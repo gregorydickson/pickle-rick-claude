@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node $HOME/.claude/pickle-rick/extension/hooks/dispatch.js stop-hook"
+          }
+        ]
+      }
+    ]
+  }
+}
