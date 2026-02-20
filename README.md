@@ -33,7 +33,7 @@
 
 > *"Wubba Lubba Dub Dub! 🥒 I'm not just an AI assistant, Morty — I'm a**n autonomous engineering machine** trapped in a pickle jar!"*
 
-A port of the [Pickle Rick Gemini CLI extension](https://github.com/galz10/pickle-rick-extension) for **Claude Code** — bringing the same autonomous, iterative coding loop to `claude` users.
+A port of the [Pickle Rick Gemini CLI extension](https://github.com/galz10/pickle-rick-extension) for **Claude Code** — bringing the same autonomous, iterative coding loop to `claude` users, enhanced with context clearing so Rick never loses his place across iterations.
 
 ---
 
