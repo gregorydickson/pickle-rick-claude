@@ -100,8 +100,8 @@ The **Stop hook** prevents Claude from exiting until the task is genuinely compl
 ### Flags
 
 ```
---max-iterations <N>    Stop after N iterations (default: unlimited)
---max-time <M>          Stop after M minutes (default: unlimited)
+--max-iterations <N>    Stop after N iterations (default: 5)
+--max-time <M>          Stop after M minutes (default: 60)
 --resume                Resume from an existing session
 --paused                Start in paused mode (PRD only)
 ```
@@ -150,17 +150,20 @@ Sit back. Rick handles the rest. 🥒
 pickle-rick-claude/
 ├── .claude/
 │   ├── commands/           # Slash commands (the magic words)
-│   │   ├── pickle.md       # Main loop command (PRD + Breakdown inlined)
-│   │   ├── pickle-prd.md   # Interactive PRD drafter
-│   │   ├── eat-pickle.md   # Loop canceller
-│   │   ├── help-pickle.md  # Help text
-│   │   └── send-to-morty.md # Worker prompt (all 7 skills inlined)
+│   │   ├── pickle.md           # Main loop command (PRD + Breakdown inlined)
+│   │   ├── pickle-prd.md       # Interactive PRD drafter
+│   │   ├── eat-pickle.md       # Loop canceller
+│   │   ├── help-pickle.md      # Help text
+│   │   ├── send-to-morty.md    # Worker prompt (all 7 skills inlined)
+│   │   ├── add-to-pickle-jar.md # Save session to Jar queue
+│   │   └── pickle-jar-open.md  # Run all Jar tasks (Night Shift)
 │   └── settings.json       # Stop hook registration
 ├── extension/
 │   ├── bin/
 │   │   ├── setup.js        # Session initializer
 │   │   ├── cancel.js       # Loop canceller
 │   │   ├── spawn-morty.js  # Worker subprocess spawner
+│   │   ├── jar-runner.js   # Jar Night Shift runner 🫙
 │   │   ├── worker-setup.js # Worker session initializer
 │   │   ├── get-session.js  # Session path resolver
 │   │   └── update-state.js # State mutation helper
@@ -171,7 +174,8 @@ pickle-rick-claude/
 │   ├── services/
 │   │   ├── pickle-utils.js # Shared utilities
 │   │   ├── git-utils.js    # Git helpers
-│   │   └── pr-factory.js   # PR creation
+│   │   ├── pr-factory.js   # PR creation
+│   │   └── jar-utils.js    # Jar queue helper
 │   └── package.json        # "type": "module" — CRITICAL
 ├── persona.md              # Pickle Rick persona snippet (append to your project's CLAUDE.md)
 ├── pickle_settings.json    # Default limits

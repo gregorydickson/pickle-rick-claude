@@ -21,8 +21,8 @@ The extension transforms Claude Code into "Pickle Rick" (from Rick and Morty) â€
 - **`/pickle-prd <task>`**: Interactively draft a PRD, then resume with `/pickle --resume`
 - **`/eat-pickle`**: Cancel the active loop
 - **`/help-pickle`**: Show help
-
-> **Note**: Jar commands (`/add-to-pickle-jar`, `/pickle-jar-open`) are not available in this Claude Code port â€” follow-up milestone.
+- **`/add-to-pickle-jar`**: Save the current session's PRD to a queue for later batch execution
+- **`/pickle-jar-open`**: Run all queued Jar tasks sequentially (Night Shift / Grand Overseer Mode)
 
 ---
 

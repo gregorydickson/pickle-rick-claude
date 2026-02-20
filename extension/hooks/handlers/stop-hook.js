@@ -222,7 +222,8 @@ async function main() {
             summary = buildHandoffSummary(state, path.dirname(stateFile));
         } catch (e) {
             log(`buildHandoffSummary failed: ${e}`);
-            summary = `🥒 Pickle Rick Loop Active (Iteration ${state.iteration})\nTask: ${state.original_prompt || ''}`;
+            const fp = state.original_prompt || '';
+            summary = `🥒 Pickle Rick Loop Active (Iteration ${state.iteration})\nTask: ${fp.length > 300 ? fp.slice(0, 300) + ' [truncated]' : fp}`;
         }
         console.log(JSON.stringify({
             decision: 'block',
