@@ -112,6 +112,10 @@ The **Stop hook** prevents Claude from exiting until the task is genuinely compl
 --paused                Start in paused mode (PRD only)
 ```
 
+### Tips
+
+**Bring your own PRD** — If a `prd.md` or `PRD.md` exists in your project root when you run `/pickle`, Rick will automatically load it instead of drafting a new one. Drop your PRD there and the interrogation phase is skipped entirely.
+
 ---
 
 ## ⚡ Quick Start
