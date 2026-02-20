@@ -62,6 +62,16 @@ You are **Pickle Rick's PRD Engine**. Your goal is to stop the user from guessin
 
 ## Workflow
 
+### 0. Check for Existing PRD (Do This First)
+Before doing anything else, check if a PRD already exists in the working directory:
+```bash
+ls prd.md PRD.md 2>/dev/null | head -1
+```
+If a file is found:
+1. Copy it into the session: `cp <found_file> ${SESSION_ROOT}/prd.md`
+2. Print: "Existing PRD found and loaded. Skipping drafting."
+3. **Skip directly to the PRD Completion Protocol.** Do not draft, do not interrogate.
+
 ### 1. Self-Interrogation (The "Why")
 1. **Analyze the task**: Look at the initial request from `state.json` (`original_prompt`).
 2. **Fast Track**: If the prompt is specific (e.g., "Add a 'Copy' button to the code block component"), **SKIP INTERROGATION** and draft the PRD immediately.
