@@ -94,6 +94,8 @@ The **Stop hook** prevents Claude from exiting until the task is genuinely compl
 | `/pickle-prd "task"` | 📋 Interactively draft a PRD first |
 | `/eat-pickle` | 🛑 Cancel the active loop |
 | `/help-pickle` | ❓ Show all commands and flags |
+| `/add-to-pickle-jar` | 🫙 Save current session to the Jar for later |
+| `/pickle-jar-open` | 🌙 Run all Jar tasks sequentially (Night Shift) |
 
 ### Flags
 
@@ -269,7 +271,7 @@ Morty workers already get clean context naturally (each is a fresh `claude -p` s
 | `~/.gemini/extensions/pickle-rick/` | `~/.claude/pickle-rick/` |
 | `hookSpecificOutput.systemMessage` | `reason` field in block response |
 
-> ⚠️ **Jar commands** (`/add-to-pickle-jar`, `/pickle-jar-open`) are not available in this port — follow-up milestone.
+> ✅ **Jar commands** (`/add-to-pickle-jar`, `/pickle-jar-open`) are fully ported.
 
 ---
 
