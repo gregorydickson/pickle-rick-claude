@@ -35,13 +35,13 @@ async function main() {
         }
     }
     if (!stateFile || !fs.existsSync(stateFile)) {
-        console.log(JSON.stringify({ decision: 'allow' }));
+        process.exit(0);
         return;
     }
     const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     // 2. Check Context
     if (state.working_dir && path.resolve(state.working_dir) !== path.resolve(process.cwd())) {
-        console.log(JSON.stringify({ decision: 'allow' }));
+        process.exit(0);
         return;
     }
     const role = process.env.PICKLE_ROLE;
@@ -51,6 +51,6 @@ async function main() {
         log(`Incrementing iteration to ${state.iteration}`);
         fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
     }
-    console.log(JSON.stringify({ decision: 'allow' }));
+    process.exit(0);
 }
-main().catch(() => console.log(JSON.stringify({ decision: 'allow' })));
+main().catch(() => process.exit(0));

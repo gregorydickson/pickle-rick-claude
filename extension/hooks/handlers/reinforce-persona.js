@@ -25,17 +25,17 @@ async function main() {
         }
     }
     if (!stateFile || !fs.existsSync(stateFile)) {
-        console.log(JSON.stringify({ decision: 'allow' }));
+        process.exit(0);
         return;
     }
     const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     // 2. Check Context
     if (state.working_dir && path.resolve(state.working_dir) !== path.resolve(process.cwd())) {
-        console.log(JSON.stringify({ decision: 'allow' }));
+        process.exit(0);
         return;
     }
     if (!state.active) {
-        console.log(JSON.stringify({ decision: 'allow' }));
+        process.exit(0);
         return;
     }
     // 3. Reinforce Persona
