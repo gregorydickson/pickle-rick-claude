@@ -241,6 +241,20 @@ pickle-rick-claude/
 
 ---
 
+## 🏆 Credits
+
+This port stands on the shoulders of giants. *Wubba Lubba Dub Dub.*
+
+| | |
+|---|---|
+| 🥒 **[galz10](https://github.com/galz10)** | Creator of the original [Pickle Rick Gemini CLI extension](https://github.com/galz10/pickle-rick-extension) — the autonomous lifecycle, manager/worker model, hook loop, and all the skill content that makes this thing work. This project is a faithful port of their work. |
+| 🧠 **[Geoffrey Huntley](https://ghuntley.com)** | Inventor of the ["Ralph Wiggum" technique](https://ghuntley.com/ralph/) — the foundational insight that "Ralph is a Bash loop": feed an AI agent a prompt, block its exit, repeat until done. Everything here traces back to that idea. |
+| 🔧 **[AsyncFuncAI/ralph-wiggum-extension](https://github.com/AsyncFuncAI/ralph-wiggum-extension)** | Reference implementation of the Ralph Wiggum loop that inspired the Pickle Rick extension. |
+| ✍️ **[dexhorthy](https://github.com/dexhorthy)** | Context engineering and prompt techniques used throughout. |
+| 📺 **Rick and Morty** | For *Pickle Riiiick!* 🥒 |
+
+---
+
 ## 🥒 License
 
 MIT — same as the original Pickle Rick extension.
