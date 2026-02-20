@@ -119,7 +119,7 @@ The **Stop hook** prevents Claude from exiting until the task is genuinely compl
 ### 1. Install
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/gregorydickson/pickle-rick-claude.git
 cd pickle-rick-claude
 bash install.sh
 ```
