@@ -116,10 +116,17 @@ cd pickle-rick-claude
 bash install.sh
 ```
 
-### 2. Copy CLAUDE.md to your project
+### 2. Add the Pickle Rick persona to your project
+
+The installer deploys `persona.md` to `~/.claude/pickle-rick/`. Add it to your project's `CLAUDE.md` — appending if you already have one, or creating fresh if not:
 
 ```bash
-cp ~/.claude/pickle-rick/CLAUDE.md /path/to/your/project/.claude/CLAUDE.md
+# Already have a CLAUDE.md? Append (safe — won't overwrite your content):
+cat ~/.claude/pickle-rick/persona.md >> /path/to/your/project/.claude/CLAUDE.md
+
+# Starting fresh:
+mkdir -p /path/to/your/project/.claude
+cp ~/.claude/pickle-rick/persona.md /path/to/your/project/.claude/CLAUDE.md
 ```
 
 ### 3. Run
@@ -164,7 +171,7 @@ pickle-rick-claude/
 │   │   ├── git-utils.js    # Git helpers
 │   │   └── pr-factory.js   # PR creation
 │   └── package.json        # "type": "module" — CRITICAL
-├── CLAUDE.md               # Pickle Rick persona (copy per project)
+├── persona.md              # Pickle Rick persona snippet (append to your project's CLAUDE.md)
 ├── pickle_settings.json    # Default limits
 ├── install.sh              # Installer
 └── uninstall.sh            # Uninstaller
