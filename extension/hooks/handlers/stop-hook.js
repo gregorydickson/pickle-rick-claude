@@ -1,6 +1,89 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+function statusSymbol(status) {
+    if (status === 'done') return '[x]';
+    if (status === 'in progress') return '[~]';
+    return '[ ]';
+}
+function parseTicketFrontmatter(filePath) {
+    try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+        if (!fmMatch) return null;
+        const fm = fmMatch[1];
+        const get = (field) => {
+            const m = fm.match(new RegExp(`^${field}:\\s*(.+)$`, 'm'));
+            return m ? m[1].trim() : null;
+        };
+        return {
+            id: get('id'),
+            title: get('title'),
+            status: get('status'),
+            order: parseInt(get('order') || '0', 10),
+        };
+    } catch {
+        return null;
+    }
+}
+function collectTickets(sessionDir) {
+    try {
+        const entries = fs.readdirSync(sessionDir, { withFileTypes: true });
+        const tickets = [];
+        for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            const subDir = path.join(sessionDir, entry.name);
+            try {
+                const files = fs.readdirSync(subDir);
+                for (const file of files) {
+                    if (!file.startsWith('linear_ticket_') || !file.endsWith('.md')) continue;
+                    const parsed = parseTicketFrontmatter(path.join(subDir, file));
+                    if (parsed) tickets.push(parsed);
+                }
+            } catch {
+                /* skip */
+            }
+        }
+        return tickets.sort((a, b) => a.order - b.order);
+    } catch {
+        return [];
+    }
+}
+function buildHandoffSummary(state, sessionDir) {
+    const task = state.original_prompt || '';
+    const truncatedTask = task.length > 300 ? task.slice(0, 300) + ' [truncated]' : task;
+    const prdPath = path.join(sessionDir, 'prd.md');
+    const prdExists = fs.existsSync(prdPath);
+    const tickets = collectTickets(sessionDir);
+    const iterLine = state.max_iterations > 0
+        ? `${state.iteration} of ${state.max_iterations}`
+        : `${state.iteration}`;
+    const lines = [
+        '=== PICKLE RICK LOOP CONTEXT ===',
+        `Phase: ${state.step || 'unknown'}`,
+        `Iteration: ${iterLine}`,
+        `Session: ${sessionDir}`,
+        `Ticket: ${state.current_ticket || 'none'}`,
+        `Task: ${truncatedTask}`,
+        `PRD: ${prdExists ? 'exists' : 'not yet created'}`,
+    ];
+    if (tickets.length > 0) {
+        lines.push('Tickets:');
+        for (const t of tickets) {
+            const sym = statusSymbol(t.status || '');
+            const title = (t.title || '').length > 60
+                ? (t.title || '').slice(0, 60) + '...'
+                : (t.title || '');
+            lines.push(`  ${sym} ${t.id || '?'}: ${title}`);
+        }
+    }
+    lines.push(
+        '',
+        'NEXT ACTION: Resume from current phase. Read state.json for context.',
+        'Do NOT restart from PRD. Continue where you left off.',
+    );
+    return lines.join('\n');
+}
 async function main() {
     const extensionDir = process.env.EXTENSION_DIR || path.join(os.homedir(), '.claude/pickle-rick');
     const globalDebugLog = path.join(extensionDir, 'debug.log');
@@ -122,11 +205,6 @@ async function main() {
         process.exit(0);
         return;
     }
-    // Truncate original_prompt in reason to ~500 chars to avoid token waste
-    const originalPrompt = state.original_prompt || '';
-    const truncatedPrompt = originalPrompt.length > 500
-        ? originalPrompt.slice(0, 500) + ' [truncated]'
-        : originalPrompt;
     // CONTINUE CONDITIONS: Block exit to force next iteration
     if (isTaskDone || isTicketDone || isBreakdownDone || isPrdDone || isTicketSelected) {
         log(`Decision: BLOCK (Checkpoint reached)`);
@@ -139,9 +217,16 @@ async function main() {
             feedback += 'Ticket selected, starting research...';
         if (isTaskDone || isTicketDone)
             feedback += 'Ticket finished, moving to next...';
+        let summary;
+        try {
+            summary = buildHandoffSummary(state, path.dirname(stateFile));
+        } catch (e) {
+            log(`buildHandoffSummary failed: ${e}`);
+            summary = `🥒 Pickle Rick Loop Active (Iteration ${state.iteration})\nTask: ${state.original_prompt || ''}`;
+        }
         console.log(JSON.stringify({
             decision: 'block',
-            reason: `${feedback}\n\nOriginal Task: ${truncatedPrompt}`,
+            reason: `${feedback}\n\n${summary}`,
         }));
         return;
     }
@@ -164,13 +249,16 @@ async function main() {
     }
     // 12. Default: Continue Loop (Prevent Exit)
     log('Decision: BLOCK (Default continuation)');
-    let defaultFeedback = `🥒 **Pickle Rick Loop Active** (Iteration ${state.iteration}`;
-    if (state.max_iterations > 0)
-        defaultFeedback += ` of ${state.max_iterations}`;
-    defaultFeedback += ')';
+    let summary;
+    try {
+        summary = buildHandoffSummary(state, path.dirname(stateFile));
+    } catch (e) {
+        log(`buildHandoffSummary failed: ${e}`);
+        summary = `🥒 Pickle Rick Loop Active (Iteration ${state.iteration})\nTask: ${state.original_prompt || ''}`;
+    }
     console.log(JSON.stringify({
         decision: 'block',
-        reason: `${defaultFeedback}\n\nOriginal Task: ${truncatedPrompt}`,
+        reason: summary,
     }));
 }
 main().catch((err) => {

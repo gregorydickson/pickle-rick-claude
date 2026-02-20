@@ -216,6 +216,40 @@ pickle-rick-claude/
     reason: "🥒 Pickle Rick Loop Active..." } ─────┘
 ```
 
+### Context Clearing — Why Rick Loops Work
+
+The single biggest advantage of the Rick loop over naive "just keep prompting" approaches is **context clearing between iterations**.
+
+Long-running AI sessions accumulate stale conversational context. The model starts "remembering" earlier wrong turns, half-finished reasoning, and superseded plans — all of it silently influencing every subsequent response. Over enough iterations, the model loses track of what phase it's in, tries to restart from scratch, or hallucinates already-completed work.
+
+**The Ralph Wiggum insight** (see [Credits](#-credits)) is that a simple loop — blocking the agent's exit and re-injecting a minimal, accurate context — outperforms one long conversation every time. Fresh context = cleaner decisions.
+
+**How we accomplish it:** The stop hook injects a structured session summary into the `reason` field of every `decision: block` response:
+
+```
+=== PICKLE RICK LOOP CONTEXT ===
+Phase: implementation
+Iteration: 4 of 10
+Session: ~/.claude/pickle-rick/sessions/2025-01-15-a3f2
+Ticket: PROJ-42
+Task: refactor the auth module
+PRD: exists
+Tickets:
+  [x] PROJ-40: Set up database schema
+  [x] PROJ-41: Add JWT middleware
+  [~] PROJ-42: Refactor auth module
+  [ ] PROJ-43: Write integration tests
+
+NEXT ACTION: Resume from current phase. Read state.json for context.
+Do NOT restart from PRD. Continue where you left off.
+```
+
+Claude Code injects this `reason` string as a **system message at the start of every new iteration** — even after full compression of the conversation history. No matter how much context gets evicted, Rick always wakes up knowing exactly where he is and what to do next.
+
+Morty workers already get clean context naturally (each is a fresh `claude -p` subprocess). This brings equivalent resilience to Rick's long-running interactive session.
+
+---
+
 ### Manager / Worker Model
 
 - **Rick (Manager)**: Runs in your interactive Claude session. Handles PRD, Breakdown, orchestration.
