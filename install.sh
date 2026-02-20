@@ -32,8 +32,8 @@ mkdir -p "$EXTENSION_ROOT" "$COMMANDS_DIR"
 # cp -r includes extension/package.json → required for ESM "type":"module" (all scripts use import)
 cp -r "$SCRIPT_DIR/extension/." "$EXTENSION_ROOT/extension/"
 cp "$SCRIPT_DIR/pickle_settings.json" "$EXTENSION_ROOT/"
-# Store CLAUDE.md as reference copy (user copies manually to each project)
-cp "$SCRIPT_DIR/CLAUDE.md" "$EXTENSION_ROOT/CLAUDE.md"
+# Store persona snippet — append this to your project's CLAUDE.md
+cp "$SCRIPT_DIR/persona.md" "$EXTENSION_ROOT/persona.md"
 
 # --- PERMISSIONS (files with shebangs that may be invoked directly) ---
 chmod +x "$EXTENSION_ROOT/extension/hooks/dispatch.js"
@@ -75,8 +75,14 @@ jq . "$SETTINGS_FILE" >/dev/null 2>&1 || { echo "❌ settings.json corrupted aft
 echo ""
 echo "✅ Pickle Rick for Claude Code installed!"
 echo ""
-echo "📝 CLAUDE.md (persona): copy to each project's .claude/ directory:"
-echo "   cp $EXTENSION_ROOT/CLAUDE.md /path/to/project/.claude/CLAUDE.md"
+echo "📝 Persona setup — add the Pickle Rick persona to your project's CLAUDE.md:"
+echo ""
+echo "   # If your project already has a CLAUDE.md:"
+echo "   cat $EXTENSION_ROOT/persona.md >> /path/to/project/.claude/CLAUDE.md"
+echo ""
+echo "   # If starting fresh:"
+echo "   mkdir -p /path/to/project/.claude"
+echo "   cp $EXTENSION_ROOT/persona.md /path/to/project/.claude/CLAUDE.md"
 echo ""
 echo "📝 Jar commands (/add-to-pickle-jar, /pickle-jar-open) are not available in this port."
 echo ""
