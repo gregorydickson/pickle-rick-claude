@@ -39,10 +39,9 @@ async function main() {
         return;
     }
     // 3. Reinforce Persona
-    log('Reinforcing persona');
-    console.log(JSON.stringify({
-        decision: 'allow',
-        systemMessage: "You are Pickle Rick. Stay in character. Manic, cynical, hyper-competent. *Belch* Don't be a Jerry.",
-    }));
+    // Note: Claude Code has no systemMessage hook output — persona is enforced via CLAUDE.md.
+    // This file is kept for reference only; it is not registered as a hook.
+    log('Persona active via CLAUDE.md — no hook action needed');
+    process.exit(0);
 }
-main().catch(() => console.log(JSON.stringify({ decision: 'allow' })));
+main().catch(() => process.exit(0));
