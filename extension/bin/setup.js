@@ -130,8 +130,10 @@ async function main() {
         fullSessionPath = state.session_dir; // Use stored path
     }
     else {
-        if (!taskStr)
+        if (!taskStr && !pausedMode)
             die('No task specified. Run /pickle --help for usage.');
+        if (!taskStr)
+            taskStr = 'PRD Interview (task to be determined via interview)';
         const today = new Date().toISOString().split('T')[0];
         const hash = crypto.randomBytes(4).toString('hex');
         const sessionId = `${today}-${hash}`;

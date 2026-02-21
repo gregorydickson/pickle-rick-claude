@@ -8,7 +8,7 @@ Your goal is to initialize a Pickle Rick session in PAUSED mode, interview the u
 ## Step 1: Initialization
 Run the setup script to create the session in PAUSED mode:
 ```bash
-node "$HOME/.claude/pickle-rick/extension/bin/setup.js" --paused $ARGUMENTS
+node "$HOME/.claude/pickle-rick/extension/bin/setup.js" $ARGUMENTS --paused
 ```
 
 **CRITICAL**: Look for the machine-readable line `SESSION_ROOT=<path>` in the output (also shown as `Path:` in the panel). That is your `SESSION_DIR`.
