@@ -6,7 +6,7 @@
 
 ## Introduction
 
-Four features with disproportionate impact relative to their implementation cost. Each is either a missing wire-up of existing code (`pr-factory.js`), a single new script (`pickle-status`, `pickle-retry`), or a four-line shell call (`notify`). None require changes to the stop hook, state schema, or Morty lifecycle.
+Four features with disproportionate impact relative to their implementation cost. Each is either a missing wire-up of existing code (`pr-factory.js`), a single new script (`pickle-status`, `pickle-retry`), or a four-line shell call (`notify`). None require changes to the state schema or Morty lifecycle. `stop-hook.js` is touched only to extract shared helpers into `pickle-utils.js` — a behavior-neutral refactor that is a prerequisite for `status.js`.
 
 ## Problem Statement
 
@@ -50,7 +50,7 @@ Four features with disproportionate impact relative to their implementation cost
 
 2. **Auto-PR**: Rick finishes the final ticket, announces "Epic complete," checks the current branch name, and if it is not `main` or `master`, automatically calls `pr-factory.js` with the session directory. A PR URL is printed to the terminal. No manual `gh pr create` required. If the branch is `main`/`master`, Rick prints a warning and skips PR creation.
 
-3. **Night Shift Notification**: User queues 3 tasks with `/add-to-pickle-jar`, runs `/pickle-jar-open`, walks away. When `jar-runner.js` finishes processing all entries, a macOS notification appears: "🥒 Pickle Rick — Jar complete. N tasks processed."
+3. **Night Shift Notification**: User queues 3 tasks with `/add-to-pickle-jar`, runs `/pickle-jar-open`, walks away. When `jar-runner.js` finishes processing all entries, a macOS notification appears: "🥒 Pickle Rick — Jar complete. X succeeded, Y failed."
 
 4. **Ticket Retry**: A Morty worker times out or produces invalid output. User runs `/pickle-retry abc123` (using the ticket hash). The script resets the ticket status to `Todo`, sets `active: true` in `state.json` (re-activating the session if it was cancelled), and prints a ready-to-run `spawn-morty.js` command. Rick executes that command, then validates and commits as normal.
 
@@ -106,6 +106,7 @@ Four features with disproportionate impact relative to their implementation cost
 - New file: `extension/bin/retry-ticket.js`
   - Args: `<ticket-id>` (session-dir resolved from `current_sessions.json` via `process.cwd()`)
   - Validates ticket directory and ticket file exist; exits with error message if not found
+  - **Cleans up partial artifacts**: moves any existing `research_*.md`, `research_review.md`, `plan_*.md`, `plan_review.md` in the ticket dir to a `_retry_<timestamp>/` subdirectory — preserves history without confusing a fresh Morty
   - Updates ticket frontmatter `status: Todo`
   - Sets `active: true` in `state.json` (re-activates session if it was previously cancelled)
   - Calls `update-state.js current_ticket <ticket-id> <session-dir>` to set the active ticket
@@ -114,6 +115,13 @@ Four features with disproportionate impact relative to their implementation cost
   - Runs `retry-ticket.js $ARGUMENTS`
   - Instructs Rick: read the printed `spawn-morty.js` command from the output, execute it, then proceed with the standard validation and commit flow from the Orchestration phase
 - Add to `install.sh`: copy command + chmod retry-ticket.js
+
+### Documentation (do last)
+
+After all four features are implemented:
+- Update `help-pickle.md`: add `/pickle-status` and `/pickle-retry` to the command list
+- Update `README.md`: add both commands to the Commands table and a Tips entry for `/pickle-retry`
+- Deploy updated help file to `~/.claude/commands/help-pickle.md`
 
 ## Assumptions
 
