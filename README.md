@@ -102,6 +102,8 @@ The **Stop hook** prevents Claude from exiting until the task is genuinely compl
 | `/help-pickle` | ❓ Show all commands and flags |
 | `/add-to-pickle-jar` | 🫙 Save current session to the Jar for later |
 | `/pickle-jar-open` | 🌙 Run all Jar tasks sequentially (Night Shift) |
+| `/disable-pickle` | 🔇 Disable the stop hook globally (without uninstalling) |
+| `/enable-pickle` | 🔊 Re-enable the stop hook |
 
 ### Flags
 
@@ -115,6 +117,8 @@ The **Stop hook** prevents Claude from exiting until the task is genuinely compl
 ### Tips
 
 **Bring your own PRD** — If a `prd.md` or `PRD.md` exists in your project root when you run `/pickle`, Rick will automatically load it instead of drafting a new one. Drop your PRD there and the interrogation phase is skipped entirely.
+
+**Disabling Rick** — `/disable-pickle` creates a global marker file that silences the stop hook across all sessions instantly — no uninstall required. `/enable-pickle` removes it. To also drop the persona mid-session, just tell Rick directly: *"drop the Pickle Rick persona"* and he'll revert to standard Claude behavior for the rest of the session.
 
 ---
 
