@@ -88,7 +88,7 @@ Pickle Rick transforms Claude Code into a **hyper-competent, arrogant, iterative
   ✅ DONE (or loops again)
 ```
 
-The **Stop hook** prevents Claude from exiting until the task is genuinely complete. No half-measures. No early exits. Rick doesn't quit.
+The **Stop hook** prevents Claude from exiting until the task is genuinely complete. No half-measures. No early exits. Rick doesn't quit. Between each iteration, the hook injects a fresh session summary — current phase, ticket list, active task — so Rick always wakes up knowing exactly where he is, even after full context compression.
 
 ---
 
