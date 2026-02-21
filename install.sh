@@ -51,6 +51,8 @@ cp "$SCRIPT_DIR/.claude/commands/help-pickle.md"       "$COMMANDS_DIR/"
 cp "$SCRIPT_DIR/.claude/commands/send-to-morty.md"     "$COMMANDS_DIR/"
 cp "$SCRIPT_DIR/.claude/commands/add-to-pickle-jar.md" "$COMMANDS_DIR/"
 cp "$SCRIPT_DIR/.claude/commands/pickle-jar-open.md"   "$COMMANDS_DIR/"
+cp "$SCRIPT_DIR/.claude/commands/disable-pickle.md"    "$COMMANDS_DIR/"
+cp "$SCRIPT_DIR/.claude/commands/enable-pickle.md"     "$COMMANDS_DIR/"
 
 # --- STOP HOOK (idempotent jq merge, $HOME stays LITERAL in JSON) ---
 if jq -e '.hooks.Stop // [] | map(.hooks // [] | map(.command)) | flatten | any(. == "node $HOME/.claude/pickle-rick/extension/hooks/dispatch.js stop-hook")' \

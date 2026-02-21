@@ -86,6 +86,11 @@ function buildHandoffSummary(state, sessionDir) {
 }
 async function main() {
     const extensionDir = process.env.EXTENSION_DIR || path.join(os.homedir(), '.claude/pickle-rick');
+    // Disabled flag — allows the user to turn off the hook globally without uninstalling
+    if (fs.existsSync(path.join(extensionDir, 'disabled'))) {
+        process.exit(0);
+        return;
+    }
     const globalDebugLog = path.join(extensionDir, 'debug.log');
     let sessionHooksLog = null;
     const log = (msg) => {

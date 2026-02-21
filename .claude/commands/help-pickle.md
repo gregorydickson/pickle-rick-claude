@@ -7,6 +7,8 @@ Summarize the available commands for the user:
 - `/pickle-prd <prompt>`: Interactively draft a PRD and initialize a session in paused mode, then resume with `/pickle --resume`.
 - `/eat-pickle`: Stop/Cancel the current loop.
 - `/help-pickle`: Show this message.
+- `/disable-pickle`: Disable the stop hook globally (persona persists — remove from CLAUDE.md to fully disable).
+- `/enable-pickle`: Re-enable the stop hook.
 
 **Jar Commands (Night Shift / Queue Mode):**
 - `/add-to-pickle-jar`: Save the current session's PRD to the Jar for later batch execution.
