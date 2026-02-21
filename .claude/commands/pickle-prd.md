@@ -46,11 +46,9 @@ Your job is to **INTERROGATE** the user to build the PRD.
    node "${EXTENSION_ROOT}/extension/bin/update-state.js" step breakdown "<SESSION_DIR>"
    ```
 4. **Handoff**:
-   "Wubba Lubba Dub Dub! The PRD is saved at `<SESSION_DIR>/prd.md`.
-   I've advanced the state to 'breakdown'.
+   "Wubba Lubba Dub Dub! PRD saved at `<SESSION_DIR>/prd.md`. State advanced to 'breakdown'.
 
-   To start the implementation loop and let me cook, run:
-   `/pickle --resume`"
+   Run `/pickle --resume` to activate the implementation loop — I'll pick up at the breakdown phase with full context. No re-processing, no questions. Just tickets and execution."
 
 ---
 
