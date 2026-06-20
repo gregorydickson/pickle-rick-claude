@@ -39,6 +39,20 @@ function isPathInScope(stagedPath: string, allowedPaths: string[]): boolean {
   });
 }
 
+// R-TDCS (#128): a subsystem `CLAUDE.md` is anatomy-park's own trap-door catalog
+// deliverable. A trap door is by definition a PRE-EXISTING invariant, so its
+// catalog file is almost never in the feature diff — strict branch-diff scope
+// (`allowed_paths`) then fences out the very file the tool exists to write, and
+// identified trap doors die in session-ephemeral `anatomy-park.json`. Exempt
+// `CLAUDE.md` catalog files from the scope-violation check: they are
+// documentation-only tool output, not code scope creep. The fence on source
+// files stays fully intact. This also subsumes the Layer-2 staleness case — a
+// just-written `CLAUDE.md` no longer depends on a frozen `allowed_paths`.
+function isTrapDoorCatalogPath(stagedPath: string): boolean {
+  const n = normalizePath(stagedPath);
+  return n === 'CLAUDE.md' || n.endsWith('/CLAUDE.md');
+}
+
 function maybeEmitImpactWarning(
   service: ImpactRadiusService | undefined,
   stagedPaths: string[],
@@ -106,7 +120,7 @@ export function checkScopeDiff(opts: CheckScopeDiffOpts = {}): ScopeDiffResult {
 
   const allowedPaths: string[] = scopeData.allowed_paths;
   const staged = getStagedFn();
-  const outside = staged.filter((p) => !isPathInScope(p, allowedPaths));
+  const outside = staged.filter((p) => !isPathInScope(p, allowedPaths) && !isTrapDoorCatalogPath(p));
 
   if (outside.length === 0) {
     maybeEmitImpactWarning(opts.impactService, staged, allowedPaths);

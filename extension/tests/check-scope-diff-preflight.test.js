@@ -166,3 +166,53 @@ test('check-scope-diff-preflight: no staged files with scope.json → exit 0 wit
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('R-TDCS #128: a subsystem CLAUDE.md outside allowed_paths is NOT a scope violation (anatomy-park catalog deliverable)', () => {
+  const tmp = makeTmp();
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmp });
+    // The trap-door catalog file lives OUTSIDE the feature diff (allowed_paths).
+    fs.mkdirSync(path.join(tmp, 'src', 'modules', 'bank-statement'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'src', 'modules', 'bank-statement', 'CLAUDE.md'), '## Trap Doors\n- new invariant\n');
+    spawnSync('git', ['add', 'src/modules/bank-statement/CLAUDE.md'], { cwd: tmp });
+
+    const scopePath = writeScopeJson(tmp, ['src/modules/bank-statement/service.ts']); // CLAUDE.md NOT listed
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 0, `expected exit 0 (CLAUDE.md exempt), got ${result.status}. stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.status, 'ok');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('R-TDCS #128: an out-of-scope source file IS still flagged even when staged alongside a CLAUDE.md (fence on source intact)', () => {
+  const tmp = makeTmp();
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmp });
+    fs.mkdirSync(path.join(tmp, 'src', 'modules', 'bank-statement'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'src', 'modules', 'bank-statement', 'CLAUDE.md'), '## Trap Doors\n- x\n');
+    fs.mkdirSync(path.join(tmp, 'unrelated'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'unrelated', 'leaked.ts'), 'export {};');
+    spawnSync('git', ['add', 'src/modules/bank-statement/CLAUDE.md', 'unrelated/leaked.ts'], { cwd: tmp });
+
+    const scopePath = writeScopeJson(tmp, ['src/modules/bank-statement/service.ts']);
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 1, `expected exit 1 (the .ts is out of scope), got ${result.status}. stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.status, 'outside_scope');
+    assert.ok(output.staged_paths_outside_scope.includes('unrelated/leaked.ts'), 'the out-of-scope .ts must be flagged');
+    assert.ok(
+      !output.staged_paths_outside_scope.some((p) => p.endsWith('CLAUDE.md')),
+      'the CLAUDE.md catalog file must NOT be flagged',
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
