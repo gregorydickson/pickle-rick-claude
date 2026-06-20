@@ -4,7 +4,7 @@ Five contracts apply to every script in `bin/`. Per-file trap doors (below) enfo
 
 1. **CLI guard** — Every `bin/` script is a CLI entry-point and MUST have a `if (process.argv[1] && path.basename(process.argv[1]) === '<script>.js')` guard before executing any side-effectful logic. Enforced per-file via `audit-trap-door-enforcement.sh`; canonical `PATTERN_SHAPE` is in the `check-flake-budget.ts` trap door.
 
-2. **StateManager.read()** — Every entry-point script that reads `state.json` MUST go through `StateManager.read()` (not raw `JSON.parse(fs.readFileSync(...))`). The only documented exception is the explicit crash-path `forceWrite` fallback in `mux-runner.ts`. Enforced per-file by the `(state reads)` trap doors in `mux-runner.ts`, `microverse-runner.ts`, `log-watcher.ts`, `morty-watcher.ts`, `raw-morty.ts`, and the `(crash fallback)` trap door in `mux-runner.ts`.
+2. **StateManager.read()** — Every entry-point script that reads `state.json` MUST go through `StateManager.read()` (not raw `JSON.parse(fs.readFileSync(...))`). The only documented exception is the explicit crash-path `forceWrite` fallback in `mux-runner.ts`. Enforced via the consolidated **State-reader coverage** trap door in `extension/CLAUDE.md` (lists the covered readers + their ENFORCE tests) plus the `mux-runner.ts` `(crash fallback)` raw-parse exception trap door; `audit-trap-door-enforcement.sh` verifies ENFORCE-reachability.
 
 3. **Finite spawn timeout** — Every script that spawns subprocesses MUST pass a finite `timeout` to `spawnSync` / `execFileSync` / `spawn`. Enforced per-file by: `test-runner.ts` trap door, `plumbus-frame-analyzer.ts` trap door (`BUN_TIMEOUT_MS`), R-APMW-6 (`mux-runner.ts`), `spawn-morty.ts` timeout-CLI trap door.
 
