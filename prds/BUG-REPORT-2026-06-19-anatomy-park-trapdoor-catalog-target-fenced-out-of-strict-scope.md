@@ -3,7 +3,7 @@
 **Filed:** 2026-06-19 (capture-only, babysitter)
 **Code:** R-TDCS (Trap-Door Catalog Scope-fence)
 **Priority:** P3
-**Status:** 🟡 OPEN — capture-only, NO fix prescribed/applied
+**Status:** 🟢 FIX COMMITTED `6b895307` (2026-06-19) — beta.20 release pending. Applied recommended fix **#1 alone**: `check-scope-diff.ts` `isTrapDoorCatalogPath(p)` (basename `CLAUDE.md`) is exempted from the `outside` scope-violation set. #1 subsumes Layer-2 staleness (a just-written `CLAUDE.md` no longer depends on a frozen `allowed_paths`), so #2/#3 were unnecessary. Fence on source files intact (an out-of-scope `*.ts` staged alongside a `CLAUDE.md` is still flagged). Tests: `check-scope-diff-preflight.test.js` R-TDCS cases; trap-door doc added (`extension/CLAUDE.md` R-TDCS, PATTERN_SHAPE `!isTrapDoorCatalogPath(p)`). REMAINING: confirm fast-c4 + integration, bump beta.20, tag.
 **Source incident:** session `2026-06-19-2b1e2707` (LOA-1387 bank-statement extraction resilience, `/pickle-pipeline --backend codex`), anatomy-park phase, subsystem `packages`.
 **Siblings:** #105 R-RGED dimension-4 (diff-vs-declared-trap-doors *scanning* — this is the *writing* counterpart); B-SJWT #95 (szechuan whole-tree-vs-`allowed_paths` scope mismatch, opposite direction).
 
