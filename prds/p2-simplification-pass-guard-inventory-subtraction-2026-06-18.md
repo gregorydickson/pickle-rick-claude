@@ -67,4 +67,16 @@ Before removing any guard, confirm its ENFORCE test still passes WITHOUT it bein
 ## Sequencing
 B-GSUB (this, low-risk hygiene) and B-GROUND2 (functional collapse) are complementary. Recommended order: **B-GROUND2 WS1/WS3 first** (collapse the finalize + resolver seams → dissolves the per-site guards as a side effect), **then B-GSUB** sweeps the independent redundancy (Clusters A/B/F + WS3 dead guards). Running B-GSUB's WS1/WS2 first is also fine since they touch docs/contracts only — but do NOT remove finalize/readiness per-site guards in B-GSUB; that's B-GROUND2's job.
 
-**DO NOT IMPLEMENT.** Next action: operator review; then `/pickle-refine-prd` into atomic, per-cluster removal tickets (each ticket = one cluster, runs the full gate, proves the ENFORCE tests still pass).
+## Empirical Result (2026-06-20 — WS1 + WS2 executed under verify-before-remove)
+
+**The inventory OVERSTATED free subtraction by ~3–5×. Honest yield: −9 trap doors (WS1 −1, WS2 −8), vs the projected ~13 for those two clusters (and ~50 for the whole pass).** Both passes ran the per-guard verify-before-remove gate (full audit set + ENFORCE tests green; behavior-preserving; ENFORCE-reachability 195 refs unchanged).
+
+- **WS1 (forward-ref cluster):** projected 9→3; actual **−1** (only `R-RTRC-6`, a pure "the test ships 3 fixtures" meta-guard). R-RTRC-1/2/3/4/5/7, R-FRA-1/2, R-SAOV-7 are **distinct load-bearing guards** (separate false-positive RCs, each with its own PATTERN_SHAPE anchor) — not grammar restatements. Committed `3e6f887`.
+- **WS2 Cluster A (state.json readers):** projected ~30→1; actual **−8** (9 pure `StateManager.read()` one-liners → one *State-reader coverage* bullet preserving all 12 ENFORCE refs). The other ~16 "state-reads" entries each carry a distinct invariant (R-MWR-4 EOF, R-PEDC, R-WSRC-2, crash-fallback, …) and stay. Committed `aa3ad29`.
+- **WS2 Cluster B (finite spawn timeout):** projected ~10→1; actual **0 free** — every timeout invariant is embedded in a distinct named trap door (R-APMW-6 close-ordering, test-runner runner-timeout, plumbus `BUN_TIMEOUT_MS`, spawn-morty timeout-CLI). Nothing collapsible without losing coverage.
+
+**Strategic conclusion (recalibrates the parent thesis D3 "simplification debt"):** the guard surface is **substantially more load-bearing than the density metric implied** — the 44%-load-bearing / 4.6:1 add:subtract figures counted distinct-invariant guards as redundant. This is, counter-intuitively, **good news for stability/GA**: the guards are mostly *earned* (real tested invariants), not dead weight. **Pure doc-level guard deletion is NOT the simplification lever.** The real complexity-reduction lever is **B-GROUND2-style functional seam-collapse** — removing the bug-generating code paths, which dissolves their guards as a side effect.
+
+**WS3 DEPRIORITIZED** (diminishing returns): the remaining items (R-TFP-C3 loop, triplicated-EOF, R-MDS-3, R-MUXQG, ~50 field-invariant parameterization) are low-stability-value cosmetic doc/line reductions; the same "turns out distinct" surprise is likely. Revisit only if a specific item is independently justified (e.g. R-TFP-C3 deletion after confirming R-TFP closed).
+
+**STATUS: WS1+WS2 DONE (−9, doc-only, no runtime change → no release/deploy). WS3 deprioritized. Pure-doc-subtraction track CLOSED.** The simplification budget redirects to functional seam-collapse (operator-scoped) and the field-proof GA gate.
