@@ -41,6 +41,7 @@ pure-doc-subtraction track (B-GSUB) is closed (−9, low-yield).
 
 | # | Item | Pri | State | Source |
 |---|------|-----|-------|--------|
+| B-RFCU | **B-RFCU** readiness forward-created unification — collapse the D1 validation-overreach seam (R-RGO/R-RPRA/R-QGSK/**R-RCFF** family) | P2 | **PLAN DRAFTED 2026-06-20** — evidence-first (R-RCFF gave 2 same-day instances). Subtraction: wire the existing `buildBundleCreationIndex` into the contract resolver + populate field-paths + demote forward-created refs to advisory; no new grammar, no new skip flag. Operator decides drain timing (top seam-collapse candidate for the GA soak). | `p2-readiness-forward-created-unification-2026-06-20.md` |
 | 124 | **R-DPMC-3** decomposition-satisfiability residual | P2 | **DEFERRED** — large additive machinery; needs operator sign-off (R-DPMC-1/-2 already shipped: B-DECOMP-SAT beta.17 / B-GROUND2 beta.16). | `archive/bundles/p2-bug-fix-bundle-b-decomp-sat-decomposition-satisfiability-2026-06-18.md` |
 | 125 | **B-GSUB** functional seam-collapse | P2 | **DEFERRED** — the next-week GA soak ranks which seam to collapse first; pure-doc track already closed (−9). | `archive/bundles/p2-simplification-pass-guard-inventory-subtraction-2026-06-18.md` |
 | 119 | **B-CIINT** integration-tier CI-env e2e failures | P3 | **OPEN** — Linux-CI-only subprocess-e2e flakiness; CI hygiene, **not a release gate**. Pass locally (macOS). | `archive/bundles/p3-bug-fix-bundle-b-ciint-integration-tier-ci-env-e2e.md` |
