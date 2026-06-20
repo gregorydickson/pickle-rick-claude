@@ -415,6 +415,32 @@ test('R-SJWT-1: buildJudgePrompt with allowedPaths enumerates each allowed path'
     }
 });
 
+test('R-SSOC L1: scoped judge prompt constrains SCORING to allowed_paths and keeps the R-SJWT-1 pins', () => {
+    const allowedPaths = ['src/foo.ts', 'src/bar.ts'];
+    const prompt = buildJudgePrompt(
+        'Reduce violations',
+        '/repo',
+        [],
+        '/repo/src',
+        undefined,
+        [],
+        allowedPaths,
+    );
+    // R-SSOC: the judge must score ONLY in-scope violations (whole-tree scoring
+    // steers the worker off-scope — baseline 24 on a clean 12-file scope).
+    assert.ok(
+        prompt.includes('Count ONLY violations located within these paths'),
+        'scoped prompt must constrain scoring to the allowed paths',
+    );
+    // R-SJWT-1/R-SJWT-TD pins must survive: header present, paths enumerated,
+    // "Target path:" absent.
+    assert.ok(prompt.includes('Review ONLY these paths:'), 'R-SJWT-1 header pin');
+    assert.ok(!prompt.includes('Target path:'), 'R-SJWT-1 Target-path-absent pin');
+    for (const p of allowedPaths) {
+        assert.ok(prompt.includes(`- ${p}`), `R-SJWT-1 enumeration pin: ${p}`);
+    }
+});
+
 test('R-SJWT-3: convergence-to-0 — scoped judge score of 0 classifies as improved, not held', () => {
     // When a scoped judge prompt restricts evaluation to allowed_paths only,
     // and the only remaining violations are out-of-scope, the judge returns score=0.

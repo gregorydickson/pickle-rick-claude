@@ -14,6 +14,7 @@ import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason, 
 const sm = new StateManager();
 import { runIteration, loadRateLimitSettings, classifyIterationExit, computeRateLimitAction, killCurrentChild, wouldResetOrphanCommit, } from './mux-runner.js';
 import { resolveCodexModel } from './spawn-morty.js';
+import { checkScopeDiff } from './check-scope-diff.js';
 import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
 import { logActivity } from '../services/activity-logger.js';
 import { assertBaselineFresh, BaselineMissingError, BaselineStaleError, runGate, filterByScope, classifyNoDisown, getChangedExportedSymbols, getChangedFilesSince, } from '../services/convergence-gate.js';
@@ -1108,6 +1109,10 @@ export function buildJudgePrompt(goal, cwd, history, prdPath, judgeContextPath, 
         for (const p of allowedPaths)
             parts.push(`- ${p}`);
         parts.push('Use Read, Glob, and Grep to examine these files before scoring.');
+        // R-SSOC L1: constrain SCORING (not just which files to read) to the allowed
+        // paths. A judge that scores whole-tree slop steers the worker off-scope
+        // (baseline 24 on a clean 12-file scope in session 2026-06-19-2b1e2707).
+        parts.push('Count ONLY violations located within these paths. Do NOT report or score violations in any file outside this list.');
     }
     else if (prdPath) {
         parts.push(`Target path: ${prdPath}`);
@@ -2710,6 +2715,72 @@ function handlePostConvergenceGateDeferral(workerResult, ctx) {
     ctx.log(`[R-APXG-3] Post-convergence gate deferral ${ctx.postConvergenceDeferralCount}/${POST_CONVERGENCE_GATE_DEFERRAL_LIMIT} — retrying`);
     return null;
 }
+/**
+ * R-SSOC (#129): post-iteration scope audit. After a worker iteration commits,
+ * diff the iteration's committed files against `scope.json:allowed_paths` and
+ * emit `worker_edit_outside_scope` when drift is found — INDEPENDENTLY of whether
+ * the worker ran the prompt-level `check-scope-diff` preflight. The codex worker
+ * bypasses the prompt instruction (and PreToolUse hooks), so the prompt-only
+ * preflight produced ZERO events while 7 off-scope commits landed silently
+ * (session 2026-06-19-2b1e2707). This runner-side audit reuses `checkScopeDiff`
+ * (incl. the #128 `CLAUDE.md` carve-out) so drift becomes observable at
+ * `/pickle-status`. Observability only — NEVER reverts/blocks/halts (auto-revert
+ * is risky machinery, rejected per the Simplification Review). Best-effort:
+ * telemetry must never crash the runner or change exit behavior.
+ */
+function listCommittedFilesInRange(workingDir, fromSha, toSha) {
+    const result = _deps.spawnSync('git', ['diff', '--name-only', '--no-renames', `${fromSha}..${toSha}`], { cwd: workingDir, encoding: 'utf-8', timeout: 15_000 });
+    if ((result.status ?? 1) !== 0)
+        return [];
+    return (result.stdout || '').split('\n').filter(Boolean);
+}
+function resolveScopeAuditInputs(ctx) {
+    const scopeJsonPath = path.join(ctx.sessionDir, 'scope.json');
+    if (!fs.existsSync(scopeJsonPath))
+        return null;
+    const preHead = ctx.preIterSha;
+    const postHead = ctx.postIterSha;
+    if (!preHead || !postHead || preHead === postHead)
+        return null;
+    const committedFiles = listCommittedFilesInRange(ctx.workingDir, preHead, postHead);
+    if (committedFiles.length === 0)
+        return null;
+    return { scopeJsonPath, postHead, committedFiles };
+}
+export function auditPostIterationScope(ctx, state) {
+    try {
+        const inputs = resolveScopeAuditInputs(ctx);
+        if (!inputs)
+            return;
+        const { scopeJsonPath, postHead, committedFiles } = inputs;
+        const result = checkScopeDiff({
+            scopeJsonPath,
+            headRef: postHead,
+            _getStagedPaths: () => committedFiles,
+        });
+        if (result.status !== 'outside_scope')
+            return;
+        const ticketId = typeof state.current_subsystem === 'string' && state.current_subsystem.trim()
+            ? state.current_subsystem
+            : undefined;
+        _deps.logActivity({
+            event: 'worker_edit_outside_scope',
+            source: 'pickle',
+            ...(ticketId ? { ticket_id: ticketId } : {}),
+            gate_payload: {
+                scope_json_path: result.scope_json_path ?? scopeJsonPath,
+                staged_paths_outside_scope: result.staged_paths_outside_scope ?? [],
+                head_ref: result.head_ref ?? postHead,
+                suggested_remediation: result.suggested_remediation ?? '',
+            },
+        });
+        ctx.log(`[R-SSOC] post-iteration scope drift: ${(result.staged_paths_outside_scope ?? []).length} ` +
+            `committed path(s) outside scope.json — emitted worker_edit_outside_scope`);
+    }
+    catch {
+        // Best-effort observability — never block the runner on telemetry.
+    }
+}
 async function handleWorkerMode(state, ctx) {
     const workerResult = await _deps.runWorkerManagedIteration({
         currentMv: state,
@@ -2728,6 +2799,7 @@ async function handleWorkerMode(state, ctx) {
     syncCurrentWorkerSubsystem(state, ctx.sessionDir);
     writeMicroverseState(ctx.sessionDir, state);
     ctx.postIterSha = _deps.getHeadSha(ctx.workingDir);
+    auditPostIterationScope(ctx, state);
     const lastAction = workerResult.currentMv.convergence?.history
         ?.findLast((entry) => entry.iteration === ctx.iteration)
         ?.action;
