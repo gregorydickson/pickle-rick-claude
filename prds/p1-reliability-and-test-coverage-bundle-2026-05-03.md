@@ -7,15 +7,15 @@ shipped: session 2026-05-03-7d9ee8cc (commit 7786bcb)
 type: bundle
 peer_prds:
   composes:
-    - prds/p1-deployed-pkgjson-version-only-revert.md
-    - prds/p2-codex-manager-empty-queue-spin.md
-    - prds/p3-paused-session-orphan-blocks-stop-hook.md
-    - prds/p3-test-flakes-council-publish-and-scope-resolver.md
+    - prds/archive/bug-reports/p1-deployed-pkgjson-version-only-revert.md
+    - prds/archive/bug-reports/p2-codex-manager-empty-queue-spin.md
+    - prds/archive/bug-reports/p3-paused-session-orphan-blocks-stop-hook.md
+    - prds/archive/bug-reports/p3-test-flakes-council-publish-and-scope-resolver.md
   related:
     - prds/citadel.md                                # quality framework
-    - prds/anatomy-park-gate-baseline-missing.md     # prior reliability incident
+    - prds/archive/bug-reports/anatomy-park-gate-baseline-missing.md     # prior reliability incident
     - prds/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md  # prior deploy-revert P0
-    - prds/schema-version-deploy-reversion-rca.md
+    - prds/archive/incidents/schema-version-deploy-reversion-rca.md
 ---
 
 # PRD — Reliability + Test Coverage Bundle (2026-05-03 PM)
@@ -32,10 +32,10 @@ The bundle is sequenced so reliability infra (Section E) lands alongside the per
 
 | Section | Source PRD | Priority | Scope summary |
 |---|---|---|---|
-| **A** | `prds/p1-deployed-pkgjson-version-only-revert.md` | P1 | Diagnose + fix the `~/.claude/pickle-rick/extension/package.json:version`-only revert (writer mystery) |
-| **B** | `prds/p2-codex-manager-empty-queue-spin.md` | P2 | Mux-runner emits synthetic `EPIC_COMPLETED` when all tickets `status: Done` |
-| **C** | `prds/p3-paused-session-orphan-blocks-stop-hook.md` | P3 | resolve-state.ts demotes `active=true && pid==null && mtime>300s` orphans |
-| **D** | `prds/p3-test-flakes-council-publish-and-scope-resolver.md` | P3 | Diagnose + fix two pre-existing failing tests (no more timing-bump cargo cult) |
+| **A** | `prds/archive/bug-reports/p1-deployed-pkgjson-version-only-revert.md` | P1 | Diagnose + fix the `~/.claude/pickle-rick/extension/package.json:version`-only revert (writer mystery) |
+| **B** | `prds/archive/bug-reports/p2-codex-manager-empty-queue-spin.md` | P2 | Mux-runner emits synthetic `EPIC_COMPLETED` when all tickets `status: Done` |
+| **C** | `prds/archive/bug-reports/p3-paused-session-orphan-blocks-stop-hook.md` | P3 | resolve-state.ts demotes `active=true && pid==null && mtime>300s` orphans |
+| **D** | `prds/archive/bug-reports/p3-test-flakes-council-publish-and-scope-resolver.md` | P3 | Diagnose + fix two pre-existing failing tests (no more timing-bump cargo cult) |
 | **E** | _(this PRD only)_ | P1 | Cross-cutting test approach + coverage + reliability infra |
 
 Each per-section PRD's `## Functional Requirements` and `## Acceptance Criteria` are authoritative — refinement should pull them in as-is and decompose to atomic tickets. Section E adds new requirements not present in any source PRD.
@@ -44,7 +44,7 @@ Each per-section PRD's `## Functional Requirements` and `## Acceptance Criteria`
 
 ## Section A — pkg.json:version-only revert
 
-**Source**: `prds/p1-deployed-pkgjson-version-only-revert.md`
+**Source**: `prds/archive/bug-reports/p1-deployed-pkgjson-version-only-revert.md`
 
 Pull all 5 `R-PJV-*` requirements and 5 `AC-PJV-*` criteria verbatim. Sequencing constraint: **R-PJV-1 (diagnose via fs_usage/lsof) MUST land before R-PJV-3/4 (fix).** No defense-in-depth without empirical writer ID — same trap the P0 bundle fell into. Add Section E hooks per E.2.
 
@@ -52,7 +52,7 @@ Pull all 5 `R-PJV-*` requirements and 5 `AC-PJV-*` criteria verbatim. Sequencing
 
 ## Section B — codex manager empty-queue spin
 
-**Source**: `prds/p2-codex-manager-empty-queue-spin.md`
+**Source**: `prds/archive/bug-reports/p2-codex-manager-empty-queue-spin.md`
 
 Pull all 4 `R-EQ-*` and `AC-EQ-*`. Add Section E hooks per E.3.
 
@@ -60,7 +60,7 @@ Pull all 4 `R-EQ-*` and `AC-EQ-*`. Add Section E hooks per E.3.
 
 ## Section C — paused-session orphan blocks stop-hook
 
-**Source**: `prds/p3-paused-session-orphan-blocks-stop-hook.md`
+**Source**: `prds/archive/bug-reports/p3-paused-session-orphan-blocks-stop-hook.md`
 
 Pull all 4 `R-PSO-*` and `AC-PSO-*`. Add Section E hooks per E.4.
 
@@ -68,7 +68,7 @@ Pull all 4 `R-PSO-*` and `AC-PSO-*`. Add Section E hooks per E.4.
 
 ## Section D — pre-existing test flakes
 
-**Source**: `prds/p3-test-flakes-council-publish-and-scope-resolver.md`
+**Source**: `prds/archive/bug-reports/p3-test-flakes-council-publish-and-scope-resolver.md`
 
 Pull all 4 `AC-TF-*`. Hard rule: **diagnose root cause before any timing/budget changes** — prior fix attempts (`0390916`, `ac7c496`, `71e5c1e`) were all timing bumps and none stuck. Section D feeds into E.7 (mock contract drift).
 

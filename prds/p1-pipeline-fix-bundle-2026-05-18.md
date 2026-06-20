@@ -9,8 +9,8 @@ bundle: B-PIPE-FIX
 blocks:
   - B-SJET-2  # current attempts at B-SJET-2 fail because of the bugs this bundle closes
 related:
-  - prds/p1-szechuan-sauce-judge-etimedout-baseline-measurement.md  # B-SJET-2 (Finding #47) — surfaced these bugs during 3 consecutive autonomous attempts 2026-05-18 PM
-  - prds/p2-remove-non-tmux-pickle-loop.md  # B-PNTR (filed 2026-05-18 PM) — bare /pickle stop-hook noise discovered during same babysitter run
+  - prds/archive/bundles/p1-szechuan-sauce-judge-etimedout-baseline-measurement.md  # B-SJET-2 (Finding #47) — surfaced these bugs during 3 consecutive autonomous attempts 2026-05-18 PM
+  - prds/archive/bundles/p2-remove-non-tmux-pickle-loop.md  # B-PNTR (filed 2026-05-18 PM) — bare /pickle stop-hook noise discovered during same babysitter run
   - extension/src/bin/pipeline-runner.ts  # phase exit-code semantics live here
   - extension/src/bin/mux-runner.ts  # manager session max-turns + markTicketDone gate
   - extension/src/bin/send-to-morty.md  # worker prompt scope-fence

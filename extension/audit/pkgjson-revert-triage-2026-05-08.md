@@ -3,7 +3,7 @@
 **Date**: 2026-05-08  
 **Ticket**: 8c4d691a (R-PJV-3)  
 **Analyst**: Morty worker (Pickle Rick extension)  
-**Status**: TRIAGE COMPLETE — follow-up fix PRD filed as `prds/p1-pkgjson-revert-auto-update.md`
+**Status**: TRIAGE COMPLETE — follow-up fix PRD filed as `prds/archive/bug-reports/p1-pkgjson-revert-auto-update.md`
 
 ## Problem Statement
 
@@ -59,5 +59,5 @@ The mechanism is code-confirmed. The intermittent nature, the version-field-only
 
 ## Next Steps
 
-See `prds/p1-pkgjson-revert-auto-update.md` for the follow-up fix PRD.  
+See `prds/archive/bug-reports/p1-pkgjson-revert-auto-update.md` for the follow-up fix PRD.  
 Run `extension/scripts/capture-pkgjson-revert-forensic.sh` immediately if another revert is observed.

@@ -31,7 +31,7 @@ Bundling them lets refinement deduplicate the small overlap (anatomy-park-follow
 
 This bundle delivers the union of the three source PRDs **plus the BMAD appendix from `prds/citadel.md`** in one ticket queue, executed in one `/pickle-pipeline --backend codex` session.
 
-- **Section A — Watcher Pane Recovery**: 4 tickets, source `prds/watcher-pane-recovery.md` §Atomic Tickets (T1–T4). **Do NOT add a new T5** — see Refinement Correction #1.
+- **Section A — Watcher Pane Recovery**: 4 tickets, source `prds/archive/features/watcher-pane-recovery.md` §Atomic Tickets (T1–T4). **Do NOT add a new T5** — see Refinement Correction #1.
 - **Section B — Anatomy-Park Followups**: 3 tickets, source `prds/anatomy-park-followups.md` §Atomic Tickets (B-T1, B-T2, B-T3).
 - **Section C — Citadel Core + Cross-Skill**: 25 tickets, source `prds/citadel.md` §Tasks (T0–T17 + T10.5/T10.7/T10.8/T10.9/T11.5/T11.7 + T13.5 + T20–T23).
 - **Section D — BMAD Appendix (in-scope)**: 28 tickets, source `prds/citadel.md` §Appendix Implementation Task Breakdown (BMAD-T01..BMAD-T28).
@@ -89,7 +89,7 @@ These P0 corrections from refinement analysis are folded into all source-PRD tic
 This bundle is **Done** when every AC from the three source PRDs + AC-BUNDLE-01..19 is met.
 
 ### Section A — Watcher Pane Recovery (7 ACs)
-**AC-WPR-01..07** verbatim from `prds/watcher-pane-recovery.md` §Acceptance Criteria. Apply Refinement Correction #2 (`'refinement'` not `'refine'`).
+**AC-WPR-01..07** verbatim from `prds/archive/features/watcher-pane-recovery.md` §Acceptance Criteria. Apply Refinement Correction #2 (`'refinement'` not `'refine'`).
 
 ### Section B — Anatomy-Park Followups (13 ACs)
 **AC-APF-A1..A4** (catalog hygiene) | **AC-APF-B1..B3** (recoverable-json tests) | **AC-APF-C1..C6** (microverse codex-relaunch)
@@ -141,7 +141,7 @@ Per-task ACs preserved verbatim in `prds/citadel.md` §Appendix as `P0.N` / `P1.
 
 ## Linked context
 
-- Source PRDs: `prds/citadel.md`, `prds/anatomy-park-followups.md`, `prds/watcher-pane-recovery.md`
+- Source PRDs: `prds/citadel.md`, `prds/anatomy-park-followups.md`, `prds/archive/features/watcher-pane-recovery.md`
 - Bundle PRD: `prds/citadel-hardening-bundle.md` (commit `120eb40`)
 - Refinement artifacts: `refinement/analysis_requirements.md`, `refinement/analysis_codebase.md`, `refinement/analysis_risk-scope.md`
 - Master plan reference: `prds/MASTER_PLAN.md` §1
@@ -162,10 +162,10 @@ Per-task ACs preserved verbatim in `prds/citadel.md` §Appendix as `P0.N` / `P1.
 | 10 | B-T1 | 9dd914da | `prds/anatomy-park-followups.md` | Atomic Tickets > T1 | Trap-door catalog hygiene (split oversized entries + standardize ENFORCE) | AC-APF-A1, AC-APF-A2, AC-APF-A3, AC-APF-A4 |
 | 20 | B-T3 | 02f70776 | `prds/anatomy-park-followups.md` | Atomic Tickets > T3 | microverse-runner.ts codex-manager relaunch wiring | AC-APF-C1, AC-APF-C2, AC-APF-C3, AC-APF-C4, AC-APF-C5, AC-APF-C6 |
 | 30 | NEW-T5 | a1f185d9 | `prd_refined.md` | New Refinement-Derived Tickets > NEW-T5 | codex-required frontmatter check in pipeline-runner | AC-BUNDLE-18 |
-| 40 | A-T1 | 34966885 | `prds/watcher-pane-recovery.md` | Atomic Tickets > T1 | Pane-level dead-watcher detection + respawn helper | AC-WPR-01, AC-WPR-02, AC-WPR-03, AC-WPR-06, AC-WPR-07 |
-| 50 | A-T2 | 9d35f0da | `prds/watcher-pane-recovery.md` | Atomic Tickets > T2 | Wire restartDeadWatcherPanes into ensureMonitorWindow | AC-WPR-04, AC-WPR-05 |
-| 60 | A-T3 | e8892588 | `prds/watcher-pane-recovery.md` | Atomic Tickets > T3 | Regression test ensure-monitor-window.test.js | AC-WPR-01, AC-WPR-02, AC-WPR-03, AC-WPR-07 |
-| 70 | A-T4 | 1e16304a | `prds/watcher-pane-recovery.md` | Atomic Tickets > T4 | Trap-door entry for restartDeadWatcherPanes | AC-BUNDLE-17 |
+| 40 | A-T1 | 34966885 | `prds/archive/features/watcher-pane-recovery.md` | Atomic Tickets > T1 | Pane-level dead-watcher detection + respawn helper | AC-WPR-01, AC-WPR-02, AC-WPR-03, AC-WPR-06, AC-WPR-07 |
+| 50 | A-T2 | 9d35f0da | `prds/archive/features/watcher-pane-recovery.md` | Atomic Tickets > T2 | Wire restartDeadWatcherPanes into ensureMonitorWindow | AC-WPR-04, AC-WPR-05 |
+| 60 | A-T3 | e8892588 | `prds/archive/features/watcher-pane-recovery.md` | Atomic Tickets > T3 | Regression test ensure-monitor-window.test.js | AC-WPR-01, AC-WPR-02, AC-WPR-03, AC-WPR-07 |
+| 70 | A-T4 | 1e16304a | `prds/archive/features/watcher-pane-recovery.md` | Atomic Tickets > T4 | Trap-door entry for restartDeadWatcherPanes | AC-BUNDLE-17 |
 | 80 | B-T2 | 11c29665 | `prds/anatomy-park-followups.md` | Atomic Tickets > T2 | extension/tests/recoverable-json.test.js (≥6 cases) | AC-APF-B1, AC-APF-B2, AC-APF-B3 |
 | 200 | C-T0 | 0971b9c9 | `prds/citadel.md` | Tasks > T0 | Citadel: Session-state schema migration | AC-CIT-01 |
 | 210 | C-T1 | 2375b777 | `prds/citadel.md` | Tasks > T1 | Citadel: PRD ID parser | AC-CIT-02 |

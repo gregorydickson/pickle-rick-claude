@@ -7,10 +7,10 @@ backend: codex-required
 type: manifest
 peer_prds:
   related:
-    - prds/schema-version-deploy-reversion-rca.md  # F7 was deferred; THIS is what makes it P0 now
-    - prds/anatomy-park-gate-baseline-missing.md  # SHIPPED v1.66.0 but invisible because of deploy-reversion
-    - prds/pipeline-runner-state-active-not-claimed-on-relaunch.md  # P3, still open
-    - prds/readiness-gate-manifest-prd-bundle-mismatch.md  # P2, still open
+    - prds/archive/incidents/schema-version-deploy-reversion-rca.md  # F7 was deferred; THIS is what makes it P0 now
+    - prds/archive/bug-reports/anatomy-park-gate-baseline-missing.md  # SHIPPED v1.66.0 but invisible because of deploy-reversion
+    - prds/archive/bug-reports/pipeline-runner-state-active-not-claimed-on-relaunch.md  # P3, still open
+    - prds/archive/bug-reports/readiness-gate-manifest-prd-bundle-mismatch.md  # P2, still open
 ---
 
 # PRD — P2 Bundle: Deploy-reversion lockdown + gate-baseline runtime diagnostic
@@ -39,10 +39,10 @@ peer_prds:
 
 | Section | Source PRD | Tickets | LOC | Refinement narrowing |
 |---|---|---|---|---|
-| **A** | `prds/schema-version-deploy-reversion-rca.md` (F7 lockdown) | F7 from that PRD = ~3-5 atomic tickets | ~150 | F7 was deferred at v1.62.0 ship time; promote to mandatory |
+| **A** | `prds/archive/incidents/schema-version-deploy-reversion-rca.md` (F7 lockdown) | F7 from that PRD = ~3-5 atomic tickets | ~150 | F7 was deferred at v1.62.0 ship time; promote to mandatory |
 | **B** | (NEW) gate-baseline runtime diagnostic | NEW: 2-3 atomic tickets | ~60 | After deployed v1.66.0 lands and persists, run anatomy-park and assert recapture log line fires |
-| **C** | `prds/pipeline-runner-state-active-not-claimed-on-relaunch.md` | All ACs from that PRD | ~150 | Already drafted; pull forward from P3 backlog |
-| **D** | `prds/readiness-gate-manifest-prd-bundle-mismatch.md` | All ACs from that PRD | ~430 | Already drafted; pull forward from P2 backlog |
+| **C** | `prds/archive/bug-reports/pipeline-runner-state-active-not-claimed-on-relaunch.md` | All ACs from that PRD | ~150 | Already drafted; pull forward from P3 backlog |
+| **D** | `prds/archive/bug-reports/readiness-gate-manifest-prd-bundle-mismatch.md` | All ACs from that PRD | ~430 | Already drafted; pull forward from P2 backlog |
 
 **Bundle total**: ~12-15 atomic tickets + 4 hardening + 1 closer (v1.67.0 → v1.68.0). ~800 LOC.
 
@@ -52,7 +52,7 @@ peer_prds:
 
 | ID | Phase | Owner | Verification artifact | Check |
 |---|---|---|---|---|
-| AC-DR-01 | bundle-end | post-bundle-audit | `bundle/ac-dr-01.json` | All Section A ACs from `prds/schema-version-deploy-reversion-rca.md` pass (kill-switch verify) |
+| AC-DR-01 | bundle-end | post-bundle-audit | `bundle/ac-dr-01.json` | All Section A ACs from `prds/archive/incidents/schema-version-deploy-reversion-rca.md` pass (kill-switch verify) |
 | AC-DR-02 | bundle-end | activity-event-assertion | `bundle/ac-dr-02.json` | Bundle's `state.json.activity[]` contains ≥1 `{event:"baseline_recapture_attempted", iteration:1}` during anatomy-park phase. (Section B.1 + B.2.) |
 | AC-DR-03 | **REMOVED** (see `prds/p1-strip-excessive-defense-deploy-reversion.md`) | status: removed | n/a | 24h soak / sampler-finalize requirement stripped per AC-STRIP-10. |
 | AC-DR-04a | bundle-end | check-update-pre-extract-guard | `bundle/ac-dr-04a.json` | `check-update.ts:performUpgrade()` reads candidate tarball's `extension/package.json:version` BEFORE `extractAndInstall`. Refuses if `compareSemver(candidate, current) < 0` UNLESS `options.allowDowngrade === true`. `--force` does NOT bypass; only `--allow-downgrade` does. Defense-in-depth. P1. |

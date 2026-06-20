@@ -9,8 +9,8 @@ composes:
   - prds/p2-citadel-conformance-core-not-wired-or-silently-skipped.md            # Section C — Open Finding #14 (P2)
   - prds/p3-monitor-dashboard-stale-after-pickle-to-anatomy-park-transition.md   # Section D — Open Finding #15 (P3)
 related:
-  - prds/p1-bug-fix-bundle-2026-05-08-mega.md   # predecessor — shipped 11/11 sections + closer (v1.73.0)
-  - prds/p1-pipeline-runner-aborts-on-judge-timeout-no-finalize-gate.md  # R-PRJT — shipped post-mega via standalone pickle (commit 0fdf3ed4); deploy in HEAD as of 2026-05-10
+  - prds/archive/bundles/p1-bug-fix-bundle-2026-05-08-mega.md   # predecessor — shipped 11/11 sections + closer (v1.73.0)
+  - prds/archive/bug-reports/p1-pipeline-runner-aborts-on-judge-timeout-no-finalize-gate.md  # R-PRJT — shipped post-mega via standalone pickle (commit 0fdf3ed4); deploy in HEAD as of 2026-05-10
   - prds/MASTER_PLAN.md   # post-bundle bookkeeping target
 backend_constraint: claude
 refine: true
@@ -178,7 +178,7 @@ Lifted from `prds/p3-monitor-dashboard-stale-after-pickle-to-anatomy-park-transi
 
 ## Cross-references
 
-- **Predecessor**: `prds/p1-bug-fix-bundle-2026-05-08-mega.md` — shipped 11/11 sections + closer at `fd6f8e18` (v1.73.0); closed Findings #11, #12, #13, #16
+- **Predecessor**: `prds/archive/bundles/p1-bug-fix-bundle-2026-05-08-mega.md` — shipped 11/11 sections + closer at `fd6f8e18` (v1.73.0); closed Findings #11, #12, #13, #16
 - **Sibling family** (3 bugs in same `microverse-runner.ts` metric-path family across 3 sessions in 3 days):
   - Finding #13 R-MJCP — closed mega Section J (`6851f41f`)
   - Finding #16 R-PRJT — closed standalone (`0fdf3ed4`) post-mega

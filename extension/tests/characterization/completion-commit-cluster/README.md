@@ -1,6 +1,6 @@
 # Completion-Commit Cluster — Characterization Safety Net
 
-PRD: `prds/p1-bug-fix-bundle-b-afcc-deep-autofill-done-flip-cluster-2026-05-28.md`  
+PRD: `prds/archive/bundles/p1-bug-fix-bundle-b-afcc-deep-autofill-done-flip-cluster-2026-05-28.md`  
 AC ref: `AC-AFCC-DEEP-01`
 
 This directory contains the characterization fixture for the `B-AFCC-DEEP` bundle. The characterization test suite (**R-AFCC-DEEP-1B**) uses these fixtures to assert current observable behaviour before any deletion (Phase 3) or refactor (Phase 4) ships. If the suite still passes after those phases, the behaviour was preserved.

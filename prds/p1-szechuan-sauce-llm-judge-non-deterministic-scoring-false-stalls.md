@@ -5,9 +5,9 @@
 **Project**: `pickle-rick-claude` — Claude Code extension
 **Repo**: `https://github.com/gregorydickson/pickle-rick-claude` — branch `main`
 **Sibling of**:
-- `prds/szechuan-sauce-codex-judge-model-mismatch.md` — judge spawn model mismatch on `--backend codex` (different failure: silent BestScore=0 false-convergence). THIS PRD addresses a *different* failure mode under the same metric path: spurious *stalls* when the judge runs successfully but emits non-stable counts.
-- `prds/anatomy-park-judge-unreachable-on-worker-convergence.md` — judge unreachable on worker-mode anatomy-park. Same `microverse-runner` family but different code path; not duplicated here.
-- `prds/convergence-toolchain-gates.md` / `prds/convergence-v8-topology.md` — broader convergence design context. THIS PRD is a concrete bug under the v8 topology.
+- `prds/archive/bug-reports/szechuan-sauce-codex-judge-model-mismatch.md` — judge spawn model mismatch on `--backend codex` (different failure: silent BestScore=0 false-convergence). THIS PRD addresses a *different* failure mode under the same metric path: spurious *stalls* when the judge runs successfully but emits non-stable counts.
+- `prds/archive/bug-reports/anatomy-park-judge-unreachable-on-worker-convergence.md` — judge unreachable on worker-mode anatomy-park. Same `microverse-runner` family but different code path; not duplicated here.
+- `prds/archive/features/convergence-toolchain-gates.md` / `prds/archive/features/convergence-v8-topology.md` — broader convergence design context. THIS PRD is a concrete bug under the v8 topology.
 **Triggering session**: `2026-05-09-92dbdff2` — `/szechuan-sauce --backend codex packages/api/src/lib/appraisal-pipeline` post-anatomy-park cleanup on `loanlight-api@gregory/1025-appraisal-epic`. Iteration 9 / 50, 8 commits landed, score stuck at 5 for 4 consecutive iterations (stall_counter 4/5).
 
 ---
@@ -127,7 +127,7 @@ R-SLLJ-5 (P2, R-SHOULD): `gap_analysis.md` is already maintained by the szechuan
 
 R-SLLJ-6 (P3, R-MAY): operator-facing diagnostic — `/pickle-status` should surface "score plateau but content drift detected" as a distinct status from "true stall." Today both look identical.
 
-R-SLLJ-7 (P1, R-MUST): documentation — `prds/convergence-v8-topology.md` and `extension/src/services/microverse-state.ts` JSDoc on `compareMetric` MUST note that `metric.type === 'llm'` requires a content-stable judge prompt and that bare numerical comparison is unsafe for that metric class.
+R-SLLJ-7 (P1, R-MUST): documentation — `prds/archive/features/convergence-v8-topology.md` and `extension/src/services/microverse-state.ts` JSDoc on `compareMetric` MUST note that `metric.type === 'llm'` requires a content-stable judge prompt and that bare numerical comparison is unsafe for that metric class.
 
 R-SLLJ-8 (P2, R-SHOULD): trap door — when the fix lands, add a trap-door entry under `extension/src/bin/CLAUDE.md` recording the invariant "LLM-judge metric stalls require content-aware comparison, not numerical equality" with a regression-test reference.
 
@@ -162,7 +162,7 @@ A regression-fixture session with the four iter 5–8 metric_value blocks pre-ba
 
 ## Out of Scope
 
-- The codex-judge-model-mismatch issue (`prds/szechuan-sauce-codex-judge-model-mismatch.md`) is a different code path. This PRD assumes the judge runs successfully; that PRD addresses the case where it cannot run at all on `--backend codex`. Both must be fixed.
+- The codex-judge-model-mismatch issue (`prds/archive/bug-reports/szechuan-sauce-codex-judge-model-mismatch.md`) is a different code path. This PRD assumes the judge runs successfully; that PRD addresses the case where it cannot run at all on `--backend codex`. Both must be fixed.
 - Anatomy-park's worker-managed convergence is unaffected and provides the structural template (per-subsystem `consecutive_clean`) that Option A would emulate.
 - Compound-rule judging, multi-target szechuan-sauce sessions, or coverage-metric szechuan-sauce variants — out of scope; this PRD addresses the LLM-judge metric path only.
 

@@ -2,7 +2,7 @@
 
 | Hermes Backend Integration PRD | | Add `hermes` as a first-class backend by spawning the first-party `hermes chat -q` CLI in headless mode, with toolset routing and honest backend identity throughout state, logs, and metrics |
 |:---|:---|:---|
-| **Author**: Gregory Dickson **Contributors**: Pickle Rick | **Status**: Ready (research complete) **Created**: 2026-05-01 **Research**: `prds/hermes-research.md` | **Visibility**: Internal |
+| **Author**: Gregory Dickson **Contributors**: Pickle Rick | **Status**: Ready (research complete) **Created**: 2026-05-01 **Research**: `prds/archive/research/hermes-research.md` | **Visibility**: Internal |
 
 ## Completion Checklist
 - [x] Introduction - [x] Problem - [x] Scope - [x] CUJs - [x] Requirements - [x] Contracts - [x] Verification - [x] Tests - [x] Assumptions - [x] Risks - [x] Impact - [x] Stakeholders
@@ -113,7 +113,7 @@ User runs `/pickle-refine-prd` from a session where `state.backend = 'hermes'`. 
 - `args: ['chat', '-q', opts.prompt, '-Q', '--ignore-rules', '--ignore-user-config', ...(opts.maxTurns ? ['--max-turns', String(opts.maxTurns)] : []), ...(opts.toolsets ? ['--toolsets', opts.toolsets.join(',')] : []), ...(opts.provider ? ['--provider', opts.provider] : []), ...(opts.model ? ['-m', opts.model] : [])]`
 - `backend: 'hermes'`
 
-`--ignore-rules --ignore-user-config` is mandatory: it skips `~/.hermes/AGENTS.md`, `~/.hermes/SOUL.md`, the user `config.yaml`, and preloaded skills. This defends against the same literal-bleed class codex hit in v1.59.1 (`~/.hermes/skills/pickle*` would otherwise be auto-loaded). Per Q19 of `prds/hermes-research.md`.
+`--ignore-rules --ignore-user-config` is mandatory: it skips `~/.hermes/AGENTS.md`, `~/.hermes/SOUL.md`, the user `config.yaml`, and preloaded skills. This defends against the same literal-bleed class codex hit in v1.59.1 (`~/.hermes/skills/pickle*` would otherwise be auto-loaded). Per Q19 of `prds/archive/research/hermes-research.md`.
 
 `--max-turns` is passed when `state.hermes_max_turns` is positive, otherwise worker spawns fall back to `state.max_iterations`.
 
@@ -324,7 +324,7 @@ Validation:
 
 ## Resolved Design Decisions
 
-All four high-level design questions are resolved by `prds/hermes-research.md`. Summary:
+All four high-level design questions are resolved by `prds/archive/research/hermes-research.md`. Summary:
 
 1. **Session-timeout wall?** **No** (Q2). Hermes has only an inactivity-based backend timeout that does not fire mid-task in headless `-q` mode. FR-11's hermes branch is a no-op early-return. The rename `evaluateCodexManagerRelaunch` → `evaluateManagerRelaunch` still ships for naming honesty.
 
@@ -336,7 +336,7 @@ All four high-level design questions are resolved by `prds/hermes-research.md`. 
 
 ## Research Questions — Hermes Behavior (ANSWERED)
 
-✅ All 30 research questions below are answered against **Hermes Agent v0.12.0 (2026.4.30)** in `prds/hermes-research.md`. The questions are kept here for traceability — the answers and resulting FR adjustments live in the research artifact and the §Resolved Design Decisions section above.
+✅ All 30 research questions below are answered against **Hermes Agent v0.12.0 (2026.4.30)** in `prds/archive/research/hermes-research.md`. The questions are kept here for traceability — the answers and resulting FR adjustments live in the research artifact and the §Resolved Design Decisions section above.
 
 ### Process lifecycle (Q1-Q5 → drives FR-10, FR-11, R1)
 
@@ -396,7 +396,7 @@ This PRD was drafted on 2026-05-01 during the v1.63.0 overnight bundle run. Rele
 ### Why this PRD exists
 
 - Pickle Rick currently supports two production backends: `claude` (default) + `codex`
-- A third backend `deepseek` is queued at `prds/deepseek-integration.md` (Draft, not started — uses Anthropic-compat shim, rides `claude` CLI)
+- A third backend `deepseek` is queued at `prds/archive/features/deepseek-integration.md` (Draft, not started — uses Anthropic-compat shim, rides `claude` CLI)
 - This PRD adds a fourth: `hermes` — first-party CLI, more like codex than deepseek
 - User invocation pattern provided: `hermes chat -q "query" -Q [-t toolsets] [--provider X] [-m model]`
 
@@ -431,7 +431,7 @@ This PRD was drafted on 2026-05-01 during the v1.63.0 overnight bundle run. Rele
 
 ### Recommended next action when resumed
 
-1. ✅ ~~Run the 30 research questions above as a structured hermes smoke test; capture answers in `prds/hermes-research.md`~~ — DONE (2026-05-01)
+1. ✅ ~~Run the 30 research questions above as a structured hermes smoke test; capture answers in `prds/archive/research/hermes-research.md`~~ — DONE (2026-05-01)
 2. ✅ ~~Resolve Open Questions 1-4 based on research findings~~ — DONE; see §Resolved Design Decisions
 3. ✅ ~~Update FR-3, FR-10, FR-11 as needed based on actual hermes shape~~ — DONE; FR-3, FR-6, FR-7, FR-10, FR-11 all updated; FR-9 version regex specified; new R9, R10, R11 added.
 4. **NEXT**: Refine PRD into atomic tickets via `/pickle-refine-prd` and bundle into the next overnight run after v1.63.0 ships.
@@ -462,7 +462,7 @@ This PRD was drafted on 2026-05-01 during the v1.63.0 overnight bundle run. Rele
 ## Reference Links
 
 - Hermes invocation pattern (from user): `hermes chat -q "query" -Q [-t toolsets] [--provider X] [-m model]`
-- Existing deepseek-integration PRD (Shape A pattern): `prds/deepseek-integration.md`
+- Existing deepseek-integration PRD (Shape A pattern): `prds/archive/features/deepseek-integration.md`
 - T2 codex-manager-relaunch extraction (in flight): session `2026-04-30-bc104e78` ticket `8ad7c134`
 - Backend type definition: `extension/src/types/index.ts:87`
 - Backend dispatch site: `extension/src/services/backend-spawn.ts`

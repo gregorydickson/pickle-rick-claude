@@ -7,7 +7,7 @@ type: bug
 peer_prds:
   related:
     - prds/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md  # the over-engineered bundle this strips
-    - prds/schema-version-deploy-reversion-rca.md                      # parent
+    - prds/archive/incidents/schema-version-deploy-reversion-rca.md                      # parent
 ---
 
 # PRD — Strip excessive defense-in-depth from deploy-reversion bundle

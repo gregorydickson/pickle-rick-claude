@@ -38,7 +38,7 @@ cut, not a GA gate:
 ### WS-CAP-A — Build the real A/B efficacy harness
 - **AC-CAP-A1 — `runProbe` actually runs an A/B.** Implement the WITH-graph / WITHOUT-graph arms:
   isolated worktrees per arm, **randomized arm order** (the current protocol runs a fixed order,
-  `prds/research/codegraph-ab-protocol.md:11-21`), a **pinned model + version**, a prebuilt index
+  `prds/archive/research/codegraph-ab-protocol.md:11-21`), a **pinned model + version**, a prebuilt index
   (no setup-time race), and post-hoc Jaccard / hallucinated-ref scoring over captured diffs. — Type: test
 - **AC-CAP-A2 — explicit decision threshold + power.** The baseline records corpus N, repeat count,
   run-to-run variance, and a pre-registered significance bar. "Within noise → opt-in" is only sound

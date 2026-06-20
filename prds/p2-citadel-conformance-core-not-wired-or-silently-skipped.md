@@ -14,7 +14,7 @@
 | AC-08 | SHIPPED | Trap-door pin at `extension/CLAUDE.md:198` labeled `R-CCNW-2 analyzer wiring` (fulfills R-CCNW-8 intent) |
 | AC-09 | SHIPPED (static) | Sections-map shape correct: `ac_coverage`, `allowlist_dead`, `trap_door_coverage`, `state_transitions` all present; T3 emits Critical for zero-match ACs (`ac-coverage-scorecard.ts:267`) |
 
-**The semantic gap that motivated the P2→P1 promotion is a DIFFERENT bug.** The wired analyzers ran on b54f2143 and emitted 288 findings exit 0 — but zero referenced the 4 anatomy-park-fixed files (`release-gate.sh`, `verify-recapture-fired.js`, `verify-bundle.js`, `convergence-gate.ts`). The wiring works; the detection-coverage logic doesn't catch the silent-gate-pass class. **Successor PRD**: `prds/p1-citadel-detection-coverage-silent-gate-pass.md` (R-CCDC, filed 2026-05-14 PM) scopes the detection-coverage diagnosis and fix.
+**The semantic gap that motivated the P2→P1 promotion is a DIFFERENT bug.** The wired analyzers ran on b54f2143 and emitted 288 findings exit 0 — but zero referenced the 4 anatomy-park-fixed files (`release-gate.sh`, `verify-recapture-fired.js`, `verify-bundle.js`, `convergence-gate.ts`). The wiring works; the detection-coverage logic doesn't catch the silent-gate-pass class. **Successor PRD**: `prds/archive/bundles/p1-citadel-detection-coverage-silent-gate-pass.md` (R-CCDC, filed 2026-05-14 PM) scopes the detection-coverage diagnosis and fix.
 
 Optional cleanup tickets that may be filed standalone (do not block R-CCDC):
 - AC-01 cleanup — port `audit-citadel-wiring.js` to `audit-citadel-section-coverage.sh` shape, commit diagnostic table to `extension/audit/`
@@ -43,7 +43,7 @@ The shape of these is "the validator was lying" — same family as the LOA-618 p
 **Project**: `pickle-rick-claude` — Claude Code extension
 **Repo**: `https://github.com/gregorydickson/pickle-rick-claude` — branch `main`
 **Sibling of**: `prds/citadel.md` (the design PRD this bug indicts) — task list at `prds/citadel.md:118` defines T3..T11 as the audit surface; this PRD reports the runtime delta from that spec.
-**Triggering session**: `2026-05-09-7ff82595` — `/pickle-pipeline --no-refine --backend claude prds/p1-bug-fix-bundle-2026-05-08-mega.md`. Phase 2/4 (citadel) wrote `citadel_report.json` with 1 LOW informational finding ("anatomy-park.json absent — skipping pattern-replay") and zero from any conformance section. Bundle has ~60 ACs (R-CCPL-1..6, R-SCJM-1..6, R-APWS-1..7, R-PSAI-1..10, R-RJR-1..3, R-CMD-1..4, R-PJV-1..6, R-SED-1..7, R-MJCP-1..8, R-CLOSER-1..3, R-A-01..03) and 4+ trap-door entries (R-CCPL-8, R-SCJM-5, R-APWS-6, R-MJCP-7); none cross-referenced against the diff. Citadel signed off on a bundle whose Sections B (Slot G) and C (Slot H) shipped only fix-only commits (`7f8cf07b` audit-trapdoor-shorten, no R-SCJM keystone) — it had no machinery to notice.
+**Triggering session**: `2026-05-09-7ff82595` — `/pickle-pipeline --no-refine --backend claude prds/archive/bundles/p1-bug-fix-bundle-2026-05-08-mega.md`. Phase 2/4 (citadel) wrote `citadel_report.json` with 1 LOW informational finding ("anatomy-park.json absent — skipping pattern-replay") and zero from any conformance section. Bundle has ~60 ACs (R-CCPL-1..6, R-SCJM-1..6, R-APWS-1..7, R-PSAI-1..10, R-RJR-1..3, R-CMD-1..4, R-PJV-1..6, R-SED-1..7, R-MJCP-1..8, R-CLOSER-1..3, R-A-01..03) and 4+ trap-door entries (R-CCPL-8, R-SCJM-5, R-APWS-6, R-MJCP-7); none cross-referenced against the diff. Citadel signed off on a bundle whose Sections B (Slot G) and C (Slot H) shipped only fix-only commits (`7f8cf07b` audit-trapdoor-shorten, no R-SCJM keystone) — it had no machinery to notice.
 
 ---
 
@@ -115,7 +115,7 @@ Diagnostic step in R-CCNW-1 below distinguishes (a) from (b).
 
 ### RC-2 — PRD parser may not handle bundle PRD `composes:` frontmatter
 
-`prds/citadel.md` T1 spec at line 131 says the parser walks "a PRD markdown file" and extracts AC IDs matching `AC-[A-Z0-9]+(-[A-Z0-9]+)*(-\d+)?`. Bundle PRDs (the dominant authoring shape in this project) inherit ACs from a `composes:` chain — e.g. `prds/p1-bug-fix-bundle-2026-05-08-mega.md` composes 9 source PRDs and lifts their ACs by reference (`R-CCPL-1..6 (=source R1..R6)`). If the parser only walks the top-level PRD it sees:
+`prds/citadel.md` T1 spec at line 131 says the parser walks "a PRD markdown file" and extracts AC IDs matching `AC-[A-Z0-9]+(-[A-Z0-9]+)*(-\d+)?`. Bundle PRDs (the dominant authoring shape in this project) inherit ACs from a `composes:` chain — e.g. `prds/archive/bundles/p1-bug-fix-bundle-2026-05-08-mega.md` composes 9 source PRDs and lifts their ACs by reference (`R-CCPL-1..6 (=source R1..R6)`). If the parser only walks the top-level PRD it sees:
 
 - ~15 ACs declared inline in the bundle PRD (`AC-A-01..03`, `AC-CMD-01..04`, `AC-RJR-01..03`, etc.)
 - ZERO of the ~50 ACs lifted-by-reference from composed source PRDs.
@@ -234,7 +234,7 @@ This test catches drift if a future analyzer module is added but not wired in.
 - **AC-CCNW-01** — `extension/scripts/audit-citadel-section-coverage.sh` exists and emits the import-vs-section diagnostic table. Output committed at `extension/audit/citadel-section-coverage-2026-05-09.md`.
 - **AC-CCNW-02** — `audit-runner.ts` imports and invokes T3 (ac-coverage-scorecard), T4 (allowlist-dead-entry-detector), T5 (endpoint-contract-conformance — may emit `skipped: project_shape_mismatch` for Node CLI projects), T8 (state-transition-audit — same skipped-reason allowed). Each emits a section in `citadel_report.json`.
 - **AC-CCNW-03** — T6 trap-door-coverage analyzer exists at `extension/src/services/citadel/trap-door-coverage.ts` and is invoked. For pickle-rick-claude's diff, T6 finds the trap-door triples cited in CLAUDE.md, classifies each as covered / unguarded, and emits findings.
-- **AC-CCNW-04** — `prd-parser.ts` recursively walks `composes:` frontmatter and surfaces ACs from composed source PRDs. Verified against `prds/p1-bug-fix-bundle-2026-05-08-mega.md`: parser emits ≥60 AC entities (from R-CCPL-1..6, R-SCJM-1..6, R-APWS-1..7, R-PSAI-1..10, R-RJR-1..3, R-CMD-1..4, R-PJV-1..6, R-SED-1..7, R-MJCP-1..8, R-CLOSER-1..3, R-A-01..03).
+- **AC-CCNW-04** — `prd-parser.ts` recursively walks `composes:` frontmatter and surfaces ACs from composed source PRDs. Verified against `prds/archive/bundles/p1-bug-fix-bundle-2026-05-08-mega.md`: parser emits ≥60 AC entities (from R-CCPL-1..6, R-SCJM-1..6, R-APWS-1..7, R-PSAI-1..10, R-RJR-1..3, R-CMD-1..4, R-PJV-1..6, R-SED-1..7, R-MJCP-1..8, R-CLOSER-1..3, R-A-01..03).
 - **AC-CCNW-05** — Sections with no work to do emit `{ skipped: true, reason: 'project_shape_mismatch', detail: '<reason>' }` rather than `{ controllers: 0, components: 0, ... findings: [] }`. Verified by grepping the report for skipped-reason strings.
 - **AC-CCNW-06** — `rule-set-invariant-audit.ts` recognizes the trap-door INVARIANT/BREAKS/ENFORCE triple shape. For pickle-rick-claude's `extension/CLAUDE.md`, the section's `inventory` count is non-zero (matches the project's actual ~120 trap-door entries in the changed CLAUDE.md region of the diff).
 - **AC-CCNW-07** — Regression test `extension/tests/citadel-audit-runner-section-coverage.test.js` asserts the (a)/(b) invariant from R-CCNW-8.
@@ -313,7 +313,7 @@ export async function runCitadelAudit({ prdPath, diffRange, ... }) {
 ## Cross-references
 
 - Design PRD: `prds/citadel.md` (T1..T17 + cross-skill T20-T23).
-- Triggering session: `2026-05-09-7ff82595` running `prds/p1-bug-fix-bundle-2026-05-08-mega.md`.
+- Triggering session: `2026-05-09-7ff82595` running `prds/archive/bundles/p1-bug-fix-bundle-2026-05-08-mega.md`.
 - LOA-618 post-mortem grid: `prds/citadel.md:464` — the 8 issues citadel was built to catch; the analyzers exist for 6 of them but only 2 are reaching the live report.
 - Test corpus that confirms the analyzers were built (just not wired): `extension/tests/citadel-ac-coverage-scorecard.test.js`, `extension/tests/citadel-allowlist-dead-entry-detector.test.js`, `extension/tests/citadel-endpoint-contract-conformance.test.js`, `extension/tests/citadel-state-transition-audit.test.js`, `extension/tests/citadel-rule-set-invariant-audit.test.js`.
 

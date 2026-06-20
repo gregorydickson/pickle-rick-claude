@@ -4,7 +4,7 @@
 **Author**: Pickle Rick
 **Project**: `pickle-rick-claude` — Claude Code extension (the gate prompts live here; the defects were in the *target* repo, loanlight-api)
 **Repo**: `https://github.com/gregorydickson/pickle-rick-claude` — branch `main`
-**Sibling of**: `prds/anatomy-park-szechuan-monorepo-missed-detection-gap.md` (the monorepo-flattening miss). Same family: declared-scope defects the post-pipeline review phases did not surface. That PRD fixed subsystem *discovery*; this PRD targets the **defect classes the finders have no dimension for**, on a *single-package* target where flattening is not the excuse.
+**Sibling of**: `prds/archive/bug-reports/anatomy-park-szechuan-monorepo-missed-detection-gap.md` (the monorepo-flattening miss). Same family: declared-scope defects the post-pipeline review phases did not surface. That PRD fixed subsystem *discovery*; this PRD targets the **defect classes the finders have no dimension for**, on a *single-package* target where flattening is not the excuse.
 **Triggering work**: loanlight-api PR #1707 (`gregory/loa-907-...`), the appraisal LangGraph migration.
 
 ---

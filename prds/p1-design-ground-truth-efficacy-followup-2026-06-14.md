@@ -8,8 +8,8 @@ created: 2026-06-14
 reviewed_by: [requirements-testability, codebase-grounding, risk-adversarial, codex-adversarial]
 source_prds:
   - prds/p1-design-simplification-and-autonomy-2026-06-13.md
-  - prds/BUG-REPORT-2026-06-14-readiness-gate-overblocks-pipeline.md
-  - prds/BUG-REPORT-2026-06-14-premature-phase-advance-and-green-ticket-gate-starvation.md
+  - prds/archive/bug-reports/BUG-REPORT-2026-06-14-readiness-gate-overblocks-pipeline.md
+  - prds/archive/bug-reports/BUG-REPORT-2026-06-14-premature-phase-advance-and-green-ticket-gate-starvation.md
 ---
 
 # B-DSAN2 — Design Ground-Truth & Validation-Proportionality

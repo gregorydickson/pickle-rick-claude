@@ -1,0 +1,34 @@
+# BUG REPORT 2026-06-18 — /pickle-pipeline unresumable after partial (false) completion
+
+**Finding:** #122 R-PRESUME. **Reporter:** operator driving /pickle-pipeline (claude backend) on an external app repo (agent-router/AgentRunReconciler tickets — NOT pickle-rick-claude). **Severity as reported:** P0 (8/13 tickets shipped, 5 stranded, no automated resume).
+
+## TRIAGE (babysitter, 2026-06-18): P0 root cause = the large-tier `routeLargeTierTicket` punt — ALREADY FIXED by B-WPEX-AUTO (v2.0.0-beta.14, shipped + deployed today)
+
+The reporter's symptom signature — **instant `0m` deactivate, NO manager `claude` spawned (0 procs, no `tmux_iteration_*.log`), `break reason 'cancelled'`, state re-derived to `{active:false, step:'completed'}` on EVERY launch, deterministic, reproduces on a fresh transplanted session, environment-independent** — is the **pre-beta.14 large-tier interactive punt**, verified at HEAD:
+
+- Legacy path (`mux-runner.ts:9847-9850`): `state.current_ticket_tier === 'large'` → `routeLargeTierTicket(...)` → `return { completion: 'inactive', exitCode: 0 }`. The `exitCode:0`/`inactive` is *deliberately chosen* (deviation comment) so `detectManagerInactiveExit` is false and the loop "falls straight through to the clean `Session deactivated. Exiting loop.` break (`exit_reason='cancelled'`)" — **before spawning any manager**. `finalizeTerminalState` then sets `step:'completed'`; `pipeline-runner` overwrites `exit_reason` with `pipeline_phase_incomplete`/`phase_no_progress`.
+- This is **tier-driven, not session-state** → exactly why the reporter's edits revert (the punt re-fires every launch on a still-large still-Todo ticket) and a fresh transplanted session reproduces it. It resolves the reporter's central puzzle ("why `cancelled` with 5 pending and no manager") — the punt short-circuits *before* the `pendingCount`/manager-relaunch logic.
+- **The reporter independently rediscovered #108 R-WPEX** (large-tier tickets can't proceed under headless mux) from the operator-facing symptom rather than the worker-silent-death framing.
+
+**Fix shipped:** B-WPEX-AUTO (`prds/archive/bundles/p1-bug-fix-bundle-b-wpex-auto-large-tier-detached-worker-poll.md`, v2.0.0-beta.14). At HEAD the large-tier seam (`mux-runner.ts:9643/9680`) routes to `spawnDetachedLargeTierWorker` (spawn + cross-iteration poll) instead of the punt; the punt is now gated behind `PICKLE_LARGE_TIER_DETACHED=off`. The deployed runtime was updated to beta.14 today during the B-WPEX-AUTO closer.
+
+**Confirmation step for the reporter:** check the 5 stranded tickets' `complexity_tier:` frontmatter (expect `large`) and/or grep their session `state.json` activity for a `large_tier_routed` event. If large-tier → this is the punt; resume on the now-beta.14 runtime. If NOT large-tier → a genuinely separate `:5531` short-circuit bug; investigate directly (re-open as a distinct finding).
+
+**Caveat (honest):** the beta.14 detached path is new (shipped today; validated by its own tests + the self-build, not yet battle-tested on a real external epic) and beta.14 surfaced **#121 R-LTMC** (manager builds large tickets in-turn then stalls without committing). So a beta.14 resume of a large-tier epic may still need babysitter salvage per the #121 playbook.
+
+## Additive hardening the report surfaced — genuinely worth shipping even post-beta.14 (the operator-facing resilience the punt-fix alone doesn't give)
+
+- [ ] **AC-R-PRESUME-1 — false-completion guard (P3, reporter #4).** Before `finalizeTerminalState({step:'completed'})`, re-scan ticket frontmatter; if any ticket is non-`Done`/`Skipped`, REFUSE to finalize `completed` and route through recovery/relaunch instead. Reuse `reconcileTicketTruth`. Directly prevents the sticky-terminal-state class regardless of WHY a phase exits early. Ties to #121 R-LTMC / the D2 completion-authority theme. — Type: integration
+- [ ] **AC-R-PRESUME-2 — sanctioned un-terminalize recovery primitive (reporter #3).** Add an operator command (e.g. `pickle-recover --reactivate <SR>` extending the existing `pickle-recover.ts`) that atomically clears `{active:false, step:'completed', terminal exit_reason}` → `{active:true, step:'research', exit_reason:null}` when pending tickets exist. Today there is NO sanctioned way to un-terminalize (`update-state.js` rejects `active`), which is the missing recovery primitive. — Type: integration
+- [ ] **AC-R-PRESUME-3 — wedge-detector vs long single-turn (P2, reporter #2).** `pipeline-runner.ts:821-862` `child_mux_runner_wedge_detected` SIGTERMs on stale `state.json` mtime (default 1800s); a long manager turn only touches `state.json` at ticket boundaries → premature mid-ticket SIGTERM (observed 84m kill). Fix: heartbeat `state.json` (or a dedicated heartbeat file) during the turn, AND/OR base the wedge timer on the **iteration-log mtime** (written continuously) instead of `state.json` mtime. NOTE: partly mooted by beta.14 (the detached path obviates the manual "babysit-in-turn" workaround that caused the long turns), but the wedge-vs-long-turn tension is real generally. — Type: integration
+- [ ] **AC-R-PRESUME-4 — readiness same-epic forward-refs (P1, reporter #1).** `check-readiness.js` false-positives on epic-internal forward references (ticket 1.10 references `AgentRouterService.route` declared as an OUTPUT of not-yet-done ticket 1.9). When validating ticket N, treat symbols/paths declared as outputs by any not-yet-Done ticket in the same bundle as satisfiable (the refiner's forward-ref annotation system R-FRA/R-RTRC is the existing mechanism — the gap is when tickets aren't auto-annotated). Bypassable today via `skip_quality_gates_reason` (works). Sibling to #120 R-ATPR (gate path-parity). — Type: test
+- [ ] **AC-R-PRESUME-5 — P4 cosmetic:** register `_pickle-manager-prompt.md` in `ensureMonitorWindow` template recognition (or silence the "unrecognized command_template" warning).
+
+## Simplification Review (subtract-before-add)
+1. **Necessary?** P0 already fixed (beta.14) — this finding is the additive operator-resilience (false-completion guard + recovery primitive) the punt-fix alone doesn't provide.
+2. **Reuse not add?** YES — AC-1 reuses `reconcileTicketTruth`; AC-2 extends the existing `pickle-recover.ts`; AC-4 reuses the R-FRA/R-RTRC forward-ref system. No new parallel machinery.
+3. **Guards brittle complexity?** The false-completion guard SUBTRACTS the failure mode (terminal-on-pending) rather than adding an escape hatch.
+4. **Subtract?** AC-2 removes the "no sanctioned un-terminalize → hand-edit state.json that reverts" dead-end; AC-1 removes the sticky-terminal class.
+
+## Note
+Reporter praised the orchestrator/agents (8 substantial cleanly-committed tickets autonomously). The defect is specifically resume-after-partial-completion — root-caused to the large-tier punt (fixed beta.14). Full reporter writeup retained in the session/issue thread. Source: this file.

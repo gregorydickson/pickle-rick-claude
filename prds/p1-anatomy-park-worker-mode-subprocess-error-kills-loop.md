@@ -6,8 +6,8 @@
 **Repo**: `https://github.com/gregorydickson/pickle-rick-claude` — branch `main`
 **Sibling of**:
 - `prds/p1-szechuan-sauce-llm-judge-non-deterministic-scoring-false-stalls.md` — szechuan false-stall via non-deterministic judge. Same `microverse-runner` family, different code path (judge result classification vs. subprocess error handling).
-- `prds/p2-szechuan-anatomy-finalize-gate-npmrc-warn-pollution-masks-real-failures.md` — finalize-gate WARN/FAIL conflation. Same lifecycle (worker-convergence + codex backend) but at a different stage (post-loop gate vs. mid-loop).
-- `prds/anatomy-park-judge-unreachable-on-worker-convergence.md` — judge unreachable on worker mode. Related: worker-mode loops have several places where the existing manager-mode assumptions leak through and cause spurious terminal exits.
+- `prds/archive/bug-reports/p2-szechuan-anatomy-finalize-gate-npmrc-warn-pollution-masks-real-failures.md` — finalize-gate WARN/FAIL conflation. Same lifecycle (worker-convergence + codex backend) but at a different stage (post-loop gate vs. mid-loop).
+- `prds/archive/bug-reports/anatomy-park-judge-unreachable-on-worker-convergence.md` — judge unreachable on worker mode. Related: worker-mode loops have several places where the existing manager-mode assumptions leak through and cause spurious terminal exits.
 - `prds/anatomy-park-followups.md` — running list of anatomy-park orchestrator hardening.
 
 **Triggering session**: `2026-05-10-6ed7182b` — `/anatomy-park --backend codex` on `loanlight-api@gregory/1025-appraisal-epic`. R3 of pipeline. Hit on iter 111/200 at `2026-05-11T10:28:15.694Z` after 19h25m wall clock.

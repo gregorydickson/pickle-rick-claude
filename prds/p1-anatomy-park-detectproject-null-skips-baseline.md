@@ -10,7 +10,7 @@ discovered_in:
   - exit_reason: failed (pipeline-runner halt)
   - failed_at: 2026-05-08T15:05:03.354Z
 related:
-  - prds/p1-bug-fix-bundle-2026-05-07-deferred-slots.md  # bundle that exposed this on its own anatomy-park phase
+  - prds/archive/bundles/p1-bug-fix-bundle-2026-05-07-deferred-slots.md  # bundle that exposed this on its own anatomy-park phase
   - prds/MASTER_PLAN.md  # Open Finding (new — supersedes prior #7 closure)
 backend_constraint: claude
 refine: false
@@ -25,7 +25,7 @@ unattended: false
 
 ## Why this PRD
 
-Session `2026-05-08-d6f98b66` ran the full `/pickle-pipeline --no-refine --backend claude` against `prds/p1-bug-fix-bundle-2026-05-07-deferred-slots.md`. **Phase 1 (pickle) shipped 5/5 tickets** (Slots D/E/K/L + Closer); **Phase 2 (citadel) wrote 1 informational finding**; **Phase 3 (anatomy-park) failed at iteration 1, 4m25s into the microverse loop**, before any subsystem-review iteration could land. Phase 4 (szechuan-sauce) never ran.
+Session `2026-05-08-d6f98b66` ran the full `/pickle-pipeline --no-refine --backend claude` against `prds/archive/bundles/p1-bug-fix-bundle-2026-05-07-deferred-slots.md`. **Phase 1 (pickle) shipped 5/5 tickets** (Slots D/E/K/L + Closer); **Phase 2 (citadel) wrote 1 informational finding**; **Phase 3 (anatomy-park) failed at iteration 1, 4m25s into the microverse loop**, before any subsystem-review iteration could land. Phase 4 (szechuan-sauce) never ran.
 
 The trap door at `microverse-runner.ts:capturePerIterationGateBaseline` (`extension/CLAUDE.md` — `convergence-gate.ts (baseline write verification)` + `microverse-runner.ts (baseline-init log gating)`) **fired correctly** with:
 
@@ -100,7 +100,7 @@ This repo (`pickle-rick-claude`) is the third bucket. So is any project that fol
 - **AC-APBN-02** — `cd extension && node --test tests/services/convergence-gate-baseline-write-verify.test.js tests/microverse-runner-baseline-init.test.js` exits 0 (no regression).
 - **AC-APBN-03** — `cd extension && bash scripts/audit-trap-door-enforcement.sh` exits 0 with ENFORCE refs ≥ 122 (current 121 + new R-APBN-4 entry).
 - **AC-APBN-04** — `cd extension && node --test tests/integration/anatomy-park-no-project-root.test.js` exits 0.
-- **AC-APBN-05** — Live verification: re-run `/pickle-pipeline --no-refine --backend claude` against `prds/p1-bug-fix-bundle-2026-05-07-deferred-slots.md` (or any bundle PRD) on `pickle-rick-claude` repo root; anatomy-park phase reaches at least iteration 2 without `gate_baseline_init_failed` exit. (Recovery from `2026-05-08-d6f98b66` — the session that originally caught this.)
+- **AC-APBN-05** — Live verification: re-run `/pickle-pipeline --no-refine --backend claude` against `prds/archive/bundles/p1-bug-fix-bundle-2026-05-07-deferred-slots.md` (or any bundle PRD) on `pickle-rick-claude` repo root; anatomy-park phase reaches at least iteration 2 without `gate_baseline_init_failed` exit. (Recovery from `2026-05-08-d6f98b66` — the session that originally caught this.)
 - **AC-APBN-06** — `cd extension && npx tsc --noEmit && npx eslint src/ --max-warnings=-1` exits 0 (production gate parity).
 
 ## Files in scope

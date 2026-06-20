@@ -7,8 +7,8 @@ PRD_ROOT="${PRD_ROOT_OVERRIDE:-$REPO_ROOT}"
 
 default_scope=(
   "prds/p1-worker-source-state-recursion-contamination.md"
-  "prds/p1-mux-runner-wedges-13h-on-unbounded-between-ticket-gate-spawnsync.md"
-  "prds/p1-closer-ticket-spins-on-r-wsrc-forbidden-acs.md"
+  "prds/archive/bug-reports/p1-mux-runner-wedges-13h-on-unbounded-between-ticket-gate-spawnsync.md"
+  "prds/archive/bundles/p1-closer-ticket-spins-on-r-wsrc-forbidden-acs.md"
 )
 
 if (($# > 0)); then
@@ -61,7 +61,7 @@ for rel_path in "${scope[@]}"; do
   fi
 
   expected_marker='<!-- R-CTSF retroactive (shipped pre-R-CTSF) -->'
-  if [[ "$rel_path" == "prds/p1-closer-ticket-spins-on-r-wsrc-forbidden-acs.md" ]]; then
+  if [[ "$rel_path" == "prds/archive/bundles/p1-closer-ticket-spins-on-r-wsrc-forbidden-acs.md" ]]; then
     expected_marker='<!-- R-CTSF compliant -->'
   fi
 

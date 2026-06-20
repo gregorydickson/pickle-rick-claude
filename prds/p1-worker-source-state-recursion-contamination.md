@@ -183,6 +183,6 @@ Both incidents in the same operator session, both root-caused to the same defens
 
 ## Cross-references
 
-- Finding #42 R-MRWG — `prds/p1-mux-runner-wedges-13h-on-unbounded-between-ticket-gate-spawnsync.md` (overlap on SIGTERM non-propagation enabling leak survival)
+- Finding #42 R-MRWG — `prds/archive/bug-reports/p1-mux-runner-wedges-13h-on-unbounded-between-ticket-gate-spawnsync.md` (overlap on SIGTERM non-propagation enabling leak survival)
 - AC-RVN-08 — existing deploy parity gate that catches install-time drift; R-WSRC complements with write-time defenses
 - send-to-morty.md:61 — existing prose-only `NEVER modify state.json` rule; R-WSRC-5 promotes to defense-in-depth pairing with runtime enforcement

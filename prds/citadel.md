@@ -682,7 +682,7 @@ Surfaced by a 4-parallel-agent validation pass against ~50 commits over the prio
 
 ## Appendix → split out
 
-The BMAD-inspired hardening appendix (P0.N / P1.N / P2.N / P3.N / P4.N ACs, R## risk register, T0## task list — ~454 lines) was extracted to `prds/citadel-appendix-bmad-reference.md` on 2026-05-01 to keep this PRD lean for coding-agent context. AC IDs there are still authoritative for the appendix scope and do not collide with `AC-CIT-NN` here.
+The BMAD-inspired hardening appendix (P0.N / P1.N / P2.N / P3.N / P4.N ACs, R## risk register, T0## task list — ~454 lines) was extracted to `prds/archive/features/citadel-appendix-bmad-reference.md` on 2026-05-01 to keep this PRD lean for coding-agent context. AC IDs there are still authoritative for the appendix scope and do not collide with `AC-CIT-NN` here.
 
 T04-T27 from that appendix SHIPPED via the v1.62.x BMAD wave (see `## Post-Validation Gaps` above for residual spec gaps).
 

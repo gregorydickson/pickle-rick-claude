@@ -4,8 +4,8 @@
 **Author**: Pickle Rick
 **Project**: `pickle-rick-claude` — Claude Code extension
 **Repo**: `https://github.com/gregorydickson/pickle-rick-claude` — branch `main`
-**Triggering session**: `2026-05-09-7ff82595` — `/pickle-pipeline --no-refine --backend claude prds/p1-bug-fix-bundle-2026-05-08-mega.md`. Pickle phase shipped 11/11 tickets at 16:35 UTC; anatomy-park has been iterating since (currently iter 12/100 at the time of this PRD). Monitor pane 1.0 still renders the pickle-phase template ("Tickets: ... 10 more above ... [x] a7fa5858: [Section K] Closer", "Active: ▣ ONLINE", "Metric Trend (lower is better, target: —): No measurements yet") despite `state.step === 'anatomy-park'` and `pipeline-status.current_phase === 'anatomy-park'` for hours.
-**Sibling of**: `prds/loop-runner-relaunch-status-bugs.md` (mux-runner ownership ordering vs `ensureMonitorWindow` — Bug A) and `prds/p3-monitor-watcher-continuous-auto-respawn.md` (R-MWR — pane-respawn watchdog). Both address pane *liveness*; this PRD addresses pane *content correctness across phase boundaries*. R-MWR ensures the monitor process keeps running; this PRD ensures the monitor process renders the right thing once it's running through a phase change.
+**Triggering session**: `2026-05-09-7ff82595` — `/pickle-pipeline --no-refine --backend claude prds/archive/bundles/p1-bug-fix-bundle-2026-05-08-mega.md`. Pickle phase shipped 11/11 tickets at 16:35 UTC; anatomy-park has been iterating since (currently iter 12/100 at the time of this PRD). Monitor pane 1.0 still renders the pickle-phase template ("Tickets: ... 10 more above ... [x] a7fa5858: [Section K] Closer", "Active: ▣ ONLINE", "Metric Trend (lower is better, target: —): No measurements yet") despite `state.step === 'anatomy-park'` and `pipeline-status.current_phase === 'anatomy-park'` for hours.
+**Sibling of**: `prds/archive/bundles/loop-runner-relaunch-status-bugs.md` (mux-runner ownership ordering vs `ensureMonitorWindow` — Bug A) and `prds/archive/features/p3-monitor-watcher-continuous-auto-respawn.md` (R-MWR — pane-respawn watchdog). Both address pane *liveness*; this PRD addresses pane *content correctness across phase boundaries*. R-MWR ensures the monitor process keeps running; this PRD ensures the monitor process renders the right thing once it's running through a phase change.
 
 ---
 
@@ -281,8 +281,8 @@ Verified via `tmux capture-pane -p` calls to the test session's monitor window.
 
 ## Cross-references
 
-- Sister bugs (pane liveness, not content correctness): `prds/loop-runner-relaunch-status-bugs.md`, `prds/p3-monitor-watcher-continuous-auto-respawn.md` (R-MWR), `prds/p2-pickle-pipeline-no-scope-auto-inference.md` R-PSAI-5 (pane 0 watchdog).
-- Triggering session: `2026-05-09-7ff82595` running `prds/p1-bug-fix-bundle-2026-05-08-mega.md`. Live capture above is from this session at iter 12/100 of anatomy-park phase.
+- Sister bugs (pane liveness, not content correctness): `prds/archive/bundles/loop-runner-relaunch-status-bugs.md`, `prds/archive/features/p3-monitor-watcher-continuous-auto-respawn.md` (R-MWR), `prds/archive/bug-reports/p2-pickle-pipeline-no-scope-auto-inference.md` R-PSAI-5 (pane 0 watchdog).
+- Triggering session: `2026-05-09-7ff82595` running `prds/archive/bundles/p1-bug-fix-bundle-2026-05-08-mega.md`. Live capture above is from this session at iter 12/100 of anatomy-park phase.
 - Code references:
   - `extension/src/bin/pipeline-runner.ts` (phase-transition site; needs R-MDS-1 hook).
   - `extension/src/bin/monitor.ts` (render-template dispatcher; needs R-MDS-2/3/4).

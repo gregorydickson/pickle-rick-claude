@@ -4,7 +4,7 @@
 **Author**: Pickle Rick
 **Project**: `pickle-rick-claude` — Claude Code extension
 **Repo**: `https://github.com/gregorydickson/pickle-rick-claude` — branch `main`
-**Predecessor**: `prds/god-functions-remediation.md` (Phase 1, T0–T15) — shipped autonomously by codex on 2026-04-28 across ~9.5K LOC of refactor diff. See MASTER_PLAN §1.
+**Predecessor**: `prds/archive/bundles/god-functions-remediation.md` (Phase 1, T0–T15) — shipped autonomously by codex on 2026-04-28 across ~9.5K LOC of refactor diff. See MASTER_PLAN §1.
 
 ---
 
@@ -182,7 +182,7 @@ Plus new test files per ticket; Phase 1 averaged ~80 LOC of new tests per large-
 
 ## Linked context
 
-- Phase 1 PRD: `prds/god-functions-remediation.md` (refined SHA `1658d81`, shipped on session `2026-04-25-9152e64b`)
+- Phase 1 PRD: `prds/archive/bundles/god-functions-remediation.md` (refined SHA `1658d81`, shipped on session `2026-04-25-9152e64b`)
 - Carve-out commit: `7bf3263 chore(lint): add eslint-disable carve-outs for 27 pre-existing god-functions`
 - v1.59.x release notes: codex backend stall hardening — confirms the codex pipeline can ship epics of this size autonomously
 - Master plan: `prds/MASTER_PLAN.md` §1 (PRD index) and §5 (cross-cutting rules — same constraints apply)

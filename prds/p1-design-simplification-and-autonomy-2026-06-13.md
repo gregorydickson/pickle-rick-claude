@@ -2,7 +2,7 @@
 
 **Status:** PLAN ONLY — do not implement. Next step is `/pickle-refine-prd` into atomic tickets (or split into the bundles named below).
 **Author:** Operator-requested deep review of the bug-PRD corpus + MASTER_PLAN ("we keep running into similar failures — simplify the design, remove validation that fails pipelines, make the system more autonomous").
-**Scope:** PARENT thesis over the whole failure corpus. It does **not** re-derive the session-isolation slice — that is already specified in `prds/p1-fix-plan-session-isolation-and-ground-truth-2026-06-13.md` (R0–R3 + S1–S4), which this PRD adopts as **Workstream W2** below. This PRD adds the two classes that fix-plan does not cover: **validation overreach (W1)** and **simplification governance (W5)**, plus elevates **work-preservation (W3)** and **recover-don't-park (W4)** from per-incident recipes to runtime defaults.
+**Scope:** PARENT thesis over the whole failure corpus. It does **not** re-derive the session-isolation slice — that is already specified in `prds/archive/design-notes/p1-fix-plan-session-isolation-and-ground-truth-2026-06-13.md` (R0–R3 + S1–S4), which this PRD adopts as **Workstream W2** below. This PRD adds the two classes that fix-plan does not cover: **validation overreach (W1)** and **simplification governance (W5)**, plus elevates **work-preservation (W3)** and **recover-don't-park (W4)** from per-incident recipes to runtime defaults.
 
 ---
 
@@ -36,7 +36,7 @@ This is the same principle the babysitter playbook already encodes *by hand* (fr
 
 ## Reconciliation with B-RRH — the design rework is *justified by* the point-fixes, not a parallel rebuild
 
-B-RRH (`prds/p1-bug-mega-bundle-b-rrh-runtime-recovery-resilience-hardening.md`, drain row 111, ship-ready) is the **per-incident point-fix** of the same weekend. It already lands the individual seam fixes this PRD generalizes. **Nothing below re-implements a B-RRH AC** — the design bundles assume B-RRH has shipped and build the *consolidation + the genuinely-uncovered prevention* on top. This is the rationalization: the recurring meta-failure is **"a fix existed but the next new seam bypassed it"** (R-WMNP respawned in-phase forever though the ladder existed; R-CHTS-CODEX's 4 codex sites each needed separate wiring). B-RRH wires ~8 salvage seams *by hand*; the design rework's entire value is making seam **N+1** inherit the behavior for free.
+B-RRH (`prds/archive/bundles/p1-bug-mega-bundle-b-rrh-runtime-recovery-resilience-hardening.md`, drain row 111, ship-ready) is the **per-incident point-fix** of the same weekend. It already lands the individual seam fixes this PRD generalizes. **Nothing below re-implements a B-RRH AC** — the design bundles assume B-RRH has shipped and build the *consolidation + the genuinely-uncovered prevention* on top. This is the rationalization: the recurring meta-failure is **"a fix existed but the next new seam bypassed it"** (R-WMNP respawned in-phase forever though the ladder existed; R-CHTS-CODEX's 4 codex sites each needed separate wiring). B-RRH wires ~8 salvage seams *by hand*; the design rework's entire value is making seam **N+1** inherit the behavior for free.
 
 | B-RRH AC (point-fix, lands first) | Design workstream that generalizes it | Delta AFTER B-RRH ships |
 |---|---|---|
@@ -100,7 +100,7 @@ B-RRH (`prds/p1-bug-mega-bundle-b-rrh-runtime-recovery-resilience-hardening.md`,
 
 ## Workstream W2 — Session isolation & ground-truth at resume/completion  *(P1; ADOPTS the 2026-06-13 fix-plan verbatim)*
 
-This workstream **is** `prds/p1-fix-plan-session-isolation-and-ground-truth-2026-06-13.md` (R0 recovery primitive, R1 session-scoped process isolation, R2 frontmatter-truth phase-advance, R3 re-pin/bundle-aware readiness, S1–S4 hygiene). It is the prevention slice of principles 1 + 4 for the launch/resume/signal seams. **Do not re-author** — refine that file directly. Its R0 (`pickle-recover`) is the sanctioned recovery command principle 4 requires; its R2 frontmatter-authority advance gate is the principle-1 instance for phase completion.
+This workstream **is** `prds/archive/design-notes/p1-fix-plan-session-isolation-and-ground-truth-2026-06-13.md` (R0 recovery primitive, R1 session-scoped process isolation, R2 frontmatter-truth phase-advance, R3 re-pin/bundle-aware readiness, S1–S4 hygiene). It is the prevention slice of principles 1 + 4 for the launch/resume/signal seams. **Do not re-author** — refine that file directly. Its R0 (`pickle-recover`) is the sanctioned recovery command principle 4 requires; its R2 frontmatter-authority advance gate is the principle-1 instance for phase completion.
 
 **Cross-binding to this PRD:** W2.R2 (phase completion = frontmatter, not exit-code/token) and W3 (salvage-before-fail) are the same principle at two seams — refine them so they share one ground-truth helper (`reconcileTicketTruth(session)`), not two parallel scanners.
 

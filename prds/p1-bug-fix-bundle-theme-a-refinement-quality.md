@@ -11,9 +11,9 @@ pipeline_target: /pickle-pipeline --no-refine --backend claude
 sections: 9
 peer_prds:
   source_prds:
-    - prds/p1-ticket-authoring-quality-systemic-defects.md  # Sections A, B, C, F, H, I
-    - prds/p2-worker-silent-exit-and-ticket-path-drift.md   # Section D
-    - prds/p1-iteration-cap-and-phantom-done-handshake.md   # Section G (R-3 only)
+    - prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md  # Sections A, B, C, F, H, I
+    - prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md   # Section D
+    - prds/archive/bug-reports/p1-iteration-cap-and-phantom-done-handshake.md   # Section G (R-3 only)
     - inline-2026-05-07-standup-bug-report                  # Section L (addendum)
 refinement:
   cycles: 1
@@ -46,7 +46,7 @@ chicken_and_egg_note: |
 ## Overview
 
 - **Date**: 2026-05-07.
-- **Theme**: refinement quality + worker reliability — the two adjacent failure surfaces that caused 12 broken tickets in session `2026-05-03-7d9ee8cc` (54% broken, 92% defect rate per `prds/p1-ticket-authoring-quality-systemic-defects.md:25-33`) and the 0-byte-log silent-exit pattern documented in `prds/p2-worker-silent-exit-and-ticket-path-drift.md:18-32`.
+- **Theme**: refinement quality + worker reliability — the two adjacent failure surfaces that caused 12 broken tickets in session `2026-05-03-7d9ee8cc` (54% broken, 92% defect rate per `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:25-33`) and the 0-byte-log silent-exit pattern documented in `prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md:18-32`.
 - **Scope**: 9 atomic implementation tickets after `/pickle-quick-refine` fan-out (Sections A-I are the core refinement-quality + worker-reliability theme; Section L is a P2 operator bug-report addendum on `/pickle-standup`, separable).
 - **Source PRDs**: 3 source-PRD-backed sections + 1 inline addendum (`p1-ticket-authoring-quality-systemic-defects.md`, `p2-worker-silent-exit-and-ticket-path-drift.md`, `p1-iteration-cap-and-phantom-done-handshake.md` — R-3 only; plus inline 2026-05-07 standup operator brief for Section L).
 - **Pipeline target**: `/pickle-pipeline --no-refine --backend codex` (after `/pickle-quick-refine`).
@@ -57,7 +57,7 @@ chicken_and_egg_note: |
 - Sections A, B, C, F, I (refinement-team validators + manifest schema + skill checklist) prevent defective tickets at *authoring* time — the upstream lever.
 - Sections D, G (worker silent-exit log flush + phantom-Done filesystem watcher) catch failure at *runtime* — the downstream backstop.
 - Section H validates that A, B, C actually catch the documented 12 defects from session `2026-05-03-7d9ee8cc` — the regression-test contract proving the upstream lever works.
-- Together they close the 7 defect classes documented at `prds/p1-ticket-authoring-quality-systemic-defects.md:39-86` AND the 0-byte-log pattern at `prds/p2-worker-silent-exit-and-ticket-path-drift.md:30-44` AND the phantom-Done R-3 sister bug deferred from the 2026-05-06 bundle.
+- Together they close the 7 defect classes documented at `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:39-86` AND the 0-byte-log pattern at `prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md:30-44` AND the phantom-Done R-3 sister bug deferred from the 2026-05-06 bundle.
 
 ## Bugs-first policy compliance
 
@@ -92,10 +92,10 @@ Recommended execution order (also reflected in the `Order:` annotations 10..90):
 
 ## Skipped / deferred
 
-- **Section E (path-drift validator)** — folded into Section B as defect Class 1 of the 7-class scanner. Source: `prds/p1-ticket-authoring-quality-systemic-defects.md:41-50` (Class 1 — File-path drift) covers the same failure mode as `prds/p2-worker-silent-exit-and-ticket-path-drift.md:48-60` (RC-2). Section B's `audit-ticket-bundle.js` runs the path-drift check as the first of seven; no separate ticket needed.
-- **Section J (`audit-ticket-paths.js` operator-only script)** — `prds/p2-worker-silent-exit-and-ticket-path-drift.md:86` R-RPD-3 — deferred to P2 in the next-next batch. Operator can run Section B's `audit-ticket-bundle.js` against a session root manually for the same effect; the standalone script is convenience-only.
+- **Section E (path-drift validator)** — folded into Section B as defect Class 1 of the 7-class scanner. Source: `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:41-50` (Class 1 — File-path drift) covers the same failure mode as `prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md:48-60` (RC-2). Section B's `audit-ticket-bundle.js` runs the path-drift check as the first of seven; no separate ticket needed.
+- **Section J (`audit-ticket-paths.js` operator-only script)** — `prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md:86` R-RPD-3 — deferred to P2 in the next-next batch. Operator can run Section B's `audit-ticket-bundle.js` against a session root manually for the same effect; the standalone script is convenience-only.
 - **Section K (backfill validation as separate ticket)** — folded into Section H. Same "validate audit catches the 12 documented defects" goal; H carries the AC.
-- `prds/p1-iteration-cap-and-phantom-done-handshake.md` R-1 (cap persistence) and R-2 (cap-hit exit code 3) — already shipped in 2026-05-06 bundle Sections I and J. This bundle covers ONLY R-3 (phantom-Done watcher + commit-hash contract).
+- `prds/archive/bug-reports/p1-iteration-cap-and-phantom-done-handshake.md` R-1 (cap persistence) and R-2 (cap-hit exit code 3) — already shipped in 2026-05-06 bundle Sections I and J. This bundle covers ONLY R-3 (phantom-Done watcher + commit-hash contract).
 
 ---
 
@@ -103,11 +103,11 @@ Recommended execution order (also reflected in the `Order:` annotations 10..90):
 
 **Priority: P1 | Order: 10**
 
-*ACs lifted verbatim from `prds/p1-ticket-authoring-quality-systemic-defects.md:122` (R-TAQ-1) and `:134` (AC-TAQ-01). Source: `prds/p1-ticket-authoring-quality-systemic-defects.md:88-98` (RC-1 root cause), `:120-128` (R-TAQ-1 row), `:154-161` (Cross-references).*
+*ACs lifted verbatim from `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:122` (R-TAQ-1) and `:134` (AC-TAQ-01). Source: `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:88-98` (RC-1 root cause), `:120-128` (R-TAQ-1 row), `:154-161` (Cross-references).*
 
 **Problem statement**: The refinement-team analyst prompts (`spawn-refinement-team.ts:367-525`, `buildAnalystPrompt`) instruct workers to produce `analysis_codebase_*.md` reports with `file_path:line` references. The prompts do NOT require the analyst to run `git ls-files <claimed-path>` to verify the path resolves at HEAD, nor to grep for cited symbols, nor to validate package.json field values. Workers are LLMs writing prose; they default to sensible-sounding but unverified claims (e.g., `extension/src/services/resolve-state.ts` cited but the actual file is `extension/src/hooks/resolve-state.ts` — the most common Class-1 defect, observed on 4+ tickets in session `2026-05-03-7d9ee8cc`).
 
-The framework needs a verification gate at the analyst layer so file-path drift is caught before tickets reach mux-runner. Without it, the worker discovers the discrepancy in research and the lifecycle stalls or completes against the wrong target (forensics: `prds/p2-worker-silent-exit-and-ticket-path-drift.md:55-60`).
+The framework needs a verification gate at the analyst layer so file-path drift is caught before tickets reach mux-runner. Without it, the worker discovers the discrepancy in research and the lifecycle stalls or completes against the wrong target (forensics: `prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md:55-60`).
 
 **Mapped requirements**: R-TAQ-1.
 
@@ -115,7 +115,7 @@ The framework needs a verification gate at the analyst layer so file-path drift 
 
 **Test files (forward-created)**: `extension/tests/spawn-refinement-team-path-verification.test.js`.
 
-### Acceptance criteria *(lifted verbatim from prds/p1-ticket-authoring-quality-systemic-defects.md:122 + :134)*
+### Acceptance criteria *(lifted verbatim from prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:122 + :134)*
 
 - **AC-TAQ-01** *(R-TAQ-1, lifted verbatim from PRD line 122)* — `spawn-refinement-team.ts` analyst prompts add a hard verification block: "Every file path you cite in `## Files` or `## Locations` MUST be verified via `git ls-files <path>` first. Cite the verification command's output. If the path doesn't exist, mark it explicitly as `(forward-created)` with a sibling-ticket reference." Verify: `grep -c "git ls-files" extension/src/bin/spawn-refinement-team.ts` ≥ 1. Type: lint.
 - **AC-TAQ-01-2** *(R-TAQ-1 regression, derived from operator brief)* — Synthetic fixture invokes the analyst prompt builder; asserts the rendered prompt contains the literal substrings `git ls-files`, `forward-created`, and the rule that paths must be verified before citation. Verify: `extension/tests/spawn-refinement-team-path-verification.test.js` asserts the rendered prompt body contains all three substrings exactly once each. Type: test.
@@ -139,7 +139,7 @@ The framework needs a verification gate at the analyst layer so file-path drift 
 
 **Priority: P1 | Order: 20**
 
-*ACs lifted verbatim from `prds/p1-ticket-authoring-quality-systemic-defects.md:123-124` (R-TAQ-2, R-TAQ-3), `:127` (R-TAQ-6), and `:135-136,:139` (AC-TAQ-02, AC-TAQ-03, AC-TAQ-06). Source: `prds/p1-ticket-authoring-quality-systemic-defects.md:39-86` (Class 1..7 enumeration), `:104-112` (RC-3 — no automated post-decomposition validator).*
+*ACs lifted verbatim from `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:123-124` (R-TAQ-2, R-TAQ-3), `:127` (R-TAQ-6), and `:135-136,:139` (AC-TAQ-02, AC-TAQ-03, AC-TAQ-06). Source: `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:39-86` (Class 1..7 enumeration), `:104-112` (RC-3 — no automated post-decomposition validator).*
 
 **Problem statement**: Once tickets exist on disk (`linear_ticket_<hash>.md`), nothing audits them as a set. `check-readiness.js` covers symbol/path resolution at gate time but with the false-positive issues documented in `p2-refined-tickets-trip-readiness-contract-resolver.md`. No tool catches:
 
@@ -161,7 +161,7 @@ The R-TAQ-6 backfill check confirms the audit catches the 12 hand-found defects 
 
 **Forward-created**: `extension/bin/audit-ticket-bundle.js`, `extension/tests/audit-ticket-bundle.test.js`, `extension/tests/audit-ticket-bundle-mux-halt.test.js`, `extension/tests/integration/audit-ticket-bundle-backfill.test.js`, `extension/tests/fixtures/audit-ticket-bundle/` (per-class fixture corpus).
 
-### Acceptance criteria *(lifted verbatim from prds/p1-ticket-authoring-quality-systemic-defects.md:123-124, :127, :135-136, :139)*
+### Acceptance criteria *(lifted verbatim from prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:123-124, :127, :135-136, :139)*
 
 - **AC-TAQ-02** *(R-TAQ-2, lifted verbatim from PRD line 123 + :135)* — New post-decomposition validator `extension/bin/audit-ticket-bundle.js`: walks `${SESSION_ROOT}/<hash>/linear_ticket_<hash>.md`, runs all 7 defect-class checks (path-drift, self-ref, missing-deps, wrong-HEAD-assumptions, cross-doc-naming, hallucinated-premise, literal-value-drift). Exits non-zero with a per-ticket findings report. Manifest: `${SESSION_ROOT}/audit-ticket-bundle.json`. `audit-ticket-bundle.js` exists, runs against a fixture session, exits 0 on clean tickets and non-zero on a deliberately-defective ticket. Verify: `cd extension && npm test -- --grep audit-ticket-bundle`. Type: test.
 - **AC-TAQ-03** *(R-TAQ-3, lifted verbatim from PRD line 124 + :136)* — mux-runner runs `audit-ticket-bundle.js` BEFORE the first iteration. Exit non-zero halts the pipeline before any worker spawns; operator sees the findings list and fixes the tickets. Bypass via `state.flags.skip_ticket_audit_reason = "<reason>"` (mirrors the readiness skip pattern). mux-runner halts on audit-bundle exit non-zero. Verify: `cd extension && npm test -- --grep mux-runner.audit-bundle-halt`. Type: test.
@@ -187,7 +187,7 @@ The R-TAQ-6 backfill check confirms the audit catches the 12 hand-found defects 
 
 **Priority: P1 | Order: 30**
 
-*ACs lifted verbatim from `prds/p1-ticket-authoring-quality-systemic-defects.md:126` (R-TAQ-5), `:128` (R-TAQ-7), `:138` (AC-TAQ-05), `:140` (AC-TAQ-07). Source: `prds/p1-ticket-authoring-quality-systemic-defects.md:69-73` (Class 5 — Cross-document naming drift).*
+*ACs lifted verbatim from `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:126` (R-TAQ-5), `:128` (R-TAQ-7), `:138` (AC-TAQ-05), `:140` (AC-TAQ-07). Source: `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:69-73` (Class 5 — Cross-document naming drift).*
 
 **Problem statement**: `bundle-thesis-matrix.md` row D references `extension/tests/contract/gh-cli-contract.test.js`. Ticket `01c13ccf` creates `extension/tests/contract/cli-contract.test.js` (parametrized over gh+codex+claude). The cross-reference audit (`dddee00b`) WILL flag this as CRITICAL — but the actual fix is upstream: pick one filename, sync the matrix doc, audit-script regex, and ticket-author description. The cross-doc validator is a subset of Section B's `audit-ticket-bundle.js` scanner: for every ticket that creates a file, scan `prds/*.md` for references to that filename pattern. If any reference uses a different name, flag as `cross-doc-naming-drift`.
 
@@ -199,7 +199,7 @@ R-TAQ-7 is the manifest-extension piece: refinement_manifest.json gains a `ticke
 
 **Test files (forward-created)**: `extension/tests/audit-ticket-bundle-cross-doc-drift.test.js`, `extension/tests/refinement-manifest-quality-warnings.test.js`.
 
-### Acceptance criteria *(lifted verbatim from prds/p1-ticket-authoring-quality-systemic-defects.md:126, :128, :138, :140)*
+### Acceptance criteria *(lifted verbatim from prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:126, :128, :138, :140)*
 
 - **AC-TAQ-05** *(R-TAQ-5, lifted verbatim from PRD line 126 + :138)* — Cross-document validator (subset of R-TAQ-2): for every ticket that creates a file, scan `prds/*.md` for references to that filename pattern. If any reference uses a different name, flag as cross-doc-naming-drift. Cross-doc validator catches matrix-vs-ticket drift. Verify: regression fixture with mismatched filenames; audit reports `cross-doc-naming-drift`. Type: test.
 - **AC-TAQ-07** *(R-TAQ-7, lifted verbatim from PRD line 128 + :140)* — Refinement-manifest schema gains `ticket_quality_warnings: <array>` field, populated by the analyst-side verification (R-TAQ-1) and the post-decomp audit (R-TAQ-2). Operator sees a single-pane summary before launch. refinement_manifest.json contains `ticket_quality_warnings` field. Verify: regression fixture; field present and schema-valid. Type: test.
@@ -223,11 +223,11 @@ R-TAQ-7 is the manifest-extension piece: refinement_manifest.json gains a `ticke
 
 **Priority: P1 | Order: 40**
 
-*Source: `prds/p2-worker-silent-exit-and-ticket-path-drift.md:36-46` (RC-1 root cause), `:78-88` (R-WSE-1..4 + R-RPD-1..4 functional requirements), `:91-100` (AC-WSE-01..04 + AC-RPD-01..04 acceptance criteria), `:144-171` (2026-05-05 forensic addendum on R-WSE-1 self-inflicted recurrence). R-WSE-1..4 codes lifted verbatim from source PRD lines 80-83. RC-2 path-drift sibling AC points upstream to Section A as the prevention layer.*
+*Source: `prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md:36-46` (RC-1 root cause), `:78-88` (R-WSE-1..4 + R-RPD-1..4 functional requirements), `:91-100` (AC-WSE-01..04 + AC-RPD-01..04 acceptance criteria), `:144-171` (2026-05-05 forensic addendum on R-WSE-1 self-inflicted recurrence). R-WSE-1..4 codes lifted verbatim from source PRD lines 80-83. RC-2 path-drift sibling AC points upstream to Section A as the prevention layer.*
 
 **Problem statement**: Reliability-bundle session `2026-05-03-7d9ee8cc` ticket `ab62807f` flipped to `status: Failed` post-research-review with a 0-byte `worker_session_94069.log`. Worker (PID 94069) ran 1 minute 8 seconds, then exited. The session log captured ZERO output. The lifecycle `research → plan → implement → verify → review → refactor` halted silently after the research-review approval. The validation rule (`pickle.md:Phase 3.A` Step 3 — "FORBIDDEN to mark Done if missing [plan_*.md, conformance_*.md, code_review_*.md]") correctly refused to mark Done. mux-runner moved on to the next ticket. **No alert, no retry, no diagnosis** — the failure surface is a single `status: Failed` flip in frontmatter.
 
-The bug is chronic: it recurred on session `2026-05-04-f416c6cc` ticket `018f32d2` (the very ticket that was implementing the R-WSE-1 fix; meta-irony forensic at `prds/p2-worker-silent-exit-and-ticket-path-drift.md:144-171`) AND on session `2026-05-03-7d9ee8cc` ticket `dddee00b` (last in queue, the entire reason the bundle did not ship clean — `:122-141`).
+The bug is chronic: it recurred on session `2026-05-04-f416c6cc` ticket `018f32d2` (the very ticket that was implementing the R-WSE-1 fix; meta-irony forensic at `prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md:144-171`) AND on session `2026-05-03-7d9ee8cc` ticket `dddee00b` (last in queue, the entire reason the bundle did not ship clean — `:122-141`).
 
 Three hypotheses for the 0-byte log: (a) worker stdout redirected but never flushed before exit; (b) claude CLI subprocess hit an internal limit (token budget, max-turns) and exited 0 without surfacing the abort; (c) worker emitted `<promise>I AM DONE</promise>` prematurely after just research, before plan/implement. Without log evidence, root cause is hypothesis-only — the 0-byte log is itself a bug.
 
@@ -239,7 +239,7 @@ RC-2 (refined ticket points at non-existent file path) is the same defect class 
 
 **Test files (forward-created)**: `extension/tests/spawn-morty-flush-and-exit.test.js`, `extension/tests/integration/worker-partial-lifecycle-exit.test.js`, `extension/tests/mux-runner-research-approved-failed-breadcrumb.test.js`, `extension/tests/send-to-morty-no-premature-promise.test.js`, `extension/tests/fixtures/silent-exit-018f32d2/` (replay fixture from `2026-05-04-f416c6cc/018f32d2/` per the 2026-05-05 forensic addendum at PRD `:168-169`).
 
-### Acceptance criteria *(lifted verbatim from prds/p2-worker-silent-exit-and-ticket-path-drift.md:80-83 + :93-96)*
+### Acceptance criteria *(lifted verbatim from prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md:80-83 + :93-96)*
 
 - **AC-WSE-01** *(R-WSE-1, lifted verbatim from PRD line 80 + :93)* — Worker session log MUST always flush before exit. Add `process.stdout.write('', () => process.exit(code))` (or equivalent) in `spawn-morty.ts` worker shutdown path. 0-byte session logs are a bug, never a feature. Worker session log size > 0 bytes for any worker that emits any output. Verify: `cd extension && npm test -- --grep worker-session-log-flush`. Type: test.
 - **AC-WSE-02** *(R-WSE-2, lifted verbatim from PRD line 81 + :94)* — When worker exits with research-review APPROVED but downstream lifecycle artifacts missing, mux-runner emits a NEW activity event `worker_partial_lifecycle_exit` with `{ticket: <id>, artifacts_missing: [...], session_log_size: <bytes>}`. Operator can audit how often this happens. `worker_partial_lifecycle_exit` event recorded. Verify: regression fixture forces partial-exit; `state.activity` contains the event. Type: test.
@@ -267,7 +267,7 @@ RC-2 (refined ticket points at non-existent file path) is the same defect class 
 
 **Priority: P1 | Order: 50**
 
-*ACs lifted verbatim from `prds/p1-ticket-authoring-quality-systemic-defects.md:125` (R-TAQ-4) and `:137` (AC-TAQ-04). Source: `prds/p1-ticket-authoring-quality-systemic-defects.md:39-86` (the 7 defect-class taxonomy that the checklist enumerates), `:114-116` (RC-4 root cause), `:159` (Decomposition skill cross-reference).*
+*ACs lifted verbatim from `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:125` (R-TAQ-4) and `:137` (AC-TAQ-04). Source: `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:39-86` (the 7 defect-class taxonomy that the checklist enumerates), `:114-116` (RC-4 root cause), `:159` (Decomposition skill cross-reference).*
 
 **Problem statement**: The Step 7a/7c decomposition (in `pickle-refine-prd.md`) describes ticket structure and field shapes but doesn't enumerate the failure modes to avoid. Ticket-authoring agents (whether the main agent or a delegated sub-agent) get no checklist of "verify these N things before each ticket is finalized." Result: the same 7 defect classes recur across sessions because authoring agents can't see them in their immediate prompt context.
 
@@ -279,7 +279,7 @@ The fix is to add a `Failure-mode checklist` subsection to Step 7a (Decompose) l
 
 **Test files (forward-created)**: `extension/tests/pickle-refine-prd-failure-mode-checklist.test.js`.
 
-### Acceptance criteria *(lifted verbatim from prds/p1-ticket-authoring-quality-systemic-defects.md:125 + :137)*
+### Acceptance criteria *(lifted verbatim from prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:125 + :137)*
 
 - **AC-TAQ-04** *(R-TAQ-4, lifted verbatim from PRD line 125 + :137)* — `pickle-refine-prd.md` Step 7a (Decompose) gets a "Failure-mode checklist" subsection enumerating the 7 defect classes with examples. Decomposition agents (main agent OR sub-agent) MUST write a 1-line audit comment in each ticket body confirming each class was checked. Failure-mode checklist in pickle-refine-prd.md. Verify: `grep -c "Failure-mode checklist" .claude/commands/pickle-refine-prd.md` ≥ 1. Type: lint.
 - **AC-TAQ-04-2** *(R-TAQ-4 7-class enumeration, derived from PRD lines 41-86)* — The Failure-mode checklist subsection enumerates ALL 7 defect classes with the one-line names from the source PRD: `path-drift`, `self-referential-AC`, `missing-deps`, `wrong-HEAD-assumptions`, `cross-doc-naming`, `hallucinated-premise`, `literal-value-drift`. Verify: parametrized test greps each of the 7 literal class tags in `.claude/commands/pickle-refine-prd.md`; all 7 must match. Type: lint+test.
@@ -303,13 +303,13 @@ The fix is to add a `Failure-mode checklist` subsection to Step 7a (Decompose) l
 
 **Priority: P1 | Order: 60**
 
-*ACs lifted verbatim from `prds/p1-iteration-cap-and-phantom-done-handshake.md:79-80` (R-ICP-5, R-ICP-6) and `:90-91` (AC-ICP-04, AC-ICP-05). Source: `prds/p1-iteration-cap-and-phantom-done-handshake.md:67-69` (RC-3 root cause), `:30` (Bug C evidence in symptom table). Bundle context: 2026-05-06 bundle Sections I and J shipped R-ICP-1..4 (cap exit code 3 + persistence); this section covers ONLY the deferred R-3 sister bug.*
+*ACs lifted verbatim from `prds/archive/bug-reports/p1-iteration-cap-and-phantom-done-handshake.md:79-80` (R-ICP-5, R-ICP-6) and `:90-91` (AC-ICP-04, AC-ICP-05). Source: `prds/archive/bug-reports/p1-iteration-cap-and-phantom-done-handshake.md:67-69` (RC-3 root cause), `:30` (Bug C evidence in symptom table). Bundle context: 2026-05-06 bundle Sections I and J shipped R-ICP-1..4 (cap exit code 3 + persistence); this section covers ONLY the deferred R-3 sister bug.*
 
 **Problem statement**: Codex's worker prompt (or its interpretation of it) instructs the manager to mark tickets Done as part of its output. The marking happens BEFORE the worker actually verifies the implementation, runs tests, or commits. mux-runner's phantom-Done detection runs once per outer iteration and looks for a "completion commit" — but the detection window is loose enough that some phantom-Dones slip through. On session `2026-05-03-7d9ee8cc`, mux-runner.log line 21:26:13 shows "Corrected phantom Done ticket 7ee8b197 back to Todo (no completion commit found)" — three tickets flagged in iteration 1, another in iteration 2. Phantom-Done detection runs ONCE per mux-runner iteration; codex can flip multiple tickets between detections. The 13 currently-Done tickets MAY include silent phantom-Dones that the detector missed.
 
 Two mitigations: (a) the worker prompt must require the commit hash in the same status update as the `status: Done` flip; (b) the phantom-Done detector should run on EVERY status flip via inotify/fswatch on `linear_ticket_*.md`, not just at iteration boundaries. R-ICP-5 ships the watcher; R-ICP-6 ships the worker-prompt commit-hash contract.
 
-This was deferred from the 2026-05-06 bundle (per `prds/p1-bug-fix-bundle-2026-05-06.md:82` — "Sections F's deferred ACs ... `p1-iteration-cap-and-phantom-done-handshake.md` R-3 (codex phantom-Done speculative flips, R-ICP-5/6) — sister bug deferred to next batch"). This bundle is that next batch.
+This was deferred from the 2026-05-06 bundle (per `prds/archive/bundles/p1-bug-fix-bundle-2026-05-06.md:82` — "Sections F's deferred ACs ... `p1-iteration-cap-and-phantom-done-handshake.md` R-3 (codex phantom-Done speculative flips, R-ICP-5/6) — sister bug deferred to next batch"). This bundle is that next batch.
 
 **Mapped requirements**: R-ICP-5, R-ICP-6.
 
@@ -317,7 +317,7 @@ This was deferred from the 2026-05-06 bundle (per `prds/p1-bug-fix-bundle-2026-0
 
 **Test files (forward-created)**: `extension/tests/mux-runner-phantom-done-watcher.test.js`, `extension/tests/integration/phantom-done-fswatch.test.js`, `extension/tests/spawn-morty-completion-commit-required.test.js`.
 
-### Acceptance criteria *(lifted verbatim from prds/p1-iteration-cap-and-phantom-done-handshake.md:79-80, :90-91)*
+### Acceptance criteria *(lifted verbatim from prds/archive/bug-reports/p1-iteration-cap-and-phantom-done-handshake.md:79-80, :90-91)*
 
 - **AC-ICP-04** *(R-ICP-5, lifted verbatim from PRD line 79 + :90)* — mux-runner's phantom-Done detection runs on EVERY frontmatter status flip (filesystem watch on `${SESSION_ROOT}/*/linear_ticket_*.md`), not only at outer iteration boundaries. Phantom-Done events emit a `phantom_done_detected` activity event with ticket id + timestamp. Phantom-Done watcher catches every flip. Verify: `cd extension && npm test -- --grep phantom-done-watcher`. Type: test.
 - **AC-ICP-05** *(R-ICP-6, lifted verbatim from PRD line 80 + :91)* — Codex worker prompt requires that any `status: Done` flip include the completion commit hash in a `completion_commit:` frontmatter field, set in the same write as the status. Workers without commit hashes get reverted IMMEDIATELY by the watcher (R-ICP-5). Codex worker prompt requires `completion_commit:` field. Verify: `grep -E 'completion_commit:' extension/src/bin/spawn-morty.ts extension/src/bin/spawn-refinement-team.ts` returns at least 1 match. Type: lint.
@@ -332,7 +332,7 @@ This was deferred from the 2026-05-06 bundle (per `prds/p1-bug-fix-bundle-2026-0
 - [ ] forward-ref: watcher and tests forward-created — section says so explicitly
 - [ ] path-drift: `extension/src/bin/mux-runner.ts`, `extension/src/bin/spawn-morty.ts`, `extension/src/bin/spawn-refinement-team.ts` all exist at HEAD (confirmed)
 - [ ] missing-deps: no Entry Conditions; section is independent
-- [ ] wrong-HEAD-assumptions: 2026-05-06 bundle deferred R-3 explicitly per `prds/p1-bug-fix-bundle-2026-05-06.md:82`; verified at compose time
+- [ ] wrong-HEAD-assumptions: 2026-05-06 bundle deferred R-3 explicitly per `prds/archive/bundles/p1-bug-fix-bundle-2026-05-06.md:82`; verified at compose time
 - [ ] cross-doc-naming: `phantom_done_detected` literal consistent across AC-ICP-04, AC-ICP-04-3, AC-ICP-04-4
 - [ ] hallucinated-premise: every quoted phrase ("Corrected phantom Done ticket", "completion_commit:") traceable to source PRD or mux-runner.log forensic
 - [ ] literal-value-drift: `< 200ms` and `< 50ms` performance bounds derived from PRD `:107` "negligible" claim — explicit numerical interpretation flagged for Cycle 1 review
@@ -343,11 +343,11 @@ This was deferred from the 2026-05-06 bundle (per `prds/p1-bug-fix-bundle-2026-0
 
 **Priority: P1 | Order: 70**
 
-*ACs lifted verbatim from `prds/p1-ticket-authoring-quality-systemic-defects.md:135-136,:138-139` (AC-TAQ-02, AC-TAQ-05, AC-TAQ-06) plus a new AC for backfill against session `2026-05-03-7d9ee8cc`. Source: `prds/p1-ticket-authoring-quality-systemic-defects.md:148-152` (Risk section — "Audit too lenient → misses the 7 defect classes": regression fixtures (R-TAQ-2's test suite) cover each class with deliberate violations).*
+*ACs lifted verbatim from `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:135-136,:138-139` (AC-TAQ-02, AC-TAQ-05, AC-TAQ-06) plus a new AC for backfill against session `2026-05-03-7d9ee8cc`. Source: `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:148-152` (Risk section — "Audit too lenient → misses the 7 defect classes": regression fixtures (R-TAQ-2's test suite) cover each class with deliberate violations).*
 
 **Problem statement**: Section B ships `audit-ticket-bundle.js` and Section C extends it with cross-doc-naming-drift detection. Without a regression fixture corpus that exercises every defect class with a known-bad ticket AND a backfill validation against the documented 12 defects from session `2026-05-03-7d9ee8cc`, the scanner can silently regress. This section is the test contract that proves the upstream lever (Sections A + B + C) actually catches the documented gap.
 
-The Risk section of the source PRD calls this out explicitly (`prds/p1-ticket-authoring-quality-systemic-defects.md:151`): *"Audit too lenient → misses the 7 defect classes: regression fixtures (R-TAQ-2's test suite) cover each class with deliberate violations."* This section is that test suite, plus the backfill validation that the audit catches what was found by hand.
+The Risk section of the source PRD calls this out explicitly (`prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:151`): *"Audit too lenient → misses the 7 defect classes: regression fixtures (R-TAQ-2's test suite) cover each class with deliberate violations."* This section is that test suite, plus the backfill validation that the audit catches what was found by hand.
 
 **Mapped requirements**: AC-TAQ-02, AC-TAQ-05, AC-TAQ-06 (test+integration verification of B's and C's deliverables) + new AC AC-TAQ-BACKFILL-01 (backfill replay).
 
@@ -355,12 +355,12 @@ The Risk section of the source PRD calls this out explicitly (`prds/p1-ticket-au
 
 **Test files (forward-created)**: `extension/tests/integration/audit-ticket-bundle-backfill-2026-05-03.test.js`, `extension/tests/fixtures/audit-ticket-bundle/class-{1..7}/` (per-class fixture corpus, also referenced by Section B's AC-TAQ-02-3 — H is the producer that builds them; B consumes).
 
-### Acceptance criteria *(lifted verbatim from prds/p1-ticket-authoring-quality-systemic-defects.md:135-136, :138-139, plus new backfill AC)*
+### Acceptance criteria *(lifted verbatim from prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:135-136, :138-139, plus new backfill AC)*
 
 - **AC-TAQ-02** *(test verification, lifted verbatim from PRD line 135)* — `audit-ticket-bundle.js` exists, runs against a fixture session, exits 0 on clean tickets and non-zero on a deliberately-defective ticket. Verify: `cd extension && npm test -- --grep audit-ticket-bundle`. Type: test. *Note: this AC is shared with Section B's AC-TAQ-02; Section H ships the fixture corpus that the test consumes.*
 - **AC-TAQ-05** *(test verification, lifted verbatim from PRD line 138)* — Cross-doc validator catches matrix-vs-ticket drift. Verify: regression fixture with mismatched filenames; audit reports `cross-doc-naming-drift`. Type: test. *Note: this AC is shared with Section C's AC-TAQ-05; Section H ships the cross-doc-drift fixture variant.*
 - **AC-TAQ-06** *(integration verification, lifted verbatim from PRD line 139)* — Backfill audit on session `2026-05-03-7d9ee8cc` produces ≥12 findings matching the documented 12 defects. Verify: `node extension/bin/audit-ticket-bundle.js /Users/gregorydickson/.local/share/pickle-rick/sessions/2026-05-03-7d9ee8cc | jq '.findings | length' >= 12`. Type: integration. *Note: this AC is shared with Section B's AC-TAQ-06; Section H is the test-driver that exercises it.*
-- **AC-TAQ-BACKFILL-01** *(NEW AC, derived from operator brief — explicit backfill class-coverage check)* — Backfill replay against session `2026-05-03-7d9ee8cc` MUST flag each of the 12 documented defects with the EXPECTED defect class tag (per `prds/p1-ticket-authoring-quality-systemic-defects.md:41-86`):
+- **AC-TAQ-BACKFILL-01** *(NEW AC, derived from operator brief — explicit backfill class-coverage check)* — Backfill replay against session `2026-05-03-7d9ee8cc` MUST flag each of the 12 documented defects with the EXPECTED defect class tag (per `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:41-86`):
   - `ab62807f` → `path-drift` (Class 1)
   - `b40cdf1d` → `path-drift` (Class 1)
   - `f00c6ea5` → `path-drift` (Class 1)
@@ -392,7 +392,7 @@ The Risk section of the source PRD calls this out explicitly (`prds/p1-ticket-au
 
 **Priority: P1 | Order: 80**
 
-*ACs lifted verbatim from `prds/p1-ticket-authoring-quality-systemic-defects.md:128` (R-TAQ-7) and `:140` (AC-TAQ-07). Source: `prds/p1-ticket-authoring-quality-systemic-defects.md:120-128` (Functional Requirements table). This is the manifest-schema piece; the producers live in Sections A (analyst-side) and B+C (post-decomp audit side).*
+*ACs lifted verbatim from `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:128` (R-TAQ-7) and `:140` (AC-TAQ-07). Source: `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:120-128` (Functional Requirements table). This is the manifest-schema piece; the producers live in Sections A (analyst-side) and B+C (post-decomp audit side).*
 
 **Problem statement**: Today, refinement_manifest.json carries the per-cycle analyst output but has no slot for ticket-quality warnings. Operator who launches a pipeline has no single-pane summary of "these N tickets have path-drift / missing-deps / cross-doc-naming-drift / unverifiable premises" — those warnings either go unsurfaced or scatter across multiple log files. R-TAQ-7 adds a `ticket_quality_warnings: <array>` field to the schema, populated by the analyst-side verification (R-TAQ-1, Section A) and the post-decomp audit (R-TAQ-2/5, Sections B and C). Operator sees a single-pane summary before launch.
 
@@ -404,7 +404,7 @@ Section I is the schema-extension ticket; Sections A/B/C are the producers that 
 
 **Test files (forward-created)**: `extension/tests/refinement-manifest-ticket-quality-warnings-schema.test.js`.
 
-### Acceptance criteria *(lifted verbatim from prds/p1-ticket-authoring-quality-systemic-defects.md:128 + :140)*
+### Acceptance criteria *(lifted verbatim from prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:128 + :140)*
 
 - **AC-TAQ-07** *(R-TAQ-7, lifted verbatim from PRD line 128 + :140)* — Refinement-manifest schema gains `ticket_quality_warnings: <array>` field, populated by the analyst-side verification (R-TAQ-1) and the post-decomp audit (R-TAQ-2). Operator sees a single-pane summary before launch. refinement_manifest.json contains `ticket_quality_warnings` field. Verify: regression fixture; field present and schema-valid. Type: test.
 - **AC-TAQ-07-2** *(R-TAQ-7 schema shape, derived from operator brief)* — `ticket_quality_warnings` is a JSON array of objects, each shaped `{ticket: string, class: string, source: "analyst" | "post-decomp", evidence: string, file_line: string | null}`. Verify: synthetic manifest with 3 warnings (one analyst, one post-decomp path-drift, one cross-doc-naming) validates against the schema. Type: test.
@@ -510,10 +510,10 @@ audit:
 
 ## Skipped / deferred (final list)
 
-- **Section E (path-drift validator standalone ticket)** — folded into Section B as Class 1 of the 7-class scanner. Source: `prds/p1-ticket-authoring-quality-systemic-defects.md:41-50` covers the same failure mode as `prds/p2-worker-silent-exit-and-ticket-path-drift.md:48-60` RC-2; Section B's `audit-ticket-bundle.js` runs the path-drift check as the first of seven defect-class checks. Section D's AC-WSE-RC2-XREF cross-references Section A as the upstream prevention. No separate ticket needed.
-- **Section J (`audit-ticket-paths.js` operator-only script)** — `prds/p2-worker-silent-exit-and-ticket-path-drift.md:86` R-RPD-3 — deferred to P2 in the next-next batch. Operator can run Section B's `audit-ticket-bundle.js` against a session root manually for the same effect; the standalone script is convenience-only.
+- **Section E (path-drift validator standalone ticket)** — folded into Section B as Class 1 of the 7-class scanner. Source: `prds/archive/bug-reports/p1-ticket-authoring-quality-systemic-defects.md:41-50` covers the same failure mode as `prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md:48-60` RC-2; Section B's `audit-ticket-bundle.js` runs the path-drift check as the first of seven defect-class checks. Section D's AC-WSE-RC2-XREF cross-references Section A as the upstream prevention. No separate ticket needed.
+- **Section J (`audit-ticket-paths.js` operator-only script)** — `prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md:86` R-RPD-3 — deferred to P2 in the next-next batch. Operator can run Section B's `audit-ticket-bundle.js` against a session root manually for the same effect; the standalone script is convenience-only.
 - **Section K (backfill validation as separate ticket)** — folded into Section H. Same "validate audit catches the 12 documented defects" goal; H carries AC-TAQ-BACKFILL-01.
-- `prds/p1-iteration-cap-and-phantom-done-handshake.md` R-1 (cap persistence) and R-2 (cap-hit exit code 3) — already shipped in 2026-05-06 bundle Sections I and J. This bundle covers ONLY R-3 (Section G).
-- `prds/p2-worker-silent-exit-and-ticket-path-drift.md` R-RPD-1..4 — RC-2 path-drift fixes. R-RPD-1 is subsumed by Section A's R-TAQ-1 (same analyst-prompt fix). R-RPD-2 is subsumed by Section B's R-TAQ-2 (same audit scanner). R-RPD-3 is the deferred Section J script. R-RPD-4 is subsumed by Section H's fixture corpus.
+- `prds/archive/bug-reports/p1-iteration-cap-and-phantom-done-handshake.md` R-1 (cap persistence) and R-2 (cap-hit exit code 3) — already shipped in 2026-05-06 bundle Sections I and J. This bundle covers ONLY R-3 (Section G).
+- `prds/archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md` R-RPD-1..4 — RC-2 path-drift fixes. R-RPD-1 is subsumed by Section A's R-TAQ-1 (same analyst-prompt fix). R-RPD-2 is subsumed by Section B's R-TAQ-2 (same audit scanner). R-RPD-3 is the deferred Section J script. R-RPD-4 is subsumed by Section H's fixture corpus.
 
 — Pickle Rick out. *belch*

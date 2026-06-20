@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "prd": "prds/p1-bug-fix-bundle-b-afcc-deep-autofill-done-flip-cluster-2026-05-28.md",
+  "prd": "prds/archive/bundles/p1-bug-fix-bundle-b-afcc-deep-autofill-done-flip-cluster-2026-05-28.md",
   "ac_ref": "AC-AFCC-DEEP-01",
   "description": "Inventory of all 8 distinct paths that can stamp status:Done and/or persist completion_commit. Used as the safety-net fixture for Phase 1 characterization tests (R-AFCC-DEEP-1B) before any deletion or refactor.",
 
