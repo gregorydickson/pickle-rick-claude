@@ -20,6 +20,8 @@
 
 **Autonomy directive (2026-05-30):** the babysitter drains the ENTIRE plan with zero operator interaction — including the full release cycle (`git push` + `gh release create`), gated only on a green release gate + clean tree. Nothing here should require operator interaction. Sole permitted residue: external-event-gated work (#25 R-CSI needs a real concurrent-session incident to analyze).
 
+**GA path — drop `-beta` (operator-decided 2026-06-20, EVIDENCE-FIRST):** GA gate = honesty ✅ (done) + stability-surface ✅ (B-GSUB proved guards are mostly load-bearing, not bloat) + **field-proof of hands-off autonomy ❌ (the real blocker — beta.14–21 all shipped via babysitter takeover).** Operator steer: **DEFER speculative work (functional seam-collapse, further guard subtraction) — not certain it helps; gather evidence from real runs NEXT WEEK first.** Next-week plan: a **measured field-soak** — operator launches representative bundles via `/pickle-pipeline`; babysitter INSTRUMENTS + RECORDS every intervention point (records, does not rescue unless data at risk) → ranked intervention-rate + failure-seam report = the GA-readiness ledger. THEN decide: collapse the top recurring seam(s) vs. already-droppable. Do NOT pre-build the collapse; let the soak rank the seams. Pure-doc-subtraction track (B-GSUB) is CLOSED (−9, low-yield, doc-only).
+
 ---
 
 ## Drain Queue
