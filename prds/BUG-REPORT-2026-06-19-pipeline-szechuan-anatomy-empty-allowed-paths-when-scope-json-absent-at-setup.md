@@ -7,6 +7,18 @@
 **Backend:** any (`/pickle-pipeline`)
 **Discovered by:** L1 root-cause trace during #129 R-SSOC. **NOT yet confirmed as a live incident** — see "Why this is capture-only / unconfirmed" below.
 
+## VERDICT (2026-06-20): REFUTED as the incident cause — latent code path only
+
+Read-only verification against the actual `2026-06-19-2b1e2707` session artifacts (`~/.local/share/pickle-rick/sessions/2026-06-19-2b1e2707/`):
+- `scope.json` had all **12** bank-statement `allowed_paths`.
+- `microverse.json` had the **same 12** `allowed_paths` (NOT empty).
+- `pipeline-runner.log`: `scope-refresh: phase=szechuan-sauce … allowed=12` → `--allowed-paths-file` WAS passed; `Szechuan Sauce setup complete`.
+- `microverse-runner.log`: `LLM baseline metric: 24`, improving 24→14 across iterations.
+
+So the judge **received correct scope data**. The empty-`allowed_paths` theory is **REFUTED for this incident**. R-PEAP remains a *plausible-from-code latent path* but is unconfirmed in the wild — **revisit ONLY if a future session shows `scope.json` non-empty AND `microverse.json.allowed_paths` empty.**
+
+**Secondary finding (re #129 R-SSOC L1):** the baseline 24 → 14 improvement within the scoped run is more consistent with the judge measuring **in-scope** violations than with whole-tree scoring — i.e., #129's "judge scored whole-tree → steered the worker off-scope" L1 premise is murkier than the original report assumed. This does NOT undermine the shipped #129 fix: Part B (runner-side post-iteration scope audit) detects off-scope commits **deterministically regardless of why the worker drifted**, and Part A is a harmless hedge. Next week's field-soak will now SURFACE any off-scope recurrence (via the `worker_edit_outside_scope` event) so it can be root-caused properly instead of inferred.
+
 ## Summary
 
 A read-only trace of the judge-scoping data flow found a credible path where a `/pickle-pipeline`
