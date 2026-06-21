@@ -9321,8 +9321,10 @@ async function runMuxRunnerMain() {
         // R-WSE-3: emit stderr breadcrumb when ticket Failed after research APPROVED
         try {
             const iterTicket = state.current_ticket;
+            // Hoisted so the R-WSDO breadcrumb below can gate on its null result.
+            let plExit = null;
             if (iterTicket) {
-                const plExit = checkPartialLifecycleExit(sessionDir, statePath, iterTicket);
+                plExit = checkPartialLifecycleExit(sessionDir, statePath, iterTicket);
                 if (plExit && plExit.subClass) {
                     const sdDecision = applySilentDeathRecoveryPolicy({
                         sessionDir,
@@ -9347,6 +9349,30 @@ async function runMuxRunnerMain() {
             }
             if (iterTicket)
                 checkFailedAfterResearchApproved(sessionDir, iterTicket);
+            // R-WSDO (30aa2e0d): worker-produced-nothing breadcrumb. Fires ONLY on the
+            // genuinely-uncovered "produced nothing at all" case, mutually exclusive with
+            // worker_silent_death by construction:
+            //   (1) checkPartialLifecycleExit returned null this iteration (no partial/silent
+            //       classification — e.g. a tier with a research gate but NO research_review.md),
+            //   (2) classifyWorkerSessionLogs → subClass === 'log_empty' (0-byte/absent log),
+            //   (3) raw artifact COUNT delta (lastArtifactCount - apBeforeCount) === 0.
+            // Observability-only: best-effort, never alters reap/salvage control flow. ts is
+            // explicit because writeActivityEntry does NOT auto-stamp it (mirrors :8094).
+            if (iterTicket &&
+                plExit === null &&
+                apProgressResult &&
+                apProgressResult.lastArtifactCount - apBeforeCount === 0) {
+                const ticketDir = path.join(sessionDir, iterTicket);
+                const { subClass, sessionLogSize, pid } = classifyWorkerSessionLogs(ticketDir, fs.readdirSync(ticketDir));
+                if (subClass === 'log_empty') {
+                    writeActivityEntry(statePath, {
+                        event: 'worker_produced_nothing',
+                        ts: new Date().toISOString(),
+                        ticket: iterTicket,
+                        gate_payload: { spawn_pid: pid, session_log_bytes: sessionLogSize, artifact_delta: 0 },
+                    });
+                }
+            }
         }
         catch { /* best-effort — never block iteration on partial-lifecycle check failure */ }
         // Move iterLogFile computation BEFORE transition block (needed by classifyTicketCompletion)

@@ -976,6 +976,16 @@ const EVENT_CASES = [
     drop: 'ts',
   },
   {
+    type: 'worker_produced_nothing',
+    valid: {
+      event: 'worker_produced_nothing',
+      ts: TS,
+      ticket: 'abc12345',
+      gate_payload: { spawn_pid: null, session_log_bytes: 0, artifact_delta: 0 },
+    },
+    drop: 'gate_payload',
+  },
+  {
     type: 'pre_reset_diff_archived',
     valid: {
       event: 'pre_reset_diff_archived',
@@ -1365,6 +1375,7 @@ test('activity-event-payload: schema defines all registered event type definitio
     'orphan_commit_reattached',
     'orphan_commit_unreattachable',
     'worker_silent_death',
+    'worker_produced_nothing',
     'pre_reset_diff_archived',
     'pre_reset_archive_failed',
     'failed_flip_suppressed',

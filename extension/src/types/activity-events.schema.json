@@ -1724,6 +1724,24 @@
         "respawn_attempt": { "type": "integer", "minimum": 0 }
       }
     },
+    "worker_produced_nothing": {
+      "type": "object",
+      "required": ["event", "ts", "ticket", "gate_payload"],
+      "properties": {
+        "event": { "type": "string", "const": "worker_produced_nothing" },
+        "ts": { "type": "string" },
+        "ticket": { "type": "string" },
+        "gate_payload": {
+          "type": "object",
+          "required": ["spawn_pid", "session_log_bytes", "artifact_delta"],
+          "properties": {
+            "spawn_pid": { "type": ["integer", "null"] },
+            "session_log_bytes": { "type": "integer", "minimum": 0 },
+            "artifact_delta": { "type": "integer" }
+          }
+        }
+      }
+    },
     "pre_reset_diff_archived": {
       "type": "object",
       "required": ["event", "ts", "ticket", "patch_path", "files", "files_truncated", "reason"],
@@ -1989,6 +2007,7 @@
     { "$ref": "#/definitions/orphan_commit_reattached" },
     { "$ref": "#/definitions/orphan_commit_unreattachable" },
     { "$ref": "#/definitions/worker_silent_death" },
+    { "$ref": "#/definitions/worker_produced_nothing" },
     { "$ref": "#/definitions/pre_reset_diff_archived" },
     { "$ref": "#/definitions/pre_reset_archive_failed" },
     { "$ref": "#/definitions/failed_flip_suppressed" },
