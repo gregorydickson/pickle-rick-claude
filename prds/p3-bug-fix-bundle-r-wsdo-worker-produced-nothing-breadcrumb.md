@@ -63,3 +63,20 @@ ONLY: it never changes reap/salvage behavior (the reap decision stays exactly as
 ## NOT in Scope
 Changing reap/salvage behavior. Capturing the worker exit code/signal beyond what is reapable at the call
 site. R-SLEAK session-GC (separate deferred finding).
+
+---
+## Refined design (post-analysis 2026-06-21) — P0 carve-out
+*(refined: analysis_codebase.md)* The original Solution would DOUBLE-EMIT alongside the existing
+`worker_silent_death` event. Corrected: emit `worker_produced_nothing` from the MAIN path
+(`mux-runner.ts:10203`) ONLY when (1) `checkPartialLifecycleExit` returned `null` for the iteration,
+(2) `classifyWorkerSessionLogs` → `subClass === 'log_empty'`, (3) raw artifact count delta == 0 —
+mutually exclusive with `worker_silent_death` by construction. `spawn_pid` is `number|null`. Reuse
+`classifyWorkerSessionLogs`. Write via `writeActivityEntry` + explicit `ts`. Register on 5 surfaces
+(`VALID_ACTIVITY_EVENTS` TS + compiled mirror; schema `definitions` + `oneOf`; `EVENT_CASES` row).
+
+## Implementation Task Breakdown
+| Order | ID | Title | Pri | Files |
+|---|---|---|---|---|
+| 10 | 30aa2e0d | Emit worker_produced_nothing breadcrumb (carve-out + 5-surface registration) | Low | mux-runner.ts, types/index.ts(+mirror), activity-events.schema.json, activity-event-payload.test.js, worker-produced-nothing.test.js |
+
+*(Single-ticket bundle: wiring skipped (≤2 impl); hardening skipped (driver judgment — 1-event additive observability change).)*
