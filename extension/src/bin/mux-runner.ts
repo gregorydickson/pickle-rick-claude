@@ -4468,6 +4468,18 @@ export function guardCompletionCommitBeforeDone(args: {
     sessionDir: args.sessionDir,
     ticketId: args.ticketId,
     workingDir: args.workingDir,
+    // R-CECB: greenness oracle for declared-file-touch branch attribution —
+    // reuses the salvage gate_passing_committed probe (runBetweenTicketFastTests),
+    // lazily invoked only when a declared-file-touch candidate is found.
+    greenGate: () => {
+      const ext = path.join(args.workingDir, 'extension');
+      if (!fs.existsSync(ext)) return 'failing';
+      try {
+        return runBetweenTicketFastTests(ext).ok ? 'passing' : 'failing';
+      } catch {
+        return 'errored';
+      }
+    },
   };
   // R-AFCC-DEEP-4A: use readEvidence (replaces hasCompletionCommit).
   const evidenceAccepted = (r: { kind: string; sha?: string | null }): boolean =>
