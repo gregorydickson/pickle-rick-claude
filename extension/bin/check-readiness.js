@@ -344,13 +344,16 @@ export function extractForwardCreatedFieldPaths(content) {
     }
     return [...dotted];
 }
-// R-FRA-6 (88a4cdd6 E1/E2): the bundle-creation index — additive whitelist of
-// every forward-created path declared (or annotated) ANYWHERE in the bundle.
-// AC-B1: suppression is decided by the shared suffix-symmetric `isForwardCreated`
-// predicate at the consumer (findPathFindings), so a genuinely phantom path
-// (neither a suffix of nor suffixed by any declared path) still flags (teeth).
-// R-RCFF: forward-created dotted field-paths (Step 2) are also seeded so the
-// contract resolver can demote them to advisory.
+// R-FRA-6 (88a4cdd6 E1/E2) + R-RCFF #2: the bundle-creation index — additive whitelist
+// of every forward-created path declared ("Files to create" / "modify/create" section
+// or annotation) ANYWHERE in the bundle. AC-B1: suppression is decided by the shared
+// suffix-symmetric `isForwardCreated` predicate at the consumer (findPathFindings), so a
+// genuinely phantom path (neither a suffix of nor suffixed by any declared path) still
+// flags (teeth). R-RCFF #2: annotation is an OPTIONAL hint, NOT a requirement — a file
+// path declared in any ticket's "Files to create" set is suppressed via this index even
+// when the referencing ticket omitted the `(forward-created)` annotation.
+// R-RCFF (ticket 96443088): forward-created dotted field-paths (Step 2) are also seeded
+// so the contract resolver can demote them to advisory.
 export function buildBundleCreationIndex(ticketContents) {
     const index = new Set();
     for (const content of ticketContents) {
@@ -991,6 +994,9 @@ function findPathFindings(ticket, repoRoot, sessionDir, cache, creationIndex = n
     const content = stripCorrectionNotes(fs.readFileSync(ticket.file, 'utf-8'));
     // R-RTRC-2: skip annotated forward-references — they're documented as
     // forward-created so the resolver MUST not flag them as unresolved paths.
+    // R-RCFF #2: annotation is now a FALLBACK hint, not the sole suppressor — a path
+    // declared in ANY bundle ticket's "Files to create" set is suppressed below via the
+    // `creationIndex` predicate regardless of whether THIS reference site annotated it.
     const annotatedTokens = extractForwardRefAnnotations(content).valid;
     const allowlist = cache?.allowlist ?? new Set();
     const refs = new Set();

@@ -365,12 +365,16 @@ export function extractDeclaredCreatePaths(body: string): Set<string> {
   return result;
 }
 
-// R-FRA-6 (88a4cdd6 E1/E2): bundle-creation index — additive whitelist of every
-// forward-created path declared (or annotated) across ALL tickets in the bundle.
-// AC-B1: suffix-symmetric suppression is decided by the shared `isForwardCreated`
-// predicate at the consumer (checkPathDrift); a phantom path that is neither a
-// suffix of nor suffixed by any declared path still produces a fatal path-drift
-// finding (teeth preserved).
+// R-FRA-6 (88a4cdd6 E1/E2) + R-RCFF #2: bundle-creation index — additive whitelist of
+// every forward-created path declared ("Files to create" / "modify/create" section or
+// annotation) across ALL tickets in the bundle. AC-B1: suffix-symmetric suppression is
+// decided by the shared `isForwardCreated` predicate at the consumer (checkPathDrift);
+// a phantom path that is neither a suffix of nor suffixed by any declared path still
+// produces a fatal path-drift finding (teeth preserved). R-RCFF #2: annotation is an
+// OPTIONAL hint, NOT a requirement — a file path declared in any ticket's "Files to
+// create" set is suppressed via this index here (BEFORE the annotation check at
+// :checkPathDrift) even when the referencing ticket omitted the annotation.
+// MUST stay parity-aligned with check-readiness.ts:buildBundleCreationIndex (gate parity).
 export function buildBundleCreationIndex(tickets: ParsedTicket[]): Set<string> {
   const index = new Set<string>();
   for (const t of tickets) {
@@ -397,10 +401,13 @@ export function checkPathDrift(t: ParsedTicket, gitFiles: Set<string>, creationI
     const suffixRe = new RegExp(`(?:^|/)${escapedStripped}$`);
     if (gitFiles.has(stripped) || gitFilesArr.some((f) => suffixRe.test(f))) continue;
     if (forwardCreatePaths.has(stripped)) continue;
-    // R-FRA-6 (88a4cdd6 E1/E2) + AC-B1: bundle-wide declared/annotated
-    // forward-create, matched suffix-symmetrically (a declared `extension/tests/X`
-    // suppresses a `tests/X` ref and vice versa) so this gate stays parity-aligned
-    // with check-readiness; teeth preserved for genuine phantoms.
+    // R-FRA-6 (88a4cdd6 E1/E2) + AC-B1 + R-RCFF #2: bundle-wide declared
+    // forward-create ("Files to create" / "modify/create" section or annotation),
+    // matched suffix-symmetrically (a declared `extension/tests/X` suppresses a
+    // `tests/X` ref and vice versa) so this gate stays parity-aligned with
+    // check-readiness; teeth preserved for genuine phantoms. This declared-creation
+    // check runs FIRST — the annotation grammar below is now only a FALLBACK hint for
+    // a path that was annotated but not declared in any create section.
     if (isForwardCreated(stripped, creationIndex)) continue;
     const ctx = lineContext(t.body, tok);
     if (hasForwardRefPathAnnotation(ctx, tok) || hasForwardRefPathAnnotation(ctx, stripped)) continue;
