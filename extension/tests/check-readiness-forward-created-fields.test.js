@@ -79,6 +79,14 @@ test('R-RCFF positive: net-new dotted Output field-path is advisory, not blockin
 
 test('R-RCFF negative: a dotted ref absent everywhere STILL blocks (exit 2)', () => {
   const sessionDir = tmpDir();
+  // The phantom BASE symbol must not appear as a literal token in ANY tracked
+  // source file — INCLUDING this test. The R-RTRC-3 resolver scans tracked test
+  // files, so a hardcoded phantom name would resolve to its own fixture string
+  // here and the "genuinely unresolvable" negative case would silently pass for
+  // the wrong reason. Assemble the base from fragments so the contiguous
+  // identifier exists only in the generated ticket on disk (never in this file).
+  const phantomBase = ['Pickle', 'Unresolvable', 'Phantom', 'Sym'].join('');
+  const phantomRef = `${phantomBase}.absentField`;
   try {
     // No `## Files to modify` section → nothing seeds the creation index, and the
     // dotted token does not resolve at HEAD → genuinely-unresolvable → blocks.
@@ -93,7 +101,7 @@ test('R-RCFF negative: a dotted ref absent everywhere STILL blocks (exit 2)', ()
       '',
       '## Interface Contracts',
       '',
-      '**Outputs**: depends on `PickleNonexistentPhantom.absentField` which exists nowhere.',
+      `**Outputs**: depends on \`${phantomRef}\` which exists nowhere.`,
       '',
       '## Acceptance Criteria',
       '',
@@ -105,7 +113,7 @@ test('R-RCFF negative: a dotted ref absent everywhere STILL blocks (exit 2)', ()
     const out = JSON.parse(result.stdout);
     assert.equal(out.status, 'fail');
     const blocking = (out.findings ?? []).filter(
-      (f) => f.kind === 'contract' && f.detail === 'PickleNonexistentPhantom.absentField',
+      (f) => f.kind === 'contract' && f.detail === phantomRef,
     );
     assert.equal(blocking.length, 1, `expected a blocking contract finding for the phantom ref; got ${JSON.stringify(out.findings)}`);
   } finally {
