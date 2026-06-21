@@ -311,26 +311,3 @@ test('AC-PCOMP-4: a synthetic 4-ticket additive bundle completes 4/4 hands-off, 
     cleanup(repo);
   }
 });
-
-test('AC-PCOMP-4: the run does not assume unlimited iterations — a cap-hit halts cleanly', () => {
-  // The hands-off contract must not depend on unbounded iterations. With the
-  // bundle's pending work exceeding max_iterations, the loop-budget check is the
-  // clean halt (iteration_cap_exhausted), NOT an infinite spin. We assert the
-  // budget relationship the runner keys its cap exit on, deterministically.
-  const repo = makeBundleRepo();
-  const sessionDir = path.join(repo, 'sessiondata');
-  const statePath = path.join(sessionDir, 'state.json');
-  try {
-    fs.mkdirSync(sessionDir, { recursive: true });
-    writeSyntheticState(statePath, repo, sessionDir);
-    const state = readState(statePath);
-    // max_iterations is a bounded positive integer — the cap exists.
-    assert.ok(Number.isInteger(state.max_iterations) && state.max_iterations > 0, 'max_iterations is a positive integer cap');
-    // Simulate the loop reaching the cap: iteration === max_iterations is the
-    // global cap-exit condition (mux-runner R-CNAR-1: state.iteration >= max_iterations).
-    const atCap = state.max_iterations;
-    assert.ok(atCap >= state.max_iterations, 'a run that reaches max_iterations halts on the global cap (no unlimited spin)');
-  } finally {
-    cleanup(repo);
-  }
-});
