@@ -5,7 +5,11 @@
 //
 // Dispositions (the SalvageOutcome contract):
 //   - HEAD regressed off a committed ticket -> auto-ff-reattach the orphan.
-//   - clean tree                            -> no-op.
+//   - clean tree + already-committed-green   -> back-fill completion_commit + Done
+//                                              (worker died post-commit, pre-Done-flip;
+//                                              reuses `committed-done` with the
+//                                              `backfilled_clean_tree` reason).
+//   - clean tree (nothing attributable)      -> no-op.
 //   - dirty + gate-PASSING                  -> commit (SCOPED ticket paths only,
 //                                              never `add -A` / `add .`) + Done.
 //   - dirty + gate-FAILING / gate-ERRORED   -> archive the diff, then reset Todo
@@ -76,6 +80,18 @@ export interface SalvageDeps {
    * not reattachable.
    */
   ffReattach: (input: SalvageTicketInput) => { recovered: boolean; sha?: string | null };
+  /**
+   * Clean-tree back-fill: a worker committed attributable green work then died
+   * BEFORE flipping the ticket Done (no `completion_commit` stamp). The
+   * attribution sha is resolved by the production caller (an already-permitted
+   * completion-evidence oracle caller) and carried in
+   * `input.completionCommitSha`; this dep performs the actual `status: Done` +
+   * `completion_commit:` frontmatter write. Default is inert so the matrix test
+   * and any non-attributable clean tree stay a `no-op`. Returns the stamped sha,
+   * or null when nothing was back-filled. Optional: seams that never see a
+   * clean-tree-with-attribution case (exit-path, bounded-escape) omit it.
+   */
+  backfillDone?: (input: SalvageTicketInput, sha: string) => { done: boolean; sha?: string | null };
 }
 
 const defaultDeps: SalvageDeps = {
@@ -103,11 +119,44 @@ const defaultDeps: SalvageDeps = {
   // (already wired at resume + cancel-teardown). The default is inert; production
   // and the matrix test supply the real reattach adapter.
   ffReattach: () => ({ recovered: false }),
+  // Inert by default: the terminal Done write lives in an allowlisted caller
+  // (completion-authority single-source). Production wires this from mux-runner.
+  backfillDone: () => ({ done: false }),
 };
 
 function isTerminalStatus(status: string | null | undefined): boolean {
   const s = (status ?? '').toLowerCase().replace(/["']/g, '').trim();
   return s === 'done' || s === 'skipped';
+}
+
+/**
+ * Clean-tree disposition: nothing dirty to commit/archive, BUT a worker may have
+ * committed attributable green work and died before flipping the ticket Done.
+ * When HEAD holds a commit, the ticket is non-terminal, and the production caller
+ * resolved an attribution sha (via the shipped readEvidence oracle, carried in
+ * `completionCommitSha`), back-fill `completion_commit` + Done instead of
+ * fataling/archiving. Reuses the `committed-done` disposition (same sha + Done
+ * shape) with the `backfilled_clean_tree` reason — no new enum member / switch arm.
+ */
+function salvageCleanTree(
+  input: SalvageTicketInput,
+  truth: TicketTruth,
+  deps: SalvageDeps,
+  log: (msg: string) => void,
+): SalvageOutcome {
+  const attributedSha = input.completionCommitSha;
+  const attributable = !!attributedSha
+    && !!truth.headSha
+    && !!deps.backfillDone
+    && !isTerminalStatus(truth.ticketStatuses[input.ticketId]);
+  if (attributable) {
+    const r = deps.backfillDone!(input, attributedSha!);
+    if (r.done && r.sha) {
+      log(`[salvage] ${input.ticketId}: clean tree + attributable commit (${r.sha}) -> back-filled completion_commit + Done`);
+      return { disposition: 'committed-done', sha: r.sha, reason: 'backfilled_clean_tree' };
+    }
+  }
+  return { disposition: 'no-op', reason: 'clean_tree' };
 }
 
 /**
@@ -126,9 +175,9 @@ export function salvageTicket(input: SalvageTicketInput, deps: SalvageDeps = def
 
     const truth = deps.reconcile({ sessionDir: input.sessionDir, workingDir: input.workingDir });
 
-    // 2. clean tree -> nothing to salvage.
+    // 2. clean tree -> back-fill-or-no-op (see salvageCleanTree).
     if (!truth.dirty) {
-      return { disposition: 'no-op', reason: 'clean_tree' };
+      return salvageCleanTree(input, truth, deps, log);
     }
 
     // A ticket already Done/Skipped is owned by the model-driven path; don't re-salvage.

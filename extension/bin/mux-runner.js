@@ -3947,8 +3947,7 @@ export function guardCompletionCommitBeforeDone(args) {
         ok: false,
         source: legacySource,
         reason: `ticket ${args.ticketId} cannot flip Done: readEvidence().kind === '${evidenceR.kind}' (expected 'explicit'); ` +
-            `worker did not produce an attributable git commit. Set state.flags.allow_inferred_completion_commit=true to bypass, ` +
-            `or edit ticket frontmatter to include completion_commit: <sha>.`,
+            `worker did not produce an attributable git commit. Edit ticket frontmatter to include completion_commit: <sha>.`,
     };
 }
 export function hasSubstantiveManagerHandoff(content) {
@@ -6596,6 +6595,49 @@ export function routeDetachedWorkerTerminalNoProgress(input) {
  * deterministic dispositions through it WITHOUT a real git repo or `test:fast` spin;
  * production passes nothing and gets the wired deps below.
  */
+/**
+ * Resolve the clean-tree back-fill attribution sha via the shipped `readEvidence`
+ * oracle (R-AFCC-DEEP-4A). Returns the attributable commit sha when the ticket's
+ * declared-file-touch / explicit-stamp evidence is `explicit` or `inferred-fresh`,
+ * else null. Reuses the existing greenGate probe (runBetweenTicketFastTests) for
+ * the declared-file-touch branch — identical to `guardCompletionCommitBeforeDone`.
+ * Best-effort: any throw → null (salvage falls through to its existing no-op).
+ */
+function resolveCleanTreeAttribution(sessionDir, workingDir, ticketId, flags) {
+    if (process.env.PICKLE_TEST_MODE === '1')
+        return null;
+    try {
+        const allowInferred = (flags ?? {})['allow_inferred_completion_commit'] === true;
+        const ext = path.join(workingDir, 'extension');
+        const evidence = readEvidence({
+            sessionDir,
+            ticketId,
+            workingDir,
+            greenGate: () => {
+                if (!fs.existsSync(ext))
+                    return 'failing';
+                try {
+                    return runBetweenTicketFastTests(ext).ok ? 'passing' : 'failing';
+                }
+                catch {
+                    return 'errored';
+                }
+            },
+        });
+        if (!evidence.sha)
+            return null;
+        if (evidence.kind === 'explicit')
+            return evidence.sha;
+        if (evidence.kind === 'inferred-fresh')
+            return evidence.sha;
+        if (allowInferred)
+            return evidence.sha;
+        return null;
+    }
+    catch {
+        return null;
+    }
+}
 export function routeDeadDetachedWorkerDisposition(input) {
     const { sessionDir, statePath, extensionRoot, workingDir, ticketId, iteration, flags, log } = input;
     const clearDetachedWorker = () => {
@@ -6664,8 +6706,35 @@ export function routeDeadDetachedWorkerDisposition(input) {
             updateTicketFrontmatter(i.ticketId, i.sessionDir, { status: 'Todo', completion_commit: null });
         },
         ffReattach: () => ({ recovered: false }),
+        // Clean-tree back-fill (allowlisted Done-flip authority): a worker committed
+        // attributable green work then died before stamping completion_commit. Flip
+        // Done + persist the SHA so the dead-clean ticket is NOT fataled/archived.
+        backfillDone: (i, sha) => {
+            try {
+                clearStaleDoneWithoutCommitEvidence(statePath);
+                if (!markTicketDone(i.sessionDir, i.ticketId))
+                    return { done: false };
+                const fp = ticketFilePath(i.sessionDir, i.ticketId);
+                const raw = fs.readFileSync(fp, 'utf8');
+                if (!readFrontmatterField(raw, 'completion_commit')) {
+                    const upd = upsertFrontmatterField(raw, 'completion_commit', sha);
+                    if (upd)
+                        fs.writeFileSync(fp, upd);
+                }
+                return { done: true, sha };
+            }
+            catch (err) {
+                log(`[salvage] back-fill Done failed for ${i.ticketId} (ignored): ${safeErrorMessage(err)}`);
+                return { done: false };
+            }
+        },
     };
-    const outcome = salvageTicket({ sessionDir, workingDir, ticketId, log }, input.deps ?? productionDeps);
+    // Resolve the clean-tree attribution sha via the shipped readEvidence oracle
+    // (an already-permitted oracle caller — no new importer, no scanGitLog export).
+    // Only an explicit OR inferred-fresh sha is attributable; anything else leaves
+    // completionCommitSha null and salvage falls through to the existing no-op.
+    const attributedCleanTreeSha = input.deps ? null : resolveCleanTreeAttribution(sessionDir, workingDir, ticketId, flags);
+    const outcome = salvageTicket({ sessionDir, workingDir, ticketId, log, completionCommitSha: attributedCleanTreeSha }, input.deps ?? productionDeps);
     switch (outcome.disposition) {
         case 'committed-done':
         case 'ff-reattached':
