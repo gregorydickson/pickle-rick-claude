@@ -4449,6 +4449,26 @@ function recoverInferredFromAnnouncement(
   return current;
 }
 
+/**
+ * R-CXOR-2 activation: reads the session baseline SHAs (`start_commit` /
+ * `pinned_sha`) so callers can feed them into `EvidenceCtx` and let
+ * `readEvidence`'s `isBaselineSha` rejection fire. Commit 1cbe4078 added the
+ * baseline-equal rejection to `readEvidence` but wired the inputs into NO
+ * production caller — a worker that stamps `completion_commit === start_commit`
+ * (the codex orphan-reset false-Done class) was still accepted as 'explicit'.
+ * Best-effort: a missing/unreadable state.json yields both null (no rejection,
+ * prior behavior preserved).
+ */
+function resolveSessionBaselineShas(sessionDir: string): { startCommit: string | null; pinnedSha: string | null } {
+  const baseline = readRecoverableJsonObject(
+    path.join(sessionDir, 'state.json'),
+  ) as { start_commit?: unknown; pinned_sha?: unknown } | null;
+  return {
+    startCommit: typeof baseline?.start_commit === 'string' ? baseline.start_commit : null,
+    pinnedSha: typeof baseline?.pinned_sha === 'string' ? baseline.pinned_sha : null,
+  };
+}
+
 export function guardCompletionCommitBeforeDone(args: {
   sessionDir: string;
   ticketId: string;
@@ -4464,10 +4484,16 @@ export function guardCompletionCommitBeforeDone(args: {
     return { ok: true, sha: 'pickle-test-mode-bypass' };
   }
   const allowInferred = (args.flags ?? {})['allow_inferred_completion_commit'] === true;
+  // R-CXOR-2 activation: source the session baseline SHAs so readEvidence's
+  // isBaselineSha rejection actually fires in the Done-flip path (see
+  // resolveSessionBaselineShas).
+  const { startCommit, pinnedSha } = resolveSessionBaselineShas(args.sessionDir);
   const probe: EvidenceCtx = {
     sessionDir: args.sessionDir,
     ticketId: args.ticketId,
     workingDir: args.workingDir,
+    startCommit,
+    pinnedSha,
     // R-CECB: greenness oracle for declared-file-touch branch attribution —
     // reuses the salvage gate_passing_committed probe (runBetweenTicketFastTests),
     // lazily invoked only when a declared-file-touch candidate is found.
