@@ -1016,6 +1016,9 @@ export function runBundlePreflight(sessionRoot: string): void {
 // ---------------------------------------------------------------------------
 
 let activeChild: ChildProcess | null = null;
+// R-OMTD: true when activeChild was spawned `detached:true` (leads its own
+// process group), so teardown must signal the whole group, not just the PID.
+let activeChildLeadsGroup = false;
 let spawnRunnerOverride: SpawnRunnerFn | null = null;
 let _closerReleaseActionsForTests: CloserReleaseActions | null = null;
 let phaseRunnerContext: PhaseRunnerContext | null = null;
@@ -1044,6 +1047,31 @@ export interface ChildMuxRunnerHeartbeatHandle {
 
 function isMuxRunnerInvocation(args: string[]): boolean {
   return path.basename(args[0] ?? '') === 'mux-runner.js';
+}
+
+/**
+ * R-OMTD: Tear down a spawned child. When the child leads its own process group
+ * (spawned `detached:true`, e.g. mux-runner), signal the WHOLE group via the
+ * negative-PID form so the mux-runner's grandchild subtree is reaped too —
+ * otherwise those grandchildren re-parent to PID 1 and outlive the pipeline.
+ * `detached:true` alone is insufficient with inherited stdio; the group reap is
+ * what severs the orphan. Falls back to a direct `child.kill()` for non-detached
+ * children or if the group signal fails (e.g. group already gone).
+ */
+function reapChildSubtree(child: Pick<ChildProcess, 'pid' | 'kill'>, leadsGroup: boolean, signal: NodeJS.Signals = 'SIGTERM'): void {
+  if (leadsGroup && typeof child.pid === 'number') {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // group already dead or unsignalable — fall through to direct kill
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // best-effort termination
+  }
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -1146,11 +1174,9 @@ export function armChildMuxRunnerHeartbeat(
     } catch {
       // best-effort telemetry only
     }
-    try {
-      opts.child.kill('SIGTERM');
-    } catch {
-      // best-effort termination
-    }
+    // R-OMTD: the heartbeat is armed only for mux-runner invocations, which are
+    // spawned detached (own process group), so reap the whole subtree.
+    reapChildSubtree(opts.child, true, 'SIGTERM');
     stop();
   };
 
@@ -1163,11 +1189,17 @@ function spawnRunner(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Prom
     let settled = false;
     let stdout = '';
     let stderr = '';
+    // R-OMTD: spawn the mux-runner child in its OWN process group so a SIGTERM
+    // to pipeline-runner can reap the whole subtree (mux-runner + its workers)
+    // via the negative-PID group signal in handleShutdown / the heartbeat.
+    const leadsGroup = isMuxRunnerInvocation(args);
     const child = spawn(cmd, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: env ?? process.env,
+      detached: leadsGroup,
     });
     activeChild = child;
+    activeChildLeadsGroup = leadsGroup;
     const heartbeat = (
       phaseRunnerContext &&
       isMuxRunnerInvocation(args)
@@ -1192,6 +1224,7 @@ function spawnRunner(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Prom
         settled = true;
         heartbeat?.stop();
         activeChild = null;
+        activeChildLeadsGroup = false;
         resolve({ exitCode: code ?? 1, stdout, stderr });
       }
     });
@@ -1200,6 +1233,7 @@ function spawnRunner(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Prom
         settled = true;
         heartbeat?.stop();
         activeChild = null;
+        activeChildLeadsGroup = false;
         reject(err);
       }
     });
@@ -2984,7 +3018,7 @@ export function installShutdownHandlers(runtime: PipelineRuntime, counters: Phas
         total_phases: runtime.config.phases.length,
       });
     } catch { /* best effort */ }
-    if (activeChild && !activeChild.killed) activeChild.kill('SIGTERM');
+    if (activeChild && !activeChild.killed) reapChildSubtree(activeChild, activeChildLeadsGroup, 'SIGTERM');
     recordExitReason(runtime.statePath, `signal:${signal}`);
     safeDeactivate(runtime.statePath);
     logActivity({ event: 'session_end', source: 'pickle', session: path.basename(runtime.sessionDir), mode: 'tmux', backend: runtime.backend });
