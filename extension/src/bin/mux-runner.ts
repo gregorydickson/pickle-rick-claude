@@ -4843,6 +4843,64 @@ export function partitionExitPathDirtyByOwnership(
   return { owned, foreign };
 }
 
+/**
+ * B-PCOMP (#b736337f): preserve un-attributable gate-green remainder at phase exit
+ * WITHOUT committing it as the exiting ticket's Done and WITHOUT mutating the
+ * working tree or `state.json`.
+ *
+ * We snapshot the entire dirty working tree (tracked modifications AND untracked
+ * files) into a dangling git commit using a TEMPORARY index file — `GIT_INDEX_FILE`
+ * pointed at a throwaway path — so neither the real index nor the worktree is
+ * mutated (the caller can still stage and commit only the positively-owned paths
+ * afterward). `git stash create` is unsuitable because it cannot include untracked
+ * files and would miss a sibling's brand-new artifacts. We then anchor the snapshot
+ * under `refs/pickle/salvage/<session>` so an operator can recover the remainder via
+ * `git show refs/pickle/salvage/<session>`. The ref lives entirely in git's
+ * object/ref store — no `state.json` write — keeping the exit path schema-neutral
+ * (avoids R-WSRC).
+ *
+ * Returns the ref name on success, or null when the tree had nothing to snapshot or
+ * any git step failed (best-effort: losing the breadcrumb must never crash exit).
+ */
+export function stashUnattributableRemainder(
+  workingDir: string,
+  sessionDir: string,
+  log: (msg: string) => void,
+): string | null {
+  let tmpIndex: string | null = null;
+  try {
+    const session = path.basename(sessionDir);
+    const ref = `refs/pickle/salvage/${session}`;
+    // Throwaway index so `git add` does not touch the real index/worktree.
+    tmpIndex = path.join(os.tmpdir(), `pickle-salvage-index-${process.pid}-${Date.now()}`);
+    const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+    // `git <args>` against workingDir; returns trimmed stdout on success, null on failure.
+    const git = (args: string[], useEnv: boolean): string | null => {
+      const r = spawnSync('git', ['-C', workingDir, ...args], { encoding: 'utf-8', timeout: 30000, ...(useEnv ? { env } : {}) });
+      return r.status === 0 ? (r.stdout ?? '').trim() : null;
+    };
+    // Seed the temp index from HEAD, then stage the full dirty tree (tracked + untracked).
+    if (git(['read-tree', 'HEAD'], true) === null) return null;
+    if (git(['add', '-A'], true) === null) return null;
+    const tree = git(['write-tree'], true);
+    if (!tree) return null;
+    if (git(['rev-parse', 'HEAD^{tree}'], false) === tree) return null; // no diff from HEAD — nothing to anchor
+    const sha = git(['commit-tree', tree, '-p', 'HEAD', '-m', `pickle exit-path bystander salvage (${session})`], true);
+    if (!sha) return null;
+    if (git(['update-ref', ref, sha], false) === null) {
+      log(`[exit-commit] failed to anchor bystander stash at ${ref}`);
+      return null;
+    }
+    log(`[exit-commit] stashed un-attributable remainder to ${ref} (${sha.slice(0, 12)})`);
+    return ref;
+  } catch (err) {
+    log(`[exit-commit] bystander stash threw (ignored): ${safeErrorMessage(err)}`);
+    return null;
+  } finally {
+    if (tmpIndex) { try { fs.rmSync(tmpIndex, { force: true }); } catch { /* best-effort */ } }
+  }
+}
+
 export interface CommitGatePassingDeliverableResult {
   committed: boolean;
   reason: CommitGatePassingDeliverableReason;
@@ -4877,16 +4935,24 @@ export function commitGatePassingDeliverableOnExitPath(
         log(`[exit-commit] ticket ${ticketId}: no ticket-owned dirty work (${foreign.length} foreign path(s)) — not committing under this ticket`);
         return { committed: false, reason: 'clean-ticket-tree' };
       }
-      // Only scope staging when there IS foreign work to exclude; otherwise leave
-      // stagePaths undefined so the committer keeps its whole-tree add behavior.
+      // B-PCOMP: when there is an un-attributable dirty remainder, NEVER fall back
+      // to the whole-tree add (that would commit a sibling ticket's work under this
+      // ticket's completion_commit — a false Done, worse than losing the work).
+      // Stash the remainder to a self-describing git ref (recoverable, schema-neutral)
+      // and commit ONLY the positively-owned paths.
       if (foreign.length > 0) {
+        stashUnattributableRemainder(workingDir, sessionDir, log);
         stagePaths = owned;
-        log(`[exit-commit] ticket ${ticketId}: staging ${owned.length} owned path(s), excluding ${foreign.length} foreign path(s)`);
+        log(`[exit-commit] ticket ${ticketId}: staging ${owned.length} owned path(s), stashed ${foreign.length} un-attributable path(s)`);
       }
     } catch (err) {
-      // Ownership probe is best-effort; on git error fall through to the existing
-      // whole-tree behavior rather than stranding genuinely-owned work.
-      log(`[exit-commit] ownership probe failed (ignored, falling back to whole-tree): ${safeErrorMessage(err)}`);
+      // B-PCOMP: the ownership probe failed, so we cannot positively attribute ANY
+      // dirty path to this ticket. Refuse the over-staging whole-tree fallback:
+      // stash the entire dirty remainder to the recoverable ref and do NOT commit
+      // it as this ticket's Done.
+      log(`[exit-commit] ownership probe failed for ${ticketId}: ${safeErrorMessage(err)}`);
+      stashUnattributableRemainder(workingDir, sessionDir, log);
+      return { committed: false, reason: 'clean-ticket-tree' };
     }
     // REUSE the existing #99 armed gate — only commit gate-PASSING work.
     const gateResult = gate(extensionDir, extensionRoot);
