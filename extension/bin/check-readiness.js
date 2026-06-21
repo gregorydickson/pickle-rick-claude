@@ -295,11 +295,62 @@ export function extractDeclaredCreatePaths(content) {
     }
     return result;
 }
+// R-RCFF (ticket 96443088 Step 2): a dotted Output field-path declared in a
+// ticket's `## Interface Contracts` Outputs whose owning schema file is in that
+// ticket's `## Files to modify` is being CREATED by the bundle. We derive this
+// from the ticket's already-declared files — NOT a new annotation grammar — and
+// add the dotted token to the creation set so the contract resolver treats it as
+// forward-created (advisory) instead of an unresolved `contract` finding.
+// HEAD-absence needs no explicit check here: a token that already resolves via
+// `resolveSymbolRef` never reaches a finding, so seeding a resolvable token is a
+// no-op; only genuinely net-new dotted tokens benefit.
+const FORWARD_FIELD_DOTTED_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/;
+function sectionSlice(content, headingRe) {
+    const lines = content.split(/\r?\n/);
+    const start = lines.findIndex((line) => headingRe.test(line));
+    if (start < 0)
+        return '';
+    const body = [];
+    for (let i = start + 1; i < lines.length; i += 1) {
+        if (/^#{1,6}\s/.test(lines[i]))
+            break;
+        body.push(lines[i]);
+    }
+    return body.join('\n');
+}
+export function extractForwardCreatedFieldPaths(content) {
+    // `## Files to modify` is NOT matched by DECLARED_CREATE_*_RE (those key on
+    // "modify/create" or "create"), so detect this section form explicitly.
+    const filesSection = sectionSlice(content, /^#{1,6}\s+.*files\s+to\s+modify\b/i);
+    const inlineFilesMatch = /\*{0,2}files\s+to\s+modify\*{0,2}\s*:.*/i.exec(content);
+    const declaredFiles = new Set();
+    for (const line of filesSection.split(/\r?\n/)) {
+        for (const token of backtickedPathTokens(line))
+            declaredFiles.add(token);
+    }
+    if (inlineFilesMatch) {
+        for (const token of backtickedPathTokens(inlineFilesMatch[0]))
+            declaredFiles.add(token);
+    }
+    if (declaredFiles.size === 0)
+        return [];
+    const contractsSection = sectionSlice(content, /^#{1,6}\s+Interface\s+Contracts\b/i);
+    const dotted = new Set();
+    for (const match of contractsSection.matchAll(/`([^`]+)`/g)) {
+        const value = match[1].trim();
+        if (FORWARD_FIELD_DOTTED_RE.test(value) && !SNIPPET_HEAD_SEGMENTS.has(value.split('.')[0])) {
+            dotted.add(value);
+        }
+    }
+    return [...dotted];
+}
 // R-FRA-6 (88a4cdd6 E1/E2): the bundle-creation index — additive whitelist of
 // every forward-created path declared (or annotated) ANYWHERE in the bundle.
 // AC-B1: suppression is decided by the shared suffix-symmetric `isForwardCreated`
 // predicate at the consumer (findPathFindings), so a genuinely phantom path
 // (neither a suffix of nor suffixed by any declared path) still flags (teeth).
+// R-RCFF: forward-created dotted field-paths (Step 2) are also seeded so the
+// contract resolver can demote them to advisory.
 export function buildBundleCreationIndex(ticketContents) {
     const index = new Set();
     for (const content of ticketContents) {
@@ -307,6 +358,8 @@ export function buildBundleCreationIndex(ticketContents) {
             index.add(declared);
         for (const annotated of extractForwardRefAnnotations(content).valid)
             index.add(annotated);
+        for (const field of extractForwardCreatedFieldPaths(content))
+            index.add(field);
     }
     return index;
 }
@@ -565,6 +618,21 @@ function findAnnotationFormatFindings(ticketFile, content) {
         detail: malformed.raw,
     }));
 }
+// R-RCFF (Step 1+3): a ref matching the bundle creation index is forward-created
+// by the bundle — advisory, NOT a blocking contract finding. Genuinely-unresolvable
+// refs (absent from the index AND at HEAD) keep kind:'contract' and still block.
+function unresolvedContractFinding(ticketFile, ref, creationIndex) {
+    const forwardCreated = creationIndex?.has(ref) ?? false;
+    return {
+        ticket: ticketFile,
+        kind: forwardCreated ? 'advisory' : 'contract',
+        analyst: 'codebase',
+        message: forwardCreated
+            ? 'Referenced contract is forward-created by the bundle (advisory)'
+            : 'Referenced contract does not resolve',
+        detail: ref,
+    };
+}
 export function findReadinessFindings(ticketFile, repoRoot, opts) {
     const content = fs.readFileSync(ticketFile, 'utf-8');
     const findings = [];
@@ -590,15 +658,8 @@ export function findReadinessFindings(ticketFile, repoRoot, opts) {
                 });
                 break;
             }
-            const resolved = resolveSymbolRef(ref, repoRoot, cache);
-            if (!resolved) {
-                findings.push({
-                    ticket: ticketFile,
-                    kind: 'contract',
-                    analyst: 'codebase',
-                    message: 'Referenced contract does not resolve',
-                    detail: ref,
-                });
+            if (!resolveSymbolRef(ref, repoRoot, cache)) {
+                findings.push(unresolvedContractFinding(ticketFile, ref, opts.creationIndex));
             }
         }
     }
@@ -1215,7 +1276,7 @@ export function runReadiness(args) {
         ...findPrdMapFindings(tickets, manifest, sourceRequirements),
         ...tickets.flatMap((ticket) => findPathFindings(ticket, args.repoRoot, args.sessionDir, pathCache, bundleCreationIndex)),
         ...tickets.flatMap((ticket) => findDependencyFindings(ticket, refs)),
-        ...selected.files.flatMap((file) => findReadinessFindings(file, args.repoRoot, { checkMachinability, checkContracts, cache: resolverCache, maxWallMs: args.maxWallMs, allowlist })),
+        ...selected.files.flatMap((file) => findReadinessFindings(file, args.repoRoot, { checkMachinability, checkContracts, cache: resolverCache, maxWallMs: args.maxWallMs, allowlist, creationIndex: bundleCreationIndex })),
     ];
     const ticketsVersion = getTicketsVersion(state);
     // W1c (AC-W1c-1): when the contract/symbol resolver exhausts its wall budget it
@@ -1238,7 +1299,10 @@ export function runReadiness(args) {
     // — surfaced in the report and JSON output as a coverage-gap signal — but are
     // excluded from the blocking set that drives `status:fail`. A gate that fails
     // because the checker ran out of time is not a gate.
-    const blockingFindings = findings.filter((finding) => finding.kind !== 'performance');
+    // R-RCFF (Step 3): forward-created refs carry kind:'advisory' — they appear in
+    // `findings`/the report as a coverage signal but, like kind:'performance', are
+    // excluded from the blocking set that drives `status:fail` and the exit code.
+    const blockingFindings = findings.filter((finding) => finding.kind !== 'performance' && finding.kind !== 'advisory');
     // AC-B4: NON-BLOCKING readiness false-positive counter. Compare this run's
     // blocking findings against the prior run's persisted signatures and emit
     // `readiness_false_positive_suppressed` for any prior finding now absent. This
