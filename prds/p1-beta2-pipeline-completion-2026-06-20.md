@@ -156,3 +156,57 @@ autonomy.** R-RCFF + R-CECB are not new scattered bugs — they are the **two se
 hands-off run**, confirmed across 5 sessions in one day. Collapsing them to ground-truth gates is
 the smallest change that turns "ships via babysitter" into "completes a pipeline on its own." That
 *is* the GA-readiness ledger, derived from evidence instead of deferred to a future soak.
+
+---
+
+## Revised Build Plan (post-agent-team understand+replan, 2026-06-21)
+
+A 6-agent team (4 investigators → synthesis → adversarial skeptic, all HEAD-grounded) re-understood the
+failures and re-planned for **simplification + reliability**. Findings changed the plan materially.
+
+### Failure understanding (why 0a1ce691 couldn't be built)
+Two compounding causes: **(1) R-PSRB self-referential catch-22** — the deployed beta.21 runtime runs the
+same salvage/no-progress machinery the ticket edits; the worker's iterations hit the artifact-delta reap
+(`PICKLE_WMW_SKIP_K=5` consecutive zero-delta spawns, `mux-runner.ts:~10098`) and the ladder exhausted,
+with 0-byte logs giving no signal (R-WSDO). **(2) A spec defect the first refinement missed** — the
+ticket's "export `scanGitLog` + import it from `reconcile-ticket-truth.ts`" step would add a **4th caller**
+to `ticket-completion-evidence.ts`, violating the **R-AFCC-CALLER-ENUMERATION** trap door
+(`audit-trap-door-enforcement.sh:467-506` pins it to exactly 3 callers) → the worker gate fails → no commit
+possible *even on a fixed runtime*. The correct, simpler design **reuses the already-shipped `readEvidence`
+oracle** (declared-file-touch + greenGate attribution landed by `8b4f75c6`) via the already-permitted
+callers — never exporting `scanGitLog`.
+
+### Corrections to the original WS-D2 plan (verified at HEAD)
+- **D2-4 (3f6800f3) is ALREADY SHIPPED → CUT.** The reap already keys on `recordWorkerArtifactProgress`
+  artifact-delta, never `worker_session` log size (`mux-runner.ts:10073/10098`). My R-CECB "salvage reads
+  log size" premise was wrong. Replaced by a regression-lock AC inside the salvage ticket.
+- **D2-1/D2-2 are partly already shipped.** `guardCompletionCommitBeforeDone` already auto-promotes
+  inferred-fresh evidence (R-WUWC); `readEvidence` already does branch attribution (`8b4f75c6`). The only
+  genuinely-uncovered seam is salvage's **clean-tree no-op** return (`salvage-ticket.ts:127-130`) for a
+  ticket whose work is committed but never Done-flipped — reuse the existing `completionCommitSha` input +
+  `reconcile` headSha; no new `attribute()` dep, no `scanGitLog` export.
+- **File-path drift fixed:** the oracle is `extension/src/services/ticket-completion-evidence.ts`;
+  `salvage-ticket.ts` + `reconcile-ticket-truth.ts` are in `extension/src/lib/`.
+
+### Final build set — 8 remaining tickets → 4 build steps (sequential; mux-runner.ts overlap)
+1. **0a1ce691 (revise, narrow):** salvage clean-tree back-fill via the existing oracle (`salvage-ticket.ts`
+   + the permitted `mux-runner.ts` caller); demote `allow_inferred_completion_commit` from the fatal advice
+   string only (`mux-runner.ts:~4526`; keep the runtime read `:4516` + manager-drift sets `:2605/:4745`);
+   regression-lock the already-shipped artifact-delta reap. ACs assert R-CCRC-2
+   (`done-flip-paths-call-guard.test.js`) + R-WUWC (`guard-completion-commit-auto-promote.test.js`) +
+   R-AFCC-CALLER-ENUMERATION still pass.
+2. **b736337f (keep):** stash un-attributable bystander remainder to `refs/pickle/salvage/<session>` at
+   phase exit (replace the two whole-tree `git add` over-stage fallbacks at `mux-runner.ts:~4853/4882/4887`);
+   never commit-as-Done under the exiting ticket; no `state.json` write.
+3. **NEW-omtd (fold in R-OMTD):** `pipeline-runner` spawns mux-runner `detached:true` (own group,
+   `:1166`) AND `handleShutdown` reaps the group via `process.kill(-pid, 'SIGTERM')` (`:2987`); fork test
+   asserts the child exits within N s.
+4. **b7b22750 (keep):** hands-off 4/4-phase e2e proof — **must force the worker-died-post-commit-pre-Done-flip
+   ordering** so it exercises salvage's clean-tree back-fill (not the guard's auto-promote), plus the
+   bystander-stash + reap-skip paths. Runs BEFORE hardening.
+5. **NEW-quality-closure (merge 4 hardening → 1):** single 3-pass (code → test → doc) over the small
+   MODIFIED_FILES union; hardening is a quality gate, not a release blocker.
+
+**Deferred (logged, off the completion-correctness path):** R-SLEAK session-GC, R-WSDO observability
+breadcrumb. **Build protocol (R-PSRB):** hand-build with atomic per-ticket commits; never re-spawn the
+salvage/no-progress machinery under itself; `install.sh`-deploy after the salvage-path tickets land.
