@@ -8,6 +8,7 @@
     "tests/integration/process-cleanup.test.js": "subprocess-spawn-timing",
     "tests/integration/pipeline-state-coherence.test.js": "subprocess-timeout-coupling",
     "tests/integration/mega-bundle-e2e.test.js": "real-repo-isolation",
+    "tests/integration/pipeline-completion-handsoff-e2e.test.js": "real-repo-isolation",
     "tests/integration/install-typescript-package.test.js": "real-repo-isolation",
     "tests/integration/install-chmod-coverage.test.js": "real-repo-isolation",
     "tests/integration/install-ui-principles.test.js": "real-repo-isolation",

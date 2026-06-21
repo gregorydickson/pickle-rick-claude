@@ -8,6 +8,7 @@
     "tests/integration/process-cleanup.test.js",
     "tests/integration/pipeline-state-coherence.test.js",
     "tests/integration/mega-bundle-e2e.test.js",
+    "tests/integration/pipeline-completion-handsoff-e2e.test.js",
     "tests/integration/install-typescript-package.test.js",
     "tests/integration/install-chmod-coverage.test.js",
     "tests/integration/install-ui-principles.test.js",
