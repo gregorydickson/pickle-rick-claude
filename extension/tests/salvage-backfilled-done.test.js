@@ -115,6 +115,27 @@ test('Part A5: a seam without a backfillDone dep stays a no-op on clean tree (op
   assert.equal(outcome.disposition, 'no-op', 'back-fill is opt-in per seam — absent dep => no-op');
 });
 
+test('Part A6: clean tree + attribution sha but NO HEAD commit -> no-op (never back-fill onto an empty repo)', () => {
+  const recorder = [];
+  const deps = cleanTreeDeps('In Progress', recorder);
+  // Non-repo / pre-first-commit: a clean tree with no HEAD cannot hold an
+  // attributable commit, so the back-fill guard (!!truth.headSha) must reject.
+  deps.reconcile = () => ({
+    headSha: null,
+    dirty: false,
+    dirtyPaths: [],
+    ticketStatuses: { t1: 'In Progress' },
+    tickets: [{ id: 't1', status: 'In Progress' }],
+  });
+  const outcome = salvageTicket(
+    { sessionDir: '/s', workingDir: '/w', ticketId: 't1', completionCommitSha: SHA, log: () => {} },
+    deps,
+  );
+  assert.equal(outcome.disposition, 'no-op', 'no HEAD -> nothing attributable to back-fill');
+  assert.equal(outcome.reason, 'clean_tree');
+  assert.ok(!recorder.some((r) => r.startsWith('backfill:')), 'backfillDone is never invoked without a HEAD commit');
+});
+
 // ── Part B: reap keys on artifact-delta + PICKLE_WMW_SKIP_K, NEVER log size ──
 
 function makeV5RawState(dir) {
