@@ -32,19 +32,19 @@ function validate(payload, defName) {
 }
 function validateAgainst(payload, def) {
   for (const field of def.required || []) {
-    if (!(field in payload)) return { valid: false, error: `missing required field: ${field}` };
+    if (!(field in payload)) { return { valid: false, error: `missing required field: ${field}` }; }
   }
   for (const [field, raw] of Object.entries(def.properties || {})) {
-    if (!(field in payload)) continue;
+    if (!(field in payload)) { continue; }
     const types = Array.isArray(raw.type) ? raw.type : [raw.type].filter(Boolean);
     const value = payload[field];
     if (Object.prototype.hasOwnProperty.call(raw, 'const') && value !== raw.const) {
       return { valid: false, error: `${field} must equal ${String(raw.const)}` };
     }
     if (types.includes('object') && raw.required) {
-      if (typeof value !== 'object' || value === null) return { valid: false, error: `${field} must be an object` };
+      if (typeof value !== 'object' || value === null) { return { valid: false, error: `${field} must be an object` }; }
       const nested = validateAgainst(value, raw);
-      if (!nested.valid) return { valid: false, error: `${field}.${nested.error}` };
+      if (!nested.valid) { return { valid: false, error: `${field}.${nested.error}` }; }
     }
     if (types.includes('integer') && value !== null && !Number.isInteger(value)) {
       return { valid: false, error: `${field} must be an integer` };
@@ -81,7 +81,7 @@ function makeTicket(sessionDir, ticketId, { tier = 'medium', files = {} } = {}) 
 function logEmptyFromDir(ticketDir) {
   const logs = readdirSync(ticketDir).filter((f) => /^worker_session_\d+\.log$/.test(f));
   // log_empty iff there is no session log OR the latest one is 0 bytes.
-  if (logs.length === 0) return true;
+  if (logs.length === 0) { return true; }
   return logs.every((f) => readFileSync(path.join(ticketDir, f)).length === 0);
 }
 function breadcrumbFires(sessionDir, statePath, ticketId, beforeCount) {
