@@ -264,6 +264,7 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'orphan_commit_reattached',
         'orphan_commit_unreattachable',
         'worker_silent_death',
+        'worker_produced_nothing',
         'pre_reset_diff_archived',
         'pre_reset_archive_failed',
         'failed_flip_suppressed',
