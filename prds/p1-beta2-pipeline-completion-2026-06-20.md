@@ -1,7 +1,7 @@
 ---
 title: "B-PCOMP — beta 2.0 pipeline completion: ground-truth gates at both pipeline boundaries"
 priority: P1
-status: Draft (release-track plan — not yet refined/launched)
+status: Shipped v2.0.0-beta.22 (live-proven 4/4 hands-off)
 schema_neutral: true
 date: 2026-06-20
 goal: "A representative multi-ticket additive bundle completes 4/4 phases hands-off (zero babysitter intervention)."

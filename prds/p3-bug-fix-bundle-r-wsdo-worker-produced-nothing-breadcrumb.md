@@ -1,7 +1,7 @@
 ---
 title: "R-WSDO — worker-produced-nothing observability breadcrumb"
 priority: P3
-status: Ready
+status: Shipped v2.0.0-beta.22 (177b84a7)
 schema_neutral: true
 date: 2026-06-21
 source: prds/BUG-REPORT-2026-06-21-pipeline-self-referential-build-catch22-and-orphan-mux.md

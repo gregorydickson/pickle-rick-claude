@@ -1,7 +1,7 @@
 ---
 title: "B-RFCU — Readiness forward-created unification: collapse the validation-overreach seam"
 priority: P2
-status: Draft (plan — not yet refined/launched)
+status: Shipped-in-bundle v2.0.0-beta.22 (B-PCOMP WS-D1)
 schema_neutral: true
 date: 2026-06-20
 family: readiness-overblock / D1 validation-overreach

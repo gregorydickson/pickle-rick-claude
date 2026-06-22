@@ -4,6 +4,8 @@
 **Finding codes:** R-PSRB (self-referential build catch-22), R-OMTD (orphan-mux teardown), R-WSDO (worker silent-death observability), R-SLEAK (session/process leak)
 **Priority:** P2 (R-PSRB blocks autonomous build of recovery-path bundles; R-OMTD/R-WSDO/R-SLEAK are P3 hygiene/observability)
 **Status:** OPEN — filed while babysitting the B-PCOMP build (session `2026-06-20-24252a03`)
+> **PARTIAL RESOLUTION v2.0.0-beta.22 (2026-06-21).** R-OMTD ✅ FIXED (`b20a4c1a` detached-group reap). R-WSDO ✅ SHIPPED (`177b84a7` breadcrumb). R-PSRB = documented build protocol (hand-build recovery-path tickets then deploy) — not a code fix. R-SLEAK (session-GC + contention-gauge) still OPEN (P3 hygiene).
+
 **Family:** recovery/salvage machinery + process-lifecycle. Cross-refs: [[B-PCOMP]] (the bundle this blocked), the catch-22 class in `project_b_orsr_recovery_state_machine_ship`, the salvage-discard class [[R-WCUC]]/[[B-GNXR]], the silent-death class [[R-WPEX]].
 
 ## Context

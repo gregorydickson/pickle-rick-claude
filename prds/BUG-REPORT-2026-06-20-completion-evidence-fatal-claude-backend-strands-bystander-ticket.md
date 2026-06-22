@@ -4,6 +4,8 @@
 **Finding code:** R-CECB (Completion-Evidence, Claude Backend) — instance of the open completion-commit cluster
 **Priority:** P3 (capture-only — sanctioned recovery exists; cluster already has drafted/shipped fix bundles)
 **Status:** OPEN / capture-only (filed while babysitting a real run)
+> **✅ RESOLVED v2.0.0-beta.22 (2026-06-21) — B-PCOMP WS-D2.** Salvage clean-tree back-fill via the shipped `readEvidence` oracle (`400fe433`) — committed-green tickets reach `committed-done`, never the fatal/salvage-loop; bystander work stashed not discarded (`aff2cfd4`). Live-confirmed (R-WSDO 4/4 hands-off, zero salvage-loops). Residual: GA soak still needs a LIVE multi-ticket run.
+
 **Family:** open completion-commit / Done-flip cluster — [[R-AFCC]], [[R-RIC]], [[R-CCC]] (codex-spark workers skip completion_commit frontmatter; phantom-Done watcher reverts real commits), [[B-WUWC]]/[[R-CCQF]] (`done_without_commit_evidence` exit_reason), and the caveat [[B-PDBL]] (inferred completion_commit drives phantom-Done backfill loop + dirty-tree relaunch block). Closely mirrors `BUG-REPORT-2026-06-19-codex-worker-commit-missing-ticket-hash-completion-evidence-fatal-halt.md` — **but on the claude backend, not codex.**
 
 ## Summary

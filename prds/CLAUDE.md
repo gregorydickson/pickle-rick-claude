@@ -168,3 +168,19 @@ Both legacy flags still work at runtime: `mux-runner.ts` reads them as a fallbac
 - Migration: `state-manager.ts:migrateLegacySkipQualityGatesFlags` — one-way promotion on every `StateManager.read()`.
 - AC-shape fold-in: `spawn-refinement-team.ts:runAcShapeEnforcement` — honors the CLI flag then the unified state flag.
 - Tests: `extension/tests/state-manager-skip-flags-migration.test.js` (AC-4 a..e), `extension/tests/one-skip-surface.test.js` (W1a single-surface invariants).
+
+---
+
+## Self-modifying-recovery bundles (R-PSRB build protocol)
+
+A bundle whose scope includes the **recovery / salvage / completion machinery** — the `mux-runner.ts`
+salvage/no-progress path, `salvage-ticket.ts`, `reconcile-ticket-truth.ts`,
+`ticket-completion-evidence.ts` — **cannot be built autonomously by the pipeline.** The deployed
+(pre-fix) runtime exercises the very machinery the bundle edits, so it salvage-resets / fatals the
+ticket building the fix (the **R-PSRB self-referential catch-22**, B-PCOMP 2026-06-21:
+`prds/BUG-REPORT-2026-06-21-pipeline-self-referential-build-catch22-and-orphan-mux.md`).
+
+**Protocol when authoring such a bundle:** flag it as self-modifying-recovery. The load-bearing
+recovery-path tickets MUST be **hand-built in-process** (or built then `install.sh`-deployed
+incrementally so the rest of the bundle runs on the fixed runtime) — do NOT expect a clean
+`/pickle-pipeline` autonomous run. Non-recovery tickets in the same bundle build normally.

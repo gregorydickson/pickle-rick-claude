@@ -4,6 +4,8 @@
 **Finding code:** R-RCFF (Readiness Contract-resolver Forward-created Fields)
 **Priority:** P3 (capture-only — clean sanctioned workaround exists: `skip_quality_gates_reason`)
 **Status:** OPEN / capture-only (filed while babysitting a real run)
+> **✅ RESOLVED v2.0.0-beta.22 (2026-06-21) — B-PCOMP WS-D1.** Readiness now consults the bundle creation index for contracts/symbols + annotation-omission robustness (`26125e91`/`e9e55fc8`/`c08bb0d3`); additive bundles pass the start gate with no skip flag. Live-confirmed (R-WSDO 0-blocking).
+
 **Family:** instance of the readiness-over-block cluster — [[R-RGO]] (hard-halt on false-positive path-form findings, no graduated response), [[R-RPRA]] (forward-created *files*), [[R-QGSK]] (readiness-rejects-forward-created-tickets / unified skip flag).
 
 ## Summary
