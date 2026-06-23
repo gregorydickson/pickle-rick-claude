@@ -406,6 +406,8 @@ All prior tickets are complete and individually verified. Test suite passes.
 - **Test patterns**: Run existing test suite, add missing edge case tests
 
 ## Implementation Details
+**Files to modify/create**: [MODIFIED_FILES — full backticked list of every file path from all prior implementation + wiring tickets; this is the concrete in-scope set the worker may edit]
+
 **Review scope**: ONLY files listed in MODIFIED_FILES. Do not touch files outside the implementation diff.
 
 **Lifecycle mapping**: During Research phase, read all MODIFIED_FILES and catalog violations. During Plan phase, prioritize violations by severity and plan fix order. During Implement phase, execute the review-fix loop below. Standard lifecycle artifacts (research, plan, conformance, review) are required.
@@ -497,6 +499,8 @@ All prior tickets including code quality hardening are complete. Test suite pass
 - **Test patterns**: Integration-style tests exercising actual data flow, not mocked internals
 
 ## Implementation Details
+**Files to modify/create**: [MODIFIED_FILES — full backticked list of every file path from all prior implementation + wiring tickets; this is the concrete in-scope set the worker may edit]
+
 **Scope**: Trace data flows ONLY through AFFECTED_SUBSYSTEMS. You may READ unmodified files to understand context, but only MODIFY files listed in MODIFIED_FILES.
 
 **Lifecycle mapping**: During Research phase, read all MODIFIED_FILES and trace data flows across them. During Plan phase, catalog findings with severity ratings. During Implement phase, execute the three-phase protocol below. Standard lifecycle artifacts (research, plan, conformance, review) are required.
@@ -592,6 +596,8 @@ All prior tickets are complete and individually verified. Test suite passes.
 - **ACs**: [List all acceptance criteria from refined PRD — each must map to at least one test]
 
 ## Implementation Details
+**Files to modify/create**: [TEST_FILES — full backticked list of every test file path created or modified by prior tickets; this is the concrete in-scope set the worker may edit. Implementation files in MODIFIED_FILES are read-only reference, not in this set.]
+
 **Review scope**: ONLY test files from prior tickets. Implementation files are read-only reference.
 
 **Lifecycle mapping**: During Research phase, read all test files and the refined PRD's acceptance criteria table. During Plan phase, catalog gaps by severity. During Implement phase, execute the review-fix loop below.
@@ -691,6 +697,8 @@ All prior tickets are complete and individually verified. Test suite passes.
 - **Reference types to check**: Pattern numbers, function/method names, type/interface names, enum values, CLI commands, config keys, error codes, node IDs, class names
 
 ## Implementation Details
+**Files to modify/create**: [DOC_FILES — full backticked list of every .md command file, README section, and prompt-template path modified by prior tickets; this is the concrete in-scope set the worker may edit. Implementation files in MODIFIED_FILES are read-only reference, not in this set.]
+
 **Scope**: Cross-reference between DOC_FILES and MODIFIED_FILES only. Do not audit unmodified documentation.
 
 **Lifecycle mapping**: During Research phase, read all doc and implementation files. During Plan phase, build reference maps and identify mismatches. During Implement phase, fix mismatches one at a time.
