@@ -9,7 +9,7 @@ import { resolveBackend, resolveWorkerBackendFromState, buildJudgeInvocation, bu
 import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv } from '../services/judge-spawn-env.js'; // R-SJET-3
 import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetric, classifyFailure, findLastAcceptedEntry, updateViolationLedger, } from '../services/microverse-state.js';
 import { getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
-import { writeStateFile, getExtensionRoot, isoCompactStamp, sleep, Style, formatTime, formatLocalDateKey, printMinimalPanel, safeErrorMessage, displayMacNotification, ensureMonitorWindow, collectTickets, getMicroverseSettings, resolveJudgeBackend, } from '../services/pickle-utils.js';
+import { writeStateFile, getExtensionRoot, getDataRoot, isoCompactStamp, sleep, Style, formatTime, formatLocalDateKey, printMinimalPanel, safeErrorMessage, displayMacNotification, ensureMonitorWindow, collectTickets, getMicroverseSettings, resolveJudgeBackend, } from '../services/pickle-utils.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError } from '../services/state-manager.js';
 const sm = new StateManager();
 import { runIteration, loadRateLimitSettings, classifyIterationExit, computeRateLimitAction, killCurrentChild, wouldResetOrphanCommit, } from './mux-runner.js';
@@ -853,6 +853,10 @@ export function measureMetric(validation, timeoutSeconds, cwd) {
     return measureMetricAttempt(validation, timeoutSeconds, cwd).then((result) => result.metric);
 }
 /** @internal test seam — do not use outside tests */
+/** Metric-path park ceiling (1h). Tighter than DEFAULT_MAX_PARK_MINUTES (6h) because the judge
+ * metric path should not silently block a session for hours awaiting API recovery. */
+const METRIC_PARK_MAX_MINUTES = 60;
+const METRIC_PARK_WAIT_MS = 5 * 60 * 1000;
 export const _deps = {
     execFileSync: execFileSync,
     execFile: execFile,
@@ -867,6 +871,8 @@ export const _deps = {
     sleep: sleep,
     collectTickets: collectTickets,
     logActivity: logActivity,
+    metricParkMaxMs: METRIC_PARK_MAX_MINUTES * 60 * 1000,
+    metricParkWaitMs: METRIC_PARK_WAIT_MS,
 };
 function buildLastSubprocessError(iteration, outcome, timestamp) {
     return {
@@ -1668,6 +1674,30 @@ export async function probeJudgeBackendAvailability(backend, cwd) {
         return { kind, message };
     }
 }
+function emitMetricParkWait(attemptActivity, parkMs, cumulativeParkedMs) {
+    if (!attemptActivity)
+        return;
+    try {
+        _deps.logActivity({
+            event: 'rate_limit_wait',
+            source: 'pickle',
+            session: attemptActivity.session,
+            duration_min: Math.ceil(parkMs / 60_000),
+        });
+        const sessionDir = path.join(getDataRoot(), 'sessions', attemptActivity.session);
+        writeStateFile(path.join(sessionDir, 'rate_limit_wait.json'), {
+            waiting: true,
+            reason: 'judge 529 metric-path park',
+            started_at: new Date().toISOString(),
+            wait_until: new Date(Date.now() + parkMs).toISOString(),
+            cumulative_parked_ms: cumulativeParkedMs,
+            metric_park_max_minutes: METRIC_PARK_MAX_MINUTES,
+        });
+    }
+    catch {
+        // Best-effort; park proceeds even if observable state write fails.
+    }
+}
 // eslint-disable-next-line complexity -- HT-1 reviewed: R-LINT-2 owns the structural refactor; judge trap-door logic kept explicit here pending that PR.
 export async function measureLlmMetricWithBackoff(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, backend = 'claude', priorViolations = [], attemptActivity, allowedPaths = []) {
     const primaryWorkerBackend = backend;
@@ -1693,103 +1723,119 @@ export async function measureLlmMetricWithBackoff(goal, timeoutSeconds, cwd, jud
     const backoffsMs = [10_000, 30_000, 60_000];
     let lastError = null;
     let exhaustedFailureKind = probe.kind === 'failed' ? 'failed' : 'rate_limited';
-    for (let attempt = 0; attempt <= backoffsMs.length; attempt++) {
-        const startedAt = Date.now();
-        const result = await measureLlmMetricAttempt(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, attemptBackend, priorViolations, allowedPaths);
-        const elapsedMs = Math.max(0, Date.now() - startedAt);
-        if (attemptActivity) {
-            const outcome = result.metric
-                ? 'success'
-                : result.failureKind === 'cli_missing'
-                    ? 'cli_missing'
-                    : result.failureKind;
-            const timeoutClass = result.failureKind === 'timeout'
-                ? probe.kind === 'timeout'
-                    ? 'probe_timeout'
-                    : 'attempt_timeout'
-                : null;
-            try {
-                _deps.logActivity({
-                    event: 'judge_measurement_attempted',
-                    source: 'pickle',
-                    session: attemptActivity.session,
-                    iteration: attemptActivity.iteration,
-                    backend: attemptBackend,
-                    judge_backend: 'claude',
-                    model: judgeModel || DEFAULT_JUDGE_MODEL,
-                    fallback_activated: workerFallbackActivated || primaryWorkerBackend !== 'claude' || probe.kind === 'timeout',
-                    spawn_context: attemptActivity.spawnContext,
-                    gate_payload: {
-                        attempt: attempt + 1,
-                        elapsed_ms: elapsedMs,
-                        outcome,
-                        timeout_class: timeoutClass,
-                        probe_kind: probe.kind,
-                        nested_claude_detected: isNested,
-                        pre_spawn_env_key_names: preSpawnEnvKeyNames,
-                    },
-                });
-            }
-            catch {
-                // Best-effort telemetry; measurement retries must continue even if logging fails.
-            }
-        }
-        if (result.metric) {
-            return { metric: result.metric, attempts: attempt + 1 };
-        }
-        lastError = result.message ?? null;
-        if (!workerFallbackActivated) {
-            const fallbackBackend = resolveWorkerIterationFallbackBackend(attemptBackend, attempt + 1, result.typedFailure, attemptActivity, settings);
-            if (fallbackBackend) {
-                workerFallbackActivated = true;
-                attemptBackend = fallbackBackend;
-                persistWorkerIterationFallback(attemptActivity, fallbackBackend);
-            }
-        }
-        if (result.failureKind === 'cli_missing') {
-            return {
-                metric: null,
-                exitReason: 'judge_cli_missing',
-                attempts: attempt + 1,
-                lastError,
-                exhaustedFailureKind: 'failed',
-            };
-        }
-        if (result.failureKind === 'failed') {
-            exhaustedFailureKind = 'failed';
-        }
-        else if (result.failureKind === 'timeout' && exhaustedFailureKind !== 'failed') {
-            exhaustedFailureKind = 'timeout';
+    let totalAttempts = 0;
+    let cumulativeParkedMs = 0;
+    while (true) {
+        for (let attempt = 0; attempt <= backoffsMs.length; attempt++) {
+            totalAttempts++;
+            const startedAt = Date.now();
+            const result = await measureLlmMetricAttempt(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, attemptBackend, priorViolations, allowedPaths);
+            const elapsedMs = Math.max(0, Date.now() - startedAt);
             if (attemptActivity) {
+                const outcome = result.metric
+                    ? 'success'
+                    : result.failureKind === 'cli_missing'
+                        ? 'cli_missing'
+                        : result.failureKind;
+                const timeoutClass = result.failureKind === 'timeout'
+                    ? probe.kind === 'timeout'
+                        ? 'probe_timeout'
+                        : 'attempt_timeout'
+                    : null;
                 try {
                     _deps.logActivity({
-                        event: 'baseline_attempt_timeout',
+                        event: 'judge_measurement_attempted',
                         source: 'pickle',
                         session: attemptActivity.session,
                         iteration: attemptActivity.iteration,
+                        backend: attemptBackend,
+                        judge_backend: 'claude',
+                        model: judgeModel || DEFAULT_JUDGE_MODEL,
+                        fallback_activated: workerFallbackActivated || primaryWorkerBackend !== 'claude' || probe.kind === 'timeout',
+                        spawn_context: attemptActivity.spawnContext,
                         gate_payload: {
-                            attempt: attempt + 1,
+                            attempt: totalAttempts,
                             elapsed_ms: elapsedMs,
-                            classifier: 'timeout',
+                            outcome,
+                            timeout_class: timeoutClass,
+                            probe_kind: probe.kind,
+                            nested_claude_detected: isNested,
+                            pre_spawn_env_key_names: preSpawnEnvKeyNames,
                         },
                     });
                 }
                 catch {
-                    // Best-effort telemetry; timeout retries must continue even if logging fails.
+                    // Best-effort telemetry; measurement retries must continue even if logging fails.
                 }
             }
+            if (result.metric) {
+                return { metric: result.metric, attempts: totalAttempts };
+            }
+            lastError = result.message ?? null;
+            if (!workerFallbackActivated) {
+                const fallbackBackend = resolveWorkerIterationFallbackBackend(attemptBackend, totalAttempts, result.typedFailure, attemptActivity, settings);
+                if (fallbackBackend) {
+                    workerFallbackActivated = true;
+                    attemptBackend = fallbackBackend;
+                    persistWorkerIterationFallback(attemptActivity, fallbackBackend);
+                }
+            }
+            if (result.failureKind === 'cli_missing') {
+                return {
+                    metric: null,
+                    exitReason: 'judge_cli_missing',
+                    attempts: totalAttempts,
+                    lastError,
+                    exhaustedFailureKind: 'failed',
+                };
+            }
+            if (result.failureKind === 'failed') {
+                exhaustedFailureKind = 'failed';
+            }
+            else if (result.failureKind === 'timeout' && exhaustedFailureKind !== 'failed') {
+                exhaustedFailureKind = 'timeout';
+                if (attemptActivity) {
+                    try {
+                        _deps.logActivity({
+                            event: 'baseline_attempt_timeout',
+                            source: 'pickle',
+                            session: attemptActivity.session,
+                            iteration: attemptActivity.iteration,
+                            gate_payload: {
+                                attempt: totalAttempts,
+                                elapsed_ms: elapsedMs,
+                                classifier: 'timeout',
+                            },
+                        });
+                    }
+                    catch {
+                        // Best-effort telemetry; timeout retries must continue even if logging fails.
+                    }
+                }
+            }
+            else if (result.failureKind === 'rate_limited' && exhaustedFailureKind !== 'failed' && exhaustedFailureKind !== 'timeout') {
+                exhaustedFailureKind = 'rate_limited';
+            }
+            if (attempt < backoffsMs.length) {
+                await _deps.sleep(backoffsMs[attempt]);
+            }
         }
-        else if (result.failureKind === 'rate_limited' && exhaustedFailureKind !== 'failed' && exhaustedFailureKind !== 'timeout') {
-            exhaustedFailureKind = 'rate_limited';
+        if (exhaustedFailureKind === 'rate_limited') {
+            const remainingMs = _deps.metricParkMaxMs - cumulativeParkedMs;
+            if (remainingMs > 0) {
+                const parkMs = Math.min(_deps.metricParkWaitMs, remainingMs);
+                emitMetricParkWait(attemptActivity, parkMs, cumulativeParkedMs);
+                await _deps.sleep(parkMs);
+                cumulativeParkedMs += parkMs;
+                continue;
+            }
         }
-        if (attempt < backoffsMs.length) {
-            await _deps.sleep(backoffsMs[attempt]);
-        }
+        break;
     }
     return {
         metric: null,
         exitReason: workerFallbackActivated ? 'all_judge_backends_exhausted' : 'judge_timeout',
-        attempts: backoffsMs.length + 1,
+        attempts: totalAttempts,
         lastError,
         exhaustedFailureKind,
     };

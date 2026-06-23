@@ -108,7 +108,10 @@ describe('backoff exhaustion: all-429 attempts → exhaustedFailureKind rate_lim
     delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
     const orig = _deps.spawn;
     const origSleep = _deps.sleep;
+    const origParkMaxMs = _deps.metricParkMaxMs;
     _deps.sleep = async () => {};
+    // Disable park ceiling so this test stays a pure backoff-exhaustion check.
+    _deps.metricParkMaxMs = 0;
     // probe (exit 0 success) + 4 attempts (exit 1 with 429 stderr)
     _deps.spawn = makeSpawnMock([
       { code: 0, stderr: 'claude/2.1.0' },
@@ -125,6 +128,7 @@ describe('backoff exhaustion: all-429 attempts → exhaustedFailureKind rate_lim
     } finally {
       _deps.spawn = orig;
       _deps.sleep = origSleep;
+      _deps.metricParkMaxMs = origParkMaxMs;
       if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
       else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
     }
