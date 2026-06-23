@@ -38,3 +38,4 @@ bundle/ac-dr-02.runtime.json
 # Pickle Jar runtime queue — only ever appears in the repo as a test/CI-sim artifact
 # (getDataRoot()=repo when EXTENSION_DIR=workspace); the real queue lives in ~/.local/share/pickle-rick/jar
 jar/
+extension/node_modules
