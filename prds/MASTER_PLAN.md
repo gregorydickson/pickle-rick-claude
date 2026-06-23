@@ -57,9 +57,12 @@ shim + dead variant, narrow Pass-1 grep), R-REIN `3c48d7ae` (recovery-budget ref
 run-blockers** ✅ BUILT — refine fence `5ad07e3c`, oversized split `b60a112e`, toolchain fail-fast `7b69f22a`,
 R-SIGF advisory flag `a668687f`. **(5) WS-5** ✅ BUILT — advisory subtract-before-add audit `9164f14d`
 (`audit-subtract-before-add.sh`). Full post-merge gate green (tsc/eslint/audits/20 new WS tests/201 mux).
-**REMAINING (deploy-gated, your soak window):** **(1-deploy)** `install.sh` the whole stack; **(2) prove on
-codex** (AC-DURA-4, re-run LOA-1363/1488 — codex multi-ticket is the loudest failure, 0-for-3); then the wide
-oracle characterization net + GA soak. **Primary metric:** hands-off soak truthfulness + manual-intervention
+**DEPLOYED 2026-06-23** ✅ — `install.sh` ran clean; runtime (`~/.claude/pickle-rick`) now carries the whole
+stack (boundary committer + R-REIN + toolchain-fail-fast + oversized-split + subtract-before-add audit
+verified in deployed JS). Version stays `2.0.0-beta.22` (deploy without release — field-prove before tag).
+**REMAINING:** **(2) prove on codex** (AC-DURA-4, re-run LOA-1363/1488 — codex multi-ticket is the loudest
+failure, 0-for-3) — *operator deferred 2026-06-23; runtime is fixed so any next codex pipeline benefits*;
+then the wide oracle characterization net + GA soak + version bump/release once codex-proven. **Primary metric:** hands-off soak truthfulness + manual-intervention
 rate (trap-door count secondary). **Self-build (old WS-4): cut** — freeze autonomous self-build for recovery
 bundles, formalize the hand-build protocol; revisit post-GA only if hand-build is the bottleneck.
 
