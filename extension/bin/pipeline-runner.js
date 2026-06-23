@@ -32,6 +32,7 @@ import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-findi
 import { citadelFindingsToGateResult } from '../services/citadel/citadel-findings-to-gate-result.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
 import { loadFinalizeGateSettings, resolveFinalizeSettingsRoot } from './finalize-gate.js';
+import { runGate } from '../services/convergence-gate.js';
 const sm = new StateManager();
 const DEFAULT_DIRTY_EXEMPT_SEGMENTS = ['prds', 'docs'];
 const CODEX_REQUIRED_BACKEND = 'codex-required';
@@ -2981,6 +2982,28 @@ async function dispatchHaltAction(runtime, counters, rawPhase, exitCode, log) {
     if (haltAction === 'run-finalize-gate-incomplete') {
         return runAllBackendsExhaustedFinalizeGate(runtime, counters, rawPhase, log);
     }
+    // AC-RPGT-6: best-effort typecheck+lint gate on abort path — network-free, never masks
+    // the original abort reason.
+    try {
+        const abortGate = await runGate({
+            workingDir: runtime.workingDir,
+            mode: 'strict',
+            scope: 'full',
+            checks: ['typecheck', 'lint'],
+        });
+        if (abortGate.status === 'red') {
+            try {
+                logActivity({
+                    event: 'tsc_gate_failed',
+                    source: 'pickle',
+                    reason: `[R-RPGT] abort-path gate: tsc/lint RED on phase ${rawPhase} exit`,
+                    gate_payload: { failure_kind: 'compile_error' },
+                });
+            }
+            catch { /* swallow emit failure */ }
+        }
+    }
+    catch { /* gate error never masks original abort reason */ }
     return { action: 'break' };
 }
 async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, index, log) {

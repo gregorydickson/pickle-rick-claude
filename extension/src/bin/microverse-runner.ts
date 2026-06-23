@@ -3575,12 +3575,15 @@ function autoRescueDirtyTree(ctx: RunContext): void {
 // R-APXG-3: convergence was signaled but the gate deferred it — trust the worker after
 // POST_CONVERGENCE_GATE_DEFERRAL_LIMIT consecutive deferrals to prevent an infinite loop.
 // Extracted from handleWorkerMode (R-APXG-3 closer fix-forward) to keep that function's
-// cyclomatic complexity under the eslint ceiling. Returns 'converged' once the bound is hit,
-// otherwise null (keep iterating); resets the counter on any non-deferral reason.
-function handlePostConvergenceGateDeferral(
+// cyclomatic complexity under the eslint ceiling. At the cap, re-runs the gate: returns
+// 'converged' only when the tree is GREEN (trust-the-worker preserved for flaky gates);
+// returns 'error' when the tree is RED (AC-RPGT-7 / B-RPGT gate-on-cap). Returns null to
+// keep iterating; resets the counter on any non-deferral reason.
+async function handlePostConvergenceGateDeferral(
   workerResult: { reason: string; selfRedOpen?: boolean },
   ctx: RunContext,
-): ExitReason | null {
+  runGateFn: typeof runGate = runGate,
+): Promise<ExitReason | null> {
   const GATE_DEFERRED_REASON = 'per-iteration gate left unresolved regressions';
   if (workerResult.reason !== GATE_DEFERRED_REASON) {
     ctx.postConvergenceDeferralCount = 0;
@@ -3604,6 +3607,32 @@ function handlePostConvergenceGateDeferral(
     return null;
   }
   if (ctx.postConvergenceDeferralCount >= POST_CONVERGENCE_GATE_DEFERRAL_LIMIT) {
+    // AC-RPGT-7: re-run the gate at the cap; only return 'converged' when the tree is GREEN.
+    let capGateRed = false;
+    try {
+      const capGate = await runGateFn({
+        workingDir: ctx.workingDir,
+        mode: 'strict',
+        scope: 'full',
+        checks: ['typecheck', 'lint'],
+      });
+      capGateRed = capGate.status === 'red';
+    } catch { /* best-effort — gate error falls through to trust-the-worker */ }
+    if (capGateRed) {
+      ctx.log(
+        `[R-APXG-3] Post-convergence gate deferred ${ctx.postConvergenceDeferralCount} consecutive time(s) ` +
+        `(limit=${POST_CONVERGENCE_GATE_DEFERRAL_LIMIT}); re-ran gate at cap — RED tree, refusing converge`,
+      );
+      try {
+        _deps.logActivity({
+          event: 'tsc_gate_failed',
+          source: 'pickle',
+          reason: `[R-APXG-3] cap reached after ${ctx.postConvergenceDeferralCount} deferral(s); tree is RED`,
+          gate_payload: { failure_kind: 'compile_error' },
+        } as never);
+      } catch { /* swallow emit failure */ }
+      return 'error';
+    }
     ctx.log(
       `[R-APXG-3] Post-convergence gate deferred ${ctx.postConvergenceDeferralCount} consecutive time(s) ` +
       `(limit=${POST_CONVERGENCE_GATE_DEFERRAL_LIMIT}); convergence signal trusted — exiting cleanly`,
@@ -3721,7 +3750,7 @@ async function handleWorkerMode(
     ctx.log(`Converged (worker-managed: ${workerResult.reason})`);
     return 'converged';
   }
-  const deferralExit = handlePostConvergenceGateDeferral(workerResult, ctx);
+  const deferralExit = await handlePostConvergenceGateDeferral(workerResult, ctx);
   if (deferralExit) {
     return deferralExit;
   }
