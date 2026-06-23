@@ -1,7 +1,13 @@
 # Pickle Rick Reliability Plan — collapse the machinery, break the self-build trap
 
-**Date:** 2026-06-23 · **Status:** REVISED post Codex adversarial review (verdict: *ship with changes*) · **Author:** babysitter session
+**Date:** 2026-06-23 · **Status:** REVISED post Codex review · **FIRST WAVE SHIPPED v2.0.0-beta.23** (B-DURA core M1 + M3-phase-advance + the subtraction; R-REIN; WS-2 run-blockers; WS-5 advisory audit — all deployed). · **Author:** babysitter session
 **Evidence base:** full issue inventory (BUG-INDEX 126KB + MASTER_PLAN + archive + 5 recent bug reports + trap-door audit).
+
+> **Execution status (2026-06-23):** §3 steps 1, 3, 4, 5 are **SHIPPED in beta.23** (see MASTER_PLAN B-DURA row).
+> **NOT done:** §3 step 2 — the **codex AC-DURA-4 field-proof** (the decisive evidence; operator-deferred);
+> the review-phase gate gaps (R-RPGT/R-S529, a separate GA-blocking 0/4 cause); R-SIGF full scope-auto-extension
+> (only the advisory flag shipped); the wide oracle characterization net. The plan's central claim — that fixing
+> M1 at the root + collapsing the oracle is the right cut — is *built but not field-validated on codex*.
 
 > **Revision note (Codex critique folded in — full review in Appendix A).** The original draft made
 > **M5 (self-build trap) the master defect** and centered **WS-4 (shadow-runtime / staged self-deploy)**.

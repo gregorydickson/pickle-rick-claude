@@ -1,7 +1,7 @@
 ---
 title: "B-DURA — durable iteration boundary: the runner commits the ticket's work; one oracle; Done & phase-advance derive from durable commits"
 priority: P1
-status: Draft (authored 2026-06-22; HEAD-grounded revision 2026-06-23 post cycle-3 refinement + R-PFNT)
+status: ✅ SHIPPED v2.0.0-beta.23 + DEPLOYED 2026-06-23 (prerelease). All workstreams built/merged/gated/deployed (T10-T70 + R-REIN + WS-2 + WS-5). RESIDUAL: codex AC-DURA-4 field-proof NOT yet run (the prerelease gate); R-SIGF shipped advisory-flag only (full scope-auto-extension deferred). Commits in MASTER_PLAN B-DURA row.
 schema_neutral: true
 date: 2026-06-22
 goal: "A multi-ticket bundle on EITHER backend (claude or codex) completes 4/4 phases hands-off: every Done ticket is backed by a durable runner-authored commit, no context-cleared worker can clobber a prior ticket's edits, a single evidence oracle governs every Done-flip, and a green build never reports 0/4."
