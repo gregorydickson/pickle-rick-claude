@@ -2294,13 +2294,14 @@ export function applyAutoTicketCompletionValidation(input) {
         // R-CCRC-2: route Done-flip through guard so the R-WUWC SOFT-variant
         // auto-fill runs and completion_commit is persisted to the frontmatter.
         // Manager drift path: ticket starts 'In Progress', so the guard's inline
-        // upsert (which requires status=Done) cannot run yet.
-        // Allow inferred evidence here; the post-markTicketDone upsert runs below.
+        // upsert (which requires status=Done) cannot run yet; the guard's
+        // inferred-fresh auto-promote attributes the durable boundary commit
+        // (B-DURA T10) and the post-markTicketDone upsert runs below.
         const guard = guardCompletionCommitBeforeDone({
             sessionDir: input.sessionDir,
             ticketId: input.ticketId,
             workingDir: input.workingDir,
-            flags: { ...(input.flags ?? {}), allow_inferred_completion_commit: true },
+            flags: input.flags ?? {},
         });
         if (!guard.ok) {
             const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
@@ -3816,9 +3817,6 @@ export const isFailureExit = (r) => FAILURE_EXIT_REASONS.has(r);
  * git commit attributable to the ticket). Returns false otherwise — caller
  * should halt mux-runner with `done_without_commit_evidence` exit_reason.
  *
- * Bypass: `state.flags.allow_inferred_completion_commit === true` accepts
- * inferred/absent evidence (operator-only edit; surfaces in audit trail).
- *
  * Rationale: workers in B-CCPM-1b (2/3 tickets) and B-SJET (1/3 ticket
  * f00097e8) shipped ticket status=Done with prose-only verdict and no
  * attributable commit. mux-runner trusted the prose; the bundle bookkeeping
@@ -3957,7 +3955,6 @@ export function guardCompletionCommitBeforeDone(args) {
     if (process.env.PICKLE_TEST_MODE === '1') {
         return { ok: true, sha: 'pickle-test-mode-bypass' };
     }
-    const allowInferred = (args.flags ?? {})['allow_inferred_completion_commit'] === true;
     // R-CXOR-2 activation: source the session baseline SHAs so readEvidence's
     // isBaselineSha rejection actually fires in the Done-flip path (see
     // resolveSessionBaselineShas).
@@ -3984,7 +3981,7 @@ export function guardCompletionCommitBeforeDone(args) {
         },
     };
     // R-AFCC-DEEP-4A: use readEvidence (replaces hasCompletionCommit).
-    const evidenceAccepted = (r) => (r.kind === 'explicit' && !!r.sha) || (allowInferred && !!r.sha);
+    const evidenceAccepted = (r) => r.kind === 'explicit' && !!r.sha;
     let evidenceR = readEvidence(probe);
     if (!evidenceAccepted(evidenceR)) {
         // R-CCGR: the worker commits + stamps `completion_commit`, then emits its
@@ -4013,10 +4010,6 @@ export function guardCompletionCommitBeforeDone(args) {
         catch { /* best-effort — fall through to existing classification */ }
     }
     if (evidenceR.kind === 'explicit' && evidenceR.sha) {
-        return { ok: true, sha: evidenceR.sha };
-    }
-    if (allowInferred && evidenceR.sha) {
-        // Operator bypass — proceed but record the kind for audit.
         return { ok: true, sha: evidenceR.sha };
     }
     // Map EvidenceKind back to legacy source for callers that inspect the error.
@@ -4201,9 +4194,9 @@ export function commitAndContinueDoneFlip(input) {
         sessionDir: input.sessionDir,
         ticketId: input.ticketId,
         workingDir: input.workingDir,
-        // The recovery commit references the ticket id (inferred-fresh evidence); the
-        // ticket is not yet Done so allow inferred, then persist below post-flip.
-        flags: { ...(input.flags ?? {}), allow_inferred_completion_commit: true },
+        // The recovery commit references the ticket id; the guard's inferred-fresh
+        // auto-promote attributes it and persists completion_commit post-flip.
+        flags: input.flags ?? {},
     });
     if (!guard.ok) {
         return { ok: false };
@@ -6927,11 +6920,10 @@ export function routeDetachedWorkerTerminalNoProgress(input) {
  * the declared-file-touch branch — identical to `guardCompletionCommitBeforeDone`.
  * Best-effort: any throw → null (salvage falls through to its existing no-op).
  */
-function resolveCleanTreeAttribution(sessionDir, workingDir, ticketId, flags) {
+function resolveCleanTreeAttribution(sessionDir, workingDir, ticketId) {
     if (process.env.PICKLE_TEST_MODE === '1')
         return null;
     try {
-        const allowInferred = (flags ?? {})['allow_inferred_completion_commit'] === true;
         const ext = path.join(workingDir, 'extension');
         const evidence = readEvidence({
             sessionDir,
@@ -6953,8 +6945,6 @@ function resolveCleanTreeAttribution(sessionDir, workingDir, ticketId, flags) {
         if (evidence.kind === 'explicit')
             return evidence.sha;
         if (evidence.kind === 'inferred-fresh')
-            return evidence.sha;
-        if (allowInferred)
             return evidence.sha;
         return null;
     }
@@ -7057,7 +7047,7 @@ export function routeDeadDetachedWorkerDisposition(input) {
     // (an already-permitted oracle caller — no new importer, no scanGitLog export).
     // Only an explicit OR inferred-fresh sha is attributable; anything else leaves
     // completionCommitSha null and salvage falls through to the existing no-op.
-    const attributedCleanTreeSha = input.deps ? null : resolveCleanTreeAttribution(sessionDir, workingDir, ticketId, flags);
+    const attributedCleanTreeSha = input.deps ? null : resolveCleanTreeAttribution(sessionDir, workingDir, ticketId);
     const outcome = salvageTicket({ sessionDir, workingDir, ticketId, log, completionCommitSha: attributedCleanTreeSha }, input.deps ?? productionDeps);
     switch (outcome.disposition) {
         case 'committed-done':

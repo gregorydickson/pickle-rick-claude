@@ -154,7 +154,7 @@
       "triggering_function": "applyAutoTicketCompletionValidation",
       "file_line": "extension/bin/mux-runner.js:1635",
       "call_site": "extension/bin/mux-runner.js:4715",
-      "description": "Manager detects drift: previous ticket was In Progress but model changed current_ticket without protocol. Calls guardCompletionCommitBeforeDone with allow_inferred_completion_commit:true, then markTicketDone, then autoFillCompletionCommit (post-markTicketDone, since autoFill requires status=Done).",
+      "description": "Manager detects drift: previous ticket was In Progress but model changed current_ticket without protocol. Calls guardCompletionCommitBeforeDone (which auto-promotes the durable boundary commit's inferred-fresh evidence), then markTicketDone, then autoFillCompletionCommit (post-markTicketDone, since autoFill requires status=Done).",
       "fixture": {
         "session_dir_skeleton": {
           "state.json": {
@@ -197,9 +197,6 @@
         "notes": "markTicketDone flips to Done, then autoFillCompletionCommit writes completion_commit"
       },
       "evidence_source": "inferred",
-      "flags_required": {
-        "allow_inferred_completion_commit": true
-      },
       "known_failure_modes": [
         "R-CCRC-2: applyAutoTicketCompletionValidation NOT routed through guard before markTicketDone — re-opens silent Done-without-commit class",
         "R-PEDC: clearStaleDoneWithoutCommitEvidence not called after guard.ok — stale exit_reason persists"
@@ -406,7 +403,7 @@
           "correctPhantomDoneTickets called with { sessionDir, workingDir, iteration }",
           "hasCompletionCommit returns { source: 'absent', sha: null }",
           "phantomDoneShouldKeepDone returns { keepDone: false }",
-          "No operator bypass flag set (state.flags.allow_inferred_completion_commit not set)"
+          "absent evidence always reverts (no inferred-completion bypass flag exists)"
         ]
       },
       "expected_end_state": {

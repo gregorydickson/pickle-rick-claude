@@ -100,7 +100,7 @@ export interface PersistResult {
 
 /** Policy for gateForPhantomDoneRevert. */
 export interface RevertPolicy {
-  /** State flags, e.g. { allow_inferred_completion_commit: true }. */
+  /** Persisted state flags (reserved; no flag currently gates revert policy). */
   flags?: Record<string, unknown> | null;
 }
 
@@ -535,9 +535,8 @@ export function persistEvidence(ctx: EvidenceCtx, sha: string, opts: PersistOpts
  * Callers do all file writes based on the returned action — this function
  * only reads evidence and returns a decision.
  */
-export function gateForPhantomDoneRevert(ctx: EvidenceCtx, policy?: RevertPolicy): RevertDecision {
+export function gateForPhantomDoneRevert(ctx: EvidenceCtx, _policy?: RevertPolicy): RevertDecision {
   const evidence = readEvidence(ctx);
-  const allowFlag = (policy?.flags ?? {})['allow_inferred_completion_commit'] === true;
 
   switch (evidence.kind) {
     case 'explicit':
@@ -549,7 +548,6 @@ export function gateForPhantomDoneRevert(ctx: EvidenceCtx, policy?: RevertPolicy
       // reverting a ticket that has a stored (but currently unverifiable) SHA.
       return { action: 'keep', kind: 'inferred-stale', sha: evidence.sha };
     case 'absent':
-      if (allowFlag) return { action: 'keep', kind: 'absent' };
       return { action: 'revert', kind: 'absent' };
   }
 }

@@ -36,7 +36,7 @@ Paths 5a/5b/5c are grouped as path 5 in the PRD enumeration ("Three more guard-r
 
 **Path 2** — `stageTicketFile` throws outside a git repo (`R-AFCC-STAGE`): the `action='filled'` signal is swallowed and the staged file is never committed. Also: bare `readFrontmatterField` on line 53 (not `normalizeCompletionCommitField`) means a quoted SHA at path 1 is invisible to path 2's already-present check — path 2 re-fills unnecessarily (`R-CCQF`).
 
-**Path 3** — If the guard call is removed or `allow_inferred_completion_commit` is false: gate blocks with `done_without_commit_evidence` for any manager-drift ticket (`R-CCRC-2`). If `clearStaleDoneWithoutCommitEvidence` is not called: stale exit_reason survives into `finalizePipeline`, mislabelling a successful bundle as failed (`R-PEDC`).
+**Path 3** — If the guard call is removed: gate blocks with `done_without_commit_evidence` for any manager-drift ticket (`R-CCRC-2`). The guard auto-promotes the durable boundary commit's inferred-fresh evidence (B-DURA T10), so no inferred-completion bypass flag is needed. If `clearStaleDoneWithoutCommitEvidence` is not called: stale exit_reason survives into `finalizePipeline`, mislabelling a successful bundle as failed (`R-PEDC`).
 
 **Path 4** — Quoted SHA in `completion_commit` without `normalizeCompletionCommitField`: classified as absent, guard exits with `done_without_commit_evidence` (`R-CCQF`). No `autoFillCompletionCommit` follows this path — if the SHA is missing at guard time, the pipeline halts.
 

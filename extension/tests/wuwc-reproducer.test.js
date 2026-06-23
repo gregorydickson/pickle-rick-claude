@@ -326,19 +326,14 @@ describe('R-WUWC Case B — SOFT: worker commits with ticket-id, no completion_c
 
       if (result.ok === false) {
         // Auto-fill git-add failed — verify the canonical error message format.
-        assert.equal(result.source, 'inferred', 'failed guard must report source: inferred');
         assert.match(
           result.reason,
-          /cannot flip Done: hasCompletionCommit\(\)\.source === 'inferred' \(expected 'explicit-reachable'\); worker did not produce an attributable git commit/,
+          /cannot flip Done: readEvidence\(\)\.kind === '[^']+' \(expected 'explicit'\); worker did not produce an attributable git commit/,
           `guard error must match pinned format; got: ${result.reason}`,
         );
         assert.ok(
-          result.reason.includes('allow_inferred_completion_commit=true'),
-          'error must surface the flag bypass path',
-        );
-        assert.ok(
           result.reason.includes('completion_commit: <sha>'),
-          'error must surface the frontmatter bypass path',
+          'error must surface the frontmatter recovery path',
         );
       } else {
         // Auto-fill succeeded (post-fix auto-promote path). The guard passes and

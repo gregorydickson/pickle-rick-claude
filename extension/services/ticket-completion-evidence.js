@@ -406,9 +406,8 @@ export function persistEvidence(ctx, sha, opts) {
  * Callers do all file writes based on the returned action — this function
  * only reads evidence and returns a decision.
  */
-export function gateForPhantomDoneRevert(ctx, policy) {
+export function gateForPhantomDoneRevert(ctx, _policy) {
     const evidence = readEvidence(ctx);
-    const allowFlag = (policy?.flags ?? {})['allow_inferred_completion_commit'] === true;
     switch (evidence.kind) {
         case 'explicit':
             return { action: 'keep', kind: 'explicit', sha: evidence.sha, fallbackFired: evidence.usedFallback };
@@ -419,8 +418,6 @@ export function gateForPhantomDoneRevert(ctx, policy) {
             // reverting a ticket that has a stored (but currently unverifiable) SHA.
             return { action: 'keep', kind: 'inferred-stale', sha: evidence.sha };
         case 'absent':
-            if (allowFlag)
-                return { action: 'keep', kind: 'absent' };
             return { action: 'revert', kind: 'absent' };
     }
 }

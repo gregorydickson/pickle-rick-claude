@@ -2152,12 +2152,12 @@ test('guardCompletionCommitBeforeDone: bypass flag accepts inferred when set', a
         fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`),
           `---\nid: ${ticketId}\ntitle: "test"\nstatus: Done\n---\n# T\n`);
         withProductionGuard(() => {
-            // No bypass: reject
+            // Absent evidence: reject (no attributable commit at all).
             const r1 = guardCompletionCommitBeforeDone({ sessionDir, ticketId, workingDir, flags: {}, rereadBackoffMs: 0 });
             assert.equal(r1.ok, false);
-            // With bypass flag: also reject because there's no sha at all (bypass requires inferred sha, not absent)
-            const r2 = guardCompletionCommitBeforeDone({ sessionDir, ticketId, workingDir, flags: { allow_inferred_completion_commit: true }, rereadBackoffMs: 0 });
-            assert.equal(r2.ok, false, 'bypass alone without any sha still rejects (absent source)');
+            // Null flags: also reject — absent evidence has no SHA to attribute.
+            const r2 = guardCompletionCommitBeforeDone({ sessionDir, ticketId, workingDir, flags: null, rereadBackoffMs: 0 });
+            assert.equal(r2.ok, false, 'absent evidence rejects regardless of flags');
         });
     } finally {
         fs.rmSync(tmpRoot, { recursive: true, force: true });
@@ -3528,7 +3528,7 @@ test('R-CCC-5 correctPhantomDoneTickets: completion_commit in frontmatter is NOT
     }
 });
 
-test('R-PDWR correctPhantomDoneTickets: allow_inferred_completion_commit flag suppresses the revert', () => {
+test('B-DURA T60 correctPhantomDoneTickets: absent evidence always reverts (no inferred-completion bypass flag)', () => {
     const tmpDir = makeTmpRoot();
     const dataRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-rpdwr-flag-')));
     const prev = process.env.PICKLE_DATA_ROOT;
@@ -3539,7 +3539,8 @@ test('R-PDWR correctPhantomDoneTickets: allow_inferred_completion_commit flag su
         const sessionDir = path.join(tmpDir, 'session');
         const ticketId = 'rpdwrflag';
         // Done frontmatter with NO completion_commit and no matching commit —
-        // normally a phantom-Done revert.
+        // a phantom-Done revert. The deleted allow_inferred_completion_commit
+        // bypass flag (T60) can no longer suppress it: absent always reverts.
         writeAutoMarkTicketWithStatus(sessionDir, ticketId, 'Done', true);
 
         const corrected = correctPhantomDoneTickets({
@@ -3550,8 +3551,8 @@ test('R-PDWR correctPhantomDoneTickets: allow_inferred_completion_commit flag su
             flags: { allow_inferred_completion_commit: true },
         });
 
-        assert.equal(corrected, 0, 'allow_inferred_completion_commit must suppress the watcher revert');
-        assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'Done');
+        assert.equal(corrected, 1, 'absent evidence reverts; the deleted bypass flag is inert');
+        assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'Todo');
     } finally {
         if (prev === undefined) delete process.env.PICKLE_DATA_ROOT;
         else process.env.PICKLE_DATA_ROOT = prev;
