@@ -49,17 +49,19 @@ holds (no new completion-class seam across the soak). Now-cheap to fix any new s
 **`prds/RELIABILITY-PLAN-2026-06-23.md`** is now the governing strategy (Codex-adversarial-reviewed;
 verdict *ship with changes*, folded in). It reframes the drain queue from bug-by-bug to **5 structural
 meta-defects** (completion-oracle plurality · scope-fence under/over-extend · recovery sprawl ·
-guards-on-guards · self-build trap). Revised sequencing: **(1) B-DURA core merged** ✅ (T10–T50 on `main`
-`484ea208`: durable boundary commit + 7-site Done-flip gate + one readEvidence oracle + Failed-terminal
-phase-advance + no-premature-drain; 238/238 tests, audits green; **deploy held** pending the live
-LOA-1363/1488 soaks). **(2) Prove the core on codex** immediately after deploy (AC-DURA-4 — codex
-multi-ticket is the loudest failure, 0-for-3). **(3) B-DURA T60–T70 subtraction + R-REIN + wide oracle
-characterization net** (post-deploy). **(4) WS-2 run-blockers** (refine-template parseable file fence ·
-R-SIGF signature-caller fan-out · toolchain fail-fast · oversized→scope_unresolvable split) — *not
-deploy-gated, buildable now*. **(5) WS-5 subtract-before-add code-gate.** **Primary metric:** hands-off
-soak truthfulness + manual-intervention rate (trap-door count demoted to secondary). **Self-build (old
-WS-4): cut as a build investment** — freeze autonomous self-build for recovery bundles, formalize the
-hand-build protocol; revisit a mechanism post-GA only if hand-build is the bottleneck.
+guards-on-guards · self-build trap). Sequencing status (all buildable-now work **BUILT + verified on `main` `f547b22f`**, deploy held for soaks):
+**(1) B-DURA core** ✅ MERGED (T10–T50: durable boundary commit + 7-site Done-flip gate + one readEvidence
+oracle + Failed-terminal phase-advance + no-premature-drain). **(3) Subtraction cluster** ✅ BUILT — T60
+`05650df1` (delete `allow_inferred_completion_commit`), T70 `71996fe8` (collapse `EvidenceKind` 4→2, delete
+shim + dead variant, narrow Pass-1 grep), R-REIN `3c48d7ae` (recovery-budget refund on reset). **(4) WS-2
+run-blockers** ✅ BUILT — refine fence `5ad07e3c`, oversized split `b60a112e`, toolchain fail-fast `7b69f22a`,
+R-SIGF advisory flag `a668687f`. **(5) WS-5** ✅ BUILT — advisory subtract-before-add audit `9164f14d`
+(`audit-subtract-before-add.sh`). Full post-merge gate green (tsc/eslint/audits/20 new WS tests/201 mux).
+**REMAINING (deploy-gated, your soak window):** **(1-deploy)** `install.sh` the whole stack; **(2) prove on
+codex** (AC-DURA-4, re-run LOA-1363/1488 — codex multi-ticket is the loudest failure, 0-for-3); then the wide
+oracle characterization net + GA soak. **Primary metric:** hands-off soak truthfulness + manual-intervention
+rate (trap-door count secondary). **Self-build (old WS-4): cut** — freeze autonomous self-build for recovery
+bundles, formalize the hand-build protocol; revisit post-GA only if hand-build is the bottleneck.
 
 ### GA field-soak (the metric for the above)
 
