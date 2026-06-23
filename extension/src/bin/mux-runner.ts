@@ -1226,7 +1226,12 @@ function batchLoopPhantomDoneKind(
   workingDir: string,
 ): PhantomDoneKind {
   // R-AFCC-DEEP-4A: migrated from hasCompletionCommit to gateForPhantomDoneRevert.
-  const ctx: EvidenceCtx = { sessionDir: input.sessionDir, ticketId, workingDir, fallbackDir: input.workingDir };
+  // B-DURA T30 (AC-DURA-6): source the same session baseline SHAs the flip-gate
+  // passes via resolveSessionBaselineShas, so readEvidence's isBaselineSha rejection
+  // fires IDENTICALLY at the watcher and the gate — no accept-here-fatal-there split
+  // on a completion_commit that equals start_commit/pinned_sha (R-CXOR-2 parity).
+  const { startCommit, pinnedSha } = resolveSessionBaselineShas(input.sessionDir);
+  const ctx: EvidenceCtx = { sessionDir: input.sessionDir, ticketId, workingDir, fallbackDir: input.workingDir, startCommit, pinnedSha };
   const decision: RevertDecision = gateForPhantomDoneRevert(ctx, { flags: input.flags });
 
   if (decision.action === 'persist-inferred') {

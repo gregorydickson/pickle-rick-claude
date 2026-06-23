@@ -1082,7 +1082,12 @@ function promoteInferredToExplicit(content, sha) {
  */
 function batchLoopPhantomDoneKind(input, ticketId, workingDir) {
     // R-AFCC-DEEP-4A: migrated from hasCompletionCommit to gateForPhantomDoneRevert.
-    const ctx = { sessionDir: input.sessionDir, ticketId, workingDir, fallbackDir: input.workingDir };
+    // B-DURA T30 (AC-DURA-6): source the same session baseline SHAs the flip-gate
+    // passes via resolveSessionBaselineShas, so readEvidence's isBaselineSha rejection
+    // fires IDENTICALLY at the watcher and the gate — no accept-here-fatal-there split
+    // on a completion_commit that equals start_commit/pinned_sha (R-CXOR-2 parity).
+    const { startCommit, pinnedSha } = resolveSessionBaselineShas(input.sessionDir);
+    const ctx = { sessionDir: input.sessionDir, ticketId, workingDir, fallbackDir: input.workingDir, startCommit, pinnedSha };
     const decision = gateForPhantomDoneRevert(ctx, { flags: input.flags });
     if (decision.action === 'persist-inferred') {
         // D1 (84c209ae) promote-once: write EXPLICIT completion_commit and DELETE the
