@@ -25,7 +25,7 @@ import { CodegraphService } from '../services/codegraph-service.js';
 import { salvageTicket } from '../lib/salvage-ticket.js';
 import { reconcileTicketTruth } from '../lib/reconcile-ticket-truth.js';
 export { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream } from '../services/classifier-utils.js';
-export { hasCompletionCommit, stripSetupSection } from '../services/pickle-utils.js';
+export { stripSetupSection } from '../services/pickle-utils.js';
 export { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
 export { evaluateManagerRelaunch as evaluateCodexManagerRelaunch, recordManagerRelaunch as recordCodexManagerRelaunch, } from '../services/manager-relaunch.js';
 const sm = new StateManager();
@@ -1068,18 +1068,17 @@ function promoteInferredToExplicit(content, sha) {
 }
 /**
  * R-AFCC-DEEP-3B/3C: classify a Done ticket for the batch phantom-Done loop and
- * apply side-effects (persist inferred SHA). Extracted to keep the loop under
- * the ESLint complexity ceiling.
+ * apply side-effects (promote a scan/inferred SHA to the explicit field).
+ * Extracted to keep the loop under the ESLint complexity ceiling.
  *
- * Decision matrix (R-AFCC-DEEP-3C four-state):
- *   explicit-reachable → keep Done (reachability-verified or bypass flag set)
- *   inferred           → persist completion_commit_inferred + keep Done
- *   absent             → revert (no evidence found)
- *   unreachable        → revert (explicit SHA stamped but not reachable from HEAD)
+ * Decision matrix (B-DURA T70 two-state):
+ *   committed + explicit field present → keep Done           → 'explicit-reachable'
+ *   committed + SHA from scan/inferred → promote + keep Done → 'inferred'
+ *   absent                             → revert (no evidence) → 'absent'
  *
- * R-RIC-EXPLICIT-4: only `inferred` (already git-verified) short-circuits
- * to keep+persist; all others fall through to phantomDoneShouldKeepDone.
- * R-CCR-1 fallback-dir is passed into hasCompletionCommit via fallbackDir.
+ * R-RIC-EXPLICIT-4: the keep decision short-circuits to keep; only a `committed`
+ * SHA that is not yet the explicit frontmatter field is promoted once. R-CCR-1
+ * fallback-dir is passed into the oracle via fallbackDir.
  */
 function batchLoopPhantomDoneKind(input, ticketId, workingDir) {
     // R-AFCC-DEEP-4A: migrated from hasCompletionCommit to gateForPhantomDoneRevert.
@@ -1090,24 +1089,26 @@ function batchLoopPhantomDoneKind(input, ticketId, workingDir) {
     const { startCommit, pinnedSha } = resolveSessionBaselineShas(input.sessionDir);
     const ctx = { sessionDir: input.sessionDir, ticketId, workingDir, fallbackDir: input.workingDir, startCommit, pinnedSha };
     const decision = gateForPhantomDoneRevert(ctx, { flags: input.flags });
-    if (decision.action === 'persist-inferred') {
-        // D1 (84c209ae) promote-once: write EXPLICIT completion_commit and DELETE the
-        // inferred field so the next phantom-Done re-scan classifies `explicit` → keep
-        // (no re-backfill loop). Replaces the prior upsert of completion_commit_inferred,
-        // which left the field present and re-fired backfill every pass.
+    if (decision.action === 'keep') {
+        // D1 (84c209ae) promote-once: when the committed SHA came from the inferred
+        // field or git-log scan (no explicit completion_commit yet), write EXPLICIT
+        // completion_commit and DELETE the inferred field so the next phantom-Done
+        // re-scan reads the explicit field → keep (no re-backfill loop).
         const fp = ticketFilePath(input.sessionDir, ticketId);
+        let promoted = false;
         try {
             const raw = fs.readFileSync(fp, 'utf8');
             if (!readFrontmatterField(raw, 'completion_commit') && decision.sha) {
                 const upd = promoteInferredToExplicit(raw, decision.sha);
-                if (upd)
+                if (upd) {
                     fs.writeFileSync(fp, upd);
+                    promoted = true;
+                }
             }
         }
         catch { /* best-effort: persist failure must not block keep-Done */ }
-        return 'inferred';
-    }
-    if (decision.action === 'keep') {
+        if (promoted)
+            return 'inferred';
         logPhantomDoneKept(input, ticketId, workingDir, decision.fallbackFired ?? false);
         return 'explicit-reachable';
     }
@@ -1145,10 +1146,8 @@ function findSplitTwins(originalTitle, allTickets, selfId) {
  * not Done or lacks a usable delivery SHA (caller should hold the original).
  *
  * Uses readEvidence as the oracle (per R-RIC-EXPLICIT-4 contract) to classify
- * the twin's evidence kind. Accepts explicit, inferred-fresh, AND inferred-stale
- * kinds — per R-AFCC-STAGE, an inferred-stale SHA is a stored but currently
- * unverifiable SHA, still valid evidence (e.g. non-repo workingDir is legitimate).
- * Only 'absent' blocks the auto-close.
+ * the twin's evidence kind. Accepts `committed` evidence (an attributable git
+ * commit exists); only `absent` blocks the auto-close.
  */
 function collectTwinEvidence(input, ticketId, twins, fallbackWorkingDir) {
     const evidence = [];
@@ -1174,9 +1173,8 @@ function collectTwinEvidence(input, ticketId, twins, fallbackWorkingDir) {
             fallbackDir: input.workingDir,
         };
         // Use the oracle (readEvidence) to classify the twin's completion evidence.
-        // R-AFCC-STAGE: inferred-stale is still valid evidence — a stored SHA in a
-        // non-repo workingDir (or when the commit was dropped from the graph) is
-        // legitimate; we accept it rather than blocking the auto-close.
+        // B-DURA T70: only `committed` evidence (a git-verified SHA) lets the
+        // auto-close proceed; `absent` blocks it.
         const twinEvidence = readEvidence(twinCtx);
         if (twinEvidence.kind === 'absent' || !twinEvidence.sha) {
             input.log?.(`R-PDUP: holding split original ${ticketId} — twin ${twin.id} Done but no usable delivery SHA`);
@@ -1262,7 +1260,7 @@ export function correctPhantomDoneTickets(input) {
             const kind = batchLoopPhantomDoneKind(input, ticket.id, workingDir);
             if (kind === 'explicit-reachable' || kind === 'inferred')
                 continue;
-            // kind is 'absent' or 'unreachable' → revert
+            // kind is 'absent' → revert
             if (!writeTicketStatus(input.sessionDir, ticket.id, 'Todo'))
                 continue;
             corrected++;
@@ -1312,15 +1310,16 @@ function applyInspectPhantomDoneDecision(content, filePath, sessionDir, ticketId
         return { changed: false, reason: 'unparseable', gitFailureReason: safeErrorMessage(err) };
     }
     switch (decision.action) {
-        case 'keep':
-            return { changed: false, reason: 'has_completion_commit' };
-        case 'persist-inferred': {
-            // D1 (84c209ae) promote-once: completion_commit absent (checked above) — promote
-            // the git-verified inferred SHA to EXPLICIT completion_commit and DELETE the
-            // inferred field. The first pass returns 'backfilled' (caller emits ONE backfill
-            // event); subsequent passes see the explicit field → 'has_completion_commit' →
-            // no further event, so the backfill count stays stable instead of growing per pass.
-            const updated = promoteInferredToExplicit(content, decision.sha ?? '');
+        case 'keep': {
+            // The explicit completion_commit field was absent (checked above), so a
+            // `keep` decision here carries a committed SHA from the inferred field or a
+            // git-log scan. D1 (84c209ae) promote-once: write EXPLICIT completion_commit
+            // and DELETE the inferred field so the first pass returns 'backfilled' (caller
+            // emits ONE backfill event) and subsequent passes see the explicit field →
+            // 'has_completion_commit' → no further event (stable backfill count).
+            if (!decision.sha)
+                return { changed: false, reason: 'has_completion_commit' };
+            const updated = promoteInferredToExplicit(content, decision.sha);
             if (!updated)
                 return { changed: false, reason: 'unparseable' };
             try {
@@ -1329,7 +1328,7 @@ function applyInspectPhantomDoneDecision(content, filePath, sessionDir, ticketId
             catch {
                 return { changed: false, reason: 'unparseable' };
             }
-            return { changed: true, reason: 'backfilled', commit: decision.sha ?? undefined };
+            return { changed: true, reason: 'backfilled', commit: decision.sha };
         }
         case 'revert': {
             const wrote = writeTicketStatus(sessionDir, ticketId, priorStatus);
@@ -2276,7 +2275,8 @@ export function validateAutoTicketCompletion(sessionDir, ticketId, workingDir, s
         return { action: 'skip', reason: 'acceptance_criteria_not_checked' };
     }
     // R-AFCC-DEEP-4A: readEvidence replaces hasCompletionCommit. 'absent' covers
-    // the legacy 'unreachable' case (explicit SHA present but not git-reachable).
+    // every non-committed case (no field/scan match, an explicit SHA that is not
+    // git-reachable, a baseline SHA, or a stored-but-unverifiable inferred SHA).
     const evidence = readEvidence({
         sessionDir,
         ticketId,
@@ -2295,7 +2295,7 @@ export function applyAutoTicketCompletionValidation(input) {
         // auto-fill runs and completion_commit is persisted to the frontmatter.
         // Manager drift path: ticket starts 'In Progress', so the guard's inline
         // upsert (which requires status=Done) cannot run yet; the guard's
-        // inferred-fresh auto-promote attributes the durable boundary commit
+        // committed-evidence auto-promote attributes the durable boundary commit
         // (B-DURA T10) and the post-markTicketDone upsert runs below.
         const guard = guardCompletionCommitBeforeDone({
             sessionDir: input.sessionDir,
@@ -3862,12 +3862,10 @@ export function clearStaleDoneWithoutCommitEvidence(statePath) {
     }
     catch { /* best-effort — finalize path will resolve terminal state */ }
 }
-/** Map a four-state EvidenceKind back to the legacy CompletionCommitEvidence source for error callers. */
+/** Map the 2-state EvidenceKind back to the legacy CompletionCommitEvidence source for error callers. */
 function mapEvidenceKindToLegacySource(kind) {
-    if (kind === 'explicit')
+    if (kind === 'committed')
         return 'explicit-reachable';
-    if (kind === 'inferred-fresh' || kind === 'inferred-stale')
-        return 'inferred';
     return 'absent';
 }
 /**
@@ -3903,7 +3901,7 @@ export function readAnnouncedCompletionSha(sessionDir, ticketId) {
 /**
  * R-CCEM (#126): when Done-flip evidence is `absent` but the worker announced a
  * commit SHA (state.activity), persist that self-declared SHA as
- * `completion_commit_inferred` and re-probe so the inferred-fresh auto-promote
+ * `completion_commit_inferred` and re-probe so the committed-evidence auto-promote
  * can attribute the ticket — instead of FATAL-halting the whole pickle phase on
  * a codex commit whose message omitted the ticket id. Runs ONLY on the Done-flip
  * guard path (never the worker-gate failed-flip-suppression). `readEvidence`
@@ -3981,7 +3979,7 @@ export function guardCompletionCommitBeforeDone(args) {
         },
     };
     // R-AFCC-DEEP-4A: use readEvidence (replaces hasCompletionCommit).
-    const evidenceAccepted = (r) => r.kind === 'explicit' && !!r.sha;
+    const evidenceAccepted = (r) => r.kind === 'committed' && !!r.sha;
     let evidenceR = readEvidence(probe);
     if (!evidenceAccepted(evidenceR)) {
         // R-CCGR: the worker commits + stamps `completion_commit`, then emits its
@@ -3992,15 +3990,17 @@ export function guardCompletionCommitBeforeDone(args) {
         evidenceR = readEvidence(probe);
     }
     // R-CCEM (#126): absent evidence + a worker-announced commit SHA → recover the
-    // worker's OWN declared SHA as inferred evidence so the inferred-fresh
+    // worker's OWN declared SHA as inferred evidence so the committed-evidence
     // auto-promote below can attribute the ticket (extracted to keep the guard
     // under the complexity ceiling).
     evidenceR = recoverInferredFromAnnouncement(args, probe, evidenceR);
-    // R-WUWC SOFT-variant: inferred-fresh — auto-promote to explicit by writing
-    // the SHA into ticket frontmatter via persistEvidence, then re-probe.
+    // R-WUWC SOFT-variant: committed evidence whose SHA came from the inferred
+    // field or git-log scan — auto-promote to an explicit completion_commit by
+    // writing the SHA into ticket frontmatter via persistEvidence, then re-probe.
     // This is the runtime equivalent of the operator workaround:
-    // `edit ticket frontmatter to include completion_commit: <sha>`.
-    if (evidenceR.kind === 'inferred-fresh' && evidenceR.sha) {
+    // `edit ticket frontmatter to include completion_commit: <sha>`. persistEvidence
+    // no-ops (already_present) when the explicit field is already there.
+    if (evidenceR.kind === 'committed' && evidenceR.sha) {
         try {
             const result = persistEvidence(probe, evidenceR.sha, { stage: 'best-effort' });
             if (result.action === 'written') {
@@ -4009,7 +4009,7 @@ export function guardCompletionCommitBeforeDone(args) {
         }
         catch { /* best-effort — fall through to existing classification */ }
     }
-    if (evidenceR.kind === 'explicit' && evidenceR.sha) {
+    if (evidenceR.kind === 'committed' && evidenceR.sha) {
         return { ok: true, sha: evidenceR.sha };
     }
     // Map EvidenceKind back to legacy source for callers that inspect the error.
@@ -4017,7 +4017,7 @@ export function guardCompletionCommitBeforeDone(args) {
     return {
         ok: false,
         source: legacySource,
-        reason: `ticket ${args.ticketId} cannot flip Done: readEvidence().kind === '${evidenceR.kind}' (expected 'explicit'); ` +
+        reason: `ticket ${args.ticketId} cannot flip Done: readEvidence().kind === '${evidenceR.kind}' (expected 'committed'); ` +
             `worker did not produce an attributable git commit. Edit ticket frontmatter to include completion_commit: <sha>.`,
     };
 }
@@ -4194,7 +4194,7 @@ export function commitAndContinueDoneFlip(input) {
         sessionDir: input.sessionDir,
         ticketId: input.ticketId,
         workingDir: input.workingDir,
-        // The recovery commit references the ticket id; the guard's inferred-fresh
+        // The recovery commit references the ticket id; the guard's committed-evidence
         // auto-promote attributes it and persists completion_commit post-flip.
         flags: input.flags ?? {},
     });
@@ -4415,6 +4415,20 @@ export function commitGatePassingDeliverableOnExitPath(input) {
  * `boundary_commit_resolved` event recording the branch taken.
  */
 /**
+ * B-DURA T70: true when the ticket frontmatter already carries an explicit
+ * `completion_commit` field (vs. a SHA only resolvable via scan/inferred). Best-
+ * effort — any read failure returns false (caller falls through to persist).
+ */
+function ticketHasExplicitCompletionCommit(sessionDir, ticketId) {
+    try {
+        const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf8');
+        return !!readFrontmatterField(raw, 'completion_commit');
+    }
+    catch {
+        return false;
+    }
+}
+/**
  * T10 Branch 1 helper: HEAD moved this iteration → attribute the existing commit
  * (never re-commit). Returns the resolved boundary result.
  */
@@ -4439,13 +4453,15 @@ function attributeBoundaryHeadMoved(sessionDir, ticketId, workingDir) {
         },
     };
     let evidence = readEvidence(probe);
-    // Already explicitly tagged (present + reachable completion_commit) → no-op.
-    if (evidence.kind === 'explicit' && evidence.sha) {
+    // Already explicitly tagged (present + reachable completion_commit field) → no-op.
+    // B-DURA T70: readEvidence returns `committed` for both the explicit field and a
+    // scan-found SHA, so read the field directly to distinguish no-op from persist.
+    if (evidence.kind === 'committed' && evidence.sha && ticketHasExplicitCompletionCommit(sessionDir, ticketId)) {
         return { outcome: 'attributed', reason: 'no-op-head-moved', sha: evidence.sha };
     }
     // Untagged worker commit → attribute via the file-touch window by writing the
     // discovered SHA into completion_commit (no second commit). When readEvidence
-    // resolves an inferred SHA, persist it so the Done-flip gate reads 'explicit'.
+    // resolves a scan/inferred SHA, persist it so the Done-flip gate reads committed.
     if (evidence.sha) {
         try {
             const persisted = persistEvidence(probe, evidence.sha, { stage: 'best-effort' });
@@ -6915,8 +6931,8 @@ export function routeDetachedWorkerTerminalNoProgress(input) {
 /**
  * Resolve the clean-tree back-fill attribution sha via the shipped `readEvidence`
  * oracle (R-AFCC-DEEP-4A). Returns the attributable commit sha when the ticket's
- * declared-file-touch / explicit-stamp evidence is `explicit` or `inferred-fresh`,
- * else null. Reuses the existing greenGate probe (runBetweenTicketFastTests) for
+ * declared-file-touch / explicit-stamp evidence is `committed`, else null.
+ * Reuses the existing greenGate probe (runBetweenTicketFastTests) for
  * the declared-file-touch branch — identical to `guardCompletionCommitBeforeDone`.
  * Best-effort: any throw → null (salvage falls through to its existing no-op).
  */
@@ -6942,9 +6958,7 @@ function resolveCleanTreeAttribution(sessionDir, workingDir, ticketId) {
         });
         if (!evidence.sha)
             return null;
-        if (evidence.kind === 'explicit')
-            return evidence.sha;
-        if (evidence.kind === 'inferred-fresh')
+        if (evidence.kind === 'committed')
             return evidence.sha;
         return null;
     }
@@ -7045,7 +7059,7 @@ export function routeDeadDetachedWorkerDisposition(input) {
     };
     // Resolve the clean-tree attribution sha via the shipped readEvidence oracle
     // (an already-permitted oracle caller — no new importer, no scanGitLog export).
-    // Only an explicit OR inferred-fresh sha is attributable; anything else leaves
+    // Only a `committed` sha is attributable; anything else leaves
     // completionCommitSha null and salvage falls through to the existing no-op.
     const attributedCleanTreeSha = input.deps ? null : resolveCleanTreeAttribution(sessionDir, workingDir, ticketId);
     const outcome = salvageTicket({ sessionDir, workingDir, ticketId, log, completionCommitSha: attributedCleanTreeSha }, input.deps ?? productionDeps);

@@ -464,7 +464,7 @@ then
   audit_exit_code=1
 fi
 
-# R-AFCC-CALLER-ENUMERATION: oracle callsite audit — verify exactly 3 caller files import ticket-completion-evidence
+# R-AFCC-CALLER-ENUMERATION: oracle callsite audit — verify exactly 2 caller files import ticket-completion-evidence
 if ! node - "$EXTENSION_ROOT/src" <<'NODE'
 const fs = require('fs');
 const path = require('path');
@@ -490,7 +490,6 @@ const files = grepOutput.trim().split('\n').filter(Boolean)
 const EXPECTED_CALLERS = [
   'mux-runner.ts',
   'auto-fill-completion-commit.ts',
-  'pickle-utils.ts',
 ];
 
 const basenames = files.map(f => path.basename(f));

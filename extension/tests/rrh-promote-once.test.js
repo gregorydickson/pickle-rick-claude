@@ -74,7 +74,7 @@ test('D1a: inferred Done ticket is promoted EXACTLY ONCE across N passes', () =>
       fs.mkdirSync(sessionDir, { recursive: true });
 
       // Done ticket with completion_commit_inferred pointing at a REAL commit,
-      // so readEvidence classifies inferred-fresh → oracle persist-inferred.
+      // so readEvidence classifies committed → oracle keep → watcher promotes once.
       const id = 'ticketd1a';
       const fp = writeTicket(sessionDir, id, [
         `id: ${id}`,
@@ -171,7 +171,8 @@ test('D1b: keep/revert routes through gateForPhantomDoneRevert oracle (not a bes
       const keepResult = inspectPhantomDoneTicketFile(explicitFp, sessionDir, repo, 'Todo');
       assert.equal(keepResult.reason, 'has_completion_commit', 'watcher must keep when oracle says keep');
 
-      // Case 3: inferred-fresh → oracle returns action:'persist-inferred' → promotion.
+      // Case 3 (B-DURA T70): a git-verified completion_commit_inferred SHA is
+      // `committed` → oracle returns action:'keep'; the watcher promotes it once.
       const inferredId = 'ticketinferred';
       const inferredFp = writeTicket(sessionDir, inferredId, [
         `id: ${inferredId}`,
@@ -179,8 +180,11 @@ test('D1b: keep/revert routes through gateForPhantomDoneRevert oracle (not a bes
         'status: Done',
         `completion_commit_inferred: "${sha}"`,
       ]);
-      const persistDecision = gateForPhantomDoneRevert({ sessionDir, ticketId: inferredId, ticketPath: inferredFp, workingDir: repo });
-      assert.equal(persistDecision.action, 'persist-inferred', 'oracle must classify inferred-fresh as persist-inferred');
+      const keepInferredDecision = gateForPhantomDoneRevert({ sessionDir, ticketId: inferredId, ticketPath: inferredFp, workingDir: repo });
+      assert.equal(keepInferredDecision.action, 'keep', 'oracle must classify a git-verified inferred SHA as keep (committed)');
+      assert.equal(keepInferredDecision.kind, 'committed', 'oracle kind must be committed');
+      const inferredResult = inspectPhantomDoneTicketFile(inferredFp, sessionDir, repo, 'Todo');
+      assert.equal(inferredResult.reason, 'backfilled', 'watcher promotes the committed inferred SHA to the explicit field');
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }

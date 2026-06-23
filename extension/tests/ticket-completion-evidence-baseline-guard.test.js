@@ -82,7 +82,7 @@ test('R-CXOR-2: completion_commit equal to pinnedSha is rejected as evidence', (
     'completion_commit equal to pinnedSha must be rejected (kind: absent)');
 });
 
-test('R-CXOR-2: a distinct non-baseline commit is accepted as explicit evidence', () => {
+test('R-CXOR-2: a distinct non-baseline commit is accepted as committed evidence', () => {
   const root = makeTmp();
   const sessionDir = path.join(root, 'session');
   const repoDir = path.join(root, 'repo');
@@ -101,7 +101,7 @@ test('R-CXOR-2: a distinct non-baseline commit is accepted as explicit evidence'
     pinnedSha: PINNED_SHA,
   });
 
-  assert.equal(result.kind, 'explicit',
-    'distinct real commit must be accepted as explicit evidence');
+  assert.equal(result.kind, 'committed',
+    'distinct real commit must be accepted as committed evidence (B-DURA T70)');
   assert.equal(result.sha, realSha);
 });

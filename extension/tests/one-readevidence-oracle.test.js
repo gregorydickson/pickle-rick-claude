@@ -60,7 +60,7 @@ function watcherVerdict(sessionDir, ticketId, workingDir, startCommit, pinnedSha
     { sessionDir, ticketId, workingDir, startCommit, pinnedSha },
     { flags: null },
   );
-  // keep/persist-inferred → committed; revert → absent.
+  // keep → committed; revert → absent.
   return decision.action === 'revert' ? 'absent' : 'committed';
 }
 

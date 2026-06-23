@@ -1,7 +1,7 @@
 // @tier: fast
 //
-// R-CCQF regression: `hasCompletionCommit` must accept ALL three documented
-// frontmatter serializations of `completion_commit:` as `source: 'explicit'`:
+// R-CCQF regression: `readEvidence` must accept ALL three documented
+// frontmatter serializations of `completion_commit:` as `kind: 'committed'`:
 //   1. Unquoted short SHA  (auto-promote helper writes this shape)
 //   2. Unquoted full SHA   (codex tool calls write this shape)
 //   3. Quoted (single OR double) short OR full SHA
@@ -19,7 +19,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { hasCompletionCommit, normalizeCompletionCommitField } from '../services/pickle-utils.js';
+import { normalizeCompletionCommitField } from '../services/pickle-utils.js';
+import { readEvidence } from '../services/ticket-completion-evidence.js';
 
 function mkTmp(prefix = 'pickle-ccqf-') {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -95,36 +96,37 @@ test('R-CCQF: normalizeCompletionCommitField returns null for null/undefined/emp
 
 // AC-CCQF-04: integration — real git repo + ticket file with each shape ------
 
-test('R-CCQF: hasCompletionCommit classifies quoted full SHA as explicit', () => {
+test('R-CCQF: readEvidence classifies quoted full SHA as committed', () => {
   const root = mkTmp();
   try {
     initGitRepo(root);
     const sha = makeRealCommit(root, 'quoted-full');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'qf001', `completion_commit: "${sha}"`);
-    const ev = hasCompletionCommit({ sessionDir, ticketId: 'qf001', workingDir: root });
-    assert.deepEqual(ev, { sha, source: 'explicit-reachable' },
-      'quoted full SHA must classify as explicit-reachable (R-CCQF live incident class)');
+    const ev = readEvidence({ sessionDir, ticketId: 'qf001', workingDir: root });
+    assert.equal(ev.kind, 'committed', 'quoted full SHA must classify as committed (R-CCQF live incident class)');
+    assert.equal(ev.sha, sha);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('R-CCQF: hasCompletionCommit classifies unquoted full SHA as explicit', () => {
+test('R-CCQF: readEvidence classifies unquoted full SHA as committed', () => {
   const root = mkTmp();
   try {
     initGitRepo(root);
     const sha = makeRealCommit(root, 'unquoted-full');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'uf001', `completion_commit: ${sha}`);
-    const ev = hasCompletionCommit({ sessionDir, ticketId: 'uf001', workingDir: root });
-    assert.deepEqual(ev, { sha, source: 'explicit-reachable' });
+    const ev = readEvidence({ sessionDir, ticketId: 'uf001', workingDir: root });
+    assert.equal(ev.kind, 'committed');
+    assert.equal(ev.sha, sha);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('R-CCQF: hasCompletionCommit classifies single-quoted short SHA as explicit', () => {
+test('R-CCQF: readEvidence classifies single-quoted short SHA as committed', () => {
   const root = mkTmp();
   try {
     initGitRepo(root);
@@ -132,8 +134,8 @@ test('R-CCQF: hasCompletionCommit classifies single-quoted short SHA as explicit
     const shortSha = fullSha.slice(0, 8);
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'sq001', `completion_commit: '${shortSha}'`);
-    const ev = hasCompletionCommit({ sessionDir, ticketId: 'sq001', workingDir: root });
-    assert.equal(ev.source, 'explicit-reachable');
+    const ev = readEvidence({ sessionDir, ticketId: 'sq001', workingDir: root });
+    assert.equal(ev.kind, 'committed');
     assert.equal(ev.sha, shortSha);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -146,13 +148,11 @@ test('R-CCQF: corrupt SHA (truncated) classifies as absent, not inferred', () =>
     initGitRepo(root);
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'bad001', 'completion_commit: "abc"'); // 3 chars — too short
-    const ev = hasCompletionCommit({ sessionDir, ticketId: 'bad001', workingDir: root });
+    const ev = readEvidence({ sessionDir, ticketId: 'bad001', workingDir: root });
     // Parse failure -> falls through frontmatter check; no R-code/ticket-id in
     // any commit message either, so terminal classification is `absent`.
-    // Critically: NOT 'inferred' (parse failure must not be confused with
-    // git-log scan miss).
-    assert.equal(ev.source, 'absent', 'corrupt SHA must classify as absent');
-    assert.equal(ev.sha, null);
+    assert.equal(ev.kind, 'absent', 'corrupt SHA must classify as absent');
+    assert.equal(ev.sha, undefined);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -180,9 +180,10 @@ test('R-CCQF: live-incident fixture (session 2026-05-23-48e6309a/26301c6a shape)
       '---',
       '# Description',
     ].join('\n'));
-    const ev = hasCompletionCommit({ sessionDir, ticketId: '26301c6a', workingDir: root });
-    assert.deepEqual(ev, { sha, source: 'explicit-reachable' },
-      'live incident shape must classify as explicit-reachable — gate must not refuse a fully-shipped commit');
+    const ev = readEvidence({ sessionDir, ticketId: '26301c6a', workingDir: root });
+    assert.equal(ev.kind, 'committed',
+      'live incident shape must classify as committed — gate must not refuse a fully-shipped commit');
+    assert.equal(ev.sha, sha);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

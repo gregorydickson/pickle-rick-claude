@@ -7,7 +7,6 @@ import { State, VALID_STEPS, LockError, SessionMapEntry, type ActivityEvent, typ
 import { StateManager, isProcessAlive } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 import { updateTicketStatusInTransaction } from './transaction-ticket-ops.js';
-import { readEvidence } from './ticket-completion-evidence.js';
 import { isRecord } from '../lib/is-record.js';
 
 let stateWriteSeq = 0;
@@ -1048,7 +1047,7 @@ export function getTicketStatus(sessionRoot: string, ticketId: string): TicketSt
 
 export interface CompletionCommitEvidence {
   sha: string | null;
-  source: 'explicit-reachable' | 'inferred' | 'absent' | 'unreachable';
+  source: 'explicit-reachable' | 'inferred' | 'absent';
   /** R-CCR-1: true when per-ticket workingDir was unusable and fallbackDir succeeded. */
   usedFallback?: boolean;
 }
@@ -1178,39 +1177,6 @@ export function normalizeCompletionCommitField(raw: string | null | undefined): 
   const stripped = raw.trim().replace(/^["']+|["']+$/g, '').trim();
   if (!stripped) return null;
   return /^[0-9a-f]{7,40}$/i.test(stripped) ? stripped : null;
-}
-
-/**
- * @deprecated R-AFCC-DEEP-4A: use readEvidence from ticket-completion-evidence.ts.
- * Retained as a compatibility shim for one minor version. Maps EvidenceKind back
- * to the legacy CompletionCommitEvidence.source union.
- *
- * Mapping:
- *   explicit       → 'explicit-reachable'
- *   inferred-fresh → 'inferred'
- *   inferred-stale → 'inferred'  (closest legacy mapping; SHA is preserved)
- *   absent         → 'absent'    (collapses legacy 'unreachable' into 'absent')
- */
-export function hasCompletionCommit(args: {
-  sessionDir?: string;
-  ticketId?: string;
-  ticketPath?: string;
-  workingDir: string;
-  startTimeEpoch?: number | null;
-  /** R-CCR-1: session-dir fallback when ticket.working_dir is stale/non-git. */
-  fallbackDir?: string;
-}): CompletionCommitEvidence {
-  const r = readEvidence(args);
-  const source: CompletionCommitEvidence['source'] =
-    r.kind === 'explicit' ? 'explicit-reachable' :
-    r.kind === 'inferred-fresh' ? 'inferred' :
-    r.kind === 'inferred-stale' ? 'inferred' :
-    'absent';
-  const evidence: CompletionCommitEvidence = { sha: r.sha ?? null, source };
-  // R-CCR-1: surface the fallback-dir flag only when it actually fired; an
-  // explicit `usedFallback: undefined` would break strict-equality consumers.
-  if (r.usedFallback) evidence.usedFallback = r.usedFallback;
-  return evidence;
 }
 
 /**

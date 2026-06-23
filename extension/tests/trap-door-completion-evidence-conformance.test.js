@@ -3,7 +3,9 @@
 // `extension-trapdoor-afcc-deep-pattern-shape-drift`.
 //
 // R-AFCC-DEEP-4A migrated mux-runner.ts off `hasCompletionCommit` /
-// `autoFillCompletionCommit` onto `readEvidence` / `persistEvidence`, but the
+// `autoFillCompletionCommit` onto `readEvidence` / `persistEvidence` (B-DURA T70
+// then deleted the `hasCompletionCommit` shim entirely and collapsed EvidenceKind
+// to `committed | absent`), but the
 // R-WUWC SOFT-variant and R-CCRC-2 trap-door entries in extension/CLAUDE.md kept
 // pointing their PATTERN_SHAPE replay anchors at the deleted `autoFillCompletionCommit(`
 // symbol. A replay anchor that names a symbol absent from the file can never match,
@@ -48,8 +50,8 @@ test('R-WUWC SOFT-variant trap door names the live persistEvidence anchor, not t
     'R-WUWC trap door must reference the current persistEvidence( auto-promotion call',
   );
   assert.ok(
-    entry.includes("inferred-fresh"),
-    'R-WUWC trap door must reference the current inferred-fresh evidence kind',
+    entry.includes("committed"),
+    'R-WUWC trap door must reference the current committed evidence kind (B-DURA T70 collapse)',
   );
 });
 
@@ -142,16 +144,15 @@ test('ticket-completion-evidence.ts implements the R-CCQF/R-CCRC-1/R-RIC-EXPLICI
     explicitIdx < scanIdx,
     'R-RIC-EXPLICIT: explicit completion_commit read must precede scanGitLog in readEvidence',
   );
-  // hasCompletionCommit in pickle-utils.ts must remain a thin delegate to
-  // readEvidence — if it ever re-grows the parsing logic the anchors must move back.
+  // B-DURA T70 deleted the deprecated hasCompletionCommit shim — pickle-utils.ts
+  // must NOT re-grow it (the single oracle is readEvidence).
   const pickleUtils = fs.readFileSync(
     path.join(repoRoot, 'extension', 'src', 'services', 'pickle-utils.ts'),
     'utf8',
   );
-  assert.match(
-    pickleUtils,
-    /export function hasCompletionCommit[\s\S]{0,400}readEvidence\(args\)/,
-    'hasCompletionCommit must delegate to readEvidence (deprecated shim); R-CCQF/R-CCRC-1 anchors now live in ticket-completion-evidence.ts',
+  assert.ok(
+    !/export function hasCompletionCommit\b/.test(pickleUtils),
+    'hasCompletionCommit shim must stay deleted (B-DURA T70); readEvidence is the sole oracle',
   );
 });
 
@@ -169,7 +170,7 @@ test('mux-runner.ts implements completion-evidence auto-promotion via persistEvi
     'guardCompletionCommitBeforeDone',
     'clearStaleDoneWithoutCommitEvidence',
     'markTicketDone',
-    "'inferred-fresh'",
+    "'committed'",
   ]) {
     assert.ok(
       muxRunner.includes(symbol),

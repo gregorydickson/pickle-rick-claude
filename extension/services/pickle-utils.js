@@ -7,7 +7,6 @@ import { VALID_STEPS, LockError } from '../types/index.js';
 import { StateManager, isProcessAlive } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 import { updateTicketStatusInTransaction } from './transaction-ticket-ops.js';
-import { readEvidence } from './ticket-completion-evidence.js';
 import { isRecord } from '../lib/is-record.js';
 let stateWriteSeq = 0;
 const DEFAULT_MICROVERSE_SETTINGS = {
@@ -991,30 +990,6 @@ export function normalizeCompletionCommitField(raw) {
     if (!stripped)
         return null;
     return /^[0-9a-f]{7,40}$/i.test(stripped) ? stripped : null;
-}
-/**
- * @deprecated R-AFCC-DEEP-4A: use readEvidence from ticket-completion-evidence.ts.
- * Retained as a compatibility shim for one minor version. Maps EvidenceKind back
- * to the legacy CompletionCommitEvidence.source union.
- *
- * Mapping:
- *   explicit       → 'explicit-reachable'
- *   inferred-fresh → 'inferred'
- *   inferred-stale → 'inferred'  (closest legacy mapping; SHA is preserved)
- *   absent         → 'absent'    (collapses legacy 'unreachable' into 'absent')
- */
-export function hasCompletionCommit(args) {
-    const r = readEvidence(args);
-    const source = r.kind === 'explicit' ? 'explicit-reachable' :
-        r.kind === 'inferred-fresh' ? 'inferred' :
-            r.kind === 'inferred-stale' ? 'inferred' :
-                'absent';
-    const evidence = { sha: r.sha ?? null, source };
-    // R-CCR-1: surface the fallback-dir flag only when it actually fired; an
-    // explicit `usedFallback: undefined` would break strict-equality consumers.
-    if (r.usedFallback)
-        evidence.usedFallback = r.usedFallback;
-    return evidence;
 }
 /**
  * Marks a ticket's frontmatter status as "Done" by rewriting the status line.

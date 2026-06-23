@@ -1381,7 +1381,8 @@ test('mux-runner: creates mux-runner.log in session directory', () => {
 
 // --- Completion classification (classifyCompletion) ---
 
-import { buildTmuxNotification, classifyCompletion, classifyTicketCompletion, applyAutoTicketCompletionValidation, correctPhantomDoneTickets, hasCompletionCommit, extractAssistantContent, transitionToMeeseeks, loadRateLimitSettings, loadMeeseeksModel, classifyIterationExit, detectRateLimitInLog, detectRateLimitInText, stripSetupSection, detectMultiRepo, validateAutoTicketCompletion, writeHandoffAtomic, classifyGitProbeError, resolveQualityGateSkipReason, _resetQualityGateSkipDeprecation } from '../bin/mux-runner.js';
+import { buildTmuxNotification, classifyCompletion, classifyTicketCompletion, applyAutoTicketCompletionValidation, correctPhantomDoneTickets, extractAssistantContent, transitionToMeeseeks, loadRateLimitSettings, loadMeeseeksModel, classifyIterationExit, detectRateLimitInLog, detectRateLimitInText, stripSetupSection, detectMultiRepo, validateAutoTicketCompletion, writeHandoffAtomic, classifyGitProbeError, resolveQualityGateSkipReason, _resetQualityGateSkipDeprecation } from '../bin/mux-runner.js';
+import { readEvidence } from '../services/ticket-completion-evidence.js';
 
 test('classifyCompletion: TASK_COMPLETED returns continue (single ticket, loop continues)', () => {
     assert.equal(classifyCompletion('<promise>TASK_COMPLETED</promise>'), 'continue');
@@ -3432,7 +3433,7 @@ function writeAutoMarkTicketWithCompletionCommit(sessionDir, ticketId, sha) {
     ].join('\n'));
 }
 
-test('R-CCC-5 hasCompletionCommit: explicit frontmatter + reachable SHA returns explicit', () => {
+test('R-CCC-5 readEvidence: explicit frontmatter + reachable SHA returns committed', () => {
     const tmpDir = makeTmpRoot();
     try {
         initGitRepo(tmpDir);
@@ -3445,15 +3446,15 @@ test('R-CCC-5 hasCompletionCommit: explicit frontmatter + reachable SHA returns 
         const ticketId = 'aabbccdd';
         writeAutoMarkTicketWithCompletionCommit(sessionDir, ticketId, sha);
 
-        const evidence = hasCompletionCommit({ sessionDir, ticketId, workingDir: tmpDir });
-        assert.equal(evidence.source, 'explicit-reachable');
+        const evidence = readEvidence({ sessionDir, ticketId, workingDir: tmpDir });
+        assert.equal(evidence.kind, 'committed');
         assert.equal(evidence.sha, sha);
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
 });
 
-test('R-CCC-5 hasCompletionCommit: frontmatter absent + git --grep matches returns inferred', () => {
+test('R-CCC-5 readEvidence: frontmatter absent + git --grep matches returns committed', () => {
     const tmpDir = makeTmpRoot();
     try {
         initGitRepo(tmpDir);
@@ -3466,15 +3467,15 @@ test('R-CCC-5 hasCompletionCommit: frontmatter absent + git --grep matches retur
         // Note: status:Done frontmatter without completion_commit field.
         writeAutoMarkTicketWithStatus(sessionDir, ticketId, 'Done', true);
 
-        const evidence = hasCompletionCommit({ sessionDir, ticketId, workingDir: tmpDir });
-        assert.equal(evidence.source, 'inferred');
+        const evidence = readEvidence({ sessionDir, ticketId, workingDir: tmpDir });
+        assert.equal(evidence.kind, 'committed');
         assert.equal(evidence.sha, sha);
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
 });
 
-test('R-CCC-5 hasCompletionCommit: no frontmatter SHA AND no matching commit returns absent', () => {
+test('R-CCC-5 readEvidence: no frontmatter SHA AND no matching commit returns absent', () => {
     const tmpDir = makeTmpRoot();
     try {
         initGitRepo(tmpDir);
@@ -3482,9 +3483,9 @@ test('R-CCC-5 hasCompletionCommit: no frontmatter SHA AND no matching commit ret
         const ticketId = 'feedface';
         writeAutoMarkTicketWithStatus(sessionDir, ticketId, 'Done', true);
 
-        const evidence = hasCompletionCommit({ sessionDir, ticketId, workingDir: tmpDir });
-        assert.equal(evidence.source, 'absent');
-        assert.equal(evidence.sha, null);
+        const evidence = readEvidence({ sessionDir, ticketId, workingDir: tmpDir });
+        assert.equal(evidence.kind, 'absent');
+        assert.equal(evidence.sha, undefined);
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -3594,9 +3595,9 @@ test('R-AFCC-DEEP-3C correctPhantomDoneTickets: backtick-decorated completion_co
             '',
         ].join('\n'));
 
-        // hasCompletionCommit returns 'absent' for the decorated value.
-        const evidence = hasCompletionCommit({ sessionDir, ticketId, workingDir: tmpDir });
-        assert.equal(evidence.source, 'absent', 'precondition: strict check misses the decorated SHA');
+        // readEvidence returns 'absent' for the decorated value.
+        const evidence = readEvidence({ sessionDir, ticketId, workingDir: tmpDir });
+        assert.equal(evidence.kind, 'absent', 'precondition: strict check misses the decorated SHA');
 
         // Without the lax-strip fallback, the watcher reverts the ticket.
         const corrected = correctPhantomDoneTickets({
@@ -3849,8 +3850,8 @@ test('R-AFCC-DEEP-3C correctPhantomDoneTickets: backtick-decorated completion_co
             '',
         ].join('\n'));
 
-        const evidence = hasCompletionCommit({ sessionDir, ticketId, workingDir: tmpDir });
-        assert.equal(evidence.source, 'absent', 'precondition: strict check misses the decorated inferred SHA');
+        const evidence = readEvidence({ sessionDir, ticketId, workingDir: tmpDir });
+        assert.equal(evidence.kind, 'absent', 'precondition: strict check misses the decorated inferred SHA');
 
         const corrected = correctPhantomDoneTickets({
             sessionDir,

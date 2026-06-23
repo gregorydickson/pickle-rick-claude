@@ -1,6 +1,6 @@
 // @tier: fast
 //
-// R-CCRC-1 regression: `hasCompletionCommit` must scan for the ticket's
+// R-CCRC-1 regression: `readEvidence` must scan for the ticket's
 // `r_code:` frontmatter value using word-boundary matching in addition to
 // the existing ticket-id + title-extracted scan.
 //
@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { hasCompletionCommit } from '../services/pickle-utils.js';
+import { readEvidence } from '../services/ticket-completion-evidence.js';
 
 function mkTmp(prefix = 'pickle-ccrc-') {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -56,8 +56,9 @@ test('R-CCRC-1: ticket-id in commit message returns inferred (existing behavior)
     const sha = makeCommit(root, 'feat(abc12345): implement the feature');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'abc12345', { title: 'some feature without R-code in title' });
-    const ev = hasCompletionCommit({ sessionDir, ticketId: 'abc12345', workingDir: root });
-    assert.deepEqual(ev, { sha, source: 'inferred' });
+    const ev = readEvidence({ sessionDir, ticketId: 'abc12345', workingDir: root });
+    assert.equal(ev.kind, 'committed');
+    assert.equal(ev.sha, sha);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -74,8 +75,9 @@ test('R-CCRC-1: r_code conventional commit match (title lacks R-code)', () => {
     const sessionDir = path.join(root, 'session');
     // Title intentionally does not contain the R-code
     writeTicket(sessionDir, 'deadbeef', { rCode: 'R-APWS-7', title: 'Add APWS regression suite' });
-    const ev = hasCompletionCommit({ sessionDir, ticketId: 'deadbeef', workingDir: root });
-    assert.deepEqual(ev, { sha, source: 'inferred' },
+    const ev = readEvidence({ sessionDir, ticketId: 'deadbeef', workingDir: root });
+    assert.equal(ev.sha, sha);
+    assert.equal(ev.kind, 'committed',
       'r_code frontmatter must extend scan to catch R-code-scoped commits');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -92,8 +94,9 @@ test('R-CCRC-1: recovery-shape commit body contains R-code', () => {
     const sessionDir = path.join(root, 'session');
     // Title does NOT contain R-APWS-9; ticket-id not in commit message
     writeTicket(sessionDir, 'cafe0001', { rCode: 'R-APWS-9', title: 'APWS recovery ticket' });
-    const ev = hasCompletionCommit({ sessionDir, ticketId: 'cafe0001', workingDir: root });
-    assert.deepEqual(ev, { sha, source: 'inferred' },
+    const ev = readEvidence({ sessionDir, ticketId: 'cafe0001', workingDir: root });
+    assert.equal(ev.sha, sha);
+    assert.equal(ev.kind, 'committed',
       'R-code in recovery commit body must be found via r_code frontmatter field');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -110,10 +113,10 @@ test('R-CCRC-1: word-boundary — r_code R-APWS-1 does not match R-APWS-10 commi
     makeCommit(root, 'feat(R-APWS-10): implement APWS-10 feature');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'feed0001', { rCode: 'R-APWS-1', title: 'APWS-1 fix' });
-    const ev = hasCompletionCommit({ sessionDir, ticketId: 'feed0001', workingDir: root });
-    assert.equal(ev.source, 'absent',
+    const ev = readEvidence({ sessionDir, ticketId: 'feed0001', workingDir: root });
+    assert.equal(ev.kind, 'absent',
       'R-APWS-1 must NOT false-match a commit that only mentions R-APWS-10');
-    assert.equal(ev.sha, null);
+    assert.equal(ev.sha, undefined);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -128,9 +131,9 @@ test('R-CCRC-1: no matching commit returns absent', () => {
     makeCommit(root, 'feat(R-ZZZZ-99): completely unrelated commit');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'babe0001', { rCode: 'R-APWS-7', title: 'APWS ticket' });
-    const ev = hasCompletionCommit({ sessionDir, ticketId: 'babe0001', workingDir: root });
-    assert.equal(ev.source, 'absent');
-    assert.equal(ev.sha, null);
+    const ev = readEvidence({ sessionDir, ticketId: 'babe0001', workingDir: root });
+    assert.equal(ev.kind, 'absent');
+    assert.equal(ev.sha, undefined);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -149,8 +152,9 @@ test('R-CCRC-07 replay: 1511a4bc / R-APWS-7 commit shape', () => {
     const sha = makeCommit(root, 'test(R-APWS-7): add has-completion-commit-quoted-form regression test');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, '1511a4bc', { rCode: 'R-APWS-7', title: 'R-CCQF regression tests' });
-    const ev = hasCompletionCommit({ sessionDir, ticketId: '1511a4bc', workingDir: root });
-    assert.deepEqual(ev, { sha, source: 'inferred' }, 'incident 1511a4bc / R-APWS-7');
+    const ev = readEvidence({ sessionDir, ticketId: '1511a4bc', workingDir: root });
+    assert.equal(ev.sha, sha);
+    assert.equal(ev.kind, 'committed', 'incident 1511a4bc / R-APWS-7');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -163,8 +167,9 @@ test('R-CCRC-07 replay: 27aedb81 / R-APWS-8 commit shape', () => {
     const sha = makeCommit(root, 'feat(R-APWS-8): autoFillCompletionCommit SOFT-variant auto-promote');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, '27aedb81', { rCode: 'R-APWS-8', title: 'WUWC SOFT-variant auto-promote' });
-    const ev = hasCompletionCommit({ sessionDir, ticketId: '27aedb81', workingDir: root });
-    assert.deepEqual(ev, { sha, source: 'inferred' }, 'incident 27aedb81 / R-APWS-8');
+    const ev = readEvidence({ sessionDir, ticketId: '27aedb81', workingDir: root });
+    assert.equal(ev.sha, sha);
+    assert.equal(ev.kind, 'committed', 'incident 27aedb81 / R-APWS-8');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -178,8 +183,9 @@ test('R-CCRC-07 replay: 0fee5b66 / R-APWS-9 recovery shape', () => {
     const sha = makeCommit(root, 'fix(abc00010): recover R-APWS-9 work from dropped commit');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, '0fee5b66', { rCode: 'R-APWS-9', title: 'PEDC clear-on-recovery exit_reason' });
-    const ev = hasCompletionCommit({ sessionDir, ticketId: '0fee5b66', workingDir: root });
-    assert.deepEqual(ev, { sha, source: 'inferred' }, 'incident 0fee5b66 / R-APWS-9');
+    const ev = readEvidence({ sessionDir, ticketId: '0fee5b66', workingDir: root });
+    assert.equal(ev.sha, sha);
+    assert.equal(ev.kind, 'committed', 'incident 0fee5b66 / R-APWS-9');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -193,8 +199,9 @@ test('R-CCRC-07 replay: eee90f16 / R-WSRC-GR-1 commit shape', () => {
     const sha = makeCommit(root, 'feat(R-WSRC-GR-1): block prohibited git verbs from worker subprocesses');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'eee90f16', { rCode: 'R-WSRC-GR-1', title: 'Git boundary rules hook coverage' });
-    const ev = hasCompletionCommit({ sessionDir, ticketId: 'eee90f16', workingDir: root });
-    assert.deepEqual(ev, { sha, source: 'inferred' }, 'incident eee90f16 / R-WSRC-GR-1');
+    const ev = readEvidence({ sessionDir, ticketId: 'eee90f16', workingDir: root });
+    assert.equal(ev.sha, sha);
+    assert.equal(ev.kind, 'committed', 'incident eee90f16 / R-WSRC-GR-1');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

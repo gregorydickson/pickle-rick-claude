@@ -22,7 +22,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { hasCompletionCommit, normalizeCompletionCommitField } from '../services/pickle-utils.js';
+import { normalizeCompletionCommitField } from '../services/pickle-utils.js';
+import { readEvidence } from '../services/ticket-completion-evidence.js';
 
 // The exact SHA from the ea04b6f8 incident — present in the real repo,
 // but NOT in fresh tmp git repos created by these tests.
@@ -84,9 +85,8 @@ test('R-RIC-EXPLICIT: quoted full SHA in frontmatter → source must not be infe
     makeCommitWithTicketId(root, TICKET_ID);
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, TICKET_ID, `completion_commit: "${INCIDENT_SHA}"`);
-    const ev = hasCompletionCommit({ sessionDir, ticketId: TICKET_ID, workingDir: root });
-    assert.notEqual(ev.source, 'inferred', 'explicit frontmatter must not fall through to findMatchingCommit');
-    assert.equal(ev.source, 'absent', 'INCIDENT_SHA not in fresh test repo → absent (R-AFCC-DEEP-4A collapsed legacy unreachable into absent; guard still refuses Done)');
+    const ev = readEvidence({ sessionDir, ticketId: TICKET_ID, workingDir: root });
+    assert.equal(ev.kind, 'absent', 'explicit frontmatter must not fall through to scan; unreachable SHA reads absent (B-DURA T70), guard still refuses Done');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -99,9 +99,8 @@ test('R-RIC-EXPLICIT: unquoted full SHA in frontmatter → source must not be in
     makeCommitWithTicketId(root, TICKET_ID);
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, TICKET_ID, `completion_commit: ${INCIDENT_SHA}`);
-    const ev = hasCompletionCommit({ sessionDir, ticketId: TICKET_ID, workingDir: root });
-    assert.notEqual(ev.source, 'inferred', 'explicit frontmatter must not fall through to findMatchingCommit');
-    assert.equal(ev.source, 'absent', 'INCIDENT_SHA not in fresh test repo → absent (R-AFCC-DEEP-4A collapsed legacy unreachable into absent; guard still refuses Done)');
+    const ev = readEvidence({ sessionDir, ticketId: TICKET_ID, workingDir: root });
+    assert.equal(ev.kind, 'absent', 'explicit frontmatter must not fall through to scan; unreachable SHA reads absent (B-DURA T70), guard still refuses Done');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -114,9 +113,8 @@ test('R-RIC-EXPLICIT: unquoted short SHA in frontmatter → source must not be i
     makeCommitWithTicketId(root, TICKET_ID);
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, TICKET_ID, `completion_commit: ${INCIDENT_SHORT}`);
-    const ev = hasCompletionCommit({ sessionDir, ticketId: TICKET_ID, workingDir: root });
-    assert.notEqual(ev.source, 'inferred', 'explicit frontmatter must not fall through to findMatchingCommit');
-    assert.equal(ev.source, 'absent', 'INCIDENT_SHORT not in fresh test repo → absent (R-AFCC-DEEP-4A collapsed legacy unreachable into absent; guard still refuses Done)');
+    const ev = readEvidence({ sessionDir, ticketId: TICKET_ID, workingDir: root });
+    assert.equal(ev.kind, 'absent', 'explicit frontmatter must not fall through to scan; unreachable SHA reads absent (B-DURA T70), guard still refuses Done');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -129,9 +127,8 @@ test('R-RIC-EXPLICIT: quoted short SHA in frontmatter → source must not be inf
     makeCommitWithTicketId(root, TICKET_ID);
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, TICKET_ID, `completion_commit: "${INCIDENT_SHORT}"`);
-    const ev = hasCompletionCommit({ sessionDir, ticketId: TICKET_ID, workingDir: root });
-    assert.notEqual(ev.source, 'inferred', 'explicit frontmatter must not fall through to findMatchingCommit');
-    assert.equal(ev.source, 'absent', 'INCIDENT_SHORT not in fresh test repo → absent (R-AFCC-DEEP-4A collapsed legacy unreachable into absent; guard still refuses Done)');
+    const ev = readEvidence({ sessionDir, ticketId: TICKET_ID, workingDir: root });
+    assert.equal(ev.kind, 'absent', 'explicit frontmatter must not fall through to scan; unreachable SHA reads absent (B-DURA T70), guard still refuses Done');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

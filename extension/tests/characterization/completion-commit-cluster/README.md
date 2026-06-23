@@ -42,7 +42,7 @@ Paths 5a/5b/5c are grouped as path 5 in the PRD enumeration ("Three more guard-r
 
 **Paths 5a/5b/5c** — Any of the three guard callsites bypassed: Done flip without evidence check (`R-CCRC-2`). Missing `clearStaleDoneWithoutCommitEvidence`: stale exit_reason (`R-PEDC`).
 
-**Path 6** — `start_time_epoch` not passed to `hasCompletionCommit`: `findMatchingCommit` scans all commits, finds a cross-session SHA from a prior session, keeps ticket Done when it should revert (`R-AFCC-STALE`). Explicit SHA present but `gitCommitExists` check skipped (R-RIC-EXPLICIT-4): valid Done incorrectly reverted.
+**Path 6** — `start_time_epoch` not passed to `readEvidence`: the git-log scan considers all commits, finds a cross-session SHA from a prior session, keeps ticket Done when it should revert. Explicit SHA present but reachability probe skipped (R-RIC-EXPLICIT-4): valid Done incorrectly reverted. (B-DURA T70: a stored-but-unverifiable inferred SHA now reads `absent` → revert.)
 
 **Path 7** — Paths 2 and 7 are functionally identical inferred-backfill helpers separated only by the field name they write (`completion_commit` vs `completion_commit_inferred`). Divergent invariants between them are the source of several recurrence bugs. The `priorStatus` default of `'Todo'` may not match the last known good status if the caller doesn't pass it.
 
@@ -50,15 +50,17 @@ Paths 5a/5b/5c are grouped as path 5 in the PRD enumeration ("Three more guard-r
 
 ---
 
-## The 3 evidence sources
+## The 2 evidence kinds (B-DURA T70)
 
-| Kind | Read site | Description |
-|------|-----------|-------------|
-| `explicit` | `pickle-utils.js:786` | `completion_commit:` field present and valid (any quote-form, stripped by `normalizeCompletionCommitField`) |
-| `inferred` | `pickle-utils.js:790–803` | `completion_commit_inferred:` + `gitCommitExists`, OR `findMatchingCommit` via git-log scan |
-| `absent` | `pickle-utils.js:804` | Neither field present; git-log scan returns null |
+`readEvidence` (`ticket-completion-evidence.ts`) is the single oracle; the deprecated
+`hasCompletionCommit` shim was deleted in B-DURA T70.
 
-The `source` field of `hasCompletionCommit`'s return value drives all downstream decisions: guard `ok/fail`, watcher `keep/revert/backfill`.
+| Kind | Description |
+|------|-------------|
+| `committed` | An attributable git commit exists and is git-reachable: an explicit `completion_commit:` field (any quote-form, stripped by `normalizeCompletionCommitField`), a git-verified `completion_commit_inferred:` field, or a git-log scan hit (word-boundary ticket-id / r_code, or declared-file-touch). |
+| `absent` | No usable evidence: neither field present and the scan returns null, an explicit SHA that is not git-reachable, a baseline SHA (R-CXOR-2), or a stored-but-currently-unverifiable inferred SHA. |
+
+The `kind` of `readEvidence`'s return value drives all downstream decisions: guard `ok/fail`, watcher `keep/revert/backfill`.
 
 ---
 
@@ -78,7 +80,7 @@ All four forms are valid inputs to `normalizeCompletionCommitField` (`pickle-uti
 ## Related tests
 
 - `R-AFCC-DEEP-1B` — characterization tests (one file per path, `@tier: integration`)
-- `extension/tests/has-completion-commit.test.js` — `hasCompletionCommit` unit tests
+- `extension/tests/has-completion-commit.test.js` — `readEvidence` unit tests
 - `extension/tests/has-completion-commit-quoted-form.test.js` — R-CCQF quote-form tests
 - `extension/tests/guard-completion-commit-auto-promote.test.js` — R-WUWC SOFT-variant guard
 - `extension/tests/done-flip-paths-call-guard.test.js` — R-CCRC-2 routing tests

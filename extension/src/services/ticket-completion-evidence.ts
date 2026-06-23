@@ -2,15 +2,19 @@
  * R-AFCC-DEEP-4A: Unified ticket completion-evidence module.
  *
  * Single conceptual entity for "is this ticket attributably done?".
- * Supersedes the divergent invariants that were split across
- * hasCompletionCommit (pickle-utils), the inlined guardCompletionCommitBeforeDone
- * upsert, and the collapsed phantom-done batch loop.
+ * Supersedes the divergent invariants that were once split across the legacy
+ * completion-commit helpers, the inlined guardCompletionCommitBeforeDone upsert,
+ * and the collapsed phantom-done batch loop.
  *
- * R-AFCC-STAGE: non-repo workingDir is a legitimate state, NOT an exception.
- * R-AFCC-STALE: first-class 'inferred-stale' return variant for stored-but-
- *   unverifiable SHAs (e.g. completion_commit_inferred field present but
- *   gitCommitExists returns false because workingDir is non-repo or commit
- *   was dropped after a branch switch).
+ * B-DURA T70: with the durable iteration-boundary commit (T10) always present and
+ * one Done-flip oracle reading it, the multi-kind evidence grammar is dead surface.
+ * EvidenceKind is collapsed to the two states that drive a decision —
+ * `committed` (an attributable git commit exists: explicit field, inferred field,
+ * or git-log scan, all git-verified) and `absent` (no usable evidence).
+ *
+ * R-AFCC-STAGE: non-repo workingDir is a legitimate state, NOT an exception — a
+ * stored-but-currently-unverifiable SHA simply reads `absent` (no usable evidence
+ * the gate can act on) rather than carrying a distinct stale variant.
  */
 
 import * as fs from 'node:fs';
@@ -30,20 +34,16 @@ import type { GateVerdict } from '../lib/salvage-ticket.js';
 // ---------------------------------------------------------------------------
 
 /**
- * 4-state completion-evidence kind.
+ * 2-state completion-evidence kind (B-DURA T70 collapse).
  *
- * explicit      — completion_commit field is present AND git-probe verifies
- *                 the SHA is reachable from workingDir (or fallbackDir).
- * inferred-fresh — SHA inferred from completion_commit_inferred field (git-
- *                 verified) or from git-log scan; commit is reachable.
- * inferred-stale — completion_commit_inferred field is present but
- *                 gitCommitExists returned false (R-AFCC-STALE; non-repo
- *                 workingDir is legitimate per R-AFCC-STAGE).
- * absent         — no usable evidence found; includes the case where an
- *                 explicit SHA was found but is not git-reachable (was
- *                 'unreachable' in the legacy CompletionCommitEvidence).
+ * committed — an attributable git commit exists and is git-reachable: the
+ *             completion_commit field (reachable), the completion_commit_inferred
+ *             field (git-verified), or a git-log scan hit. Carries the SHA.
+ * absent    — no usable evidence the gate can act on: no field/scan match, an
+ *             explicit SHA that is not git-reachable, a baseline SHA (R-CXOR-2),
+ *             or a stored-but-currently-unverifiable inferred SHA (R-AFCC-STAGE).
  */
-export type EvidenceKind = 'explicit' | 'inferred-fresh' | 'inferred-stale' | 'absent';
+export type EvidenceKind = 'committed' | 'absent';
 
 export interface EvidenceResult {
   kind: EvidenceKind;
@@ -105,7 +105,7 @@ export interface RevertPolicy {
 }
 
 export type RevertDecision = {
-  action: 'keep' | 'revert' | 'persist-inferred';
+  action: 'keep' | 'revert';
   kind: EvidenceKind;
   sha?: string;
   fallbackFired?: boolean;
@@ -175,10 +175,10 @@ function isBaselineSha(sha: string, ctx: Pick<EvidenceCtx, 'startCommit' | 'pinn
  */
 function probeExplicitSha(sha: string, workingDir: string, fallbackDir?: string): EvidenceResult | null {
   const primary = probeCatFile(workingDir, sha);
-  if (primary === 'exists') return { kind: 'explicit', sha };
+  if (primary === 'exists') return { kind: 'committed', sha };
   if (primary !== 'git-could-not-run') return null;
   if (!fallbackDir || fallbackDir === workingDir) return null;
-  if (probeCatFile(fallbackDir, sha) === 'exists') return { kind: 'explicit', sha, usedFallback: true };
+  if (probeCatFile(fallbackDir, sha) === 'exists') return { kind: 'committed', sha, usedFallback: true };
   return null;
 }
 
@@ -329,9 +329,11 @@ function scanGitLog(args: {
   }
   commands.push(['-C', args.workingDir, 'log', '-n', '50', '--format=%H%n%ct%n%B%n---pickle-commit-boundary---', 'HEAD']);
 
-  // Pass 1: existing ref-token scan (ticket-id substring + word-boundary r_code).
-  // This preserves all current behavior and stays the highest-precedence match.
-  // Caches the HEAD pass entries for the Pass-2 file-touch fallback.
+  // Pass 1: ref-token scan (word-boundary ticket-id + word-boundary r_code).
+  // B-DURA T70 narrows the prior R-CCRC fuzzy substring widening to a
+  // word-boundary match so an unrelated commit mentioning the hash inside a
+  // longer token can no longer false-attribute. Highest-precedence match;
+  // caches the HEAD pass entries for the Pass-2 file-touch fallback.
   const headEntries: GitLogEntry[] = [];
   const refHit = scanGitLogByRefToken(commands, {
     workingDir: args.workingDir,
@@ -358,8 +360,9 @@ function scanGitLog(args: {
 }
 
 /**
- * Pass 1 of the git-log scan: the existing ref-token attribution (ticket-id
- * substring + word-boundary r_code). Captures the HEAD-pass entries into
+ * Pass 1 of the git-log scan: ref-token attribution (word-boundary ticket-id +
+ * word-boundary r_code). B-DURA T70 narrowed the ticket-id match from a
+ * substring scan to a word-boundary scan. Captures the HEAD-pass entries into
  * `headEntriesOut` so the caller can reuse them for the file-touch fallback.
  */
 function scanGitLogByRefToken(
@@ -374,10 +377,15 @@ function scanGitLogByRefToken(
 ): { sha: string } | null {
   const startEpoch = Number(args.startTimeEpoch);
   const lastCmd = commands[commands.length - 1];
+  // B-DURA T70: word-boundary matchers (was substring `includes`). Tokens are
+  // already lowercased; escape regex metacharacters before anchoring with \b.
+  const matcherRes = args.matchers.map(
+    t => new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`),
+  );
   const checkEntry = (e: GitLogEntry): { sha: string } | null => {
     if (Number.isFinite(startEpoch) && startEpoch > 0 && e.epoch < startEpoch) return null;
     const lower = e.message.toLowerCase();
-    if (args.matchers.some(t => lower.includes(t))) return { sha: e.sha };
+    if (matcherRes.some(re => re.test(lower))) return { sha: e.sha };
     if (args.rCodeRe && args.rCodeRe.test(lower)) return { sha: e.sha };
     return null;
   };
@@ -403,14 +411,12 @@ function scanGitLogByRefToken(
 // ---------------------------------------------------------------------------
 
 /**
- * Reads completion evidence for a ticket and returns a 4-state EvidenceKind.
- *
- * Key differences from legacy hasCompletionCommit:
- *   - 'explicit-reachable' → 'explicit'
- *   - 'inferred' (from field or scan) → 'inferred-fresh'
- *   - NEW 'inferred-stale': completion_commit_inferred field present but
- *     gitCommitExists returned false (R-AFCC-STALE)
- *   - 'unreachable' (explicit SHA present, not git-reachable) → 'absent'
+ * Reads completion evidence for a ticket and returns a 2-state EvidenceKind
+ * (B-DURA T70):
+ *   - committed: explicit completion_commit (git-reachable), git-verified
+ *     completion_commit_inferred field, or a git-log scan hit.
+ *   - absent: no field/scan match, an explicit SHA that is not git-reachable, a
+ *     baseline SHA (R-CXOR-2), or a stored-but-unverifiable inferred SHA.
  */
 export function readEvidence(ctx: EvidenceCtx): EvidenceResult {
   const tPath = resolveTicketPath(ctx);
@@ -444,11 +450,12 @@ export function readEvidence(ctx: EvidenceCtx): EvidenceResult {
   const inferredField = normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit_inferred'));
   if (inferredField) {
     if (commitExists(ctx.workingDir, inferredField)) {
-      return { kind: 'inferred-fresh', sha: inferredField };
+      return { kind: 'committed', sha: inferredField };
     }
-    // R-AFCC-STALE: field present but git can't verify → inferred-stale rather
-    // than falling through to scan (which would also fail for the same reason).
-    return { kind: 'inferred-stale', sha: inferredField };
+    // R-AFCC-STAGE: field present but git can't verify (non-repo workingDir or a
+    // dropped commit). A stored-but-unverifiable SHA is not evidence the gate can
+    // act on → absent. Short-circuit (the scan would fail for the same reason).
+    return { kind: 'absent' };
   }
 
   // --- Git log scan (ref token + R-CECB declared-file-touch) ---
@@ -465,7 +472,7 @@ export function readEvidence(ctx: EvidenceCtx): EvidenceResult {
     siblingDeclared: ctx.sessionDir ? enumerateSiblingDeclaredFiles(ctx.sessionDir, selfId) : [],
     greenGate: ctx.greenGate,
   });
-  if (scan) return { kind: 'inferred-fresh', sha: scan.sha };
+  if (scan) return { kind: 'committed', sha: scan.sha };
 
   return { kind: 'absent' };
 }
@@ -527,10 +534,8 @@ export function persistEvidence(ctx: EvidenceCtx, sha: string, opts: PersistOpts
 
 /**
  * Decides whether a Done ticket should be reverted (phantom-Done watcher) or
- * kept, and if kept, whether its inferred SHA should be persisted.
- *
- * R-AFCC-STAGE: inferred-stale → action:'keep' (non-repo workingDir is
- * legitimate; a stored SHA exists even if currently unverifiable).
+ * kept. B-DURA T70 collapse: `committed` evidence → keep (the caller idempotently
+ * promotes a non-explicit SHA into the completion_commit field); `absent` → revert.
  *
  * Callers do all file writes based on the returned action — this function
  * only reads evidence and returns a decision.
@@ -539,14 +544,8 @@ export function gateForPhantomDoneRevert(ctx: EvidenceCtx, _policy?: RevertPolic
   const evidence = readEvidence(ctx);
 
   switch (evidence.kind) {
-    case 'explicit':
-      return { action: 'keep', kind: 'explicit', sha: evidence.sha, fallbackFired: evidence.usedFallback };
-    case 'inferred-fresh':
-      return { action: 'persist-inferred', kind: 'inferred-fresh', sha: evidence.sha };
-    case 'inferred-stale':
-      // R-AFCC-STAGE: non-repo workingDir is legitimate; keep Done rather than
-      // reverting a ticket that has a stored (but currently unverifiable) SHA.
-      return { action: 'keep', kind: 'inferred-stale', sha: evidence.sha };
+    case 'committed':
+      return { action: 'keep', kind: 'committed', sha: evidence.sha, fallbackFired: evidence.usedFallback };
     case 'absent':
       return { action: 'revert', kind: 'absent' };
   }

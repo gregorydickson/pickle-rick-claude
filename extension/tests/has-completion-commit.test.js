@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { hasCompletionCommit } from '../services/pickle-utils.js';
+import { readEvidence } from '../services/ticket-completion-evidence.js';
 
 function makeTmpRoot(prefix = 'pickle-has-completion-commit-') {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -27,7 +27,7 @@ function writeTicket(sessionDir, ticketId, lines) {
   fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
 }
 
-test('hasCompletionCommit: explicit completion_commit wins when SHA exists', () => {
+test('readEvidence: explicit completion_commit wins when SHA exists', () => {
   const root = makeTmpRoot();
   try {
     initGitRepo(root);
@@ -47,14 +47,15 @@ test('hasCompletionCommit: explicit completion_commit wins when SHA exists', () 
       '# Explicit completion commit',
     ]);
 
-    const evidence = hasCompletionCommit({ sessionDir, ticketId: 'explicit01', workingDir: root });
-    assert.deepEqual(evidence, { sha, source: 'explicit-reachable' });
+    const evidence = readEvidence({ sessionDir, ticketId: 'explicit01', workingDir: root });
+    assert.equal(evidence.kind, 'committed');
+    assert.equal(evidence.sha, sha);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('hasCompletionCommit: R-code commit subjects infer completion when explicit field is absent', () => {
+test('readEvidence: R-code commit subjects infer completion when explicit field is absent', () => {
   const root = makeTmpRoot();
   try {
     initGitRepo(root);
@@ -73,14 +74,15 @@ test('hasCompletionCommit: R-code commit subjects infer completion when explicit
       '# R-CCC-5 inferred path',
     ]);
 
-    const evidence = hasCompletionCommit({ sessionDir, ticketId: 'infer001', workingDir: root });
-    assert.deepEqual(evidence, { sha, source: 'inferred' });
+    const evidence = readEvidence({ sessionDir, ticketId: 'infer001', workingDir: root });
+    assert.equal(evidence.kind, 'committed');
+    assert.equal(evidence.sha, sha);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('hasCompletionCommit: returns absent when neither frontmatter nor git evidence exists', () => {
+test('readEvidence: returns absent when neither frontmatter nor git evidence exists', () => {
   const root = makeTmpRoot();
   try {
     initGitRepo(root);
@@ -94,8 +96,9 @@ test('hasCompletionCommit: returns absent when neither frontmatter nor git evide
       '# No completion evidence',
     ]);
 
-    const evidence = hasCompletionCommit({ sessionDir, ticketId: 'absent001', workingDir: root });
-    assert.deepEqual(evidence, { sha: null, source: 'absent' });
+    const evidence = readEvidence({ sessionDir, ticketId: 'absent001', workingDir: root });
+    assert.equal(evidence.kind, 'absent');
+    assert.equal(evidence.sha, undefined);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

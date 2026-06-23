@@ -21,10 +21,10 @@ import {
   guardCompletionCommitBeforeDone,
 } from '../bin/mux-runner.js';
 import {
-  hasCompletionCommit,
   markTicketDone,
   getTicketStatus,
 } from '../services/pickle-utils.js';
+import { readEvidence } from '../services/ticket-completion-evidence.js';
 import { __setSpawnRunnerForTests, main as pipelineMain } from '../bin/pipeline-runner.js';
 import { PipelineRunnerExitCode } from '../types/index.js';
 
@@ -302,13 +302,13 @@ describe('R-WUWC Case B — SOFT: worker commits with ticket-id, no completion_c
     fs.rmSync(sessionDir, { recursive: true, force: true });
   });
 
-  it('AC-WUWC-11a: hasCompletionCommit returns { source: "inferred", sha } before explicit field', () => {
+  it('AC-WUWC-11a: readEvidence returns { kind: "committed", sha } before explicit field', () => {
     const ticketFile = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
     const content = fs.readFileSync(ticketFile, 'utf-8');
     assert.ok(!content.includes('completion_commit:'), 'precondition: no explicit field yet');
 
-    const evidence = hasCompletionCommit({ sessionDir, ticketId, workingDir: repo });
-    assert.equal(evidence.source, 'inferred', 'must infer commit from git log scan matching ticket-id');
+    const evidence = readEvidence({ sessionDir, ticketId, workingDir: repo });
+    assert.equal(evidence.kind, 'committed', 'must infer commit from git log scan matching ticket-id (B-DURA T70: committed)');
     assert.equal(evidence.sha, commitSha, 'inferred sha must match the actual commit');
   });
 
@@ -328,7 +328,7 @@ describe('R-WUWC Case B — SOFT: worker commits with ticket-id, no completion_c
         // Auto-fill git-add failed — verify the canonical error message format.
         assert.match(
           result.reason,
-          /cannot flip Done: readEvidence\(\)\.kind === '[^']+' \(expected 'explicit'\); worker did not produce an attributable git commit/,
+          /cannot flip Done: readEvidence\(\)\.kind === '[^']+' \(expected 'committed'\); worker did not produce an attributable git commit/,
           `guard error must match pinned format; got: ${result.reason}`,
         );
         assert.ok(
@@ -344,7 +344,7 @@ describe('R-WUWC Case B — SOFT: worker commits with ticket-id, no completion_c
     });
   });
 
-  it('AC-WUWC-12: writing completion_commit to frontmatter promotes source to explicit and allows Done flip', () => {
+  it('AC-WUWC-12: writing completion_commit to frontmatter keeps kind committed and allows Done flip', () => {
     // After AC-WUWC-11b, autoFillCompletionCommit may have already written completion_commit
     // to the ticket file (it writes the file before the git-add fails). Ensure the field
     // is present — if the auto-fill succeeded OR wrote before failing, we verify it now;
@@ -360,11 +360,11 @@ describe('R-WUWC Case B — SOFT: worker commits with ticket-id, no completion_c
       fs.writeFileSync(ticketFile, content);
     }
 
-    // Re-probe: source must now be explicit-reachable (AC-WUWC-12 step 1)
-    const evidence = hasCompletionCommit({ sessionDir, ticketId, workingDir: repo });
+    // Re-probe: kind must now be committed via the explicit field (AC-WUWC-12 step 1)
+    const evidence = readEvidence({ sessionDir, ticketId, workingDir: repo });
     assert.equal(
-      evidence.source, 'explicit-reachable',
-      'after writing completion_commit field, source must be explicit-reachable',
+      evidence.kind, 'committed',
+      'after writing completion_commit field, kind must be committed',
     );
     assert.equal(evidence.sha, commitSha);
 

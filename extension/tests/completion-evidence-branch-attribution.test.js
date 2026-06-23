@@ -64,7 +64,7 @@ test('file-touch primary: green LOA-subject commit touching declared files → a
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'abc12345', { declaredPaths: [declared], title: 'CECB feature' });
     const ev = readEvidence({ sessionDir, ticketId: 'abc12345', workingDir: root, greenGate: PASS });
-    assert.equal(ev.kind, 'inferred-fresh', 'attributable via declared-file-touch (auto-promoted by the guard)');
+    assert.equal(ev.kind, 'committed', 'attributable via declared-file-touch (B-DURA T70: committed)');
     assert.equal(ev.sha, sha);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -165,7 +165,7 @@ test('ref-token scan still wins when present (existing behavior preserved)', () 
     writeTicket(sessionDir, 'abc12345', { declaredPaths: [declared] });
     // greenGate would reject, but the ref-token scan runs first and does not consult it.
     const ev = readEvidence({ sessionDir, ticketId: 'abc12345', workingDir: root, greenGate: FAIL });
-    assert.equal(ev.kind, 'inferred-fresh');
+    assert.equal(ev.kind, 'committed');
     assert.equal(ev.sha, sha);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
