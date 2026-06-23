@@ -74,7 +74,7 @@ function buildBeta6State(sessionDir) {
         original_prompt: 'beta6 back-compat fixture',
         current_ticket: CURRENT_TICKET,
         history: [],
-        started_at: '2026-06-15T09:00:00.000Z',
+        started_at: new Date(Date.now() - 3600000).toISOString(), // recent: stale hardcoded date aged past pruneOldSessions threshold (time-bomb fixture)
         session_dir: sessionDir,
         tmux_mode: true,
         min_iterations: 0,
