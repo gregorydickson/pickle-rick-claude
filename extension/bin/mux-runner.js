@@ -5123,6 +5123,73 @@ export function recordBoundedEscapeAttempt(statePath, ticketId, iteration, log =
     }
 }
 /**
+ * R-REIN: refund the per-ticket recovery budget when an operator explicitly resets a
+ * ticket's frontmatter `status` back to `Todo`. The documented recovery recipe ("set
+ * status: Todo + relaunch") was INERT once a ticket had exhausted its bounded-escape
+ * ladder: the spent `bounded_terminal_escape` attempts persisted in the ledger, so the
+ * ticket was force-escaped again on its very first no-progress relaunch (re-exiting
+ * `recovery_exhausted` in ~2s with no real re-attempt).
+ *
+ * Conservative: refunds ONLY when frontmatter status reads `todo` AND the ledger holds
+ * spent attempts for THIS ticket. A still-Failed/In-Progress ticket (no reset) keeps its
+ * spent attempts and exhausts normally. Pre-reset entries are SUPERSEDED (removed) so the
+ * subsequent `countBoundedEscapeAttempts` reads zero and the ladder starts fresh. Emits
+ * the existing `operator_recovery_transition` activity event for the audit trail. Adds no
+ * forbidden state field. Best-effort: any read/write failure is swallowed (no refund).
+ */
+export function refundRecoveryBudgetOnReset(statePath, sessionDir, ticketId, iteration, log = () => { }) {
+    if (!ticketId)
+        return { refunded: false, cleared: 0 };
+    let status;
+    try {
+        status = (getTicketStatus(sessionDir, ticketId) ?? '').toLowerCase().replace(/["']/g, '').trim();
+    }
+    catch {
+        return { refunded: false, cleared: 0 };
+    }
+    if (status !== 'todo')
+        return { refunded: false, cleared: 0 };
+    let cleared = 0;
+    try {
+        const probe = readRecoverableJsonObject(statePath);
+        const priorCount = countBoundedEscapeAttempts(probe?.recovery_attempts, ticketId);
+        if (priorCount <= 0)
+            return { refunded: false, cleared: 0 };
+        sm.update(statePath, s => {
+            if (!Array.isArray(s.recovery_attempts)) {
+                s.recovery_attempts = [];
+                return;
+            }
+            const before = s.recovery_attempts.length;
+            s.recovery_attempts = s.recovery_attempts.filter(a => !(a.strategy === BOUNDED_ESCAPE_STRATEGY && a.ticket === ticketId && a.outcome === 'failed'));
+            cleared = before - s.recovery_attempts.length;
+        });
+    }
+    catch (err) {
+        log(`WARN: failed to refund recovery budget for ${ticketId}: ${safeErrorMessage(err)}`);
+        return { refunded: false, cleared: 0 };
+    }
+    if (cleared <= 0)
+        return { refunded: false, cleared: 0 };
+    log(`recovery: refunded per-ticket recovery budget for ${ticketId} (status reset to Todo) — cleared ${cleared} spent attempt(s).`);
+    try {
+        logActivity({
+            event: 'operator_recovery_transition',
+            source: 'pickle',
+            session: path.basename(sessionDir),
+            iteration,
+            gate_payload: {
+                subcommand: 'refund-recovery-budget',
+                ticket: ticketId,
+                disposition: 'recovery_budget_refunded',
+                cleared_attempts: cleared,
+            },
+        });
+    }
+    catch { /* best-effort telemetry */ }
+    return { refunded: true, cleared };
+}
+/**
  * Force the unreclaimable In Progress ticket to a terminal disposition. First
  * salvage (archive-before-destructive preserves any uncommitted work), then flip
  * the frontmatter to `Skipped` (terminal per PRD AC-A4 Risks row), then append a
@@ -8495,6 +8562,13 @@ async function runMuxRunnerMain() {
                 });
             }
             catch { /* best-effort */ }
+            // R-REIN: refund the per-ticket recovery budget when the operator has explicitly
+            // reset this ticket's frontmatter status back to Todo. Without this, the spent
+            // `bounded_terminal_escape` ledger entries survive the reset and force the ticket
+            // terminal again on its first no-progress relaunch — re-exiting `recovery_exhausted`
+            // in ~2s and making the documented "reset to Todo + relaunch" recovery INERT. The
+            // helper is conservative (no-op unless frontmatter is Todo AND spent attempts exist).
+            refundRecoveryBudgetOnReset(statePath, sessionDir, preTicket, iteration, log);
         }
         state = updateMuxLifecycleState(statePath, { iteration, currentTicket: preTicket, step: preStep });
         // R-MWIS-2: iteration advance + state write is a forward-progress marker.
