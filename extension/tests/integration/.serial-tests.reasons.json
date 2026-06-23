@@ -55,6 +55,7 @@
     "tests/bin/test-runner-tier-discovery.test.js": "subprocess-timeout-coupling",
     "tests/integration/large-tier-detached-spawn.test.js": "subprocess-spawn-timing",
     "tests/integration/large-tier-recovery-reexec-detached.test.js": "subprocess-spawn-timing",
-    "tests/integration/large-tier-detached-reap-subtree.test.js": "subprocess-spawn-timing"
+    "tests/integration/large-tier-detached-reap-subtree.test.js": "subprocess-spawn-timing",
+    "tests/rpgt-exit-paths.test.js": "subprocess-spawn-timing"
   }
 }
