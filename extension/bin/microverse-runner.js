@@ -1312,6 +1312,8 @@ export function classifyJudgeError(err) {
         return { failureKind: 'cli_missing' };
     if (/\bETIMEDOUT\b/i.test(safeErrorMessage(err)))
         return { failureKind: 'timeout' };
+    if (/\b(529|429)\b/.test(safeErrorMessage(err)))
+        return { failureKind: 'rate_limited' };
     return { failureKind: 'unknown' };
 }
 const COMMAND_METRIC_KILL_GRACE_MS = 1000;
@@ -1690,7 +1692,7 @@ export async function measureLlmMetricWithBackoff(goal, timeoutSeconds, cwd, jud
     }
     const backoffsMs = [10_000, 30_000, 60_000];
     let lastError = null;
-    let exhaustedFailureKind = probe.kind === 'failed' ? 'failed' : 'timeout';
+    let exhaustedFailureKind = probe.kind === 'failed' ? 'failed' : 'rate_limited';
     for (let attempt = 0; attempt <= backoffsMs.length; attempt++) {
         const startedAt = Date.now();
         const result = await measureLlmMetricAttempt(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, attemptBackend, priorViolations, allowedPaths);
@@ -1776,6 +1778,9 @@ export async function measureLlmMetricWithBackoff(goal, timeoutSeconds, cwd, jud
                     // Best-effort telemetry; timeout retries must continue even if logging fails.
                 }
             }
+        }
+        else if (result.failureKind === 'rate_limited' && exhaustedFailureKind !== 'failed' && exhaustedFailureKind !== 'timeout') {
+            exhaustedFailureKind = 'rate_limited';
         }
         if (attempt < backoffsMs.length) {
             await _deps.sleep(backoffsMs[attempt]);
@@ -2049,7 +2054,9 @@ function mapJudgeMeasurementFailure(measured) {
         case 'judge_timeout':
             return measured.exhaustedFailureKind === 'timeout'
                 ? 'judge_timeout'
-                : 'baseline_unmeasurable_unrecoverable';
+                : measured.exhaustedFailureKind === 'rate_limited'
+                    ? 'baseline_unmeasurable_transient'
+                    : 'baseline_unmeasurable_unrecoverable';
         default:
             return 'baseline_unmeasurable_unrecoverable';
     }
@@ -2168,7 +2175,7 @@ async function measureLlmBaseline(state, ctx, backend) {
     if (measured.metric)
         return measured.metric;
     const exitReason = mapJudgeMeasurementFailure(measured);
-    const activityEvent = exitReason === 'baseline_unmeasurable_unrecoverable'
+    const activityEvent = (exitReason === 'baseline_unmeasurable_unrecoverable' || exitReason === 'baseline_unmeasurable_transient')
         ? 'baseline_unmeasurable'
         : exitReason === 'all_judge_backends_exhausted'
             ? 'judge_timeout'
@@ -2385,7 +2392,7 @@ async function measureLlmIteration(state, ctx, backend) {
     logActivity({
         // all_judge_backends_exhausted is a routing-only reason (not a registered activity event);
         // emit judge_timeout as the telemetry surface per R-SJET-4 "no new event" constraint.
-        event: exitReason === 'baseline_unmeasurable_unrecoverable'
+        event: (exitReason === 'baseline_unmeasurable_unrecoverable' || exitReason === 'baseline_unmeasurable_transient')
             ? 'baseline_unmeasurable'
             : exitReason === 'all_judge_backends_exhausted'
                 ? 'judge_timeout'

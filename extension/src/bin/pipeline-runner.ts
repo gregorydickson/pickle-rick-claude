@@ -2530,10 +2530,11 @@ export function isFatalPhaseFailure(phase: PhaseName, runtime: PipelineRuntime):
     if (phase === 'anatomy-park' || phase === 'szechuan-sauce') {
       const reason = runnerState.exit_reason;
       if (isMicroverseFatalReason(reason)) return true;
-      // judge_timeout / all_judge_backends_exhausted are intentionally NOT in MICROVERSE_FAILURE_REASONS
-      // so logPhaseHaltReason can route them through finalize-gate (R-PRJT-2). Still treat as
-      // halt-eligible here so the halt path runs instead of recordRecoverablePhaseFailure.
-      if (reason === 'judge_timeout' || reason === 'all_judge_backends_exhausted') return true;
+      // judge_timeout / all_judge_backends_exhausted / baseline_unmeasurable_transient are intentionally
+      // NOT in MICROVERSE_FAILURE_REASONS so logPhaseHaltReason can route them through finalize-gate
+      // (R-PRJT-2 / R-S529). Still treat as halt-eligible so the halt path runs instead of
+      // recordRecoverablePhaseFailure.
+      if (reason === 'judge_timeout' || reason === 'all_judge_backends_exhausted' || reason === 'baseline_unmeasurable_transient') return true;
       // Microverse failure exits (judge_unreachable, error, rate_limit_exhausted, ...) halt
       // the pipeline. R-SCJM-3 expects judge_unreachable to halt without finalize-gate.
       if (typeof reason === 'string' && isMicroverseFailureExit(reason as MicroverseExitReason)) {
@@ -3664,7 +3665,7 @@ export function classifyMicroverseHaltDecision(exitReason: unknown): MicroverseH
   if (exitReason === 'judge_timeout') {
     return { action: 'run-finalize-gate', recognizedExitReason: exitReason as string };
   }
-  if (exitReason === 'all_judge_backends_exhausted') {
+  if (exitReason === 'all_judge_backends_exhausted' || exitReason === 'baseline_unmeasurable_transient') {
     return { action: 'run-finalize-gate-incomplete', recognizedExitReason: exitReason as string };
   }
   if (
