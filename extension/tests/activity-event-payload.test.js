@@ -986,6 +986,16 @@ const EVENT_CASES = [
     drop: 'gate_payload',
   },
   {
+    type: 'boundary_commit_resolved',
+    valid: {
+      event: 'boundary_commit_resolved',
+      ts: TS,
+      ticket: 'abc12345',
+      gate_payload: { outcome: 'committed', pre_iter_sha: 'aaaa1111', post_iter_sha: 'bbbb2222' },
+    },
+    drop: 'gate_payload',
+  },
+  {
     type: 'pre_reset_diff_archived',
     valid: {
       event: 'pre_reset_diff_archived',
@@ -1376,6 +1386,7 @@ test('activity-event-payload: schema defines all registered event type definitio
     'orphan_commit_unreattachable',
     'worker_silent_death',
     'worker_produced_nothing',
+    'boundary_commit_resolved',
     'pre_reset_diff_archived',
     'pre_reset_archive_failed',
     'failed_flip_suppressed',

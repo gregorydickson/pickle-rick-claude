@@ -1742,6 +1742,24 @@
         }
       }
     },
+    "boundary_commit_resolved": {
+      "type": "object",
+      "required": ["event", "ts", "ticket", "gate_payload"],
+      "properties": {
+        "event": { "type": "string", "const": "boundary_commit_resolved" },
+        "ts": { "type": "string" },
+        "ticket": { "type": "string" },
+        "gate_payload": {
+          "type": "object",
+          "required": ["outcome", "pre_iter_sha", "post_iter_sha"],
+          "properties": {
+            "outcome": { "type": "string", "enum": ["committed", "attributed", "honest_failure"] },
+            "pre_iter_sha": { "type": ["string", "null"] },
+            "post_iter_sha": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
     "pre_reset_diff_archived": {
       "type": "object",
       "required": ["event", "ts", "ticket", "patch_path", "files", "files_truncated", "reason"],
@@ -2008,6 +2026,7 @@
     { "$ref": "#/definitions/orphan_commit_unreattachable" },
     { "$ref": "#/definitions/worker_silent_death" },
     { "$ref": "#/definitions/worker_produced_nothing" },
+    { "$ref": "#/definitions/boundary_commit_resolved" },
     { "$ref": "#/definitions/pre_reset_diff_archived" },
     { "$ref": "#/definitions/pre_reset_archive_failed" },
     { "$ref": "#/definitions/failed_flip_suppressed" },

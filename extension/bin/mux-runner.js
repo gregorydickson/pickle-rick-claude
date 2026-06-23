@@ -4338,6 +4338,164 @@ export function commitGatePassingDeliverableOnExitPath(input) {
         return { committed: false, reason: 'error' };
     }
 }
+/**
+ * B-DURA T10 (AC-DURA-1/2/8): commit the ticket's gate-passing work at the NORMAL
+ * iteration boundary — before context is cleared — instead of only on the
+ * salvage/cap/fatal exit path.
+ *
+ * One decidable trichotomy, keyed on HEAD movement (NOT tree dirtiness, so an
+ * untracked `research_*.md`/`plan_*.md` artifact that leaves the tree dirty must
+ * NOT defeat the no-op):
+ *   - HEAD moved off `preIterSha` (the worker already committed):
+ *       - if a present, git-reachable `completion_commit:` already attributes the
+ *         commit → no-op (outcome 'attributed', already tagged);
+ *       - else ATTRIBUTE the existing untagged commit via `readEvidence`'s
+ *         declared-file-touch window (back-fills `completion_commit`, never
+ *         re-commits) → outcome 'attributed' (AC-DURA-8). If readEvidence cannot
+ *         attribute, leave it to the downstream Done-flip guard → 'honest_failure'.
+ *   - HEAD static + gate-green dirty tree: commit the gate-green dirty source under
+ *     the current ticket via the REUSED exit committer, whose ownership partition
+ *     stashes foreign sibling residue (`stashUnattributableRemainder`) and stages
+ *     only owned paths. T10 ADDS an allowlist-intersection staging filter: any
+ *     owned path NOT within the ticket's `scope.json` allowed_paths is pre-stashed
+ *     to the salvage ref so staged ⊆ allowlist (AC-DURA-2) → outcome 'committed'.
+ *   - else (HEAD static, nothing committable): honest-failure (no Done, no context
+ *     clear) → outcome 'honest_failure'.
+ *
+ * Idempotent on HEAD movement. Best-effort: any throw degrades to 'honest_failure'
+ * (the downstream Done-flip guard remains authoritative). Emits exactly one
+ * `boundary_commit_resolved` event recording the branch taken.
+ */
+/**
+ * T10 Branch 1 helper: HEAD moved this iteration → attribute the existing commit
+ * (never re-commit). Returns the resolved boundary result.
+ */
+function attributeBoundaryHeadMoved(sessionDir, ticketId, workingDir) {
+    const { startCommit, pinnedSha } = resolveSessionBaselineShas(sessionDir);
+    const probe = {
+        sessionDir,
+        ticketId,
+        workingDir,
+        startCommit,
+        pinnedSha,
+        greenGate: () => {
+            const ext = path.join(workingDir, 'extension');
+            if (!fs.existsSync(ext))
+                return 'failing';
+            try {
+                return runBetweenTicketFastTests(ext).ok ? 'passing' : 'failing';
+            }
+            catch {
+                return 'errored';
+            }
+        },
+    };
+    let evidence = readEvidence(probe);
+    // Already explicitly tagged (present + reachable completion_commit) → no-op.
+    if (evidence.kind === 'explicit' && evidence.sha) {
+        return { outcome: 'attributed', reason: 'no-op-head-moved', sha: evidence.sha };
+    }
+    // Untagged worker commit → attribute via the file-touch window by writing the
+    // discovered SHA into completion_commit (no second commit). When readEvidence
+    // resolves an inferred SHA, persist it so the Done-flip gate reads 'explicit'.
+    if (evidence.sha) {
+        try {
+            const persisted = persistEvidence(probe, evidence.sha, { stage: 'best-effort' });
+            if (persisted.action === 'written')
+                evidence = readEvidence(probe);
+        }
+        catch { /* best-effort — fall through to the attributed classification */ }
+        return { outcome: 'attributed', reason: 'head-moved-untagged', sha: evidence.sha };
+    }
+    // HEAD moved but readEvidence cannot attribute it (e.g. baseline-only / out of
+    // scope). Leave it to the downstream Done-flip guard; do NOT re-commit.
+    return { outcome: 'honest_failure', reason: 'head-moved-untagged' };
+}
+/**
+ * T10 allowlist-intersection staging filter: pre-stash any dirty path NOT within
+ * the ticket's scope.json allowed_paths to the salvage ref and restore it to HEAD,
+ * so the reused exit committer can only stage paths ⊆ the allowlist (AC-DURA-2).
+ * Unscoped session (no scope.json) → no-op. Best-effort.
+ */
+function preStashOutOfAllowlistResidue(sessionDir, workingDir, ticketId, log) {
+    const allowed = readScopeAllowedPaths(sessionDir);
+    if (!allowed || allowed.length === 0)
+        return;
+    try {
+        const dirty = listWorkingTreeDirtyPaths(workingDir);
+        const outOfScope = dirty.filter((f) => !isWithinAllowedPaths(f, allowed));
+        // Only owned-but-out-of-scope source residue needs pre-stashing; the exit
+        // committer already routes session-dir-foreign residue to the salvage ref.
+        if (outOfScope.length === 0)
+            return;
+        stashUnattributableRemainder(workingDir, sessionDir, log);
+        // Restore the out-of-scope residue to HEAD so it cannot be swept into the
+        // ticket-attributed commit; the salvage ref retains a recoverable copy.
+        spawnSync('git', ['-C', workingDir, 'checkout', '--', ...outOfScope], {
+            encoding: 'utf-8', timeout: 30000,
+        });
+        log(`[boundary-commit] ticket ${ticketId}: pre-stashed ${outOfScope.length} out-of-allowlist path(s) to salvage ref`);
+    }
+    catch (err) {
+        log(`[boundary-commit] allowlist pre-stash failed (continuing): ${safeErrorMessage(err)}`);
+    }
+}
+export function commitGatePassingDeliverableAtBoundary(input) {
+    const { sessionDir, statePath, workingDir, ticketId, preIterSha, log } = input;
+    const resolve = (outcome, postIterSha, rest) => {
+        if (ticketId) {
+            try {
+                writeActivityEntry(statePath, {
+                    event: 'boundary_commit_resolved',
+                    ts: new Date().toISOString(),
+                    ticket: ticketId,
+                    gate_payload: { outcome, pre_iter_sha: preIterSha, post_iter_sha: postIterSha },
+                });
+            }
+            catch { /* best-effort telemetry — never block the boundary on an emit failure */ }
+        }
+        return { outcome, ...rest };
+    };
+    try {
+        if (!ticketId)
+            return { outcome: 'honest_failure', reason: 'no-ticket' };
+        if (isTerminalTicketStatus(getTicketStatus(sessionDir, ticketId))) {
+            const post = readHeadCommit(workingDir);
+            return resolve('attributed', post, { reason: 'no-op-head-moved', sha: post ?? undefined });
+        }
+        const postIterSha = readHeadCommit(workingDir);
+        const headMoved = !!postIterSha && !!preIterSha && postIterSha !== preIterSha;
+        // --- Branch 1: HEAD moved this iteration → attribute, never re-commit. ---
+        if (headMoved) {
+            const r = attributeBoundaryHeadMoved(sessionDir, ticketId, workingDir);
+            return resolve(r.outcome, postIterSha, { reason: r.reason, sha: r.sha });
+        }
+        // --- Branch 2: HEAD static + gate-green dirty tree → commit the deliverable. ---
+        if (!isWorkingTreeDirty(workingDir)) {
+            return resolve('honest_failure', postIterSha, { reason: 'clean-tree' });
+        }
+        preStashOutOfAllowlistResidue(sessionDir, workingDir, ticketId, log);
+        const committed = commitGatePassingDeliverableOnExitPath({
+            sessionDir,
+            statePath,
+            workingDir,
+            ticketId,
+            extensionRoot: input.extensionRoot,
+            flags: input.flags,
+            log,
+            ...(input.runGate ? { runGate: input.runGate } : {}),
+        });
+        const post = readHeadCommit(workingDir);
+        if (committed.committed) {
+            return resolve('committed', post, { reason: 'committed', sha: committed.sha });
+        }
+        return resolve('honest_failure', post, { reason: committed.reason });
+    }
+    catch (err) {
+        log(`[boundary-commit] threw (ignored): ${safeErrorMessage(err)}`);
+        return resolve('honest_failure', readHeadCommit(workingDir), { reason: 'error' });
+    }
+}
 // ---------------------------------------------------------------------------
 // W3 salvage-before-fail consolidation routing.
 //
@@ -9398,6 +9556,30 @@ async function runMuxRunnerMain() {
             }
         }
         catch { /* best-effort — never block iteration on partial-lifecycle check failure */ }
+        // B-DURA T10: commit the current ticket's gate-passing deliverable at the NORMAL
+        // iteration boundary (or attribute an existing untagged commit, or honest-fail)
+        // BEFORE the Done-detection / context-clear block below. Best-effort, idempotent
+        // on HEAD movement — an already-tagged commit or a clean tree is a no-op. The
+        // downstream Done-flip guard remains authoritative; this only ensures verified
+        // work is a durable commit on the branch before context is cleared.
+        try {
+            const boundaryTicket = state.current_ticket || null;
+            if (boundaryTicket && !isTerminalTicketStatus(getTicketStatus(sessionDir, boundaryTicket))) {
+                commitGatePassingDeliverableAtBoundary({
+                    sessionDir,
+                    statePath,
+                    workingDir: iterWorkingDir,
+                    ticketId: boundaryTicket,
+                    extensionRoot,
+                    flags: state.flags ?? null,
+                    preIterSha,
+                    log,
+                });
+            }
+        }
+        catch (err) {
+            log(`[boundary-commit] iteration-boundary commit threw (ignored): ${safeErrorMessage(err)}`);
+        }
         // Move iterLogFile computation BEFORE transition block (needed by classifyTicketCompletion)
         const iterLogFile = path.join(sessionDir, `tmux_iteration_${iteration}.log`);
         // Detect ticket transitions: validate completion before marking Done

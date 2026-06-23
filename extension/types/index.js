@@ -323,6 +323,9 @@ export const VALID_ACTIVITY_EVENTS = [
     // R-WSDO (30aa2e0d): worker ran but produced nothing — no research_review.md +
     // log_empty + zero artifact-count delta. Mutually exclusive with worker_silent_death.
     'worker_produced_nothing',
+    // B-DURA T10 (AC-DURA-1/2/8): the normal iteration boundary committed/attributed/
+    // honest-failed the ticket's gate-passing deliverable before context clear.
+    'boundary_commit_resolved',
     'pre_reset_diff_archived',
     'pre_reset_archive_failed',
     'failed_flip_suppressed',
