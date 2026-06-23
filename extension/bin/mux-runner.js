@@ -20,6 +20,7 @@ import { getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorking
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds } from '../services/artifact-progress-detector.js';
 import { readEvidence, persistEvidence, gateForPhantomDoneRevert } from '../services/ticket-completion-evidence.js';
+import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { CodegraphService } from '../services/codegraph-service.js';
 import { salvageTicket } from '../lib/salvage-ticket.js';
 import { reconcileTicketTruth } from '../lib/reconcile-ticket-truth.js';
@@ -1596,56 +1597,95 @@ export function repopulateNoProgressCapFromFrontmatter(statePath, state, log, se
     }
 }
 /**
- * Proactive empty-queue completion check, run at iteration_start before any
- * manager spawn. If all `linear_ticket_*.md` files in the session report
- * `status: Done` (and there is at least one ticket), synthesizes an
- * EPIC_COMPLETED terminal state atomically and returns true so the caller
- * can break the outer loop.
- *
- * Guard conditions (bias: don't fire):
- *   - N=0 tickets — ambiguous; could be a setup error
- *   - Any ticket file unparseable — cannot confirm all Done
- *   - Not all statuses normalize to 'done'
- *
- * On success mutates state.json twice:
- *   1. sm.update  — sets completion_promise (JSON) + appends activity entry
- *   2. finalizeTerminalState — sets active=false, step='completed', exit_reason='completed'
+ * B-DURA T40 (AC-DURA-6/7): the ONE guarded predicate shared by all 4 advance/
+ * finalize count sites. A `Failed` ticket is terminal-EXCLUDABLE from the
+ * advance/pending count ONLY when the conjunctive false-green guard holds:
+ *   - its `start_commit..HEAD` declared-file window is EMPTY (no commit
+ *     attributable to the ticket landed since the session baseline; because
+ *     `preIterSha..HEAD ⊆ start_commit..HEAD`, an empty start_commit window
+ *     implies an empty preIterSha window — both windows empty), AND
+ *   - the working tree is CLEAN.
+ * A spuriously-Failed BUILD ticket with a NON-empty window OR a dirty tree is NOT
+ * excludable → it BLOCKS advance (prevents both the 0/4 false-negative AND the
+ * silent-drop false-green). Missing git context (no start_commit / no HEAD) is
+ * conservative: NOT excludable (blocks advance). This is the ONLY place the
+ * exclusion is decided; the 4 count sites call it identically.
  */
+export function isFailedTicketTerminalExcludable(ctx, ticketId) {
+    if (!ctx.startCommit)
+        return false; // no baseline → cannot prove the window empty
+    const head = silentDeathGit(['rev-parse', 'HEAD'], ctx.workingDir);
+    if (!head)
+        return false;
+    // Tree must be clean (no uncommitted deliverable for this/any ticket).
+    try {
+        if (isWorkingTreeDirty(ctx.workingDir))
+            return false;
+    }
+    catch {
+        return false;
+    }
+    // start_commit..HEAD declared-file window must be empty for this ticket.
+    let declared;
+    try {
+        declared = readDeclaredFiles(fs.readFileSync(ticketFilePath(ctx.sessionDir, ticketId), 'utf8'));
+    }
+    catch {
+        // Cannot read declared files → cannot prove the window empty → block advance.
+        return false;
+    }
+    if (declared.length === 0) {
+        // No declared files: fall back to "any commit in the window" — if HEAD moved
+        // off the baseline at all there may be ticket work, so block; if HEAD === baseline
+        // the window is trivially empty.
+        return head === ctx.startCommit;
+    }
+    const diffOut = silentDeathGit(['diff', '--name-only', `${ctx.startCommit}..HEAD`], ctx.workingDir);
+    if (diffOut === null)
+        return false; // git could not answer → conservative block
+    const touched = new Set(diffOut.split('\n').map((s) => s.trim()).filter(Boolean));
+    // The window is "empty for this ticket" iff none of its declared files were touched.
+    const norm = (p) => p.replace(/^\.\//, '');
+    const touchedNorm = new Set([...touched].map(norm));
+    const anyDeclaredTouched = declared.some((f) => touchedNorm.has(norm(f)));
+    return !anyDeclaredTouched;
+}
 /**
- * B-GROUND2 WS1: the mux-seam ground-truth scan fed to `finalizeIfTrulyComplete`
- * at every EPIC-terminal finalize. Re-scans frontmatter via `reconcileTicketTruth`
- * and reduces to `GraduationCounts`. The mux seam has no commit count in hand at
- * the finalize site, so `commitCount` is 0 — graduation then keys on the
- * Done/Skipped roster alone (a fully-Done bundle has `pendingCount === 0`).
- *
- * `reconcileTicketTruth` is by-design best-effort (every probe try/catch'd to a
- * conservative default), so an empty / unreadable roster reduces to a 0-count
- * snapshot, which `graduationDecision` GRADUATES via its `ticketCount <= 0`
- * never-decomposed carve-out. That carve-out is safe at THIS seam only because
- * every caller is gated upstream: `applyAllTicketsDoneCompletion` returns false
- * on a 0-ticket roster BEFORE reaching this finalize, and the EPIC_COMPLETED
- * paths fire only after the bundle's tickets are established as terminal. The
- * primary fail-closed line is the pipeline seam (`pipelineBundleScan` returns
- * `null` on a throwing reader); this adapter returns counts, never `null`, and is
- * pinned by `completion-scan-adapter-edge.test.js`.
+ * T40 helper: is this ticket pending FOR ADVANCE purposes? Done/Skipped are never
+ * pending. A `Failed` ticket is pending UNLESS the conjunctive guard proves it
+ * terminal-excludable. All other non-terminal statuses (Todo/In Progress) are
+ * pending. `gitCtx` absent → Failed is treated as pending (conservative block).
  */
+function isPendingForAdvance(status, ticketId, gitCtx) {
+    const n = normalizeTicketStatus(status);
+    if (n === 'done' || n === 'skipped')
+        return false;
+    if (n === 'failed') {
+        if (!gitCtx || !ticketId)
+            return true; // no context → block advance (false-green guard)
+        return !isFailedTicketTerminalExcludable(gitCtx, ticketId);
+    }
+    return true; // todo / in progress / unknown non-terminal → pending
+}
 function muxBundleScan(sessionDir, workingDir) {
     const truth = reconcileTicketTruth({ sessionDir, workingDir });
-    const entries = Object.values(truth.ticketStatuses);
-    const doneCount = entries.filter(st => normalizeTicketStatus(st) === 'done').length;
-    const pendingCount = entries.filter(st => {
-        const n = normalizeTicketStatus(st);
-        return n !== 'done' && n !== 'skipped';
-    }).length;
+    const entries = Object.entries(truth.ticketStatuses);
+    const doneCount = entries.filter(([, st]) => normalizeTicketStatus(st) === 'done').length;
+    // B-DURA T40: a Failed ticket is excluded from pendingCount ONLY under the
+    // conjunctive false-green guard (windows empty + tree clean), applied identically
+    // at all 4 count sites via isPendingForAdvance.
+    const gitCtx = { sessionDir, workingDir, startCommit: resolveSessionBaselineShas(sessionDir).startCommit };
+    const pendingCount = entries.filter(([id, st]) => isPendingForAdvance(st ?? '', id, gitCtx)).length;
     return { doneCount, commitCount: 0, pendingCount, ticketCount: entries.length };
 }
-export function applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, log, workingDir = '') {
+/** Collect all `linear_ticket_*.md` paths under a session dir; null when the dir is unreadable. */
+function collectLinearTicketPaths(sessionDir) {
     let dirEntries;
     try {
         dirEntries = fs.readdirSync(sessionDir, { withFileTypes: true });
     }
     catch {
-        return false;
+        return null;
     }
     const ticketPaths = [];
     for (const entry of dirEntries) {
@@ -1653,37 +1693,43 @@ export function applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, 
             continue;
         const subDir = path.join(sessionDir, entry.name);
         try {
-            const files = fs.readdirSync(subDir);
-            for (const file of files) {
+            for (const file of fs.readdirSync(subDir)) {
                 if (file.startsWith('linear_ticket_') && file.endsWith('.md')) {
                     ticketPaths.push(path.join(subDir, file));
                 }
             }
         }
-        catch {
-            // subdir unreadable — skip
-        }
+        catch { /* subdir unreadable — skip */ }
     }
+    return ticketPaths;
+}
+export function applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, log, workingDir = '') {
+    const ticketPaths = collectLinearTicketPaths(sessionDir);
+    if (ticketPaths === null)
+        return false;
     if (ticketPaths.length === 0)
         return false;
-    const statuses = [];
+    // B-DURA T40: shared git context for the Failed-terminal conjunctive guard,
+    // applied identically here (the `every` pre-check) and in the reconcile re-scan.
+    const t40GitCtx = { sessionDir, workingDir, startCommit: resolveSessionBaselineShas(sessionDir).startCommit };
+    const idStatuses = [];
     for (const ticketPath of ticketPaths) {
         const parsed = parseTicketFrontmatter(ticketPath);
         if (!parsed) {
             log(`all-tickets-done-check: cannot parse ${path.basename(path.dirname(ticketPath))} — skipping completion synthesis`);
             return false;
         }
-        statuses.push(normalizeTicketStatus(parsed.status || ''));
+        const id = parsed.id ?? path.basename(path.dirname(ticketPath));
+        idStatuses.push({ id, status: normalizeTicketStatus(parsed.status || '') });
     }
-    if (!statuses.every(s => s === 'done' || s === 'skipped'))
+    // A Failed ticket that satisfies the conjunctive guard is terminal-excludable
+    // here too (it does not block the all-done synthesis); otherwise it blocks.
+    if (idStatuses.some(({ id, status }) => isPendingForAdvance(status, id, t40GitCtx)))
         return false;
     // False-completion guard: re-scan via reconcileTicketTruth before committing to finalize.
     const truth = reconcileTicketTruth({ sessionDir, workingDir });
     const nonTerminal = Object.entries(truth.ticketStatuses)
-        .filter(([, st]) => {
-        const n = normalizeTicketStatus(st);
-        return n !== 'done' && n !== 'skipped';
-    });
+        .filter(([id, st]) => isPendingForAdvance(st ?? '', id, t40GitCtx));
     if (nonTerminal.length > 0) {
         log(`false-completion guard: ${nonTerminal.length} non-terminal ticket(s) detected — refusing all-done finalize`);
         return false;
@@ -1712,15 +1758,16 @@ export function applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, 
  * Status comparison is case-insensitive and strips quotes (matches the
  * normalisation already used at line ~1017 and in monitor.ts).
  */
-export function findPendingNonCurrentTickets(tickets, currentTicket) {
-    const norm = (s) => (s || '').toLowerCase().replace(/["']/g, '').trim();
+export function findPendingNonCurrentTickets(tickets, currentTicket, gitCtx = null) {
+    // B-DURA T40: a Failed ticket is excluded from the pending set ONLY under the
+    // conjunctive false-green guard (identical predicate to the other 3 count sites
+    // via isPendingForAdvance); absent gitCtx → Failed counts as pending (block).
     return tickets.filter(t => {
         if (!t.id)
             return false;
         if (t.id === currentTicket)
             return false;
-        const s = norm(t.status);
-        return s !== 'done' && s !== 'skipped';
+        return isPendingForAdvance(t.status ?? '', t.id, gitCtx);
     });
 }
 /**
@@ -1732,10 +1779,13 @@ export function evaluateEpicCompletion(input) {
     const { tickets, currentTicket, priorFalseCount, priorFalseTicket } = input;
     const threshold = input.threshold ?? FALSE_EPIC_THRESHOLD;
     const norm = (s) => (s || '').toLowerCase().replace(/["']/g, '').trim();
+    const gitCtx = input.failedTerminalGitContext ?? null;
     const totalCount = tickets.filter(t => !!t.id).length;
     const doneCount = tickets.filter(t => !!t.id && norm(t.status) === 'done').length;
+    // B-DURA T40: a Failed ticket is excluded from pendingIds ONLY under the
+    // conjunctive false-green guard (identical predicate via isPendingForAdvance).
     const pendingIds = tickets
-        .filter(t => !!t.id && norm(t.status) !== 'done' && norm(t.status) !== 'skipped' && t.id !== currentTicket)
+        .filter(t => !!t.id && t.id !== currentTicket && isPendingForAdvance(t.status ?? '', t.id, gitCtx))
         .map(t => t.id)
         .filter((s) => typeof s === 'string');
     const currentInfo = currentTicket ? tickets.find(t => t.id === currentTicket) : null;
@@ -6158,6 +6208,13 @@ function processTaskCompleted(state, ctx) {
         tickets: withFreshTicketStatuses(ctx.sessionDir, collectTickets(ctx.sessionDir)), currentTicket: curState.current_ticket || null,
         priorFalseCount: Number(curState.false_epic_completed_count) || 0,
         priorFalseTicket: curState.false_epic_completed_ticket ?? null,
+        // B-DURA T40: supply git context so a genuinely-Failed ticket is excluded from
+        // the pending set only under the conjunctive false-green guard.
+        failedTerminalGitContext: {
+            sessionDir: ctx.sessionDir,
+            workingDir: curState.working_dir || process.cwd(),
+            startCommit: typeof curState.start_commit === 'string' ? curState.start_commit : null,
+        },
     });
     if (decision.kind === 'persistent_hallucination') {
         ctxDeactivate(ctx);
@@ -10019,6 +10076,12 @@ async function runMuxRunnerMain() {
                 currentTicket: curState.current_ticket || null,
                 priorFalseCount: Number(curState.false_epic_completed_count) || 0,
                 priorFalseTicket: curState.false_epic_completed_ticket ?? null,
+                // B-DURA T40: conjunctive Failed-terminal guard git context.
+                failedTerminalGitContext: {
+                    sessionDir,
+                    workingDir: curState.working_dir || process.cwd(),
+                    startCommit: typeof curState.start_commit === 'string' ? curState.start_commit : null,
+                },
             });
             if (decision.kind === 'persistent_hallucination') {
                 log(`MANAGER_PERSISTENT_HALLUCINATION: ticket ${decision.ticket} emitted ${PromiseTokens.EPIC_COMPLETED} ${decision.nextCount} times without finishing (threshold ${FALSE_EPIC_THRESHOLD}). Done=${decision.doneCount}/${decision.totalCount}. Bailing for human review.\n       Iteration log: ${iterLogFile}`);
