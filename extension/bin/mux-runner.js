@@ -6276,18 +6276,26 @@ function processTaskCompleted(state, ctx) {
             ctx.updateState(s => Object.assign(s, ctx.transitionToMeeseeks ? ctx.transitionToMeeseeks(s) : transitionToMeeseeks(s, ctx.extensionRoot)));
         return { kind: 'continue', resetStall: true };
     }
-    // False-completion guard: re-scan ticket frontmatter via reconcileTicketTruth before
-    // finalizing EPIC as completed. Guards against stale evaluateEpicCompletion reads.
+    // False-completion guard + B-DURA T50 no-premature-drain: re-scan ticket
+    // frontmatter via reconcileTicketTruth before finalizing EPIC as completed.
+    // The pickle phase MUST NOT exit while any non-`Failed` ticket is Todo / In
+    // Progress (real unattempted work). Advance only when every ticket is TERMINAL
+    // (Done | Skipped | Failed). A `Failed` ticket is terminal-for-advance (it does
+    // NOT force a re-drain — that is T40's domain); an UNATTEMPTED Todo / In Progress
+    // ticket keeps the phase draining rather than reporting a premature completion
+    // (R-CECX run-3 / LOA-1488: codex drained at iter 49/500 with 4 Todo tickets).
     {
         const workingDir4Guard = curState.working_dir || state.working_dir || '';
         const guardTruth = reconcileTicketTruth({ sessionDir: ctx.sessionDir, workingDir: workingDir4Guard });
-        const guardNonTerminal = Object.entries(guardTruth.ticketStatuses)
+        const nonFailedPending = Object.entries(guardTruth.ticketStatuses)
             .filter(([, st]) => {
             const n = normalizeTicketStatus(st);
-            return n !== 'done' && n !== 'skipped';
+            // Terminal-for-advance: Done, Skipped, AND Failed. Only Todo / In Progress
+            // (genuine non-terminal, unattempted-or-in-flight) keeps the phase draining.
+            return n !== 'done' && n !== 'skipped' && n !== 'failed';
         });
-        if (guardNonTerminal.length > 0) {
-            ctx.log(`false-completion guard: ${guardNonTerminal.length} non-terminal ticket(s) detected — refusing EPIC finalize, routing recovery`);
+        if (nonFailedPending.length > 0) {
+            ctx.log(`no-premature-drain: ${nonFailedPending.length} non-Failed Todo/In-Progress ticket(s) remain — refusing EPIC finalize, keep draining`);
             const handoffSummary = buildIterationHandoffSummary(state, ctx.sessionDir, ctx.iteration + 1);
             (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffSummary, process.pid, ctx.log);
             return { kind: 'continue', resetStall: true };
