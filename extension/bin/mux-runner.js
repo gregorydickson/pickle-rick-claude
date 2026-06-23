@@ -3837,9 +3837,43 @@ const FAILURE_EXIT_REASONS = new Set([
     'manager_persistent_hallucination', 'iteration_cap_exhausted', 'codex_unhealthy_consecutive_failures',
     'ticket_audit_failed', 'working_tree_modified_externally', 'state_schema_version_ahead',
     'done_without_commit_evidence', 'codex_manager_no_progress', 'recovery_exhausted',
-    'idle_stall_unrecoverable', 'state_working_dir_missing',
+    'idle_stall_unrecoverable', 'state_working_dir_missing', 'toolchain_unavailable',
 ]);
 export const isFailureExit = (r) => FAILURE_EXIT_REASONS.has(r);
+/**
+ * WS-2c (R-PFNT): cheap, best-effort target-toolchain pre-flight. When the TARGET
+ * repo declares a Node toolchain (`package.json`) but has NO installed `node_modules`,
+ * every worker spawn churns through ~30 Done/Skipped iterations of red gates before
+ * anyone notices — the toolchain is simply absent. Detect that ONE definite
+ * missing-toolchain signal so the run can fail fast (once) instead of churning.
+ *
+ * CONSERVATIVE by construction — returns `false` (toolchain OK / unknown) for every
+ * ambiguous case so a genuine run is never falsely killed:
+ *  - no `workingDir` given                      → not our call to make
+ *  - no `package.json`                          → not a Node project; no toolchain claim
+ *  - `node_modules` present (dir OR symlink)    → installed
+ *  - any FS error                               → fail-open (treat as OK)
+ *
+ * Only `package.json present AND node_modules absent` returns `true` (fail fast).
+ */
+export function targetToolchainMissing(workingDir) {
+    if (!workingDir)
+        return false;
+    try {
+        const pkgJson = path.join(workingDir, 'package.json');
+        if (!fs.existsSync(pkgJson))
+            return false; // not a Node project → no definite signal
+        const nodeModules = path.join(workingDir, 'node_modules');
+        // existsSync follows symlinks, so a symlinked node_modules (the worktree case)
+        // correctly reads as present.
+        if (fs.existsSync(nodeModules))
+            return false; // toolchain installed
+        return true; // package.json present, node_modules absent → definite missing toolchain
+    }
+    catch {
+        return false; // fail-open: never fail-fast on an ambiguous FS error
+    }
+}
 /**
  * Returns true only when the conformance has a `## Manager Handoff` section AND
  * its body is substantive (not "None", "N/A", "Nothing", empty, etc.).
@@ -8421,6 +8455,9 @@ async function runMuxRunnerMain() {
     let ticketAuditGateChecked = false;
     let smokeGateBypassEmitted = false;
     let bundleBootstrapApplied = false;
+    // WS-2c (R-PFNT): one-time target-toolchain pre-flight latch. Set after the first
+    // pass so the cheap missing-node_modules probe runs ONCE per run, not per-iteration.
+    let toolchainPreflightChecked = false;
     // Initialize session-scoped CodegraphService (fail-open — never blocks session start).
     const cgSettings = resolveCodegraphSettings(loadPickleSettingsBag());
     const cgWorkingDir = ownerState.working_dir || process.cwd();
@@ -8449,6 +8486,40 @@ async function runMuxRunnerMain() {
             log('Session inactive. Exiting.');
             exitReason = 'cancelled';
             break;
+        }
+        // WS-2c (R-PFNT): one-time target-toolchain pre-flight. If the target repo
+        // declares a Node toolchain (package.json) but has NO node_modules, every worker
+        // spawn churns ~30 Done/Skipped iterations of red gates before anyone notices.
+        // Fail fast ONCE here with a distinct exit_reason instead. Conservative: only the
+        // definite missing-toolchain signal trips this (see targetToolchainMissing).
+        if (!toolchainPreflightChecked) {
+            toolchainPreflightChecked = true;
+            try {
+                if (targetToolchainMissing(state.working_dir)) {
+                    const msg = `toolchain_unavailable: target repo '${state.working_dir}' has package.json but no installed node_modules — `
+                        + 'failing fast instead of churning iterations against a missing toolchain.';
+                    log(msg);
+                    process.stderr.write(`${msg}\n`);
+                    try {
+                        writeActivityEntry(statePath, {
+                            event: 'session_end',
+                            ts: new Date().toISOString(),
+                            reason: 'toolchain_unavailable',
+                            terminal_exit_reason: 'toolchain_unavailable',
+                            gate_payload: { working_dir: state.working_dir ?? null },
+                        });
+                    }
+                    catch { /* best-effort */ }
+                    recordExitReason(statePath, 'toolchain_unavailable');
+                    safeDeactivate(statePath);
+                    exitReason = 'toolchain_unavailable';
+                    break;
+                }
+            }
+            catch (err) {
+                // Pre-flight is best-effort — never let a probe error abort a real run.
+                log(`toolchain pre-flight skipped (ignored): ${safeErrorMessage(err)}`);
+            }
         }
         state = clearStalePerTicketCacheAtIterationStart(statePath, state, log, sessionDir);
         // W4c (AC-W4c-1): re-assert the per-ticket no-progress cap from frontmatter
