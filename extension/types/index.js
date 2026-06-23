@@ -361,8 +361,36 @@ export const VALID_ACTIVITY_EVENTS = [
     'phase_graduation_refused',
     'gate_parity_divergence',
 ];
-/** Recoverable reasons a ticket can be flipped to Failed by the auto-skip guard (R-WSWA-3). */
-export const FAILURE_REASONS = ['oversized_no_progress'];
+/**
+ * Recoverable reasons a ticket can be flipped to Failed by the auto-skip guard (R-WSWA-3).
+ *
+ * WS-2d (R-PFNT): the legacy single `oversized_no_progress` label conflated three
+ * distinct stall causes (truly-oversized, scope-fence ambiguity, and legitimate-long
+ * work) under one misleading literal — masking the real cause (often an out-of-fence
+ * compile-RED). It is now split:
+ *  - `scope_unresolvable`   — the stall correlates with an unresolved/empty scope
+ *                             (the ticket cannot resolve a fence to edit within).
+ *  - `no_progress_timeout`  — genuine no-progress within the spawn/poll budget.
+ * `oversized_no_progress` is retained as a recognized RETRY-equivalent reason (no
+ * behavior regression on retry / selection); the emission sites now pick the finer
+ * reason via `classifyNoProgressFailureReason`.
+ */
+export const FAILURE_REASONS = [
+    'oversized_no_progress',
+    'scope_unresolvable',
+    'no_progress_timeout',
+];
+/**
+ * WS-2d (R-PFNT): the no-progress Failed reasons that share the legacy
+ * `oversized_no_progress` selection / retry-exemption semantics. A reader that
+ * treated only the old literal as a terminal no-progress flip MUST treat all three
+ * equivalently so the split introduces no behavior regression.
+ */
+export const NO_PROGRESS_FAILURE_REASONS = [
+    'oversized_no_progress',
+    'scope_unresolvable',
+    'no_progress_timeout',
+];
 export var PipelineRunnerExitCode;
 (function (PipelineRunnerExitCode) {
     PipelineRunnerExitCode[PipelineRunnerExitCode["Success"] = 0] = "Success";

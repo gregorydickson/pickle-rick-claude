@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload } from '../types/index.js';
+import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
@@ -1026,20 +1026,26 @@ function isPendingMuxTicket(sessionDir: string, ticket: TicketInfo): boolean {
 
 /**
  * AC-R-WMNP-3: true iff the ticket's frontmatter is a TERMINAL no-progress flip
- * (status Failed + failed_reason 'oversized_no_progress'). Such a ticket is NOT
- * selectable for work — it must neither be respawned in-phase forever nor
- * re-engaged via a stale `state.current_ticket` after a relaunch. It stays Failed
- * and visible; the operator re-queues by setting `status: Todo`. Scoped to the
- * oversized_no_progress reason so a generic Failed ticket retains its retry
- * semantics — this is selection-layer filtering, NOT a change to the canonical
- * `isPendingMuxTicket` pendingness contract (R-RMBS-1).
+ * (status Failed + a no-progress `failed_reason`). Such a ticket is NOT selectable
+ * for work — it must neither be respawned in-phase forever nor re-engaged via a stale
+ * `state.current_ticket` after a relaunch. It stays Failed and visible; the operator
+ * re-queues by setting `status: Todo`. Scoped to the no-progress reason set so a
+ * generic Failed ticket retains its retry semantics — this is selection-layer
+ * filtering, NOT a change to the canonical `isPendingMuxTicket` pendingness contract
+ * (R-RMBS-1).
+ *
+ * WS-2d (R-PFNT): the no-progress reason was split out of the single misleading
+ * `oversized_no_progress` literal into the finer `scope_unresolvable` /
+ * `no_progress_timeout` (see `NO_PROGRESS_FAILURE_REASONS`). All three are treated
+ * EQUIVALENTLY here so the split introduces no selection / retry-exemption regression.
  */
 function isOversizedNoProgressFailed(sessionDir: string, ticketId: string | null | undefined): boolean {
   if (!ticketId) return false;
   try {
     const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf-8');
     if (normalizeTicketStatus(readFrontmatterField(raw, 'status')) !== 'failed') return false;
-    return (readFrontmatterField(raw, 'failed_reason') ?? '').trim() === 'oversized_no_progress';
+    const reason = (readFrontmatterField(raw, 'failed_reason') ?? '').trim();
+    return (NO_PROGRESS_FAILURE_REASONS as readonly string[]).includes(reason);
   } catch (err) {
     // M4: a missing/unreadable/corrupt ticket file is no longer silently
     // swallowed. We still return false (conservative — an unreadable ticket is
@@ -1052,6 +1058,36 @@ function isOversizedNoProgressFailed(sessionDir: string, ticketId: string | null
     );
     return false;
   }
+}
+
+/**
+ * WS-2d (R-PFNT): pick the finer no-progress `failed_reason` for a wmw-auto-skip /
+ * ladder-exhaustion flip, replacing the single misleading `oversized_no_progress`
+ * literal. Branches on the available in-runtime signal:
+ *
+ *  - `scope_unresolvable` when a scope.json exists but resolves to an EMPTY
+ *    allowed-paths fence (the ticket has no resolvable region to edit, so the stall
+ *    is a scope-fence ambiguity, NOT genuine oversize). This is the case that most
+ *    often masks an out-of-fence compile-RED behind the legacy label.
+ *  - `no_progress_timeout` otherwise — genuine no-progress within the spawn/poll
+ *    budget (the honest default; preserves prior semantics for unscoped sessions and
+ *    well-fenced tickets that simply ran out of progress).
+ *
+ * Conservative + best-effort: any read error falls back to `no_progress_timeout`
+ * (the honest no-progress default) so a transient FS hiccup never mislabels a flip.
+ * Both reasons are members of `NO_PROGRESS_FAILURE_REASONS`, so selection / retry
+ * semantics are identical to the old single literal (no regression).
+ */
+export function classifyNoProgressFailureReason(sessionDir: string): TicketFailureReason {
+  try {
+    const scopePath = path.join(sessionDir, 'scope.json');
+    if (fs.existsSync(scopePath)) {
+      const allowed = readScopeAllowedPaths(sessionDir);
+      // scope.json present but unresolvable/empty fence → scope-fence ambiguity.
+      if (allowed !== null && allowed.length === 0) return 'scope_unresolvable';
+    }
+  } catch { /* fall through to the honest no-progress default */ }
+  return 'no_progress_timeout';
 }
 
 function findNextPendingTicketId(sessionDir: string): string | null {
@@ -7750,7 +7786,8 @@ export function advanceOrExitOnLadderExhaustion(input: {
     updateTicketFrontmatter(ticketId, sessionDir, { status: 'Failed', completion_commit: null });
     const tfPath = ticketFilePath(sessionDir, ticketId);
     const tfRaw = fs.readFileSync(tfPath, 'utf-8');
-    const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', 'oversized_no_progress');
+    // WS-2d (R-PFNT): finer no-progress reason in place of the misleading single literal.
+    const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', classifyNoProgressFailureReason(sessionDir));
     if (tfUpdated) fs.writeFileSync(tfPath, tfUpdated);
   } catch (err) { log(`[ticket-ladder] frontmatter flip failed (ignored): ${safeErrorMessage(err)}`); }
   try {
@@ -7982,16 +8019,18 @@ export function routeDetachedWorkerTerminalNoProgress(input: {
   });
   if (recovered.handled) return recovered.result!;
 
-  // fall_through → terminal Failed/oversized_no_progress flip (mirrors :9347-9375).
+  // fall_through → terminal Failed/no-progress flip (mirrors :9347-9375).
   const skipK = resolveWmwSkipK();
-  const skipMsg = `[wmw-auto-skip] detached ${ticketId}: ${progress.zeroProgressCount}/${skipK} consecutive zero-progress polls — flipping to Failed/oversized_no_progress`;
+  // WS-2d (R-PFNT): finer no-progress reason in place of the misleading single literal.
+  const failureReason = classifyNoProgressFailureReason(sessionDir);
+  const skipMsg = `[wmw-auto-skip] detached ${ticketId}: ${progress.zeroProgressCount}/${skipK} consecutive zero-progress polls — flipping to Failed/${failureReason}`;
   log(skipMsg);
   process.stderr.write(`${skipMsg}\n`);
   try {
     updateTicketFrontmatter(ticketId, sessionDir, { status: 'Failed', completion_commit: null });
     const tfPath = ticketFilePath(sessionDir, ticketId);
     const tfRaw = fs.readFileSync(tfPath, 'utf-8');
-    const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', 'oversized_no_progress');
+    const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', failureReason);
     if (tfUpdated) fs.writeFileSync(tfPath, tfUpdated);
   } catch (err) { log(`[wmw-auto-skip] detached frontmatter flip failed (ignored): ${safeErrorMessage(err)}`); }
   try {
@@ -8003,7 +8042,7 @@ export function routeDetachedWorkerTerminalNoProgress(input: {
         spawn_count: progress.spawnCount,
         zero_progress_count: progress.zeroProgressCount,
         skip_k: skipK,
-        failure_reason: 'oversized_no_progress',
+        failure_reason: failureReason,
       },
     });
   } catch { /* best-effort */ }
@@ -10767,14 +10806,16 @@ async function runMuxRunnerMain() {
         }
         archiveDirtyTreeBeforeFlip({ workingDir: wmwWorkingDir, sessionDir, ticketId: apTicketId, log });
       }
-      const skipMsg = `[wmw-auto-skip] ticket ${apTicketId}: ${apProgressResult.zeroProgressCount}/${skipK} consecutive zero-progress spawns — flipping to Failed/oversized_no_progress`;
+      // WS-2d (R-PFNT): finer no-progress reason in place of the misleading single literal.
+      const apFailureReason = classifyNoProgressFailureReason(sessionDir);
+      const skipMsg = `[wmw-auto-skip] ticket ${apTicketId}: ${apProgressResult.zeroProgressCount}/${skipK} consecutive zero-progress spawns — flipping to Failed/${apFailureReason}`;
       log(skipMsg);
       process.stderr.write(`${skipMsg}\n`);
       try {
         updateTicketFrontmatter(apTicketId, sessionDir, { status: 'Failed', completion_commit: null });
         const tfPath = ticketFilePath(sessionDir, apTicketId);
         const tfRaw = fs.readFileSync(tfPath, 'utf-8');
-        const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', 'oversized_no_progress');
+        const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', apFailureReason);
         if (tfUpdated) fs.writeFileSync(tfPath, tfUpdated);
       } catch (err) { log(`[wmw-auto-skip] frontmatter flip failed (ignored): ${safeErrorMessage(err)}`); }
       try {
@@ -10786,7 +10827,7 @@ async function runMuxRunnerMain() {
             spawn_count: apProgressResult.spawnCount,
             zero_progress_count: apProgressResult.zeroProgressCount,
             skip_k: skipK,
-            failure_reason: 'oversized_no_progress',
+            failure_reason: apFailureReason,
           },
         });
       } catch { /* best-effort */ }

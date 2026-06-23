@@ -202,11 +202,15 @@ test('AC-R-WPEXA-5: wedged detached worker still trips PICKLE_WMW_SKIP_K (Failed
 
     const tf = readFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), 'utf-8');
     assert.match(tf, /status:\s*["']?Failed["']?/, 'ticket flipped to Failed');
-    assert.match(tf, /failed_reason:\s*["']?oversized_no_progress["']?/, 'failed_reason set');
+    // WS-2d (R-PFNT): the no-progress reason is now finer-grained. This session has no
+    // scope.json fence → the classifier picks the honest no_progress_timeout default.
+    assert.match(tf, /failed_reason:\s*["']?no_progress_timeout["']?/, 'failed_reason set (unscoped → no_progress_timeout)');
 
     const skips = state.activity.filter(e => e.event === 'worker_auto_skip_oversized');
     assert.equal(skips.length, 1, 'worker_auto_skip_oversized emitted once');
     assert.equal(skips[0].gate_payload.skip_k, skipK);
+    assert.equal(skips[0].gate_payload.failure_reason, 'no_progress_timeout',
+      'WS-2d: event payload carries the finer no_progress_timeout reason');
   } finally {
     if (prevConsolidation === undefined) delete process.env.PICKLE_RECOVERY_CONSOLIDATION;
     else process.env.PICKLE_RECOVERY_CONSOLIDATION = prevConsolidation;
