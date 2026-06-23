@@ -22,8 +22,9 @@ edits the recovery machinery); documented build protocol = hand-build recovery-p
 
 | Item | Value |
 |---|---|
-| Version (source = deployed) | **v2.0.0-beta.22** — B-PCOMP pipeline-completion fixes + R-WSDO; deployed via install.sh 2026-06-21. |
-| Latest GitHub release | **v2.0.0-beta.22** (B-PCOMP + R-WSDO; prerelease). Prior: beta.21 #129 R-SSOC · beta.20 #128 R-TDCS · beta.19 #127 R-DEFCHURN. |
+| Version (source = deployed) | **v2.0.0-beta.23** — B-DURA durable-iteration-boundary core + evidence-archaeology subtraction + R-REIN + WS-2/WS-5; deployed via install.sh 2026-06-23. |
+| Latest GitHub release | **v2.0.0-beta.23** (B-DURA + reliability program; prerelease, NOT codex-proven). Prior: beta.22 B-PCOMP+R-WSDO · beta.21 #129 R-SSOC · beta.20 #128 R-TDCS. |
+| Test-hygiene follow-ups (non-blocking) | (1) **hardcoded-date fixture time-bombs** — beta6-ga-session-resume's `started_at: 2026-06-15` aged past `pruneOldSessions` and broke the test (fixed via dynamic date); audit for other hardcoded ISO dates in fixtures. (2) **R-OMTD test leaks subprocesses** — pipeline-runner-orphan-mux-teardown leaves `mux.js`/`grandchild.js` running on failure; needs `afterEach` cleanup (65 leaked over one session choked the local gate). |
 | Codex backend | `gpt-5.4` |
 | Gate posture | Ship on the **local** gate (tsc + eslint + audits + fast-c4 + integration + expensive). **CI-green = hygiene, never a release gate.** |
 
