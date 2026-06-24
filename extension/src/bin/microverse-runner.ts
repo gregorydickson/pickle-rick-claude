@@ -2324,6 +2324,20 @@ function emitMetricParkWait(
   }
 }
 
+/** Clears the metric-path park's `rate_limit_wait.json` once the judge recovers (or the park
+ * ceiling is exhausted), mirroring the manager-mode `clearRateLimitWaitFile`. Without this the
+ * monitor renders a stale "Rate limited" field forever after the API recovers. Resolves the same
+ * session path as `emitMetricParkWait` so the clear is the exact inverse of the write. */
+function clearMetricParkWait(attemptActivity: JudgeAttemptActivity | undefined): void {
+  if (!attemptActivity) { return; }
+  try {
+    const sessionDir = path.join(getDataRoot(), 'sessions', attemptActivity.session);
+    fs.unlinkSync(path.join(sessionDir, 'rate_limit_wait.json'));
+  } catch {
+    // Best-effort; the park file may already be absent.
+  }
+}
+
 // eslint-disable-next-line complexity -- HT-1 reviewed: R-LINT-2 owns the structural refactor; judge trap-door logic kept explicit here pending that PR.
 export async function measureLlmMetricWithBackoff(
   goal: string,
@@ -2419,6 +2433,7 @@ export async function measureLlmMetricWithBackoff(
         }
       }
       if (result.metric) {
+        if (cumulativeParkedMs > 0) { clearMetricParkWait(attemptActivity); }
         return { metric: result.metric, attempts: totalAttempts };
       }
       lastError = result.message ?? null;
@@ -2487,6 +2502,7 @@ export async function measureLlmMetricWithBackoff(
     break;
   }
 
+  if (cumulativeParkedMs > 0) { clearMetricParkWait(attemptActivity); }
   return {
     metric: null,
     exitReason: workerFallbackActivated ? 'all_judge_backends_exhausted' : 'judge_timeout',

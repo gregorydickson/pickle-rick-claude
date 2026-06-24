@@ -1318,8 +1318,9 @@ export function classifyJudgeError(err) {
         return { failureKind: 'cli_missing' };
     if (/\bETIMEDOUT\b/i.test(safeErrorMessage(err)))
         return { failureKind: 'timeout' };
-    if (/\b(529|429)\b/.test(safeErrorMessage(err)))
+    if (/\b(529|429)\b/.test(safeErrorMessage(err))) {
         return { failureKind: 'rate_limited' };
+    }
     return { failureKind: 'unknown' };
 }
 const COMMAND_METRIC_KILL_GRACE_MS = 1000;
@@ -1675,8 +1676,9 @@ export async function probeJudgeBackendAvailability(backend, cwd) {
     }
 }
 function emitMetricParkWait(attemptActivity, parkMs, cumulativeParkedMs) {
-    if (!attemptActivity)
+    if (!attemptActivity) {
         return;
+    }
     try {
         _deps.logActivity({
             event: 'rate_limit_wait',
@@ -1696,6 +1698,22 @@ function emitMetricParkWait(attemptActivity, parkMs, cumulativeParkedMs) {
     }
     catch {
         // Best-effort; park proceeds even if observable state write fails.
+    }
+}
+/** Clears the metric-path park's `rate_limit_wait.json` once the judge recovers (or the park
+ * ceiling is exhausted), mirroring the manager-mode `clearRateLimitWaitFile`. Without this the
+ * monitor renders a stale "Rate limited" field forever after the API recovers. Resolves the same
+ * session path as `emitMetricParkWait` so the clear is the exact inverse of the write. */
+function clearMetricParkWait(attemptActivity) {
+    if (!attemptActivity) {
+        return;
+    }
+    try {
+        const sessionDir = path.join(getDataRoot(), 'sessions', attemptActivity.session);
+        fs.unlinkSync(path.join(sessionDir, 'rate_limit_wait.json'));
+    }
+    catch {
+        // Best-effort; the park file may already be absent.
     }
 }
 // eslint-disable-next-line complexity -- HT-1 reviewed: R-LINT-2 owns the structural refactor; judge trap-door logic kept explicit here pending that PR.
@@ -1769,6 +1787,9 @@ export async function measureLlmMetricWithBackoff(goal, timeoutSeconds, cwd, jud
                 }
             }
             if (result.metric) {
+                if (cumulativeParkedMs > 0) {
+                    clearMetricParkWait(attemptActivity);
+                }
                 return { metric: result.metric, attempts: totalAttempts };
             }
             lastError = result.message ?? null;
@@ -1831,6 +1852,9 @@ export async function measureLlmMetricWithBackoff(goal, timeoutSeconds, cwd, jud
             }
         }
         break;
+    }
+    if (cumulativeParkedMs > 0) {
+        clearMetricParkWait(attemptActivity);
     }
     return {
         metric: null,
