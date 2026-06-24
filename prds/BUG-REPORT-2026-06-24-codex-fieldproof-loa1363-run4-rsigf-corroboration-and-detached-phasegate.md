@@ -14,9 +14,9 @@
 This is the first codex multi-ticket run on the **fixed** runtime (beta.24) — the decisive AC-DURA-4 data point. Result is **split, and decision-changing**:
 
 - ✅ **The completion-evidence reliability fixes HELD on codex.** R-CECX (committed-nothing / cross-iteration corruption) and R-PFNT facets **1** (two-oracle disagreement) + **2** (`oversized_no_progress` misclassification) did **NOT** recur. 14/14 tickets reached `Done` with **durable runner-authored commits** (86 commits on branch, 34 ticket-attributed), 825 valid-evidence/inferred acceptances, **zero** `oversized_no_progress` labels (7× the new `no_progress_timeout` instead), zero `done_without_commit_evidence` fatals. **These three facets convert from "pending codex proof" → "codex-PROVEN."**
-- ❌ **AC-DURA-4 is NOT cleanly met.** The pipeline reported **`Pipeline finished: 0/2 phases`** and **citadel never ran**, even though the build genuinely completed (14/14 durable). The cause is **not** the original R-PFNT facets (those held) — it is a **NEW facet-3 variant (R-DPGT)** driven by **R-SIGF** (second independent reproduction).
+- ❌ **AC-DURA-4 is NOT cleanly met.** The pipeline reported **`Pipeline finished: 0/2 phases`** and **citadel never ran**, even though all 14 tickets reached `Done` with durable commits. **But `Done` ≠ green:** ticket 100's own `completion_commit` (`8bc4e4fa4`) does not even **typecheck** — `TS1136` missing-brace at `test/credit-rules-loa-1363.e2e-spec.ts:415` — it flipped `Done` over committed-RED code (**R-DOTR**, §below). So there are **TWO new facets**, both downstream of the held fixes: the phase mis-report (**R-DPGT**) and the Done-over-red flip (**R-DOTR**), with **R-SIGF** (2nd repro) the shared root.
 
-**Bottom line: the reliability *code* is now codex-proven for the completion/oracle/label classes — the GA blocker that mattered most — but R-SIGF's deferred half is now the load-bearing failure, and it cascades through a new detached-phase-gate timing seam into the very "0/N phases → downstream skipped" symptom R-PFNT was supposed to retire.**
+**Bottom line: completion-*evidence* is now codex-proven (oracle/label/commit-durability — the GA blocker that mattered most), but completion-*correctness* is NOT: a `no_progress_timeout` ticket committed partial non-compiling work and flipped `Done` (R-DOTR), and the phase mis-reported 0/N over detached-in-flight work (R-DPGT). R-SIGF's deferred half is the load-bearing root that drives both.**
 
 ---
 
@@ -36,7 +36,7 @@ This is the first codex multi-ticket run on the **fixed** runtime (beta.24) — 
 
 ## What RECURRED — NEW residual: R-DPGT (detached-ticket phase-gate non-terminal timing)
 
-**Symptom:** `Pipeline finished: 0/2 phases, 106m 11s` → **citadel never started** (0 `PHASE 2/2` markers) — despite all 14 tickets ultimately `Done` with valid commits.
+**Symptom:** `Pipeline finished: 0/2 phases, 106m 11s` → **citadel never started** (0 `PHASE 2/2` markers) — despite all 14 tickets ultimately reaching `Done` with durable commits (though one of those Done commits is itself RED — see R-DOTR).
 
 **Mechanism (timestamps, all UTC):**
 - `16:09:43.084Z` — `Phase pickle exited with code 3` → `Phase pickle hit iteration cap; 3/14 tickets remain unfinished` → listed **100 (In Progress), 110 (Todo), 130 (Todo)** → `Pipeline finished: 0/2 phases`.
@@ -45,11 +45,36 @@ This is the first codex multi-ticket run on the **fixed** runtime (beta.24) — 
   - `38e947235 be641400` (130) @ **16:13:58Z**
   - `a619be372 d848f1b3` (110) @ **16:16:44Z**
   - `8bc4e4fa4 54d89f21` (100) @ **16:19:13Z**
-- So the detached workers committed valid work **4–10 min after** the phase-gate gave up and skipped citadel.
+- So the detached workers committed work **4–10 min after** the phase-gate gave up and skipped citadel. (Note: "committed" ≠ "green" — ticket 100's late commit is the very one that does not typecheck; see R-DOTR.)
 
 **Distinct from the shipped facet-3 fix.** B-DURA T40 (`f788aa43`) made `Failed` *terminal-for-advance under the empty-window guard*. That covers the "3 Failed polish tickets atop 10 Done → 0/4" path. It does **NOT** cover **detached tickets that are still In-Progress/non-terminal when the pickle phase hits its cap** — those are counted as "unfinished," the phase exits code 3, and downstream phases are skipped while the detached work is minutes from landing. Note `max_iterations` (500) was **not** reached (final iteration **149**) — the cap that fired is a **phase/detached-poll exhaustion, not the session budget**, and it fired while real progress was imminent.
 
 **Proposed fix direction (reuse-first):** before a phase exits `0/N` on "unfinished" tickets, the gate should (a) check whether the "unfinished" set is entirely **detached + actively advancing** (the loop literally logs `advanced detached … before terminal disposition`) and, if so, grant a bounded grace drain keyed to the detached poll, or (b) treat a detached ticket that subsequently acquires a durable `completion_commit` as retroactively terminal for phase-advance (the evidence is the same single oracle that already works for the Done-flip). Either keeps citadel from being skipped over work that was ~minutes from terminal.
+
+---
+
+## SECOND NEW residual — R-DOTR (Done-flip over committed-RED work on the timeout path)
+
+**Symptom:** ticket 100 (`54d89f21`) is `status: Done` with `completion_commit: 8bc4e4fa4` and `failed_reason: no_progress_timeout` — but that commit's own file **does not compile**:
+
+```
+test/credit-rules-loa-1363.e2e-spec.ts(415,5): error TS1136: Property assignment expected
+```
+
+The `auShortfall` fixture's `makeFacts({ … })` is missing the object-literal closing brace (line 415 emits `);` where the identical correct fixture 45 lines up emits `});`). The tree is **clean** (0 dirty files) — so the syntax error is **committed at HEAD**, inside the recorded `completion_commit`, not a local artifact.
+
+**Mechanism — the inverse of the R-CECX fix.** B-DURA's durable-boundary committer (T10 `e1472c37`) makes "committed *nothing*" impossible by having the runner author the commit at the iteration boundary. On the `no_progress_timeout` path the worker is mid-edit when its budget expires; the runner commits **whatever partial output exists** and the Done-flip accepts it. The Done-flip gate keys on **durability** (B-PCOMP: "a ticket should not flip Done if its declared files show *no diff*" — catches *code-absent*) — it does **NOT** verify the committed diff is **green**. There is no per-ticket `tsc` gate in the pickle/build loop (B-RPGT's hard typecheck gate is **review-phase only** — citadel/anatomy/szechuan — confirmed: no per-ticket tsc gate in `mux-runner` build-loop). Net: **a ticket can reach `Done` with code that does not compile.**
+
+**Scope of evidence (honest):** confirmed for **1** ticket (100). The other 6 `no_progress_timeout` tickets cannot be individually assessed because `tsc` fails fast at the e2e syntax error — they may or may not also carry committed-red. The point is structural: the timeout salvage-commit path is **not subject to the green gate that normal completion is**, so Done-over-red is *possible*, and demonstrably *occurred* here.
+
+**Distinct from neighbors:**
+- **B-PCOMP durability gate** — checks *code-absent*, not *code-red*. Passes a broken-but-present diff.
+- **B-RPGT typecheck gate** — review phases only; does not cover the pickle per-ticket Done-flip.
+- **R-SIGF** — out-of-fence red; here the break is **in-fence** (the ticket's own file).
+- **R-DPGT** — phase mis-report; here the issue is the **ticket disposition** (Done over red), independent of the phase count.
+- **R-SFRS/B-ORSR (resolved)** — a worker *disowning* an out-of-fence break; here the worker simply ran out of budget mid-edit and the runner committed the fragment.
+
+**Fix direction (reuse-first, subtract-before-add):** gate the Done-flip on the **same toolchain signal the per-ticket loop already computes** — if the salvage/timeout commit leaves `tsc` RED on the ticket's own declared files, the ticket is **not** `Done`; flip it to a terminal `Failed`/retry disposition (or hold `In Progress`) rather than `Done`. Reuse the existing toolchain-fail-fast (`7b69f22a`) result; do **not** add a parallel gate. This closes the gap the R-CECX fix opened (committed-nothing → committed-something-broken) without new machinery.
 
 ---
 
