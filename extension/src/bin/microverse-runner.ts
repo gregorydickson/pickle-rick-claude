@@ -2852,6 +2852,21 @@ function mapJudgeMeasurementFailure(
   }
 }
 
+/** Maps an exhausted judge-measurement exit reason to its telemetry activity event.
+ * Both the transient and unrecoverable baseline failures surface as `baseline_unmeasurable`;
+ * `all_judge_backends_exhausted` is a routing-only reason (not a registered activity event) so it
+ * emits `judge_timeout` per the R-SJET-4 "no new event" constraint. Shared by `measureLlmBaseline`
+ * and `measureLlmIteration` so the two telemetry sites cannot drift. */
+function mapExhaustedExitToActivityEvent(exitReason: JudgeMeasurementFailureExitReason): ActivityEventType {
+  if (exitReason === 'baseline_unmeasurable_unrecoverable' || exitReason === 'baseline_unmeasurable_transient') {
+    return 'baseline_unmeasurable';
+  }
+  if (exitReason === 'all_judge_backends_exhausted') {
+    return 'judge_timeout';
+  }
+  return exitReason;
+}
+
 function mapCommandMeasurementFailure(
   measured: CommandMeasurementResult,
 ): Exclude<JudgeMeasurementFailureExitReason, 'baseline_unmeasurable_transient'> {
@@ -2981,14 +2996,8 @@ async function measureLlmBaseline(
     state.allowed_paths ?? [],
   );
   if (measured.metric) return measured.metric;
-  const exitReason: ExitReason = mapJudgeMeasurementFailure(measured);
-  const activityEvent: ActivityEventType = (
-    exitReason === 'baseline_unmeasurable_unrecoverable' || exitReason === 'baseline_unmeasurable_transient'
-  )
-    ? 'baseline_unmeasurable'
-    : exitReason === 'all_judge_backends_exhausted'
-      ? 'judge_timeout'
-      : exitReason;
+  const exitReason: JudgeMeasurementFailureExitReason = mapJudgeMeasurementFailure(measured);
+  const activityEvent: ActivityEventType = mapExhaustedExitToActivityEvent(exitReason);
   const error = measured.lastError ?? `${exitReason} after ${measured.attempts} attempt(s)`;
   ctx.log(`ERROR: Could not measure LLM baseline (${exitReason}) after ${measured.attempts} attempt(s): ${error}`);
   logActivity({
@@ -3257,15 +3266,7 @@ async function measureLlmIteration(
   const error = measured.lastError ?? `${exitReason} after ${measured.attempts} attempt(s)`;
   ctx.log(`ERROR: Metric measurement failed (${exitReason}) after ${measured.attempts} attempt(s): ${error}`);
   logActivity({
-    // all_judge_backends_exhausted is a routing-only reason (not a registered activity event);
-    // emit judge_timeout as the telemetry surface per R-SJET-4 "no new event" constraint.
-    event: (
-      exitReason === 'baseline_unmeasurable_unrecoverable' || exitReason === 'baseline_unmeasurable_transient'
-    )
-      ? 'baseline_unmeasurable'
-      : exitReason === 'all_judge_backends_exhausted'
-        ? 'judge_timeout'
-        : exitReason,
+    event: mapExhaustedExitToActivityEvent(exitReason),
     source: 'pickle',
     session: path.basename(ctx.sessionDir),
     iteration: ctx.iteration,
