@@ -6,20 +6,29 @@ on purpose. Shipped-release detail and closed-finding forensics live in
 [`MASTER_PLAN-archive.md`](MASTER_PLAN-archive.md) + `git log`; the full finding catalog is in
 [`BUG-INDEX.md`](BUG-INDEX.md).
 
-**Updated 2026-06-23.** Shipped + deployed through **v2.0.0-beta.23** (B-DURA + the first wave of the
-Reliability Plan). **B-DURA** closes the 14-incident completion-commit/Done-flip cluster at its root:
-the runner authors a durable commit at every iteration boundary, ONE `readEvidence` oracle reads it,
-`Failed` is terminal for phase-advance, no premature queue drain — and the evidence-archaeology layer
-is **deleted** (`allow_inferred` flag, `EvidenceKind` 4→2, deprecated shim, dead variant). Also shipped:
-**R-REIN** (recovery-budget refund on reset), **WS-2** run-blockers (refine fence · oversized split ·
-toolchain fail-fast · R-SIGF advisory flag), **WS-5** advisory subtract-before-add audit. Build protocol:
-the load-bearing recovery tickets were **hand-built on claude** (R-PSRB self-referential catch-22 confirmed
-live — the autonomous pipeline Failed T10 under the pre-fix runtime), then `install.sh`-deployed; the rest
-built via a parallel worktree agent-team. **⚠️ GA is NOT closer than before B-DURA in *evidence* terms:**
-beta.23 is a prerelease because the **codex AC-DURA-4 field-proof has NOT run** — a live codex multi-ticket
-bundle completing 4/4 hands-off is the only thing that validates the thesis, and codex was **0-for-3**
-before this work. Every *unit/mechanism* signal is green; the *field* signal is unproven. **THE single
-highest-value next step is the codex AC-DURA-4 proof.**
+**Updated 2026-06-24.** Shipped + deployed through **v2.0.0-beta.24** (B-RPGT). The **known reliability
+defect classes are now all code-fixed at root**: the 14-incident completion-commit/Done-flip cluster
+(B-PCOMP beta.22 start/finish gates + **B-DURA beta.23** durable-iteration-boundary core, evidence-archaeology
+layer deleted), AND the independent review-phase 0/4 cause (**B-RPGT beta.24**: review/cleanup phases can no
+longer converge over a tsc/eslint-RED tree, and a transient 529 no longer aborts a 3-hr pipeline — both
+reuse-first, no new machinery).
+
+**Reliability scorecard.** Code/mechanism ✅ — the most-fixed it has ever been. claude field-soak 🟢 — **2 clean
+hands-off runs, now incl. a live MULTI-TICKET ADDITIVE bundle** (B-RPGT: 5 tickets, 4/4 phases, 178m, ZERO
+mid-run intervention, the 529-abort bug never fired, anatomy-park self-hardened the new code) — the exact run
+the soak required. codex field-soak 🔴 — **still 0-for-3, NOT re-run post-fix.** The reliability *code* is
+proven on claude and unproven on codex; that gap is the whole remaining GA story.
+
+**Autonomous-development scorecard.** The build→citadel→anatomy-park→szechuan-sauce pipeline now runs a real
+multi-ticket additive bundle **fully hands-off on claude** (B-RPGT). Remaining autonomy gaps, in order of bite:
+(a) the **closer** (version bump · `install.sh` deploy · `gh release`) is NOT auto-run by `pipeline-runner` —
+it finishes 4/4 then stops, so a babysitter still ships; (b) **recovery-machinery bundles can't self-build**
+(R-PSRB) — must hand-build; (c) per-phase gates don't run the FULL release gate, so debt surfaces at the
+closer (B-RPGT's closer caught pre-existing gate-parity drift + 2 over-limit trap-door entries the review
+phases added — tsc/eslint-clean but tripping AC-BUNDLE-17).
+
+**THE single highest-value next step remains the codex AC-DURA-4 field-proof** — the only thing that converts
+the codex 🔴 to evidence and unblocks GA.
 
 ## Status
 
@@ -38,14 +47,15 @@ gated work. Every bundle PRD carries a `## Simplification Review` (subtract-befo
 [`CLAUDE.md`](CLAUDE.md).
 
 **GA path (evidence-first).** GA gate = honesty ✅ + stability-surface ✅ + completion-bugs-**code-fixed** ✅
-(B-PCOMP beta.22 + **B-DURA beta.23**, the cluster root) + **field-soak repeatability 🔴 on codex (0-for-3,
-NOT re-run post-B-DURA)** / 🟡 on claude (1 of ~3–5, single-ticket). The completion machinery is now
-collapsed to one runner-authored-durable-commit invariant + one oracle; the *code* is the most-fixed it has
-ever been, but the **codex field-proof is the missing evidence**. Remaining GA work: **(a) run the codex
-AC-DURA-4 proof** (the decisive data point); **(b) ≥1 claude multi-ticket clean run**; **(c) close the
-review-phase gate gaps** (facets 4–6) which are an independent 0/4 cause; then 2–3 more reps at low
-intervention. Run bundles via `/pickle-pipeline --scope branch` (an unscoped 1-event bundle made
-anatomy/szechuan review the whole tree for 84m). Drop `-beta` once repeatability holds on BOTH backends.
+(B-PCOMP beta.22 + **B-DURA beta.23**, the cluster root) + review-phase-gate-gaps-**code-fixed** ✅
+(**B-RPGT beta.24**, the independent 0/4 cause) + **field-soak repeatability 🔴 on codex (0-for-3, NOT re-run
+post-fix)** / 🟢 on claude (**2 of ~3–5, now incl. a live multi-ticket additive run**). The *code* is the
+most-fixed it has ever been and is now **proven on claude**; the only missing evidence is the **codex
+field-proof**. Remaining GA work: **(a) run the codex AC-DURA-4 proof** — the decisive data point (was 0/4 on
+codex pre-fix); **(b) 1–2 more claude reps at low intervention** to firm up repeatability; ~~(c) close the
+review-phase gate gaps~~ ✅ done (B-RPGT). Run bundles via `/pickle-pipeline --scope branch` (an unscoped
+1-event bundle made anatomy/szechuan review the whole tree for 84m). Drop `-beta` once repeatability holds on
+BOTH backends with no new completion-class seam.
 
 ---
 
