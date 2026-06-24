@@ -251,6 +251,8 @@ for (const exitPath of PATHS) {
                         'at the cap a RED tree must fail, never trust-the-worker converge');
                     assert.notEqual(exitReasons[2], 'converged');
                     assert.equal(gateFailedEvents.length, 1, 'exactly one tsc_gate_failed for the RED cap gate');
+                    // Round-trip pin: the filter already requires event === 'tsc_gate_failed'; assert it explicitly.
+                    assert.equal(gateFailedEvents[0].event, 'tsc_gate_failed');
                     assert.equal(gateFailedEvents[0].gate_payload?.failure_kind, 'compile_error');
                 } finally {
                     rm(workingDir);
@@ -293,9 +295,14 @@ for (const exitPath of PATHS) {
             });
 
             test('RED: the abort-path gate inputs go RED over a broken tree (would emit tsc_gate_failed) without masking the abort', async () => {
+                // dispatchHaltAction is NOT exported — no injection seam for its abort gate call.
+                // We prove the two halves independently:
+                //   (1) runGate with the exact args dispatchHaltAction uses goes RED on this fixture,
+                //       so IF it were wired it WOULD emit tsc_gate_failed.
+                //   (2) AC-RPGT-6 (below) proves the abort result is preserved when the gate throws —
+                //       by construction, {action:'break'} is always the return value.
                 const workingDir = makeRedWorkingDir();
                 try {
-                    // Exactly the call dispatchHaltAction makes on the abort branch.
                     const result = await runGate({
                         workingDir,
                         mode: 'strict',
@@ -303,12 +310,9 @@ for (const exitPath of PATHS) {
                         checks: ['typecheck', 'lint'],
                     });
                     assert.equal(result.status, 'red', 'broken typecheck must drive the abort gate RED');
-                    assert.ok(result.failures.length >= 1, 'a RED gate must enumerate at least one failure');
+                    assert.ok(result.failures.length > 0, 'a RED gate must enumerate at least one failure');
                     assert.ok(result.failures.some(f => f.check === 'typecheck'),
                         'the typecheck check must be the source of the RED');
-                    // The abort branch ALWAYS returns {action:'break'} regardless of the
-                    // gate result — the gate is best-effort and never masks the abort.
-                    assert.equal(await abortOutcomeIsBreak(result), true);
                 } finally {
                     rm(workingDir);
                 }
@@ -428,11 +432,3 @@ for (const exitPath of PATHS) {
     });
 }
 
-// dispatchHaltAction returns {action:'break'} after running its best-effort gate.
-// The gate result never changes that outcome — model the production contract.
-async function abortOutcomeIsBreak(_gateResult) {
-    // Production: `try { runGate(...); if red emit tsc_gate_failed } catch {}` then
-    // `return { action: 'break' }`. The result is independent of the gate status.
-    const outcome = { action: 'break' };
-    return outcome.action === 'break';
-}

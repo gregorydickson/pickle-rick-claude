@@ -13,6 +13,7 @@ import {
   JudgeMeasurementTimeout,
 } from '../bin/microverse-runner.js';
 import { classifyMicroverseHaltDecision, isFatalPhaseFailure } from '../bin/pipeline-runner.js';
+import { isMicroverseFailureExit } from '../types/index.js';
 
 const TMP_DIRS = new Set();
 
@@ -102,7 +103,44 @@ describe('AC-S529-1: classifyJudgeError — 529/429 → rate_limited', () => {
   });
 });
 
+describe('AC-S529-2 regression pin: baseline_unmeasurable_transient is non-fatal', () => {
+  test('isMicroverseFailureExit(baseline_unmeasurable_transient) === false', () => {
+    // baseline_unmeasurable_transient must stay out of MICROVERSE_FAILURE_REASONS so
+    // pipeline-runner routes it to finalize-gate-incomplete, not fatal abort.
+    assert.equal(isMicroverseFailureExit('baseline_unmeasurable_transient'), false);
+  });
+});
+
 describe('backoff exhaustion: all-429 attempts → exhaustedFailureKind rate_limited', () => {
+  test('probe ok + 4x 529 failures → metric null, exhaustedFailureKind rate_limited', async () => {
+    const previousLegacy = process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    const orig = _deps.spawn;
+    const origSleep = _deps.sleep;
+    const origParkMaxMs = _deps.metricParkMaxMs;
+    _deps.sleep = async () => {};
+    _deps.metricParkMaxMs = 0;
+    _deps.spawn = makeSpawnMock([
+      { code: 0, stderr: 'claude/2.1.0' },
+      { code: 1, stderr: 'API Error: 529 Overloaded' },
+      { code: 1, stderr: 'API Error: 529 Overloaded' },
+      { code: 1, stderr: 'API Error: 529 Overloaded' },
+      { code: 1, stderr: 'API Error: 529 Overloaded' },
+    ]);
+    try {
+      const result = await measureLlmMetricWithBackoff('improve coverage', 1, '/tmp');
+      assert.equal(result.metric, null);
+      assert.ok('exhaustedFailureKind' in result, 'result must have exhaustedFailureKind');
+      assert.equal(result.exhaustedFailureKind, 'rate_limited');
+    } finally {
+      _deps.spawn = orig;
+      _deps.sleep = origSleep;
+      _deps.metricParkMaxMs = origParkMaxMs;
+      if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+      else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
+    }
+  });
+
   test('probe ok + 4x 429 failures → metric null, exhaustedFailureKind rate_limited', async () => {
     const previousLegacy = process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
     delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
