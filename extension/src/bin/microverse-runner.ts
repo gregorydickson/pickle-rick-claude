@@ -1274,8 +1274,8 @@ export const _deps = {
   sleep: sleep as typeof sleep,
   collectTickets: collectTickets as typeof collectTickets,
   logActivity: logActivity as typeof logActivity,
-  metricParkMaxMs: METRIC_PARK_MAX_MINUTES * 60 * 1000 as number,
-  metricParkWaitMs: METRIC_PARK_WAIT_MS as number,
+  metricParkMaxMs: METRIC_PARK_MAX_MINUTES * 60 * 1000,
+  metricParkWaitMs: METRIC_PARK_WAIT_MS,
 };
 
 type TestRunIterationOverride = typeof runIteration;
