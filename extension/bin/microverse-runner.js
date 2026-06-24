@@ -857,6 +857,10 @@ export function measureMetric(validation, timeoutSeconds, cwd) {
  * metric path should not silently block a session for hours awaiting API recovery. */
 const METRIC_PARK_MAX_MINUTES = 60;
 const METRIC_PARK_WAIT_MS = 5 * 60 * 1000;
+/** Sidecar file the monitor reads to render the "Rate limited" wait field. Inter-module contract:
+ * every writer (manager-mode + metric-path park) and its inverse clear MUST target this exact name,
+ * so it lives as a single constant rather than a literal repeated at each write/clear site. */
+const RATE_LIMIT_WAIT_FILENAME = 'rate_limit_wait.json';
 export const _deps = {
     execFileSync: execFileSync,
     execFile: execFile,
@@ -1687,7 +1691,7 @@ function emitMetricParkWait(attemptActivity, parkMs, cumulativeParkedMs) {
             duration_min: Math.ceil(parkMs / 60_000),
         });
         const sessionDir = path.join(getDataRoot(), 'sessions', attemptActivity.session);
-        writeStateFile(path.join(sessionDir, 'rate_limit_wait.json'), {
+        writeStateFile(path.join(sessionDir, RATE_LIMIT_WAIT_FILENAME), {
             waiting: true,
             reason: 'judge 529 metric-path park',
             started_at: new Date().toISOString(),
@@ -1710,7 +1714,7 @@ function clearMetricParkWait(attemptActivity) {
     }
     try {
         const sessionDir = path.join(getDataRoot(), 'sessions', attemptActivity.session);
-        fs.unlinkSync(path.join(sessionDir, 'rate_limit_wait.json'));
+        fs.unlinkSync(path.join(sessionDir, RATE_LIMIT_WAIT_FILENAME));
     }
     catch {
         // Best-effort; the park file may already be absent.
@@ -2076,7 +2080,7 @@ function writeHandoffFile(sessionDir, content) {
 }
 function clearRateLimitWaitFile(sessionDir) {
     try {
-        fs.unlinkSync(path.join(sessionDir, 'rate_limit_wait.json'));
+        fs.unlinkSync(path.join(sessionDir, RATE_LIMIT_WAIT_FILENAME));
     }
     catch { /* ok */ }
 }
@@ -2360,7 +2364,7 @@ export async function handleRateLimit(_state, ctx, signal, waitMetadata = {}) {
         session: path.basename(ctx.sessionDir),
         duration_min: waitMetadata.durationMin ?? Math.ceil(actualWaitMs / 60_000),
     });
-    writeStateFile(path.join(ctx.sessionDir, 'rate_limit_wait.json'), {
+    writeStateFile(path.join(ctx.sessionDir, RATE_LIMIT_WAIT_FILENAME), {
         waiting: true, reason: 'API rate limit',
         started_at: new Date().toISOString(),
         wait_until: new Date(Date.now() + actualWaitMs).toISOString(),
