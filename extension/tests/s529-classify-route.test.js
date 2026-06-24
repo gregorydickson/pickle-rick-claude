@@ -38,7 +38,7 @@ function makeSpawnMock(steps) {
     child.kill = () => true;
     process.nextTick(() => {
       const step = steps.shift() ?? { code: 0 };
-      if (step.stderr) child.stderr.write(step.stderr);
+      if (step.stderr) { child.stderr.write(step.stderr); }
       child.stdout.end();
       child.stderr.end();
       child.emit('close', step.code ?? 0, null);
@@ -136,7 +136,7 @@ describe('backoff exhaustion: all-429 attempts → exhaustedFailureKind rate_lim
       _deps.spawn = orig;
       _deps.sleep = origSleep;
       _deps.metricParkMaxMs = origParkMaxMs;
-      if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+      if (previousLegacy === undefined) { delete process.env['PICKLE_JUDGE_LEGACY_SPAWN']; }
       else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
     }
   });
@@ -167,7 +167,7 @@ describe('backoff exhaustion: all-429 attempts → exhaustedFailureKind rate_lim
       _deps.spawn = orig;
       _deps.sleep = origSleep;
       _deps.metricParkMaxMs = origParkMaxMs;
-      if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+      if (previousLegacy === undefined) { delete process.env['PICKLE_JUDGE_LEGACY_SPAWN']; }
       else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
     }
   });
@@ -194,7 +194,7 @@ describe('backoff exhaustion: all-429 attempts → exhaustedFailureKind rate_lim
     } finally {
       _deps.spawn = orig;
       _deps.sleep = origSleep;
-      if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+      if (previousLegacy === undefined) { delete process.env['PICKLE_JUDGE_LEGACY_SPAWN']; }
       else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
     }
   });

@@ -98,10 +98,10 @@ before(() => {
 
 after(() => {
     for (const k of Object.keys(savedEnv)) {
-        if (savedEnv[k] === undefined) delete process.env[k];
+        if (savedEnv[k] === undefined) { delete process.env[k]; }
         else process.env[k] = savedEnv[k];
     }
-    if (dataRoot) rm(dataRoot);
+    if (dataRoot) { rm(dataRoot); }
 });
 
 // ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ async function driveConvergenceDeferral(workingDir, iterations) {
         selfRedOpen: false,
     });
     microverse._deps.logActivity = (event) => {
-        if (event && event.event === 'tsc_gate_failed') gateFailedEvents.push(event);
+        if (event && event.event === 'tsc_gate_failed') { gateFailedEvents.push(event); }
     };
     microverse._deps.getHeadSha = () => 'a'.repeat(40);
     microverse._deps.sleep = async () => {};
@@ -348,7 +348,7 @@ for (const exitPath of PATHS) {
                 const result = await (async () => {
                     try {
                         const g = await throwingGate();
-                        if (g.status === 'red') emitted.push('tsc_gate_failed');
+                        if (g.status === 'red') { emitted.push('tsc_gate_failed'); }
                     } catch {
                         // gate error never masks original abort reason
                     }

@@ -27,8 +27,8 @@ function makeSpawnMock(steps) {
     child.kill = () => true;
     process.nextTick(() => {
       const step = steps.shift() ?? { code: 0 };
-      if (step.stderr) child.stderr.write(step.stderr);
-      if (step.stdout) child.stdout.write(step.stdout);
+      if (step.stderr) { child.stderr.write(step.stderr); }
+      if (step.stdout) { child.stdout.write(step.stdout); }
       child.stdout.end();
       child.stderr.end();
       child.emit('close', step.code ?? 0, null);
@@ -47,7 +47,7 @@ function withDeps(overrides, fn) {
   Object.assign(_deps, overrides);
   return fn().finally(() => {
     Object.assign(_deps, saved);
-    if (prevLegacy === undefined) delete process.env[LEGACY_ENV];
+    if (prevLegacy === undefined) { delete process.env[LEGACY_ENV]; }
     else process.env[LEGACY_ENV] = prevLegacy;
   });
 }

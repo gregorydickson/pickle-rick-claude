@@ -1879,7 +1879,7 @@ export function classifyJudgeError(err: unknown): ClassifiedJudgeError {
   }
   if (isMissingCliError(err)) return { failureKind: 'cli_missing' };
   if (/\bETIMEDOUT\b/i.test(safeErrorMessage(err))) return { failureKind: 'timeout' };
-  if (/\b(529|429)\b/.test(safeErrorMessage(err))) return { failureKind: 'rate_limited' };
+  if (/\b(529|429)\b/.test(safeErrorMessage(err))) { return { failureKind: 'rate_limited' }; }
   return { failureKind: 'unknown' };
 }
 
@@ -2302,7 +2302,7 @@ function emitMetricParkWait(
   parkMs: number,
   cumulativeParkedMs: number,
 ): void {
-  if (!attemptActivity) return;
+  if (!attemptActivity) { return; }
   try {
     _deps.logActivity({
       event: 'rate_limit_wait',
