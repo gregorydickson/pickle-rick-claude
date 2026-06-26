@@ -6,7 +6,7 @@ on purpose. Shipped-release detail and closed-finding forensics live in
 [`MASTER_PLAN-archive.md`](MASTER_PLAN-archive.md) + `git log`; the full finding catalog is in
 [`BUG-INDEX.md`](BUG-INDEX.md).
 
-**Updated 2026-06-24.** Shipped + deployed through **v2.0.0-beta.24** (B-RPGT). The **known reliability
+**Updated 2026-06-26.** Shipped + deployed through **v2.0.0-beta.24** (B-RPGT). The **known reliability
 defect classes are now all code-fixed at root**: the 14-incident completion-commit/Done-flip cluster
 (B-PCOMP beta.22 start/finish gates + **B-DURA beta.23** durable-iteration-boundary core, evidence-archaeology
 layer deleted), AND the independent review-phase 0/4 cause (**B-RPGT beta.24**: review/cleanup phases can no
@@ -40,6 +40,28 @@ not just signature/type callers)** + the new **[[R-DPGT]] detached-phase-gate gr
 green gate on the timeout path** — together they own the residual `0/N phases → downstream skipped` AND
 `Done-over-red`. See
 `BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md`.
+
+## ⏯ RESUME HERE (Sunday 2026-06-29 — fresh context, new tokens)
+
+**Next action: build [[B-PXBO]]** — `prds/p2-bug-fix-bundle-b-pxbo-phase-exit-boundary-oracle-2026-06-26.md`
+(authored 2026-06-26, committed `4437395a`). It consolidates the three live phase-exit defects into one
+reuse-first bundle: **R-DPGT** (detached-overrun → `0/N phases`, 2 repros) + **R-DOTR** (Done over committed-RED
+on the timeout path) + **R-CRSR** (crash-resume restarts phase 1 + reopens Done tickets) + the LOA-1588
+foreign-hash sub-finding. Thesis: the pickle phase-exit / per-ticket-budget boundary doesn't read the single
+`readEvidence` oracle. The PRD has machine-checkable ACs grounded in real `file:line` (mux-runner.ts:3134/4674/6362,
+pipeline-runner.ts:3832/3131, spawn-morty.ts:1255, ticket-completion-evidence.ts:421).
+
+**HOW to build it (do NOT just `/pickle-pipeline` it):** B-PXBO is **SELF-MODIFYING-RECOVERY (R-PSRB)** — it edits
+the live salvage/no-progress/detached-poll + completion-evidence + pipeline-runner machinery, so the deployed
+pre-fix runtime would salvage-reset the tickets building the fix. **Hand-build the load-bearing tickets in-process**
+(subagent + manager validate/commit), or build then `install.sh`-deploy incrementally. Build order per the PRD:
+WS-3-FacetB + WS-1 (shared `readEvidence`-at-boundary helper) → WS-2 (persist worker-gate tsc result) →
+WS-3-FacetA (pipeline-runner resume) → WS-4 (oracle attribution). All tiers medium/small — no large review-all tickets.
+
+**After B-PXBO ships:** bump to **beta.25**, run the full local gate, `install.sh`, `gh release`. Then the codex GA
+gap is just **R-SIGF full scope-auto-extension** (separate parallel track — schema-shape + signature consumers).
+Pre-build sanity: re-`git log`/grep HEAD for these findings' ACs in case a stale-but-shipped state changed (see
+`feedback_prelaunch_residual_check_stale_findings`).
 
 ## Status
 
@@ -104,7 +126,11 @@ exacerbated by a 7-hr session's leftover machine load (65 leaked R-OMTD test sub
    codex rep should land AFTER R-SIGF schema-shape auto-extension + R-DPGT detached grace ship.
 2. ~~**Review-phase gate gaps** (R-CECX run-3 follow-up #2, facets 4–6)~~ — ✅ **SHIPPED B-RPGT v2.0.0-beta.24**
    (R-RPGT review-phase hard typecheck gate on abort + R-APXG-3 cap; R-S529 529→transient park-and-retry). See drain row.
-3. **R-SIGF full scope-auto-extension** (only the advisory flag shipped) + the wide oracle characterization net.
+3. **▶ B-PXBO (NEXT — authored 2026-06-26, `4437395a`)** — phase-exit boundary reads the `readEvidence` oracle:
+   closes [[R-DPGT]] + [[R-DOTR]] + [[R-CRSR]] + LOA-1588 foreign-hash. Reuse-first, no new oracle/state.
+   **R-PSRB self-modifying-recovery → hand-build.** See the RESUME HERE block at the top.
+4. **R-SIGF full scope-auto-extension** (only the advisory flag shipped) + the wide oracle characterization net.
+   Separate parallel track from B-PXBO (scope-fence subsystem, not the phase-exit oracle).
    *(Note: anatomy-park found+fixed a real HIGH in B-RPGT's own new park code (`946cd0b1`) — review phases now self-harden.)*
 **Primary metric:** hands-off soak truthfulness + manual-intervention rate (trap-door count secondary).
 **Self-build (old WS-4): cut** — freeze autonomous self-build for recovery bundles, formalize the hand-build
