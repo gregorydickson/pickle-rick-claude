@@ -125,6 +125,76 @@ function touchesDeclared(touched, declared) {
     return touched.some(t => set.has(t));
 }
 /**
+ * Commit subject+body for `sha`, via `git show -s --format=%B`. Best-effort —
+ * any git failure yields `''`. Lowercased by the caller's matcher.
+ */
+function commitMessage(workingDir, sha) {
+    try {
+        return execFileSync('git', ['-C', workingDir, 'show', '-s', '--format=%B', sha], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    }
+    catch {
+        return '';
+    }
+}
+/**
+ * R-OMA: every OTHER ticket id (directory basename) under `sessionDir`,
+ * lowercased, excluding `selfTicketId`. Best-effort → `[]`. Reused to detect a
+ * commit whose subject positively names a DIFFERENT ticket (foreign attribution).
+ */
+function enumerateSiblingTicketIds(sessionDir, selfTicketId) {
+    const out = [];
+    let entries;
+    try {
+        entries = fs.readdirSync(sessionDir, { withFileTypes: true });
+    }
+    catch {
+        return out;
+    }
+    const selfLower = selfTicketId ? selfTicketId.toLowerCase() : null;
+    for (const entry of entries) {
+        if (!entry.isDirectory())
+            continue;
+        const id = entry.name.toLowerCase();
+        if (selfLower && id === selfLower)
+            continue;
+        out.push(id);
+    }
+    return out;
+}
+/**
+ * R-OMA (LOA-1588): true iff the explicit-completion-commit `sha` is POSITIVELY
+ * attributed to a DIFFERENT ticket — its commit subject/body word-boundary-matches
+ * a sibling ticket id (e.g. a no-op/clean-audit ticket borrowing another ticket's
+ * e2e commit hash) WITHOUT also naming THIS ticket's own id/r_code.
+ *
+ * REJECTION-BY-POSITIVE-FOREIGN-ATTRIBUTION ONLY: default is accept. Absence of a
+ * matching message is NEVER grounds for rejection (R-RIC-EXPLICIT / explicit-SHA-wins);
+ * a generic or own-ticket message returns false (accept). Reuses the same
+ * word-boundary matcher shape as `scanGitLogByRefToken`.
+ */
+function isForeignAttributedExplicitSha(sha, ctx, content) {
+    if (!ctx.sessionDir)
+        return false;
+    const selfId = readFrontmatterField(content, 'id') ?? ctx.ticketId ?? null;
+    const siblingIds = enumerateSiblingTicketIds(ctx.sessionDir, selfId);
+    if (siblingIds.length === 0)
+        return false;
+    const message = commitMessage(ctx.workingDir, sha).toLowerCase();
+    if (!message)
+        return false;
+    const wordBoundary = (token) => new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+    // Own attribution wins: never reject a commit that names this ticket's id/r_code.
+    const selfRCode = readFrontmatterField(content, 'r_code');
+    const ownTokens = [
+        ...(selfId ? [selfId.toLowerCase()] : []),
+        ...(selfRCode ? [selfRCode.trim().toLowerCase()] : []),
+    ].filter(Boolean);
+    if (ownTokens.some(t => wordBoundary(t).test(message)))
+        return false;
+    // Foreign positive: the message names a DIFFERENT ticket id.
+    return siblingIds.some(id => wordBoundary(id).test(message));
+}
+/**
  * R-CECB: declared in-scope files for every OTHER ticket under `sessionDir`,
  * read directly via `fs` (inlined dir walk; importing `collectTickets` from
  * pickle-utils would create an import cycle — pickle-utils imports this module).
@@ -319,6 +389,13 @@ export function readEvidence(ctx) {
             return { kind: 'absent' };
         }
         const r = probeExplicitSha(explicit, ctx.workingDir, ctx.fallbackDir);
+        // R-OMA: reject a reachable explicit SHA ONLY when it is positively attributed
+        // to a DIFFERENT ticket (a no-op/clean-audit ticket borrowing another ticket's
+        // commit hash). Default = accept (explicit-SHA-wins).
+        if (r && isForeignAttributedExplicitSha(explicit, ctx, content)) {
+            process.stderr.write(`[ticket-completion-evidence] explicit sha ${explicit} rejected — positively attributed to a different ticket (R-OMA foreign-attribution)\n`);
+            return { kind: 'absent' };
+        }
         if (r)
             return r;
         // Explicit SHA present but not reachable → no usable evidence.
