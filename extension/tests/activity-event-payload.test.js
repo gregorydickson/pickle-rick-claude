@@ -797,6 +797,16 @@ const EVENT_CASES = [
     drop: 'gate_payload',
   },
   {
+    type: 'worker_gate_verdict_fail_closed',
+    valid: {
+      event: 'worker_gate_verdict_fail_closed',
+      ts: TS,
+      ticket_id: 'abc12345',
+      gate_payload: { verdict: 'red', computed_via: 'worker_gate' },
+    },
+    drop: 'gate_payload',
+  },
+  {
     type: 'orphan_phantom_demoted',
     valid: { event: 'orphan_phantom_demoted', ts: TS },
     drop: 'ts',
@@ -1317,6 +1327,7 @@ test('activity-event-payload: schema defines all registered event type definitio
     'mux_idle_stall_detected',
     'cross_ticket_regression_detected',
     'worker_gate_failed',
+    'worker_gate_verdict_fail_closed',
     'worker_lint_gate_failed',
     'worker_lint_autofix_applied',
     'worker_completion_commit_announced',

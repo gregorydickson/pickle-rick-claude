@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, runCmd, safeErrorMessage, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, resolveWorkerTestGateTimeoutMs, classifyTicketTier, VALID_TICKET_COMPLEXITY_TIERS, extractFrontmatter, loadPickleSettingsBag, resolveCodegraphSettings, upsertFrontmatterField, ticketFilePath, TIER_LIFECYCLE, TIER_DIFF_ENVELOPE, } from '../services/pickle-utils.js';
 import { spawn } from 'child_process';
-import { PromiseTokens, hasToken, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_TSC_OK_FIELD } from '../types/index.js';
+import { PromiseTokens, hasToken, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD } from '../types/index.js';
 import { CodegraphService } from '../services/codegraph-service.js';
 import { isRecord } from '../lib/is-record.js';
 import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths, resetToSha, updateTicketFrontmatter, updateTicketStatus } from '../services/git-utils.js';
@@ -1097,25 +1097,25 @@ function didWorkerGateFail(lintOk, tscOk, testsOk) {
     return !lintOk || !tscOk || !testsOk;
 }
 /**
- * B-PXBO WS-2 (R-DOTR): persist the worker gate's already-computed `tscOk`
- * verdict into the ticket frontmatter (`WORKER_GATE_TSC_OK_FIELD`) so the
- * Done-flip guard (`guardCompletionCommitBeforeDone`) can consult it on a
- * SALVAGE / no_progress_timeout disposition WITHOUT re-running tsc (AC-DOTR-1).
- * Best-effort: the ticket frontmatter file lives under the session root (never
- * touched by the gate-fail tree reset), so the value survives. Reuses the
- * existing `upsertFrontmatterField` write path — no new schema field, no second
- * tsc invocation. Silent on any FS error so a write hiccup never blocks the
- * gate.
+ * B-CWGE WS-2 (R-CWGE): persist the worker gate's overall verdict (the combined
+ * eslint + tsc + test outcome) into the ticket frontmatter
+ * (`WORKER_GATE_VERDICT_FIELD`) so the Done-flip guard
+ * (`guardCompletionCommitBeforeDone`) can make the recorded verdict
+ * authoritative on EVERY Done-flip path WITHOUT re-running the gate. Best-effort:
+ * the ticket frontmatter file lives under the session root (never touched by the
+ * gate-fail tree reset), so the value survives. Reuses the existing
+ * `upsertFrontmatterField` write path. Silent on any FS error so a write hiccup
+ * never blocks the gate (the guard treats an absent field as fail-closed).
  */
-function persistWorkerGateTscOk(statePath, ticketId, tscOk) {
+function persistWorkerGateVerdict(statePath, ticketId, verdict) {
     try {
         const fp = ticketFilePath(path.dirname(statePath), ticketId);
         const raw = fs.readFileSync(fp, 'utf8');
-        const upd = upsertFrontmatterField(raw, WORKER_GATE_TSC_OK_FIELD, tscOk ? 'true' : 'false');
+        const upd = upsertFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD, verdict);
         if (upd)
             fs.writeFileSync(fp, upd);
     }
-    catch { /* best-effort — guard treats an absent field as no tsc signal */ }
+    catch { /* best-effort — guard treats an absent field as fail-closed */ }
 }
 /** R-PIAP-A3: Count total changed LOC (additions + deletions) between preWorkerHead and current HEAD. */
 export function computeChangedLoc(preWorkerHead, workingDir) {
@@ -1225,10 +1225,10 @@ export async function runWorkerGate(changedFiles, args) {
         });
         ({ lintOk, tscOk, testsOk } = gateResult);
     }
-    // B-PXBO WS-2 (R-DOTR): persist the already-computed tscOk so the Done-flip
-    // guard can read it on a salvage/no_progress_timeout disposition without
-    // re-running tsc. Written on BOTH the pass and fail paths below.
-    persistWorkerGateTscOk(args.statePath, args.ticketId, tscOk);
+    // B-CWGE WS-2 (R-CWGE): persist the overall worker-gate verdict (eslint+tsc+test)
+    // so the Done-flip guard can read it on EVERY path without re-running the gate.
+    // Written on BOTH the pass and fail paths below.
+    persistWorkerGateVerdict(args.statePath, args.ticketId, didWorkerGateFail(lintOk, tscOk, testsOk) ? 'red' : 'green');
     if (didWorkerGateFail(lintOk, tscOk, testsOk)) {
         writeActivityEntry(args.statePath, {
             event: 'worker_gate_failed',

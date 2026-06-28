@@ -1,7 +1,9 @@
 // @tier: integration
-// B-PXBO WS-2 (R-DOTR): the Done-flip guard must reject a salvage / no_progress_timeout
-// commit over tsc-RED code (gated on the worker gate's persisted tscOk verdict), while
-// leaving the normal happy path AND green-salvage path untouched.
+// B-CWGE WS-2 (R-CWGE): the Done-flip guard makes the recorded worker-gate verdict
+// (`worker_gate_verdict`) authoritative on EVERY committed Done-flip path — a red OR
+// absent/unverifiable verdict is fail-closed; only a GREEN verdict flips Done. This
+// generalizes the prior salvage-only tsc gate (R-DOTR) and preserves no regression on
+// the salvage / no_progress_timeout fail-closed case.
 //
 // R-PTSB: this test invokes guardCompletionCommitBeforeDone, a session-writing mux-runner
 // helper (its R-WUWC auto-promote upserts ticket frontmatter), so PICKLE_DATA_ROOT is
@@ -14,13 +16,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-const DATA_ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dotr-data-')));
+const DATA_ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwge-data-')));
 process.env.PICKLE_DATA_ROOT = DATA_ROOT;
 
 const { guardCompletionCommitBeforeDone } = await import('../bin/mux-runner.js');
 
 function makeTmp() {
-  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dotr-guard-')));
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwge-guard-')));
 }
 
 function git(repoDir, args) {
@@ -41,13 +43,13 @@ function commitFile(repoDir, name, body, msg) {
 }
 
 // Build a ticket whose explicit completion_commit attributes a real commit, plus the
-// optional WS-2 disposition (failed_reason) and persisted worker_gate_tsc_ok fields.
-function writeTicket(sessionDir, ticketId, sha, { failedReason, tscOk } = {}) {
+// optional disposition (failed_reason) and persisted worker_gate_verdict fields.
+function writeTicket(sessionDir, ticketId, sha, { failedReason, verdict } = {}) {
   const dir = path.join(sessionDir, ticketId);
   fs.mkdirSync(dir, { recursive: true });
   const lines = ['---', `id: ${ticketId}`, 'status: In Progress', `completion_commit: ${sha}`];
   if (failedReason !== undefined) lines.push(`failed_reason: ${failedReason}`);
-  if (tscOk !== undefined) lines.push(`worker_gate_tsc_ok: ${tscOk}`);
+  if (verdict !== undefined) lines.push(`worker_gate_verdict: ${verdict}`);
   lines.push('---', '');
   fs.writeFileSync(path.join(dir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
 }
@@ -57,83 +59,96 @@ function writeState(sessionDir, startCommit) {
 }
 
 // The guard early-returns ok:true under PICKLE_TEST_MODE=1 — these tests must exercise
-// the REAL evidence + disposition path, so the var must be unset.
+// the REAL evidence + verdict path, so the var must be unset.
 function withoutTestMode(fn) {
   const prev = process.env.PICKLE_TEST_MODE;
   delete process.env.PICKLE_TEST_MODE;
   try { return fn(); } finally { if (prev !== undefined) process.env.PICKLE_TEST_MODE = prev; }
 }
 
-function setup({ failedReason, tscOk } = {}) {
+function setup({ failedReason, verdict } = {}) {
   const root = makeTmp();
   const sessionDir = path.join(root, 'session');
   fs.mkdirSync(sessionDir, { recursive: true });
   initRepo(root);
   const baseline = commitFile(root, 'init.txt', 'init', 'baseline');
   const real = commitFile(root, 'work.txt', 'real work', 'feat: real ticket work');
-  writeTicket(sessionDir, 'abc12345', real, { failedReason, tscOk });
+  writeTicket(sessionDir, 'abc12345', real, { failedReason, verdict });
   writeState(sessionDir, baseline);
   return { root, sessionDir, real };
 }
 
-// AC-DOTR-2: salvage / no_progress_timeout disposition + tsc RED -> guard REFUSES.
-test('R-DOTR: no_progress_timeout disposition + tsc-RED rejects the Done-flip', () => {
+// AC-CWGE-3 (no regression): salvage / no_progress_timeout disposition + RED verdict
+// -> guard REFUSES (the original R-DOTR fail-closed case, now via the unified verdict).
+test('R-CWGE: no_progress_timeout disposition + RED verdict rejects the Done-flip', () => {
   withoutTestMode(() => {
-    const { root, sessionDir } = setup({ failedReason: 'no_progress_timeout', tscOk: 'false' });
+    const { root, sessionDir } = setup({ failedReason: 'no_progress_timeout', verdict: 'red' });
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
-    assert.equal(guard.ok, false, 'a salvage commit over tsc-RED code must NOT flip Done');
-    assert.match(guard.reason, /tsc-RED|R-DOTR/, 'rejection names the tsc-RED disposition gate');
+    assert.equal(guard.ok, false, 'a salvage commit over a RED verdict must NOT flip Done');
+    assert.match(guard.reason, /worker_gate_verdict|R-CWGE/, 'rejection names the worker-gate verdict gate');
   });
 });
 
-test('R-DOTR: oversized_no_progress disposition + tsc-RED also rejects (all NO_PROGRESS reasons)', () => {
+test('R-CWGE: oversized_no_progress disposition + RED verdict also rejects', () => {
   withoutTestMode(() => {
-    const { root, sessionDir } = setup({ failedReason: 'oversized_no_progress', tscOk: 'false' });
+    const { root, sessionDir } = setup({ failedReason: 'oversized_no_progress', verdict: 'red' });
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
     assert.equal(guard.ok, false);
   });
 });
 
-// AC-DOTR-3: green-salvage path STILL flips Done (no regression).
-test('R-DOTR: no_progress_timeout disposition + tsc-GREEN still flips Done', () => {
+// AC-CWGE-3: a GREEN verdict still flips Done (no regression on the happy path).
+test('R-CWGE: no_progress_timeout disposition + GREEN verdict still flips Done', () => {
   withoutTestMode(() => {
-    const { root, sessionDir, real } = setup({ failedReason: 'no_progress_timeout', tscOk: 'true' });
+    const { root, sessionDir, real } = setup({ failedReason: 'no_progress_timeout', verdict: 'green' });
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
-    assert.equal(guard.ok, true, 'a green salvage commit is accepted (AC-DOTR-3)');
+    assert.equal(guard.ok, true, 'a green salvage commit is accepted (AC-CWGE-3)');
     assert.equal(guard.sha, real);
   });
 });
 
-test('R-DOTR: no_progress_timeout disposition + ABSENT tsc field still flips Done (no signal => no gate)', () => {
+// AC-CWGE-5/6: an ABSENT verdict on a salvage disposition computes one via the
+// between-ticket gate. The temp-repo harness has no `extension/` dir (a non-pickle-rick
+// target), so the JS worker gate is NOT applicable -> verdict green -> Done flips. This
+// preserves R-DOTR's AC-DOTR-3 (a salvage commit with no gate signal is not gated) and
+// proves fail-closed does not universally refuse salvage Done-flips on non-pickle-rick
+// repos. Fail-closed on a salvage disposition fires on a RED verdict (above) or a RED
+// computed gate when `extension/` exists.
+test('R-CWGE: no_progress_timeout + ABSENT verdict on a non-pickle-rick target flips Done (gate not applicable)', () => {
   withoutTestMode(() => {
     const { root, sessionDir, real } = setup({ failedReason: 'no_progress_timeout' });
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
-    assert.equal(guard.ok, true, 'an absent tsc verdict (worker never ran tsc) does NOT gate');
+    assert.equal(guard.ok, true, 'no extension/ dir => worker gate not applicable => verdict green => Done flips');
     assert.equal(guard.sha, real);
   });
 });
 
-// AC-DOTR-4: the tsc gate fires ONLY on salvage/timeout dispositions. A normally-completed
-// ticket (no failed_reason) that happens to carry a stale tsc-RED verdict is NOT re-gated.
-test('R-DOTR: normal ticket (no failed_reason) + tsc-RED is NOT re-gated (AC-DOTR-4)', () => {
+// AC-CWGE-4: the verdict gate fires on EVERY committed path now — a normally-completed
+// ticket (no failed_reason) carrying a RED verdict is also fail-closed.
+test('R-CWGE: normal ticket (no failed_reason) + RED verdict is fail-CLOSED', () => {
   withoutTestMode(() => {
-    const { root, sessionDir, real } = setup({ tscOk: 'false' });
+    const { root, sessionDir } = setup({ verdict: 'red' });
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
-    assert.equal(guard.ok, true, 'no salvage disposition => the tsc gate never fires');
+    assert.equal(guard.ok, false, 'a RED verdict fails closed on every Done-flip path (AC-CWGE-4)');
+  });
+});
+
+// A normal ticket with a GREEN verdict flips Done.
+test('R-CWGE: normal ticket + GREEN verdict flips Done', () => {
+  withoutTestMode(() => {
+    const { root, sessionDir, real } = setup({ verdict: 'green' });
+    const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
+    assert.equal(guard.ok, true);
     assert.equal(guard.sha, real);
   });
 });
 
-// AC-DOTR-1 (subtract): the gate consumes the EXISTING WorkerGateCheckResult.tscOk shape
-// persisted into ticket frontmatter — there is no new state field and no second tsc run.
-test('R-DOTR: no-new-state-field — gate reads worker_gate_tsc_ok frontmatter, never re-runs tsc', () => {
+// AC-CWGE (source assertion): the guard reads the persisted verdict, spawn-morty
+// persists it, and no parallel runnability state field was introduced (R-RMBS-1).
+test('R-CWGE: guard reads worker_gate_verdict; spawn-morty persists it; no parallel runnability set', () => {
   const src = fs.readFileSync(new URL('../../extension/src/bin/mux-runner.ts', import.meta.url), 'utf8');
-  // The guard's disposition + tsc-verdict reads are frontmatter reads, not a tsc spawn.
-  assert.match(src, /workerGateTscWasRed/, 'guard reads the persisted tsc verdict via a frontmatter helper');
-  assert.match(src, /isNoProgressTimeoutDisposition/, 'guard detects disposition via the existing failed_reason read');
-  // No forbidden parallel runnability state field was introduced (R-RMBS-1/-3).
+  assert.match(src, /readWorkerGateVerdict/, 'guard reads the persisted verdict via a frontmatter helper');
   assert.doesNotMatch(src, /state\.(failed|blocked|skipped)_tickets/, 'no parallel runnability set');
-  // The spawn-morty producer persists tscOk without a second tsc invocation in the guard.
   const spawnSrc = fs.readFileSync(new URL('../../extension/src/bin/spawn-morty.ts', import.meta.url), 'utf8');
-  assert.match(spawnSrc, /persistWorkerGateTscOk/, 'spawn-morty persists the already-computed tscOk');
+  assert.match(spawnSrc, /persistWorkerGateVerdict/, 'spawn-morty persists the worker-gate verdict');
 });

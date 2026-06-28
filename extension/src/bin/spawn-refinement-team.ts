@@ -166,6 +166,7 @@ When writing acceptance criteria or analyzing PRD sections that reference activi
 | \`worker_spawn_backend_resolved\` | \`backend\`, \`source\`, \`pid\` | spawn-morty, spawn-refinement-team, microverse-runner, mux-runner |
 | \`signal_received\` | \`source\`, \`session\`, \`signal\`, \`pid\`, \`ppid\`, \`is_tty\`, \`received_at_iso\`, \`handler_stack\`, \`gate_payload.signal_sender_pid\`, \`gate_payload.signal_sender_cmd\` | mux-runner, pipeline-runner shutdown path |
 | \`worker_partial_lifecycle_exit\` | \`ticket\`, \`gate_payload.artifacts_missing\`, \`gate_payload.session_log_size\` | spawn-morty worker exit path |
+| \`worker_gate_verdict_fail_closed\` | \`ticket_id\`, \`gate_payload.verdict\`, \`gate_payload.computed_via\` | mux-runner guardCompletionCommitBeforeDone fail-closed Done-flip path |
 | \`judge_measurement_attempted\` | \`session\`, \`iteration\`, \`backend\`, \`judge_backend\`, \`model\`, \`fallback_activated\`, \`spawn_context\`, \`gate_payload.attempt\`, \`gate_payload.elapsed_ms\`, \`gate_payload.outcome\`, \`gate_payload.timeout_class\`, \`gate_payload.probe_kind\` | microverse-runner LLM judge retry loop |
 | \`baseline_attempt_timeout\` | \`session\`, \`gate_payload.attempt\`, \`gate_payload.elapsed_ms\`, \`gate_payload.classifier\` | microverse-runner LLM timeout retry loop |
 | \`pipeline_auto_resumed\` | \`gate_payload.retry_index\`, \`gate_payload.ticket_id\`, \`gate_payload.session_done_count_at_retry\` | mux-runner auto-resume path |

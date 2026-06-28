@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_TSC_OK_FIELD, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason } from '../types/index.js';
+import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
@@ -4743,41 +4743,61 @@ export function isTicketOracleCommitted(args: {
 }
 
 /**
- * B-PXBO WS-2 (R-DOTR): the Done-flip tsc-gate fires ONLY on a SALVAGE /
- * no_progress_timeout disposition — never on a normally-completed ticket that
- * already ran its own worker gate (AC-DOTR-4). The disposition signal is the
- * EXISTING ticket-frontmatter `failed_reason` read: the B-DURA durable-boundary
- * committer / wmw-auto-skip flip stamps a `NO_PROGRESS_FAILURE_REASONS` member
- * (oversized_no_progress / scope_unresolvable / no_progress_timeout) on the
- * ticket whose partial output was salvage-committed. No new disposition flag.
- * Best-effort: an unreadable ticket reads as "not a salvage disposition" (the
- * gate stays off — conservative, preserves the happy path).
+ * B-CWGE WS-2 (R-CWGE): read the worker gate's persisted verdict
+ * (`WORKER_GATE_VERDICT_FIELD`, written by spawn-morty's
+ * `persistWorkerGateVerdict` — REUSED, never recomputed). Returns the recorded
+ * `'green'` / `'red'` as-is; anything else (missing / blank / unknown) returns
+ * `'absent'`, meaning the worker gate never ran for this commit. Best-effort: an
+ * unreadable ticket reads as `'absent'` (fail-closed — the guard refuses a
+ * Done-flip on a non-green verdict).
  */
-function isNoProgressTimeoutDisposition(sessionDir: string, ticketId: string): boolean {
+function readWorkerGateVerdict(sessionDir: string, ticketId: string): 'green' | 'red' | 'absent' {
   try {
     const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf8');
-    const reason = (readFrontmatterField(raw, 'failed_reason') ?? '').trim();
-    return (NO_PROGRESS_FAILURE_REASONS as readonly string[]).includes(reason);
+    const v = (readFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD) ?? '').trim();
+    return v === 'green' || v === 'red' ? v : 'absent';
   } catch {
-    return false;
+    return 'absent';
   }
 }
 
 /**
- * B-PXBO WS-2 (R-DOTR): read the worker gate's persisted tsc verdict
- * (`WORKER_GATE_TSC_OK_FIELD`, written by spawn-morty's `persistWorkerGateTscOk`
- * — REUSED, never recomputed; AC-DOTR-1). Returns `true` when tsc was RED
- * (`"false"`), `false` otherwise — INCLUDING an absent field (no tsc signal →
- * do NOT gate; conservative, AC-DOTR-3 green-salvage path keeps flipping Done)
- * and a `"true"` value. Best-effort.
+ * B-CWGE WS-2 (R-CWGE): resolve the authoritative worker-gate verdict for the Done-flip
+ * guard. Prefers the persisted `worker_gate_verdict`; on an absent value computes one via
+ * the EXISTING between-ticket fast gate (no new gate function) and persists the
+ * green/red result back so the epic-completion path doesn't recompute. A missing
+ * `extension/` dir means the JS worker gate is NOT APPLICABLE to this target repo
+ * (non-pickle-rick targets, e.g. loanlight-api) — it yields `verdict:'green'`, matching
+ * `runWorkerGate`'s own no-extension `ok:true` early return, so Done-flips on those repos
+ * are not universally fail-closed. Only an EXISTING-but-errored gate yields `'unavailable'`
+ * (→ fail-closed, AC-CWGE-6).
  */
-function workerGateTscWasRed(sessionDir: string, ticketId: string): boolean {
+function resolveWorkerGateVerdict(
+  sessionDir: string,
+  ticketId: string,
+  workingDir: string,
+): { verdict: 'green' | 'red' | 'absent'; computedVia: 'worker_gate' | 'between_ticket_gate' | 'unavailable' } {
+  const persisted = readWorkerGateVerdict(sessionDir, ticketId);
+  if (persisted !== 'absent') return { verdict: persisted, computedVia: 'worker_gate' };
+  const ext = path.join(workingDir, 'extension');
+  // No extension/ dir → JS worker gate not applicable to this target repo → green
+  // (matches runWorkerGate's no-extension ok:true). NOT fail-closed: a non-pickle-rick
+  // target would otherwise have every Done-flip refused.
+  if (!fs.existsSync(ext)) return { verdict: 'green', computedVia: 'worker_gate' };
+  let verdict: 'green' | 'red';
   try {
-    const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf8');
-    return (readFrontmatterField(raw, WORKER_GATE_TSC_OK_FIELD) ?? '').trim() === 'false';
+    verdict = runBetweenTicketFastTests(ext).ok ? 'green' : 'red';
   } catch {
-    return false;
+    return { verdict: 'absent', computedVia: 'unavailable' };   // gate errored -> non-green (AC-CWGE-6)
   }
+  // best-effort persist the computed verdict (green|red) back to frontmatter
+  try {
+    const fp = ticketFilePath(sessionDir, ticketId);
+    const raw = fs.readFileSync(fp, 'utf8');
+    const upd = upsertFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD, verdict);
+    if (upd) fs.writeFileSync(fp, upd);
+  } catch { /* best-effort */ }
+  return { verdict, computedVia: 'between_ticket_gate' };
 }
 
 export function guardCompletionCommitBeforeDone(args: {
@@ -4849,23 +4869,25 @@ export function guardCompletionCommitBeforeDone(args: {
     } catch { /* best-effort — fall through to existing classification */ }
   }
   if (evidenceR.kind === 'committed' && evidenceR.sha) {
-    // B-PXBO WS-2 (R-DOTR): on a SALVAGE / no_progress_timeout disposition ONLY
-    // (AC-DOTR-4), reject a Done-flip over tsc-RED code. The salvage committer
-    // commits partial output on timeout; the worker gate's already-computed tsc
-    // verdict (persisted by spawn-morty, READ — never recomputed) tells us the
-    // declared files don't compile, so Done must become Failed/retry, not Done.
-    // A normally-completed ticket (no failed_reason) or a green-salvage tree
-    // (tscOk true / absent) is untouched.
-    if (
-      isNoProgressTimeoutDisposition(args.sessionDir, args.ticketId)
-      && workerGateTscWasRed(args.sessionDir, args.ticketId)
-    ) {
+    // B-CWGE WS-2 (R-CWGE): the recorded worker-gate verdict is authoritative on
+    // EVERY Done-flip path. Done requires a GREEN verdict (eslint+tsc+test:fast);
+    // a red or absent/unverifiable verdict is fail-closed.
+    const { verdict, computedVia } = resolveWorkerGateVerdict(args.sessionDir, args.ticketId, args.workingDir);
+    if (verdict !== 'green') {
+      // AC-CWGE-4/6: fail-closed. Emit the observability event, then refuse the Done-flip.
+      try {
+        writeActivityEntry(path.join(args.sessionDir, 'state.json'), {
+          event: 'worker_gate_verdict_fail_closed',
+          ts: new Date().toISOString(),
+          ticket_id: args.ticketId,
+          gate_payload: { verdict, computed_via: computedVia },
+        });
+      } catch { /* best-effort */ }
       return {
         ok: false,
         source: mapEvidenceKindToLegacySource(evidenceR.kind),
-        reason: `ticket ${args.ticketId} cannot flip Done: salvage/no-progress-timeout commit over tsc-RED code ` +
-          `(${WORKER_GATE_TSC_OK_FIELD}: false). The worker gate's tsc --noEmit failed on the declared files; ` +
-          `Done requires a tsc-green tree on this disposition (R-DOTR).`,
+        reason: `ticket ${args.ticketId} cannot flip Done: worker_gate_verdict='${verdict}' (computed_via=${computedVia}). ` +
+          `Done requires a GREEN worker-gate verdict (eslint+tsc+test:fast); a red or absent/unverifiable verdict is fail-closed (R-CWGE).`,
       };
     }
     return { ok: true, sha: evidenceR.sha };

@@ -1450,6 +1450,23 @@
         }
       }
     },
+    "worker_gate_verdict_fail_closed": {
+      "type": "object",
+      "required": ["event", "ts", "ticket_id", "gate_payload"],
+      "properties": {
+        "event": { "type": "string", "const": "worker_gate_verdict_fail_closed" },
+        "ts": { "type": "string" },
+        "ticket_id": { "type": "string" },
+        "gate_payload": {
+          "type": "object",
+          "required": ["verdict", "computed_via"],
+          "properties": {
+            "verdict": { "type": "string", "enum": ["red", "absent"] },
+            "computed_via": { "type": "string", "enum": ["worker_gate", "between_ticket_gate", "unavailable"] }
+          }
+        }
+      }
+    },
     "orphan_phantom_demoted": {
       "type": "object",
       "required": ["event", "ts"],
@@ -2006,6 +2023,7 @@
     { "$ref": "#/definitions/ticket_timeout_halted_no_progress" },
     { "$ref": "#/definitions/worker_artifact_progress_zero" },
     { "$ref": "#/definitions/worker_auto_skip_oversized" },
+    { "$ref": "#/definitions/worker_gate_verdict_fail_closed" },
     { "$ref": "#/definitions/orphan_phantom_demoted" },
     { "$ref": "#/definitions/codex_manager_no_progress" },
     { "$ref": "#/definitions/pickle_command_deprecated" },
