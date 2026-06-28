@@ -3838,6 +3838,11 @@ export function classifyMicroverseHaltDecision(exitReason: unknown): MicroverseH
   if (exitReason === 'all_judge_backends_exhausted' || exitReason === 'baseline_unmeasurable_transient') {
     return { action: 'run-finalize-gate-incomplete', recognizedExitReason: exitReason as string };
   }
+  // B-APNC WS-1: a non-convergent subsystem halt is a NON-FATAL phase end — run the
+  // finalize gate over the converged work and continue to szechuan (R-PHC-6), never abort.
+  if (exitReason === 'anatomy_non_convergent') {
+    return { action: 'run-finalize-gate-incomplete', recognizedExitReason: exitReason as string };
+  }
   if (
     typeof exitReason === 'string'
     && (

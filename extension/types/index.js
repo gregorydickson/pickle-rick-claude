@@ -289,6 +289,15 @@ export const VALID_ACTIVITY_EVENTS = [
     'install_sh_override_used',
     'anatomy_park_empty_scope_skip',
     'szechuan_sauce_empty_scope_skip',
+    // B-APNC WS-1: a subsystem ran N passes (default 8, env
+    // PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN) without a single clean pass — the runner
+    // halts-and-reports it as non-convergent instead of grinding to the iteration cap.
+    // Routes to a NON-FATAL phase end (pipeline continues to szechuan per R-PHC-6).
+    'anatomy_park_non_convergent_halt',
+    // B-APNC WS-2: a worker pass whose committed fix RAISED the subsystem's lint
+    // complexity-rule count (eslint complexity / max-lines-per-function) over the
+    // pass-start baseline — counted as a non-clean (regressing) pass, breadcrumb only.
+    'anatomy_park_complexity_regression',
     'monitor_respawn_session_dir_invalid',
     'spawn_morty_invalid_ticket_path',
     'ticket_preskipped_already_terminal',

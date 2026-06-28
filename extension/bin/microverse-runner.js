@@ -12,7 +12,7 @@ import { getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths }
 import { writeStateFile, getExtensionRoot, getDataRoot, isoCompactStamp, sleep, Style, formatTime, formatLocalDateKey, printMinimalPanel, safeErrorMessage, displayMacNotification, ensureMonitorWindow, collectTickets, getMicroverseSettings, resolveJudgeBackend, } from '../services/pickle-utils.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError } from '../services/state-manager.js';
 const sm = new StateManager();
-import { runIteration, loadRateLimitSettings, classifyIterationExit, computeRateLimitAction, killCurrentChild, wouldResetOrphanCommit, } from './mux-runner.js';
+import { runIteration, loadRateLimitSettings, classifyIterationExit, computeRateLimitAction, killCurrentChild, wouldResetOrphanCommit, resolveApncMaxPassesWithoutClean, } from './mux-runner.js';
 import { resolveCodexModel } from './spawn-morty.js';
 import { checkScopeDiff } from './check-scope-diff.js';
 import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
@@ -375,6 +375,9 @@ async function runChangedPerIterationGate(opts) {
             gate_payload: data,
         }),
     });
+    if (opts.lintFailuresSink) {
+        opts.lintFailuresSink.push(...result.failures.filter((f) => f.check === 'lint'));
+    }
     if (result.status !== 'red' || result.failures.length === 0) {
         return opts.currentMv;
     }
@@ -550,6 +553,7 @@ export async function runPerIterationGateHook(opts) {
             iteration: opts.iteration,
             log,
             deps,
+            lintFailuresSink: opts.lintFailuresSink,
         });
     }
     else if (isEnabled && !commitsHappened) {
@@ -732,6 +736,7 @@ export async function handleWorkerManagedIteration(opts) {
     const { preIterSha, workingDir, sessionDir, enabledFiles, regressionWarningThreshold, backend, remediatorTimeoutS, log, iteration, minIterations, startCommit, _deps, } = opts;
     let currentMv = opts.currentMv;
     const priorIterationRegressions = Number(currentMv.iteration_regressions ?? 0);
+    const lintFailures = [];
     const cfPath = path.join(sessionDir, currentMv.convergence_file);
     const { converged, reason } = readWorkerConvergenceSignal(cfPath, iteration, log);
     currentMv = await runPerIterationGateHook({
@@ -746,9 +751,10 @@ export async function handleWorkerManagedIteration(opts) {
         iteration,
         log,
         _deps,
+        lintFailuresSink: lintFailures,
     });
     if (!converged) {
-        return { currentMv, converged, reason };
+        return { currentMv, converged, reason, lintFailures };
     }
     const iterationLeftRegression = Number(currentMv.iteration_regressions ?? 0) > priorIterationRegressions;
     if (iterationLeftRegression) {
@@ -2894,6 +2900,117 @@ export function auditPostIterationScope(ctx, state) {
         // Best-effort observability — never block the runner on telemetry.
     }
 }
+// B-APNC WS-1 pure classifier: a subsystem with pass_counts[sub] >= maxPasses while
+// consecutive_clean[sub] is still 0 is non-convergent. Reads the EXISTING anatomy-park.json
+// counters (no new state field). Returns the offending subsystem + its pass count, or null
+// when nothing has hit the ceiling. Defensive: malformed/absent maps yield null.
+export function classifyAnatomyNonConvergence(anatomyConfig, maxPasses) {
+    if (!anatomyConfig || typeof anatomyConfig !== 'object')
+        return null;
+    const subsystems = Array.isArray(anatomyConfig.subsystems)
+        ? anatomyConfig.subsystems.filter((v) => typeof v === 'string' && v.trim().length > 0)
+        : [];
+    if (subsystems.length === 0)
+        return null;
+    const passCounts = asNumberMap(anatomyConfig.pass_counts);
+    const consecutiveClean = asNumberMap(anatomyConfig.consecutive_clean);
+    const currentIndex = Number.isInteger(anatomyConfig.current_index)
+        ? Number(anatomyConfig.current_index)
+        : 0;
+    const ordered = [subsystems[currentIndex] ?? subsystems[0], ...subsystems];
+    for (const subsystem of ordered) {
+        if (!subsystem)
+            continue;
+        const passes = passCounts[subsystem] ?? 0;
+        const clean = consecutiveClean[subsystem] ?? 0;
+        if (passes >= maxPasses && clean === 0) {
+            return { subsystem, passCount: passes };
+        }
+    }
+    return null;
+}
+function asNumberMap(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+        return {};
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+        if (Number.isFinite(Number(v)))
+            out[k] = Number(v);
+    }
+    return out;
+}
+// B-APNC WS-1 thin wiring: read anatomy-park.json, classify, and on a hit emit EXACTLY ONE
+// operator-visible halt event (subsystem + pass count) and return the non-fatal exit reason
+// 'anatomy_non_convergent' (mapped to run-finalize-gate-incomplete in pipeline-runner so the
+// pipeline continues to szechuan per R-PHC-6). Best-effort: read/telemetry failure -> null.
+export function maybeHaltAnatomyNonConvergent(state, ctx) {
+    try {
+        const convergenceFile = state.convergence_file;
+        if (!convergenceFile)
+            return null;
+        const raw = readRecoverableJsonObject(path.join(ctx.sessionDir, convergenceFile));
+        const hit = classifyAnatomyNonConvergence(raw, resolveApncMaxPassesWithoutClean());
+        if (!hit)
+            return null;
+        ctx.log(`[B-APNC] subsystem '${hit.subsystem}' ran ${hit.passCount} pass(es) with no clean pass — ` +
+            `halting as non-convergent (non-fatal; pipeline continues)`);
+        _deps.logActivity({
+            event: 'anatomy_park_non_convergent_halt',
+            source: 'pickle',
+            session: path.basename(ctx.sessionDir),
+            ts: new Date().toISOString(),
+            gate_payload: { subsystem: hit.subsystem, pass_count: hit.passCount },
+        });
+        return 'anatomy_non_convergent';
+    }
+    catch {
+        return null;
+    }
+}
+// B-APNC WS-2 pure helpers. The complexity-rule count is the subset of lint failures whose
+// rule id is `complexity` or `max-lines-per-function`.
+const COMPLEXITY_RULE_IDS = new Set(['complexity', 'max-lines-per-function']);
+export function countComplexityRuleFailures(failures) {
+    if (!Array.isArray(failures))
+        return 0;
+    return failures.filter((f) => f && f.check === 'lint' && COMPLEXITY_RULE_IDS.has(String(f.ruleOrCode))).length;
+}
+// A pass is REGRESSING when its post-iteration complexity-rule count strictly exceeds the
+// pass-start baseline count. Lowering or holding the count is NOT a regression.
+export function classifyComplexityRegression(baselineFailures, postFailures) {
+    return countComplexityRuleFailures(postFailures) > countComplexityRuleFailures(baselineFailures);
+}
+// B-APNC WS-2 thin wiring: compare the post-iteration lint complexity-rule count (from the
+// per-iteration gate's EXISTING lint run) against the pass-start baseline (gate/baseline.json).
+// On a regression emit ONE breadcrumb and return true (non-clean pass — feeds the WS-1 tally).
+// Best-effort: read/telemetry failure -> false. No second lint invocation.
+export function maybeEmitComplexityRegression(state, ctx, postFailures) {
+    try {
+        const baseline = readRecoverableJsonObject(path.join(ctx.sessionDir, 'gate', 'baseline.json'));
+        if (!classifyComplexityRegression(baseline?.failures, postFailures))
+            return false;
+        const subsystem = typeof state.current_subsystem === 'string' && state.current_subsystem.trim()
+            ? state.current_subsystem
+            : undefined;
+        _deps.logActivity({
+            event: 'anatomy_park_complexity_regression',
+            source: 'pickle',
+            session: path.basename(ctx.sessionDir),
+            ts: new Date().toISOString(),
+            gate_payload: {
+                ...(subsystem ? { subsystem } : {}),
+                baseline_complexity_count: countComplexityRuleFailures(baseline?.failures),
+                post_complexity_count: countComplexityRuleFailures(postFailures),
+            },
+        });
+        ctx.log(`[B-APNC] complexity regression: post lint complexity-rule count exceeds pass baseline — ` +
+            `counting this pass as non-clean`);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 async function handleWorkerMode(state, ctx) {
     const workerResult = await _deps.runWorkerManagedIteration({
         currentMv: state,
@@ -2913,6 +3030,9 @@ async function handleWorkerMode(state, ctx) {
     writeMicroverseState(ctx.sessionDir, state);
     ctx.postIterSha = _deps.getHeadSha(ctx.workingDir);
     auditPostIterationScope(ctx, state);
+    // B-APNC WS-2: a complexity-worsening pass is a non-clean (regressing) pass — breadcrumb
+    // only; it feeds the WS-1 tally because consecutive_clean does not advance for it.
+    maybeEmitComplexityRegression(state, ctx, workerResult.lintFailures);
     const lastAction = workerResult.currentMv.convergence?.history
         ?.findLast((entry) => entry.iteration === ctx.iteration)
         ?.action;
@@ -2937,6 +3057,11 @@ async function handleWorkerMode(state, ctx) {
             `(${stallCounter}/${stallLimit})`);
         return 'error';
     }
+    // B-APNC WS-1: a subsystem that has run N passes (default 8) with no clean pass is
+    // non-convergent — halt-and-report (non-fatal) instead of grinding to the iteration cap.
+    const nonConvergentHalt = maybeHaltAnatomyNonConvergent(state, ctx);
+    if (nonConvergentHalt)
+        return nonConvergentHalt;
     await _deps.sleep(1000);
     return null;
 }

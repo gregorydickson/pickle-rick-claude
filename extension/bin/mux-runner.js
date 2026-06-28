@@ -243,6 +243,26 @@ export function resolveExitDrainFallbackMs(env = process.env) {
     }
     return EXIT_DRAIN_FALLBACK_MS;
 }
+// B-APNC WS-1: max passes a subsystem may run WITHOUT a clean pass before anatomy-park's
+// worker-mode loop halts-and-reports it as non-convergent (rather than grinding to the
+// iteration cap). Tunable per-machine via PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN (strict
+// positive integer); invalid / absent / non-positive falls back to this 8 default.
+const APNC_MAX_PASSES_WITHOUT_CLEAN = 8;
+export const APNC_MAX_PASSES_ENV_VAR = 'PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN';
+// Resolve the anatomy-park non-convergence pass ceiling. Env override wins when it parses
+// as a strict positive integer; everything else (absent / blank / non-numeric / zero /
+// negative / fractional) falls back to APNC_MAX_PASSES_WITHOUT_CLEAN. Mirrors
+// resolveExitDrainFallbackMs (default-on-invalid, no floor beyond > 0).
+export function resolveApncMaxPassesWithoutClean(env = process.env) {
+    const raw = env[APNC_MAX_PASSES_ENV_VAR];
+    if (typeof raw === 'string' && raw.trim().length > 0) {
+        const parsed = Number(raw);
+        if (Number.isFinite(parsed) && Number.isInteger(parsed) && parsed > 0) {
+            return parsed;
+        }
+    }
+    return APNC_MAX_PASSES_WITHOUT_CLEAN;
+}
 export function maybeEmitManagerTurnProgress(opts) {
     const { sessionDir, statePath, ticketId, lastSeenMtimeMs } = opts;
     if (!ticketId)
