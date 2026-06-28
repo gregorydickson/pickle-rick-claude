@@ -156,6 +156,7 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'between_ticket_gate_timeout',
         'mux_runner_stall_detected',
         'worker_gate_failed',
+        'worker_gate_verdict_fail_closed',
         'worker_lint_gate_passed',
         'worker_lint_gate_failed',
         'worker_lint_autofix_applied',
