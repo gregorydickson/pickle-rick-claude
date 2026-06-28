@@ -3761,11 +3761,11 @@ export function classifyAnatomyNonConvergence(
   anatomyConfig: Record<string, unknown> | null | undefined,
   maxPasses: number,
 ): { subsystem: string; passCount: number } | null {
-  if (!anatomyConfig || typeof anatomyConfig !== 'object') return null;
+  if (!anatomyConfig || typeof anatomyConfig !== 'object') { return null; }
   const subsystems = Array.isArray(anatomyConfig.subsystems)
     ? anatomyConfig.subsystems.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
     : [];
-  if (subsystems.length === 0) return null;
+  if (subsystems.length === 0) { return null; }
   const passCounts = asNumberMap(anatomyConfig.pass_counts);
   const consecutiveClean = asNumberMap(anatomyConfig.consecutive_clean);
   const currentIndex = Number.isInteger(anatomyConfig.current_index)
@@ -3773,7 +3773,7 @@ export function classifyAnatomyNonConvergence(
     : 0;
   const ordered = [subsystems[currentIndex] ?? subsystems[0], ...subsystems];
   for (const subsystem of ordered) {
-    if (!subsystem) continue;
+    if (!subsystem) { continue; }
     const passes = passCounts[subsystem] ?? 0;
     const clean = consecutiveClean[subsystem] ?? 0;
     if (passes >= maxPasses && clean === 0) {
@@ -3784,10 +3784,10 @@ export function classifyAnatomyNonConvergence(
 }
 
 function asNumberMap(raw: unknown): Record<string, number> {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return {}; }
   const out: Record<string, number> = {};
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (Number.isFinite(Number(v))) out[k] = Number(v);
+    if (Number.isFinite(Number(v))) { out[k] = Number(v); }
   }
   return out;
 }
@@ -3802,10 +3802,10 @@ export function maybeHaltAnatomyNonConvergent(
 ): ExitReason | null {
   try {
     const convergenceFile = state.convergence_file;
-    if (!convergenceFile) return null;
+    if (!convergenceFile) { return null; }
     const raw = readRecoverableJsonObject(path.join(ctx.sessionDir, convergenceFile)) as Record<string, unknown> | null;
     const hit = classifyAnatomyNonConvergence(raw, resolveApncMaxPassesWithoutClean());
-    if (!hit) return null;
+    if (!hit) { return null; }
     ctx.log(
       `[B-APNC] subsystem '${hit.subsystem}' ran ${hit.passCount} pass(es) with no clean pass — ` +
       `halting as non-convergent (non-fatal; pipeline continues)`,
@@ -3828,7 +3828,7 @@ export function maybeHaltAnatomyNonConvergent(
 const COMPLEXITY_RULE_IDS = new Set(['complexity', 'max-lines-per-function']);
 
 export function countComplexityRuleFailures(failures: GateFailure[] | null | undefined): number {
-  if (!Array.isArray(failures)) return 0;
+  if (!Array.isArray(failures)) { return 0; }
   return failures.filter(
     (f) => f && f.check === 'lint' && COMPLEXITY_RULE_IDS.has(String(f.ruleOrCode)),
   ).length;
@@ -3856,7 +3856,7 @@ export function maybeEmitComplexityRegression(
     const baseline = readRecoverableJsonObject(path.join(ctx.sessionDir, 'gate', 'baseline.json')) as
       | { failures?: GateFailure[] }
       | null;
-    if (!classifyComplexityRegression(baseline?.failures, postFailures)) return false;
+    if (!classifyComplexityRegression(baseline?.failures, postFailures)) { return false; }
     const subsystem = typeof state.current_subsystem === 'string' && state.current_subsystem.trim()
       ? state.current_subsystem
       : undefined;
@@ -3937,7 +3937,7 @@ async function handleWorkerMode(
   // B-APNC WS-1: a subsystem that has run N passes (default 8) with no clean pass is
   // non-convergent — halt-and-report (non-fatal) instead of grinding to the iteration cap.
   const nonConvergentHalt = maybeHaltAnatomyNonConvergent(state, ctx);
-  if (nonConvergentHalt) return nonConvergentHalt;
+  if (nonConvergentHalt) { return nonConvergentHalt; }
   await _deps.sleep(1000);
   return null;
 }
