@@ -2649,16 +2649,23 @@ function resolveUnfinishedTickets(runtime, tickets) {
         .sort((a, b) => (a.order || 0) - (b.order || 0));
 }
 /**
- * B-PXBO WS-1: bounded grace-drain decision (R-DPGT). True ONLY when the
- * large-tier detached-worker lifecycle is enabled AND every remaining unfinished
- * ticket is attributable to a LIVE detached worker still inside its detached-poll
- * timeout window. In that case the cap-exit was a RACE (the worker is advancing at
- * the cap), not a genuine stall — the caller defers the `pipeline_phase_incomplete`
- * stamp for one bounded re-resolve keyed to the EXISTING detached-poll timeout
- * (state.worker_timeout_seconds, fallback Defaults.WORKER_TIMEOUT_SECONDS) rather
- * than minting a new constant. Conservative: any mismatch (dead/absent worker,
- * unfinished ticket the worker is not on, elapsed past the cap) returns false →
- * fall straight through to the existing stamp path (no nested guard ladder).
+ * B-PXBO WS-1: bounded grace-drain ELIGIBILITY decision (R-DPGT). True ONLY when
+ * the large-tier detached-worker lifecycle is enabled AND every remaining unfinished
+ * ticket is attributable to a LIVE detached worker still inside its detached-poll /
+ * worker-timeout window. The eligibility window REUSES the existing detached-poll
+ * timeout (`state.worker_timeout_seconds`, fallback `Defaults.WORKER_TIMEOUT_SECONDS`)
+ * rather than minting a new constant: the worker must still be within its own poll
+ * budget to qualify as "advancing at the cap" (a RACE), not stalled.
+ *
+ * NOTE — this is ONLY the eligibility gate; it does NOT govern how long the caller
+ * waits. The WAIT itself (`reportPhaseIncomplete`'s grace-drain loop) is a
+ * deliberately-BOUNDED sub-slice of `GRACE_DRAIN_MAX_PASSES * GRACE_DRAIN_PASS_MS`
+ * (= 15s), intentionally NOT the full worker-timeout budget — blocking the pipeline's
+ * exit for up to the entire worker timeout (potentially an hour) on a rare cap race
+ * would be wrong. Eligibility reuses the existing timeout; the wait is its own small
+ * fixed window. Conservative: any mismatch (dead/absent worker, unfinished ticket the
+ * worker is not on, elapsed past the eligibility window) returns false → fall straight
+ * through to the existing stamp path (no nested guard ladder).
  */
 function shouldGraceDrainDetached(runtime, unfinished) {
     if (unfinished.length === 0)
@@ -2689,10 +2696,13 @@ function shouldGraceDrainDetached(runtime, unfinished) {
     return unfinished.every(t => t.id === dw.ticket_id);
 }
 /**
- * B-PXBO WS-1: bounded grace-drain wait slice. Re-resolves the unfinished set up
- * to GRACE_DRAIN_MAX_PASSES times with GRACE_DRAIN_PASS_MS between passes (a single
- * bounded slice — NOT the full poll budget — so the pipeline never blocks for the
- * whole worker timeout). The wait is injectable for tests via `_setGraceDrainSleep`.
+ * B-PXBO WS-1: bounded grace-drain WAIT slice. Distinct from the eligibility window
+ * (`shouldGraceDrainDetached`, which reuses `worker_timeout_seconds`): this wait is a
+ * deliberately-BOUNDED sub-slice of GRACE_DRAIN_MAX_PASSES passes × GRACE_DRAIN_PASS_MS
+ * each (= 15s total), intentionally NOT the full worker-timeout budget — so the pipeline
+ * never blocks its exit for up to an hour on a rare cap race. Re-resolves the unfinished
+ * set through the oracle between passes. The wait is injectable for tests via
+ * `_setGraceDrainSleep`.
  */
 const GRACE_DRAIN_MAX_PASSES = 3;
 const GRACE_DRAIN_PASS_MS = 5_000;
