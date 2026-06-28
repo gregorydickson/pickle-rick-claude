@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PRD_ROOT="${PRD_ROOT_OVERRIDE:-$REPO_ROOT}"
 
 default_scope=(
-  "prds/p1-worker-source-state-recursion-contamination.md"
+  "prds/archive/bundles/p1-worker-source-state-recursion-contamination.md"
   "prds/archive/bug-reports/p1-mux-runner-wedges-13h-on-unbounded-between-ticket-gate-spawnsync.md"
   "prds/archive/bundles/p1-closer-ticket-spins-on-r-wsrc-forbidden-acs.md"
 )
