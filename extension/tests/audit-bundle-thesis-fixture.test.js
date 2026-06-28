@@ -58,8 +58,8 @@ function createFixtureRepo({ matrix = fixtureMatrix(), prd = fixturePrd(), missi
     assert.equal(runGit(repoRoot, ['config', 'user.name', 'Test User']).status, 0);
 
     writeFile(repoRoot, 'extension/scripts/audit-bundle-thesis.sh', fs.readFileSync(AUDIT_SCRIPT, 'utf8'));
-    writeFile(repoRoot, 'prds/bundle-thesis-matrix.md', matrix);
-    writeFile(repoRoot, 'prds/p1-reliability-and-test-coverage-bundle-2026-05-03.md', prd);
+    writeFile(repoRoot, 'prds/archive/design-notes/bundle-thesis-matrix.md', matrix);
+    writeFile(repoRoot, 'prds/archive/bundles/p1-reliability-and-test-coverage-bundle-2026-05-03.md', prd);
 
     for (const name of ['a', 'b', 'c', 'd']) {
       if (missingCanary && name === 'c') {

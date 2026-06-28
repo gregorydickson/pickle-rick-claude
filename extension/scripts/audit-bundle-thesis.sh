@@ -4,8 +4,10 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTENSION_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TEST_ROOT="$EXTENSION_ROOT/extension/tests"
-MATRIX_PATH="$EXTENSION_ROOT/prds/bundle-thesis-matrix.md"
-PRD_PATH="$EXTENSION_ROOT/prds/p1-reliability-and-test-coverage-bundle-2026-05-03.md"
+# f009608d swept these two live gate inputs to archive/; the audit follows them
+# there (sync-to-landed, matching beta.25's b5f3c85e citadel-hardening repoint).
+MATRIX_PATH="$EXTENSION_ROOT/prds/archive/design-notes/bundle-thesis-matrix.md"
+PRD_PATH="$EXTENSION_ROOT/prds/archive/bundles/p1-reliability-and-test-coverage-bundle-2026-05-03.md"
 
 if [ ! -d "$TEST_ROOT" ]; then
   echo "[skipped: tests not deployed]" >&2
