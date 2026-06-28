@@ -6,8 +6,8 @@ on purpose. Shipped-release detail and closed-finding forensics live in
 [`MASTER_PLAN-archive.md`](MASTER_PLAN-archive.md) + `git log`; the full finding catalog is in
 [`BUG-INDEX.md`](BUG-INDEX.md).
 
-**Updated 2026-06-28.** Shipped + deployed through **v2.0.0-beta.26** (B-CWGE codex worker-gate verdict
-authority; beta.25 B-PXBO phase-exit oracle). The **known reliability
+**Updated 2026-06-28.** Shipped + deployed through **v2.0.0-beta.27** (B-APNC anatomy-park convergence guard;
+beta.26 B-CWGE codex worker-gate verdict authority; beta.25 B-PXBO phase-exit oracle). The **known reliability
 defect classes are now all code-fixed at root**: the 14-incident completion-commit/Done-flip cluster
 (B-PCOMP beta.22 start/finish gates + **B-DURA beta.23** durable-iteration-boundary core, evidence-archaeology
 layer deleted), AND the independent review-phase 0/4 cause (**B-RPGT beta.24**: review/cleanup phases can no
@@ -42,7 +42,7 @@ green gate on the timeout path** — together they own the residual `0/N phases 
 `Done-over-red`. See
 `BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md`.
 
-## ⏯ RESUME HERE (updated 2026-06-28 — B-CWGE SHIPPED beta.26)
+## ⏯ RESUME HERE (updated 2026-06-28 — B-APNC SHIPPED beta.27)
 
 **✅ B-CWGE SHIPPED v2.0.0-beta.26 (2026-06-28, on CLAUDE, via babysitter closer-takeover).** Closes
 **[[R-CWGE]] (P1)** — the codex worker quality gate is now fail-CLOSED. Root cause confirmed: `runWorkerGate`
@@ -69,21 +69,26 @@ shipped PRDs to archive/" commit orphaned three LIVE gate inputs whose audit/tes
 `prds/archive/<sub>/` — and the doc-sweep commit must re-run the FULL gate.** The c=8 `test:fast:budget`
 FAIL_BUDGET(3) was a confirmed R-CIFB load-flake (c=4 green, 6711/6714) — non-blocking per posture.
 
-**Next action: drain [[R-APNC]] (P2)** — anatomy-park guard-piling non-convergence on codex (27 commits piling one
-guard per variant into `readEvidence`, complexity 13→31, never converged). Needs a convergence/complexity guard
-(halt-and-report a subsystem that runs N passes without `consecutive_clean≥1` or whose fixes raise lint-complexity)
-+ a subtract-pass discipline. PRD to author from
-`BUG-REPORT-2026-06-27-codex-worker-gate-not-enforced-and-anatomy-guard-piling.md` Finding B, then
-`/pickle-pipeline --scope branch` on claude. **R-SIGF full scope-auto-extension** remains the separate codex GA
-track (schema-shape + signature consumers). Pre-build sanity: re-`git log`/grep HEAD for ACs
-(`feedback_prelaunch_residual_check_stale_findings`).
+**✅ B-APNC SHIPPED v2.0.0-beta.27 (2026-06-28, claude, babysitter closer-takeover)** — closes **[[R-APNC]] (P2)**:
+anatomy-park now halts-and-reports a non-convergent subsystem (`APNC_MAX_PASSES_WITHOUT_CLEAN`, exit_reason
+`anatomy_non_convergent` → non-fatal continue) + treats a complexity-regressing pass as non-progress + a
+subtract-pass discipline section in `anatomy-park.md`. Mid-build the **R-WPEX detached-`claude -p` log-flush
+worker death recurred** (workers died at flush, artifacts intact) → pickle hit `pipeline_phase_incomplete` 0/4;
+babysitter recovered (hand-committed the verified WS-3 doc work `080e7e60` + Done-flip + relaunch → 4/4). Closer
+caught + fixed the 2 new convergence-guard activity events missing from `activity-logger`'s expected list (same
+event-registration class as B-CWGE; `anatomy_non_convergent` is the exit_reason, correctly NOT in the events array).
+
+**Next action: drain the queue, P1>P2>P3, verify-first.** Top candidates: **[[R-WPEX]]↻ reopen** (P2, fresh
+non-load repro this build — detached `claude -p` still dies on log-flush despite B-WPEX/worker-shutdown fixes) +
+**[[R-SIGF]] full scope-auto-extension** (separate codex GA track — schema-shape + signature consumers). Pre-build
+sanity: re-`git log`/grep HEAD for ACs (`feedback_prelaunch_residual_check_stale_findings`).
 
 ## Status
 
 | Item | Value |
 |---|---|
-| Version (source = deployed) | **v2.0.0-beta.26** — B-CWGE codex worker quality gate fail-CLOSED via the `worker_gate_verdict` authority (R-CWGE); built on claude, deployed via install.sh 2026-06-28. |
-| Latest GitHub release | **v2.0.0-beta.26** (B-CWGE; prerelease). Prior: beta.25 B-PXBO · beta.24 B-RPGT · beta.23 B-DURA + reliability program · beta.22 B-PCOMP+R-WSDO. |
+| Version (source = deployed) | **v2.0.0-beta.27** — B-APNC anatomy-park convergence/complexity guard + subtract-pass discipline (R-APNC); built on claude (R-WPEX log-flush recovery mid-build), deployed via install.sh 2026-06-28. |
+| Latest GitHub release | **v2.0.0-beta.27** (B-APNC; prerelease). Prior: beta.26 B-CWGE · beta.25 B-PXBO · beta.24 B-RPGT · beta.23 B-DURA + reliability program. |
 | Test-hygiene follow-ups (non-blocking) | (1) **hardcoded-date fixture time-bombs** — beta6-ga-session-resume's `started_at: 2026-06-15` aged past `pruneOldSessions` and broke the test (fixed via dynamic date); audit for other hardcoded ISO dates in fixtures. (2) **R-OMTD test leaks subprocesses** — pipeline-runner-orphan-mux-teardown leaves `mux.js`/`grandchild.js` running on failure; needs `afterEach` cleanup (65 leaked over one session choked the local gate). |
 | Codex backend | `gpt-5.4` |
 | Gate posture | Ship on the **local** gate (tsc + eslint + audits + fast-c4 + integration + expensive). **CI-green = hygiene, never a release gate.** |
@@ -186,7 +191,6 @@ repeatability holds on BOTH backends with no new completion-class seam.
 
 | # | Item | Pri | State | Source |
 |---|------|-----|-------|--------|
-| R-APNC | **R-APNC (NEW — 2026-06-27 codex soak)** anatomy-park guard-piling non-convergence on codex. After pickle+citadel, anatomy-park made 27 commits piling one guard per "stale-evidence-replay" variant into `readEvidence` (complexity 13→31, 2× the eslint limit) and never converged (`extension` subsystem 14+ passes, `consecutive_clean`=0, `stall_counts`=0 because committing a guard counts as "progress"). The add-don't-subtract anti-pattern executed by the review phase, complexity-blind. | P2 | **OPEN — NEW.** Fix: anatomy-park needs a convergence/complexity guard (N passes without `consecutive_clean≥1`, or fixes that raise lint-complexity → halt-and-report non-convergent, not grind to cap) + a subtract-pass discipline (collapse the Nth same-theme guard, don't add the N+1th). Stall detection that counts "committed a fix" as progress can't see oscillation. | `p2-bug-fix-bundle-b-apnc-anatomy-park-convergence-guard-2026-06-28.md` · `BUG-REPORT-2026-06-27-codex-worker-gate-not-enforced-and-anatomy-guard-piling.md` |
 | R-WPEX↻ | **R-WPEX RECURRENCE + inline-recovery gap (2026-06-28 B-APNC build; initially mis-filed R-WUDC, corrected)** pickle exited `pipeline_phase_incomplete` 0/4. ROOT CAUSE: the detached `claude -p` spawn-morty workers **died on log-flush** (manager: "worker died on log-flush, not on the work") — the KNOWN R-WPEX/worker-silent-exit class, previously MONITOR-only ([[project_wpex_worker_silent_death_monitor]]), now a fresh non-load repro. Manager inline-recovered both tickets (committed `5dc68f98`→`4ad6d2d9` Done; delivered WS-3 `6803d887` via in-process morty-implementer) but the pickle loop EXITED after committing only 1/2 → WS-3 left uncommitted+Todo → 0/4. NOT a new doc-only/B-DURA-boundary bug (that hypothesis retracted). | P2 | **OPEN.** (1) **Reopen R-WPEX** — detached `claude -p` still dies on log-flush despite B-WPEX/worker-shutdown fixes; repro-driven look at flushAndExit drain vs the "died-on-flush, artifacts-intact" flavor. (2) Manager inline-recovery must commit+Done-flip PER-TICKET (not batch) so a turn exit cannot strand an already-delivered ticket. Babysitter hand-recovered (`080e7e60`+Done-flip+relaunch). | `BUG-REPORT-2026-06-28-doc-deliverable-uncommitted-durable-boundary-coverage-gap.md` |
 | R-PFNT | **R-PFNT** green build reports `0/4 phases` (codex multi-ticket) — **B-PCOMP finish-gate NOT a single oracle.** (1) phantom-Done watcher ACCEPTS `b17cc3fe` (`valid completion_commit evidence` ×3) while flip-gate `readEvidence()` FATALS it (`kind==='absent'`) on the SAME frontmatter (`completion_commit: 9adfed909` present) — two oracles, opposite verdicts; the fatal demands a `completion_commit` already there. (2) `wmw-auto-skip` flips all 3 detached `large`-tier hardening tickets → `Failed/oversized_no_progress` (misclassifies scope-fence-ambiguity stall as "oversized"). (3) `Failed` is non-terminal for phase advance → 3 failed *polish* tickets atop 10 Done verified-green *build* tickets → `Pipeline finished: 0/4 phases` and citadel/anatomy/szechuan never run. Independently verified at halt: 12 commits, typecheck clean, **978 tests 0-fail**, 22/22 files lint-clean. | P1 | **✅ CODE-FIXED in B-DURA / beta.23 — pending codex field-proof.** All three facets addressed: (1) two-oracle split → ONE `readEvidence` oracle, watcher≡flip-gate (T30 `be667dee`); (3) `Failed`-non-terminal → terminal-for-advance under the empty-window guard (T40 `f788aa43`); (2) `oversized_no_progress` misclassification → split into `scope_unresolvable`/`no_progress_timeout` (WS-2d `b60a112e`) + parseable hardening fence (`5ad07e3c`) + toolchain fail-fast (`7b69f22a`). **✅ RE-RUN on codex 2026-06-24 (LOA-1363 run 4, beta.24): facets 1+2 PROVEN HELD** — 0× `oversized_no_progress` (7× `no_progress_timeout`), single oracle, 14/14 durable. Facet 3's empty-window fix held for `Failed`-non-terminal, but a **NEW variant surfaced → [[R-DPGT]]**: detached large-tier tickets non-terminal at the pickle iteration/detached-poll cap → `0/2 phases`, citadel skipped, while their commits landed 4–10 min later. Root driver = [[R-SIGF]]. AC-DURA-4: *completion-evidence* met, *phase-completion* NOT. See `BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md`. | `BUG-REPORT-2026-06-23-green-build-reports-0-of-4-evidence-oracle-disagreement-and-failed-nonterminal.md` |
 | R-SIGF + R-REIN | **R-SIGF / R-REIN — tickets-not-completing (LOA-1488 run 3, 2026-06-23).** Two NEW root causes behind hardening tickets never completing, distinct from R-PFNT's "oversized misclassification." **R-SIGF (scope-fence signature fan-out):** ticket 60 correctly added `StatementAnalyzerHealthService` as the 14th `LangGraphService` ctor injection, but sibling spec `appraisalEvaluation/buildAppraisalEvaluationGraph.spec.ts` instantiates it positionally (13 mocks) → `tsc` RED at 6 sites. That file is **outside the bundle's MODIFIED_FILES scope fence**, so NO fenced worker could fix it; build stayed RED → the data-flow + test-quality hardening tickets failed their typecheck gates indefinitely (presenting as `oversized_no_progress`, a misleading symptom). Fence must auto-extend to positional callers of a changed injected/exported signature (or readiness must flag signature-change-without-caller-co-scope). **R-REIN (recovery-exhausted inert on reset):** flipping a Failed ticket `status → Todo` + relaunch does NOT refund the per-ticket recovery counter → phase re-exits `exit_reason=recovery_exhausted` in ~2s with no re-attempt, so the documented "reset to Todo + relaunch" recovery is INERT once the ladder is spent. **Operator recovery (verified):** hand-fix the out-of-fence arity break (commit `ccad8c39e`), pin `scope_base` to the merge-base SHA to undo the moved-`main` phantom diff (see R-CECX Run-3 follow-up facet 3), then R-PFNT drop-pickle → review phases. | P2 | **R-REIN ✅ SHIPPED beta.23 (`3c48d7ae`)** — `refundRecoveryBudgetOnReset` refunds the per-ticket recovery ledger when frontmatter is reset to Todo, wired at the iteration loop top; the documented "reset to Todo + relaunch" recovery is no longer inert. **R-SIGF ⚠️ PARTIAL** — shipped the **advisory** `signature_change_caller_gap` readiness finding (`a668687f`, non-blocking, names orphaned positional callers); the **full scope-auto-extension** (fence auto-extends to callers of a changed injected/exported signature) is **DEFERRED** — the harder, higher-risk half. **⬆ 2nd INDEPENDENT REPRO — now load-bearing (LOA-1363 run 4, 2026-06-24):** a changed zod `thresholdSchema` *shape* (CRED_017/018/019) broke out-of-fence sibling specs (`e2e`/`summary-computer`/`credit-rule-fns`/`evaluator`); the data-flow audit ticket DEFERRED them verbatim ("no scoped CRITICAL/HIGH audit fix was warranted in the seven editable source files"); RED tree → `no_progress_timeout` storm → detached overrun → `0/2 phases`, citadel skipped. **Auto-extension MUST cover schema-shape consumers, not just signature/type callers. Promote toward P1.** See `BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-…`. | `BUG-REPORT-2026-06-22-codex-backend-completion-evidence-fatal-and-cross-iteration-work-corruption.md` |
@@ -203,7 +207,10 @@ repeatability holds on BOTH backends with no new completion-class seam.
 | 13 | **B-DWF-2** retire legacy refinement subprocess | P3 | **⏸️ SHELVED** — soak-harness prereq unmet; legacy path retained for zero regression. | `archive/bundles/p3-bug-fix-bundle-b-dwf2-retire-refinement-subprocess.md` |
 | 25 | **R-CSI** concurrent-session destructive-command interference (DATA-LOSS class) | P1 | **EXTERNAL-GATED** — re-activates on the next real concurrent-session incident to analyze. | `archive/bug-reports/p1-concurrent-claude-session-interference-with-running-pipelines.md` |
 
-> **Recently shipped + swept to `archive/`:** **B-CWGE (R-CWGE, beta.26, 2026-06-28)** — codex worker-gate
+> **Recently shipped + swept to `archive/`:** **B-APNC (R-APNC, beta.27, 2026-06-28)** — anatomy-park
+> convergence/complexity halt guard + subtract-pass discipline; built on claude, shipped via babysitter
+> closer-takeover (recovered an R-WPEX log-flush 0/4 stall mid-build; closer fixed the 2 new guard activity
+> events' registration). · **B-CWGE (R-CWGE, beta.26, 2026-06-28)** — codex worker-gate
 > verdict authority, fail-closed; built on claude, shipped via babysitter closer-takeover (the closer's full
 > gate caught 1 verdict over-reach into the runner-authored commit path + 3 pre-existing `f009608d` sweep-drift
 > audit/test path casualties). · **B-PXBO (R-DPGT + R-DOTR + R-CRSR + R-OMA, beta.25)** ·
