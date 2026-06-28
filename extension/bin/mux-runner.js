@@ -4137,16 +4137,46 @@ function readWorkerGateVerdict(sessionDir, ticketId) {
         return 'absent';
     }
 }
+/** Finite hang-guard for the eslint/tsc recompute spawns (5 min). */
+const WORKER_GATE_RECOMPUTE_CHECK_TIMEOUT_MS = 300_000;
+function defaultRecomputeCheck(bin, cmdArgs, dir) {
+    const r = spawnSync(bin, cmdArgs, {
+        cwd: dir,
+        encoding: 'utf-8',
+        timeout: WORKER_GATE_RECOMPUTE_CHECK_TIMEOUT_MS,
+    });
+    return r.status === 0;
+}
+/**
+ * B-CWGE (R-CWGE/R-DOTR): recompute an ABSENT worker-gate verdict against the SAME
+ * eslint + tsc + test:fast contract `runWorkerGateChecks` (spawn-morty) enforces — NOT
+ * `test:fast` alone. A worker that never persisted `worker_gate_verdict` (notably a
+ * codex / detached / salvaged worker that bypasses or dies before spawn-morty's
+ * `persistWorkerGateVerdict`) is the population this recompute speaks for; if it only
+ * ran `test:fast`, a lint-RED or tsc-RED tree whose `test:fast` still passes (stale
+ * compiled JS hides the tsc-RED entirely) would recompute 'green' and the Done-flip
+ * guard would ship Done-over-red on the lint/tsc dimensions — exactly the 2026-06-27
+ * codex soak class B-CWGE closes. eslint short-circuits tsc short-circuits tests, mirroring
+ * the worker gate's `!lintOk || !tscOk || !testsOk` failure ordering. `runCheck`/`runTests`
+ * are injectable for tests; production wires the real spawns.
+ */
+export function recomputeAbsentWorkerGateVerdict(extensionDir, runCheck = defaultRecomputeCheck, runTests = (dir) => runBetweenTicketFastTests(dir).ok) {
+    if (!runCheck('npx', ['eslint', 'src/', '--max-warnings=-1'], extensionDir))
+        return 'red';
+    if (!runCheck('npx', ['tsc', '--noEmit'], extensionDir))
+        return 'red';
+    return runTests(extensionDir) ? 'green' : 'red';
+}
 /**
  * B-CWGE WS-2 (R-CWGE): resolve the authoritative worker-gate verdict for the Done-flip
- * guard. Prefers the persisted `worker_gate_verdict`; on an absent value computes one via
- * the EXISTING between-ticket fast gate (no new gate function) and persists the
- * green/red result back so the epic-completion path doesn't recompute. A missing
- * `extension/` dir means the JS worker gate is NOT APPLICABLE to this target repo
- * (non-pickle-rick targets, e.g. loanlight-api) — it yields `verdict:'green'`, matching
- * `runWorkerGate`'s own no-extension `ok:true` early return, so Done-flips on those repos
- * are not universally fail-closed. Only an EXISTING-but-errored gate yields `'unavailable'`
- * (→ fail-closed, AC-CWGE-6).
+ * guard. Prefers the persisted `worker_gate_verdict`; on an absent value recomputes one via
+ * `recomputeAbsentWorkerGateVerdict` (the full eslint+tsc+test:fast contract — no new
+ * `runWorkerGate` callsite) and persists the green/red result back so the epic-completion
+ * path doesn't recompute. A missing `extension/` dir means the JS worker gate is NOT
+ * APPLICABLE to this target repo (non-pickle-rick targets, e.g. loanlight-api) — it yields
+ * `verdict:'green'`, matching `runWorkerGate`'s own no-extension `ok:true` early return, so
+ * Done-flips on those repos are not universally fail-closed. Only an EXISTING-but-errored
+ * gate yields `'unavailable'` (→ fail-closed, AC-CWGE-6).
  */
 function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
     const persisted = readWorkerGateVerdict(sessionDir, ticketId);
@@ -4162,7 +4192,7 @@ function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
     }
     let verdict;
     try {
-        verdict = runBetweenTicketFastTests(ext).ok ? 'green' : 'red';
+        verdict = recomputeAbsentWorkerGateVerdict(ext);
     }
     catch {
         return { verdict: 'absent', computedVia: 'unavailable' }; // gate errored -> non-green (AC-CWGE-6)
