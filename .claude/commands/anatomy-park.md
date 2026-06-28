@@ -322,6 +322,20 @@ Severity and confidence compose independently — a CRITICAL at conf=50 drops by
 
 Apply the `## False Positives — Do NOT Flag` exclusion list before assigning confidence — if a candidate finding matches any exclusion bullet, discard it outright. No brain-in-a-jar squishing around hypotheticals; the rubric lives in the principles doc, not here.
 
+### Override 1.6: Subtract-pass discipline
+
+This is the authoring-time arm of the **W5b subtract-before-add governance** (`extension/CLAUDE.md` → `### Subtract-before-add governance (W5b)`). It is **advisory discipline, not a runtime gate** — there is no machinery policing it; the reviewer applies it by judgment, the same way `prds/CLAUDE.md`'s Simplification Review is a doc discipline, not a check.
+
+The guard-piling pathology: handed the Nth variant of an already-guarded theme, a worker adds the N+1th guard and ratchets the target's branch count up. Each guard looks locally justified; the symbol rots into load-bearing spaghetti.
+
+When a Phase 1 finding is the Nth variant of a theme **already guarded** — i.e. the target symbol already carries **N ≥ 2 same-theme guards** (two-or-more checks defending against the same class of input/state on one function) — do NOT propose the N+1th guard. Instead:
+
+- In Phase 2, **collapse the same-theme guards into ONE uniform check** (a single normalizer, predicate, or early-return that subsumes the existing N and the new variant) rather than appending another conditional. Two escape hatches for one concern is the smell that the guard shape itself is wrong — fix the shape, do not add to it.
+- The collapsing fix **MUST NOT raise the target's cyclomatic complexity past the eslint limit**. If the only way to absorb the new variant is to add another branch, the right move is the uniform collapse, not the increment. A fix that would push complexity over the eslint ceiling is not a fix — re-shape until the count goes down, not up.
+- Record the collapse as the iteration's single Phase 2 fix and write the regression test against the unified check, so the guard family can never re-fork.
+
+If the symbol carries 0 or 1 same-theme guard, this override does not apply — add the guard normally.
+
 ### Override 2: Three-Phase Protocol
 
 Each iteration consists of three primary phases plus the mandatory Phase 2.5 replay sweep after a fix. Do NOT skip or combine phases.
