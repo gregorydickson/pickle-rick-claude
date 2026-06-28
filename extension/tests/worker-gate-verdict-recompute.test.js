@@ -1,3 +1,4 @@
+// @tier: fast
 // B-CWGE (R-CWGE/R-DOTR): the ABSENT worker-gate verdict recompute MUST enforce the
 // SAME eslint + tsc + test:fast contract the worker gate enforces — NOT test:fast alone.
 // A codex / detached / salvaged worker that never persisted `worker_gate_verdict` reaches
