@@ -4457,6 +4457,25 @@ function assertWorkingDirUnderTmpdirIfTestMode(workingDir) {
         throw new Error(`R-WSRC-4: PICKLE_TEST_MODE=1 but workingDir is outside os.tmpdir() (${tmpdirRealpath}): ${workingDir}. ` +
             `Test fixtures must root working_dir under os.tmpdir() to prevent git mutations against the real repo.`);
 }
+/**
+ * B-CWGE: record the proven-green worker-gate verdict for a RUNNER-AUTHORED
+ * commit (callers gate with the armed #99 gate before reaching the committer).
+ * Mirrors spawn-morty's `persistWorkerGateVerdict`; extracted so
+ * `commitAndContinueDoneFlip` stays within the complexity budget. Best-effort:
+ * the ticket frontmatter lives under the session root (untouched by the
+ * gate-fail tree reset); the Done-flip guard treats an absent verdict as
+ * fail-closed, so a write hiccup degrades safely.
+ */
+function persistRunnerAuthoredGreenVerdict(sessionDir, ticketId) {
+    try {
+        const fp = ticketFilePath(sessionDir, ticketId);
+        const raw = fs.readFileSync(fp, 'utf8');
+        const upd = upsertFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD, 'green');
+        if (upd)
+            fs.writeFileSync(fp, upd);
+    }
+    catch { /* best-effort — guard treats an absent verdict as fail-closed */ }
+}
 export function commitAndContinueDoneFlip(input) {
     assertWorkingDirUnderTmpdirIfTestMode(input.workingDir);
     // M1: ownership-scoped staging when stagePaths is provided (exit-path commit);
@@ -4475,6 +4494,18 @@ export function commitAndContinueDoneFlip(input) {
         input.log(`commit-and-continue: git commit blocked/failed for ${input.ticketId} (status ${commit.status ?? 'null'})`);
         return { ok: false };
     }
+    // B-CWGE: this is a RUNNER-AUTHORED commit. Every caller (the exit-path /
+    // boundary committer `commitGatePassingDeliverableOnExitPath` and the
+    // recovery-ladder `commitAndFlipDone` dep) runs its own armed #99 gate
+    // (`runBetweenTicketFastTests`) and reaches here ONLY on a GREEN result.
+    // Record that proven-green worker-gate verdict so `guardCompletionCommitBeforeDone`
+    // honors it instead of RE-running the full eslint+tsc+test:fast recompute — which,
+    // on a salvage tree that has an `extension/` dir but no installed toolchain, errors
+    // → fail-closed → strands the gate-passing deliverable (the R-DOTR over-reach the
+    // recompute introduced for this runner-authored path). The GENUINE worker
+    // self-commit Done-flip does NOT route through this committer, so its
+    // absent-verdict recompute (R-CWGE fail-closed) is preserved.
+    persistRunnerAuthoredGreenVerdict(input.sessionDir, input.ticketId);
     const guard = guardCompletionCommitBeforeDone({
         sessionDir: input.sessionDir,
         ticketId: input.ticketId,
