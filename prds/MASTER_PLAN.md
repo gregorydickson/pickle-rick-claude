@@ -6,7 +6,8 @@ on purpose. Shipped-release detail and closed-finding forensics live in
 [`MASTER_PLAN-archive.md`](MASTER_PLAN-archive.md) + `git log`; the full finding catalog is in
 [`BUG-INDEX.md`](BUG-INDEX.md).
 
-**Updated 2026-06-26.** Shipped + deployed through **v2.0.0-beta.24** (B-RPGT). The **known reliability
+**Updated 2026-06-28.** Shipped + deployed through **v2.0.0-beta.26** (B-CWGE codex worker-gate verdict
+authority; beta.25 B-PXBO phase-exit oracle). The **known reliability
 defect classes are now all code-fixed at root**: the 14-incident completion-commit/Done-flip cluster
 (B-PCOMP beta.22 start/finish gates + **B-DURA beta.23** durable-iteration-boundary core, evidence-archaeology
 layer deleted), AND the independent review-phase 0/4 cause (**B-RPGT beta.24**: review/cleanup phases can no
@@ -41,47 +42,48 @@ green gate on the timeout path** — together they own the residual `0/N phases 
 `Done-over-red`. See
 `BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md`.
 
-## ⏯ RESUME HERE (updated 2026-06-28 — B-PXBO SHIPPED beta.25)
+## ⏯ RESUME HERE (updated 2026-06-28 — B-CWGE SHIPPED beta.26)
 
-**✅ B-PXBO SHIPPED v2.0.0-beta.25 (2026-06-28, on CLAUDE).** Closes **R-DPGT** (detached-advancing
-terminal-via-oracle + bounded grace-drain) + **R-DOTR** (Done-flip gated on worker-gate tsc result for
-salvage/timeout commits) + **R-CRSR** (crash-resume reads pipeline-status.json ledger + per-process budget
-reset) + **R-OMA** (narrow foreign-attributed completion_commit rejection). The pickle phase-exit /
-per-ticket-budget boundary now reads the single `readEvidence` oracle. Built via an **ultracode workflow**
-(understand→implement→adversarial-verify, 8 commits `b96ded49`..`57e46583`), reuse-first, oracle untouched
-(complexity ≤15). Full local gate green (tsc/eslint/audits/expensive/fast@c4/integration); fast-c8 +
-integration variances confirmed load-flakes (pass isolated). Pushed to origin/main + tag `v2.0.0-beta.25`
-+ `install.sh`-deployed. The gate caught + I fixed 2 issues pre-ship (judge-exhausted stamp regression;
-pre-existing doc-cross-reference stale-ref).
+**✅ B-CWGE SHIPPED v2.0.0-beta.26 (2026-06-28, on CLAUDE, via babysitter closer-takeover).** Closes
+**[[R-CWGE]] (P1)** — the codex worker quality gate is now fail-CLOSED. Root cause confirmed: `runWorkerGate`
+ran at a single callsite inside spawn-morty's `if(isSuccess)` finalize, and NO orchestrator Done-flip path
+re-ran it — so codex's detached/no_progress/salvage path committed work that never reached the clean finalize,
+and the oracle-based Done-flip shipped lint/tsc/test-RED. Fix: spawn-morty persists ONE `worker_gate_verdict`
+(`green|red|absent`, eslint+tsc+test) frontmatter field (subsumes B-PXBO's tsc-only field); the Done-flip guard
+`guardCompletionCommitBeforeDone` consults it on EVERY genuine worker Done-flip and is fail-closed — an `absent`
+verdict is RECOMPUTED over the full eslint+tsc+test:fast contract (a tsc-RED tree hides from test:fast behind
+stale compiled JS). The build ran a clean `/pickle-pipeline --scope branch` 4/4 (pickle→citadel→anatomy-park→
+szechuan), with anatomy-park self-hardening 3 CRITICAL gaps in the new code.
 
-**Why claude not codex:** the 2026-06-27 codex soak of this same bundle was REVERTED — codex's worker quality
-gate is not enforced (shipped Done-over-red across 2 of 4 workstreams). That finding is **[[R-CWGE]] (P1)** —
-now the **top drain item** + the decisive codex GA blocker. **[[R-APNC]] (P2)** (anatomy-park guard-piling) +
-**R-SIGF** also open. Lesson (in memory): never trust a codex worker `Done` as gate-green.
+**Closer-takeover note (8 commits `e804775b`..`e526edc2`):** the full release gate (which the per-phase pipeline
+gates do NOT run) caught **6 issues none of which were a core B-CWGE design fault**: (1) the verdict gate
+**over-reached** into the runner-authored `commitGatePassingDeliverableOnExitPath`/boundary/salvage commit path,
+recomputing a real 71s gate on fixture repos → `commit-failed` (fixed `aed8e831`: scope the verdict to GENUINE
+worker Done-flips — runner-authored commits already proved green via their own armed #99 gate, so persist
+green and skip the recompute); (2) its AC-DURA-3 follow-on — a 2000-char source-slice test broke when the fix
+comment pushed the guard+markTicketDone past the window (`2980e5e6`); (3) R-TAQ-6 subprocess-heavy load-flake
+serialized (`2980e5e6`); and **(4–6) THREE pre-existing `f009608d` sweep-drift casualties** — that "sweep 35
+shipped PRDs to archive/" commit orphaned three LIVE gate inputs whose audit/test paths still pointed at
+`prds/` (bundle-thesis matrix+PRD `fba57e47`, closer-template PRD `82650a5e`, readiness-bundle-prd fixture
+`574a4ff1`). **Lesson: when a doc-sweep moves a PRD that a gate reads, the audit/test path must follow it to
+`prds/archive/<sub>/` — and the doc-sweep commit must re-run the FULL gate.** The c=8 `test:fast:budget`
+FAIL_BUDGET(3) was a confirmed R-CIFB load-flake (c=4 green, 6711/6714) — non-blocking per posture.
 
-**Next action: drain [[R-CWGE]] (P1)** — make `runWorkerGate` (`spawn-morty.ts`) fail-CLOSED on codex (a gate
-timeout / non-zero eslint/tsc/test MUST block the completion-commit). See
-`BUG-REPORT-2026-06-27-codex-worker-gate-not-enforced-and-anatomy-guard-piling.md`. Recommend building it on
-claude (or hand-build); it is the prerequisite for any future codex soak being trustworthy.
-
-**HOW to build it (do NOT just `/pickle-pipeline` it):** B-PXBO is **SELF-MODIFYING-RECOVERY (R-PSRB)** — it edits
-the live salvage/no-progress/detached-poll + completion-evidence + pipeline-runner machinery, so the deployed
-pre-fix runtime would salvage-reset the tickets building the fix. **Hand-build the load-bearing tickets in-process**
-(subagent + manager validate/commit), or build then `install.sh`-deploy incrementally. Build order per the PRD:
-WS-3-FacetB + WS-1 (shared `readEvidence`-at-boundary helper) → WS-2 (persist worker-gate tsc result) →
-WS-3-FacetA (pipeline-runner resume) → WS-4 (oracle attribution). All tiers medium/small — no large review-all tickets.
-
-**After B-PXBO ships:** bump to **beta.25**, run the full local gate, `install.sh`, `gh release`. Then the codex GA
-gap is just **R-SIGF full scope-auto-extension** (separate parallel track — schema-shape + signature consumers).
-Pre-build sanity: re-`git log`/grep HEAD for these findings' ACs in case a stale-but-shipped state changed (see
-`feedback_prelaunch_residual_check_stale_findings`).
+**Next action: drain [[R-APNC]] (P2)** — anatomy-park guard-piling non-convergence on codex (27 commits piling one
+guard per variant into `readEvidence`, complexity 13→31, never converged). Needs a convergence/complexity guard
+(halt-and-report a subsystem that runs N passes without `consecutive_clean≥1` or whose fixes raise lint-complexity)
++ a subtract-pass discipline. PRD to author from
+`BUG-REPORT-2026-06-27-codex-worker-gate-not-enforced-and-anatomy-guard-piling.md` Finding B, then
+`/pickle-pipeline --scope branch` on claude. **R-SIGF full scope-auto-extension** remains the separate codex GA
+track (schema-shape + signature consumers). Pre-build sanity: re-`git log`/grep HEAD for ACs
+(`feedback_prelaunch_residual_check_stale_findings`).
 
 ## Status
 
 | Item | Value |
 |---|---|
-| Version (source = deployed) | **v2.0.0-beta.25** — B-PXBO phase-exit reads the readEvidence oracle (R-DPGT + R-DOTR + R-CRSR + R-OMA), built on claude via ultracode workflow; deployed via install.sh 2026-06-28. |
-| Latest GitHub release | **v2.0.0-beta.25** (B-PXBO; prerelease). Prior: beta.24 B-RPGT · beta.23 B-DURA + reliability program · beta.22 B-PCOMP+R-WSDO · beta.21 #129 R-SSOC. |
+| Version (source = deployed) | **v2.0.0-beta.26** — B-CWGE codex worker quality gate fail-CLOSED via the `worker_gate_verdict` authority (R-CWGE); built on claude, deployed via install.sh 2026-06-28. |
+| Latest GitHub release | **v2.0.0-beta.26** (B-CWGE; prerelease). Prior: beta.25 B-PXBO · beta.24 B-RPGT · beta.23 B-DURA + reliability program · beta.22 B-PCOMP+R-WSDO. |
 | Test-hygiene follow-ups (non-blocking) | (1) **hardcoded-date fixture time-bombs** — beta6-ga-session-resume's `started_at: 2026-06-15` aged past `pruneOldSessions` and broke the test (fixed via dynamic date); audit for other hardcoded ISO dates in fixtures. (2) **R-OMTD test leaks subprocesses** — pipeline-runner-orphan-mux-teardown leaves `mux.js`/`grandchild.js` running on failure; needs `afterEach` cleanup (65 leaked over one session choked the local gate). |
 | Codex backend | `gpt-5.4` |
 | Gate posture | Ship on the **local** gate (tsc + eslint + audits + fast-c4 + integration + expensive). **CI-green = hygiene, never a release gate.** |
@@ -184,7 +186,6 @@ repeatability holds on BOTH backends with no new completion-class seam.
 
 | # | Item | Pri | State | Source |
 |---|------|-----|-------|--------|
-| R-CWGE | **R-CWGE (NEW — 2026-06-27 codex soak)** codex worker quality gate NOT enforced. On `--backend codex`, `runWorkerGate` (`spawn-morty.ts`: eslint + tsc + `test:fast`) did not block commits: the B-PXBO codex build `Done`-flipped 4 tickets with `completion_commit`s over lint-RED + test-RED code (WS-1 broke 3 `mux-runner-codex-inactive-relaunch` tests deterministically at c=4 + an unguarded `Number(worker_pid)`; WS-3 added an unsandboxed-`PICKLE_DATA_ROOT` test failing `audit-test-isolation`; WS-4 broke `readEvidence` "explicit-SHA-wins"/R-CCQF + complexity 13→19). **R-DOTR class (Done-over-red) at the worker-gate level on codex.** Likely worker `test:fast` timeout-passthrough (`project_afcc_deep_closer_masked_fast_tier_failures`) or codex not routing through the gate's enforcement. | P1 | **▶ BUILDING (PRD authored 2026-06-28, B-CWGE).** Root cause confirmed by source read: `runWorkerGate` runs at ONE callsite (`spawn-morty.ts:1619`, inside `finalizeWorkerTurn`'s `if(isSuccess)`); NO orchestrator Done-flip path re-runs it — codex's detached/no_progress/salvage path commits without reaching the clean finalize → gate never runs → oracle-based Done-flip ships red. Fix: persist a single `worker_gate_verdict` (subsumes B-PXBO WS-2's tsc-only field) + gate every Done-flip path on a GREEN verdict, fail-CLOSED on absence (reuse `runBetweenTicketFastGate`, no new gate). Build on claude. | `p1-bug-fix-bundle-b-cwge-codex-worker-gate-enforcement-2026-06-28.md` · `BUG-REPORT-2026-06-27-codex-worker-gate-not-enforced-and-anatomy-guard-piling.md` |
 | R-APNC | **R-APNC (NEW — 2026-06-27 codex soak)** anatomy-park guard-piling non-convergence on codex. After pickle+citadel, anatomy-park made 27 commits piling one guard per "stale-evidence-replay" variant into `readEvidence` (complexity 13→31, 2× the eslint limit) and never converged (`extension` subsystem 14+ passes, `consecutive_clean`=0, `stall_counts`=0 because committing a guard counts as "progress"). The add-don't-subtract anti-pattern executed by the review phase, complexity-blind. | P2 | **OPEN — NEW.** Fix: anatomy-park needs a convergence/complexity guard (N passes without `consecutive_clean≥1`, or fixes that raise lint-complexity → halt-and-report non-convergent, not grind to cap) + a subtract-pass discipline (collapse the Nth same-theme guard, don't add the N+1th). Stall detection that counts "committed a fix" as progress can't see oscillation. | `BUG-REPORT-2026-06-27-codex-worker-gate-not-enforced-and-anatomy-guard-piling.md` |
 | R-PFNT | **R-PFNT** green build reports `0/4 phases` (codex multi-ticket) — **B-PCOMP finish-gate NOT a single oracle.** (1) phantom-Done watcher ACCEPTS `b17cc3fe` (`valid completion_commit evidence` ×3) while flip-gate `readEvidence()` FATALS it (`kind==='absent'`) on the SAME frontmatter (`completion_commit: 9adfed909` present) — two oracles, opposite verdicts; the fatal demands a `completion_commit` already there. (2) `wmw-auto-skip` flips all 3 detached `large`-tier hardening tickets → `Failed/oversized_no_progress` (misclassifies scope-fence-ambiguity stall as "oversized"). (3) `Failed` is non-terminal for phase advance → 3 failed *polish* tickets atop 10 Done verified-green *build* tickets → `Pipeline finished: 0/4 phases` and citadel/anatomy/szechuan never run. Independently verified at halt: 12 commits, typecheck clean, **978 tests 0-fail**, 22/22 files lint-clean. | P1 | **✅ CODE-FIXED in B-DURA / beta.23 — pending codex field-proof.** All three facets addressed: (1) two-oracle split → ONE `readEvidence` oracle, watcher≡flip-gate (T30 `be667dee`); (3) `Failed`-non-terminal → terminal-for-advance under the empty-window guard (T40 `f788aa43`); (2) `oversized_no_progress` misclassification → split into `scope_unresolvable`/`no_progress_timeout` (WS-2d `b60a112e`) + parseable hardening fence (`5ad07e3c`) + toolchain fail-fast (`7b69f22a`). **✅ RE-RUN on codex 2026-06-24 (LOA-1363 run 4, beta.24): facets 1+2 PROVEN HELD** — 0× `oversized_no_progress` (7× `no_progress_timeout`), single oracle, 14/14 durable. Facet 3's empty-window fix held for `Failed`-non-terminal, but a **NEW variant surfaced → [[R-DPGT]]**: detached large-tier tickets non-terminal at the pickle iteration/detached-poll cap → `0/2 phases`, citadel skipped, while their commits landed 4–10 min later. Root driver = [[R-SIGF]]. AC-DURA-4: *completion-evidence* met, *phase-completion* NOT. See `BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md`. | `BUG-REPORT-2026-06-23-green-build-reports-0-of-4-evidence-oracle-disagreement-and-failed-nonterminal.md` |
 | R-SIGF + R-REIN | **R-SIGF / R-REIN — tickets-not-completing (LOA-1488 run 3, 2026-06-23).** Two NEW root causes behind hardening tickets never completing, distinct from R-PFNT's "oversized misclassification." **R-SIGF (scope-fence signature fan-out):** ticket 60 correctly added `StatementAnalyzerHealthService` as the 14th `LangGraphService` ctor injection, but sibling spec `appraisalEvaluation/buildAppraisalEvaluationGraph.spec.ts` instantiates it positionally (13 mocks) → `tsc` RED at 6 sites. That file is **outside the bundle's MODIFIED_FILES scope fence**, so NO fenced worker could fix it; build stayed RED → the data-flow + test-quality hardening tickets failed their typecheck gates indefinitely (presenting as `oversized_no_progress`, a misleading symptom). Fence must auto-extend to positional callers of a changed injected/exported signature (or readiness must flag signature-change-without-caller-co-scope). **R-REIN (recovery-exhausted inert on reset):** flipping a Failed ticket `status → Todo` + relaunch does NOT refund the per-ticket recovery counter → phase re-exits `exit_reason=recovery_exhausted` in ~2s with no re-attempt, so the documented "reset to Todo + relaunch" recovery is INERT once the ladder is spent. **Operator recovery (verified):** hand-fix the out-of-fence arity break (commit `ccad8c39e`), pin `scope_base` to the merge-base SHA to undo the moved-`main` phantom diff (see R-CECX Run-3 follow-up facet 3), then R-PFNT drop-pickle → review phases. | P2 | **R-REIN ✅ SHIPPED beta.23 (`3c48d7ae`)** — `refundRecoveryBudgetOnReset` refunds the per-ticket recovery ledger when frontmatter is reset to Todo, wired at the iteration loop top; the documented "reset to Todo + relaunch" recovery is no longer inert. **R-SIGF ⚠️ PARTIAL** — shipped the **advisory** `signature_change_caller_gap` readiness finding (`a668687f`, non-blocking, names orphaned positional callers); the **full scope-auto-extension** (fence auto-extends to callers of a changed injected/exported signature) is **DEFERRED** — the harder, higher-risk half. **⬆ 2nd INDEPENDENT REPRO — now load-bearing (LOA-1363 run 4, 2026-06-24):** a changed zod `thresholdSchema` *shape* (CRED_017/018/019) broke out-of-fence sibling specs (`e2e`/`summary-computer`/`credit-rule-fns`/`evaluator`); the data-flow audit ticket DEFERRED them verbatim ("no scoped CRITICAL/HIGH audit fix was warranted in the seven editable source files"); RED tree → `no_progress_timeout` storm → detached overrun → `0/2 phases`, citadel skipped. **Auto-extension MUST cover schema-shape consumers, not just signature/type callers. Promote toward P1.** See `BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-…`. | `BUG-REPORT-2026-06-22-codex-backend-completion-evidence-fatal-and-cross-iteration-work-corruption.md` |
@@ -201,7 +202,11 @@ repeatability holds on BOTH backends with no new completion-class seam.
 | 13 | **B-DWF-2** retire legacy refinement subprocess | P3 | **⏸️ SHELVED** — soak-harness prereq unmet; legacy path retained for zero regression. | `archive/bundles/p3-bug-fix-bundle-b-dwf2-retire-refinement-subprocess.md` |
 | 25 | **R-CSI** concurrent-session destructive-command interference (DATA-LOSS class) | P1 | **EXTERNAL-GATED** — re-activates on the next real concurrent-session incident to analyze. | `archive/bug-reports/p1-concurrent-claude-session-interference-with-running-pipelines.md` |
 
-> **Recently shipped + swept to `archive/` (2026-06-24):** B-PCOMP · B-RFCU · R-WSDO · R-CECB · R-RCFF (beta.22) ·
+> **Recently shipped + swept to `archive/`:** **B-CWGE (R-CWGE, beta.26, 2026-06-28)** — codex worker-gate
+> verdict authority, fail-closed; built on claude, shipped via babysitter closer-takeover (the closer's full
+> gate caught 1 verdict over-reach into the runner-authored commit path + 3 pre-existing `f009608d` sweep-drift
+> audit/test path casualties). · **B-PXBO (R-DPGT + R-DOTR + R-CRSR + R-OMA, beta.25)** ·
+> B-PCOMP · B-RFCU · R-WSDO · R-CECB · R-RCFF (beta.22) ·
 > B-DURA + R-REIN + WS-2/WS-5 (beta.23) · **B-RPGT (R-RPGT + R-S529, beta.24)** — drain rows removed; source PRDs
 > moved to `archive/bundles` + `archive/bug-reports`. **R-PFNT facets 1+2 / R-CECX are now codex-PROVEN HELD
 > (LOA-1363 run 4, 2026-06-24)** — completion-evidence class closes on codex; they stay above only as the
