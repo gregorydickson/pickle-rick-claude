@@ -17,7 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync } from 'child_process';
-import { BACKENDS, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, isMicroverseFailureExit } from '../types/index.js';
+import { BACKENDS, Defaults, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, isMicroverseFailureExit } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, } from '../services/pickle-utils.js';
@@ -31,6 +31,12 @@ import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
 import { citadelFindingsToGateResult } from '../services/citadel/citadel-findings-to-gate-result.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
+// B-PXBO WS-1: consume the SHARED oracle-recheck helper exported from mux-runner.ts
+// (an already-permitted completion-evidence oracle caller). pipeline-runner MUST NOT
+// import the oracle module directly — that becomes a 3rd caller and fails
+// audit-trap-door-enforcement.sh R-AFCC-CALLER-ENUMERATION. `largeTierDetachedEnabled`
+// gates the bounded grace-drain.
+import { isTicketOracleCommitted, largeTierDetachedEnabled } from './mux-runner.js';
 import { loadFinalizeGateSettings, resolveFinalizeSettingsRoot } from './finalize-gate.js';
 import { runGate } from '../services/convergence-gate.js';
 const sm = new StateManager();
@@ -2586,12 +2592,109 @@ const UNFINISHED_TICKETS_PRINT_CAP = 50;
  * pipeline-level outcome is preserved alongside any per-phase
  * `iteration_cap_exhausted` already recorded by mux-runner.
  */
+/**
+ * B-PXBO WS-1: resolve the genuinely-unfinished ticket set for `reportPhaseIncomplete`.
+ *
+ * Starts from the pure status filter (`status !== 'done'`) and then RE-RESOLVES each
+ * survivor through the completion oracle via the SHARED `isTicketOracleCommitted`
+ * helper (R-DPGT). A ticket whose oracle result is committed is terminal-for-advance
+ * — a detached large-tier worker that committed green minutes AFTER the mux cap-check
+ * recorded the race-entry `iteration_cap_exhausted` is NOT phase-incomplete, so it is
+ * excluded from the unfinished set. The status filter alone (pure string compare)
+ * misses this because the frontmatter flip to Done lands after the cap-check.
+ *
+ * AC-DPGT-3: no new state field — reuses `readEvidence` (via the helper) + the
+ * existing ticket roster. AC-DPGT-4 negative path: a genuinely-stuck ticket (no
+ * commit) stays in the set and still reaches the `pipeline_phase_incomplete` stamp.
+ */
+function resolveUnfinishedTickets(runtime, tickets) {
+    return tickets
+        .filter(t => (t.status || '').toLowerCase() !== 'done')
+        .filter(t => !(t.id && isTicketOracleCommitted({
+        sessionDir: runtime.sessionDir,
+        ticketId: t.id,
+        workingDir: runtime.workingDir,
+    })))
+        .sort((a, b) => (a.order || 0) - (b.order || 0));
+}
+/**
+ * B-PXBO WS-1: bounded grace-drain decision (R-DPGT). True ONLY when the
+ * large-tier detached-worker lifecycle is enabled AND every remaining unfinished
+ * ticket is attributable to a LIVE detached worker still inside its detached-poll
+ * timeout window. In that case the cap-exit was a RACE (the worker is advancing at
+ * the cap), not a genuine stall — the caller defers the `pipeline_phase_incomplete`
+ * stamp for one bounded re-resolve keyed to the EXISTING detached-poll timeout
+ * (state.worker_timeout_seconds, fallback Defaults.WORKER_TIMEOUT_SECONDS) rather
+ * than minting a new constant. Conservative: any mismatch (dead/absent worker,
+ * unfinished ticket the worker is not on, elapsed past the cap) returns false →
+ * fall straight through to the existing stamp path (no nested guard ladder).
+ */
+function shouldGraceDrainDetached(runtime, unfinished) {
+    if (unfinished.length === 0)
+        return false;
+    if (!largeTierDetachedEnabled())
+        return false;
+    let dw;
+    let rawTimeout;
+    try {
+        const state = sm.read(runtime.statePath);
+        dw = state.detached_worker;
+        rawTimeout = state.worker_timeout_seconds;
+    }
+    catch {
+        return false;
+    }
+    if (!dw || !isProcessAlive(dw.worker_pid))
+        return false;
+    // Reuse the detached-poll timeout primitive (no new constant).
+    const parsedTimeout = Number(rawTimeout);
+    const timeoutSec = Number.isFinite(parsedTimeout) && parsedTimeout > 0
+        ? parsedTimeout
+        : Defaults.WORKER_TIMEOUT_SECONDS;
+    const elapsedSec = (Date.now() - dw.spawned_at_epoch) / 1000;
+    if (elapsedSec >= timeoutSec)
+        return false;
+    // Every unfinished ticket must be the one the live detached worker is on.
+    return unfinished.every(t => t.id === dw.ticket_id);
+}
+/**
+ * B-PXBO WS-1: bounded grace-drain wait slice. Re-resolves the unfinished set up
+ * to GRACE_DRAIN_MAX_PASSES times with GRACE_DRAIN_PASS_MS between passes (a single
+ * bounded slice — NOT the full poll budget — so the pipeline never blocks for the
+ * whole worker timeout). The wait is injectable for tests via `_setGraceDrainSleep`.
+ */
+const GRACE_DRAIN_MAX_PASSES = 3;
+const GRACE_DRAIN_PASS_MS = 5_000;
+let graceDrainSleep = (ms) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* bounded busy-wait — only ever runs in the rare race window */ }
+};
+/** Test-only: override the grace-drain wait (B-PXBO WS-1). */
+export function _setGraceDrainSleep(fn) {
+    graceDrainSleep = fn;
+}
 function reportPhaseIncomplete(runtime, phase) {
     const tickets = collectTickets(runtime.sessionDir);
-    const unfinished = tickets
-        .filter(t => (t.status || '').toLowerCase() !== 'done')
-        .sort((a, b) => (a.order || 0) - (b.order || 0));
+    let unfinished = resolveUnfinishedTickets(runtime, tickets);
     const total = tickets.length;
+    // B-PXBO WS-1: if all remaining unfinished tickets are live-detached within the
+    // detached-poll window, the cap-exit was a RACE — the worker is still advancing.
+    // Apply a bounded grace-drain: wait a slice, re-resolve through the oracle, repeat
+    // until the worker commits (unfinished empties → defer the stamp) or the slice is
+    // spent / the worker is no longer eligible (fall through to the genuine stamp).
+    let passes = 0;
+    while (shouldGraceDrainDetached(runtime, unfinished) && passes < GRACE_DRAIN_MAX_PASSES) {
+        passes++;
+        runtime.log(`Phase ${phase}: ${unfinished.length}/${total} unfinished but attributable to a live detached worker — grace-drain pass ${passes}/${GRACE_DRAIN_MAX_PASSES}.`);
+        graceDrainSleep(GRACE_DRAIN_PASS_MS);
+        unfinished = resolveUnfinishedTickets(runtime, collectTickets(runtime.sessionDir));
+    }
+    if (unfinished.length === 0) {
+        // Grace-drain succeeded (or nothing was unfinished after oracle exclusion):
+        // do NOT stamp pipeline_phase_incomplete — the work is committed/terminal.
+        runtime.log(`Phase ${phase}: 0/${total} tickets unfinished after oracle re-resolution — no phase-incomplete stamp.`);
+        return;
+    }
     let priorExitReason = null;
     try {
         const reason = sm.read(runtime.statePath).exit_reason;

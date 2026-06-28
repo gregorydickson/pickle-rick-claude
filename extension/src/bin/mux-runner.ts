@@ -1111,18 +1111,58 @@ function findNextPendingTicketId(sessionDir: string): string | null {
  * the order-deadlock where the manager re-spawned the flipped ticket forever.
  * When current_ticket is the flipped ticket (or null), fall through to the next
  * selectable pending ticket.
+ *
+ * B-PXBO WS-3-FacetB: a crash-resume relaunch can inherit a `state.current_ticket`
+ * that is ALREADY Done with a durable git commit (the large-tier worker committed
+ * green, then the process died before the ticket pointer advanced). Re-selecting it
+ * here lets the inherited spent budget reach the per-ticket cap-check and flip
+ * Done->Failed (AC-CRSR-3 violation). When `workingDir` is supplied AND the current
+ * ticket is terminal (Done/Skipped) AND its completion is oracle-committed, re-route
+ * through the EXISTING `findNextPendingTicketId` selection (subtract, don't add a new
+ * Done-detection guard layer). A Done closer ticket WITHOUT committed evidence
+ * (manager-handoff residual) is still honored, preserving that downstream path.
  */
-export function resolvePreTicket(sessionDir: string, currentTicket: string | null | undefined): string | null {
+export function resolvePreTicket(
+  sessionDir: string,
+  currentTicket: string | null | undefined,
+  workingDir?: string | null,
+): string | null {
   if (
     currentTicket
     && !isOversizedNoProgressFailed(sessionDir, currentTicket)
     // 7eb9fa20: a held (failed-flip-suppressed) current_ticket is never
     // re-engaged — fall through to the next selectable pending ticket.
     && !readActiveFailedFlipHolds(sessionDir).has(currentTicket)
+    // B-PXBO WS-3-FacetB: skip an already-Done ticket whose completion is durably
+    // committed (oracle-committed). AC-CRSR-3: such a ticket must NEVER be re-routed
+    // back through the cap-check that could flip Done->Failed/Todo.
+    && !isResumedDoneWithDurableCommit(sessionDir, currentTicket, workingDir)
   ) {
     return currentTicket;
   }
   return findNextPendingTicketId(sessionDir);
+}
+
+/**
+ * B-PXBO WS-3-FacetB: true when `ticketId` is terminal (Done/Skipped) AND its
+ * completion evidence is oracle-committed. Reuses `getTicketStatus` +
+ * `isTerminalTicketStatus` for the status read and the shared
+ * `isTicketOracleCommitted` helper for the committed-evidence check. A workingDir
+ * is required for the git probe; absent → conservative false (preserve the legacy
+ * honored-current_ticket path). Best-effort: any read error reads as not-skippable.
+ */
+function isResumedDoneWithDurableCommit(
+  sessionDir: string,
+  ticketId: string,
+  workingDir?: string | null,
+): boolean {
+  if (!workingDir) return false;
+  try {
+    if (!isTerminalTicketStatus(getTicketStatus(sessionDir, ticketId))) return false;
+    return isTicketOracleCommitted({ sessionDir, ticketId, workingDir });
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1684,11 +1724,38 @@ function sessionRunnerBudget(state: State): TicketTierBudget {
   };
 }
 
+/**
+ * B-PXBO WS-3-FacetB: per-PROCESS set of tickets whose per-ticket budget baseline
+ * has been (re-)established in THIS process. A crash-resume relaunch inherits a
+ * persisted `current_ticket_budget_start_iteration` from a PRIOR process; if it is
+ * stale (e.g. baseline 0 against a resumed iteration N) `ticketBudgetIterationCount`
+ * returns an iteration-N delta that instantly trips the per-ticket cap-check and
+ * flips a still-runnable ticket Done->Failed. The first time this process applies
+ * the budget for a ticket, we re-baseline to the current iteration; every later
+ * same-process call leaves the (now process-fresh) baseline untouched so genuine
+ * no-progress within this process still accrues against the cap.
+ */
+const ticketBudgetProcessBaselined = new Set<string>();
+
+/** Test-only: reset the per-process budget-baseline ledger (B-PXBO WS-3-FacetB). */
+export function _resetTicketBudgetProcessBaseline(): void {
+  ticketBudgetProcessBaselined.clear();
+}
+
 export function applyTicketTierBudget(state: State, sessionDir: string): TicketTierBudget {
   const budget = readTicketBudgetForState(state, sessionDir);
-  if (state.current_ticket_budget_start_iteration === undefined) {
+  const ticketId = typeof state.current_ticket === 'string' && state.current_ticket.length > 0
+    ? state.current_ticket
+    : null;
+  // Re-baseline once per process for an INHERITED (prior-process) baseline; or set
+  // the baseline for the first time when absent (the legacy `=== undefined` gate).
+  const inheritedFromPriorProcess = ticketId !== null
+    && state.current_ticket_budget_start_iteration !== undefined
+    && !ticketBudgetProcessBaselined.has(ticketId);
+  if (state.current_ticket_budget_start_iteration === undefined || inheritedFromPriorProcess) {
     state.current_ticket_budget_start_iteration = Math.max(0, (Number(state.iteration) || 0) - 1);
   }
+  if (ticketId !== null) ticketBudgetProcessBaselined.add(ticketId);
   state.current_ticket_tier = budget.tier;
   state.current_ticket_max_iterations = budget.max_iterations;
   state.current_ticket_worker_timeout_seconds = budget.worker_timeout_seconds;
@@ -4629,6 +4696,50 @@ function resolveSessionBaselineShas(sessionDir: string): { startCommit: string |
     startCommit: typeof baseline?.start_commit === 'string' ? baseline.start_commit : null,
     pinnedSha: typeof baseline?.pinned_sha === 'string' ? baseline.pinned_sha : null,
   };
+}
+
+/**
+ * B-PXBO WS-3-FacetB + WS-1 SHARED oracle-recheck helper.
+ *
+ * Thin wrapper over the shipped `readEvidence` oracle that answers the single
+ * committed-vs-absent question both consumers need: "is this ticket's completion
+ * attributably committed in git?". It wires the session baseline SHAs
+ * (`resolveSessionBaselineShas`) into the `EvidenceCtx` so the R-CXOR-2
+ * `isBaselineSha` rejection fires — a ticket whose only "commit" is the session
+ * baseline is NOT committed-for-advance.
+ *
+ * Consumers:
+ *   - WS-3-FacetB (this module): the crash-resume Done-skip re-route, so an
+ *     already-committed `state.current_ticket` is NOT re-selected (and never
+ *     reaches the per-ticket cap-check that could flip Done->Failed, AC-CRSR-3).
+ *   - WS-1 (pipeline-runner via this exported helper): `reportPhaseIncomplete`
+ *     excludes a non-Done ticket whose oracle result is committed from the
+ *     unfinished set — keeping ticket-completion-evidence.ts at exactly 2 oracle
+ *     importer files (R-AFCC-CALLER-ENUMERATION). mux-runner.ts is ALREADY a
+ *     permitted oracle caller, so re-exporting this wrapper adds no new importer.
+ *
+ * Best-effort: any oracle error reads as not-committed (conservative — never
+ * spuriously excludes a genuinely-unfinished ticket from the incomplete set).
+ */
+export function isTicketOracleCommitted(args: {
+  sessionDir: string;
+  ticketId: string;
+  workingDir: string;
+}): boolean {
+  if (!args.ticketId) return false;
+  try {
+    const { startCommit, pinnedSha } = resolveSessionBaselineShas(args.sessionDir);
+    const result = readEvidence({
+      sessionDir: args.sessionDir,
+      ticketId: args.ticketId,
+      workingDir: args.workingDir,
+      startCommit,
+      pinnedSha,
+    });
+    return result.kind === 'committed' && !!result.sha;
+  } catch {
+    return false;
+  }
 }
 
 export function guardCompletionCommitBeforeDone(args: {
@@ -9657,6 +9768,31 @@ async function runMuxRunnerMain() {
     // respawn). Kill-switch PICKLE_RECOVERY_CONSOLIDATION=off reverts this.
     state = repopulateNoProgressCapFromFrontmatter(statePath, state, log, sessionDir);
 
+    // B-PXBO WS-3-FacetB: a crash-resume relaunch can inherit a `state.current_ticket`
+    // that is ALREADY Done with a durable git commit. The per-ticket cap-check below
+    // reads the inherited (spent) per-ticket cache keyed to that ticket and would flip
+    // it Done->Failed (AC-CRSR-3 violation). Skip it BEFORE the cap-check reads the
+    // stale persisted cache: clear the per-ticket cache via the EXISTING reset helper
+    // (subtract — reuse `clearStaleTicketCacheFields`, do not add a new clearer) so the
+    // cap-check sees no live ticket and `resolvePreTicket` re-routes to the next pending
+    // ticket via `findNextPendingTicketId`. This does NOT widen `updateMuxLifecycleState`'s
+    // ticketChanged trigger; the same-Done-ticket resume path clears here.
+    if (
+      typeof state.current_ticket === 'string'
+      && state.current_ticket.length > 0
+      && isResumedDoneWithDurableCommit(sessionDir, state.current_ticket, state.working_dir || process.cwd())
+    ) {
+      const skipTicket = state.current_ticket;
+      log(`B-PXBO WS-3-FacetB: resumed current_ticket ${skipTicket} is Done with durable commit — skipping before per-ticket cap-check`);
+      try {
+        state = sm.update(statePath, s => {
+          clearStaleTicketCacheFields(s);
+        });
+      } catch (err) {
+        log(`B-PXBO WS-3-FacetB: cap-cache clear failed (ignored): ${safeErrorMessage(err)}`);
+      }
+    }
+
     const rawGlobalMaxIter = Number(state.max_iterations);
     const globalMaxIter = Number.isFinite(rawGlobalMaxIter) ? rawGlobalMaxIter : 0;
     const ticketCacheValid = isValidPerTicketCapCache(state);
@@ -9780,7 +9916,7 @@ async function runMuxRunnerMain() {
     }
     const preTicket = templateName === 'meeseeks.md'
       ? null
-      : resolvePreTicket(sessionDir, state.current_ticket);
+      : resolvePreTicket(sessionDir, state.current_ticket, state.working_dir || process.cwd());
     const preStep = templateName === 'meeseeks.md'
       ? 'review'
       : inferTicketLifecycleStep(sessionDir, preTicket, state.step);

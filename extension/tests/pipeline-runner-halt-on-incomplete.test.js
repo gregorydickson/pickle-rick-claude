@@ -272,3 +272,67 @@ test('pipeline-runner.clean-exit0-all-terminal advances (no false halt)', async 
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+// B-PXBO WS-1 (R-DPGT): reportPhaseIncomplete must RE-RESOLVE each non-Done ticket
+// through the completion oracle. A ticket still 'Todo' in frontmatter but whose
+// completion landed as a real commit (oracle committed) is excluded from the
+// unfinished set — so a detached worker that committed green minutes after the cap
+// race is NOT declared phase-incomplete. With the only "unfinished" ticket excluded,
+// reportPhaseIncomplete must NOT overwrite the mux iteration_cap_exhausted with
+// pipeline_phase_incomplete.
+test('pipeline-runner.WS-1 oracle-committed non-Done ticket is excluded from unfinished set', async () => {
+  const repo = tmpDir('pipeline-ws1-repo-');
+  const sessionDir = tmpDir('pipeline-ws1-session-');
+  const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+  const prevDetached = process.env.PICKLE_LARGE_TIER_DETACHED;
+  process.env.PICKLE_DATA_ROOT = tmpDir('pipeline-ws1-dataroot-');
+  // Disable the detached grace-drain branch — this case is purely about the oracle
+  // exclusion (no detached_worker in state). 'off' keeps shouldGraceDrainDetached false.
+  process.env.PICKLE_LARGE_TIER_DETACHED = 'off';
+  try {
+    initRepo(repo);
+    writeState(sessionDir, repo);
+    writePipeline(sessionDir, repo, ['pickle']);
+
+    // Frontmatter says Todo, but the worker committed green referencing the ticket id
+    // (the race: the cap-check fired before the frontmatter flip landed).
+    writeTicket(sessionDir, 'aaa10001', 1, 'Todo');
+
+    __setSpawnRunnerForTests(async () => {
+      // Land a commit whose subject references the ticket id → oracle reads committed.
+      fs.writeFileSync(path.join(repo, 'aaa10001.ts'), 'export const a = 1;\n');
+      git(['add', '.'], repo);
+      git(['commit', '-q', '-m', 'fix(aaa10001): durable green work'], repo);
+      const statePath = path.join(sessionDir, 'state.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      state.exit_reason = 'iteration_cap_exhausted';
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+      return { exitCode: 3, stdout: '', stderr: '' };
+    });
+
+    // finalize still exits 3 (phaseIncomplete break), but the oracle-committed ticket
+    // is excluded so reportPhaseIncomplete defers the pipeline_phase_incomplete stamp.
+    await captureMainExit(sessionDir, 3);
+
+    const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+    assert.notEqual(
+      state.exit_reason,
+      'pipeline_phase_incomplete',
+      'an oracle-committed non-Done ticket must NOT be counted unfinished (no incomplete stamp)',
+    );
+
+    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.ok(
+      /0\/1 tickets unfinished after oracle re-resolution|no phase-incomplete stamp/.test(log),
+      'log must record the oracle re-resolution exclusion',
+    );
+  } finally {
+    __setSpawnRunnerForTests(null);
+    if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+    if (prevDetached === undefined) delete process.env.PICKLE_LARGE_TIER_DETACHED;
+    else process.env.PICKLE_LARGE_TIER_DETACHED = prevDetached;
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
