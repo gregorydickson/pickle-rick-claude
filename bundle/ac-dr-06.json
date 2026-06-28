@@ -5,7 +5,7 @@
   "checker": "tests/integration/readiness-bundle-prd.test.js",
   "checker_version": "local",
   "evidence": {
-    "bundle_prd": "prds/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md",
+    "bundle_prd": "prds/archive/bundles/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md",
     "ticket_count": 19,
     "skip_readiness": false
   },
