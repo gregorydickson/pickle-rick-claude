@@ -2908,17 +2908,13 @@ export function classifyAnatomyNonConvergence(anatomyConfig, maxPasses) {
     if (!anatomyConfig || typeof anatomyConfig !== 'object') {
         return null;
     }
-    const subsystems = Array.isArray(anatomyConfig.subsystems)
-        ? anatomyConfig.subsystems.filter((v) => typeof v === 'string' && v.trim().length > 0)
-        : [];
+    const subsystems = parseSubsystemList(anatomyConfig);
     if (subsystems.length === 0) {
         return null;
     }
     const passCounts = asNumberMap(anatomyConfig.pass_counts);
     const consecutiveClean = asNumberMap(anatomyConfig.consecutive_clean);
-    const currentIndex = Number.isInteger(anatomyConfig.current_index)
-        ? Number(anatomyConfig.current_index)
-        : 0;
+    const currentIndex = parseCurrentIndex(anatomyConfig);
     const ordered = [subsystems[currentIndex] ?? subsystems[0], ...subsystems];
     for (const subsystem of ordered) {
         if (!subsystem) {
@@ -2943,6 +2939,19 @@ function asNumberMap(raw) {
         }
     }
     return out;
+}
+// Single source of truth for parsing the filtered, non-empty subsystem-name list out of a
+// raw anatomy-park.json object: non-string and blank entries are dropped; malformed/absent
+// input yields []. Used by classify / resolve / stall-mark — keep these three readers in sync.
+function parseSubsystemList(raw) {
+    return raw && typeof raw === 'object' && Array.isArray(raw.subsystems)
+        ? raw.subsystems.filter((v) => typeof v === 'string' && v.trim().length > 0)
+        : [];
+}
+// Parse the current-subsystem index from a raw anatomy-park.json object. Non-integer / absent
+// values default to 0 (the first subsystem).
+function parseCurrentIndex(raw) {
+    return raw && Number.isInteger(raw.current_index) ? Number(raw.current_index) : 0;
 }
 // B-APNC WS-1 thin wiring: read anatomy-park.json, classify, and on a hit emit EXACTLY ONE
 // operator-visible halt event (subsystem + pass count) and return the non-fatal exit reason
@@ -3112,13 +3121,10 @@ function resolveCurrentWorkerSubsystem(state, sessionDir) {
     const raw = readRecoverableJsonObject(convergencePath);
     if (!raw)
         return null;
-    const subsystems = Array.isArray(raw.subsystems)
-        ? raw.subsystems.filter((value) => typeof value === 'string' && value.trim().length > 0)
-        : [];
+    const subsystems = parseSubsystemList(raw);
     if (subsystems.length === 0)
         return null;
-    const currentIndex = Number.isInteger(raw.current_index) ? Number(raw.current_index) : 0;
-    return subsystems[currentIndex] ?? null;
+    return subsystems[parseCurrentIndex(raw)] ?? null;
 }
 function syncCurrentWorkerSubsystem(state, sessionDir) {
     const nextSubsystem = state.convergence_mode === 'worker'
@@ -3234,17 +3240,12 @@ function markWorkerSubsystemStalled(state, sessionDir) {
     const raw = readRecoverableJsonObject(convergencePath);
     if (!raw)
         return;
-    const subsystems = Array.isArray(raw.subsystems)
-        ? raw.subsystems.filter((value) => typeof value === 'string' && value.trim().length > 0)
-        : [];
+    const subsystems = parseSubsystemList(raw);
     if (subsystems.length === 0)
         return;
     const currentSubsystem = typeof state.current_subsystem === 'string' && state.current_subsystem.trim().length > 0
         ? state.current_subsystem
-        : (() => {
-            const currentIndex = Number.isInteger(raw.current_index) ? Number(raw.current_index) : 0;
-            return subsystems[currentIndex] ?? null;
-        })();
+        : (subsystems[parseCurrentIndex(raw)] ?? null);
     if (!currentSubsystem || !subsystems.includes(currentSubsystem))
         return;
     const stallCounts = raw.stall_counts && typeof raw.stall_counts === 'object' && !Array.isArray(raw.stall_counts)
