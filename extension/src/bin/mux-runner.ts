@@ -4778,12 +4778,12 @@ function resolveWorkerGateVerdict(
   workingDir: string,
 ): { verdict: 'green' | 'red' | 'absent'; computedVia: 'worker_gate' | 'between_ticket_gate' | 'unavailable' } {
   const persisted = readWorkerGateVerdict(sessionDir, ticketId);
-  if (persisted !== 'absent') return { verdict: persisted, computedVia: 'worker_gate' };
+  if (persisted !== 'absent') { return { verdict: persisted, computedVia: 'worker_gate' }; }
   const ext = path.join(workingDir, 'extension');
   // No extension/ dir → JS worker gate not applicable to this target repo → green
   // (matches runWorkerGate's no-extension ok:true). NOT fail-closed: a non-pickle-rick
   // target would otherwise have every Done-flip refused.
-  if (!fs.existsSync(ext)) return { verdict: 'green', computedVia: 'worker_gate' };
+  if (!fs.existsSync(ext)) { return { verdict: 'green', computedVia: 'worker_gate' }; }
   let verdict: 'green' | 'red';
   try {
     verdict = runBetweenTicketFastTests(ext).ok ? 'green' : 'red';
@@ -4795,7 +4795,7 @@ function resolveWorkerGateVerdict(
     const fp = ticketFilePath(sessionDir, ticketId);
     const raw = fs.readFileSync(fp, 'utf8');
     const upd = upsertFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD, verdict);
-    if (upd) fs.writeFileSync(fp, upd);
+    if (upd) { fs.writeFileSync(fp, upd); }
   } catch { /* best-effort */ }
   return { verdict, computedVia: 'between_ticket_gate' };
 }

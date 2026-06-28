@@ -53,7 +53,7 @@ function writeTicket(sessionDir, ticketId, sha, { verdict } = {}) {
   const dir = path.join(sessionDir, ticketId);
   fs.mkdirSync(dir, { recursive: true });
   const lines = ['---', `id: ${ticketId}`, 'status: In Progress', `completion_commit: ${sha}`];
-  if (verdict !== undefined) lines.push(`worker_gate_verdict: ${verdict}`);
+  if (verdict !== undefined) { lines.push(`worker_gate_verdict: ${verdict}`); }
   lines.push('---', '');
   fs.writeFileSync(path.join(dir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
 }
@@ -67,7 +67,7 @@ function writeState(sessionDir, startCommit) {
 function withoutTestMode(fn) {
   const prev = process.env.PICKLE_TEST_MODE;
   delete process.env.PICKLE_TEST_MODE;
-  try { return fn(); } finally { if (prev !== undefined) process.env.PICKLE_TEST_MODE = prev; }
+  try { return fn(); } finally { if (prev !== undefined) { process.env.PICKLE_TEST_MODE = prev; } }
 }
 
 function setup({ verdict } = {}) {

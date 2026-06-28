@@ -49,7 +49,7 @@ function writeTicket(sessionDir, ticketId, sha, { failedReason, verdict } = {}) 
   fs.mkdirSync(dir, { recursive: true });
   const lines = ['---', `id: ${ticketId}`, 'status: In Progress', `completion_commit: ${sha}`];
   if (failedReason !== undefined) lines.push(`failed_reason: ${failedReason}`);
-  if (verdict !== undefined) lines.push(`worker_gate_verdict: ${verdict}`);
+  if (verdict !== undefined) { lines.push(`worker_gate_verdict: ${verdict}`); }
   lines.push('---', '');
   fs.writeFileSync(path.join(dir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
 }
