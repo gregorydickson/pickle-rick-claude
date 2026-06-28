@@ -2714,10 +2714,27 @@ let graceDrainSleep = (ms) => {
 export function _setGraceDrainSleep(fn) {
     graceDrainSleep = fn;
 }
+/** Log the unfinished-ticket list (capped). Extracted to keep reportPhaseIncomplete simple. */
+function logUnfinishedTickets(runtime, unfinished) {
+    runtime.log('Unfinished tickets:');
+    const printable = unfinished.slice(0, UNFINISHED_TICKETS_PRINT_CAP);
+    for (const t of printable) {
+        runtime.log(`  ${String(t.order ?? 0)}  ${t.id || '<unknown>'}  ${t.title || ''}  [status: ${t.status || 'Todo'}]`);
+    }
+    const overflow = unfinished.length - printable.length;
+    if (overflow > 0)
+        runtime.log(`  ... and ${overflow} more`);
+}
 function reportPhaseIncomplete(runtime, phase) {
     const tickets = collectTickets(runtime.sessionDir);
     let unfinished = resolveUnfinishedTickets(runtime, tickets);
     const total = tickets.length;
+    // B-PXBO WS-1: count status-unfinished (non-Done) tickets BEFORE oracle exclusion.
+    // The grace-drain stamp-skip applies ONLY when such tickets existed and all became
+    // oracle-committed/terminal. When there are NO status-unfinished tickets, the phase
+    // is incomplete for a NON-ticket reason (e.g. all_judge_backends_exhausted + gate
+    // pass) and must still stamp pipeline_phase_incomplete.
+    const statusUnfinished = tickets.filter(t => (t.status || '').toLowerCase() !== 'done').length;
     // B-PXBO WS-1: if all remaining unfinished tickets are live-detached within the
     // detached-poll window, the cap-exit was a RACE — the worker is still advancing.
     // Apply a bounded grace-drain: wait a slice, re-resolve through the oracle, repeat
@@ -2730,10 +2747,12 @@ function reportPhaseIncomplete(runtime, phase) {
         graceDrainSleep(GRACE_DRAIN_PASS_MS);
         unfinished = resolveUnfinishedTickets(runtime, collectTickets(runtime.sessionDir));
     }
-    if (unfinished.length === 0) {
-        // Grace-drain succeeded (or nothing was unfinished after oracle exclusion):
-        // do NOT stamp pipeline_phase_incomplete — the work is committed/terminal.
-        runtime.log(`Phase ${phase}: 0/${total} tickets unfinished after oracle re-resolution — no phase-incomplete stamp.`);
+    if (statusUnfinished > 0 && unfinished.length === 0) {
+        // Status-unfinished tickets all became oracle-committed/terminal (grace-drain or
+        // oracle exclusion) → the work landed; do NOT stamp pipeline_phase_incomplete.
+        // Gated on statusUnfinished so a non-ticket incompleteness (none unfinished by
+        // status, e.g. judge-exhausted) still falls through to the genuine stamp below.
+        runtime.log(`Phase ${phase}: ${statusUnfinished} ticket(s) committed/terminal via oracle re-resolution — no phase-incomplete stamp.`);
         return;
     }
     let priorExitReason = null;
@@ -2749,21 +2768,8 @@ function reportPhaseIncomplete(runtime, phase) {
         ? 'hit iteration cap'
         : `exited (exit_reason=${priorExitReason})`;
     runtime.log(`Phase ${phase} ${cause}; ${unfinished.length}/${total} tickets remain unfinished.`);
-    if (unfinished.length > 0) {
-        runtime.log('Unfinished tickets:');
-        const printable = unfinished.slice(0, UNFINISHED_TICKETS_PRINT_CAP);
-        for (const t of printable) {
-            const order = String(t.order ?? 0);
-            const id = t.id || '<unknown>';
-            const title = t.title || '';
-            const status = t.status || 'Todo';
-            runtime.log(`  ${order}  ${id}  ${title}  [status: ${status}]`);
-        }
-        const overflow = unfinished.length - printable.length;
-        if (overflow > 0) {
-            runtime.log(`  ... and ${overflow} more`);
-        }
-    }
+    if (unfinished.length > 0)
+        logUnfinishedTickets(runtime, unfinished);
     recordExitReason(runtime.statePath, 'pipeline_phase_incomplete');
 }
 /**
