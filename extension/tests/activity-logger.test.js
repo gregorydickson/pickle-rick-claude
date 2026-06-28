@@ -209,6 +209,8 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'tsc_gate_override_consumed',
         'tsc_gate_crashed',
         'anatomy_park_empty_scope_skip',
+        'anatomy_park_non_convergent_halt',
+        'anatomy_park_complexity_regression',
         'szechuan_sauce_empty_scope_skip',
         'pipeline_all_backends_exhausted_recovery_attempted',
         'paused_session_orphan_precleaned',
