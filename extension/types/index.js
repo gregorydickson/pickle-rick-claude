@@ -391,6 +391,18 @@ export const NO_PROGRESS_FAILURE_REASONS = [
     'scope_unresolvable',
     'no_progress_timeout',
 ];
+/**
+ * B-PXBO WS-2 (R-DOTR): the ticket-frontmatter field into which spawn-morty
+ * persists the worker gate's already-computed `tscOk` boolean (the tsc
+ * `--noEmit` verdict from `WorkerGateCheckResult.tscOk`). Read back in
+ * `guardCompletionCommitBeforeDone` to gate the Done-flip on tsc-greenness for
+ * SALVAGE / no_progress_timeout dispositions ONLY. Sharing one literal between
+ * the producer (spawn-morty) and consumer (mux-runner guard) keeps the storage
+ * key/shape in lockstep (WS-2 ordering hazard). Value is the string `"true"` /
+ * `"false"`; an absent field means the worker gate never ran tsc on this ticket
+ * (e.g. timed out before the gate), which the guard treats as "no tsc signal".
+ */
+export const WORKER_GATE_TSC_OK_FIELD = 'worker_gate_tsc_ok';
 export var PipelineRunnerExitCode;
 (function (PipelineRunnerExitCode) {
     PipelineRunnerExitCode[PipelineRunnerExitCode["Success"] = 0] = "Success";

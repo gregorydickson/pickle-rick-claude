@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS } from '../types/index.js';
+import { PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_TSC_OK_FIELD } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
@@ -4118,6 +4118,44 @@ export function isTicketOracleCommitted(args) {
         return false;
     }
 }
+/**
+ * B-PXBO WS-2 (R-DOTR): the Done-flip tsc-gate fires ONLY on a SALVAGE /
+ * no_progress_timeout disposition — never on a normally-completed ticket that
+ * already ran its own worker gate (AC-DOTR-4). The disposition signal is the
+ * EXISTING ticket-frontmatter `failed_reason` read: the B-DURA durable-boundary
+ * committer / wmw-auto-skip flip stamps a `NO_PROGRESS_FAILURE_REASONS` member
+ * (oversized_no_progress / scope_unresolvable / no_progress_timeout) on the
+ * ticket whose partial output was salvage-committed. No new disposition flag.
+ * Best-effort: an unreadable ticket reads as "not a salvage disposition" (the
+ * gate stays off — conservative, preserves the happy path).
+ */
+function isNoProgressTimeoutDisposition(sessionDir, ticketId) {
+    try {
+        const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf8');
+        const reason = (readFrontmatterField(raw, 'failed_reason') ?? '').trim();
+        return NO_PROGRESS_FAILURE_REASONS.includes(reason);
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * B-PXBO WS-2 (R-DOTR): read the worker gate's persisted tsc verdict
+ * (`WORKER_GATE_TSC_OK_FIELD`, written by spawn-morty's `persistWorkerGateTscOk`
+ * — REUSED, never recomputed; AC-DOTR-1). Returns `true` when tsc was RED
+ * (`"false"`), `false` otherwise — INCLUDING an absent field (no tsc signal →
+ * do NOT gate; conservative, AC-DOTR-3 green-salvage path keeps flipping Done)
+ * and a `"true"` value. Best-effort.
+ */
+function workerGateTscWasRed(sessionDir, ticketId) {
+    try {
+        const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf8');
+        return (readFrontmatterField(raw, WORKER_GATE_TSC_OK_FIELD) ?? '').trim() === 'false';
+    }
+    catch {
+        return false;
+    }
+}
 export function guardCompletionCommitBeforeDone(args) {
     // R-WSRC-4 parity: PICKLE_TEST_MODE=1 bypasses for sandboxed test fixtures
     // whose workingDir is a synthetic temp dir without a real git repo.
@@ -4182,6 +4220,23 @@ export function guardCompletionCommitBeforeDone(args) {
         catch { /* best-effort — fall through to existing classification */ }
     }
     if (evidenceR.kind === 'committed' && evidenceR.sha) {
+        // B-PXBO WS-2 (R-DOTR): on a SALVAGE / no_progress_timeout disposition ONLY
+        // (AC-DOTR-4), reject a Done-flip over tsc-RED code. The salvage committer
+        // commits partial output on timeout; the worker gate's already-computed tsc
+        // verdict (persisted by spawn-morty, READ — never recomputed) tells us the
+        // declared files don't compile, so Done must become Failed/retry, not Done.
+        // A normally-completed ticket (no failed_reason) or a green-salvage tree
+        // (tscOk true / absent) is untouched.
+        if (isNoProgressTimeoutDisposition(args.sessionDir, args.ticketId)
+            && workerGateTscWasRed(args.sessionDir, args.ticketId)) {
+            return {
+                ok: false,
+                source: mapEvidenceKindToLegacySource(evidenceR.kind),
+                reason: `ticket ${args.ticketId} cannot flip Done: salvage/no-progress-timeout commit over tsc-RED code ` +
+                    `(${WORKER_GATE_TSC_OK_FIELD}: false). The worker gate's tsc --noEmit failed on the declared files; ` +
+                    `Done requires a tsc-green tree on this disposition (R-DOTR).`,
+            };
+        }
         return { ok: true, sha: evidenceR.sha };
     }
     // Map EvidenceKind back to legacy source for callers that inspect the error.
