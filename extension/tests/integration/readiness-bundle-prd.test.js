@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const BIN = path.resolve(__dirname, '../../bin/check-readiness.js');
-const BUNDLE_PRD = path.join(REPO_ROOT, 'prds/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md');
+const BUNDLE_PRD = path.join(REPO_ROOT, 'prds/archive/bundles/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md');
 const CHECKED_AT = '2026-05-02T00:00:00.000Z';
 
 function tmpDir(prefix = 'pickle-readiness-bundle-') {
@@ -78,7 +78,7 @@ test('check-readiness: current bundle PRD clears readiness without skip-readines
       checker: 'tests/integration/readiness-bundle-prd.test.js',
       checker_version: 'local',
       evidence: {
-        bundle_prd: 'prds/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md',
+        bundle_prd: 'prds/archive/bundles/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md',
         ticket_count: tickets.length,
         skip_readiness: false,
       },
