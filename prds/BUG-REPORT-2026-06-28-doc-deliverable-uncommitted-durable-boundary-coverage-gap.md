@@ -1,74 +1,75 @@
-# BUG-REPORT 2026-06-28 — doc-only deliverable left uncommitted → pickle 0/4; durable-boundary committer coverage gap (R-WUDC)
+# BUG-REPORT 2026-06-28 — B-APNC pickle 0/4: R-WPEX worker log-flush death recurred + manager inline-recovery committed only 1 of 2 tickets
+
+> **CORRECTION (2026-06-28, after deeper investigation prompted by the operator):** the original title/finding
+> of this report ("R-WUDC — doc-only deliverable / durable-boundary committer coverage gap") was **WRONG** and
+> is retracted. This is **not a brand-new bug**. The manager's own iteration-6 narration shows the true trigger
+> is the **known R-WPEX detached-`claude -p` worker silent-death-on-log-flush class** (already filed + shipped:
+> `archive/bundles/p1-bug-fix-bundle-r-wpex-worker-silent-death.md`,
+> `archive/bundles/p1-bug-fix-bundle-b-wpex-auto-large-tier-detached-worker-poll.md`,
+> `archive/bug-reports/p2-worker-silent-exit-and-ticket-path-drift.md`). The corrected analysis is below.
 
 **Incident:** B-APNC (R-APNC) build, `--backend claude`, `/pickle-pipeline --scope branch`, session
 `2026-06-28-4209388b`. The **pickle phase exited `pipeline_phase_incomplete` at 0/4 phases** after 55m
-20s (iter 7 / 500 — NOT the iteration cap), stranding a fully-completed-but-uncommitted ticket. The
-babysitter hand-recovered and the pipeline then advanced normally. Logged per the loop-failure directive
+20s (iter 7 / 500 — NOT the iteration cap), leaving one ticket's completed work uncommitted. Babysitter
+hand-recovered; the pipeline then advanced. Logged per the loop-failure directive
 ([[feedback_loop_failure_log_bug_prd_and_master_plan]]).
 
-## Finding (P2) — R-WUDC: doc-only deliverable stranded uncommitted, durable-boundary committer did not capture it
+## Root cause (corrected) — R-WPEX recurrence + manager inline-recovery incompleteness
 
-The bundle had 2 tickets:
-- **`5dc68f98` (WS-1+WS-2, code):** completed + committed (`4ad6d2d9`) → `Done`. ✅
-- **`6803d887` (WS-3, doc-only):** "subtract-pass discipline section in `.claude/commands/anatomy-park.md`
-  + README". The worker ran its **full lifecycle** — `research_6803d887.md`, `plan_6803d887.md`,
-  `conformance_6803d887.md`, plan_review/research_review all present — and **produced the deliverable**
-  (a correct, complete 14-line `### Override 1.6: Subtract-pass discipline` section, later verified to
-  satisfy AC-APNC-4 + pass all doc-coupled tests). BUT the edit was left **uncommitted** in the working
-  tree and the ticket stayed `status: Todo`.
+The manager's iteration-6 stream states it directly:
+- *"The worker died on log-flush, not on the work."*
+- *"the lifecycle ran through implement; only the verify/review artifacts are missing because of the
+  log-flush death. I performed those phases myself."*
+- *"6803d887 (WS-3) — IN PROGRESS 🔄 In-process `morty-implementer` … avoiding the detached-`claude -p`
+  flush bug that killed the spawn-morty [worker]."*
 
-Runner log (`pipeline-runner.log`):
-```
-Phase pickle exited with code 0
-Phase pickle exited but 1/2 tickets remain pending (1 Done) — not all-tickets-terminal, marking phase incomplete (not advancing)
-Phase pickle exited (exit_reason=done_without_commit_evidence); 1/2 tickets remain unfinished.
-  20  6803d887  WS-3 — subtract-pass discipline section ...  [status: Todo]
-Pipeline finished: 0/4 phases, 55m 20s
-```
+Sequence:
+1. **R-WPEX RECURRED (primary).** The detached `claude -p` spawn-morty workers died on **log-flush**
+   (the artifacts/work survived; the worker process died at flush/exit). This is the documented R-WPEX /
+   worker-silent-exit class — previously triaged **MONITOR-only ("likely transient load",
+   [[project_wpex_worker_silent_death_monitor]])**. This is a fresh repro on a not-obviously-overloaded
+   system, which is the condition that memory says should **reopen R-WPEX** rather than stay monitor-only.
+   `5dc68f98` has 3 `worker_session` logs (spawn + retries, all flush-died); `6803d887` has **none** —
+   for it the manager skipped spawn-morty entirely and used an in-process `morty-implementer`.
+2. **Manager inline recovery (worked, but partial).** The manager recovered both tickets' work in its own
+   context: it validated + committed `5dc68f98` (`4ad6d2d9`, marked Done + recorded the boundary commit),
+   and delivered `6803d887`'s deliverable via the in-process subagent.
+3. **Phase exited mid-recovery.** The pickle manager loop ended (clean exit code 0, iter 7) **after
+   committing 1 of 2 tickets but before committing/Done-flipping `6803d887`**. So `6803d887` was left
+   `status: Todo` with its `anatomy-park.md` edit uncommitted → `1/2 tickets pending` →
+   `pipeline_phase_incomplete` → `0/4 phases`. (The `done_without_commit_evidence` log line is the Done-flip
+   guard correctly refusing the uncommitted ticket.)
 
-**The gap.** Two safety nets that should have caught this both missed:
-1. The worker's own Done-flip was (correctly) refused — `done_without_commit_evidence` — because there
-   was no commit. Correct behavior, but it left the ticket `Todo` rather than salvaging the work.
-2. **The B-DURA durable-boundary committer** (`commitGatePassingDeliverableOnExitPath` /
-   `commitGatePassingDeliverableAtBoundary`, whose whole purpose is "worker left gate-green dirty work
-   but committed nothing → runner authors a commit") did **NOT** fire for this ticket.
+**What is NOT the cause (retracted):** the B-DURA durable-boundary exit-path committer is not the right
+lens here — the work was being recovered *inline by the manager*, not stranded by a worker-exit path the
+committer watches; and the "doc-only / outside-`extension/`" angle is incidental, not causal.
 
-**Hypothesis (to investigate).** The durable-boundary committer is keyed to specific exit paths
-(worker timeout / salvage / manager-relaunch boundary) and/or to gate-passing work under `extension/`.
-This deliverable was (a) **doc-only**, editing `.claude/commands/anatomy-park.md` — **outside `extension/`**,
-so the armed `runBetweenTicketFastTests` #99 gate (which runs in `extension/`) sees no relevant diff —
-and (b) produced on a **clean manager-turn exit** (the manager finished its turn, exit code 0, not a
-timeout/salvage), so the exit-path committer's trigger condition likely never armed. Net: a doc-only
-deliverable on the clean-exit path is **not** covered by the durable-iteration-boundary commit, and the
-phase declares incomplete with verified work stranded uncommitted. This is a NEW variant of the
-worker-uncommitted-work class ([[R-WUWC]] / R-WSE / B-DURA family) specific to **doc-only / non-`extension/`
-deliverables** and the **clean manager-exit** path.
+## The genuinely-actionable findings
 
-## Fix direction (reuse-first; for a future bundle)
-
-Extend the durable-boundary committer's coverage so a ticket whose worker produced lifecycle artifacts
-(`conformance_*.md` present) + a non-empty working-tree diff attributable to the ticket — **including
-doc-only diffs outside `extension/`** — has that diff committed + the ticket flipped `Done` at the phase
-boundary, rather than left `Todo`. Reuse the existing exit-path committer + the `worker_gate_verdict`
-authority (a doc-only ticket has no `extension/src` diff → trivially green). Do NOT add a parallel
-mechanism; close the coverage gap on the path that already exists. Alternatively: gate the boundary
-committer on "lifecycle complete (conformance present) + attributable dirty diff" rather than on the
-narrower timeout/salvage triggers.
+1. **Reopen R-WPEX** (P2→consider P1): detached `claude -p` workers still die on log-flush, no longer
+   plausibly "transient load." The R-WPEX/B-WPEX fixes (auto large-tier detached poll, worker-shutdown
+   flush-and-drain `worker-shutdown.ts`) did not prevent this recurrence on a `medium`-tier worker. Needs a
+   fresh repro-driven look at the `flushAndExit` / `once(sessionLog,'close')` drain vs the actual death
+   class (SIGKILL/segfault/OOM produce 0-byte logs per R-WSE-2; this was "died on flush" with artifacts
+   intact — a distinct flavor).
+2. **Manager inline-recovery should commit per-ticket, not batch** (the smaller, possibly-new bit): when the
+   manager hand-recovers multiple flush-died workers in one turn, it must commit+Done-flip **each ticket as
+   it finishes** so a turn/loop exit can't strand an already-delivered ticket uncommitted. (Mitigated in
+   practice by the operator/babysitter, but it is what turned a recoverable R-WPEX hit into a 0/4 phase
+   failure.)
 
 ## Recovery taken (babysitter, verified)
 
-1. Confirmed the uncommitted `anatomy-park.md` edit was complete + correct (AC-APNC-4 grep present; ran
-   the doc-coupled tests `scope-preflight-ordering`, `anatomy-park-gate-integration`,
-   `worker-templates-include-scope-preflight`, `scope-errors-doc-parity` — all green).
+1. Confirmed `6803d887`'s uncommitted `anatomy-park.md` edit was complete + correct (AC-APNC-4 grep present;
+   doc-coupled tests `scope-preflight-ordering`, `anatomy-park-gate-integration`,
+   `worker-templates-include-scope-preflight`, `scope-errors-doc-parity` all green).
 2. Committed the verified doc work attributed to the ticket (`080e7e60`).
-3. Flipped `6803d887` → `Done` + `completion_commit: 080e7e60` (heal-via-edit-then-resume recipe).
-4. Cleared stale `worker_artifact_progress` / `detached_worker` / `current_ticket` to avoid relaunch
-   mis-routing, then re-launched `pipeline-runner.js` (self-activates via `claimPipelineRunnerActive`).
-5. Pickle re-entered, found both tickets terminal → **graduated** → advanced to citadel → anatomy-park →
-   szechuan. Build is now progressing normally toward beta.27.
+3. Flipped `6803d887` → `Done` + `completion_commit: 080e7e60` (heal-via-edit-then-resume).
+4. Cleared stale `worker_artifact_progress` / `detached_worker` / `current_ticket`; relaunched
+   `pipeline-runner.js`. Pickle re-entered → both terminal → graduated → advanced to citadel → anatomy-park.
 
 ## Severity / priority
 
-**P2** — recoverable (verified work preserved; ~5 min hand-recovery), but it is silent data-stranding:
-without a babysitter the build sits at 0/4 with completed work uncommitted. Same impact class as the
-B-DURA cluster it falls outside of. Worth a focused fix bundle when the drain queue reaches it.
+**P2.** Recoverable (verified work preserved; ~5 min hand-recovery). The headline is the **R-WPEX
+recurrence** (the trigger); the manager-inline-recovery-per-ticket-commit gap is the secondary, narrower
+fix. Not a new defect class.
