@@ -5163,24 +5163,16 @@ export function commitAndContinueDoneFlip(input: CommitAndContinueDoneFlipInput)
     input.log(`commit-and-continue: git commit blocked/failed for ${input.ticketId} (status ${commit.status ?? 'null'})`);
     return { ok: false };
   }
-  // B-CWGE: this is a RUNNER-AUTHORED commit. Every caller (the exit-path /
-  // boundary committer `commitGatePassingDeliverableOnExitPath` and the
-  // recovery-ladder `commitAndFlipDone` dep) runs its own armed #99 gate
-  // (`runBetweenTicketFastTests`) and reaches here ONLY on a GREEN result.
-  // Record that proven-green worker-gate verdict so `guardCompletionCommitBeforeDone`
-  // honors it instead of RE-running the full eslint+tsc+test:fast recompute — which,
-  // on a salvage tree that has an `extension/` dir but no installed toolchain, errors
-  // → fail-closed → strands the gate-passing deliverable (the R-DOTR over-reach the
-  // recompute introduced for this runner-authored path). The GENUINE worker
-  // self-commit Done-flip does NOT route through this committer, so its
-  // absent-verdict recompute (R-CWGE fail-closed) is preserved.
+  // B-CWGE: runner-authored commit — the caller already proved GREEN via its own
+  // armed #99 gate, so record that verdict and let the guard honor it instead of
+  // re-running the full recompute (which over-reaches on a toolchain-less salvage
+  // tree). Genuine worker self-commits don't route here, so their fail-closed
+  // absent-verdict recompute stays intact. See CLAUDE.md R-CWGE trap door.
   persistRunnerAuthoredGreenVerdict(input.sessionDir, input.ticketId);
   const guard = guardCompletionCommitBeforeDone({
     sessionDir: input.sessionDir,
     ticketId: input.ticketId,
     workingDir: input.workingDir,
-    // The recovery commit references the ticket id; the guard's committed-evidence
-    // auto-promote attributes it and persists completion_commit post-flip.
     flags: input.flags ?? {},
   });
   if (!guard.ok) {
