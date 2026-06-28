@@ -19,14 +19,14 @@ function readLines(relPath) {
 function findBundleTicketRow(ticketKey) {
   const escapedTicketKey = ticketKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const rowPattern = new RegExp(`^\\| \\d+ \\| ${escapedTicketKey} \\|`);
-  const rows = readLines('prds/citadel-hardening-bundle.md')
+  const rows = readLines('prds/archive/bundles/citadel-hardening-bundle.md')
     .filter((line) => rowPattern.test(line));
   assert.equal(rows.length, 1, `${ticketKey} must appear exactly once in bundle implementation table`);
   return rows[0];
 }
 
 function findBundleRowsMatching(pattern) {
-  return readLines('prds/citadel-hardening-bundle.md')
+  return readLines('prds/archive/bundles/citadel-hardening-bundle.md')
     .filter((line) => line.startsWith('|'))
     .filter((line) => pattern.test(line));
 }
