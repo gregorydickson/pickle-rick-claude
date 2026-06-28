@@ -4150,14 +4150,16 @@ function readWorkerGateVerdict(sessionDir, ticketId) {
  */
 function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
     const persisted = readWorkerGateVerdict(sessionDir, ticketId);
-    if (persisted !== 'absent')
+    if (persisted !== 'absent') {
         return { verdict: persisted, computedVia: 'worker_gate' };
+    }
     const ext = path.join(workingDir, 'extension');
     // No extension/ dir → JS worker gate not applicable to this target repo → green
     // (matches runWorkerGate's no-extension ok:true). NOT fail-closed: a non-pickle-rick
     // target would otherwise have every Done-flip refused.
-    if (!fs.existsSync(ext))
+    if (!fs.existsSync(ext)) {
         return { verdict: 'green', computedVia: 'worker_gate' };
+    }
     let verdict;
     try {
         verdict = runBetweenTicketFastTests(ext).ok ? 'green' : 'red';
@@ -4170,8 +4172,9 @@ function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
         const fp = ticketFilePath(sessionDir, ticketId);
         const raw = fs.readFileSync(fp, 'utf8');
         const upd = upsertFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD, verdict);
-        if (upd)
+        if (upd) {
             fs.writeFileSync(fp, upd);
+        }
     }
     catch { /* best-effort */ }
     return { verdict, computedVia: 'between_ticket_gate' };
@@ -7361,6 +7364,27 @@ export function routeDeadDetachedWorkerDisposition(input) {
         // Done + persist the SHA so the dead-clean ticket is NOT fataled/archived.
         backfillDone: (i, sha) => {
             try {
+                // B-CWGE (R-CWGE): the clean-tree back-fill is a Done-flip path and MUST
+                // honor the authoritative worker-gate verdict, fail-closed on red/absent,
+                // exactly like guardCompletionCommitBeforeDone. A dead detached (esp.
+                // codex) worker can leave a COMMITTED but gate-RED tree; readEvidence
+                // attributes the commit WITHOUT re-checking green (greenGate gates only
+                // the declared-file-touch pass), so without this gate the back-fill would
+                // flip Done over red — the R-DOTR/R-CWGE class the verdict authority closes.
+                const { verdict, computedVia } = resolveWorkerGateVerdict(i.sessionDir, i.ticketId, i.workingDir);
+                if (verdict !== 'green') {
+                    try {
+                        writeActivityEntry(statePath, {
+                            event: 'worker_gate_verdict_fail_closed',
+                            ts: new Date().toISOString(),
+                            ticket_id: i.ticketId,
+                            gate_payload: { verdict, computed_via: computedVia },
+                        });
+                    }
+                    catch { /* best-effort */ }
+                    log(`[salvage] back-fill Done REFUSED for ${i.ticketId}: worker_gate_verdict='${verdict}' (computed_via=${computedVia}) — fail-closed (R-CWGE)`);
+                    return { done: false };
+                }
                 clearStaleDoneWithoutCommitEvidence(statePath);
                 if (!markTicketDone(i.sessionDir, i.ticketId))
                     return { done: false };

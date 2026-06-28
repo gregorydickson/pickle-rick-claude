@@ -8422,6 +8422,26 @@ export function routeDeadDetachedWorkerDisposition(input: {
     // Done + persist the SHA so the dead-clean ticket is NOT fataled/archived.
     backfillDone: (i, sha) => {
       try {
+        // B-CWGE (R-CWGE): the clean-tree back-fill is a Done-flip path and MUST
+        // honor the authoritative worker-gate verdict, fail-closed on red/absent,
+        // exactly like guardCompletionCommitBeforeDone. A dead detached (esp.
+        // codex) worker can leave a COMMITTED but gate-RED tree; readEvidence
+        // attributes the commit WITHOUT re-checking green (greenGate gates only
+        // the declared-file-touch pass), so without this gate the back-fill would
+        // flip Done over red — the R-DOTR/R-CWGE class the verdict authority closes.
+        const { verdict, computedVia } = resolveWorkerGateVerdict(i.sessionDir, i.ticketId, i.workingDir);
+        if (verdict !== 'green') {
+          try {
+            writeActivityEntry(statePath, {
+              event: 'worker_gate_verdict_fail_closed',
+              ts: new Date().toISOString(),
+              ticket_id: i.ticketId,
+              gate_payload: { verdict, computed_via: computedVia },
+            });
+          } catch { /* best-effort */ }
+          log(`[salvage] back-fill Done REFUSED for ${i.ticketId}: worker_gate_verdict='${verdict}' (computed_via=${computedVia}) — fail-closed (R-CWGE)`);
+          return { done: false };
+        }
         clearStaleDoneWithoutCommitEvidence(statePath);
         if (!markTicketDone(i.sessionDir, i.ticketId)) return { done: false };
         const fp = ticketFilePath(i.sessionDir, i.ticketId);
