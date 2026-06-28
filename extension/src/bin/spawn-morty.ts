@@ -1164,7 +1164,7 @@ function parseWorkerGateTscFailures(output: string, extensionDir: string): Worke
   return buildFallbackGateFailure('tsc', '', fallbackMessage);
 }
 
-async function runWorkerGateTestCommand(
+export async function runWorkerGateTestCommand(
   scriptName: 'test:fast' | 'test:integration',
   extensionDir: string,
   workerTestGateTimeoutMs: number,

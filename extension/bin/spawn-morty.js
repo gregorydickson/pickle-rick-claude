@@ -959,7 +959,7 @@ function parseWorkerGateTscFailures(output, extensionDir) {
     const fallbackMessage = output.split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? 'tsc failed';
     return buildFallbackGateFailure('tsc', '', fallbackMessage);
 }
-async function runWorkerGateTestCommand(scriptName, extensionDir, workerTestGateTimeoutMs) {
+export async function runWorkerGateTestCommand(scriptName, extensionDir, workerTestGateTimeoutMs) {
     const commandName = `npm run ${scriptName}`;
     const testResult = await runCommand('npm', ['run', scriptName], extensionDir, { timeoutMs: workerTestGateTimeoutMs });
     const failures = testResult.ok
