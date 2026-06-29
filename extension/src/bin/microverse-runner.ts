@@ -3367,9 +3367,13 @@ function maybeRecordPlateauFailedApproach(
   score: number,
   previousScore: number,
 ): void {
-  if (classification !== 'held') return;
+  if (classification !== 'held') {
+    return;
+  }
   const lastApproach = state.failed_approaches[state.failed_approaches.length - 1] ?? '';
-  if (lastApproach.includes('score held at')) return;
+  if (lastApproach.includes('score held at')) {
+    return;
+  }
   replaceMicroverseState(
     state,
     recordFailedApproach(state, `Iteration ${iteration}: score held at ${score} (no improvement from ${previousScore})`),

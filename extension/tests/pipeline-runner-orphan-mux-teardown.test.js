@@ -139,7 +139,9 @@ async function runScenario(mode) {
     if (mp && isAlive(mp)) { try { process.kill(mp, 'SIGKILL'); } catch {} }
     // Track mux pid for group reap in afterEach (catches orphaned grandchildren in
     // the mux's process group that survived the direct-pid kill above).
-    if (mp !== null) _spawnedForTeardown.push({ pid: mp, groupKill: true });
+    if (mp !== null) {
+      _spawnedForTeardown.push({ pid: mp, groupKill: true });
+    }
     try { harness.kill('SIGKILL'); } catch {}
   }
 }
