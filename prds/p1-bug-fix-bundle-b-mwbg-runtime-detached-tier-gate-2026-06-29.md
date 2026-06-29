@@ -7,7 +7,7 @@
 | **Class** | Bug-fix — worker-spawn / recovery machinery |
 | **Closes** | [[R-MWBG]] runtime half (half-1 manager-prompt foreground discipline already SHIPPED beta.29 `795e539e`) |
 | **Backends** | claude (the pickle manager is `claude -p`; the gap is backend-agnostic) |
-| **⚠️ Build protocol** | **SELF-MODIFYING-RECOVERY (R-PSRB).** Scope edits the `mux-runner.ts` detached-worker spawn/poll gate — a pipeline's own workers run that path, so it **cannot** run a clean autonomous `/pickle-pipeline` (the deployed pre-fix runtime would route its own workers through the path being edited). Load-bearing tickets **MUST be hand-built in-process** (repro-first per the R-WPEX beta.28 precedent), or built then `install.sh`-deployed before any pipeline relaunch. See `prds/CLAUDE.md` → "Self-modifying-recovery bundles". |
+| **Build protocol** | **NORMAL PIPELINE — R-PSRB does NOT apply.** This edit is to the detached-worker *spawn gate*, not the salvage/completion-evidence path, so it does not corrupt the in-flight worker building it; and the running pipeline executes the **deployed beta.29 compiled JS**, not the source — the diff has zero mid-run effect (it takes effect only after the closer's `install.sh`). The one residual risk — the deployed "medium has no detached path" bug biting a *medium*-tier fix ticket — is dissolved by pinning the load-bearing ticket **`complexity_tier: large`** (beta.29 routes large through the verified-working detached lifecycle). Run via `/pickle-pipeline --scope branch`; no hand-build. |
 
 ## Problem
 
@@ -137,9 +137,12 @@ Per `prds/CLAUDE.md`, answering all four.
 
 - Single workstream, single load-bearing edit (two gate conditions + a shared predicate + a constant) +
   its unit tests + the doc/CLAUDE.md update.
-- **Complexity tier:** `medium`. **R-PSRB hand-build in-process** — repro-first: write a RED unit test
-  proving a medium ticket is NOT routed detached today, make it GREEN by broadening the gate, then run the
-  full gate. Do NOT launch `/pickle-tmux` for the load-bearing ticket.
+- **Complexity tier:** the load-bearing implementation ticket is pinned **`large`** (NOT medium — a
+  medium ticket would hit the very deployed bug it fixes and die on the pre-fix runtime; large rides the
+  verified-working detached lifecycle on beta.29). The doc/CLAUDE.md ticket is `small`/`trivial`
+  (foreground-safe, well under 600s). Repro-first within the pipeline: the implementation ticket's plan
+  writes a RED unit test proving a medium ticket is NOT routed detached today, then makes it GREEN by
+  broadening the gate. Built by a normal `/pickle-pipeline --scope branch` run — no hand-build.
 
 ## Closer
 
