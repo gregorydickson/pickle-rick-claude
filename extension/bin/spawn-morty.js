@@ -1928,10 +1928,22 @@ export async function runWorkerProcess(ctx) {
             clearLifecycleTimers();
             const flushTimeout = setTimeout(() => {
                 console.error(`${Style.YELLOW}⚠️  Log flush timed out — reading partial log${Style.RESET}`);
+                // Durability on the degraded path too: persist whatever reached disk
+                // before finalizing (the detached worker still owns the only log copy).
+                bestEffortFdatasync(sessionLogPath);
                 finalize(code);
             }, 5000);
             sessionLog.once('finish', () => {
                 clearTimeout(flushTimeout);
+                // R-WPEX: the detached, unref'd large-tier worker SOLELY owns this log
+                // (mux-runner spawns spawn-morty `detached:true` + `unref()` +
+                // stdio:'ignore'). `'finish'` only proves the writable buffer reached the
+                // OS page cache, not durable storage — so the process can exit before the
+                // log is persisted and the poll-reattach side reads a 0-byte/truncated
+                // log while artifacts are intact (B-APNC 2026-06-28 idle-system signature).
+                // Reuse the hangGuard's durability primitive so the success/close drain is
+                // fsync-safe like the hang path already is.
+                bestEffortFdatasync(sessionLogPath);
                 finalize(code);
             });
             sessionLog.end();

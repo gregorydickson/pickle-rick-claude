@@ -153,6 +153,8 @@ Read `${SESSION_ROOT}/state.json` once at Phase 3 entry. If `state.teams_mode ==
    ```
 8. **Next ticket**: repeat
 
+**Per-ticket recovery atomicity (mandatory).** If you are hand-recovering more than one finished or dead worker in a single turn (e.g. workers whose logs died but whose verified work is on disk), commit + flip that ticket to Done **individually** before touching the next one — finish steps 4–5 (commit, then mark Done with `completion_commit`) for ticket A, then start ticket B. NEVER batch recovery commits across a turn boundary: an already-delivered ticket left uncommitted/Todo is stranded if the turn or loop exits.
+
 ## Phase 3.B — Teams Mode (`--teams`)
 
 When `state.teams_mode === true`. Claude backend only (setup.js rejects codex+teams). Use harness team primitives instead of `spawn-morty.js`. **Spec:** `prds/pickle-agent-teams.md`.
