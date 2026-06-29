@@ -2,6 +2,19 @@
 
 PRD → Breakdown → Research → Plan → Implement → Verify → Review → Simplify.
 
+## 🐶 Dogfood by default — fix Pickle Rick by RUNNING Pickle Rick
+
+The pipeline is the product. If we can run it — and we can — it fixes its own bugs. **Default: author a PRD/ticket and run `/pickle-pipeline` (or `/pickle-tmux`).** Do NOT hand-write the fix code yourself; hand-decomposing a PRD into tickets is fine (that's planning), hand-*building* the implementation is not. A bug we won't dogfood is a bug we don't trust the tool to survive — fix that, don't route around it.
+
+**Hand-build is a NARROW exception, not a reflex.** It applies ONLY to the **R-PSRB self-referential catch-22**: a bundle that edits the **salvage / completion-evidence / Done-flip path** (`mux-runner.ts` salvage/no-progress logic, `salvage-ticket.ts`, `reconcile-ticket-truth.ts`, `ticket-completion-evidence.ts`), because the deployed *buggy* runtime applies that same logic to the worker building the fix and resets it mid-flight. "Edits `mux-runner.ts`" is NOT the trigger — the *salvage path* is.
+
+Before stamping "hand-build," check the two facts that usually dissolve the catch-22:
+1. **The running pipeline executes the DEPLOYED compiled JS, not your source diff** — editing `extension/src/**` has zero mid-run effect; the change only lands at the closer's `install.sh`. So a worker cannot be corrupted by its own diff.
+2. **Only the salvage/completion path self-references.** Spawn-gate, routing, phase-exit, scope-fence, refinement, and feature edits are pipeline-safe.
+3. **Tier the load-bearing ticket to dodge the deployed bug** when the bug is tier-specific (e.g. pin `complexity_tier: large` so it rides a working path instead of the broken one). That often removes the only residual self-reference.
+
+Build protocol detail: `prds/CLAUDE.md` → "Self-modifying-recovery bundles (R-PSRB build protocol)".
+
 ## ⛔ Worker Forbidden Ops (R-WSRC)
 
 Meta-tool: workers run inside the runtime they're modifying. Runtime hooks enforce these; prose alone failed (`send-to-morty.md` NEVER rule was violated by R-QGSK-3 incident 2026-05-16).
