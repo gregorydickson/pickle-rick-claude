@@ -57,7 +57,13 @@ Tests: `extension/tests/*.test.js` via `node --test` (no `.test.ts`). Aux script
 
 ## Versioning
 
-Semver in `extension/package.json`: **Major** = breaking (state schema, CLI args, hook contracts) | **Minor** = features (commands, flags, prompts) | **Patch** = fixes/refactors. Bump → commit `chore: bump version to X.Y.Z` → `gh release create vX.Y.Z`. **Before tagging:** the full Build & Test gate (above) must be green — test failures block release, no exceptions — AND the tree must be clean (`git status` clean, compiled JS matches TS source). No dirty release.
+Semver in `extension/package.json`: **Major** = breaking (state schema, CLI args, hook contracts) | **Minor** = features (commands, flags, prompts) | **Patch** = fixes/refactors. Bump → commit `chore: bump version to X.Y.Z` → `gh release create vX.Y.Z`.
+
+**Before tagging**, the full release gate must be green from `extension/` (test failures block release, no exceptions) — this is the release-gate source of truth, mirrored by `.github/workflows/release.yml` (enforced by `release-gate-parity.test.js`):
+
+`npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-design-ground-truth.sh && bash scripts/audit-un-terminalize-single-path.sh && npm run test:fast:budget && npm run test:integration && RUN_EXPENSIVE_TESTS=1 npm run test:expensive`
+
+AND the tree must be clean (`git status` clean, compiled JS matches TS source). No dirty release.
 
 ## Architecture
 
@@ -88,7 +94,7 @@ Operator fields (source `pickle_settings.json`, deployed via `bash install.sh`):
 |---|---|---|---|
 | `worker_mcp_config_path` | `string \| null` | `null` | Subset MCP config for worker/manager subprocesses (e.g. read-only Linear; omit write servers). `null` = no MCP forwarding. |
 | `worker_mcp_snapshot_servers` | `string[]` | `[]` | Server names from `worker_mcp_config_path` to snapshot at setup. `[]` = none. |
-| `codegraph` | `object` | see notes | v2.0 Code Graph block (`resolveCodegraphSettings`, per-field fallback). Opt-in, disabled by default (de3c5959): `enabled` false, `index_at_setup` false, `staleness_max_age_minutes` 30 (min 1), `context_max_bytes` 8192 (clamp 1024–65536), `expose_mcp_to_workers` false (C0-gated, separate future flip), timeouts `index_timeout_ms` 120000 (floor 5000) / `sync_timeout_ms` 30000 (floor 1000) / `query_timeout_ms` 5000 (floor 500). Kill-switch `PICKLE_CODEGRAPH=off`. |
+| `codegraph` | `object` | see notes | v2.0 Code Graph block (`resolveCodegraphSettings`, per-field fallback). **Opt-in / disabled by default** (de3c5959): `enabled` (`false`), `index_at_setup` (`false`), `staleness_max_age_minutes` 30 (min 1), `context_max_bytes` 8192 (clamp 1024–65536), `expose_mcp_to_workers` (`false`, C0-gated, separate future flip), timeouts `index_timeout_ms` 120000 (floor 5000) / `sync_timeout_ms` 30000 (floor 1000) / `query_timeout_ms` 5000 (floor 500). Kill-switch `PICKLE_CODEGRAPH=off`. |
 | `hardening` | `object` | see notes | Runtime-recovery block (DISTINCT from `bmad_hardening`; `resolveHardeningSettings`). `silent_death_respawn_cap` 1 (0 disables), `failed_flip_suppression_cap` 2 (0 disables) — non-negative ints drawing down the persistent `state.recovery_attempts` ledger (survives relaunch/`--resume`). Separate field `breaker_recovery_grace_seconds` 30, resolved by `resolveBreakerRecoveryGraceSeconds` in `mux-runner.ts` (NOT `resolveHardeningSettings`): grace window where a breaker-recovery spawn doesn't count as progress. |
 | `rate_limit` | `object` | see notes | B-RRH rate-limit park (`resolveRateLimitSettings`, `pickle-utils.ts`). `max_park_minutes` 360 (int floor 1) caps cumulative parked wall-clock per episode before `rate_limit_park_exhausted`. Absent/malformed → compiled default. |
 

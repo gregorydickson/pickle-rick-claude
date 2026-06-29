@@ -155,3 +155,46 @@ Per `prds/CLAUDE.md`, answering all four.
   `state.flags.allow_install_sh_reason` if a closer hook blocks, then clear) → verify clean tree + JS
   matches TS → `git push` → `gh release create v2.0.0-beta.30`. Ship on the local gate; CI-green is
   hygiene, not a release gate.
+
+---
+
+## ⛔ Rebuild Notes — first attempt REVERTED at the closer (2026-06-29)
+
+The first build (commit `0cbc49c1`, session `2026-06-29-e7f5b7e1`) shipped a clean-looking diff (swap
+`tier === 'large'` → `workerTimeoutExceedsBashCeiling(state)`) but **the full release gate caught a
+deterministic 9-test regression in `mux-runner.test.js`** (command_template rejection, SIGTERM signal
+attribution, desync reconciliation, iteration-persistence-before-manager-spawn). REVERTED to restore
+green main; re-queued for a proper rebuild.
+
+**Why the simple budget-predicate is WRONG (root cause, verified):**
+1. `readTicketBudgetForState` → `sessionRunnerBudget` returns **`tier: 'medium'` + `worker_timeout_seconds`
+   = the session default (e.g. 1200)** for the **no-ticket / prd / breakdown** case. So
+   `applyTicketTierBudget` stamps `current_ticket_tier='medium'` and
+   `current_ticket_worker_timeout_seconds=1200` during phases where NO ticket is active.
+2. A ticket with **no explicit `complexity_tier`** also resolves to the **medium** default (3600s).
+3. Therefore gating on **any** of `worker_timeout_seconds`, `current_ticket_worker_timeout_seconds`, OR
+   `current_ticket_tier ∈ {medium,large}` fires during the prd phase AND for every default-tier ticket —
+   routing them through the detached / `routeLargeTierTicket` path, which **bypasses the `runIteration`
+   path** (command_template validation, manager spawn, desync reconciliation, iteration persistence,
+   signal attribution). The old `=== 'large'` gate dodged ALL of this only because the fallback/default
+   tier is `medium`, never `large`.
+4. The detached lifecycle (`spawnDetachedLargeTierWorker` + poll + disposition) was built for LARGE
+   tickets and **does not preserve the `runIteration`-path invariants** for medium tickets.
+
+**Why the build didn't catch it:** the implementation ticket was tiered **`small`** to dodge the
+deployed R-MWBG bug — but a `small`-tier worker gate **SKIPS `test:fast`** (R-PTG-2 contract), so
+`mux-runner.test.js` never ran during the build. The regression only surfaced at the closer's full gate.
+
+**Rebuild direction (the scope is bigger than originally written — needs design + operator sign-off):**
+- The runtime half is NOT a one-line gate swap. It requires EITHER (A) making the detached lifecycle
+  preserve every `runIteration`-path invariant for medium tickets (large additive work), OR (B) a gate
+  that fires ONLY for an **active ticket whose EXPLICIT frontmatter tier** exceeds the ceiling (never the
+  `sessionRunnerBudget` fallback, never a default-tier ticket) AND verified detached-path correctness for
+  medium. Both need the full `mux-runner.test.js` as the per-ticket gate.
+- **Build as a `medium`-tier ticket** (NOT small) so the worker gate runs `test:fast` and catches this
+  class during the build. With half-1 shipped, the deployed manager foregrounds + re-spawns-resumes a
+  medium worker, so a medium build ticket survives on the deployed runtime.
+- **Reconsider priority:** half-1 (manager foreground-spawn + resume-on-cutoff, shipped beta.29) already
+  removes the ORIGINAL R-MWBG death (manager Bash-backgrounding). The runtime half is now a
+  larger/riskier change for a smaller marginal gain — DE-PRIORITIZE behind a real repro that half-1
+  doesn't cover.

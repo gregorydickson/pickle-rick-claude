@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
-import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TICKET_TIER_BUDGETS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
+import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
 import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
@@ -3301,35 +3301,6 @@ export function routeLargeTierTicket(
     },
   });
   return { sanctionedPath: 'interactive_pickle_tmux', ticketId, sessionDir };
-}
-
-/**
- * The Bash-tool ceiling: any `claude -p` subprocess that outlives 600 seconds is
- * SIGKILLed at turn-end. Workers whose budget EXCEEDS this ceiling must run
- * detached (spawnDetachedLargeTierWorker) so the worker log survives (R-MWBG).
- * Strictly greater-than: small-tier workers at exactly 600s stay synchronous.
- */
-export const BASH_TOOL_CEILING_SECONDS = 600;
-
-/**
- * Returns true when the resolved worker timeout for the current ticket exceeds
- * the 600-second Bash-tool ceiling — these workers must run detached to survive
- * turn-end. Prefers the already-resolved `state.worker_timeout_seconds`; falls
- * back to the TICKET_TIER_BUDGETS tier table when that field is absent or non-finite.
- * Fail-safe: returns false (synchronous spawn) when no timeout can be resolved.
- */
-export function workerTimeoutExceedsBashCeiling(
-  state: Pick<State, 'worker_timeout_seconds' | 'current_ticket_tier'>,
-): boolean {
-  const resolved = state.worker_timeout_seconds;
-  if (typeof resolved === 'number' && Number.isFinite(resolved) && resolved > 0) {
-    return resolved > BASH_TOOL_CEILING_SECONDS;
-  }
-  const tier = state.current_ticket_tier;
-  if (tier && (VALID_TICKET_COMPLEXITY_TIERS as readonly string[]).includes(tier)) {
-    return TICKET_TIER_BUDGETS[tier as TicketComplexityTier].worker_timeout_seconds > BASH_TOOL_CEILING_SECONDS;
-  }
-  return false;
 }
 
 /**
@@ -10792,7 +10763,7 @@ async function runMuxRunnerMain() {
     // mapping) branches are out of scope here — this is the NO-ARM branch only.
     const detachedEnabled = largeTierDetachedEnabled();
 
-    if (workerTimeoutExceedsBashCeiling(state) && detachedEnabled && apTicketId &&
+    if (state.current_ticket_tier === 'large' && detachedEnabled && apTicketId &&
         !state.detached_worker) {
       const raw = Number(state.worker_timeout_seconds);
       const workerTimeoutSec = Number.isFinite(raw) && raw > 0 ? raw : Defaults.WORKER_TIMEOUT_SECONDS;
@@ -10829,7 +10800,7 @@ async function runMuxRunnerMain() {
     // guarded by !state.detached_worker) and BEFORE any routeLargeTierTicket/next-ticket
     // advance, so there is exactly ONE spawn-morty invocation per detached ticket.
     // A mismatched arm (ticket_id !== apTicketId) does NOT match here → falls through.
-    if (workerTimeoutExceedsBashCeiling(state) && detachedEnabled && apTicketId &&
+    if (state.current_ticket_tier === 'large' && detachedEnabled && apTicketId &&
         state.detached_worker && state.detached_worker.ticket_id === apTicketId) {
       const dw = state.detached_worker;
       const detachedTicketId = dw.ticket_id;
@@ -10994,9 +10965,9 @@ async function runMuxRunnerMain() {
       continue;
     }
 
-    // Kill-switch off, below-ceiling tier, or detached spawn failed: original path.
+    // Kill-switch off, non-large tier, or detached spawn failed: original path.
     const outcome: Awaited<ReturnType<typeof runIteration>> =
-      workerTimeoutExceedsBashCeiling(state)
+      state.current_ticket_tier === 'large'
         ? (() => {
             routeLargeTierTicket(apTicketId ?? '', sessionDir, statePath);
             return { completion: 'inactive' as const, timedOut: false, exitCode: 0, wallSeconds: 0 };
