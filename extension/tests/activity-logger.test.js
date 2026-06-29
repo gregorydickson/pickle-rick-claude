@@ -173,6 +173,7 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'signal_received',
         'standup_session_dropped',
         'worker_edit_outside_scope',
+        'scope_auto_extended',
         'pkgjson_revert_forensic_captured',
         'pipeline_judge_timeout_recovery_attempted',
         'bundle_preflight_failed',
