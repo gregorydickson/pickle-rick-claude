@@ -44,6 +44,34 @@ green gate on the timeout path** — together they own the residual `0/N phases 
 
 ## ⏯ RESUME HERE (updated 2026-06-29 — R-SIGF SHIPPED beta.29; R-MWBG runtime-half NEXT)
 
+**▶ NEXT ACTION — [[R-MWBG]] runtime half (P1).** half-1 (manager-prompt foreground-spawn discipline) SHIPPED
+beta.29 (`795e539e`) and is validated. The **runtime half is OPEN and is the top drain item**: extend the
+detached-worker lifecycle (`routeLargeTierTicket` / `state.detached_worker` / `largeTierDetachedEnabled` in
+`bin/mux-runner.ts`; B-WPEX-AUTO) to **ANY tier whose resolved `worker_timeout` exceeds the 600s Bash ceiling**,
+not just `large`. Evidence (B-SIGF 2026-06-29): medium-tier workers stalled (manager backgrounding, fixed by
+half-1) AND the 4 **large-tier** hardening workers ALSO died (0-byte/116-byte logs, `no_progress_timeout`,
+pre-success-drain) — so the existing large-tier detached path is itself failing in a way beta.28's R-WPEX fsync
+fix does NOT cover. **⚠️ R-PSRB self-modifying-recovery → HAND-BUILD in-process** (edits the mux-runner
+worker-spawn lifecycle the pipeline's own workers run); repro-first per the R-WPEX precedent
+([[project_rwpex_shipped_beta28_ultracode_workflow]] — an ultracode Workflow on the immune in-process path works).
+Then the **B-SIGF hardening fast-follow**: re-run the 4 deferred hardening passes (data-flow / test-quality /
+cross-ref) once large-tier workers survive — resume session `2026-06-29-e68fda19` OR run fresh `/anatomy-park` +
+`/szechuan-sauce` over the R-SIGF diff (those phases ARE the hardening). Pre-build: re-`git log`/grep HEAD
+([[feedback_prelaunch_residual_check_stale_findings]]). Rate note: the babysitter cron is **session-only** (dies
+when this Claude process exits) and the 5-hour rate window cycles ~04:13/09:13 CDT — heavy work (pipelines,
+hand-builds, gates) should run with headroom, not near a window edge.
+
+**✅ R-SIGF / B-SIGF SHIPPED v2.0.0-beta.29 (2026-06-29, claude, babysitter pipeline + closer-takeover).** Closes
+**[[R-SIGF]] full scope-auto-extension — the codex GA blocker.** Built via `/pickle-pipeline --scope branch` from
+a cron babysitter; recovered through two mid-build stalls (R-MWBG medium then large-tier worker deaths). All 5
+functional tickets shipped — shared detector (`18f2ccc1`), WS-1 advisory→conditional-blocking finding
+(`e4c23a27`), WS-2 schema-shape consumers (`c138b29f`), WS-3 bounded opt-in auto-extension behind default-OFF
+`scope.auto_extend_signature_callers` (`e5401758`), wiring (`74a7f852`) + schema-shape-aware message hardening
+(`555ef2b9`); + R-MWBG half-1 (`795e539e`). Full local gate GREEN (the one real fast-c4 fail — `scope_auto_extended`
+missing from the activity-logger expected-count array — fixed `b67abbad`; c=8 budget + dispatch-watchdog fails were
+proven R-CIFB/R-TSPF load-flakes, isolation-green). **Hardening-deferred (honest):** the 4 in-pickle hardening
+tickets did NOT complete (large-tier worker silent-death = R-MWBG runtime half) → fast-follow above.
+
 **✅ B-CWGE SHIPPED v2.0.0-beta.26 (2026-06-28, on CLAUDE, via babysitter closer-takeover).** Closes
 **[[R-CWGE]] (P1)** — the codex worker quality gate is now fail-CLOSED. Root cause confirmed: `runWorkerGate`
 ran at a single callsite inside spawn-morty's `if(isSuccess)` finalize, and NO orchestrator Done-flip path
@@ -94,27 +122,6 @@ recovered ticket individually, never batch across a turn) — the gap that turne
 the B-APNC 0/4. Built on the IMMUNE in-process path (no detached `claude -p` spawned during the build); full
 local gate green (tsc/eslint/10 audits + fast-c4 6727/6730 0-fail + integration 495/496 [F22-1 isolation-green
 load-flake] + expensive 0-fail).
-
-**▶ IN FLIGHT: [[R-SIGF]] → B-SIGF (P1, the codex GA blocker).** PRD authored 2026-06-29 by the babysitter:
-`prds/p1-bug-fix-bundle-b-sigf-scope-auto-extension-2026-06-28.md`. Reuse-first design (the advisory detector
-`findSignatureChangeCallerGapFindings` already ships, `a668687f`): **WS-1** promote it advisory→blocking (reuse,
-unified skip hatch + W5b budget), **WS-2** extend to schema-shape consumers (2nd repro: changed zod
-`thresholdSchema` shape broke out-of-fence sibling specs), **WS-3** bounded scope auto-extension behind a
-default-OFF `scope.auto_extend_signature_callers` setting so the safe block ships first and the
-isolation-touching capability is opt-in until soak. Scope-fence subsystem, NOT recovery-path (R-PSRB N/A) →
-pipeline-safe. **✅ SHIPPED v2.0.0-beta.29 (2026-06-29, claude, babysitter-recovered + closer-takeover).** Closes
-**[[R-SIGF]] full scope-auto-extension (P1, the codex GA blocker).** All 5 functional tickets shipped — shared
-detector module (`18f2ccc1`), WS-1 conditional-blocking finding (`e4c23a27`), WS-2 schema-shape consumers
-(`c138b29f`), WS-3 bounded opt-in auto-extension behind default-OFF `scope.auto_extend_signature_callers`
-(`e5401758`), wiring (`74a7f852`) + schema-shape-aware finding-message hardening (`555ef2b9`). The R-MWBG
-manager-prompt fix (`795e539e`, half-1) un-stalled the medium-tier build mid-run. Full local gate GREEN
-(tsc/eslint/10 audits + integration 0-fail + expensive 0-fail + fast-c4: 1 real fail = `scope_auto_extended`
-event-count sync, fixed `b67abbad`; residual dispatch-watchdog fail is a proven R-TSPF load-flake, isolation-green,
-non-B-SIGF file). **⚠️ Hardening-deferred (honest):** the 4 in-pickle hardening tickets (data-flow / test-quality /
-cross-ref + part of code-quality) **did NOT complete** — their large-tier workers died on the [[R-MWBG]]
-silent-death class (0-byte/116-byte logs, pre-success-drain, NOT covered by beta.28's R-WPEX fsync fix). The full
-release gate (deterministic correctness + all test tiers) is the substitute correctness floor; the LLM hardening
-review passes are a **fast-follow** gated on the R-MWBG runtime half (large-tier detached lifecycle fix).
 
 ## Status
 
