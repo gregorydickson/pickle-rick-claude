@@ -173,14 +173,17 @@ Both legacy flags still work at runtime: `mux-runner.ts` reads them as a fallbac
 
 ## Self-modifying-recovery bundles (R-PSRB build protocol)
 
-A bundle whose scope includes the **recovery / salvage / completion machinery** — the `mux-runner.ts`
-salvage/no-progress path, `salvage-ticket.ts`, `reconcile-ticket-truth.ts`,
-`ticket-completion-evidence.ts` — **cannot be built autonomously by the pipeline.** The deployed
-(pre-fix) runtime exercises the very machinery the bundle edits, so it salvage-resets / fatals the
-ticket building the fix (the **R-PSRB self-referential catch-22**, B-PCOMP 2026-06-21:
-`prds/BUG-REPORT-2026-06-21-pipeline-self-referential-build-catch22-and-orphan-mux.md`).
+**Dogfood by default (see `CLAUDE.md` → Dogfood).** Hand-build is the NARROW exception below, not the rule for any mux-runner edit.
 
-**Protocol when authoring such a bundle:** flag it as self-modifying-recovery. The load-bearing
-recovery-path tickets MUST be **hand-built in-process** (or built then `install.sh`-deployed
-incrementally so the rest of the bundle runs on the fixed runtime) — do NOT expect a clean
-`/pickle-pipeline` autonomous run. Non-recovery tickets in the same bundle build normally.
+The catch-22 applies ONLY to the **salvage / completion-evidence / Done-flip path** — `mux-runner.ts`
+salvage/no-progress logic, `salvage-ticket.ts`, `reconcile-ticket-truth.ts`,
+`ticket-completion-evidence.ts`. The deployed (pre-fix) runtime applies that same logic to the worker
+building the fix and salvage-resets / fatals it (**R-PSRB**, B-PCOMP 2026-06-21:
+`prds/BUG-REPORT-2026-06-21-pipeline-self-referential-build-catch22-and-orphan-mux.md`). Spawn-gate /
+routing / phase-exit / scope-fence edits are pipeline-safe — the running pipeline executes deployed JS,
+not your source diff (lands only at `install.sh`).
+
+**Protocol for a genuine salvage-path bundle:** flag it self-modifying-recovery; hand-build the
+load-bearing recovery-path tickets in-process (or build then `install.sh`-deploy incrementally so the
+rest runs on the fixed runtime). First try to dissolve it: tier the load-bearing ticket so it dodges the
+deployed bug (e.g. `large` → detached path). Non-salvage tickets build normally.
