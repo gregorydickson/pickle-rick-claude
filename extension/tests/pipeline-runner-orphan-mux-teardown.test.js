@@ -10,12 +10,18 @@
 // negative-PID group reap the grandchild survives and re-parents to PID 1. The
 // "control" scenario (direct child.kill() only) proves that orphan persists, so
 // the test fails if the group reap is ever removed.
-import { test, describe } from 'node:test';
+import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+
+// Per-file accumulator for afterEach subprocess reaping.
+// Entries: { pid: number, groupKill: boolean }
+// groupKill=true → process.kill(-pid, signal) to reap the whole process group
+//   (used for mux which spawns with detached:true and leads its own group).
+const _spawnedForTeardown = [];
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-omtd-'));
@@ -109,6 +115,9 @@ async function runScenario(mode) {
   fs.writeFileSync(harnessScript, harnessSource(muxScript, mode));
 
   const harness = spawn(process.execPath, [harnessScript], { stdio: 'ignore' });
+  if (typeof harness.pid === 'number') {
+    _spawnedForTeardown.push({ pid: harness.pid, groupKill: false });
+  }
 
   try {
     // Wait for the whole tree to come up.
@@ -128,11 +137,21 @@ async function runScenario(mode) {
     if (gp && isAlive(gp)) { try { process.kill(gp, 'SIGKILL'); } catch {} }
     const mp = readPid(muxPidFile);
     if (mp && isAlive(mp)) { try { process.kill(mp, 'SIGKILL'); } catch {} }
+    // Track mux pid for group reap in afterEach (catches orphaned grandchildren in
+    // the mux's process group that survived the direct-pid kill above).
+    if (mp !== null) _spawnedForTeardown.push({ pid: mp, groupKill: true });
     try { harness.kill('SIGKILL'); } catch {}
   }
 }
 
 describe('R-OMTD: orphan-mux teardown', () => {
+  afterEach(() => {
+    const entries = _spawnedForTeardown.splice(0);
+    for (const { pid, groupKill } of entries) {
+      try { process.kill(groupKill ? -pid : pid, 'SIGKILL'); } catch {}
+    }
+  });
+
   test('group reap kills the mux grandchild subtree within N seconds', async () => {
     const { grandchildDied } = await runScenario('group');
     assert.equal(grandchildDied, true, 'grandchild must be reaped by the process-group SIGTERM (no PPID-1 orphan)');
