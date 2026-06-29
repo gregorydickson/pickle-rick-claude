@@ -12,6 +12,7 @@ import { StateManager } from '../services/state-manager.js';
 import { readRecoverableJsonObject } from '../services/recoverable-json.js';
 import { FORWARD_REF_ANNOTATION_RE, isForwardCreated, resolveExtensionDir } from '../services/forward-ref-annotation.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
+import { createResolverCache, detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
 const SNAPSHOT_FILE = 'readiness_snapshot.json';
 const READINESS_MAX_RECYCLE_CYCLES = 3;
 const DEFAULT_HISTORY_LIMIT = 10;
@@ -542,21 +543,6 @@ function resolveExternalSymbolRef(partPatterns, repoRoot, cache) {
             return false;
         return partPatterns.every((pattern) => pattern.test(content));
     });
-}
-function createResolverCache(repoRoot, maxWallMs, allowlist = new Set()) {
-    // R-RTRC-3: lift the tests/ exclusion ONLY. Symbols defined in test files
-    // (helpers, test fixtures) are valid resolution targets — the prior filter
-    // produced false positives whenever a ticket cited a test-defined helper.
-    // Extension allowlist (ts|tsx|js|jsx|mjs|cjs) is unchanged.
-    const tracked = gitTrackedFiles(repoRoot)
-        .filter((file) => /\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file));
-    return {
-        trackedSourceFiles: tracked,
-        fileContents: new Map(),
-        deadline: Date.now() + maxWallMs,
-        truncated: false,
-        allowlist,
-    };
 }
 function readCachedFile(absPath, cache) {
     const cached = cache.fileContents.get(absPath);
@@ -1256,71 +1242,11 @@ function maybeEmitResolverIndeterminate(input) {
         },
     });
 }
-// R-SIGF (LOA-1488): ADVISORY signature-change-caller-gap detector.
-//
-// PROBLEM: a ticket adds an Nth constructor/function parameter to an exported or
-// injected symbol; a sibling spec instantiates that symbol POSITIONALLY (e.g.
-// `new Service(a, b, c)`) with the OLD arity. If that spec sits OUTSIDE the
-// bundle's scope fence, no fenced worker may touch it, and tsc stays RED with no
-// in-scope remedy. We cannot reliably auto-extend the call sites, so we FLAG the
-// gap for the operator/author. This finding is ADVISORY (kind:'advisory') — it
-// NEVER adds to the blocking set and NEVER fails readiness.
-//
-// LIMITS (documented in the finding message): detection is a markdown + grep
-// heuristic, not a type-aware diff. We detect an arity change only when the
-// ticket body explicitly says it ADDS a constructor/function parameter (or a new
-// injection) to a NAMED symbol; we then grep tracked `*.spec.ts` / factory files
-// for positional `new <Symbol>(` call sites outside the bundle's declared files.
-// False negatives (an arity change phrased without these cues) and over-broad
-// symbol matches are possible; the finding is advisory precisely so a miss or an
-// over-report costs nothing.
-// Phrases that signal a NEW positional parameter / injection is being added.
-const ARITY_ADD_CUE_RE = /\b(?:add(?:s|ing|ed)?|introduc(?:e|es|ing|ed)|new|append(?:s|ing|ed)?|inject(?:s|ing|ed)?)\b[^.\n]{0,60}\b(?:constructor\s+(?:param(?:eter)?|arg(?:ument)?|injection|dependency)|(?:param(?:eter)?|arg(?:ument)?|injection|dependency)\s+to\s+the\s+constructor|\d+(?:st|nd|rd|th)\s+(?:constructor\s+)?(?:param(?:eter)?|arg(?:ument)?)|new\s+(?:injected\s+)?(?:param(?:eter)?|arg(?:ument)?|dependency|service))\b/i;
-// Captures a PascalCase service/class symbol named near an arity cue. We look for
-// the symbol either as a backticked token or as the subject of a `new X(` form in
-// the ticket body.
-const PASCAL_SYMBOL_RE = /\b([A-Z][A-Za-z0-9]*(?:Service|Manager|Resolver|Provider|Client|Repository|Store|Gateway|Adapter|Controller|Handler|Factory|Runner|Engine|Auditor|Analyzer|Validator|Collector|Builder))\b/g;
-// True when a tracked file is declared in-scope by ANY ticket in the bundle (so a
-// positional caller there is fixable by a fenced worker and must NOT be flagged).
-function isCallerInBundleScope(trackedFile, declaredAll) {
-    if (declaredAll.has(trackedFile))
-        return true;
-    for (const declared of declaredAll) {
-        if (trackedFile === declared || trackedFile.endsWith(`/${declared}`) || declared.endsWith(`/${trackedFile}`)) {
-            return true;
-        }
-    }
-    return false;
-}
-// Candidate caller files: tracked specs + factory/builder TS files. Bound the
-// corpus to keep the scan cheap.
-function callerCandidateFiles(repoRoot, cache) {
-    const tracked = cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot);
-    if (cache && cache.trackedAllFiles === undefined)
-        cache.trackedAllFiles = tracked;
-    return tracked.filter((file) => /\.spec\.ts$/.test(file) || /(?:factory|factories|builder)[^/]*\.ts$/i.test(file));
-}
-// Extract candidate symbols whose arity the ticket claims to change.
-function extractAritySymbols(content) {
-    const symbols = new Set();
-    for (const rawLine of content.split(/\r?\n/)) {
-        if (!ARITY_ADD_CUE_RE.test(rawLine))
-            continue;
-        PASCAL_SYMBOL_RE.lastIndex = 0;
-        for (const match of rawLine.matchAll(PASCAL_SYMBOL_RE))
-            symbols.add(match[1]);
-        // Also harvest a `new X(` subject on the cue line even if the suffix list misses it.
-        for (const match of rawLine.matchAll(/\bnew\s+([A-Z][A-Za-z0-9]*)\s*\(/g))
-            symbols.add(match[1]);
-    }
-    return [...symbols];
-}
 export function findSignatureChangeCallerGapFindings(sigTickets, repoRoot, cache) {
     const declaredAll = new Set();
     for (const t of sigTickets)
         for (const f of t.declaredFiles)
             declaredAll.add(f);
-    const candidates = callerCandidateFiles(repoRoot, cache);
     const findings = [];
     for (const ticket of sigTickets) {
         let content;
@@ -1330,25 +1256,21 @@ export function findSignatureChangeCallerGapFindings(sigTickets, repoRoot, cache
         catch {
             continue;
         }
-        for (const symbol of extractAritySymbols(content)) {
-            const callerRe = new RegExp(`\\bnew\\s+${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`);
-            const outOfScopeCallers = candidates.filter((file) => {
-                if (isCallerInBundleScope(file, declaredAll))
-                    return false;
-                const abs = path.join(repoRoot, file);
-                const body = cache ? readCachedFile(abs, cache) : (fs.existsSync(abs) ? fs.readFileSync(abs, 'utf-8') : undefined);
-                return body !== undefined && callerRe.test(body);
-            });
-            if (outOfScopeCallers.length === 0)
-                continue;
+        const gaps = detectSignatureCallerGaps({
+            ticketContents: [content],
+            declaredFiles: declaredAll,
+            repoRoot,
+            cache,
+        });
+        for (const gap of gaps) {
             findings.push({
                 ticket: ticket.file,
                 kind: 'advisory',
                 analyst: 'risk',
-                message: `Arity change to '${symbol}' has positional caller(s) OUTSIDE the bundle scope fence; ` +
+                message: `Arity change to '${gap.symbol}' has positional caller(s) OUTSIDE the bundle scope fence; ` +
                     'no fenced worker can update them, so tsc may stay RED (advisory — heuristic markdown+grep detection, ' +
                     'not a type-aware diff; verify and extend or rescope the callers)',
-                detail: `${symbol} -> ${outOfScopeCallers.join(', ')}`,
+                detail: `${gap.symbol} -> ${gap.outOfScopeCallers.join(', ')}`,
             });
         }
     }

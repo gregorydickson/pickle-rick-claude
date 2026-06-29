@@ -13,6 +13,7 @@ import { readRecoverableJsonObject } from '../services/recoverable-json.js';
 import type { ReadinessCycleHistoryEntry } from '../types/index.js';
 import { FORWARD_REF_ANNOTATION_RE, isForwardCreated, resolveExtensionDir } from '../services/forward-ref-annotation.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
+import { ResolverCache, createResolverCache, detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
 
 export interface ReadinessArgs {
   sessionDir: string;
@@ -517,16 +518,6 @@ function gitTrackedFiles(repoRoot: string): string[] {
   return result.stdout.split('\n').filter(Boolean);
 }
 
-interface ResolverCache {
-  trackedSourceFiles: string[];
-  trackedAllFiles?: string[];
-  externalDtsFiles?: string[];
-  fileContents: Map<string, string>;
-  deadline: number;
-  truncated: boolean;
-  allowlist: Set<string>;
-}
-
 // R-RCEX (Finding #65): bounds for the node_modules `.d.ts` resolution scan.
 const EXTERNAL_DTS_FILE_CAP = 3_000;
 const EXTERNAL_DTS_MAX_BYTES = 512 * 1024;
@@ -612,22 +603,6 @@ function resolveExternalSymbolRef(partPatterns: RegExp[], repoRoot: string, cach
     if (content === undefined) return false;
     return partPatterns.every((pattern) => pattern.test(content));
   });
-}
-
-function createResolverCache(repoRoot: string, maxWallMs: number, allowlist: Set<string> = new Set()): ResolverCache {
-  // R-RTRC-3: lift the tests/ exclusion ONLY. Symbols defined in test files
-  // (helpers, test fixtures) are valid resolution targets — the prior filter
-  // produced false positives whenever a ticket cited a test-defined helper.
-  // Extension allowlist (ts|tsx|js|jsx|mjs|cjs) is unchanged.
-  const tracked = gitTrackedFiles(repoRoot)
-    .filter((file) => /\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file));
-  return {
-    trackedSourceFiles: tracked,
-    fileContents: new Map<string, string>(),
-    deadline: Date.now() + maxWallMs,
-    truncated: false,
-    allowlist,
-  };
 }
 
 function readCachedFile(absPath: string, cache: ResolverCache): string | undefined {
@@ -1350,50 +1325,12 @@ function maybeEmitResolverIndeterminate(input: {
 // symbol matches are possible; the finding is advisory precisely so a miss or an
 // over-report costs nothing.
 
-// Phrases that signal a NEW positional parameter / injection is being added.
-const ARITY_ADD_CUE_RE = /\b(?:add(?:s|ing|ed)?|introduc(?:e|es|ing|ed)|new|append(?:s|ing|ed)?|inject(?:s|ing|ed)?)\b[^.\n]{0,60}\b(?:constructor\s+(?:param(?:eter)?|arg(?:ument)?|injection|dependency)|(?:param(?:eter)?|arg(?:ument)?|injection|dependency)\s+to\s+the\s+constructor|\d+(?:st|nd|rd|th)\s+(?:constructor\s+)?(?:param(?:eter)?|arg(?:ument)?)|new\s+(?:injected\s+)?(?:param(?:eter)?|arg(?:ument)?|dependency|service))\b/i;
-
-// Captures a PascalCase service/class symbol named near an arity cue. We look for
-// the symbol either as a backticked token or as the subject of a `new X(` form in
-// the ticket body.
-const PASCAL_SYMBOL_RE = /\b([A-Z][A-Za-z0-9]*(?:Service|Manager|Resolver|Provider|Client|Repository|Store|Gateway|Adapter|Controller|Handler|Factory|Runner|Engine|Auditor|Analyzer|Validator|Collector|Builder))\b/g;
+// Detector symbols relocated to extension/src/services/signature-caller-gap.ts (R-SIGF).
+// Re-imported above: ResolverCache, createResolverCache, detectSignatureCallerGaps.
 
 interface SignatureGapTicket {
   file: string;
   declaredFiles: Set<string>;
-}
-
-// True when a tracked file is declared in-scope by ANY ticket in the bundle (so a
-// positional caller there is fixable by a fenced worker and must NOT be flagged).
-function isCallerInBundleScope(trackedFile: string, declaredAll: Set<string>): boolean {
-  if (declaredAll.has(trackedFile)) return true;
-  for (const declared of declaredAll) {
-    if (trackedFile === declared || trackedFile.endsWith(`/${declared}`) || declared.endsWith(`/${trackedFile}`)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Candidate caller files: tracked specs + factory/builder TS files. Bound the
-// corpus to keep the scan cheap.
-function callerCandidateFiles(repoRoot: string, cache?: ResolverCache): string[] {
-  const tracked = cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot);
-  if (cache && cache.trackedAllFiles === undefined) cache.trackedAllFiles = tracked;
-  return tracked.filter((file) => /\.spec\.ts$/.test(file) || /(?:factory|factories|builder)[^/]*\.ts$/i.test(file));
-}
-
-// Extract candidate symbols whose arity the ticket claims to change.
-function extractAritySymbols(content: string): string[] {
-  const symbols = new Set<string>();
-  for (const rawLine of content.split(/\r?\n/)) {
-    if (!ARITY_ADD_CUE_RE.test(rawLine)) continue;
-    PASCAL_SYMBOL_RE.lastIndex = 0;
-    for (const match of rawLine.matchAll(PASCAL_SYMBOL_RE)) symbols.add(match[1]);
-    // Also harvest a `new X(` subject on the cue line even if the suffix list misses it.
-    for (const match of rawLine.matchAll(/\bnew\s+([A-Z][A-Za-z0-9]*)\s*\(/g)) symbols.add(match[1]);
-  }
-  return [...symbols];
 }
 
 export function findSignatureChangeCallerGapFindings(
@@ -1403,7 +1340,6 @@ export function findSignatureChangeCallerGapFindings(
 ): ReadinessFinding[] {
   const declaredAll = new Set<string>();
   for (const t of sigTickets) for (const f of t.declaredFiles) declaredAll.add(f);
-  const candidates = callerCandidateFiles(repoRoot, cache);
   const findings: ReadinessFinding[] = [];
   for (const ticket of sigTickets) {
     let content: string;
@@ -1412,24 +1348,22 @@ export function findSignatureChangeCallerGapFindings(
     } catch {
       continue;
     }
-    for (const symbol of extractAritySymbols(content)) {
-      const callerRe = new RegExp(`\\bnew\\s+${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`);
-      const outOfScopeCallers = candidates.filter((file) => {
-        if (isCallerInBundleScope(file, declaredAll)) return false;
-        const abs = path.join(repoRoot, file);
-        const body = cache ? readCachedFile(abs, cache) : (fs.existsSync(abs) ? fs.readFileSync(abs, 'utf-8') : undefined);
-        return body !== undefined && callerRe.test(body);
-      });
-      if (outOfScopeCallers.length === 0) continue;
+    const gaps = detectSignatureCallerGaps({
+      ticketContents: [content],
+      declaredFiles: declaredAll,
+      repoRoot,
+      cache,
+    });
+    for (const gap of gaps) {
       findings.push({
         ticket: ticket.file,
         kind: 'advisory',
         analyst: 'risk',
         message:
-          `Arity change to '${symbol}' has positional caller(s) OUTSIDE the bundle scope fence; ` +
+          `Arity change to '${gap.symbol}' has positional caller(s) OUTSIDE the bundle scope fence; ` +
           'no fenced worker can update them, so tsc may stay RED (advisory — heuristic markdown+grep detection, ' +
           'not a type-aware diff; verify and extend or rescope the callers)',
-        detail: `${symbol} -> ${outOfScopeCallers.join(', ')}`,
+        detail: `${gap.symbol} -> ${gap.outOfScopeCallers.join(', ')}`,
       });
     }
   }
