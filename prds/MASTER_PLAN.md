@@ -95,13 +95,14 @@ the B-APNC 0/4. Built on the IMMUNE in-process path (no detached `claude -p` spa
 local gate green (tsc/eslint/10 audits + fast-c4 6727/6730 0-fail + integration 495/496 [F22-1 isolation-green
 load-flake] + expensive 0-fail).
 
-**Next action: [[R-SIGF]] full scope-auto-extension (P2 → promote toward P1).** The remaining codex GA blocker
-(separate scope-fence subsystem, NOT the phase-exit oracle). Only the advisory `signature_change_caller_gap`
-readiness finding shipped (`a668687f`); the full fence auto-extension — extend MODIFIED_FILES scope to positional
-callers of a changed injected/exported signature AND **schema-shape consumers** (2nd repro: a changed zod
-`thresholdSchema` shape broke out-of-fence sibling specs) — is the harder, higher-risk half, still DEFERRED. This
-is a normal scope-fence build (NOT recovery-path; R-PSRB does not apply) → pipeline-safe now that R-WPEX is fixed.
-Pre-build: re-`git log`/grep HEAD for ACs (`feedback_prelaunch_residual_check_stale_findings`).
+**▶ IN FLIGHT: [[R-SIGF]] → B-SIGF (P1, the codex GA blocker).** PRD authored 2026-06-29 by the babysitter:
+`prds/p1-bug-fix-bundle-b-sigf-scope-auto-extension-2026-06-28.md`. Reuse-first design (the advisory detector
+`findSignatureChangeCallerGapFindings` already ships, `a668687f`): **WS-1** promote it advisory→blocking (reuse,
+unified skip hatch + W5b budget), **WS-2** extend to schema-shape consumers (2nd repro: changed zod
+`thresholdSchema` shape broke out-of-fence sibling specs), **WS-3** bounded scope auto-extension behind a
+default-OFF `scope.auto_extend_signature_callers` setting so the safe block ships first and the
+isolation-touching capability is opt-in until soak. Scope-fence subsystem, NOT recovery-path (R-PSRB N/A) →
+pipeline-safe now that R-WPEX is fixed. Launched via the babysitter; next tick monitors the run.
 
 ## Status
 
