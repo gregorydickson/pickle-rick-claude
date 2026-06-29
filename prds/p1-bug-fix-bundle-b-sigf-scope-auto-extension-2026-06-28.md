@@ -70,6 +70,22 @@ Net: WS-1+WS-2 are reuse-first and close the GA blocker safely (no bundle launch
 tree). WS-3 is the capability, shipped behind a default-off flag so it does not risk scope isolation until
 proven.
 
+## Interface Contracts
+
+**Shared detector module (WS-3, AC-SIGF-7)** — `extension/src/services/signature-caller-gap.ts` (forward-created):
+- `export interface CallerGapInput { ticketContents: string[]; declaredFiles: Set<string>; repoRoot: string; cache?: ResolverCache }`
+- `export interface CallerGap { symbol: string; kind: 'arity' | 'schema-shape'; outOfScopeCallers: string[] }`
+- `export function detectSignatureCallerGaps(input: CallerGapInput): CallerGap[]` — pure; reuses `ARITY_ADD_CUE_RE`, `callerCandidateFiles`, `isCallerInBundleScope`; bounded by the existing `ResolverCache` wall budget.
+- Consumed by `check-readiness.ts` (`findSignatureChangeCallerGapFindings`, WS-1/WS-2) and the scope-resolution path (WS-3). No inline `ARITY_ADD_CUE_RE` copy may remain in either consumer.
+
+**Readiness finding (WS-1/WS-2)** — `ReadinessFinding` with `kind:'blocking'` (added to `blockingFindings`); message names `symbol -> caller1, caller2`; `kind` distinguishes `arity` vs `schema-shape`. Bypass: non-empty `state.flags.skip_quality_gates_reason` → `readiness_skipped`-class event + exit 0.
+
+**Setting (WS-3)** — `pickle_settings.json` `scope.auto_extend_signature_callers: boolean` (default `false`); resolved alongside the existing `scope` block. When `true`, `ScopeJson.allowed_paths` gains the detector-named caller files (deduped, byte-sorted, capped at `SCOPE_AUTO_EXTEND_MAX` documented constant).
+
+**Activity event (WS-3)** — `scope_auto_extended`, `gate_payload: { added_paths: string[], symbols: string[], cap_hit: boolean }`; registered in `VALID_ACTIVITY_EVENTS` + `activity-events.schema.json` `oneOf` + EVENT_CASES + `spawn-refinement-team.ts:ACTIVITY_EVENT_SCHEMA_SECTION` (the 7-touchpoint registration contract).
+
+**Errors / invariants**: detection never throws (best-effort, bounded wall budget); auto-extension never adds a path the detector did not positively name; the `worker_edit_outside_scope` event still fires for any non-named out-of-scope edit (scope isolation preserved).
+
 ## Workstreams & acceptance criteria
 
 ### WS-1 — Promote the signature-caller-gap finding to blocking (reuse the shipped detector)
