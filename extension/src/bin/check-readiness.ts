@@ -1310,27 +1310,36 @@ function maybeEmitResolverIndeterminate(input: {
   });
 }
 
-// R-SIGF (LOA-1488): ADVISORY signature-change-caller-gap detector.
+// R-SIGF (LOA-1488): signature-change-caller-gap detector — CONDITIONAL-BLOCKING.
 //
-// PROBLEM: a ticket adds an Nth constructor/function parameter to an exported or
-// injected symbol; a sibling spec instantiates that symbol POSITIONALLY (e.g.
-// `new Service(a, b, c)`) with the OLD arity. If that spec sits OUTSIDE the
-// bundle's scope fence, no fenced worker may touch it, and tsc stays RED with no
-// in-scope remedy. We cannot reliably auto-extend the call sites, so we FLAG the
-// gap for the operator/author. This finding is ADVISORY (kind:'advisory') — it
-// NEVER adds to the blocking set and NEVER fails readiness.
+// PROBLEM: a ticket changes the signature/shape of an exported or injected symbol
+// (adds an Nth constructor/function parameter, or changes a `<Name>Schema` shape),
+// while a sibling spec uses the OLD form — e.g. `new Service(a, b, c)` positionally
+// (WS-1 arity) or `ThresholdSchema.parse(...)` / a factory bridge (WS-2 schema-shape).
+// If that caller sits OUTSIDE the bundle's scope fence, no fenced worker may touch
+// it, and tsc can stay RED with no in-scope remedy.
+//
+// BLOCKING CONTRACT (WS-1): `findSignatureChangeCallerGapFindings` emits
+// `kind:'signature_caller_gap'` (blocking — fails readiness) UNLESS suppressed by
+// `isGapBlocking`: the `PICKLE_SIGF` kill-switch (`off`/`advisory`), a
+// `skip_quality_gates_reason`, or an opt-in scope auto-extension that absorbs the
+// caller (`autoExtend && callerCount <= SCOPE_AUTO_EXTEND_MAX`). When suppressed
+// the finding degrades to `kind:'advisory'` (informational, never blocks).
+//
+// SINGLE DETECTOR: the matching engine (`ARITY_ADD_CUE_RE`, `SCHEMA_SHAPE_CUE_RE`,
+// and `detectSignatureCallerGaps`) lives ONLY in
+// extension/src/services/signature-caller-gap.ts and is shared verbatim with the
+// build-phase scope auto-extension in pipeline-runner.ts (WS-3
+// `computeScopeAutoExtension`) — no divergent copy exists in either consumer.
+// Re-imported above: CallerGap, ResolverCache, createResolverCache, detectSignatureCallerGaps.
 //
 // LIMITS (documented in the finding message): detection is a markdown + grep
-// heuristic, not a type-aware diff. We detect an arity change only when the
-// ticket body explicitly says it ADDS a constructor/function parameter (or a new
-// injection) to a NAMED symbol; we then grep tracked `*.spec.ts` / factory files
-// for positional `new <Symbol>(` call sites outside the bundle's declared files.
-// False negatives (an arity change phrased without these cues) and over-broad
-// symbol matches are possible; the finding is advisory precisely so a miss or an
-// over-report costs nothing.
-
-// Detector symbols relocated to extension/src/services/signature-caller-gap.ts (R-SIGF).
-// Re-imported above: ResolverCache, createResolverCache, detectSignatureCallerGaps.
+// heuristic, not a type-aware diff. Both cues require the ticket body to NAME the
+// symbol and the change explicitly; we then grep tracked `*.spec.ts` / factory
+// files for old-form call sites outside the bundle's declared files. False
+// negatives (a change phrased without these cues) and over-broad symbol matches
+// are possible — the blocking finding always carries an actionable remediation
+// (co-scope, auto-extend, or skip) so a miss or over-report stays cheap to resolve.
 
 interface SignatureGapTicket {
   file: string;
