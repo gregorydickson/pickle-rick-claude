@@ -153,6 +153,8 @@ Read `${SESSION_ROOT}/state.json` once at Phase 3 entry. If `state.teams_mode ==
    ```
 8. **Next ticket**: repeat
 
+**Worker-spawn discipline (mandatory — R-MWBG).** Run `spawn-morty.js` (step 2) in the FOREGROUND. NEVER background it — no Bash `run_in_background`, no trailing `&`, no `nohup`/`setsid`/`disown`. You are a `claude -p` subprocess: a backgrounded child does NOT survive your turn ending — it is KILLED at turn-end, leaving a 0-byte `worker_session` log and ZERO progress, which strands the whole bundle at `pipeline_phase_incomplete` (the R-MWBG stall, B-SIGF 2026-06-29). Do NOT preemptively background a worker because you fear the 600s Bash-tool ceiling: most workers finish well within it, and if a worker's Bash call IS cut off at the ceiling before it signals `<promise>I AM DONE</promise>`, simply re-spawn the SAME `spawn-morty.js` command in the foreground on your next turn — the worker RESUMES from its on-disk artifacts (`research_*`, `plan_*`, `conformance_*`), so progress accumulates across the ceiling. The mux-runner relaunches you (R-MMTR) to give you the turns you need. Foreground + re-spawn-resumes, never background.
+
 **Per-ticket recovery atomicity (mandatory).** If you are hand-recovering more than one finished or dead worker in a single turn (e.g. workers whose logs died but whose verified work is on disk), commit + flip that ticket to Done **individually** before touching the next one — finish steps 4–5 (commit, then mark Done with `completion_commit`) for ticket A, then start ticket B. NEVER batch recovery commits across a turn boundary: an already-delivered ticket left uncommitted/Todo is stranded if the turn or loop exits.
 
 ## Phase 3.B — Teams Mode (`--teams`)
