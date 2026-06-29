@@ -7,7 +7,7 @@ type: bug-fix-bundle
 schema_neutral: true
 self_modifying_recovery: false
 backend: claude
-source_bug_report: prds/archive/bug-reports/BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md
+source_bug_report: prds/BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md
 ---
 
 # B-SIGF — scope-fence signature/schema-shape caller gap (R-SIGF)
@@ -61,7 +61,7 @@ Per workstream:
   fenced worker CAN fix them. *Guards brittle complexity?* Scope isolation is load-bearing (R-APWS /
   `check-scope-diff` trap doors). Auto-widening the fence is the **smell** the governance warns about, so
   WS-3 is **bounded and gated**: it extends ONLY to caller files the WS-1/2 detector positively named (never
-  arbitrary source), caps the count, emits a `scope_auto_extended` activity event per added path, and is
+  arbitrary source), caps the count, emits a `scope_auto_extended` (forward-created) activity event per added path, and is
   **default-OFF behind a setting** (`scope.auto_extend_signature_callers`, default `false`) so the safe
   WS-1 block ships first and the capability is opt-in until soak validates it. *Subtract?* The auto-extension
   makes the WS-1 block a fallback (block only when auto-extension is off or over-cap), not a second hatch.
@@ -80,9 +80,9 @@ proven.
 
 **Readiness finding (WS-1/WS-2)** — `ReadinessFinding` with `kind:'blocking'` (added to `blockingFindings`); message names `symbol -> caller1, caller2`; `kind` distinguishes `arity` vs `schema-shape`. Bypass: non-empty `state.flags.skip_quality_gates_reason` → `readiness_skipped`-class event + exit 0.
 
-**Setting (WS-3)** — `pickle_settings.json` `scope.auto_extend_signature_callers: boolean` (default `false`); resolved alongside the existing `scope` block. When `true`, `ScopeJson.allowed_paths` gains the detector-named caller files (deduped, byte-sorted, capped at `SCOPE_AUTO_EXTEND_MAX` documented constant).
+**Setting (WS-3)** — `pickle_settings.json` `scope.auto_extend_signature_callers: boolean` (default `false`); resolved alongside the existing `scope` block. When `true`, `ScopeJson.allowed_paths` gains the detector-named caller files (deduped, byte-sorted, capped at `SCOPE_AUTO_EXTEND_MAX` (forward-created) documented constant).
 
-**Activity event (WS-3)** — `scope_auto_extended`, `gate_payload: { added_paths: string[], symbols: string[], cap_hit: boolean }`; registered in `VALID_ACTIVITY_EVENTS` + `activity-events.schema.json` `oneOf` + EVENT_CASES + `spawn-refinement-team.ts:ACTIVITY_EVENT_SCHEMA_SECTION` (the 7-touchpoint registration contract).
+**Activity event (WS-3)** — `scope_auto_extended` (forward-created), `gate_payload: { added_paths: string[], symbols: string[], cap_hit: boolean }`; registered in `VALID_ACTIVITY_EVENTS` + `activity-events.schema.json` `oneOf` + EVENT_CASES + `spawn-refinement-team.ts:ACTIVITY_EVENT_SCHEMA_SECTION` (the 7-touchpoint registration contract).
 
 **Errors / invariants**: detection never throws (best-effort, bounded wall budget); auto-extension never adds a path the detector did not positively name; the `worker_edit_outside_scope` event still fires for any non-named out-of-scope edit (scope isolation preserved).
 
@@ -113,7 +113,7 @@ proven.
 ### WS-3 — Bounded, opt-in scope auto-extension (default-OFF)
 - **AC-SIGF-6**: a new resolved setting `scope.auto_extend_signature_callers` (default **false**) gates the
   behavior; when `true`, `resolveScope`/`refreshScope` add the WS-1/WS-2-detected out-of-fence caller files
-  to `allowed_paths` (deduped, sorted), capped at a documented maximum, emitting a `scope_auto_extended`
+  to `allowed_paths` (deduped, sorted), capped at a documented maximum, emitting a `scope_auto_extended` (forward-created)
   activity event naming each added path. Verify: with the flag on, a fixture's named callers appear in
   `scope.json.allowed_paths` and the event fires; with the flag off (default), `allowed_paths` is unchanged
   and WS-1 blocks instead.
