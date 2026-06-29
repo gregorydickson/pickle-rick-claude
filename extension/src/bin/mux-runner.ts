@@ -3324,6 +3324,51 @@ export function largeTierDetachedEnabled(env: NodeJS.ProcessEnv = process.env): 
   return env.PICKLE_LARGE_TIER_DETACHED !== 'off';
 }
 
+/**
+ * The 600s Bash-tool ceiling that SIGKILLs a foreground spawn-morty. A ticket
+ * whose resolved worker_timeout exceeds this needs the detached lifecycle to
+ * survive; at-or-below it (trivial 300s / small 600s) runs in-process fine.
+ */
+export const BASH_TOOL_CEILING_SECONDS = 600;
+
+/**
+ * R-MWBG runtime half: true when ticket `ticketId`'s **EXPLICIT** frontmatter
+ * `complexity_tier` resolves to a worker_timeout that exceeds the 600s Bash
+ * ceiling — i.e. the ticket genuinely needs the detached lifecycle to survive.
+ *
+ * This is the gate that the FIRST attempt got wrong (reverted at the beta.30
+ * closer): a budget predicate keyed on `state.current_ticket_tier` fired during
+ * the prd/no-ticket phase and for every default-tier ticket, because
+ * `sessionRunnerBudget` stamps the `medium` fallback there. By reading the
+ * EXPLICIT field straight from the ticket file (mirroring `resolveCreditEarlyPhases`)
+ * and rejecting a missing/invalid tier BEFORE budget resolution (which would
+ * otherwise normalize an absent tier to `medium`), the prd phase (no ticket file)
+ * and a default-tier ticket (no `complexity_tier` field) both yield `false` →
+ * they stay on the in-process `runIteration` path with its invariants intact.
+ *
+ * Fail-open: a missing/unreadable ticket file or absent ticketId yields `false`.
+ * `state` is consulted only for per-tier `tier_cap_override` (never the polluting
+ * `current_ticket_worker_timeout_seconds`).
+ */
+export function tierExceedsBashCeiling(
+  state: State | null | undefined,
+  sessionDir: string,
+  ticketId: string | null | undefined,
+): boolean {
+  if (!ticketId) return false;
+  try {
+    const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf-8');
+    const explicit = (readFrontmatterField(raw, 'complexity_tier') ?? '').trim().toLowerCase();
+    // ONLY an explicit, valid tier counts — a missing/invalid field is the
+    // default-tier case and must NOT route detached (the revert root cause).
+    if (!(VALID_TICKET_COMPLEXITY_TIERS as readonly string[]).includes(explicit)) return false;
+    const budget = getTicketTierBudgetWithOverrides(state ?? null, explicit);
+    return budget.worker_timeout_seconds > BASH_TOOL_CEILING_SECONDS;
+  } catch {
+    return false;
+  }
+}
+
 export interface SpawnDetachedLargeTierWorkerInput {
   sessionDir: string;
   statePath: string;
@@ -6043,12 +6088,20 @@ export function attemptRecoveryBeforeTerminal(input: AttemptRecoveryBeforeTermin
       // worker by default (AC-R-WPEXA-14) so the recovery branch no longer punts to
       // interactive tmux — the worker survives the 600s Bash ceiling and the next mux
       // poll re-attaches. Only PICKLE_LARGE_TIER_DETACHED=off keeps the legacy
-      // routeLargeTierTicket punt. Small/medium spawn an implement pass directly.
+      // routeLargeTierTicket punt. R-MWBG: any explicit tier whose timeout exceeds
+      // the 600s ceiling (medium/large) routes detached; small/trivial (≤600s) spawn
+      // an implement pass directly.
       reExecutionSeam: {
         spawnImplementPass: (opts) => {
-          if (opts.complexityTier === 'large') {
+          const st = sm.read(opts.statePath);
+          // R-MWBG: any ticket whose EXPLICIT tier exceeds the 600s Bash ceiling
+          // (medium/large) needs the detached lifecycle — not just `large`.
+          // opts.complexityTier carries a `medium` FALLBACK for an unset field, so
+          // route on the explicit frontmatter tier, never the fallback.
+          const needsDetached = opts.complexityTier === 'large'
+            || tierExceedsBashCeiling(st, opts.sessionDir, opts.ticketId);
+          if (needsDetached) {
             if (largeTierDetachedEnabled()) {
-              const st = sm.read(opts.statePath);
               const rawTimeout = Number(st.worker_timeout_seconds);
               const workerTimeoutSec = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : Defaults.WORKER_TIMEOUT_SECONDS;
               const spawnRes = spawnDetachedLargeTierWorker({
@@ -10763,8 +10816,8 @@ async function runMuxRunnerMain() {
     // mapping) branches are out of scope here — this is the NO-ARM branch only.
     const detachedEnabled = largeTierDetachedEnabled();
 
-    if (state.current_ticket_tier === 'large' && detachedEnabled && apTicketId &&
-        !state.detached_worker) {
+    if ((state.current_ticket_tier === 'large' || tierExceedsBashCeiling(state, sessionDir, apTicketId)) &&
+        detachedEnabled && apTicketId && !state.detached_worker) {
       const raw = Number(state.worker_timeout_seconds);
       const workerTimeoutSec = Number.isFinite(raw) && raw > 0 ? raw : Defaults.WORKER_TIMEOUT_SECONDS;
       const spawnRes = spawnDetachedLargeTierWorker({
@@ -10800,7 +10853,8 @@ async function runMuxRunnerMain() {
     // guarded by !state.detached_worker) and BEFORE any routeLargeTierTicket/next-ticket
     // advance, so there is exactly ONE spawn-morty invocation per detached ticket.
     // A mismatched arm (ticket_id !== apTicketId) does NOT match here → falls through.
-    if (state.current_ticket_tier === 'large' && detachedEnabled && apTicketId &&
+    if ((state.current_ticket_tier === 'large' || tierExceedsBashCeiling(state, sessionDir, apTicketId)) &&
+        detachedEnabled && apTicketId &&
         state.detached_worker && state.detached_worker.ticket_id === apTicketId) {
       const dw = state.detached_worker;
       const detachedTicketId = dw.ticket_id;
