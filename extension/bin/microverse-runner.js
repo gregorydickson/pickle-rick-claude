@@ -2547,11 +2547,13 @@ function guardedMicroverseRollback(ctx) {
  * the last entry already describes a plateau, so a long stall appends at most one entry.
  */
 function maybeRecordPlateauFailedApproach(state, classification, iteration, score, previousScore) {
-    if (classification !== 'held')
+    if (classification !== 'held') {
         return;
+    }
     const lastApproach = state.failed_approaches[state.failed_approaches.length - 1] ?? '';
-    if (lastApproach.includes('score held at'))
+    if (lastApproach.includes('score held at')) {
         return;
+    }
     replaceMicroverseState(state, recordFailedApproach(state, `Iteration ${iteration}: score held at ${score} (no improvement from ${previousScore})`));
 }
 export async function measureAndClassifyIteration(state, baseline, ctx) {
