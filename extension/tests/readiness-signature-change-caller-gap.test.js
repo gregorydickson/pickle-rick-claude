@@ -1,9 +1,12 @@
 // @tier: fast
-// R-SIGF (LOA-1488): the readiness gate emits an ADVISORY
-// `signature_change_caller_gap` finding when a ticket changes an exported/injected
+// R-SIGF (LOA-1488, WS-1): the readiness gate conditionally BLOCKS on a
+// `signature_caller_gap` finding when a ticket changes an exported/injected
 // symbol's ARITY (adds a constructor param) and a positional caller in an
-// out-of-scope `*.spec.ts` / factory file would be left stale. The finding is
-// ADVISORY — readiness still PASSES (exit 0); it is excluded from the blocking set.
+// out-of-scope `*.spec.ts` / factory file would be left stale.
+// Blocking when: kill-switch absent AND skip_quality_gates_reason absent AND
+//   (scope.auto_extend_signature_callers is false OR caller count > SCOPE_AUTO_EXTEND_MAX=8).
+// Advisory (non-blocking) when: kill-switch (PICKLE_SIGF=off|advisory),
+//   skip_quality_gates_reason set, or flag-on + count ≤ 8.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -14,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.resolve(__dirname, '../bin/check-readiness.js');
+const SKIP_FLAG_BUDGETS_KEY = 'pickle::signature_caller_gap';
 
 function tmpDir(prefix = 'pickle-sigf-') {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -40,19 +44,19 @@ function gitRepoWith(files) {
   return repoRoot;
 }
 
-function runReadiness(sessionDir, repoRoot) {
+function runReadiness(sessionDir, repoRoot, extraEnv = {}) {
   return spawnSync(process.execPath, [
     BIN,
     '--session-dir', sessionDir,
     '--repo-root', repoRoot,
     '--contract-only',
-  ], { encoding: 'utf-8', timeout: 15000 });
+  ], { encoding: 'utf-8', timeout: 15000, env: { ...process.env, ...extraEnv } });
 }
 
-test('R-SIGF: arity change with an out-of-scope positional caller emits the advisory finding AND readiness passes', () => {
+// AC-SIGF-1: arity gap with out-of-scope git-TRACKED caller BLOCKS (exit != 0);
+// finding kind is 'signature_caller_gap'
+test('R-SIGF WS-1: arity change with an out-of-scope positional caller BLOCKS readiness (exit != 0)', () => {
   const sessionDir = tmpDir();
-  // The out-of-scope spec instantiates the service POSITIONALLY with the old arity.
-  // It is NOT in the ticket's declared files, so a fenced worker could not fix it.
   const repoRoot = gitRepoWith({
     'src/widget-service.ts': 'export class WidgetService { constructor(a, b) {} }\n',
     'src/widget-service.spec.ts': "import { WidgetService } from './widget-service';\nconst s = new WidgetService(1, 2);\n",
@@ -67,9 +71,6 @@ test('R-SIGF: arity change with an out-of-scope positional caller emits the advi
       '',
       '# Add a 3rd constructor parameter to WidgetService',
       '',
-      'This ticket adds a new constructor parameter (an injected dependency) to the',
-      '`WidgetService` so it can resolve the clock.',
-      '',
       '## Files to modify',
       '',
       '- `src/widget-service.ts`',
@@ -80,23 +81,19 @@ test('R-SIGF: arity change with an out-of-scope positional caller emits the advi
       '',
     ].join('\n'));
     const result = runReadiness(sessionDir, repoRoot);
-    assert.equal(result.status, 0, `expected exit 0 (advisory never blocks), got ${result.status}; stderr=${result.stderr}; stdout=${result.stdout}`);
+    assert.notEqual(result.status, 0, `expected non-zero exit (blocking), got ${result.status}; stdout=${result.stdout}`);
     const out = JSON.parse(result.stdout);
-    assert.equal(out.status, 'pass');
-    const advisory = (out.findings ?? []).filter(
-      (f) => f.kind === 'advisory' && /signature|arity/i.test(f.message) && /WidgetService/.test(f.detail),
-    );
-    assert.equal(advisory.length, 1, `expected one signature_change_caller_gap advisory finding; got ${JSON.stringify(out.findings)}`);
-    assert.match(advisory[0].detail, /widget-service\.spec\.ts/, 'finding must name the out-of-scope caller');
-    // It must not be a blocking finding.
-    const blocking = (out.findings ?? []).filter((f) => f.kind !== 'advisory' && f.kind !== 'performance');
-    assert.deepEqual(blocking, [], `no blocking findings expected; got ${JSON.stringify(blocking)}`);
+    assert.equal(out.status, 'fail');
+    const blocking = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap');
+    assert.equal(blocking.length, 1, `expected one signature_caller_gap blocking finding; got ${JSON.stringify(out.findings)}`);
+    assert.match(blocking[0].detail, /widget-service\.spec\.ts/, 'finding must name the out-of-scope caller');
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }
 });
 
+// AC-SIGF-1: co-scoped caller → no block (exit 0)
 test('R-SIGF: in-scope positional caller emits NOTHING (a fenced worker can fix it)', () => {
   const sessionDir = tmpDir();
   const repoRoot = gitRepoWith({
@@ -114,8 +111,6 @@ test('R-SIGF: in-scope positional caller emits NOTHING (a fenced worker can fix 
       '',
       '# Add a new constructor parameter to GadgetService',
       '',
-      'Adds a new constructor injection to the `GadgetService`.',
-      '',
       '## Files to modify',
       '',
       '- `src/gadget-service.ts`',
@@ -130,14 +125,15 @@ test('R-SIGF: in-scope positional caller emits NOTHING (a fenced worker can fix 
     assert.equal(result.status, 0, `expected exit 0, got ${result.status}; stderr=${result.stderr}`);
     const out = JSON.parse(result.stdout);
     assert.equal(out.status, 'pass');
-    const advisory = (out.findings ?? []).filter((f) => f.kind === 'advisory' && /signature|arity/i.test(f.message));
-    assert.deepEqual(advisory, [], `in-scope caller must emit no advisory; got ${JSON.stringify(advisory)}`);
+    const sigGapFindings = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap' && /GadgetService/.test(f.detail));
+    assert.deepEqual(sigGapFindings, [], `in-scope caller must emit no signature_caller_gap; got ${JSON.stringify(sigGapFindings)}`);
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }
 });
 
+// AC-SIGF-1: no arity change → no finding
 test('R-SIGF: a ticket with no arity change emits nothing', () => {
   const sessionDir = tmpDir();
   const repoRoot = gitRepoWith({
@@ -153,8 +149,6 @@ test('R-SIGF: a ticket with no arity change emits nothing', () => {
       '---',
       '',
       '# Tweak SprocketService behavior',
-      '',
-      'This ticket changes a method body; it does not change the constructor signature.',
       '',
       '## Files to modify',
       '',
@@ -174,5 +168,371 @@ test('R-SIGF: a ticket with no arity change emits nothing', () => {
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// AC-SIGF-1: negative FP case — out-of-scope caller uses factory (not positional `new X(`)
+// The heuristic only detects `new Symbol(` patterns; a factory call won't match → no gap.
+test('R-SIGF: out-of-scope caller using factory/non-positional call emits nothing (negative FP bound)', () => {
+  const sessionDir = tmpDir();
+  const repoRoot = gitRepoWith({
+    'src/flux-service.ts': 'export class FluxService { static create(a, b) { return new FluxService(a, b); } constructor(a, b) {} }\n',
+    // Uses factory — no `new FluxService(` in the spec — heuristic won't match
+    'src/flux-service.spec.ts': "import { FluxService } from './flux-service';\nconst s = FluxService.create(1, 2);\n",
+  });
+  try {
+    writeTicket(sessionDir, 'sigf-fp', [
+      '---',
+      'id: sigf-fp',
+      'key: SIGF-FP',
+      'ac_ids: []',
+      '---',
+      '',
+      '# Add a 3rd constructor parameter to FluxService',
+      '',
+      '## Files to modify',
+      '',
+      '- `src/flux-service.ts`',
+      '',
+      '## Acceptance Criteria',
+      '',
+      '- [ ] `FluxService` constructor accepts exactly `3` parameters.',
+      '',
+    ].join('\n'));
+    const result = runReadiness(sessionDir, repoRoot);
+    assert.equal(result.status, 0, `expected exit 0 (factory call → heuristic finds no positional gap), got ${result.status}; stdout=${result.stdout}`);
+    const out = JSON.parse(result.stdout);
+    const blocking = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap');
+    assert.deepEqual(blocking, [], `factory-only caller must not emit signature_caller_gap; got ${JSON.stringify(blocking)}`);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// AC-SIGF-1d: flag ON + count ≤ 8 → informational (exit 0, advisory kind)
+test('R-SIGF AC-SIGF-1d: scope.auto_extend_signature_callers=true + count ≤ 8 → advisory/informational (exit 0)', () => {
+  const sessionDir = tmpDir();
+  const repoRoot = gitRepoWith({
+    'src/alpha-service.ts': 'export class AlphaService { constructor(a, b) {} }\n',
+    'src/alpha-service.spec.ts': "import { AlphaService } from './alpha-service';\nconst s = new AlphaService(1, 2);\n",
+  });
+  try {
+    writeTicket(sessionDir, 'sigf-flag', [
+      '---',
+      'id: sigf-flag',
+      'key: SIGF-FLAG',
+      'ac_ids: []',
+      '---',
+      '',
+      '# Add a 3rd constructor parameter to AlphaService',
+      '',
+      '## Files to modify',
+      '',
+      '- `src/alpha-service.ts`',
+      '',
+      '## Acceptance Criteria',
+      '',
+      '- [ ] `AlphaService` constructor accepts exactly `3` parameters.',
+      '',
+    ].join('\n'));
+    // Write scope.json with auto_extend_signature_callers: true
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({ auto_extend_signature_callers: true }));
+    const result = runReadiness(sessionDir, repoRoot);
+    assert.equal(result.status, 0, `expected exit 0 (flag on, count ≤ 8 → informational), got ${result.status}; stdout=${result.stdout}`);
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.status, 'pass');
+    // Should be advisory, not signature_caller_gap blocking
+    const blockingGap = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap');
+    assert.deepEqual(blockingGap, [], `flag on+count≤8 must emit advisory not blocking; got ${JSON.stringify(blockingGap)}`);
+    const advisory = (out.findings ?? []).filter((f) => f.kind === 'advisory' && /signature|arity/i.test(f.message));
+    assert.equal(advisory.length, 1, `expected one advisory finding; got ${JSON.stringify(advisory)}`);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// AC-SIGF-1d: flag ON + count > 8 → still BLOCKS
+test('R-SIGF AC-SIGF-1d: scope.auto_extend_signature_callers=true + count > 8 → BLOCKS (exit != 0)', () => {
+  const sessionDir = tmpDir();
+  // Create 9 out-of-scope callers to exceed the cap (SCOPE_AUTO_EXTEND_MAX=8)
+  const files = {
+    'src/beta-service.ts': 'export class BetaService { constructor(a, b) {} }\n',
+  };
+  for (let i = 1; i <= 9; i++) {
+    files[`src/beta-consumer-${i}.spec.ts`] =
+      `import { BetaService } from './beta-service';\nconst s = new BetaService(${i}, ${i + 1});\n`;
+  }
+  const repoRoot = gitRepoWith(files);
+  try {
+    writeTicket(sessionDir, 'sigf-overcap', [
+      '---',
+      'id: sigf-overcap',
+      'key: SIGF-OVERCAP',
+      'ac_ids: []',
+      '---',
+      '',
+      '# Add a 3rd constructor parameter to BetaService',
+      '',
+      '## Files to modify',
+      '',
+      '- `src/beta-service.ts`',
+      '',
+      '## Acceptance Criteria',
+      '',
+      '- [ ] `BetaService` constructor accepts exactly `3` parameters.',
+      '',
+    ].join('\n'));
+    // Flag ON but count > 8 → should still block
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({ auto_extend_signature_callers: true }));
+    const result = runReadiness(sessionDir, repoRoot);
+    assert.notEqual(result.status, 0, `expected non-zero exit (flag on but count > 8 → blocks), got ${result.status}; stdout=${result.stdout}`);
+    const out = JSON.parse(result.stdout);
+    const blocking = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap');
+    assert.ok(blocking.length > 0, `expected at least one signature_caller_gap finding; got ${JSON.stringify(out.findings)}`);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// AC-SIGF-1e: PICKLE_SIGF=off → advisory (non-blocking), kind:'advisory'
+test('R-SIGF AC-SIGF-1e: PICKLE_SIGF=off reverts to advisory (exit 0, kind advisory)', () => {
+  const sessionDir = tmpDir();
+  const repoRoot = gitRepoWith({
+    'src/gamma-service.ts': 'export class GammaService { constructor(a, b) {} }\n',
+    'src/gamma-service.spec.ts': "import { GammaService } from './gamma-service';\nconst s = new GammaService(1, 2);\n",
+  });
+  try {
+    writeTicket(sessionDir, 'sigf-ks', [
+      '---',
+      'id: sigf-ks',
+      'key: SIGF-KS',
+      'ac_ids: []',
+      '---',
+      '',
+      '# Add a 3rd constructor parameter to GammaService',
+      '',
+      '## Files to modify',
+      '',
+      '- `src/gamma-service.ts`',
+      '',
+      '## Acceptance Criteria',
+      '',
+      '- [ ] `GammaService` constructor accepts exactly `3` parameters.',
+      '',
+    ].join('\n'));
+    const result = runReadiness(sessionDir, repoRoot, { PICKLE_SIGF: 'off' });
+    assert.equal(result.status, 0, `PICKLE_SIGF=off must make it advisory (exit 0), got ${result.status}; stdout=${result.stdout}`);
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.status, 'pass');
+    // Must be advisory, not blocking
+    const blocking = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap');
+    assert.deepEqual(blocking, [], `PICKLE_SIGF=off must produce advisory not blocking; got ${JSON.stringify(blocking)}`);
+    const advisory = (out.findings ?? []).filter((f) => f.kind === 'advisory' && /GammaService/.test(f.detail));
+    assert.equal(advisory.length, 1, `expected one advisory finding with kill-switch; got ${JSON.stringify(advisory)}`);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// AC-SIGF-1e: PICKLE_SIGF=advisory → same as =off
+test('R-SIGF AC-SIGF-1e: PICKLE_SIGF=advisory also reverts to advisory (exit 0)', () => {
+  const sessionDir = tmpDir();
+  const repoRoot = gitRepoWith({
+    'src/delta-service.ts': 'export class DeltaService { constructor(a, b) {} }\n',
+    'src/delta-service.spec.ts': "import { DeltaService } from './delta-service';\nconst s = new DeltaService(1, 2);\n",
+  });
+  try {
+    writeTicket(sessionDir, 'sigf-ks2', [
+      '---',
+      'id: sigf-ks2',
+      'key: SIGF-KS2',
+      'ac_ids: []',
+      '---',
+      '',
+      '# Add a 3rd constructor parameter to DeltaService',
+      '',
+      '## Files to modify',
+      '',
+      '- `src/delta-service.ts`',
+      '',
+      '## Acceptance Criteria',
+      '',
+      '- [ ] `DeltaService` constructor accepts exactly `3` parameters.',
+      '',
+    ].join('\n'));
+    const result = runReadiness(sessionDir, repoRoot, { PICKLE_SIGF: 'advisory' });
+    assert.equal(result.status, 0, `PICKLE_SIGF=advisory must exit 0, got ${result.status}; stdout=${result.stdout}`);
+    const out = JSON.parse(result.stdout);
+    const blocking = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap');
+    assert.deepEqual(blocking, [], `PICKLE_SIGF=advisory must produce no blocking findings`);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// AC-SIGF-1c: blocking text contains all three exit options
+test('R-SIGF AC-SIGF-1c: blocking remediation message contains all three exits', () => {
+  const sessionDir = tmpDir();
+  const repoRoot = gitRepoWith({
+    'src/epsilon-service.ts': 'export class EpsilonService { constructor(a, b) {} }\n',
+    'src/epsilon-service.spec.ts': "import { EpsilonService } from './epsilon-service';\nconst s = new EpsilonService(1, 2);\n",
+  });
+  try {
+    writeTicket(sessionDir, 'sigf-msg', [
+      '---',
+      'id: sigf-msg',
+      'key: SIGF-MSG',
+      'ac_ids: []',
+      '---',
+      '',
+      '# Add a 3rd constructor parameter to EpsilonService',
+      '',
+      '## Files to modify',
+      '',
+      '- `src/epsilon-service.ts`',
+      '',
+      '## Acceptance Criteria',
+      '',
+      '- [ ] `EpsilonService` constructor accepts exactly `3` parameters.',
+      '',
+    ].join('\n'));
+    const result = runReadiness(sessionDir, repoRoot);
+    assert.notEqual(result.status, 0, `expected blocking exit; got ${result.status}`);
+    const out = JSON.parse(result.stdout);
+    const blocking = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap');
+    assert.ok(blocking.length > 0, `expected a blocking finding`);
+    const msg = blocking[0].message;
+    // Exit 1: co-scope the caller
+    assert.match(msg, /co-scope|## Files to modify/i, 'message must mention co-scoping the caller');
+    // Exit 2: scope.auto_extend_signature_callers
+    assert.match(msg, /auto_extend_signature_callers|scope\.auto_extend/i, 'message must mention the scope flag');
+    // Exit 3: skip_quality_gates_reason
+    assert.match(msg, /skip_quality_gates_reason/i, 'message must mention the skip_quality_gates_reason bypass');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// AC-SIGF-2: skip_quality_gates_reason bypass → exit 0
+test('R-SIGF AC-SIGF-2: skip_quality_gates_reason bypass passes (exit 0)', () => {
+  const sessionDir = tmpDir();
+  const repoRoot = gitRepoWith({
+    'src/zeta-service.ts': 'export class ZetaService { constructor(a, b) {} }\n',
+    'src/zeta-service.spec.ts': "import { ZetaService } from './zeta-service';\nconst s = new ZetaService(1, 2);\n",
+  });
+  try {
+    writeTicket(sessionDir, 'sigf-skip', [
+      '---',
+      'id: sigf-skip',
+      'key: SIGF-SKIP',
+      'ac_ids: []',
+      '---',
+      '',
+      '# Add a 3rd constructor parameter to ZetaService',
+      '',
+      '## Files to modify',
+      '',
+      '- `src/zeta-service.ts`',
+      '',
+      '## Acceptance Criteria',
+      '',
+      '- [ ] `ZetaService` constructor accepts exactly `3` parameters.',
+      '',
+    ].join('\n'));
+    // Write state.json with skip_quality_gates_reason
+    const stateDir = sessionDir;
+    const sm = { flags: { skip_quality_gates_reason: 'test skip for SIGF' } };
+    fs.writeFileSync(path.join(stateDir, 'state.json'), JSON.stringify(sm));
+    const result = runReadiness(sessionDir, repoRoot);
+    assert.equal(result.status, 0, `skip_quality_gates_reason must bypass the gate (exit 0), got ${result.status}; stdout=${result.stdout}`);
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.status, 'pass');
+    const blocking = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap');
+    assert.deepEqual(blocking, [], `bypass must produce no blocking signature_caller_gap; got ${JSON.stringify(blocking)}`);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// AC-SIGF-3: block-time event → budget key accrual
+// The SKIP_FLAG_BUDGETS key 'pickle::signature_caller_gap' = 3 maps the gate_skipped event.
+// We verify: (a) the budget key exists in metrics-utils with non-zero value,
+// (b) a blocking run emits the gate_skipped activity event with source:'pickle' + reason:'signature_caller_gap'.
+test('R-SIGF AC-SIGF-3: SKIP_FLAG_BUDGETS key exists with non-zero value and block emits gate_skipped event', async () => {
+  // Part (a): verify the budget entry exists and is non-zero
+  const metricsUtils = path.resolve(__dirname, '../services/metrics-utils.js');
+  const { SKIP_FLAG_BUDGETS } = await import(metricsUtils);
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(SKIP_FLAG_BUDGETS, SKIP_FLAG_BUDGETS_KEY),
+    `SKIP_FLAG_BUDGETS must have key '${SKIP_FLAG_BUDGETS_KEY}'`,
+  );
+  assert.ok(
+    typeof SKIP_FLAG_BUDGETS[SKIP_FLAG_BUDGETS_KEY] === 'number' && SKIP_FLAG_BUDGETS[SKIP_FLAG_BUDGETS_KEY] > 0,
+    `SKIP_FLAG_BUDGETS['${SKIP_FLAG_BUDGETS_KEY}'] must be a positive number, got ${SKIP_FLAG_BUDGETS[SKIP_FLAG_BUDGETS_KEY]}`,
+  );
+
+  // Part (b): a blocking run emits a gate_skipped activity event
+  // logActivity writes to PICKLE_DATA_ROOT/activity — use a temp dir so we can read events.
+  const dataRoot = tmpDir('pickle-sigf-data-');
+  const sessionDir = tmpDir();
+  const repoRoot = gitRepoWith({
+    'src/eta-service.ts': 'export class EtaService { constructor(a, b) {} }\n',
+    'src/eta-service.spec.ts': "import { EtaService } from './eta-service';\nconst s = new EtaService(1, 2);\n",
+  });
+  try {
+    writeTicket(sessionDir, 'sigf-budget', [
+      '---',
+      'id: sigf-budget',
+      'key: SIGF-BUDGET',
+      'ac_ids: []',
+      '---',
+      '',
+      '# Add a 3rd constructor parameter to EtaService',
+      '',
+      '## Files to modify',
+      '',
+      '- `src/eta-service.ts`',
+      '',
+      '## Acceptance Criteria',
+      '',
+      '- [ ] `EtaService` constructor accepts exactly `3` parameters.',
+      '',
+    ].join('\n'));
+    const result = runReadiness(sessionDir, repoRoot, { PICKLE_DATA_ROOT: dataRoot });
+    assert.notEqual(result.status, 0, `expected blocking exit for budget test; got ${result.status}`);
+
+    // Check that a gate_skipped event was emitted with the right fields
+    const activityDir = path.join(dataRoot, 'activity');
+    const gateSkippedEvents = [];
+    if (fs.existsSync(activityDir)) {
+      const files = fs.readdirSync(activityDir).filter((f) => f.endsWith('.jsonl'));
+      for (const file of files) {
+        const lines = fs.readFileSync(path.join(activityDir, file), 'utf-8').split('\n').filter(Boolean);
+        for (const line of lines) {
+          try {
+            const ev = JSON.parse(line);
+            if (ev.event === 'gate_skipped' && ev.source === 'pickle' &&
+                ev.gate_payload?.reason === 'signature_caller_gap') {
+              gateSkippedEvents.push(ev);
+            }
+          } catch { /* skip malformed */ }
+        }
+      }
+    }
+    assert.ok(
+      gateSkippedEvents.length > 0,
+      `expected at least one gate_skipped event with source:'pickle' reason:'signature_caller_gap'; found ${gateSkippedEvents.length} in ${activityDir}; stderr=${result.stderr}; stdout=${result.stdout}`,
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });

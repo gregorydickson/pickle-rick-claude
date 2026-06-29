@@ -1242,12 +1242,61 @@ function maybeEmitResolverIndeterminate(input) {
         },
     });
 }
-export function findSignatureChangeCallerGapFindings(sigTickets, repoRoot, cache) {
-    const declaredAll = new Set();
+// WS-1: cap for auto_extend_signature_callers flag; mirrors SCOPE_AUTO_EXTEND_MAX from ticket 0b9b2319.
+const SCOPE_AUTO_EXTEND_MAX = 8;
+function isSigGapKillSwitchActive() {
+    return process.env['PICKLE_SIGF'] === 'off' || process.env['PICKLE_SIGF'] === 'advisory';
+}
+function collectAllDeclared(sigTickets) {
+    const all = new Set();
     for (const t of sigTickets)
         for (const f of t.declaredFiles)
-            declaredAll.add(f);
+            all.add(f);
+    return all;
+}
+function isGapBlocking(killSwitch, skipReason, autoExtend, callerCount) {
+    return !killSwitch && !skipReason && (!autoExtend || callerCount > SCOPE_AUTO_EXTEND_MAX);
+}
+function buildGapFinding(ticketFile, gap, isBlocking) {
+    const base = `Arity change to '${gap.symbol}' has positional caller(s) OUTSIDE the bundle scope fence; ` +
+        'no fenced worker can update them, so tsc may stay RED (heuristic markdown+grep detection, ' +
+        'not a type-aware diff; verify and extend or rescope the callers)';
+    const suffix = isBlocking
+        ? ` — To resolve: (1) co-scope the caller by adding it to ## Files to modify in the ticket, ` +
+            `(2) set scope.auto_extend_signature_callers: true in scope.json (auto-extends fence if ≤${SCOPE_AUTO_EXTEND_MAX} callers), ` +
+            `or (3) set state.flags.skip_quality_gates_reason to bypass the gate`
+        : ' (advisory — never blocks readiness)';
+    return {
+        ticket: ticketFile,
+        kind: isBlocking ? 'signature_caller_gap' : 'advisory',
+        analyst: 'risk',
+        message: base + suffix,
+        detail: `${gap.symbol} -> ${gap.outOfScopeCallers.join(', ')}`,
+    };
+}
+function maybeEmitSigGapBlockEvent(sessionDir, symbol, emitted) {
+    if (emitted || !sessionDir)
+        return emitted;
+    try {
+        logActivity({ event: 'gate_skipped', source: 'pickle', ts: new Date().toISOString(), gate_payload: { reason: 'signature_caller_gap', detail: symbol } });
+    }
+    catch { /* non-fatal */ }
+    return true;
+}
+export function findSignatureChangeCallerGapFindings(sigTickets, repoRoot, cache, opts) {
+    const killSwitch = isSigGapKillSwitchActive();
+    const { autoExtend = false, skipQualityGatesReason, sessionDir } = opts ?? {};
+    // Bypass: skip_quality_gates_reason set → advisory for all findings in this invocation.
+    // Emit gate_skipped once so the budget counter increments.
+    if (!killSwitch && skipQualityGatesReason && sessionDir) {
+        try {
+            logActivity({ event: 'gate_skipped', source: 'pickle', ts: new Date().toISOString(), gate_payload: { reason: 'signature_caller_gap', detail: skipQualityGatesReason } });
+        }
+        catch { /* non-fatal */ }
+    }
+    const declaredAll = collectAllDeclared(sigTickets);
     const findings = [];
+    let emittedBlockEvent = false;
     for (const ticket of sigTickets) {
         let content;
         try {
@@ -1256,25 +1305,19 @@ export function findSignatureChangeCallerGapFindings(sigTickets, repoRoot, cache
         catch {
             continue;
         }
-        const gaps = detectSignatureCallerGaps({
-            ticketContents: [content],
-            declaredFiles: declaredAll,
-            repoRoot,
-            cache,
-        });
+        const gaps = detectSignatureCallerGaps({ ticketContents: [content], declaredFiles: declaredAll, repoRoot, cache });
         for (const gap of gaps) {
-            findings.push({
-                ticket: ticket.file,
-                kind: 'advisory',
-                analyst: 'risk',
-                message: `Arity change to '${gap.symbol}' has positional caller(s) OUTSIDE the bundle scope fence; ` +
-                    'no fenced worker can update them, so tsc may stay RED (advisory — heuristic markdown+grep detection, ' +
-                    'not a type-aware diff; verify and extend or rescope the callers)',
-                detail: `${gap.symbol} -> ${gap.outOfScopeCallers.join(', ')}`,
-            });
+            const blocking = isGapBlocking(killSwitch, skipQualityGatesReason, autoExtend, gap.outOfScopeCallers.length);
+            if (blocking)
+                emittedBlockEvent = maybeEmitSigGapBlockEvent(sessionDir, gap.symbol, emittedBlockEvent);
+            findings.push(buildGapFinding(ticket.file, gap, blocking));
         }
     }
     return findings;
+}
+function readScopeAutoExtend(sessionDir) {
+    const raw = readRecoverableJsonObject(path.join(sessionDir, 'scope.json'));
+    return raw?.['auto_extend_signature_callers'] === true;
 }
 export function runReadiness(args) {
     const started = Date.now();
@@ -1299,19 +1342,23 @@ export function runReadiness(args) {
     // selected ticket so a forward-created path declared in one ticket is honored
     // when cited (in a command, table, or cross-ticket ref) by any ticket.
     const bundleCreationIndex = buildBundleCreationIndex(selected.files.map((file) => fs.readFileSync(file, 'utf-8')));
-    // R-SIGF: ADVISORY signature-change-caller-gap scan over the bundle's declared
-    // files. Reuses the shared `readDeclaredFiles` helper; emits kind:'advisory'
-    // findings that are excluded from the blocking set below — never fails readiness.
+    // R-SIGF (WS-1): signature-change-caller-gap scan. Blocking when flag off or count > cap;
+    // advisory when kill-switch active, bypass reason set, or flag on + count ≤ cap.
     const sigTickets = selected.files.map((file) => ({
         file,
         declaredFiles: new Set(readDeclaredFiles(fs.readFileSync(file, 'utf-8'))),
     }));
+    const autoExtend = readScopeAutoExtend(args.sessionDir);
     const findings = [
         ...findPrdMapFindings(tickets, manifest, sourceRequirements),
         ...tickets.flatMap((ticket) => findPathFindings(ticket, args.repoRoot, args.sessionDir, pathCache, bundleCreationIndex)),
         ...tickets.flatMap((ticket) => findDependencyFindings(ticket, refs)),
         ...selected.files.flatMap((file) => findReadinessFindings(file, args.repoRoot, { checkMachinability, checkContracts, cache: resolverCache, maxWallMs: args.maxWallMs, allowlist, creationIndex: bundleCreationIndex })),
-        ...findSignatureChangeCallerGapFindings(sigTickets, args.repoRoot, pathCache),
+        ...findSignatureChangeCallerGapFindings(sigTickets, args.repoRoot, pathCache, {
+            autoExtend,
+            skipQualityGatesReason: state?.flags?.skip_quality_gates_reason,
+            sessionDir: args.sessionDir,
+        }),
     ];
     const ticketsVersion = getTicketsVersion(state);
     // W1c (AC-W1c-1): when the contract/symbol resolver exhausts its wall budget it

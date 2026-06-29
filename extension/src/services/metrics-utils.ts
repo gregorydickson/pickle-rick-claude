@@ -101,6 +101,7 @@ export const SKIP_FLAG_BUDGETS: Record<string, number> = {
   'pickle::project_type_low_confidence': 50,
   'pickle::dirty_worktree_no_rescue': 20,
   'citadel-mechanical::skip_quality_gates': 3,
+  'pickle::signature_caller_gap': 3,
 };
 
 /** A single normalized skip-flag use extracted from an activity event. */
