@@ -49,6 +49,53 @@ const ARITY_ADD_CUE_RE = /\b(?:add(?:s|ing|ed)?|introduc(?:e|es|ing|ed)|new|appe
 // the symbol either as a backticked token or as the subject of a `new X(` form in
 // the ticket body.
 const PASCAL_SYMBOL_RE = /\b([A-Z][A-Za-z0-9]*(?:Service|Manager|Resolver|Provider|Client|Repository|Store|Gateway|Adapter|Controller|Handler|Factory|Runner|Engine|Auditor|Analyzer|Validator|Collector|Builder))\b/g;
+// WS-2 (LOA-1363): phrases that signal a SHAPE change to a `<Name>Schema` symbol —
+// a zod field/property/key/member is added, changed, required, extended, or renamed.
+// Mirrors the named-cue pattern of ARITY_ADD_CUE_RE.
+export const SCHEMA_SHAPE_CUE_RE = /\b(?:add(?:s|ing|ed)?|introduc(?:e|es|ing|ed)|new|chang(?:e|es|ing|ed)|extend(?:s|ing|ed)?|requir(?:e|es|ing|ed)|renam(?:e|es|ing|ed)|tighten(?:s|ing|ed)?)\b[^.\n]{0,60}\b(?:field|property|prop|key|member|column|attribute|shape)\b/i;
+// PascalCase zod-schema symbol (e.g. thresholdSchema is lowercase-led by convention,
+// but exported schemas are commonly `ThresholdSchema`; we also accept a leading
+// lowercase camelCase `<name>Schema` token because zod schemas frequently are).
+const SCHEMA_SYMBOL_RE = /\b([A-Za-z][A-Za-z0-9]*Schema)\b/g;
+// A new OPTIONAL field (or an explicitly compatible change) is NOT a breaking
+// shape change — callers keep working. Skip extraction for such cue lines.
+function isOptionalCompatibleChange(line) {
+    return /\boptional\b/i.test(line) || /\.optional\s*\(/.test(line) || /\bbackward[- ]?compatible\b/i.test(line);
+}
+// Extract `<Name>Schema` symbols whose SHAPE the ticket claims to change in a
+// breaking way (optional/compatible changes are skipped).
+function extractSchemaShapeSymbols(content) {
+    const symbols = new Set();
+    for (const rawLine of content.split(/\r?\n/)) {
+        if (!SCHEMA_SHAPE_CUE_RE.test(rawLine))
+            continue;
+        if (isOptionalCompatibleChange(rawLine))
+            continue;
+        SCHEMA_SYMBOL_RE.lastIndex = 0;
+        for (const match of rawLine.matchAll(SCHEMA_SYMBOL_RE))
+            symbols.add(match[1]);
+    }
+    return [...symbols];
+}
+// Factory bridge (LOA-1363): a factory like `makeFacts({...})` shares zero lexical
+// tokens with the changed `thresholdSchema`. Resolve the bridge by scanning the
+// IN-FENCE declared files for exported function/const names whose declaration body
+// references the changed schema symbol; out-of-fence callers of THOSE names are gaps.
+function findFactoryBridgeNames(symbol, declaredFiles, repoRoot, cache) {
+    const names = new Set();
+    const symbolRe = new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+    const exportDeclRe = /\bexport\s+(?:async\s+)?(?:function|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+    for (const declared of declaredFiles) {
+        const abs = path.isAbsolute(declared) ? declared : path.join(repoRoot, declared);
+        const body = cache ? readCachedFile(abs, cache) : (fs.existsSync(abs) ? fs.readFileSync(abs, 'utf-8') : undefined);
+        if (body === undefined || !symbolRe.test(body))
+            continue;
+        exportDeclRe.lastIndex = 0;
+        for (const match of body.matchAll(exportDeclRe))
+            names.add(match[1]);
+    }
+    return [...names];
+}
 // True when a tracked file is declared in-scope by ANY ticket in the bundle (so a
 // positional caller there is fixable by a fenced worker and must NOT be flagged).
 function isCallerInBundleScope(trackedFile, declaredAll) {
@@ -102,6 +149,29 @@ export function detectSignatureCallerGaps(input) {
                 if (outOfScopeCallers.length === 0)
                     continue;
                 gaps.push({ symbol, kind: 'arity', outOfScopeCallers });
+            }
+            // WS-2: schema-shape gaps — direct (`<Schema>.parse(`/`.safeParse(`/`z.infer`)
+            // AND factory-mediated (out-of-fence callers of an in-fence factory that
+            // references the changed schema). Carried on the same CallerGap[] return.
+            for (const symbol of extractSchemaShapeSymbols(content)) {
+                const esc = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const directRe = new RegExp(`\\b${esc}\\s*\\.\\s*(?:parse|safeParse)\\s*\\(|z\\s*\\.\\s*infer\\s*<\\s*typeof\\s+${esc}\\s*>`);
+                const bridgeNames = findFactoryBridgeNames(symbol, declaredFiles, repoRoot, cache);
+                const bridgeRes = bridgeNames.map((name) => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`));
+                const outOfScopeCallers = candidates.filter((file) => {
+                    if (isCallerInBundleScope(file, declaredFiles))
+                        return false;
+                    const abs = path.join(repoRoot, file);
+                    const body = cache ? readCachedFile(abs, cache) : (fs.existsSync(abs) ? fs.readFileSync(abs, 'utf-8') : undefined);
+                    if (body === undefined)
+                        return false;
+                    if (directRe.test(body))
+                        return true;
+                    return bridgeRes.some((re) => re.test(body));
+                });
+                if (outOfScopeCallers.length === 0)
+                    continue;
+                gaps.push({ symbol, kind: 'schema-shape', outOfScopeCallers });
             }
         }
         return gaps;
