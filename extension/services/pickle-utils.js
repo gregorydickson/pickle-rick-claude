@@ -698,6 +698,26 @@ export function resolveRateLimitSettings(bag) {
         settings.max_park_minutes = maxPark;
     return settings;
 }
+/**
+ * Ticket 0b9b2319 (WS-3): resolve the additive `scope:` block in
+ * `pickle_settings.json`. Mirrors `resolveHardeningSettings` robustness —
+ * an absent, partial, or malformed bag/block/field never throws and falls
+ * back to the default-OFF compiled default. The single field
+ * `auto_extend_signature_callers` (default `false`) gates the bounded,
+ * opt-in build-phase scope auto-extension in `setupScope`.
+ */
+export function resolveScopeSettings(bag) {
+    const settings = { autoExtendSignatureCallers: false };
+    if (!bag || typeof bag !== 'object')
+        return settings;
+    const block = bag.scope;
+    if (!block || typeof block !== 'object' || Array.isArray(block))
+        return settings;
+    const autoExtend = parseSettingBool(block.auto_extend_signature_callers);
+    if (autoExtend !== undefined)
+        settings.autoExtendSignatureCallers = autoExtend;
+    return settings;
+}
 export function resolveWorkerTestGateTimeoutMs(extensionRoot = getExtensionRoot(), settings, env = process.env) {
     // Env override wins. Parse strict int, clamp to >= WORKER_TEST_GATE_TIMEOUT_FLOOR_MS,
     // fall back to settings/default on parse failure or sub-floor value.

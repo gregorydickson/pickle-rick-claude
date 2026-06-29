@@ -850,6 +850,11 @@ export const VALID_ACTIVITY_EVENTS = [
   'completion_finalize_refused',
   'phase_graduation_refused',
   'gate_parity_divergence',
+  // 0b9b2319 (WS-3): bounded, opt-in build-phase scope auto-extension. Emitted by
+  // pipeline-runner setupScope when the flag is on, scope is paths-mode, and the
+  // shared signature-caller-gap detector named out-of-fence callers. Over-cap
+  // (> SCOPE_AUTO_EXTEND_MAX) extends nothing (allowed_paths unchanged, cap_hit:true).
+  'scope_auto_extended',
 ] as const;
 
 export type ActivityEventType = typeof VALID_ACTIVITY_EVENTS[number];

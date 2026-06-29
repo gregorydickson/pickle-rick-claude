@@ -750,6 +750,25 @@
         }
       }
     },
+    "scope_auto_extended": {
+      "type": "object",
+      "required": ["event", "ts", "gate_payload"],
+      "properties": {
+        "event": { "type": "string", "const": "scope_auto_extended" },
+        "ts": { "type": "string" },
+        "session": { "type": "string" },
+        "source": { "type": "string" },
+        "gate_payload": {
+          "type": "object",
+          "required": ["added_paths", "symbols", "cap_hit"],
+          "properties": {
+            "added_paths": { "type": "array", "items": { "type": "string" } },
+            "symbols": { "type": "array", "items": { "type": "string" } },
+            "cap_hit": { "type": "boolean" }
+          }
+        }
+      }
+    },
     "completion_finalize_refused": {
       "type": "object",
       "required": ["event", "ts", "gate_payload"],
@@ -2060,6 +2079,7 @@
     { "$ref": "#/definitions/large_tier_worker_reaped" },
     { "$ref": "#/definitions/completion_finalize_refused" },
     { "$ref": "#/definitions/phase_graduation_refused" },
-    { "$ref": "#/definitions/gate_parity_divergence" }
+    { "$ref": "#/definitions/gate_parity_divergence" },
+    { "$ref": "#/definitions/scope_auto_extended" }
   ]
 }

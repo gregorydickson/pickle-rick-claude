@@ -94,6 +94,10 @@
   "hardening": {
     "silent_death_respawn_cap": 1
   },
+  "_scope_doc": "0b9b2319 (WS-3): bounded, opt-in build-phase scope auto-extension. auto_extend_signature_callers (default false) lets setupScope auto-add detector-named out-of-fence callers (signature-caller-gap) into the paths-mode scope.json allowed_paths, deduped, byte-sorted, capped at SCOPE_AUTO_EXTEND_MAX=8 (over-cap extends nothing). Resolved via resolveScopeSettings; absent/malformed/partial falls back to false.",
+  "scope": {
+    "auto_extend_signature_callers": false
+  },
   "commit_pending_probe_threshold": 2,
   "convergence_gate": {
     "commands": {},

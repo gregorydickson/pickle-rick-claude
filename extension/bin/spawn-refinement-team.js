@@ -181,6 +181,7 @@ When writing acceptance criteria or analyzing PRD sections that reference activi
 | \`completion_finalize_refused\` | \`gate_payload.pending_count\`, \`gate_payload.ticket_count\`, \`gate_payload.seam\` | state-manager finalizeIfTrulyComplete — completion authority refused a finalize while work is pending (refused-and-recovered, informational) (forward-created) |
 | \`phase_graduation_refused\` | \`gate_payload.pending_count\`, \`gate_payload.done_count\`, \`gate_payload.exit_code\` | pipeline-runner maybeStampPhaseGraduation — proportional gate refused phase graduation (refused-and-recovered, informational) (forward-created) |
 | \`gate_parity_divergence\` | \`gate_payload.gate_a\`, \`gate_payload.gate_b\`, \`gate_payload.ref\` | forward-ref-annotation resolveExtensionRelativePath — the two extension-dir gates would have disagreed (refused-and-recovered, informational) (forward-created) |
+| \`scope_auto_extended\` | \`gate_payload.added_paths\`, \`gate_payload.symbols\`, \`gate_payload.cap_hit\` | pipeline-runner setupScope build-phase bounded scope auto-extension (paths-mode; over-cap extends nothing) |
 
 When writing ACs that assert event emission, include the full event name and required payload fields. Do NOT invent event names — use only the names listed here or already present in \`extension/src/types/index.ts:VALID_ACTIVITY_EVENTS\`.`;
 export const PATH_VERIFICATION_PROMPT_SECTION = `## Path Verification & Forward-reference hygiene

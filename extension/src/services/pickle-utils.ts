@@ -840,6 +840,28 @@ export function resolveRateLimitSettings(bag: PickleSettings | null | undefined)
   return settings;
 }
 
+export interface ScopeSettings {
+  autoExtendSignatureCallers: boolean;
+}
+
+/**
+ * Ticket 0b9b2319 (WS-3): resolve the additive `scope:` block in
+ * `pickle_settings.json`. Mirrors `resolveHardeningSettings` robustness —
+ * an absent, partial, or malformed bag/block/field never throws and falls
+ * back to the default-OFF compiled default. The single field
+ * `auto_extend_signature_callers` (default `false`) gates the bounded,
+ * opt-in build-phase scope auto-extension in `setupScope`.
+ */
+export function resolveScopeSettings(bag: PickleSettings | null | undefined): ScopeSettings {
+  const settings: ScopeSettings = { autoExtendSignatureCallers: false };
+  if (!bag || typeof bag !== 'object') return settings;
+  const block = (bag as Record<string, unknown>).scope;
+  if (!block || typeof block !== 'object' || Array.isArray(block)) return settings;
+  const autoExtend = parseSettingBool((block as Record<string, unknown>).auto_extend_signature_callers);
+  if (autoExtend !== undefined) settings.autoExtendSignatureCallers = autoExtend;
+  return settings;
+}
+
 export function resolveWorkerTestGateTimeoutMs(
   extensionRoot = getExtensionRoot(),
   settings?: PickleSettings | null,

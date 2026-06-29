@@ -37,8 +37,11 @@ import {
   respawnMonitorWindowForMode,
   classifyDiffVisualDominance,
   VISUAL_DOMINANCE_THRESHOLD,
+  loadPickleSettingsBag,
+  resolveScopeSettings,
   type DiffVisualStat,
 } from '../services/pickle-utils.js';
+import { detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
 import {
   isGitIgnoredPath,
   listWorkingTreeDirtyPaths,
@@ -1566,6 +1569,161 @@ export interface SetupScopeArgs {
 }
 
 /**
+ * Ticket 0b9b2319 (WS-3): hard cap on the bounded build-phase scope
+ * auto-extension. If merging the detector-named callers would push
+ * `allowed_paths` past this many entries, NOTHING is extended (over-cap
+ * extends nothing) and the event is emitted with `cap_hit:true`. Mirrored
+ * defensively by already-shipped consumers as a local const = 8.
+ */
+export const SCOPE_AUTO_EXTEND_MAX = 8;
+
+/** Locale-independent byte-order comparator (clone of scope-resolver's private `byteOrder`). */
+export function scopeByteOrder(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Read the raw `linear_ticket_<id>.md` bodies for every collected ticket.
+ * Best-effort: unreadable / missing files are skipped.
+ */
+function readTicketContents(sessionDir: string): string[] {
+  const contents: string[] = [];
+  for (const t of collectTickets(sessionDir)) {
+    if (!t.id) continue;
+    const file = path.join(sessionDir, t.id, `linear_ticket_${t.id}.md`);
+    try {
+      contents.push(fs.readFileSync(file, 'utf-8'));
+    } catch {
+      /* skip unreadable ticket file */
+    }
+  }
+  return contents;
+}
+
+export interface ScopeAutoExtension {
+  /** The (possibly unchanged) byte-sorted allowed_paths after the merge. */
+  allowedPaths: string[];
+  /** Detector-named callers actually added (empty when over-cap or no-op). */
+  addedPaths: string[];
+  /** Detector-named symbols whose callers were considered (byte-sorted). */
+  symbols: string[];
+  /** True when merging would exceed SCOPE_AUTO_EXTEND_MAX → nothing extended. */
+  capHit: boolean;
+  /** True when allowed_paths changed (a real extension happened). */
+  changed: boolean;
+}
+
+/**
+ * Pure core of the WS-3 scope auto-extension (no settings gate, no persistence,
+ * no event). Merges the detector-NAMED out-of-fence callers into
+ * `allowedPaths` (deduped, byte-sorted) — caller paths the detector did not
+ * name are NEVER added. Over the `SCOPE_AUTO_EXTEND_MAX` cap, NOTHING is
+ * extended (`allowedPaths` returned unchanged, `capHit:true`). Exported so the
+ * merge / over-cap contract is testable independent of the deployed setting.
+ */
+export function computeScopeAutoExtension(
+  allowedPaths: string[],
+  ticketContents: string[],
+  declaredFiles: Set<string>,
+  repoRoot: string,
+): ScopeAutoExtension {
+  const unchanged: ScopeAutoExtension = {
+    allowedPaths,
+    addedPaths: [],
+    symbols: [],
+    capHit: false,
+    changed: false,
+  };
+  if (ticketContents.length === 0) return unchanged;
+
+  const gaps = detectSignatureCallerGaps({ ticketContents, declaredFiles, repoRoot });
+  if (gaps.length === 0) return unchanged;
+
+  const symbols = Array.from(new Set(gaps.map((g) => g.symbol))).sort(scopeByteOrder);
+  const namedCallers = new Set<string>();
+  for (const g of gaps) for (const c of g.outOfScopeCallers) namedCallers.add(c);
+
+  const existing = new Set(allowedPaths);
+  const newCallers = Array.from(namedCallers).filter((c) => !existing.has(c));
+  if (newCallers.length === 0) return { ...unchanged, symbols };
+
+  const merged = Array.from(new Set([...allowedPaths, ...newCallers])).sort(scopeByteOrder);
+  if (merged.length > SCOPE_AUTO_EXTEND_MAX) {
+    // Over-cap extends nothing — allowed_paths unchanged.
+    return { allowedPaths, addedPaths: [], symbols, capHit: true, changed: false };
+  }
+  return {
+    allowedPaths: merged,
+    addedPaths: [...newCallers].sort(scopeByteOrder),
+    symbols,
+    capHit: false,
+    changed: true,
+  };
+}
+
+/**
+ * Ticket 0b9b2319 (WS-3): bounded, opt-in build-phase scope auto-extension.
+ *
+ * When the `scope.auto_extend_signature_callers` setting is true AND `scope`
+ * is paths-mode (diff/branch are null at setup → synthesize nothing), run the
+ * shared `detectSignatureCallerGaps` detector against the current ticket set
+ * and merge the detector-NAMED out-of-fence callers into `scope.allowed_paths`
+ * BEFORE persistence (deduped, byte-sorted, capped). Mutates `scope` in place,
+ * re-persists `scope.json`, and emits `scope_auto_extended`.
+ *
+ * Best-effort: the entire body is wrapped so a detector / read / write failure
+ * never aborts setup.
+ */
+export function maybeAutoExtendScope(
+  sessionDir: string,
+  workingDir: string,
+  scope: ScopeJson,
+  log: (msg: string) => void,
+): void {
+  try {
+    if (!resolveScopeSettings(loadPickleSettingsBag()).autoExtendSignatureCallers) return;
+    // Diff/branch-mode is null at setup → synthesize nothing, no merge.
+    if (scope.mode !== 'paths') return;
+
+    const ticketContents = readTicketContents(sessionDir);
+    const declaredFiles = new Set<string>();
+    for (const files of buildDeclaredFilesByTicket(sessionDir).values()) {
+      for (const f of files) declaredFiles.add(f);
+    }
+
+    const result = computeScopeAutoExtension(scope.allowed_paths, ticketContents, declaredFiles, workingDir);
+    // No-op: nothing named, or named callers already in scope, and not a cap hit.
+    if (!result.changed && !result.capHit) return;
+
+    if (result.changed) {
+      scope.allowed_paths = result.allowedPaths;
+      try {
+        const scopePath = path.join(sessionDir, 'scope.json');
+        const tmp = `${scopePath}.tmp.${process.pid}`;
+        fs.writeFileSync(tmp, JSON.stringify(scope, null, 2));
+        fs.renameSync(tmp, scopePath);
+      } catch (err) {
+        log(`scope-auto-extend WARN: re-persist failed — ${safeErrorMessage(err)}`);
+        return;
+      }
+      log(`scope-auto-extend: added ${result.addedPaths.length} detector-named caller(s) to allowed_paths`);
+    } else {
+      log(`scope-auto-extend: cap hit (> ${SCOPE_AUTO_EXTEND_MAX}) — extending nothing`);
+    }
+
+    logActivity({
+      event: 'scope_auto_extended',
+      source: 'pickle',
+      ts: new Date().toISOString(),
+      session: path.basename(sessionDir),
+      gate_payload: { added_paths: result.addedPaths, symbols: result.symbols, cap_hit: result.capHit },
+    });
+  } catch (err) {
+    log(`scope-auto-extend WARN: skipped — ${safeErrorMessage(err)}`);
+  }
+}
+
+/**
  * Setup-time scope resolution. Writes `scope.json` and initializes
  * `state.phases_entered = []`. SCOPE_EMPTY_DIFF is demoted to a WARN (CUJ-6a):
  * a scope-configured session with no diff at setup should not kill the
@@ -1585,6 +1743,10 @@ export function setupScope(args: SetupScopeArgs): ScopeJson | null {
       repoRoot: workingDir,
     });
     sm.update(statePath, (s) => { s.phases_entered = []; });
+    // WS-3 (0b9b2319): bounded, opt-in auto-extension of paths-mode scope with
+    // detector-named out-of-fence callers — runs once here at the build-phase
+    // setup site, never in refreshScope. No-op unless the setting is on.
+    maybeAutoExtendScope(sessionDir, workingDir, scope, log);
     log(`scope-setup: mode=${scope.mode} strategy=${scope.strategy} base=${scope.base_ref ?? '-'} allowed=${scope.allowed_paths.length}`);
     return scope;
   } catch (err) {

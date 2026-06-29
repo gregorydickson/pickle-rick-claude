@@ -119,6 +119,21 @@ const EVENT_CASES = [
     },
     drop: 'gate_payload',
   },
+  // 0b9b2319 (WS-3): bounded opt-in build-phase scope auto-extension event.
+  {
+    type: 'scope_auto_extended',
+    valid: {
+      event: 'scope_auto_extended',
+      ts: TS,
+      session: 'session-1',
+      gate_payload: {
+        added_paths: ['tests/foo.factory.ts'],
+        symbols: ['FooService'],
+        cap_hit: false,
+      },
+    },
+    drop: 'gate_payload',
+  },
   {
     type: 'worker_spawn_backend_resolved',
     valid: { event: 'worker_spawn_backend_resolved', ts: TS, backend: 'claude', source: 'state', pid: 1234 },
@@ -1416,6 +1431,8 @@ test('activity-event-payload: schema defines all registered event type definitio
     'completion_finalize_refused',
     'phase_graduation_refused',
     'gate_parity_divergence',
+    // 0b9b2319 (WS-3): bounded opt-in build-phase scope auto-extension.
+    'scope_auto_extended',
   ];
   // Structural drift check — assert set-equality between registered events
   // and asserted EVENT_NAMES rather than a hardcoded count literal.
@@ -1554,6 +1571,36 @@ for (const eventName of DETACHED_WORKER_EVENTS) {
       `surface 5: ${eventName} missing from EVENT_CASES`,
     );
     // Surface 6: ACTIVITY_EVENT_SCHEMA_SECTION in spawn-refinement-team.ts
+    assert.ok(
+      SPAWN_REFINEMENT_TEAM_SRC.includes(eventName),
+      `surface 6: ${eventName} missing from ACTIVITY_EVENT_SCHEMA_SECTION in spawn-refinement-team.ts`,
+    );
+  });
+}
+
+// AC-SIGF-6-event (0b9b2319): same 7-surface parity check for the bounded
+// build-phase scope auto-extension event. Surfaces mirror the detached-worker
+// loop above: 1/7 VALID_ACTIVITY_EVENTS (compiled mirror), 3 schema.definitions,
+// 4 schema.oneOf $ref, 5 EVENT_CASES row, 6 ACTIVITY_EVENT_SCHEMA_SECTION.
+const SCOPE_AUTOEXTEND_EVENTS = ['scope_auto_extended'];
+for (const eventName of SCOPE_AUTOEXTEND_EVENTS) {
+  test(`AC-SIGF-6-event: ${eventName} registered at all 7 R-PDD-oneOf touchpoints`, () => {
+    assert.ok(
+      VALID_ACTIVITY_EVENTS.includes(eventName),
+      `surface 1/7: ${eventName} missing from VALID_ACTIVITY_EVENTS`,
+    );
+    assert.ok(
+      eventName in schema.definitions,
+      `surface 3: ${eventName} missing from schema.definitions`,
+    );
+    assert.ok(
+      schema.oneOf.some((r) => r.$ref === `#/definitions/${eventName}`),
+      `surface 4: ${eventName} missing from schema.oneOf`,
+    );
+    assert.ok(
+      EVENT_CASES.some((c) => c.type === eventName),
+      `surface 5: ${eventName} missing from EVENT_CASES`,
+    );
     assert.ok(
       SPAWN_REFINEMENT_TEAM_SRC.includes(eventName),
       `surface 6: ${eventName} missing from ACTIVITY_EVENT_SCHEMA_SECTION in spawn-refinement-team.ts`,
