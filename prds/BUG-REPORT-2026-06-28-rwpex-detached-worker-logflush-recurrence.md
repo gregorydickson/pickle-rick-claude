@@ -44,19 +44,55 @@ Sequence:
 lens here — the work was being recovered *inline by the manager*, not stranded by a worker-exit path the
 committer watches; and the "doc-only / outside-`extension/`" angle is incidental, not causal.
 
-## The genuinely-actionable findings
+## Diagnostic update — the actual trigger is the DETACHED-SPAWN PATH, not load (operator-prompted, 2026-06-28)
 
-1. **Reopen R-WPEX** (P2→consider P1): detached `claude -p` workers still die on log-flush, no longer
-   plausibly "transient load." The R-WPEX/B-WPEX fixes (auto large-tier detached poll, worker-shutdown
-   flush-and-drain `worker-shutdown.ts`) did not prevent this recurrence on a `medium`-tier worker. Needs a
-   fresh repro-driven look at the `flushAndExit` / `once(sessionLog,'close')` drain vs the actual death
-   class (SIGKILL/segfault/OOM produce 0-byte logs per R-WSE-2; this was "died on flush" with artifacts
-   intact — a distinct flavor).
-2. **Manager inline-recovery should commit per-ticket, not batch** (the smaller, possibly-new bit): when the
-   manager hand-recovers multiple flush-died workers in one turn, it must commit+Done-flip **each ticket as
-   it finishes** so a turn/loop exit can't strand an already-delivered ticket uncommitted. (Mitigated in
-   practice by the operator/babysitter, but it is what turned a recoverable R-WPEX hit into a 0/4 phase
-   failure.)
+"It doesn't stall every time" — cross-session comparison shows why. The necessary condition is **whether the
+manager spawns a detached `spawn-morty` `claude -p` worker at all**; the in-process delivery path is immune.
+
+| Session | tickets | detached `claude -p` workers spawned | result |
+|---|---|---|---|
+| **B-CWGE** (`2026-06-28-952ab2a6`) | 3 | **0** — all `worker_session` logs absent; manager built every ticket **in-process** | clean **4/4** |
+| **B-APNC** (`2026-06-28-4209388b`) | 2 | **3** on `5dc68f98`, **every one a 0-byte log** (flush-death signature) | **0/4** stall |
+
+Findings from the comparison:
+- The flush-death lives **only on the detached `claude -p` (`spawn-morty`) exit path**. When the manager
+  builds in-process (`morty-implementer` subagent → no `worker_session` log), the bug **cannot fire** —
+  B-CWGE proved it (0 detached spawns, 0 deaths, clean). "Not every time" = the manager doesn't always spawn
+  detached; it's a per-ticket judgment, and managers have been *learning to avoid it* (B-CWGE went fully
+  in-process; B-APNC's manager pivoted to in-process for ticket 2 after ticket 1's 3 deaths).
+- **Load is likely NOT the trigger** (contradicts the original "transient load" triage). B-APNC's pickle ran
+  **21:07–22:02Z**; the babysitter's heavy background gates ran **before** (gate6 ended ~20:59Z) and **after**
+  (apnc-gate started ~22:37Z), **not during** — so the 3 deaths happened on a relatively idle machine. It is
+  a real **flush/drain bug in the detached `claude -p` worker exit**, not a load artifact.
+- The 0-byte logs distinguish it: the worker dies **before/while its log stream flushes** — a distinct flavor
+  from the SIGKILL/segfault/OOM 0-byte class R-WSE-2 already covers, and from a clean exit.
+- **Caveat: n=2 sessions.** The detached-vs-in-process correlation + the 0-byte logs are strong; the "not
+  load" claim rests on this one window's timing. Settle it in the repro (run with and without concurrent load).
+
+## The plan (restart-ready) — R-WPEX↻
+
+**This is the next drain item. Build approach: HAND-BUILD in-process (R-PSRB).** The fix edits the detached
+worker exit path, which is exactly the path an autonomous pipeline's own workers run on — so a pipeline run
+risks re-triggering the bug while building its fix (B-APNC demonstrated it). The in-process `morty-implementer`
+path is the immune one (B-CWGE proved it), so hand-building in-process sidesteps the bug entirely.
+
+1. **Repro FIRST (test-driven, do not guess the fix).** Write a deterministic test that spawns a detached
+   `claude -p`-shaped child producing a LARGE stdout log and asserts the `worker_session` log fully drains on
+   exit (the `flushAndExit` → `once(sessionLog,'close')` path in `services/worker-shutdown.ts` + the detached
+   spawn in `bin/spawn-morty.ts`). Run it **with and without concurrent load** to settle whether load is a
+   contributing factor or irrelevant. Target the "died-on-flush, artifacts-intact, 0-byte session log" flavor
+   specifically — NOT the SIGKILL/OOM class (R-WSE-2).
+2. **Fix the drain race** the repro exposes (likely: the detached child's stdout pipe isn't fully drained
+   before the parent/child exits; or `flushAndExit`'s `'close'` await doesn't cover the detached case).
+3. **Secondary (smaller): manager inline-recovery should commit PER-TICKET, not batch** — when the manager
+   hand-recovers multiple flush-died workers in one turn, commit+Done-flip each ticket as it finishes so a
+   turn/loop exit can't strand an already-delivered ticket (this is what turned a recoverable R-WPEX hit into
+   the 0/4 failure). Lives in the pickle manager prompt / send-to-morty guidance.
+4. Full local gate, ship the next beta, sweep this report to `archive/bug-reports/`.
+
+Files in scope: `extension/src/services/worker-shutdown.ts` (`flushAndExit`), `extension/src/bin/spawn-morty.ts`
+(detached `claude -p` spawn + `runWorkerProcess`), the worker-shutdown test. Pre-build: re-`git log`/grep HEAD
+for any since-shipped flush-drain fix (`feedback_prelaunch_residual_check_stale_findings`).
 
 ## Recovery taken (babysitter, verified)
 
