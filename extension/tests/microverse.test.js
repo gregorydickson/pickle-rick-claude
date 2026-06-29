@@ -3127,3 +3127,77 @@ test('maybeEmitConsecutiveNoProgressWarning: does NOT emit event for LLM-judge s
         assert.equal(events.length, 0, 'expected NO consecutive_no_progress_warning event for LLM sessions');
     });
 });
+
+// --- R-MVFM: held/plateau → failed_approaches routing ---
+
+const PLATEAU_CMD_METRIC = {
+    description: 'plateau test metric',
+    validation: 'echo 40',
+    type: 'command',
+    timeout_seconds: 10,
+    tolerance: 2,
+};
+
+test('R-MVFM: held appends to failed_approaches with score-held-at marker', async () => {
+    const workingDir = createTempGitRepo();
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: PLATEAU_CMD_METRIC, stallLimit: 3 });
+    state.status = 'iterating';
+    state.baseline_score = 40;
+    const session = createSessionDir(workingDir, { key_metric: state.key_metric, baseline_score: 40, convergence: state.convergence });
+    const ctx = makeMicroverseLoopContext(session, workingDir, path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
+    ctx.iteration = 1;
+    ctx.preIterSha = 'a'.repeat(40);
+    ctx.postIterSha = 'a'.repeat(40);
+    try {
+        const result = await measureAndClassifyIteration(state, { raw: '40', score: 40 }, ctx);
+        assert.equal(result.kind, 'unchanged', 'held → unchanged kind');
+        assert.equal(state.failed_approaches.length, 1, 'held should append one entry to failed_approaches');
+        assert.ok(state.failed_approaches[0].includes('score held at'), 'entry should contain score-held-at marker');
+    } finally {
+        fs.rmSync(session.dir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('R-MVFM: consecutive held iterations dedupe — only one entry appended', async () => {
+    const workingDir = createTempGitRepo();
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: PLATEAU_CMD_METRIC, stallLimit: 10 });
+    state.status = 'iterating';
+    state.baseline_score = 40;
+    const session = createSessionDir(workingDir, { key_metric: state.key_metric, baseline_score: 40, convergence: state.convergence });
+    const ctx = makeMicroverseLoopContext(session, workingDir, path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
+    ctx.preIterSha = 'a'.repeat(40);
+    ctx.postIterSha = 'a'.repeat(40);
+    try {
+        for (let i = 1; i <= 3; i++) {
+            ctx.iteration = i;
+            await measureAndClassifyIteration(state, { raw: '40', score: 40 }, ctx);
+        }
+        assert.equal(state.failed_approaches.length, 1, 'dedupe guard: 3 consecutive held should produce only 1 entry');
+    } finally {
+        fs.rmSync(session.dir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('R-MVFM: non-plateau entry resets dedupe guard — next held appends fresh entry', async () => {
+    const workingDir = createTempGitRepo();
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: PLATEAU_CMD_METRIC, stallLimit: 10 });
+    state.status = 'iterating';
+    state.baseline_score = 40;
+    // Pre-populate a regression entry (simulates prior iteration that regressed)
+    state.failed_approaches.push('Iteration 0: score dropped from 40 to 30');
+    const session = createSessionDir(workingDir, { key_metric: state.key_metric, baseline_score: 40, convergence: state.convergence });
+    const ctx = makeMicroverseLoopContext(session, workingDir, path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
+    ctx.iteration = 1;
+    ctx.preIterSha = 'a'.repeat(40);
+    ctx.postIterSha = 'a'.repeat(40);
+    try {
+        await measureAndClassifyIteration(state, { raw: '40', score: 40 }, ctx);
+        assert.equal(state.failed_approaches.length, 2, 'regression entry + new held entry = 2 total');
+        assert.ok(state.failed_approaches[1].includes('score held at'), 'second entry should be the plateau entry');
+    } finally {
+        fs.rmSync(session.dir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});

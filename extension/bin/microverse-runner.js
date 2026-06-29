@@ -2541,6 +2541,19 @@ function guardedMicroverseRollback(ctx) {
         reason: 'microverse_rollback',
     });
 }
+/**
+ * R-MVFM: route a `held`/no_progress plateau into the failed_approaches denylist so the next
+ * worker sees it (regressions were already recorded; plateaus were not). Dedupe guard: skip when
+ * the last entry already describes a plateau, so a long stall appends at most one entry.
+ */
+function maybeRecordPlateauFailedApproach(state, classification, iteration, score, previousScore) {
+    if (classification !== 'held')
+        return;
+    const lastApproach = state.failed_approaches[state.failed_approaches.length - 1] ?? '';
+    if (lastApproach.includes('score held at'))
+        return;
+    replaceMicroverseState(state, recordFailedApproach(state, `Iteration ${iteration}: score held at ${score} (no improvement from ${previousScore})`));
+}
 export async function measureAndClassifyIteration(state, baseline, ctx) {
     const backend = resolveWorkerBackendFromState(ctx.currentRunnerState).backend;
     let metricResult;
@@ -2592,6 +2605,7 @@ export async function measureAndClassifyIteration(state, baseline, ctx) {
         guardedMicroverseRollback(ctx);
         replaceMicroverseState(state, recordFailedApproach(state, `Iteration ${ctx.iteration}: score dropped from ${previousScore} to ${metricResult.score}`));
     }
+    maybeRecordPlateauFailedApproach(state, classification, ctx.iteration, metricResult.score, previousScore);
     replaceMicroverseState(state, stateRecordIteration(state, entry, classification));
     writeMicroverseState(ctx.sessionDir, state);
     maybeAppendGapAnalysisFixed(state, entry, ctx);
