@@ -93,6 +93,50 @@ test('R-SIGF WS-1: arity change with an out-of-scope positional caller BLOCKS re
   }
 });
 
+// WS-2: schema-shape gap with an out-of-scope `<Schema>.parse(` consumer BLOCKS,
+// and the finding message uses kind-aware "Schema-shape change" wording (F2 fix) —
+// NEVER the arity "Arity change" wording.
+test('R-SIGF WS-2: schema-shape change with an out-of-scope .parse() consumer emits Schema-shape wording (not Arity)', () => {
+  const sessionDir = tmpDir();
+  const repoRoot = gitRepoWith({
+    'src/threshold-schema.ts': "import { z } from 'zod';\nexport const ThresholdSchema = z.object({ a: z.number() });\n",
+    // Out-of-scope spec consumes the schema via .parse( — a schema-shape gap.
+    'src/threshold-schema.spec.ts': "import { ThresholdSchema } from './threshold-schema';\nconst v = ThresholdSchema.parse({ a: 1 });\n",
+  });
+  try {
+    writeTicket(sessionDir, 'sigf-shape', [
+      '---',
+      'id: sigf-shape',
+      'key: SIGF-SHAPE',
+      'ac_ids: []',
+      '---',
+      '',
+      '# Add a required field to ThresholdSchema',
+      '',
+      '## Files to modify',
+      '',
+      '- `src/threshold-schema.ts`',
+      '',
+      '## Acceptance Criteria',
+      '',
+      '- [ ] `ThresholdSchema` adds a required `b` field of type number.',
+      '',
+    ].join('\n'));
+    const result = runReadiness(sessionDir, repoRoot);
+    assert.notEqual(result.status, 0, `expected non-zero exit (blocking), got ${result.status}; stdout=${result.stdout}`);
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.status, 'fail');
+    const blocking = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap' && /ThresholdSchema/.test(f.detail));
+    assert.equal(blocking.length, 1, `expected one schema-shape signature_caller_gap; got ${JSON.stringify(out.findings)}`);
+    const msg = blocking[0].message;
+    assert.match(msg, /schema-shape change/i, `message must use kind-aware schema-shape wording; got: ${msg}`);
+    assert.ok(!/Arity change/.test(msg), `schema-shape finding must NOT carry the arity wording; got: ${msg}`);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 // AC-SIGF-1: co-scoped caller → no block (exit 0)
 test('R-SIGF: in-scope positional caller emits NOTHING (a fenced worker can fix it)', () => {
   const sessionDir = tmpDir();

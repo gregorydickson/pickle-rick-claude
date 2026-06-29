@@ -1256,9 +1256,13 @@ function isGapBlocking(killSwitch, skipReason, autoExtend, callerCount) {
     return !killSwitch && !skipReason && (!autoExtend || callerCount > SCOPE_AUTO_EXTEND_MAX);
 }
 function buildGapFinding(ticketFile, gap, isBlocking) {
-    const base = `Arity change to '${gap.symbol}' has positional caller(s) OUTSIDE the bundle scope fence; ` +
-        'no fenced worker can update them, so tsc may stay RED (heuristic markdown+grep detection, ' +
-        'not a type-aware diff; verify and extend or rescope the callers)';
+    const base = gap.kind === 'schema-shape'
+        ? `Schema-shape change to '${gap.symbol}' has out-of-scope consumer(s) (.parse/.safeParse/factory) ` +
+            'OUTSIDE the bundle scope fence; no fenced worker can update them, so tsc may stay RED ' +
+            '(heuristic markdown+grep detection, not a type-aware diff; verify and extend or rescope the callers)'
+        : `Arity change to '${gap.symbol}' has positional caller(s) OUTSIDE the bundle scope fence; ` +
+            'no fenced worker can update them, so tsc may stay RED (heuristic markdown+grep detection, ' +
+            'not a type-aware diff; verify and extend or rescope the callers)';
     const suffix = isBlocking
         ? ` — To resolve: (1) co-scope the caller by adding it to ## Files to modify in the ticket, ` +
             `(2) set scope.auto_extend_signature_callers: true in scope.json (auto-extends fence if ≤${SCOPE_AUTO_EXTEND_MAX} callers), ` +
