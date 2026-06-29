@@ -5,6 +5,11 @@ import { spawnSync } from 'child_process';
 // Consumed by check-readiness.ts (WS-1/WS-2) and forward by WS-3 (scope-resolution).
 // Moved here from check-readiness.ts to avoid divergent copies.
 const GIT_LS_FILES_TIMEOUT_MS = 30_000;
+// R-SIGF: the single cap literal for the bounded scope auto-extension. Homed here
+// in the shared detector module because both consumers (check-readiness.ts gating
+// and pipeline-runner.ts build-phase auto-extension) already import this module —
+// one definition, no divergent mirrors (ticket c6051d64 DRY invariant).
+export const SCOPE_AUTO_EXTEND_MAX = 8;
 function gitTrackedFiles(repoRoot) {
     const result = spawnSync('git', ['ls-files'], {
         cwd: repoRoot,

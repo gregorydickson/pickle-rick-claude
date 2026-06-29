@@ -21,7 +21,10 @@ import { BACKENDS, Defaults, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, i
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, } from '../services/pickle-utils.js';
-import { detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
+import { detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
+// Re-export the single cap literal so existing importers (tests, Module Export Catalog)
+// keep resolving it from pipeline-runner without a second definition.
+export { SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
 import { isGitIgnoredPath, listWorkingTreeDirtyPaths, archiveBeforeDestructive, updateTicketStatus, ARCHIVE_UNTRACKED_BYTE_CAP, } from '../services/git-utils.js';
 import { logActivity } from '../services/activity-logger.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
@@ -1282,14 +1285,8 @@ export function enterPicklePhase(sessionDir, statePath, backend) {
         }
     }
 }
-/**
- * Ticket 0b9b2319 (WS-3): hard cap on the bounded build-phase scope
- * auto-extension. If merging the detector-named callers would push
- * `allowed_paths` past this many entries, NOTHING is extended (over-cap
- * extends nothing) and the event is emitted with `cap_hit:true`. Mirrored
- * defensively by already-shipped consumers as a local const = 8.
- */
-export const SCOPE_AUTO_EXTEND_MAX = 8;
+// SCOPE_AUTO_EXTEND_MAX (the bounded build-phase auto-extension cap) is imported
+// and re-exported from ../services/signature-caller-gap.js — single definition there.
 /** Locale-independent byte-order comparator (clone of scope-resolver's private `byteOrder`). */
 export function scopeByteOrder(a, b) {
     return a < b ? -1 : a > b ? 1 : 0;

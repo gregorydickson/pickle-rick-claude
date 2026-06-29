@@ -13,7 +13,7 @@ import { readRecoverableJsonObject } from '../services/recoverable-json.js';
 import type { ReadinessCycleHistoryEntry } from '../types/index.js';
 import { FORWARD_REF_ANNOTATION_RE, isForwardCreated, resolveExtensionDir } from '../services/forward-ref-annotation.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
-import { CallerGap, ResolverCache, createResolverCache, detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
+import { CallerGap, ResolverCache, SCOPE_AUTO_EXTEND_MAX, createResolverCache, detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
 
 export interface ReadinessArgs {
   sessionDir: string;
@@ -1346,8 +1346,9 @@ interface SignatureGapTicket {
   declaredFiles: Set<string>;
 }
 
-// WS-1: cap for auto_extend_signature_callers flag; mirrors SCOPE_AUTO_EXTEND_MAX from ticket 0b9b2319.
-const SCOPE_AUTO_EXTEND_MAX = 8;
+// SCOPE_AUTO_EXTEND_MAX (cap for the auto_extend_signature_callers flag) is imported
+// from ../services/signature-caller-gap.js — the single definition shared with the
+// build-phase auto-extension in pipeline-runner.ts.
 
 interface SignatureGapOpts {
   autoExtend?: boolean;
