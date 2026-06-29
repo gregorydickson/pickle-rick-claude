@@ -6,13 +6,14 @@ on purpose. Shipped-release detail and closed-finding forensics live in
 [`MASTER_PLAN-archive.md`](MASTER_PLAN-archive.md) + `git log`; the full finding catalog is in
 [`BUG-INDEX.md`](BUG-INDEX.md).
 
-**Updated 2026-06-28.** Shipped + deployed through **v2.0.0-beta.27** (B-APNC anatomy-park convergence guard;
-beta.26 B-CWGE codex worker-gate verdict authority; beta.25 B-PXBO phase-exit oracle). The **known reliability
-defect classes are now all code-fixed at root**: the 14-incident completion-commit/Done-flip cluster
-(B-PCOMP beta.22 start/finish gates + **B-DURA beta.23** durable-iteration-boundary core, evidence-archaeology
-layer deleted), AND the independent review-phase 0/4 cause (**B-RPGT beta.24**: review/cleanup phases can no
-longer converge over a tsc/eslint-RED tree, and a transient 529 no longer aborts a 3-hr pipeline — both
-reuse-first, no new machinery).
+**Updated 2026-06-29.** Shipped + deployed + released through **v2.0.0-beta.30** (B-RELHYG reliability hygiene:
+R-MVFM microverse plateau-memory + date-fixture time-bomb audit + R-OMTD afterEach reap; beta.29 R-SIGF
+scope-fence + R-MWBG half-1; beta.28 R-WPEX; beta.27 B-APNC; beta.26 B-CWGE; beta.25 B-PXBO). **All known
+reliability defect classes are code-fixed at root** — the completion-commit/Done-flip cluster (B-PCOMP beta.22 +
+B-DURA beta.23), the review-phase 0/4 cause (B-RPGT beta.24), the codex worker-gate (B-CWGE beta.26), the
+phase-exit oracle (B-PXBO beta.25), and the codex scope-fence GA blocker (R-SIGF beta.29). **The actionable
+reliability-FIX queue is now DRAINED; we are in OBSERVATION mode** (GA gate = field-soak repeatability, not more
+bundles). See `## ⏯ RESUME HERE` for the strategic fork + the reverted-R-MWBG root cause + this session's lessons.
 
 **Reliability scorecard.** Code/mechanism ✅ — the most-fixed it has ever been. claude field-soak 🟢 — **2 clean
 hands-off runs, now incl. a live MULTI-TICKET ADDITIVE bundle** (B-RPGT: 5 tickets, 4/4 phases, 178m, ZERO
@@ -42,34 +43,59 @@ green gate on the timeout path** — together they own the residual `0/N phases 
 `Done-over-red`. See
 `BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md`.
 
-## ⏯ RESUME HERE (updated 2026-06-29 — R-SIGF SHIPPED beta.29; R-MWBG runtime-half NEXT)
+## ⏯ RESUME HERE (updated 2026-06-29 — beta.30 SHIPPED; reliability-FIX queue DRAINED → OBSERVATION mode)
 
-**▶ NEXT ACTION — observe / drain P2-P3. [[R-MWBG]] runtime half DE-PRIORITIZED (1st build REVERTED).**
-The 2026-06-29 build (`/pickle-pipeline`, session `2026-06-29-e7f5b7e1`) shipped a clean-looking diff
-(`0cbc49c1`: swap `tier === 'large'` → a budget predicate) but the **full closer gate caught a deterministic
-9-test `mux-runner.test.js` regression** (command_template rejection, SIGTERM attribution, desync reconciliation,
-iteration-persistence-before-manager-spawn). **REVERTED at the closer to restore green main**; re-queued. DEEP
-ROOT CAUSE (verified, see the PRD's `## Rebuild Notes`): `sessionRunnerBudget` hardcodes **`tier:'medium'` +
-the session timeout (1200)** for the **no-ticket/prd/breakdown** case, and a ticket with no explicit
-`complexity_tier` also defaults to **medium (3600s)** — so gating on `worker_timeout_seconds` OR
-`current_ticket_worker_timeout_seconds` OR `current_ticket_tier ∈ {medium,large}` fires during the prd phase AND
-for every default-tier ticket, routing them through the detached/`routeLargeTierTicket` path which **bypasses the
-`runIteration` invariants** (command_template validation, manager spawn, desync, iteration persistence). The old
-`=== 'large'` gate dodged ALL of it only because the fallback/default tier is `medium`, never `large`. The
-detached lifecycle (built for LARGE) does NOT preserve those invariants for medium. **Why the build missed it:**
-the impl ticket was tiered **`small`**, and a small-tier worker gate SKIPS `test:fast` — so `mux-runner.test.js`
-never ran during the build (lesson: a fix that touches the iteration loop MUST be built ≥`medium` so the worker
-gate runs the suite). **Rebuild is bigger than a gate swap** (either make the detached path preserve
-runIteration invariants for medium, OR a gate that fires ONLY for an active ticket's EXPLICIT frontmatter tier and
-verified detached-path correctness) → needs design + operator sign-off. **De-prioritize:** half-1 (shipped
-beta.29) already removes the ORIGINAL R-MWBG death (manager Bash-backgrounding); the runtime half is now a
-larger/riskier change for smaller marginal gain — reopen only on a real repro half-1 doesn't cover.
-Then the **B-SIGF hardening fast-follow**: re-run the 4 deferred hardening passes (data-flow / test-quality /
-cross-ref) once large-tier workers survive — resume session `2026-06-29-e68fda19` OR run fresh `/anatomy-park` +
-`/szechuan-sauce` over the R-SIGF diff (those phases ARE the hardening). Pre-build: re-`git log`/grep HEAD
-([[feedback_prelaunch_residual_check_stale_findings]]). Rate note: the babysitter cron is **session-only** (dies
-when this Claude process exits) and the 5-hour rate window cycles ~04:13/09:13 CDT — heavy work (pipelines,
-hand-builds, gates) should run with headroom, not near a window edge.
+**▶ STATE: the actionable reliability-FIX queue is DRAINED.** Shipped + deployed + released through
+**v2.0.0-beta.30** (B-RELHYG: R-MVFM microverse plateau-memory + date-fixture time-bomb audit [zero genuine
+time-bombs found] + R-OMTD afterEach reap). All known completion/scope/recovery defect classes are code-fixed and
+shipped. Per the GA path we are now in **OBSERVATION mode** — the GA gate is field-soak **repeatability** (esp.
+on codex), NOT more fix bundles. No active pipeline; tree clean; `origin/main` = beta.30.
+
+**▶ NEXT ACTION — a strategic fork (operator-steerable). The 3 remaining open items each have a blocker to a
+clean autonomous launch:**
+1. **Codex GA field-soak (the master plan's #1 GA-remaining item).** Run ≥1 representative bundle hands-off via
+   `/pickle-pipeline --backend codex` to collect the codex reliability evidence (completion-evidence already
+   proven on codex LOA-1363 run4; need phase-completion repeatability). Needs a representative bundle to run.
+2. **[[R-MWBG]] runtime half — DESIGN-NEEDED (reverted beta.30, de-prioritized P2).** Do NOT blindly re-launch
+   (you'll re-hit the exact reverted regression). See the root-cause + rebuild direction below.
+3. **[[R-SIGF]] hardening fast-follow** — the 4 deferred B-SIGF hardening passes (data-flow / test-quality /
+   cross-ref) over the R-SIGF diff; gated on R-MWBG runtime half (needed large-tier workers to survive). Run as
+   fresh `/anatomy-park` + `/szechuan-sauce` over the diff, OR fold into a codex soak.
+
+Other open residuals (all blocked from clean autonomous launch): **R-SLEAK** (P3 — session/process GC, mis-reap
+hazard + new machinery, conflicts with subtract-before-add; build only if leaks actually bite); **B-CIINT** (P3 —
+Linux-CI-only, not locally verifiable); **R-DPMC-3 / B-GSUB** (P2 — deferred, need operator sign-off); **#25
+R-CSI** (P1 — external-event-gated). **B-ARBR** = idea/exploration, not a fix.
+
+**▶ R-MWBG runtime-half rebuild (when scoped):** REVERTED at the beta.30 closer (`0cbc49c1` → reverted; session
+`2026-06-29-e7f5b7e1`). The full closer gate caught a deterministic 9-test `mux-runner.test.js` regression. DEEP
+ROOT CAUSE (verified, full detail in `prds/p1-bug-fix-bundle-b-mwbg-runtime-detached-tier-gate-2026-06-29.md`
+`## Rebuild Notes`): `sessionRunnerBudget` hardcodes `tier:'medium'` + the session timeout (1200) for the
+no-ticket/prd/breakdown case, and a ticket with no explicit `complexity_tier` also defaults to medium (3600s) —
+so gating on ANY timeout field OR `current_ticket_tier ∈ {medium,large}` fires during the prd phase AND for every
+default-tier ticket, routing them through the detached/`routeLargeTierTicket` path which BYPASSES the
+`runIteration` invariants. The old `=== 'large'` gate dodged it because the fallback/default tier is `medium`,
+never `large`; the detached lifecycle (built for LARGE) does NOT preserve those invariants for medium. Rebuild is
+bigger than a gate swap (make the detached path preserve runIteration invariants for medium, OR gate only on an
+active ticket's EXPLICIT frontmatter tier + verified detached-path correctness). half-1 (manager foreground-spawn,
+beta.29) already removed the ORIGINAL death, so this is lower marginal value.
+
+**▶ HARD-WON LESSONS this session (encode before clearing):**
+- **A fix touching the iteration loop / orchestrator MUST be built ≥`medium` tier** — a `small`-tier worker gate
+  SKIPS `test:fast`, so the B-MWBG regression slipped past the build and only surfaced at the closer's full gate.
+- **Do NOT token-optimize the project `CLAUDE.md`** — it carries test-pinned literal phrases; the beta.30
+  token-optimize broke `release-gate-parity` + `codegraph-docs-optin-parity` (restored at the closer).
+- **A null-diff audit ticket** (e.g. WS-2 found zero time-bombs) can't satisfy the commit-evidence gate → the
+  manager correctly resolved it by committing the audit findings as a durable repo doc. Pre-stage that recovery.
+- **Closer compile-drift**: a worker can commit `.ts` source but a stale compiled `.js` → run `npx tsc` and
+  `git status` before bump; commit the recompile (and commit it EARLY, before `test:integration`, which can
+  delete the compiled tree and a `git restore` would revert your fresh `.js`).
+- **R-SLEAK symptom seen**: a `node require` looping over ALL session `state.json`s timed out on an old
+  slow/locked one → use `timeout 3 node -e ...` per-file for phantom scans.
+
+Rate note: the babysitter cron is **session-only** (dies when this Claude process exits) and the 5-hour rate
+window cycles ~04:13/09:13/14:13/19:13 CDT — heavy work (pipelines, gates) should run with headroom, not near a
+window edge.
 
 **✅ R-SIGF / B-SIGF SHIPPED v2.0.0-beta.29 (2026-06-29, claude, babysitter pipeline + closer-takeover).** Closes
 **[[R-SIGF]] full scope-auto-extension — the codex GA blocker.** Built via `/pickle-pipeline --scope branch` from
