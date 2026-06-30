@@ -1054,25 +1054,26 @@ test('mux-runner: runs readiness gate at iteration 0 before manager spawn', () =
             command_template: 'pickle.md',
         }, null, 2));
 
-        // @add-dir-safe: readiness gate halts before any worker spawn — no
-        // --add-dir REPO_ROOT propagates into a claude subprocess.
+        // R-GATE-ADVISORY: the readiness gate is ADVISORY — it still runs and logs its
+        // findings, but it does NOT halt the run. The build proceeds past it (here it
+        // then fails only on unrelated test-fixture issues: no manager template / non-git
+        // dir), so it never stops at the gate with a halt exit_reason.
         const result = runWithRealExtension([sessionDir]);
         const runnerLog = fs.readFileSync(path.join(sessionDir, 'mux-runner.log'), 'utf-8');
         const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
 
-        assert.equal(result.status, 1);
-        assert.equal(state.active, false);
-        assert.match(result.stdout, /"status":"fail"/);
-        assert.match(result.stderr + runnerLog, /READINESS HALT/);
-        assert.doesNotMatch(runnerLog, /Run Pickle Iteration/);
+        assert.match(runnerLog, /readiness advisory/);          // gate ran, logged its finding
+        assert.doesNotMatch(result.stderr + runnerLog, /READINESS HALT/);
+        assert.notEqual(state.exit_reason, 'readiness_halt');   // did NOT halt at the gate
         assert.ok(fs.readdirSync(sessionDir).some((file) => /^readiness_\d{4}-\d{2}-\d{2}/.test(file)));
     } finally {
         fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
 });
 
-// R-TAQ-3: ticket audit gate halts before iteration-0 spawn when audit-ticket-bundle exits non-zero
-test('mux-runner.audit-bundle-halt: halts before manager spawn on defective tickets', () => {
+// R-GATE-ADVISORY: ticket-audit gate is advisory — a non-zero audit-ticket-bundle exit
+// is logged but does NOT halt the iteration-0 run (the build/review phases catch real defects).
+test('mux-runner.audit-bundle-advisory: logs but does NOT halt on defective tickets', () => {
     const tmpRoot = makeTmpRoot();
     try {
         const sessionDir = path.join(tmpRoot, 'session');
@@ -1109,23 +1110,16 @@ test('mux-runner.audit-bundle-halt: halts before manager spawn on defective tick
             command_template: 'pickle.md',
         }, null, 2));
 
-        // @add-dir-safe: audit-bundle-halt fires BEFORE any worker spawn —
-        // mux-runner halts at the ticket-audit gate, so no claude subprocess
-        // is constructed with --add-dir REPO_ROOT (the R-WSRC-4 leak vector).
+        // R-GATE-ADVISORY: a path-drift finding is logged, NOT halted. The run proceeds
+        // past the ticket-audit gate (here it then fails on unrelated test-fixture issues),
+        // so exit_reason is never 'ticket_audit_failed'.
         const result = runWithRealExtension([sessionDir]);
         const runnerLog = fs.readFileSync(path.join(sessionDir, 'mux-runner.log'), 'utf-8');
         const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
 
-        assert.equal(result.status, 1);
-        assert.equal(state.active, false);
-        assert.equal(state.exit_reason, 'ticket_audit_failed');
-        assert.match(result.stderr + runnerLog, /TICKET AUDIT HALT/);
-        assert.match(result.stderr, /ticket audit failed/);
-        // No iteration log file → runIteration was never called (gate fired before spawn)
-        assert.ok(
-            !fs.existsSync(path.join(sessionDir, 'tmux_iteration_1.log')),
-            'Expected no tmux_iteration_1.log (manager should not have spawned)',
-        );
+        assert.match(runnerLog, /ticket audit advisory/);        // gate ran, logged its finding
+        assert.doesNotMatch(result.stderr + runnerLog, /TICKET AUDIT HALT/);
+        assert.notEqual(state.exit_reason, 'ticket_audit_failed'); // did NOT halt at the gate
     } finally {
         fs.rmSync(tmpRoot, { recursive: true, force: true });
     }

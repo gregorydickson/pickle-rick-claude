@@ -50,18 +50,11 @@ describe('ticket_audit_failed schema conformance', () => {
     );
   });
 
-  it('mux-runner emits ticket_audit_failed with required fields', () => {
-    const src = readFileSync(MUX_RUNNER_PATH, 'utf8');
-    // Match: event: 'ticket_audit_failed' inside a logActivity({...}) call.
-    // The emitted payload at mux-runner.ts:3140 (R-TAQ-3 ticket-audit gate halt)
-    // is `{ event, source, session }`; logActivity stamps `ts` automatically.
-    const emitterRe = /logActivity\(\{[^}]*event:\s*['"]ticket_audit_failed['"][^}]*\}\)/s;
-    assert.match(
-      src,
-      emitterRe,
-      'mux-runner.ts must emit ticket_audit_failed via logActivity({...}) — schema requires event+ts; logActivity supplies ts',
-    );
-  });
+  // R-GATE-ADVISORY: the ticket-audit gate is now advisory and no longer EMITS
+  // `ticket_audit_failed` (it logs + proceeds instead of halting). The event stays
+  // REGISTERED (schema + VALID_ACTIVITY_EVENTS) for now, so the schema/registry
+  // conformance above still holds; the emission-presence assertion was removed.
+  // (Phase 2 of the gate-overreach subtraction removes the dead event entirely.)
 
   it('analyst prompt catalog documents ticket_audit_failed', () => {
     const prompt = readFileSync(REFINEMENT_PATH, 'utf8');

@@ -4507,8 +4507,11 @@ export function _resetQualityGateSkipDeprecation(): void {
 
 /**
  * Invokes audit-ticket-bundle.js on the session's ticket files immediately
- * after runMuxReadinessGate exits 0 and BEFORE iteration-0 spawn.
- * Non-zero exit → caller halts with exit_reason='ticket_audit_failed'.
+ * after the (advisory) readiness gate and BEFORE iteration-0 spawn.
+ * R-GATE-ADVISORY: a non-zero exit is ADVISORY — the caller logs the findings
+ * and PROCEEDS (it does NOT halt and does NOT stamp a failure exit_reason). A
+ * genuinely-defective bundle surfaces at the build/review phases instead of
+ * being pre-emptively killed by a heuristic pre-flight.
  * skipReason (from state.flags.skip_ticket_audit_reason) → bypassed.
  */
 export function runTicketAuditGate(input: TicketAuditGateInput): TicketAuditGateResult {
@@ -10426,12 +10429,15 @@ async function runMuxRunnerMain() {
         skipReason,
       });
       if (readinessStatus !== 0) {
-        log(`READINESS HALT: check-readiness exited ${readinessStatus}; no manager spawn attempted`);
-        process.stderr.write(`[mux-runner] readiness failed (exit ${readinessStatus}): fix the readiness findings or, to bypass with audit trail, set state.flags.skip_quality_gates_reason in state.json before relaunching\n`);
-        recordExitReason(statePath, 'readiness_halt');
-        safeDeactivate(statePath);
-        exitReason = 'error';
-        break;
+        // R-GATE-ADVISORY: the readiness gate is ADVISORY, not blocking. Its
+        // contract/path/symbol checks are heuristic pre-build validations that
+        // historically false-blocked legitimate bundles (R-RTRC reached a 5th
+        // recurrence; R-ATBG is the "guard around a brittle guard" archetype) and
+        // forced a large band-aid surface (forward-ref annotation grammar,
+        // allowlists, carve-outs, the skip flag). A genuinely-bad path fails the
+        // BUILD itself, and the review phases catch the rest — so log + proceed,
+        // never halt an autonomous run on a heuristic pre-flight.
+        log(`readiness advisory: check-readiness exited ${readinessStatus} — findings logged, NOT halting (advisory gate)`);
       }
     }
 
@@ -10459,17 +10465,13 @@ async function runMuxRunnerMain() {
           reason: auditResult.reason,
         });
       } else if (auditResult.status === 'failed') {
-        log(`TICKET AUDIT HALT: audit-ticket-bundle exited ${auditResult.exitCode}; defects found — no manager spawn attempted`);
-        process.stderr.write(`[mux-runner] ticket audit failed (exit ${auditResult.exitCode}): defects must be resolved before the pipeline can proceed or, to bypass with audit trail, set state.flags.skip_quality_gates_reason in state.json before relaunching\n`);
-        logActivity({
-          event: 'ticket_audit_failed',
-          source: 'pickle',
-          session: path.basename(sessionDir),
-        });
-        recordExitReason(statePath, 'ticket_audit_failed');
-        safeDeactivate(statePath);
-        exitReason = 'ticket_audit_failed';
-        break;
+        // R-GATE-ADVISORY: ticket-audit is ADVISORY, not blocking (see the readiness
+        // gate above). Its path-drift/cross-doc-naming heuristics false-blocked
+        // legitimate bundles at iteration 0 (e.g. a `file.ts:symbol` token mis-read
+        // as a missing path → fatal). The findings stay logged for the operator, but
+        // a defective bundle surfaces at the build/review phases — not by silently
+        // killing the run before any work. Log + proceed, never halt.
+        log(`ticket audit advisory: audit-ticket-bundle exited ${auditResult.exitCode} — findings logged, NOT halting (advisory gate)`);
       }
     }
 
