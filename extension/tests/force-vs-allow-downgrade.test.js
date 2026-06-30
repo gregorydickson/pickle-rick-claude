@@ -9,6 +9,35 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CHECK_UPDATE = path.resolve(__dirname, '../bin/check-update.js');
+const INSTALL_SH = path.resolve(__dirname, '..', '..', 'install.sh');
+
+/**
+ * Extract the real `compare_semver` function body verbatim from install.sh
+ * (no hand-copied fixture) — same brace-depth-scan approach as
+ * install-script.test.js. See R-ISVP.
+ */
+function extractCompareSemverSource() {
+  const src = readFileSync(INSTALL_SH, 'utf8');
+  const marker = 'compare_semver() {';
+  const start = src.indexOf(marker);
+  if (start === -1) {
+    throw new Error('compare_semver() not found in install.sh');
+  }
+  let depth = 0;
+  let pos = start;
+  for (; pos < src.length; pos++) {
+    const ch = src[pos];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        pos++;
+        break;
+      }
+    }
+  }
+  return src.slice(start, pos);
+}
 
 const CASES = [
   { name: 'force-only-refuses', args: ['--force'], options: { force: true }, permits: false },
@@ -120,7 +149,7 @@ function makeInstallFixture() {
   writeJson(path.join(sourceExtension, 'package.json'), { version: '1.62.0' });
   writeJson(path.join(deployedExtension, 'package.json'), { version: '1.67.0' });
   const scriptPath = path.join(dir, 'install.sh');
-  writeFileSync(scriptPath, `#!/bin/bash
+  const header = `#!/bin/bash
 set -euo pipefail
 SCRIPT_DIR="${dir}"
 EXTENSION_ROOT="$HOME/.claude/pickle-rick"
@@ -134,20 +163,17 @@ done
 read_version() {
   node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).version)' "$1"
 }
-compare_semver() {
-  IFS=. read -r a_major a_minor a_patch <<< "$1"
-  IFS=. read -r b_major b_minor b_patch <<< "$2"
-  if (( 10#$a_major < 10#$b_major )); then echo -1; return; fi
-  if (( 10#$a_major > 10#$b_major )); then echo 1; return; fi
-  if (( 10#$a_minor < 10#$b_minor )); then echo -1; return; fi
-  if (( 10#$a_minor > 10#$b_minor )); then echo 1; return; fi
-  if (( 10#$a_patch < 10#$b_patch )); then echo -1; return; fi
-  if (( 10#$a_patch > 10#$b_patch )); then echo 1; return; fi
-  echo 0
-}
+`;
+  // Spliced in as a plain string (not a template literal) so the real
+  // compare_semver's "${...}" parameter expansions are not re-interpreted
+  // as JS template substitutions. No hand-copied fixture — see R-ISVP.
+  const compareSemverSource = extractCompareSemverSource();
+  const footer = `
 SRC_V="$(read_version "$SCRIPT_DIR/extension/package.json")"
 DEP_V="$(read_version "$EXTENSION_ROOT/extension/package.json")"
-if [ "$(compare_semver "$SRC_V" "$DEP_V")" -lt 0 ]; then
+if ! cmp="$(compare_semver "$SRC_V" "$DEP_V")"; then
+  exit 1
+elif [ "$cmp" -lt 0 ]; then
   if [ "$ALLOW_DOWNGRADE" -ne 1 ]; then
     echo "REFUSE: source v$SRC_V older than deployed v$DEP_V" >&2
     exit 1
@@ -164,7 +190,8 @@ if [ "$(compare_semver "$SRC_V" "$DEP_V")" -lt 0 ]; then
   '
 fi
 echo "mode=tarball"
-`, { mode: 0o755 });
+`;
+  writeFileSync(scriptPath, header + compareSemverSource + footer, { mode: 0o755 });
   return { dir, homeDir, scriptPath };
 }
 

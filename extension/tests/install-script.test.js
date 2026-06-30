@@ -12,6 +12,36 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const INSTALL_SH = path.join(REPO_ROOT, 'install.sh');
 
 /**
+ * Extract the real `compare_semver` function body verbatim from install.sh
+ * (no hand-copied fixture) by scanning brace depth from the `compare_semver() {`
+ * marker to its matching closing brace. `${...}` parameter expansions inside the
+ * body are individually balanced, so a flat brace-depth counter finds the right
+ * boundary.
+ */
+function extractCompareSemverSource() {
+  const src = readFileSync(INSTALL_SH, 'utf8');
+  const marker = 'compare_semver() {';
+  const start = src.indexOf(marker);
+  if (start === -1) {
+    throw new Error('compare_semver() not found in install.sh');
+  }
+  let depth = 0;
+  let pos = start;
+  for (; pos < src.length; pos++) {
+    const ch = src[pos];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        pos++;
+        break;
+      }
+    }
+  }
+  return src.slice(start, pos);
+}
+
+/**
  * Build a minimal install.sh fixture that runs only the F3 schemaVersion
  * parity check from the real install.sh. SCRIPT_DIR is wired to the supplied
  * tmp dir so we can pin source/compiled schemaVersion values per case.
@@ -63,7 +93,7 @@ function makeFixture({ sourceVersion, compiledVersion }) {
 }
 
 function buildVersionGuardFixtureScript(scriptDir) {
-  return `#!/bin/bash
+  const header = `#!/bin/bash
 set -euo pipefail
 SCRIPT_DIR="${scriptDir}"
 EXTENSION_ROOT="$HOME/.claude/pickle-rick"
@@ -75,24 +105,12 @@ for arg in "$@"; do
   esac
 done
 
-compare_semver() {
-  local a="$1"
-  local b="$2"
-  if [[ ! "$a" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || [[ ! "$b" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
-    echo "invalid semver comparison: '$a' vs '$b'" >&2
-    exit 1
-  fi
-  local a_major a_minor a_patch b_major b_minor b_patch
-  IFS=. read -r a_major a_minor a_patch <<< "$a"
-  IFS=. read -r b_major b_minor b_patch <<< "$b"
-  if (( 10#$a_major < 10#$b_major )); then echo -1; return; fi
-  if (( 10#$a_major > 10#$b_major )); then echo 1; return; fi
-  if (( 10#$a_minor < 10#$b_minor )); then echo -1; return; fi
-  if (( 10#$a_minor > 10#$b_minor )); then echo 1; return; fi
-  if (( 10#$a_patch < 10#$b_patch )); then echo -1; return; fi
-  if (( 10#$a_patch > 10#$b_patch )); then echo 1; return; fi
-  echo 0
-}
+`;
+  // Spliced in as a plain string (not a template literal) so the real
+  // compare_semver's "${...}" parameter expansions are not re-interpreted
+  // as JS template substitutions. No hand-copied fixture — see R-ISVP.
+  const compareSemverSource = extractCompareSemverSource();
+  const footer = `
 
 read_package_version() {
   local package_json="$1"
@@ -109,7 +127,9 @@ SRC_V="$(read_package_version "$SCRIPT_DIR/extension/package.json")"
 DEPLOYED_PACKAGE_JSON="$EXTENSION_ROOT/extension/package.json"
 if [ -f "$DEPLOYED_PACKAGE_JSON" ]; then
   DEP_V="$(read_package_version "$DEPLOYED_PACKAGE_JSON")"
-  if [ "$(compare_semver "$SRC_V" "$DEP_V")" -lt 0 ] && [ "$ALLOW_DOWNGRADE" -ne 1 ]; then
+  if ! cmp="$(compare_semver "$SRC_V" "$DEP_V")"; then
+    exit 1
+  elif [ "$cmp" -lt 0 ] && [ "$ALLOW_DOWNGRADE" -ne 1 ]; then
     echo "REFUSE: source v$SRC_V older than deployed v$DEP_V" >&2
     exit 1
   fi
@@ -122,6 +142,7 @@ else
 fi
 echo "mode=$INSTALL_MODE"
 `;
+  return header + compareSemverSource + footer;
 }
 
 function makeVersionGuardFixture({ sourceVersion, deployedVersion, gitMode }) {
@@ -772,6 +793,45 @@ describe('install.sh source-vs-deployed package version guard', () => {
     assert.ok(guardIdx !== -1, 'install.sh must contain source-vs-deployed refusal');
     assert.ok(modeIdx !== -1, 'install.sh must contain mode detection marker');
     assert.ok(guardIdx < modeIdx, 'source-vs-deployed guard must run before INSTALL_MODE detection');
+  });
+
+  test('install-script.refuses-older-prerelease-source (R-ISVP)', () => {
+    const fixture = makeVersionGuardFixture({
+      sourceVersion: '2.0.0-beta.30',
+      deployedVersion: '2.0.0-beta.31',
+      gitMode: false,
+    });
+    try {
+      const result = runVersionGuardFixture(fixture);
+      assert.strictEqual(result.status, 1, `expected exit 1, got ${result.status}`);
+      assert.match(result.stderr, /REFUSE: source v2[.]0[.]0-beta[.]30 older than deployed v2[.]0[.]0-beta[.]31/);
+      assert.doesNotMatch(result.stdout, /mode=/, 'guard must run before INSTALL_MODE branch side effects');
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('install-script.allow-downgrade permits older prerelease source (R-ISVP)', () => {
+    const fixture = makeVersionGuardFixture({
+      sourceVersion: '2.0.0-beta.30',
+      deployedVersion: '2.0.0-beta.31',
+      gitMode: false,
+    });
+    try {
+      const result = runVersionGuardFixture(fixture, ['--allow-downgrade']);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      assert.match(result.stdout, /mode=tarball/);
+      assert.equal(result.stderr, '');
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('extracted compare_semver source is the live prerelease-aware function, not a frozen copy', () => {
+    const extracted = extractCompareSemverSource();
+    assert.match(extracted, /^compare_semver\(\) \{[\s\S]*\}$/, 'extraction must be a balanced function body');
+    assert.match(extracted, /a_ident/, 'extracted source must be the prerelease-aware implementation');
+    assert.match(extracted, /b_ident/, 'extracted source must be the prerelease-aware implementation');
   });
 });
 

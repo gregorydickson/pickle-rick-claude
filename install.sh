@@ -52,14 +52,20 @@ md5_file() {
 compare_semver() {
   local a="$1"
   local b="$2"
-  if [[ ! "$a" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || [[ ! "$b" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+  local semver_re='^[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z-]+[.][0-9]+)?$'
+  if [[ ! "$a" =~ $semver_re ]] || [[ ! "$b" =~ $semver_re ]]; then
     echo "❌ Invalid semver comparison: '$a' vs '$b'" >&2
-    exit 1
+    return 1
   fi
 
+  local a_core="${a%%-*}" b_core="${b%%-*}"
+  local a_pre="" b_pre=""
+  [[ "$a" == *-* ]] && a_pre="${a#*-}"
+  [[ "$b" == *-* ]] && b_pre="${b#*-}"
+
   local a_major a_minor a_patch b_major b_minor b_patch
-  IFS=. read -r a_major a_minor a_patch <<< "$a"
-  IFS=. read -r b_major b_minor b_patch <<< "$b"
+  IFS=. read -r a_major a_minor a_patch <<< "$a_core"
+  IFS=. read -r b_major b_minor b_patch <<< "$b_core"
 
   if (( 10#$a_major < 10#$b_major )); then echo -1; return; fi
   if (( 10#$a_major > 10#$b_major )); then echo 1; return; fi
@@ -67,6 +73,21 @@ compare_semver() {
   if (( 10#$a_minor > 10#$b_minor )); then echo 1; return; fi
   if (( 10#$a_patch < 10#$b_patch )); then echo -1; return; fi
   if (( 10#$a_patch > 10#$b_patch )); then echo 1; return; fi
+
+  # Triplet equal — mirror check-update.ts:comparePrerelease (release > prerelease;
+  # ident compared lexically first, then num numerically).
+  if [ -z "$a_pre" ] && [ -z "$b_pre" ]; then echo 0; return; fi
+  if [ -z "$a_pre" ]; then echo 1; return; fi
+  if [ -z "$b_pre" ]; then echo -1; return; fi
+
+  local a_ident="${a_pre%%.*}" b_ident="${b_pre%%.*}"
+  local a_num="${a_pre##*.}" b_num="${b_pre##*.}"
+  if [ "$a_ident" != "$b_ident" ]; then
+    if [[ "$a_ident" < "$b_ident" ]]; then echo -1; else echo 1; fi
+    return
+  fi
+  if (( 10#$a_num < 10#$b_num )); then echo -1; return; fi
+  if (( 10#$a_num > 10#$b_num )); then echo 1; return; fi
   echo 0
 }
 
@@ -196,7 +217,9 @@ SRC_V="$(read_package_version "$SCRIPT_DIR/extension/package.json")"
 DEPLOYED_PACKAGE_JSON="$EXTENSION_ROOT/extension/package.json"
 if [ -f "$DEPLOYED_PACKAGE_JSON" ]; then
   DEP_V="$(read_package_version "$DEPLOYED_PACKAGE_JSON")"
-  if [ "$(compare_semver "$SRC_V" "$DEP_V")" -lt 0 ]; then
+  if ! cmp="$(compare_semver "$SRC_V" "$DEP_V")"; then
+    exit 1
+  elif [ "$cmp" -lt 0 ]; then
     if [ "$ALLOW_DOWNGRADE" -ne 1 ]; then
       echo "REFUSE: source v$SRC_V older than deployed v$DEP_V" >&2
       exit 1
