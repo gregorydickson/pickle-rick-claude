@@ -6,7 +6,7 @@ on purpose. Shipped-release detail and closed-finding forensics live in
 [`MASTER_PLAN-archive.md`](MASTER_PLAN-archive.md) + `git log`; the full finding catalog is in
 [`BUG-INDEX.md`](BUG-INDEX.md).
 
-**Updated 2026-06-30.** Shipped + deployed + released through **v2.0.0-beta.32** (✅ **[[R-LTDM]] (P1)** — the beta.31 R-MWBG runtime half routed explicit-medium tickets through the detached poll path which false-failed them in ~980ms; fixed by a detached-poll throttle. R-MWBG now RE-CLOSED). Operator flagged the underlying brittleness — the dual worker-spawn model — logged as **[[B-WSPU]]** (sign-off-gated structural collapse, the real subtraction). Detail below. (R-MWBG runtime half:
+**Updated 2026-06-30.** Shipped + deployed + released through **v2.0.0-beta.33** (✅ **gate-overreach subtraction** — Phase 1 made the iteration-0 readiness + ticket-audit gates ADVISORY, Phase 2 DELETED the forward-ref annotation grammar, the top recurring bug source [R-RTRC ×8 + R-FRA ×7]; ~35 files of pure subtraction, KEPT resolution fixes R-RTRC-3/4/5 / R-RHFP / R-RCEX / R-RTPS; commit `9a5c047e`). beta.32 ✅ **[[R-LTDM]]** detached-poll throttle (R-MWBG RE-CLOSED). Operator flagged the underlying brittleness — the dual worker-spawn model — logged as **[[B-WSPU]]** (sign-off-gated structural collapse, the real subtraction). Detail below. (R-MWBG runtime half:
 explicit-tier detached-routing gate — R-MWBG now FULLY closed; beta.30 B-RELHYG; beta.29 R-SIGF scope-fence +
 R-MWBG half-1; beta.28 R-WPEX; beta.27 B-APNC; beta.26 B-CWGE; beta.25 B-PXBO). **The historical reliability
 defect classes are code-fixed at root** — the completion-commit/Done-flip cluster (B-PCOMP beta.22 + B-DURA
@@ -72,16 +72,17 @@ green gate on the timeout path** — together they own the residual `0/N phases 
 
 ---
 
-## ⏯ RESUME HERE (updated 2026-06-30 — beta.31 SHIPPED+DEPLOYED; OBSERVATION mode surfaced R-SSBR P2 + R-ISVP P3)
+## ⏯ RESUME HERE (updated 2026-06-30 — beta.33 SHIPPED+DEPLOYED+RELEASED; gate-overreach subtraction complete)
 
-**▶ STATE: OBSERVATION mode, and it is working as designed — two new bugs surfaced from live runs.** Shipped +
-deployed + released through **v2.0.0-beta.31** (R-MWBG runtime half — explicit-tier detached-routing gate;
-R-MWBG fully closed). The historical completion/scope/recovery/ceiling defect classes are all code-fixed and
-shipped. But babysitting live pipelines this window surfaced **[[R-SSBR]] (P2)** — scope-resolver trusts a stale
-local `origin/main` → false `SCOPE_EMPTY_DIFF` → review phases run UNSCOPED (fail-open on the scope boundary,
-amplifies [[R-SSOC]]) — and **[[R-ISVP]] (P3)** — install.sh prerelease semver. Per the GA path the gate is
-field-soak **repeatability** (esp. codex), but R-SSBR is now the **top actionable reliability fix** (it weakens
-the scope-lock guarantee the soak relies on). No active pipeline; tree clean; `origin/main` = beta.31.
+**▶ STATE: clean. `origin/main` = v2.0.0-beta.33 (HEAD `8a24f4eb`); tree clean; no active pipeline; runtime deployed.**
+The gate-overreach subtraction shipped (full detail in **▶▶ STRATEGIC SHIFT** above): Phase 1 made the iteration-0
+readiness + ticket-audit gates ADVISORY (`87d837f6`), Phase 2 DELETED the forward-ref annotation grammar (`9a5c047e`)
+— the top recurring bug source, ~35 files of pure subtraction, KEEPING resolution fixes R-RTRC-3/4/5 / R-RHFP / R-RCEX /
+R-RTPS and the gate-parity resolver. The historical completion/scope/recovery/ceiling defect classes are all code-fixed
+and shipped. Two reliability bugs surfaced from earlier live runs remain OPEN and unbuilt — **[[R-SSBR]] (P2)**
+scope-resolver fail-open (stale local `origin/main` → false `SCOPE_EMPTY_DIFF` → review phases run UNSCOPED, amplifies
+[[R-SSOC]]) and **[[R-ISVP]] (P3)** install.sh prerelease semver. Per the GA path the gate is field-soak **repeatability**
+(esp. codex); R-SSBR is the **top actionable reliability fix** (it weakens the scope-lock guarantee the soak relies on).
 
 **▶ NEXT ACTION — priority order per the standing directive: RELIABILITY-FIX → SIMPLIFICATION → capability/evidence
 (operator-steerable).** Both the reliability-fix queue AND the major simplification levers are largely SHIPPED — the
