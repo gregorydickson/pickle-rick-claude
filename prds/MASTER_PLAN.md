@@ -184,7 +184,7 @@ load-flake] + expensive 0-fail).
 
 | Item | Value |
 |---|---|
-| Version (source = committed) | **v2.0.0-beta.31** — R-MWBG runtime half (explicit-tier detached-routing gate; `tierExceedsBashCeiling`); fix `64fb7e12`, built interactively 2026-06-29. ⚠️ **LOCAL install.sh DEPLOY HELD** pending the concurrent live loa-1614 session (pid 79338) — install.sh redeploys the shared `~/.claude/pickle-rick` runtime that session is using; deploy after it finishes. Prior: beta.30 B-RELHYG reliability hygiene. |
+| Version (source = deployed) | **v2.0.0-beta.31** — R-MWBG runtime half (explicit-tier detached-routing gate; `tierExceedsBashCeiling`); fix `64fb7e12`, built interactively, deployed via install.sh 2026-06-30 (held one day for a concurrent loa-1614 session, then deployed once the shared runtime was free; MD5 parity OK). Prior: beta.30 B-RELHYG reliability hygiene. |
 | Latest GitHub release | **v2.0.0-beta.31** (R-MWBG runtime half; prerelease). Prior: beta.30 B-RELHYG · beta.29 R-SIGF+R-MWBG-half-1 · beta.28 R-WPEX · beta.27 B-APNC · beta.26 B-CWGE · beta.25 B-PXBO. |
 | Test-hygiene follow-ups | ✅ **BOTH SHIPPED beta.30 (B-RELHYG).** (1) hardcoded-date fixture time-bombs — audited all 35 fixtures, **zero genuine wall-clock time-bombs** (only beta6-ga-session-resume ever qualified, already fixed); durable audit record `84464f6f`. (2) R-OMTD afterEach subprocess reap `b9bccd1a`. |
 | Codex backend | `gpt-5.4` |
