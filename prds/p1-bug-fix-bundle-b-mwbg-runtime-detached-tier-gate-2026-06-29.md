@@ -198,3 +198,37 @@ deployed R-MWBG bug — but a `small`-tier worker gate **SKIPS `test:fast`** (R-
   removes the ORIGINAL R-MWBG death (manager Bash-backgrounding). The runtime half is now a
   larger/riskier change for a smaller marginal gain — DE-PRIORITIZE behind a real repro that half-1
   doesn't cover.
+
+## ✅ Rebuild — SHIPPED v2.0.0-beta.31 (2026-06-29, interactive, operator-signed-off; fix `64fb7e12`)
+
+**Chosen: option (B), sharpened — gate on the EXPLICIT frontmatter tier, REUSE the existing detached
+lifecycle (no option-A peer rewrite, no new state field/path).** The detached lifecycle is not
+large-specific (`spawnDetachedLargeTierWorker` takes `workerTimeoutSec` as a param; poll/disposition run
+the generic `salvageTicket` oracle), so widening it to medium needs only a correct gate — not a rewrite.
+
+The ONLY thing the reverted attempt got wrong was trusting `state.current_ticket_tier` (which carries the
+`sessionRunnerBudget` `medium` fallback for the prd/no-ticket phase AND for default-tier tickets). The fix
+reads the tier the way `resolveCreditEarlyPhases` already does — straight from the ticket frontmatter —
+and rejects a missing/invalid field BEFORE budget resolution (which would normalize an absent tier to
+`medium`). So the prd phase (no ticket) and a default-tier ticket (no field) both yield `false` → they
+stay on the in-process `runIteration` path with its invariants intact. That is exactly why the reverted
+9-test `mux-runner.test.js` regression does NOT recur.
+
+**Diff (all in `extension/src/bin/mux-runner.ts`):**
+- NEW exported `tierExceedsBashCeiling(state, sessionDir, ticketId)` + `BASH_TOOL_CEILING_SECONDS = 600`
+  (placed by `largeTierDetachedEnabled`). Reads explicit `complexity_tier`; valid-tier guard before
+  `getTicketTierBudgetWithOverrides`; `true` iff resolved `worker_timeout_seconds > 600`. Fail-open false.
+- Both poll-loop detached gates (spawn + poll) OR the helper into the existing `=== 'large'` check.
+- The recovery re-execution seam (`spawnImplementPass`) routes explicit-medium-over-ceiling detached too
+  (was bounded to a 600s implement pass).
+- Deliberately LEFT the kill-switch/spawn-fail fallback (`routeLargeTierTicket` vs `runIteration`) alone:
+  with detached off or a failed spawn, medium degrades gracefully to in-process `runIteration`.
+
+**Tier mapping (TICKET_TIER_BUDGETS):** trivial 300s / small 600s / medium 3600s / large 4800s — so
+`>600` cleanly includes explicit medium+large and excludes small+trivial.
+
+**Verification:** `tsc --noEmit` clean; eslint clean (pre-existing warnings only); `mux-runner.test.js`
+**201/201** (the revert suite); large-tier integration 27/28 (the 1 fail = `AC-R-WPEXA-1b` real-subprocess
+pipe-survival timing flake, **3/3 green in isolation**, untouched spawn mechanism); NEW pinning test
+`tests/r-mwbg-tier-exceeds-bash-ceiling.test.js` green (explicit medium/large → detached; prd/default/junk/
+missing → in-process). JS recompiled to match TS. Built on the in-process path (spawn-gate edit, R-PSRB N/A).
