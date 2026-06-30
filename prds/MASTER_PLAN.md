@@ -47,6 +47,33 @@ green gate on the timeout path** — together they own the residual `0/N phases 
 `Done-over-red`. See
 `BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md`.
 
+## ▶▶ STRATEGIC SHIFT (2026-06-30) — SUBTRACT THE BRITTLE FEATURES (read this first; supersedes the drain-queue posture below)
+
+**North star (operator, 2026-06-30):** *"We had a version that ran completely autonomously and reliably; it only became brittle as we added features. Autonomous is the first goal, quality output is the second goal."* Reliability is goal #1, quality #2 — when a feature trades reliability for output quality, cut the feature. The reliable baseline was **~v1.5, before codex (`--backend codex` landed v1.51.0 / 2026-04-24)**. We do NOT roll back (a month of real value sits on top); we **subtract the specific small additions that broke it.** The reliability bar is empirical: **build N real bundles hands-off, in a row** — not green tests. See [[feedback_autonomous_first_subtract_features_back_to_reliable_baseline]].
+
+**Brittle-feature attribution (data-grounded, BUG-INDEX + trap-door catalog).** Ranked by RECURRENCE (the real signal):
+| Feature | Brittleness evidence | Operator decision |
+|---|---|---|
+| Multi-backend / codex (v1.51) | ~25 findings; codex manager-wall re-filed 4×; worker-gate reverted; infects completion/scope/judge | **KEEP — we need codex** |
+| Review phases (microverse/anatomy/szechuan/council/death-crystal) | largest guard cluster (~59 trap-doors) but post-build polish | **KEEP — anatomy-park/szechuan are reliable + valued** |
+| **Gate overreach** (readiness/forward-ref/scope/audit) | **R-RTRC ×8 + R-FRA ×7 = 15 sub-fixes, ~99 commits; R-ATBG = "guard around a brittle guard" archetype** | **★ THE TARGET — cut the small over-strict guards** |
+| Detached large-tier spawn | newest + still failing (R-LTDM, R-MWBG, R-WPEX) | structure kept ([[B-WSPU]]); operator "needs to understand better" before deciding — DEFERRED |
+| Monitor/watchdog TUI | ~19 trap-doors for a cosmetic dashboard | candidate, low priority |
+
+**▶ IN-FLIGHT WORK: the gate-overreach subtraction (ship Phase 1 + Phase 2 together as v2.0.0-beta.33).**
+- **Phase 1 ✅ COMMITTED `87d837f6` (NOT yet deployed/released).** R-GATE-ADVISORY: the iteration-0 readiness + ticket-audit gates now **log findings and PROCEED instead of halting** (`mux-runner.ts` ~:10428 / ~:10461). A genuinely-bad bundle surfaces at the build/review phases, not via a heuristic pre-flight false-killing good runs (the `path-drift` fatal that halted the B-SSVR pipeline at iter-0 today). Behavior tests + trap doors updated to advisory; `ticket_audit_failed`/`readiness_halt` retained-but-unemitted. Full local gate green (lone integration fail = known isolation-green lockdown-downgrade load-flake).
+- **Phase 2 ▶ NEXT (approved, not started): DELETE the forward-ref annotation grammar** — the top recurring bug source (15 numbered sub-fixes), now INERT because Phase 1 made its only consumers (readiness + ticket-audit) advisory (a malformed annotation can no longer block — it just logs noise). Scoped to the ANNOTATION grammar only; **KEEP** the separate resolution/allowlist fixes (R-RTRC-3 tests-in-scope, R-RTRC-4 suffix-match, R-RTRC-5 allowlist, R-RHFP/R-RCEX/R-RTPS carve-outs). **Deletion surface (mapped):**
+  - DELETE `extension/src/services/forward-ref-annotation.ts`; `extension/scripts/audit-ticket-forward-refs.sh` (+ remove from the gate command in `extension/CLAUDE.md` + `audit-test-tiers.sh`).
+  - Surgically remove annotation handling from `check-readiness.ts` (`extractForwardRefAnnotations` + R-RTRC-1/2/7 suppression), `audit-ticket-bundle.ts` (`extractForwardCreatePaths` + checkPathDrift annotation acceptance, R-FRA/R-RTRC-7), `spawn-refinement-team.ts` (`PATH_VERIFICATION_PROMPT_SECTION`, R-RTRC-1 path-not-verified suppression, R-SAOV-7 symbol-audit forward-create), `mux-runner.ts` (any forward-created ref), `.claude/commands/pickle-refine-prd.md` (Step 7c hygiene reminder).
+  - DELETE the forward-ref trap doors (R-FRA-1..6, R-RTRC-1/2/7, R-SAOV-7) from `extension/CLAUDE.md` + `extension/src/bin/CLAUDE.md`.
+  - DELETE/trim the annotation tests: `forward-ref-annotation-shared-predicate`, `audit-ticket-forward-refs`, `check-readiness-forward-ref-annotation`, `check-readiness-forward-created-fields`, `check-readiness-annotation-omission`, `spawn-refinement-team-forward-ref-hygiene`, `spawn-refinement-team-step7c-annotation-reminder`, `refiner-auto-annotation`, `spawn-refinement-team-symbol-audit-annotations`, + annotation cases in `check-readiness-forward-ref-fixture`/`audit-ticket-bundle*`/`greenfield-corpus`/`rrh-forward-ref-coverage`/`gate-parity-shared-resolver`. + the `fra-forward-create` greenfield fixtures.
+  - Execute carefully: compile after each consumer edit, fix dangling refs, then full gate. It's pure deletion but spans ~25 files.
+- **Closer for beta.33:** bump → `install.sh` → `gh release`. Phase 1 alone is NOT shipped — bundle both.
+
+**Other open (post-subtraction):** R-LTDM ✅ shipped beta.32 (detached-poll throttle). [[B-WSPU]] dual-spawn-model collapse — DEFERRED (operator keeps the structure). Detached-worker-dies-at-~10min (the SECOND B-SSVR failure, distinct from R-LTDM) — uninvestigated, deferred. **B-SSVR** (R-SSBR + R-ISVP) PRD+2 tickets READY on main, session `2026-06-30-38285dba`, hand-build or pipeline-build once stable. The drain-queue / OBSERVATION posture below is SUPERSEDED by this subtraction strategy.
+
+---
+
 ## ⏯ RESUME HERE (updated 2026-06-30 — beta.31 SHIPPED+DEPLOYED; OBSERVATION mode surfaced R-SSBR P2 + R-ISVP P3)
 
 **▶ STATE: OBSERVATION mode, and it is working as designed — two new bugs surfaced from live runs.** Shipped +
