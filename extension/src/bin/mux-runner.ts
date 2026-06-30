@@ -7904,6 +7904,26 @@ export function resolveWmwSkipK(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : WMW_SKIP_K_DEFAULT;
 }
 
+// R-LTDM: inter-poll throttle for the large-tier DETACHED poll branch. The
+// synchronous path throttles naturally by BLOCKING on `await runIteration` (a
+// full manager turn, minutes); the detached branch only polls + `continue`s, so
+// without a delay it spins at CPU speed and accumulates WMW_SKIP_K (5) zero-
+// progress polls in <1s — false-failing a just-spawned worker (~980ms, beta.31
+// R-MWBG runtime half) long before its first-artifact latency. Each detached poll
+// must be a meaningful wall-clock cycle; the detached no-progress wedge window is
+// therefore `resolveDetachedPollIntervalMs() × WMW_SKIP_K` (default ~15 min),
+// comfortably above worker first-artifact latency and below the T6
+// `worker_timeout` hard cap.
+export const DETACHED_POLL_INTERVAL_ENV = 'PICKLE_DETACHED_POLL_INTERVAL_MS';
+export const DETACHED_POLL_INTERVAL_DEFAULT_MS = 180_000;
+
+export function resolveDetachedPollIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[DETACHED_POLL_INTERVAL_ENV];
+  if (!raw) return DETACHED_POLL_INTERVAL_DEFAULT_MS;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DETACHED_POLL_INTERVAL_DEFAULT_MS;
+}
+
 // AC-A4 (B-RRH): the early-phase credit window — for a `large`-tier ticket's
 // first N spawns, research/plan artifacts credit progress. N defaults to 4, kept
 // strictly below the default skip threshold (WMW_SKIP_K_DEFAULT = 5) so phase
@@ -10943,6 +10963,14 @@ async function runMuxRunnerMain() {
         lastProgressEpoch = muxNow();
         continue;
       }
+
+      // R-LTDM: throttle the LIVE-worker poll. Liveness (dead → dispose) and the T6
+      // timeout backstop above run EVERY poll unthrottled so death/over-budget is
+      // detected promptly; only the no-progress charge below is paced. Without this
+      // sleep the loop spins and WMW_SKIP_K zero-progress polls accumulate in <1s,
+      // false-failing a just-spawned worker before it can produce its first artifact
+      // (R-MWBG runtime half / beta.31 — explicit-medium tickets route here).
+      await sleep(resolveDetachedPollIntervalMs());
 
       // AC-R-WPEXA-5: re-point artifact progress at the DETACHED worker's ticket dir.
       // The bug: apBeforeCount (computed at loop top against apTicketId) equals the
