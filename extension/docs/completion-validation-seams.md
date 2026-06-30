@@ -53,22 +53,16 @@ Canonical decision is computed once and reused. No seam re-derives "is the epic 
 
 ---
 
-## WS-B — readiness validation (check-readiness.ts / services/forward-ref-annotation.ts)
+## WS-B — readiness validation (check-readiness.ts)
 
-### Seam: `readiness forward-ref` suppression — `routed-through-canonical-authority`
-Forward-reference suppression is decided by shared resolvers; the hard-halt predicate is a single
-named expression, not a per-call-site copy.
-- `resolvePathRef` (`extension/src/bin/check-readiness.ts:419`) — AC-B2 repo-basename-prefix strip +
-  R-RTRC-4 HEAD git-ls-files suffix-match (commit `e395a0bb`); call sites `check-readiness.ts:700`
-  and `:1013`.
-- `isForwardCreated` (`extension/src/services/forward-ref-annotation.ts:47`) — the shared
-  suffix-symmetric forward-created predicate (AC-B1, commit `ee6aa68f`); consumed at
-  `check-readiness.ts:1013`.
-- AC-B3 two-class `file_path` predicate folded at `check-readiness.ts:1013`
-  (`isForwardCreated(...) || resolvePathRef(...)`, commit `02a6d0de`) — De Morgan-equivalent single
-  predicate, no behavior fork.
-- AC-B4 observability: `readiness_false_positive_suppressed` activity event
-  (`check-readiness.ts:1131`, commit `e95ebcdb`) — non-blocking counter, never alters exit code.
+### Seam: `readiness path resolution` — `routed-through-canonical-authority`
+Path resolution is decided by a single shared resolver; the hard-halt predicate is one named
+expression, not a per-call-site copy. (The forward-ref annotation grammar was subtracted in
+v2.0.0-beta.33 — readiness is advisory, so the suppression machinery it fed is gone.)
+- `resolvePathRef` (`extension/src/bin/check-readiness.ts:findPathFindings`) — AC-B2
+  repo-basename-prefix strip + R-RTRC-4 HEAD git-ls-files suffix-match (commit `e395a0bb`).
+- AC-B4 observability: `readiness_false_positive_suppressed` activity event — non-blocking counter,
+  never alters exit code.
 
 ---
 
@@ -105,7 +99,7 @@ the bounded escape (`evaluateBoundedEscape` / `executeBoundedEscape` → `salvag
 | A | `pickle clean-exit` completion | `routed-through-canonical-authority` | evaluateEpicCompletion / applyAllTicketsDoneCompletion / evaluateBoundedEscape+executeBoundedEscape → salvageTicket → reconcileTicketTruth |
 | A | pipeline phase-incomplete halt | `routed-through-canonical-authority` | reportPhaseIncomplete |
 | A | bounded terminal escape ledger | `routed-through-canonical-authority` | evaluateBoundedEscape / executeBoundedEscape |
-| B | `readiness forward-ref` suppression | `routed-through-canonical-authority` | resolvePathRef / isForwardCreated (+ readiness_false_positive_suppressed) |
+| B | `readiness path resolution` | `routed-through-canonical-authority` | resolvePathRef (+ readiness_false_positive_suppressed) |
 | C | `config-protection read` gate | `routed-through-canonical-authority` | detectTargetedConfigFile → bashWritesProtectedConfig → detectBashStateWriteTarget |
 
 Doc-only exceptions: **none**. Every enumerated WS-A/B/C seam routes through canonical authority.

@@ -24,7 +24,7 @@ const READINESS_BIN = path.resolve(import.meta.dirname, '../bin/check-readiness.
 const RESOLVABLE_SYMBOLS = [
   'extractContractReferences()', 'extractAcceptanceCriteria()', 'isMachineCheckable()',
   'parseArgs()', 'runHistory()', 'findReadinessFindings()', 'loadReadinessAllowlist()',
-  'extractForwardRefAnnotations()', 'runReadiness()', 'resolveSymbolRef()',
+  'runReadiness()', 'resolveSymbolRef()',
   'gitTrackedFiles()', 'createResolverCache()',
 ];
 

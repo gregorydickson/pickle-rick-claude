@@ -13,9 +13,6 @@
 #   (ii)  `check-flake-budget` / `test:fast:budget` / `--test-concurrency=8` appearing
 #         in the PER-TICKET path (`mux-runner.ts`). The flake budget is once-per-bundle
 #         only; it must NEVER be in the per-ticket completion path (mirrors AC-A3).
-#   (iii) exact-string-ONLY forward-ref membership (`creationIndex.has(...)`) in EITHER
-#         `buildBundleCreationIndex` consumer — a regression from the suffix-symmetric
-#         `isForwardCreated` predicate (AC-B1) back to exact `.has(ref)` membership.
 #
 # Exit 0 = no proxy present. Nonzero = at least one proxy detected.
 #
@@ -56,24 +53,6 @@ if require_file "$MUX_RUNNER"; then
     fail "PROXY (ii): flake-budget token (check-flake-budget|test:fast:budget|--test-concurrency=8) found in the PER-TICKET path mux-runner.ts — the flake budget is once-per-bundle only, never in the per-ticket completion path (AC-A3)."
   fi
 fi
-
-# --- CHECK (iii): exact-only forward-ref membership regression ---
-# For EACH buildBundleCreationIndex consumer: (a) it MUST import the suffix-symmetric
-# `isForwardCreated` predicate, and (b) it MUST NOT decide forward-ref suppression via
-# exact `creationIndex.has(...)` membership. A revert to `.has()` re-introduces the
-# token and trips (b); removing the suffix predicate trips (a).
-check_forward_ref_consumer() {
-  local file="$1"
-  require_file "$file" || return
-  if [ "$(grep -c "isForwardCreated" "$file")" -lt 1 ]; then
-    fail "PROXY (iii): $file no longer references the suffix-symmetric isForwardCreated predicate — forward-ref suppression must use isForwardCreated, not exact membership (AC-B1)."
-  fi
-  if grep -nE "creationIndex\.has\(" "$file" >/dev/null 2>&1; then
-    fail "PROXY (iii): $file uses exact-string membership creationIndex.has(...) for forward-ref suppression — this is the AC-B1 regression away from the suffix-symmetric isForwardCreated predicate."
-  fi
-}
-check_forward_ref_consumer "$CHECK_READINESS"
-check_forward_ref_consumer "$AUDIT_TICKET_BUNDLE"
 
 # --- CHECK (i): raw-exit-code completion bypass (POSITIVE invariant) ---
 # A pickle/phase SUCCESS must be decided by the canonical `evaluateEpicCompletion`
@@ -164,7 +143,7 @@ NODE_EOF
 fi
 
 if [ "$audit_exit_code" -eq 0 ]; then
-  echo "audit-design-ground-truth: OK — no R-DSAN proxy (i/ii/iii/iv) present in $SOURCE_ROOT"
+  echo "audit-design-ground-truth: OK — no R-DSAN proxy (i/ii/iv) present in $SOURCE_ROOT"
 fi
 
 exit "$audit_exit_code"

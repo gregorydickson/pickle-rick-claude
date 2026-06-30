@@ -10,7 +10,7 @@ import { isRecord } from '../lib/is-record.js';
 import { formatLocalDateKey, safeErrorMessage, writeStateFile } from '../services/pickle-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { readRecoverableJsonObject } from '../services/recoverable-json.js';
-import { FORWARD_REF_ANNOTATION_RE, isForwardCreated, resolveExtensionDir } from '../services/forward-ref-annotation.js';
+import { resolveExtensionDir } from '../services/forward-ref-annotation.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { SCOPE_AUTO_EXTEND_MAX, createResolverCache, detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
 const SNAPSHOT_FILE = 'readiness_snapshot.json';
@@ -42,15 +42,6 @@ const CORRECTION_NOTE_RE = /\*\(refined:[\s\S]*?\)\*/g;
 function stripCorrectionNotes(content) {
     return content.replace(CORRECTION_NOTE_RE, ' ');
 }
-// R-RTRC-7 forward-reference annotation: backticked token followed by exactly
-// one ASCII space and either a legacy `(forward-created)` marker, the hybrid
-// `(forward-created by ticket <hash>)` marker, a canonical
-// `(created|introduced) by ticket <hash>` parenthetical, or the symbol-audit
-// compatibility alias `(created by R-<CODE>-N)`. Hash format = 8-char short
-// SHA OR ticket-dir basename. Resolver matches 6-12 alphanumeric to give some
-// flexibility while remaining strict.
-const FORWARD_REF_ANNOTATION_HASH_RE = /^[A-Za-z0-9]{6,12}$/;
-const FORWARD_REF_REQUIREMENT_RE = /^R-[A-Z0-9]+(?:-[A-Z0-9]+)*-\d+$/;
 const ALLOWLIST_FILE_REL = 'extension/.readiness-allowlist.json';
 // R-CCR-13: head segments that identify inline code snippets (test-runner
 // context or workflow inputs) rather than in-repo contract references.
@@ -191,186 +182,8 @@ function isEventNameLiteral(ref) {
     const parts = ref.replace(/\(\)$/, '').split('.');
     return parts.length >= 3 && parts.every((part) => /^[a-z][a-z0-9_]*$/.test(part));
 }
-function isPathLikeForwardRefToken(token) {
-    return token.includes('/') || /\.[A-Za-z][A-Za-z0-9]*$/.test(token);
-}
-/**
- * R-RTRC-2 / R-RTRC-7: Extract forward-reference annotations from PRD/ticket content.
- *
- * Annotation schema (R-RTRC-7):
- *   - position OUTSIDE backticks
- *   - separated by EXACTLY one ASCII space (no-space, two-space, tab → malformed)
- *   - canonical form: `(created|introduced) by ticket <hash>`
- *   - compatibility aliases: `(forward-created)` for bundle-authored paths,
- *     `(forward-created by ticket <hash>)` for the hybrid bundle+attribution form, and
- *     `(created by R-<CODE>-N)` for symbol-audit-authored forward references
- *   - hash = 8-char short SHA OR ticket-dir basename (resolver normalizes by length)
- *
- * Returns:
- *   - `valid`: tokens whose annotation parses cleanly. Resolver MUST skip these
- *              (forward-created artifacts that do not yet exist at HEAD).
- *   - `malformed`: annotations whose separator/hash format is wrong; resolver
- *                  emits an `annotation_format` finding for each.
- */
-function classifyForwardRefVerb(annotationBody, verbRaw) {
-    if (annotationBody.startsWith('forward-created'))
-        return 'forward-created';
-    if (verbRaw === 'introduced')
-        return 'introduced';
-    return 'created';
-}
-function extractHybridForwardRefHash(annotationBody) {
-    if (annotationBody === 'forward-created')
-        return undefined;
-    if (!annotationBody.startsWith('forward-created'))
-        return undefined;
-    const m = /^forward-created\s+by\s+ticket\s+([A-Za-z0-9]{6,12})$/.exec(annotationBody);
-    return m?.[1];
-}
-function isAnnotationCanonicalHashValid(isForwardCreated, requirementCode, hash) {
-    if (isForwardCreated)
-        return true;
-    if (requirementCode)
-        return FORWARD_REF_REQUIREMENT_RE.test(requirementCode);
-    return Boolean(hash) && FORWARD_REF_ANNOTATION_HASH_RE.test(hash);
-}
-export function extractForwardRefAnnotations(content) {
-    const valid = new Set();
-    const malformed = [];
-    const re = new RegExp(FORWARD_REF_ANNOTATION_RE.source, FORWARD_REF_ANNOTATION_RE.flags);
-    for (const match of content.matchAll(re)) {
-        const [raw, token, separator, annotationBody, _canonicalBody, verbRaw, hashRaw, requirementAlias] = match;
-        const hash = hashRaw?.trim();
-        const requirementCode = requirementAlias?.trim().replace(/^created by\s+/, '');
-        const isForwardCreated = annotationBody.startsWith('forward-created');
-        const verbTyped = classifyForwardRefVerb(annotationBody, verbRaw);
-        const annotation = { token: token.trim(), separator, verb: verbTyped, raw };
-        if (hash)
-            annotation.hash = hash;
-        if (requirementCode)
-            annotation.hash = requirementCode;
-        const hybridHash = extractHybridForwardRefHash(annotationBody);
-        if (hybridHash)
-            annotation.hash = hybridHash;
-        const invalidRequirementAliasTarget = Boolean(requirementCode) && isPathLikeForwardRefToken(annotation.token);
-        const invalidCanonicalHash = !isAnnotationCanonicalHashValid(isForwardCreated, requirementCode, hash);
-        if (separator !== ' ' || invalidCanonicalHash || invalidRequirementAliasTarget) {
-            malformed.push(annotation);
-            continue;
-        }
-        valid.add(annotation.token);
-    }
-    return { valid, malformed };
-}
-// R-FRA-6 (88a4cdd6 E1/E2): a forward-created file declared in a ticket's
-// "Files to modify/create" (or "Files to create") section — whether as a bold
-// inline declaration `**Files to modify/create**: \`a.ts\`, \`b.ts\`` or under a
-// `## Files to modify/create` heading — is creation-OK across EVERY citation
-// surface (verify-command strings, table cells, cross-ticket refs), not just the
-// line that carries an inline annotation. This harvests the declared paths from
-// one ticket's content. Bare "Files to modify" (no "/create") is intentionally
-// excluded — a modify-only path must still exist at HEAD (ATB-02 contract).
-const DECLARED_CREATE_HEADING_RE = /^#{1,6}\s+.*files\s+to\s+(?:modify\/create|create)\b/i;
-const DECLARED_CREATE_INLINE_RE = /\*{0,2}files\s+to\s+(?:modify\/create|create)\*{0,2}\s*:/i;
-function backtickedPathTokens(line) {
-    const tokens = [];
-    for (const match of line.matchAll(/`([^`]+)`/g)) {
-        const value = match[1].trim();
-        PATH_RE.lastIndex = 0;
-        if (PATH_RE.test(value))
-            tokens.push(value);
-        PATH_RE.lastIndex = 0;
-    }
-    return tokens;
-}
-export function extractDeclaredCreatePaths(content) {
-    const result = new Set();
-    let inCreateSection = false;
-    for (const line of content.split(/\r?\n/)) {
-        if (/^#{1,6}\s/.test(line)) {
-            inCreateSection = DECLARED_CREATE_HEADING_RE.test(line);
-        }
-        if (inCreateSection || DECLARED_CREATE_INLINE_RE.test(line)) {
-            for (const token of backtickedPathTokens(line))
-                result.add(token);
-        }
-    }
-    return result;
-}
-// R-RCFF (ticket 96443088 Step 2): a dotted Output field-path declared in a
-// ticket's `## Interface Contracts` Outputs whose owning schema file is in that
-// ticket's `## Files to modify` is being CREATED by the bundle. We derive this
-// from the ticket's already-declared files — NOT a new annotation grammar — and
-// add the dotted token to the creation set so the contract resolver treats it as
-// forward-created (advisory) instead of an unresolved `contract` finding.
-// HEAD-absence needs no explicit check here: a token that already resolves via
-// `resolveSymbolRef` never reaches a finding, so seeding a resolvable token is a
-// no-op; only genuinely net-new dotted tokens benefit.
-const FORWARD_FIELD_DOTTED_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/;
-function sectionSlice(content, headingRe) {
-    const lines = content.split(/\r?\n/);
-    const start = lines.findIndex((line) => headingRe.test(line));
-    if (start < 0)
-        return '';
-    const body = [];
-    for (let i = start + 1; i < lines.length; i += 1) {
-        if (/^#{1,6}\s/.test(lines[i]))
-            break;
-        body.push(lines[i]);
-    }
-    return body.join('\n');
-}
-export function extractForwardCreatedFieldPaths(content) {
-    // `## Files to modify` is NOT matched by DECLARED_CREATE_*_RE (those key on
-    // "modify/create" or "create"), so detect this section form explicitly.
-    const filesSection = sectionSlice(content, /^#{1,6}\s+.*files\s+to\s+modify\b/i);
-    const inlineFilesMatch = /\*{0,2}files\s+to\s+modify\*{0,2}\s*:.*/i.exec(content);
-    const declaredFiles = new Set();
-    for (const line of filesSection.split(/\r?\n/)) {
-        for (const token of backtickedPathTokens(line))
-            declaredFiles.add(token);
-    }
-    if (inlineFilesMatch) {
-        for (const token of backtickedPathTokens(inlineFilesMatch[0]))
-            declaredFiles.add(token);
-    }
-    if (declaredFiles.size === 0)
-        return [];
-    const contractsSection = sectionSlice(content, /^#{1,6}\s+Interface\s+Contracts\b/i);
-    const dotted = new Set();
-    for (const match of contractsSection.matchAll(/`([^`]+)`/g)) {
-        const value = match[1].trim();
-        if (FORWARD_FIELD_DOTTED_RE.test(value) && !SNIPPET_HEAD_SEGMENTS.has(value.split('.')[0])) {
-            dotted.add(value);
-        }
-    }
-    return [...dotted];
-}
-// R-FRA-6 (88a4cdd6 E1/E2) + R-RCFF #2: the bundle-creation index — additive whitelist
-// of every forward-created path declared ("Files to create" / "modify/create" section
-// or annotation) ANYWHERE in the bundle. AC-B1: suppression is decided by the shared
-// suffix-symmetric `isForwardCreated` predicate at the consumer (findPathFindings), so a
-// genuinely phantom path (neither a suffix of nor suffixed by any declared path) still
-// flags (teeth). R-RCFF #2: annotation is an OPTIONAL hint, NOT a requirement — a file
-// path declared in any ticket's "Files to create" set is suppressed via this index even
-// when the referencing ticket omitted the `(forward-created)` annotation.
-// R-RCFF (ticket 96443088): forward-created dotted field-paths (Step 2) are also seeded
-// so the contract resolver can demote them to advisory.
-export function buildBundleCreationIndex(ticketContents) {
-    const index = new Set();
-    for (const content of ticketContents) {
-        for (const declared of extractDeclaredCreatePaths(content))
-            index.add(declared);
-        for (const annotated of extractForwardRefAnnotations(content).valid)
-            index.add(annotated);
-        for (const field of extractForwardCreatedFieldPaths(content))
-            index.add(field);
-    }
-    return index;
-}
 export function extractContractReferences(rawContent) {
     const content = stripCorrectionNotes(rawContent);
-    const annotations = extractForwardRefAnnotations(content);
     const refs = new Set();
     for (const match of content.matchAll(PATH_RE))
         refs.add(match[0]);
@@ -396,7 +209,6 @@ export function extractContractReferences(rawContent) {
         .filter((ref) => !refs.has(`${ref}()`))
         .filter((ref) => !isDocExtensionBasename(ref))
         .filter((ref) => !isEventNameLiteral(ref))
-        .filter((ref) => !annotations.valid.has(ref))
         .sort();
 }
 function resolvePathRef(ref, repoRoot, ticket, sessionDir, cache) {
@@ -598,28 +410,14 @@ function findMachinabilityFindings(ticketFile, content) {
     }
     return findings;
 }
-function findAnnotationFormatFindings(ticketFile, content) {
-    // R-RTRC-7: emit annotation_format findings for malformed forward-reference annotations.
-    return extractForwardRefAnnotations(content).malformed.map((malformed) => ({
-        ticket: ticketFile,
-        kind: 'annotation_format',
-        analyst: 'gaps',
-        message: 'annotation-format-error: forward-reference annotation must be `<token>` (forward-created) or `<token>` (created|introduced) by ticket <8-12-char-hash> or `<token>` (created by R-<CODE>-N) — exactly one ASCII space separator',
-        detail: malformed.raw,
-    }));
-}
 // R-RCFF (Step 1+3): a ref matching the bundle creation index is forward-created
-// by the bundle — advisory, NOT a blocking contract finding. Genuinely-unresolvable
-// refs (absent from the index AND at HEAD) keep kind:'contract' and still block.
-function unresolvedContractFinding(ticketFile, ref, creationIndex) {
-    const forwardCreated = creationIndex?.has(ref) ?? false;
+// Genuinely-unresolvable refs (absent at HEAD) keep kind:'contract'.
+function unresolvedContractFinding(ticketFile, ref) {
     return {
         ticket: ticketFile,
-        kind: forwardCreated ? 'advisory' : 'contract',
+        kind: 'contract',
         analyst: 'codebase',
-        message: forwardCreated
-            ? 'Referenced contract is forward-created by the bundle (advisory)'
-            : 'Referenced contract does not resolve',
+        message: 'Referenced contract does not resolve',
         detail: ref,
     };
 }
@@ -629,7 +427,6 @@ export function findReadinessFindings(ticketFile, repoRoot, opts) {
     if (opts.checkMachinability)
         findings.push(...findMachinabilityFindings(ticketFile, content));
     if (opts.checkContracts) {
-        findings.push(...findAnnotationFormatFindings(ticketFile, content));
         const allowlist = opts.allowlist ?? opts.cache?.allowlist ?? new Set();
         const cache = opts.cache ?? createResolverCache(repoRoot, opts.maxWallMs ?? DEFAULT_MAX_WALL_MS, allowlist);
         for (const ref of extractContractReferences(content)) {
@@ -649,7 +446,7 @@ export function findReadinessFindings(ticketFile, repoRoot, opts) {
                 break;
             }
             if (!resolveSymbolRef(ref, repoRoot, cache)) {
-                findings.push(unresolvedContractFinding(ticketFile, ref, opts.creationIndex));
+                findings.push(unresolvedContractFinding(ticketFile, ref));
             }
         }
     }
@@ -975,41 +772,20 @@ function findPrdMapFindings(tickets, manifest, sourceRequirements) {
         detail: requirement,
     }));
 }
-function findPathFindings(ticket, repoRoot, sessionDir, cache, creationIndex = new Set()) {
+function findPathFindings(ticket, repoRoot, sessionDir, cache) {
     // R-RHFP: drop `*(refined: ...)*` correction notes so stale old paths
     // quoted inside them are not flagged as unresolved.
     const content = stripCorrectionNotes(fs.readFileSync(ticket.file, 'utf-8'));
-    // R-RTRC-2: skip annotated forward-references — they're documented as
-    // forward-created so the resolver MUST not flag them as unresolved paths.
-    // R-RCFF #2: annotation is now a FALLBACK hint, not the sole suppressor — a path
-    // declared in ANY bundle ticket's "Files to create" set is suppressed below via the
-    // `creationIndex` predicate regardless of whether THIS reference site annotated it.
-    const annotatedTokens = extractForwardRefAnnotations(content).valid;
     const allowlist = cache?.allowlist ?? new Set();
     const refs = new Set();
     for (const match of content.matchAll(PATH_RE))
         refs.add(match[0]);
-    // AC-B3: a `file_path` ref has EXACTLY TWO dispositions — hard-halt or
-    // suppressed. There is deliberately no intermediate tier; ReadinessFinding
-    // carries no certainty/score field (see the interface at the top of this file).
-    // It HARD-HALTS iff it suffix-matches NEITHER a declared-forward-created path NOR
-    // a HEAD path — i.e. a true phantom. Otherwise it auto-suppresses. The predicate
-    // is the deterministic disjunction below:
-    //   suffixMatchesForwardCreatedOrHead(ref)
-    //     = isForwardCreated(ref, creationIndex)   // AC-B1: declared-forward-created
-    //                                              // suffix-symmetric set
-    //       || resolvePathRef(ref, ...)            // AC-B2 + R-RTRC-4: HEAD path set
-    //                                              // (repo-prefix strip + git
-    //                                              // ls-files `(?:^|/)<ref>$`)
-    // Keeping a ref as a finding requires it to satisfy NEITHER (a genuine phantom).
-    // The `annotatedTokens` (R-RTRC-2/7) and `allowlist` (R-RTRC-5) filters below are
-    // pre-existing, distinct suppression surfaces — NOT a third AC-B3 class.
-    const suffixMatchesForwardCreatedOrHead = (ref) => isForwardCreated(ref, creationIndex) || resolvePathRef(ref, repoRoot, ticket, sessionDir, cache);
+    // A `file_path` ref hard-halts iff it suffix-matches no HEAD path (a true
+    // phantom) — via R-RTRC-4's repo-prefix strip + git ls-files `(?:^|/)<ref>$`.
+    // The `allowlist` (R-RTRC-5) filter below is a distinct suppression surface.
     return [...refs].sort()
-        .filter((ref) => !annotatedTokens.has(ref))
         .filter((ref) => !allowlist.has(ref))
-        // AC-B3 two-class predicate: hard-halt ⟺ no forward-created AND no HEAD suffix.
-        .filter((ref) => !suffixMatchesForwardCreatedOrHead(ref))
+        .filter((ref) => !resolvePathRef(ref, repoRoot, ticket, sessionDir, cache))
         .map((ref) => ({
         ticket: ticket.file,
         kind: 'file_path',
@@ -1340,10 +1116,6 @@ export function runReadiness(args) {
         ? createResolverCache(args.repoRoot, args.maxWallMs, allowlist)
         : undefined;
     const pathCache = resolverCache ?? createResolverCache(args.repoRoot, args.maxWallMs, allowlist);
-    // R-FRA-6 (88a4cdd6 E1/E2): build the bundle-creation index ONCE over every
-    // selected ticket so a forward-created path declared in one ticket is honored
-    // when cited (in a command, table, or cross-ticket ref) by any ticket.
-    const bundleCreationIndex = buildBundleCreationIndex(selected.files.map((file) => fs.readFileSync(file, 'utf-8')));
     // R-SIGF (WS-1): signature-change-caller-gap scan. Blocking when flag off or count > cap;
     // advisory when kill-switch active, bypass reason set, or flag on + count ≤ cap.
     const sigTickets = selected.files.map((file) => ({
@@ -1353,9 +1125,9 @@ export function runReadiness(args) {
     const autoExtend = readScopeAutoExtend(args.sessionDir);
     const findings = [
         ...findPrdMapFindings(tickets, manifest, sourceRequirements),
-        ...tickets.flatMap((ticket) => findPathFindings(ticket, args.repoRoot, args.sessionDir, pathCache, bundleCreationIndex)),
+        ...tickets.flatMap((ticket) => findPathFindings(ticket, args.repoRoot, args.sessionDir, pathCache)),
         ...tickets.flatMap((ticket) => findDependencyFindings(ticket, refs)),
-        ...selected.files.flatMap((file) => findReadinessFindings(file, args.repoRoot, { checkMachinability, checkContracts, cache: resolverCache, maxWallMs: args.maxWallMs, allowlist, creationIndex: bundleCreationIndex })),
+        ...selected.files.flatMap((file) => findReadinessFindings(file, args.repoRoot, { checkMachinability, checkContracts, cache: resolverCache, maxWallMs: args.maxWallMs, allowlist })),
         ...findSignatureChangeCallerGapFindings(sigTickets, args.repoRoot, pathCache, {
             autoExtend,
             skipQualityGatesReason: state?.flags?.skip_quality_gates_reason,

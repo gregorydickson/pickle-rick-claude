@@ -221,7 +221,7 @@ test('R-RHFP (BUG #1): a performance wall-budget finding does not fail the gate'
     const symbols = [
       'extractContractReferences()', 'extractAcceptanceCriteria()', 'isMachineCheckable()',
       'parseArgs()', 'runHistory()', 'findReadinessFindings()', 'loadReadinessAllowlist()',
-      'extractForwardRefAnnotations()', 'runReadiness()', 'resolveSymbolRef()',
+      'runReadiness()', 'resolveSymbolRef()',
       'gitTrackedFiles()', 'createResolverCache()',
     ];
     fs.writeFileSync(path.join(ticketDir, 'linear_ticket_wb0001.md'), [

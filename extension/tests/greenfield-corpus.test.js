@@ -3,7 +3,6 @@
 //
 //   POSITIVE corpus (historically-blocking, now-ready — must PASS, zero skip-flags):
 //     (a) loa727-ac-shape    — AC-shape cross-field parametrized recognition (refiner gate)
-//     (b) fra-forward-create — R-FRA forward-created path honored (readiness + ticket-audit)
 //     (c) forced-budget      — R-RHFP wall-budget `performance` finding is non-blocking
 //     (d) deep-path          — R-RTRC-4 bare-basename suffix-match (readiness, fresh repo)
 //
@@ -108,34 +107,6 @@ test('POSITIVE (a): LOA-727 parametrized ticket passes the AC-shape gate with ze
   );
 });
 
-// ── POSITIVE (b) — R-FRA forward-created bundle ─────────────────────────────
-test('POSITIVE (b): forward-created bundle passes readiness + ticket-audit with zero skip-flags', () => {
-  const sessionDir = tmpDir();
-  const dataRoot = tmpDir('pickle-greenfield-data-');
-  try {
-    copyFixtureTicket(sessionDir, 'fra-forward-create', 'aaaa0010');
-    copyFixtureTicket(sessionDir, 'fra-forward-create', 'bbbb0070');
-    writeSessionState(sessionDir, REPO_ROOT);
-
-    const readiness = runReadiness(sessionDir, REPO_ROOT, [], dataRoot);
-    assert.equal(readiness.status, 0, `readiness must pass; stderr=${readiness.stderr}; stdout=${readiness.stdout}`);
-    const out = JSON.parse(readiness.stdout);
-    assert.equal(out.status, 'pass');
-    assert.equal(
-      out.findings.filter((f) => f.kind === 'contract' || f.kind === 'file_path').length, 0,
-      `no contract/file_path finding expected; got ${JSON.stringify(out.findings)}`,
-    );
-
-    const audit = runAuditBundle(sessionDir);
-    assert.equal(audit.status, 0, `ticket-audit must pass; stdout=${audit.stdout}; stderr=${audit.stderr}`);
-
-    assertNoSkipFlags(sessionDir);
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
-
 // ── POSITIVE (c) — forced-budget-override wall-budget (indeterminate, not fail) ──
 test('POSITIVE (c): forced --max-wall-ms 1 yields an advisory performance finding, status pass', () => {
   const sessionDir = tmpDir();
@@ -148,7 +119,7 @@ test('POSITIVE (c): forced --max-wall-ms 1 yields an advisory performance findin
     const symbols = [
       'extractContractReferences()', 'extractAcceptanceCriteria()', 'isMachineCheckable()',
       'parseArgs()', 'runHistory()', 'findReadinessFindings()', 'loadReadinessAllowlist()',
-      'extractForwardRefAnnotations()', 'runReadiness()',
+      'runReadiness()',
       'gitTrackedFiles()', 'createResolverCache()', 'resolveSymbolRef()',
     ];
     writeTicket(sessionDir, 'cc000001', [

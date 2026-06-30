@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { extractForwardRefAnnotations, isForwardCreated, resolveExtensionDir } from '../services/forward-ref-annotation.js';
+import { resolveExtensionDir } from '../services/forward-ref-annotation.js';
 
 const MANIFEST_SCHEMA_VERSION = 1 as const;
 const TICKET_HASH_RE = /^[0-9a-f]{8}$/;
@@ -312,82 +312,9 @@ export function detectCrossDocNamingDrift(
   return drifts;
 }
 
-function lineContext(text: string, token: string): string {
-  const idx = text.indexOf(token);
-  if (idx === -1) return '';
-  const start = text.lastIndexOf('\n', idx) + 1;
-  const end = text.indexOf('\n', idx);
-  return text.slice(start, end === -1 ? text.length : end);
-}
-
-function hasForwardRefPathAnnotation(context: string, token: string): boolean {
-  return extractForwardRefAnnotations(context).includes(token);
-}
-
-// Paths under "## Files to create" headings are forward-create-OK — they don't exist at HEAD by design.
-export function extractForwardCreatePaths(body: string): Set<string> {
-  const lines = body.split('\n');
-  const result = new Set<string>();
-  let inCreateSection = false;
-  for (const line of lines) {
-    if (/^#{1,6}\s/.test(line)) {
-      inCreateSection = /files\s+to\s+create/i.test(line);
-    }
-    if (inCreateSection) {
-      for (const p of extractBacktickedPaths(line)) {
-        result.add(p);
-      }
-    }
-  }
-  return result;
-}
-
-// R-FRA-6 (88a4cdd6 E1/E2): harvest paths declared forward-created in a ticket's
-// "Files to modify/create" or "Files to create" section — bold inline
-// (`**Files to modify/create**: ...`) or heading-led. DISTINCT from
-// `extractForwardCreatePaths` (create-only, per-ticket, ATB-06 contract): this
-// also accepts the "modify/create" combined heading and feeds the bundle-wide
-// index. Bare "Files to modify" (no "/create") is excluded — modify-only paths
-// must exist at HEAD (ATB-02 contract).
-const DECLARED_CREATE_HEADING_RE = /^#{1,6}\s+.*files\s+to\s+(?:modify\/create|create)\b/i;
-const DECLARED_CREATE_INLINE_RE = /\*{0,2}files\s+to\s+(?:modify\/create|create)\*{0,2}\s*:/i;
-export function extractDeclaredCreatePaths(body: string): Set<string> {
-  const result = new Set<string>();
-  let inCreateSection = false;
-  for (const line of body.split('\n')) {
-    if (/^#{1,6}\s/.test(line)) {
-      inCreateSection = DECLARED_CREATE_HEADING_RE.test(line);
-    }
-    if (inCreateSection || DECLARED_CREATE_INLINE_RE.test(line)) {
-      for (const p of extractBacktickedPaths(line)) result.add(p);
-    }
-  }
-  return result;
-}
-
-// R-FRA-6 (88a4cdd6 E1/E2) + R-RCFF #2: bundle-creation index — additive whitelist of
-// every forward-created path declared ("Files to create" / "modify/create" section or
-// annotation) across ALL tickets in the bundle. AC-B1: suffix-symmetric suppression is
-// decided by the shared `isForwardCreated` predicate at the consumer (checkPathDrift);
-// a phantom path that is neither a suffix of nor suffixed by any declared path still
-// produces a fatal path-drift finding (teeth preserved). R-RCFF #2: annotation is an
-// OPTIONAL hint, NOT a requirement — a file path declared in any ticket's "Files to
-// create" set is suppressed via this index here (BEFORE the annotation check at
-// :checkPathDrift) even when the referencing ticket omitted the annotation.
-// MUST stay parity-aligned with check-readiness.ts:buildBundleCreationIndex (gate parity).
-export function buildBundleCreationIndex(tickets: ParsedTicket[]): Set<string> {
-  const index = new Set<string>();
-  for (const t of tickets) {
-    for (const declared of extractDeclaredCreatePaths(t.body)) index.add(declared);
-    for (const annotated of extractForwardRefAnnotations(t.body)) index.add(annotated);
-  }
-  return index;
-}
-
-export function checkPathDrift(t: ParsedTicket, gitFiles: Set<string>, creationIndex: Set<string> = new Set()): Finding[] {
+export function checkPathDrift(t: ParsedTicket, gitFiles: Set<string>): Finding[] {
   const findings: Finding[] = [];
   const seen = new Set<string>();
-  const forwardCreatePaths = extractForwardCreatePaths(t.body);
   // Pre-convert for suffix-match (R-RTRC-4 parity); built once, not per token.
   const gitFilesArr = Array.from(gitFiles);
   for (const tok of extractBacktickedPaths(t.body)) {
@@ -400,24 +327,13 @@ export function checkPathDrift(t: ParsedTicket, gitFiles: Set<string>, creationI
     const escapedStripped = stripped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const suffixRe = new RegExp(`(?:^|/)${escapedStripped}$`);
     if (gitFiles.has(stripped) || gitFilesArr.some((f) => suffixRe.test(f))) continue;
-    if (forwardCreatePaths.has(stripped)) continue;
-    // R-FRA-6 (88a4cdd6 E1/E2) + AC-B1 + R-RCFF #2: bundle-wide declared
-    // forward-create ("Files to create" / "modify/create" section or annotation),
-    // matched suffix-symmetrically (a declared `extension/tests/X` suppresses a
-    // `tests/X` ref and vice versa) so this gate stays parity-aligned with
-    // check-readiness; teeth preserved for genuine phantoms. This declared-creation
-    // check runs FIRST — the annotation grammar below is now only a FALLBACK hint for
-    // a path that was annotated but not declared in any create section.
-    if (isForwardCreated(stripped, creationIndex)) continue;
-    const ctx = lineContext(t.body, tok);
-    if (hasForwardRefPathAnnotation(ctx, tok) || hasForwardRefPathAnnotation(ctx, stripped)) continue;
     findings.push({
       ticket_id: t.id,
       ticket_path: t.relPath,
       defect_class: 'path-drift',
       severity: 'fatal',
       evidence: `cited path \`${tok}\` not found in git ls-files`,
-      remediation_hint: 'verify path or annotate per R-RTRC-7 (`(forward-created)` or `(created|introduced) by ticket <hash>`)',
+      remediation_hint: 'verify the cited path resolves at HEAD',
     });
   }
   return findings;
@@ -548,15 +464,13 @@ function checkHallucinatedPremise(t: ParsedTicket, ctx: AuditContext): Finding[]
     const escapedStripped = stripped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const suffixRe = new RegExp(`(?:^|/)${escapedStripped}$`);
     if (ctx.gitFiles.has(stripped) || gitFilesArr.some((f) => suffixRe.test(f))) continue;
-    const ctxLine = lineContext(t.problemSection, tok);
-    if (hasForwardRefPathAnnotation(ctxLine, tok)) continue;
     findings.push({
       ticket_id: t.id,
       ticket_path: t.relPath,
       defect_class: 'hallucinated-premise',
       severity: 'fatal',
       evidence: `Problem section cites nonexistent code path \`${tok}\``,
-      remediation_hint: 'rewrite premise against a real path, mark `(forward-created)`, or add disposition exemption',
+      remediation_hint: 'rewrite premise against a real path, or add disposition exemption',
     });
   }
   return findings;
@@ -621,9 +535,9 @@ export function checkMissingAuditComment(t: ParsedTicket): Finding[] {
   ];
 }
 
-function auditTicket(t: ParsedTicket, ctx: AuditContext, creationIndex: Set<string> = new Set()): Finding[] {
+function auditTicket(t: ParsedTicket, ctx: AuditContext): Finding[] {
   return [
-    ...checkPathDrift(t, ctx.gitFiles, creationIndex),
+    ...checkPathDrift(t, ctx.gitFiles),
     ...checkSelfReference(t),
     ...checkMissingDeps(t, ctx.knownTicketHashes),
     ...checkWrongHead(t, ctx),
@@ -704,13 +618,9 @@ export function auditSession(sessionDir: string, scriptDir: string): AuditManife
   const ticketDirs = [...ctx.knownTicketHashes].sort();
   const files = findTicketFiles(absSession, ticketDirs);
   const parsed = files.map((f) => parseTicket(f, absSession)).filter((t): t is ParsedTicket => t !== null);
-  // R-FRA-6 (88a4cdd6 E1/E2): build the bundle-creation index over every parsed
-  // ticket so a forward-created path declared in one ticket is honored when cited
-  // by any ticket (command, table, or cross-ticket ref).
-  const creationIndex = buildBundleCreationIndex(parsed);
   const findings: Finding[] = [];
   for (const t of parsed) {
-    findings.push(...auditTicket(t, ctx, creationIndex));
+    findings.push(...auditTicket(t, ctx));
   }
   const exit_code = findings.some((f) => f.severity === 'fatal' || f.severity === 'warning') ? 1 : 0;
   return {

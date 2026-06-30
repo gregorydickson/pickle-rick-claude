@@ -50,40 +50,6 @@ test('scanAnalystOutputsForUnverifiedPaths: emits warning for phantom backticked
     }
 });
 
-test('scanAnalystOutputsForUnverifiedPaths: suppresses warning when path is forward-ref-annotated', () => {
-    const refinementDir = tmpDir('pickle-apv-refine-');
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
-        initGitRepo(workingDir);
-        fs.writeFileSync(
-            path.join(refinementDir, 'analysis_requirements.md'),
-            '# Analysis\n\nCitation: `extension/services/future.ts` (forward-created) — coming soon.\n'
-        );
-        const warnings = scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir);
-        assert.equal(warnings.length, 0);
-    } finally {
-        fs.rmSync(refinementDir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
-    }
-});
-
-test('scanAnalystOutputsForUnverifiedPaths: suppresses warning for hybrid forward-ref annotation (F1 + F5)', () => {
-    const refinementDir = tmpDir('pickle-apv-refine-');
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
-        initGitRepo(workingDir);
-        fs.writeFileSync(
-            path.join(refinementDir, 'analysis_risk-scope.md'),
-            '# Analysis\n\nCitation: `extension/services/h.ts` (forward-created by ticket abc12345) — hybrid form.\n'
-        );
-        const warnings = scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir);
-        assert.equal(warnings.length, 0);
-    } finally {
-        fs.rmSync(refinementDir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
-    }
-});
-
 test('scanAnalystOutputsForUnverifiedPaths: ignores non-canonical (per-cycle) files', () => {
     const refinementDir = tmpDir('pickle-apv-refine-');
     const workingDir = tmpDir('pickle-apv-work-');

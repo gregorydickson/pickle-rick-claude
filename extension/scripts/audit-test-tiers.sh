@@ -47,7 +47,6 @@ audit_file() {
   esac
 }
 
-# R-FRA-2: audit-ticket-forward-refs.test.js is auto-discovered via find below.
 if [ "$#" -gt 0 ]; then
   for file in "$@"; do
     audit_file "$file"

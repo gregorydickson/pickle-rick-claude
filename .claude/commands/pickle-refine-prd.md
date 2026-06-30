@@ -205,22 +205,6 @@ After completing each ticket body, append this single-line audit comment as the 
 
 ### 7c: Create Child Tickets
 
-> 🚦 Forward-reference hygiene — Before writing any backticked path or symbol in a ticket body, verify it resolves at HEAD (`git ls-files <path>` for files; `git grep -n '<symbol>'` for symbols). If the artifact does not exist yet because it is created by this bundle, AUTO-EMIT the canonical forward-reference annotation immediately after the closing backtick, separated by exactly one ASCII space — never wait for the operator to hand-annotate. Choose the form by who creates the artifact:
->
-> | Form | When | Example |
-> |---|---|---|
-> | `(forward-created)` | the SAME ticket creates it | `` `extension/tests/my-new.test.js` (forward-created) `` |
-> | `(created by ticket <hash>)` | a DIFFERENT bundle ticket creates the path/file | `` `src/bin/new-helper.ts` (created by ticket 76605b8f) `` |
-> | `(introduced by ticket <hash>)` | a DIFFERENT bundle ticket introduces the symbol | `` `MyNewHelper` (introduced by ticket 76605b8f) `` |
->
-> `<hash>` is the creating ticket's dir basename (or its 8-char short SHA) — `[A-Za-z0-9]{6,12}`.
->
-> **Forward-created event literals get the same treatment** (closes the R-RTRC-7 event-literal gap): a backticked activity-event name introduced by the bundle carries the canonical annotation, e.g. `` `worker_auto_skip_oversized` (created by ticket <hash>) ``.
->
-> **NEVER emit the bare `(ticket <hash>)` form** — the readiness validator does not recognize it and the bundle false-blocks. Use one of the three canonical forms above.
->
-> Annotation must be **outside** the backticks. No-space, two-space, or tab separators emit `annotation-format-error` at readiness. See R-RTRC-7 in `extension/CLAUDE.md` for the full schema.
-
 **Loop discipline**: complete every iteration as a `Write` of `linear_ticket_<hash>.md` — one file per atomic task from 7a. Do not substitute TaskCreate for the file write. If a harness task-tool reminder fires mid-loop, ignore it and finish the loop. After the loop, verify with `ls ${SESSION_ROOT}/*/linear_ticket_*.md | wc -l` matches your decomposition count from 7a.
 
 Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `linear_ticket_[hash].md`:

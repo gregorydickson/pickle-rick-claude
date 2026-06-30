@@ -184,20 +184,6 @@ When writing acceptance criteria or analyzing PRD sections that reference activi
 | \`scope_auto_extended\` | \`gate_payload.added_paths\`, \`gate_payload.symbols\`, \`gate_payload.cap_hit\` | pipeline-runner setupScope build-phase bounded scope auto-extension (paths-mode; over-cap extends nothing) |
 
 When writing ACs that assert event emission, include the full event name and required payload fields. Do NOT invent event names — use only the names listed here or already present in \`extension/src/types/index.ts:VALID_ACTIVITY_EVENTS\`.`;
-export const PATH_VERIFICATION_PROMPT_SECTION = `## Path Verification & Forward-reference hygiene
-
-**Every file path or symbol you cite in \`## Files\`, \`## Locations\`, \`## Acceptance Criteria\`, or any backticked reference MUST be verified before being included in your output.** Follow this protocol for each backticked token:
-
-1. **Paths** — Run \`git ls-files <path>\` in the working directory; empty output means the path is not tracked at HEAD.
-2. **Symbols** — Verify the symbol is defined or exported at HEAD via \`grep -n '<symbol>' <files>\` or \`git grep -n '<symbol>'\`. Stdlib/external-package APIs (\`Promise.all\`, \`fs.readFileSync\`, \`process.exit\`) must NEVER be backticked because the readiness contract resolver treats them as in-repo refs and reports false positives.
-3. **Forward-created artifacts** — If a path does not exist at HEAD and is created by THIS bundle (introduced in a sibling ticket), mark it as (forward-created) with a sibling-ticket reference, then annotate per R-RTRC-7 annotation schema:
-   For any path listed under \`Implementation Details > Files to modify/create\` that does not exist at HEAD, append the canonical forward-reference annotation immediately after the backticked path as either \`(forward-created)\` or \`(created by ticket <hash>)\`. Write it as \`\\\`path/to/file.ts\\\` (forward-created)\` or \`\\\`path/to/file.ts\\\` (created by ticket <hash>)\`; the annotation stays OUTSIDE the backticks and is separated by exactly one ASCII space.
-   - Format: \`\\\`path/to/file.ts\\\` (created by ticket <8-char-hash-or-ticket-dir-basename)\` — annotation OUTSIDE backticks, separated by **exactly one ASCII space** (no-space, two-space, or tab separators emit \`annotation-format-error\`).
-   - \`(introduced by ticket <hash>)\` is the equivalent annotation for symbols.
-   - Hash format: 8-char short SHA OR ticket-dir basename (both 8-char alphanumerics; resolver accepts either).
-4. **Backtick discipline** — Backtick a path/symbol ONLY when (a) the path check above confirms it exists at HEAD, OR (b) the symbol resolves at HEAD, OR (c) it carries a valid forward-reference annotation. Never backtick stdlib/external-package imports or refs that do not yet exist.
-
-Consult the per-requirement disposition table at \`extension/src/data/bundle-disposition-2026-05-04.json\` (R-BUNDLE-DISPO-1) when citing paths — requirements with disposition \`DROP\` or \`REGRESSION-TEST-ONLY\` must not drive new file creation.`;
 export const BUNDLE_OF_BUNDLES_FANOUT_SECTION = `## Bundle-of-bundles fan-out
 
 When the PRD frontmatter declares a \`composes:\` field, this PRD is a **bundle-of-bundles**: it composes one or more source PRDs, each of which may already carry its own atomic ticket decomposition.
@@ -312,21 +298,15 @@ export function emitStaleAnchorWarnings(warnings) {
         process.stderr.write(`[pickle-rick] stale-anchor ${citation.raw} (PRD line ${citation.sourceLine}): ${warning.detail}\n`);
     }
 }
-const PATH_FORWARD_REF_ANNOTATION_RE = /^ \((?:forward-created(?:\s+by\s+ticket\s+[A-Za-z0-9]{6,12})?|(?:created|introduced) by ticket [A-Za-z0-9]{6,12})\)(?:\b|$|[\s,.;:])/;
 // Parses analyst output for backtick file paths, checks each via git ls-files,
 // and emits path_not_verified breadcrumbs for unclaimed non-existent paths.
-// Forward-reference annotations ((forward-created), (created by ticket ...), (introduced by ticket ...))
-// suppress the warning. Section I will land these in refinement_manifest.json.ticket_quality_warnings[].
+// Section I will land these in refinement_manifest.json.ticket_quality_warnings[].
 export function checkAnalystOutputPaths(content, workingDir) {
     const warnings = [];
     const backtickPathRe = /`([a-zA-Z][a-zA-Z0-9/_.-]*\/[a-zA-Z0-9/_.-]+)`/g;
     let match;
     while ((match = backtickPathRe.exec(content)) !== null) {
         const citedPath = match[1];
-        const afterMatch = content.slice(match.index + match[0].length);
-        if (PATH_FORWARD_REF_ANNOTATION_RE.test(afterMatch)) {
-            continue;
-        }
         const result = spawnSync('git', ['ls-files', citedPath], {
             cwd: workingDir,
             encoding: 'utf-8',
@@ -365,7 +345,6 @@ function buildPromptGuidanceSections() {
     return [
         buildTierClassificationSection(),
         AC_SHAPE_PROMPT_SECTION,
-        PATH_VERIFICATION_PROMPT_SECTION,
         DECOMPOSITION_COLOCATION_PROMPT_SECTION,
         BUNDLE_OF_BUNDLES_FANOUT_SECTION,
     ].join('\n');
@@ -1421,8 +1400,6 @@ const ACTIVITY_EVENT_TRIGGER_RE = /\b(?:activity[-_\s]?events?|event_type|logAct
 const NON_EVENT_ACTIVITY_CONTEXT_RE = /\b(?:enum value|state field|phase outcome|gate outcome)\b/i;
 const SOURCE_FILE_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|sh|py|css|scss|html)$/;
 const SKIP_SOURCE_DIRS = new Set(['.git', 'node_modules', 'dist', 'coverage', '.turbo', '.next']);
-const FORWARD_CREATE_EVENT_TICKET_RE = '[A-Za-z0-9]{6,12}';
-const FORWARD_CREATE_EVENT_REQUIREMENT_RE = 'R-[A-Z0-9]+(?:-[A-Z0-9]+)*-\\d+';
 function lineRefs(content) {
     return content.split(/\r?\n/).map((line, index) => ({ line, sourceLine: index + 1 }));
 }
@@ -1501,11 +1478,6 @@ export function resolveComposesChain(prdPath) {
     visit(prdPath);
     return resolved;
 }
-export function parseForwardCreateAnnotation(afterQuotedToken) {
-    const annotationRe = new RegExp(`^ \\((?:forward-created|(?:created|introduced) by ticket ${FORWARD_CREATE_EVENT_TICKET_RE}|created by ${FORWARD_CREATE_EVENT_REQUIREMENT_RE})\\)(?:\\b|$|[\\s,.;:])`);
-    const match = annotationRe.exec(afterQuotedToken);
-    return match?.[0].trim();
-}
 function uniqueReferences(refs) {
     const seen = new Set();
     return refs.filter((ref) => {
@@ -1516,11 +1488,6 @@ function uniqueReferences(refs) {
         return true;
     });
 }
-/*
-TRAP DOOR: R-SAOV-7 forward-create annotation acceptance
-Symbol audit accepts forward-create annotations matching the path schema for events + helpers.
-New bundle wrappers MUST be reviewable for false-positive enum-value backticks on trigger-phrase lines.
-*/
 // enum-value heuristic:
 // Trigger-phrase lines are still the entrypoint for activity-event auditing.
 // When the same line also advertises enum/state prose, quoted snake_case values
@@ -1552,19 +1519,13 @@ function collectActivityEventReferences(prdContent, declaredSymbols = []) {
                 continue;
             if (!shouldAuditActivityEventToken(line, match.index, raw))
                 continue;
-            const afterMatch = line.slice(match.index + raw.length);
-            const annotation = raw.startsWith('`') ? parseForwardCreateAnnotation(afterMatch) : undefined;
-            const status = valid.has(symbol) ? 'valid' : annotation ? 'forward-create' : 'phantom';
+            const status = valid.has(symbol) ? 'valid' : 'phantom';
             refs.push({
                 symbol,
                 sourceLine,
                 evidence: line.trim(),
                 status,
-                ...(status === 'phantom'
-                    ? { reason: 'not present in VALID_ACTIVITY_EVENTS' }
-                    : status === 'forward-create'
-                        ? { reason: annotation }
-                        : {}),
+                ...(status === 'phantom' ? { reason: 'not present in VALID_ACTIVITY_EVENTS' } : {}),
             });
         }
     }
@@ -1682,23 +1643,17 @@ function collectHelperSentinelReferences(prdContent, workingDir, declaredSymbols
         QUOTED_SYMBOL_RE.lastIndex = 0;
         let match;
         while ((match = QUOTED_SYMBOL_RE.exec(line)) !== null) {
-            const [raw, symbol] = match;
+            const [, symbol] = match;
             if (!/^[A-Za-z_$][A-Za-z0-9_$.-]*$/.test(symbol))
                 continue;
-            const afterMatch = line.slice(match.index + raw.length);
-            const annotation = raw.startsWith('`') ? parseForwardCreateAnnotation(afterMatch) : undefined;
             const grounded = valid.has(symbol) || hasSourceHit(symbol, workingDir);
-            const status = grounded ? 'valid' : annotation ? 'forward-create' : 'phantom';
+            const status = grounded ? 'valid' : 'phantom';
             refs.push({
                 symbol,
                 sourceLine,
                 evidence: line.trim(),
                 status,
-                ...(status === 'phantom'
-                    ? { reason: 'no source-tree hit found' }
-                    : status === 'forward-create'
-                        ? { reason: annotation }
-                        : {}),
+                ...(status === 'phantom' ? { reason: 'no source-tree hit found' } : {}),
             });
         }
     }
@@ -1786,9 +1741,7 @@ export function runSymbolAuditEnforcement(report) {
     if (report.ok)
         return PipelineRunnerExitCode.Success;
     process.stderr.write(`[pickle-rick] symbol audit failed: ${report.findings.length} phantom symbol(s).\n`);
-    process.stderr.write('[pickle-rick] To allow forward-create symbols, either (a) annotate with (forward-created)\n' +
-        'or (created by R-<CODE>-N) outside the backticks, or (b) ensure the symbol is declared\n' +
-        "in a PRD listed in this bundle's `composes:` frontmatter.\n");
+    process.stderr.write("[pickle-rick] Ensure each cited symbol is declared at HEAD or in a PRD listed in this bundle's `composes:` frontmatter.\n");
     for (const finding of report.findings) {
         process.stderr.write(`[pickle-rick] ${finding.category} ${finding.symbol} (PRD line ${finding.sourceLine}): ${finding.reason}\n`);
     }

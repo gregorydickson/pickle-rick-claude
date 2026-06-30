@@ -9,10 +9,7 @@
  *
  *   1. premature-advance   — pipeline advances past pickle on a clean mux exit-0
  *                            while runnable tickets remain (AC-A1, fix 508cb144).
- *   2. suffix-asymmetry    — readiness flags a forward-created path referenced in
- *                            a different path-suffix form than declared
- *                            (AC-B1, fix ee6aa68f).
- *   3. read-block          — config-protection blocks a READ-ONLY Bash command
+ *   2. read-block          — config-protection blocks a READ-ONLY Bash command
  *                            over a protected path (AC-C1, fix 983b3de8).
  *
  * Each test asserts the FIXED behavior, so the corpus is RED on the pre-fix
@@ -22,7 +19,7 @@
  * missing-symbol ERROR. Every test drives a STABLE entry point that EXISTS at
  * BOTH `4f7b79f4` AND HEAD, so on old code the test fails because the BEHAVIOR
  * is wrong, never because an import/reference throws. The fixed-this-bundle
- * functions (`maybeStampPicklePendingTickets`, `isForwardCreated`,
+ * functions (`maybeStampPicklePendingTickets`,
  * `bashWritesProtectedConfig`) are deliberately NOT called — they do not exist
  * at `4f7b79f4` and would turn a clean RED into a reference ERROR.
  *
@@ -150,72 +147,6 @@ test('B-DSAN2 incident-3 read-block: cat over a protected config file approves (
     'approve',
     `read-block regression: a read-only cat over a protected config file must approve; got ${JSON.stringify(result)}`,
   );
-});
-
-// ===========================================================================
-// Incident 2 — suffix-asymmetry (readiness forward-created false-positive)
-// ===========================================================================
-
-function runReadinessContractOnly(sessionDir) {
-  return spawnSync(process.execPath, [
-    READINESS_BIN,
-    '--session-dir', sessionDir,
-    '--repo-root', REPO_ROOT,
-    '--contract-only',
-  ], { encoding: 'utf-8', timeout: 15000 });
-}
-
-test('B-DSAN2 incident-2 suffix-asymmetry: bare tests/X ref against declared deep extension/tests/X is suppressed', () => {
-  // RED on 4f7b79f4: exact `creationIndex.has(ref)` membership misses the bare
-  // `tests/X` suffix of a declared deep `extension/tests/X`, so the bare ref
-  // (forward-created, unresolvable at HEAD) yields a blocking file_path finding
-  // → exit 2. GREEN on HEAD: suffix-symmetric suppression yields 0 findings.
-  const sessionDir = tmpDir('dsan2-readiness-');
-  try {
-    const ticketDir = path.join(sessionDir, 'dsan2sfx1');
-    fs.mkdirSync(ticketDir, { recursive: true });
-    // Unique fixture basename so it never resolves to a real tracked file (that
-    // would false-green the suppression assertion).
-    fs.writeFileSync(path.join(ticketDir, 'linear_ticket_dsan2sfx1.md'), [
-      '---',
-      'id: dsan2sfx1',
-      'key: DSAN2-SUFFIX-ASYMMETRY',
-      'ac_ids: []',
-      '---',
-      '',
-      '# B-DSAN2 suffix-asymmetry (declared deep, referenced bare)',
-      '',
-      '## Files to create',
-      '',
-      '- `extension/tests/dsan2-suffix-asymmetry-fixture.test.js`',
-      '',
-      '## Description',
-      '',
-      'The new test lives at `tests/dsan2-suffix-asymmetry-fixture.test.js`.',
-      '',
-      '## Acceptance Criteria',
-      '',
-      '- [ ] `node --test tests/dsan2-suffix-asymmetry-fixture.test.js` exits 0.',
-      '',
-    ].join('\n'));
-
-    const result = runReadinessContractOnly(sessionDir);
-    assert.equal(
-      result.status,
-      0,
-      `suffix-asymmetry regression: expected readiness exit 0, got ${result.status}; stderr=${result.stderr}; stdout=${result.stdout}`,
-    );
-    const out = JSON.parse(result.stdout);
-    assert.equal(out.status, 'pass');
-    const pathFindings = out.findings.filter((f) => f.kind === 'file_path');
-    assert.equal(
-      pathFindings.length,
-      0,
-      `suffix-asymmetry regression: bare tests/X ref must be suppressed by the declared deep path; got ${JSON.stringify(pathFindings)}`,
-    );
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
 });
 
 // ===========================================================================

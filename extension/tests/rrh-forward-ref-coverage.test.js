@@ -15,7 +15,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_ROOT = path.resolve(__dirname, '..');
 const CHECK_READINESS = path.join(EXT_ROOT, 'bin', 'check-readiness.js');
 const AUDIT_BUNDLE = path.join(EXT_ROOT, 'bin', 'audit-ticket-bundle.js');
-const FWD_REF_SH = path.join(EXT_ROOT, 'scripts', 'audit-ticket-forward-refs.sh');
 
 let DATA_ROOT;
 before(() => {
@@ -61,65 +60,6 @@ function writeStateJson(sessionDir, workingDir) {
   }));
 }
 
-// ---------------------------------------------------------------------------
-// E1/E2 + integration — coverage bundle: annotated forward-created paths cited in
-// a verify-COMMAND, a TABLE cell, and a CROSS-TICKET ref. ZERO findings, both
-// validators pass, no skip flag.
-// ---------------------------------------------------------------------------
-test('E1/E2: annotated forward-created paths in command/table/cross-ticket → check-readiness zero findings AND audit passes (no skip flag)', () => {
-  const sessionDir = tmpDir('pickle-fra6-cov-');
-  const workingDir = tmpDir('pickle-fra6-repo-');
-  try {
-    gitInit(workingDir);
-    writeStateJson(sessionDir, workingDir);
-    // Ticket A: declares the forward-created files; cites one in a verify-command
-    // and one in a table cell; references a file created by ticket B.
-    writeTicket(sessionDir, 'aaaa1111', [
-      '---', 'id: aaaa1111', 'key: AAAA', 'ac_ids: []', '---', '',
-      '# Coverage A', '',
-      '## Files to create', '',
-      '- `extension/src/services/fra6-new-helper.ts` (forward-created)',
-      '- `extension/tests/fra6-new.test.js` (forward-created)', '',
-      '## Implementation Details',
-      '**Files to modify/create**: `extension/src/services/fra6-new-helper.ts`, `extension/tests/fra6-new.test.js`', '',
-      '## Acceptance Criteria',
-      '- [ ] Verify: `extension/tests/fra6-new.test.js` (forward-created) exits 0', '',
-      '| File | Status |', '|---|---|',
-      '| `extension/src/services/fra6-new-helper.ts` (forward-created) | created |', '',
-      'Cross-ticket: `extension/src/services/fra6-cross.ts` (created by ticket bbbb2222).', '',
-      '<!-- audit: 7-class checked 2026-06-12 -->', '',
-    ]);
-    // Ticket B: declares the cross-referenced file in its own create section.
-    writeTicket(sessionDir, 'bbbb2222', [
-      '---', 'id: bbbb2222', 'key: BBBB', 'ac_ids: []', '---', '',
-      '# Coverage B', '',
-      '## Files to create', '',
-      '- `extension/src/services/fra6-cross.ts` (forward-created)', '',
-      '## Acceptance Criteria',
-      '- [ ] File `extension/src/services/fra6-cross.ts` (forward-created) exists.', '',
-      '<!-- audit: 7-class checked 2026-06-12 -->', '',
-    ]);
-
-    const readiness = runReadiness(sessionDir);
-    const out = JSON.parse(readiness.stdout);
-    assert.equal(readiness.status, 0, `check-readiness expected exit 0; stdout=${readiness.stdout}; stderr=${readiness.stderr}`);
-    assert.equal(out.status, 'pass');
-    assert.deepEqual(out.findings, [], `expected zero findings, got ${JSON.stringify(out.findings)}`);
-
-    const audit = runAuditBundle(sessionDir);
-    const blocking = audit.stdout.split('\n').filter((l) => /\bfatal\b|\bwarning\b/.test(l));
-    assert.equal(audit.status, 0, `audit expected exit 0; stdout=${audit.stdout}; blocking=${JSON.stringify(blocking)}`);
-
-    // No skip flag was set anywhere (the gate passed on its own merits).
-    const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
-    assert.equal(state.flags?.skip_readiness_reason, undefined, 'no readiness skip flag');
-    assert.equal(state.flags?.skip_ticket_audit_reason, undefined, 'no ticket-audit skip flag');
-    assert.equal(state.flags?.skip_quality_gates_reason, undefined, 'no blanket skip flag');
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-    fs.rmSync(workingDir, { recursive: true, force: true });
-  }
-});
 
 // ---------------------------------------------------------------------------
 // Control / teeth — one REAL phantom path + one phantom event. BOTH validators
@@ -168,64 +108,6 @@ test('Control/teeth: a genuine phantom path + phantom event → BOTH validators 
     const audit = runAuditBundle(sessionDir);
     assert.equal(audit.status, 1, `audit expected exit 1; stdout=${audit.stdout}`);
     assert.ok(audit.stdout.includes(PHANTOM_PATH), 'audit names the phantom path');
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-    fs.rmSync(workingDir, { recursive: true, force: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// E3 — grammar unit matrix: the four trailing-char forms all parse.
-// ---------------------------------------------------------------------------
-test('E3: FORWARD_REF_ANNOTATION_RE parses all four trailing-char forms', async () => {
-  const mod = await import(path.join(EXT_ROOT, 'services', 'forward-ref-annotation.js'));
-  const cases = [
-    ['`a/b.ts` (forward-created))', 'a/b.ts'],
-    ['`a/b.ts` (forward-created),', 'a/b.ts'],
-    ['`a/b.ts` (created by ticket ab1234cd).', 'a/b.ts'],
-    ['`a/b.ts` (introduced by ticket ab1234cd);', 'a/b.ts'],
-  ];
-  for (const [text, expectedToken] of cases) {
-    const re = new RegExp(mod.FORWARD_REF_ANNOTATION_RE.source, mod.FORWARD_REF_ANNOTATION_RE.flags);
-    const m = re.exec(text);
-    assert.ok(m, `should match: ${text}`);
-    assert.equal(m[1], expectedToken, `token mismatch for: ${text}`);
-    // The simple extractor returns the token cleanly (no swallowed trailing char).
-    assert.deepEqual(mod.extractForwardRefAnnotations(text), [expectedToken], `extractor mismatch for: ${text}`);
-  }
-  // Canonical ticket-hash forms expose the bounded hash group (group 6), never the
-  // trailing punctuation.
-  const re2 = new RegExp(mod.FORWARD_REF_ANNOTATION_RE.source, mod.FORWARD_REF_ANNOTATION_RE.flags);
-  const hashMatch = re2.exec('`a/b.ts` (created by ticket ab1234cd).');
-  assert.equal(hashMatch[6], 'ab1234cd', 'hash group must be exactly the 8-char hash, not "ab1234cd)."');
-});
-
-// ---------------------------------------------------------------------------
-// E4 — the contract resolver honors the annotation (not only the path branch):
-// a forward-created SYMBOL cited (and annotated) in an Interface Contract is NOT
-// a contract finding.
-// ---------------------------------------------------------------------------
-test('E4: contract resolver honors annotated forward-created symbol (not just paths)', () => {
-  const sessionDir = tmpDir('pickle-fra6-e4-');
-  const workingDir = tmpDir('pickle-fra6-repo-');
-  try {
-    gitInit(workingDir);
-    writeStateJson(sessionDir, workingDir);
-    writeTicket(sessionDir, 'dddd4444', [
-      '---', 'id: dddd4444', 'key: DDDD', 'ac_ids: []', '---', '',
-      '# E4 contract honoring', '',
-      '## Interface Contracts',
-      // Annotated forward-created symbol — the contract resolver must skip it.
-      '- `Fra6NewService.computeImpact` (created by ticket dddd4444) MUST exist.', '',
-      '## Acceptance Criteria',
-      '- [ ] Command writes a JSON `kind` field equal to `bundle`.', '',
-      '<!-- audit: 7-class checked 2026-06-12 -->', '',
-    ]);
-    const readiness = runReadiness(sessionDir);
-    const out = JSON.parse(readiness.stdout);
-    assert.equal(readiness.status, 0, `expected exit 0; stdout=${readiness.stdout}`);
-    const contractFindings = out.findings.filter((f) => f.kind === 'contract');
-    assert.deepEqual(contractFindings, [], `annotated forward-created symbol must not be a contract finding, got ${JSON.stringify(contractFindings)}`);
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
@@ -300,30 +182,5 @@ test('E6: path branch skips URLs, >2-slash identifier lists, and node_modules pa
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Integration AC — audit-ticket-forward-refs.sh green against the coverage bundle.
-// The script inspects "## Files to create" sections; fully-annotated paths exit 0.
-// ---------------------------------------------------------------------------
-test('integration: audit-ticket-forward-refs.sh exits 0 against the annotated coverage bundle', () => {
-  const sessionDir = tmpDir('pickle-fra6-sh-');
-  try {
-    writeTicket(sessionDir, 'aaaa1111', [
-      '---', 'id: aaaa1111', 'key: AAAA', 'ac_ids: []', '---', '',
-      '# Coverage', '',
-      '## Files to create', '',
-      '- `extension/src/services/fra6-new-helper.ts` (forward-created)',
-      '- `extension/tests/fra6-new.test.js` (created by ticket aaaa1111)',
-      '- `extension/src/services/fra6-cross.ts` (introduced by ticket bbbb2222)', '',
-      '<!-- audit: 7-class checked 2026-06-12 -->', '',
-    ]);
-    const result = spawnSync('bash', [FWD_REF_SH, sessionDir], {
-      encoding: 'utf-8', timeout: 15000, env: { ...process.env, PICKLE_DATA_ROOT: DATA_ROOT },
-    });
-    assert.equal(result.status, 0, `forward-refs.sh expected exit 0; stderr=${result.stderr}; stdout=${result.stdout}`);
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });

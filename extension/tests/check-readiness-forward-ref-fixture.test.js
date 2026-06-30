@@ -1,6 +1,5 @@
 // @tier: fast
-// R-RTRC-6: regression suite — 3 fixture tickets exercising each of:
-//   RC-1: forward-ref-annotated bundle artifact (R-RTRC-2 + R-RTRC-7)
+// R-RTRC-6: regression suite — fixture tickets exercising each of:
 //   RC-2: test-defined helper resolves via lifted tests/ exclusion (R-RTRC-3)
 //   RC-3: deep repo path resolves via git ls-files suffix-match (R-RTRC-4)
 // AC-RTRC-01: contract-only run on a regression fixture exits 0.
@@ -37,40 +36,6 @@ function runReadiness(sessionDir, repoRoot = REPO_ROOT, extraArgs = []) {
         ...extraArgs,
     ], { encoding: 'utf-8', timeout: 15000 });
 }
-
-test('R-RTRC-6 RC-1: forward-ref-annotated bundle artifact resolves clean', () => {
-    const sessionDir = tmpDir();
-    try {
-        // Forward-created path (does NOT exist at HEAD) annotated per R-RTRC-7
-        // schema. Annotation MUST be exactly `(created by ticket <hash>)` with
-        // exactly one ASCII space separator. Resolver skips the path (R-RTRC-2).
-        writeTicket(sessionDir, 'rc1ann01', [
-            '---',
-            'id: rc1ann01',
-            'key: RC1-ANN',
-            'ac_ids: []',
-            '---',
-            '',
-            '# RC-1 forward-ref-annotated artifact',
-            '',
-            '## Files',
-            '',
-            '- `extension/services/forward-created-by-ticket-rc1ann01.ts` (created by ticket rc1ann01)',
-            '',
-            '## Acceptance Criteria',
-            '',
-            '- [ ] Command writes a JSON file with field `kind` matching exactly `bundle`.',
-            '',
-        ].join('\n'));
-        const result = runReadiness(sessionDir);
-        assert.equal(result.status, 0, `expected exit 0, got ${result.status}; stderr=${result.stderr}; stdout=${result.stdout}`);
-        const out = JSON.parse(result.stdout);
-        assert.equal(out.status, 'pass');
-        assert.deepEqual(out.findings, []);
-    } finally {
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
-});
 
 test('R-RTRC-6 RC-2: test-defined helper resolves via lifted tests/ exclusion', () => {
     const sessionDir = tmpDir();
@@ -119,83 +84,6 @@ test('R-RTRC-6 RC-2: test-defined helper resolves via lifted tests/ exclusion', 
     } finally {
         fs.rmSync(sessionDir, { recursive: true, force: true });
         fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-});
-
-test('AC-B1 B1-SUFFIX: declared deep `extension/tests/X` suppresses a bare `tests/X` ref', () => {
-    const sessionDir = tmpDir();
-    try {
-        // Forward-created path declared under ## Files as the DEEP form, then
-        // referenced elsewhere as the bare `tests/X` form. Exact membership would
-        // miss the bare ref; suffix-symmetric suppression must catch it.
-        writeTicket(sessionDir, 'b1suffix1', [
-            '---',
-            'id: b1suffix1',
-            'key: B1-SUFFIX',
-            'ac_ids: []',
-            '---',
-            '',
-            '# B1 suffix-symmetric (declared deep, referenced bare)',
-            '',
-            '## Files to create',
-            '',
-            '- `extension/tests/b1suffix-fixture.test.js`',
-            '',
-            '## Description',
-            '',
-            'The new test lives at `tests/b1suffix-fixture.test.js`.',
-            '',
-            '## Acceptance Criteria',
-            '',
-            '- [ ] `node --test tests/b1suffix-fixture.test.js` exits 0.',
-            '',
-        ].join('\n'));
-        const result = runReadiness(sessionDir);
-        assert.equal(result.status, 0, `expected exit 0, got ${result.status}; stderr=${result.stderr}; stdout=${result.stdout}`);
-        const out = JSON.parse(result.stdout);
-        assert.equal(out.status, 'pass');
-        const pathFindings = out.findings.filter((f) => f.kind === 'file_path');
-        assert.equal(pathFindings.length, 0, `bare tests/X ref must be suppressed by declared deep path; got ${JSON.stringify(pathFindings)}`);
-    } finally {
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
-});
-
-test('AC-B1 B1-REVERSE: declared bare `tests/X` suppresses a deep `extension/tests/X` ref', () => {
-    const sessionDir = tmpDir();
-    try {
-        // Reverse direction: declared as the BARE form, referenced as the DEEP
-        // form. The declared bare path is a suffix of the deep ref.
-        writeTicket(sessionDir, 'b1rev001', [
-            '---',
-            'id: b1rev001',
-            'key: B1-REVERSE',
-            'ac_ids: []',
-            '---',
-            '',
-            '# B1 reverse direction (declared bare, referenced deep)',
-            '',
-            '## Files to create',
-            '',
-            '- `tests/b1reverse-fixture.test.js`',
-            '',
-            '## Description',
-            '',
-            'Wired from `extension/tests/b1reverse-fixture.test.js`.',
-            '',
-            '## Acceptance Criteria',
-            '',
-            '- [ ] `node --test extension/tests/b1reverse-fixture.test.js` exits 0.',
-            '',
-        ].join('\n'));
-        const result = runReadiness(sessionDir);
-        assert.equal(result.status, 0, `expected exit 0, got ${result.status}; stderr=${result.stderr}; stdout=${result.stdout}`);
-        const out = JSON.parse(result.stdout);
-        assert.equal(out.status, 'pass');
-        const pathFindings = out.findings.filter((f) => f.kind === 'file_path');
-        assert.equal(pathFindings.length, 0, `deep ref must be suppressed by declared bare path; got ${JSON.stringify(pathFindings)}`);
-    } finally {
-        fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 });
 
@@ -330,45 +218,6 @@ test('AC-B2 B2-NONMATCH: non-matching prefix `other-repo/X` is NOT stripped (sti
         assert.equal(pathFindings.length, 1, `non-matching prefix must NOT be stripped and must flag once; got ${JSON.stringify(out.findings)}`);
     } finally {
         fs.rmSync(path.dirname(repoRoot), { recursive: true, force: true });
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
-});
-
-test('AC-B3 two-class: forward-created suffix ref → suppressed (exit 0)', () => {
-    const sessionDir = tmpDir();
-    try {
-        // A path declared forward-created (deep form) under `## Files to create`,
-        // then referenced via its bare suffix elsewhere. AC-B3 class 1: a ref that
-        // suffix-matches a declared-forward-created path auto-suppresses → exit 0.
-        writeTicket(sessionDir, 'b3sup001', [
-            '---',
-            'id: b3sup001',
-            'key: B3-SUPPRESS',
-            'ac_ids: []',
-            '---',
-            '',
-            '# AC-B3 forward-created suffix suppressed',
-            '',
-            '## Files to create',
-            '',
-            '- `extension/tests/b3suppress-fixture.test.js`',
-            '',
-            '## Description',
-            '',
-            'Wired at `tests/b3suppress-fixture.test.js`.',
-            '',
-            '## Acceptance Criteria',
-            '',
-            '- [ ] `node --test tests/b3suppress-fixture.test.js` exits 0.',
-            '',
-        ].join('\n'));
-        const result = runReadiness(sessionDir);
-        assert.equal(result.status, 0, `expected exit 0, got ${result.status}; stderr=${result.stderr}; stdout=${result.stdout}`);
-        const out = JSON.parse(result.stdout);
-        assert.equal(out.status, 'pass');
-        const pathFindings = out.findings.filter((f) => f.kind === 'file_path');
-        assert.equal(pathFindings.length, 0, `forward-created suffix ref must be suppressed; got ${JSON.stringify(pathFindings)}`);
-    } finally {
         fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 });
