@@ -6,14 +6,18 @@ on purpose. Shipped-release detail and closed-finding forensics live in
 [`MASTER_PLAN-archive.md`](MASTER_PLAN-archive.md) + `git log`; the full finding catalog is in
 [`BUG-INDEX.md`](BUG-INDEX.md).
 
-**Updated 2026-06-29.** Shipped + deployed + released through **v2.0.0-beta.30** (B-RELHYG reliability hygiene:
-R-MVFM microverse plateau-memory + date-fixture time-bomb audit + R-OMTD afterEach reap; beta.29 R-SIGF
-scope-fence + R-MWBG half-1; beta.28 R-WPEX; beta.27 B-APNC; beta.26 B-CWGE; beta.25 B-PXBO). **All known
-reliability defect classes are code-fixed at root** — the completion-commit/Done-flip cluster (B-PCOMP beta.22 +
-B-DURA beta.23), the review-phase 0/4 cause (B-RPGT beta.24), the codex worker-gate (B-CWGE beta.26), the
-phase-exit oracle (B-PXBO beta.25), and the codex scope-fence GA blocker (R-SIGF beta.29). **The actionable
-reliability-FIX queue is now DRAINED; we are in OBSERVATION mode** (GA gate = field-soak repeatability, not more
-bundles). See `## ⏯ RESUME HERE` for the strategic fork + the reverted-R-MWBG root cause + this session's lessons.
+**Updated 2026-06-30.** Shipped + deployed + released through **v2.0.0-beta.31** (R-MWBG runtime half:
+explicit-tier detached-routing gate — R-MWBG now FULLY closed; beta.30 B-RELHYG; beta.29 R-SIGF scope-fence +
+R-MWBG half-1; beta.28 R-WPEX; beta.27 B-APNC; beta.26 B-CWGE; beta.25 B-PXBO). **The historical reliability
+defect classes are code-fixed at root** — the completion-commit/Done-flip cluster (B-PCOMP beta.22 + B-DURA
+beta.23), the review-phase 0/4 cause (B-RPGT beta.24), the codex worker-gate (B-CWGE beta.26), the phase-exit
+oracle (B-PXBO beta.25), the codex scope-fence GA blocker (R-SIGF beta.29), and the medium-tier ceiling-survival
+gap (R-MWBG beta.31). **OBSERVATION mode is now producing new evidence-backed work, as designed:** two fresh
+bugs surfaced this window — **[[R-SSBR]] (P2, scope-resolver trusts a stale `origin/main` → false
+`SCOPE_EMPTY_DIFF` → review phases run UNSCOPED, fail-open on the scope boundary; surfaced babysitting the
+LOA-1614 pipeline)** and **[[R-ISVP]] (P3, install.sh `compare_semver` rejects prerelease → downgrade guard dead
+for the `beta.*` line)**. So the queue is NOT empty: R-SSBR is the new top actionable reliability fix. GA gate
+remains field-soak repeatability (esp. codex). See `## ⏯ RESUME HERE`.
 
 **Reliability scorecard.** Code/mechanism ✅ — the most-fixed it has ever been. claude field-soak 🟢 — **2 clean
 hands-off runs, now incl. a live MULTI-TICKET ADDITIVE bundle** (B-RPGT: 5 tickets, 4/4 phases, 178m, ZERO
@@ -43,22 +47,32 @@ green gate on the timeout path** — together they own the residual `0/N phases 
 `Done-over-red`. See
 `BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md`.
 
-## ⏯ RESUME HERE (updated 2026-06-29 — beta.30 SHIPPED; reliability-FIX queue DRAINED → OBSERVATION mode)
+## ⏯ RESUME HERE (updated 2026-06-30 — beta.31 SHIPPED+DEPLOYED; OBSERVATION mode surfaced R-SSBR P2 + R-ISVP P3)
 
-**▶ STATE: the actionable reliability-FIX queue is DRAINED.** Shipped + deployed + released through
-**v2.0.0-beta.30** (B-RELHYG: R-MVFM microverse plateau-memory + date-fixture time-bomb audit [zero genuine
-time-bombs found] + R-OMTD afterEach reap). All known completion/scope/recovery defect classes are code-fixed and
-shipped. Per the GA path we are now in **OBSERVATION mode** — the GA gate is field-soak **repeatability** (esp.
-on codex), NOT more fix bundles. No active pipeline; tree clean; `origin/main` = beta.30.
+**▶ STATE: OBSERVATION mode, and it is working as designed — two new bugs surfaced from live runs.** Shipped +
+deployed + released through **v2.0.0-beta.31** (R-MWBG runtime half — explicit-tier detached-routing gate;
+R-MWBG fully closed). The historical completion/scope/recovery/ceiling defect classes are all code-fixed and
+shipped. But babysitting live pipelines this window surfaced **[[R-SSBR]] (P2)** — scope-resolver trusts a stale
+local `origin/main` → false `SCOPE_EMPTY_DIFF` → review phases run UNSCOPED (fail-open on the scope boundary,
+amplifies [[R-SSOC]]) — and **[[R-ISVP]] (P3)** — install.sh prerelease semver. Per the GA path the gate is
+field-soak **repeatability** (esp. codex), but R-SSBR is now the **top actionable reliability fix** (it weakens
+the scope-lock guarantee the soak relies on). No active pipeline; tree clean; `origin/main` = beta.31.
 
 **▶ NEXT ACTION — priority order per the standing directive: RELIABILITY-FIX → SIMPLIFICATION → capability/evidence
 (operator-steerable).** Both the reliability-fix queue AND the major simplification levers are largely SHIPPED — the
 residuals below are narrow and each carries a blocker to a clean autonomous launch. None is blindly auto-launchable.
 
-**A. Reliability fixes — NOW FULLY DRAINED.** ✅ **[[R-MWBG]] runtime half SHIPPED beta.31** (`64fb7e12`,
-explicit-tier detached-routing gate; reuse-first, no new state/path) — closes the last open reliability *fix*.
-The entire known reliability defect class is now code-fixed + shipped on claude. No actionable reliability fix
-remains; the residual reliability work is *evidence* (the codex field-soak, track C) and *simplification* (track B).
+**A. Reliability fixes (drain first).** The historical class is code-fixed + shipped (✅ **[[R-MWBG]] runtime
+half SHIPPED beta.31** `64fb7e12` — explicit-tier detached-routing gate, reuse-first). OBSERVATION mode then
+surfaced new fix work:
+1. **[[R-SSBR]] — P2, the new top actionable reliability fix (scope-resolver fail-open).** A stale/racing local
+   `refs/remotes/origin/main` makes `resolveAllowedFromDiffMode` compute an empty `HEAD...HEAD` diff → false
+   `SCOPE_EMPTY_DIFF` → no `scope.json` → citadel/anatomy/**szechuan** run UNSCOPED and may off-scope-commit
+   ([[R-SSOC]]). Fix is reuse-first + fail-SAFE (ancestry sanity-check: `baseSha===headSha` must not emit empty;
+   fall back to fork-point / local main; never run review phases unscoped when `--scope branch` was requested).
+   NORMAL pipeline (scope-resolver edit, NOT salvage path — R-PSRB N/A). **Build this next.**
+2. **[[R-ISVP]] — P3, install.sh prerelease semver** (downgrade guard dead for `beta.*`). Cheap, reuse-first
+   (widen regex + prerelease compare + drop the `exit`-in-subshell). Normal pipeline.
 
 **B. Simplification (subtract-before-add — the major levers already shipped).** The Reliability Plan's 5 structural
 meta-defects are 4-of-5 substantially addressed: completion-oracle plurality → ONE `readEvidence` oracle
@@ -300,6 +314,7 @@ repeatability holds on BOTH backends with no new completion-class seam.
 | R-MVFM | **R-MVFM (NEW — 2026-06-28, claude; surfaced while evaluating Arbor/HTR for the microverse loop)** microverse failure-memory records only **regressions**, never **plateaus** → the `## Failed Approaches (DO NOT RETRY)` denylist is **dead on the dominant stall**. `recordFailedApproach` fires from exactly one trigger — `if (classification === 'regressed')` (`microverse-runner.ts:3408`); a `held` iteration (worker changed code, metric didn't move) is never recorded, so the next worker gets an empty denylist (`appendFailedApproachesHandoff`, `:2566`) and can re-propose the same ineffective move. **Live ground truth:** all 4 microverse runs with real iterations show `failed_approaches:0` despite `held×5` plateaus (27298c24 7→4 held×5; b6b75d07 17→13 held×5) — the loop already logs `no_progress` into `failure_history` but never routes it into `failed_approaches`, the one field the worker reads. This is the **subtractive alternative to importing Arbor/HTR**: ~90% of HTR's relevant benefit for our loop is recovered by re-pointing the existing trigger; HTR's genuine residual (branching/competing live hypotheses) is DEFERRED. Caveat: all 4 runs are the same szechuan principle-violation metric (defect is code-universal, plateau shape for numeric metrics unobserved). Secondary note-only: `target:0` on an LLM-judged count is ~unreachable (don't fold target-realism in). | P3 | **✅ SHIPPED v2.0.0-beta.30 (B-RELHYG, 2026-06-29, `3bc85cee`).** Routes `held`/`no_progress` plateaus into `failed_approaches` (was regressed-only) with a dedupe guard; reuse-first (no new field/schema). Built via clean `/pickle-pipeline` (4/4, 178m). | `BUG-REPORT-2026-06-28-microverse-failure-memory-records-regressions-not-plateaus.md` |
 | B-ARBR | **B-ARBR (IDEA — 2026-06-29, captured from a LoanLight Arbor-fit review, LOA-1651)** explore using Arbor (keyless MCP autonomous metric-optimizer; HTR Idea Tree + held-out merge margin) to **tune the szechuan-sauce + anatomy-park review prompts** against a review-quality harness. Fit rationale: the prompts are a fully-ours, unconstrained tunable surface; prompt-tuning is Arbor's strongest mode; Arbor's git-worktree isolation is exactly right for parallel code-mutating review runs. **Inverse of [[R-MVFM]]** — there PR *borrows* HTR for the microverse loop; here Arbor *optimizes* PR's own prompts (complementary, not contradictory). **Make-or-break is the metric, not the ~50-line wiring:** review quality must be a **balanced, held-out** score (defect recall + regression rate + scope-adherence); a one-sided metric self-games instantly (optimize recall → flag-everything reviewer-noise; optimize safety → change-nothing). Taste ("is this code worthy") does not quantify and stays human. **Cheapest PoC:** tune szechuan to drive **off-scope-commit rate → 0** ([[reference_szechuan_soft_scope_escape]] / R-SSOC soft-scope-escape; objective, non-gameable, currently failing → real headroom) while holding deslop value at a floor. | P3 | **IDEA — capture-only, NOT scoped.** Deferred behind the reliability queue (R-MWBG runtime half P1, then R-MVFM P3). Subtractive cross-link: R-MVFM already recovers ~90% of HTR's *microverse* benefit cheaply — this is a **different surface** (review prompts), so it does not subsume R-MVFM and vice-versa. No PRD yet; author one (with the harness/metric spec) only if pursued. | capture-only — LoanLight Arbor review 2026-06-29 (Linear LOA-1651) |
 | R-ISVP | **R-ISVP (NEW — 2026-06-30, surfaced at the beta.31 closer deploy) — install.sh `compare_semver` rejects prerelease versions → downgrade guard DEAD for the whole `beta.*` line.** Regex `^[0-9]+[.][0-9]+[.][0-9]+$` (install.sh:52) matches only plain `X.Y.Z`, so every `2.0.0-beta.NN` fails validation → `exit 1` inside the `$(compare_semver ...)` subshell → empty stdout → `[ "" -lt 0 ]` → `integer expression expected` (install.sh:199), and the `if` falls through. Benign today (install proceeds) BUT the `REFUSE: source older than deployed` downgrade guard can never fire for two prereleases — an accidental `beta.31→beta.20` deploy installs silently. | P3 | **OPEN — fix direction documented (reuse-first, re-arms the existing guard).** Widen the regex to accept optional `-<prerelease>`; compare X.Y.Z first then prerelease (release > prerelease; `beta.N` numeric); replace the `exit 1`-in-subshell with a `return`/sentinel so the caller never hits `integer expression expected`. Add an install-script test for the prerelease matrix. Subtraction: removes the silent-failure mode. | `BUG-REPORT-2026-06-30-install-sh-semver-comparison-rejects-prerelease.md` |
+| R-SSBR | **R-SSBR (NEW — 2026-06-30, babysitting a `/pickle-pipeline` run, session `2026-06-29-b6bab0c8`, LOA-1614) — scope-resolver trusts a stale/racing local `refs/remotes/origin/main` → false `SCOPE_EMPTY_DIFF` → review phases run with NO scope.json (scope lock silently lost).** `resolveDefaultBase` correctly picks `origin/main`, but `resolveAllowedFromDiffMode` (`scope-resolver.js:137-163`) does `getMergeBase(origin/main,'HEAD')` then `git diff base...HEAD` against whatever the LOCAL remote-tracking ref happens to be — no `git fetch`, no sanity-check. In a ~30-worktree shared checkout (cf. [[reference_loanlight_api_shared_checkout_branch_race]]) that ref was transiently at/ahead of HEAD at resolve time → `merge-base==HEAD` → `HEAD...HEAD` empty. PROVEN stale-ref artifact: identical computation re-run yields 12 files (`merge-base 777e0e0ce...HEAD`); `origin/main` (`4556b75c7`) does NOT contain the branch's porter commit. The empty branch throws BEFORE `writeScopeJson`, so `scope.json` is never written and the CUJ-6a WARN-demotion lets citadel/anatomy/**szechuan** proceed UNSCOPED — a fail-OPEN on the scope boundary that directly enables [[R-SSOC]] off-scope auto-commits. Benign this run ONLY because the worktree held nothing but the feature (audited all 29 commits incl. szechuan `0a5037078` → zero off-scope escapes). | P2 | **OPEN — fix direction documented (reuse-first, fail-SAFE not fail-open).** (1) ancestry sanity-check: if `baseSha===headSha` (HEAD is an ancestor of baseRef) do NOT emit `SCOPE_EMPTY_DIFF` — fall back to fork-point (`git merge-base --fork-point`) / local `main`, or a distinct `SCOPE_BASE_AHEAD_OF_HEAD`; (2) optional short-timeout `git fetch` of the default branch before resolving; (3) when `--scope branch` was explicitly requested, an empty resolution must NOT silently run review phases unscoped — retry post-first-commit or hold, don't fail-open. Add a `scope-resolver` unit test: base at/ahead of HEAD must not yield empty for a branch with a real fork-point diff. Subtraction: removes a silent scope-lock-loss path. | `BUG-REPORT-2026-06-30-scope-resolver-stale-shared-base-ref-false-empty-diff.md` |
 | 124 | **R-DPMC-3** decomposition-satisfiability residual | P2 | **DEFERRED** — large additive machinery; needs operator sign-off (R-DPMC-1/-2 already shipped: B-DECOMP-SAT beta.17 / B-GROUND2 beta.16). | `archive/bundles/p2-bug-fix-bundle-b-decomp-sat-decomposition-satisfiability-2026-06-18.md` |
 | 125 | **B-GSUB** functional seam-collapse (the simplification track) | P2 | **DOC TRACK CLOSED (−9); functional lever LARGELY SHIPPED.** B-GSUB's own empirical conclusion: pure doc-guard deletion is NOT the lever — B-GROUND2-style **functional** seam-collapse is, which has largely shipped (B-GROUND2 beta.16 + B-DURA single-oracle beta.23 + B-PXBO beta.25 + R-CWGE beta.26 = 4-of-5 Reliability-Plan meta-defects). **Residual = recovery sprawl (the 5th)**: the next seam to collapse (e.g. [[R-DPMC-3]]) is operator-scoped + soak-ranked, needs sign-off on WHICH seam. Pure subtraction, no new machinery. | `archive/bundles/p2-simplification-pass-guard-inventory-subtraction-2026-06-18.md` |
 | 119 | **B-CIINT** integration-tier CI-env e2e failures | P3 | **OPEN** — Linux-CI-only subprocess-e2e flakiness; CI hygiene, **not a release gate**. Pass locally (macOS). | `archive/bundles/p3-bug-fix-bundle-b-ciint-integration-tier-ci-env-e2e.md` |
