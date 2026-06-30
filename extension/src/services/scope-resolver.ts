@@ -53,7 +53,8 @@ export type ScopeErrorCode =
   | 'SCOPE_BASE_MISSING'
   | 'SCOPE_BAD_FLAG'
   | 'SCOPE_ONE_HOP_TOO_LARGE'
-  | 'SCOPE_EMPTY_POST_BUILD';
+  | 'SCOPE_EMPTY_POST_BUILD'
+  | 'SCOPE_BASE_AHEAD_OF_HEAD';
 // R-SRAA #53: `SCOPE_ARCHIVE_EXISTS` was retired — `writeScopeArchive` now
 // rotates a pre-existing archive instead of throwing on relaunch.
 
@@ -220,6 +221,28 @@ function resolveAllowedFromDiffMode(
     const msg = err instanceof Error ? err.message : String(err);
     throw new ScopeError('SCOPE_BASE_MISSING', `Base ref "${baseRef}" not resolvable: ${msg}`);
   }
+
+  // R-SSBR: `baseSha === headSha` is also true for a genuinely-unchanged branch (baseRef IS
+  // HEAD), so disambiguate via baseRef's own resolved tip — only a tip that DIFFERS from headSha
+  // means HEAD is a strict ancestor of baseRef (baseRef has moved past HEAD). Explicit
+  // `diff:<ref>` scopes are never silently swapped.
+  if (parsed.mode !== 'diff' && baseSha === headSha) {
+    const baseRefTipSha = runGit(['rev-parse', baseRef], repoRoot, false)?.trim();
+    if (baseRefTipSha && baseRefTipSha !== headSha) {
+      const forkPointBase = resolveForkPointBase(repoRoot, baseRef, headSha);
+      if (forkPointBase) {
+        baseSha = forkPointBase;
+      } else {
+        throw new ScopeError(
+          'SCOPE_BASE_AHEAD_OF_HEAD',
+          `Base ref "${baseRef}" is ahead of HEAD (merge-base ${baseSha} equals HEAD, but ` +
+            `${baseRef} resolves to ${baseRefTipSha}) and no divergent fork-point base was ` +
+            `found; the resulting empty diff would be untrustworthy`,
+        );
+      }
+    }
+  }
+
   let paths: string[];
   try {
     paths = computeAllowedFromDiff(baseSha, headSha, repoRoot);
@@ -611,6 +634,38 @@ function resolveDefaultBase(repoRoot: string): string {
   const remoteHead = runGit(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoRoot, false)?.trim();
   if (remoteHead && remoteHead.length > 0) return remoteHead;
   return 'origin/main';
+}
+
+/**
+ * R-SSBR: when the auto-default base has moved past HEAD (`baseSha === headSha` but `baseRef`'s
+ * own tip differs from `headSha`), search for a genuinely divergent base to recompute the diff
+ * against instead of failing closed. Soft git form throughout (`runGit(..., false)`) — mirrors
+ * {@link resolveDefaultBase}; `getMergeBase`'s default `check=true` would throw and break the
+ * fallback chain. Returns the first candidate whose `candidate...headSha` diff is non-empty, or
+ * `null` if none recover a usable base.
+ */
+function resolveForkPointBase(repoRoot: string, baseRef: string, headSha: string): string | null {
+  const candidates: string[] = [];
+
+  const forkPoint = runGit(['merge-base', '--fork-point', baseRef, 'HEAD'], repoRoot, false)?.trim();
+  if (forkPoint) candidates.push(forkPoint);
+
+  // Plain merge-base only helps if it differs from headSha — otherwise it reproduces the same
+  // false-empty result the ancestry check above already detected.
+  const plainMergeBase = runGit(['merge-base', baseRef, 'HEAD'], repoRoot, false)?.trim();
+  if (plainMergeBase && plainMergeBase !== headSha) candidates.push(plainMergeBase);
+
+  const localMain = runGit(['rev-parse', 'refs/heads/main'], repoRoot, false)?.trim();
+  if (localMain) candidates.push(localMain);
+  const localMaster = runGit(['rev-parse', 'refs/heads/master'], repoRoot, false)?.trim();
+  if (localMaster) candidates.push(localMaster);
+
+  for (const candidate of candidates) {
+    if (!candidate || candidate === headSha) continue;
+    const diff = runGit(['diff', `${candidate}...${headSha}`, '--name-only'], repoRoot, false);
+    if (diff && diff.trim().length > 0) return candidate;
+  }
+  return null;
 }
 
 function listTrackedAndUntracked(repoRoot: string): string[] {

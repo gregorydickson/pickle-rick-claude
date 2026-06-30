@@ -1444,6 +1444,12 @@ export function setupScope(args) {
             sm.update(statePath, (s) => { s.phases_entered = []; });
             return null;
         }
+        if (err instanceof Error && err instanceof ScopeError && err.code === 'SCOPE_BASE_AHEAD_OF_HEAD') {
+            log(`scope-setup FATAL: SCOPE_BASE_AHEAD_OF_HEAD — ${err.message} (halting; stale/ahead base ` +
+                `ref made the diff untrustworthy — fail-closed, not proceeding unscoped)`);
+            recordExitReason(statePath, 'scope_base_ahead_of_head');
+            throw err;
+        }
         throw err;
     }
 }
