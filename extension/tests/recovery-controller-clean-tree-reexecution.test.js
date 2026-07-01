@@ -14,7 +14,6 @@
 //   AC-GA-REC-3  idempotent no-op keyed on completion_commit + recovery_attempts ledger
 //   AC-GA-REC-4  no-diff re-execution reconciles to terminal, does NOT loop
 //   AC-GA-REC-5  implementer timeout escalates to recovery_exhausted
-//   AC-GA-REC-6  large-tier routes through the routeLargeTierTicket seam, no raw spawn
 //   AC-GA-REC-7  dirty-tree rung-3 path unchanged (runRecoveryLadder, recovery-controller)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -219,37 +218,6 @@ test('AC-GA-REC-5: implementer timeout escalates to recovery_exhausted via the l
 
   assert.equal(out.kind, 'exhausted');
   assert.ok(attempts.some((a) => a.strategy === 'execute-converged-plan' && a.outcome === 'failed'));
-});
-
-test('AC-GA-REC-6: large-tier routes through the routeLargeTierTicket seam, no raw spawn', async () => {
-  const { executeConvergedPlanAdapter } = await load();
-  const sessionDir = mkTmp();
-  const workingDir = mkTmp();
-  scaffoldSession(sessionDir, { complexityTier: 'large' });
-  const statePath = writeState(sessionDir, { recovery_attempts: [] });
-
-  let seenTier = null;
-  let postDiffProbed = false;
-  const result = executeConvergedPlanAdapter({
-    sessionDir,
-    ticketId: TICKET_ID,
-    workingDir,
-    statePath,
-    log: () => {},
-    _testHooks: { isPostImplementDirty: () => { postDiffProbed = true; return true; } },
-    reExecutionSeam: {
-      spawnImplementPass: (opts) => {
-        seenTier = opts.complexityTier;
-        // Large-tier: the production seam calls routeLargeTierTicket and returns
-        // largeTierRouted; the unit stub mirrors that contract.
-        return { ok: true, largeTierRouted: true };
-      },
-    },
-  });
-
-  assert.deepEqual(result, { ok: true });
-  assert.equal(seenTier, 'large');
-  assert.equal(postDiffProbed, false, 'large-tier short-circuits before any post-diff / phase-loop work');
 });
 
 test('AC-GA-REC-7: dirty-tree rung-3 path unchanged (commit-and-continue advances)', async () => {

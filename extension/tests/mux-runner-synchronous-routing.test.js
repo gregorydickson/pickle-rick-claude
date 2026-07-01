@@ -1,9 +1,10 @@
 // @tier: fast
 //
-// B-WSPU WS-1 regression guard: all tiers route through the single synchronous
-// `runIteration` spawn path. The dual detached-worker spawn model (spawn arm +
-// poll loop + large-tier routing) was deleted; this test pins the deletion so it
-// cannot silently return, and proves the synchronous path survives.
+// B-WSPU regression guard: all tiers route through the single synchronous
+// `runIteration` spawn path. The dual detached-worker spawn model — spawn arm +
+// poll loop + large-tier routing (WS-1) AND the detached disposition path +
+// `state.detached_worker` (WS-2) — was fully deleted; this test pins the deletion
+// so it cannot silently return, and proves the synchronous path survives.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -25,7 +26,17 @@ const DELETED_DETACHED_SPAWN_SYMBOLS = [
   'BASH_TOOL_CEILING_SECONDS',
 ];
 
-test('WS-1: deleted detached-spawn symbols are absent from the module surface', () => {
+// The detached DISPOSITION machinery deleted in WS-2 (once WS-1 removed every
+// caller). If any reappears, the detached lifecycle crept back in.
+const DELETED_DETACHED_DISPOSITION_SYMBOLS = [
+  'routeDeadDetachedWorkerDisposition',
+  'routeDetachedWorkerTerminalNoProgress',
+  'reapTimedOutDetachedWorker',
+  'validateDetachedWorkerIdentity',
+  'resolveDetachedPollIntervalMs',
+];
+
+test('B-WSPU: deleted detached-spawn symbols are absent from the module surface', () => {
   for (const symbol of DELETED_DETACHED_SPAWN_SYMBOLS) {
     assert.strictEqual(
       muxRunner[symbol],
@@ -35,7 +46,17 @@ test('WS-1: deleted detached-spawn symbols are absent from the module surface', 
   }
 });
 
-test('WS-1: the single synchronous spawn path (runIteration) is still exported', () => {
+test('B-WSPU: deleted detached-disposition symbols are absent from the module surface', () => {
+  for (const symbol of DELETED_DETACHED_DISPOSITION_SYMBOLS) {
+    assert.strictEqual(
+      muxRunner[symbol],
+      undefined,
+      `${symbol} must stay deleted — its return means the detached disposition lifecycle crept back`
+    );
+  }
+});
+
+test('B-WSPU: the single synchronous spawn path (runIteration) is still exported', () => {
   assert.strictEqual(
     typeof muxRunner.runIteration,
     'function',
@@ -43,48 +64,31 @@ test('WS-1: the single synchronous spawn path (runIteration) is still exported',
   );
 });
 
-test('WS-1: mux-runner source has no detached spawn arm / poll-loop symbols', () => {
+test('B-WSPU: mux-runner source has no detached spawn/poll/disposition symbols', () => {
   const source = fs.readFileSync(SRC, 'utf8');
 
-  // Robust source-grep guard: the deleted-arm identifiers must not be defined or
-  // called anywhere in the source. The KEPT disposition helpers
-  // (routeDeadDetachedWorkerDisposition / routeDetachedWorkerTerminalNoProgress /
-  // reapTimedOutDetachedWorker) do NOT reference any of these, so this grep is
-  // scoped to the deleted-arm surface only.
-  for (const symbol of DELETED_DETACHED_SPAWN_SYMBOLS) {
-    assert.ok(
-      !source.includes(symbol),
-      `source still references deleted detached-spawn symbol "${symbol}" — WS-1 deletion regressed`
-    );
-  }
-
-  // The deleted spawn-arm's own log strings must be absent from the main loop.
-  // These are unique to the detached SPAWN arm (not the KEPT disposition helpers,
-  // whose only detached_worker touch is the "clear detached_worker" cleanup line).
-  const DELETED_ARM_LOG_STRINGS = [
-    'detached spawn-morty',
-    '[large-tier] detached spawn',
-  ];
-  for (const logString of DELETED_ARM_LOG_STRINGS) {
-    assert.ok(
-      !source.includes(logString),
-      `source still contains deleted-arm log string "${logString}" — the detached spawn/poll branch regressed`
-    );
-  }
-});
-
-test('WS-1: the KEPT detached DISPOSITION helpers survive (WS-2 deletes them, not WS-1)', () => {
-  const source = fs.readFileSync(SRC, 'utf8');
-  // These are intentionally preserved as (now-unreferenced) dead code so tsc stays
-  // green; WS-2 deletes them. Guard that WS-1 did not over-delete.
-  for (const kept of [
-    'routeDeadDetachedWorkerDisposition',
-    'routeDetachedWorkerTerminalNoProgress',
-    'reapTimedOutDetachedWorker',
+  for (const symbol of [
+    ...DELETED_DETACHED_SPAWN_SYMBOLS,
+    ...DELETED_DETACHED_DISPOSITION_SYMBOLS,
   ]) {
     assert.ok(
-      source.includes(`function ${kept}`),
-      `disposition helper "${kept}" must remain defined for WS-2; WS-1 must not delete it`
+      !source.includes(symbol),
+      `source still references deleted detached symbol "${symbol}" — the dual-spawn model regressed`
+    );
+  }
+
+  // The deleted spawn-arm's own log strings and the removed state field must be
+  // absent from the source entirely.
+  const DELETED_MARKERS = [
+    'detached spawn-morty',
+    '[large-tier] detached spawn',
+    'detached_worker',
+    'DetachedWorker',
+  ];
+  for (const marker of DELETED_MARKERS) {
+    assert.ok(
+      !source.includes(marker),
+      `source still contains deleted detached marker "${marker}" — the detached lifecycle regressed`
     );
   }
 });

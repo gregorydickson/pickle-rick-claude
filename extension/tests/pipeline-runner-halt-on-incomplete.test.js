@@ -284,11 +284,7 @@ test('pipeline-runner.WS-1 oracle-committed non-Done ticket is excluded from unf
   const repo = tmpDir('pipeline-ws1-repo-');
   const sessionDir = tmpDir('pipeline-ws1-session-');
   const prevDataRoot = process.env.PICKLE_DATA_ROOT;
-  const prevDetached = process.env.PICKLE_LARGE_TIER_DETACHED;
   process.env.PICKLE_DATA_ROOT = tmpDir('pipeline-ws1-dataroot-');
-  // Disable the detached grace-drain branch — this case is purely about the oracle
-  // exclusion (no detached_worker in state). 'off' keeps shouldGraceDrainDetached false.
-  process.env.PICKLE_LARGE_TIER_DETACHED = 'off';
   try {
     initRepo(repo);
     writeState(sessionDir, repo);
@@ -330,8 +326,6 @@ test('pipeline-runner.WS-1 oracle-committed non-Done ticket is excluded from unf
     __setSpawnRunnerForTests(null);
     if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
     else process.env.PICKLE_DATA_ROOT = prevDataRoot;
-    if (prevDetached === undefined) delete process.env.PICKLE_LARGE_TIER_DETACHED;
-    else process.env.PICKLE_LARGE_TIER_DETACHED = prevDetached;
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }

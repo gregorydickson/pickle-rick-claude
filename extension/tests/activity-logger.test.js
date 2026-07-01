@@ -282,14 +282,6 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         // B-DSAN2 AC-B4 (e157a44e): non-blocking readiness false-positive counter
         // surfaced on /pickle-metrics; emitted via READINESS_FALSE_POSITIVE_EVENT_NAME.
         'readiness_false_positive_suppressed',
-        // large-tier routing: routeLargeTierTicket (mux-runner.ts) emits this
-        // when a large-tier ticket is routed through the sanctioned seam.
-        'large_tier_routed',
-        // AC-R-WPEXA-EVENTS (d2a211ea): detached large-tier worker lifecycle events
-        // consumed by T3–T6 (spawn / poll / reap).
-        'large_tier_worker_spawned',
-        'large_tier_worker_poll',
-        'large_tier_worker_reaped',
         // B-GROUND2 WS4 (dcf18b3f): refused-and-recovered recurrence-dashboard
         // counters. INVERTED semantics — a rising count is the consolidation guard
         // WORKING (refused an unsafe transition and recovered), NOT a regression.
