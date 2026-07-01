@@ -41,7 +41,7 @@ import {
   resolveScopeSettings,
   type DiffVisualStat,
 } from '../services/pickle-utils.js';
-import { detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
+import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
 // Re-export the single cap literal so existing importers (tests, Module Export Catalog)
 // keep resolving it from pipeline-runner without a second definition.
 export { SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
@@ -1632,7 +1632,10 @@ export function computeScopeAutoExtension(
   };
   if (ticketContents.length === 0) return unchanged;
 
-  const gaps = detectSignatureCallerGaps({ ticketContents, declaredFiles, repoRoot });
+  // Mirror check-readiness.ts DEFAULT_MAX_WALL_MS so the build-phase caller scan
+  // reuses the WS-1 deadline instead of introducing a second budget shape.
+  const cache = createResolverCache(repoRoot, 120_000);
+  const gaps = detectSignatureCallerGaps({ ticketContents, declaredFiles, repoRoot, cache });
   if (gaps.length === 0) return unchanged;
 
   const symbols = Array.from(new Set(gaps.map((g) => g.symbol))).sort(scopeByteOrder);
