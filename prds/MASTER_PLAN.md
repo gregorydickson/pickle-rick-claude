@@ -231,11 +231,20 @@ load-flake] + expensive 0-fail).
 
 | Item | Value |
 |---|---|
-| Version (source = deployed) | **v2.0.0-beta.35** — B-WSPU collapse the dual worker-spawn model (delete detached lifecycle, unify synchronous re-spawn-resume; ~1000+ LOC pure subtraction; WS-1 `f2e795e6` … bump `9f2a0592`); pushed + GitHub-released + **✅ DEPLOYED via install.sh 2026-07-01** (operator-authorized; detached lifecycle now gone from the running runtime). Field-soak the spawn-model change on the next real bundles. Prior: beta.34 B-SSVR (deployed) · beta.33 gate-overreach subtraction · beta.32 R-LTDM detached-poll throttle. |
+| Version | **v2.0.0-beta.36** — B-SIGFH scope-fence detector hardening (WS-1 deadline `1d095e06`/`7f3a5b66` · WS-2 bridge export forms `87e8188a` · WS-3 corpus-widen + cache-thread `b9513e45` · bump `103af4be`); pushed + GitHub-released. ⚠️ **install.sh DEPLOY HELD** — concurrent session `2026-07-01-6b10b3f7` (loanlight-api LOA-1570) shares the runtime; no override → **deployed runtime stays beta.35** until 6b10b3f7 clears, then `bash install.sh`. Full local gate green (tsc+eslint+13 audits+fast-c4 6671/6674+integration [known lockdown flake isolation-green]+expensive). Prior: beta.35 B-WSPU (deployed) · beta.34 B-SSVR · beta.33 gate-overreach subtraction. |
 | Latest GitHub release | **v2.0.0-beta.35** (B-WSPU dual-spawn collapse; prerelease). Prior: beta.34 B-SSVR · beta.33 gate-overreach subtraction · beta.32 R-LTDM · beta.31 R-MWBG runtime half · beta.30 B-RELHYG · beta.29 R-SIGF. |
 | Test-hygiene follow-ups | ✅ **BOTH SHIPPED beta.30 (B-RELHYG).** (1) hardcoded-date fixture time-bombs — audited all 35 fixtures, **zero genuine wall-clock time-bombs** (only beta6-ga-session-resume ever qualified, already fixed); durable audit record `84464f6f`. (2) R-OMTD afterEach subprocess reap `b9bccd1a`. |
 | Codex backend | `gpt-5.4` |
 | Gate posture | Ship on the **local** gate (tsc + eslint + audits + fast-c4 + integration + expensive). **CI-green = hygiene, never a release gate.** |
+
+### B-SIGFH codex GA field-soak — findings (2026-07-01)
+
+Ran B-SIGFH (scope-fence detector hardening) as a `--backend codex` soak. **Verdict: codex is viable-but-fragile.** On a clean machine it completed WS-2 + WS-3 autonomously — **including the subtle cross-file cache-thread AC** (threaded `ResolverCache` into `pipeline-runner.ts:1638`) — and the completion-authority + phase-graduation guards held throughout (`phase_graduation_refused` correctly blocked false-done). But three real findings surfaced:
+- **[[R-CXHANG]] codex CLI hangs in uninterruptible (D-state) sleep and accumulates unkillably across sessions (R-SLEAK amplified on codex).** 8 orphans from prior days' runs (16h–2d old) survived SIGKILL, saturated the machine, and starved my workers into 0-byte hangs — **this killed run 1.** Only an operator kill/reboot cleared them. P2, codex-GA-relevant. Needs: reap-on-exit / a session-GC that force-kills codex subtrees, or a codex-spawn watchdog. *(No PRD yet — author before the next codex soak.)*
+- **codex non-convergence under load:** the WS-1 worker shipped an inconsistent deliverable (a *correct* test that caught its own incomplete code — schema-shape deadline gap) and could not converge it in 6 iterations under the degraded machine. Hand-finished (`1d095e06`).
+- **[[R-SSPB]] on-`main` `--scope branch` mis-scopes the pickle phase** to the pre-build diff (the build's own commits don't exist yet at setup → workers fenced out of their target files). Patched live by broadening `scope.json`; the review-phase refresh is correct. Fix: seed pickle-phase branch-scope from the ticket file-impact set. P3.
+
+**POSITIVE (banked):** beta.35 synchronous re-spawn-resume held across WS-1's 6 iterations *and* preserved uncommitted work through a Failed-flip (no git-reset) — the collapse is validated under real load. **Operator lesson:** never hand-complete a ticket then resume the same pipeline — it churns the completion oracle (phantom-revert, `false_epic ×4`, duplicate commit); let the pipeline own completion, or reset fully first.
 
 **Directives.** Drain bugs before features, P1 > P2 > P3. The babysitter drains the entire plan
 with **zero operator interaction**, including the full release cycle (`git push` + `gh release
