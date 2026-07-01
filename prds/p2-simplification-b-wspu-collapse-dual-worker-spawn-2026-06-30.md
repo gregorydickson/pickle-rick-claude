@@ -114,3 +114,12 @@ Every `extension/CLAUDE.md` trap-door entry MUST be a **single physical line** �
 - `grep` proves the detached lifecycle symbols are absent from source, exports, tests, trap doors, and env-doc tables.
 - One worker-spawn path remains (`runIteration`); a `medium`/`large` ticket routes synchronous.
 - Closer HOLDS the shared-runtime `install.sh` deploy until a field-soak (≥2 bundles, incl. one >600s ticket) confirms re-spawn-resume; the git release (bump + push + `gh release`) proceeds normally.
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Tier | Files |
+|---|---|---|---|---|
+| 10 | e345fb12 | Route all tiers synchronous; remove detached spawn arm + poll | medium | mux-runner.ts, backend-spawn.ts, spawn-morty.ts |
+| 20 | 0c5daf46 | Delete detached disposition + state field + events | small (R-PSRB dodge) | mux-runner.ts, types/index.ts |
+| 30 | 8258253b | Delete detached tests + trap doors | small | tests/integration/large-tier-detached-*, CLAUDE.md |
+| 40 | 775e9a17 | Manager prompt + env docs → single lifecycle | small | _pickle-manager-prompt.md, CLAUDE.md, README.md |
