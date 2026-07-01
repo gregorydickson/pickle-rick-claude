@@ -102,6 +102,11 @@ function createTrackedFixtureRepo(commitCount = 110) {
   copyDir(FIXTURE_DIR, seed);
   writeFile(seed, 'extension/package.json', JSON.stringify({ name: 'fixture-extension', version: '1.74.0' }, null, 2) + '\n');
   writeFile(seed, 'extension/pickle_settings.json', JSON.stringify({ mode: 'fixture' }, null, 2) + '\n');
+  // beta.33 deleted the forward-ref annotation grammar (R-RTRC/R-FRA), so readiness no longer
+  // suppresses a `(forward-created)` path — it must actually exist in the tracked tree to verify.
+  // keystone-alpha is declared `(forward-created)` in the fixture PRD; create it so the clean-bundle
+  // ergonomics assertion holds under the post-beta.33 behavior.
+  writeFile(seed, 'extension/src/services/keystone-alpha.ts', 'export const keystoneAlpha = true;\n');
   writeFile(seed, 'extension/src/services/keystone-beta.ts', 'export const keystoneBeta = true;\n');
   writeFile(seed, 'extension/src/services/keystone-gamma.ts', 'export const keystoneGamma = true;\n');
   git(['add', '.'], seed);
