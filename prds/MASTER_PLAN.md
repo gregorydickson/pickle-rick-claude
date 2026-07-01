@@ -6,7 +6,7 @@ on purpose. Shipped-release detail and closed-finding forensics live in
 [`MASTER_PLAN-archive.md`](MASTER_PLAN-archive.md) + `git log`; the full finding catalog is in
 [`BUG-INDEX.md`](BUG-INDEX.md).
 
-**Updated 2026-06-30.** Shipped + deployed + released through **v2.0.0-beta.33** (✅ **gate-overreach subtraction** — Phase 1 made the iteration-0 readiness + ticket-audit gates ADVISORY, Phase 2 DELETED the forward-ref annotation grammar, the top recurring bug source [R-RTRC ×8 + R-FRA ×7]; ~35 files of pure subtraction, KEPT resolution fixes R-RTRC-3/4/5 / R-RHFP / R-RCEX / R-RTPS; commit `9a5c047e`). beta.32 ✅ **[[R-LTDM]]** detached-poll throttle (R-MWBG RE-CLOSED). Operator flagged the underlying brittleness — the dual worker-spawn model — logged as **[[B-WSPU]]** (sign-off-gated structural collapse, the real subtraction). Detail below. (R-MWBG runtime half:
+**Updated 2026-07-01.** Shipped + deployed + released through **v2.0.0-beta.35** (✅ **B-WSPU — the DUAL WORKER-SPAWN MODEL COLLAPSED**: the entire detached lifecycle DELETED (~1000+ LOC pure subtraction), all tiers now run one synchronous re-spawn-resume path; the operator-flagged #1 structural subtraction, DONE + DEPLOYED 2026-07-01 — the R-LTDM/R-WPEX/R-MWBG failure-mode class is gone. Field evidence FOR the collapse: a detached worker silent-died building its own deletion while the synchronous path built it clean). beta.34 ✅ **B-SSVR** (R-SSBR scope-resolver fail-CLOSED + R-ISVP install.sh prerelease semver, both DEPLOYED). beta.33 (✅ **gate-overreach subtraction** — Phase 1 made the iteration-0 readiness + ticket-audit gates ADVISORY, Phase 2 DELETED the forward-ref annotation grammar, the top recurring bug source [R-RTRC ×8 + R-FRA ×7]; ~35 files of pure subtraction, KEPT resolution fixes R-RTRC-3/4/5 / R-RHFP / R-RCEX / R-RTPS; commit `9a5c047e`). beta.32 ✅ **[[R-LTDM]]** detached-poll throttle (R-MWBG RE-CLOSED). Operator flagged the underlying brittleness — the dual worker-spawn model — logged as **[[B-WSPU]]** and now ✅ SHIPPED+DEPLOYED beta.35 — the real subtraction, done. (R-MWBG runtime half:
 explicit-tier detached-routing gate — R-MWBG now FULLY closed; beta.30 B-RELHYG; beta.29 R-SIGF scope-fence +
 R-MWBG half-1; beta.28 R-WPEX; beta.27 B-APNC; beta.26 B-CWGE; beta.25 B-PXBO). **The historical reliability
 defect classes are code-fixed at root** — the completion-commit/Done-flip cluster (B-PCOMP beta.22 + B-DURA
@@ -16,8 +16,8 @@ gap (R-MWBG beta.31). **OBSERVATION mode is now producing new evidence-backed wo
 bugs surfaced this window — **[[R-SSBR]] (P2, scope-resolver trusts a stale `origin/main` → false
 `SCOPE_EMPTY_DIFF` → review phases run UNSCOPED, fail-open on the scope boundary; surfaced babysitting the
 LOA-1614 pipeline)** and **[[R-ISVP]] (P3, install.sh `compare_semver` rejects prerelease → downgrade guard dead
-for the `beta.*` line)**. So the queue is NOT empty: R-SSBR is the new top actionable reliability fix. GA gate
-remains field-soak repeatability (esp. codex). See `## ⏯ RESUME HERE`.
+for the `beta.*` line)**. Both R-SSBR and R-ISVP ✅ SHIPPED+DEPLOYED beta.34, and the detached-spawn brittleness they exposed is now SUBTRACTED (B-WSPU beta.35). GA gate
+remains field-soak repeatability (esp. codex) — now on the simpler single-lifecycle runtime. See `## ⏯ RESUME HERE`.
 
 **Reliability scorecard.** Code/mechanism ✅ — the most-fixed it has ever been. claude field-soak 🟢 — **2 clean
 hands-off runs, now incl. a live MULTI-TICKET ADDITIVE bundle** (B-RPGT: 5 tickets, 4/4 phases, 178m, ZERO
@@ -57,7 +57,7 @@ green gate on the timeout path** — together they own the residual `0/N phases 
 | Multi-backend / codex (v1.51) | ~25 findings; codex manager-wall re-filed 4×; worker-gate reverted; infects completion/scope/judge | **KEEP — we need codex** |
 | Review phases (microverse/anatomy/szechuan/council/death-crystal) | largest guard cluster (~59 trap-doors) but post-build polish | **KEEP — anatomy-park/szechuan are reliable + valued** |
 | **Gate overreach** (readiness/forward-ref/scope/audit) | **R-RTRC ×8 + R-FRA ×7 = 15 sub-fixes, ~99 commits; R-ATBG = "guard around a brittle guard" archetype** | **★ THE TARGET — cut the small over-strict guards** |
-| Detached large-tier spawn | newest + still failing (R-LTDM, R-MWBG, R-WPEX) | structure kept ([[B-WSPU]]); operator "needs to understand better" before deciding — DEFERRED |
+| Detached large-tier spawn | was newest + still-failing (R-LTDM, R-MWBG, R-WPEX) | ✅ **SUBTRACTED — B-WSPU beta.35, DEPLOYED 2026-07-01**: the whole detached lifecycle deleted, all tiers unified on synchronous re-spawn-resume. The failure-mode class is gone. |
 | Monitor/watchdog TUI | ~19 trap-doors for a cosmetic dashboard | candidate, low priority |
 
 **✅ SHIPPED v2.0.0-beta.33 (2026-06-30) — the gate-overreach subtraction (Phase 1 + Phase 2 bundled). Commit `9a5c047e`, deployed via `install.sh`, released.**
@@ -93,26 +93,25 @@ remains field-soak **repeatability** (esp. codex).
 (operator-steerable).** Both the reliability-fix queue AND the major simplification levers are largely SHIPPED — the
 residuals below are narrow and each carries a blocker to a clean autonomous launch. None is blindly auto-launchable.
 
-**A. Reliability fixes (drain first).** ✅ **[[R-LTDM]] (P1) SHIPPED beta.32** — the beta.31 R-MWBG runtime half had routed
-explicit-`medium` tickets through the detached poll path, which false-failed them in ~980ms (premature no-progress verdict
-before first-artifact latency) → false `EPIC_COMPLETED`, pickle `0/N`; fixed by a detached-poll throttle (the missing
-poll-sleep, not a new guard). Autonomous medium-tier builds restored. The operator flagged the deeper brittleness — the dual
-worker-spawn model — now tracked as **[[B-WSPU]]** (sign-off-gated structural collapse; the poll-throttle holds the line until
-then). Remaining reliability-fix queue (B-SSVR was hand-built this session under R-LTDM; now buildable via pipeline):
-1. **[[R-SSBR]] — P2, scope-resolver fail-open.** A stale/racing local
-   `refs/remotes/origin/main` makes `resolveAllowedFromDiffMode` compute an empty `HEAD...HEAD` diff → false
-   `SCOPE_EMPTY_DIFF` → no `scope.json` → citadel/anatomy/**szechuan** run UNSCOPED and may off-scope-commit
-   ([[R-SSOC]]). Fix is reuse-first + fail-SAFE (ancestry sanity-check: `baseSha===headSha` must not emit empty;
-   fall back to fork-point / local main; never run review phases unscoped when `--scope branch` was requested).
-   NORMAL pipeline (scope-resolver edit, NOT salvage path — R-PSRB N/A). **Build this next.**
-2. **[[R-ISVP]] — P3, install.sh prerelease semver** (downgrade guard dead for `beta.*`). Cheap, reuse-first
-   (widen regex + prerelease compare + drop the `exit`-in-subshell). Normal pipeline.
+**A. Reliability-fix queue — ✅ DRAINED (2026-07-01).** Everything actionable shipped this window:
+**[[R-LTDM]]** detached-poll throttle (beta.32) → **[[R-SSBR]]** scope-resolver fail-CLOSED + **[[R-ISVP]]** install.sh
+prerelease semver (beta.34, DEPLOYED) → **[[B-WSPU]]** the DUAL WORKER-SPAWN MODEL COLLAPSED (beta.35, DEPLOYED):
+the entire detached lifecycle deleted, all tiers unified on synchronous re-spawn-resume. The detached-spawn
+failure-mode class (R-LTDM / R-WPEX / R-MWBG runtime half) is now **subtracted at the root, not patched** — the
+operator's #1 north-star move, live. No open actionable claude-side reliability fix remains; the residuals are
+the codex-GA gaps (R-SIGF / R-DPGT / R-DOTR — track C) and external-gated items.
+
+**▶ THE IMMEDIATE NEXT STEP is now a field-soak, not a fix:** the deployed runtime is a fundamentally simpler
+single-lifecycle system. Run the next real bundle(s) via `/pickle-pipeline` — INCLUDING one with a genuine
+>600s (`medium`/`large`) ticket — and confirm the synchronous re-spawn-resume path holds across the 600s
+Bash-ceiling SIGKILL. That soak *is* the validation of the collapse (build N bundles hands-off, per the north
+star); anything it surfaces is a clean bug on a much simpler runtime.
 
 **B. Simplification (subtract-before-add — the major levers already shipped).** The Reliability Plan's 5 structural
 meta-defects are 4-of-5 substantially addressed: completion-oracle plurality → ONE `readEvidence` oracle
 (B-DURA/B-PXBO/R-CWGE) ✅; scope-fence under/over-extend → R-SIGF ✅; guards-on-guards → B-GSUB doc track CLOSED
-(−9) + B-GROUND2 functional collapse ✅; self-build trap → R-PSRB hand-build protocol ✅. The residual is the **5th —
-recovery sprawl**:
+(−9) + B-GROUND2 functional collapse ✅; self-build trap → R-PSRB hand-build protocol ✅. **B-WSPU (beta.35) just subtracted the biggest chunk of the
+5th (recovery sprawl) — the entire detached recovery/disposition half is gone.** The narrower residual:
 2. **Recovery-sprawl functional seam-collapse — the remaining simplification lever (operator-scoped, soak-ranked).**
    Per B-GSUB's own empirical conclusion, pure doc-guard deletion is NOT the lever; B-GROUND2-style **functional**
    collapse is. The next seam to collapse (e.g. [[R-DPMC-3]] decomposition-satisfiability / recovery-transition
