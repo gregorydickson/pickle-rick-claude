@@ -53,9 +53,6 @@
     "tests/audit-subprocess-heavy-tests.test.js": "load-dependent-timeout",
     "tests/audit-test-isolation.test.js": "load-dependent-timeout",
     "tests/bin/test-runner-tier-discovery.test.js": "subprocess-timeout-coupling",
-    "tests/integration/large-tier-detached-spawn.test.js": "subprocess-spawn-timing",
-    "tests/integration/large-tier-recovery-reexec-detached.test.js": "subprocess-spawn-timing",
-    "tests/integration/large-tier-detached-reap-subtree.test.js": "subprocess-spawn-timing",
     "tests/rpgt-exit-paths.test.js": "subprocess-spawn-timing",
     "tests/worker-gate-test-command-timeout.test.js": "subprocess-timeout-coupling",
     "tests/integration/audit-ticket-bundle-baseline.test.js": "load-dependent-timeout"

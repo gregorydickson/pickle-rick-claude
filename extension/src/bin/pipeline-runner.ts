@@ -20,7 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'child_process';
 import type { Backend, State } from '../types/index.js';
-import { BACKENDS, Defaults, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, isMicroverseFailureExit, type MicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
+import { BACKENDS, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, isMicroverseFailureExit, type MicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, type GraduationCounts } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import {
