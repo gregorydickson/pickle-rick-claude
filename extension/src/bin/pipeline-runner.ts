@@ -72,9 +72,8 @@ import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
 // B-PXBO WS-1: consume the SHARED oracle-recheck helper exported from mux-runner.ts
 // (an already-permitted completion-evidence oracle caller). pipeline-runner MUST NOT
 // import the oracle module directly — that becomes a 3rd caller and fails
-// audit-trap-door-enforcement.sh R-AFCC-CALLER-ENUMERATION. `largeTierDetachedEnabled`
-// gates the bounded grace-drain.
-import { isTicketOracleCommitted, largeTierDetachedEnabled } from './mux-runner.js';
+// audit-trap-door-enforcement.sh R-AFCC-CALLER-ENUMERATION.
+import { isTicketOracleCommitted } from './mux-runner.js';
 import { loadFinalizeGateSettings, resolveFinalizeSettingsRoot } from './finalize-gate.js';
 import type { GateResult } from '../types/index.js';
 import { runGate } from '../services/convergence-gate.js';
@@ -3378,7 +3377,6 @@ function shouldGraceDrainDetached(
   unfinished: ReturnType<typeof collectTickets>,
 ): boolean {
   if (unfinished.length === 0) return false;
-  if (!largeTierDetachedEnabled()) return false;
   let dw: State['detached_worker'];
   let rawTimeout: unknown;
   try {

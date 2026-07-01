@@ -8,7 +8,7 @@ import { PromiseTokens, hasToken, Defaults, hasLifecycleArtifact, BACKENDS, WORK
 import { CodegraphService } from '../services/codegraph-service.js';
 import { isRecord } from '../lib/is-record.js';
 import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths, resetToSha, updateTicketFrontmatter, updateTicketStatus } from '../services/git-utils.js';
-import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup, shouldForceDetachForLargeTier } from '../services/backend-spawn.js';
+import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup } from '../services/backend-spawn.js';
 import { scrubForbiddenWorkerTokens } from '../services/promise-tokens.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
 import { autoFillCompletionCommit } from './auto-fill-completion-commit.js';
@@ -1813,23 +1813,7 @@ export async function runWorkerProcess(ctx) {
     // killProcessTree's existing `process.kill(-pid, sig)` then reaps exactly this
     // session's group and cannot reach a concurrent session's healthy workers.
     // PICKLE_RECOVERY_CONSOLIDATION=off reverts to the per-seam (non-detached) path.
-    //
-    // H2 DATA-FLOW FIX (aee2767b): the DETACHED large-tier lifecycle worker is the
-    // EXCEPTION — it must INHERIT spawn-morty's (already session-scoped) process group,
-    // NOT lead its own. mux-runner spawns THIS spawn-morty process `detached:true`, so
-    // spawn-morty is itself the session group leader and `state.detached_worker.worker_pid`
-    // is spawn-morty's pid. The orchestrator timeout-reap does `process.kill(-worker_pid)`
-    // (mux-runner.ts:reapTimedOutDetachedWorker) — a group kill of spawn-morty's group.
-    // If this claude grandchild led its OWN group (the prior `detached:true` here) it would
-    // ESCAPE spawn-morty's group, so `-worker_pid` would kill only the spawn-morty wrapper
-    // and ORPHAN the runaway worker (empirically: grandchild survives the reap) — defeating
-    // the timeout backstop and letting salvage mutate git while the worker still runs.
-    // Keeping the grandchild in spawn-morty's group makes the single `-worker_pid` group
-    // kill reap the WHOLE subtree. spawn-morty's own timeout reap still works: with the
-    // grandchild non-detached, `killProcessTree(proc)` falls back to the single-proc
-    // `proc.kill()` (spawn-morty.ts:killProcessTree). Cross-session isolation is preserved
-    // because spawn-morty's group is itself session-scoped.
-    const detachWorker = shouldForceDetachForLargeTier() ? false : shouldIsolateSessionGroup();
+    const detachWorker = shouldIsolateSessionGroup();
     const proc = spawn(invocation.cmd, invocation.args, { cwd: sessionWorkingDir, env, stdio: ['inherit', 'pipe', 'pipe'], detached: detachWorker });
     proc.stdout?.pipe(sessionLog, { end: false });
     proc.stderr?.pipe(sessionLog, { end: false });
