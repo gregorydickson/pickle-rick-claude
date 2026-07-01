@@ -79,6 +79,45 @@ test('deadline truncates the schema-shape scan before any candidate file is read
   }
 });
 
+test('deadline returns partial arity findings and stops before later candidate reads', async () => {
+  const { createResolverCache, detectSignatureCallerGaps } = await import(MODULE);
+  const repoRoot = gitRepoWith({
+    'src/widget-service.ts': 'export class WidgetService { constructor(a, b) {} }\n',
+    'src/a-widget.spec.ts': "import { WidgetService } from './widget-service';\nconst a = new WidgetService(1, 2);\n",
+    'src/b-widget.spec.ts': "import { WidgetService } from './widget-service';\nconst b = new WidgetService(3, 4);\n",
+  });
+  const realNow = Date.now;
+  let nowCalls = 0;
+  try {
+    const cache = createResolverCache(repoRoot, 5000);
+    cache.deadline = 100;
+    Date.now = () => {
+      nowCalls += 1;
+      return nowCalls === 1 ? 99 : 101;
+    };
+    const gaps = detectSignatureCallerGaps({
+      ticketContents: [ticket(['# Add a 3rd constructor parameter to WidgetService'])],
+      declaredFiles: new Set(['src/widget-service.ts']),
+      repoRoot,
+      cache,
+    });
+    assert.deepEqual(gaps, [{
+      symbol: 'WidgetService',
+      kind: 'arity',
+      outOfScopeCallers: ['src/a-widget.spec.ts'],
+    }]);
+    assert.equal(cache.truncated, true);
+    assert.deepEqual(
+      [...cache.fileContents.keys()].map((file) => path.relative(repoRoot, file)),
+      ['src/a-widget.spec.ts'],
+      'deadline must stop before reading later candidate files once a partial finding exists',
+    );
+  } finally {
+    Date.now = realNow;
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test('future deadline preserves detection and leaves the cache untruncated', async () => {
   const { createResolverCache, detectSignatureCallerGaps } = await import(MODULE);
   const repoRoot = gitRepoWith({
