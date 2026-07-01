@@ -62,6 +62,13 @@ function readCachedFile(absPath: string, cache: ResolverCache): string | undefin
   }
 }
 
+function isDeadlineExceeded(cache?: ResolverCache): boolean {
+  if (!cache) return false;
+  if (Date.now() <= cache.deadline) return false;
+  cache.truncated = true;
+  return true;
+}
+
 // Phrases that signal a NEW positional parameter / injection is being added.
 const ARITY_ADD_CUE_RE = /\b(?:add(?:s|ing|ed)?|introduc(?:e|es|ing|ed)|new|append(?:s|ing|ed)?|inject(?:s|ing|ed)?)\b[^.\n]{0,60}\b(?:constructor\s+(?:param(?:eter)?|arg(?:ument)?|injection|dependency)|(?:param(?:eter)?|arg(?:ument)?|injection|dependency)\s+to\s+the\s+constructor|\d+(?:st|nd|rd|th)\s+(?:constructor\s+)?(?:param(?:eter)?|arg(?:ument)?)|new\s+(?:injected\s+)?(?:param(?:eter)?|arg(?:ument)?|dependency|service))\b/i;
 
@@ -168,6 +175,68 @@ export interface CallerGapInput {
   cache?: ResolverCache;
 }
 
+function readCandidateFile(repoRoot: string, file: string, cache?: ResolverCache): string | undefined {
+  const abs = path.join(repoRoot, file);
+  return cache ? readCachedFile(abs, cache) : (fs.existsSync(abs) ? fs.readFileSync(abs, 'utf-8') : undefined);
+}
+
+interface GapCallerScanResult {
+  outOfScopeCallers: string[];
+  truncated: boolean;
+}
+
+function collectArityGapCallers(input: {
+  symbol: string;
+  candidates: string[];
+  declaredFiles: Set<string>;
+  repoRoot: string;
+  cache?: ResolverCache;
+}): GapCallerScanResult {
+  const { symbol, candidates, declaredFiles, repoRoot, cache } = input;
+  const callerRe = new RegExp(`\\bnew\\s+${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`);
+  const outOfScopeCallers: string[] = [];
+  for (const file of candidates) {
+    if (isCallerInBundleScope(file, declaredFiles)) continue;
+    if (isDeadlineExceeded(cache)) {
+      return { outOfScopeCallers, truncated: true };
+    }
+    const body = readCandidateFile(repoRoot, file, cache);
+    if (body !== undefined && callerRe.test(body)) outOfScopeCallers.push(file);
+  }
+  return { outOfScopeCallers, truncated: false };
+}
+
+function collectSchemaShapeGapCallers(input: {
+  symbol: string;
+  candidates: string[];
+  declaredFiles: Set<string>;
+  repoRoot: string;
+  cache?: ResolverCache;
+}): GapCallerScanResult {
+  const { symbol, candidates, declaredFiles, repoRoot, cache } = input;
+  // Honor the wall-budget BEFORE any file I/O: findFactoryBridgeNames reads
+  // declared files, so the deadline must gate ahead of it (the arity scan has no
+  // pre-loop I/O, hence its check lives inside the loop).
+  if (isDeadlineExceeded(cache)) {
+    return { outOfScopeCallers: [], truncated: true };
+  }
+  const esc = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const directRe = new RegExp(`\\b${esc}\\s*\\.\\s*(?:parse|safeParse)\\s*\\(|z\\s*\\.\\s*infer\\s*<\\s*typeof\\s+${esc}\\s*>`);
+  const bridgeNames = findFactoryBridgeNames(symbol, declaredFiles, repoRoot, cache);
+  const bridgeRes = bridgeNames.map((name) => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`));
+  const outOfScopeCallers: string[] = [];
+  for (const file of candidates) {
+    if (isCallerInBundleScope(file, declaredFiles)) continue;
+    if (isDeadlineExceeded(cache)) {
+      return { outOfScopeCallers, truncated: true };
+    }
+    const body = readCandidateFile(repoRoot, file, cache);
+    if (body === undefined) continue;
+    if (directRe.test(body) || bridgeRes.some((re) => re.test(body))) outOfScopeCallers.push(file);
+  }
+  return { outOfScopeCallers, truncated: false };
+}
+
 export function detectSignatureCallerGaps(input: CallerGapInput): CallerGap[] {
   try {
     const { ticketContents, declaredFiles, repoRoot, cache } = input;
@@ -175,13 +244,11 @@ export function detectSignatureCallerGaps(input: CallerGapInput): CallerGap[] {
     const gaps: CallerGap[] = [];
     for (const content of ticketContents) {
       for (const symbol of extractAritySymbols(content)) {
-        const callerRe = new RegExp(`\\bnew\\s+${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`);
-        const outOfScopeCallers = candidates.filter((file) => {
-          if (isCallerInBundleScope(file, declaredFiles)) return false;
-          const abs = path.join(repoRoot, file);
-          const body = cache ? readCachedFile(abs, cache) : (fs.existsSync(abs) ? fs.readFileSync(abs, 'utf-8') : undefined);
-          return body !== undefined && callerRe.test(body);
-        });
+        const { outOfScopeCallers, truncated } = collectArityGapCallers({ symbol, candidates, declaredFiles, repoRoot, cache });
+        if (truncated) {
+          if (outOfScopeCallers.length > 0) gaps.push({ symbol, kind: 'arity', outOfScopeCallers });
+          return gaps;
+        }
         if (outOfScopeCallers.length === 0) continue;
         gaps.push({ symbol, kind: 'arity', outOfScopeCallers });
       }
@@ -189,18 +256,11 @@ export function detectSignatureCallerGaps(input: CallerGapInput): CallerGap[] {
       // AND factory-mediated (out-of-fence callers of an in-fence factory that
       // references the changed schema). Carried on the same CallerGap[] return.
       for (const symbol of extractSchemaShapeSymbols(content)) {
-        const esc = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const directRe = new RegExp(`\\b${esc}\\s*\\.\\s*(?:parse|safeParse)\\s*\\(|z\\s*\\.\\s*infer\\s*<\\s*typeof\\s+${esc}\\s*>`);
-        const bridgeNames = findFactoryBridgeNames(symbol, declaredFiles, repoRoot, cache);
-        const bridgeRes = bridgeNames.map((name) => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`));
-        const outOfScopeCallers = candidates.filter((file) => {
-          if (isCallerInBundleScope(file, declaredFiles)) return false;
-          const abs = path.join(repoRoot, file);
-          const body = cache ? readCachedFile(abs, cache) : (fs.existsSync(abs) ? fs.readFileSync(abs, 'utf-8') : undefined);
-          if (body === undefined) return false;
-          if (directRe.test(body)) return true;
-          return bridgeRes.some((re) => re.test(body));
-        });
+        const { outOfScopeCallers, truncated } = collectSchemaShapeGapCallers({ symbol, candidates, declaredFiles, repoRoot, cache });
+        if (truncated) {
+          if (outOfScopeCallers.length > 0) gaps.push({ symbol, kind: 'schema-shape', outOfScopeCallers });
+          return gaps;
+        }
         if (outOfScopeCallers.length === 0) continue;
         gaps.push({ symbol, kind: 'schema-shape', outOfScopeCallers });
       }
