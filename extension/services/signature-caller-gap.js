@@ -10,6 +10,7 @@ const GIT_LS_FILES_TIMEOUT_MS = 30_000;
 // and pipeline-runner.ts build-phase auto-extension) already import this module —
 // one definition, no divergent mirrors (ticket c6051d64 DRY invariant).
 export const SCOPE_AUTO_EXTEND_MAX = 8;
+export const CALLER_CANDIDATE_MAX = 512;
 function gitTrackedFiles(repoRoot) {
     const result = spawnSync('git', ['ls-files'], {
         cwd: repoRoot,
@@ -136,13 +137,25 @@ function isCallerInBundleScope(trackedFile, declaredAll) {
     }
     return false;
 }
-// Candidate caller files: tracked specs + factory/builder TS files. Bound the
-// corpus to keep the scan cheap.
+// Candidate caller files: tracked specs/factory-builder files plus ordinary
+// tracked TS/TSX production callers, capped in deterministic git order.
 function callerCandidateFiles(repoRoot, cache) {
     const tracked = cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot);
     if (cache && cache.trackedAllFiles === undefined)
         cache.trackedAllFiles = tracked;
-    return tracked.filter((file) => /\.spec\.ts$/.test(file) || /(?:factory|factories|builder)[^/]*\.ts$/i.test(file));
+    const candidates = [];
+    const seen = new Set();
+    for (const file of tracked) {
+        const isExistingCandidate = /\.spec\.ts$/.test(file) || /(?:factory|factories|builder)[^/]*\.ts$/i.test(file);
+        const isTrackedSource = /\.(?:ts|tsx)$/.test(file) && !/\.d\.ts$/.test(file);
+        if ((!isExistingCandidate && !isTrackedSource) || seen.has(file))
+            continue;
+        seen.add(file);
+        candidates.push(file);
+        if (candidates.length >= CALLER_CANDIDATE_MAX)
+            break;
+    }
+    return candidates;
 }
 // Extract candidate symbols whose arity the ticket claims to change.
 function extractAritySymbols(content) {
