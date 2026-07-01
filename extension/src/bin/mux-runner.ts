@@ -9465,7 +9465,6 @@ async function runMuxRunnerMain() {
             persistCloserHandoffTracker(statePath, null);
             lastStateIteration = -1;
             stallCount = 0;
-            // eslint-disable-next-line no-useless-assignment -- R-ORSR-2 WIP checkpoint (babysitter): defensive state reload after recovery mutation; keep until worker finalizes the ladder loop.
             state = readRunnerState(statePath);
             continue;
           }

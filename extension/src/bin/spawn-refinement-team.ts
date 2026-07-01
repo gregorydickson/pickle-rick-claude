@@ -203,10 +203,6 @@ When writing acceptance criteria or analyzing PRD sections that reference activi
 | \`ac_shape_gate_bypassed\` | \`gate_payload.reason\` | spawn-refinement-team AC-shape gate bypass path |
 | \`refinement_over_collapse_detected\` | \`gate_payload.composed_count\`, \`gate_payload.ticket_count\`, \`gate_payload.sources_with_atomic_section\` | spawn-refinement-team post-decomp bundle-of-bundles over-collapse guard |
 
-| \`large_tier_worker_spawned\` | \`ticket\`, \`gate_payload.worker_pid\`, \`gate_payload.ticket_id\`, \`gate_payload.spawned_at_epoch\` | spawn-morty large-tier detached-worker T3 spawn path (AC-R-WPEXA-EVENTS) (forward-created) |
-| \`large_tier_worker_poll\` | \`ticket\`, \`gate_payload.worker_pid\`, \`gate_payload.ticket_id\` | mux-runner large-tier detached-worker T4/T5 poll path (AC-R-WPEXA-EVENTS) (forward-created) |
-| \`large_tier_worker_reaped\` | \`ticket\`, \`gate_payload.worker_pid\`, \`gate_payload.ticket_id\`, \`gate_payload.outcome\` | mux-runner large-tier detached-worker T6 reap path (AC-R-WPEXA-EVENTS) (forward-created) |
-
 | \`completion_finalize_refused\` | \`gate_payload.pending_count\`, \`gate_payload.ticket_count\`, \`gate_payload.seam\` | state-manager finalizeIfTrulyComplete — completion authority refused a finalize while work is pending (refused-and-recovered, informational) (forward-created) |
 | \`phase_graduation_refused\` | \`gate_payload.pending_count\`, \`gate_payload.done_count\`, \`gate_payload.exit_code\` | pipeline-runner maybeStampPhaseGraduation — proportional gate refused phase graduation (refused-and-recovered, informational) (forward-created) |
 | \`gate_parity_divergence\` | \`gate_payload.gate_a\`, \`gate_payload.gate_b\`, \`gate_payload.ref\` | forward-ref-annotation resolveExtensionRelativePath — the two extension-dir gates would have disagreed (refused-and-recovered, informational) (forward-created) |
