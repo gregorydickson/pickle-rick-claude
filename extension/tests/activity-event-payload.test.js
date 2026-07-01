@@ -1056,52 +1056,6 @@ const EVENT_CASES = [
     },
     drop: 'ts',
   },
-  {
-    // AC-GA-REC-2 (de345802): large-tier ticket routed to the sanctioned path.
-    type: 'large_tier_routed',
-    valid: {
-      event: 'large_tier_routed',
-      ts: TS,
-      ticket: 'abc12345',
-      gate_payload: { sanctioned_path: 'interactive_pickle_tmux', reason: '600s Bash-tool ceiling' },
-    },
-    drop: 'gate_payload',
-  },
-  {
-    // AC-R-WPEXA-EVENTS (d2a211ea): detached large-tier worker spawned.
-    type: 'large_tier_worker_spawned',
-    valid: {
-      event: 'large_tier_worker_spawned',
-      ts: TS,
-      ticket: 'abc12345',
-      gate_payload: { worker_pid: 9999, ticket_id: 'abc12345', spawned_at_epoch: 1718600000 },
-    },
-    drop: 'gate_payload',
-  },
-  {
-    // AC-R-WPEXA-EVENTS (d2a211ea): detached large-tier worker polled.
-    type: 'large_tier_worker_poll',
-    valid: {
-      event: 'large_tier_worker_poll',
-      ts: TS,
-      ticket: 'abc12345',
-      gate_payload: { worker_pid: 9999, ticket_id: 'abc12345' },
-    },
-    drop: 'gate_payload',
-  },
-  {
-    // AC-R-WPEXA-EVENTS (d2a211ea): detached large-tier worker reaped.
-    type: 'large_tier_worker_reaped',
-    valid: {
-      event: 'large_tier_worker_reaped',
-      ts: TS,
-      ticket: 'abc12345',
-      // outcome mirrors the real reapTimedOutDetachedWorker emission: a validated-identity
-      // reap is 'reaped' (an identity failure is 'identity_failed_no_kill:<reason>').
-      gate_payload: { worker_pid: 9999, ticket_id: 'abc12345', outcome: 'reaped' },
-    },
-    drop: 'gate_payload',
-  },
 ];
 
 // B-RRH ed840487 (data-flow audit): the C3 signal-teardown arm returns a new
@@ -1422,11 +1376,6 @@ test('activity-event-payload: schema defines all registered event type definitio
     'rate_limited_without_reset_at',
     'ticket_ladder_exhausted',
     'pickle_incomplete',
-    'large_tier_routed',
-    // AC-R-WPEXA-EVENTS (d2a211ea): detached large-tier worker lifecycle events.
-    'large_tier_worker_spawned',
-    'large_tier_worker_poll',
-    'large_tier_worker_reaped',
     // WS4 (b7cc6081): refused-and-recovered counters.
     'completion_finalize_refused',
     'phase_graduation_refused',
@@ -1530,57 +1479,13 @@ test('activity-event-payload: worker_mcp_config_resolved registered in VALID_ACT
   );
 });
 
-// AC-R-WPEXA-EVENTS (d2a211ea): parametrized 7-surface check for the three
-// detached large-tier worker lifecycle events. Surfaces verified per iteration:
-//   1. VALID_ACTIVITY_EVENTS (compiled types/index.js — also covers surface 7)
-//   2. ActivityEventType union (TypeScript — inferred from surface 1 const array)
-//   3. schema.definitions entry
-//   4. schema.oneOf $ref
-//   5. EVENT_CASES row (this file)
-//   6. ACTIVITY_EVENT_SCHEMA_SECTION in spawn-refinement-team.ts
-//   7. compiled types/index.js mirror (same import as surface 1)
-const DETACHED_WORKER_EVENTS = [
-  'large_tier_worker_spawned',
-  'large_tier_worker_poll',
-  'large_tier_worker_reaped',
-];
 const SPAWN_REFINEMENT_TEAM_SRC = readFileSync(
   path.resolve(__dirname, '../src/bin/spawn-refinement-team.ts'),
   'utf8',
 );
-for (const eventName of DETACHED_WORKER_EVENTS) {
-  test(`AC-R-WPEXA-EVENTS: ${eventName} registered at all 7 R-PDD-oneOf touchpoints`, () => {
-    // Surface 1 + 7: VALID_ACTIVITY_EVENTS in compiled types/index.js
-    assert.ok(
-      VALID_ACTIVITY_EVENTS.includes(eventName),
-      `surface 1/7: ${eventName} missing from VALID_ACTIVITY_EVENTS`,
-    );
-    // Surface 3: definitions entry in activity-events.schema.json
-    assert.ok(
-      eventName in schema.definitions,
-      `surface 3: ${eventName} missing from schema.definitions`,
-    );
-    // Surface 4: oneOf $ref in activity-events.schema.json
-    assert.ok(
-      schema.oneOf.some((r) => r.$ref === `#/definitions/${eventName}`),
-      `surface 4: ${eventName} missing from schema.oneOf`,
-    );
-    // Surface 5: EVENT_CASES row in this test file
-    assert.ok(
-      EVENT_CASES.some((c) => c.type === eventName),
-      `surface 5: ${eventName} missing from EVENT_CASES`,
-    );
-    // Surface 6: ACTIVITY_EVENT_SCHEMA_SECTION in spawn-refinement-team.ts
-    assert.ok(
-      SPAWN_REFINEMENT_TEAM_SRC.includes(eventName),
-      `surface 6: ${eventName} missing from ACTIVITY_EVENT_SCHEMA_SECTION in spawn-refinement-team.ts`,
-    );
-  });
-}
 
-// AC-SIGF-6-event (0b9b2319): same 7-surface parity check for the bounded
-// build-phase scope auto-extension event. Surfaces mirror the detached-worker
-// loop above: 1/7 VALID_ACTIVITY_EVENTS (compiled mirror), 3 schema.definitions,
+// AC-SIGF-6-event (0b9b2319): 7-surface parity check for the bounded
+// build-phase scope auto-extension event: 1/7 VALID_ACTIVITY_EVENTS (compiled mirror), 3 schema.definitions,
 // 4 schema.oneOf $ref, 5 EVENT_CASES row, 6 ACTIVITY_EVENT_SCHEMA_SECTION.
 const SCOPE_AUTOEXTEND_EVENTS = ['scope_auto_extended'];
 for (const eventName of SCOPE_AUTOEXTEND_EVENTS) {

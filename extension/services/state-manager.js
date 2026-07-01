@@ -390,8 +390,6 @@ function normalizeV5StateDefaults(state) {
         state.codex_manager_consecutive_no_progress = 0;
     if (!Array.isArray(state.recovery_attempts))
         state.recovery_attempts = [];
-    if (state.detached_worker === undefined)
-        state.detached_worker = null;
 }
 function normalizeUpToVersion(state, schemaVersion) {
     if (schemaVersion >= 3)

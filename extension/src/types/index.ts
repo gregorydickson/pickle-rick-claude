@@ -171,14 +171,6 @@ export interface State {
    * relaunch does not spawn-burn into the wall. Absent/null when not parked.
    */
   rate_limit_park?: RateLimitPark | null;
-  /**
-   * Ticket 2ea48072 (AC-R-WPEXA-6, schema-neutral additive): persisted detached-worker
-   * arm. Written when a large-tier worker is spawned detached; cleared on worker exit or
-   * reap. Absent/null when no detached worker is live. At-most-one (single object | null,
-   * never an array) — enforced by the type and the invariant test.
-   * Defaulted to null via normalizeV5StateDefaults with NO LATEST_SCHEMA_VERSION bump.
-   */
-  detached_worker?: DetachedWorker | null;
 }
 
 /** Persisted rate-limit park arm (ticket e9bdac75). */
@@ -191,23 +183,6 @@ export interface RateLimitPark {
   cumulative_parked_ms: number;
   /** Consecutive rate-limit waits in this episode (carries the counter across relaunch). */
   consecutive_waits: number;
-}
-
-/** Persisted detached-worker arm (ticket 2ea48072, AC-R-WPEXA-6). */
-export interface DetachedWorker {
-  /** PID of the detached claude -p worker process. */
-  worker_pid: number;
-  /** Ticket being processed by this worker. */
-  ticket_id: string;
-  /** Epoch-ms when the worker was spawned. */
-  spawned_at_epoch: number;
-  /**
-   * Absolute path to the worker session log file. Observability/forensic breadcrumb
-   * written by the orchestrator at spawn; intentionally NOT read by the poll/reap/resume
-   * control flow (the watchers discover logs by directory scan, not from this arm). Kept
-   * as a recorded artifact path, not a consumed field.
-   */
-  worker_log_path: string;
 }
 
 /** Per-entry shape for the recovery controller attempt ledger (R-ORSR-1). */
@@ -833,16 +808,6 @@ export const VALID_ACTIVITY_EVENTS = [
   // indeterminate signal (the checker couldn't finish), NOT a ticket defect. Emitted by
   // check-readiness.ts:runReadiness; the gate still exits 0 (non-blocking).
   'resolver_indeterminate',
-  // AC-GA-REC-2 (de345802): a complexity_tier:large ticket was routed to the
-  // sanctioned autonomous path (interactive /pickle-tmux) instead of a raw
-  // foreground spawn-morty that the 600s Bash-tool ceiling would SIGKILL.
-  'large_tier_routed',
-  // AC-R-WPEXA-EVENTS (d2a211ea): detached large-tier worker lifecycle events
-  // consumed by T3–T6. Emitters pass ts explicitly (writeActivityEntry does not
-  // auto-stamp). Gate payload reflects the DetachedWorker state arm.
-  'large_tier_worker_spawned',
-  'large_tier_worker_poll',
-  'large_tier_worker_reaped',
   // WS4 (b7cc6081): recurrence-dashboard refused-and-recovered counters. INVERTED
   // semantics vs skip-flag events — a rising count is the consolidation guard WORKING
   // (refused an unsafe transition and recovered), NOT a regression. The genuine

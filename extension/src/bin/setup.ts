@@ -1305,38 +1305,11 @@ function resumeSession(config: SetupArgs): SessionResult {
 
   emitResumeEpochReset(fullSessionPath, originalEpoch, state);
 
-  noteLiveDetachedWorkerOnResume(state);
-
   syncConfigFromState(config, state);
   return {
     sessionRoot: fullSessionPath,
     state,
   };
-}
-
-/**
- * AC-R-WPEXA-6 (resume portion): a large-tier detached worker can outlive a
- * manager relaunch / `setup.js --resume`. The resume path already PRESERVES a
- * populated `state.detached_worker` — `applyResumeConfig` mutates only named
- * fields and never touches the arm, and `normalizeV5StateDefaults` defaults it
- * to null only when ABSENT. The resumed mux-runner's poll branch then re-attaches
- * to the live PID via ground truth (`isProcessAlive`) WITHOUT re-spawning, and a
- * dead PID is handed to the poll's T5 dead-disposition — disposition is the poll
- * path's job, NOT setup's. So this is observability only: when a live detached
- * worker is detected, drop an operator breadcrumb. It NEVER mutates the arm.
- */
-function noteLiveDetachedWorkerOnResume(state: State): void {
-  try {
-    const dw = state.detached_worker;
-    if (!dw || typeof dw.worker_pid !== 'number') return;
-    if (!isProcessAlive(dw.worker_pid)) return;
-    process.stderr.write(
-      `[setup] detached worker pid=${dw.worker_pid} still live — resume will re-attach via poll ` +
-      `(ticket ${dw.ticket_id})\n`,
-    );
-  } catch {
-    /* breadcrumb is best-effort — never block resume */
-  }
 }
 
 function resolveTask(config: SetupArgs): string {

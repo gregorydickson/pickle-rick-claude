@@ -17,7 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync } from 'child_process';
-import { BACKENDS, Defaults, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, isMicroverseFailureExit } from '../types/index.js';
+import { BACKENDS, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, isMicroverseFailureExit } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, } from '../services/pickle-utils.js';
@@ -2788,70 +2788,6 @@ function resolveUnfinishedTickets(runtime, tickets) {
     })))
         .sort((a, b) => (a.order || 0) - (b.order || 0));
 }
-/**
- * B-PXBO WS-1: bounded grace-drain ELIGIBILITY decision (R-DPGT). True ONLY when
- * the large-tier detached-worker lifecycle is enabled AND every remaining unfinished
- * ticket is attributable to a LIVE detached worker still inside its detached-poll /
- * worker-timeout window. The eligibility window REUSES the existing detached-poll
- * timeout (`state.worker_timeout_seconds`, fallback `Defaults.WORKER_TIMEOUT_SECONDS`)
- * rather than minting a new constant: the worker must still be within its own poll
- * budget to qualify as "advancing at the cap" (a RACE), not stalled.
- *
- * NOTE — this is ONLY the eligibility gate; it does NOT govern how long the caller
- * waits. The WAIT itself (`reportPhaseIncomplete`'s grace-drain loop) is a
- * deliberately-BOUNDED sub-slice of `GRACE_DRAIN_MAX_PASSES * GRACE_DRAIN_PASS_MS`
- * (= 15s), intentionally NOT the full worker-timeout budget — blocking the pipeline's
- * exit for up to the entire worker timeout (potentially an hour) on a rare cap race
- * would be wrong. Eligibility reuses the existing timeout; the wait is its own small
- * fixed window. Conservative: any mismatch (dead/absent worker, unfinished ticket the
- * worker is not on, elapsed past the eligibility window) returns false → fall straight
- * through to the existing stamp path (no nested guard ladder).
- */
-function shouldGraceDrainDetached(runtime, unfinished) {
-    if (unfinished.length === 0)
-        return false;
-    let dw;
-    let rawTimeout;
-    try {
-        const state = sm.read(runtime.statePath);
-        dw = state.detached_worker;
-        rawTimeout = state.worker_timeout_seconds;
-    }
-    catch {
-        return false;
-    }
-    if (!dw || !isProcessAlive(dw.worker_pid))
-        return false;
-    // Reuse the detached-poll timeout primitive (no new constant).
-    const parsedTimeout = Number(rawTimeout);
-    const timeoutSec = Number.isFinite(parsedTimeout) && parsedTimeout > 0
-        ? parsedTimeout
-        : Defaults.WORKER_TIMEOUT_SECONDS;
-    const elapsedSec = (Date.now() - dw.spawned_at_epoch) / 1000;
-    if (elapsedSec >= timeoutSec)
-        return false;
-    // Every unfinished ticket must be the one the live detached worker is on.
-    return unfinished.every(t => t.id === dw.ticket_id);
-}
-/**
- * B-PXBO WS-1: bounded grace-drain WAIT slice. Distinct from the eligibility window
- * (`shouldGraceDrainDetached`, which reuses `worker_timeout_seconds`): this wait is a
- * deliberately-BOUNDED sub-slice of GRACE_DRAIN_MAX_PASSES passes × GRACE_DRAIN_PASS_MS
- * each (= 15s total), intentionally NOT the full worker-timeout budget — so the pipeline
- * never blocks its exit for up to an hour on a rare cap race. Re-resolves the unfinished
- * set through the oracle between passes. The wait is injectable for tests via
- * `_setGraceDrainSleep`.
- */
-const GRACE_DRAIN_MAX_PASSES = 3;
-const GRACE_DRAIN_PASS_MS = 5_000;
-let graceDrainSleep = (ms) => {
-    const end = Date.now() + ms;
-    while (Date.now() < end) { /* bounded busy-wait — only ever runs in the rare race window */ }
-};
-/** Test-only: override the grace-drain wait (B-PXBO WS-1). */
-export function _setGraceDrainSleep(fn) {
-    graceDrainSleep = fn;
-}
 /** Log the unfinished-ticket list (capped). Extracted to keep reportPhaseIncomplete simple. */
 function logUnfinishedTickets(runtime, unfinished) {
     runtime.log('Unfinished tickets:');
@@ -2865,29 +2801,17 @@ function logUnfinishedTickets(runtime, unfinished) {
 }
 function reportPhaseIncomplete(runtime, phase) {
     const tickets = collectTickets(runtime.sessionDir);
-    let unfinished = resolveUnfinishedTickets(runtime, tickets);
+    const unfinished = resolveUnfinishedTickets(runtime, tickets);
     const total = tickets.length;
     // B-PXBO WS-1: count status-unfinished (non-Done) tickets BEFORE oracle exclusion.
-    // The grace-drain stamp-skip applies ONLY when such tickets existed and all became
+    // The stamp-skip applies ONLY when such tickets existed and all became
     // oracle-committed/terminal. When there are NO status-unfinished tickets, the phase
     // is incomplete for a NON-ticket reason (e.g. all_judge_backends_exhausted + gate
     // pass) and must still stamp pipeline_phase_incomplete.
     const statusUnfinished = tickets.filter(t => (t.status || '').toLowerCase() !== 'done').length;
-    // B-PXBO WS-1: if all remaining unfinished tickets are live-detached within the
-    // detached-poll window, the cap-exit was a RACE — the worker is still advancing.
-    // Apply a bounded grace-drain: wait a slice, re-resolve through the oracle, repeat
-    // until the worker commits (unfinished empties → defer the stamp) or the slice is
-    // spent / the worker is no longer eligible (fall through to the genuine stamp).
-    let passes = 0;
-    while (shouldGraceDrainDetached(runtime, unfinished) && passes < GRACE_DRAIN_MAX_PASSES) {
-        passes++;
-        runtime.log(`Phase ${phase}: ${unfinished.length}/${total} unfinished but attributable to a live detached worker — grace-drain pass ${passes}/${GRACE_DRAIN_MAX_PASSES}.`);
-        graceDrainSleep(GRACE_DRAIN_PASS_MS);
-        unfinished = resolveUnfinishedTickets(runtime, collectTickets(runtime.sessionDir));
-    }
     if (statusUnfinished > 0 && unfinished.length === 0) {
-        // Status-unfinished tickets all became oracle-committed/terminal (grace-drain or
-        // oracle exclusion) → the work landed; do NOT stamp pipeline_phase_incomplete.
+        // Status-unfinished tickets all became oracle-committed/terminal via oracle
+        // exclusion → the work landed; do NOT stamp pipeline_phase_incomplete.
         // Gated on statusUnfinished so a non-ticket incompleteness (none unfinished by
         // status, e.g. judge-exhausted) still falls through to the genuine stamp below.
         runtime.log(`Phase ${phase}: ${statusUnfinished} ticket(s) committed/terminal via oracle re-resolution — no phase-incomplete stamp.`);

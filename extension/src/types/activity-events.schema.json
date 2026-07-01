@@ -1882,76 +1882,6 @@
         "event": { "type": "string", "const": "pickle_incomplete" },
         "ts": { "type": "string" }
       }
-    },
-    "large_tier_routed": {
-      "type": "object",
-      "required": ["event", "ts", "ticket", "gate_payload"],
-      "properties": {
-        "event": { "type": "string", "const": "large_tier_routed" },
-        "ts": { "type": "string" },
-        "ticket": { "type": "string" },
-        "gate_payload": {
-          "type": "object",
-          "required": ["sanctioned_path", "reason"],
-          "properties": {
-            "sanctioned_path": { "type": "string", "const": "interactive_pickle_tmux" },
-            "reason": { "type": "string" }
-          }
-        }
-      }
-    },
-    "large_tier_worker_spawned": {
-      "type": "object",
-      "required": ["event", "ts", "ticket", "gate_payload"],
-      "properties": {
-        "event": { "type": "string", "const": "large_tier_worker_spawned" },
-        "ts": { "type": "string" },
-        "ticket": { "type": "string" },
-        "gate_payload": {
-          "type": "object",
-          "required": ["worker_pid", "ticket_id", "spawned_at_epoch"],
-          "properties": {
-            "worker_pid": { "type": "integer" },
-            "ticket_id": { "type": "string" },
-            "spawned_at_epoch": { "type": "integer" }
-          }
-        }
-      }
-    },
-    "large_tier_worker_poll": {
-      "type": "object",
-      "required": ["event", "ts", "ticket", "gate_payload"],
-      "properties": {
-        "event": { "type": "string", "const": "large_tier_worker_poll" },
-        "ts": { "type": "string" },
-        "ticket": { "type": "string" },
-        "gate_payload": {
-          "type": "object",
-          "required": ["worker_pid", "ticket_id"],
-          "properties": {
-            "worker_pid": { "type": "integer" },
-            "ticket_id": { "type": "string" }
-          }
-        }
-      }
-    },
-    "large_tier_worker_reaped": {
-      "type": "object",
-      "required": ["event", "ts", "ticket", "gate_payload"],
-      "properties": {
-        "event": { "type": "string", "const": "large_tier_worker_reaped" },
-        "ts": { "type": "string" },
-        "ticket": { "type": "string" },
-        "gate_payload": {
-          "type": "object",
-          "required": ["worker_pid", "ticket_id", "outcome"],
-          "properties": {
-            "worker_pid": { "type": "integer" },
-            "ticket_id": { "type": "string" },
-            "outcome": { "type": "string" }
-          }
-        }
-      }
     }
   },
   "oneOf": [
@@ -2073,10 +2003,6 @@
     { "$ref": "#/definitions/crashed_ticket_files_quarantined" },
     { "$ref": "#/definitions/crashed_ticket_files_quarantine_truncated" },
     { "$ref": "#/definitions/pickle_incomplete" },
-    { "$ref": "#/definitions/large_tier_routed" },
-    { "$ref": "#/definitions/large_tier_worker_spawned" },
-    { "$ref": "#/definitions/large_tier_worker_poll" },
-    { "$ref": "#/definitions/large_tier_worker_reaped" },
     { "$ref": "#/definitions/completion_finalize_refused" },
     { "$ref": "#/definitions/phase_graduation_refused" },
     { "$ref": "#/definitions/gate_parity_divergence" },
