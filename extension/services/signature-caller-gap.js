@@ -97,7 +97,8 @@ function extractSchemaShapeSymbols(content) {
 function findFactoryBridgeNames(symbol, declaredFiles, repoRoot, cache) {
     const names = new Set();
     const symbolRe = new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
-    const exportDeclRe = /\bexport\s+(?:async\s+)?(?:function|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+    const exportDeclRe = /\bexport\s+(?:(?:default\s+)?(?:async\s+)?function|(?:abstract\s+)?class|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+    const exportListRe = /\bexport\s*\{([^}]*)\}/g;
     for (const declared of declaredFiles) {
         const abs = path.isAbsolute(declared) ? declared : path.join(repoRoot, declared);
         const body = cache ? readCachedFile(abs, cache) : (fs.existsSync(abs) ? fs.readFileSync(abs, 'utf-8') : undefined);
@@ -106,6 +107,20 @@ function findFactoryBridgeNames(symbol, declaredFiles, repoRoot, cache) {
         exportDeclRe.lastIndex = 0;
         for (const match of body.matchAll(exportDeclRe))
             names.add(match[1]);
+        exportListRe.lastIndex = 0;
+        for (const match of body.matchAll(exportListRe)) {
+            for (const spec of match[1].split(',')) {
+                const exportSpec = spec.trim();
+                if (!exportSpec)
+                    continue;
+                const aliasMatch = exportSpec.match(/^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/);
+                if (!aliasMatch)
+                    continue;
+                names.add(aliasMatch[1]);
+                if (aliasMatch[2])
+                    names.add(aliasMatch[2]);
+            }
+        }
     }
     return [...names];
 }
