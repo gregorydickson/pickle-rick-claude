@@ -74,7 +74,7 @@ green gate on the timeout path** — together they own the residual `0/N phases 
 
 ## ⏯ RESUME HERE (updated 2026-06-30 — beta.34 SHIPPED+DEPLOYED+RELEASED; B-SSVR R-SSBR + R-ISVP)
 
-**▶ STATE: clean. `origin/main` = v2.0.0-beta.34 (HEAD `1d0fb20f`); tree clean; no active pipeline; runtime deployed.**
+**▶ STATE: clean. `origin/main` = v2.0.0-beta.34 (HEAD `219c3532`); tree clean; no active pickle-rick pipeline. ⏸️ install.sh DEPLOY HELD — a concurrent `loanlight-api` pipeline (session `456d1d79`, pid 44249) holds the shared `~/.claude/pickle-rick` runtime; deploy once it frees (git release already published).**
 **✅ B-SSVR SHIPPED beta.34** (via /pickle-pipeline + babysitter closer-takeover): **[[R-SSBR]] scope-resolver fail-CLOSED**
 on a stale/ahead base ref (`9592eb46`) — `resolveAllowedFromDiffMode` now detects `baseSha===headSha` with a differing
 baseRef tip and either recomputes via `resolveForkPointBase` or throws `SCOPE_BASE_AHEAD_OF_HEAD` (never a false
@@ -232,7 +232,7 @@ load-flake] + expensive 0-fail).
 
 | Item | Value |
 |---|---|
-| Version (source = deployed) | **v2.0.0-beta.34** — B-SSVR: R-SSBR scope-resolver fail-CLOSED (`9592eb46`) + R-ISVP install.sh prerelease semver (`d260012e`) + 2 closer fixes (trap-door single-line `73f780bf`, keystone stale-test sync `8e987d87`); deployed via install.sh 2026-06-30. Prior: beta.33 gate-overreach subtraction · beta.32 R-LTDM detached-poll throttle · beta.31 R-MWBG runtime half. |
+| Version (source = deployed) | **v2.0.0-beta.34** — B-SSVR: R-SSBR scope-resolver fail-CLOSED (`9592eb46`) + R-ISVP install.sh prerelease semver (`d260012e`) + 2 closer fixes (trap-door single-line `73f780bf`, keystone stale-test sync `8e987d87`); pushed + GitHub-released 2026-06-30, **install.sh deploy HELD** pending a concurrent loanlight-api pipeline on the shared runtime (deployed runtime still beta.33 until it frees). Prior: beta.33 gate-overreach subtraction · beta.32 R-LTDM detached-poll throttle · beta.31 R-MWBG runtime half. |
 | Latest GitHub release | **v2.0.0-beta.34** (B-SSVR R-SSBR + R-ISVP; prerelease). Prior: beta.33 gate-overreach subtraction · beta.32 R-LTDM · beta.31 R-MWBG runtime half · beta.30 B-RELHYG · beta.29 R-SIGF+R-MWBG-half-1 · beta.28 R-WPEX. |
 | Test-hygiene follow-ups | ✅ **BOTH SHIPPED beta.30 (B-RELHYG).** (1) hardcoded-date fixture time-bombs — audited all 35 fixtures, **zero genuine wall-clock time-bombs** (only beta6-ga-session-resume ever qualified, already fixed); durable audit record `84464f6f`. (2) R-OMTD afterEach subprocess reap `b9bccd1a`. |
 | Codex backend | `gpt-5.4` |
