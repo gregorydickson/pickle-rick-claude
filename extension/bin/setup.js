@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter } from '../services/git-utils.js';
+import { computeBaselineStartCommit } from '../services/scope-resolver.js';
 import { detectAndRecoverHeadRegression } from './mux-runner.js';
 import { LockError, BACKENDS, STATE_MANAGER_DEFAULTS } from '../types/index.js';
 import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid } from '../services/state-manager.js';
@@ -922,6 +923,21 @@ function applyResumeConfig(s, config, fullSessionPath, codexVersionSeen) {
     if (config.prdPath)
         s.prd_path = config.prdPath;
     repinFromHeadOnResume(s, config);
+    // R-PSCG (B-1SEAM WS-2): a session bootstrapped from a non-git cwd (e.g.
+    // `--paused` from the LoanLight root) never captured start_commit; recompute
+    // a best-effort baseline now that cwd is the resumed working_dir (chdir ran
+    // upstream in validateResumeCompatibility — the same guarantee
+    // repinFromHeadOnResume documents). NEVER overwrite an existing start_commit.
+    if (!s.start_commit) {
+        const healed = computeBaselineStartCommit(process.cwd());
+        if (healed) {
+            s.start_commit = healed;
+        }
+        else {
+            process.stderr.write('[setup] WARNING: start_commit still unresolved on --resume (cwd is not a git repository) — ' +
+                'diff-based phases (citadel) will heal or fail honestly at phase entry.\n');
+        }
+    }
 }
 /**
  * R-RSPIN-A: re-derive pinned_branch/pinned_sha from working-dir HEAD on resume.
@@ -1304,8 +1320,16 @@ function createInitialState(config, sessionPath, taskStr) {
     const startCommit = resolveStartCommit();
     if (config.prdPath)
         state.prd_path = config.prdPath;
-    if (startCommit)
+    if (startCommit) {
         state.start_commit = startCommit;
+    }
+    else {
+        // R-PSCG AC-3: the LoanLight-normal `--paused`-in-repo-root case. WARN
+        // loudly instead of silently deferring — the --resume recompute in
+        // applyResumeConfig fills the field once cwd is a git worktree.
+        process.stderr.write('[setup] WARNING: cwd is not a git repository — start_commit deferred; ' +
+            'a later --resume in a git worktree will recompute it.\n');
+    }
     const pinnedBranch = (() => {
         try {
             return getHeadBranch(process.cwd());

@@ -30,7 +30,7 @@ import { logActivity } from '../services/activity-logger.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
-import { resolveScope, refreshScope, filterBySubsystem, ScopeError, } from '../services/scope-resolver.js';
+import { resolveScope, refreshScope, filterBySubsystem, computeBaselineStartCommit, ScopeError, } from '../services/scope-resolver.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
 import { citadelFindingsToGateResult } from '../services/citadel/citadel-findings-to-gate-result.js';
@@ -2041,8 +2041,9 @@ async function remediateCitadelFindings(runtime, findings, remediatorTimeoutMs, 
 }
 /**
  * D4 (B-RRH AC-D4): resolve the refined-or-base PRD under a session dir,
- * preferring `prd_refined.md` over `prd.md`. Used by the citadel preflight to
- * self-heal a missing `state.prd_path` instead of hard-failing a clean build.
+ * preferring `prd_refined.md` over `prd.md`. Used by the symmetric citadel
+ * preflight heal ({@link healPipelineRequiredFields}) to self-heal a missing
+ * `state.prd_path` instead of hard-failing a clean build.
  */
 function resolveSessionPrdPath(sessionDir) {
     for (const name of ['prd_refined.md', 'prd.md']) {
@@ -2057,13 +2058,22 @@ function resolveSessionPrdPath(sessionDir) {
     }
     return undefined;
 }
-export async function executeCitadelPhase(runtime) {
+/**
+ * D4 (B-RRH AC-D4) + R-PSCG (B-1SEAM WS-2): symmetric citadel preflight heal.
+ * Each required field heals INDEPENDENTLY — the old `!prdPath && start_commit`
+ * cross-gate is gone (a deliberate widening: a session missing BOTH fields can
+ * now heal both). Missing `prd_path` adopts the session PRD; missing
+ * `start_commit` computes a best-effort baseline via
+ * {@link computeBaselineStartCommit} against the git repoRoot. Healed values
+ * are persisted AND returned so the caller uses the fresh values, never a
+ * stale pre-heal state snapshot. Unhealable fields stay undefined — the honest
+ * fail in {@link executeCitadelPhase} still fires (no session PRD / non-git
+ * repoRoot).
+ */
+function healPipelineRequiredFields(runtime) {
     const state = sm.read(runtime.statePath);
-    // D4 (B-RRH AC-D4): if prd_path is absent BUT start_commit is set AND a session
-    // PRD exists, adopt it (persist + use) instead of hard-failing. Adopt only when
-    // start_commit is present; if NEITHER prd file exists the honest fail below fires.
     let prdPath = state.prd_path;
-    if (!prdPath && state.start_commit) {
+    if (!prdPath) {
         const adopted = resolveSessionPrdPath(runtime.sessionDir);
         if (adopted) {
             sm.update(runtime.statePath, s => { s.prd_path = adopted; });
@@ -2071,10 +2081,28 @@ export async function executeCitadelPhase(runtime) {
             runtime.log(`citadel: self-healed missing state.prd_path — adopted ${adopted}`);
         }
     }
-    if (!prdPath || !state.start_commit) {
-        runtime.log('citadel: missing state.prd_path or state.start_commit — failing phase');
+    let startCommit = state.start_commit;
+    if (!startCommit) {
+        const healed = computeBaselineStartCommit(runtime.repoRoot);
+        if (healed) {
+            sm.update(runtime.statePath, s => { s.start_commit = healed; });
+            startCommit = healed;
+            runtime.log(`citadel: self-healed missing state.start_commit — adopted ${healed}`);
+        }
+    }
+    return { prdPath, startCommit };
+}
+export async function executeCitadelPhase(runtime) {
+    const { prdPath, startCommit } = healPipelineRequiredFields(runtime);
+    if (!prdPath || !startCommit) {
+        const missing = [
+            !prdPath ? 'state.prd_path' : null,
+            !startCommit ? 'state.start_commit' : null,
+        ].filter(Boolean).join(' and ');
+        runtime.log(`citadel: missing ${missing} — failing phase`);
         return { exitCode: 1 };
     }
+    const state = sm.read(runtime.statePath);
     const reportPath = path.join(runtime.sessionDir, 'citadel_report.json');
     const { cap, remediatorTimeoutMs } = citadelRemediationDeps.loadSettings();
     const threshold = remediationSeverityThreshold(runtime.config.citadel_strict);
@@ -2116,7 +2144,9 @@ export async function executeCitadelPhase(runtime) {
     for (let cycle = 0; cycle < cap; cycle++) {
         const result = await citadelRemediationDeps.runCitadelAudit({
             prdPath,
-            diffRange: `${state.start_commit}..HEAD`,
+            // R-PSCG: use the RETURNED (possibly healed) startCommit, never the
+            // pre-heal state snapshot — that would silently diff `undefined..HEAD`.
+            diffRange: `${startCommit}..HEAD`,
             repoRoot: runtime.repoRoot,
             sessionDir: runtime.sessionDir,
             reportPath,

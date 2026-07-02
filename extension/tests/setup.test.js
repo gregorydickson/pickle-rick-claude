@@ -339,6 +339,105 @@ test('setup CLI: fresh tmux PRD session persists prd_path and start_commit in st
     }
 });
 
+// ── R-PSCG (B-1SEAM WS-2): setup-side start_commit recompute + WARN ──────────
+
+function initGitRepo(dir) {
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'test@test.local'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'seed.txt'), 'seed');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    execFileSync('git', ['commit', '--no-gpg-sign', '-q', '-m', 'baseline'], { cwd: dir });
+}
+
+// Run setup as a subprocess from an explicit cwd, capturing stdout AND stderr.
+function runSetupAt(cwd, args, dataRoot) {
+    const res = spawnSync(process.execPath, [SETUP, ...args], {
+        cwd,
+        encoding: 'utf-8',
+        env: { ...process.env, FORCE_COLOR: '0', PICKLE_DATA_ROOT: dataRoot },
+    });
+    if (res.status !== 0) {
+        throw new Error(`setup exited ${res.status}:\n${res.stdout}\n${res.stderr}`);
+    }
+    return res;
+}
+
+test('setup --paused in a non-git cwd: WARNs loudly that start_commit is deferred (R-PSCG AC-3)', () => {
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pscg-warn-data-'));
+    const neutralCwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pscg-warn-cwd-')));
+    try {
+        const res = runSetupAt(neutralCwd, ['--paused', '--task', 'pscg warn test'], dataRoot);
+        assert.match(res.stderr, /start_commit deferred/, 'non-git cwd must WARN, not silently skip');
+
+        const sessionRoot = res.stdout.match(/SESSION_ROOT=(.+)/)?.[1]?.trim();
+        assert.ok(sessionRoot, 'SESSION_ROOT expected in setup output');
+        const state = JSON.parse(fs.readFileSync(path.join(sessionRoot, 'state.json'), 'utf-8'));
+        assert.ok(!state.start_commit, 'start_commit stays unset when cwd is not a git repository');
+    } finally {
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+        fs.rmSync(neutralCwd, { recursive: true, force: true });
+    }
+});
+
+test('setup --resume: recomputes missing start_commit from the resumed git working_dir (R-PSCG AC-2)', () => {
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pscg-resume-data-'));
+    const neutralCwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pscg-resume-cwd-')));
+    const repoDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pscg-resume-repo-')));
+    try {
+        initGitRepo(repoDir);
+        const boot = runSetupAt(neutralCwd, ['--paused', '--task', 'pscg resume recompute'], dataRoot);
+        const sessionRoot = boot.stdout.match(/SESSION_ROOT=(.+)/)?.[1]?.trim();
+        assert.ok(sessionRoot, 'SESSION_ROOT expected from paused bootstrap');
+
+        const statePath = path.join(sessionRoot, 'state.json');
+        const pre = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        assert.ok(!pre.start_commit, 'paused non-git bootstrap must not have start_commit');
+        pre.working_dir = repoDir;
+        fs.writeFileSync(statePath, JSON.stringify(pre, null, 2));
+
+        runSetupAt(sessionRoot, ['--resume', sessionRoot, '--paused', '--task', ''], dataRoot);
+
+        const post = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        assert.ok(post.start_commit, '--resume in a git working_dir must recompute start_commit');
+        // The sha must resolve inside the resumed repo.
+        execFileSync('git', ['cat-file', '-e', post.start_commit], { cwd: repoDir });
+    } finally {
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+        fs.rmSync(neutralCwd, { recursive: true, force: true });
+        fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+});
+
+test('setup --resume: never clobbers an existing start_commit (R-PSCG no-clobber)', () => {
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pscg-noclobber-data-'));
+    const repoDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pscg-noclobber-repo-')));
+    try {
+        initGitRepo(repoDir);
+        const boot = runSetupAt(repoDir, ['--paused', '--task', 'pscg no-clobber'], dataRoot);
+        const sessionRoot = boot.stdout.match(/SESSION_ROOT=(.+)/)?.[1]?.trim();
+        assert.ok(sessionRoot, 'SESSION_ROOT expected from in-repo bootstrap');
+
+        const statePath = path.join(sessionRoot, 'state.json');
+        const original = JSON.parse(fs.readFileSync(statePath, 'utf-8')).start_commit;
+        assert.ok(original, 'in-repo bootstrap captures start_commit');
+
+        // Advance HEAD so a (wrong) recompute would observably change the field.
+        fs.writeFileSync(path.join(repoDir, 'next.txt'), 'next');
+        execFileSync('git', ['add', '-A'], { cwd: repoDir });
+        execFileSync('git', ['commit', '--no-gpg-sign', '-q', '-m', 'advance'], { cwd: repoDir });
+
+        runSetupAt(sessionRoot, ['--resume', sessionRoot, '--paused', '--task', ''], dataRoot);
+
+        const post = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        assert.equal(post.start_commit, original, 'existing start_commit must survive resume byte-identical');
+    } finally {
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+        fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+});
+
 test('setup initializeNewSession: session id uses local day, not UTC day', () => {
     const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-local-day-data-'));
     const previousDataRoot = process.env.PICKLE_DATA_ROOT;

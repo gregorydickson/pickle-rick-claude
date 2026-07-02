@@ -147,6 +147,37 @@ function stubCleanCitadel() {
   });
 }
 
+// Like stubCleanCitadel, but records the opts passed to runCitadelAudit so
+// tests can assert the healed start_commit feeds diffRange (R-PSCG).
+function stubRecordingCitadel() {
+  const captured = { audits: [] };
+  __setCitadelRemediationDepsForTests({
+    loadSettings: () => ({ cap: 3, remediatorTimeoutMs: 1000 }),
+    runCitadelAudit: async (opts) => {
+      captured.audits.push(opts);
+      return citadelResult([]);
+    },
+    spawnGateRemediatorMain: async () => 0,
+    spawnRemediator: () => { /* no-op */ },
+  });
+  return captured;
+}
+
+// Feature branch fixture: fork off main, add commits so merge-base(main, HEAD)
+// is the fork point, not HEAD.
+function addFeatureBranchCommits(dir, n = 2) {
+  execFileSync('git', ['checkout', '-q', '-b', 'feature'], { cwd: dir });
+  for (let i = 0; i < n; i++) {
+    fs.writeFileSync(path.join(dir, `feature-${i}.txt`), `feature ${i}`);
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    execFileSync('git', ['commit', '--no-gpg-sign', '-q', '-m', `feature ${i}`], { cwd: dir });
+  }
+}
+
+function gitSha(dir, ref) {
+  return execFileSync('git', ['rev-parse', ref], { cwd: dir, encoding: 'utf-8' }).trim();
+}
+
 // ── D3a: paused → write prd_refined.md → resume → prd_path → existing refined file
 test('D3a: --resume populates state.prd_path from prd_refined.md (preferred)', () => {
   const dataRoot = tmpRoot('pickle-rrh-d3a-data-');
@@ -257,6 +288,133 @@ test('D5: paused → refine → resume composition reaches PHASE 2 CITADEL', asy
     runtime.workingDir = repoDir;
     const { exitCode } = await executeCitadelPhase(runtime);
     assert.equal(exitCode, 0, 'citadel preflight passes — PHASE 2 CITADEL entered on a clean build');
+  } finally {
+    __setCitadelRemediationDepsForTests(null);
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// ── R-PSCG AC-1: start_commit unset, prd_path set, repoRoot is a git repo →
+// citadel preflight HEALS start_commit (merge-base of default base and HEAD)
+// instead of hard-failing, and the healed sha feeds diffRange.
+test('R-PSCG AC-1: citadel self-heals missing start_commit from the git repoRoot', async () => {
+  const sessionDir = tmpRoot('pickle-pscg-ac1-session-');
+  const repoDir = tmpRoot('pickle-pscg-ac1-repo-');
+  try {
+    initRepo(repoDir);
+    const forkPoint = gitSha(repoDir, 'HEAD');
+    addFeatureBranchCommits(repoDir, 2);
+    const head = gitSha(repoDir, 'HEAD');
+    assert.notEqual(forkPoint, head, 'fixture must have commits past the fork point');
+
+    const captured = stubRecordingCitadel();
+    fs.writeFileSync(path.join(sessionDir, 'prd_refined.md'), '# refined prd\n');
+    writeCitadelState(path.join(sessionDir, 'state.json'), {
+      prd_path: path.join(sessionDir, 'prd_refined.md'),
+      start_commit: undefined,
+    });
+
+    const runtime = makeRuntime(sessionDir);
+    runtime.repoRoot = repoDir;
+    runtime.workingDir = repoDir;
+    const { exitCode } = await executeCitadelPhase(runtime);
+
+    assert.equal(exitCode, 0, 'missing start_commit must self-heal, not hard-fail the phase');
+    const persisted = readState(sessionDir);
+    assert.equal(persisted.start_commit, forkPoint, 'healed start_commit is merge-base(main, HEAD)');
+    assert.equal(captured.audits.length > 0, true, 'citadel audit must have run');
+    assert.equal(
+      captured.audits[0].diffRange,
+      `${forkPoint}..HEAD`,
+      'the HEALED sha (not the stale pre-heal snapshot) feeds diffRange',
+    );
+  } finally {
+    __setCitadelRemediationDepsForTests(null);
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// ── R-PSCG honesty mirror: start_commit unset AND repoRoot non-git → honest fail
+test('R-PSCG honesty: citadel fails honestly when start_commit cannot be healed (non-git repoRoot)', async () => {
+  const sessionDir = tmpRoot('pickle-pscg-honesty-');
+  try {
+    stubCleanCitadel();
+    fs.writeFileSync(path.join(sessionDir, 'prd_refined.md'), '# refined prd\n');
+    writeCitadelState(path.join(sessionDir, 'state.json'), {
+      prd_path: path.join(sessionDir, 'prd_refined.md'),
+      start_commit: undefined,
+    });
+
+    // makeRuntime: repoRoot = sessionDir, which is NOT a git repository.
+    const { exitCode } = await executeCitadelPhase(makeRuntime(sessionDir));
+
+    assert.equal(exitCode, 1, 'non-git repoRoot → start_commit unhealable → honest hard-fail');
+    const persisted = readState(sessionDir);
+    assert.ok(!persisted.start_commit, 'start_commit must remain unset on honest fail');
+  } finally {
+    __setCitadelRemediationDepsForTests(null);
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// ── R-PSCG symmetric double-heal: BOTH fields unset, PRD file + git repo present →
+// both heal (the exact inversion of the old `!prdPath && state.start_commit` cross-gate).
+test('R-PSCG double-heal: citadel heals BOTH missing prd_path and missing start_commit', async () => {
+  const sessionDir = tmpRoot('pickle-pscg-double-session-');
+  const repoDir = tmpRoot('pickle-pscg-double-repo-');
+  try {
+    initRepo(repoDir);
+    stubCleanCitadel();
+    fs.writeFileSync(path.join(sessionDir, 'prd_refined.md'), '# refined prd\n');
+    writeCitadelState(path.join(sessionDir, 'state.json'), {
+      prd_path: undefined,
+      start_commit: undefined,
+    });
+
+    const runtime = makeRuntime(sessionDir);
+    runtime.repoRoot = repoDir;
+    runtime.workingDir = repoDir;
+    const { exitCode } = await executeCitadelPhase(runtime);
+
+    assert.equal(exitCode, 0, 'both fields heal — phase runs');
+    const persisted = readState(sessionDir);
+    assert.ok(persisted.prd_path, 'prd_path adopted');
+    assert.equal(path.basename(persisted.prd_path), 'prd_refined.md');
+    assert.ok(persisted.start_commit, 'start_commit healed');
+    assert.equal(persisted.start_commit, gitSha(repoDir, 'HEAD'), 'single-branch repo heals to HEAD');
+  } finally {
+    __setCitadelRemediationDepsForTests(null);
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// ── R-PSCG AC-4: the D5 composition WITHOUT the hand-stamp — paused non-git cwd →
+// refine → resume-in-repo → citadel. The resume recompute (setup.ts) supplies
+// start_commit, so citadel enters with NO manual state surgery.
+test('R-PSCG AC-4: paused → refine → resume composition works WITHOUT hand-stamping start_commit', async () => {
+  const dataRoot = tmpRoot('pickle-pscg-ac4-data-');
+  const repoDir = tmpRoot('pickle-pscg-ac4-repo-');
+  try {
+    initRepo(repoDir);
+    const sessionRoot = bootstrapPausedSession(dataRoot, repoDir);
+    const pre = readState(sessionRoot);
+    assert.ok(!pre.start_commit, 'neutral-cwd bootstrap must NOT have captured start_commit');
+    fs.writeFileSync(path.join(sessionRoot, 'prd_refined.md'), '# refined prd for AC-4\n');
+
+    resume(sessionRoot, dataRoot);
+    const resumed = readState(sessionRoot);
+    assert.ok(resumed.prd_path && fs.existsSync(resumed.prd_path), 'D3 populated prd_path on resume');
+    assert.ok(resumed.start_commit, 'resume recomputed start_commit from the git working_dir');
+
+    stubCleanCitadel();
+    const runtime = makeRuntime(sessionRoot);
+    runtime.repoRoot = repoDir;
+    runtime.workingDir = repoDir;
+    const { exitCode } = await executeCitadelPhase(runtime);
+    assert.equal(exitCode, 0, 'citadel preflight passes with no hand-stamped start_commit');
   } finally {
     __setCitadelRemediationDepsForTests(null);
     fs.rmSync(dataRoot, { recursive: true, force: true });
