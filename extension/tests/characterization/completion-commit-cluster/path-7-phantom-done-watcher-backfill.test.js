@@ -3,16 +3,21 @@
 // inspectPhantomDoneTicketFile(filePath, sessionDir, workingDir, priorStatus)
 // at mux-runner.js:1089 — inspects a single Done ticket file.
 //
-// Two sub-outcomes:
+// Sub-outcomes (B-1SEAM WS-1: the watcher now git-probes a stamped
+// completion_commit through the ONE predicate — bare field presence no longer
+// keeps; the resolvable-vs-unresolvable split is decided by the probe):
 //   backfill: completion_commit absent, git-log finds inferred SHA
 //     → D1 (84c209ae) promote-once: writes EXPLICIT completion_commit:<sha> (and deletes any
 //       inferred field), returns {changed:true, reason:'backfilled'}. The next re-scan then sees
 //       the explicit field → has_completion_commit → no re-backfill (stable count, no loop).
-//   revert: completion_commit absent, no git evidence
+//   keep: completion_commit present AND git-reachable
+//     → {changed:false, reason:'has_completion_commit'}
+//   revert: completion_commit absent + no git evidence, OR completion_commit
+//     present but UNRESOLVABLE with no scan fallback (hallucinated stamp)
 //     → reverts status to priorStatus, returns {changed:true, reason:'reverted'}
 //
 // Decision-matrix: path_id 7 — assert what the code DOES today.
-// Backfill sub-path uses a local tmp git repo. Revert sub-path needs no git.
+// Backfill/keep sub-paths use a local tmp git repo. Revert sub-path needs no git.
 // No live git against the host repo.
 
 import { test } from 'node:test';
@@ -140,18 +145,20 @@ test('path-7 revert: Done ticket + no completion_commit + no git evidence → re
 });
 
 // ---
-// inspectPhantomDoneTicketFile: existing explicit completion_commit → not_done exit
-// (short-circuit: has_completion_commit, no git needed)
+// inspectPhantomDoneTicketFile: existing REACHABLE completion_commit → keep.
+// B-1SEAM WS-1: the field is git-probed (no more bare field-presence keep).
 // ---
-test('path-7: existing completion_commit → changed=false, reason=has_completion_commit', () => {
+test('path-7: existing reachable completion_commit → changed=false, reason=has_completion_commit', () => {
   const root = makeTmp();
   try {
+    initGitRepo(root);
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
     const sessionDir = path.join(root, 'session');
     const ticketId = ticketIdFromEntry(ENTRY);
     const ticketPath = writeTicket(sessionDir, ticketId, {
       id: ticketId,
       status: 'Done',
-      completion_commit: 'abc1234',
+      completion_commit: sha,
       title: 'Already-committed ticket',
     });
 
@@ -160,6 +167,35 @@ test('path-7: existing completion_commit → changed=false, reason=has_completio
     assert.equal(result.changed, false, `expected changed=false, got ${result.changed}`);
     assert.equal(result.reason, 'has_completion_commit',
       `expected reason=has_completion_commit, got '${result.reason}'`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---
+// B-1SEAM WS-1: existing UNRESOLVABLE completion_commit with no scan fallback
+// → reverted (the pre-collapse bare field-presence keep is gone; this is the
+// hallucinated-stamp class the single-file watcher previously blessed).
+// ---
+test('path-7 (B-1SEAM): existing unresolvable completion_commit + no git evidence → reverted', () => {
+  const root = makeTmp();
+  try {
+    initGitRepo(root);
+    const sessionDir = path.join(root, 'session');
+    const ticketId = ticketIdFromEntry(ENTRY);
+    const ticketPath = writeTicket(sessionDir, ticketId, {
+      id: ticketId,
+      status: 'Done',
+      completion_commit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+      title: 'Hallucinated-stamp ticket',
+    });
+
+    const result = inspectPhantomDoneTicketFile(ticketPath, sessionDir, root, 'In Progress');
+
+    assert.equal(result.changed, true, `expected changed=true, got ${result.changed}`);
+    assert.equal(result.reason, 'reverted', `expected reason=reverted, got '${result.reason}'`);
+    const status = readFrontmatterField(fs.readFileSync(ticketPath, 'utf8'), 'status');
+    assert.equal(status, 'In Progress', `expected status reverted to In Progress, got '${status}'`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -173,6 +173,10 @@ test('D1b: keep/revert routes through gateForPhantomDoneRevert oracle (not a bes
 
       // Case 3 (B-DURA T70): a git-verified completion_commit_inferred SHA is
       // `committed` → oracle returns action:'keep'; the watcher promotes it once.
+      // B-1SEAM: the predicate itself promote-once-persists on EVERY decision
+      // kind (R-WUWC trap door), so the watcher inspect runs FIRST here — a
+      // prior direct oracle call would already stamp the explicit field and the
+      // inspect would correctly classify 'has_completion_commit'.
       const inferredId = 'ticketinferred';
       const inferredFp = writeTicket(sessionDir, inferredId, [
         `id: ${inferredId}`,
@@ -180,11 +184,12 @@ test('D1b: keep/revert routes through gateForPhantomDoneRevert oracle (not a bes
         'status: Done',
         `completion_commit_inferred: "${sha}"`,
       ]);
-      const keepInferredDecision = gateForPhantomDoneRevert({ sessionDir, ticketId: inferredId, ticketPath: inferredFp, workingDir: repo });
-      assert.equal(keepInferredDecision.action, 'keep', 'oracle must classify a git-verified inferred SHA as keep (committed)');
-      assert.equal(keepInferredDecision.kind, 'committed', 'oracle kind must be committed');
       const inferredResult = inspectPhantomDoneTicketFile(inferredFp, sessionDir, repo, 'Todo');
       assert.equal(inferredResult.reason, 'backfilled', 'watcher promotes the committed inferred SHA to the explicit field');
+      const keepInferredDecision = gateForPhantomDoneRevert({ sessionDir, ticketId: inferredId, ticketPath: inferredFp, workingDir: repo });
+      assert.equal(keepInferredDecision.action, 'keep', 'oracle must classify the promoted explicit SHA as keep (committed)');
+      assert.equal(keepInferredDecision.kind, 'committed', 'oracle kind must be committed');
+      assert.ok(/^completion_commit:/m.test(fs.readFileSync(inferredFp, 'utf8')), 'explicit completion_commit stamped after promote-once');
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }

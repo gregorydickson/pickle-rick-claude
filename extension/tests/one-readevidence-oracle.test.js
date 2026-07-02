@@ -136,12 +136,19 @@ test('AC-DURA-6 baseline parity: completion_commit === start_commit reads `absen
   }
 });
 
-test('T30 source pin: batchLoopPhantomDoneKind sources baseline SHAs via resolveSessionBaselineShas (single-oracle parity)', () => {
+test('T30 source pin: batchLoopPhantomDoneKind sources baseline SHAs via buildCompletionCtx (single-oracle parity)', () => {
+  // B-1SEAM WS-1: baseline wiring moved into the shared buildCompletionCtx
+  // helper — every decision site (watcher included) sources the SAME baseline
+  // SHAs there, so the watcher's predicate ctx matches the gate's by construction.
   const src = fs.readFileSync(path.resolve(import.meta.dirname, '../src/bin/mux-runner.ts'), 'utf8');
   const fnStart = src.indexOf('function batchLoopPhantomDoneKind');
   const fnBody = src.slice(fnStart, fnStart + 1400);
-  assert.ok(/resolveSessionBaselineShas\(input\.sessionDir\)/.test(fnBody),
-    'batchLoopPhantomDoneKind must source baseline SHAs so its readEvidence matches the gate');
-  assert.ok(/startCommit,\s*pinnedSha/.test(fnBody),
-    'the watcher EvidenceCtx must carry startCommit/pinnedSha');
+  assert.ok(/buildCompletionCtx\(/.test(fnBody),
+    'batchLoopPhantomDoneKind must build its predicate ctx via buildCompletionCtx');
+  const helperStart = src.indexOf('function buildCompletionCtx');
+  const helperBody = src.slice(helperStart, helperStart + 1600);
+  assert.ok(/resolveSessionBaselineShas\(args\.sessionDir\)/.test(helperBody),
+    'buildCompletionCtx must source baseline SHAs so every decision site matches the gate');
+  assert.ok(/startCommit,\s*\n?\s*pinnedSha/.test(helperBody),
+    'the shared CompletionDecisionCtx must carry startCommit/pinnedSha');
 });

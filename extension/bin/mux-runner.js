@@ -19,7 +19,7 @@ import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/man
 import { getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds } from '../services/artifact-progress-detector.js';
-import { readEvidence, persistEvidence, gateForPhantomDoneRevert } from '../services/ticket-completion-evidence.js';
+import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence } from '../services/ticket-completion-evidence.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { CodegraphService } from '../services/codegraph-service.js';
 import { salvageTicket } from '../lib/salvage-ticket.js';
@@ -1173,12 +1173,11 @@ function promoteInferredToExplicit(content, sha) {
  */
 function batchLoopPhantomDoneKind(input, ticketId, workingDir) {
     // R-AFCC-DEEP-4A: migrated from hasCompletionCommit to gateForPhantomDoneRevert.
-    // B-DURA T30 (AC-DURA-6): source the same session baseline SHAs the flip-gate
-    // passes via resolveSessionBaselineShas, so readEvidence's isBaselineSha rejection
-    // fires IDENTICALLY at the watcher and the gate — no accept-here-fatal-there split
-    // on a completion_commit that equals start_commit/pinned_sha (R-CXOR-2 parity).
-    const { startCommit, pinnedSha } = resolveSessionBaselineShas(input.sessionDir);
-    const ctx = { sessionDir: input.sessionDir, ticketId, workingDir, fallbackDir: input.workingDir, startCommit, pinnedSha };
+    // B-1SEAM WS-1: ctx built by buildCompletionCtx (resolveSessionBaselineShas
+    // baseline SHAs per B-DURA T30/AC-DURA-6, plus the extension/-greenGate and the
+    // announcement reader) so the watcher evaluates the SAME predicate policy as the
+    // flip-gate — no accept-here-fatal-there split (R-CXOR-2 parity, R-AICF).
+    const ctx = buildCompletionCtx({ sessionDir: input.sessionDir, ticketId, workingDir, fallbackDir: input.workingDir }, 'phantom-watch');
     const decision = gateForPhantomDoneRevert(ctx, { flags: input.flags });
     if (decision.action === 'keep') {
         // D1 (84c209ae) promote-once: when the committed SHA came from the inferred
@@ -1257,21 +1256,22 @@ function collectTwinEvidence(input, ticketId, twins, fallbackWorkingDir) {
             input.log?.(`R-PDUP: holding split original ${ticketId} — twin ${twin.id} not yet Done (${twinStatus})`);
             return null;
         }
-        const twinCtx = {
+        // B-1SEAM WS-1: classify the twin's completion evidence through the ONE
+        // predicate ({ decision: 'attribution' } — keep-decision, no R-CWGE verdict).
+        // B-DURA T70: only `committed` evidence (a git-verified SHA) lets the
+        // auto-close proceed; `absent` blocks it.
+        const twinDecision = evaluateCompletionEvidence(buildCompletionCtx({
             sessionDir: input.sessionDir,
             ticketId: twin.id,
             workingDir: twin.working_dir || fallbackWorkingDir,
             fallbackDir: input.workingDir,
-        };
-        // Use the oracle (readEvidence) to classify the twin's completion evidence.
-        // B-DURA T70: only `committed` evidence (a git-verified SHA) lets the
-        // auto-close proceed; `absent` blocks it.
-        const twinEvidence = readEvidence(twinCtx);
-        if (twinEvidence.kind === 'absent' || !twinEvidence.sha) {
+            rereadBackoffMs: 0,
+        }, 'attribution'));
+        if (!twinDecision.ok) {
             input.log?.(`R-PDUP: holding split original ${ticketId} — twin ${twin.id} Done but no usable delivery SHA`);
             return null;
         }
-        evidence.push({ twinId: twin.id, sha: twinEvidence.sha });
+        evidence.push({ twinId: twin.id, sha: twinDecision.sha });
     }
     return evidence;
 }
@@ -1314,7 +1314,30 @@ function maybeAutoCloseSplitOriginal(input, ticket, allTickets) {
         input.log?.(`R-PDUP: could not write completion_commit for split original ${ticket.id} (persist failed: ${persisted.action})`);
         return false;
     }
-    if (!writeTicketStatus(input.sessionDir, ticket.id, 'Done'))
+    // B-1SEAM WS-1: flip Done through the standard guard idiom instead of a bare
+    // writeTicketStatus — the 7th guardCompletionCommitBeforeDone +
+    // clearStaleDoneWithoutCommitEvidence pair (R-PEDC parity 6→7). The twins'
+    // evidence, not the original's own gate, proves greenness: persist a
+    // runner-authored GREEN verdict first (same idiom as commitAndContinueDoneFlip)
+    // so the R-CWGE fail-closed check honors it.
+    persistRunnerAuthoredGreenVerdict(input.sessionDir, ticket.id);
+    const guard = guardCompletionCommitBeforeDone({
+        sessionDir: input.sessionDir,
+        ticketId: ticket.id,
+        workingDir,
+        flags: input.flags ?? {},
+        // R-PDUP twin-borrow: the canonical sha's commit message names the TWIN
+        // (production convention `fix(<twinId>): ...`), a sibling dir of the
+        // original — without this sanction R-OMA reads it as foreign_attribution
+        // and the original stays Todo forever (phantom-rebuild class).
+        ownAttributionTokens: twinEvidence.map((e) => e.twinId),
+    });
+    if (!guard.ok) {
+        input.log?.(`R-PDUP: auto-close guard refused split original ${ticket.id}: ${guard.reason}`);
+        return false;
+    }
+    clearStaleDoneWithoutCommitEvidence(path.join(input.sessionDir, 'state.json'));
+    if (!markTicketDone(input.sessionDir, ticket.id))
         return false;
     input.log?.(`R-PDUP: auto-closed split original ${ticket.id} — twins [${twinEvidence.map((e) => e.twinId).join(', ')}] Done, completion_commit=${canonicalSha}`);
     logActivity({
@@ -1382,17 +1405,20 @@ export function correctPhantomDoneTickets(input) {
  * pre-checks have already passed (status=Done, id present). Extracted to keep
  * inspectPhantomDoneTicketFile under the ESLint complexity ceiling.
  *
- * Watcher path: explicit field presence → 'explicit-reachable' (no git probe).
- * This preserves the path-7 characterization invariant: has_completion_commit
- * fires without git reachability probing.
+ * Watcher path (B-1SEAM): stamped shas are git-probed via the single
+ * completion predicate — resolvable → keep, scan-recoverable → backfill,
+ * else revert. The pre-B-1SEAM bare field-presence keep is gone.
  */
 function applyInspectPhantomDoneDecision(content, filePath, sessionDir, ticketId, workingDir, priorStatus) {
-    // Explicit completion_commit field: keep without any git probe (path-7 invariant).
-    if (readFrontmatterField(content, 'completion_commit')) {
-        return { changed: false, reason: 'has_completion_commit' };
-    }
-    // R-AFCC-DEEP-4A: delegate to gateForPhantomDoneRevert.
-    const ctx = { sessionDir, ticketId, ticketPath: filePath, workingDir };
+    // B-1SEAM WS-1: the bare field-presence keep is GONE — a stamped
+    // completion_commit is now git-probed through the same predicate as every
+    // other decision site (the hallucinated-sha stamp that caused the R-AICF
+    // live accept/revert/fatal 3-way split was kept here on field presence
+    // alone). The field-presence read only classifies the keep result below.
+    const hadExplicit = !!readFrontmatterField(content, 'completion_commit');
+    // R-AFCC-DEEP-4A: delegate to gateForPhantomDoneRevert (predicate-backed),
+    // with session baseline SHAs wired via buildCompletionCtx (R-CXOR-2).
+    const ctx = buildCompletionCtx({ sessionDir, ticketId, ticketPath: filePath, workingDir }, 'phantom-watch');
     let decision;
     try {
         decision = gateForPhantomDoneRevert(ctx);
@@ -1402,14 +1428,15 @@ function applyInspectPhantomDoneDecision(content, filePath, sessionDir, ticketId
     }
     switch (decision.action) {
         case 'keep': {
-            // The explicit completion_commit field was absent (checked above), so a
-            // `keep` decision here carries a committed SHA from the inferred field or a
-            // git-log scan. D1 (84c209ae) promote-once: write EXPLICIT completion_commit
-            // and DELETE the inferred field so the first pass returns 'backfilled' (caller
-            // emits ONE backfill event) and subsequent passes see the explicit field →
-            // 'has_completion_commit' → no further event (stable backfill count).
-            if (!decision.sha)
+            // Explicit field was already present and the predicate resolved it → keep as-is.
+            if (hadExplicit || !decision.sha)
                 return { changed: false, reason: 'has_completion_commit' };
+            // No explicit field yet: the keep carries a committed SHA from the inferred
+            // field or a git-log scan. D1 (84c209ae) promote-once: write EXPLICIT
+            // completion_commit and DELETE the inferred field so the first pass returns
+            // 'backfilled' (caller emits ONE backfill event) and subsequent passes see
+            // the explicit field → 'has_completion_commit' → no further event (stable
+            // backfill count).
             const updated = promoteInferredToExplicit(content, decision.sha);
             if (!updated)
                 return { changed: false, reason: 'unparseable' };
@@ -2391,16 +2418,19 @@ export function validateAutoTicketCompletion(sessionDir, ticketId, workingDir, s
     if (!hasCheckedAcceptanceCriteria(content)) {
         return { action: 'skip', reason: 'acceptance_criteria_not_checked' };
     }
-    // R-AFCC-DEEP-4A: readEvidence replaces hasCompletionCommit. 'absent' covers
-    // every non-committed case (no field/scan match, an explicit SHA that is not
-    // git-reachable, a baseline SHA, or a stored-but-unverifiable inferred SHA).
-    const evidence = readEvidence({
+    // B-1SEAM WS-1: the ONE completion predicate replaces the bare readEvidence
+    // call — this site now gets baseline rejection (R-CXOR-2), the R-AICF
+    // unreachable-explicit scan fallback, and announcement recovery for free.
+    // decision:'attribution' — the R-CWGE verdict stays with the guard at the
+    // applyAutoTicketCompletionValidation callsite (unchanged double-check).
+    const decision = evaluateCompletionEvidence(buildCompletionCtx({
         sessionDir,
         ticketId,
         workingDir,
         startTimeEpoch: gitCommitEpoch(workingDir, startCommit),
-    });
-    if (evidence.kind === 'absent') {
+        rereadBackoffMs: 0,
+    }, 'attribution'));
+    if (!decision.ok) {
         return { action: 'skip', reason: 'no_commit_referencing_ticket_since_current_set' };
     }
     return { action: 'done', reason: 'commit_and_acceptance_checked' };
@@ -3650,7 +3680,7 @@ const DEFAULT_MUX_IDLE_STALL_RECOVERY_CAP = 3;
  */
 export function resolveIdleStallRecoveryCap() {
     const raw = Number(process.env.PICKLE_MUX_IDLE_STALL_RECOVERY_CAP);
-    return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_MUX_IDLE_STALL_RECOVERY_CAP;
+    return Number.isFinite(raw) && Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_MUX_IDLE_STALL_RECOVERY_CAP;
 }
 /**
  * L2: decide whether a consecutive idle-stall recovery streak has EXCEEDED the cap
@@ -3852,25 +3882,6 @@ export function targetToolchainMissing(workingDir) {
  * shipped while the actual fix never landed. This is the surgical guard.
  */
 /**
- * R-CCGR: a process-blocking sleep, used only for the guard's single backoff
- * re-read. `Atomics.wait` blocks without spawning a child process.
- */
-function sleepSyncMs(ms) {
-    if (!(ms > 0))
-        return;
-    try {
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-    }
-    catch { /* SharedArrayBuffer disabled — skip the backoff */ }
-}
-/** R-CCGR backoff before the guard's single re-read; env-overridable, clamped. */
-function guardRereadBackoffMs() {
-    const raw = Number(process.env.PICKLE_GUARD_REREAD_BACKOFF_MS);
-    if (Number.isFinite(raw) && raw >= 0)
-        return Math.min(raw, 5000);
-    return 500;
-}
-/**
  * R-PEDC: clear a stale `done_without_commit_evidence` exit_reason when a
  * later guard pass eventually classifies `ok: true`. The prior iteration's
  * fatal stamp survives a successful auto-promote in the same loop, and
@@ -3890,12 +3901,6 @@ export function clearStaleDoneWithoutCommitEvidence(statePath) {
         }
     }
     catch { /* best-effort — finalize path will resolve terminal state */ }
-}
-/** Map the 2-state EvidenceKind back to the legacy CompletionCommitEvidence source for error callers. */
-function mapEvidenceKindToLegacySource(kind) {
-    if (kind === 'committed')
-        return 'explicit-reachable';
-    return 'absent';
 }
 /**
  * R-CCEM (#126): the most-recent worker-announced completion SHA for a ticket,
@@ -3926,37 +3931,6 @@ export function readAnnouncedCompletionSha(sessionDir, ticketId) {
     catch {
         return null;
     }
-}
-/**
- * R-CCEM (#126): when Done-flip evidence is `absent` but the worker announced a
- * commit SHA (state.activity), persist that self-declared SHA as
- * `completion_commit_inferred` and re-probe so the committed-evidence auto-promote
- * can attribute the ticket — instead of FATAL-halting the whole pickle phase on
- * a codex commit whose message omitted the ticket id. Runs ONLY on the Done-flip
- * guard path (never the worker-gate failed-flip-suppression). `readEvidence`
- * still gates on commitExists + baseline rejection, so a non-existent or baseline
- * SHA stays absent (no #94 R-CXOR false-Done risk). Best-effort; never overwrites
- * an explicit `completion_commit`.
- */
-function recoverInferredFromAnnouncement(args, probe, current) {
-    if (current.kind !== 'absent')
-        return current;
-    const announced = readAnnouncedCompletionSha(args.sessionDir, args.ticketId);
-    if (!announced)
-        return current;
-    try {
-        const fp = ticketFilePath(args.sessionDir, args.ticketId);
-        const raw = fs.readFileSync(fp, 'utf8');
-        if (!readFrontmatterField(raw, 'completion_commit')) {
-            const upd = upsertFrontmatterField(raw, 'completion_commit_inferred', announced);
-            if (upd) {
-                fs.writeFileSync(fp, upd);
-                return readEvidence(probe);
-            }
-        }
-    }
-    catch { /* best-effort — fall through to existing classification */ }
-    return current;
 }
 /**
  * R-CXOR-2 activation: reads the session baseline SHAs (`start_commit` /
@@ -4002,15 +3976,15 @@ export function isTicketOracleCommitted(args) {
     if (!args.ticketId)
         return false;
     try {
-        const { startCommit, pinnedSha } = resolveSessionBaselineShas(args.sessionDir);
-        const result = readEvidence({
+        // B-1SEAM WS-1: mechanical swap onto the ONE predicate (baseline SHAs wired
+        // by buildCompletionCtx; { decision: 'attribution' } — no R-CWGE verdict).
+        const decision = evaluateCompletionEvidence(buildCompletionCtx({
             sessionDir: args.sessionDir,
             ticketId: args.ticketId,
             workingDir: args.workingDir,
-            startCommit,
-            pinnedSha,
-        });
-        return result.kind === 'committed' && !!result.sha;
+            rereadBackoffMs: 0,
+        }, 'attribution'));
+        return decision.ok;
     }
     catch {
         return false;
@@ -4107,6 +4081,55 @@ function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
     catch { /* best-effort */ }
     return { verdict, computedVia: 'between_ticket_gate' };
 }
+/**
+ * R-CECB: greenness oracle for declared-file-touch branch attribution —
+ * reuses the salvage gate_passing_committed probe (runBetweenTicketFastTests),
+ * lazily invoked only when a declared-file-touch candidate is found.
+ */
+function extensionGreenGate(workingDir) {
+    return () => {
+        const ext = path.join(workingDir, 'extension');
+        if (!fs.existsSync(ext))
+            return 'failing';
+        try {
+            return runBetweenTicketFastTests(ext).ok ? 'passing' : 'failing';
+        }
+        catch {
+            return 'errored';
+        }
+    };
+}
+/**
+ * B-1SEAM WS-1: build the `CompletionDecisionCtx` every mux-runner decision site
+ * feeds into `evaluateCompletionEvidence` (the ONE completion predicate in
+ * ticket-completion-evidence.ts). Wires the runtime capabilities the predicate
+ * cannot own itself:
+ *   - session baseline SHAs (R-CXOR-2 rejection) via resolveSessionBaselineShas;
+ *   - the extension/-scoped greenGate (R-CECB declared-file-touch attribution);
+ *   - the worker-gate verdict resolver (R-CWGE, consulted only on 'done-flip');
+ *   - the worker's announced completion SHA (R-CCEM recovery).
+ * Every site building its ctx here evaluates the SAME policy — no per-site
+ * ladder drift (the R-AICF accept-here-revert-there class).
+ */
+function buildCompletionCtx(args, decision) {
+    const { startCommit, pinnedSha } = resolveSessionBaselineShas(args.sessionDir);
+    return {
+        sessionDir: args.sessionDir,
+        ticketId: args.ticketId,
+        workingDir: args.workingDir,
+        ticketPath: args.ticketPath,
+        fallbackDir: args.fallbackDir,
+        startTimeEpoch: args.startTimeEpoch,
+        rereadBackoffMs: args.rereadBackoffMs,
+        ownAttributionTokens: args.ownAttributionTokens,
+        startCommit,
+        pinnedSha,
+        decision,
+        greenGate: extensionGreenGate(args.workingDir),
+        workerGateVerdict: () => resolveWorkerGateVerdict(args.sessionDir, args.ticketId, args.workingDir),
+        announcedSha: () => readAnnouncedCompletionSha(args.sessionDir, args.ticketId),
+    };
+}
 export function guardCompletionCommitBeforeDone(args) {
     // R-WSRC-4 parity: PICKLE_TEST_MODE=1 bypasses for sandboxed test fixtures
     // whose workingDir is a synthetic temp dir without a real git repo.
@@ -4114,93 +4137,45 @@ export function guardCompletionCommitBeforeDone(args) {
     if (process.env.PICKLE_TEST_MODE === '1') {
         return { ok: true, sha: 'pickle-test-mode-bypass' };
     }
-    // R-CXOR-2 activation: source the session baseline SHAs so readEvidence's
-    // isBaselineSha rejection actually fires in the Done-flip path (see
-    // resolveSessionBaselineShas).
-    const { startCommit, pinnedSha } = resolveSessionBaselineShas(args.sessionDir);
-    const probe = {
+    // B-1SEAM WS-1: the ladder (readEvidence → R-CCGR backoff re-read → R-CCEM
+    // announcement recovery → R-WUWC persistEvidence promote-once → R-CWGE
+    // worker-gate verdict fail-closed) lives in evaluateCompletionEvidence; this
+    // guard only wires the runtime ctx and maps the decision back to the legacy
+    // {ok…}/{ok:false, reason, source} shape callers and tests pin.
+    const decision = evaluateCompletionEvidence(buildCompletionCtx({
         sessionDir: args.sessionDir,
         ticketId: args.ticketId,
         workingDir: args.workingDir,
-        startCommit,
-        pinnedSha,
-        // R-CECB: greenness oracle for declared-file-touch branch attribution —
-        // reuses the salvage gate_passing_committed probe (runBetweenTicketFastTests),
-        // lazily invoked only when a declared-file-touch candidate is found.
-        greenGate: () => {
-            const ext = path.join(args.workingDir, 'extension');
-            if (!fs.existsSync(ext))
-                return 'failing';
-            try {
-                return runBetweenTicketFastTests(ext).ok ? 'passing' : 'failing';
-            }
-            catch {
-                return 'errored';
-            }
-        },
-    };
-    // R-AFCC-DEEP-4A: use readEvidence (replaces hasCompletionCommit).
-    const evidenceAccepted = (r) => r.kind === 'committed' && !!r.sha;
-    let evidenceR = readEvidence(probe);
-    if (!evidenceAccepted(evidenceR)) {
-        // R-CCGR: the worker commits + stamps `completion_commit`, then emits its
-        // done-promise; mux-runner can read this guard before that frontmatter
-        // write is durably visible. Re-read once after a short backoff so a
-        // genuinely-complete ticket is not FATAL'd on a flush race.
-        sleepSyncMs(args.rereadBackoffMs ?? guardRereadBackoffMs());
-        evidenceR = readEvidence(probe);
+        rereadBackoffMs: args.rereadBackoffMs,
+        ownAttributionTokens: args.ownAttributionTokens,
+    }, 'done-flip'));
+    if (decision.ok) {
+        return { ok: true, sha: decision.sha };
     }
-    // R-CCEM (#126): absent evidence + a worker-announced commit SHA → recover the
-    // worker's OWN declared SHA as inferred evidence so the committed-evidence
-    // auto-promote below can attribute the ticket (extracted to keep the guard
-    // under the complexity ceiling).
-    evidenceR = recoverInferredFromAnnouncement(args, probe, evidenceR);
-    // R-WUWC SOFT-variant: committed evidence whose SHA came from the inferred
-    // field or git-log scan — auto-promote to an explicit completion_commit by
-    // writing the SHA into ticket frontmatter via persistEvidence, then re-probe.
-    // This is the runtime equivalent of the operator workaround:
-    // `edit ticket frontmatter to include completion_commit: <sha>`. persistEvidence
-    // no-ops (already_present) when the explicit field is already there.
-    if (evidenceR.kind === 'committed' && evidenceR.sha) {
+    if (decision.reason === 'worker_gate_red' || decision.reason === 'worker_gate_unavailable') {
+        const gate = decision.gate ?? { verdict: 'absent', computedVia: 'unavailable' };
+        // AC-CWGE-4/6: fail-closed. Emit the observability event, then refuse the Done-flip.
         try {
-            const result = persistEvidence(probe, evidenceR.sha, { stage: 'best-effort' });
-            if (result.action === 'written') {
-                evidenceR = readEvidence(probe);
-            }
+            writeActivityEntry(path.join(args.sessionDir, 'state.json'), {
+                event: 'worker_gate_verdict_fail_closed',
+                ts: new Date().toISOString(),
+                ticket_id: args.ticketId,
+                gate_payload: { verdict: gate.verdict, computed_via: gate.computedVia },
+            });
         }
-        catch { /* best-effort — fall through to existing classification */ }
+        catch { /* best-effort */ }
+        return {
+            ok: false,
+            // Evidence was committed when the verdict refused — legacy source mapping.
+            source: 'explicit-reachable',
+            reason: `ticket ${args.ticketId} cannot flip Done: worker_gate_verdict='${gate.verdict}' (computed_via=${gate.computedVia}). ` +
+                `Done requires a GREEN worker-gate verdict (eslint+tsc+test:fast); a red or absent/unverifiable verdict is fail-closed (R-CWGE).`,
+        };
     }
-    if (evidenceR.kind === 'committed' && evidenceR.sha) {
-        // B-CWGE WS-2 (R-CWGE): the recorded worker-gate verdict is authoritative on
-        // EVERY Done-flip path. Done requires a GREEN verdict (eslint+tsc+test:fast);
-        // a red or absent/unverifiable verdict is fail-closed.
-        const { verdict, computedVia } = resolveWorkerGateVerdict(args.sessionDir, args.ticketId, args.workingDir);
-        if (verdict !== 'green') {
-            // AC-CWGE-4/6: fail-closed. Emit the observability event, then refuse the Done-flip.
-            try {
-                writeActivityEntry(path.join(args.sessionDir, 'state.json'), {
-                    event: 'worker_gate_verdict_fail_closed',
-                    ts: new Date().toISOString(),
-                    ticket_id: args.ticketId,
-                    gate_payload: { verdict, computed_via: computedVia },
-                });
-            }
-            catch { /* best-effort */ }
-            return {
-                ok: false,
-                source: mapEvidenceKindToLegacySource(evidenceR.kind),
-                reason: `ticket ${args.ticketId} cannot flip Done: worker_gate_verdict='${verdict}' (computed_via=${computedVia}). ` +
-                    `Done requires a GREEN worker-gate verdict (eslint+tsc+test:fast); a red or absent/unverifiable verdict is fail-closed (R-CWGE).`,
-            };
-        }
-        return { ok: true, sha: evidenceR.sha };
-    }
-    // Map EvidenceKind back to legacy source for callers that inspect the error.
-    const legacySource = mapEvidenceKindToLegacySource(evidenceR.kind);
     return {
         ok: false,
-        source: legacySource,
-        reason: `ticket ${args.ticketId} cannot flip Done: readEvidence().kind === '${evidenceR.kind}' (expected 'committed'); ` +
+        source: 'absent',
+        reason: `ticket ${args.ticketId} cannot flip Done: readEvidence().kind === 'absent' (expected 'committed'); ` +
             `worker did not produce an attributable git commit. Edit ticket frontmatter to include completion_commit: <sha>.`,
     };
 }
@@ -4331,8 +4306,8 @@ function exitForCloserTerminalState(statePath, sessionDir, iteration, decision, 
 }
 /**
  * Rung-1 committer: stage the dirty tree, commit referencing the ticket id, then
- * flip the ticket Done through the R-PEDC guard/clear pair (the 7th such pair in
- * this file). Atomic by construction — a failed `git commit` (e.g. refused by the
+ * flip the ticket Done through the R-PEDC guard/clear pair. Atomic by
+ * construction — a failed `git commit` (e.g. refused by the
  * R-WSRC config-protection hook) returns `{ ok: false }` with nothing flipped, so
  * the ladder falls through to fix-forward-trivial rather than leaving a half-commit.
  */
@@ -4639,45 +4614,24 @@ function ticketHasExplicitCompletionCommit(sessionDir, ticketId) {
  * (never re-commit). Returns the resolved boundary result.
  */
 function attributeBoundaryHeadMoved(sessionDir, ticketId, workingDir) {
-    const { startCommit, pinnedSha } = resolveSessionBaselineShas(sessionDir);
-    const probe = {
-        sessionDir,
-        ticketId,
-        workingDir,
-        startCommit,
-        pinnedSha,
-        greenGate: () => {
-            const ext = path.join(workingDir, 'extension');
-            if (!fs.existsSync(ext))
-                return 'failing';
-            try {
-                return runBetweenTicketFastTests(ext).ok ? 'passing' : 'failing';
-            }
-            catch {
-                return 'errored';
-            }
-        },
-    };
-    let evidence = readEvidence(probe);
+    // B-1SEAM WS-1: mechanical swap onto the ONE predicate ({ decision:
+    // 'attribution' } — keep-decision, no R-CWGE verdict). The predicate owns the
+    // R-WUWC promote-once persist that this function previously duplicated inline,
+    // so a scan/inferred SHA is already written to completion_commit on `ok`.
+    // Read the explicit-field presence BEFORE the predicate (which may persist it)
+    // to distinguish the no-op from the fresh attribution.
+    const hadExplicit = ticketHasExplicitCompletionCommit(sessionDir, ticketId);
+    const decision = evaluateCompletionEvidence(buildCompletionCtx({ sessionDir, ticketId, workingDir, rereadBackoffMs: 0 }, 'attribution'));
     // Already explicitly tagged (present + reachable completion_commit field) → no-op.
-    // B-DURA T70: readEvidence returns `committed` for both the explicit field and a
-    // scan-found SHA, so read the field directly to distinguish no-op from persist.
-    if (evidence.kind === 'committed' && evidence.sha && ticketHasExplicitCompletionCommit(sessionDir, ticketId)) {
-        return { outcome: 'attributed', reason: 'no-op-head-moved', sha: evidence.sha };
+    if (decision.ok && hadExplicit) {
+        return { outcome: 'attributed', reason: 'no-op-head-moved', sha: decision.sha };
     }
-    // Untagged worker commit → attribute via the file-touch window by writing the
-    // discovered SHA into completion_commit (no second commit). When readEvidence
-    // resolves a scan/inferred SHA, persist it so the Done-flip gate reads committed.
-    if (evidence.sha) {
-        try {
-            const persisted = persistEvidence(probe, evidence.sha, { stage: 'best-effort' });
-            if (persisted.action === 'written')
-                evidence = readEvidence(probe);
-        }
-        catch { /* best-effort — fall through to the attributed classification */ }
-        return { outcome: 'attributed', reason: 'head-moved-untagged', sha: evidence.sha };
+    // Untagged worker commit → attributed via the predicate's scan/inferred branch
+    // (completion_commit back-filled by its promote-once; no second commit).
+    if (decision.ok) {
+        return { outcome: 'attributed', reason: 'head-moved-untagged', sha: decision.sha };
     }
-    // HEAD moved but readEvidence cannot attribute it (e.g. baseline-only / out of
+    // HEAD moved but the predicate cannot attribute it (e.g. baseline-only / out of
     // scope). Leave it to the downstream Done-flip guard; do NOT re-commit.
     return { outcome: 'honest_failure', reason: 'head-moved-untagged' };
 }
@@ -6839,18 +6793,22 @@ export function isWithinBreakerRecoveryGrace(cbState, graceSeconds, nowMs) {
 }
 /**
  * AC-A1 (B-RRH) default done-guard: a ticket is "fine" (never charged) when its
- * frontmatter status is Done AND it carries explicit (`completion_commit`) OR
- * inferred (`completion_commit_inferred`) completion evidence. Fail-open — a
- * missing/unreadable ticket file yields false so the normal charge path runs.
+ * frontmatter status is Done AND its completion evidence is accepted by the ONE
+ * completion predicate (B-1SEAM WS-1 — the prior bare non-empty-field read
+ * accepted a hallucinated/unreachable stamp here that the batch watcher then
+ * reverted seconds later: the live accept-here-revert-there split). Evaluated
+ * as a keep-decision ({ decision: 'phantom-watch' }) so its verdict matches the
+ * watcher's. Fail-open — a missing/unreadable ticket file or an absent
+ * workingDir yields false so the normal charge path runs.
  */
-function defaultDoneGuard(sessionDir, ticketId) {
+function defaultDoneGuard(sessionDir, ticketId, workingDir) {
     try {
         if (normalizeTicketStatus(getTicketStatus(sessionDir, ticketId)) !== 'done')
             return false;
-        const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf-8');
-        const explicit = (readFrontmatterField(raw, 'completion_commit') ?? '').trim();
-        const inferred = (readFrontmatterField(raw, 'completion_commit_inferred') ?? '').trim();
-        return explicit.length > 0 || inferred.length > 0;
+        if (!workingDir)
+            return false;
+        const decision = evaluateCompletionEvidence(buildCompletionCtx({ sessionDir, ticketId, workingDir, rereadBackoffMs: 0 }, 'phantom-watch'));
+        return decision.ok;
     }
     catch {
         return false;
@@ -6929,7 +6887,7 @@ export function recordWorkerArtifactProgress(statePath, sessionDir, ticketId, be
     const doneGuardFn = opts.doneGuardFn ?? defaultDoneGuard;
     let doneGuard = false;
     try {
-        doneGuard = doneGuardFn(sessionDir, ticketId);
+        doneGuard = doneGuardFn(sessionDir, ticketId, opts.workingDir);
     }
     catch {
         doneGuard = false;

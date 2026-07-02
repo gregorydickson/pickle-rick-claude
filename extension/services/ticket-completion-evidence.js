@@ -184,10 +184,12 @@ function isForeignAttributedExplicitSha(sha, ctx, content) {
         return false;
     const wordBoundary = (token) => new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
     // Own attribution wins: never reject a commit that names this ticket's id/r_code.
+    // R-PDUP: sanctioned twin-borrow tokens count as own attribution too.
     const selfRCode = readFrontmatterField(content, 'r_code');
     const ownTokens = [
         ...(selfId ? [selfId.toLowerCase()] : []),
         ...(selfRCode ? [selfRCode.trim().toLowerCase()] : []),
+        ...(ctx.ownAttributionTokens ?? []).map(t => t.trim().toLowerCase()),
     ].filter(Boolean);
     if (ownTokens.some(t => wordBoundary(t).test(message)))
         return false;
@@ -381,12 +383,13 @@ export function readEvidence(ctx) {
     }
     // --- Explicit completion_commit field ---
     const explicit = normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit'));
+    let unreachableExplicit = false;
     if (explicit) {
         // R-CXOR-2: reject baseline SHAs — a ticket whose only "commit" is the session
         // start_commit or pinned_sha did no real work; treat it as absent evidence.
         if (isBaselineSha(explicit, ctx)) {
             process.stderr.write(`[ticket-completion-evidence] baseline sha ${explicit} rejected as completion evidence — ticket did no work beyond session start\n`);
-            return { kind: 'absent' };
+            return { kind: 'absent', absentReason: 'baseline_sha' };
         }
         const r = probeExplicitSha(explicit, ctx.workingDir, ctx.fallbackDir);
         // R-OMA: reject a reachable explicit SHA ONLY when it is positively attributed
@@ -394,23 +397,31 @@ export function readEvidence(ctx) {
         // commit hash). Default = accept (explicit-SHA-wins).
         if (r && isForeignAttributedExplicitSha(explicit, ctx, content)) {
             process.stderr.write(`[ticket-completion-evidence] explicit sha ${explicit} rejected — positively attributed to a different ticket (R-OMA foreign-attribution)\n`);
-            return { kind: 'absent' };
+            return { kind: 'absent', absentReason: 'foreign_attribution' };
         }
         if (r)
-            return r;
-        // Explicit SHA present but not reachable → no usable evidence.
-        return { kind: 'absent' };
+            return { ...r, via: 'explicit' };
+        // R-AICF: explicit SHA present but UNREACHABLE (hallucinated/dropped stamp).
+        // No longer hard-absent — fall through to the inferred-field and git-log-scan
+        // branches so real untagged work is still attributable. Baseline-rejected and
+        // foreign-attributed explicit SHAs above stay hard-absent.
+        unreachableExplicit = true;
+        process.stderr.write(`[ticket-completion-evidence] explicit sha ${explicit} unreachable — falling through to inferred/scan attribution (R-AICF)\n`);
     }
+    const absent = () => ({
+        kind: 'absent',
+        absentReason: unreachableExplicit ? 'unreachable_explicit_unattributable' : 'no_evidence',
+    });
     // --- Inferred field (completion_commit_inferred) ---
     const inferredField = normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit_inferred'));
     if (inferredField) {
         if (commitExists(ctx.workingDir, inferredField)) {
-            return { kind: 'committed', sha: inferredField };
+            return { kind: 'committed', sha: inferredField, via: 'inferred' };
         }
         // R-AFCC-STAGE: field present but git can't verify (non-repo workingDir or a
         // dropped commit). A stored-but-unverifiable SHA is not evidence the gate can
         // act on → absent. Short-circuit (the scan would fail for the same reason).
-        return { kind: 'absent' };
+        return absent();
     }
     // --- Git log scan (ref token + R-CECB declared-file-touch) ---
     const selfId = readFrontmatterField(content, 'id') ?? ctx.ticketId ?? null;
@@ -427,8 +438,8 @@ export function readEvidence(ctx) {
         greenGate: ctx.greenGate,
     });
     if (scan)
-        return { kind: 'committed', sha: scan.sha };
-    return { kind: 'absent' };
+        return { kind: 'committed', sha: scan.sha, via: 'scan' };
+    return absent();
 }
 // ---------------------------------------------------------------------------
 // Entry point 2: persistEvidence
@@ -479,23 +490,179 @@ export function persistEvidence(ctx, sha, opts) {
     }
     return { action: 'written', sha, staged };
 }
+/**
+ * R-CCGR: a process-blocking sleep for the single backoff re-read.
+ * `Atomics.wait` blocks without spawning a child process.
+ */
+function sleepSyncMs(ms) {
+    if (!(ms > 0))
+        return;
+    try {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    }
+    catch { /* SharedArrayBuffer disabled — skip the backoff */ }
+}
+/** R-CCGR backoff before the single re-read; env-overridable, clamped. */
+function defaultRereadBackoffMs() {
+    const raw = Number(process.env.PICKLE_GUARD_REREAD_BACKOFF_MS);
+    if (Number.isFinite(raw) && raw >= 0)
+        return Math.min(raw, 5000);
+    return 500;
+}
+/**
+ * R-CCEM: absent evidence + a worker-announced commit SHA → persist the worker's
+ * OWN declared SHA as `completion_commit_inferred` and re-probe (absorbs
+ * mux-runner's recoverInferredFromAnnouncement). `readEvidence` still gates on
+ * commitExists + baseline rejection, so a non-existent or baseline SHA stays
+ * absent. Best-effort; never overwrites an explicit `completion_commit`.
+ */
+function recoverFromAnnouncement(ctx) {
+    if (!ctx.announcedSha)
+        return null;
+    let announced;
+    try {
+        announced = ctx.announcedSha();
+    }
+    catch {
+        return null;
+    }
+    if (!announced)
+        return null;
+    const tPath = resolveTicketPath(ctx);
+    if (!tPath)
+        return null;
+    try {
+        const raw = fs.readFileSync(tPath, 'utf8');
+        if (!readFrontmatterField(raw, 'completion_commit')) {
+            const upd = upsertFrontmatterField(raw, 'completion_commit_inferred', announced);
+            if (upd) {
+                fs.writeFileSync(tPath, upd);
+                return readEvidence(ctx);
+            }
+        }
+    }
+    catch { /* best-effort — fall through to existing classification */ }
+    return null;
+}
+/**
+ * B-1SEAM WS-1: the ONE completion predicate — the single policy answering
+ * "may this ticket's completion evidence be acted on?". Policy is the shipped
+ * `guardCompletionCommitBeforeDone` ladder VERBATIM (the strictest site):
+ *
+ *   1. readEvidence (explicit-reachable-wins; baseline + foreign hard-absent;
+ *      R-AICF unreachable-explicit falls to inferred/scan).
+ *   2. Single backoff re-read on absent (R-CCGR flush race).
+ *   3. Announcement recovery (R-CCEM): persist the worker-announced SHA as
+ *      completion_commit_inferred + re-probe.
+ *   4. Promote-once (R-WUWC SOFT-variant): persistEvidence writes the committed
+ *      SHA into the explicit field (no-ops when already present) + re-probe.
+ *   5. decision === 'done-flip' ONLY: worker-gate verdict fail-closed (R-CWGE) —
+ *      GREEN required; red / absent / un-injected refuse. 'phantom-watch' and
+ *      'attribution' apply everything EXCEPT the verdict: the verdict governs
+ *      Done-FLIPS, not keep-decisions — reverting shipped Done work on an absent
+ *      verdict would violate R-DSAN never-discard.
+ */
+/** Type guard: committed evidence carrying a SHA the predicate can act on. */
+function isAcceptedEvidence(r) {
+    return r.kind === 'committed' && !!r.sha;
+}
+function refuseAbsent(evidence) {
+    return { ok: false, reason: evidence.absentReason ?? 'no_evidence' };
+}
+/**
+ * R-WUWC SOFT-variant promote-once: write the SHA into the explicit
+ * completion_commit field (persistEvidence no-ops when already present), then
+ * re-probe so the accepted evidence is the durable on-disk state. Best-effort:
+ * a persist failure yields null and the caller keeps the pre-persist evidence.
+ */
+function promoteOnceAndReprobe(ctx, sha) {
+    try {
+        const result = persistEvidence(ctx, sha, { stage: 'best-effort' });
+        if (result.action === 'written') {
+            return readEvidence(ctx);
+        }
+    }
+    catch { /* best-effort — fall through to existing classification */ }
+    return null;
+}
+/**
+ * R-CWGE: Done requires a GREEN worker-gate verdict; fail-closed. Consulted
+ * ONLY for 'done-flip'. An un-injected or throwing resolver reads as
+ * absent/unavailable and refuses.
+ */
+function workerGateRefusal(ctx) {
+    if (ctx.decision !== 'done-flip')
+        return null;
+    let gate;
+    try {
+        gate = ctx.workerGateVerdict
+            ? ctx.workerGateVerdict()
+            : { verdict: 'absent', computedVia: 'unavailable' };
+    }
+    catch {
+        gate = { verdict: 'absent', computedVia: 'unavailable' };
+    }
+    if (gate.verdict === 'green')
+        return null;
+    return {
+        ok: false,
+        reason: gate.verdict === 'red' ? 'worker_gate_red' : 'worker_gate_unavailable',
+        gate,
+    };
+}
+export function evaluateCompletionEvidence(ctx) {
+    let evidence = readEvidence(ctx);
+    if (!isAcceptedEvidence(evidence)) {
+        // R-CCGR: the worker commits + stamps `completion_commit`, then emits its
+        // done-promise; a decision site can read this predicate before that
+        // frontmatter write is durably visible. Re-read once after a short backoff.
+        sleepSyncMs(ctx.rereadBackoffMs ?? defaultRereadBackoffMs());
+        evidence = readEvidence(ctx);
+    }
+    let via = evidence.via;
+    if (!isAcceptedEvidence(evidence)) {
+        const recovered = recoverFromAnnouncement(ctx);
+        if (recovered) {
+            evidence = recovered;
+            if (isAcceptedEvidence(recovered))
+                via = 'announcement';
+        }
+    }
+    if (!isAcceptedEvidence(evidence))
+        return refuseAbsent(evidence);
+    const viaAtAccept = via ?? evidence.via ?? 'scan';
+    const reprobed = promoteOnceAndReprobe(ctx, evidence.sha);
+    if (reprobed)
+        evidence = reprobed;
+    if (!isAcceptedEvidence(evidence))
+        return refuseAbsent(evidence);
+    const refusal = workerGateRefusal(ctx);
+    if (refusal)
+        return refusal;
+    return { ok: true, sha: evidence.sha, via: viaAtAccept, usedFallback: evidence.usedFallback };
+}
 // ---------------------------------------------------------------------------
-// Entry point 3: gateForPhantomDoneRevert
+// Entry point 4: gateForPhantomDoneRevert
 // ---------------------------------------------------------------------------
 /**
  * Decides whether a Done ticket should be reverted (phantom-Done watcher) or
- * kept. B-DURA T70 collapse: `committed` evidence → keep (the caller idempotently
- * promotes a non-explicit SHA into the completion_commit field); `absent` → revert.
- *
- * Callers do all file writes based on the returned action — this function
- * only reads evidence and returns a decision.
+ * kept. B-1SEAM WS-1: thin adapter over `evaluateCompletionEvidence`
+ * ({ decision: 'phantom-watch' }) so the watcher and the Done-flip gate share
+ * ONE policy — no accept-here-revert-there split. The export name is kept for
+ * audit-phantom-done-call-sites.sh and the R-RIC-EXPLICIT-4 pins.
  */
 export function gateForPhantomDoneRevert(ctx, _policy) {
-    const evidence = readEvidence(ctx);
-    switch (evidence.kind) {
-        case 'committed':
-            return { action: 'keep', kind: 'committed', sha: evidence.sha, fallbackFired: evidence.usedFallback };
-        case 'absent':
-            return { action: 'revert', kind: 'absent' };
+    const decision = evaluateCompletionEvidence({
+        ...ctx,
+        startCommit: ctx.startCommit ?? null,
+        pinnedSha: ctx.pinnedSha ?? null,
+        decision: 'phantom-watch',
+        // Watcher re-checks are not racing a done-promise flush; skip the sleep
+        // (the single re-read still runs).
+        rereadBackoffMs: 0,
+    });
+    if (decision.ok) {
+        return { action: 'keep', kind: 'committed', sha: decision.sha, fallbackFired: decision.usedFallback };
     }
+    return { action: 'revert', kind: 'absent' };
 }

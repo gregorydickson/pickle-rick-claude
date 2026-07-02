@@ -11,6 +11,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,15 +69,24 @@ function makeTicketFile(dir, ticketId, frontmatter) {
   return file;
 }
 
-test('AC-ICP-04: status: Done WITH completion_commit field → has_completion_commit (no revert)', () => {
+test('AC-ICP-04: status: Done WITH reachable completion_commit field → has_completion_commit (no revert)', () => {
   const tmp = fs.mkdtempSync(path.join(fs.realpathSync('/tmp'), 'phantom-watcher-test-'));
   try {
+    // B-1SEAM WS-1: the watcher git-probes the stamped sha through the ONE
+    // predicate (bare field presence no longer keeps) — stamp a REAL sha.
+    execFileSync('git', ['init', '-q'], { cwd: tmp, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: tmp });
+    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: tmp });
+    fs.writeFileSync(path.join(tmp, 'work.txt'), 'work\n');
+    execFileSync('git', ['add', '-A'], { cwd: tmp, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-q', '-m', 'work', '--no-gpg-sign'], { cwd: tmp, stdio: 'ignore' });
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tmp, encoding: 'utf8' }).trim();
     const ticketDir = path.join(tmp, 'session', 'eeff0011');
     fs.mkdirSync(ticketDir, { recursive: true });
     const ticketFile = makeTicketFile(ticketDir, 'eeff0011', {
       id: 'eeff0011',
       status: 'Done',
-      completion_commit: 'abc1234',
+      completion_commit: sha,
     });
     const result = inspectPhantomDoneTicketFile(
       ticketFile,

@@ -313,3 +313,81 @@ test('R-PDUP: Done original already has completion_commit → auto-close does no
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Test 6: PRODUCTION-SHAPED commits — twin commits tagged `fix(<twinId>): ...`
+// must NOT trip the R-OMA foreign-attribution check on the auto-close path.
+// The borrowed twin sha's message word-boundary-names the TWIN (a sibling dir
+// of the original); the sanctioned twin-borrow injects the twin ids as own-
+// attribution tokens so the guard accepts the evidence and the original closes.
+// (Regression: with untagged fixture commits this bug was invisible — the
+// guard refused every production-tagged twin sha and the original stayed Todo
+// forever, re-entering the phantom-rebuild class R-PDUP exists to prevent.)
+// ---------------------------------------------------------------------------
+test('R-PDUP: twin commits tagged fix(<twinId>) → original still auto-closes (R-OMA twin-borrow sanctioned)', () => {
+  const root = makeTmp();
+  const prevTestMode = process.env.PICKLE_TEST_MODE;
+  // The guard's PICKLE_TEST_MODE bypass would mask the R-OMA path — force it off.
+  delete process.env.PICKLE_TEST_MODE;
+  try {
+    initGitRepo(root);
+    const gitOpts = { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] };
+
+    // Per-twin delivering commits using the PRODUCTION commit-message
+    // convention: the message names the TWIN's ticket id, never the original's.
+    fs.writeFileSync(path.join(root, 'part-i.txt'), 'split part i\n');
+    execFileSync('git', ['add', 'part-i.txt'], { cwd: root });
+    execFileSync('git', ['commit', '-q', '-m', 'fix(ff000001): implement split part i', '--no-gpg-sign'], { cwd: root });
+    const shaI = execFileSync('git', ['rev-parse', 'HEAD'], gitOpts).trim();
+
+    fs.writeFileSync(path.join(root, 'part-ii.txt'), 'split part ii\n');
+    execFileSync('git', ['add', 'part-ii.txt'], { cwd: root });
+    execFileSync('git', ['commit', '-q', '-m', 'fix(ff000002): implement split part ii', '--no-gpg-sign'], { cwd: root });
+    const shaII = execFileSync('git', ['rev-parse', 'HEAD'], gitOpts).trim();
+
+    const sessionDir = path.join(root, 'session');
+    fs.mkdirSync(sessionDir, { recursive: true });
+
+    writeTicket(sessionDir, 'ff000001', {
+      status: 'Done', title: 'R-PROD-6-i', order: 10, completion_commit: shaI,
+    });
+    writeTicket(sessionDir, 'ff000002', {
+      status: 'Done', title: 'R-PROD-6-ii', order: 11, completion_commit: shaII,
+    });
+    const origId = 'ff000000';
+    writeTicket(sessionDir, origId, {
+      status: 'Todo', title: 'R-PROD-6', order: 996,
+    });
+
+    const logs = [];
+    const count = correctPhantomDoneTickets({
+      sessionDir,
+      workingDir: root,
+      startCommit: null,
+      iteration: 1,
+      log: (m) => logs.push(m),
+    });
+
+    const content = readTicketContent(sessionDir, origId);
+    const status = readFrontmatterField(content, 'status');
+    assert.equal(status, 'Done',
+      `expected production-tagged split original to auto-close (status=Done), got '${status}'; logs: ${JSON.stringify(logs)}`);
+    assert.ok(count >= 1, `expected at least 1 auto-close, got ${count}`);
+
+    // Canonical sha is a twin's delivering commit (first-found twin is stable).
+    const cc = readFrontmatterField(content, 'completion_commit');
+    assert.ok([shaI, shaII].includes(cc),
+      `expected completion_commit to be a twin sha (${shaI} or ${shaII}), got '${cc}'`);
+
+    // The guard must NOT have refused with the R-OMA foreign-attribution reason.
+    const refusal = logs.find(l => l.includes('auto-close guard refused'));
+    assert.ok(!refusal, `guard refused the sanctioned twin-borrow: ${refusal}`);
+
+    const autoCloseLog = logs.find(l => l.includes('R-PDUP') && l.includes('auto-closed'));
+    assert.ok(autoCloseLog, `expected an R-PDUP auto-close log line; got: ${JSON.stringify(logs)}`);
+  } finally {
+    if (prevTestMode === undefined) delete process.env.PICKLE_TEST_MODE;
+    else process.env.PICKLE_TEST_MODE = prevTestMode;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

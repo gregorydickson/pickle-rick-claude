@@ -80,17 +80,18 @@ if (!batchHelperBody.includes("return 'explicit-reachable';")) {
 }
 
 // --- validateAutoTicketCompletion ---
-// R-AFCC-DEEP-4A: readEvidence replaces hasCompletionCommit.
-// MUST use readEvidence( and check evidence.kind === 'absent'.
+// B-1SEAM WS-1: evaluateCompletionEvidence (the ONE completion predicate)
+// replaces the bare readEvidence call (R-AFCC-DEEP-4A lineage).
+// MUST consult the predicate before the no-evidence skip return.
 const validateBody = extractFunctionBody('validateAutoTicketCompletion');
 assertIncludesBefore(
   validateBody,
-  'readEvidence(',
+  'evaluateCompletionEvidence(',
   "return { action: 'skip', reason: 'no_commit_referencing_ticket_since_current_set' };",
   'validateAutoTicketCompletion',
 );
-if (!validateBody.includes("evidence.kind === 'absent'")) {
-  throw new Error("validateAutoTicketCompletion: missing absent-kind branch (R-AFCC-DEEP-4A)");
+if (!validateBody.includes('!decision.ok')) {
+  throw new Error("validateAutoTicketCompletion: missing predicate-refusal branch (B-1SEAM WS-1)");
 }
 
 // --- inspectPhantomDoneTicketFile ---

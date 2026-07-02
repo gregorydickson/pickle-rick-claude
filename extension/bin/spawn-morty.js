@@ -2,8 +2,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, runCmd, safeErrorMessage, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, resolveWorkerTestGateTimeoutMs, classifyTicketTier, VALID_TICKET_COMPLEXITY_TIERS, extractFrontmatter, loadPickleSettingsBag, resolveCodegraphSettings, upsertFrontmatterField, ticketFilePath, TIER_LIFECYCLE, TIER_DIFF_ENVELOPE, } from '../services/pickle-utils.js';
-import { spawn } from 'child_process';
+import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, runCmd, safeErrorMessage, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, resolveWorkerTestGateTimeoutMs, classifyTicketTier, VALID_TICKET_COMPLEXITY_TIERS, extractFrontmatter, loadPickleSettingsBag, resolveCodegraphSettings, readFrontmatterField, upsertFrontmatterField, ticketFilePath, TIER_LIFECYCLE, TIER_DIFF_ENVELOPE, } from '../services/pickle-utils.js';
+import { spawn, execFileSync } from 'child_process';
 import { PromiseTokens, hasToken, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD } from '../types/index.js';
 import { CodegraphService } from '../services/codegraph-service.js';
 import { isRecord } from '../lib/is-record.js';
@@ -1330,6 +1330,140 @@ export async function runWorkerGate(changedFiles, args) {
         failedFlipSuppressed: false,
     };
 }
+const RECONCILE_GIT_TIMEOUT_MS = 5_000;
+const CLAIMED_SHA_RE = /^[0-9a-f]{7,40}$/i;
+function reconcileGit(workingDir, args) {
+    return execFileSync('git', args, {
+        cwd: workingDir,
+        encoding: 'utf8',
+        timeout: RECONCILE_GIT_TIMEOUT_MS,
+        stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+}
+function reconcileGitOrNull(workingDir, args) {
+    try {
+        return reconcileGit(workingDir, args);
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * R-AICF: the worker's OWN completion-commit claim — the frontmatter stamp
+ * first, then the last COMPLETION_COMMIT_RECORDED ack event. Both are
+ * untrusted (codex hallucinated a full 40-char sha in the live incident)
+ * until reconcileWorkerCommitAttribution verifies against git ground truth.
+ */
+function readWorkerClaimedCompletionSha(ctx) {
+    try {
+        if (ctx.args.ticketFilePath && fs.existsSync(ctx.args.ticketFilePath)) {
+            const raw = readFrontmatterField(fs.readFileSync(ctx.args.ticketFilePath, 'utf-8'), 'completion_commit');
+            if (raw && CLAIMED_SHA_RE.test(raw))
+                return raw;
+        }
+    }
+    catch { /* best-effort */ }
+    try {
+        const state = readRecoverableJsonObject(path.join(ctx.sessionRoot, 'state.json'));
+        const activity = isRecord(state) && Array.isArray(state.activity) ? state.activity : [];
+        for (let i = activity.length - 1; i >= 0; i--) {
+            const entry = activity[i];
+            if (!isRecord(entry))
+                continue;
+            if (entry.event !== 'worker_completion_commit_announced' || entry.ticket_id !== ctx.ticketId)
+                continue;
+            if (typeof entry.sha === 'string' && CLAIMED_SHA_RE.test(entry.sha))
+                return entry.sha;
+        }
+    }
+    catch { /* best-effort */ }
+    return null;
+}
+/** Newest in-window commit touching a declared file; falls back to the window tip. */
+function pickAttributionCommit(workingDir, windowShas, declaredFiles) {
+    const declared = new Set((declaredFiles ?? []).filter((f) => typeof f === 'string' && f.length > 0));
+    if (declared.size > 0) {
+        for (const sha of windowShas) {
+            const files = reconcileGitOrNull(workingDir, ['diff-tree', '--no-commit-id', '--name-only', '-r', sha]);
+            if (files !== null && files.split('\n').some((f) => declared.has(f.trim())))
+                return sha;
+        }
+    }
+    return windowShas[0] ?? null;
+}
+/**
+ * Amend the unpushed tip with a `Pickle-Ticket: <ticketId>` trailer so every
+ * ref-token scanner (readEvidence git-log scan, done-guard, phantom watcher)
+ * can attribute the commit. Preconditions (all three, else skip): message
+ * lacks a word-boundary ticketId, the verified commit IS the single-commit
+ * window tip, and the index is clean. Returns the post-amend sha.
+ */
+function maybeAmendTicketTrailer(workingDir, ticketId, verifiedSha, windowSize) {
+    try {
+        if (windowSize !== 1)
+            return verifiedSha;
+        const message = reconcileGitOrNull(workingDir, ['log', '-1', '--format=%B', verifiedSha]);
+        if (message === null)
+            return verifiedSha;
+        const escaped = ticketId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp(`\\b${escaped}\\b`, 'i').test(message))
+            return verifiedSha;
+        if (reconcileGitOrNull(workingDir, ['rev-parse', 'HEAD']) !== verifiedSha)
+            return verifiedSha;
+        try {
+            execFileSync('git', ['diff', '--cached', '--quiet'], { cwd: workingDir, timeout: RECONCILE_GIT_TIMEOUT_MS, stdio: 'ignore' });
+        }
+        catch {
+            return verifiedSha; // dirty index: an amend would sweep staged foreign work into the commit
+        }
+        // Parallel-session race guard: re-verify the tip did not move since the checks above.
+        if (reconcileGitOrNull(workingDir, ['rev-parse', 'HEAD']) !== verifiedSha)
+            return verifiedSha;
+        reconcileGit(workingDir, ['commit', '--amend', '--no-gpg-sign', '-m', message, '-m', `Pickle-Ticket: ${ticketId}`]);
+        return reconcileGitOrNull(workingDir, ['rev-parse', 'HEAD']) ?? verifiedSha;
+    }
+    catch {
+        return verifiedSha;
+    }
+}
+/**
+ * B-1SEAM WS1b (R-AICF root-cause prong): verify the worker-claimed completion
+ * sha against git ground truth BEFORE the Done stamp persists. A claimed sha
+ * that is hallucinated, unreachable, or outside preWorkerHead..HEAD is
+ * DISCARDED and replaced by the newest in-window commit touching the declared
+ * files; the survivor is normalized to the full 40-char form and, when it is
+ * the untagged single-commit tip, amended with a `Pickle-Ticket:` trailer.
+ * Best-effort throughout — attribution must never block finalize.
+ */
+export function reconcileWorkerCommitAttribution(workingDir, ticketId, preWorkerHead, claimedSha, opts = {}) {
+    try {
+        if (!preWorkerHead)
+            return null;
+        const headSha = reconcileGitOrNull(workingDir, ['rev-parse', 'HEAD']);
+        if (!headSha || headSha === preWorkerHead)
+            return null;
+        const windowRaw = reconcileGitOrNull(workingDir, ['rev-list', `${preWorkerHead}..HEAD`]);
+        if (windowRaw === null)
+            return null;
+        const windowShas = windowRaw.split('\n').map((s) => s.trim()).filter(Boolean);
+        if (windowShas.length === 0)
+            return null;
+        let verifiedSha = null;
+        if (claimedSha && CLAIMED_SHA_RE.test(claimedSha)) {
+            const resolved = reconcileGitOrNull(workingDir, ['rev-parse', '--verify', '--quiet', `${claimedSha}^{commit}`]);
+            if (resolved && windowShas.includes(resolved))
+                verifiedSha = resolved;
+        }
+        if (!verifiedSha)
+            verifiedSha = pickAttributionCommit(workingDir, windowShas, opts.declaredFiles);
+        if (!verifiedSha)
+            return null;
+        return maybeAmendTicketTrailer(workingDir, ticketId, verifiedSha, windowShas.length);
+    }
+    catch {
+        return null;
+    }
+}
 /**
  * Persist the worker-turn outcome to ticket frontmatter. 7eb9fa20: a
  * suppressed gate-fail preserves the existing status — no Failed flip.
@@ -1380,6 +1514,16 @@ async function finalizeWorkerTurn(params) {
         // status (no Failed flip); the worker still exits non-zero below and the
         // manager-side non-runnable hold parks the ticket for triage.
         flipSuppressed = !workerGate.ok && workerGate.failedFlipSuppressed;
+        if (isSuccess) {
+            // R-AICF: verify the completion-commit claim (runner autofix sha,
+            // frontmatter stamp, or ACK) against git ground truth and reconcile the
+            // ticket-id trailer BEFORE the Done stamp persists — a hallucinated
+            // worker-written sha dies here instead of at the manager's oracle.
+            const claimedSha = completionCommitSha ?? readWorkerClaimedCompletionSha(ctx);
+            const verifiedSha = reconcileWorkerCommitAttribution(sessionWorkingDir, ticketId, ctx.preWorkerHead, claimedSha, { declaredFiles: changedFiles });
+            if (verifiedSha)
+                completionCommitSha = verifiedSha;
+        }
     }
     persistWorkerOutcomeStatus({ ticketId, sessionRoot, sessionWorkingDir, isSuccess, flipSuppressed, completionCommitSha });
     if (isSuccess) {

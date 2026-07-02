@@ -70,35 +70,72 @@ function getTicketStatus(sessionDir, id) {
 }
 
 // ───────────────────────── A1 — Done-guard ─────────────────────────
+//
+// B-1SEAM WS-1: the done-guard is predicate-backed (evaluateCompletionEvidence)
+// — a stamped sha must be GIT-VERIFIABLE in the spawn's workingDir; a bare
+// non-empty field no longer triggers the guard (the live accept-here-revert-there
+// split). Guarded cases therefore need a real repo + a reachable sha.
 
-test('A1: Done ticket with explicit completion_commit is NOT charged (advance, count==0)', async () => {
+function initA1GitRepo(dir) {
+  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
+  fs.writeFileSync(path.join(dir, 'work.txt'), 'work\n');
+  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-q', '-m', 'work', '--no-gpg-sign'], { cwd: dir, stdio: 'ignore' });
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+}
+
+test('A1: Done ticket with reachable explicit completion_commit is NOT charged (advance, count==0)', async () => {
   const { recordWorkerArtifactProgress } = await import('../bin/mux-runner.js');
   const { sessionDir, statePath } = setupSession('rrh-a1-explicit-');
+  const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rrh-a1-explicit-work-'));
   const id = 'a1explic';
-  writeTicket(sessionDir, id, { id, status: 'Done', title: 'done ticket', completion_commit: 'deadbeef' });
   try {
+    const sha = initA1GitRepo(workingDir);
+    writeTicket(sessionDir, id, { id, status: 'Done', title: 'done ticket', completion_commit: sha });
     // Three zero-artifact spawns in a row — without the guard each would charge.
     let r;
-    for (let i = 0; i < 3; i++) r = recordWorkerArtifactProgress(statePath, sessionDir, id, 0);
-    assert.equal(r.doneGuard, true, 'Done + completion_commit must trigger the done-guard');
+    for (let i = 0; i < 3; i++) r = recordWorkerArtifactProgress(statePath, sessionDir, id, 0, { workingDir });
+    assert.equal(r.doneGuard, true, 'Done + reachable completion_commit must trigger the done-guard');
     assert.equal(r.zeroProgressCount, 0, 'a Done ticket is never charged');
     assert.equal(readProgress(statePath, id).zero_progress_count, 0);
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
   }
 });
 
-test('A1: Done ticket with INFERRED completion_commit is also guarded', async () => {
+test('A1: Done ticket with git-verified INFERRED completion_commit is also guarded', async () => {
   const { recordWorkerArtifactProgress } = await import('../bin/mux-runner.js');
   const { sessionDir, statePath } = setupSession('rrh-a1-inferred-');
+  const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rrh-a1-inferred-work-'));
   const id = 'a1infer';
-  writeTicket(sessionDir, id, { id, status: 'Done', title: 't', completion_commit_inferred: 'cafef00d' });
   try {
-    const r = recordWorkerArtifactProgress(statePath, sessionDir, id, 0);
+    const sha = initA1GitRepo(workingDir);
+    writeTicket(sessionDir, id, { id, status: 'Done', title: 't', completion_commit_inferred: sha });
+    const r = recordWorkerArtifactProgress(statePath, sessionDir, id, 0, { workingDir });
     assert.equal(r.doneGuard, true);
     assert.equal(r.zeroProgressCount, 0);
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('A1 (B-1SEAM): Done ticket with UNREACHABLE completion_commit is NOT guarded — bare field presence no longer accepts', async () => {
+  const { recordWorkerArtifactProgress } = await import('../bin/mux-runner.js');
+  const { sessionDir, statePath } = setupSession('rrh-a1-unreach-');
+  const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rrh-a1-unreach-work-'));
+  const id = 'a1unreach';
+  try {
+    initA1GitRepo(workingDir);
+    writeTicket(sessionDir, id, { id, status: 'Done', title: 't', completion_commit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' });
+    const r = recordWorkerArtifactProgress(statePath, sessionDir, id, 0, { workingDir });
+    assert.equal(r.doneGuard, false, 'a hallucinated/unreachable stamp must not trigger the done-guard');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
   }
 });
 

@@ -11,9 +11,10 @@
 // the message and returned `source: 'inferred'` instead of `source: 'explicit'`.
 // `guardCompletionCommitBeforeDone` raised a fatal, bricking the pipeline.
 //
-// All four assertions below MUST FAIL with the current code (red state).
-// They pass after the R-RIC-EXPLICIT-2 fix decouples `gitCommitExists` from
-// the explicit-frontmatter branch.
+// History: R-RIC-EXPLICIT-2 decoupled `gitCommitExists` from the explicit-
+// frontmatter branch (unreachable read `absent`, never mis-sourced `inferred`).
+// B-1SEAM/R-AICF then loosened unreachable-explicit from hard-absent to a
+// fall-through into the inferred/scan branches — see the block comment below.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -69,66 +70,73 @@ function writeTicket(sessionDir, ticketId, completionLine) {
   ].join('\n'));
 }
 
-// ── RED-STATE tests (AC-BRIC-01) ─────────────────────────────────────────────
-// All four assertions below FAIL until R-RIC-EXPLICIT-2 is applied.
+// ── Unreachable-explicit scan fallback (B-1SEAM R-AICF) ──────────────────────
+// INCIDENT_SHA is NOT in the fresh test repo, so git cat-file -e returns
+// non-zero. B-1SEAM/R-AICF: an unreachable explicit SHA no longer hard-returns
+// `absent` — it falls through to the inferred-field and git-log-scan branches,
+// so the fixture's real `fix(110f51bd)` commit is attributed via scan (the
+// hallucinated-stamp class: real untagged/mistagged work must not be discarded).
+// The R-RIC-EXPLICIT invariant that survives unchanged: a REACHABLE explicit
+// SHA still wins (explicit-SHA-wins, no scan override) — see the reachable
+// cases in has-completion-commit.test.js. Baseline-rejected (R-CXOR-2) and
+// foreign-attributed (R-OMA) explicit SHAs stay hard-absent — see
+// ticket-completion-evidence-predicate.test.js.
 
-// R-AFCC-DEEP-3C/4A: INCIDENT_SHA is NOT in the fresh test repo, so git cat-file -e
-// returns non-zero → source: 'absent' (R-AFCC-DEEP-4A collapsed the legacy
-// 'unreachable' source into 'absent'). The critical invariant is unchanged: presence
-// of a completion_commit field does NOT fall through to findMatchingCommit (no
-// 'inferred'), so guardCompletionCommitBeforeDone still refuses the Done flip.
-
-test('R-RIC-EXPLICIT: quoted full SHA in frontmatter → source must not be inferred (unreachable when SHA absent from repo)', () => {
+test('R-AICF: quoted full unreachable SHA in frontmatter → falls through to scan and attributes the real commit', () => {
   const root = mkTmp('pickle-bric-qf-');
   try {
     initGitRepo(root);
-    makeCommitWithTicketId(root, TICKET_ID);
+    const realSha = makeCommitWithTicketId(root, TICKET_ID);
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, TICKET_ID, `completion_commit: "${INCIDENT_SHA}"`);
     const ev = readEvidence({ sessionDir, ticketId: TICKET_ID, workingDir: root });
-    assert.equal(ev.kind, 'absent', 'explicit frontmatter must not fall through to scan; unreachable SHA reads absent (B-DURA T70), guard still refuses Done');
+    assert.equal(ev.kind, 'committed', 'unreachable explicit SHA must fall through to scan (R-AICF)');
+    assert.equal(ev.sha, realSha, 'scan fallback must attribute the real ticket-id commit');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('R-RIC-EXPLICIT: unquoted full SHA in frontmatter → source must not be inferred (unreachable when SHA absent from repo)', () => {
+test('R-AICF: unquoted full unreachable SHA in frontmatter → falls through to scan and attributes the real commit', () => {
   const root = mkTmp('pickle-bric-uf-');
   try {
     initGitRepo(root);
-    makeCommitWithTicketId(root, TICKET_ID);
+    const realSha = makeCommitWithTicketId(root, TICKET_ID);
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, TICKET_ID, `completion_commit: ${INCIDENT_SHA}`);
     const ev = readEvidence({ sessionDir, ticketId: TICKET_ID, workingDir: root });
-    assert.equal(ev.kind, 'absent', 'explicit frontmatter must not fall through to scan; unreachable SHA reads absent (B-DURA T70), guard still refuses Done');
+    assert.equal(ev.kind, 'committed', 'unreachable explicit SHA must fall through to scan (R-AICF)');
+    assert.equal(ev.sha, realSha, 'scan fallback must attribute the real ticket-id commit');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('R-RIC-EXPLICIT: unquoted short SHA in frontmatter → source must not be inferred (unreachable when SHA absent from repo)', () => {
+test('R-AICF: unquoted short unreachable SHA in frontmatter → falls through to scan and attributes the real commit', () => {
   const root = mkTmp('pickle-bric-us-');
   try {
     initGitRepo(root);
-    makeCommitWithTicketId(root, TICKET_ID);
+    const realSha = makeCommitWithTicketId(root, TICKET_ID);
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, TICKET_ID, `completion_commit: ${INCIDENT_SHORT}`);
     const ev = readEvidence({ sessionDir, ticketId: TICKET_ID, workingDir: root });
-    assert.equal(ev.kind, 'absent', 'explicit frontmatter must not fall through to scan; unreachable SHA reads absent (B-DURA T70), guard still refuses Done');
+    assert.equal(ev.kind, 'committed', 'unreachable explicit SHA must fall through to scan (R-AICF)');
+    assert.equal(ev.sha, realSha, 'scan fallback must attribute the real ticket-id commit');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('R-RIC-EXPLICIT: quoted short SHA in frontmatter → source must not be inferred (unreachable when SHA absent from repo)', () => {
+test('R-AICF: quoted short unreachable SHA in frontmatter → falls through to scan and attributes the real commit', () => {
   const root = mkTmp('pickle-bric-qs-');
   try {
     initGitRepo(root);
-    makeCommitWithTicketId(root, TICKET_ID);
+    const realSha = makeCommitWithTicketId(root, TICKET_ID);
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, TICKET_ID, `completion_commit: "${INCIDENT_SHORT}"`);
     const ev = readEvidence({ sessionDir, ticketId: TICKET_ID, workingDir: root });
-    assert.equal(ev.kind, 'absent', 'explicit frontmatter must not fall through to scan; unreachable SHA reads absent (B-DURA T70), guard still refuses Done');
+    assert.equal(ev.kind, 'committed', 'unreachable explicit SHA must fall through to scan (R-AICF)');
+    assert.equal(ev.sha, realSha, 'scan fallback must attribute the real ticket-id commit');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

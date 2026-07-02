@@ -529,6 +529,107 @@ then
   audit_exit_code=1
 fi
 
+# B-1SEAM WS-1: completion-predicate single-seam pins (mirrors
+# extension/tests/completion-predicate-single-seam.test.js; importer-set pin 3
+# is the R-AFCC-CALLER-ENUMERATION block above).
+if ! node - "$EXTENSION_ROOT/src" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const [,, srcDir] = process.argv;
+let failures = 0;
+
+const ORACLE_BASENAME = 'ticket-completion-evidence.ts';
+// Enumerated buildCompletionCtx consumers in mux-runner.ts: collectTwinEvidence,
+// validateAutoTicketCompletion, isTicketOracleCommitted,
+// guardCompletionCommitBeforeDone, attributeBoundaryHeadMoved, defaultDoneGuard.
+const MUX_PREDICATE_CALLSITES = 6;
+// A callsite passes an argument; the guard refusal string's zero-arg prose form
+// `readEvidence().kind` is spared by the [^)\s] after the paren.
+const READ_EVIDENCE_CALLSITE_RE = /\breadEvidence\(\s*[^)\s]/;
+
+function walkTs(dir) {
+  const result = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) result.push(...walkTs(full));
+    else if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) result.push(full);
+  }
+  return result;
+}
+
+function nonCommentText(content) {
+  return content.split('\n').filter((line) => {
+    const t = line.trimStart();
+    return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+  }).join('\n');
+}
+
+function extractTopLevelFunction(content, signature, label) {
+  const start = content.indexOf(signature);
+  if (start === -1) {
+    process.stderr.write(`B-1SEAM: ${label}: ${signature} not found in mux-runner.ts\n`);
+    failures++;
+    return '';
+  }
+  // \n}\n terminator: bare \n} would truncate at a multi-line params type's column-0 }).
+  const end = content.indexOf('\n}\n', start);
+  if (end === -1) {
+    process.stderr.write(`B-1SEAM: ${label}: no column-0 closing brace after ${signature}\n`);
+    failures++;
+    return '';
+  }
+  return content.slice(start, end + 3);
+}
+
+// Pin 1: zero readEvidence(<arg>) callsites outside the oracle.
+for (const filePath of walkTs(srcDir)) {
+  if (path.basename(filePath) === ORACLE_BASENAME) continue;
+  if (READ_EVIDENCE_CALLSITE_RE.test(nonCommentText(fs.readFileSync(filePath, 'utf8')))) {
+    process.stderr.write(`B-1SEAM: readEvidence( callsite outside ${ORACLE_BASENAME}: ${path.relative(srcDir, filePath)}\n`);
+    failures++;
+  }
+}
+
+// Pin 2: exact evaluateCompletionEvidence( callsite counts.
+const muxContent = fs.readFileSync(path.join(srcDir, 'bin', 'mux-runner.ts'), 'utf8');
+const autoFillContent = fs.readFileSync(path.join(srcDir, 'bin', 'auto-fill-completion-commit.ts'), 'utf8');
+const muxCount = (nonCommentText(muxContent).match(/evaluateCompletionEvidence\(/g) || []).length;
+const autoFillCount = (nonCommentText(autoFillContent).match(/evaluateCompletionEvidence\(/g) || []).length;
+if (muxCount !== MUX_PREDICATE_CALLSITES) {
+  process.stderr.write(`B-1SEAM: evaluateCompletionEvidence( in mux-runner.ts = ${muxCount}, expected exactly ${MUX_PREDICATE_CALLSITES}\n`);
+  failures++;
+}
+if (autoFillCount !== 1) {
+  process.stderr.write(`B-1SEAM: evaluateCompletionEvidence( in auto-fill-completion-commit.ts = ${autoFillCount}, expected exactly 1\n`);
+  failures++;
+}
+
+// Pin 4: defaultDoneGuard routes through the predicate; no bare field-presence accept.
+const doneGuard = extractTopLevelFunction(muxContent, 'function defaultDoneGuard(', 'pin 4');
+if (doneGuard && !doneGuard.includes('evaluateCompletionEvidence(')) {
+  process.stderr.write('B-1SEAM: defaultDoneGuard body missing evaluateCompletionEvidence( (accept-here-revert-there split)\n');
+  failures++;
+}
+if (doneGuard && /\.length\s*>\s*0/.test(doneGuard)) {
+  process.stderr.write('B-1SEAM: defaultDoneGuard contains a bare .length > 0 field-presence accept\n');
+  failures++;
+}
+
+// Pin 5: the Done-flip guard routes through the predicate (predicate UNDER the guard).
+const guard = extractTopLevelFunction(muxContent, 'export function guardCompletionCommitBeforeDone(', 'pin 5');
+if (guard && !guard.includes('evaluateCompletionEvidence(')) {
+  process.stderr.write('B-1SEAM: guardCompletionCommitBeforeDone body missing evaluateCompletionEvidence(\n');
+  failures++;
+}
+
+if (failures > 0) process.exit(1);
+console.log(`audit-trap-door-enforcement: B-1SEAM completion-predicate single-seam verified (mux callsites: ${muxCount}, auto-fill: ${autoFillCount})`);
+NODE
+then
+  audit_exit_code=1
+fi
+
 # R-AFCC-DEEP-CONSOLIDATED: single oracle — verify surviving entry points present and pruned exports absent
 if ! node - "$EXTENSION_ROOT/src/services/ticket-completion-evidence.ts" <<'NODE'
 const fs = require('fs');

@@ -10,19 +10,24 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { readFrontmatterField, ticketFilePath, upsertFrontmatterField } from '../services/pickle-utils.js';
-import { readEvidence } from '../services/ticket-completion-evidence.js';
+import { evaluateCompletionEvidence } from '../services/ticket-completion-evidence.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { writeActivityEntry } from '../services/state-manager.js';
+const EMPTY_BASELINE = { startTimeEpoch: null, startCommit: null, pinnedSha: null };
 function parseStartEpoch(statePath) {
     if (!statePath)
-        return null;
+        return EMPTY_BASELINE;
     try {
         const raw = readRecoverableJsonObject(statePath);
         const parsed = Number(raw?.start_time_epoch);
-        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+        return {
+            startTimeEpoch: Number.isFinite(parsed) && parsed > 0 ? parsed : null,
+            startCommit: typeof raw?.start_commit === 'string' && raw.start_commit ? raw.start_commit : null,
+            pinnedSha: typeof raw?.pinned_sha === 'string' && raw.pinned_sha ? raw.pinned_sha : null,
+        };
     }
     catch {
-        return null;
+        return EMPTY_BASELINE;
     }
 }
 function targetIds(sessionDir, ticketId) {
@@ -36,7 +41,7 @@ function targetIds(sessionDir, ticketId) {
     }
 }
 export function autoFillCompletionCommit(input) {
-    const startTimeEpoch = parseStartEpoch(input.statePath);
+    const { startTimeEpoch, startCommit, pinnedSha } = parseStartEpoch(input.statePath);
     const results = [];
     for (const id of targetIds(input.sessionDir, input.ticketId)) {
         const filePath = ticketFilePath(input.sessionDir, id);
@@ -56,19 +61,27 @@ export function autoFillCompletionCommit(input) {
             results.push({ ticketId: id, sha: readFrontmatterField(content, 'completion_commit'), action: 'already_present' });
             continue;
         }
-        // R-AFCC-DEEP-4A: readEvidence replaces hasCompletionCommit.
-        const evidence = readEvidence({
+        // R-AFCC-DEEP-4A evidence read, routed through the ONE completion
+        // predicate (B-1SEAM WS-1): { decision: 'attribution' } — full ladder
+        // minus the R-CWGE done-flip verdict, PLUS the R-CXOR-2 baseline
+        // rejection this site never had (start_commit/pinned_sha stamps refuse).
+        // Post-hoc CLI is not racing a done-promise flush: rereadBackoffMs 0.
+        const decision = evaluateCompletionEvidence({
             sessionDir: input.sessionDir,
             ticketId: id,
             ticketPath: filePath,
             workingDir: input.workingDir,
             startTimeEpoch,
+            startCommit,
+            pinnedSha,
+            decision: 'attribution',
+            rereadBackoffMs: 0,
         });
-        if (evidence.kind === 'absent' || !evidence.sha) {
+        if (!decision.ok) {
             results.push({ ticketId: id, sha: null, action: 'no_evidence' });
             continue;
         }
-        const updated = upsertFrontmatterField(content, 'completion_commit', evidence.sha);
+        const updated = upsertFrontmatterField(content, 'completion_commit', decision.sha);
         if (!updated) {
             results.push({ ticketId: id, sha: null, action: 'unreadable' });
             continue;
@@ -84,12 +97,12 @@ export function autoFillCompletionCommit(input) {
                 source: 'pickle',
                 session: path.basename(input.sessionDir),
                 ticket_id: id,
-                sha: evidence.sha,
+                sha: decision.sha,
                 helper: 'auto_fill',
                 ts: new Date().toISOString(),
             });
         }
-        results.push({ ticketId: id, sha: evidence.sha, action: 'filled' });
+        results.push({ ticketId: id, sha: decision.sha, action: 'filled' });
     }
     return results;
 }
