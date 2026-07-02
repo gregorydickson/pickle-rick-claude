@@ -3,10 +3,11 @@
 // `signature_caller_gap` finding when a ticket changes an exported/injected
 // symbol's ARITY (adds a constructor param) and a positional caller in an
 // out-of-scope `*.spec.ts` / factory file would be left stale.
-// Blocking when: kill-switch absent AND skip_quality_gates_reason absent AND
+// Blocking when: skip_quality_gates_reason absent AND
 //   (scope.auto_extend_signature_callers is false OR caller count > SCOPE_AUTO_EXTEND_MAX=8).
-// Advisory (non-blocking) when: kill-switch (PICKLE_SIGF=off|advisory),
-//   skip_quality_gates_reason set, or flag-on + count ≤ 8.
+// Advisory (non-blocking) when: skip_quality_gates_reason set, or flag-on + count ≤ 8.
+// (The PICKLE_SIGF kill-switch was retired in the guard-layer prune — the mux-level
+// readiness gate is already advisory, so the env demotion route was redundant.)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -335,84 +336,6 @@ test('R-SIGF AC-SIGF-1d: scope.auto_extend_signature_callers=true + count > 8 �
     const out = JSON.parse(result.stdout);
     const blocking = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap');
     assert.ok(blocking.length > 0, `expected at least one signature_caller_gap finding; got ${JSON.stringify(out.findings)}`);
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-    fs.rmSync(repoRoot, { recursive: true, force: true });
-  }
-});
-
-// AC-SIGF-1e: PICKLE_SIGF=off → advisory (non-blocking), kind:'advisory'
-test('R-SIGF AC-SIGF-1e: PICKLE_SIGF=off reverts to advisory (exit 0, kind advisory)', () => {
-  const sessionDir = tmpDir();
-  const repoRoot = gitRepoWith({
-    'src/gamma-service.ts': 'export class GammaService { constructor(a, b) {} }\n',
-    'src/gamma-service.spec.ts': "import { GammaService } from './gamma-service';\nconst s = new GammaService(1, 2);\n",
-  });
-  try {
-    writeTicket(sessionDir, 'sigf-ks', [
-      '---',
-      'id: sigf-ks',
-      'key: SIGF-KS',
-      'ac_ids: []',
-      '---',
-      '',
-      '# Add a 3rd constructor parameter to GammaService',
-      '',
-      '## Files to modify',
-      '',
-      '- `src/gamma-service.ts`',
-      '',
-      '## Acceptance Criteria',
-      '',
-      '- [ ] `GammaService` constructor accepts exactly `3` parameters.',
-      '',
-    ].join('\n'));
-    const result = runReadiness(sessionDir, repoRoot, { PICKLE_SIGF: 'off' });
-    assert.equal(result.status, 0, `PICKLE_SIGF=off must make it advisory (exit 0), got ${result.status}; stdout=${result.stdout}`);
-    const out = JSON.parse(result.stdout);
-    assert.equal(out.status, 'pass');
-    // Must be advisory, not blocking
-    const blocking = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap');
-    assert.deepEqual(blocking, [], `PICKLE_SIGF=off must produce advisory not blocking; got ${JSON.stringify(blocking)}`);
-    const advisory = (out.findings ?? []).filter((f) => f.kind === 'advisory' && /GammaService/.test(f.detail));
-    assert.equal(advisory.length, 1, `expected one advisory finding with kill-switch; got ${JSON.stringify(advisory)}`);
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-    fs.rmSync(repoRoot, { recursive: true, force: true });
-  }
-});
-
-// AC-SIGF-1e: PICKLE_SIGF=advisory → same as =off
-test('R-SIGF AC-SIGF-1e: PICKLE_SIGF=advisory also reverts to advisory (exit 0)', () => {
-  const sessionDir = tmpDir();
-  const repoRoot = gitRepoWith({
-    'src/delta-service.ts': 'export class DeltaService { constructor(a, b) {} }\n',
-    'src/delta-service.spec.ts': "import { DeltaService } from './delta-service';\nconst s = new DeltaService(1, 2);\n",
-  });
-  try {
-    writeTicket(sessionDir, 'sigf-ks2', [
-      '---',
-      'id: sigf-ks2',
-      'key: SIGF-KS2',
-      'ac_ids: []',
-      '---',
-      '',
-      '# Add a 3rd constructor parameter to DeltaService',
-      '',
-      '## Files to modify',
-      '',
-      '- `src/delta-service.ts`',
-      '',
-      '## Acceptance Criteria',
-      '',
-      '- [ ] `DeltaService` constructor accepts exactly `3` parameters.',
-      '',
-    ].join('\n'));
-    const result = runReadiness(sessionDir, repoRoot, { PICKLE_SIGF: 'advisory' });
-    assert.equal(result.status, 0, `PICKLE_SIGF=advisory must exit 0, got ${result.status}; stdout=${result.stdout}`);
-    const out = JSON.parse(result.stdout);
-    const blocking = (out.findings ?? []).filter((f) => f.kind === 'signature_caller_gap');
-    assert.deepEqual(blocking, [], `PICKLE_SIGF=advisory must produce no blocking findings`);
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(repoRoot, { recursive: true, force: true });

@@ -1953,7 +1953,6 @@ export async function runWorkerProcess(ctx) {
     // R-CSI / W2.R1: detach so the worker subtree leads its own process group;
     // killProcessTree's existing `process.kill(-pid, sig)` then reaps exactly this
     // session's group and cannot reach a concurrent session's healthy workers.
-    // PICKLE_RECOVERY_CONSOLIDATION=off reverts to the per-seam (non-detached) path.
     const detachWorker = shouldIsolateSessionGroup();
     const proc = spawn(invocation.cmd, invocation.args, { cwd: sessionWorkingDir, env, stdio: ['inherit', 'pipe', 'pipe'], detached: detachWorker });
     proc.stdout?.pipe(sessionLog, { end: false });
@@ -1976,7 +1975,7 @@ export async function runWorkerProcess(ctx) {
         console.log(`\n${Style.RED}❌ Worker timed out after ${Math.floor(ctx.effectiveTimeoutMs / 1000)}s${Style.RESET}`);
         // R-CSI / W2.R1: reap the whole session-scoped worker group (detached →
         // `process.kill(-pid)`); fall back to the leader-only kill when the group is
-        // gone or the kill-switch reverted to the non-detached per-seam path.
+        // gone (win32 workers are never detached).
         if (!killProcessTree(proc, 'SIGTERM')) {
             try {
                 proc.kill('SIGTERM');

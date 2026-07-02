@@ -91,7 +91,7 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         // exhausted with findings still open (pipeline continues, never halts).
         'citadel_findings_unremediated',
         // BMAD residual P0.6: check-readiness --skip-readiness emits this when
-        // the gate is bypassed via state.flags.skip_readiness_reason.
+        // the gate is bypassed via state.flags.skip_quality_gates_reason.
         'readiness_skipped',
         'readiness_skipped_for_manifest',
         'archaeology_complete',
@@ -144,7 +144,6 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'smoke_gate_bypassed',
         'codex_unhealthy_consecutive_failures',
         'ticket_audit_bypassed',
-        'ticket_audit_failed',
         'worker_partial_lifecycle_exit',
         'cap_check_skipped_stale_cache',
         'ticket_cache_cleared',
@@ -167,7 +166,6 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'subprocess_error',
         'time_cap_disabled_default',
         'bundle_bootstrap_exemption_applied',
-        'skip_flag_legacy_used',
         'resolver_indeterminate',
         'operator_recovery_transition',
         'signal_received',

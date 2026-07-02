@@ -491,36 +491,6 @@ function migrateLegacyBaselineExitReason(state: State): boolean {
   return false;
 }
 
-function trimmedFlagString(flags: State['flags'], key: string): string {
-  const v = (flags as Record<string, unknown> | undefined)?.[key];
-  return typeof v === 'string' ? v.trim() : '';
-}
-
-// One-way migration: promotes the first non-empty legacy per-gate skip flag
-// into skip_quality_gates_reason (readiness wins) and removes both legacy fields.
-function migrateLegacySkipQualityGatesFlags(state: State): boolean {
-  const unified = trimmedFlagString(state.flags, 'skip_quality_gates_reason');
-  const flags = state.flags as Record<string, unknown> | undefined;
-  const hasReadiness = flags != null && 'skip_readiness_reason' in flags;
-  const hasTicketAudit = flags != null && 'skip_ticket_audit_reason' in flags;
-  if (unified.length > 0) {
-    if (!hasReadiness && !hasTicketAudit) return false;
-    delete flags!['skip_readiness_reason'];
-    delete flags!['skip_ticket_audit_reason'];
-    return true;
-  }
-  const readinessTrimmed = trimmedFlagString(state.flags, 'skip_readiness_reason');
-  const ticketAuditTrimmed = trimmedFlagString(state.flags, 'skip_ticket_audit_reason');
-  if (readinessTrimmed.length === 0 && ticketAuditTrimmed.length === 0) return false;
-  const promoted = readinessTrimmed.length > 0 ? readinessTrimmed : ticketAuditTrimmed;
-  if (!state.flags) state.flags = {};
-  const mutableFlags = state.flags as Record<string, unknown>;
-  mutableFlags['skip_quality_gates_reason'] = promoted;
-  delete mutableFlags['skip_readiness_reason'];
-  delete mutableFlags['skip_ticket_audit_reason'];
-  return true;
-}
-
 function isStateSnapshotNewer(
   currentState: { iteration?: unknown },
   currentMtimeMs: number,
@@ -671,7 +641,6 @@ export class StateManager {
       migrateLegacyManagerRelaunchCount(state);
       migrateLegacySignalExitReason(state);
       migrateLegacyBaselineExitReason(state);
-      migrateLegacySkipQualityGatesFlags(state);
       try { writeMigrationStateFile(statePath, state); } catch { /* migration write failed, non-fatal */ }
     }
 
@@ -688,7 +657,6 @@ export class StateManager {
       migrateLegacyManagerRelaunchCount(state);
       migrateLegacySignalExitReason(state);
       migrateLegacyBaselineExitReason(state);
-      migrateLegacySkipQualityGatesFlags(state);
       process.stderr.write(`[state-manager] migrating ${statePath} to schema_version ${this.opts.schemaVersion}\n`);
       try { writeMigrationStateFile(statePath, state); } catch { /* migration write failed, non-fatal */ }
     } else if (state.schema_version >= 3) {
@@ -696,8 +664,7 @@ export class StateManager {
       normalizeUpToVersion(state, state.schema_version);
       const didMigrateRelaunch = migrateLegacyManagerRelaunchCount(state);
       const didMigrateSignal = migrateLegacySignalExitReason(state);
-      const didMigrateSkipFlags = migrateLegacySkipQualityGatesFlags(state);
-      if (missingPipelineContinueOnPhaseFail || didMigrateRelaunch || didMigrateSignal || didMigrateSkipFlags) {
+      if (missingPipelineContinueOnPhaseFail || didMigrateRelaunch || didMigrateSignal) {
         try { writeMigrationStateFile(statePath, state); } catch { /* migration write failed, non-fatal */ }
       }
       migrateLegacyBaselineExitReason(state);

@@ -77,13 +77,13 @@ export interface MetricsCache {
 // Skip-flag budget dashboard (W5c)
 //
 // Counts skip-flag USES per {source,reason} over the existing activity events
-// `gate_skipped` / `readiness_skipped` / `skip_flag_legacy_used` and flags any
-// gate whose use rate exceeds its stated budget as a removal candidate. Keys on
-// skip-flag-USE rate ONLY (owner ruling 3 — no `gate_false_positive` event).
+// `gate_skipped` / `readiness_skipped` and flags any gate whose use rate
+// exceeds its stated budget as a removal candidate. Keys on skip-flag-USE
+// rate ONLY (owner ruling 3 — no `gate_false_positive` event).
 // ---------------------------------------------------------------------------
 
-/** The three existing activity events that record a skip-flag use. */
-export const SKIP_FLAG_EVENT_NAMES = ['gate_skipped', 'readiness_skipped', 'skip_flag_legacy_used'] as const;
+/** The activity events that record a skip-flag use. */
+export const SKIP_FLAG_EVENT_NAMES = ['gate_skipped', 'readiness_skipped'] as const;
 
 /** Default recurrence budget applied to any {source,reason} without an explicit entry. */
 export const DEFAULT_SKIP_FLAG_BUDGET = 5;
@@ -662,8 +662,7 @@ function budgetKey(source: string, reason: string): string {
 /**
  * Normalize one activity event into a {source,reason} skip-flag use, or null if
  * the event is not a skip-flag event. `gate_skipped`/`readiness_skipped` carry
- * the reason in `gate_payload.reason`; `skip_flag_legacy_used` carries the flag
- * name in `gate_payload.legacy_field`.
+ * the reason in `gate_payload.reason`.
  */
 export function extractSkipFlagUse(ev: unknown): SkipFlagEvent | null {
   if (typeof ev !== 'object' || ev === null) return null;
@@ -675,7 +674,7 @@ export function extractSkipFlagUse(ev: unknown): SkipFlagEvent | null {
   const payload = typeof obj.gate_payload === 'object' && obj.gate_payload !== null
     ? (obj.gate_payload as Record<string, unknown>)
     : {};
-  const rawReason = event === 'skip_flag_legacy_used' ? payload.legacy_field : payload.reason;
+  const rawReason = payload.reason;
   const reason = typeof rawReason === 'string' && rawReason ? rawReason : 'unspecified';
 
   return { event, source, reason };

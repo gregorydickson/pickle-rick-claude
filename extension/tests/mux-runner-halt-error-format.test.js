@@ -26,15 +26,18 @@ function run(args, extDir) {
 }
 
 test('command docs surface Skip-flag overrides in /pickle-tmux and /pickle-pipeline', () => {
-  // R-PNTR-5: pickle.md deleted; skip-flag docs now required only in pickle-tmux and pickle-pipeline
+  // R-PNTR-5: pickle.md deleted; skip-flag docs now required only in pickle-tmux and pickle-pipeline.
+  // Guard-layer prune (item e): the ONLY documented skip surface is the unified
+  // skip_quality_gates_reason — the retired per-gate flags must not be documented.
   for (const relPath of [
     '.claude/commands/pickle-tmux.md',
     '.claude/commands/pickle-pipeline.md',
   ]) {
     const text = fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf8');
     assert.match(text, /## Skip-flag overrides/);
-    assert.match(text, /state\.flags\.skip_readiness_reason/);
-    assert.match(text, /state\.flags\.skip_ticket_audit_reason/);
+    assert.match(text, /state\.flags\.skip_quality_gates_reason/);
+    assert.doesNotMatch(text, /skip_readiness_reason/);
+    assert.doesNotMatch(text, /skip_ticket_audit_reason/);
   }
 });
 

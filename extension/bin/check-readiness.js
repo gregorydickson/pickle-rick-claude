@@ -1018,9 +1018,6 @@ function maybeEmitResolverIndeterminate(input) {
         },
     });
 }
-function isSigGapKillSwitchActive() {
-    return process.env['PICKLE_SIGF'] === 'off' || process.env['PICKLE_SIGF'] === 'advisory';
-}
 function collectAllDeclared(sigTickets) {
     const all = new Set();
     for (const t of sigTickets)
@@ -1028,8 +1025,8 @@ function collectAllDeclared(sigTickets) {
             all.add(f);
     return all;
 }
-function isGapBlocking(killSwitch, skipReason, autoExtend, callerCount) {
-    return !killSwitch && !skipReason && (!autoExtend || callerCount > SCOPE_AUTO_EXTEND_MAX);
+function isGapBlocking(skipReason, autoExtend, callerCount) {
+    return !skipReason && (!autoExtend || callerCount > SCOPE_AUTO_EXTEND_MAX);
 }
 function buildGapFinding(ticketFile, gap, isBlocking) {
     const base = gap.kind === 'schema-shape'
@@ -1062,11 +1059,10 @@ function maybeEmitSigGapBlockEvent(sessionDir, symbol, emitted) {
     return true;
 }
 export function findSignatureChangeCallerGapFindings(sigTickets, repoRoot, cache, opts) {
-    const killSwitch = isSigGapKillSwitchActive();
     const { autoExtend = false, skipQualityGatesReason, sessionDir } = opts ?? {};
     // Bypass: skip_quality_gates_reason set → advisory for all findings in this invocation.
     // Emit gate_skipped once so the budget counter increments.
-    if (!killSwitch && skipQualityGatesReason && sessionDir) {
+    if (skipQualityGatesReason && sessionDir) {
         try {
             logActivity({ event: 'gate_skipped', source: 'pickle', ts: new Date().toISOString(), gate_payload: { reason: 'signature_caller_gap', detail: skipQualityGatesReason } });
         }
@@ -1085,7 +1081,7 @@ export function findSignatureChangeCallerGapFindings(sigTickets, repoRoot, cache
         }
         const gaps = detectSignatureCallerGaps({ ticketContents: [content], declaredFiles: declaredAll, repoRoot, cache });
         for (const gap of gaps) {
-            const blocking = isGapBlocking(killSwitch, skipQualityGatesReason, autoExtend, gap.outOfScopeCallers.length);
+            const blocking = isGapBlocking(skipQualityGatesReason, autoExtend, gap.outOfScopeCallers.length);
             if (blocking)
                 emittedBlockEvent = maybeEmitSigGapBlockEvent(sessionDir, gap.symbol, emittedBlockEvent);
             findings.push(buildGapFinding(ticket.file, gap, blocking));

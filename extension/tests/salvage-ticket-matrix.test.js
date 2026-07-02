@@ -19,7 +19,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { salvageTicket } from '../lib/salvage-ticket.js';
-import { partitionExitPathDirtyByOwnership, recoveryConsolidationEnabled } from '../bin/mux-runner.js';
+import { partitionExitPathDirtyByOwnership } from '../bin/mux-runner.js';
 
 // The 5 interruption seams (AC-W3-1 seam axis).
 const SEAMS = [
@@ -150,21 +150,6 @@ describe('salvageTicket cross-cutting invariants', () => {
       deps,
     );
     assert.equal(outcome.disposition, 'error');
-  });
-
-  it('AC-W3-KILLSWITCH: PICKLE_RECOVERY_CONSOLIDATION=off reverts to per-seam paths', () => {
-    const prior = process.env.PICKLE_RECOVERY_CONSOLIDATION;
-    try {
-      delete process.env.PICKLE_RECOVERY_CONSOLIDATION;
-      assert.equal(recoveryConsolidationEnabled(), true, 'unset -> consolidated path active');
-      process.env.PICKLE_RECOVERY_CONSOLIDATION = 'on';
-      assert.equal(recoveryConsolidationEnabled(), true, 'any non-off value -> consolidated');
-      process.env.PICKLE_RECOVERY_CONSOLIDATION = 'off';
-      assert.equal(recoveryConsolidationEnabled(), false, 'literal off -> per-seam legacy path');
-    } finally {
-      if (prior === undefined) delete process.env.PICKLE_RECOVERY_CONSOLIDATION;
-      else process.env.PICKLE_RECOVERY_CONSOLIDATION = prior;
-    }
   });
 
   it('partitionExitPathDirtyByOwnership survives (ownership partition preserved)', () => {

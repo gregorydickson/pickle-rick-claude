@@ -6,11 +6,8 @@
 // through `routeRecoveryBeforeTerminal` — the single DECISION site that wraps the
 // `runRecoveryLadder` invocation in `attemptRecoveryBeforeTerminal`.
 //
-// Per cell:
-//   - PICKLE_RECOVERY_CONSOLIDATION=off  -> { kind:'fall_through', reason:'consolidation_off' }
-//     (kill-switch reverts to the caller's retained per-seam bare halt).
-//   - consolidation ON (default)         -> a valid RecoveryOutcome kind is returned,
-//     proving the ladder fires regardless of backend × mode × halt-site.
+// Per cell: a valid RecoveryOutcome kind is returned, proving the ladder fires
+// regardless of backend × mode × halt-site.
 //
 // Plus the forward-protection lint over `extension/src/bin/mux-runner.ts`:
 //   - the `runRecoveryLadder(` DECISION appears exactly once (single decision site).
@@ -29,7 +26,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { routeRecoveryBeforeTerminal, recoveryConsolidationEnabled } from '../bin/mux-runner.js';
+import { routeRecoveryBeforeTerminal } from '../bin/mux-runner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MUX_SRC = path.join(__dirname, '..', 'src', 'bin', 'mux-runner.ts');
@@ -72,17 +69,6 @@ function writeState(statePath, backend) {
   }));
 }
 
-function withConsolidation(value, fn) {
-  const prev = process.env.PICKLE_RECOVERY_CONSOLIDATION;
-  if (value === undefined) delete process.env.PICKLE_RECOVERY_CONSOLIDATION;
-  else process.env.PICKLE_RECOVERY_CONSOLIDATION = value;
-  try { return fn(); }
-  finally {
-    if (prev === undefined) delete process.env.PICKLE_RECOVERY_CONSOLIDATION;
-    else process.env.PICKLE_RECOVERY_CONSOLIDATION = prev;
-  }
-}
-
 const VALID_OUTCOME_KINDS = new Set(['advanced', 'fall_through', 'exhausted']);
 
 describe('W4a single choke point — backend × mode × halt-site matrix', () => {
@@ -113,26 +99,13 @@ describe('W4a single choke point — backend × mode × halt-site matrix', () =>
                 };
               }
 
-              it('kill-switch OFF reverts to the per-seam bare halt (consolidation_off)', () => {
-                withConsolidation('off', () => {
-                  assert.equal(recoveryConsolidationEnabled(), false);
-                  const { input } = buildInput();
-                  const outcome = routeRecoveryBeforeTerminal(input);
-                  assert.equal(outcome.kind, 'fall_through');
-                  assert.equal(outcome.reason, 'consolidation_off');
-                });
-              });
-
-              it('consolidation ON routes through the ladder (valid RecoveryOutcome)', () => {
-                withConsolidation(undefined, () => {
-                  assert.equal(recoveryConsolidationEnabled(), true);
-                  const { input } = buildInput();
-                  const outcome = routeRecoveryBeforeTerminal(input);
-                  assert.ok(VALID_OUTCOME_KINDS.has(outcome.kind), `unexpected kind ${outcome.kind}`);
-                  // The ladder ran (no real repo) — it must NOT silently advance/commit
-                  // against a non-repo tree; it honestly falls through or exhausts.
-                  assert.notEqual(outcome.kind, 'advanced');
-                });
+              it('routes through the ladder (valid RecoveryOutcome)', () => {
+                const { input } = buildInput();
+                const outcome = routeRecoveryBeforeTerminal(input);
+                assert.ok(VALID_OUTCOME_KINDS.has(outcome.kind), `unexpected kind ${outcome.kind}`);
+                // The ladder ran (no real repo) — it must NOT silently advance/commit
+                // against a non-repo tree; it honestly falls through or exhausts.
+                assert.notEqual(outcome.kind, 'advanced');
               });
             });
           }
@@ -144,29 +117,27 @@ describe('W4a single choke point — backend × mode × halt-site matrix', () =>
 
 describe('W4a discriminant resolution', () => {
   it('defaults backend from state.backend when the input omits it', () => {
-    withConsolidation(undefined, () => {
-      const fx = makeFixture();
-      writeState(fx.statePath, 'codex');
-      // No explicit backend on the input — resolver must read state.backend.
-      const outcome = routeRecoveryBeforeTerminal({
-        sessionDir: fx.sessionDir,
-        statePath: fx.statePath,
-        extensionRoot: fx.root,
-        workingDir: fx.workingDir,
-        ticketId: fx.ticketId,
-        iteration: 1,
-        flags: null,
-        log: () => {},
-        mode: 'manager',
-      });
-      assert.ok(VALID_OUTCOME_KINDS.has(outcome.kind));
-      // The ledger entry is annotated with the resolved discriminant.
-      const state = JSON.parse(fs.readFileSync(fx.statePath, 'utf-8'));
-      if (Array.isArray(state.recovery_attempts) && state.recovery_attempts.length > 0) {
-        const last = state.recovery_attempts.at(-1);
-        assert.match(last.reason, /\[backend=codex;mode=manager\]/);
-      }
+    const fx = makeFixture();
+    writeState(fx.statePath, 'codex');
+    // No explicit backend on the input — resolver must read state.backend.
+    const outcome = routeRecoveryBeforeTerminal({
+      sessionDir: fx.sessionDir,
+      statePath: fx.statePath,
+      extensionRoot: fx.root,
+      workingDir: fx.workingDir,
+      ticketId: fx.ticketId,
+      iteration: 1,
+      flags: null,
+      log: () => {},
+      mode: 'manager',
     });
+    assert.ok(VALID_OUTCOME_KINDS.has(outcome.kind));
+    // The ledger entry is annotated with the resolved discriminant.
+    const state = JSON.parse(fs.readFileSync(fx.statePath, 'utf-8'));
+    if (Array.isArray(state.recovery_attempts) && state.recovery_attempts.length > 0) {
+      const last = state.recovery_attempts.at(-1);
+      assert.match(last.reason, /\[backend=codex;mode=manager\]/);
+    }
   });
 });
 

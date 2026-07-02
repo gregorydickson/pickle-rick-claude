@@ -3,13 +3,12 @@
 // AC-W4b-3: bind the recovery ladder's honest terminal EXCLUSIVELY to the EXISTING
 // `recovery_exhausted` state, write a `## Recovery Handoff` artifact on exhaustion,
 // and resolve the empty roster {all-Done -> completion, all-Failed-no-runnable ->
-// recovery_exhausted}. The PICKLE_RECOVERY_CONSOLIDATION=off kill-switch reverts the
-// empty-roster all-Failed path to the legacy `all_tickets_terminal` per-seam terminal.
+// recovery_exhausted}.
 //
 // Covers:
 //   1. terminal-literal grep — only `recovery_exhausted` is the honest ladder terminal;
-//      `all_tickets_terminal` survives ONLY behind the kill-switch (`!recoveryConsolidationEnabled()`).
-//   2. empty-roster resolution — both kill-switch states, plus the all-Done -> completion path.
+//      the retired legacy `all_tickets_terminal` literal must NOT reappear.
+//   2. empty-roster resolution — recovery_exhausted, plus the all-Done -> completion path.
 //   3. handoff-artifact write — `writeRecoveryHandoffArtifact` writes `recovery_handoff.md`
 //      with a `## Recovery Handoff` header naming the exact `pickle-recover` subcommand.
 
@@ -33,20 +32,16 @@ function mkTmp(prefix) {
 }
 
 describe('AC-W4b-3 terminal-literal grep — only recovery_exhausted is the honest ladder terminal', () => {
-  it('the empty-roster all-Failed path terminates into recovery_exhausted under consolidation', () => {
-    // The W4b empty-roster branch (consolidation ON) records recovery_exhausted.
+  it('the empty-roster all-Failed path terminates into recovery_exhausted', () => {
+    // The W4b empty-roster branch records recovery_exhausted.
     const onBranch = SRC.match(/empty roster \(all-Failed, no runnable ticket\)[\s\S]{0,400}?recordExitReason\(statePath, 'recovery_exhausted'\)/);
-    assert.ok(onBranch, 'empty-roster all-Failed branch must record recovery_exhausted under consolidation');
+    assert.ok(onBranch, 'empty-roster all-Failed branch must record recovery_exhausted');
   });
 
-  it('the sole sibling literal all_tickets_terminal survives ONLY behind the kill-switch', () => {
-    // all_tickets_terminal appears in the ExitReason type + the kill-switch-OFF branch only.
-    const emissions = SRC.match(/recordExitReason\(statePath, 'all_tickets_terminal'\)/g) || [];
-    assert.equal(emissions.length, 1, 'all_tickets_terminal must be emitted at exactly one (kill-switch-off) site');
-    // The single emission must be reachable only when consolidation is disabled: the
-    // recoveryConsolidationEnabled() guard must precede it inside the empty-roster block.
-    const block = SRC.match(/if \(recoveryConsolidationEnabled\(\)\) \{[\s\S]*?recordExitReason\(statePath, 'recovery_exhausted'\)[\s\S]*?\}\s*\n\s*log\('all tickets terminal[\s\S]*?recordExitReason\(statePath, 'all_tickets_terminal'\)/);
-    assert.ok(block, 'all_tickets_terminal must sit after the recoveryConsolidationEnabled() ON-branch (kill-switch-off fallback)');
+  it('the retired legacy all_tickets_terminal literal does not reappear', () => {
+    // The legacy per-seam terminal was deleted in the guard-layer kill-switch prune —
+    // no emission site and no ExitReason member.
+    assert.ok(!SRC.includes("'all_tickets_terminal'"), 'all_tickets_terminal must not reappear in mux-runner.ts');
   });
 
   it('no NEW honest-terminal literal sibling is introduced — recovery_exhausted is the single ladder terminal', () => {

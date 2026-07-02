@@ -1,8 +1,8 @@
 // @tier: integration
 // R-CSI / W2.R1 — session-scoped process isolation (setpgid + stamp).
 // Verifies: (1) sessionStampEnv stamps PICKLE_SESSION + PICKLE_WORKING_DIR;
-// (2) shouldIsolateSessionGroup honors the PICKLE_RECOVERY_CONSOLIDATION=off
-// kill-switch (AC-R1-KILLSWITCH); (3) the real cross-session isolation property
+// (2) shouldIsolateSessionGroup isolates on POSIX, never on win32;
+// (3) the real cross-session isolation property
 // (AC-R1-2): a group-scoped kill (`process.kill(-pgid, sig)`) of session A's
 // detached worker group leaves session B's worker group AND an out-of-repo
 // process alive — a kill in one session cannot reap another's healthy workers
@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 
-import { sessionStampEnv, shouldIsolateSessionGroup, SESSION_ISOLATION_KILL_SWITCH } from '../../services/backend-spawn.js';
+import { sessionStampEnv, shouldIsolateSessionGroup } from '../../services/backend-spawn.js';
 
 const isWin = process.platform === 'win32';
 
@@ -27,14 +27,8 @@ test('sessionStampEnv omits empty fields (no blank stamps)', () => {
   assert.equal('PICKLE_WORKING_DIR' in env, false);
 });
 
-test('shouldIsolateSessionGroup defaults on (POSIX), kill-switch reverts to per-seam', () => {
-  // Default (kill-switch absent): isolate on POSIX, never on win32.
-  assert.equal(shouldIsolateSessionGroup({}), !isWin);
-  // PICKLE_RECOVERY_CONSOLIDATION=off reverts to the non-detached per-seam path.
-  assert.equal(shouldIsolateSessionGroup({ [SESSION_ISOLATION_KILL_SWITCH]: 'off' }), false);
-  // Only the literal lowercase 'off' disables; any other value keeps isolation on.
-  assert.equal(shouldIsolateSessionGroup({ [SESSION_ISOLATION_KILL_SWITCH]: 'OFF' }), !isWin);
-  assert.equal(shouldIsolateSessionGroup({ [SESSION_ISOLATION_KILL_SWITCH]: '0' }), !isWin);
+test('shouldIsolateSessionGroup isolates on POSIX, never on win32', () => {
+  assert.equal(shouldIsolateSessionGroup(), !isWin);
 });
 
 // --- Real cross-session isolation proof (POSIX process groups) ---

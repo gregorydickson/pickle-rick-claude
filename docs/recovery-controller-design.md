@@ -29,7 +29,6 @@ Every member of the `ExitReason` union classified into one of three disposition 
 | `circuit_open` | retained-fatal (failure) | true | false | yes |
 | `rate_limit_exhausted` | retained-fatal (failure) | true | false | yes |
 | `readiness_failed` | retained-fatal (failure) | true | false | yes |
-| `ticket_audit_failed` | retained-fatal (failure) | true | false | yes |
 | `iteration_cap_exhausted` | retained-fatal (failure) | true | false | yes |
 | `pipeline_phase_incomplete` | retained-fatal (failure) | true | false | yes |
 | `working_tree_modified_externally` | retained-fatal (failure) | true | false | yes |

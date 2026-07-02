@@ -72,9 +72,7 @@ If pipeline launch halts at a quality gate, edit `${SESSION_ROOT}/state.json` an
 ```json
 "flags": { "skip_quality_gates_reason": "<reason string>" }
 ```
-This unified flag (R-QGSK-2, `b2ddf584`) covers both readiness AND ticket-audit gates.
-
-**Legacy**: `state.flags.skip_readiness_reason` and `state.flags.skip_ticket_audit_reason` are still honored but emit a deprecation warning. Migrate to the unified flag.
+`state.flags.skip_quality_gates_reason` (R-QGSK-2, `b2ddf584`) is the SINGLE quality-gate bypass surface — it covers both the readiness AND ticket-audit gates (both advisory post-R-GATE-ADVISORY). The retired per-gate legacy flags are ignored.
 
 Use a short reason string for any override. mux-runner records the bypass in activity and then proceeds on the next launch.
 

@@ -1,15 +1,16 @@
 // @tier: fast
 //
-// W1a (ticket 34b4d4e5): collapse quality-gate skip-flags to ONE skip surface.
-// Asserts the W1a invariants:
-//   1. single operator-facing bypass surface (no legacy write/instruction strings
-//      in mux-runner source; the unified flag is present)
-//   2. bundle-bootstrap exemption writes the unified flag (consolidation ON) and
-//      retains the legacy dual-write under the kill-switch (=off)
-//   3. legacy auto-migrate (StateManager.read promotes legacy → unified, drops legacy)
+// W1a (ticket 34b4d4e5) + guard-layer prune (item e): ONE quality-gate skip surface.
+// `state.flags.skip_quality_gates_reason` is the ONLY quality-gate bypass flag.
+// The legacy per-gate flags (skip_readiness_reason / skip_ticket_audit_reason),
+// their read-time auto-migration, the deprecation-warning machinery, and the
+// `skip_flag_legacy_used` event are GONE. Asserts the post-prune invariants:
+//   1. single operator-facing bypass surface (no legacy flag strings anywhere in
+//      mux-runner / state-manager / types sources; the unified flag is present)
+//   2. bundle-bootstrap exemption writes ONLY the unified flag
+//   3. retired legacy keys on old sessions are INERT (no promotion, no drop, no crash)
 //   4. --skip-ac-shape-gate folds into the unified surface
 //   5. skip_smoke_gate_reason stays a SEPARATE flag (ruling 2)
-//   6. both-present conflict rule (unified wins)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -17,7 +18,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StateManager } from '../services/state-manager.js';
-import { LATEST_SCHEMA_VERSION } from '../types/index.js';
+import { LATEST_SCHEMA_VERSION, VALID_ACTIVITY_EVENTS } from '../types/index.js';
 import { writeStateFile } from '../services/pickle-utils.js';
 import { runAcShapeEnforcement } from '../bin/spawn-refinement-team.js';
 
@@ -25,6 +26,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC_ROOT = path.resolve(__dirname, '..', 'src');
 const MUX_SRC = fs.readFileSync(path.join(SRC_ROOT, 'bin', 'mux-runner.ts'), 'utf-8');
 const SM_SRC = fs.readFileSync(path.join(SRC_ROOT, 'services', 'state-manager.ts'), 'utf-8');
+const TYPES_SRC = fs.readFileSync(path.join(SRC_ROOT, 'types', 'index.ts'), 'utf-8');
 
 function tmpDir(prefix = 'one-skip-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -90,60 +92,70 @@ function writeSessionState(sessionDir, flags) {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Single operator-facing bypass surface
+// 1. Single operator-facing bypass surface — legacy strings fully absent
 // ---------------------------------------------------------------------------
-test('single operator-facing bypass surface: no legacy write/instruction strings', () => {
-  // Operator-facing WRITE instructions name the unified flag only.
-  assert.equal(
-    MUX_SRC.includes('set state.flags.skip_readiness_reason in state.json'),
-    false,
-    'readiness halt banner must instruct the unified flag, not skip_readiness_reason',
-  );
-  assert.equal(
-    MUX_SRC.includes('set state.flags.skip_ticket_audit_reason in state.json'),
-    false,
-    'ticket-audit halt banner must instruct the unified flag, not skip_ticket_audit_reason',
-  );
+test('single skip surface: legacy per-gate flag strings absent from runtime sources', () => {
+  for (const [name, src] of [['mux-runner.ts', MUX_SRC], ['state-manager.ts', SM_SRC], ['types/index.ts', TYPES_SRC]]) {
+    assert.equal(src.includes('skip_readiness_reason'), false, `${name} must not reference skip_readiness_reason`);
+    assert.equal(src.includes('skip_ticket_audit_reason'), false, `${name} must not reference skip_ticket_audit_reason`);
+    assert.equal(src.includes('skip_flag_legacy_used'), false, `${name} must not reference skip_flag_legacy_used`);
+  }
+  // The legacy migration and deprecation machinery are gone.
+  assert.equal(SM_SRC.includes('migrateLegacySkipQualityGatesFlags'), false);
+  assert.equal(MUX_SRC.includes('_resetQualityGateSkipDeprecation'), false);
+  assert.equal(MUX_SRC.includes('skip_quality_gates_deprecation_warning'), false);
   // The skip-log lines name the unified flag.
-  assert.equal(
-    MUX_SRC.includes('skipped via state.flags.skip_quality_gates_reason'),
-    true,
-  );
-  assert.equal(
-    MUX_SRC.includes('bypassed via state.flags.skip_quality_gates_reason'),
-    true,
-  );
+  assert.equal(MUX_SRC.includes('skipped via state.flags.skip_quality_gates_reason'), true);
+  assert.equal(MUX_SRC.includes('bypassed via state.flags.skip_quality_gates_reason'), true);
   // The unified flag is the one surface present.
   assert.ok(MUX_SRC.includes('skip_quality_gates_reason'));
+  // The retired events are out of the registry.
+  const eventList = Array.from(VALID_ACTIVITY_EVENTS);
+  assert.equal(eventList.includes('skip_flag_legacy_used'), false);
+  assert.equal(eventList.includes('ticket_audit_failed'), false);
 });
 
 // ---------------------------------------------------------------------------
-// 2. Bundle-bootstrap writes unified (ON) and dual legacy (kill-switch off)
+// 2. Bundle-bootstrap writes ONLY the unified flag
 // ---------------------------------------------------------------------------
-test('bundle-bootstrap exemption: consolidated path writes the unified flag, kill-switch retains legacy dual-write', () => {
+test('bundle-bootstrap exemption: writes the unified flag only', () => {
   const block = MUX_SRC.slice(MUX_SRC.indexOf('R-BUNDLE-1 / W1a'));
   const bootstrapBlock = block.slice(0, block.indexOf('readinessGateChecked'));
-  // Consolidated (recoveryConsolidationEnabled) branch assigns the unified flag.
-  assert.ok(bootstrapBlock.includes('recoveryConsolidationEnabled()'));
   assert.ok(bootstrapBlock.includes('skip_quality_gates_reason: skipQualityGatesReason'));
-  // Kill-switch branch retains the legacy dual-write.
-  assert.ok(bootstrapBlock.includes('skip_readiness_reason: skipReadinessReason'));
-  assert.ok(bootstrapBlock.includes('skip_ticket_audit_reason: skipTicketAuditReason'));
+  // No per-gate dual-write branch survives.
+  assert.equal(bootstrapBlock.includes('skipReadinessReason'), false);
+  assert.equal(bootstrapBlock.includes('skipTicketAuditReason'), false);
 });
 
 // ---------------------------------------------------------------------------
-// 3. Legacy auto-migrate (StateManager.read promotes + drops legacy + warns)
+// 3. Retired legacy keys on old sessions are inert (schema-neutral)
 // ---------------------------------------------------------------------------
-test('legacy auto-migrate: StateManager.read promotes skip_readiness_reason into unified and drops legacy', () => {
+test('retired legacy skip keys are inert: no promotion, no crash, unified untouched', () => {
   withDataRoot(() => {
-    const dir = tmpDir('one-skip-migrate-');
+    const dir = tmpDir('one-skip-inert-');
     try {
       const statePath = path.join(dir, 'state.json');
       writeStateFile(statePath, makeState({ skip_readiness_reason: 'legacy-readiness' }));
       const read = new StateManager().read(statePath);
-      assert.equal(read.flags.skip_quality_gates_reason, 'legacy-readiness', 'promoted to unified');
-      assert.ok(!('skip_readiness_reason' in read.flags), 'legacy field dropped');
-      assert.ok(!('skip_ticket_audit_reason' in read.flags));
+      assert.equal(read.flags.skip_quality_gates_reason, undefined, 'no promotion into the unified flag');
+      assert.equal(read.flags.skip_readiness_reason, 'legacy-readiness', 'retired key left in place, inert');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('unified flag read is unaffected by lingering retired keys', () => {
+  withDataRoot(() => {
+    const dir = tmpDir('one-skip-unified-');
+    try {
+      const statePath = path.join(dir, 'state.json');
+      writeStateFile(
+        statePath,
+        makeState({ skip_quality_gates_reason: 'unified', skip_readiness_reason: 'legacy' }),
+      );
+      const read = new StateManager().read(statePath);
+      assert.equal(read.flags.skip_quality_gates_reason, 'unified', 'unified preserved');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -196,37 +208,10 @@ test('AC-shape gate: armed when neither CLI flag nor unified flag is set (would-
   });
 });
 
-test('AC-shape gate: kill-switch off disables the unified fold-in (CLI flag only)', () => {
-  withDataRoot(() => {
-    const sessionDir = tmpDir('one-skip-acshape-killswitch-');
-    const prev = process.env.PICKLE_RECOVERY_CONSOLIDATION;
-    process.env.PICKLE_RECOVERY_CONSOLIDATION = 'off';
-    try {
-      writeSessionState(sessionDir, { skip_quality_gates_reason: 'unified-should-be-ignored' });
-      const code = runAcShapeEnforcement(failingManifest(), { sessionDir });
-      assert.equal(code, 2, 'with kill-switch off, the unified flag does NOT bypass the AC-shape gate');
-    } finally {
-      if (prev === undefined) delete process.env.PICKLE_RECOVERY_CONSOLIDATION;
-      else process.env.PICKLE_RECOVERY_CONSOLIDATION = prev;
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
-  });
-});
-
 // ---------------------------------------------------------------------------
 // 5. skip_smoke_gate_reason stays SEPARATE (ruling 2)
 // ---------------------------------------------------------------------------
 test('skip_smoke_gate_reason stays a separate flag (not folded into the quality-gate surface)', () => {
-  // The migration shim must NOT touch the smoke-gate flag.
-  const shim = SM_SRC.slice(
-    SM_SRC.indexOf('function migrateLegacySkipQualityGatesFlags'),
-  );
-  const shimBody = shim.slice(0, shim.indexOf('\n}\n'));
-  assert.equal(
-    shimBody.includes('skip_smoke_gate_reason'),
-    false,
-    'migrateLegacySkipQualityGatesFlags must not reference the smoke-gate flag',
-  );
   // The unified read path must NOT fold in the smoke-gate flag.
   const resolver = MUX_SRC.slice(MUX_SRC.indexOf('function resolveQualityGateSkipReason'));
   const resolverBody = resolver.slice(0, resolver.indexOf('\n}\n'));
@@ -240,25 +225,4 @@ test('skip_smoke_gate_reason stays a separate flag (not folded into the quality-
     MUX_SRC.includes('skip_smoke_gate_reason'),
     'skip_smoke_gate_reason still exists as a distinct flag',
   );
-});
-
-// ---------------------------------------------------------------------------
-// 6. Both-present conflict rule: unified wins
-// ---------------------------------------------------------------------------
-test('both-present conflict rule: unified flag wins, legacy dropped on read', () => {
-  withDataRoot(() => {
-    const dir = tmpDir('one-skip-conflict-');
-    try {
-      const statePath = path.join(dir, 'state.json');
-      writeStateFile(
-        statePath,
-        makeState({ skip_quality_gates_reason: 'unified', skip_readiness_reason: 'legacy' }),
-      );
-      const read = new StateManager().read(statePath);
-      assert.equal(read.flags.skip_quality_gates_reason, 'unified', 'unified preserved');
-      assert.ok(!('skip_readiness_reason' in read.flags), 'legacy dropped (unified wins)');
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
 });

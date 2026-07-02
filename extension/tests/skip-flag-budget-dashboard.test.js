@@ -15,76 +15,11 @@ import {
 } from '../services/metrics-utils.js';
 
 const EXTENSION_ROOT = path.join(import.meta.dirname, '..');
-const META_LINT = path.join(EXTENSION_ROOT, 'scripts', 'audit-skip-flag-unification.sh');
 const CLAUDE_MD = path.join(EXTENSION_ROOT, 'CLAUDE.md');
 
 function mkTmp(prefix) {
     return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
-
-function runMetaLint(env = {}) {
-    return spawnSync('bash', [META_LINT], {
-        encoding: 'utf-8',
-        timeout: 30000,
-        env: { ...process.env, ...env },
-    });
-}
-
-// --- W5b: meta-lint -------------------------------------------------------
-
-test('meta-lint: clean StateFlags passes (exit 0)', () => {
-    const r = runMetaLint();
-    assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /no non-unified skip flags/);
-});
-
-test('meta-lint: a NEW non-unified skip flag is flagged (exit 1)', () => {
-    const dir = mkTmp('skipflag-lint-');
-    const poisoned = path.join(dir, 'index.ts');
-    fs.writeFileSync(
-        poisoned,
-        [
-            'export interface StateFlags {',
-            '  skip_quality_gates_reason?: string;',
-            '  skip_readiness_reason?: string;',
-            '  skip_brandnew_gate_reason?: string;',
-            '  [key: string]: unknown;',
-            '}',
-            '',
-        ].join('\n'),
-    );
-    const r = runMetaLint({ STATE_FLAGS_FILE: poisoned });
-    assert.equal(r.status, 1, `expected exit 1, got ${r.status}: ${r.stdout}${r.stderr}`);
-    // the violation reported is the new flag, not a sanctioned survivor
-    assert.match(r.stderr, /skip flag 'skip_brandnew_gate_reason'/);
-    assert.doesNotMatch(r.stderr, /skip flag 'skip_quality_gates_reason'/);
-    fs.rmSync(dir, { recursive: true, force: true });
-});
-
-test('meta-lint: documented survivors do NOT trip the lint', () => {
-    const dir = mkTmp('skipflag-survivors-');
-    const f = path.join(dir, 'index.ts');
-    fs.writeFileSync(
-        f,
-        [
-            'export interface StateFlags {',
-            '  skip_quality_gates_reason?: string;',
-            '  skip_readiness_reason?: string;',
-            '  skip_ticket_audit_reason?: string;',
-            '  skip_smoke_gate_reason?: string;',
-            '}',
-            '',
-        ].join('\n'),
-    );
-    const r = runMetaLint({ STATE_FLAGS_FILE: f });
-    assert.equal(r.status, 0, r.stderr);
-    fs.rmSync(dir, { recursive: true, force: true });
-});
-
-test('meta-lint: missing types file exits 2', () => {
-    const r = runMetaLint({ STATE_FLAGS_FILE: '/nonexistent/path/index.ts' });
-    assert.equal(r.status, 2);
-});
 
 // --- W5b: governance rule text -------------------------------------------
 
@@ -98,7 +33,7 @@ test('extension/CLAUDE.md carries the subtract-before-add governance rule', () =
 
 // --- W5c: extract / scan / budget ----------------------------------------
 
-test('extractSkipFlagUse: normalizes the three event shapes; ignores others', () => {
+test('extractSkipFlagUse: normalizes the two event shapes; ignores others', () => {
     assert.deepEqual(
         extractSkipFlagUse({ event: 'gate_skipped', source: 'pickle', gate_payload: { reason: 'kill_switch' } }),
         { event: 'gate_skipped', source: 'pickle', reason: 'kill_switch' },
@@ -107,10 +42,10 @@ test('extractSkipFlagUse: normalizes the three event shapes; ignores others', ()
         extractSkipFlagUse({ event: 'readiness_skipped', source: 'pickle', gate_payload: { reason: 'manifest-bundle' } }),
         { event: 'readiness_skipped', source: 'pickle', reason: 'manifest-bundle' },
     );
-    // legacy event carries the flag name under legacy_field, not reason
-    assert.deepEqual(
+    // the retired legacy event (skip_flag_legacy_used) is no longer a skip-flag event
+    assert.equal(
         extractSkipFlagUse({ event: 'skip_flag_legacy_used', source: 'pickle', gate_payload: { legacy_field: 'skip_readiness_reason' } }),
-        { event: 'skip_flag_legacy_used', source: 'pickle', reason: 'skip_readiness_reason' },
+        null,
     );
     assert.equal(extractSkipFlagUse({ event: 'iteration_started', source: 'pickle' }), null);
     assert.equal(extractSkipFlagUse(null), null);
@@ -119,7 +54,7 @@ test('extractSkipFlagUse: normalizes the three event shapes; ignores others', ()
         extractSkipFlagUse({ event: 'gate_skipped', gate_payload: {} }),
         { event: 'gate_skipped', source: 'pickle', reason: 'unspecified' },
     );
-    assert.equal(SKIP_FLAG_EVENT_NAMES.length, 3);
+    assert.equal(SKIP_FLAG_EVENT_NAMES.length, 2);
 });
 
 test('buildSkipFlagBudgetReport: counts per {source,reason}', () => {
@@ -163,12 +98,14 @@ test('buildSkipFlagBudgetReport: generous-budget gate stays under (not flagged)'
     assert.equal(entry.removal_candidate, false);
 });
 
-test('scanSkipFlagEvents: reads the three event names only, within the date window', () => {
+test('scanSkipFlagEvents: reads the two event names only, within the date window', () => {
     const dir = mkTmp('skipflag-activity-');
     const lines = [
         // in-window skip-flag events
         JSON.stringify({ ts: '2026-06-10T12:00:00.000Z', event: 'gate_skipped', source: 'pickle', gate_payload: { reason: 'no_commits' } }),
-        JSON.stringify({ ts: '2026-06-10T13:00:00.000Z', event: 'skip_flag_legacy_used', source: 'pickle', gate_payload: { legacy_field: 'skip_ticket_audit_reason' } }),
+        JSON.stringify({ ts: '2026-06-10T13:00:00.000Z', event: 'readiness_skipped', source: 'pickle', gate_payload: { reason: 'manifest-bundle' } }),
+        // retired legacy skip event in window -> ignored
+        JSON.stringify({ ts: '2026-06-10T13:30:00.000Z', event: 'skip_flag_legacy_used', source: 'pickle', gate_payload: { legacy_field: 'skip_ticket_audit_reason' } }),
         // non-skip event in window -> ignored
         JSON.stringify({ ts: '2026-06-10T14:00:00.000Z', event: 'iteration_started', source: 'pickle' }),
         // out-of-window skip event -> ignored
@@ -180,7 +117,7 @@ test('scanSkipFlagEvents: reads the three event names only, within the date wind
     const events = scanSkipFlagEvents(dir, '2026-06-01', '2026-06-13');
     assert.equal(events.length, 2);
     const reasons = events.map((e) => e.reason).sort();
-    assert.deepEqual(reasons, ['no_commits', 'skip_ticket_audit_reason']);
+    assert.deepEqual(reasons, ['manifest-bundle', 'no_commits']);
     fs.rmSync(dir, { recursive: true, force: true });
 });
 

@@ -308,28 +308,9 @@ const EVENT_CASES = [
     drop: 'gate_payload',
   },
   {
-    type: 'skip_flag_legacy_used',
-    valid: {
-      event: 'skip_flag_legacy_used',
-      ts: TS,
-      session: 'session-1',
-      gate_payload: {
-        legacy_field: 'skip_readiness_reason',
-        value: 'bootstrap',
-        callsite: 'readiness_gate',
-      },
-    },
-    drop: 'gate_payload',
-  },
-  {
     type: 'ticket_audit_bypassed',
     valid: { event: 'ticket_audit_bypassed', ts: TS, reason: 'operator-approved' },
     drop: 'reason',
-  },
-  {
-    type: 'ticket_audit_failed',
-    valid: { event: 'ticket_audit_failed', ts: TS, session: 'session-1' },
-    drop: 'ts',
   },
   {
     type: 'resolver_indeterminate',
@@ -1282,9 +1263,7 @@ test('activity-event-payload: schema defines all registered event type definitio
     'cap_check_skipped_stale_cache',
     'pipeline_auto_resumed',
     'bundle_bootstrap_exemption_applied',
-    'skip_flag_legacy_used',
     'ticket_audit_bypassed',
-    'ticket_audit_failed',
     'resolver_indeterminate',
     'readiness_false_positive_suppressed',
     'ticket_audit_manual_edit',

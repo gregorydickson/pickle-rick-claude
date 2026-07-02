@@ -11,8 +11,8 @@
  *      progress event resets the counter.
  *
  * L5 — all-terminal short-circuit: when every pending ticket is terminal-Failed and
- *      current_ticket is null, the loop must exit cleanly (all_tickets_terminal)
- *      rather than enter runIteration with a null ticket.
+ *      current_ticket is null, the loop must exit (recovery_exhausted) rather than
+ *      enter runIteration with a null ticket.
  *
  * L6 — recovery-ladder entry-point parity: attemptRecoveryBeforeTerminal is wired at
  *      THREE call sites (closer-handoff, codex-no-progress, wmw-auto-skip); the
@@ -216,14 +216,18 @@ test('L5: noRunnableTicketsRemain is false when there are NO tickets (avoid fals
 
 test('L5: wiring — null preTicket + no runnable tickets short-circuits BEFORE runIteration', () => {
   // The guard must sit after the all-Done check and gate on a null resolved ticket.
+  // W4b: the empty roster (all-Failed, no runnable) resolves to the honest ladder
+  // terminal `recovery_exhausted` (the legacy `all_tickets_terminal` was retired
+  // in the guard-layer kill-switch prune).
   assert.ok(/noRunnableTicketsRemain\(sessionDir\)/.test(src), 'loop must call noRunnableTicketsRemain');
   assert.ok(/!preTicket/.test(src), 'loop must short-circuit on a null preTicket');
-  assert.ok(/recordExitReason\(statePath, 'all_tickets_terminal'\)|exitReason = 'all_tickets_terminal'/.test(src),
-    'all-terminal short-circuit must set all_tickets_terminal');
+  assert.ok(/empty roster \(all-Failed, no runnable ticket\)[\s\S]{0,400}?recordExitReason\(statePath, 'recovery_exhausted'\)/.test(src),
+    'all-terminal short-circuit must record recovery_exhausted');
+  assert.ok(!src.includes("'all_tickets_terminal'"), 'retired all_tickets_terminal literal must not reappear');
 });
 
-test('L5: all_tickets_terminal is a CLEAN (non-failure) exit', () => {
-  assert.equal(isFailureExit('all_tickets_terminal'), false);
+test('L5: recovery_exhausted is a failure exit (auto-resume stops)', () => {
+  assert.equal(isFailureExit('recovery_exhausted'), true);
 });
 
 // ---------------------------------------------------------------------------

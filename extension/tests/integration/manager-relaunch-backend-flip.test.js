@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { evaluateCodexManagerRelaunch } from '../../services/codex-manager-relaunch.js';
+import { evaluateManagerRelaunch } from '../../services/manager-relaunch.js';
 import { StateManager } from '../../services/state-manager.js';
 
 function makeTmpDir(prefix = 'pickle-xbl08-') {
@@ -56,7 +56,7 @@ function makeState(overrides = {}) {
 test('AC-XBL-08: manager-relaunch-backend-flip — codex backend yields shouldRelaunch:true', () => {
   withCleanEnv(() => {
     const state = makeState({ backend: 'codex' });
-    const decision = evaluateCodexManagerRelaunch(state, PENDING_TICKETS, null);
+    const decision = evaluateManagerRelaunch(state, PENDING_TICKETS, null);
     assert.equal(decision.shouldRelaunch, true, 'state.backend=codex with pending tickets must trigger relaunch');
     assert.equal(decision.reason, 'eligible', 'reason must be eligible for codex with pending work');
   });
@@ -65,7 +65,7 @@ test('AC-XBL-08: manager-relaunch-backend-flip — codex backend yields shouldRe
 test('AC-XBL-08: manager-relaunch-backend-flip — mutating to claude yields shouldRelaunch:true', () => {
   withCleanEnv(() => {
     const state = makeState({ backend: 'claude' });
-    const decision = evaluateCodexManagerRelaunch(state, PENDING_TICKETS, null);
+    const decision = evaluateManagerRelaunch(state, PENDING_TICKETS, null);
     assert.equal(decision.shouldRelaunch, true, 'state.backend=claude with pending tickets must trigger relaunch');
     assert.equal(decision.reason, 'eligible');
     assert.equal(decision.cap, 20);
@@ -74,17 +74,17 @@ test('AC-XBL-08: manager-relaunch-backend-flip — mutating to claude yields sho
 
 test('AC-XBL-08: manager-relaunch-backend-flip — sequential flip: codex→true then claude→true', () => {
   // Core regression: single state object mutated between decisions, same ticket list.
-  // Locks in codex-manager-relaunch.ts:69 behavior.
+  // Locks in manager-relaunch.ts behavior.
   withCleanEnv(() => {
     const state = makeState({ backend: 'codex' });
 
-    const first = evaluateCodexManagerRelaunch(state, PENDING_TICKETS, null);
+    const first = evaluateManagerRelaunch(state, PENDING_TICKETS, null);
     assert.equal(first.shouldRelaunch, true, 'first decision (codex) must shouldRelaunch');
     assert.equal(first.reason, 'eligible', 'first decision reason must be eligible');
 
     state.backend = 'claude';
 
-    const second = evaluateCodexManagerRelaunch(state, PENDING_TICKETS, null);
+    const second = evaluateManagerRelaunch(state, PENDING_TICKETS, null);
     assert.equal(second.shouldRelaunch, true, 'second decision (claude) must shouldRelaunch');
     assert.equal(second.reason, 'eligible');
     assert.equal(second.cap, 20);
@@ -105,7 +105,7 @@ test('AC-XBL-08: manager-relaunch-backend-flip — state-file-backed: StateManag
 
     withCleanEnv(() => {
       const codexState = sm.read(statePath);
-      const first = evaluateCodexManagerRelaunch(codexState, PENDING_TICKETS, null);
+      const first = evaluateManagerRelaunch(codexState, PENDING_TICKETS, null);
       assert.equal(first.shouldRelaunch, true, 'state-file codex backend must shouldRelaunch');
       assert.equal(first.reason, 'eligible');
     });
@@ -114,7 +114,7 @@ test('AC-XBL-08: manager-relaunch-backend-flip — state-file-backed: StateManag
 
     withCleanEnv(() => {
       const claudeState = sm.read(statePath);
-      const second = evaluateCodexManagerRelaunch(claudeState, PENDING_TICKETS, null);
+      const second = evaluateManagerRelaunch(claudeState, PENDING_TICKETS, null);
       assert.equal(second.shouldRelaunch, true, 'state-file claude backend must shouldRelaunch');
       assert.equal(second.reason, 'eligible');
       assert.equal(second.cap, 20);

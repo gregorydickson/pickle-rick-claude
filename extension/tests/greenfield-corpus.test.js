@@ -29,6 +29,8 @@ const CORPUS = path.join(__dirname, 'fixtures', 'greenfield-corpus');
 
 const { evaluateAcShapeEnforcement } = await import('../bin/spawn-refinement-team.js');
 
+// The unified flag is the only live skip surface; the two retired legacy keys stay
+// in this list so positive fixtures prove they never reappear.
 const SKIP_FLAG_KEYS = ['skip_quality_gates_reason', 'skip_readiness_reason', 'skip_ticket_audit_reason'];
 
 function tmpDir(prefix = 'pickle-greenfield-') {

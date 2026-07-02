@@ -2592,18 +2592,16 @@ export async function executeCitadelPhase(runtime: PipelineRuntime): Promise<{ e
   const { cap, remediatorTimeoutMs } = citadelRemediationDeps.loadSettings();
   const threshold = remediationSeverityThreshold(runtime.config.citadel_strict);
 
-  // T40 bypass + kill-switch: the mechanical floor is additive over the threshold set, so
-  // collapsing it reverts toRemediate to the legacy Critical-only/threshold-only behavior.
-  // Bypass reuses the UNIFIED skip surface (no new per-gate flag — W5b); kill-switch is the
-  // dedicated env var, gated on the literal lowercase 'off' (PICKLE_CODEGRAPH precedent).
+  // T40 bypass: the mechanical floor is additive over the threshold set; the ONLY way to
+  // collapse it to the Critical-only/threshold-only behavior is the UNIFIED skip
+  // surface (no new per-gate flag — W5b). The floor is otherwise unconditional.
   const skipReason =
     typeof state.flags?.skip_quality_gates_reason === 'string' && state.flags.skip_quality_gates_reason.trim()
       ? state.flags.skip_quality_gates_reason.trim()
       : null;
-  const mechanicalKilled = process.env.PICKLE_CITADEL_MECHANICAL === 'off';
-  const mechanicalEnabled = !skipReason && !mechanicalKilled;
+  const mechanicalEnabled = !skipReason;
   if (skipReason) {
-    // Emit ONCE per phase invocation (not per cycle). Kill-switch reverts silently.
+    // Emit ONCE per phase invocation (not per cycle).
     // MUST go to the activity-dir jsonl sink via logActivity, NOT state.json.activity:
     // the W5c skip-flag budget scanner (scanSkipFlagEvents) reads only
     // getDataRoot()/activity/<day>.jsonl, so a state.json.activity write would leave the
@@ -2648,7 +2646,7 @@ export async function executeCitadelPhase(runtime: PipelineRuntime): Promise<{ e
     toRemediate = [...remediable, ...mechanical.filter(f => !seen.has(f.id))];
     // ADVISORY subset: sub-threshold AND non-mechanical (orphan-*/nested-ternary). Computed from
     // the SAME result, via isMechanicalCitadelFinding directly (independent of T40's enabled flag)
-    // because the advisory class is stable regardless of the mechanical kill-switch.
+    // because the advisory class is stable regardless of the skip surface.
     lastAdvisory = result.findings.filter(
       f => !findingMeetsThreshold(f, threshold) && !isMechanicalCitadelFinding(f),
     );

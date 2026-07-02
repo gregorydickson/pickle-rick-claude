@@ -9,8 +9,7 @@
 // max_iter=undefined → the `ticketMaxIter > 0` guard skipped the cap.
 //
 // repopulateNoProgressCapFromFrontmatter re-derives the cap via the R-CNAR-1
-// `applyTicketTierBudget` path (frontmatter complexity_tier → tier budget),
-// gated by PICKLE_RECOVERY_CONSOLIDATION (=off reverts to per-seam R-CNAR-1).
+// `applyTicketTierBudget` path (frontmatter complexity_tier → tier budget).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -156,29 +155,6 @@ test('W4c: no-ticket (current_ticket=null) + populated cache → pass-through (n
     assert.equal(updated, before, 'returns the same state object (no sm.update)');
     assert.equal(readState(statePath).current_ticket_max_iterations, 10, 'cache untouched on disk');
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('W4c kill-switch: PICKLE_RECOVERY_CONSOLIDATION=off reverts to per-seam path', () => {
-  const root = tempRoot();
-  const prev = process.env.PICKLE_RECOVERY_CONSOLIDATION;
-  try {
-    process.env.PICKLE_RECOVERY_CONSOLIDATION = 'off';
-    writeTicket(root, 't1', 'small');
-    const statePath = writeState(root, { current_ticket: 't1' });
-    const state = readState(statePath);
-    assert.equal(isValidPerTicketCapCache(state), false);
-
-    const updated = repopulateNoProgressCapFromFrontmatter(statePath, state, noop, root);
-
-    // Kill-switch: helper is inert — does NOT repopulate (per-seam R-CNAR-1 path
-    // remains the only repopulator).
-    assert.equal(updated, state, 'returns state untouched under kill-switch');
-    assert.equal(updated.current_ticket_max_iterations, undefined, 'no cap repopulation');
-  } finally {
-    if (prev === undefined) delete process.env.PICKLE_RECOVERY_CONSOLIDATION;
-    else process.env.PICKLE_RECOVERY_CONSOLIDATION = prev;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

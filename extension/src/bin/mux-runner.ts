@@ -36,15 +36,10 @@ export {
   evaluateManagerRelaunch,
   recordManagerRelaunch,
 } from '../services/manager-relaunch.js';
-export {
-  evaluateManagerRelaunch as evaluateCodexManagerRelaunch,
-  recordManagerRelaunch as recordCodexManagerRelaunch,
-} from '../services/manager-relaunch.js';
 
 const sm = new StateManager();
 
 let currentChildProc: import('child_process').ChildProcess | null = null;
-let qualityGateLegacyWarningLogged = false; // R-MUXQG test-reset contract — see prds/p1-bug-fix-bundle-b-release-drift-2026-05-26.md
 
 export interface OrphanDetectionResult {
   orphan_session_path: string;
@@ -1950,10 +1945,8 @@ export function clearStalePerTicketCacheAtIterationStart(
  * and NEVER overwrites `state.max_iterations` (R-CNAR-1 part-2 trap door —
  * `applyTicketTierBudget` is the part-2-compliant deriver).
  *
- * Behind the `PICKLE_RECOVERY_CONSOLIDATION=off` kill-switch this reverts to the
- * per-seam R-CNAR-1-only path (returns state untouched). Best-effort: a state
- * write failure falls open to the existing `ticketMaxIter=0` skip — never worse
- * than the pre-W4c behavior.
+ * Best-effort: a state write failure falls open to the existing
+ * `ticketMaxIter=0` skip — never worse than the pre-W4c behavior.
  */
 export function repopulateNoProgressCapFromFrontmatter(
   statePath: string,
@@ -1961,7 +1954,6 @@ export function repopulateNoProgressCapFromFrontmatter(
   log: (msg: string) => void,
   sessionDir: string,
 ): State {
-  if (!recoveryConsolidationEnabled()) return state;
   const hasTicket = typeof state.current_ticket === 'string' && state.current_ticket.length > 0;
   if (!hasTicket || isValidPerTicketCapCache(state)) return state;
   try {
@@ -4150,7 +4142,7 @@ export interface MuxReadinessGateInput {
   /**
    * BMAD residual P0.6: when set, mux-runner forwards `--skip-readiness <reason>`
    * to check-readiness, bypassing validation and emitting a `readiness_skipped`
-   * activity event for audit. Wired from `state.flags.skip_readiness_reason`.
+   * activity event for audit. Wired from `state.flags.skip_quality_gates_reason`.
    */
   skipReason?: string;
 }
@@ -4205,61 +4197,25 @@ type QualityGateSkipCallsite = 'readiness_gate' | 'ticket_audit_gate';
 
 interface QualityGateSkipResolution {
   reason?: string;
-  legacyField?: 'skip_readiness_reason' | 'skip_ticket_audit_reason';
 }
 
+// Single skip surface: `state.flags.skip_quality_gates_reason` is the ONLY
+// quality-gate bypass flag. The legacy per-gate skip flags were retired in the
+// guard-layer prune — both gates are advisory (R-GATE-ADVISORY), so the bypass
+// only silences advisory findings. Old sessions may still carry the retired
+// keys in state.flags; they are inert (never read, never migrated).
 export function resolveQualityGateSkipReason(
   state: State,
-  log: (msg: string) => void,
-  sessionName: string,
-  callsite: QualityGateSkipCallsite,
+  _log: (msg: string) => void,
+  _sessionName: string,
+  _callsite: QualityGateSkipCallsite,
 ): QualityGateSkipResolution {
-  const flags = state.flags;
-  const unifiedRaw = flags?.skip_quality_gates_reason;
+  const unifiedRaw = state.flags?.skip_quality_gates_reason;
   const unifiedReason = typeof unifiedRaw === 'string' ? unifiedRaw.trim() : '';
   if (unifiedReason.length > 0) {
     return { reason: unifiedReason };
   }
-
-  // R-QGSK-2 followup: scope the legacy fallback to the callsite's OWN legacy
-  // field. Previous implementation took the first set legacy flag regardless of
-  // callsite, which silently bypassed ticket_audit_gate whenever
-  // skip_readiness_reason was set (broke mux-runner.audit-bundle-halt test).
-  const legacyField: 'skip_readiness_reason' | 'skip_ticket_audit_reason' =
-    callsite === 'readiness_gate' ? 'skip_readiness_reason' : 'skip_ticket_audit_reason';
-  const legacyValueRaw = flags?.[legacyField];
-  if (typeof legacyValueRaw !== 'string' || legacyValueRaw.trim().length === 0) {
-    return {};
-  }
-  const legacyValue = (legacyValueRaw as string).trim();
-  const suppressDeprecation =
-    state.flags?.skip_quality_gates_deprecation_warning === true;
-
-  if (!suppressDeprecation) {
-    if (!qualityGateLegacyWarningLogged) {
-      qualityGateLegacyWarningLogged = true;
-      log(
-        `DEPRECATION: state.flags.${legacyField} is legacy; prefer state.flags.skip_quality_gates_reason for unified quality-gate bypasses.`,
-      );
-    }
-    logActivity({
-      event: 'skip_flag_legacy_used',
-      source: 'pickle',
-      session: sessionName,
-      gate_payload: {
-        legacy_field: legacyField,
-        value: legacyValue,
-        callsite,
-      },
-    });
-  }
-
-  return { reason: legacyValue, legacyField };
-}
-
-/** Test-only: resets the once-per-process deprecation flag. Non-prod. */
-export function _resetQualityGateSkipDeprecation(): void {
-  qualityGateLegacyWarningLogged = false;
+  return {};
 }
 
 /**
@@ -4269,7 +4225,7 @@ export function _resetQualityGateSkipDeprecation(): void {
  * and PROCEEDS (it does NOT halt and does NOT stamp a failure exit_reason). A
  * genuinely-defective bundle surfaces at the build/review phases instead of
  * being pre-emptively killed by a heuristic pre-flight.
- * skipReason (from state.flags.skip_ticket_audit_reason) → bypassed.
+ * skipReason (from state.flags.skip_quality_gates_reason) → bypassed.
  */
 export function runTicketAuditGate(input: TicketAuditGateInput): TicketAuditGateResult {
   if (typeof input.skipReason === 'string' && input.skipReason.length > 0) {
@@ -4313,7 +4269,7 @@ export function appendPipelineRunnerMarker(sessionDir: string, message: string):
   } catch { /* non-critical — the marker is also in mux-runner.log */ }
 }
 
-export type ExitReason = 'success' | 'cancelled' | 'error' | 'limit' | 'iteration_cap_exhausted' | 'stall' | 'circuit_open' | 'rate_limit_exhausted' | 'timeout_repeat' | 'manager_persistent_hallucination' | 'codex_unhealthy_consecutive_failures' | 'ticket_audit_failed' | 'working_tree_modified_externally' | 'state_schema_version_ahead' | 'closer_handoff_terminal' | 'manager_handoff_pending' | 'done_without_commit_evidence' | 'codex_manager_no_progress' | 'recovery_exhausted' | 'idle_stall_unrecoverable' | 'all_tickets_terminal' | 'state_working_dir_missing' | 'toolchain_unavailable';
+export type ExitReason = 'success' | 'cancelled' | 'error' | 'limit' | 'iteration_cap_exhausted' | 'stall' | 'circuit_open' | 'rate_limit_exhausted' | 'timeout_repeat' | 'manager_persistent_hallucination' | 'codex_unhealthy_consecutive_failures' | 'working_tree_modified_externally' | 'state_schema_version_ahead' | 'closer_handoff_terminal' | 'manager_handoff_pending' | 'done_without_commit_evidence' | 'codex_manager_no_progress' | 'recovery_exhausted' | 'idle_stall_unrecoverable' | 'state_working_dir_missing' | 'toolchain_unavailable';
 
 /** R-CNAR-4(c): halt exits pause/defer — auto-resume.sh may retry. Does NOT include 'recovery_exhausted' (fatal, non-recoverable). */
 export const isHaltExit = (r: ExitReason): boolean => r === 'cancelled' || r === 'limit' || r === 'timeout_repeat' || r === 'closer_handoff_terminal' || r === 'manager_handoff_pending' || r === 'done_without_commit_evidence';
@@ -4321,7 +4277,7 @@ export const isHaltExit = (r: ExitReason): boolean => r === 'cancelled' || r ===
 const FAILURE_EXIT_REASONS: ReadonlySet<ExitReason> = new Set<ExitReason>([
   'error', 'stall', 'circuit_open', 'rate_limit_exhausted', 'timeout_repeat',
   'manager_persistent_hallucination', 'iteration_cap_exhausted', 'codex_unhealthy_consecutive_failures',
-  'ticket_audit_failed', 'working_tree_modified_externally', 'state_schema_version_ahead',
+  'working_tree_modified_externally', 'state_schema_version_ahead',
   'done_without_commit_evidence', 'codex_manager_no_progress', 'recovery_exhausted',
   'idle_stall_unrecoverable', 'state_working_dir_missing', 'toolchain_unavailable',
 ]);
@@ -4867,7 +4823,7 @@ function exitForCloserTerminalState(
 // The controller (services/recovery-controller.ts) is dependency-injected; these
 // adapters bind its callbacks to the real runtime. Every no-progress / handoff /
 // self-terminate seam routes its decision through the W4a choke point
-// `routeRecoveryBeforeTerminal` (gated by PICKLE_RECOVERY_CONSOLIDATION): the original
+// `routeRecoveryBeforeTerminal`: the original
 // THREE terminal authorities — (1) closer_handoff_terminal, (2) codex
 // manager-no-progress, (3) wmw-auto-skip (oversized_no_progress) — plus the W4a
 // additions (4) timeout_repeat and (5) idle_stall_unrecoverable. The DECISION (the
@@ -5346,31 +5302,22 @@ export function commitGatePassingDeliverableAtBoundary(
 // W3 salvage-before-fail consolidation routing.
 //
 // Every fail/cancel/timeout/exit seam routes its salvage through the shared
-// `salvageTicket()` primitive when consolidation is active. Per the per-seam
-// migration contract the OLD per-seam path is RETAINED: the production
-// `salvageTicket` adapter delegates to the existing per-seam function, so the
-// consolidated behavior is identical by construction, and `PICKLE_RECOVERY_
-// CONSOLIDATION=off` reverts to the bare legacy call. Only the literal lowercase
-// `off` disables; default (unset/any other value) = consolidated path active.
-// Precedent: PICKLE_CODEGRAPH=off, PLUMBUS_GENERATIVE_AUDIT=off.
+// `salvageTicket()` primitive. The production `salvageTicket` adapter delegates
+// to the existing per-seam function, so the consolidated behavior is identical
+// by construction.
 // ---------------------------------------------------------------------------
-
-export function recoveryConsolidationEnabled(): boolean {
-  return process.env.PICKLE_RECOVERY_CONSOLIDATION !== 'off';
-}
 
 /**
  * Exit-path seam: route the gate-passing-deliverable commit through
  * `salvageTicket()` (which reads `reconcileTicketTruth` for the clean-tree
  * short-circuit). The production adapter delegates to the retained per-seam
  * `commitGatePassingDeliverableOnExitPath`, so committed/Done vs no-op behavior
- * is identical; the kill-switch flips between the consolidated wrapper and the
- * bare legacy call.
+ * is identical.
  */
 export function routeExitPathSalvage(
   input: CommitGatePassingDeliverableInput,
 ): CommitGatePassingDeliverableResult {
-  if (!recoveryConsolidationEnabled() || !input.ticketId) {
+  if (!input.ticketId) {
     return commitGatePassingDeliverableOnExitPath(input);
   }
   let legacy: CommitGatePassingDeliverableResult = { committed: false, reason: 'no-ticket' };
@@ -5401,8 +5348,7 @@ export function routeExitPathSalvage(
 /**
  * Failed-flip seam: route the suppression decision through `salvageTicket()`'s
  * choke point while preserving the EXACT per-seam decision. The production
- * adapter delegates to the retained `evaluateFailedFlipSuppression`; the
- * kill-switch reverts to the bare legacy call.
+ * adapter delegates to the retained `evaluateFailedFlipSuppression`.
  */
 export function routeFailedFlipSuppression(
   input: FailedFlipSuppressionInput,
@@ -5410,10 +5356,8 @@ export function routeFailedFlipSuppression(
   // The flip-suppression decision IS the salvage decision for this seam; the
   // shared primitive's role here is the single choke point. The decision always
   // delegates to the retained per-seam evaluator (suppress/proceed/escalate is
-  // unchanged whether or not consolidation is active) — the ONLY consolidation-
-  // gated effect is the W4a attribution log, which is only meaningful when the
-  // choke point is actually routing (consolidation on).
-  if (recoveryConsolidationEnabled() && (input.backend || input.mode) && input.log) {
+  // unchanged) — the only additional effect is the W4a attribution log.
+  if ((input.backend || input.mode) && input.log) {
     input.log(`[failed-flip] choke-point routed ${input.ticketId} at ${input.callsite} [backend=${input.backend ?? 'claude'};mode=${input.mode ?? 'worker'}]`);
   }
   return evaluateFailedFlipSuppression(input);
@@ -5785,18 +5729,12 @@ export function attemptRecoveryBeforeTerminal(input: AttemptRecoveryBeforeTermin
 
 /**
  * W4a single choke point. Every no-progress / handoff / self-terminate seam routes
- * its recovery decision through THIS function (claude + codex, worker + manager). When
- * consolidation is active it runs the ladder via `attemptRecoveryBeforeTerminal`; the
- * `PICKLE_RECOVERY_CONSOLIDATION=off` kill-switch short-circuits to
- * `{ kind:'fall_through', reason:'consolidation_off' }` so the caller reverts to its
- * retained per-seam bare halt (per-seam migration parity). The DECISION (the ladder
+ * its recovery decision through THIS function (claude + codex, worker + manager),
+ * which runs the ladder via `attemptRecoveryBeforeTerminal`. The DECISION (the ladder
  * invocation) lives only here and in `attemptRecoveryBeforeTerminal`; new halt sites
  * MUST route through this wrapper rather than emit a terminal disposition directly.
  */
 export function routeRecoveryBeforeTerminal(input: AttemptRecoveryBeforeTerminalInput): RecoveryOutcome {
-  if (!recoveryConsolidationEnabled()) {
-    return { kind: 'fall_through', reason: 'consolidation_off' };
-  }
   return attemptRecoveryBeforeTerminal(input);
 }
 
@@ -6917,8 +6855,7 @@ function processTimeoutOutcome(state: State, outcome: IterationOutcome, ctx: Loo
   if (!counterNext.halt) return { kind: 'noop', timeoutCount: counterNext.count, lastTimeoutTicket: counterNext.ticket };
   // W4a: route the timeout-repeat halt through the single choke point BEFORE parking.
   // A near-green diff recovered by the ladder continues the loop (counter reset); the
-  // bare `executeTimeoutHalt` park survives only on fall_through / exhausted, and the
-  // PICKLE_RECOVERY_CONSOLIDATION=off kill-switch reverts to the legacy halt directly.
+  // bare `executeTimeoutHalt` park survives only on fall_through / exhausted.
   // AC-2 fail-safe: the git-mutating recovery call MUST have an explicit working_dir
   // (never process.cwd() / the real repo); when absent, park without recovering.
   const timeoutWorkingDir = (() => {
@@ -9105,7 +9042,7 @@ async function runMuxRunnerMain() {
     // W4c (AC-W4c-1): re-assert the per-ticket no-progress cap from frontmatter
     // ground truth so a SET ticket can never reach the cap-check below with an
     // invalid cache (ticketMaxIter=0 → cap silently disabled → R-WMNP unbounded
-    // respawn). Kill-switch PICKLE_RECOVERY_CONSOLIDATION=off reverts this.
+    // respawn).
     state = repopulateNoProgressCapFromFrontmatter(statePath, state, log, sessionDir);
 
     // B-PXBO WS-3-FacetB: a crash-resume relaunch can inherit a `state.current_ticket`
@@ -9408,40 +9345,23 @@ async function runMuxRunnerMain() {
       // applyAllTicketsDoneCompletion (→ completion). Reaching here means the
       // roster is all-Failed with no runnable Todo — the honest ladder terminal
       // `recovery_exhausted` (single CUJ-1 entry state, ∈ isFailureExit so
-      // auto-resume.sh stops). The PICKLE_RECOVERY_CONSOLIDATION=off kill-switch
-      // reverts to the legacy clean `all_tickets_terminal` per-seam terminal.
-      if (recoveryConsolidationEnabled()) {
-        log('empty roster (all-Failed, no runnable ticket) — honest terminal recovery_exhausted before runIteration.');
-        writeRecoveryHandoffArtifact(sessionDir, null, 'empty_roster_all_failed_no_runnable', log);
-        recordExitReason(statePath, 'recovery_exhausted');
-        safeDeactivate(statePath);
-        removeRunnerSessionMapEntry(statePath, log);
-        exitReason = 'recovery_exhausted';
-        break;
-      }
-      log('all tickets terminal (no runnable ticket and no all-Done completion) — clean exit before runIteration.');
-      recordExitReason(statePath, 'all_tickets_terminal');
-      // B-GROUND2 WS1: route the ticket-bundle terminal through the single
-      // ground-truth authority — refuses (re-stamps incomplete) if a residual
-      // pending ticket is found on the re-scan.
-      finalizeIfTrulyComplete(
-        statePath,
-        () => muxBundleScan(sessionDir, state.working_dir || ''),
-        { step: 'completed', runnerIteration: iteration, exitReason: 'completed' },
-      );
-      exitReason = 'all_tickets_terminal';
+      // auto-resume.sh stops).
+      log('empty roster (all-Failed, no runnable ticket) — honest terminal recovery_exhausted before runIteration.');
+      writeRecoveryHandoffArtifact(sessionDir, null, 'empty_roster_all_failed_no_runnable', log);
+      recordExitReason(statePath, 'recovery_exhausted');
+      safeDeactivate(statePath);
+      removeRunnerSessionMapEntry(statePath, log);
+      exitReason = 'recovery_exhausted';
       break;
     }
 
     // R-BUNDLE-1 / W1a: bundle bootstrap mode — auto-apply the quality-gate skip
     // exemption for allowlisted sessions. Updates local state.flags so the
     // readiness + ticket-audit gate checks below read the derived skip reason.
-    // W1a: the consolidated path writes ONLY the unified `skip_quality_gates_reason`
-    // (the single operator-facing quality-gate bypass surface). Conflict-resolution
-    // rule: an existing non-empty `skip_quality_gates_reason` WINS over the derived
-    // reason (operator intent preserved). `PICKLE_RECOVERY_CONSOLIDATION=off` reverts
-    // to the legacy per-gate dual-write (`skip_readiness_reason` +
-    // `skip_ticket_audit_reason`), retained until the consolidation is green.
+    // W1a: writes ONLY the unified `skip_quality_gates_reason` (the single
+    // operator-facing quality-gate bypass surface). Conflict-resolution rule: an
+    // existing non-empty `skip_quality_gates_reason` WINS over the derived
+    // reason (operator intent preserved).
     if (!bundleBootstrapApplied && curIter === 0) {
       bundleBootstrapApplied = true;
       const bootstrapMode = typeof state.flags?.bundle_bootstrap_mode === 'string'
@@ -9450,42 +9370,21 @@ async function runMuxRunnerMain() {
       if (bootstrapMode !== null && BUNDLE_BOOTSTRAP_ALLOWLIST[bootstrapMode]?.has(path.basename(sessionDir))) {
         const derivedReason = `bundle_bootstrap_mode=${bootstrapMode}`;
         const existingFlags = state.flags ?? {};
-        if (recoveryConsolidationEnabled()) {
-          const existingUnified = typeof existingFlags.skip_quality_gates_reason === 'string'
-            ? existingFlags.skip_quality_gates_reason.trim()
-            : '';
-          const skipQualityGatesReason = existingUnified.length > 0 ? existingUnified : derivedReason;
-          state = { ...state, flags: { ...existingFlags, skip_quality_gates_reason: skipQualityGatesReason } };
-          logActivity({
-            event: 'bundle_bootstrap_exemption_applied',
-            source: 'pickle',
-            session: path.basename(sessionDir),
-            gate_payload: {
-              bundle_id: bootstrapMode,
-              skip_quality_gates_reason: skipQualityGatesReason,
-            },
-          });
-          log(`bundle bootstrap mode applied: ${bootstrapMode} — quality gates auto-skipped via skip_quality_gates_reason for session ${path.basename(sessionDir)}`);
-        } else {
-          const skipReadinessReason = typeof existingFlags.skip_readiness_reason === 'string' && existingFlags.skip_readiness_reason.length > 0
-            ? existingFlags.skip_readiness_reason
-            : derivedReason;
-          const skipTicketAuditReason = typeof existingFlags.skip_ticket_audit_reason === 'string' && existingFlags.skip_ticket_audit_reason.length > 0
-            ? existingFlags.skip_ticket_audit_reason
-            : derivedReason;
-          state = { ...state, flags: { ...existingFlags, skip_readiness_reason: skipReadinessReason, skip_ticket_audit_reason: skipTicketAuditReason } };
-          logActivity({
-            event: 'bundle_bootstrap_exemption_applied',
-            source: 'pickle',
-            session: path.basename(sessionDir),
-            gate_payload: {
-              bundle_id: bootstrapMode,
-              skip_readiness_reason: skipReadinessReason,
-              skip_ticket_audit_reason: skipTicketAuditReason,
-            },
-          });
-          log(`bundle bootstrap mode applied: ${bootstrapMode} — both gates auto-skipped for session ${path.basename(sessionDir)}`);
-        }
+        const existingUnified = typeof existingFlags.skip_quality_gates_reason === 'string'
+          ? existingFlags.skip_quality_gates_reason.trim()
+          : '';
+        const skipQualityGatesReason = existingUnified.length > 0 ? existingUnified : derivedReason;
+        state = { ...state, flags: { ...existingFlags, skip_quality_gates_reason: skipQualityGatesReason } };
+        logActivity({
+          event: 'bundle_bootstrap_exemption_applied',
+          source: 'pickle',
+          session: path.basename(sessionDir),
+          gate_payload: {
+            bundle_id: bootstrapMode,
+            skip_quality_gates_reason: skipQualityGatesReason,
+          },
+        });
+        log(`bundle bootstrap mode applied: ${bootstrapMode} — quality gates auto-skipped via skip_quality_gates_reason for session ${path.basename(sessionDir)}`);
       }
     }
 
@@ -9693,8 +9592,7 @@ async function runMuxRunnerMain() {
         if (evaluateIdleStallRecoveryCap(idleStallRecoveryCount, idleStallRecoveryCap)) {
           // W4a: route the idle-stall escalation through the single choke point before
           // the terminal `idle_stall_unrecoverable` park. A ladder-advanced ticket
-          // resets the streak and continues; only fall_through / exhausted parks (and
-          // PICKLE_RECOVERY_CONSOLIDATION=off reverts to the bare escalation directly).
+          // resets the streak and continues; only fall_through / exhausted parks.
           // AC-2 fail-safe: never run the git-mutating recovery against process.cwd().
           if (state.current_ticket && state.working_dir) {
             const recovery = routeRecoveryBeforeTerminal({

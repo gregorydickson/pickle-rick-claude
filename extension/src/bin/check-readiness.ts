@@ -27,8 +27,8 @@ export interface ReadinessArgs {
   /**
    * BMAD residual P0.6: when set, the gate is bypassed entirely; the reason is
    * recorded as a `readiness_skipped` activity event for audit. The flag is
-   * only forwarded by `mux-runner` when `state.flags.skip_readiness_reason` is
-   * configured for the session — there is no implicit default.
+   * only forwarded by `mux-runner` when `state.flags.skip_quality_gates_reason`
+   * is configured for the session — there is no implicit default.
    */
   skipReadiness?: string;
 }
@@ -1094,10 +1094,12 @@ function maybeEmitResolverIndeterminate(input: {
 //
 // BLOCKING CONTRACT (WS-1): `findSignatureChangeCallerGapFindings` emits
 // `kind:'signature_caller_gap'` (blocking — fails readiness) UNLESS suppressed by
-// `isGapBlocking`: the `PICKLE_SIGF` kill-switch (`off`/`advisory`), a
-// `skip_quality_gates_reason`, or an opt-in scope auto-extension that absorbs the
-// caller (`autoExtend && callerCount <= SCOPE_AUTO_EXTEND_MAX`). When suppressed
+// `isGapBlocking`: a `skip_quality_gates_reason` (the single quality-gate bypass
+// surface), or an opt-in scope auto-extension that absorbs the caller
+// (`autoExtend && callerCount <= SCOPE_AUTO_EXTEND_MAX`). When suppressed
 // the finding degrades to `kind:'advisory'` (informational, never blocks).
+// NOTE: readiness itself is advisory at the mux level (R-GATE-ADVISORY) — a
+// "blocking" finding fails this CLI's exit code but never halts a pipeline.
 //
 // SINGLE DETECTOR: the matching engine (`ARITY_ADD_CUE_RE`, `SCHEMA_SHAPE_CUE_RE`,
 // and `detectSignatureCallerGaps`) lives ONLY in
@@ -1129,18 +1131,14 @@ interface SignatureGapOpts {
   sessionDir?: string;
 }
 
-function isSigGapKillSwitchActive(): boolean {
-  return process.env['PICKLE_SIGF'] === 'off' || process.env['PICKLE_SIGF'] === 'advisory';
-}
-
 function collectAllDeclared(sigTickets: SignatureGapTicket[]): Set<string> {
   const all = new Set<string>();
   for (const t of sigTickets) for (const f of t.declaredFiles) all.add(f);
   return all;
 }
 
-function isGapBlocking(killSwitch: boolean, skipReason: string | undefined, autoExtend: boolean, callerCount: number): boolean {
-  return !killSwitch && !skipReason && (!autoExtend || callerCount > SCOPE_AUTO_EXTEND_MAX);
+function isGapBlocking(skipReason: string | undefined, autoExtend: boolean, callerCount: number): boolean {
+  return !skipReason && (!autoExtend || callerCount > SCOPE_AUTO_EXTEND_MAX);
 }
 
 function buildGapFinding(ticketFile: string, gap: CallerGap, isBlocking: boolean): ReadinessFinding {
@@ -1180,12 +1178,11 @@ export function findSignatureChangeCallerGapFindings(
   cache?: ResolverCache,
   opts?: SignatureGapOpts,
 ): ReadinessFinding[] {
-  const killSwitch = isSigGapKillSwitchActive();
   const { autoExtend = false, skipQualityGatesReason, sessionDir } = opts ?? {};
 
   // Bypass: skip_quality_gates_reason set → advisory for all findings in this invocation.
   // Emit gate_skipped once so the budget counter increments.
-  if (!killSwitch && skipQualityGatesReason && sessionDir) {
+  if (skipQualityGatesReason && sessionDir) {
     try {
       logActivity({ event: 'gate_skipped', source: 'pickle', ts: new Date().toISOString(), gate_payload: { reason: 'signature_caller_gap', detail: skipQualityGatesReason } });
     } catch { /* non-fatal */ }
@@ -1203,7 +1200,7 @@ export function findSignatureChangeCallerGapFindings(
     }
     const gaps = detectSignatureCallerGaps({ ticketContents: [content], declaredFiles: declaredAll, repoRoot, cache });
     for (const gap of gaps) {
-      const blocking = isGapBlocking(killSwitch, skipQualityGatesReason, autoExtend, gap.outOfScopeCallers.length);
+      const blocking = isGapBlocking(skipQualityGatesReason, autoExtend, gap.outOfScopeCallers.length);
       if (blocking) emittedBlockEvent = maybeEmitSigGapBlockEvent(sessionDir, gap.symbol, emittedBlockEvent);
       findings.push(buildGapFinding(ticket.file, gap, blocking));
     }

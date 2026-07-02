@@ -5,9 +5,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-    evaluateCodexManagerRelaunch,
-    recordCodexManagerRelaunch,
-} from '../services/codex-manager-relaunch.js';
+    evaluateManagerRelaunch,
+    recordManagerRelaunch,
+} from '../services/manager-relaunch.js';
 import { Defaults } from '../types/index.js';
 
 const pendingTickets = [
@@ -33,7 +33,7 @@ function hermesState(overrides = {}) {
 }
 
 test('hermes-lifecycle: simple relaunch decision is eligible below cap', () => {
-    const decision = evaluateCodexManagerRelaunch(hermesState(), true);
+    const decision = evaluateManagerRelaunch(hermesState(), true);
 
     assert.equal(decision.should_relaunch, true);
     assert.equal(decision.reason, 'below_cap');
@@ -42,14 +42,14 @@ test('hermes-lifecycle: simple relaunch decision is eligible below cap', () => {
 });
 
 test('hermes-lifecycle: simple relaunch decision refuses when no work remains', () => {
-    const decision = evaluateCodexManagerRelaunch(hermesState(), false);
+    const decision = evaluateManagerRelaunch(hermesState(), false);
 
     assert.equal(decision.should_relaunch, false);
     assert.equal(decision.reason, 'no_pending_work');
 });
 
 test('hermes-lifecycle: runner relaunch decision counts pending hermes tickets', () => {
-    const decision = evaluateCodexManagerRelaunch(hermesState(), pendingTickets, null);
+    const decision = evaluateManagerRelaunch(hermesState(), pendingTickets, null);
 
     assert.equal(decision.shouldRelaunch, true);
     assert.equal(decision.reason, 'eligible');
@@ -59,8 +59,8 @@ test('hermes-lifecycle: runner relaunch decision counts pending hermes tickets',
 
 test('hermes-lifecycle: relaunch cap is enforced for hermes', () => {
     const state = hermesState({ manager_relaunch_count: Defaults.CODEX_MANAGER_RELAUNCH_CAP });
-    const runnerDecision = evaluateCodexManagerRelaunch(state, pendingTickets, null);
-    const simpleDecision = evaluateCodexManagerRelaunch(state, true);
+    const runnerDecision = evaluateManagerRelaunch(state, pendingTickets, null);
+    const simpleDecision = evaluateManagerRelaunch(state, true);
 
     assert.equal(runnerDecision.shouldRelaunch, false);
     assert.equal(runnerDecision.reason, 'cap_exceeded');
@@ -77,9 +77,9 @@ test('hermes-lifecycle: record relaunch persists shared manager counter', () => 
     try {
         process.env.PICKLE_DATA_ROOT = dataRoot;
         fs.writeFileSync(statePath, JSON.stringify(hermesState({ manager_relaunch_count: 2 }), null, 2));
-        const decision = evaluateCodexManagerRelaunch(JSON.parse(fs.readFileSync(statePath, 'utf-8')), pendingTickets, null);
+        const decision = evaluateManagerRelaunch(JSON.parse(fs.readFileSync(statePath, 'utf-8')), pendingTickets, null);
 
-        recordCodexManagerRelaunch(statePath, sessionDir, decision, 5, () => {});
+        recordManagerRelaunch(statePath, sessionDir, decision, 5, () => {});
 
         const persisted = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
         assert.equal(persisted.backend, 'hermes');

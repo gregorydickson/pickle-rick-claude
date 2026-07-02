@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { evaluateCodexManagerRelaunch } from '../../services/codex-manager-relaunch.js';
+import { evaluateManagerRelaunch } from '../../services/manager-relaunch.js';
 import { StateManager } from '../../services/state-manager.js';
 
 function makeTmpDir(prefix = 'pickle-xbl7b-') {
@@ -72,7 +72,7 @@ test('R-XBL-7b: spawn-morty-actual-session-bug — state.backend=claude + PICKLE
       const sm = new StateManager();
       const state = sm.read(path.join(sessionDir, 'state.json'));
 
-      const decision = evaluateCodexManagerRelaunch(state, PENDING_TICKETS, null);
+      const decision = evaluateManagerRelaunch(state, PENDING_TICKETS, null);
 
       assert.equal(decision.backend, 'claude', 'claude session must never be hijacked into a codex manager relaunch');
     });
@@ -95,7 +95,7 @@ test('R-XBL-7b: spawn-morty-actual-session-bug — PICKLE_REFINEMENT_LOCK=1 forc
       const sm = new StateManager();
       const state = sm.read(path.join(sessionDir, 'state.json'));
 
-      const decision = evaluateCodexManagerRelaunch(state, PENDING_TICKETS, null);
+      const decision = evaluateManagerRelaunch(state, PENDING_TICKETS, null);
 
       assert.equal(
         decision.backend,
@@ -122,7 +122,7 @@ test('R-XBL-7b: spawn-morty-actual-session-bug — without PICKLE_REFINEMENT_LOC
       const sm = new StateManager();
       const state = sm.read(path.join(sessionDir, 'state.json'));
 
-      const decision = evaluateCodexManagerRelaunch(state, PENDING_TICKETS, null);
+      const decision = evaluateManagerRelaunch(state, PENDING_TICKETS, null);
 
       assert.equal(decision.backend, 'claude', 'state.backend=claude must resolve claude without the refinement lock too');
     });

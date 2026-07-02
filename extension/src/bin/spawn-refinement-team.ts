@@ -20,7 +20,6 @@ import { buildWorkerInvocation, isBackend, SpawnInvocation } from '../services/b
 import { Backend, PromiseTokens, hasToken, Defaults, VALID_ACTIVITY_EVENTS, PipelineRunnerExitCode } from '../types/index.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
-import { recoveryConsolidationEnabled } from './mux-runner.js';
 
 // PRD refinement is planning, not implementation. Codex is reserved for
 // implementation loops only — if the parent session opted into codex, we
@@ -170,9 +169,8 @@ When writing acceptance criteria or analyzing PRD sections that reference activi
 | \`judge_measurement_attempted\` | \`session\`, \`iteration\`, \`backend\`, \`judge_backend\`, \`model\`, \`fallback_activated\`, \`spawn_context\`, \`gate_payload.attempt\`, \`gate_payload.elapsed_ms\`, \`gate_payload.outcome\`, \`gate_payload.timeout_class\`, \`gate_payload.probe_kind\` | microverse-runner LLM judge retry loop |
 | \`baseline_attempt_timeout\` | \`session\`, \`gate_payload.attempt\`, \`gate_payload.elapsed_ms\`, \`gate_payload.classifier\` | microverse-runner LLM timeout retry loop |
 | \`pipeline_auto_resumed\` | \`gate_payload.retry_index\`, \`gate_payload.ticket_id\`, \`gate_payload.session_done_count_at_retry\` | mux-runner auto-resume path |
-| \`bundle_bootstrap_exemption_applied\` | \`gate_payload.skip_readiness_reason\`, \`gate_payload.skip_ticket_audit_reason\` | mux-runner bootstrap-mode path |
+| \`bundle_bootstrap_exemption_applied\` | \`gate_payload.bundle_id\`, \`gate_payload.skip_quality_gates_reason\` | mux-runner bootstrap-mode path |
 | \`ticket_audit_bypassed\` | \`reason\` | audit-ticket-bundle.js, readiness gate |
-| \`ticket_audit_failed\` | \`session\` (optional) | mux-runner ticket-audit halt path |
 | \`ticket_audit_manual_edit\` | \`gate_payload.edit_count\` | mux-runner audit loop |
 | \`smoke_gate_bypassed\` | \`reason\` | mux-runner smoke-gate path |
 | \`tsc_gate_failed\` | \`reason\`, \`gate_payload.failure_kind\`, \`gate_payload.command\` | tsc-gate PreToolUse hook block path |
@@ -1590,10 +1588,9 @@ export function evaluateAcShapeAdvisory(manifest: Pick<RefinementManifest, 'prd_
  * quality-gate bypass surface, so a session carrying the unified flag bypasses
  * the AC-shape gate just as it bypasses the readiness/ticket-audit gates. The
  * explicit `--skip-ac-shape-gate <reason>` CLI flag takes precedence over this.
- * Behind `PICKLE_RECOVERY_CONSOLIDATION=off` the fold-in is inert (CLI flag only).
  */
 function readUnifiedQualityGateSkipReason(sessionDir?: string): string | undefined {
-  if (!recoveryConsolidationEnabled() || !sessionDir) return undefined;
+  if (!sessionDir) return undefined;
   try {
     const statePath = path.join(sessionDir, 'state.json');
     const state = readRecoverableJsonObject(statePath) as { flags?: Record<string, unknown> } | null;

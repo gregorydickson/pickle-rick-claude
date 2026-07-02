@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# AC-D3 (R-DSAN) design-ground-truth enforcement spine.
+# AC-D3 (R-DSAN) design-ground-truth check — ADVISORY (demoted out of the release
+# gate 2026-07-02, guard-layer prune item c: zero catches since 2026-04). Run it
+# manually when touching completion-authority code; it no longer appears in the
+# canonical gate command (CLAUDE.md / check-wired.sh / release.yml / ci.yml).
+# The evaluateEpicCompletion call-site floor remains covered by
+# extension/tests/completion-authority-single-source.test.js.
 #
 # R-DSAN was hollowed during the B-RRH merge because NOTHING failed the build when
-# the fix went inert. This spine is a SOURCE-GREP enforcement: it FAILS the build
-# (nonzero exit) if any of the three R-DSAN proxies reappear as source patterns,
-# and PASSES (exit 0) on the current fixed tree. A stub-satisfiable test is not
-# enough — each check is keyed to a real source surface, not a sentinel comment.
+# the fix went inert. This check is a SOURCE-GREP detector: it exits nonzero if any
+# of the R-DSAN proxies reappear as source patterns, and exits 0 on the current
+# fixed tree. A stub-satisfiable test is not enough — each check is keyed to a
+# real source surface, not a sentinel comment.
 #
 # The three proxies:
 #   (i)   a pickle/phase SUCCESS keyed on a RAW mux child exit code instead of routing

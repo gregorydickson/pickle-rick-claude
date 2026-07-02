@@ -146,7 +146,7 @@ test('mux-runner skip flags emit ticket_audit_bypassed on the audit bypass path'
   try {
     writeClaudeStub(stubBinDir);
     writeAlignedSession(sessionDir, workingDir, {
-      skip_ticket_audit_reason: 'historical drift acknowledged',
+      skip_quality_gates_reason: 'historical drift acknowledged',
     });
 
     const result = runMuxRunner(sessionDir, dataRoot, stubBinDir);

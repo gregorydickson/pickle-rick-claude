@@ -21,7 +21,7 @@ Workers run inside the runtime they modify. Hooks enforce these (prose alone fai
 | tsc errors at commit time | `allow_tsc_failed_reason` (manager-only) | `tsc-gate.ts` hook |
 | `bash install.sh` from worker | none | bash-scanner |
 | `~/.claude/pickle-rick/**` | none | `config-protection.ts` hook |
-| Test `claude --add-dir <real-repo>` | none | `backend-spawn.ts` `PICKLE_TEST_MODE` + `audit-test-add-dir-containment.sh` |
+| Test `claude --add-dir <real-repo>` | none | `backend-spawn.ts` `PICKLE_TEST_MODE` |
 | Other ticket's dir | none | `check-scope-diff.ts` preflight |
 | `spawnSync`/`spawn` no `timeout` | per-callsite | Per-file trap doors |
 | Orchestrator tokens (`EPIC_COMPLETED`, etc.) | none — workers emit only `<promise>I AM DONE</promise>` | `promise-tokens.ts` scrubber |
@@ -44,7 +44,7 @@ Canonical → deployed (`bash install.sh` rsyncs, overwrites): `extension/src/*.
 
 Run from `extension/` (the release gate; green before any tag):
 ```
-cd extension && npm ci && npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-design-ground-truth.sh && bash scripts/audit-un-terminalize-single-path.sh && npm run test:fast:budget && npm run test:integration && RUN_EXPENSIVE_TESTS=1 npm run test:expensive
+cd extension && npm ci && npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-un-terminalize-single-path.sh && npm run test:fast:budget && npm run test:integration && RUN_EXPENSIVE_TESTS=1 npm run test:expensive
 ```
 Tests: `extension/tests/*.test.js` via `node --test` (no `.test.ts`). Aux scripts: `coverage` (c8 fast-tier baseline), `coverage:delta` (`scripts/coverage-delta.sh`), `wire-check` (gate parity, `scripts/check-wired.sh`).
 
@@ -61,7 +61,7 @@ Semver in `extension/package.json`: **Major** = breaking (state schema, CLI args
 
 **Before tagging**, the full release gate must be green from `extension/` (test failures block release, no exceptions) — this is the release-gate source of truth, mirrored by `.github/workflows/release.yml` (enforced by `release-gate-parity.test.js`):
 
-`npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-design-ground-truth.sh && bash scripts/audit-un-terminalize-single-path.sh && npm run test:fast:budget && npm run test:integration && RUN_EXPENSIVE_TESTS=1 npm run test:expensive`
+`npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-un-terminalize-single-path.sh && npm run test:fast:budget && npm run test:integration && RUN_EXPENSIVE_TESTS=1 npm run test:expensive`
 
 AND the tree must be clean (`git status` clean, compiled JS matches TS source). No dirty release.
 
@@ -104,13 +104,10 @@ Kill-switches are the literal lowercase `"off"` (any other value / absent = feat
 | Variable | Values | Effect |
 |---|---|---|
 | `PLUMBUS_GENERATIVE_AUDIT` | `off` | Bypasses Override 6 — no analyzer, no `## Generative Findings`; logs `generative_audit: skipped (kill-switch)` to `state.json.activity`. |
-| `PICKLE_SIGF` | `off` / `advisory` | Demotes the R-SIGF signature-caller-gap gate from blocking (`signature_caller_gap`) to advisory (exit 0). Reads `bin/check-readiness.ts` (`findSignatureChangeCallerGapFindings`). |
 | `PICKLE_CODEGRAPH` | `off` | Makes `CodegraphService` inert (returns null, never loads `@colbymchenry/codegraph`) + skips setup-time index (`runCodegraphIndexAtSetup`); else `codegraph.enabled` governs. Reads `services/codegraph-service.ts`, `bin/setup.ts`. |
-| `PICKLE_CITADEL_MECHANICAL` | `off` | Reverts the T40 mechanical-remediation floor in `executeCitadelPhase` to legacy Critical/threshold-only (skips the deterministically-fixable sub-threshold union). Distinct from `skip_quality_gates_reason` (also collapses the floor, but emits `gate_skipped`). Reads `src/bin/pipeline-runner.ts`. |
 | `PICKLE_INSTALL_ROOT` | path (default `$HOME/.claude/pickle-rick`) | Deploy-prefix override for `install.sh` + deploy-lifecycle soak. |
 | `RUN_EXPENSIVE_TESTS` | `1` | Gates `test:expensive` (deploy-lifecycle soak, release-gate full run). Explicit only; not in default `npm test`. |
 | `SOAK_SECONDS` | int ≥1800 (default 1800) | deploy-lifecycle soak duration (`tests/integration/deploy-lifecycle-soak.test.js`). |
 | `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` | int ms ≥60000 (default 600000) | Per-gate-phase cap for `test:fast`/`test:integration` in the worker lint gate (R-WTFT). Below floor clamps up; invalid → default. |
-| `PICKLE_RECOVERY_CONSOLIDATION` | `off` | Reverts the bundle-bootstrap exemption to legacy per-gate dual-write + disables the AC-shape unified-flag fold-in. Reads `backend-spawn.ts`, `mux-runner.ts`, `spawn-morty.ts`, `spawn-refinement-team.ts`. |
 | `PICKLE_EXIT_DRAIN_FALLBACK_MS` | int ms (default 30000) | Fallback drain window for the manager `'exit'` event when the `'close'`-primary stdio drain never fires. Invalid/≤0/fractional → default. Resolver `resolveExitDrainFallbackMs` (`mux-runner.ts`). |
 | `PICKLE_ORPHAN_REAP` | `off` | Makes the R-CXHANG setup-time orphaned-worker-proc reaper inert (no ps scan, no kills); otherwise setup bootstrap reaps worker procs whose owning session is provably dead (positive ownership + min-age required). Reads `src/bin/setup.ts` (`runSetupOrphanReap`) + `src/services/orphan-reaper.ts`. |

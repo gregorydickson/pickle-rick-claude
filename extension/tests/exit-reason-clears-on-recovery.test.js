@@ -76,7 +76,7 @@ test('R-PEDC: clearStaleDoneWithoutCommitEvidence leaves UNRELATED exit_reasons 
     'closer_handoff_terminal',
     'timeout_repeat',
     'state_schema_version_ahead',
-    'ticket_audit_failed',
+    'iteration_cap_exhausted',
   ];
   for (const reason of unrelatedReasons) {
     const root = mkTmp();

@@ -286,34 +286,18 @@ export interface CourseCorrectionRecord {
 export interface StateFlags {
   strict_teams?: boolean;
   /**
-   * Canonical quality-gate bypass reason shared by readiness and ticket-audit
-   * gates. When present, mux-runner reads this before any legacy per-gate flag.
+   * The SINGLE quality-gate bypass reason shared by the readiness and
+   * ticket-audit gates (both advisory post-R-GATE-ADVISORY). When set to a
+   * non-empty trimmed string, mux-runner forwards `--skip-readiness <reason>`
+   * to check-readiness and bypasses the ticket-audit gate on iter 0, emitting
+   * `readiness_skipped` / `ticket_audit_bypassed` activity events for audit.
    */
   skip_quality_gates_reason?: string;
   /**
-   * If set, mux-runner forwards `--skip-readiness <reason>` to check-readiness
-   * on iter 0 of every pickle phase, bypassing the readiness gate. The reason
-   * is recorded as a `readiness_skipped` activity event for audit. Used when a
-   * bundle has already been validated by the refinement team or other
-   * out-of-band review.
-   */
-  skip_readiness_reason?: string;
-  /**
-   * If set, mux-runner bypasses the ticket audit gate (audit-ticket-bundle.js)
-   * on iter 0 and emits a `ticket_audit_bypassed` activity event with this reason.
-   */
-  skip_ticket_audit_reason?: string;
-  /**
-   * Suppresses the once-per-process deprecation warning and
-   * `skip_flag_legacy_used` activity event when a legacy per-gate skip flag is
-   * consumed for back-compat.
-   */
-  skip_quality_gates_deprecation_warning?: boolean;
-  /**
    * If set to a recognized bundle ID (e.g. "2026-05-08-mega"), and the current
    * session hash is in BUNDLE_BOOTSTRAP_ALLOWLIST for that bundle ID, mux-runner
-   * auto-applies both skip_readiness_reason and skip_ticket_audit_reason on iter 0
-   * and emits a `bundle_bootstrap_exemption_applied` activity event.
+   * auto-applies skip_quality_gates_reason on iter 0 and emits a
+   * `bundle_bootstrap_exemption_applied` activity event.
    */
   bundle_bootstrap_mode?: string;
   /**
@@ -679,10 +663,8 @@ export const VALID_ACTIVITY_EVENTS = [
   'tsc_gate_override_used',
   'tsc_gate_override_consumed',
   'tsc_gate_crashed',
-  'skip_flag_legacy_used',
   'codex_unhealthy_consecutive_failures',
   'ticket_audit_bypassed',
-  'ticket_audit_failed',
   'worker_partial_lifecycle_exit',
   'cap_check_skipped_stale_cache',
   'ticket_cache_cleared',

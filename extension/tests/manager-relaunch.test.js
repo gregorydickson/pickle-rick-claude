@@ -8,10 +8,6 @@ import {
   evaluateManagerRelaunch,
   recordManagerRelaunch,
 } from '../services/manager-relaunch.js';
-import {
-  evaluateCodexManagerRelaunch,
-  recordCodexManagerRelaunch,
-} from '../services/codex-manager-relaunch.js';
 import { isGenuineCrashOrSpawnFailure } from '../bin/mux-runner.js';
 import { StateManager } from '../services/state-manager.js';
 import { Defaults } from '../types/index.js';
@@ -77,11 +73,9 @@ function withExtensionRoot(settings, fn) {
   }
 }
 
-test('manager-relaunch exports canonical and legacy symbols', () => {
+test('manager-relaunch exports canonical symbols', () => {
   assert.equal(typeof evaluateManagerRelaunch, 'function');
   assert.equal(typeof recordManagerRelaunch, 'function');
-  assert.equal(evaluateCodexManagerRelaunch, evaluateManagerRelaunch);
-  assert.equal(recordCodexManagerRelaunch, recordManagerRelaunch);
 });
 
 test('manager-relaunch preserves codex behavior below cap', () => {

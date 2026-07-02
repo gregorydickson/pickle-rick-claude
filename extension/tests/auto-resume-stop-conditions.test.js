@@ -198,11 +198,11 @@ describe('auto-resume.stop-conditions', () => {
 
   test('halts on non-pipeline_phase_incomplete exit_reason', () => {
     runFixtureTest((fixture) => {
-      writeMuxRunner(fixture, singleExitReasonRunner('ticket_audit_failed'));
+      writeMuxRunner(fixture, singleExitReasonRunner('circuit_open'));
       const result = runScript(fixture);
       assertCompleted(result);
       assert.ok(
-        result.stderr.includes("exit_reason='ticket_audit_failed'"),
+        result.stderr.includes("exit_reason='circuit_open'"),
         `expected stop on non-incomplete reason\n${formatResultDiagnostics(result)}`,
       );
     });
