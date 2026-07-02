@@ -4,7 +4,7 @@
 tickets — see §0), session `2026-06-27-a1dd8e8d`. Build ran pickle→citadel→anatomy-park hands-off.
 **Outcome:** the build was **reverted** (no ship); main returned to `e107fab2` (beta.24). The B-PXBO
 *design* (phase-exit reads the `readEvidence` oracle) is sound and preserved in
-`prds/p2-bug-fix-bundle-b-pxbo-phase-exit-boundary-oracle-2026-06-26.md`; the codex *execution* was
+`prds/archive/bundles/p2-bug-fix-bundle-b-pxbo-phase-exit-boundary-oracle-2026-06-26.md`; the codex *execution* was
 broadly unreliable. These two findings are the soak's deliverable.
 
 ## Finding A (P1, HEADLINE) — codex worker quality gate not enforced

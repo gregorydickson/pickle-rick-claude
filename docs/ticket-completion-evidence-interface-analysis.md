@@ -5,6 +5,8 @@
 **Date:** 2026-05-28  
 **Module:** `extension/src/services/ticket-completion-evidence.ts`
 
+> **STALE-FLAG NOTE (2026-07-02):** this is a dated analysis snapshot. The `allow_inferred_completion_commit` flag (and the `allowInferred` gate option) it references was DELETED from source by B-DURA T60 (beta.23); inferred-completion acceptance is not a flag surface. Its absence in `src/` is pinned by `extension/scripts/check-no-inferred-completion-flag.sh` and `extension/tests/allow-inferred-completion-commit-deleted.test.js`. Code excerpts below describe the pre-deletion source.
+
 ---
 
 ## Context

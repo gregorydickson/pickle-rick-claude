@@ -206,7 +206,7 @@ Linux-CI-only, not locally verifiable); **#25 R-CSI** (P1 — external-event-gat
 
 **▶ R-MWBG runtime-half rebuild (when scoped):** REVERTED at the beta.30 closer (`0cbc49c1` → reverted; session
 `2026-06-29-e7f5b7e1`). The full closer gate caught a deterministic 9-test `mux-runner.test.js` regression. DEEP
-ROOT CAUSE (verified, full detail in `prds/p1-bug-fix-bundle-b-mwbg-runtime-detached-tier-gate-2026-06-29.md`
+ROOT CAUSE (verified, full detail in `prds/archive/bundles/p1-bug-fix-bundle-b-mwbg-runtime-detached-tier-gate-2026-06-29.md`
 `## Rebuild Notes`): `sessionRunnerBudget` hardcodes `tier:'medium'` + the session timeout (1200) for the
 no-ticket/prd/breakdown case, and a ticket with no explicit `complexity_tier` also defaults to medium (3600s) —
 so gating on ANY timeout field OR `current_ticket_tier ∈ {medium,large}` fires during the prd phase AND for every
@@ -303,6 +303,7 @@ load-flake] + expensive 0-fail).
 | Version (source = deployed) | **v2.0.0-beta.36** — B-SIGFH scope-fence detector hardening (WS-1 deadline `1d095e06`/`7f3a5b66` · WS-2 bridge export forms `87e8188a` · WS-3 corpus-widen + cache-thread `b9513e45` · bump `103af4be`); pushed + GitHub-released + **✅ DEPLOYED via install.sh 2026-07-02** (MD5 parity OK on all 5 hot files; deferred one day behind the concurrent LOA-1570 session `6b10b3f7`, now cleared). Full local gate green (tsc+eslint+13 audits+fast-c4 6671/6674+integration [known lockdown flake isolation-green]+expensive). Prior: beta.35 B-WSPU (deployed) · beta.34 B-SSVR · beta.33 gate-overreach subtraction. |
 | Latest GitHub release | **v2.0.0-beta.35** (B-WSPU dual-spawn collapse; prerelease). Prior: beta.34 B-SSVR · beta.33 gate-overreach subtraction · beta.32 R-LTDM · beta.31 R-MWBG runtime half · beta.30 B-RELHYG · beta.29 R-SIGF. |
 | Test-hygiene follow-ups | ✅ **BOTH SHIPPED beta.30 (B-RELHYG).** (1) hardcoded-date fixture time-bombs — audited all 35 fixtures, **zero genuine wall-clock time-bombs** (only beta6-ga-session-resume ever qualified, already fixed); durable audit record `84464f6f`. (2) R-OMTD afterEach subprocess reap `b9bccd1a`. |
+| Subsystem CLAUDE.md audit | ✅ OK (2026-05-23, `93fd5690`) — `extension/src/bin/CLAUDE.md` + `extension/src/services/CLAUDE.md` each carry a module export catalog bringing subsystem audit coverage above the script threshold. |
 | Codex backend | `gpt-5.4` |
 | Gate posture | Ship on the **local** gate (tsc + eslint + audits + fast-c4 + integration + expensive). **CI-green = hygiene, never a release gate.** |
 
@@ -406,7 +407,7 @@ repeatability holds on BOTH backends with no new completion-class seam.
 
 > **Consolidating bundle authored (2026-06-26):** [[R-DPGT]] + [[R-DOTR]] + [[R-CRSR]] (Facets A+B) + the LOA-1588
 > foreign-hash sub-finding are one wound — the **pickle phase-exit / per-ticket-budget boundary does not read the
-> single `readEvidence` oracle.** PRD: `p2-bug-fix-bundle-b-pxbo-phase-exit-boundary-oracle-2026-06-26.md`
+> single `readEvidence` oracle.** PRD: `archive/bundles/p2-bug-fix-bundle-b-pxbo-phase-exit-boundary-oracle-2026-06-26.md`
 > (**B-PXBO**, reuse-first, no new oracle/state). ⚠️ **SELF-MODIFYING-RECOVERY (R-PSRB)** — hand-build the
 > mux-runner/completion-evidence tickets; cannot run a clean autonomous pipeline. **R-SIGF stays a separate
 > parallel track** (scope-fence auto-extension — different subsystem, the other codex GA blocker).
