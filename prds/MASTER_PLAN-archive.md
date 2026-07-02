@@ -7,6 +7,140 @@ Live `MASTER_PLAN.md` keeps only operational state. Browse here for full forensi
 
 ---
 
+## Swept 2026-07-02 — post-beta.37 hygiene (stale strata removed from the live file)
+
+Removed from `MASTER_PLAN.md` on 2026-07-02 because they contradicted the current top-of-file state
+(beta.37): they name R-SIGF / R-DPGT / R-DOTR as the open GA gap (all shipped, beta.25/beta.29), call
+the codex soak "0-for-3, NOT re-run post-fix" (the AC-DURA-4 proof ran 2026-06-24), carry the
+OBSERVATION posture superseded 2026-06-30, and describe an R-MWBG detached-path rebuild mooted by the
+B-WSPU beta.35 lifecycle deletion. Preserved verbatim below.
+
+### Reliability scorecard (as of beta.24 — STALE: R-SIGF shipped beta.29; R-DPGT/R-DOTR shipped beta.25 B-PXBO)
+
+**Reliability scorecard.** Code/mechanism ✅ — the most-fixed it has ever been. claude field-soak 🟢 — **2 clean
+hands-off runs, now incl. a live MULTI-TICKET ADDITIVE bundle** (B-RPGT: 5 tickets, 4/4 phases, 178m, ZERO
+mid-run intervention, the 529-abort bug never fired, anatomy-park self-hardened the new code) — the exact run
+the soak required. codex field-soak 🟡 — **the AC-DURA-4 field-proof RAN (LOA-1363 run 4, beta.24, 2026-06-24):
+completion-evidence facets PROVEN on codex — R-CECX + R-PFNT facets 1+2 HELD (14/14 durable, 0×
+`oversized_no_progress`, single oracle).** But that run finished **0/2 phases (citadel skipped)** — blocked NOT
+by the fixed facets but by [[R-SIGF]] (2nd independent repro) cascading into a NEW detached-phase-gate seam
+[[R-DPGT]] + completion-*correctness* gap [[R-DOTR]] (a `no_progress_timeout` ticket flipped `Done` over
+non-compiling committed code — the inverse of the R-CECX fix). So on codex: *completion-evidence* soak ✅ /
+*completion-correctness* 🔴 / *phase-completion* soak 🔴. The reliability *code* (oracle/label/durability) is
+proven on claude AND now on codex; the remaining GA gap is R-SIGF + R-DPGT + R-DOTR, not the completion oracle.
+
+### Codex AC-DURA-4 field-proof GA re-pointing (STALE — all three named blockers since shipped)
+
+**The codex AC-DURA-4 field-proof RAN (LOA-1363 run 4, beta.24, 2026-06-24)** — it converts the
+completion-evidence classes (R-CECX, R-PFNT facets 1+2) to **codex-proven ✅** and re-points the GA blocker:
+the highest-value next step is now **[[R-SIGF]] full scope-auto-extension (must cover schema-shape consumers,
+not just signature/type callers)** + the new **[[R-DPGT]] detached-phase-gate grace** + **[[R-DOTR]] Done-flip
+green gate on the timeout path** — together they own the residual `0/N phases → downstream skipped` AND
+`Done-over-red`. See
+`BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md`.
+
+### R-MWBG runtime-half rebuild notes (MOOT — B-WSPU beta.35 deleted the detached lifecycle outright; nothing left to rebuild)
+
+**▶ R-MWBG runtime-half rebuild (when scoped):** REVERTED at the beta.30 closer (`0cbc49c1` → reverted; session
+`2026-06-29-e7f5b7e1`). The full closer gate caught a deterministic 9-test `mux-runner.test.js` regression. DEEP
+ROOT CAUSE (verified, full detail in `prds/archive/bundles/p1-bug-fix-bundle-b-mwbg-runtime-detached-tier-gate-2026-06-29.md`
+`## Rebuild Notes`): `sessionRunnerBudget` hardcodes `tier:'medium'` + the session timeout (1200) for the
+no-ticket/prd/breakdown case, and a ticket with no explicit `complexity_tier` also defaults to medium (3600s) —
+so gating on ANY timeout field OR `current_ticket_tier ∈ {medium,large}` fires during the prd phase AND for every
+default-tier ticket, routing them through the detached/`routeLargeTierTicket` path which BYPASSES the
+`runIteration` invariants. The old `=== 'large'` gate dodged it because the fallback/default tier is `medium`,
+never `large`; the detached lifecycle (built for LARGE) does NOT preserve those invariants for medium. Rebuild is
+bigger than a gate swap (make the detached path preserve runIteration invariants for medium, OR gate only on an
+active ticket's EXPLICIT frontmatter tier + verified detached-path correctness). half-1 (manager foreground-spawn,
+beta.29) already removed the ORIGINAL death, so this is lower marginal value.
+
+### Operating mode: OBSERVATION (2026-06-24 — SUPERSEDED 2026-06-30 by the subtraction strategy)
+
+**⏱️ Operating mode (2026-06-24): OBSERVATION.** The known reliability defect classes are code-fixed and the
+drain queue is short. We are now **running Pickle Rick live for a few days to collect field data** on the two
+goals (reliability + autonomous development) rather than draining the remaining deferred/external-gated work.
+Per the loop-failure directive: **log every real incident as a bug-PRD in `prds/` + a drain row** — those
+become the next evidence-backed work. The codex AC-DURA-4 field-proof is the one high-value run that can be
+done during this window; everything else open is deferred-by-design or external-gated.
+
+### GA path, evidence-first (STALE — the codex AC-DURA-4 proof RAN 2026-06-24; the live GA bar is in RESUME HERE)
+
+**GA path (evidence-first).** GA gate = honesty ✅ + stability-surface ✅ + completion-bugs-**code-fixed** ✅
+(B-PCOMP beta.22 + **B-DURA beta.23**, the cluster root) + review-phase-gate-gaps-**code-fixed** ✅
+(**B-RPGT beta.24**, the independent 0/4 cause) + **field-soak repeatability 🔴 on codex (0-for-3, NOT re-run
+post-fix)** / 🟢 on claude (**2 of ~3–5, now incl. a live multi-ticket additive run**). The *code* is the
+most-fixed it has ever been and is now **proven on claude**; the only missing evidence is the **codex
+field-proof**. Remaining GA work: **(a) run the codex AC-DURA-4 proof** — the decisive data point (was 0/4 on
+codex pre-fix); **(b) 1–2 more claude reps at low intervention** to firm up repeatability; ~~(c) close the
+review-phase gate gaps~~ ✅ done (B-RPGT). Run bundles via `/pickle-pipeline --scope branch` (an unscoped
+1-event bundle made anatomy/szechuan review the whole tree for 84m). Drop `-beta` once repeatability holds on
+BOTH backends with no new completion-class seam.
+
+### Governing strategy: Reliability Plan — beta.23 build/deploy narrative + REMAINING list (all four items shipped) + GA field-soak proof ledger
+
+## ▶ Governing strategy (2026-06-23): Reliability Plan
+
+**`prds/RELIABILITY-PLAN-2026-06-23.md`** is now the governing strategy (Codex-adversarial-reviewed;
+verdict *ship with changes*, folded in). It reframes the drain queue from bug-by-bug to **5 structural
+meta-defects** (completion-oracle plurality · scope-fence under/over-extend · recovery sprawl ·
+guards-on-guards · self-build trap). Sequencing status (all buildable-now work **BUILT + verified on `main` `f547b22f`**, deploy held for soaks):
+**(1) B-DURA core** ✅ MERGED (T10–T50: durable boundary commit + 7-site Done-flip gate + one readEvidence
+oracle + Failed-terminal phase-advance + no-premature-drain). **(3) Subtraction cluster** ✅ BUILT — T60
+`05650df1` (delete `allow_inferred_completion_commit`), T70 `71996fe8` (collapse `EvidenceKind` 4→2, delete
+shim + dead variant, narrow Pass-1 grep), R-REIN `3c48d7ae` (recovery-budget refund on reset). **(4) WS-2
+run-blockers** ✅ BUILT — refine fence `5ad07e3c`, oversized split `b60a112e`, toolchain fail-fast `7b69f22a`,
+R-SIGF advisory flag `a668687f`. **(5) WS-5** ✅ BUILT — advisory subtract-before-add audit `9164f14d`
+(`audit-subtract-before-add.sh`). Full post-merge gate green (tsc/eslint/audits/20 new WS tests/201 mux).
+**DEPLOYED + RELEASED 2026-06-23** ✅ — `install.sh` deployed the whole stack (deployed JS verified: boundary
+committer + R-REIN + toolchain-fail-fast + oversized-split + subtract-before-add audit); bumped to
+**`2.0.0-beta.23`** and published the GitHub **prerelease** (`b8b70b2e`; `eabf3d1d` ledger). Release-gate
+note: tsc/eslint/10 audits + all changed-file tests + the load-bearing completion-commit characterization
+suite (R-AFCC-DEEP invariant, 35/35) green **in isolation**; the full `test:fast`/integration suites carry
+known subprocess-timing **load-flakes** (R-TFP/R-TSPF class) — proven isolation-green, none in changed files,
+exacerbated by a 7-hr session's leftover machine load (65 leaked R-OMTD test subprocesses, since reaped).
+**REMAINING (next-context priorities, in order):**
+1. ~~**Codex AC-DURA-4 field-proof**~~ — ✅ **RAN 2026-06-24 (LOA-1363 run 4, beta.24).** Completion-evidence
+   class PROVEN on codex (R-CECX + R-PFNT 1+2 held, 14/14 durable); but **phase-completion FAILED 0/2 (citadel
+   skipped)** via [[R-SIGF]] → [[R-DPGT]]. GA-on-codex now gated on those two, NOT the completion oracle. Next
+   codex rep should land AFTER R-SIGF schema-shape auto-extension + R-DPGT detached grace ship.
+2. ~~**Review-phase gate gaps** (R-CECX run-3 follow-up #2, facets 4–6)~~ — ✅ **SHIPPED B-RPGT v2.0.0-beta.24**
+   (R-RPGT review-phase hard typecheck gate on abort + R-APXG-3 cap; R-S529 529→transient park-and-retry). See drain row.
+3. **▶ B-PXBO (NEXT — authored 2026-06-26, `4437395a`)** — phase-exit boundary reads the `readEvidence` oracle:
+   closes [[R-DPGT]] + [[R-DOTR]] + [[R-CRSR]] + LOA-1588 foreign-hash. Reuse-first, no new oracle/state.
+   **R-PSRB self-modifying-recovery → hand-build.** See the RESUME HERE block at the top.
+4. **R-SIGF full scope-auto-extension** (only the advisory flag shipped) + the wide oracle characterization net.
+   Separate parallel track from B-PXBO (scope-fence subsystem, not the phase-exit oracle).
+   *(Note: anatomy-park found+fixed a real HIGH in B-RPGT's own new park code (`946cd0b1`) — review phases now self-harden.)*
+**Primary metric:** hands-off soak truthfulness + manual-intervention rate (trap-door count secondary).
+**Self-build (old WS-4): cut** — freeze autonomous self-build for recovery bundles, formalize the hand-build
+protocol; revisit post-GA only if hand-build is the bottleneck.
+
+### GA field-soak (the metric for the above)
+
+**The GA-readiness soak** (drop `-beta`) is the reliability metric. Run **~3–5 representative bundles**
+hands-off via `/pickle-pipeline`, INCLUDING **≥1 live multi-ticket additive bundle** (R-WSDO was
+single-ticket). Use `--scope branch` for small bundles (an unscoped 1-event bundle made anatomy/szechuan
+review the whole tree for 84m). *Record* every intervention point (don't rescue unless data at risk) →
+ranked intervention-rate report = the GA-readiness ledger. **Soak ledger: 2 clean on claude — (1) R-WSDO
+(single-ticket, 4/4 hands-off, beta.22) + (2) ✅ B-RPGT (2026-06-23, claude, MULTI-TICKET ADDITIVE: 5 tickets
+→ pickle/citadel/anatomy-park/szechuan-sauce, 4/4 hands-off in 178m, ZERO mid-run intervention — the first
+live multi-ticket additive clean run the soak required; the 529-abort bug never fired, anatomy-park even
+found+fixed a real HIGH in the new code; only closer work was pre-existing gate-parity debt + 2 oversized
+trap-door trims, no recovery-class seam). codex multi-ticket still 0-for-3 (NOT re-run post-B-DURA).** —
+LOA-1363 run 1 → [[R-CECX]]
+(no-commit + cross-iteration corruption); LOA-1363 run 2 → [[R-PFNT]] (evidence-oracle disagreement +
+`Failed` non-terminal masks a GREEN build: 12 commits / 978 tests 0-fail); LOA-1488 run 3 → R-CECX run-3
+(build 12/17 durable, 11 correctly attributed; one untagged commit + premature drain at iter 49/500) +
+run-3 follow-up #2 (review-phase tsc/lint-RED commits + transient-529 szechuan abort). **LOA-1363 run 4
+(2026-06-24, beta.24) IS the codex re-run on the fixed runtime** → [[R-DPGT]]: R-CECX + R-PFNT facets 1+2 ✅
+PROVEN HELD (14/14 durable, 0× `oversized_no_progress`, single oracle), but it finished **0/2 phases (citadel
+skipped)** via [[R-SIGF]] 2nd-repro (out-of-fence schema-shape RED) cascading into a NEW detached-phase-gate
+seam — so the *completion-evidence* soak passes on codex while the *phase-completion* soak does not. Net: the
+completion-class is now codex-proven; phase-completion is blocked on R-SIGF + R-DPGT. Drop `-beta` when
+repeatability holds on BOTH backends with no new completion-class seam.
+
+---
+
 ## Closed Open Findings (full text)
 
 These findings were CLOSED before 2026-05-09 and were occupying ~10K bytes in the live file as struck-through entries. Full original text preserved below in case the closing rationale needs to be re-read.

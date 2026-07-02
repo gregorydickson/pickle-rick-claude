@@ -6,7 +6,7 @@ on purpose. Shipped-release detail and closed-finding forensics live in
 [`MASTER_PLAN-archive.md`](MASTER_PLAN-archive.md) + `git log`; the full finding catalog is in
 [`BUG-INDEX.md`](BUG-INDEX.md).
 
-**Updated 2026-07-02 (v2).** ✅ **THE SIMPLIFICATION DROP SHIPPED — v2.0.0-beta.37 RELEASED + DEPLOYED 2026-07-02 (install.sh, MD5 parity OK on all hot files; gate: tsc/eslint/9-audits/fast-c4/expensive green, budget-c8 + 4 integration reds proven isolation-green load-flakes per posture).** One ultracode session executed `SIMPLIFICATION-AND-FIX-PLAN-2026-07-02.md` end-to-end: **B-1SEAM all 3 WS** (`7b52789d` WS-1 ONE completion predicate `evaluateCompletionEvidence` routing ALL 8 former divergent decision sites [not 3 oracles — 7 sites/3 policy shapes + the bare-field `defaultDoneGuard`] + spawn-morty verified-sha/`Pickle-Ticket`-trailer reconciliation killing the codex untagged/hallucinated-sha trigger at the source; `2bbf5770` WS-2 `healPipelineRequiredFields` symmetric prd_path+start_commit self-heal; WS-3 in `885efb73` — ONE dirty-tree salvage seam, `stageAutoCommitPaths` empty-excludes sweep deleted) + **R-CXHANG orphan reaper + B-RSHM subtraction** (`885efb73`: stop-hook dead branches + whole chain_meeseeks subsystem retired) + **the guard-layer prune** (`2957f0c2`: 4 orphan audits + 2 advisory audits DELETED, design-ground-truth demoted [canonical gate now 9 audits], ONE quality-gate bypass surface, legacy kill-switches PICKLE_CITADEL_MECHANICAL/PICKLE_RECOVERY_CONSOLIDATION removed, codex-manager-relaunch shim collapsed). R-AICF/R-PSCG/R-MACB/R-CXHANG all closed; net ~−3,650 LOC. Shipped + deployed + released through **v2.0.0-beta.36** (✅ **B-SIGFH** scope-fence detector hardening — codex GA soak, DEPLOYED 2026-07-02; prior **B-WSPU — the DUAL WORKER-SPAWN MODEL COLLAPSED**: the entire detached lifecycle DELETED (~1000+ LOC pure subtraction), all tiers now run one synchronous re-spawn-resume path; the operator-flagged #1 structural subtraction, DONE + DEPLOYED 2026-07-01 — the R-LTDM/R-WPEX/R-MWBG failure-mode class is gone. Field evidence FOR the collapse: a detached worker silent-died building its own deletion while the synchronous path built it clean). beta.34 ✅ **B-SSVR** (R-SSBR scope-resolver fail-CLOSED + R-ISVP install.sh prerelease semver, both DEPLOYED). beta.33 (✅ **gate-overreach subtraction** — Phase 1 made the iteration-0 readiness + ticket-audit gates ADVISORY, Phase 2 DELETED the forward-ref annotation grammar, the top recurring bug source [R-RTRC ×8 + R-FRA ×7]; ~35 files of pure subtraction, KEPT resolution fixes R-RTRC-3/4/5 / R-RHFP / R-RCEX / R-RTPS; commit `9a5c047e`). beta.32 ✅ **[[R-LTDM]]** detached-poll throttle (R-MWBG RE-CLOSED). Operator flagged the underlying brittleness — the dual worker-spawn model — logged as **[[B-WSPU]]** and now ✅ SHIPPED+DEPLOYED beta.35 — the real subtraction, done. (R-MWBG runtime half:
+**Updated 2026-07-02 (v3 — hygiene sweep: stale/contradicting strata → archive).** ✅ **THE SIMPLIFICATION DROP SHIPPED — v2.0.0-beta.37 RELEASED + DEPLOYED 2026-07-02 (install.sh, MD5 parity OK on all hot files; gate: tsc/eslint/9-audits/fast-c4/expensive green, budget-c8 + 4 integration reds proven isolation-green load-flakes per posture).** One ultracode session executed `SIMPLIFICATION-AND-FIX-PLAN-2026-07-02.md` end-to-end: **B-1SEAM all 3 WS** (`7b52789d` WS-1 ONE completion predicate `evaluateCompletionEvidence` routing ALL 8 former divergent decision sites [not 3 oracles — 7 sites/3 policy shapes + the bare-field `defaultDoneGuard`] + spawn-morty verified-sha/`Pickle-Ticket`-trailer reconciliation killing the codex untagged/hallucinated-sha trigger at the source; `2bbf5770` WS-2 `healPipelineRequiredFields` symmetric prd_path+start_commit self-heal; WS-3 in `885efb73` — ONE dirty-tree salvage seam, `stageAutoCommitPaths` empty-excludes sweep deleted) + **R-CXHANG orphan reaper + B-RSHM subtraction** (`885efb73`: stop-hook dead branches + whole chain_meeseeks subsystem retired) + **the guard-layer prune** (`2957f0c2`: 4 orphan audits + 2 advisory audits DELETED, design-ground-truth demoted [canonical gate now 9 audits], ONE quality-gate bypass surface, legacy kill-switches PICKLE_CITADEL_MECHANICAL/PICKLE_RECOVERY_CONSOLIDATION removed, codex-manager-relaunch shim collapsed). R-AICF/R-PSCG/R-MACB/R-CXHANG all closed; net ~−3,650 LOC. Shipped + deployed + released through **v2.0.0-beta.36** (✅ **B-SIGFH** scope-fence detector hardening — codex GA soak, DEPLOYED 2026-07-02; prior **B-WSPU — the DUAL WORKER-SPAWN MODEL COLLAPSED**: the entire detached lifecycle DELETED (~1000+ LOC pure subtraction), all tiers now run one synchronous re-spawn-resume path; the operator-flagged #1 structural subtraction, DONE + DEPLOYED 2026-07-01 — the R-LTDM/R-WPEX/R-MWBG failure-mode class is gone. Field evidence FOR the collapse: a detached worker silent-died building its own deletion while the synchronous path built it clean). beta.34 ✅ **B-SSVR** (R-SSBR scope-resolver fail-CLOSED + R-ISVP install.sh prerelease semver, both DEPLOYED). beta.33 (✅ **gate-overreach subtraction** — Phase 1 made the iteration-0 readiness + ticket-audit gates ADVISORY, Phase 2 DELETED the forward-ref annotation grammar, the top recurring bug source [R-RTRC ×8 + R-FRA ×7]; ~35 files of pure subtraction, KEPT resolution fixes R-RTRC-3/4/5 / R-RHFP / R-RCEX / R-RTPS; commit `9a5c047e`). beta.32 ✅ **[[R-LTDM]]** detached-poll throttle (R-MWBG RE-CLOSED). Operator flagged the underlying brittleness — the dual worker-spawn model — logged as **[[B-WSPU]]** and now ✅ SHIPPED+DEPLOYED beta.35 — the real subtraction, done. (R-MWBG runtime half:
 explicit-tier detached-routing gate — R-MWBG now FULLY closed; beta.30 B-RELHYG; beta.29 R-SIGF scope-fence +
 R-MWBG half-1; beta.28 R-WPEX; beta.27 B-APNC; beta.26 B-CWGE; beta.25 B-PXBO). **The historical reliability
 defect classes are code-fixed at root** — the completion-commit/Done-flip cluster (B-PCOMP beta.22 + B-DURA
@@ -19,18 +19,6 @@ LOA-1614 pipeline)** and **[[R-ISVP]] (P3, install.sh `compare_semver` rejects p
 for the `beta.*` line)**. Both R-SSBR and R-ISVP ✅ SHIPPED+DEPLOYED beta.34, and the detached-spawn brittleness they exposed is now SUBTRACTED (B-WSPU beta.35). GA gate
 remains field-soak repeatability (esp. codex) — now on the simpler single-lifecycle runtime. See `## ⏯ RESUME HERE`.
 
-**Reliability scorecard.** Code/mechanism ✅ — the most-fixed it has ever been. claude field-soak 🟢 — **2 clean
-hands-off runs, now incl. a live MULTI-TICKET ADDITIVE bundle** (B-RPGT: 5 tickets, 4/4 phases, 178m, ZERO
-mid-run intervention, the 529-abort bug never fired, anatomy-park self-hardened the new code) — the exact run
-the soak required. codex field-soak 🟡 — **the AC-DURA-4 field-proof RAN (LOA-1363 run 4, beta.24, 2026-06-24):
-completion-evidence facets PROVEN on codex — R-CECX + R-PFNT facets 1+2 HELD (14/14 durable, 0×
-`oversized_no_progress`, single oracle).** But that run finished **0/2 phases (citadel skipped)** — blocked NOT
-by the fixed facets but by [[R-SIGF]] (2nd independent repro) cascading into a NEW detached-phase-gate seam
-[[R-DPGT]] + completion-*correctness* gap [[R-DOTR]] (a `no_progress_timeout` ticket flipped `Done` over
-non-compiling committed code — the inverse of the R-CECX fix). So on codex: *completion-evidence* soak ✅ /
-*completion-correctness* 🔴 / *phase-completion* soak 🔴. The reliability *code* (oracle/label/durability) is
-proven on claude AND now on codex; the remaining GA gap is R-SIGF + R-DPGT + R-DOTR, not the completion oracle.
-
 **Autonomous-development scorecard.** The build→citadel→anatomy-park→szechuan-sauce pipeline now runs a real
 multi-ticket additive bundle **fully hands-off on claude** (B-RPGT). Remaining autonomy gaps, in order of bite:
 (a) the **closer** (version bump · `install.sh` deploy · `gh release`) is NOT auto-run by `pipeline-runner` —
@@ -38,14 +26,6 @@ it finishes 4/4 then stops, so a babysitter still ships; (b) **recovery-machiner
 (R-PSRB) — must hand-build; (c) per-phase gates don't run the FULL release gate, so debt surfaces at the
 closer (B-RPGT's closer caught pre-existing gate-parity drift + 2 over-limit trap-door entries the review
 phases added — tsc/eslint-clean but tripping AC-BUNDLE-17).
-
-**The codex AC-DURA-4 field-proof RAN (LOA-1363 run 4, beta.24, 2026-06-24)** — it converts the
-completion-evidence classes (R-CECX, R-PFNT facets 1+2) to **codex-proven ✅** and re-points the GA blocker:
-the highest-value next step is now **[[R-SIGF]] full scope-auto-extension (must cover schema-shape consumers,
-not just signature/type callers)** + the new **[[R-DPGT]] detached-phase-gate grace** + **[[R-DOTR]] Done-flip
-green gate on the timeout path** — together they own the residual `0/N phases → downstream skipped` AND
-`Done-over-red`. See
-`BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md`.
 
 ## ▶▶ NEXT FIX RUN (2026-07-02) — B-1SEAM: collapse the asymmetric-fix siblings [✅ BUILT 2026-07-02 — `7b52789d`/`2bbf5770`/`885efb73`; retained as the design record]
 
@@ -137,13 +117,13 @@ its bug AND collapses a sibling-seam — reliability + simplification in the sam
   - **A delegated `fork` came back role-confused** (inherited my context, returned a meta-summary of the overall task instead of doing the 9 test-trims). Verified via `git status` it had done nothing useful; did the trims myself. **Don't trust a fork's self-report — diff the filesystem.**
   - **Phase 1 left two obsolete tests red** (`mux-runner-halt-error-format.test.js` asserting the removed halt-with-skip-flag behavior) — only surfaced at the full fast-tier gate. Deleted them; advisory behavior is covered by `mux-runner.test.js audit-bundle-advisory`. The c=8 `test:fast:budget` WEDGED (0% CPU whole-suite load-flake) — re-ran at c=4 for the authoritative 6648/0; integration's lone fail was the known isolation-green lockdown-downgrade flake.
 
-**Other open (post-subtraction) — ⚠ 2026-07-02 NOTE: the three "NEW capture-only" findings below (R-PSCG / R-AICF / R-MACB) are now ✅ CLOSED in beta.37 (B-1SEAM); the paragraph is retained as the capture record, and R-AICF's flag attribution was later disproven (flag deleted beta.23 — see the premise correction above).** R-LTDM ✅ shipped beta.32 (detached-poll throttle). [[B-WSPU]] dual-spawn-model collapse — DEFERRED (operator keeps the structure). Detached-worker-dies-at-~10min (the SECOND B-SSVR failure, distinct from R-LTDM) — uninvestigated, deferred. **B-SSVR** (R-SSBR + R-ISVP) PRD+2 tickets READY on main, session `2026-06-30-38285dba`, hand-build or pipeline-build once stable. **NEW [[R-PSCG]] (P2, capture-only, 2026-07-02)** — paused-PRD → `/pickle-pipeline` resume leaves `state.start_commit` unset → **citadel hard-fails, pipeline stops 1/4** (built 11/11 tickets clean first). The **exact mirror of the shipped [[R-PRPATH]]**: that fix self-heals a missing `prd_path` but NOT the sibling `start_commit`; origin is `setup.js` computing `start_commit` only for a git-repo cwd (the `loanlight/` root is not one) and `--resume` never recomputing it. Fix = symmetric self-heal + recompute-on-resume (`BUG-REPORT-2026-07-02-pipeline-resume-start-commit-gap-citadel-hardfail.md`). Surfaced babysitting LOA-1356. **NEW [[R-AICF]] (P1, capture-only, 2026-07-02)** — codex bundle stranded **0/4 phases (4/16 tickets committed, clean)** by a live **3-oracle disagreement**: `allow_inferred_completion_commit=true` is honored by `done-guard` (accepts) but NOT by the `phantom-Done watcher` (reverts to Todo) nor `readEvidence()` (FATAL) — the latter two git-log-scan for the `(<hash>)` tag and ignore both the frontmatter `completion_commit` sha AND the flag. Trigger = a codex worker committed real in-scope work WITHOUT the hash tag (~1-in-4 empirically; 3/4 tagged). **Corroborates + reopens [[R-CCC]]** (marked fixed 2026-05-05 — did NOT survive codex + inferred-flag) **and [[B-PDBL]]**. Salvage-path fix = **R-PSRB hand-build** (touches `ticket-completion-evidence.ts` / `reconcile-ticket-truth.ts` / phantom-Done watcher — unify all three oracles behind one predicate). Surfaced babysitting LOA-1078 (`BUG-REPORT-2026-07-02-codex-inferred-commit-flag-unhonored-3oracle-disagreement.md`). **NEW [[R-MACB]] (P2, capture-only, 2026-07-02)** — the microverse **worker-timeout auto-rescue** (`autoRescueDirtyTree` → `stageAutoCommitPaths(ctx.workingDir)` at `microverse-runner.ts:~3628`) is called with **empty `excludePrefixes`**, so it `git add -u` + stages **every** untracked `?? ` path with no docs/prds exclude and no attribution check — sweeping a **foreign** session's pre-existing untracked `docs/prd-statement-analyzer-*.md` (LOA-1365 WIP) onto the LOA-1570 feature branch under `microverse: auto-commit (worker timed out before committing)` (`6272304fc`). **Violates the module's own documented invariant** ("auto-commit rescue … honoring docs/prds exclusions") — the pre-flight call site (`:2947`) passes `PREFLIGHT_DIRT_EXCLUDES`, the rescue site passes none. **Exact microverse-side twin of the already-fixed [[B-PCOMP]] `#b736337f` bystander-stash** (mux-runner exit path stages only positively-owned paths + `stashUnattributableRemainder`) — never ported to the microverse rescue path; adjacent to R-APWS/R-APXG. Fix = port the bystander pattern (owned-paths-only + stash remainder) or minimally pass the docs/prds excludes; ENFORCE pins the `:3628` call site to a non-empty exclude/owned arg. Surfaced babysitting LOA-1570 First Colony Phase 2/3 (`BUG-REPORT-2026-07-02-microverse-autorescue-bystander-untracked-sweep.md`). The drain-queue / OBSERVATION posture below is SUPERSEDED by this subtraction strategy.
+**Other open (post-subtraction) — ⚠ 2026-07-02 NOTE: the three "NEW capture-only" findings below (R-PSCG / R-AICF / R-MACB) are now ✅ CLOSED in beta.37 (B-1SEAM); the paragraph is retained as the capture record, and R-AICF's flag attribution was later disproven (flag deleted beta.23 — see the premise correction above).** R-LTDM ✅ shipped beta.32 (detached-poll throttle). [[B-WSPU]] dual-spawn-model collapse — DEFERRED (operator keeps the structure). Detached-worker-dies-at-~10min (the SECOND B-SSVR failure, distinct from R-LTDM) — uninvestigated, deferred. **B-SSVR** (R-SSBR + R-ISVP) PRD+2 tickets READY on main, session `2026-06-30-38285dba`, hand-build or pipeline-build once stable. **NEW [[R-PSCG]] (P2, capture-only, 2026-07-02)** — paused-PRD → `/pickle-pipeline` resume leaves `state.start_commit` unset → **citadel hard-fails, pipeline stops 1/4** (built 11/11 tickets clean first). The **exact mirror of the shipped [[R-PRPATH]]**: that fix self-heals a missing `prd_path` but NOT the sibling `start_commit`; origin is `setup.js` computing `start_commit` only for a git-repo cwd (the `loanlight/` root is not one) and `--resume` never recomputing it. Fix = symmetric self-heal + recompute-on-resume (`BUG-REPORT-2026-07-02-pipeline-resume-start-commit-gap-citadel-hardfail.md`). Surfaced babysitting LOA-1356. **NEW [[R-AICF]] (P1, capture-only, 2026-07-02)** — codex bundle stranded **0/4 phases (4/16 tickets committed, clean)** by a live **3-oracle disagreement**: `allow_inferred_completion_commit=true` is honored by `done-guard` (accepts) but NOT by the `phantom-Done watcher` (reverts to Todo) nor `readEvidence()` (FATAL) — the latter two git-log-scan for the `(<hash>)` tag and ignore both the frontmatter `completion_commit` sha AND the flag. Trigger = a codex worker committed real in-scope work WITHOUT the hash tag (~1-in-4 empirically; 3/4 tagged). **Corroborates + reopens [[R-CCC]]** (marked fixed 2026-05-05 — did NOT survive codex + inferred-flag) **and [[B-PDBL]]**. Salvage-path fix = **R-PSRB hand-build** (touches `ticket-completion-evidence.ts` / `reconcile-ticket-truth.ts` / phantom-Done watcher — unify all three oracles behind one predicate). Surfaced babysitting LOA-1078 (`BUG-REPORT-2026-07-02-codex-inferred-commit-flag-unhonored-3oracle-disagreement.md`). **NEW [[R-MACB]] (P2, capture-only, 2026-07-02)** — the microverse **worker-timeout auto-rescue** (`autoRescueDirtyTree` → `stageAutoCommitPaths(ctx.workingDir)` at `microverse-runner.ts:~3628`) is called with **empty `excludePrefixes`**, so it `git add -u` + stages **every** untracked `?? ` path with no docs/prds exclude and no attribution check — sweeping a **foreign** session's pre-existing untracked `docs/prd-statement-analyzer-*.md` (LOA-1365 WIP) onto the LOA-1570 feature branch under `microverse: auto-commit (worker timed out before committing)` (`6272304fc`). **Violates the module's own documented invariant** ("auto-commit rescue … honoring docs/prds exclusions") — the pre-flight call site (`:2947`) passes `PREFLIGHT_DIRT_EXCLUDES`, the rescue site passes none. **Exact microverse-side twin of the already-fixed [[B-PCOMP]] `#b736337f` bystander-stash** (mux-runner exit path stages only positively-owned paths + `stashUnattributableRemainder`) — never ported to the microverse rescue path; adjacent to R-APWS/R-APXG. Fix = port the bystander pattern (owned-paths-only + stash remainder) or minimally pass the docs/prds excludes; ENFORCE pins the `:3628` call site to a non-empty exclude/owned arg. Surfaced babysitting LOA-1570 First Colony Phase 2/3 (`BUG-REPORT-2026-07-02-microverse-autorescue-bystander-untracked-sweep.md`). The drain-queue / OBSERVATION posture is SUPERSEDED by this subtraction strategy (the OBSERVATION block was swept to `MASTER_PLAN-archive.md` → "Swept 2026-07-02").
 
 ---
 
 ## ⏯ RESUME HERE (updated 2026-07-02 — beta.37 the SIMPLIFICATION DROP shipped+deployed)
 
-**▶ STATE: `origin/main` = v2.0.0-beta.37 (HEAD `7d69d6b7`); tree clean (sole dirt: none); no active pickle-rick pipeline; deployed runtime = beta.37 (install.sh 2026-07-02, MD5 parity OK; phantom session `2026-07-01-9e922602` demoted + its inert flag cleared at deploy). The full simplification plan (`SIMPLIFICATION-AND-FIX-PLAN-2026-07-02.md`) is EXECUTED: Phase 0 record hygiene `f34addaf` · B-1SEAM WS-1 `7b52789d` + WS-2 `2bbf5770` · WS-3+R-CXHANG+B-RSHM `885efb73` · guard prune `2957f0c2` · ledger `0f05865c` · bump `ad624cdd`. Built via ultracode in-process workflows (R-PSRB-compliant hand-build for the salvage-path work; adversarial verify per WS; full gate the arbiter). Gate record: tsc/eslint/9-audits/fast-c4/expensive GREEN; budget-c8 FAIL_BUDGET(3/2) + 4 integration reds ALL proven isolation-green load-flakes (posture: c=4 authoritative). Canonical gate is now 9 audits (design-ground-truth demoted). NOTE for next contexts: `PICKLE_SIGF`, `PICKLE_CITADEL_MECHANICAL`, `PICKLE_RECOVERY_CONSOLIDATION`, `skip_readiness_reason`/`skip_ticket_audit_reason`, chain_meeseeks, and `evaluateCodexManagerRelaunch` NO LONGER EXIST — do not cite them.**
+**▶ STATE: `origin/main` = v2.0.0-beta.37 (bump `ad624cdd`); tree clean (sole dirt: none); no active pickle-rick pipeline; deployed runtime = beta.37 (install.sh 2026-07-02, MD5 parity OK; phantom session `2026-07-01-9e922602` demoted + its inert flag cleared at deploy). The full simplification plan (`SIMPLIFICATION-AND-FIX-PLAN-2026-07-02.md`) is EXECUTED: Phase 0 record hygiene `f34addaf` · B-1SEAM WS-1 `7b52789d` + WS-2 `2bbf5770` · WS-3+R-CXHANG+B-RSHM `885efb73` · guard prune `2957f0c2` · ledger `0f05865c` · bump `ad624cdd`. Built via ultracode in-process workflows (R-PSRB-compliant hand-build for the salvage-path work; adversarial verify per WS; full gate the arbiter). Gate record: tsc/eslint/9-audits/fast-c4/expensive GREEN; budget-c8 FAIL_BUDGET(3/2) + 4 integration reds ALL proven isolation-green load-flakes (posture: c=4 authoritative). Canonical gate is now 9 audits (design-ground-truth demoted). NOTE for next contexts: `PICKLE_SIGF`, `PICKLE_CITADEL_MECHANICAL`, `PICKLE_RECOVERY_CONSOLIDATION`, `skip_readiness_reason`/`skip_ticket_audit_reason`, chain_meeseeks, and `evaluateCodexManagerRelaunch` NO LONGER EXIST — do not cite them.**
 **✅ B-SSVR SHIPPED beta.34** (via /pickle-pipeline + babysitter closer-takeover): **[[R-SSBR]] scope-resolver fail-CLOSED**
 on a stale/ahead base ref (`9592eb46`) — `resolveAllowedFromDiffMode` now detects `baseSha===headSha` with a differing
 baseRef tip and either recomputes via `resolveForkPointBase` or throws `SCOPE_BASE_AHEAD_OF_HEAD` (never a false
@@ -198,28 +178,15 @@ meta-defects are 4-of-5 substantially addressed: completion-oracle plurality →
 4. **Codex GA field-soak — the #1 GA-evidence gate** (a *run*, not a fix). Run ≥1 representative bundle hands-off
    via `/pickle-pipeline --backend codex` (completion-evidence already proven on codex LOA-1363 run4; need
    phase-completion repeatability). The bottleneck is workload, not code — needs a representative bundle to run.
-5. **[[R-SIGF]] hardening fast-follow** — 4 deferred B-SIGF hardening passes over the R-SIGF diff; gated on the
-   R-MWBG runtime half (needs large-tier workers to survive). Fold into a codex soak or run as fresh
-   `/anatomy-park` + `/szechuan-sauce` over the diff.
+5. **[[R-SIGF]] hardening fast-follow** — 4 deferred B-SIGF hardening passes over the R-SIGF diff. The old
+   R-MWBG gating is GONE (B-WSPU beta.35 — all tiers survive via synchronous re-spawn-resume), so this is
+   unblocked. Fold into a codex soak or run as fresh `/anatomy-park` + `/szechuan-sauce` over the diff.
 6. **[[B-CGCAP]] codegraph default-on (v2.1)** / **[[B-ARBR]]** (idea, not a fix) — capability, DEFERRED post-GA
    (reliability-first / capability-second).
 
 Other open residuals (all blocked from clean autonomous launch): **R-SLEAK** (P3 — session/process GC; new
 machinery that conflicts with subtract-before-add, build only if leaks actually bite); **B-CIINT** (P3 —
 Linux-CI-only, not locally verifiable); **#25 R-CSI** (P1 — external-event-gated).
-
-**▶ R-MWBG runtime-half rebuild (when scoped):** REVERTED at the beta.30 closer (`0cbc49c1` → reverted; session
-`2026-06-29-e7f5b7e1`). The full closer gate caught a deterministic 9-test `mux-runner.test.js` regression. DEEP
-ROOT CAUSE (verified, full detail in `prds/archive/bundles/p1-bug-fix-bundle-b-mwbg-runtime-detached-tier-gate-2026-06-29.md`
-`## Rebuild Notes`): `sessionRunnerBudget` hardcodes `tier:'medium'` + the session timeout (1200) for the
-no-ticket/prd/breakdown case, and a ticket with no explicit `complexity_tier` also defaults to medium (3600s) —
-so gating on ANY timeout field OR `current_ticket_tier ∈ {medium,large}` fires during the prd phase AND for every
-default-tier ticket, routing them through the detached/`routeLargeTierTicket` path which BYPASSES the
-`runIteration` invariants. The old `=== 'large'` gate dodged it because the fallback/default tier is `medium`,
-never `large`; the detached lifecycle (built for LARGE) does NOT preserve those invariants for medium. Rebuild is
-bigger than a gate swap (make the detached path preserve runIteration invariants for medium, OR gate only on an
-active ticket's EXPLICIT frontmatter tier + verified detached-path correctness). half-1 (manager foreground-spawn,
-beta.29) already removed the ORIGINAL death, so this is lower marginal value.
 
 **▶ HARD-WON LESSONS this session (encode before clearing):**
 - **A fix touching the iteration loop / orchestrator MUST be built ≥`medium` tier** — a `small`-tier worker gate
@@ -324,88 +291,21 @@ Ran B-SIGFH (scope-fence detector hardening) as a `--backend codex` soak. **Verd
 with **zero operator interaction**, including the full release cycle (`git push` + `gh release
 create`), gated only on a green local gate + clean tree. Sole permitted residue: external-event-
 gated work. Every bundle PRD carries a `## Simplification Review` (subtract-before-add) — see
-[`CLAUDE.md`](CLAUDE.md).
-
-**⏱️ Operating mode (2026-06-24): OBSERVATION.** The known reliability defect classes are code-fixed and the
-drain queue is short. We are now **running Pickle Rick live for a few days to collect field data** on the two
-goals (reliability + autonomous development) rather than draining the remaining deferred/external-gated work.
-Per the loop-failure directive: **log every real incident as a bug-PRD in `prds/` + a drain row** — those
-become the next evidence-backed work. The codex AC-DURA-4 field-proof is the one high-value run that can be
-done during this window; everything else open is deferred-by-design or external-gated.
-
-**GA path (evidence-first).** GA gate = honesty ✅ + stability-surface ✅ + completion-bugs-**code-fixed** ✅
-(B-PCOMP beta.22 + **B-DURA beta.23**, the cluster root) + review-phase-gate-gaps-**code-fixed** ✅
-(**B-RPGT beta.24**, the independent 0/4 cause) + **field-soak repeatability 🔴 on codex (0-for-3, NOT re-run
-post-fix)** / 🟢 on claude (**2 of ~3–5, now incl. a live multi-ticket additive run**). The *code* is the
-most-fixed it has ever been and is now **proven on claude**; the only missing evidence is the **codex
-field-proof**. Remaining GA work: **(a) run the codex AC-DURA-4 proof** — the decisive data point (was 0/4 on
-codex pre-fix); **(b) 1–2 more claude reps at low intervention** to firm up repeatability; ~~(c) close the
-review-phase gate gaps~~ ✅ done (B-RPGT). Run bundles via `/pickle-pipeline --scope branch` (an unscoped
-1-event bundle made anatomy/szechuan review the whole tree for 84m). Drop `-beta` once repeatability holds on
-BOTH backends with no new completion-class seam.
+[`CLAUDE.md`](CLAUDE.md). **Log every real incident as a bug-PRD in `prds/` + a drain row** (the
+loop-failure directive).
 
 ---
 
-## ▶ Governing strategy (2026-06-23): Reliability Plan
+## ▶ Governing strategy (2026-06-23): Reliability Plan — resolved; pointer only
 
-**`prds/RELIABILITY-PLAN-2026-06-23.md`** is now the governing strategy (Codex-adversarial-reviewed;
-verdict *ship with changes*, folded in). It reframes the drain queue from bug-by-bug to **5 structural
-meta-defects** (completion-oracle plurality · scope-fence under/over-extend · recovery sprawl ·
-guards-on-guards · self-build trap). Sequencing status (all buildable-now work **BUILT + verified on `main` `f547b22f`**, deploy held for soaks):
-**(1) B-DURA core** ✅ MERGED (T10–T50: durable boundary commit + 7-site Done-flip gate + one readEvidence
-oracle + Failed-terminal phase-advance + no-premature-drain). **(3) Subtraction cluster** ✅ BUILT — T60
-`05650df1` (delete `allow_inferred_completion_commit`), T70 `71996fe8` (collapse `EvidenceKind` 4→2, delete
-shim + dead variant, narrow Pass-1 grep), R-REIN `3c48d7ae` (recovery-budget refund on reset). **(4) WS-2
-run-blockers** ✅ BUILT — refine fence `5ad07e3c`, oversized split `b60a112e`, toolchain fail-fast `7b69f22a`,
-R-SIGF advisory flag `a668687f`. **(5) WS-5** ✅ BUILT — advisory subtract-before-add audit `9164f14d`
-(`audit-subtract-before-add.sh`). Full post-merge gate green (tsc/eslint/audits/20 new WS tests/201 mux).
-**DEPLOYED + RELEASED 2026-06-23** ✅ — `install.sh` deployed the whole stack (deployed JS verified: boundary
-committer + R-REIN + toolchain-fail-fast + oversized-split + subtract-before-add audit); bumped to
-**`2.0.0-beta.23`** and published the GitHub **prerelease** (`b8b70b2e`; `eabf3d1d` ledger). Release-gate
-note: tsc/eslint/10 audits + all changed-file tests + the load-bearing completion-commit characterization
-suite (R-AFCC-DEEP invariant, 35/35) green **in isolation**; the full `test:fast`/integration suites carry
-known subprocess-timing **load-flakes** (R-TFP/R-TSPF class) — proven isolation-green, none in changed files,
-exacerbated by a 7-hr session's leftover machine load (65 leaked R-OMTD test subprocesses, since reaped).
-**REMAINING (next-context priorities, in order):**
-1. ~~**Codex AC-DURA-4 field-proof**~~ — ✅ **RAN 2026-06-24 (LOA-1363 run 4, beta.24).** Completion-evidence
-   class PROVEN on codex (R-CECX + R-PFNT 1+2 held, 14/14 durable); but **phase-completion FAILED 0/2 (citadel
-   skipped)** via [[R-SIGF]] → [[R-DPGT]]. GA-on-codex now gated on those two, NOT the completion oracle. Next
-   codex rep should land AFTER R-SIGF schema-shape auto-extension + R-DPGT detached grace ship.
-2. ~~**Review-phase gate gaps** (R-CECX run-3 follow-up #2, facets 4–6)~~ — ✅ **SHIPPED B-RPGT v2.0.0-beta.24**
-   (R-RPGT review-phase hard typecheck gate on abort + R-APXG-3 cap; R-S529 529→transient park-and-retry). See drain row.
-3. **▶ B-PXBO (NEXT — authored 2026-06-26, `4437395a`)** — phase-exit boundary reads the `readEvidence` oracle:
-   closes [[R-DPGT]] + [[R-DOTR]] + [[R-CRSR]] + LOA-1588 foreign-hash. Reuse-first, no new oracle/state.
-   **R-PSRB self-modifying-recovery → hand-build.** See the RESUME HERE block at the top.
-4. **R-SIGF full scope-auto-extension** (only the advisory flag shipped) + the wide oracle characterization net.
-   Separate parallel track from B-PXBO (scope-fence subsystem, not the phase-exit oracle).
-   *(Note: anatomy-park found+fixed a real HIGH in B-RPGT's own new park code (`946cd0b1`) — review phases now self-harden.)*
-**Primary metric:** hands-off soak truthfulness + manual-intervention rate (trap-door count secondary).
-**Self-build (old WS-4): cut** — freeze autonomous self-build for recovery bundles, formalize the hand-build
-protocol; revisit post-GA only if hand-build is the bottleneck.
-
-### GA field-soak (the metric for the above)
-
-**The GA-readiness soak** (drop `-beta`) is the reliability metric. Run **~3–5 representative bundles**
-hands-off via `/pickle-pipeline`, INCLUDING **≥1 live multi-ticket additive bundle** (R-WSDO was
-single-ticket). Use `--scope branch` for small bundles (an unscoped 1-event bundle made anatomy/szechuan
-review the whole tree for 84m). *Record* every intervention point (don't rescue unless data at risk) →
-ranked intervention-rate report = the GA-readiness ledger. **Soak ledger: 2 clean on claude — (1) R-WSDO
-(single-ticket, 4/4 hands-off, beta.22) + (2) ✅ B-RPGT (2026-06-23, claude, MULTI-TICKET ADDITIVE: 5 tickets
-→ pickle/citadel/anatomy-park/szechuan-sauce, 4/4 hands-off in 178m, ZERO mid-run intervention — the first
-live multi-ticket additive clean run the soak required; the 529-abort bug never fired, anatomy-park even
-found+fixed a real HIGH in the new code; only closer work was pre-existing gate-parity debt + 2 oversized
-trap-door trims, no recovery-class seam). codex multi-ticket still 0-for-3 (NOT re-run post-B-DURA).** —
-LOA-1363 run 1 → [[R-CECX]]
-(no-commit + cross-iteration corruption); LOA-1363 run 2 → [[R-PFNT]] (evidence-oracle disagreement +
-`Failed` non-terminal masks a GREEN build: 12 commits / 978 tests 0-fail); LOA-1488 run 3 → R-CECX run-3
-(build 12/17 durable, 11 correctly attributed; one untagged commit + premature drain at iter 49/500) +
-run-3 follow-up #2 (review-phase tsc/lint-RED commits + transient-529 szechuan abort). **LOA-1363 run 4
-(2026-06-24, beta.24) IS the codex re-run on the fixed runtime** → [[R-DPGT]]: R-CECX + R-PFNT facets 1+2 ✅
-PROVEN HELD (14/14 durable, 0× `oversized_no_progress`, single oracle), but it finished **0/2 phases (citadel
-skipped)** via [[R-SIGF]] 2nd-repro (out-of-fence schema-shape RED) cascading into a NEW detached-phase-gate
-seam — so the *completion-evidence* soak passes on codex while the *phase-completion* soak does not. Net: the
-completion-class is now codex-proven; phase-completion is blocked on R-SIGF + R-DPGT. Drop `-beta` when
-repeatability holds on BOTH backends with no new completion-class seam.
+**`prds/RELIABILITY-PLAN-2026-06-23.md`** reframed the queue as **5 structural meta-defects**
+(completion-oracle plurality · scope-fence under/over-extend · recovery sprawl · guards-on-guards ·
+self-build trap) — 4-of-5 substantially shipped (see track B above); the residual is the operator-scoped
+recovery-sprawl seam-collapse. The full beta.23 build/deploy narrative, the shipped REMAINING list, and the
+GA field-soak proof ledger (claude: 2 clean hands-off incl. the multi-ticket additive B-RPGT run; codex:
+completion-evidence PROVEN, LOA-1363 run 4) are preserved in
+[`MASTER_PLAN-archive.md`](MASTER_PLAN-archive.md) → "Swept 2026-07-02". The live GA bar is in
+`## ⏯ RESUME HERE`: N bundles hands-off in a row, both backends.
 
 ## Drain Queue — shipped + remaining (deferred / blocked / external-gated)
 
@@ -422,6 +322,7 @@ repeatability holds on BOTH backends with no new completion-class seam.
 | R-CXHANG | **R-CXHANG** (codex orphaned-worker-proc reaper). | P2 | ✅ **BUILT 2026-07-02** (`885efb73`): `services/orphan-reaper.ts` — positive-ownership-mandatory reap (argv `--add-dir` under sessions root + owning session not-live), min-age 600s, SIGTERM→SIGKILL escalation, `PICKLE_ORPHAN_REAP=off`, both prior negative-PID kill sites collapsed onto shared `killProcessGroup`. Ships in beta.37; PRD archived. | `archive/bundles/p2-bug-fix-bundle-r-cxhang-codex-orphan-proc-reaper-2026-07-01.md` |
 | B-RSHM | **B-RSHM** subtraction — stop-hook dead-code + chain_meeseeks retirement. | P2 | ✅ **BUILT 2026-07-02** (`885efb73`): stop-hook non-tmux continuation/checkpoint/degenerate-nudge/session-end machinery deleted (idle-backoff + update-check + tmux-passthrough KEPT); whole chain_meeseeks subsystem retired (transitionToMeeseeks, ~15 template branches, MonitorMode, settings, 2 command files; `morty-reviewer` agents + `meeseeks_pass` event untouched; no schema bump). Ships in beta.37; PRD archived. | `archive/bundles/p2-subtraction-retire-stophook-deadcode-and-chain-meeseeks-2026-07-01.md` |
 | R-PSAM | **R-PSAM** (Pickle Standup Author-`@me`) — `/pickle-standup` Step 2.5 commit scan uses `git log --author="@me"`, which git never resolves (it's a `gh` idiom); the author filter matches nothing so every un-PR'd local-branch ticket is silently dropped from Y:. Proven on LOA-1570: `@me`→0 commits, real email→28. Fix = resolve `@me` to `git config user.email` per-`$repo` in the `git log` line only (leave the `gh pr list --author "@me"` lines). Prompt-only change in `.claude/commands/pickle-standup.md`. | P3 | **OPEN — capture-only** (babysitter-surfaced 2026-07-01 running standup for Gregory). Reporting-accuracy defect, no runtime/data impact. | `BUG-REPORT-2026-07-01-standup-git-author-me-drops-local-branch-tickets.md` |
+| R-SSPB | **R-SSPB** — on-`main` `--scope branch` mis-scopes the PICKLE phase to the pre-build diff (the build's own commits don't exist at setup → workers fenced out of their own target files; the review-phase scope refresh is correct). Fix = seed the pickle-phase branch-scope from the ticket file-impact set. | P3 | **OPEN — capture-only** (surfaced in the B-SIGFH codex soak 2026-07-01; patched live by broadening `scope.json`). No PRD yet — author before the next on-`main` `--scope branch` run. | B-SIGFH soak findings (§ above) |
 | R-SLEAK | **R-SLEAK** (+ R-PSRB/R-OMTD/R-WSDO context) — session/process leak + contention-gauge | P3 | **PARTIAL — R-OMTD ✅ + R-WSDO ✅ SHIPPED beta.22; R-PSRB documented; R-SLEAK OPEN.** **R-OMTD (`b20a4c1a`):** pipeline-runner spawns mux children `detached` + reaps the subtree via `reapChildSubtree`/negative-PID on teardown (no more PPID-1 orphans). **R-WSDO (`177b84a7`):** `worker_produced_nothing` breadcrumb shipped. **R-PSRB (design, documented — not a code fix):** recovery-machinery bundles can't self-build (deployed pre-fix runtime salvage-resets the ticket building the fix); build protocol = hand-build recovery-path tickets then install.sh-deploy. **R-SLEAK (OPEN, P3 hygiene):** leaked tmux sessions + orphan runners persist for days; `pgrep -f claude` over-counts (matches node runners + own shell) → real worker-contention gauge is `ps -eo command \| grep -E '/claude '`. Session-GC unbuilt. | `BUG-REPORT-2026-06-21-pipeline-self-referential-build-catch22-and-orphan-mux.md` |
 | B-ARBR | **B-ARBR (IDEA — 2026-06-29, captured from a LoanLight Arbor-fit review, LOA-1651)** explore using Arbor (keyless MCP autonomous metric-optimizer; HTR Idea Tree + held-out merge margin) to **tune the szechuan-sauce + anatomy-park review prompts** against a review-quality harness. Fit rationale: the prompts are a fully-ours, unconstrained tunable surface; prompt-tuning is Arbor's strongest mode; Arbor's git-worktree isolation is exactly right for parallel code-mutating review runs. **Inverse of [[R-MVFM]]** — there PR *borrows* HTR for the microverse loop; here Arbor *optimizes* PR's own prompts (complementary, not contradictory). **Make-or-break is the metric, not the ~50-line wiring:** review quality must be a **balanced, held-out** score (defect recall + regression rate + scope-adherence); a one-sided metric self-games instantly (optimize recall → flag-everything reviewer-noise; optimize safety → change-nothing). Taste ("is this code worthy") does not quantify and stays human. **Cheapest PoC:** tune szechuan to drive **off-scope-commit rate → 0** ([[reference_szechuan_soft_scope_escape]] / R-SSOC soft-scope-escape; objective, non-gameable, currently failing → real headroom) while holding deslop value at a floor. | P3 | **IDEA — capture-only, NOT scoped.** Deferred behind the reliability queue (R-MWBG runtime half P1, then R-MVFM P3). Subtractive cross-link: R-MVFM already recovers ~90% of HTR's *microverse* benefit cheaply — this is a **different surface** (review prompts), so it does not subsume R-MVFM and vice-versa. No PRD yet; author one (with the harness/metric spec) only if pursued. | capture-only — LoanLight Arbor review 2026-06-29 (Linear LOA-1651) |
 | 124 | **R-DPMC-3** decomposition-satisfiability residual | P2 | **DEFERRED** — large additive machinery; needs operator sign-off (R-DPMC-1/-2 already shipped: B-DECOMP-SAT beta.17 / B-GROUND2 beta.16). | `archive/bundles/p2-bug-fix-bundle-b-decomp-sat-decomposition-satisfiability-2026-06-18.md` |
