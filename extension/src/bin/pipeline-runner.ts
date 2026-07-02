@@ -54,6 +54,7 @@ import {
   type ArchiveResult,
 } from '../services/git-utils.js';
 import { logActivity } from '../services/activity-logger.js';
+import { killProcessGroup } from '../services/orphan-reaper.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
@@ -1072,13 +1073,11 @@ function isMuxRunnerInvocation(args: string[]): boolean {
  * children or if the group signal fails (e.g. group already gone).
  */
 function reapChildSubtree(child: Pick<ChildProcess, 'pid' | 'kill'>, leadsGroup: boolean, signal: NodeJS.Signals = 'SIGTERM'): void {
-  if (leadsGroup && typeof child.pid === 'number') {
-    try {
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // group already dead or unsignalable — fall through to direct kill
-    }
+  // R-CXHANG AC-CXHANG-3: the negative-PID group kill is the SHARED primitive
+  // (services/orphan-reaper.ts killProcessGroup); false (group already dead or
+  // unsignalable) falls through to the direct kill — behavior-preserving.
+  if (leadsGroup && typeof child.pid === 'number' && killProcessGroup(child.pid, signal)) {
+    return;
   }
   try {
     child.kill(signal);
@@ -1353,7 +1352,6 @@ export function resetStateForPhase(statePath: string, template: string, maxItera
     s.start_time_epoch = Math.floor(Date.now() / 1000);
     s.max_iterations = maxIterations;
     s.command_template = template;
-    s.chain_meeseeks = false;
     s.tmux_mode = true;
   });
 }
@@ -1537,7 +1535,6 @@ export function enterPicklePhase(
   // Fix A — pin command_template. Stale value from a previous anatomy-park or
   // szechuan-sauce run would otherwise misroute the pickle worker.
   sm.update(statePath, (s: State) => {
-    s.chain_meeseeks = false;
     s.command_template = '_pickle-manager-prompt.md';
     if (s.backend !== backend) s.backend = backend;
   });
@@ -2291,7 +2288,7 @@ function picklePhaseConfig(): PhaseConfig {
     setup: null,
     refreshScope: false,
     throwOnEmptyScope: false,
-    preSpawnStateMutation: (s) => { s.chain_meeseeks = false; },
+    preSpawnStateMutation: null,
   };
 }
 

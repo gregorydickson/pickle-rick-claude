@@ -13,7 +13,7 @@ import {
   createMonitorStderrCapture,
 } from '../bin/monitor.js';
 
-const ALL_MONITOR_MODES = ['pickle', 'meeseeks', 'council', 'refinement', 'szechuan-sauce', 'anatomy-park'];
+const ALL_MONITOR_MODES = ['pickle', 'council', 'refinement', 'szechuan-sauce', 'anatomy-park'];
 
 function makeSessionDir() {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-monitor-stderr-')));

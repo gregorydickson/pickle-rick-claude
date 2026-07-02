@@ -304,22 +304,6 @@ test('processIterationOutcome: task_completed with pending tickets continues', a
   }
 });
 
-test('processIterationOutcome: task_completed with chain_meeseeks continues', async () => {
-  const session = tmpSession();
-  try {
-    writeTicket(session.dir, 't1', 'Done');
-    const state = baseState({ chain_meeseeks: true });
-    writeState(session, state);
-    let updated = false;
-    const { context } = ctx(session, { updateState: () => { updated = true; } });
-    const action = await processIterationOutcome(state, baseOutcome({ completion: 'task_completed' }), context);
-    assert.equal(action.kind, 'continue');
-    assert.equal(updated, true);
-  } finally {
-    fs.rmSync(session.dir, { recursive: true, force: true });
-  }
-});
-
 test('processIterationOutcome: review_clean below min_iterations returns noop', async () => {
   const session = tmpSession();
   try {

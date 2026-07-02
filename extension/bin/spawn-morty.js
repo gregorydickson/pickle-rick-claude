@@ -19,6 +19,7 @@ import { evaluateFailedFlipSuppression } from './mux-runner.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { loadAgentMd } from '../services/agent-md-loader.js';
 import { flushAndExit } from '../services/worker-shutdown.js';
+import { killProcessGroup } from '../services/orphan-reaper.js';
 const TIER_MODEL_MAP = {
     trivial: 'haiku',
     small: 'sonnet',
@@ -776,15 +777,11 @@ function killProcessTree(proc, signal) {
     const pid = proc.pid;
     if (!pid)
         return false;
-    if (process.platform !== 'win32') {
-        try {
-            process.kill(-pid, signal);
-            return true;
-        }
-        catch {
-            // Fall back to the direct child if the process group is already gone.
-        }
-    }
+    // R-CXHANG AC-CXHANG-3: the negative-PID group kill is the SHARED primitive
+    // (services/orphan-reaper.ts); it returns false on win32 or a gone group and
+    // we fall back to the direct child kill — behavior-preserving delegation.
+    if (killProcessGroup(pid, signal))
+        return true;
     try {
         proc.kill(signal);
         return true;

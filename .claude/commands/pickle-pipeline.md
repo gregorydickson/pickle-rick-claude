@@ -294,8 +294,7 @@ Phase Limits:
   Szechuan Sauce: max_iterations=<SZ_MAX_ITER>, stall_limit=<SZ_STALL>
 
 "I turned myself into a pipeline, Morty!
- Build, inspect, clean — the whole lifecycle.
- No meeseeks required."
+ Build, inspect, clean — the whole lifecycle."
 ```
 
 Output: `<promise>TASK_COMPLETED</promise>`

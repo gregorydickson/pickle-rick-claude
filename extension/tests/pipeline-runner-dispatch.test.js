@@ -58,7 +58,6 @@ function writeBaseState(sessionDir, repo, overrides = {}) {
     started_at: new Date().toISOString(),
     session_dir: sessionDir,
     tmux_mode: true,
-    chain_meeseeks: true,
     backend: 'claude',
     ...overrides,
   }, null, 2));
@@ -228,9 +227,7 @@ describe('pipeline phase config dispatch', () => {
     assert.equal(pickle.runnerScript, 'mux-runner.js');
     assert.equal(pickle.setup, null);
     assert.equal(pickle.throwOnEmptyScope, false);
-    const pickleState = { chain_meeseeks: true };
-    pickle.preSpawnStateMutation(pickleState);
-    assert.equal(pickleState.chain_meeseeks, false);
+    assert.equal(pickle.preSpawnStateMutation, null);
 
     const citadel = setupPhase('citadel', config);
     assert.equal(citadel.prevPhase, 'pickle');
@@ -270,7 +267,6 @@ describe('pipeline phase config dispatch', () => {
       assert.equal(calls[0].args[1], sessionDir);
       assert.equal(calls[0].env.PICKLE_BACKEND, 'claude');
       const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
-      assert.equal(state.chain_meeseeks, false);
       assert.equal(state.command_template, '_pickle-manager-prompt.md');
     } finally {
       cleanup([repo, sessionDir]);

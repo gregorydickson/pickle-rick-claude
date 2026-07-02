@@ -39,20 +39,20 @@
   "null:true:stale:11": { "expected": "approve", "reason_substring": "orphan" },
 
   "null:true:fresh:0":  { "expected": "approve", "reason_substring": "orphan_phantom_demoted" },
-  "null:true:fresh:1":  { "expected": "block",   "reason_substring": "Pickle Rick" },
-  "null:true:fresh:9":  { "expected": "block",   "reason_substring": "Pickle Rick" },
+  "null:true:fresh:1":  { "expected": "approve", "reason_substring": "interactive loop retired" },
+  "null:true:fresh:9":  { "expected": "approve", "reason_substring": "interactive loop retired" },
   "null:true:fresh:10": { "expected": "approve", "reason_substring": "iterations" },
   "null:true:fresh:11": { "expected": "approve", "reason_substring": "iterations" },
 
-  "alive:true:fresh:0":  { "expected": "block",   "reason_substring": "Pickle Rick" },
-  "alive:true:fresh:1":  { "expected": "block",   "reason_substring": "Pickle Rick" },
-  "alive:true:fresh:9":  { "expected": "block",   "reason_substring": "Pickle Rick" },
+  "alive:true:fresh:0":  { "expected": "approve", "reason_substring": "interactive loop retired" },
+  "alive:true:fresh:1":  { "expected": "approve", "reason_substring": "interactive loop retired" },
+  "alive:true:fresh:9":  { "expected": "approve", "reason_substring": "interactive loop retired" },
   "alive:true:fresh:10": { "expected": "approve", "reason_substring": "iterations" },
   "alive:true:fresh:11": { "expected": "approve", "reason_substring": "iterations" },
 
-  "alive:true:stale:0":  { "expected": "block",   "reason_substring": "Pickle Rick" },
-  "alive:true:stale:1":  { "expected": "block",   "reason_substring": "Pickle Rick" },
-  "alive:true:stale:9":  { "expected": "block",   "reason_substring": "Pickle Rick" },
+  "alive:true:stale:0":  { "expected": "approve", "reason_substring": "interactive loop retired" },
+  "alive:true:stale:1":  { "expected": "approve", "reason_substring": "interactive loop retired" },
+  "alive:true:stale:9":  { "expected": "approve", "reason_substring": "interactive loop retired" },
   "alive:true:stale:10": { "expected": "approve", "reason_substring": "iterations" },
   "alive:true:stale:11": { "expected": "approve", "reason_substring": "iterations" },
 

@@ -85,21 +85,12 @@ test('inferMonitorMode: anatomy-park.md → anatomy-park', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('inferMonitorMode: meeseeks.md → meeseeks (meeseeks* glob, base name)', () => {
+test('inferMonitorMode: retired meeseeks.md → pickle default with WARN (B-RSHM subsystem retired)', () => {
   const dir = makeSessionDir('meeseeks.md');
   try {
     const warns = [];
-    assert.equal(inferMonitorMode(dir, (m) => warns.push(m)), 'meeseeks');
-    assert.equal(warns.length, 0, 'no WARN expected for recognized template');
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-});
-
-test('inferMonitorMode: meeseeks-review.md → meeseeks (meeseeks* glob, variant)', () => {
-  const dir = makeSessionDir('meeseeks-review.md');
-  try {
-    const warns = [];
-    assert.equal(inferMonitorMode(dir, (m) => warns.push(m)), 'meeseeks');
-    assert.equal(warns.length, 0, 'no WARN expected for recognized template');
+    assert.equal(inferMonitorMode(dir, (m) => warns.push(m)), 'pickle');
+    assert.equal(warns.length, 1, 'unrecognized retired template must WARN');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -258,7 +249,7 @@ test('ensureMonitorWindow: undefined template without explicit mode → mode=pic
 });
 
 test('ensureMonitorWindow: explicit mode overrides inferred mode (AC #4 backward compat)', () => {
-  const fix = makeMonitorFixture('meeseeks.md'); // would infer 'meeseeks' without override
+  const fix = makeMonitorFixture('szechuan-sauce.md'); // would infer 'szechuan-sauce' without override
   try {
     const logs = [];
     const result = ensureMonitorWindow({
@@ -273,7 +264,7 @@ test('ensureMonitorWindow: explicit mode overrides inferred mode (AC #4 backward
     const createdLog = logs.find((m) => m.includes('created 4-pane monitor'));
     assert.ok(createdLog, `missing "created 4-pane monitor" log; logs: ${JSON.stringify(logs)}`);
     assert.match(createdLog, /mode=council/);
-    assert.doesNotMatch(createdLog, /mode=meeseeks/);
+    assert.doesNotMatch(createdLog, /mode=szechuan-sauce/);
   } finally {
     fix.cleanup();
   }

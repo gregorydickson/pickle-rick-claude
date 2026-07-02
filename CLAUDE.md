@@ -84,7 +84,6 @@ AND the tree must be clean (`git status` clean, compiled JS matches TS source). 
 | pipeline-runner.js | Sequential phase orchestrator: pickle → anatomy-park → szechuan-sauce |
 | state-manager.js | Atomic file locks, crash recovery, schema migration, multi-file transactions |
 | types/index.js | Shared types: State, errors (StateError/LockError/TransactionError), PromiseTokens, activity events |
-| meeseeks.md | Setup + per-pass review template |
 
 ## Settings (pickle_settings.json)
 
@@ -114,3 +113,4 @@ Kill-switches are the literal lowercase `"off"` (any other value / absent = feat
 | `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` | int ms ≥60000 (default 600000) | Per-gate-phase cap for `test:fast`/`test:integration` in the worker lint gate (R-WTFT). Below floor clamps up; invalid → default. |
 | `PICKLE_RECOVERY_CONSOLIDATION` | `off` | Reverts the bundle-bootstrap exemption to legacy per-gate dual-write + disables the AC-shape unified-flag fold-in. Reads `backend-spawn.ts`, `mux-runner.ts`, `spawn-morty.ts`, `spawn-refinement-team.ts`. |
 | `PICKLE_EXIT_DRAIN_FALLBACK_MS` | int ms (default 30000) | Fallback drain window for the manager `'exit'` event when the `'close'`-primary stdio drain never fires. Invalid/≤0/fractional → default. Resolver `resolveExitDrainFallbackMs` (`mux-runner.ts`). |
+| `PICKLE_ORPHAN_REAP` | `off` | Makes the R-CXHANG setup-time orphaned-worker-proc reaper inert (no ps scan, no kills); otherwise setup bootstrap reaps worker procs whose owning session is provably dead (positive ownership + min-age required). Reads `src/bin/setup.ts` (`runSetupOrphanReap`) + `src/services/orphan-reaper.ts`. |

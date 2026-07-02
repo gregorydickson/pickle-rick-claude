@@ -24,10 +24,6 @@ describe('resolveCommandTemplate', () => {
     assert.equal(resolveCommandTemplate('_pickle-manager-prompt.md'), '_pickle-manager-prompt.md');
   });
 
-  it('passes through meeseeks.md unchanged', () => {
-    assert.equal(resolveCommandTemplate('meeseeks.md'), 'meeseeks.md');
-  });
-
   it('passes through anatomy-park.md unchanged', () => {
     assert.equal(resolveCommandTemplate('anatomy-park.md'), 'anatomy-park.md');
   });

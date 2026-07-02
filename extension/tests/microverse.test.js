@@ -529,7 +529,7 @@ test('runIteration is exported from mux-runner', () => {
 
 // --- microverse-runner tests ---
 
-import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, main, _deps, readRunnerState, stageAutoCommitPaths, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, applyTestBackendOverrideFromEnv } from '../bin/microverse-runner.js';
+import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, applyTestBackendOverrideFromEnv } from '../bin/microverse-runner.js';
 import { resetToSha } from '../services/git-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { writeStateFile } from '../services/pickle-utils.js';
@@ -2597,6 +2597,7 @@ test('worker_timeout_seconds=0 is re-enforced after state re-read', () => {
 
 test('auto-rescue: dirty tree gets auto-committed when no commits detected', () => {
     const dir = createTempGitRepo();
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-microverse-session-'));
     try {
         const preSha = getHeadSha(dir);
 
@@ -2604,24 +2605,19 @@ test('auto-rescue: dirty tree gets auto-committed when no commits detected', () 
         fs.writeFileSync(path.join(dir, 'worker-output.txt'), 'worker changes');
         assert.equal(isWorkingTreeDirty(dir), true);
 
-        // Replicate auto-rescue logic from microverse-runner
-        let postIterSha = getHeadSha(dir);
-        assert.equal(postIterSha, preSha, 'no commits yet');
+        const ctx = { workingDir: dir, sessionDir, log: () => { }, preIterSha: preSha, postIterSha: preSha };
+        autoRescueDirtyTree(ctx);
 
-        if (postIterSha === preSha && isWorkingTreeDirty(dir)) {
-            stageAutoCommitPaths(dir);
-            execSync('git commit -m "microverse: auto-commit (test)"', { cwd: dir, timeout: 30_000 });
-            postIterSha = getHeadSha(dir);
-        }
-
-        assert.notEqual(postIterSha, preSha, 'auto-commit should advance HEAD');
+        assert.notEqual(ctx.postIterSha, preSha, 'auto-commit should advance HEAD');
+        assert.equal(getHeadSha(dir), ctx.postIterSha, 'ctx.postIterSha should track the rescue commit');
         assert.equal(isWorkingTreeDirty(dir), false, 'tree should be clean after auto-commit');
     } finally {
         fs.rmSync(dir, { recursive: true });
+        fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 });
 
-test('stageAutoCommitPaths stages untracked files without sweeping excluded docs/prds paths', () => {
+test('preflightAutoCommit stages untracked files without sweeping excluded docs/prds paths', () => {
     const dir = createTempGitRepo();
     try {
         fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
@@ -2630,8 +2626,7 @@ test('stageAutoCommitPaths stages untracked files without sweeping excluded docs
         fs.writeFileSync(path.join(dir, 'docs', 'note.md'), 'leave me alone');
         fs.writeFileSync(path.join(dir, 'prds', 'idea.md'), 'leave me alone too');
 
-        stageAutoCommitPaths(dir, ['docs', 'prds']);
-        execSync('git commit -m "microverse: preflight auto-commit (test)"', { cwd: dir, timeout: 30_000 });
+        preflightAutoCommit(dir, () => { });
 
         const committedFiles = execSync('git show --name-only --format=oneline HEAD', { cwd: dir, encoding: 'utf-8' });
         assert.match(committedFiles, /worker-output\.txt/, 'should stage untracked worker output');

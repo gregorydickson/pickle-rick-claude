@@ -8,7 +8,7 @@ const SESSION_DIR = '/tmp/test-session-abc123';
 const EXTENSION_ROOT = '/home/user/.claude/pickle-rick';
 const BIN_ROOT = path.join(EXTENSION_ROOT, 'extension', 'bin');
 
-const MODES = ['pickle', 'meeseeks', 'council', 'refinement', 'szechuan-sauce', 'anatomy-park'];
+const MODES = ['pickle', 'council', 'refinement', 'szechuan-sauce', 'anatomy-park'];
 
 describe('watcherPaneCommands stderr redirect', () => {
   for (const mode of MODES) {

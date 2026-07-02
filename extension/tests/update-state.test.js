@@ -223,7 +223,7 @@ test('updateState: boolean key rejects numeric-looking values', () => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Meeseeks fields: min_iterations, command_template, step: 'review'
+// Review-loop fields: min_iterations, command_template, step: 'review'
 // ---------------------------------------------------------------------------
 
 test('updateState: min_iterations accepted as numeric key', () => {
@@ -237,9 +237,9 @@ test('updateState: min_iterations accepted as numeric key', () => {
 
 test('updateState: command_template accepted as string key', () => {
     withTempSession({ active: true, step: 'prd', iteration: 0 }, (dir) => {
-        updateState('command_template', 'meeseeks.md', dir);
+        updateState('command_template', 'szechuan-sauce.md', dir);
         const state = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf-8'));
-        assert.equal(state.command_template, 'meeseeks.md');
+        assert.equal(state.command_template, 'szechuan-sauce.md');
     });
 });
 
@@ -254,24 +254,6 @@ test('updateState: step "review" is valid', () => {
 // ---------------------------------------------------------------------------
 // CLI guard: sessionDir flag validation (deep review pass 12)
 // ---------------------------------------------------------------------------
-
-test('updateState: boolean key "chain_meeseeks" with "true" stores boolean true', () => {
-    withTempSession({ active: true, step: 'prd', iteration: 0 }, (dir) => {
-        updateState('chain_meeseeks', 'true', dir);
-        const state = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf-8'));
-        assert.strictEqual(state.chain_meeseeks, true);
-        assert.strictEqual(typeof state.chain_meeseeks, 'boolean');
-    });
-});
-
-test('updateState: boolean key "chain_meeseeks" with "false" stores boolean false', () => {
-    withTempSession({ active: true, step: 'prd', chain_meeseeks: true }, (dir) => {
-        updateState('chain_meeseeks', 'false', dir);
-        const state = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf-8'));
-        assert.strictEqual(state.chain_meeseeks, false);
-        assert.strictEqual(typeof state.chain_meeseeks, 'boolean');
-    });
-});
 
 test('updateState CLI: exits 1 when sessionDir starts with --', () => {
     const updateStatePath = path.resolve(

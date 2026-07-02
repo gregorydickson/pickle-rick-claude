@@ -188,7 +188,7 @@ export function summarizeLine(raw) {
     return '';
 }
 const MX = MatrixStyle;
-const VALID_MODES = ['pickle', 'microverse', 'idle', 'meeseeks', 'council', 'refinement', 'szechuan-sauce', 'anatomy-park'];
+const VALID_MODES = ['pickle', 'microverse', 'idle', 'council', 'refinement', 'szechuan-sauce', 'anatomy-park'];
 function normalizeStderrChunk(chunk) {
     return typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk);
 }
@@ -903,7 +903,7 @@ async function main() {
     let mode = initialMode;
     // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
     if (!sessionDir || !fs.existsSync(sessionDir)) {
-        console.error('Usage: node monitor.js <session-dir> [--mode pickle|microverse|idle|meeseeks|council|refinement|szechuan-sauce|anatomy-park]');
+        console.error('Usage: node monitor.js <session-dir> [--mode pickle|microverse|idle|council|refinement|szechuan-sauce|anatomy-park]');
         process.exit(1);
     }
     const stderrCapture = createMonitorStderrCapture({ sessionDir });

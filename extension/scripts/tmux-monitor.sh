@@ -1,6 +1,6 @@
 #!/bin/bash
 # Deterministic 4-pane tmux monitor layout (Matrix edition).
-# Usage: tmux-monitor.sh <session-name> <session-root> [pickle|meeseeks|refinement]
+# Usage: tmux-monitor.sh <session-name> <session-root> [pickle|council|refinement]
 set -e
 
 NAME="$1"
@@ -9,7 +9,7 @@ MODE="${3:-pickle}"
 EXT="$HOME/.claude/pickle-rick/extension"
 
 if [ -z "$NAME" ] || [ -z "$SESSION_ROOT" ]; then
-  echo "Usage: tmux-monitor.sh <session-name> <session-root> [pickle|meeseeks]" >&2
+  echo "Usage: tmux-monitor.sh <session-name> <session-root> [pickle|council]" >&2
   exit 1
 fi
 
@@ -41,7 +41,7 @@ tmux send-keys -t "$NAME:monitor.0" "node $EXT/bin/monitor.js $SESSION_ROOT" Ent
 tmux send-keys -t "$NAME:monitor.1" "node $EXT/bin/log-watcher.js $SESSION_ROOT" Enter
 
 # Pane 2 = bottom-left — varies by mode
-if [ "$MODE" = "meeseeks" ] || [ "$MODE" = "council" ]; then
+if [ "$MODE" = "council" ]; then
   tmux send-keys -t "$NAME:monitor.2" "tail -F $SESSION_ROOT/mux-runner.log" Enter
 elif [ "$MODE" = "refinement" ]; then
   tmux send-keys -t "$NAME:monitor.2" "node $EXT/bin/refinement-watcher.js $SESSION_ROOT" Enter

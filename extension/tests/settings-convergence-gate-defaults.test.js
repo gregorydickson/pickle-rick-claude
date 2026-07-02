@@ -79,5 +79,4 @@ test('convergence-gate-defaults: existing top-level keys unchanged', () => {
   assert.equal('default_max_time_minutes' in settings, false);
   assert.strictEqual(settings.default_worker_timeout_seconds, 2400);
   assert.strictEqual(settings.default_manager_max_turns, 50);
-  assert.strictEqual(settings.enable_model_tiers, true);
 });

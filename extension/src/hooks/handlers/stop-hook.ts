@@ -12,13 +12,6 @@ import { readRecoverableJsonObject } from '../../services/microverse-state.js';
 
 const sm = new StateManager();
 
-/**
- * Number of consecutive short manager responses tolerated before the degenerate-response
- * detector forces an exit. Long-running ticket work produces legitimate short poll messages
- * ("Waiting.", "Still running.") while a worker churns; a single one is benign, three in a
- * row means the manager is genuinely stuck in an ack loop.
- */
-export const DEGENERATE_CONSECUTIVE_THRESHOLD = 3;
 export const DEFAULT_MANAGER_IDLE_BACKOFF_FALLBACK_MS = 60_000;
 export const MANAGER_IDLE_BACKOFF_THRESHOLD = 3;
 const IDLE_BACKOFF_STATE_FILE = '.manager-idle-backoff.json';
@@ -64,8 +57,7 @@ export type TokenKind =
   | { kind: 'none' };
 
 export type Decision = 'approve' | 'block';
-export type StateDelta = Partial<Pick<State, 'active' | 'consecutive_short_responses'>>;
-export type HelperResult = { decision: Decision; stateMutations?: StateDelta };
+export type HelperResult = { decision: Decision };
 type IdleBackoffReleaseReason = 'state_mtime' | 'worker_exit' | 'artifact_landed' | 'fallback_timer';
 interface IdleBackoffSnapshot {
   consecutive_wait_turns: number;
@@ -77,13 +69,12 @@ interface IdleBackoffSnapshot {
 }
 type StateActivityEntry = Record<string, unknown> & { event: string };
 
-type ActivityKind = 'review-clean' | 'epic-completed' | 'ticket-completed' | 'session-end';
+type ActivityKind = 'review-clean' | 'epic-completed' | 'ticket-completed';
 type ClassifiedResult = HelperResult & {
   reason?: string;
   logMessage: string;
   token: TokenKind;
   activity?: ActivityKind;
-  sessionEndDurationMin?: number;
   stateActivityEntries?: StateActivityEntry[];
 };
 
@@ -102,14 +93,6 @@ function roleAllowsToken(token: TokenKind, role: string): boolean {
   if (token.kind === 'analysis-done') return role === 'refinement-worker';
   if (token.kind === 'prd-complete' || token.kind === 'ticket-selected') return role !== 'worker';
   return true;
-}
-
-function activeDelta(state: State, role: string, resetShortResponses = false): StateDelta | undefined {
-  const delta: StateDelta = {};
-  const isWorkerRole = role === 'worker' || role === 'refinement-worker';
-  if (!isWorkerRole && state.tmux_mode !== true) delta.active = false;
-  if (resetShortResponses) delta.consecutive_short_responses = 0;
-  return Object.keys(delta).length > 0 ? delta : undefined;
 }
 
 function isWhitespaceOnlyResponse(transcript: string, trimmed: string): boolean {
@@ -469,34 +452,25 @@ export function enforceLimits(state: State): HelperResult | null {
   const { startEpoch, maxTimeMins, maxIter, curIter, elapsedSeconds } = computeLimitMetrics(state);
 
   if (maxIter > 0 && curIter >= maxIter) {
-    return { decision: 'approve', stateMutations: state.tmux_mode === true ? undefined : { active: false } };
+    return { decision: 'approve' };
   }
   if (maxTimeMins > 0 && startEpoch > 0 && elapsedSeconds >= maxTimeMins * 60) {
-    return { decision: 'approve', stateMutations: state.tmux_mode === true ? undefined : { active: false } };
+    return { decision: 'approve' };
   }
   return null;
 }
 
-export function detectDegenerateResponse(state: State, transcript: string, role = ''): HelperResult | null {
+/**
+ * B-RSHM WS-1: the consecutive-short-response BLOCK-nudge counter was retired with the
+ * interactive (non-tmux) loop. Degenerate output (whitespace-only, no-op ack, or short
+ * response) now APPROVES unconditionally — under tmux the manager exits and mux-runner
+ * owns the respawn. The old State counter field is retained as optional with no runtime
+ * writer (no schema bump).
+ */
+export function detectDegenerateResponse(_state: State, transcript: string, _role = ''): HelperResult | null {
   const trimmed = transcript.trim();
-  const whitespaceOnly = isWhitespaceOnlyResponse(transcript, trimmed);
-  const noOp = isNoOpResponse(trimmed);
-  const shortResponse = isShortResponse(trimmed);
-  const isWorkerRole = role === 'worker' || role === 'refinement-worker';
-
-  if (whitespaceOnly || noOp) {
-    return { decision: 'approve', stateMutations: activeDelta(state, role, true) };
-  }
-  if (shortResponse) {
-    if (isWorkerRole) return { decision: 'approve' };
-    const newCount = (Number(state.consecutive_short_responses) || 0) + 1;
-    if (newCount >= DEGENERATE_CONSECUTIVE_THRESHOLD) {
-      return { decision: 'approve', stateMutations: activeDelta(state, role, true) };
-    }
-    return { decision: 'block', stateMutations: { consecutive_short_responses: newCount } };
-  }
-  if (!isWorkerRole && (Number(state.consecutive_short_responses) || 0) > 0) {
-    return { decision: 'block', stateMutations: { consecutive_short_responses: 0 } };
+  if (isWhitespaceOnlyResponse(transcript, trimmed) || isNoOpResponse(trimmed) || isShortResponse(trimmed)) {
+    return { decision: 'approve' };
   }
   return null;
 }
@@ -524,9 +498,6 @@ function classifyDecisionInternal(state: State, transcript: string, role: string
   const degenerateDecision = classifyDegenerateDecision(state, transcript, role);
   if (degenerateDecision) return degenerateDecision;
 
-  const maxIter = finiteNumber(state.max_iterations);
-  const curIter = finiteNumber(state.iteration);
-  const iterSuffix = maxIter > 0 ? ` of ${maxIter}` : '';
   if (state.tmux_mode === true) {
     return {
       decision: 'approve',
@@ -534,10 +505,14 @@ function classifyDecisionInternal(state: State, transcript: string, role: string
       token,
     };
   }
+  // B-RSHM WS-1: interactive /pickle is gone and tmux is the sole launch path, so the
+  // non-tmux default-continuation BLOCK is dead machinery — approve unconditionally.
+  const maxIter = finiteNumber(state.max_iterations);
+  const curIter = finiteNumber(state.iteration);
+  const iterSuffix = maxIter > 0 ? ` of ${maxIter}` : '';
   return {
-    decision: 'block',
-    reason: `🥒 **Pickle Rick Loop Active** (Iteration ${curIter}${iterSuffix})`,
-    logMessage: 'Decision: BLOCK (Default continuation)',
+    decision: 'approve',
+    logMessage: `Decision: APPROVE (Interactive loop retired — non-tmux default approve, iteration ${curIter}${iterSuffix})`,
     token,
   };
 }
@@ -547,39 +522,19 @@ function classifyTokenDecision(state: State, token: TokenKind, isWorkerRole: boo
     const minIter = finiteNumber(state.min_iterations);
     const curIter = finiteNumber(state.iteration);
     if (minIter > 0 && curIter < minIter) {
-      if (state.tmux_mode === true) {
-        return {
-          decision: 'approve',
-          logMessage: `Decision: APPROVE (review_clean at ${curIter}/${minIter} — below min, runner continues)`,
-          token,
-        };
-      }
       return {
-        decision: 'block',
-        reason: `🥒 Clean pass ${curIter}/${minIter} — continuing review`,
-        logMessage: `Decision: BLOCK (review_clean at ${curIter}/${minIter} — below min, continuing inline loop)`,
+        decision: 'approve',
+        logMessage: `Decision: APPROVE (review_clean at ${curIter}/${minIter} — below min, runner continues)`,
         token,
       };
     }
   }
   if (token.kind === 'prd-complete' || token.kind === 'ticket-selected') {
-    if (state.tmux_mode === true) {
-      return { decision: 'approve', logMessage: 'Decision: APPROVE (tmux mode checkpoint — runner will respawn for next phase)', token };
-    }
-    const phase = token.kind === 'prd-complete'
-      ? 'PRD finished, moving to breakdown...'
-      : 'Ticket selected, starting research...';
-    return {
-      decision: 'block',
-      reason: `🥒 **Pickle Rick Loop Active** - ${phase}`,
-      logMessage: 'Decision: BLOCK (Checkpoint reached)',
-      token,
-    };
+    return { decision: 'approve', logMessage: 'Decision: APPROVE (checkpoint — runner will respawn for next phase)', token };
   }
 
   return {
     decision: 'approve',
-    stateMutations: !isWorkerRole && state.tmux_mode !== true ? { active: false } : undefined,
     logMessage: 'Decision: APPROVE (Task/Worker complete)',
     token,
     activity: tokenActivity(token, isWorkerRole),
@@ -594,7 +549,7 @@ function tokenActivity(token: TokenKind, isWorkerRole: boolean): ActivityKind | 
 }
 
 function classifyLimitDecision(state: State): ClassifiedResult | null {
-  const { startEpoch, maxTimeMins, maxIter, curIter, elapsedSeconds } = computeLimitMetrics(state);
+  const { maxTimeMins, maxIter, curIter, elapsedSeconds } = computeLimitMetrics(state);
   const limitResult = enforceLimits(state);
   if (!limitResult) return null;
 
@@ -603,16 +558,12 @@ function classifyLimitDecision(state: State): ClassifiedResult | null {
       ...limitResult,
       logMessage: `Decision: APPROVE (Max iterations reached: ${curIter}/${maxIter})`,
       token: { kind: 'none' },
-      activity: state.tmux_mode === true ? undefined : 'session-end',
-      sessionEndDurationMin: startEpoch > 0 ? Math.round(elapsedSeconds / 60) : undefined,
     };
   }
   return {
     ...limitResult,
     logMessage: `Decision: APPROVE (Time limit reached: ${elapsedSeconds}/${maxTimeMins * 60}s)`,
     token: { kind: 'none' },
-    activity: state.tmux_mode === true ? undefined : 'session-end',
-    sessionEndDurationMin: Math.round(elapsedSeconds / 60),
   };
 }
 
@@ -621,31 +572,16 @@ function classifyDegenerateDecision(state: State, transcript: string, role: stri
   if (!result) return null;
 
   const trimmed = transcript.trim();
-  const isWorkerRole = role === 'worker' || role === 'refinement-worker';
   const whitespaceOnly = isWhitespaceOnlyResponse(transcript, trimmed);
-  const noOp = isNoOpResponse(trimmed);
-  const newCount = result.stateMutations?.consecutive_short_responses ??
-    ((Number(state.consecutive_short_responses) || 0) + 1);
-
-  if (whitespaceOnly || noOp) {
+  if (whitespaceOnly || isNoOpResponse(trimmed)) {
     const reason = whitespaceOnly
       ? `Whitespace-only response — ${transcript.length} raw chars`
       : `No-op response detected: "${trimmed}" — breaking ack loop`;
     return { ...result, logMessage: `Decision: APPROVE (${reason})`, token: { kind: 'none' } };
   }
-  if (result.decision === 'approve') {
-    const roleText = isWorkerRole
-      ? ` in ${role} role`
-      : `: "${trimmed}" — ${trimmed.length} chars, ${newCount} consecutive`;
-    return { ...result, logMessage: `Decision: APPROVE (Degenerate short response${roleText})`, token: { kind: 'none' } };
-  }
-  if (result.stateMutations?.consecutive_short_responses === 0) {
-    return { ...result, logMessage: 'Decision: BLOCK (Default continuation)', token: { kind: 'none' } };
-  }
   return {
     ...result,
-    reason: `🥒 Short response (${newCount}/${DEGENERATE_CONSECUTIVE_THRESHOLD}) — continuing`,
-    logMessage: `Decision: BLOCK (Short response: "${trimmed}" — ${trimmed.length} chars, ${newCount}/${DEGENERATE_CONSECUTIVE_THRESHOLD} consecutive)`,
+    logMessage: `Decision: APPROVE (Degenerate short response: "${trimmed}" — ${trimmed.length} chars)`,
     token: { kind: 'none' },
   };
 }
@@ -670,8 +606,6 @@ function emitActivity(decision: ClassifiedResult, state: State, stateFile: strin
     logActivity({ event: 'epic_completed', source: 'pickle', session: sessionId, epic: state.original_prompt || undefined });
   } else if (decision.activity === 'ticket-completed' && !isWorker) {
     logActivity({ event: 'ticket_completed', source: 'pickle', session: sessionId, ticket: state.current_ticket || undefined, step: state.step });
-  } else if (decision.activity === 'session-end') {
-    logActivity({ event: 'session_end', source: 'pickle', session: sessionId, duration_min: decision.sessionEndDurationMin, mode: 'inline' });
   }
 }
 
@@ -837,14 +771,6 @@ function finalizeHookDecision(
   isWorker: boolean,
   log: (msg: string) => void,
 ): void {
-  if (decision.stateMutations && Object.keys(decision.stateMutations).length > 0) {
-    try {
-      sm.update(stateFile, (s) => { Object.assign(s, decision.stateMutations); });
-    } catch {
-      /* fail-open */
-    }
-  }
-
   emitStateActivityEntries(stateFile, decision.stateActivityEntries);
   refreshIdleBackoffStateBaseline(state, stateFile, decision.stateActivityEntries);
 

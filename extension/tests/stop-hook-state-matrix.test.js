@@ -133,9 +133,9 @@ for (const [key, oracle] of Object.entries(FIXTURES)) {
       `${tuple} expected=${oracle.expected} got=${decision} reason="${reason}"`,
     );
     // Case-insensitive substring keeps the fixture vocabulary-agnostic across
-    // BLOCK reason prose ("🥒 **Pickle Rick Loop Active** ..."), APPROVE logMessage
-    // prose ("Decision: APPROVE (Max iterations reached: 10/10)"), and recovery-set
-    // exit_reason values ("orphan-paused-no-claim").
+    // APPROVE logMessage prose ("Decision: APPROVE (Max iterations reached: 10/10)",
+    // "... (Interactive loop retired — ...)") and recovery-set exit_reason values
+    // ("orphan-paused-no-claim"). B-RSHM WS-1: classifyDecision is approve-only.
     assert.ok(
       reason.toLowerCase().includes(oracle.reason_substring.toLowerCase()),
       `${tuple} expected reason to include "${oracle.reason_substring}" but got "${reason}"`,

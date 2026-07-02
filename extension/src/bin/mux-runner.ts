@@ -29,6 +29,7 @@ import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { CodegraphService } from '../services/codegraph-service.js';
 import { salvageTicket, type SalvageDeps } from '../lib/salvage-ticket.js';
 import { reconcileTicketTruth } from '../lib/reconcile-ticket-truth.js';
+import { salvageDirtyTree, stashUnattributableRemainder } from '../services/dirty-tree-salvage.js';
 export { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream } from '../services/classifier-utils.js';
 export { stripSetupSection } from '../services/pickle-utils.js';
 export {
@@ -2208,7 +2209,7 @@ export function findPendingNonCurrentTickets(
  * "exit 1 on any false EPIC_COMPLETED" behaviour with structural recovery.
  *
  * - `genuine` — every ticket reports `status: Done` (case/quote-insensitive).
- *   Behave as today: mark current Done, exit success or chain meeseeks.
+ *   Behave as today: mark current Done, exit success.
  * - `recover_advance` — manager lied about epic completion BUT current_ticket
  *   really is Done. Treat as a single TASK_COMPLETED; advance to next ticket,
  *   keep iterating. Increment false-epic counter for telemetry.
@@ -2934,74 +2935,6 @@ function positiveIntegerOrNull(value: unknown): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-/**
- * Transitions a session from ticket-execution mode to Meeseeks review mode.
- * Pure function — returns a new state object without side effects.
- */
-export function transitionToMeeseeks(state: State, extensionRoot: string): State {
-  let minPasses = 10;
-  let maxPasses = 50;
-
-  const settings = loadSettingsBag(extensionRoot, 'mux-runner:transition-meeseeks:settings');
-  const rawMin = Number(settings.default_meeseeks_min_passes);
-  if (Number.isFinite(rawMin) && rawMin > 0) minPasses = rawMin;
-  const rawMax = Number(settings.default_meeseeks_max_passes);
-  if (Number.isFinite(rawMax) && rawMax > 0) maxPasses = rawMax;
-
-  return {
-    ...state,
-    chain_meeseeks: false,
-    command_template: 'meeseeks.md',
-    min_iterations: minPasses,
-    max_iterations: maxPasses,
-    iteration: 0,
-    step: 'review',
-    current_ticket: null,
-  };
-}
-
-// eslint-disable-next-line -- legacy model tier resolver retained behavior-preserving for global bin acceptance
-export function loadMeeseeksModel(extensionRoot: string, passCount: number = 1): string {
-  const fallback = 'sonnet';
-  let defaultModel = fallback;
-  let tiers: Record<string, string> | null = null;
-  let maxOpusPasses = 3;
-  let enableModelTiers = true;
-
-  const raw = loadSettingsBag(extensionRoot, 'mux-runner:load-meeseeks-model:settings');
-  if (typeof raw.default_meeseeks_model === 'string' && raw.default_meeseeks_model.length > 0) {
-    defaultModel = raw.default_meeseeks_model;
-  }
-  if (raw.meeseeks_model_tiers && typeof raw.meeseeks_model_tiers === 'object') {
-    tiers = raw.meeseeks_model_tiers as Record<string, string>;
-  }
-  const rawCap = Number(raw.max_opus_passes);
-  if (Number.isFinite(rawCap) && rawCap > 0) maxOpusPasses = rawCap;
-  // Feature flag: enable_model_tiers (default true — missing flag = enabled)
-  if (raw.enable_model_tiers === false) enableModelTiers = false;
-
-  if (!tiers || !enableModelTiers) return defaultModel;
-
-  // Find the highest threshold that doesn't exceed passCount
-  let resolvedModel = defaultModel;
-  let highestThreshold = 0;
-  for (const [key, model] of Object.entries(tiers)) {
-    const threshold = Number(key);
-    if (Number.isFinite(threshold) && threshold <= passCount && threshold > highestThreshold) {
-      highestThreshold = threshold;
-      resolvedModel = String(model);
-    }
-  }
-
-  // Cap opus passes: if resolved model is opus and we've used more than the allowed count, fall back to sonnet
-  if (resolvedModel === 'opus') {
-    const opusPassNumber = passCount - highestThreshold + 1;
-    if (opusPassNumber > maxOpusPasses) resolvedModel = 'sonnet';
-  }
-
-  return resolvedModel;
-}
-
 export function loadRateLimitSettings(extensionRoot: string): { waitMinutes: number; maxRetries: number } {
   let waitMinutes = 5;
   let maxRetries = 3;
@@ -3304,7 +3237,7 @@ export async function runIteration(
   sessionDir: string,
   iterationNum: number,
   extensionRoot: string,
-  qualityPassModel: string,
+  qualityPassModel: string = '',
   runtimeOverrides: IterationRuntimeOverrides = {},
 ): Promise<IterationOutcome> {
   const statePath = path.join(sessionDir, 'state.json');
@@ -3389,7 +3322,7 @@ export async function runIteration(
     ?? positiveIntegerOrNull(settings.default_manager_max_turns)
     ?? maxTurns;
   const logFile = path.join(sessionDir, `tmux_iteration_${iterationNum}.log`);
-  const isQualityPassTemplate = templateName === 'meeseeks.md' || templateName === 'szechuan-sauce.md';
+  const isQualityPassTemplate = templateName === 'szechuan-sauce.md';
   // Quality review passes can run on a selected Claude model. Codex exposes a
   // different model vocabulary, so only apply the override for claude.
   const iterationModel = isQualityPassTemplate && qualityPassModel && backend === 'claude'
@@ -3397,7 +3330,7 @@ export async function runIteration(
     : undefined;
   // Codex manager spawns plumb the resolved codex model so `--ignore-user-config`
   // doesn't strip away the configured `-m`. Quality-pass-template Claude
-  // overrides (meeseeks/szechuan) remain claude-only above.
+  // overrides (szechuan) remain claude-only above.
   const codexManagerModel = backend === 'codex' ? resolveCodexModel(extensionRoot, state) : undefined;
   const invocation = buildManagerInvocation(backend, {
     prompt: managerPrompt,
@@ -5135,63 +5068,12 @@ export function partitionExitPathDirtyByOwnership(
   return { owned, foreign };
 }
 
-/**
- * B-PCOMP (#b736337f): preserve un-attributable gate-green remainder at phase exit
- * WITHOUT committing it as the exiting ticket's Done and WITHOUT mutating the
- * working tree or `state.json`.
- *
- * We snapshot the entire dirty working tree (tracked modifications AND untracked
- * files) into a dangling git commit using a TEMPORARY index file — `GIT_INDEX_FILE`
- * pointed at a throwaway path — so neither the real index nor the worktree is
- * mutated (the caller can still stage and commit only the positively-owned paths
- * afterward). `git stash create` is unsuitable because it cannot include untracked
- * files and would miss a sibling's brand-new artifacts. We then anchor the snapshot
- * under `refs/pickle/salvage/<session>` so an operator can recover the remainder via
- * `git show refs/pickle/salvage/<session>`. The ref lives entirely in git's
- * object/ref store — no `state.json` write — keeping the exit path schema-neutral
- * (avoids R-WSRC).
- *
- * Returns the ref name on success, or null when the tree had nothing to snapshot or
- * any git step failed (best-effort: losing the breadcrumb must never crash exit).
- */
-export function stashUnattributableRemainder(
-  workingDir: string,
-  sessionDir: string,
-  log: (msg: string) => void,
-): string | null {
-  let tmpIndex: string | null = null;
-  try {
-    const session = path.basename(sessionDir);
-    const ref = `refs/pickle/salvage/${session}`;
-    // Throwaway index so `git add` does not touch the real index/worktree.
-    tmpIndex = path.join(os.tmpdir(), `pickle-salvage-index-${process.pid}-${Date.now()}`);
-    const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
-    // `git <args>` against workingDir; returns trimmed stdout on success, null on failure.
-    const git = (args: string[], useEnv: boolean): string | null => {
-      const r = spawnSync('git', ['-C', workingDir, ...args], { encoding: 'utf-8', timeout: 30000, ...(useEnv ? { env } : {}) });
-      return r.status === 0 ? (r.stdout ?? '').trim() : null;
-    };
-    // Seed the temp index from HEAD, then stage the full dirty tree (tracked + untracked).
-    if (git(['read-tree', 'HEAD'], true) === null) return null;
-    if (git(['add', '-A'], true) === null) return null;
-    const tree = git(['write-tree'], true);
-    if (!tree) return null;
-    if (git(['rev-parse', 'HEAD^{tree}'], false) === tree) return null; // no diff from HEAD — nothing to anchor
-    const sha = git(['commit-tree', tree, '-p', 'HEAD', '-m', `pickle exit-path bystander salvage (${session})`], true);
-    if (!sha) return null;
-    if (git(['update-ref', ref, sha], false) === null) {
-      log(`[exit-commit] failed to anchor bystander stash at ${ref}`);
-      return null;
-    }
-    log(`[exit-commit] stashed un-attributable remainder to ${ref} (${sha.slice(0, 12)})`);
-    return ref;
-  } catch (err) {
-    log(`[exit-commit] bystander stash threw (ignored): ${safeErrorMessage(err)}`);
-    return null;
-  } finally {
-    if (tmpIndex) { try { fs.rmSync(tmpIndex, { force: true }); } catch { /* best-effort */ } }
-  }
-}
+// B-1SEAM WS-3 (R-MACB): `stashUnattributableRemainder` moved verbatim to the
+// shared dirty-tree salvage seam (`services/dirty-tree-salvage.ts`) so the
+// microverse rescue path shares the exact B-PCOMP (#b736337f) mechanism.
+// Re-exported here to preserve the `../bin/mux-runner.js` import surface
+// (exit-path-bystander-stash.test.js + Module Export Catalog).
+export { stashUnattributableRemainder };
 
 export interface CommitGatePassingDeliverableResult {
   committed: boolean;
@@ -5230,11 +5112,12 @@ export function commitGatePassingDeliverableOnExitPath(
       // B-PCOMP: when there is an un-attributable dirty remainder, NEVER fall back
       // to the whole-tree add (that would commit a sibling ticket's work under this
       // ticket's completion_commit — a false Done, worse than losing the work).
-      // Stash the remainder to a self-describing git ref (recoverable, schema-neutral)
-      // and commit ONLY the positively-owned paths.
+      // The shared salvage seam (B-1SEAM WS-3) stashes the remainder to a
+      // self-describing git ref (recoverable, schema-neutral) and returns ONLY the
+      // positively-owned paths as stageable.
       if (foreign.length > 0) {
-        stashUnattributableRemainder(workingDir, sessionDir, log);
-        stagePaths = owned;
+        const plan = salvageDirtyTree({ workingDir, sessionDir, owned, foreign, log });
+        stagePaths = plan.stagePaths;
         log(`[exit-commit] ticket ${ticketId}: staging ${owned.length} owned path(s), stashed ${foreign.length} un-attributable path(s)`);
       }
     } catch (err) {
@@ -6570,7 +6453,6 @@ export interface LoopContext {
   writeHandoff?: (sessionDir: string, content: string, pid: number, log: (msg: string) => void) => void;
   writeTimeout?: typeof writeTimeoutStub;
   updateState?: (mutator: (state: State) => void) => void;
-  transitionToMeeseeks?: (state: State) => State;
 }
 
 function ctxNow(ctx: LoopContext): number {
@@ -7466,10 +7348,6 @@ function processTaskCompleted(state: State, ctx: LoopContext): LoopAction {
     } catch (err) {
       ctx.log(`between-ticket fast gate failed after final completion (ignored): ${safeErrorMessage(err)}`);
     }
-  }
-  if (curState.chain_meeseeks === true) {
-    if (ctx.updateState) ctx.updateState(s => Object.assign(s, ctx.transitionToMeeseeks ? ctx.transitionToMeeseeks(s) : transitionToMeeseeks(s, ctx.extensionRoot)));
-    return { kind: 'continue', resetStall: true };
   }
   // False-completion guard + B-DURA T50 no-premature-drain: re-scan ticket
   // frontmatter via reconcileTicketTruth before finalizing EPIC as completed.
@@ -9103,7 +8981,6 @@ async function runMuxRunnerMain() {
 
   const startTime = Date.now();
   let iteration = 0;
-  let meeseeksPassCount = 0;
   let lastStateIteration = -1;
   let stallCount = 0;
   let consecutiveRateLimits = 0;
@@ -9366,24 +9243,17 @@ async function runMuxRunnerMain() {
         break;
       }
     }
-    const templateName = resolveCommandTemplate(state.command_template);
-    if (templateName !== 'meeseeks.md') {
-      correctPhantomDoneTickets({
-        sessionDir,
-        workingDir: state.working_dir || process.cwd(),
-        startCommit: state.start_commit || null,
-        iteration,
-        flags: state.flags,
-        log,
-      });
-    }
-    const preTicket = templateName === 'meeseeks.md'
-      ? null
-      : resolvePreTicket(sessionDir, state.current_ticket, state.working_dir || process.cwd());
-    const preStep = templateName === 'meeseeks.md'
-      ? 'review'
-      : inferTicketLifecycleStep(sessionDir, preTicket, state.step);
-    if (preTicket && templateName !== 'meeseeks.md') {
+    correctPhantomDoneTickets({
+      sessionDir,
+      workingDir: state.working_dir || process.cwd(),
+      startCommit: state.start_commit || null,
+      iteration,
+      flags: state.flags,
+      log,
+    });
+    const preTicket = resolvePreTicket(sessionDir, state.current_ticket, state.working_dir || process.cwd());
+    const preStep = inferTicketLifecycleStep(sessionDir, preTicket, state.step);
+    if (preTicket) {
       // R-RMBS-3: emit per-iteration runnability decision for observability.
       // Frontmatter status is the authoritative source — runnable means status is
       // Todo or In Progress (per isPendingMuxTicket).
@@ -9416,12 +9286,10 @@ async function runMuxRunnerMain() {
     // R-MWIS-2: iteration advance + state write is a forward-progress marker.
     lastProgressEpoch = muxNow();
     state = reconcileTicketStateDesync(statePath, sessionDir, state.current_ticket || null, iteration, log);
-    if (templateName !== 'meeseeks.md') {
-      state = sm.update(statePath, s => {
-        applyTicketTierBudget(s, sessionDir);
-      });
-    }
-    if (templateName !== 'meeseeks.md') {
+    state = sm.update(statePath, s => {
+      applyTicketTierBudget(s, sessionDir);
+    });
+    {
       const closerDecision = evaluateCloserTerminalState({
         state,
         sessionDir,
@@ -9523,7 +9391,7 @@ async function runMuxRunnerMain() {
       log(`orphan manager reaper failed (ignored): ${safeErrorMessage(err)}`);
     }
 
-    if (templateName !== 'meeseeks.md' && applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, log, state.working_dir || '')) {
+    if (applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, log, state.working_dir || '')) {
       exitReason = 'success';
       break;
     }
@@ -9535,7 +9403,7 @@ async function runMuxRunnerMain() {
     // than entering `runIteration` with a null ticket (which spawns a manager with
     // no work and re-arms the idle-stall watchdog every pass). Matches the all-Done
     // clean-deactivation pattern but with a distinct, non-failure exit reason.
-    if (templateName !== 'meeseeks.md' && !preTicket && noRunnableTicketsRemain(sessionDir)) {
+    if (!preTicket && noRunnableTicketsRemain(sessionDir)) {
       // W4b empty-roster resolution: all-Done already exited above via
       // applyAllTicketsDoneCompletion (→ completion). Reaching here means the
       // roster is all-Failed with no runnable Todo — the honest ladder terminal
@@ -9692,14 +9560,6 @@ async function runMuxRunnerMain() {
       }
     }
 
-    // Resolve meeseeks model per-pass based on tier mapping
-    if (templateName === 'meeseeks.md') meeseeksPassCount++;
-    const meeseeksModel = loadMeeseeksModel(extensionRoot, meeseeksPassCount);
-    if (templateName === 'meeseeks.md') {
-      log(`Meeseeks pass ${meeseeksPassCount} → model: ${meeseeksModel}`);
-      logActivity({ event: 'meeseeks_model_select', source: 'pickle', session: path.basename(sessionDir), iteration, model: meeseeksModel, pass: meeseeksPassCount });
-    }
-
     // Update outer-loop progress tracker for the commit-pending probe.
     // First observation seeds both fields so a fresh session never trips
     // the probe at iteration 1 from the default zero-init.
@@ -9777,7 +9637,7 @@ async function runMuxRunnerMain() {
     // completed the ticket but state.current_ticket wasn't cleared yet), skip
     // the manager spawn and advance current_ticket to the next pending ticket.
     // This avoids wasted 1h+ manager turns that just log "already Done, skipping".
-    if (templateName !== 'meeseeks.md') {
+    {
       const preskipTicket = state.current_ticket;
       if (preskipTicket) {
         let preskipStatus: string | null = null;
@@ -10041,7 +9901,7 @@ async function runMuxRunnerMain() {
 
     // B-WSPU WS-1: all tiers route through the single synchronous spawn path.
     const outcome: Awaited<ReturnType<typeof runIteration>> =
-      await runIteration(sessionDir, iteration, extensionRoot, meeseeksModel).catch(
+      await runIteration(sessionDir, iteration, extensionRoot).catch(
         (err: unknown): Awaited<ReturnType<typeof runIteration>> => {
           const msg = err instanceof Error ? err.message : String(err);
           log(`runIteration threw (treating as spawn error): ${msg}`);
@@ -10123,7 +9983,7 @@ async function runMuxRunnerMain() {
     // AC-A1 (B-RRH): a Done ticket with completion evidence that produced no new
     // artifacts is NOT stuck — reset (handled in recordWorkerArtifactProgress), clear
     // current_ticket, advance, no increment (B-LERD: run-exit on a Done ticket).
-    if (templateName !== 'meeseeks.md' && apTicketId && apProgressResult?.doneGuard) {
+    if (apTicketId && apProgressResult?.doneGuard) {
       log(`[done-guard] ticket ${apTicketId} is Done with completion evidence — counter reset, advancing without charge`);
       updateMuxLifecycleState(statePath, { currentTicket: null });
       continue;
@@ -10139,7 +9999,7 @@ async function runMuxRunnerMain() {
       // / auto-split) advances the ticket instead of being respawned indefinitely;
       // only a genuinely exhausted ladder escalates to recovery_exhausted. A
       // fall_through (nothing to recover) proceeds to the existing terminal flip.
-      if (templateName !== 'meeseeks.md') {
+      {
         // AC-2 fail-safe: missing working_dir must halt this git-mutating
         // recovery call, never fall back to process.cwd() (the real repo).
         if (!state.working_dir) {
@@ -10817,7 +10677,7 @@ async function runMuxRunnerMain() {
     }
 
     if (result === 'task_completed') {
-      // EPIC_COMPLETED / TASK_COMPLETED — check for meeseeks chain before exiting
+      // EPIC_COMPLETED / TASK_COMPLETED
       let curState: State;
       try {
         curState = readRunnerState(statePath);
@@ -10992,18 +10852,6 @@ async function runMuxRunnerMain() {
       if (closerDecision.action === 'exit' && closerDecision.reason === 'manager_handoff_pending') {
         exitReason = exitForCloserTerminalState(statePath, sessionDir, iteration, closerDecision, log);
         break;
-      }
-      if (curState.chain_meeseeks === true) {
-        sm.update(statePath, s => { Object.assign(s, transitionToMeeseeks(s, extensionRoot)); });
-        lastStateIteration = -1;
-        stallCount = 0;
-        if (cbEnabled) {
-          // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-          try { fs.unlinkSync(cbPath); } catch { /* may not exist */ }
-          cbState = initCircuitBreaker(sessionDir, cbSettings);
-        }
-        log('Transitioning to Meeseeks review mode (chain_meeseeks). Continuing loop.');
-        continue;
       }
       log('Task completed. Exiting loop.');
       // B-GROUND2 WS1: the EPIC-success finalize routes through the single

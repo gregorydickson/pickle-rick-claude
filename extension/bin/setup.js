@@ -13,6 +13,7 @@ import { detectAndRecoverHeadRegression } from './mux-runner.js';
 import { LockError, BACKENDS, STATE_MANAGER_DEFAULTS } from '../types/index.js';
 import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
+import { reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { updateTicketStatusInTransaction } from '../services/transaction-ticket-ops.js';
 import { CodegraphService } from '../services/codegraph-service.js';
@@ -185,7 +186,6 @@ function createSetupConfig() {
         tmuxMode: false,
         minIterations: 0,
         commandTemplate: '_pickle-manager-prompt.md',
-        chainMeeseeks: false,
         backend: undefined,
         workerBackend: undefined,
         teamsMode: false,
@@ -582,10 +582,6 @@ const ARG_HANDLERS = {
         config.commandTemplate = value;
         config.explicitFlags.add('command-template');
         return index + 1;
-    },
-    '--chain-meeseeks': (config, _args, index) => {
-        config.chainMeeseeks = true;
-        return index;
     },
     '--backend': (config, args, index) => {
         const value = args[index + 1];
@@ -1034,8 +1030,6 @@ function applyResumeModeConfig(s, config) {
         s.command_template = config.commandTemplate;
     if (config.tmuxMode)
         s.tmux_mode = true;
-    if (config.chainMeeseeks)
-        s.chain_meeseeks = true;
     if (config.explicitFlags.has('backend') && config.backend)
         s.backend = config.backend;
     if (config.explicitFlags.has('worker-backend'))
@@ -1057,7 +1051,6 @@ function syncConfigFromState(config, state) {
     const rawMinIter = Number(state.min_iterations);
     config.minIterations = Number.isFinite(rawMinIter) ? rawMinIter : 0;
     config.commandTemplate = state.command_template;
-    config.chainMeeseeks = state.chain_meeseeks === true;
     if (state.backend && BACKENDS.includes(state.backend))
         config.backend = state.backend;
     config.teamsMode = state.teams_mode === true;
@@ -1290,7 +1283,6 @@ function createInitialState(config, sessionPath, taskStr) {
         tmux_mode: config.tmuxMode,
         min_iterations: config.minIterations,
         command_template: config.commandTemplate,
-        chain_meeseeks: config.chainMeeseeks,
         schema_version: STATE_MANAGER_DEFAULTS.schemaVersion,
         backend: config.backend,
         worker_backend: config.workerBackend,
@@ -1410,7 +1402,6 @@ function printActivationPanel(paths, config, fullSessionPath, currentIteration) 
         Promise: config.promiseToken || 'None',
         ...(config.minIterations > 0 ? { 'Min Passes': config.minIterations } : {}),
         ...(config.commandTemplate ? { Template: config.commandTemplate } : {}),
-        ...(config.chainMeeseeks ? { 'Chain Meeseeks': 'Yes' } : {}),
         Backend: config.backend || 'claude',
         ...(config.effort ? { Effort: config.effort } : {}),
         ...(config.teamsMode ? { Teams: `Yes (parallel: ${config.maxParallel})` } : {}),
@@ -1603,6 +1594,27 @@ function materializeWorkerMcpConfig(sessionRoot) {
     }
     catch { /* worker MCP config is best-effort — never block launch */ }
 }
+/**
+ * R-CXHANG AC-CXHANG-2: setup-time orphan-worker reap (session-GC), invoked
+ * once at pipeline bootstrap BEFORE any worker spawn. Best-effort — a reaper
+ * throw never blocks launch (returns null instead). Kill-switch
+ * PICKLE_ORPHAN_REAP=off and win32 no-op live inside the reaper itself.
+ */
+export function runSetupOrphanReap(sessionRoot, sessionsRoot, deps = {}) {
+    try {
+        const reap = deps.reap ?? reapOrphanedWorkerProcs;
+        const result = reap({
+            sessionsRoot,
+            statePath: path.join(sessionRoot, 'state.json'),
+        });
+        console.log(`[setup] orphan-worker reap: scanned=${result.scanned} reaped=${result.reaped}`);
+        return result;
+    }
+    catch {
+        // Best-effort session-GC — never block launch.
+        return null;
+    }
+}
 async function main() {
     try {
         assertSchemaVersionDeployParity();
@@ -1625,6 +1637,9 @@ async function main() {
     const session = args.resumeMode
         ? handleResumeSession(args)
         : initializeNewSession(args);
+    // R-CXHANG AC-CXHANG-2: collect worker procs no live session owns before this
+    // session spawns its own workers (they spawn much later, in mux-runner).
+    runSetupOrphanReap(session.sessionRoot, paths.sessionsRoot);
     // AC-LPB-01: warn (don't block) when --max-time is undersized for the planned
     // ticket count. Runs after session resolution so we can read the manifest from
     // the actual session dir. Best-effort; never throws.

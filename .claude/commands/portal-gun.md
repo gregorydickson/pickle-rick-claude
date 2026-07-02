@@ -9,7 +9,6 @@ Scan `$ARGUMENTS`:
 | Flag | Default | Effect |
 |------|---------|--------|
 | `--run` | false | Auto-launch convergence loop: execute → coverage scan → delta PRD → re-execute until 100% |
-| `--meeseeks` | false | Chain Meeseeks review after convergence completes (implies `--run`) |
 | `--target <path>` | cwd | Target repo/directory for the transplant |
 | `--depth <shallow\|deep>` | `deep` | `shallow` = summary, routes, models, invariants only; `deep` = full inventory with services, config, imports |
 | `--no-refine` | false | Skip the automatic refinement cycle (Step 6) |
@@ -21,9 +20,7 @@ Scan `$ARGUMENTS`:
 
 Remaining text = `${EXEMPLAR}` (the portal destination — a GitHub URL, local file/dir path, npm/PyPI package name, or plain-text description of a pattern).
 
-If `CHAIN_MEESEEKS` is true, set `AUTO_RUN` to true (implies `--run`).
-
-Store: `AUTO_RUN`, `CHAIN_MEESEEKS`, `TARGET_DIR`, `DEPTH`, `SKIP_REFINE`, `NO_CONVERGE`, `MAX_PASSES`, `CYCLES`, `MAX_TURNS`, `SAVE_PATTERN`, `EXEMPLAR`.
+Store: `AUTO_RUN`, `TARGET_DIR`, `DEPTH`, `SKIP_REFINE`, `NO_CONVERGE`, `MAX_PASSES`, `CYCLES`, `MAX_TURNS`, `SAVE_PATTERN`, `EXEMPLAR`.
 
 If `EXEMPLAR` is empty → ask user: "Where should I open the portal? Give me a GitHub URL, file path, package name, or describe the pattern you want to steal."
 
@@ -652,8 +649,6 @@ Re-initialize for execution:
 ```bash
 node "$HOME/.claude/pickle-rick/extension/bin/setup.js" --tmux --resume "${SESSION_ROOT}" --max-iterations 0 --max-time 0
 ```
-If CHAIN_MEESEEKS: append `--chain-meeseeks`.
-
 Launch tmux session and runner:
 ```bash
 PORTAL_HASH="$(basename "${SESSION_ROOT}" | sed 's/.*\(.\{8\}\)$/\1/')"
@@ -703,7 +698,7 @@ Total items: [N] | Ported: [N] | Partial: [N] | Missing: [N] | Coverage: [%]
 
 If `NO_CONVERGE` is true → skip to 9f (single pass, no loop).
 
-If coverage = 100% → converged. Print report. If CHAIN_MEESEEKS, transition to Meeseeks. Output `<promise>TASK_COMPLETED</promise>`.
+If coverage = 100% → converged. Print report. Output `<promise>TASK_COMPLETED</promise>`.
 
 If coverage < 100% AND this is pass 1 through `MAX_PASSES` (default: 3) → generate delta PRD and re-execute (Step 9e).
 
@@ -727,6 +722,5 @@ node "${EXTENSION_ROOT}/extension/bin/update-state.js" step breakdown "${SESSION
 
 ### 9f: Final Report
 Print: total passes, final coverage, items ported per pass, session path, attach command.
-If CHAIN_MEESEEKS: note auto-transition to Meeseeks review.
 
 Output: `<promise>TASK_COMPLETED</promise>`

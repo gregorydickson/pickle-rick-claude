@@ -412,8 +412,8 @@ test('ensureMonitorWindow: existing monitor respawns dead monitor and watcher pa
         },
         {
             mode: undefined,
-            monitorMode: 'meeseeks',
-            commandTemplate: 'meeseeks.md',
+            monitorMode: 'council',
+            commandTemplate: 'council-of-ricks.md',
             pane2: /monitor\.2.*tail -F .+session\/mux-runner\.log/,
         },
     ];
@@ -802,7 +802,6 @@ test('restartDeadWatcherPanes: non-node long-running command is treated as dead 
 test('restartDeadWatcherPanes: mode-specific pane 2 command uses refinement and mux log tail modes', async () => {
     const cases = [
         ['refinement', /tmux send-keys -t refinement-watch:monitor\.2 .+refinement-watcher\.js .+session.+ Enter/],
-        ['meeseeks', /tmux send-keys -t meeseeks-watch:monitor\.2 .+tail -F .+session\/mux-runner\.log.* Enter/],
         ['council', /tmux send-keys -t council-watch:monitor\.2 .+tail -F .+session\/mux-runner\.log.* Enter/],
     ];
 
@@ -903,23 +902,23 @@ test('monitorModesCompatible: unset existing => incompatible; matching => compat
     assert.equal(monitorModesCompatible('', 'council'), false);
     assert.equal(monitorModesCompatible('pickle', 'council'), false);
     assert.equal(monitorModesCompatible('council', 'council'), true);
-    assert.equal(monitorModesCompatible('meeseeks', 'meeseeks'), true);
+    assert.equal(monitorModesCompatible('refinement', 'refinement'), true);
 });
 
 test('monitorModesCompatible: every MonitorMode member matches only itself', () => {
-    const modes = ['pickle', 'meeseeks', 'council', 'refinement', 'szechuan-sauce', 'anatomy-park'];
+    const modes = ['pickle', 'council', 'refinement', 'szechuan-sauce', 'anatomy-park'];
     for (const mode of modes) {
         assert.equal(monitorModesCompatible(mode, mode), true, `expected ${mode} to match itself`);
         assert.equal(
-            monitorModesCompatible(mode === 'pickle' ? 'meeseeks' : 'pickle', mode),
+            monitorModesCompatible(mode === 'pickle' ? 'council' : 'pickle', mode),
             false,
             `expected ${mode} to reject a different existing mode`,
         );
     }
 });
 
-test('ensureMonitorWindow: infers meeseeks mode from state.command_template', async () => {
-    const f = makeFakes({ sessionName: 'meeseeks-abc', commandTemplate: 'meeseeks.md' });
+test('ensureMonitorWindow: infers council mode from state.command_template glob', async () => {
+    const f = makeFakes({ sessionName: 'council-glob-abc', commandTemplate: 'council-of-ricks.md' });
     try {
         let result;
         await f.withPath(() => {
@@ -933,7 +932,7 @@ test('ensureMonitorWindow: infers meeseeks mode from state.command_template', as
             });
         });
         assert.equal(result.status, 'created');
-        assert.match(f.readCalls(), /tmux-monitor\.sh meeseeks-abc .+session meeseeks/);
+        assert.match(f.readCalls(), /tmux-monitor\.sh council-glob-abc .+session council/);
     } finally {
         f.cleanup();
     }
@@ -961,7 +960,7 @@ test('ensureMonitorWindow: infers council mode from state.command_template', asy
 });
 
 test('ensureMonitorWindow: explicit mode overrides state-inferred mode', async () => {
-    const f = makeFakes({ sessionName: 'pickle-abc', commandTemplate: 'meeseeks.md' });
+    const f = makeFakes({ sessionName: 'pickle-abc', commandTemplate: 'szechuan-sauce.md' });
     try {
         let result;
         await f.withPath(() => {
@@ -1017,7 +1016,7 @@ test('inferMonitorMode: defaults to pickle when state.json missing', () => {
 describe.each([
     ['szechuan-sauce.md', 'szechuan-sauce'],
     ['anatomy-park.md', 'anatomy-park'],
-    ['meeseeks.md', 'meeseeks'],
+    ['meeseeks.md', 'pickle'],
     ['council-of-ricks.md', 'council'],
     ['refinement.md', 'refinement'],
     [undefined, 'pickle'],
@@ -1056,12 +1055,12 @@ test('inferMonitorMode: recovers orphan tmp state before reading command_templat
         );
         fs.writeFileSync(
             `${statePath}.tmp.99999999`,
-            JSON.stringify({ ...baseFields, command_template: 'meeseeks.md', iteration: 2, schema_version: 1 }),
+            JSON.stringify({ ...baseFields, command_template: 'szechuan-sauce.md', iteration: 2, schema_version: 1 }),
         );
 
-        assert.equal(inferMonitorMode(tmpRoot), 'meeseeks');
+        assert.equal(inferMonitorMode(tmpRoot), 'szechuan-sauce');
         const promoted = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-        assert.equal(promoted.command_template, 'meeseeks.md');
+        assert.equal(promoted.command_template, 'szechuan-sauce.md');
     } finally {
         fs.rmSync(tmpRoot, { recursive: true, force: true });
     }

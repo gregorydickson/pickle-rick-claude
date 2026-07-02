@@ -665,7 +665,6 @@ describe('resetStateForPhase', () => {
       started_at: new Date().toISOString(),
       session_dir: dir,
       tmux_mode: true,
-      chain_meeseeks: true,
       exit_reason: 'fatal',
     }));
 
@@ -679,7 +678,6 @@ describe('resetStateForPhase', () => {
     assert.equal(state.command_template, 'anatomy-park.md');
     assert.equal(state.step, null);
     assert.equal(state.exit_reason, null);
-    assert.equal(state.chain_meeseeks, false);
     assert.equal(state.tmux_mode, true);
     // Preserved fields
     assert.equal(state.working_dir, '/tmp');
@@ -784,7 +782,6 @@ describe('resetStateForPhase', () => {
 
     assert.doesNotThrow(() => resetStateForPhase(statePath, 'szechuan-sauce.md', 50));
     const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    assert.equal(state.chain_meeseeks, false);
     assert.equal(state.tmux_mode, true);
     fs.rmSync(dir, { recursive: true });
   });
@@ -1539,7 +1536,6 @@ function writeBaseState(statePath, overrides = {}) {
     started_at: new Date().toISOString(),
     session_dir: path.dirname(statePath),
     tmux_mode: true,
-    chain_meeseeks: false,
     backend: 'claude',
     ...overrides,
   };
@@ -1556,7 +1552,6 @@ describe('pickle phase entry', () => {
 
     const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
     assert.equal(state.command_template, '_pickle-manager-prompt.md');
-    assert.equal(state.chain_meeseeks, false);
     fs.rmSync(dir, { recursive: true });
   });
 

@@ -24,12 +24,12 @@ const MUX_SRC = fs.readFileSync(
   'utf8',
 );
 
-// The 7-site set: 6 literal guard call sites (by enclosing function) + the 7th
+// The guard-site set: literal guard call sites (by enclosing function) + the
 // committer commitAndContinueDoneFlip. We assert source-level routing per site.
+// (B-RSHM WS-2 retired the meeseeks/closer-flip site with the chain_meeseeks subsystem.)
 const SEVEN_SITES = [
   'applyAutoTicketCompletionValidation', // 2601
-  'commitAndContinueDoneFlip',           // 4764 (also the 7th committer)
-  'transitionToMeeseeks',                // 7130-ish meeseeks/closer flip
+  'commitAndContinueDoneFlip',           // 4764 (also the committer)
   'main-loop-model-marked-done',         // 10708
   'main-loop-secondary',                 // 11193
   'main-loop-tertiary',                  // 11268

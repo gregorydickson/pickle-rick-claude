@@ -13,7 +13,7 @@ This skill is **file-based, not harness-task-based**. The authoritative task lis
 If stale harness tasks exist at handoff (Step 7g), mark them `deleted` before advancing state — orphan tasks pollute downstream `/pickle-tmux --teams` mode.
 
 ## Step 0: Parse Flags
-`$ARGUMENTS`: `--run` → AUTO_RUN. `--meeseeks` → CHAIN_MEESEEKS (implies --run). `--resume [PATH]` → RESUME_MODE (reuse existing session). Remainder = `${TASK_ARGS}`.
+`$ARGUMENTS`: `--run` → AUTO_RUN. `--resume [PATH]` → RESUME_MODE (reuse existing session). Remainder = `${TASK_ARGS}`.
 
 If `--resume` has a path argument → `RESUME_SESSION = <path>`. If `--resume` with no path → resolve via `node "$HOME/.claude/pickle-rick/extension/bin/get-session.js"` → `RESUME_SESSION`.
 
@@ -791,8 +791,6 @@ Never recommend `--resume` if state incomplete.
 ```bash
 node "$HOME/.claude/pickle-rick/extension/bin/setup.js" --tmux --resume "${SESSION_ROOT}" --max-iterations 0 --max-time 0
 ```
-CHAIN_MEESEEKS → append `--chain-meeseeks`.
-
 ### 11b-zellij: Re-initialize (Zellij)
 Same setup command. Then create Zellij session per /pickle-zellij Steps 3-4.
 
@@ -811,6 +809,6 @@ tmux send-keys -t <name>:0 "node $HOME/.claude/pickle-rick/extension/bin/mux-run
 mux-runner auto-creates the 4-pane monitor window on startup — no manual invocation needed.
 
 ### 11g: Report
-Print: session, attach command, layout, cancel/kill commands. CHAIN_MEESEEKS → note auto-transition.
+Print: session, attach command, layout, cancel/kill commands.
 
 Output: `<promise>TASK_COMPLETED</promise>`

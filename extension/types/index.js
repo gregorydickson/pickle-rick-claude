@@ -149,7 +149,6 @@ export const VALID_ACTIVITY_EVENTS = [
     'baseline_unmeasurable',
     'judge_cli_missing',
     'multi_repo_warning',
-    'meeseeks_model_select',
     'pending_tickets_on_completion',
     'manager_false_epic_completed',
     'manager_persistent_hallucination',
@@ -282,6 +281,9 @@ export const VALID_ACTIVITY_EVENTS = [
     'codex_manager_self_bootstrap_attempted',
     'orphan_test_runner_reaped',
     'orphan_manager_reaped',
+    // R-CXHANG: setup-time orphan-worker reaper collected a detached codex/claude
+    // worker proc whose owning session is provably not live (session-GC).
+    'worker_orphan_reaped',
     'orphan_session_detected',
     'session_map_collision_blocked',
     'state_write_override_used',

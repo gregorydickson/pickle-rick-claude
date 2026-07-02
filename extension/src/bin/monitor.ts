@@ -208,12 +208,11 @@ export type MonitorMode =
   | 'pickle'
   | 'microverse'
   | 'idle'
-  | 'meeseeks'
   | 'council'
   | 'refinement'
   | 'szechuan-sauce'
   | 'anatomy-park';
-const VALID_MODES: ReadonlyArray<MonitorMode> = ['pickle', 'microverse', 'idle', 'meeseeks', 'council', 'refinement', 'szechuan-sauce', 'anatomy-park'];
+const VALID_MODES: ReadonlyArray<MonitorMode> = ['pickle', 'microverse', 'idle', 'council', 'refinement', 'szechuan-sauce', 'anatomy-park'];
 
 type StderrChunk = string | Uint8Array;
 type StderrWriteFn = (chunk: StderrChunk, encoding?: BufferEncoding, cb?: (err?: Error | null) => void) => boolean;
@@ -1033,7 +1032,7 @@ async function main() {
   let mode: MonitorMode = initialMode;
   // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
   if (!sessionDir || !fs.existsSync(sessionDir)) {
-    console.error('Usage: node monitor.js <session-dir> [--mode pickle|microverse|idle|meeseeks|council|refinement|szechuan-sauce|anatomy-park]');
+    console.error('Usage: node monitor.js <session-dir> [--mode pickle|microverse|idle|council|refinement|szechuan-sauce|anatomy-park]');
     process.exit(1);
   }
 

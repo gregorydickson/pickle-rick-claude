@@ -30,7 +30,6 @@ const describe = Object.assign(
 
 const MONITOR_MODE_CASES = [
   ['pickle', 'pickle.md', 'implement', 'pickle', /morty-watcher\.js/],
-  ['meeseeks', 'meeseeks.md', 'research', 'pickle', /tail -F .+mux-runner\.log/],
   ['council', 'council-of-ricks.md', 'plan', 'pickle', /tail -F .+mux-runner\.log/],
   ['refinement', 'refinement.md', 'verify', 'pickle', /refinement-watcher\.js/],
   ['szechuan-sauce', 'szechuan-sauce.md', 'szechuan-sauce', 'microverse', /pane-1-2-pointer\.js/],

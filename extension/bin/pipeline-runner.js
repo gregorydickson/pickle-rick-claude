@@ -27,6 +27,7 @@ import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX }
 export { SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
 import { isGitIgnoredPath, listWorkingTreeDirtyPaths, archiveBeforeDestructive, updateTicketStatus, ARCHIVE_UNTRACKED_BYTE_CAP, } from '../services/git-utils.js';
 import { logActivity } from '../services/activity-logger.js';
+import { killProcessGroup } from '../services/orphan-reaper.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
@@ -810,14 +811,11 @@ function isMuxRunnerInvocation(args) {
  * children or if the group signal fails (e.g. group already gone).
  */
 function reapChildSubtree(child, leadsGroup, signal = 'SIGTERM') {
-    if (leadsGroup && typeof child.pid === 'number') {
-        try {
-            process.kill(-child.pid, signal);
-            return;
-        }
-        catch {
-            // group already dead or unsignalable — fall through to direct kill
-        }
+    // R-CXHANG AC-CXHANG-3: the negative-PID group kill is the SHARED primitive
+    // (services/orphan-reaper.ts killProcessGroup); false (group already dead or
+    // unsignalable) falls through to the direct kill — behavior-preserving.
+    if (leadsGroup && typeof child.pid === 'number' && killProcessGroup(child.pid, signal)) {
+        return;
     }
     try {
         child.kill(signal);
@@ -1078,7 +1076,6 @@ export function resetStateForPhase(statePath, template, maxIterations) {
         s.start_time_epoch = Math.floor(Date.now() / 1000);
         s.max_iterations = maxIterations;
         s.command_template = template;
-        s.chain_meeseeks = false;
         s.tmux_mode = true;
     });
 }
@@ -1260,7 +1257,6 @@ export function enterPicklePhase(sessionDir, statePath, backend) {
     // Fix A — pin command_template. Stale value from a previous anatomy-park or
     // szechuan-sauce run would otherwise misroute the pickle worker.
     sm.update(statePath, (s) => {
-        s.chain_meeseeks = false;
         s.command_template = '_pickle-manager-prompt.md';
         if (s.backend !== backend)
             s.backend = backend;
@@ -1846,7 +1842,7 @@ function picklePhaseConfig() {
         setup: null,
         refreshScope: false,
         throwOnEmptyScope: false,
-        preSpawnStateMutation: (s) => { s.chain_meeseeks = false; },
+        preSpawnStateMutation: null,
     };
 }
 function citadelPhaseConfig() {

@@ -725,6 +725,19 @@ const EVENT_CASES = [
     drop: 'argv_summary',
   },
   {
+    type: 'worker_orphan_reaped',
+    valid: {
+      event: 'worker_orphan_reaped',
+      ts: TS,
+      pid: 7801,
+      pgid: 7801,
+      etime_seconds: 61234,
+      owning_session: '2026-07-01-abc123',
+      argv_summary: 'codex exec --dangerously-bypass-approvals-and-sandbox --add-dir /sessions/2026-07-01-abc123/t1 -- x',
+    },
+    drop: 'owning_session',
+  },
+  {
     type: 'orphan_session_detected',
     valid: {
       event: 'orphan_session_detected',
@@ -1331,6 +1344,7 @@ test('activity-event-payload: schema defines all registered event type definitio
     'codex_manager_self_bootstrap_attempted',
     'orphan_test_runner_reaped',
     'orphan_manager_reaped',
+    'worker_orphan_reaped',
     'orphan_session_detected',
     'session_map_collision_blocked',
     'state_write_override_used',

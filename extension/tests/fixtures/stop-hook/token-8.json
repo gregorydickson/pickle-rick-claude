@@ -1,10 +1,9 @@
 {
   "file": "token-8.json",
   "transcript": "<promise>TICKET_SELECTED</promise>",
-  "expected_decision": "block",
+  "expected_decision": "approve",
   "expected_output": {
-    "decision": "block",
-    "reason": "🥒 **Pickle Rick Loop Active** - Ticket selected, starting research..."
+    "decision": "approve"
   },
   "state": {
     "active": true,

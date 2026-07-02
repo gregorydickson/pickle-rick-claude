@@ -38,10 +38,7 @@
   "default_tmux_max_turns": 400,
   "default_refinement_cycles": 3,
   "default_refinement_max_turns": 100,
-  "default_meeseeks_model": "sonnet",
   "default_codex_model": "gpt-5.3-codex-spark",
-  "default_meeseeks_min_passes": 10,
-  "default_meeseeks_max_passes": 50,
   "default_council_min_rounds": 2,
   "default_council_max_rounds": 5,
   "default_council_publish": true,
@@ -55,12 +52,6 @@
     "max_park_minutes": 360
   },
   "manager_idle_backoff_fallback_ms": 60000,
-  "meeseeks_model_tiers": {
-    "1": "haiku",
-    "3": "sonnet",
-    "5": "opus"
-  },
-  "max_opus_passes": 3,
   "worker_mcp_config_path": null,
   "_worker_mcp_config_path_doc": "Optional path to an operator-curated subset MCP config (e.g. read-only Linear; omit write-capable servers). Null = no MCP forwarding.",
   "worker_mcp_snapshot_servers": [],
@@ -71,7 +62,6 @@
   "enable_failure_classification": true,
   "enable_complexity_tiers": true,
   "enable_config_protection": true,
-  "enable_model_tiers": true,
   "enable_backend_routing_heuristic": false,
   "bmad_hardening": {
     "archaeology_refresh_threshold_pct": 10,

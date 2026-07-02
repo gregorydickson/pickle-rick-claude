@@ -42,7 +42,7 @@ test('gate-events: no collisions with pre-existing 25 events', () => {
     'circuit_open', 'circuit_recovery',
     'iteration_start', 'iteration_end',
     'rate_limit_wait', 'rate_limit_resume', 'rate_limit_exhausted',
-    'multi_repo_warning', 'meeseeks_model_select', 'pending_tickets_on_completion',
+    'multi_repo_warning', 'pending_tickets_on_completion',
     'manager_false_epic_completed', 'manager_persistent_hallucination',
   ];
   for (const name of GATE_EVENTS) {

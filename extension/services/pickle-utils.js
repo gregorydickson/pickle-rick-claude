@@ -1723,7 +1723,7 @@ export function updateState(key, value, sessionDir) {
         throw new Error(`Invalid step "${value}". Must be one of: ${VALID_STEPS.join(', ')}`);
     }
     const NUMERIC_KEYS = new Set(['iteration', 'max_iterations', 'max_time_minutes', 'worker_timeout_seconds', 'start_time_epoch', 'min_iterations']);
-    const BOOLEAN_KEYS = new Set(['tmux_mode', 'chain_meeseeks']);
+    const BOOLEAN_KEYS = new Set(['tmux_mode']);
     // active and completion_promise are owned by tmux-runner/cancel.js — never via CLI
     const ALLOWED_KEYS = new Set([
         ...NUMERIC_KEYS, ...BOOLEAN_KEYS, 'step', 'working_dir',
@@ -1779,7 +1779,7 @@ export function updateState(key, value, sessionDir) {
 }
 /**
  * Infers monitor mode from state.json's command_template. Defaults to 'pickle'.
- * Glob mapping: pickle*→pickle, meeseeks*→meeseeks, council*→council.
+ * Glob mapping: pickle*→pickle, council*→council.
  * Exact mapping: anatomy-park.md→anatomy-park, szechuan-sauce.md→szechuan-sauce, refinement.md→refinement.
  * Missing or unrecognized template defaults to 'pickle' and emits a WARN via optional log.
  */
@@ -1797,8 +1797,6 @@ export function inferMonitorMode(sessionDir, log) {
             return 'anatomy-park';
         if (tpl === 'szechuan-sauce.md')
             return 'szechuan-sauce';
-        if (tpl.startsWith('meeseeks'))
-            return 'meeseeks';
         if (tpl.startsWith('council'))
             return 'council';
         if (tpl === 'refinement.md')
@@ -1977,7 +1975,6 @@ export function watcherPaneCommands(sessionDir, extensionRoot, mode) {
     let paneTwo;
     switch (mode) {
         case 'pickle':
-        case 'meeseeks':
         case 'council':
         case 'refinement':
         case 'szechuan-sauce':
@@ -2012,7 +2009,6 @@ function watcherPaneTwoCommand(sessionDir, binRoot, mode) {
                 name: 'refinement-watcher.js',
                 command: wrapWithStderrRedirect(`node ${path.join(binRoot, 'refinement-watcher.js')} ${sessionDir}`, sessionDir, 2),
             };
-        case 'meeseeks':
         case 'council':
             return {
                 pane: 2,
@@ -2117,7 +2113,7 @@ export function _resetSessionDirInvalidEmittedForTests() {
  *   - `error`      → tmux/bash call failed; check `reason`
  *
  * Mode compatibility: the monitor window's layout is mode-specific
- * (pickle/meeseeks/council/refinement). We persist the mode it was built for
+ * (pickle/council/refinement). We persist the mode it was built for
  * via a tmux user-option (`@pickle_monitor_mode`) on the window itself, then
  * on re-entry compare against the mode this invocation wants. Mismatch =>
  * kill + recreate. Silent reuse would leave the wrong layout in place.
@@ -2272,8 +2268,6 @@ export function monitorModesCompatible(existing, want) {
     switch (want) {
         case 'pickle':
             return existing === 'pickle';
-        case 'meeseeks':
-            return existing === 'meeseeks';
         case 'council':
             return existing === 'council';
         case 'refinement':
@@ -2453,7 +2447,7 @@ export function pruneOldSessions(sessionsRoot, maxAgeDays = 7) {
 }
 // --- Manager prompt composition helpers ---
 /**
- * Strips the Setup section from dual-mode templates (e.g. meeseeks.md, szechuan-sauce.md).
+ * Strips the Setup section from dual-mode templates (e.g. szechuan-sauce.md).
  * The mux-runner always invokes with --resume, so Setup instructions are dead weight
  * that confuse the model. Strips from "## SETUP" (with or without " MODE" suffix) to
  * the next ##-level heading, regardless of its name. This avoids coupling to a specific

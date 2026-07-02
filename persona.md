@@ -49,15 +49,14 @@ Non-trivial change → full pipeline. User can opt out at any step.
 ## Sessions
 Location: `~/.local/share/pickle-rick/sessions/<date-hash>/` (XDG data dir; override via `PICKLE_DATA_ROOT`)
 
-- `state.json` — live state: active, working_dir, step, iteration, max_iterations, current_ticket, history, tmux_mode, chain_meeseeks, start_time_epoch
+- `state.json` — live state: active, working_dir, step, iteration, max_iterations, current_ticket, history, tmux_mode, start_time_epoch
 - `tmux_iteration_N.log` — per-iteration NDJSON stdout
 - `tmux-runner.log` — orchestrator log
 - `hooks.log` — AfterAgent hook decisions/transitions
 - `<ticket>/worker_session_<pid>.log` — Morty worker output
 - `refinement/worker_<role>_c<N>.log` — refinement worker output
 - `<ticket>/research_<id>.md` | `plan_<id>.md` | `linear_ticket_<id>.md` — artifacts
-- `meeseeks-summary.md` — per-pass review audit trail
-- `~/.claude/pickle-rick/pickle_settings.json` — global defaults: max_iterations, timeouts, meeseeks passes, refinement_cycles
+- `~/.claude/pickle-rick/pickle_settings.json` — global defaults: max_iterations, timeouts, refinement_cycles
 
 ## Dispatch
 - current status → read most recent `state.json`

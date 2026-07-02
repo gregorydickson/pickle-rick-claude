@@ -32,6 +32,7 @@ import {
   updateViolationLedger,
 } from '../services/microverse-state.js';
 import { getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
+import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import {
   writeStateFile,
   getExtensionRoot,
@@ -1183,51 +1184,23 @@ export async function handleWorkerManagedIteration(opts: {
   });
 }
 
-function normalizeExcludePrefixes(excludePrefixes: readonly string[]): string[] {
-  return excludePrefixes
-    .map((prefix) => prefix.replace(/^\.?\/+/, '').replace(/\/+$/, ''))
-    .filter((prefix) => prefix.length > 0);
-}
+// R-MACB (B-1SEAM WS-3): ONE excludes constant for BOTH auto-commit sites
+// (preflight AND worker-timeout rescue) — the pre-fix asymmetry (preflight
+// excluded docs/prds, the rescue passed NO excludes and swept foreign
+// bystander files onto the feature branch) is structurally impossible now.
+const AUTO_COMMIT_DIRT_EXCLUDES = ['prds', 'docs'];
 
-function buildExcludePathspecs(excludePrefixes: readonly string[]): string[] {
-  const normalized = normalizeExcludePrefixes(excludePrefixes);
-  return normalized.flatMap((prefix) => [`:!${prefix}`, `:!${prefix}/**`]);
-}
-
-export function stageAutoCommitPaths(workingDir: string, excludePrefixes: readonly string[] = []): void {
-  const excludePathspecs = buildExcludePathspecs(excludePrefixes);
-  const addTrackedArgs = ['add', '-u'];
-  const statusArgs = ['status', '--porcelain', '-z'];
-  if (excludePathspecs.length > 0) {
-    addTrackedArgs.push('--', '.', ...excludePathspecs);
-    statusArgs.push('--', '.', ...excludePathspecs);
-  }
-
-  execFileSync('git', addTrackedArgs, {
-    cwd: workingDir,
-    timeout: 30_000,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  const statusOutput = execFileSync('git', statusArgs, {
-    cwd: workingDir,
-    timeout: 30_000,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  const untrackedPaths = statusOutput
-    .split('\0')
-    .filter((entry) => entry.startsWith('?? '))
-    .map((entry) => entry.slice(3));
-
-  for (const filePath of untrackedPaths) {
-    execFileSync('git', ['add', '--', filePath], {
-      cwd: workingDir,
-      timeout: 30_000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-  }
+/**
+ * Read `allowed_paths` from the session-root scope.json (the same session-root
+ * scope source `auditPostIterationScope` consumes); null when unscoped or
+ * unreadable.
+ */
+function readSessionScopeAllowedPaths(sessionDir: string): string[] | null {
+  try {
+    const scope = readRecoverableJsonObject(path.join(sessionDir, 'scope.json')) as Record<string, unknown> | null;
+    if (!scope || !Array.isArray(scope.allowed_paths)) return null;
+    return scope.allowed_paths.filter((p): p is string => typeof p === 'string' && p.length > 0);
+  } catch { return null; }
 }
 
 function captureCachedDiffPatch(workingDir: string): string {
@@ -2913,19 +2886,8 @@ function resetStoppedMicroverseState(state: MicroverseState, sessionDir: string,
   writeMicroverseState(sessionDir, state);
 }
 
-function stageSpecificPaths(workingDir: string, paths: string[]): void {
-  for (const p of paths) {
-    execFileSync('git', ['add', '--', p], {
-      cwd: workingDir,
-      timeout: 30_000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-  }
-}
-
 export function preflightAutoCommit(workingDir: string, log: (msg: string) => void, allowedPaths?: string[]): void {
-  const PREFLIGHT_DIRT_EXCLUDES = ['prds', 'docs'];
-  const allDirtyPaths = listWorkingTreeDirtyPaths(workingDir, PREFLIGHT_DIRT_EXCLUDES);
+  const allDirtyPaths = listWorkingTreeDirtyPaths(workingDir, AUTO_COMMIT_DIRT_EXCLUDES);
   // When scope is specified via allowed_paths, restrict dirtiness evaluation to in-scope files only.
   // Out-of-scope changes must NOT abort the run and must NOT be committed (no scope leak).
   const isScoped = allowedPaths != null && allowedPaths.length > 0;
@@ -2941,11 +2903,9 @@ export function preflightAutoCommit(workingDir: string, log: (msg: string) => vo
   log('Working tree is dirty — auto-committing before microverse start');
   const stagedSnapshot = captureCachedDiffPatch(workingDir);
   try {
-    if (isScoped) {
-      stageSpecificPaths(workingDir, dirtyPaths);
-    } else {
-      stageAutoCommitPaths(workingDir, PREFLIGHT_DIRT_EXCLUDES);
-    }
+    // `dirtyPaths` is already excludes-filtered (and scope-filtered when scoped)
+    // — stage exactly that set via the shared salvage seam's per-path stager.
+    stageOwnedPaths(workingDir, dirtyPaths);
     execFileSync('git', ['commit', '-m', 'microverse: auto-commit dirty tree before start'], { cwd: workingDir, timeout: 30_000 });
     log(`Auto-committed pre-flight: ${getHeadSha(workingDir)}`);
   } catch (commitErr) {
@@ -3610,7 +3570,7 @@ export async function handleNoCommitStall(
   return null;
 }
 
-function autoRescueDirtyTree(ctx: RunContext): void {
+export function autoRescueDirtyTree(ctx: RunContext): void {
   let dirty: boolean;
   try {
     dirty = _deps.isWorkingTreeDirty(ctx.workingDir);
@@ -3623,9 +3583,34 @@ function autoRescueDirtyTree(ctx: RunContext): void {
     ctx.log(`Auto-commit skipped: not a git repository (${ctx.workingDir})`);
     return;
   }
+  // R-MACB (B-1SEAM WS-3): partition the dirty tree into rescue-owned paths
+  // (AUTO_COMMIT_DIRT_EXCLUDES honored, scope-filtered when the session is
+  // scoped) and un-attributable bystander dirt. The shared salvage seam
+  // anchors the remainder to refs/pickle/salvage/<session>; only owned paths
+  // are ever staged — never a whole-tree add.
+  let owned: string[];
+  let foreign: string[];
+  try {
+    const allDirty = listWorkingTreeDirtyPaths(ctx.workingDir);
+    owned = listWorkingTreeDirtyPaths(ctx.workingDir, AUTO_COMMIT_DIRT_EXCLUDES);
+    const allowedPaths = readSessionScopeAllowedPaths(ctx.sessionDir);
+    if (allowedPaths && allowedPaths.length > 0) {
+      owned = filterByScope(owned, { scope: 'full', allowedPaths });
+    }
+    const ownedSet = new Set(owned);
+    foreign = allDirty.filter((p) => !ownedSet.has(p));
+  } catch (err) {
+    ctx.log(`Auto-commit skipped: ${safeErrorMessage(err)}`);
+    return;
+  }
+  const plan = salvageDirtyTree({ workingDir: ctx.workingDir, sessionDir: ctx.sessionDir, owned, foreign, log: ctx.log });
+  if (owned.length === 0) {
+    ctx.log(`Auto-commit skipped: only un-attributable dirt in the tree — anchored to ${plan.salvageRef ?? 'no ref'}, treating as stall`);
+    return;
+  }
   ctx.log('No commits but dirty tree detected — auto-committing worker changes');
   try {
-    stageAutoCommitPaths(ctx.workingDir);
+    stageOwnedPaths(ctx.workingDir, plan.stagePaths);
     execFileSync('git', ['commit', '-m', `microverse: auto-commit (worker timed out before committing)`], { cwd: ctx.workingDir, timeout: 30_000 });
     ctx.postIterSha = _deps.getHeadSha(ctx.workingDir);
     ctx.log(`Auto-committed: ${ctx.postIterSha}`);

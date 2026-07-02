@@ -1,10 +1,9 @@
 {
   "file": "token-7.json",
   "transcript": "<promise>PRD_COMPLETE</promise>",
-  "expected_decision": "block",
+  "expected_decision": "approve",
   "expected_output": {
-    "decision": "block",
-    "reason": "🥒 **Pickle Rick Loop Active** - PRD finished, moving to breakdown..."
+    "decision": "approve"
   },
   "state": {
     "active": true,

@@ -98,10 +98,20 @@ test('classifyDecision: token fixture replay matches expected decisions', () => 
   }
 });
 
-test('helper state changes are returned without mutating input state', () => {
-  const state = baseState({ consecutive_short_responses: 1 });
+test('detectDegenerateResponse: short response approves without mutating input state (B-RSHM nudge retired)', () => {
+  const state = baseState();
   const before = JSON.stringify(state);
   const result = detectDegenerateResponse(state, 'wait');
   assert.equal(JSON.stringify(state), before);
-  assert.deepEqual(result, { decision: 'block', stateMutations: { consecutive_short_responses: 2 } });
+  assert.deepEqual(result, { decision: 'approve' });
+});
+
+test('classifyDecision: non-tmux default fallthrough approves (interactive loop retired)', () => {
+  const result = classifyDecision(
+    baseState({ tmux_mode: false, iteration: 3, max_iterations: 10 }),
+    'Substantive progress update that is well above the degenerate length threshold.',
+    '',
+  );
+  assert.equal(result.decision, 'approve');
+  assert.match(result.logMessage, /interactive loop retired/i);
 });

@@ -2,7 +2,7 @@
 /**
  * mux-loop.test.js — Mux-runner loop logic integration tests.
  *
- * Tests three key mux-runner loop scenarios using its exported pure functions:
+ * Tests two key mux-runner loop scenarios using its exported pure functions:
  *
  * 1. success/rate_limit/success (wait+resume):
  *    - Iteration 1 succeeds → consecutiveRateLimits stays 0
@@ -11,11 +11,6 @@
  *
  * 2. success/success/stall with CB open (deactivated):
  *    - canExecute(OPEN state) → false → state.active set to false
- *
- * 3. task completed with chain_meeseeks (template transitions):
- *    - result='task_completed' + state.chain_meeseeks=true
- *    - transitionToMeeseeks() → command_template='meeseeks.md', step='review'
- *    - chain_meeseeks cleared, iteration reset to 0
  */
 
 import { test } from 'node:test';
@@ -34,9 +29,7 @@ const {
   classifyCompletion,
   classifyIterationExit,
   computeRateLimitAction,
-  transitionToMeeseeks,
   loadRateLimitSettings,
-  loadMeeseeksModel,
   detectRateLimitInText,
 } = await import(path.resolve(__dirname, '../../bin/mux-runner.js'));
 
@@ -61,7 +54,6 @@ function makeState(overrides = {}) {
     started_at: new Date().toISOString(),
     session_dir: '/tmp/test-session',
     schema_version: 1,
-    chain_meeseeks: false,
     ...overrides,
   };
 }
@@ -278,123 +270,6 @@ test('ML-16: CB open → safeDeactivate sets active=false (session deactivated)'
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 3: task_completed with chain_meeseeks → template transition
-//
-// When result='task_completed' and chain_meeseeks=true, the runner calls
-// transitionToMeeseeks() to switch to review mode. Tests the state transition.
-// ---------------------------------------------------------------------------
-
-test('ML-17: transitionToMeeseeks — sets command_template to meeseeks.md', () => {
-  const dir = tmpDir();
-  try {
-    const extRoot = path.join(dir, 'ext');
-    fs.mkdirSync(extRoot, { recursive: true });
-
-    const state = makeState({ chain_meeseeks: true, step: 'implement', current_ticket: 'TICK-001' });
-    const next = transitionToMeeseeks(state, extRoot);
-
-    assert.equal(next.command_template, 'meeseeks.md', 'must switch to meeseeks template');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('ML-18: transitionToMeeseeks — clears chain_meeseeks flag and resets iteration', () => {
-  const dir = tmpDir();
-  try {
-    const extRoot = path.join(dir, 'ext');
-    fs.mkdirSync(extRoot, { recursive: true });
-
-    const state = makeState({ chain_meeseeks: true, iteration: 7 });
-    const next = transitionToMeeseeks(state, extRoot);
-
-    assert.equal(next.chain_meeseeks, false, 'chain_meeseeks must be cleared');
-    assert.equal(next.iteration, 0, 'iteration must reset to 0 for fresh review loop');
-    assert.equal(next.step, 'review', 'step must switch to review');
-    assert.equal(next.current_ticket, null, 'current_ticket must be cleared');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('ML-19: transitionToMeeseeks — uses default min/max passes when no settings file', () => {
-  const dir = tmpDir();
-  try {
-    const extRoot = path.join(dir, 'ext');
-    fs.mkdirSync(extRoot, { recursive: true });
-    // No pickle_settings.json → uses hardcoded defaults (10 min, 50 max)
-
-    const state = makeState({ chain_meeseeks: true });
-    const next = transitionToMeeseeks(state, extRoot);
-
-    assert.equal(next.min_iterations, 10, 'default min_iterations must be 10');
-    assert.equal(next.max_iterations, 50, 'default max_iterations must be 50');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('ML-20: transitionToMeeseeks — reads custom min/max passes from pickle_settings.json', () => {
-  const dir = tmpDir();
-  try {
-    const extRoot = path.join(dir, 'ext');
-    fs.mkdirSync(extRoot, { recursive: true });
-    fs.writeFileSync(
-      path.join(extRoot, 'pickle_settings.json'),
-      JSON.stringify({ default_meeseeks_min_passes: 5, default_meeseeks_max_passes: 25 }),
-    );
-
-    const state = makeState({ chain_meeseeks: true });
-    const next = transitionToMeeseeks(state, extRoot);
-
-    assert.equal(next.min_iterations, 5, 'custom min_iterations from settings');
-    assert.equal(next.max_iterations, 25, 'custom max_iterations from settings');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('ML-21: transitionToMeeseeks — ignores non-positive values in settings (uses defaults)', () => {
-  const dir = tmpDir();
-  try {
-    const extRoot = path.join(dir, 'ext');
-    fs.mkdirSync(extRoot, { recursive: true });
-    fs.writeFileSync(
-      path.join(extRoot, 'pickle_settings.json'),
-      JSON.stringify({ default_meeseeks_min_passes: 0, default_meeseeks_max_passes: -1 }),
-    );
-
-    const state = makeState({ chain_meeseeks: true });
-    const next = transitionToMeeseeks(state, extRoot);
-
-    assert.equal(next.min_iterations, 10, 'zero value must fall back to default');
-    assert.equal(next.max_iterations, 50, 'negative value must fall back to default');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('ML-22: transitionToMeeseeks — is a pure function (original state unchanged)', () => {
-  const dir = tmpDir();
-  try {
-    const extRoot = path.join(dir, 'ext');
-    fs.mkdirSync(extRoot, { recursive: true });
-
-    const state = makeState({ chain_meeseeks: true, step: 'implement', iteration: 5 });
-    const stateCopy = { ...state };
-
-    transitionToMeeseeks(state, extRoot);
-
-    // Original state must be unchanged
-    assert.equal(state.chain_meeseeks, stateCopy.chain_meeseeks, 'original chain_meeseeks must be unchanged');
-    assert.equal(state.step, stateCopy.step, 'original step must be unchanged');
-    assert.equal(state.iteration, stateCopy.iteration, 'original iteration must be unchanged');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
 // loadRateLimitSettings — settings parsing
 // ---------------------------------------------------------------------------
 
@@ -444,40 +319,6 @@ test('ML-25: loadRateLimitSettings — ignores sub-1 values (uses defaults)', ()
     const { waitMinutes, maxRetries } = loadRateLimitSettings(extRoot);
     assert.equal(waitMinutes, 5, 'zero wait must use default');
     assert.equal(maxRetries, 3, 'zero retries must use default');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// loadMeeseeksModel — model selection
-// ---------------------------------------------------------------------------
-
-test('ML-26: loadMeeseeksModel — returns "sonnet" when no settings file', () => {
-  const dir = tmpDir();
-  try {
-    const extRoot = path.join(dir, 'ext');
-    fs.mkdirSync(extRoot, { recursive: true });
-
-    const model = loadMeeseeksModel(extRoot);
-    assert.equal(model, 'sonnet');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('ML-27: loadMeeseeksModel — reads custom model from settings', () => {
-  const dir = tmpDir();
-  try {
-    const extRoot = path.join(dir, 'ext');
-    fs.mkdirSync(extRoot, { recursive: true });
-    fs.writeFileSync(
-      path.join(extRoot, 'pickle_settings.json'),
-      JSON.stringify({ default_meeseeks_model: 'opus' }),
-    );
-
-    const model = loadMeeseeksModel(extRoot);
-    assert.equal(model, 'opus');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

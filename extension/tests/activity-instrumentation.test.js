@@ -182,30 +182,26 @@ test('activity: custom completion_promise emits NO per-token events', () => {
 });
 
 // ---------------------------------------------------------------------------
-// stop-hook: limit-exit session_end events
+// stop-hook: limit exits emit NO session_end (B-RSHM WS-1 — the inline
+// session-end emission was retired with the non-tmux interactive loop; runners
+// own session lifecycle events)
 // ---------------------------------------------------------------------------
 
-test('activity: max iterations limit (non-tmux) emits session_end', () => {
+test('activity: max iterations limit (non-tmux) emits NO session_end', () => {
   const { activityEvents } = runHookWithActivity({
     state: baseState({ iteration: 5, max_iterations: 5 }),
   });
-  assert.equal(activityEvents.length, 1);
-  assert.equal(activityEvents[0].event, 'session_end');
-  assert.equal(activityEvents[0].mode, 'inline');
-  assert.ok(activityEvents[0].session, 'should have session ID');
+  assert.equal(activityEvents.length, 0, 'stop-hook no longer emits session_end on limit exits');
 });
 
-test('activity: time limit (non-tmux) emits session_end', () => {
+test('activity: time limit (non-tmux) emits NO session_end', () => {
   const { activityEvents } = runHookWithActivity({
     state: baseState({
       start_time_epoch: Math.floor(Date.now() / 1000) - 3700,
       max_time_minutes: 60,
     }),
   });
-  assert.equal(activityEvents.length, 1);
-  assert.equal(activityEvents[0].event, 'session_end');
-  assert.equal(activityEvents[0].mode, 'inline');
-  assert.equal(typeof activityEvents[0].duration_min, 'number');
+  assert.equal(activityEvents.length, 0, 'stop-hook no longer emits session_end on limit exits');
 });
 
 test('activity: max iterations limit (tmux) does NOT emit session_end', () => {

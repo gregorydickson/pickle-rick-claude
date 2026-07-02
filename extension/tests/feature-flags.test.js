@@ -6,7 +6,6 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadMeeseeksModel } from '../bin/mux-runner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PROTECTION_HANDLER = path.resolve(__dirname, '../hooks/handlers/config-protection.js');
@@ -97,44 +96,6 @@ function runConfigProtection(opts = {}) {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }
-
-// ---------------------------------------------------------------------------
-// enable_model_tiers
-// ---------------------------------------------------------------------------
-
-describe('enable_model_tiers', () => {
-  const TIERS = { '1': 'haiku', '3': 'sonnet', '5': 'opus' };
-
-  test('enabled (default): uses tier routing', () => {
-    withTempRoot({ meeseeks_model_tiers: TIERS, enable_model_tiers: true }, (root) => {
-      assert.equal(loadMeeseeksModel(root, 5), 'opus');
-    });
-  });
-
-  test('disabled: skips tier routing, returns default model', () => {
-    withTempRoot({ meeseeks_model_tiers: TIERS, enable_model_tiers: false }, (root) => {
-      assert.equal(loadMeeseeksModel(root, 5), 'sonnet');
-    });
-  });
-
-  test('disabled with custom default: returns custom default, not tiers', () => {
-    withTempRoot({ meeseeks_model_tiers: TIERS, default_meeseeks_model: 'haiku', enable_model_tiers: false }, (root) => {
-      assert.equal(loadMeeseeksModel(root, 5), 'haiku');
-    });
-  });
-
-  test('missing flag: treated as enabled (backward compat)', () => {
-    withTempRoot({ meeseeks_model_tiers: TIERS }, (root) => {
-      assert.equal(loadMeeseeksModel(root, 5), 'opus');
-    });
-  });
-
-  test('no settings file: returns default sonnet', () => {
-    withTempRoot(null, (root) => {
-      assert.equal(loadMeeseeksModel(root, 5), 'sonnet');
-    });
-  });
-});
 
 // ---------------------------------------------------------------------------
 // enable_config_protection
@@ -286,10 +247,9 @@ describe('pickle_settings.json defaults', () => {
     'enable_failure_classification',
     'enable_complexity_tiers',
     'enable_config_protection',
-    'enable_model_tiers',
   ];
 
-  test('all 5 flags exist and default to true', () => {
+  test('all 4 flags exist and default to true', () => {
     const settingsPath = path.resolve(__dirname, '../../pickle_settings.json');
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
     for (const flag of FLAGS) {
@@ -303,15 +263,6 @@ describe('pickle_settings.json defaults', () => {
 // ---------------------------------------------------------------------------
 
 describe('error isolation', () => {
-  test('loadMeeseeksModel: corrupted settings file returns default', () => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-ff-')));
-    try {
-      fs.writeFileSync(path.join(root, 'pickle_settings.json'), 'NOT JSON!!!');
-      assert.equal(loadMeeseeksModel(root, 5), 'sonnet');
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
 
   test('config-protection: corrupted settings file still blocks (default enabled)', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-ff-'));

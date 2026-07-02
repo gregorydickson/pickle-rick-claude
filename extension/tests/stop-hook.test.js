@@ -54,8 +54,8 @@ function writeExtensionSentinel(extensionDir) {
  *   setStateFileEnv – if true (default), sets PICKLE_STATE_FILE; if false,
  *                     the hook resolves state via current_sessions.json instead
  *
- * Returns { decision, state } where state is the (possibly updated)
- * state.json read back after the hook exits.
+ * Returns { decision, state, debugLog } where state is the (possibly updated)
+ * state.json read back after the hook exits and debugLog is the hook's debug.log.
  */
 function runHook(opts = {}) {
   const { state = baseState(), response = '', role = undefined, setStateFileEnv = true } = opts;
@@ -85,9 +85,11 @@ function runHook(opts = {}) {
       encoding: 'utf-8',
       env,
     });
+    const debugLogPath = path.join(tmpDir, 'debug.log');
     return {
       decision: JSON.parse(stdout.trim()),
       state: JSON.parse(fs.readFileSync(stateFile, 'utf-8')),
+      debugLog: fs.existsSync(debugLogPath) ? fs.readFileSync(debugLogPath, 'utf-8') : '',
     };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -241,11 +243,13 @@ test('stop-hook: symlink cwd alias does not trigger early approve for a live sam
     fs.symlinkSync(repoRoot, repoAlias);
 
     process.chdir(repoAlias);
-    const { decision } = runHook({
+    const { decision, debugLog } = runHook({
       state: baseState({ working_dir: repoRoot }),
       response: 'Still working on the ticket.',
     });
-    assert.equal(decision.decision, 'block');
+    assert.equal(decision.decision, 'approve');
+    assert.doesNotMatch(debugLog, /CWD Mismatch/, 'symlink alias must not be treated as a foreign cwd');
+    assert.match(debugLog, /Interactive loop retired/, 'must reach the classify fallthrough, not the early approve');
   } finally {
     process.chdir(originalCwd);
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -306,23 +310,23 @@ test('stop-hook: tmux_mode, PICKLE_STATE_FILE set (subprocess) → approves when
 });
 
 // ---------------------------------------------------------------------------
-// Exit conditions — approve and deactivate session
+// Exit conditions — approve; the hook never mutates active (runner owns lifecycle)
 // ---------------------------------------------------------------------------
 
-test('stop-hook: EPIC_COMPLETED → approve + active=false', () => {
+test('stop-hook: EPIC_COMPLETED → approve, active unchanged (hook never deactivates)', () => {
   const { decision, state } = runHook({
     response: 'Work done. <promise>EPIC_COMPLETED</promise>',
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false);
+  assert.equal(state.active, true, 'B-RSHM: stop-hook no longer writes active — runner owns lifecycle');
 });
 
-test('stop-hook: TASK_COMPLETED → approve + active=false', () => {
+test('stop-hook: TASK_COMPLETED → approve, active unchanged (hook never deactivates)', () => {
   const { decision, state } = runHook({
     response: '<promise>TASK_COMPLETED</promise>',
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false);
+  assert.equal(state.active, true, 'B-RSHM: stop-hook no longer writes active — runner owns lifecycle');
 });
 
 test('stop-hook: recovered disabled auto-update settings suppress completion update spawn', () => {
@@ -444,21 +448,23 @@ test('stop-hook: TASK_COMPLETED + tmux_mode → approve, active UNCHANGED (runne
   assert.equal(state.active, true, 'tmux mode: runner owns active — hook must not deactivate');
 });
 
-test('stop-hook: custom completion_promise match → approve + active=false', () => {
+test('stop-hook: custom completion_promise match → approve, active unchanged', () => {
   const { decision, state } = runHook({
     state: baseState({ completion_promise: 'MY_CUSTOM_DONE' }),
     response: 'All done. <promise>MY_CUSTOM_DONE</promise>',
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false);
+  assert.equal(state.active, true);
 });
 
-test('stop-hook: completion_promise set but wrong token in response → block', () => {
-  const { decision } = runHook({
+test('stop-hook: completion_promise set but wrong token → approve without completion detection', () => {
+  const { decision, debugLog } = runHook({
     state: baseState({ completion_promise: 'MY_CUSTOM_DONE' }),
-    response: 'Not done yet.',
+    response: 'Not done yet, still iterating on it.',
   });
-  assert.equal(decision.decision, 'block');
+  assert.deepEqual(decision, { decision: 'approve' });
+  assert.match(debugLog, /hasPromise=false/, 'wrong token must not read as the completion promise');
+  assert.doesNotMatch(debugLog, /Task\/Worker complete/);
 });
 
 test('stop-hook: worker + I AM DONE → approve, active unchanged', () => {
@@ -482,19 +488,20 @@ test('stop-hook: worker + EPIC_COMPLETED → approve, active unchanged', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Checkpoint conditions (non-tmux) — block with phase-specific feedback
+// Checkpoint conditions — approve unconditionally (B-RSHM: inline checkpoint
+// blocks retired; the runner owns phase respawn)
 // ---------------------------------------------------------------------------
 
-test('stop-hook: PRD_COMPLETE (non-tmux) → block, feedback mentions breakdown', () => {
-  const { decision } = runHook({ response: '<promise>PRD_COMPLETE</promise>' });
-  assert.equal(decision.decision, 'block');
-  assert.ok(decision.reason.includes('breakdown'), decision.reason);
+test('stop-hook: PRD_COMPLETE (non-tmux) → approve (checkpoint blocks retired)', () => {
+  const { decision, debugLog } = runHook({ response: '<promise>PRD_COMPLETE</promise>' });
+  assert.deepEqual(decision, { decision: 'approve' });
+  assert.match(debugLog, /checkpoint — runner will respawn/);
 });
 
-test('stop-hook: TICKET_SELECTED (non-tmux) → block, feedback mentions research', () => {
-  const { decision } = runHook({ response: '<promise>TICKET_SELECTED</promise>' });
-  assert.equal(decision.decision, 'block');
-  assert.ok(decision.reason.includes('research'), decision.reason);
+test('stop-hook: TICKET_SELECTED (non-tmux) → approve (checkpoint blocks retired)', () => {
+  const { decision, debugLog } = runHook({ response: '<promise>TICKET_SELECTED</promise>' });
+  assert.deepEqual(decision, { decision: 'approve' });
+  assert.match(debugLog, /checkpoint — runner will respawn/);
 });
 
 // ---------------------------------------------------------------------------
@@ -524,51 +531,55 @@ test('stop-hook: PRD_COMPLETE + tmux_mode + PICKLE_STATE_FILE → approve', () =
 // Worker suppression — workers ignore manager checkpoint tokens
 // ---------------------------------------------------------------------------
 
-test('stop-hook: worker + PRD_COMPLETE → not treated as checkpoint, falls to default block', () => {
-  // isWorker=true makes isPrdDone=false, so the checkpoint block is not entered
-  const { decision } = runHook({
+test('stop-hook: worker + PRD_COMPLETE → not treated as checkpoint, falls to default approve', () => {
+  // isWorker=true makes roleAllowsToken false, so the checkpoint path is not entered
+  const { decision, debugLog } = runHook({
     state: baseState({ active: true }),
     response: '<promise>PRD_COMPLETE</promise>',
     role: 'worker',
   });
-  assert.equal(decision.decision, 'block');
-  assert.ok(!decision.reason.includes('breakdown'), 'should not include phase feedback');
+  assert.equal(decision.decision, 'approve');
+  assert.doesNotMatch(debugLog, /checkpoint — runner will respawn/, 'worker must not hit the manager checkpoint path');
 });
 
-test('stop-hook: state.worker=true (no PICKLE_ROLE) → NOT treated as worker, falls to default block', () => {
+test('stop-hook: state.worker=true (no PICKLE_ROLE) → NOT treated as worker', () => {
   // state.worker is a dead field — only PICKLE_ROLE=worker determines worker mode
-  const { decision } = runHook({
+  const { decision, debugLog } = runHook({
     state: baseState({ worker: true }),
     response: '<promise>I AM DONE</promise>',
   });
-  assert.equal(decision.decision, 'block', 'state.worker alone must not activate worker mode');
+  assert.equal(decision.decision, 'approve');
+  assert.match(debugLog, /isWorkerDone=false/, 'state.worker alone must not activate worker mode');
 });
 
 // ---------------------------------------------------------------------------
 // Iteration and time limits
 // ---------------------------------------------------------------------------
 
-test('stop-hook: iteration >= max_iterations → approve + active=false', () => {
-  const { decision, state } = runHook({
+test('stop-hook: iteration >= max_iterations → approve via limit path, active unchanged', () => {
+  const { decision, state, debugLog } = runHook({
     state: baseState({ iteration: 5, max_iterations: 5 }),
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false);
+  assert.equal(state.active, true, 'B-RSHM: limit exits no longer deactivate — runner owns lifecycle');
+  assert.match(debugLog, /Max iterations reached: 5\/5/);
 });
 
-test('stop-hook: iteration > max_iterations → approve + active=false', () => {
-  const { decision, state } = runHook({
+test('stop-hook: iteration > max_iterations → approve via limit path', () => {
+  const { decision, debugLog } = runHook({
     state: baseState({ iteration: 7, max_iterations: 5 }),
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false);
+  assert.match(debugLog, /Max iterations reached: 7\/5/);
 });
 
-test('stop-hook: max_iterations=0 (unlimited) → never fires limit, falls to default block', () => {
-  const { decision } = runHook({
+test('stop-hook: max_iterations=0 (unlimited) → never fires limit, falls to default approve', () => {
+  const { decision, debugLog } = runHook({
     state: baseState({ iteration: 999, max_iterations: 0 }),
   });
-  assert.equal(decision.decision, 'block');
+  assert.equal(decision.decision, 'approve');
+  assert.doesNotMatch(debugLog, /Max iterations reached/);
+  assert.match(debugLog, /Interactive loop retired/);
 });
 
 test('stop-hook: iteration limit + tmux_mode → approve, active UNCHANGED (runner handles limits)', () => {
@@ -579,25 +590,27 @@ test('stop-hook: iteration limit + tmux_mode → approve, active UNCHANGED (runn
   assert.equal(state.active, true, 'tmux mode: runner handles limits — hook must not deactivate');
 });
 
-test('stop-hook: time limit reached → approve + active=false', () => {
-  const { decision, state } = runHook({
+test('stop-hook: time limit reached → approve via limit path, active unchanged', () => {
+  const { decision, state, debugLog } = runHook({
     state: baseState({
       start_time_epoch: Math.floor(Date.now() / 1000) - 3700, // 61 minutes ago
       max_time_minutes: 60,
     }),
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false);
+  assert.equal(state.active, true, 'B-RSHM: limit exits no longer deactivate — runner owns lifecycle');
+  assert.match(debugLog, /Time limit reached/);
 });
 
-test('stop-hook: max_time_minutes=0 (unlimited) → never fires limit, falls to default block', () => {
-  const { decision } = runHook({
+test('stop-hook: max_time_minutes=0 (unlimited) → never fires limit, falls to default approve', () => {
+  const { decision, debugLog } = runHook({
     state: baseState({
       start_time_epoch: Math.floor(Date.now() / 1000) - 99999,
       max_time_minutes: 0,
     }),
   });
-  assert.equal(decision.decision, 'block');
+  assert.equal(decision.decision, 'approve');
+  assert.doesNotMatch(debugLog, /Time limit reached/);
 });
 
 test('stop-hook: time limit + tmux_mode → approve, active UNCHANGED (runner handles limits)', () => {
@@ -613,41 +626,41 @@ test('stop-hook: time limit + tmux_mode → approve, active UNCHANGED (runner ha
 });
 
 // ---------------------------------------------------------------------------
-// Default block — active session, no tokens, no limits hit
+// Default fallthrough — approve-only (B-RSHM: the non-tmux continuation BLOCK
+// is retired; every classify path is approve)
 // ---------------------------------------------------------------------------
 
-test('stop-hook: active session, no tokens → block with iteration number', () => {
-  const { decision } = runHook({
+test('stop-hook: active session, no tokens → approve, log carries iteration numbers', () => {
+  const { decision, debugLog } = runHook({
     state: baseState({ iteration: 3, max_iterations: 10 }),
   });
-  assert.equal(decision.decision, 'block');
-  assert.ok(decision.reason.includes('3'), decision.reason);
-  assert.ok(decision.reason.includes('10'), decision.reason);
+  assert.deepEqual(decision, { decision: 'approve' });
+  assert.match(debugLog, /iteration 3 of 10/);
 });
 
-test('stop-hook: max_iterations=0 → block message has no "of N"', () => {
-  const { decision } = runHook({
+test('stop-hook: max_iterations=0 → default approve log has no "of N"', () => {
+  const { decision, debugLog } = runHook({
     state: baseState({ iteration: 2, max_iterations: 0 }),
   });
-  assert.equal(decision.decision, 'block');
-  assert.ok(!decision.reason.includes('of 0'), decision.reason);
+  assert.deepEqual(decision, { decision: 'approve' });
+  assert.doesNotMatch(debugLog, /iteration 2 of/);
 });
 
 test('stop-hook: promise token with surrounding text is still detected', () => {
-  const { decision, state } = runHook({
+  const { decision, debugLog } = runHook({
     response: 'Done with everything!\n<promise>EPIC_COMPLETED</promise>\nGoodbye.',
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false);
+  assert.match(debugLog, /Task\/Worker complete/);
 });
 
 test('stop-hook: token with extra whitespace inside tags IS matched (tolerant)', () => {
   // Whitespace-tolerant regex — spaces inside tags still trigger the match
-  const { decision, state } = runHook({
+  const { decision, debugLog } = runHook({
     response: '<promise> EPIC_COMPLETED </promise>',
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false);
+  assert.match(debugLog, /Task\/Worker complete/);
 });
 
 // ---------------------------------------------------------------------------
@@ -799,10 +812,11 @@ test('stop-hook: disabled marker file → approve immediately, state unchanged',
   }
 });
 
-test('stop-hook: no disabled marker → hook processes normally (blocks active session)', () => {
-  // Sanity check: without the marker, an active session with no tokens should block
-  const { decision } = runHook({ state: baseState(), response: 'just some text' });
-  assert.equal(decision.decision, 'block');
+test('stop-hook: no disabled marker → hook processes normally (classify fallthrough runs)', () => {
+  // Sanity check: without the marker, the hook must run the full classify path
+  const { decision, debugLog } = runHook({ state: baseState(), response: 'just some text about the ongoing work' });
+  assert.equal(decision.decision, 'approve');
+  assert.match(debugLog, /Interactive loop retired/);
 });
 
 // ---------------------------------------------------------------------------
@@ -851,23 +865,25 @@ test('stop-hook: refinement-worker + ANALYSIS_DONE → approve, active unchanged
   assert.equal(state.active, true, 'refinement workers must not deactivate the session');
 });
 
-test('stop-hook: refinement-worker + no token → block (default continuation)', () => {
-  const { decision } = runHook({
+test('stop-hook: refinement-worker + no token → default approve (continuation blocks retired)', () => {
+  const { decision, debugLog } = runHook({
     state: baseState({ active: true }),
     response: 'Still working on analysis...',
     role: 'refinement-worker',
   });
-  assert.equal(decision.decision, 'block');
+  assert.equal(decision.decision, 'approve');
+  assert.doesNotMatch(debugLog, /Task\/Worker complete/);
 });
 
-test('stop-hook: non-refinement role + ANALYSIS_DONE → not treated as exit, block', () => {
+test('stop-hook: non-refinement role + ANALYSIS_DONE → not treated as completion', () => {
   // ANALYSIS_DONE should only work for refinement-worker role
-  const { decision } = runHook({
+  const { decision, debugLog } = runHook({
     state: baseState({ active: true }),
     response: '<promise>ANALYSIS_DONE</promise>',
     role: 'manager',
   });
-  assert.equal(decision.decision, 'block');
+  assert.equal(decision.decision, 'approve');
+  assert.doesNotMatch(debugLog, /Task\/Worker complete/, 'ANALYSIS_DONE must not read as completion for a manager');
 });
 
 // ---------------------------------------------------------------------------
@@ -875,22 +891,22 @@ test('stop-hook: non-refinement role + ANALYSIS_DONE → not treated as exit, bl
 // ---------------------------------------------------------------------------
 
 test('stop-hook: string max_iterations and iteration still trigger limit check', () => {
-  const { decision, state } = runHook({
+  const { decision, debugLog } = runHook({
     state: baseState({ iteration: '3', max_iterations: '3' }),
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false, 'should deactivate when string numerics match limit');
+  assert.match(debugLog, /Max iterations reached: 3\/3/, 'string numerics must still hit the limit path');
 });
 
 test('stop-hook: string start_time_epoch and max_time_minutes still trigger time limit', () => {
-  const { decision, state } = runHook({
+  const { decision, debugLog } = runHook({
     state: baseState({
       start_time_epoch: String(Math.floor(Date.now() / 1000) - 3700),
       max_time_minutes: '60',
     }),
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false, 'should deactivate when string time values exceed limit');
+  assert.match(debugLog, /Time limit reached/, 'string time values must still hit the limit path');
 });
 
 test('stop-hook: string "true" active is treated as inactive (strict boolean check)', () => {
@@ -905,44 +921,37 @@ test('stop-hook: string "true" active is treated as inactive (strict boolean che
 test('stop-hook: string "true" tmux_mode is NOT treated as tmux mode (strict boolean check)', () => {
   // tmux_mode stored as string "true" (truthy but !== true) should NOT trigger tmux early-exit
   // setStateFileEnv: false so the tmux main-window branch (!process.env.PICKLE_STATE_FILE) is reachable
-  const { decision } = runHook({
+  const { decision, debugLog } = runHook({
     state: baseState({ tmux_mode: "true" }),
     response: 'This is a longer response that avoids the degenerate short-response detection',
     setStateFileEnv: false,
   });
-  // Should fall through to default block (active session, no tokens), not approve as tmux main-window
-  assert.equal(decision.decision, 'block');
-});
-
-test('stop-hook: string "true" tmux_mode does NOT approve checkpoint tokens (strict boolean check)', () => {
-  // tmux_mode stored as string "true" at the checkpoint path — should block, not approve
-  const { decision } = runHook({
-    state: baseState({ tmux_mode: "true" }),
-    response: '<promise>PRD_COMPLETE</promise>',
-  });
-  // With real tmux_mode=true, this would approve. With string "true", it should block with feedback.
-  assert.equal(decision.decision, 'block');
+  // Must fall through to the non-tmux default approve, not the tmux main-window defer
+  assert.equal(decision.decision, 'approve');
+  assert.doesNotMatch(debugLog, /main window defers to tmux-runner/);
+  assert.match(debugLog, /Interactive loop retired/, 'string tmux_mode must take the non-tmux fallthrough');
 });
 
 // ---------------------------------------------------------------------------
 // EXISTENCE_IS_PAIN token — meeseeks code review loop
 // ---------------------------------------------------------------------------
 
-test('stop-hook: EXISTENCE_IS_PAIN → approve + active=false (standard completion)', () => {
+test('stop-hook: EXISTENCE_IS_PAIN → approve (standard completion), active unchanged', () => {
   const { decision, state } = runHook({
     response: '<promise>EXISTENCE_IS_PAIN</promise>',
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false);
+  assert.equal(state.active, true, 'B-RSHM: hook never deactivates');
 });
 
-test('stop-hook: EXISTENCE_IS_PAIN below min_iterations (non-tmux) → block inline loop', () => {
-  const { decision, state } = runHook({
+test('stop-hook: EXISTENCE_IS_PAIN below min_iterations (non-tmux) → approve for runner respawn', () => {
+  const { decision, state, debugLog } = runHook({
     state: baseState({ min_iterations: 10, iteration: 3 }),
     response: '<promise>EXISTENCE_IS_PAIN</promise>',
   });
-  assert.equal(decision.decision, 'block', 'non-tmux mode below min_iterations must block to continue inline loop');
+  assert.deepEqual(decision, { decision: 'approve' });
   assert.equal(state.active, true, 'below min_iterations — active must stay true');
+  assert.match(debugLog, /below min, runner continues/);
 });
 
 test('stop-hook: EXISTENCE_IS_PAIN below min_iterations (tmux) → approve for runner respawn', () => {
@@ -954,13 +963,14 @@ test('stop-hook: EXISTENCE_IS_PAIN below min_iterations (tmux) → approve for r
   assert.equal(state.active, true, 'below min_iterations — active must stay true for runner to continue');
 });
 
-test('stop-hook: EXISTENCE_IS_PAIN at min_iterations → approve + active=false', () => {
-  const { decision, state } = runHook({
+test('stop-hook: EXISTENCE_IS_PAIN at min_iterations → approve as completion', () => {
+  const { decision, state, debugLog } = runHook({
     state: baseState({ min_iterations: 10, iteration: 10 }),
     response: '<promise>EXISTENCE_IS_PAIN</promise>',
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false, 'at min_iterations — should deactivate');
+  assert.equal(state.active, true, 'B-RSHM: hook never deactivates');
+  assert.match(debugLog, /Task\/Worker complete/);
 });
 
 test('stop-hook: EXISTENCE_IS_PAIN at min_iterations + tmux_mode → approve, active UNCHANGED', () => {
@@ -976,21 +986,22 @@ test('stop-hook: EXISTENCE_IS_PAIN at min_iterations + tmux_mode → approve, ac
 // THE_CITADEL_APPROVES token — council of ricks stack review loop
 // ---------------------------------------------------------------------------
 
-test('stop-hook: THE_CITADEL_APPROVES → approve + active=false (standard completion)', () => {
+test('stop-hook: THE_CITADEL_APPROVES → approve (standard completion), active unchanged', () => {
   const { decision, state } = runHook({
     response: '<promise>THE_CITADEL_APPROVES</promise>',
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false);
+  assert.equal(state.active, true, 'B-RSHM: hook never deactivates');
 });
 
-test('stop-hook: THE_CITADEL_APPROVES below min_iterations (non-tmux) → block inline loop', () => {
-  const { decision, state } = runHook({
+test('stop-hook: THE_CITADEL_APPROVES below min_iterations (non-tmux) → approve for runner respawn', () => {
+  const { decision, state, debugLog } = runHook({
     state: baseState({ min_iterations: 10, iteration: 3 }),
     response: '<promise>THE_CITADEL_APPROVES</promise>',
   });
-  assert.equal(decision.decision, 'block', 'non-tmux mode below min_iterations must block to continue inline loop');
+  assert.deepEqual(decision, { decision: 'approve' });
   assert.equal(state.active, true, 'below min_iterations — active must stay true');
+  assert.match(debugLog, /below min, runner continues/);
 });
 
 test('stop-hook: THE_CITADEL_APPROVES below min_iterations (tmux) → approve for runner respawn', () => {
@@ -1002,13 +1013,14 @@ test('stop-hook: THE_CITADEL_APPROVES below min_iterations (tmux) → approve fo
   assert.equal(state.active, true, 'below min_iterations — active must stay true for runner to continue');
 });
 
-test('stop-hook: THE_CITADEL_APPROVES at min_iterations → approve + active=false', () => {
-  const { decision, state } = runHook({
+test('stop-hook: THE_CITADEL_APPROVES at min_iterations → approve as completion', () => {
+  const { decision, state, debugLog } = runHook({
     state: baseState({ min_iterations: 10, iteration: 10 }),
     response: '<promise>THE_CITADEL_APPROVES</promise>',
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false, 'at min_iterations — should deactivate');
+  assert.equal(state.active, true, 'B-RSHM: hook never deactivates');
+  assert.match(debugLog, /Task\/Worker complete/);
 });
 
 test('stop-hook: THE_CITADEL_APPROVES at min_iterations + tmux_mode → approve, active UNCHANGED', () => {
@@ -1020,13 +1032,13 @@ test('stop-hook: THE_CITADEL_APPROVES at min_iterations + tmux_mode → approve,
   assert.equal(state.active, true, 'tmux mode: runner owns active — hook must not deactivate');
 });
 
-test('stop-hook: EPIC_COMPLETED ignores min_iterations → still deactivates', () => {
-  const { decision, state } = runHook({
+test('stop-hook: EPIC_COMPLETED ignores min_iterations → still approves as completion', () => {
+  const { decision, debugLog } = runHook({
     state: baseState({ min_iterations: 10, iteration: 2 }),
     response: '<promise>EPIC_COMPLETED</promise>',
   });
   assert.deepEqual(decision, { decision: 'approve' });
-  assert.equal(state.active, false, 'EPIC_COMPLETED must ignore min_iterations — no regression');
+  assert.match(debugLog, /Task\/Worker complete/, 'EPIC_COMPLETED must ignore min_iterations — no regression');
 });
 
 // ---------------------------------------------------------------------------
@@ -1062,18 +1074,20 @@ test('stop-hook: "hour limit" short message → approve', () => {
   assert.deepEqual(decision, { decision: 'approve' });
 });
 
-test('stop-hook: long response mentioning rate limit → block (not a real rate limit)', () => {
+test('stop-hook: long response mentioning rate limit → NOT classified as rate limit', () => {
   // > 500 chars: normal conversation about rate limits, not a synthetic error
   const longText = 'I hit a rate limit but recovered and continued working on the task. ' +
     'Here is what I found during my research phase. '.repeat(15);
   assert.ok(longText.length > 500, 'test setup: text must be > 500 chars');
-  const { decision } = runHook({ response: longText });
-  assert.equal(decision.decision, 'block', 'long responses mentioning rate limits must not trigger early exit');
+  const { decision, debugLog } = runHook({ response: longText });
+  assert.equal(decision.decision, 'approve');
+  assert.doesNotMatch(debugLog, /Rate limit detected/, 'long responses mentioning rate limits must not classify as rate-limit');
 });
 
-test('stop-hook: empty response → block (not a rate limit)', () => {
-  const { decision } = runHook({ response: '' });
-  assert.equal(decision.decision, 'block');
+test('stop-hook: empty response → NOT classified as rate limit', () => {
+  const { decision, debugLog } = runHook({ response: '' });
+  assert.equal(decision.decision, 'approve');
+  assert.doesNotMatch(debugLog, /Rate limit detected/);
 });
 
 test('stop-hook: rate limit in tmux subprocess → approve, active unchanged', () => {
@@ -1092,10 +1106,11 @@ test('stop-hook: rate limit in tmux subprocess → approve, active unchanged', (
 
 test('stop-hook: NaN/undefined numeric state fields do not crash', () => {
   // max_iterations is undefined, iteration is "abc" → Number("abc") = NaN → || 0
-  const { decision } = runHook({
+  const { decision, debugLog } = runHook({
     state: baseState({ iteration: 'abc', max_iterations: undefined, max_time_minutes: undefined, start_time_epoch: undefined }),
   });
-  assert.equal(decision.decision, 'block', 'should fall through to default block without crashing');
+  assert.equal(decision.decision, 'approve', 'should fall through to default approve without crashing');
+  assert.match(debugLog, /Interactive loop retired/);
 });
 
 // ---------------------------------------------------------------------------
@@ -1104,16 +1119,17 @@ test('stop-hook: NaN/undefined numeric state fields do not crash', () => {
 
 test('stop-hook: completion_promise empty string → not treated as custom promise', () => {
   // !!("") is false, so hasPromise should be false even if responseText has <promise></promise>
-  const { decision } = runHook({
+  const { decision, debugLog } = runHook({
     state: baseState({ completion_promise: '' }),
     response: 'no tokens here',
   });
-  assert.equal(decision.decision, 'block', 'empty string completion_promise should not match anything');
+  assert.equal(decision.decision, 'approve');
+  assert.match(debugLog, /hasPromise=false/, 'empty string completion_promise should not match anything');
 });
 
 test('stop-hook: start_time_epoch=0 with max_time_minutes>0 → time limit skipped', () => {
-  // Line 210: maxTimeMins > 0 && startEpoch > 0 — when epoch is 0, the condition short-circuits
-  const { decision } = runHook({
+  // maxTimeMins > 0 && startEpoch > 0 — when epoch is 0, the condition short-circuits
+  const { decision, debugLog } = runHook({
     state: baseState({
       start_time_epoch: 0,
       max_time_minutes: 1, // 1 minute — would trigger if epoch were valid
@@ -1121,7 +1137,8 @@ test('stop-hook: start_time_epoch=0 with max_time_minutes>0 → time limit skipp
       max_iterations: 100,
     }),
   });
-  assert.equal(decision.decision, 'block', 'start_time_epoch=0 should disable time limit check');
+  assert.equal(decision.decision, 'approve');
+  assert.doesNotMatch(debugLog, /Time limit reached/, 'start_time_epoch=0 should disable time limit check');
 });
 
 // ---------------------------------------------------------------------------
@@ -1172,70 +1189,68 @@ test('stop-hook: "Got it." response → approve (matches no-op pattern)', () => 
   assert.equal(decision.decision, 'approve');
 });
 
-test('stop-hook: substantive short response without tokens → still blocks (not a no-op)', () => {
-  const { decision } = runHook({
+test('stop-hook: substantive response without tokens → default approve (not a no-op)', () => {
+  const { decision, debugLog } = runHook({
     state: baseState({ iteration: 2, max_iterations: 10 }),
     response: 'I fixed the linting error in utils.ts and ran the tests.',
   });
-  assert.equal(decision.decision, 'block');
+  assert.equal(decision.decision, 'approve');
+  assert.match(debugLog, /Interactive loop retired/, 'substantive text must take the default fallthrough, not the no-op path');
 });
 
 test('stop-hook: no-op detection does not fire for empty response', () => {
-  // Empty responses are handled by the existing default block path
-  const { decision } = runHook({
+  // Empty responses fall to the default approve path
+  const { decision, debugLog } = runHook({
     state: baseState({ iteration: 2, max_iterations: 10 }),
     response: '',
   });
-  assert.equal(decision.decision, 'block');
+  assert.equal(decision.decision, 'approve');
+  assert.doesNotMatch(debugLog, /No-op response detected/);
 });
 
 // ---------------------------------------------------------------------------
-// Degenerate short / whitespace response detection
+// Degenerate short / whitespace response detection — approve-only (B-RSHM:
+// the consecutive-short-response BLOCK-nudge counter is retired)
 // ---------------------------------------------------------------------------
 
-test('stop-hook: whitespace-only response → approve + deactivate (inline mode)', () => {
-  const { decision, state } = runHook({
+test('stop-hook: whitespace-only response → approve, active unchanged', () => {
+  const { decision, state, debugLog } = runHook({
     state: baseState({ iteration: 6, max_iterations: 50 }),
     response: '  \n\n',
   });
   assert.equal(decision.decision, 'approve');
-  assert.equal(state.active, false, 'inline mode must deactivate on degenerate to prevent stale state');
+  assert.equal(state.active, true, 'B-RSHM: hook never deactivates');
+  assert.match(debugLog, /Whitespace-only response/);
 });
 
-test('stop-hook: 2-char non-matching response (counter=0) → block + counter=1 (polling tolerated)', () => {
-  const { decision, state } = runHook({
+test('stop-hook: 2-char response → approve immediately, no counter written (nudge retired)', () => {
+  const { decision, state, debugLog } = runHook({
     state: baseState({ iteration: 6, max_iterations: 50 }),
     response: 'no',
   });
-  assert.equal(decision.decision, 'block', 'first short response is legitimate polling — must not exit');
-  assert.equal(state.active, true, 'single short response must not deactivate session');
-  assert.equal(state.consecutive_short_responses, 1);
+  assert.equal(decision.decision, 'approve', 'short manager output approves — mux-runner owns the respawn');
+  assert.equal(state.active, true);
+  assert.equal(state.consecutive_short_responses, undefined, 'counter field must never be written');
+  assert.match(debugLog, /Degenerate short response/);
 });
 
-test('stop-hook: 10-char response (counter=0) → block + counter=1 (degenerate boundary)', () => {
-  const { decision, state } = runHook({
+test('stop-hook: 10-char response → approve (degenerate boundary), no counter written', () => {
+  const { decision, state, debugLog } = runHook({
     state: baseState({ iteration: 3, max_iterations: 50 }),
     response: '0123456789',
   });
-  assert.equal(decision.decision, 'block');
-  assert.equal(state.consecutive_short_responses, 1);
+  assert.equal(decision.decision, 'approve');
+  assert.equal(state.consecutive_short_responses, undefined);
+  assert.match(debugLog, /Degenerate short response/);
 });
 
-test('stop-hook: 11-char non-matching response → block (above degenerate threshold)', () => {
-  const { decision } = runHook({
+test('stop-hook: 11-char non-matching response → default approve (above degenerate threshold)', () => {
+  const { decision, debugLog } = runHook({
     state: baseState({ iteration: 3, max_iterations: 50 }),
     response: '01234567890',
   });
-  assert.equal(decision.decision, 'block');
-});
-
-test('stop-hook: 1-char response (counter=0) → block + counter=1', () => {
-  const { decision, state } = runHook({
-    state: baseState({ iteration: 2, max_iterations: 50 }),
-    response: 'x',
-  });
-  assert.equal(decision.decision, 'block');
-  assert.equal(state.consecutive_short_responses, 1);
+  assert.equal(decision.decision, 'approve');
+  assert.match(debugLog, /Interactive loop retired/, '11 chars is above the degenerate threshold — default path');
 });
 
 test('stop-hook: tab-only response → approve (whitespace-only detection)', () => {
@@ -1262,23 +1277,23 @@ test('stop-hook: single newline response → approve (whitespace-only detection)
   assert.equal(decision.decision, 'approve');
 });
 
-test('stop-hook: single short response in tmux mode → block + counter=1 (not yet degenerate)', () => {
+test('stop-hook: short response in tmux mode → approve (runner owns the respawn)', () => {
   const { decision, state } = runHook({
     state: baseState({ tmux_mode: true, iteration: 3, max_iterations: 50 }),
     response: 'no',
   });
-  assert.equal(decision.decision, 'block', 'first short response is not yet degenerate — must not exit');
-  assert.equal(state.active, true, 'single short response must not deactivate — runner handles lifecycle');
-  assert.equal(state.consecutive_short_responses, 1);
+  assert.equal(decision.decision, 'approve');
+  assert.equal(state.active, true, 'short response must not deactivate — runner handles lifecycle');
+  assert.equal(state.consecutive_short_responses, undefined, 'counter field must never be written');
 });
 
-test('stop-hook: no-op "Acknowledged." in inline mode → approve + deactivate', () => {
+test('stop-hook: no-op "Acknowledged." (non-tmux) → approve, active unchanged', () => {
   const { decision, state } = runHook({
     state: baseState({ iteration: 3, max_iterations: 50 }),
     response: 'Acknowledged.',
   });
   assert.equal(decision.decision, 'approve');
-  assert.equal(state.active, false, 'inline mode must deactivate on no-op to prevent stale state');
+  assert.equal(state.active, true, 'B-RSHM: hook never deactivates');
 });
 
 test('stop-hook: whitespace-only response in tmux mode → approve', () => {
@@ -1291,51 +1306,21 @@ test('stop-hook: whitespace-only response in tmux mode → approve', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Consecutive-short-response counter — tolerate polling messages, exit on looping
+// Consecutive-short-response counter RETIRED (B-RSHM WS-1) — short responses
+// approve immediately; a stale persisted counter is ignored and never rewritten.
 // ---------------------------------------------------------------------------
 
-test('stop-hook: short response at counter=1 → block + counter=2 (below threshold)', () => {
-  const { decision, state } = runHook({
-    state: baseState({ iteration: 6, max_iterations: 50, consecutive_short_responses: 1 }),
-    response: 'Waiting.',
-  });
-  assert.equal(decision.decision, 'block');
-  assert.equal(state.active, true);
-  assert.equal(state.consecutive_short_responses, 2);
-});
-
-test('stop-hook: short response at counter=2 → approve (hits threshold of 3) + counter reset', () => {
+test('stop-hook: stale persisted counter is ignored and left untouched', () => {
   const { decision, state } = runHook({
     state: baseState({ iteration: 6, max_iterations: 50, consecutive_short_responses: 2 }),
     response: 'Waiting.',
   });
-  assert.equal(decision.decision, 'approve', 'third consecutive short response should exit');
-  assert.equal(state.active, false, 'inline mode at threshold must deactivate');
-  assert.equal(state.consecutive_short_responses, 0, 'counter must reset on exit');
+  assert.equal(decision.decision, 'approve', 'short response approves immediately — no counting');
+  assert.equal(state.active, true);
+  assert.equal(state.consecutive_short_responses, 2, 'stale optional field is left exactly as persisted');
 });
 
-test('stop-hook: short response at counter=2 + tmux_mode → approve, active unchanged', () => {
-  const { decision, state } = runHook({
-    state: baseState({ tmux_mode: true, iteration: 6, max_iterations: 50, consecutive_short_responses: 2 }),
-    response: 'Waiting.',
-  });
-  assert.equal(decision.decision, 'approve');
-  assert.equal(state.active, true, 'tmux mode at threshold must not deactivate — runner owns lifecycle');
-  assert.equal(state.consecutive_short_responses, 0, 'counter must reset on exit');
-});
-
-test('stop-hook: substantive response at counter=2 → block + counter reset to 0', () => {
-  const longResponse = 'I finished editing utils.ts and the tests are passing. Here is a detailed summary of the work.';
-  assert.ok(longResponse.length > 10);
-  const { decision, state } = runHook({
-    state: baseState({ iteration: 4, max_iterations: 50, consecutive_short_responses: 2 }),
-    response: longResponse,
-  });
-  assert.equal(decision.decision, 'block', 'substantive response continues loop');
-  assert.equal(state.consecutive_short_responses, 0, 'counter must reset on substantive response');
-});
-
-test('stop-hook: worker + short response → approve immediately (counter not applied)', () => {
+test('stop-hook: worker + short response → approve immediately', () => {
   const { decision } = runHook({
     state: baseState({ iteration: 2, max_iterations: 50 }),
     response: 'wait',
@@ -1344,7 +1329,7 @@ test('stop-hook: worker + short response → approve immediately (counter not ap
   assert.equal(decision.decision, 'approve', 'worker short response exits immediately (own lifecycle)');
 });
 
-test('stop-hook: refinement-worker + short response → approve immediately (counter not applied)', () => {
+test('stop-hook: refinement-worker + short response → approve immediately', () => {
   const { decision } = runHook({
     state: baseState({ iteration: 2, max_iterations: 50 }),
     response: 'wait',
@@ -1353,35 +1338,16 @@ test('stop-hook: refinement-worker + short response → approve immediately (cou
   assert.equal(decision.decision, 'approve');
 });
 
-test('stop-hook: whitespace-only at counter=2 → approve immediately + counter reset', () => {
-  // Whitespace is never legitimate — must exit immediately regardless of counter state.
-  const { decision, state } = runHook({
-    state: baseState({ iteration: 5, max_iterations: 50, consecutive_short_responses: 2 }),
-    response: '\n\t',
+test('stop-hook: substantive response with stale counter → default approve, counter untouched', () => {
+  const longResponse = 'I finished editing utils.ts and the tests are passing. Here is a detailed summary of the work.';
+  assert.ok(longResponse.length > 10);
+  const { decision, state, debugLog } = runHook({
+    state: baseState({ iteration: 4, max_iterations: 50, consecutive_short_responses: 2 }),
+    response: longResponse,
   });
   assert.equal(decision.decision, 'approve');
-  assert.equal(state.active, false, 'whitespace-only deactivates inline session');
-  assert.equal(state.consecutive_short_responses, 0);
-});
-
-test('stop-hook: no-op pattern at counter=2 → approve immediately + counter reset', () => {
-  // No-op patterns are the explicit ack class — always exit immediately, no counting.
-  const { decision, state } = runHook({
-    state: baseState({ iteration: 5, max_iterations: 50, consecutive_short_responses: 2 }),
-    response: 'Acknowledged.',
-  });
-  assert.equal(decision.decision, 'approve');
-  assert.equal(state.active, false);
-  assert.equal(state.consecutive_short_responses, 0);
-});
-
-test('stop-hook: counter reset feedback mentions N/threshold', () => {
-  const { decision } = runHook({
-    state: baseState({ iteration: 2, max_iterations: 50 }),
-    response: 'Waiting.',
-  });
-  assert.equal(decision.decision, 'block');
-  assert.ok(decision.reason.includes('1/3'), `expected progress indicator, got: ${decision.reason}`);
+  assert.equal(state.consecutive_short_responses, 2, 'no reset write — the counter has no runtime writer');
+  assert.match(debugLog, /Interactive loop retired/);
 });
 
 // ---------------------------------------------------------------------------
