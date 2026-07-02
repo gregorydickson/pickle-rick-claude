@@ -72,6 +72,21 @@ call-site-count audit (the R-AFCC-CALLER-ENUMERATION pattern) so a future diverg
 also sharpens the standing GA question: the completion-oracle plurality is the ROOT that keeps
 re-surfacing on codex; **B-1SEAM WS-1 is the real codex-GA completion fix, ahead of any further soak.**
 
+**⚠ PREMISE CORRECTION (2026-07-02, source-verified — read before authoring):**
+`allow_inferred_completion_commit` **does not exist in source** — deleted by B-DURA T60 (beta.23,
+`05650df1`); `check-no-inferred-completion-flag.sh` + `allow-inferred-completion-commit-deleted.test.js`
+pin its absence. The flag set at LOA-1078 launch was inert JSON; the R-AICF report's flag attribution is
+impossible. The REAL divergence: `readEvidence()` is already the single evidence *function*, but its **6
+decision call-sites apply different policy** — only `guardCompletionCommitBeforeDone` (`mux-runner.ts:4697`)
+applies baseline-SHA rejection (`:4714`) + worker-gate fail-closed verdict (`:4769`); the phantom-Done
+watcher (`ticket-completion-evidence.ts:626`), R-PDUP twin auto-close (`mux-runner.ts:1427`), salvage
+attribution (`mux-runner.ts:5358`), auto-fill (`auto-fill-completion-commit.ts:75`), and
+`validateAutoTicketCompletion` (`mux-runner.ts:2792`) apply none of it. WS-1 = route all 6 sites through
+ONE predicate (baseline + gate verdict + frontmatter-sha resolution) + deterministic post-commit hash-tag
+trailer injection in the worker wrapper (kills the codex untagged-commit trigger, no flag) — do NOT "teach
+the flag" to anything. WS-1 must open with a mechanism trace of session `2026-07-01-9e922602` against the 6
+sites. Full analysis + phased simplification plan: `SIMPLIFICATION-AND-FIX-PLAN-2026-07-02.md`.
+
 **THE BUNDLE — B-1SEAM (author the PRD next context from the 3 bug reports, then build):** one thesis
 — *fix at the seam, not the site.*
 - **WS-1 (R-AICF, P1) — collapse the completion oracles onto one predicate.** The phantom-Done
