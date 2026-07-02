@@ -11,85 +11,16 @@ export function auditTrapDoorCoverage(diff) {
             .map((file) => file.path),
     });
 }
-// TODO(R-LINT): refactor — pre-existing complexity 23 introduced 2026-05-10
-// (882b48818); extract per-finding-class helpers in a focused PR.
-// eslint-disable-next-line complexity -- HT-1 reviewed: pre-existing complexity tracked by R-LINT; per-finding-class helper extraction deferred to a focused refactor PR.
 export function runT6TrapDoorCoverage(context) {
     const { projectRoot } = context;
     const findings = [];
     const allClaudeFiles = collectClaudeMdFiles(projectRoot);
-    const scopedClaudeFiles = new Set((context.claudeFiles ?? []).map(normalizeRelativePath));
-    const scopedTestFiles = new Set((context.testFiles ?? []).map(normalizeRelativePath));
-    const hasScope = scopedClaudeFiles.size > 0 || scopedTestFiles.size > 0;
+    const scope = createScopeContext(context);
     const referencedFiles = new Set();
     for (const claudeFile of allClaudeFiles) {
-        let content;
-        try {
-            content = readFileSync(claudeFile, 'utf-8');
-        }
-        catch {
-            continue;
-        }
-        const section = extractTrapDoorsSection(content);
-        if (!section)
-            continue;
-        const relClaude = normalizeRelativePath(path.relative(projectRoot, claudeFile));
-        const claudeInScope = !hasScope || scopedClaudeFiles.has(relClaude);
-        let barePathWarned = false;
-        for (const match of section.matchAll(new RegExp(ENFORCE_REF_RE.source, ENFORCE_REF_RE.flags))) {
-            const refs = parseEnforceRefs(match[1]);
-            for (const { filePath, anchor } of refs) {
-                const { canonicalPath, absPath } = resolveEnforceRef(projectRoot, filePath);
-                referencedFiles.add(canonicalPath);
-                const refInScope = !hasScope || claudeInScope || scopedTestFiles.has(canonicalPath);
-                if (!anchor && !barePathWarned && claudeInScope) {
-                    findings.push({
-                        id: `trap-door-bare-path:${relClaude}`,
-                        severity: 'Low',
-                        message: `ENFORCE ref without #anchor in ${relClaude}; adding #test-case-name improves precision.`,
-                        file: relClaude,
-                    });
-                    barePathWarned = true;
-                }
-                if (!existsSync(absPath)) {
-                    if (refInScope) {
-                        findings.push({
-                            id: `orphan-enforce:${canonicalPath}`,
-                            severity: 'High',
-                            message: `ENFORCE ref points to nonexistent file: ${canonicalPath} (in ${relClaude})`,
-                            file: relClaude,
-                        });
-                    }
-                    continue;
-                }
-                if (anchor) {
-                    const testContent = readFileSync(absPath, 'utf-8');
-                    if (refInScope && !hasTestCase(testContent, anchor)) {
-                        findings.push({
-                            id: `orphan-test-case:${canonicalPath}#${anchor}`,
-                            severity: 'High',
-                            message: `ENFORCE anchor #${anchor} not found in ${canonicalPath}`,
-                            file: canonicalPath,
-                        });
-                    }
-                }
-            }
-        }
+        findings.push(...auditClaudeTrapDoorRefs(projectRoot, claudeFile, scope, referencedFiles));
     }
-    const scopedTestCandidates = hasScope
-        ? [...scopedTestFiles].map((filePath) => path.resolve(projectRoot, filePath))
-        : collectTestFiles(projectRoot);
-    for (const absTestFile of scopedTestCandidates) {
-        const relPath = normalizeRelativePath(path.relative(projectRoot, absTestFile));
-        if (!referencedFiles.has(relPath)) {
-            findings.push({
-                id: `orphan-test-file:${relPath}`,
-                severity: 'Medium',
-                message: `Test file has no inbound ENFORCE ref: ${relPath}`,
-                file: relPath,
-            });
-        }
-    }
+    findings.push(...collectOrphanTestFileFindings(projectRoot, scope, referencedFiles));
     return { findings };
 }
 function collectClaudeMdFiles(projectRoot) {
@@ -119,6 +50,107 @@ function walkForClaudeMd(dir) {
         // non-fatal: subsystem CLAUDE.md may be missing (Open Finding #5)
     }
     return results;
+}
+function createScopeContext(context) {
+    const scopedClaudeFiles = new Set((context.claudeFiles ?? []).map(normalizeRelativePath));
+    const scopedTestFiles = new Set((context.testFiles ?? []).map(normalizeRelativePath));
+    return {
+        hasScope: scopedClaudeFiles.size > 0 || scopedTestFiles.size > 0,
+        scopedClaudeFiles,
+        scopedTestFiles,
+    };
+}
+function auditClaudeTrapDoorRefs(projectRoot, claudeFile, scope, referencedFiles) {
+    const content = readTextFile(claudeFile);
+    if (content === null)
+        return [];
+    const section = extractTrapDoorsSection(content);
+    if (!section)
+        return [];
+    const findings = [];
+    const relClaude = normalizeRelativePath(path.relative(projectRoot, claudeFile));
+    const claudeInScope = !scope.hasScope || scope.scopedClaudeFiles.has(relClaude);
+    let barePathWarned = false;
+    for (const match of section.matchAll(new RegExp(ENFORCE_REF_RE.source, ENFORCE_REF_RE.flags))) {
+        const refs = parseEnforceRefs(match[1]);
+        for (const ref of refs) {
+            const refFindings = auditEnforceRef({
+                projectRoot,
+                ref,
+                relClaude,
+                claudeInScope,
+                scope,
+                barePathWarned,
+            });
+            barePathWarned ||= refFindings.warnedBarePath;
+            referencedFiles.add(refFindings.canonicalPath);
+            findings.push(...refFindings.findings);
+        }
+    }
+    return findings;
+}
+function auditEnforceRef(input) {
+    const { projectRoot, ref, relClaude, claudeInScope, scope, barePathWarned } = input;
+    const { canonicalPath, absPath } = resolveEnforceRef(projectRoot, ref.filePath);
+    const findings = [];
+    const refInScope = !scope.hasScope || claudeInScope || scope.scopedTestFiles.has(canonicalPath);
+    let warned = barePathWarned;
+    if (!ref.anchor && !warned && claudeInScope) {
+        findings.push({
+            id: `trap-door-bare-path:${relClaude}`,
+            severity: 'Low',
+            message: `ENFORCE ref without #anchor in ${relClaude}; adding #test-case-name improves precision.`,
+            file: relClaude,
+        });
+        warned = true;
+    }
+    if (!existsSync(absPath)) {
+        if (refInScope) {
+            findings.push({
+                id: `orphan-enforce:${canonicalPath}`,
+                severity: 'High',
+                message: `ENFORCE ref points to nonexistent file: ${canonicalPath} (in ${relClaude})`,
+                file: relClaude,
+            });
+        }
+        return { canonicalPath, findings, warnedBarePath: warned };
+    }
+    if (ref.anchor) {
+        const testContent = readTextFile(absPath);
+        if (testContent !== null && refInScope && !hasTestCase(testContent, ref.anchor)) {
+            findings.push({
+                id: `orphan-test-case:${canonicalPath}#${ref.anchor}`,
+                severity: 'High',
+                message: `ENFORCE anchor #${ref.anchor} not found in ${canonicalPath}`,
+                file: canonicalPath,
+            });
+        }
+    }
+    return { canonicalPath, findings, warnedBarePath: warned };
+}
+function collectOrphanTestFileFindings(projectRoot, scope, referencedFiles) {
+    const scopedTestCandidates = scope.hasScope
+        ? [...scope.scopedTestFiles].map((filePath) => path.resolve(projectRoot, filePath))
+        : collectTestFiles(projectRoot);
+    return scopedTestCandidates.flatMap((absTestFile) => {
+        const relPath = normalizeRelativePath(path.relative(projectRoot, absTestFile));
+        if (referencedFiles.has(relPath))
+            return [];
+        return [{
+                id: `orphan-test-file:${relPath}`,
+                severity: 'Medium',
+                message: `Test file has no inbound ENFORCE ref: ${relPath}`,
+                file: relPath,
+            }];
+    });
+}
+function readTextFile(filePath) {
+    try {
+        return readFileSync(filePath, 'utf-8');
+    }
+    catch {
+        return null;
+    }
 }
 function parseEnforceRefs(raw) {
     return raw.split(/,\s*/).flatMap((part) => {
