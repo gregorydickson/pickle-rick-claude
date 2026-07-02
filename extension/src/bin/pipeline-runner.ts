@@ -63,9 +63,11 @@ import {
   refreshScope,
   filterBySubsystem,
   computeBaselineStartCommit,
+  parseScope,
   ScopeError,
   type ScopeJson,
 } from '../services/scope-resolver.js';
+import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
 import type { CitadelFinding, CitadelJsonReport, CitadelSeverity } from '../services/citadel/reporter.js';
@@ -544,19 +546,103 @@ function readDeclaredFilesForTicket(sessionDir: string, ticketId: string): strin
   try {
     const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
     const content = fs.readFileSync(ticketPath, 'utf-8');
-    const line = content.split('\n').find((l) => l.includes('Files to modify/create'));
-    if (!line) return [];
-    const paths: string[] = [];
-    const re = /`([^`]+)`/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(line)) !== null) {
-      const token = m[1].trim();
-      if (token.length > 0) paths.push(token);
-    }
-    return [...new Set(paths)];
+    return readDeclaredFiles(content);
   } catch {
     return [];
   }
+}
+
+function runGitString(args: string[], cwd: string): string | null {
+  try {
+    const out = execFileSync('git', ['-C', cwd, ...args], {
+      encoding: 'utf-8',
+      timeout: GIT_REPO_ROOT_TIMEOUT_MS,
+    }).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveSetupScopeBaseRef(repoRoot: string, scopeBase?: string): string {
+  if (scopeBase && scopeBase.length > 0) return scopeBase;
+  const currentBranch = runGitString(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot);
+  const upstream = runGitString(['rev-parse', '--abbrev-ref', '@{upstream}'], repoRoot);
+  if (upstream && (!currentBranch || upstream !== `origin/${currentBranch}`)) return upstream;
+  return runGitString(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoRoot) ?? 'origin/main';
+}
+
+function normalizeRepoPathForScope(p: string): string {
+  return p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '');
+}
+
+function realpathOrResolveScopePath(p: string): string {
+  try {
+    return fs.realpathSync(path.resolve(p));
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+function filterSeedPathsToTarget(paths: string[], target: string | undefined, repoRoot: string): string[] {
+  if (!target) return paths;
+  const relTarget = normalizeRepoPathForScope(
+    path.relative(realpathOrResolveScopePath(repoRoot), realpathOrResolveScopePath(target)),
+  );
+  if (relTarget.length === 0) return paths;
+  const prefix = relTarget.endsWith('/') ? relTarget : `${relTarget}/`;
+  return paths.filter((candidate) => candidate === relTarget || candidate.startsWith(prefix));
+}
+
+function sortScopePaths(paths: string[]): string[] {
+  return [...paths].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+function resolveSeedPathsForSetup(sessionDir: string, statePath: string, target: string | undefined, repoRoot: string): string[] {
+  let currentTicket: string | null = null;
+  try {
+    const state = sm.read(statePath);
+    currentTicket = typeof state.current_ticket === 'string' && state.current_ticket.length > 0
+      ? state.current_ticket
+      : null;
+  } catch {
+    currentTicket = null;
+  }
+
+  const declared = currentTicket
+    ? readDeclaredFilesForTicket(sessionDir, currentTicket)
+    : Array.from(buildDeclaredFilesByTicket(sessionDir).values()).flat();
+  const normalized = Array.from(new Set(declared.map(normalizeRepoPathForScope).filter(Boolean)));
+  return sortScopePaths(filterSeedPathsToTarget(normalized, target, repoRoot));
+}
+
+function persistSeededBranchScope(args: SetupScopeArgs): ScopeJson | null {
+  const { sessionDir, workingDir, target, scopeBase, scopeFlag } = args;
+  const parsed = parseScope(scopeFlag);
+  if (parsed.mode !== 'branch') return null;
+
+  const repoRoot = gitRepoRoot(workingDir);
+  const allowedPaths = resolveSeedPathsForSetup(sessionDir, path.join(sessionDir, 'state.json'), target, repoRoot);
+  if (allowedPaths.length === 0) return null;
+
+  const headSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
+  const baseRef = resolveSetupScopeBaseRef(repoRoot, scopeBase);
+  const baseSha = runGitString(['merge-base', baseRef, 'HEAD'], repoRoot) ?? computeBaselineStartCommit(repoRoot);
+  if (!headSha || !baseSha) return null;
+
+  const scope: ScopeJson = {
+    version: 1,
+    mode: 'branch',
+    strategy: parsed.strategy,
+    base_ref: baseRef,
+    base_sha: baseSha,
+    head_sha: headSha,
+    allowed_paths: allowedPaths,
+    resolved_at: new Date().toISOString(),
+    refresh_history: [],
+  };
+  fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify(scope, null, 2));
+  return scope;
 }
 
 /**
@@ -1748,8 +1834,14 @@ export function setupScope(args: SetupScopeArgs): ScopeJson | null {
     return scope;
   } catch (err) {
     if (err instanceof Error && err instanceof ScopeError && err.code === 'SCOPE_EMPTY_DIFF') {
-      log(`scope-setup WARN: SCOPE_EMPTY_DIFF — ${err.message} (continuing; build phase may produce diff)`);
       sm.update(statePath, (s) => { s.phases_entered = []; });
+      const seeded = persistSeededBranchScope(args);
+      if (seeded) {
+        log(`scope-setup: seeded pickle-phase scope from ticket file-impact (${seeded.allowed_paths.length} paths)`);
+        log(`scope-setup: mode=${seeded.mode} strategy=${seeded.strategy} base=${seeded.base_ref ?? '-'} allowed=${seeded.allowed_paths.length}`);
+        return seeded;
+      }
+      log(`scope-setup WARN: SCOPE_EMPTY_DIFF — ${err.message} (continuing; build phase may produce diff)`);
       return null;
     }
     if (err instanceof Error && err instanceof ScopeError && err.code === 'SCOPE_BASE_AHEAD_OF_HEAD') {
