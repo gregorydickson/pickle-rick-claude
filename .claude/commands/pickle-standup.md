@@ -33,7 +33,9 @@ R-PSU-3 / AC-PSU-03. The Linear-first algorithm misses old tickets that received
 For each auto-discovered repo (Step 3), run:
 
 ```bash
-git -C "$repo" log --all --author="@me" --since="$START" --pretty="%H %ci %s%n%b" \
+ME_EMAIL="$(git -C "$repo" config user.email)"
+[ -n "$ME_EMAIL" ] || { echo "warn: missing git user.email for $repo, skip commit scan" >&2; continue; }
+git -C "$repo" log --all --author="$ME_EMAIL" --since="$START" --pretty="%H %ci %s%n%b" \
   | grep -oE '\bLOA-[0-9]+\b' \
   | sort -u
 ```
