@@ -38,9 +38,9 @@ function removePath(targetPath) {
 
 function collectPrefixMatches(dir, prefix) {
   try {
-    return fs.readdirSync(dir)
-      .filter((entry) => entry.startsWith(prefix))
-      .map((entry) => path.join(dir, entry));
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith(prefix))
+      .map((entry) => path.join(dir, entry.name));
   } catch {
     return [];
   }
@@ -68,7 +68,7 @@ function collectVarFolderMatches(rootDir) {
 
     for (const entry of entries) {
       const fullPath = path.join(current, entry.name);
-      if (prefixes.some((prefix) => entry.name.startsWith(prefix))) {
+      if (entry.isDirectory() && prefixes.some((prefix) => entry.name.startsWith(prefix))) {
         matches.push(fullPath);
       } else if (entry.isDirectory()) {
         stack.push(fullPath);

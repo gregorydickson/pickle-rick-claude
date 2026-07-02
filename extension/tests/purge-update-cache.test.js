@@ -21,9 +21,11 @@ function makeFixture() {
   const auditPath = path.join(runtimeRoot, 'deploy-audit.log');
   const tarballDir = path.join(tmpRoot, 'pickle-update-fixture');
   const extractDir = path.join(tmpRoot, 'pickle-extract-fixture');
+  const prefixedTmpFile = path.join(tmpRoot, 'pickle-update-keep.txt');
   const darwinBranch = path.join(varFoldersRoot, 'zz', '12345', 'T');
   const darwinTarballDir = path.join(darwinBranch, 'pickle-update-darwin-fixture');
   const darwinExtractDir = path.join(darwinBranch, 'pickle-extract-darwin-fixture');
+  const prefixedDarwinFile = path.join(darwinBranch, 'pickle-extract-darwin-keep.txt');
   mkdirSync(runtimeRoot, { recursive: true });
   mkdirSync(varFoldersRoot, { recursive: true });
   mkdirSync(tarballDir, { recursive: true });
@@ -39,6 +41,8 @@ function makeFixture() {
   writeFileSync(path.join(extractDir, 'install.sh'), '#!/usr/bin/env bash\nexit 0\n');
   writeFileSync(path.join(darwinTarballDir, 'release.tar.gz'), 'fixture');
   writeFileSync(path.join(darwinExtractDir, 'install.sh'), '#!/usr/bin/env bash\nexit 0\n');
+  writeFileSync(prefixedTmpFile, 'leave me alone');
+  writeFileSync(prefixedDarwinFile, 'leave me alone');
   return {
     dir,
     homeDir,
@@ -48,8 +52,10 @@ function makeFixture() {
     auditPath,
     tarballDir,
     extractDir,
+    prefixedTmpFile,
     darwinTarballDir,
     darwinExtractDir,
+    prefixedDarwinFile,
   };
 }
 
@@ -81,6 +87,7 @@ describe('purge-update-cache.js', () => {
       assert.equal(existsSync(fixture.cachePath), false);
       assert.equal(existsSync(fixture.tarballDir), false);
       assert.equal(existsSync(fixture.extractDir), false);
+      assert.equal(existsSync(fixture.prefixedTmpFile), true, 'prefix-matching tmp files must survive the purge');
       // B-CITAIL T4: var-folders cleanup is macOS-only by design
       // (`if (process.platform === 'darwin')` at purge-update-cache.js:102 —
       // /var/folders is a macOS concept). On Linux the darwin fixtures are
@@ -89,6 +96,7 @@ describe('purge-update-cache.js', () => {
       if (process.platform === 'darwin') {
         assert.equal(existsSync(fixture.darwinTarballDir), false);
         assert.equal(existsSync(fixture.darwinExtractDir), false);
+        assert.equal(existsSync(fixture.prefixedDarwinFile), true, 'prefix-matching /var/folders files must survive the purge');
       }
 
       const lines = readFileSync(fixture.auditPath, 'utf8').trim().split('\n');
@@ -98,9 +106,11 @@ describe('purge-update-cache.js', () => {
       assert.ok(audit.removed_paths.includes(fixture.cachePath));
       assert.ok(audit.removed_paths.includes(fixture.tarballDir));
       assert.ok(audit.removed_paths.includes(fixture.extractDir));
+      assert.equal(audit.removed_paths.includes(fixture.prefixedTmpFile), false);
       if (process.platform === 'darwin') {
         assert.ok(audit.removed_paths.includes(fixture.darwinTarballDir));
         assert.ok(audit.removed_paths.includes(fixture.darwinExtractDir));
+        assert.equal(audit.removed_paths.includes(fixture.prefixedDarwinFile), false);
       }
       assert.equal(typeof audit.ts, 'string');
     } finally {
