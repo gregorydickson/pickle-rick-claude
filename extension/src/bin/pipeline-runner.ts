@@ -565,10 +565,10 @@ function runGitString(args: string[], cwd: string): string | null {
 }
 
 function resolveSetupScopeBaseRef(repoRoot: string, scopeBase?: string): string {
-  if (scopeBase && scopeBase.length > 0) return scopeBase;
+  if (scopeBase && scopeBase.length > 0) { return scopeBase; }
   const currentBranch = runGitString(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot);
   const upstream = runGitString(['rev-parse', '--abbrev-ref', '@{upstream}'], repoRoot);
-  if (upstream && (!currentBranch || upstream !== `origin/${currentBranch}`)) return upstream;
+  if (upstream && (!currentBranch || upstream !== `origin/${currentBranch}`)) { return upstream; }
   return runGitString(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoRoot) ?? 'origin/main';
 }
 
@@ -585,11 +585,11 @@ function realpathOrResolveScopePath(p: string): string {
 }
 
 function filterSeedPathsToTarget(paths: string[], target: string | undefined, repoRoot: string): string[] {
-  if (!target) return paths;
+  if (!target) { return paths; }
   const relTarget = normalizeRepoPathForScope(
     path.relative(realpathOrResolveScopePath(repoRoot), realpathOrResolveScopePath(target)),
   );
-  if (relTarget.length === 0) return paths;
+  if (relTarget.length === 0) { return paths; }
   const prefix = relTarget.endsWith('/') ? relTarget : `${relTarget}/`;
   return paths.filter((candidate) => candidate === relTarget || candidate.startsWith(prefix));
 }
@@ -619,16 +619,16 @@ function resolveSeedPathsForSetup(sessionDir: string, statePath: string, target:
 function persistSeededBranchScope(args: SetupScopeArgs): ScopeJson | null {
   const { sessionDir, workingDir, target, scopeBase, scopeFlag } = args;
   const parsed = parseScope(scopeFlag);
-  if (parsed.mode !== 'branch') return null;
+  if (parsed.mode !== 'branch') { return null; }
 
   const repoRoot = gitRepoRoot(workingDir);
   const allowedPaths = resolveSeedPathsForSetup(sessionDir, path.join(sessionDir, 'state.json'), target, repoRoot);
-  if (allowedPaths.length === 0) return null;
+  if (allowedPaths.length === 0) { return null; }
 
   const headSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
   const baseRef = resolveSetupScopeBaseRef(repoRoot, scopeBase);
   const baseSha = runGitString(['merge-base', baseRef, 'HEAD'], repoRoot) ?? computeBaselineStartCommit(repoRoot);
-  if (!headSha || !baseSha) return null;
+  if (!headSha || !baseSha) { return null; }
 
   const scope: ScopeJson = {
     version: 1,
