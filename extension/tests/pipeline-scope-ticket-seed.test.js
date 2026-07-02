@@ -76,16 +76,19 @@ function cleanup(...dirs) {
 }
 
 let compiledModulesPromise;
+const EXTENSION_ROOT = path.join(import.meta.dirname, '..');
+const EXTENSION_TSCONFIG = path.join(EXTENSION_ROOT, 'tsconfig.json');
+const EXTENSION_NODE_MODULES = path.join(EXTENSION_ROOT, 'node_modules');
 
 function loadCompiledModules() {
     if (!compiledModulesPromise) {
         compiledModulesPromise = (async () => {
             const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeline-scope-ticket-seed-build-'));
             fs.writeFileSync(path.join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
-            fs.symlinkSync(path.resolve('extension/node_modules'), path.join(outDir, 'node_modules'), 'dir');
+            fs.symlinkSync(EXTENSION_NODE_MODULES, path.join(outDir, 'node_modules'), 'dir');
             const compile = spawnSync(
                 'npx',
-                ['tsc', '-p', 'extension/tsconfig.json', '--outDir', outDir],
+                ['tsc', '-p', EXTENSION_TSCONFIG, '--outDir', outDir],
                 { cwd: process.cwd(), encoding: 'utf-8' },
             );
             if (compile.status !== 0) {
