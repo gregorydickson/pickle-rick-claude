@@ -3305,7 +3305,7 @@ function buildIterationPromptContext(
   sessionDir: string,
   iterationNum: number,
   extensionRoot: string,
-): { promptContext: IterationPromptContext; promptPath: string; settings: HardeningSettings } {
+): { promptContext: IterationPromptContext; promptPath: string; settings: Record<string, unknown> } {
   const templateName = resolveCommandTemplate(state.command_template);
   const promptPath = resolveIterationPromptPath(extensionRoot, templateName);
   const settings = loadSettingsBag(extensionRoot, 'mux-runner:run-iteration:settings');
@@ -3392,7 +3392,7 @@ class IterationProcessController {
   private currentChild: import('child_process').ChildProcess | null = null;
   private didTimeout = false;
   private heartbeat: NodeJS.Timeout | null = null;
-  private lastDataAt = this.start;
+  private lastDataAt: number;
   private logFd = -1;
   private outputStallGuard: NodeJS.Timeout | null = null;
   private resolveOutcome: (outcome: IterationOutcome) => void = () => undefined;
@@ -3419,6 +3419,7 @@ class IterationProcessController {
       this.resolveTimeout('wall_clock');
     }, (runtimeOverrides.maxIterationSeconds ?? Defaults.MAX_ITERATION_SECONDS) * 1000),
   ) {
+    this.lastDataAt = this.start;
     this.hangGuard.unref();
   }
 
@@ -7086,7 +7087,7 @@ function breakForLimit(ctx: LoopContext): LoopAction {
   return { kind: 'break', reason: 'limit' };
 }
 
-function breakWithExitReason(ctx: LoopContext, reason: string): LoopAction {
+function breakWithExitReason(ctx: LoopContext, reason: ExitReason): LoopAction {
   recordExitReason(ctx.statePath, reason);
   ctxDeactivate(ctx);
   return { kind: 'break', reason };

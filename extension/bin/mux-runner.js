@@ -3262,7 +3262,6 @@ class IterationProcessController {
         this.logFd = -1;
     }
 }
-// eslint-disable-next-line -- legacy iteration loop retained behavior-preserving for global bin acceptance
 export async function runIteration(sessionDir, iterationNum, extensionRoot, qualityPassModel = '', runtimeOverrides = {}) {
     const prepared = prepareIterationRun(sessionDir, iterationNum, extensionRoot, qualityPassModel, runtimeOverrides);
     if ('completion' in prepared)
