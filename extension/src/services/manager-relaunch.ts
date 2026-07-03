@@ -93,6 +93,81 @@ function evaluateSimpleManagerRelaunch(
   return { should_relaunch: true, reason: 'below_cap', current_count: currentCount, cap };
 }
 
+function evaluateTicketManagerRelaunch(
+  state: State,
+  tickets: readonly TicketInfo[],
+  cbState: CircuitBreakerState | null,
+  exitKind: ManagerRelaunchExitKind,
+): ManagerRelaunchDecision {
+  const backend = resolveBackend(state);
+  const cap = managerRelaunchCapForExitKind(exitKind, backend);
+
+  const startEpoch = Number.isFinite(Number(state.start_time_epoch)) ? Number(state.start_time_epoch) : 0;
+  const maxTimeMins = Number.isFinite(Number(state.max_time_minutes)) ? Number(state.max_time_minutes) : 0;
+  if (maxTimeMins > 0 && startEpoch > 0) {
+    const elapsedSec = Math.max(0, Math.floor(Date.now() / 1000) - startEpoch);
+    if (elapsedSec >= maxTimeMins * 60) {
+      return {
+        shouldRelaunch: false,
+        pendingCount: 0,
+        nextRelaunchCount: 0,
+        reason: 'time_limit',
+        cap,
+        backend,
+        exitKind,
+      };
+    }
+  }
+
+  if (cbState && cbState.state === 'OPEN') {
+    return {
+      shouldRelaunch: false,
+      pendingCount: 0,
+      nextRelaunchCount: 0,
+      reason: 'circuit_open',
+      cap,
+      backend,
+      exitKind,
+    };
+  }
+
+  const pending = tickets.filter(ticketIsPending);
+  if (pending.length === 0) {
+    return {
+      shouldRelaunch: false,
+      pendingCount: 0,
+      nextRelaunchCount: 0,
+      reason: 'no_pending',
+      cap,
+      backend,
+      exitKind,
+    };
+  }
+
+  const prior = currentManagerRelaunchCount(state);
+  if (prior >= cap) {
+    return {
+      shouldRelaunch: false,
+      pendingCount: pending.length,
+      nextRelaunchCount: prior,
+      reason: 'cap_exceeded',
+      cap,
+      backend,
+      exitKind,
+    };
+  }
+
+  return {
+    shouldRelaunch: true,
+    pendingCount: pending.length,
+    nextRelaunchCount: prior + 1,
+    reason: 'eligible',
+    cap,
+    backend,
+    exitKind,
+  };
+}
+
 export function evaluateManagerRelaunch(
   state: State,
   hasPendingWork: boolean,
@@ -116,72 +191,7 @@ export function evaluateManagerRelaunch(
 
   const cbState = typeof cbStateOrExitKind === 'string' ? null : (cbStateOrExitKind ?? null);
   const resolvedExitKind = typeof cbStateOrExitKind === 'string' ? cbStateOrExitKind : exitKind;
-  const backend = resolveBackend(state);
-  const cap = managerRelaunchCapForExitKind(resolvedExitKind, backend);
-
-  const startEpoch = Number.isFinite(Number(state.start_time_epoch)) ? Number(state.start_time_epoch) : 0;
-  const maxTimeMins = Number.isFinite(Number(state.max_time_minutes)) ? Number(state.max_time_minutes) : 0;
-  if (maxTimeMins > 0 && startEpoch > 0) {
-    const elapsedSec = Math.max(0, Math.floor(Date.now() / 1000) - startEpoch);
-    if (elapsedSec >= maxTimeMins * 60) {
-      return {
-        shouldRelaunch: false,
-        pendingCount: 0,
-        nextRelaunchCount: 0,
-        reason: 'time_limit',
-        cap,
-        backend,
-        exitKind: resolvedExitKind,
-      };
-    }
-  }
-
-  if (cbState && cbState.state === 'OPEN') {
-    return {
-      shouldRelaunch: false,
-      pendingCount: 0,
-      nextRelaunchCount: 0,
-      reason: 'circuit_open',
-      cap,
-      backend,
-      exitKind: resolvedExitKind,
-    };
-  }
-
-  const pending = pendingInput.filter(ticketIsPending);
-  if (pending.length === 0) {
-    return {
-      shouldRelaunch: false,
-      pendingCount: 0,
-      nextRelaunchCount: 0,
-      reason: 'no_pending',
-      cap,
-      backend,
-      exitKind: resolvedExitKind,
-    };
-  }
-
-  const prior = currentManagerRelaunchCount(state);
-  if (prior >= cap) {
-    return {
-      shouldRelaunch: false,
-      pendingCount: pending.length,
-      nextRelaunchCount: prior,
-      reason: 'cap_exceeded',
-      cap,
-      backend,
-      exitKind: resolvedExitKind,
-    };
-  }
-  return {
-    shouldRelaunch: true,
-    pendingCount: pending.length,
-    nextRelaunchCount: prior + 1,
-    reason: 'eligible',
-    cap,
-    backend,
-    exitKind: resolvedExitKind,
-  };
+  return evaluateTicketManagerRelaunch(state, pendingInput, cbState, resolvedExitKind);
 }
 
 export function recordManagerRelaunch(statePath: string): void;

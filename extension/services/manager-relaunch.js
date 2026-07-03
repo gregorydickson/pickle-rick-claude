@@ -56,14 +56,9 @@ function evaluateSimpleManagerRelaunch(state, hasPendingWork) {
     }
     return { should_relaunch: true, reason: 'below_cap', current_count: currentCount, cap };
 }
-export function evaluateManagerRelaunch(state, pendingInput, cbStateOrExitKind, exitKind = 'other_error') {
-    if (typeof pendingInput === 'boolean') {
-        return evaluateSimpleManagerRelaunch(state, pendingInput);
-    }
-    const cbState = typeof cbStateOrExitKind === 'string' ? null : (cbStateOrExitKind ?? null);
-    const resolvedExitKind = typeof cbStateOrExitKind === 'string' ? cbStateOrExitKind : exitKind;
+function evaluateTicketManagerRelaunch(state, tickets, cbState, exitKind) {
     const backend = resolveBackend(state);
-    const cap = managerRelaunchCapForExitKind(resolvedExitKind, backend);
+    const cap = managerRelaunchCapForExitKind(exitKind, backend);
     const startEpoch = Number.isFinite(Number(state.start_time_epoch)) ? Number(state.start_time_epoch) : 0;
     const maxTimeMins = Number.isFinite(Number(state.max_time_minutes)) ? Number(state.max_time_minutes) : 0;
     if (maxTimeMins > 0 && startEpoch > 0) {
@@ -76,7 +71,7 @@ export function evaluateManagerRelaunch(state, pendingInput, cbStateOrExitKind, 
                 reason: 'time_limit',
                 cap,
                 backend,
-                exitKind: resolvedExitKind,
+                exitKind,
             };
         }
     }
@@ -88,10 +83,10 @@ export function evaluateManagerRelaunch(state, pendingInput, cbStateOrExitKind, 
             reason: 'circuit_open',
             cap,
             backend,
-            exitKind: resolvedExitKind,
+            exitKind,
         };
     }
-    const pending = pendingInput.filter(ticketIsPending);
+    const pending = tickets.filter(ticketIsPending);
     if (pending.length === 0) {
         return {
             shouldRelaunch: false,
@@ -100,7 +95,7 @@ export function evaluateManagerRelaunch(state, pendingInput, cbStateOrExitKind, 
             reason: 'no_pending',
             cap,
             backend,
-            exitKind: resolvedExitKind,
+            exitKind,
         };
     }
     const prior = currentManagerRelaunchCount(state);
@@ -112,7 +107,7 @@ export function evaluateManagerRelaunch(state, pendingInput, cbStateOrExitKind, 
             reason: 'cap_exceeded',
             cap,
             backend,
-            exitKind: resolvedExitKind,
+            exitKind,
         };
     }
     return {
@@ -122,8 +117,16 @@ export function evaluateManagerRelaunch(state, pendingInput, cbStateOrExitKind, 
         reason: 'eligible',
         cap,
         backend,
-        exitKind: resolvedExitKind,
+        exitKind,
     };
+}
+export function evaluateManagerRelaunch(state, pendingInput, cbStateOrExitKind, exitKind = 'other_error') {
+    if (typeof pendingInput === 'boolean') {
+        return evaluateSimpleManagerRelaunch(state, pendingInput);
+    }
+    const cbState = typeof cbStateOrExitKind === 'string' ? null : (cbStateOrExitKind ?? null);
+    const resolvedExitKind = typeof cbStateOrExitKind === 'string' ? cbStateOrExitKind : exitKind;
+    return evaluateTicketManagerRelaunch(state, pendingInput, cbState, resolvedExitKind);
 }
 export function recordManagerRelaunch(statePath, sessionDir, decision, iteration, log = () => { }) {
     let lastTicketSeen = null;
