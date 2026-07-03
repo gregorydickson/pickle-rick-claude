@@ -7015,200 +7015,162 @@ export function isGenuineCrashOrSpawnFailure(
   return false;
 }
 
-// eslint-disable-next-line complexity, max-lines-per-function -- HT-1 reviewed: legacy completion branch retained behavior-preserving; R-CHTS-CODEX adds recovery-seam branches; pre-existing violation, refactor deferred to a focused PR.
-export async function processCompletionBranch(state: State, result: IterationOutcome['completion'], ctx: LoopContext): Promise<LoopAction> {
-  if (result === 'task_completed') return processTaskCompleted(state, ctx);
-  if (result === 'review_clean') return processReviewClean(ctx);
-  if (result === 'inactive') {
-    if (detectManagerInactiveExit(ctx.outcome)) {
-      let postState: State = state;
-      try { postState = ctxReadState(ctx); } catch { /* fall back to pre-iteration state */ }
-      const inactiveExitKind = classifyManagerRelaunchExit(
-        postState,
-        ctx.outcome,
-        ctx.iterLogFile || path.join(ctx.sessionDir, `tmux_iteration_${ctx.iteration}.log`),
-        ctx.maxTurns ?? null,
-      );
-      if (inactiveExitKind === 'codex_session_inactive') {
-        const inactiveDecision = evaluateManagerRelaunch(
-          postState,
-          collectTickets(ctx.sessionDir),
-          ctx.cbState ?? null,
-          inactiveExitKind,
-        );
-        if (inactiveDecision.reason === 'time_limit') {
-          ctx.log('Time limit reached. Exiting.');
-          finalizeTerminalState(ctx.statePath, { step: 'completed', runnerIteration: ctx.iteration, exitReason: 'limit' });
-          return { kind: 'break', reason: 'limit' };
-        }
-        if (inactiveDecision.shouldRelaunch) {
-          const noProgress = checkAndUpdateCodexManagerNoProgress(ctx.statePath, inactiveDecision.pendingCount, ctx.log);
-          if (noProgress.halt) {
-            // AC-2 fail-safe: a missing working_dir on this git-mutating recovery
-            // seam must halt, never fall back to process.cwd() (the real repo).
-            const workingDir4R = postState.working_dir || state.working_dir;
-            if (!workingDir4R) {
-              recordExitReason(ctx.statePath, 'state_working_dir_missing');
-              ctxDeactivate(ctx);
-              return { kind: 'break', reason: 'state_working_dir_missing' };
-            }
-            // R-CHTS-CODEX: route through recovery seam before parking.
-            const codexRecovery = haltOrRecoverCodexNoProgress({
-              statePath: ctx.statePath,
-              sessionDir: ctx.sessionDir,
-              extensionRoot: ctx.extensionRoot,
-              workingDir: workingDir4R,
-              iteration: ctx.iteration,
-              log: ctx.log,
-            });
-            if (codexRecovery.kind === 'advanced') {
-              return { kind: 'relaunch', relaunchCount: inactiveDecision.nextRelaunchCount, pendingTickets: inactiveDecision.pendingCount, resetStall: true };
-            }
-            if (codexRecovery.kind === 'recovery_exhausted') {
-              writeRecoveryHandoffArtifact(ctx.sessionDir, ctxCurrentTicket(ctx), 'codex_manager_no_progress: ladder_exhausted', ctx.log);
-              recordExitReason(ctx.statePath, 'recovery_exhausted');
-              ctxDeactivate(ctx);
-              return { kind: 'break', reason: 'recovery_exhausted' };
-            }
-            // kind === 'halt' → fall through to existing park.
-            ctx.log(`Codex manager made no progress for ${noProgress.consecutiveCount} consecutive relaunch passes — halting with codex_manager_no_progress.`);
-            logActivity({ event: 'codex_manager_no_progress', source: 'pickle', session: path.basename(ctx.sessionDir), iteration: ctx.iteration, backend: resolveBackendFromStateFileWithSource(ctx.statePath).backend, consecutive_count: noProgress.consecutiveCount, pending_count: inactiveDecision.pendingCount });
-            recordExitReason(ctx.statePath, 'codex_manager_no_progress');
-            ctxDeactivate(ctx);
-            return { kind: 'break', reason: 'codex_manager_no_progress' };
-          }
-          const relaunchBackend = resolveBackendFromStateFileWithSource(ctx.statePath).backend;
-          ctx.log(
-            `${relaunchBackend} manager subprocess exited via ${inactiveExitKind} with ${inactiveDecision.pendingCount} ticket(s) still pending — ` +
-            `relaunching (count ${inactiveDecision.nextRelaunchCount}/${inactiveDecision.cap}).`,
-          );
-          recordManagerRelaunch(ctx.statePath, ctx.sessionDir, inactiveDecision, ctx.iteration, ctx.log);
-          return { kind: 'relaunch', relaunchCount: inactiveDecision.nextRelaunchCount, pendingTickets: inactiveDecision.pendingCount, resetStall: true };
-        }
-      }
-      // AC-A2 (B-DSAN2 WS-A): a clean manager exit (end_turn / max-turns) must NOT exit 0
-      // while tickets remain non-terminal. Reuse evaluateManagerRelaunch (the existing
-      // completion authority) to relaunch on a pending bundle; only an all-terminal queue
-      // may fall through to the clean exit. No new parallel guard.
-      if (inactiveExitKind !== 'codex_session_inactive') {
-        const relaunchTickets = withFreshTicketStatuses(ctx.sessionDir, collectTickets(ctx.sessionDir));
-        const decision = evaluateManagerRelaunch(postState, relaunchTickets, ctx.cbState ?? null, inactiveExitKind);
-        if (decision.reason === 'time_limit') {
-          ctx.log('Time limit reached. Exiting.');
-          finalizeTerminalState(ctx.statePath, { step: 'completed', runnerIteration: ctx.iteration, exitReason: 'limit' });
-          return { kind: 'break', reason: 'limit' };
-        }
-        if (decision.shouldRelaunch) {
-          // AC-A4 (f8000435): bounded terminal escape. An In Progress ticket held
-          // across BOUNDED_ESCAPE_CAP consecutive no-progress relaunches is forced
-          // terminal (salvage → Skipped) so the next evaluateManagerRelaunch sees it
-          // no longer pending; never spin to max_iterations on an unreclaimable ticket.
-          const esc = evaluateBoundedEscape(postState, ctx.sessionDir);
-          if (esc.escape && esc.ticketId) {
-            executeBoundedEscape(ctx.statePath, ctx.sessionDir, postState.working_dir || state.working_dir || '', esc.ticketId, ctx.iteration, ctx.log);
-            return { kind: 'relaunch', relaunchCount: decision.nextRelaunchCount, pendingTickets: Math.max(0, decision.pendingCount - 1), resetStall: true };
-          }
-          if (esc.ticketId) recordBoundedEscapeAttempt(ctx.statePath, esc.ticketId, ctx.iteration, ctx.log);
-          const relaunchBackend = resolveBackendFromStateFileWithSource(ctx.statePath).backend;
-          ctx.log(`${relaunchBackend} manager exited via ${inactiveExitKind} with ${decision.pendingCount} pending — relaunching (count ${decision.nextRelaunchCount}/${decision.cap}).`);
-          recordManagerRelaunch(ctx.statePath, ctx.sessionDir, decision, ctx.iteration, ctx.log);
-          return { kind: 'relaunch', relaunchCount: decision.nextRelaunchCount, pendingTickets: decision.pendingCount, resetStall: true };
-        }
-        if (decision.pendingCount > 0) {
-          // cap_exceeded / circuit_open WITH pending tickets — terminal, but NEVER exit-0.
-          recordExitReason(ctx.statePath, 'idle_stall_unrecoverable');
-          ctxDeactivate(ctx);
-          return { kind: 'break', reason: 'idle_stall_unrecoverable' };
-        }
-        // decision.pendingCount === 0 → all terminal → legitimate clean exit, fall through.
-      }
-    }
+function breakForLimit(ctx: LoopContext): LoopAction {
+  ctx.log('Time limit reached. Exiting.');
+  finalizeTerminalState(ctx.statePath, { step: 'completed', runnerIteration: ctx.iteration, exitReason: 'limit' });
+  return { kind: 'break', reason: 'limit' };
+}
+
+function breakWithExitReason(ctx: LoopContext, reason: string): LoopAction {
+  recordExitReason(ctx.statePath, reason);
+  ctxDeactivate(ctx);
+  return { kind: 'break', reason };
+}
+
+function recordAndReturnRelaunch(
+  ctx: LoopContext,
+  decision: ManagerRelaunchDecision,
+  pendingTickets: number,
+  message: string,
+): LoopAction {
+  ctx.log(message);
+  recordManagerRelaunch(ctx.statePath, ctx.sessionDir, decision, ctx.iteration, ctx.log);
+  return { kind: 'relaunch', relaunchCount: decision.nextRelaunchCount, pendingTickets, resetStall: true };
+}
+
+function handleCodexNoProgressRecovery(
+  state: State,
+  postState: State,
+  ctx: LoopContext,
+  decision: ManagerRelaunchDecision,
+): LoopAction | null {
+  const noProgress = checkAndUpdateCodexManagerNoProgress(ctx.statePath, decision.pendingCount, ctx.log);
+  if (!noProgress.halt) return null;
+  const workingDir = postState.working_dir || state.working_dir;
+  if (!workingDir) return breakWithExitReason(ctx, 'state_working_dir_missing');
+  const codexRecovery = haltOrRecoverCodexNoProgress({
+    statePath: ctx.statePath,
+    sessionDir: ctx.sessionDir,
+    extensionRoot: ctx.extensionRoot,
+    workingDir,
+    iteration: ctx.iteration,
+    log: ctx.log,
+  });
+  if (codexRecovery.kind === 'advanced') {
+    return { kind: 'relaunch', relaunchCount: decision.nextRelaunchCount, pendingTickets: decision.pendingCount, resetStall: true };
+  }
+  if (codexRecovery.kind === 'recovery_exhausted') {
+    writeRecoveryHandoffArtifact(ctx.sessionDir, ctxCurrentTicket(ctx), 'codex_manager_no_progress: ladder_exhausted', ctx.log);
+    return breakWithExitReason(ctx, 'recovery_exhausted');
+  }
+  ctx.log(`Codex manager made no progress for ${noProgress.consecutiveCount} consecutive relaunch passes — halting with codex_manager_no_progress.`);
+  logActivity({ event: 'codex_manager_no_progress', source: 'pickle', session: path.basename(ctx.sessionDir), iteration: ctx.iteration, backend: resolveBackendFromStateFileWithSource(ctx.statePath).backend, consecutive_count: noProgress.consecutiveCount, pending_count: decision.pendingCount });
+  return breakWithExitReason(ctx, 'codex_manager_no_progress');
+}
+
+function handleCodexInactiveCompletion(
+  state: State,
+  postState: State,
+  ctx: LoopContext,
+  decision: ManagerRelaunchDecision,
+  exitKind: ManagerRelaunchExitKind,
+): LoopAction | null {
+  if (decision.reason === 'time_limit') return breakForLimit(ctx);
+  if (!decision.shouldRelaunch) return null;
+  const noProgressAction = handleCodexNoProgressRecovery(state, postState, ctx, decision);
+  if (noProgressAction) return noProgressAction;
+  const backend = resolveBackendFromStateFileWithSource(ctx.statePath).backend;
+  return recordAndReturnRelaunch(
+    ctx,
+    decision,
+    decision.pendingCount,
+    `${backend} manager subprocess exited via ${exitKind} with ${decision.pendingCount} ticket(s) still pending — relaunching (count ${decision.nextRelaunchCount}/${decision.cap}).`,
+  );
+}
+
+function handlePendingInactiveCompletion(
+  state: State,
+  postState: State,
+  ctx: LoopContext,
+  exitKind: ManagerRelaunchExitKind,
+): LoopAction | null {
+  const decision = evaluateManagerRelaunch(
+    postState,
+    withFreshTicketStatuses(ctx.sessionDir, collectTickets(ctx.sessionDir)),
+    ctx.cbState ?? null,
+    exitKind,
+  );
+  if (decision.reason === 'time_limit') return breakForLimit(ctx);
+  if (!decision.shouldRelaunch) {
+    return decision.pendingCount > 0 ? breakWithExitReason(ctx, 'idle_stall_unrecoverable') : null;
+  }
+  const esc = evaluateBoundedEscape(postState, ctx.sessionDir);
+  if (esc.escape && esc.ticketId) {
+    executeBoundedEscape(ctx.statePath, ctx.sessionDir, postState.working_dir || state.working_dir || '', esc.ticketId, ctx.iteration, ctx.log);
+    return { kind: 'relaunch', relaunchCount: decision.nextRelaunchCount, pendingTickets: Math.max(0, decision.pendingCount - 1), resetStall: true };
+  }
+  if (esc.ticketId) recordBoundedEscapeAttempt(ctx.statePath, esc.ticketId, ctx.iteration, ctx.log);
+  const backend = resolveBackendFromStateFileWithSource(ctx.statePath).backend;
+  return recordAndReturnRelaunch(
+    ctx,
+    decision,
+    decision.pendingCount,
+    `${backend} manager exited via ${exitKind} with ${decision.pendingCount} pending — relaunching (count ${decision.nextRelaunchCount}/${decision.cap}).`,
+  );
+}
+
+function handleInactiveCompletion(state: State, ctx: LoopContext): LoopAction {
+  if (!detectManagerInactiveExit(ctx.outcome)) {
     ctx.log('Session deactivated. Exiting loop.');
     return { kind: 'break', reason: 'cancelled' };
   }
-  if (result === 'error') {
-    // Codex tmux_mode runs one long-lived manager across many tickets.
-    // A 4h hang-guard SIGTERM (or other subprocess error) does not mean
-    // the work is doomed — relaunch the manager and let it pick up the
-    // remaining ticket queue. Bounded by CODEX_MANAGER_RELAUNCH_CAP and
-    // gated on circuit-breaker state.
-    let postState: State = state;
-    try { postState = ctxReadState(ctx); } catch { /* fall back to pre-iteration state */ }
-    const exitKind = classifyManagerRelaunchExit(
-      postState,
-      ctx.outcome,
-      ctx.iterLogFile || path.join(ctx.sessionDir, `tmux_iteration_${ctx.iteration}.log`),
-      ctx.maxTurns ?? null,
+  const postState = readPostIterationState(state, ctx);
+  const exitKind = classifyManagerRelaunchExit(
+    postState,
+    ctx.outcome,
+    ctx.iterLogFile || path.join(ctx.sessionDir, `tmux_iteration_${ctx.iteration}.log`),
+    ctx.maxTurns ?? null,
+  );
+  const action = exitKind === 'codex_session_inactive'
+    ? handleCodexInactiveCompletion(state, postState, ctx, evaluateManagerRelaunch(postState, collectTickets(ctx.sessionDir), ctx.cbState ?? null, exitKind), exitKind)
+    : handlePendingInactiveCompletion(state, postState, ctx, exitKind);
+  if (action) return action;
+  ctx.log('Session deactivated. Exiting loop.');
+  return { kind: 'break', reason: 'cancelled' };
+}
+
+function handleErrorCompletion(state: State, ctx: LoopContext): LoopAction {
+  const postState = readPostIterationState(state, ctx);
+  const exitKind = classifyManagerRelaunchExit(
+    postState,
+    ctx.outcome,
+    ctx.iterLogFile || path.join(ctx.sessionDir, `tmux_iteration_${ctx.iteration}.log`),
+    ctx.maxTurns ?? null,
+  );
+  const decision = evaluateManagerRelaunch(postState, collectTickets(ctx.sessionDir), ctx.cbState ?? null, exitKind);
+  if (decision.reason === 'time_limit') return breakForLimit(ctx);
+  if (decision.shouldRelaunch && !isGenuineCrashOrSpawnFailure(decision, ctx.outcome, ctx.iterLogFile || path.join(ctx.sessionDir, `tmux_iteration_${ctx.iteration}.log`))) {
+    const noProgressAction = handleCodexNoProgressRecovery(state, postState, ctx, decision);
+    if (noProgressAction) return noProgressAction;
+    const backend = resolveBackendFromStateFileWithSource(ctx.statePath).backend;
+    const detail = decision.exitKind === 'other_error' ? 'errored' : `exited via ${decision.exitKind}`;
+    return recordAndReturnRelaunch(
+      ctx,
+      decision,
+      decision.pendingCount,
+      `${backend} manager subprocess ${detail} with ${decision.pendingCount} ticket(s) still pending — relaunching (count ${decision.nextRelaunchCount}/${decision.cap}).`,
     );
-    const decision = evaluateManagerRelaunch(
-      postState,
-      collectTickets(ctx.sessionDir),
-      ctx.cbState ?? null,
-      exitKind,
-    );
-    if (decision.reason === 'time_limit') {
-      ctx.log('Time limit reached. Exiting.');
-      finalizeTerminalState(ctx.statePath, { step: 'completed', runnerIteration: ctx.iteration, exitReason: 'limit' });
-      return { kind: 'break', reason: 'limit' };
-    }
-    // Genuine subprocess crash or spawn failure tears down rather than
-    // relaunches (see isGenuineCrashOrSpawnFailure): a deterministic crash, or a
-    // null-exit cut-off with nothing left to recover, stays fatal. A cut-off
-    // mid-tool-result with pending tickets below cap is retryable and relaunches.
-    if (decision.shouldRelaunch && !isGenuineCrashOrSpawnFailure(decision, ctx.outcome, ctx.iterLogFile || path.join(ctx.sessionDir, `tmux_iteration_${ctx.iteration}.log`))) {
-      const noProgress = checkAndUpdateCodexManagerNoProgress(ctx.statePath, decision.pendingCount, ctx.log);
-      if (noProgress.halt) {
-        // AC-2 fail-safe: a missing working_dir on this git-mutating recovery
-        // seam must halt, never fall back to process.cwd() (the real repo).
-        const workingDir4Rerr = postState.working_dir || state.working_dir;
-        if (!workingDir4Rerr) {
-          recordExitReason(ctx.statePath, 'state_working_dir_missing');
-          ctxDeactivate(ctx);
-          return { kind: 'break', reason: 'state_working_dir_missing' };
-        }
-        // R-CHTS-CODEX: route through recovery seam before parking.
-        const codexRecovery = haltOrRecoverCodexNoProgress({
-          statePath: ctx.statePath,
-          sessionDir: ctx.sessionDir,
-          extensionRoot: ctx.extensionRoot,
-          workingDir: workingDir4Rerr,
-          iteration: ctx.iteration,
-          log: ctx.log,
-        });
-        if (codexRecovery.kind === 'advanced') {
-          return { kind: 'relaunch', relaunchCount: decision.nextRelaunchCount, pendingTickets: decision.pendingCount, resetStall: true };
-        }
-        if (codexRecovery.kind === 'recovery_exhausted') {
-          writeRecoveryHandoffArtifact(ctx.sessionDir, ctxCurrentTicket(ctx), 'codex_manager_no_progress: ladder_exhausted', ctx.log);
-          recordExitReason(ctx.statePath, 'recovery_exhausted');
-          ctxDeactivate(ctx);
-          return { kind: 'break', reason: 'recovery_exhausted' };
-        }
-        // kind === 'halt' → fall through to existing park.
-        ctx.log(`Codex manager made no progress for ${noProgress.consecutiveCount} consecutive relaunch passes — halting with codex_manager_no_progress.`);
-        logActivity({ event: 'codex_manager_no_progress', source: 'pickle', session: path.basename(ctx.sessionDir), iteration: ctx.iteration, backend: resolveBackendFromStateFileWithSource(ctx.statePath).backend, consecutive_count: noProgress.consecutiveCount, pending_count: decision.pendingCount });
-        recordExitReason(ctx.statePath, 'codex_manager_no_progress');
-        ctxDeactivate(ctx);
-        return { kind: 'break', reason: 'codex_manager_no_progress' };
-      }
-      const relaunchBackend = resolveBackendFromStateFileWithSource(ctx.statePath).backend;
-      const detail = decision.exitKind === 'other_error'
-        ? 'errored'
-        : `exited via ${decision.exitKind}`;
-      ctx.log(
-        `${relaunchBackend} manager subprocess ${detail} with ${decision.pendingCount} ticket(s) still pending — ` +
-        `relaunching (count ${decision.nextRelaunchCount}/${decision.cap}).`,
-      );
-      recordManagerRelaunch(ctx.statePath, ctx.sessionDir, decision, ctx.iteration, ctx.log);
-      // Relaunch IS progress — reset stall counter. Do NOT deactivate.
-      // Do NOT reset the circuit breaker: a 4h hang-guard timeout is
-      // exactly the kind of repeated event the CB should observe.
-      return { kind: 'relaunch', relaunchCount: decision.nextRelaunchCount, pendingTickets: decision.pendingCount, resetStall: true };
-    }
-    ctx.log('Subprocess error. Exiting loop.');
-    ctxDeactivate(ctx);
-    return { kind: 'break', reason: 'error' };
   }
+  ctx.log('Subprocess error. Exiting loop.');
+  ctxDeactivate(ctx);
+  return { kind: 'break', reason: 'error' };
+}
+
+export async function processCompletionBranch(state: State, result: IterationOutcome['completion'], ctx: LoopContext): Promise<LoopAction> {
+  if (result === 'task_completed') return processTaskCompleted(state, ctx);
+  if (result === 'review_clean') return processReviewClean(ctx);
+  if (result === 'inactive') return handleInactiveCompletion(state, ctx);
+  if (result === 'error') return handleErrorCompletion(state, ctx);
   await (ctx.sleep || sleep)(1000);
   return { kind: 'noop' };
 }
