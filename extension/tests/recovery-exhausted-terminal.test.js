@@ -46,9 +46,12 @@ describe('AC-W4b-3 terminal-literal grep — only recovery_exhausted is the hone
 
   it('no NEW honest-terminal literal sibling is introduced — recovery_exhausted is the single ladder terminal', () => {
     // Every ladder-exhausted seam records recovery_exhausted; none introduces a fresh
-    // distinct terminal literal for the exhausted disposition.
-    const exhaustedTerminals = SRC.match(/recordExitReason\([^,]+, 'recovery_exhausted'\)/g) || [];
-    assert.ok(exhaustedTerminals.length >= 8, `expected the ladder-exhausted seams to all record recovery_exhausted (found ${exhaustedTerminals.length})`);
+    // distinct terminal literal for the exhausted disposition. A seam may record it
+    // directly or route through breakWithExitReason (which calls recordExitReason).
+    const direct = SRC.match(/recordExitReason\([^,]+, 'recovery_exhausted'\)/g) || [];
+    const viaHelper = SRC.match(/breakWithExitReason\(\s*ctx,\s*'recovery_exhausted'\)/g) || [];
+    const total = direct.length + viaHelper.length;
+    assert.ok(total >= 8, `expected the ladder-exhausted seams to all record recovery_exhausted (found ${total})`);
   });
 });
 

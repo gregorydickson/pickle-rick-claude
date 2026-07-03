@@ -25,15 +25,17 @@ test('mux-runner-timer: hangGuard present in source', () => {
 });
 
 test('mux-runner-timer: hangGuardMs defaults to MAX_ITERATION_SECONDS with runtime override support', () => {
+    // Anchor is declaration-shape-agnostic: matches the pre-refactor `const` local
+    // and the IterationProcessController constructor parameter property alike.
     assert.ok(
-        src.includes('const hangGuardMs = (runtimeOverrides.maxIterationSeconds ?? Defaults.MAX_ITERATION_SECONDS) * 1000;'),
+        src.includes('hangGuardMs = (runtimeOverrides.maxIterationSeconds ?? Defaults.MAX_ITERATION_SECONDS) * 1000'),
         'hangGuardMs must default to Defaults.MAX_ITERATION_SECONDS while allowing explicit runtime overrides',
     );
 });
 
 test('mux-runner-timer: outputStallGuardMs defaults to OUTPUT_STALL_SECONDS with runtime override support', () => {
     assert.ok(
-        src.includes('const outputStallGuardMs = (runtimeOverrides.outputStallSeconds ?? Defaults.OUTPUT_STALL_SECONDS) * 1000;'),
+        src.includes('outputStallGuardMs = (runtimeOverrides.outputStallSeconds ?? Defaults.OUTPUT_STALL_SECONDS) * 1000'),
         'outputStallGuardMs must default to Defaults.OUTPUT_STALL_SECONDS while allowing explicit runtime overrides',
     );
 });
