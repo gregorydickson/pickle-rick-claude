@@ -101,4 +101,41 @@ describe('sibling-auth-audit: budget-check + csrf-validation token detection (AC
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
   });
+
+  test('ignores string-literal braces when slicing a method body', () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sibling-auth-'));
+    try {
+      const rel = 'src/orders.controller.ts';
+      fs.mkdirSync(path.join(repoRoot, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(repoRoot, rel), [
+        'import { Controller, Get } from "@nestjs/common";',
+        '',
+        '@Controller("orders")',
+        'export class OrdersController {',
+        '  @Get(":id/detail")',
+        '  getDetail(@Param("id") id: string) {',
+        '    const marker = "}";',
+        '    this.verifyCsrf(id);',
+        '    return marker;',
+        '  }',
+        '',
+        '  @Get(":id/summary")',
+        '  getSummary(@Param("id") id: string) {',
+        '    return this.svc.summary(id);',
+        '  }',
+        '}',
+        '',
+      ].join('\n'));
+
+      const report = runAudit(repoRoot, rel);
+      const detail = report.routes.find((route) => route.methodName === 'getDetail');
+      assert.ok(detail, 'getDetail route must be parsed');
+      assert.ok(
+        detail.guardPrefix.includes('csrf-validation'),
+        `csrf-validation must survive string-literal braces: ${JSON.stringify(detail.guardPrefix)}`,
+      );
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
 });

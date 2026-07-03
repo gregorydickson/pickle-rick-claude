@@ -90,6 +90,14 @@ interface SourceFile {
   lines: string[];
 }
 
+interface BraceScanState {
+  inBlockComment: boolean;
+  inSingleQuote: boolean;
+  inDoubleQuote: boolean;
+  inTemplateLiteral: boolean;
+  templateExpressionDepth: number;
+}
+
 interface DecoratorEvidence {
   name: string;
   args: string;
@@ -242,14 +250,134 @@ function methodBody(lines: string[], startLine: number): string[] {
   const body: string[] = [];
   let depth = 0;
   let opened = false;
+  const scanState: BraceScanState = {
+    inBlockComment: false,
+    inSingleQuote: false,
+    inDoubleQuote: false,
+    inTemplateLiteral: false,
+    templateExpressionDepth: 0,
+  };
   for (let index = startLine - 1; index < lines.length; index += 1) {
     const line = lines[index];
     body.push(line);
-    depth += countChar(line, '{') - countChar(line, '}');
-    if (line.includes('{')) opened = true;
+    const { openedBrace, delta } = structuralBraceDelta(line, scanState);
+    depth += delta;
+    if (openedBrace) opened = true;
     if (opened && depth <= 0) break;
   }
   return body;
+}
+
+function structuralBraceDelta(line: string, state: BraceScanState): { openedBrace: boolean; delta: number } {
+  let delta = 0;
+  let openedBrace = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+
+    const blockCommentAdvance = advanceBlockComment(state, char, next);
+    if (blockCommentAdvance !== null) {
+      index += blockCommentAdvance;
+      continue;
+    }
+
+    const quoteAdvance = advanceQuotedState(state, char);
+    if (quoteAdvance !== null) {
+      index += quoteAdvance;
+      continue;
+    }
+
+    const templateAdvance = advanceTemplateLiteral(state, char, next);
+    if (templateAdvance !== null) {
+      if (templateAdvance > 0) {
+        openedBrace = true;
+        delta += 1;
+      }
+      index += Math.abs(templateAdvance);
+      continue;
+    }
+
+    const enteredNonCodeState = enterNonCodeState(state, char, next);
+    if (enteredNonCodeState === 'line-comment') break;
+    if (enteredNonCodeState !== 'none') {
+      index += enteredNonCodeState === 'block-comment' ? 1 : 0;
+      continue;
+    }
+
+    if (char === '{') {
+      openedBrace = true;
+      delta += 1;
+      if (state.templateExpressionDepth > 0) state.templateExpressionDepth += 1;
+      continue;
+    }
+    if (char === '}') {
+      delta -= 1;
+      if (state.templateExpressionDepth > 0) {
+        state.templateExpressionDepth -= 1;
+        if (state.templateExpressionDepth === 0) state.inTemplateLiteral = true;
+      }
+    }
+  }
+
+  return { openedBrace, delta };
+}
+
+function advanceBlockComment(state: BraceScanState, char: string, next: string | undefined): number | null {
+  if (!state.inBlockComment) return null;
+  if (char === '*' && next === '/') {
+    state.inBlockComment = false;
+    return 1;
+  }
+  return 0;
+}
+
+function advanceQuotedState(state: BraceScanState, char: string): number | null {
+  if (!state.inSingleQuote && !state.inDoubleQuote) return null;
+  if (char === '\\') return 1;
+  if (state.inSingleQuote && char === '\'') state.inSingleQuote = false;
+  if (state.inDoubleQuote && char === '"') state.inDoubleQuote = false;
+  return 0;
+}
+
+function advanceTemplateLiteral(state: BraceScanState, char: string, next: string | undefined): number | null {
+  if (!state.inTemplateLiteral) return null;
+  if (char === '\\') return 1;
+  if (char === '`') {
+    state.inTemplateLiteral = false;
+    return 0;
+  }
+  if (char === '$' && next === '{') {
+    state.templateExpressionDepth = 1;
+    state.inTemplateLiteral = false;
+    return 1;
+  }
+  return 0;
+}
+
+function enterNonCodeState(
+  state: BraceScanState,
+  char: string,
+  next: string | undefined,
+): 'none' | 'line-comment' | 'block-comment' | 'single-quote' | 'double-quote' | 'template-literal' {
+  if (char === '/' && next === '/') return 'line-comment';
+  if (char === '/' && next === '*') {
+    state.inBlockComment = true;
+    return 'block-comment';
+  }
+  if (char === '\'') {
+    state.inSingleQuote = true;
+    return 'single-quote';
+  }
+  if (char === '"') {
+    state.inDoubleQuote = true;
+    return 'double-quote';
+  }
+  if (char === '`') {
+    state.inTemplateLiteral = true;
+    return 'template-literal';
+  }
+  return 'none';
 }
 
 function guardPrefix(decorators: DecoratorEvidence[], body: string[]): string[] {
@@ -470,10 +598,6 @@ function severityRank(severity: string): number {
   if (severity === 'Critical') return 0;
   if (severity === 'High') return 1;
   return 2;
-}
-
-function countChar(value: string, char: string): number {
-  return value.split(char).length - 1;
 }
 
 function slug(value: string): string {
