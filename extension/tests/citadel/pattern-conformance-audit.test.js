@@ -256,6 +256,29 @@ describe('pattern-conformance-audit: empty/malformed declarations', () => {
     }
   });
 
+  test('lowercase pattern_shape marker is harvested like PATTERN_SHAPE', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pca-lowercase-'));
+    try {
+      const targetFile = 'extension/src/lowercase-pattern.ts';
+      fs.mkdirSync(path.join(tmpDir, 'extension', 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, 'extension', 'CLAUDE.md'),
+        `## Trap Doors\n\n- \`${targetFile}\` (TEST) — INVARIANT: test. pattern_shape: \`LOWERCASE_SENTINEL\`.\n`,
+      );
+      fs.writeFileSync(path.join(tmpDir, targetFile), 'export const x = 1;\n');
+
+      const diff = makeDiff(tmpDir, [
+        { path: targetFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 1 }], blame: [] },
+      ]);
+      const result = auditPatternConformance(diff);
+
+      const violations = result.findings.filter((f) => f.id.startsWith('pattern-shape-violation:'));
+      assert.strictEqual(violations.length, 1, 'lowercase marker must still enforce the pattern');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('target file not in changedFiles → no violation even if pattern absent', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pca-notchanged-'));
     try {

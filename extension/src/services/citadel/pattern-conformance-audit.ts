@@ -141,9 +141,9 @@ function splitTrapDoorBullets(section: string): string[] {
 }
 
 function extractFirstFilePath(bullet: string): string | null {
-  // Search only the part before PATTERN_SHAPE: to avoid treating pattern strings as target files.
-  const psIdx = bullet.indexOf('PATTERN_SHAPE:');
-  const searchIn = psIdx !== -1 ? bullet.slice(0, psIdx) : bullet;
+  // Search only the part before the pattern marker to avoid treating pattern strings as target files.
+  const marker = findPatternShapeMarker(bullet);
+  const searchIn = marker ? bullet.slice(0, marker.index) : bullet;
 
   const backtickRe = /`([^`]+)`/g;
   let match: RegExpExecArray | null;
@@ -159,10 +159,10 @@ function isFilePathLike(s: string): boolean {
 }
 
 function extractPatternShapes(bullet: string): PatternEntry[] {
-  const psIdx = bullet.indexOf('PATTERN_SHAPE:');
-  if (psIdx === -1) return [];
+  const marker = findPatternShapeMarker(bullet);
+  if (!marker) return [];
 
-  const psValue = bullet.slice(psIdx + 'PATTERN_SHAPE:'.length);
+  const psValue = bullet.slice(marker.index + marker.label.length);
   const entries: PatternEntry[] = [];
 
   const backtickRe = /`([^`]+)`/g;
@@ -178,6 +178,12 @@ function extractPatternShapes(bullet: string): PatternEntry[] {
     entries.push({ raw, re });
   }
   return entries;
+}
+
+function findPatternShapeMarker(bullet: string): { index: number; label: string } | null {
+  const match = /pattern_shape:/i.exec(bullet);
+  if (!match || match.index < 0) return null;
+  return { index: match.index, label: match[0] };
 }
 
 function patternPresentInContent(pat: PatternEntry, content: string): boolean {
