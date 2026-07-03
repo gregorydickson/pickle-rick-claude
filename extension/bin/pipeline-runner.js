@@ -438,7 +438,7 @@ function sortScopePaths(paths) {
     return [...paths].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 function resolveSeedPathsForSetup(sessionDir, statePath, target, repoRoot) {
-    let currentTicket = null;
+    let currentTicket;
     try {
         const state = sm.read(statePath);
         currentTicket = typeof state.current_ticket === 'string' && state.current_ticket.length > 0

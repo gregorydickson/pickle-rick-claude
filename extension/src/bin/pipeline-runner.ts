@@ -599,7 +599,7 @@ function sortScopePaths(paths: string[]): string[] {
 }
 
 function resolveSeedPathsForSetup(sessionDir: string, statePath: string, target: string | undefined, repoRoot: string): string[] {
-  let currentTicket: string | null = null;
+  let currentTicket: string | null;
   try {
     const state = sm.read(statePath);
     currentTicket = typeof state.current_ticket === 'string' && state.current_ticket.length > 0
