@@ -2805,102 +2805,110 @@ export function drawParkResumeJitterMs(rand = Math.random) {
 export function isParkExhausted(cumulativeParkedMs, maxParkMinutes) {
     return cumulativeParkedMs > maxParkMinutes * 60 * 1000;
 }
-// eslint-disable-next-line -- legacy iteration loop retained behavior-preserving for global bin acceptance
-export async function runIteration(sessionDir, iterationNum, extensionRoot, qualityPassModel = '', runtimeOverrides = {}) {
+function readIterationStateOrThrow(sessionDir, iterationNum) {
     const statePath = path.join(sessionDir, 'state.json');
-    let state;
     try {
-        state = readRunnerState(statePath);
+        return { state: readRunnerState(statePath), statePath };
     }
     catch (err) {
         const msg = safeErrorMessage(err);
         throw new Error(`Failed to read state.json for iteration ${iterationNum}: ${msg}`);
     }
-    if (state.active !== true)
-        return { completion: 'inactive', timedOut: false, exitCode: null, wallSeconds: 0 };
-    const templateName = resolveCommandTemplate(state.command_template);
-    // Validate at read time (not just at setup.ts CLI parse time) — state.json could be tampered with
+}
+function resolveIterationPromptPath(extensionRoot, templateName) {
     if (templateName.includes('/') || templateName.includes('\\') || templateName.includes('..')) {
         throw new Error(`Invalid command_template in state.json: "${templateName}" — must be a plain filename`);
     }
-    // Check internal templates first (hidden from slash command list), then user-facing commands.
-    // Use extensionRoot for templatesDir so tests can inject an isolated directory via EXTENSION_DIR.
     const templatesDir = path.join(extensionRoot, 'templates');
     const commandsDir = path.join(os.homedir(), '.claude/commands');
-    // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-    const picklePromptPath = fs.existsSync(path.join(templatesDir, templateName))
+    const promptPath = fs.existsSync(path.join(templatesDir, templateName))
         ? path.join(templatesDir, templateName)
         : path.join(commandsDir, templateName);
-    // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-    if (!fs.existsSync(picklePromptPath)) {
+    if (!fs.existsSync(promptPath)) {
         throw new Error(`${templateName} not found in ${templatesDir} or ${commandsDir}. Run install.sh first.`);
     }
-    // Pre-compute handoff text (mutually exclusive: handoffText OR iterationSummary)
-    let handoffText;
-    let iterationSummary;
+    return promptPath;
+}
+function consumeIterationHandoff(state, sessionDir, iterationNum) {
     const handoffPath = path.join(sessionDir, 'handoff.txt');
-    // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-    if (fs.existsSync(handoffPath)) {
-        // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-        handoffText = fs.readFileSync(handoffPath, 'utf-8');
-        // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-        try {
-            fs.unlinkSync(handoffPath);
-        }
-        catch (unlinkErr) {
-            const code = unlinkErr.code;
-            if (code === 'EACCES' || code === 'ENOENT') {
-                console.warn(`[mux-runner] WARNING: Cannot remove handoff.txt (${code})`);
-            }
+    if (!fs.existsSync(handoffPath)) {
+        return { iterationSummary: buildIterationHandoffSummary(state, sessionDir, iterationNum) };
+    }
+    const handoffText = fs.readFileSync(handoffPath, 'utf-8');
+    try {
+        fs.unlinkSync(handoffPath);
+    }
+    catch (unlinkErr) {
+        const code = unlinkErr.code;
+        if (code === 'EACCES' || code === 'ENOENT') {
+            console.warn(`[mux-runner] WARNING: Cannot remove handoff.txt (${code})`);
         }
     }
-    else {
-        iterationSummary = buildIterationHandoffSummary(state, sessionDir, iterationNum);
+    return { handoffText };
+}
+function readIterationTaskNotes(sessionDir, enabled) {
+    if (!enabled)
+        return undefined;
+    const taskNotesPath = path.join(sessionDir, 'TASK_NOTES.md');
+    try {
+        if (!fs.existsSync(taskNotesPath))
+            return undefined;
+        const raw = fs.readFileSync(taskNotesPath, 'utf-8');
+        const truncated = truncateTaskNotes(raw);
+        return truncated.trim() ? truncated : undefined;
     }
+    catch (readErr) {
+        const msg = readErr instanceof Error ? readErr.message : String(readErr);
+        console.warn(`[mux-runner] WARNING: task notes subsystem failed: ${msg}`);
+        return undefined;
+    }
+}
+function buildIterationPromptContext(state, sessionDir, iterationNum, extensionRoot) {
+    const templateName = resolveCommandTemplate(state.command_template);
+    const promptPath = resolveIterationPromptPath(extensionRoot, templateName);
     const settings = loadSettingsBag(extensionRoot, 'mux-runner:run-iteration:settings');
-    // Feature flag: enable_task_notes (default true — missing flag = enabled)
-    const enableTaskNotes = settings.enable_task_notes !== false;
-    let taskNotes;
-    if (enableTaskNotes) {
-        const taskNotesPath = path.join(sessionDir, 'TASK_NOTES.md');
-        try {
-            // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-            if (fs.existsSync(taskNotesPath)) {
-                // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-                const raw = fs.readFileSync(taskNotesPath, 'utf-8');
-                const truncated = truncateTaskNotes(raw);
-                if (truncated.trim())
-                    taskNotes = truncated;
-            }
-        }
-        catch (readErr) {
-            const msg = readErr instanceof Error ? readErr.message : String(readErr);
-            console.warn(`[mux-runner] WARNING: task notes subsystem failed: ${msg}`);
-        }
-    }
+    return {
+        promptContext: {
+            ...consumeIterationHandoff(state, sessionDir, iterationNum),
+            taskNotes: readIterationTaskNotes(sessionDir, settings.enable_task_notes !== false),
+        },
+        promptPath,
+        settings,
+    };
+}
+function createIterationSpawnEnv(state, backend, invocation, statePath, runtimeOverrides, sessionDir) {
+    const env = {
+        ...process.env,
+        ...runtimeOverrides.envOverrides,
+        ...backendEnvOverrides(backend),
+        ...(invocation.env ?? {}),
+        ...sessionStampEnv(path.basename(sessionDir), state.working_dir || process.cwd()),
+        PICKLE_STATE_FILE: statePath,
+        PYTHONUNBUFFERED: '1',
+    };
+    delete env['CLAUDECODE'];
+    delete env['PICKLE_ROLE'];
+    return env;
+}
+function prepareIterationRun(sessionDir, iterationNum, extensionRoot, qualityPassModel, runtimeOverrides) {
+    const { state, statePath } = readIterationStateOrThrow(sessionDir, iterationNum);
+    if (state.active !== true)
+        return { completion: 'inactive', timedOut: false, exitCode: null, wallSeconds: 0 };
+    const { promptContext, promptPath, settings } = buildIterationPromptContext(state, sessionDir, iterationNum, extensionRoot);
     const backend = resolveBackend(state);
-    const managerPrompt = composeManagerPromptFromSkill(picklePromptPath, backend, {
+    const templateName = resolveCommandTemplate(state.command_template);
+    const managerPrompt = composeManagerPromptFromSkill(promptPath, backend, {
         argumentSubstitution: `--resume ${sessionDir}`,
-        handoffText,
-        iterationSummary,
-        taskNotes,
+        ...promptContext,
     });
     if (backend === 'codex')
         process.env.PICKLE_PARENT_SESSION_HASH = path.basename(sessionDir);
-    let maxTurns = Defaults.MANAGER_MAX_TURNS;
-    maxTurns = positiveIntegerOrNull(settings.default_tmux_max_turns)
+    const maxTurns = positiveIntegerOrNull(settings.default_tmux_max_turns)
         ?? positiveIntegerOrNull(settings.default_manager_max_turns)
-        ?? maxTurns;
-    const logFile = path.join(sessionDir, `tmux_iteration_${iterationNum}.log`);
-    const isQualityPassTemplate = templateName === 'szechuan-sauce.md';
-    // Quality review passes can run on a selected Claude model. Codex exposes a
-    // different model vocabulary, so only apply the override for claude.
-    const iterationModel = isQualityPassTemplate && qualityPassModel && backend === 'claude'
+        ?? Defaults.MANAGER_MAX_TURNS;
+    const iterationModel = templateName === 'szechuan-sauce.md' && qualityPassModel && backend === 'claude'
         ? qualityPassModel
         : undefined;
-    // Codex manager spawns plumb the resolved codex model so `--ignore-user-config`
-    // doesn't strip away the configured `-m`. Quality-pass-template Claude
-    // overrides (szechuan) remain claude-only above.
     const codexManagerModel = backend === 'codex' ? resolveCodexModel(extensionRoot, state) : undefined;
     const invocation = buildManagerInvocation(backend, {
         prompt: managerPrompt,
@@ -2912,350 +2920,354 @@ export async function runIteration(sessionDir, iterationNum, extensionRoot, qual
         toolsets: backend === 'hermes' ? state.hermes_toolsets : undefined,
         provider: backend === 'hermes' ? state.hermes_provider : undefined,
     });
-    const env = {
-        ...process.env,
-        ...runtimeOverrides.envOverrides,
-        ...backendEnvOverrides(backend),
-        ...(invocation.env ?? {}),
-        // R-CSI / W2.R1: stamp the owning session so the manager subprocess (and the
-        // worker subtree it spawns, which inherits these) is identifiable by session
-        // for session-scoped reaping rather than a bare binary-name kill.
-        ...sessionStampEnv(path.basename(sessionDir), state.working_dir || process.cwd()),
-        PICKLE_STATE_FILE: statePath,
-        PYTHONUNBUFFERED: '1',
+    const env = createIterationSpawnEnv(state, backend, invocation, statePath, runtimeOverrides, sessionDir);
+    return {
+        backend,
+        env,
+        exitDrainFallbackMs: resolveExitDrainFallbackMs(env),
+        invocation,
+        logFile: path.join(sessionDir, `tmux_iteration_${iterationNum}.log`),
+        maxTurns,
+        state,
+        statePath,
     };
-    // Remove CLAUDECODE so the spawned claude process doesn't think it's nested
-    // inside another Claude Code session (which would alter its behavior).
-    delete env['CLAUDECODE'];
-    // Remove PICKLE_ROLE so manager subprocesses aren't misidentified as workers
-    // by the stop-hook (tmux-runner spawns managers, not workers).
-    delete env['PICKLE_ROLE'];
-    // AC-R-WPEXA-9: bounded 'exit'-drain fallback window for this iteration,
-    // tunable via PICKLE_EXIT_DRAIN_FALLBACK_MS (resolved from the worker env,
-    // which folds in runtimeOverrides.envOverrides).
-    const exitDrainFallbackMs = resolveExitDrainFallbackMs(env);
-    // Use a raw file descriptor with synchronous writes so every chunk hits
-    // the disk immediately. Node's WriteStream buffers up to 16KB internally,
-    // which starves log-watcher (it polls file size via statSync).
-    // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-    const logFd = fs.openSync(logFile, 'w');
-    function writeToLog(chunk) {
-        try {
-            fs.writeSync(logFd, chunk);
-        }
-        catch { /* fd closed — ignore late writes */ }
+}
+class IterationProcessController {
+    sessionDir;
+    iterationNum;
+    prepared;
+    runtimeOverrides;
+    start;
+    hangGuardMs;
+    outputStallGuardMs;
+    hangGuard;
+    currentChild = null;
+    didTimeout = false;
+    heartbeat = null;
+    lastDataAt;
+    logFd = -1;
+    outputStallGuard = null;
+    resolveOutcome = () => undefined;
+    settled = false;
+    stallReason;
+    timeoutAwaitingDrain = false;
+    timeoutChildClosed = false;
+    timeoutDrainTimer = null;
+    timeoutEarliestFinishAt = 0;
+    timeoutResolutionFinished = false;
+    timeoutResolveTimer = null;
+    timeoutStderrClosed = false;
+    timeoutStdoutClosed = false;
+    constructor(sessionDir, iterationNum, prepared, runtimeOverrides, start = Date.now(), hangGuardMs = (runtimeOverrides.maxIterationSeconds ?? Defaults.MAX_ITERATION_SECONDS) * 1000, outputStallGuardMs = (runtimeOverrides.outputStallSeconds ?? Defaults.OUTPUT_STALL_SECONDS) * 1000, hangGuard = setTimeout(() => {
+        this.resolveTimeout('wall_clock');
+    }, (runtimeOverrides.maxIterationSeconds ?? Defaults.MAX_ITERATION_SECONDS) * 1000)) {
+        this.sessionDir = sessionDir;
+        this.iterationNum = iterationNum;
+        this.prepared = prepared;
+        this.runtimeOverrides = runtimeOverrides;
+        this.start = start;
+        this.hangGuardMs = hangGuardMs;
+        this.outputStallGuardMs = outputStallGuardMs;
+        this.hangGuard = hangGuard;
+        this.lastDataAt = this.start;
+        this.hangGuard.unref();
     }
-    // eslint-disable-next-line max-lines-per-function -- HT-1 reviewed: legacy spawn-wait callback retained behavior-preserving for global bin acceptance; refactor deferred.
-    return new Promise((resolve) => {
-        let settled = false;
-        const start = Date.now();
-        let didTimeout = false;
-        let stallReason;
-        let lastDataAt = start;
-        let timeoutResolveTimer = null;
-        let timeoutDrainTimer = null;
-        let timeoutResolutionFinished = false;
-        let timeoutAwaitingDrain = false;
-        let timeoutChildClosed = false;
-        let timeoutStdoutClosed = false;
-        let timeoutStderrClosed = false;
-        let timeoutEarliestFinishAt = 0;
-        const proc = spawn(invocation.cmd, invocation.args, {
-            cwd: state.working_dir || process.cwd(),
-            env,
+    run() {
+        this.logFd = fs.openSync(this.prepared.logFile, 'w');
+        return new Promise((resolve) => {
+            this.resolveOutcome = resolve;
+            const proc = this.spawnManagerProcess();
+            this.currentChild = proc;
+            this.timeoutStdoutClosed = proc.stdout === null;
+            this.timeoutStderrClosed = proc.stderr === null;
+            this.armOutputStallGuard();
+            this.startHeartbeat();
+            this.attachStreamHandlers(proc);
+            this.attachLifecycleHandlers(proc);
+        });
+    }
+    spawnManagerProcess() {
+        const proc = spawn(this.prepared.invocation.cmd, this.prepared.invocation.args, {
+            cwd: this.prepared.state.working_dir || process.cwd(),
+            env: this.prepared.env,
             stdio: ['inherit', 'pipe', 'pipe'],
         });
         currentChildProc = proc;
-        const spawnedPid = proc.pid;
-        if (spawnedPid != null) {
+        if (proc.pid != null) {
             try {
-                writeActivePidFile(sessionDir, spawnedPid);
+                writeActivePidFile(this.sessionDir, proc.pid);
             }
             catch { /* best effort */ }
         }
-        timeoutStdoutClosed = proc.stdout === null;
-        timeoutStderrClosed = proc.stderr === null;
-        const hangGuardMs = (runtimeOverrides.maxIterationSeconds ?? Defaults.MAX_ITERATION_SECONDS) * 1000;
-        const outputStallGuardMs = (runtimeOverrides.outputStallSeconds ?? Defaults.OUTPUT_STALL_SECONDS) * 1000;
-        let outputStallGuard = null;
-        let heartbeat = null;
-        function clearIterationGuards() {
-            clearTimeout(hangGuard);
-            if (outputStallGuard) {
-                clearTimeout(outputStallGuard);
-                outputStallGuard = null;
-            }
-            if (heartbeat) {
-                clearInterval(heartbeat);
-                heartbeat = null;
-            }
-        }
-        function maybeFinishTimeoutResolution() {
-            if (!timeoutAwaitingDrain || timeoutResolutionFinished)
-                return;
-            if (!timeoutChildClosed || !timeoutStdoutClosed || !timeoutStderrClosed)
-                return;
-            finishTimeoutResolution();
-        }
-        function scheduleTimeoutResolutionFinish(force = false) {
-            if (!timeoutAwaitingDrain || timeoutResolutionFinished)
-                return;
-            if (timeoutDrainTimer) {
-                clearTimeout(timeoutDrainTimer);
-                timeoutDrainTimer = null;
-            }
-            const remainingMs = timeoutEarliestFinishAt - Date.now();
-            if (remainingMs > 0) {
-                timeoutDrainTimer = setTimeout(() => {
-                    timeoutDrainTimer = null;
-                    scheduleTimeoutResolutionFinish(force);
-                }, remainingMs);
-                timeoutDrainTimer.unref();
-                return;
-            }
-            if (force) {
-                finishTimeoutResolution();
-                return;
-            }
-            maybeFinishTimeoutResolution();
-        }
-        function finishTimeoutResolution() {
-            if (timeoutResolutionFinished)
-                return;
-            timeoutResolutionFinished = true;
-            timeoutAwaitingDrain = false;
-            if (timeoutDrainTimer) {
-                clearTimeout(timeoutDrainTimer);
-                timeoutDrainTimer = null;
-            }
-            if (timeoutResolveTimer) {
-                clearTimeout(timeoutResolveTimer);
-                timeoutResolveTimer = null;
-            }
+        return proc;
+    }
+    startHeartbeat() {
+        let heartbeatLastSeenMtimeMs = 0;
+        this.heartbeat = setInterval(() => {
             try {
-                fs.fsyncSync(logFd);
+                heartbeatLastSeenMtimeMs = maybeEmitManagerTurnProgress({
+                    sessionDir: this.sessionDir,
+                    statePath: this.prepared.statePath,
+                    ticketId: this.prepared.state.current_ticket,
+                    lastSeenMtimeMs: heartbeatLastSeenMtimeMs,
+                });
             }
-            catch { /* already closed or error */ }
-            try {
-                fs.closeSync(logFd);
-            }
-            catch { /* already closed */ }
-            const label = stallReason === 'output_stall' ? 'output stall detected' : 'hang detected';
-            console.error(`${Style.RED}❌ Iteration ${iterationNum} ${label} — forcing failure${Style.RESET}`);
-            resolve({
-                completion: 'error',
-                timedOut: true,
-                exitCode: null,
-                wallSeconds: (Date.now() - start) / 1000,
-                stallReason,
-            });
-        }
-        function resolveTimeout(reason) {
-            if (settled)
-                return;
-            settled = true;
-            didTimeout = true;
-            stallReason = reason;
-            timeoutResolutionFinished = false;
-            timeoutAwaitingDrain = true;
-            timeoutChildClosed = false;
-            timeoutStdoutClosed = proc.stdout === null;
-            timeoutStderrClosed = proc.stderr === null;
-            // R-APMW-6: even if the child closes promptly after SIGTERM, keep the
-            // timeout path open briefly so delayed shutdown output can still arrive
-            // on the pipe and hit the iteration log before we close the fd.
-            timeoutEarliestFinishAt = Date.now() + 150;
-            clearIterationGuards();
-            currentChildProc = null;
-            proc.once('close', () => {
-                timeoutChildClosed = true;
-                scheduleTimeoutResolutionFinish();
-            });
-            // R-APMW-6: bounded fallback wait for delayed SIGTERM cleanup. The
-            // child has up to TIMEOUT_RESOLVE_FALLBACK_MS to flush shutdown output
-            // and exit cleanly before we force the resolve path. 500ms was too
-            // tight under load (data flows stdout→pipe→Node→fd write); 1500ms
-            // gives realistic slack while still bounding the resolve.
-            timeoutResolveTimer = setTimeout(() => {
-                scheduleTimeoutResolutionFinish(true);
-            }, 1500);
-            timeoutResolveTimer.unref();
-            try {
-                proc.kill('SIGTERM');
-            }
-            catch { /* already dead */ }
-        }
-        function armOutputStallGuard() {
-            if (settled)
-                return;
-            if (outputStallGuard)
-                clearTimeout(outputStallGuard);
-            const remainingMs = Math.max(1, (lastDataAt + outputStallGuardMs) - Date.now());
-            outputStallGuard = setTimeout(() => {
-                if (settled)
-                    return;
-                if ((Date.now() - lastDataAt) < outputStallGuardMs) {
-                    armOutputStallGuard();
-                    return;
-                }
-                resolveTimeout('output_stall');
-            }, remainingMs);
-            outputStallGuard.unref();
-        }
-        const hangGuard = setTimeout(() => {
-            resolveTimeout('wall_clock');
-        }, hangGuardMs);
-        hangGuard.unref();
-        armOutputStallGuard();
-        {
-            let heartbeatLastSeenMtimeMs = 0;
-            heartbeat = setInterval(() => {
-                try {
-                    heartbeatLastSeenMtimeMs = maybeEmitManagerTurnProgress({
-                        sessionDir,
-                        statePath,
-                        ticketId: state.current_ticket,
-                        lastSeenMtimeMs: heartbeatLastSeenMtimeMs,
-                    });
-                }
-                catch { /* best effort — never crash the manager turn */ }
-            }, MANAGER_TURN_HEARTBEAT_POLL_MS);
-            heartbeat.unref();
-        }
-        // Direct data handlers: write each chunk to both the log file (sync,
-        // no buffering) and the terminal (for the tmux-runner pane).
-        proc.stdout?.on('data', (chunk) => {
-            lastDataAt = Date.now();
-            armOutputStallGuard();
-            writeToLog(chunk);
+            catch { /* best effort — never crash the manager turn */ }
+        }, MANAGER_TURN_HEARTBEAT_POLL_MS);
+        this.heartbeat.unref();
+    }
+    attachStreamHandlers(proc) {
+        const handleData = (chunk) => {
+            this.lastDataAt = Date.now();
+            this.armOutputStallGuard();
+            this.writeToLog(chunk);
             process.stderr.write(chunk);
-        });
-        proc.stderr?.on('data', (chunk) => {
-            lastDataAt = Date.now();
-            armOutputStallGuard();
-            writeToLog(chunk);
-            process.stderr.write(chunk);
-        });
+        };
+        proc.stdout?.on('data', handleData);
+        proc.stderr?.on('data', handleData);
         proc.stdout?.once('close', () => {
-            timeoutStdoutClosed = true;
-            scheduleTimeoutResolutionFinish();
+            this.timeoutStdoutClosed = true;
+            this.scheduleTimeoutResolutionFinish();
         });
         proc.stderr?.once('close', () => {
-            timeoutStderrClosed = true;
-            scheduleTimeoutResolutionFinish();
+            this.timeoutStderrClosed = true;
+            this.scheduleTimeoutResolutionFinish();
         });
-        // R-MWIS-1: shared finalize body, reachable from BOTH the legacy stdio
-        // 'close' handler AND the PRIMARY 'exit' observer below. The `settled` guard
-        // (single-resolution invariant) means whichever fires first wins; the other
-        // short-circuits. Extracting this keeps the resolution logic single-sourced
-        // so the exit-driven path cannot drift from the close-driven path.
-        // eslint-disable-next-line complexity -- HT-1 reviewed: R-OMS-1 clearActivePidFile adds one branch to the resolution finalize (R-APMW-6 ordering preserved); behavior-preserving, surrounding-flow refactor deferred to a focused PR.
-        function finalizeOnChildEnd(code) {
-            if (settled)
-                return;
-            settled = true;
-            currentChildProc = null;
-            try {
-                clearActivePidFile(sessionDir);
-            }
-            catch { /* best effort */ }
-            if (heartbeat) {
-                clearInterval(heartbeat);
-                heartbeat = null;
-            }
-            clearIterationGuards();
-            try {
-                fs.fsyncSync(logFd);
-            }
-            catch { /* already closed or error */ }
-            try {
-                fs.closeSync(logFd);
-            }
-            catch { /* already closed */ }
-            const exitCodeFile = logFile.replace('.log', '.exitcode');
-            try {
-                fs.writeFileSync(exitCodeFile, String(code ?? -1));
-            }
-            catch { /* best effort */ }
-            let output = '';
-            try {
-                output = fs.readFileSync(logFile, 'utf-8');
-            }
-            catch { /* missing/unreadable log */ }
-            if (backend === 'codex' && detectOutputFormat(output) === 'plain-text') {
-                process.stderr.write(`[classifier] codex delimiter drift: no recognizable codex/user blocks in iteration ${iterationNum} output\n`);
-            }
-            // R-CCPM-2: observe codex stream for setup.js self-bootstrap attempts (LOG-ONLY)
-            if (state.backend === 'codex') {
-                const bootstrapObs = checkIterationLogForCodexSelfBootstrap(output, state.backend, state.current_ticket, iterationNum);
-                for (const obs of bootstrapObs) {
-                    logActivity({
-                        event: 'codex_manager_self_bootstrap_attempted',
-                        ts: new Date().toISOString(),
-                        source: 'pickle',
-                        session: path.basename(sessionDir),
-                        ticket: obs.ticket,
-                        attempted_argv: obs.attempted_argv,
-                        iteration: obs.iteration,
-                        action_taken: 'logged',
-                    });
-                }
-            }
-            const completion = classifyCompletion(output);
-            const normalizedOutcome = {
-                completion,
-                timedOut: didTimeout,
-                exitCode: code ?? null,
-                wallSeconds: (Date.now() - start) / 1000,
-                stallReason,
-            };
-            const isMaxTurnsExit = backend === 'claude'
-                && detectManagerMaxTurnsExit(normalizedOutcome, logFile, maxTurns);
-            if (isMaxTurnsExit)
-                emitMaxTurnsClassifiedEvent(sessionDir, iterationNum, logFile, maxTurns, normalizedOutcome.wallSeconds);
-            resolve({
-                ...normalizedOutcome,
-                completion: isMaxTurnsExit ? 'error' : completion,
-            });
-        }
-        proc.on('close', (code) => finalizeOnChildEnd(code));
-        // R-MWIS-1: process exit is the PRIMARY worker-completion signal — observed
-        // directly via 'exit', INDEPENDENT of stdio-pipe closure, log bytes, or any
-        // promise/completion token. A silent 0-byte worker exit whose stdio 'close'
-        // lags (render-lag / inherited fd) no longer hangs the loop at 0% CPU: the
-        // 'exit' event fires on child termination and, after a bounded stdio-drain
-        // window, finalizes the outcome. If 'close' fires first (the common case,
-        // when the child flushed output), `settled` short-circuits this path so no
-        // double-resolution and no log truncation occurs.
+    }
+    attachLifecycleHandlers(proc) {
+        proc.on('close', (code) => this.finalizeOnChildEnd(code));
         proc.on('exit', (code) => {
-            if (settled)
+            if (this.settled)
                 return;
             const drainTimer = setTimeout(() => {
-                if (settled)
+                if (this.settled)
                     return;
-                finalizeOnChildEnd(code ?? null);
-            }, exitDrainFallbackMs);
+                this.finalizeOnChildEnd(code ?? null);
+            }, this.prepared.exitDrainFallbackMs);
             drainTimer.unref();
         });
         proc.on('error', (err) => {
-            if (settled)
+            if (this.settled)
                 return;
-            settled = true;
+            this.settled = true;
             currentChildProc = null;
-            clearIterationGuards();
-            const msg = safeErrorMessage(err);
-            console.error(`${Style.RED}Failed to spawn ${invocation.cmd}: ${msg}${Style.RESET}`);
-            try {
-                fs.fsyncSync(logFd);
-            }
-            catch { /* already closed or error */ }
-            try {
-                fs.closeSync(logFd);
-            }
-            catch { /* already closed */ }
-            resolve({ completion: 'error', timedOut: false, exitCode: null, wallSeconds: (Date.now() - start) / 1000 });
+            this.currentChild = null;
+            this.clearIterationGuards();
+            console.error(`${Style.RED}Failed to spawn ${this.prepared.invocation.cmd}: ${safeErrorMessage(err)}${Style.RESET}`);
+            this.closeLogFd();
+            this.resolveOutcome({ completion: 'error', timedOut: false, exitCode: null, wallSeconds: (Date.now() - this.start) / 1000 });
         });
-    });
+    }
+    writeToLog(chunk) {
+        try {
+            fs.writeSync(this.logFd, chunk);
+        }
+        catch { /* fd closed — ignore late writes */ }
+    }
+    clearIterationGuards() {
+        clearTimeout(this.hangGuard);
+        if (this.outputStallGuard) {
+            clearTimeout(this.outputStallGuard);
+            this.outputStallGuard = null;
+        }
+        if (this.heartbeat) {
+            clearInterval(this.heartbeat);
+            this.heartbeat = null;
+        }
+    }
+    armOutputStallGuard() {
+        if (this.settled)
+            return;
+        if (this.outputStallGuard)
+            clearTimeout(this.outputStallGuard);
+        const remainingMs = Math.max(1, (this.lastDataAt + this.outputStallGuardMs) - Date.now());
+        this.outputStallGuard = setTimeout(() => {
+            if (this.settled)
+                return;
+            if ((Date.now() - this.lastDataAt) < this.outputStallGuardMs) {
+                this.armOutputStallGuard();
+                return;
+            }
+            this.resolveTimeout('output_stall');
+        }, remainingMs);
+        this.outputStallGuard.unref();
+    }
+    resolveTimeout(reason) {
+        if (this.settled)
+            return;
+        this.settled = true;
+        this.didTimeout = true;
+        this.stallReason = reason;
+        this.timeoutResolutionFinished = false;
+        this.timeoutAwaitingDrain = true;
+        this.timeoutChildClosed = false;
+        this.timeoutStdoutClosed = this.currentChild?.stdout === null;
+        this.timeoutStderrClosed = this.currentChild?.stderr === null;
+        this.timeoutEarliestFinishAt = Date.now() + 150;
+        this.clearIterationGuards();
+        currentChildProc = null;
+        this.currentChild?.once('close', () => {
+            this.timeoutChildClosed = true;
+            this.scheduleTimeoutResolutionFinish();
+        });
+        this.timeoutResolveTimer = setTimeout(() => {
+            this.scheduleTimeoutResolutionFinish(true);
+        }, 1500);
+        this.timeoutResolveTimer.unref();
+        try {
+            this.currentChild?.kill('SIGTERM');
+        }
+        catch { /* already dead */ }
+    }
+    maybeFinishTimeoutResolution() {
+        if (!this.timeoutAwaitingDrain || this.timeoutResolutionFinished)
+            return;
+        if (!this.timeoutChildClosed || !this.timeoutStdoutClosed || !this.timeoutStderrClosed)
+            return;
+        this.finishTimeoutResolution();
+    }
+    scheduleTimeoutResolutionFinish(force = false) {
+        if (!this.timeoutAwaitingDrain || this.timeoutResolutionFinished)
+            return;
+        if (this.timeoutDrainTimer) {
+            clearTimeout(this.timeoutDrainTimer);
+            this.timeoutDrainTimer = null;
+        }
+        const remainingMs = this.timeoutEarliestFinishAt - Date.now();
+        if (remainingMs > 0) {
+            this.timeoutDrainTimer = setTimeout(() => {
+                this.timeoutDrainTimer = null;
+                this.scheduleTimeoutResolutionFinish(force);
+            }, remainingMs);
+            this.timeoutDrainTimer.unref();
+            return;
+        }
+        if (force) {
+            this.finishTimeoutResolution();
+            return;
+        }
+        this.maybeFinishTimeoutResolution();
+    }
+    finishTimeoutResolution() {
+        if (this.timeoutResolutionFinished)
+            return;
+        this.timeoutResolutionFinished = true;
+        this.timeoutAwaitingDrain = false;
+        if (this.timeoutDrainTimer) {
+            clearTimeout(this.timeoutDrainTimer);
+            this.timeoutDrainTimer = null;
+        }
+        if (this.timeoutResolveTimer) {
+            clearTimeout(this.timeoutResolveTimer);
+            this.timeoutResolveTimer = null;
+        }
+        this.closeLogFd();
+        const label = this.stallReason === 'output_stall' ? 'output stall detected' : 'hang detected';
+        console.error(`${Style.RED}❌ Iteration ${this.iterationNum} ${label} — forcing failure${Style.RESET}`);
+        this.resolveOutcome({
+            completion: 'error',
+            timedOut: true,
+            exitCode: null,
+            wallSeconds: (Date.now() - this.start) / 1000,
+            stallReason: this.stallReason,
+        });
+    }
+    finalizeOnChildEnd(code) {
+        if (this.settled)
+            return;
+        this.settled = true;
+        currentChildProc = null;
+        this.currentChild = null;
+        try {
+            clearActivePidFile(this.sessionDir);
+        }
+        catch { /* best effort */ }
+        this.clearIterationGuards();
+        this.closeLogFd();
+        this.writeExitCodeFile(code);
+        const output = this.readIterationOutput();
+        this.emitCodexObservations(output);
+        const outcome = this.buildOutcome(code, output);
+        if (outcome.completion === 'error') {
+            this.resolveOutcome(outcome);
+            return;
+        }
+        this.resolveOutcome(outcome);
+    }
+    writeExitCodeFile(code) {
+        const exitCodeFile = this.prepared.logFile.replace('.log', '.exitcode');
+        try {
+            fs.writeFileSync(exitCodeFile, String(code ?? -1));
+        }
+        catch { /* best effort */ }
+    }
+    readIterationOutput() {
+        try {
+            return fs.readFileSync(this.prepared.logFile, 'utf-8');
+        }
+        catch {
+            return '';
+        }
+    }
+    emitCodexObservations(output) {
+        if (this.prepared.backend === 'codex' && detectOutputFormat(output) === 'plain-text') {
+            process.stderr.write(`[classifier] codex delimiter drift: no recognizable codex/user blocks in iteration ${this.iterationNum} output\n`);
+        }
+        if (this.prepared.state.backend !== 'codex')
+            return;
+        const bootstrapObs = checkIterationLogForCodexSelfBootstrap(output, this.prepared.state.backend, this.prepared.state.current_ticket, this.iterationNum);
+        for (const obs of bootstrapObs) {
+            logActivity({
+                event: 'codex_manager_self_bootstrap_attempted',
+                ts: new Date().toISOString(),
+                source: 'pickle',
+                session: path.basename(this.sessionDir),
+                ticket: obs.ticket,
+                attempted_argv: obs.attempted_argv,
+                iteration: obs.iteration,
+                action_taken: 'logged',
+            });
+        }
+    }
+    buildOutcome(code, output) {
+        const completion = classifyCompletion(output);
+        const normalizedOutcome = {
+            completion,
+            timedOut: this.didTimeout,
+            exitCode: code ?? null,
+            wallSeconds: (Date.now() - this.start) / 1000,
+            stallReason: this.stallReason,
+        };
+        const isMaxTurnsExit = this.prepared.backend === 'claude'
+            && detectManagerMaxTurnsExit(normalizedOutcome, this.prepared.logFile, this.prepared.maxTurns);
+        if (isMaxTurnsExit) {
+            emitMaxTurnsClassifiedEvent(this.sessionDir, this.iterationNum, this.prepared.logFile, this.prepared.maxTurns, normalizedOutcome.wallSeconds);
+        }
+        return {
+            ...normalizedOutcome,
+            completion: isMaxTurnsExit ? 'error' : completion,
+        };
+    }
+    closeLogFd() {
+        if (this.logFd < 0)
+            return;
+        try {
+            fs.fsyncSync(this.logFd);
+        }
+        catch { /* already closed or error */ }
+        try {
+            fs.closeSync(this.logFd);
+        }
+        catch { /* already closed */ }
+        this.logFd = -1;
+    }
+}
+// eslint-disable-next-line -- legacy iteration loop retained behavior-preserving for global bin acceptance
+export async function runIteration(sessionDir, iterationNum, extensionRoot, qualityPassModel = '', runtimeOverrides = {}) {
+    const prepared = prepareIterationRun(sessionDir, iterationNum, extensionRoot, qualityPassModel, runtimeOverrides);
+    if ('completion' in prepared)
+        return prepared;
+    return new IterationProcessController(sessionDir, iterationNum, prepared, runtimeOverrides).run();
 }
 /**
  * Atomically writes handoff.txt via a tmp file + rename.
