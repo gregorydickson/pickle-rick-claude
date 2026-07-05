@@ -352,6 +352,26 @@ async function attemptStrictBaselineRecapture(opts) {
         return 'strict';
     }
 }
+// R-SZGB-B: a persisted baseline with project_type: null means the gate inspected NOTHING at
+// the resolved target (WS-1 already tried and failed the depth-1 child scan) — zero captured
+// checks is not evidence of a clean tree. Reuses the existing GateBaselineFile.project_type
+// signal; no new state field/flag.
+function isBaselineUncertifiable(baselinePath) {
+    const baseline = readRecoverableJsonObject(baselinePath);
+    return baseline !== null && baseline.project_type === null;
+}
+// R-SZGB-B: an uncertifiable baseline can never certify a clean replay. Defer the same way a
+// real gate regression would (bump iteration_regressions) so the worker-managed convergence
+// guard (applyWorkerConvergenceGuard, via iterationLeftRegression) blocks rather than converges.
+function recordUncertifiableBaselineDefer(opts) {
+    opts.log('gate: uncertifiable baseline (no project type detected at target) — cannot certify convergence');
+    const nextMv = {
+        ...opts.currentMv,
+        iteration_regressions: (opts.currentMv.iteration_regressions ?? 0) + 1,
+    };
+    opts.deps.writeMicroverseStateFn(opts.sessionDir, nextMv);
+    return nextMv;
+}
 async function runChangedPerIterationGate(opts) {
     let gateMode = opts.gateMode;
     if (gateMode === 'strict') {
@@ -378,6 +398,9 @@ async function runChangedPerIterationGate(opts) {
     });
     if (opts.lintFailuresSink) {
         opts.lintFailuresSink.push(...result.failures.filter((f) => f.check === 'lint'));
+    }
+    if (gateMode === 'baseline' && isBaselineUncertifiable(opts.baselinePath)) {
+        return recordUncertifiableBaselineDefer(opts);
     }
     if (result.status !== 'red' || result.failures.length === 0) {
         return opts.currentMv;

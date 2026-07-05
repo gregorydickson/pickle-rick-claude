@@ -19,6 +19,10 @@ const {
   path.resolve(__dirname, '../../bin/microverse-runner.js')
 );
 
+const { runGate } = await import(
+  path.resolve(__dirname, '../../services/convergence-gate.js')
+);
+
 function makeMv(overrides = {}) {
   return {
     status: 'iterating',
@@ -125,6 +129,29 @@ function writeGateFixtureRepo(dir) {
 function commitAll(dir, message) {
   execFileSync('git', ['add', '.'], { cwd: dir, stdio: 'pipe' });
   execFileSync('git', ['commit', '-m', message], { cwd: dir, stdio: 'pipe' });
+}
+
+// AC-SZGB-06 fixture: a real npm project with a `typecheck` script that always fails, so a
+// resolved child project surfaces a genuine typecheck failure (not a fixture stub that always
+// passes, like writeGateFixtureRepo's typecheck.cjs).
+function writeTypecheckFailureProject(childDir) {
+  fs.mkdirSync(childDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(childDir, 'package.json'),
+    JSON.stringify({
+      name: 'nested-typecheck-fixture',
+      private: true,
+      scripts: { typecheck: 'node typecheck.cjs' },
+    }, null, 2),
+  );
+  fs.writeFileSync(
+    path.join(childDir, 'typecheck.cjs'),
+    [
+      "console.error(\"src/index.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.\");",
+      'process.exit(1);',
+      '',
+    ].join('\n'),
+  );
 }
 
 // Fixture i: gate enabled + commits happened + gate green → no events
@@ -810,4 +837,134 @@ test('microverse startup settings default invalid numeric gate controls before r
   } finally {
     fs.rmSync(extRoot, { recursive: true, force: true });
   }
+});
+
+// AC-SZGB-08 (mechanism finding): Hypothesis 2 held — a persisted gate baseline with
+// `project_type: null` (zero captured checks; observed live in `gate/baseline.json` for session
+// `2026-07-02-b3c45331`) was read by the worker-managed convergence seam as a clean pass with
+// zero regressions, letting a tsc-RED commit converge silently. anatomy-park shared this defect
+// with szechuan-sauce/microverse because both flow through the same shared seam
+// (`runPerIterationGateHook` -> `runChangedPerIterationGate`). The tests below prove the
+// fail-CLOSED fix: an uncertifiable baseline can no longer certify convergence (AC-SZGB-05), a
+// WS-1-resolved target still catches a real typecheck failure end-to-end (AC-SZGB-06), and a
+// healthy certifiable baseline is unaffected (AC-SZGB-07).
+test('AC-SZGB-05: uncertifiable baseline (project_type: null) blocks worker convergence despite a tsc-RED commit', async () => {
+  const workingDir = makeGitRepo('ap-gate-uncertifiable-repo-');
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-gate-uncertifiable-session-'));
+  fs.writeFileSync(path.join(workingDir, 'README.md'), 'no project marker here\n');
+  commitAll(workingDir, 'initial clean state');
+
+  await ensurePerIterationGateBaseline({
+    currentMv: makeMv({ key_metric: undefined }),
+    workingDir,
+    sessionDir,
+    enabledFiles: ['anatomy-park.json'],
+    log: () => {},
+  });
+
+  const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+  const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+  assert.equal(baseline.project_type, null, 'fixture precondition: baseline must be uncertifiable');
+
+  const preIterSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workingDir, encoding: 'utf-8' }).trim();
+  // Simulated tsc-RED commit: a real type error. Since the target has no resolvable project it
+  // is never actually type-checked — this is exactly the fail-OPEN hole under test.
+  fs.writeFileSync(path.join(workingDir, 'broken.ts'), 'let x: number = "s";\n');
+  fs.writeFileSync(path.join(sessionDir, 'anatomy-park.json'), JSON.stringify({ converged: true, reason: 'clean passes done' }));
+  commitAll(workingDir, 'introduce tsc-RED change under an uncertifiable target');
+
+  const logs = [];
+  let writtenMv;
+  const result = await handleWorkerManagedIteration({
+    ...BASE_OPTS,
+    currentMv: makeMv({ key_metric: undefined }),
+    preIterSha,
+    workingDir,
+    sessionDir,
+    iteration: 1,
+    log: (msg) => logs.push(msg),
+    _deps: {
+      writeMicroverseStateFn: (_, next) => { writtenMv = next; },
+      logActivityFn: () => {},
+    },
+  });
+
+  assert.equal(result.converged, false, 'an uncertifiable baseline must never certify convergence');
+  assert.ok(
+    logs.some((msg) => msg.includes('gate: uncertifiable baseline (no project type detected at target) — cannot certify convergence')),
+    `expected uncertifiable-baseline log, got: ${JSON.stringify(logs)}`,
+  );
+  assert.equal(result.currentMv.iteration_regressions, 1, 'uncertifiable-baseline defer must record a regression like a real gate regression');
+  assert.equal(writtenMv.iteration_regressions, 1, 'regression state must be persisted before exit');
+});
+
+test('AC-SZGB-06: WS-1 project-root resolution surfaces a REAL typecheck failure (resolve -> run -> catch)', async () => {
+  const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-gate-ws1-resolve-'));
+  try {
+    // No project marker at workingDir itself; the ONE resolvable child below is what WS-1's
+    // depth-1 resolver (resolveProjectRootOneLevelDown) requires (exactly one candidate).
+    writeTypecheckFailureProject(path.join(workingDir, 'child-pkg'));
+
+    const result = await runGate({
+      workingDir,
+      mode: 'strict',
+      scope: 'full',
+      checks: ['typecheck'],
+    });
+
+    assert.equal(result.status, 'red', 'a project resolved one level down must surface its own typecheck failure, not a silent skip');
+    assert.ok(
+      result.failures.some((f) => f.check === 'typecheck'),
+      `expected a typecheck failure, got: ${JSON.stringify(result.failures)}`,
+    );
+  } finally {
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('AC-SZGB-07: certifiable baseline (non-null project_type) + clean tree still converges normally', async () => {
+  const workingDir = makeGitRepo('ap-gate-certifiable-repo-');
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-gate-certifiable-session-'));
+  writeGateFixtureRepo(workingDir);
+  commitAll(workingDir, 'initial clean state');
+
+  await ensurePerIterationGateBaseline({
+    currentMv: makeMv({ key_metric: undefined }),
+    workingDir,
+    sessionDir,
+    enabledFiles: ['anatomy-park.json'],
+    log: () => {},
+  });
+
+  const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+  const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+  assert.equal(baseline.project_type, 'npm', 'fixture precondition: baseline must be certifiable');
+
+  const preIterSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workingDir, encoding: 'utf-8' }).trim();
+  fs.writeFileSync(path.join(sessionDir, 'anatomy-park.json'), JSON.stringify({ converged: true, reason: 'clean passes done' }));
+  fs.writeFileSync(path.join(workingDir, 'harmless.txt'), 'no regression here\n');
+  commitAll(workingDir, 'harmless clean commit');
+
+  const logs = [];
+  const writtenStates = [];
+  const result = await handleWorkerManagedIteration({
+    ...BASE_OPTS,
+    currentMv: makeMv({ key_metric: undefined }),
+    preIterSha,
+    workingDir,
+    sessionDir,
+    iteration: 1,
+    log: (msg) => logs.push(msg),
+    _deps: {
+      writeMicroverseStateFn: (_, s) => writtenStates.push(s),
+      logActivityFn: () => {},
+    },
+  });
+
+  assert.equal(result.converged, true, 'a certifiable baseline with a clean tree must converge, unaffected by the new fail-closed check');
+  assert.equal(writtenStates.length, 0, 'a clean certifiable pass must not record any regression');
+  assert.ok(
+    !logs.some((msg) => msg.includes('uncertifiable baseline')),
+    `uncertifiable-baseline log must not fire for a certifiable baseline, got: ${JSON.stringify(logs)}`,
+  );
 });
