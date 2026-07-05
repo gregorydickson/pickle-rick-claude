@@ -6,13 +6,19 @@
 // Synthesizes a minimal repo layout that mimics this repo's failure mode: no
 // project-type marker at the workingDir root, but an `extension/package.json`
 // nested one level down. Invokes runGate({mode:'baseline', ...}) directly
-// (lighter than the full pipeline-runner) and asserts the no-project-type
-// early-return path WRITES `gate/baseline.json` so downstream
-// pathExists(baselinePath) consumers (microverse-runner trap door) survive.
+// (lighter than the full pipeline-runner) and asserts baseline capture WRITES
+// `gate/baseline.json` so downstream pathExists(baselinePath) consumers
+// (microverse-runner trap door) survive — the core silent-skip invariant.
 //
-// If Agent 1's convergence-gate.ts fix has not landed yet, this test fails
-// with the original "no baseline written" symptom — that's expected; the
-// orchestrator re-runs after the fix lands.
+// R-SZGB-A (convergence-gate.ts detectProjectTypeWithRootResolution) SUPERSEDES
+// the original R-APBN-1 partial fix for THIS fixture shape: a no-project-type
+// root with EXACTLY ONE package child now resolves DOWN to that child and
+// captures its REAL checks, instead of writing a vacuously-empty baseline. The
+// empty-baseline path for GENUINELY unresolvable targets (zero or 2+ package
+// children, or a detected-but-cmdMap-less type) is still covered by the unit
+// suite tests/services/convergence-gate-baseline-no-project-type.test.js and by
+// R-SZGB-A's own AC-SZGB-02a/02b. This end-to-end test therefore now pins the
+// FULL fix: resolution succeeds and real checks are captured through runGate.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,7 +59,7 @@ function makeFixtureRepo(prefix) {
   return dir;
 }
 
-test('R-APBN-5: runGate({mode:baseline}) at no-project-type root WRITES baseline.json', async () => {
+test('R-APBN-5: runGate({mode:baseline}) at no-project-type root with one package child RESOLVES + WRITES baseline.json', async () => {
   const tmpdir = makeFixtureRepo('ap-no-project-root-');
   const baselinePath = path.join(tmpdir, 'gate', 'baseline.json');
 
@@ -91,29 +97,32 @@ test('R-APBN-5: runGate({mode:baseline}) at no-project-type root WRITES baseline
       `gate/baseline.json MUST exist on disk after baseline-mode runGate, expected at ${baselinePath}`,
     );
 
-    // (4) The written baseline.json is parseable JSON with empty checks +
-    // empty failures arrays. project_type may be null (R-APBN-1 schema
-    // extension) or any string Agent 1 chose; both are accepted because the
-    // operative invariant is empty arrays, not the precise project-type
-    // sentinel.
+    // (4) The written baseline.json is parseable JSON. Post-R-SZGB-A, the
+    // no-project-type root with exactly one package child (extension/) RESOLVES
+    // down to that child, so the baseline captures the child's REAL checks
+    // rather than a vacuously-empty set. checks is therefore NON-empty and
+    // project_type is non-null. The persisted baseline.failures records the
+    // child's actual check state as the subtraction zero-point — for this bare
+    // fixture (a package.json with no typecheck/lint/tests scripts) that is a
+    // non-empty set of "Missing script" baseline failures, which is exactly the
+    // captured baseline every future iteration subtracts against.
     const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
     assert.ok(
       Array.isArray(baseline.checks),
       `baseline.checks must be an array, got: ${JSON.stringify(baseline.checks)}`,
     );
-    assert.equal(
-      baseline.checks.length,
-      0,
-      `baseline.checks must be empty for no-project-type workingDir, got: ${JSON.stringify(baseline.checks)}`,
+    assert.ok(
+      baseline.checks.length > 0,
+      `baseline.checks must be non-empty once R-SZGB-A resolves the one package child, got: ${JSON.stringify(baseline.checks)}`,
+    );
+    assert.notEqual(
+      baseline.project_type,
+      null,
+      `project_type must be non-null after R-SZGB-A resolves the child package, got: ${JSON.stringify(baseline.project_type)}`,
     );
     assert.ok(
       Array.isArray(baseline.failures),
       `baseline.failures must be an array, got: ${JSON.stringify(baseline.failures)}`,
-    );
-    assert.equal(
-      baseline.failures.length,
-      0,
-      `baseline.failures must be empty for no-project-type workingDir, got: ${JSON.stringify(baseline.failures)}`,
     );
   } finally {
     fs.rmSync(tmpdir, { recursive: true, force: true });
