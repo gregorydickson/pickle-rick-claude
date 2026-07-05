@@ -988,10 +988,52 @@ async function emitSkippedAndReturn(opts, projectType, reason, start, emit, extr
     emit('gate_skipped', { reason, ...extra });
     return { ...emptyGateResult(), elapsed_ms: Date.now() - start };
 }
-export async function runGate(opts) {
-    const start = Date.now();
-    const emit = (event, data) => opts.onEvent?.(event, data);
+const NON_CANDIDATE_CHILD_DIRS = new Set(['node_modules']);
+/**
+ * R-SZGB-A: when `target` itself carries no project marker, scan its immediate
+ * children (depth 1, skipping node_modules/dot-dirs) for the real package root
+ * via the same `detectProjectType` primitive. Returns the single unambiguous
+ * candidate, or null on zero or 2+ matches — callers must never guess.
+ */
+function resolveProjectRootOneLevelDown(target) {
+    let entries;
+    try {
+        entries = fs.readdirSync(target, { withFileTypes: true });
+    }
+    catch {
+        return null;
+    }
+    const candidates = [];
+    for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith('.') || NON_CANDIDATE_CHILD_DIRS.has(entry.name))
+            continue;
+        const childDir = path.join(target, entry.name);
+        const childType = detectProjectType(childDir);
+        if (childType)
+            candidates.push({ dir: childDir, type: childType });
+    }
+    return candidates.length === 1 ? candidates[0] : null;
+}
+/**
+ * R-SZGB-A: detect the project type at `opts.workingDir`, falling back to the
+ * bounded depth-1 resolver when the target itself has no marker. Returns opts
+ * unchanged (and projectType null) when neither the target nor a lone child
+ * resolves.
+ */
+function detectProjectTypeWithRootResolution(opts) {
     const projectType = detectProjectType(opts.workingDir);
+    if (projectType)
+        return { opts, projectType };
+    const resolvedRoot = resolveProjectRootOneLevelDown(opts.workingDir);
+    if (!resolvedRoot)
+        return { opts, projectType: null };
+    console.error(`gate: resolved project root 1 level(s) below target -> ${resolvedRoot.dir}`);
+    return { opts: { ...opts, workingDir: resolvedRoot.dir }, projectType: resolvedRoot.type };
+}
+export async function runGate(rawOpts) {
+    const start = Date.now();
+    const emit = (event, data) => rawOpts.onEvent?.(event, data);
+    const { opts, projectType } = detectProjectTypeWithRootResolution(rawOpts);
     if (!projectType) {
         return emitSkippedAndReturn(opts, null, 'no_project_type_detected', start, emit);
     }
