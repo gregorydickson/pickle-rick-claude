@@ -539,6 +539,9 @@ interface RunChangedPerIterationGateOpts {
   // ALREADY computed (no second lint run), so handleWorkerMode can compare the
   // complexity-rule count against the pass-start baseline.
   lintFailuresSink?: GateFailure[];
+  // R-SZGB-C-A: sink the uncertifiable-baseline defer fills when it fires, so the caller can
+  // arm the existing R-ORSR-6 no-disown latch (selfRedOpen) without a new state field.
+  uncertifiableBaselineDeferSink?: { fired: boolean };
 }
 
 async function attemptStrictBaselineRecapture(opts: RunChangedPerIterationGateOpts): Promise<'baseline' | 'strict'> {
@@ -595,6 +598,8 @@ function isBaselineUncertifiable(baselinePath: string): boolean {
 // guard (applyWorkerConvergenceGuard, via iterationLeftRegression) blocks rather than converges.
 function recordUncertifiableBaselineDefer(opts: RunChangedPerIterationGateOpts): MicroverseSessionState {
   opts.log('gate: uncertifiable baseline (no project type detected at target) — cannot certify convergence');
+  opts.log('gate: uncertifiable baseline defer — arming no-attrition latch (cannot force-converge)');
+  if (opts.uncertifiableBaselineDeferSink) opts.uncertifiableBaselineDeferSink.fired = true;
   const nextMv: MicroverseSessionState = {
     ...opts.currentMv,
     iteration_regressions: (opts.currentMv.iteration_regressions ?? 0) + 1,
@@ -857,6 +862,8 @@ export async function runPerIterationGateHook(opts: {
   _deps?: PerIterationGateDeps;
   // B-APNC WS-2: optional sink the gate fills with the lint failures it already ran.
   lintFailuresSink?: GateFailure[];
+  // R-SZGB-C-A: optional sink the gate fills when the uncertifiable-baseline defer fires.
+  uncertifiableBaselineDeferSink?: { fired: boolean };
 }): Promise<MicroverseSessionState> {
   const {
     preIterSha, workingDir, sessionDir, enabledFiles, regressionWarningThreshold,
@@ -883,6 +890,7 @@ export async function runPerIterationGateHook(opts: {
       log,
       deps,
       lintFailuresSink: opts.lintFailuresSink,
+      uncertifiableBaselineDeferSink: opts.uncertifiableBaselineDeferSink,
     });
   } else if (isEnabled && !commitsHappened) {
     deps.logActivityFn({ event: 'gate_skipped', source: 'pickle', gate_payload: { reason: 'no_commits' } });
@@ -1147,6 +1155,7 @@ export async function handleWorkerManagedIteration(opts: {
   let currentMv = opts.currentMv;
   const priorIterationRegressions = Number(currentMv.iteration_regressions ?? 0);
   const lintFailures: GateFailure[] = [];
+  const uncertifiableBaselineDeferSink = { fired: false };
 
   const cfPath = path.join(sessionDir, currentMv.convergence_file!);
   const { converged, reason } = readWorkerConvergenceSignal(cfPath, iteration, log);
@@ -1164,6 +1173,7 @@ export async function handleWorkerManagedIteration(opts: {
     log,
     _deps,
     lintFailuresSink: lintFailures,
+    uncertifiableBaselineDeferSink,
   });
 
   if (!converged) {
@@ -1180,6 +1190,7 @@ export async function handleWorkerManagedIteration(opts: {
       currentMv,
       converged: false,
       reason: 'per-iteration gate left unresolved regressions',
+      ...(uncertifiableBaselineDeferSink.fired ? { selfRedOpen: true as const } : {}),
     };
   }
 

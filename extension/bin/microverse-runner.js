@@ -365,6 +365,9 @@ function isBaselineUncertifiable(baselinePath) {
 // guard (applyWorkerConvergenceGuard, via iterationLeftRegression) blocks rather than converges.
 function recordUncertifiableBaselineDefer(opts) {
     opts.log('gate: uncertifiable baseline (no project type detected at target) — cannot certify convergence');
+    opts.log('gate: uncertifiable baseline defer — arming no-attrition latch (cannot force-converge)');
+    if (opts.uncertifiableBaselineDeferSink)
+        opts.uncertifiableBaselineDeferSink.fired = true;
     const nextMv = {
         ...opts.currentMv,
         iteration_regressions: (opts.currentMv.iteration_regressions ?? 0) + 1,
@@ -578,6 +581,7 @@ export async function runPerIterationGateHook(opts) {
             log,
             deps,
             lintFailuresSink: opts.lintFailuresSink,
+            uncertifiableBaselineDeferSink: opts.uncertifiableBaselineDeferSink,
         });
     }
     else if (isEnabled && !commitsHappened) {
@@ -761,6 +765,7 @@ export async function handleWorkerManagedIteration(opts) {
     let currentMv = opts.currentMv;
     const priorIterationRegressions = Number(currentMv.iteration_regressions ?? 0);
     const lintFailures = [];
+    const uncertifiableBaselineDeferSink = { fired: false };
     const cfPath = path.join(sessionDir, currentMv.convergence_file);
     const { converged, reason } = readWorkerConvergenceSignal(cfPath, iteration, log);
     currentMv = await runPerIterationGateHook({
@@ -776,6 +781,7 @@ export async function handleWorkerManagedIteration(opts) {
         log,
         _deps,
         lintFailuresSink: lintFailures,
+        uncertifiableBaselineDeferSink,
     });
     if (!converged) {
         return { currentMv, converged, reason, lintFailures };
@@ -787,6 +793,7 @@ export async function handleWorkerManagedIteration(opts) {
             currentMv,
             converged: false,
             reason: 'per-iteration gate left unresolved regressions',
+            ...(uncertifiableBaselineDeferSink.fired ? { selfRedOpen: true } : {}),
         };
     }
     // R-ORSR-6 interface-change sweep: before trusting a convergence signal, run a whole-repo tsc
