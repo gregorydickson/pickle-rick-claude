@@ -15,6 +15,14 @@ const GIT_LS_FILES_TIMEOUT_MS = 30_000;
 export const SCOPE_AUTO_EXTEND_MAX = 8;
 export const CALLER_CANDIDATE_MAX = 512;
 
+// Escape a string for literal use inside a RegExp. Homed once here because the
+// detector builds several dynamic matchers from ticket-named symbols (arity
+// `new X(`, schema `.parse(`/`z.infer`, factory-bridge names) and each must
+// escape the same metacharacter set — one definition, no divergent copies.
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function gitTrackedFiles(repoRoot: string): string[] {
   const result = spawnSync('git', ['ls-files'], {
     cwd: repoRoot,
@@ -118,7 +126,7 @@ function findFactoryBridgeNames(
   cache?: ResolverCache,
 ): string[] {
   const names = new Set<string>();
-  const symbolRe = new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+  const symbolRe = new RegExp(`\\b${escapeRegExp(symbol)}\\b`);
   const exportDeclRe = /\bexport\s+(?:(?:default\s+)?(?:async\s+)?function|(?:abstract\s+)?class|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
   const exportListRe = /\bexport\s*\{([^}]*)\}/g;
   for (const declared of declaredFiles) {
@@ -216,7 +224,7 @@ function collectArityGapCallers(input: {
   cache?: ResolverCache;
 }): GapCallerScanResult {
   const { symbol, candidates, declaredFiles, repoRoot, cache } = input;
-  const callerRe = new RegExp(`\\bnew\\s+${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`);
+  const callerRe = new RegExp(`\\bnew\\s+${escapeRegExp(symbol)}\\s*\\(`);
   const outOfScopeCallers: string[] = [];
   for (const file of candidates) {
     if (isCallerInBundleScope(file, declaredFiles)) continue;
@@ -243,10 +251,10 @@ function collectSchemaShapeGapCallers(input: {
   if (isDeadlineExceeded(cache)) {
     return { outOfScopeCallers: [], truncated: true };
   }
-  const esc = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const esc = escapeRegExp(symbol);
   const directRe = new RegExp(`\\b${esc}\\s*\\.\\s*(?:parse|safeParse)\\s*\\(|z\\s*\\.\\s*infer\\s*<\\s*typeof\\s+${esc}\\s*>`);
   const bridgeNames = findFactoryBridgeNames(symbol, declaredFiles, repoRoot, cache);
-  const bridgeRes = bridgeNames.map((name) => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`));
+  const bridgeRes = bridgeNames.map((name) => new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`));
   const outOfScopeCallers: string[] = [];
   for (const file of candidates) {
     if (isCallerInBundleScope(file, declaredFiles)) continue;
