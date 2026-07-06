@@ -33,10 +33,16 @@ export function createResolverCache(repoRoot, maxWallMs, allowlist = new Set()) 
     // (helpers, test fixtures) are valid resolution targets — the prior filter
     // produced false positives whenever a ticket cited a test-defined helper.
     // Extension allowlist (ts|tsx|js|jsx|mjs|cjs) is unchanged.
-    const tracked = gitTrackedFiles(repoRoot)
-        .filter((file) => /\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file));
+    const trackedAll = gitTrackedFiles(repoRoot);
+    const tracked = trackedAll.filter((file) => /\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file));
     return {
         trackedSourceFiles: tracked,
+        // Eagerly capture the RAW git-tracked list (from the single spawn already
+        // made above — NOT a second one) so the shared `trackedAllFiles` field —
+        // read by callerCandidateFiles here and by check-readiness.ts resolvePathRef
+        // (R-RTRC-4) — is a pre-populated pure read, never a lazy-init side effect
+        // hidden inside a query.
+        trackedAllFiles: trackedAll,
         fileContents: new Map(),
         deadline: Date.now() + maxWallMs,
         truncated: false,
@@ -154,9 +160,10 @@ function isCallerInBundleScope(trackedFile, declaredAll) {
 // Candidate caller files: tracked specs/factory-builder files plus ordinary
 // tracked TS/TSX production callers, capped in deterministic git order.
 function callerCandidateFiles(repoRoot, cache) {
+    // Pure query: `trackedAllFiles` is eagerly populated by createResolverCache,
+    // so no lazy-init cache mutation happens here. The `?? gitTrackedFiles` arm
+    // only fires for the cache-less path (tests / direct invocation).
     const tracked = cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot);
-    if (cache && cache.trackedAllFiles === undefined)
-        cache.trackedAllFiles = tracked;
     const candidates = [];
     const seen = new Set();
     for (const file of tracked) {
