@@ -137,8 +137,10 @@ function findFactoryBridgeNames(symbol, declaredFiles, repoRoot, cache) {
 function isCallerInBundleScope(trackedFile, declaredAll) {
     if (declaredAll.has(trackedFile))
         return true;
+    // Exact matches are already handled by the has() check above; only the
+    // path-suffix relations remain to be tested here.
     for (const declared of declaredAll) {
-        if (trackedFile === declared || trackedFile.endsWith(`/${declared}`) || declared.endsWith(`/${trackedFile}`)) {
+        if (trackedFile.endsWith(`/${declared}`) || declared.endsWith(`/${trackedFile}`)) {
             return true;
         }
     }

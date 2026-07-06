@@ -154,8 +154,10 @@ function findFactoryBridgeNames(
 // positional caller there is fixable by a fenced worker and must NOT be flagged).
 function isCallerInBundleScope(trackedFile: string, declaredAll: Set<string>): boolean {
   if (declaredAll.has(trackedFile)) return true;
+  // Exact matches are already handled by the has() check above; only the
+  // path-suffix relations remain to be tested here.
   for (const declared of declaredAll) {
-    if (trackedFile === declared || trackedFile.endsWith(`/${declared}`) || declared.endsWith(`/${trackedFile}`)) {
+    if (trackedFile.endsWith(`/${declared}`) || declared.endsWith(`/${trackedFile}`)) {
       return true;
     }
   }
