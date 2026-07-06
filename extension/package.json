@@ -10,6 +10,7 @@
     "gh": "2.88.1"
   },
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "postinstall": "node -e \"const fs=require('fs');const path=require('path');const dir=path.resolve('../node_modules/.bin');fs.mkdirSync(dir,{recursive:true});const dst=path.join(dir,'tsc');const src=path.resolve('node_modules/.bin/tsc');const tmp=dst+'.tmp.'+process.pid+'.'+Date.now();fs.symlinkSync(src,tmp);fs.renameSync(tmp,dst);\"",
     "sync-schema": "node bin/sync-schema.js",
