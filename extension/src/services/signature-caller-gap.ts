@@ -299,7 +299,14 @@ export function detectSignatureCallerGaps(input: CallerGapInput): CallerGap[] {
       }
     }
     return gaps;
-  } catch {
+  } catch (err) {
+    // Fail-open by design: this detector is advisory (the readiness gate and the
+    // build-phase scope auto-extension both treat "no gaps" as non-blocking), so a
+    // scan failure must never crash the caller. But swallowing it silently makes a
+    // failed scan indistinguishable from a clean one — emit a diagnostic so the
+    // failure is observable (Fail-Fast / Observability).
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[signature-caller-gap] detector scan failed, returning no gaps: ${msg}\n`);
     return [];
   }
 }
