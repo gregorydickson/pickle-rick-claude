@@ -46,7 +46,20 @@ function makeFixtureRepo(prefix) {
   fs.mkdirSync(path.join(dir, 'extension', 'src'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'extension', 'package.json'),
-    JSON.stringify({ name: 'fixture-extension', private: true, version: '0.0.1' }, null, 2),
+    JSON.stringify({
+      name: 'fixture-extension',
+      private: true,
+      version: '0.0.1',
+      // R-SZGB-D-A: all three checks must be runnable (exit 0) so this fixture proves
+      // R-SZGB-A root resolution, not the separate unrunnable-check-uncertifiable path
+      // (a missing script here now marks the baseline uncertifiable, not a normal
+      // subtractable failure — see convergence-gate-unrunnable-check.test.js).
+      scripts: {
+        typecheck: 'node -e "process.exit(0)"',
+        lint: 'node -e "process.exit(0)"',
+        test: 'node -e "process.exit(0)"',
+      },
+    }, null, 2),
   );
   fs.writeFileSync(
     path.join(dir, 'extension', 'src', 'hello.ts'),
@@ -101,11 +114,8 @@ test('R-APBN-5: runGate({mode:baseline}) at no-project-type root with one packag
     // no-project-type root with exactly one package child (extension/) RESOLVES
     // down to that child, so the baseline captures the child's REAL checks
     // rather than a vacuously-empty set. checks is therefore NON-empty and
-    // project_type is non-null. The persisted baseline.failures records the
-    // child's actual check state as the subtraction zero-point — for this bare
-    // fixture (a package.json with no typecheck/lint/tests scripts) that is a
-    // non-empty set of "Missing script" baseline failures, which is exactly the
-    // captured baseline every future iteration subtracts against.
+    // project_type is non-null (the fixture's scripts all exit 0, so none of
+    // them trip the separate R-SZGB-D-A unrunnable-check-uncertifiable path).
     const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
     assert.ok(
       Array.isArray(baseline.checks),

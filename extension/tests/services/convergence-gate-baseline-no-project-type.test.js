@@ -102,7 +102,17 @@ test('runGate baseline (project type detected but no cmdMap): writes empty basel
 test('runGate baseline (existing baseline-write path): unchanged for npm project with package.json + lock', async () => {
   const workingDir = mkTmp('apbn-npm-baseline-');
   try {
-    fs.writeFileSync(path.join(workingDir, 'package.json'), JSON.stringify({ name: 'fixture', private: true }, null, 2));
+    fs.writeFileSync(path.join(workingDir, 'package.json'), JSON.stringify({
+      name: 'fixture',
+      private: true,
+      // R-SZGB-D-A: all three checks must be runnable (exit 0) so this fixture proves
+      // project-type detection/baseline-write is unaffected, not the unrunnable-check path.
+      scripts: {
+        typecheck: 'node -e "process.exit(0)"',
+        lint: 'node -e "process.exit(0)"',
+        test: 'node -e "process.exit(0)"',
+      },
+    }, null, 2));
     fs.writeFileSync(path.join(workingDir, 'package-lock.json'), JSON.stringify({ name: 'fixture', lockfileVersion: 3 }));
     const baselinePath = path.join(workingDir, 'session', 'gate', 'baseline.json');
 

@@ -21,7 +21,17 @@ function mkTmp(prefix) {
 
 function writePkgJson(dir) {
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'fixture', private: true }, null, 2));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'fixture',
+    private: true,
+    // R-SZGB-D-A: all three checks must be runnable (exit 0) so root-resolution fixtures
+    // prove project-type detection is unaffected, not the unrunnable-check path.
+    scripts: {
+      typecheck: 'node -e "process.exit(0)"',
+      lint: 'node -e "process.exit(0)"',
+      test: 'node -e "process.exit(0)"',
+    },
+  }, null, 2));
 }
 
 test('AC-SZGB-01: exactly one child with package.json resolves the gate working dir to that child', async () => {

@@ -720,6 +720,31 @@ export function buildFailures(result: CheckResult, check: 'typecheck' | 'lint' |
   }];
 }
 
+// R-SZGB-D: a check whose COMMAND never ran (missing npm/pnpm/yarn script, the binary itself
+// absent from PATH, ENOENT, exit 127) is a distinct class from "the tool ran and found nothing" —
+// buildFailures' generic fallback branch previously conflated the two, so a missing npm script
+// became an ordinary subtractable failure that made the check permanently inert. Kept narrow: a
+// REAL tool failure (tsc TSxxxx, eslint violations, failing tests) must never match.
+const UNRUNNABLE_CHECK_PATTERNS: ReadonlyArray<{ re: RegExp; reason: string }> = [
+  { re: /npm (?:error|ERR!) .*missing script/i, reason: 'missing npm script' },
+  { re: /ERR_PNPM_NO_SCRIPT|pnpm.*missing script/i, reason: 'missing pnpm script' },
+  { re: /error Command "[^"]*" not found|couldn't find a script named/i, reason: 'missing yarn script' },
+  { re: /^tool not installed:/im, reason: 'tool not installed' },
+  { re: /\bENOENT\b/, reason: 'ENOENT' },
+  { re: /\bcommand not found\b|is not recognized as an internal or external command/i, reason: 'command not found' },
+];
+
+function classifyUnrunnableCheck(result: CheckResult): string | null {
+  if (result.exitCode === 0) return null;
+  if (result.exitCode === 127) return 'exit 127: command not found';
+  const output = stripEnvNoise(`${result.stdout}\n${result.stderr}`);
+  return UNRUNNABLE_CHECK_PATTERNS.find(({ re }) => re.test(output))?.reason ?? null;
+}
+
+export function isUnrunnableCheckResult(result: CheckResult): boolean {
+  return classifyUnrunnableCheck(result) !== null;
+}
+
 const CHECK_KEY_MAP: Record<'typecheck' | 'lint' | 'tests', keyof { typecheck?: string; lint?: string; test?: string }> = {
   typecheck: 'typecheck',
   lint: 'lint',
@@ -966,27 +991,48 @@ function resolveDelegatedScriptLeaves(
   return leaves;
 }
 
+interface UnrunnableCheck {
+  check: GateCheck;
+  reason: string;
+}
+
+interface GateCheckOutcome {
+  failures: GateFailure[];
+  unrunnable: UnrunnableCheck | null;
+}
+
 async function runGateCheck(
   check: GateCheck,
   cmd: string,
   dir: string,
   effectiveMs: number,
-): Promise<GateFailure[]> {
+): Promise<GateCheckOutcome> {
   try {
     const result = await runCheckCommand(check, cmd, dir, effectiveMs);
-    return buildFailures(result, check, dir);
+    const failures = buildFailures(result, check, dir);
+    const unrunnableReason = classifyUnrunnableCheck(result);
+    const unrunnable = unrunnableReason !== null ? { check, reason: unrunnableReason } : null;
+    return { failures, unrunnable };
   } catch (err) {
     if (!(err instanceof GateTimeoutError)) throw err;
-    return [{
-      check,
-      file: '<timeout>',
-      line: 0,
-      ruleOrCode: 'GATE_CHECK_TIMEOUT',
-      message: `${check} timed out after ${effectiveMs}ms`,
-      severity: 'error',
-      occurrence_index: 0,
-    }];
+    return {
+      failures: [{
+        check,
+        file: '<timeout>',
+        line: 0,
+        ruleOrCode: 'GATE_CHECK_TIMEOUT',
+        message: `${check} timed out after ${effectiveMs}ms`,
+        severity: 'error',
+        occurrence_index: 0,
+      }],
+      unrunnable: null,
+    };
   }
+}
+
+interface GateFailuresCollection {
+  failures: GateFailure[];
+  unrunnableCheck: UnrunnableCheck | null;
 }
 
 async function collectGateFailures(
@@ -996,8 +1042,9 @@ async function collectGateFailures(
   projectType: ProjectType,
   totalDeadline: number,
   emit: GateEmit,
-): Promise<GateFailure[]> {
+): Promise<GateFailuresCollection> {
   const allFailures: GateFailure[] = [];
+  let unrunnableCheck: UnrunnableCheck | null = null;
 
   outerLoop:
   for (const dir of targetDirs) {
@@ -1011,10 +1058,12 @@ async function collectGateFailures(
       if (!cmd) continue;
       if (!(await canRunTestScript(check, projectType, dir, emit))) continue;
       const perCheckMs = opts._timeouts?.perCheck?.[check] ?? PER_CHECK_TIMEOUT_MS[check];
-      allFailures.push(...await runGateCheck(check, cmd, dir, Math.min(perCheckMs, remaining)));
+      const outcome = await runGateCheck(check, cmd, dir, Math.min(perCheckMs, remaining));
+      allFailures.push(...outcome.failures);
+      if (outcome.unrunnable && !unrunnableCheck) unrunnableCheck = outcome.unrunnable;
     }
   }
-  return allFailures;
+  return { failures: allFailures, unrunnableCheck };
 }
 
 function timeoutFailure(check: GateCheck): GateFailure {
@@ -1080,6 +1129,7 @@ async function handleBaselineMode(
   realFailures: GateFailure[],
   start: number,
   emit: GateEmit,
+  uncertifiable: boolean,
 ): Promise<GateResult | null> {
   if (opts.mode !== 'baseline' || !opts.baselinePath) return null;
   const baselinePath = opts.baselinePath;
@@ -1090,7 +1140,7 @@ async function handleBaselineMode(
   try {
     return await withLock(lockKey, { timeout_ms: lockMs }, async () => {
       emit('gate_lock_acquired', { lock_key: lockKey });
-      return await resolveBaselineResult(baselinePath, opts, projectType, withIndices, allowedPathsUsed, start, emit);
+      return await resolveBaselineResult(baselinePath, opts, projectType, withIndices, allowedPathsUsed, start, emit, uncertifiable);
     });
   } catch (err) {
     if (err instanceof LockError) {
@@ -1109,11 +1159,15 @@ async function resolveBaselineResult(
   allowedPathsUsed: boolean,
   start: number,
   emit: GateEmit,
+  uncertifiable: boolean,
 ): Promise<GateResult> {
   const preWriteStatus = await inspectBaselinePath(baselinePath);
   emit('gate_baseline_disk_check', { phase: 'pre_write', ...preWriteStatus });
   if (preWriteStatus.exists !== true) {
-    await persistGateBaseline(baselinePath, opts, projectType, opts.checks, withIndices, emit);
+    // R-SZGB-D: an unrunnable check means the gate inspected NOTHING for that check — reuse the
+    // R-SZGB-B `project_type: null` uncertifiable-baseline signal so the existing
+    // `isBaselineUncertifiable` consumer in microverse-runner.ts fails closed with no new field.
+    await persistGateBaseline(baselinePath, opts, uncertifiable ? null : projectType, opts.checks, withIndices, emit);
     emit('gate_baseline_captured', { path: baselinePath, failure_count: withIndices.length });
     emit('gate_preexisting_tests_baselined', { failure_count: withIndices.length });
     return {
@@ -1252,6 +1306,20 @@ function detectProjectTypeWithRootResolution(opts: RunGateOpts): { opts: RunGate
   return { opts: { ...opts, workingDir: resolvedRoot.dir }, projectType: resolvedRoot.type };
 }
 
+/**
+ * R-SZGB-D-A: logs the uncertifiable-baseline signal only in baseline mode, keeping this
+ * conditional out of runGate's cyclomatic complexity count.
+ */
+function logUnrunnableCheckIfBaseline(
+  unrunnableCheck: UnrunnableCheck | null,
+  mode: RunGateOpts['mode'],
+): void {
+  if (!unrunnableCheck || mode !== 'baseline') return;
+  console.error(
+    `gate: check '${unrunnableCheck.check}' could not run (${unrunnableCheck.reason}) — baseline uncertifiable, cannot certify`,
+  );
+}
+
 export async function runGate(rawOpts: RunGateOpts): Promise<GateResult> {
   const start = Date.now();
   const emit = (event: string, data: Record<string, unknown>) => rawOpts.onEvent?.(event, data);
@@ -1279,12 +1347,14 @@ export async function runGate(rawOpts: RunGateOpts): Promise<GateResult> {
   if (drift) return finalizeGateResult(opts, emit, drift);
 
   const totalDeadline = Date.now() + (opts._timeouts?.total ?? GATE_TOTAL_TIMEOUT_MS);
-  const allFailures = await collectGateFailures(opts, resolved.targetDirs, cmdMap, projectType, totalDeadline, emit);
+  const { failures: allFailures, unrunnableCheck } = await collectGateFailures(opts, resolved.targetDirs, cmdMap, projectType, totalDeadline, emit);
+
+  logUnrunnableCheckIfBaseline(unrunnableCheck, opts.mode);
 
   const flakeGlobs = opts.settings?.convergence_gate?.known_flake_files ?? [];
   const { real: realFailures, flake: flakeFailures } = applyFlakeFilter(allFailures, opts.workingDir, flakeGlobs);
 
-  const baseline = await handleBaselineMode(opts, projectType, allowedPathsUsed, realFailures, start, emit);
+  const baseline = await handleBaselineMode(opts, projectType, allowedPathsUsed, realFailures, start, emit, unrunnableCheck !== null);
   if (baseline) return finalizeGateResult(opts, emit, baseline);
 
   const flake = await knownFlakeResult(opts, allFailures, realFailures, flakeFailures, allowedPathsUsed, start, emit);
