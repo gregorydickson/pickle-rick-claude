@@ -282,24 +282,16 @@ export function detectSignatureCallerGaps(input: CallerGapInput): CallerGap[] {
     for (const content of ticketContents) {
       for (const symbol of extractAritySymbols(content)) {
         const { outOfScopeCallers, truncated } = collectArityGapCallers({ symbol, candidates, declaredFiles, repoRoot, cache });
-        if (truncated) {
-          if (outOfScopeCallers.length > 0) gaps.push({ symbol, kind: 'arity', outOfScopeCallers });
-          return gaps;
-        }
-        if (outOfScopeCallers.length === 0) continue;
-        gaps.push({ symbol, kind: 'arity', outOfScopeCallers });
+        if (outOfScopeCallers.length > 0) gaps.push({ symbol, kind: 'arity', outOfScopeCallers });
+        if (truncated) return gaps;
       }
       // WS-2: schema-shape gaps — direct (`<Schema>.parse(`/`.safeParse(`/`z.infer`)
       // AND factory-mediated (out-of-fence callers of an in-fence factory that
       // references the changed schema). Carried on the same CallerGap[] return.
       for (const symbol of extractSchemaShapeSymbols(content)) {
         const { outOfScopeCallers, truncated } = collectSchemaShapeGapCallers({ symbol, candidates, declaredFiles, repoRoot, cache });
-        if (truncated) {
-          if (outOfScopeCallers.length > 0) gaps.push({ symbol, kind: 'schema-shape', outOfScopeCallers });
-          return gaps;
-        }
-        if (outOfScopeCallers.length === 0) continue;
-        gaps.push({ symbol, kind: 'schema-shape', outOfScopeCallers });
+        if (outOfScopeCallers.length > 0) gaps.push({ symbol, kind: 'schema-shape', outOfScopeCallers });
+        if (truncated) return gaps;
       }
     }
     return gaps;
