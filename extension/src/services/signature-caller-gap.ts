@@ -223,13 +223,18 @@ interface GapCallerScanResult {
   truncated: boolean;
 }
 
-function collectArityGapCallers(input: {
+// Per-symbol scan inputs shared by both collect* passes. Named here (mirroring
+// the already-extracted GapCallerScanResult) so the 5-field contract has ONE home
+// — a field change lands in one place instead of two verbatim inline copies.
+interface GapCallerScanInput {
   symbol: string;
   candidates: string[];
   declaredFiles: Set<string>;
   repoRoot: string;
   cache?: ResolverCache;
-}): GapCallerScanResult {
+}
+
+function collectArityGapCallers(input: GapCallerScanInput): GapCallerScanResult {
   const { symbol, candidates, declaredFiles, repoRoot, cache } = input;
   const callerRe = new RegExp(`\\bnew\\s+${escapeRegExp(symbol)}\\s*\\(`);
   const outOfScopeCallers: string[] = [];
@@ -244,13 +249,7 @@ function collectArityGapCallers(input: {
   return { outOfScopeCallers, truncated: false };
 }
 
-function collectSchemaShapeGapCallers(input: {
-  symbol: string;
-  candidates: string[];
-  declaredFiles: Set<string>;
-  repoRoot: string;
-  cache?: ResolverCache;
-}): GapCallerScanResult {
+function collectSchemaShapeGapCallers(input: GapCallerScanInput): GapCallerScanResult {
   const { symbol, candidates, declaredFiles, repoRoot, cache } = input;
   // Honor the wall-budget BEFORE any file I/O: findFactoryBridgeNames reads
   // declared files, so the deadline must gate ahead of it (the arity scan has no
