@@ -71,7 +71,12 @@ function readCachedFile(absPath: string, cache: ResolverCache): string | undefin
   }
 }
 
-function isDeadlineExceeded(cache?: ResolverCache): boolean {
+// Command-with-status (NOT a pure predicate): when the wall budget is spent this
+// records the fact on the shared cache (`cache.truncated`, read by the readiness
+// gate to self-report a `kind:'performance'` finding) AND returns true so the
+// caller can bail. The `markTruncatedIf` name advertises the mutation so callers
+// aren't surprised by a boolean-shaped helper that writes (CQS).
+function markTruncatedIfDeadlineExceeded(cache?: ResolverCache): boolean {
   if (!cache) return false;
   if (Date.now() <= cache.deadline) return false;
   cache.truncated = true;
@@ -230,7 +235,7 @@ function collectArityGapCallers(input: {
   const outOfScopeCallers: string[] = [];
   for (const file of candidates) {
     if (isCallerInBundleScope(file, declaredFiles)) continue;
-    if (isDeadlineExceeded(cache)) {
+    if (markTruncatedIfDeadlineExceeded(cache)) {
       return { outOfScopeCallers, truncated: true };
     }
     const body = readCandidateFile(repoRoot, file, cache);
@@ -250,7 +255,7 @@ function collectSchemaShapeGapCallers(input: {
   // Honor the wall-budget BEFORE any file I/O: findFactoryBridgeNames reads
   // declared files, so the deadline must gate ahead of it (the arity scan has no
   // pre-loop I/O, hence its check lives inside the loop).
-  if (isDeadlineExceeded(cache)) {
+  if (markTruncatedIfDeadlineExceeded(cache)) {
     return { outOfScopeCallers: [], truncated: true };
   }
   const esc = escapeRegExp(symbol);
@@ -260,7 +265,7 @@ function collectSchemaShapeGapCallers(input: {
   const outOfScopeCallers: string[] = [];
   for (const file of candidates) {
     if (isCallerInBundleScope(file, declaredFiles)) continue;
-    if (isDeadlineExceeded(cache)) {
+    if (markTruncatedIfDeadlineExceeded(cache)) {
       return { outOfScopeCallers, truncated: true };
     }
     const body = readCandidateFile(repoRoot, file, cache);
