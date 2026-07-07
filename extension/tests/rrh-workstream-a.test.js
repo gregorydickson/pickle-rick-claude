@@ -338,17 +338,19 @@ test('A5: suppressIncrement HOLDS the counter (never increments)', async () => {
   }
 });
 
-test('A5: resolveBreakerRecoveryGraceSeconds + isWithinBreakerRecoveryGrace', async () => {
-  const {
-    resolveBreakerRecoveryGraceSeconds, DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS, isWithinBreakerRecoveryGrace,
-  } = await import('../bin/mux-runner.js');
-  assert.equal(DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS, 30);
-  assert.equal(resolveBreakerRecoveryGraceSeconds(null), 30);
-  assert.equal(resolveBreakerRecoveryGraceSeconds({}), 30, 'absent hardening block → default');
-  assert.equal(resolveBreakerRecoveryGraceSeconds({ hardening: { breaker_recovery_grace_seconds: 45 } }), 45);
-  assert.equal(resolveBreakerRecoveryGraceSeconds({ hardening: { breaker_recovery_grace_seconds: -1 } }), 30, 'negative → default');
-  assert.equal(resolveBreakerRecoveryGraceSeconds({ hardening: { breaker_recovery_grace_seconds: 1.5 } }), 30, 'non-integer → default');
-  assert.equal(resolveBreakerRecoveryGraceSeconds({ hardening: 'nope' }), 30, 'malformed block → default');
+test('A5: resolveHardeningSettings().breaker_recovery_grace_seconds + isWithinBreakerRecoveryGrace', async () => {
+  const { isWithinBreakerRecoveryGrace } = await import('../bin/mux-runner.js');
+  // R-RRPC-1: resolveBreakerRecoveryGraceSeconds was folded into the canonical
+  // resolveHardeningSettings (services/pickle-utils.js) — the duplicate mux-runner.js
+  // resolver + its DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS const are gone.
+  const { resolveHardeningSettings } = await import('../services/pickle-utils.js');
+  const grace = (bag) => resolveHardeningSettings(bag).breaker_recovery_grace_seconds;
+  assert.equal(grace(null), 30);
+  assert.equal(grace({}), 30, 'absent hardening block → default');
+  assert.equal(grace({ hardening: { breaker_recovery_grace_seconds: 45 } }), 45);
+  assert.equal(grace({ hardening: { breaker_recovery_grace_seconds: -1 } }), 30, 'negative → default');
+  assert.equal(grace({ hardening: { breaker_recovery_grace_seconds: 1.5 } }), 30, 'non-integer → default');
+  assert.equal(grace({ hardening: 'nope' }), 30, 'malformed block → default');
 
   const now = Date.parse('2026-06-12T12:00:00Z');
   assert.equal(isWithinBreakerRecoveryGrace(null, 30, now), false, 'no breaker → false');

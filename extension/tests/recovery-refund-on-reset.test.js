@@ -22,9 +22,14 @@ import {
   refundRecoveryBudgetOnReset,
   evaluateBoundedEscape,
   BOUNDED_ESCAPE_STRATEGY,
-  BOUNDED_ESCAPE_CAP,
 } from '../bin/mux-runner.js';
+import { resolveHardeningSettings } from '../services/pickle-utils.js';
 import { StateManager } from '../services/state-manager.js';
+
+// R-RRPC-1/3: the cap is no longer a mux-runner.js const — it's resolved from
+// resolveHardeningSettings(). Use the compiled default (3) explicitly here so
+// this fixture stays independent of the resolver's internal default value.
+const BOUNDED_ESCAPE_CAP = resolveHardeningSettings(null).bounded_terminal_escape_cap;
 
 function tempRoot() {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-recovery-refund-')));
@@ -100,7 +105,7 @@ test('reset-to-Todo ticket with spent attempts: budget refunded → fresh ladder
     // immediately escape — priorCount is back to 0, well below cap.
     const inProgress = { ...refunded, current_ticket: 't1' };
     writeTicket(root, 't1', 'In Progress');
-    const esc = evaluateBoundedEscape(inProgress, root);
+    const esc = evaluateBoundedEscape(inProgress, root, BOUNDED_ESCAPE_CAP);
     assert.equal(esc.priorCount, 0, 'count reads zero after refund');
     assert.equal(esc.escape, false, 'a refunded ticket is re-attempted, not force-escaped');
   } finally {
@@ -130,7 +135,7 @@ test('NOT reset (still Failed) with spent attempts: NO refund → still exhausts
     assert.equal(preserved.length, BOUNDED_ESCAPE_CAP, 'spent attempts preserved without a reset');
 
     writeTicket(root, 't1', 'In Progress');
-    const esc = evaluateBoundedEscape({ ...after, current_ticket: 't1' }, root);
+    const esc = evaluateBoundedEscape({ ...after, current_ticket: 't1' }, root, BOUNDED_ESCAPE_CAP);
     assert.equal(esc.priorCount, BOUNDED_ESCAPE_CAP, 'count unchanged for a non-reset ticket');
     assert.equal(esc.escape, true, 'a non-reset exhausted ticket still escapes (exhausts) correctly');
   } finally {

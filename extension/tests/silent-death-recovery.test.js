@@ -439,21 +439,21 @@ test('ArchiveAbortError suppresses respawn (fail-closed for the destructive op),
 
 test('resolveHardeningSettings: absent/partial/malformed → compiled defaults; valid override honored', () => {
   // documented compiled default
-  assert.deepEqual(resolveHardeningSettings(null), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
-  assert.deepEqual(resolveHardeningSettings(undefined), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
-  assert.deepEqual(resolveHardeningSettings({}), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
-  assert.deepEqual(resolveHardeningSettings({ hardening: null }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
-  assert.deepEqual(resolveHardeningSettings({ hardening: 'nope' }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
-  assert.deepEqual(resolveHardeningSettings({ hardening: [] }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
-  assert.deepEqual(resolveHardeningSettings({ hardening: {} }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
+  assert.deepEqual(resolveHardeningSettings(null), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
+  assert.deepEqual(resolveHardeningSettings(undefined), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
+  assert.deepEqual(resolveHardeningSettings({}), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
+  assert.deepEqual(resolveHardeningSettings({ hardening: null }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
+  assert.deepEqual(resolveHardeningSettings({ hardening: 'nope' }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
+  assert.deepEqual(resolveHardeningSettings({ hardening: [] }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
+  assert.deepEqual(resolveHardeningSettings({ hardening: {} }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
   // malformed cap values fall back
-  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: 'two' } }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
-  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: -3 } }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
-  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: 1.5 } }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
-  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: NaN } }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
+  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: 'two' } }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
+  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: -3 } }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
+  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: 1.5 } }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
+  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: NaN } }), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
   // valid overrides honored (0 disables respawn)
-  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: 3 } }), { silent_death_respawn_cap: 3, failed_flip_suppression_cap: 2 });
-  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: 0 } }), { silent_death_respawn_cap: 0, failed_flip_suppression_cap: 2 });
+  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: 3 } }), { silent_death_respawn_cap: 3, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
+  assert.deepEqual(resolveHardeningSettings({ hardening: { silent_death_respawn_cap: 0 } }), { silent_death_respawn_cap: 0, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
 });
 
 test('repo-source pickle_settings.json carries the additive hardening block and schema_version 2 untouched', () => {
@@ -463,7 +463,7 @@ test('repo-source pickle_settings.json carries the additive hardening block and 
   assert.ok(bag.hardening && typeof bag.hardening === 'object', 'additive hardening block present');
   assert.equal(bag.hardening.silent_death_respawn_cap, 1);
   assert.ok(bag.bmad_hardening, 'distinct bmad_hardening block untouched');
-  assert.deepEqual(resolveHardeningSettings(bag), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 });
+  assert.deepEqual(resolveHardeningSettings(bag), { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2, breaker_recovery_grace_seconds: 30, bounded_terminal_escape_cap: 3 });
 });
 
 test('cap 0 disables respawn entirely → first silent death halts', () => {

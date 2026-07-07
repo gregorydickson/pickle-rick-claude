@@ -5871,9 +5871,10 @@ function haltOrRecoverCodexNoProgress(input: HaltOrRecoverCodexNoProgressInput):
 // REFUSE to complete. The inverse hazard: an In Progress ticket the manager can
 // never finish would relaunch up to CLAUDE_MANAGER_RELAUNCH_CAP (20) times — a
 // long, sterile twin-wedge — and then exit idle_stall_unrecoverable WITHOUT ever
-// forcing the stuck ticket terminal. This escape fires EARLIER: after
-// BOUNDED_ESCAPE_CAP consecutive no-progress relaunches on the same In Progress
-// ticket it forces the ticket to a terminal disposition (salvage-then-Skipped),
+// forcing the stuck ticket terminal. This escape fires EARLIER: after the
+// resolved bounded-escape cap (`hardening.bounded_terminal_escape_cap`,
+// compiled default 3) consecutive no-progress relaunches on the same In
+// Progress ticket it forces the ticket to a terminal disposition (salvage-then-Skipped),
 // so the NEXT evaluateManagerRelaunch sees it no longer pending and the existing
 // AC-A2 gate advances/halts deterministically. The pipeline never spins to
 // max_iterations on an unreclaimable ticket.
@@ -5888,13 +5889,6 @@ function haltOrRecoverCodexNoProgress(input: HaltOrRecoverCodexNoProgressInput):
 
 /** Ledger discriminator for bounded-escape attempts (AC-A4). */
 export const BOUNDED_ESCAPE_STRATEGY = 'bounded_terminal_escape';
-
-/**
- * Consecutive no-progress relaunches on the same In Progress ticket before the
- * escape forces it terminal. A small compiled constant (< CLAUDE_MANAGER_RELAUNCH_CAP)
- * so the escape fires before the blunt relaunch cap and the pipeline never spins.
- */
-export const BOUNDED_ESCAPE_CAP = 3;
 
 export interface BoundedEscapeEvaluation {
   /** True when the in-flight ticket is In Progress and has hit the no-progress cap. */
@@ -5928,7 +5922,7 @@ function countBoundedEscapeAttempts(
 export function evaluateBoundedEscape(
   state: State,
   sessionDir: string,
-  cap: number = BOUNDED_ESCAPE_CAP,
+  cap: number,
 ): BoundedEscapeEvaluation {
   const ticketId = typeof state.current_ticket === 'string' && state.current_ticket.length > 0
     ? state.current_ticket
@@ -6056,6 +6050,7 @@ export function executeBoundedEscape(
   workingDir: string,
   ticketId: string,
   iteration: number,
+  cap: number,
   log: (msg: string) => void = () => { /* silent */ },
 ): boolean {
   const deps: SalvageDeps = {
@@ -6097,7 +6092,7 @@ export function executeBoundedEscape(
   } catch (err) {
     log(`WARN: failed to record bounded-escape success: ${safeErrorMessage(err)}`);
   }
-  log(`bounded escape: ${ticketId} held In Progress across ${BOUNDED_ESCAPE_CAP} no-progress relaunches — forced terminal (Skipped) so the phase advances/halts deterministically.`);
+  log(`bounded escape: ${ticketId} held In Progress across ${cap} no-progress relaunches — forced terminal (Skipped) so the phase advances/halts deterministically.`);
   return flipped;
 }
 
@@ -7170,9 +7165,10 @@ function handlePendingInactiveCompletion(
   if (!decision.shouldRelaunch) {
     return decision.pendingCount > 0 ? breakWithExitReason(ctx, 'idle_stall_unrecoverable') : null;
   }
-  const esc = evaluateBoundedEscape(postState, ctx.sessionDir);
+  const boundedEscapeCap = resolveHardeningSettings(loadPickleSettingsBag(ctx.extensionRoot)).bounded_terminal_escape_cap;
+  const esc = evaluateBoundedEscape(postState, ctx.sessionDir, boundedEscapeCap);
   if (esc.escape && esc.ticketId) {
-    executeBoundedEscape(ctx.statePath, ctx.sessionDir, postState.working_dir || state.working_dir || '', esc.ticketId, ctx.iteration, ctx.log);
+    executeBoundedEscape(ctx.statePath, ctx.sessionDir, postState.working_dir || state.working_dir || '', esc.ticketId, ctx.iteration, boundedEscapeCap, ctx.log);
     return { kind: 'relaunch', relaunchCount: decision.nextRelaunchCount, pendingTickets: Math.max(0, decision.pendingCount - 1), resetStall: true };
   }
   if (esc.ticketId) recordBoundedEscapeAttempt(ctx.statePath, esc.ticketId, ctx.iteration, ctx.log);
@@ -7600,29 +7596,6 @@ export function computeScopedSourceTreeSignature(
   } catch {
     return null;
   }
-}
-
-/**
- * AC-A5 (B-RRH): compiled default for `hardening.breaker_recovery_grace_seconds`
- * (30s). A spawn within this many seconds of a circuit-breaker recovery is given
- * grace — its zero-progress increment is suppressed (the worker is racing a
- * just-reopened breaker, not genuinely stuck).
- */
-export const DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS = 30;
-
-/**
- * Resolve `hardening.breaker_recovery_grace_seconds` from the settings bag.
- * Mirrors `resolveHardeningSettings` doctrine: absent / partial / malformed bag
- * or non-(non-negative-integer) field falls back to the compiled default; never
- * throws.
- */
-export function resolveBreakerRecoveryGraceSeconds(bag: unknown): number {
-  if (!bag || typeof bag !== 'object') return DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS;
-  const block = (bag as Record<string, unknown>).hardening;
-  if (!block || typeof block !== 'object' || Array.isArray(block)) return DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS;
-  const grace = (block as Record<string, unknown>).breaker_recovery_grace_seconds;
-  if (typeof grace === 'number' && Number.isInteger(grace) && grace >= 0) return grace;
-  return DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS;
 }
 
 /**
@@ -9881,7 +9854,7 @@ async function runMuxRunnerMain() {
         || detectRateLimitInLog(path.join(sessionDir, `tmux_iteration_${iteration}.log`)).limited;
       const apBreakerGrace = isWithinBreakerRecoveryGrace(
         cbState,
-        resolveBreakerRecoveryGraceSeconds(loadPickleSettingsBag(extensionRoot)),
+        resolveHardeningSettings(loadPickleSettingsBag(extensionRoot)).breaker_recovery_grace_seconds,
         Date.now(),
       );
       apSuppressIncrement = apRateLimited || apBreakerGrace;
@@ -10906,13 +10879,15 @@ async function runMuxRunnerMain() {
           }
           if (decision.shouldRelaunch) {
             // AC-A4 (f8000435): bounded terminal escape. An In Progress ticket held
-            // across BOUNDED_ESCAPE_CAP consecutive no-progress relaunches is forced
+            // across the resolved bounded-escape cap (`hardening.bounded_terminal_escape_cap`,
+            // compiled default 3) consecutive no-progress relaunches is forced
             // terminal (salvage → Skipped); the next loop's evaluateManagerRelaunch
             // sees it no longer pending and advances/halts deterministically — the
             // pipeline never spins to max_iterations on an unreclaimable ticket.
-            const esc = evaluateBoundedEscape(postState, sessionDir);
+            const boundedEscapeCap = resolveHardeningSettings(loadPickleSettingsBag(extensionRoot)).bounded_terminal_escape_cap;
+            const esc = evaluateBoundedEscape(postState, sessionDir, boundedEscapeCap);
             if (esc.escape && esc.ticketId) {
-              executeBoundedEscape(statePath, sessionDir, postState.working_dir || state.working_dir || '', esc.ticketId, iteration, log);
+              executeBoundedEscape(statePath, sessionDir, postState.working_dir || state.working_dir || '', esc.ticketId, iteration, boundedEscapeCap, log);
               lastStateIteration = -1;
               stallCount = 0;
               await sleep(1000);

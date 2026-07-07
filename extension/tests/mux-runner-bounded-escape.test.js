@@ -22,10 +22,14 @@ import {
   recordBoundedEscapeAttempt,
   executeBoundedEscape,
   BOUNDED_ESCAPE_STRATEGY,
-  BOUNDED_ESCAPE_CAP,
 } from '../bin/mux-runner.js';
-import { getTicketStatus } from '../services/pickle-utils.js';
+import { getTicketStatus, resolveHardeningSettings } from '../services/pickle-utils.js';
 import { StateManager } from '../services/state-manager.js';
+
+// R-RRPC-1/3: the cap is no longer a mux-runner.js const — it's resolved from
+// resolveHardeningSettings(). Use the compiled default (3) explicitly here so
+// this fixture stays independent of the resolver's internal default value.
+const BOUNDED_ESCAPE_CAP = resolveHardeningSettings(null).bounded_terminal_escape_cap;
 
 function tempRoot() {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-bounded-escape-')));
@@ -81,7 +85,7 @@ test('evaluateBoundedEscape: In Progress below cap does NOT escape', () => {
   try {
     writeTicket(root, 't1', 'In Progress');
     const state = baseState('t1', { recovery_attempts: ledgerEntries('t1', BOUNDED_ESCAPE_CAP - 1) });
-    const e = evaluateBoundedEscape(state, root);
+    const e = evaluateBoundedEscape(state, root, BOUNDED_ESCAPE_CAP);
     assert.equal(e.escape, false, 'below cap must not escape');
     assert.equal(e.ticketId, 't1');
     assert.equal(e.priorCount, BOUNDED_ESCAPE_CAP - 1);
@@ -96,7 +100,7 @@ test('evaluateBoundedEscape: In Progress AT cap escapes', () => {
   try {
     writeTicket(root, 't1', 'In Progress');
     const state = baseState('t1', { recovery_attempts: ledgerEntries('t1', BOUNDED_ESCAPE_CAP) });
-    const e = evaluateBoundedEscape(state, root);
+    const e = evaluateBoundedEscape(state, root, BOUNDED_ESCAPE_CAP);
     assert.equal(e.escape, true, 'at/above cap with In Progress must escape');
     assert.equal(e.priorCount, BOUNDED_ESCAPE_CAP);
   } finally {
@@ -113,10 +117,10 @@ test('bounded escape to terminal: forces Skipped, records ledger, does NOT loop'
     // Precondition: escape fires.
     const sm = new StateManager();
     let state = sm.read(statePath);
-    assert.equal(evaluateBoundedEscape(state, root).escape, true);
+    assert.equal(evaluateBoundedEscape(state, root, BOUNDED_ESCAPE_CAP).escape, true);
 
     // Force terminal.
-    const flipped = executeBoundedEscape(statePath, root, '/nonexistent-non-repo', 't1', 9, () => {});
+    const flipped = executeBoundedEscape(statePath, root, '/nonexistent-non-repo', 't1', 9, BOUNDED_ESCAPE_CAP, () => {});
     assert.equal(flipped, true, 'ticket frontmatter flipped to terminal');
 
     // Ticket is now terminal (Skipped counts terminal per PRD AC-A4 Risks).
@@ -130,7 +134,7 @@ test('bounded escape to terminal: forces Skipped, records ledger, does NOT loop'
     assert.equal(successEntries.length, 1, 'one success ledger entry recorded');
 
     // One-shot: the now-terminal ticket no longer escapes (no infinite loop).
-    assert.equal(evaluateBoundedEscape(state, root).escape, false, 'terminal ticket must not re-escape');
+    assert.equal(evaluateBoundedEscape(state, root, BOUNDED_ESCAPE_CAP).escape, false, 'terminal ticket must not re-escape');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -151,7 +155,7 @@ test('cap survives setup.js --resume: count comes from persisted ledger, not a p
     // No in-memory counter carries over — the count must come from the ledger.
     const resumedSm = new StateManager();
     const resumedState = resumedSm.read(statePath);
-    const e = evaluateBoundedEscape(resumedState, root);
+    const e = evaluateBoundedEscape(resumedState, root, BOUNDED_ESCAPE_CAP);
     assert.equal(e.priorCount, BOUNDED_ESCAPE_CAP, 'count rehydrated from persisted recovery_attempts');
     assert.equal(e.escape, true, 'cap respected post-resume from the persisted ledger');
   } finally {
@@ -166,7 +170,7 @@ test('non-In-Progress tickets never escape (Todo not started; Done/Skipped alrea
       writeTicket(root, 't1', status);
       // Even far above cap, a non-In-Progress ticket is not escape-eligible.
       const state = baseState('t1', { recovery_attempts: ledgerEntries('t1', BOUNDED_ESCAPE_CAP + 5) });
-      assert.equal(evaluateBoundedEscape(state, root).escape, false, `${status} must not escape`);
+      assert.equal(evaluateBoundedEscape(state, root, BOUNDED_ESCAPE_CAP).escape, false, `${status} must not escape`);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -177,7 +181,7 @@ test('no current_ticket → no escape', () => {
   const root = tempRoot();
   try {
     const state = baseState(null, { current_ticket: null });
-    const e = evaluateBoundedEscape(state, root);
+    const e = evaluateBoundedEscape(state, root, BOUNDED_ESCAPE_CAP);
     assert.equal(e.escape, false);
     assert.equal(e.ticketId, null);
   } finally {

@@ -745,6 +745,18 @@ export const DEFAULT_SILENT_DEATH_RESPAWN_CAP = 1;
 /** Compiled default for `hardening.failed_flip_suppression_cap` (ticket 7eb9fa20). */
 export const DEFAULT_FAILED_FLIP_SUPPRESSION_CAP = 2;
 
+/** Compiled default for `hardening.breaker_recovery_grace_seconds` (AC-A5, B-RRH). */
+export const DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS = 30;
+
+/** Compiled default for `hardening.bounded_terminal_escape_cap` (AC-A4, f8000435). */
+export const DEFAULT_BOUNDED_TERMINAL_ESCAPE_CAP = 3;
+
+/** Non-negative-integer-or-fallback field resolver shared by every `hardening.*` field. */
+function resolveNonNegativeIntField(block: Record<string, unknown>, key: string, fallback: number): number {
+  const v = block[key];
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : fallback;
+}
+
 /**
  * Ticket 90574654 — resolve the additive `hardening:` settings block (DISTINCT
  * from `bmad_hardening`). Doctrine mirrors `loadRefinementSettings`
@@ -754,23 +766,24 @@ export const DEFAULT_FAILED_FLIP_SUPPRESSION_CAP = 2;
  * silent-death respawns entirely. `failed_flip_suppression_cap` (ticket
  * 7eb9fa20) follows the same rule — `0` disables evidence-backed Failed-flip
  * suppression (flip-intents with evidence escalate immediately).
+ * `breaker_recovery_grace_seconds` (AC-A5) and `bounded_terminal_escape_cap`
+ * (AC-A4) follow the same non-negative-integer-or-default doctrine.
  */
 export function resolveHardeningSettings(bag: PickleSettings | null | undefined): HardeningSettings {
   const settings: HardeningSettings = {
     silent_death_respawn_cap: DEFAULT_SILENT_DEATH_RESPAWN_CAP,
     failed_flip_suppression_cap: DEFAULT_FAILED_FLIP_SUPPRESSION_CAP,
+    breaker_recovery_grace_seconds: DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS,
+    bounded_terminal_escape_cap: DEFAULT_BOUNDED_TERMINAL_ESCAPE_CAP,
   };
   if (!bag || typeof bag !== 'object') return settings;
   const block = (bag as Record<string, unknown>).hardening;
   if (!block || typeof block !== 'object' || Array.isArray(block)) return settings;
-  const respawnCap = (block as Record<string, unknown>).silent_death_respawn_cap;
-  if (typeof respawnCap === 'number' && Number.isInteger(respawnCap) && respawnCap >= 0) {
-    settings.silent_death_respawn_cap = respawnCap;
-  }
-  const suppressionCap = (block as Record<string, unknown>).failed_flip_suppression_cap;
-  if (typeof suppressionCap === 'number' && Number.isInteger(suppressionCap) && suppressionCap >= 0) {
-    settings.failed_flip_suppression_cap = suppressionCap;
-  }
+  const b = block as Record<string, unknown>;
+  settings.silent_death_respawn_cap = resolveNonNegativeIntField(b, 'silent_death_respawn_cap', settings.silent_death_respawn_cap);
+  settings.failed_flip_suppression_cap = resolveNonNegativeIntField(b, 'failed_flip_suppression_cap', settings.failed_flip_suppression_cap);
+  settings.breaker_recovery_grace_seconds = resolveNonNegativeIntField(b, 'breaker_recovery_grace_seconds', settings.breaker_recovery_grace_seconds);
+  settings.bounded_terminal_escape_cap = resolveNonNegativeIntField(b, 'bounded_terminal_escape_cap', settings.bounded_terminal_escape_cap);
   return settings;
 }
 

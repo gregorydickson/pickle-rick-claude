@@ -224,6 +224,17 @@ export interface HardeningSettings {
    * Compiled default: 2.
    */
   failed_flip_suppression_cap: number;
+  /**
+   * AC-A5 (B-RRH): seconds of grace after a circuit-breaker recovery during
+   * which a spawn's zero-progress increment is suppressed. Compiled default: 30.
+   */
+  breaker_recovery_grace_seconds: number;
+  /**
+   * AC-A4 (f8000435): consecutive no-progress relaunches on the same In
+   * Progress ticket before the bounded escape forces it terminal
+   * (salvage-then-Skipped). Compiled default: 3.
+   */
+  bounded_terminal_escape_cap: number;
 }
 
 /**
