@@ -226,8 +226,35 @@ function readRemediationResult(gateDir, startMs) {
 }
 const PER_ITERATION_GATE_CHECKS = ['typecheck', 'lint', 'tests'];
 const GIT_TEMP_CHECKOUT_TIMEOUT_MS = 10_000;
+const GIT_REV_PARSE_TIMEOUT_MS = 5_000;
 // R-APXG-3: how many consecutive gate-deferred-convergence iterations before force-exiting
 const POST_CONVERGENCE_GATE_DEFERRAL_LIMIT = 3;
+// R-MPGD-A: git-repo membership test (replaces naive `existsSync(path.join(dir, '.git'))`,
+// which false-negatives for monorepo subdirs/worktrees/submodules and true-positives on a
+// stray `.git` file). Never throws — any git failure (timeout/ENOENT/permission/not-a-repo)
+// classifies as "not inside a work tree".
+function isInsideWorkTree(dir) {
+    try {
+        const out = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+            cwd: dir, encoding: 'utf8', timeout: GIT_REV_PARSE_TIMEOUT_MS,
+            stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        return out.trim() === 'true';
+    }
+    catch {
+        return false;
+    }
+}
+// `listWorkingTreeDirtyPaths`/`git status --porcelain` always reports paths relative to the
+// work-tree ROOT, regardless of the `cwd` the command was invoked from. `stageOwnedPaths`
+// (dirty-tree-salvage.ts) invokes `git add -- <path>` with `cwd: workingDir` unchanged — when
+// `workingDir` is a monorepo subdir (not the repo root, now reachable post-R-MPGD-A), a bare
+// root-relative path resolves against the wrong base and `git add` fails with "did not match
+// any files". The `:/` magic pathspec prefix anchors each path to the work-tree top level
+// regardless of invocation cwd, fixing this without touching the shared staging helper.
+function toTopLevelPathspecs(paths) {
+    return paths.map((p) => `:/${p}`);
+}
 function getGitRestoreArgs(workingDir) {
     const headSha = execFileSync('git', ['rev-parse', 'HEAD'], {
         cwd: workingDir,
@@ -2201,7 +2228,7 @@ export function preflightAutoCommit(workingDir, log, allowedPaths) {
         : allDirtyPaths;
     if (dirtyPaths.length === 0)
         return;
-    if (!fs.existsSync(path.join(workingDir, '.git'))) {
+    if (!isInsideWorkTree(workingDir)) {
         log('ERROR: Working tree is dirty — uncommitted in-scope changes detected. Aborting.');
         log('ERROR: No .git repository found at working directory. Cannot auto-commit.');
         throw new Error('Working tree is dirty — not a git repo, cannot auto-commit');
@@ -2211,7 +2238,7 @@ export function preflightAutoCommit(workingDir, log, allowedPaths) {
     try {
         // `dirtyPaths` is already excludes-filtered (and scope-filtered when scoped)
         // — stage exactly that set via the shared salvage seam's per-path stager.
-        stageOwnedPaths(workingDir, dirtyPaths);
+        stageOwnedPaths(workingDir, toTopLevelPathspecs(dirtyPaths));
         execFileSync('git', ['commit', '-m', 'microverse: auto-commit dirty tree before start'], { cwd: workingDir, timeout: 30_000 });
         log(`Auto-committed pre-flight: ${getHeadSha(workingDir)}`);
     }
@@ -2768,7 +2795,7 @@ export function autoRescueDirtyTree(ctx) {
     }
     if (!dirty)
         return;
-    if (!fs.existsSync(path.join(ctx.workingDir, '.git'))) {
+    if (!isInsideWorkTree(ctx.workingDir)) {
         ctx.log(`Auto-commit skipped: not a git repository (${ctx.workingDir})`);
         return;
     }
@@ -2800,7 +2827,7 @@ export function autoRescueDirtyTree(ctx) {
     }
     ctx.log('No commits but dirty tree detected — auto-committing worker changes');
     try {
-        stageOwnedPaths(ctx.workingDir, plan.stagePaths);
+        stageOwnedPaths(ctx.workingDir, toTopLevelPathspecs(plan.stagePaths));
         execFileSync('git', ['commit', '-m', `microverse: auto-commit (worker timed out before committing)`], { cwd: ctx.workingDir, timeout: 30_000 });
         ctx.postIterSha = _deps.getHeadSha(ctx.workingDir);
         ctx.log(`Auto-committed: ${ctx.postIterSha}`);

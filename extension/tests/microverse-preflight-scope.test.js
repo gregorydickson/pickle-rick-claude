@@ -72,13 +72,15 @@ test('preflightAutoCommit scoped: out-of-scope file remains uncommitted after no
     }
 });
 
-// AC-SMAF-1-2: unscoped run from a subdir that has no own .git but parent does
-// (monorepo subpackage scenario: git works, but workingDir/.git absent → abort)
-test('preflightAutoCommit unscoped: dirty tree in subdir without own .git throws', () => {
+// AC-MPGD-A3 (R-MPGD-A): unscoped run from a subdir that has no own .git but parent does
+// (monorepo subpackage scenario) now auto-commits — `isInsideWorkTree` correctly detects
+// work-tree membership via `git rev-parse --is-inside-work-tree` instead of the naive
+// direct-child `existsSync(path.join(dir, '.git'))` check this test used to pin as a throw.
+test('preflightAutoCommit unscoped: dirty tree in subdir without own .git auto-commits (R-MPGD-A)', () => {
     const parentDir = createTempGitRepo();
     try {
         // Create a subpackage directory — git status works from here (parent .git),
-        // but the subpackage itself has no .git directory.
+        // and the subpackage itself has no .git directory.
         const subDir = path.join(parentDir, 'packages', 'subpkg');
         fs.mkdirSync(subDir, { recursive: true });
         fs.writeFileSync(path.join(subDir, 'tracked.ts'), 'v1');
@@ -90,13 +92,15 @@ test('preflightAutoCommit unscoped: dirty tree in subdir without own .git throws
         // Confirm subDir has no own .git
         assert.ok(!fs.existsSync(path.join(subDir, '.git')), 'subDir must not have its own .git');
 
-        // Without allowedPaths (unscoped), listWorkingTreeDirtyPaths succeeds (parent git),
-        // then fs.existsSync(subDir/.git) returns false → throws the no-git error
-        assert.throws(
+        // Without allowedPaths (unscoped), isInsideWorkTree(subDir) is true (parent repo),
+        // so the dirty subdir is auto-committed instead of aborting.
+        assert.doesNotThrow(
             () => preflightAutoCommit(subDir, () => {}),
-            /Working tree is dirty — not a git repo/,
-            'unscoped run from non-git subdir with dirty tree must throw',
+            'unscoped run from a monorepo subdir with a valid parent repo must not abort',
         );
+
+        const headMsg = execSync('git log -1 --format=%s', { cwd: subDir, encoding: 'utf-8' }).trim();
+        assert.equal(headMsg, 'microverse: auto-commit dirty tree before start', 'subdir dirt must be auto-committed');
     } finally {
         fs.rmSync(parentDir, { recursive: true });
     }
