@@ -138,72 +138,60 @@ grammar deletion left the fixture relying on deleted `(forward-created)` handlin
 historical completion/scope/recovery/ceiling defect classes are all code-fixed and shipped. Per the GA path the gate
 remains field-soak **repeatability** (esp. codex).
 
-**▶ NEXT ACTION — priority order per the standing directive: RELIABILITY-FIX → SIMPLIFICATION → capability/evidence
-(operator-steerable).** Both the reliability-fix queue AND the major simplification levers are largely SHIPPED — the
-residuals below are narrow and each carries a blocker to a clean autonomous launch. None is blindly auto-launchable.
+**▶ NEXT ACTION — the standing priority order: RELIABILITY → SIMPLIFICATION → AUTONOMOUS-DEVELOPMENT EVIDENCE.**
+Today (2026-07-07) banked TWO clean hands-off soak reps (beta.41 [[R-MPGD]] WS-1, beta.42 [[B-RRPC]]) and
+MAPPED + RANKED the last simplification lever (recovery sprawl). Both the reliability-fix queue and the major
+simplification levers are largely drained; the residuals are narrow. **Top recommendation: [[B-RASO]] — it is BOTH
+the last open reliability fix AND a seam-collapse simplification, in one cut.**
 
-**A. Reliability-fix queue — the R-SZGB fail-OPEN family drained through beta.40 (2026-07-05); ONE new open: [[R-MPGD]] (P2, PRD authored).**
-The full R-SZGB family is CLOSED (A per-project package-root walk `e284c7ca` → B per-project uncertifiable
-fail-CLOSED `cceef8b4` → C attrition-latch `80ec8ab8` → D per-CHECK unrunnable fail-CLOSED `46900269`,
-beta.39–40) — the review-phase gate now bites tsc-RED at both per-project and per-check granularity. The
-sole open verified reliability bug is **[[R-MPGD]]** (P2, field-surfaced 2026-07-06): the microverse
-dirty-tree recovery gates on a naive `.git`-direct-child test, false-negating on monorepo package subdirs
-so anatomy-park + szechuan silently no-op and report `completed successfully`. **✅ Mechanism VERIFIED
-vs `8f94f620` + blast radius corrected (TWO sites: `preflightAutoCommit:2935` throws-abort +
-`autoRescueDirtyTree:3619` silently-skips-rescue). Fix PRD authored**
-(`prds/p2-bug-fix-bundle-r-mpgd-microverse-git-detect-false-negative-2026-07-06.md`): WS-1 one shared
-`isInsideWorkTree` helper at both sites (net-subtraction, reuses the `git rev-parse --is-inside-work-tree`
-signal already at `circuit-breaker.ts:225`) + WS-2 classify a 0-pass setup-abort as `setup_aborted`/skipped
-(honesty, not `completed`). Pipeline-safe (NOT R-PSRB). Build on claude → deploy. Prior window (beta.37):
-the three 2026-07-02 capture-only bugs
-(**[[R-AICF]]** P1 completion-oracle plurality → ONE `evaluateCompletionEvidence` predicate at all 8 decision
-sites + spawn-morty verified-sha/trailer reconciliation; **[[R-PSCG]]** → `healPipelineRequiredFields`
-symmetric self-heal; **[[R-MACB]]** → ONE dirty-tree salvage seam) are CLOSED, plus **[[R-CXHANG]]** (orphan
-reaper — the codex-soak unblocker) and the B-RSHM + guard-layer subtractions. Prior window:
-**[[R-LTDM]]** detached-poll throttle (beta.32) → **[[R-SSBR]]** scope-resolver fail-CLOSED + **[[R-ISVP]]** install.sh
-prerelease semver (beta.34, DEPLOYED) → **[[B-WSPU]]** the DUAL WORKER-SPAWN MODEL COLLAPSED (beta.35, DEPLOYED):
-the entire detached lifecycle deleted, all tiers unified on synchronous re-spawn-resume. The detached-spawn
-failure-mode class (R-LTDM / R-WPEX / R-MWBG runtime half) is now **subtracted at the root, not patched** — the
-operator's #1 north-star move, live. Residuals after beta.38: **[[R-SZGB]]** (above), the [[R-SIGF]]
-hardening fast-follow (track C, unblocked), and external-gated items.
+**A. Reliability (goal #1).** The historical defect classes are code-fixed at root: completion-oracle plurality
+(B-1SEAM ✅), scope-fence under/over-extend (R-SIGF ✅), the R-SZGB fail-OPEN gate family (A/B/C/D, beta.39–40 ✅),
+the dual-spawn brittleness (B-WSPU beta.35 ✅), and the microverse git-detect silent-skip ([[R-MPGD]] WS-1, beta.41
+✅ — one shared `isInsideWorkTree` at both dirty-tree sites; R-MPGD WS-2 honesty-labeling DEFERRED, superseded by
+B-CSOR). **The ONE open verified reliability bug is [[B-RASO]]** (P2): `detectSilentDeathAttributableWork`
+(`mux-runner.ts:8117`) validates a completion sha's FORMAT only, while its twin `detectFailedFlipEvidence`
+(`:8353`) `git cat-file`-VERIFIES it — so the silent-death path can suppress a respawn on a hallucinated sha the
+Failed-flip path rejects (a latent false-hold). Collapse both to one `resolveAttributableWorkEvidence` oracle
+(the B-1SEAM pattern one level down: "is there SALVAGEABLE WORK", sibling of "is this ticket DONE"). ⚠️ R-PSRB
+HAND-BUILD (silent-death/Failed-flip → Done-flip/salvage boundary). Analysis:
+`RECOVERY-SPRAWL-COLLAPSE-ANALYSIS-2026-07-07.md`.
 
-**▶ R-MPGD WS-1 SHIPPED beta.41 (2026-07-07). The IMMEDIATE-NEXT is operator-steerable (reliability-first): [[B-CSOR]] subtractive root fix, or bank another soak rep (codex for repeatability).** (Historical note — the original build directive follows.) (the R-SZGB fail-OPEN family is fully drained beta.39–40):
-another silent-review-skip class — every monorepo-subdir pipeline (the common case) silently deletes its
-two most expensive review phases on a green ledger, so like R-SZGB it makes "hands-off 4/4" soak reps
-FALSE-green. Sequence: (1) build R-MPGD on claude (2 WS, pipeline-safe, PRD authored) → `install.sh`
-deploy; (2) resume the soak on the FIXED gate: run `/szechuan-sauce` over a known-RED tree / the R-SIGF
-diff as LIVE proof the R-SZGB gate now bites (doubles as the R-SIGF hardening pass + a soak rep); (3)
-≥1 claude rep with a genuine >600s ticket + ≥1 more codex rep for repeatability. ✅ codex rep #1 already
-BANKED CLEAN (B-SCOPESEED 2026-07-02: 4/4 hands-off, 139m) — but it shipped tsc-RED under the then-blind
-gate, so it counts for phase-completion, NOT toolchain-green. The GA bar stays N bundles hands-off in a row.
+**▶ RECOMMENDED SEQUENCE** (reliability + simplification + autonomy):
+1. **[[B-RASO]]** — the reliability + simplification double-win (correctness fix that is also a 2-detector →
+   1-oracle collapse; carries [[B-CSHYG-a]], the dead `salvageCleanTree` branch). ⚠️ R-PSRB hand-build — won't
+   dogfood through a pipeline; build in-process (ultracode Workflow / hand-build) then `install.sh`.
+2. **[[B-CSOR]]** — the subtractive ROOT fix (pipeline-safe, dogfoodable → banks another soak rep): make citadel
+   COMMIT its own mechanical remediation so no phase inherits a dirty tree → no dirty-tree abort → R-MPGD's
+   safety-net becomes vestigial. Removes a failure source rather than guarding it.
+3. **A codex soak rep** for the GA cross-backend bar (fold in the [[R-SIGF]] hardening fast-follow).
+4. P3 filler: [[R-LTNC]] (PRD ready) · [[R-TCVC]] + [[R-HNCG]] (bundle the two worker-continuity fixes).
 
 **B. Simplification (subtract-before-add — the major levers already shipped).** The Reliability Plan's 5 structural
 meta-defects are 4-of-5 substantially addressed: completion-oracle plurality → ONE `readEvidence` oracle
 (B-DURA/B-PXBO/R-CWGE) ✅; scope-fence under/over-extend → R-SIGF ✅; guards-on-guards → B-GSUB doc track CLOSED
 (−9) + B-GROUND2 functional collapse ✅; self-build trap → R-PSRB hand-build protocol ✅. **B-WSPU (beta.35) just subtracted the biggest chunk of the
 5th (recovery sprawl) — the entire detached recovery/disposition half is gone.** The narrower residual:
-2. **Recovery-sprawl functional seam-collapse — the last lever, now MAPPED + RANKED (2026-07-07, 4-agent analysis;
-   `RECOVERY-SPRAWL-COLLAPSE-ANALYSIS-2026-07-07.md`).** The analysis re-confirmed B-GSUB's core lesson: the
-   ~38-guard manager-loop-continuation cluster is a FALSE target (earned distinct detection signals, already
-   sharing termination plumbing) — chasing the guard count would repeat the exact over-subtraction B-GSUB warned
-   against. The honest yield is THREE bounded items: **[[B-RASO]]** (P2, the real win — collapse the two
-   divergent-strictness attributable-work detectors into one oracle; fixes a latent false-hold bug on an
-   unverified sha; R-PSRB hand-build); **[[B-RRPC]]** (P3, pipeline-safe — delete a dead relaunch overload + fold
-   a duplicate resolver); **[[B-CSHYG]]** (P3, pipeline-safe — wire-or-delete a dead salvage branch + delete an
-   orphaned scanner). The completion seam is already fully collapsed (B-1SEAM). Recommended: ship B-RRPC+B-CSHYG
-   as one pipeline-safe subtraction bundle, then B-RASO as the correctness-bearing hand-build.
+2. **Recovery-sprawl functional seam-collapse — the last lever, MAPPED + RANKED + partly SHIPPED (2026-07-07,
+   4-agent analysis, `RECOVERY-SPRAWL-COLLAPSE-ANALYSIS-2026-07-07.md`).** The analysis re-confirmed B-GSUB's core
+   lesson: the ~38-guard manager-loop-continuation cluster is a FALSE target (earned distinct detection signals,
+   already sharing termination plumbing) — chasing the guard count repeats the over-subtraction B-GSUB warned
+   against. Honest yield = bounded items: **[[B-RRPC]]** ✅ SHIPPED beta.42 (dead relaunch overload collapsed +
+   duplicate resolver folded + orphaned scanner deleted — pipeline-safe subtraction); **[[B-RASO]]** (P2, the real
+   remaining win — 2 attributable-work detectors → 1 oracle, fixes the latent false-hold; R-PSRB hand-build, also
+   carries [[B-CSHYG-a]]). The completion seam is already fully collapsed (B-1SEAM). DEFERRED (low ROI / earned):
+   the manager-loop-continuation "collapse" (false target); the dead-pid/orphan liveness-probe unification
+   (`killProcessGroup` already shared, only detection triplicated — revisit after B-RASO).
 3. **[[B-GIMA]] guard-inventory & finding-shape mining (report-only)** — operationalizes subtract-before-add
    (DELETE never-fired guards / calibrate conf<80 judge-drops). Stays DEFERRED — design dependency on codegraph
    (v2.1), not calendar.
 
-**C. Capability / GA-evidence (parallel track / last).**
-4. **Codex GA field-soak — the #1 GA-evidence gate** (a *run*, not a fix). ✅ **Rep #1 BANKED CLEAN**
-   (B-SCOPESEED beta.38, 2026-07-02: 4/4 phases, 139m, zero intervention — the first clean hands-off codex
-   multi-phase run; completion-evidence was already codex-proven LOA-1363 run4, this adds phase-completion).
-   Remaining: ≥1 more codex rep for REPEATABILITY + [[R-SZGB]] drained so a converged run is toolchain-green.
-5. **[[R-SIGF]] hardening fast-follow** — 4 deferred B-SIGF hardening passes over the R-SIGF diff. The old
-   R-MWBG gating is GONE (B-WSPU beta.35 — all tiers survive via synchronous re-spawn-resume), so this is
-   unblocked. Fold into a codex soak or run as fresh `/anatomy-park` + `/szechuan-sauce` over the diff.
+**C. Autonomous-development evidence (the GA bar = N clean hands-off reps in a row, both backends).** ✅ **THREE
+clean reps now banked:** B-SCOPESEED beta.38 (**codex**, 4/4 139m) + R-MPGD beta.41 (claude, 4/4 56m) + B-RRPC
+beta.42 (claude, 4/4 103m). **Both claude reps today self-recovered real mid-build events with ZERO intervention**
+— a spurious Failed-flip (R-MPGD) and a declined-then-completed subtraction where the build-time GUARD caught a
+test-caller the refinement analysts missed (B-RRPC WS-2) — the strongest autonomy evidence yet. Remaining for GA:
+**≥1 more codex rep** for cross-backend repeatability (both banked today were claude), optionally folding the
+[[R-SIGF]] hardening fast-follow (4 deferred passes over the R-SIGF diff, now unblocked post-B-WSPU) into it.
 6. **[[B-CGCAP]] codegraph default-on (v2.1)** / **[[B-ARBR]]** (idea, not a fix) — capability, DEFERRED post-GA
    (reliability-first / capability-second).
 
