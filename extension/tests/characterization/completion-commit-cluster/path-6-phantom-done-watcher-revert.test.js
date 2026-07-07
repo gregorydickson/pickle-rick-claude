@@ -6,7 +6,7 @@
 //
 // Decision-matrix: path_id 6 — assert what the code DOES today.
 // No live git against host. With no git repo and no completion_commit field,
-// findMatchingCommit catches git errors (returns null → source:'absent')
+// the git-log scan catches git errors (returns null → source:'absent')
 // and probeCommitReachable fails gracefully (keepDone=false).
 // The ticket is reverted to Todo.
 
@@ -48,7 +48,7 @@ function writeTicket(sessionDir, ticketId, frontmatter) {
 
 test('path-6 phantom-done-revert: Done ticket with no completion_commit → reverted to Todo, count=1', () => {
   // Use a dedicated workingDir that is NOT a git repo so git operations fail
-  // gracefully. findMatchingCommit catches the error → source:'absent'.
+  // gracefully. The git-log scan catches the error → source:'absent'.
   // probeCommitReachable fails → keepDone=false.
   const root = makeTmp();
   const workingDir = makeTmp('char-path6-notgit-');

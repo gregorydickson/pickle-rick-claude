@@ -128,7 +128,7 @@ test('path-7 revert: Done ticket + no completion_commit + no git evidence → re
       title: 'Backfill candidate ticket',
     });
 
-    // workingDir is not a git repo → findMatchingCommit fails gracefully → null
+    // workingDir is not a git repo → the git-log scan fails gracefully → null
     const result = inspectPhantomDoneTicketFile(ticketPath, sessionDir, workingDir, 'Todo');
 
     // Characterize: no git evidence → reverted

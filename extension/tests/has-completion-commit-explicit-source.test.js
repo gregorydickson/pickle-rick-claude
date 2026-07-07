@@ -7,7 +7,7 @@
 // field. `hasCompletionCommit` still returned `source: 'inferred'` because
 // `gitCommitExists(workingDir, sha)` returned false (the SHA wasn't verifiable
 // in the supplied workingDir), causing the explicit branch at pickle-utils.ts:947
-// to be skipped. `findMatchingCommit` then found the commit by `110f51bd` in
+// to be skipped. The inferred git-log scan then found the commit by `110f51bd` in
 // the message and returned `source: 'inferred'` instead of `source: 'explicit'`.
 // `guardCompletionCommitBeforeDone` raised a fatal, bricking the pipeline.
 //
@@ -45,8 +45,8 @@ function initGitRepo(dir) {
   execFileSync('git', ['commit', '-q', '-m', 'initial', '--no-gpg-sign'], { cwd: dir, stdio: 'ignore' });
 }
 
-// Commits a file whose message contains the ticket ID — so findMatchingCommit
-// can find it and return `inferred`. The commit SHA will differ from INCIDENT_SHA.
+// Commits a file whose message contains the ticket ID — so the inferred git-log
+// scan can find it and return `inferred`. The commit SHA will differ from INCIDENT_SHA.
 function makeCommitWithTicketId(gitDir, ticketId) {
   fs.writeFileSync(path.join(gitDir, `${ticketId}.txt`), 'fixture work\n');
   execFileSync('git', ['add', `${ticketId}.txt`], { cwd: gitDir });

@@ -3112,7 +3112,7 @@ test('R-CCC-5 readEvidence: no frontmatter SHA AND no matching commit returns ab
 
 test('R-CCC-5 correctPhantomDoneTickets: completion_commit in frontmatter is NOT reverted even when commit lacks ticket hash', () => {
     // Run #6 forensic replay: bundle commits use R-* codes in subject, operator backfills
-    // completion_commit: SHA into frontmatter. Pre-fix, hasCommitReferencingTicketSince
+    // completion_commit: SHA into frontmatter. Pre-fix, the git-log ticket-hash scan
     // missed (no ticket hash in commit) and reverted Done→Todo. Post-fix the explicit
     // field short-circuits the revert.
     const tmpDir = makeTmpRoot();

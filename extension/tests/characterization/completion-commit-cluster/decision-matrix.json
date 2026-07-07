@@ -12,8 +12,8 @@
     },
     {
       "kind": "inferred",
-      "description": "completion_commit_inferred: field present AND gitCommitExists() returns true, OR findMatchingCommit() locates a commit referencing ticket id/r_code via git-log scan",
-      "read_site": "extension/services/pickle-utils.js:790-803"
+      "description": "completion_commit_inferred: field present AND gitCommitExists() returns true, OR a git-log scan locates a commit referencing ticket id/r_code",
+      "read_site": "extension/services/ticket-completion-evidence.js"
     },
     {
       "kind": "absent",
@@ -416,7 +416,7 @@
       "evidence_source": "absent",
       "known_failure_modes": [
         "R-RIC-EXPLICIT-4: explicit SHA present but gitCommitExists check skipped — explicit branch falls through to reachability probe which incorrectly reverts a valid Done",
-        "R-AFCC-STALE: start_time_epoch not passed — findMatchingCommit scans all commits, finds cross-session SHA, keeps ticket Done when it should revert"
+        "R-AFCC-STALE: start_time_epoch not passed — the git-log scan scans all commits, finds cross-session SHA, keeps ticket Done when it should revert"
       ]
     },
 

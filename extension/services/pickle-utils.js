@@ -1,4 +1,4 @@
-import { execSync, execFileSync, spawnSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -907,89 +907,6 @@ export function getTicketStatus(sessionRoot, ticketId) {
         throw new MissingTicketError(sessionRoot, ticketId, ticketPath);
     }
     return parsed.status;
-}
-function extractRequirementCodes(title) {
-    if (!title)
-        return [];
-    return [...new Set(Array.from(title.matchAll(/\bR-[A-Z0-9-]+\b/gi), match => match[0].toLowerCase()))];
-}
-function parseGitLogBlocks(raw) {
-    return raw
-        .split('\n---pickle-commit-boundary---\n')
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .map((entry) => {
-        const [sha = '', epochRaw = '0', ...messageParts] = entry.split('\n');
-        return {
-            sha: sha.trim(),
-            epoch: Number(epochRaw.trim()) || 0,
-            message: messageParts.join('\n').trim(),
-        };
-    })
-        .filter(entry => /^[0-9a-f]{40}$/i.test(entry.sha));
-}
-function findMatchingCommit(args) {
-    const matchers = [
-        ...(args.ticketId ? [args.ticketId.toLowerCase()] : []),
-        ...extractRequirementCodes(args.title),
-    ];
-    // Word-boundary regex for the explicit r_code frontmatter field.
-    // \b anchors prevent R-APWS-1 from matching a commit that only contains R-APWS-10.
-    const rCodeBoundaryRe = (() => {
-        if (!args.rCode)
-            return null;
-        const code = args.rCode.trim().toLowerCase();
-        if (!code)
-            return null;
-        const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return new RegExp(`\\b${escaped}\\b`);
-    })();
-    if (matchers.length === 0 && !rCodeBoundaryRe)
-        return null;
-    const startTimeEpoch = Number(args.startTimeEpoch);
-    const checkEntry = (entry) => {
-        if (Number.isFinite(startTimeEpoch) && startTimeEpoch > 0 && entry.epoch < startTimeEpoch)
-            return null;
-        const lower = entry.message.toLowerCase();
-        if (matchers.some(token => lower.includes(token)))
-            return { sha: entry.sha, epoch: entry.epoch };
-        if (rCodeBoundaryRe && rCodeBoundaryRe.test(lower))
-            return { sha: entry.sha, epoch: entry.epoch };
-        return null;
-    };
-    const commands = [];
-    if (args.ticketPath) {
-        commands.push(['-C', args.workingDir, 'log', '-n', '20', '--format=%H%n%ct%n%B%n---pickle-commit-boundary---', '--', args.ticketPath]);
-    }
-    commands.push(['-C', args.workingDir, 'log', '-n', '50', '--format=%H%n%ct%n%B%n---pickle-commit-boundary---', 'HEAD']);
-    for (const gitArgs of commands) {
-        try {
-            const raw = execFileSync('git', gitArgs, {
-                timeout: 5000,
-                encoding: 'utf8',
-                stdio: ['ignore', 'pipe', 'pipe'],
-            });
-            for (const entry of parseGitLogBlocks(raw)) {
-                const matched = checkEntry(entry);
-                if (matched)
-                    return matched;
-            }
-        }
-        catch {
-            continue;
-        }
-    }
-    return null;
-}
-export function hasCommitReferencingTicketSince(args) {
-    const match = findMatchingCommit({
-        workingDir: args.workingDir,
-        ticketId: args.ticketId,
-        title: args.title ?? null,
-        startTimeEpoch: args.startTimeEpoch,
-        ticketPath: args.ticketPath,
-    });
-    return match ? { sha: match.sha, matched: true } : { sha: null, matched: false };
 }
 /**
  * R-CCQF: Normalize a frontmatter `completion_commit*` field value into a bare
