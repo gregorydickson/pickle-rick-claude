@@ -24,6 +24,16 @@ before build if HEAD moved.
 > discriminator to `pass_counts` all-zero, and co-scopes the `PhaseSkipReason` union extension to avoid a
 > scope-fence deadlock. WS-1 was confirmed precise.
 
+> **▶ BUILD SCOPE (operator decision 2026-07-07): WS-1 ONLY. WS-2 is DEFERRED — see the WS-2 section.**
+> Held to the north star (reliability of autonomous execution first; quality/correctness second; subtract
+> brittleness). WS-1 is the reliability fix + a net-subtraction (2 naive checks → 1 helper). WS-2 serves
+> goal #2 (ledger honesty), changes zero runtime behavior, and *adds* the exact brittleness class we are
+> fighting — a new classifier keyed on `pass_counts`, a field written **out-of-process** by the skill
+> subprocess (R6: read-after-write race → a completed phase could be mis-marked skipped). Crucially, once
+> WS-1 lands the R-MPGD abort no longer fires on monorepo subdirs, so WS-2 defends a door WS-1 just locked.
+> If the honesty gap ever bites, prefer the **subtractive** root fix [[B-CSOR]] (citadel commits its own
+> remediation → no dirty tree → no abort → nothing to mislabel) over adding this classifier.
+
 ---
 
 ## Context
@@ -130,7 +140,13 @@ path broken and still losing timed-out work.
 
 ---
 
-## WS-2 — R-MPGD-B: a 0-pass setup-abort is `setup_aborted`/skipped, not `completed successfully`
+## WS-2 (DEFERRED — NOT in this bundle) — R-MPGD-B: a 0-pass setup-abort is `setup_aborted`/skipped, not `completed successfully`
+
+> **DEFERRED 2026-07-07 (operator).** Does not serve goal #1 (reliability of autonomous execution — zero
+> runtime-behavior change); serves goal #2 (ledger honesty) at the cost of *adding* a cross-process-keyed
+> classifier + closed-union extension (the brittleness class we are subtracting). Superseded in intent by
+> the subtractive [[B-CSOR]] root fix. Retained below as the analyzed design record should the honesty gap
+> later prove load-bearing on a non-R-MPGD abort cause.
 
 **complexity_tier: medium** (new classifier with fast-tier regression risk [AC-B3]; hard file count 4–5;
 the `PhaseSkipReason` union edit is guarded by two scope tests that must run).
