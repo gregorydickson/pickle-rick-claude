@@ -45,18 +45,7 @@ function ticketIsPending(ticket) {
     const status = (ticket.status || '').toLowerCase().replace(/["']/g, '').trim();
     return status !== 'done' && status !== 'skipped';
 }
-function evaluateSimpleManagerRelaunch(state, hasPendingWork) {
-    const currentCount = currentManagerRelaunchCount(state);
-    const cap = managerRelaunchCap(state);
-    if (!hasPendingWork) {
-        return { should_relaunch: false, reason: 'no_pending_work', current_count: currentCount, cap };
-    }
-    if (currentCount >= cap) {
-        return { should_relaunch: false, reason: 'at_cap', current_count: currentCount, cap };
-    }
-    return { should_relaunch: true, reason: 'below_cap', current_count: currentCount, cap };
-}
-function evaluateTicketManagerRelaunch(state, tickets, cbState, exitKind) {
+export function evaluateManagerRelaunch(state, tickets, cbState, exitKind = 'other_error') {
     const backend = resolveBackend(state);
     const cap = managerRelaunchCapForExitKind(exitKind, backend);
     const startEpoch = Number.isFinite(Number(state.start_time_epoch)) ? Number(state.start_time_epoch) : 0;
@@ -119,14 +108,6 @@ function evaluateTicketManagerRelaunch(state, tickets, cbState, exitKind) {
         backend,
         exitKind,
     };
-}
-export function evaluateManagerRelaunch(state, pendingInput, cbStateOrExitKind, exitKind = 'other_error') {
-    if (typeof pendingInput === 'boolean') {
-        return evaluateSimpleManagerRelaunch(state, pendingInput);
-    }
-    const cbState = typeof cbStateOrExitKind === 'string' ? null : (cbStateOrExitKind ?? null);
-    const resolvedExitKind = typeof cbStateOrExitKind === 'string' ? cbStateOrExitKind : exitKind;
-    return evaluateTicketManagerRelaunch(state, pendingInput, cbState, resolvedExitKind);
 }
 export function recordManagerRelaunch(statePath, sessionDir, decision, iteration, log = () => { }) {
     let lastTicketSeen = null;

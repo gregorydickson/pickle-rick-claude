@@ -32,22 +32,6 @@ function hermesState(overrides = {}) {
     };
 }
 
-test('hermes-lifecycle: simple relaunch decision is eligible below cap', () => {
-    const decision = evaluateManagerRelaunch(hermesState(), true);
-
-    assert.equal(decision.should_relaunch, true);
-    assert.equal(decision.reason, 'below_cap');
-    assert.equal(decision.current_count, 2);
-    assert.equal(decision.cap, Defaults.CODEX_MANAGER_RELAUNCH_CAP);
-});
-
-test('hermes-lifecycle: simple relaunch decision refuses when no work remains', () => {
-    const decision = evaluateManagerRelaunch(hermesState(), false);
-
-    assert.equal(decision.should_relaunch, false);
-    assert.equal(decision.reason, 'no_pending_work');
-});
-
 test('hermes-lifecycle: runner relaunch decision counts pending hermes tickets', () => {
     const decision = evaluateManagerRelaunch(hermesState(), pendingTickets, null);
 
@@ -60,12 +44,9 @@ test('hermes-lifecycle: runner relaunch decision counts pending hermes tickets',
 test('hermes-lifecycle: relaunch cap is enforced for hermes', () => {
     const state = hermesState({ manager_relaunch_count: Defaults.CODEX_MANAGER_RELAUNCH_CAP });
     const runnerDecision = evaluateManagerRelaunch(state, pendingTickets, null);
-    const simpleDecision = evaluateManagerRelaunch(state, true);
 
     assert.equal(runnerDecision.shouldRelaunch, false);
     assert.equal(runnerDecision.reason, 'cap_exceeded');
-    assert.equal(simpleDecision.should_relaunch, false);
-    assert.equal(simpleDecision.reason, 'at_cap');
 });
 
 test('hermes-lifecycle: record relaunch persists shared manager counter', () => {

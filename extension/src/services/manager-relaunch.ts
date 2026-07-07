@@ -16,13 +16,6 @@ export type ManagerRelaunchExitKind =
   | 'claude_max_turns'
   | 'other_error';
 
-export interface RelaunchEvaluation {
-  should_relaunch: boolean;
-  reason: 'below_cap' | 'at_cap' | 'wrong_backend' | 'no_pending_work';
-  current_count: number;
-  cap: number;
-}
-
 export interface ManagerRelaunchDecision {
   shouldRelaunch: boolean;
   pendingCount: number;
@@ -78,26 +71,11 @@ function ticketIsPending(ticket: TicketInfo): boolean {
   return status !== 'done' && status !== 'skipped';
 }
 
-function evaluateSimpleManagerRelaunch(
-  state: State,
-  hasPendingWork: boolean,
-): RelaunchEvaluation {
-  const currentCount = currentManagerRelaunchCount(state);
-  const cap = managerRelaunchCap(state);
-  if (!hasPendingWork) {
-    return { should_relaunch: false, reason: 'no_pending_work', current_count: currentCount, cap };
-  }
-  if (currentCount >= cap) {
-    return { should_relaunch: false, reason: 'at_cap', current_count: currentCount, cap };
-  }
-  return { should_relaunch: true, reason: 'below_cap', current_count: currentCount, cap };
-}
-
-function evaluateTicketManagerRelaunch(
+export function evaluateManagerRelaunch(
   state: State,
   tickets: readonly TicketInfo[],
   cbState: CircuitBreakerState | null,
-  exitKind: ManagerRelaunchExitKind,
+  exitKind: ManagerRelaunchExitKind = 'other_error',
 ): ManagerRelaunchDecision {
   const backend = resolveBackend(state);
   const cap = managerRelaunchCapForExitKind(exitKind, backend);
@@ -166,32 +144,6 @@ function evaluateTicketManagerRelaunch(
     backend,
     exitKind,
   };
-}
-
-export function evaluateManagerRelaunch(
-  state: State,
-  hasPendingWork: boolean,
-  exitKind?: ManagerRelaunchExitKind,
-): RelaunchEvaluation;
-export function evaluateManagerRelaunch(
-  state: State,
-  tickets: readonly TicketInfo[],
-  cbState: CircuitBreakerState | null,
-  exitKind?: ManagerRelaunchExitKind,
-): ManagerRelaunchDecision;
-export function evaluateManagerRelaunch(
-  state: State,
-  pendingInput: boolean | readonly TicketInfo[],
-  cbStateOrExitKind?: CircuitBreakerState | null | ManagerRelaunchExitKind,
-  exitKind = 'other_error' as ManagerRelaunchExitKind,
-): RelaunchEvaluation | ManagerRelaunchDecision {
-  if (typeof pendingInput === 'boolean') {
-    return evaluateSimpleManagerRelaunch(state, pendingInput);
-  }
-
-  const cbState = typeof cbStateOrExitKind === 'string' ? null : (cbStateOrExitKind ?? null);
-  const resolvedExitKind = typeof cbStateOrExitKind === 'string' ? cbStateOrExitKind : exitKind;
-  return evaluateTicketManagerRelaunch(state, pendingInput, cbState, resolvedExitKind);
 }
 
 export function recordManagerRelaunch(statePath: string): void;

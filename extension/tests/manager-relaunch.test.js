@@ -80,15 +80,12 @@ test('manager-relaunch exports canonical symbols', () => {
 
 test('manager-relaunch preserves codex behavior below cap', () => {
   const decision = evaluateManagerRelaunch(stateFixture(), pendingTickets, null, 'codex_4h_hang_guard');
-  const simple = evaluateManagerRelaunch(stateFixture(), true);
 
   assert.equal(decision.shouldRelaunch, true);
   assert.equal(decision.reason, 'eligible');
   assert.equal(decision.pendingCount, 1);
   assert.equal(decision.nextRelaunchCount, 4);
   assert.equal(decision.cap, Defaults.CODEX_MANAGER_RELAUNCH_CAP);
-  assert.equal(simple.should_relaunch, true);
-  assert.equal(simple.cap, Defaults.CODEX_MANAGER_RELAUNCH_CAP);
 });
 
 test('manager-relaunch allows claude with cap 20', () => {
