@@ -11,7 +11,18 @@ unreachable code. None alters salvage/no-progress *behavior* applied to a runnin
 DEPLOYED JS; these land at `install.sh`). Explicitly OUT of scope: `lib/salvage-ticket.ts`,
 `reconcile-ticket-truth.ts`, `ticket-completion-evidence.ts`, and the mux-runner salvage/no-progress decision
 bodies — those are the R-PSRB surface and are handled by the separate **[[B-RASO]]** hand-build.
-**Source anchor:** verified against HEAD `29fe2794` (2026-07-07). Refresh line refs before build if HEAD moved.
+**Source anchor:** verified against HEAD `865f6e78` (2026-07-07).
+
+> **⚠ Refinement corrections (2026-07-07, 3-cycle analyst team — folded into the built tickets).** Source
+> verification caught: (1) `HardeningSettings` lives in **`extension/src/types/index.ts:208`**, so WS-1/WS-3
+> MUST co-scope `types/index.ts` (else scope-fence deadlock). (2) The stale resolver note is in **repo-root
+> `CLAUDE.md:97`**, NOT `extension/CLAUDE.md` — AC-RRPC-1d greps root `CLAUDE.md`. (3) WS-3 is **4 call sites +
+> 2 signatures** (`evaluateBoundedEscape` decision at `:7173`/`:10913` + `executeBoundedEscape` log at
+> `:6100`, called `:7175`/`:10915`), retiered **`small → medium`** (also arms the else-inert `test:fast` AC).
+> (4) WS-4 deletion must also fix the R-CCRC-1 sibling clause at **`extension/CLAUDE.md:207`** + name the exact
+> audit `audit-subsystem-claude-md.sh`. (5) Preserve the `extensionRoot` arg on the `:9884` rewire; single-source
+> each moved default in `pickle-utils.ts`; the reason union has **6** values (incl. `not_codex`); grep ACs use
+> `grep -rl … | wc -l → 0`. Build decomposition: WS-1+WS-3 combined (shared files) + WS-2 + WS-4 = 3 tickets.
 
 > **Scope note (verified 2026-07-07):** The recovery-sprawl analysis proposed B-RRPC + B-CSHYG. On source
 > verification, **B-CSHYG-a** (the dead `salvageCleanTree` back-fill branch) edits `lib/salvage-ticket.ts` — an
