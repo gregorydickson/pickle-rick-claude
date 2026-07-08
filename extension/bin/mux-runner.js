@@ -6908,10 +6908,12 @@ function resolveAttributableFrontmatterSha(sessionDir, ticketId, workingDir) {
     }
     for (const field of ['completion_commit', 'completion_commit_inferred']) {
         const value = (readFrontmatterField(raw, field) ?? '').trim().replace(/^['"]+|['"]+$/g, '');
-        if (!/^[0-9a-f]{7,40}$/i.test(value))
+        if (!/^[0-9a-f]{7,40}$/i.test(value)) {
             continue;
-        if (silentDeathGit(['cat-file', '-t', value], workingDir) === 'commit')
+        }
+        if (silentDeathGit(['cat-file', '-t', value], workingDir) === 'commit') {
             return value;
+        }
     }
     return null;
 }
@@ -6964,8 +6966,9 @@ function appendRecoveryLedgerEntry(statePath, attempt) {
     catch { /* best-effort ledger append — never block recovery */ }
 }
 function detectSilentDeathAttributableWork(input) {
-    if (resolveAttributableFrontmatterSha(input.sessionDir, input.ticketId, input.workingDir) !== null)
+    if (resolveAttributableFrontmatterSha(input.sessionDir, input.ticketId, input.workingDir) !== null) {
         return 'completion_commit';
+    }
     if (hasScopedIterationWindowCommit(input))
         return 'scoped_commit';
     if (hasFreshLifecycleArtifacts(input))
@@ -7099,8 +7102,9 @@ function hasFreshTicketArtifactEvidence(input) {
 }
 /** Evidence arm (b): frontmatter completion sha (verified via the shared B-RASO oracle) OR a window commit whose touched paths ⊆ allowed_paths. */
 function hasTicketScopedCommitEvidence(input) {
-    if (resolveAttributableFrontmatterSha(input.sessionDir, input.ticketId, input.workingDir) !== null)
+    if (resolveAttributableFrontmatterSha(input.sessionDir, input.ticketId, input.workingDir) !== null) {
         return true;
+    }
     if (!input.preSha)
         return false;
     const head = silentDeathGit(['rev-parse', 'HEAD'], input.workingDir);
