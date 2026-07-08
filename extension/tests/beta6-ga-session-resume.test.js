@@ -114,7 +114,7 @@ function writeTicketFile(sessionDir, ticketId) {
         '# Description',
         'beta6 back-compat fixture ticket.',
     ].join('\n');
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), content, 'utf-8');
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), content, 'utf-8');
 }
 
 // Hermetic sandbox: temp data root (mkdtempSync) + PICKLE_DATA_ROOT for the setup.js

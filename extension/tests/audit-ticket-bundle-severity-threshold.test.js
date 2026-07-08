@@ -50,7 +50,7 @@ function writeTicket(sessionDir, ticketId, body, frontmatterExtras = '') {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
   const raw = `---\nid: ${ticketId}\ntitle: Threshold fixture ${ticketId}\nstatus: In Progress\n${frontmatterExtras}---\n${body}`;
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), raw);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), raw);
 }
 
 function runCli(sessionDir) {

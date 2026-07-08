@@ -11,7 +11,7 @@ import {
 
 function withTempFile(content, fn) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-tier-'));
-    const file = path.join(dir, 'linear_ticket_test.md');
+    const file = path.join(dir, 'rick_ticket_test.md');
     fs.writeFileSync(file, content);
     try {
         fn(file);
@@ -62,7 +62,7 @@ test('complexity_tier: handoff shows tag for non-medium tiers, omits for medium'
             const ticketDir = path.join(dir, id);
             fs.mkdirSync(ticketDir);
             fs.writeFileSync(
-                path.join(ticketDir, `linear_ticket_${id}.md`),
+                path.join(ticketDir, `rick_ticket_${id}.md`),
                 `---\nid: ${id}\ntitle: Ticket ${tier}\nstatus: Todo\norder: 1\ncomplexity_tier: ${tier}\n---\n`
             );
         }

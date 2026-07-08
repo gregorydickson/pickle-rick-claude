@@ -52,8 +52,8 @@ function writeTicket(sessionDir, ticketId, frontmatter) {
     lines.push(`${k}: "${v}"`);
   }
   lines.push('order: 1', '---', '# Body');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
-  return path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
+  return path.join(ticketDir, `rick_ticket_${ticketId}.md`);
 }
 
 // Shared guard args builder — uses a real git workingDir
@@ -77,7 +77,7 @@ test('path-5a guard-worker-self-attested: explicit completion_commit → {ok:tru
   try {
     const realSha = initGitRepo(root);
     const prevFm = ENTRY.callsites.find(c => c.callsite_id === '5a')
-      .fixture.session_dir_skeleton[`aabbccdd/linear_ticket_aabbccdd.md`].frontmatter;
+      .fixture.session_dir_skeleton[`aabbccdd/rick_ticket_aabbccdd.md`].frontmatter;
     writeTicket(root, 'aabbccdd', {
       id: 'aabbccdd',
       status: prevFm.status,
@@ -106,7 +106,7 @@ test('path-5b guard-false-epic-recover-advance: In-Progress ticket with explicit
   try {
     const realSha = initGitRepo(root);
     const cs5b = ENTRY.callsites.find(c => c.callsite_id === '5b');
-    const fm = cs5b.fixture.session_dir_skeleton['aabbccdd/linear_ticket_aabbccdd.md'].frontmatter;
+    const fm = cs5b.fixture.session_dir_skeleton['aabbccdd/rick_ticket_aabbccdd.md'].frontmatter;
     writeTicket(root, 'aabbccdd', {
       id: 'aabbccdd',
       status: fm.status,
@@ -135,7 +135,7 @@ test('path-5c guard-genuine-epic-final-ticket: final ticket with explicit comple
   try {
     const realSha = initGitRepo(root);
     const cs5c = ENTRY.callsites.find(c => c.callsite_id === '5c');
-    const fm = cs5c.fixture.session_dir_skeleton['aabbccdd/linear_ticket_aabbccdd.md'].frontmatter;
+    const fm = cs5c.fixture.session_dir_skeleton['aabbccdd/rick_ticket_aabbccdd.md'].frontmatter;
     writeTicket(root, 'aabbccdd', {
       id: 'aabbccdd',
       status: fm.status,

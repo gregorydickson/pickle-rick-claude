@@ -52,7 +52,7 @@ function writeTicket(sessionDir, ticketId, status, order = 1) {
     '# Description',
     'Test ticket.',
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), content);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), content);
 }
 
 // ---------------------------------------------------------------------------

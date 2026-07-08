@@ -61,7 +61,7 @@ test('AC-ICP-04-3: payload count covers ≥3 registration sites (lint per AC)', 
 const { inspectPhantomDoneTicketFile } = await import('../bin/mux-runner.js');
 
 function makeTicketFile(dir, ticketId, frontmatter) {
-  const file = path.join(dir, `linear_ticket_${ticketId}.md`);
+  const file = path.join(dir, `rick_ticket_${ticketId}.md`);
   const fm = Object.entries(frontmatter)
     .map(([k, v]) => `${k}: ${v}`)
     .join('\n');
@@ -134,7 +134,7 @@ test('AC-ICP-04: missing id frontmatter → missing_id (defensive)', () => {
     fs.mkdirSync(ticketDir, { recursive: true });
     // status: Done but NO id field — exercises the missing_id branch which returns
     // before the git lookup that needs a real repo.
-    const ticketFile = path.join(ticketDir, 'linear_ticket_99887766.md');
+    const ticketFile = path.join(ticketDir, 'rick_ticket_99887766.md');
     fs.writeFileSync(ticketFile, '---\nstatus: Done\n---\n');
     const result = inspectPhantomDoneTicketFile(
       ticketFile,

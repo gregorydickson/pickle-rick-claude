@@ -40,7 +40,7 @@ function makeSession(root) {
 function makeTicket(sessionDir, id, status) {
   const ticketDir = path.join(sessionDir, id);
   mkdirSync(ticketDir, { recursive: true });
-  writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), [
+  writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), [
     '---',
     `id: ${id}`,
     `title: "Ticket ${id}"`,

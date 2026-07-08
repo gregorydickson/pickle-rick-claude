@@ -47,7 +47,7 @@ function writeTicket(sessionDir, id, frontmatter) {
   fs.mkdirSync(ticketDir, { recursive: true });
   const lines = Object.entries(frontmatter).map(([k, v]) => `${k}: ${v}`).join('\n');
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${id}.md`),
+    path.join(ticketDir, `rick_ticket_${id}.md`),
     `---\n${lines}\n---\n# ${id}\n`,
   );
   return ticketDir;
@@ -64,7 +64,7 @@ function readActivity(statePath, event) {
 }
 
 function getTicketStatus(sessionDir, id) {
-  const raw = fs.readFileSync(path.join(sessionDir, id, `linear_ticket_${id}.md`), 'utf-8');
+  const raw = fs.readFileSync(path.join(sessionDir, id, `rick_ticket_${id}.md`), 'utf-8');
   const v = /^status:\s*(.+)$/m.exec(raw)?.[1]?.trim() ?? null;
   return v ? v.replace(/^["']|["']$/g, '') : null;
 }

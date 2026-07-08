@@ -30,7 +30,7 @@ function writeTicket(sessionDir, id, status) {
     '',
     '# Fixture',
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), content);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), content);
 }
 
 function writeState(sessionDir, overrides = {}) {
@@ -213,7 +213,7 @@ test('codex-inactive-relaunch: no relaunch when cap exceeded', async () => {
 test('codex-inactive-relaunch: no relaunch when no pending tickets', async () => {
   await withFixture({}, async ({ dir, state, logs, ctx }) => {
     // Mark the only Todo ticket as Done
-    const ticketFile = path.join(dir, 'ticket-001', 'linear_ticket_ticket-001.md');
+    const ticketFile = path.join(dir, 'ticket-001', 'rick_ticket_ticket-001.md');
     const raw = fs.readFileSync(ticketFile, 'utf-8');
     fs.writeFileSync(ticketFile, raw.replace('status: Todo', 'status: Done'));
 

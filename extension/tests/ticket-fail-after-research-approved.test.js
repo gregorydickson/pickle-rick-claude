@@ -25,7 +25,7 @@ function makeTicket(sessionDir, ticketId, status, reviewContent) {
   const ticketDir = path.join(sessionDir, ticketId);
   mkdirSync(ticketDir, { recursive: true });
   writeFileSync(
-    path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+    path.join(ticketDir, `rick_ticket_${ticketId}.md`),
     `---\nid: ${ticketId}\ntitle: Test ticket\nstatus: ${status}\norder: 1\n---\n\n# Test\n`,
   );
   if (reviewContent !== null) {

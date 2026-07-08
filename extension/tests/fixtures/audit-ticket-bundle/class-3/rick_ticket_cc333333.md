@@ -18,4 +18,4 @@ Dependencies: zz999999
 
 ## Problem to solve
 
-Depends on `zz999999` which has no matching `linear_ticket_zz999999.md` in the bundle.
+Depends on `zz999999` which has no matching `rick_ticket_zz999999.md` in the bundle.

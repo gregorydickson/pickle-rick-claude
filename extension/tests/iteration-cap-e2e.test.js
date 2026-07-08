@@ -80,7 +80,7 @@ function writeTicket(sessionDir, id, order) {
   const dir = path.join(sessionDir, id);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
-    path.join(dir, `linear_ticket_${id}.md`),
+    path.join(dir, `rick_ticket_${id}.md`),
     `---\nid: ${id}\ntitle: E2E ticket ${id}\nstatus: Todo\norder: ${order}\n---\n\n# Body\n`,
   );
 }
@@ -148,7 +148,7 @@ test('iteration-cap-and-phantom-done-end-to-end', async () => {
     // No phantom-Done escape: all 5 tickets must remain non-Done
     let doneCount = 0;
     for (const id of TICKET_IDS) {
-      const ticketPath = path.join(sessionDir, id, `linear_ticket_${id}.md`);
+      const ticketPath = path.join(sessionDir, id, `rick_ticket_${id}.md`);
       const content = fs.readFileSync(ticketPath, 'utf-8');
       if (/status:\s*Done/i.test(content)) doneCount++;
     }

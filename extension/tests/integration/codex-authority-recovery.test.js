@@ -59,7 +59,7 @@ function writeTicket(sessionDir, id, status = 'In Progress') {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${id}.md`),
+    path.join(ticketDir, `rick_ticket_${id}.md`),
     `---\nid: ${id}\ntitle: Fixture ${id}\nstatus: ${JSON.stringify(status)}\norder: 1\ncomplexity_tier: medium\n---\n\n# Fixture\n`,
   );
   return ticketDir;

@@ -99,7 +99,7 @@ function splitCommand(command: string): { bin: string; args: string[] } {
 }
 
 function findTicketPath(sessionDir: string, ticketId: string): string {
-  return path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+  return path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
 }
 
 function readFrontmatterField(body: string, field: string): string | undefined {

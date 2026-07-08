@@ -46,7 +46,7 @@ function withDataRoot(fn) {
 function makeTicketFile(sessionDir, ticketId, status) {
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
-    const ticketPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
     const content = [
         '---',
         `id: ${ticketId}`,

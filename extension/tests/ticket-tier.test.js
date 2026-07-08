@@ -31,7 +31,7 @@ function writeTicket(sessionDir, id, tierLine) {
   ];
   if (tierLine !== null) frontmatter.push(tierLine);
   frontmatter.push('---', '', '# Test');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), frontmatter.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), frontmatter.join('\n'));
 }
 
 function stateFor(ticketId) {
@@ -66,7 +66,7 @@ test('ticket-tier.budget-mapping: all tiers map to documented iteration and work
     for (const [tier, maxIterations, workerTimeoutSeconds] of cases) {
       const id = `ticket-${tier}`;
       writeTicket(root, id, `complexity_tier: ${tier}`);
-      const ticketPath = path.join(root, id, `linear_ticket_${id}.md`);
+      const ticketPath = path.join(root, id, `rick_ticket_${id}.md`);
       const parsed = parseTicketFrontmatter(ticketPath);
       assert.deepEqual(ticketInfoBudget(parsed), {
         tier,
@@ -109,7 +109,7 @@ test('ticket-tier.default: missing and invalid tiers default to medium budget', 
   try {
     for (const [id, tierLine] of [['missing', null], ['invalid', 'complexity_tier: bogus']]) {
       writeTicket(root, id, tierLine);
-      const parsed = parseTicketFrontmatter(path.join(root, id, `linear_ticket_${id}.md`));
+      const parsed = parseTicketFrontmatter(path.join(root, id, `rick_ticket_${id}.md`));
       assert.deepEqual(ticketInfoBudget(parsed), expected);
 
       const state = stateFor(id);

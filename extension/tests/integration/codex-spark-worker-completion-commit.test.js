@@ -109,7 +109,7 @@ function writeSession(root, ticketId) {
     schema_version: 3,
     activity: [],
   }, null, 2));
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
     '---',
     `id: ${ticketId}`,
     'title: R-CCC-5 integration replay',
@@ -179,7 +179,7 @@ test('spawn-morty auto-fills completion_commit after a successful codex worker t
     const result = runSpawnMorty(root, sessionRoot, ticketDir, ticketId, 'auto-fill');
     assert.equal(result.status, 0, `stderr: ${result.stderr}`);
 
-    const ticketPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
     const ticketContent = fs.readFileSync(ticketPath, 'utf8');
     assert.match(ticketContent, /status: "Done"/);
     assert.match(ticketContent, /completion_commit:\s+"[0-9a-f]{40}"/);

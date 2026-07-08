@@ -60,12 +60,12 @@ function makeTicket(sessionDir, ticketId, status = 'In Progress') {
     '# Description',
     'Test ticket for R-WSWA-3 auto-skip.',
   ].join('\n') + '\n';
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), content);
-  return path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), content);
+  return path.join(ticketDir, `rick_ticket_${ticketId}.md`);
 }
 
 function readTicketContent(sessionDir, ticketId) {
-  return fs.readFileSync(path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`), 'utf-8');
+  return fs.readFileSync(path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`), 'utf-8');
 }
 
 function getActivityEvents(statePath, eventName) {
@@ -117,7 +117,7 @@ test('AC-WSWA-03: at K=5 zero-progress spawns ticket ends Failed/oversized_no_pr
 
     // Simulate the auto-skip block: flip status, add failed_reason, emit event.
     updateTicketFrontmatter(ticketId, sessionDir, { status: 'Failed', completion_commit: null });
-    const tfPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    const tfPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
     const tfRaw = fs.readFileSync(tfPath, 'utf-8');
     const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', 'oversized_no_progress');
     assert.ok(tfUpdated, 'upsertFrontmatterField returned updated content');

@@ -45,7 +45,7 @@ function makeRealCommit(dir, suffix) {
 function writeTicket(sessionDir, ticketId, completionLine) {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
     '---',
     `id: ${ticketId}`,
     'title: R-CCQF fixture',
@@ -170,7 +170,7 @@ test('R-CCQF: live-incident fixture (session 2026-05-23-48e6309a/26301c6a shape)
     // Real-world shape: title is quoted, status is quoted, completion_commit
     // is quoted with the FULL 40-char SHA. This is what closer workers emit
     // via codex's edit primitive.
-    fs.writeFileSync(path.join(ticketDir, 'linear_ticket_26301c6a.md'), [
+    fs.writeFileSync(path.join(ticketDir, 'rick_ticket_26301c6a.md'), [
       '---',
       'id: 26301c6a',
       'title: "R-WUWC-3-CLOSER — MASTER_PLAN bookkeeping"',

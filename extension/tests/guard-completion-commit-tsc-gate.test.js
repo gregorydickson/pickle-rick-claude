@@ -51,7 +51,7 @@ function writeTicket(sessionDir, ticketId, sha, { failedReason, verdict } = {}) 
   if (failedReason !== undefined) lines.push(`failed_reason: ${failedReason}`);
   if (verdict !== undefined) { lines.push(`worker_gate_verdict: ${verdict}`); }
   lines.push('---', '');
-  fs.writeFileSync(path.join(dir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(dir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
 }
 
 function writeState(sessionDir, startCommit) {

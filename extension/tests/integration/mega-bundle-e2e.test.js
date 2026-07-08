@@ -116,7 +116,7 @@ function writeTicket(sessionDir, ticketId, fields = '') {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+    path.join(ticketDir, `rick_ticket_${ticketId}.md`),
     `---\nid: ${ticketId}\ntitle: Fixture\nstatus: "Done"\norder: 10\n${fields}---\n`,
   );
 }
@@ -282,7 +282,7 @@ test('mega bundle A-F smoke paths work together', () => {
     });
     assert.equal(corrected, 1);
     assert.match(
-      fs.readFileSync(path.join(parentSession, 'ticket-b/linear_ticket_ticket-b.md'), 'utf8'),
+      fs.readFileSync(path.join(parentSession, 'ticket-b/rick_ticket_ticket-b.md'), 'utf8'),
       /status: "Todo"/,
     );
 

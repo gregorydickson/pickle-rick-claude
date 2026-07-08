@@ -225,7 +225,7 @@ function enumerateSiblingDeclaredFiles(sessionDir, selfTicketId) {
             continue;
         }
         for (const file of files) {
-            if (!file.startsWith('linear_ticket_') || !file.endsWith('.md'))
+            if (!file.startsWith('rick_ticket_') || !file.endsWith('.md'))
                 continue;
             try {
                 const content = fs.readFileSync(path.join(subDir, file), 'utf8');

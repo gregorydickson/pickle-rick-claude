@@ -22,7 +22,7 @@ function makeTmpTicket() {
     fs.mkdirSync(ticketDir, { recursive: true });
     fs.mkdirSync(projectDir, { recursive: true });
     fs.writeFileSync(
-        path.join(ticketDir, 'linear_ticket_abc123.md'),
+        path.join(ticketDir, 'rick_ticket_abc123.md'),
         ['---', 'id: abc123', 'updated: "2026-05-01"', '---', '', '# Ticket', ''].join('\n')
     );
     return { root, ticketDir, projectDir };
@@ -44,7 +44,7 @@ function latestArtifact(ticketDir, pattern) {
 }
 
 function ticketUpdatedTime(ticketDir) {
-    const ticketFile = fs.readdirSync(ticketDir).find((name) => /^linear_ticket_.*\.md$/.test(name));
+    const ticketFile = fs.readdirSync(ticketDir).find((name) => /^rick_ticket_.*\.md$/.test(name));
     assert.ok(ticketFile, 'fixture must include a linear ticket file');
     const body = fs.readFileSync(path.join(ticketDir, ticketFile), 'utf-8');
     const match = body.match(/^updated:\s*"?([^"\n]+)"?/m);

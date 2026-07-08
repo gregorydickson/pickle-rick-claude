@@ -152,7 +152,7 @@ function writeClaudeCompletionStub(binDir) {
 function writeGateSkipTicket(sessionDir, id = 'ok0001', status = 'Done') {
     const ticketDir = path.join(sessionDir, id);
     fs.mkdirSync(ticketDir, { recursive: true });
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), [
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), [
         '---',
         `id: ${id}`,
         `key: ${id.toUpperCase()}`,
@@ -1027,7 +1027,7 @@ test('mux-runner: runs readiness gate at iteration 0 before manager spawn', () =
         const sessionDir = path.join(tmpRoot, 'session');
         const ticketDir = path.join(sessionDir, 'bad001');
         fs.mkdirSync(ticketDir, { recursive: true });
-        fs.writeFileSync(path.join(ticketDir, 'linear_ticket_bad001.md'), [
+        fs.writeFileSync(path.join(ticketDir, 'rick_ticket_bad001.md'), [
             '---',
             'id: bad001',
             'key: BAD-1',
@@ -1086,7 +1086,7 @@ test('mux-runner.audit-bundle-advisory: logs but does NOT halt on defective tick
         // as path-drift because gitListFiles(tmpRoot) returns empty (non-git working_dir).
         // No flags set — skip_quality_gates_reason (the single bypass surface) would
         // bypass both gates.
-        fs.writeFileSync(path.join(ticketDir, 'linear_ticket_deadbeef.md'), [
+        fs.writeFileSync(path.join(ticketDir, 'rick_ticket_deadbeef.md'), [
             '---',
             'id: deadbeef',
             'title: Phantom File Ticket',
@@ -1745,7 +1745,7 @@ test('guardCompletionCommitBeforeDone: rejects ticket with no completion_commit'
         const ticketDir = path.join(sessionDir, ticketId);
         fs.mkdirSync(ticketDir, { recursive: true });
         // Ticket with NO completion_commit field — the f00097e8 attack vector.
-        fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+        fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`),
           `---\nid: ${ticketId}\ntitle: "test"\nstatus: Done\n---\n# T\n`);
         const result = withProductionGuard(() =>
             guardCompletionCommitBeforeDone({ sessionDir, ticketId, workingDir, rereadBackoffMs: 0 })
@@ -1769,7 +1769,7 @@ test('guardCompletionCommitBeforeDone: bypass flag accepts inferred when set', a
         const ticketId = 'bbbb2222';
         const ticketDir = path.join(sessionDir, ticketId);
         fs.mkdirSync(ticketDir, { recursive: true });
-        fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+        fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`),
           `---\nid: ${ticketId}\ntitle: "test"\nstatus: Done\n---\n# T\n`);
         withProductionGuard(() => {
             // Absent evidence: reject (no attributable commit at all).
@@ -1794,7 +1794,7 @@ test('R-CCGR guardCompletionCommitBeforeDone: backoff re-read recovers a complet
         const ticketId = 'ccgr0001';
         const ticketDir = path.join(sessionDir, ticketId);
         fs.mkdirSync(ticketDir, { recursive: true });
-        const ticketFile = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+        const ticketFile = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
         // Initial frontmatter: status Done but NO completion_commit — the
         // exact state the guard sees before the worker's stamp lands.
         fs.writeFileSync(ticketFile, `---\nid: ${ticketId}\ntitle: ccgr\nstatus: Done\n---\n# T\n`);
@@ -1866,7 +1866,7 @@ test('R-CCGR guardCompletionCommitBeforeDone: backoff re-read is reached for com
         const ticketId = 'ccgr7001';
         const ticketDir = path.join(sessionDir, ticketId);
         fs.mkdirSync(ticketDir, { recursive: true });
-        const ticketFile = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+        const ticketFile = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
         fs.writeFileSync(ticketFile, `---\nid: ${ticketId}\ntitle: "test"\nstatus: Done\n---\n# T\n`);
 
         const result = withProductionGuard(() =>
@@ -1922,7 +1922,7 @@ test('guardRereadBackoffMs: R-CCR-9 PICKLE_GUARD_REREAD_BACKOFF_MS=0 honored —
         const ticketId = 'ccr9env0';
         const ticketDir = path.join(sessionDir, ticketId);
         fs.mkdirSync(ticketDir, { recursive: true });
-        fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+        fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`),
             `---\nid: ${ticketId}\ntitle: "test"\nstatus: Done\n---\n# T\n`);
         const t0 = Date.now();
         const result = withProductionGuard(() =>
@@ -1951,7 +1951,7 @@ test('guardRereadBackoffMs: R-CCR-9 env above 5000ms ceiling clamped — writer 
         const ticketId = 'ccr9ceil';
         const ticketDir = path.join(sessionDir, ticketId);
         fs.mkdirSync(ticketDir, { recursive: true });
-        const ticketFile = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+        const ticketFile = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
         fs.writeFileSync(ticketFile, `---\nid: ${ticketId}\ntitle: "test"\nstatus: Done\n---\n# T\n`);
         const stamped = `---\nid: ${ticketId}\ntitle: "test"\nstatus: Done\ncompletion_commit: ${sha}\n---\n# T\n`;
         const writer = spawn(process.execPath, ['-e',
@@ -1990,7 +1990,7 @@ test('guardRereadBackoffMs: R-CCR-9 NaN and negative env values fall back to 500
             const ticketId = label === 'NaN' ? 'ccr9dflt1' : 'ccr9dflt2';
             const ticketDir = path.join(sessionDir, ticketId);
             fs.mkdirSync(ticketDir, { recursive: true });
-            const ticketFile = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+            const ticketFile = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
             fs.writeFileSync(ticketFile, `---\nid: ${ticketId}\ntitle: "test"\nstatus: Done\n---\n# T\n`);
             const stamped = `---\nid: ${ticketId}\ntitle: "test"\nstatus: Done\ncompletion_commit: ${sha}\n---\n# T\n`;
             // The writer signals readiness, then stamps the ticket 150ms later.
@@ -2438,7 +2438,7 @@ function runAndCollectActivity(stateOverrides = {}) {
 function writeMuxTicket(sessionDir, ticketId, status, order = 1) {
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
         '---',
         `id: ${ticketId}`,
         `title: ${ticketId}`,
@@ -2451,7 +2451,7 @@ function writeMuxTicket(sessionDir, ticketId, status, order = 1) {
 }
 
 function readMuxTicketStatus(sessionDir, ticketId) {
-    const file = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    const file = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
     const content = fs.readFileSync(file, 'utf-8');
     const match = content.match(/^status:\s*(.+)$/m);
     return match ? match[1].trim().replace(/^["']|["']$/g, '') : null;
@@ -2587,7 +2587,7 @@ test('mux-runner: persists iteration, picked ticket, and lifecycle step before m
         const ticketId = 'ticket-state-1';
         const ticketDir = path.join(sessionDir, ticketId);
         fs.mkdirSync(ticketDir, { recursive: true });
-        fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+        fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
             '---',
             `id: ${ticketId}`,
             'title: State coherence',
@@ -2803,7 +2803,7 @@ function gitHead(dir) {
 function writeAutoMarkTicket(sessionDir, ticketId, checked = true) {
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
         '---',
         `id: ${ticketId}`,
         'title: Auto mark validation',
@@ -2830,7 +2830,7 @@ function writeAutoMarkTicketWithStatus(sessionDir, ticketId, status, checked = t
 function writeAutoMarkTicketWithCriteria(sessionDir, ticketId, status, criteriaLines) {
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
         '---',
         `id: ${ticketId}`,
         'title: Auto mark validation',
@@ -2846,7 +2846,7 @@ function writeAutoMarkTicketWithCriteria(sessionDir, ticketId, status, criteriaL
 }
 
 function readAutoMarkTicketStatus(sessionDir, ticketId) {
-    const filePath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    const filePath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
     const content = fs.readFileSync(filePath, 'utf-8');
     const match = /^status:\s*(.+)$/m.exec(content);
     return match ? match[1].replace(/^["']|["']$/g, '').trim() : null;
@@ -3036,7 +3036,7 @@ test('phantom-done.correction: Done frontmatter with no completion commit is res
 function writeAutoMarkTicketWithCompletionCommit(sessionDir, ticketId, sha) {
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
         '---',
         `id: ${ticketId}`,
         'title: Auto mark validation',
@@ -3202,7 +3202,7 @@ test('R-AFCC-DEEP-3C correctPhantomDoneTickets: backtick-decorated completion_co
         fs.mkdirSync(ticketDir, { recursive: true });
         // completion_commit with backtick decoration — normalizeCompletionCommitField
         // does not strip backticks → explicit=null → hasCompletionCommit returns 'absent'.
-        fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+        fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
             '---',
             `id: ${ticketId}`,
             'title: plain stamp ticket',
@@ -3241,7 +3241,7 @@ test('R-AFCC-DEEP-3C correctPhantomDoneTickets: backtick-decorated completion_co
 function writeTicketWithWorkingDir(sessionDir, ticketId, sha, ticketWorkingDir) {
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
         '---',
         `id: ${ticketId}`,
         'title: Fallback test ticket',
@@ -3327,7 +3327,7 @@ test('R-CCR-1 no-fallback on clean miss: git runs, SHA is valid but not in repo 
         // misses it and returns 'absent' (no fallback for absent evidence).
         const ticketDir = path.join(sessionDir, ticketId);
         fs.mkdirSync(ticketDir, { recursive: true });
-        fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+        fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
             '---',
             `id: ${ticketId}`,
             'title: clean miss test',
@@ -3457,7 +3457,7 @@ test('R-AFCC-DEEP-3C correctPhantomDoneTickets: backtick-decorated completion_co
         fs.mkdirSync(ticketDir, { recursive: true });
         // completion_commit_inferred with backtick decoration: hasCompletionCommit strict
         // hex check misses it (returns 'absent'). After 3C, no lax-strip fallback exists.
-        fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+        fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
             '---',
             `id: ${ticketId}`,
             'title: inferred-only reachable test',
@@ -3515,7 +3515,7 @@ test('R-CCR-8 R-PDWR correctPhantomDoneTickets: completion_commit SHA that is a 
         // Backtick-decorated SHA: hasCompletionCommit strict hex check returns 'absent'
         // (backticks not stripped by normalizeCompletionCommitField). No fallback fires
         // since evidence.source is 'absent'. Ticket reverts.
-        fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+        fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
             '---',
             `id: ${ticketId}`,
             'title: orphan SHA revert test',
@@ -3710,11 +3710,11 @@ test('detectMultiRepo: returns dirs when tickets have 2+ distinct working_dir va
     try {
         const t1 = path.join(dir, 't1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_t1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_t1.md'),
             '---\nid: t1\ntitle: API work\nstatus: Todo\norder: 10\nworking_dir: api/\n---\n');
         const t2 = path.join(dir, 't2');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_t2.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_t2.md'),
             '---\nid: t2\ntitle: Web work\nstatus: Todo\norder: 20\nworking_dir: web/\n---\n');
 
         // api/ and web/ are not git repos — each resolves to its own
@@ -3741,15 +3741,15 @@ test('R-MRFP detectMultiRepo: monorepo workspace subdirs of one repo are NOT mul
 
         const t1 = path.join(dir, 't1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_t1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_t1.md'),
             `---\nid: t1\ntitle: API work\nstatus: Todo\norder: 10\nworking_dir: ${apiDir}\n---\n`);
         const t2 = path.join(dir, 't2');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_t2.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_t2.md'),
             `---\nid: t2\ntitle: App work\nstatus: Todo\norder: 20\nworking_dir: ${appDir}\n---\n`);
         const t3 = path.join(dir, 't3');
         fs.mkdirSync(t3);
-        fs.writeFileSync(path.join(t3, 'linear_ticket_t3.md'),
+        fs.writeFileSync(path.join(t3, 'rick_ticket_t3.md'),
             `---\nid: t3\ntitle: Root work\nstatus: Todo\norder: 30\nworking_dir: ${repo}\n---\n`);
 
         assert.equal(
@@ -3772,11 +3772,11 @@ test('R-MRFP detectMultiRepo: tickets in two genuinely distinct git repos are mu
         initGitRepo(repoB);
         const t1 = path.join(dir, 't1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_t1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_t1.md'),
             `---\nid: t1\ntitle: A\nstatus: Todo\norder: 10\nworking_dir: ${repoA}\n---\n`);
         const t2 = path.join(dir, 't2');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_t2.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_t2.md'),
             `---\nid: t2\ntitle: B\nstatus: Todo\norder: 20\nworking_dir: ${repoB}\n---\n`);
 
         const result = detectMultiRepo(dir, dir);
@@ -3794,11 +3794,11 @@ test('detectMultiRepo: returns null when all tickets share same working_dir', ()
     try {
         const t1 = path.join(dir, 't1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_t1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_t1.md'),
             '---\nid: t1\ntitle: Task A\nstatus: Todo\norder: 10\nworking_dir: api/\n---\n');
         const t2 = path.join(dir, 't2');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_t2.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_t2.md'),
             '---\nid: t2\ntitle: Task B\nstatus: Todo\norder: 20\nworking_dir: api/\n---\n');
 
         assert.equal(detectMultiRepo(dir, dir), null);
@@ -3812,11 +3812,11 @@ test('detectMultiRepo: returns null when all tickets have working_dir null', () 
     try {
         const t1 = path.join(dir, 't1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_t1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_t1.md'),
             '---\nid: t1\ntitle: Task A\nstatus: Todo\norder: 10\n---\n');
         const t2 = path.join(dir, 't2');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_t2.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_t2.md'),
             '---\nid: t2\ntitle: Task B\nstatus: Todo\norder: 20\n---\n');
 
         assert.equal(detectMultiRepo(dir, dir), null);
@@ -3830,11 +3830,11 @@ test('detectMultiRepo: returns null when only one ticket has a working_dir', () 
     try {
         const t1 = path.join(dir, 't1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_t1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_t1.md'),
             '---\nid: t1\ntitle: Task A\nstatus: Todo\norder: 10\nworking_dir: api/\n---\n');
         const t2 = path.join(dir, 't2');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_t2.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_t2.md'),
             '---\nid: t2\ntitle: Task B\nstatus: Todo\norder: 20\n---\n');
 
         assert.equal(detectMultiRepo(dir, dir), null);
@@ -3853,11 +3853,11 @@ test('R-CCR-2 detectMultiRepo: relative working_dirs resolve against stableBase 
 
         const t1 = path.join(sessionDir, 't1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_t1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_t1.md'),
             '---\nid: t1\ntitle: API work\nstatus: Todo\norder: 10\nworking_dir: api\n---\n');
         const t2 = path.join(sessionDir, 't2');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_t2.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_t2.md'),
             '---\nid: t2\ntitle: App work\nstatus: Todo\norder: 20\nworking_dir: app\n---\n');
 
         // With stableBase=repo, relative 'api' → <repo>/api and 'app' → <repo>/app.
@@ -3885,11 +3885,11 @@ test('R-MRFP detectMultiRepo: relative working_dir with non-git stableBase falls
 
         const t1 = path.join(sessionDir, 't1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_t1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_t1.md'),
             '---\nid: t1\ntitle: A\nstatus: Todo\norder: 10\nworking_dir: subA\n---\n');
         const t2 = path.join(sessionDir, 't2');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_t2.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_t2.md'),
             '---\nid: t2\ntitle: B\nstatus: Todo\norder: 20\nworking_dir: subB\n---\n');
 
         // Relative paths resolve via stableBase; neither subdir is a git repo, so resolveRepoRoot falls back to the absolute path.
@@ -3920,11 +3920,11 @@ test('R-MRFP detectMultiRepo: mixed git-repo and non-git-repo working_dirs are d
 
         const t1 = path.join(sessionDir, 't1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_t1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_t1.md'),
             `---\nid: t1\ntitle: Git repo\nstatus: Todo\norder: 10\nworking_dir: ${gitRepo}\n---\n`);
         const t2 = path.join(sessionDir, 't2');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_t2.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_t2.md'),
             `---\nid: t2\ntitle: Plain dir\nstatus: Todo\norder: 20\nworking_dir: ${plainDir}\n---\n`);
 
         // gitRepo resolves to its own git root; plainDir has no git root so falls back to plainDir itself — two distinct roots.
@@ -4104,7 +4104,7 @@ import { Defaults as DefaultsForRelaunch } from '../types/index.js';
 function writeRelaunchTicket(sessionDir, id, status, order = 1) {
     const ticketDir = path.join(sessionDir, id);
     fs.mkdirSync(ticketDir, { recursive: true });
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), [
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), [
         '---',
         `id: ${id}`,
         `title: ${id}`,

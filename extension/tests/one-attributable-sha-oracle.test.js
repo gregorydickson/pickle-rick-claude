@@ -55,7 +55,7 @@ function makeFix(frontmatter, workingDir) {
   );
   writeFileSync(path.join(ticketDir, 'research_2026-07-07.md'), 'research body');
   writeFileSync(path.join(ticketDir, 'research_review.md'), '# review\n\nAPPROVED');
-  writeFileSync(path.join(ticketDir, `linear_ticket_${TICKET}.md`), frontmatter);
+  writeFileSync(path.join(ticketDir, `rick_ticket_${TICKET}.md`), frontmatter);
   writeFileSync(path.join(ticketDir, 'worker_session_12321.log'), '');
   return { tmp, sessionDir, statePath, ticketDir };
 }

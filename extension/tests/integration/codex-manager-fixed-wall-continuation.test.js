@@ -33,20 +33,20 @@ function writeTicket(sessionDir, id, status) {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${id}.md`),
+    path.join(ticketDir, `rick_ticket_${id}.md`),
     `---\nid: ${id}\ntitle: ${id} fixture\nstatus: ${status}\norder: 1\n---\n\n# Fixture\n`,
   );
 }
 
 function markTicketDone(sessionDir, id) {
-  const ticketFile = path.join(sessionDir, id, `linear_ticket_${id}.md`);
+  const ticketFile = path.join(sessionDir, id, `rick_ticket_${id}.md`);
   const raw = fs.readFileSync(ticketFile, 'utf-8');
   fs.writeFileSync(ticketFile, raw.replace(/^status: .+$/m, 'status: Done'));
 }
 
 function readTicketStatus(sessionDir, id) {
   const content = fs.readFileSync(
-    path.join(sessionDir, id, `linear_ticket_${id}.md`), 'utf-8',
+    path.join(sessionDir, id, `rick_ticket_${id}.md`), 'utf-8',
   );
   const m = content.match(/^status:\s*(.+)$/m);
   return m ? m[1].trim().replace(/["']/g, '').toLowerCase() : null;

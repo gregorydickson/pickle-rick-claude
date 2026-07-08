@@ -34,7 +34,7 @@ const MAX_TICKET_SEARCH_DEPTH = 10;
 const GIT_CHECK_IGNORE_TIMEOUT_MS = 5_000;
 
 function findTicketFile(sessionDir: string, ticketId: string): string | null {
-  const fileName = `linear_ticket_${ticketId}.md`;
+  const fileName = `rick_ticket_${ticketId}.md`;
   const walk = (dir: string, depth: number): string | null => {
     if (depth > MAX_TICKET_SEARCH_DEPTH) return null; // symlink-cycle guard
     let entries: string[];
@@ -124,7 +124,7 @@ export function updateTicketFrontmatter(
 
   const ticketPath = findTicketFile(sessionDir, ticketId);
   if (!ticketPath) {
-    throw new Error(`Ticket linear_ticket_${ticketId}.md not found in ${sessionDir}`);
+    throw new Error(`Ticket rick_ticket_${ticketId}.md not found in ${sessionDir}`);
   }
 
   const original = fs.readFileSync(ticketPath, 'utf-8');

@@ -381,7 +381,7 @@ export function resetInterruptedTicketWorkForRelaunch(workingDir, scope, log) {
  */
 function readDeclaredFilesForTicket(sessionDir, ticketId) {
     try {
-        const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+        const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
         const content = fs.readFileSync(ticketPath, 'utf-8');
         return readDeclaredFiles(content);
     }
@@ -1373,7 +1373,7 @@ export function scopeByteOrder(a, b) {
     return a < b ? -1 : a > b ? 1 : 0;
 }
 /**
- * Read the raw `linear_ticket_<id>.md` bodies for every collected ticket.
+ * Read the raw `rick_ticket_<id>.md` bodies for every collected ticket.
  * Best-effort: unreadable / missing files are skipped.
  */
 function readTicketContents(sessionDir) {
@@ -1381,7 +1381,7 @@ function readTicketContents(sessionDir) {
     for (const t of collectTickets(sessionDir)) {
         if (!t.id)
             continue;
-        const file = path.join(sessionDir, t.id, `linear_ticket_${t.id}.md`);
+        const file = path.join(sessionDir, t.id, `rick_ticket_${t.id}.md`);
         try {
             contents.push(fs.readFileSync(file, 'utf-8'));
         }
@@ -2876,7 +2876,7 @@ function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipeli
 const UNFINISHED_TICKETS_PRINT_CAP = 50;
 /**
  * Report unfinished tickets when a phase exits with PhaseIncomplete (3).
- * Walks `<session>/<hash>/linear_ticket_<hash>.md`, prints non-Done entries
+ * Walks `<session>/<hash>/rick_ticket_<hash>.md`, prints non-Done entries
  * sorted by `order` ascending, capped at UNFINISHED_TICKETS_PRINT_CAP.
  * Stamps `state.exit_reason = 'pipeline_phase_incomplete'` so the
  * pipeline-level outcome is preserved alongside any per-phase

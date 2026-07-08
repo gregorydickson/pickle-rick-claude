@@ -62,7 +62,7 @@ function makeSession(opts = {}) {
   writeFileSync(path.join(ticketDir, 'research_2026-06-11.md'), 'research body');
   writeFileSync(path.join(ticketDir, 'research_review.md'), '# review\n\nAPPROVED');
   writeFileSync(
-    path.join(ticketDir, `linear_ticket_${TICKET}.md`),
+    path.join(ticketDir, `rick_ticket_${TICKET}.md`),
     opts.ticketFrontmatter ?? `---\nid: ${TICKET}\nstatus: "In Progress"\ncomplexity_tier: medium\n---\n# T\n`,
   );
   return { tmp, sessionDir, statePath, ticketDir };
@@ -236,7 +236,7 @@ test('AC-2b (B-RASO): SHA-arm survival — git-resolvable completion sha, no win
     assert.equal(decision.action, 'hold');
     assert.equal(decision.evidence, 'completion_commit');
     assert.equal(readState(fix.statePath).recovery_attempts.length, 0, 'hold must not draw down the cap');
-    const ticketRaw = readFileSync(path.join(fix.ticketDir, `linear_ticket_${TICKET}.md`), 'utf-8');
+    const ticketRaw = readFileSync(path.join(fix.ticketDir, `rick_ticket_${TICKET}.md`), 'utf-8');
     assert.match(ticketRaw, /status: "In Progress"/, 'ticket status untouched');
   } finally {
     rmSync(fix.tmp, { recursive: true, force: true });
@@ -348,7 +348,7 @@ test('respawn-dies: cap reached → halt with HALT-class exit reason (set member
     assert.ok(ledger.length >= 2, 'ledger is monotonic — exhaustion is recorded, prior entries preserved');
     assert.equal(ledger[0].outcome, 'success');
     assert.equal(ledger.filter((a) => a.strategy === 'silent_death_respawn' && a.outcome === 'success').length, 1, 'no extra respawn charged');
-    const ticketRaw = readFileSync(path.join(fix.ticketDir, `linear_ticket_${TICKET}.md`), 'utf-8');
+    const ticketRaw = readFileSync(path.join(fix.ticketDir, `rick_ticket_${TICKET}.md`), 'utf-8');
     assert.doesNotMatch(ticketRaw, /status:\s*"?Failed/, 'ticket status must NOT be flipped Failed by this path');
   } finally {
     rmSync(fix.tmp, { recursive: true, force: true });

@@ -24,7 +24,7 @@ function makeTmp() {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'char-path1-')));
 }
 
-// Extract ticket ID from the fixture skeleton (key = "<hash>/linear_ticket_<hash>.md")
+// Extract ticket ID from the fixture skeleton (key = "<hash>/rick_ticket_<hash>.md")
 function ticketIdFromEntry(entry) {
   const key = Object.keys(entry.fixture.session_dir_skeleton).find(k => /^[a-f0-9]+\/linear_ticket/.test(k));
   return key ? key.split('/')[0] : null;
@@ -40,15 +40,15 @@ function writeTicket(sessionDir, ticketId, frontmatter) {
   // No body text — frontmatter-only ticket so setFrontmatterField can INSERT
   // new fields via the /\n---(\r?\n?)$/ pattern.
   lines.push('order: 1', '---');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n') + '\n');
-  return path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n') + '\n');
+  return path.join(ticketDir, `rick_ticket_${ticketId}.md`);
 }
 
 test('path-1 worker-explicit-stamp: updateTicketFrontmatter writes status:Done + completion_commit atomically', () => {
   const root = makeTmp();
   try {
     const ticketId = ticketIdFromEntry(ENTRY);
-    const fm = ENTRY.fixture.session_dir_skeleton[`${ticketId}/linear_ticket_${ticketId}.md`].frontmatter;
+    const fm = ENTRY.fixture.session_dir_skeleton[`${ticketId}/rick_ticket_${ticketId}.md`].frontmatter;
     const ticketPath = writeTicket(root, ticketId, fm);
 
     // Characterize: path-1 writes status:Done + completion_commit in one call
@@ -69,13 +69,13 @@ test('path-1 worker-explicit-stamp: updateTicketFrontmatter writes null completi
   const root = makeTmp();
   try {
     const ticketId = ticketIdFromEntry(ENTRY);
-    const fm = ENTRY.fixture.session_dir_skeleton[`${ticketId}/linear_ticket_${ticketId}.md`].frontmatter;
+    const fm = ENTRY.fixture.session_dir_skeleton[`${ticketId}/rick_ticket_${ticketId}.md`].frontmatter;
     writeTicket(root, ticketId, fm);
 
     // Characterize: failed path writes status:Failed + null completion_commit
     updateTicketFrontmatter(ticketId, root, { status: 'Failed', completion_commit: null });
 
-    const ticketPath = path.join(root, ticketId, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(root, ticketId, `rick_ticket_${ticketId}.md`);
     const content = fs.readFileSync(ticketPath, 'utf8');
     const status = readFrontmatterField(content, 'status');
     const commit = readFrontmatterField(content, 'completion_commit');
@@ -96,11 +96,11 @@ test('path-1 worker-explicit-stamp: expected end-state matches current behaviour
   const root = makeTmp();
   try {
     const ticketId = ticketIdFromEntry(ENTRY);
-    const fm = ENTRY.fixture.session_dir_skeleton[`${ticketId}/linear_ticket_${ticketId}.md`].frontmatter;
+    const fm = ENTRY.fixture.session_dir_skeleton[`${ticketId}/rick_ticket_${ticketId}.md`].frontmatter;
     writeTicket(root, ticketId, fm);
     updateTicketFrontmatter(ticketId, root, { status: 'Done', completion_commit: 'abc1234' });
 
-    const ticketPath = path.join(root, ticketId, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(root, ticketId, `rick_ticket_${ticketId}.md`);
     const content = fs.readFileSync(ticketPath, 'utf8');
     // Matrix says watcher_decision='keep' when completion_commit is present
     const commit = readFrontmatterField(content, 'completion_commit');

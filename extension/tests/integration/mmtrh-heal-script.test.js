@@ -51,7 +51,7 @@ function makeFixture(id, status, completionCommit) {
     const sessionDir = makeTmpDir('heal-session-');
     const ticketDir = path.join(sessionDir, id);
     fs.mkdirSync(ticketDir, { recursive: true });
-    const ticketFile = path.join(ticketDir, `linear_ticket_${id}.md`);
+    const ticketFile = path.join(ticketDir, `rick_ticket_${id}.md`);
     fs.writeFileSync(ticketFile, makeTicketContent(id, status, completionCommit));
     return { sessionDir, ticketFile };
 }

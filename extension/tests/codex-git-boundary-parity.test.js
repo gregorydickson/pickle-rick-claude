@@ -43,7 +43,7 @@ function makeTicketFile(sessionDir, ticketId, status, completionCommit) {
     '---',
     '# Test',
   ].filter(Boolean);
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
 }
 
 function makeStatePath(sessionDir) {
@@ -200,7 +200,7 @@ test('R-CXOR-3: codex-spawn-shaped git reset --hard is detected and recovered â€
     assert.equal(headSha(repoDir), completionCommit, 'HEAD must advance to completion commit after reattach');
   } else {
     // Held â€” ticket must not be Done-at-baseline; status preserved or Failed
-    const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
     const content = fs.readFileSync(ticketPath, 'utf-8');
     assert.ok(
       !content.includes('status: "Done"') && !content.includes("status: 'Done'"),

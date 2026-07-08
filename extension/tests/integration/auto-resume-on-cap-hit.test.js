@@ -63,7 +63,7 @@ function makeCapHitFixture() {
     const ticketDir = path.join(sessionDir, id);
     fs.mkdirSync(ticketDir, { recursive: true });
     fs.writeFileSync(
-      path.join(ticketDir, `linear_ticket_${id}.md`),
+      path.join(ticketDir, `rick_ticket_${id}.md`),
       makeTicketMd(id, 'Todo'),
     );
   }
@@ -93,14 +93,14 @@ const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
 const ticketIds = ${JSON.stringify(ticketIds)};
 const currentId = state.current_ticket;
 if (currentId) {
-  const tf = path.join(sessionDir, currentId, 'linear_ticket_' + currentId + '.md');
+  const tf = path.join(sessionDir, currentId, 'rick_ticket_' + currentId + '.md');
   if (fs.existsSync(tf)) {
     const content = fs.readFileSync(tf, 'utf8');
     fs.writeFileSync(tf, content.replace(/^status: .*/m, 'status: Done'));
   }
 }
 const nextUndone = ticketIds.find(id => {
-  const tf = path.join(sessionDir, id, 'linear_ticket_' + id + '.md');
+  const tf = path.join(sessionDir, id, 'rick_ticket_' + id + '.md');
   if (!fs.existsSync(tf)) return false;
   return !fs.readFileSync(tf, 'utf8').includes('status: Done');
 });
@@ -140,7 +140,7 @@ test('AR-CAP-1: 5-ticket cap-hit session — all tickets Done within MAX_RETRIES
 
     // All 5 tickets must reach Done status
     for (const id of TICKET_IDS) {
-      const ticketFile = path.join(sessionDir, id, `linear_ticket_${id}.md`);
+      const ticketFile = path.join(sessionDir, id, `rick_ticket_${id}.md`);
       const content = fs.readFileSync(ticketFile, 'utf8');
       assert.ok(
         /^status: Done\s*$/m.test(content),

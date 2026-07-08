@@ -15,4 +15,4 @@ updated: 2026-05-07
 
 ## Problem to solve
 
-Directory is `class-5/linear_ticket_ee555555.md` but frontmatter `id:` says `ff666666`.
+Directory is `class-5/rick_ticket_ee555555.md` but frontmatter `id:` says `ff666666`.

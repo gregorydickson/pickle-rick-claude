@@ -56,7 +56,7 @@ function writeFailedTicket(sessionDir, ticketId, declaredFile = 'extension/src/f
     '## Files to modify',
     `- \`${declaredFile}\``,
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), fm);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), fm);
 }
 
 const cleanup = (...dirs) => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); };

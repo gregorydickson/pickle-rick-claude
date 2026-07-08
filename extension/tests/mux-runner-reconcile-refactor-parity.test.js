@@ -16,7 +16,7 @@ function tmpDir() {
 function makeTicketDir(baseDir, ticketId, status) {
   const ticketDir = path.join(baseDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
     '---',
     `id: ${ticketId}`,
     `status: "${status}"`,

@@ -53,7 +53,7 @@ function makeTicket(sessionDir, id, status, opts = {}) {
   ];
   if (opts.completion_commit) lines.push(`completion_commit: "${opts.completion_commit}"`);
   lines.push('---', '', '# Body');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), lines.join('\n'));
 }
 
 function withDataRoot(dataRoot, fn) {

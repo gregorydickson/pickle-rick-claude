@@ -24,7 +24,7 @@ function initGitRepo(dir) {
 function writeTicket(sessionDir, ticketId, status = 'Done') {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
-  const ticketPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
   fs.writeFileSync(ticketPath, [
     '---',
     `id: ${ticketId}`,
@@ -71,7 +71,7 @@ test('autoFillCompletionCommit: fills missing completion_commit, stages the tick
     assert.match(updated, new RegExp(`completion_commit:\\s+"${sha}"`));
 
     const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: root, encoding: 'utf8' });
-    assert.match(staged, new RegExp(`linear_ticket_${ticketId}\\.md`));
+    assert.match(staged, new RegExp(`rick_ticket_${ticketId}\\.md`));
 
     const second = autoFillCompletionCommit({
       sessionDir,

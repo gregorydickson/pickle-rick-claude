@@ -76,7 +76,7 @@ function injectTicket(sessionRoot, ticketId, { status, completionCommit }) {
   fs.mkdirSync(ticketDir, { recursive: true });
   const ccLine = completionCommit ? `completion_commit: "${completionCommit}"\n` : '';
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+    path.join(ticketDir, `rick_ticket_${ticketId}.md`),
     `---\nid: ${ticketId}\ntitle: RRH C5 ticket ${ticketId}\nstatus: "${status}"\norder: 1\n${ccLine}---\n\n# Test\n`,
   );
   const statePath = path.join(sessionRoot, 'state.json');
@@ -87,7 +87,7 @@ function injectTicket(sessionRoot, ticketId, { status, completionCommit }) {
 
 function readTicketStatus(sessionRoot, ticketId) {
   const content = fs.readFileSync(
-    path.join(sessionRoot, ticketId, `linear_ticket_${ticketId}.md`),
+    path.join(sessionRoot, ticketId, `rick_ticket_${ticketId}.md`),
     'utf-8',
   );
   const m = content.match(/^status:\s*(.+)$/m);

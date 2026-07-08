@@ -28,7 +28,7 @@ function writeTicket(sessionDir, ticketId, sha) {
     '---',
     '',
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), content);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), content);
 }
 
 function initGitRepoWithCommit(repoDir) {

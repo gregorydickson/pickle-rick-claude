@@ -77,7 +77,7 @@ function writeSession(root, ticketId) {
     start_time_epoch: Math.floor(Date.now() / 1000) - 60,
     activity: [],
   }, null, 2));
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), `---\nid: ${ticketId}\ntitle: Forensic\nstatus: "Todo"\norder: 1\n---\n# Ticket\n`);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), `---\nid: ${ticketId}\ntitle: Forensic\nstatus: "Todo"\norder: 1\n---\n# Ticket\n`);
   return { sessionRoot, ticketDir };
 }
 
@@ -134,7 +134,7 @@ test('worker lint gate forensic: deliberate lint violation with work evidence ho
       state.activity.some((entry) => entry.event === 'failed_flip_suppressed' && entry.ticket === ticketId),
       'evidence-backed gate failure emits failed_flip_suppressed',
     );
-    const ticketContent = fs.readFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), 'utf8');
+    const ticketContent = fs.readFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), 'utf8');
     assert.match(ticketContent, /status: "In Progress"/, 'status preserved — no Failed flip with evidence');
     const headAfter = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
     assert.notEqual(headAfter, headBefore, 'worker commit preserved (gate-fail reset suppressed)');

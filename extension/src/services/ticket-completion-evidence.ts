@@ -81,7 +81,7 @@ export interface EvidenceCtx {
   sessionDir?: string;
   /** Short ticket hash. Used to derive ticketPath when ticketPath is absent. */
   ticketId?: string;
-  /** Absolute path to the linear_ticket_<id>.md file; overrides sessionDir+ticketId. */
+  /** Absolute path to the rick_ticket_<id>.md file; overrides sessionDir+ticketId. */
   ticketPath?: string;
   /** Working directory for git probe operations. */
   workingDir: string;
@@ -360,7 +360,7 @@ function enumerateSiblingDeclaredFiles(
       continue;
     }
     for (const file of files) {
-      if (!file.startsWith('linear_ticket_') || !file.endsWith('.md')) continue;
+      if (!file.startsWith('rick_ticket_') || !file.endsWith('.md')) continue;
       try {
         const content = fs.readFileSync(path.join(subDir, file), 'utf8');
         const declared = readDeclaredFiles(content);

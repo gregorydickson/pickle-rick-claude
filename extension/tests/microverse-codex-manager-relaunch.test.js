@@ -18,7 +18,7 @@ const RELAUNCH_ACTUAL_URL = `${RELAUNCH_URL}?r-rvmw-actual=1`;
 function writeTicket(sessionDir, id, status, order = 1) {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), [
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), [
     '---',
     `id: ${id}`,
     `title: ${id}`,

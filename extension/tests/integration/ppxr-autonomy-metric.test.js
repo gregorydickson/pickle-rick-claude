@@ -46,11 +46,11 @@ function writeTicket(sessionDir, id, status, order) {
     '',
     '# Fixture',
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), content);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), content);
 }
 
 function setTicketStatus(sessionDir, id, status) {
-  const ticketFile = path.join(sessionDir, id, `linear_ticket_${id}.md`);
+  const ticketFile = path.join(sessionDir, id, `rick_ticket_${id}.md`);
   const content = fs.readFileSync(ticketFile, 'utf-8');
   fs.writeFileSync(ticketFile, content.replace(/^status: .*$/m, `status: ${status}`));
 }
@@ -58,7 +58,7 @@ function setTicketStatus(sessionDir, id, status) {
 // Build the TicketInfo[] the relaunch chain consumes, reading live frontmatter status.
 function ticketInfos(sessionDir, ids) {
   return ids.map((id, i) => {
-    const ticketFile = path.join(sessionDir, id, `linear_ticket_${id}.md`);
+    const ticketFile = path.join(sessionDir, id, `rick_ticket_${id}.md`);
     const content = fs.readFileSync(ticketFile, 'utf-8');
     const status = (content.match(/^status: (.*)$/m) || [])[1] || 'Todo';
     return { id, status, title: '', order: i + 1, type: null, working_dir: null, completed_at: null, skipped_at: null };

@@ -23,7 +23,7 @@ function withSession(fn) {
 function writeTicket(sessionDir, ticketId, status = 'Todo') {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
-  const ticketPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
   const content = [
     '---',
     `id: ${ticketId}`,
@@ -126,7 +126,7 @@ test('course-correct hot-swap branch c materializes and redirects to added curre
     const redirect = state.activity.find(entry => entry.event === 'current_ticket_redirected_to_new');
     assert.equal(result.branch, 'c');
     assert.equal(state.current_ticket, 'new123');
-    assert.equal(fs.existsSync(path.join(sessionDir, 'new123', 'linear_ticket_new123.md')), true);
+    assert.equal(fs.existsSync(path.join(sessionDir, 'new123', 'rick_ticket_new123.md')), true);
     assert.equal(redirect.to_ticket_id, 'new123');
     assert.equal(state.activity.some(entry => entry.event === 'course_corrected' && entry.branch === 'c'), true);
   });

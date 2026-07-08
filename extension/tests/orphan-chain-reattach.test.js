@@ -55,7 +55,7 @@ function makeTicketFile(sessionDir, ticketId, status, completionCommit) {
     '---',
     '# Test',
   ].filter(Boolean).join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), frontmatter);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), frontmatter);
 }
 
 function makeStatePath(sessionDir) {
@@ -166,7 +166,7 @@ test('orphan-chain: divergent fixture (orphan not a fast-forward of HEAD) → ze
     result.action === 'flip_suppressed' || result.action === 'suppression_cap_escalate',
     `evidence present → action must be a hold variant, got: ${result.action}`,
   );
-  const ticketContent = fs.readFileSync(path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`), 'utf-8');
+  const ticketContent = fs.readFileSync(path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`), 'utf-8');
   assert.ok(!ticketContent.includes('status: "Failed"'), 'hold path must not mark the ticket Failed');
 
   const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));

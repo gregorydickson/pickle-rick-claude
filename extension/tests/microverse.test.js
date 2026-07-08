@@ -579,7 +579,7 @@ function createSessionDir(workingDir, mvOverrides = {}) {
 function writeMicroverseRelaunchTicket(sessionDir, id, status, order = 1) {
     const ticketDir = path.join(sessionDir, id);
     fs.mkdirSync(ticketDir, { recursive: true });
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), [
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), [
         '---',
         `id: ${id}`,
         `title: ${id}`,

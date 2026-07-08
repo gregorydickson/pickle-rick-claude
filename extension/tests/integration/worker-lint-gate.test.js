@@ -91,7 +91,7 @@ function writeSession(root, ticketId) {
     start_time_epoch: Math.floor(Date.now() / 1000) - 60,
     activity: [],
   }, null, 2));
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
     '---',
     `id: ${ticketId}`,
     'title: Worker lint gate failure',
@@ -168,7 +168,7 @@ test('spawn-morty: persistent lint gate failure with work evidence suppresses th
     assert.ok(suppressedEvent, `missing failed_flip_suppressed in ${JSON.stringify(state.activity)}`);
     assert.equal(suppressedEvent.ticket, ticketId);
 
-    const ticketContent = fs.readFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), 'utf8');
+    const ticketContent = fs.readFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), 'utf8');
     assert.match(ticketContent, /status: "In Progress"/, 'frontmatter status preserved — no Failed flip with evidence');
     assert.doesNotMatch(ticketContent, /completion_commit:/);
 

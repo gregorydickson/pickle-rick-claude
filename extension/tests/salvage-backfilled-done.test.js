@@ -167,7 +167,7 @@ function setupSession() {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+    path.join(ticketDir, `rick_ticket_${ticketId}.md`),
     '---\nstatus: In Progress\n---\n# t-reap\n',
   );
   // A 0-BYTE worker_session log: the reap decision must ignore it entirely.

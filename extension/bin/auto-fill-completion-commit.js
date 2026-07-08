@@ -34,7 +34,7 @@ function targetIds(sessionDir, ticketId) {
     if (ticketId)
         return [ticketId];
     try {
-        return fs.readdirSync(sessionDir).filter((entry) => fs.existsSync(path.join(sessionDir, entry, `linear_ticket_${entry}.md`)));
+        return fs.readdirSync(sessionDir).filter((entry) => fs.existsSync(path.join(sessionDir, entry, `rick_ticket_${entry}.md`)));
     }
     catch {
         return [];

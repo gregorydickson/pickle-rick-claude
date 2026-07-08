@@ -38,7 +38,7 @@ function writeTicket(sessionDir, id, tier) {
   const fm = ['---', `id: ${id}`, 'title: Cap split fixture', 'status: Todo', 'order: 1'];
   if (tier) fm.push(`complexity_tier: ${tier}`);
   fm.push('---', '', '# Test');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), fm.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), fm.join('\n'));
 }
 
 function freshState(ticketId, overrides = {}) {

@@ -374,7 +374,7 @@ test('correct-course --recover-from-ledger executes reverse recovery', () => {
   try {
     const ticketDir = path.join(sessionDir, 'abc123');
     fs.mkdirSync(ticketDir);
-    const ticketPath = path.join(ticketDir, 'linear_ticket_abc123.md');
+    const ticketPath = path.join(ticketDir, 'rick_ticket_abc123.md');
     const before = [
       '---',
       'id: abc123',
@@ -433,7 +433,7 @@ test('correct-course --recover requires --force and executes forward recovery', 
   try {
     const ticketDir = path.join(sessionDir, 'abc123');
     fs.mkdirSync(ticketDir);
-    const ticketPath = path.join(ticketDir, 'linear_ticket_abc123.md');
+    const ticketPath = path.join(ticketDir, 'rick_ticket_abc123.md');
     const before = [
       '---',
       'id: abc123',

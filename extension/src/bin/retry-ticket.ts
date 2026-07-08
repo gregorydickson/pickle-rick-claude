@@ -48,7 +48,7 @@ export function retryTicket(ticketId: string, cwd: string): void {
   const sessionDir = sessionPath;
 
   const ticketDir = path.join(sessionDir, ticketId);
-  const ticketFile = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  const ticketFile = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
   if (!fs.existsSync(ticketDir) || !fs.existsSync(ticketFile)) {
     throw new Error(`Ticket ${ticketId} not found in session ${sessionDir}`);
   }
@@ -110,7 +110,7 @@ export function retryTicket(ticketId: string, cwd: string): void {
   // Task is first positional arg (spawn-morty.js:13 expects args[0] as task)
   // Use single-quoting for sessionDir to prevent shell expansion of $, `, etc.
   const safeSessionDir = sessionDir.replace(/'/g, "'\\''");
-  const spawnCmd = `node "${getExtensionRoot()}/extension/bin/spawn-morty.js" '${safePrompt}' --ticket-id '${ticketId}' --ticket-path '${safeSessionDir}/${ticketId}/' --ticket-file '${safeSessionDir}/${ticketId}/linear_ticket_${ticketId}.md' --timeout ${timeout}`;
+  const spawnCmd = `node "${getExtensionRoot()}/extension/bin/spawn-morty.js" '${safePrompt}' --ticket-id '${ticketId}' --ticket-path '${safeSessionDir}/${ticketId}/' --ticket-file '${safeSessionDir}/${ticketId}/rick_ticket_${ticketId}.md' --timeout ${timeout}`;
   console.log(`\n✅ Ticket ${ticketId} reset to Todo. Run this command to re-spawn Morty:\n\n${spawnCmd}\n`);
 }
 

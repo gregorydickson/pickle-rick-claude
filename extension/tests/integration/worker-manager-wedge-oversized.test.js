@@ -49,7 +49,7 @@ function setupSession(prefix, ticketId) {
   fs.mkdirSync(ticketDir, { recursive: true });
   const fixtureContent = fs.readFileSync(OVERSIZED_FIXTURE, 'utf-8');
   const ticketContent = fixtureContent.replace(/^id: deadf00d/m, `id: ${ticketId}`);
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), ticketContent);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), ticketContent);
   return { sessionDir, statePath, ticketDir };
 }
 
@@ -102,7 +102,7 @@ test('AC-WSWA-05: full oversized-wedge regression — K=3 observe, K=5 skip, tic
       if (lastResult.zeroProgressCount >= skipK) {
         // Mirror mux-runner auto-skip block (mux-runner.ts:5296–5314).
         updateTicketFrontmatter(ticketId, sessionDir, { status: 'Failed', completion_commit: null });
-        const tfPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+        const tfPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
         const tfRaw = fs.readFileSync(tfPath, 'utf-8');
         const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', 'oversized_no_progress');
         assert.ok(tfUpdated, 'upsertFrontmatterField must return updated content');
@@ -143,7 +143,7 @@ test('AC-WSWA-05: full oversized-wedge regression — K=3 observe, K=5 skip, tic
 
     // AC3: ticket ends Failed/oversized_no_progress.
     const ticketContent = fs.readFileSync(
-      path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+      path.join(ticketDir, `rick_ticket_${ticketId}.md`),
       'utf-8',
     );
     assert.match(ticketContent, /status:\s*"Failed"/, 'ticket status must be Failed');

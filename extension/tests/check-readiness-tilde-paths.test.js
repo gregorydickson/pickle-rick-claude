@@ -27,7 +27,7 @@ function tmpDir(prefix = 'pickle-rtps-') {
 function writeTicket(sessionDir, id, body) {
     const ticketDir = path.join(sessionDir, id);
     fs.mkdirSync(ticketDir, { recursive: true });
-    const ticketPath = path.join(ticketDir, `linear_ticket_${id}.md`);
+    const ticketPath = path.join(ticketDir, `rick_ticket_${id}.md`);
     fs.writeFileSync(ticketPath, body);
     return ticketPath;
 }

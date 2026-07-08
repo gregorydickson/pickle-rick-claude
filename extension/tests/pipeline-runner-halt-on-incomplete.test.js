@@ -83,7 +83,7 @@ function writeTicket(sessionDir, id, order, status = 'Todo') {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${id}.md`),
+    path.join(ticketDir, `rick_ticket_${id}.md`),
     `---\nid: ${id}\ntitle: Halt test ticket ${id}\nstatus: ${status}\norder: ${order}\n---\n\n# Test\n`,
   );
 }
@@ -164,7 +164,7 @@ test('pipeline-runner.halt-on-incomplete-phase', async () => {
 
     // All 3 tickets must still be Todo (pipeline did not falsely complete them)
     for (const id of ['aaa11111', 'bbb22222', 'ccc33333']) {
-      const ticketFile = path.join(sessionDir, id, `linear_ticket_${id}.md`);
+      const ticketFile = path.join(sessionDir, id, `rick_ticket_${id}.md`);
       const content = fs.readFileSync(ticketFile, 'utf-8');
       assert.ok(content.includes('status: Todo'), `ticket ${id} must remain Todo after pipeline halt`);
     }
@@ -214,7 +214,7 @@ test('pipeline-runner.clean-exit0-with-pending-and-progress halts incomplete', a
     );
 
     // The pending ticket stays Todo (pipeline did not falsely complete it).
-    const pendingFile = path.join(sessionDir, 'eee55555', 'linear_ticket_eee55555.md');
+    const pendingFile = path.join(sessionDir, 'eee55555', 'rick_ticket_eee55555.md');
     assert.ok(
       fs.readFileSync(pendingFile, 'utf-8').includes('status: Todo'),
       'pending ticket must remain Todo (no false advance)',

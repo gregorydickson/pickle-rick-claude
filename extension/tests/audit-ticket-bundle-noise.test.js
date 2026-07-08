@@ -152,7 +152,7 @@ test('AC-ATBG-2: blocking findings visible in CLI stdout even when info findings
       '<!-- audit: 7-class checked 2026-06-16 -->',
       '',
     ].join('\n');
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), ticketBody);
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), ticketBody);
 
     const result = spawnSync('node', [BUNDLE, sessionDir], { encoding: 'utf8', timeout: 30_000 });
     const stdout = result.stdout;

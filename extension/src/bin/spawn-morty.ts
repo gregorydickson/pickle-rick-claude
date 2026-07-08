@@ -401,7 +401,7 @@ export function parseAndValidateArgs(argv: string[]): ParsedArgs {
   const ticketPath = normalizeTicketPath(requireFlagValue(argv, ticketPathIndex));
   if (!/^[a-zA-Z0-9_-]+$/.test(ticketId)) die('Error: --ticket-id contains invalid characters.');
   const explicitTicketFile = readTicketFileArg(argv);
-  const inferredTicketFilePath = explicitTicketFile.ticketFilePath ?? path.join(ticketPath, `linear_ticket_${ticketId}.md`);
+  const inferredTicketFilePath = explicitTicketFile.ticketFilePath ?? path.join(ticketPath, `rick_ticket_${ticketId}.md`);
   const ticketFilePath = fs.existsSync(inferredTicketFilePath) ? inferredTicketFilePath : null;
   const ticketContent = ticketFilePath ? fs.readFileSync(ticketFilePath, 'utf-8') : '';
   fs.mkdirSync(ticketPath, { recursive: true });
@@ -510,7 +510,7 @@ export function buildTierLifecycleSections(phases: LifecyclePhase[], tier: strin
   let n = 1;
 
   if (phaseSet.has('research')) {
-    out += `\n### ${n++}. Research\nWhat IS, not SHOULD BE. No solutioning. Every claim = \`file:line\` ref.\n- Read \`\${TICKET_DIR}/linear_ticket_\${TICKET_ID}.md\`\n- **Glob**, **Grep** (not bash grep), **Read** to trace code\n- Write \`\${TICKET_DIR}/research_[date].md\`: Summary, Context (file:line), Findings, Constraints\n`;
+    out += `\n### ${n++}. Research\nWhat IS, not SHOULD BE. No solutioning. Every claim = \`file:line\` ref.\n- Read \`\${TICKET_DIR}/rick_ticket_\${TICKET_ID}.md\`\n- **Glob**, **Grep** (not bash grep), **Read** to trace code\n- Write \`\${TICKET_DIR}/research_[date].md\`: Summary, Context (file:line), Findings, Constraints\n`;
   }
 
   if (phaseSet.has('research_review')) {
@@ -1394,6 +1394,7 @@ export async function runWorkerGate(changedFiles: string[], args: {
     }
   }
   const extensionDir = path.join(args.workingDir, 'extension');
+  // eslint-disable-next-line pickle/no-sync-in-async
   if (!fs.existsSync(extensionDir)) {
     return {
       ok: true,
@@ -1514,6 +1515,7 @@ export async function runWorkerGate(changedFiles: string[], args: {
         resetToSha(args.preWorkerHead, args.workingDir, preservePrefixes, {
           cwd: args.workingDir,
           sessionDir,
+          // eslint-disable-next-line pickle/no-sync-in-async
           ticketDir: fs.existsSync(ticketDir) ? ticketDir : null,
           reason: 'pre_reset',
         });
@@ -2214,6 +2216,7 @@ export async function runWorkerProcess(ctx: WorkerProcessContext): Promise<{ exi
   // that reads this field.
   const sessionMcpPath = path.join(sessionRoot, 'mcp', 'worker-mcp.json');
   const resolvedMcpConfig =
+    // eslint-disable-next-line pickle/no-sync-in-async
     args.backend === 'claude' && fs.existsSync(sessionMcpPath)
       ? sessionMcpPath
       : undefined;

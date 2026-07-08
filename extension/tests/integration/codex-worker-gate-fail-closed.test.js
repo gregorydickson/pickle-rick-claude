@@ -55,7 +55,7 @@ function writeTicket(sessionDir, ticketId, sha, { verdict } = {}) {
   const lines = ['---', `id: ${ticketId}`, 'status: In Progress', `completion_commit: ${sha}`];
   if (verdict !== undefined) { lines.push(`worker_gate_verdict: ${verdict}`); }
   lines.push('---', '');
-  fs.writeFileSync(path.join(dir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(dir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
 }
 
 function writeState(sessionDir, startCommit) {

@@ -52,7 +52,7 @@ function splitCommand(command) {
     return { bin, args: tokens };
 }
 function findTicketPath(sessionDir, ticketId) {
-    return path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    return path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
 }
 function readFrontmatterField(body, field) {
     const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

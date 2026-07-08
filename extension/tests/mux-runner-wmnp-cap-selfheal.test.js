@@ -15,7 +15,7 @@ function writeTicket(sessionDir, ticketId, tier) {
   const dir = path.join(sessionDir, ticketId);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
-    path.join(dir, `linear_ticket_${ticketId}.md`),
+    path.join(dir, `rick_ticket_${ticketId}.md`),
     `---\nid: ${ticketId}\ntitle: "t"\nstatus: "In Progress"\norder: 10\ncomplexity_tier: ${tier}\n---\n# t\n`,
   );
 }

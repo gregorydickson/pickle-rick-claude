@@ -14,12 +14,12 @@ function assertWithinRoot(targetPath, rootPath) {
 function resolveTicketDir(sessionDir, ticketId) {
     return path.join(sessionDir, ticketId);
 }
-function findLinearTicketFile(ticketDir) {
+function findRickTicketFile(ticketDir) {
     const ticketFile = fs
         .readdirSync(ticketDir)
-        .find(file => file.startsWith('linear_ticket_') && file.endsWith('.md'));
+        .find(file => file.startsWith('rick_ticket_') && file.endsWith('.md'));
     if (!ticketFile)
-        throw new Error(`No linear ticket file found in ${ticketDir}`);
+        throw new Error(`No rick ticket file found in ${ticketDir}`);
     return path.join(ticketDir, ticketFile);
 }
 function escapeRegExp(value) {
@@ -76,7 +76,7 @@ function assertStatusWasUpdated(before, after, filePath) {
 }
 export function updateTicketStatusInTransaction(ticketId, newStatus, sessionDir, txCtx) {
     const ticketDir = resolveTicketDir(sessionDir, ticketId);
-    const filePath = findLinearTicketFile(ticketDir);
+    const filePath = findRickTicketFile(ticketDir);
     const content = fs.readFileSync(filePath, 'utf-8');
     let updated = content.replace(/^(status:\s*).*$/m, `$1"${newStatus}"`);
     assertStatusWasUpdated(content, updated, filePath);
@@ -109,13 +109,13 @@ export function materializeNewTicket(spec) {
     const files = spec.files && spec.files.length > 0
         ? spec.files
         : [{
-                name: spec.ticketFileName ?? `linear_ticket_${spec.ticketId}.md`,
+                name: spec.ticketFileName ?? `rick_ticket_${spec.ticketId}.md`,
                 content: spec.content ?? defaultTicketContent(spec),
             }];
     return {
         dirPath: root,
         files: files.map(file => ({
-            path: assertWithinRoot(file.path ?? path.join(root, file.name ?? `linear_ticket_${spec.ticketId}.md`), root),
+            path: assertWithinRoot(file.path ?? path.join(root, file.name ?? `rick_ticket_${spec.ticketId}.md`), root),
             content: file.content,
         })),
     };

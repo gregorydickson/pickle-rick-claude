@@ -3,7 +3,7 @@
 // RED-STATE regression test — B-RIC-EXPLICIT bundle (finding #83).
 //
 // Incident: 2026-05-26 21:55Z, session `pickle-ea04b6f8`, ticket `110f51bd`.
-// `linear_ticket_110f51bd.md` had an explicit `completion_commit:` frontmatter
+// `rick_ticket_110f51bd.md` had an explicit `completion_commit:` frontmatter
 // field. `hasCompletionCommit` still returned `source: 'inferred'` because
 // `gitCommitExists(workingDir, sha)` returned false (the SHA wasn't verifiable
 // in the supplied workingDir), causing the explicit branch at pickle-utils.ts:947
@@ -58,7 +58,7 @@ function makeCommitWithTicketId(gitDir, ticketId) {
 function writeTicket(sessionDir, ticketId, completionLine) {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
     '---',
     `id: ${ticketId}`,
     'title: "R-SMTEST-3 — R-RIC-EXPLICIT fixture"',

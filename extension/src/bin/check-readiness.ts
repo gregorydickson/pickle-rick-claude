@@ -4,7 +4,7 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import { logActivity } from '../services/activity-logger.js';
-import { listLinearTicketFiles } from '../services/artifact-validation.js';
+import { listRickTicketFiles } from '../services/artifact-validation.js';
 import { computeOneHop } from '../services/scope-resolver.js';
 import { isRecord } from '../lib/is-record.js';
 import { formatLocalDateKey, safeErrorMessage, writeStateFile } from '../services/pickle-utils.js';
@@ -995,7 +995,7 @@ function getTicketsVersion(state: ReadinessStateShape): number | undefined {
 }
 
 function selectTicketFiles(sessionDir: string, state: ReadinessStateShape): { files: string[]; delta: boolean } {
-  const allFiles = listLinearTicketFiles(sessionDir);
+  const allFiles = listRickTicketFiles(sessionDir);
   const snapshot = readSnapshot(sessionDir);
   const ticketsVersion = getTicketsVersion(state);
   const hasCorrection = Array.isArray(state.activity) && state.activity.some((entry) => entry.event === 'course_corrected');
@@ -1286,7 +1286,7 @@ export function runReadiness(args: ReadinessArgs): { exitCode: number; findings:
   persistFindingSignaturesAndEmit(args.sessionDir, state, blockingFindings);
 
   if (blockingFindings.length === 0) {
-    writeSnapshot(args.sessionDir, listLinearTicketFiles(args.sessionDir), ticketsVersion);
+    writeSnapshot(args.sessionDir, listRickTicketFiles(args.sessionDir), ticketsVersion);
     return { exitCode: 0, findings, delta: selected.delta, elapsed_ms: Date.now() - started };
   }
 

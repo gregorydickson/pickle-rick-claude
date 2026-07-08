@@ -118,7 +118,7 @@ function writeTicket(sessionDir, ticketId, tier, artifacts) {
   const dir = path.join(sessionDir, ticketId);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
-    path.join(dir, `linear_ticket_${ticketId}.md`),
+    path.join(dir, `rick_ticket_${ticketId}.md`),
     `---\nid: ${ticketId}\ncomplexity_tier: ${tier}\n---\n# ${ticketId}\n`,
   );
   for (const f of artifacts) writeFileSync(path.join(dir, f), 'x\n');

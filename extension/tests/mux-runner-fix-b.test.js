@@ -56,7 +56,7 @@ function writeTicket(sessionDir, ticketId, status, order = 1) {
   const lines = ['---', `id: "${ticketId}"`, `status: "${status}"`, `order: ${order}`];
   if (status === 'Failed') lines.push('failed_reason: "oversized_no_progress"');
   lines.push('---', '# Body');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
 }
 function porcelain(dir) {
   return execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' }).trim();

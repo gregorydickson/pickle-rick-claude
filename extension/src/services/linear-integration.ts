@@ -92,7 +92,7 @@ function splitLinearCommand(command: string): { bin: string; args: string[] } {
 }
 
 function findTicketFile(sessionDir: string, ticketId: string): string | null {
-  const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
   if (fs.existsSync(ticketPath)) return ticketPath;
   return null;
 }

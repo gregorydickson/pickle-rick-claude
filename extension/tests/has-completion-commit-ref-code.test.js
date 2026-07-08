@@ -44,7 +44,7 @@ function writeTicket(sessionDir, ticketId, { rCode = null, title = 'fixture tick
   const lines = ['---', `id: ${ticketId}`, `title: "${title}"`, 'status: "Done"'];
   if (rCode) lines.push(`r_code: ${rCode}`);
   lines.push('---', '# Body');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
 }
 
 // Group 1: Direct ticket-id match — backstop for existing behavior -----------

@@ -29,7 +29,7 @@ function withDir(fn) {
 function writeTicket(sessionDir, ticketId, status = 'Todo') {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
-  const ticketPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
   const content = [
     '---',
     `id: ${ticketId}`,
@@ -108,7 +108,7 @@ test('materializeNewTicket returns a ticket directory and planned files', () => 
 
     assert.equal(planned.dirPath, path.join(sessionDir, 'new123'));
     assert.deepEqual(planned.files.map(file => file.path), [
-      path.join(sessionDir, 'new123', 'linear_ticket_new123.md'),
+      path.join(sessionDir, 'new123', 'rick_ticket_new123.md'),
     ]);
     assert.match(planned.files[0].content, /^id: "new123"$/m);
     assert.match(planned.files[0].content, /^status: "Todo"$/m);
@@ -179,7 +179,7 @@ test('applyCourseCorrectionRestructure kills, adds, bumps tickets_version, and w
 
     const state = readState(sessionDir);
     const killedContent = fs.readFileSync(killed.ticketPath, 'utf-8');
-    const newTicketPath = path.join(sessionDir, 'new123', 'linear_ticket_new123.md');
+    const newTicketPath = path.join(sessionDir, 'new123', 'rick_ticket_new123.md');
     const ledger = readJsonl(result.ledgerPath);
 
     assert.equal(result.branch, 'a');

@@ -47,7 +47,7 @@ function initRepo(dir) {
 function writeTicket(sessionDir, id, frontmatterLines) {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
-  const fp = path.join(ticketDir, `linear_ticket_${id}.md`);
+  const fp = path.join(ticketDir, `rick_ticket_${id}.md`);
   fs.writeFileSync(fp, `---\n${frontmatterLines.join('\n')}\n---\n\n# Test ${id}\n`);
   return fp;
 }

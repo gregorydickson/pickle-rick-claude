@@ -59,13 +59,13 @@ test('updateTicketStatus: updates status in frontmatter', () => {
     const subDir = path.join(dir, ticketId);
     fs.mkdirSync(subDir);
     fs.writeFileSync(
-        path.join(subDir, `linear_ticket_${ticketId}.md`),
+        path.join(subDir, `rick_ticket_${ticketId}.md`),
         `---\nid: ${ticketId}\ntitle: Test\nstatus: Todo\nupdated: 2025-01-01\n---\n# Body\n`
     );
     try {
         updateTicketStatus(ticketId, 'Done', dir);
         const content = fs.readFileSync(
-            path.join(subDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(subDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         assert.match(content, /^status: "Done"$/m);
         // updated date should be refreshed
         const today = formatLocalDateKey(new Date());
@@ -81,7 +81,7 @@ test('updateTicketStatus: updated date uses local day, not UTC day', () => {
     const subDir = path.join(dir, ticketId);
     fs.mkdirSync(subDir);
     fs.writeFileSync(
-        path.join(subDir, `linear_ticket_${ticketId}.md`),
+        path.join(subDir, `rick_ticket_${ticketId}.md`),
         `---\nid: ${ticketId}\ntitle: Test\nstatus: Todo\nupdated: 2025-01-01\n---\n# Body\n`
     );
 
@@ -95,7 +95,7 @@ test('updateTicketStatus: updated date uses local day, not UTC day', () => {
             }
         });
         const content = fs.readFileSync(
-            path.join(subDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(subDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         assert.match(content, /updated: "2026-04-28"/);
         assert.doesNotMatch(content, /updated: "2026-04-29"/);
     } finally {
@@ -131,13 +131,13 @@ test('updateTicketStatus: updates the "updated" field to today', () => {
     const subDir = path.join(dir, ticketId);
     fs.mkdirSync(subDir);
     fs.writeFileSync(
-        path.join(subDir, `linear_ticket_${ticketId}.md`),
+        path.join(subDir, `rick_ticket_${ticketId}.md`),
         '---\nid: "upd-date-check"\ntitle: "Date Test"\nstatus: "Todo"\nupdated: "2020-01-01"\norder: 1\n---\n# Body\n'
     );
     try {
         updateTicketStatus(ticketId, 'InProgress', dir);
         const content = fs.readFileSync(
-            path.join(subDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(subDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         const today = formatLocalDateKey(new Date());
         assert.match(content, new RegExp(`updated: "${today}"`),
             'updated field should be set to today');
@@ -155,7 +155,7 @@ test('updateTicketStatus: no frontmatter prints warning and still replaces statu
     fs.mkdirSync(subDir);
     // No --- delimiters — just bare YAML-like fields
     fs.writeFileSync(
-        path.join(subDir, `linear_ticket_${ticketId}.md`),
+        path.join(subDir, `rick_ticket_${ticketId}.md`),
         'id: "no-fm"\ntitle: "No Frontmatter"\nstatus: "Todo"\nupdated: "2020-01-01"\n\n# Body\nSome content.\n'
     );
     try {
@@ -173,7 +173,7 @@ test('updateTicketStatus: no frontmatter prints warning and still replaces statu
             `expected a warning about missing frontmatter, got: ${JSON.stringify(warnings)}`);
         // Status should still be updated via full-file replace
         const content = fs.readFileSync(
-            path.join(subDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(subDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         assert.match(content, /^status: "Done"$/m);
     } finally {
         fs.rmSync(dir, { recursive: true });
@@ -189,13 +189,13 @@ test('updateTicketStatus: preserves body content after frontmatter', () => {
     fs.mkdirSync(subDir);
     const bodyContent = '# Ticket Body\nSome important content here.\n\n- bullet one\n- bullet two\n';
     fs.writeFileSync(
-        path.join(subDir, `linear_ticket_${ticketId}.md`),
+        path.join(subDir, `rick_ticket_${ticketId}.md`),
         `---\nid: "${ticketId}"\ntitle: "Body Test"\nstatus: "Todo"\nupdated: "2020-01-01"\norder: 1\n---\n${bodyContent}`
     );
     try {
         updateTicketStatus(ticketId, 'Done', dir);
         const content = fs.readFileSync(
-            path.join(subDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(subDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         // Status should be updated
         assert.match(content, /^status: "Done"$/m);
         // Body content must be preserved exactly
@@ -215,13 +215,13 @@ test('updateTicketStatus: finds ticket in nested subdirectory', () => {
     const nestedDir = path.join(dir, 'some', 'nested', 'dir', ticketId);
     fs.mkdirSync(nestedDir, { recursive: true });
     fs.writeFileSync(
-        path.join(nestedDir, `linear_ticket_${ticketId}.md`),
+        path.join(nestedDir, `rick_ticket_${ticketId}.md`),
         `---\nid: "${ticketId}"\ntitle: "Nested Test"\nstatus: "Todo"\nupdated: "2020-01-01"\norder: 1\n---\n# Nested Body\n`
     );
     try {
         updateTicketStatus(ticketId, 'InProgress', dir);
         const content = fs.readFileSync(
-            path.join(nestedDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(nestedDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         assert.match(content, /^status: "InProgress"$/m,
             'status should be updated even in deeply nested ticket file');
     } finally {
@@ -238,7 +238,7 @@ test('updateTicketStatus: warns when ticket has no status field to replace', () 
     fs.mkdirSync(subDir);
     // Frontmatter with no status: line at all
     fs.writeFileSync(
-        path.join(subDir, `linear_ticket_${ticketId}.md`),
+        path.join(subDir, `rick_ticket_${ticketId}.md`),
         `---\nid: "${ticketId}"\ntitle: "No Status"\norder: 1\n---\n# Body\n`
     );
     try {
@@ -281,7 +281,7 @@ test('updateTicketStatus: respects depth limit on deeply nested directories', ()
     }
     fs.mkdirSync(current, { recursive: true });
     fs.writeFileSync(
-        path.join(current, `linear_ticket_${ticketId}.md`),
+        path.join(current, `rick_ticket_${ticketId}.md`),
         `---\nid: "${ticketId}"\ntitle: "Deep"\nstatus: "Todo"\n---\n# Body\n`
     );
     try {
@@ -323,13 +323,13 @@ test('updateTicketStatus: inserts updated field when missing from frontmatter', 
     fs.mkdirSync(subDir);
     // Frontmatter with status but no updated: line
     fs.writeFileSync(
-        path.join(subDir, `linear_ticket_${ticketId}.md`),
+        path.join(subDir, `rick_ticket_${ticketId}.md`),
         `---\nid: "${ticketId}"\ntitle: "No Updated"\nstatus: "Todo"\norder: 1\n---\n# Body\n`
     );
     try {
         updateTicketStatus(ticketId, 'Done', dir);
         const content = fs.readFileSync(
-            path.join(subDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(subDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         // Status should be updated
         assert.match(content, /^status: "Done"$/m);
         // updated field should be inserted within frontmatter
@@ -355,13 +355,13 @@ test('updateTicketStatus: does not replace status: line in body after frontmatte
     fs.mkdirSync(subDir);
     // status: appears both in frontmatter AND in the body
     fs.writeFileSync(
-        path.join(subDir, `linear_ticket_${ticketId}.md`),
+        path.join(subDir, `rick_ticket_${ticketId}.md`),
         `---\nid: "${ticketId}"\ntitle: "Body Status"\nstatus: "Todo"\nupdated: "2020-01-01"\n---\n# Body\nstatus: should-not-change\n`
     );
     try {
         updateTicketStatus(ticketId, 'Done', dir);
         const content = fs.readFileSync(
-            path.join(subDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(subDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         // Frontmatter status should be updated
         assert.match(content, /^status: "Done"$/m);
         // Body status should remain unchanged

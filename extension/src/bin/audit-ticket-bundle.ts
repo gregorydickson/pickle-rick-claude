@@ -342,7 +342,7 @@ export function checkPathDrift(t: ParsedTicket, gitFiles: Set<string>): Finding[
 function checkSelfReference(t: ParsedTicket): Finding[] {
   const re = new RegExp(`\`[^\`]*${t.id}[^\`]*\``, 'g');
   const hits = t.body.match(re) ?? [];
-  const offending = hits.filter((h) => !h.includes(`linear_ticket_${t.id}.md`));
+  const offending = hits.filter((h) => !h.includes(`rick_ticket_${t.id}.md`));
   if (offending.length === 0) return [];
   return [
     {
@@ -606,7 +606,7 @@ function buildContext(sessionDir: string, scriptDir: string): AuditContext {
 function findTicketFiles(sessionDir: string, ticketDirs: string[]): string[] {
   const out: string[] = [];
   for (const dir of ticketDirs) {
-    const file = path.join(sessionDir, dir, `linear_ticket_${dir}.md`);
+    const file = path.join(sessionDir, dir, `rick_ticket_${dir}.md`);
     if (fs.existsSync(file)) out.push(file);
   }
   return out;
@@ -642,7 +642,7 @@ function writeManifest(manifest: AuditManifest, target: string): void {
 function usage(): void {
   process.stdout.write(
     'Usage: audit-ticket-bundle.js <session-dir> [--manifest <path>]\n\n' +
-      'Walks <session>/<hash>/linear_ticket_<hash>.md files and runs 9 defect-class checks:\n' +
+      'Walks <session>/<hash>/rick_ticket_<hash>.md files and runs 9 defect-class checks:\n' +
       '  path-drift, self-reference, missing-deps, wrong-HEAD-assumptions,\n' +
       '  cross-doc-naming, cross-doc-naming-drift, hallucinated-premise, literal-value-drift,\n' +
       '  missing-audit-comment.\n\n' +

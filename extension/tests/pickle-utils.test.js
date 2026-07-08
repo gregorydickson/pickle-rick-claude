@@ -396,7 +396,7 @@ test('wrapText: negative width returns text unchanged', () => {
 
 function withTempFile(content, fn) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-test-'));
-    const file = path.join(dir, 'linear_ticket_test.md');
+    const file = path.join(dir, 'rick_ticket_test.md');
     fs.writeFileSync(file, content);
     try {
         fn(file);
@@ -443,7 +443,7 @@ function withTempSessionTicket(id, status, fn) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-session-'));
     const ticketDir = path.join(dir, id);
     fs.mkdirSync(ticketDir);
-    const file = path.join(ticketDir, `linear_ticket_${id}.md`);
+    const file = path.join(ticketDir, `rick_ticket_${id}.md`);
     fs.writeFileSync(file, `---\nid: ${id}\ntitle: T\nstatus: ${status}\norder: 1\n---\n`);
     try {
         fn(dir, file);
@@ -543,17 +543,17 @@ test('collectTickets: review tickets sorted by order alongside impl tickets', ()
         // impl ticket at order 10
         const sub1 = path.join(dir, 'impl1');
         fs.mkdirSync(sub1);
-        fs.writeFileSync(path.join(sub1, 'linear_ticket_impl1.md'),
+        fs.writeFileSync(path.join(sub1, 'rick_ticket_impl1.md'),
             '---\nid: impl1\ntitle: Implement foo\nstatus: Done\norder: 10\n---\n');
         // review ticket at order 15
         const sub2 = path.join(dir, 'rev1');
         fs.mkdirSync(sub2);
-        fs.writeFileSync(path.join(sub2, 'linear_ticket_rev1.md'),
+        fs.writeFileSync(path.join(sub2, 'rick_ticket_rev1.md'),
             '---\nid: rev1\ntitle: "Review: impl1"\nstatus: Todo\norder: 15\ntype: review\n---\n');
         // impl ticket at order 20
         const sub3 = path.join(dir, 'impl2');
         fs.mkdirSync(sub3);
-        fs.writeFileSync(path.join(sub3, 'linear_ticket_impl2.md'),
+        fs.writeFileSync(path.join(sub3, 'rick_ticket_impl2.md'),
             '---\nid: impl2\ntitle: Implement bar\nstatus: Todo\norder: 20\n---\n');
 
         const tickets = collectTickets(dir);
@@ -574,7 +574,7 @@ test('collectTickets: returns tickets sorted by order', () => {
         for (const [id, order, status] of [['aaa', 20, 'Todo'], ['bbb', 10, 'Done']]) {
             const sub = path.join(dir, id);
             fs.mkdirSync(sub);
-            fs.writeFileSync(path.join(sub, `linear_ticket_${id}.md`),
+            fs.writeFileSync(path.join(sub, `rick_ticket_${id}.md`),
                 `---\nid: ${id}\ntitle: Ticket ${id}\nstatus: ${status}\norder: ${order}\n---\n`);
         }
         const tickets = collectTickets(dir);
@@ -732,11 +732,11 @@ test('buildHandoffSummary: shows [REVIEW] tag for review tickets', () => {
         // Create an impl ticket and a review ticket
         const implDir = path.join(dir, 'impl1');
         fs.mkdirSync(implDir);
-        fs.writeFileSync(path.join(implDir, 'linear_ticket_impl1.md'),
+        fs.writeFileSync(path.join(implDir, 'rick_ticket_impl1.md'),
             '---\nid: impl1\ntitle: Implement foo\nstatus: Done\norder: 10\n---\n');
         const revDir = path.join(dir, 'rev1');
         fs.mkdirSync(revDir);
-        fs.writeFileSync(path.join(revDir, 'linear_ticket_rev1.md'),
+        fs.writeFileSync(path.join(revDir, 'rick_ticket_rev1.md'),
             '---\nid: rev1\ntitle: "Review: impl1"\nstatus: Todo\norder: 15\ntype: review\n---\n');
 
         const summary = buildHandoffSummary({ step: 'research', iteration: 1 }, dir);
@@ -756,7 +756,7 @@ test('buildHandoffSummary: shows directory context when working_dir differs from
         fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ active: true }));
         const ticketDir = path.join(dir, 'wd1');
         fs.mkdirSync(ticketDir);
-        fs.writeFileSync(path.join(ticketDir, 'linear_ticket_wd1.md'),
+        fs.writeFileSync(path.join(ticketDir, 'rick_ticket_wd1.md'),
             '---\nid: wd1\ntitle: Add API endpoint\nstatus: Todo\norder: 10\nworking_dir: api/\n---\n');
 
         const summary = buildHandoffSummary({ step: 'implement', iteration: 1, working_dir: '/project' }, dir);
@@ -772,7 +772,7 @@ test('buildHandoffSummary: omits parenthetical when working_dir is null', () => 
         fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ active: true }));
         const ticketDir = path.join(dir, 'nowd');
         fs.mkdirSync(ticketDir);
-        fs.writeFileSync(path.join(ticketDir, 'linear_ticket_nowd.md'),
+        fs.writeFileSync(path.join(ticketDir, 'rick_ticket_nowd.md'),
             '---\nid: nowd\ntitle: Fix the thing\nstatus: Todo\norder: 10\n---\n');
 
         const summary = buildHandoffSummary({ step: 'implement', iteration: 1 }, dir);
@@ -788,7 +788,7 @@ test('buildHandoffSummary: omits parenthetical when working_dir matches session 
         fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ active: true }));
         const ticketDir = path.join(dir, 'same');
         fs.mkdirSync(ticketDir);
-        fs.writeFileSync(path.join(ticketDir, 'linear_ticket_same.md'),
+        fs.writeFileSync(path.join(ticketDir, 'rick_ticket_same.md'),
             '---\nid: same\ntitle: Same dir task\nstatus: Todo\norder: 10\nworking_dir: /project\n---\n');
 
         const summary = buildHandoffSummary({ step: 'implement', iteration: 1, working_dir: '/project' }, dir);
@@ -916,11 +916,11 @@ test('markTicketDone: updates unquoted Todo to Done', () => {
     try {
         const sub = path.join(dir, 'abc123');
         fs.mkdirSync(sub);
-        fs.writeFileSync(path.join(sub, 'linear_ticket_abc123.md'),
+        fs.writeFileSync(path.join(sub, 'rick_ticket_abc123.md'),
             '---\nid: abc123\ntitle: Test\nstatus: Todo\norder: 10\n---\nBody');
         const result = markTicketDone(dir, 'abc123');
         assert.equal(result, true);
-        const content = fs.readFileSync(path.join(sub, 'linear_ticket_abc123.md'), 'utf-8');
+        const content = fs.readFileSync(path.join(sub, 'rick_ticket_abc123.md'), 'utf-8');
         assert.ok(content.includes('status: "Done"'), `Expected status: "Done", got: ${content}`);
         assert.ok(content.includes('Body'), 'Body should be preserved');
     } finally {
@@ -933,11 +933,11 @@ test('markTicketDone: updates quoted "In Progress" to Done', () => {
     try {
         const sub = path.join(dir, 'def456');
         fs.mkdirSync(sub);
-        fs.writeFileSync(path.join(sub, 'linear_ticket_def456.md'),
+        fs.writeFileSync(path.join(sub, 'rick_ticket_def456.md'),
             '---\nid: def456\ntitle: Test\nstatus: "In Progress"\norder: 10\n---\n');
         const result = markTicketDone(dir, 'def456');
         assert.equal(result, true);
-        const content = fs.readFileSync(path.join(sub, 'linear_ticket_def456.md'), 'utf-8');
+        const content = fs.readFileSync(path.join(sub, 'rick_ticket_def456.md'), 'utf-8');
         assert.ok(content.includes('status: "Done"'));
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -949,7 +949,7 @@ test('markTicketDone: no-op when already Done', () => {
     try {
         const sub = path.join(dir, 'ghi789');
         fs.mkdirSync(sub);
-        fs.writeFileSync(path.join(sub, 'linear_ticket_ghi789.md'),
+        fs.writeFileSync(path.join(sub, 'rick_ticket_ghi789.md'),
             '---\nid: ghi789\ntitle: Test\nstatus: "Done"\norder: 10\n---\n');
         const result = markTicketDone(dir, 'ghi789');
         assert.equal(result, false, 'Should return false when already Done');
@@ -967,7 +967,7 @@ test('markTicketDone: returns false for nonexistent ticket dir', () => {
     }
 });
 
-test('markTicketDone: returns false when no linear_ticket_ file exists', () => {
+test('markTicketDone: returns false when no rick_ticket_ file exists', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-test-'));
     try {
         const sub = path.join(dir, 'jkl012');
@@ -984,11 +984,11 @@ test('markTicketDone: inserts completed_at timestamp', () => {
     try {
         const sub = path.join(dir, 'ts1');
         fs.mkdirSync(sub);
-        fs.writeFileSync(path.join(sub, 'linear_ticket_ts1.md'),
+        fs.writeFileSync(path.join(sub, 'rick_ticket_ts1.md'),
             '---\nid: ts1\ntitle: Test\nstatus: Todo\norder: 10\n---\nBody');
         const result = markTicketDone(dir, 'ts1');
         assert.equal(result, true);
-        const content = fs.readFileSync(path.join(sub, 'linear_ticket_ts1.md'), 'utf-8');
+        const content = fs.readFileSync(path.join(sub, 'rick_ticket_ts1.md'), 'utf-8');
         assert.ok(content.includes('status: "Done"'));
         assert.match(content, /completed_at: "\d{4}-\d{2}-\d{2}T/);
     } finally {
@@ -1001,11 +1001,11 @@ test('markTicketDone: replaces existing completed_at timestamp instead of duplic
     try {
         const sub = path.join(dir, 'ts2');
         fs.mkdirSync(sub);
-        fs.writeFileSync(path.join(sub, 'linear_ticket_ts2.md'),
+        fs.writeFileSync(path.join(sub, 'rick_ticket_ts2.md'),
             '---\nid: ts2\ntitle: Test\nstatus: Todo\norder: 10\ncompleted_at: "2026-03-01T00:00:00.000Z"\n---\nBody');
         const result = markTicketDone(dir, 'ts2');
         assert.equal(result, true);
-        const content = fs.readFileSync(path.join(sub, 'linear_ticket_ts2.md'), 'utf-8');
+        const content = fs.readFileSync(path.join(sub, 'rick_ticket_ts2.md'), 'utf-8');
         assert.equal((content.match(/^completed_at:/gm) || []).length, 1);
         assert.doesNotMatch(content, /completed_at: "2026-03-01T00:00:00.000Z"/);
     } finally {
@@ -1020,11 +1020,11 @@ test('markTicketSkipped: updates Todo to Skipped', () => {
     try {
         const sub = path.join(dir, 'skip1');
         fs.mkdirSync(sub);
-        fs.writeFileSync(path.join(sub, 'linear_ticket_skip1.md'),
+        fs.writeFileSync(path.join(sub, 'rick_ticket_skip1.md'),
             '---\nid: skip1\ntitle: Test\nstatus: Todo\norder: 10\n---\nBody');
         const result = markTicketSkipped(dir, 'skip1');
         assert.equal(result, true);
-        const content = fs.readFileSync(path.join(sub, 'linear_ticket_skip1.md'), 'utf-8');
+        const content = fs.readFileSync(path.join(sub, 'rick_ticket_skip1.md'), 'utf-8');
         assert.ok(content.includes('status: "Skipped"'), `Expected status: "Skipped", got: ${content}`);
         assert.ok(content.includes('Body'), 'Body should be preserved');
     } finally {
@@ -1037,11 +1037,11 @@ test('markTicketSkipped: inserts skipped_at timestamp', () => {
     try {
         const sub = path.join(dir, 'skip2');
         fs.mkdirSync(sub);
-        fs.writeFileSync(path.join(sub, 'linear_ticket_skip2.md'),
+        fs.writeFileSync(path.join(sub, 'rick_ticket_skip2.md'),
             '---\nid: skip2\ntitle: Test\nstatus: "In Progress"\norder: 10\n---\n');
         const result = markTicketSkipped(dir, 'skip2');
         assert.equal(result, true);
-        const content = fs.readFileSync(path.join(sub, 'linear_ticket_skip2.md'), 'utf-8');
+        const content = fs.readFileSync(path.join(sub, 'rick_ticket_skip2.md'), 'utf-8');
         assert.ok(content.includes('status: "Skipped"'));
         assert.match(content, /skipped_at: "\d{4}-\d{2}-\d{2}T/);
     } finally {
@@ -1054,11 +1054,11 @@ test('markTicketSkipped: replaces existing skipped_at timestamp instead of dupli
     try {
         const sub = path.join(dir, 'skip4');
         fs.mkdirSync(sub);
-        fs.writeFileSync(path.join(sub, 'linear_ticket_skip4.md'),
+        fs.writeFileSync(path.join(sub, 'rick_ticket_skip4.md'),
             '---\nid: skip4\ntitle: Test\nstatus: Todo\norder: 10\nskipped_at: "2026-03-01T00:00:00.000Z"\n---\n');
         const result = markTicketSkipped(dir, 'skip4');
         assert.equal(result, true);
-        const content = fs.readFileSync(path.join(sub, 'linear_ticket_skip4.md'), 'utf-8');
+        const content = fs.readFileSync(path.join(sub, 'rick_ticket_skip4.md'), 'utf-8');
         assert.equal((content.match(/^skipped_at:/gm) || []).length, 1);
         assert.doesNotMatch(content, /skipped_at: "2026-03-01T00:00:00.000Z"/);
     } finally {
@@ -1071,7 +1071,7 @@ test('markTicketSkipped: no-op when already Skipped', () => {
     try {
         const sub = path.join(dir, 'skip3');
         fs.mkdirSync(sub);
-        fs.writeFileSync(path.join(sub, 'linear_ticket_skip3.md'),
+        fs.writeFileSync(path.join(sub, 'rick_ticket_skip3.md'),
             '---\nid: skip3\ntitle: Test\nstatus: "Skipped"\norder: 10\n---\n');
         const result = markTicketSkipped(dir, 'skip3');
         assert.equal(result, false, 'Should return false when already Skipped');
@@ -1115,7 +1115,7 @@ test('buildHandoffSummary: shows "(no verified completion — re-attempt)" for S
         fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ active: true }));
         const ticketDir = path.join(dir, 'skip1');
         fs.mkdirSync(ticketDir);
-        fs.writeFileSync(path.join(ticketDir, 'linear_ticket_skip1.md'),
+        fs.writeFileSync(path.join(ticketDir, 'rick_ticket_skip1.md'),
             '---\nid: skip1\ntitle: Skipped task\nstatus: "Skipped"\norder: 10\n---\n');
 
         const summary = buildHandoffSummary({ step: 'implement', iteration: 1 }, dir);
@@ -1134,11 +1134,11 @@ test('buildHandoffSummary: does not show re-attempt note for Done or Todo ticket
         fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ active: true }));
         const doneDir = path.join(dir, 'done1');
         fs.mkdirSync(doneDir);
-        fs.writeFileSync(path.join(doneDir, 'linear_ticket_done1.md'),
+        fs.writeFileSync(path.join(doneDir, 'rick_ticket_done1.md'),
             '---\nid: done1\ntitle: Done task\nstatus: "Done"\norder: 10\n---\n');
         const todoDir = path.join(dir, 'todo1');
         fs.mkdirSync(todoDir);
-        fs.writeFileSync(path.join(todoDir, 'linear_ticket_todo1.md'),
+        fs.writeFileSync(path.join(todoDir, 'rick_ticket_todo1.md'),
             '---\nid: todo1\ntitle: Todo task\nstatus: Todo\norder: 20\n---\n');
 
         const summary = buildHandoffSummary({ step: 'implement', iteration: 1 }, dir);
@@ -1157,11 +1157,11 @@ test('buildHandoffSummary: includes MULTI-REPO warning when tickets span 2+ work
         fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ active: true }));
         const t1 = path.join(dir, 'api1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_api1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_api1.md'),
             '---\nid: api1\ntitle: API task\nstatus: Todo\norder: 10\nworking_dir: api/\n---\n');
         const t2 = path.join(dir, 'web1');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_web1.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_web1.md'),
             '---\nid: web1\ntitle: Web task\nstatus: Todo\norder: 20\nworking_dir: web/\n---\n');
 
         const summary = buildHandoffSummary({ step: 'implement', iteration: 1 }, dir);
@@ -1179,11 +1179,11 @@ test('buildHandoffSummary: omits MULTI-REPO warning for single working_dir', () 
         fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ active: true }));
         const t1 = path.join(dir, 'a1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_a1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_a1.md'),
             '---\nid: a1\ntitle: Task A\nstatus: Todo\norder: 10\nworking_dir: api/\n---\n');
         const t2 = path.join(dir, 'a2');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_a2.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_a2.md'),
             '---\nid: a2\ntitle: Task B\nstatus: Todo\norder: 20\nworking_dir: api/\n---\n');
 
         const summary = buildHandoffSummary({ step: 'implement', iteration: 1 }, dir);
@@ -1431,19 +1431,19 @@ test('buildHandoffSummary: shows tier tag for non-medium tiers, omits for medium
         fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ active: true }));
         const t1 = path.join(dir, 'triv1');
         fs.mkdirSync(t1);
-        fs.writeFileSync(path.join(t1, 'linear_ticket_triv1.md'),
+        fs.writeFileSync(path.join(t1, 'rick_ticket_triv1.md'),
             '---\nid: triv1\ntitle: Trivial task\nstatus: Todo\norder: 10\ncomplexity_tier: trivial\n---\n');
         const t2 = path.join(dir, 'sm1');
         fs.mkdirSync(t2);
-        fs.writeFileSync(path.join(t2, 'linear_ticket_sm1.md'),
+        fs.writeFileSync(path.join(t2, 'rick_ticket_sm1.md'),
             '---\nid: sm1\ntitle: Small task\nstatus: Todo\norder: 20\ncomplexity_tier: small\n---\n');
         const t3 = path.join(dir, 'med1');
         fs.mkdirSync(t3);
-        fs.writeFileSync(path.join(t3, 'linear_ticket_med1.md'),
+        fs.writeFileSync(path.join(t3, 'rick_ticket_med1.md'),
             '---\nid: med1\ntitle: Medium task\nstatus: Todo\norder: 30\ncomplexity_tier: medium\n---\n');
         const t4 = path.join(dir, 'lg1');
         fs.mkdirSync(t4);
-        fs.writeFileSync(path.join(t4, 'linear_ticket_lg1.md'),
+        fs.writeFileSync(path.join(t4, 'rick_ticket_lg1.md'),
             '---\nid: lg1\ntitle: Large task\nstatus: Todo\norder: 40\ncomplexity_tier: large\n---\n');
 
         const summary = buildHandoffSummary({ step: 'implement', iteration: 1 }, dir);

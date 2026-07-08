@@ -59,12 +59,12 @@ function writeTicket(sessionDir, ticketId, status, declaredFiles) {
     `**Files to modify/create**: ${declared}`,
     '',
   ].join('\n');
-  fs.writeFileSync(path.join(dir, `linear_ticket_${ticketId}.md`), md);
+  fs.writeFileSync(path.join(dir, `rick_ticket_${ticketId}.md`), md);
   return dir;
 }
 
 function ticketStatus(sessionDir, ticketId) {
-  const md = fs.readFileSync(path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`), 'utf-8');
+  const md = fs.readFileSync(path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`), 'utf-8');
   const m = md.match(/^status:\s*(.+)$/m);
   return m ? m[1].trim().replace(/^["']|["']$/g, '') : null;
 }

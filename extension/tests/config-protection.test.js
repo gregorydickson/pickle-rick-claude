@@ -76,7 +76,7 @@ function runHandler(opts = {}) {
     const frontmatter = configChange
       ? `---\nid: ${ticketId}\ntitle: "Test"\nconfig_change: true\n---\n# Ticket\n`
       : `---\nid: ${ticketId}\ntitle: "Test"\n---\n# Ticket\n`;
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), frontmatter);
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), frontmatter);
   }
 
   if (persistState) {
@@ -470,7 +470,7 @@ test('approves --allow-config-edit override when resolved state.session_dir is s
   const liveTicketDir = path.join(liveSessionDir, ticketId);
   fs.mkdirSync(liveTicketDir, { recursive: true });
   fs.writeFileSync(
-    path.join(liveTicketDir, `linear_ticket_${ticketId}.md`),
+    path.join(liveTicketDir, `rick_ticket_${ticketId}.md`),
     `---\nid: ${ticketId}\ntitle: "Test"\nconfig_change: true\n---\n# Ticket\n`,
   );
 

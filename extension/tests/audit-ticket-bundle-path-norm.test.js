@@ -23,8 +23,8 @@ function makeTicket(id, body) {
   return {
     id,
     title: `Test ticket ${id}`,
-    filePath: `/fake/session/${id}/linear_ticket_${id}.md`,
-    relPath: `${id}/linear_ticket_${id}.md`,
+    filePath: `/fake/session/${id}/rick_ticket_${id}.md`,
+    relPath: `${id}/rick_ticket_${id}.md`,
     mappedRequirements: [],
     body,
     problemSection: '',

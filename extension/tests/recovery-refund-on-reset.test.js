@@ -39,7 +39,7 @@ function writeTicket(sessionDir, id, status) {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
   const fm = ['---', `id: ${id}`, 'title: Recovery refund fixture', `status: ${status}`, 'order: 1', '---', '', '# Test'];
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), fm.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), fm.join('\n'));
 }
 
 function baseState(ticketId, overrides = {}) {

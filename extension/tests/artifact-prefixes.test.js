@@ -82,7 +82,7 @@ test('hasLifecycleArtifact: empty list → false (the ghost-ticket guard)', () =
 
 test('hasLifecycleArtifact: only unrelated files → false', () => {
     assert.equal(
-        hasLifecycleArtifact(['worker_session_12345.log', 'linear_ticket_abc.md', 'README.md'], 'implementation'),
+        hasLifecycleArtifact(['worker_session_12345.log', 'rick_ticket_abc.md', 'README.md'], 'implementation'),
         false
     );
 });
@@ -104,7 +104,7 @@ test('hasLifecycleArtifact: prefix-adjacent names do NOT falsely match', () => {
 test('hasLifecycleArtifact: mixed list with at least one match → true', () => {
     assert.equal(
         hasLifecycleArtifact(
-            ['worker_session_1.log', 'README.md', 'research_2026-04-18.md', 'linear_ticket_x.md'],
+            ['worker_session_1.log', 'README.md', 'research_2026-04-18.md', 'rick_ticket_x.md'],
             'implementation'
         ),
         true

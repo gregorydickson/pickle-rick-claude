@@ -71,7 +71,7 @@
             "iteration": 1,
             "max_iterations": 15
           },
-          "aabbccdd/linear_ticket_aabbccdd.md": {
+          "aabbccdd/rick_ticket_aabbccdd.md": {
             "frontmatter": {
               "id": "aabbccdd",
               "status": "In Progress",
@@ -115,7 +115,7 @@
             "backend": "claude",
             "schema_version": 3
           },
-          "aabbccdd/linear_ticket_aabbccdd.md": {
+          "aabbccdd/rick_ticket_aabbccdd.md": {
             "frontmatter": {
               "id": "aabbccdd",
               "status": "Done",
@@ -165,7 +165,7 @@
             "schema_version": 3,
             "iteration": 2
           },
-          "aabbccdd/linear_ticket_aabbccdd.md": {
+          "aabbccdd/rick_ticket_aabbccdd.md": {
             "frontmatter": {
               "id": "aabbccdd",
               "status": "In Progress",
@@ -173,7 +173,7 @@
             },
             "notes": "This is the previousTicket; model drifted away from it without marking Done"
           },
-          "bbccddee/linear_ticket_bbccddee.md": {
+          "bbccddee/rick_ticket_bbccddee.md": {
             "frontmatter": {
               "id": "bbccddee",
               "status": "Todo",
@@ -219,7 +219,7 @@
             "backend": "claude",
             "schema_version": 3
           },
-          "aabbccdd/linear_ticket_aabbccdd.md": {
+          "aabbccdd/rick_ticket_aabbccdd.md": {
             "frontmatter": {
               "id": "aabbccdd",
               "status": "In Progress",
@@ -265,7 +265,7 @@
                 "working_dir": "<synthetic-git-repo>",
                 "schema_version": 3
               },
-              "aabbccdd/linear_ticket_aabbccdd.md": {
+              "aabbccdd/rick_ticket_aabbccdd.md": {
                 "frontmatter": {
                   "id": "aabbccdd",
                   "status": "Done",
@@ -303,7 +303,7 @@
                 "schema_version": 3,
                 "false_epic_completed_count": 1
               },
-              "aabbccdd/linear_ticket_aabbccdd.md": {
+              "aabbccdd/rick_ticket_aabbccdd.md": {
                 "frontmatter": {
                   "id": "aabbccdd",
                   "status": "In Progress",
@@ -311,7 +311,7 @@
                   "title": "Current ticket"
                 }
               },
-              "bbccddee/linear_ticket_bbccddee.md": {
+              "bbccddee/rick_ticket_bbccddee.md": {
                 "frontmatter": {
                   "id": "bbccddee",
                   "status": "Todo",
@@ -347,7 +347,7 @@
                 "working_dir": "<synthetic-git-repo>",
                 "schema_version": 3
               },
-              "aabbccdd/linear_ticket_aabbccdd.md": {
+              "aabbccdd/rick_ticket_aabbccdd.md": {
                 "frontmatter": {
                   "id": "aabbccdd",
                   "status": "In Progress",
@@ -390,7 +390,7 @@
             "working_dir": "<synthetic-git-repo>",
             "schema_version": 3
           },
-          "aabbccdd/linear_ticket_aabbccdd.md": {
+          "aabbccdd/rick_ticket_aabbccdd.md": {
             "frontmatter": {
               "id": "aabbccdd",
               "status": "Done",
@@ -433,7 +433,7 @@
             "working_dir": "<synthetic-git-repo>",
             "schema_version": 3
           },
-          "aabbccdd/linear_ticket_aabbccdd.md": {
+          "aabbccdd/rick_ticket_aabbccdd.md": {
             "frontmatter": {
               "id": "aabbccdd",
               "status": "Done",
@@ -477,7 +477,7 @@
       "label": "operator-salvage-edit",
       "triggering_function": "n/a (manual frontmatter write)",
       "file_line": "n/a",
-      "description": "Operator manually edits linear_ticket_*.md frontmatter to add completion_commit:<sha>. Documented bypass path. After edit, watcher (correctPhantomDoneTickets or inspectPhantomDoneTicketFile) sees explicit evidence and keeps ticket Done. No code path in the runtime triggers this — purely an operator action.",
+      "description": "Operator manually edits rick_ticket_*.md frontmatter to add completion_commit:<sha>. Documented bypass path. After edit, watcher (correctPhantomDoneTickets or inspectPhantomDoneTicketFile) sees explicit evidence and keeps ticket Done. No code path in the runtime triggers this — purely an operator action.",
       "fixture": {
         "session_dir_skeleton": {
           "state.json": {
@@ -485,7 +485,7 @@
             "working_dir": "<synthetic-git-repo>",
             "schema_version": 3
           },
-          "aabbccdd/linear_ticket_aabbccdd.md": {
+          "aabbccdd/rick_ticket_aabbccdd.md": {
             "frontmatter": {
               "id": "aabbccdd",
               "status": "Done",

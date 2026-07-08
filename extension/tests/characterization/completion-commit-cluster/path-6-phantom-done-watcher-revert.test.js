@@ -42,8 +42,8 @@ function writeTicket(sessionDir, ticketId, frontmatter) {
     lines.push(`${k}: "${v}"`);
   }
   lines.push('order: 1', '---', '# Body');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
-  return path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
+  return path.join(ticketDir, `rick_ticket_${ticketId}.md`);
 }
 
 test('path-6 phantom-done-revert: Done ticket with no completion_commit → reverted to Todo, count=1', () => {
@@ -54,7 +54,7 @@ test('path-6 phantom-done-revert: Done ticket with no completion_commit → reve
   const workingDir = makeTmp('char-path6-notgit-');
   try {
     const ticketId = ticketIdFromEntry(ENTRY);
-    const fm = ENTRY.fixture.session_dir_skeleton[`${ticketId}/linear_ticket_${ticketId}.md`].frontmatter;
+    const fm = ENTRY.fixture.session_dir_skeleton[`${ticketId}/rick_ticket_${ticketId}.md`].frontmatter;
     const ticketPath = writeTicket(root, ticketId, {
       id: fm.id,
       status: fm.status, // 'Done'

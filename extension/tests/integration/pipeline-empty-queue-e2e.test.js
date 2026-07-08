@@ -21,7 +21,7 @@ test('pipeline-empty-queue post-completion contract (AC-RTC-04)', async (t) => {
       const dir = path.join(sessionRoot, id);
       fs.mkdirSync(dir);
       fs.writeFileSync(
-        path.join(dir, `linear_ticket_${id}.md`),
+        path.join(dir, `rick_ticket_${id}.md`),
         `---\nid: ${id}\nstatus: Done\n---\n# T${id}\n`,
       );
     }

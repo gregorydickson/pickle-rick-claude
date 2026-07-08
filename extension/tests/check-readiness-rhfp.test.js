@@ -224,7 +224,7 @@ test('R-RHFP (BUG #1): a performance wall-budget finding does not fail the gate'
       'runReadiness()', 'resolveSymbolRef()',
       'gitTrackedFiles()', 'createResolverCache()',
     ];
-    fs.writeFileSync(path.join(ticketDir, 'linear_ticket_wb0001.md'), [
+    fs.writeFileSync(path.join(ticketDir, 'rick_ticket_wb0001.md'), [
       '---', 'id: wb0001', 'key: WB-1', 'ac_ids: []', '---', '',
       '# Ticket', '', '## Acceptance Criteria', '- [ ] `node --test` passes.', '',
       '## Interface Contracts', '',

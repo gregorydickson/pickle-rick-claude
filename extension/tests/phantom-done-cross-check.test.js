@@ -34,7 +34,7 @@ test('inspectPhantomDoneTicketFile: promotes git-inferred SHA to EXPLICIT comple
     const ticketId = 'phantom01';
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
-    const ticketPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
     fs.writeFileSync(ticketPath, [
       '---',
       `id: ${ticketId}`,

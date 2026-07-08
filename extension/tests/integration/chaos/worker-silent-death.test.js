@@ -70,7 +70,7 @@ function makeSession() {
   fs.writeFileSync(path.join(ticketDir, 'research_2026-06-11.md'), 'research body');
   fs.writeFileSync(path.join(ticketDir, 'research_review.md'), '# review\n\nAPPROVED');
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${TICKET}.md`),
+    path.join(ticketDir, `rick_ticket_${TICKET}.md`),
     `---\nid: ${TICKET}\nstatus: "In Progress"\ncomplexity_tier: medium\n---\n# T\n`,
   );
   return { tmp, sessionDir, statePath, ticketDir };

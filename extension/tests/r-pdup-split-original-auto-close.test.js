@@ -68,13 +68,13 @@ function writeTicket(sessionDir, ticketId, { status, title, order = 1, completio
   if (completion_commit !== undefined) lines.push(`completion_commit: "${completion_commit}"`);
   if (completion_commit_inferred !== undefined) lines.push(`completion_commit_inferred: "${completion_commit_inferred}"`);
   lines.push('---', '# Body');
-  const ticketPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
   fs.writeFileSync(ticketPath, lines.join('\n'));
   return ticketPath;
 }
 
 function readTicketContent(sessionDir, ticketId) {
-  const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
   return fs.readFileSync(ticketPath, 'utf8');
 }
 

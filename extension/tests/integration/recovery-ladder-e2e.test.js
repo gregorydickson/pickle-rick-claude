@@ -94,7 +94,7 @@ function makeSession(root, ticketId, extraState = {}) {
     '# Ticket',
     'Test ticket body.',
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), ticketContent);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), ticketContent);
 
   return { sessionDir, ticketDir, statePath };
 }
@@ -407,7 +407,7 @@ test('INV-NO-PHANTOM-REBUILD: split original + all twins Done → EXPLICIT compl
         lines.push(`completion_commit: ${completionCommit}`);
       }
       lines.push('---', `# ${title}`);
-      fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
+      fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
     }
 
     // Write original (Todo/Failed): title must NOT end in roman-numeral suffix
@@ -458,7 +458,7 @@ test('INV-NO-PHANTOM-REBUILD: split original + all twins Done → EXPLICIT compl
     // Verify that the completion_commit written is EXPLICIT (not _inferred)
     // SHA may be written quoted ("abc123") or unquoted (abc123) — both are valid explicit forms.
     const origContent = fs.readFileSync(
-      path.join(sessionDir, originalId, `linear_ticket_${originalId}.md`), 'utf8');
+      path.join(sessionDir, originalId, `rick_ticket_${originalId}.md`), 'utf8');
     assert.match(origContent, /completion_commit:\s*["']?[0-9a-f]{7,40}["']?/i,
       'split original must have explicit completion_commit after auto-close');
     assert.doesNotMatch(origContent, /completion_commit_inferred/,
@@ -486,7 +486,7 @@ test('INV-NO-PHANTOM-REBUILD: split original + all twins Done → EXPLICIT compl
 
     // Verify original is still Todo
     const origContent2 = fs.readFileSync(
-      path.join(sessionDir, originalId, `linear_ticket_${originalId}.md`), 'utf8');
+      path.join(sessionDir, originalId, `rick_ticket_${originalId}.md`), 'utf8');
     assert.match(origContent2, /status: "Todo"/,
       'split original must remain Todo when not all twins are Done');
 

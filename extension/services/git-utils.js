@@ -30,7 +30,7 @@ export function getBranchName(taskId) {
 const MAX_TICKET_SEARCH_DEPTH = 10;
 const GIT_CHECK_IGNORE_TIMEOUT_MS = 5_000;
 function findTicketFile(sessionDir, ticketId) {
-    const fileName = `linear_ticket_${ticketId}.md`;
+    const fileName = `rick_ticket_${ticketId}.md`;
     const walk = (dir, depth) => {
         if (depth > MAX_TICKET_SEARCH_DEPTH)
             return null; // symlink-cycle guard
@@ -112,7 +112,7 @@ export function updateTicketFrontmatter(ticketId, sessionDir, patch) {
     validateTicketFrontmatterPatch(patch);
     const ticketPath = findTicketFile(sessionDir, ticketId);
     if (!ticketPath) {
-        throw new Error(`Ticket linear_ticket_${ticketId}.md not found in ${sessionDir}`);
+        throw new Error(`Ticket rick_ticket_${ticketId}.md not found in ${sessionDir}`);
     }
     const original = fs.readFileSync(ticketPath, 'utf-8');
     const today = formatLocalDateKey(new Date());

@@ -9,7 +9,7 @@ import { resolveEffectiveTierForTicket } from '../bin/spawn-morty.js';
 
 function withTempTicket(content, fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'piap-a5-'));
-  const file = path.join(dir, 'linear_ticket_test.md');
+  const file = path.join(dir, 'rick_ticket_test.md');
   fs.writeFileSync(file, content);
   try {
     return fn(file);

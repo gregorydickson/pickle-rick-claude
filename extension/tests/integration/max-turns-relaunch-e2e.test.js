@@ -27,7 +27,7 @@ function makeSessionFixture(nDone, nPending, stateOverrides = {}) {
     const ticketDir = path.join(dir, id);
     fs.mkdirSync(ticketDir, { recursive: true });
     fs.writeFileSync(
-      path.join(ticketDir, `linear_ticket_${id}.md`),
+      path.join(ticketDir, `rick_ticket_${id}.md`),
       [
         '---',
         `id: ${id}`,

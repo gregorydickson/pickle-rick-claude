@@ -39,7 +39,7 @@ function writeTicket(sessionDir, ticketId, sha) {
   const dir = path.join(sessionDir, ticketId);
   fs.mkdirSync(dir, { recursive: true });
   const content = ['---', `id: ${ticketId}`, 'status: In Progress', `completion_commit: ${sha}`, '---', ''].join('\n');
-  fs.writeFileSync(path.join(dir, `linear_ticket_${ticketId}.md`), content);
+  fs.writeFileSync(path.join(dir, `rick_ticket_${ticketId}.md`), content);
 }
 
 function writeState(sessionDir, startCommit) {

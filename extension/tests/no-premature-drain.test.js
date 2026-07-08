@@ -40,7 +40,7 @@ function writeTicket(sessionDir, ticketId, status, completionCommit, declaredFil
   if (completionCommit) lines.push(`completion_commit: "${completionCommit}"`);
   lines.push('---', '# Description');
   if (declaredFile) lines.push('## Files to modify', `- \`${declaredFile}\``);
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
 }
 
 function withDataRoot(dataRoot, fn) {

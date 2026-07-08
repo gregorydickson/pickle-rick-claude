@@ -96,7 +96,7 @@ describe('AC-W4b-3 empty-roster resolution', () => {
     const tdir = path.join(sessionDir, id);
     fs.mkdirSync(tdir, { recursive: true });
     fs.writeFileSync(
-      path.join(tdir, `linear_ticket_${id}.md`),
+      path.join(tdir, `rick_ticket_${id}.md`),
       `---\nid: ${id}\nstatus: ${status}\n---\n# ${id}\n`,
     );
   }

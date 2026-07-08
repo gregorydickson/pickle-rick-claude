@@ -265,7 +265,7 @@ test('v2-E2E-9: applySilentDeathRecoveryPolicy with completion_commit in frontma
 
   // Write a ticket with a resolvable completion_commit field
   fs.writeFileSync(
-    path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`),
+    path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`),
     `---\nid: ${ticketId}\nstatus: Done\ncompletion_commit: ${completionSha}\n---\n# Ticket\n`,
   );
 
@@ -317,7 +317,7 @@ test('v2-E2E-10: applySilentDeathRecoveryPolicy with no evidence → respawn (fi
 
   // Write a ticket WITHOUT a completion_commit field
   fs.writeFileSync(
-    path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`),
+    path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`),
     `---\nid: ${ticketId}\nstatus: In Progress\n---\n# Ticket\n`,
   );
 

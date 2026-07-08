@@ -94,7 +94,7 @@ function writeTicket(sessionDir, id, status) {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${id}.md`),
+    path.join(ticketDir, `rick_ticket_${id}.md`),
     `---\nid: ${id}\ntitle: WUWC reproducer\nstatus: ${status}\norder: 1\n---\n\n# Test\n`,
   );
   return ticketDir;
@@ -284,7 +284,7 @@ describe('R-WUWC Case B — SOFT: worker commits with ticket-id, no completion_c
     fs.mkdirSync(ticketDir, { recursive: true });
     // Ticket frontmatter: status Done, NO completion_commit field
     fs.writeFileSync(
-      path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+      path.join(ticketDir, `rick_ticket_${ticketId}.md`),
       [
         '---',
         `id: ${ticketId}`,
@@ -303,7 +303,7 @@ describe('R-WUWC Case B — SOFT: worker commits with ticket-id, no completion_c
   });
 
   it('AC-WUWC-11a: readEvidence returns { kind: "committed", sha } before explicit field', () => {
-    const ticketFile = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    const ticketFile = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
     const content = fs.readFileSync(ticketFile, 'utf-8');
     assert.ok(!content.includes('completion_commit:'), 'precondition: no explicit field yet');
 
@@ -349,7 +349,7 @@ describe('R-WUWC Case B — SOFT: worker commits with ticket-id, no completion_c
     // to the ticket file (it writes the file before the git-add fails). Ensure the field
     // is present — if the auto-fill succeeded OR wrote before failing, we verify it now;
     // if neither, write it manually to simulate the operator recovery workaround.
-    const ticketFile = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    const ticketFile = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
     let content = fs.readFileSync(ticketFile, 'utf-8');
     if (!content.includes('completion_commit:')) {
       // Manual operator recovery: insert completion_commit before the closing '---'

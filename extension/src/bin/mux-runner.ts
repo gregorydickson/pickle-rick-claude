@@ -1664,7 +1664,7 @@ function applyInspectPhantomDoneDecision(
 }
 
 /**
- * R-ICP-5 / R-AFCC-DEEP-3B: Inspect a single linear_ticket_*.md file using the
+ * R-ICP-5 / R-AFCC-DEEP-3B: Inspect a single rick_ticket_*.md file using the
  * explicit PhantomDoneKind decision matrix (via applyInspectPhantomDoneDecision).
  *
  * `priorStatus` defaults to 'Todo' but the watcher caller passes the last
@@ -1749,7 +1749,7 @@ function readTicketBudgetForState(state: State, sessionDir: string): TicketTierB
     : null;
   if (!ticketId) return sessionRunnerBudget(state);
 
-  const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
   if (!fs.existsSync(ticketPath)) return sessionRunnerBudget(state);
 
   const cachedTier = typeof state.current_ticket_tier === 'string' ? state.current_ticket_tier : undefined;
@@ -1971,7 +1971,7 @@ export function repopulateNoProgressCapFromFrontmatter(
 
 /**
  * Proactive empty-queue completion check, run at iteration_start before any
- * manager spawn. If all `linear_ticket_*.md` files in the session report
+ * manager spawn. If all `rick_ticket_*.md` files in the session report
  * `status: Done` (and there is at least one ticket), synthesizes an
  * EPIC_COMPLETED terminal state atomically and returns true so the caller
  * can break the outer loop.
@@ -2091,8 +2091,8 @@ function muxBundleScan(sessionDir: string, workingDir: string): GraduationCounts
   return { doneCount, commitCount: 0, pendingCount, ticketCount: entries.length };
 }
 
-/** Collect all `linear_ticket_*.md` paths under a session dir; null when the dir is unreadable. */
-function collectLinearTicketPaths(sessionDir: string): string[] | null {
+/** Collect all `rick_ticket_*.md` paths under a session dir; null when the dir is unreadable. */
+function collectRickTicketPaths(sessionDir: string): string[] | null {
   let dirEntries: fs.Dirent[];
   try {
     dirEntries = fs.readdirSync(sessionDir, { withFileTypes: true });
@@ -2105,7 +2105,7 @@ function collectLinearTicketPaths(sessionDir: string): string[] | null {
     const subDir = path.join(sessionDir, entry.name);
     try {
       for (const file of fs.readdirSync(subDir)) {
-        if (file.startsWith('linear_ticket_') && file.endsWith('.md')) {
+        if (file.startsWith('rick_ticket_') && file.endsWith('.md')) {
           ticketPaths.push(path.join(subDir, file));
         }
       }
@@ -2121,7 +2121,7 @@ export function applyAllTicketsDoneCompletion(
   log: (msg: string) => void,
   workingDir: string = '',
 ): boolean {
-  const ticketPaths = collectLinearTicketPaths(sessionDir);
+  const ticketPaths = collectRickTicketPaths(sessionDir);
   if (ticketPaths === null) return false;
   if (ticketPaths.length === 0) return false;
 
@@ -6278,7 +6278,7 @@ export function getCircuitBreakerBudget(state: State, sessionDir: string): Circu
     return fallback;
   }
 
-  const ticketPath = path.join(sessionDir, ticket, `linear_ticket_${ticket}.md`);
+  const ticketPath = path.join(sessionDir, ticket, `rick_ticket_${ticket}.md`);
   let budget = defaultCircuitBreakerBudget();
   try {
     const tier = parseTicketComplexityTier(fs.readFileSync(ticketPath, 'utf-8'));
@@ -8620,7 +8620,7 @@ async function runMuxRunnerMain() {
 
   // R-ICP-5: phantom-Done filesystem watcher. Catches Todo→Done flips that
   // happen mid-iteration (between the iteration-boundary backstop in
-  // correctPhantomDoneTickets). One fs.watch per linear_ticket_*.md file.
+  // correctPhantomDoneTickets). One fs.watch per rick_ticket_*.md file.
   // Closed on SIGTERM/SIGINT/SIGHUP/exit so we don't leak file descriptors.
   const phantomDoneWatchers: fs.FSWatcher[] = [];
   let phantomDoneWatchersClosed = false;
@@ -8775,7 +8775,7 @@ async function runMuxRunnerMain() {
     let skipped = 0;
     for (const ticket of collectTickets(sessionDir)) {
       if (!ticket.id) { skipped++; continue; }
-      const ticketFile = path.join(sessionDir, ticket.id, `linear_ticket_${ticket.id}.md`);
+      const ticketFile = path.join(sessionDir, ticket.id, `rick_ticket_${ticket.id}.md`);
       if (!fs.existsSync(ticketFile)) { skipped++; continue; }
       const ticketId = ticket.id;
       const ticketWorkingDir = ticket.working_dir || ownerState.working_dir || process.cwd();
@@ -10017,8 +10017,10 @@ async function runMuxRunnerMain() {
       try {
         updateTicketFrontmatter(apTicketId, sessionDir, { status: 'Failed', completion_commit: null });
         const tfPath = ticketFilePath(sessionDir, apTicketId);
+        // eslint-disable-next-line pickle/no-sync-in-async
         const tfRaw = fs.readFileSync(tfPath, 'utf-8');
         const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', apFailureReason);
+        // eslint-disable-next-line pickle/no-sync-in-async
         if (tfUpdated) fs.writeFileSync(tfPath, tfUpdated);
       } catch (err) { log(`[wmw-auto-skip] frontmatter flip failed (ignored): ${safeErrorMessage(err)}`); }
       try {
@@ -10097,6 +10099,7 @@ async function runMuxRunnerMain() {
         apProgressResult.lastArtifactCount - apBeforeCount === 0
       ) {
         const ticketDir = path.join(sessionDir, iterTicket);
+        // eslint-disable-next-line pickle/no-sync-in-async
         const { subClass, sessionLogSize, pid } = classifyWorkerSessionLogs(ticketDir, fs.readdirSync(ticketDir));
         if (subClass === 'log_empty') {
           writeActivityEntry(statePath, {
@@ -10685,8 +10688,8 @@ async function runMuxRunnerMain() {
           `You emitted <promise>${PromiseTokens.EPIC_COMPLETED}</promise> but only ${decision.doneCount} of ${decision.totalCount} tickets are status: Done.`,
           decision.pendingIds.length > 0 ? `Pending tickets: ${decision.pendingIds.join(', ')}.` : '',
           decision.kind === 'recover_advance'
-            ? `Continue with the next non-Done ticket. Do NOT emit ${PromiseTokens.EPIC_COMPLETED} again until every linear_ticket_*.md file in the session root reports status: Done.`
-            : `Resume work on current_ticket=${curState.current_ticket}. It is NOT yet Done. Do NOT emit ${PromiseTokens.EPIC_COMPLETED} again until every linear_ticket_*.md file in the session root reports status: Done.`,
+            ? `Continue with the next non-Done ticket. Do NOT emit ${PromiseTokens.EPIC_COMPLETED} again until every rick_ticket_*.md file in the session root reports status: Done.`
+            : `Resume work on current_ticket=${curState.current_ticket}. It is NOT yet Done. Do NOT emit ${PromiseTokens.EPIC_COMPLETED} again until every rick_ticket_*.md file in the session root reports status: Done.`,
           `Use ${PromiseTokens.TASK_COMPLETED} for single-ticket completions; reserve ${PromiseTokens.EPIC_COMPLETED} for the moment all tickets are Done.`,
         ].filter(Boolean).join('\n');
         const handoffSummary = buildIterationHandoffSummary(state, sessionDir, iteration + 1);

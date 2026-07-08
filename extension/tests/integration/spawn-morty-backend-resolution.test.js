@@ -36,7 +36,7 @@ complexity_tier: ${complexityTier}
 
 This ticket drives routing-path regression coverage.
 `;
-  const ticketFile = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  const ticketFile = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
   fs.writeFileSync(ticketFile, content);
   return ticketFile;
 }

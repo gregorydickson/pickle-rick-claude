@@ -89,7 +89,7 @@ There is no `state.failed_tickets` / `state.blocked_tickets` / `state.skipped_ti
 
 Heal flow recipe: To make a previously-failed or skipped ticket runnable again:
 1. Stop the pipeline (Ctrl-C or `eat-pickle`).
-2. Edit the ticket's frontmatter file at `<SESSION_ROOT>/<hash>/linear_ticket_<hash>.md`: set `status: Todo`.
+2. Edit the ticket's frontmatter file at `<SESSION_ROOT>/<hash>/rick_ticket_<hash>.md`: set `status: Todo`.
 3. (Optional Finding #36 workaround if `state.current_ticket` points at this same ticket): set `state.current_ticket = null` BEFORE running setup.js — only needed when running an older deployed setup.js that lacks R-SRTS-1.
 4. Re-run `setup.js --resume <SESSION_ROOT>`. The runner will pick up the ticket via `findNextPendingTicketId` (frontmatter read). Do NOT edit `refinement_manifest.json` for this purpose — the runner does not consult it for runnability.
 

@@ -31,7 +31,7 @@ function tmpDir(prefix) {
 function writeTicket(sessionDir, id, lines) {
   const dir = path.join(sessionDir, id);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `linear_ticket_${id}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(dir, `rick_ticket_${id}.md`), lines.join('\n'));
 }
 
 function gitInit(dir) {

@@ -83,7 +83,7 @@ function scaffoldThreeTickets(sessionRoot) {
         const dir = path.join(sessionRoot, id);
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(
-            path.join(dir, `linear_ticket_${id}.md`),
+            path.join(dir, `rick_ticket_${id}.md`),
             `---\nid: ${id}\ntitle: "Teams fixture ticket ${i + 1}"\nstatus: Todo\norder: ${(i + 1) * 10}\n---\n# Fixture ${i + 1}\n`,
         );
     });
@@ -102,7 +102,7 @@ test('AC-PNTR-04: /pickle-tmux --teams sets tmux_mode + teams_mode jointly on a 
 
     for (const id of ids) {
         assert.ok(
-            fs.existsSync(path.join(sessionRoot, id, `linear_ticket_${id}.md`)),
+            fs.existsSync(path.join(sessionRoot, id, `rick_ticket_${id}.md`)),
             `3-ticket fixture present: ${id}`,
         );
     }

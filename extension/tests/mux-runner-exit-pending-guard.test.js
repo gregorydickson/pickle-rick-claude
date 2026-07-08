@@ -31,7 +31,7 @@ function writeTicket(sessionDir, id, status) {
     '',
     '# Fixture',
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), content);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), content);
 }
 
 function writeState(sessionDir, overrides = {}) {

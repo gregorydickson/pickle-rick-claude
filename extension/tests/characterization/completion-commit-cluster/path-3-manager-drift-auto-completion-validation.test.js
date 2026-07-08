@@ -58,8 +58,8 @@ function writePrevTicket(sessionDir, ticketId, status = 'In Progress') {
     '## Acceptance Criteria',
     '- [x] implementation complete',
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), content);
-  return path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), content);
+  return path.join(ticketDir, `rick_ticket_${ticketId}.md`);
 }
 
 function withDataRoot(dataRoot, fn) {
@@ -138,7 +138,7 @@ test('path-3 manager-drift: no AC evidence → action=skip (acceptance_criteria_
     // Write ticket WITHOUT checked acceptance criteria
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
       '---',
       `id: ${ticketId}`,
       'title: "No-AC ticket"',

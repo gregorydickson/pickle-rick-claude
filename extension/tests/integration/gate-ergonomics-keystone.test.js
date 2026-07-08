@@ -185,7 +185,7 @@ function writeTicketFile(sessionDir, template, extra = {}) {
   const ticket = { ...template, ...extra };
   const ticketDir = path.join(sessionDir, ticket.id);
   fs.mkdirSync(ticketDir, { recursive: true });
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticket.id}.md`), [
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticket.id}.md`), [
     '---',
     `id: ${ticket.id}`,
     `title: ${ticket.title}`,
@@ -310,7 +310,7 @@ test('gate ergonomics keystone: paused setup, refinement, readiness, audit, and 
     fs.writeFileSync(path.join(sessionDir, 'decomposition_manifest.json'), JSON.stringify(refinementManifest, null, 2));
 
     for (const ticket of refinementManifest.tickets) {
-      const ticketPath = path.join(sessionDir, ticket.id, `linear_ticket_${ticket.id}.md`);
+      const ticketPath = path.join(sessionDir, ticket.id, `rick_ticket_${ticket.id}.md`);
       const content = fs.readFileSync(ticketPath, 'utf-8');
       assert.match(content, new RegExp(`source_prd: ${ticket.source_prd.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}`));
       assert.doesNotMatch(content, /^\s*source_prd:\s+\//m);

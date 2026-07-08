@@ -49,7 +49,7 @@ function writeTicket(sessionDir, ticketId, { declaredPaths = [], rCode = null, t
   if (rCode) lines.push(`r_code: ${rCode}`);
   lines.push('---', '# Body', '## Files to modify');
   for (const p of declaredPaths) lines.push(`- \`${p}\``);
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
 }
 
 const PASS = () => 'passing';

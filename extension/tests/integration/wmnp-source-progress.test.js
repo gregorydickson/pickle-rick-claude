@@ -260,7 +260,7 @@ test('M4: unreadable/corrupt ticket file → resolvePreTicket keeps the ticket A
   // Make the ticket PATH a directory where the .md file is itself a directory →
   // readFileSync throws EISDIR (an unreadable, non-ENOENT corruption case).
   fs.mkdirSync(path.join(sessionDir, ticketId), { recursive: true });
-  fs.mkdirSync(path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`));
+  fs.mkdirSync(path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`));
   const writes = [];
   const origWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = (chunk, ...rest) => { writes.push(String(chunk)); return origWrite(chunk, ...rest); };

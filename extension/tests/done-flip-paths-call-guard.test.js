@@ -62,18 +62,18 @@ function writeTicketFile(sessionDir, ticketId, status = 'In Progress') {
     '## Acceptance Criteria',
     '- [x] implementation complete',
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), body);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), body);
 }
 
 function readTicketStatus(sessionDir, ticketId) {
-  const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
   const content = fs.readFileSync(ticketPath, 'utf8');
   const match = /^status:\s*"?([^"\n]+)"?/m.exec(content);
   return match ? match[1].trim() : null;
 }
 
 function readTicketCompletionCommit(sessionDir, ticketId) {
-  const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
   const content = fs.readFileSync(ticketPath, 'utf8');
   return readFrontmatterField(content, 'completion_commit');
 }

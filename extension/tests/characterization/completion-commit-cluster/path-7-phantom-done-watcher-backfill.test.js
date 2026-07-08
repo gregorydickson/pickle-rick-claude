@@ -63,7 +63,7 @@ function writeTicket(sessionDir, ticketId, frontmatter) {
     lines.push(`${k}: "${v}"`);
   }
   lines.push('order: 1', '---', '# Body');
-  const ticketPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
   fs.writeFileSync(ticketPath, lines.join('\n'));
   return ticketPath;
 }

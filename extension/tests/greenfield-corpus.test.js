@@ -63,15 +63,15 @@ function copyFixtureTicket(sessionDir, relDir, ticketId) {
   const dest = path.join(sessionDir, ticketId);
   fs.mkdirSync(dest, { recursive: true });
   fs.copyFileSync(
-    path.join(CORPUS, relDir, ticketId, `linear_ticket_${ticketId}.md`),
-    path.join(dest, `linear_ticket_${ticketId}.md`),
+    path.join(CORPUS, relDir, ticketId, `rick_ticket_${ticketId}.md`),
+    path.join(dest, `rick_ticket_${ticketId}.md`),
   );
 }
 
 function writeTicket(sessionDir, id, lines) {
   const dir = path.join(sessionDir, id);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `linear_ticket_${id}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(dir, `rick_ticket_${id}.md`), lines.join('\n'));
 }
 
 function initGitRepo(root) {

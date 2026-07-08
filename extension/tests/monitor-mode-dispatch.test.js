@@ -85,7 +85,7 @@ describe('monitor-mode-dispatch', () => {
             const ticketDir = path.join(sessionDir, 'aabbccdd');
             fs.mkdirSync(ticketDir, { recursive: true });
             fs.writeFileSync(
-                path.join(ticketDir, 'linear_ticket_aabbccdd.md'),
+                path.join(ticketDir, 'rick_ticket_aabbccdd.md'),
                 [
                     '---',
                     'id: aabbccdd',

@@ -38,7 +38,7 @@ function writeTicket(sessionDir, ticketId, status) {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
   const fm = ['---', `id: "${ticketId}"`, `status: "${status}"`, 'order: 1', '---', '# Body'].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), fm);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), fm);
 }
 
 function porcelain(dir) {

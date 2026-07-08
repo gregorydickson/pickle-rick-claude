@@ -58,7 +58,7 @@ function makeSession(repoRoot, ticketId = 'seed1234') {
 function writeTicket(sessionDir, ticketId, declaredPaths) {
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
-    fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
         '---',
         `id: ${ticketId}`,
         'title: Seed scope test',

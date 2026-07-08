@@ -392,7 +392,7 @@ export function upsertFrontmatterField(content, field, value) {
     return content.slice(0, insertPoint) + `${line}\n` + content.slice(insertPoint);
 }
 export function ticketFilePath(sessionDir, ticketId) {
-    return path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    return path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
 }
 export function clearTicketResolutionTimestamps(content) {
     const fm = extractFrontmatter(content);
@@ -898,7 +898,7 @@ export function parseTicketFrontmatter(filePath) {
     }
 }
 export function getTicketStatus(sessionRoot, ticketId) {
-    const ticketPath = path.join(sessionRoot, ticketId, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(sessionRoot, ticketId, `rick_ticket_${ticketId}.md`);
     if (!fs.existsSync(ticketPath)) {
         throw new MissingTicketError(sessionRoot, ticketId, ticketPath);
     }
@@ -1048,7 +1048,7 @@ export function collectTickets(sessionDir) {
             try {
                 const files = fs.readdirSync(subDir);
                 for (const file of files) {
-                    if (!file.startsWith('linear_ticket_') || !file.endsWith('.md'))
+                    if (!file.startsWith('rick_ticket_') || !file.endsWith('.md'))
                         continue;
                     const parsed = parseTicketFrontmatter(path.join(subDir, file));
                     if (parsed)

@@ -56,7 +56,7 @@ function writeTicket(sessionDir, ticketId, status = 'In Progress') {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
   const fm = ['---', `id: "${ticketId}"`, `title: "Test ${ticketId}"`, `status: "${status}"`, 'order: 1', '---', '# Body'].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), fm);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), fm);
 }
 
 const cleanup = (...dirs) => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); };
@@ -140,7 +140,7 @@ test('AC-DURA-8 attribute: worker committed untagged (HEAD moved, ticket-id in s
     // No re-commit: HEAD unchanged.
     assert.equal(head(workingDir), committedSha, 'guard must NOT author a second commit (attribute, not re-commit)');
     // completion_commit back-filled into the ticket frontmatter.
-    const raw = fs.readFileSync(path.join(sessionDir, T, `linear_ticket_${T}.md`), 'utf8');
+    const raw = fs.readFileSync(path.join(sessionDir, T, `rick_ticket_${T}.md`), 'utf8');
     const cc = (readFrontmatterField(raw, 'completion_commit') ?? '').replace(/^['"]+|['"]+$/g, '');
     assert.ok(cc.length >= 7 && committedSha.startsWith(cc), `completion_commit must be back-filled (got ${cc})`);
   } finally {

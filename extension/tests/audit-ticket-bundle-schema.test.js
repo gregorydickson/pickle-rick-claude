@@ -104,7 +104,7 @@ const ALL_SEVERITY_FIXTURE = {
   findings: [
     {
       ticket_id: 'aabbccdd',
-      ticket_path: 'aabbccdd/linear_ticket_aabbccdd.md',
+      ticket_path: 'aabbccdd/rick_ticket_aabbccdd.md',
       defect_class: 'path-drift',
       severity: 'fatal',
       evidence: 'cited path `extension/src/missing.ts` not found in git ls-files',
@@ -112,7 +112,7 @@ const ALL_SEVERITY_FIXTURE = {
     },
     {
       ticket_id: '11223344',
-      ticket_path: '11223344/linear_ticket_11223344.md',
+      ticket_path: '11223344/rick_ticket_11223344.md',
       defect_class: 'literal-value-drift',
       severity: 'info',
       evidence: 'version literal(s) ["1.60.0"] differ from package.json version `1.69.0`',
@@ -120,7 +120,7 @@ const ALL_SEVERITY_FIXTURE = {
     },
     {
       ticket_id: 'deadbeef',
-      ticket_path: 'deadbeef/linear_ticket_deadbeef.md',
+      ticket_path: 'deadbeef/rick_ticket_deadbeef.md',
       defect_class: 'self-reference',
       severity: 'warning',
       evidence: 'body cites own hash in: `deadbeef`',
@@ -160,7 +160,7 @@ test('ABS-5: fixture with invalid defect_class fails validation', () => {
     findings: [
       {
         ticket_id: 'aabbccdd',
-        ticket_path: 'aabbccdd/linear_ticket_aabbccdd.md',
+        ticket_path: 'aabbccdd/rick_ticket_aabbccdd.md',
         defect_class: 'not-a-real-class',
         severity: 'fatal',
         evidence: 'test evidence',

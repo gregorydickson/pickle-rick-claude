@@ -74,7 +74,7 @@ function writeTicket(sessionDir, ticketId, title, mappedRequirementsFrontmatter)
     '<!-- audit: 7-class checked 2026-06-16 -->',
     '',
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), raw);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), raw);
 }
 
 /**
@@ -97,7 +97,7 @@ function writeTicketWithDirMismatch(sessionDir, dirHash, frontmatterId) {
   ].join('\n');
   // File must be named after the dir hash so findTicketFiles can discover it;
   // the frontmatter id intentionally differs to trigger the dir-vs-id fatal check.
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${dirHash}.md`), raw);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${dirHash}.md`), raw);
 }
 
 // AC-ATBG-5 + AC-ATBG-3: YAML block-list and inline scalar both yield an info finding

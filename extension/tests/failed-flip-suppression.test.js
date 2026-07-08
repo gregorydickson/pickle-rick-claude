@@ -85,7 +85,7 @@ function makeFixture(opts = {}) {
   const ticketDir = path.join(sessionDir, TICKET);
   mkdirSync(ticketDir, { recursive: true });
   writeFileSync(
-    path.join(ticketDir, `linear_ticket_${TICKET}.md`),
+    path.join(ticketDir, `rick_ticket_${TICKET}.md`),
     opts.ticketFrontmatter ?? `---\nid: ${TICKET}\nstatus: "In Progress"\norder: 1\ncomplexity_tier: medium\n---\n# T\n`,
   );
   writeFileSync(path.join(ticketDir, 'plan_2026-06-11.md'), 'plan body\n');
@@ -240,7 +240,7 @@ test('verified frontmatter completion sha is authoritative ticket_commit evidenc
     const sha = commitWork(fix);
     // preSha == HEAD (no window commit) so ONLY the frontmatter sha arm fires.
     const fm = `---\nid: ${TICKET}\nstatus: "Done"\norder: 1\ncompletion_commit: "${sha}"\n---\n# T\n`;
-    writeFileSync(path.join(fix.ticketDir, `linear_ticket_${TICKET}.md`), fm);
+    writeFileSync(path.join(fix.ticketDir, `rick_ticket_${TICKET}.md`), fm);
     const decision = evaluateFailedFlipSuppression(policyInput(fix, 'head_regression', { preSha: sha }));
     assert.deepEqual(decision, { action: 'suppress', evidence: 'ticket_commit', suppressionCount: 1 });
   } finally { rmSync(fix.tmp, { recursive: true, force: true }); }
@@ -325,7 +325,7 @@ function addTicket(sessionDir, id, status, order) {
   const dir = path.join(sessionDir, id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
-    path.join(dir, `linear_ticket_${id}.md`),
+    path.join(dir, `rick_ticket_${id}.md`),
     `---\nid: ${id}\nstatus: "${status}"\norder: ${order}\n---\n# ${id}\n`,
   );
 }
@@ -388,7 +388,7 @@ test('head-regression: unreattachable-but-real orphan → flip suppressed, statu
   try {
     ageArtifacts(fix.ticketDir);
     writeFileSync(
-      path.join(fix.ticketDir, `linear_ticket_${TICKET}.md`),
+      path.join(fix.ticketDir, `rick_ticket_${TICKET}.md`),
       `---\nid: ${TICKET}\nstatus: "Done"\norder: 1\ncompletion_commit: ${fix.orphanSha}\n---\n# T\n`,
     );
     const result = detectAndRecoverHeadRegression({
@@ -405,7 +405,7 @@ test('head-regression: unreattachable-but-real orphan → flip suppressed, statu
     assert.equal(result.recovered, false);
     assert.equal(result.action, 'flip_suppressed');
 
-    const raw = readFileSync(path.join(fix.ticketDir, `linear_ticket_${TICKET}.md`), 'utf-8');
+    const raw = readFileSync(path.join(fix.ticketDir, `rick_ticket_${TICKET}.md`), 'utf-8');
     assert.match(raw, /status: "Done"/, 'frontmatter status preserved — no Failed flip');
     assert.match(raw, new RegExp(fix.orphanSha), 'completion_commit preserved');
     assert.equal(eventsOf(fix.statePath, 'failed_flip_suppressed').length, 1);
@@ -417,7 +417,7 @@ test('head-regression: suppression cap reached → suppression_cap_escalate, sti
   try {
     ageArtifacts(fix.ticketDir);
     writeFileSync(
-      path.join(fix.ticketDir, `linear_ticket_${TICKET}.md`),
+      path.join(fix.ticketDir, `rick_ticket_${TICKET}.md`),
       `---\nid: ${TICKET}\nstatus: "Done"\norder: 1\ncompletion_commit: ${fix.orphanSha}\n---\n# T\n`,
     );
     // Pre-seed the persisted ledger at the compiled default cap (2).
@@ -436,7 +436,7 @@ test('head-regression: suppression cap reached → suppression_cap_escalate, sti
       log: () => {},
     });
     assert.equal(result.action, 'suppression_cap_escalate');
-    const raw = readFileSync(path.join(fix.ticketDir, `linear_ticket_${TICKET}.md`), 'utf-8');
+    const raw = readFileSync(path.join(fix.ticketDir, `rick_ticket_${TICKET}.md`), 'utf-8');
     assert.match(raw, /status: "Done"/, 'a ticket is only ever flipped Failed with evidence absent');
     const ledger = ledgerOf(fix.statePath);
     assert.equal(ledger[ledger.length - 1].outcome, 'failed');
@@ -461,7 +461,7 @@ test('head-regression: evidence absent + dirty tree → archival runs BEFORE the
       log: () => {},
     });
     assert.equal(result.action, 'marked_failed', 'legitimate evidence-absent failure still flips');
-    const raw = readFileSync(path.join(fix.ticketDir, `linear_ticket_${TICKET}.md`), 'utf-8');
+    const raw = readFileSync(path.join(fix.ticketDir, `rick_ticket_${TICKET}.md`), 'utf-8');
     assert.match(raw, /status: "Failed"/);
     const patches = readdirSync(fix.ticketDir).filter((f) => /^pre_reset_diff_\d+\.patch$/.test(f));
     assert.equal(patches.length, 1, 'dirty tree archived before the flip');
@@ -569,7 +569,7 @@ test('C3: real verified-sha evidence takes precedence over signal_committed (tic
     ageArtifacts(fix.ticketDir);
     const sha = commitWork(fix);
     const fm = `---\nid: ${TICKET}\nstatus: "Done"\norder: 1\ncompletion_commit: "${sha}"\n---\n# T\n`;
-    writeFileSync(path.join(fix.ticketDir, `linear_ticket_${TICKET}.md`), fm);
+    writeFileSync(path.join(fix.ticketDir, `rick_ticket_${TICKET}.md`), fm);
     // Even with a signal cause, a verified sha resolves the descriptive label to
     // ticket_commit (the stronger, git-resolved arm wins the OR-combine).
     const decision = evaluateFailedFlipSuppression(
@@ -599,7 +599,7 @@ test('C3/git-utils invariant: genuine evidence-absent flip still clears completi
       log: () => {},
     });
     assert.equal(result.action, 'marked_failed', 'no signal + no real commit → genuine evidence-absent flip');
-    const raw = readFileSync(path.join(fix.ticketDir, `linear_ticket_${TICKET}.md`), 'utf-8');
+    const raw = readFileSync(path.join(fix.ticketDir, `rick_ticket_${TICKET}.md`), 'utf-8');
     assert.match(raw, /status: "Failed"/);
     // git-utils invariant: status:Failed + completion_commit:null clears inferred.
     assert.doesNotMatch(

@@ -27,12 +27,12 @@ test('AC-TAQ-FIXTURE-01: class-1..7 fixture directories each contain exactly one
 
   for (const klass of classes) {
     const ticketFiles = readdirSync(path.join(FIXTURE_ROOT, klass)).filter((f) =>
-      /^linear_ticket_[a-f0-9]{8}\.md$/.test(f),
+      /^rick_ticket_[a-f0-9]{8}\.md$/.test(f),
     );
     assert.equal(
       ticketFiles.length,
       1,
-      `${klass} must contain exactly one synthetic linear_ticket_<hash>.md, got ${ticketFiles.length}`,
+      `${klass} must contain exactly one synthetic rick_ticket_<hash>.md, got ${ticketFiles.length}`,
     );
   }
 });
@@ -41,7 +41,7 @@ test('AC-TAQ-FIXTURE-01: each class fixture has the audit comment and a delibera
   const classes = readdirSync(FIXTURE_ROOT).filter((d) => d.startsWith('class-'));
   for (const klass of classes) {
     const dir = path.join(FIXTURE_ROOT, klass);
-    const ticketFile = readdirSync(dir).find((f) => f.startsWith('linear_ticket_'));
+    const ticketFile = readdirSync(dir).find((f) => f.startsWith('rick_ticket_'));
     const content = readFileSync(path.join(dir, ticketFile), 'utf-8');
     assert.ok(
       /<!-- audit: 7-class checked \d{4}-\d{2}-\d{2} -->/.test(content),

@@ -147,7 +147,7 @@ test('R-RRPC-3d: a resolved bounded_terminal_escape_cap=2 fires the decision one
     const ticketDir = path.join(tmpD, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
     fs.writeFileSync(
-      path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+      path.join(ticketDir, `rick_ticket_${ticketId}.md`),
       ['---', `id: ${ticketId}`, 'title: R-RRPC-3d fixture', 'status: In Progress', 'order: 1', '---', '', '# Test'].join('\n'),
     );
 

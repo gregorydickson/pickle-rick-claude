@@ -130,11 +130,11 @@ function resolveTicketDir(sessionDir: string, ticketId: string): string {
   return path.join(sessionDir, ticketId);
 }
 
-function findLinearTicketFile(ticketDir: string): string {
+function findRickTicketFile(ticketDir: string): string {
   const ticketFile = fs
     .readdirSync(ticketDir)
-    .find(file => file.startsWith('linear_ticket_') && file.endsWith('.md'));
-  if (!ticketFile) throw new Error(`No linear ticket file found in ${ticketDir}`);
+    .find(file => file.startsWith('rick_ticket_') && file.endsWith('.md'));
+  if (!ticketFile) throw new Error(`No rick ticket file found in ${ticketDir}`);
   return path.join(ticketDir, ticketFile);
 }
 
@@ -197,7 +197,7 @@ export function updateTicketStatusInTransaction(
   txCtx?: TicketTransactionContext,
 ): PlannedTicketWrite {
   const ticketDir = resolveTicketDir(sessionDir, ticketId);
-  const filePath = findLinearTicketFile(ticketDir);
+  const filePath = findRickTicketFile(ticketDir);
   const content = fs.readFileSync(filePath, 'utf-8');
   let updated = content.replace(/^(status:\s*).*$/m, `$1"${newStatus}"`);
   assertStatusWasUpdated(content, updated, filePath);
@@ -233,7 +233,7 @@ export function materializeNewTicket(spec: MaterializeTicketSpec): MaterializedT
   const files = spec.files && spec.files.length > 0
     ? spec.files
     : [{
-        name: spec.ticketFileName ?? `linear_ticket_${spec.ticketId}.md`,
+        name: spec.ticketFileName ?? `rick_ticket_${spec.ticketId}.md`,
         content: spec.content ?? defaultTicketContent(spec),
       }];
 
@@ -241,7 +241,7 @@ export function materializeNewTicket(spec: MaterializeTicketSpec): MaterializedT
     dirPath: root,
     files: files.map(file => ({
       path: assertWithinRoot(
-        file.path ?? path.join(root, file.name ?? `linear_ticket_${spec.ticketId}.md`),
+        file.path ?? path.join(root, file.name ?? `rick_ticket_${spec.ticketId}.md`),
         root,
       ),
       content: file.content,

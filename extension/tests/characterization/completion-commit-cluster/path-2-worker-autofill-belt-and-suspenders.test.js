@@ -45,8 +45,8 @@ function writeTicket(sessionDir, ticketId, extraFrontmatter = {}) {
     lines.push(`${k}: "${v}"`);
   }
   lines.push('---', '# Body');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
-  return path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
+  return path.join(ticketDir, `rick_ticket_${ticketId}.md`);
 }
 
 test('path-2 autofill: absent completion_commit — fills from git-log, action=filled', () => {
@@ -81,7 +81,7 @@ test('path-2 autofill: absent completion_commit — fills from git-log, action=f
 
     // Staged check
     const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: root, encoding: 'utf8' });
-    assert.match(staged, new RegExp(`linear_ticket_${ticketId}\\.md`),
+    assert.match(staged, new RegExp(`rick_ticket_${ticketId}\\.md`),
       'ticket file should be staged after fill');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

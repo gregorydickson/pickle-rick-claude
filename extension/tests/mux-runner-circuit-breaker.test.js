@@ -36,7 +36,7 @@ function writeTicket(sessionDir, id, tierLine) {
   ];
   if (tierLine !== null) frontmatter.push(tierLine);
   frontmatter.push('---', '', '# Test');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), frontmatter.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), frontmatter.join('\n'));
 }
 
 function baseState(sessionDir, repoDir, overrides = {}) {

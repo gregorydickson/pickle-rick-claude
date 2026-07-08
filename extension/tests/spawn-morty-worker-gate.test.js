@@ -112,7 +112,7 @@ function writeSession(root, ticketId, options = {}) {
     start_time_epoch: Math.floor(Date.now() / 1000) - 60,
     activity: [],
   }, null, 2));
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
     '---',
     `id: ${ticketId}`,
     'title: Worker test gate failure',
@@ -590,7 +590,7 @@ test('spawn-morty: test:fast failure with work evidence suppresses the Failed fl
       && state.recovery_attempts.some((a) => a.strategy === 'failed_flip_suppressed' && a.ticket === ticketId));
 
     // Frontmatter status preserved — no Failed flip, no completion commit.
-    const ticketContent = fs.readFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), 'utf8');
+    const ticketContent = fs.readFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), 'utf8');
     assert.match(ticketContent, /status: "In Progress"/);
     assert.doesNotMatch(ticketContent, /status: "Failed"/);
     assert.doesNotMatch(ticketContent, /completion_commit:/);
@@ -658,7 +658,7 @@ test('spawn-morty: evidence-absent test:fast failure still marks ticket Failed a
     assert.ok(state.activity.some((entry) => entry.event === 'worker_gate_failed'));
     assert.equal(state.activity.some((entry) => entry.event === 'failed_flip_suppressed'), false, 'no suppression without evidence');
 
-    const ticketContent = fs.readFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), 'utf8');
+    const ticketContent = fs.readFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), 'utf8');
     assert.match(ticketContent, /status: "Failed"/);
     assert.doesNotMatch(ticketContent, /completion_commit:/);
 

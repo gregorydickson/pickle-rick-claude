@@ -45,7 +45,7 @@ function writeTicketFrontmatter(sessionDir, ticketId, status, extra = []) {
     '---',
     '# Body',
   ];
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
 }
 
 test('guardCompletionCommitBeforeDone: SOFT-variant inferred SHA is auto-promoted to explicit', (t) => {
@@ -68,7 +68,7 @@ test('guardCompletionCommitBeforeDone: SOFT-variant inferred SHA is auto-promote
 
     const sessionDir = path.join(root, 'session');
     writeTicketFrontmatter(sessionDir, ticketId, 'Done');
-    const ticketFile = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    const ticketFile = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
     // Sanity-check the precondition: no completion_commit field yet.
     assert.equal(readFrontmatterField(fs.readFileSync(ticketFile, 'utf8'), 'completion_commit'), null);
 

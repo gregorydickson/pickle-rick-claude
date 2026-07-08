@@ -38,7 +38,7 @@ function writeTicket(sessionDir, ticketId, status, order = 1, extraFm = []) {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
   const fm = ['---', `id: "${ticketId}"`, `status: "${status}"`, `order: ${order}`, ...extraFm, '---', '# Body'].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), fm);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), fm);
 }
 
 function readActivity(statePath) {
@@ -126,7 +126,7 @@ test('AC-DURA-8 attribute branch: worker committed untagged (HEAD moved), clean 
     // No second commit — HEAD unchanged from the worker's own commit.
     assert.equal(head(workingDir), committedSha, 'attribute branch must NOT author a second commit');
     // completion_commit back-filled into the ticket frontmatter.
-    const raw = fs.readFileSync(path.join(sessionDir, T, `linear_ticket_${T}.md`), 'utf8');
+    const raw = fs.readFileSync(path.join(sessionDir, T, `rick_ticket_${T}.md`), 'utf8');
     const cc = (readFrontmatterField(raw, 'completion_commit') ?? '').replace(/^['"]+|['"]+$/g, '');
     assert.ok(cc.length >= 7 && committedSha.startsWith(cc), `completion_commit must be back-filled to the worker commit (got ${cc})`);
 
@@ -150,7 +150,7 @@ test('idempotent no-op keyed on HEAD movement: HEAD already moved + untracked re
     execFileSync('git', ['commit', '-q', '-m', `feat: ${T}`, '--no-gpg-sign'], { cwd: workingDir, stdio: 'ignore' });
     const tagged = head(workingDir);
     // Stamp completion_commit so it reads explicit.
-    const tfPath = path.join(sessionDir, T, `linear_ticket_${T}.md`);
+    const tfPath = path.join(sessionDir, T, `rick_ticket_${T}.md`);
     writeTicket(sessionDir, T, 'In Progress', 1, [`completion_commit: "${tagged}"`]);
     void tfPath;
     execFileSync('git', ['add', '-A'], { cwd: workingDir, stdio: 'ignore' });

@@ -80,7 +80,7 @@ test('retryTicket: resets ticket status to Todo and archives artifacts', () => {
 
         // Write ticket file with Done status
         fs.writeFileSync(
-            path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+            path.join(ticketDir, `rick_ticket_${ticketId}.md`),
             `---\nid: ${ticketId}\ntitle: Test\nstatus: Done\norder: 10\n---\n`
         );
 
@@ -108,7 +108,7 @@ test('retryTicket: resets ticket status to Todo and archives artifacts', () => {
 
         // Verify: ticket status reset to Todo
         const ticketContent = fs.readFileSync(
-            path.join(ticketDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(ticketDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         assert.match(ticketContent, /^status: "Todo"$/m);
 
         // Verify: artifact was archived
@@ -160,7 +160,7 @@ test('retryTicket: archives implementation and review lifecycle artifacts to pre
         fs.mkdirSync(ticketDir, { recursive: true });
 
         fs.writeFileSync(
-            path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+            path.join(ticketDir, `rick_ticket_${ticketId}.md`),
             `---\nid: ${ticketId}\ntitle: Test\nstatus: Done\norder: 10\n---\n`
         );
         fs.writeFileSync(path.join(ticketDir, 'conformance_2026-05-07.md'), '# Old implementation evidence');
@@ -218,7 +218,7 @@ test('retryTicket: clears stale completed_at and skipped_at when resetting to To
         fs.mkdirSync(ticketDir, { recursive: true });
 
         fs.writeFileSync(
-            path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+            path.join(ticketDir, `rick_ticket_${ticketId}.md`),
             `---\nid: ${ticketId}\ntitle: Test\nstatus: Done\norder: 10\ncompleted_at: "2026-03-01T00:00:00.000Z"\nskipped_at: "2026-03-02T00:00:00.000Z"\n---\n`
         );
 
@@ -242,7 +242,7 @@ test('retryTicket: clears stale completed_at and skipped_at when resetting to To
         retryTicket(ticketId, fakeCwd);
 
         const ticketContent = fs.readFileSync(
-            path.join(ticketDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(ticketDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         assert.match(ticketContent, /^status: "Todo"$/m);
         assert.doesNotMatch(ticketContent, /^completed_at:/m);
         assert.doesNotMatch(ticketContent, /^skipped_at:/m);
@@ -271,7 +271,7 @@ test('retryTicket: falls back to active session state when the sessions map is m
         fs.mkdirSync(ticketDir, { recursive: true });
 
         fs.writeFileSync(
-            path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+            path.join(ticketDir, `rick_ticket_${ticketId}.md`),
             `---\nid: ${ticketId}\ntitle: Test\nstatus: Done\norder: 10\n---\n`
         );
         fs.writeFileSync(
@@ -293,7 +293,7 @@ test('retryTicket: falls back to active session state when the sessions map is m
             fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
         assert.equal(updatedState.active, true);
         const ticketContent = fs.readFileSync(
-            path.join(ticketDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(ticketDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         assert.match(ticketContent, /^status: "Todo"$/m);
     } finally {
         if (saved === undefined) {
@@ -323,11 +323,11 @@ test('retryTicket: missing map prefers the newest inactive same-cwd fallback ses
         fs.mkdirSync(newTicketDir, { recursive: true });
 
         fs.writeFileSync(
-            path.join(oldTicketDir, `linear_ticket_${ticketId}.md`),
+            path.join(oldTicketDir, `rick_ticket_${ticketId}.md`),
             `---\nid: ${ticketId}\ntitle: Old\nstatus: Done\norder: 10\n---\n`
         );
         fs.writeFileSync(
-            path.join(newTicketDir, `linear_ticket_${ticketId}.md`),
+            path.join(newTicketDir, `rick_ticket_${ticketId}.md`),
             `---\nid: ${ticketId}\ntitle: New\nstatus: Done\norder: 10\n---\n`
         );
 
@@ -374,8 +374,8 @@ test('retryTicket: missing map prefers the newest inactive same-cwd fallback ses
         assert.equal(newState.active, true, 'newest fallback session should be reactivated');
         assert.equal(newState.current_ticket, ticketId, 'newest fallback session should own the retry');
 
-        const oldTicketContent = fs.readFileSync(path.join(oldTicketDir, `linear_ticket_${ticketId}.md`), 'utf-8');
-        const newTicketContent = fs.readFileSync(path.join(newTicketDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+        const oldTicketContent = fs.readFileSync(path.join(oldTicketDir, `rick_ticket_${ticketId}.md`), 'utf-8');
+        const newTicketContent = fs.readFileSync(path.join(newTicketDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         assert.match(oldTicketContent, /^status: Done$/m, 'older fallback ticket must remain untouched');
         assert.match(newTicketContent, /^status: "Todo"$/m, 'newest fallback ticket should be reset');
     } finally {
@@ -403,7 +403,7 @@ test('retryTicket: resolved session path wins over stale state.session_dir', () 
         fs.mkdirSync(liveTicketDir, { recursive: true });
 
         fs.writeFileSync(
-            path.join(liveTicketDir, `linear_ticket_${ticketId}.md`),
+            path.join(liveTicketDir, `rick_ticket_${ticketId}.md`),
             `---\nid: ${ticketId}\ntitle: Test\nstatus: Done\norder: 10\n---\n`
         );
 
@@ -434,7 +434,7 @@ test('retryTicket: resolved session path wins over stale state.session_dir', () 
         assert.equal(liveState.current_ticket, ticketId);
 
         const ticketContent = fs.readFileSync(
-            path.join(liveTicketDir, `linear_ticket_${ticketId}.md`), 'utf-8');
+            path.join(liveTicketDir, `rick_ticket_${ticketId}.md`), 'utf-8');
         assert.match(ticketContent, /^status: "Todo"$/m);
     } finally {
         if (saved === undefined) {
@@ -462,7 +462,7 @@ test('retryTicket: malformed worker timeout falls back to spawn-morty-compatible
         fs.mkdirSync(ticketDir, { recursive: true });
 
         fs.writeFileSync(
-            path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+            path.join(ticketDir, `rick_ticket_${ticketId}.md`),
             `---\nid: ${ticketId}\ntitle: Test\nstatus: Done\norder: 10\n---\n`
         );
         fs.writeFileSync(

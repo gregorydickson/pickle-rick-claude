@@ -38,8 +38,8 @@ function writeTicket(sessionDir, ticketId, frontmatter) {
     lines.push(`${k}: "${v}"`);
   }
   lines.push('order: 1', '---', '# Body');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
-  return path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
+  return path.join(ticketDir, `rick_ticket_${ticketId}.md`);
 }
 
 function withDataRoot(dataRoot, fn) {
@@ -66,8 +66,8 @@ test('path-4 processTaskCompleted: EPIC_COMPLETED with Done ticket → guard pas
     writeTicket(sessionDir, ticketId, {
       id: ticketId,
       status: 'Done',
-      completion_commit: ENTRY.fixture.session_dir_skeleton[`${ticketId}/linear_ticket_${ticketId}.md`].frontmatter.completion_commit,
-      title: ENTRY.fixture.session_dir_skeleton[`${ticketId}/linear_ticket_${ticketId}.md`].frontmatter.title,
+      completion_commit: ENTRY.fixture.session_dir_skeleton[`${ticketId}/rick_ticket_${ticketId}.md`].frontmatter.completion_commit,
+      title: ENTRY.fixture.session_dir_skeleton[`${ticketId}/rick_ticket_${ticketId}.md`].frontmatter.title,
     });
 
     const statePath = path.join(sessionDir, 'state.json');
@@ -107,7 +107,7 @@ test('path-4 processTaskCompleted: EPIC_COMPLETED with Done ticket → guard pas
     assert.equal(action.reason, 'success', `expected reason=success, got '${action.reason}'`);
 
     // Ticket stays Done
-    const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
     const content = fs.readFileSync(ticketPath, 'utf8');
     const status = readFrontmatterField(content, 'status');
     assert.equal(status, 'Done', `expected ticket status=Done after task_completed, got '${status}'`);

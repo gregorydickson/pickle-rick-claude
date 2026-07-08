@@ -71,7 +71,7 @@ function buildSession(tmpRoot) {
     const tickADir = path.join(sessionDir, 'tickA');
     fs.mkdirSync(tickADir, { recursive: true });
     fs.writeFileSync(
-        path.join(tickADir, 'linear_ticket_tickA.md'),
+        path.join(tickADir, 'rick_ticket_tickA.md'),
         ['---', 'id: tickA', 'title: Ticket A', 'status: Todo', 'order: 1', '---', '', '# Ticket A'].join('\n')
     );
 
@@ -79,7 +79,7 @@ function buildSession(tmpRoot) {
     const tickBDir = path.join(sessionDir, 'tickB');
     fs.mkdirSync(tickBDir, { recursive: true });
     fs.writeFileSync(
-        path.join(tickBDir, 'linear_ticket_tickB.md'),
+        path.join(tickBDir, 'rick_ticket_tickB.md'),
         ['---', 'id: tickB', 'title: Ticket B', 'status: Todo', 'order: 2', '---', '', '# Ticket B'].join('\n')
     );
 

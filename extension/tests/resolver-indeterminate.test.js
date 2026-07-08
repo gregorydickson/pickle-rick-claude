@@ -32,7 +32,7 @@ function buildSession(symbols) {
   const sessionDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-w1c-')));
   const ticketDir = path.join(sessionDir, 'wb0001');
   fs.mkdirSync(ticketDir, { recursive: true });
-  fs.writeFileSync(path.join(ticketDir, 'linear_ticket_wb0001.md'), [
+  fs.writeFileSync(path.join(ticketDir, 'rick_ticket_wb0001.md'), [
     '---', 'id: wb0001', 'key: WB-1', 'ac_ids: []', '---', '',
     '# Ticket', '', '## Acceptance Criteria', '- [ ] `node --test` passes.', '',
     '## Interface Contracts', '',

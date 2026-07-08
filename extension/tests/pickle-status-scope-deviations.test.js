@@ -71,7 +71,7 @@ function makeTestContext(tmp, tickets) {
     const ticketDir = path.join(sessionDir, ticket.id);
     fs.mkdirSync(ticketDir, { recursive: true });
     fs.writeFileSync(
-      path.join(ticketDir, `linear_ticket_${ticket.id}.md`),
+      path.join(ticketDir, `rick_ticket_${ticket.id}.md`),
       `---\nid: ${ticket.id}\ntitle: ${ticket.title}\nstatus: In Progress\npriority: Medium\n---\n`
     );
   }

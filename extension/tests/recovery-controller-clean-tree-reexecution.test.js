@@ -54,7 +54,7 @@ function scaffoldSession(sessionDir, { complexityTier = 'medium', completionComm
     '# Description',
     '',
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${TICKET_ID}.md`), fm, 'utf-8');
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${TICKET_ID}.md`), fm, 'utf-8');
   return ticketDir;
 }
 

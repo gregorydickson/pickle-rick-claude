@@ -76,7 +76,7 @@ function makeTicketFile(sessionDir, ticketId, status, completionCommit) {
     '---',
     '# Test',
   ].filter(Boolean).join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), frontmatter);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), frontmatter);
 }
 
 function makeStatePath(sessionDir) {
@@ -251,7 +251,7 @@ test('divergent orphan (sibling line) + worker SIGKILLed → zero mutation, held
       result.action === 'flip_suppressed' || result.action === 'suppression_cap_escalate',
       `real orphan commit = evidence → hold variant, got: ${result.action}`,
     );
-    const ticketRaw = fs.readFileSync(path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`), 'utf-8');
+    const ticketRaw = fs.readFileSync(path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`), 'utf-8');
     assert.ok(!ticketRaw.includes('status: "Failed"'), 'hold path must not flip the ticket Failed');
 
     const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));

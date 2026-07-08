@@ -94,7 +94,7 @@ function buildEnrichedTickets(parentPrdPath, cwd) {
 function writeTicket(sessionDir, ticket) {
   const ticketDir = path.join(sessionDir, ticket.id);
   fs.mkdirSync(ticketDir, { recursive: true });
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticket.id}.md`), [
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticket.id}.md`), [
     '---',
     `id: ${ticket.id}`,
     `key: ${ticket.id.toUpperCase()}`,

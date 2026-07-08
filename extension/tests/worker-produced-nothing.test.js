@@ -67,7 +67,7 @@ function makeTicket(sessionDir, ticketId, { tier = 'medium', files = {} } = {}) 
   const ticketDir = path.join(sessionDir, ticketId);
   mkdirSync(ticketDir, { recursive: true });
   writeFileSync(
-    path.join(ticketDir, `linear_ticket_${ticketId}.md`),
+    path.join(ticketDir, `rick_ticket_${ticketId}.md`),
     `---\nid: ${ticketId}\ncomplexity_tier: ${tier}\n---\n# ${ticketId}\n`,
   );
   for (const [name, content] of Object.entries(files)) {

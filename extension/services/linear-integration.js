@@ -56,7 +56,7 @@ function splitLinearCommand(command) {
     return { bin, args: tokens };
 }
 function findTicketFile(sessionDir, ticketId) {
-    const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
     if (fs.existsSync(ticketPath))
         return ticketPath;
     return null;

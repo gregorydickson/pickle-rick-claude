@@ -73,7 +73,7 @@ function readFinalTicketStatuses(sessionDir: string): Record<string, string> {
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const ticketFile = path.join(sessionDir, entry.name, `linear_ticket_${entry.name}.md`);
+    const ticketFile = path.join(sessionDir, entry.name, `rick_ticket_${entry.name}.md`);
     try {
       const content = fs.readFileSync(ticketFile, 'utf-8');
       statuses[entry.name] = parseTicketStatus(content);
@@ -97,7 +97,7 @@ function advanceOneTicketToDone(sessionDir: string): void {
     .sort((a, b) => a.name.localeCompare(b.name));
 
   for (const entry of sorted) {
-    const ticketFile = path.join(sessionDir, entry.name, `linear_ticket_${entry.name}.md`);
+    const ticketFile = path.join(sessionDir, entry.name, `rick_ticket_${entry.name}.md`);
     let content: string;
     try {
       content = fs.readFileSync(ticketFile, 'utf-8');

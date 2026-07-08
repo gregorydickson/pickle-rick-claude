@@ -40,7 +40,7 @@ function commitWith(dir, file, message) {
 function writeTicket(sessionDir, ticketId, lines) {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
 }
 
 // AC-OMA-2: a no-op/clean-audit ticket borrowing a DIFFERENT ticket's e2e commit
@@ -168,7 +168,7 @@ test('R-OMA: without sessionDir context the explicit SHA is accepted (default = 
     ]);
     // ticketPath supplied directly, NO sessionDir → no sibling scan.
     const evidence = readEvidence({
-      ticketPath: path.join(sessionDir, 'tk000001', 'linear_ticket_tk000001.md'),
+      ticketPath: path.join(sessionDir, 'tk000001', 'rick_ticket_tk000001.md'),
       workingDir: root,
     });
     assert.equal(evidence.kind, 'committed');

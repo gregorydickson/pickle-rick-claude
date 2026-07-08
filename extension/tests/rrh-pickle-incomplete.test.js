@@ -95,7 +95,7 @@ function writeTicket(sessionDir, id, order, status = 'Todo') {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${id}.md`),
+    path.join(ticketDir, `rick_ticket_${id}.md`),
     `---\nid: ${id}\ntitle: RRH test ticket ${id}\nstatus: ${status}\norder: ${order}\n---\n\n# Test\n`,
   );
 }

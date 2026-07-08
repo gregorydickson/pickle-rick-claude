@@ -214,7 +214,7 @@ function writePipelineTicket(sessionDir, id, order, status) {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${id}.md`),
+    path.join(ticketDir, `rick_ticket_${id}.md`),
     `---\nid: ${id}\ntitle: DSAN2 premature-advance ticket ${id}\nstatus: ${status}\norder: ${order}\n---\n\n# Test\n`,
   );
 }
@@ -281,7 +281,7 @@ test('B-DSAN2 incident-1 premature-advance: clean pickle exit-0 with a pending t
     );
 
     // The pending ticket stays Todo (the pipeline did not falsely complete it).
-    const pendingFile = path.join(sessionDir, 'dsan2bbb', 'linear_ticket_dsan2bbb.md');
+    const pendingFile = path.join(sessionDir, 'dsan2bbb', 'rick_ticket_dsan2bbb.md');
     assert.ok(
       fs.readFileSync(pendingFile, 'utf-8').includes('status: Todo'),
       'premature-advance regression: the pending ticket must remain Todo (no false advance)',

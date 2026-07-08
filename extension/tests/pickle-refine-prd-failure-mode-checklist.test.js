@@ -94,8 +94,8 @@ function makeTicket(body) {
   return {
     id: 'aabbccdd',
     title: 'fixture',
-    filePath: '/fake/aabbccdd/linear_ticket_aabbccdd.md',
-    relPath: 'aabbccdd/linear_ticket_aabbccdd.md',
+    filePath: '/fake/aabbccdd/rick_ticket_aabbccdd.md',
+    relPath: 'aabbccdd/rick_ticket_aabbccdd.md',
     mappedRequirements: [],
     body,
     problemSection: '',

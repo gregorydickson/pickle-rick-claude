@@ -23,7 +23,7 @@ test('review ticket: frontmatter round-trip preserves all fields', () => {
             'created: 2026-02-27',
             'updated: 2026-02-27',
             'links:',
-            '  - url: ../linear_ticket_parent.md',
+            '  - url: ../rick_ticket_parent.md',
             '    title: Parent Ticket',
             '---',
             '# Description',
@@ -31,7 +31,7 @@ test('review ticket: frontmatter round-trip preserves all fields', () => {
             'Review tickets abc1, def2, ghi3 for cross-cutting concerns.',
         ].join('\n');
 
-        const filePath = path.join(dir, 'linear_ticket_r1a2b3c4.md');
+        const filePath = path.join(dir, 'rick_ticket_r1a2b3c4.md');
         fs.writeFileSync(filePath, ticketContent);
 
         const parsed = parseTicketFrontmatter(filePath);
@@ -61,7 +61,7 @@ test('review ticket: parseTicketFrontmatter extracts review_group via extractFro
             '# Review',
         ].join('\n');
 
-        const filePath = path.join(dir, 'linear_ticket_r_group_test.md');
+        const filePath = path.join(dir, 'rick_ticket_r_group_test.md');
         fs.writeFileSync(filePath, ticketContent);
 
         // parseTicketFrontmatter returns TicketInfo which has id, title, status, order, type
@@ -99,7 +99,7 @@ test('review ticket: malformed review_group with empty segments', () => {
             '# Review',
         ].join('\n');
 
-        const filePath = path.join(dir, 'linear_ticket_r_malformed.md');
+        const filePath = path.join(dir, 'rick_ticket_r_malformed.md');
         fs.writeFileSync(filePath, ticketContent);
 
         const content = fs.readFileSync(filePath, 'utf-8');
@@ -130,7 +130,7 @@ test('review ticket: review_group parsing from frontmatter', () => {
             '# Review',
         ].join('\n');
 
-        const filePath = path.join(dir, 'linear_ticket_r5e6f7g8.md');
+        const filePath = path.join(dir, 'rick_ticket_r5e6f7g8.md');
         fs.writeFileSync(filePath, ticketContent);
 
         // Extract review_group via extractFrontmatter + manual parse

@@ -31,7 +31,7 @@ function writeTicket(dir, { id, order = 0, depends_on = [], status = 'Todo' }) {
         ? `depends_on:\n${depends_on.map((d) => `  - ${d}`).join('\n')}\n`
         : '';
     fs.writeFileSync(
-        path.join(sub, `linear_ticket_${id}.md`),
+        path.join(sub, `rick_ticket_${id}.md`),
         `---\nid: ${id}\ntitle: ${id}\nstatus: ${status}\norder: ${order}\n${depsBlock}---\n`,
     );
 }
@@ -145,7 +145,7 @@ test('parseTicketFrontmatter: inline depends_on array', () => {
     try {
         const sub = path.join(dir, 't1');
         fs.mkdirSync(sub);
-        const file = path.join(sub, 'linear_ticket_t1.md');
+        const file = path.join(sub, 'rick_ticket_t1.md');
         fs.writeFileSync(file, '---\nid: t1\ntitle: t1\nstatus: Todo\norder: 10\ndepends_on: [a, "b", c]\n---\n');
         const parsed = parseTicketFrontmatter(file);
         assert.deepEqual(parsed.depends_on, ['a', 'b', 'c']);
@@ -159,7 +159,7 @@ test('parseTicketFrontmatter: dependencies alias merges with depends_on, dedupes
     try {
         const sub = path.join(dir, 't1');
         fs.mkdirSync(sub);
-        const file = path.join(sub, 'linear_ticket_t1.md');
+        const file = path.join(sub, 'rick_ticket_t1.md');
         fs.writeFileSync(
             file,
             '---\nid: t1\ntitle: t1\nstatus: Todo\norder: 10\ndepends_on:\n  - a\n  - b\ndependencies:\n  - b\n  - c\n---\n',
@@ -176,7 +176,7 @@ test('parseTicketFrontmatter: external: prefix is stripped', () => {
     try {
         const sub = path.join(dir, 't1');
         fs.mkdirSync(sub);
-        const file = path.join(sub, 'linear_ticket_t1.md');
+        const file = path.join(sub, 'rick_ticket_t1.md');
         fs.writeFileSync(
             file,
             '---\nid: t1\ntitle: t1\nstatus: Todo\norder: 10\ndepends_on:\n  - external: ext-thing\n  - local-dep\n---\n',

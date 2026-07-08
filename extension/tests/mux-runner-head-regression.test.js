@@ -42,7 +42,7 @@ function makeTicketFile(sessionDir, ticketId, status, completionCommit) {
     '---',
     '# Test',
   ].filter(Boolean).join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), frontmatter);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), frontmatter);
 }
 
 function makeStatePath(sessionDir) {
@@ -141,7 +141,7 @@ test('R-CXOR-1: detectAndRecoverHeadRegression marks ticket Failed when orphan u
   assert.equal(headSha(repoDir), startCommit, 'HEAD should still be at startCommit (no history mutation)');
 
   // Verify ticket was flipped to Failed
-  const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
   const ticketContent = fs.readFileSync(ticketPath, 'utf-8');
   assert.ok(ticketContent.includes('status: "Failed"') || ticketContent.includes("status: 'Failed'"), 'ticket status should be Failed');
 
@@ -202,7 +202,7 @@ test('R-CXOR-1: NEVER leaves ticket Done at baseline — either reattached or Fa
       result.action === 'flip_suppressed' || result.action === 'suppression_cap_escalate' || result.action === 'marked_failed',
       `non-reattach action must be a hold variant or marked_failed, got: ${result.action}`,
     );
-    const ticketPath = path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
     const ticketContent = fs.readFileSync(ticketPath, 'utf-8');
     assert.ok(!ticketContent.includes('status: "Done"') && !ticketContent.includes("status: 'Done'"), 'ticket must not be Done at baseline');
     // orphan_commit_unreattachable accompanies the non-reattach hold/flip

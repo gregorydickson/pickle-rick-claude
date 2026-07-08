@@ -98,7 +98,7 @@ function writeSession(root, ticketId) {
     start_time_epoch: Math.floor(Date.now() / 1000) - 60,
     activity: [],
   }, null, 2));
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), [
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
     '---',
     `id: ${ticketId}`,
     'title: Worker node_modules reuse',

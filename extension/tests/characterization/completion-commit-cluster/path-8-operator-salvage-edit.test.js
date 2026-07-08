@@ -71,7 +71,7 @@ function writeTicketWithRawFrontmatter(sessionDir, ticketId, completionCommitLin
   ];
   if (completionCommitLine) lines.push(completionCommitLine);
   lines.push('---', '# Body');
-  const ticketPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  const ticketPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
   fs.writeFileSync(ticketPath, lines.join('\n'));
   return ticketPath;
 }

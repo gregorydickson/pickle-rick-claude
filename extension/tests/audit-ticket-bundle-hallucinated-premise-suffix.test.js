@@ -53,7 +53,7 @@ function makeSessionDir(problemText) {
     'Fix it.',
   ].join('\n');
 
-  fs.writeFileSync(path.join(ticketSubdir, `linear_ticket_${ticketId}.md`), ticketContent, 'utf-8');
+  fs.writeFileSync(path.join(ticketSubdir, `rick_ticket_${ticketId}.md`), ticketContent, 'utf-8');
 
   // Minimal state.json so loadSessionState resolves working_dir to the project.
   fs.writeFileSync(

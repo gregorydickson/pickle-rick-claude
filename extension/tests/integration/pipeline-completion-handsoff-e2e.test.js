@@ -94,7 +94,7 @@ function writeTicket(sessionDir, id, status, order) {
     `- state.handsoff.${id}: boolean (forward-created)`,
     `- \`extension/synthetic/${id}.spec.ts\` (forward-created)`,
   ].join('\n');
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), fm);
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), fm);
 }
 
 function readState(statePath) {
@@ -203,7 +203,7 @@ test('AC-PCOMP-4: a synthetic 4-ticket additive bundle completes 4/4 hands-off, 
     assert.equal(t1Outcome.disposition, 'committed-done', '(a) clean-tree committed-green back-fills to committed-done');
     assert.equal(t1Outcome.reason, 'backfilled_clean_tree', '(a) back-fill reason marks the clean-tree path (not gate_passing_committed)');
     assert.equal(getTicketStatus(sessionDir, T1), 'Done', '(a) T1 is now Done via back-fill');
-    const t1Fm = fs.readFileSync(path.join(sessionDir, T1, `linear_ticket_${T1}.md`), 'utf8');
+    const t1Fm = fs.readFileSync(path.join(sessionDir, T1, `rick_ticket_${T1}.md`), 'utf8');
     assert.match(t1Fm, /completion_commit:\s*['"]?[0-9a-f]{7,40}['"]?/, '(a) completion_commit stamped into frontmatter (no done_without_commit_evidence)');
 
     // ── Path (b): forced fatal on N with un-attributable N+1 bystander → stash ──
@@ -283,7 +283,7 @@ test('AC-PCOMP-4: a synthetic 4-ticket additive bundle completes 4/4 hands-off, 
     const allTickets = [T1, T2, T3, T4];
     for (const id of allTickets) {
       assert.equal(getTicketStatus(sessionDir, id), 'Done', `ticket ${id} reaches committed-done|backfilled-done`);
-      const fm = fs.readFileSync(path.join(sessionDir, id, `linear_ticket_${id}.md`), 'utf8');
+      const fm = fs.readFileSync(path.join(sessionDir, id, `rick_ticket_${id}.md`), 'utf8');
       // 0 done_without_commit_evidence: every Done ticket carries a completion_commit.
       assert.match(fm, /completion_commit:\s*['"]?[0-9a-f]{7,40}['"]?/, `ticket ${id} has completion_commit (no done_without_commit_evidence)`);
       // 0 archived-todo: no ticket was reset to Todo / archived.

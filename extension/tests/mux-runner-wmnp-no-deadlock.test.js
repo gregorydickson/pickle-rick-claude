@@ -17,7 +17,7 @@ function writeTicket(sessionDir, ticketId, order, frontmatter) {
   fs.mkdirSync(dir, { recursive: true });
   const fm = Object.entries(frontmatter).map(([k, v]) => `${k}: ${v}`).join('\n');
   fs.writeFileSync(
-    path.join(dir, `linear_ticket_${ticketId}.md`),
+    path.join(dir, `rick_ticket_${ticketId}.md`),
     `---\nid: ${ticketId}\ntitle: "t"\norder: ${order}\n${fm}\n---\n# t\n`,
   );
 }

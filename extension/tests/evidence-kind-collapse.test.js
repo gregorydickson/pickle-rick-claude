@@ -66,7 +66,7 @@ test('Pass-2 scanGitLogByFileTouch (R-CECB) still attributes a declared-file com
     const sessionDir = path.join(root, 'session');
     const ticketDir = path.join(sessionDir, 'fac12345');
     fs.mkdirSync(ticketDir, { recursive: true });
-    fs.writeFileSync(path.join(ticketDir, 'linear_ticket_fac12345.md'), [
+    fs.writeFileSync(path.join(ticketDir, 'rick_ticket_fac12345.md'), [
       '---', 'id: fac12345', 'title: "feature"', 'status: "Done"', '---',
       '# Body', '## Files to modify', `- \`${declared}\``,
     ].join('\n'));

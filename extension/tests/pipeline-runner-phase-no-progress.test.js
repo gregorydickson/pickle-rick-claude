@@ -94,7 +94,7 @@ function writeTicket(sessionDir, id, order, status = 'Todo') {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
   fs.writeFileSync(
-    path.join(ticketDir, `linear_ticket_${id}.md`),
+    path.join(ticketDir, `rick_ticket_${id}.md`),
     `---\nid: ${id}\ntitle: phase_no_progress ticket ${id}\nstatus: ${status}\norder: ${order}\n---\n\n# Test\n`,
   );
 }
@@ -164,7 +164,7 @@ test('R-PIPE-2: pickle phase clean-exit with 0 Done + 0 commits stamps phase_no_
 
     // All 3 tickets must still be Todo
     for (const id of ['aaa11111', 'bbb22222', 'ccc33333']) {
-      const ticketFile = path.join(sessionDir, id, `linear_ticket_${id}.md`);
+      const ticketFile = path.join(sessionDir, id, `rick_ticket_${id}.md`);
       const content = fs.readFileSync(ticketFile, 'utf-8');
       assert.ok(content.includes('status: Todo'), `ticket ${id} must remain Todo`);
     }

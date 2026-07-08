@@ -69,7 +69,7 @@ function writeTicket(sessionDir, ticketId, { completionCommit, declaredFiles = [
       ? ['## Files to modify', ...declaredFiles.map((f) => `- \`${f}\``)]
       : []),
   ];
-  const fp = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+  const fp = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
   fs.writeFileSync(fp, lines.join('\n'));
   return fp;
 }

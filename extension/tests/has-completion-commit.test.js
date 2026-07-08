@@ -24,7 +24,7 @@ function initGitRepo(dir) {
 function writeTicket(sessionDir, ticketId, lines) {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${ticketId}.md`), lines.join('\n'));
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), lines.join('\n'));
 }
 
 test('readEvidence: explicit completion_commit wins when SHA exists', () => {

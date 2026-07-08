@@ -50,7 +50,7 @@ function readActivityLines(dataRoot) {
 function writeTicket(sessionDir, id, status = 'Done') {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
-  fs.writeFileSync(path.join(ticketDir, `linear_ticket_${id}.md`), [
+  fs.writeFileSync(path.join(ticketDir, `rick_ticket_${id}.md`), [
     '---',
     `id: ${id}`,
     `key: ${id.toUpperCase()}`,

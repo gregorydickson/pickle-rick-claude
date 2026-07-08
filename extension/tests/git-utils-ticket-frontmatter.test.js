@@ -18,7 +18,7 @@ test('updateTicketFrontmatter: Failed status clears inferred completion evidence
     const ticketId = 'e5f6a7b8';
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
-    const ticketPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
     fs.writeFileSync(ticketPath, `---
 id: ${ticketId}
 title: Test ticket
@@ -56,7 +56,7 @@ test('updateTicketFrontmatter: Done persists completion_commit when the field is
     const ticketId = 'a1b2c3d4';
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
-    const ticketPath = path.join(ticketDir, `linear_ticket_${ticketId}.md`);
+    const ticketPath = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
     // Frontmatter intentionally has NO completion_commit line (the normal at-creation shape),
     // followed by a real body so the closing `---` is mid-document.
     fs.writeFileSync(ticketPath, `---

@@ -202,7 +202,7 @@ test('AC-APWS-1: emitted event passes the consumer filter in /pickle-status rend
     const ticketDir = path.join(sessionDir, 'tkt00001');
     fs.mkdirSync(ticketDir, { recursive: true });
     fs.writeFileSync(
-      path.join(ticketDir, 'linear_ticket_tkt00001.md'),
+      path.join(ticketDir, 'rick_ticket_tkt00001.md'),
       '---\nid: tkt00001\ntitle: Drift surfacing\nstatus: In Progress\npriority: Medium\n---\n',
     );
     fs.writeFileSync(
