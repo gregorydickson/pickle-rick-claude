@@ -95,7 +95,7 @@ const dir = process.argv[1];
 let n = 0;
 try {
   for (const hash of fs.readdirSync(dir)) {
-    const ticketPath = path.join(dir, hash, 'linear_ticket_' + hash + '.md');
+    const ticketPath = path.join(dir, hash, 'rick_ticket_' + hash + '.md');
     if (!fs.existsSync(ticketPath)) continue;
     if (/^status:\s*Done\s*$/m.test(fs.readFileSync(ticketPath, 'utf8'))) n++;
   }

@@ -29,7 +29,7 @@ shift
 
 for pair in "$@"; do
   ticket_id="${pair%%:*}"
-  ticket_file="$SESSION_DIR/$ticket_id/linear_ticket_${ticket_id}.md"
+  ticket_file="$SESSION_DIR/$ticket_id/rick_ticket_${ticket_id}.md"
 
   if [[ ! -f "$ticket_file" ]]; then
     echo "[skip] $ticket_id: ticket file not found" >&2
