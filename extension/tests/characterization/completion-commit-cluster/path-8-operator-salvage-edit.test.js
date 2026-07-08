@@ -77,7 +77,7 @@ function writeTicketWithRawFrontmatter(sessionDir, ticketId, completionCommitLin
 }
 
 // Extract ticket ID from fixture skeleton keys (path-8 fixture doesn't have current_ticket in state.json)
-const ticketId = Object.keys(ENTRY.fixture.session_dir_skeleton).find(k => /^[a-f0-9]+\/linear_ticket/.test(k))?.split('/')[0] ?? 'aabbccdd';
+const ticketId = Object.keys(ENTRY.fixture.session_dir_skeleton).find(k => /^[a-f0-9]+\/rick_ticket/.test(k))?.split('/')[0] ?? 'aabbccdd';
 
 // The 4 SHA quote-forms from the decision-matrix
 const SHA_QUOTE_FORMS = MATRIX.sha_quote_forms;

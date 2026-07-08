@@ -30,7 +30,7 @@ function makeTmp(prefix = 'char-path6-') {
 
 // Extract ticket ID from the fixture skeleton keys
 function ticketIdFromEntry(entry) {
-  const key = Object.keys(entry.fixture.session_dir_skeleton).find(k => /^[a-f0-9]+\/linear_ticket/.test(k));
+  const key = Object.keys(entry.fixture.session_dir_skeleton).find(k => /^[a-f0-9]+\/rick_ticket/.test(k));
   return key ? key.split('/')[0] : null;
 }
 
