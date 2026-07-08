@@ -22,7 +22,7 @@ To inspect another ref without changing branch state: `git show <ref>:<path>` or
 <!-- END GIT_BOUNDARY_RULES -->
 
 ## Step 0 — Queue Check (mandatory)
-Before any other action, read every linear_ticket_*.md frontmatter in the session root. If every status: field is Done, emit:
+Before any other action, read every rick_ticket_*.md frontmatter in the session root. If every status: field is Done, emit:
 `<promise` + `>EPIC_COMPLETED</promise>`
 and exit immediately. Do not spawn any tools.
 
@@ -92,10 +92,10 @@ Mark checkboxes as sections are drafted.
 
 ### Create Tickets
 1. Read `${SESSION_ROOT}/prd.md`
-2. Create `${SESSION_ROOT}/linear_ticket_parent.md` — Status: Backlog, Title: [Epic] [Feature]
+2. Create `${SESSION_ROOT}/rick_ticket_parent.md` — Status: Backlog, Title: [Epic] [Feature]
 3. Create atomic child tickets. Each MUST produce functional/testable changes — NO research-only or docs-only tickets. Assign `order` (10, 20, 30...). If the PRD targets a specific subdirectory that is its own git repo, set `working_dir` to that path relative to the session root. Omit if the ticket targets the same directory as the session.
 
-For each child: generate hash (`openssl rand -hex 4`), create `${SESSION_ROOT}/[hash]/linear_ticket_[hash].md`:
+For each child: generate hash (`openssl rand -hex 4`), create `${SESSION_ROOT}/[hash]/rick_ticket_[hash].md`:
 
 ```markdown
 ---
@@ -108,7 +108,7 @@ working_dir: [path or omit]
 created: [Date]
 updated: [Date]
 links:
-  - url: ../linear_ticket_parent.md
+  - url: ../rick_ticket_parent.md
     title: Parent Ticket
 ---
 # Description
@@ -141,7 +141,7 @@ Read `${SESSION_ROOT}/state.json` once at Phase 3 entry. If `state.teams_mode ==
 1. **Pick**: lowest-order non-Done ticket. Tickets marked `[!]` Skipped were not verified
    as complete by the safety net — re-attempt Skipped tickets before starting new Todo tickets.
    `update-state.js current_ticket <ID> ${SESSION_ROOT}` + `update-state.js step research ${SESSION_ROOT}`
-2. **Delegate**: `node "${EXTENSION_ROOT}/extension/bin/spawn-morty.js" "<DESC>" --ticket-id <ID> --ticket-path "${SESSION_ROOT}/<ID>/" --ticket-file "${SESSION_ROOT}/<ID>/linear_ticket_<ID>.md" --timeout <worker_timeout_seconds>`
+2. **Delegate**: `node "${EXTENSION_ROOT}/extension/bin/spawn-morty.js" "<DESC>" --ticket-id <ID> --ticket-path "${SESSION_ROOT}/<ID>/" --ticket-file "${SESSION_ROOT}/<ID>/rick_ticket_<ID>.md" --timeout <worker_timeout_seconds>`
 3. **Validate** (after Morty outputs `<promise>I AM DONE</promise>`): check `${SESSION_ROOT}/[id]/` for `research_*.md`, `research_review.md`, `plan_*.md`, `plan_review.md`, `conformance_*.md`, `code_review_*.md` — FORBIDDEN to mark Done if missing. Run `git status`, `git diff`, tests/build.
 4. **Cleanup**: validation fail → `git restore <paths-edited-this-iteration>` (path-scoped — never `git stash` + `git checkout .` per Git Boundary Rules above); pass → commit
 5. **Update**: mark ticket Done in frontmatter
@@ -164,7 +164,7 @@ When `state.teams_mode === true`. Claude backend only (setup.js rejects codex+te
 **Setup (once)**:
 1. Derive a session id once: `SESSION_ID = path.basename(${SESSION_ROOT})`.
 2. **TeamCreate**: `team_name = "pickle-${SESSION_ID}"`, `description` = `original_prompt` truncated to ~80 chars.
-3. **TaskCreate per ticket**: for each non-Done ticket in `order` order, create one task with `subject` = ticket title, `description` = `Implement ticket ${TICKET_ID} — see ${SESSION_ROOT}/${TICKET_ID}/linear_ticket_${TICKET_ID}.md`, and metadata `{ ticket_id: <id> }`. Capture the returned task IDs and keep a local mapping `{ticket_id → team_task_id}`.
+3. **TaskCreate per ticket**: for each non-Done ticket in `order` order, create one task with `subject` = ticket title, `description` = `Implement ticket ${TICKET_ID} — see ${SESSION_ROOT}/${TICKET_ID}/rick_ticket_${TICKET_ID}.md`, and metadata `{ ticket_id: <id> }`. Capture the returned task IDs and keep a local mapping `{ticket_id → team_task_id}`.
 4. **Readiness gate BEFORE first Agent call**: run `node "${EXTENSION_ROOT}/extension/bin/check-readiness.js" --session-dir "${SESSION_ROOT}" --repo-root "$(node -e 'const fs=require("fs"); const state=JSON.parse(fs.readFileSync(process.argv[1],"utf-8")); console.log(state.working_dir || process.cwd())' "${SESSION_ROOT}/state.json")"`. Nonzero exit halts before any `Agent` call. If stdout reports `"delta":true`, surface the readiness report path as the post-correction delta-mode halt banner.
 
 **Per ticket** (sequential — `state.max_parallel` is plumbed for a follow-up that fans out independent tickets in parallel; today, treat as 1):
@@ -184,7 +184,7 @@ When `state.teams_mode === true`. Claude backend only (setup.js rejects codex+te
    For each call use:
    - `team_name: "pickle-${SESSION_ID}"`
    - `name: "morty-${phase}-${TICKET_ID}"`
-   - `prompt`: a self-contained phase brief that includes `SESSION_ROOT`, `TICKET_ID`, `TICKET_DIR=${SESSION_ROOT}/${TICKET_ID}`, the `team_task_id`, the phase name, the path to `linear_ticket_${TICKET_ID}.md`, and the `working_dir` from the ticket's frontmatter (if present — needed for sub-repo targets). If `${SESSION_ROOT}/project-context.md` exists and is non-empty, include its content as a `## Project Context` block before the phase instructions / 8-phase lifecycle guidance. Only the final `refactor` phase calls `TaskUpdate(taskId=<team_task_id>, status="completed")`.
+   - `prompt`: a self-contained phase brief that includes `SESSION_ROOT`, `TICKET_ID`, `TICKET_DIR=${SESSION_ROOT}/${TICKET_ID}`, the `team_task_id`, the phase name, the path to `rick_ticket_${TICKET_ID}.md`, and the `working_dir` from the ticket's frontmatter (if present — needed for sub-repo targets). If `${SESSION_ROOT}/project-context.md` exists and is non-empty, include its content as a `## Project Context` block before the phase instructions / 8-phase lifecycle guidance. Only the final `refactor` phase calls `TaskUpdate(taskId=<team_task_id>, status="completed")`.
 4. **Wait**: after each phase Agent call, wait for its completion response before dispatching the next phase. After `refactor`, the teammate's `TaskUpdate(status="completed")` arrives as an auto-delivered notification (a new turn). Do NOT poll. Only fall back to a `TaskList` check if no notification has arrived past `state.worker_timeout_seconds`.
 5. **Validate**: run `node "${EXTENSION_ROOT}/extension/bin/validate-teams-ticket.js" --ticket-path "${SESSION_ROOT}/${TICKET_ID}" --role implementation`. Exit 0 → continue. Exit 1 → log the missing artifacts (stderr lists them), mark the ticket Failed in frontmatter, do NOT commit.
 6. **Commit**: pass → run `git status`, `git diff`, project tests/build, then commit. Fail → `git restore <paths-edited-this-iteration>` (path-scoped — never `git stash` + `git checkout .` per Git Boundary Rules above).
@@ -205,7 +205,7 @@ Mark parent Done. If on `main`/`master` → skip auto-PR, output `<promise` + `>
 `EPIC_COMPLETED` means EVERY ticket is finished — not just the one you just closed. Use `TASK_COMPLETED` for single-ticket completions; reserve `EPIC_COMPLETED` for the final tear-down only.
 
 Verify before you emit:
-1. List `linear_ticket_*.md` files in `${SESSION_ROOT}` (excluding `linear_ticket_parent.md` and the `refinement/` directory).
+1. List `rick_ticket_*.md` files in `${SESSION_ROOT}` (excluding `rick_ticket_parent.md` and the `refinement/` directory).
 2. For each, confirm the frontmatter `status` field equals `"Done"` (case-insensitive, quotes optional).
 3. If ANY ticket is Todo, In Progress, Skipped, or anything other than Done — STOP. Output `<promise` + `>TASK_COMPLETED</promise>` (single-ticket signal) and continue iterating on the next non-Done ticket. Do NOT emit `EPIC_COMPLETED`.
 

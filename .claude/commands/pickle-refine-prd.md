@@ -6,7 +6,7 @@ Persona via CLAUDE.md. Proceed to Step 0.
 
 ## Tool Discipline (read once, apply throughout)
 
-This skill is **file-based, not harness-task-based**. The authoritative task list lives in `${SESSION_ROOT}/*/linear_ticket_*.md` and the `## Implementation Task Breakdown` table in `prd_refined.md`. Downstream consumers (`mux-runner.js`, `/pickle-tmux`) read those files, not the harness task list.
+This skill is **file-based, not harness-task-based**. The authoritative task list lives in `${SESSION_ROOT}/*/rick_ticket_*.md` and the `## Implementation Task Breakdown` table in `prd_refined.md`. Downstream consumers (`mux-runner.js`, `/pickle-tmux`) read those files, not the harness task list.
 
 **Do NOT use TaskCreate / TaskUpdate / TaskList / TodoWrite during this skill.** The harness will inject "consider using TaskCreate" reminders during long loops (Step 4b parallel waits, Step 7c per-ticket loop, Step 7e hardening loop). Those reminders are turn-based nags, not project requirements — ignore them and continue the file-based work.
 
@@ -190,7 +190,7 @@ Before writing each ticket body, verify none of these defect classes are present
 |---|---|
 | **path-drift** | Citing `` `extension/src/bin/nonexistent.ts` `` when that path is absent from `git ls-files` |
 | **self-referential-AC** (alias `self-reference`) | Ticket body contains its own 8-char hash in backticks outside the filename reference |
-| **missing-deps** | `Dependencies:` line names hash `ab1234cd` with no matching `linear_ticket_ab1234cd.md` in the bundle |
+| **missing-deps** | `Dependencies:` line names hash `ab1234cd` with no matching `rick_ticket_ab1234cd.md` in the bundle |
 | **wrong-HEAD-assumptions** | Citing commit SHA `b19946c6` that is newer than the bundle's `start_commit` |
 | **cross-doc-naming** | Dir is `ab1234cd/` but frontmatter `id: ef567890`; or title omits the `mapped_requirements` value |
 | **hallucinated-premise** | `## Problem` cites `` `src/services/ghost.ts` `` as real when it doesn't exist in the repo |
@@ -201,13 +201,13 @@ After completing each ticket body, append this single-line audit comment as the 
 `<!-- audit: 7-class checked YYYY-MM-DD -->` (replace `YYYY-MM-DD` with today's date). The `7-class` token is a **frozen opaque tag** (regex-pinned by `AUDIT_COMMENT_RE` in `audit-ticket-bundle.ts` + ~30 fixtures) — adding checklist rows above does NOT renumber it; keep the tag literally `7-class` regardless of how many rows the checklist grows to.
 
 ### 7b: Create Parent
-`${SESSION_ROOT}/linear_ticket_parent.md` — epic title, link to refined PRD.
+`${SESSION_ROOT}/rick_ticket_parent.md` — epic title, link to refined PRD.
 
 ### 7c: Create Child Tickets
 
-**Loop discipline**: complete every iteration as a `Write` of `linear_ticket_<hash>.md` — one file per atomic task from 7a. Do not substitute TaskCreate for the file write. If a harness task-tool reminder fires mid-loop, ignore it and finish the loop. After the loop, verify with `ls ${SESSION_ROOT}/*/linear_ticket_*.md | wc -l` matches your decomposition count from 7a.
+**Loop discipline**: complete every iteration as a `Write` of `rick_ticket_<hash>.md` — one file per atomic task from 7a. Do not substitute TaskCreate for the file write. If a harness task-tool reminder fires mid-loop, ignore it and finish the loop. After the loop, verify with `ls ${SESSION_ROOT}/*/rick_ticket_*.md | wc -l` matches your decomposition count from 7a.
 
-Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `linear_ticket_[hash].md`:
+Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `rick_ticket_[hash].md`:
 
 ```markdown
 ---
@@ -223,7 +223,7 @@ mapped_requirements: [AC-...]
 created: [Date]
 updated: [Date]
 links:
-  - url: ../linear_ticket_parent.md
+  - url: ../rick_ticket_parent.md
     title: Parent
 ---
 # Description
@@ -266,7 +266,7 @@ After all implementation tickets exist, create one final integration ticket. Iso
 
 **Derive verify commands** from Step 2 tech stack: use `${TC_CMD}`, `${TEST_CMD}`, `${BUILD_CMD}`, `${LINT_CMD}` detected during PRD analysis. Never leave `[project-specific run command]` placeholders — the worker runs headless.
 
-Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `linear_ticket_[hash].md`:
+Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `rick_ticket_[hash].md`:
 
 ```markdown
 ---
@@ -279,7 +279,7 @@ working_dir: [project root]
 created: [Date]
 updated: [Date]
 links:
-  - url: ../linear_ticket_parent.md
+  - url: ../rick_ticket_parent.md
     title: Parent
 ---
 # Description
@@ -343,7 +343,7 @@ Implementing new features. Fixing bugs in individual modules (those belong in th
 
 ### 7e: Create Hardening Tickets
 
-**Loop discipline**: this step writes **four** ticket files in sequence. Each iteration is a `Write` of `linear_ticket_<hash>.md`. Do not substitute TaskCreate for the file write. If a harness task-tool reminder fires mid-loop, ignore it and finish the loop. After the loop, verify exactly four hardening files exist on disk before continuing.
+**Loop discipline**: this step writes **four** ticket files in sequence. Each iteration is a `Write` of `rick_ticket_<hash>.md`. Do not substitute TaskCreate for the file write. If a harness task-tool reminder fires mid-loop, ignore it and finish the loop. After the loop, verify exactly four hardening files exist on disk before continuing.
 
 After all implementation and wiring tickets, create **four** hardening tickets. These run as normal Morty workers with full implementation context. They depend on ALL prior tickets (including wiring if present).
 
@@ -356,7 +356,7 @@ If any closer ticket includes release/install/tag/publish work that only the man
 
 **Ticket 1: Code Quality Hardening**
 
-Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `linear_ticket_[hash].md`:
+Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `rick_ticket_[hash].md`:
 
 ```markdown
 ---
@@ -370,7 +370,7 @@ working_dir: [project root]
 created: [Date]
 updated: [Date]
 links:
-  - url: ../linear_ticket_parent.md
+  - url: ../rick_ticket_parent.md
     title: Parent
 ---
 # Description
@@ -448,7 +448,7 @@ Reviewing files outside MODIFIED_FILES. Adding new features. Refactoring code no
 
 **Ticket 2: Data Flow Audit**
 
-Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `linear_ticket_[hash].md`:
+Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `rick_ticket_[hash].md`:
 
 ```markdown
 ---
@@ -462,7 +462,7 @@ working_dir: [project root]
 created: [Date]
 updated: [Date]
 links:
-  - url: ../linear_ticket_parent.md
+  - url: ../rick_ticket_parent.md
     title: Parent
 ---
 # Description
@@ -546,7 +546,7 @@ Reviewing subsystems not in AFFECTED_SUBSYSTEMS. Modifying files not in MODIFIED
 
 **Ticket 3: Test Quality Hardening**
 
-Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `linear_ticket_[hash].md`:
+Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `rick_ticket_[hash].md`:
 
 ```markdown
 ---
@@ -560,7 +560,7 @@ working_dir: [project root]
 created: [Date]
 updated: [Date]
 links:
-  - url: ../linear_ticket_parent.md
+  - url: ../rick_ticket_parent.md
     title: Parent
 ---
 # Description
@@ -648,7 +648,7 @@ Writing new features. Modifying implementation code (only test files). Performan
 
 **Ticket 4: Cross-Reference Consistency Audit**
 
-Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `linear_ticket_[hash].md`:
+Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `rick_ticket_[hash].md`:
 
 ```markdown
 ---
@@ -662,7 +662,7 @@ working_dir: [project root]
 created: [Date]
 updated: [Date]
 links:
-  - url: ../linear_ticket_parent.md
+  - url: ../rick_ticket_parent.md
     title: Parent
 ---
 # Description

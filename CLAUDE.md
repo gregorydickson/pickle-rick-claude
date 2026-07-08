@@ -32,6 +32,8 @@ PRD: `prds/p1-worker-source-state-recursion-contamination.md`. Closer manager-ha
 
 Adding/removing/modifying commands (`.claude/commands/*.md`) → update `README.md`. Docs drift = bugs.
 
+Internal ticket artifacts use `rick_ticket_<hash>.md` and `rick_ticket_parent.md`; reserve "Linear ticket" prose for real external tracker issues, not the on-disk worker artifacts.
+
 ## Source of Truth
 
 Canonical → deployed (`bash install.sh` rsyncs, overwrites): `extension/src/*.ts` → `~/.claude/pickle-rick/extension/**/*.js` | `.claude/commands/*.md` → `~/.claude/commands/*.md` | `pickle_settings.json` + `persona.md` → `~/.claude/pickle-rick/`. **NEVER edit deployed files — edit source, run `bash install.sh`.**

@@ -66,7 +66,7 @@ Workers run inside the runtime. These writes corrupt it; runtime hooks will bloc
 
 ## ⛔ SCOPE FENCE (R-PIPE-4 — mandatory, read before any Edit/Write/MultiEdit)
 
-This worker is implementing a specific ticket. The ticket body (in `linear_ticket_<id>.md`) lists the **exhaustive** "Files to modify" and "Files to create".
+This worker is implementing a specific ticket. The ticket body (in `rick_ticket_<id>.md`) lists the **exhaustive** "Files to modify" and "Files to create".
 
 - Any `Edit`, `Write`, `MultiEdit`, `NotebookEdit` (or equivalent) on a path **NOT** in that list is a **SCOPE VIOLATION**.
 - Emit exactly:
