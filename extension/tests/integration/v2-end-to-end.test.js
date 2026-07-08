@@ -24,6 +24,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_ROOT = path.resolve(__dirname, '../..');
@@ -251,10 +252,21 @@ test('v2-E2E-9: applySilentDeathRecoveryPolicy with completion_commit in frontma
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
 
-  // Write a ticket with a completion_commit field
+  // B-RASO: the completion_commit arm now git cat-file-VERIFIES the sha (was
+  // format-only). Make the fixture's workingDir a real repo with a real commit
+  // so the sha resolves and the hold path is genuinely exercised (AC-4).
+  execFileSync('git', ['init', '-q'], { cwd: sessionDir, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: sessionDir });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: sessionDir });
+  fs.writeFileSync(path.join(sessionDir, 'seed.txt'), 'seed\n');
+  execFileSync('git', ['add', '-A'], { cwd: sessionDir, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-q', '-m', 'seed', '--no-gpg-sign'], { cwd: sessionDir, stdio: 'ignore' });
+  const completionSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sessionDir, encoding: 'utf8' }).trim();
+
+  // Write a ticket with a resolvable completion_commit field
   fs.writeFileSync(
     path.join(sessionDir, ticketId, `linear_ticket_${ticketId}.md`),
-    `---\nid: ${ticketId}\nstatus: Done\ncompletion_commit: abc1234\n---\n# Ticket\n`,
+    `---\nid: ${ticketId}\nstatus: Done\ncompletion_commit: ${completionSha}\n---\n# Ticket\n`,
   );
 
   // Write a minimal state.json so appendRecoveryLedgerEntry doesn't crash
