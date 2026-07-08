@@ -173,7 +173,11 @@ run. Each rep is chosen to ALSO do reliability or simplicity work — never a re
 1. **[[B-CSOR]]** — the tri-pillar top pick. Make citadel COMMIT its own mechanical remediation so no downstream
    phase inherits a dirty tree → no dirty-tree abort → [[R-MPGD]]'s safety-net becomes vestigial. **Reliability**
    (removes a failure source), **simplicity** (subtractive root, R-MPGD WS-2 honesty-labeling then unneeded),
-   **autonomy** (pipeline-safe → dogfood it → soak rep #5). Ship on claude.
+   **autonomy** (pipeline-safe → dogfood it → soak rep #5). Ship on claude. **PRD (revalidate vs HEAD before
+   building — it predates the beta.37–43 changes):** `prds/archive/bundles/p2-bug-fix-bundle-b-csor-citadel-graduated-remediation.md`.
+   Per the Simplification Review guard (`prds/CLAUDE.md`), the honest fix is to make citadel commit its OWN
+   remediation, NOT to add a finding-classifier/hand-fix class (brace-free-`if` → eslint/prettier autofix); scope
+   accordingly. **To build:** author/refresh a PRD from that spec → `/pickle-pipeline` (refinement runs in Step 0).
 2. **A CODEX soak rep** — the one concrete GA gap. Fold in the [[R-SIGF]] hardening fast-follow so the rep also
    banks real work. Watch for [[R-CXHANG]] D-state orphans (the codex-soak top hazard; reaper shipped beta.37).
 3. P3 filler, only to give a rep a payload: [[R-LTNC]] (PRD ready — internal `linear_ticket_*` rename) ·
