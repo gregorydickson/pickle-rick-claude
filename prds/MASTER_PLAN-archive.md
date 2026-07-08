@@ -773,3 +773,73 @@ These rows shipped (beta.23–beta.32) and were removed from the live ledger to 
 | R-DOTR | **R-DOTR (NEW — LOA-1363 run 4, 2026-06-24)** Done-flip over committed-RED work on the `no_progress_timeout` path — **the inverse of the R-CECX fix.** Ticket 100 (`54d89f21`) is `Done` with `completion_commit 8bc4e4fa4` + `failed_reason: no_progress_timeout`, but that commit's own file does **not compile**: `test/credit-rules-loa-1363.e2e-spec.ts(415,5) TS1136` (missing object-literal brace in the `auShortfall` `makeFacts({…})`). Tree clean → the red is **committed at HEAD**, inside the recorded completion_commit. Mechanism: B-DURA's durable-boundary committer (`e1472c37`) commits the worker's **partial output** when its budget expires; the Done-flip keys on **durability** (B-PCOMP: "no diff" → catches code-*absent*) but **NOT** on **green** — and B-RPGT's hard `tsc` gate is **review-phase only**, with NO per-ticket tsc gate in the pickle build loop. So the R-CECX fix (committed-*nothing* impossible) opened committed-*something-broken*. Confirmed for 1 ticket; structural for all `no_progress_timeout` salvage-commits (tsc fails fast at the first error so the other 6 can't be individually assessed). Distinct from [[R-DPGT]] (phase mis-report) and [[R-SIGF]] (this break is IN-fence). | P2 | **✅ SHIPPED v2.0.0-beta.25 (B-PXBO WS-2, 2026-06-28).** Fix (reuse-first, subtract-before-add): gate the Done-flip on the toolchain signal the per-ticket loop already computes (toolchain-fail-fast `7b69f22a`) — if a salvage/timeout commit leaves `tsc` RED on the ticket's own declared files, disposition is `Failed`/retry, NOT `Done`. No new gate; reuse the existing tsc result. Closes the gap R-CECX opened. | `BUG-REPORT-2026-06-24-codex-fieldproof-loa1363-run4-rsigf-corroboration-and-detached-phasegate.md` |
 | R-CRSR | **R-CRSR (NEW — 2026-06-25, claude, LOA standalone-loanless full pipeline)** crash-resume relaunch restarts from phase 1 + re-opens Done tickets. The tmux **server** died mid-PHASE-3 (anatomy-park) — external (sleep/OOM), NOT a pipeline bug — but the **relaunch corrupted a fully-complete build**. `pipeline-status.json` recorded `completed_phases:2, current_phase:"anatomy-park"`, yet relaunching `launch.sh` **restarted at PHASE 1/4** and **reset that file to `completed_phases:0`** (Facet A: the phase ledger is write-only telemetry, not a resume oracle). On the pickle re-entry the runner re-selected an **already-`Done` large-tier ticket** (`84636f7e`) via the `execute-converged-plan` detached/recovery path; its per-ticket budget was stale-exhausted (`60/60, tier=large`) so it gave up in **17s / 61 iters with zero work**, flipping `84636f7e` `Done→Failed` + `2a0e630a` `Done→Todo` and declaring **`0/4 phases`** (Facet B: Done-w/-durable-commit tickets must be skipped *before* budget accounting; per-ticket budget must reset on a new process). Code intact (16 commits, all 14 tickets committed); only ticket-status + pipeline-status files corrupted. Distinct from [[R-REIN]] (refund on *manual* `→Todo` reset only) and [[R-DPGT]] (detached overrun during a *first* run). | P2 | **✅ SHIPPED v2.0.0-beta.25 (B-PXBO WS-3, 2026-06-28).** Fix (reuse-first): (A) on launch, if `pipeline-status.json` shows `status:"running"` + `completed_phases>0` for this session, **resume at `current_phase`** (don't reset the counter, don't re-run completed phases). (B) skip tickets already `Done` with a durable `completion_commit` (reuse the existing `readEvidence` oracle) *before* per-ticket budget accounting on (re)entry, AND reset the per-ticket budget on a fresh process start. Operator recovery (verified): kill the relaunched session, repair the 2 statuses → `Done`, finish phases 3–4 via standalone `/anatomy-park` + `/szechuan-sauce` (NOT a full-pipeline relaunch). | `BUG-REPORT-2026-06-25-crash-resume-relaunch-restarts-from-phase1-and-reopens-done-tickets.md` |
 | R-MVFM | **R-MVFM (NEW — 2026-06-28, claude; surfaced while evaluating Arbor/HTR for the microverse loop)** microverse failure-memory records only **regressions**, never **plateaus** → the `## Failed Approaches (DO NOT RETRY)` denylist is **dead on the dominant stall**. `recordFailedApproach` fires from exactly one trigger — `if (classification === 'regressed')` (`microverse-runner.ts:3408`); a `held` iteration (worker changed code, metric didn't move) is never recorded, so the next worker gets an empty denylist (`appendFailedApproachesHandoff`, `:2566`) and can re-propose the same ineffective move. **Live ground truth:** all 4 microverse runs with real iterations show `failed_approaches:0` despite `held×5` plateaus (27298c24 7→4 held×5; b6b75d07 17→13 held×5) — the loop already logs `no_progress` into `failure_history` but never routes it into `failed_approaches`, the one field the worker reads. This is the **subtractive alternative to importing Arbor/HTR**: ~90% of HTR's relevant benefit for our loop is recovered by re-pointing the existing trigger; HTR's genuine residual (branching/competing live hypotheses) is DEFERRED. Caveat: all 4 runs are the same szechuan principle-violation metric (defect is code-universal, plateau shape for numeric metrics unobserved). Secondary note-only: `target:0` on an LLM-judged count is ~unreachable (don't fold target-realism in). | P3 | **✅ SHIPPED v2.0.0-beta.30 (B-RELHYG, 2026-06-29, `3bc85cee`).** Routes `held`/`no_progress` plateaus into `failed_approaches` (was regressed-only) with a dedupe guard; reuse-first (no new field/schema). Built via clean `/pickle-pipeline` (4/4, 178m). | `BUG-REPORT-2026-06-28-microverse-failure-memory-records-regressions-not-plateaus.md` |
+
+---
+
+## Swept 2026-07-08 — beta.26–29 shipped-release retrospectives (moved from live)
+
+Removed from `MASTER_PLAN.md` on 2026-07-08 as pure shipped-history retrospectives (all four betas
+long since released + deployed; drain-queue rows and `git log` carry the operational facts). Preserved
+verbatim below.
+
+**✅ R-SIGF / B-SIGF SHIPPED v2.0.0-beta.29 (2026-06-29, claude, babysitter pipeline + closer-takeover).** Closes
+**[[R-SIGF]] full scope-auto-extension — the codex GA blocker.** Built via `/pickle-pipeline --scope branch` from
+a cron babysitter; recovered through two mid-build stalls (R-MWBG medium then large-tier worker deaths). All 5
+functional tickets shipped — shared detector (`18f2ccc1`), WS-1 advisory→conditional-blocking finding
+(`e4c23a27`), WS-2 schema-shape consumers (`c138b29f`), WS-3 bounded opt-in auto-extension behind default-OFF
+`scope.auto_extend_signature_callers` (`e5401758`), wiring (`74a7f852`) + schema-shape-aware message hardening
+(`555ef2b9`); + R-MWBG half-1 (`795e539e`). Full local gate GREEN (the one real fast-c4 fail — `scope_auto_extended`
+missing from the activity-logger expected-count array — fixed `b67abbad`; c=8 budget + dispatch-watchdog fails were
+proven R-CIFB/R-TSPF load-flakes, isolation-green). **Hardening-deferred (honest):** the 4 in-pickle hardening
+tickets did NOT complete (large-tier worker silent-death = R-MWBG runtime half) → fast-follow above.
+
+**✅ B-CWGE SHIPPED v2.0.0-beta.26 (2026-06-28, on CLAUDE, via babysitter closer-takeover).** Closes
+**[[R-CWGE]] (P1)** — the codex worker quality gate is now fail-CLOSED. Root cause confirmed: `runWorkerGate`
+ran at a single callsite inside spawn-morty's `if(isSuccess)` finalize, and NO orchestrator Done-flip path
+re-ran it — so codex's detached/no_progress/salvage path committed work that never reached the clean finalize,
+and the oracle-based Done-flip shipped lint/tsc/test-RED. Fix: spawn-morty persists ONE `worker_gate_verdict`
+(`green|red|absent`, eslint+tsc+test) frontmatter field (subsumes B-PXBO's tsc-only field); the Done-flip guard
+`guardCompletionCommitBeforeDone` consults it on EVERY genuine worker Done-flip and is fail-closed — an `absent`
+verdict is RECOMPUTED over the full eslint+tsc+test:fast contract (a tsc-RED tree hides from test:fast behind
+stale compiled JS). The build ran a clean `/pickle-pipeline --scope branch` 4/4 (pickle→citadel→anatomy-park→
+szechuan), with anatomy-park self-hardening 3 CRITICAL gaps in the new code.
+
+**Closer-takeover note (8 commits `e804775b`..`e526edc2`):** the full release gate (which the per-phase pipeline
+gates do NOT run) caught **6 issues none of which were a core B-CWGE design fault**: (1) the verdict gate
+**over-reached** into the runner-authored `commitGatePassingDeliverableOnExitPath`/boundary/salvage commit path,
+recomputing a real 71s gate on fixture repos → `commit-failed` (fixed `aed8e831`: scope the verdict to GENUINE
+worker Done-flips — runner-authored commits already proved green via their own armed #99 gate, so persist
+green and skip the recompute); (2) its AC-DURA-3 follow-on — a 2000-char source-slice test broke when the fix
+comment pushed the guard+markTicketDone past the window (`2980e5e6`); (3) R-TAQ-6 subprocess-heavy load-flake
+serialized (`2980e5e6`); and **(4–6) THREE pre-existing `f009608d` sweep-drift casualties** — that "sweep 35
+shipped PRDs to archive/" commit orphaned three LIVE gate inputs whose audit/test paths still pointed at
+`prds/` (bundle-thesis matrix+PRD `fba57e47`, closer-template PRD `82650a5e`, readiness-bundle-prd fixture
+`574a4ff1`). **Lesson: when a doc-sweep moves a PRD that a gate reads, the audit/test path must follow it to
+`prds/archive/<sub>/` — and the doc-sweep commit must re-run the FULL gate.** The c=8 `test:fast:budget`
+FAIL_BUDGET(3) was a confirmed R-CIFB load-flake (c=4 green, 6711/6714) — non-blocking per posture.
+
+**✅ B-APNC SHIPPED v2.0.0-beta.27 (2026-06-28, claude, babysitter closer-takeover)** — closes **[[R-APNC]] (P2)**:
+anatomy-park now halts-and-reports a non-convergent subsystem (`APNC_MAX_PASSES_WITHOUT_CLEAN`, exit_reason
+`anatomy_non_convergent` → non-fatal continue) + treats a complexity-regressing pass as non-progress + a
+subtract-pass discipline section in `anatomy-park.md`. Mid-build the **R-WPEX detached-`claude -p` log-flush
+worker death recurred** (workers died at flush, artifacts intact) → pickle hit `pipeline_phase_incomplete` 0/4;
+babysitter recovered (hand-committed the verified WS-3 doc work `080e7e60` + Done-flip + relaunch → 4/4). Closer
+caught + fixed the 2 new convergence-guard activity events missing from `activity-logger`'s expected list (same
+event-registration class as B-CWGE; `anatomy_non_convergent` is the exit_reason, correctly NOT in the events array).
+
+**✅ R-WPEX↻ SHIPPED v2.0.0-beta.28 (2026-06-28, claude, hand-built in-process via ultracode Workflow).** Closes
+**[[R-WPEX]] (P2)**. ROOT CAUSE (sharpened to a **durability** gap, not a buffer-drain race): the spawn-morty
+success/close drain awaited `sessionLog.once('finish')` (bytes → OS page cache) but **never fsynced** before the
+detached, unref'd large-tier worker exits. mux-runner spawns spawn-morty `detached:true` + `unref()` +
+`stdio:'ignore'`, so spawn-morty SOLELY owns the `worker_session` log; it could exit before durable persist and
+the poll-reattach side then reads a **0-byte/truncated log while artifacts are intact** — exactly the B-APNC
+idle-box flush-death signature (distinct from the R-WSE-2 SIGKILL/OOM 0-byte class). FIX (subtract-before-add,
+`a4400e80`): reuse the existing `bestEffortFdatasync(sessionLogPath)` helper (already used by the hangGuard) on
+the `once('finish')` success drain + the 5s degraded fallback — no new state field/gate/flag; the pinned
+`flushAndExit` trap door (`end()` → `await once('close')` → `exit`) is UNCHANGED. A deterministic worker-shutdown
+repro proved the missing fsync (RED→GREEN) + a production-source trap-door guard pins the success-drain fsync so a
+revert goes RED. Secondary (`a4400e80`): manager-prompt per-ticket recovery-atomicity note (commit+Done each
+recovered ticket individually, never batch across a turn) — the gap that turned the recoverable flush-death into
+the B-APNC 0/4. Built on the IMMUNE in-process path (no detached `claude -p` spawned during the build); full
+local gate green (tsc/eslint/10 audits + fast-c4 6727/6730 0-fail + integration 495/496 [F22-1 isolation-green
+load-flake] + expensive 0-fail).

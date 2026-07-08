@@ -6,7 +6,7 @@ on purpose. Shipped-release detail and closed-finding forensics live in
 [`MASTER_PLAN-archive.md`](MASTER_PLAN-archive.md) + `git log`; the full finding catalog is in
 [`BUG-INDEX.md`](BUG-INDEX.md).
 
-**Updated 2026-07-08 (v9 — PRIORITY ORDER SET BY OPERATOR: RELIABILITY → AUTONOMOUS EXECUTION → SIMPLICITY. THREE clean hands-off soak reps banked 2026-07-07: beta.41 [[R-MPGD]] WS-1 + beta.42 [[B-RRPC]] + beta.43 [[B-RASO]] (recovery attributable-work single oracle — one `git cat-file`-verified `resolveAttributableFrontmatterSha` for both silent-death + Failed-flip detectors, closing the latent false-hold). All 4/4, ZERO interventions. B-RASO is the FIRST R-PSRB salvage-path RELIABILITY fix shipped via an ATTENDED `/pickle-pipeline` rather than hand-built — the deployed false-hold is low-base-rate and never fired on the build worker. With B-RASO shipped, the reliability-FIX queue is DRAINED (zero open verified reliability bugs) and the recovery-sprawl simplification lever is fully worked (B-RASO + B-RRPC + B-CSHYG all shipped/closed). Focus now: PROVE reliability via more clean reps (esp. a CODEX rep for the cross-backend GA bar) and keep subtracting where there is real yield ([[B-CSOR]] is the tri-pillar top pick). Recovery-sprawl map: `RECOVERY-SPRAWL-COLLAPSE-ANALYSIS-2026-07-07.md`. Prior: R-SZGB fail-OPEN family CLOSED (beta.39–40)).** ✅ **THE SIMPLIFICATION DROP SHIPPED — v2.0.0-beta.37 RELEASED + DEPLOYED 2026-07-02 (install.sh, MD5 parity OK on all hot files; gate: tsc/eslint/9-audits/fast-c4/expensive green, budget-c8 + 4 integration reds proven isolation-green load-flakes per posture).** One ultracode session executed `SIMPLIFICATION-AND-FIX-PLAN-2026-07-02.md` end-to-end: **B-1SEAM all 3 WS** (`7b52789d` WS-1 ONE completion predicate `evaluateCompletionEvidence` routing ALL 8 former divergent decision sites [not 3 oracles — 7 sites/3 policy shapes + the bare-field `defaultDoneGuard`] + spawn-morty verified-sha/`Pickle-Ticket`-trailer reconciliation killing the codex untagged/hallucinated-sha trigger at the source; `2bbf5770` WS-2 `healPipelineRequiredFields` symmetric prd_path+start_commit self-heal; WS-3 in `885efb73` — ONE dirty-tree salvage seam, `stageAutoCommitPaths` empty-excludes sweep deleted) + **R-CXHANG orphan reaper + B-RSHM subtraction** (`885efb73`: stop-hook dead branches + whole chain_meeseeks subsystem retired) + **the guard-layer prune** (`2957f0c2`: 4 orphan audits + 2 advisory audits DELETED, design-ground-truth demoted [canonical gate now 9 audits], ONE quality-gate bypass surface, legacy kill-switches PICKLE_CITADEL_MECHANICAL/PICKLE_RECOVERY_CONSOLIDATION removed, codex-manager-relaunch shim collapsed). R-AICF/R-PSCG/R-MACB/R-CXHANG all closed; net ~−3,650 LOC. Shipped + deployed + released through **v2.0.0-beta.36** (✅ **B-SIGFH** scope-fence detector hardening — codex GA soak, DEPLOYED 2026-07-02; prior **B-WSPU — the DUAL WORKER-SPAWN MODEL COLLAPSED**: the entire detached lifecycle DELETED (~1000+ LOC pure subtraction), all tiers now run one synchronous re-spawn-resume path; the operator-flagged #1 structural subtraction, DONE + DEPLOYED 2026-07-01 — the R-LTDM/R-WPEX/R-MWBG failure-mode class is gone. Field evidence FOR the collapse: a detached worker silent-died building its own deletion while the synchronous path built it clean). beta.34 ✅ **B-SSVR** (R-SSBR scope-resolver fail-CLOSED + R-ISVP install.sh prerelease semver, both DEPLOYED). beta.33 (✅ **gate-overreach subtraction** — Phase 1 made the iteration-0 readiness + ticket-audit gates ADVISORY, Phase 2 DELETED the forward-ref annotation grammar, the top recurring bug source [R-RTRC ×8 + R-FRA ×7]; ~35 files of pure subtraction, KEPT resolution fixes R-RTRC-3/4/5 / R-RHFP / R-RCEX / R-RTPS; commit `9a5c047e`). beta.32 ✅ **[[R-LTDM]]** detached-poll throttle (R-MWBG RE-CLOSED). Operator flagged the underlying brittleness — the dual worker-spawn model — logged as **[[B-WSPU]]** and now ✅ SHIPPED+DEPLOYED beta.35 — the real subtraction, done. (R-MWBG runtime half:
+**Updated 2026-07-08 (v9 — PRIORITY ORDER SET BY OPERATOR: RELIABILITY → AUTONOMOUS EXECUTION → SIMPLICITY. THREE clean hands-off soak reps banked 2026-07-07: beta.41 [[R-MPGD]] WS-1 + beta.42 [[B-RRPC]] + beta.43 [[B-RASO]] (recovery attributable-work single oracle — one `git cat-file`-verified `resolveAttributableFrontmatterSha` for both silent-death + Failed-flip detectors, closing the latent false-hold). All 4/4, ZERO interventions. B-RASO is the FIRST R-PSRB salvage-path RELIABILITY fix shipped via an ATTENDED `/pickle-pipeline` rather than hand-built — the deployed false-hold is low-base-rate and never fired on the build worker. With B-RASO shipped, the reliability-FIX queue is DRAINED (zero open verified reliability bugs) and the recovery-sprawl simplification lever is fully worked (B-RASO + B-RRPC + B-CSHYG all shipped/closed). Focus now: PROVE reliability via more clean reps (esp. a CODEX rep for the cross-backend GA bar) and keep subtracting where there is real yield (a CODEX soak rep is the one concrete GA gap and LEADS the queue; [[B-CSOR]] is the top SIMPLICITY pick, sequenced after it). Recovery-sprawl map: `RECOVERY-SPRAWL-COLLAPSE-ANALYSIS-2026-07-07.md`. Prior: R-SZGB fail-OPEN family CLOSED (beta.39–40)).** ✅ **THE SIMPLIFICATION DROP SHIPPED — v2.0.0-beta.37 RELEASED + DEPLOYED 2026-07-02 (install.sh, MD5 parity OK on all hot files; gate: tsc/eslint/9-audits/fast-c4/expensive green, budget-c8 + 4 integration reds proven isolation-green load-flakes per posture).** One ultracode session executed `SIMPLIFICATION-AND-FIX-PLAN-2026-07-02.md` end-to-end: **B-1SEAM all 3 WS** (`7b52789d` WS-1 ONE completion predicate `evaluateCompletionEvidence` routing ALL 8 former divergent decision sites [not 3 oracles — 7 sites/3 policy shapes + the bare-field `defaultDoneGuard`] + spawn-morty verified-sha/`Pickle-Ticket`-trailer reconciliation killing the codex untagged/hallucinated-sha trigger at the source; `2bbf5770` WS-2 `healPipelineRequiredFields` symmetric prd_path+start_commit self-heal; WS-3 in `885efb73` — ONE dirty-tree salvage seam, `stageAutoCommitPaths` empty-excludes sweep deleted) + **R-CXHANG orphan reaper + B-RSHM subtraction** (`885efb73`: stop-hook dead branches + whole chain_meeseeks subsystem retired) + **the guard-layer prune** (`2957f0c2`: 4 orphan audits + 2 advisory audits DELETED, design-ground-truth demoted [canonical gate now 9 audits], ONE quality-gate bypass surface, legacy kill-switches PICKLE_CITADEL_MECHANICAL/PICKLE_RECOVERY_CONSOLIDATION removed, codex-manager-relaunch shim collapsed). R-AICF/R-PSCG/R-MACB/R-CXHANG all closed; net ~−3,650 LOC. Shipped + deployed + released through **v2.0.0-beta.36** (✅ **B-SIGFH** scope-fence detector hardening — codex GA soak, DEPLOYED 2026-07-02; prior **B-WSPU — the DUAL WORKER-SPAWN MODEL COLLAPSED**: the entire detached lifecycle DELETED (~1000+ LOC pure subtraction), all tiers now run one synchronous re-spawn-resume path; the operator-flagged #1 structural subtraction, DONE + DEPLOYED 2026-07-01 — the R-LTDM/R-WPEX/R-MWBG failure-mode class is gone. Field evidence FOR the collapse: a detached worker silent-died building its own deletion while the synchronous path built it clean). beta.34 ✅ **B-SSVR** (R-SSBR scope-resolver fail-CLOSED + R-ISVP install.sh prerelease semver, both DEPLOYED). beta.33 (✅ **gate-overreach subtraction** — Phase 1 made the iteration-0 readiness + ticket-audit gates ADVISORY, Phase 2 DELETED the forward-ref annotation grammar, the top recurring bug source [R-RTRC ×8 + R-FRA ×7]; ~35 files of pure subtraction, KEPT resolution fixes R-RTRC-3/4/5 / R-RHFP / R-RCEX / R-RTPS; commit `9a5c047e`). beta.32 ✅ **[[R-LTDM]]** detached-poll throttle (R-MWBG RE-CLOSED). Operator flagged the underlying brittleness — the dual worker-spawn model — logged as **[[B-WSPU]]** and now ✅ SHIPPED+DEPLOYED beta.35 — the real subtraction, done. (R-MWBG runtime half:
 explicit-tier detached-routing gate — R-MWBG now FULLY closed; beta.30 B-RELHYG; beta.29 R-SIGF scope-fence +
 R-MWBG half-1; beta.28 R-WPEX; beta.27 B-APNC; beta.26 B-CWGE; beta.25 B-PXBO). **The historical reliability
 defect classes are code-fixed at root** — the completion-commit/Done-flip cluster (B-PCOMP beta.22 + B-DURA
@@ -128,7 +128,7 @@ its bug AND collapses a sibling-seam — reliability + simplification in the sam
 
 ## ⏯ RESUME HERE (updated 2026-07-07 — beta.43 B-RASO shipped+deployed; THREE clean hands-off soak reps banked today; the LAST open verified reliability bug is CLOSED)
 
-**▶ STATE: `origin/main` = v2.0.0-beta.43 (B-RASO recovery attributable-work single oracle); tree clean; no active pickle-rick pipeline; deployed runtime = beta.43. TODAY (2026-07-07) banked THREE clean hands-off `/pickle-pipeline` soak reps: beta.41 R-MPGD WS-1 (`fbde530c`, 4/4 56m) + beta.42 B-RRPC (4/4 103m) + beta.43 B-RASO (4/4 ~28m — WS-1 collapse `4aae80ad` + WS-2 DEFER doc `6fc22e9c`; ZERO interventions, the R-PSRB false-hold NEVER fired on the build worker). All zero-intervention. B-RASO is the FIRST R-PSRB salvage-path RELIABILITY FIX shipped end-to-end through an ATTENDED `/pickle-pipeline` (not hand-built) — the deployed buggy runtime governed the build worker but the latent false-hold is low-base-rate and never triggered. Closer's full gate caught 3 escapes the scoped per-phase gates don't run: compiled-mirror drift (`4cb81885`), a 2141-char trap-door line vs the 1500 limit (`f2025ae4`), and a stale `v2-E2E-9` integration test asserting the pre-fix `hold` contract on a non-resolvable sha (`ab47b3b6`, reconciled to a git-resolvable fixture — same class as the analyst-caught `silent-death-recovery.test.js:191`, in a second file outside the worker allowlist). Deploy-soak needed `PICKLE_TEST_RUNNER_TIMEOUT_MS`>30min (the runner's DEFAULT_TEST_RUNNER_TIMEOUT_MS=1800000 kills a SOAK_SECONDS=1800 soak at the finish line — set 2700000). **B-RASO was "the ONE open verified reliability bug"; with it shipped, the reliability-fix queue is DRAINED — the historical defect classes AND the recovery-sprawl correctness residual are all code-fixed at root.** B-CSHYG-a (the dead `salvageCleanTree` back-fill branch folded into B-RASO WS-2) resolved as DEFER (pinned forward-seam, zero production wirings — `prds/BUG-REPORT-2026-07-07-b-cshyg-a-defer-evidence.md`). NEXT ACTION (operator-steerable, reliability-first order): (a) [[B-CSOR]] — subtractive root fix (citadel commits its own remediation → makes R-MPGD's net vestigial; pipeline-safe, dogfoodable → soak rep #4); (b) ≥1 more CODEX soak rep for the GA cross-backend bar (fold in the [[R-SIGF]] hardening fast-follow); (c) residual P3 ([[R-LTNC]] PRD authored, [[R-TCVC]]/[[R-HNCG]] bug-filed). NOTE for next contexts: `PICKLE_SIGF`, `PICKLE_CITADEL_MECHANICAL`, `PICKLE_RECOVERY_CONSOLIDATION`, `skip_readiness_reason`/`skip_ticket_audit_reason`, chain_meeseeks, `evaluateCodexManagerRelaunch`, `getPhaseExitReason`, `resolveBreakerRecoveryGraceSeconds` / `evaluateSimpleManagerRelaunch` / `hasCommitReferencingTicketSince`, and (as of beta.43) `hasFrontmatterCompletionSha` / `hasVerifiedFrontmatterCompletionSha` (collapsed into `resolveAttributableFrontmatterSha`) NO LONGER EXIST — do not cite them.**
+**▶ STATE: `origin/main` = v2.0.0-beta.43 (B-RASO recovery attributable-work single oracle); tree clean; no active pickle-rick pipeline; deployed runtime = beta.43. TODAY (2026-07-07) banked THREE clean hands-off `/pickle-pipeline` soak reps: beta.41 R-MPGD WS-1 (`fbde530c`, 4/4 56m) + beta.42 B-RRPC (4/4 103m) + beta.43 B-RASO (4/4 ~28m — WS-1 collapse `4aae80ad` + WS-2 DEFER doc `6fc22e9c`; ZERO interventions, the R-PSRB false-hold NEVER fired on the build worker). All zero-intervention. B-RASO is the FIRST R-PSRB salvage-path RELIABILITY FIX shipped end-to-end through an ATTENDED `/pickle-pipeline` (not hand-built) — the deployed buggy runtime governed the build worker but the latent false-hold is low-base-rate and never triggered. Closer's full gate caught 3 escapes the scoped per-phase gates don't run: compiled-mirror drift (`4cb81885`), a 2141-char trap-door line vs the 1500 limit (`f2025ae4`), and a stale `v2-E2E-9` integration test asserting the pre-fix `hold` contract on a non-resolvable sha (`ab47b3b6`, reconciled to a git-resolvable fixture — same class as the analyst-caught `silent-death-recovery.test.js:191`, in a second file outside the worker allowlist). Deploy-soak needed `PICKLE_TEST_RUNNER_TIMEOUT_MS`>30min (the runner's DEFAULT_TEST_RUNNER_TIMEOUT_MS=1800000 kills a SOAK_SECONDS=1800 soak at the finish line — set 2700000). **B-RASO was "the ONE open verified reliability bug"; with it shipped, the reliability-fix queue is DRAINED — the historical defect classes AND the recovery-sprawl correctness residual are all code-fixed at root.** B-CSHYG-a (the dead `salvageCleanTree` back-fill branch folded into B-RASO WS-2) resolved as DEFER (pinned forward-seam, zero production wirings — `prds/BUG-REPORT-2026-07-07-b-cshyg-a-defer-evidence.md`). NEXT ACTION (operator-steerable, priority order autonomy→simplicity): (a) ≥1 more CODEX soak rep for the GA cross-backend bar — the one concrete GA gap (fold in the [[R-SIGF]] hardening fast-follow); (b) [[B-CSOR]] — subtractive root fix (citadel commits its own remediation → makes R-MPGD's net vestigial; pipeline-safe, dogfoodable → a claude soak rep); (c) residual P3 ([[R-LTNC]] PRD authored, [[R-TCVC]]/[[R-HNCG]] bug-filed). NOTE for next contexts: `PICKLE_SIGF`, `PICKLE_CITADEL_MECHANICAL`, `PICKLE_RECOVERY_CONSOLIDATION`, `skip_readiness_reason`/`skip_ticket_audit_reason`, chain_meeseeks, `evaluateCodexManagerRelaunch`, `getPhaseExitReason`, `resolveBreakerRecoveryGraceSeconds` / `evaluateSimpleManagerRelaunch` / `hasCommitReferencingTicketSince`, and (as of beta.43) `hasFrontmatterCompletionSha` / `hasVerifiedFrontmatterCompletionSha` (collapsed into `resolveAttributableFrontmatterSha`) NO LONGER EXIST — do not cite them.**
 **✅ B-SSVR SHIPPED beta.34** (via /pickle-pipeline + babysitter closer-takeover): **[[R-SSBR]] scope-resolver fail-CLOSED**
 on a stale/ahead base ref (`9592eb46`) — `resolveAllowedFromDiffMode` now detects `baseSha===headSha` with a differing
 baseRef tip and either recomputes via `resolveForkPointBase` or throws `SCOPE_BASE_AHEAD_OF_HEAD` (never a false
@@ -146,9 +146,12 @@ remains field-soak **repeatability** (esp. codex).
 **▶ NEXT ACTION — priority order (operator, 2026-07-08): RELIABILITY → AUTONOMOUS EXECUTION → SIMPLICITY.**
 The reliability-**fix** queue is now DRAINED (B-RASO, the last open verified reliability bug, shipped beta.43).
 So the work shifts from *fixing* reliability to *proving* it — and the proof IS autonomous execution. **Top
-recommendation: [[B-CSOR]] — it is the convergence of all three pillars in one cut** (subtractive root fix =
-simplicity; pipeline-safe + dogfoodable = an autonomous soak rep; removes a failure source rather than guarding
-it = reliability). Run it via `/pickle-pipeline`; then bank a **codex** rep for the cross-backend GA bar.
+recommendation: a CODEX soak rep** — it is the ONE concrete GA gap (goal #2 autonomy: cross-backend
+repeatability; three of the four banked reps are claude). Fold the [[R-SIGF]] hardening fast-follow in as its
+payload so the rep banks real work. **Then** run [[B-CSOR]] — the subtractive root fix (primary weight: goal #3
+simplicity) that doubles as a claude soak rep. B-CSOR is NOT the lead: its reliability contribution removes an
+already-defended door (R-MPGD WS-1 shipped beta.41), and a claude rep does not move the codex bar — so the
+operator's priority order (autonomy before simplicity) puts the codex rep first.
 
 **A. Reliability (goal #1) — HOLD THE BAR; the fix queue is drained.** Every historical defect class is code-fixed
 at root: completion-oracle plurality (B-1SEAM ✅), scope-fence under/over-extend (R-SIGF ✅), the R-SZGB fail-OPEN
@@ -169,17 +172,21 @@ specific: ≥1 more CODEX rep** for cross-backend repeatability (three of the fo
 [[R-SIGF]] hardening fast-follow (4 deferred passes over the R-SIGF diff, unblocked post-B-WSPU) into that codex
 run. Each rep is chosen to ALSO do reliability or simplicity work — never a rep for its own sake.
 
-**▶ RECOMMENDED SEQUENCE** (each item advances ≥2 pillars):
-1. **[[B-CSOR]]** — the tri-pillar top pick. Make citadel COMMIT its own mechanical remediation so no downstream
-   phase inherits a dirty tree → no dirty-tree abort → [[R-MPGD]]'s safety-net becomes vestigial. **Reliability**
-   (removes a failure source), **simplicity** (subtractive root, R-MPGD WS-2 honesty-labeling then unneeded),
-   **autonomy** (pipeline-safe → dogfood it → soak rep #5). Ship on claude. **PRD (revalidate vs HEAD before
-   building — it predates the beta.37–43 changes):** `prds/archive/bundles/p2-bug-fix-bundle-b-csor-citadel-graduated-remediation.md`.
+**▶ RECOMMENDED SEQUENCE** (priority order — autonomy [goal #2] leads simplicity [goal #3]):
+1. **A CODEX soak rep** — the ONE concrete GA gap (goal #2 autonomy: cross-backend repeatability; three of the
+   four banked reps are claude, only B-SCOPESEED beta.38 is codex). Fold in the [[R-SIGF]] hardening fast-follow
+   (4 deferred passes over the R-SIGF diff, unblocked post-B-WSPU) so the rep also banks real work. Watch for
+   [[R-CXHANG]] D-state orphans (the codex-soak top hazard; reaper shipped beta.37). This directly attacks the
+   named GA blocker — a claude rep cannot.
+2. **[[B-CSOR]]** — the subtractive root fix (primary weight: goal #3 simplicity; NOT the lead — a claude rep does
+   not move the codex bar). Make citadel COMMIT its own mechanical remediation so no downstream phase inherits a
+   dirty tree → no dirty-tree abort → [[R-MPGD]]'s safety-net becomes vestigial. Secondary: **reliability** (removes
+   an already-defended failure source — R-MPGD WS-1 shipped beta.41 already locks this door), **autonomy** (a claude
+   soak rep, but claude is already banked ×3). Ship on claude. **PRD (revalidate vs HEAD before building — it
+   predates the beta.37–43 changes):** `prds/archive/bundles/p2-bug-fix-bundle-b-csor-citadel-graduated-remediation.md`.
    Per the Simplification Review guard (`prds/CLAUDE.md`), the honest fix is to make citadel commit its OWN
    remediation, NOT to add a finding-classifier/hand-fix class (brace-free-`if` → eslint/prettier autofix); scope
    accordingly. **To build:** author/refresh a PRD from that spec → `/pickle-pipeline` (refinement runs in Step 0).
-2. **A CODEX soak rep** — the one concrete GA gap. Fold in the [[R-SIGF]] hardening fast-follow so the rep also
-   banks real work. Watch for [[R-CXHANG]] D-state orphans (the codex-soak top hazard; reaper shipped beta.37).
 3. P3 filler, only to give a rep a payload: [[R-LTNC]] (PRD ready — internal `linear_ticket_*` rename) ·
    [[R-TCVC]] + [[R-HNCG]] (the two worker-continuity fixes, bundle-able).
 
@@ -234,68 +241,6 @@ auto-rescue scope-leak) and [[B-GNDT]] (launch-time dirty-tree self-brick); sour
 Rate note: the babysitter cron is **session-only** (dies when this Claude process exits) and the 5-hour rate
 window cycles ~04:13/09:13/14:13/19:13 CDT — heavy work (pipelines, gates) should run with headroom, not near a
 window edge.
-
-**✅ R-SIGF / B-SIGF SHIPPED v2.0.0-beta.29 (2026-06-29, claude, babysitter pipeline + closer-takeover).** Closes
-**[[R-SIGF]] full scope-auto-extension — the codex GA blocker.** Built via `/pickle-pipeline --scope branch` from
-a cron babysitter; recovered through two mid-build stalls (R-MWBG medium then large-tier worker deaths). All 5
-functional tickets shipped — shared detector (`18f2ccc1`), WS-1 advisory→conditional-blocking finding
-(`e4c23a27`), WS-2 schema-shape consumers (`c138b29f`), WS-3 bounded opt-in auto-extension behind default-OFF
-`scope.auto_extend_signature_callers` (`e5401758`), wiring (`74a7f852`) + schema-shape-aware message hardening
-(`555ef2b9`); + R-MWBG half-1 (`795e539e`). Full local gate GREEN (the one real fast-c4 fail — `scope_auto_extended`
-missing from the activity-logger expected-count array — fixed `b67abbad`; c=8 budget + dispatch-watchdog fails were
-proven R-CIFB/R-TSPF load-flakes, isolation-green). **Hardening-deferred (honest):** the 4 in-pickle hardening
-tickets did NOT complete (large-tier worker silent-death = R-MWBG runtime half) → fast-follow above.
-
-**✅ B-CWGE SHIPPED v2.0.0-beta.26 (2026-06-28, on CLAUDE, via babysitter closer-takeover).** Closes
-**[[R-CWGE]] (P1)** — the codex worker quality gate is now fail-CLOSED. Root cause confirmed: `runWorkerGate`
-ran at a single callsite inside spawn-morty's `if(isSuccess)` finalize, and NO orchestrator Done-flip path
-re-ran it — so codex's detached/no_progress/salvage path committed work that never reached the clean finalize,
-and the oracle-based Done-flip shipped lint/tsc/test-RED. Fix: spawn-morty persists ONE `worker_gate_verdict`
-(`green|red|absent`, eslint+tsc+test) frontmatter field (subsumes B-PXBO's tsc-only field); the Done-flip guard
-`guardCompletionCommitBeforeDone` consults it on EVERY genuine worker Done-flip and is fail-closed — an `absent`
-verdict is RECOMPUTED over the full eslint+tsc+test:fast contract (a tsc-RED tree hides from test:fast behind
-stale compiled JS). The build ran a clean `/pickle-pipeline --scope branch` 4/4 (pickle→citadel→anatomy-park→
-szechuan), with anatomy-park self-hardening 3 CRITICAL gaps in the new code.
-
-**Closer-takeover note (8 commits `e804775b`..`e526edc2`):** the full release gate (which the per-phase pipeline
-gates do NOT run) caught **6 issues none of which were a core B-CWGE design fault**: (1) the verdict gate
-**over-reached** into the runner-authored `commitGatePassingDeliverableOnExitPath`/boundary/salvage commit path,
-recomputing a real 71s gate on fixture repos → `commit-failed` (fixed `aed8e831`: scope the verdict to GENUINE
-worker Done-flips — runner-authored commits already proved green via their own armed #99 gate, so persist
-green and skip the recompute); (2) its AC-DURA-3 follow-on — a 2000-char source-slice test broke when the fix
-comment pushed the guard+markTicketDone past the window (`2980e5e6`); (3) R-TAQ-6 subprocess-heavy load-flake
-serialized (`2980e5e6`); and **(4–6) THREE pre-existing `f009608d` sweep-drift casualties** — that "sweep 35
-shipped PRDs to archive/" commit orphaned three LIVE gate inputs whose audit/test paths still pointed at
-`prds/` (bundle-thesis matrix+PRD `fba57e47`, closer-template PRD `82650a5e`, readiness-bundle-prd fixture
-`574a4ff1`). **Lesson: when a doc-sweep moves a PRD that a gate reads, the audit/test path must follow it to
-`prds/archive/<sub>/` — and the doc-sweep commit must re-run the FULL gate.** The c=8 `test:fast:budget`
-FAIL_BUDGET(3) was a confirmed R-CIFB load-flake (c=4 green, 6711/6714) — non-blocking per posture.
-
-**✅ B-APNC SHIPPED v2.0.0-beta.27 (2026-06-28, claude, babysitter closer-takeover)** — closes **[[R-APNC]] (P2)**:
-anatomy-park now halts-and-reports a non-convergent subsystem (`APNC_MAX_PASSES_WITHOUT_CLEAN`, exit_reason
-`anatomy_non_convergent` → non-fatal continue) + treats a complexity-regressing pass as non-progress + a
-subtract-pass discipline section in `anatomy-park.md`. Mid-build the **R-WPEX detached-`claude -p` log-flush
-worker death recurred** (workers died at flush, artifacts intact) → pickle hit `pipeline_phase_incomplete` 0/4;
-babysitter recovered (hand-committed the verified WS-3 doc work `080e7e60` + Done-flip + relaunch → 4/4). Closer
-caught + fixed the 2 new convergence-guard activity events missing from `activity-logger`'s expected list (same
-event-registration class as B-CWGE; `anatomy_non_convergent` is the exit_reason, correctly NOT in the events array).
-
-**✅ R-WPEX↻ SHIPPED v2.0.0-beta.28 (2026-06-28, claude, hand-built in-process via ultracode Workflow).** Closes
-**[[R-WPEX]] (P2)**. ROOT CAUSE (sharpened to a **durability** gap, not a buffer-drain race): the spawn-morty
-success/close drain awaited `sessionLog.once('finish')` (bytes → OS page cache) but **never fsynced** before the
-detached, unref'd large-tier worker exits. mux-runner spawns spawn-morty `detached:true` + `unref()` +
-`stdio:'ignore'`, so spawn-morty SOLELY owns the `worker_session` log; it could exit before durable persist and
-the poll-reattach side then reads a **0-byte/truncated log while artifacts are intact** — exactly the B-APNC
-idle-box flush-death signature (distinct from the R-WSE-2 SIGKILL/OOM 0-byte class). FIX (subtract-before-add,
-`a4400e80`): reuse the existing `bestEffortFdatasync(sessionLogPath)` helper (already used by the hangGuard) on
-the `once('finish')` success drain + the 5s degraded fallback — no new state field/gate/flag; the pinned
-`flushAndExit` trap door (`end()` → `await once('close')` → `exit`) is UNCHANGED. A deterministic worker-shutdown
-repro proved the missing fsync (RED→GREEN) + a production-source trap-door guard pins the success-drain fsync so a
-revert goes RED. Secondary (`a4400e80`): manager-prompt per-ticket recovery-atomicity note (commit+Done each
-recovered ticket individually, never batch across a turn) — the gap that turned the recoverable flush-death into
-the B-APNC 0/4. Built on the IMMUNE in-process path (no detached `claude -p` spawned during the build); full
-local gate green (tsc/eslint/10 audits + fast-c4 6727/6730 0-fail + integration 495/496 [F22-1 isolation-green
-load-flake] + expensive 0-fail).
 
 ## Status
 
