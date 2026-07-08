@@ -6886,18 +6886,34 @@ function isWithinAllowedPaths(file, allowed) {
         return file === a || file.startsWith(prefix);
     });
 }
-/** Salvage probe 1: ticket frontmatter carries an explicit completion sha (quoted forms accepted, R-CCQF parity). */
-function hasFrontmatterCompletionSha(sessionDir, ticketId) {
+/**
+ * B-RASO — the ONE frontmatter-SHA-verifying helper for BOTH recovery detectors
+ * (silent-death salvage + Failed-flip suppression). Resolves a ticket's
+ * frontmatter completion sha, git-VERIFIED: iterates both fields with `continue`
+ * semantics (a bad `completion_commit` does NOT suppress a good
+ * `completion_commit_inferred`), R-CCQF-normalizes quoted forms, shape-checks,
+ * and returns the FIRST sha that `git cat-file -t` resolves to a commit object in
+ * `workingDir` — else null. A regex-valid but nonexistent sha yields null, so a
+ * garbage stamp can neither hold a silent-death ticket nor suppress a Failed-flip.
+ * Fails toward null on unreadable file / bad shape / git error / timeout (the
+ * fresh-artifacts + scoped-commit backstop arms remain the independent evidence).
+ */
+function resolveAttributableFrontmatterSha(sessionDir, ticketId, workingDir) {
+    let raw;
     try {
-        const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf-8');
-        for (const field of ['completion_commit', 'completion_commit_inferred']) {
-            const value = (readFrontmatterField(raw, field) ?? '').trim().replace(/^['"]+|['"]+$/g, '');
-            if (/^[0-9a-f]{7,40}$/i.test(value))
-                return true;
-        }
+        raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf-8');
     }
-    catch { /* missing/unreadable ticket file → no evidence */ }
-    return false;
+    catch {
+        return null;
+    }
+    for (const field of ['completion_commit', 'completion_commit_inferred']) {
+        const value = (readFrontmatterField(raw, field) ?? '').trim().replace(/^['"]+|['"]+$/g, '');
+        if (!/^[0-9a-f]{7,40}$/i.test(value))
+            continue;
+        if (silentDeathGit(['cat-file', '-t', value], workingDir) === 'commit')
+            return value;
+    }
+    return null;
 }
 /** Salvage probe 2: a commit landed in the iteration window touching only `allowed_paths` (unscoped session → any commit counts). */
 function hasScopedIterationWindowCommit(input) {
@@ -6948,7 +6964,7 @@ function appendRecoveryLedgerEntry(statePath, attempt) {
     catch { /* best-effort ledger append — never block recovery */ }
 }
 function detectSilentDeathAttributableWork(input) {
-    if (hasFrontmatterCompletionSha(input.sessionDir, input.ticketId))
+    if (resolveAttributableFrontmatterSha(input.sessionDir, input.ticketId, input.workingDir) !== null)
         return 'completion_commit';
     if (hasScopedIterationWindowCommit(input))
         return 'scoped_commit';
@@ -7081,32 +7097,9 @@ function hasFreshTicketArtifactEvidence(input) {
     }
     return false;
 }
-/**
- * Frontmatter completion sha, authoritative but garbage-proof: the sha counts
- * only when it resolves to a real commit object in workingDir (a regex-valid
- * but nonexistent sha must NOT hold a ticket — R-CXOR-1 unrecoverable-orphan
- * flips stay flips).
- */
-function hasVerifiedFrontmatterCompletionSha(sessionDir, ticketId, workingDir) {
-    let raw;
-    try {
-        raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf-8');
-    }
-    catch {
-        return false;
-    }
-    for (const field of ['completion_commit', 'completion_commit_inferred']) {
-        const value = (readFrontmatterField(raw, field) ?? '').trim().replace(/^['"]+|['"]+$/g, '');
-        if (!/^[0-9a-f]{7,40}$/i.test(value))
-            continue;
-        if (silentDeathGit(['cat-file', '-t', value], workingDir) === 'commit')
-            return true;
-    }
-    return false;
-}
-/** Evidence arm (b): frontmatter completion sha (verified) OR a window commit whose touched paths ⊆ allowed_paths. */
+/** Evidence arm (b): frontmatter completion sha (verified via the shared B-RASO oracle) OR a window commit whose touched paths ⊆ allowed_paths. */
 function hasTicketScopedCommitEvidence(input) {
-    if (hasVerifiedFrontmatterCompletionSha(input.sessionDir, input.ticketId, input.workingDir))
+    if (resolveAttributableFrontmatterSha(input.sessionDir, input.ticketId, input.workingDir) !== null)
         return true;
     if (!input.preSha)
         return false;

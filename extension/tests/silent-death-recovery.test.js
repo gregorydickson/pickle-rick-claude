@@ -188,7 +188,11 @@ test('graceful exit (terminal promise token in latest log) keeps the existing ev
 
 // ─── Salvage-first ────────────────────────────────────────────────────────────
 
-test('salvage-first: frontmatter completion sha + 0-byte log → hold, no respawn, no cap drawdown, status untouched', () => {
+test('AC-2 (B-RASO): UNRESOLVABLE frontmatter sha in non-repo tmp + 0-byte log → respawn, NOT a false hold', () => {
+  // The garbage-SHA false-hold this bundle closes: a format-valid but
+  // git-unverifiable `completion_commit` must NOT suppress respawn. The old
+  // format-only detector held here forever; the collapsed verified oracle
+  // rejects the stamp and the ticket respawns like any no-work exit.
   const fix = makeSession({
     ticketFrontmatter: `---\nid: ${TICKET}\nstatus: "In Progress"\ncomplexity_tier: medium\ncompletion_commit: abc1234def\n---\n# T\n`,
   });
@@ -198,14 +202,45 @@ test('salvage-first: frontmatter completion sha + 0-byte log → hold, no respaw
     const cls = checkPartialLifecycleExit(fix.sessionDir, fix.statePath, TICKET);
     assert.equal(cls.subClass, 'log_empty');
     const decision = applySilentDeathRecoveryPolicy(policyInput(fix, cls, { settings: { silent_death_respawn_cap: 1 } }));
+    assert.equal(decision.action, 'respawn', 'unresolvable sha is not attributable work → respawn');
+    assert.equal(decision.attempt, 1);
+    assert.equal(decision.cap, 1);
+    const ledger = readState(fix.statePath).recovery_attempts;
+    assert.equal(ledger.length, 1, 'exactly one respawn charged');
+    assert.equal(ledger[0].strategy, 'silent_death_respawn', 'strategy === SILENT_DEATH_RESPAWN_STRATEGY');
+    assert.equal(ledger[0].outcome, 'success');
+  } finally {
+    rmSync(fix.tmp, { recursive: true, force: true });
+  }
+});
+
+test('AC-2b (B-RASO): SHA-arm survival — git-resolvable completion sha, no window commit, aged artifacts → hold (completion_commit), cap untouched', () => {
+  // Genuine-work behavior is UNCHANGED: a real, git-verifiable completion sha
+  // still holds the ticket (no respawn, no cap drawdown) even with no
+  // iteration-window commit and no fresh artifacts.
+  const repo = mkdtempSync(path.join(tmpdir(), 'pickle-sdr-repo-'));
+  const realSha = initRepo(repo);
+  const fix = makeSession({
+    workingDir: repo,
+    ticketFrontmatter: `---\nid: ${TICKET}\nstatus: "In Progress"\ncomplexity_tier: medium\ncompletion_commit: ${realSha}\n---\n# T\n`,
+  });
+  try {
+    ageArtifacts(fix.ticketDir);
+    writeFileSync(path.join(fix.ticketDir, 'worker_session_44445.log'), '');
+    const cls = checkPartialLifecycleExit(fix.sessionDir, fix.statePath, TICKET);
+    assert.equal(cls.subClass, 'log_empty');
+    // No preIterSha → the scoped-commit window arm cannot fire; the SHA arm must.
+    const decision = applySilentDeathRecoveryPolicy(
+      policyInput(fix, cls, { workingDir: repo, settings: { silent_death_respawn_cap: 1 } }),
+    );
     assert.equal(decision.action, 'hold');
     assert.equal(decision.evidence, 'completion_commit');
-    const s = readState(fix.statePath);
-    assert.equal(s.recovery_attempts.length, 0, 'hold must not draw down the cap');
+    assert.equal(readState(fix.statePath).recovery_attempts.length, 0, 'hold must not draw down the cap');
     const ticketRaw = readFileSync(path.join(fix.ticketDir, `linear_ticket_${TICKET}.md`), 'utf-8');
     assert.match(ticketRaw, /status: "In Progress"/, 'ticket status untouched');
   } finally {
     rmSync(fix.tmp, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
   }
 });
 
