@@ -28,10 +28,10 @@ Summarize the available commands for the user:
 
 **Internal:** `/send-to-morty` — auto-sent to worker subprocesses, not for direct use
 
-**Flags for /pickle-tmux:** `--resume [PATH]` | `--max-iterations <N>` (default:500) | `--max-time <M>` (default:off; opt-in) | `--worker-timeout <S>` (default:1200) | `--completion-promise "TEXT"` | `--backend <claude|codex|hermes>` | `--teams` (claude-only; spawns workers via harness Agent teams instead of subprocesses) | `--max-parallel <N>` (default:5; requires `--teams`; v1 ships sequential, this flag is plumbed for the parallel-fan-out follow-up)
+**Flags for /pickle-tmux:** `--resume [PATH]` | `--max-iterations <N>` (default:500) | `--max-time <M>` (default:off; opt-in) | `--worker-timeout <S>` (default: tier-derived; medium=3600) | `--completion-promise "TEXT"` | `--backend <claude|codex|hermes|deepseek|grok|kimi|gemini>` | `--teams` (claude-only; spawns workers via harness Agent teams instead of subprocesses) | `--max-parallel <N>` (default:5; requires `--teams`; v1 ships sequential, this flag is plumbed for the parallel-fan-out follow-up)
 
 **Backends:**
-- `--backend <claude|codex|hermes>` accepted by `/pickle-tmux`, `/pickle-microverse`, `/anatomy-park`, `/szechuan-sauce`
+- `--backend <claude|codex|hermes|deepseek|grok|kimi|gemini>` accepted by `/pickle-tmux`, `/pickle-microverse`, `/anatomy-park`, `/szechuan-sauce`
 - `/council-of-ricks` integrates codex differently: Phase C adversarial subagent runs by default; `--no-codex` disables, `--codex-timeout <sec>` tunes (default 600)
 - `PICKLE_BACKEND=codex` or `PICKLE_BACKEND=hermes` env var — session-independent alternative, persists across commands
 - Precedence: CLI flag > env var > session state > default `claude`

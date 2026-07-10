@@ -626,7 +626,7 @@ node "${EXTENSION_ROOT}/extension/bin/update-state.js" step breakdown "${SESSION
 
 Verify: `prd.md` exists AND state.json has `step: breakdown`.
 
-**Note**: State advances to `breakdown`. When the user runs `/pickle-tmux --resume`, pickle.md Phase 2 (Ticket Manager) will decompose the PRD into atomic tickets before entering the orchestration loop. This is the standard Pickle Rick lifecycle — portal-gun handles PRD creation, pickle handles decomposition and execution.
+**Note**: State advances to `breakdown`. When the user runs `/pickle-tmux --resume`, the manager template (`extension/templates/_pickle-manager-prompt.md`) Phase 2 (Ticket Manager) will decompose the PRD into atomic tickets before entering the orchestration loop. This is the standard Pickle Rick lifecycle — portal-gun handles PRD creation, the manager handles decomposition and execution.
 
 **If `AUTO_RUN` is false**:
 Print results: PRD path, pattern summary, donor → target mapping, refinement status, pattern library status.

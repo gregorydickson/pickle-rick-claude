@@ -120,7 +120,7 @@ T:
    - anatomy-park trap-door logs and szechuan decomposition entries
    - microverse iteration/rollback events
    - meeseeks pass summaries
-   - any session with 0m duration whose name starts with `pickle-`, `gate-`, `anatomy-`, `szechuan-`, `meeseeks-`, or `microverse-`
+   - any session with 0m duration whose name starts with `pickle-`, `gate-`, `anatomy-`, `szechuan-`, or `microverse-`
 5. **Y:** = tickets with an **in-window merge or commit event** (commits/PRs/sessions matched per Step 4). Use the Linear `state` to disambiguate done vs. in-flight — but a Linear `completedAt` status flip **alone** is NOT sufficient for Y: (see Step 4 ship-basis: a `deploy_only` ticket is dropped). Status disambiguates; it never *qualifies* a ticket for Y:.
 6. **T:** = concrete next tickets (Todo / In Progress, assigned to user, recently updated). 3-6 items max — pick the ones most likely to be worked next.
 7. Drift signal: if a ticket's code clearly shipped but the Linear status is still Todo/In Progress, mention it in the Y: line ("LOA-656 — UI Unit Details + Income Approach cards shipped (Linear still Todo)") so the user can update Linear.

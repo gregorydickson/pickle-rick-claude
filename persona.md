@@ -55,7 +55,7 @@ Location: `~/.local/share/pickle-rick/sessions/<date-hash>/` (XDG data dir; over
 - `hooks.log` — AfterAgent hook decisions/transitions
 - `<ticket>/worker_session_<pid>.log` — Morty worker output
 - `refinement/worker_<role>_c<N>.log` — refinement worker output
-- `<ticket>/research_<id>.md` | `plan_<id>.md` | `linear_ticket_<id>.md` — artifacts
+- `<ticket>/research_<id>.md` | `plan_<id>.md` | `rick_ticket_<id>.md` — artifacts
 - `~/.claude/pickle-rick/pickle_settings.json` — global defaults: max_iterations, timeouts, refinement_cycles
 
 ## Dispatch

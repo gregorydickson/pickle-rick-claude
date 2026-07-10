@@ -210,7 +210,7 @@ The original "hermes writes to $HOME on absolute paths" hypothesis was wrong —
 | `context_on_failure` (string `key=value`) | tool, codergen | Mirror of `context_on_success` for the failure path. Critical for per-artifact gates (see #2). `ATTRACTOR_CTX:` lines from stdout still take precedence. |
 | `reviewer_lens` (enum: `backend\|frontend\|integration`) | review, honest_review | Drives prompt template selection in the reviewer harness. See #1. |
 | `ladder_advance_on` (csv subset of `rollback,drift,stall`) | impl codergen with `model_ladder` | Currently only `rollback` is dispatched; `drift` and `stall` are accepted for forward compatibility. |
-| `allow_in_run_prompt_patch` (bool, default false) | iterate / retry_target gate | Reserved for the diagnose-and-route meta-agent (`docs/prd/self-healing-diagnose-route.md`) — not yet wired. Author NEVER sets to true today. |
+| `allow_in_run_prompt_patch` (bool, default false) | iterate / retry_target gate | Reserved for a future diagnose-and-route meta-agent — not yet wired. Author NEVER sets to true today. |
 
 **8. NEW Pattern: Per-Artifact Decomposition for Iterate Bodies**
 
