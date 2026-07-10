@@ -842,7 +842,7 @@ function isGitVerbBlockedByRWSRCGR(input: PreToolUseInput, state: State): boolea
     });
   } catch { /* best-effort */ }
 
-  block(`R-WSRC-GR: \`git ${verb}\` is FORBIDDEN inside worker subprocesses (path-scope your edits with \`git restore <paths>\` instead). Operator override: set state.flags.${flagField ?? `allow_git_${verb.replace(/\s/g, '_')}_reason`}="<reason>" to bypass.`);
+  block(`R-WSRC-GR: \`git ${verb}\` is FORBIDDEN inside worker subprocesses. PRESERVE WORK first (R-WUWC): commit verified changes scoped, then \`git restore <named-files>\` — NEVER \`git restore .\` or a directory over uncommitted work (restore is not blocked and wipes it all). Operator override: set state.flags.${flagField ?? `allow_git_${verb.replace(/\s/g, '_')}_reason`}="<reason>" to bypass.`);
   return true;
 }
 
