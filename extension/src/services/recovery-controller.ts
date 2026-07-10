@@ -287,9 +287,7 @@ export interface ExecutePhaseLoopResult {
  * DI seam for the clean-tree implement pass (AC-GA-REC-1). The adapter receives the
  * RAW plan_*.md path (never the parsed PlanPhase[], which is verify-only and carries
  * nothing implementable) and returns whether an implement pass produced a diff.
- * B-WSPU WS-1: all tiers spawn an implement pass synchronously — the optional
- * `detachedSpawned`/`largeTierRouted` result fields are retained on the type for
- * caller compatibility but the production adapter no longer sets them. Timeout is
+ * B-WSPU WS-1: all tiers spawn an implement pass synchronously. Timeout is
  * surfaced as `{ ok: false, timedOut: true }` so the ladder escalates to recovery_exhausted.
  */
 export interface ReExecutionSeam {
@@ -301,7 +299,7 @@ export interface ReExecutionSeam {
     sessionDir: string;
     workingDir: string;
     statePath: string;
-  }) => { ok: boolean; largeTierRouted?: boolean; detachedSpawned?: boolean; timedOut?: boolean };
+  }) => { ok: boolean; timedOut?: boolean };
 }
 
 /** Adapters for `executePhaseLoop` — every side-effect is injected (DI), like RecoveryDeps. */

@@ -98,6 +98,7 @@ export function buildCorrectCourseBrief(args, createdAt) {
         '- Read-only analysis only.',
         '- Use the morty-course-corrector agent instructions.',
         '- The corrector produces proposal content only; the manager performs any later apply, ledger, ticket, or state changes.',
+        '- Discovery Summary states what IS, each claim carrying a file:line ref — no solutioning; any sentence containing "should" belongs in Impact Map/Restart Point, not discovery. A correction built on an unverified premise restructures tickets around a hallucinated fact.',
         '- Actual worker invocation must use buildJudgeInvocation(backend, ...) so codex runs with `-s read-only` and Claude runs with `--allowedTools Read,Glob,Grep`.',
         '',
         '## Expected Proposal Sections',

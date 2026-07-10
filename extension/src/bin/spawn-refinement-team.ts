@@ -147,6 +147,10 @@ For each ticket, assign a complexity_tier in the frontmatter:
 - small: 1-2 files, straightforward logic, type-only or minimal tests
 - medium: 2-4 files, moderate logic, requires unit tests
 - large: 4+ files, complex integration, multiple test files, cross-cutting concerns
+
+Tier is a BET on every downstream budget — worker timeout, iteration cap, and which test tiers the gate runs; \`small\` skips \`test:fast\` entirely.
+Bias anything touching the orchestrator, iteration loop, or recovery machinery to medium+ regardless of LOC.
+Count verification cost in the bet: a slow integration/container-based verify is never \`small\`.
 `;
 
 export function buildTierClassificationSection(): string {

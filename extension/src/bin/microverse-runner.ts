@@ -2585,6 +2585,7 @@ function buildWorkerMicroverseHandoff(
   appendFailedApproachesHandoff(parts, mvState);
   appendTargetHandoff(parts, mvState, workingDir, sessionDir);
   parts.push('Make targeted changes and commit.');
+  parts.push('A clean pass (zero confident findings) is a valid, expected outcome: commit NOTHING and state clearly in your final output that the pass was clean — say "clean" or "no violations" so the runner classifies it. Never manufacture a change or finding just to have something to commit.');
   return parts.join('\n');
 }
 

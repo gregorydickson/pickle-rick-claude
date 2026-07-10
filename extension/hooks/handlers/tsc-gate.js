@@ -99,7 +99,7 @@ const SHELL_SEGMENT_SEPARATORS = new Set(['&&', '||', '|', '&', ';', '\n']);
  *
  * Without segmentation the gate inspected only the cd-stripped leading command,
  * so the CLAUDE.md-canonical `git add -A && git commit -m "…"` form (the
- * documented commit pattern in pickle-microverse.md / meeseeks.md) reported the
+ * documented commit pattern in pickle-microverse.md) reported the
  * subcommand as `add` and the tsc check was skipped — a broken-TS commit slipped
  * the R-WACT backstop. A worker also naturally emits `git add` and `git commit`
  * on separate lines, so a swallowed newline produced the same single-segment
