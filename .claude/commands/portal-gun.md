@@ -673,7 +673,7 @@ After each execution pass, measure migration coverage against the inventory:
    - **Model/schema**: Grep target for the model name, check if fields match
    - **Service**: Grep target for the service name or equivalent functions
    - **Config**: Check if env vars / config keys exist in target
-3. Classify each item: `PORTED` (found in target with equivalent behavior), `PARTIAL` (exists but incomplete), `MISSING` (not found)
+3. Classify each item: `PORTED` (found in target with equivalent behavior), `PARTIAL` (exists but incomplete), `MISSING` (not found). A name-grep hit alone NEVER classifies PORTED — name-exists-but-behavior-unverified is the phantom-Done shape. PORTED requires a second signal: the item's Behavioral Validation Test passes, or the implementing commit's diff demonstrably covers the item. Grep-only evidence classifies at most PARTIAL.
 4. Write `${SESSION_ROOT}/portal/coverage_report.md`:
 
 ```markdown

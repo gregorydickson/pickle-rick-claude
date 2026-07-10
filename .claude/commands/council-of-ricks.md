@@ -232,6 +232,8 @@ Severity uses the **szechuan P0–P4 matrix** from `council-principles.md`:
 
 Every finding carries a **confidence score** per the `## Confidence Scoring` section of `council-principles.md` (rubric: 0 / 25 / 50 / 75 / 100). Format: `[P<N>, conf=<score>]`. Findings with `conf < 80` drop before they reach the directive — severity and confidence are independent axes, a P0 at conf 50 still gets cut. Before scoring, apply the `## False Positives — Do NOT Flag` exclusion list wholesale — pre-existing issues, tooling-caught errors, stylistic preferences, speculative future-risk, and resolved prior-round findings never reach scoring.
 
+Zero findings from a category on clean code is a SUCCESSFUL review — never manufacture a finding or round conf 75 up to 80 to keep one alive. A single inflated P0/P1 breaks the two-clean-round approval streak, drives the Council to max-round exhaustion, and publishes noise onto real PRs. The metric is credited findings, not emitted ones.
+
 #### Phase A — Historical Context (serial, main agent)
 
 Main agent computes a "historical brief" that informs Phase B/C subagents. Cheap, no fan-out — one markdown file per round.

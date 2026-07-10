@@ -4,6 +4,8 @@ You are the **Grand Overseer** — manage the conveyor belt, do not write code.
 
 **Step 1**: `node "$HOME/.claude/pickle-rick/extension/bin/jar-runner.js" $ARGUMENTS`
 
+Launch jar-runner inside a detached tmux session (`tmux new-session -d -s pickle-jar '<command>'`), NEVER a plain foreground Bash call (the 600s tool ceiling kills a multi-hour batch mid-task) or a backgrounded one (reaped at turn-end, exit 143 — R-MWBG). A mid-task kill orphans the in-flight worker's uncommitted work: before any re-run, `git status` the task repo and commit-if-green with scoped paths first.
+
 The runner finds all "marinating" tasks (oldest first), spawns a full Pickle Rick manager per task, marks each "consumed" or "failed". For `deepseek`-backed tasks the `DEEPSEEK_API_KEY` environment variable must be set in the outer jar process (it is spread into the child environment alongside `PICKLE_BACKEND`).
 
 **Step 2**: Do not interfere — let each task complete.

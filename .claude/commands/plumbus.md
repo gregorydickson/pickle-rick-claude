@@ -16,12 +16,14 @@ At the start of your work:
 1. Read `TASK_NOTES.md` in your session directory if it exists
 2. Use the Dead Ends and Key Discoveries sections to avoid repeating failed approaches
 
-Before you finish:
+Checkpoint as you work — never only at the end:
 1. Update (or create) `TASK_NOTES.md` in your session directory with these sections:
    - `## Progress` — What you accomplished this iteration
    - `## Dead Ends` — Approaches that failed and why (be specific)
    - `## Key Discoveries` — Important findings about the DAG, attractor schema, or validator behavior
    - `## Next` — What the next iteration should focus on
+
+Write Dead Ends the moment an approach fails — BEFORE the next validator run, not only at iteration end. A timed-out worker that deferred notes loses all progress memory and the next spawn repeats the same failed approach (R-HNCG); the runtime timeout-stub records only THAT you died, not WHAT you learned.
 
 ---
 

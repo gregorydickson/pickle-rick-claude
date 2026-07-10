@@ -183,6 +183,7 @@ Repeat until converged or max iterations reached:
      - **Improved** (score < previous - tolerance) → accept, set stall_counter = 0
      - **Held** (within tolerance) → accept, increment stall_counter
      - **Regressed** (score > previous + tolerance) → run `git reset --hard <pre-iteration-SHA>`, add description to `failed_approaches`, increment stall_counter
+   Before any `git reset --hard`: run `git status` first — if the tree holds dirty paths this iteration did NOT edit (foreign/concurrent work), do NOT hard-reset. Revert only your own edited files via path-scoped `git restore <named files>` and leave the rest intact (R-WUWC: never an unscoped reset over uncommitted work you don't own).
 7. If accepted: `git add -A && git commit -m "microverse: <description>"`
 8. Add entry to `convergence.history`: `{iteration, metric_value, score, action, description, pre_iteration_sha, timestamp}`
 9. Write updated state to `microverse.json`
