@@ -131,8 +131,8 @@ From `$ARGUMENTS`:
 
 **Pickle phase flags:**
 - `--max-iterations <N>` → PICKLE_MAX_ITER (default: 500)
-- `--max-time <M>` → MAX_TIME in minutes (default: 720)
-- `--worker-timeout <S>` → WORKER_TIMEOUT in seconds (default: 1200)
+- `--max-time <M>` → MAX_TIME in minutes (default: off — the wall-clock cap is opt-in per Step 0.5b; the runtime treats absent/0 as disabled)
+- `--worker-timeout <S>` → WORKER_TIMEOUT in seconds (default: tier-derived; medium=3600)
 - `--backend <claude|codex|hermes>` → BACKEND (default `claude`; `codex` routes phase spawns through `codex exec`, `hermes` routes phase spawns through `hermes chat -q`; both propagate via `PICKLE_BACKEND` to sub-runners)
 
 **Anatomy Park flags:**
@@ -148,6 +148,7 @@ From `$ARGUMENTS`:
 **Phase control:**
 - `--refine` → force refinement before pipeline (already consumed in Step 0)
 - `--no-refine` → suppress auto-inferred refinement (already consumed in Step 0)
+- `--skip-citadel` → remove citadel from pipeline
 - `--skip-anatomy` → remove anatomy-park from pipeline
 - `--skip-szechuan` → remove szechuan-sauce from pipeline
 - `--target <path>` → TARGET for review phases (default: current working directory)
@@ -160,9 +161,9 @@ When set, these flags are written into `pipeline.json` in Step 4 — do NOT pass
 
 ## Skip-flag overrides
 
-If pipeline launch halts at a quality gate, edit `${SESSION_ROOT}/state.json` and add:
-```json
-"flags": { "skip_quality_gates_reason": "<reason string>" }
+If pipeline launch halts at a quality gate, set the flag through the sanctioned write path (a direct `state.json` hand-edit is hook-blocked by `config-protection.ts`). Pass the values via environment variables — NEVER interpolate free text into the `-e` payload (quotes in a reason string would break out of the script):
+```bash
+PICKLE_SR="<SESSION_ROOT>" PICKLE_REASON="<reason string>" node --input-type=module -e 'const {StateManager}=await import(process.env.HOME+"/.claude/pickle-rick/extension/services/state-manager.js");new StateManager().update(process.env.PICKLE_SR+"/state.json",s=>{s.flags={...(s.flags||{}),skip_quality_gates_reason:process.env.PICKLE_REASON};});'
 ```
 `state.flags.skip_quality_gates_reason` (R-QGSK-2, `b2ddf584`) is the SINGLE quality-gate bypass surface — it covers both the readiness AND ticket-audit gates (both advisory post-R-GATE-ADVISORY). The retired per-gate legacy flags are ignored.
 
@@ -180,15 +181,15 @@ Branch on whether Step 0 already initialized a session via refinement (i.e. `SES
 
 **If Step 0 set `SESSION_INITIALIZED=true` (refinement ran):** call setup.js in resume mode to preserve refinement artifacts (`prd_refined.md`, ticket directories):
 ```bash
-node "$HOME/.claude/pickle-rick/extension/bin/setup.js" --tmux --resume "${SESSION_ROOT}" --max-iterations <PICKLE_MAX_ITER> --max-time <MAX_TIME> --worker-timeout <WORKER_TIMEOUT> [--backend <BACKEND>]
+node "$HOME/.claude/pickle-rick/extension/bin/setup.js" --tmux --resume "${SESSION_ROOT}" --max-iterations <PICKLE_MAX_ITER> [--max-time <MAX_TIME>] --worker-timeout <WORKER_TIMEOUT> [--backend <BACKEND>]
 ```
 
 **Otherwise (no refinement, fresh pipeline):**
 ```bash
-node "$HOME/.claude/pickle-rick/extension/bin/setup.js" --tmux --max-iterations <PICKLE_MAX_ITER> --max-time <MAX_TIME> --worker-timeout <WORKER_TIMEOUT> [--backend <BACKEND>] --task "<TASK>"
+node "$HOME/.claude/pickle-rick/extension/bin/setup.js" --tmux --max-iterations <PICKLE_MAX_ITER> [--max-time <MAX_TIME>] --worker-timeout <WORKER_TIMEOUT> [--backend <BACKEND>] --task "<TASK>"
 ```
 
-Append `--backend <BACKEND>` only when the flag was passed. Extract `SESSION_ROOT=<path>` from output (resume mode echoes the same path).
+Append `--backend <BACKEND>` only when the flag was passed, and `--max-time <MAX_TIME>` only when `--max-time` was passed — the wall-clock cap is opt-in; unconditionally passing a default silently arms a session wall the runtime otherwise treats as disabled. Extract `SESSION_ROOT=<path>` from output (resume mode echoes the same path).
 
 ## Step 4: Create pipeline.json
 
@@ -214,7 +215,7 @@ Optional keys — include each ONLY when the corresponding flag was set, and use
 - `szechuan_focus` (string) — add when `--szechuan-focus` was passed
 - `scope` (string) — add when `--scope` was passed
 - `scope_base` (string) — add when `--scope-base` was passed
-- `backend` (string: `"claude"` or `"codex"`) — add when `--backend` was passed; omit the key entirely otherwise
+- `backend` (string: `"claude"`, `"codex"`, or `"hermes"`) — add when `--backend` was passed; omit the key entirely otherwise
 
 ## Step 5: tmux Session
 

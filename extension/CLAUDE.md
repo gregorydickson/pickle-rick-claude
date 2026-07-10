@@ -26,10 +26,10 @@ sanctioned `state.json` hand-edit for any of them. WS2 (ticket 005c63c9) additio
 
 | Babysitter recipe | `pickle-recover` command surface | What it does |
 |---|---|---|
-| resume-from-todo | `pickle-recover resume-from-todo` | ff-reattach any orphaned commit, then re-queue the lowest runnable Todo; clears `current_ticket` + `exit_reason`. |
-| reattach-orphan | `pickle-recover reattach-orphan` | ff-reattach an orphaned commit via `detectAndRecoverHeadRegression` (no status flip). |
-| reset-ticket | `pickle-recover reset-ticket <id>` | archive the diff + reset the ticket to Todo; clears `current_ticket` if it pointed at the ticket. |
-| salvage | `pickle-recover salvage <id>` | commit+Done / archive+Todo / ff-reattach / no-op per `salvageTicket` disposition. |
+| resume-from-todo | `pickle-recover --resume-from-todo` | ff-reattach any orphaned commit, then re-queue the lowest runnable Todo; clears `current_ticket` + `exit_reason`. |
+| reattach-orphan | `pickle-recover --reattach-orphan` | ff-reattach an orphaned commit via `detectAndRecoverHeadRegression` (no status flip). |
+| reset-ticket | `pickle-recover --reset-ticket <id>` | archive the diff + reset the ticket to Todo; clears `current_ticket` if it pointed at the ticket. |
+| salvage | `pickle-recover --salvage <id>` | commit+Done / archive+Todo / ff-reattach / no-op per `salvageTicket` disposition. |
 | un-terminalize | `pickle-recover --reactivate` | the ONLY sanctioned terminal→runnable write: set `{active:true, step:'research', exit_reason:null, current_ticket:<lowest runnable Todo>}`; refuses a still-live session (`active:true`) and an all-Done session. `--plan` previews without writing. |
 
 ### Refusal CUJs
