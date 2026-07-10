@@ -802,9 +802,14 @@ function parseSettingIntClamp(v: unknown, floor: number, ceiling: number): numbe
 }
 
 export function resolveCodegraphSettings(bag: unknown): CodegraphSettings {
+  // Compiled defaults are OFF (aligned with the shipped pickle_settings.json
+  // opt-in stance, de3c5959): a missing/malformed settings file must NOT
+  // silently activate codegraph — sandboxed test runs without a settings file
+  // were indexing fixture dirs through the old enabled:true fallback (97
+  // leaked codegraph_index_built events, 2026-06-12..07-08).
   const settings: CodegraphSettings = {
-    enabled: true,
-    index_at_setup: true,
+    enabled: false,
+    index_at_setup: false,
     staleness_max_age_minutes: 30,
     context_max_bytes: 8192,
     expose_mcp_to_workers: false,
