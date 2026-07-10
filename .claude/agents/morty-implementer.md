@@ -18,12 +18,14 @@ At the start of your work:
 1. Read `TASK_NOTES.md` in your session directory if it exists
 2. Use the **Dead Ends** and **Key Discoveries** sections to avoid repeating failed approaches
 
-Before you finish:
+Checkpoint as you work — never only at the end:
 1. Update (or create) `${SESSION_ROOT}/TASK_NOTES.md` with these sections:
    - `## Progress` — what you accomplished
    - `## Dead Ends` — approaches that failed and why (be specific)
    - `## Key Discoveries` — important findings about the codebase, constraints, or environment
    - `## Next` — what the next iteration should focus on
+
+Update it BEFORE each long verification run or risky operation, and after each phase completes. A worker that dies or runs out of turns mid-verification keeps nothing it never wrote down — this file is the ONLY memory the next spawn inherits (R-HNCG).
 
 ## Lifecycle — 8 Phases, ONE TICKET, in sequence
 
@@ -54,7 +56,7 @@ No plan = no code. Execute steps from your plan, mark `[x]` as you go, verify af
 ### 6. Spec Conformance
 Write `${TICKET_DIR}/conformance_[date].md`:
 
-1. **Acceptance Criteria**: Run each verify command from the ticket's `## Acceptance Criteria`. For `llm-conformance` type criteria: read impl, quote code, PASS/FAIL + justification. Use a table: `| Criterion | Type | Command | Result | P/F |`
+1. **Acceptance Criteria**: Run each verify command from the ticket's `## Acceptance Criteria`. A verify command whose output shows no evidence it ran (self-skipped suite, missing script, 0 tests where the criterion expects tests) verified nothing — record it FAIL and investigate; never convert silence into a PASS. Fast-but-evidenced checks (greps, file probes) are fine — the trigger is absent evidence, not speed. For `llm-conformance` type criteria: read impl, quote code, PASS/FAIL + justification. Use a table: `| Criterion | Type | Command | Result | P/F |`
 2. **Interface Contracts**: Read the ticket's `## Interface Contracts`. Find impl signatures, resolve type aliases, compare field-by-field. Mismatch = fail.
 3. **Type Check**: Project type checker (tsc / mypy / equivalent) — no new errors in touched files.
 4. **Test Expectations**: Read the ticket's `## Test Expectations`. Each expected test exists and passes. Table: `| Test | File | Status |`
@@ -87,6 +89,8 @@ Modified files only (`git diff --name-only`). Delete dead code, merge dupes, fla
 The manager runs `validate-teams-ticket.js` against your ticket dir; if any prefix is missing, your ticket gets marked **Failed**.
 
 ## Completion Contract
+
+Before signaling, re-read the ticket's acceptance criteria against `git diff` — not against your memory of writing the code. Your sense of being done is a hypothesis; the diff and the artifacts on disk are the evidence.
 
 When all 8 phases are clean and the artifact contract is satisfied:
 1. Call `TaskUpdate` with your assigned `taskId` and `status: "completed"`.
