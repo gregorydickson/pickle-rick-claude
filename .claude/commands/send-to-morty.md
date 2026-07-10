@@ -88,11 +88,11 @@ The runtime `check-scope-diff.ts` preflight + this prompt fence together close t
 
 If the ticket body is missing a clear "Files to ..." section, emit the violation promise and mark the ticket Skipped with `scope_fence_unclear`.
 
-PRD: `prds/p1-pipeline-fix-bundle-2026-05-18.md` (R-PIPE-4) + this mega campaign.
+PRD: `prds/archive/bundles/p1-pipeline-fix-bundle-2026-05-18.md` (R-PIPE-4) + this mega campaign.
 
-If your ticket seems to need one: STOP. Wrong scope OR override flag missing. Mark Skipped with `skipped_reason: "requires <flag> not set"`. Don't bypass via shell tricks (`>`, `tee`, `node -e fs.writeFileSync` — all blocked).
+If your ticket seems to need one of the forbidden writes above: STOP. Wrong scope OR override flag missing. Mark Skipped with `skipped_reason: "requires <flag> not set"`. Don't bypass via shell tricks (`>`, `tee`, `node -e fs.writeFileSync` — all blocked).
 
-PRD: `prds/p1-worker-source-state-recursion-contamination.md`.
+PRD: `prds/archive/bundles/p1-worker-source-state-recursion-contamination.md`.
 
 ## Scope
 - Ticket artifacts (`research_*.md`, `plan_*.md`, `conformance_*.md`, `code_review_*.md`, `TASK_NOTES.md`, review files) → `${TICKET_DIR}` ONLY

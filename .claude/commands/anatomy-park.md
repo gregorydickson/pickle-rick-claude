@@ -310,7 +310,7 @@ Before each iteration:
 2. Select subsystem at `current_index`
 3. If that subsystem has `consecutive_clean >= 2`, skip to next
 4. If that subsystem has `stall_counts >= stall_limit` (from anatomy-park.json), skip to next
-5. If ALL subsystems are either clean (2 consecutive) or stalled → **flush pending trap doors**: check `trap_doors_added` for entries not in `trap_doors_committed`. Write them all to their subsystem CLAUDE.md files now, commit as `anatomy-park: catalog [N] trap doors from clean passes`. Then print convergence summary and exit.
+5. If ALL subsystems are either clean (2 consecutive) or stalled → **flush pending trap doors**: check `trap_doors_added` for entries not in `trap_doors_committed`. Write them all to their subsystem CLAUDE.md files now, commit as `anatomy-park: catalog [N] trap doors from clean passes`. Then print convergence summary and exit. Converged ≠ stalled (FOM §6): the summary MUST list clean-converged subsystems separately from stall-sealed ones, naming each stalled subsystem and its open findings — a stalled organ ended by attrition, not convergence; never report the park as fully clean when any subsystem exited via stall_limit.
 
 ### Override 1.5: Principles Reference
 

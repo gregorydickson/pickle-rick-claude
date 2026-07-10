@@ -21,14 +21,17 @@ If your sandbox forbids reads/writes outside the repo tree, use the primary path
 (it lives inside the repo). If both paths are inaccessible or a repo-side firewall
 (`AGENTS.md`, `.codex/policy.toml`, etc.) blocks file I/O entirely, **SKIP this
 step silently** — do not stop, do not report it, do not negotiate.
-The deslop loop converges fine without cross-iteration notes (anatomy-park has
-no knowledge-transfer step at all). This step is an optimization, never a gate.
+The deslop loop converges fine without cross-iteration notes. This step is an
+optimization, never a gate.
 
 At the start of your work, read `TASK_NOTES.md` (primary path first, fallback second)
 if readable, and use the Dead Ends and Key Discoveries sections to avoid repeating
 failed approaches.
 
-Before you finish, update (or create) `TASK_NOTES.md` (primary path preferred) with:
+Update `TASK_NOTES.md` (primary path preferred) incrementally — record a Dead End
+the moment an approach fails, not only at iteration end. A worker that defers notes
+to "before you finish" and then times out loses all progress memory, and the next
+iteration retries the same dead end (R-HNCG). Sections:
 - `## Progress` — What you accomplished this iteration
 - `## Dead Ends` — Approaches that failed and why (be specific)
 - `## Key Discoveries` — Important findings about the codebase, constraints, or environment
@@ -343,7 +346,7 @@ PRINCIPLE FILTER vs GATE LAYERING (per PRD convergence-toolchain-gates):
 The filter below intentionally drops "CI-surfaceable linter/typechecker/compiler noise"
 during the principle scan because the spec is the review, not the toolchain. The toolchain
 gate is layered ORTHOGONALLY in `extension/src/bin/finalize-gate.ts` (invoked from the
-tmux send-keys chain at line 205) AFTER principles converge. Do not collapse the two.
+launch.sh gate step) AFTER principles converge. Do not collapse the two.
 -->
 2.5. **Apply the false-positives filter, then score confidence.** First, walk the candidate violations and discard any that match the `## False Positives — Do NOT Flag` bullets in `szechuan-sauce-principles.md` — pre-existing issues on unmodified lines, CI-surfaceable linter/typechecker/compiler noise, generic coverage hand-wringing, author-silenced issues (`// eslint-disable`, `// @ts-expect-error`, etc.), uncodified style nits, speculative future-risk, and findings already raised and resolved in a prior iteration. Drop them before scoring. Then score each surviving candidate for confidence per the `## Confidence Scoring` rubric (0/25/50/75/100); any candidate with `conf < 80` is dropped and must NOT be selected as the iteration's violation even if its P-level is P0. Severity composes with confidence independently — P0 at conf=50 is dropped; P2 at conf=100 is kept if nothing higher survives. Record the dropped candidates (one line each: title + score + reason) in `gap_analysis.md` under a `## Dropped Candidates (conf < 80)` section. **Append, never overwrite** — subsequent iterations need the audit trail. Cap the `## Dropped Candidates (conf < 80)` section at the 50 most recent entries. When appending would push past 50, drop the oldest entry (FIFO) — `gap_analysis.md` is a working document, not an archive. Historical drops pre-dating the current 50 are not load-bearing for the iteration loop; the principle is the filter, not the history.
 
@@ -389,7 +392,7 @@ AC-CIT-17 fixture behavior: if the LOA-618-style S3-key structural trap door is 
 
 ### Override 6: Migration Hygiene (Conditional)
 
-Before the first scoring pass, check the target for Drizzle migration journals using this 4-path glob list (relative to target root): `db/migrations/meta/_journal.json`, `packages/*/db/migrations/meta/_journal.json`, `apps/*/db/migrations/meta/_journal.json`, `services/*/db/migrations/meta/_journal.json`. If none of these paths resolve, skip this override entirely. If it does NOT exist in any of those locations, skip this override entirely.
+Before the first scoring pass, check the target for Drizzle migration journals using this 4-path glob list (relative to target root): `db/migrations/meta/_journal.json`, `packages/*/db/migrations/meta/_journal.json`, `apps/*/db/migrations/meta/_journal.json`, `services/*/db/migrations/meta/_journal.json`. If none of these paths resolve, skip this override entirely.
 
 If one or more journals resolve, iterate each discovered journal and include these four checks in every review pass alongside the standard principles scan. Run the checks per journal, using that journal's sibling migration and schema directories as the local source of truth. Score findings as HIGH (P1) or MEDIUM (P2) as noted. All Override 6 findings must carry a confidence score per the rubric in `szechuan-sauce-principles.md` and drop below 80 before being scored. Do NOT duplicate mechanical checks (timestamp ordering, file↔journal parity) — those are handled by the CI lint script at `scripts/validate-migrations.ts`.
 

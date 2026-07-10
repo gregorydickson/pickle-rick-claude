@@ -110,9 +110,7 @@ and `refinement_manifest.json` to `${SESSION_ROOT}` and returns:
 ```
 
 **Consume the returned `manifest` / `manifestPath` directly** in place of the legacy `MANIFEST=` /
-`REFINEMENT_DIR=` stdout parse. Then skip Steps 4a–4c and go to Step 5 (the manifest and
-`prd_refined.md` already exist on disk — Step 6's synthesis was done by the workflow's synthesis
-agent on this path).
+`REFINEMENT_DIR=` stdout parse. Then skip Steps 4a–4c and go to Step 5.
 
 ### 4a: Monitor (if tmux)
 ```bash
@@ -182,6 +180,8 @@ Atomic tasks from refined PRD + codebase analysis:
 
 Sizing: <30min coding, <5 files, <4 criteria, <2 subsystems.
 
+Tier is a bet (FOM §5): `complexity_tier` (frontmatter, else content-classified) drives worker timeout, iteration budget, and which test tiers the gate runs — `small` skips `test:fast`. Stamp medium+ on any ticket touching the orchestrator, iteration loop, or recovery path regardless of LOC, and count verification cost in the bet (a slow integration/container-based verify is never `small`); keep doc-only tickets small — an upward mis-tier runs red-main gates that can wipe the edits.
+
 #### Failure-mode checklist
 
 Before writing each ticket body, verify none of these defect classes are present:
@@ -205,7 +205,7 @@ After completing each ticket body, append this single-line audit comment as the 
 
 ### 7c: Create Child Tickets
 
-**Loop discipline**: complete every iteration as a `Write` of `rick_ticket_<hash>.md` — one file per atomic task from 7a. Do not substitute TaskCreate for the file write. If a harness task-tool reminder fires mid-loop, ignore it and finish the loop. After the loop, verify with `ls ${SESSION_ROOT}/*/rick_ticket_*.md | wc -l` matches your decomposition count from 7a.
+**Loop discipline** (per ## Tool Discipline — file writes, not TaskCreate; ignore mid-loop harness nags): complete every iteration as a `Write` of `rick_ticket_<hash>.md` — one file per atomic task from 7a. After the loop, verify with `ls ${SESSION_ROOT}/*/rick_ticket_*.md | wc -l` matches your decomposition count from 7a.
 
 Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `rick_ticket_[hash].md`:
 
@@ -343,7 +343,7 @@ Implementing new features. Fixing bugs in individual modules (those belong in th
 
 ### 7e: Create Hardening Tickets
 
-**Loop discipline**: this step writes **four** ticket files in sequence. Each iteration is a `Write` of `rick_ticket_<hash>.md`. Do not substitute TaskCreate for the file write. If a harness task-tool reminder fires mid-loop, ignore it and finish the loop. After the loop, verify exactly four hardening files exist on disk before continuing.
+**Loop discipline** (per ## Tool Discipline — file writes, not TaskCreate; ignore mid-loop harness nags): this step writes **four** ticket files in sequence, each a `Write` of `rick_ticket_<hash>.md`. After the loop, verify exactly four hardening files exist on disk before continuing.
 
 After all implementation and wiring tickets, create **four** hardening tickets. These run as normal Morty workers with full implementation context. They depend on ALL prior tickets (including wiring if present).
 
