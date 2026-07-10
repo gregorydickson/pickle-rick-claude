@@ -142,7 +142,7 @@ Read `${SESSION_ROOT}/state.json` once at Phase 3 entry. If `state.teams_mode ==
    as complete by the safety net — re-attempt Skipped tickets before starting new Todo tickets.
    `update-state.js current_ticket <ID> ${SESSION_ROOT}` + `update-state.js step research ${SESSION_ROOT}`
 2. **Delegate**: `node "${EXTENSION_ROOT}/extension/bin/spawn-morty.js" "<DESC>" --ticket-id <ID> --ticket-path "${SESSION_ROOT}/<ID>/" --ticket-file "${SESSION_ROOT}/<ID>/rick_ticket_<ID>.md" --timeout <worker_timeout_seconds>`
-3. **Validate** (after Morty outputs `<promise>I AM DONE</promise>`): check `${SESSION_ROOT}/[id]/` for `research_*.md`, `research_review.md`, `plan_*.md`, `plan_review.md`, `conformance_*.md`, `code_review_*.md` — FORBIDDEN to mark Done if missing. Run `git status`, `git diff`, tests/build.
+3. **Validate** (after Morty outputs `<promise>I AM DONE</promise>`): check `${SESSION_ROOT}/[id]/` for `research_*.md`, `research_review.md`, `plan_*.md`, `plan_review.md`, `conformance_*.md`, `code_review_*.md` — FORBIDDEN to mark Done if missing. Run `git status`, `git diff`, tests/build. `I AM DONE` is a claim, not a fact — validate from the artifacts and the diff on disk, never from the worker's narrative.
 4. **Cleanup**: validation fail → `git restore <paths-edited-this-iteration>` (path-scoped — never `git stash` + `git checkout .` per Git Boundary Rules above); pass → commit
 5. **Update**: mark ticket Done in frontmatter
 6. **Signal**: output `<promise` + `>TASK_COMPLETED</promise>` to confirm ticket completion
@@ -208,5 +208,7 @@ Verify before you emit:
 1. List `rick_ticket_*.md` files in `${SESSION_ROOT}` (excluding `rick_ticket_parent.md` and the `refinement/` directory).
 2. For each, confirm the frontmatter `status` field equals `"Done"` (case-insensitive, quotes optional).
 3. If ANY ticket is Todo, In Progress, Skipped, or anything other than Done — STOP. Output `<promise` + `>TASK_COMPLETED</promise>` (single-ticket signal) and continue iterating on the next non-Done ticket. Do NOT emit `EPIC_COMPLETED`.
+
+Never reason about completion from conversation memory — the felt sense that "we're done" is the most common manager hallucination. The frontmatter on disk is the only truth; re-read it every time, even when you are certain.
 
 A premature `EPIC_COMPLETED` will be detected by mux-runner, logged as `MANAGER_FALSE_EPIC_COMPLETED`, and the loop will retry — it does NOT shortcut your way out of remaining work.

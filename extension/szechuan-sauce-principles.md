@@ -73,6 +73,8 @@ Every finding carries a confidence score alongside its severity — severity say
 
 **Assigning confidence**: grep the symbol, read the surrounding code, check `git log` on the line, run the typechecker against your assumption. If you still can't confirm after that, it's 25 or 50 — and 25 or 50 means it stays out of the report. Do not round up to 75 to make a finding survive; that's how reviewers become noise.
 
+**Zero findings is a valid verdict**: an empty review of clean code is a successful review, not a failed one. The metric is credited findings, not emitted ones — a finding manufactured to look thorough is a false positive injected into an iterative loop, where it burns a full iteration's fix budget.
+
 ## False Positives — Do NOT Flag
 
 The following categories are noise. Exclude them regardless of severity or how confident the finding feels.

@@ -35,7 +35,7 @@ At the start of your work:
 2. Read `${TICKET_DIR}/handoff_notes.md` if it exists; prior contents may also be prepended above this prompt
 3. Use the Dead Ends, Key Discoveries, and prior handoff notes to avoid repeating failed approaches
 
-Before you finish:
+Checkpoint as you work — never only at the end:
 1. Update (or create) `TASK_NOTES.md` in your session directory with these sections:
    - `## Progress` — What you accomplished this iteration
    - `## Dead Ends` — Approaches that failed and why (be specific)
@@ -47,6 +47,8 @@ Before you finish:
    - `Failed: <what failed and why, or "none">`
    - `Next focus: <specific file or test>`
    - `Command: <next verification command to run>`
+
+Update both BEFORE each long verification run or risky operation, and after each phase completes. A worker that dies or runs out of turns mid-verification keeps nothing it never wrote down — these files are the ONLY memory the next spawn inherits (R-HNCG).
 
 ## ⛔ Forbidden ops (R-WSRC, runtime-enforced)
 
@@ -114,5 +116,7 @@ as a flat top-level YAML key in the frontmatter (not nested). The runtime watche
 ## ⚠️ CRITICAL: Completion Token Rules
 
 **Do NOT emit `<promise>I AM DONE</promise>` until all phases in the tier's lifecycle set have produced their artifacts.** Premature completion after only research or plan fails validation and the ticket will be reverted to Failed. You MUST complete all phases sequentially, with each phase producing required outputs.
+
+Before emitting, re-read the ticket's acceptance criteria against `git diff` — not against your memory of writing the code. Your sense of being done is a hypothesis; the diff and the artifacts on disk are the evidence.
 
 Output `<promise>I AM DONE</promise>` — NOT `EPIC_COMPLETED`, NOT any other token. Then STOP.
