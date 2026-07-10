@@ -75,6 +75,6 @@ P0 table (fixed) | P1 table (fixed) | P2 table (documented)
 ```
 
 ### Phase 4: Simplify
-`git diff --name-only` for combined file list. Kill dead code, collapse redundancy, flatten nesting (max 2), purge slop comments, normalize style. Don't touch files outside scope. Don't add functionality. Verify after each file — revert if broken. Your Phase 3 fixes are UNCOMMITTED: "revert" means path-scoped `git checkout -- <the one file you just simplified>`, named files only — never an unscoped `git restore`/`checkout` of a directory, which wipes your own fixes and the reviewed tickets' work. Preserve work before anything else. Run tests after all changes.
+`git diff --name-only` for combined file list. Kill dead code, collapse redundancy, flatten nesting (max 2), purge slop comments, normalize style. Don't touch files outside scope. Don't add functionality. Verify after each file — revert if broken. Your Phase 3 fixes are UNCOMMITTED: "revert" means path-scoped `git checkout -- <the one file you just simplified>`, named files only — never an unscoped `git restore`/`checkout` of a directory, which wipes your own fixes and the reviewed tickets' work. If the reverted file ALSO contains one of your Phase 3 fixes, re-apply that fix immediately after the revert — a file-level checkout wipes both, and `review_findings.md` must stay truthful about what is actually fixed. Preserve work before anything else. Run tests after all changes.
 
 Output `<promise>I AM DONE</promise>`. STOP.

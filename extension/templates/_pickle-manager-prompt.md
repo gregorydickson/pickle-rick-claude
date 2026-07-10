@@ -189,6 +189,7 @@ When `state.teams_mode === true`. Claude backend only (setup.js rejects codex+te
 4. **Wait**: after each phase Agent call, wait for its completion response before dispatching the next phase. After `refactor`, the teammate's `TaskUpdate(status="completed")` arrives as an auto-delivered notification (a new turn). Do NOT poll. Only fall back to a `TaskList` check if no notification has arrived past `state.worker_timeout_seconds`.
 5. **Validate**: run `node "${EXTENSION_ROOT}/extension/bin/validate-teams-ticket.js" --ticket-path "${SESSION_ROOT}/${TICKET_ID}" --role implementation`. Exit 0 → continue. Exit 1 → log the missing artifacts (stderr lists them), mark the ticket Failed in frontmatter, do NOT commit.
 6. **Commit**: pass → run `git status`, `git diff`, project tests/build, then commit. Fail → `git restore <paths-edited-this-iteration>` (path-scoped — never `git stash` + `git checkout .` per Git Boundary Rules above).
+   **Preserve work before cleanup (R-WUWC), same as Legacy step 4.** Before any restore: `git status` and read the diff. If real verified work exists on disk (artifacts + diffs) and only a validation nit failed (e.g. one missing artifact prefix), commit it scoped instead — a restore over a teammate's uncommitted work destroys it permanently.
 7. **Update**: mark ticket Done in frontmatter; output `<promise` + `>TASK_COMPLETED</promise>`.
 8. **Increment iteration** (same as Legacy step 7).
 9. **Next ticket**: repeat until `TaskList` shows all team tasks `completed` or all tickets in frontmatter are Done/Failed.

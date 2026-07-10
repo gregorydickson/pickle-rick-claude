@@ -117,8 +117,14 @@ test('git-boundary: PROHIBITED verb list is identical across all copies', () => 
     const start = block.indexOf('PROHIBITED commands');
     assert.notStrictEqual(start, -1, `${path.basename(p)} boundary block missing PROHIBITED commands section`);
     const rest = block.slice(start);
-    const end = rest.search(/\n\s*\n/);
-    return rest.slice(0, end === -1 ? undefined : end).trim();
+    // Bound by BOTH the next blank line and the END marker, whichever comes
+    // first — a block-terminal PROHIBITED section must not sweep the marker
+    // text into the compared verb list.
+    const blankIdx = rest.search(/\n\s*\n/);
+    const markerIdx = rest.indexOf(BOUNDARY_BLOCK_END);
+    const candidates = [blankIdx, markerIdx].filter((i) => i !== -1);
+    const end = candidates.length ? Math.min(...candidates) : undefined;
+    return rest.slice(0, end).trim();
   };
   const sections = COMMAND_FILES.map((f) => ({ file: path.basename(f), text: extractProhibited(f) }));
   const canonical = sections[0];

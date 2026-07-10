@@ -161,9 +161,9 @@ When set, these flags are written into `pipeline.json` in Step 4 — do NOT pass
 
 ## Skip-flag overrides
 
-If pipeline launch halts at a quality gate, set the flag through the sanctioned write path (a direct `state.json` hand-edit is hook-blocked by `config-protection.ts`):
+If pipeline launch halts at a quality gate, set the flag through the sanctioned write path (a direct `state.json` hand-edit is hook-blocked by `config-protection.ts`). Pass the values via environment variables — NEVER interpolate free text into the `-e` payload (quotes in a reason string would break out of the script):
 ```bash
-node -e 'const {StateManager}=await import(process.env.HOME+"/.claude/pickle-rick/extension/services/state-manager.js");new StateManager().update("<SESSION_ROOT>/state.json",s=>{s.flags={...(s.flags||{}),skip_quality_gates_reason:"<reason string>"};});' --input-type=module
+PICKLE_SR="<SESSION_ROOT>" PICKLE_REASON="<reason string>" node --input-type=module -e 'const {StateManager}=await import(process.env.HOME+"/.claude/pickle-rick/extension/services/state-manager.js");new StateManager().update(process.env.PICKLE_SR+"/state.json",s=>{s.flags={...(s.flags||{}),skip_quality_gates_reason:process.env.PICKLE_REASON};});'
 ```
 `state.flags.skip_quality_gates_reason` (R-QGSK-2, `b2ddf584`) is the SINGLE quality-gate bypass surface — it covers both the readiness AND ticket-audit gates (both advisory post-R-GATE-ADVISORY). The retired per-gate legacy flags are ignored.
 

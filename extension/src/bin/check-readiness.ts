@@ -1098,9 +1098,12 @@ function maybeEmitResolverIndeterminate(input: {
 // blocking arm was demoted after the W5c recurrence dashboard showed 725 gate_skipped
 // uses in 10 days against a stated budget of 3 (~240x) — per W5b, a guard past its
 // budget is loosened or removed, never given another hatch. The former suppression
-// apparatus (skip-flag bypass + auto-extend degrade) died with the block. The
-// build-phase scope auto-extension (`computeScopeAutoExtension`, pipeline-runner)
-// remains the mechanism that actually absorbs out-of-scope callers.
+// apparatus (skip-flag bypass + auto-extend degrade, incl. the scope.json
+// readScopeAutoExtend reader) died with the block. The build-phase scope
+// auto-extension (`computeScopeAutoExtension`, pipeline-runner) remains the
+// mechanism that actually absorbs out-of-scope callers — enabled via
+// pickle_settings.json `scope.auto_extend_signature_callers`
+// (resolveScopeSettings), NOT session scope.json.
 //
 // SINGLE DETECTOR: the matching engine (`ARITY_ADD_CUE_RE`, `SCHEMA_SHAPE_CUE_RE`,
 // and `detectSignatureCallerGaps`) lives ONLY in
@@ -1143,7 +1146,7 @@ function buildGapFinding(ticketFile: string, gap: CallerGap): ReadinessFinding {
         'not a type-aware diff; verify and extend or rescope the callers)';
   const suffix =
     ` (advisory — never blocks readiness) — To resolve: (1) co-scope the caller by adding it to ## Files to modify in the ticket, ` +
-    `or (2) set scope.auto_extend_signature_callers: true in scope.json (build-phase auto-extension absorbs ≤${SCOPE_AUTO_EXTEND_MAX} callers)`;
+    `or (2) set "scope": { "auto_extend_signature_callers": true } in pickle_settings.json (the build-phase auto-extension reads it via resolveScopeSettings and absorbs ≤${SCOPE_AUTO_EXTEND_MAX} callers)`;
   return {
     ticket: ticketFile,
     kind: 'signature_caller_gap',

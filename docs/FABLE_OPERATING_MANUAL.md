@@ -70,7 +70,7 @@ suspiciously fast or suspiciously clean, that's not luck — that's a gate that 
 
 **Green is a necessary condition, never a sufficient one.** Worker-green ≠ shippable is the most-
 repeated operational fact here. Per-phase gates run scoped fast tiers; the closer's full gate
-(tsc + eslint + ten audits + fast + integration + expensive) routinely catches compiled-mirror
+(tsc + eslint + the full audit-script suite + fast + integration + expensive) routinely catches compiled-mirror
 drift, stale tests outside the worker's allowlist, rename-gap escapes. Never let a scoped green
 stand in for the full gate, and never read a gate result and tag a release in the same breath —
 read first, confirm green, *then* act.

@@ -124,6 +124,7 @@ For each ticket, assign a complexity_tier in the frontmatter:
 Tier is a BET on every downstream budget — worker timeout, iteration cap, and which test tiers the gate runs; \`small\` skips \`test:fast\` entirely.
 Bias anything touching the orchestrator, iteration loop, or recovery machinery to medium+ regardless of LOC.
 Count verification cost in the bet: a slow integration/container-based verify is never \`small\`.
+Keep doc-only tickets small — an upward mis-tier runs red-main gates that can wipe the edits.
 `;
 export function buildTierClassificationSection() {
     return TICKET_COMPLEXITY_PROMPT_SECTION;
