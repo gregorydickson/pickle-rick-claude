@@ -133,7 +133,7 @@ PICKLE_BACKEND=codex /pickle-tmux "refactor the auth middleware"
 /pickle-tmux --resume                                              # teams_mode survives resume
 ```
 
-Subagent definitions live at `~/.claude/agents/morty-implementer.md` (8-phase implementation lifecycle), `~/.claude/agents/morty-reviewer.md` (4-phase review lifecycle), and the six `~/.claude/agents/morty-phase-*.md` phase teammates. All are deployed by `install.sh`. See the [PRD](prds/pickle-agent-teams.md) for the v1 boundary. The default subprocess path is untouched — passing no `--teams` flag preserves the legacy `mux-runner` spawn loop.
+Subagent definitions live at `~/.claude/agents/morty-implementer.md` (8-phase implementation lifecycle), `~/.claude/agents/morty-reviewer.md` (4-phase review lifecycle), and the six `~/.claude/agents/morty-phase-*.md` phase teammates. All are deployed by `install.sh`. See the [PRD](prds/archive/design-notes/pickle-agent-teams.md) for the v1 boundary. The default subprocess path is untouched — passing no `--teams` flag preserves the legacy `mux-runner` spawn loop.
 
 When NOT to use: codex/hermes backend (codex+teams rejected at setup); `/pickle-zellij` / `/pickle-microverse` / `/pickle-pipeline` (legacy spawn only). When to use: epics where you want clean bidirectional comms with the worker, native completion notifications, and the strictest artifact gate available.
 

@@ -626,8 +626,7 @@ pickle-rick-claude/
 │   │   ├── finalize-gate.js          # Post-skill gate enforcement + remediator orchestration
 │   │   └── spawn-gate-remediator.js  # Remediator brief writer (gate result → morty-gate-remediator.md)
 │   ├── layouts/
-│   │   ├── monitor-pickle.kdl   # Zellij layout for /pickle-zellij
-│   │   └── monitor-meeseeks.kdl # Zellij layout for /meeseeks-zellij
+│   │   └── monitor-pickle.kdl   # Zellij layout for /pickle-zellij
 │   ├── hooks/
 │   │   ├── dispatch.js      # Hook router (fail-open, spawns handlers)
 │   │   ├── resolve-state.js # State file resolution + atomic writes

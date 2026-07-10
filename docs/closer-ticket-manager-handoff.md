@@ -10,7 +10,7 @@ Use this runbook when a closer exits with `state.exit_reason = closer_handoff_te
 ## Manager-owned steps
 
 1. Inspect the latest conformance artifact and confirm the remaining items are manager-owned only.
-2. Run the version-bump step for `extension/package.json` if this closer is shipping a release. Before the bump: READ the gate result and confirm green as its own act — bump, commit, and tag are separate acts, never batched with the gate-read. The one time you batch the tag with the gate-read is the time the gate was red (FOM §8).
+2. Run the version-bump step for `extension/package.json` if this closer is shipping a release. Before the bump: READ the gate result and confirm green as its own act — bump, commit, and tag are separate acts, never batched with the gate-read. The one time you batch the tag with the gate-read is the time the gate was red (Fable Operating Manual §8 — `docs/FABLE_OPERATING_MANUAL.md`, "FOM" below).
 3. Run `bash install.sh --closer-context --no-confirm`.
 4. Verify the required MD5 parity set for the touched compiled files.
 5. Update [prds/MASTER_PLAN.md](/Users/gregorydickson/loanlight/pickle-rick/pickle-rick-claude/prds/MASTER_PLAN.md) and any release/bookkeeping notes.

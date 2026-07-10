@@ -16,4 +16,4 @@ You're a worker inside pickle-rick-claude (meta-tool: runtime modifies itself). 
 
 If your ticket seems to require one: STOP. Wrong scope OR override flag missing. Mark Skipped with `skipped_reason: "requires <flag> not set"`.
 
-PRD: `prds/p1-worker-source-state-recursion-contamination.md`.
+PRD: `prds/archive/bundles/p1-worker-source-state-recursion-contamination.md`.

@@ -13,7 +13,7 @@ Extract `SESSION_ROOT=<path>`. Extension root: `$HOME/.claude/pickle-rick` (`${E
 PAUSED mode — normal chat. Interrogate:
 1. Feature (if not specified)
 2. **Why** (problem/value/urgency), **Who** (audience), **What** (scope/UX), **How** (constraints)
-3. Relevant files/folders/patterns in codebase — verify every path/symbol before it enters the PRD (`git ls-files` or open the file) and cite `file:line` for current-state claims; a hallucinated premise is a named ticket defect class a downstream worker will build on. Current-state text states what IS; anything about what SHOULD be belongs only in requirements (FOM §6).
+3. Relevant files/folders/patterns in codebase — verify every path/symbol before it enters the PRD (`git ls-files` or open the file) and cite `file:line` for current-state claims; a hallucinated premise is a named ticket defect class a downstream worker will build on. Current-state text states what IS; anything about what SHOULD be belongs only in requirements.
 4. **Verification**: Per requirement, ask "How will we verify this automatically?" Push for commands, type shapes, test assertions. Spec replaces review — no requirement without a machine-checkable criterion.
 5. **Contracts**: "What crosses a boundary?" (APIs, events, shared types, state transitions). Get exact shapes.
 6. Iterate until 100% clarity AND verification coverage. No premature drafting.

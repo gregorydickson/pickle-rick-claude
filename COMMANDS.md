@@ -53,7 +53,7 @@ Most flags are command-scoped. The table groups them by command family — flags
 | `--reset` | General | Reset iteration counter and start time (use with `--resume`) |
 | `--paused` | General | Start in paused mode (PRD only) |
 | `--backend <claude\|codex>` | `/pickle`, `/pickle-tmux`, `/pickle-microverse`, `/anatomy-park`, `/szechuan-sauce`, `/pickle-pipeline` | Route worker/manager spawns through `codex exec` instead of `claude`. Persisted in `state.json`. Env var alternative: `PICKLE_BACKEND=codex`. Precedence: CLI flag > env var > session state > default `claude` |
-| `--teams` | `/pickle` | Phase 3 spawns workers via harness team primitives (`TeamCreate` + `Agent` + `TaskUpdate`) instead of `spawn-morty.js` subprocesses. Persisted in `state.json`. Claude backend only — incompatible with `--backend codex`. Spec: [`prds/pickle-agent-teams.md`](prds/pickle-agent-teams.md) |
+| `--teams` | `/pickle` | Phase 3 spawns workers via harness team primitives (`TeamCreate` + `Agent` + `TaskUpdate`) instead of `spawn-morty.js` subprocesses. Persisted in `state.json`. Claude backend only — incompatible with `--backend codex`. Spec: [`prds/archive/design-notes/pickle-agent-teams.md`](prds/archive/design-notes/pickle-agent-teams.md) |
 | `--max-parallel <N>` | `/pickle` (with `--teams`) | Concurrency cap for parallel `morty-implementer` teammates (default: 5). v1 ships sequential; this is plumbed for the parallel-fan-out follow-up. Requires `--teams`. Must be a positive integer |
 | `--run` | `/pickle-refine-prd`, `/portal-gun` | Auto-launch tmux |
 | `--interactive` | `/pickle-microverse` | Run inline instead of tmux |

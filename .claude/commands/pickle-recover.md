@@ -2,7 +2,7 @@ You are recovering a Pickle Rick session that halted in `recovery_exhausted` —
 
 > **Gate:** every subcommand EXCEPT `--reactivate` refuses to run unless the session's `state.exit_reason` is `recovery_exhausted`. `--reactivate` is the exception: it targets a COMPLETED session (`active:false`, `step:'completed'`), so it is exempt from the `recovery_exhausted` entry-state gate and instead refuses a still-live session (`active:true`). Each real (non-`--plan`) run performs EXACTLY ONE state transition via a shared primitive — never inline git, never a raw `state.json` write — and emits one `operator_recovery_transition` activity event.
 
-Diagnose from the tree before picking: most halts trace to the recovery/salvage machinery, not the worker (FOM §3 base rate) — `git fsck` for dangling commits and check ticket artifact mtimes first. Real work found (orphaned commit, dirty-but-green tree) wants `--reattach-orphan`/`--salvage`; `--reset-ticket` archives-then-requeues and is the last resort.
+Diagnose from the tree before picking: most halts trace to the recovery/salvage machinery, not the worker — `git fsck` for dangling commits and check ticket artifact mtimes first. Real work found (orphaned commit, dirty-but-green tree) wants `--reattach-orphan`/`--salvage`; `--reset-ticket` archives-then-requeues and is the last resort.
 
 Pick the subcommand for the situation, then run the recover script from the session's working directory:
 

@@ -180,7 +180,7 @@ Atomic tasks from refined PRD + codebase analysis:
 
 Sizing: <30min coding, <5 files, <4 criteria, <2 subsystems.
 
-Tier is a bet (FOM §5): `complexity_tier` (frontmatter, else content-classified) drives worker timeout, iteration budget, and which test tiers the gate runs — `small` skips `test:fast`. Stamp medium+ on any ticket touching the orchestrator, iteration loop, or recovery path regardless of LOC, and count verification cost in the bet (a slow integration/container-based verify is never `small`); keep doc-only tickets small — an upward mis-tier runs red-main gates that can wipe the edits.
+Tier is a bet: `complexity_tier` (frontmatter, else content-classified) drives worker timeout, iteration budget, and which test tiers the gate runs — `small` skips `test:fast`. Stamp medium+ on any ticket touching the orchestrator, iteration loop, or recovery path regardless of LOC, and count verification cost in the bet (a slow integration/container-based verify is never `small`); keep doc-only tickets small — an upward mis-tier runs red-main gates that can wipe the edits.
 
 #### Failure-mode checklist
 
