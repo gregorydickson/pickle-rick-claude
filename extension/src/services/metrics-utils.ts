@@ -101,8 +101,11 @@ export const SKIP_FLAG_BUDGETS: Record<string, number> = {
   'pickle::project_type_low_confidence': 50,
   'pickle::dirty_worktree_no_rescue': 20,
   'citadel-mechanical::skip_quality_gates': 3,
-  'pickle::signature_caller_gap': 3,
 };
+// 'pickle::signature_caller_gap' (budget 3) removed 2026-07-10: the dashboard showed
+// 725 uses/10d (~240x over) → the blocking arm was demoted to advisory per W5b and
+// its gate_skipped emitters deleted (check-readiness.ts) — the budget row is retired
+// with the gate, not raised.
 
 /** A single normalized skip-flag use extracted from an activity event. */
 export interface SkipFlagEvent {

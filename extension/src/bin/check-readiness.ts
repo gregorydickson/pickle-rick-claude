@@ -1092,14 +1092,15 @@ function maybeEmitResolverIndeterminate(input: {
 // If that caller sits OUTSIDE the bundle's scope fence, no fenced worker may touch
 // it, and tsc can stay RED with no in-scope remedy.
 //
-// BLOCKING CONTRACT (WS-1): `findSignatureChangeCallerGapFindings` emits
-// `kind:'signature_caller_gap'` (blocking — fails readiness) UNLESS suppressed by
-// `isGapBlocking`: a `skip_quality_gates_reason` (the single quality-gate bypass
-// surface), or an opt-in scope auto-extension that absorbs the caller
-// (`autoExtend && callerCount <= SCOPE_AUTO_EXTEND_MAX`). When suppressed
-// the finding degrades to `kind:'advisory'` (informational, never blocks).
-// NOTE: readiness itself is advisory at the mux level (R-GATE-ADVISORY) — a
-// "blocking" finding fails this CLI's exit code but never halts a pipeline.
+// ADVISORY CONTRACT (W5b demotion, 2026-07-10): `findSignatureChangeCallerGapFindings`
+// emits `kind:'signature_caller_gap'` — surfaced in the report/JSON but EXCLUDED from
+// the blocking set (see the R-RHFP-style filter in `runReadiness`). The original
+// blocking arm was demoted after the W5c recurrence dashboard showed 725 gate_skipped
+// uses in 10 days against a stated budget of 3 (~240x) — per W5b, a guard past its
+// budget is loosened or removed, never given another hatch. The former suppression
+// apparatus (skip-flag bypass + auto-extend degrade) died with the block. The
+// build-phase scope auto-extension (`computeScopeAutoExtension`, pipeline-runner)
+// remains the mechanism that actually absorbs out-of-scope callers.
 //
 // SINGLE DETECTOR: the matching engine (`ARITY_ADD_CUE_RE`, `SCHEMA_SHAPE_CUE_RE`,
 // and `detectSignatureCallerGaps`) lives ONLY in
@@ -1113,8 +1114,8 @@ function maybeEmitResolverIndeterminate(input: {
 // symbol and the change explicitly; we then grep tracked `*.spec.ts` / factory
 // files for old-form call sites outside the bundle's declared files. False
 // negatives (a change phrased without these cues) and over-broad symbol matches
-// are possible — the blocking finding always carries an actionable remediation
-// (co-scope, auto-extend, or skip) so a miss or over-report stays cheap to resolve.
+// are possible — the finding always carries an actionable remediation
+// (co-scope or auto-extend) so a miss or over-report stays cheap to resolve.
 
 interface SignatureGapTicket {
   file: string;
@@ -1125,23 +1126,13 @@ interface SignatureGapTicket {
 // from ../services/signature-caller-gap.js — the single definition shared with the
 // build-phase auto-extension in pipeline-runner.ts.
 
-interface SignatureGapOpts {
-  autoExtend?: boolean;
-  skipQualityGatesReason?: string;
-  sessionDir?: string;
-}
-
 function collectAllDeclared(sigTickets: SignatureGapTicket[]): Set<string> {
   const all = new Set<string>();
   for (const t of sigTickets) for (const f of t.declaredFiles) all.add(f);
   return all;
 }
 
-function isGapBlocking(skipReason: string | undefined, autoExtend: boolean, callerCount: number): boolean {
-  return !skipReason && (!autoExtend || callerCount > SCOPE_AUTO_EXTEND_MAX);
-}
-
-function buildGapFinding(ticketFile: string, gap: CallerGap, isBlocking: boolean): ReadinessFinding {
+function buildGapFinding(ticketFile: string, gap: CallerGap): ReadinessFinding {
   const base =
     gap.kind === 'schema-shape'
       ? `Schema-shape change to '${gap.symbol}' has out-of-scope consumer(s) (.parse/.safeParse/factory) ` +
@@ -1150,47 +1141,25 @@ function buildGapFinding(ticketFile: string, gap: CallerGap, isBlocking: boolean
       : `Arity change to '${gap.symbol}' has positional caller(s) OUTSIDE the bundle scope fence; ` +
         'no fenced worker can update them, so tsc may stay RED (heuristic markdown+grep detection, ' +
         'not a type-aware diff; verify and extend or rescope the callers)';
-  const suffix = isBlocking
-    ? ` — To resolve: (1) co-scope the caller by adding it to ## Files to modify in the ticket, ` +
-      `(2) set scope.auto_extend_signature_callers: true in scope.json (auto-extends fence if ≤${SCOPE_AUTO_EXTEND_MAX} callers), ` +
-      `or (3) set state.flags.skip_quality_gates_reason to bypass the gate`
-    : ' (advisory — never blocks readiness)';
+  const suffix =
+    ` (advisory — never blocks readiness) — To resolve: (1) co-scope the caller by adding it to ## Files to modify in the ticket, ` +
+    `or (2) set scope.auto_extend_signature_callers: true in scope.json (build-phase auto-extension absorbs ≤${SCOPE_AUTO_EXTEND_MAX} callers)`;
   return {
     ticket: ticketFile,
-    kind: isBlocking ? 'signature_caller_gap' : 'advisory',
+    kind: 'signature_caller_gap',
     analyst: 'risk',
     message: base + suffix,
     detail: `${gap.symbol} -> ${gap.outOfScopeCallers.join(', ')}`,
   };
 }
 
-function maybeEmitSigGapBlockEvent(sessionDir: string | undefined, symbol: string, emitted: boolean): boolean {
-  if (emitted || !sessionDir) return emitted;
-  try {
-    logActivity({ event: 'gate_skipped', source: 'pickle', ts: new Date().toISOString(), gate_payload: { reason: 'signature_caller_gap', detail: symbol } });
-  } catch { /* non-fatal */ }
-  return true;
-}
-
 export function findSignatureChangeCallerGapFindings(
   sigTickets: SignatureGapTicket[],
   repoRoot: string,
   cache?: ResolverCache,
-  opts?: SignatureGapOpts,
 ): ReadinessFinding[] {
-  const { autoExtend = false, skipQualityGatesReason, sessionDir } = opts ?? {};
-
-  // Bypass: skip_quality_gates_reason set → advisory for all findings in this invocation.
-  // Emit gate_skipped once so the budget counter increments.
-  if (skipQualityGatesReason && sessionDir) {
-    try {
-      logActivity({ event: 'gate_skipped', source: 'pickle', ts: new Date().toISOString(), gate_payload: { reason: 'signature_caller_gap', detail: skipQualityGatesReason } });
-    } catch { /* non-fatal */ }
-  }
-
   const declaredAll = collectAllDeclared(sigTickets);
   const findings: ReadinessFinding[] = [];
-  let emittedBlockEvent = false;
   for (const ticket of sigTickets) {
     let content: string;
     try {
@@ -1200,17 +1169,10 @@ export function findSignatureChangeCallerGapFindings(
     }
     const gaps = detectSignatureCallerGaps({ ticketContents: [content], declaredFiles: declaredAll, repoRoot, cache });
     for (const gap of gaps) {
-      const blocking = isGapBlocking(skipQualityGatesReason, autoExtend, gap.outOfScopeCallers.length);
-      if (blocking) emittedBlockEvent = maybeEmitSigGapBlockEvent(sessionDir, gap.symbol, emittedBlockEvent);
-      findings.push(buildGapFinding(ticket.file, gap, blocking));
+      findings.push(buildGapFinding(ticket.file, gap));
     }
   }
   return findings;
-}
-
-function readScopeAutoExtend(sessionDir: string): boolean {
-  const raw = readRecoverableJsonObject(path.join(sessionDir, 'scope.json'));
-  return (raw as Record<string, unknown> | null)?.['auto_extend_signature_callers'] === true;
 }
 
 export function runReadiness(args: ReadinessArgs): { exitCode: number; findings: ReadinessFinding[]; reportPath?: string; delta: boolean; elapsed_ms: number } {
@@ -1232,23 +1194,18 @@ export function runReadiness(args: ReadinessArgs): { exitCode: number; findings:
     ? createResolverCache(args.repoRoot, args.maxWallMs, allowlist)
     : undefined;
   const pathCache: ResolverCache = resolverCache ?? createResolverCache(args.repoRoot, args.maxWallMs, allowlist);
-  // R-SIGF (WS-1): signature-change-caller-gap scan. Blocking when flag off or count > cap;
-  // advisory when kill-switch active, bypass reason set, or flag on + count ≤ cap.
+  // R-SIGF (WS-1, demoted to advisory per W5b — see the ADVISORY CONTRACT note above):
+  // signature-change-caller-gap scan; findings surface in the report, never block.
   const sigTickets = selected.files.map((file) => ({
     file,
     declaredFiles: new Set(readDeclaredFiles(fs.readFileSync(file, 'utf-8'))),
   }));
-  const autoExtend = readScopeAutoExtend(args.sessionDir);
   const findings = [
     ...findPrdMapFindings(tickets, manifest, sourceRequirements),
     ...tickets.flatMap((ticket) => findPathFindings(ticket, args.repoRoot, args.sessionDir, pathCache)),
     ...tickets.flatMap((ticket) => findDependencyFindings(ticket, refs)),
     ...selected.files.flatMap((file) => findReadinessFindings(file, args.repoRoot, { checkMachinability, checkContracts, cache: resolverCache, maxWallMs: args.maxWallMs, allowlist })),
-    ...findSignatureChangeCallerGapFindings(sigTickets, args.repoRoot, pathCache, {
-      autoExtend,
-      skipQualityGatesReason: state?.flags?.skip_quality_gates_reason,
-      sessionDir: args.sessionDir,
-    }),
+    ...findSignatureChangeCallerGapFindings(sigTickets, args.repoRoot, pathCache),
   ];
   const ticketsVersion = getTicketsVersion(state);
 
@@ -1276,7 +1233,10 @@ export function runReadiness(args: ReadinessArgs): { exitCode: number; findings:
   // R-RCFF (Step 3): forward-created refs carry kind:'advisory' — they appear in
   // `findings`/the report as a coverage signal but, like kind:'performance', are
   // excluded from the blocking set that drives `status:fail` and the exit code.
-  const blockingFindings = findings.filter((finding) => finding.kind !== 'performance' && finding.kind !== 'advisory');
+  // W5b (2026-07-10): kind:'signature_caller_gap' joins the advisory set — the blocking
+  // arm ran 240x over its skip-flag budget (725 uses/10d vs 3); the finding still
+  // surfaces, the build-phase scope auto-extension still absorbs real gaps.
+  const blockingFindings = findings.filter((finding) => finding.kind !== 'performance' && finding.kind !== 'advisory' && finding.kind !== 'signature_caller_gap');
 
   // AC-B4: NON-BLOCKING readiness false-positive counter. Compare this run's
   // blocking findings against the prior run's persisted signatures and emit
