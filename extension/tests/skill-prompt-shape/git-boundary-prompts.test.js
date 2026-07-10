@@ -12,6 +12,11 @@ const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const COMMAND_FILES = [
   path.join(repoRoot, '.claude/commands/pickle-tmux.md'),
   path.join(repoRoot, '.claude/commands/anatomy-park.md'),
+  // Runtime-consumed manager template (composeManagerPromptFromSkill) + death-crystal:
+  // added 2026-07-10 after the copies were found silently drifting — the manager copy
+  // is the one every spawned manager actually reads, so it must stay pinned.
+  path.join(repoRoot, 'extension/templates/_pickle-manager-prompt.md'),
+  path.join(repoRoot, '.claude/commands/death-crystal.md'),
 ];
 
 const BOUNDARY_BLOCK_START = '<!-- BEGIN GIT_BOUNDARY_RULES -->';
@@ -101,3 +106,27 @@ for (const file of COMMAND_FILES) {
     );
   });
 }
+
+// Cross-copy identity: the PROHIBITED verb list is the prose mirror of the
+// R-WSRC-GR runtime contract (detectProhibitedGitVerb) — no copy may drop,
+// reword, or extend a verb line independently. Per-file tails (enforcement
+// note, closing guidance) may legitimately vary; the verb list may not.
+test('git-boundary: PROHIBITED verb list is identical across all copies', () => {
+  const extractProhibited = (p) => {
+    const { block } = readAndSplit(p);
+    const start = block.indexOf('PROHIBITED commands');
+    assert.notStrictEqual(start, -1, `${path.basename(p)} boundary block missing PROHIBITED commands section`);
+    const rest = block.slice(start);
+    const end = rest.search(/\n\s*\n/);
+    return rest.slice(0, end === -1 ? undefined : end).trim();
+  };
+  const sections = COMMAND_FILES.map((f) => ({ file: path.basename(f), text: extractProhibited(f) }));
+  const canonical = sections[0];
+  for (const s of sections.slice(1)) {
+    assert.equal(
+      s.text,
+      canonical.text,
+      `PROHIBITED verb list in ${s.file} drifted from ${canonical.file} — update ALL copies together (R-WSRC-GR prose mirror)`,
+    );
+  }
+});
