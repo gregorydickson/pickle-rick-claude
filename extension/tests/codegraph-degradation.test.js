@@ -310,3 +310,64 @@ test('AC3 degrade persists to state.json.activity via the emit dep (spawn-path w
   assert.equal(degraded[0].gate_payload.operation, 'query', 'operation stamped in gate_payload');
   assert.equal(degraded[0].reason, 'enoent', 'open reason string persisted');
 });
+
+// A round-trip fixture: the runner spawns THIS as its child. It reads the batch input from
+// stdin, echoes a deterministic ok-result carrying full node/score/file/line + caller shapes,
+// then exits 0 — exercising the REAL parent transport (stdin write → child stdout → JSON.parse)
+// without the SDK. The prior three tests only cover timeout/failure; none reaches status:'ok'.
+function writeRoundTripFixture() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'cg-roundtrip-'));
+  const file = path.join(dir, 'roundtrip-child.cjs');
+  writeFileSync(
+    file,
+    [
+      "let raw = '';",
+      "process.stdin.on('data', (c) => { raw += c; });",
+      "process.stdin.on('end', () => {",
+      '  const input = JSON.parse(raw);',
+      '  const searches = {};',
+      '  for (const term of input.searches || []) {',
+      "    searches[term] = [{ node: { id: 'id-' + term, name: term + 'Fn', file: 'src/' + term + '.ts', line: 42 }, score: 7.5 }];",
+      '  }',
+      '  const callers = {};',
+      '  for (const id of input.callers || []) {',
+      "    callers[id] = [{ node: { id: 'c-' + id, name: id + 'Caller' } }];",
+      '  }',
+      '  process.stdout.write(JSON.stringify({ searches, callers }));',
+      '  process.exit(0);',
+      '});',
+      '',
+    ].join('\n'),
+  );
+  return file;
+}
+
+test('round-trip: real runner resolves status=ok with node/score/file/line preserved field-for-field across the subprocess JSON boundary', async () => {
+  const fixture = writeRoundTripFixture();
+  // timeoutMs is a generous hang-guard for a fast echo child — never a perf assertion, and
+  // never shrunk below the wedge test's own bound (serial-manifest hygiene, AC-R-ITIH-4).
+  const result = await runCodegraphQueryBatch(
+    { workingDir: '/tmp/cg-roundtrip-wd', searches: ['foo', 'bar'], callers: ['n1'] },
+    { timeoutMs: 5000, childScriptPath: fixture },
+  );
+
+  assert.equal(result.status, 'ok', 'a successful batch must resolve status=ok');
+  assert.deepEqual(Object.keys(result.searches).sort(), ['bar', 'foo'], 'every requested term round-trips a key');
+
+  const fooHit = result.searches.foo[0];
+  assert.equal(fooHit.score, 7.5, 'score survives the JSON boundary');
+  assert.equal(fooHit.node.id, 'id-foo', 'node.id survives');
+  assert.equal(fooHit.node.name, 'fooFn', 'node.name survives');
+  assert.equal(fooHit.node.file, 'src/foo.ts', 'node.file survives');
+  assert.equal(fooHit.node.line, 42, 'node.line survives');
+
+  const barHit = result.searches.bar[0];
+  assert.equal(barHit.node.name, 'barFn', 'second term round-trips independently');
+  assert.equal(barHit.node.file, 'src/bar.ts');
+
+  assert.deepEqual(
+    result.callers.n1,
+    [{ node: { id: 'c-n1', name: 'n1Caller' } }],
+    'caller entries round-trip field-for-field',
+  );
+});
