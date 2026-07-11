@@ -506,6 +506,58 @@ The three timeouts are independent — index, sync, and query each get their own
 | `codegraph_degraded` | An op was degraded (timeout, lock, corrupt, schema-skew, or latch). |
 | `worker_mcp_config_resolved` | Names the winning `--mcp-config` layer for a worker/manager spawn. |
 
+### Soak protocol
+
+Post-GA operator runbook for validating Code Graph's efficacy with live telemetry (not a build
+step — this section documents the RUN, not new code). Existing opt-in default and kill-switch
+semantics above are unchanged; this only adds an operator procedure on top of them.
+
+1. **Deploy — pin the exact build.** Deploy the target line via `bash install.sh` and **record
+   the exact tag/SHA in the soak artifact** (no "or cherry-picked" ambiguity). Confirm the
+   deployed gate is green (`extension/`: `npm run test:fast`). Deploy-soak variants need
+   `PICKLE_INSTALL_ROOT` set off-`$HOME`.
+2. **Flip settings — precondition: no active pipeline session.** Edit the *source*
+   `extension/pickle_settings.json` (`codegraph.enabled: true`, `index_at_setup: true`), then
+   `bash install.sh`. **Never hand-edit the deployed copy** — the same rule as the kill-switch
+   above.
+3. **Run ≥5 real bundle reps** through `/pickle-pipeline` (normal drain-queue payloads).
+   **Rep validity:** a rep counts toward the ≥5 only if ≥1 graph-tier ticket spawned with
+   codegraph enabled. **Run ≥2 contemporaneous DISABLED reps on the SAME deploy** as the primary
+   comparison arm — trailing pre-soak GA reps are context only, not a substitute (comparing
+   across deploys attributes the whole version diff to codegraph).
+4. **Abort semantics (honest).** `PICKLE_CODEGRAPH=off` is a **per-session** kill-switch — the
+   env var is read once at process construction (`codegraph-service.ts:137`) and can never reach
+   an already-running session. Set it in the launching shell for the *next* rep only. A mid-rep
+   problem is handled by a **freeze**: freeze the session (scoped kills, per the standing
+   recovery recipe) and **discard that rep** (`harm (aborted, rep discarded)`) — editing the
+   deployed settings file or running `install.sh` mid-run are forbidden surfaces, not abort
+   levers.
+5. **Read telemetry from these paths only:**
+   - `codegraph_session_summary` (per session, once at session end) for injected/skipped counts.
+   - Per-event `state.json.activity` for degrades (`codegraph_degraded`) and skip reasons
+     (`query_timeout`, `query_failed`, `stale_refs`) including `dropped_stale`.
+   - Never read `degraded_ops` for this purpose — it's mux-runner-process-scoped, not a
+     per-rep signal.
+   - The disabled arm's codegraph telemetry is empty **by design** (emit-suppressed) — absence
+     of events there is not absence of effect, it's the control arm.
+6. **Record the artifact and apply the verdict tree.** Write
+   `prds/research/codegraph-soak-baseline.md` (forward-created at RUN time) with per-rep
+   injected/skipped-by-reason counts, bytes + `build_ms`, `dropped_stale` totals, degrade
+   evidence, and worker outcomes for both arms.
+   - **Gating (machine-checkable):** cost/stability predicates — no spawn-path stall beyond the
+     bound, no leaked native process, setup index within `index_timeout_ms`, no rep-aborting
+     degrade cascade. Any violation → **harm**.
+   - **Non-gating (directional only):** outcome deltas vs. the comparison arm. Labeled
+     cross-version/directional-at-best unless ≥2 contemporaneous disabled reps ran on the same
+     deploy (step 3).
+   - **Exposure floor:** total injections across counted reps `< 10` → verdict
+     **no-exposure (inconclusive)** — extend the soak window. Never map zero exposure to
+     "neutral."
+   - Verdict routing: help → proceeds to the default-on evidence review · harm → revisit
+     subtraction · neutral (with the exposure floor met) → stays opt-in.
+7. **Exit.** Either restore the pre-soak line (checkout the recorded GA tag → `bash
+   install.sh`) or explicitly record the decision to stay on the soaked line.
+
 ### 🧬 Cronenberg — The Meta-Router
 
 <p align="center">
