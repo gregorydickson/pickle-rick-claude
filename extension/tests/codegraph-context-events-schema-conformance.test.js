@@ -243,7 +243,7 @@ function fakeService({ hits = [], callers = [], summary = '', statusOverride = n
     // productive-skip branches (query_timeout / query_failed) can be exercised without
     // a real subprocess spawn.
     async runQueryBatch(searchTerms, callerIds) {
-      if (statusOverride) return statusOverride;
+      if (statusOverride) { return statusOverride; }
       return {
         status: 'ok',
         searches: Object.fromEntries((searchTerms ?? []).map((t) => [t, hits])),

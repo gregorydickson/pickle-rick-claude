@@ -680,7 +680,7 @@ function rankCodegraphHits(
 ): { node: CodegraphNodeLike }[] {
   const hitsById = new Map<string, { node: CodegraphNodeLike; score: number }>();
   for (const hits of Object.values(searches)) {
-    if (!Array.isArray(hits)) continue;
+    if (!Array.isArray(hits)) { continue; }
     for (const raw of hits) {
       const node = asNode(raw);
       if (!node || typeof node.id !== 'string') continue;
@@ -694,7 +694,7 @@ function rankCodegraphHits(
 
 /** First-degree caller names from a pre-fetched caller list, or '' when none. Pure. */
 function callerSuffixFromList(list: unknown[]): string {
-  if (!Array.isArray(list)) return '';
+  if (!Array.isArray(list)) { return ''; }
   const names = list
     .map((c) => asNode(c))
     .map((n) => (n ? nodeName(n) : null))
@@ -711,7 +711,7 @@ interface CodegraphFileStaleness {
 /** Stat + read a file's line count once; callers memoize via `cache` across ranked nodes. */
 function statCodegraphFile(resolved: string, cache: Map<string, CodegraphFileStaleness>): CodegraphFileStaleness {
   const cached = cache.get(resolved);
-  if (cached) return cached;
+  if (cached) { return cached; }
   let result: CodegraphFileStaleness;
   try {
     const stat = fs.statSync(resolved);
@@ -749,13 +749,13 @@ function isNodeLocationFresh(
   cache: Map<string, CodegraphFileStaleness>,
 ): boolean {
   const file = typeof node.file === 'string' ? node.file : typeof node.filePath === 'string' ? node.filePath : null;
-  if (!file) return true;
+  if (!file) { return true; }
   const resolved = path.isAbsolute(file) ? file : path.join(workingDir, file);
   const info = statCodegraphFile(resolved, cache);
-  if (!info.resolves) return false;
-  if (info.lineCount === null) return true;
+  if (!info.resolves) { return false; }
+  if (info.lineCount === null) { return true; }
   const line = typeof node.line === 'number' ? node.line : typeof node.startLine === 'number' ? node.startLine : null;
-  if (line === null) return true;
+  if (line === null) { return true; }
   return line >= 1 && line <= info.lineCount;
 }
 
@@ -802,7 +802,7 @@ function buildCodegraphEntries(
   if (locatedEntries.length > 0 && typeof summary === 'string') {
     for (const line of summary.split('\n')) {
       const t = line.trim();
-      if (t.length > 0) entries.push(`Summary: ${t}`);
+      if (t.length > 0) { entries.push(`Summary: ${t}`); }
     }
   }
   entries.push(...locatedEntries);
@@ -2631,8 +2631,8 @@ async function main() {
       const cgEmit = (event: CodegraphEmitEvent): void => {
         try {
           const entry: ActivityLogEntry = { event: event.event, ts: event.ts };
-          if (event.reason) entry.reason = event.reason;
-          if (event.error) entry.error = event.error;
+          if (event.reason) { entry.reason = event.reason; }
+          if (event.error) { entry.error = event.error; }
           if (event.operation || event.gate_payload) {
             entry.gate_payload = {
               ...(event.operation ? { operation: event.operation } : {}),

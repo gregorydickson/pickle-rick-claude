@@ -864,9 +864,9 @@ export function countCodegraphDegradedEvents(
 ): number {
   let degraded = 0;
   for (const entry of activity ?? []) {
-    if (entry?.event !== 'codegraph_degraded') continue;
+    if (entry?.event !== 'codegraph_degraded') { continue; }
     const op = (entry.gate_payload as { operation?: unknown } | undefined)?.operation;
-    if (op === 'latch') continue;
+    if (op === 'latch') { continue; }
     degraded += 1;
   }
   return degraded;

@@ -225,7 +225,7 @@ export class CodegraphService {
    * consumer, which maps it to `query_timeout` / `query_failed` skip reasons. Never throws.
    */
   async runQueryBatch(searches: string[], callers: string[]): Promise<CodegraphQueryBatchResult> {
-    if (this.inert) return { status: 'ok', searches: {}, callers: {} };
+    if (this.inert) { return { status: 'ok', searches: {}, callers: {} }; }
     this.counters.ops += 1;
     const run =
       this.deps.runQueryBatch ??

@@ -105,14 +105,14 @@ export async function runCodegraphQueryBatch(
     let stdout = '';
 
     const settle = (result: CodegraphQueryBatchResult): void => {
-      if (settled) return;
+      if (settled) { return; }
       settled = true;
       clearTimeout(timer);
       resolve(result);
     };
 
     const timer = setTimeout(() => {
-      if (settled) return;
+      if (settled) { return; }
       const pid = child.pid;
       if (typeof pid === 'number') {
         // Group-kill the leader: SIGTERM, then escalate to SIGKILL after a grace
@@ -123,13 +123,13 @@ export async function runCodegraphQueryBatch(
           // group-kills via `kill(pid, ...)` and never touches it, so `!child.killed` was
           // always true (dead sub-term). The live guard is `exitCode === null`: skip the
           // escalation only if the child already exited with a real code.
-          if (child.exitCode === null) kill(pid, 'SIGKILL');
+          if (child.exitCode === null) { kill(pid, 'SIGKILL'); }
         }, GROUP_KILL_GRACE_MS);
-        if (typeof escalate.unref === 'function') escalate.unref();
+        if (typeof escalate.unref === 'function') { escalate.unref(); }
       }
       settle({ status: 'timeout', reason: 'grandchild-kill' });
     }, opts.timeoutMs);
-    if (typeof timer.unref === 'function') timer.unref();
+    if (typeof timer.unref === 'function') { timer.unref(); }
 
     child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
     // Drain stderr so a chatty child can't deadlock on a full pipe buffer; the content
@@ -141,7 +141,7 @@ export async function runCodegraphQueryBatch(
     });
 
     child.on('close', (code) => {
-      if (settled) return; // timeout already fired — swallow the late close
+      if (settled) { return; } // timeout already fired — swallow the late close
       if (code !== 0) {
         settle({ status: 'failed', reason: `shim-exit-${code ?? 'null'}` });
         return;
@@ -193,11 +193,11 @@ async function runChild(): Promise<void> {
   const CodeGraph = bag.CodeGraph as
     | { open?: (root: string) => Promise<unknown>; init?: (root: string) => Promise<unknown> }
     | undefined;
-  if (!CodeGraph) throw new Error('CodeGraph unavailable');
+  if (!CodeGraph) { throw new Error('CodeGraph unavailable'); }
   const graph = (CodeGraph.open
     ? await CodeGraph.open(input.workingDir)
     : await CodeGraph.init?.(input.workingDir)) as ChildGraph | null;
-  if (!graph) throw new Error('graph open failed');
+  if (!graph) { throw new Error('graph open failed'); }
 
   const searches: Record<string, CodegraphSearchHit[]> = {};
   for (const term of input.searches ?? []) {

@@ -287,7 +287,7 @@ test('AC3 degrade persists to state.json.activity via the emit dep (spawn-path w
   // Mirror the spawn-morty call-site cgEmit closure: CodegraphEmitEvent → ActivityLogEntry.
   const emit = (event) => {
     const entry = { event: event.event, ts: event.ts };
-    if (event.reason) entry.reason = event.reason;
+    if (event.reason) { entry.reason = event.reason; }
     if (event.operation || event.gate_payload) {
       entry.gate_payload = {
         ...(event.operation ? { operation: event.operation } : {}),
