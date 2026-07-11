@@ -1,48 +1,47 @@
-# P2 Bug-Fix Bundle — R-WGFR: the between-ticket worker-gate must verify `test:fast` through a flake-resistant signal, not one raw c=8 run
+# P2 Bug-Fix Bundle — R-WGFR (subtractive): the Done-flip worker-gate recompute must verify the DETERMINISTIC dimensions (eslint+tsc), not re-run the flaky `test:fast`
 
-**Priority:** P2 (HIGH — reliability. No data loss: the tree is provably green. But a single c=8
-timeout-flake yields a false-red worker-gate verdict, R-CWGE fail-closes **fatal**, and a GREEN bundle
-is killed at `0/N phases`. This false-red-fatal is the #1 open reliability item and the single biggest
-de-flaker of autonomous soak reps — it forced the heavy babysitter closer-takeover on the beta.44 codex
-build.)
-**Code:** R-WGFR (Worker-Gate Flaky-testfast false-Red-fatal).
-**Backend:** claude (gate-decision seam; the fix removes a codex-amplified flake but the seam itself is
-backend-agnostic).
-**Build-safety note:** **Pipeline-safe — NOT the R-PSRB salvage/completion/Done-flip path.** The edit
-lives in `extension/src/bin/mux-runner.ts` `runBetweenTicketFastTests` (the between-ticket gate's
-`test:fast` invocation) + a new `extension/package.json` script. It does NOT touch `salvage-ticket.ts` /
-`reconcile-ticket-truth.ts` / `ticket-completion-evidence.ts` / the mux-runner Done-flip **evidence**
-logic — it only changes the *concurrency of the test command that feeds the verdict*. R-CWGE stays
-fail-CLOSED (unchanged). The running pipeline executes DEPLOYED JS, so this builds normally on its own
-pipeline; the closer's full gate is the authoritative backstop.
-**Source anchor:** verified against branch `experiment/fable-operating-manual` HEAD `0f1e6245`
-(2026-07-11, the v2.1 beta line). The three fix sites (`runBetweenTicketFastTests` `mux-runner.ts:638`,
-`recomputeAbsentWorkerGateVerdict` delegation `:4584/:4588`, `package.json:22` `test:fast` c=8) are
-**byte-identical to `main`** (the branch/main `mux-runner.ts` diff is elsewhere — the codegraph
-mux-gate + version), so the fix applies cleanly here and **back-ports to `main` byte-exact** for v2.0.
-**Version-line policy (operator 2026-07-11):** ALL work lands on the v2.1 branch first, then back-ports
-to `main` for v2.0 as needed. R-WGFR is a GA-blocking reliability fix → build on v2.1, cherry-pick to
-main. Refresh anchors before build if HEAD moved.
+**Priority:** P2 (HIGH — reliability / continuous-autonomy. No data loss: the tree is provably green. A
+single c=8 `test:fast` timeout-flake makes `recomputeAbsentWorkerGateVerdict` return red, R-CWGE
+fail-closes **fatal**, and a GREEN bundle is killed at `0/N phases` — the beta.44 codex 0/4 forensic.
+This is the #1 open reliability item AND the single biggest de-flaker of hands-off soak reps.)
+**Code:** R-WGFR (Worker-Gate Flaky-testfast false-Red-fatal) — **resolved by SUBTRACTION.**
+**Backend:** claude (gate-verdict seam; backend-agnostic).
+**North-star framing (operator 2026-07-11): simplify → autonomy → quality.** This bundle is a net
+**subtraction**: it *removes* the flaky `test:fast` re-run from the Done-flip verdict recompute. It adds
+no script, no npm hook, no schema field, no retry/budget machinery, no new flag/state. The additive
+alternatives (a `test:fast:gate` script at c=4; a flake-budget branch) were rejected — a 3-analyst
+refinement pass proved the additive path carries a 5-file blast radius (a JSON-schema `const`, a
+`pretest:fast` audit hook, two command-pinned tests) AND does not actually *close* the class (c=4 is
+still one run against the unchanged 600 s timeout; the release gate's real resistance is a repetition
+budget, not c=4). Subtracting the flaky dimension closes the class at the root and dissolves all of it.
 
-> **▶ BUILD SCOPE (author decision 2026-07-11, north-star-aligned): WS-1 ONLY. WS-2 is DEFERRED —
-> see the WS-2 section.** WS-1 is the reliability root fix + a subtraction of a false-red failure class,
-> and it removes the timeout-flake regardless of machine contention. WS-2 (widening the R-CXHANG reaper
-> to sweep age-old `codex app-server` orphans) targets a contention *amplifier*, not the root, and it
-> tensions with a **pinned safety invariant** (the R-CXHANG reaper's positive-ownership-mandatory
-> contract — "an un-attributable proc is NEVER killed; deliberately NO ppid==1-only reap branch"). A
-> `codex app-server` proc carries no `--add-dir` session ownership, so an age-only sweep is precisely the
-> brittleness-adding change the north star says to defer (the R-MPGD WS-2 precedent). Once WS-1 lands at
-> c=4 the timeout-flake is removed at the source; if orphan contention still bites, WS-2 gets its own
-> bounded bundle with a real ownership signal — NOT an age-only reap branch grafted onto a positive-
-> ownership guard.
+**Build-safety note (pipeline-safe, self-exposed — B-RASO model).** The edit lives in
+`extension/src/bin/mux-runner.ts` `recomputeAbsentWorkerGateVerdict` (the absent-verdict recompute that
+feeds the Done-flip guard) + its R-CWGE trap door + one test. It does NOT touch `salvage-ticket.ts` /
+`reconcile-ticket-truth.ts` / `ticket-completion-evidence.ts` / the completion-evidence oracle. The
+running pipeline executes DEPLOYED JS, so the source diff never self-applies mid-build (lands at
+`install.sh`). **Self-exposure:** the R-WGFR build's own ticket-boundary Done-flips run under the
+DEPLOYED (buggy, flaky) recompute — so this very build can be false-red-fataled by the bug it fixes. The
+firing condition is a c=8 flake (low base rate). If it fires: re-verify via `test:fast:budget`
+(authoritative because it is **5 reruns @ c=8 tolerating ≤2** — a repetition budget, NOT because it is
+c=4; it is not), `git merge --ff-only` the orphaned commit, do NOT re-spawn — then continue. Attended
+pipeline per B-RASO; expected, not a regression.
+
+**Source anchor:** verified against branch `experiment/fable-operating-manual` HEAD `a317d971`
+(2026-07-11, v2.1 beta line). `recomputeAbsentWorkerGateVerdict` at `mux-runner.ts:4581–4589`; the
+Done-flip guard reason string at `:4743`; the R-CWGE trap door in `extension/src/bin/CLAUDE.md`. **Fix
+site is byte-identical to `main`** → back-ports byte-exact for v2.0. **Version-line policy (operator
+2026-07-11):** all work on the v2.1 branch first, back-port to `main` for v2.0 as needed. Refresh anchors
+before build if HEAD moved.
 
 ---
 
 ## Context
 
 Live forensics of the beta.44 R-LTNC codex soak (session `2026-07-08-b89bb506`). Ticket `9bdcecd5`
-(a 225-file rename + hermetic backfill test) committed cleanly and flipped **Done**; the pipeline
-advanced. Then the **between-ticket gate** re-verified `9bdcecd5` and fatal-stopped the whole pipeline
+committed cleanly and flipped **Done**; the pipeline advanced. Then the between-ticket boundary
+re-resolved that ticket's worker-gate verdict — which was **absent** (a codex worker never persisted
+one) — via `recomputeAbsentWorkerGateVerdict`, and the Done-flip guard fatal-stopped the whole pipeline
 at **0/4 phases**:
 
 ```
@@ -50,154 +49,125 @@ at **0/4 phases**:
         (computed_via=between_ticket_gate). Done requires a GREEN worker-gate
         verdict (eslint+tsc+test:fast); a red or absent/unverifiable verdict is
         fail-closed (R-CWGE).
-Phase pickle exited (exit_reason=done_without_commit_evidence); 2/3 tickets remain.
 ```
 
-**But the tree was GREEN.** Post-hoc, on the exact committed tree: `tsc --noEmit` PASS, `eslint src/`
-PASS, `test:fast:budget` **5/5 runs, 0 failures**, backfill ≥12-pin ✔. The "red" was a **flake**, not a
-real failure — the worker itself reported the fast suite "did not yield a trustworthy terminal result."
-Under codex, resource contention from orphan `codex app-server` procs (one 2 days old) amplified the
-timeout-flakiness.
+**But the tree was GREEN.** Post-hoc on the exact committed tree: `tsc --noEmit` PASS, `eslint src/`
+PASS, `test:fast:budget` **5/5, 0 failures**. The "red" was a `test:fast` **flake** at c=8 (documented
+R-CIFB, amplified by codex orphan contention) — not a real failure.
 
-The historical operator rule is already on record: **`test:fast` is timeout-shaped flaky at c=8; re-run
-at c=4 for the authoritative green.** The release gate never trusts a single c=8 run — it uses
-`test:fast:budget` (`check-flake-budget.js`, 5 runs, tolerate ≤2). Only the between-ticket gate trusted
-one raw run.
+## Root cause (and why the fix is subtraction, not addition)
 
-Forensics: `prds/BUG-REPORT-2026-07-08-worker-gate-single-flaky-testfast-false-red-fatal.md`.
+`recomputeAbsentWorkerGateVerdict` (`mux-runner.ts:4581`) speaks for a worker that never persisted a
+`worker_gate_verdict` (codex / salvaged). It recomputes over the full contract:
 
-## Root cause
+```
+if (!runCheck eslint) return 'red';   // deterministic
+if (!runCheck tsc)    return 'red';   // deterministic
+return runTests(...) ? 'green' : 'red';  // ← runs a SINGLE npm run test:fast — FLAKY at c=8
+```
 
-The between-ticket gate computes its verdict from a **single raw run**:
+The verdict feeds `resolveWorkerGateVerdict` → `guardCompletionCommitBeforeDone`, whose
+`worker_gate_red` branch (`:4727`) is **fail-closed FATAL**. Two of the three dimensions (`eslint`,
+`tsc`) are **deterministic** — they never flake. The flake lives entirely in the third (`test:fast`),
+and that third dimension is **redundant** with (a) the *next* ticket's own worker-lint gate, which runs
+`test:fast`, and (b) the **closer's authoritative full release gate**, which runs
+`test:fast`+`integration`+`expensive`.
 
-- `mux-runner.ts:638` — `runBetweenTicketFastTests` calls
-  `spawnSync('npm', ['run', 'test:fast'], …)` **once**. `test:fast` hardcodes
-  `--test-concurrency=8` (`package.json:22`), and `test-runner.ts` only *caps* concurrency to core
-  count — on a ≥8-core machine the gate runs at the exact c=8 that is documented-flaky under contention.
-- `recomputeAbsentWorkerGateVerdict` (`mux-runner.ts:4581–4589`) recomputes an absent verdict over the
-  full eslint+tsc+test:fast contract by **delegating to the same `runBetweenTicketFastTests`** — so it
-  inherits the single-c=8-run flakiness. **This is one seam: fixing `runBetweenTicketFastTests` fixes
-  both callers.**
+The guard is a lifecycle-advancement gate → it correctly fails **closed** (manual §4). The defect is its
+**input**: a deterministic verdict polluted by one flaky, redundant test run. The subtract-before-add
+fix is not to make the flaky run flake-resistant (add machinery) — it is to **remove the flaky,
+redundant dimension** and keep the deterministic ones. B-CWGE's actual protection (a lint-RED or tsc-RED
+tree hidden behind a passing `test:fast` recomputing green) is fully preserved by keeping eslint+tsc —
+that is the class the trap door was written to catch, and it stays caught.
 
-R-CWGE (correctly) treats a **red OR absent/unverifiable** verdict as fail-closed. That policy is
-load-bearing and correct — the defect is **its input**: a verdict only as reliable as one flaky c=8
-`test:fast` run. A single c=8 flake becomes a **false red → fatal 0/N on a green bundle.**
+**Verified caller topology (why this is the whole fix):** `runBetweenTicketFastTests` is called by five
+sites, but only the **Done-flip guard verdict** (via the recompute) fatals a green bundle. `greenGate`
+(`:4640`) feeds a *separate* salvage/attribution decision, not the `worker_gate_red` fatal branch;
+`commitGatePassingDeliverableOnExitPath` (`:5110`) and the recovery-ladder armed gate (`:5726`) degrade
+gracefully (skip-commit / continue-recovery) — none fatal a green bundle on a flake. Subtracting the
+test dimension from the **recompute** closes the confirmed fatal class without touching the observability
+gate's command string (so the schema `const`, the `pretest:fast` hook, and the two command-pinned tests
+the refinement flagged are all **untouched**).
 
-## WS-1 — route the between-ticket gate's `test:fast` through the c=4 flake-resistant path (SHIP)
-
-**One seam, one concurrency value, greppable.** Do NOT add a retry-guard around R-CWGE; do NOT change
-R-CWGE's fail-closed policy. Only lower the concurrency of the test command that feeds the verdict, from
-the documented-flaky c=8 to the documented-authoritative c=4.
+## WS-1 — recompute the absent verdict over eslint+tsc only (SHIP)
 
 ### Changes
 
-1. **Add a dedicated gate npm script** in `extension/package.json`:
-   `"test:fast:gate": "node bin/test-runner.js --tier fast --test-concurrency=4"`.
-   This is the single source of truth for the gate's concurrency (reuses the same `test-runner.js` the
-   `test:fast` script uses; no new machinery, no new runner). Placed adjacent to `test:fast` /
-   `test:fast:budget`.
-2. **Route the gate through it.** In `runBetweenTicketFastTests` (`mux-runner.ts:638`), spawn
-   `npm run test:fast:gate` instead of `npm run test:fast`. Keep the existing `timeout`
-   (`resolveWorkerTestGateTimeoutMs`), the ETIMEDOUT detection, and the `BetweenTicketGateResult`
-   shape unchanged.
-3. **Update the two surfaced command strings** in the same function's failure/timeout records
-   (the `file: 'npm run test:fast'` fallback at `:651` and the `between_ticket_gate_timeout`
-   `gate_payload.command: 'npm run test:fast'` at `:696`) to `'npm run test:fast:gate'` so the activity
-   trail names the command that actually ran.
-4. **`recomputeAbsentWorkerGateVerdict` requires NO edit** — it calls `runBetweenTicketFastTests` and
-   inherits the fix. The R-CWGE trap-door PATTERN_SHAPE (`recomputeAbsentWorkerGateVerdict` runs
-   eslint+tsc before `runBetweenTicketFastTests(`) is preserved verbatim.
+1. **`recomputeAbsentWorkerGateVerdict` (`mux-runner.ts:4581`)** — remove the `runTests` step and its
+   parameter; return `'green'` once eslint and tsc both pass. eslint short-circuits tsc (ordering
+   preserved). Add a one-line R-WGFR rationale comment (deterministic-only; test authority = closer).
+2. **Done-flip guard reason string (`:4743`)** — `Done requires a GREEN worker-gate verdict
+   (eslint+tsc+test:fast)` → `(eslint+tsc)`. (Tests grep this string — reconcile in lockstep.)
+3. **R-CWGE trap door (`extension/src/bin/CLAUDE.md`)** — update the invariant + PATTERN_SHAPE: the
+   recompute runs **eslint+tsc** (no longer "eslint+tsc before `runBetweenTicketFastTests(`"); document
+   that dropping the deterministic-only recompute's test dimension is deliberate (R-WGFR: the flaky
+   redundant run false-red-fataled a green bundle; test authority is the closer's full gate). The
+   `runWorkerGate(` callsite-count == 1 and the fail-closed Done-flip routing invariants are UNCHANGED.
+4. **`worker-gate-verdict-recompute.test.js`** — reconcile: inject `runCheck` returning eslint-red /
+   tsc-red → `'red'` (both preserved); eslint+tsc green → `'green'` **regardless of any test state**
+   (prove the test dimension is gone); remove/repurpose the old `runTests` injection assertions.
 
 ### Acceptance criteria (machine-checkable)
 
-- **AC-WGFR-1** — `extension/package.json` contains a `"test:fast:gate"` script whose value invokes
-  `bin/test-runner.js` with `--tier fast` and `--test-concurrency=4`.
-  `node -e "process.exit(/--test-concurrency=4/.test(require('./extension/package.json').scripts['test:fast:gate'])?0:1)"`
-  exits 0.
-- **AC-WGFR-2** — `runBetweenTicketFastTests` in `extension/src/bin/mux-runner.ts` spawns
-  `npm run test:fast:gate` (not `npm run test:fast`).
-  `grep -c "'run', 'test:fast:gate'" extension/src/bin/mux-runner.ts` ≥ 1 AND the function body no longer
-  contains a `spawnSync('npm', ['run', 'test:fast']` (unsuffixed) call.
-- **AC-WGFR-3** — the timeout/failure records in `runBetweenTicketFastTests` name `test:fast:gate`:
-  no residual bare `'npm run test:fast'` string literal remains inside the function body (the surfaced
-  `command`/`file` fields say `test:fast:gate`).
-- **AC-WGFR-4** — `recomputeAbsentWorkerGateVerdict` still delegates test execution to
-  `runBetweenTicketFastTests` (single-seam invariant): the R-CWGE conformance test and
-  `worker-gate-verdict-recompute.test.js` stay green with no new `test:fast` spawn added.
-- **AC-WGFR-5** — a new/updated unit test proves the gate invokes the c=4 path: injecting a fake
-  `runTestFast`/`spawnSync` observes the command `npm run test:fast:gate` and the gate returns the
-  injected ok/failure verdict unchanged (R-CWGE fail-closed semantics untouched). Test file:
-  `extension/tests/between-ticket-gate-concurrency.test.js` (or an added case in the existing
-  mux-runner gate test).
-- **AC-WGFR-6** — full release gate green from `extension/` (tsc + eslint + all audit scripts +
+- **AC-WGFR-1** — `recomputeAbsentWorkerGateVerdict` no longer runs `test:fast`: its body contains no
+  `runTests(` call and no `runBetweenTicketFastTests(` call.
+  `awk '/export function recomputeAbsentWorkerGateVerdict/,/^}/' extension/src/bin/mux-runner.ts | grep -c "runBetweenTicketFastTests\|runTests("` == 0.
+- **AC-WGFR-2** — the deterministic Done-over-red protection is preserved: the function still returns
+  `'red'` when eslint fails and when tsc fails (eslint checked before tsc).
+  `awk '/export function recomputeAbsentWorkerGateVerdict/,/^}/' … | grep -Ec "eslint|tsc"` ≥ 2 with
+  both guarded `return 'red'`.
+- **AC-WGFR-3** — the guard reason string names only the checked dimensions:
+  `grep -c "GREEN worker-gate verdict (eslint+tsc)" extension/src/bin/mux-runner.ts` ≥ 1 AND
+  `grep -c "eslint+tsc+test:fast" extension/src/bin/mux-runner.ts` == 0.
+- **AC-WGFR-4** — the R-CWGE trap door reflects the new contract:
+  `extension/src/bin/CLAUDE.md`'s R-CWGE entry PATTERN_SHAPE no longer requires
+  `runBetweenTicketFastTests(` inside `recomputeAbsentWorkerGateVerdict`, and
+  `bash extension/scripts/audit-trap-door-enforcement.sh` passes.
+- **AC-WGFR-5** — `worker-gate-verdict-recompute.test.js` proves: eslint-red→red, tsc-red→red, and
+  eslint+tsc-green→green with **no** test invocation (inject a `runCheck` and assert green without any
+  `runTests`); `npm run test:fast` (fast tier) green.
+- **AC-WGFR-6** — the fail-closed Done-flip ROUTING is untouched: `resolveWorkerGateVerdict` still calls
+  `recomputeAbsentWorkerGateVerdict` on an absent persisted verdict; `guardCompletionCommitBeforeDone`
+  still fail-closes on `worker_gate_red`/`worker_gate_unavailable`; `runWorkerGate(` callsite count == 1.
+- **AC-WGFR-7** — full release gate green from `extension/` (tsc + eslint + all audit scripts +
   `test:fast:budget` + `test:integration` + `RUN_EXPENSIVE_TESTS=1 test:expensive`).
 
 ### Simplification Review (subtract-before-add) — WS-1
 
-1. **Necessary?** No new guard/flag/state field. The runtime change is a **one-token concurrency swap**
-   at one call site (`test:fast` → `test:fast:gate`), plus one npm script that reuses the existing
-   `test-runner.js`. Net-neutral-to-subtractive.
-2. **Reuse?** Yes — reuses the c=4 concurrency the release gate already relies on and the existing
-   `test-runner.js`. No parallel test mechanism, no retry loop. (The `test:fast:budget` /
-   `check-flake-budget.js` path was considered and **rejected** for the per-boundary gate: ~5× the test
-   time at every ticket boundary is too expensive; c=4 removes the flake at the source far cheaper.)
-3. **Guards existing brittle complexity?** It **removes** brittleness (a flaky single-c=8-run verdict);
-   it does not guard it. Explicitly NOT adding a retry-hatch around R-CWGE — that would be
-   guards-on-guards (two hatches for one guard = the guard is wrong).
-4. **Subtracts?** Removes a false-red failure class: a green bundle can no longer be fatally stopped by
-   one c=8 `test:fast` timeout-flake.
-
-## WS-2 — widen the R-CXHANG reaper to sweep age-old `codex app-server` orphans (DEFERRED)
-
-**Status: DEFERRED (author, reliability-first + subtract-before-add).** The contributing cause is real:
-orphan `codex app-server` procs accumulate (the R-CXHANG reaper keys on `--add-dir` under the sessions
-root and does not catch them), starving the machine and amplifying the c=8 timeout-flake. But this is a
-**contention amplifier, not the root** — WS-1 removes the timeout-flake at the source regardless of how
-many orphans exist.
-
-Widening the reaper is **not** a safe reuse: the R-CXHANG reaper carries a pinned
-positive-ownership-mandatory invariant (`services/orphan-reaper.ts`, trap door
-`R-CXHANG orphaned-worker-proc reaper` — "reaping without positive ownership kills a live sibling
-pipeline's worker mid-build … there is deliberately NO ppid==1-only reap branch"). A `codex app-server`
-proc has no `--add-dir` session ownership, so reaping it by age alone would **violate** that invariant
-and risks killing a shared daemon a live codex session still needs. Doing it correctly requires a genuine
-ownership signal for `codex app-server` procs — real design work that ADDS a detection branch to a
-safety-critical guard.
-
-Per the north star (reliability first; defer goal-#2 workstreams that add brittleness even when the bug
-is real — the R-MPGD WS-2 precedent), WS-2 is deferred to its own bounded bundle, to be built **only if**
-orphan contention still bites after WS-1 lands at c=4. Tracking stays in the MASTER_PLAN R-WGFR /
-R-CXHANG rows.
-
-### Simplification Review — WS-2
-
-1. **Necessary?** Not now — WS-1 removes the flake at the root; WS-2 defends a door WS-1 already closes.
-2. **Reuse?** Only partially — it would extend `killProcessGroup`/`orphan-reaper.ts`, but the *ownership
-   signal* it needs does not exist and cannot be safely age-only.
-3. **Guards existing brittle complexity?** It would ADD a reap branch to a safety-critical
-   positive-ownership guard — the exact brittleness class the north star fights.
-4. **Subtracts?** No subtraction available; pure addition. → **DEFER.**
+1. **Necessary?** Pure removal — deletes the `runTests` step + parameter from one function. Adds no
+   guard/flag/state/script/hook/schema. The ideal case per the guide.
+2. **Reuse?** N/A (removal). The deterministic dimensions reuse the existing `runCheck` seam unchanged.
+3. **Guards existing brittle complexity that should be SUBTRACTED?** Yes — and it subtracts it. The
+   brittle thing is the recompute's flaky `test:fast` dimension, which false-red-fataled a green bundle
+   (a guard false-blocking past budget → removal candidate, not a hardening candidate). We remove it
+   rather than wrap it in c=4/budget/retry machinery (which would be a second hatch around one guard).
+4. **Subtracts?** Removes a flaky, redundant per-boundary test run and the entire false-red-fatal class
+   it caused; collapses a 3-dimension recompute to its 2 deterministic dimensions.
 
 ## Risks
 
-- **R1 — non-pickle-rick extension targets.** `runBetweenTicketFastTests` early-returns null when no
-  `extension/` dir exists, and `recomputeAbsentWorkerGateVerdict` runs only when `extension/` is present
-  — in practice the gate's `test:fast` runs only on pickle-rick self-builds, where `test:fast:gate` will
-  exist. If a hypothetical non-pickle-rick target ever carries an `extension/` dir with `test:fast` but
-  not `test:fast:gate`, `npm run test:fast:gate` would exit non-zero → a fail-closed red (the SAFE
-  direction, never a false-green). Acceptable; note it, do not add a fallback (that would be new
-  machinery for a case that does not occur in the fleet).
-- **R2 — c=4 is slower per boundary than c=8.** True but bounded: fewer parallel workers, marginally
-  longer wall-clock at each ticket boundary, in exchange for removing the false-red-fatal class. The
-  release gate already accepts this trade at c=4. No mitigation needed.
-- **R3 — a test elsewhere pins the between-ticket gate to `npm run test:fast`.** The worker must grep
-  `test:fast'` across `extension/tests/` and reconcile any test asserting the old unsuffixed command in
-  the between-ticket gate path to the new `test:fast:gate` command (do NOT touch the worker-lint-gate's
-  own `test:fast` in spawn-morty — that is a different gate and out of scope).
+- **R1 — test-red deferred at absent-verdict boundaries (accepted, priority #3).** After the fix, a
+  worker with an *absent* persisted verdict whose tree is genuinely test-RED (but eslint+tsc green) flips
+  Done at the boundary; the RED is caught by the closer's authoritative full gate rather than at the
+  boundary. This is the deliberate quality/autonomy trade (quality #3): the boundary recompute no longer
+  fatal-stops on a *flaky* red, at the cost of not catching a *genuine* boundary test-red until the
+  closer. B-CWGE's lint/tsc-red protection is fully preserved. Persisted-verdict workers (the common
+  case) are unaffected — their own worker-lint gate already ran test:fast.
+- **R2 — self-exposure during this build** (see Build-safety note): the deployed flaky recompute governs
+  the build's own Done-flips; recovery = `test:fast:budget` re-verify + ff-reattach, do NOT re-spawn.
+- **R3 — trap-door reversal is deliberate.** We are loosening a pinned R-CWGE invariant. This is
+  sanctioned subtract-before-add (the guard false-blocked past budget), but it MUST update the trap-door
+  text + its enforcing audit + the test in one commit, with the rationale recorded, so the reversal is
+  documented, never silent.
 
 ## Out of scope
 
-- The worker-lint-gate `test:fast` in `spawn-morty.ts` (a different gate; its concurrency is a separate
-  decision and NOT part of R-WGFR).
-- Any change to R-CWGE fail-closed policy, the completion-evidence oracle, or the Done-flip guard.
-- WS-2 (reaper widening) — deferred, see above.
+- The observability between-ticket gate `runBetweenTicketFastGate` / `runBetweenTicketFastTests` command
+  string, the `test:fast` npm script, the `pretest:fast` hook, `activity-events.schema.json`, and the
+  command-pinned tests (`per-ticket-gate-no-flake-budget.test.js`, `mux-runner-between-ticket-gate.test.js`)
+  — all UNTOUCHED (we never introduce a `test:fast:gate` command). A *further* subtraction — dropping the
+  per-boundary observability `test:fast` re-run entirely (rely on worker gate + closer) — is a separate,
+  larger call, deliberately NOT bundled here.
+- The worker-lint gate `test:fast` in `spawn-morty.ts` (a different gate).
+- R-CWGE fail-closed Done-flip policy, the completion-evidence oracle, WS-2 reaper widening (a different
+  concern; contention amplifier, not the root).
