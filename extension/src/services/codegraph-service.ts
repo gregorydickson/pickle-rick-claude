@@ -26,15 +26,16 @@ export interface CodegraphCounters {
 /**
  * Structural slice of the upstream `CodeGraph` instance this service depends on.
  * Per `extension/data/codegraph-api-inventory.json`: `indexAll`/`sync`/`buildContext`
- * are async (Promise-returning) and are the only timeout targets; `searchNodes`,
- * `getCallers`, and `close` are SYNCHRONOUS and therefore lose
- * the timeout claim (a synchronous call cannot be raced against a timer).
+ * are async (Promise-returning) and are the only timeout targets; `close` is
+ * SYNCHRONOUS and therefore loses the timeout claim (a synchronous call cannot be
+ * raced against a timer). The upstream's sync `searchNodes`/`getCallers` are NOT part
+ * of this slice — after the A1 refactor the service reaches them ONLY across the
+ * killable subprocess boundary (`codegraph-query-runner.ts`, `ChildGraph`), never
+ * in-process on `impl`.
  */
 export interface CodegraphImpl {
   indexAll(): Promise<unknown>;
   sync(): Promise<unknown>;
-  searchNodes(query: string): unknown;
-  getCallers(nodeId: string): unknown;
   buildContext(task: unknown): Promise<unknown>;
   close(): void;
 }
