@@ -4566,33 +4566,38 @@ function defaultRecomputeCheck(bin: string, cmdArgs: string[], dir: string): boo
 }
 
 /**
- * B-CWGE (R-CWGE/R-DOTR): recompute an ABSENT worker-gate verdict against the SAME
- * eslint + tsc + test:fast contract `runWorkerGateChecks` (spawn-morty) enforces — NOT
- * `test:fast` alone. A worker that never persisted `worker_gate_verdict` (notably a
- * codex / detached / salvaged worker that bypasses or dies before spawn-morty's
- * `persistWorkerGateVerdict`) is the population this recompute speaks for; if it only
- * ran `test:fast`, a lint-RED or tsc-RED tree whose `test:fast` still passes (stale
- * compiled JS hides the tsc-RED entirely) would recompute 'green' and the Done-flip
- * guard would ship Done-over-red on the lint/tsc dimensions — exactly the 2026-06-27
- * codex soak class B-CWGE closes. eslint short-circuits tsc short-circuits tests, mirroring
- * the worker gate's `!lintOk || !tscOk || !testsOk` failure ordering. `runCheck`/`runTests`
- * are injectable for tests; production wires the real spawns.
+ * B-CWGE (R-CWGE/R-DOTR): recompute an ABSENT worker-gate verdict against the
+ * DETERMINISTIC eslint + tsc dimensions. A worker that never persisted
+ * `worker_gate_verdict` (notably a codex / detached / salvaged worker that bypasses or
+ * dies before spawn-morty's `persistWorkerGateVerdict`) is the population this recompute
+ * speaks for; a lint-RED or tsc-RED tree (stale compiled JS hides the tsc-RED entirely)
+ * would otherwise recompute 'green' and the Done-flip guard would ship Done-over-red on
+ * the lint/tsc dimensions — exactly the 2026-06-27 codex soak class B-CWGE closes.
+ * eslint short-circuits tsc, mirroring the worker gate's `!lintOk || !tscOk` ordering.
+ *
+ * R-WGFR (SUBTRACTION): the `test:fast` dimension is DROPPED here. eslint and tsc are
+ * deterministic; only `test:fast` flakes (a single c=8 timeout-flake, R-CIFB, false-red
+ * this recompute and killed a GREEN bundle FATAL at 0/N phases — beta.44 codex). That
+ * `test:fast` run is redundant with the next ticket's own worker-lint gate and the
+ * closer's authoritative full release gate. B-CWGE's protection (a lint/tsc-RED tree
+ * hidden behind a passing `test:fast`) is fully preserved by keeping eslint+tsc.
+ * `runCheck` is injectable for tests; production wires the real spawns.
  */
 export function recomputeAbsentWorkerGateVerdict(
   extensionDir: string,
   runCheck: (bin: string, cmdArgs: string[], dir: string) => boolean = defaultRecomputeCheck,
-  runTests: (dir: string) => boolean = (dir) => runBetweenTicketFastTests(dir).ok,
 ): 'green' | 'red' {
   if (!runCheck('npx', ['eslint', 'src/', '--max-warnings=-1'], extensionDir)) return 'red';
   if (!runCheck('npx', ['tsc', '--noEmit'], extensionDir)) return 'red';
-  return runTests(extensionDir) ? 'green' : 'red';
+  return 'green';
 }
 
 /**
  * B-CWGE WS-2 (R-CWGE): resolve the authoritative worker-gate verdict for the Done-flip
  * guard. Prefers the persisted `worker_gate_verdict`; on an absent value recomputes one via
- * `recomputeAbsentWorkerGateVerdict` (the full eslint+tsc+test:fast contract — no new
- * `runWorkerGate` callsite) and persists the green/red result back so the epic-completion
+ * `recomputeAbsentWorkerGateVerdict` (the deterministic eslint+tsc contract — no new
+ * `runWorkerGate` callsite; R-WGFR drops the flaky `test:fast` dimension) and persists
+ * the green/red result back so the epic-completion
  * path doesn't recompute. A missing `extension/` dir means the JS worker gate is NOT
  * APPLICABLE to this target repo (non-pickle-rick targets, e.g. loanlight-api) — it yields
  * `verdict:'green'`, matching `runWorkerGate`'s own no-extension `ok:true` early return, so
@@ -4740,7 +4745,7 @@ export function guardCompletionCommitBeforeDone(args: {
       // Evidence was committed when the verdict refused — legacy source mapping.
       source: 'explicit-reachable',
       reason: `ticket ${args.ticketId} cannot flip Done: worker_gate_verdict='${gate.verdict}' (computed_via=${gate.computedVia}). ` +
-        `Done requires a GREEN worker-gate verdict (eslint+tsc+test:fast); a red or absent/unverifiable verdict is fail-closed (R-CWGE).`,
+        `Done requires a GREEN worker-gate verdict (eslint+tsc); a red or absent/unverifiable verdict is fail-closed (R-CWGE).`,
     };
   }
   return {
