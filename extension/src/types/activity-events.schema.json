@@ -1667,7 +1667,7 @@
       "properties": {
         "event": { "type": "string", "const": "codegraph_context_skipped" },
         "ts": { "type": "string" },
-        "reason": { "type": "string", "enum": ["no_service", "non_graph_tier", "no_terms", "zero_hits"] }
+        "reason": { "type": "string", "enum": ["no_service", "non_graph_tier", "no_terms", "zero_hits", "query_timeout", "query_failed"] }
       }
     },
     "codegraph_efficacy_sample": {

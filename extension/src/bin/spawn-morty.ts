@@ -29,7 +29,7 @@ import {
 } from '../services/pickle-utils.js';
 import { spawn, execFileSync } from 'child_process';
 import { PromiseTokens, hasToken, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type BackendResolutionSource, type CodegraphContextSkipReason, type CodegraphSettings, type LastToolErrorState, type PickleSettings, type State } from '../types/index.js';
-import { CodegraphService } from '../services/codegraph-service.js';
+import { CodegraphService, type CodegraphEmitEvent } from '../services/codegraph-service.js';
 import { isRecord } from '../lib/is-record.js';
 import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths, resetToSha, updateTicketFrontmatter, updateTicketStatus } from '../services/git-utils.js';
 import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup } from '../services/backend-spawn.js';
@@ -660,16 +660,18 @@ export interface CodegraphContextOptions {
   ticketId: string;
 }
 
-/** Collect deduped search hits (by node id, highest score wins), ranked by score desc. */
-async function collectCodegraphHits(
-  service: CodegraphService,
-  terms: string[],
-): Promise<{ node: CodegraphNodeLike }[]> {
+/**
+ * Rank deduped search hits (by node id, highest score wins), ranked by score desc.
+ * Pure — consumes the batched `runQueryBatch` search map, no service calls. A wedged
+ * SDK query cannot hang here: the query already ran (or was group-killed) in the child.
+ */
+function rankCodegraphHits(
+  searches: Record<string, { node: unknown; score: number }[]>,
+): { node: CodegraphNodeLike }[] {
   const hitsById = new Map<string, { node: CodegraphNodeLike; score: number }>();
-  for (const term of terms) {
-    const result = await service.searchNodes(term);
-    if (!Array.isArray(result)) continue;
-    for (const raw of result) {
+  for (const hits of Object.values(searches)) {
+    if (!Array.isArray(hits)) continue;
+    for (const raw of hits) {
       const node = asNode(raw);
       if (!node || typeof node.id !== 'string') continue;
       const score = isRecord(raw) && typeof raw.score === 'number' ? raw.score : 0;
@@ -680,23 +682,22 @@ async function collectCodegraphHits(
   return [...hitsById.values()].sort((a, b) => b.score - a.score);
 }
 
-/** First-degree caller names for a node, or '' when none. */
-async function codegraphCallerSuffix(service: CodegraphService, nodeId: string): Promise<string> {
-  const callers = await service.getCallers(nodeId);
-  if (!Array.isArray(callers)) return '';
-  const names = callers
+/** First-degree caller names from a pre-fetched caller list, or '' when none. Pure. */
+function callerSuffixFromList(list: unknown[]): string {
+  if (!Array.isArray(list)) return '';
+  const names = list
     .map((c) => asNode(c))
     .map((n) => (n ? nodeName(n) : null))
     .filter((n): n is string => n !== null);
   return names.length > 0 ? ` ← callers: ${names.join(', ')}` : '';
 }
 
-/** Render one symbol-boundary line per ranked hit; the top hits also get caller suffixes. */
-async function buildCodegraphEntries(
-  service: CodegraphService,
+/** Render one symbol-boundary line per ranked hit; the top hits also get caller suffixes. Pure. */
+function buildCodegraphEntries(
   ranked: { node: CodegraphNodeLike }[],
+  callersMap: Record<string, unknown[]>,
   summary: unknown,
-): Promise<string[]> {
+): string[] {
   const entries: string[] = [];
   if (typeof summary === 'string') {
     for (const line of summary.split('\n')) {
@@ -710,7 +711,7 @@ async function buildCodegraphEntries(
     if (!name) continue;
     let entry = `- \`${name}\`${nodeLocation(node)}`;
     if (i < CODEGRAPH_CALLER_HITS && typeof node.id === 'string') {
-      entry += await codegraphCallerSuffix(service, node.id);
+      entry += callerSuffixFromList(callersMap[node.id] ?? []);
     }
     entries.push(entry);
   }
@@ -747,7 +748,9 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
     emit({ event: 'codegraph_context_skipped', ts: new Date().toISOString(), reason });
   };
 
-  // Branch precedence (top wins): disabled → no_service → non_graph_tier → no_terms → zero_hits.
+  // Branch precedence (top wins): disabled → no_service → non_graph_tier → no_terms →
+  // zero_hits → query_timeout → query_failed. The last two come from the batched
+  // killable-subprocess boundary (AC-CGH-A1) — a wedged/failed query degrades here.
   if (!settings.enabled) return '';                                    // disabled — SUPPRESSED, no emit
   if (!service) { emitSkipped('no_service'); return ''; }
   if (!tierUsesGraphContext(tier)) { emitSkipped('non_graph_tier'); return ''; }
@@ -755,11 +758,29 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
   const terms = deriveCodegraphTerms(title, ticketContent);
   if (terms.length === 0) { emitSkipped('no_terms'); return ''; }
 
-  const ranked = await collectCodegraphHits(service, terms);
+  // Batch #1: search terms. Group-killed on timeout in the child — never hangs the spawn.
+  const searchRes = await service.runQueryBatch(terms, []);
+  if (searchRes.status === 'timeout') { emitSkipped('query_timeout'); return ''; }
+  if (searchRes.status === 'failed') { emitSkipped('query_failed'); return ''; }
+  const ranked = rankCodegraphHits(searchRes.searches);
   if (ranked.length === 0) { emitSkipped('zero_hits'); return ''; }
 
+  // Batch #2: caller lookups for the top hits (only when there are ids to look up).
+  const callerIds = ranked
+    .slice(0, CODEGRAPH_CALLER_HITS)
+    .map((h) => h.node)
+    .filter((n): n is CodegraphNodeLike & { id: string } => typeof n.id === 'string')
+    .map((n) => n.id);
+  let callersMap: Record<string, unknown[]> = {};
+  if (callerIds.length > 0) {
+    const cRes = await service.runQueryBatch([], callerIds);
+    if (cRes.status === 'timeout') { emitSkipped('query_timeout'); return ''; }
+    if (cRes.status === 'failed') { emitSkipped('query_failed'); return ''; }
+    callersMap = cRes.callers;
+  }
+
   const summary = await service.buildContext({ title, description: ticketContent.slice(0, 500) });
-  const entries = await buildCodegraphEntries(service, ranked, summary);
+  const entries = buildCodegraphEntries(ranked, callersMap, summary);
   if (entries.length === 0) { emitSkipped('zero_hits'); return ''; }
 
   const section = renderCodegraphSection(entries, settings.context_max_bytes);
@@ -2498,7 +2519,24 @@ async function main() {
   if (!args.isReviewTicket) {
     try {
       const cgSettings = resolveCodegraphSettings(loadPickleSettingsBag());
-      const cgService = CodegraphService.create(runtime.sessionWorkingDir, cgSettings, {});
+      // Persist spawn-path degrade telemetry (AC-CGH-A3): map the service's canonical
+      // CodegraphEmitEvent onto an ActivityLogEntry and land it in state.json.activity
+      // via writeActivityEntry (which does NOT auto-stamp ts — the event carries it).
+      const cgEmit = (event: CodegraphEmitEvent): void => {
+        try {
+          const entry: ActivityLogEntry = { event: event.event, ts: event.ts };
+          if (event.reason) entry.reason = event.reason;
+          if (event.error) entry.error = event.error;
+          if (event.operation || event.gate_payload) {
+            entry.gate_payload = {
+              ...(event.operation ? { operation: event.operation } : {}),
+              ...(event.gate_payload ?? {}),
+            };
+          }
+          writeActivityEntry(path.join(args.sessionRoot, 'state.json'), entry);
+        } catch { /* telemetry best-effort — must never break the spawn */ }
+      };
+      const cgService = CodegraphService.create(runtime.sessionWorkingDir, cgSettings, { emit: cgEmit });
       try {
         codegraphSection = await buildCodegraphContextSection({
           tier: effectiveTier,

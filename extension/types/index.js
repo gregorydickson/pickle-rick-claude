@@ -319,7 +319,8 @@ export const VALID_ACTIVITY_EVENTS = [
     'codegraph_session_summary',
     // b1089e97 (CGH-2): efficacy telemetry from buildCodegraphContextSection.
     // injected on the success path, skipped on productive-skip branches
-    // (no_service / non_graph_tier / no_terms / zero_hits). The steady-state
+    // (no_service / non_graph_tier / no_terms / zero_hits / query_timeout / query_failed;
+    // the last two are AC-CGH-A1 killable-subprocess degrade outcomes). The steady-state
     // `disabled` branch is suppressed to avoid per-spawn flooding while default is OFF.
     'codegraph_context_injected',
     'codegraph_context_skipped',

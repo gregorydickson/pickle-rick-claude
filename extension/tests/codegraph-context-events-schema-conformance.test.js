@@ -78,7 +78,7 @@ describe('codegraph context events: schema conformance', () => {
     assert.equal(skipped.properties.ts.type, 'string');
     assert.deepEqual(
       skipped.properties.reason.enum.sort(),
-      ['no_service', 'no_terms', 'non_graph_tier', 'zero_hits'],
+      ['no_service', 'no_terms', 'non_graph_tier', 'query_failed', 'query_timeout', 'zero_hits'],
     );
   });
 
@@ -222,10 +222,20 @@ function makeSettings(overrides = {}) {
   };
 }
 
-function fakeService({ hits = [], callers = [], summary = '' } = {}) {
+function fakeService({ hits = [], callers = [], summary = '', statusOverride = null } = {}) {
   return {
-    async searchNodes() { return hits; },
-    async getCallers() { return callers; },
+    // A1: the section builder now goes through the batched, killable runQueryBatch
+    // boundary. `statusOverride` forces a timeout/failed discriminant so the two new
+    // productive-skip branches (query_timeout / query_failed) can be exercised without
+    // a real subprocess spawn.
+    async runQueryBatch(searchTerms, callerIds) {
+      if (statusOverride) return statusOverride;
+      return {
+        status: 'ok',
+        searches: Object.fromEntries((searchTerms ?? []).map((t) => [t, hits])),
+        callers: Object.fromEntries((callerIds ?? []).map((id) => [id, callers])),
+      };
+    },
     async buildContext() { return summary; },
     recordContextInjected() {},
     recordContextSkipped() {},
@@ -271,6 +281,16 @@ describe('codegraph_context_skipped: branch sweep', () => {
     {
       reason: 'zero_hits',
       build: () => ({ tier: 'medium', service: fakeService({ hits: [] }), settings: makeSettings() }),
+    },
+    {
+      // A1: the batch runner group-killed a wedged query on timeout.
+      reason: 'query_timeout',
+      build: () => ({ tier: 'medium', service: fakeService({ statusOverride: { status: 'timeout', reason: 'grandchild-kill' } }), settings: makeSettings() }),
+    },
+    {
+      // A1: the batch runner child crashed / ENOENT / emitted unparseable stdout.
+      reason: 'query_failed',
+      build: () => ({ tier: 'medium', service: fakeService({ statusOverride: { status: 'failed', reason: 'enoent' } }), settings: makeSettings() }),
     },
   ];
 

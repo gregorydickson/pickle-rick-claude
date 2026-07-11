@@ -769,7 +769,8 @@ export const VALID_ACTIVITY_EVENTS = [
   'codegraph_session_summary',
   // b1089e97 (CGH-2): efficacy telemetry from buildCodegraphContextSection.
   // injected on the success path, skipped on productive-skip branches
-  // (no_service / non_graph_tier / no_terms / zero_hits). The steady-state
+  // (no_service / non_graph_tier / no_terms / zero_hits / query_timeout / query_failed;
+  // the last two are AC-CGH-A1 killable-subprocess degrade outcomes). The steady-state
   // `disabled` branch is suppressed to avoid per-spawn flooding while default is OFF.
   'codegraph_context_injected',
   'codegraph_context_skipped',
@@ -1133,8 +1134,19 @@ export interface CodegraphSessionSummaryPayload {
   ts: string;
 }
 
-/** b1089e97: reasons a productive `codegraph_context_skipped` is emitted (NOT `disabled`/`degraded`). */
-export type CodegraphContextSkipReason = 'no_service' | 'non_graph_tier' | 'no_terms' | 'zero_hits';
+/**
+ * b1089e97: reasons a productive `codegraph_context_skipped` is emitted (NOT `disabled`/`degraded`).
+ * AC-CGH-A1: `query_timeout` (batch runner group-killed on timeout) and `query_failed`
+ * (child crash / ENOENT / unparseable stdout) join the productive-skip set — the section
+ * build returns '' and never throws when the killable subprocess boundary degrades.
+ */
+export type CodegraphContextSkipReason =
+  | 'no_service'
+  | 'non_graph_tier'
+  | 'no_terms'
+  | 'zero_hits'
+  | 'query_timeout'
+  | 'query_failed';
 
 /** Payload for `codegraph_context_injected` (buildCodegraphContextSection success path). */
 export interface CodegraphContextInjectedPayload {

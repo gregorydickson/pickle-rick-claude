@@ -7,13 +7,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
 
 const { CodegraphService } = await import(path.join(EXTENSION_ROOT, 'services/codegraph-service.js'));
 const { runCodegraphIndexAtSetup } = await import(path.join(EXTENSION_ROOT, 'bin/setup.js'));
+const { runCodegraphQueryBatch } = await import(path.join(EXTENSION_ROOT, 'services/codegraph-query-runner.js'));
+const { buildCodegraphContextSection } = await import(path.join(EXTENSION_ROOT, 'bin/spawn-morty.js'));
+const { writeActivityEntry } = await import(path.join(EXTENSION_ROOT, 'services/state-manager.js'));
 
 // --- helpers -----------------------------------------------------------------
 
@@ -166,4 +172,141 @@ test('PICKLE_CODEGRAPH=off: zero events, no native bundle load, buildContext and
 
   assert.equal(events.length, 0, 'PICKLE_CODEGRAPH=off: zero codegraph activity events from any service call');
   assert.equal(loadImplCalled, false, 'PICKLE_CODEGRAPH=off: native bundle must never be loaded from service calls');
+});
+
+// --- AC-CGH-A1: killable-subprocess query boundary ---------------------------
+//
+// The spawn-path queries run behind a `detached` child that is GROUP-killed on
+// timeout (the vendored bin spawns the native binary as a grandchild; a plain
+// child `timeout` would leak it). These three tests cover the wedge, the crash,
+// and the spawn-path degrade-persist wiring.
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function freshSession() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'cg-degrade-'));
+  writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ schema_version: 5, active: true, activity: [] }));
+  return dir;
+}
+
+function readActivity(sessionDir) {
+  const state = JSON.parse(readFileSync(path.join(sessionDir, 'state.json'), 'utf8'));
+  return Array.isArray(state.activity) ? state.activity : [];
+}
+
+// A wedge fixture: the runner spawns THIS as its child. It spawns a hanging
+// grandchild tagged with the marker (visible to `ps`), then hangs itself. Both
+// self-exit after 30s so a failed group-kill never leaks past the test run.
+function writeWedgeFixture(marker) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'cg-wedge-'));
+  const file = path.join(dir, 'wedge-child.cjs');
+  writeFileSync(
+    file,
+    [
+      "const { spawn } = require('node:child_process');",
+      `const marker = process.env.CG_TEST_MARKER || ${JSON.stringify(marker)};`,
+      // Grandchild: hangs, marker in argv so `ps -o command=` can find it.
+      "spawn(process.execPath, ['-e', 'setTimeout(()=>process.exit(0), 30000)', marker], { stdio: 'ignore' });",
+      // Child hangs — never writes stdout, never exits within the timeout window.
+      'setTimeout(() => process.exit(0), 30000);',
+      '',
+    ].join('\n'),
+  );
+  return file;
+}
+
+const CG_TITLE = 'Inject `searchNodes` context';
+const CG_CONTENT = '---\nid: t1\n---\n# body uses `searchNodes`';
+
+test('AC1 wedge: query_timeout skip within the aggregate bound, NO surviving child/grandchild', async () => {
+  const sessionDir = freshSession();
+  const marker = `CGWEDGE_${process.pid}_${Date.now()}`;
+  const fixture = writeWedgeFixture(marker);
+  const settings = cgSettings({ query_timeout_ms: 1500, index_at_setup: false });
+
+  const service = CodegraphService.create('/tmp/cg-wedge-wd', settings, {
+    // Inject the REAL runner but point it at the wedge fixture + tag the env so the
+    // grandchild is greppable. The service group-kills on timeout.
+    runQueryBatch: (input, ms) => runCodegraphQueryBatch(input, {
+      timeoutMs: ms,
+      childScriptPath: fixture,
+      env: { ...process.env, CG_TEST_MARKER: marker },
+    }),
+  });
+
+  const t0 = Date.now();
+  const section = await buildCodegraphContextSection({
+    tier: 'medium', title: CG_TITLE, ticketContent: CG_CONTENT,
+    service, settings, sessionDir, ticketId: 't1',
+  });
+  const elapsed = Date.now() - t0;
+
+  assert.equal(section, '', 'wedge must yield an empty section');
+  // Aggregate bound: one batch race at query_timeout_ms (1500) + spawn/settle overhead.
+  assert.ok(elapsed < 6000, `wedge must return bounded, got ${elapsed}ms`);
+
+  const skipped = readActivity(sessionDir).filter((e) => e.event === 'codegraph_context_skipped');
+  assert.equal(skipped.length, 1, 'exactly one skip event');
+  assert.equal(skipped[0].reason, 'query_timeout', 'reason must be query_timeout');
+
+  // Let the group SIGTERM propagate, then prove no marked process survived.
+  await sleep(700);
+  const psOut = execFileSync('ps', ['-A', '-o', 'command='], { encoding: 'utf-8' });
+  assert.ok(!psOut.includes(marker), 'group-kill must leave NO surviving child/grandchild');
+});
+
+test('AC2 crash: query_failed skip + codegraph_degraded with a distinct open reason', async () => {
+  const sessionDir = freshSession();
+  const degradeEvents = [];
+  const settings = cgSettings({ index_at_setup: false });
+  const service = CodegraphService.create('/tmp/cg-crash-wd', settings, {
+    emit: (e) => degradeEvents.push(e),
+    runQueryBatch: async () => ({ status: 'failed', reason: 'shim-exit-1' }),
+  });
+
+  const section = await buildCodegraphContextSection({
+    tier: 'medium', title: CG_TITLE, ticketContent: CG_CONTENT,
+    service, settings, sessionDir, ticketId: 't1',
+  });
+
+  assert.equal(section, '', 'crash must yield an empty section');
+  const skipped = readActivity(sessionDir).filter((e) => e.event === 'codegraph_context_skipped');
+  assert.equal(skipped.length, 1, 'exactly one skip event');
+  assert.equal(skipped[0].reason, 'query_failed', 'reason must be query_failed');
+
+  const degraded = degradeEvents.filter((e) => e.event === 'codegraph_degraded');
+  assert.ok(degraded.length >= 1, 'a codegraph_degraded must be emitted for the failure');
+  assert.equal(degraded[0].reason, 'shim-exit-1', 'degrade reason is the distinct open string');
+});
+
+test('AC3 degrade persists to state.json.activity via the emit dep (spawn-path wiring)', async () => {
+  const sessionDir = freshSession();
+  const statePath = path.join(sessionDir, 'state.json');
+  const settings = cgSettings({ index_at_setup: false });
+
+  // Mirror the spawn-morty call-site cgEmit closure: CodegraphEmitEvent → ActivityLogEntry.
+  const emit = (event) => {
+    const entry = { event: event.event, ts: event.ts };
+    if (event.reason) entry.reason = event.reason;
+    if (event.operation || event.gate_payload) {
+      entry.gate_payload = {
+        ...(event.operation ? { operation: event.operation } : {}),
+        ...(event.gate_payload ?? {}),
+      };
+    }
+    writeActivityEntry(statePath, entry);
+  };
+
+  const service = CodegraphService.create('/tmp/cg-a3-wd', settings, {
+    emit,
+    runQueryBatch: async () => ({ status: 'failed', reason: 'enoent' }),
+  });
+
+  const result = await service.runQueryBatch(['x'], []);
+  assert.equal(result.status, 'failed', 'runner failure flows through');
+
+  const degraded = readActivity(sessionDir).filter((e) => e.event === 'codegraph_degraded');
+  assert.ok(degraded.length >= 1, 'codegraph_degraded must persist to state.json.activity via emit dep');
+  assert.equal(degraded[0].gate_payload.operation, 'query', 'operation stamped in gate_payload');
+  assert.equal(degraded[0].reason, 'enoent', 'open reason string persisted');
 });

@@ -52,12 +52,18 @@ function makeSettings(overrides = {}) {
   };
 }
 
-// Fake matching the CodegraphService surface (searchNodes/getCallers/buildContext →
-// Promise-returning, close()). No real @colbymchenry/codegraph dependency.
+// Fake matching the CodegraphService surface (A1: the section builder queries via the
+// batched, killable `runQueryBatch` boundary; buildContext stays async; close()). No real
+// @colbymchenry/codegraph dependency. `hits`/`callers` map onto every requested term/id.
 function fakeService({ hits = [], callers = [], summary = '' } = {}) {
   return {
-    async searchNodes() { return hits; },
-    async getCallers() { return callers; },
+    async runQueryBatch(searchTerms, callerIds) {
+      return {
+        status: 'ok',
+        searches: Object.fromEntries((searchTerms ?? []).map((t) => [t, hits])),
+        callers: Object.fromEntries((callerIds ?? []).map((id) => [id, callers])),
+      };
+    },
     async buildContext() { return summary; },
     close() {},
   };
@@ -185,8 +191,13 @@ function spyService({ hits, summary }) {
   const calls = { injected: 0, skipped: 0 };
   return {
     service: {
-      async searchNodes() { return hits; },
-      async getCallers() { return [{ node: { id: 'c', name: 'someCaller' } }]; },
+      async runQueryBatch(searchTerms, callerIds) {
+        return {
+          status: 'ok',
+          searches: Object.fromEntries((searchTerms ?? []).map((t) => [t, hits])),
+          callers: Object.fromEntries((callerIds ?? []).map((id) => [id, [{ node: { id: 'c', name: 'someCaller' } }]])),
+        };
+      },
       async buildContext() { return summary; },
       recordContextInjected() { calls.injected += 1; },
       recordContextSkipped() { calls.skipped += 1; },

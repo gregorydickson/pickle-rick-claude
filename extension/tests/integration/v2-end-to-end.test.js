@@ -94,9 +94,15 @@ function fakeImpl(overrides = {}) {
 function fakeService(opts = {}) {
   return {
     buildContext: async () => opts.context ?? 'ctx-body',
-    searchNodes: () => opts.nodes ?? [{ id: 'n1', name: 'CodegraphService', score: 1 }],
-    getCallers: () => opts.callers ?? [],
-    getImpactRadius: () => opts.radius ?? [],
+    // A1: the section builder queries via the batched, killable runQueryBatch boundary.
+    async runQueryBatch(searchTerms, callerIds) {
+      const hits = opts.nodes ?? [{ id: 'n1', name: 'CodegraphService', score: 1 }];
+      return {
+        status: 'ok',
+        searches: Object.fromEntries((searchTerms ?? []).map((t) => [t, hits])),
+        callers: Object.fromEntries((callerIds ?? []).map((id) => [id, opts.callers ?? []])),
+      };
+    },
     indexAll: async () => ({}),
     sync: async () => ({}),
     close: () => {},

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import { logActivity } from './activity-logger.js';
+import { runCodegraphQueryBatch } from './codegraph-query-runner.js';
 const KILL_SWITCH_ENV = 'PICKLE_CODEGRAPH';
 const KILL_SWITCH_VALUE = 'off';
 // Bounded retry/backoff for serve --mcp startup: transient native-module or
@@ -117,17 +118,47 @@ export class CodegraphService {
         const result = await this.runWithTimeout('buildContext', this.settings.query_timeout_ms, () => impl.buildContext(task));
         return result.ok ? result.value : null;
     }
-    searchNodes(query) {
-        // SYNC impl (inventory) — no timeout race; query_timeout_ms claim is forfeit.
-        return this.runSyncQuery('searchNodes', (impl) => impl.searchNodes(query));
+    /**
+     * Run a batch of codegraph queries (search terms + caller node ids) for ONE section
+     * build behind the killable subprocess boundary (A1). The SDK queries are SYNC native
+     * calls, so an in-process race can never preempt a wedged one — the runner spawns a
+     * `detached` child and group-kills it on timeout. Kill-switch / latched short-circuits
+     * to an empty `ok` result (mirrors the old null→zero_hits collapse). Timeout/failure
+     * emit an open-string `codegraph_degraded`; the discriminated result flows to the
+     * consumer, which maps it to `query_timeout` / `query_failed` skip reasons. Never throws.
+     */
+    async runQueryBatch(searches, callers) {
+        if (this.inert)
+            return { status: 'ok', searches: {}, callers: {} };
+        this.counters.ops += 1;
+        const run = this.deps.runQueryBatch ??
+            ((input, ms) => runCodegraphQueryBatch(input, { timeoutMs: ms, ...(this.deps.env ? { env: this.deps.env } : {}) }));
+        let result;
+        try {
+            result = await run({ workingDir: this.workingDir, searches, callers }, this.settings.query_timeout_ms);
+        }
+        catch {
+            this.degradeOpen('query', 'runner-threw');
+            return { status: 'failed', reason: 'runner-threw' };
+        }
+        if (result.status === 'timeout' || result.status === 'failed') {
+            this.degradeOpen('query', result.reason);
+        }
+        return result;
     }
-    getCallers(nodeId) {
-        // SYNC impl (inventory) — "do NOT await in C1"; no timeout race.
-        return this.runSyncQuery('getCallers', (impl) => impl.getCallers(nodeId));
+    async searchNodes(query) {
+        // Behind the subprocess boundary (A1) — no in-process sync query is reachable.
+        const r = await this.runQueryBatch([query], []);
+        return r.status === 'ok' ? (r.searches[query] ?? []) : null;
+    }
+    async getCallers(nodeId) {
+        // Behind the subprocess boundary (A1) — no in-process sync query is reachable.
+        const r = await this.runQueryBatch([], [nodeId]);
+        return r.status === 'ok' ? (r.callers[nodeId] ?? []) : null;
     }
     getImpactRadius(nodeId) {
-        // SYNC impl (inventory) — no timeout race.
-        return this.runSyncQuery('getImpactRadius', (impl) => impl.getImpactRadius(nodeId));
+        // SYNC impl (inventory) — deleted by ticket 8321922b; left compiling, NOT extended.
+        return this.impactRadiusSync(nodeId);
     }
     // --- internals -----------------------------------------------------------
     now() {
@@ -163,15 +194,16 @@ export class CodegraphService {
         this.counters.ops += 1;
         return impl;
     }
-    async runSyncQuery(op, call) {
+    /** getImpactRadius's inlined body — the sole remaining sync-impl query (deletion pending 8321922b). */
+    async impactRadiusSync(nodeId) {
         const impl = await this.beginOp();
         if (!impl)
             return null;
         try {
-            return call(impl);
+            return impl.getImpactRadius(nodeId);
         }
         catch (err) {
-            await this.handleError(op, err);
+            await this.handleError('getImpactRadius', err);
             return null;
         }
     }
@@ -254,9 +286,13 @@ export class CodegraphService {
             });
         });
     }
-    degrade(op, reason) {
+    /** Emit a `codegraph_degraded` with an OPEN reason string (schema `reason` is unconstrained). */
+    degradeOpen(op, reason) {
         this.counters.degraded += 1;
         this.emit({ event: 'codegraph_degraded', ts: this.now(), operation: op, reason });
+    }
+    degrade(op, reason) {
+        this.degradeOpen(op, reason);
     }
     async handleError(op, err) {
         const reason = classifyError(errMessage(err));

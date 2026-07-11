@@ -933,6 +933,16 @@ const EVENT_CASES = [
     drop: 'reason',
   },
   {
+    // AC-CGH-A1: the extended enum accepts the killable-subprocess degrade reasons.
+    type: 'codegraph_context_skipped',
+    valid: {
+      event: 'codegraph_context_skipped',
+      ts: TS,
+      reason: 'query_timeout',
+    },
+    drop: 'ts',
+  },
+  {
     type: 'codegraph_efficacy_sample',
     valid: {
       event: 'codegraph_efficacy_sample',

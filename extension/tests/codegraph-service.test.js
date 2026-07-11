@@ -50,13 +50,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // --- matrix ----------------------------------------------------------------
 
 test('throwing fake: returns null + one classified error degrade', async () => {
-  const impl = fakeImpl({ searchNodes: () => { throw new Error('boom'); } });
+  // A1: searchNodes/getCallers now route through the killable subprocess boundary;
+  // getImpactRadius is the surviving in-process sync-impl query (deletion pending
+  // 8321922b) and still exercises the impl error-classification path.
+  const impl = fakeImpl({ getImpactRadius: () => { throw new Error('boom'); } });
   const { svc, events } = harness(baseSettings(), { impl });
-  const res = await svc.searchNodes('q');
+  const res = await svc.getImpactRadius('q');
   assert.equal(res, null);
   assert.equal(events.length, 1);
   assert.equal(events[0].event, 'codegraph_degraded');
-  assert.equal(events[0].operation, 'searchNodes');
+  assert.equal(events[0].operation, 'getImpactRadius');
   assert.equal(events[0].reason, 'error');
   assert.equal(events[0].ts, 'TS');
   assert.deepEqual(svc.getSessionCounters(), { ops: 1, degraded: 1, latched: 0, injected: 0, skipped: 0 });
@@ -109,8 +112,10 @@ test('kill-switch off: inert, zero events, dependency never loaded', async () =>
   });
   assert.equal(await svc.indexAll(), null);
   assert.equal(await svc.sync(), null);
-  assert.equal(await svc.searchNodes('q'), null);
-  assert.equal(await svc.getCallers('n'), null);
+  // A1: inert searchNodes/getCallers short-circuit runQueryBatch to an empty ok result,
+  // so the wrappers return [] (no hits) — semantically "no context", no load, no events.
+  assert.deepEqual(await svc.searchNodes('q'), []);
+  assert.deepEqual(await svc.getCallers('n'), []);
   assert.equal(await svc.getImpactRadius('n'), null);
   assert.equal(await svc.buildContext('t'), null);
   svc.close();
@@ -164,7 +169,8 @@ test('second corrupt after rebuild: latches sticky, then inert', async () => {
   assert.equal(svc.getSessionCounters().latched, 1);
 
   const before = events.length;
-  assert.equal(await svc.searchNodes('q'), null, 'post-latch calls are inert-null');
+  // A1: post-latch searchNodes is inert → runQueryBatch returns empty ok → [] (no hits).
+  assert.deepEqual(await svc.searchNodes('q'), [], 'post-latch query calls are inert-empty');
   assert.equal(await svc.sync(), null);
   assert.equal(events.length, before, 'post-latch calls emit nothing further');
 });
@@ -191,7 +197,12 @@ test('counters exact across a forced-degrade sequence', async () => {
     indexAll: never,
     sync: async () => { throw new Error('database is locked'); },
   });
-  const { svc } = harness(baseSettings({ index_timeout_ms: 10 }), { impl });
+  // A1: searchNodes runs behind runQueryBatch — inject a successful batch so the counter
+  // increments deterministically without spawning a real subprocess.
+  const { svc } = harness(baseSettings({ index_timeout_ms: 10 }), {
+    impl,
+    runQueryBatch: async () => ({ status: 'ok', searches: { q: [{ node: { id: 'n1' }, score: 1 }] }, callers: {} }),
+  });
   await svc.searchNodes('q'); // ops=1, degraded=0 (success)
   await svc.indexAll();        // ops=2, degraded=1 (timeout)
   await svc.sync();            // ops=3, degraded=2 (locked)
@@ -231,8 +242,11 @@ test('enabled but dependency unavailable: degrades, never throws', async () => {
   const { svc, events } = harness(baseSettings(), {
     impl: null,
     loadImpl: async () => null,
+    sleep: async () => {}, // skip MCP startup backoff
   });
-  assert.equal(await svc.searchNodes('q'), null);
+  // A1: getImpactRadius is the surviving in-process query that reaches beginOp/resolveImpl,
+  // so it exercises the "dependency unavailable → single load degrade" path.
+  assert.equal(await svc.getImpactRadius('q'), null);
   assert.equal(events.length, 1);
   assert.equal(events[0].event, 'codegraph_degraded');
   assert.equal(events[0].reason, 'error');
@@ -244,8 +258,9 @@ test('persistently unavailable dependency degrades once, not per call', async ()
   const { svc, events } = harness(baseSettings(), {
     impl: null,
     loadImpl: async () => null,
+    sleep: async () => {}, // skip MCP startup backoff
   });
-  await svc.searchNodes('q');
+  await svc.getImpactRadius('q');
   await svc.indexAll();
   await svc.sync();
   assert.equal(events.length, 1, 'absent dependency must emit exactly one degrade for the session');
