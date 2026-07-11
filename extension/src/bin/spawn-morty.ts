@@ -845,9 +845,10 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
   };
 
   // Branch precedence (top wins): disabled → no_service → non_graph_tier → no_terms →
-  // zero_hits → query_timeout → query_failed → stale_refs. The middle two come from the
-  // batched killable-subprocess boundary (AC-CGH-A1) — a wedged/failed query degrades
-  // here; stale_refs comes from node-level fs verification dropping every located node.
+  // query_timeout → query_failed → zero_hits → stale_refs. query_timeout/query_failed come
+  // from the batched killable-subprocess boundary (AC-CGH-A1) and are checked BEFORE zero_hits
+  // — a wedged/failed query returns early, so zero_hits is only reachable after an `ok` batch.
+  // stale_refs comes from node-level fs verification dropping every located node.
   if (!settings.enabled) return '';                                    // disabled — SUPPRESSED, no emit
   if (!service) { emitSkipped('no_service'); return ''; }
   if (!tierUsesGraphContext(tier)) { emitSkipped('non_graph_tier'); return ''; }
