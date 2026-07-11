@@ -528,7 +528,7 @@ semantics above are unchanged; this only adds an operator procedure on top of th
    comparison arm — trailing pre-soak GA reps are context only, not a substitute (comparing
    across deploys attributes the whole version diff to codegraph).
 4. **Abort semantics (honest).** `PICKLE_CODEGRAPH=off` is a **per-session** kill-switch — the
-   env var is read once at process construction (`codegraph-service.ts:137`) and can never reach
+   env var is read once at process construction (`codegraph-service.ts:146`) and can never reach
    an already-running session. Set it in the launching shell for the *next* rep only. A mid-rep
    problem is handled by a **freeze**: freeze the session (scoped kills, per the standing
    recovery recipe) and **discard that rep** (`harm (aborted, rep discarded)`) — editing the

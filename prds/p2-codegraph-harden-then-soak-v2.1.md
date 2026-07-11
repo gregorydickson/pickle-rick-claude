@@ -201,7 +201,7 @@ SOAK RUN needs the deployed runtime, post v2.0 GA.
    contemporaneous DISABLED reps on the same deploy** as the primary comparison arm (trailing GA
    reps are context only).
 4. **Abort semantics (honest):** `PICKLE_CODEGRAPH=off` is a PER-SESSION kill-switch — env is
-   read at process construction (`codegraph-service.ts:137`) and cannot reach a running session;
+   read at process construction (`codegraph-service.ts:146`) and cannot reach a running session;
    set it in the launching shell for the NEXT rep. Mid-rep abort = freeze the session (scoped
    kills per the standing recipe) and discard the rep; the deployed-settings edit and mid-run
    `install.sh` are forbidden surfaces, NOT abort levers.
