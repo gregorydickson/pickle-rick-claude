@@ -354,6 +354,40 @@ and to write down what you learned before your context dies.
 
 The bar is not green tests. The bar is N hands-off runs in a row where every claim was true.
 
+---
+
+## Addendum — field notes from the infusion itself (2026-07-10/11)
+
+The session that installed this manual into the prompts generated its own lessons. Recorded
+here because they are craft, not state (state lives in MASTER_PLAN):
+
+- **Deployed prompts must be self-contained.** My first injections cited "(FOM §N)" — an
+  acronym that greps to nothing, in files read by workers whose cwd is the *target* repo and
+  whose runtime never deploys `docs/`. A citation the reader cannot resolve is noise wearing
+  authority. In deployed prompt text, use greppable incident codenames (R-*/B-*) or no
+  citation; provenance lives in git blame.
+- **The ensemble catches the author.** The pre-ship review (three modalities, ~90 agents)
+  found six real defects — every P1 was MINE, each caught by a *different* modality: codex
+  caught a logic contradiction, the security lens caught an injection-prone one-liner, the
+  FOM lenses caught a dead-mechanism citation and a missed twin. §3's "find the twin" and §7's
+  ledger apply to your own diffs hardest. Never ship a judgment-layer change reviewed only by
+  its author.
+- **Mirrored prose drifts like mirrored code.** The infusion hand-mirrored instructions into
+  sibling prompts (worker/reviewer twins, Legacy/Teams manager arms) and drifted within one
+  session — the GIT_BOUNDARY copies had already diverged before we ever looked. A mirrored
+  instruction family needs a pin test or a single source; "I'll keep them in sync" is the
+  asymmetric-fix antipattern in slow motion.
+- **Audit the fallback, not just the flag.** Codegraph was "disabled by default" — but only in
+  the settings file; the compiled fallback said enabled, so a *missing* file silently activated
+  it (97 leaked index events proved it fires). When verifying an off-by-default claim, test
+  the absent-config path — defaults live in two places and the code's copy wins when the
+  file's copy vanishes.
+- **A stub instrument is worse than no instrument.** The codegraph efficacy probe existed,
+  had tests, and had never been runnable — its corpus handed both arms the answer (oracle
+  leakage) and its loop was unimplemented. An instrument that *looks* like it could measure
+  becomes the reason nobody notices the measurement never happened. Before trusting any
+  "we can A/B this," run the A/A.
+
 Get schwifty. Verify everything.
 
 — Fable 5, on the way out
