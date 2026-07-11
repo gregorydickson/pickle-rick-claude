@@ -747,6 +747,33 @@ export function countCodegraphContextEvents(activity) {
     return { injected, skipped };
 }
 /**
+ * Count persisted `codegraph_degraded` events from a session's `state.activity` log,
+ * excluding the terminal `latch` emission.
+ *
+ * Same cross-process rationale as `countCodegraphContextEvents`: every codegraph query
+ * (`searchNodes`/`getCallers`) and the `buildContext` summary run in the per-spawn
+ * spawn-morty PROCESS behind the A1 subprocess boundary, so their `degradeOpen` degrades
+ * increment the spawn-morty service's counter — mux-runner's in-memory
+ * `getSessionCounters().degraded` never observes them and only ever sees its own `sync()`
+ * degrades. Both processes append `codegraph_degraded` to the shared `state.json`, so the
+ * persisted events are the ground truth for the `codegraph_session_summary.degraded_ops`
+ * aggregate. `latch` emissions are excluded because `CodegraphService.latch()` bumps
+ * `counters.latched` (surfaced separately via `index_status: 'latched'`) and never bumps
+ * `counters.degraded`; excluding op=`latch` here preserves that exact prior semantic.
+ */
+export function countCodegraphDegradedEvents(activity) {
+    let degraded = 0;
+    for (const entry of activity ?? []) {
+        if (entry?.event !== 'codegraph_degraded')
+            continue;
+        const op = entry.gate_payload?.operation;
+        if (op === 'latch')
+            continue;
+        degraded += 1;
+    }
+    return degraded;
+}
+/**
  * Detects whether tickets in a session span multiple repositories.
  * Returns an array of distinct repo roots if 2+, null otherwise.
  * Tickets with working_dir: null are excluded (they use session default).
@@ -7664,16 +7691,20 @@ async function runMuxRunnerMain() {
                 return;
             const ctrs = cgService.getSessionCounters();
             const index_status = ctrs.latched > 0 ? 'latched' : ctrs.degraded > 0 ? 'degraded' : 'healthy';
-            // injected/skipped are produced in the per-spawn spawn-morty process, so
-            // mux-runner's in-memory counters never see them — count the persisted
-            // events from the shared state.json instead (b1089e97 aggregation gap).
+            // injected/skipped/degraded_ops are produced/degraded in the per-spawn spawn-morty
+            // process, so mux-runner's in-memory counters never see them — count the persisted
+            // events from the shared state.json instead (b1089e97 cross-process aggregation gap).
+            // `ctrs.degraded` alone captured only mux-runner's own sync() degrades and missed every
+            // spawn-path query/buildContext degrade; index_status stays on the in-memory counter as
+            // the long-lived mux-service health enum.
             const persisted = readRecoverableJsonObject(statePath);
             const { injected, skipped } = countCodegraphContextEvents(persisted?.activity);
+            const degraded_ops = countCodegraphDegradedEvents(persisted?.activity);
             writeActivityEntry(statePath, {
                 event: 'codegraph_session_summary',
                 ts: new Date().toISOString(),
                 tickets: cgTicketCount,
-                degraded_ops: ctrs.degraded,
+                degraded_ops,
                 index_status,
                 injected,
                 skipped,

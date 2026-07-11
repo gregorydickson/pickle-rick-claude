@@ -21,7 +21,7 @@
 // shared across both processes) instead of the always-zero in-memory counters.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { countCodegraphContextEvents } from '../bin/mux-runner.js';
+import { countCodegraphContextEvents, countCodegraphDegradedEvents } from '../bin/mux-runner.js';
 
 describe('countCodegraphContextEvents (b1089e97 cross-process aggregation)', () => {
   it('counts persisted injected/skipped events from a realistic activity log', () => {
@@ -74,5 +74,58 @@ describe('countCodegraphContextEvents (b1089e97 cross-process aggregation)', () 
       { event: 'codegraph_context_injected', ts: '2026-06-14T19:01:00.000Z' },
     ];
     assert.deepEqual(countCodegraphContextEvents(activity), { injected: 1, skipped: 0 });
+  });
+});
+
+// a53a1db1 F1: degraded_ops carried the SAME cross-process gap. The session summary read
+// `getSessionCounters().degraded` (mux-runner's in-memory service, which only ever runs
+// sync()), so every spawn-path query/buildContext degrade — emitted as codegraph_degraded
+// into the shared state.json from the per-spawn spawn-morty process — was uncounted. The fix
+// counts the persisted codegraph_degraded events (excluding the terminal `latch` emission,
+// which the in-memory counter also excludes and which index_status surfaces separately).
+describe('countCodegraphDegradedEvents (a53a1db1 cross-process aggregation)', () => {
+  it('counts persisted codegraph_degraded events, excluding latch', () => {
+    const activity = [
+      { event: 'iteration_start', ts: '2026-07-11T19:00:00.000Z' },
+      { event: 'codegraph_degraded', ts: '2026-07-11T19:01:00.000Z', reason: 'timeout', gate_payload: { operation: 'query' } },
+      { event: 'codegraph_degraded', ts: '2026-07-11T19:02:00.000Z', reason: 'runner-threw', gate_payload: { operation: 'query' } },
+      { event: 'codegraph_context_skipped', ts: '2026-07-11T19:02:30.000Z', reason: 'query_timeout' },
+      { event: 'codegraph_degraded', ts: '2026-07-11T19:03:00.000Z', reason: 'error', gate_payload: { operation: 'buildContext' } },
+      // latch is a terminal event surfaced via index_status:'latched'; it must NOT count as a
+      // degraded op (the in-memory counter never incremented `degraded` for it either).
+      { event: 'codegraph_degraded', ts: '2026-07-11T19:04:00.000Z', reason: 'error', gate_payload: { operation: 'latch' } },
+    ];
+
+    assert.equal(countCodegraphDegradedEvents(activity), 3);
+  });
+
+  it('is the cross-process fix: persisted degrades count even when the in-memory counter is 0', () => {
+    // The bug: mux-runner's own CodegraphService only ran sync() (degraded:0 here), yet the
+    // shared state.json holds spawn-path query degrades. Counting from activity must report
+    // the real number, NOT the always-partial in-memory counter.
+    const muxInMemoryCounters = { ops: 5, degraded: 0, latched: 0, injected: 0, skipped: 0 };
+    const persistedActivity = [
+      { event: 'codegraph_degraded', ts: '2026-07-11T19:01:00.000Z', reason: 'timeout', gate_payload: { operation: 'query' } },
+      { event: 'codegraph_degraded', ts: '2026-07-11T19:02:00.000Z', reason: 'query-failed', gate_payload: { operation: 'query' } },
+    ];
+
+    const derived = countCodegraphDegradedEvents(persistedActivity);
+    assert.equal(derived, 2, 'must reflect persisted spawn-path degrades, not the in-memory counter');
+    assert.notEqual(derived, muxInMemoryCounters.degraded, 'fix must NOT read the in-memory counter');
+  });
+
+  it('counts codegraph_degraded with no gate_payload / no operation (non-latch) as a degrade', () => {
+    const activity = [
+      { event: 'codegraph_degraded', ts: '2026-07-11T19:01:00.000Z', reason: 'error' },
+      { event: 'codegraph_degraded', ts: '2026-07-11T19:02:00.000Z', reason: 'error', gate_payload: {} },
+    ];
+    assert.equal(countCodegraphDegradedEvents(activity), 2);
+  });
+
+  it('returns 0 for absent, empty, or non-degraded activity, and tolerates malformed entries', () => {
+    assert.equal(countCodegraphDegradedEvents(undefined), 0);
+    assert.equal(countCodegraphDegradedEvents([]), 0);
+    assert.equal(countCodegraphDegradedEvents([{ event: 'iteration_start', ts: '2026-07-11T19:00:00.000Z' }]), 0);
+    assert.equal(countCodegraphDegradedEvents([null, undefined, {}, { event: 'codegraph_degraded', ts: '2026-07-11T19:01:00.000Z' }]), 1);
   });
 });
