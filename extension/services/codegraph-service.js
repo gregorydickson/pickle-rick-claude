@@ -156,10 +156,6 @@ export class CodegraphService {
         const r = await this.runQueryBatch([], [nodeId]);
         return r.status === 'ok' ? (r.callers[nodeId] ?? []) : null;
     }
-    getImpactRadius(nodeId) {
-        // SYNC impl (inventory) — deleted by ticket 8321922b; left compiling, NOT extended.
-        return this.impactRadiusSync(nodeId);
-    }
     // --- internals -----------------------------------------------------------
     now() {
         return this.deps.now ? this.deps.now() : new Date().toISOString();
@@ -193,19 +189,6 @@ export class CodegraphService {
         }
         this.counters.ops += 1;
         return impl;
-    }
-    /** getImpactRadius's inlined body — the sole remaining sync-impl query (deletion pending 8321922b). */
-    async impactRadiusSync(nodeId) {
-        const impl = await this.beginOp();
-        if (!impl)
-            return null;
-        try {
-            return impl.getImpactRadius(nodeId);
-        }
-        catch (err) {
-            await this.handleError('getImpactRadius', err);
-            return null;
-        }
     }
     async resolveImpl() {
         if (this.killSwitch)

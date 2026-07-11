@@ -27,7 +27,7 @@ export interface CodegraphCounters {
  * Structural slice of the upstream `CodeGraph` instance this service depends on.
  * Per `extension/data/codegraph-api-inventory.json`: `indexAll`/`sync`/`buildContext`
  * are async (Promise-returning) and are the only timeout targets; `searchNodes`,
- * `getCallers`, `getImpactRadius`, and `close` are SYNCHRONOUS and therefore lose
+ * `getCallers`, and `close` are SYNCHRONOUS and therefore lose
  * the timeout claim (a synchronous call cannot be raced against a timer).
  */
 export interface CodegraphImpl {
@@ -35,7 +35,6 @@ export interface CodegraphImpl {
   sync(): Promise<unknown>;
   searchNodes(query: string): unknown;
   getCallers(nodeId: string): unknown;
-  getImpactRadius(nodeId: string): unknown;
   buildContext(task: unknown): Promise<unknown>;
   close(): void;
 }
@@ -260,11 +259,6 @@ export class CodegraphService {
     return r.status === 'ok' ? (r.callers[nodeId] ?? []) : null;
   }
 
-  getImpactRadius(nodeId: string): Promise<unknown | null> {
-    // SYNC impl (inventory) — deleted by ticket 8321922b; left compiling, NOT extended.
-    return this.impactRadiusSync(nodeId);
-  }
-
   // --- internals -----------------------------------------------------------
 
   private now(): string {
@@ -299,18 +293,6 @@ export class CodegraphService {
     }
     this.counters.ops += 1;
     return impl;
-  }
-
-  /** getImpactRadius's inlined body — the sole remaining sync-impl query (deletion pending 8321922b). */
-  private async impactRadiusSync(nodeId: string): Promise<unknown | null> {
-    const impl = await this.beginOp();
-    if (!impl) return null;
-    try {
-      return impl.getImpactRadius(nodeId);
-    } catch (err) {
-      await this.handleError('getImpactRadius', err);
-      return null;
-    }
   }
 
   private async resolveImpl(): Promise<CodegraphImpl | null> {

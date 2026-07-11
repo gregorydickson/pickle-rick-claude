@@ -25,7 +25,6 @@ function fakeImpl(overrides = {}) {
     sync: async () => ({ filesChecked: 1 }),
     searchNodes: () => [{ node: { id: 'n1' }, score: 1 }],
     getCallers: () => [],
-    getImpactRadius: () => ({ nodes: new Map() }),
     buildContext: async () => 'context',
     close: () => {},
     ...overrides,
@@ -50,16 +49,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // --- matrix ----------------------------------------------------------------
 
 test('throwing fake: returns null + one classified error degrade', async () => {
-  // A1: searchNodes/getCallers now route through the killable subprocess boundary;
-  // getImpactRadius is the surviving in-process sync-impl query (deletion pending
-  // 8321922b) and still exercises the impl error-classification path.
-  const impl = fakeImpl({ getImpactRadius: () => { throw new Error('boom'); } });
+  // A1: searchNodes/getCallers route through the killable subprocess boundary and no longer
+  // reach impl directly; sync still calls beginOp()+runWithTimeout, so it exercises the
+  // generic impl error-classification path (a message matching none of the
+  // locked/corrupt/schema keywords classifies as 'error').
+  const impl = fakeImpl({ sync: async () => { throw new Error('boom'); } });
   const { svc, events } = harness(baseSettings(), { impl });
-  const res = await svc.getImpactRadius('q');
+  const res = await svc.sync();
   assert.equal(res, null);
   assert.equal(events.length, 1);
   assert.equal(events[0].event, 'codegraph_degraded');
-  assert.equal(events[0].operation, 'getImpactRadius');
+  assert.equal(events[0].operation, 'sync');
   assert.equal(events[0].reason, 'error');
   assert.equal(events[0].ts, 'TS');
   assert.deepEqual(svc.getSessionCounters(), { ops: 1, degraded: 1, latched: 0, injected: 0, skipped: 0 });
@@ -116,7 +116,6 @@ test('kill-switch off: inert, zero events, dependency never loaded', async () =>
   // so the wrappers return [] (no hits) — semantically "no context", no load, no events.
   assert.deepEqual(await svc.searchNodes('q'), []);
   assert.deepEqual(await svc.getCallers('n'), []);
-  assert.equal(await svc.getImpactRadius('n'), null);
   assert.equal(await svc.buildContext('t'), null);
   svc.close();
   assert.equal(loadCalled, false, 'off must never load the dependency');
@@ -244,9 +243,9 @@ test('enabled but dependency unavailable: degrades, never throws', async () => {
     loadImpl: async () => null,
     sleep: async () => {}, // skip MCP startup backoff
   });
-  // A1: getImpactRadius is the surviving in-process query that reaches beginOp/resolveImpl,
-  // so it exercises the "dependency unavailable → single load degrade" path.
-  assert.equal(await svc.getImpactRadius('q'), null);
+  // indexAll reaches beginOp/resolveImpl directly, so it exercises the
+  // "dependency unavailable → single load degrade" path.
+  assert.equal(await svc.indexAll(), null);
   assert.equal(events.length, 1);
   assert.equal(events[0].event, 'codegraph_degraded');
   assert.equal(events[0].reason, 'error');
@@ -260,10 +259,18 @@ test('persistently unavailable dependency degrades once, not per call', async ()
     loadImpl: async () => null,
     sleep: async () => {}, // skip MCP startup backoff
   });
-  await svc.getImpactRadius('q');
   await svc.indexAll();
   await svc.sync();
   assert.equal(events.length, 1, 'absent dependency must emit exactly one degrade for the session');
+});
+
+// 8321922b: getImpactRadius (zero production callers) was subtracted from the service.
+test('surface shrunk: no getImpactRadius, remaining methods intact', () => {
+  const { svc } = harness(baseSettings());
+  assert.equal(typeof svc.getImpactRadius, 'undefined', 'getImpactRadius must not exist on instances');
+  for (const method of ['indexAll', 'sync', 'searchNodes', 'getCallers', 'buildContext', 'close', 'getSessionCounters']) {
+    assert.equal(typeof svc[method], 'function', `${method} must remain a function on instances`);
+  }
 });
 
 // b1089e97: per-session injected/skipped counters (count only — no event emission).
