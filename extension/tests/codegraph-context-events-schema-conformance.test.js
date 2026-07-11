@@ -70,6 +70,12 @@ describe('codegraph context events: schema conformance', () => {
     assert.equal(injected.properties.hits_count.type, 'integer');
     assert.equal(injected.properties.bytes.type, 'integer');
     assert.equal(injected.properties.build_ms.type, 'integer');
+    // AC-CGH-B2(b): `codegraph_context_injected` is an OPEN object, so an emit carrying
+    // `dropped_stale` validates whether or not the schema NAMES it — the contract must
+    // declare the property explicitly or an emit-only change never becomes contract.
+    assert.equal(injected.properties.dropped_stale.type, 'integer',
+      'schema must NAME dropped_stale on codegraph_context_injected (open-object silent-validation gap)');
+    assert.equal(injected.properties.dropped_stale.minimum, 0);
 
     const skipped = schema.definitions.codegraph_context_skipped;
     assert.ok(skipped, 'schema must define codegraph_context_skipped');
@@ -80,6 +86,14 @@ describe('codegraph context events: schema conformance', () => {
       skipped.properties.reason.enum.sort(),
       ['no_service', 'no_terms', 'non_graph_tier', 'query_failed', 'query_timeout', 'stale_refs', 'zero_hits'],
     );
+    // AC-CGH-B2(c/d): the stale_refs skip carries optional `dropped_stale` (= full entry
+    // count) + `ticket` attribution. Same open-object gap — the schema must NAME both or
+    // the emit-only additions never become contract.
+    assert.equal(skipped.properties.dropped_stale.type, 'integer',
+      'schema must NAME dropped_stale on codegraph_context_skipped');
+    assert.equal(skipped.properties.dropped_stale.minimum, 0);
+    assert.equal(skipped.properties.ticket.type, 'string',
+      'schema must NAME the optional ticket attribution on codegraph_context_skipped');
   });
 
   it('schema oneOf references both events (R-PDD-oneOf)', () => {
