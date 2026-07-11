@@ -499,7 +499,9 @@ The three timeouts are independent — index, sync, and query each get their own
 
 | Event | Emitted when |
 |---|---|
-| `codegraph_session_summary` | Once at session end. Payload: `{ tickets, degraded_ops, index_status: 'healthy'\|'degraded'\|'latched'\|'disabled', ts }`. |
+| `codegraph_context_injected` | Once per worker spawn on the graph tier, when a non-empty `## Code Graph Context` section is built. Payload: `{ ticket, tier, terms_count, hits_count, bytes, build_ms, dropped_stale? }`. |
+| `codegraph_context_skipped` | Once per worker spawn on the graph tier, when context-building is productively skipped. Payload: `{ reason: 'no_service'\|'non_graph_tier'\|'no_terms'\|'zero_hits'\|'query_timeout'\|'query_failed'\|'stale_refs', dropped_stale?, ticket? }`. |
+| `codegraph_session_summary` | Once at session end. Payload: `{ tickets, degraded_ops, index_status: 'healthy'\|'degraded'\|'latched'\|'disabled', injected?, skipped?, ts }`. |
 | `codegraph_index_built` | A full `indexAll` succeeded. |
 | `codegraph_index_failed` | Setup-time index returned no result. |
 | `codegraph_sync_completed` | An incremental `sync` succeeded. |
