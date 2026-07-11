@@ -183,6 +183,10 @@ SOAK RUN needs the deployed runtime, post v2.0 GA.
   `codegraph_index_failed`. Gap-detection method: run the existing tests
   (`codegraph-index-cost.test.js`, `integration/setup-codegraph-index.test.js`) — green = done;
   extend only on an actual gap. — Type: test (existing tests green)
+  **Re-verified 2026-07-11 (ticket ef611d8a) on the post-909bf131/8321922b/2e632f9a tree:**
+  `codegraph-index-cost.test.js` 7/7 green, `integration/setup-codegraph-index.test.js` 15/15
+  green, `tsc --noEmit` clean. No gap vs. the timeout/fail-open contract (CGH4-T4b,
+  AC-C4-FAIL directly exercise it); zero source diffs.
 
 ## 2. Soak protocol (operator runbook — executed post-GA; reconciled into README by C1)
 
