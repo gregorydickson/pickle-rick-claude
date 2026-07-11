@@ -219,12 +219,18 @@ async function runChild(): Promise<void> {
   }
 
   try { graph.close?.(); } catch { /* release best-effort */ }
-  process.stdout.write(JSON.stringify({ searches, callers }));
-  // Deterministic exit for the spawned worker child: the parent settles on the
-  // child `close`, so a lingering SDK handle would else look like a false timeout.
+  // Flush stdout BEFORE the deterministic exit. `process.stdout.write` to the parent's
+  // pipe is async once the payload exceeds the OS pipe buffer (~64KB), so a bare
+  // `process.exit(0)` truncates the un-drained tail — the parent's `JSON.parse(stdout)`
+  // then throws and the whole batch degrades to `unparseable-stdout` on large result
+  // sets. The write callback fires only after the payload is handed to the OS, so a big
+  // batch round-trips intact. The explicit exit is still required: the SDK can leave a
+  // handle open, so a natural exit would look like a false timeout to the parent.
   // This is a CLI child entry (guarded below), not library code.
-  // eslint-disable-next-line pickle/no-process-exit-in-library
-  process.exit(0);
+  process.stdout.write(JSON.stringify({ searches, callers }), () => {
+    // eslint-disable-next-line pickle/no-process-exit-in-library
+    process.exit(0);
+  });
 }
 
 if (process.argv[1] && path.basename(process.argv[1]) === 'codegraph-query-runner.js') {

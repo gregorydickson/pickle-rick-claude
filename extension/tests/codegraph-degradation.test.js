@@ -371,3 +371,62 @@ test('round-trip: real runner resolves status=ok with node/score/file/line prese
     'caller entries round-trip field-for-field',
   );
 });
+
+// A large-payload round-trip fixture: emits a batch whose serialized JSON far exceeds the
+// OS pipe buffer (~64KB), then exits inside the stdout write callback (the fixed runChild
+// shape). A bare `write(...); process.exit(0)` would truncate the un-drained tail and the
+// parent's JSON.parse would throw `unparseable-stdout`. This drives the REAL parent
+// transport so a multi-chunk stdout must reassemble whole.
+function writeLargePayloadFixture() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'cg-large-'));
+  const file = path.join(dir, 'large-child.cjs');
+  writeFileSync(
+    file,
+    [
+      "let raw = '';",
+      "process.stdin.on('data', (c) => { raw += c; });",
+      "process.stdin.on('end', () => {",
+      '  const input = JSON.parse(raw);',
+      '  const searches = {};',
+      "  const blob = 'x'.repeat(4096);", // 4KB per hit → 256 hits ≈ 1MB, well past the pipe buffer
+      '  for (const term of input.searches || []) {',
+      '    searches[term] = Array.from({ length: 256 }, (_, i) => ({',
+      "      node: { id: term + '-' + i, name: term + 'Fn' + i, blob }, score: i,",
+      '    }));',
+      '  }',
+      '  process.stdout.write(JSON.stringify({ searches, callers: {} }), () => process.exit(0));',
+      '});',
+      '',
+    ].join('\n'),
+  );
+  return file;
+}
+
+test('R-CGST large-payload round-trip: >64KB batch reassembles intact (no exit-truncation)', async () => {
+  const fixture = writeLargePayloadFixture();
+  const result = await runCodegraphQueryBatch(
+    { workingDir: '/tmp/cg-large-wd', searches: ['alpha'], callers: [] },
+    { timeoutMs: 5000, childScriptPath: fixture },
+  );
+
+  assert.equal(result.status, 'ok', 'a large batch must not degrade to unparseable-stdout');
+  assert.equal(result.searches.alpha.length, 256, 'every hit in the large payload survives the pipe boundary');
+  const last = result.searches.alpha[255];
+  assert.equal(last.node.id, 'alpha-255', 'the tail of a >64KB payload is not truncated');
+  assert.equal(last.node.blob.length, 4096, 'the final hit payload arrives whole');
+});
+
+test('R-CGST source guard: runChild flushes stdout via the write callback before exit', () => {
+  const src = readFileSync(
+    path.join(EXTENSION_ROOT, 'src/services/codegraph-query-runner.ts'),
+    'utf-8',
+  );
+  // The success-path exit MUST be the argument callback of process.stdout.write, so the
+  // payload is drained to the pipe before the child exits. A bare `write(...); exit(0)`
+  // truncates unflushed data on payloads larger than the OS pipe buffer.
+  assert.match(
+    src,
+    /process\.stdout\.write\(\s*JSON\.stringify\(\{ searches, callers \}\),\s*\(\)\s*=>\s*\{/,
+    'runChild must pass an exit callback to process.stdout.write',
+  );
+});
