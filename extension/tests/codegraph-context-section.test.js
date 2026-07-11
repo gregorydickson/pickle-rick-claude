@@ -251,6 +251,115 @@ test('empty render under tiny cap → SKIP (no phantom injection), normal cap �
   }
 });
 
+// ── AC (2e632f9a): node-level staleness verification ─────────────────────────
+// `workingDir` gates the feature: absent/empty means no filtering (every other test
+// in this file omits it and is unaffected). These tests wire a real tmp working tree
+// so stale (missing-file / out-of-range-line) node claims are provably dropped.
+
+function makeWorkingDir(files) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-staleness-wd-'));
+  for (const [rel, content] of Object.entries(files)) {
+    const full = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content);
+  }
+  return dir;
+}
+
+test('staleness: node citing a missing file is dropped, fresh sibling survives', async () => {
+  const workingDir = makeWorkingDir({ 'real.ts': 'line1\nline2\nline3\n' });
+  const service = fakeService({
+    hits: [
+      { node: { id: 'n1', name: 'freshFn', file: 'real.ts', line: 2 }, score: 5 },
+      { node: { id: 'n2', name: 'staleFn', file: 'missing.ts', line: 3 }, score: 3 },
+    ],
+  });
+  const section = await buildCodegraphContextSection({
+    tier: 'medium', title: makeTicket().task, ticketContent: makeTicket().ticketContent,
+    service, settings: makeSettings(), workingDir,
+  });
+  assert.ok(section.includes('freshFn'), 'surviving node must render');
+  assert.ok(!section.includes('staleFn'), 'stale-file node must be dropped');
+});
+
+test('staleness: two nodes citing the same file get independent per-line verdicts (stat cache correctness)', async () => {
+  const workingDir = makeWorkingDir({ 'shared.ts': 'line1\nline2\nline3\n' });
+  const service = fakeService({
+    hits: [
+      { node: { id: 'n1', name: 'freshInShared', file: 'shared.ts', line: 2 }, score: 5 },
+      { node: { id: 'n2', name: 'staleInShared', file: 'shared.ts', line: 500 }, score: 3 },
+    ],
+  });
+  const section = await buildCodegraphContextSection({
+    tier: 'medium', title: makeTicket().task, ticketContent: makeTicket().ticketContent,
+    service, settings: makeSettings(), workingDir,
+  });
+  assert.ok(section.includes('freshInShared'), 'in-range node on a shared file must survive');
+  assert.ok(!section.includes('staleInShared'), 'out-of-range node on the SAME shared file must still be dropped');
+});
+
+test('staleness: node whose line exceeds the file line count is dropped', async () => {
+  const workingDir = makeWorkingDir({ 'real.ts': 'line1\nline2\nline3\n' });
+  const service = fakeService({
+    hits: [
+      { node: { id: 'n1', name: 'freshFn', file: 'real.ts', line: 2 }, score: 5 },
+      { node: { id: 'n2', name: 'staleLineFn', file: 'real.ts', line: 999 }, score: 3 },
+    ],
+  });
+  const section = await buildCodegraphContextSection({
+    tier: 'medium', title: makeTicket().task, ticketContent: makeTicket().ticketContent,
+    service, settings: makeSettings(), workingDir,
+  });
+  assert.ok(section.includes('freshFn'), 'surviving node must render');
+  assert.ok(!section.includes('staleLineFn'), 'out-of-range-line node must be dropped');
+});
+
+test('staleness: all located nodes stale → stale_refs skip, dropped_stale == count, no injected event', async () => {
+  const workingDir = makeWorkingDir({});
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-staleness-session-'));
+  const statePath = seedState(sessionDir);
+  const service = fakeService({
+    hits: [
+      { node: { id: 'n1', name: 'staleFnA', file: 'missing-a.ts', line: 1 }, score: 5 },
+      { node: { id: 'n2', name: 'staleFnB', file: 'missing-b.ts', line: 1 }, score: 3 },
+    ],
+  });
+  const section = await buildCodegraphContextSection({
+    tier: 'medium', title: makeTicket().task, ticketContent: makeTicket().ticketContent,
+    service, settings: makeSettings(), sessionDir, ticketId: 'tstale', workingDir,
+  });
+  assert.equal(section, '', 'all-stale must yield an empty section');
+  const activity = JSON.parse(fs.readFileSync(statePath, 'utf8')).activity;
+  const skipped = activity.filter((e) => e.event === 'codegraph_context_skipped');
+  assert.equal(skipped.length, 1, 'exactly one skipped event');
+  assert.equal(skipped[0].reason, 'stale_refs', 'reason must be stale_refs, not zero_hits');
+  assert.equal(skipped[0].dropped_stale, 2, 'dropped_stale must equal the dropped-node count');
+  assert.equal(activity.filter((e) => e.event === 'codegraph_context_injected').length, 0,
+    'must NOT emit a codegraph_context_injected event');
+});
+
+test('staleness: all located nodes dropped + Summary present → still stale_refs, no phantom Summary-only injection', async () => {
+  const workingDir = makeWorkingDir({});
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-staleness-summary-session-'));
+  const statePath = seedState(sessionDir);
+  const service = fakeService({
+    hits: [{ node: { id: 'n1', name: 'staleFn', file: 'missing.ts', line: 1 }, score: 5 }],
+    summary: 'a summary that would otherwise render on its own',
+  });
+  const section = await buildCodegraphContextSection({
+    tier: 'medium', title: makeTicket().task, ticketContent: makeTicket().ticketContent,
+    service, settings: makeSettings(), sessionDir, ticketId: 'tsummary', workingDir,
+  });
+  assert.equal(section, '', 'Summary alone must not render/inject when every located node is stale');
+  const activity = JSON.parse(fs.readFileSync(statePath, 'utf8')).activity;
+  const skipped = activity.filter((e) => e.event === 'codegraph_context_skipped');
+  assert.equal(skipped.length, 1, 'exactly one skipped event');
+  assert.equal(skipped[0].reason, 'stale_refs');
+  assert.equal(skipped[0].dropped_stale, 1);
+  assert.equal(activity.filter((e) => e.event === 'codegraph_context_injected').length, 0,
+    'must NOT emit a codegraph_context_injected event for Summary-only content');
+});
+
 // ── AC: absence (zero hits / null / disabled / kill-switch) ──────────────────
 test('absence: zero hits / null service / disabled → NO section header anywhere', async () => {
   const base = { tier: 'medium', title: makeTicket().task, ticketContent: makeTicket().ticketContent };

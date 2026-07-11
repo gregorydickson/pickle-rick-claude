@@ -554,6 +554,8 @@ const CODEGRAPH_TRUNCATED_MARKER = '[truncated]';
 const CODEGRAPH_GRAPH_PHASES: readonly LifecyclePhase[] = ['research', 'plan'];
 const CODEGRAPH_MAX_TERMS = 8;
 const CODEGRAPH_CALLER_HITS = 3;
+/** 2e632f9a: files larger than this get an existence-only staleness check (skip line-count read). */
+const CODEGRAPH_STALENESS_MAX_STAT_BYTES = 5 * 1024 * 1024;
 const CODEGRAPH_TERM_STOPWORDS = new Set<string>([
   'into', 'with', 'from', 'this', 'that', 'when', 'then', 'tier', 'code', 'graph',
   'context', 'worker', 'prompt', 'build', 'inject', 'section', 'only', 'over',
@@ -658,6 +660,14 @@ export interface CodegraphContextOptions {
   sessionDir: string;
   /** b1089e97: ticket id stamped into `codegraph_context_injected.ticket`. */
   ticketId: string;
+  /**
+   * 2e632f9a: worker's repo root, used to resolve node-cited `file`/`filePath` for
+   * node-level staleness verification. Optional and gates the feature: absent/empty
+   * means no verification runs (every node is treated as fresh) — this keeps unit
+   * tests that don't wire a real working tree unaffected. Production always passes
+   * `runtime.sessionWorkingDir`.
+   */
+  workingDir?: string;
 }
 
 /**
@@ -692,30 +702,111 @@ function callerSuffixFromList(list: unknown[]): string {
   return names.length > 0 ? ` ← callers: ${names.join(', ')}` : '';
 }
 
-/** Render one symbol-boundary line per ranked hit; the top hits also get caller suffixes. Pure. */
+interface CodegraphFileStaleness {
+  resolves: boolean;
+  /** `null` = large file (existence-only, per-line check skipped) or unreadable-but-stat-ok. */
+  lineCount: number | null;
+}
+
+/** Stat + read a file's line count once; callers memoize via `cache` across ranked nodes. */
+function statCodegraphFile(resolved: string, cache: Map<string, CodegraphFileStaleness>): CodegraphFileStaleness {
+  const cached = cache.get(resolved);
+  if (cached) return cached;
+  let result: CodegraphFileStaleness;
+  try {
+    const stat = fs.statSync(resolved);
+    if (stat.size > CODEGRAPH_STALENESS_MAX_STAT_BYTES) {
+      result = { resolves: true, lineCount: null };
+    } else {
+      try {
+        result = { resolves: true, lineCount: fs.readFileSync(resolved, 'utf-8').split('\n').length };
+      } catch {
+        result = { resolves: true, lineCount: null };
+      }
+    }
+  } catch {
+    result = { resolves: false, lineCount: null };
+  }
+  cache.set(resolved, result);
+  return result;
+}
+
+/**
+ * 2e632f9a: node-level staleness verification — local fs stat + line count ONLY (no
+ * check-readiness resolver machinery). A node with no `file`/`filePath` claim has
+ * nothing to verify and is always fresh. Errors during verification (ENOENT, EACCES,
+ * unreadable, etc.) count the node as non-resolving (stale), never throw. Freshness
+ * residual: content drift WITHIN a surviving file is undetected — this is bounded only
+ * by `staleness_max_age_minutes`, so `dropped_stale: 0` under-counts true staleness.
+ *
+ * `cache` is owned by the caller (one per `buildCodegraphEntries` call) so multiple
+ * ranked nodes citing the same file — the common case, several symbols per file —
+ * stat/read that file once instead of once per node.
+ */
+function isNodeLocationFresh(
+  node: CodegraphNodeLike,
+  workingDir: string,
+  cache: Map<string, CodegraphFileStaleness>,
+): boolean {
+  const file = typeof node.file === 'string' ? node.file : typeof node.filePath === 'string' ? node.filePath : null;
+  if (!file) return true;
+  const resolved = path.isAbsolute(file) ? file : path.join(workingDir, file);
+  const info = statCodegraphFile(resolved, cache);
+  if (!info.resolves) return false;
+  if (info.lineCount === null) return true;
+  const line = typeof node.line === 'number' ? node.line : typeof node.startLine === 'number' ? node.startLine : null;
+  if (line === null) return true;
+  return line >= 1 && line <= info.lineCount;
+}
+
+interface CodegraphEntriesResult {
+  entries: string[];
+  /** Located (named + fresh-or-unverified) node entries actually rendered. */
+  locatedSurvivors: number;
+  /** Nodes dropped by node-level staleness verification. */
+  droppedStale: number;
+}
+
+/**
+ * Render one symbol-boundary line per ranked hit; the top hits also get caller
+ * suffixes. Pure except for the optional `workingDir`-gated fs staleness check.
+ * 2e632f9a: `workingDir` absent/empty → no staleness filtering (every named node
+ * survives, legacy behavior). `Summary:` lines only survive when ≥1 located node
+ * survived — a Summary-only render is not a productive injection.
+ */
 function buildCodegraphEntries(
   ranked: { node: CodegraphNodeLike }[],
   callersMap: Record<string, unknown[]>,
   summary: unknown,
-): string[] {
+  workingDir?: string,
+): CodegraphEntriesResult {
+  const locatedEntries: string[] = [];
+  let droppedStale = 0;
+  const verifyStaleness = typeof workingDir === 'string' && workingDir.length > 0;
+  const staleCache = new Map<string, CodegraphFileStaleness>();
+  for (let i = 0; i < ranked.length; i++) {
+    const node = ranked[i].node;
+    const name = nodeName(node);
+    if (!name) continue;
+    if (verifyStaleness && !isNodeLocationFresh(node, workingDir as string, staleCache)) {
+      droppedStale++;
+      continue;
+    }
+    let entry = `- \`${name}\`${nodeLocation(node)}`;
+    if (i < CODEGRAPH_CALLER_HITS && typeof node.id === 'string') {
+      entry += callerSuffixFromList(callersMap[node.id] ?? []);
+    }
+    locatedEntries.push(entry);
+  }
   const entries: string[] = [];
-  if (typeof summary === 'string') {
+  if (locatedEntries.length > 0 && typeof summary === 'string') {
     for (const line of summary.split('\n')) {
       const t = line.trim();
       if (t.length > 0) entries.push(`Summary: ${t}`);
     }
   }
-  for (let i = 0; i < ranked.length; i++) {
-    const node = ranked[i].node;
-    const name = nodeName(node);
-    if (!name) continue;
-    let entry = `- \`${name}\`${nodeLocation(node)}`;
-    if (i < CODEGRAPH_CALLER_HITS && typeof node.id === 'string') {
-      entry += callerSuffixFromList(callersMap[node.id] ?? []);
-    }
-    entries.push(entry);
-  }
-  return entries;
+  entries.push(...locatedEntries);
+  return { entries, locatedSurvivors: locatedEntries.length, droppedStale };
 }
 
 /**
@@ -724,14 +815,14 @@ function buildCodegraphEntries(
  * or zero search hits. The service itself returns null on kill-switch / degraded /
  * unavailable, which collapses into the zero-hits path. Never throws.
  *
- * b1089e97: emits `codegraph_context_skipped` on the four productive-skip branches
- * (`no_service` / `non_graph_tier` / `no_terms` / `zero_hits`) and
+ * b1089e97: emits `codegraph_context_skipped` on the productive-skip branches
+ * (`no_service` / `non_graph_tier` / `no_terms` / `zero_hits` / `stale_refs`) and
  * `codegraph_context_injected` on success. The steady-state `disabled` branch is
  * SUPPRESSED (no emit) to avoid per-spawn flooding while the default is OFF.
  * Emission is best-effort: telemetry must never break the spawn.
  */
 export async function buildCodegraphContextSection(opts: CodegraphContextOptions): Promise<string> {
-  const { tier, title, ticketContent, service, settings, sessionDir, ticketId } = opts;
+  const { tier, title, ticketContent, service, settings, sessionDir, ticketId, workingDir } = opts;
   const start = Date.now();
 
   // Best-effort telemetry sink. writeActivityEntry does NOT auto-stamp `ts`
@@ -743,14 +834,20 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
       writeActivityEntry(path.join(sessionDir, 'state.json'), entry);
     } catch { /* telemetry best-effort */ }
   };
-  const emitSkipped = (reason: CodegraphContextSkipReason): void => {
+  const emitSkipped = (reason: CodegraphContextSkipReason, droppedStale?: number): void => {
     try { service?.recordContextSkipped(); } catch { /* best-effort */ }
-    emit({ event: 'codegraph_context_skipped', ts: new Date().toISOString(), reason });
+    emit({
+      event: 'codegraph_context_skipped',
+      ts: new Date().toISOString(),
+      reason,
+      ...(reason === 'stale_refs' ? { dropped_stale: droppedStale ?? 0, ticket: ticketId } : {}),
+    });
   };
 
   // Branch precedence (top wins): disabled → no_service → non_graph_tier → no_terms →
-  // zero_hits → query_timeout → query_failed. The last two come from the batched
-  // killable-subprocess boundary (AC-CGH-A1) — a wedged/failed query degrades here.
+  // zero_hits → query_timeout → query_failed → stale_refs. The middle two come from the
+  // batched killable-subprocess boundary (AC-CGH-A1) — a wedged/failed query degrades
+  // here; stale_refs comes from node-level fs verification dropping every located node.
   if (!settings.enabled) return '';                                    // disabled — SUPPRESSED, no emit
   if (!service) { emitSkipped('no_service'); return ''; }
   if (!tierUsesGraphContext(tier)) { emitSkipped('non_graph_tier'); return ''; }
@@ -780,8 +877,15 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
   }
 
   const summary = await service.buildContext({ title, description: ticketContent.slice(0, 500) });
-  const entries = buildCodegraphEntries(ranked, callersMap, summary);
-  if (entries.length === 0) { emitSkipped('zero_hits'); return ''; }
+  // 2e632f9a: node-level staleness verification runs here, upstream of `nodeLocation`
+  // rendering and upstream of the frozen b1089e97 render-empty PATTERN_SHAPE below.
+  // `ranked.length > 0` is already guaranteed (checked above) — zero surviving located
+  // nodes at this point is a productive `stale_refs` skip, never `zero_hits` (that
+  // reason stays reserved for genuinely empty `ranked`, checked above, and the
+  // render-empty PATTERN_SHAPE, unchanged below).
+  const built = buildCodegraphEntries(ranked, callersMap, summary, workingDir);
+  if (built.locatedSurvivors === 0) { emitSkipped('stale_refs', built.droppedStale); return ''; }
+  const entries = built.entries;
 
   const section = renderCodegraphSection(entries, settings.context_max_bytes);
   // Nothing fit under context_max_bytes (renderCodegraphSection returns '') → no
@@ -800,6 +904,7 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
     hits_count: ranked.length,
     bytes: Buffer.byteLength(section, 'utf-8'),
     build_ms: Math.max(0, Date.now() - start),
+    dropped_stale: built.droppedStale,
   });
   return section;
 }
@@ -2549,6 +2654,7 @@ async function main() {
           // state file lives at `<sessionRoot>/state.json`).
           sessionDir: args.sessionRoot,
           ticketId: args.ticketId,
+          workingDir: runtime.sessionWorkingDir,
         });
       } finally {
         cgService.close();

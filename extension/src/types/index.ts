@@ -1054,6 +1054,8 @@ export interface ActivityEvent {
   hits_count?: number;
   bytes?: number;
   build_ms?: number;
+  /** 2e632f9a: nodes dropped by node-level staleness verification (both event branches). */
+  dropped_stale?: number;
   // Ticket e9bdac75 (Workstream B): rate-limit park payload fields.
   // rate_limit_wait carries the API reset_at (epoch seconds, null when absent);
   // rate_limit_resume carries the actual parked wall-clock in minutes.
@@ -1139,6 +1141,10 @@ export interface CodegraphSessionSummaryPayload {
  * AC-CGH-A1: `query_timeout` (batch runner group-killed on timeout) and `query_failed`
  * (child crash / ENOENT / unparseable stdout) join the productive-skip set — the section
  * build returns '' and never throws when the killable subprocess boundary degrades.
+ * 2e632f9a: `stale_refs` fires when `ranked.length > 0` but node-level fs verification
+ * (existence + line-range) drops every located node before `nodeLocation` renders —
+ * distinct from `zero_hits` (genuinely empty `ranked`, or the render-empty PATTERN_SHAPE
+ * branch after byte-cap truncation).
  */
 export type CodegraphContextSkipReason =
   | 'no_service'
@@ -1146,7 +1152,8 @@ export type CodegraphContextSkipReason =
   | 'no_terms'
   | 'zero_hits'
   | 'query_timeout'
-  | 'query_failed';
+  | 'query_failed'
+  | 'stale_refs';
 
 /** Payload for `codegraph_context_injected` (buildCodegraphContextSection success path). */
 export interface CodegraphContextInjectedPayload {
@@ -1160,6 +1167,8 @@ export interface CodegraphContextInjectedPayload {
   bytes: number;
   /** Finite non-negative duration wrapping the build body. */
   build_ms: number;
+  /** 2e632f9a: nodes dropped by node-level staleness verification, even though injection still fired. */
+  dropped_stale?: number;
 }
 
 /** Payload for `codegraph_context_skipped` (productive-skip branches only). */
@@ -1167,6 +1176,10 @@ export interface CodegraphContextSkippedPayload {
   event: 'codegraph_context_skipped';
   ts: string;
   reason: CodegraphContextSkipReason;
+  /** 2e632f9a: full staleness-dropped count on the `stale_refs` reason. */
+  dropped_stale?: number;
+  /** 2e632f9a: per-rep ticket attribution on the `stale_refs` reason. */
+  ticket?: string;
 }
 
 /**

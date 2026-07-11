@@ -1658,7 +1658,8 @@
         "terms_count": { "type": "integer", "minimum": 0 },
         "hits_count": { "type": "integer", "minimum": 0 },
         "bytes": { "type": "integer", "minimum": 0 },
-        "build_ms": { "type": "integer", "minimum": 0 }
+        "build_ms": { "type": "integer", "minimum": 0 },
+        "dropped_stale": { "type": "integer", "minimum": 0 }
       }
     },
     "codegraph_context_skipped": {
@@ -1667,7 +1668,9 @@
       "properties": {
         "event": { "type": "string", "const": "codegraph_context_skipped" },
         "ts": { "type": "string" },
-        "reason": { "type": "string", "enum": ["no_service", "non_graph_tier", "no_terms", "zero_hits", "query_timeout", "query_failed"] }
+        "reason": { "type": "string", "enum": ["no_service", "non_graph_tier", "no_terms", "zero_hits", "query_timeout", "query_failed", "stale_refs"] },
+        "dropped_stale": { "type": "integer", "minimum": 0 },
+        "ticket": { "type": "string" }
       }
     },
     "codegraph_efficacy_sample": {

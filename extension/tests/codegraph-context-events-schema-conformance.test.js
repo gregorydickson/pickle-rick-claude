@@ -78,7 +78,7 @@ describe('codegraph context events: schema conformance', () => {
     assert.equal(skipped.properties.ts.type, 'string');
     assert.deepEqual(
       skipped.properties.reason.enum.sort(),
-      ['no_service', 'no_terms', 'non_graph_tier', 'query_failed', 'query_timeout', 'zero_hits'],
+      ['no_service', 'no_terms', 'non_graph_tier', 'query_failed', 'query_timeout', 'stale_refs', 'zero_hits'],
     );
   });
 
@@ -292,6 +292,17 @@ describe('codegraph_context_skipped: branch sweep', () => {
       reason: 'query_failed',
       build: () => ({ tier: 'medium', service: fakeService({ statusOverride: { status: 'failed', reason: 'enoent' } }), settings: makeSettings() }),
     },
+    {
+      // 2e632f9a: node-level fs verification drops the only located hit (its cited
+      // file doesn't exist under the fresh, empty `workingDir`).
+      reason: 'stale_refs',
+      build: () => ({
+        tier: 'medium',
+        service: fakeService({ hits: [searchHit('n1', 'x')] }),
+        settings: makeSettings(),
+        workingDir: mkdtempSync(path.join(os.tmpdir(), 'cg-events-stale-wd-')),
+      }),
+    },
   ];
 
   for (const c of cases) {
@@ -306,6 +317,7 @@ describe('codegraph_context_skipped: branch sweep', () => {
         settings: cfg.settings,
         sessionDir,
         ticketId: 't1',
+        workingDir: cfg.workingDir,
       });
       assert.equal(section, '', `${c.reason}: section must be empty`);
       const events = readActivity(sessionDir);
@@ -314,6 +326,9 @@ describe('codegraph_context_skipped: branch sweep', () => {
       assert.equal(skipped[0].reason, c.reason, `${c.reason}: reason mismatch`);
       assert.ok(typeof skipped[0].ts === 'string' && skipped[0].ts.length > 0, `${c.reason}: ts must be stamped`);
       assert.equal(events.filter((e) => e.event === 'codegraph_context_injected').length, 0);
+      if (c.reason === 'stale_refs') {
+        assert.equal(skipped[0].dropped_stale, 1, 'stale_refs: dropped_stale must equal the dropped-node count');
+      }
     });
   }
 });

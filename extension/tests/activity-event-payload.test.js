@@ -920,6 +920,7 @@ const EVENT_CASES = [
       hits_count: 7,
       bytes: 812,
       build_ms: 13,
+      dropped_stale: 2,
     },
     drop: 'ts',
   },
@@ -941,6 +942,18 @@ const EVENT_CASES = [
       reason: 'query_timeout',
     },
     drop: 'ts',
+  },
+  {
+    // 2e632f9a: stale_refs carries optional dropped_stale + ticket attribution.
+    type: 'codegraph_context_skipped',
+    valid: {
+      event: 'codegraph_context_skipped',
+      ts: TS,
+      reason: 'stale_refs',
+      dropped_stale: 3,
+      ticket: 'abc12345',
+    },
+    drop: 'reason',
   },
   {
     type: 'codegraph_efficacy_sample',
