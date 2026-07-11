@@ -68,7 +68,11 @@ export async function runCodegraphQueryBatch(input, opts) {
                 // window so a native call that ignores SIGTERM cannot linger.
                 kill(pid, 'SIGTERM');
                 const escalate = setTimeout(() => {
-                    if (!child.killed && child.exitCode === null)
+                    // `child.killed` reflects only whether `child.kill()` was called — this module
+                    // group-kills via `kill(pid, ...)` and never touches it, so `!child.killed` was
+                    // always true (dead sub-term). The live guard is `exitCode === null`: skip the
+                    // escalation only if the child already exited with a real code.
+                    if (child.exitCode === null)
                         kill(pid, 'SIGKILL');
                 }, GROUP_KILL_GRACE_MS);
                 if (typeof escalate.unref === 'function')
