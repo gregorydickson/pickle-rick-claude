@@ -6,164 +6,276 @@ status: queued
 type: bug-feature-bundle
 schema_neutral: true
 target_version: v2.1.0
-depends_on: "none for BUILD (deploy-agnostic, v2.1 branch); SOAK RUN needs a codegraph-enabled window on the deployed runtime post v2.0 GA"
-source_assessment: "2026-07-11 operator decision: keep-and-refine codegraph (supersedes the B-CGPROBE instrument build; probe demoted to optional follow-up). Grounded in the 2026-07-10 4-agent evidence audit + 2026-07-11 4-agent codebase audit."
+depends_on: "none for BUILD (deploy-agnostic, v2.1 branch); SOAK RUN needs a codegraph-enabled window on the deployed runtime post v2.0 GA. Dormancy: BUILD is Done on unit evidence; soak evidence gates only B-CGCAP, not this bundle's Done. *(refined: risk-scope)*"
+source_assessment: "2026-07-11 operator decision: keep-and-refine codegraph. Refined 2026-07-11 by 3-analyst × 3-cycle team (session 2026-07-11-a19aa731)."
 ---
 
-# B-CGHARD — Codegraph harden-then-soak
+# B-CGHARD — Codegraph harden-then-soak (REFINED)
 
 ## 0. Why this bundle, and why not the probe
 
 The operator resolved the MASTER_PLAN ③ open decision (2026-07-11): **keep codegraph and refine
-it** rather than subtract it or build the synthetic A/B efficacy instrument first. Codegraph has
-never caused a live-run failure — because it has never run (zero `codegraph_context_injected`
-events across all sessions; every `codegraph_session_summary` reads `injected: 0`). Its recorded
-costs are cost-of-ownership (6 fix commits in 5 weeks while disabled), not run instability.
+it**. Codegraph has never caused a live-run failure — because it has never run (zero
+`codegraph_context_injected` events ever). With the subtract branch off the table, the synthetic
+A/B probe loses its main verdict branch; the cheaper, decision-relevant instrument is the feature
+itself run live: fix the two defects that would bite in production, then enable it for a bounded
+soak of real pipeline reps and read live telemetry.
 
-With the subtract branch off the table, the synthetic probe (B-CGPROBE) loses its main verdict
-branch and its price is disproportionate: one Large build item (the whole worker-spawn harness —
-`captureWorkerDiff` is a bare `spawnSync` shell) plus a ≥40-worker-spawn RUN. The cheaper, more
-decision-relevant instrument is the feature itself, run live: **fix the two defects that would
-actually bite in production, then enable it for a bounded soak of real pipeline reps and read the
-live telemetry.** That measures the question the autonomy north star cares about — does injected
-graph context help or hurt hands-off builds — using events that already exist.
+Two liabilities block an honest soak (both verified at HEAD by the refinement team):
 
-Two liabilities block an honest soak today (both from the B-CGCAP evidence audit):
+1. **Unraceable sync-query hang.** `searchNodes`/`getCallers`/`getImpactRadius` route through
+   `runSyncQuery` (`extension/src/services/codegraph-service.ts:260`) with no timeout race
+   ("query_timeout_ms claim is forfeit"). Called from the worker spawn path
+   (`collectCodegraphHits`/`codegraphCallerSuffix`, `extension/src/bin/spawn-morty.ts:664-692` —
+   up to 8 `searchNodes` + 3 `getCallers` per spawn). A wedged native call burns a full
+   worker-timeout iteration. *(refined: codebase — the SDK queries are documented SYNC in
+   `extension/data/codegraph-api-inventory.json`; an in-process race is a dead branch.)*
+2. **Stale-ref injection.** Rendered entries carry `file:line` from an index up to
+   `staleness_max_age_minutes` (30) old — hallucination-inducing on a fast repo.
 
-1. **Unraceable sync-query hang.** `searchNodes` / `getCallers` / `getImpactRadius` route through
-   `runSyncQuery` (`extension/src/services/codegraph-service.ts:260`) with **no timeout race** —
-   the source comments admit "query_timeout_ms claim is forfeit." These are called from the worker
-   spawn path (`collectCodegraphHits` / `codegraphCallerSuffix` in
-   `extension/src/bin/spawn-morty.ts:664-692`, up to 8 `searchNodes` + 3 `getCallers` per spawn).
-   A wedged native call blocks the spawn-morty process and burns a full worker-timeout iteration.
-2. **Stale-ref injection.** Rendered entries carry `file:line` locations from an index up to
-   `staleness_max_age_minutes` (30) old. On a fast-moving repo those can point at moved/deleted
-   code — injected context that *induces* the hallucinated-premise failure class it exists to
-   prevent.
-
-BUILD (WS-A, WS-B, WS-C docs) is deploy-agnostic and runs via `/pickle-pipeline` on the v2.1
-branch checkout now. The SOAK RUN (WS-C protocol execution) needs the deployed runtime with
-codegraph enabled — serialize behind v2.0 GA; do not perturb GA soak reps.
+BUILD (WS-A, WS-B, WS-C docs) is deploy-agnostic, runs via `/pickle-pipeline` on the v2.1 branch.
+SOAK RUN needs the deployed runtime, post v2.0 GA.
 
 ## 1. Workstreams
 
 ### WS-CGH-A — Bound the query hang surface (spawn path)
 
-- **AC-CGH-A1 — no unraceable query reachable from the worker spawn path.** The
-  `buildCodegraphContextSection` pipeline (`spawn-morty.ts:732`) must be timeboxed end-to-end with
-  a finite bound: a wedged codegraph query may cost at most the configured timeout, never a full
-  worker iteration. The sync in-process path (`runSyncQuery`, `codegraph-service.ts:260`) must no
-  longer be reachable from spawn-morty. Sanctioned shapes (worker research picks): isolate query
-  execution behind a killable subprocess boundary using the house `spawnSync`/`spawn` +
-  finite-`timeout` pattern (bin subsystem invariant #3), or race a genuinely-async upstream API if
-  the vendored SDK exposes one (an in-process `Promise.race` over a sync call is NOT acceptable —
-  a blocked event loop never yields to the timer). On timeout: emit `codegraph_context_skipped`
-  (reason per AC-CGH-B2's union), return `''`, never throw, never leave an orphan process (kill on
-  timeout). — Type: test (`extension/tests/codegraph-degradation.test.js` extension or a new
-  fast-tier test proving a deliberately-wedged query returns within the bound with a skip event)
-- **AC-CGH-A2 — SUBTRACT `CodegraphService.getImpactRadius`.** It has zero production callers:
-  spawn-morty uses only `searchNodes`/`getCallers`/`buildContext`;
-  `check-scope-diff.ts:9` declares its own injected `ImpactRadiusService` seam that the CLI never
-  wires (fail-open, tests inject fakes); the worker MCP lane (`backend-spawn.ts:431-506`) spawns
-  `codegraph serve --mcp` as a separate process and does not import the service. Delete the method
-  and its interface member; update `codegraph-service.test.js` pins. — Type: test
-  (`grep -c "getImpactRadius" extension/src/services/codegraph-service.ts` == 0)
-- **AC-CGH-A3 — `runSyncQuery` deleted or unreachable.** After A1/A2, prefer deleting
-  `runSyncQuery` outright. If any caller legitimately remains, it must be enumerated in the ticket's
-  research artifact with its timebox stated — "documented residual sync caller" is the fallback, not
-  the default. — Type: test (grep: `runSyncQuery` absent from `codegraph-service.ts`, or the
-  residual-caller justification present in the shipped diff)
+- **AC-CGH-A1 — no unraceable query reachable from the worker spawn path.** *(refined: all three
+  analysts, cycle 2+3 convergence)* The `buildCodegraphContextSection` pipeline
+  (`spawn-morty.ts:732`) is timeboxed end-to-end. Sanctioned shape, ranked:
+  (i) **house query-runner child** (preferred): a forward-created runner module invoked as a child
+  process that imports the SDK (`init()`/`open()` do NOT auto-watch per
+  `extension/data/codegraph-api-inventory.json`), executes ALL queries for one section build in
+  **one batched invocation** (up to 11 queries/spawn; per-query subprocess would pay 2 process
+  starts each — batching is correctness, not optimization), preserves the
+  `SearchResult={node,score}` contract, and defensively sets `CODEGRAPH_NO_WATCH=1`;
+  (ii) the vendored CLI (`codegraph query|callers|impact --json`) ONLY if the research artifact
+  captures its actual `--json` shape against the inventory pre-plan-approval (it keys `callers` by
+  symbol NAME, not `node.id`).
+  **Dead branch deleted:** "genuinely-async upstream API" does not exist (SDK queries are sync).
+  **Not recommended:** reusing `serve --mcp` (default-ACTIVE watcher WRITES the db;
+  `CODEGRAPH_NO_WATCH=1` is the only verified opt-out; `CODEGRAPH_NO_DAEMON=1` is NOT a watcher
+  kill-switch).
+  **Kill shape:** the vendored bin is a shim that `spawnSync`s the platform binary as a
+  GRANDCHILD (`npm-shim.js:48`) — a plain spawn `timeout` kills the shim and leaks the wedged
+  native binary. The child MUST be spawned `detached: true` and killed via the group-kill
+  primitive (`killProcessGroup`, `extension/src/services/orphan-reaper.ts`, R-OMTD pattern).
+  **Timeout/failure telemetry:** on timeout emit `codegraph_context_skipped` reason
+  `'query_timeout'`; on crash/ENOENT/malformed-stdout emit reason `'query_failed'`; both return
+  `''`, never throw, never orphan. Parent-side failure classification (shim exit≠0, grandchild
+  kill, ENOENT, unparseable stdout) emits distinct `codegraph_degraded.reason` strings — the
+  schema's reason is an open string, no schema edit needed.
+  **Degrade-telemetry wiring (P0):** the spawn-morty service construction (`spawn-morty.ts:2501`)
+  currently passes `{}` deps, so `codegraph_degraded` from the spawn path is silently dropped
+  (`codegraph-service.ts:230-233` emit guard). Wire the existing activity-sink closure
+  (`spawn-morty.ts:738-743`) as `{ emit }` so degrades persist to `state.json.activity`
+  (`codegraph_degraded` is already in `VALID_ACTIVITY_EVENTS` and the schema).
+  `codegraph_session_summary.degraded_ops` stays mux-runner-process-scoped by design; the soak
+  reads spawn-path degrade evidence from per-event activity, never from `degraded_ops`.
+  **Composition:** `buildContext` is already raced (`runWithTimeout`,
+  `codegraph-service.ts:203-205`) — the aggregate bound composes over that plus the subprocess
+  boundary; no third timer. Aggregate wall bound for the whole section build ≤
+  2 × `query_timeout_ms` + `buildContext` race; happy-path p50 recorded via the existing
+  `build_ms` payload field.
+  **Union co-location (P0):** `'query_timeout'` + `'query_failed'` land IN THIS TICKET in all
+  four homes: `CodegraphContextSkipReason` (`types/index.ts:1137`), the
+  `codegraph_context_skipped.reason` enum in `activity-events.schema.json`, the hard pins + one
+  new case row EACH in `codegraph-context-events-schema-conformance.test.js` (lines 76-81
+  `deepEqual` the required array and exact enum — the addition reds this test until updated), and
+  the emit branches. The branch-precedence comment at `spawn-morty.ts:749` gains the new reasons.
+  — Type: test (a deliberately-wedged query returns within the bound with the skip event + no
+  orphan process; extend `codegraph-degradation.test.js`)
+- **AC-CGH-A2 — SUBTRACT `CodegraphService.getImpactRadius`.** Zero production callers
+  (spawn-morty uses `searchNodes`/`getCallers`/`buildContext`; `check-scope-diff.ts:9` declares
+  its own injected `ImpactRadiusService` seam — DIFFERENT interface, never wired by the CLI,
+  fail-open; the worker MCP lane is a separate process). *(refined: codebase — full sweep: 11
+  files reference the name; 6 touched test files enter the allowlist:*
+  `codegraph-service.test.js`, `codegraph-degradation.test.js`, `codegraph-index-cost.test.js`,
+  `integration/codegraph-real-index.test.js`, `integration/setup-codegraph-index.test.js`,
+  `integration/v2-end-to-end.test.js`; *3 DO-NOT-TOUCH:* `check-scope-diff.ts`,
+  `check-scope-diff-impact.test.js`, `rrh-forward-ref-coverage.test.js` *(same-name traps —
+  different seam + fixture literal).* The never-wired `ImpactRadiusService` seam stays (it is
+  check-scope-diff's own advisory surface, out of this bundle's scope) — recorded here per the
+  Simplification Review. — Type: test
+  (`! grep -q getImpactRadius extension/src/services/codegraph-service.ts`)
+- **AC-CGH-A3 — `runSyncQuery` DELETED.** *(refined: requirements + risk-scope — the disjunction
+  is collapsed; the complete caller set is `codegraph-service.ts:211/216/221`, all deleted or
+  re-routed by A1+A2, so no legitimate residual exists and "documented residual" was fig-leaf
+  surface.)* Deletion is the only passing outcome. `close()` is explicitly out of scope. — Type:
+  test (`! grep -q runSyncQuery extension/src/services/codegraph-service.ts`)
 
 ### WS-CGH-B — Verify-before-inject (staleness truthfulness)
 
-- **AC-CGH-B1 — every injected location resolves against the working tree at injection time.**
-  Before `renderCodegraphSection`, each entry with a `file` (and optional `line`) location is
-  verified: the file exists in the working tree, and when a line is present, `1 <= line <= <file
-  line count>`. Non-resolving entries are dropped. If ALL entries drop, the branch is a productive
-  skip (no injection, no `codegraph_context_injected` — preserves the b1089e97 injection-truthfulness
-  trap door in `extension/src/bin/CLAUDE.md`). The check is local and cheap (fs stat + line count);
-  do NOT import the check-readiness resolver machinery for this. — Type: test
-  (`codegraph-context-section.test.js` cases: stale-file entry dropped, stale-line entry dropped,
-  all-stale → skip + no injected event)
-- **AC-CGH-B2 — `stale_refs` skip reason + staleness telemetry.** Add `'stale_refs'` to
-  `CodegraphContextSkipReason` (`extension/src/types/index.ts:1137`) and emit it on the all-dropped
-  branch of B1 and the timeout branch of A1 may reuse it or add `'query_timeout'` (worker decides;
-  every added member lands in `activity-events.schema.json` + `activity-event-payload.test.js` in
-  the same ticket — the R-WSE-2/iter-7/iter-8 producer/schema-disconnect class is the known trap).
-  The `codegraph_context_injected` payload gains an optional `dropped_stale` integer (count of
-  entries dropped by B1) so the soak can measure staleness pressure on injections that still fire.
-  Schema-neutral for `state.json` (activity payloads only, no state schema bump). — Type: test
-  (schema conformance + payload tests)
+- **AC-CGH-B1 — node-level verification before rendering.** *(refined: codebase — the PRD's
+  original render-level hook was wrong: `renderCodegraphSection(entries: string[])` at
+  `spawn-morty.ts:598` receives location-baked strings; string-level verification would freeze
+  the display format into a parse contract.)* Verification runs at NODE level inside/around
+  `buildCodegraphEntries` (`spawn-morty.ts:695`) BEFORE `nodeLocation` renders: for each ranked
+  node with `file|filePath`, verify the repo-relative path (resolved from the worker's
+  `working_dir`) exists; when `line|startLine` present, `1 <= line <= <file line count>` (files
+  >5MB: existence check only). Non-resolving nodes are dropped.
+  **Disambiguation predicate (P0):** `ranked.length > 0` with zero surviving located nodes →
+  skip reason `'stale_refs'` — NEVER the existing `zero_hits` branches (`spawn-morty.ts:762,770`);
+  a genuinely empty `ranked` stays `zero_hits`. Location-less `Summary:` entries survive only
+  when ≥1 located entry survived; all-located-dropped + Summary present → productive skip
+  (`stale_refs`), no injected event.
+  **b1089e97 pin preservation (P1):** the filter inserts UPSTREAM of the frozen PATTERN_SHAPE
+  region — the empty-RENDER branch (`if (section.length === 0) { emitSkipped('zero_hits')`,
+  `spawn-morty.ts:770`) is preserved untouched; its literal and the
+  `codegraph-context-section.test.js` pins MUST NOT be weakened. Update the `extension/src/bin/CLAUDE.md`
+  b1089e97 ENFORCE prose to name BOTH branches in the same ticket.
+  **Freshness residual (stated):** content drift within surviving files is undetected — a file
+  edited since indexing that kept its line count passes while the symbol moved; the bound remains
+  `staleness_max_age_minutes`. `dropped_stale: 0` therefore under-counts true staleness.
+  — Type: test (4 named cases EXTENDING the existing `codegraph-context-section.test.js`:
+  stale-file dropped; stale-line dropped; all-stale → `stale_refs` skip + no injected event;
+  all-located-dropped + Summary present → `stale_refs` skip)
+- **AC-CGH-B2 — `stale_refs` + `dropped_stale` on BOTH branches.** *(refined: requirements P0 —
+  as originally spec'd the staleness metric was anti-correlated with staleness: the all-dropped
+  branch carried no count.)* Additions, all in THIS ticket (co-scoped with B1):
+  (a) `'stale_refs'` in all four homes (union `types/index.ts:1137`, schema enum, conformance-test
+  pins + case row in `codegraph-context-events-schema-conformance.test.js`, emit branch);
+  (b) `dropped_stale` (integer ≥0) on the `codegraph_context_injected` payload — THREE co-edit
+  sites: explicit schema property, `CodegraphContextInjectedPayload` (`types/index.ts:1140`), and
+  a test asserting the schema names the property (both event definitions are OPEN objects — an
+  emit-only change validates silently and never becomes contract);
+  (c) `dropped_stale` ALSO on the `stale_refs`-reason `codegraph_context_skipped` emit (= full
+  entry count) with its explicit schema property — C2's "dropped_stale totals" = sum across BOTH
+  event types;
+  (d) optional `ticket` (string) added to `codegraph_context_skipped` for per-rep attribution
+  (the conformance test's `required` pin tolerates optional additions).
+  — Type: test (schema conformance + payload tests; `activity-event-payload.test.js` +
+  `codegraph-context-events-schema-conformance.test.js`)
 
 ### WS-CGH-C — Soak readiness + protocol (RUN is a post-GA operator step)
 
-- **AC-CGH-C1 — soak protocol documented, no new machinery.** The PRD's `## Soak protocol` section
-  below is reconciled into `README.md`'s Code Graph section (~line 468) as the operator runbook.
-  NO new aggregation script: the existing `codegraph_session_summary` event already aggregates
-  injected/skipped cross-process via `countCodegraphContextEvents` (`mux-runner.ts`, b1089e97 trap
-  door), and per-injection detail lives in `state.json.activity`. — Type: artifact (README section)
-- **AC-CGH-C2 — soak baseline artifact (forward-created at RUN time).**
-  `prds/research/codegraph-soak-baseline.md` records, for ≥5 real pipeline reps with codegraph
-  enabled vs the trailing disabled GA-soak reps: injected/skipped/degraded counts, bytes + build_ms
-  per injection, `dropped_stale` totals, and per-rep worker outcomes (gate verdicts, iterations per
-  ticket, hands-off completion). Verdict tree: measured help → B-CGCAP default-on path proceeds on
-  live evidence · measured harm → revisit subtraction · neutral → stays opt-in, MCP lane and probe
-  stay shelved. — Type: artifact (forward-created; NOT part of the BUILD gate)
-- **AC-CGH-C3 — setup index cost bound re-verified, not rebuilt.** The soak window uses
-  `index_at_setup: true`; confirm the existing bound holds — `runCodegraphIndexAtSetup`
-  (`setup.ts:1762`) honors `index_timeout_ms` (120s floor 5000) and fails open with
-  `codegraph_index_failed`. Existing coverage (`codegraph-index-cost.test.js`,
-  `setup-codegraph-index.test.js`) is the evidence; extend only if a gap is found. — Type: test
-  (existing tests green; no new code expected)
+- **AC-CGH-C1 — soak runbook documented with honest semantics, no new machinery.** The `## Soak
+  protocol` section below is reconciled into `README.md`'s Code Graph section (header at
+  `README.md:464`) as `### Soak protocol`. NO new aggregation script (session-summary aggregation
+  via `countCodegraphContextEvents` already exists). **Owner clause (grep-checkable):** the same
+  diff adds a MASTER_PLAN Drain Queue row for the soak RUN (post-GA trigger, GA-serialization
+  stated). — Type: artifact (README section + MASTER_PLAN row)
+- **AC-CGH-C2 — soak baseline artifact (forward-created at RUN time; NOT a build ticket).**
+  `prds/research/codegraph-soak-baseline.md` records per rep: injected/skipped-by-reason counts,
+  bytes + build_ms per injection, `dropped_stale` totals (summed across BOTH event types),
+  spawn-path degrade evidence read from per-event `state.json.activity` (`codegraph_degraded`,
+  `query_timeout` skips — NEVER from `degraded_ops`, which is mux-runner-process-scoped), worker
+  outcomes (gate verdicts, iterations/ticket, hands-off completion) — identical fields for both
+  arms, disabled-arm outcomes read from the same per-session `state.json`/history (the disabled
+  arm's codegraph telemetry is empty BY DESIGN — emit-suppressed; absence of events is not
+  absence of effect).
+  **Verdict tree (downgraded — N=5 heterogeneous reps cannot support an efficacy claim):**
+  - GATING (machine-checkable): cost/stability predicates — no spawn-path stall exceeding the A1
+    aggregate bound; no leaked native process; setup index within `index_timeout_ms`; no
+    rep-aborting degrade cascade. Any violation → **harm** (mid-rep: freeze the session per the
+    standing scoped-kill recipe, discard the rep as `harm (aborted, rep discarded)`).
+  - NON-GATING (directional only): outcome deltas vs the comparison arm, per-rep confounders
+    recorded. Labeled **cross-version, directional at best** unless ≥2 contemporaneous disabled
+    reps ran on the SAME deploy.
+  - **Exposure floor (P0):** a rep counts toward the ≥5 only if ≥1 graph-tier ticket spawned with
+    codegraph enabled; total injections across counted reps < 10 → verdict **no-exposure
+    (inconclusive)** — extend the soak window; NEVER map zero exposure to "neutral."
+  - help → B-CGCAP proceeds on live evidence · harm → revisit subtraction · neutral (with
+    exposure floor met) → stays opt-in.
+  — Type: artifact (forward-created at RUN)
+- **AC-CGH-C3 — setup index cost bound re-verified, not rebuilt.** `runCodegraphIndexAtSetup`
+  (defined `setup.ts:204`, callsite `setup.ts:1762`) honors `index_timeout_ms`, fails open with
+  `codegraph_index_failed`. Gap-detection method: run the existing tests
+  (`codegraph-index-cost.test.js`, `integration/setup-codegraph-index.test.js`) — green = done;
+  extend only on an actual gap. — Type: test (existing tests green)
 
-## 2. Soak protocol (operator runbook — executed post-GA)
+## 2. Soak protocol (operator runbook — executed post-GA; reconciled into README by C1)
 
-1. Deploy the v2.1 line (or cherry-picked hardening) via `bash install.sh`; confirm
-   `codegraph-degradation` + `codegraph-context-section` tests green in the deployed gate.
-2. Flip `pickle_settings.json` `codegraph.enabled: true`, `index_at_setup: true` (source settings,
-   then `bash install.sh` — never hand-edit the deployed copy). `PICKLE_CODEGRAPH=off` remains the
-   one-step kill-switch.
-3. Run ≥5 real bundle reps through `/pickle-pipeline` (normal drain-queue payloads, not synthetic
-   corpus tickets).
-4. Read telemetry per session: `codegraph_session_summary` (injected/skipped/degraded),
-   per-injection `codegraph_context_injected` payloads (`bytes`, `build_ms`, `dropped_stale`), and
-   the standard run outcomes (worker gate verdicts, iterations/ticket, hands-off completion).
-5. Record `prds/research/codegraph-soak-baseline.md` per AC-CGH-C2 and take the verdict to the
-   B-CGCAP row.
+1. Deploy the v2.1 line via `bash install.sh` — **pin and record the exact tag/SHA in the
+   artifact** (no "or cherry-picked" ambiguity). Confirm the deployed gate green: from
+   `extension/`, `npm run test:fast` (deploy-soak variants need `PICKLE_INSTALL_ROOT` off-`$HOME`).
+2. **Precondition: no active pipeline session.** Flip source `pickle_settings.json`
+   `codegraph.enabled: true`, `index_at_setup: true`, then `bash install.sh`. Never hand-edit the
+   deployed copy.
+3. Run ≥5 real bundle reps through `/pickle-pipeline` (normal drain-queue payloads). **Rep
+   validity:** a rep counts only if ≥1 graph-tier ticket spawned with codegraph enabled. **Run ≥2
+   contemporaneous DISABLED reps on the same deploy** as the primary comparison arm (trailing GA
+   reps are context only).
+4. **Abort semantics (honest):** `PICKLE_CODEGRAPH=off` is a PER-SESSION kill-switch — env is
+   read at process construction (`codegraph-service.ts:137`) and cannot reach a running session;
+   set it in the launching shell for the NEXT rep. Mid-rep abort = freeze the session (scoped
+   kills per the standing recipe) and discard the rep; the deployed-settings edit and mid-run
+   `install.sh` are forbidden surfaces, NOT abort levers.
+5. Read telemetry per session dir: `codegraph_session_summary` for injected/skipped;
+   per-event `state.json.activity` for `codegraph_degraded` + `query_timeout`/`query_failed`/
+   `stale_refs` skips (with `dropped_stale`); standard run outcomes for both arms.
+6. Record `prds/research/codegraph-soak-baseline.md` per AC-CGH-C2; take the verdict to B-CGCAP.
+7. **Exit:** restore the pre-soak line (checkout the recorded GA tag → `bash install.sh`) or
+   explicitly record the decision to stay on v2.1.
+
+## Risks *(refined: risk-scope — paste-ready register, cycle 3)*
+
+- Runtime-version confound: enabled soak reps run the v2.1 deploy; the trailing disabled baseline
+  ran v2.0 GA — deltas attribute the whole v2.1 diff to codegraph. Mitigation: pin the exact
+  deploy SHA in the artifact; run ≥2 contemporaneous disabled reps on the SAME deploy as the
+  primary comparison arm; label the GA-trailing comparison directional-only.
+- Kill-switch semantics: PICKLE_CODEGRAPH is read at process construction; it cannot reach a
+  running session. It is a per-SESSION switch (next rep). Mid-rep abort = freeze the session and
+  discard the rep; the deployed-settings edit and mid-run install.sh are forbidden surfaces and
+  are NOT abort levers.
+- Serve-watcher writer-ownership: serve --mcp runs a default-active watcher that WRITES the db;
+  reused as the query boundary it mutates staleness state mid-soak. Mitigation: prefer the
+  SDK-embedded runner (init/open never auto-watch); if serve is reused, mandate
+  CODEGRAPH_NO_WATCH=1 (NOT CODEGRAPH_NO_DAEMON=1 — verified not a watcher kill-switch).
+- Query-boundary feasibility: SDK queries are sync-only (async-race shape is dead); the vendored
+  CLI exists (query|callers|impact --json) but keys callers by name and its JSON shape is
+  unrecorded; the vendored bin shims to a grandchild, so plain spawn timeouts leak the native
+  binary. Mitigation: house runner + detached group-kill; research artifact settles the shape
+  pre-plan-approval, citing codegraph-api-inventory.json.
+- Happy-path latency: up to 11 queries/spawn; per-query subprocess pays SDK open each time.
+  Mitigation: one batched subprocess per section build; p50 budget; build_ms is the measure.
+- Soak validity: N=5 heterogeneous reps cannot support an efficacy verdict. Mitigation: gating
+  cost/stability predicates; efficacy directional-only; per-rep confounders recorded; exposure
+  floor with a no-exposure verdict branch.
+- Orphaned RUN: no owner/trigger post-GA. Mitigation: MASTER_PLAN Drain Queue row created in
+  WS-CGH-C1; dormancy line decouples bundle-Done from the soak.
+- Residual staleness: B1 catches dangling refs only; content drift within surviving files is
+  undetected (bounded only by staleness_max_age_minutes).
 
 ## 3. Simplification Review (subtract-before-add)
 
-**WS-CGH-A** — (1) Necessary? Yes: the hang surface is real, admitted in-source ("claim is
-forfeit"), and un-timeboxable in-process because the upstream calls are sync — a blocked event
-loop cannot be raced. (2) Reuse? Yes: the house finite-`timeout` subprocess pattern (bin subsystem
-invariant #3, enforced by existing audits) and the existing skip-event surface; no new
-gate/flag/state field. (3) Guarding brittle complexity that should be subtracted? Partly — and it
-IS subtracted: A2 deletes the dead `getImpactRadius`, A3 targets `runSyncQuery` itself for
-deletion rather than wrapping it. (4) Subtraction: two service methods/paths deleted; the
-"forfeited-claim" comment class disappears.
+**WS-CGH-A** — (1) Necessary: the hang surface is real and un-timeboxable in-process (SDK queries
+are sync; a blocked event loop cannot be raced). (2) Reuse: house finite-timeout subprocess
+pattern + `killProcessGroup` (R-OMTD) + existing skip-event surface; no new gate/flag/state
+field. (3)+(4) Subtracts: `getImpactRadius` (dead), `runSyncQuery` (deleted outright — the
+"documented residual" fallback was itself subtracted in refinement), the dead async-API option
+branch. The `ImpactRadiusService` seam in check-scope-diff is KEPT: it is that module's own
+advisory surface, not codegraph-service scope.
 
-**WS-CGH-B** — (1) Necessary? Yes: stale `file:line` injection is hallucination-inducing, the
-opposite of the feature's purpose. (2) Reuse? The check is deliberately local (fs stat + line
-count) — importing the check-readiness resolver for this would be the over-engineering smell;
-the skip/emit surface is reused as-is. (3) Brittle-complexity check: the alternative pure
-subtraction (drop `file:line` suffixes entirely) was considered and rejected — location is the
-value proposition of the section; verify-then-inject keeps it honest instead of deleting it.
-(4) Subtraction: none beyond dropped stale entries; recorded as "no subtraction available" with
-the above reason.
+**WS-CGH-B** — (1) Necessary: stale `file:line` injection is hallucination-inducing. (2) Reuse:
+local fs stat + line count (deliberately NOT the check-readiness resolver); existing skip/emit
+surface. (3) The pure-subtraction alternative (drop `file:line` entirely) rejected — location is
+the section's value. (4) No subtraction available; recorded. Refinement moved the hook from
+render-level to node-level, REMOVING a would-be parse contract on the display format.
 
-**WS-CGH-C** — (1) Adds no runtime code: protocol doc + forward-created artifact. (2) Reuses the
-b1089e97 session-summary aggregation instead of a new report script. (3)/(4) Pure reuse/doc — the
-ideal case. The one deliberate non-build: the synthetic probe stays a stub (see out-of-scope)
-rather than being either finished or deleted — finishing it duplicates what the soak measures
-more cheaply; deleting it forecloses the optional follow-up the operator kept open.
+**WS-CGH-C** — Pure protocol/doc + forward-created artifact; reuses session-summary aggregation;
+no new script. The probe stays a stub (not finished, not deleted — optional follow-up).
 
 ## 4. Out of scope
 
-- **B-CGPROBE probe build/run** — demoted to optional follow-up (operator decision 2026-07-11);
-  the stub (`codegraph-efficacy-probe.ts`) and its corpus stay as-is. Revisit only if soak
-  telemetry is ambiguous.
-- **Default-on flip + propagation + supply-chain policy** — B-CGCAP, still evidence-gated; the
-  soak baseline becomes its evidence input.
-- **`expose_mcp_to_workers` flip** — stays `false` (C0-gated, B-CGCAP WS-E).
-- **Any change to the `## Code Graph Context` section format, term derivation, or tier gating** —
-  hardening only; format changes would confound the soak baseline.
+- B-CGPROBE probe build/run (stub + corpus stay as-is; optional follow-up iff soak ambiguous).
+- Default-on flip + propagation + supply-chain policy (B-CGCAP; soak baseline is its evidence).
+- `expose_mcp_to_workers` flip (stays false, C0-gated).
+- Any change to the `## Code Graph Context` section format, term derivation, or tier gating.
+- `CodegraphService.close()` (A3 names it out of scope).
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Entry | Exit | Files |
+|:---|:---|:---|:---|:---|:---|:---|
+| 10 | 909bf131 | Bound query hang surface: batched subprocess runner + group-kill + degrade wiring + query_timeout/query_failed; delete runSyncQuery | High | clean tree | no unraceable spawn-path query; runSyncQuery gone | codegraph-service.ts, spawn-morty.ts, types/index.ts, activity-events.schema.json, codegraph-query-runner.ts (new), 3 test files |
+| 20 | 8321922b | Subtract CodegraphService.getImpactRadius (zero prod callers) + test-pin sweep | High | 909bf131 done | getImpactRadius absent from service | codegraph-service.ts + 6 test files (3 DO-NOT-TOUCH pinned) |
+| 30 | 2e632f9a | Verify-before-inject: node-level staleness filter + stale_refs + dropped_stale both branches | High | 909bf131, 8321922b | every injected file:line resolves at injection time | spawn-morty.ts, types/index.ts, schema, bin/CLAUDE.md, 3 test files |
+| 40 | 6f562114 | README ### Soak protocol (honest semantics) + MASTER_PLAN soak-RUN row | Medium | 909bf131, 2e632f9a | runbook executable from README alone | README.md, prds/MASTER_PLAN.md |
+| 50 | ef611d8a | Re-verify setup index cost bound via existing tests | Medium | A-tickets done | green evidence recorded | (tests only on proven gap) |
+| 60 | 6317933b | Harden: code quality review of the bundle diff | High | all impl done | zero P0-P1 violations | bundle diff files |
+| 70 | a53a1db1 | Audit: data flow integrity (subprocess round-trip, counts, precedence) | High | 6317933b | zero CRITICAL/HIGH or trap-doored | bundle diff files |
+| 80 | fc240dc2 | Harden: test quality review of the bundle test surface | High | a53a1db1 | zero P0-P1 assertion gaps; all ACs mapped | bundle test files |
+| 90 | 23f36f46 | Audit: cross-reference consistency (docs ↔ telemetry names) | High | fc240dc2 | zero CRITICAL/HIGH doc mismatches | README.md, bin/CLAUDE.md, MASTER_PLAN.md, PRD |
+
+Wiring ticket: SKIPPED — co-location mandates make each ticket self-integrating; no cross-ticket module handoff.
