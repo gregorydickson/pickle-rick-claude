@@ -266,8 +266,10 @@ function makeWorkingDir(files) {
   return dir;
 }
 
-test('staleness: node citing a missing file is dropped, fresh sibling survives', async () => {
+test('staleness: node citing a missing file is dropped, fresh sibling survives (injected branch carries dropped_stale)', async () => {
   const workingDir = makeWorkingDir({ 'real.ts': 'line1\nline2\nline3\n' });
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-staleness-inject-'));
+  const statePath = seedState(sessionDir);
   const service = fakeService({
     hits: [
       { node: { id: 'n1', name: 'freshFn', file: 'real.ts', line: 2 }, score: 5 },
@@ -276,10 +278,20 @@ test('staleness: node citing a missing file is dropped, fresh sibling survives',
   });
   const section = await buildCodegraphContextSection({
     tier: 'medium', title: makeTicket().task, ticketContent: makeTicket().ticketContent,
-    service, settings: makeSettings(), workingDir,
+    service, settings: makeSettings(), sessionDir, ticketId: 'tinject', workingDir,
   });
   assert.ok(section.includes('freshFn'), 'surviving node must render');
   assert.ok(!section.includes('staleFn'), 'stale-file node must be dropped');
+  // AC-CGH-B2 "both branches": the INJECTED branch (survivors present) must still carry the
+  // dropped-node count. The stale_refs SKIP branch is covered elsewhere; this exercises the
+  // dropped_stale transformation end-to-end on the branch where a section IS emitted.
+  const activity = JSON.parse(fs.readFileSync(statePath, 'utf8')).activity;
+  const injected = activity.filter((e) => e.event === 'codegraph_context_injected');
+  assert.equal(injected.length, 1, 'exactly one injected event (survivor present)');
+  assert.equal(injected[0].dropped_stale, 1, 'dropped_stale must equal the dropped-node count on the injected branch');
+  assert.equal(injected[0].hits_count, 2, 'hits_count is the pre-drop ranked-hits length (1 dropped + 1 survivor)');
+  assert.equal(activity.filter((e) => e.event === 'codegraph_context_skipped').length, 0,
+    'a surviving node must NOT emit a skip event');
 });
 
 test('staleness: two nodes citing the same file get independent per-line verdicts (stat cache correctness)', async () => {
