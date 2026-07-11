@@ -1,7 +1,13 @@
 // @tier: fast
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CodegraphService } from '../services/codegraph-service.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SERVICE_SRC_PATH = path.resolve(__dirname, '../src/services/codegraph-service.ts');
 
 // --- helpers ---------------------------------------------------------------
 
@@ -262,6 +268,19 @@ test('persistently unavailable dependency degrades once, not per call', async ()
   await svc.indexAll();
   await svc.sync();
   assert.equal(events.length, 1, 'absent dependency must emit exactly one degrade for the session');
+});
+
+// AC-CGH-A3 (runSyncQuery DELETED) + AC-CGH-A2 (getImpactRadius SUBTRACT): both ACs verify
+// via a SOURCE grep (`! grep -q <name> extension/src/services/codegraph-service.ts`). The
+// `surface shrunk` instance test below proves the runtime surface; this test institutionalizes
+// the AC's exact source-deletion check as a regression guard so neither method can be
+// re-introduced (as a private helper, dead code, or comment) without reddening the suite.
+test('source-level deletion: neither runSyncQuery nor getImpactRadius appears in the service source', () => {
+  const src = readFileSync(SERVICE_SRC_PATH, 'utf8');
+  assert.equal(src.includes('runSyncQuery'), false,
+    'AC-CGH-A3: runSyncQuery must be DELETED from codegraph-service.ts source');
+  assert.equal(src.includes('getImpactRadius'), false,
+    'AC-CGH-A2: getImpactRadius must be SUBTRACTED from codegraph-service.ts source');
 });
 
 // 8321922b: getImpactRadius (zero production callers) was subtracted from the service.
