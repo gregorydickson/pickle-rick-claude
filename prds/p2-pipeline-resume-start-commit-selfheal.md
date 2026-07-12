@@ -2,7 +2,8 @@
 title: "B-PSCG — Symmetric start_commit self-heal: paused-PRD → resume → pipeline must reach citadel"
 priority: P2
 finding: R-PSCG
-status: queued
+status: superseded
+superseded_by: "R-SCPIN (p2-start-commit-adopt-pinned-sha.md); shipped-as 2bbf5770 with a live defect"
 type: bug-fix-bundle
 schema_neutral: true
 target_version: v2.1.0
@@ -11,6 +12,18 @@ source_assessment: "prds/BUG-REPORT-2026-07-02-pipeline-resume-start-commit-gap-
 ---
 
 # B-PSCG — pipeline resume start_commit self-heal
+
+## 0. Status — SUPERSEDED, with a live P0 carried forward (refinement 2026-07-12, 3×3 cycles)
+
+These branches shipped 2026-07-02 in `2bbf5770` and are live in the deployed tree. **Do not
+re-implement — a diff that adds these branches is a regression.** But the bundle does NOT close
+clean: AC-PSCG-1/2 adopt `computeBaselineStartCommit` = `merge-base(<default>, HEAD)`, which is
+NOT what `start_commit` means (`setup.ts:1414/:1432` stamp HEAD-at-session-start — the same SHA
+as `pinned_sha`). On `experiment/fable-operating-manual` the two differ by 97 commits / 154
+files, and citadel's remediator WRITES code against that range. Successor: **R-SCPIN**
+(`prds/p2-start-commit-adopt-pinned-sha.md`). Authoring lesson (owned): this PRD itself violated
+the pre-launch stale-premise grep — one grep for the heal's log string would have shown it
+shipped ten days earlier.
 
 ## 0. The defect
 

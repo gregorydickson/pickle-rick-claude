@@ -101,3 +101,24 @@ not your source diff (lands only at `install.sh`).
 load-bearing recovery-path tickets in-process (or build then `install.sh`-deploy incrementally so the
 rest runs on the fixed runtime). First try to dissolve it: tier the load-bearing ticket so it dodges the
 deployed bug (e.g. `large` → detached path). Non-salvage tickets build normally.
+
+---
+
+## Pre-launch stale-premise check (MANDATORY — earned by B-PSCG, 2026-07-12)
+
+Before authoring or launching any bug/fix bundle, grep HEAD **and the deployed tree**
+(`~/.claude/pickle-rick/extension/`) for the finding's most distinctive artifact — its log
+string, guard, or R-code annotation. A finding is "open" only if its artifacts are ABSENT from
+both. B-PSCG was authored, refined, and nearly launched for a fix that had shipped ten days
+earlier (`2bbf5770`) — one grep would have caught it.
+
+Two further authoring rules, same provenance:
+- **Recoverability line.** A PRD that HEALS a state field must state: *"is this value still
+  recoverable at the seam where the heal fires?"* (`prd_path`: yes — time-invariant.
+  `start_commit`: no — the build destroys it; and check whether a CO-STAMPED field already
+  holds it, e.g. `pinned_sha`.)
+- **Contract-match artifact.** When a Simplification Review mandates reuse of a primitive
+  ("REUSE if its contract fits"), the research phase MUST print both contracts side by side and
+  assert the match IN THE RESEARCH ARTIFACT. An unanswered mandatory check in a shipped PRD is
+  a process failure. (B-PSCG asked the question, nobody answered it, and a review-base
+  primitive shipped as a session baseline — 97 commits wrong.)
