@@ -230,6 +230,37 @@ test('AC-WMFF-2B: complete artifacts + Failed + dirty tree → fires with the fu
   }
 });
 
+// `green` was the ONLY verdict any payload test schema-validated. But a worker that dies at
+// budget death typically never persisted one, so `absent` (the `readWorkerGateVerdict` default
+// on a missing frontmatter field) is the shape production emits MOST often — and it went
+// unvalidated. A payload the runtime routinely writes must be provably schema-conformant.
+test('AC-WMFF-2B: a ticket with NO worker_gate_verdict field emits "absent" — and THAT payload is schema-conformant', () => {
+  const { repo, baseSha } = makeRepo('wmff-2b-absent-repo-');
+  const { sessionDir } = makeSession('wmff-2b-absent-sess-');
+  try {
+    const id = 'bbccabsn';
+    // No `worker_gate_verdict` in frontmatter — the budget-death worker never got to persist one.
+    makeTicket(sessionDir, id, { status: 'Failed', extraFiles: { 'worker_session_1.log': '' } });
+    writeFileSync(path.join(repo, 'src.ts'), 'export const y = 2;\n');
+
+    const payload = claimWorkerProducedEverythingButCommit({
+      sessionDir, workingDir: repo, ticketId: id, iteration: 1, sessionLogBytes: 0, preIterSha: baseSha,
+    });
+
+    assert.ok(payload, 'the predicate still fires — a missing verdict is not a missing artifact');
+    assert.equal(payload.worker_gate_verdict, 'absent', 'a missing frontmatter field reads "absent", never undefined');
+
+    const res = validate(
+      { event: 'worker_produced_everything_but_commit', ts: new Date().toISOString(), ticket: id, gate_payload: payload },
+      'worker_produced_everything_but_commit',
+    );
+    assert.equal(res.valid, true, res.error);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('AC-WMFF-2B: clean tree + an UNREFERENCED commit in preIterSha..HEAD → fires with window_commit set', () => {
   const { repo, baseSha } = makeRepo('wmff-2b-win-repo-');
   const { sessionDir, statePath } = makeSession('wmff-2b-win-sess-');

@@ -1519,6 +1519,31 @@ test('activity-event-payload: worker_produced_everything_but_commit rejects an u
   assert.equal(result.valid, false, "worker_gate_verdict must be one of green|red|absent");
 });
 
+// The enum has three members but only `green` was ever validated positively (the negative case
+// above proves `maybe` is rejected — it does not prove `absent` and `red` are ACCEPTED). A
+// budget-dead worker usually never persisted a verdict, so `absent` is the shape the runtime
+// emits most often; `red` is the gate-failed-then-died shape. Both must validate.
+for (const verdict of ['absent', 'red']) {
+  test(`activity-event-payload: worker_produced_everything_but_commit accepts worker_gate_verdict '${verdict}'`, () => {
+    const result = validate({
+      event: 'worker_produced_everything_but_commit',
+      ts: TS,
+      ticket: 'abc12345',
+      gate_payload: {
+        tier: 'large',
+        prefixes_checked: ['research', 'code_review'],
+        session_log_bytes: 0,
+        worker_gate_verdict: verdict,
+        dirty_in_scope_paths: ['extension/src/bin/mux-runner.ts'],
+        truncated: false,
+        total_count: 1,
+        window_commit: null,
+      },
+    }, 'worker_produced_everything_but_commit');
+    assert.equal(result.valid, true, `'${verdict}' is a real production verdict and must validate: ${result.error}`);
+  });
+}
+
 test('activity-event-payload: worker_produced_everything_but_commit caps dirty_in_scope_paths at 20 (maxItems)', () => {
   // The 20MB-state.json incident precedent: the path list is capped in the SCHEMA too,
   // so an uncapped producer cannot quietly write an unbounded array into state.json.
