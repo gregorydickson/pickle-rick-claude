@@ -317,6 +317,81 @@ for (const { label, stamp } of [
   });
 }
 
+// Window LOWER bound. Every other window test commits AFTER `preIterSha`, so all of them pass
+// whether the walk starts at `preIterSha` or at the session `start_commit`. These two pin the
+// bound: widening the walk to `start_commit..HEAD` — the exact regression the bounded-window rule
+// exists to prevent — must turn the suite RED, because a commit from an EARLIER iteration is not
+// this iteration's unclaimed work.
+test('AC-WMFF-2B: a commit BELOW preIterSha is outside the window → not reported as window_commit', () => {
+  const { repo } = makeRepo('wmff-2b-lowbound-repo-');
+  const { sessionDir } = makeSession('wmff-2b-lowbound-sess-');
+  try {
+    const id = 'bbaalowb';
+    makeTicket(sessionDir, id, { status: 'Failed', extraFiles: { 'worker_session_1.log': '' } });
+
+    // A prior iteration's commit. Under a `start_commit..HEAD` walk this is unreferenced and
+    // would be wrongly surfaced as THIS iteration's unclaimed work.
+    writeFileSync(path.join(repo, 'earlier.ts'), 'export const earlier = 1;\n');
+    git(repo, ['add', 'earlier.ts']);
+    git(repo, ['commit', '-q', '-m', 'a previous iteration already landed this']);
+
+    // mux-runner.ts captures preIterSha = readHeadCommit(workingDir) at the TOP of the iteration.
+    const preIterSha = git(repo, ['rev-parse', 'HEAD']);
+    // This iteration then commits nothing and leaves a clean tree: preIterSha..HEAD is EMPTY.
+
+    assert.equal(
+      claimWorkerProducedEverythingButCommit({
+        sessionDir, workingDir: repo, ticketId: id, iteration: 1, sessionLogBytes: 0, preIterSha,
+      }),
+      null,
+      'an empty window over a clean tree means nothing is on the floor — a prior iteration\'s commit is not this one\'s',
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// `rev-list` emits newest-first, so a NON-empty window whose newest commit is unclaimed would find
+// that commit before ever reaching a below-window one — such a fixture passes even under a widened
+// walk, for the wrong reason. To pin the lower bound with a non-empty window, the IN-window commit
+// must be claimed: correct code then finds nothing unreferenced and declines, while a
+// `start_commit..HEAD` walk falls through to the unclaimed below-window commit and fires.
+test('AC-WMFF-2B: a claimed in-window commit does not let the walk fall through to a below-window one', () => {
+  const { repo } = makeRepo('wmff-2b-lowbound2-repo-');
+  const { sessionDir } = makeSession('wmff-2b-lowbound2-sess-');
+  try {
+    const id = 'bbbblowc';
+    makeTicket(sessionDir, id, { status: 'Failed', extraFiles: { 'worker_session_1.log': '' } });
+
+    // Unclaimed, and BELOW the window — a widened walk would surface this.
+    writeFileSync(path.join(repo, 'earlier.ts'), 'export const earlier = 1;\n');
+    git(repo, ['add', 'earlier.ts']);
+    git(repo, ['commit', '-q', '-m', 'below the window, unclaimed']);
+    const below = git(repo, ['rev-parse', 'HEAD']);
+
+    const preIterSha = below;   // the iteration starts here
+
+    // Inside the window, but already claimed by a sibling ticket.
+    writeFileSync(path.join(repo, 'inside.ts'), 'export const inside = 2;\n');
+    git(repo, ['add', 'inside.ts']);
+    git(repo, ['commit', '-q', '-m', 'in-window work, claimed']);
+    const inside = git(repo, ['rev-parse', 'HEAD']);
+    makeTicket(sessionDir, 'bbccsibl', { status: 'Done', frontmatter: { completion_commit: inside } });
+
+    assert.equal(
+      claimWorkerProducedEverythingButCommit({
+        sessionDir, workingDir: repo, ticketId: id, iteration: 1, sessionLogBytes: 0, preIterSha,
+      }),
+      null,
+      `the only in-window commit is claimed → nothing on the floor; ${below.slice(0, 8)} is below the window and must not be resurrected`,
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('AC-WMFF-2B: dirty_in_scope_paths is capped at 20 with truncated + total_count telling the truth', () => {
   const { repo, baseSha } = makeRepo('wmff-2b-cap-repo-');
   const { sessionDir } = makeSession('wmff-2b-cap-sess-');
