@@ -61,9 +61,18 @@ function makeExtensionRoot(tmpRoot) {
   return extRoot;
 }
 
-function makeMonitorFixture({ template }) {
+/**
+ * Launchers name the tmux session `<prefix>-<session-hash>` for the session dir it
+ * manages, and `restartDeadWatcherPanes` refuses any session whose hash is not ours.
+ * Fixtures must honor that pairing or they exercise a layout production cannot build.
+ */
+function sessionDirNameFor(sessionName) {
+  return sessionName.slice(sessionName.lastIndexOf('-') + 1);
+}
+
+function makeMonitorFixture({ template, sessionName = 'pickle-monitor' }) {
   const tmpRoot = makeSessionRoot('pickle-monitor-resilience-');
-  const sessionDir = path.join(tmpRoot, 'session');
+  const sessionDir = path.join(tmpRoot, sessionDirNameFor(sessionName));
   writeState(sessionDir, { command_template: template });
   return {
     tmpRoot,
@@ -161,7 +170,7 @@ describe.each(MONITOR_MODE_CASES)(
 describe.each(MONITOR_MODE_CASES)(
   'R-MWCL-3 %s: collapsed watcher layout recreates pane 2 and pane 3 with the mode-specific command',
   (mode, template, _step, _expectedStepMode, paneTwoPattern) => {
-    const fixture = makeMonitorFixture({ template });
+    const fixture = makeMonitorFixture({ template, sessionName: `${mode}-collapsed` });
     try {
       const restart = makeRestartSpawn(fixture.sessionDir, `${mode}-collapsed`);
       restartDeadWatcherPanes(fixture.sessionDir, fixture.extRoot, mode, restart.spawnSyncFn);
@@ -216,7 +225,7 @@ describe.each(MONITOR_MODE_CASES)(
 describe.each(MONITOR_MODE_CASES)(
   'R-MWCL-5 %s: watchdog fires immediately and uses the mode-specific pane 2 command',
   async (mode, template, _step, _expectedStepMode, paneTwoPattern) => {
-    const fixture = makeMonitorFixture({ template });
+    const fixture = makeMonitorFixture({ template, sessionName: `${mode}-watchdog` });
     try {
       const sessionName = `${mode}-watchdog`;
       const paneCommands = { 0: 'zsh', 1: 'bash', 2: 'fish', 3: 'sh' };
@@ -260,7 +269,7 @@ describe.each(MONITOR_MODE_CASES)(
 describe.each(MONITOR_MODE_CASES)(
   'R-MWCL-5 %s: first-tick failure still leaves the watchdog interval armed',
   async (mode, template) => {
-    const fixture = makeMonitorFixture({ template });
+    const fixture = makeMonitorFixture({ template, sessionName: `${mode}-watchdog-flaky` });
     try {
       const sessionName = `${mode}-watchdog-flaky`;
       const basePaneCommands = { 0: 'zsh', 1: 'bash', 2: 'fish', 3: 'sh' };

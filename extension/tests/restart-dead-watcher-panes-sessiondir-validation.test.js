@@ -378,7 +378,7 @@ test('restartDeadWatcherPanes: ambient tmux session owns THIS sessionDir → res
     }
 });
 
-test('restartDeadWatcherPanes: tmux session name matching no pickle session → respawns', () => {
+test('restartDeadWatcherPanes: tmux session carrying no hash of ours → no send-keys', () => {
     const savedDataRoot = process.env.PICKLE_DATA_ROOT;
     const tmpRoot = makeTmpRoot();
     try {
@@ -386,13 +386,37 @@ test('restartDeadWatcherPanes: tmux session name matching no pickle session → 
         makeDataRootSession(tmpRoot, '2026-07-11-86dd509f');
         const sessionDir = makeValidSessionDir(tmpRoot);
         const extRoot = makeExtRoot(tmpRoot);
-        // A layout whose naming we do not own is not ours to judge — permit.
+        // Fail CLOSED: a name we cannot tie to our own session dir is not ours to drive.
         const { calls, spawnSyncFn } = makeSpawnCapture('pickle-dead');
 
         restartDeadWatcherPanes(sessionDir, extRoot, 'pickle', spawnSyncFn);
 
         const sendKeys = calls.filter(c => c.command === 'tmux' && c.args[0] === 'send-keys');
-        assert.ok(sendKeys.length > 0, 'unrecognized tmux session names stay permitted');
+        assert.equal(sendKeys.length, 0, 'a tmux session we cannot claim is never driven');
+    } finally {
+        if (savedDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = savedDataRoot;
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+// The live-hijack regression: a worker's data root does NOT contain the operator's
+// session, so resolving the ambient name against the data root finds no owner and
+// falls open. Ownership must come from the (name, sessionDir) pair alone.
+test('restartDeadWatcherPanes: ambient session absent from OUR data root → still no send-keys', () => {
+    const savedDataRoot = process.env.PICKLE_DATA_ROOT;
+    const tmpRoot = makeTmpRoot();
+    try {
+        // Sandboxed data root: the live `pipeline-86dd509f` session is nowhere in it.
+        process.env.PICKLE_DATA_ROOT = tmpRoot;
+        const sessionDir = makeValidSessionDir(tmpRoot);
+        const extRoot = makeExtRoot(tmpRoot);
+        const { calls, spawnSyncFn } = makeSpawnCapture('pipeline-86dd509f');
+
+        restartDeadWatcherPanes(sessionDir, extRoot, 'pickle', spawnSyncFn);
+
+        const sendKeys = calls.filter(c => c.command === 'tmux' && c.args[0] === 'send-keys');
+        assert.equal(sendKeys.length, 0, 'an unresolvable ambient session must not fall open');
     } finally {
         if (savedDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
         else process.env.PICKLE_DATA_ROOT = savedDataRoot;

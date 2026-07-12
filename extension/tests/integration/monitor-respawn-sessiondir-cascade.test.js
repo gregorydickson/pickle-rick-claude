@@ -73,8 +73,10 @@ function makeSpawnCapture(sessionName = 'cascade-test', paneCommands = {}) {
   };
 }
 
+// Session dir carries the hash the fake tmux session name (`cascade-test`) advertises —
+// restartDeadWatcherPanes refuses any tmux session whose hash is not ours.
 function makeValidSession(tmpRoot) {
-  const sessionDir = path.join(tmpRoot, 'session');
+  const sessionDir = path.join(tmpRoot, 'test');
   fs.mkdirSync(sessionDir, { recursive: true });
   fs.writeFileSync(
     path.join(sessionDir, 'state.json'),

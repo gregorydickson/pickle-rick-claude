@@ -40,6 +40,15 @@ function withSerializedPath(shimDir, fn) {
   return queued;
 }
 
+/**
+ * Launchers name the tmux session `<prefix>-<session-hash>` for the session dir it
+ * manages, and `restartDeadWatcherPanes` refuses any session whose hash is not ours.
+ * Fixtures must honor that pairing or they exercise a layout production cannot build.
+ */
+function sessionDirNameFor(sessionName) {
+  return sessionName.slice(sessionName.lastIndexOf('-') + 1);
+}
+
 function makeCollapsedLayoutFixture({
   sessionName = 'pickle-collapsed-layout',
   mode = 'pickle',
@@ -50,7 +59,7 @@ function makeCollapsedLayoutFixture({
   const shimDir = path.join(tmpRoot, 'bin');
   fs.mkdirSync(shimDir, { recursive: true });
 
-  const sessionDir = path.join(tmpRoot, 'session');
+  const sessionDir = path.join(tmpRoot, sessionDirNameFor(sessionName));
   const extRoot = path.join(tmpRoot, 'ext');
   fs.mkdirSync(sessionDir, { recursive: true });
   fs.mkdirSync(path.join(extRoot, 'extension', 'bin'), { recursive: true });
@@ -157,9 +166,9 @@ test('restartDeadWatcherPanes restores a collapsed 1x2 watcher layout within the
 
     assert.equal(f.missingCount(), 0, 'collapsed layout should have no missing watcher panes after fallback');
     assert.match(calls, /tmux split-window -v -l 40% -t pickle-collapsed-layout:monitor\.0/);
-    assert.match(calls, /tmux send-keys -t pickle-collapsed-layout:monitor\.2 .+morty-watcher\.js .+session.+ Enter/);
+    assert.match(calls, /tmux send-keys -t pickle-collapsed-layout:monitor\.2 .+morty-watcher\.js .+layout.+ Enter/);
     assert.match(calls, /tmux split-window -h -t pickle-collapsed-layout:monitor\.2/);
-    assert.match(calls, /tmux send-keys -t pickle-collapsed-layout:monitor\.3 .+raw-morty\.js .+session.+ Enter/);
+    assert.match(calls, /tmux send-keys -t pickle-collapsed-layout:monitor\.3 .+raw-morty\.js .+layout.+ Enter/);
     assert.ok(
       durationMs <= RESPAWN_WATCHDOG_INTERVAL_MS + 100,
       `recovery should stay within watchdog bound; got ${durationMs}ms`,
