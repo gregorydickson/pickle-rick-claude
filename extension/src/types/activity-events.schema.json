@@ -1759,6 +1759,38 @@
         }
       }
     },
+    "worker_produced_everything_but_commit": {
+      "type": "object",
+      "required": ["event", "ts", "ticket", "gate_payload"],
+      "properties": {
+        "event": { "type": "string", "const": "worker_produced_everything_but_commit" },
+        "ts": { "type": "string" },
+        "ticket": { "type": "string" },
+        "gate_payload": {
+          "type": "object",
+          "required": [
+            "tier",
+            "prefixes_checked",
+            "session_log_bytes",
+            "worker_gate_verdict",
+            "dirty_in_scope_paths",
+            "truncated",
+            "total_count",
+            "window_commit"
+          ],
+          "properties": {
+            "tier": { "type": "string", "enum": ["trivial", "small", "medium", "large"] },
+            "prefixes_checked": { "type": "array", "items": { "type": "string" } },
+            "session_log_bytes": { "type": "integer", "minimum": 0 },
+            "worker_gate_verdict": { "type": "string", "enum": ["green", "red", "absent"] },
+            "dirty_in_scope_paths": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
+            "truncated": { "type": "boolean" },
+            "total_count": { "type": "integer", "minimum": 0 },
+            "window_commit": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
     "boundary_commit_resolved": {
       "type": "object",
       "required": ["event", "ts", "ticket", "gate_payload"],
@@ -1973,6 +2005,7 @@
     { "$ref": "#/definitions/orphan_commit_unreattachable" },
     { "$ref": "#/definitions/worker_silent_death" },
     { "$ref": "#/definitions/worker_produced_nothing" },
+    { "$ref": "#/definitions/worker_produced_everything_but_commit" },
     { "$ref": "#/definitions/boundary_commit_resolved" },
     { "$ref": "#/definitions/pre_reset_diff_archived" },
     { "$ref": "#/definitions/pre_reset_archive_failed" },

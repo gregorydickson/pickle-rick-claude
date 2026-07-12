@@ -164,7 +164,9 @@ test('A2: per-ticket ladder exhaustion ADVANCES while a runnable Todo remains, e
   writeTicket(sessionDir, runnable, { id: runnable, status: 'Todo', title: 'next', order: 2 });
   try {
     const action = advanceOrExitOnLadderExhaustion({
-      sessionDir, statePath, ticketId: exhausted, reason: 'recovery_exhausted: test', log: () => {},
+      // AC-WMFF-2A: workingDir is required — the flip now archives a dirty tree first.
+      // sessionDir is not a git repo, so archiveBeforeDestructive self-fails (best-effort).
+      sessionDir, statePath, workingDir: sessionDir, ticketId: exhausted, reason: 'recovery_exhausted: test', log: () => {},
     });
     assert.equal(action, 'advance', 'a remaining runnable Todo → advance, not run-exit');
     assert.equal(getTicketStatus(sessionDir, exhausted), 'Failed', 'exhausted ticket is flipped Failed');
@@ -185,7 +187,7 @@ test('A2: ladder exhaustion EXITS when no runnable ticket remains', async () => 
   writeTicket(sessionDir, only, { id: only, status: 'In Progress', title: 'last', order: 1 });
   try {
     const action = advanceOrExitOnLadderExhaustion({
-      sessionDir, statePath, ticketId: only, reason: 'recovery_exhausted: test', log: () => {},
+      sessionDir, statePath, workingDir: sessionDir, ticketId: only, reason: 'recovery_exhausted: test', log: () => {},
     });
     assert.equal(action, 'exit', 'no runnable ticket remains → run-exit');
     assert.equal(getTicketStatus(sessionDir, only), 'Failed');
