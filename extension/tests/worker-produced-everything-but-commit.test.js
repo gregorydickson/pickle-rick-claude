@@ -282,6 +282,41 @@ test('AC-WMFF-2B: a REFERENCED commit (some ticket\'s completion_commit) is not 
   }
 });
 
+// The full-40-char case above is the ONLY shape the referenced-commit arm had covered, but it is
+// the rare one: the worker prompt allows a short sha, auto-promote writes unquoted short shas, and
+// R-CCQF says codex/human edits write QUOTED shas. All three flow through `sha.startsWith(ref)` —
+// the one disjunct that does the work — plus the quote-strip in `collectReferencedCompletionShas`.
+for (const { label, stamp } of [
+  { label: 'abbreviated, unquoted (auto-promote shape)', stamp: (sha) => sha.slice(0, 7) },
+  { label: 'abbreviated, quoted (R-CCQF codex/human shape)', stamp: (sha) => `"${sha.slice(0, 7)}"` },
+  { label: 'full, quoted (R-CCQF codex/human shape)', stamp: (sha) => `"${sha}"` },
+]) {
+  test(`AC-WMFF-2B: a REFERENCED commit stamped ${label} is still recognized → no fire`, () => {
+    const { repo, baseSha } = makeRepo('wmff-2b-refshape-repo-');
+    const { sessionDir } = makeSession('wmff-2b-refshape-sess-');
+    try {
+      writeFileSync(path.join(repo, 'landed.ts'), 'export const z = 3;\n');
+      git(repo, ['add', 'landed.ts']);
+      git(repo, ['commit', '-q', '-m', 'claimed work']);
+      const claimed = git(repo, ['rev-parse', 'HEAD']);
+
+      const id = 'bb66shap';
+      makeTicket(sessionDir, id, { status: 'Failed', extraFiles: { 'worker_session_1.log': '' } });
+      // A sibling ticket owns that commit, stamped in this shape.
+      makeTicket(sessionDir, 'bb77sibl', { status: 'Done', frontmatter: { completion_commit: stamp(claimed) } });
+
+      const payload = claimWorkerProducedEverythingButCommit({
+        sessionDir, workingDir: repo, ticketId: id, iteration: 1, sessionLogBytes: 0, preIterSha: baseSha,
+      });
+
+      assert.equal(payload, null, 'the sole window commit is already claimed → nothing on the floor');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+}
+
 test('AC-WMFF-2B: dirty_in_scope_paths is capped at 20 with truncated + total_count telling the truth', () => {
   const { repo, baseSha } = makeRepo('wmff-2b-cap-repo-');
   const { sessionDir } = makeSession('wmff-2b-cap-sess-');
