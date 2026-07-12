@@ -45,7 +45,7 @@ read_expected_version() {
 read_tag_name_version() {
   local tag="$1"
   local version="${tag#v}"
-  # Prerelease suffix is required: every release this repo ships is an X.Y.Z-beta.N tag.
+  # The prerelease suffix must stay optional-but-accepted: every tag this repo ships is X.Y.Z-beta.N.
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die 12 "tag $tag is not a semver release tag"
   printf '%s\n' "$version"
 }
