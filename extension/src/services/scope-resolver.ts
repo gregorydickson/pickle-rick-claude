@@ -14,7 +14,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { runGit, getHeadSha, getDiffFiles, getMergeBase } from './git-utils.js';
-import { StateManager, isProcessAlive } from './state-manager.js';
+import { StateManager } from './state-manager.js';
+import { readRecoverableJsonObject } from './recoverable-json.js';
 import type { State } from '../types/index.js';
 
 export type ScopeMode = 'branch' | 'diff' | 'paths';
@@ -317,7 +318,10 @@ export function refreshScope(
   if (isPhaseAlreadyEntered(sm, statePath, phase)) return null;
 
   const scopePath = path.join(sessionRoot, 'scope.json');
-  const scope = readScopeJson(scopePath);
+  // A killed initial writer may leave the only valid scope in a sibling `.tmp.<pid>`.
+  // Orphan-tmp recovery is the shared primitive's job — a local scan here re-forks its
+  // delete rule (see the orphan-tmp delete-authority trap door in services/CLAUDE.md).
+  const scope = readRecoverableJsonObject(scopePath) as ScopeJson | null;
   if (!scope) return null;
   const repoRoot = opts.repoRoot ?? resolveRepoRootFromState(sm, statePath);
   const log = opts.log ?? ((msg: string) => { process.stderr.write(`${msg}\n`); });
@@ -360,58 +364,6 @@ function resolveRepoRootFromState(sm: StateManager, statePath: string): string {
     throw new ScopeError('SCOPE_NOT_A_REPO', `refreshScope: no repoRoot given and no state.json at ${statePath}`);
   }
   return sm.read(statePath).working_dir;
-}
-
-function readScopeJson(scopePath: string): ScopeJson | null {
-  let base: ScopeJson | null = null;
-  let baseMtimeMs = 0;
-  try {
-    base = JSON.parse(fs.readFileSync(scopePath, 'utf-8')) as ScopeJson;
-    baseMtimeMs = fs.statSync(scopePath).mtimeMs;
-  } catch {
-    // A killed initial writer may leave the only valid scope in a sibling tmp.
-  }
-  const dir = path.dirname(scopePath);
-  const baseName = path.basename(scopePath);
-  const tmpPattern = new RegExp(`^${baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.tmp\\.(\\d+)$`);
-  let winner: { path: string; scope: ScopeJson; mtimeMs: number } | null = null;
-
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(dir);
-  } catch {
-    return base;
-  }
-
-  for (const entry of entries) {
-    const match = entry.match(tmpPattern);
-    if (!match) continue;
-    const tmpPid = Number(match[1]);
-    if (Number.isFinite(tmpPid) && isProcessAlive(tmpPid)) continue;
-
-    const tmpPath = path.join(dir, entry);
-    try {
-      const scope = JSON.parse(fs.readFileSync(tmpPath, 'utf-8')) as ScopeJson;
-      const mtimeMs = fs.statSync(tmpPath).mtimeMs;
-      if (mtimeMs <= baseMtimeMs) {
-        fs.unlinkSync(tmpPath);
-        continue;
-      }
-      if (!winner || mtimeMs > winner.mtimeMs) {
-        winner = { path: tmpPath, scope, mtimeMs };
-      }
-    } catch {
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore invalid tmp cleanup failure */ }
-    }
-  }
-
-  if (!winner) return base;
-  try {
-    fs.renameSync(winner.path, scopePath);
-    return winner.scope;
-  } catch {
-    return base;
-  }
 }
 
 function computeRefreshedAllowed(

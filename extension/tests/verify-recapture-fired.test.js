@@ -1,7 +1,7 @@
 // @tier: fast
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   appendFileSync,
   chmodSync,
@@ -656,5 +656,95 @@ test('verify-recapture.no-session writes runtime artifact outside the tracked re
     assert.equal(artifact.failure_reason, 'state-missing');
   } finally {
     rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Orphan-tmp delete authority — THIRD scanner (scope.json).
+//
+// The invariant above ("an orphan .tmp.<pid> may be unlinked ONLY when positively
+// proven garbage") is a property of the SHARED recovery primitive, not of any one
+// caller. scope-resolver.ts hand-rolled its own scan and re-forked BOTH halves of
+// the delete rule: it unlinked on a catch that also wrapped the tmp's own
+// readFileSync (so an EACCES tmp read as garbage), and it discarded on `<=`
+// baseMtimeMs (so an equal-mtime tmp — the coarse-mtime tie R-CIFB-B says the tmp
+// WINS — was deleted). Both destroy the only valid copy of the scope.
+//
+// These two cases pin scope.json to the same primitive. refreshScope() is the only
+// caller of that read.
+// ---------------------------------------------------------------------------
+
+function makeScopeRepo() {
+  const repo = realpathSync(mkdtempSync(path.join(tmpdir(), 'verify-recapture-scope-repo-')));
+  const git = (...args) => execFileSync('git', args, { cwd: repo, timeout: SPAWN_TIMEOUT_MS });
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 'test@test.local');
+  git('config', 'user.name', 'Test');
+  git('config', 'commit.gpgsign', 'false');
+  writeFileSync(path.join(repo, 'seed.txt'), 'seed');
+  git('add', '-A');
+  git('commit', '--no-gpg-sign', '-q', '-m', 'seed');
+  return repo;
+}
+
+function scopeJson(allowedPaths) {
+  return {
+    version: 1,
+    mode: 'paths',
+    strategy: 'strict',
+    base_ref: null,
+    base_sha: null,
+    head_sha: null,
+    allowed_paths: allowedPaths,
+    resolved_at: '2026-05-02T10:00:00.000Z',
+    refresh_history: [],
+  };
+}
+
+test('scope.json orphan tmp: an UNREADABLE tmp is preserved, not reaped as garbage', async () => {
+  const { refreshScope } = await import('../services/scope-resolver.js');
+  const session = realpathSync(mkdtempSync(path.join(tmpdir(), 'verify-recapture-scope-')));
+  const repo = makeScopeRepo();
+  const scopePath = path.join(session, 'scope.json');
+  const orphanPath = `${scopePath}.tmp.${DEAD_TMP_PID}`;
+  try {
+    writeFileSync(scopePath, `${JSON.stringify(scopeJson(['base.ts']), null, 2)}\n`);
+    writeFileSync(orphanPath, `${JSON.stringify(scopeJson(['orphan.ts']), null, 2)}\n`);
+    // Unreadable is NOT garbage — it is a snapshot behind a permissions problem an
+    // operator can still repair. A scan that deletes it destroys the only copy.
+    chmodSync(orphanPath, 0o000);
+
+    refreshScope(session, 'anatomy-park', { repoRoot: repo, log: () => {} });
+
+    assert.equal(existsSync(orphanPath), true, 'unreadable orphan tmp must survive the scan');
+  } finally {
+    chmodSync(orphanPath, 0o644);
+    rmSync(session, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('scope.json orphan tmp: an equal-mtime dead tmp is promoted over a readable base', async () => {
+  const { refreshScope } = await import('../services/scope-resolver.js');
+  const session = realpathSync(mkdtempSync(path.join(tmpdir(), 'verify-recapture-scope-tie-')));
+  const repo = makeScopeRepo();
+  const scopePath = path.join(session, 'scope.json');
+  const orphanPath = `${scopePath}.tmp.${DEAD_TMP_PID}`;
+  try {
+    writeFileSync(scopePath, `${JSON.stringify(scopeJson(['base.ts']), null, 2)}\n`);
+    writeFileSync(orphanPath, `${JSON.stringify(scopeJson(['orphan.ts']), null, 2)}\n`);
+    // Force the coarse-mtime tie (Linux ext4 granularity). The tmp is written AFTER
+    // its base, so on a tie the tmp is the more-recent intent and MUST win.
+    const tie = new Date(1_700_000_000_000);
+    utimesSync(scopePath, tie, tie);
+    utimesSync(orphanPath, tie, tie);
+
+    const refreshed = refreshScope(session, 'anatomy-park', { repoRoot: repo, log: () => {} });
+
+    assert.deepEqual(refreshed.allowed_paths, ['orphan.ts'], 'equal-mtime tmp must win the tie');
+    assert.equal(existsSync(orphanPath), false, 'the winning tmp is consumed by promotion');
+  } finally {
+    rmSync(session, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
   }
 });
