@@ -1246,9 +1246,10 @@ test('withRetryLock: throws LockError after maxRetries exhausted', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-retrylock-'));
     try {
         const lockPath = path.join(dir, 'stuck.lock');
-        // Place a fresh lock that won't be stolen (mtime = now, staleLockTimeoutMs = 30s default)
+        // Holder must be a LIVE pid: a fresh mtime alone no longer protects a lock, since a
+        // provably-dead holder is stolen on sight. This process is the one pid we know is alive.
         const fd = fs.openSync(lockPath, 'w');
-        fs.writeSync(fd, '99999');
+        fs.writeSync(fd, String(process.pid));
         fs.closeSync(fd);
 
         let threw = false;
@@ -1292,8 +1293,9 @@ test('withRetryLock: steals stale lock (age > staleLockTimeoutMs) and succeeds',
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-retrylock-'));
     try {
         const lockPath = path.join(dir, 'stale.lock');
-        // Write a lock with mtime 35 seconds in the past
-        fs.writeFileSync(lockPath, '12345');
+        // LIVE holder + mtime 35s in the past: the liveness path cannot fire, so a steal here
+        // proves the mtime branch still works on its own.
+        fs.writeFileSync(lockPath, String(process.pid));
         const staleTime = new Date(Date.now() - 35_000);
         fs.utimesSync(lockPath, staleTime, staleTime);
 
@@ -1308,7 +1310,7 @@ test('withRetryLock: does NOT steal fresh lock (age < staleLockTimeoutMs)', () =
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-retrylock-'));
     try {
         const lockPath = path.join(dir, 'fresh.lock');        // Lock mtime = now (fresh)
-        fs.writeFileSync(lockPath, '12345');
+        fs.writeFileSync(lockPath, String(process.pid));      // ...held by a LIVE pid
 
         let threw = false;
         try {
@@ -1323,6 +1325,77 @@ test('withRetryLock: does NOT steal fresh lock (age < staleLockTimeoutMs)', () =
             assert.ok(e instanceof LockError);
         }
         assert.ok(threw, 'Fresh lock should not be stolen — LockError expected');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+// --- withRetryLock: dead-holder steal (abrupt-death strand) ---
+//
+// A holder killed by SIGKILL/OOM/crash leaves its lock behind with a FRESH mtime. Pre-fix the pid
+// in the lock file was never read back, so the only recovery was the staleLockTimeoutMs window —
+// which the retry budget (~26.3s over 10 attempts) expires before, so a contender took a LockError
+// after 26.5s and setup.ts registered no session (fails open at :1765). StateManager's lock has
+// always done the dead-pid steal (state-manager.ts:861); this is the same check on the other lock.
+
+/** A pid that cannot be alive: probed with kill(pid, 0) until ESRCH. */
+function findDeadPid() {
+    for (let pid = 60000; pid < 65000; pid++) {
+        try {
+            process.kill(pid, 0);
+        } catch (e) {
+            if (e.code === 'ESRCH') return pid;
+        }
+    }
+    throw new Error('no dead pid available on this host');
+}
+
+test('withRetryLock: steals a FRESH lock whose holder pid is provably dead', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-retrylock-'));
+    try {
+        const lockPath = path.join(dir, 'current_sessions.json.lock');
+        fs.writeFileSync(lockPath, String(findDeadPid()));   // fresh mtime, dead holder
+
+        // maxRetries:0 — the steal must happen on the FIRST pass or there is no retry to save it.
+        const result = withRetryLock(lockPath, () => 'acquired', { maxRetries: 0 });
+        assert.equal(result, 'acquired');
+        assert.equal(fs.existsSync(lockPath), false, 'lock released after fn');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+test('withRetryLock: dead-holder steal does not burn the retry budget', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-retrylock-'));
+    try {
+        const lockPath = path.join(dir, 'current_sessions.json.lock');
+        fs.writeFileSync(lockPath, String(findDeadPid()));
+
+        // Default opts: pre-fix this threw LockError after ~26.5s of backoff sleeps.
+        const start = Date.now();
+        const result = withRetryLock(lockPath, () => 'acquired');
+        const elapsed = Date.now() - start;
+
+        assert.equal(result, 'acquired');
+        assert.ok(elapsed < 2000, `expected immediate steal, took ${elapsed}ms`);
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+test('withRetryLock: does NOT steal a fresh lock with an empty payload (holder died mid-write)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-retrylock-'));
+    try {
+        // tryRunWithExclusiveLock creates the file, THEN writes the pid. A contender reading in
+        // that window sees ''. An unaccountable holder must defer to the mtime window, never be
+        // treated as dead — otherwise we steal from a live holder mid-acquisition.
+        const lockPath = path.join(dir, 'empty.lock');
+        fs.writeFileSync(lockPath, '');
+
+        assert.throws(
+            () => withRetryLock(lockPath, () => {}, { maxRetries: 1, baseLockDelayMs: 1, lockJitter: false }),
+            LockError,
+        );
     } finally {
         fs.rmSync(dir, { recursive: true });
     }
