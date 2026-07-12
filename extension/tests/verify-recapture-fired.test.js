@@ -16,12 +16,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { validateBundleArtifact } from '../../bin/verify-bundle.js';
+import { validateBundleArtifact, verifyBundle } from '../../bin/verify-bundle.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CLI = path.join(REPO_ROOT, 'bin', 'verify-recapture-fired.js');
-const STABLE_ARTIFACT = path.join(REPO_ROOT, 'bundle', 'ac-dr-02.json');
+// There is deliberately NO tracked bundle/ac-dr-02.json — see the trap door in bin/CLAUDE.md.
+const TRACKED_ARTIFACT = path.join(REPO_ROOT, 'bundle', 'ac-dr-02.json');
 
 // R-CIFB: hermetic base env — strip data-root/extension-root vars so a runner-set
 // EXTENSION_DIR (CI = github.workspace) cannot override the no-session test's fake
@@ -52,7 +53,6 @@ function runVerifier(session) {
   });
   return {
     ...result,
-    stableArtifact: JSON.parse(readFileSync(STABLE_ARTIFACT, 'utf8')),
     runtimeArtifactPath: runtimeArtifactPathForSession,
     runtimeArtifact: JSON.parse(readFileSync(runtimeArtifactPathForSession, 'utf8')),
   };
@@ -101,17 +101,14 @@ test('verify-recapture.pass writes passing artifact when a recapture event is in
       iteration: 3,
     },
   ]));
-  const baseline = readFileSync(STABLE_ARTIFACT, 'utf8');
   try {
     const result = runVerifier(session);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /AC-DR-02 PASS/);
     assert.match(result.stdout, new RegExp(result.runtimeArtifactPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-    assert.equal(readFileSync(STABLE_ARTIFACT, 'utf8'), baseline);
-    assert.deepEqual(validateBundleArtifact(result.stableArtifact), []);
-    assert.equal(result.stableArtifact.pass, true);
-    assert.equal(result.stableArtifact.failure_reason, null);
-    assert.equal(result.stableArtifact.checker_version, '2');
+    assert.equal(existsSync(TRACKED_ARTIFACT), false, 'a verifier run must never fabricate a tracked artifact');
+    assert.deepEqual(validateBundleArtifact(result.runtimeArtifact), []);
+    assert.equal(result.runtimeArtifact.checker_version, '2');
     assert.equal(result.runtimeArtifact.pass, true);
     assert.equal(result.runtimeArtifact.failure_reason, null);
   } finally {
@@ -497,33 +494,29 @@ test('verify-recapture.session-runtime-artifacts do not overwrite evidence from 
   }
 });
 
-test('verify-recapture.tracked-bundle-artifact-unchanged-on-pass-and-fail-runs', () => {
-  const baseline = readFileSync(STABLE_ARTIFACT, 'utf8');
-  const passSession = makeSession(baseState([
-    {
-      ts: '2026-05-02T11:15:00.000Z',
-      event: 'baseline_recapture_attempted',
-      iteration: 3,
-    },
-  ]));
+// The tracked bundle/ac-dr-02.json used to be rewritten with a hardcoded `pass: true` on
+// every run, so verify-bundle reported AC-DR-02 PASS even while this verifier reported FAIL
+// for the very same session. Neither gate may claim AC-DR-02 passed when recapture never fired.
+test('verify-recapture.failing-run-cannot-false-green-the-AC-DR-02-bundle-gate', () => {
   const failSession = makeSession(baseState([]));
   try {
-    const passResult = runVerifier(passSession);
-    assert.equal(passResult.status, 0, passResult.stderr);
-    assert.equal(readFileSync(STABLE_ARTIFACT, 'utf8'), baseline, 'tracked bundle must not change after pass run');
-
     const failResult = runVerifier(failSession);
     assert.equal(failResult.status, 1, failResult.stderr);
-    assert.equal(readFileSync(STABLE_ARTIFACT, 'utf8'), baseline, 'tracked bundle must not change after fail run');
+    assert.equal(failResult.runtimeArtifact.pass, false);
+    assert.equal(failResult.runtimeArtifact.failure_reason, 'recapture-event-missing');
+
+    assert.equal(existsSync(TRACKED_ARTIFACT), false, 'a failing run must not leave passing tracked evidence');
+
+    const bundle = verifyBundle({ repoRoot: REPO_ROOT, ac: 'AC-DR-02' });
+    assert.notEqual(bundle.exitCode, 0, 'AC-DR-02 must not PASS the bundle gate while recapture verification fails');
+    assert.match(bundle.stderr, /AC-DR-02: missing bundle\/ac-dr-02\.json/);
   } finally {
-    rmSync(passSession, { recursive: true, force: true });
     rmSync(failSession, { recursive: true, force: true });
   }
 });
 
 test('verify-recapture.no-session writes runtime artifact outside the tracked repo bundle tree', () => {
   const fakeHome = mkdtempSync(path.join(tmpdir(), 'verify-recapture-home-'));
-  const baseline = readFileSync(STABLE_ARTIFACT, 'utf8');
   const repoRuntimeArtifact = path.join(REPO_ROOT, 'bundle', 'ac-dr-02.runtime.json');
   const repoRuntimeBaseline = readOptionalFile(repoRuntimeArtifact);
   const runtimeArtifact = path.join(fakeHome, '.local', 'share', 'pickle-rick', 'bundle', 'ac-dr-02.runtime.json');
@@ -539,7 +532,7 @@ test('verify-recapture.no-session writes runtime artifact outside the tracked re
     });
 
     assert.equal(result.status, 2);
-    assert.equal(readFileSync(STABLE_ARTIFACT, 'utf8'), baseline);
+    assert.equal(existsSync(TRACKED_ARTIFACT), false);
     assert.equal(readOptionalFile(repoRuntimeArtifact), repoRuntimeBaseline);
     assert.equal(runtimeArtifact.startsWith(path.join(REPO_ROOT, 'bundle')), false);
 
