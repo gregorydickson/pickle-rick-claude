@@ -8526,13 +8526,19 @@ const everythingButCommitClaimed = new Set<string>();
  */
 function collectDirtyInScopePaths(workingDir: string, sessionDir: string): string[] {
   const dirty = listWorkingTreeDirtyPaths(workingDir).filter((p) => !isCodegraphArtifact(p));
-  if (dirty.length === 0) return [];
+  if (dirty.length === 0) {
+    return [];
+  }
 
   const scopeJsonPath = path.join(sessionDir, 'scope.json');
-  if (!fs.existsSync(scopeJsonPath)) return dirty;
+  if (!fs.existsSync(scopeJsonPath)) {
+    return dirty;
+  }
 
   const result = checkScopeDiff({ scopeJsonPath, _getStagedPaths: () => dirty });
-  if (result.status !== 'outside_scope') return dirty;
+  if (result.status !== 'outside_scope') {
+    return dirty;
+  }
 
   const outside = new Set(result.staged_paths_outside_scope ?? []);
   return dirty.filter((p) => !outside.has(p));
@@ -8542,12 +8548,16 @@ function collectDirtyInScopePaths(workingDir: string, sessionDir: string): strin
 function collectReferencedCompletionShas(sessionDir: string): string[] {
   const shas: string[] = [];
   for (const ticket of collectTickets(sessionDir)) {
-    if (!ticket.id) continue;
+    if (!ticket.id) {
+      continue;
+    }
     let raw: string;
     try { raw = fs.readFileSync(ticketFilePath(sessionDir, ticket.id), 'utf-8'); } catch { continue; }
     for (const field of ['completion_commit', 'completion_commit_inferred']) {
       const v = (readFrontmatterField(raw, field) ?? '').trim().replace(/["']/g, '').toLowerCase();
-      if (/^[0-9a-f]{7,40}$/.test(v)) shas.push(v);
+      if (/^[0-9a-f]{7,40}$/.test(v)) {
+        shas.push(v);
+      }
     }
   }
   return shas;
@@ -8559,13 +8569,19 @@ function collectReferencedCompletionShas(sessionDir: string): string[] {
  * emit site, so this is ONE bounded `rev-list` over an existing window — no new git walker.
  */
 function findUnreferencedWindowCommit(workingDir: string, sessionDir: string, preIterSha: string | null): string | null {
-  if (!preIterSha) return null;
+  if (!preIterSha) {
+    return null;
+  }
   const r = spawnSync('git', ['-C', workingDir, 'rev-list', `${preIterSha}..HEAD`], {
     encoding: 'utf-8', timeout: EVERYTHING_BUT_COMMIT_GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  if (r.status !== 0) return null;
+  if (r.status !== 0) {
+    return null;
+  }
   const shas = ((r.stdout as string) || '').split('\n').map((s) => s.trim()).filter(Boolean);
-  if (shas.length === 0) return null;
+  if (shas.length === 0) {
+    return null;
+  }
 
   const referenced = collectReferencedCompletionShas(sessionDir);
   // `sha` is a full 40-char sha from `rev-list`; `ref` is `^[0-9a-f]{7,40}$` — never longer. So a
@@ -8599,11 +8615,15 @@ export function claimWorkerProducedEverythingButCommit(input: {
   const { sessionDir, workingDir, ticketId, iteration, sessionLogBytes, preIterSha } = input;
   try {
     // (1) the worker-flip class: the ticket reads Failed.
-    if (normalizeTicketStatus(getTicketStatus(sessionDir, ticketId)) !== 'failed') return null;
+    if (normalizeTicketStatus(getTicketStatus(sessionDir, ticketId)) !== 'failed') {
+      return null;
+    }
 
     // (2) idempotent once per (ticket, iteration).
     const claimKey = `${ticketId}:${iteration}`;
-    if (everythingButCommitClaimed.has(claimKey)) return null;
+    if (everythingButCommitClaimed.has(claimKey)) {
+      return null;
+    }
 
     // (3) every gated artifact for the tier is present. Tier is read from the TICKET
     // FRONTMATTER, never `state.current_ticket_tier` — that cache is the R-CNAR-1
@@ -8612,12 +8632,16 @@ export function claimWorkerProducedEverythingButCommit(input: {
       parseTicketFrontmatter(ticketFilePath(sessionDir, ticketId))?.complexity_tier ?? 'medium';
     const prefixes = requiredTierArtifactPrefixes(tier);
     const ticketDir = path.join(sessionDir, ticketId);
-    if (findMissingPrefixes(fs.readdirSync(ticketDir), prefixes).length > 0) return null;
+    if (findMissingPrefixes(fs.readdirSync(ticketDir), prefixes).length > 0) {
+      return null;
+    }
 
     // (4) the work is still on the floor: an uncommitted dirty tree OR an unclaimed commit.
     const dirty = collectDirtyInScopePaths(workingDir, sessionDir);
     const windowCommit = findUnreferencedWindowCommit(workingDir, sessionDir, preIterSha);
-    if (dirty.length === 0 && windowCommit === null) return null;
+    if (dirty.length === 0 && windowCommit === null) {
+      return null;
+    }
 
     everythingButCommitClaimed.add(claimKey);
     return {
@@ -10290,7 +10314,9 @@ async function runMuxRunnerMain() {
           }
         }
       }
-      if (iterTicket) checkFailedAfterResearchApproved(sessionDir, iterTicket);
+      if (iterTicket) {
+        checkFailedAfterResearchApproved(sessionDir, iterTicket);
+      }
 
       // R-WSDO (30aa2e0d): worker-produced-nothing breadcrumb. Fires ONLY on the
       // genuinely-uncovered "produced nothing at all" case, mutually exclusive with

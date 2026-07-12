@@ -67,7 +67,9 @@ function makeTicket(sessionDir, ticketId, { tier = 'large', status = 'Failed', o
     `---\nid: ${ticketId}\nstatus: ${status}\ncomplexity_tier: ${tier}\norder: 1\n${extraFm}---\n# ${ticketId}\n`,
   );
   for (const prefix of requiredTierArtifactPrefixes(tier)) {
-    if (prefix === omitPrefix) continue;
+    if (prefix === omitPrefix) {
+      continue;
+    }
     // research_review / plan_review are bare `<prefix>.md`; the rest take a `_<date>` suffix.
     const name = prefix.endsWith('_review') ? `${prefix}.md` : `${prefix}_2026-07-11.md`;
     writeFileSync(path.join(ticketDir, name), `${prefix} body\n`);
@@ -91,10 +93,14 @@ function validate(payload, defName) {
 }
 function validateAgainst(payload, def) {
   for (const field of def.required || []) {
-    if (!(field in payload)) return { valid: false, error: `missing required field: ${field}` };
+    if (!(field in payload)) {
+      return { valid: false, error: `missing required field: ${field}` };
+    }
   }
   for (const [field, raw] of Object.entries(def.properties || {})) {
-    if (!(field in payload)) continue;
+    if (!(field in payload)) {
+      continue;
+    }
     const types = Array.isArray(raw.type) ? raw.type : [raw.type].filter(Boolean);
     const value = payload[field];
     if (Object.prototype.hasOwnProperty.call(raw, 'const') && value !== raw.const) {
@@ -104,12 +110,18 @@ function validateAgainst(payload, def) {
       return { valid: false, error: `${field} '${value}' not in enum` };
     }
     if (types.includes('object') && raw.required) {
-      if (typeof value !== 'object' || value === null) return { valid: false, error: `${field} must be an object` };
+      if (typeof value !== 'object' || value === null) {
+        return { valid: false, error: `${field} must be an object` };
+      }
       const nested = validateAgainst(value, raw);
-      if (!nested.valid) return { valid: false, error: `${field}.${nested.error}` };
+      if (!nested.valid) {
+        return { valid: false, error: `${field}.${nested.error}` };
+      }
     }
     if (types.includes('array')) {
-      if (!Array.isArray(value)) return { valid: false, error: `${field} must be an array` };
+      if (!Array.isArray(value)) {
+        return { valid: false, error: `${field} must be an array` };
+      }
       if (typeof raw.maxItems === 'number' && value.length > raw.maxItems) {
         return { valid: false, error: `${field} exceeds maxItems ${raw.maxItems}` };
       }
@@ -776,8 +788,11 @@ test('structural exclusion: the overlap fixture (prior-iteration artifacts + zer
         sessionDir, workingDir: repo, ticketId: id, iteration, sessionLogBytes: 0, preIterSha: baseSha,
       });
     const emitted = [];
-    if (wsdoFires) emitted.push('worker_produced_nothing');
-    else if (everythingButCommit) emitted.push('worker_produced_everything_but_commit');
+    if (wsdoFires) {
+      emitted.push('worker_produced_nothing');
+    } else if (everythingButCommit) {
+      emitted.push('worker_produced_everything_but_commit');
+    }
 
     assert.deepEqual(emitted, ['worker_produced_nothing'], 'exactly ONE event, and R-WSDO wins');
 
@@ -829,8 +844,11 @@ test('structural exclusion: a 1-BYTE session log flips the else-if — R-WSDO de
         sessionDir, workingDir: repo, ticketId: id, iteration: 1, sessionLogBytes: logBytes, preIterSha: baseSha,
       });
     const emitted = [];
-    if (wsdoFires) emitted.push('worker_produced_nothing');
-    else if (everythingButCommit) emitted.push('worker_produced_everything_but_commit');
+    if (wsdoFires) {
+      emitted.push('worker_produced_nothing');
+    } else if (everythingButCommit) {
+      emitted.push('worker_produced_everything_but_commit');
+    }
 
     assert.deepEqual(
       emitted, ['worker_produced_everything_but_commit'],

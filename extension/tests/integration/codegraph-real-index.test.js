@@ -339,9 +339,13 @@ test('C0: committed inventory exists and its method surface matches the real cla
 // create the first index (live incident: enabled-window trial, session
 // 2026-07-11-86dd509f — indexAll -> null, codegraph_degraded load/error).
 test('R-CGBOOT: CodegraphService.indexAll bootstraps a never-initialized dir (open-throws -> init fallback)', { timeout: TEST_TIMEOUT_MS }, async (t) => {
-  if (!EXPENSIVE) return t.skip('RUN_EXPENSIVE_TESTS!=1');
+  if (!EXPENSIVE) {
+    return t.skip('RUN_EXPENSIVE_TESTS!=1');
+  }
   const { skip } = loadCodeGraphOrSkipReason();
-  if (skip) return t.skip(skip);
+  if (skip) {
+    return t.skip(skip);
+  }
   const { CodegraphService } = await import('../../services/codegraph-service.js');
   const dir = makeFixture({
     'src/alpha.ts': 'export function alpha(): number { return 1; }\n',
