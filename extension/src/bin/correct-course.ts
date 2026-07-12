@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { buildJudgeInvocation, resolveBackendFromStateFile, type SpawnInvocation } from '../services/backend-spawn.js';
 import { isoCompactStamp } from '../services/pickle-utils.js';
 import { recoverCourseCorrectionFromLedger, type RecoverCourseCorrectionResult } from '../services/transaction-ticket-ops.js';
@@ -311,6 +310,6 @@ export function main(argv = process.argv.slice(2)): void {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (process.argv[1] && path.basename(process.argv[1]) === 'correct-course.js') {
   main();
 }
