@@ -38,7 +38,6 @@
     "tests/integration/chaos/lock-contention.test.js": "subprocess-spawn-timing",
     "tests/integration/chaos/worker-silent-death.test.js": "subprocess-timeout-coupling",
     "tests/integration/chaos/orphan-chain-reattach.chaos.test.js": "subprocess-timeout-coupling",
-    "tests/integration/codegraph-real-index.test.js": "subprocess-spawn-timing",
     "tests/mux-runner-claude-max-turns-relaunch.test.js": "subprocess-timeout-coupling",
     "tests/install-script-real.test.js": "real-repo-isolation",
     "tests/install-script-prefix.test.js": "real-repo-isolation",

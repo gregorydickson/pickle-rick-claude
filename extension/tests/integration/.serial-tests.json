@@ -38,7 +38,6 @@
     "tests/integration/chaos/lock-contention.test.js",
     "tests/integration/chaos/worker-silent-death.test.js",
     "tests/integration/chaos/orphan-chain-reattach.chaos.test.js",
-    "tests/integration/codegraph-real-index.test.js",
     "tests/mux-runner-claude-max-turns-relaunch.test.js",
     "tests/install-script-real.test.js",
     "tests/install-script-prefix.test.js",
