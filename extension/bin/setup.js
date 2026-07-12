@@ -333,7 +333,12 @@ export function evaluateLaunchSizing(sessionDir, config, emit = (msg) => process
     return { warned: true, ticketCount, expectedMinutes, recommendedMinutes, throughput, backend };
 }
 function updateSessionMap(sessionsMap, cwd, sessionPath) {
-    withRetryLock(sessionsMap + '.lock', () => {
+    // The collision verdict is computed under the lock but ACTED ON after it is released.
+    // process.exit() skips finally blocks, so exiting from inside the callback strands the
+    // lockfile: withRetryLock's release never runs, and because the lock guards the SHARED
+    // sessions map, an unrelated cwd's setup then burns its whole retry budget (~26s) before
+    // stealStaleLock's 30s window even opens — it takes a LockError and never registers.
+    const collision = withRetryLock(sessionsMap + '.lock', () => {
         let map = {};
         try {
             const recovered = readRecoverableJsonObject(sessionsMap);
@@ -348,20 +353,7 @@ function updateSessionMap(sessionsMap, cwd, sessionPath) {
             const existingPid = readMappedPid(existing);
             const existingPath = typeof existing === 'string' ? existing : existing.sessionPath;
             if (existingPid && isProcessAlive(existingPid) && existingPath !== sessionPath) {
-                try {
-                    logActivity({
-                        event: 'session_map_collision_blocked',
-                        source: 'pickle',
-                        existing_session_path: existingPath,
-                        existing_pid: existingPid,
-                        attempted_session_path: sessionPath,
-                        attempted_pid: process.pid,
-                        cwd,
-                    });
-                }
-                catch { /* best-effort */ }
-                process.stderr.write(`[pickle] session-map collision blocked — cwd=${cwd} held by pid=${existingPid}\n`);
-                process.exit(1);
+                return { existingPid, existingPath };
             }
         }
         map[cwd] = { sessionPath, pid: process.pid };
@@ -377,7 +369,24 @@ function updateSessionMap(sessionsMap, cwd, sessionPath) {
             catch { /* cleanup best-effort */ }
             throw err;
         }
+        return null;
     });
+    if (!collision)
+        return;
+    try {
+        logActivity({
+            event: 'session_map_collision_blocked',
+            source: 'pickle',
+            existing_session_path: collision.existingPath,
+            existing_pid: collision.existingPid,
+            attempted_session_path: sessionPath,
+            attempted_pid: process.pid,
+            cwd,
+        });
+    }
+    catch { /* best-effort */ }
+    process.stderr.write(`[pickle] session-map collision blocked — cwd=${cwd} held by pid=${collision.existingPid}\n`);
+    process.exit(1);
 }
 function ensureCoreDirectories(paths) {
     [paths.sessionsRoot, paths.jarRoot, paths.worktreesRoot].forEach((dir) => {
