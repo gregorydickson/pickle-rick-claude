@@ -8,7 +8,6 @@ import { fileURLToPath } from 'url';
 import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter } from '../services/git-utils.js';
-import { computeBaselineStartCommit } from '../services/scope-resolver.js';
 import { detectAndRecoverHeadRegression } from './mux-runner.js';
 import { LockError, BACKENDS, STATE_MANAGER_DEFAULTS } from '../types/index.js';
 import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid } from '../services/state-manager.js';
@@ -933,15 +932,17 @@ function applyResumeConfig(s, config, fullSessionPath, codexVersionSeen) {
     if (config.prdPath)
         s.prd_path = config.prdPath;
     repinFromHeadOnResume(s, config);
-    // R-PSCG (B-1SEAM WS-2): a session bootstrapped from a non-git cwd (e.g.
-    // `--paused` from the LoanLight root) never captured start_commit; recompute
-    // a best-effort baseline now that cwd is the resumed working_dir (chdir ran
-    // upstream in validateResumeCompatibility — the same guarantee
-    // repinFromHeadOnResume documents). NEVER overwrite an existing start_commit.
+    // R-SCPIN (supersedes R-PSCG/B-1SEAM WS-2): a session bootstrapped from a
+    // non-git cwd (e.g. `--paused` from the LoanLight root) never captured
+    // start_commit. Adopt s.pinned_sha — already re-derived from working-dir
+    // HEAD by repinFromHeadOnResume() one line above — rather than guessing a
+    // merge-base review-base value. By contract (R-SCPIN §0) start_commit and
+    // pinned_sha are co-stamped at normal bootstrap, so adoption here restores
+    // the same invariant on the resume path. NEVER overwrite an existing
+    // start_commit.
     if (!s.start_commit) {
-        const healed = computeBaselineStartCommit(process.cwd());
-        if (healed) {
-            s.start_commit = healed;
+        if (s.pinned_sha) {
+            s.start_commit = s.pinned_sha;
         }
         else {
             process.stderr.write('[setup] WARNING: start_commit still unresolved on --resume (cwd is not a git repository) — ' +
