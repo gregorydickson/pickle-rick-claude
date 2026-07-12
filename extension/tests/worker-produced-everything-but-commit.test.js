@@ -689,6 +689,61 @@ test('structural exclusion: the overlap fixture (prior-iteration artifacts + zer
   }
 });
 
+// The 0-byte/1-byte boundary. Every breadcrumb fixture above passes a 0-byte log, so the
+// suite only ever exercised the branch where R-WSDO WINS. One byte flips it: R-WSDO requires
+// `log_empty`, so a non-empty log makes it decline and the `else if` arm is the one that must
+// fire. That is the live incident's own shape — the worker logged real work, then died at
+// budget with the diff uncommitted — and until now no test covered it.
+test('structural exclusion: a 1-BYTE session log flips the else-if — R-WSDO declines, the breadcrumb wins (the incident shape)', async () => {
+  const { repo, baseSha } = makeRepo('wmff-1byte-repo-');
+  const { sessionDir, statePath } = makeSession('wmff-1byte-sess-');
+  const { checkPartialLifecycleExit, countWorkerArtifacts } = await import('../bin/mux-runner.js');
+  try {
+    const id = 'cc22oneb';
+    // Identical to the overlap fixture in EVERY respect but one: the log carries a single byte.
+    const ticketDir = makeTicket(sessionDir, id, {
+      tier: 'large',
+      status: 'Failed',
+      extraFiles: { 'worker_session_4242.log': 'x' },
+    });
+    writeFileSync(path.join(repo, 'dirty.ts'), 'export const e = 5;\n');
+
+    const plExit = checkPartialLifecycleExit(sessionDir, statePath, id);
+    const beforeCount = countWorkerArtifacts(ticketDir);
+    const afterCount = countWorkerArtifacts(ticketDir);
+    const logBytes = statSync(path.join(ticketDir, 'worker_session_4242.log')).size;
+    assert.equal(logBytes, 1, 'the ONLY difference from the overlap fixture is this one byte');
+
+    const wsdoFires = plExit === null && afterCount - beforeCount === 0 && logBytes === 0;
+    assert.equal(wsdoFires, false, 'a non-empty log makes R-WSDO decline — its log_empty term is false');
+
+    // Mirror the runtime's if/else-if. With R-WSDO declining, the else-if arm is reachable.
+    const everythingButCommit = wsdoFires
+      ? null
+      : claimWorkerProducedEverythingButCommit({
+        sessionDir, workingDir: repo, ticketId: id, iteration: 1, sessionLogBytes: logBytes, preIterSha: baseSha,
+      });
+    const emitted = [];
+    if (wsdoFires) emitted.push('worker_produced_nothing');
+    else if (everythingButCommit) emitted.push('worker_produced_everything_but_commit');
+
+    assert.deepEqual(
+      emitted, ['worker_produced_everything_but_commit'],
+      'still exactly ONE event — but at 1 byte it is the breadcrumb, not R-WSDO',
+    );
+    assert.equal(everythingButCommit.session_log_bytes, 1, 'the non-zero log size round-trips into the payload');
+    assert.equal(
+      validate({ event: 'worker_produced_everything_but_commit', ts: new Date().toISOString(), ticket: id, gate_payload: everythingButCommit },
+        'worker_produced_everything_but_commit').valid,
+      true,
+      'the incident-shaped payload is schema-conformant',
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('structural exclusion: the runtime region is a real if/else-if with R-WSDO FIRST', () => {
   const src = readFileSync(SRC_MUX, 'utf8');
   const wsdoAt = src.indexOf("event: 'worker_produced_nothing'");
