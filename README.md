@@ -518,10 +518,15 @@ semantics above are unchanged; this only adds an operator procedure on top of th
    the exact tag/SHA in the soak artifact** (no "or cherry-picked" ambiguity). Confirm the
    deployed gate is green (`extension/`: `npm run test:fast`). Deploy-soak variants need
    `PICKLE_INSTALL_ROOT` set off-`$HOME`.
-2. **Flip settings — precondition: no active pipeline session.** Edit the *source*
-   `extension/pickle_settings.json` (`codegraph.enabled: true`, `index_at_setup: true`), then
-   `bash install.sh`. **Never hand-edit the deployed copy** — the same rule as the kill-switch
-   above.
+2. **Flip settings — precondition: no active pipeline session.** Edit the **deployed**
+   `~/.claude/pickle-rick/pickle_settings.json` (`codegraph.enabled: true`,
+   `index_at_setup: true`) via a tmp-write + `mv` (e.g. `jq … > tmp && mv tmp …`). The deployed
+   settings file is the designed operator-customization surface: `install.sh` merges
+   deployed-values-win (`jq -s '.[0] * .[1]'`), so a *source* flip provably never propagates to
+   an existing install (the B-CGCAP propagation paradox — live-confirmed 2026-07-11), and the
+   flip survives redeploys. Do NOT commit `enabled: true` to source `pickle_settings.json`
+   (breaks the opt-in default + `codegraph-docs-optin-parity` pin). Deployed *code* remains
+   hands-off — this exception is the settings file only.
 3. **Run ≥5 real bundle reps** through `/pickle-pipeline` (normal drain-queue payloads).
    **Rep validity:** a rep counts toward the ≥5 only if ≥1 graph-tier ticket spawned with
    codegraph enabled. **Run ≥2 contemporaneous DISABLED reps on the SAME deploy** as the primary
