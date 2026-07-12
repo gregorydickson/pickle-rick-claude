@@ -8559,8 +8559,12 @@ function findUnreferencedWindowCommit(workingDir: string, sessionDir: string, pr
   if (shas.length === 0) return null;
 
   const referenced = collectReferencedCompletionShas(sessionDir);
-  const isReferenced = (sha: string): boolean =>
-    referenced.some((ref) => sha.toLowerCase().startsWith(ref) || ref.startsWith(sha.toLowerCase()));
+  // `sha` is a full 40-char sha from `rev-list`; `ref` is `^[0-9a-f]{7,40}$` — never longer. So a
+  // stored ref can only ever be a PREFIX of a window sha, never the reverse.
+  const isReferenced = (sha: string): boolean => {
+    const lower = sha.toLowerCase();
+    return referenced.some((ref) => lower.startsWith(ref));
+  };
   return shas.find((sha) => !isReferenced(sha)) ?? null;
 }
 
