@@ -8514,9 +8514,18 @@ const everythingButCommitClaimed = new Set<string>();
  * `CLAUDE.md` trap-door-catalog carve-out flows through. `checkScopeDiff` reads the INDEX,
  * so the working-tree paths are fed through its documented `_getStagedPaths` seam. No
  * `scope.json` (or a malformed one) → `listWorkingTreeDirtyPaths` unfiltered.
+ *
+ * Codegraph artifacts are dropped FIRST, via the same exported `isCodegraphArtifact` that
+ * `archiveBeforeDestructive` uses. This set MUST equal the set the archive would save: the
+ * payload's claim is "this work is still on the floor", and the archive is what puts it
+ * somewhere recoverable. Codegraph writes its index INTO the working dir
+ * (`<workingDir>/.codegraph/`) and `.codegraph/` is git-ignored only through the local,
+ * unversioned `.git/info/exclude` — on a fresh clone it is plain untracked dirt. Counting it
+ * would fire the breadcrumb over a tree the archive (correctly) declines to archive, sending
+ * the operator after a `pre_reset_*.patch` that was never written.
  */
 function collectDirtyInScopePaths(workingDir: string, sessionDir: string): string[] {
-  const dirty = listWorkingTreeDirtyPaths(workingDir);
+  const dirty = listWorkingTreeDirtyPaths(workingDir).filter((p) => !isCodegraphArtifact(p));
   if (dirty.length === 0) return [];
 
   const scopeJsonPath = path.join(sessionDir, 'scope.json');
