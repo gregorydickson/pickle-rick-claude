@@ -2053,7 +2053,10 @@ export function _resetSessionDirInvalidEmittedForTests() {
  * agent's context was tight.
  *
  * Never throws. Returns a status so callers can log the outcome:
- *   - `skipped`    → not inside tmux (headless or direct invocation)
+ *   - `skipped`    → not inside tmux (headless or direct invocation), or the
+ *                    ambient tmux session is not the one hosting our monitor
+ *                    window (`isForeignTmuxSession`) — we do not kill or create
+ *                    windows in a session we do not own
  *   - `exists`     → monitor window already present for this mode, no-op
  *   - `created`    → monitor window spawned
  *   - `recreated`  → stale monitor (different mode) killed and respawned
@@ -2084,6 +2087,10 @@ export function ensureMonitorWindow(opts) {
         const sessionName = getSessionName();
         if (!sessionName)
             return activeMonitorWindowContext.outcome || { status: 'error', reason: 'empty session name' };
+        if (isForeignTmuxSession(sessionName, opts.sessionDir)) {
+            log(`ensureMonitorWindow: tmux session '${sessionName}' does not host this session's monitor window — skipping`);
+            return { status: 'skipped', reason: `foreign tmux session: ${sessionName}` };
+        }
         const { recreate } = checkAndRecreateWindow(sessionName);
         if (activeMonitorWindowContext.outcome)
             return activeMonitorWindowContext.outcome;

@@ -9,6 +9,7 @@ import {
     validateSessionDirOrSkip,
     _resetSessionDirInvalidEmittedForTests,
     restartDeadWatcherPanes,
+    ensureMonitorWindow,
 } from '../services/pickle-utils.js';
 import { respawnMonitorWindowForMode } from '../lib/monitor-respawn.js';
 
@@ -420,6 +421,114 @@ test('restartDeadWatcherPanes: ambient session absent from OUR data root → sti
     } finally {
         if (savedDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
         else process.env.PICKLE_DATA_ROOT = savedDataRoot;
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+// ─── ensureMonitorWindow: same ownership gate, higher stakes ──────────────────
+//
+// `restartDeadWatcherPanes` only ever sent keys. `ensureMonitorWindow` resolves its
+// target from the same ambient `#S` but can `kill-window` (on @pickle_monitor_mode
+// mismatch) and `new-window` — i.e. destroy a stranger's monitor window and rebuild
+// it pointed at our session dir. The mode-mismatch fixture below is exactly that path.
+
+function makeMonitorExtRoot(tmpRoot) {
+    const extRoot = makeExtRoot(tmpRoot);
+    fs.mkdirSync(path.join(extRoot, 'extension', 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(extRoot, 'extension', 'scripts', 'tmux-monitor.sh'), '# sentinel\n');
+    return extRoot;
+}
+
+/** Ambient tmux advertises `sessionName` and already hosts a monitor window built for `existingMode`. */
+function makeModeMismatchCapture(sessionName, existingMode = 'council') {
+    const calls = [];
+    const spawnSyncFn = (command, args = []) => {
+        calls.push({ command, args: [...args] });
+        if (command === 'tmux' && args[0] === 'display-message') {
+            return { status: 0, stdout: `${sessionName}\n`, stderr: '' };
+        }
+        if (command === 'tmux' && args[0] === 'list-windows') {
+            return { status: 0, stdout: 'bash\nmonitor\n', stderr: '' };
+        }
+        if (command === 'tmux' && args[0] === 'show-option') {
+            return { status: 0, stdout: `${existingMode}\n`, stderr: '' };
+        }
+        return { status: 0, stdout: '', stderr: '' };
+    };
+    return { calls, spawnSyncFn };
+}
+
+test('ensureMonitorWindow: foreign tmux session with a mode mismatch → never kills its window', () => {
+    const tmpRoot = makeTmpRoot();
+    try {
+        // We manage `session`; we are running inside the live tmux of `2026-07-11-86dd509f`,
+        // whose monitor window was built for a different mode.
+        const sessionDir = makeValidSessionDir(tmpRoot);
+        const extRoot = makeMonitorExtRoot(tmpRoot);
+        const { calls, spawnSyncFn } = makeModeMismatchCapture('pipeline-86dd509f', 'council');
+
+        const result = ensureMonitorWindow({
+            sessionDir,
+            extensionRoot: extRoot,
+            mode: 'pickle',
+            inTmux: true,
+            spawnSyncFn,
+            bashBin: 'bash',
+        });
+
+        assert.equal(result.status, 'skipped');
+        const killed = calls.filter(c => c.command === 'tmux' && c.args[0] === 'kill-window');
+        assert.equal(killed.length, 0, "must not kill a stranger's monitor window");
+        const bashed = calls.filter(c => c.command === 'bash');
+        assert.equal(bashed.length, 0, 'must not build a monitor window in a session we do not own');
+    } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+test('ensureMonitorWindow: our own tmux session with a mode mismatch → still recreates', () => {
+    const tmpRoot = makeTmpRoot();
+    try {
+        const sessionDir = makeDataRootSession(tmpRoot, '2026-07-11-86dd509f');
+        const extRoot = makeMonitorExtRoot(tmpRoot);
+        const { calls, spawnSyncFn } = makeModeMismatchCapture('pipeline-86dd509f', 'council');
+
+        const result = ensureMonitorWindow({
+            sessionDir,
+            extensionRoot: extRoot,
+            mode: 'pickle',
+            inTmux: true,
+            spawnSyncFn,
+            bashBin: 'bash',
+        });
+
+        assert.equal(result.status, 'recreated');
+        const killed = calls.filter(c => c.command === 'tmux' && c.args[0] === 'kill-window');
+        assert.equal(killed.length, 1, 'our own stale monitor window is still replaced');
+    } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+test('ensureMonitorWindow: tmux session carrying no hash of ours → fails closed', () => {
+    const tmpRoot = makeTmpRoot();
+    try {
+        const sessionDir = makeValidSessionDir(tmpRoot);
+        const extRoot = makeMonitorExtRoot(tmpRoot);
+        const { calls, spawnSyncFn } = makeModeMismatchCapture('pickle-dead', 'council');
+
+        const result = ensureMonitorWindow({
+            sessionDir,
+            extensionRoot: extRoot,
+            mode: 'pickle',
+            inTmux: true,
+            spawnSyncFn,
+            bashBin: 'bash',
+        });
+
+        assert.equal(result.status, 'skipped');
+        assert.equal(calls.filter(c => c.args[0] === 'kill-window').length, 0);
+    } finally {
         fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
 });
