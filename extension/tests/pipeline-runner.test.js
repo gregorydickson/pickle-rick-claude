@@ -2352,6 +2352,17 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
     }, null, 2));
   }
 
+  function seedGitRepoAndCommit(dir) {
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
+    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
+  }
+
   function scpinRuntime(dir) {
     return {
       sessionDir: dir,
@@ -2413,14 +2424,7 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
   test('captured baseline with zero commits halt says "zero commits", never "baseline unmeasurable"', () => {
     const dir = scpinTmpDir();
     try {
-      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
-      execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
-      fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
-      execFileSync('git', ['add', '.'], { cwd: dir });
-      execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
-      const startCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
+      const startCommit = seedGitRepoAndCommit(dir);
 
       writePickleState(path.join(dir, 'state.json'), { start_commit: startCommit });
       const runtime = scpinRuntime(dir);
@@ -2457,14 +2461,7 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
     // must not assume "startCommit present -> zero commits" in that case.
     const dir = scpinTmpDir();
     try {
-      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
-      execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
-      fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
-      execFileSync('git', ['add', '.'], { cwd: dir });
-      execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
-      const startCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
+      const startCommit = seedGitRepoAndCommit(dir);
 
       // Real build progress landed after the baseline was captured.
       fs.writeFileSync(path.join(dir, 'progress.ts'), 'export const y = 2;\n');
