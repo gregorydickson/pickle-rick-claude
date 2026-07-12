@@ -16,23 +16,27 @@ import { fileURLToPath } from 'node:url';
 import {
   BUNDLE_ARTIFACT_SCHEMA,
   EXPECTED_BUNDLE_AC_IDS,
-  REFINED_TO_BUNDLE_ARTIFACT_AC_ID,
   verifyBundle,
 } from '../../bin/verify-bundle.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CLI = path.join(REPO_ROOT, 'bin', 'verify-bundle.js');
+const REFINED_PRD = path.join(
+  REPO_ROOT,
+  'prds/archive/bundles/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md',
+);
+// The live (non-stripped) refined ACs. AC-DR-03/07/15 are absent because AC-STRIP-10
+// removed them; `removed-acs-are-not-demanded` derives that set from the PRD itself so
+// this list cannot silently drift back out of sync with the contract.
 const REFINED_DEPLOY_REVERSION_AC_IDS = Object.freeze([
   'AC-DR-01',
   'AC-DR-02',
-  'AC-DR-03',
   'AC-DR-04a',
   'AC-DR-04b',
   'AC-DR-04c',
   'AC-DR-04d',
   'AC-DR-06',
-  'AC-DR-07',
   'AC-DR-08',
   'AC-DR-09',
   'AC-DR-10',
@@ -40,9 +44,20 @@ const REFINED_DEPLOY_REVERSION_AC_IDS = Object.freeze([
   'AC-DR-12',
   'AC-DR-13',
   'AC-DR-14',
-  'AC-DR-15',
   'AC-DR-16',
 ]);
+
+// Parses the refined PRD's AC table for rows whose status cell is REMOVED, e.g.
+// `| AC-DR-03 | **REMOVED** (see ...) | status: removed | n/a | ... |`
+function removedAcIdsFromRefinedPrd() {
+  const prd = readFileSync(REFINED_PRD, 'utf8');
+  const removed = [];
+  for (const line of prd.split('\n')) {
+    const match = /^\|\s*(AC-DR-[0-9a-z]+)\s*\|(.*)$/i.exec(line);
+    if (match && /status:\s*removed/i.test(match[2])) removed.push(match[1]);
+  }
+  return removed;
+}
 function acFileName(acId) {
   return `${acId.toLowerCase()}.json`;
 }
@@ -96,11 +111,42 @@ function assertBundleArtifactShape(value, acId) {
 }
 
 test('verify-bundle.ac-mapping covers every refined deploy-reversion AC exactly once', () => {
-  const expectedArtifactIds = REFINED_DEPLOY_REVERSION_AC_IDS.map((acId) => (
-    REFINED_TO_BUNDLE_ARTIFACT_AC_ID[acId] ?? acId
-  ));
-  assert.deepEqual(EXPECTED_BUNDLE_AC_IDS, expectedArtifactIds);
+  assert.deepEqual(EXPECTED_BUNDLE_AC_IDS, REFINED_DEPLOY_REVERSION_AC_IDS);
   assert.equal(new Set(EXPECTED_BUNDLE_AC_IDS).size, EXPECTED_BUNDLE_AC_IDS.length);
+});
+
+test('verify-bundle.removed-acs-are-not-demanded by the bundle contract', () => {
+  const removed = removedAcIdsFromRefinedPrd();
+  // Guards the test itself: if the PRD table shape changes, this must not silently pass.
+  assert.deepEqual(removed, ['AC-DR-03', 'AC-DR-07', 'AC-DR-15']);
+
+  // A stripped AC has artifact `n/a` in the PRD, so no artifact can ever exist for it.
+  // Demanding one pins the full-bundle run at INCONCLUSIVE forever.
+  for (const acId of removed) {
+    assert.equal(
+      EXPECTED_BUNDLE_AC_IDS.includes(acId),
+      false,
+      `${acId} is status:removed in the refined PRD but is still demanded by EXPECTED_BUNDLE_AC_IDS`,
+    );
+    // AC-DR-15's artifact slot was `ac-dr-pre-flight.json`; the alias must not smuggle it back.
+    const result = verifyBundle({ repoRoot: REPO_ROOT, ac: acId });
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, new RegExp(`unknown AC id ${acId}`));
+  }
+  assert.equal(EXPECTED_BUNDLE_AC_IDS.includes('AC-DR-PRE-FLIGHT'), false);
+});
+
+test('verify-bundle.live-acs-still-demanded so unwritten evidence cannot false-green', () => {
+  // The 12 ACs below have real artifact paths in the PRD but were never authored.
+  // They MUST keep reporting missing — dropping them would manufacture a false PASS.
+  for (const acId of ['AC-DR-01', 'AC-DR-04a', 'AC-DR-08', 'AC-DR-16']) {
+    assert.equal(EXPECTED_BUNDLE_AC_IDS.includes(acId), true);
+  }
+  const result = verifyBundle({ repoRoot: REPO_ROOT });
+  assert.equal(result.exitCode, 2);
+  assert.match(result.stderr, /AC-DR-16: missing bundle\/ac-dr-16\.json/);
+  // ...but never for an AC the PRD stripped.
+  assert.equal(/ac-dr-(03|07|pre-flight)\.json/.test(result.stderr), false);
 });
 
 test('verify-bundle.fixture-artifacts satisfy required metadata schema for every AC', () => {
@@ -224,18 +270,21 @@ test('verify-bundle.single-ac validates only requested artifact', () => {
   }
 });
 
-test('verify-bundle.single-ac alias resolves refined AC ids to canonical bundle artifacts', () => {
+test('verify-bundle.single-ac rejects a stripped AC even when an artifact file exists', () => {
   const fixture = makeFixture(({ bundleDir }) => {
-    rmSync(path.join(bundleDir, 'ac-dr-pre-flight.json'));
+    // A stray artifact on disk must not resurrect a removed AC: the PRD contract is
+    // authoritative, not the filesystem.
     writeFileSync(
       path.join(bundleDir, 'ac-dr-pre-flight.json'),
       `${JSON.stringify(artifact('AC-DR-PRE-FLIGHT'), null, 2)}\n`,
     );
   });
   try {
-    const result = runVerifier(fixture, ['--ac', 'AC-DR-15']);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /checked=1/);
+    for (const acId of ['AC-DR-15', 'AC-DR-PRE-FLIGHT', 'AC-DR-03', 'AC-DR-07']) {
+      const result = runVerifier(fixture, ['--ac', acId]);
+      assert.equal(result.status, 2, result.stdout);
+      assert.match(result.stderr, new RegExp(`unknown AC id ${acId}`));
+    }
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }

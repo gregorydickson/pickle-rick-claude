@@ -21,16 +21,15 @@ export const BUNDLE_ARTIFACT_SCHEMA = Object.freeze({
   ]),
 });
 
+// AC-DR-03 (24h soak), AC-DR-07 (1h soak), and AC-DR-15 (PRE-FLIGHT) are absent by
+// contract, not by omission: AC-STRIP-10 stripped them and the refined PRD marks each
+// `status: removed` with artifact `n/a`. A removed AC has no artifact to demand.
 export const EXPECTED_BUNDLE_AC_IDS = Object.freeze([
-  'AC-DR-01', 'AC-DR-02', 'AC-DR-03', 'AC-DR-04a', 'AC-DR-04b',
-  'AC-DR-04c', 'AC-DR-04d', 'AC-DR-06', 'AC-DR-07',
+  'AC-DR-01', 'AC-DR-02', 'AC-DR-04a', 'AC-DR-04b',
+  'AC-DR-04c', 'AC-DR-04d', 'AC-DR-06',
   'AC-DR-08', 'AC-DR-09', 'AC-DR-10', 'AC-DR-11', 'AC-DR-12',
-  'AC-DR-13', 'AC-DR-14', 'AC-DR-PRE-FLIGHT', 'AC-DR-16',
+  'AC-DR-13', 'AC-DR-14', 'AC-DR-16',
 ]);
-
-export const REFINED_TO_BUNDLE_ARTIFACT_AC_ID = Object.freeze({
-  'AC-DR-15': 'AC-DR-PRE-FLIGHT',
-});
 
 function acIdToFileName(acId) {
   return `${acId.toLowerCase()}.json`;
@@ -38,10 +37,6 @@ function acIdToFileName(acId) {
 
 function artifactPath(repoRoot, acId) {
   return path.join(repoRoot, 'bundle', acIdToFileName(acId));
-}
-
-function normalizeBundleArtifactAcId(acId) {
-  return REFINED_TO_BUNDLE_ARTIFACT_AC_ID[acId] ?? acId;
 }
 
 function isKnownBundleArtifactAcId(acId) {
@@ -87,17 +82,14 @@ export function validateBundleArtifact(artifact) {
 export function verifyBundle(options = {}) {
   const repoRoot = options.repoRoot ?? DEFAULT_REPO_ROOT;
   const requestedAcId = options.ac ?? null;
-  const normalizedRequestedAcId = requestedAcId ? normalizeBundleArtifactAcId(requestedAcId) : null;
-  if (normalizedRequestedAcId && !isKnownBundleArtifactAcId(normalizedRequestedAcId)) {
+  if (requestedAcId && !isKnownBundleArtifactAcId(requestedAcId)) {
     return {
       exitCode: 2,
       stdout: 'bundle INCONCLUSIVE checked=0 missing=0 failures=0\n',
-      stderr: `verify-bundle: unknown AC id ${requestedAcId}${normalizedRequestedAcId === requestedAcId ? '' : ` (canonical ${normalizedRequestedAcId})`}\n`,
+      stderr: `verify-bundle: unknown AC id ${requestedAcId}\n`,
     };
   }
-  const expectedIds = normalizedRequestedAcId
-    ? [normalizedRequestedAcId]
-    : [...EXPECTED_BUNDLE_AC_IDS];
+  const expectedIds = requestedAcId ? [requestedAcId] : [...EXPECTED_BUNDLE_AC_IDS];
   const failures = [];
   const missing = [];
 
