@@ -31,7 +31,7 @@ import { killProcessGroup } from '../services/orphan-reaper.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
-import { resolveScope, refreshScope, filterBySubsystem, computeBaselineStartCommit, parseScope, ScopeError, } from '../services/scope-resolver.js';
+import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
@@ -466,7 +466,7 @@ function persistSeededBranchScope(args) {
     }
     const headSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
     const baseRef = resolveSetupScopeBaseRef(repoRoot, scopeBase);
-    const baseSha = runGitString(['merge-base', baseRef, 'HEAD'], repoRoot) ?? computeBaselineStartCommit(repoRoot);
+    const baseSha = runGitString(['merge-base', baseRef, 'HEAD'], repoRoot) ?? computeReviewBase(repoRoot);
     if (!headSha || !baseSha) {
         return null;
     }

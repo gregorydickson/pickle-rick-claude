@@ -62,7 +62,7 @@ import {
   resolveScope,
   refreshScope,
   filterBySubsystem,
-  computeBaselineStartCommit,
+  computeReviewBase,
   parseScope,
   ScopeError,
   type ScopeJson,
@@ -626,7 +626,7 @@ function persistSeededBranchScope(args: SetupScopeArgs): ScopeJson | null {
 
   const headSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
   const baseRef = resolveSetupScopeBaseRef(repoRoot, scopeBase);
-  const baseSha = runGitString(['merge-base', baseRef, 'HEAD'], repoRoot) ?? computeBaselineStartCommit(repoRoot);
+  const baseSha = runGitString(['merge-base', baseRef, 'HEAD'], repoRoot) ?? computeReviewBase(repoRoot);
   if (!headSha || !baseSha) { return null; }
 
   const scope: ScopeJson = {

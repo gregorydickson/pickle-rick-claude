@@ -1,9 +1,9 @@
 // @tier: fast
 //
-// R-PSCG (B-1SEAM WS-2): unit pins for computeBaselineStartCommit — the
-// best-effort baseline primitive the symmetric citadel preflight heal and the
-// setup --resume recompute both call. Soft git form throughout: a missing ref
-// never throws.
+// R-PSCG (B-1SEAM WS-2): unit pins for computeReviewBase — the best-effort
+// review-base primitive the legitimate review-base fallback in
+// pipeline-runner.ts calls. Soft git form throughout: a missing ref never
+// throws.
 //
 //  - non-git dir            → null (caller WARNs / honest-fails)
 //  - feature branch fixture → merge-base(default base, HEAD) = fork point, not HEAD
@@ -15,7 +15,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { computeBaselineStartCommit } from '../services/scope-resolver.js';
+import { computeReviewBase } from '../services/scope-resolver.js';
 
 function tmpRoot(prefix) {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -39,16 +39,16 @@ function sha(dir, ref) {
   return execFileSync('git', ['rev-parse', ref], { cwd: dir, encoding: 'utf-8' }).trim();
 }
 
-test('computeBaselineStartCommit: non-git dir → null', () => {
+test('computeReviewBase: non-git dir → null', () => {
   const dir = tmpRoot('pickle-cbsc-nongit-');
   try {
-    assert.equal(computeBaselineStartCommit(dir), null);
+    assert.equal(computeReviewBase(dir), null);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('computeBaselineStartCommit: feature branch past a local main fork → fork-point sha, not HEAD', () => {
+test('computeReviewBase: feature branch past a local main fork → fork-point sha, not HEAD', () => {
   const dir = tmpRoot('pickle-cbsc-feature-');
   try {
     initRepo(dir);
@@ -59,13 +59,13 @@ test('computeBaselineStartCommit: feature branch past a local main fork → fork
     const head = sha(dir, 'HEAD');
     assert.notEqual(forkPoint, head, 'fixture must diverge from the fork point');
 
-    assert.equal(computeBaselineStartCommit(dir), forkPoint, 'baseline is merge-base(main, HEAD)');
+    assert.equal(computeReviewBase(dir), forkPoint, 'baseline is merge-base(main, HEAD)');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('computeBaselineStartCommit: single-branch local-only repo → HEAD floor (documented degenerate)', () => {
+test('computeReviewBase: single-branch local-only repo → HEAD floor (documented degenerate)', () => {
   // Branch deliberately NOT main/master and no origin: no default base resolves,
   // so the primitive falls to the loud HEAD floor.
   const dir = tmpRoot('pickle-cbsc-floor-');
@@ -77,9 +77,9 @@ test('computeBaselineStartCommit: single-branch local-only repo → HEAD floor (
     commit(dir, 'second');
     const head = sha(dir, 'HEAD');
 
-    assert.equal(computeBaselineStartCommit(dir), head, 'HEAD floor when no base resolves');
+    assert.equal(computeReviewBase(dir), head, 'HEAD floor when no base resolves');
     assert.ok(
-      warns.some(w => /computeBaselineStartCommit/.test(w)),
+      warns.some(w => /computeReviewBase/.test(w)),
       'degenerate floor must warn loudly',
     );
   } finally {

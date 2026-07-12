@@ -637,7 +637,7 @@ function resolveDefaultBase(repoRoot: string): string {
 }
 
 /**
- * R-PSCG (B-1SEAM WS-2): best-effort baseline `start_commit` for sessions that
+ * R-PSCG (B-1SEAM WS-2): best-effort review base for sessions that
  * bootstrapped outside a git worktree and never captured one. Soft git form
  * throughout (`runGit(..., false)` — the R-SSBR precedent), so a missing ref
  * never throws. Resolution order:
@@ -649,7 +649,7 @@ function resolveDefaultBase(repoRoot: string): string {
  *  (d) documented degenerate floor: HEAD itself, with a loud warn — an empty
  *      citadel diff beats killing the whole review tail.
  */
-export function computeBaselineStartCommit(repoRoot: string): string | null {
+export function computeReviewBase(repoRoot: string): string | null {
   const headSha = runGit(['rev-parse', 'HEAD'], repoRoot, false)?.trim();
   if (!headSha) return null;
 
@@ -660,7 +660,7 @@ export function computeBaselineStartCommit(repoRoot: string): string | null {
   }
 
   console.warn(
-    `computeBaselineStartCommit: no default base resolves in ${repoRoot} — ` +
+    `computeReviewBase: no default base resolves in ${repoRoot} — ` +
       'falling back to HEAD (diff-based review phases will see an empty diff)',
   );
   return headSha;
