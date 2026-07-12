@@ -23,6 +23,12 @@ Stale-review guard: if a review file's mtime is older than the ticket file's `up
 
 Rejected reviews (`NON-CONFORMANT`): re-do the failed phase from scratch.
 
+## ⚠️ Synchronous Gate Confirmation & Commit-First
+
+Gate/test confirmation (tsc, eslint, test:fast) runs SYNCHRONOUSLY in your own turn — NEVER background it, poll a monitor, or await an external event to confirm it. No waker exists in `claude -p`; a worker that parks on an async confirmation idles to budget death with the diff uncommitted.
+
+If the diff is green on tsc+eslint and only the test tier is unconfirmed, COMMIT FIRST — do not hold a deterministically-green diff hostage to an unconfirmed test tier.
+
 ## Lifecycle — ONE REVIEW, phases 1→4, then `<promise>I AM DONE</promise>`
 
 ### Phase 1: Scope Discovery

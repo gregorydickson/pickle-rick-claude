@@ -498,6 +498,15 @@ export function buildTierResumeTable(phases: LifecyclePhase[]): string {
   return `| Files in \`\${TICKET_DIR}\` | Enter at step |\n|---|---|\n${rows.join('\n')}`;
 }
 
+/**
+ * R-WMFF: no waker exists in `claude -p` — a worker that parks on an async
+ * confirmation (background test run, monitor poll) idles to budget death
+ * with a verified diff left uncommitted. Injected into both the Implement
+ * and Spec Conformance lifecycle sections so the rule reaches every tier
+ * that runs either phase.
+ */
+const SYNC_GATE_COMMIT_FIRST_RULES = '\n**Gate confirmation is synchronous**: run tsc/eslint/test verification SYNCHRONOUSLY in your own turn — never background it, poll a monitor, or await an external event to confirm it. No waker exists in `claude -p`; a worker parked on an async confirmation idles to budget death with the diff uncommitted.\n\n**Commit first when green**: if the diff is green on tsc+eslint and only the test tier is unconfirmed, COMMIT FIRST — do not hold a deterministically-green diff hostage to an unconfirmed test tier.\n';
+
 export function buildTierLifecycleSections(phases: LifecyclePhase[], tier: string): string {
   const phaseSet = new Set<LifecyclePhase>(phases);
   const isReduced = phases.length < ALL_LIFECYCLE_PHASES.length;
@@ -526,10 +535,10 @@ export function buildTierLifecycleSections(phases: LifecyclePhase[], tier: strin
     out += `\n### ${n++}. Plan Review\nFAIL if: vague steps, no verify commands, generic paths.\n- Write \`\${TICKET_DIR}/plan_review.md\`: APPROVED/RISKY/REJECTED\n- APPROVED → next. RISKY → revise. REJECTED → redo previous.\n`;
   }
 
-  out += `\n### ${n++}. Implement\nNo plan = no code. Execute steps, mark \`[x]\`, verify after each phase.\n`;
+  out += `\n### ${n++}. Implement\nNo plan = no code. Execute steps, mark \`[x]\`, verify after each phase.\n${SYNC_GATE_COMMIT_FIRST_RULES}`;
 
   if (phaseSet.has('conformance')) {
-    out += `\n### ${n++}. Spec Conformance\nWrite \`\${TICKET_DIR}/conformance_[date].md\`:\n\n1. **Acceptance Criteria**: Run each verify command from ticket's \`## Acceptance Criteria\`. A verify command whose output shows no evidence it ran (self-skipped suite, missing script, 0 tests where the criterion expects tests) verified nothing — record it FAIL and investigate; never convert silence into a PASS. Fast-but-evidenced checks (greps, file probes) are fine — the trigger is absent evidence, not speed. For \`llm-conformance\` type: read impl, quote code, PASS/FAIL + justification. Table: \`| Criterion | Type | Command | Result | P/F |\`\n2. **Interface Contracts**: Read ticket's \`## Interface Contracts\`. Find impl signatures, resolve type aliases, compare field-by-field. Mismatch = fail.\n3. **Type Check**: Project type checker (tsc/mypy/equivalent) — no new errors in touched files.\n4. **Test Expectations**: Read ticket's \`## Test Expectations\`. Each expected test exists and passes. Table: \`| Test | File | Status |\`\n5. **Project Checks**: Read ticket's \`## Conformance Check\`. Run any additional checks listed.\n6. **Verdict**: ALL_PASS / FAIL (failures with file:line refs)\n\nALL_PASS → next. FAIL → fix, re-run.\n`;
+    out += `\n### ${n++}. Spec Conformance\nWrite \`\${TICKET_DIR}/conformance_[date].md\`:\n\n1. **Acceptance Criteria**: Run each verify command from ticket's \`## Acceptance Criteria\`. A verify command whose output shows no evidence it ran (self-skipped suite, missing script, 0 tests where the criterion expects tests) verified nothing — record it FAIL and investigate; never convert silence into a PASS. Fast-but-evidenced checks (greps, file probes) are fine — the trigger is absent evidence, not speed. For \`llm-conformance\` type: read impl, quote code, PASS/FAIL + justification. Table: \`| Criterion | Type | Command | Result | P/F |\`\n2. **Interface Contracts**: Read ticket's \`## Interface Contracts\`. Find impl signatures, resolve type aliases, compare field-by-field. Mismatch = fail.\n3. **Type Check**: Project type checker (tsc/mypy/equivalent) — no new errors in touched files.\n4. **Test Expectations**: Read ticket's \`## Test Expectations\`. Each expected test exists and passes. Table: \`| Test | File | Status |\`\n5. **Project Checks**: Read ticket's \`## Conformance Check\`. Run any additional checks listed.\n6. **Verdict**: ALL_PASS / FAIL (failures with file:line refs)\n\nALL_PASS → next. FAIL → fix, re-run.\n${SYNC_GATE_COMMIT_FIRST_RULES}`;
   }
 
   out += `\n### ${n++}. Code Review\n\`git diff\` self-review. Write \`\${TICKET_DIR}/code_review_[date].md\`:\n1. Correctness (logic, off-by-one, null paths)\n2. Security (injection, auth, secrets, OWASP)\n3. Tests (coverage, fragile assertions, error paths)\n4. Architecture (coupling, abstraction leaks, contracts)\n5. Verdict: PASS / NEEDS_FIX (file:line refs)\n\nPASS → next. NEEDS_FIX → fix, re-verify.\n`;
