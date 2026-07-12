@@ -208,8 +208,12 @@ test('AC-WMFF-2A: advanceOrExitOnLadderExhaustion archives BEFORE its Failed fro
   );
 
   // `workingDir` is REQUIRED, not optional. Making it optional both re-opens the gap and lets
-  // archiveBeforeDestructive run git in `process.cwd()`.
-  const signature = body.slice(0, body.indexOf('}): '));
+  // archiveBeforeDestructive run git in `process.cwd()`. Bound the search to the param block —
+  // an unfound delimiter would make `slice(0, -1)` match the whole body and pass for the wrong
+  // reason.
+  const sigEnd = body.indexOf('}): ');
+  assert.ok(sigEnd > 0, 'the input-object signature is delimited');
+  const signature = body.slice(0, sigEnd);
   assert.match(signature, /workingDir: string;/, 'workingDir is a required input (never `workingDir?:`)');
 
   // Trap-door claim 2: every Failed-flip site archives, so the call-site count stays >= 4
