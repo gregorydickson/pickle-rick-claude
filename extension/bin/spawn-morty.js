@@ -522,8 +522,9 @@ function nodeLocation(node) {
 function rankCodegraphHits(searches) {
     const hitsById = new Map();
     for (const hits of Object.values(searches)) {
-        if (!Array.isArray(hits))
+        if (!Array.isArray(hits)) {
             continue;
+        }
         for (const raw of hits) {
             const node = asNode(raw);
             if (!node || typeof node.id !== 'string')
@@ -538,8 +539,9 @@ function rankCodegraphHits(searches) {
 }
 /** First-degree caller names from a pre-fetched caller list, or '' when none. Pure. */
 function callerSuffixFromList(list) {
-    if (!Array.isArray(list))
+    if (!Array.isArray(list)) {
         return '';
+    }
     const names = list
         .map((c) => asNode(c))
         .map((n) => (n ? nodeName(n) : null))
@@ -549,8 +551,9 @@ function callerSuffixFromList(list) {
 /** Stat + read a file's line count once; callers memoize via `cache` across ranked nodes. */
 function statCodegraphFile(resolved, cache) {
     const cached = cache.get(resolved);
-    if (cached)
+    if (cached) {
         return cached;
+    }
     let result;
     try {
         const stat = fs.statSync(resolved);
@@ -586,17 +589,21 @@ function statCodegraphFile(resolved, cache) {
  */
 function isNodeLocationFresh(node, workingDir, cache) {
     const file = typeof node.file === 'string' ? node.file : typeof node.filePath === 'string' ? node.filePath : null;
-    if (!file)
+    if (!file) {
         return true;
+    }
     const resolved = path.isAbsolute(file) ? file : path.join(workingDir, file);
     const info = statCodegraphFile(resolved, cache);
-    if (!info.resolves)
+    if (!info.resolves) {
         return false;
-    if (info.lineCount === null)
+    }
+    if (info.lineCount === null) {
         return true;
+    }
     const line = typeof node.line === 'number' ? node.line : typeof node.startLine === 'number' ? node.startLine : null;
-    if (line === null)
+    if (line === null) {
         return true;
+    }
     return line >= 1 && line <= info.lineCount;
 }
 /**
@@ -630,8 +637,9 @@ function buildCodegraphEntries(ranked, callersMap, summary, workingDir) {
     if (locatedEntries.length > 0 && typeof summary === 'string') {
         for (const line of summary.split('\n')) {
             const t = line.trim();
-            if (t.length > 0)
+            if (t.length > 0) {
                 entries.push(`Summary: ${t}`);
+            }
         }
     }
     entries.push(...locatedEntries);
@@ -2351,10 +2359,12 @@ async function main() {
             const cgEmit = (event) => {
                 try {
                     const entry = { event: event.event, ts: event.ts };
-                    if (event.reason)
+                    if (event.reason) {
                         entry.reason = event.reason;
-                    if (event.error)
+                    }
+                    if (event.error) {
                         entry.error = event.error;
+                    }
                     if (event.operation || event.gate_payload) {
                         entry.gate_payload = {
                             ...(event.operation ? { operation: event.operation } : {}),

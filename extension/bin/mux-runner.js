@@ -764,11 +764,13 @@ export function countCodegraphContextEvents(activity) {
 export function countCodegraphDegradedEvents(activity) {
     let degraded = 0;
     for (const entry of activity ?? []) {
-        if (entry?.event !== 'codegraph_degraded')
+        if (entry?.event !== 'codegraph_degraded') {
             continue;
+        }
         const op = entry.gate_payload?.operation;
-        if (op === 'latch')
+        if (op === 'latch') {
             continue;
+        }
         degraded += 1;
     }
     return degraded;
