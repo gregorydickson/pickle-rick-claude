@@ -1409,39 +1409,56 @@ function gateLockPath(key) {
     const hash = createHash('sha256').update(key).digest('hex');
     return path.join(os.tmpdir(), `pickle-gate-lock-${hash}.lock`);
 }
+/**
+ * Reclaims a gate lock whose holder is provably dead.
+ *
+ * A gate holder killed mid-run (operator Ctrl-C group-kill, OOM, crash) never reaches its release,
+ * and this lock is keyed by workingDir under `os.tmpdir()` — it is not session-scoped, so the strand
+ * outlives the pipeline and wedges every later gate for that repo.
+ *
+ * Positive proof of death is the ONLY licence to evict: unlike the session-map lock, a gate
+ * legitimately holds for minutes (it wraps a full typecheck/lint/test run), so the age-based arm that
+ * `withRetryLock` carries would evict a live holder here. Empty, unparseable and live payloads defer.
+ */
+function reclaimDeadGateLock(lp) {
+    withStealRight(lp, () => {
+        const snapshot = inspectLockFile(lp);
+        if (!snapshot || !isDeadPidPayload(snapshot.payload))
+            return false;
+        return stealLockFile(lp, snapshot);
+    });
+}
 export async function withLock(key, opts, fn) {
     const timeout_ms = opts.timeout_ms ?? 30_000;
     const retry_interval_ms = opts.retry_interval_ms ?? 100;
     const lp = gateLockPath(key);
     const start = Date.now();
+    let ino;
     for (;;) {
-        try {
-            await fs.promises.writeFile(lp, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' });
-            const waited = Date.now() - start;
-            opts.onAcquire?.(waited);
+        // The payload is the bare holder pid — the one encoding `isDeadPidPayload` reads.
+        ino = acquireLockFile(lp, String(process.pid));
+        if (ino !== null) {
+            opts.onAcquire?.(Date.now() - start);
             break;
         }
-        catch {
-            const waited = Date.now() - start;
-            if (waited >= timeout_ms) {
-                opts.onTimeout?.(waited);
-                const err = new LockError(`withLock timeout after ${waited}ms waiting for key: ${key}`);
-                err.kind = 'LockError';
-                err.key = key;
-                err.timeout_ms = timeout_ms;
-                err.waited_ms = waited;
-                throw err;
-            }
-            await new Promise(resolve => setTimeout(resolve, retry_interval_ms));
+        reclaimDeadGateLock(lp);
+        const waited = Date.now() - start;
+        if (waited >= timeout_ms) {
+            opts.onTimeout?.(waited);
+            const err = new LockError(`withLock timeout after ${waited}ms waiting for key: ${key}`);
+            err.kind = 'LockError';
+            err.key = key;
+            err.timeout_ms = timeout_ms;
+            err.waited_ms = waited;
+            throw err;
         }
+        await new Promise(resolve => setTimeout(resolve, retry_interval_ms));
     }
     try {
         return await fn();
     }
     finally {
-        try {
-            await fs.promises.unlink(lp);
-        }
-        catch { /* already gone — harmless */ }
+        // Inode-bound: if ours was stolen, the file here is a successor's lock — never unlink it.
+        releaseLockFile(lp, ino);
     }
 }

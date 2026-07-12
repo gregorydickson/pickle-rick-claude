@@ -2,11 +2,17 @@
 /**
  * lock-steal-live-holder.test.js — a stale-lock steal must never evict a LIVE holder.
  *
- * Both file locks in the tree (withRetryLock's session-map lock and StateManager's state.json lock)
- * recover from an abrupt-death strand by stealing the dead holder's lockfile. The steal is two
- * operations on a PATH — form a staleness verdict, then remove the file — and between them a rival
- * can evict the dead holder and take a live lock at that same path. The loser then removes the live
- * holder's lockfile and walks into the critical section alongside it.
+ * All three file locks in the tree (withRetryLock's session-map lock, StateManager's state.json lock,
+ * and withLock's gate lock) recover from an abrupt-death strand by stealing the dead holder's
+ * lockfile. The steal is two operations on a PATH — form a staleness verdict, then remove the file —
+ * and between them a rival can evict the dead holder and take a live lock at that same path. The
+ * loser then removes the live holder's lockfile and walks into the critical section alongside it.
+ *
+ * The gate lock reached this contract last: it hand-rolled its own acquire/release, wrote a
+ * {pid,ts} payload nothing ever read back, and had NO steal path at all — so one SIGKILL wedged
+ * every later gate for that workingDir, permanently. It steals ONLY on positive proof of death: a
+ * gate legitimately holds for minutes (it wraps a full typecheck/lint/test run), so the age-based
+ * arm the session-map lock carries would evict a live holder here.
  *
  * Observed pre-fix on the deployed build: 8 processes contending behind one dead-pid lock lost
  * updates in 30/30 rounds. The steal now carries the inode it judged and refuses to evict anything
@@ -21,11 +27,13 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
-import { inspectLockFile, stealLockFile } from '../../services/state-manager.js';
+import { inspectLockFile, stealLockFile, withLock } from '../../services/state-manager.js';
+import { LockError } from '../../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PICKLE_UTILS = path.resolve(__dirname, '../../services/pickle-utils.js');
@@ -33,6 +41,22 @@ const STATE_MANAGER = path.resolve(__dirname, '../../services/state-manager.js')
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-lock-steal-'));
+}
+
+/** Mirrors the private `gateLockPath` in state-manager.ts — the gate lock is NOT session-scoped. */
+function gateLockPath(key) {
+  const hash = createHash('sha256').update(key).digest('hex');
+  return path.join(os.tmpdir(), `pickle-gate-lock-${hash}.lock`);
+}
+
+function gateKey(label) {
+  return `gate-${label}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function removeGateLock(lp) {
+  for (const p of [lp, `${lp}.steal`]) {
+    try { fs.unlinkSync(p); } catch { /* already gone */ }
+  }
 }
 
 /** A pid that is provably dead: spawn a process, wait for its exit, reuse its pid. */
@@ -183,4 +207,84 @@ test('StateManager: concurrent state writers behind a dead holder lose no update
   const iteration = JSON.parse(fs.readFileSync(statePath, 'utf-8')).iteration;
   assert.equal(iteration, contenders,
     `expected ${contenders} serialized updates, saw ${iteration} — two processes held the state lock at once`);
+});
+
+// --- the gate lock: the third lock, which had no steal path at all ---------------------------
+
+test('withLock: a gate lock stranded by a dead holder is reclaimed, not waited out', async () => {
+  const key = gateKey('strand');
+  const lp = gateLockPath(key);
+
+  // The exact abrupt-death strand: a gate holder was SIGKILLed and never reached its release.
+  // The lock lives in os.tmpdir() keyed by workingDir, so it outlives the pipeline that stranded it.
+  fs.writeFileSync(lp, String(await deadPid()));
+
+  try {
+    let ran = false;
+    await withLock(key, { timeout_ms: 2_000, retry_interval_ms: 25 }, async () => { ran = true; });
+
+    assert.ok(ran, 'the gate must reclaim a provably-dead holder and run — pre-fix it waited out the '
+      + 'full timeout and threw LockError, so every later gate for that workingDir wedged forever');
+    assert.equal(fs.existsSync(lp), false, 'the reclaimed lock is released on the way out');
+  } finally {
+    removeGateLock(lp);
+  }
+});
+
+test('withLock: a LIVE gate holder is never stolen', async () => {
+  const key = gateKey('live');
+  const lp = gateLockPath(key);
+
+  // A gate legitimately holds for minutes (typecheck + lint + tests). Our own pid is alive, so this
+  // is a live holder — the reclaim must refuse it and the contender must time out rather than walk
+  // into the critical section alongside it.
+  fs.writeFileSync(lp, String(process.pid));
+
+  try {
+    await assert.rejects(
+      () => withLock(key, { timeout_ms: 300, retry_interval_ms: 25 }, async () => {}),
+      (err) => err instanceof LockError && err.key === key,
+      'a live gate holder must survive: reclaim requires positive proof of death, not age',
+    );
+    assert.equal(fs.readFileSync(lp, 'utf-8'), String(process.pid), 'live holder’s lock is untouched');
+  } finally {
+    removeGateLock(lp);
+  }
+});
+
+test('withLock: concurrent gate writers behind a dead holder lose no updates', async () => {
+  const dir = tmpDir();
+  const contenders = 8;
+  const key = gateKey('race');
+  const lp = gateLockPath(key);
+
+  // Every contender forms its steal verdict against the SAME dead holder at once. Without the
+  // withStealRight serialization, one evicts the dead lock, another takes a live lock at that path,
+  // and a third removes THAT — two gates then write gate/baseline.json concurrently.
+  fs.writeFileSync(lp, String(await deadPid()));
+
+  try {
+    const n = await raceBehindDeadHolder({
+      dir,
+      contenders,
+      body: `
+        import fs from 'node:fs';
+        import path from 'node:path';
+        import { withLock } from ${JSON.stringify(STATE_MANAGER)};
+        const dir = process.argv[2];
+        while (!fs.existsSync(path.join(dir, 'go'))) { /* barrier */ }
+        const counter = path.join(dir, 'counter.json');
+        await withLock(${JSON.stringify(key)}, { timeout_ms: 20_000, retry_interval_ms: 20 }, async () => {
+          const n = JSON.parse(fs.readFileSync(counter, 'utf-8')).n;
+          await new Promise((r) => setTimeout(r, 120)); // hold, so a co-holder is observable
+          fs.writeFileSync(counter, JSON.stringify({ n: n + 1 }));
+        });
+      `,
+    });
+
+    assert.equal(n, contenders,
+      `expected ${contenders} serialized updates, saw ${n} — two processes held the gate lock at once`);
+  } finally {
+    removeGateLock(lp);
+  }
 });
