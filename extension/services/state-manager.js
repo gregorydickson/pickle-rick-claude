@@ -591,6 +591,67 @@ function isStateSnapshotNewer(currentState, currentMtimeMs, candidateState, cand
     // R-CIFB-B: both iterations absent → mtime tie-break, candidate (tmp) wins ties (`>=`).
     return candidateMtimeMs >= currentMtimeMs;
 }
+function unlinkQuietly(filePath) {
+    try {
+        fs.unlinkSync(filePath);
+    }
+    catch { /* best-effort cleanup */ }
+}
+/**
+ * Enumerate the orphan `.tmp.<pid>` siblings of `statePath` whose owning process is gone.
+ * Shared by both recovery scanners so neither can drift its own notion of what an orphan is.
+ */
+function listDeadOrphanTmpPaths(statePath) {
+    const dir = path.dirname(statePath);
+    const base = path.basename(statePath);
+    let entries;
+    try {
+        entries = fs.readdirSync(dir);
+    }
+    catch {
+        return [];
+    }
+    const tmpPattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.tmp\\.(\\d+)(?:\\..*)?$`);
+    const tmpPaths = [];
+    for (const entry of entries) {
+        const match = entry.match(tmpPattern);
+        if (!match)
+            continue;
+        const tmpPath = path.join(dir, entry);
+        if (shouldSkipLiveTmp(Number(match[1]), tmpPath))
+            continue;
+        tmpPaths.push(tmpPath);
+    }
+    return tmpPaths;
+}
+/**
+ * The single delete-authority decision for an orphan `.tmp.<pid>`.
+ *
+ * A tmp we could not READ is not the same as a tmp we read and found to be garbage:
+ * an EACCES/EISDIR snapshot may hold the only copy of a newer state write, and once
+ * unlinked the operator has nothing left to repair permissions on. Only a positively
+ * proven-garbage tmp (readable AND unparseable, or not a valid snapshot) is reapable.
+ */
+function classifyOrphanTmp(tmpPath, maxSupportedSchemaVersion) {
+    let raw;
+    try {
+        raw = fs.readFileSync(tmpPath, 'utf-8');
+    }
+    catch {
+        return { kind: 'unreadable' };
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch {
+        return { kind: 'garbage' };
+    }
+    if (!isRecoverableStateSnapshotCandidate(parsed, maxSupportedSchemaVersion)) {
+        return { kind: 'garbage' };
+    }
+    return { kind: 'snapshot', state: parsed, mtimeMs: readMtimeMs(tmpPath) };
+}
 function isRecoverableStateSnapshotCandidate(value, maxSupportedSchemaVersion) {
     if (!isRecord(value))
         return false;
@@ -930,37 +991,14 @@ export class StateManager {
         });
     }
     recoverFromOrphanTmpWhenBaseCorrupt(statePath) {
-        const dir = path.dirname(statePath);
-        const base = path.basename(statePath);
-        let entries;
-        try {
-            entries = fs.readdirSync(dir);
-        }
-        catch {
-            return null;
-        }
-        const tmpPattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.tmp\\.(\\d+)(?:\\..*)?$`);
         let winner = null;
-        for (const entry of entries) {
-            const match = entry.match(tmpPattern);
-            if (!match)
+        for (const tmpPath of listDeadOrphanTmpPaths(statePath)) {
+            const candidate = classifyOrphanTmp(tmpPath, this.opts.schemaVersion);
+            if (candidate.kind !== 'snapshot')
                 continue;
-            const tmpPath = path.join(dir, entry);
-            const tmpPid = Number(match[1]);
-            if (shouldSkipLiveTmp(tmpPid, tmpPath))
-                continue;
-            try {
-                const parsed = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'));
-                if (!isRecoverableStateSnapshotCandidate(parsed, this.opts.schemaVersion))
-                    continue;
-                const mtimeMs = readMtimeMs(tmpPath);
-                if (!winner ||
-                    isStateSnapshotNewer(winner.state, winner.mtimeMs, parsed, mtimeMs)) {
-                    winner = { tmpPath, state: parsed, mtimeMs };
-                }
-            }
-            catch {
-                continue;
+            if (!winner ||
+                isStateSnapshotNewer(winner.state, winner.mtimeMs, candidate.state, candidate.mtimeMs)) {
+                winner = { tmpPath, state: candidate.state, mtimeMs: candidate.mtimeMs };
             }
         }
         if (!winner)
@@ -977,54 +1015,33 @@ export class StateManager {
     // Recovery: orphan tmp files
     // -----------------------------------------------------------------------
     recoverOrphanTmpFiles(statePath, _state) {
-        const dir = path.dirname(statePath);
-        const base = path.basename(statePath);
         let currentMtimeMs = readMtimeMs(statePath);
-        let entries;
-        try {
-            entries = fs.readdirSync(dir);
-        }
-        catch {
-            return;
-        }
-        const tmpPattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.tmp\\.(\\d+)(?:\\..*)?$`);
-        for (const entry of entries) {
-            const match = entry.match(tmpPattern);
-            if (!match)
+        for (const tmpPath of listDeadOrphanTmpPaths(statePath)) {
+            const candidate = classifyOrphanTmp(tmpPath, this.opts.schemaVersion);
+            // Unreadable is not proven-garbage: it may hold the only copy of a newer write.
+            if (candidate.kind === 'unreadable')
                 continue;
-            const tmpPath = path.join(dir, entry);
-            const tmpPid = Number(match[1]);
-            // If owning process is still alive, leave it alone
-            if (shouldSkipLiveTmp(tmpPid, tmpPath))
+            if (candidate.kind === 'garbage') {
+                unlinkQuietly(tmpPath);
                 continue;
-            // Check if tmpfile contains valid JSON
+            }
+            // Promote a dead-process snapshot if it represents a newer state write.
+            // Same-iteration tmpfiles happen when control-flow fields (active/backend/
+            // working_dir/session_dir) change without incrementing iteration.
+            if (!isStateSnapshotNewer(_state, currentMtimeMs, candidate.state, candidate.mtimeMs)) {
+                unlinkQuietly(tmpPath);
+                continue;
+            }
+            // A promotion that fails leaves the snapshot in place — never reap what we
+            // just judged to be the newer state.
             try {
-                const raw = fs.readFileSync(tmpPath, 'utf-8');
-                const tmpState = JSON.parse(raw);
-                if (!isRecoverableStateSnapshotCandidate(tmpState, this.opts.schemaVersion)) {
-                    fs.unlinkSync(tmpPath);
-                    continue;
-                }
-                // Promote a dead-process snapshot if it represents a newer state write.
-                // Same-iteration tmpfiles happen when control-flow fields (active/backend/
-                // working_dir/session_dir) change without incrementing iteration.
-                if (isStateSnapshotNewer(_state, currentMtimeMs, tmpState, readMtimeMs(tmpPath))) {
-                    fs.renameSync(tmpPath, statePath);
-                    // Re-read promoted state into _state
-                    Object.assign(_state, JSON.parse(fs.readFileSync(statePath, 'utf-8')));
-                    currentMtimeMs = readMtimeMs(statePath);
-                }
-                else {
-                    fs.unlinkSync(tmpPath);
-                }
+                fs.renameSync(tmpPath, statePath);
             }
             catch {
-                // Invalid tmpfile — delete it
-                try {
-                    fs.unlinkSync(tmpPath);
-                }
-                catch { /* ignore */ }
+                continue;
             }
+            Object.assign(_state, candidate.state);
+            currentMtimeMs = readMtimeMs(statePath);
         }
     }
     // -----------------------------------------------------------------------
