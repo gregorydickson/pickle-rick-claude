@@ -1,97 +1,153 @@
 ---
-title: "B-WMFF — Fix the worker monitor-wait Failed-flip class: synchronous gate confirmation + completion-shape breadcrumb"
+title: "B-WMFF — Worker budget-death durability + honest telemetry: synchronous-gate prompt rules, archive-on-every-flip, complete-but-uncommitted breadcrumb"
 priority: P2
 finding: R-WMFF
 status: queued
 type: bug-fix-bundle
 schema_neutral: true
 target_version: v2.1.0
-depends_on: "none (deploy-agnostic BUILD; prompt-layer + additive telemetry)"
-source_assessment: "Live incident 2026-07-11, session 2026-07-11-a19aa731 ticket 6317933b — see prds/BUG-REPORT-2026-07-11-worker-monitor-wait-failed-flip-orphans-verified-work.md"
+depends_on: "none (deploy-agnostic BUILD; prompt text is inert until bash install.sh — workers read the DEPLOYED ~/.claude/commands copy; workers cannot deploy, the operator/closer does)"
+source_assessment: "Live incident 2026-07-11 session 2026-07-11-a19aa731 ticket 6317933b. Refined 2026-07-11 (session 2026-07-11-86dd509f, 2+1 cycles): the analysts REFUTED two of the capture's claims and re-scoped WS-2 from telemetry to durability."
 ---
 
-# B-WMFF — worker monitor-wait Failed-flip fix
+# B-WMFF — worker budget-death durability (REFINED — supersedes the capture's fix legs)
 
-## 0. The defect (from the capture)
+## 0. Corrected incident model *(refined: requirements + codebase, verified against the session)*
 
-A hardening worker completed a verified diff, then parked "waiting on the test:fast monitor
-event before finalizing conformance and committing." Inside a `claude -p` worker no waker exists
-for a background/monitor wait; the worker idled to budget death, the ticket flipped Failed with
-the verified work UNCOMMITTED, and the flip left ZERO activity-event trail (the R-WSE-2
-partial-lifecycle predicate is correctly silent — all artifacts existed; exit-path salvage
-correctly refused — no gate verdict existed because the gate never ran). Recovery cost an
-operator assist (`3d36ff2c`).
+The capture said "the Failed flip left ZERO activity trail" as a CLASS claim. Wrong as stated:
+the three mux-runner-side flip sites ALL emit (`worker_head_regression_detected`,
+`ticket_ladder_exhausted`, `worker_auto_skip_oversized`). The incident's flip was the FOURTH
+class — the **spawn-morty worker-process budget-death flip** (`spawn-morty.ts:1847/:2398/:2431`)
+— which emits nothing; the session's event census confirms no flip-shaped event fired. The
+R-WSDO post-iteration region DOES observe this class (the mux-runner-side flips
+`continue`/`break`/return above it and are OUT of scope for the breadcrumb).
 
-Two legs. The third candidate (widening exit-path salvage) is REJECTED per subtract-before-add —
-tighten the worker contract instead of adding a second rescue branch.
+The deeper defect is DURABILITY, not observability *(refined: requirements P0, verified at
+HEAD)*: (a) `advanceOrExitOnLadderExhaustion` (`mux-runner.ts:~7723`) is the ONLY Failed-flip
+site that never calls `archiveDirtyTreeBeforeFlip` — the head-regression (`:~2755`) and
+wmw-auto-skip (`:~10052`) sites both do; (b) the B-DURA T10 boundary committer
+(`commitGatePassingDeliverableAtBoundary`, invoked `:~10166`) is guarded by
+`!isTerminalTicketStatus(...)`, so once a ticket flips Failed it skips — on the incident's path
+the verified diff had no commit AND no archive. **T10 guard reordering is explicitly OUT of
+this bundle**: it touches the boundary-commit/terminal path (R-PSRB adjacency) and is deferred
+with its own decision; this bundle stays pipeline-safe.
 
 ## 1. Workstreams
 
-### WS-WMFF-1 — Prompt-layer: gate confirmation is synchronous, commit-first near budget
+### WS-WMFF-1 — Prompt-layer: synchronous gate confirmation + commit-first (RETARGETED)
 
-- **AC-WMFF-1A** — `.claude/commands/send-to-morty.md` (the worker lifecycle prompt) gains an
-  explicit rule in the Implement/Conformance phase guidance: test/gate confirmation commands run
-  SYNCHRONOUSLY in the worker's own turn — a worker MUST NOT background, monitor-poll, or
-  otherwise await an external event for its own `test:fast`/lint/tsc confirmation (no waker
-  exists in `claude -p`). — Type: lint
-  (`grep -qi "synchron" .claude/commands/send-to-morty.md && grep -qiE "never.*(background|monitor).*(gate|test)" .claude/commands/send-to-morty.md`
-  — exact phrasing worker's choice; both greps must hit)
-- **AC-WMFF-1B** — the same file gains the commit-first rule: when the verified diff is green on
-  the deterministic dimensions (tsc+eslint) and the remaining confirmation is the test tier, the
-  worker COMMITS FIRST and lets the runner-side gate verdict (R-CWGE `runWorkerGate` before
-  completion-commit acceptance, R-WGFR recompute) own final verification — an uncommitted
-  verified diff at budget death is strictly worse than a committed one awaiting gate. — Type:
-  lint (`grep -qi "commit.first" .claude/commands/send-to-morty.md`)
-- **AC-WMFF-1C** — README documentation-rule compliance: no command was added/removed, so
-  README needs no change; assert docs-parity tests stay green. — Type: test
-  (`cd extension && npm run test:fast` scoped run green)
+*(refined: codebase P0 — the Implement/Conformance guidance is GENERATED by
+`buildTierLifecycleSections` (`extension/src/bin/spawn-morty.ts:501-542`), not written in
+`send-to-morty.md`, whose line ~114 is the `{{TIER_LIFECYCLE_SECTIONS}}` placeholder.)*
 
-### WS-WMFF-2 — One breadcrumb event for the complete-but-uncommitted terminal shape
+- **AC-WMFF-1A** — `buildTierLifecycleSections` gains, in the Implement section (`:529`) AND the
+  Spec Conformance section (`:532`), the rule: gate/test confirmation runs SYNCHRONOUSLY in the
+  worker's own turn — never background, monitor-poll, or await an external event for your own
+  test/lint/tsc confirmation (no waker exists in `claude -p`). Because Conformance is
+  tier-conditional, the same rule ALSO lands tier-independently as a top-level bullet in BOTH
+  `.claude/commands/send-to-morty.md` AND `.claude/commands/send-to-morty-review.md` *(refined:
+  requirements P1 — the review worker runs the same no-waker environment with zero gate
+  discipline today)*. — Type: test (`extension/tests/spawn-morty.test.js` asserts the rendered
+  Implement + Conformance sections carry the rule for every tier in `TIER_LIFECYCLE`; grep
+  pins on both .md files use two independent single-token greps, not one line-anchored regex)
+- **AC-WMFF-1B** — commit-first near budget, with the trade stated HONESTLY *(refined: codebase
+  P1 — the capture's "runner gate owns verification" was wrong on this exact path:
+  `runWorkerGate` runs in `finalizeWorkerTurn` (worker exit path — never completes at budget
+  death) and `recomputeAbsentWorkerGateVerdict` is Done-flip-only + eslint+tsc-only)*: when the
+  diff is green on tsc+eslint and only the test tier is unconfirmed, COMMIT FIRST — the outcome
+  is committed-but-Failed, recoverable via the WS-2 breadcrumb + archive, with the test tier
+  deferred to the closer. The genuinely NEW instruction (the existing prompt already mandates
+  commit-before-DONE at `spawn-morty.ts:~963`) is: do not HOLD a deterministically-green diff
+  hostage to an unconfirmed test tier. — Type: test (rendered-section assertion, same home as 1A)
+- **AC-WMFF-1C** — existing pins preserved: the send-to-morty resume-table trap door
+  (`send-to-morty-resume.test.js`) and R-XBL-5 (`subtool_backend_override` grep ≥1) stay green
+  unmodified. — Type: test
+- *(Dropped: the capture's AC-1C full-fast-tier run — a mis-tier hazard on a prompt ticket;
+  release gate owns suite-green.)*
 
-- **AC-WMFF-2A** — `worker_produced_everything_but_commit` emitted from the mux-runner
-  post-iteration check region (alongside the existing R-WSDO `worker_produced_nothing` check,
-  same best-effort try/catch pattern): fires when a ticket flips Failed while (a) the required
-  artifact prefixes for its tier are ALL present (reuse `findMissingPrefixes` /
-  `requiredTierArtifactPrefixes` from `services/artifact-validation.ts` — build NO new artifact
-  scanner), and (b) the working tree carries an in-scope dirty diff or an unreferenced fresh
-  commit exists in the iteration window. Observability ONLY — no reap/salvage/status behavior
-  change. Mutual exclusion: never double-emits with `worker_produced_nothing` (disjoint
-  predicates by construction). — Type: test
-- **AC-WMFF-2B** — R-WSE-2 co-location discipline: event registered in
-  `VALID_ACTIVITY_EVENTS` (`extension/src/types/index.ts`), schema definition in
-  `activity-events.schema.json` with an explicit ts timestamp stamped by the producer
-  (`writeActivityEntry` does NOT auto-stamp — the known producer/schema-disconnect class), and
-  `activity-event-payload.test.js` coverage — all in the SAME ticket as the emit. — Type: test
-- **AC-WMFF-2C** — payload carries `{ ticket, gate_payload: { artifacts_present: true,
-  dirty_in_scope_paths: string[], window_commit: string|null } }` so the babysitter can execute
-  the standing commit-before-respawn recovery from the event alone. — Type: test
+### WS-WMFF-2 — Durability + breadcrumb for the worker-side flip class (RE-SCOPED)
+
+- **AC-WMFF-2A — archive on EVERY flip (one-line consistency fix).**
+  `advanceOrExitOnLadderExhaustion` calls `archiveDirtyTreeBeforeFlip({workingDir, sessionDir,
+  ticketId, log})` BEFORE its Failed frontmatter write, matching the two sibling flip sites. NO
+  new mechanism. — Type: test (ladder-exhaustion flip with a dirty tree leaves the `pre_reset`
+  archive on disk)
+- **AC-WMFF-2B — `worker_produced_everything_but_commit` breadcrumb, worker-flip class only.**
+  Emitted from the R-WSDO post-iteration region as a structural `else if` AFTER the
+  `worker_produced_nothing` branch *(refined: both analysts P0 — "disjoint by construction" was
+  FALSE: all-prefixes-present forces `plExit === null`, and the R-WSDO middle term is an
+  iteration DELTA, so a respawned worker with prior-iteration artifacts + empty log + dirty tree
+  double-fires; `else if` makes exclusion structural)*. Predicate: ticket status reads Failed
+  (once per (ticket, iteration) — idempotency tested) AND `findMissingPrefixes(files,
+  requiredTierArtifactPrefixes(tier))` empty with tier read from TICKET FRONTMATTER (not the
+  stale `state.current_ticket_tier` cache — R-CNAR-1 trap door) AND (`checkScopeDiff` reports
+  in-scope dirty paths — REUSE, the #128 carve-out flows through; no `scope.json` → fall back to
+  `listWorkingTreeDirtyPaths` unfiltered — OR an unreferenced commit exists in
+  `preIterSha..HEAD`, "unreferenced" = not any ticket's `completion_commit`). Observability
+  ONLY — and that invariant is TESTED (no reap/salvage/status write on the emit path), plus a
+  `bin/CLAUDE.md` trap-door entry (INVARIANT/BREAKS/ENFORCE/PATTERN_SHAPE) like R-WSDO's. —
+  Type: test (`extension/tests/worker-produced-everything-but-commit.test.js` incl. the
+  overlap fixture: prior-iteration artifacts + zero delta + 0-byte log + dirty tree → exactly
+  ONE of the two events)
+- **AC-WMFF-2C — registration: ALL touchpoints, payload capped.** *(refined: codebase P0 — the
+  capture missed the top-level `oneOf` `$ref`; without it the schema definition is inert and
+  payload drift validates green.)* Touchpoints in ONE ticket: `VALID_ACTIVITY_EVENTS`
+  (`src/types/index.ts`), schema `definitions` block AND top-level `oneOf` `$ref`, explicit
+  producer-stamped ts (`writeActivityEntry` does not auto-stamp), `activity-event-payload.test.js`
+  + `activity-logger.test.js` coverage, compiled mirrors `extension/types/index.js` +
+  `extension/bin/mux-runner.js` IN THE TICKET ALLOWLIST (scope-fence deadlock otherwise).
+  Payload carries real discriminators, not constants *(refined: both analysts P2)*:
+  `{ ticket, gate_payload: { tier, prefixes_checked: string[], session_log_bytes,
+  worker_gate_verdict, dirty_in_scope_paths (capped 20), truncated, total_count,
+  window_commit } }` — the 20MB-state.json incident is on record; the cap is tested. Sink:
+  `writeActivityEntry` (state.json.activity — the babysitter reads the session, not the metrics
+  scanner; WS4 trap door not triggered). — Type: test
 
 ## 2. Out of scope
 
-- Exit-path salvage widening (REJECTED — leg 3 of the capture; two rescue branches for one
-  contract is the smell).
-- Any change to `runWorkerGate`, completion-evidence, or Done-flip logic (R-PSRB salvage-path
-  adjacency — this bundle is additive telemetry + prompt text only).
-- Retro-fixing the 6317933b incident (already recovered, `3d36ff2c`).
+- **T10 (`commitGatePassingDeliverableAtBoundary`) terminal-guard reorder** — deliberate: it is
+  the boundary-commit path (R-PSRB adjacency; would demand a hand-build). Recorded as the
+  known residual: committed-but-Failed recovery remains babysitter-driven via breadcrumb +
+  archive. Revisit only with fresh failure history.
+- `ticket_ladder_exhausted` payload enrichment — the analysts proposed it assuming the incident
+  was ladder-exhaustion; the session census disproved that (no such event fired). Rejected for
+  THIS bundle; ride a future ladder-class incident if one occurs.
+- The three mux-runner-side flip classes for the breadcrumb (each already emits its own event).
+- Salvage/Done-flip/completion-evidence logic of any kind.
 
 ## Simplification Review (subtract-before-add)
 
-**WS-1** — (1) Adds prompt text only; no runtime code, no flag, no gate. (2) Reuses the existing
-runner-side gate (R-CWGE/R-WGFR) as the verification owner instead of strengthening worker-side
-verification — that IS the reuse. (3) The brittle thing (worker self-gating via background
-waits) is subtracted behaviorally by forbidding it. (4) Subtraction: the worker's redundant
-self-wait pattern is removed from the contract.
-
-**WS-2** — (1) One additive event; justified because the incident was telemetrically INVISIBLE
-(zero trail). (2) Reuses `artifact-validation.ts` helpers and the R-WSDO check region/pattern —
-no new scanner, no new check phase. (3) Does not guard anything — pure breadcrumb. (4) No
-subtraction available; recorded (the alternative — salvage widening — was itself the rejected
-addition).
+**WS-1** — (1) Prompt/builder text; no runtime mechanism. (2) REUSE: the tier-lifecycle builder
+that already renders phase guidance; the existing commit-before-DONE mandate (the delta is
+narrow and stated). (3) Subtracts the worker's self-wait anti-pattern behaviorally. (4) The
+capture's full-fast-tier AC was itself subtracted (mis-tier hazard).
+**WS-2** — (1) One archive call-site (consistency with two existing siblings) + one event. (2)
+REUSE verified by the analysts: `archiveDirtyTreeBeforeFlip`, `findMissingPrefixes`/
+`requiredTierArtifactPrefixes`, `checkScopeDiff`, `listWorkingTreeDirtyPaths`; explicitly NO new
+scanner/walker. (3) The Q4 "no subtraction available" from the capture was WRONG and is
+re-answered: the durability leg IS the subtractive fix (extends an existing mechanism to the one
+site missing it); the T10 reorder was evaluated and deferred with a reason, not ignored. (4)
+Remaining addition is one registered event, justified by the worker-flip class's genuine
+telemetry hole (census-verified).
 
 ## Risks
 
-- Prompt-text rules are advisory to the model (prose failed before — R-QGSK-3); accepted here
-  because the breadcrumb (WS-2) makes violations visible and the runner gate already owns
-  verification. If recurrence continues post-fix, the NEXT step is hook-level, evidence-first.
-- The breadcrumb predicate must not misfire on legitimately-Failed tickets with stale artifacts
-  from a prior attempt: window-scope the dirty/commit check to the current iteration.
+- Prompt rules are advisory (R-QGSK-3 precedent) — mitigations: rendered-output tests pin the
+  builder; the breadcrumb + archive make violations recoverable; hook-level enforcement is the
+  evidence-gated NEXT step, not this one.
+- The window/idempotency predicate must window-scope to the current iteration (`preIterSha`,
+  `iterStartMs` — both in scope at the emit site); the overlap fixture pins it.
+- Prompt legs inert until deploy (`install.sh` is operator/closer-owned; workers hook-blocked).
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Entry | Exit | Files |
+|:---|:---|:---|:---|:---|:---|:---|
+| 10 | 8327c4d8 | Prompt-layer sync-gate + commit-first (builder + both worker prompts) | High | clean tree | rendered sections carry rules every tier | spawn-morty.ts/.js, send-to-morty*.md, spawn-morty.test.js |
+| 20 | 9da93c73 | Archive-on-ladder-flip + worker_produced_everything_but_commit (else-if, full registration, capped payload) | High | 8327c4d8 | every flip archives; worker-flip class has breadcrumb | mux-runner.ts/.js, types, schema, bin/CLAUDE.md, 3 test files |
+| 30 | 5fee5953 | Harden: code quality | High | impl done | zero P0-P1 | diff files |
+| 40 | 8f699e78 | Audit: data flow (predicate/cap/window/ordering) | High | 30 | zero CRIT/HIGH | diff files |
+| 50 | 83610ab9 | Harden: test quality | High | 40 | ACs mapped, no weak assertions | test files |
+| 60 | 76ee2195 | Audit: cross-ref (capture corrections, ledger reconcile) | High | 50 | one corrected story | docs |
+
+Wiring ticket: SKIPPED — 2 impl tickets, self-integrating.
