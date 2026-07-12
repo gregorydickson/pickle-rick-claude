@@ -21,7 +21,6 @@ import {
   applyEpochResetOnReconstruction,
   claimPipelineRunnerActive,
   armChildMuxRunnerHeartbeat,
-  writeWatcherLivenessArtifact,
   runBundlePreflight,
   BundlePreflightError,
   samplePhaseHistoryTimestamp,
@@ -33,7 +32,6 @@ import { isGateResult } from '../bin/spawn-gate-remediator.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { Defaults, VALID_ACTIVITY_EVENTS } from '../types/index.js';
-import { validateBundleArtifact } from '../../bin/verify-bundle.js';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pipeline-'));
@@ -843,7 +841,7 @@ describe('pipeline-runner.relaunch-claim', () => {
     }
   });
 
-  test('watchers stay alive proxy across three claimed iteration boundaries', () => {
+  test('phase entry re-claims active across three iteration boundaries', () => {
     const dir = tmpDir();
     try {
       const statePath = path.join(dir, 'state.json');
@@ -855,37 +853,6 @@ describe('pipeline-runner.relaunch-claim', () => {
         const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
         assert.equal(state.active, true);
       }
-
-      fs.writeFileSync(path.join(dir, 'tmux-runner.log'), 'iteration 1\niteration 2\niteration 3\n');
-      writeWatcherLivenessArtifact(dir, 'pickle');
-      const artifact = JSON.parse(fs.readFileSync(path.join(dir, 'bundle/ac-dr-05.json'), 'utf-8'));
-      assert.deepEqual(validateBundleArtifact(artifact), []);
-      assert.equal(artifact.ac_id, 'AC-DR-05');
-      assert.equal(artifact.pass, true);
-      assert.equal(artifact.forbidden_literal_present, false);
-      assert.equal(artifact.failure_reason, null);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('ac-dr-05-artifact records failure when watcher termination literal appears', () => {
-    const dir = tmpDir();
-    try {
-      fs.writeFileSync(path.join(dir, 'tmux-runner.log'), 'ok\n◤ FEED TERMINATED ◢\n');
-
-      writeWatcherLivenessArtifact(dir, 'pickle');
-
-      const artifactPath = path.join(dir, 'bundle/ac-dr-05.json');
-      const artifact = JSON.parse(fs.readFileSync(artifactPath, 'utf-8'));
-      assert.deepEqual(validateBundleArtifact(artifact), []);
-      assert.equal(artifact.ac_id, 'AC-DR-05');
-      assert.equal(artifact.phase, 'pickle');
-      assert.equal(artifact.pass, false);
-      assert.deepEqual(artifact.checked_files, ['tmux-runner.log']);
-      assert.equal(artifact.forbidden_literal_present, true);
-      assert.equal(artifact.failure_reason, 'watcher-terminated-banner-present');
-      assert.match(artifact.remediation_hint, /premature watcher shutdown/i);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

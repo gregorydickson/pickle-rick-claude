@@ -19,7 +19,6 @@ import {
   REFINED_TO_BUNDLE_ARTIFACT_AC_ID,
   verifyBundle,
 } from '../../bin/verify-bundle.js';
-import { writeWatcherLivenessArtifact } from '../bin/pipeline-runner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -32,7 +31,6 @@ const REFINED_DEPLOY_REVERSION_AC_IDS = Object.freeze([
   'AC-DR-04b',
   'AC-DR-04c',
   'AC-DR-04d',
-  'AC-DR-05',
   'AC-DR-06',
   'AC-DR-07',
   'AC-DR-08',
@@ -259,30 +257,15 @@ test('verify-bundle.single-ac rejects unknown AC ids instead of validating arbit
   }
 });
 
-test('verify-bundle.ac-dr-05 accepts the real watcher-liveness artifact shape', () => {
-  const fixture = mkdtempSync(path.join(tmpdir(), 'verify-bundle-watcher-'));
-  try {
-    writeFileSync(path.join(fixture, 'tmux-runner.log'), 'iteration 1\niteration 2\n');
-    writeWatcherLivenessArtifact(fixture, 'pickle');
-    const result = runVerifier(fixture, ['--ac', 'AC-DR-05']);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /bundle PASS/);
-  } finally {
-    rmSync(fixture, { recursive: true, force: true });
-  }
-});
-
 test('verify-bundle.recovers newer orphan tmp bundle artifacts before reporting missing files', () => {
-  const fixture = makeFixture(({ dir, bundleDir }) => {
-    writeFileSync(path.join(dir, 'tmux-runner.log'), 'iteration 1\niteration 2\n');
-    writeWatcherLivenessArtifact(dir, 'pickle');
-    const watcherArtifactPath = path.join(bundleDir, 'ac-dr-05.json');
-    const watcherArtifact = readFileSync(watcherArtifactPath, 'utf8');
-    rmSync(watcherArtifactPath);
-    writeFileSync(path.join(bundleDir, 'ac-dr-05.json.tmp.999999.recovered'), watcherArtifact);
+  const fixture = makeFixture(({ bundleDir }) => {
+    const artifactPath = path.join(bundleDir, acFileName('AC-DR-01'));
+    const payload = readFileSync(artifactPath, 'utf8');
+    rmSync(artifactPath);
+    writeFileSync(path.join(bundleDir, `${acFileName('AC-DR-01')}.tmp.999999.recovered`), payload);
   });
   try {
-    const result = runVerifier(fixture, ['--ac', 'AC-DR-05']);
+    const result = runVerifier(fixture, ['--ac', 'AC-DR-01']);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /bundle PASS/);
   } finally {

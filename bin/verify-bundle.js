@@ -23,7 +23,7 @@ export const BUNDLE_ARTIFACT_SCHEMA = Object.freeze({
 
 export const EXPECTED_BUNDLE_AC_IDS = Object.freeze([
   'AC-DR-01', 'AC-DR-02', 'AC-DR-03', 'AC-DR-04a', 'AC-DR-04b',
-  'AC-DR-04c', 'AC-DR-04d', 'AC-DR-05', 'AC-DR-06', 'AC-DR-07',
+  'AC-DR-04c', 'AC-DR-04d', 'AC-DR-06', 'AC-DR-07',
   'AC-DR-08', 'AC-DR-09', 'AC-DR-10', 'AC-DR-11', 'AC-DR-12',
   'AC-DR-13', 'AC-DR-14', 'AC-DR-PRE-FLIGHT', 'AC-DR-16',
 ]);

@@ -16,6 +16,15 @@
 // false-RED on every cleanly-completed session.
 //
 // These assertions pin the producer contract, so the class cannot be rebuilt.
+//
+// The class DID get rebuilt once, in the one place these assertions could not
+// see: AC-DR-05 (`writeWatcherLivenessArtifact`, pipeline-runner.ts) grepped the
+// same two logs from `extension/src/bin/` — outside the repo-`bin/` scan — and
+// referred to the banner through a named constant rather than the raw literal,
+// so a literal-only scan missed it. Its `pass: matches.length === 0` could never
+// be false, and unlike section-c it WAS consumed (EXPECTED_BUNDLE_AC_IDS), so it
+// shipped a green "watcher liveness verified" checkmark on every bundle. Deleted;
+// the consumer-side scan below now resolves constants and covers both trees.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -110,15 +119,58 @@ test('no tmux pane-to-file tee exists (pipe-pane / capture-pane)', () => {
   );
 });
 
-test('no bin/ gate greps a watcher log for the banner', () => {
-  const binDir = path.join(REPO_ROOT, 'bin');
-  for (const entry of fs.readdirSync(binDir)) {
-    if (!/\.(js|sh)$/.test(entry)) continue;
-    const text = fs.readFileSync(path.join(binDir, entry), 'utf8');
-    assert.ok(
-      !text.includes(BANNER),
-      `bin/${entry} greps for the watcher banner, which no watcher log can contain — this is the `
-      + 'permanent false-green that killed section-c-still-needed.js',
-    );
+/**
+ * Every name the banner is reachable under in `text`: the raw literal, plus any
+ * `const NAME = '<banner>'` alias. AC-DR-05 hid behind exactly such an alias.
+ */
+function bannerAliases(text) {
+  const aliases = [BANNER];
+  const bind = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=]+)?=\s*['"`]◤ FEED TERMINATED ◢['"`]/g;
+  for (const m of text.matchAll(bind)) aliases.push(m[1]);
+  return aliases;
+}
+
+function sourceFilesUnder(dir, exts) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...sourceFilesUnder(full, exts));
+    else if (exts.some((ext) => entry.name.endsWith(ext))) out.push(full);
   }
+  return out;
+}
+
+test('no gate tests file content against the watcher banner', () => {
+  const files = [
+    ...sourceFilesUnder(SRC_DIR, ['.ts']),
+    ...sourceFilesUnder(path.join(REPO_ROOT, 'bin'), ['.js', '.sh']),
+  ];
+  const offenders = [];
+
+  for (const file of files) {
+    const text = fs.readFileSync(file, 'utf8');
+    if (!text.includes(BANNER)) continue;
+    const aliases = bannerAliases(text);
+
+    text.split('\n').forEach((line, i) => {
+      const t = line.trimStart();
+      if (t.startsWith('//') || t.startsWith('*') || t.startsWith('#')) return;
+      // A read-side membership test against the banner: `<content>.includes(BANNER)`,
+      // `grep -q "<banner>"`, etc. No file a watcher writes can ever contain it.
+      const greps = aliases.some((a) => (
+        line.includes(`.includes(${a})`) || line.includes(`.includes('${a}')`)
+        || /\bgrep\b/.test(line)
+      ));
+      if (greps) offenders.push(`${path.relative(REPO_ROOT, file)}:${i + 1}`);
+    });
+  }
+
+  assert.deepEqual(
+    offenders, [],
+    `these lines test file content against the watcher banner: ${offenders.join(', ')} — no log a `
+    + 'watcher writes can contain it (pane stdout is never teed), so the check is unfalsifiable. '
+    + 'It cannot be repaired by making the banner file-visible either: R-MWR-6 reserves it for '
+    + 'NORMAL session end, so a working version would false-RED every clean session. Delete the '
+    + 'gate (see AC-DR-05 / section-c-still-needed.js in the file header).',
+  );
 });
