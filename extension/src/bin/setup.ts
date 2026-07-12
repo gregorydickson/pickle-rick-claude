@@ -7,7 +7,7 @@ import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, type TicketInfo } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig } from '../services/backend-spawn.js';
-import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter } from '../services/git-utils.js';
+import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
 import { detectAndRecoverHeadRegression } from './mux-runner.js';
 import { State, LockError, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
 import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid } from '../services/state-manager.js';
@@ -836,6 +836,16 @@ function resolveStartCommit(): string | undefined {
   }
 }
 
+/**
+ * AC-SCPIN-5: `getHeadSha` failure is ambiguous — cwd may not be inside a git
+ * repository at all, OR it may be a fresh repo with an unborn HEAD (no commits
+ * yet). `rev-parse --git-dir` succeeds in the second case and fails only in
+ * the first, so it is the honest predicate for which WARN message is true.
+ */
+function isInsideGitRepo(cwd: string): boolean {
+  return runGit(['rev-parse', '--git-dir'], cwd, false).trim().length > 0;
+}
+
 function validateCommandLine(config: SetupArgs) {
   if (config.explicitFlags.has('max-parallel') && !config.teamsMode) {
     die('--max-parallel requires --teams');
@@ -1420,10 +1430,20 @@ function createInitialState(config: SetupArgs, sessionPath: string, taskStr: str
     // R-PSCG AC-3: the LoanLight-normal `--paused`-in-repo-root case. WARN
     // loudly instead of silently deferring — the --resume recompute in
     // applyResumeConfig fills the field once cwd is a git worktree.
-    process.stderr.write(
-      '[setup] WARNING: cwd is not a git repository — start_commit deferred; ' +
-      'a later --resume in a git worktree will recompute it.\n',
-    );
+    // AC-SCPIN-5: branch on the real cause — a non-repo cwd and a git repo
+    // with an unborn HEAD (no commits yet) are different incidents and each
+    // gets its own true message, not one message asserted for both.
+    if (isInsideGitRepo(process.cwd())) {
+      process.stderr.write(
+        '[setup] WARNING: git repo has no commits yet — start_commit deferred; ' +
+        'a later --resume in a git worktree will recompute it.\n',
+      );
+    } else {
+      process.stderr.write(
+        '[setup] WARNING: cwd is not a git repository — start_commit deferred; ' +
+        'a later --resume in a git worktree will recompute it.\n',
+      );
+    }
   }
 
   const pinnedBranch = (() => {

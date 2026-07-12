@@ -26,6 +26,8 @@ import {
   samplePhaseHistoryTimestamp,
   executeCitadelPhase,
   shouldHaltAfterPhase,
+  isFatalPhaseFailure,
+  logPhaseHaltReason,
   __setCitadelRemediationDepsForTests,
 } from '../bin/pipeline-runner.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
@@ -2308,5 +2310,143 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
       /citadel_strict\s*\?\s*['"]High['"]\s*:\s*['"]Critical['"]/,
       "the citadel_strict ? 'High' : 'Critical' halt-threshold expression must be deleted",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-SCPIN-5 — honest fatal-pickle-halt reason: a missing baseline
+// (`start_commit` never captured) is unmeasurable, NOT the same incident as a
+// captured baseline with genuinely zero commits since it. `logPhaseHaltReason`
+// must say a distinct, true thing for each — the halt/no-halt decision itself
+// (isFatalPhaseFailure / shouldHaltAfterPhase) is unchanged.
+// ---------------------------------------------------------------------------
+
+describe('AC-SCPIN-5 honest phase-halt reason', () => {
+  function scpinTmpDir() {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-scpin5-'));
+  }
+
+  function writePickleState(statePath, overrides = {}) {
+    const dir = path.dirname(statePath);
+    fs.writeFileSync(statePath, JSON.stringify({
+      active: true,
+      working_dir: dir,
+      step: 'pickle',
+      iteration: 1,
+      max_iterations: 50,
+      max_time_minutes: 720,
+      worker_timeout_seconds: 1200,
+      start_time_epoch: 1000,
+      completion_promise: null,
+      original_prompt: 'AC-SCPIN-5 test',
+      current_ticket: null,
+      history: [],
+      started_at: new Date().toISOString(),
+      session_dir: dir,
+      schema_version: 3,
+      exit_reason: null,
+      prd_path: 'prd.md',
+      backend: 'claude',
+      activity: [],
+      ...overrides,
+    }, null, 2));
+  }
+
+  function scpinRuntime(dir) {
+    return {
+      sessionDir: dir,
+      statePath: path.join(dir, 'state.json'),
+      repoRoot: dir,
+      workingDir: dir,
+      extensionRoot: dir,
+      backend: 'claude',
+      phaseEnv: { ...process.env },
+      designSafe: false,
+      log: () => {},
+      config: {
+        phases: ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'],
+        target: dir,
+        child_mux_runner_heartbeat_ms: 1000,
+        child_mux_runner_stall_seconds: 60,
+        anatomy_stall_limit: 3,
+        szechuan_stall_limit: 5,
+        anatomy_max_iterations: 100,
+        szechuan_max_iterations: 50,
+        citadel_strict: false,
+        dirty_exempt_segments: [],
+      },
+    };
+  }
+
+  test('!startCommit halt says "baseline unmeasurable", never "zero commits"', () => {
+    const dir = scpinTmpDir();
+    try {
+      // No start_commit field at all — the baseline was never captured.
+      writePickleState(path.join(dir, 'state.json'));
+      const runtime = scpinRuntime(dir);
+
+      assert.equal(
+        isFatalPhaseFailure('pickle', runtime),
+        true,
+        'missing start_commit must still be fatal (halt/no-halt decision unchanged)',
+      );
+
+      const logged = [];
+      logPhaseHaltReason(runtime, 'pickle', 1, (msg) => logged.push(msg));
+      const combined = logged.join('\n');
+
+      assert.match(
+        combined,
+        /baseline unmeasurable/,
+        'must report the missing baseline honestly',
+      );
+      assert.doesNotMatch(
+        combined,
+        /zero commits/,
+        'must NOT conflate a missing baseline with zero build progress',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('captured baseline with zero commits halt says "zero commits", never "baseline unmeasurable"', () => {
+    const dir = scpinTmpDir();
+    try {
+      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
+      execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+      fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
+      execFileSync('git', ['add', '.'], { cwd: dir });
+      execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
+      const startCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
+
+      writePickleState(path.join(dir, 'state.json'), { start_commit: startCommit });
+      const runtime = scpinRuntime(dir);
+
+      assert.equal(
+        isFatalPhaseFailure('pickle', runtime),
+        true,
+        'zero commits since a captured baseline must still be fatal (halt/no-halt decision unchanged)',
+      );
+
+      const logged = [];
+      logPhaseHaltReason(runtime, 'pickle', 1, (msg) => logged.push(msg));
+      const combined = logged.join('\n');
+
+      assert.match(
+        combined,
+        /zero commits/,
+        'must report genuine zero build progress honestly',
+      );
+      assert.doesNotMatch(
+        combined,
+        /baseline unmeasurable/,
+        'must NOT report a captured baseline as unmeasurable',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

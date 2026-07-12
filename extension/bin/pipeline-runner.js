@@ -3165,6 +3165,31 @@ function emitHeadMismatchStderr(statePath) {
         return false;
     }
 }
+/**
+ * AC-SCPIN-5: honest fatal-pickle-halt reason. `isFatalPhaseFailure`'s
+ * `!startCommit` branch and its zero-commits-since-baseline branch both
+ * return `true`, but they are NOT the same incident: a missing baseline is
+ * unmeasurable (no commit-count check ever ran), while zero commits since a
+ * captured baseline is genuine zero build progress. Reporting the former as
+ * "zero commits" mis-triages the incident. This is telemetry-only — it does
+ * not change the halt/no-halt decision made by `isFatalPhaseFailure`.
+ */
+function getFatalPickleHaltReason(runtime) {
+    try {
+        const runnerState = sm.read(runtime.statePath);
+        if (runnerState.exit_reason === 'readiness_halt') {
+            return 'readiness halt';
+        }
+        const startCommit = runnerState.start_commit?.trim();
+        if (!startCommit) {
+            return 'baseline unmeasurable — start_commit was never recorded for this session';
+        }
+        return `zero commits since baseline ${startCommit.slice(0, 8)} — no build progress this run`;
+    }
+    catch {
+        return 'fatal phase failure';
+    }
+}
 export function logPhaseHaltReason(runtime, rawPhase, exitCode, log) {
     const haltMsg = `Phase ${rawPhase} failed (exit ${exitCode}) — stopping pipeline`;
     // R-PIWG-1: surface HEAD mismatch before phase-type gating so it fires for all phases.
@@ -3173,7 +3198,12 @@ export function logPhaseHaltReason(runtime, rawPhase, exitCode, log) {
         return 'abort';
     }
     if (exitCode === 0 || (rawPhase !== 'anatomy-park' && rawPhase !== 'szechuan-sauce')) {
-        log(haltMsg);
+        if (rawPhase === 'pickle' && exitCode !== 0) {
+            log(`${haltMsg} (${getFatalPickleHaltReason(runtime)})`);
+        }
+        else {
+            log(haltMsg);
+        }
         return 'abort';
     }
     try {

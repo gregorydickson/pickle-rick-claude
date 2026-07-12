@@ -381,6 +381,10 @@ test('setup --paused in a non-git cwd: WARNs loudly that start_commit is deferre
     try {
         const res = runSetupAt(neutralCwd, ['--paused', '--task', 'pscg warn test'], dataRoot);
         assert.match(res.stderr, /start_commit deferred/, 'non-git cwd must WARN, not silently skip');
+        // AC-SCPIN-5: a truly non-repo cwd gets the "not a git repository" message,
+        // never the unborn-HEAD phrasing (this cwd has no .git dir at all).
+        assert.match(res.stderr, /cwd is not a git repository/, 'non-repo cwd must say it is not a git repository');
+        assert.doesNotMatch(res.stderr, /has no commits yet/, 'non-repo cwd must NOT get the unborn-HEAD message');
 
         const sessionRoot = res.stdout.match(/SESSION_ROOT=(.+)/)?.[1]?.trim();
         assert.ok(sessionRoot, 'SESSION_ROOT expected in setup output');
@@ -389,6 +393,32 @@ test('setup --paused in a non-git cwd: WARNs loudly that start_commit is deferre
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });
         fs.rmSync(neutralCwd, { recursive: true, force: true });
+    }
+});
+
+test('setup --paused in a git repo with an unborn HEAD (no commits yet): WARNs truthfully, not "not a git repository" (AC-SCPIN-5)', () => {
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-scpin5-warn-data-'));
+    const unbornRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-scpin5-warn-repo-')));
+    try {
+        execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: unbornRepo });
+        // Deliberately no commit — HEAD is unborn, but this IS a git repository.
+
+        const res = runSetupAt(unbornRepo, ['--paused', '--task', 'scpin5 unborn-head warn test'], dataRoot);
+        assert.match(res.stderr, /start_commit deferred/, 'unborn-HEAD repo must WARN, not silently skip');
+        assert.match(res.stderr, /has no commits yet/, 'unborn-HEAD repo must say it has no commits yet');
+        assert.doesNotMatch(
+            res.stderr,
+            /cwd is not a git repository/,
+            'unborn-HEAD repo must NOT be told it is not a git repository — it is one',
+        );
+
+        const sessionRoot = res.stdout.match(/SESSION_ROOT=(.+)/)?.[1]?.trim();
+        assert.ok(sessionRoot, 'SESSION_ROOT expected in setup output');
+        const state = JSON.parse(fs.readFileSync(path.join(sessionRoot, 'state.json'), 'utf-8'));
+        assert.ok(!state.start_commit, 'start_commit stays unset when HEAD is unborn');
+    } finally {
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+        fs.rmSync(unbornRepo, { recursive: true, force: true });
     }
 });
 
