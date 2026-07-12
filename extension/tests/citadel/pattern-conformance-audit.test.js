@@ -24,115 +24,81 @@ function makeDiff(repoRoot, changedFiles) {
   };
 }
 
-describe('pattern-conformance-audit: PATTERN_SHAPE violations', () => {
+// R-PCPS: the PATTERN_SHAPE grep arm was subtracted. These fixtures reproduce the three
+// corpus shapes that made it emit 41/41 false High findings on a clean tree. Each fixture's
+// target file FULLY honors its trap door, so a conformance-correct analyzer must stay silent.
+// Before the subtraction every one of these emitted `pattern-shape-violation:` at High.
+describe('pattern-conformance-audit: PATTERN_SHAPE prose is never enforced as a literal (R-PCPS)', () => {
   let tmpDir;
   before(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pca-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pca-pcps-'));
+    fs.mkdirSync(path.join(tmpDir, 'extension', 'src'), { recursive: true });
   });
   after(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test('flags a diff hunk that violates a harvested PATTERN_SHAPE', () => {
-    const targetFile = 'extension/src/some-service.ts';
-    fs.mkdirSync(path.join(tmpDir, 'extension', 'src'), { recursive: true });
+  function runAgainst(targetFile, trapDoorBullet, source) {
     fs.writeFileSync(
       path.join(tmpDir, 'extension', 'CLAUDE.md'),
-      `## Trap Doors\n\n- \`${targetFile}\` (TEST-1) — INVARIANT: test. PATTERN_SHAPE: \`REQUIRED_SENTINEL_XYZ\`.\n`,
+      `## Trap Doors\n\n${trapDoorBullet}\n`,
     );
-    // Write target file WITHOUT the required pattern
-    fs.writeFileSync(
-      path.join(tmpDir, targetFile),
+    fs.writeFileSync(path.join(tmpDir, targetFile), source);
+    const diff = makeDiff(tmpDir, [
+      { path: targetFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 1 }], blame: [] },
+    ]);
+    return auditPatternConformance(diff)
+      .findings.filter((f) => f.id.startsWith('pattern-shape-violation:'));
+  }
+
+  test('literal code pattern that IS present: `(` and `.` must not be read as regex metachars', () => {
+    // Regex-first evaluation made `if (counterNext.halt)` unable to match itself: the parens
+    // parse as a capture group and `.` as a wildcard, so the required text never matched.
+    const targetFile = 'extension/src/halt-guard.ts';
+    const violations = runAgainst(
+      targetFile,
+      `- \`${targetFile}\` (R-WTB-A1) — INVARIANT: halt only without progress. PATTERN_SHAPE: \`if (counterNext.halt)\`.`,
+      'export function run(counterNext) {\n  if (counterNext.halt) { return "halt"; }\n  return "go";\n}\n',
+    );
+    assert.deepEqual(violations, [], 'pattern is literally present — must not be reported absent');
+  });
+
+  test('negative assertion: a MUST-NOT-CONTAIN pattern is not a required pattern', () => {
+    // The inversion hazard: R-CNAR-1 requires `applyTicketTierBudget` to NOT contain this
+    // assignment (it truncated the operator's global cap). Requiring it PRESENT meant the
+    // check only went green once the known-shipped bug was reintroduced.
+    const targetFile = 'extension/src/tier-budget.ts';
+    const violations = runAgainst(
+      targetFile,
+      `- \`${targetFile}\` (R-CNAR-1) — INVARIANT: the per-ticket ceiling never overwrites the global cap. PATTERN_SHAPE: \`applyTicketTierBudget\` MUST NOT contain \`state.max_iterations = budget.max_iterations\`.`,
+      'export function applyTicketTierBudget(state, budget) {\n  state.current_ticket_max_iterations = budget.max_iterations;\n}\n',
+    );
+    assert.deepEqual(violations, [], 'code correctly omits the forbidden assignment — must not be flagged');
+  });
+
+  test('shell-command / cross-file PATTERN_SHAPE is not grepped into the target file', () => {
+    // Corpus carries `grep -c "..." <path> == 0` and `node -e "..."` as PATTERN_SHAPE prose,
+    // plus symbols that live in a sibling file. None can ever appear in the target source.
+    const targetFile = 'extension/src/oracle.ts';
+    const violations = runAgainst(
+      targetFile,
+      `- \`${targetFile}\` (R-RASO) — INVARIANT: one oracle. PATTERN_SHAPE: \`grep -c "hasFrontmatterCompletionSha" src/bin/mux-runner.ts\` == 0 AND \`persistWorkerGateVerdict(\` in spawn-morty.ts.`,
+      'export function resolveAttributableFrontmatterSha() { return null; }\n',
+    );
+    assert.deepEqual(violations, [], 'shell commands and sibling-file symbols are not target-file literals');
+  });
+
+  test('no pattern-shape finding is emitted for any input', () => {
+    const targetFile = 'extension/src/absent-guard.ts';
+    // Even the historical happy path — a bare sentinel genuinely missing from the file —
+    // no longer produces a citadel finding. PATTERN_SHAPE enforcement moved to
+    // extension/scripts/audit-trap-door-enforcement.sh (curated, in the release gate).
+    const violations = runAgainst(
+      targetFile,
+      `- \`${targetFile}\` (TEST) — INVARIANT: test. PATTERN_SHAPE: \`REQUIRED_SENTINEL_XYZ\`.`,
       'export function doSomething() { return 42; }\n',
     );
-
-    const diff = makeDiff(tmpDir, [
-      { path: targetFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 1 }], blame: [] },
-    ]);
-    const result = auditPatternConformance(diff);
-
-    const violations = result.findings.filter((f) => f.id.startsWith('pattern-shape-violation:'));
-    assert.ok(violations.length >= 1, `Expected PATTERN_SHAPE violation; got ${JSON.stringify(result.findings)}`);
-    assert.strictEqual(violations[0].severity, 'High', 'finding must have High severity');
-  });
-
-  test('no finding when PATTERN_SHAPE is satisfied', () => {
-    const targetFile = 'extension/src/satisfied-service.ts';
-    fs.mkdirSync(path.join(tmpDir, 'extension', 'src'), { recursive: true });
-    fs.writeFileSync(
-      path.join(tmpDir, 'extension', 'CLAUDE.md'),
-      `## Trap Doors\n\n- \`${targetFile}\` (TEST-2) — INVARIANT: test. PATTERN_SHAPE: \`REQUIRED_SENTINEL_XYZ\`.\n`,
-    );
-    fs.writeFileSync(
-      path.join(tmpDir, targetFile),
-      'export const REQUIRED_SENTINEL_XYZ = true;\n',
-    );
-
-    const diff = makeDiff(tmpDir, [
-      { path: targetFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 1 }], blame: [] },
-    ]);
-    const result = auditPatternConformance(diff);
-
-    const violations = result.findings.filter((f) => f.id.startsWith('pattern-shape-violation:'));
-    assert.strictEqual(violations.length, 0, 'Expected no violations when pattern present');
-  });
-
-  test('regex-form PATTERN_SHAPE is checked with RegExp', () => {
-    const targetFile = 'extension/src/regex-service.ts';
-    fs.mkdirSync(path.join(tmpDir, 'extension', 'src'), { recursive: true });
-    fs.writeFileSync(
-      path.join(tmpDir, 'extension', 'CLAUDE.md'),
-      // Pattern uses a regex alternation
-      `## Trap Doors\n\n- \`${targetFile}\` (TEST-3) — INVARIANT: test. PATTERN_SHAPE: \`GUARD_A|GUARD_B\`.\n`,
-    );
-    // File contains GUARD_B → regex matches → no violation
-    fs.writeFileSync(path.join(tmpDir, targetFile), 'const x = GUARD_B;\n');
-
-    const diff = makeDiff(tmpDir, [
-      { path: targetFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 1 }], blame: [] },
-    ]);
-    const result = auditPatternConformance(diff);
-
-    const violations = result.findings.filter((f) => f.id.startsWith('pattern-shape-violation:'));
-    assert.strictEqual(violations.length, 0, 'Regex alternation: GUARD_B satisfies GUARD_A|GUARD_B');
-  });
-
-  test('literal fallback when backtick string is invalid regex', () => {
-    const targetFile = 'extension/src/literal-service.ts';
-    fs.mkdirSync(path.join(tmpDir, 'extension', 'src'), { recursive: true });
-    // Pattern has unmatched paren — invalid regex; falls back to literal string match
-    const pattern = 'someFunc(arg1, arg2';
-    fs.writeFileSync(
-      path.join(tmpDir, 'extension', 'CLAUDE.md'),
-      `## Trap Doors\n\n- \`${targetFile}\` (TEST-4) — INVARIANT: test. PATTERN_SHAPE: \`${pattern}\`.\n`,
-    );
-    // File contains the literal string
-    fs.writeFileSync(path.join(tmpDir, targetFile), `const x = ${pattern}; /* something */\n`);
-
-    const diff = makeDiff(tmpDir, [
-      { path: targetFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 1 }], blame: [] },
-    ]);
-    const result = auditPatternConformance(diff);
-
-    const violations = result.findings.filter((f) => f.id.startsWith('pattern-shape-violation:'));
-    assert.strictEqual(violations.length, 0, 'Literal fallback: function call string satisfies pattern');
-  });
-
-  test('deleted file is not checked for PATTERN_SHAPE', () => {
-    const targetFile = 'extension/src/deleted-service.ts';
-    fs.mkdirSync(path.join(tmpDir, 'extension', 'src'), { recursive: true });
-    fs.writeFileSync(
-      path.join(tmpDir, 'extension', 'CLAUDE.md'),
-      `## Trap Doors\n\n- \`${targetFile}\` (TEST-5) — INVARIANT: test. PATTERN_SHAPE: \`SENTINEL_DEL\`.\n`,
-    );
-
-    const diff = makeDiff(tmpDir, [
-      { path: targetFile, status: 'D', kind: 'production', changedLines: [], blame: [] },
-    ]);
-    const result = auditPatternConformance(diff);
-
-    const violations = result.findings.filter((f) => f.id.startsWith('pattern-shape-violation:'));
-    assert.strictEqual(violations.length, 0, 'Deleted file must not be checked');
+    assert.deepEqual(violations, [], 'the PATTERN_SHAPE arm is subtracted — citadel emits no pattern-shape findings');
   });
 });
 
@@ -198,6 +164,16 @@ describe('pattern-conformance-audit: SQL ON CONFLICT clobber', () => {
     assert.ok(sqlFindings.length >= 1, 'kind:test .sql file must still be checked for SQL clobber');
   });
 
+  test('deleted .sql file is not checked', () => {
+    const diff = makeDiff(tmpDir, [
+      { path: 'db/migrations/004_gone.sql', status: 'D', kind: 'production', changedLines: [], blame: [] },
+    ]);
+    const result = auditPatternConformance(diff);
+
+    const sqlFindings = result.findings.filter((f) => f.id.startsWith('sql-conflict-clobber:'));
+    assert.strictEqual(sqlFindings.length, 0, 'Deleted file must not be checked');
+  });
+
   test('non-.sql changed file does not trigger SQL check', () => {
     const diff = makeDiff(tmpDir, [
       { path: 'src/index.ts', status: 'M', kind: 'production', changedLines: [], blame: [] },
@@ -219,85 +195,18 @@ describe('pattern-conformance-audit: empty/malformed declarations', () => {
     assert.strictEqual(result.findings.length, 0);
   });
 
-  test('CLAUDE.md with no Trap Doors section → zero findings', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pca-notd-'));
+  test('unreadable target file → zero findings, no throw', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pca-unreadable-'));
     try {
-      fs.mkdirSync(path.join(tmpDir, 'extension'), { recursive: true });
-      fs.writeFileSync(path.join(tmpDir, 'extension', 'CLAUDE.md'), '# Extension\n\nNo trap doors.\n');
-
-      const diff = makeDiff(tmpDir, []);
-      const result = auditPatternConformance(diff);
-
+      // Path is declared changed but never written to disk.
+      const diff = makeDiff(tmpDir, [
+        { path: 'db/migrations/nonexistent.sql', status: 'M', kind: 'production', changedLines: [], blame: [] },
+      ]);
+      let result;
+      assert.doesNotThrow(() => {
+        result = auditPatternConformance(diff);
+      });
       assert.strictEqual(result.findings.length, 0);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test('bullet with no PATTERN_SHAPE: → zero findings for that bullet', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pca-nops-'));
-    try {
-      const targetFile = 'extension/src/no-ps.ts';
-      fs.mkdirSync(path.join(tmpDir, 'extension', 'src'), { recursive: true });
-      fs.writeFileSync(
-        path.join(tmpDir, 'extension', 'CLAUDE.md'),
-        `## Trap Doors\n\n- \`${targetFile}\` (TEST) — INVARIANT: test. ENFORCE: some.test.js.\n`,
-      );
-      fs.writeFileSync(path.join(tmpDir, targetFile), 'export const x = 1;\n');
-
-      const diff = makeDiff(tmpDir, [
-        { path: targetFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 1 }], blame: [] },
-      ]);
-      const result = auditPatternConformance(diff);
-
-      assert.strictEqual(result.findings.length, 0, 'No PATTERN_SHAPE → no findings');
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test('lowercase pattern_shape marker is harvested like PATTERN_SHAPE', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pca-lowercase-'));
-    try {
-      const targetFile = 'extension/src/lowercase-pattern.ts';
-      fs.mkdirSync(path.join(tmpDir, 'extension', 'src'), { recursive: true });
-      fs.writeFileSync(
-        path.join(tmpDir, 'extension', 'CLAUDE.md'),
-        `## Trap Doors\n\n- \`${targetFile}\` (TEST) — INVARIANT: test. pattern_shape: \`LOWERCASE_SENTINEL\`.\n`,
-      );
-      fs.writeFileSync(path.join(tmpDir, targetFile), 'export const x = 1;\n');
-
-      const diff = makeDiff(tmpDir, [
-        { path: targetFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 1 }], blame: [] },
-      ]);
-      const result = auditPatternConformance(diff);
-
-      const violations = result.findings.filter((f) => f.id.startsWith('pattern-shape-violation:'));
-      assert.strictEqual(violations.length, 1, 'lowercase marker must still enforce the pattern');
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test('target file not in changedFiles → no violation even if pattern absent', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pca-notchanged-'));
-    try {
-      const targetFile = 'extension/src/not-changed.ts';
-      fs.mkdirSync(path.join(tmpDir, 'extension', 'src'), { recursive: true });
-      fs.writeFileSync(
-        path.join(tmpDir, 'extension', 'CLAUDE.md'),
-        `## Trap Doors\n\n- \`${targetFile}\` (TEST) — INVARIANT: test. PATTERN_SHAPE: \`SENTINEL_NOTCHANGED\`.\n`,
-      );
-      fs.writeFileSync(path.join(tmpDir, targetFile), 'export const x = 1;\n');
-
-      // diff only touches a different file
-      const diff = makeDiff(tmpDir, [
-        { path: 'extension/src/other.ts', status: 'M', kind: 'production', changedLines: [{ start: 1, end: 1 }], blame: [] },
-      ]);
-      const result = auditPatternConformance(diff);
-
-      const violations = result.findings.filter((f) => f.id.startsWith('pattern-shape-violation:'));
-      assert.strictEqual(violations.length, 0, 'Unchanged file must not be checked');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
