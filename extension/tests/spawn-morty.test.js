@@ -2129,32 +2129,46 @@ for (const tier of Object.keys(TIER_LIFECYCLE)) {
 }
 
 // ---------------------------------------------------------------------------
-// The same two rules ALSO live as a static block in the two hand-authored
-// prompt files, because buildTierLifecycleSections cannot reach every worker:
-// the trivial tier renders no Conformance section, and a REVIEW worker never
-// calls the builder at all. For those paths the .md block is the ONLY carrier
-// of the rule — yet the assertions above would stay green if someone deleted
-// it. These pin the third and fourth copies. Anchors are semantic (the rule
-// survives), not byte-exact (the prose is deliberately worded per context).
+// Which file carries the rule is decided by ONE fact: whether it renders the
+// builder. spawn-morty picks the prompt at :927 — a review ticket gets
+// send-to-morty-review.md, everything else gets send-to-morty.md.
+//
+//   send-to-morty-review.md has no {{TIER_LIFECYCLE_SECTIONS}}, so the builder
+//   never runs for it and its hand-authored block is the ONLY thing that puts
+//   the rule in front of a review worker. The assertions above would stay green
+//   if someone deleted it, so it is pinned here.
+//
+//   send-to-morty.md DOES render the builder, and Implement is emitted
+//   unconditionally — so every tier, trivial included, already receives the rule.
+//   A static block there would be a third copy in one rendered prompt and a
+//   second place to keep the wording in sync. Its absence is pinned too.
+//
+// Anchors are semantic (the rule survives), not byte-exact (the prose is
+// deliberately worded per context).
 // ---------------------------------------------------------------------------
 
-for (const commandFile of ['send-to-morty.md', 'send-to-morty-review.md']) {
-    test(`${commandFile}: static prompt block carries the sync-gate + commit-first rules`, () => {
-        const mdPath = path.resolve(__dirname, '../../.claude/commands', commandFile);
-        const md = fs.readFileSync(mdPath, 'utf-8');
-        const heading = '## ⚠️ Synchronous Gate Confirmation & Commit-First';
-        const idx = md.indexOf(heading);
-        assert.notEqual(idx, -1, `expected the '${heading}' block in ${commandFile}`);
+test('send-to-morty-review.md: hand-authored block is the SOLE carrier — the builder never runs for a review worker', () => {
+    const md = fs.readFileSync(path.resolve(__dirname, '../../.claude/commands/send-to-morty-review.md'), 'utf-8');
+    assert.equal(md.includes('{{TIER_LIFECYCLE_SECTIONS}}'), false,
+        'a review prompt renders no lifecycle sections — that is WHY it needs its own block');
 
-        // Bound the slice to the block so a stray match elsewhere in the file cannot satisfy it.
-        const nextHeadingIdx = md.indexOf('\n## ', idx + heading.length);
-        const block = md.slice(idx, nextHeadingIdx === -1 ? undefined : nextHeadingIdx);
+    const heading = '## ⚠️ Synchronous Gate Confirmation & Commit-First';
+    const idx = md.indexOf(heading);
+    assert.notEqual(idx, -1, `expected the '${heading}' block in send-to-morty-review.md`);
 
-        assert.match(block, /synchronously/i,
-            `expected synchronous-gate rule in ${commandFile}, got: ${block}`);
-        assert.match(block, /commit first/i,
-            `expected commit-first rule in ${commandFile}, got: ${block}`);
-        assert.match(block, /no waker exists in `claude -p`/i,
-            `expected no-waker rationale in ${commandFile}, got: ${block}`);
-    });
-}
+    // Bound the slice to the block so a stray match elsewhere in the file cannot satisfy it.
+    const nextHeadingIdx = md.indexOf('\n## ', idx + heading.length);
+    const block = md.slice(idx, nextHeadingIdx === -1 ? undefined : nextHeadingIdx);
+
+    assert.match(block, /synchronously/i, `expected synchronous-gate rule, got: ${block}`);
+    assert.match(block, /commit first/i, `expected commit-first rule, got: ${block}`);
+    assert.match(block, /no waker exists in `claude -p`/i, `expected no-waker rationale, got: ${block}`);
+});
+
+test('send-to-morty.md: the rule reaches the worker through the builder, never a duplicate static block', () => {
+    const md = fs.readFileSync(path.resolve(__dirname, '../../.claude/commands/send-to-morty.md'), 'utf-8');
+    assert.ok(md.includes('{{TIER_LIFECYCLE_SECTIONS}}'),
+        'the implement prompt renders the builder — that substitution is what carries the rule');
+    assert.equal(md.includes('## ⚠️ Synchronous Gate Confirmation & Commit-First'), false,
+        'the builder already emits the rule at Implement for EVERY tier; a static block here restates it a third time in one prompt and forks the wording into a second place to maintain');
+});
