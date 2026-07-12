@@ -2101,3 +2101,34 @@ for (const tier of Object.keys(TIER_LIFECYCLE)) {
             `expected commit-first rule in ${tier} Conformance section, got: ${conformanceSection}`);
     });
 }
+
+// ---------------------------------------------------------------------------
+// The same two rules ALSO live as a static block in the two hand-authored
+// prompt files, because buildTierLifecycleSections cannot reach every worker:
+// the trivial tier renders no Conformance section, and a REVIEW worker never
+// calls the builder at all. For those paths the .md block is the ONLY carrier
+// of the rule — yet the assertions above would stay green if someone deleted
+// it. These pin the third and fourth copies. Anchors are semantic (the rule
+// survives), not byte-exact (the prose is deliberately worded per context).
+// ---------------------------------------------------------------------------
+
+for (const commandFile of ['send-to-morty.md', 'send-to-morty-review.md']) {
+    test(`${commandFile}: static prompt block carries the sync-gate + commit-first rules`, () => {
+        const mdPath = path.resolve(__dirname, '../../.claude/commands', commandFile);
+        const md = fs.readFileSync(mdPath, 'utf-8');
+        const heading = '## ⚠️ Synchronous Gate Confirmation & Commit-First';
+        const idx = md.indexOf(heading);
+        assert.notEqual(idx, -1, `expected the '${heading}' block in ${commandFile}`);
+
+        // Bound the slice to the block so a stray match elsewhere in the file cannot satisfy it.
+        const nextHeadingIdx = md.indexOf('\n## ', idx + heading.length);
+        const block = md.slice(idx, nextHeadingIdx === -1 ? undefined : nextHeadingIdx);
+
+        assert.match(block, /synchronously/i,
+            `expected synchronous-gate rule in ${commandFile}, got: ${block}`);
+        assert.match(block, /commit first/i,
+            `expected commit-first rule in ${commandFile}, got: ${block}`);
+        assert.match(block, /no waker exists in `claude -p`/i,
+            `expected no-waker rationale in ${commandFile}, got: ${block}`);
+    });
+}
