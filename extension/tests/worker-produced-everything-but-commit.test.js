@@ -185,6 +185,42 @@ test('AC-WMFF-2A: ladder-exhaustion flip on a CLEAN tree writes no archive (self
   }
 });
 
+// The `bin/CLAUDE.md` AC-WMFF-2A trap door states this ordering as a PATTERN_SHAPE, but
+// `audit-trap-door-enforcement.sh` only verifies ENFORCE-reachability — it never checks the
+// shape itself. The two behavioural tests above cannot check it either: a Failed-flip does not
+// mutate the working tree, so an archive moved AFTER the frontmatter write leaves both of them
+// green while the downstream reset destroys the diff unexamined. Only source order can pin it.
+test('AC-WMFF-2A: advanceOrExitOnLadderExhaustion archives BEFORE its Failed frontmatter write', () => {
+  const src = readFileSync(SRC_MUX, 'utf8');
+  const fnAt = src.indexOf('export function advanceOrExitOnLadderExhaustion');
+  assert.ok(fnAt > 0, 'the ladder-exhaustion flip site exists');
+  const end = src.indexOf('\n}\n', fnAt);
+  assert.ok(end > fnAt, 'body is delimited');
+  const body = src.slice(fnAt, end);
+
+  const archiveAt = body.indexOf('archiveDirtyTreeBeforeFlip(');
+  const flipAt = body.indexOf("status: 'Failed'");
+  assert.ok(archiveAt > 0, 'the flip site calls archiveDirtyTreeBeforeFlip');
+  assert.ok(flipAt > 0, "the flip site writes status: 'Failed'");
+  assert.ok(
+    archiveAt < flipAt,
+    'the archive MUST precede the Failed flip — the B-DURA T10 boundary committer is terminal-guarded and skips an already-Failed ticket, so an archive that runs after the flip saves nothing',
+  );
+
+  // `workingDir` is REQUIRED, not optional. Making it optional both re-opens the gap and lets
+  // archiveBeforeDestructive run git in `process.cwd()`.
+  const signature = body.slice(0, body.indexOf('}): '));
+  assert.match(signature, /workingDir: string;/, 'workingDir is a required input (never `workingDir?:`)');
+
+  // Trap-door claim 2: every Failed-flip site archives, so the call-site count stays >= 4
+  // (the three flip sites + the orphan-reattach pre-ff-only archive).
+  const callSites = (src.match(/archiveDirtyTreeBeforeFlip\(/g) ?? []).length;
+  assert.ok(
+    callSites >= 4,
+    `expected >= 4 archiveDirtyTreeBeforeFlip call sites (3 Failed-flip sites + orphan-reattach), got ${callSites}`,
+  );
+});
+
 // ═══════════ AC-WMFF-2B — the breadcrumb predicate ═══════════
 
 test('AC-WMFF-2B: complete artifacts + Failed + dirty tree → fires with the full discriminator payload', () => {
