@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { StateManager } from './state-manager.js';
+import { StateManager, acquireLockFile, inspectLockFile, isDeadPidPayload, releaseLockFile, stealLockFile, withStealRight, } from './state-manager.js';
 function isWithinRoot(targetPath, rootPath) {
     const relative = path.relative(path.resolve(rootPath), path.resolve(targetPath));
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
@@ -216,16 +216,36 @@ function latestApplyLedgerPath(sessionRoot) {
         throw new Error(`No course-correction apply ledger found in ${sessionRoot}`);
     return ledgers[0].filePath;
 }
+/**
+ * Reclaims the restructure lock from a holder we can PROVE is dead — never an age verdict: a
+ * restructure legitimately holds while it rewrites every ticket in the session, so an age arm
+ * (the one `withRetryLock` carries) would evict a LIVE holder mid-transaction.
+ */
+function reclaimDeadRestructureLock(lockFile) {
+    withStealRight(lockFile, () => {
+        const snapshot = inspectLockFile(lockFile);
+        if (!snapshot || !isDeadPidPayload(snapshot.payload))
+            return false;
+        return stealLockFile(lockFile, snapshot);
+    });
+}
 function acquireFileLock(lockFile) {
-    const fd = fs.openSync(lockFile, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-    fs.writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }));
-    fs.closeSync(fd);
-    return () => {
-        try {
-            fs.unlinkSync(lockFile);
-        }
-        catch { /* already released */ }
-    };
+    // Payload is the BARE holder pid — the one encoding `isDeadPidPayload` reads. The prior
+    // `{pid,ts}` JSON parsed to NaN there, so any steal bolted onto it would silently never fire.
+    let ino = acquireLockFile(lockFile, String(process.pid));
+    if (ino === null) {
+        reclaimDeadRestructureLock(lockFile);
+        ino = acquireLockFile(lockFile, String(process.pid));
+    }
+    if (ino === null) {
+        const err = new Error(`EEXIST: restructure lock is held, open '${lockFile}'`);
+        err.code = 'EEXIST';
+        err.path = lockFile;
+        throw err;
+    }
+    // Release is inode-bound: a lock we no longer own (ours was stolen) is left for its new holder.
+    const heldIno = ino;
+    return () => { releaseLockFile(lockFile, heldIno); };
 }
 function appendApplyLedger(ledgerPath, entry) {
     fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
