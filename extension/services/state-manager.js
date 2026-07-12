@@ -176,24 +176,42 @@ export function inspectLockFile(lockPath) {
 }
 /**
  * Takes the lock and returns the inode the caller now owns, or null if someone already holds it.
- * The inode comes from the same fd that created the file, so ownership is a fact, not an inference.
+ * The inode comes from the same fd that wrote the file, so ownership is a fact, not an inference.
+ *
+ * The payload is written to a private staging file and the lock is published by linking it into
+ * place — one atomic step, so the lock can never be seen without the pid that holds it. Creating
+ * the lock first and writing the pid second leaves a window where it exists EMPTY, and an empty
+ * payload is unreclaimable BY DESIGN: `isDeadPidPayload` cannot prove death from it, so a holder
+ * killed in that window wedges the lock forever. The gate and restructure locks have no age-based
+ * arm to fall back on (they legitimately hold for minutes), so nothing recovers them. Widening the
+ * reclaim rule to steal an empty payload is not the fix — a LIVE holder is empty in that same
+ * window, so such a steal would evict it.
  */
 export function acquireLockFile(lockPath, payload) {
-    let fd;
+    const staging = `${lockPath}.acq.${process.pid}`;
     try {
-        fd = fs.openSync(lockPath, 'wx');
+        const fd = fs.openSync(staging, 'w');
+        let ino;
+        try {
+            fs.writeSync(fd, payload);
+            ino = fs.fstatSync(fd).ino;
+        }
+        finally {
+            fs.closeSync(fd);
+        }
+        fs.linkSync(staging, lockPath); // publishes the payload with the lock, or EEXIST if held
+        return ino;
     }
     catch (err) {
         if (err.code === 'EEXIST')
             return null;
         throw err; // EACCES/ENOENT-on-dir etc. are real faults, not contention
     }
-    try {
-        fs.writeSync(fd, payload);
-        return fs.fstatSync(fd).ino;
-    }
     finally {
-        fs.closeSync(fd);
+        try {
+            fs.unlinkSync(staging);
+        }
+        catch { /* never created, or already unlinked */ }
     }
 }
 /** Removes a lock only while it is still the inode the caller acquired. */
