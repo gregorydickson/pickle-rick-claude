@@ -2035,6 +2035,13 @@ export function restartDeadWatcherPanes(
     appendWatcherRestartLog(sessionDir, `${logTag} WARN: unable to resolve tmux session name`);
     return;
   }
+  if (isForeignTmuxSession(sessionName, sessionDir)) {
+    appendWatcherRestartLog(
+      sessionDir,
+      `${logTag} WARN: tmux session '${sessionName}' does not host this session's monitor window — skipping respawn`,
+    );
+    return;
+  }
 
   for (const watcher of watcherPaneCommands(sessionDir, extensionRoot, mode)) {
     if (processWatcherPane(sessionDir, extensionRoot, mode, sessionName, watcher, spawnSyncFn, logTag, ensureMonitorWindowFn)) return;
@@ -2048,6 +2055,36 @@ function isSessionInactive(sessionDir: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * We may only drive the tmux session that hosts THIS session's monitor window.
+ * `#S` answers "which tmux session is this PROCESS in" — the right answer only
+ * when the runner was launched inside the session it manages. Otherwise
+ * send-keys types our pane commands, with Enter, into a stranger's live pane.
+ *
+ * Launchers name the session `<prefix>-<session-hash>`, so a name whose hash
+ * resolves to a DIFFERENT session dir under the data root is provably foreign.
+ * Anything else stays permitted: a layout whose naming we do not own is not ours
+ * to judge.
+ */
+function isForeignTmuxSession(sessionName: string, sessionDir: string): boolean {
+  const dash = sessionName.lastIndexOf('-');
+  if (dash === -1) return false;
+  const hash = sessionName.slice(dash + 1);
+  if (!hash) return false;
+
+  const sessionsRoot = path.join(getDataRoot(), 'sessions');
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(sessionsRoot);
+  } catch {
+    return false;
+  }
+
+  const owner = entries.find((entry) => entry.endsWith(`-${hash}`));
+  if (!owner) return false;
+  return path.resolve(sessionsRoot, owner) !== path.resolve(sessionDir);
 }
 
 function readCurrentTmuxSessionName(spawnSyncFn: typeof spawnSync): string | null {

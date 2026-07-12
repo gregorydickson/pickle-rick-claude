@@ -318,3 +318,84 @@ test('respawnMonitorWindowForMode: valid sessionDir → tmux respawn-pane called
         fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
 });
+
+// ─── restartDeadWatcherPanes: ambient tmux session must own the sessionDir ─────
+// `#S` names the tmux session the PROCESS sits in, not the one we manage. A
+// runner launched from an unrelated tmux (test fixture, operator's own window)
+// would otherwise send-keys its pane commands — with Enter — into a stranger's
+// live monitor pane.
+
+function makeDataRootSession(dataRoot, name) {
+    const sessionDir = path.join(dataRoot, 'sessions', name);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(sessionDir, 'state.json'),
+        JSON.stringify({ active: true, command_template: null, session_dir: sessionDir }),
+    );
+    return sessionDir;
+}
+
+test('restartDeadWatcherPanes: ambient tmux session owned by ANOTHER pickle session → no send-keys', () => {
+    const savedDataRoot = process.env.PICKLE_DATA_ROOT;
+    const tmpRoot = makeTmpRoot();
+    try {
+        process.env.PICKLE_DATA_ROOT = tmpRoot;
+        makeDataRootSession(tmpRoot, '2026-07-11-86dd509f');
+        // We manage a DIFFERENT session, but we are running inside the live
+        // tmux session of `2026-07-11-86dd509f`.
+        const sessionDir = makeValidSessionDir(tmpRoot);
+        const extRoot = makeExtRoot(tmpRoot);
+        const { calls, spawnSyncFn } = makeSpawnCapture('pipeline-86dd509f');
+
+        restartDeadWatcherPanes(sessionDir, extRoot, 'pickle', spawnSyncFn);
+
+        const sendKeys = calls.filter(c => c.command === 'tmux' && c.args[0] === 'send-keys');
+        assert.equal(sendKeys.length, 0, 'must not type into a pane of a foreign pickle session');
+    } finally {
+        if (savedDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = savedDataRoot;
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+test('restartDeadWatcherPanes: ambient tmux session owns THIS sessionDir → respawns', () => {
+    const savedDataRoot = process.env.PICKLE_DATA_ROOT;
+    const tmpRoot = makeTmpRoot();
+    try {
+        process.env.PICKLE_DATA_ROOT = tmpRoot;
+        const sessionDir = makeDataRootSession(tmpRoot, '2026-07-11-86dd509f');
+        const extRoot = makeExtRoot(tmpRoot);
+        const { calls, spawnSyncFn } = makeSpawnCapture('pipeline-86dd509f');
+
+        restartDeadWatcherPanes(sessionDir, extRoot, 'pickle', spawnSyncFn);
+
+        const sendKeys = calls.filter(c => c.command === 'tmux' && c.args[0] === 'send-keys');
+        assert.ok(sendKeys.length > 0, 'our own monitor window is still repaired');
+    } finally {
+        if (savedDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = savedDataRoot;
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+test('restartDeadWatcherPanes: tmux session name matching no pickle session → respawns', () => {
+    const savedDataRoot = process.env.PICKLE_DATA_ROOT;
+    const tmpRoot = makeTmpRoot();
+    try {
+        process.env.PICKLE_DATA_ROOT = tmpRoot;
+        makeDataRootSession(tmpRoot, '2026-07-11-86dd509f');
+        const sessionDir = makeValidSessionDir(tmpRoot);
+        const extRoot = makeExtRoot(tmpRoot);
+        // A layout whose naming we do not own is not ours to judge — permit.
+        const { calls, spawnSyncFn } = makeSpawnCapture('pickle-dead');
+
+        restartDeadWatcherPanes(sessionDir, extRoot, 'pickle', spawnSyncFn);
+
+        const sendKeys = calls.filter(c => c.command === 'tmux' && c.args[0] === 'send-keys');
+        assert.ok(sendKeys.length > 0, 'unrecognized tmux session names stay permitted');
+    } finally {
+        if (savedDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = savedDataRoot;
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
