@@ -270,10 +270,10 @@ test('AC-WMFF-2B: complete artifacts + Failed + dirty tree → fires with the fu
   }
 });
 
-// `green` was the ONLY verdict any payload test schema-validated. But a worker that dies at
-// budget death typically never persisted one, so `absent` (the `readWorkerGateVerdict` default
-// on a missing frontmatter field) is the shape production emits MOST often — and it went
-// unvalidated. A payload the runtime routinely writes must be provably schema-conformant.
+// A worker that dies at budget death never persisted a gate verdict, so `absent` (the
+// `readWorkerGateVerdict` default on a missing frontmatter field) is the shape this event
+// carries MOST often in production — and a payload the runtime routinely writes must be
+// provably schema-conformant, not merely the happy-path `green` one.
 test('AC-WMFF-2B: a ticket with NO worker_gate_verdict field emits "absent" — and THAT payload is schema-conformant', () => {
   const { repo, baseSha } = makeRepo('wmff-2b-absent-repo-');
   const { sessionDir } = makeSession('wmff-2b-absent-sess-');
@@ -746,10 +746,8 @@ test('structural exclusion: the overlap fixture (prior-iteration artifacts + zer
 
     // BOTH predicates are individually satisfiable here — that is the whole point.
     //
-    // R-WSDO's three conjuncts, each MEASURED. (They were previously faked: the delta term
-    // was written `afterCount - afterCount === 0` — true for every input — and the log term
-    // was a hardcoded `true` behind a `/* 0-byte log */` comment. A tautology cannot fail,
-    // so it proved nothing about the fixture it claimed to characterize.)
+    // R-WSDO's three conjuncts, each MEASURED from real on-disk state. An assertion over a
+    // term the fixture hardcodes cannot fail, so it characterizes nothing.
     const plExit = checkPartialLifecycleExit(sessionDir, statePath, id);
     const beforeCount = countWorkerArtifacts(ticketDir);
     // …the respawned worker's iteration runs HERE and produces nothing new…
@@ -785,7 +783,7 @@ test('structural exclusion: the overlap fixture (prior-iteration artifacts + zer
 
     // Term 2 is load-bearing, not vacuous: a worker that DID produce a new artifact this
     // iteration moves the delta off zero, so R-WSDO declines and the `else if` arm becomes
-    // reachable. Proving the term can FAIL is exactly what `afterCount - afterCount` could not.
+    // reachable. A delta term that cannot be pushed off zero is not measuring anything.
     writeFileSync(path.join(ticketDir, 'code_review_2026-07-12.md'), 'produced THIS iteration\n');
     assert.notEqual(
       countWorkerArtifacts(ticketDir) - beforeCount, 0,
@@ -797,11 +795,10 @@ test('structural exclusion: the overlap fixture (prior-iteration artifacts + zer
   }
 });
 
-// The 0-byte/1-byte boundary. Every breadcrumb fixture above passes a 0-byte log, so the
-// suite only ever exercised the branch where R-WSDO WINS. One byte flips it: R-WSDO requires
-// `log_empty`, so a non-empty log makes it decline and the `else if` arm is the one that must
-// fire. That is the live incident's own shape — the worker logged real work, then died at
-// budget with the diff uncommitted — and until now no test covered it.
+// The 0-byte/1-byte boundary — the else-if's OTHER arm. R-WSDO requires `log_empty`, so a
+// single byte makes it decline and the breadcrumb becomes the event that must fire. That is the
+// live incident's own shape: the worker logged real work, then died at budget with the diff
+// uncommitted. A fixture set that only ever passes a 0-byte log never reaches this arm.
 test('structural exclusion: a 1-BYTE session log flips the else-if — R-WSDO declines, the breadcrumb wins (the incident shape)', async () => {
   const { repo, baseSha } = makeRepo('wmff-1byte-repo-');
   const { sessionDir, statePath } = makeSession('wmff-1byte-sess-');

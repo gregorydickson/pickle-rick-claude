@@ -2075,10 +2075,9 @@ test('resolveCodexModel: trims state.codex_model whitespace', () => {
 /**
  * The ONE section named by `heading`, bounded at the next `### ` heading.
  *
- * The rule under test is rendered TWICE — once in Implement, once in Spec Conformance — and
- * Conformance is rendered AFTER Implement. An unbounded `rendered.slice(indexOf(heading))`
- * therefore swallows every later section, so the Implement assertion would be satisfied by
- * the Conformance copy: deleting the Implement rule left the medium/large tests green.
+ * The sync-gate rule is rendered TWICE — Implement, then Spec Conformance — so the bound is
+ * load-bearing, not cosmetic: an unbounded `rendered.slice(indexOf(heading))` runs to the end
+ * of the string and lets the Conformance copy satisfy an assertion scoped to Implement.
  */
 function sectionOf(rendered, heading) {
     const start = rendered.indexOf(heading);

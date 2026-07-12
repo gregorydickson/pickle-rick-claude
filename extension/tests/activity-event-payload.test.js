@@ -1519,10 +1519,10 @@ test('activity-event-payload: worker_produced_everything_but_commit rejects an u
   assert.equal(result.valid, false, "worker_gate_verdict must be one of green|red|absent");
 });
 
-// The enum has three members but only `green` was ever validated positively (the negative case
-// above proves `maybe` is rejected — it does not prove `absent` and `red` are ACCEPTED). A
-// budget-dead worker usually never persisted a verdict, so `absent` is the shape the runtime
-// emits most often; `red` is the gate-failed-then-died shape. Both must validate.
+// The negative case above proves `maybe` is REJECTED; it does not prove the other two enum
+// members are ACCEPTED. Both are real production shapes — `absent` is what a budget-dead worker
+// leaves behind (it never persisted a verdict), `red` is gate-failed-then-died — so both must
+// validate.
 for (const verdict of ['absent', 'red']) {
   test(`activity-event-payload: worker_produced_everything_but_commit accepts worker_gate_verdict '${verdict}'`, () => {
     const result = validate({
