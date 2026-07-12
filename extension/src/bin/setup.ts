@@ -1223,18 +1223,32 @@ function readTicketCompletionCommit(sessionRoot: string, ticketId: string): stri
   }
 }
 
-/** True iff `sha` ff-descends from HEAD (`merge-base --is-ancestor HEAD sha` exit 0). */
-function shaDescendsFromHead(workingDir: string, currentHead: string, sha: string): boolean {
+/** True iff `a` is an ancestor of `b`. Git counts a commit as its own ancestor. */
+function isAncestor(workingDir: string, a: string, b: string): boolean {
   try {
-    execFileSync('git', ['merge-base', '--is-ancestor', currentHead, sha], {
+    execFileSync('git', ['merge-base', '--is-ancestor', a, b], {
       cwd: workingDir,
       stdio: ['ignore', 'ignore', 'ignore'],
       timeout: 5000,
     });
     return true;
   } catch {
-    return false; // not a descendant — never force-reattach (SAFETY)
+    return false;
   }
+}
+
+/**
+ * True iff `sha` STRICTLY ff-descends from HEAD — i.e. an orphan really exists.
+ * Git counts a commit as its own ancestor, so the forward probe alone also accepts
+ * `sha === HEAD`: a tree where nothing was reset and nothing is orphaned. That case
+ * must NOT reach the recovery path — a `merge --ff-only HEAD` reports "Already up to
+ * date" (exit 0) and reads back as a successful reattach, manufacturing a Done flip
+ * out of a no-op. The reverse probe rejects it. Both SHAs are resolved by git, so a
+ * short frontmatter stamp compares correctly against a full HEAD.
+ */
+function shaDescendsFromHead(workingDir: string, currentHead: string, sha: string): boolean {
+  if (!isAncestor(workingDir, currentHead, sha)) return false; // divergent — never force-reattach (SAFETY)
+  return !isAncestor(workingDir, sha, currentHead); // equal ⇒ nothing orphaned, nothing to recover
 }
 
 function tryResumeOrphanReattach(
