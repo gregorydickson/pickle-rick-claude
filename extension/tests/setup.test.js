@@ -422,6 +422,44 @@ test('setup --paused in a git repo with an unborn HEAD (no commits yet): WARNs t
     }
 });
 
+// R-SCPIN §0 co-stamp contract: createInitialState assigns start_commit and
+// pinned_sha from ONE resolveStartCommit() value. Both heal seams —
+// applyResumeConfig (setup.ts) and healPipelineRequiredFields
+// (pipeline-runner.ts) — justify adopting pinned_sha AS start_commit by citing
+// this bootstrap invariant, so the fast tier has to pin it.
+// repin-on-resume.test.js covers pinned_sha === HEAD, but nothing covered
+// start_commit at bootstrap: corrupting start_commit alone (pinned_sha intact)
+// left that suite fully green, so the field the heal chain feeds was untested.
+test('setup normal in-repo bootstrap: start_commit and pinned_sha are co-stamped identical (R-SCPIN §0)', () => {
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-scpin-costamp-data-'));
+    const repoDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-scpin-costamp-repo-')));
+    try {
+        initGitRepo(repoDir);
+        const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf-8' }).trim();
+
+        const res = runSetupAt(repoDir, ['--paused', '--task', 'scpin co-stamp test'], dataRoot);
+        const sessionRoot = res.stdout.match(/SESSION_ROOT=(.+)/)?.[1]?.trim();
+        assert.ok(sessionRoot, 'SESSION_ROOT expected in setup output');
+
+        const state = JSON.parse(fs.readFileSync(path.join(sessionRoot, 'state.json'), 'utf-8'));
+        assert.equal(state.start_commit, headSha, 'start_commit captures repo HEAD at bootstrap');
+        assert.equal(state.pinned_sha, headSha, 'pinned_sha captures the same repo HEAD');
+        assert.equal(
+            state.start_commit,
+            state.pinned_sha,
+            'R-SCPIN §0: start_commit and pinned_sha are co-stamped from one value, never independently derived',
+        );
+        assert.doesNotMatch(
+            res.stderr,
+            /start_commit deferred/,
+            'a normal in-repo bootstrap must take neither AC-SCPIN-5 deferral branch',
+        );
+    } finally {
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+        fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+});
+
 test('setup --resume: recomputes missing start_commit from the resumed git working_dir (R-PSCG AC-2)', () => {
     const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pscg-resume-data-'));
     const neutralCwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pscg-resume-cwd-')));
