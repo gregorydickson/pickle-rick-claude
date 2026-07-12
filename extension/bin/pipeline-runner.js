@@ -3184,7 +3184,16 @@ function getFatalPickleHaltReason(runtime) {
         if (!startCommit) {
             return 'baseline unmeasurable — start_commit was never recorded for this session';
         }
-        return `zero commits since baseline ${startCommit.slice(0, 8)} — no build progress this run`;
+        const shortSha = startCommit.slice(0, 8);
+        // This halt path is also reachable via the strict-phase policy
+        // (pipeline_continue_on_phase_fail=false) even when isFatalPhaseFailure returned
+        // false because real commits landed — countCommitsSince must be checked directly
+        // rather than assumed, or this string would falsely claim zero build progress.
+        const commitCount = countCommitsSince(startCommit, runtime.repoRoot);
+        if (commitCount === 0) {
+            return `zero commits since baseline ${shortSha} — no build progress this run`;
+        }
+        return `${commitCount} commit(s) since baseline ${shortSha} — halted for a reason other than build progress (e.g. strict phase policy)`;
     }
     catch {
         return 'fatal phase failure';

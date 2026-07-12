@@ -2449,4 +2449,66 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('strict-phase-policy halt with real commits since baseline never says "zero commits"', () => {
+    // logPhaseHaltReason's pickle branch is reachable even when isFatalPhaseFailure
+    // is false: shouldHaltAfterPhase also halts when pipeline_continue_on_phase_fail
+    // is false (--strict-phases), regardless of build progress. getFatalPickleHaltReason
+    // must not assume "startCommit present -> zero commits" in that case.
+    const dir = scpinTmpDir();
+    try {
+      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
+      execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+      fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
+      execFileSync('git', ['add', '.'], { cwd: dir });
+      execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
+      const startCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
+
+      // Real build progress landed after the baseline was captured.
+      fs.writeFileSync(path.join(dir, 'progress.ts'), 'export const y = 2;\n');
+      execFileSync('git', ['add', '.'], { cwd: dir });
+      execFileSync('git', ['commit', '-q', '-m', 'real progress'], { cwd: dir });
+
+      writePickleState(path.join(dir, 'state.json'), {
+        start_commit: startCommit,
+        pipeline_continue_on_phase_fail: false,
+      });
+      const runtime = scpinRuntime(dir);
+
+      assert.equal(
+        isFatalPhaseFailure('pickle', runtime),
+        false,
+        'real commits since baseline must not be classified fatal by commit count',
+      );
+      assert.equal(
+        shouldHaltAfterPhase('pickle', 1, runtime),
+        true,
+        'strict phase policy still halts even without a fatal-by-commit-count reason',
+      );
+
+      const logged = [];
+      logPhaseHaltReason(runtime, 'pickle', 1, (msg) => logged.push(msg));
+      const combined = logged.join('\n');
+
+      assert.doesNotMatch(
+        combined,
+        /zero commits/,
+        'must NOT falsely claim zero build progress when real commits landed since baseline',
+      );
+      assert.doesNotMatch(
+        combined,
+        /baseline unmeasurable/,
+        'must NOT report a captured baseline as unmeasurable',
+      );
+      assert.match(
+        combined,
+        /commit\(s\) since baseline/,
+        'must report the true commit count for a halt not driven by zero build progress',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
