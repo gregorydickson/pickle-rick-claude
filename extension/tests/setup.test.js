@@ -517,6 +517,62 @@ test('setup --resume: never clobbers an existing start_commit (R-PSCG no-clobber
     }
 });
 
+// R-SCPIN AC-SCPIN-1 (resume seam), fast tier. The sibling
+// tests/integration/start-commit-pinned-sha.test.js proves this too, but it is
+// integration-tier + serialized — so a full revert of the setup-side heal to the
+// merge-base guess did NOT redden `npm run test:fast` at all (measured: 70/70 of
+// this file passed against a reverted heal). The legacy R-PSCG AC-2 test above
+// cannot catch it either: its oracle is `assert.ok(post.start_commit)` + cat-file,
+// which ANY of the three candidate shas satisfies. This test closes that hole in
+// the tier the worker gate actually runs.
+//
+// Discrimination comes from the FIXTURE: the working dir is a feature branch past
+// a main fork point, so pinned_sha (HEAD) and merge-base(main, HEAD) are different
+// shas and the heal must be seen to pick the former.
+test('setup --resume: start_commit heal ADOPTS pinned_sha, never the merge-base guess (R-SCPIN AC-SCPIN-1)', () => {
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-scpin-adopt-data-'));
+    const neutralCwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-scpin-adopt-cwd-')));
+    const repoDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-scpin-adopt-repo-')));
+    try {
+        initGitRepo(repoDir);
+        const forkPoint = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf-8' }).trim();
+        execFileSync('git', ['checkout', '-q', '-b', 'feature'], { cwd: repoDir });
+        fs.writeFileSync(path.join(repoDir, 'feature.txt'), 'feature work');
+        execFileSync('git', ['add', '-A'], { cwd: repoDir });
+        execFileSync('git', ['commit', '--no-gpg-sign', '-q', '-m', 'feature commit'], { cwd: repoDir });
+        const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf-8' }).trim();
+        assert.notEqual(forkPoint, head, 'fixture: merge-base and HEAD must be different shas');
+
+        // Neutral-cwd bootstrap: start_commit and pinned_sha both start unset, exactly
+        // as a `--paused`-from-a-non-repo-root session does.
+        const boot = runSetupAt(neutralCwd, ['--paused', '--task', 'scpin adopt'], dataRoot);
+        const sessionRoot = boot.stdout.match(/SESSION_ROOT=(.+)/)?.[1]?.trim();
+        assert.ok(sessionRoot, 'SESSION_ROOT expected from paused bootstrap');
+
+        const statePath = path.join(sessionRoot, 'state.json');
+        const pre = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        assert.ok(!pre.start_commit, 'neutral-cwd bootstrap must not capture start_commit');
+        pre.working_dir = repoDir;
+        fs.writeFileSync(statePath, JSON.stringify(pre, null, 2));
+
+        runSetupAt(sessionRoot, ['--resume', sessionRoot, '--paused', '--task', ''], dataRoot);
+
+        const post = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        assert.equal(post.pinned_sha, head, 'repin re-derives pinned_sha from working-dir HEAD');
+        assert.equal(post.start_commit, head, 'the heal ADOPTS pinned_sha');
+        assert.equal(post.start_commit, post.pinned_sha, 'R-SCPIN §0 invariant restored on the resume path');
+        assert.notEqual(
+            post.start_commit,
+            forkPoint,
+            'the heal must NOT adopt merge-base(main, HEAD) — the value the pre-R-SCPIN heal guessed',
+        );
+    } finally {
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+        fs.rmSync(neutralCwd, { recursive: true, force: true });
+        fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+});
+
 test('setup initializeNewSession: session id uses local day, not UTC day', () => {
     const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-local-day-data-'));
     const previousDataRoot = process.env.PICKLE_DATA_ROOT;

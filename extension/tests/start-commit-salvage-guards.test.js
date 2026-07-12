@@ -195,6 +195,20 @@ test('AC-SCPIN-4(b): T40 isFailedTicketTerminalExcludable — empty-window exclu
       false,
       'declared file touched in the window -> NOT excludable',
     );
+
+    // The OTHER T40 failure mode the PRD names: on the HEAD-floor baseline the
+    // window `start_commit..HEAD` is EMPTY, so no ticket's declared files can ever
+    // look touched and the guard degenerates into a rubber stamp — every Failed
+    // ticket is silently excludable, including the one it just correctly REFUSED
+    // above. This is the assertion that proves T40's correctness is baseline-
+    // DEPENDENT, which is the whole reason a wrong start_commit is a safety bug
+    // and not merely a cosmetic one. Read-only on mux-runner.ts.
+    const headFloorCtx = { sessionDir, workingDir: repo, startCommit: git(['rev-parse', 'HEAD'], repo) };
+    assert.equal(
+      isFailedTicketTerminalExcludable(headFloorCtx, touchedId),
+      true,
+      'HEAD-floor baseline -> empty window -> the guard rubber-stamps the ticket it correctly refused under the true baseline',
+    );
   } finally {
     if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });

@@ -368,14 +368,22 @@ test('R-PSCG honesty: citadel fails honestly when start_commit cannot be healed 
 // file + git repo present → both heal (the exact inversion of the old
 // `!prdPath && state.start_commit` cross-gate); start_commit heals by
 // ADOPTING pinned_sha, not by recomputing a merge-base guess.
+//
+// Feature branch past a fork point, like the AC-1 sibling above: on a
+// single-branch repo merge-base(main, HEAD) == HEAD == pinned_sha, so the
+// start_commit half of this double-heal would pass against a merge-base guess
+// (measured — it did). The fork point is what makes the wrong value visible.
 test('R-SCPIN double-heal: citadel heals BOTH missing prd_path and missing start_commit (adopts pinned_sha)', async () => {
   const sessionDir = tmpRoot('pickle-scpin-double-session-');
   const repoDir = tmpRoot('pickle-scpin-double-repo-');
   try {
     initRepo(repoDir);
+    const forkPoint = gitSha(repoDir, 'HEAD');
+    addFeatureBranchCommits(repoDir, 2);
     stubCleanCitadel();
     fs.writeFileSync(path.join(sessionDir, 'prd_refined.md'), '# refined prd\n');
     const head = gitSha(repoDir, 'HEAD');
+    assert.notEqual(forkPoint, head, 'fixture must have commits past the fork point');
     writeCitadelState(path.join(sessionDir, 'state.json'), {
       prd_path: undefined,
       start_commit: undefined,
@@ -392,7 +400,8 @@ test('R-SCPIN double-heal: citadel heals BOTH missing prd_path and missing start
     assert.ok(persisted.prd_path, 'prd_path adopted');
     assert.equal(path.basename(persisted.prd_path), 'prd_refined.md');
     assert.ok(persisted.start_commit, 'start_commit healed');
-    assert.equal(persisted.start_commit, head, 'start_commit heals by adopting pinned_sha (== HEAD here)');
+    assert.equal(persisted.start_commit, head, 'start_commit heals by adopting pinned_sha (the feature-branch tip)');
+    assert.notEqual(persisted.start_commit, forkPoint, 'start_commit must NOT fall back to merge-base(main, HEAD)');
   } finally {
     __setCitadelRemediationDepsForTests(null);
     fs.rmSync(sessionDir, { recursive: true, force: true });
