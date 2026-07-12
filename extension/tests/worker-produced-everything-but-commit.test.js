@@ -597,9 +597,22 @@ test('structural exclusion: the overlap fixture (prior-iteration artifacts + zer
     writeFileSync(path.join(repo, 'dirty.ts'), 'export const e = 5;\n');
 
     // BOTH predicates are individually satisfiable here — that is the whole point.
+    //
+    // R-WSDO's three conjuncts, each MEASURED. (They were previously faked: the delta term
+    // was written `afterCount - afterCount === 0` — true for every input — and the log term
+    // was a hardcoded `true` behind a `/* 0-byte log */` comment. A tautology cannot fail,
+    // so it proved nothing about the fixture it claimed to characterize.)
     const plExit = checkPartialLifecycleExit(sessionDir, statePath, id);
+    const beforeCount = countWorkerArtifacts(ticketDir);
+    // …the respawned worker's iteration runs HERE and produces nothing new…
     const afterCount = countWorkerArtifacts(ticketDir);
-    const wsdoFires = plExit === null && afterCount - afterCount === 0 && /* 0-byte log */ true;
+    const logBytes = statSync(path.join(ticketDir, 'worker_session_4242.log')).size;
+
+    assert.equal(plExit, null, 'R-WSDO term 1: a complete prefix set forces plExit === null');
+    assert.equal(afterCount - beforeCount, 0, 'R-WSDO term 2: zero NEW artifacts this iteration (measured delta)');
+    assert.equal(logBytes, 0, 'R-WSDO term 3: the session log is 0 bytes (read from disk)');
+
+    const wsdoFires = plExit === null && afterCount - beforeCount === 0 && logBytes === 0;
     assert.equal(wsdoFires, true, 'R-WSDO predicate holds on the overlap fixture');
     // …and so would the new one, on its own:
     assert.ok(
@@ -621,6 +634,15 @@ test('structural exclusion: the overlap fixture (prior-iteration artifacts + zer
     else if (everythingButCommit) emitted.push('worker_produced_everything_but_commit');
 
     assert.deepEqual(emitted, ['worker_produced_nothing'], 'exactly ONE event, and R-WSDO wins');
+
+    // Term 2 is load-bearing, not vacuous: a worker that DID produce a new artifact this
+    // iteration moves the delta off zero, so R-WSDO declines and the `else if` arm becomes
+    // reachable. Proving the term can FAIL is exactly what `afterCount - afterCount` could not.
+    writeFileSync(path.join(ticketDir, 'code_review_2026-07-12.md'), 'produced THIS iteration\n');
+    assert.notEqual(
+      countWorkerArtifacts(ticketDir) - beforeCount, 0,
+      'a new artifact moves the measured delta off zero — term 2 genuinely discriminates',
+    );
   } finally {
     rmSync(repo, { recursive: true, force: true });
     rmSync(sessionDir, { recursive: true, force: true });
