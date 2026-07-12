@@ -2,7 +2,7 @@
 title: "R-SCPIN — start_commit adopts pinned_sha; delete the merge-base guess (supersedes the defective shipped B-PSCG heals)"
 priority: P2
 finding: R-SCPIN
-status: queued
+status: "partially-shipped 2026-07-12 (core fix + 3/4 hardening/audit tickets landed, session 2026-07-11-255ad373; remaining: 695e4fb4 cross-reference-consistency, in progress)"
 type: bug-fix-bundle
 schema_neutral: true
 target_version: v2.1.0
