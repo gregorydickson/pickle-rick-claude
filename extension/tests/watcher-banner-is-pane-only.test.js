@@ -155,13 +155,12 @@ test('no gate tests file content against the watcher banner', () => {
     text.split('\n').forEach((line, i) => {
       const t = line.trimStart();
       if (t.startsWith('//') || t.startsWith('*') || t.startsWith('#')) return;
-      // A read-side membership test against the banner: `<content>.includes(BANNER)`,
-      // `grep -q "<banner>"`, etc. No file a watcher writes can ever contain it.
-      const greps = aliases.some((a) => (
-        line.includes(`.includes(${a})`) || line.includes(`.includes('${a}')`)
-        || /\bgrep\b/.test(line)
-      ));
-      if (greps) offenders.push(`${path.relative(REPO_ROOT, file)}:${i + 1}`);
+      // Flag a line that BOTH names the banner and tests content for it —
+      // `readFileSync(log).includes(BANNER)`, `grep -q '<banner>' log`. Emitting the
+      // banner (`process.stdout.write(...)`) names it without testing, and stays legal.
+      const namesBanner = aliases.some((alias) => line.includes(alias));
+      const testsContent = line.includes('.includes(') || /\bgrep\b/.test(line);
+      if (namesBanner && testsContent) offenders.push(`${path.relative(REPO_ROOT, file)}:${i + 1}`);
     });
   }
 
