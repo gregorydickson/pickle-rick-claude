@@ -1869,6 +1869,53 @@ export function writeStateFile(filePath: string, state: State | object): void {
   }
 }
 
+const NUMERIC_STATE_KEYS = new Set([
+  'iteration', 'max_iterations', 'max_time_minutes', 'worker_timeout_seconds', 'start_time_epoch', 'min_iterations',
+]);
+const BOOLEAN_STATE_KEYS = new Set(['tmux_mode']);
+// active and completion_promise are owned by tmux-runner/cancel.js — never via CLI
+const ALLOWED_STATE_KEYS = new Set([
+  ...NUMERIC_STATE_KEYS, ...BOOLEAN_STATE_KEYS, 'step', 'working_dir',
+  'original_prompt', 'current_ticket', 'started_at', 'session_dir', 'command_template',
+]);
+
+/** Throws if `key` is not CLI-writable or `value` is the wrong shape for it. */
+function assertValidStateUpdate(key: string, value: string): void {
+  if (key === 'step' && !(VALID_STEPS as readonly string[]).includes(value)) {
+    throw new Error(`Invalid step "${value}". Must be one of: ${VALID_STEPS.join(', ')}`);
+  }
+
+  if (!ALLOWED_STATE_KEYS.has(key)) {
+    throw new Error(`Unknown state key "${key}". Allowed: ${[...ALLOWED_STATE_KEYS].join(', ')}`);
+  }
+
+  if (NUMERIC_STATE_KEYS.has(key)) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+      throw new Error(`Key "${key}" requires a finite number, got "${value}"`);
+    }
+    if (!Number.isInteger(num)) {
+      throw new Error(`Key "${key}" requires an integer, got "${value}"`);
+    }
+    // worker_timeout_seconds is the only numeric key a zero would break.
+    const floor = key === 'worker_timeout_seconds' ? 1 : 0;
+    if (num < floor) {
+      const bound = floor === 1 ? 'positive' : 'non-negative';
+      throw new Error(`Key "${key}" requires a ${bound} integer, got "${value}"`);
+    }
+  } else if (BOOLEAN_STATE_KEYS.has(key)) {
+    if (value !== 'true' && value !== 'false') {
+      throw new Error(`Key "${key}" requires "true" or "false", got "${value}"`);
+    }
+  }
+}
+
+function coerceStateValue(key: string, value: string): string | number | boolean {
+  if (NUMERIC_STATE_KEYS.has(key)) return Number(value);
+  if (BOOLEAN_STATE_KEYS.has(key)) return value === 'true';
+  return value;
+}
+
 /**
  * Updates a single key in a session's state.json with validation.
  * Numeric, boolean, and step keys are type-checked before writing.
@@ -1880,60 +1927,16 @@ export function updateState(key: string, value: string, sessionDir: string): voi
     throw new Error(`state.json not found at ${statePath}`);
   }
 
-  if (key === 'step' && !(VALID_STEPS as readonly string[]).includes(value)) {
-    throw new Error(`Invalid step "${value}". Must be one of: ${VALID_STEPS.join(', ')}`);
-  }
-
-  const NUMERIC_KEYS = new Set(['iteration', 'max_iterations', 'max_time_minutes', 'worker_timeout_seconds', 'start_time_epoch', 'min_iterations']);
-  const BOOLEAN_KEYS = new Set(['tmux_mode']);
-  // active and completion_promise are owned by tmux-runner/cancel.js — never via CLI
-  const ALLOWED_KEYS = new Set([
-    ...NUMERIC_KEYS, ...BOOLEAN_KEYS, 'step', 'working_dir',
-    'original_prompt', 'current_ticket', 'started_at', 'session_dir', 'command_template',
-  ]);
-  if (!ALLOWED_KEYS.has(key)) {
-    throw new Error(`Unknown state key "${key}". Allowed: ${[...ALLOWED_KEYS].join(', ')}`);
-  }
-
-  // Validate value BEFORE acquiring lock to fail fast
-  if (NUMERIC_KEYS.has(key)) {
-    const num = Number(value);
-    if (!Number.isFinite(num)) {
-      throw new Error(`Key "${key}" requires a finite number, got "${value}"`);
-    }
-    if (!Number.isInteger(num)) {
-      throw new Error(`Key "${key}" requires an integer, got "${value}"`);
-    }
-    if (['iteration', 'max_iterations', 'max_time_minutes', 'start_time_epoch', 'min_iterations'].includes(key) && num < 0) {
-      throw new Error(`Key "${key}" requires a non-negative integer, got "${value}"`);
-    }
-    if (key === 'worker_timeout_seconds' && num <= 0) {
-      throw new Error(`Key "${key}" requires a positive integer, got "${value}"`);
-    }
-  } else if (BOOLEAN_KEYS.has(key)) {
-    if (value !== 'true' && value !== 'false') {
-      throw new Error(`Key "${key}" requires "true" or "false", got "${value}"`);
-    }
-  }
+  // Validate BEFORE acquiring the lock to fail fast.
+  assertValidStateUpdate(key, value);
 
   const sm = new StateManager();
   sm.update(statePath, state => {
-    if (NUMERIC_KEYS.has(key)) {
-      (state as unknown as Record<string, unknown>)[key] = Number(value);
-    } else if (BOOLEAN_KEYS.has(key)) {
-      (state as unknown as Record<string, unknown>)[key] = value === 'true';
-    } else {
-      (state as unknown as Record<string, unknown>)[key] = value;
-    }
+    (state as unknown as Record<string, unknown>)[key] = coerceStateValue(key, value);
     if (key === 'current_ticket') {
-      // R-CNAR-8: when an operator manually retargets current_ticket, ALL 5
-      // cache fields must clear together. Pre-fix the missing 3 fields skewed
-      // ticketBudgetIterationCount on the next iteration.
-      delete state.current_ticket_tier;
-      delete state.current_ticket_budget;
-      delete state.current_ticket_max_iterations;
-      delete state.current_ticket_worker_timeout_seconds;
-      delete state.current_ticket_budget_start_iteration;
+      // R-CNAR-8: retargeting current_ticket must clear all 5 per-ticket cache
+      // fields together, or stale tier/budget values skew the next iteration.
+      clearTicketCacheFields(state as unknown as { [k: string]: unknown });
     }
   });
   console.log(`Successfully updated ${key} to ${value} in ${statePath}`);
