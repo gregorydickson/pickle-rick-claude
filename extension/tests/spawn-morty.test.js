@@ -2072,10 +2072,25 @@ test('resolveCodexModel: trims state.codex_model whitespace', () => {
 // fails the test.)
 // ---------------------------------------------------------------------------
 
+/**
+ * The ONE section named by `heading`, bounded at the next `### ` heading.
+ *
+ * The rule under test is rendered TWICE — once in Implement, once in Spec Conformance — and
+ * Conformance is rendered AFTER Implement. An unbounded `rendered.slice(indexOf(heading))`
+ * therefore swallows every later section, so the Implement assertion would be satisfied by
+ * the Conformance copy: deleting the Implement rule left the medium/large tests green.
+ */
+function sectionOf(rendered, heading) {
+    const start = rendered.indexOf(heading);
+    assert.notEqual(start, -1, `no '${heading}' section in the rendered output:\n${rendered}`);
+    const next = rendered.indexOf('\n### ', start);
+    return next === -1 ? rendered.slice(start) : rendered.slice(start, next);
+}
+
 for (const tier of Object.keys(TIER_LIFECYCLE)) {
     test(`buildTierLifecycleSections: ${tier} tier Implement section carries sync-gate + commit-first rules`, () => {
         const rendered = buildTierLifecycleSections(TIER_LIFECYCLE[tier], tier);
-        const implementSection = rendered.slice(rendered.indexOf('. Implement'));
+        const implementSection = sectionOf(rendered, '. Implement');
         assert.match(implementSection, /synchronously/i,
             `expected synchronous-gate rule in ${tier} Implement section, got: ${implementSection}`);
         assert.match(implementSection, /commit first/i,
@@ -2089,16 +2104,28 @@ for (const tier of Object.keys(TIER_LIFECYCLE)) {
     const hasConformance = TIER_LIFECYCLE[tier].includes('conformance');
     test(`buildTierLifecycleSections: ${tier} tier Spec Conformance section ${hasConformance ? 'carries' : 'omits'} sync-gate + commit-first rules`, () => {
         const rendered = buildTierLifecycleSections(TIER_LIFECYCLE[tier], tier);
-        const conformanceIdx = rendered.indexOf('. Spec Conformance');
         if (!hasConformance) {
-            assert.equal(conformanceIdx, -1, `expected no Spec Conformance section for ${tier} tier`);
+            assert.equal(rendered.indexOf('. Spec Conformance'), -1,
+                `expected no Spec Conformance section for ${tier} tier`);
             return;
         }
-        const conformanceSection = rendered.slice(conformanceIdx);
+        const conformanceSection = sectionOf(rendered, '. Spec Conformance');
         assert.match(conformanceSection, /synchronously/i,
             `expected synchronous-gate rule in ${tier} Conformance section, got: ${conformanceSection}`);
         assert.match(conformanceSection, /commit first/i,
             `expected commit-first rule in ${tier} Conformance section, got: ${conformanceSection}`);
+    });
+}
+
+// Copy COUNT is the slice-independent pin: it fails if either copy is dropped, no matter how a
+// future refactor bounds (or fails to bound) the sections above.
+for (const tier of Object.keys(TIER_LIFECYCLE)) {
+    const expected = TIER_LIFECYCLE[tier].includes('conformance') ? 2 : 1;
+    test(`buildTierLifecycleSections: ${tier} tier renders the sync-gate rule exactly ${expected}×`, () => {
+        const rendered = buildTierLifecycleSections(TIER_LIFECYCLE[tier], tier);
+        const copies = rendered.match(/\*\*Gate confirmation is synchronous\*\*/g) ?? [];
+        assert.equal(copies.length, expected,
+            `${tier} renders Implement${expected === 2 ? ' + Spec Conformance' : ' only'} — expected ${expected} copies of the rule, got ${copies.length}`);
     });
 }
 
