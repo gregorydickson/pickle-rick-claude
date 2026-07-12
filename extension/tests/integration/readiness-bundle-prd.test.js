@@ -11,7 +11,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const BIN = path.resolve(__dirname, '../../bin/check-readiness.js');
 const BUNDLE_PRD = path.join(REPO_ROOT, 'prds/archive/bundles/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md');
-const CHECKED_AT = '2026-05-02T00:00:00.000Z';
 
 function tmpDir(prefix = 'pickle-readiness-bundle-') {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -40,7 +39,12 @@ function writeTicket(sessionDir, acId) {
   return { id, key: acId, requirements: [acId] };
 }
 
-test('check-readiness: current bundle PRD clears readiness without skip-readiness and writes AC-DR-06 artifact', () => {
+// AC-DR-06's verdict lives in THIS test's exit code, which the release gate enforces via
+// test:integration. It deliberately writes no bundle/ac-dr-06.json: a tracked artifact must be
+// content-stable, so it could only ever carry a hardcoded pass — and a failing run throws
+// before rewriting it, leaving the stale pass:true on disk where verify-bundle reads it as the
+// verdict. Absent is honest; verify-bundle reports AC-DR-06 as missing (INCONCLUSIVE).
+test('check-readiness: current bundle PRD clears readiness without skip-readiness', () => {
   const sessionDir = tmpDir();
   try {
     const acIds = bundleAcIds();
@@ -67,24 +71,6 @@ test('check-readiness: current bundle PRD clears readiness without skip-readines
     const out = JSON.parse(result.stdout);
     assert.equal(out.status, 'pass');
     assert.deepEqual(out.findings, []);
-
-    const artifactDir = path.join(REPO_ROOT, 'bundle');
-    fs.mkdirSync(artifactDir, { recursive: true });
-    const artifactPath = path.join(artifactDir, 'ac-dr-06.json');
-    fs.writeFileSync(artifactPath, JSON.stringify({
-      ac_id: 'AC-DR-06',
-      pass: true,
-      checked_at: CHECKED_AT,
-      checker: 'tests/integration/readiness-bundle-prd.test.js',
-      checker_version: 'local',
-      evidence: {
-        bundle_prd: 'prds/archive/bundles/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md',
-        ticket_count: tickets.length,
-        skip_readiness: false,
-      },
-      failure_reason: null,
-      remediation_hint: null,
-    }, null, 2));
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
