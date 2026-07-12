@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -90,8 +91,8 @@ function makeFixture(mutator = () => {}) {
   return dir;
 }
 
-function runVerifier(repoRoot, args = []) {
-  return spawnSync(process.execPath, [CLI, ...args], {
+function runVerifier(repoRoot, args = [], cli = CLI) {
+  return spawnSync(process.execPath, [cli, ...args], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     env: { ...process.env, BUNDLE_REPO_ROOT: repoRoot },
@@ -326,6 +327,36 @@ test('verify-bundle.repo-ac-dr-04d stays verifier-clean as a tracked artifact', 
   const result = runVerifier(REPO_ROOT, ['--ac', 'AC-DR-04d']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /bundle PASS/);
+});
+
+// Node realpath-resolves `import.meta.url`, but `process.argv[1]` stays the literal path
+// the caller typed. A CLI guard that compares the two exactly stops firing the moment the
+// script is reached through a symlink (macOS `/tmp`, a symlinked worktree or home), so the
+// gate exits 0 having printed nothing — a failing bundle reads as green.
+test('verify-bundle.cli-entrypoint still fires when reached through a symlinked path', () => {
+  const repoRoot = makeFixture(({ bundleDir }) => {
+    writeFileSync(
+      path.join(bundleDir, acFileName('AC-DR-04d')),
+      `${JSON.stringify(artifact('AC-DR-04d', { pass: false, failure_reason: 'injected' }), null, 2)}\n`,
+    );
+  });
+  const linkRoot = mkdtempSync(path.join(tmpdir(), 'verify-bundle-link-'));
+  const linkedRepo = path.join(linkRoot, 'repo');
+  symlinkSync(REPO_ROOT, linkedRepo);
+  try {
+    const linkedCli = path.join(linkedRepo, 'bin', 'verify-bundle.js');
+    const result = runVerifier(repoRoot, ['--ac', 'AC-DR-04d'], linkedCli);
+    assert.equal(
+      result.status,
+      1,
+      `symlinked CLI must report the failure, got exit=${result.status} stdout=${JSON.stringify(result.stdout)}`,
+    );
+    assert.match(result.stdout, /bundle FAIL/);
+    assert.match(result.stderr, /pass false \(injected\)/);
+  } finally {
+    rmSync(linkRoot, { recursive: true, force: true });
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test('verify-bundle.exported-api defaults to repo root instead of caller cwd', () => {

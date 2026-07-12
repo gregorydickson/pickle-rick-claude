@@ -127,7 +127,7 @@ function parseArgs(argv) {
   throw new Error('usage: bin/verify-bundle.js [--ac <id>]');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.join(DEFAULT_REPO_ROOT, 'bin', 'verify-bundle.js')) {
+if (process.argv[1] && path.basename(process.argv[1]) === 'verify-bundle.js') {
   try {
     const result = verifyBundle({
       repoRoot: process.env.BUNDLE_REPO_ROOT ?? DEFAULT_REPO_ROOT,
