@@ -59,7 +59,7 @@ tighten the worker contract instead of adding a second rescue branch.
   predicates by construction). — Type: test
 - **AC-WMFF-2B** — R-WSE-2 co-location discipline: event registered in
   `VALID_ACTIVITY_EVENTS` (`extension/src/types/index.ts`), schema definition in
-  `activity-events.schema.json` with explicit `ts` stamped by the producer
+  `activity-events.schema.json` with an explicit ts timestamp stamped by the producer
   (`writeActivityEntry` does NOT auto-stamp — the known producer/schema-disconnect class), and
   `activity-event-payload.test.js` coverage — all in the SAME ticket as the emit. — Type: test
 - **AC-WMFF-2C** — payload carries `{ ticket, gate_payload: { artifacts_present: true,
