@@ -505,9 +505,10 @@ export function lookupCommandForPid(pid: number): string | null {
  *   3. If neither tool answers confidently, returns `null` (FAIL-OPEN) — the
  *      launch probe treats probe-tool absence as "no confident holder detected".
  *
- * This is the advisory counterpart to `cancel.ts:probeLockHolder`, which uses
- * the same spawn pattern but fails CLOSED (returns a synthetic holder when both
- * tools are unavailable, to protect the destructive unlink path).
+ * Advisory ONLY (warn + event), and it is now the sole lock-holder probe: the
+ * destructive twin in `cancel.ts` was deleted because no probe can license removing
+ * a lock git owns — git closes the fd before it renames, so an unheld reading does
+ * not mean unowned. A probe may inform an operator; it may never authorize an unlink.
  */
 export function probeConcurrentGitAccess(repoRoot: string): ConcurrentGitHolder | null {
   // TRAP DOOR: probeConcurrentGitAccess advisory-probe — warn+event, never a hard launch block; every subprocess timeout is finite

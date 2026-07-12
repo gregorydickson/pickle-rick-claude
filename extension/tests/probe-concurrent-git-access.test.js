@@ -1,7 +1,8 @@
 // @tier: fast
-// Tests for the probeConcurrentGitAccess helper (AC-PIWG-5.1.b, .c, .d)
-// and the divergent fail-OPEN vs fail-CLOSED stances between it and
-// cleanupStaleIndexLock (AC-PIWG-5.1.d).
+// Tests for the probeConcurrentGitAccess helper (AC-PIWG-5.1.b, .c, .d).
+// It is now the only lock-holder probe: the destructive twin in cancel.ts was deleted
+// because no probe can license removing a lock git owns. This one stays advisory —
+// it may inform an operator, never authorize an unlink.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -9,7 +10,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { probeConcurrentGitAccess } from '../services/git-utils.js';
-import { cleanupStaleIndexLock } from '../bin/cancel.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GIT_UTILS_SRC = path.resolve(__dirname, '../src/services/git-utils.ts');
@@ -180,10 +180,11 @@ test('probeConcurrentGitAccess: falls back to pgrep when lsof is unavailable', (
 });
 
 // ---------------------------------------------------------------------------
-// AC-PIWG-5.1.d — DIVERGENT STANCES: both tools unavailable
+// AC-PIWG-5.1.d — both tools unavailable: fail-OPEN.
 //
-//   probeConcurrentGitAccess → null (FAIL-OPEN, advisory)
-//   cleanupStaleIndexLock    → refuses to delete lock (FAIL-CLOSED, conservative)
+// Safe here precisely because the probe is advisory. It warns and emits an event;
+// nothing destructive rides on the answer, so an absent probe tool costs a warning,
+// not a deleted lock.
 // ---------------------------------------------------------------------------
 
 test('probeConcurrentGitAccess: returns null (fail-OPEN) when both lsof and pgrep are unavailable', () => {
@@ -199,78 +200,6 @@ test('probeConcurrentGitAccess: returns null (fail-OPEN) when both lsof and pgre
 
         assert.equal(result, null,
             'probeConcurrentGitAccess must return null (fail-OPEN) when both tools are unavailable');
-    } finally {
-        fs.rmSync(tmpRoot, { recursive: true, force: true });
-        fs.rmSync(fakeDir, { recursive: true, force: true });
-    }
-});
-
-test('cleanupStaleIndexLock: conservatively refuses to delete lock (fail-CLOSED) when both lsof and pgrep are unavailable', () => {
-    const { tmpRoot, gitDir } = makeFakeLockDir();
-    const fakeDir = makeFakeBinDir('both-unavail-cancel');
-    const lockPath = path.join(gitDir, 'index.lock');
-    try {
-        // Both tools error out (non-0, non-1) — probe-unavailable scenario
-        writeFakeBin(fakeDir, 'lsof', 2, '');
-        writeFakeBin(fakeDir, 'pgrep', 2, '');
-        writeFakeBin(fakeDir, 'ps', 1, '');
-
-        // Create a stale lock file (mtime = now - 2 minutes, well within STALE_LOCK_WINDOW_MS=5min)
-        fs.writeFileSync(lockPath, '');
-        const lockMtimeMs = Date.now() - 2 * 60 * 1000;
-        fs.utimesSync(lockPath, new Date(lockMtimeMs), new Date(lockMtimeMs));
-
-        // stateMtimeMs just after lockMtimeMs (within the 5-min window)
-        const stateMtimeMs = lockMtimeMs + 10_000;
-        const sessionDir = tmpRoot;
-
-        withPath(fakeDir, () => {
-            cleanupStaleIndexLock({ sessionDir, workingDir: tmpRoot, stateMtimeMs });
-        });
-
-        // Lock must NOT be deleted — conservative stance when probe is unavailable
-        assert.ok(
-            fs.existsSync(lockPath),
-            'cleanupStaleIndexLock must NOT delete the lock when both probe tools are unavailable (fail-CLOSED / conservative refusal)',
-        );
-    } finally {
-        fs.rmSync(tmpRoot, { recursive: true, force: true });
-        fs.rmSync(fakeDir, { recursive: true, force: true });
-    }
-});
-
-test('cleanupStaleIndexLock: divergent stance from probeConcurrentGitAccess is explicit — same inputs, different outcomes', () => {
-    // This test verifies the documented R3 split: fail-OPEN (probeConcurrentGitAccess)
-    // vs fail-CLOSED (cleanupStaleIndexLock via probeLockHolder).
-    const { tmpRoot, gitDir } = makeFakeLockDir();
-    const fakeDir = makeFakeBinDir('divergent-stance');
-    const lockPath = path.join(gitDir, 'index.lock');
-    try {
-        // Both tools error (non-0, non-1)
-        writeFakeBin(fakeDir, 'lsof', 2, '');
-        writeFakeBin(fakeDir, 'pgrep', 2, '');
-        writeFakeBin(fakeDir, 'ps', 1, '');
-
-        // Create lock file within the cleanup window
-        fs.writeFileSync(lockPath, '');
-        const lockMtimeMs = Date.now() - 90_000; // 90s ago, within STALE_LOCK_WINDOW_MS=5min
-        fs.utimesSync(lockPath, new Date(lockMtimeMs), new Date(lockMtimeMs));
-        const stateMtimeMs = lockMtimeMs + 30_000;
-
-        let probeResult;
-        withPath(fakeDir, () => {
-            // probeConcurrentGitAccess: advisory → null (fail-OPEN)
-            probeResult = probeConcurrentGitAccess(tmpRoot);
-            // cleanupStaleIndexLock: destructive → refuses (fail-CLOSED)
-            cleanupStaleIndexLock({ sessionDir: tmpRoot, workingDir: tmpRoot, stateMtimeMs });
-        });
-
-        assert.equal(probeResult, null,
-            'probeConcurrentGitAccess must return null (fail-OPEN) when tools unavailable');
-        assert.ok(
-            fs.existsSync(lockPath),
-            'cleanupStaleIndexLock must preserve the lock (fail-CLOSED) when tools unavailable',
-        );
     } finally {
         fs.rmSync(tmpRoot, { recursive: true, force: true });
         fs.rmSync(fakeDir, { recursive: true, force: true });
