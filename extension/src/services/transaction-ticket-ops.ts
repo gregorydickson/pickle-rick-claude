@@ -577,117 +577,170 @@ function clearCurrentTicketCache(s: State): void {
   delete s.current_ticket_budget_start_iteration;
 }
 
+interface CourseCorrectionApplyContext {
+  sessionRoot: string;
+  ledgerPath: string;
+  nowIso: string;
+  proposalPath: string;
+  restartTicketId: string | null;
+  killedTicketIds: string[];
+  addedTickets: MaterializeTicketSpec[];
+  killedSet: Set<string>;
+  addedSet: Set<string>;
+}
+
+function buildApplyContext(input: ApplyCourseCorrectionRestructureInput): CourseCorrectionApplyContext {
+  const sessionRoot = path.resolve(input.sessionRoot);
+  const killedTicketIds = input.killedTicketIds ?? [];
+  const addedTickets = input.addedTickets ?? [];
+  return {
+    sessionRoot,
+    ledgerPath: assertWithinRoot(
+      input.ledgerPath ? path.resolve(input.ledgerPath) : proposalApplyLedgerPath(sessionRoot, input.proposalPath),
+      sessionRoot,
+    ),
+    nowIso: timestampForLedger(input.now),
+    proposalPath: input.proposalPath,
+    restartTicketId: input.restartTicketId,
+    killedTicketIds,
+    addedTickets,
+    killedSet: new Set(killedTicketIds),
+    addedSet: new Set(addedTickets.map(ticket => ticket.ticketId)),
+  };
+}
+
+/** Kills then adds, numbering every ledger step from one running counter. Returns the step count. */
+function applyTicketFileWrites(ctx: CourseCorrectionApplyContext): number {
+  const { sessionRoot, ledgerPath, nowIso } = ctx;
+  let step = 0;
+
+  for (const ticketId of ctx.killedTicketIds) {
+    step += 1;
+    const planned = updateTicketStatusInTransaction(ticketId, 'Killed', sessionRoot, { now: nowIso });
+    applyPlannedWrite(ledgerPath, step, 'kill_ticket', ticketId, planned, nowIso);
+  }
+
+  for (const ticket of ctx.addedTickets) {
+    const plan = materializeNewTicket({ ...ticket, sessionRoot });
+    for (const file of plan.files) {
+      step += 1;
+      applyPlannedWrite(ledgerPath, step, 'add_ticket', ticket.ticketId, file, nowIso);
+    }
+  }
+
+  return step;
+}
+
+function applyBranchCurrentTicket(state: State, branch: CourseCorrectionBranch, ctx: CourseCorrectionApplyContext): void {
+  // R-CNAR-8: every course-correct current_ticket transition MUST clear the cache
+  // fields. Pre-fix, the new ticket inherited tier/budget/max-iter from the killed
+  // ticket and skewed budget calculations.
+  if (branch === 'a') {
+    state.current_ticket = ctx.restartTicketId ?? null;
+    clearCurrentTicketCache(state);
+    return;
+  }
+  if (branch !== 'c') return;
+
+  const previousTicket = state.current_ticket;
+  const redirectedTicket = resolveAddedCurrentTicket(state, ctx.addedSet);
+  state.current_ticket = redirectedTicket;
+  clearCurrentTicketCache(state);
+  appendActivity(state, {
+    event: 'current_ticket_redirected_to_new',
+    from_ticket_id: previousTicket,
+    to_ticket_id: redirectedTicket,
+    ticket_id: redirectedTicket,
+    timestamp: ctx.nowIso,
+  });
+}
+
+/** Bumps tickets_version and records the correction. Call AFTER the writes — after_count reads the new tree. */
+function recordCourseCorrectionApplied(
+  state: State,
+  branch: CourseCorrectionBranch,
+  beforeCount: number,
+  ctx: CourseCorrectionApplyContext,
+): number {
+  const currentVersion = typeof state.tickets_version === 'number' && Number.isFinite(state.tickets_version)
+    ? state.tickets_version
+    : 0;
+  const ticketsVersion = currentVersion + 1;
+
+  state.tickets_version = ticketsVersion;
+  state.last_course_correction = {
+    proposal_path: ctx.proposalPath,
+    applied_iso: ctx.nowIso,
+    restart_ticket_id: ctx.restartTicketId,
+    before_count: beforeCount,
+    after_count: collectTicketDirectoryIds(ctx.sessionRoot).length,
+  };
+  appendActivity(state, {
+    event: 'course_corrected',
+    timestamp: ctx.nowIso,
+    proposal_path: ctx.proposalPath,
+    killed_ticket_ids: ctx.killedTicketIds,
+    added_ticket_ids: [...ctx.addedSet],
+    branch,
+    tickets_version: ticketsVersion,
+  });
+  appendActivity(state, {
+    event: 'readiness_delta_requested',
+    timestamp: ctx.nowIso,
+    reason: 'course_corrected',
+    tickets_version: ticketsVersion,
+  });
+
+  return ticketsVersion;
+}
+
+function rollbackAndHaltApply(
+  error: unknown,
+  ctx: CourseCorrectionApplyContext,
+  stateManager: StateManager,
+  autoApply: boolean,
+): void {
+  const { sessionRoot, ledgerPath, nowIso } = ctx;
+  if (fs.existsSync(ledgerPath)) replayReverseLedger(ledgerPath, sessionRoot);
+
+  const failedEntry = latestFailedEntry(ledgerPath);
+  if (!autoApply || !failedEntry) return;
+
+  const cause = failedEntry.error ?? safeErrorMessage(error);
+  const haltPath = writeHaltFile(sessionRoot, ledgerPath, failedEntry.step, cause, nowIso);
+  appendStateActivity(sessionRoot, stateManager, {
+    event: 'course_correct_apply_failed',
+    timestamp: nowIso,
+    failed_step: failedEntry.step,
+    cause,
+    ledger_path: ledgerPath,
+    halt_path: haltPath,
+  });
+}
+
 export function applyCourseCorrectionRestructure(
   input: ApplyCourseCorrectionRestructureInput,
 ): ApplyCourseCorrectionRestructureResult {
-  const sessionRoot = path.resolve(input.sessionRoot);
-  const statePath = path.join(sessionRoot, 'state.json');
-  const ledgerPath = assertWithinRoot(
-    input.ledgerPath ? path.resolve(input.ledgerPath) : proposalApplyLedgerPath(sessionRoot, input.proposalPath),
-    sessionRoot,
-  );
-  const nowIso = timestampForLedger(input.now);
-  const killedTicketIds = input.killedTicketIds ?? [];
-  const addedTickets = input.addedTickets ?? [];
-  const killedSet = new Set(killedTicketIds);
-  const addedSet = new Set(addedTickets.map(ticket => ticket.ticketId));
+  const ctx = buildApplyContext(input);
   const stateManager = input.stateManager ?? new StateManager();
+  const statePath = path.join(ctx.sessionRoot, 'state.json');
   let branch: CourseCorrectionBranch = 'b';
   let ticketsVersion = 0;
   let appliedSteps = 0;
-  const releaseRestructureLock = acquireFileLock(path.join(sessionRoot, 'restructure.lock'));
+  const releaseRestructureLock = acquireFileLock(path.join(ctx.sessionRoot, 'restructure.lock'));
 
   try {
     stateManager.transaction([statePath], ([state]) => {
-      const beforeTickets = collectTicketDirectoryIds(sessionRoot);
-      branch = resolveCurrentTicketBranch(state, killedSet, addedSet);
-
-      for (const ticketId of killedTicketIds) {
-        appliedSteps += 1;
-        const planned = updateTicketStatusInTransaction(ticketId, 'Killed', sessionRoot, { now: nowIso });
-        applyPlannedWrite(ledgerPath, appliedSteps, 'kill_ticket', ticketId, planned, nowIso);
-      }
-
-      for (const ticket of addedTickets) {
-        const plan = materializeNewTicket({ ...ticket, sessionRoot });
-        for (const file of plan.files) {
-          appliedSteps += 1;
-          applyPlannedWrite(ledgerPath, appliedSteps, 'add_ticket', ticket.ticketId, file, nowIso);
-        }
-      }
-
-      if (branch === 'a') {
-        state.current_ticket = input.restartTicketId ?? null;
-        // R-CNAR-8: course-correct current_ticket transition MUST clear cache
-        // fields. Pre-fix, the new ticket inherited tier/budget/max-iter from
-        // the killed ticket and skewed budget calculations.
-        clearCurrentTicketCache(state);
-      }
-      if (branch === 'c') {
-        const previousTicket = state.current_ticket;
-        const redirectedTicket = resolveAddedCurrentTicket(state, addedSet);
-        state.current_ticket = redirectedTicket;
-        // R-CNAR-8: redirect-current-ticket transition MUST clear cache fields.
-        clearCurrentTicketCache(state);
-        appendActivity(state, {
-          event: 'current_ticket_redirected_to_new',
-          from_ticket_id: previousTicket,
-          to_ticket_id: redirectedTicket,
-          ticket_id: redirectedTicket,
-          timestamp: nowIso,
-        });
-      }
-
-      const currentVersion = typeof state.tickets_version === 'number' && Number.isFinite(state.tickets_version)
-        ? state.tickets_version
-        : 0;
-      ticketsVersion = currentVersion + 1;
-      state.tickets_version = ticketsVersion;
-      state.last_course_correction = {
-        proposal_path: input.proposalPath,
-        applied_iso: nowIso,
-        restart_ticket_id: input.restartTicketId,
-        before_count: beforeTickets.length,
-        after_count: collectTicketDirectoryIds(sessionRoot).length,
-      };
-      appendActivity(state, {
-        event: 'course_corrected',
-        timestamp: nowIso,
-        proposal_path: input.proposalPath,
-        killed_ticket_ids: killedTicketIds,
-        added_ticket_ids: [...addedSet],
-        branch,
-        tickets_version: ticketsVersion,
-      });
-      appendActivity(state, {
-        event: 'readiness_delta_requested',
-        timestamp: nowIso,
-        reason: 'course_corrected',
-        tickets_version: ticketsVersion,
-      });
+      const beforeCount = collectTicketDirectoryIds(ctx.sessionRoot).length;
+      branch = resolveCurrentTicketBranch(state, ctx.killedSet, ctx.addedSet);
+      appliedSteps = applyTicketFileWrites(ctx);
+      applyBranchCurrentTicket(state, branch, ctx);
+      ticketsVersion = recordCourseCorrectionApplied(state, branch, beforeCount, ctx);
     });
 
-    return { ledgerPath, branch, ticketsVersion, appliedSteps };
+    return { ledgerPath: ctx.ledgerPath, branch, ticketsVersion, appliedSteps };
   } catch (error) {
-    if (fs.existsSync(ledgerPath)) replayReverseLedger(ledgerPath, sessionRoot);
-    const failedEntry = latestFailedEntry(ledgerPath);
-    if (input.autoApply && failedEntry) {
-      const haltPath = writeHaltFile(
-        sessionRoot,
-        ledgerPath,
-        failedEntry.step,
-        failedEntry.error ?? safeErrorMessage(error),
-        nowIso,
-      );
-      appendStateActivity(sessionRoot, stateManager, {
-        event: 'course_correct_apply_failed',
-        timestamp: nowIso,
-        failed_step: failedEntry.step,
-        cause: failedEntry.error ?? safeErrorMessage(error),
-        ledger_path: ledgerPath,
-        halt_path: haltPath,
-      });
-    }
+    rollbackAndHaltApply(error, ctx, stateManager, input.autoApply === true);
     throw error;
   } finally {
     releaseRestructureLock();
