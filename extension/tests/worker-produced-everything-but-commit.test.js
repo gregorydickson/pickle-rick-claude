@@ -284,8 +284,8 @@ test('AC-WMFF-2B: a REFERENCED commit (some ticket\'s completion_commit) is not 
 
 // The full-40-char case above is the ONLY shape the referenced-commit arm had covered, but it is
 // the rare one: the worker prompt allows a short sha, auto-promote writes unquoted short shas, and
-// R-CCQF says codex/human edits write QUOTED shas. All three flow through `sha.startsWith(ref)` —
-// the one disjunct that does the work — plus the quote-strip in `collectReferencedCompletionShas`.
+// R-CCQF says codex/human edits write QUOTED shas. All three must survive the quote-strip in
+// `collectReferencedCompletionShas` and then match as a PREFIX of the full window sha.
 for (const { label, stamp } of [
   { label: 'abbreviated, unquoted (auto-promote shape)', stamp: (sha) => sha.slice(0, 7) },
   { label: 'abbreviated, quoted (R-CCQF codex/human shape)', stamp: (sha) => `"${sha.slice(0, 7)}"` },
