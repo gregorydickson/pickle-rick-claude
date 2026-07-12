@@ -144,6 +144,144 @@ export function isProcessAlive(pid) {
         return false;
     }
 }
+/** Lock payloads are a bare pid or a small `{pid,ts}` JSON object; 256B covers both with room. */
+const LOCK_PAYLOAD_MAX_BYTES = 256;
+/**
+ * Reads a lock's identity, age, and payload through ONE fd, so a staleness verdict can never be
+ * assembled from two different inodes (a path can be re-pointed between two separate reads).
+ */
+export function inspectLockFile(lockPath) {
+    let fd;
+    try {
+        fd = fs.openSync(lockPath, 'r');
+    }
+    catch {
+        return null;
+    }
+    try {
+        const st = fs.fstatSync(fd);
+        const buf = Buffer.alloc(LOCK_PAYLOAD_MAX_BYTES);
+        const read = fs.readSync(fd, buf, 0, LOCK_PAYLOAD_MAX_BYTES, 0);
+        return { ino: st.ino, mtimeMs: st.mtimeMs, payload: buf.subarray(0, read).toString('utf-8') };
+    }
+    catch {
+        return null;
+    }
+    finally {
+        try {
+            fs.closeSync(fd);
+        }
+        catch { /* already closed */ }
+    }
+}
+/**
+ * Takes the lock and returns the inode the caller now owns, or null if someone already holds it.
+ * The inode comes from the same fd that created the file, so ownership is a fact, not an inference.
+ */
+export function acquireLockFile(lockPath, payload) {
+    let fd;
+    try {
+        fd = fs.openSync(lockPath, 'wx');
+    }
+    catch (err) {
+        if (err.code === 'EEXIST')
+            return null;
+        throw err; // EACCES/ENOENT-on-dir etc. are real faults, not contention
+    }
+    try {
+        fs.writeSync(fd, payload);
+        return fs.fstatSync(fd).ino;
+    }
+    finally {
+        fs.closeSync(fd);
+    }
+}
+/** Removes a lock only while it is still the inode the caller acquired. */
+export function releaseLockFile(lockPath, ino) {
+    try {
+        if (fs.statSync(lockPath).ino !== ino)
+            return; // ours was already stolen — leave the new holder's
+        fs.unlinkSync(lockPath);
+    }
+    catch { /* already gone */ }
+}
+/**
+ * True only for a payload naming a pid we can PROVE is dead. An empty payload (the holder created
+ * the file but died before writing) or an unparseable one is NOT proof, and a recycled pid reads as
+ * alive — both defer, so we never steal from a holder we cannot account for.
+ */
+export function isDeadPidPayload(payload) {
+    const pid = Number(payload.trim());
+    if (!Number.isInteger(pid) || pid <= 0)
+        return false;
+    return !isProcessAlive(pid);
+}
+/** Evicts a lock, refusing anything that is no longer the inode `snapshot` was judged against. */
+export function stealLockFile(lockPath, snapshot) {
+    const tombstone = `${lockPath}.tomb.${process.pid}.${Date.now()}`;
+    try {
+        fs.renameSync(lockPath, tombstone);
+    }
+    catch {
+        return false; // already gone
+    }
+    let stolenIno = null;
+    try {
+        stolenIno = fs.statSync(tombstone).ino;
+    }
+    catch { /* unreadable — treat as mismatch */ }
+    if (stolenIno !== snapshot.ino) {
+        try {
+            fs.linkSync(tombstone, lockPath);
+        }
+        catch { /* a third party holds it now — leave theirs */ }
+        try {
+            fs.unlinkSync(tombstone);
+        }
+        catch { /* best-effort */ }
+        return false;
+    }
+    try {
+        fs.unlinkSync(tombstone);
+    }
+    catch { /* best-effort */ }
+    return true;
+}
+/**
+ * Runs `steal` holding exclusive stale-recovery rights on `lockPath`.
+ *
+ * A steal is inspect-then-remove — two operations on a path, not one atomic act — and Node's fs
+ * offers no "remove only if still this file". Two stealers running it concurrently is exactly how a
+ * LIVE holder gets evicted: both judge the dead holder stale, the first replaces it with its own
+ * live lock, and the second's removal lands on THAT. Checking identity before removing does not
+ * save you, because both stealers form their verdict before either one acts.
+ *
+ * So serialize the recovery instead. Inside `steal`, no other process can be removing this lock,
+ * and a dead holder cannot release its own — therefore the lock `steal` inspects is necessarily the
+ * lock it removes. Returns false without stealing when another process holds the rights; the caller
+ * just retries its normal acquire.
+ */
+export function withStealRight(lockPath, steal) {
+    const rightsPath = `${lockPath}.steal`;
+    let ino = acquireLockFile(rightsPath, String(process.pid));
+    if (ino === null) {
+        // A stealer that died mid-recovery would wedge this path forever. Reclaiming is safe only from a
+        // provably dead holder: a live stealer sits in a microsecond-scale critical section, never a dead pid.
+        const held = inspectLockFile(rightsPath);
+        if (!held || !isDeadPidPayload(held.payload))
+            return false; // someone is mid-steal — back off
+        stealLockFile(rightsPath, held);
+        ino = acquireLockFile(rightsPath, String(process.pid));
+        if (ino === null)
+            return false;
+    }
+    try {
+        return steal();
+    }
+    finally {
+        releaseLockFile(rightsPath, ino);
+    }
+}
 function readProcessStartTimeMs(pid) {
     try {
         const output = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], {
@@ -486,6 +624,8 @@ function isRecoverableStateSnapshotCandidate(value, maxSupportedSchemaVersion) {
 // ---------------------------------------------------------------------------
 export class StateManager {
     opts;
+    /** Lock path -> the inode this manager acquired, so release can prove the file is still ours. */
+    lockInodes = new Map();
     constructor(opts = {}) {
         this.opts = { ...STATE_MANAGER_DEFAULTS, ...opts };
     }
@@ -737,85 +877,57 @@ export class StateManager {
         let steals = 0;
         const maxSteals = 3; // Cap stale-steal retries to prevent unbounded loops
         for (let attempt = 0; attempt <= this.opts.maxLockRetries; attempt++) {
-            try {
-                // O_CREAT | O_EXCL — fails if file already exists (atomic)
-                const fd = fs.openSync(lp, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-                // Write PID + timestamp for stale detection
-                fs.writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }));
-                fs.closeSync(fd);
+            const ino = acquireLockFile(lp, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+            if (ino !== null) {
+                this.lockInodes.set(lp, ino); // release must prove it still owns this exact file
                 return;
             }
-            catch {
-                // Check if existing lock is stale (bounded steal attempts)
-                if (steals < maxSteals && this.tryStealStaleLock(lp)) {
-                    steals++;
-                    // Stolen — retry immediately (don't count as attempt)
-                    attempt--;
-                    continue;
-                }
-                if (attempt < this.opts.maxLockRetries) {
-                    const base = this.opts.baseLockDelayMs * Math.pow(2, attempt);
-                    const jitter = this.opts.lockJitter ? Math.random() * this.opts.baseLockDelayMs : 0;
-                    sleepSync(Math.min(base + jitter, 5000));
-                }
+            // Check if existing lock is stale (bounded steal attempts)
+            if (steals < maxSteals && this.tryStealStaleLock(lp)) {
+                steals++;
+                // Stolen — retry immediately (don't count as attempt)
+                attempt--;
+                continue;
+            }
+            if (attempt < this.opts.maxLockRetries) {
+                const base = this.opts.baseLockDelayMs * Math.pow(2, attempt);
+                const jitter = this.opts.lockJitter ? Math.random() * this.opts.baseLockDelayMs : 0;
+                sleepSync(Math.min(base + jitter, 5000));
             }
         }
         throw new LockError(`Failed to acquire lock after ${this.opts.maxLockRetries} retries: ${lp}`);
     }
     releaseLock(statePath) {
+        const lp = lockPath(statePath);
+        const ino = this.lockInodes.get(lp);
+        if (ino === undefined)
+            return; // never acquired it
+        this.lockInodes.delete(lp);
+        releaseLockFile(lp, ino);
+    }
+    isStaleLockSnapshot(snapshot) {
         try {
-            fs.unlinkSync(lockPath(statePath));
+            const lock = JSON.parse(snapshot.payload);
+            const lockPid = Number(lock.pid);
+            const lockTs = Number(lock.ts);
+            if (!Number.isFinite(lockPid) || !Number.isFinite(lockTs))
+                return true;
+            return !isProcessAlive(lockPid) || (Date.now() - lockTs > this.opts.staleLockTimeoutMs);
         }
         catch {
-            // Lock file already gone — harmless
+            // Corrupt JSON — safe to steal
+            return true;
         }
     }
     tryStealStaleLock(lp) {
-        let raw;
-        try {
-            raw = fs.readFileSync(lp, 'utf-8');
-        }
-        catch {
-            // Can't read lock file — might have been removed by holder
-            return false;
-        }
-        const shouldSteal = (() => {
-            try {
-                const lock = JSON.parse(raw);
-                const lockPid = Number(lock.pid);
-                const lockTs = Number(lock.ts);
-                if (!Number.isFinite(lockPid) || !Number.isFinite(lockTs))
-                    return true;
-                return !isProcessAlive(lockPid) || (Date.now() - lockTs > this.opts.staleLockTimeoutMs);
-            }
-            catch {
-                // Corrupt JSON — safe to steal
-                return true;
-            }
-        })();
-        if (!shouldSteal)
-            return false;
-        // Atomic steal: rename to a unique tombstone, then delete. This prevents
-        // two processes from both unlinking the same lock and both believing they
-        // stole it (the classic TOCTOU race with unlink).
-        const tombstone = `${lp}.tomb.${process.pid}.${Date.now()}`;
-        try {
-            fs.renameSync(lp, tombstone);
-            // We won the rename — lock is ours to clean up
-            try {
-                fs.unlinkSync(tombstone);
-            }
-            catch { /* best-effort */ }
-            return true;
-        }
-        catch {
-            // Another process already renamed/removed it — we lost the race
-            try {
-                fs.unlinkSync(tombstone);
-            }
-            catch { /* might not exist */ }
-            return false;
-        }
+        return withStealRight(lp, () => {
+            const snapshot = inspectLockFile(lp);
+            if (!snapshot)
+                return false; // can't read — holder may have released it already
+            if (!this.isStaleLockSnapshot(snapshot))
+                return false;
+            return stealLockFile(lp, snapshot);
+        });
     }
     recoverFromOrphanTmpWhenBaseCorrupt(statePath) {
         const dir = path.dirname(statePath);

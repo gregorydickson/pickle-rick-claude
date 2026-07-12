@@ -54,6 +54,7 @@
     "tests/bin/test-runner-tier-discovery.test.js": "subprocess-timeout-coupling",
     "tests/rpgt-exit-paths.test.js": "subprocess-spawn-timing",
     "tests/worker-gate-test-command-timeout.test.js": "subprocess-timeout-coupling",
-    "tests/integration/audit-ticket-bundle-baseline.test.js": "load-dependent-timeout"
+    "tests/integration/audit-ticket-bundle-baseline.test.js": "load-dependent-timeout",
+    "tests/integration/lock-steal-live-holder.test.js": "subprocess-spawn-timing"
   }
 }

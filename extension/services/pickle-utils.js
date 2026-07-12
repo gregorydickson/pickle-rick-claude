@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { StringDecoder } from 'string_decoder';
 import { VALID_STEPS, LockError } from '../types/index.js';
-import { StateManager, isProcessAlive } from './state-manager.js';
+import { StateManager, isProcessAlive, inspectLockFile, stealLockFile, acquireLockFile, releaseLockFile, isDeadPidPayload, withStealRight } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 import { updateTicketStatusInTransaction } from './transaction-ticket-ops.js';
 import { isRecord } from '../lib/is-record.js';
@@ -1154,64 +1154,32 @@ const RETRY_LOCK_DEFAULTS = {
     lockJitter: true,
 };
 /**
- * The lock payload is the holder's pid (see `tryRunWithExclusiveLock`). Only a holder we can PROVE
- * is dead is reported dead: an empty payload (holder created the file but died before the write) or
- * an unparseable one defers to the mtime window, so we never steal from a holder we cannot account
- * for. A recycled pid reads as alive and also defers — the safe direction.
+ * The lock payload is the holder's pid (see `tryRunWithExclusiveLock`). Recovery runs under
+ * `withStealRight`, so the lock inspected here is the lock removed here — no other stealer can be
+ * mid-removal, and the dead holder this judges cannot release its own file.
  */
-function isLockHolderDead(lockPath) {
-    let pid;
-    try {
-        pid = Number(fs.readFileSync(lockPath, 'utf-8').trim());
-    }
-    catch {
-        return false;
-    }
-    if (!Number.isInteger(pid) || pid <= 0)
-        return false;
-    return !isProcessAlive(pid);
-}
 function stealStaleLock(lockPath, staleLockTimeoutMs) {
-    let mtimeMs;
-    try {
-        mtimeMs = fs.statSync(lockPath).mtimeMs;
-    }
-    catch {
-        return; // lock file doesn't exist — expected
-    }
-    // A dead holder is stolen at once. Waiting out staleLockTimeoutMs is not merely slow, it is
-    // unreachable: the retry budget (~26.3s over 10 attempts) expires before the 30s window opens.
-    if (isLockHolderDead(lockPath) || Date.now() - mtimeMs > staleLockTimeoutMs) {
-        try {
-            fs.unlinkSync(lockPath);
-        }
-        catch { /* already gone — race is fine */ }
-    }
+    withStealRight(lockPath, () => {
+        const snapshot = inspectLockFile(lockPath);
+        if (!snapshot)
+            return false; // lock file doesn't exist — expected
+        // A dead holder is stolen at once. Waiting out staleLockTimeoutMs is not merely slow, it is
+        // unreachable: the retry budget (~26.3s over 10 attempts) expires before the 30s window opens.
+        const stale = isDeadPidPayload(snapshot.payload)
+            || Date.now() - snapshot.mtimeMs > staleLockTimeoutMs;
+        return stale ? stealLockFile(lockPath, snapshot) : false;
+    });
 }
 function tryRunWithExclusiveLock(lockPath, fn) {
-    try {
-        const fd = fs.openSync(lockPath, 'wx');
-        try {
-            fs.writeSync(fd, String(process.pid));
-        }
-        finally {
-            fs.closeSync(fd);
-        }
-        try {
-            return { acquired: true, value: fn() };
-        }
-        finally {
-            try {
-                fs.unlinkSync(lockPath);
-            }
-            catch { /* ignore cleanup failure */ }
-        }
-    }
-    catch (e) {
-        const code = e instanceof Error ? e.code : undefined;
-        if (code !== 'EEXIST')
-            throw e;
+    const ino = acquireLockFile(lockPath, String(process.pid));
+    if (ino === null)
         return { acquired: false };
+    try {
+        return { acquired: true, value: fn() };
+    }
+    finally {
+        // Release only our own inode: a blind unlink would drop a successor's lock if ours was stolen.
+        releaseLockFile(lockPath, ino);
     }
 }
 function sleepBeforeRetry(attempt, baseLockDelayMs, lockJitter) {

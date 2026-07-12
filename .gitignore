@@ -13,8 +13,10 @@ extension/.tmp/
 # Claude Code agent worktrees — temporary git worktrees created by isolation:"worktree"
 .claude/worktrees/
 # Runtime data leaks — these belong in PICKLE_DATA_ROOT (~/.local/share/pickle-rick/),
-# but workers occasionally write them to the source repo cwd.
-current_sessions.json
+# but workers occasionally write them to the source repo cwd. The glob covers the lock siblings
+# (.lock, .lock.steal, .lock.tomb.*, .tmp.<pid>): an abrupt death strands them, and any one of them
+# is a non-ignored dirty path that blocks the next pipeline launch.
+current_sessions.json*
 # User-specific Claude Code files (memories, conversations)
 .claude/pickle-rick/
 .claude/projects/
