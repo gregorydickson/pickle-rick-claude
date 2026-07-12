@@ -422,6 +422,46 @@ test('AC-WMFF-2B: dirty_in_scope_paths is capped at 20 with truncated + total_co
   }
 });
 
+// The 25-path test above cannot tell `truncated: dirty.length > CAP` apart from a `>=`
+// off-by-one — at 25 BOTH report `true`. The boundary is the only place they disagree: at
+// EXACTLY 20 a correct `>` reports `truncated: false` while a `>=` regression reports `true`.
+// 21 is the first input that must truncate; 19 anchors the under-cap side.
+for (const { n, expectedPaths, expectedTruncated } of [
+  { n: 19, expectedPaths: 19, expectedTruncated: false },
+  { n: 20, expectedPaths: 20, expectedTruncated: false },
+  { n: 21, expectedPaths: 20, expectedTruncated: true },
+]) {
+  test(`AC-WMFF-2B: cap boundary — ${n} dirty paths → ${expectedPaths} reported, truncated=${expectedTruncated}, total_count=${n}`, () => {
+    const { repo, baseSha } = makeRepo(`wmff-2b-bound${n}-repo-`);
+    const { sessionDir } = makeSession(`wmff-2b-bound${n}-sess-`);
+    try {
+      const id = `cap${n}bnd`;
+      makeTicket(sessionDir, id, { status: 'Failed', extraFiles: { 'worker_session_1.log': '' } });
+      for (let i = 0; i < n; i += 1) {
+        writeFileSync(path.join(repo, `f${String(i).padStart(2, '0')}.ts`), `export const v${i} = ${i};\n`);
+      }
+
+      const payload = claimWorkerProducedEverythingButCommit({
+        sessionDir, workingDir: repo, ticketId: id, iteration: 1, sessionLogBytes: 0, preIterSha: baseSha,
+      });
+
+      assert.ok(payload, 'a dirty tree fires regardless of how many paths');
+      assert.equal(payload.dirty_in_scope_paths.length, expectedPaths, 'reported slice honors the cap');
+      assert.equal(payload.truncated, expectedTruncated, `truncated at n=${n} (20 is where > and >= disagree)`);
+      assert.equal(payload.total_count, n, 'total_count tells the truth whether capped or not');
+      assert.equal(
+        validate({ event: 'worker_produced_everything_but_commit', ts: new Date().toISOString(), ticket: id, gate_payload: payload },
+          'worker_produced_everything_but_commit').valid,
+        true,
+        'schema-conformant AT the boundary (maxItems: 20), not merely at 25',
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+}
+
 test('AC-WMFF-2B: scope.json filters dirty paths, but the #128 CLAUDE.md carve-out still counts', () => {
   const { repo } = makeRepo('wmff-2b-scope-repo-');
   const { sessionDir } = makeSession('wmff-2b-scope-sess-');
