@@ -81,3 +81,42 @@ re-drive.
   `feedback_commit_uncommitted_verified_work_before_respawn` (the recovery rule applied),
   R-WSDO `worker_produced_nothing` (the sibling breadcrumb this mirrors), R-WSE-2
   `worker_partial_lifecycle_exit` (correctly did not fire — different predicate).
+
+## Refinement corrections
+
+*(added 2026-07-11 by ticket 76ee2195, post-refinement audit — append-only per this report's own
+NOT-in-Scope contract; the capture above is preserved verbatim)*
+
+Refinement (`prds/p2-worker-monitor-wait-failed-flip-fix.md`, 2+1 analyst cycles) REFUTED two of
+this capture's claims and RE-SCOPED a third:
+
+1. **"ZERO activity-event trail" was stated as a CLASS claim — wrong as generalized.** The three
+   mux-runner-side Failed-flip sites (`worker_head_regression_detected`, `ticket_ladder_exhausted`,
+   `worker_auto_skip_oversized`) ALL emit their own event. The incident's flip was the FOURTH class
+   — the spawn-morty worker-process budget-death flip (`spawn-morty.ts:1847/:2398/:2431`) — which
+   is the one class that emits nothing. "Zero trail" is accurate for THIS incident's flip class,
+   not the flip mechanism generally.
+2. **"Runner gate owns verification" (fix-direction leg 1 framing) was wrong on this exact path.**
+   `runWorkerGate` runs in `finalizeWorkerTurn` (the worker's own EXIT path) — it never completes
+   when the worker dies at budget exhaustion mid-turn. `recomputeAbsentWorkerGateVerdict` is
+   Done-flip-only and recomputes eslint+tsc only (R-WGFR), not `test:fast`. The refined fix instead
+   directs COMMIT-FIRST when the diff is green on tsc+eslint (AC-WMFF-1B), rather than relying on a
+   downstream gate that cannot run on the budget-death path.
+3. **The originally-conceived "one breadcrumb event" was RE-SCOPED** from an implicit
+   every-flip-site design to the worker-flip class ONLY (`worker_produced_everything_but_commit`,
+   AC-WMFF-2B) — the three mux-runner-side classes already have their own events (point 1 above),
+   so a class-wide breadcrumb would have duplicated existing telemetry.
+
+The refined bundle additionally found the deeper defect was DURABILITY, not observability:
+`advanceOrExitOnLadderExhaustion` was the only Failed-flip site that never called
+`archiveDirtyTreeBeforeFlip` (its two siblings did) — on the incident's actual path a verified diff
+would have had NO commit AND no archive. Fixed by AC-WMFF-2A (archive-on-every-flip, one-line
+consistency fix, `9da93c73`). The B-DURA T10 boundary committer
+(`commitGatePassingDeliverableAtBoundary`) terminal-guard reorder was evaluated and explicitly
+DEFERRED (R-PSRB adjacency — it touches the boundary-commit/terminal path); committed-but-Failed
+recovery stays babysitter-driven via the breadcrumb + archive.
+
+Shipped: `8327c4d8` (prompt-layer sync-gate + commit-first), `9da93c73` (archive-on-ladder-flip +
+`worker_produced_everything_but_commit`), `5fee5953` / `8f699e78` / `83610ab9` (hardening/audit/
+test-quality passes). See `prds/p2-worker-monitor-wait-failed-flip-fix.md` for the full refined
+bundle and the `prds/MASTER_PLAN.md` R-WMFF row for the ledger summary.
