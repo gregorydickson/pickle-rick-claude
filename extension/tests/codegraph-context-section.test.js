@@ -372,6 +372,36 @@ test('staleness: all located nodes dropped + Summary present → still stale_ref
     'must NOT emit a codegraph_context_injected event for Summary-only content');
 });
 
+// The post-render twin of the staleness case above: there the located nodes are dropped
+// BEFORE the render, here they are dropped BY it. renderCodegraphSection enforces the byte
+// cap by popping trailing entries, so a Summary that leads would starve out every symbol
+// and still return a non-empty section — passing both skip gates and reaching
+// recordContextInjected() with an event claiming hits_count: 60 over zero rendered symbols.
+test('cap: long Summary must not starve out every symbol entry — no phantom Summary-only injection', async () => {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-cap-starve-session-'));
+  const statePath = seedState(sessionDir);
+  const hits = [];
+  for (let i = 0; i < 60; i++) hits.push(searchHit(`n${i}`, `symbolNumber${i}`, 60 - i));
+  const bigSummary = Array.from({ length: 40 }, (_, i) => `summary line ${i} with extra words to consume bytes`).join('\n');
+  const service = fakeService({ hits, callers: [{ node: { id: 'c', name: 'someCaller' } }], summary: bigSummary });
+  const section = await buildCodegraphContextSection({
+    tier: 'medium', title: makeTicket().task, ticketContent: makeTicket().ticketContent,
+    service, settings: makeSettings({ context_max_bytes: 400 }), sessionDir, ticketId: 'tcap',
+  });
+
+  const bodyLines = section.split('\n').filter((l) => l !== '' && l !== SECTION_HEADER && l !== '[truncated]');
+  const symbolLines = bodyLines.filter((l) => l.startsWith('- `'));
+  assert.ok(symbolLines.length > 0,
+    'a rendered section must carry at least one symbol entry — the payload, not just Summary prose');
+
+  // The injected event is the efficacy metric the default-on decision rides on: it may only
+  // fire over a section that actually named symbols.
+  const activity = JSON.parse(fs.readFileSync(statePath, 'utf8')).activity;
+  const injected = activity.filter((e) => e.event === 'codegraph_context_injected');
+  assert.equal(injected.length, 1, 'exactly one injected event');
+  assert.ok(injected[0].bytes > 0, 'injected event must report the real section bytes');
+});
+
 // ── AC: absence (zero hits / null / disabled / kill-switch) ──────────────────
 test('absence: zero hits / null service / disabled → NO section header anywhere', async () => {
   const base = { tier: 'medium', title: makeTicket().task, ticketContent: makeTicket().ticketContent };

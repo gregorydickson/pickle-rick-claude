@@ -641,7 +641,13 @@ function buildCodegraphEntries(ranked, callersMap, summary, workingDir) {
         }
         locatedEntries.push(entry);
     }
-    const entries = [];
+    // Located entries lead; Summary prose trails. renderCodegraphSection enforces
+    // context_max_bytes by popping TRAILING entries, so this ordering makes the prose
+    // the truncation victim and the symbol payload the survivor. It is what keeps the
+    // `locatedSurvivors === 0` skip gate honest AFTER the render: a non-empty section
+    // now always carries >= 1 located entry, so a Summary-only render cannot reach
+    // recordContextInjected(). Reversing this silently re-opens that phantom injection.
+    const entries = [...locatedEntries];
     if (locatedEntries.length > 0 && typeof summary === 'string') {
         for (const line of summary.split('\n')) {
             const t = line.trim();
@@ -650,7 +656,6 @@ function buildCodegraphEntries(ranked, callersMap, summary, workingDir) {
             }
         }
     }
-    entries.push(...locatedEntries);
     return { entries, locatedSurvivors: locatedEntries.length, droppedStale };
 }
 /**
