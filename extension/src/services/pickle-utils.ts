@@ -72,7 +72,6 @@ function getMicroverseSettingsWithDefaults(
   };
 }
 
-/** Extracts a string message from any thrown value. Never throws. */
 /**
  * R-CNAR-8: Atomic clear of all five `current_ticket_*` per-ticket cache fields.
  * Call this at any site that writes `current_ticket = null` OR transitions
@@ -102,6 +101,7 @@ export function clearTicketCacheFields(state: { [k: string]: unknown }): number 
   return cleared;
 }
 
+/** Extracts a string message from any thrown value. Never throws. */
 export function safeErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }

@@ -45,7 +45,6 @@ function getMicroverseSettingsWithDefaults(settings) {
         judge_model_codex: typeof codexModel === 'string' && codexModel.trim() ? codexModel : DEFAULT_MICROVERSE_SETTINGS.judge_model_codex,
     };
 }
-/** Extracts a string message from any thrown value. Never throws. */
 /**
  * R-CNAR-8: Atomic clear of all five `current_ticket_*` per-ticket cache fields.
  * Call this at any site that writes `current_ticket = null` OR transitions
@@ -74,6 +73,7 @@ export function clearTicketCacheFields(state) {
     }
     return cleared;
 }
+/** Extracts a string message from any thrown value. Never throws. */
 export function safeErrorMessage(err) {
     return err instanceof Error ? err.message : String(err);
 }
