@@ -45,7 +45,8 @@ read_expected_version() {
 read_tag_name_version() {
   local tag="$1"
   local version="${tag#v}"
-  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 12 "tag $tag is not a semver release tag"
+  # Prerelease suffix is required: every release this repo ships is an X.Y.Z-beta.N tag.
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die 12 "tag $tag is not a semver release tag"
   printf '%s\n' "$version"
 }
 

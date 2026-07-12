@@ -262,6 +262,46 @@ describe('release-gate.pre-tag', () => {
       rmSync(repoDir, { recursive: true, force: true });
     }
   });
+
+  test('passes for a prerelease tag, the only shape this repo ships', () => {
+    const { dir: repoDir, tagName } = makeGitFixture({
+      headVersion: '2.1.0-beta.1',
+      tagVersion: '2.1.0-beta.1',
+    });
+    try {
+      const result = gate(['--pre-tag', tagName], { cwd: repoDir });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /ok: tag v2\.1\.0-beta\.1 .* version 2\.1\.0-beta\.1/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  test('exits 10 when a prerelease tag package version drifts from HEAD', () => {
+    const { dir: repoDir, tagName } = makeGitFixture({
+      headVersion: '2.1.0-beta.2',
+      tagVersion: '2.1.0-beta.1',
+    });
+    try {
+      const result = gate(['--pre-tag', tagName], { cwd: repoDir });
+      assert.equal(result.status, 10);
+      assert.match(result.stderr, /exit 10/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  test('exits 12 when a prerelease suffix is empty', () => {
+    const { dir: repoDir } = makeGitFixture({ headVersion: '1.67.0', tagVersion: '1.67.0' });
+    run('git', ['tag', 'v1.67.0-'], { cwd: repoDir });
+    try {
+      const result = gate(['--pre-tag', 'v1.67.0-'], { cwd: repoDir });
+      assert.equal(result.status, 12);
+      assert.match(result.stderr, /not a semver release tag/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('release-gate.post-tag', () => {
