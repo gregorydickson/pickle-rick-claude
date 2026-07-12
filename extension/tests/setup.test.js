@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArguments, initializeNewSession, evaluateLaunchSizing, countManifestTickets } from '../bin/setup.js';
 import { compatibleCodexVersion, codexVersionLine } from './__helpers__/codex-shim.js';
@@ -48,19 +48,30 @@ function withTmuxDefault(args) {
     return hasMode ? args : ['--tmux', ...args];
 }
 
-function runSetup(args) {
+// The collision retry and the DATA_ROOT fallback are properties of spawning setup.js,
+// not of one caller, so every helper routes through this single seam. An explicit
+// PICKLE_DATA_ROOT in extraEnv still wins; a caller that omits it lands in the sandbox
+// rather than the operator's production data dir.
+function execSetup(args, extraEnv) {
+    const env = {
+        ...process.env,
+        FORCE_COLOR: '0',
+        PICKLE_DATA_ROOT: process.env.PICKLE_DATA_ROOT ?? DATA_ROOT,
+        ...extraEnv,
+    };
+    // An `undefined` in extraEnv means "unset this for the child" — a plain spread would
+    // leave the inherited process.env value in place.
+    for (const key of Object.keys(env)) {
+        if (env[key] === undefined) delete env[key];
+    }
+
     const deadline = Date.now() + 30_000;
     for (;;) {
         try {
-            const output = execFileSync(process.execPath, [SETUP, ...withTmuxDefault(args)], {
+            return execFileSync(process.execPath, [SETUP, ...withTmuxDefault(args)], {
                 encoding: 'utf-8',
-                // Fall back to DATA_ROOT when no PICKLE_DATA_ROOT is already set on the
-                // test process — prevents sessions from landing in the production data dir.
-                env: { ...process.env, FORCE_COLOR: '0', PICKLE_DATA_ROOT: process.env.PICKLE_DATA_ROOT ?? DATA_ROOT },
+                env,
             });
-            const match = output.match(/SESSION_ROOT=(.+)/);
-            if (!match) throw new Error(`SESSION_ROOT not found in output:\n${output}`);
-            return match[1].trim();
         } catch (err) {
             const stderr = err && typeof err.stderr === 'string' ? err.stderr : '';
             if (isSessionMapCollision(stderr) && Date.now() < deadline) {
@@ -72,11 +83,15 @@ function runSetup(args) {
     }
 }
 
+function runSetup(args) {
+    const output = execSetup(args);
+    const match = output.match(/SESSION_ROOT=(.+)/);
+    if (!match) throw new Error(`SESSION_ROOT not found in output:\n${output}`);
+    return match[1].trim();
+}
+
 function runSetupWithEnv(args, extraEnv) {
-    return execFileSync(process.execPath, [SETUP, ...withTmuxDefault(args)], {
-        encoding: 'utf-8',
-        env: { ...process.env, FORCE_COLOR: '0', ...extraEnv },
-    });
+    return execSetup(args, extraEnv);
 }
 
 function cleanup(sessionPath) {
@@ -223,17 +238,13 @@ test('worker-backend.invalid: setup rejects unknown --worker-backend with exit 1
 
 test('setup rejects deepseek without API key', () => {
     const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-deepseek-key-data-'));
-    const env = { ...process.env };
-    delete env.DEEPSEEK_API_KEY;
-    env.PICKLE_DATA_ROOT = dataRoot;
-    env.FORCE_COLOR = '0';
 
     try {
         assert.throws(
-            () => execFileSync(process.execPath, [SETUP, '--tmux', '--backend', 'deepseek', '--task', 'deepseek api key test'], {
-                encoding: 'utf-8',
-                env,
-            }),
+            () => runSetupWithEnv(
+                ['--tmux', '--backend', 'deepseek', '--task', 'deepseek api key test'],
+                { PICKLE_DATA_ROOT: dataRoot, DEEPSEEK_API_KEY: undefined },
+            ),
             error => {
                 assert.equal(error.status, 1);
                 assert.match(String(error.stderr), /DEEPSEEK_API_KEY/);
@@ -859,10 +870,7 @@ test('setup: --resume preserves max_time_minutes=0 (unlimited) without falling b
         assert.equal(state.max_time_minutes, 0, 'initial max_time_minutes should be 0');
 
         // Resume WITHOUT explicit --max-time — should preserve 0, not fall back to default
-        const output = execFileSync(process.execPath, [SETUP, '--resume', sessionPath], {
-            encoding: 'utf-8',
-            env: { ...process.env, FORCE_COLOR: '0' },
-        });
+        const output = runSetupWithEnv(['--resume', sessionPath], {});
         state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
         assert.equal(state.max_time_minutes, 0, 'max_time_minutes=0 must be preserved on resume');
         // Display should show ∞ for unlimited, not a numeric default
@@ -873,10 +881,7 @@ test('setup: --resume preserves max_time_minutes=0 (unlimited) without falling b
 });
 
 test('setup: new session with max_time=0 shows ∞ in panel output', () => {
-    const output = execFileSync(process.execPath, [SETUP, '--tmux', '--max-time', '0', '--task', 'display-infinity-test'], {
-        encoding: 'utf-8',
-        env: { ...process.env, FORCE_COLOR: '0' },
-    });
+    const output = runSetupWithEnv(['--tmux', '--max-time', '0', '--task', 'display-infinity-test'], {});
     const match = output.match(/SESSION_ROOT=(.+)/);
     assert.ok(match, 'SESSION_ROOT should be in output');
     const sessionPath = match[1].trim();
@@ -1520,4 +1525,47 @@ test('AC-LPB-05: --resume resets start_time_epoch to current time and emits acti
         else process.env.PICKLE_DATA_ROOT = previousDataRoot;
         fs.rmSync(dataRoot, { recursive: true, force: true });
     }
+});
+
+// Regression: the fast tier runs setup-family files concurrently, so a sibling can hold
+// this cwd's session-map slot while setup.js claims it. Every spawn helper must wait the
+// slot out — `runSetupWithEnv` used to die on it, false-REDding the whole fast tier.
+test('setup: a spawn survives a live sibling holding the cwd session-map slot', () => {
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-collision-data-'));
+    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2500)'], { stdio: 'ignore' });
+    try {
+        fs.writeFileSync(
+            path.join(dataRoot, 'current_sessions.json'),
+            JSON.stringify({
+                [process.cwd()]: {
+                    sessionPath: path.join(dataRoot, 'sessions', 'held-by-live-sibling'),
+                    pid: holder.pid,
+                },
+            }),
+        );
+
+        const output = runSetupWithEnv(
+            ['--task', 'session-map-collision-retry-test'],
+            { EXTENSION_DIR: REPO_ROOT, PICKLE_DATA_ROOT: dataRoot },
+        );
+
+        assert.match(
+            output,
+            /SESSION_ROOT=/,
+            'spawn helper must retry past a live sibling holding the cwd slot, not throw',
+        );
+    } finally {
+        try { holder.kill(); } catch { /* already exited */ }
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+});
+
+test('setup: the setup binary is spawned through exactly one seam', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'setup.test.js'), 'utf-8');
+    const spawnSites = source.match(/execFileSync\(process\.execPath, \[SETUP/g) ?? [];
+    assert.equal(
+        spawnSites.length,
+        1,
+        'every setup.js spawn must route through execSetup — a second site forks the collision retry and the sandbox data-root fallback back off',
+    );
 });
