@@ -578,6 +578,43 @@ test('AC-WMFF-2B: idempotent once per (ticket, iteration); a NEW iteration re-ar
   }
 });
 
+// The claim key is `${ticketId}:${iteration}`, but the idempotency test above varies ONLY the
+// iteration. A regression that keyed the ledger on the iteration alone would pass it — while
+// silently suppressing the breadcrumb for every ticket after the first in any given iteration.
+// Two DIFFERENT tickets at the SAME iteration is the only input that can see that.
+test('AC-WMFF-2B: the claim key is per-(ticket, iteration) — two tickets at the SAME iteration both fire', () => {
+  const { repo, baseSha } = makeRepo('wmff-2b-key-repo-');
+  const { sessionDir } = makeSession('wmff-2b-key-sess-');
+  try {
+    const first = 'dd11keya';
+    const second = 'dd22keyb';
+    makeTicket(sessionDir, first, { tier: 'large', status: 'Failed', extraFiles: { 'worker_session_1.log': '' } });
+    makeTicket(sessionDir, second, { tier: 'small', status: 'Failed', extraFiles: { 'worker_session_2.log': '' } });
+    writeFileSync(path.join(repo, 'dirty.ts'), 'export const g = 7;\n');
+
+    const args = { sessionDir, workingDir: repo, iteration: 42, sessionLogBytes: 0, preIterSha: baseSha };
+    const a = claimWorkerProducedEverythingButCommit({ ...args, ticketId: first });
+    const b = claimWorkerProducedEverythingButCommit({ ...args, ticketId: second });
+
+    assert.ok(a, 'the first ticket fires at iteration 42');
+    assert.ok(b, 'a DIFFERENT ticket at the SAME iteration ALSO fires — the key is not iteration-only');
+
+    // Each payload describes its OWN ticket (tier read per-ticket from frontmatter), never a
+    // shared or cached one.
+    assert.equal(a.tier, 'large');
+    assert.equal(b.tier, 'small');
+    assert.deepEqual(a.prefixes_checked, requiredTierArtifactPrefixes('large'));
+    assert.deepEqual(b.prefixes_checked, requiredTierArtifactPrefixes('small'));
+
+    // …and each remains claim-once under its own key.
+    assert.equal(claimWorkerProducedEverythingButCommit({ ...args, ticketId: first }), null, 'first ticket already claimed');
+    assert.equal(claimWorkerProducedEverythingButCommit({ ...args, ticketId: second }), null, 'second ticket already claimed');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('AC-WMFF-2B: negative cases — non-Failed status, a missing required prefix, and a clean/claimed tree', () => {
   const { repo, baseSha } = makeRepo('wmff-2b-neg-repo-');
   const { sessionDir } = makeSession('wmff-2b-neg-sess-');
