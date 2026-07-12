@@ -332,3 +332,35 @@ test('C0: committed inventory exists and its method surface matches the real cla
     assert.equal(typeof entry.async, 'boolean', `inventory.${name}.async is boolean`);
   }
 });
+
+// R-CGBOOT (2026-07-11): the service must BOOTSTRAP a never-initialized repo.
+// defaultLoadImpl preferred CodeGraph.open() unconditionally; open() throws
+// "Run init() first" when no .codegraph db exists, so index_at_setup could never
+// create the first index (live incident: enabled-window trial, session
+// 2026-07-11-86dd509f — indexAll -> null, codegraph_degraded load/error).
+test('R-CGBOOT: CodegraphService.indexAll bootstraps a never-initialized dir (open-throws -> init fallback)', { timeout: TEST_TIMEOUT_MS }, async (t) => {
+  if (!EXPENSIVE) return t.skip('RUN_EXPENSIVE_TESTS!=1');
+  const { skip } = loadCodeGraphOrSkipReason();
+  if (skip) return t.skip(skip);
+  const { CodegraphService } = await import('../../services/codegraph-service.js');
+  const dir = makeFixture({
+    'src/alpha.ts': 'export function alpha(): number { return 1; }\n',
+    'src/beta.ts': "import { alpha } from './alpha.js';\nexport const beta = () => alpha() + 1;\n",
+  });
+  const events = [];
+  try {
+    const svc = CodegraphService.create(dir, {
+      enabled: true, index_at_setup: true, index_timeout_ms: 120000, sync_timeout_ms: 30000,
+      query_timeout_ms: 5000, staleness_max_age_minutes: 30, context_max_bytes: 8192,
+      expose_mcp_to_workers: false,
+    }, { emit: (e) => events.push(e) });
+    const result = await svc.indexAll();
+    svc.close();
+    const loadDegrades = events.filter((e) => e.event === 'codegraph_degraded' && e.operation === 'load');
+    assert.notEqual(result, null, 'indexAll must bootstrap-init a fresh dir, not return null');
+    assert.equal(loadDegrades.length, 0, `no load-degrade expected, got: ${JSON.stringify(loadDegrades)}`);
+    assert.ok(fs.existsSync(path.join(dir, '.codegraph')), '.codegraph db dir created by bootstrap');
+  } finally {
+    rmDir(dir);
+  }
+});

@@ -128,8 +128,9 @@ export class CodegraphService {
      * consumer, which maps it to `query_timeout` / `query_failed` skip reasons. Never throws.
      */
     async runQueryBatch(searches, callers) {
-        if (this.inert)
+        if (this.inert) {
             return { status: 'ok', searches: {}, callers: {} };
+        }
         this.counters.ops += 1;
         const run = this.deps.runQueryBatch ??
             ((input, ms) => runCodegraphQueryBatch(input, { timeoutMs: ms, ...(this.deps.env ? { env: this.deps.env } : {}) }));
@@ -343,7 +344,21 @@ async function defaultLoadImpl(workingDir) {
     const CodeGraph = bag.CodeGraph;
     if (!CodeGraph)
         return null;
-    const graph = CodeGraph.open ? await CodeGraph.open(workingDir) : await CodeGraph.init?.(workingDir);
+    // R-CGBOOT: open() throws on a never-initialized repo ("Run init() first"), so a
+    // fresh dir could never bootstrap its first index. Fall back to init() when open
+    // is absent OR refuses; only a failure of BOTH surfaces is a genuine load error.
+    let graph = null;
+    if (CodeGraph.open) {
+        try {
+            graph = await CodeGraph.open(workingDir);
+        }
+        catch {
+            graph = CodeGraph.init ? await CodeGraph.init(workingDir) : null;
+        }
+    }
+    else if (CodeGraph.init) {
+        graph = await CodeGraph.init(workingDir);
+    }
     return (graph ?? null);
 }
 /** Default file-lock wrapper using upstream `FileLock`. */

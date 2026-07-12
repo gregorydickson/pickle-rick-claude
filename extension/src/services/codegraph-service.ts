@@ -456,7 +456,19 @@ async function defaultLoadImpl(workingDir: string): Promise<CodegraphImpl | null
     | { open?: (root: string) => Promise<unknown>; init?: (root: string) => Promise<unknown> }
     | undefined;
   if (!CodeGraph) return null;
-  const graph = CodeGraph.open ? await CodeGraph.open(workingDir) : await CodeGraph.init?.(workingDir);
+  // R-CGBOOT: open() throws on a never-initialized repo ("Run init() first"), so a
+  // fresh dir could never bootstrap its first index. Fall back to init() when open
+  // is absent OR refuses; only a failure of BOTH surfaces is a genuine load error.
+  let graph: unknown = null;
+  if (CodeGraph.open) {
+    try {
+      graph = await CodeGraph.open(workingDir);
+    } catch {
+      graph = CodeGraph.init ? await CodeGraph.init(workingDir) : null;
+    }
+  } else if (CodeGraph.init) {
+    graph = await CodeGraph.init(workingDir);
+  }
   return (graph ?? null) as CodegraphImpl | null;
 }
 
