@@ -10,6 +10,11 @@ import {
     _resetSessionDirInvalidEmittedForTests,
     restartDeadWatcherPanes,
     ensureMonitorWindow,
+    // The PRODUCTION phase-boundary respawn: pipeline-runner.ts imports this one and
+    // calls it at every phase transition. `lib/monitor-respawn.js` exports a same-named
+    // fork that no production module imports — the tests below that drive the fork are
+    // NOT guarding the pipeline. Aliased so the two cannot be confused.
+    respawnMonitorWindowForMode as respawnMonitorWindowForModePipeline,
 } from '../services/pickle-utils.js';
 import { respawnMonitorWindowForMode } from '../lib/monitor-respawn.js';
 
@@ -529,6 +534,88 @@ test('ensureMonitorWindow: tmux session carrying no hash of ours → fails close
         assert.equal(result.status, 'skipped');
         assert.equal(calls.filter(c => c.args[0] === 'kill-window').length, 0);
     } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+// ─── respawnMonitorWindowForMode (pipeline path): the same ownership gate ─────
+//
+// The third ambient-`#S` consumer, and the most destructive: `_tmuxRespawnPane`
+// issues `tmux respawn-pane -k`, which KILLS pane 0 of the target window and
+// repoints it at our sessionDir. pipeline-runner calls it at EVERY phase
+// boundary. `validateSessionDirOrSkip` is not a substitute — it validates that
+// OUR sessionDir is coherent, never that the tmux target is ours.
+
+test('respawnMonitorWindowForMode (pipeline): foreign tmux session → never respawns its pane', async () => {
+    const savedDataRoot = process.env.PICKLE_DATA_ROOT;
+    const tmpRoot = makeTmpRoot();
+    try {
+        process.env.PICKLE_DATA_ROOT = tmpRoot;
+        // We manage `session`; we are running inside the live tmux of `pipeline-86dd509f`.
+        const sessionDir = makeValidSessionDir(tmpRoot);
+        const { calls, spawnSyncFn } = makeSpawnCapture('pipeline-86dd509f');
+
+        const result = await respawnMonitorWindowForModePipeline(sessionDir, 'anatomy-park', {
+            inTmux: true,
+            spawnSyncFn,
+        });
+
+        assert.equal(result, 'no-op');
+        const respawned = calls.filter(c => c.command === 'tmux' && c.args[0] === 'respawn-pane');
+        assert.equal(respawned.length, 0, "must not kill a stranger's monitor pane");
+    } finally {
+        if (savedDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = savedDataRoot;
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+test('respawnMonitorWindowForMode (pipeline): tmux session carrying no hash of ours → fails closed', async () => {
+    const savedDataRoot = process.env.PICKLE_DATA_ROOT;
+    const tmpRoot = makeTmpRoot();
+    try {
+        process.env.PICKLE_DATA_ROOT = tmpRoot;
+        const sessionDir = makeValidSessionDir(tmpRoot);
+        const { calls, spawnSyncFn } = makeSpawnCapture('pickle-dead');
+
+        const result = await respawnMonitorWindowForModePipeline(sessionDir, 'anatomy-park', {
+            inTmux: true,
+            spawnSyncFn,
+        });
+
+        assert.equal(result, 'no-op');
+        const respawned = calls.filter(c => c.command === 'tmux' && c.args[0] === 'respawn-pane');
+        assert.equal(respawned.length, 0, 'a tmux session we cannot claim is never driven');
+    } finally {
+        if (savedDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = savedDataRoot;
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+test('respawnMonitorWindowForMode (pipeline): ambient tmux session owns THIS sessionDir → respawns', async () => {
+    const savedDataRoot = process.env.PICKLE_DATA_ROOT;
+    const tmpRoot = makeTmpRoot();
+    try {
+        process.env.PICKLE_DATA_ROOT = tmpRoot;
+        const sessionDir = makeDataRootSession(tmpRoot, '2026-07-11-86dd509f');
+        const { calls, spawnSyncFn } = makeSpawnCapture('pipeline-86dd509f');
+
+        const result = await respawnMonitorWindowForModePipeline(sessionDir, 'anatomy-park', {
+            inTmux: true,
+            spawnSyncFn,
+        });
+
+        assert.equal(result, 'respawned');
+        const respawned = calls.filter(c => c.command === 'tmux' && c.args[0] === 'respawn-pane');
+        assert.equal(respawned.length, 1, 'our own monitor pane is still respawned');
+        assert.ok(
+            respawned[0].args.includes('pipeline-86dd509f:monitor.0'),
+            'respawn targets our own monitor pane',
+        );
+    } finally {
+        if (savedDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = savedDataRoot;
         fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
 });
