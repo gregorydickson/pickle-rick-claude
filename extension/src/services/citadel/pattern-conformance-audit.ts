@@ -1,21 +1,10 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { CitadelFinding, slugify } from './reporter.js';
 import { DiffSummary } from './diff-walker.js';
-import { extractTrapDoorsSection } from './trap-doors-section.js';
 
 export interface PatternConformanceResult {
   findings: CitadelFinding[];
-}
-
-interface PatternRule {
-  targetFile: string;
-  patterns: PatternEntry[];
-}
-
-interface PatternEntry {
-  raw: string;
-  re: RegExp | null;
 }
 
 // Filter by path, never by ChangedFileKind (must not widen ChangedFileKind).
@@ -24,69 +13,26 @@ interface PatternEntry {
 const SQL_CLOBBER_RE =
   /\bON\s+CONFLICT\b[^;]*?\bDO\s+UPDATE\s+SET\s+\w+\s*=\s*(?!\s*EXCLUDED\.)([^,\n;]+)/is;
 
-// Flags diff hunks that violate harvested PATTERN_SHAPE declarations and SQL ON CONFLICT clobbers.
-// Report-only; never halts, never auto-fixes.
+/**
+ * Flags SQL ON CONFLICT clobbers. Report-only; never halts, never auto-fixes.
+ *
+ * R-PCPS: this analyzer NO LONGER greps trap-door `PATTERN_SHAPE:` declarations. That arm
+ * treated every backticked span after the marker as a literal that MUST appear in the target
+ * file, which is unsound against the real corpus: PATTERN_SHAPE is LLM-authored prose with
+ * embedded code, not a machine grammar. It carries negative assertions ("MUST NOT contain
+ * `state.max_iterations = budget.max_iterations`"), shell commands (`grep -c ... == 0`),
+ * cross-file symbols, and ``-fenced spans. Requiring all of it PRESENT inverted the negatives
+ * — the check went green only when a known-shipped bug was reintroduced — and reported
+ * literally-present code as absent, because presence was tested regex-first (`(` and `.` in
+ * `if (counterNext.halt)` parse as a group and a wildcard, so the pattern cannot match itself).
+ * It emitted 41/41 false High findings on a clean tree.
+ *
+ * Trap-door enforcement lives in `extension/scripts/audit-trap-door-enforcement.sh` (curated
+ * per-trap-door greps, in the release gate) and `citadel/trap-door-coverage-audit.ts`
+ * (ENFORCE-reachability). Both are sound; this grep was the redundant, broken one.
+ */
 export function auditPatternConformance(diff: DiffSummary): PatternConformanceResult {
-  return {
-    findings: [
-      ...findPatternShapeViolations(diff),
-      ...findSqlConflictClobbers(diff),
-    ],
-  };
-}
-
-function collectClaudeMdFiles(repoRoot: string): string[] {
-  const files: string[] = [];
-  const primary = path.join(repoRoot, 'extension', 'CLAUDE.md');
-  if (existsSync(primary)) files.push(primary);
-  const srcDir = path.join(repoRoot, 'extension', 'src');
-  if (existsSync(srcDir)) files.push(...walkForClaudeMd(srcDir));
-  return files;
-}
-
-function walkForClaudeMd(dir: string): string[] {
-  const results: string[] = [];
-  try {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        results.push(...walkForClaudeMd(fullPath));
-      } else if (entry.name === 'CLAUDE.md') {
-        results.push(fullPath);
-      }
-    }
-  } catch {
-    // non-fatal: subsystem CLAUDE.md may be absent
-  }
-  return results;
-}
-
-function findPatternShapeViolations(diff: DiffSummary): CitadelFinding[] {
-  const claudeMdFiles = collectClaudeMdFiles(diff.repoRoot);
-  const rules = harvestPatternRules(claudeMdFiles);
-  const findings: CitadelFinding[] = [];
-
-  for (const rule of rules) {
-    const matchedFile = diff.changedFiles.find(
-      (f) => f.status !== 'D' && pathSuffixMatch(f.path, rule.targetFile),
-    );
-    if (!matchedFile) continue;
-
-    const content = tryReadFile(path.resolve(diff.repoRoot, matchedFile.path));
-    if (content === null) continue;
-
-    for (const pat of rule.patterns) {
-      if (patternPresentInContent(pat, content)) continue;
-      findings.push({
-        id: `pattern-shape-violation:${slugify(matchedFile.path, 'file', 40)}:${slugify(pat.raw, 'pattern', 30)}`,
-        severity: 'High',
-        message: `PATTERN_SHAPE violation in ${matchedFile.path}: required pattern absent — ${pat.raw}`,
-        file: matchedFile.path,
-      });
-    }
-  }
-
-  return findings;
+  return { findings: findSqlConflictClobbers(diff) };
 }
 
 function findSqlConflictClobbers(diff: DiffSummary): CitadelFinding[] {
@@ -115,100 +61,4 @@ function tryReadFile(filePath: string): string | null {
   } catch {
     return null;
   }
-}
-
-function harvestPatternRules(claudeMdFiles: string[]): PatternRule[] {
-  const rules: PatternRule[] = [];
-  for (const claudeFile of claudeMdFiles) {
-    let content: string;
-    try {
-      content = readFileSync(claudeFile, 'utf-8');
-    } catch {
-      continue;
-    }
-    const section = extractTrapDoorsSection(content);
-    if (!section) continue;
-
-    for (const bullet of splitTrapDoorBullets(section)) {
-      const targetFile = extractFirstFilePath(bullet);
-      if (!targetFile) continue;
-
-      const patterns = extractPatternShapes(bullet);
-      if (patterns.length === 0) continue;
-
-      rules.push({ targetFile, patterns });
-    }
-  }
-  return rules;
-}
-
-function splitTrapDoorBullets(section: string): string[] {
-  return section
-    .split(/\n(?=- )/)
-    .map((p) => p.trim())
-    .filter((p) => p.startsWith('- '));
-}
-
-function extractFirstFilePath(bullet: string): string | null {
-  // Search only the part before the pattern marker to avoid treating pattern strings as target files.
-  const marker = findPatternShapeMarker(bullet);
-  const searchIn = marker ? bullet.slice(0, marker.index) : bullet;
-
-  const backtickRe = /`([^`]+)`/g;
-  let match: RegExpExecArray | null;
-  while ((match = backtickRe.exec(searchIn)) !== null) {
-    if (isFilePathLike(match[1])) return match[1];
-  }
-  return null;
-}
-
-function isFilePathLike(s: string): boolean {
-  // Must have a directory separator or a recognizable file extension.
-  return s.includes('/') || /\.\w{2,6}$/.test(s);
-}
-
-function extractPatternShapes(bullet: string): PatternEntry[] {
-  const marker = findPatternShapeMarker(bullet);
-  if (!marker) return [];
-
-  const psValue = bullet.slice(marker.index + marker.label.length);
-  const entries: PatternEntry[] = [];
-
-  const backtickRe = /`([^`]+)`/g;
-  let match: RegExpExecArray | null;
-  while ((match = backtickRe.exec(psValue)) !== null) {
-    const raw = match[1];
-    let re: RegExp | null;
-    try {
-      re = new RegExp(raw, 's');
-    } catch {
-      re = null;
-    }
-    entries.push({ raw, re });
-  }
-  return entries;
-}
-
-function findPatternShapeMarker(bullet: string): { index: number; label: string } | null {
-  const match = /pattern_shape:/i.exec(bullet);
-  if (!match || match.index < 0) return null;
-  return { index: match.index, label: match[0] };
-}
-
-function patternPresentInContent(pat: PatternEntry, content: string): boolean {
-  if (pat.re !== null) {
-    try {
-      return pat.re.test(content);
-    } catch {
-      // fall through to literal check
-    }
-  }
-  return content.includes(pat.raw);
-}
-
-function pathSuffixMatch(changedPath: string, targetPath: string): boolean {
-  const norm = (s: string) => s.replace(/\\/g, '/');
-  const cp = norm(changedPath);
-  const tp = norm(targetPath);
-  return cp === tp || cp.endsWith('/' + tp);
 }

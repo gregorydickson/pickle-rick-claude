@@ -8,11 +8,11 @@ Test-quality review of the citadel review-efficacy test suite added/extended by 
 |----|-----------|----------------------|
 | AC-1 | `runCitadelStandalone` + CLI shim | `run-standalone.test.js`, `standalone-integration.test.js`, `citadel-analyzer-wiring.test.js` |
 | AC-2 | extended banned-casts / sibling-auth / stale-reference analyzers | `banned-casts-audit.test.js`, `banned-constructs-audit.test.js`, `sibling-auth-audit.test.js` (+ `-throttle-roles`, `-toctou`), `stale-reference-audit.test.js` |
-| AC-3 | new `pattern-conformance-audit` (PATTERN_SHAPE + SQL ON CONFLICT) | `pattern-conformance-audit.test.js` |
+| AC-3 | new `pattern-conformance-audit` (PATTERN_SHAPE + SQL ON CONFLICT) — PATTERN_SHAPE arm later subtracted by R-PCPS; SQL ON CONFLICT retained | `pattern-conformance-audit.test.js` |
 | AC-4 | (descoped to target-repo — out of bundle) | n/a |
 | AC-5 | M2 report-only skeptic lens → `skeptic_findings.json` sink | `skeptic-lens.test.js` |
 | AC-6 | test-quality review (this record) | this document + the suite as a whole |
-| AC-7 | flywheel-closes proof (documented PATTERN_SHAPE → caught) | `pattern-conformance-flywheel.test.js` |
+| AC-7 | flywheel-closes proof (documented PATTERN_SHAPE → caught) — WITHDRAWN by R-PCPS: the flywheel only closed for sentinel-shaped patterns; against the real corpus the arm emitted 41/41 false High findings, so it was subtracted and its test removed. Trap-door enforcement lives in `extension/scripts/audit-trap-door-enforcement.sh`. | ~~`pattern-conformance-flywheel.test.js`~~ (removed) |
 | AC-8 | analyzer count rises ≤1, no double-report; LOC flat-or-down | `citadel-analyzer-wiring.test.js`, `severity-enum-guard.test.js` |
 | G1/G2 | PR#1707 dirty/clean regression fixtures | `loa907-regression.test.js` (+ `fixtures/loa907-{dirty,clean}.diff`) |
 

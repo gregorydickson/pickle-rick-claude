@@ -141,9 +141,12 @@ describe('loa907-regression: M1 deterministic floor (dirty fixture)', () => {
 
   // Each defect pins the EXACT emitted CitadelSeverity (reporter.ts CitadelSeverity union).
   const FLOOR = [
+    // R-PCPS: defect '#10 PATTERN_SHAPE violation' was dropped from the floor — the citadel
+    // grep arm that emitted it was unsound (it inverted MUST-NOT assertions and reported
+    // literally-present code as absent). Trap-door PATTERN_SHAPE enforcement now lives in
+    // extension/scripts/audit-trap-door-enforcement.sh, which is in the release gate.
     { defect: '#6 SQL ON CONFLICT clobber', prefix: 'sql-conflict-clobber:', severity: 'High' },
     { defect: '#9 `as never` cast', prefix: 'banned-cast:as-never:', severity: 'Medium' },
-    { defect: '#10 PATTERN_SHAPE violation', prefix: 'pattern-shape-violation:', severity: 'High' },
     { defect: '#14 stale cited symbol', prefix: 'stale-reference:', severity: 'Low' },
   ];
 
@@ -156,9 +159,9 @@ describe('loa907-regression: M1 deterministic floor (dirty fixture)', () => {
     });
   }
 
-  test('all four floor defects fire together on a single dirty run', () => {
+  test('all floor defects fire together on a single dirty run', () => {
     const present = FLOOR.filter(({ prefix }) => firstWithPrefix(findings, prefix));
-    assert.equal(present.length, 4, `expected all 4 floor defects; got ${present.map((p) => p.defect).join(', ')}`);
+    assert.equal(present.length, FLOOR.length, `expected all ${FLOOR.length} floor defects; got ${present.map((p) => p.defect).join(', ')}`);
   });
 
   test('every emitted severity is a member of the CitadelSeverity union', () => {
