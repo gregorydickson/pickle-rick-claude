@@ -139,6 +139,30 @@ tarball_has_unsafe_entries() {
   '
 }
 
+# `tarball_has_unsafe_entries` scans member NAMES only (`tar -tzf`), so a symlink or hardlink
+# whose NAME is safe but whose TARGET escapes the payload root sails through: the extractor writes
+# members that land after the link THROUGH it, escaping the install prefix. `-tvzf` is the only
+# listing that exposes the entry type (mode field first char: `l` symlink, `h` hardlink — portable
+# across GNU and BSD tar). The real installer payload contains no links, so a blanket rejection of
+# every link member cannot false-RED a legitimate release. Drain to END — never a bare `exit` on
+# first match — or pipefail SIGPIPEs the still-writing tar on a >64KB listing (see release-gate.sh
+# trap door).
+tarball_has_link_entries() {
+  local tarball="$1"
+  tar -tvzf "$tarball" | awk '
+    {
+      type = substr($1, 1, 1)
+      if (!found && (type == "l" || type == "h")) {
+        print $0
+        found = 1
+      }
+    }
+    END {
+      exit(found ? 0 : 1)
+    }
+  '
+}
+
 select_installable_tarball() {
   local dir="$1"
   local tag="$2"
@@ -156,6 +180,9 @@ select_installable_tarball() {
   for tarball in "${downloaded[@]}"; do
     if unsafe_entry="$(tarball_has_unsafe_entries "$tarball")"; then
       die 21 "downloaded tarball contains unsafe archive entry $unsafe_entry"
+    fi
+    if link_entry="$(tarball_has_link_entries "$tarball")"; then
+      die 21 "downloaded tarball contains a symlink or hardlink member: $link_entry"
     fi
     if payload_root="$(find_installable_payload_root "$tarball")"; then
       installable+=("$tarball")

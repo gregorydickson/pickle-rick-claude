@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -101,6 +102,20 @@ function makeMultiPayloadRootTarball(archiveName = 'multi-root.tar.gz') {
   writeFileSync(path.join(secondRoot, 'install.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
   const tarball = path.join(dir, archiveName);
   run('tar', ['-czf', tarball, '-C', dir, 'pickle-rick-claude', 'pickle-rick-claude-copy']);
+  return { dir, tarball };
+}
+
+// A REAL tarball (driven through the REAL tar, no fake-tar shim) carrying a valid payload root PLUS
+// one real symlink member whose target escapes the root. The member NAME is safe, so the name-only
+// `tar -tzf` scan is blind to it — only the `-tvzf` link-type scan catches it.
+function makeSymlinkPayloadTarball(archiveName = 'symlink.tar.gz') {
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-symlink-'));
+  const root = path.join(dir, 'pickle-rick-claude');
+  writePackage(root, '1.67.0');
+  writeFileSync(path.join(root, 'install.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+  symlinkSync('../../../../../tmp/PWNED', path.join(root, 'extension', 'evil-link'));
+  const tarball = path.join(dir, archiveName);
+  run('tar', ['-czf', tarball, '-C', dir, 'pickle-rick-claude']);
   return { dir, tarball };
 }
 
@@ -512,6 +527,26 @@ esac
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
       rmSync(fakeTar.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  test('exits 21 when a downloaded tarball has a safe payload plus a symlink member whose target escapes', () => {
+    // Regression: the name-only `tar -tzf` scan reads member NAMES, so a symlink whose name is
+    // safe but whose target escapes the payload root (../../../../../tmp/PWNED) sailed through as
+    // "no unsafe entry" — then check-update.ts extracts it and members written after the link land
+    // THROUGH it, escaping the install prefix. Uses a REAL tarball through the REAL tar (no fake-tar
+    // shim) so the `-tvzf` link-type scan is actually exercised.
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const symlinkFixture = makeSymlinkPayloadTarball('pickle-release.tar.gz');
+    const ghDir = makeGhFixture({ tarball: symlinkFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stdout || result.stderr);
+      assert.match(result.stderr, /symlink or hardlink member/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(symlinkFixture.dir, { recursive: true, force: true });
       rmSync(ghDir, { recursive: true, force: true });
     }
   });
