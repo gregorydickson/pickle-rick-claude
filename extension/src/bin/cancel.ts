@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawnSync } from 'child_process';
 import { printMinimalPanel, getDataRoot, withRetryLock, findSessionPathForCwd, safeErrorMessage } from '../services/pickle-utils.js';
-import { lookupCommandForPid } from '../services/git-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { LockError } from '../types/index.js';
 import { readRecoverableJsonObject } from '../services/recoverable-json.js';
@@ -11,24 +9,27 @@ import { logActivity } from '../services/activity-logger.js';
 
 const sm = new StateManager();
 
-const STALE_LOCK_WINDOW_MS = 5 * 60 * 1000;
-
 interface LockCleanupContext {
   sessionDir: string;
   workingDir: string;
-  stateMtimeMs: number;
 }
 
 /**
- * R-PIWG-4: clean up an orphaned `.git/index.lock` in the session's
- * working_dir when (a) it predates the session's last activity by less
- * than STALE_LOCK_WINDOW_MS (so it's plausibly ours, not external) and
- * (b) no live process holds it. Three outcomes:
- *   - External lock (mtime > stateMtime + window): preserved, no event.
- *   - Live-holder lock: preserved, emits `stale_index_lock_held_by_live_process`.
- *   - Cleanly removable lock: deleted, emits `stale_index_lock_cleaned`.
+ * R-PIWG-4: report a leftover `.git/index.lock` in the session's working_dir so the
+ * operator can clear it before their next git command.
+ *
+ * Deliberately non-destructive. git owns `index.lock` under a protocol it does not
+ * share: it records no holder pid, honors no steal, and releases the lock by
+ * close()-then-rename(). A liveness probe can therefore only ever answer about the
+ * past — inside git's close→rename window the fd is already closed, so the lock reads
+ * as unheld while a live git still owns it. Unlinking it there lets a second git
+ * acquire the same lock, putting two writers in the index critical section: the exact
+ * corruption the lock exists to prevent. No conditional-unlink syscall exists to close
+ * that gap, so the only action that cannot be wrong is to leave the file alone and say
+ * so. The one caller is the operator-run `/eat-pickle`, and git prints the same remedy
+ * on the next command.
  */
-export function cleanupStaleIndexLock(ctx: LockCleanupContext): void {
+function reportStaleIndexLock(ctx: LockCleanupContext): void {
   const lockPath = path.join(ctx.workingDir, '.git', 'index.lock');
   let lockStat: fs.Stats;
   try {
@@ -41,44 +42,14 @@ export function cleanupStaleIndexLock(ctx: LockCleanupContext): void {
   const lockMtimeMs = lockStat.mtimeMs;
   const ageSeconds = Math.max(0, Math.round((Date.now() - lockMtimeMs) / 1000));
 
-  if (lockMtimeMs > ctx.stateMtimeMs + STALE_LOCK_WINDOW_MS) {
-    // Lock is newer than the session's activity window — external, not ours.
-    return;
-  }
-
-  // Probe for a live process holding the lock.
-  const holder = probeLockHolder(lockPath);
-  if (holder !== null) {
-    process.stderr.write(
-      `[pickle] WARNING: ${lockPath} is held by PID ${holder.pid} (${holder.command}). Refusing to clean up. Wait for that process to finish or kill it manually.\n`,
-    );
-    try {
-      logActivity({
-        event: 'stale_index_lock_held_by_live_process',
-        source: 'pickle',
-        session: path.basename(ctx.sessionDir),
-        gate_payload: {
-          path: lockPath,
-          mtime: new Date(lockMtimeMs).toISOString(),
-          age_seconds: ageSeconds,
-          holder_pid: holder.pid,
-          holder_command: holder.command,
-        },
-      });
-    } catch { /* best-effort */ }
-    return;
-  }
-
-  try {
-    fs.unlinkSync(lockPath);
-  } catch (err) {
-    process.stderr.write(`[pickle] WARNING: could not remove ${lockPath}: ${safeErrorMessage(err)}\n`);
-    return;
-  }
+  process.stderr.write(
+    `[pickle] WARNING: ${lockPath} still exists — git will refuse to run in ${ctx.workingDir} until it is gone. ` +
+      `Confirm no git process is running, then remove it: rm -f ${lockPath}\n`,
+  );
 
   try {
     logActivity({
-      event: 'stale_index_lock_cleaned',
+      event: 'stale_index_lock_detected',
       source: 'pickle',
       session: path.basename(ctx.sessionDir),
       gate_payload: {
@@ -88,57 +59,6 @@ export function cleanupStaleIndexLock(ctx: LockCleanupContext): void {
       },
     });
   } catch { /* best-effort */ }
-}
-
-/**
- * Probe whether a live process holds the given path. Returns null only
- * when a probe tool confidently reports no holder (lsof or pgrep exit
- * with a clear "unheld" status). When neither tool answers confidently
- * (both unavailable, both errored), returns a synthetic
- * `{ pid: -1, command: 'probe-unavailable' }` so the caller refuses to
- * remove the lock conservatively.
- *
- * Strategy:
- *   1. `lsof -t <path>` — POSIX standard, returns PID list on stdout.
- *   2. Fall back to `pgrep -f 'git -C <repo>'` — looser match.
- *   3. If neither tool answers confidently, return a synthetic holder
- *      so the caller refuses to remove the lock (conservative).
- */
-function probeLockHolder(lockPath: string): { pid: number; command: string } | null {
-  // Try lsof first.
-  const lsof = spawnSync('lsof', ['-t', lockPath], { encoding: 'utf-8', timeout: 5_000 });
-  if (lsof.status === 0 && typeof lsof.stdout === 'string') {
-    const pids = lsof.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
-    if (pids.length > 0) {
-      const pidNum = Number.parseInt(pids[0], 10);
-      if (Number.isFinite(pidNum)) {
-        return { pid: pidNum, command: lookupCommandForPid(pidNum) ?? 'unknown' };
-      }
-    }
-    // lsof exited 0 with empty stdout → no holder
-    return null;
-  }
-  if (lsof.status === 1) {
-    // lsof exits 1 when no process holds the file — unheld
-    return null;
-  }
-
-  // lsof unavailable or errored — fall back to pgrep.
-  const repoRoot = path.dirname(path.dirname(lockPath)); // parent of .git/
-  const pgrep = spawnSync('pgrep', ['-f', `git -C ${repoRoot}`], { encoding: 'utf-8', timeout: 5_000 });
-  if (pgrep.status === 0 && typeof pgrep.stdout === 'string') {
-    const pid = Number.parseInt(pgrep.stdout.split('\n')[0]?.trim() ?? '', 10);
-    if (Number.isFinite(pid)) {
-      return { pid, command: lookupCommandForPid(pid) ?? 'unknown' };
-    }
-  }
-  if (pgrep.status === 1) {
-    // pgrep exits 1 when no matches — unheld
-    return null;
-  }
-
-  // Neither tool answered confidently. Refuse cleanup conservatively.
-  return { pid: -1, command: 'probe-unavailable' };
 }
 
 export function cancelSession(cwd: string) {
@@ -157,7 +77,6 @@ export function cancelSession(cwd: string) {
     return;
   }
 
-  let stateMtimeMs = Date.now();
   let workingDir: string;
   try {
     const stateSnapshot = sm.read(statePath);
@@ -168,9 +87,6 @@ export function cancelSession(cwd: string) {
     workingDir = typeof stateSnapshot.working_dir === 'string' && stateSnapshot.working_dir
       ? stateSnapshot.working_dir
       : cwd;
-    try {
-      stateMtimeMs = fs.statSync(statePath).mtimeMs;
-    } catch { /* keep Date.now() fallback */ }
   } catch {
     console.log('State file is unreadable.');
     return;
@@ -219,10 +135,9 @@ export function cancelSession(cwd: string) {
   }
 
   if (cancelled) {
-    // R-PIWG-4: best-effort cleanup of orphaned .git/index.lock if one exists
-    // in the session's working_dir and the lock is plausibly ours.
+    // R-PIWG-4: surface an orphaned .git/index.lock left in the session's working_dir.
     try {
-      cleanupStaleIndexLock({ sessionDir: sessionPath, workingDir, stateMtimeMs });
+      reportStaleIndexLock({ sessionDir: sessionPath, workingDir });
     } catch { /* best-effort */ }
 
     printMinimalPanel(

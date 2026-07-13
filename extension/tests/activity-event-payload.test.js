@@ -615,31 +615,15 @@ const EVENT_CASES = [
     drop: 'session',
   },
   {
-    type: 'stale_index_lock_cleaned',
+    type: 'stale_index_lock_detected',
     valid: {
-      event: 'stale_index_lock_cleaned',
+      event: 'stale_index_lock_detected',
       ts: TS,
       session: 'session-1',
       gate_payload: {
         path: '/tmp/repo/.git/index.lock',
         mtime: TS,
         age_seconds: 12,
-      },
-    },
-    drop: 'session',
-  },
-  {
-    type: 'stale_index_lock_held_by_live_process',
-    valid: {
-      event: 'stale_index_lock_held_by_live_process',
-      ts: TS,
-      session: 'session-1',
-      gate_payload: {
-        path: '/tmp/repo/.git/index.lock',
-        mtime: TS,
-        age_seconds: 12,
-        holder_pid: 4242,
-        holder_command: 'git',
       },
     },
     drop: 'session',
@@ -1336,8 +1320,7 @@ test('activity-event-payload: schema defines all registered event type definitio
     'setup_resume_ticket_status_preserved',
     'setup_resume_overrode_ticket_status',
     'head_mismatch_detected',
-    'stale_index_lock_cleaned',
-    'stale_index_lock_held_by_live_process',
+    'stale_index_lock_detected',
     'setup_resume_chdir_applied',
     'ticket_runnability_resolved',
     'codex_manager_self_bootstrap_attempted',
