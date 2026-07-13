@@ -1236,7 +1236,11 @@ test('withRetryLock: writes PID into lock file', () => {
         const lockPath = path.join(dir, 'test.lock');
         let pidInLock;
         withRetryLock(lockPath, () => {
-            pidInLock = fs.readFileSync(lockPath, 'utf-8').trim();
+            // The lock carries a nonce header line ahead of the caller's payload (R-LSPC-2:
+            // the bytes are the identity, since an inode number can be recycled). The pid is
+            // the payload — the last line.
+            const raw = fs.readFileSync(lockPath, 'utf-8');
+            pidInLock = raw.slice(raw.indexOf('\n') + 1).trim();
         });
         assert.equal(pidInLock, String(process.pid));
     } finally {

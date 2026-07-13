@@ -81,11 +81,15 @@ test('stealLockFile refuses to evict a live holder that replaced the inspected l
   assert.ok(snapshot, 'contender must be able to inspect the dead holder lock');
 
   // Before the contender acts on that verdict, a RIVAL steals the dead lock and acquires its own.
-  // This is the exact interleave: same path, different file.
+  // This is the exact interleave: same path, different acquisition.
+  //
+  // Do NOT assert the rival landed on a different inode. ext4 recycles inode numbers immediately,
+  // so on Linux the rival routinely gets the SAME number the dead holder had — which is precisely
+  // why identity cannot be the inode number. Asserting otherwise only asserts which filesystem we
+  // are on; the behaviour below must hold either way.
   fs.unlinkSync(lock);
   fs.writeFileSync(lock, String(process.pid)); // rival is alive — it is us
   const liveIno = fs.statSync(lock).ino;
-  assert.notEqual(liveIno, snapshot.ino, 'rival must hold a genuinely different file');
 
   // The contender now performs the steal it decided on. It must NOT take the rival's live lock.
   const stole = stealLockFile(lock, snapshot);
@@ -97,6 +101,39 @@ test('stealLockFile refuses to evict a live holder that replaced the inspected l
 
   // No tombstone litter left behind.
   assert.deepEqual(fs.readdirSync(dir), ['map.lock']);
+});
+
+// R-LSPC-2. The ONLY reason the case above went green on macOS is that APFS does not recycle inode
+// numbers eagerly; ext4 does, and hands the rival's brand-new lock the very number the dead holder's
+// had. An ino-only check then reads "still the file I judged" and evicts a LIVE holder. Reproduce
+// that deterministically on ANY filesystem by handing stealLockFile the verdict it formed, wearing
+// the live file's inode — byte-for-byte what a recycled inode looks like from the code's side.
+// This test FAILS against an inode-only comparison, on every platform. That is the point: the bug
+// hid for three releases behind a filesystem that happened to be forgiving.
+test('stealLockFile refuses a live holder that landed on the RECYCLED inode of the lock it judged', async () => {
+  const dir = tmpDir();
+  const lock = path.join(dir, 'map.lock');
+
+  fs.writeFileSync(lock, String(await deadPid()));
+  const judged = inspectLockFile(lock);
+  assert.ok(judged, 'contender must be able to inspect the dead holder lock');
+
+  // The rival replaces it, and the filesystem recycles the inode number straight back.
+  fs.unlinkSync(lock);
+  fs.writeFileSync(lock, String(process.pid)); // rival is alive — it is us
+  const live = inspectLockFile(lock);
+  assert.ok(live, 'the rival lock must be inspectable');
+
+  const recycled = { ...judged, ino: live.ino };
+  assert.equal(recycled.ino, live.ino, 'fixture: the judged snapshot now wears the LIVE inode');
+  assert.notEqual(recycled.raw, live.raw, 'fixture: but the bytes are still the dead holder’s');
+
+  const stole = stealLockFile(lock, recycled);
+
+  assert.equal(stole, false, 'an inode-number match is NOT proof of identity — the steal must refuse');
+  assert.ok(fs.existsSync(lock), 'the live holder’s lock must survive an inode-number collision');
+  assert.equal(fs.readFileSync(lock, 'utf-8'), String(process.pid), 'live holder’s payload intact');
+  assert.deepEqual(fs.readdirSync(dir), ['map.lock'], 'no tombstone litter');
 });
 
 test('stealLockFile evicts the lock when it is still the inode that was inspected', async () => {
@@ -142,9 +179,13 @@ test('stealLockFile verifies the inode before it removes the lock — never the 
       'that window and the mismatch cleanup then destroys its brand-new lock',
   );
 
-  const verdict = body.indexOf('stolenIno !== snapshot.ino');
+  // Identity is the full bytes + inode (sameLock), NOT the inode number: ext4 recycles inode
+  // numbers, so an ino-only verdict evicts a live holder that landed on the recycled number.
+  const verdict = body.indexOf('sameLock(stolen, snapshot)');
   const removal = body.indexOf('fs.unlinkSync(lockPath)');
-  assert.ok(verdict > 0, 'the inode identity check must be present');
+  assert.ok(verdict > 0, 'the full-identity check must be present (inode number alone is not identity)');
+  assert.equal(body.includes('stolenIno !== snapshot.ino'), false,
+    'the ino-only verdict must be gone — it evicts a live holder on a recycled inode');
   assert.ok(removal > 0, 'the removal of the judged lock must be present');
   assert.ok(verdict < removal, 'the identity check must run BEFORE the lock is removed');
 });
@@ -461,7 +502,11 @@ test('acquireLockFile publishes the lock and its payload in one step — never t
     assert.equal(seen.sawIncomplete, false,
       'the lock must never be observable without its payload — that state is an unreclaimable strand');
 
-    assert.equal(fs.readFileSync(lock, 'utf-8'), payload, 'the published payload must be intact');
+    // Read the bytes directly: this payload is deliberately far larger than inspectLockFile's
+    // read cap (the size is what widens the publish window this test watches).
+    const rawOnDisk = fs.readFileSync(lock, 'utf-8');
+    assert.ok(rawOnDisk.startsWith('#pk:'), 'the acquisition must carry a nonce — the bytes ARE the identity');
+    assert.equal(rawOnDisk.slice(rawOnDisk.indexOf('\n') + 1), payload, 'the published payload must be intact');
     assert.deepEqual(fs.readdirSync(dir).sort(), ['gate.lock', 'observer-ready'],
       'the staging file used to publish atomically must not be left behind');
   } finally {

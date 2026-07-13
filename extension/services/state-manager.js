@@ -147,6 +147,25 @@ export function isProcessAlive(pid) {
 }
 /** Lock payloads are a bare pid or a small `{pid,ts}` JSON object; 256B covers both with room. */
 const LOCK_PAYLOAD_MAX_BYTES = 256;
+/** One lock file's identity, age, and holder — all read from a single file descriptor. */
+/**
+ * An inode NUMBER is not a durable identity for a path that can be deleted and recreated: ext4
+ * recycles inode numbers immediately, so a rival's brand-new lock can land on the very number the
+ * previous holder's lock had. An ino-only check then reads "still the file I judged" and evicts a
+ * LIVE holder — the exact catastrophe this module exists to prevent. (APFS does not recycle that
+ * eagerly, which is why this only ever went red on Linux.)
+ *
+ * So every lock carries a nonce, minted per acquisition by `acquireLockFile` and written as a
+ * header line ahead of the caller's payload. Identity is the FULL raw bytes plus the inode; the
+ * nonce makes those bytes unique per acquisition even when the same pid re-takes the same path.
+ * `payload` stays exactly what the caller wrote, so each caller's own decoder (bare pid,
+ * `{pid,ts}` JSON, …) is untouched.
+ */
+const LOCK_NONCE_PREFIX = '#pk:';
+/** True when two views of a path are the same file AND the same acquisition. */
+function sameLock(a, b) {
+    return a.ino === b.ino && a.raw === b.raw;
+}
 /**
  * Reads a lock's identity, age, and payload through ONE fd, so a staleness verdict can never be
  * assembled from two different inodes (a path can be re-pointed between two separate reads).
@@ -163,7 +182,20 @@ export function inspectLockFile(lockPath) {
         const st = fs.fstatSync(fd);
         const buf = Buffer.alloc(LOCK_PAYLOAD_MAX_BYTES);
         const read = fs.readSync(fd, buf, 0, LOCK_PAYLOAD_MAX_BYTES, 0);
-        return { ino: st.ino, mtimeMs: st.mtimeMs, payload: buf.subarray(0, read).toString('utf-8') };
+        const raw = buf.subarray(0, read).toString('utf-8');
+        // Split our nonce header off the caller's payload. A lock without the header (written by an
+        // older runtime, or by hand) still inspects fine — it just has no nonce, and identity falls
+        // back to raw-bytes equality, which is still strictly stronger than the inode alone.
+        let nonce = null;
+        let payload = raw;
+        if (raw.startsWith(LOCK_NONCE_PREFIX)) {
+            const nl = raw.indexOf('\n');
+            if (nl !== -1) {
+                nonce = raw.slice(LOCK_NONCE_PREFIX.length, nl);
+                payload = raw.slice(nl + 1);
+            }
+        }
+        return { ino: st.ino, mtimeMs: st.mtimeMs, payload, nonce, raw };
     }
     catch {
         return null;
@@ -190,8 +222,10 @@ function stagingSuffix() {
     return `${process.pid}.${threadId}.${++attemptSeq}`;
 }
 /**
- * Takes the lock and returns the inode the caller now owns, or null if someone already holds it.
- * The inode comes from the same fd that wrote the file, so ownership is a fact, not an inference.
+ * Takes the lock and returns the handle the caller now owns, or null if someone already holds it.
+ * The inode comes from the same fd that wrote the file, so ownership is a fact, not an inference —
+ * but the inode NUMBER alone is not identity (see LOCK_NONCE_PREFIX), so the handle carries the
+ * raw bytes too, and those bytes are made unique per acquisition by the nonce header.
  *
  * The payload is written to a private staging file and the lock is published by linking it into
  * place — one atomic step, so the lock can never be seen without the pid that holds it. Creating
@@ -204,18 +238,19 @@ function stagingSuffix() {
  */
 export function acquireLockFile(lockPath, payload) {
     const staging = `${lockPath}.acq.${stagingSuffix()}`;
+    const raw = `${LOCK_NONCE_PREFIX}${stagingSuffix()}\n${payload}`;
     try {
         const fd = fs.openSync(staging, 'w');
         let ino;
         try {
-            fs.writeSync(fd, payload);
+            fs.writeSync(fd, raw);
             ino = fs.fstatSync(fd).ino;
         }
         finally {
             fs.closeSync(fd);
         }
         fs.linkSync(staging, lockPath); // publishes the payload with the lock, or EEXIST if held
-        return ino;
+        return { ino, raw };
     }
     catch (err) {
         if (err.code === 'EEXIST')
@@ -229,11 +264,14 @@ export function acquireLockFile(lockPath, payload) {
         catch { /* never created, or already unlinked */ }
     }
 }
-/** Removes a lock only while it is still the inode the caller acquired. */
-export function releaseLockFile(lockPath, ino) {
+/** Removes a lock only while it is still the exact acquisition the caller took. */
+export function releaseLockFile(lockPath, handle) {
     try {
-        if (fs.statSync(lockPath).ino !== ino)
-            return; // ours was already stolen — leave the new holder's
+        const now = inspectLockFile(lockPath);
+        // Not ours any more — ours was stolen and someone else acquired. Leave the new holder's lock.
+        // Comparing the inode alone would delete it: ext4 hands the recycled number straight back.
+        if (!now || !sameLock(now, handle))
+            return;
         fs.unlinkSync(lockPath);
     }
     catch { /* already gone */ }
@@ -268,14 +306,14 @@ export function stealLockFile(lockPath, snapshot) {
     catch {
         return false; // already gone
     }
-    let stolenIno = null;
+    // Judge the SECOND LINK, never the path — and judge it by full identity, not by inode number.
+    // A rival that unlinked the dead lock and acquired its own can land on the very same inode
+    // number (ext4 recycles immediately), so an ino-only verdict reads "still the file I judged"
+    // and evicts a LIVE holder. The bytes cannot be recycled: they carry a per-acquisition nonce.
+    const stolen = inspectLockFile(tombstone);
     try {
-        stolenIno = fs.statSync(tombstone).ino;
-    }
-    catch { /* unreadable — treat as mismatch */ }
-    try {
-        if (stolenIno !== snapshot.ino)
-            return false; // not the file we judged — and we never touched it
+        if (!stolen || !sameLock(stolen, snapshot))
+            return false; // not what we judged — never touched
         fs.unlinkSync(lockPath);
         return true;
     }
@@ -305,23 +343,23 @@ export function stealLockFile(lockPath, snapshot) {
  */
 export function withStealRight(lockPath, steal) {
     const rightsPath = `${lockPath}.steal`;
-    let ino = acquireLockFile(rightsPath, String(process.pid));
-    if (ino === null) {
+    let acquired = acquireLockFile(rightsPath, String(process.pid));
+    if (acquired === null) {
         // A stealer that died mid-recovery would wedge this path forever. Reclaiming is safe only from a
         // provably dead holder: a live stealer sits in a microsecond-scale critical section, never a dead pid.
         const held = inspectLockFile(rightsPath);
         if (!held || !isDeadPidPayload(held.payload))
             return false; // someone is mid-steal — back off
         stealLockFile(rightsPath, held);
-        ino = acquireLockFile(rightsPath, String(process.pid));
-        if (ino === null)
+        acquired = acquireLockFile(rightsPath, String(process.pid));
+        if (acquired === null)
             return false;
     }
     try {
         return steal();
     }
     finally {
-        releaseLockFile(rightsPath, ino);
+        releaseLockFile(rightsPath, acquired);
     }
 }
 function readProcessStartTimeMs(pid) {
@@ -728,7 +766,7 @@ function isRecoverableStateSnapshotCandidate(value, maxSupportedSchemaVersion) {
 export class StateManager {
     opts;
     /** Lock path -> the inode this manager acquired, so release can prove the file is still ours. */
-    lockInodes = new Map();
+    lockHandles = new Map();
     constructor(opts = {}) {
         this.opts = { ...STATE_MANAGER_DEFAULTS, ...opts };
     }
@@ -980,9 +1018,9 @@ export class StateManager {
         let steals = 0;
         const maxSteals = 3; // Cap stale-steal retries to prevent unbounded loops
         for (let attempt = 0; attempt <= this.opts.maxLockRetries; attempt++) {
-            const ino = acquireLockFile(lp, JSON.stringify({ pid: process.pid, ts: Date.now() }));
-            if (ino !== null) {
-                this.lockInodes.set(lp, ino); // release must prove it still owns this exact file
+            const held = acquireLockFile(lp, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+            if (held !== null) {
+                this.lockHandles.set(lp, held); // release must prove it still owns this exact acquisition
                 return;
             }
             // Check if existing lock is stale (bounded steal attempts)
@@ -1002,11 +1040,11 @@ export class StateManager {
     }
     releaseLock(statePath) {
         const lp = lockPath(statePath);
-        const ino = this.lockInodes.get(lp);
-        if (ino === undefined)
+        const held = this.lockHandles.get(lp);
+        if (held === undefined)
             return; // never acquired it
-        this.lockInodes.delete(lp);
-        releaseLockFile(lp, ino);
+        this.lockHandles.delete(lp);
+        releaseLockFile(lp, held);
     }
     isStaleLockSnapshot(snapshot) {
         try {
@@ -1475,11 +1513,11 @@ export async function withLock(key, opts, fn) {
     const retry_interval_ms = opts.retry_interval_ms ?? 100;
     const lp = gateLockPath(key);
     const start = Date.now();
-    let ino;
+    let held;
     for (;;) {
         // The payload is the bare holder pid — the one encoding `isDeadPidPayload` reads.
-        ino = acquireLockFile(lp, String(process.pid));
-        if (ino !== null) {
+        held = acquireLockFile(lp, String(process.pid));
+        if (held !== null) {
             opts.onAcquire?.(Date.now() - start);
             break;
         }
@@ -1500,7 +1538,7 @@ export async function withLock(key, opts, fn) {
         return await fn();
     }
     finally {
-        // Inode-bound: if ours was stolen, the file here is a successor's lock — never unlink it.
-        releaseLockFile(lp, ino);
+        // Identity-bound: if ours was stolen, the file here is a successor's lock — never unlink it.
+        releaseLockFile(lp, held);
     }
 }
