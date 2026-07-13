@@ -24,6 +24,10 @@ function makeDiff(repoRoot, changedFiles) {
   };
 }
 
+function slug(text) {
+  return text.replace(/[^a-z0-9]+/gi, '_').toLowerCase();
+}
+
 // R-PCPS: the PATTERN_SHAPE grep arm was subtracted. These fixtures reproduce the three
 // corpus shapes that made it emit 41/41 false High findings on a clean tree. Each fixture's
 // target file FULLY honors its trap door, so a conformance-correct analyzer must stay silent.
@@ -162,6 +166,71 @@ describe('pattern-conformance-audit: SQL ON CONFLICT clobber', () => {
 
     const sqlFindings = result.findings.filter((f) => f.id.startsWith('sql-conflict-clobber:'));
     assert.ok(sqlFindings.length >= 1, 'kind:test .sql file must still be checked for SQL clobber');
+  });
+
+  // The pre-fix regex anchored `\w+\s*=` directly to `DO UPDATE SET`, so `\w+` could only ever
+  // bind the FIRST column. A correct EXCLUDED.<col> in position 1 made the whole file read clean
+  // and every clobber in columns 2..N was invisible — i.e. the canonical upsert (propagate most
+  // columns from EXCLUDED, clobber one) was exactly the shape the analyzer could not see.
+  const multiColumnClobbers = [
+    ['clobber in column 2 after a correct column 1', "ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, email = 'x@y.z';\n", 'email'],
+    ['NULL clobber in column 2', 'ON CONFLICT (id) DO UPDATE SET a = EXCLUDED.a, b = NULL;\n', 'b'],
+    ['clobber in column 3 after two correct columns', 'ON CONFLICT (id) DO UPDATE SET a = EXCLUDED.a, b = EXCLUDED.b, c = 0;\n', 'c'],
+    ['clobber in a multiline SET list', 'ON CONFLICT (id) DO UPDATE SET\n  a = EXCLUDED.a,\n  b = 0;\n', 'b'],
+  ];
+
+  for (const [label, sql, expectedColumn] of multiColumnClobbers) {
+    test(`flags ${label}`, () => {
+      const sqlFile = `db/migrations/multi_${expectedColumn}_${slug(label)}.sql`;
+      fs.mkdirSync(path.join(tmpDir, 'db', 'migrations'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, sqlFile), `INSERT INTO t (id) VALUES (1)\n${sql}`);
+
+      const diff = makeDiff(tmpDir, [
+        { path: sqlFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 4 }], blame: [] },
+      ]);
+      const sqlFindings = auditPatternConformance(diff)
+        .findings.filter((f) => f.id.startsWith('sql-conflict-clobber:'));
+
+      assert.strictEqual(sqlFindings.length, 1, `Expected a clobber finding for ${label}`);
+      assert.match(sqlFindings[0].message, new RegExp(`\\b${expectedColumn}\\b`), 'finding must name the clobbered column');
+    });
+  }
+
+  test('every column correctly assigned from EXCLUDED is clean, whatever the list length', () => {
+    const sqlFile = 'db/migrations/005_all_excluded.sql';
+    fs.mkdirSync(path.join(tmpDir, 'db', 'migrations'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, sqlFile),
+      'INSERT INTO t (id) VALUES (1)\nON CONFLICT (id) DO UPDATE SET a = EXCLUDED.a, b = EXCLUDED.b, c = EXCLUDED.c;\n',
+    );
+
+    const diff = makeDiff(tmpDir, [
+      { path: sqlFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 3 }], blame: [] },
+    ]);
+    const sqlFindings = auditPatternConformance(diff)
+      .findings.filter((f) => f.id.startsWith('sql-conflict-clobber:'));
+
+    assert.strictEqual(sqlFindings.length, 0, 'a fully-EXCLUDED SET list must not be flagged');
+  });
+
+  test('a function call argument comma does not split an assignment', () => {
+    const sqlFile = 'db/migrations/006_coalesce.sql';
+    fs.mkdirSync(path.join(tmpDir, 'db', 'migrations'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, sqlFile),
+      'INSERT INTO t (id) VALUES (1)\nON CONFLICT (id) DO UPDATE SET a = COALESCE(EXCLUDED.a, t.a), b = EXCLUDED.b;\n',
+    );
+
+    const diff = makeDiff(tmpDir, [
+      { path: sqlFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 3 }], blame: [] },
+    ]);
+    const sqlFindings = auditPatternConformance(diff)
+      .findings.filter((f) => f.id.startsWith('sql-conflict-clobber:'));
+
+    // COALESCE(...) is not an EXCLUDED.<col> passthrough, so `a` is a genuine clobber — but it must
+    // be reported as ONE assignment, never split at the argument comma into a bogus second column.
+    assert.strictEqual(sqlFindings.length, 1);
+    assert.doesNotMatch(sqlFindings[0].message, /\bt\b/, 'the COALESCE argument must not be read as its own column');
   });
 
   test('deleted .sql file is not checked', () => {
