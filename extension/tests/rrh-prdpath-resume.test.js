@@ -295,12 +295,15 @@ test('D5: paused → refine → resume composition reaches PHASE 2 CITADEL', asy
   }
 });
 
-// ── R-PSCG AC-1: start_commit unset, prd_path set, repoRoot is a git repo →
-// citadel preflight HEALS start_commit (merge-base of default base and HEAD)
-// instead of hard-failing, and the healed sha feeds diffRange.
-test('R-PSCG AC-1: citadel self-heals missing start_commit from the git repoRoot', async () => {
-  const sessionDir = tmpRoot('pickle-pscg-ac1-session-');
-  const repoDir = tmpRoot('pickle-pscg-ac1-repo-');
+// ── R-SCPIN AC-1: start_commit unset, pinned_sha set, prd_path set, repoRoot
+// is a git repo with commits past a fork point → citadel preflight ADOPTS
+// pinned_sha (the co-stamped session-start baseline), NEVER the merge-base
+// guess — the discriminating fixture from R-SCPIN §2 AC-SCPIN-1: pinned_sha
+// !== merge-base(main, HEAD) here, so a correct heal and the old (defective)
+// merge-base heal produce OBSERVABLY DIFFERENT values.
+test('R-SCPIN AC-1: citadel self-heals missing start_commit by ADOPTING pinned_sha, not merge-base', async () => {
+  const sessionDir = tmpRoot('pickle-scpin-ac1-session-');
+  const repoDir = tmpRoot('pickle-scpin-ac1-repo-');
   try {
     initRepo(repoDir);
     const forkPoint = gitSha(repoDir, 'HEAD');
@@ -313,6 +316,7 @@ test('R-PSCG AC-1: citadel self-heals missing start_commit from the git repoRoot
     writeCitadelState(path.join(sessionDir, 'state.json'), {
       prd_path: path.join(sessionDir, 'prd_refined.md'),
       start_commit: undefined,
+      pinned_sha: head,
     });
 
     const runtime = makeRuntime(sessionDir);
@@ -322,12 +326,13 @@ test('R-PSCG AC-1: citadel self-heals missing start_commit from the git repoRoot
 
     assert.equal(exitCode, 0, 'missing start_commit must self-heal, not hard-fail the phase');
     const persisted = readState(sessionDir);
-    assert.equal(persisted.start_commit, forkPoint, 'healed start_commit is merge-base(main, HEAD)');
+    assert.equal(persisted.start_commit, head, 'healed start_commit adopts pinned_sha (the feature-branch tip)');
+    assert.notEqual(persisted.start_commit, forkPoint, 'healed start_commit must NOT fall back to merge-base(main, HEAD)');
     assert.equal(captured.audits.length > 0, true, 'citadel audit must have run');
     assert.equal(
       captured.audits[0].diffRange,
-      `${forkPoint}..HEAD`,
-      'the HEALED sha (not the stale pre-heal snapshot) feeds diffRange',
+      `${head}..HEAD`,
+      'the HEALED sha (not the stale pre-heal snapshot, not a merge-base guess) feeds diffRange',
     );
   } finally {
     __setCitadelRemediationDepsForTests(null);
@@ -359,18 +364,22 @@ test('R-PSCG honesty: citadel fails honestly when start_commit cannot be healed 
   }
 });
 
-// ── R-PSCG symmetric double-heal: BOTH fields unset, PRD file + git repo present →
-// both heal (the exact inversion of the old `!prdPath && state.start_commit` cross-gate).
-test('R-PSCG double-heal: citadel heals BOTH missing prd_path and missing start_commit', async () => {
-  const sessionDir = tmpRoot('pickle-pscg-double-session-');
-  const repoDir = tmpRoot('pickle-pscg-double-repo-');
+// ── R-SCPIN symmetric double-heal: BOTH fields unset except pinned_sha, PRD
+// file + git repo present → both heal (the exact inversion of the old
+// `!prdPath && state.start_commit` cross-gate); start_commit heals by
+// ADOPTING pinned_sha, not by recomputing a merge-base guess.
+test('R-SCPIN double-heal: citadel heals BOTH missing prd_path and missing start_commit (adopts pinned_sha)', async () => {
+  const sessionDir = tmpRoot('pickle-scpin-double-session-');
+  const repoDir = tmpRoot('pickle-scpin-double-repo-');
   try {
     initRepo(repoDir);
     stubCleanCitadel();
     fs.writeFileSync(path.join(sessionDir, 'prd_refined.md'), '# refined prd\n');
+    const head = gitSha(repoDir, 'HEAD');
     writeCitadelState(path.join(sessionDir, 'state.json'), {
       prd_path: undefined,
       start_commit: undefined,
+      pinned_sha: head,
     });
 
     const runtime = makeRuntime(sessionDir);
@@ -383,7 +392,7 @@ test('R-PSCG double-heal: citadel heals BOTH missing prd_path and missing start_
     assert.ok(persisted.prd_path, 'prd_path adopted');
     assert.equal(path.basename(persisted.prd_path), 'prd_refined.md');
     assert.ok(persisted.start_commit, 'start_commit healed');
-    assert.equal(persisted.start_commit, gitSha(repoDir, 'HEAD'), 'single-branch repo heals to HEAD');
+    assert.equal(persisted.start_commit, head, 'start_commit heals by adopting pinned_sha (== HEAD here)');
   } finally {
     __setCitadelRemediationDepsForTests(null);
     fs.rmSync(sessionDir, { recursive: true, force: true });

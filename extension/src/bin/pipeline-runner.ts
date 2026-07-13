@@ -2635,16 +2635,17 @@ function resolveSessionPrdPath(sessionDir: string): string | undefined {
 }
 
 /**
- * D4 (B-RRH AC-D4) + R-PSCG (B-1SEAM WS-2): symmetric citadel preflight heal.
- * Each required field heals INDEPENDENTLY — the old `!prdPath && start_commit`
- * cross-gate is gone (a deliberate widening: a session missing BOTH fields can
- * now heal both). Missing `prd_path` adopts the session PRD; missing
- * `start_commit` computes a best-effort baseline via
- * {@link computeBaselineStartCommit} against the git repoRoot. Healed values
- * are persisted AND returned so the caller uses the fresh values, never a
- * stale pre-heal state snapshot. Unhealable fields stay undefined — the honest
- * fail in {@link executeCitadelPhase} still fires (no session PRD / non-git
- * repoRoot).
+ * D4 (B-RRH AC-D4) + R-SCPIN (supersedes R-PSCG/B-1SEAM WS-2): symmetric
+ * citadel preflight heal. Each required field heals INDEPENDENTLY — the old
+ * `!prdPath && start_commit` cross-gate is gone (a deliberate widening: a
+ * session missing BOTH fields can now heal both). Missing `prd_path` adopts
+ * the session PRD; missing `start_commit` ADOPTS `state.pinned_sha` (the
+ * co-stamped session-start baseline — R-SCPIN §0) rather than guessing a
+ * merge-base review-base value against the git repoRoot. Healed values are
+ * persisted AND returned so the caller uses the fresh values, never a stale
+ * pre-heal state snapshot. Unhealable fields stay undefined — the honest fail
+ * in {@link executeCitadelPhase} still fires (no session PRD / no pinned_sha
+ * to adopt).
  */
 function healPipelineRequiredFields(runtime: PipelineRuntime): { prdPath?: string; startCommit?: string } {
   const state = sm.read(runtime.statePath);
@@ -2658,13 +2659,11 @@ function healPipelineRequiredFields(runtime: PipelineRuntime): { prdPath?: strin
     }
   }
   let startCommit = state.start_commit;
-  if (!startCommit) {
-    const healed = computeBaselineStartCommit(runtime.repoRoot);
-    if (healed) {
-      sm.update(runtime.statePath, s => { s.start_commit = healed; });
-      startCommit = healed;
-      runtime.log(`citadel: self-healed missing state.start_commit — adopted ${healed}`);
-    }
+  if (!startCommit && state.pinned_sha) {
+    const adopted = state.pinned_sha;
+    sm.update(runtime.statePath, s => { s.start_commit = adopted; });
+    startCommit = adopted;
+    runtime.log(`citadel: self-healed missing state.start_commit — adopted pinned_sha ${adopted}`);
   }
   return { prdPath, startCommit };
 }
