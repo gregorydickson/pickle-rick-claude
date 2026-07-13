@@ -498,6 +498,37 @@ test('verify-recapture.does NOT clobber a good readable base with a future-schem
   }
 });
 
+test('verify-recapture.preserves an UNREADABLE orphan tmp alongside a readable base (delete authority needs proof of garbage)', () => {
+  const session = makeSession(null);
+  const dataRoot = makeDataRoot();
+  const sessionName = path.basename(session);
+  const statePath = path.join(session, 'state.json');
+  const orphanPath = `${statePath}.tmp.${DEAD_TMP_PID}`;
+  // Readable, valid base — so recovery takes the readable-base scanner, not the corrupt-base
+  // one. The corrupt-base sibling of this case is already covered above; this path was not.
+  writeFileSync(statePath, `${JSON.stringify(recoverableState(HISTORY_WINDOW_MISS, { iteration: 1 }), null, 2)}\n`);
+  // A dead-pid orphan carrying a NEWER write. We cannot read it (EACCES), so we cannot know
+  // that — which is exactly why it must survive: it may be the only copy, and an operator
+  // can only repair permissions on a file that still exists.
+  writeFileSync(orphanPath, `${JSON.stringify(recoverableState(HISTORY_WINDOW_HIT, { iteration: 99 }), null, 2)}\n`);
+  writeActivityEvents(dataRoot, [recaptureEvent(sessionName, { iteration: 7 })]);
+  try {
+    chmodSync(orphanPath, 0o000);
+    const result = runVerifier(session, dataRoot);
+    // Unreadable ⇒ un-promotable: the verdict must come from the base's MISS window.
+    assert.equal(result.runtimeArtifact.pass, false, 'an unreadable tmp must not be promoted over the base');
+    assert.equal(
+      existsSync(orphanPath),
+      true,
+      'unreadable orphan tmp must remain available for operator recovery, not be reaped as invalid',
+    );
+  } finally {
+    chmodSync(orphanPath, 0o644);
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
 test('verify-recapture.recovers orphan tmp state when state.json is missing entirely', () => {
   const session = makeSession(null);
   const dataRoot = makeDataRoot();
