@@ -1372,14 +1372,14 @@ function stealStaleLock(lockPath: string, staleLockTimeoutMs: number): void {
 }
 
 function tryRunWithExclusiveLock<T>(lockPath: string, fn: () => T): { acquired: true; value: T } | { acquired: false } {
-  const ino = acquireLockFile(lockPath, String(process.pid));
-  if (ino === null) return { acquired: false };
+  const held = acquireLockFile(lockPath, String(process.pid));
+  if (held === null) return { acquired: false };
 
   try {
     return { acquired: true, value: fn() };
   } finally {
-    // Release only our own inode: a blind unlink would drop a successor's lock if ours was stolen.
-    releaseLockFile(lockPath, ino);
+    // Release only our own acquisition: a blind unlink would drop a successor's lock if ours was stolen.
+    releaseLockFile(lockPath, held);
   }
 }
 

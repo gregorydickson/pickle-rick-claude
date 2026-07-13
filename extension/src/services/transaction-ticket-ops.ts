@@ -372,21 +372,21 @@ function reclaimDeadRestructureLock(lockFile: string): void {
 function acquireFileLock(lockFile: string): () => void {
   // Payload is the BARE holder pid — the one encoding `isDeadPidPayload` reads. The prior
   // `{pid,ts}` JSON parsed to NaN there, so any steal bolted onto it would silently never fire.
-  let ino = acquireLockFile(lockFile, String(process.pid));
-  if (ino === null) {
+  let acquired = acquireLockFile(lockFile, String(process.pid));
+  if (acquired === null) {
     reclaimDeadRestructureLock(lockFile);
-    ino = acquireLockFile(lockFile, String(process.pid));
+    acquired = acquireLockFile(lockFile, String(process.pid));
   }
-  if (ino === null) {
+  if (acquired === null) {
     const err = new Error(`EEXIST: restructure lock is held, open '${lockFile}'`) as NodeJS.ErrnoException;
     err.code = 'EEXIST';
     err.path = lockFile;
     throw err;
   }
 
-  // Release is inode-bound: a lock we no longer own (ours was stolen) is left for its new holder.
-  const heldIno = ino;
-  return () => { releaseLockFile(lockFile, heldIno); };
+  // Release is identity-bound: a lock we no longer own (ours was stolen) is left for its new holder.
+  const held = acquired;
+  return () => { releaseLockFile(lockFile, held); };
 }
 
 function appendApplyLedger(ledgerPath: string, entry: CourseCorrectionApplyLedgerEntry): void {

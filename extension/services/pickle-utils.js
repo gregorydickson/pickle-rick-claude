@@ -1171,15 +1171,15 @@ function stealStaleLock(lockPath, staleLockTimeoutMs) {
     });
 }
 function tryRunWithExclusiveLock(lockPath, fn) {
-    const ino = acquireLockFile(lockPath, String(process.pid));
-    if (ino === null)
+    const held = acquireLockFile(lockPath, String(process.pid));
+    if (held === null)
         return { acquired: false };
     try {
         return { acquired: true, value: fn() };
     }
     finally {
-        // Release only our own inode: a blind unlink would drop a successor's lock if ours was stolen.
-        releaseLockFile(lockPath, ino);
+        // Release only our own acquisition: a blind unlink would drop a successor's lock if ours was stolen.
+        releaseLockFile(lockPath, held);
     }
 }
 function sleepBeforeRetry(attempt, baseLockDelayMs, lockJitter) {
