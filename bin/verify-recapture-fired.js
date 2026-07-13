@@ -137,7 +137,14 @@ export function verifyRecaptureFired(sessionRoot) {
     };
   }
 
-  readRecoverableJsonObject(statePath);
+  // Recover a MISSING base from an orphan .tmp.<pid> snapshot only. When the base
+  // already exists (readable or corrupt-JSON), StateManager.read below promotes any
+  // newer tmp through its schema-candidacy guard (isRecoverableStateSnapshotCandidate).
+  // The generic promotion here is unguarded, so on an existing base it would renameSync
+  // a future-schema / core-field-missing tmp OVER a good state.json and destroy it.
+  if (!fs.existsSync(statePath)) {
+    readRecoverableJsonObject(statePath);
+  }
   if (!fs.existsSync(statePath)) {
     return {
       exitCode: 2,

@@ -380,6 +380,42 @@ test('verify-recapture.promotes an equal-mtime dead orphan tmp over a readable b
   }
 });
 
+test('verify-recapture.does NOT clobber a good readable base with a future-schema orphan tmp (state-candidacy guard)', () => {
+  const session = realpathSync(mkdtempSync(path.join(tmpdir(), 'verify-recapture-future-schema-')));
+  const statePath = path.join(session, 'state.json');
+  const orphanPath = `${statePath}.tmp.${DEAD_TMP_PID}`;
+  // Good, readable, current-schema base carrying the recapture event → PASS on its own.
+  writeFileSync(statePath, `${JSON.stringify(recoverableState([
+    {
+      ts: '2026-05-02T11:15:00.000Z',
+      event: 'baseline_recapture_attempted',
+      iteration: 7,
+    },
+  ]), null, 2)}\n`);
+  // Dead-pid orphan tmp whose schema_version is ahead of the runtime (a deploy-reversion
+  // residue). StateManager's guarded recovery rejects it; the unguarded generic promotion
+  // would renameSync it over the good base, destroying live session state.
+  writeFileSync(orphanPath, `${JSON.stringify({ ...recoverableState([]), schema_version: 6 }, null, 2)}\n`);
+  // Equal (coarse) mtime — the tie under which the generic helper promotes the tmp.
+  utimesSync(statePath, new Date(1_000), new Date(1_000));
+  utimesSync(orphanPath, new Date(1_000), new Date(1_000));
+  try {
+    const result = runVerifier(session);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.runtimeArtifact.pass, true, 'good base must be evaluated, not clobbered');
+    assert.equal(result.runtimeArtifact.failure_reason, null);
+    const preserved = JSON.parse(readFileSync(statePath, 'utf8'));
+    assert.notEqual(preserved.schema_version, 6, 'the future-schema tmp must NOT overwrite the good base');
+    assert.ok(
+      Array.isArray(preserved.activity) && preserved.activity.some((e) => e.event === 'baseline_recapture_attempted'),
+      'the good base and its recapture event must survive',
+    );
+    assert.equal(existsSync(orphanPath), false, 'future-schema orphan tmp must be rejected, not left behind');
+  } finally {
+    rmSync(session, { recursive: true, force: true });
+  }
+});
+
 test('verify-recapture.recovers orphan tmp state when state.json is missing entirely', () => {
   const session = realpathSync(mkdtempSync(path.join(tmpdir(), 'verify-recapture-missing-base-')));
   const statePath = path.join(session, 'state.json');
