@@ -8,7 +8,10 @@ import { ensureMonitorWindow } from '../services/pickle-utils.js';
 
 function makeStubTmuxEnv() {
   const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ensure-monitor-stub-')));
-  const sessionDir = path.join(tmpRoot, 'session');
+  // Launchers name the tmux session `<prefix>-<session-hash>` for the dir it manages, and
+  // ensureMonitorWindow refuses a session whose hash is not ours. The stub `#S` below
+  // advertises `pickle-stub`, so the session dir must be `stub`.
+  const sessionDir = path.join(tmpRoot, 'stub');
   const extensionRoot = path.join(tmpRoot, 'ext');
 
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -113,7 +116,7 @@ test('ensureMonitorWindow: stub tmux creates, recreates, stamps mode, and preser
 
     const calls = env.readCalls();
     assert.match(calls, /tmux kill-window -t pickle-stub:monitor/);
-    assert.match(calls, /bash .+tmux-monitor\.sh pickle-stub .+session council/);
+    assert.match(calls, /bash .+tmux-monitor\.sh pickle-stub .+stub council/);
     assert.match(calls, /tmux set-option -w -t pickle-stub:monitor @pickle_monitor_mode council/);
 
     const recreateTimeouts = env.captured.slice(beforeRecreate)
