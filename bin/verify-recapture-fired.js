@@ -2,8 +2,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { getActivityDir } from '../extension/services/activity-logger.js';
 import { readRecoverableJsonObject } from '../extension/services/recoverable-json.js';
-import { getDataRoot } from '../extension/services/pickle-utils.js';
+import { formatLocalDateKey, getDataRoot } from '../extension/services/pickle-utils.js';
 import { StateManager } from '../extension/services/state-manager.js';
 
 const DEFAULT_RUNTIME_ARTIFACT_PATH = path.join(getDataRoot(), 'bundle', 'ac-dr-02.runtime.json');
@@ -17,8 +18,10 @@ const sm = new StateManager();
 const ARTIFACT_TEMPLATE = {
   ac_id: 'AC-DR-02',
   checker: 'verify-recapture-fired',
-  checker_version: '2',
+  checker_version: '3',
 };
+
+const ACTIVITY_FILE_RE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 
 function isoMs(value) {
   if (typeof value !== 'string') return null;
@@ -54,9 +57,52 @@ function isInWindow(timestamp, windows) {
   return ts !== null && windows.some(({ start, end }) => ts >= start && ts < end);
 }
 
-function findMatchingEvent(activity, windows) {
+// `baseline_recapture_attempted` is emitted by microverse-runner through logActivity(),
+// which appends ONLY to getDataRoot()/activity/<local-day>.jsonl. state.json.activity is a
+// DIFFERENT sink (writeActivityEntry) that this event never reaches — read the one the
+// producer actually writes, or the AC can never pass.
+function listActivityFiles(activityDir) {
+  try {
+    return fs.readdirSync(activityDir).filter((name) => ACTIVITY_FILE_RE.test(name));
+  } catch {
+    return null;
+  }
+}
+
+// Activity files are keyed by LOCAL day, and local-day is monotonic in epoch ms, so a file
+// older than the window's opening day cannot hold an in-window event — bounding the scan
+// here can never drop a match, and keeps a year of retained activity off the read path.
+function readActivityEventsSince(activityDir, files, sinceMs) {
+  const sinceDayKey = Number.isFinite(sinceMs) ? formatLocalDateKey(new Date(sinceMs)) : null;
+  const events = [];
+  for (const file of files) {
+    if (sinceDayKey !== null && path.basename(file, '.jsonl') < sinceDayKey) continue;
+    let content;
+    try {
+      content = fs.readFileSync(path.join(activityDir, file), 'utf8');
+    } catch {
+      continue;
+    }
+    for (const rawLine of content.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) events.push(parsed);
+      } catch {
+        // A torn or malformed activity line is not evidence; skip it.
+      }
+    }
+  }
+  return events;
+}
+
+// The activity dir is shared by every session on the host, so an unscoped match would let a
+// sibling session's recapture satisfy THIS session's AC. Attribution is required, not optional.
+function findMatchingEvent(activity, windows, sessionName) {
   return activity.find((entry) => (
     entry?.event === 'baseline_recapture_attempted'
+    && entry?.session === sessionName
     && isInWindow(entry.ts ?? entry.timestamp, windows)
   )) ?? null;
 }
@@ -88,11 +134,11 @@ function remediationHintForFailure(failureReason) {
     case 'state-unreadable':
       return 'Repair the session state.json so StateManager.read can parse it before rerunning AC-DR-02.';
     case 'activity-missing':
-      return 'Ensure the session state persists activity as an array before rerunning AC-DR-02.';
+      return 'Ensure the pickle activity log directory (getDataRoot()/activity) exists and is readable before rerunning AC-DR-02.';
     case 'phase-window-missing':
       return 'Ensure anatomy-park phase transitions are appended to state.history before rerunning AC-DR-02.';
     case 'recapture-event-missing':
-      return 'Ensure anatomy-park records baseline_recapture_attempted inside its latest anatomy-park phase window.';
+      return 'Ensure anatomy-park logs baseline_recapture_attempted to activity/<day>.jsonl, stamped with this session, inside its latest anatomy-park phase window.';
     default:
       return null;
   }
@@ -115,6 +161,7 @@ function writeRuntimeArtifact(artifactPath, { pass, failureReason, evidence }) {
 export function verifyRecaptureFired(sessionRoot) {
   const statePath = sessionRoot ? path.join(sessionRoot, 'state.json') : null;
   const artifactPath = runtimeArtifactPath(sessionRoot);
+  const activityDir = getActivityDir();
   if (!statePath) {
     return {
       exitCode: 2,
@@ -122,7 +169,7 @@ export function verifyRecaptureFired(sessionRoot) {
       artifact: writeRuntimeArtifact(artifactPath, {
         pass: false,
         failureReason: 'state-missing',
-        evidence: { state_path: statePath, activity_count: null, anatomy_windows: [] },
+        evidence: { state_path: statePath, activity_dir: activityDir, activity_count: null, anatomy_windows: [] },
       }),
     };
   }
@@ -142,7 +189,7 @@ export function verifyRecaptureFired(sessionRoot) {
       artifact: writeRuntimeArtifact(artifactPath, {
         pass: false,
         failureReason: 'state-missing',
-        evidence: { state_path: statePath, activity_count: null, anatomy_windows: [] },
+        evidence: { state_path: statePath, activity_dir: activityDir, activity_count: null, anatomy_windows: [] },
       }),
     };
   }
@@ -160,6 +207,7 @@ export function verifyRecaptureFired(sessionRoot) {
         failureReason,
         evidence: {
           state_path: statePath,
+          activity_dir: activityDir,
           read_error: err instanceof Error ? err.message : String(err),
           activity_count: null,
           anatomy_windows: [],
@@ -167,11 +215,16 @@ export function verifyRecaptureFired(sessionRoot) {
       }),
     };
   }
-  const activity = state.activity;
+
+  const sessionName = path.basename(sessionRoot);
+  const activityFiles = listActivityFiles(activityDir);
   const latestWindow = latestAnatomyWindow(state.history);
   const windows = latestWindow ? [latestWindow] : [];
-  const matchingEvent = Array.isArray(activity) ? findMatchingEvent(activity, windows) : null;
-  const failureReason = !Array.isArray(activity)
+  const activity = activityFiles === null
+    ? null
+    : readActivityEventsSince(activityDir, activityFiles, latestWindow ? latestWindow.start : NaN);
+  const matchingEvent = activity ? findMatchingEvent(activity, windows, sessionName) : null;
+  const failureReason = activity === null
     ? 'activity-missing'
     : windows.length === 0
       ? 'phase-window-missing'
@@ -188,7 +241,9 @@ export function verifyRecaptureFired(sessionRoot) {
       failureReason,
       evidence: {
         state_path: statePath,
-        activity_count: Array.isArray(activity) ? activity.length : null,
+        activity_dir: activityDir,
+        session: sessionName,
+        activity_count: activity ? activity.length : null,
         anatomy_windows: artifactWindows(windows),
         matched_event: matchingEvent,
       },
