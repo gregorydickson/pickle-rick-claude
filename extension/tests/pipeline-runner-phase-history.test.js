@@ -10,6 +10,7 @@ import {
   __setSpawnRunnerForTests,
   main,
 } from '../bin/pipeline-runner.js';
+import { logActivity } from '../services/activity-logger.js';
 import { verifyRecaptureFired } from '../../bin/verify-recapture-fired.js';
 
 class ExitIntercept extends Error {
@@ -112,18 +113,27 @@ afterEach(() => {
 
 test('pipeline-runner persists phase history for anatomy windows used by verify-recapture-fired', async () => {
   const { repo, sessionDir } = makeSession();
+  // Sandbox the activity sink: the stub emits through the REAL logActivity (as microverse-runner
+  // does), and the verifier reads getDataRoot()/activity — so both must land in a tmp data root,
+  // never the operator's live one.
+  const dataRoot = tmpDir('pipeline-phase-history-data-');
+  const priorDataRoot = process.env.PICKLE_DATA_ROOT;
+  process.env.PICKLE_DATA_ROOT = dataRoot;
   const childSteps = [];
   __setSpawnRunnerForTests(async () => {
     const statePath = path.join(sessionDir, 'state.json');
     const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
     childSteps.push(state.step);
     if (state.step === 'anatomy-park') {
-      state.activity.push({
-        event: 'baseline_recapture_attempted',
-        iteration: 1,
+      // Emit exactly as the real producer does — logActivity, NOT state.activity. The window
+      // this test pins is only meaningful if the event reaches the sink the verifier reads.
+      logActivity({
         ts: new Date().toISOString(),
+        event: 'baseline_recapture_attempted',
+        source: 'pickle',
+        session: path.basename(sessionDir),
+        iteration: 1,
       });
-      fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
     }
     return 0;
   });
@@ -142,6 +152,9 @@ test('pipeline-runner persists phase history for anatomy windows used by verify-
     assert.equal(recaptureResult.exitCode, 0, JSON.stringify(recaptureResult.artifact, null, 2));
     assert.equal(recaptureResult.artifact.failure_reason, null);
   } finally {
+    if (priorDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = priorDataRoot;
+    fs.rmSync(dataRoot, { recursive: true, force: true });
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
