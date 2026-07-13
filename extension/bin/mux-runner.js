@@ -25,6 +25,7 @@ import { CodegraphService } from '../services/codegraph-service.js';
 import { salvageTicket } from '../lib/salvage-ticket.js';
 import { reconcileTicketTruth } from '../lib/reconcile-ticket-truth.js';
 import { salvageDirtyTree, stashUnattributableRemainder } from '../services/dirty-tree-salvage.js';
+import { checkScopeDiff } from './check-scope-diff.js';
 export { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream } from '../services/classifier-utils.js';
 export { stripSetupSection } from '../services/pickle-utils.js';
 export { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
@@ -3970,7 +3971,7 @@ export function recomputeAbsentWorkerGateVerdict(extensionDir, runCheck = defaul
  * Done-flips on those repos are not universally fail-closed. Only an EXISTING-but-errored
  * gate yields `'unavailable'` (→ fail-closed, AC-CWGE-6).
  */
-function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
+export function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
     const persisted = readWorkerGateVerdict(sessionDir, ticketId);
     if (persisted !== 'absent') {
         return { verdict: persisted, computedVia: 'worker_gate' };
@@ -6584,9 +6585,16 @@ export function resolveCreditEarlyPhases(sessionDir, ticketId, priorSpawnCount, 
  * current_ticket, then returns `'advance'` (a runnable ticket remains) or `'exit'`
  * (none remains — the caller performs the recovery_exhausted run-exit). The global
  * iteration cap is enforced separately at the loop top.
+ *
+ * AC-WMFF-2A: this was the ONE Failed-flip site that never archived. The two siblings
+ * (head-regression, wmw-auto-skip) both call `archiveDirtyTreeBeforeFlip` before their
+ * frontmatter write; the B-DURA T10 boundary committer is `!isTerminalTicketStatus`-guarded
+ * and skips an already-Failed ticket, so a verified dirty diff on this path had NO commit
+ * AND no archive. `workingDir` is threaded in for exactly that call.
  */
 export function advanceOrExitOnLadderExhaustion(input) {
-    const { sessionDir, statePath, ticketId, reason, log } = input;
+    const { sessionDir, statePath, workingDir, ticketId, reason, log } = input;
+    archiveDirtyTreeBeforeFlip({ workingDir, sessionDir, ticketId, log });
     try {
         updateTicketFrontmatter(ticketId, sessionDir, { status: 'Failed', completion_commit: null });
         const tfPath = ticketFilePath(sessionDir, ticketId);
@@ -7297,6 +7305,139 @@ function archiveDirtyTreeBeforeFlip(input) {
         input.log(`[failed-flip] pre-flip archive failed for ${input.ticketId} (flip proceeds; tree untouched): ${msg}`);
     }
 }
+// ───────────── AC-WMFF-2B: worker_produced_everything_but_commit breadcrumb ─────────────
+/** Cap on `gate_payload.dirty_in_scope_paths` — the 20MB-state.json incident precedent. */
+const EVERYTHING_BUT_COMMIT_PATH_CAP = 20;
+/** Bounded git probe for the `preIterSha..HEAD` window walk. */
+const EVERYTHING_BUT_COMMIT_GIT_TIMEOUT_MS = 5000;
+/**
+ * In-process claim ledger keyed `${ticketId}:${iteration}` — the frozen payload carries no
+ * iteration field, so `state.activity` cannot reconstruct the key. One mux-runner process
+ * drives one loop, so this is the correct scope: a re-check for the SAME iteration (and a
+ * bounded-terminal-escape revisit) must not re-emit.
+ */
+const everythingButCommitClaimed = new Set();
+/**
+ * Dirty working-tree paths, scope-filtered when the session has a `scope.json`.
+ *
+ * REUSES the exported `checkScopeDiff` (never re-implements scope matching) so the #128
+ * `CLAUDE.md` trap-door-catalog carve-out flows through. `checkScopeDiff` reads the INDEX,
+ * so the working-tree paths are fed through its documented `_getStagedPaths` seam. No
+ * `scope.json` (or a malformed one) → `listWorkingTreeDirtyPaths` unfiltered.
+ *
+ * Codegraph artifacts are dropped FIRST, via the same exported `isCodegraphArtifact` that
+ * `archiveBeforeDestructive` uses. This set MUST equal the set the archive would save: the
+ * payload's claim is "this work is still on the floor", and the archive is what puts it
+ * somewhere recoverable. Codegraph writes its index INTO the working dir
+ * (`<workingDir>/.codegraph/`) and `.codegraph/` is git-ignored only through the local,
+ * unversioned `.git/info/exclude` — on a fresh clone it is plain untracked dirt. Counting it
+ * would fire the breadcrumb over a tree the archive (correctly) declines to archive, sending
+ * the operator after a `pre_reset_*.patch` that was never written.
+ */
+function collectDirtyInScopePaths(workingDir, sessionDir) {
+    const dirty = listWorkingTreeDirtyPaths(workingDir).filter((p) => !isCodegraphArtifact(p));
+    if (dirty.length === 0)
+        return [];
+    const scopeJsonPath = path.join(sessionDir, 'scope.json');
+    if (!fs.existsSync(scopeJsonPath))
+        return dirty;
+    const result = checkScopeDiff({ scopeJsonPath, _getStagedPaths: () => dirty });
+    if (result.status !== 'outside_scope')
+        return dirty;
+    const outside = new Set(result.staged_paths_outside_scope ?? []);
+    return dirty.filter((p) => !outside.has(p));
+}
+/** Every ticket's frontmatter completion sha (explicit + inferred), lowercased. */
+function collectReferencedCompletionShas(sessionDir) {
+    const shas = [];
+    for (const ticket of collectTickets(sessionDir)) {
+        if (!ticket.id)
+            continue;
+        let raw;
+        try {
+            raw = fs.readFileSync(ticketFilePath(sessionDir, ticket.id), 'utf-8');
+        }
+        catch {
+            continue;
+        }
+        for (const field of ['completion_commit', 'completion_commit_inferred']) {
+            const v = (readFrontmatterField(raw, field) ?? '').trim().replace(/["']/g, '').toLowerCase();
+            if (/^[0-9a-f]{7,40}$/.test(v))
+                shas.push(v);
+        }
+    }
+    return shas;
+}
+/**
+ * First commit in `preIterSha..HEAD` that is not any ticket's `completion_commit` — the
+ * "worker committed but nobody claimed it" arm. `preIterSha` is already in scope at the
+ * emit site, so this is ONE bounded `rev-list` over an existing window — no new git walker.
+ */
+function findUnreferencedWindowCommit(workingDir, sessionDir, preIterSha) {
+    if (!preIterSha)
+        return null;
+    const r = spawnSync('git', ['-C', workingDir, 'rev-list', `${preIterSha}..HEAD`], {
+        encoding: 'utf-8', timeout: EVERYTHING_BUT_COMMIT_GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (r.status !== 0)
+        return null;
+    const shas = (r.stdout || '').split('\n').map((s) => s.trim()).filter(Boolean);
+    if (shas.length === 0)
+        return null;
+    const referenced = collectReferencedCompletionShas(sessionDir);
+    const isReferenced = (sha) => referenced.some((ref) => sha.toLowerCase().startsWith(ref) || ref.startsWith(sha.toLowerCase()));
+    return shas.find((sha) => !isReferenced(sha)) ?? null;
+}
+/**
+ * AC-WMFF-2B: claim-once evaluation of the `worker_produced_everything_but_commit` predicate.
+ *
+ * Fires when the worker-process budget-death flip left a ticket Failed even though it produced
+ * EVERY gated artifact for its tier and its work is still recoverable — either an uncommitted
+ * dirty tree or an unclaimed commit inside the iteration window. Returns the frozen
+ * `gate_payload` on the first claim of a `(ticket, iteration)` pair, `null` otherwise.
+ *
+ * OBSERVABILITY ONLY: this performs no reap, no salvage, no status write, and no frontmatter
+ * write. The caller's sole action is `writeActivityEntry`. Best-effort — any throw reads null.
+ */
+export function claimWorkerProducedEverythingButCommit(input) {
+    const { sessionDir, workingDir, ticketId, iteration, sessionLogBytes, preIterSha } = input;
+    try {
+        // (1) the worker-flip class: the ticket reads Failed.
+        if (normalizeTicketStatus(getTicketStatus(sessionDir, ticketId)) !== 'failed')
+            return null;
+        // (2) idempotent once per (ticket, iteration).
+        const claimKey = `${ticketId}:${iteration}`;
+        if (everythingButCommitClaimed.has(claimKey))
+            return null;
+        // (3) every gated artifact for the tier is present. Tier is read from the TICKET
+        // FRONTMATTER, never `state.current_ticket_tier` — that cache is the R-CNAR-1
+        // staleness trap and can describe a previously-selected ticket.
+        const tier = parseTicketFrontmatter(ticketFilePath(sessionDir, ticketId))?.complexity_tier ?? 'medium';
+        const prefixes = requiredTierArtifactPrefixes(tier);
+        const ticketDir = path.join(sessionDir, ticketId);
+        if (findMissingPrefixes(fs.readdirSync(ticketDir), prefixes).length > 0)
+            return null;
+        // (4) the work is still on the floor: an uncommitted dirty tree OR an unclaimed commit.
+        const dirty = collectDirtyInScopePaths(workingDir, sessionDir);
+        const windowCommit = findUnreferencedWindowCommit(workingDir, sessionDir, preIterSha);
+        if (dirty.length === 0 && windowCommit === null)
+            return null;
+        everythingButCommitClaimed.add(claimKey);
+        return {
+            tier,
+            prefixes_checked: prefixes,
+            session_log_bytes: sessionLogBytes,
+            worker_gate_verdict: readWorkerGateVerdict(sessionDir, ticketId),
+            dirty_in_scope_paths: dirty.slice(0, EVERYTHING_BUT_COMMIT_PATH_CAP),
+            truncated: dirty.length > EVERYTHING_BUT_COMMIT_PATH_CAP,
+            total_count: dirty.length,
+            window_commit: windowCommit,
+        };
+    }
+    catch {
+        return null; // best-effort — a breadcrumb never alters the iteration outcome
+    }
+}
 /**
  * R-WSE-3: Emit a stderr breadcrumb when a ticket has status Failed
  * but its research_review.md ends in APPROVED.
@@ -7322,6 +7463,55 @@ export function checkFailedAfterResearchApproved(sessionDir, ticketId) {
     if (!reviewContent.trimEnd().endsWith('APPROVED'))
         return;
     process.stderr.write(`[warn] [${new Date().toISOString()}] ⚠ ticket ${ticketId} failed AFTER research APPROVED — see ${sessionDir}/${ticketId}/\n`);
+}
+/**
+ * Emit AT MOST ONE post-iteration worker-production breadcrumb, and return which one fired.
+ *
+ * R-WSDO wins the overlap: both predicates are individually satisfiable on the same iteration
+ * (a complete prefix set forces `plExit === null`, and R-WSDO's middle term is an iteration
+ * DELTA — so a respawned worker carrying prior-iteration artifacts + zero delta + 0-byte log +
+ * a dirty tree satisfies BOTH). Mutual exclusion therefore lives in CONTROL FLOW, never in a
+ * "disjoint by construction" claim. The second arm is evaluated LAZILY so a winning R-WSDO
+ * branch never spends a git call.
+ *
+ * Observability-only: no reap, salvage, status, or frontmatter write happens on this path.
+ */
+export function emitWorkerProductionBreadcrumb(input) {
+    const ticketDir = path.join(input.sessionDir, input.ticketId);
+    const { subClass, sessionLogSize, pid } = classifyWorkerSessionLogs(ticketDir, fs.readdirSync(ticketDir));
+    const wsdoFires = input.partialLifecycleExit === null &&
+        input.artifactDelta === 0 &&
+        subClass === 'log_empty';
+    const everythingButCommit = wsdoFires
+        ? null
+        : claimWorkerProducedEverythingButCommit({
+            sessionDir: input.sessionDir,
+            workingDir: input.workingDir,
+            ticketId: input.ticketId,
+            iteration: input.iteration,
+            sessionLogBytes: sessionLogSize,
+            preIterSha: input.preIterSha,
+        });
+    // ts is explicit because writeActivityEntry does NOT auto-stamp it (mirrors :8094).
+    if (wsdoFires) {
+        writeActivityEntry(input.statePath, {
+            event: 'worker_produced_nothing',
+            ts: new Date().toISOString(),
+            ticket: input.ticketId,
+            gate_payload: { spawn_pid: pid, session_log_bytes: sessionLogSize, artifact_delta: 0 },
+        });
+        return 'worker_produced_nothing';
+    }
+    else if (everythingButCommit) {
+        writeActivityEntry(input.statePath, {
+            event: 'worker_produced_everything_but_commit',
+            ts: new Date().toISOString(),
+            ticket: input.ticketId,
+            gate_payload: everythingButCommit,
+        });
+        return 'worker_produced_everything_but_commit';
+    }
+    return null;
 }
 export function detectPkgJsonVersionDrift(srcPath, depPath, statePath) {
     const ts = new Date().toISOString();
@@ -7813,14 +8003,19 @@ async function runMuxRunnerMain() {
     // pass so the cheap missing-node_modules probe runs ONCE per run, not per-iteration.
     let toolchainPreflightChecked = false;
     // Initialize session-scoped CodegraphService (fail-open — never blocks session start).
+    // Gated on settings.enabled: with codegraph disabled, a leftover
+    // .codegraph/codegraph.db (prior enabled run, or direct CLI use) must not
+    // keep the native library loading and re-syncing every staleness window.
     const cgSettings = resolveCodegraphSettings(loadPickleSettingsBag());
     const cgWorkingDir = ownerState.working_dir || process.cwd();
     const cgDbPath = path.join(cgWorkingDir, '.codegraph', 'codegraph.db');
-    try {
-        cgService = await CodegraphService.create(cgWorkingDir, cgSettings, { emit: (ev) => writeActivityEntry(statePath, ev) });
-    }
-    catch (err) {
-        log(`codegraph service init failed (ignored): ${safeErrorMessage(err)}`);
+    if (cgSettings.enabled) {
+        try {
+            cgService = await CodegraphService.create(cgWorkingDir, cgSettings, { emit: (ev) => writeActivityEntry(statePath, ev) });
+        }
+        catch (err) {
+            log(`codegraph service init failed (ignored): ${safeErrorMessage(err)}`);
+        }
     }
     while (true) {
         let state;
@@ -8752,6 +8947,7 @@ async function runMuxRunnerMain() {
                     const ladderAction = advanceOrExitOnLadderExhaustion({
                         sessionDir,
                         statePath,
+                        workingDir: state.working_dir || process.cwd(),
                         ticketId: apTicketId,
                         reason: `recovery_exhausted: ${wmwRecovery.reason}`,
                         log,
@@ -8809,6 +9005,7 @@ async function runMuxRunnerMain() {
                     const ladderAction = advanceOrExitOnLadderExhaustion({
                         sessionDir,
                         statePath,
+                        workingDir: wmwWorkingDir,
                         ticketId: apTicketId,
                         reason: `suppression_cap_reached: ${ffDecision.cap}`,
                         log,
@@ -8907,30 +9104,20 @@ async function runMuxRunnerMain() {
             }
             if (iterTicket)
                 checkFailedAfterResearchApproved(sessionDir, iterTicket);
-            // R-WSDO (30aa2e0d): worker-produced-nothing breadcrumb. Fires ONLY on the
-            // genuinely-uncovered "produced nothing at all" case, mutually exclusive with
-            // worker_silent_death by construction:
-            //   (1) checkPartialLifecycleExit returned null this iteration (no partial/silent
-            //       classification — e.g. a tier with a research gate but NO research_review.md),
-            //   (2) classifyWorkerSessionLogs → subClass === 'log_empty' (0-byte/absent log),
-            //   (3) raw artifact COUNT delta (lastArtifactCount - apBeforeCount) === 0.
-            // Observability-only: best-effort, never alters reap/salvage control flow. ts is
-            // explicit because writeActivityEntry does NOT auto-stamp it (mirrors :8094).
-            if (iterTicket &&
-                plExit === null &&
-                apProgressResult &&
-                apProgressResult.lastArtifactCount - apBeforeCount === 0) {
-                const ticketDir = path.join(sessionDir, iterTicket);
-                // eslint-disable-next-line pickle/no-sync-in-async
-                const { subClass, sessionLogSize, pid } = classifyWorkerSessionLogs(ticketDir, fs.readdirSync(ticketDir));
-                if (subClass === 'log_empty') {
-                    writeActivityEntry(statePath, {
-                        event: 'worker_produced_nothing',
-                        ts: new Date().toISOString(),
-                        ticket: iterTicket,
-                        gate_payload: { spawn_pid: pid, session_log_bytes: sessionLogSize, artifact_delta: 0 },
-                    });
-                }
+            // R-WSDO (30aa2e0d) + AC-WMFF-2B: at most one post-iteration production breadcrumb.
+            // The predicates, their overlap, and the R-WSDO-first control flow live in
+            // emitWorkerProductionBreadcrumb — the one seam a test can cross to reach them.
+            if (iterTicket) {
+                emitWorkerProductionBreadcrumb({
+                    sessionDir,
+                    statePath,
+                    workingDir: iterWorkingDir,
+                    ticketId: iterTicket,
+                    iteration,
+                    partialLifecycleExit: plExit,
+                    artifactDelta: apProgressResult ? apProgressResult.lastArtifactCount - apBeforeCount : null,
+                    preIterSha,
+                });
             }
         }
         catch { /* best-effort — never block iteration on partial-lifecycle check failure */ }

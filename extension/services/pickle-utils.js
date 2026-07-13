@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { StringDecoder } from 'string_decoder';
 import { VALID_STEPS, LockError } from '../types/index.js';
-import { StateManager, isProcessAlive } from './state-manager.js';
+import { StateManager, isProcessAlive, inspectLockFile, stealLockFile, acquireLockFile, releaseLockFile, isDeadPidPayload, withStealRight } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 import { updateTicketStatusInTransaction } from './transaction-ticket-ops.js';
 import { isRecord } from '../lib/is-record.js';
@@ -647,9 +647,14 @@ function parseSettingIntClamp(v, floor, ceiling) {
     return Math.max(floor, Math.min(ceiling, v));
 }
 export function resolveCodegraphSettings(bag) {
+    // Compiled defaults are OFF (aligned with the shipped pickle_settings.json
+    // opt-in stance, de3c5959): a missing/malformed settings file must NOT
+    // silently activate codegraph — sandboxed test runs without a settings file
+    // were indexing fixture dirs through the old enabled:true fallback (97
+    // leaked codegraph_index_built events, 2026-06-12..07-08).
     const settings = {
-        enabled: true,
-        index_at_setup: true,
+        enabled: false,
+        index_at_setup: false,
         staleness_max_age_minutes: 30,
         context_max_bytes: 8192,
         expose_mcp_to_workers: false,
@@ -1148,44 +1153,33 @@ const RETRY_LOCK_DEFAULTS = {
     staleLockTimeoutMs: 30_000,
     lockJitter: true,
 };
+/**
+ * The lock payload is the holder's pid (see `tryRunWithExclusiveLock`). Recovery runs under
+ * `withStealRight`, so the lock inspected here is the lock removed here — no other stealer can be
+ * mid-removal, and the dead holder this judges cannot release its own file.
+ */
 function stealStaleLock(lockPath, staleLockTimeoutMs) {
-    try {
-        const stats = fs.statSync(lockPath);
-        if (Date.now() - stats.mtimeMs > staleLockTimeoutMs) {
-            try {
-                fs.unlinkSync(lockPath);
-            }
-            catch { /* already gone — race is fine */ }
-        }
-    }
-    catch {
-        // lock file doesn't exist — expected
-    }
+    withStealRight(lockPath, () => {
+        const snapshot = inspectLockFile(lockPath);
+        if (!snapshot)
+            return false; // lock file doesn't exist — expected
+        // A dead holder is stolen at once. Waiting out staleLockTimeoutMs is not merely slow, it is
+        // unreachable: the retry budget (~26.3s over 10 attempts) expires before the 30s window opens.
+        const stale = isDeadPidPayload(snapshot.payload)
+            || Date.now() - snapshot.mtimeMs > staleLockTimeoutMs;
+        return stale ? stealLockFile(lockPath, snapshot) : false;
+    });
 }
 function tryRunWithExclusiveLock(lockPath, fn) {
-    try {
-        const fd = fs.openSync(lockPath, 'wx');
-        try {
-            fs.writeSync(fd, String(process.pid));
-        }
-        finally {
-            fs.closeSync(fd);
-        }
-        try {
-            return { acquired: true, value: fn() };
-        }
-        finally {
-            try {
-                fs.unlinkSync(lockPath);
-            }
-            catch { /* ignore cleanup failure */ }
-        }
-    }
-    catch (e) {
-        const code = e instanceof Error ? e.code : undefined;
-        if (code !== 'EEXIST')
-            throw e;
+    const ino = acquireLockFile(lockPath, String(process.pid));
+    if (ino === null)
         return { acquired: false };
+    try {
+        return { acquired: true, value: fn() };
+    }
+    finally {
+        // Release only our own inode: a blind unlink would drop a successor's lock if ours was stolen.
+        releaseLockFile(lockPath, ino);
     }
 }
 function sleepBeforeRetry(attempt, baseLockDelayMs, lockJitter) {
@@ -1757,6 +1751,10 @@ ensureMonitorWindowFn = ensureMonitorWindow) {
         appendWatcherRestartLog(sessionDir, `${logTag} WARN: unable to resolve tmux session name`);
         return;
     }
+    if (isForeignTmuxSession(sessionName, sessionDir)) {
+        appendWatcherRestartLog(sessionDir, `${logTag} WARN: tmux session '${sessionName}' does not host this session's monitor window — skipping respawn`);
+        return;
+    }
     for (const watcher of watcherPaneCommands(sessionDir, extensionRoot, mode)) {
         if (processWatcherPane(sessionDir, extensionRoot, mode, sessionName, watcher, spawnSyncFn, logTag, ensureMonitorWindowFn))
             return;
@@ -1770,6 +1768,28 @@ function isSessionInactive(sessionDir) {
     catch {
         return false;
     }
+}
+/** Trailing `-`-delimited segment: the session hash both names are keyed by. */
+function sessionHashOf(name) {
+    return name.slice(name.lastIndexOf('-') + 1);
+}
+/**
+ * We may only drive the tmux session that hosts THIS session's monitor window.
+ * `#S` answers "which tmux session is this PROCESS in" — the right answer only
+ * when the runner was launched inside the session it manages. A runner that
+ * inherits `$TMUX` from somewhere else (a test child, an operator's own window)
+ * would otherwise send-keys its pane commands, with Enter, into a stranger's
+ * live pane.
+ *
+ * Launchers name the tmux session `<prefix>-<session-hash>` for the session dir
+ * they manage, so the two hashes agree exactly when the window is ours. Fail
+ * CLOSED: a name we cannot tie to our own session dir is not ours to drive.
+ * Deriving ownership from the pair alone — rather than resolving the name
+ * against the data root — is what makes this hold for a runner whose data root
+ * does not contain the ambient session.
+ */
+function isForeignTmuxSession(sessionName, sessionDir) {
+    return sessionHashOf(sessionName) !== sessionHashOf(path.basename(sessionDir));
 }
 function readCurrentTmuxSessionName(spawnSyncFn) {
     const result = spawnSyncFn('tmux', ['display-message', '-p', '#S'], {
@@ -2033,7 +2053,10 @@ export function _resetSessionDirInvalidEmittedForTests() {
  * agent's context was tight.
  *
  * Never throws. Returns a status so callers can log the outcome:
- *   - `skipped`    → not inside tmux (headless or direct invocation)
+ *   - `skipped`    → not inside tmux (headless or direct invocation), or the
+ *                    ambient tmux session is not the one hosting our monitor
+ *                    window (`isForeignTmuxSession`) — we do not kill or create
+ *                    windows in a session we do not own
  *   - `exists`     → monitor window already present for this mode, no-op
  *   - `created`    → monitor window spawned
  *   - `recreated`  → stale monitor (different mode) killed and respawned
@@ -2064,6 +2087,10 @@ export function ensureMonitorWindow(opts) {
         const sessionName = getSessionName();
         if (!sessionName)
             return activeMonitorWindowContext.outcome || { status: 'error', reason: 'empty session name' };
+        if (isForeignTmuxSession(sessionName, opts.sessionDir)) {
+            log(`ensureMonitorWindow: tmux session '${sessionName}' does not host this session's monitor window — skipping`);
+            return { status: 'skipped', reason: `foreign tmux session: ${sessionName}` };
+        }
         const { recreate } = checkAndRecreateWindow(sessionName);
         if (activeMonitorWindowContext.outcome)
             return activeMonitorWindowContext.outcome;
@@ -2278,6 +2305,7 @@ function _updateMonitorState(smLocal, statePath, newPid, mode) {
  *   - sessionDir is invalid (validateSessionDirOrSkip)
  *   - state.monitor_mode already equals `mode`
  *   - not inside tmux
+ *   - the ambient tmux session is not ours (isForeignTmuxSession)
  *   - tmux respawn-pane fails
  * Returns 'respawned' on success; updates state.monitor_pid and state.monitor_mode.
  * Logs `monitor: respawned for mode <mode>` via opts.log so the line appears in
@@ -2305,6 +2333,12 @@ export async function respawnMonitorWindowForMode(sessionDir, mode, opts) {
     const sessionName = _resolveTmuxSessionName(spawnSyncFn, log, mode);
     if (!sessionName)
         return 'no-op';
+    // `respawn-pane -k` KILLS the target pane. `validateSessionDirOrSkip` above proves
+    // our sessionDir is coherent — it says nothing about whose tmux session `#S` named.
+    if (isForeignTmuxSession(sessionName, sessionDir)) {
+        log(`monitor: tmux session '${sessionName}' does not host this session's monitor window — skipping respawn for mode ${mode}`);
+        return 'no-op';
+    }
     const extensionRoot = getExtensionRoot();
     const monitorBin = path.join(extensionRoot, 'extension', 'bin', 'monitor.js');
     const target = `${sessionName}:monitor.0`;

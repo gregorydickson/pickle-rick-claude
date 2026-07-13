@@ -110,6 +110,6 @@ function main() {
         console.log(filePath);
     }
 }
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && path.basename(process.argv[1]) === 'generate-debate-personas.js') {
     main();
 }

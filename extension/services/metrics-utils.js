@@ -30,7 +30,6 @@ export const SKIP_FLAG_BUDGETS = {
     'pickle::project_type_low_confidence': 50,
     'pickle::dirty_worktree_no_rescue': 20,
     'citadel-mechanical::skip_quality_gates': 3,
-    'pickle::signature_caller_gap': 3,
 };
 // ---------------------------------------------------------------------------
 // Utility Functions

@@ -8,8 +8,7 @@ import { fileURLToPath } from 'url';
 import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter } from '../services/git-utils.js';
-import { computeBaselineStartCommit } from '../services/scope-resolver.js';
-import { detectAndRecoverHeadRegression } from './mux-runner.js';
+import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict } from './mux-runner.js';
 import { LockError, BACKENDS, STATE_MANAGER_DEFAULTS } from '../types/index.js';
 import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
@@ -333,7 +332,12 @@ export function evaluateLaunchSizing(sessionDir, config, emit = (msg) => process
     return { warned: true, ticketCount, expectedMinutes, recommendedMinutes, throughput, backend };
 }
 function updateSessionMap(sessionsMap, cwd, sessionPath) {
-    withRetryLock(sessionsMap + '.lock', () => {
+    // The collision verdict is computed under the lock but ACTED ON after it is released.
+    // process.exit() skips finally blocks, so exiting from inside the callback strands the
+    // lockfile: withRetryLock's release never runs, and because the lock guards the SHARED
+    // sessions map, an unrelated cwd's setup then burns its whole retry budget (~26s) before
+    // stealStaleLock's 30s window even opens — it takes a LockError and never registers.
+    const collision = withRetryLock(sessionsMap + '.lock', () => {
         let map = {};
         try {
             const recovered = readRecoverableJsonObject(sessionsMap);
@@ -348,20 +352,7 @@ function updateSessionMap(sessionsMap, cwd, sessionPath) {
             const existingPid = readMappedPid(existing);
             const existingPath = typeof existing === 'string' ? existing : existing.sessionPath;
             if (existingPid && isProcessAlive(existingPid) && existingPath !== sessionPath) {
-                try {
-                    logActivity({
-                        event: 'session_map_collision_blocked',
-                        source: 'pickle',
-                        existing_session_path: existingPath,
-                        existing_pid: existingPid,
-                        attempted_session_path: sessionPath,
-                        attempted_pid: process.pid,
-                        cwd,
-                    });
-                }
-                catch { /* best-effort */ }
-                process.stderr.write(`[pickle] session-map collision blocked — cwd=${cwd} held by pid=${existingPid}\n`);
-                process.exit(1);
+                return { existingPid, existingPath };
             }
         }
         map[cwd] = { sessionPath, pid: process.pid };
@@ -377,7 +368,24 @@ function updateSessionMap(sessionsMap, cwd, sessionPath) {
             catch { /* cleanup best-effort */ }
             throw err;
         }
+        return null;
     });
+    if (!collision)
+        return;
+    try {
+        logActivity({
+            event: 'session_map_collision_blocked',
+            source: 'pickle',
+            existing_session_path: collision.existingPath,
+            existing_pid: collision.existingPid,
+            attempted_session_path: sessionPath,
+            attempted_pid: process.pid,
+            cwd,
+        });
+    }
+    catch { /* best-effort */ }
+    process.stderr.write(`[pickle] session-map collision blocked — cwd=${cwd} held by pid=${collision.existingPid}\n`);
+    process.exit(1);
 }
 function ensureCoreDirectories(paths) {
     [paths.sessionsRoot, paths.jarRoot, paths.worktreesRoot].forEach((dir) => {
@@ -924,15 +932,17 @@ function applyResumeConfig(s, config, fullSessionPath, codexVersionSeen) {
     if (config.prdPath)
         s.prd_path = config.prdPath;
     repinFromHeadOnResume(s, config);
-    // R-PSCG (B-1SEAM WS-2): a session bootstrapped from a non-git cwd (e.g.
-    // `--paused` from the LoanLight root) never captured start_commit; recompute
-    // a best-effort baseline now that cwd is the resumed working_dir (chdir ran
-    // upstream in validateResumeCompatibility — the same guarantee
-    // repinFromHeadOnResume documents). NEVER overwrite an existing start_commit.
+    // R-SCPIN (supersedes R-PSCG/B-1SEAM WS-2): a session bootstrapped from a
+    // non-git cwd (e.g. `--paused` from the LoanLight root) never captured
+    // start_commit. Adopt s.pinned_sha — already re-derived from working-dir
+    // HEAD by repinFromHeadOnResume() one line above — rather than guessing a
+    // merge-base review-base value. By contract (R-SCPIN §0) start_commit and
+    // pinned_sha are co-stamped at normal bootstrap, so adoption here restores
+    // the same invariant on the resume path. NEVER overwrite an existing
+    // start_commit.
     if (!s.start_commit) {
-        const healed = computeBaselineStartCommit(process.cwd());
-        if (healed) {
-            s.start_commit = healed;
+        if (s.pinned_sha) {
+            s.start_commit = s.pinned_sha;
         }
         else {
             process.stderr.write('[setup] WARNING: start_commit still unresolved on --resume (cwd is not a git repository) — ' +
@@ -1118,10 +1128,10 @@ function readTicketCompletionCommit(sessionRoot, ticketId) {
         return null;
     }
 }
-/** True iff `sha` ff-descends from HEAD (`merge-base --is-ancestor HEAD sha` exit 0). */
-function shaDescendsFromHead(workingDir, currentHead, sha) {
+/** True iff `a` is an ancestor of `b`. Git counts a commit as its own ancestor. */
+function isAncestor(workingDir, a, b) {
     try {
-        execFileSync('git', ['merge-base', '--is-ancestor', currentHead, sha], {
+        execFileSync('git', ['merge-base', '--is-ancestor', a, b], {
             cwd: workingDir,
             stdio: ['ignore', 'ignore', 'ignore'],
             timeout: 5000,
@@ -1129,8 +1139,22 @@ function shaDescendsFromHead(workingDir, currentHead, sha) {
         return true;
     }
     catch {
-        return false; // not a descendant — never force-reattach (SAFETY)
+        return false;
     }
+}
+/**
+ * True iff `sha` STRICTLY ff-descends from HEAD — i.e. an orphan really exists.
+ * Git counts a commit as its own ancestor, so the forward probe alone also accepts
+ * `sha === HEAD`: a tree where nothing was reset and nothing is orphaned. That case
+ * must NOT reach the recovery path — a `merge --ff-only HEAD` reports "Already up to
+ * date" (exit 0) and reads back as a successful reattach, manufacturing a Done flip
+ * out of a no-op. The reverse probe rejects it. Both SHAs are resolved by git, so a
+ * short frontmatter stamp compares correctly against a full HEAD.
+ */
+function shaDescendsFromHead(workingDir, currentHead, sha) {
+    if (!isAncestor(workingDir, currentHead, sha))
+        return false; // divergent — never force-reattach (SAFETY)
+    return !isAncestor(workingDir, sha, currentHead); // equal ⇒ nothing orphaned, nothing to recover
 }
 function tryResumeOrphanReattach(fullSessionPath, statePath, currentTicket, workingDir) {
     if (!currentTicket || !workingDir)
@@ -1169,9 +1193,20 @@ function tryResumeOrphanReattach(fullSessionPath, statePath, currentTicket, work
             iteration,
             log: (m) => process.stderr.write(m + '\n'),
         });
-        if (result.recovered) {
-            updateTicketFrontmatter(currentTicket, fullSessionPath, { status: 'Done', completion_commit: completionCommitSha });
+        if (!result.recovered)
+            return;
+        // R-CWGE: the ff-reattach already preserved the commit — that part is unconditional. Done is
+        // terminal and bypasses every later gate, so it requires the GREEN worker-gate verdict every
+        // Done-flip path in mux-runner consults. Fail closed: a red or unverifiable verdict leaves the
+        // ticket at its current status, where the runner can still re-select it.
+        const gate = resolveWorkerGateVerdict(fullSessionPath, currentTicket, workingDir);
+        if (gate.verdict !== 'green') {
+            process.stderr.write(`[resume-reattach] ticket ${currentTicket} reattached at ${completionCommitSha} but NOT flipped Done: ` +
+                `worker_gate_verdict='${gate.verdict}' (computed_via=${gate.computedVia}). ` +
+                `Done requires a GREEN worker-gate verdict (R-CWGE).\n`);
+            return;
         }
+        updateTicketFrontmatter(currentTicket, fullSessionPath, { status: 'Done', completion_commit: completionCommitSha });
     }
     catch (err) {
         process.stderr.write(`[resume-reattach] best-effort failure: ${safeErrorMessage(err)}\n`);

@@ -271,8 +271,7 @@ export const VALID_ACTIVITY_EVENTS = [
     'setup_resume_ticket_status_preserved',
     'setup_resume_overrode_ticket_status',
     'head_mismatch_detected',
-    'stale_index_lock_cleaned',
-    'stale_index_lock_held_by_live_process',
+    'stale_index_lock_detected',
     'concurrent_git_access_detected',
     'setup_resume_chdir_applied',
     'ticket_runnability_resolved',
@@ -333,6 +332,11 @@ export const VALID_ACTIVITY_EVENTS = [
     // R-WSDO (30aa2e0d): worker ran but produced nothing — no research_review.md +
     // log_empty + zero artifact-count delta. Mutually exclusive with worker_silent_death.
     'worker_produced_nothing',
+    // AC-WMFF-2B: the worker-process budget-death flip left a ticket Failed even though it
+    // produced EVERY gated artifact for its tier and its work is still recoverable (dirty
+    // tree, or an unclaimed commit in the iteration window). Structural `else if` BELOW
+    // worker_produced_nothing — R-WSDO wins any overlap. Observability only.
+    'worker_produced_everything_but_commit',
     // B-DURA T10 (AC-DURA-1/2/8): the normal iteration boundary committed/attributed/
     // honest-failed the ticket's gate-passing deliverable before context clear.
     'boundary_commit_resolved',

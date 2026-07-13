@@ -144,6 +144,171 @@ export function isProcessAlive(pid) {
         return false;
     }
 }
+/** Lock payloads are a bare pid or a small `{pid,ts}` JSON object; 256B covers both with room. */
+const LOCK_PAYLOAD_MAX_BYTES = 256;
+/**
+ * Reads a lock's identity, age, and payload through ONE fd, so a staleness verdict can never be
+ * assembled from two different inodes (a path can be re-pointed between two separate reads).
+ */
+export function inspectLockFile(lockPath) {
+    let fd;
+    try {
+        fd = fs.openSync(lockPath, 'r');
+    }
+    catch {
+        return null;
+    }
+    try {
+        const st = fs.fstatSync(fd);
+        const buf = Buffer.alloc(LOCK_PAYLOAD_MAX_BYTES);
+        const read = fs.readSync(fd, buf, 0, LOCK_PAYLOAD_MAX_BYTES, 0);
+        return { ino: st.ino, mtimeMs: st.mtimeMs, payload: buf.subarray(0, read).toString('utf-8') };
+    }
+    catch {
+        return null;
+    }
+    finally {
+        try {
+            fs.closeSync(fd);
+        }
+        catch { /* already closed */ }
+    }
+}
+/**
+ * Takes the lock and returns the inode the caller now owns, or null if someone already holds it.
+ * The inode comes from the same fd that wrote the file, so ownership is a fact, not an inference.
+ *
+ * The payload is written to a private staging file and the lock is published by linking it into
+ * place — one atomic step, so the lock can never be seen without the pid that holds it. Creating
+ * the lock first and writing the pid second leaves a window where it exists EMPTY, and an empty
+ * payload is unreclaimable BY DESIGN: `isDeadPidPayload` cannot prove death from it, so a holder
+ * killed in that window wedges the lock forever. The gate and restructure locks have no age-based
+ * arm to fall back on (they legitimately hold for minutes), so nothing recovers them. Widening the
+ * reclaim rule to steal an empty payload is not the fix — a LIVE holder is empty in that same
+ * window, so such a steal would evict it.
+ */
+export function acquireLockFile(lockPath, payload) {
+    const staging = `${lockPath}.acq.${process.pid}`;
+    try {
+        const fd = fs.openSync(staging, 'w');
+        let ino;
+        try {
+            fs.writeSync(fd, payload);
+            ino = fs.fstatSync(fd).ino;
+        }
+        finally {
+            fs.closeSync(fd);
+        }
+        fs.linkSync(staging, lockPath); // publishes the payload with the lock, or EEXIST if held
+        return ino;
+    }
+    catch (err) {
+        if (err.code === 'EEXIST')
+            return null;
+        throw err; // EACCES/ENOENT-on-dir etc. are real faults, not contention
+    }
+    finally {
+        try {
+            fs.unlinkSync(staging);
+        }
+        catch { /* never created, or already unlinked */ }
+    }
+}
+/** Removes a lock only while it is still the inode the caller acquired. */
+export function releaseLockFile(lockPath, ino) {
+    try {
+        if (fs.statSync(lockPath).ino !== ino)
+            return; // ours was already stolen — leave the new holder's
+        fs.unlinkSync(lockPath);
+    }
+    catch { /* already gone */ }
+}
+/**
+ * True only for a payload naming a pid we can PROVE is dead. An empty payload (the holder created
+ * the file but died before writing) or an unparseable one is NOT proof, and a recycled pid reads as
+ * alive — both defer, so we never steal from a holder we cannot account for.
+ */
+export function isDeadPidPayload(payload) {
+    const pid = Number(payload.trim());
+    if (!Number.isInteger(pid) || pid <= 0)
+        return false;
+    return !isProcessAlive(pid);
+}
+/**
+ * Evicts a lock, refusing anything that is no longer the inode `snapshot` was judged against.
+ *
+ * The identity check runs against a SECOND LINK to the lock, never against the lock itself. Renaming
+ * first means vacating the path before you can see what you captured — and a mismatch cannot then be
+ * undone: a contender that acquires in that window makes the restoring `link` fail EEXIST, the
+ * cleanup unlinks the file anyway, and the steal has destroyed a lock it neither created nor judged
+ * while its rightful holder still believes it owns it. Both then enter the critical section. Linking
+ * is non-destructive, so a mismatch costs nothing but our own link: the lock never leaves the
+ * namespace, and there is no window for a contender to race into.
+ */
+export function stealLockFile(lockPath, snapshot) {
+    const tombstone = `${lockPath}.tomb.${process.pid}.${Date.now()}`;
+    try {
+        fs.linkSync(lockPath, tombstone); // a second link — the lock stays published while we judge it
+    }
+    catch {
+        return false; // already gone
+    }
+    let stolenIno = null;
+    try {
+        stolenIno = fs.statSync(tombstone).ino;
+    }
+    catch { /* unreadable — treat as mismatch */ }
+    try {
+        if (stolenIno !== snapshot.ino)
+            return false; // not the file we judged — and we never touched it
+        fs.unlinkSync(lockPath);
+        return true;
+    }
+    catch {
+        return false; // holder released it under us — nothing of ours to evict
+    }
+    finally {
+        try {
+            fs.unlinkSync(tombstone);
+        }
+        catch { /* best-effort */ }
+    }
+}
+/**
+ * Runs `steal` holding exclusive stale-recovery rights on `lockPath`.
+ *
+ * A steal is inspect-then-remove — two operations on a path, not one atomic act — and Node's fs
+ * offers no "remove only if still this file". Two stealers running it concurrently is exactly how a
+ * LIVE holder gets evicted: both judge the dead holder stale, the first replaces it with its own
+ * live lock, and the second's removal lands on THAT. Checking identity before removing does not
+ * save you, because both stealers form their verdict before either one acts.
+ *
+ * So serialize the recovery instead. Inside `steal`, no other process can be removing this lock,
+ * and a dead holder cannot release its own — therefore the lock `steal` inspects is necessarily the
+ * lock it removes. Returns false without stealing when another process holds the rights; the caller
+ * just retries its normal acquire.
+ */
+export function withStealRight(lockPath, steal) {
+    const rightsPath = `${lockPath}.steal`;
+    let ino = acquireLockFile(rightsPath, String(process.pid));
+    if (ino === null) {
+        // A stealer that died mid-recovery would wedge this path forever. Reclaiming is safe only from a
+        // provably dead holder: a live stealer sits in a microsecond-scale critical section, never a dead pid.
+        const held = inspectLockFile(rightsPath);
+        if (!held || !isDeadPidPayload(held.payload))
+            return false; // someone is mid-steal — back off
+        stealLockFile(rightsPath, held);
+        ino = acquireLockFile(rightsPath, String(process.pid));
+        if (ino === null)
+            return false;
+    }
+    try {
+        return steal();
+    }
+    finally {
+        releaseLockFile(rightsPath, ino);
+    }
+}
 function readProcessStartTimeMs(pid) {
     try {
         const output = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], {
@@ -453,6 +618,67 @@ function isStateSnapshotNewer(currentState, currentMtimeMs, candidateState, cand
     // R-CIFB-B: both iterations absent → mtime tie-break, candidate (tmp) wins ties (`>=`).
     return candidateMtimeMs >= currentMtimeMs;
 }
+function unlinkQuietly(filePath) {
+    try {
+        fs.unlinkSync(filePath);
+    }
+    catch { /* best-effort cleanup */ }
+}
+/**
+ * Enumerate the orphan `.tmp.<pid>` siblings of `statePath` whose owning process is gone.
+ * Shared by both recovery scanners so neither can drift its own notion of what an orphan is.
+ */
+function listDeadOrphanTmpPaths(statePath) {
+    const dir = path.dirname(statePath);
+    const base = path.basename(statePath);
+    let entries;
+    try {
+        entries = fs.readdirSync(dir);
+    }
+    catch {
+        return [];
+    }
+    const tmpPattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.tmp\\.(\\d+)(?:\\..*)?$`);
+    const tmpPaths = [];
+    for (const entry of entries) {
+        const match = entry.match(tmpPattern);
+        if (!match)
+            continue;
+        const tmpPath = path.join(dir, entry);
+        if (shouldSkipLiveTmp(Number(match[1]), tmpPath))
+            continue;
+        tmpPaths.push(tmpPath);
+    }
+    return tmpPaths;
+}
+/**
+ * The single delete-authority decision for an orphan `.tmp.<pid>`.
+ *
+ * A tmp we could not READ is not the same as a tmp we read and found to be garbage:
+ * an EACCES/EISDIR snapshot may hold the only copy of a newer state write, and once
+ * unlinked the operator has nothing left to repair permissions on. Only a positively
+ * proven-garbage tmp (readable AND unparseable, or not a valid snapshot) is reapable.
+ */
+function classifyOrphanTmp(tmpPath, maxSupportedSchemaVersion) {
+    let raw;
+    try {
+        raw = fs.readFileSync(tmpPath, 'utf-8');
+    }
+    catch {
+        return { kind: 'unreadable' };
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch {
+        return { kind: 'garbage' };
+    }
+    if (!isRecoverableStateSnapshotCandidate(parsed, maxSupportedSchemaVersion)) {
+        return { kind: 'garbage' };
+    }
+    return { kind: 'snapshot', state: parsed, mtimeMs: readMtimeMs(tmpPath) };
+}
 function isRecoverableStateSnapshotCandidate(value, maxSupportedSchemaVersion) {
     if (!isRecord(value))
         return false;
@@ -486,6 +712,8 @@ function isRecoverableStateSnapshotCandidate(value, maxSupportedSchemaVersion) {
 // ---------------------------------------------------------------------------
 export class StateManager {
     opts;
+    /** Lock path -> the inode this manager acquired, so release can prove the file is still ours. */
+    lockInodes = new Map();
     constructor(opts = {}) {
         this.opts = { ...STATE_MANAGER_DEFAULTS, ...opts };
     }
@@ -737,118 +965,67 @@ export class StateManager {
         let steals = 0;
         const maxSteals = 3; // Cap stale-steal retries to prevent unbounded loops
         for (let attempt = 0; attempt <= this.opts.maxLockRetries; attempt++) {
-            try {
-                // O_CREAT | O_EXCL — fails if file already exists (atomic)
-                const fd = fs.openSync(lp, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-                // Write PID + timestamp for stale detection
-                fs.writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }));
-                fs.closeSync(fd);
+            const ino = acquireLockFile(lp, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+            if (ino !== null) {
+                this.lockInodes.set(lp, ino); // release must prove it still owns this exact file
                 return;
             }
-            catch {
-                // Check if existing lock is stale (bounded steal attempts)
-                if (steals < maxSteals && this.tryStealStaleLock(lp)) {
-                    steals++;
-                    // Stolen — retry immediately (don't count as attempt)
-                    attempt--;
-                    continue;
-                }
-                if (attempt < this.opts.maxLockRetries) {
-                    const base = this.opts.baseLockDelayMs * Math.pow(2, attempt);
-                    const jitter = this.opts.lockJitter ? Math.random() * this.opts.baseLockDelayMs : 0;
-                    sleepSync(Math.min(base + jitter, 5000));
-                }
+            // Check if existing lock is stale (bounded steal attempts)
+            if (steals < maxSteals && this.tryStealStaleLock(lp)) {
+                steals++;
+                // Stolen — retry immediately (don't count as attempt)
+                attempt--;
+                continue;
+            }
+            if (attempt < this.opts.maxLockRetries) {
+                const base = this.opts.baseLockDelayMs * Math.pow(2, attempt);
+                const jitter = this.opts.lockJitter ? Math.random() * this.opts.baseLockDelayMs : 0;
+                sleepSync(Math.min(base + jitter, 5000));
             }
         }
         throw new LockError(`Failed to acquire lock after ${this.opts.maxLockRetries} retries: ${lp}`);
     }
     releaseLock(statePath) {
+        const lp = lockPath(statePath);
+        const ino = this.lockInodes.get(lp);
+        if (ino === undefined)
+            return; // never acquired it
+        this.lockInodes.delete(lp);
+        releaseLockFile(lp, ino);
+    }
+    isStaleLockSnapshot(snapshot) {
         try {
-            fs.unlinkSync(lockPath(statePath));
+            const lock = JSON.parse(snapshot.payload);
+            const lockPid = Number(lock.pid);
+            const lockTs = Number(lock.ts);
+            if (!Number.isFinite(lockPid) || !Number.isFinite(lockTs))
+                return true;
+            return !isProcessAlive(lockPid) || (Date.now() - lockTs > this.opts.staleLockTimeoutMs);
         }
         catch {
-            // Lock file already gone — harmless
+            // Corrupt JSON — safe to steal
+            return true;
         }
     }
     tryStealStaleLock(lp) {
-        let raw;
-        try {
-            raw = fs.readFileSync(lp, 'utf-8');
-        }
-        catch {
-            // Can't read lock file — might have been removed by holder
-            return false;
-        }
-        const shouldSteal = (() => {
-            try {
-                const lock = JSON.parse(raw);
-                const lockPid = Number(lock.pid);
-                const lockTs = Number(lock.ts);
-                if (!Number.isFinite(lockPid) || !Number.isFinite(lockTs))
-                    return true;
-                return !isProcessAlive(lockPid) || (Date.now() - lockTs > this.opts.staleLockTimeoutMs);
-            }
-            catch {
-                // Corrupt JSON — safe to steal
-                return true;
-            }
-        })();
-        if (!shouldSteal)
-            return false;
-        // Atomic steal: rename to a unique tombstone, then delete. This prevents
-        // two processes from both unlinking the same lock and both believing they
-        // stole it (the classic TOCTOU race with unlink).
-        const tombstone = `${lp}.tomb.${process.pid}.${Date.now()}`;
-        try {
-            fs.renameSync(lp, tombstone);
-            // We won the rename — lock is ours to clean up
-            try {
-                fs.unlinkSync(tombstone);
-            }
-            catch { /* best-effort */ }
-            return true;
-        }
-        catch {
-            // Another process already renamed/removed it — we lost the race
-            try {
-                fs.unlinkSync(tombstone);
-            }
-            catch { /* might not exist */ }
-            return false;
-        }
+        return withStealRight(lp, () => {
+            const snapshot = inspectLockFile(lp);
+            if (!snapshot)
+                return false; // can't read — holder may have released it already
+            if (!this.isStaleLockSnapshot(snapshot))
+                return false;
+            return stealLockFile(lp, snapshot);
+        });
     }
     recoverFromOrphanTmpWhenBaseCorrupt(statePath) {
-        const dir = path.dirname(statePath);
-        const base = path.basename(statePath);
-        let entries;
-        try {
-            entries = fs.readdirSync(dir);
-        }
-        catch {
-            return null;
-        }
-        const tmpPattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.tmp\\.(\\d+)(?:\\..*)?$`);
         let winner = null;
-        for (const entry of entries) {
-            const match = entry.match(tmpPattern);
-            if (!match)
+        for (const tmpPath of listDeadOrphanTmpPaths(statePath)) {
+            const candidate = classifyOrphanTmp(tmpPath, this.opts.schemaVersion);
+            if (candidate.kind !== 'snapshot')
                 continue;
-            const tmpPath = path.join(dir, entry);
-            const tmpPid = Number(match[1]);
-            if (shouldSkipLiveTmp(tmpPid, tmpPath))
-                continue;
-            try {
-                const parsed = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'));
-                if (!isRecoverableStateSnapshotCandidate(parsed, this.opts.schemaVersion))
-                    continue;
-                const mtimeMs = readMtimeMs(tmpPath);
-                if (!winner ||
-                    isStateSnapshotNewer(winner.state, winner.mtimeMs, parsed, mtimeMs)) {
-                    winner = { tmpPath, state: parsed, mtimeMs };
-                }
-            }
-            catch {
-                continue;
+            if (!winner ||
+                isStateSnapshotNewer(winner.state, winner.mtimeMs, candidate.state, candidate.mtimeMs)) {
+                winner = { tmpPath, state: candidate.state, mtimeMs: candidate.mtimeMs };
             }
         }
         if (!winner)
@@ -865,54 +1042,33 @@ export class StateManager {
     // Recovery: orphan tmp files
     // -----------------------------------------------------------------------
     recoverOrphanTmpFiles(statePath, _state) {
-        const dir = path.dirname(statePath);
-        const base = path.basename(statePath);
         let currentMtimeMs = readMtimeMs(statePath);
-        let entries;
-        try {
-            entries = fs.readdirSync(dir);
-        }
-        catch {
-            return;
-        }
-        const tmpPattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.tmp\\.(\\d+)(?:\\..*)?$`);
-        for (const entry of entries) {
-            const match = entry.match(tmpPattern);
-            if (!match)
+        for (const tmpPath of listDeadOrphanTmpPaths(statePath)) {
+            const candidate = classifyOrphanTmp(tmpPath, this.opts.schemaVersion);
+            // Unreadable is not proven-garbage: it may hold the only copy of a newer write.
+            if (candidate.kind === 'unreadable')
                 continue;
-            const tmpPath = path.join(dir, entry);
-            const tmpPid = Number(match[1]);
-            // If owning process is still alive, leave it alone
-            if (shouldSkipLiveTmp(tmpPid, tmpPath))
+            if (candidate.kind === 'garbage') {
+                unlinkQuietly(tmpPath);
                 continue;
-            // Check if tmpfile contains valid JSON
+            }
+            // Promote a dead-process snapshot if it represents a newer state write.
+            // Same-iteration tmpfiles happen when control-flow fields (active/backend/
+            // working_dir/session_dir) change without incrementing iteration.
+            if (!isStateSnapshotNewer(_state, currentMtimeMs, candidate.state, candidate.mtimeMs)) {
+                unlinkQuietly(tmpPath);
+                continue;
+            }
+            // A promotion that fails leaves the snapshot in place — never reap what we
+            // just judged to be the newer state.
             try {
-                const raw = fs.readFileSync(tmpPath, 'utf-8');
-                const tmpState = JSON.parse(raw);
-                if (!isRecoverableStateSnapshotCandidate(tmpState, this.opts.schemaVersion)) {
-                    fs.unlinkSync(tmpPath);
-                    continue;
-                }
-                // Promote a dead-process snapshot if it represents a newer state write.
-                // Same-iteration tmpfiles happen when control-flow fields (active/backend/
-                // working_dir/session_dir) change without incrementing iteration.
-                if (isStateSnapshotNewer(_state, currentMtimeMs, tmpState, readMtimeMs(tmpPath))) {
-                    fs.renameSync(tmpPath, statePath);
-                    // Re-read promoted state into _state
-                    Object.assign(_state, JSON.parse(fs.readFileSync(statePath, 'utf-8')));
-                    currentMtimeMs = readMtimeMs(statePath);
-                }
-                else {
-                    fs.unlinkSync(tmpPath);
-                }
+                fs.renameSync(tmpPath, statePath);
             }
             catch {
-                // Invalid tmpfile — delete it
-                try {
-                    fs.unlinkSync(tmpPath);
-                }
-                catch { /* ignore */ }
+                continue;
             }
+            Object.assign(_state, candidate.state);
+            currentMtimeMs = readMtimeMs(statePath);
         }
     }
     // -----------------------------------------------------------------------
@@ -1280,39 +1436,56 @@ function gateLockPath(key) {
     const hash = createHash('sha256').update(key).digest('hex');
     return path.join(os.tmpdir(), `pickle-gate-lock-${hash}.lock`);
 }
+/**
+ * Reclaims a gate lock whose holder is provably dead.
+ *
+ * A gate holder killed mid-run (operator Ctrl-C group-kill, OOM, crash) never reaches its release,
+ * and this lock is keyed by workingDir under `os.tmpdir()` — it is not session-scoped, so the strand
+ * outlives the pipeline and wedges every later gate for that repo.
+ *
+ * Positive proof of death is the ONLY licence to evict: unlike the session-map lock, a gate
+ * legitimately holds for minutes (it wraps a full typecheck/lint/test run), so the age-based arm that
+ * `withRetryLock` carries would evict a live holder here. Empty, unparseable and live payloads defer.
+ */
+function reclaimDeadGateLock(lp) {
+    withStealRight(lp, () => {
+        const snapshot = inspectLockFile(lp);
+        if (!snapshot || !isDeadPidPayload(snapshot.payload))
+            return false;
+        return stealLockFile(lp, snapshot);
+    });
+}
 export async function withLock(key, opts, fn) {
     const timeout_ms = opts.timeout_ms ?? 30_000;
     const retry_interval_ms = opts.retry_interval_ms ?? 100;
     const lp = gateLockPath(key);
     const start = Date.now();
+    let ino;
     for (;;) {
-        try {
-            await fs.promises.writeFile(lp, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' });
-            const waited = Date.now() - start;
-            opts.onAcquire?.(waited);
+        // The payload is the bare holder pid — the one encoding `isDeadPidPayload` reads.
+        ino = acquireLockFile(lp, String(process.pid));
+        if (ino !== null) {
+            opts.onAcquire?.(Date.now() - start);
             break;
         }
-        catch {
-            const waited = Date.now() - start;
-            if (waited >= timeout_ms) {
-                opts.onTimeout?.(waited);
-                const err = new LockError(`withLock timeout after ${waited}ms waiting for key: ${key}`);
-                err.kind = 'LockError';
-                err.key = key;
-                err.timeout_ms = timeout_ms;
-                err.waited_ms = waited;
-                throw err;
-            }
-            await new Promise(resolve => setTimeout(resolve, retry_interval_ms));
+        reclaimDeadGateLock(lp);
+        const waited = Date.now() - start;
+        if (waited >= timeout_ms) {
+            opts.onTimeout?.(waited);
+            const err = new LockError(`withLock timeout after ${waited}ms waiting for key: ${key}`);
+            err.kind = 'LockError';
+            err.key = key;
+            err.timeout_ms = timeout_ms;
+            err.waited_ms = waited;
+            throw err;
         }
+        await new Promise(resolve => setTimeout(resolve, retry_interval_ms));
     }
     try {
         return await fn();
     }
     finally {
-        try {
-            await fs.promises.unlink(lp);
-        }
-        catch { /* already gone — harmless */ }
+        // Inode-bound: if ours was stolen, the file here is a successor's lock — never unlink it.
+        releaseLockFile(lp, ino);
     }
 }
