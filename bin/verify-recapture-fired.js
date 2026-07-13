@@ -1,28 +1,23 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { readRecoverableJsonObject } from '../extension/services/recoverable-json.js';
 import { getDataRoot } from '../extension/services/pickle-utils.js';
 import { StateManager } from '../extension/services/state-manager.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, '..');
-const ARTIFACT_PATH = path.join(REPO_ROOT, 'bundle', 'ac-dr-02.json');
 const DEFAULT_RUNTIME_ARTIFACT_PATH = path.join(getDataRoot(), 'bundle', 'ac-dr-02.runtime.json');
 const sm = new StateManager();
-const STABLE_ARTIFACT = {
+
+// AC-DR-02 evidence lives ONLY in the session-scoped runtime artifact. A tracked
+// bundle/ac-dr-02.json is impossible by construction: it must be content-stable to keep
+// the repo tree clean across runs, and a content-stable file cannot carry a run-dependent
+// verdict — it can only assert a hardcoded pass. verify-bundle reads `pass` as the AC's
+// verdict, so such a file is a permanent false-green. It reports missing instead.
+const ARTIFACT_TEMPLATE = {
   ac_id: 'AC-DR-02',
-  pass: true,
-  checked_at: '2026-05-06T00:00:00.000Z',
   checker: 'verify-recapture-fired',
   checker_version: '2',
-  evidence: {
-    contract: 'Runtime verification results are written to a session-scoped bundle/ac-dr-02.runtime.json artifact so the tracked artifact remains content-stable across runs.',
-  },
-  failure_reason: null,
-  remediation_hint: null,
 };
 
 function isoMs(value) {
@@ -105,7 +100,7 @@ function remediationHintForFailure(failureReason) {
 
 function writeRuntimeArtifact(artifactPath, { pass, failureReason, evidence }) {
   const artifact = {
-    ...STABLE_ARTIFACT,
+    ...ARTIFACT_TEMPLATE,
     pass,
     checked_at: new Date().toISOString(),
     evidence,
@@ -115,11 +110,6 @@ function writeRuntimeArtifact(artifactPath, { pass, failureReason, evidence }) {
   fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
   fs.writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
   return artifact;
-}
-
-function ensureStableArtifact() {
-  fs.mkdirSync(path.dirname(ARTIFACT_PATH), { recursive: true });
-  fs.writeFileSync(ARTIFACT_PATH, `${JSON.stringify(STABLE_ARTIFACT, null, 2)}\n`);
 }
 
 export function verifyRecaptureFired(sessionRoot) {
@@ -208,7 +198,6 @@ export function verifyRecaptureFired(sessionRoot) {
 
 if (process.argv[1] && path.basename(process.argv[1]) === 'verify-recapture-fired.js') {
   try {
-    ensureStableArtifact();
     const sessionRoot = process.argv[2] ?? process.env.PICKLE_SESSION_ROOT;
     const result = verifyRecaptureFired(sessionRoot);
     process.stdout.write(`AC-DR-02 ${result.artifact.pass ? 'PASS' : 'FAIL'} ${result.artifactPath}\n`);
