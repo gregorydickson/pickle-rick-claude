@@ -4000,7 +4000,7 @@ export function recomputeAbsentWorkerGateVerdict(extensionDir, runCheck = defaul
  * Done-flips on those repos are not universally fail-closed. Only an EXISTING-but-errored
  * gate yields `'unavailable'` (→ fail-closed, AC-CWGE-6).
  */
-function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
+export function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
     const persisted = readWorkerGateVerdict(sessionDir, ticketId);
     if (persisted !== 'absent') {
         return { verdict: persisted, computedVia: 'worker_gate' };
