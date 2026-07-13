@@ -19,7 +19,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   advanceOrExitOnLadderExhaustion,
+  checkPartialLifecycleExit,
   claimWorkerProducedEverythingButCommit,
+  countWorkerArtifacts,
+  emitWorkerProductionBreadcrumb,
 } from '../bin/mux-runner.js';
 import { requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
 import { getTicketStatus } from '../services/pickle-utils.js';
@@ -83,6 +86,12 @@ function makeTicket(sessionDir, ticketId, { tier = 'large', status = 'Failed', o
 function readActivity(statePath, event) {
   const s = JSON.parse(readFileSync(statePath, 'utf8'));
   return (s.activity || []).filter((e) => e.event === event);
+}
+
+/** Every activity event the runtime actually wrote, in order. A double-fire shows up here. */
+function readAllActivity(statePath) {
+  const s = JSON.parse(readFileSync(statePath, 'utf8'));
+  return s.activity || [];
 }
 
 /** Minimal schema validator (mirrors the worker-produced-nothing.test.js shape). */
@@ -740,10 +749,9 @@ test('AC-WMFF-2B: negative cases — non-Failed status, a missing required prefi
 
 // ═══════════ Structural exclusion — R-WSDO wins the overlap ═══════════
 
-test('structural exclusion: the overlap fixture (prior-iteration artifacts + zero delta + 0-byte log + dirty tree) emits EXACTLY ONE event — worker_produced_nothing', async () => {
+test('structural exclusion: the overlap fixture (prior-iteration artifacts + zero delta + 0-byte log + dirty tree) emits EXACTLY ONE event — worker_produced_nothing', () => {
   const { repo, baseSha } = makeRepo('wmff-excl-repo-');
   const { sessionDir, statePath } = makeSession('wmff-excl-sess-');
-  const { checkPartialLifecycleExit, countWorkerArtifacts } = await import('../bin/mux-runner.js');
   try {
     const id = 'cc11over';
     // The exact double-fire fixture the ticket calls out: a RESPAWNED worker that
@@ -756,10 +764,9 @@ test('structural exclusion: the overlap fixture (prior-iteration artifacts + zer
     });
     writeFileSync(path.join(repo, 'dirty.ts'), 'export const e = 5;\n');
 
-    // BOTH predicates are individually satisfiable here — that is the whole point.
-    //
-    // R-WSDO's three conjuncts, each MEASURED from real on-disk state. An assertion over a
-    // term the fixture hardcodes cannot fail, so it characterizes nothing.
+    // R-WSDO's three conjuncts, each MEASURED from real on-disk state and then fed to the
+    // runtime emitter. An assertion over a term the fixture hardcodes cannot fail, so it
+    // characterizes nothing — these are read back off disk, not asserted into existence.
     const plExit = checkPartialLifecycleExit(sessionDir, statePath, id);
     const beforeCount = countWorkerArtifacts(ticketDir);
     // …the respawned worker's iteration runs HERE and produces nothing new…
@@ -770,9 +777,9 @@ test('structural exclusion: the overlap fixture (prior-iteration artifacts + zer
     assert.equal(afterCount - beforeCount, 0, 'R-WSDO term 2: zero NEW artifacts this iteration (measured delta)');
     assert.equal(logBytes, 0, 'R-WSDO term 3: the session log is 0 bytes (read from disk)');
 
-    const wsdoFires = plExit === null && afterCount - beforeCount === 0 && logBytes === 0;
-    assert.equal(wsdoFires, true, 'R-WSDO predicate holds on the overlap fixture');
-    // …and so would the new one, on its own:
+    // BOTH predicates are individually satisfiable on this fixture — that is the whole point,
+    // and it is why mutual exclusion has to live in the emitter's control flow. Probe the
+    // second one on a throwaway iteration so the claim-once key for iteration 1 stays unburnt.
     assert.ok(
       claimWorkerProducedEverythingButCommit({
         sessionDir, workingDir: repo, ticketId: id, iteration: 99, sessionLogBytes: 0, preIterSha: baseSha,
@@ -780,21 +787,26 @@ test('structural exclusion: the overlap fixture (prior-iteration artifacts + zer
       'the everything-but-commit predicate ALSO holds — "disjoint by construction" is false',
     );
 
-    // The runtime's if/else-if is what makes it ONE event. Mirror it here.
-    const iteration = 1;
-    const everythingButCommit = wsdoFires
-      ? null
-      : claimWorkerProducedEverythingButCommit({
-        sessionDir, workingDir: repo, ticketId: id, iteration, sessionLogBytes: 0, preIterSha: baseSha,
-      });
-    const emitted = [];
-    if (wsdoFires) {
-      emitted.push('worker_produced_nothing');
-    } else if (everythingButCommit) {
-      emitted.push('worker_produced_everything_but_commit');
-    }
+    // Drive the REAL emitter — the same function the mux loop calls — and read the events it
+    // actually wrote. A test-local re-derivation of the if/else-if would pass against a
+    // production double-fire; only state.json can refute one.
+    const fired = emitWorkerProductionBreadcrumb({
+      sessionDir,
+      statePath,
+      workingDir: repo,
+      ticketId: id,
+      iteration: 1,
+      partialLifecycleExit: plExit,
+      artifactDelta: afterCount - beforeCount,
+      preIterSha: baseSha,
+    });
 
-    assert.deepEqual(emitted, ['worker_produced_nothing'], 'exactly ONE event, and R-WSDO wins');
+    assert.equal(fired, 'worker_produced_nothing', 'R-WSDO wins the overlap');
+    assert.deepEqual(
+      readAllActivity(statePath).map((e) => e.event),
+      ['worker_produced_nothing'],
+      'EXACTLY ONE event reached state.json — an eager second arm would leave two',
+    );
 
     // Term 2 is load-bearing, not vacuous: a worker that DID produce a new artifact this
     // iteration moves the delta off zero, so R-WSDO declines and the `else if` arm becomes
@@ -814,10 +826,9 @@ test('structural exclusion: the overlap fixture (prior-iteration artifacts + zer
 // single byte makes it decline and the breadcrumb becomes the event that must fire. That is the
 // live incident's own shape: the worker logged real work, then died at budget with the diff
 // uncommitted. A fixture set that only ever passes a 0-byte log never reaches this arm.
-test('structural exclusion: a 1-BYTE session log flips the else-if — R-WSDO declines, the breadcrumb wins (the incident shape)', async () => {
+test('structural exclusion: a 1-BYTE session log flips the else-if — R-WSDO declines, the breadcrumb wins (the incident shape)', () => {
   const { repo, baseSha } = makeRepo('wmff-1byte-repo-');
   const { sessionDir, statePath } = makeSession('wmff-1byte-sess-');
-  const { checkPartialLifecycleExit, countWorkerArtifacts } = await import('../bin/mux-runner.js');
   try {
     const id = 'cc22oneb';
     // Identical to the overlap fixture in EVERY respect but one: the log carries a single byte.
@@ -833,33 +844,36 @@ test('structural exclusion: a 1-BYTE session log flips the else-if — R-WSDO de
     const afterCount = countWorkerArtifacts(ticketDir);
     const logBytes = statSync(path.join(ticketDir, 'worker_session_4242.log')).size;
     assert.equal(logBytes, 1, 'the ONLY difference from the overlap fixture is this one byte');
+    assert.equal(plExit, null, 'the prefix set is still complete, so plExit is still null');
+    assert.equal(afterCount - beforeCount, 0, 'the artifact delta is still zero');
 
-    const wsdoFires = plExit === null && afterCount - beforeCount === 0 && logBytes === 0;
-    assert.equal(wsdoFires, false, 'a non-empty log makes R-WSDO decline — its log_empty term is false');
+    // The emitter reads the log size off disk itself — the one byte is what makes R-WSDO's
+    // log_empty term false, so the else-if arm becomes reachable and the breadcrumb wins.
+    const fired = emitWorkerProductionBreadcrumb({
+      sessionDir,
+      statePath,
+      workingDir: repo,
+      ticketId: id,
+      iteration: 1,
+      partialLifecycleExit: plExit,
+      artifactDelta: afterCount - beforeCount,
+      preIterSha: baseSha,
+    });
 
-    // Mirror the runtime's if/else-if. With R-WSDO declining, the else-if arm is reachable.
-    const everythingButCommit = wsdoFires
-      ? null
-      : claimWorkerProducedEverythingButCommit({
-        sessionDir, workingDir: repo, ticketId: id, iteration: 1, sessionLogBytes: logBytes, preIterSha: baseSha,
-      });
-    const emitted = [];
-    if (wsdoFires) {
-      emitted.push('worker_produced_nothing');
-    } else if (everythingButCommit) {
-      emitted.push('worker_produced_everything_but_commit');
-    }
-
+    assert.equal(fired, 'worker_produced_everything_but_commit', 'at 1 byte it is the breadcrumb, not R-WSDO');
+    const emitted = readAllActivity(statePath);
     assert.deepEqual(
-      emitted, ['worker_produced_everything_but_commit'],
-      'still exactly ONE event — but at 1 byte it is the breadcrumb, not R-WSDO',
+      emitted.map((e) => e.event),
+      ['worker_produced_everything_but_commit'],
+      'still EXACTLY ONE event in state.json — but the other arm of the else-if',
     );
-    assert.equal(everythingButCommit.session_log_bytes, 1, 'the non-zero log size round-trips into the payload');
+
+    const entry = emitted[0];
+    assert.equal(entry.gate_payload.session_log_bytes, 1, 'the non-zero log size round-trips into the payload');
     assert.equal(
-      validate({ event: 'worker_produced_everything_but_commit', ts: new Date().toISOString(), ticket: id, gate_payload: everythingButCommit },
-        'worker_produced_everything_but_commit').valid,
+      validate(entry, 'worker_produced_everything_but_commit').valid,
       true,
-      'the incident-shaped payload is schema-conformant',
+      'the incident-shaped payload the runtime actually wrote is schema-conformant',
     );
   } finally {
     rmSync(repo, { recursive: true, force: true });
