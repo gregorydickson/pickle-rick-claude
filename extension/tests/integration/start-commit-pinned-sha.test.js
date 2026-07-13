@@ -5,12 +5,20 @@
 // the (now-deleted-at-these-seams) computeBaselineStartCommit. This file
 // proves:
 //  - AC-SCPIN-2: the post-heal invariant `start_commit === pinned_sha`, plus
-//    the DISCRIMINATING oracle `rev-list --count start_commit..HEAD ==
-//    commits-the-build-made` in the three PRD-mandated cases (exit-0 build /
-//    non-zero-with-commits / unborn-HEAD gains first commit). The oracle is
-//    discriminating because a merge-base-based baseline is ALSO an ancestor
-//    of HEAD and ALSO != HEAD (so those weaker checks pass on the wrong
-//    value too) but produces the WRONG commit count.
+//    the oracle `rev-list --count start_commit..HEAD == commits-the-build-made`
+//    across the three PRD-mandated cases (exit-0 build / non-zero-with-commits /
+//    unborn-HEAD gains first commit). The oracle is discriminating because a
+//    merge-base-based baseline is ALSO an ancestor of HEAD and ALSO != HEAD (so
+//    those weaker checks pass on the wrong value too) but produces the WRONG
+//    commit count.
+//
+//    Discrimination is a property of the FIXTURE, not of the assertion: it holds
+//    only where merge-base(main, HEAD), HEAD and pinned_sha are three DIFFERENT
+//    shas. Cases A and B therefore branch past a main fork point, and each
+//    asserts the healed value is pinned_sha AND is not the merge-base. Case C
+//    (unborn HEAD) CANNOT be made discriminating — at a genesis commit the three
+//    candidates are necessarily the same object — so it is a BOUNDARY case and
+//    is not evidence that the heal adopts the right value. Do not read it as such.
 //  - AC-SCPIN-3: repinFromHeadOnResume runs BEFORE the start_commit heal in
 //    applyResumeConfig, proven behaviorally (a stale pinned_sha must not
 //    survive into the healed start_commit).
@@ -36,32 +44,50 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SETUP = path.resolve(__dirname, '../../bin/setup.js');
 
+// Hang guards, not perf assertions (extension/CLAUDE.md serial-manifest hygiene): these
+// bound a wedged subprocess so one hung spawn cannot stall the whole integration tier.
+// They are deliberately generous. NEVER shrink them to make a load-starved test pass —
+// this file is already serialized via tests/integration/.serial-tests.json.
+const GIT_TIMEOUT_MS = 15_000;
+const SETUP_TIMEOUT_MS = 120_000;
+
+function git(args, dir) {
+  return execFileSync('git', args, { cwd: dir, encoding: 'utf-8', timeout: GIT_TIMEOUT_MS });
+}
+
 function tmpRoot(prefix) {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
 function initGitRepo(dir) {
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-  execFileSync('git', ['config', 'user.email', 'test@test.local'], { cwd: dir });
-  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
-  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+  git(['init', '-q', '-b', 'main'], dir);
+  git(['config', 'user.email', 'test@test.local'], dir);
+  git(['config', 'user.name', 'Test'], dir);
+  git(['config', 'commit.gpgsign', 'false'], dir);
   fs.writeFileSync(path.join(dir, 'seed.txt'), 'seed');
-  execFileSync('git', ['add', '-A'], { cwd: dir });
-  execFileSync('git', ['commit', '--no-gpg-sign', '-q', '-m', 'baseline'], { cwd: dir });
+  git(['add', '-A'], dir);
+  git(['commit', '--no-gpg-sign', '-q', '-m', 'baseline'], dir);
 }
 
 function gitSha(dir, ref) {
-  return execFileSync('git', ['rev-parse', ref], { cwd: dir, encoding: 'utf-8' }).trim();
+  return git(['rev-parse', ref], dir).trim();
+}
+
+// The discriminating oracle: how many commits exist in `base..HEAD`. A merge-base
+// baseline is ALSO an ancestor of HEAD and ALSO != HEAD, so only the COUNT can tell
+// a correct baseline from a fork-point-early one.
+function revCount(dir, base, tip) {
+  return Number(git(['rev-list', '--count', `${base}..${tip}`], dir).trim());
 }
 
 function commitFile(dir, name, message) {
   fs.writeFileSync(path.join(dir, name), message);
-  execFileSync('git', ['add', '-A'], { cwd: dir });
-  execFileSync('git', ['commit', '--no-gpg-sign', '-q', '-m', message], { cwd: dir });
+  git(['add', '-A'], dir);
+  git(['commit', '--no-gpg-sign', '-q', '-m', message], dir);
 }
 
 function addFeatureBranchCommits(dir, n) {
-  execFileSync('git', ['checkout', '-q', '-b', 'feature'], { cwd: dir });
+  git(['checkout', '-q', '-b', 'feature'], dir);
   for (let i = 0; i < n; i++) {
     commitFile(dir, `feature-${i}.txt`, `feature ${i}`);
   }
@@ -71,6 +97,7 @@ function runSetupAt(cwd, args, dataRoot) {
   const res = spawnSync(process.execPath, [SETUP, ...args], {
     cwd,
     encoding: 'utf-8',
+    timeout: SETUP_TIMEOUT_MS,
     env: { ...process.env, FORCE_COLOR: '0', PICKLE_DATA_ROOT: dataRoot },
   });
   if (res.status !== 0) {
@@ -89,6 +116,7 @@ function bootstrapPausedSessionAt(dataRoot, repoDir, task) {
   const out = execFileSync(process.execPath, [SETUP, '--paused', '--task', task], {
     cwd: neutralCwd,
     encoding: 'utf-8',
+    timeout: SETUP_TIMEOUT_MS,
     env: { ...process.env, FORCE_COLOR: '0', PICKLE_DATA_ROOT: dataRoot },
   });
   const match = out.match(/SESSION_ROOT=(.+)/);
@@ -141,22 +169,19 @@ test('R-SCPIN AC-SCPIN-2 case A (exit-0 build): healed start_commit oracle == ex
     commitFile(repoDir, 'build-3.txt', 'build 3');
     const head = gitSha(repoDir, 'HEAD');
 
-    const realCount = Number(
-      execFileSync('git', ['rev-list', '--count', `${healedBase}..${head}`], { cwd: repoDir, encoding: 'utf-8' }).trim(),
-    );
-    assert.equal(realCount, 3, 'discriminating oracle: rev-list --count start_commit..HEAD == exact build-commit count');
+    assert.equal(revCount(repoDir, healedBase, head), 3, 'discriminating oracle: rev-list --count start_commit..HEAD == exact build-commit count');
 
     // Non-discriminating checks: forkPoint is ALSO an ancestor of HEAD and
     // ALSO != HEAD, yet gives the WRONG count — proving those weaker checks
     // (used and rejected in the PRD) cannot tell a correct baseline from a
     // 97-commit-early one.
-    const isAncestor = spawnSync('git', ['merge-base', '--is-ancestor', forkPoint, head], { cwd: repoDir }).status === 0;
+    const isAncestor = spawnSync('git', ['merge-base', '--is-ancestor', forkPoint, head], {
+      cwd: repoDir,
+      timeout: GIT_TIMEOUT_MS,
+    }).status === 0;
     assert.ok(isAncestor, 'forkPoint must ALSO be an ancestor of HEAD (non-discriminating check #1)');
     assert.notEqual(forkPoint, head, 'forkPoint must ALSO differ from HEAD (non-discriminating check #2)');
-    const wrongCount = Number(
-      execFileSync('git', ['rev-list', '--count', `${forkPoint}..${head}`], { cwd: repoDir, encoding: 'utf-8' }).trim(),
-    );
-    assert.notEqual(wrongCount, 3, 'the wrong (merge-base) baseline must NOT produce the correct build-commit count');
+    assert.notEqual(revCount(repoDir, forkPoint, head), 3, 'the wrong (merge-base) baseline must NOT produce the correct build-commit count');
   } finally {
     fs.rmSync(dataRoot, { recursive: true, force: true });
     fs.rmSync(repoDir, { recursive: true, force: true });
@@ -171,17 +196,27 @@ test('R-SCPIN AC-SCPIN-2 case A (exit-0 build): healed start_commit oracle == ex
 // integration-tier mandate): once to heal start_commit, once more after
 // additional commits land — proving start_commit, once healed, is NEVER
 // re-derived on a later resume even though pinned_sha keeps tracking HEAD.
+//
+// The fixture is deliberately a feature branch PAST a main fork point. On a
+// single-branch repo merge-base(main, HEAD) == HEAD == pinned_sha, so all three
+// candidate baselines collapse to one sha and NO assertion here could fail on a
+// merge-base-guessing heal (measured: this test passed against a reverted fix).
+// The fork point makes the wrong value observably different from the right one.
 test('R-SCPIN AC-SCPIN-2 case B (non-zero-with-commits): start_commit survives a second resume unchanged', () => {
   const dataRoot = tmpRoot('pickle-scpin-b-data-');
   const repoDir = tmpRoot('pickle-scpin-b-repo-');
   try {
     initGitRepo(repoDir);
+    addFeatureBranchCommits(repoDir, 2);
+    const forkPoint = gitSha(repoDir, 'main');
     const sessionRoot = bootstrapPausedSessionAt(dataRoot, repoDir, 'scpin case B');
 
     resumeAt(sessionRoot, dataRoot);
     const afterFirstResume = readState(sessionRoot);
     const healedBase = afterFirstResume.start_commit;
     assert.ok(healedBase, 'first resume healed start_commit');
+    assert.equal(healedBase, afterFirstResume.pinned_sha, 'AC-SCPIN-2 invariant: healed start_commit === pinned_sha');
+    assert.notEqual(healedBase, forkPoint, 'healed start_commit must NOT be the merge-base guess');
 
     // Simulate a worker pass that committed real work but did not cleanly
     // finish (e.g. a failed gate after a partial commit) — the commit still
@@ -199,10 +234,17 @@ test('R-SCPIN AC-SCPIN-2 case B (non-zero-with-commits): start_commit survives a
     assert.equal(afterSecondResume.pinned_sha, headAfterPartialWork, 'pinned_sha DOES track the new HEAD on the second resume');
     assert.notEqual(afterSecondResume.start_commit, afterSecondResume.pinned_sha, 'once healed, start_commit intentionally diverges from a since-moved pinned_sha');
 
-    const buildCount = Number(
-      execFileSync('git', ['rev-list', '--count', `${healedBase}..${headAfterPartialWork}`], { cwd: repoDir, encoding: 'utf-8' }).trim(),
+    assert.equal(
+      revCount(repoDir, healedBase, headAfterPartialWork),
+      1,
+      'oracle still counts exactly the one commit made after the healed baseline',
     );
-    assert.equal(buildCount, 1, 'oracle still counts exactly the one commit made after the healed baseline');
+    // The merge-base guess would have counted the 2 pre-existing feature commits too.
+    assert.notEqual(
+      revCount(repoDir, forkPoint, headAfterPartialWork),
+      1,
+      'the merge-base baseline must NOT produce the correct build-commit count',
+    );
   } finally {
     fs.rmSync(dataRoot, { recursive: true, force: true });
     fs.rmSync(repoDir, { recursive: true, force: true });
@@ -216,14 +258,20 @@ test('R-SCPIN AC-SCPIN-2 case B (non-zero-with-commits): start_commit survives a
 // non-git-cwd WARN case). Once the repo gains its genesis commit, a SECOND
 // resume must heal start_commit to that exact commit, and the oracle must
 // read 0 (the genesis commit itself is the baseline, not a "build commit").
+//
+// BOUNDARY case, NOT a discrimination case: at the genesis commit merge-base,
+// HEAD and pinned_sha are all the same object, so this test passes on a
+// merge-base-guessing heal too (measured). It pins the unborn-HEAD boundary —
+// heal defers while HEAD is unresolvable, then fires once it is born — and
+// nothing about WHICH value the heal adopts. Cases A and B carry that load.
 test('R-SCPIN AC-SCPIN-2 case C (unborn-HEAD gains first commit): heals only once HEAD is resolvable', () => {
   const dataRoot = tmpRoot('pickle-scpin-c-data-');
   const repoDir = tmpRoot('pickle-scpin-c-repo-');
   try {
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoDir });
-    execFileSync('git', ['config', 'user.email', 'test@test.local'], { cwd: repoDir });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoDir });
-    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repoDir });
+    git(['init', '-q', '-b', 'main'], repoDir);
+    git(['config', 'user.email', 'test@test.local'], repoDir);
+    git(['config', 'user.name', 'Test'], repoDir);
+    git(['config', 'commit.gpgsign', 'false'], repoDir);
 
     const sessionRoot = bootstrapPausedSessionAt(dataRoot, repoDir, 'scpin case C');
 
@@ -241,10 +289,11 @@ test('R-SCPIN AC-SCPIN-2 case C (unborn-HEAD gains first commit): heals only onc
     assert.equal(afterSecondResume.start_commit, genesisSha, 'heal adopts the now-resolvable pinned_sha');
     assert.equal(afterSecondResume.start_commit, afterSecondResume.pinned_sha, 'AC-SCPIN-2 invariant holds');
 
-    const buildCount = Number(
-      execFileSync('git', ['rev-list', '--count', `${afterSecondResume.start_commit}..HEAD`], { cwd: repoDir, encoding: 'utf-8' }).trim(),
+    assert.equal(
+      revCount(repoDir, afterSecondResume.start_commit, 'HEAD'),
+      0,
+      'the genesis commit IS the baseline — zero build commits past it',
     );
-    assert.equal(buildCount, 0, 'the genesis commit IS the baseline — zero build commits past it');
   } finally {
     fs.rmSync(dataRoot, { recursive: true, force: true });
     fs.rmSync(repoDir, { recursive: true, force: true });
@@ -256,12 +305,23 @@ test('R-SCPIN AC-SCPIN-2 case C (unborn-HEAD gains first commit): heals only onc
 // start_commit, advance HEAD to commit B while paused, then resume. The
 // healed start_commit must equal B (the FRESH re-derived pin), never A (the
 // stale pre-repin value) — only possible if repin ran first.
+//
+// The fixture sits on a feature branch so the THREE failure modes produce three
+// DIFFERENT shas and the test can tell them apart:
+//   heal-before-repin  → commitA   (the stale pin)
+//   merge-base guess   → forkPoint (the pre-R-SCPIN defect)
+//   correct            → commitB   (the fresh pin)
+// On a single-branch repo forkPoint == commitB, so the merge-base mode would be
+// invisible here (measured: this test passed against a reverted fix).
 test('R-SCPIN AC-SCPIN-3: repinFromHeadOnResume runs before the start_commit heal (ordering pin)', () => {
   const dataRoot = tmpRoot('pickle-scpin-ord-data-');
   const repoDir = tmpRoot('pickle-scpin-ord-repo-');
   try {
     initGitRepo(repoDir);
+    const forkPoint = gitSha(repoDir, 'main');
+    addFeatureBranchCommits(repoDir, 1);
     const commitA = gitSha(repoDir, 'HEAD');
+    assert.notEqual(forkPoint, commitA, 'fixture: the merge-base must differ from the stale pin');
 
     // In-repo bootstrap: createInitialState co-stamps start_commit=A and
     // pinned_sha=A (the normal-path invariant this ticket's contract cites).
@@ -291,6 +351,7 @@ test('R-SCPIN AC-SCPIN-3: repinFromHeadOnResume runs before the start_commit hea
     assert.equal(post.pinned_sha, commitB, 'repin refreshed pinned_sha to current HEAD before the heal ran');
     assert.equal(post.start_commit, commitB, 'heal adopted the FRESH pin, proving repin ran first');
     assert.notEqual(post.start_commit, commitA, 'heal must NOT adopt the stale pre-repin pinned_sha');
+    assert.notEqual(post.start_commit, forkPoint, 'heal must NOT adopt the merge-base guess');
   } finally {
     fs.rmSync(dataRoot, { recursive: true, force: true });
     fs.rmSync(repoDir, { recursive: true, force: true });
@@ -372,12 +433,17 @@ function stubCleanCitadel() {
   });
 }
 
-test('R-SCPIN citadel seam: unset start_commit at PHASE 2 adopts pinned_sha', async () => {
+test('R-SCPIN citadel seam: unset start_commit at PHASE 2 adopts pinned_sha, not merge-base', async () => {
   const sessionDir = tmpRoot('pickle-scpin-citadel-adopt-');
   const repoDir = tmpRoot('pickle-scpin-citadel-adopt-repo-');
   try {
     initGitRepo(repoDir);
+    // Feature branch past the fork point: without it merge-base(main, HEAD) == HEAD
+    // == pinned_sha and this test cannot see a merge-base-guessing heal at all.
+    const forkPoint = gitSha(repoDir, 'main');
+    addFeatureBranchCommits(repoDir, 2);
     const head = gitSha(repoDir, 'HEAD');
+    assert.notEqual(forkPoint, head, 'fixture must have commits past the fork point');
     stubCleanCitadel();
     fs.writeFileSync(path.join(sessionDir, 'prd_refined.md'), '# refined prd\n');
     writeCitadelState(path.join(sessionDir, 'state.json'), {
@@ -393,6 +459,7 @@ test('R-SCPIN citadel seam: unset start_commit at PHASE 2 adopts pinned_sha', as
     assert.equal(exitCode, 0, 'citadel proceeds — start_commit healed from pinned_sha');
     const persisted = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
     assert.equal(persisted.start_commit, head, 'healed start_commit adopts pinned_sha');
+    assert.notEqual(persisted.start_commit, forkPoint, 'healed start_commit must NOT fall back to merge-base(main, HEAD)');
   } finally {
     __setCitadelRemediationDepsForTests(null);
     fs.rmSync(sessionDir, { recursive: true, force: true });
