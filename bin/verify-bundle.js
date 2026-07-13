@@ -21,9 +21,15 @@ export const BUNDLE_ARTIFACT_SCHEMA = Object.freeze({
   ]),
 });
 
-// AC-DR-03 (24h soak), AC-DR-07 (1h soak), and AC-DR-15 (PRE-FLIGHT) are absent by
-// contract, not by omission: AC-STRIP-10 stripped them and the refined PRD marks each
-// `status: removed` with artifact `n/a`. A removed AC has no artifact to demand.
+// Four AC ids are absent below by decision, not omission. AC-DR-03 (24h soak), AC-DR-07
+// (1h soak), and AC-DR-15 (PRE-FLIGHT) were stripped by AC-STRIP-10, and the refined PRD
+// marks each `status: removed` with artifact `n/a` — a removed AC has no artifact to demand.
+// AC-DR-05 (watcher-liveness) lost its only checker in 59120b5d, which deleted it as
+// structurally unfalsifiable (`pass` was `matches.length === 0` over a log the banner can
+// never reach); `bundle/section-c-still-needed.json` records Section C as
+// `still_needed: false`. No artifact can ever be produced for it, so demanding one would
+// pin every full-bundle run at INCONCLUSIVE. Its PRD row still lacks `status: removed`, so
+// that fourth absence is derived from the exception recorded in verify-bundle.test.js.
 export const EXPECTED_BUNDLE_AC_IDS = Object.freeze([
   'AC-DR-01', 'AC-DR-02', 'AC-DR-04a', 'AC-DR-04b',
   'AC-DR-04c', 'AC-DR-04d', 'AC-DR-06',

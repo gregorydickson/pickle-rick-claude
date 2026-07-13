@@ -27,37 +27,39 @@ const REFINED_PRD = path.join(
   REPO_ROOT,
   'prds/archive/bundles/p2-bundle-deploy-reversion-and-gate-baseline-diagnostic.md',
 );
-// The live (non-stripped) refined ACs. AC-DR-03/07/15 are absent because AC-STRIP-10
-// removed them; `removed-acs-are-not-demanded` derives that set from the PRD itself so
-// this list cannot silently drift back out of sync with the contract.
-const REFINED_DEPLOY_REVERSION_AC_IDS = Object.freeze([
-  'AC-DR-01',
-  'AC-DR-02',
-  'AC-DR-04a',
-  'AC-DR-04b',
-  'AC-DR-04c',
-  'AC-DR-04d',
-  'AC-DR-06',
-  'AC-DR-08',
-  'AC-DR-09',
-  'AC-DR-10',
-  'AC-DR-11',
-  'AC-DR-12',
-  'AC-DR-13',
-  'AC-DR-14',
-  'AC-DR-16',
-]);
+// AC-DR-05 is a LIVE row in the refined PRD that the contract deliberately does not demand:
+// 59120b5d deleted its only checker as structurally unfalsifiable, and
+// `bundle/section-c-still-needed.json` records Section C as `still_needed: false`, so no
+// artifact can ever be produced. Demanding one would pin every full-bundle run at
+// INCONCLUSIVE. The PRD row still lacks `status: removed`; until it is marked, this entry is
+// what keeps that gap visible. Any OTHER live AC missing from the contract is a false-green
+// and reddens `live-acs-still-demanded` below.
+const UNDEMANDED_LIVE_AC_IDS = Object.freeze({
+  'AC-DR-05': 'checker deleted as unfalsifiable (59120b5d); Section C still_needed:false',
+});
 
-// Parses the refined PRD's AC table for rows whose status cell is REMOVED, e.g.
+// Parses the refined PRD's AC table, e.g.
 // `| AC-DR-03 | **REMOVED** (see ...) | status: removed | n/a | ... |`
-function removedAcIdsFromRefinedPrd() {
+function acRowsFromRefinedPrd() {
   const prd = readFileSync(REFINED_PRD, 'utf8');
-  const removed = [];
+  const rows = [];
   for (const line of prd.split('\n')) {
     const match = /^\|\s*(AC-DR-[0-9a-z]+)\s*\|(.*)$/i.exec(line);
-    if (match && /status:\s*removed/i.test(match[2])) removed.push(match[1]);
+    if (match) rows.push({ acId: match[1], removed: /status:\s*removed/i.test(match[2]) });
   }
-  return removed;
+  return rows;
+}
+
+function removedAcIdsFromRefinedPrd() {
+  return acRowsFromRefinedPrd()
+    .filter((row) => row.removed)
+    .map((row) => row.acId);
+}
+
+function liveAcIdsFromRefinedPrd() {
+  return acRowsFromRefinedPrd()
+    .filter((row) => !row.removed)
+    .map((row) => row.acId);
 }
 function acFileName(acId) {
   return `${acId.toLowerCase()}.json`;
@@ -112,7 +114,17 @@ function assertBundleArtifactShape(value, acId) {
 }
 
 test('verify-bundle.ac-mapping covers every refined deploy-reversion AC exactly once', () => {
-  assert.deepEqual(EXPECTED_BUNDLE_AC_IDS, REFINED_DEPLOY_REVERSION_AC_IDS);
+  const live = liveAcIdsFromRefinedPrd();
+  // Guards the parser: a PRD table-shape change must not silently empty these sets.
+  assert.ok(live.length >= 15, `refined PRD AC table parsed only ${live.length} live rows`);
+
+  // No phantom: nothing is demanded that the PRD does not declare live.
+  for (const acId of EXPECTED_BUNDLE_AC_IDS) {
+    assert.ok(
+      live.includes(acId),
+      `${acId} is demanded by EXPECTED_BUNDLE_AC_IDS but is not a live AC row in the refined PRD`,
+    );
+  }
   assert.equal(new Set(EXPECTED_BUNDLE_AC_IDS).size, EXPECTED_BUNDLE_AC_IDS.length);
 });
 
@@ -138,16 +150,24 @@ test('verify-bundle.removed-acs-are-not-demanded by the bundle contract', () => 
 });
 
 test('verify-bundle.live-acs-still-demanded so unwritten evidence cannot false-green', () => {
-  // The 12 ACs below have real artifact paths in the PRD but were never authored.
-  // They MUST keep reporting missing — dropping them would manufacture a false PASS.
-  for (const acId of ['AC-DR-01', 'AC-DR-04a', 'AC-DR-08', 'AC-DR-16']) {
-    assert.equal(EXPECTED_BUNDLE_AC_IDS.includes(acId), true);
+  // Derived from the PRD, not sampled from a hardcoded list: an AC that is never demanded can
+  // never report missing, so dropping a live one manufactures a PASS. Sampling four ids is why
+  // AC-DR-05 was dropped unnoticed — it was not in the sample.
+  const dropped = liveAcIdsFromRefinedPrd().filter((acId) => !EXPECTED_BUNDLE_AC_IDS.includes(acId));
+  assert.deepEqual(
+    [...dropped].sort(),
+    Object.keys(UNDEMANDED_LIVE_AC_IDS).sort(),
+    'a live PRD AC is not demanded by EXPECTED_BUNDLE_AC_IDS and has no recorded justification',
+  );
+  for (const [acId, justification] of Object.entries(UNDEMANDED_LIVE_AC_IDS)) {
+    assert.ok(justification.trim().length > 0, `${acId} is undemanded with an empty justification`);
   }
+
   const result = verifyBundle({ repoRoot: REPO_ROOT });
   assert.equal(result.exitCode, 2);
   assert.match(result.stderr, /AC-DR-16: missing bundle\/ac-dr-16\.json/);
-  // ...but never for an AC the PRD stripped.
-  assert.equal(/ac-dr-(03|07|pre-flight)\.json/.test(result.stderr), false);
+  // ...but never for an AC the PRD stripped, nor for the one whose checker is gone.
+  assert.equal(/ac-dr-(03|05|07|pre-flight)\.json/.test(result.stderr), false);
 });
 
 test('verify-bundle.fixture-artifacts satisfy required metadata schema for every AC', () => {
