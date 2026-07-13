@@ -32,7 +32,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
-import { inspectLockFile, stealLockFile, withLock } from '../../services/state-manager.js';
+import { acquireLockFile, inspectLockFile, isDeadPidPayload, stealLockFile, withLock } from '../../services/state-manager.js';
 import { applyCourseCorrectionRestructure } from '../../services/transaction-ticket-ops.js';
 import { LockError } from '../../types/index.js';
 
@@ -362,5 +362,90 @@ test('applyCourseCorrectionRestructure: a LIVE restructure holder is never stole
     assert.equal(fs.readFileSync(lock, 'utf-8'), String(process.pid), 'the live holder’s lock must survive');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- the primitive: the lock and its payload are published together ---------------------------
+
+/** Spins in its own process recording whether `lock` is ever on disk holding fewer than `full` bytes. */
+function spawnPublishObserver(lock, full, readyPath) {
+  const src = `
+    const fs = require('node:fs');
+    const [lock, full, ready] = [process.argv[1], Number(process.argv[2]), process.argv[3]];
+    fs.writeFileSync(ready, '1');
+    let sawIncomplete = false, sawComplete = false;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline && !sawComplete) {
+      try {
+        if (fs.statSync(lock).size < full) sawIncomplete = true; else sawComplete = true;
+      } catch { /* not published yet */ }
+    }
+    process.stdout.write(JSON.stringify({ sawIncomplete, sawComplete }));
+  `;
+  return spawn(process.execPath, ['-e', src, lock, String(full), readyPath], {
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+}
+
+async function waitForFile(p, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(p)) return true;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  return false;
+}
+
+test('acquireLockFile publishes the lock and its payload in one step — never the lock alone', async () => {
+  const dir = tmpDir();
+  try {
+    const lock = path.join(dir, 'gate.lock');
+    const ready = path.join(dir, 'observer-ready');
+
+    // A holder killed between "create the lock file" and "write the holder pid" publishes an EMPTY
+    // payload, and the next test proves that strand can never be reclaimed. For a real pid the window
+    // is microseconds wide, so widen it with a payload big enough to watch — the invariant it proves
+    // (the lock is never on disk without the pid that holds it) does not depend on payload size.
+    const payload = 'x'.repeat(32 * 1024 * 1024);
+    const observer = spawnPublishObserver(lock, payload.length, ready);
+    assert.ok(await waitForFile(ready), 'observer must be watching before the lock is taken');
+
+    assert.ok(acquireLockFile(lock, payload), 'acquire must succeed on an unheld lock');
+
+    let out = '';
+    observer.stdout.on('data', chunk => { out += chunk; });
+    await once(observer, 'close');
+    const seen = JSON.parse(out);
+
+    assert.equal(seen.sawComplete, true, 'observer must have seen the published lock at all');
+    assert.equal(seen.sawIncomplete, false,
+      'the lock must never be observable without its payload — that state is an unreclaimable strand');
+
+    assert.equal(fs.readFileSync(lock, 'utf-8'), payload, 'the published payload must be intact');
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['gate.lock', 'observer-ready'],
+      'the staging file used to publish atomically must not be left behind');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a lock published without its payload is never reclaimed — the strand the atomic publish prevents', async () => {
+  const key = gateKey('empty-payload');
+  const lp = gateLockPath(key);
+  try {
+    // Exactly what a holder killed mid-publish used to leave behind: the lock exists, the pid never landed.
+    fs.writeFileSync(lp, '');
+
+    // The reclaim rule refuses it, and MUST: a LIVE holder is empty in that same window, so a steal
+    // keyed on an empty payload would evict one. The publish is what has to change, not the reclaim.
+    assert.equal(isDeadPidPayload(''), false, 'an empty payload is not proof of death');
+
+    await assert.rejects(
+      withLock(key, { timeout_ms: 600, retry_interval_ms: 50 }, async () => 'unreachable'),
+      err => err instanceof LockError,
+      'an empty-payload lock wedges every later gate for this key — the gate lock has no age arm to fall back on',
+    );
+  } finally {
+    removeGateLock(lp);
   }
 });
