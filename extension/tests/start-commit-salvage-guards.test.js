@@ -72,6 +72,7 @@ function makeSessionDir(workingDir) {
 
 test('AC-SCPIN-4(a): reset-to-session-start detected under correct baseline, blinded under merge-base baseline', () => {
   const repo = initRepo();
+  let sessionTmp;
   try {
     const BASE = commit(repo, 'base.txt', 'base');
     const START = commit(repo, 'start.txt', 'start'); // pinned session-start commit
@@ -79,7 +80,9 @@ test('AC-SCPIN-4(a): reset-to-session-start detected under correct baseline, bli
     git(['reset', '--hard', START], repo); // simulated worker regression: HEAD -> START, WORK now dangling
     assert.equal(git(['rev-parse', 'HEAD'], repo), START);
 
-    const { sessionDir, statePath } = makeSessionDir(repo);
+    const sessionFix = makeSessionDir(repo);
+    sessionTmp = sessionFix.tmp;
+    const { sessionDir, statePath } = sessionFix;
 
     // Blinded under a merge-base-style (older, wrong) baseline: isHeadAtOrBelowCommit(START,
     // BASE, repo) is neither equal nor "START is an ancestor of BASE" (BASE is OLDER than
@@ -120,16 +123,20 @@ test('AC-SCPIN-4(a): reset-to-session-start detected under correct baseline, bli
     assert.equal(detected.action, 'ff_reattached');
     assert.equal(git(['rev-parse', 'HEAD'], repo), WORK);
   } finally {
+    if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
   }
 });
 
 test('AC-SCPIN-4(b): T40 isFailedTicketTerminalExcludable — empty-window excludable, declared-file-touched not excludable', () => {
   const repo = initRepo();
+  let sessionTmp;
   try {
     const startCommit = commit(repo, 'init.txt', 'init');
 
-    const { sessionDir } = makeSessionDir(repo);
+    const sessionFix = makeSessionDir(repo);
+    sessionTmp = sessionFix.tmp;
+    const { sessionDir } = sessionFix;
 
     // Excludable case: ticket declares an untouched file; the window's one commit touches a
     // DIFFERENT file, so the window is non-empty in general but empty for THIS ticket.
@@ -180,6 +187,7 @@ test('AC-SCPIN-4(b): T40 isFailedTicketTerminalExcludable — empty-window exclu
       'declared file touched in the window -> NOT excludable',
     );
   } finally {
+    if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
   }
 });
