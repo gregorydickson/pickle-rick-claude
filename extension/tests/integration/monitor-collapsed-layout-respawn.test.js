@@ -15,8 +15,17 @@ import {
   render,
 } from '../../bin/monitor.js';
 
-function makeValidSession(tmpRoot, { active = true, step = null, commandTemplate = null, includeSessionDir = false } = {}) {
-  const sessionDir = path.join(tmpRoot, 'session');
+/**
+ * Launchers name the tmux session `<prefix>-<session-hash>` for the session dir it
+ * manages, and `restartDeadWatcherPanes` refuses any session whose hash is not ours.
+ * Fixtures must honor that pairing or they exercise a layout production cannot build.
+ */
+function sessionDirNameFor(sessionName) {
+  return sessionName.slice(sessionName.lastIndexOf('-') + 1);
+}
+
+function makeValidSession(tmpRoot, { active = true, step = null, commandTemplate = null, includeSessionDir = false, sessionName = 'collapsed-test' } = {}) {
+  const sessionDir = path.join(tmpRoot, sessionDirNameFor(sessionName));
   fs.mkdirSync(sessionDir, { recursive: true });
   const state = { active, command_template: commandTemplate };
   if (step != null) state.step = step;
@@ -66,7 +75,7 @@ describe('monitor-collapsed-layout-respawn (R-MWCL-3 + R-MWCL-5 + R-MWCL-1 + R-M
       const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mclr-a1-')));
       _resetSessionDirInvalidEmittedForTests();
       try {
-        const { sessionDir, extRoot } = makeValidSession(tmpRoot);
+        const { sessionDir, extRoot } = makeValidSession(tmpRoot, { sessionName: 'watchdog-session' });
         const { spawnSyncFn, splitCalls, sendKeysCalls } = makeCollapsedSpawnFn('watchdog-session');
 
         startRespawnWatchdog({
@@ -95,7 +104,7 @@ describe('monitor-collapsed-layout-respawn (R-MWCL-3 + R-MWCL-5 + R-MWCL-1 + R-M
       const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mclr-a2-')));
       _resetSessionDirInvalidEmittedForTests();
       try {
-        const { sessionDir, extRoot } = makeValidSession(tmpRoot);
+        const { sessionDir, extRoot } = makeValidSession(tmpRoot, { sessionName: 'watcher-cmd-session' });
         const { spawnSyncFn, sendKeysCalls } = makeCollapsedSpawnFn('watcher-cmd-session');
 
         restartDeadWatcherPanes(sessionDir, extRoot, 'pickle', spawnSyncFn);
@@ -145,7 +154,7 @@ describe('monitor-collapsed-layout-respawn (R-MWCL-3 + R-MWCL-5 + R-MWCL-1 + R-M
       const tmpRootB = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mclr-ab-b-')));
       _resetSessionDirInvalidEmittedForTests();
       try {
-        const { sessionDir: sDirA, extRoot: extRootA } = makeValidSession(tmpRootA);
+        const { sessionDir: sDirA, extRoot: extRootA } = makeValidSession(tmpRootA, { sessionName: 'independent-a' });
         const { spawnSyncFn: spawnA, splitCalls } = makeCollapsedSpawnFn('independent-a');
         startRespawnWatchdog({
           sessionDir: sDirA,

@@ -10,7 +10,9 @@ import { _resetSessionDirInvalidEmittedForTests } from '../services/pickle-utils
 
 function makeFirstTickFakes({ active = true, paneCommands } = {}) {
     const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mwcl5-')));
-    const sessionDir = path.join(tmpRoot, 'session');
+    // Session dir carries the hash the fake tmux `#S` advertises (`pickle-mwcl5-test`) —
+    // restartDeadWatcherPanes refuses any tmux session whose hash is not ours.
+    const sessionDir = path.join(tmpRoot, 'test');
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.writeFileSync(
         path.join(sessionDir, 'state.json'),

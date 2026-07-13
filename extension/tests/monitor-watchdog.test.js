@@ -20,9 +20,18 @@ import { _resetSessionDirInvalidEmittedForTests } from '../services/pickle-utils
  * invocation and returns shaped responses so dead panes are detected
  * and respawn `send-keys` is observable.
  */
+/**
+ * Launchers name the tmux session `<prefix>-<session-hash>` for the session dir it
+ * manages, and `restartDeadWatcherPanes` refuses any session whose hash is not ours.
+ * Fixtures must honor that pairing or they exercise a layout production cannot build.
+ */
+function sessionDirNameFor(sessionName) {
+    return sessionName.slice(sessionName.lastIndexOf('-') + 1);
+}
+
 function makeWatchdogFakes({ active = true, sessionName = 'pickle-mwr-test', paneCommands } = {}) {
     const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mwr-')));
-    const sessionDir = path.join(tmpRoot, 'session');
+    const sessionDir = path.join(tmpRoot, sessionDirNameFor(sessionName));
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.writeFileSync(
         path.join(sessionDir, 'state.json'),

@@ -41,7 +41,9 @@ function buildSession(tmpRoot) {
     const extDir = path.join(tmpRoot, 'ext');
     fs.mkdirSync(path.join(extDir, 'extension', 'bin'), { recursive: true });
 
-    const sessionDir = path.join(tmpRoot, 'session');
+    // Session dir carries the hash the fake tmux `#S` advertises (`pickle-relaunch`) —
+    // restartDeadWatcherPanes refuses any tmux session whose hash is not ours.
+    const sessionDir = path.join(tmpRoot, 'relaunch');
     fs.mkdirSync(sessionDir, { recursive: true });
 
     writeJson(path.join(sessionDir, 'state.json'), {

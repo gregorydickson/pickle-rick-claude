@@ -45,13 +45,24 @@ function loadRobustSpawnSync(command, args, opts) {
  * opts.sendKeysFails: boolean  — if true, send-keys exits 1
  * opts.sessionName: string
  */
+/**
+ * Launchers name the tmux session `<prefix>-<session-hash>` for the session dir it
+ * manages, and `restartDeadWatcherPanes` refuses any session whose hash is not ours.
+ * Fixtures must honor that pairing or they exercise a layout production cannot build.
+ */
+function sessionDirNameFor(sessionName) {
+    return sessionName.slice(sessionName.lastIndexOf('-') + 1);
+}
+
 function makeCollapsedFakes(opts = {}) {
     const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mwcl3-')));
     const callsLog = path.join(tmpRoot, 'calls.log');
     const shimDir = path.join(tmpRoot, 'bin');
     fs.mkdirSync(shimDir, { recursive: true });
 
-    const sessionDir = path.join(tmpRoot, 'session');
+    const sessionName = opts.sessionName || 'mwcl3-test';
+
+    const sessionDir = path.join(tmpRoot, sessionDirNameFor(sessionName));
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.writeFileSync(
         path.join(sessionDir, 'state.json'),
@@ -62,7 +73,6 @@ function makeCollapsedFakes(opts = {}) {
     fs.mkdirSync(path.join(extRoot, 'extension', 'bin'), { recursive: true });
     fs.writeFileSync(path.join(extRoot, 'extension', 'bin', 'log-watcher.js'), '// sentinel\n');
 
-    const sessionName = opts.sessionName || 'mwcl3-test';
     const missingPanes = new Set(opts.missingPanes || []);
     const windowMissing = opts.windowMissing === true;
     const sendKeysFails = opts.sendKeysFails === true;

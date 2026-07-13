@@ -238,7 +238,9 @@ test('pipeline-runner: spawn targets are under extension/bin/, never directly un
 
 test('restartDeadWatcherPanes: healthy 2x2 layout is a no-op', () => {
     const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-utils-watchers-')));
-    const sessionDir = path.join(tmpRoot, 'session');
+    // Session dir carries the hash the fake tmux session name advertises below —
+    // restartDeadWatcherPanes refuses any tmux session whose hash is not ours.
+    const sessionDir = path.join(tmpRoot, 'healthy');
     const extRoot = path.join(tmpRoot, 'ext');
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.mkdirSync(path.join(extRoot, 'extension', 'bin'), { recursive: true });
