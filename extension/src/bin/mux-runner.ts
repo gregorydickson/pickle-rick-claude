@@ -8622,6 +8622,79 @@ export function checkFailedAfterResearchApproved(sessionDir: string, ticketId: s
   );
 }
 
+export interface WorkerProductionBreadcrumbInput {
+  sessionDir: string;
+  statePath: string;
+  workingDir: string;
+  ticketId: string;
+  iteration: number;
+  /** `checkPartialLifecycleExit`'s verdict this iteration; `null` = no partial/silent classification. */
+  partialLifecycleExit: PartialLifecycleExitClassification | null;
+  /** Raw artifact-count delta across the iteration; `null` when no progress record was taken. */
+  artifactDelta: number | null;
+  preIterSha: string | null;
+}
+
+export type WorkerProductionBreadcrumb =
+  | 'worker_produced_nothing'
+  | 'worker_produced_everything_but_commit'
+  | null;
+
+/**
+ * Emit AT MOST ONE post-iteration worker-production breadcrumb, and return which one fired.
+ *
+ * R-WSDO wins the overlap: both predicates are individually satisfiable on the same iteration
+ * (a complete prefix set forces `plExit === null`, and R-WSDO's middle term is an iteration
+ * DELTA — so a respawned worker carrying prior-iteration artifacts + zero delta + 0-byte log +
+ * a dirty tree satisfies BOTH). Mutual exclusion therefore lives in CONTROL FLOW, never in a
+ * "disjoint by construction" claim. The second arm is evaluated LAZILY so a winning R-WSDO
+ * branch never spends a git call.
+ *
+ * Observability-only: no reap, salvage, status, or frontmatter write happens on this path.
+ */
+export function emitWorkerProductionBreadcrumb(
+  input: WorkerProductionBreadcrumbInput,
+): WorkerProductionBreadcrumb {
+  const ticketDir = path.join(input.sessionDir, input.ticketId);
+  const { subClass, sessionLogSize, pid } = classifyWorkerSessionLogs(ticketDir, fs.readdirSync(ticketDir));
+
+  const wsdoFires =
+    input.partialLifecycleExit === null &&
+    input.artifactDelta === 0 &&
+    subClass === 'log_empty';
+
+  const everythingButCommit = wsdoFires
+    ? null
+    : claimWorkerProducedEverythingButCommit({
+      sessionDir: input.sessionDir,
+      workingDir: input.workingDir,
+      ticketId: input.ticketId,
+      iteration: input.iteration,
+      sessionLogBytes: sessionLogSize,
+      preIterSha: input.preIterSha,
+    });
+
+  // ts is explicit because writeActivityEntry does NOT auto-stamp it (mirrors :8094).
+  if (wsdoFires) {
+    writeActivityEntry(input.statePath, {
+      event: 'worker_produced_nothing',
+      ts: new Date().toISOString(),
+      ticket: input.ticketId,
+      gate_payload: { spawn_pid: pid, session_log_bytes: sessionLogSize, artifact_delta: 0 },
+    });
+    return 'worker_produced_nothing';
+  } else if (everythingButCommit) {
+    writeActivityEntry(input.statePath, {
+      event: 'worker_produced_everything_but_commit',
+      ts: new Date().toISOString(),
+      ticket: input.ticketId,
+      gate_payload: everythingButCommit,
+    });
+    return 'worker_produced_everything_but_commit';
+  }
+  return null;
+}
+
 export function detectPkgJsonVersionDrift(
   srcPath: string,
   depPath: string,
@@ -10256,58 +10329,20 @@ async function runMuxRunnerMain() {
       }
       if (iterTicket) checkFailedAfterResearchApproved(sessionDir, iterTicket);
 
-      // R-WSDO (30aa2e0d): worker-produced-nothing breadcrumb. Fires ONLY on the
-      // genuinely-uncovered "produced nothing at all" case, mutually exclusive with
-      // worker_silent_death by construction:
-      //   (1) checkPartialLifecycleExit returned null this iteration (no partial/silent
-      //       classification — e.g. a tier with a research gate but NO research_review.md),
-      //   (2) classifyWorkerSessionLogs → subClass === 'log_empty' (0-byte/absent log),
-      //   (3) raw artifact COUNT delta (lastArtifactCount - apBeforeCount) === 0.
-      // Observability-only: best-effort, never alters reap/salvage control flow. ts is
-      // explicit because writeActivityEntry does NOT auto-stamp it (mirrors :8094).
-      //
-      // AC-WMFF-2B: `worker_produced_everything_but_commit` is the structural `else if`
-      // BELOW it. R-WSDO FIRST — mutual exclusion lives in CONTROL FLOW, not in a
-      // "disjoint by construction" claim (which is provably false: all-prefixes-present
-      // forces plExit === null, and R-WSDO's middle term is an iteration DELTA, so a
-      // respawned worker carrying prior-iteration artifacts + zero delta + 0-byte log +
-      // a dirty tree satisfies BOTH predicates and would double-fire without the else-if).
-      // The new arm is evaluated LAZILY so a winning R-WSDO branch never spends a git call.
+      // R-WSDO (30aa2e0d) + AC-WMFF-2B: at most one post-iteration production breadcrumb.
+      // The predicates, their overlap, and the R-WSDO-first control flow live in
+      // emitWorkerProductionBreadcrumb — the one seam a test can cross to reach them.
       if (iterTicket) {
-        const ticketDir = path.join(sessionDir, iterTicket);
-        // eslint-disable-next-line pickle/no-sync-in-async
-        const { subClass, sessionLogSize, pid } = classifyWorkerSessionLogs(ticketDir, fs.readdirSync(ticketDir));
-        const wsdoFires =
-          plExit === null &&
-          !!apProgressResult &&
-          apProgressResult.lastArtifactCount - apBeforeCount === 0 &&
-          subClass === 'log_empty';
-        const everythingButCommit = wsdoFires
-          ? null
-          : claimWorkerProducedEverythingButCommit({
-            sessionDir,
-            workingDir: iterWorkingDir,
-            ticketId: iterTicket,
-            iteration,
-            sessionLogBytes: sessionLogSize,
-            preIterSha,
-          });
-
-        if (wsdoFires) {
-          writeActivityEntry(statePath, {
-            event: 'worker_produced_nothing',
-            ts: new Date().toISOString(),
-            ticket: iterTicket,
-            gate_payload: { spawn_pid: pid, session_log_bytes: sessionLogSize, artifact_delta: 0 },
-          });
-        } else if (everythingButCommit) {
-          writeActivityEntry(statePath, {
-            event: 'worker_produced_everything_but_commit',
-            ts: new Date().toISOString(),
-            ticket: iterTicket,
-            gate_payload: everythingButCommit,
-          });
-        }
+        emitWorkerProductionBreadcrumb({
+          sessionDir,
+          statePath,
+          workingDir: iterWorkingDir,
+          ticketId: iterTicket,
+          iteration,
+          partialLifecycleExit: plExit,
+          artifactDelta: apProgressResult ? apProgressResult.lastArtifactCount - apBeforeCount : null,
+          preIterSha,
+        });
       }
     } catch { /* best-effort — never block iteration on partial-lifecycle check failure */ }
 
