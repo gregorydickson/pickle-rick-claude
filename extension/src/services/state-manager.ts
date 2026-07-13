@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
+import { threadId } from 'node:worker_threads';
 import * as path from 'node:path';
 import { isRecord } from '../lib/is-record.js';
 import {
@@ -233,6 +234,21 @@ export function inspectLockFile(lockPath: string): LockSnapshot | null {
 }
 
 /**
+ * A private scratch name for one acquire/steal attempt. It must be unique per ATTEMPT, not per
+ * process: `acquireLockFile` is synchronous, so two attempts cannot interleave inside one thread —
+ * but worker threads share a pid, so keying the name on `process.pid` alone lets two of them open
+ * the SAME staging path. The loser truncates the winner's payload and unlinks it underneath them:
+ * the `linkSync` then fails ENOENT, or worse, publishes a lock naming the WRONG pid — a live holder
+ * whose lock advertises a pid that is already dead, which `isDeadPidPayload` will happily reclaim
+ * out from under it. Production spawns one process per writer, so this never fired there; the
+ * concurrent-state suite drives it with threads and does.
+ */
+let attemptSeq = 0;
+function stagingSuffix(): string {
+  return `${process.pid}.${threadId}.${++attemptSeq}`;
+}
+
+/**
  * Takes the lock and returns the inode the caller now owns, or null if someone already holds it.
  * The inode comes from the same fd that wrote the file, so ownership is a fact, not an inference.
  *
@@ -246,7 +262,7 @@ export function inspectLockFile(lockPath: string): LockSnapshot | null {
  * window, so such a steal would evict it.
  */
 export function acquireLockFile(lockPath: string, payload: string): number | null {
-  const staging = `${lockPath}.acq.${process.pid}`;
+  const staging = `${lockPath}.acq.${stagingSuffix()}`;
 
   try {
     const fd = fs.openSync(staging, 'w');
@@ -299,7 +315,7 @@ export function isDeadPidPayload(payload: string): boolean {
  * namespace, and there is no window for a contender to race into.
  */
 export function stealLockFile(lockPath: string, snapshot: LockSnapshot): boolean {
-  const tombstone = `${lockPath}.tomb.${process.pid}.${Date.now()}`;
+  const tombstone = `${lockPath}.tomb.${stagingSuffix()}`;
   try {
     fs.linkSync(lockPath, tombstone); // a second link — the lock stays published while we judge it
   } catch {

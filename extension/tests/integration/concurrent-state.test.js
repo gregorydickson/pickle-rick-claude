@@ -100,13 +100,19 @@ if (isMainThread) {
    * Spawns a worker that runs this same file with the given workerData.
    * Resolves when the worker posts its completion message.
    */
+  // Resolve on 'exit', not 'message': the worker still releases the lock (unlink
+  // lockfile, clear the staging file the linkSync publish leaves) AFTER it posts
+  // its result. Resolving on the message let the caller's rmSync race a worker
+  // still touching the dir — an ENOTEMPTY teardown flake.
   function spawnWorker(data) {
     return new Promise((resolve, reject) => {
       const w = new Worker(__filename, { workerData: data });
-      w.on('message', resolve);
+      let message;
+      w.on('message', (m) => { message = m; });
       w.on('error', reject);
       w.on('exit', (code) => {
         if (code !== 0) reject(new Error(`Worker exited with code ${code}`));
+        else resolve(message);
       });
     });
   }
