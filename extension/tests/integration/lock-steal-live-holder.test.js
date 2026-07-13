@@ -33,6 +33,7 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
 import { inspectLockFile, stealLockFile, withLock } from '../../services/state-manager.js';
+import { applyCourseCorrectionRestructure } from '../../services/transaction-ticket-ops.js';
 import { LockError } from '../../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -286,5 +287,80 @@ test('withLock: concurrent gate writers behind a dead holder lose no updates', a
       `expected ${contenders} serialized updates, saw ${n} — two processes held the gate lock at once`);
   } finally {
     removeGateLock(lp);
+  }
+});
+
+// --- the fourth lock: restructure.lock -------------------------------------------------------
+//
+// The course-correction transaction lock was the last holdout of the shape the gate lock shed: an
+// O_EXCL create, a {pid,ts} payload nothing read back, and a bare unlink release. It had no steal
+// path, so one SIGKILL stranded restructure.lock and every later course correction for that session
+// died on EEXIST — permanently, with no runtime recovery. Like the gate lock it steals ONLY on proof
+// of death: a restructure legitimately holds while it rewrites every ticket in the session.
+
+function writeTicket(sessionDir, ticketId) {
+  const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
+  fs.mkdirSync(path.dirname(ticketPath), { recursive: true });
+  const content = ['---', `id: ${ticketId}`, 'status: "Todo"', 'title: "Example"', '---', '', '# Example', ''].join('\n');
+  fs.writeFileSync(ticketPath, content);
+  return { ticketPath, content };
+}
+
+function writeState(sessionDir) {
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+    active: true, working_dir: sessionDir, step: 'implement', iteration: 1, max_iterations: 3,
+    max_time_minutes: 30, worker_timeout_seconds: 1200, start_time_epoch: 1, completion_promise: null,
+    original_prompt: 'test', current_ticket: 'kill123', history: [], started_at: '2026-04-30T00:00:00.000Z',
+    session_dir: sessionDir, schema_version: 3, tickets_version: 4, last_course_correction: null, activity: [],
+  }, null, 2));
+}
+
+function restructure(sessionDir) {
+  return applyCourseCorrectionRestructure({
+    sessionRoot: sessionDir,
+    proposalPath: path.join(sessionDir, 'change_proposal_2026-04-30T12-00-00Z.md'),
+    restartTicketId: null,
+    killedTicketIds: ['kill123'],
+    now: '2026-04-30T12:00:00.000Z',
+  });
+}
+
+test('applyCourseCorrectionRestructure: a restructure lock stranded by a dead holder is reclaimed', async () => {
+  const dir = tmpDir();
+  try {
+    const killed = writeTicket(dir, 'kill123');
+    writeState(dir);
+
+    // A restructure was SIGKILLed mid-transaction: its lockfile outlives the process that made it.
+    const lock = path.join(dir, 'restructure.lock');
+    fs.writeFileSync(lock, String(await deadPid()));
+
+    const result = restructure(dir);
+
+    assert.equal(result.ticketsVersion, 5, 'the restructure must reclaim the strand and run, not die on EEXIST');
+    assert.match(fs.readFileSync(killed.ticketPath, 'utf-8'), /^status: "Killed"$/m);
+    assert.equal(fs.existsSync(lock), false, 'the reclaimed lock is released on the way out, not leaked');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('applyCourseCorrectionRestructure: a LIVE restructure holder is never stolen', () => {
+  const dir = tmpDir();
+  try {
+    const killed = writeTicket(dir, 'kill123');
+    writeState(dir);
+
+    // The holder is this very process — demonstrably alive, so its pid can never read as dead.
+    const lock = path.join(dir, 'restructure.lock');
+    fs.writeFileSync(lock, String(process.pid));
+
+    assert.throws(() => restructure(dir), /EEXIST/, 'a live holder must still be refused');
+
+    assert.equal(fs.readFileSync(killed.ticketPath, 'utf-8'), killed.content,
+      'the live holder’s in-flight transaction must be untouched');
+    assert.equal(fs.readFileSync(lock, 'utf-8'), String(process.pid), 'the live holder’s lock must survive');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
