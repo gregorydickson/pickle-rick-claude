@@ -351,6 +351,61 @@ test('AC-WMFF-2B: scope.json filters dirty paths, but the #128 CLAUDE.md carve-o
   }
 });
 
+// The payload's claim is "this work is still on the floor" and `archiveBeforeDestructive` is what
+// puts it somewhere recoverable — so the two MUST agree on what "the work" is. The archive drops
+// codegraph artifacts (`listWorkingTreeDirtyPaths(cwd, [CODEGRAPH_DIR]).filter(!isCodegraphArtifact)`);
+// the breadcrumb must too. Codegraph writes its index INTO the working dir and `.codegraph/` is
+// ignored only via the local, unversioned `.git/info/exclude`, so on a fresh clone — and in these
+// fixtures — it is plain untracked dirt.
+test('AC-WMFF-2B: codegraph runtime artifacts are NOT recoverable work → no fire', () => {
+  const { repo, baseSha } = makeRepo('wmff-2b-cg-repo-');
+  const { sessionDir } = makeSession('wmff-2b-cg-sess-');
+  try {
+    const id = 'bb88cgrf';
+    makeTicket(sessionDir, id, { status: 'Failed', extraFiles: { 'worker_session_1.log': '' } });
+
+    // The ONLY dirt is the runtime's own codegraph index. The archive would save nothing here.
+    mkdirSync(path.join(repo, '.codegraph'), { recursive: true });
+    writeFileSync(path.join(repo, '.codegraph', 'codegraph.db'), 'binary-ish\n');
+
+    assert.equal(
+      claimWorkerProducedEverythingButCommit({
+        sessionDir, workingDir: repo, ticketId: id, iteration: 1, sessionLogBytes: 0, preIterSha: baseSha,
+      }),
+      null,
+      'a codegraph-only tree has NO recoverable work — firing here sends the operator after a patch that was never written',
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('AC-WMFF-2B: codegraph dirt is excluded from the COUNT, not merely from the capped slice', () => {
+  const { repo, baseSha } = makeRepo('wmff-2b-cgmix-repo-');
+  const { sessionDir } = makeSession('wmff-2b-cgmix-sess-');
+  try {
+    const id = 'bb99cgmx';
+    makeTicket(sessionDir, id, { status: 'Failed', extraFiles: { 'worker_session_1.log': '' } });
+
+    mkdirSync(path.join(repo, '.codegraph'), { recursive: true });
+    writeFileSync(path.join(repo, '.codegraph', 'codegraph.db'), 'binary-ish\n');
+    writeFileSync(path.join(repo, 'real.ts'), 'export const real = 1;\n');   // genuine worker output
+
+    const payload = claimWorkerProducedEverythingButCommit({
+      sessionDir, workingDir: repo, ticketId: id, iteration: 1, sessionLogBytes: 0, preIterSha: baseSha,
+    });
+
+    assert.ok(payload, 'real uncommitted work still fires');
+    assert.deepEqual(payload.dirty_in_scope_paths, ['real.ts'], 'codegraph paths never reach the payload');
+    assert.equal(payload.total_count, 1, 'total_count reports the RECOVERABLE set — the set the archive would save');
+    assert.equal(payload.truncated, false);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('AC-WMFF-2B: idempotent once per (ticket, iteration); a NEW iteration re-arms', () => {
   const { repo, baseSha } = makeRepo('wmff-2b-idem-repo-');
   const { sessionDir } = makeSession('wmff-2b-idem-sess-');
