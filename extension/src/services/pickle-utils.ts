@@ -2699,6 +2699,7 @@ function _updateMonitorState(smLocal: StateManager, statePath: string, newPid: n
  *   - sessionDir is invalid (validateSessionDirOrSkip)
  *   - state.monitor_mode already equals `mode`
  *   - not inside tmux
+ *   - the ambient tmux session is not ours (isForeignTmuxSession)
  *   - tmux respawn-pane fails
  * Returns 'respawned' on success; updates state.monitor_pid and state.monitor_mode.
  * Logs `monitor: respawned for mode <mode>` via opts.log so the line appears in
@@ -2728,6 +2729,12 @@ export async function respawnMonitorWindowForMode(
   const spawnSyncFn = opts?.spawnSyncFn ?? spawnSync;
   const sessionName = _resolveTmuxSessionName(spawnSyncFn, log, mode);
   if (!sessionName) return 'no-op';
+  // `respawn-pane -k` KILLS the target pane. `validateSessionDirOrSkip` above proves
+  // our sessionDir is coherent — it says nothing about whose tmux session `#S` named.
+  if (isForeignTmuxSession(sessionName, sessionDir)) {
+    log(`monitor: tmux session '${sessionName}' does not host this session's monitor window — skipping respawn for mode ${mode}`);
+    return 'no-op';
+  }
 
   const extensionRoot = getExtensionRoot();
   const monitorBin = path.join(extensionRoot, 'extension', 'bin', 'monitor.js');
