@@ -11,9 +11,14 @@ const require = createRequire(import.meta.url);
 // Import compiled JS (tests run against compiled output)
 const { resolveCodegraphSettings } = await import('../services/pickle-utils.js');
 
+// Compiled defaults are OFF: absence of a settings file (or a malformed
+// codegraph block) must never silently activate codegraph — the opt-in
+// stance lives in BOTH the shipped pickle_settings.json AND the compiled
+// fallback (the old enabled:true fallback leaked fixture-dir indexing from
+// sandboxed test runs without a settings file).
 const DEFAULTS = {
-  enabled: true,
-  index_at_setup: true,
+  enabled: false,
+  index_at_setup: false,
   staleness_max_age_minutes: 30,
   context_max_bytes: 8192,
   expose_mcp_to_workers: false,
@@ -87,13 +92,13 @@ describe('resolveCodegraphSettings', () => {
   });
 
   describe('malformed values → compiled defaults', () => {
-    it('enabled="true" (string) → default true', () => {
+    it('enabled="true" (string) → default false (malformed never activates)', () => {
       const result = resolveCodegraphSettings({ codegraph: { enabled: 'true' } });
-      assert.strictEqual(result.enabled, true);
+      assert.strictEqual(result.enabled, false);
     });
-    it('index_at_setup=1 (number) → default true', () => {
+    it('index_at_setup=1 (number) → default false (malformed never activates)', () => {
       const result = resolveCodegraphSettings({ codegraph: { index_at_setup: 1 } });
-      assert.strictEqual(result.index_at_setup, true);
+      assert.strictEqual(result.index_at_setup, false);
     });
     it('expose_mcp_to_workers=null → default false', () => {
       const result = resolveCodegraphSettings({ codegraph: { expose_mcp_to_workers: null } });

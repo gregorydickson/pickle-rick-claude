@@ -8972,17 +8972,22 @@ async function runMuxRunnerMain() {
   let toolchainPreflightChecked = false;
 
   // Initialize session-scoped CodegraphService (fail-open — never blocks session start).
+  // Gated on settings.enabled: with codegraph disabled, a leftover
+  // .codegraph/codegraph.db (prior enabled run, or direct CLI use) must not
+  // keep the native library loading and re-syncing every staleness window.
   const cgSettings = resolveCodegraphSettings(loadPickleSettingsBag());
   const cgWorkingDir = ownerState.working_dir || process.cwd();
   const cgDbPath = path.join(cgWorkingDir, '.codegraph', 'codegraph.db');
-  try {
-    cgService = await CodegraphService.create(
-      cgWorkingDir,
-      cgSettings,
-      { emit: (ev) => writeActivityEntry(statePath, ev as unknown as ActivityLogEntry) },
-    );
-  } catch (err) {
-    log(`codegraph service init failed (ignored): ${safeErrorMessage(err)}`);
+  if (cgSettings.enabled) {
+    try {
+      cgService = await CodegraphService.create(
+        cgWorkingDir,
+        cgSettings,
+        { emit: (ev) => writeActivityEntry(statePath, ev as unknown as ActivityLogEntry) },
+      );
+    } catch (err) {
+      log(`codegraph service init failed (ignored): ${safeErrorMessage(err)}`);
+    }
   }
 
   while (true) {
