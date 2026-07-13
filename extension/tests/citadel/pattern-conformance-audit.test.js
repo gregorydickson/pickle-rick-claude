@@ -218,7 +218,7 @@ describe('pattern-conformance-audit: SQL ON CONFLICT clobber', () => {
     fs.mkdirSync(path.join(tmpDir, 'db', 'migrations'), { recursive: true });
     fs.writeFileSync(
       path.join(tmpDir, sqlFile),
-      'INSERT INTO t (id) VALUES (1)\nON CONFLICT (id) DO UPDATE SET a = COALESCE(EXCLUDED.a, t.a), b = EXCLUDED.b;\n',
+      "INSERT INTO t (id) VALUES (1)\nON CONFLICT (id) DO UPDATE SET a = COALESCE(EXCLUDED.a, t.a), b = EXCLUDED.b, c = 'const';\n",
     );
 
     const diff = makeDiff(tmpDir, [
@@ -227,10 +227,57 @@ describe('pattern-conformance-audit: SQL ON CONFLICT clobber', () => {
     const sqlFindings = auditPatternConformance(diff)
       .findings.filter((f) => f.id.startsWith('sql-conflict-clobber:'));
 
-    // COALESCE(...) is not an EXCLUDED.<col> passthrough, so `a` is a genuine clobber — but it must
-    // be reported as ONE assignment, never split at the argument comma into a bogus second column.
+    // `c` is the only const clobber. COALESCE(EXCLUDED.a, t.a) consumes the incoming row, so it is
+    // not one — and it must be read as ONE assignment, never split at the argument comma into a
+    // bogus `t` column. Pin the whole column list: a split would widen it.
     assert.strictEqual(sqlFindings.length, 1);
-    assert.doesNotMatch(sqlFindings[0].message, /\bt\b/, 'the COALESCE argument must not be read as its own column');
+    assert.match(sqlFindings[0].message, /\(c\)/, 'the finding must name exactly the const-clobbered column');
+  });
+
+  // The clobber RHS is matched POSITIVELY against the literal-constant set. Matching it negatively
+  // ("anything that is not EXCLUDED.<col>") swept in every function-valued assignment: it fired a
+  // High on `updated_at = NOW()` — the single most common CORRECT upsert idiom — advising
+  // "use EXCLUDED.updated_at instead", which is precisely what you must NOT write there. Same
+  // false-High class the R-PCPS subtraction above deleted the PATTERN_SHAPE arm for.
+  const functionValuedRhs = [
+    ['NOW() timestamp stamp', 'ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v, updated_at = NOW();\n'],
+    ['CURRENT_TIMESTAMP stamp', 'ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v, updated_at = CURRENT_TIMESTAMP;\n'],
+    ['NULLIF — must not match on the NULL prefix', 'ON CONFLICT (id) DO UPDATE SET n = NULLIF(t.n, 0);\n'],
+  ];
+
+  for (const [label, sql] of functionValuedRhs) {
+    test(`function-valued RHS is not a const clobber: ${label}`, () => {
+      const sqlFile = `db/migrations/fn_${slug(label)}.sql`;
+      fs.mkdirSync(path.join(tmpDir, 'db', 'migrations'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, sqlFile), `INSERT INTO t (id) VALUES (1)\n${sql}`);
+
+      const diff = makeDiff(tmpDir, [
+        { path: sqlFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 3 }], blame: [] },
+      ]);
+      const sqlFindings = auditPatternConformance(diff)
+        .findings.filter((f) => f.id.startsWith('sql-conflict-clobber:'));
+
+      assert.deepEqual(sqlFindings, [], 'a computed value is not a discarded value — must not be flagged');
+    });
+  }
+
+  test('narrowing the RHS does not blind the scan: a const clobber beside a NOW() stamp still fires', () => {
+    const sqlFile = 'db/migrations/007_const_beside_now.sql';
+    fs.mkdirSync(path.join(tmpDir, 'db', 'migrations'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, sqlFile),
+      "INSERT INTO t (id) VALUES (1)\nON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v, updated_at = NOW(), status = 'pending';\n",
+    );
+
+    const diff = makeDiff(tmpDir, [
+      { path: sqlFile, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 3 }], blame: [] },
+    ]);
+    const sqlFindings = auditPatternConformance(diff)
+      .findings.filter((f) => f.id.startsWith('sql-conflict-clobber:'));
+
+    assert.strictEqual(sqlFindings.length, 1, 'the real clobber in column 3 must still be caught');
+    assert.match(sqlFindings[0].message, /\(status\)/, 'the finding must name status');
+    assert.doesNotMatch(sqlFindings[0].message, /updated_at/, 'the NOW() stamp must not ride along in the column list');
   });
 
   test('deleted .sql file is not checked', () => {

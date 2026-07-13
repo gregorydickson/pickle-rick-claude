@@ -13,9 +13,17 @@ export interface PatternConformanceResult {
 // which is the canonical upsert shape (propagate most columns from EXCLUDED, clobber one).
 const ON_CONFLICT_SET_RE = /\bON\s+CONFLICT\b[^;]*?\bDO\s+UPDATE\s+SET\s+([^;]+)/gi;
 
-// Negative lookahead must absorb optional leading whitespace, else `= EXCLUDED.col`
-// slips past when \s* backtracks to zero and the guard checks at the space, not the value.
-const CLOBBER_ASSIGN_RE = /^\s*(\w+)\s*=\s*(?!\s*EXCLUDED\.)\S/i;
+// A clobber is `col = <bare literal constant>` — the shape that DISCARDS the incoming row's value.
+// Match the RHS positively against the literal set rather than negatively against `EXCLUDED.`:
+// a not-EXCLUDED RHS is not the same thing as a constant, and the difference is every
+// function-valued assignment. `updated_at = NOW()` is the canonical upsert idiom, and the finding's
+// own advice ("use EXCLUDED.<col>") is the one thing you must not write there.
+// The trailing lookahead keeps `NULL` from matching the head of `NULLIF(...)`.
+const CLOBBER_LITERAL_RHS = String.raw`'(?:[^']|'')*'|-?\d+(?:\.\d+)?|NULL|TRUE|FALSE`;
+const CLOBBER_ASSIGN_RE = new RegExp(
+  String.raw`^\s*(\w+)\s*=\s*(?:${CLOBBER_LITERAL_RHS})(?![\w.(])`,
+  'i',
+);
 
 /** Split a SET list on its top-level commas, so `COALESCE(a, b)` stays one assignment. */
 function splitTopLevelCommas(clause: string): string[] {
@@ -37,7 +45,7 @@ function splitTopLevelCommas(clause: string): string[] {
   return parts;
 }
 
-/** Every column in an `ON CONFLICT … DO UPDATE SET` list assigned something other than EXCLUDED.<col>. */
+/** Every column in an `ON CONFLICT … DO UPDATE SET` list assigned a bare literal constant. */
 function findClobberedColumns(content: string): string[] {
   const columns: string[] = [];
 
