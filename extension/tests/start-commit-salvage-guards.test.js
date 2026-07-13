@@ -23,15 +23,42 @@
 // test needs. See research_2026-07-12.md / plan_2026-07-12.md for the full
 // reachability analysis.
 
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+// R-PTSB: mux-runner.js is a session-writing bin, and this file loads it IN-PROCESS, so
+// it shares this process's env. `getDataRoot()` reads PICKLE_DATA_ROOT at call time and
+// otherwise resolves the operator's real ~/.local/share/pickle-rick, so the sandbox below
+// is what keeps a fast-tier test off live session state. The import must stay DYNAMIC: a
+// static one is hoisted above this assignment and would evaluate mux-runner.js unsandboxed.
+const dataRoot = mkdtempSync(path.join(tmpdir(), 'pickle-scsg-dataroot-'));
+process.env.PICKLE_DATA_ROOT = dataRoot;
+after(() => rmSync(dataRoot, { recursive: true, force: true }));
+
 const { detectAndRecoverHeadRegression, isFailedTicketTerminalExcludable } =
   await import('../bin/mux-runner.js');
+
+function makeSessionDir(workingDir) {
+  const tmp = mkdtempSync(path.join(tmpdir(), 'pickle-scsg-session-'));
+  const sessionDir = path.join(tmp, 'session');
+  mkdirSync(sessionDir, { recursive: true });
+  const statePath = path.join(sessionDir, 'state.json');
+  writeFileSync(
+    statePath,
+    JSON.stringify({
+      active: true, schema_version: 5, working_dir: workingDir, step: 'implement',
+      iteration: 1, max_iterations: 50, worker_timeout_seconds: 600,
+      start_time_epoch: Math.floor(Date.now() / 1000), original_prompt: 'scsg test',
+      session_dir: sessionDir, started_at: new Date().toISOString(), history: [],
+      tmux_mode: false, backend: 'claude', activity: [], recovery_attempts: [],
+    }),
+  );
+  return { tmp, sessionDir, statePath };
+}
 
 function git(args, cwd) {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 15000 }).trim();
@@ -50,24 +77,6 @@ function initRepo() {
   git(['config', 'user.email', 'scsg@test.local'], repo);
   git(['config', 'user.name', 'scsg'], repo);
   return repo;
-}
-
-function makeSessionDir(workingDir) {
-  const tmp = mkdtempSync(path.join(tmpdir(), 'pickle-scsg-session-'));
-  const sessionDir = path.join(tmp, 'session');
-  mkdirSync(sessionDir, { recursive: true });
-  const statePath = path.join(sessionDir, 'state.json');
-  writeFileSync(
-    statePath,
-    JSON.stringify({
-      active: true, schema_version: 5, working_dir: workingDir, step: 'implement',
-      iteration: 1, max_iterations: 50, worker_timeout_seconds: 600,
-      start_time_epoch: Math.floor(Date.now() / 1000), original_prompt: 'scsg test',
-      session_dir: sessionDir, started_at: new Date().toISOString(), history: [],
-      tmux_mode: false, backend: 'claude', activity: [], recovery_attempts: [],
-    }),
-  );
-  return { tmp, sessionDir, statePath };
 }
 
 test('AC-SCPIN-4(a): reset-to-session-start detected under correct baseline, blinded under merge-base baseline', () => {
