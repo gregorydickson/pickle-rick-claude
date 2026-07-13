@@ -1005,6 +1005,26 @@ const EVENT_CASES = [
     drop: 'gate_payload',
   },
   {
+    // AC-WMFF-2C: full discriminator payload — capped paths + explicit ts.
+    type: 'worker_produced_everything_but_commit',
+    valid: {
+      event: 'worker_produced_everything_but_commit',
+      ts: TS,
+      ticket: 'abc12345',
+      gate_payload: {
+        tier: 'large',
+        prefixes_checked: ['research', 'research_review', 'plan', 'plan_review', 'conformance', 'code_review'],
+        session_log_bytes: 4096,
+        worker_gate_verdict: 'green',
+        dirty_in_scope_paths: ['extension/src/bin/mux-runner.ts'],
+        truncated: false,
+        total_count: 1,
+        window_commit: null,
+      },
+    },
+    drop: 'gate_payload',
+  },
+  {
     type: 'boundary_commit_resolved',
     valid: {
       event: 'boundary_commit_resolved',
@@ -1359,6 +1379,7 @@ test('activity-event-payload: schema defines all registered event type definitio
     'orphan_commit_unreattachable',
     'worker_silent_death',
     'worker_produced_nothing',
+    'worker_produced_everything_but_commit',
     'boundary_commit_resolved',
     'pre_reset_diff_archived',
     'pre_reset_archive_failed',
@@ -1435,6 +1456,51 @@ test('activity-event-payload: tier_diff_envelope_exceeded registered in VALID_AC
     VALID_ACTIVITY_EVENTS.includes('tier_diff_envelope_exceeded'),
     'tier_diff_envelope_exceeded must be present in VALID_ACTIVITY_EVENTS',
   );
+});
+
+// ───────── AC-WMFF-2C: worker_produced_everything_but_commit registration ─────────
+
+test('activity-event-payload: worker_produced_everything_but_commit registered in VALID_ACTIVITY_EVENTS', () => {
+  assert.ok(
+    VALID_ACTIVITY_EVENTS.includes('worker_produced_everything_but_commit'),
+    'worker_produced_everything_but_commit must be present in VALID_ACTIVITY_EVENTS',
+  );
+});
+
+test('activity-event-payload: worker_produced_everything_but_commit has BOTH a definition and a top-level oneOf $ref', () => {
+  // A definition without the $ref is INERT — validation never reaches it.
+  assert.ok(schema.definitions.worker_produced_everything_but_commit, 'definition must exist');
+  const refs = schema.oneOf.map((entry) => entry.$ref);
+  assert.ok(
+    refs.includes('#/definitions/worker_produced_everything_but_commit'),
+    'top-level oneOf must $ref the definition (a definition without the $ref is inert)',
+  );
+});
+
+test('activity-event-payload: worker_produced_everything_but_commit rejects an unknown worker_gate_verdict', () => {
+  const result = validate({
+    event: 'worker_produced_everything_but_commit',
+    ts: TS,
+    ticket: 'abc12345',
+    gate_payload: {
+      tier: 'medium',
+      prefixes_checked: ['research'],
+      session_log_bytes: 0,
+      worker_gate_verdict: 'maybe',
+      dirty_in_scope_paths: [],
+      truncated: false,
+      total_count: 0,
+      window_commit: 'deadbeef',
+    },
+  }, 'worker_produced_everything_but_commit');
+  assert.equal(result.valid, false, "worker_gate_verdict must be one of green|red|absent");
+});
+
+test('activity-event-payload: worker_produced_everything_but_commit caps dirty_in_scope_paths at 20 (maxItems)', () => {
+  // The 20MB-state.json incident precedent: the path list is capped in the SCHEMA too,
+  // so an uncapped producer cannot quietly write an unbounded array into state.json.
+  const def = schema.definitions.worker_produced_everything_but_commit;
+  assert.equal(def.properties.gate_payload.properties.dirty_in_scope_paths.maxItems, 20);
 });
 
 // AC-MFW-6: worker_mcp_config_resolved schema tests
