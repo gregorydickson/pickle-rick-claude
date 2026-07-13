@@ -1037,7 +1037,7 @@ function buildGapFinding(ticketFile, gap) {
             'no fenced worker can update them, so tsc may stay RED (heuristic markdown+grep detection, ' +
             'not a type-aware diff; verify and extend or rescope the callers)';
     const suffix = ` (advisory — never blocks readiness) — To resolve: (1) co-scope the caller by adding it to ## Files to modify in the ticket, ` +
-        `or (2) set scope.auto_extend_signature_callers: true in scope.json (build-phase auto-extension absorbs ≤${SCOPE_AUTO_EXTEND_MAX} callers)`;
+        `or (2) set "scope": { "auto_extend_signature_callers": true } in pickle_settings.json (the build-phase auto-extension reads it via resolveScopeSettings and absorbs ≤${SCOPE_AUTO_EXTEND_MAX} callers)`;
     return {
         ticket: ticketFile,
         kind: 'signature_caller_gap',
