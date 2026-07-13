@@ -8,10 +8,48 @@ export interface PatternConformanceResult {
 }
 
 // Filter by path, never by ChangedFileKind (must not widen ChangedFileKind).
+// Capture the WHOLE SET list. Anchoring `\w+\s*=` directly to `DO UPDATE SET` pins the
+// column to the FIRST one in the list, so every clobber in columns 2..N reads clean —
+// which is the canonical upsert shape (propagate most columns from EXCLUDED, clobber one).
+const ON_CONFLICT_SET_RE = /\bON\s+CONFLICT\b[^;]*?\bDO\s+UPDATE\s+SET\s+([^;]+)/gi;
+
 // Negative lookahead must absorb optional leading whitespace, else `= EXCLUDED.col`
 // slips past when \s* backtracks to zero and the guard checks at the space, not the value.
-const SQL_CLOBBER_RE =
-  /\bON\s+CONFLICT\b[^;]*?\bDO\s+UPDATE\s+SET\s+\w+\s*=\s*(?!\s*EXCLUDED\.)([^,\n;]+)/is;
+const CLOBBER_ASSIGN_RE = /^\s*(\w+)\s*=\s*(?!\s*EXCLUDED\.)\S/i;
+
+/** Split a SET list on its top-level commas, so `COALESCE(a, b)` stays one assignment. */
+function splitTopLevelCommas(clause: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+
+  for (let i = 0; i < clause.length; i++) {
+    const ch = clause[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    else if (ch === ',' && depth === 0) {
+      parts.push(clause.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(clause.slice(start));
+
+  return parts;
+}
+
+/** Every column in an `ON CONFLICT … DO UPDATE SET` list assigned something other than EXCLUDED.<col>. */
+function findClobberedColumns(content: string): string[] {
+  const columns: string[] = [];
+
+  for (const setClause of content.matchAll(ON_CONFLICT_SET_RE)) {
+    for (const assignment of splitTopLevelCommas(setClause[1])) {
+      const clobber = CLOBBER_ASSIGN_RE.exec(assignment);
+      if (clobber) columns.push(clobber[1]);
+    }
+  }
+
+  return columns;
+}
 
 /**
  * Flags SQL ON CONFLICT clobbers. Report-only; never halts, never auto-fixes.
@@ -42,12 +80,15 @@ function findSqlConflictClobbers(diff: DiffSummary): CitadelFinding[] {
     if (changed.status === 'D' || !changed.path.endsWith('.sql')) continue;
 
     const content = tryReadFile(path.resolve(diff.repoRoot, changed.path));
-    if (content === null || !SQL_CLOBBER_RE.test(content)) continue;
+    if (content === null) continue;
+
+    const clobbered = findClobberedColumns(content);
+    if (clobbered.length === 0) continue;
 
     findings.push({
       id: `sql-conflict-clobber:${slugify(changed.path, 'sql', 40)}`,
       severity: 'High',
-      message: `SQL ON CONFLICT … DO UPDATE SET col=const clobber in ${changed.path}; use EXCLUDED.<col> instead`,
+      message: `SQL ON CONFLICT … DO UPDATE SET clobber in ${changed.path} (${clobbered.join(', ')}); use EXCLUDED.<col> instead`,
       file: changed.path,
     });
   }
