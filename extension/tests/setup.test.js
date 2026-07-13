@@ -1646,3 +1646,129 @@ test('setup: the setup binary is spawned through exactly one seam', () => {
         'every setup.js spawn must route through execSetup — a second site forks the collision retry and the sandbox data-root fallback back off',
     );
 });
+
+// --- resume orphan-reattach: only a REAL orphan may flip a ticket Done ---------------
+// `setup --resume` reattaches an orphaned worker commit and flips the ticket Done. That
+// Done write consults no worker gate, so the reattach guard is the only thing standing
+// between a dead worker and a terminal Done. Git counts a commit as its own ancestor, so
+// a stamp equal to HEAD once passed the guard: `merge --ff-only HEAD` reports "Already up
+// to date", the runner read it back as a recovery, and a Failed ticket was resurrected to
+// Done over code no gate ever saw. Every git probe below stays inside a throwaway repo.
+
+function initOrphanRepo(prefix) {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf-8' }).trim();
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 'orphan@example.com');
+    git('config', 'user.name', 'Orphan Test');
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'base\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'base');
+    return { repo, git, base: git('rev-parse', 'HEAD') };
+}
+
+function seedResumableSession(dataRoot, repo, ticketId, completionCommit) {
+    const sessionPath = runSetupWithEnv(
+        ['--tmux', '--task', 'resume orphan reattach'],
+        { PICKLE_DATA_ROOT: dataRoot },
+    ).match(/SESSION_ROOT=(.+)/)?.[1]?.trim();
+    assert.ok(sessionPath, 'expected SESSION_ROOT from initial setup');
+
+    const statePath = path.join(sessionPath, 'state.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+    state.working_dir = repo; // pin every reattach git probe to the throwaway repo
+    state.current_ticket = ticketId;
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    const ticketDir = path.join(sessionPath, ticketId);
+    fs.mkdirSync(ticketDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(ticketDir, `rick_ticket_${ticketId}.md`),
+        `---\nid: ${ticketId}\nstatus: Failed\ncomplexity_tier: small\norder: 1\ncompletion_commit: ${completionCommit}\n---\n# ${ticketId}\n`,
+    );
+    return { sessionPath, ticketDir };
+}
+
+function readTicketStatus(ticketDir, ticketId) {
+    const body = fs.readFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), 'utf-8');
+    // The frontmatter writer quotes the value it writes (`status: "Done"`) while the seed
+    // fixture writes it bare. Unquote, or a `notEqual(status, 'Done')` assertion below can
+    // never fail and the regression test greens over the very bug it exists to catch.
+    return body.match(/^status:\s*(.+)$/m)?.[1]?.trim()?.replace(/^["']|["']$/g, '');
+}
+
+function withResumeFixture(prefix, fn) {
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-data-`));
+    const { repo, git, base } = initOrphanRepo(`${prefix}-repo-`);
+    try {
+        fn({ dataRoot, repo, git, base });
+    } finally {
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+        fs.rmSync(repo, { recursive: true, force: true });
+    }
+}
+
+test('setup --resume: a completion_commit equal to HEAD is NOT an orphan and must not flip the ticket Done', () => {
+    withResumeFixture('pickle-resume-noop', ({ dataRoot, repo, git, base }) => {
+        const ticketId = 'aa11noop';
+        const { sessionPath, ticketDir } = seedResumableSession(dataRoot, repo, ticketId, base);
+
+        runSetupWithEnv(['--resume', sessionPath], {
+            PICKLE_DATA_ROOT: dataRoot,
+            PICKLE_ORPHAN_REAP: 'off',
+        });
+
+        assert.notEqual(
+            readTicketStatus(ticketDir, ticketId),
+            'Done',
+            'nothing was orphaned and nothing was recovered — a vacuous ff-only no-op must not resurrect a Failed ticket to Done, which is terminal and bypasses the worker gate entirely',
+        );
+        assert.equal(git('rev-parse', 'HEAD'), base, 'HEAD must not move when there is no orphan');
+    });
+});
+
+test('setup --resume: a SHORT completion_commit equal to HEAD is still not an orphan', () => {
+    withResumeFixture('pickle-resume-short', ({ dataRoot, repo, git, base }) => {
+        const ticketId = 'aa22shrt';
+        // Workers and codex stamp both short and full SHAs, so the guard must compare
+        // commits through git, not as strings — a string compare would miss this entirely.
+        const { sessionPath, ticketDir } = seedResumableSession(dataRoot, repo, ticketId, base.slice(0, 8));
+
+        runSetupWithEnv(['--resume', sessionPath], {
+            PICKLE_DATA_ROOT: dataRoot,
+            PICKLE_ORPHAN_REAP: 'off',
+        });
+
+        assert.notEqual(
+            readTicketStatus(ticketDir, ticketId),
+            'Done',
+            'a short stamp naming HEAD is the same no-op — the guard must resolve SHAs through git',
+        );
+        assert.equal(git('rev-parse', 'HEAD'), base, 'HEAD must not move when there is no orphan');
+    });
+});
+
+test('setup --resume: a REAL orphaned commit is still ff-reattached and flipped Done', () => {
+    withResumeFixture('pickle-resume-real', ({ dataRoot, repo, git, base }) => {
+        const ticketId = 'aa33real';
+        fs.writeFileSync(path.join(repo, 'b.txt'), 'worker work\n');
+        git('add', '-A');
+        git('commit', '-q', '-m', 'worker commit');
+        const orphan = git('rev-parse', 'HEAD');
+        git('reset', '--hard', '-q', base); // strand the worker's commit off HEAD
+
+        const { sessionPath, ticketDir } = seedResumableSession(dataRoot, repo, ticketId, orphan);
+
+        runSetupWithEnv(['--resume', sessionPath], {
+            PICKLE_DATA_ROOT: dataRoot,
+            PICKLE_ORPHAN_REAP: 'off',
+        });
+
+        assert.equal(git('rev-parse', 'HEAD'), orphan, 'a genuinely orphaned commit must still be ff-reattached');
+        assert.equal(
+            readTicketStatus(ticketDir, ticketId),
+            'Done',
+            'the real recovery path must survive the strict-descent guard',
+        );
+    });
+});
