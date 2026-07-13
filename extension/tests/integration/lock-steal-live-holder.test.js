@@ -38,6 +38,7 @@ import { LockError } from '../../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PICKLE_UTILS = path.resolve(__dirname, '../../services/pickle-utils.js');
+const STATE_MANAGER_SRC = path.resolve(__dirname, '../../src/services/state-manager.ts');
 const STATE_MANAGER = path.resolve(__dirname, '../../services/state-manager.js');
 
 function tmpDir() {
@@ -91,7 +92,7 @@ test('stealLockFile refuses to evict a live holder that replaced the inspected l
 
   assert.equal(stole, false, 'contender must report that it stole nothing');
   assert.ok(fs.existsSync(lock), 'the live holder’s lock must survive');
-  assert.equal(fs.statSync(lock).ino, liveIno, 'the surviving lock must be the SAME file, restored');
+  assert.equal(fs.statSync(lock).ino, liveIno, 'the surviving lock must be the SAME file, untouched');
   assert.equal(fs.readFileSync(lock, 'utf-8'), String(process.pid), 'live holder’s payload intact');
 
   // No tombstone litter left behind.
@@ -107,6 +108,45 @@ test('stealLockFile evicts the lock when it is still the inode that was inspecte
   assert.equal(stealLockFile(lock, snapshot), true);
   assert.equal(fs.existsSync(lock), false, 'the dead holder’s lock is gone');
   assert.deepEqual(fs.readdirSync(dir), [], 'no tombstone litter');
+});
+
+/**
+ * A steal that renames the lock away before it can see what it captured has to vacate the path to
+ * judge it. On a mismatch it cannot put the file back atomically: a contender that acquires in that
+ * window makes the restoring `link` fail EEXIST, the cleanup unlinks the file regardless, and the
+ * steal has destroyed a live lock it neither created nor judged — while its holder's inode is still
+ * in `lockInodes`, so both processes proceed into the critical section and a state update is lost.
+ *
+ * That damage is only observable when a contender lands inside the window, which no single-threaded
+ * test can force, and `state-manager.ts` imports `* as fs` — a sealed namespace, so the restoring
+ * link cannot be made to fail from here either. What IS checkable is the shape that makes the window
+ * impossible: judge the lock through a second link, and remove it only once its inode is proven to
+ * be the one that was judged. `withStealRight` cannot cover this — the steal that reclaims a
+ * stranded steal-rights lock (`withStealRight` itself) is the one steal nothing can serialize.
+ */
+test('stealLockFile verifies the inode before it removes the lock — never the other way round', () => {
+  const src = fs.readFileSync(STATE_MANAGER_SRC, 'utf-8');
+  const body = src.slice(
+    src.indexOf('export function stealLockFile'),
+    src.indexOf('export function withStealRight'),
+  );
+  assert.ok(body.length > 0, 'stealLockFile must precede withStealRight in state-manager.ts');
+
+  assert.ok(
+    body.includes('fs.linkSync(lockPath, tombstone)'),
+    'the lock must be judged through a SECOND LINK, so it is never unpublished while unverified',
+  );
+  assert.ok(
+    !/fs\.renameSync\(\s*lockPath/.test(body),
+    'renaming the lock away before the identity check vacates the path — a contender acquires in ' +
+      'that window and the mismatch cleanup then destroys its brand-new lock',
+  );
+
+  const verdict = body.indexOf('stolenIno !== snapshot.ino');
+  const removal = body.indexOf('fs.unlinkSync(lockPath)');
+  assert.ok(verdict > 0, 'the inode identity check must be present');
+  assert.ok(removal > 0, 'the removal of the judged lock must be present');
+  assert.ok(verdict < removal, 'the identity check must run BEFORE the lock is removed');
 });
 
 test('inspectLockFile reads identity, age and payload from one snapshot; null when absent', () => {

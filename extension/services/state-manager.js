@@ -234,11 +234,21 @@ export function isDeadPidPayload(payload) {
         return false;
     return !isProcessAlive(pid);
 }
-/** Evicts a lock, refusing anything that is no longer the inode `snapshot` was judged against. */
+/**
+ * Evicts a lock, refusing anything that is no longer the inode `snapshot` was judged against.
+ *
+ * The identity check runs against a SECOND LINK to the lock, never against the lock itself. Renaming
+ * first means vacating the path before you can see what you captured — and a mismatch cannot then be
+ * undone: a contender that acquires in that window makes the restoring `link` fail EEXIST, the
+ * cleanup unlinks the file anyway, and the steal has destroyed a lock it neither created nor judged
+ * while its rightful holder still believes it owns it. Both then enter the critical section. Linking
+ * is non-destructive, so a mismatch costs nothing but our own link: the lock never leaves the
+ * namespace, and there is no window for a contender to race into.
+ */
 export function stealLockFile(lockPath, snapshot) {
     const tombstone = `${lockPath}.tomb.${process.pid}.${Date.now()}`;
     try {
-        fs.renameSync(lockPath, tombstone);
+        fs.linkSync(lockPath, tombstone); // a second link — the lock stays published while we judge it
     }
     catch {
         return false; // already gone
@@ -248,22 +258,21 @@ export function stealLockFile(lockPath, snapshot) {
         stolenIno = fs.statSync(tombstone).ino;
     }
     catch { /* unreadable — treat as mismatch */ }
-    if (stolenIno !== snapshot.ino) {
-        try {
-            fs.linkSync(tombstone, lockPath);
-        }
-        catch { /* a third party holds it now — leave theirs */ }
+    try {
+        if (stolenIno !== snapshot.ino)
+            return false; // not the file we judged — and we never touched it
+        fs.unlinkSync(lockPath);
+        return true;
+    }
+    catch {
+        return false; // holder released it under us — nothing of ours to evict
+    }
+    finally {
         try {
             fs.unlinkSync(tombstone);
         }
         catch { /* best-effort */ }
-        return false;
     }
-    try {
-        fs.unlinkSync(tombstone);
-    }
-    catch { /* best-effort */ }
-    return true;
 }
 /**
  * Runs `steal` holding exclusive stale-recovery rights on `lockPath`.
