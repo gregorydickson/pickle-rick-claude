@@ -119,6 +119,39 @@ function makeSymlinkPayloadTarball(archiveName = 'symlink.tar.gz') {
   return { dir, tarball };
 }
 
+// A REAL tarball (REAL tar, no shim) whose payload sentinels and one escaping symlink are the first
+// members, padded past a single gzip block, then TRUNCATED mid-stream. `tar -tvzf` still LISTS the
+// symlink and THEN exits non-zero on the short read — the shape that defeated the old guard: awk saw
+// the link and exited 0, but `pipefail` hands the pipeline TAR's non-zero status, and the `if`-guard
+// read non-zero as "no link found".
+function makeTruncatedSymlinkTarball(archiveName = 'pickle-release.tar.gz') {
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-truncated-'));
+  const root = path.join(dir, 'pickle-rick-claude');
+  writePackage(root, '1.67.0');
+  writeFileSync(path.join(root, 'install.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+  symlinkSync('../../../../../tmp/PWNED', path.join(root, 'extension', 'evil-link'));
+
+  const servicesDir = path.join(root, 'extension', 'services');
+  mkdirSync(servicesDir, { recursive: true });
+  const members = [
+    'pickle-rick-claude/extension/package.json',
+    'pickle-rick-claude/install.sh',
+    'pickle-rick-claude/extension/evil-link',
+  ];
+  for (let index = 0; index < 600; index += 1) {
+    const relative = `pickle-rick-claude/extension/services/generated_module_${index}.js`;
+    writeFileSync(path.join(dir, relative), `export const generatedModule${index} = ${index};\n`);
+    members.push(relative);
+  }
+
+  const intact = path.join(dir, 'intact.tar.gz');
+  run('tar', ['-czf', intact, '-C', dir, ...members]);
+  const bytes = readFileSync(intact);
+  const tarball = path.join(dir, archiveName);
+  writeFileSync(tarball, bytes.subarray(0, Math.floor(bytes.length * 0.6)));
+  return { dir, tarball };
+}
+
 function makeGhFixture({ mode = 'ok', tarball, tarballs, fakeFindNames, downloadAssert }) {
   const binDir = mkdtempSync(path.join(tmpdir(), 'release-gate-bin-'));
   const ghPath = path.join(binDir, 'gh');
@@ -180,6 +213,11 @@ case "$1" in
   -tzf)
     cat <<'EOF'
 ${listing.join('\n')}
+EOF
+    ;;
+  -tvzf)
+    cat <<'EOF'
+${listing.map((entry) => `-rw-r--r--  0 release gate  0 Jan  1 00:00 ${entry}`).join('\n')}
 EOF
     ;;
   -xOzf)
@@ -495,7 +533,7 @@ esac
   });
 
   test('exits 21 when an unsafe entry precedes a large listing that would SIGPIPE the tar producer', () => {
-    // Regression: tarball_has_unsafe_entries piped `tar -tzf | awk`, and the awk
+    // Regression: the unsafe-entry scan piped `tar -tzf | awk`, and the awk
     // exited on the first unsafe match. Under `set -o pipefail`, an early awk exit
     // SIGPIPEs the still-writing tar producer (listing > 64KB pipe buffer), so the
     // pipeline returns 141 and the `if`-guard read it as "no unsafe entry" — the
@@ -547,6 +585,29 @@ esac
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
       rmSync(symlinkFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  test('exits 21 when a truncated tarball hides an escaping symlink behind a tar read error', () => {
+    // Regression: the link and name scans were `tar ... | awk` pipelines consumed as `if`-guards.
+    // Under `set -o pipefail` a pipeline yields TAR's status whenever tar fails, and that status
+    // MASKS awk's verdict — awk exits 0 on a detected link, tar's non-zero wins, and the guard reads
+    // it as "clean". A truncated archive still LISTS its escaping symlink, so the gate sailed past
+    // the very link awk had just printed. Every listing is now materialized and status-checked
+    // BEFORE it is scanned: an archive tar cannot fully list is unverifiable, so it dies rather than
+    // ships. The valid payload root in the fixture is what let the buggy gate reach "ok".
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const truncated = makeTruncatedSymlinkTarball();
+    const ghDir = makeGhFixture({ tarball: truncated.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stdout || result.stderr);
+      assert.match(result.stderr, /could not list archive entries/);
+      assert.doesNotMatch(result.stdout, /^ok:/m);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(truncated.dir, { recursive: true, force: true });
       rmSync(ghDir, { recursive: true, force: true });
     }
   });
