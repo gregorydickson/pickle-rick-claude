@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArguments, initializeNewSession, evaluateLaunchSizing, countManifestTickets } from '../bin/setup.js';
 import { compatibleCodexVersion, codexVersionLine } from './__helpers__/codex-shim.js';
@@ -1530,16 +1530,27 @@ test('AC-LPB-05: --resume resets start_time_epoch to current time and emits acti
 // Regression: the fast tier runs setup-family files concurrently, so a sibling can hold
 // this cwd's session-map slot while setup.js claims it. Every spawn helper must wait the
 // slot out — `runSetupWithEnv` used to die on it, false-REDding the whole fast tier.
+// The holder must be an ORPHAN (a grandchild), never this process's own child. The body
+// below is fully synchronous (execFileSync + Atomics.wait), so it can never process
+// SIGCHLD — an exited child would linger as a zombie that `kill(pid, 0)` still reports
+// alive, the slot would never free, and the retry could never win. Orphaning it (sh forks
+// node, sh exits) re-parents it to init, which reaps it for real when it exits.
 test('setup: a spawn survives a live sibling holding the cwd session-map slot', () => {
     const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-collision-data-'));
-    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2500)'], { stdio: 'ignore' });
+    const pidFile = path.join(dataRoot, 'holder.pid');
+    execFileSync(
+        'sh',
+        ['-c', `"${process.execPath}" -e 'setTimeout(() => {}, 2500)' >/dev/null 2>&1 & echo $! > "${pidFile}"`],
+        { timeout: 30_000 },
+    );
+    const holderPid = Number(fs.readFileSync(pidFile, 'utf-8').trim());
     try {
         fs.writeFileSync(
             path.join(dataRoot, 'current_sessions.json'),
             JSON.stringify({
                 [process.cwd()]: {
                     sessionPath: path.join(dataRoot, 'sessions', 'held-by-live-sibling'),
-                    pid: holder.pid,
+                    pid: holderPid,
                 },
             }),
         );
@@ -1554,8 +1565,18 @@ test('setup: a spawn survives a live sibling holding the cwd session-map slot', 
             /SESSION_ROOT=/,
             'spawn helper must retry past a live sibling holding the cwd slot, not throw',
         );
+
+        // Green for the RIGHT reason: the winning spawn must have CLAIMED the slot. A
+        // stranded session-map lock ALSO gets SESSION_ROOT= onto stdout — setup takes a
+        // LockError, warns "session map not updated", and proceeds — while the sibling's
+        // entry survives untouched. Pinning the claim is what tells the two apart.
+        const claimed = JSON.parse(
+            fs.readFileSync(path.join(dataRoot, 'current_sessions.json'), 'utf-8'),
+        )[process.cwd()];
+        assert.notEqual(claimed.pid, holderPid, 'the winning spawn must own the cwd slot, not the departed sibling');
+        assert.equal(claimed.sessionPath, output.match(/SESSION_ROOT=(.+)/)[1].trim());
     } finally {
-        try { holder.kill(); } catch { /* already exited */ }
+        try { process.kill(holderPid, 'SIGKILL'); } catch { /* already exited */ }
         fs.rmSync(dataRoot, { recursive: true, force: true });
     }
 });
