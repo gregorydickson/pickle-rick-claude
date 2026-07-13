@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, type TicketInfo } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter } from '../services/git-utils.js';
-import { detectAndRecoverHeadRegression } from './mux-runner.js';
+import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict } from './mux-runner.js';
 import { State, LockError, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
 import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
@@ -1277,9 +1277,22 @@ function tryResumeOrphanReattach(
       log: (m) => process.stderr.write(m + '\n'),
     });
 
-    if (result.recovered) {
-      updateTicketFrontmatter(currentTicket, fullSessionPath, { status: 'Done', completion_commit: completionCommitSha });
+    if (!result.recovered) return;
+
+    // R-CWGE: the ff-reattach already preserved the commit — that part is unconditional. Done is
+    // terminal and bypasses every later gate, so it requires the GREEN worker-gate verdict every
+    // Done-flip path in mux-runner consults. Fail closed: a red or unverifiable verdict leaves the
+    // ticket at its current status, where the runner can still re-select it.
+    const gate = resolveWorkerGateVerdict(fullSessionPath, currentTicket, workingDir);
+    if (gate.verdict !== 'green') {
+      process.stderr.write(
+        `[resume-reattach] ticket ${currentTicket} reattached at ${completionCommitSha} but NOT flipped Done: ` +
+        `worker_gate_verdict='${gate.verdict}' (computed_via=${gate.computedVia}). ` +
+        `Done requires a GREEN worker-gate verdict (R-CWGE).\n`,
+      );
+      return;
     }
+    updateTicketFrontmatter(currentTicket, fullSessionPath, { status: 'Done', completion_commit: completionCommitSha });
   } catch (err) {
     process.stderr.write(`[resume-reattach] best-effort failure: ${safeErrorMessage(err)}\n`);
   }

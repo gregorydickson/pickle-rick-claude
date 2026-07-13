@@ -1667,7 +1667,7 @@ function initOrphanRepo(prefix) {
     return { repo, git, base: git('rev-parse', 'HEAD') };
 }
 
-function seedResumableSession(dataRoot, repo, ticketId, completionCommit) {
+function seedResumableSession(dataRoot, repo, ticketId, completionCommit, extraFrontmatter = '') {
     const sessionPath = runSetupWithEnv(
         ['--tmux', '--task', 'resume orphan reattach'],
         { PICKLE_DATA_ROOT: dataRoot },
@@ -1684,7 +1684,7 @@ function seedResumableSession(dataRoot, repo, ticketId, completionCommit) {
     fs.mkdirSync(ticketDir, { recursive: true });
     fs.writeFileSync(
         path.join(ticketDir, `rick_ticket_${ticketId}.md`),
-        `---\nid: ${ticketId}\nstatus: Failed\ncomplexity_tier: small\norder: 1\ncompletion_commit: ${completionCommit}\n---\n# ${ticketId}\n`,
+        `---\nid: ${ticketId}\nstatus: Failed\ncomplexity_tier: small\norder: 1\ncompletion_commit: ${completionCommit}\n${extraFrontmatter}---\n# ${ticketId}\n`,
     );
     return { sessionPath, ticketDir };
 }
@@ -1769,6 +1769,40 @@ test('setup --resume: a REAL orphaned commit is still ff-reattached and flipped 
             readTicketStatus(ticketDir, ticketId),
             'Done',
             'the real recovery path must survive the strict-descent guard',
+        );
+    });
+});
+
+test('setup --resume: a REAL orphan whose worker gate went RED is reattached but NOT flipped Done', () => {
+    withResumeFixture('pickle-resume-red', ({ dataRoot, repo, git, base }) => {
+        const ticketId = 'aa44red0';
+        fs.writeFileSync(path.join(repo, 'b.txt'), 'work the worker gate rejected\n');
+        git('add', '-A');
+        git('commit', '-q', '-m', 'worker commit');
+        const orphan = git('rev-parse', 'HEAD');
+        git('reset', '--hard', '-q', base); // strand the worker's commit off HEAD
+
+        // The worker gate ran and recorded RED (eslint/tsc failed), which is exactly why the
+        // ticket sits at Failed with its completion_commit still stamped.
+        const { sessionPath, ticketDir } = seedResumableSession(
+            dataRoot, repo, ticketId, orphan, 'worker_gate_verdict: red\n',
+        );
+
+        runSetupWithEnv(['--resume', sessionPath], {
+            PICKLE_DATA_ROOT: dataRoot,
+            PICKLE_ORPHAN_REAP: 'off',
+        });
+
+        assert.equal(
+            git('rev-parse', 'HEAD'),
+            orphan,
+            'preserving the commit is unconditional — only the terminal Done flip is gated on the verdict',
+        );
+        assert.notEqual(
+            readTicketStatus(ticketDir, ticketId),
+            'Done',
+            'the worker gate recorded RED for this very commit, so --resume must not resurrect the ticket to ' +
+                'terminal Done over code no gate ever passed — Done bypasses every later gate and lets the epic finalize on it (R-CWGE fail-closed)',
         );
     });
 });

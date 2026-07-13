@@ -4605,7 +4605,7 @@ export function recomputeAbsentWorkerGateVerdict(
  * Done-flips on those repos are not universally fail-closed. Only an EXISTING-but-errored
  * gate yields `'unavailable'` (→ fail-closed, AC-CWGE-6).
  */
-function resolveWorkerGateVerdict(
+export function resolveWorkerGateVerdict(
   sessionDir: string,
   ticketId: string,
   workingDir: string,
