@@ -61,9 +61,22 @@ read_tag_version() {
   printf '%s\n' "$version"
 }
 
-list_installable_payload_roots() {
+# Every scan below consumes a listing that `read_tarball_listing` already materialized and
+# status-checked — never a live `tar | awk` pipe. Under `set -o pipefail` a pipeline yields TAR's
+# status whenever tar fails, and that status MASKS awk's verdict: awk exits 0 on a detected
+# offending member, tar's non-zero wins, and the `if`-guard at the callsite reads non-zero as
+# "clean". A truncated archive carrying an escaping symlink therefore false-greened the release
+# while awk was printing the very link it missed. `printf` cannot fail, so awk's verdict is the
+# pipeline's verdict here, and an unlistable archive is a hard stop (die 21) rather than a pass.
+read_tarball_listing() {
   local tarball="$1"
-  tar -tzf "$tarball" | awk '
+  shift
+  tar "$@" "$tarball"
+}
+
+list_installable_payload_roots() {
+  local listing="$1"
+  printf '%s\n' "$listing" | awk '
     function is_safe_root(root) {
       return root == "" || (root !~ /^\// && root !~ /(^|\/)\.\.?($|\/)/)
     }
@@ -105,22 +118,22 @@ list_installable_payload_roots() {
 }
 
 find_installable_payload_root() {
-  local tarball="$1"
+  local listing="$1"
   local -a roots=()
   local root
 
   while IFS= read -r root; do
     roots+=("$root")
-  done < <(list_installable_payload_roots "$tarball")
+  done < <(list_installable_payload_roots "$listing")
 
   [ ${#roots[@]} -gt 0 ] || return 1
   [ ${#roots[@]} -eq 1 ] || return 2
   printf '%s\n' "${roots[0]}"
 }
 
-tarball_has_unsafe_entries() {
-  local tarball="$1"
-  tar -tzf "$tarball" | awk '
+listing_has_unsafe_entries() {
+  local listing="$1"
+  printf '%s\n' "$listing" | awk '
     function normalized(entry) {
       sub(/^\.\//, "", entry)
       sub(/\/$/, "", entry)
@@ -139,17 +152,17 @@ tarball_has_unsafe_entries() {
   '
 }
 
-# `tarball_has_unsafe_entries` scans member NAMES only (`tar -tzf`), so a symlink or hardlink
+# `listing_has_unsafe_entries` scans member NAMES only (`tar -tzf`), so a symlink or hardlink
 # whose NAME is safe but whose TARGET escapes the payload root sails through: the extractor writes
 # members that land after the link THROUGH it, escaping the install prefix. `-tvzf` is the only
 # listing that exposes the entry type (mode field first char: `l` symlink, `h` hardlink — portable
 # across GNU and BSD tar). The real installer payload contains no links, so a blanket rejection of
 # every link member cannot false-RED a legitimate release. Drain to END — never a bare `exit` on
-# first match — or pipefail SIGPIPEs the still-writing tar on a >64KB listing (see release-gate.sh
-# trap door).
-tarball_has_link_entries() {
-  local tarball="$1"
-  tar -tvzf "$tarball" | awk '
+# first match — or pipefail SIGPIPEs the still-writing producer on a >64KB listing (see
+# release-gate.sh trap door).
+listing_has_link_entries() {
+  local listing="$1"
+  printf '%s\n' "$listing" | awk '
     {
       type = substr($1, 1, 1)
       if (!found && (type == "l" || type == "h")) {
@@ -168,7 +181,7 @@ select_installable_tarball() {
   local tag="$2"
   local -a downloaded=()
   local -a installable=()
-  local tarball
+  local tarball name_listing verbose_listing
 
   while IFS= read -r tarball; do
     [ -n "$tarball" ] || continue
@@ -178,13 +191,20 @@ select_installable_tarball() {
   [ ${#downloaded[@]} -gt 0 ] || die 20 "release download produced no tar.gz asset for $tag"
 
   for tarball in "${downloaded[@]}"; do
-    if unsafe_entry="$(tarball_has_unsafe_entries "$tarball")"; then
+    # Fail closed here, where `die` still reaches the caller: an `if`-guard suppresses `set -e`,
+    # so a `die` raised from inside one of the scans below would only exit its own subshell.
+    name_listing="$(read_tarball_listing "$tarball" -tzf)" ||
+      die 21 "could not list archive entries of downloaded tarball $tarball"
+    verbose_listing="$(read_tarball_listing "$tarball" -tvzf)" ||
+      die 21 "could not list archive entries of downloaded tarball $tarball"
+
+    if unsafe_entry="$(listing_has_unsafe_entries "$name_listing")"; then
       die 21 "downloaded tarball contains unsafe archive entry $unsafe_entry"
     fi
-    if link_entry="$(tarball_has_link_entries "$tarball")"; then
+    if link_entry="$(listing_has_link_entries "$verbose_listing")"; then
       die 21 "downloaded tarball contains a symlink or hardlink member: $link_entry"
     fi
-    if payload_root="$(find_installable_payload_root "$tarball")"; then
+    if payload_root="$(find_installable_payload_root "$name_listing")"; then
       installable+=("$tarball")
     else
       status=$?
@@ -222,9 +242,11 @@ post_tag() {
   trap 'rm -rf "$RELEASE_GATE_TMPDIR"' EXIT
   gh release download "$tag" -R "$REPO" -p '*.tar.gz' -D "$tmpdir" >/dev/null 2>&1 || die 20 "release download failed for $tag"
 
-  local tarball payload_root pkg_member pkg tagged
+  local tarball payload_root pkg_member pkg tagged name_listing
   tarball="$(select_installable_tarball "$tmpdir" "$tag")"
-  payload_root="$(find_installable_payload_root "$tarball")" || {
+  name_listing="$(read_tarball_listing "$tarball" -tzf)" ||
+    die 21 "could not list archive entries of downloaded tarball $tarball"
+  payload_root="$(find_installable_payload_root "$name_listing")" || {
     status=$?
     [ "$status" -eq 1 ] || die 21 "downloaded tarball contains multiple install payload roots shared by $PKG_DISPLAY_PATH and install.sh"
     die 21 "downloaded tarball is missing install payload root shared by $PKG_DISPLAY_PATH and install.sh"
