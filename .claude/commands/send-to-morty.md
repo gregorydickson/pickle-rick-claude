@@ -107,6 +107,12 @@ completion_commit: <full-or-short-sha-of-the-commit-that-closes-this-ticket>
 
 as a flat top-level YAML key in the frontmatter (not nested). The runtime watcher reverts any `status: Done` flip that lacks a `completion_commit` field — reverted tickets count as Todo on the next iteration, and your work is wasted. The `completion_commit` SHA must point to a commit on the current branch whose message references the ticket id (`${TICKET_ID}`). Do not flip status to Done before the commit exists. This requirement is in addition to the existing rule that work must pass acceptance criteria before you mark the ticket Done.
 
+## ⚠️ Synchronous Gate Confirmation & Commit-First
+
+Gate/test confirmation (tsc, eslint, test:fast) runs SYNCHRONOUSLY in your own turn — NEVER background it, poll a monitor, or await an external event to confirm it. No waker exists in `claude -p`; a worker that parks on an async confirmation idles to budget death with the diff uncommitted.
+
+If the diff is green on tsc+eslint and only the test tier is unconfirmed, COMMIT FIRST — do not hold a deterministically-green diff hostage to an unconfirmed test tier.
+
 ## Lifecycle — ONE TICKET, all phases in the tier's lifecycle set
 
 {{TIER_LIFECYCLE_SECTIONS}}

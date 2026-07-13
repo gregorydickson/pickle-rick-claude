@@ -6,7 +6,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { tierToModel, resolveCodexModel } from '../bin/spawn-morty.js';
+import { tierToModel, resolveCodexModel, buildTierLifecycleSections } from '../bin/spawn-morty.js';
+import { TIER_LIFECYCLE } from '../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SPAWN_MORTY_BIN = path.resolve(__dirname, '../bin/spawn-morty.js');
@@ -2060,3 +2061,43 @@ test('resolveCodexModel: trims state.codex_model whitespace', () => {
         fs.rmSync(extensionRoot, { recursive: true, force: true });
     }
 });
+
+// ---------------------------------------------------------------------------
+// buildTierLifecycleSections — rendered-output sync-gate + commit-first rules
+// (ticket 8327c4d8 / WS-WMFF-1: a worker parked on a test:fast monitor event
+// that can never fire inside `claude -p` idled to budget death with a
+// verified diff left uncommitted. These assertions read the ACTUAL rendered
+// string returned by the builder, not the source file text, so a future
+// refactor that keeps the source comment but drops the runtime string still
+// fails the test.)
+// ---------------------------------------------------------------------------
+
+for (const tier of Object.keys(TIER_LIFECYCLE)) {
+    test(`buildTierLifecycleSections: ${tier} tier Implement section carries sync-gate + commit-first rules`, () => {
+        const rendered = buildTierLifecycleSections(TIER_LIFECYCLE[tier], tier);
+        const implementSection = rendered.slice(rendered.indexOf('. Implement'));
+        assert.match(implementSection, /synchronously/i,
+            `expected synchronous-gate rule in ${tier} Implement section, got: ${implementSection}`);
+        assert.match(implementSection, /commit first/i,
+            `expected commit-first rule in ${tier} Implement section, got: ${implementSection}`);
+        assert.match(implementSection, /no waker exists in `claude -p`/i,
+            `expected no-waker rationale in ${tier} Implement section, got: ${implementSection}`);
+    });
+}
+
+for (const tier of Object.keys(TIER_LIFECYCLE)) {
+    const hasConformance = TIER_LIFECYCLE[tier].includes('conformance');
+    test(`buildTierLifecycleSections: ${tier} tier Spec Conformance section ${hasConformance ? 'carries' : 'omits'} sync-gate + commit-first rules`, () => {
+        const rendered = buildTierLifecycleSections(TIER_LIFECYCLE[tier], tier);
+        const conformanceIdx = rendered.indexOf('. Spec Conformance');
+        if (!hasConformance) {
+            assert.equal(conformanceIdx, -1, `expected no Spec Conformance section for ${tier} tier`);
+            return;
+        }
+        const conformanceSection = rendered.slice(conformanceIdx);
+        assert.match(conformanceSection, /synchronously/i,
+            `expected synchronous-gate rule in ${tier} Conformance section, got: ${conformanceSection}`);
+        assert.match(conformanceSection, /commit first/i,
+            `expected commit-first rule in ${tier} Conformance section, got: ${conformanceSection}`);
+    });
+}
