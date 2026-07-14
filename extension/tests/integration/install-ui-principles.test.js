@@ -49,4 +49,11 @@ test('install-ui-principles: szechuan-sauce-ui-principles.md lands under PICKLE_
     const content = fs.readFileSync(deployedPrinciples, 'utf-8');
     assert.ok(content.includes('Author Intent'), 'deployed ui-principles should contain Author Intent principle');
     assert.ok(content.includes('False Positives'), 'deployed ui-principles should contain False Positives section');
+
+    // Existence is not enough: the rubric deploys via a plain `cp` with no compiled mirror
+    // (install.sh:517-518), so nothing else pins deployed bytes to source bytes. Assert content
+    // parity directly so a stale/hand-edited deployed copy fails loud instead of merely existing.
+    const sourcePrinciples = path.join(REPO_ROOT, 'extension', 'szechuan-sauce-ui-principles.md');
+    const sourceContent = fs.readFileSync(sourcePrinciples, 'utf-8');
+    assert.equal(content, sourceContent, 'deployed szechuan-sauce-ui-principles.md must be byte-identical to the repo source');
 });

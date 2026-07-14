@@ -401,7 +401,7 @@ if [ -f "$_schema_src" ]; then
 fi
 
 # --- POST-RSYNC MD5 PARITY PROBE (R-ITS-2) ---
-# Verifies source-built and deployed copies of the 5 most-trafficked compiled
+# Verifies source-built and deployed copies of the most-trafficked compiled
 # JS files are byte-identical after rsync. Mismatch → exit 1 with diff list.
 # Set INSTALL_SKIP_PARITY=1 to bypass for emergency deploys.
 if [ "${INSTALL_SKIP_PARITY:-0}" != "1" ] && [ "$INSTALL_MODE" = "git" ]; then
@@ -411,6 +411,9 @@ if [ "${INSTALL_SKIP_PARITY:-0}" != "1" ] && [ "$INSTALL_MODE" = "git" ]; then
     "bin/spawn-morty.js"
     "bin/mux-runner.js"
     "services/pickle-utils.js"
+    "bin/spawn-refinement-team.js"
+    "bin/microverse-runner.js"
+    "bin/spawn-gate-remediator.js"
   )
   _mismatches=()
   for _f in "${_parity_files[@]}"; do
