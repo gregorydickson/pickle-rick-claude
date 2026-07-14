@@ -540,3 +540,23 @@ gh release create vX.Y.Z             # tag + publish
 
 **Resume an active loop:** `node ~/.claude/pickle-rick/extension/bin/setup.js --tmux --resume <SESSION_ROOT>`.
 Closer manager-handoff runbook: `../docs/closer-ticket-manager-handoff.md`. Babysitter: `babysitter.md`.
+
+---
+
+## OPEN BUG — AC-shape gate rejects DERIVED `describe.each` (2026-07-14, capture-only)
+
+**`prds/BUG-REPORT-2026-07-14-ac-shape-gate-rejects-derived-describe-each.md`**
+
+`DESCRIBE_EACH_RE = /describe\.each\s*\(\s*\[/s` (`spawn-refinement-team.js:943`) requires an **inline array
+literal**, so it **rejects `describe.each(EXPORTED_CONST)`** — the derived form, which is strictly better and is
+what the gate's own purpose demands. Satisfying the gate means **hand-copying the target set into the spec**,
+which is the exact drift-prone enumeration the gate exists to stamp out.
+
+Also: `UNIVERSAL_QUANTIFIER_RE` (`:941`) omits `no` / `never` / bare `any`, so it misses **negative universals**
+("NO rule emits…", "a FAIL never renders below a PASS") — the shape most safety ACs take.
+
+**Consequence:** the gate's stated pass condition is **unreachable** for a correctly-written PRD, so *"refine
+until the gate passes clean"* does not terminate. Hit on LOA-1763 (loanlight-api): five rounds, gate blocked all
+five, six of nine analyst-authored tickets failed the collapse check **while being more correct than the shape
+the gate wanted**. The blocking was still valuable — rounds 4–5 surfaced real correctness bugs — but the run had
+to override the gate with a documented reason to proceed.
