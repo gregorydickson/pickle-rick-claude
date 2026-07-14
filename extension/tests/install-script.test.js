@@ -885,6 +885,19 @@ describe('install.sh schemaVersion parity check (F3)', () => {
     assert.match(src, /Compiled JS schemaVersion .* does not match source TS/);
   });
 
+  test('git-mode detection uses -e, not -d: in a worktree .git is a FILE', () => {
+    const src = readFileSync(INSTALL_SH, 'utf8');
+    // A git WORKTREE's .git is a `gitdir:` POINTER FILE, not a directory. `[ -d ]` fell through to
+    // tarball mode there, which skips the codegraph symlinks and lets the deploy-root
+    // `npm install --omit=dev` prune the typescript symlink — leaving the deployed pipeline-runner
+    // unloadable (ERR_MODULE_NOT_FOUND). Loud in tests, SILENT for an operator installing from a
+    // worktree. Nothing covered this until a v2.1 gate run happened to execute inside one.
+    assert.match(src, /if \[ -e "\$SCRIPT_DIR\/\.git" \]; then/,
+      'install.sh must detect git mode with [ -e ] so a worktree .git FILE still means git mode');
+    assert.equal(/if \[ -d "\$SCRIPT_DIR\/\.git" \]; then/.test(src), false,
+      '[ -d ] misdetects a git worktree as a tarball install');
+  });
+
   test('real source TS and compiled JS schemaVersion currently agree', () => {
     const tsSrc = readFileSync(path.join(REPO_ROOT, 'extension', 'src', 'types', 'index.ts'), 'utf8');
     const jsSrc = readFileSync(path.join(REPO_ROOT, 'extension', 'types', 'index.js'), 'utf8');

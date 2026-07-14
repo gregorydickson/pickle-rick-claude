@@ -324,7 +324,12 @@ jq . "$SETTINGS_FILE" >/dev/null 2>&1 || { echo "❌ settings.json is not valid 
 [ -d "$SCRIPT_DIR/.claude/commands" ] || { echo "❌ .claude/commands/ not found. Are you running from the repo root?"; exit 1; }
 
 # --- MODE DETECTION ---
-if [ -d "$SCRIPT_DIR/.git" ]; then
+# `-e`, not `-d`: in a git WORKTREE `.git` is a FILE (a gitdir: pointer), not a directory. Testing
+# for a directory silently fell through to tarball mode there — which skips the codegraph symlinks
+# and then lets the deploy-root `npm install --omit=dev` prune the `typescript` symlink as
+# extraneous, leaving the deployed pipeline-runner unloadable (ERR_MODULE_NOT_FOUND). It failed
+# loudly in the tests and SILENTLY for anyone installing from a worktree.
+if [ -e "$SCRIPT_DIR/.git" ]; then
   INSTALL_MODE="git"
 else
   INSTALL_MODE="tarball"
