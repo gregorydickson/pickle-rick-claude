@@ -137,10 +137,16 @@ this ran for five iterations, in front of an attentive operator, and looked like
 
 - `AC-JPCM-7`: `judge_json_parse_failed` is in `VALID_ACTIVITY_EVENTS` and reachable from the schema's top-level
   `oneOf`; `activity-event-payload.test.js` covers its required fields.
-- `AC-JPCM-8`: a szechuan/anatomy phase that exits on the stall limit with a **flat** score and an **empty**
-  `violation_ledger` does **not** report `status: "converged"` — it reports a distinct, honest disposition
-  (e.g. `stalled_unmeasurable`), because a metric that never moved and a ledger that never populated is not evidence
-  of convergence.
+- `AC-JPCM-8` **(RE-KEYED 2026-07-14 — the original was SELF-DISARMING; see below)**: a metric phase that exits on
+  `stall_limit` with `convergence_target != null` and a score **not at target** does **not** report
+  `status: "converged"` — it reports `stalled_below_target`. This holds **regardless of `violation_ledger` contents**.
+
+  > **Why re-keyed.** The original AC was a *conjunction* on ledger-**emptiness** ("a flat score **and** an empty
+  > `violation_ledger`"). But WS-1's entire purpose is to make the ledger NON-empty (`AC-JPCM-3`). The moment WS-1
+  > lands, the AC-JPCM-8 precondition is false, the check passes **vacuously**, and szechuan converges at score 4
+  > against target 0 again — now with 20 real violations sitting in the ledger it just learned to populate. The
+  > bundle would ship, its own acceptance test would go green, and the field bug would still reproduce. The honest
+  > invariant is score-vs-target, which no workstream in this bundle can destroy.
 
 ### Simplification Review (subtract-before-add) — WS-2
 
