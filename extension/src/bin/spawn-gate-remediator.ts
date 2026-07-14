@@ -6,6 +6,7 @@ import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { isBackend } from '../services/backend-spawn.js';
 import type { Backend, GateResult, GateFailure } from '../types/index.js';
 import { writeActivityEntry } from '../services/state-manager.js';
+import { FOM_EVIDENCE_RULES, FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 
 const USAGE = 'Usage: spawn-gate-remediator --gate-result <path> --session-root <path> --reason strict|per-iteration';
 const LOCKFILE_NAME = 'remediator.lockfile';
@@ -146,6 +147,10 @@ The abort file must contain: reason, affected file:line, what fix was requested,
 - Do not write to \`state.json\`, \`microverse.json\`, or any orchestrator-owned file.
 - Write your outcome to \`\${SESSION_ROOT}/gate/remediation_<iso>_result.json\` only.
 `);
+
+  sections.push(`## Section 5: Evidence & Reporting\n`);
+  sections.push(FOM_EVIDENCE_RULES + '\n');
+  sections.push(FOM_HONEST_REPORTING_RULES + '\n');
 
   return sections.join('\n');
 }

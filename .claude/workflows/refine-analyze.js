@@ -20,6 +20,16 @@ export const meta = {
 //     intentionally NOT reproduced here (trap door R-DWF-CROSSCYCLE-VARS).
 // ---------------------------------------------------------------------------
 
+// B-FOMC WS-1 single source (extension/src/services/fom-blocks.ts), carried verbatim per
+// the workflow-js contract: one top-level unindented template literal per block, never
+// `[...].join('\n')`'d (the shape test forbids that form for FOM blocks specifically).
+const FOM_EVIDENCE_RULES = `## Evidence rules
+A resolving path is not a verified claim; a missing path may be a proposed file, not a fabrication.
+Verify the claim itself, not whether a token resolves.`;
+const FOM_HONEST_REPORTING_RULES = `## Honest reporting
+Silence is not success. A fast clean pass may mean the gate never fired, not that it passed.
+Never report an outcome you did not observe; verify before declaring a verdict.`;
+
 const ROLES = ['requirements', 'codebase', 'risk-scope'];
 
 const ROLE_LABELS = {
@@ -37,7 +47,7 @@ const ROLE_INSTRUCTIONS = {
     'Analyze alignment between the PRD and the actual codebase at the working dir. Use Glob/Grep/Read '
     + 'to map existing patterns. Flag PRD assumptions about components that do not exist, missing '
     + 'technical constraints, integration points, and unspecified technical decisions. Use file:line '
-    + 'references for every codebase claim.',
+    + 'references you have verified for every codebase claim; mark anything unverified as a hypothesis.',
   'risk-scope':
     'Analyze the PRD EXCLUSIVELY for risk, scope, and assumptions: scope clarity, non-goals / scope '
     + 'creep, risk completeness, mitigation quality, hidden assumptions, and under-specified external '
@@ -170,7 +180,7 @@ function analystPrompt(role, prdPath, workingDir, refinementDir, cycle, prior) {
     ].join('\n');
   }
 
-  return [
+  const body = [
     persona,
     '',
     `## Your Role: ${ROLE_LABELS[role]} Morty`,
@@ -189,6 +199,7 @@ function analystPrompt(role, prdPath, workingDir, refinementDir, cycle, prior) {
     '   optional p1_gaps[], ac_shape_smells[] (per the AC-Shape contract above), optional ticket',
     `   hints[], and the full markdown text in markdown_body. THIS IS CYCLE ${cycle}.`,
   ].join('\n');
+  return `${body}\n\n${FOM_EVIDENCE_RULES}\n\n${FOM_HONEST_REPORTING_RULES}`;
 }
 
 // Build the synthesis agent's prompt. It receives the final-cycle analyses inline (script vars),
@@ -198,7 +209,7 @@ function synthPrompt(prdPath, sessionDir, refinementDir, analyses, cycles, maxTu
   const findings = analyses
     .map((a) => `### ${ROLE_LABELS[a.role] || a.role}\n${a.markdown_body}`)
     .join('\n\n');
-  return [
+  const body = [
     'You are Pickle Rick synthesizing a final refined PRD from the analyst team\'s findings.',
     '',
     '## Inputs',
@@ -222,6 +233,7 @@ function synthPrompt(prdPath, sessionDir, refinementDir, analyses, cycles, maxTu
     '   completed_at is the current time as an ISO-8601 date-time string.',
     '3. Return that same manifest object as your structured result.',
   ].join('\n');
+  return `${body}\n\n${FOM_EVIDENCE_RULES}\n\n${FOM_HONEST_REPORTING_RULES}`;
 }
 
 // --------------------------------- body -----------------------------------

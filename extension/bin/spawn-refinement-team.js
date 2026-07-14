@@ -8,6 +8,7 @@ import { buildWorkerInvocation, isBackend } from '../services/backend-spawn.js';
 import { PromiseTokens, hasToken, Defaults, VALID_ACTIVITY_EVENTS, PipelineRunnerExitCode } from '../types/index.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
+import { FOM_EVIDENCE_RULES, FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 // PRD refinement is planning, not implementation. Codex is reserved for
 // implementation loops only — if the parent session opted into codex, we
 // still force claude here so analysis stays on the Claude model family.
@@ -346,6 +347,8 @@ function buildPromptGuidanceSections() {
         AC_SHAPE_PROMPT_SECTION,
         DECOMPOSITION_COLOCATION_PROMPT_SECTION,
         BUNDLE_OF_BUNDLES_FANOUT_SECTION,
+        FOM_EVIDENCE_RULES,
+        FOM_HONEST_REPORTING_RULES,
     ].join('\n');
 }
 export function buildWorkerPrompt(roleId, prdContent, outputFile, workingDir, cycle, previousAnalyses, portalContext) {
@@ -373,7 +376,7 @@ Analyze alignment between the PRD and the actual codebase at: \`${workingDir}\`
 4. **Integration Points**: What existing components will this feature touch? Are those interactions specified?
 5. **Missing Technical Context**: What technical decisions does the PRD leave unspecified that engineering will have to guess at?
 
-Use file:line references for every codebase claim. If the codebase is empty/irrelevant, say so explicitly and note what the PRD should specify instead.`
+Use file:line references you have verified for every codebase claim; mark anything unverified as a hypothesis. If the codebase is empty/irrelevant, say so explicitly and note what the PRD should specify instead.`
             + (portalContext && roleId === 'codebase' ? `
 
 ## Portal Artifacts

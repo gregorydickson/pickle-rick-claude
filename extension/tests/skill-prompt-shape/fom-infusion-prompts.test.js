@@ -23,29 +23,32 @@ const FOM_BLOCKS = {
   },
 };
 
-// FAMILY starts EMPTY — B-FOMC WS-1 (this ticket) builds the mechanism only; nothing is infused.
-// Ticket c4ee67ff (WS-2) and a460cad3 (WS-3) move entries here as they infuse each surface.
-// Shape: { path: <repo-relative>, blocks: [<FOM_BLOCKS key>, ...], kind: 'md' | 'ts' | 'workflow-js' }
-const FAMILY = [];
+// B-FOMC WS-2 (ticket c4ee67ff) infused all ten judging surfaces below. Shape:
+// { path: <repo-relative>, blocks: [<FOM_BLOCKS key>, ...], kind: 'md' | 'ts' | 'workflow-js' }
+const FAMILY = [
+  // The two refinement twins + the synthesizer + the council get BOTH blocks.
+  { path: 'extension/src/bin/spawn-refinement-team.ts', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], kind: 'ts' },
+  { path: '.claude/workflows/refine-analyze.js', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], kind: 'workflow-js' },
+  { path: '.claude/commands/pickle-refine-prd.md', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], kind: 'md' },
+  { path: '.claude/workflows/council-round.js', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], kind: 'workflow-js' },
 
-// Every prompt surface the discovery sweep can find, that is NOT (yet) in FAMILY, MUST be listed
+  // The judge (JUDGE_SYSTEM_PROMPT + buildJudgePrompt) and the three rubrics get honest-reporting only.
+  { path: 'extension/src/bin/microverse-runner.ts', blocks: ['FOM_HONEST_REPORTING_RULES'], kind: 'ts' },
+  { path: 'extension/szechuan-sauce-principles.md', blocks: ['FOM_HONEST_REPORTING_RULES'], kind: 'md' },
+  { path: 'extension/szechuan-sauce-ui-principles.md', blocks: ['FOM_HONEST_REPORTING_RULES'], kind: 'md' },
+  { path: 'extension/szechuan-sauce-financial-principles.md', blocks: ['FOM_HONEST_REPORTING_RULES'], kind: 'md' },
+
+  // The remediator pair gets BOTH blocks.
+  { path: 'extension/src/bin/spawn-gate-remediator.ts', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], kind: 'ts' },
+  { path: '.claude/agents/morty-gate-remediator.md', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], kind: 'md' },
+];
+
+// Every prompt surface the discovery sweep can find, that is NOT in FAMILY, MUST be listed
 // here with a non-empty reason. A few WS-2 targets (the 3 rubrics + spawn-gate-remediator.ts) are
 // NOT reachable by the literal AC-FOMC-1b glob predicate (rubrics live outside the five glob roots;
-// spawn-gate-remediator.ts's buildBriefContent is unexported and not `*Prompt`-named) — they are
-// added here by hand so WS-2 coverage is complete regardless of that sweep blind spot.
+// spawn-gate-remediator.ts's buildBriefContent is unexported and not `*Prompt`-named) — they were
+// added to FAMILY by hand for that reason (sweep coverage doesn't gate FAMILY membership).
 const EXCLUDED = [
-  // --- WS-2 targets (ticket c4ee67ff) ---
-  { path: 'extension/src/bin/spawn-refinement-team.ts', reason: 'B-FOMC WS-2 pending (ticket c4ee67ff)' },
-  { path: '.claude/workflows/refine-analyze.js', reason: 'B-FOMC WS-2 pending (ticket c4ee67ff)' },
-  { path: 'extension/src/bin/microverse-runner.ts', reason: 'B-FOMC WS-2 pending (ticket c4ee67ff)' },
-  { path: 'extension/src/bin/spawn-gate-remediator.ts', reason: 'B-FOMC WS-2 pending (ticket c4ee67ff)' },
-  { path: '.claude/agents/morty-gate-remediator.md', reason: 'B-FOMC WS-2 pending (ticket c4ee67ff)' },
-  { path: '.claude/workflows/council-round.js', reason: 'B-FOMC WS-2 pending (ticket c4ee67ff)' },
-  { path: '.claude/commands/pickle-refine-prd.md', reason: 'B-FOMC WS-2 pending (ticket c4ee67ff)' },
-  { path: 'extension/szechuan-sauce-principles.md', reason: 'B-FOMC WS-2 pending (ticket c4ee67ff)' },
-  { path: 'extension/szechuan-sauce-ui-principles.md', reason: 'B-FOMC WS-2 pending (ticket c4ee67ff)' },
-  { path: 'extension/szechuan-sauce-financial-principles.md', reason: 'B-FOMC WS-2 pending (ticket c4ee67ff)' },
-
   // --- WS-3 target (ticket a460cad3) — persona.md is a DIFFERENT workstream than WS-2 ---
   { path: 'persona.md', reason: 'B-FOMC WS-3 pending (ticket a460cad3)' },
 
@@ -177,8 +180,13 @@ test('fom-infusion red-proof: assertMdCarriesBlock throws when the block is stri
   assert.throws(() => assertMdCarriesBlock('synthetic-surface-stripped.md', stripped, 'FOM_HONEST_REPORTING_RULES'));
 });
 
-// --- AC-FOMC-1: live per-surface assertions over FAMILY (empty today; ticket c4ee67ff populates it) ---
-for (const entry of FAMILY) {
+// --- AC-FOMC-1: live per-surface assertions over FAMILY. Only `md`-kind surfaces carry the block
+// as a literal sentinel-wrapped string (assertMdCarriesBlock's contract); `ts` surfaces import the
+// constant (verified by tsFamilyEntries below — the source text never literally re-types the prose,
+// per AC-FOMC-2(b)) and `workflow-js` surfaces carry it as a top-level const (verified by
+// workflowFamilyEntries below). ---
+const mdFamilyEntries = FAMILY.filter((e) => e.kind === 'md');
+for (const entry of mdFamilyEntries) {
   test(`fom-infusion: ${entry.path} carries its required FOM block(s)`, () => {
     const abs = path.join(repoRoot, entry.path);
     const content = fs.readFileSync(abs, 'utf8');

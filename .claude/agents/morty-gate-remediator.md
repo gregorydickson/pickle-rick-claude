@@ -18,6 +18,17 @@ You receive a brief at `${SESSION_ROOT}/gate/remediation_<iso>_brief.md` contain
 
 Read the brief before touching any file. If `SESSION_ROOT` is not provided, halt immediately.
 
+<!-- BEGIN FOM_EVIDENCE_RULES -->
+## Evidence rules
+A resolving path is not a verified claim; a missing path may be a proposed file, not a fabrication.
+Verify the claim itself, not whether a token resolves.
+<!-- END FOM_EVIDENCE_RULES -->
+<!-- BEGIN FOM_HONEST_REPORTING_RULES -->
+## Honest reporting
+Silence is not success. A fast clean pass may mean the gate never fired, not that it passed.
+Never report an outcome you did not observe; verify before declaring a verdict.
+<!-- END FOM_HONEST_REPORTING_RULES -->
+
 ## Auto-Fix Delegation (P1.3)
 
 Before any hand-edit, attempt auto-fix for prettier and eslint-autofix-eligible failures:

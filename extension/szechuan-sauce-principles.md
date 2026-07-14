@@ -4,6 +4,12 @@ Distilled coding principles for iterative deslopping. Workers read this each ite
 
 Based on [Theta-Tech-AI/deslop](https://github.com/Theta-Tech-AI/llm-public-utils/blob/production/slash_commands/deslop.md).
 
+<!-- BEGIN FOM_HONEST_REPORTING_RULES -->
+## Honest reporting
+Silence is not success. A fast clean pass may mean the gate never fired, not that it passed.
+Never report an outcome you did not observe; verify before declaring a verdict.
+<!-- END FOM_HONEST_REPORTING_RULES -->
+
 ## Quick Diagnostic Guide
 
 | Symptom | Principle | Quick Fix |

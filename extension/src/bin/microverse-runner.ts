@@ -16,6 +16,7 @@ import {
   backendEnvOverrides,
 } from '../services/backend-spawn.js';
 import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv } from '../services/judge-spawn-env.js'; // R-SJET-3
+import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 import {
   readMicroverseState,
   readRecoverableJsonObject,
@@ -1596,7 +1597,7 @@ const JUDGE_SYSTEM_PROMPT = [
   'Do NOT add commentary, explanations, or flavor text.',
   'Use Read, Glob, and Grep tools to examine files as needed.',
   'Your final output MUST be a single line containing ONLY a number.',
-].join(' ');
+].join(' ') + '\n\n' + FOM_HONEST_REPORTING_RULES;
 
 /**
  * Build the LLM judge prompt.
@@ -1672,6 +1673,9 @@ export function buildJudgePrompt(
       parts.push(`- [${v.id}] ${v.severity} ${v.description} (last seen iter ${v.last_seen_iter})`);
     }
   }
+
+  parts.push('');
+  parts.push(FOM_HONEST_REPORTING_RULES);
 
   return parts.join('\n');
 }

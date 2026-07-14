@@ -2,6 +2,12 @@
 
 Supplemental principles for financial/mortgage domain code. Loaded via `--domain financial`. These extend (and where noted, override) the base principles.
 
+<!-- BEGIN FOM_HONEST_REPORTING_RULES -->
+## Honest reporting
+Silence is not success. A fast clean pass may mean the gate never fired, not that it passed.
+Never report an outcome you did not observe; verify before declaring a verdict.
+<!-- END FOM_HONEST_REPORTING_RULES -->
+
 ## Quick Diagnostic Guide
 
 | Symptom | Principle | Quick Fix |

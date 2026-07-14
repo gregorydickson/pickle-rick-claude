@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { Defaults } from '../types/index.js';
 import { resolveBackend, resolveWorkerBackendFromState, buildJudgeInvocation, buildWorkerInvocation, backendEnvOverrides, } from '../services/backend-spawn.js';
 import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv } from '../services/judge-spawn-env.js'; // R-SJET-3
+import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetric, classifyFailure, findLastAcceptedEntry, updateViolationLedger, } from '../services/microverse-state.js';
 import { getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
@@ -1137,7 +1138,7 @@ const JUDGE_SYSTEM_PROMPT = [
     'Do NOT add commentary, explanations, or flavor text.',
     'Use Read, Glob, and Grep tools to examine files as needed.',
     'Your final output MUST be a single line containing ONLY a number.',
-].join(' ');
+].join(' ') + '\n\n' + FOM_HONEST_REPORTING_RULES;
 /**
  * Build the LLM judge prompt.
  *
@@ -1195,6 +1196,8 @@ export function buildJudgePrompt(goal, cwd, history, prdPath, judgeContextPath, 
             parts.push(`- [${v.id}] ${v.severity} ${v.description} (last seen iter ${v.last_seen_iter})`);
         }
     }
+    parts.push('');
+    parts.push(FOM_HONEST_REPORTING_RULES);
     return parts.join('\n');
 }
 function baselineShaForRecentChanges(mvState) {

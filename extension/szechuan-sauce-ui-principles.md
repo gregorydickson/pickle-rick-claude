@@ -3,6 +3,12 @@
 
 Supplemental principles for UI/frontend code in design-safe mode. Auto-loaded when `design_safe` is active. These extend the base principles with UI-specific guidance that protects deliberate visual decisions as author intent.
 
+<!-- BEGIN FOM_HONEST_REPORTING_RULES -->
+## Honest reporting
+Silence is not success. A fast clean pass may mean the gate never fired, not that it passed.
+Never report an outcome you did not observe; verify before declaring a verdict.
+<!-- END FOM_HONEST_REPORTING_RULES -->
+
 ## Quick Diagnostic Guide
 
 | Symptom | Principle | Correct Response |

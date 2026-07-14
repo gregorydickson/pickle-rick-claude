@@ -27,6 +27,16 @@ export const meta = {
 //   * validateDirective + council-publish.ts stay EXTERNAL (publisher path unchanged).
 // ---------------------------------------------------------------------------
 
+// B-FOMC WS-1 single source (extension/src/services/fom-blocks.ts), carried verbatim per
+// the workflow-js contract: one top-level unindented template literal per block, never
+// `[...].join('\n')`'d (the shape test forbids that form for FOM blocks specifically).
+const FOM_EVIDENCE_RULES = `## Evidence rules
+A resolving path is not a verified claim; a missing path may be a proposed file, not a fabrication.
+Verify the claim itself, not whether a token resolves.`;
+const FOM_HONEST_REPORTING_RULES = `## Honest reporting
+Silence is not success. A fast clean pass may mean the gate never fired, not that it passed.
+Never report an outcome you did not observe; verify before declaring a verdict.`;
+
 // Mirror of council-schema.ts:63-75 (the 11 KNOWN_CATEGORIES).
 const KNOWN_CATEGORIES = [
   'B1_stack_structure',
@@ -225,7 +235,7 @@ function subagentPrompt(spec, brief, sessionFiles, round) {
   const branchScope = spec.branch
     ? `Scope: branch ${spec.branch} diff ONLY.`
     : 'Scope: stack-wide (all non-trunk branch diffs).';
-  return [
+  const body = [
     PERSONA,
     '',
     `## Category ${spec.category} — round ${round}`,
@@ -251,6 +261,7 @@ function subagentPrompt(spec, brief, sessionFiles, round) {
     + 'skip_reason (non-empty iff skipped, else null), findings[], trap_door_candidates[], '
     + 'codex_per_branch (null for non-codex categories).',
   ].join('\n');
+  return `${body}\n\n${FOM_EVIDENCE_RULES}\n\n${FOM_HONEST_REPORTING_RULES}`;
 }
 
 function categoryCriteria(category) {
@@ -273,7 +284,7 @@ function categoryCriteria(category) {
 // that shells out to codex-companion.mjs adversarial-review per branch. Default agent type:
 // needs Bash for sequential checkout + the codex shell + a session-dir write. JUDGE-ONLY.
 function codexSweepPrompt(branches, sessionFiles, round) {
-  return [
+  const body = [
     PERSONA,
     '',
     `## Phase C — Codex Sweep (round ${round})`,
@@ -300,6 +311,7 @@ function codexSweepPrompt(branches, sessionFiles, round) {
     + 'skip_reason, findings[] (tagged source="CODEX"), trap_door_candidates[], and codex_per_branch '
     + 'keyed by branch name with { verdict: approve|needs-attention|failed|timeout, reason }.',
   ].join('\n');
+  return `${body}\n\n${FOM_EVIDENCE_RULES}\n\n${FOM_HONEST_REPORTING_RULES}`;
 }
 
 // Phase D synthesis (council-of-ricks.md:299-309, Step 16/17). Default agent type: writes the
@@ -307,7 +319,7 @@ function codexSweepPrompt(branches, sessionFiles, round) {
 function synthesisPrompt(bc, codex, round, sessionFiles) {
   const payloads = [...bc];
   if (codex) payloads.push(codex);
-  return [
+  const body = [
     PERSONA,
     '',
     `## Phase D — Synthesis (round ${round})`,
@@ -334,6 +346,7 @@ function synthesisPrompt(bc, codex, round, sessionFiles) {
     + 'line), directive (the Directive object you wrote), directive_path, issue_counts, '
     + 'codex_verdicts }.',
   ].join('\n');
+  return `${body}\n\n${FOM_EVIDENCE_RULES}\n\n${FOM_HONEST_REPORTING_RULES}`;
 }
 
 // --------------------------------- body -----------------------------------

@@ -149,6 +149,17 @@ The manifest now carries:
 
 ## Step 6: Synthesize Refined PRD
 
+<!-- BEGIN FOM_EVIDENCE_RULES -->
+## Evidence rules
+A resolving path is not a verified claim; a missing path may be a proposed file, not a fabrication.
+Verify the claim itself, not whether a token resolves.
+<!-- END FOM_EVIDENCE_RULES -->
+<!-- BEGIN FOM_HONEST_REPORTING_RULES -->
+## Honest reporting
+Silence is not success. A fast clean pass may mean the gate never fired, not that it passed.
+Never report an outcome you did not observe; verify before declaring a verdict.
+<!-- END FOM_HONEST_REPORTING_RULES -->
+
 > **Workflow path:** `prd_refined.md` was already written by the workflow's synthesis agent in
 > Step 4-WF. Verify it exists and is non-empty, then continue to Step 7. Do NOT re-synthesize.
 
@@ -204,6 +215,17 @@ After completing each ticket body, append this single-line audit comment as the 
 `${SESSION_ROOT}/rick_ticket_parent.md` — epic title, link to refined PRD.
 
 ### 7c: Create Child Tickets
+
+<!-- BEGIN FOM_EVIDENCE_RULES -->
+## Evidence rules
+A resolving path is not a verified claim; a missing path may be a proposed file, not a fabrication.
+Verify the claim itself, not whether a token resolves.
+<!-- END FOM_EVIDENCE_RULES -->
+<!-- BEGIN FOM_HONEST_REPORTING_RULES -->
+## Honest reporting
+Silence is not success. A fast clean pass may mean the gate never fired, not that it passed.
+Never report an outcome you did not observe; verify before declaring a verdict.
+<!-- END FOM_HONEST_REPORTING_RULES -->
 
 **Loop discipline** (per ## Tool Discipline — file writes, not TaskCreate; ignore mid-loop harness nags): complete every iteration as a `Write` of `rick_ticket_<hash>.md` — one file per atomic task from 7a. After the loop, verify with `ls ${SESSION_ROOT}/*/rick_ticket_*.md | wc -l` matches your decomposition count from 7a.
 
