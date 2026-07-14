@@ -670,6 +670,17 @@ Run before launch, against HEAD **and** the deployed tree `~/.claude/pickle-rick
 - **Source-green, deploy-stale.** Workers run `~/.claude/pickle-rick/extension/**/*.js`. AC-FOMC-11 pins the
   compiled mirror; the infusion is live only after `bash install.sh`.
 
+## Drain Queue — open residuals this bundle did NOT fix (recorded 2026-07-14, ticket `a460cad3`)
+
+| # | Residual | Severity | Owner | Evidence |
+|:--|:---|:---|:---|:---|
+| 1 | **`extension/CLAUDE.md` line 138 trap-door entry is 1651 chars, cap 1500** → **2 hard failures** in `tests/trap-door-conformance.test.js`. **RELEASE BLOCKER**: both `npm run test:fast` and `scripts/audit-trap-door-enforcement.sh` sit on the release gate, so **B-FOMC cannot tag while this is red.** Pre-existing — last touched `69829ec5`; `git log 16b5dc48..HEAD -- extension/CLAUDE.md` is **empty** (untouched by this bundle). Fix = shorten the entry under the cap. | **P1 — blocks release** | unassigned (needs a ticket) | reproduced individually: `node --test tests/trap-door-conformance.test.js` → `ℹ fail 2`, both `'length: line 138 trap-door entry is 1651 chars'` |
+| 2 | **`tests/codegraph-degradation.test.js` — `spawnSync ps ENOBUFS`** on macOS (`AC1 wedge` case). Environment flake, not a code defect; distinct from residual 1. | P3 — flake | unassigned | `Error: spawnSync ps ENOBUFS, code: 'ENOBUFS'` |
+| 3 | **The `<!-- BEGIN PICKLE RICK PERSONA (managed by install.sh …) -->` marker is still a live lie** — but **in `~/.claude/CLAUDE.md`**, which is unversioned, written by **no script in this repo**, and off-limits to hand-editing. AC-FOMC-7c's grep passed **vacuously**. Removing it is an **operator action outside this repo**, not a code change. | P3 — operator | **operator** | `grep -n 'managed by install.sh' ~/.claude/CLAUDE.md` → line 1; `grep -rn 'managed by install.sh' <repo>` → PRD quotes only |
+
+Residual 1 is the one that matters: **the fast tier is RED on this branch right now**, for a reason that predates
+the bundle. It will surface at the closer. Fix it before tagging, and do not let "green except for" ship a red tier.
+
 ## Rollback
 
 No runtime behaviour changes — this bundle edits prompts, adds one test + one constants module. Rollback is
