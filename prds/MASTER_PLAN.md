@@ -133,7 +133,46 @@ its bug AND collapses a sibling-seam — reliability + simplification in the sam
 
 ## ⏯ RESUME HERE (updated 2026-07-08 — beta.44 R-LTNC shipped+deployed via a CLOSER-ASSISTED codex build; R-WGFR re-opened the reliability-fix queue and now LEADS)
 
-**▶ 2026-07-14 SESSION UPDATE — 39-AGENT PLAN RE-REVIEW + [[B-RLH]] AMENDED & LAUNCHED (NEWEST — read FIRST; supersedes the 2026-07-13/14 block below for what's NEXT).**
+## 🔝 TOP ITEM — [[B-FOMC]]: COMPLETE THE FABLE INFUSION (P1, operator-set 2026-07-14)
+
+**PRD: `prds/p1-b-fomc-complete-the-fable-infusion.md`. This is the NEXT BUILD. [[B-RLH]] is HELD behind it.**
+
+**THE THESIS (one line): the fable infusion reached every surface that BUILDS and skipped every surface that JUDGES — and every open honesty defect lives in a skipped surface.**
+
+**The coverage map (measured against HEAD 2026-07-14; probe = `grep -ciE 'ground.?truth|evidence hierarch|silence is not success|tree.?truth|checkpoint as you work|verify before'`):**
+
+| Runtime prompt-builder | The worker it prompts | Role | FOM hits |
+|---|---|---|---|
+| `spawn-morty.ts` | Morty implementer | **BUILDS** | **3 ✅** |
+| `spawn-refinement-team.ts` | the 3 analysts | **JUDGES the PRD** | **0 ❌** |
+| `spawn-gate-remediator.ts` | the gate remediator | **JUDGES the gate** | **0 ❌** |
+| `microverse-runner.ts` (`buildJudgePrompt:1613`) | the LLM judge | **JUDGES code quality** | **0 ❌** |
+
+Also: `_pickle-manager-prompt.md` ✅ · `.claude/commands/` **8/33** · `.claude/agents/` **2/18** · **`persona.md` 0** (and it is the source of `~/.claude/CLAUDE.md` — in context on every turn of every session **in every repo, including target repos**). Tell: `szechuan-sauce.md` + `pickle-microverse.md` ARE infused — the human-facing command prose got it — **while the runtime-generated judge prompt they spawn did not.** The infusion stopped at the surfaces a human reads.
+
+**Line that up against the open honesty defects — they are EXACT COMPLEMENTS:**
+- [[R-JPCM]] (judge reports `converged` at 4 vs target 0) → `microverse-runner.ts` — **un-infused**
+- [[R-GRLS]] (remediator exits clean having remediated nothing — false-GREEN gate) → `spawn-gate-remediator.ts` — **un-infused**
+- [[R-RAFC]] (analysts fabricate `file:line` citations) → `spawn-refinement-team.ts` — **un-infused**
+- The infused surfaces (implementer, manager) have produced **none**.
+
+**⚠ HONESTY NOTE (do not let a ticket restate this as causation):** the defects PREDATE the infusion (2026-07-10/11), so it did not *cause* them, and "un-infused ⇒ fabricates" is NOT causally established. What IS established is that the two maps are exact complements — which makes completing the infusion a credible **systemic** countermeasure rather than four separate patches, and makes **B-RLH look like three symptoms of one disease.** WS-5 is the falsifier; **a null result must ship as a null result.**
+
+**ROOT CAUSE: the infusion is hand-mirrored prose with NO source, NO markers, and NO test** — so coverage is untracked and a MISSING surface is invisible. **The manual predicted this in its own addendum** (*"Mirrored prose drifts like mirrored code… a mirrored instruction family needs a pin test or a single source; 'I'll keep them in sync' is the asymmetric-fix antipattern in slow motion"*) **and shipped anyway.**
+
+**FIX = REUSE THE MECHANISM THIS REPO ALREADY PROVED.** `GIT_BOUNDARY_RULES` (`extension/tests/skill-prompt-shape/git-boundary-prompts.test.js`) is the same problem, already solved: a delimited block + an **enumerated file list** + a shape test that fails when a listed surface lacks the block. **The enumeration IS the coverage ledger** — a surface cannot be silently skipped because the test names it. ~30 lines. Its own comment records that it was hardened *"after the copies were found silently drifting."* **This is [[R-FOMH]] leg (e), unbuilt only because it was mis-filed as needing an "operator decision" — it is not a decision; GIT_BOUNDARY already made it.**
+
+**⛔ HARD CONSTRAINT — deployed prompts must be SELF-CONTAINED.** Workers run with cwd = the TARGET repo and the runtime **never deploys `docs/`**, so `docs/FABLE_OPERATING_MANUAL.md` is **physically unreachable** from a worker in loanlight-api. The prose must live IN the prompt. **No `(FOM §N)` citations** — that is exactly how the first infusion failed (its own addendum, bullet 1).
+
+**WS:** (1) the shape test + delimited blocks — **build FIRST, everything else is inert without it**; (2) infuse the three judging prompt-builders (**folds in [[R-RAFC]]** — `spawn-refinement-team.ts:569` *mandates* "file:line references for every codebase claim" and **never asks anyone to verify one**); (3) **`persona.md`** — O(1) cost, 100% reach, lands in **every target repo** (the outward goal); (4) widen the **existing** `checkAnalystOutputPaths` from *path-exists* to *line-exists* + **attribute** its warnings (it fired **44** on the 2026-07-14 run, all with `ticket_id: ""`, and blocked nothing) — **stays ADVISORY, do NOT build a fabrication gate** (W5b); (5) **SOAK** — re-run the B-RLH refinement on the infused team vs the recorded baseline (2 fabricated mechanisms, 44 unattributed warnings; artifacts preserved at `~/.local/share/pickle-rick/sessions/2026-07-14-ef12a95a/refinement_round1/`).
+
+**⚠ R-BCFR is NOT a prompt defect** — citadel's fabricated `"is banned by CLAUDE.md"` is a **hardcoded string literal in code** (`banned-constructs-audit.ts:129`), not an LLM hallucination. Same shape, different cause; infusion cannot fix it; it stays in B-RLH WS-1. **Do not let the thesis's elegance swallow a defect it cannot fix.**
+
+**⚠ SELF-REFERENCE:** this bundle is refined by the very analysts it fixes. Pipeline-safe (the run executes the DEPLOYED runtime, not the source diff), but **hand-check every `file:line` in the resulting tickets before launch** — treat each as unverified until greped. That discipline is what this bundle exists to make automatic.
+
+---
+
+**▶ 2026-07-14 SESSION UPDATE — 39-AGENT PLAN RE-REVIEW + [[B-RLH]] AMENDED (then HELD — see TOP ITEM above).**
 
 **⓪ OPERATOR RE-FRAME (binding — supersedes the reliability-first/autonomy-second posture below).** Priority axes restated as: **(1) autonomous development, (2) reliability, (3) quality of outputs, (4) fable infusion, (5) codegraph polish** — with two corrections that dominate all planning:
 - **"Autonomous development" = pickle-rick implementing OTHER systems, not itself.** Verbatim: *"it doesn't matter who does our installs and version bumps, what I'm referring to is using pickle rick to implement other systems, not itself."* Self-host reps are the TEST HARNESS, not the goal. **The un-automated closer (bump / install.sh / gh release) is an EXPLICIT NON-ISSUE — do not queue it, do not cite it as autonomy gap (a).**
@@ -161,7 +200,7 @@ its bug AND collapses a sibling-seam — reliability + simplification in the sam
 - **ROOT CAUSE = the FOM infusion reached the worker that BUILDS and skipped the workers that ANALYZE.** Evidence-hierarchy/anti-fabrication content: `spawn-morty.ts` (implementer) **5 hits — infused**; `spawn-refinement-team.ts` (analysts) **0 hits — NOT infused**; `.claude/commands/*.md` **3 of ~30**; **`persona.md` 0** — the one surface appended into every project's CLAUDE.md, in context on every turn of **every session in every repo**, is the single place where infusion cost is O(1) and reach is 100%, and the infusion skipped it. `spawn-refinement-team.ts:569` *mandates* "use file:line references for **every** codebase claim" and **never asks the analyst to verify one**. **This is NOT a fable-infusion symptom — it is the gap where the infusion never landed.**
 - **The one existing verifier checks the wrong thing and is advisory.** `checkAnalystOutputPaths` → `analyst_path_not_verified` (`spawn-refinement-team.ts:2142-2149`) checks only that a cited **path exists** — never that the cited **line** says what is claimed, that a claimed **grep result** is real, or that a claimed **relationship** exists. **All three fabrications cite real files and sail straight through it.** It emitted **44 warnings on this run**, wrote them with `ticket_id: ""` (**unattributed**), and blocked/down-weighted **nothing**. *A warning nobody reads is the same shape as the bug B-RLH exists to fix.*
 - **FIX (reuse, not new machinery; repo-agnostic):** (WS-A) infuse the analyst prompt with the evidence-hierarchy block `spawn-morty.ts` **already carries**, and widen `:569` to *"file:line references **you have verified**; mark anything unverified as a hypothesis"* — **plus infuse `persona.md`** (3–5 lines, O(1) cost, 100% reach, lands in **every target repo**). (WS-B) widen the **existing** `checkAnalystOutputPaths` from *path-exists* to *line-exists* and **attribute** each warning to the emitting analyst+cycle. **Explicitly NOT in scope:** a new citation-verifier service or a fabrication gate — the cross-cycle catch already works; the analysts were simply never told to verify. Bug: `BUG-REPORT-2026-07-14-refinement-analysts-fabricate-citations-fom-infusion-gap.md`.
-- **B-RLH IS HELD** pending this (operator call, 2026-07-14: *"stop and fix the analysts"*). Building a 5-WS anti-fabrication bundle on a decomposition whose citations are unverified is the R-BCFR trap, self-inflicted. **R-RAFC ships FIRST, then B-RLH is re-refined on a trustworthy analyst.**
+- **B-RLH IS HELD** pending this (operator call, 2026-07-14: *"stop and fix the analysts"*). Building a 5-WS anti-fabrication bundle on a decomposition whose citations are unverified is the R-BCFR trap, self-inflicted. **R-RAFC is now FOLDED INTO [[B-FOMC]] as WS-2** (see the TOP ITEM block at the head of this file) — the analyst fabrication is one instance of the general infusion gap, not a standalone bug. **B-FOMC ships FIRST, then B-RLH is re-refined on an infused, citation-checking analyst team.**
 
 **④ ▶ NEXT AFTER R-RAFC + B-RLH:** (a) **[[R-WDTF]]** — author the PRD + **hand-build** (P1, destroys verified work, R-PSRB salvage-path). (b) **[[B-TRGP]]** + [[R-TCVC]] — the target-repo gate void (②); scope from the field, not from source-reading. (c) the three cheap honesty subtractions: `install.sh` settings-merge direction, `pipeline-runner.ts:4137` honest phase reporting (R-MPGD WS-2), `convergence-gate.ts:1334` pass `null` on the `!cmdMap` branch (a `bun` project currently certifies convergence having inspected nothing). (d) land the config-protection patch (`git apply`). **DEPRIORITIZED by the re-axing:** [[B-APRP]] (self-only; and still correctly blocked — re-running szechuan before WS-4, not merely before R-JPCM, reproduces the identical false-`converged`); the codegraph soak (**do NOT run it before fixing the injection payload** — `deriveCodegraphTerms` harvests ALL backticked spans in document order capped at 8, so on the 6 newest real tickets **5 of 6 yielded ZERO code symbols**; actual injected "terms" include `git stash` and `cd extension && npm run test:fast`. A soak on today's path returns "injected: N" for N restatements of the ticket's own file list, and [[B-CGCAP]] would flip a hollow win on).
 
