@@ -20,6 +20,82 @@ source_assessment: "Every coverage number was measured against HEAD on 2026-07-1
 The fable infusion reached **every surface that does the work** and skipped **every surface that checks the
 work** — and every honesty defect currently open lives in a skipped surface.
 
+## ⚠ Refinement Corrections (3 cycles × 3 analysts; every claim below re-greped BY HAND, 2026-07-14)
+
+*(refined: refinement cycles 1–3 + operator hand-verification. The analysts are the un-infused surface this bundle
+fixes, so nothing they asserted was adopted on trust. Two of three analysts fabricated the central number — see C-1.)*
+
+**C-1 — THE FALSIFIER IS STRUCTURALLY BLIND, and this supersedes the entire WS-4 debate.**
+R-RAFC's actual fabrication was: *"two trap-door INVARIANTs **policed by the release gate**
+(`audit-trap-door-enforcement.sh`)."* **The cited paths are REAL.** The lie is in the *claim about what the mechanism
+does*. `checkAnalystOutputPaths` verifies only **path existence** — so it **passed** that citation, and WS-4's
+`file:line` + line-count widening would **also pass it** (the file exists; the line is in range). **The checker caught
+0 of R-RAFC's 2 fabrications not because it is miscalibrated, but because it checks the wrong thing.** Consequences:
+- **Warning count can NEVER measure fabrication.** Strike it as a success metric (AC-FOMC-10, re-specified below).
+- **WS-4 is hygiene, not detection.** Its honest job is to stop lying *at* us (a 98% false-positive rate), not to
+  catch fabricators. It **stays ADVISORY**. It cannot reduce fabrication and must claim no such thing.
+- **The only real countermeasure is WS-2 (the prompt) plus cross-cycle catch** — which is what actually caught both
+  R-RAFC fabrications, and both of this refinement's. The PRD's original instinct ("that verification burden moves
+  into the analyst prompt itself, where it belongs") was right. **Verify the claim, not the token.**
+
+**C-2 — Genuine fabrications in the 44-warning baseline: ZERO. Two of three analysts got this wrong, identically.**
+Requirements and Codebase both reported `citadel/changed-source-helpers.ts` as a "TRUE FABRICATION," each citing
+`git ls-files | grep changed-source → nothing`. **Hand-verified: it is a PROPOSAL** — *"**Rename** the surviving
+helper module **to** `citadel/changed-source-helpers.ts`"* (`refinement_round1/analysis_codebase_c2.md:37`). They ran a
+correct command, got a correct result, and asserted a false conclusion **by never reading the sentence around the
+token.** That is the precise error this bundle exists to kill, committed by 2 of the 3 analysts auditing it, at a 2-1
+majority. **A vote count would have shipped the wrong WS-4.** This anecdote is the single best field evidence for
+`FOM_EVIDENCE_RULES` and MUST land in it (see WS-1).
+
+**C-3 — All 44 baseline warnings are false positives, via three mechanisms** (hand-verified): **cwd-prefix mismatch**
+(analysts cite relative to `extension/` and `extension/src/`; the checker greps root-anchored), **non-path tokens**
+(the regex `spawn-refinement-team.ts:484` matches any backticked `foo/bar`, so `R-JPCM/WS-2` counts as a path), and
+**forward-created/proposed paths** (C-2's class — a file the analyst is *proposing to create*).
+
+**C-4 — The dominant citation idiom is a BARE BASENAME, and the shipped regex requires a slash.** Hand-verified over
+the preserved baseline: **327** `file:line` citations, **264 (81%) carry no slash**. The naive reading of AC-FOMC-8
+(add `:` to the character class) leaves the mandatory `\/` in place and therefore matches **0 of the 264** — WS-4
+would ship green and stay blind to four-fifths of citations. **The fix is one subtractive rule, not a prefix ladder**
+(see AC-FOMC-8, re-specified).
+
+**C-5 — A NEW REQUIRED SURFACE the PRD never named: `.claude/commands/pickle-refine-prd.md`.** Hand-verified: FOM
+probe **0**; appears **0** times in this PRD; it carries Step 6 "Synthesize Refined PRD" (`:150`) and Step 7's `Write`
+of `rick_ticket_<hash>.md` (`:210`). `spawn-refinement-team.ts` has **no synthesis prompt** (its `build*` exports are
+the 3 analysts, the env, and the manifest — verified). **On the default path, the synthesizer and ticket-writer IS
+this command file.** It is the last hop before a ticket exists, and `rick_ticket_<hash>.md` is exactly the artifact
+WS-5's primary metric hand-audits — **the falsifier measures the output of a surface no AC covered.** Enumeration
+missed it; a 3-agent verification pass missed it; four analyses missed it. **This is the third time this family has
+been caught missing a live surface** (`spawn-refinement-team.ts` → the original bug; `refine-analyze.js` → the first
+draft; this → now). Enumeration found none of the three. **Ship the discovery sweep (AC-FOMC-1b).**
+
+**C-6 — `refine-analyze.js` is NOT DEPLOYED.** Hand-verified: `grep -c workflows install.sh` → **0**;
+`~/.claude/workflows/` **does not exist**. It is still infused (a twin that drifts is the antipattern), but it carries
+**zero autonomous reach**, no coverage claim may rest on it, and WS-5 does not measure it. **The PRD required the
+undeployed twin and skipped the deployed synthesizer.**
+
+**C-7 — AC-FOMC-11 as written is UNSATISFIABLE.** Hand-verified: `tsc` emits an **import edge**, never an inlined
+literal (`extension/services/dot-builder.js:5` imports `DEFAULT_FIX_BACKEND_PROMPT`; the literal appears **0** times
+in that file). A builder's compiled mirror can therefore never contain the block *string*. The only way to satisfy the
+AC as written is to **inline copies into every builder** — failing AC-FOMC-2(b) and re-shipping the hand-mirroring
+antipattern across every judging surface at once. **That is the escape hatch an unattended worker is most likely to
+take, and it is the bundle's worst possible failure mode.** Re-specified below.
+
+**C-8 — The claimed reuse donor does not exist.** Hand-verified: `send-to-morty.md:38` — the PRD's named donor — is
+*"Checkpoint as you work"*, a **session-checkpointing** section. `FOM_HONEST_REPORTING_RULES` has exactly one real
+donor (`.claude/agents/morty-phase-verifier.md:18`, on a **default-OFF** surface). **`FOM_EVIDENCE_RULES` has no donor
+anywhere — it is net-new authored prose, injected into every judging surface at once.** The Simplification Review
+calls this "reuse." **It is an addition. Declared.**
+
+**C-9 — The live hand-mirrored twin drift is IN THE FILES WS-2 MUST EDIT.** Hand-verified: `AC_SHAPE_PROMPT_SECTION`
+(`spawn-refinement-team.ts:109`) is a template literal; its twin `AC_SHAPE_CONTRACT` (`refine-analyze.js:139`) is a
+`[...].join()` array. Different carriers, already drifted. The manual's *"mirrored prose drifts like mirrored code"*
+is not a prediction — **it is currently reproducing in the worksite.**
+
+**C-10 — The judge silently scores with NO rubric if the deployed file is missing.** Hand-verified:
+`pipeline-runner.ts:2142` → `return fs.existsSync(principlesPath) ? principlesPath : undefined;` — no warn, no event,
+no throw. **Silence-is-not-success, failing inside the machinery being infused to teach that silence is not success.**
+WS-5 must assert the deployed rubric exists before reading any judge result as evidence.
+
 ## The coverage map (measured, not asserted)
 
 Probe used throughout (`FOM` = the infusion's own vocabulary):
@@ -169,13 +245,31 @@ git blame.
 
 ## Workstreams
 
-| WS | What | Shape |
+| WS | What | Shape *(refined — the original labels understated three of five)* |
 |---|---|---|
-| **WS-1** | The **shape test + single-source constants + delimited blocks** — the enforcement mechanism | reuse (GIT_BOUNDARY ledger + colocation-constant identity) |
-| **WS-2** | Infuse the **judging surfaces** — both refinement twins, both judge prompts, the rubric files, the remediator brief + agent mirror, the council prompts (folds in [[R-RAFC]]) | reuse (prose from the shipped `send-to-morty.md` blocks) |
-| **WS-3** | Infuse **`persona.md`** — worker-prompt reach (mechanism corrected below) | reuse |
-| **WS-4** | Widen the **existing** analyst-output checker to parse `file:line` and check line existence; attribute warnings | small addition (a parsing branch) — honestly declared |
-| **WS-5** | **Soak**: does an infused judging surface actually stop lying? (the falsifier) | measurement |
+| **WS-1** | The **shape test + single-source constants + delimited blocks + the discovery sweep** — the enforcement mechanism | reuse (GIT_BOUNDARY ledger + colocation-constant identity) **+ net-new authored prose** (C-8) **+ the discovery sweep** (C-5) |
+| **WS-2** | Infuse the **judging surfaces** — both refinement twins, **the default-path synthesizer/ticket-writer (C-5)**, both judge prompts, the rubric files, the remediator brief + agent mirror, the council prompts (folds in [[R-RAFC]]) | **ADDITION, not reuse** — `FOM_EVIDENCE_RULES` has no donor (C-8) |
+| **WS-3** | Infuse **`persona.md`** — worker-prompt reach; **option (b) DECIDED** (see WS-3) | reuse |
+| **WS-4** | **Instrument hygiene** on the analyst-output checker: subtractive path resolution, extension-required tokens, split `defect_class`, memoize + timeout. **ADVISORY. It does NOT detect fabrication (C-1).** | **instrument repair** — NOT "a small addition (a parsing branch)" |
+| **WS-5** | **Soak**: does an infused judging surface actually stop lying? (the falsifier) | measurement — **metric re-specified (C-1)** |
+
+**Mandatory revert order (WS-2/WS-3 import WS-1's constant; reverting WS-1 alone leaves dangling imports and a red
+`tsc`): WS-4 → WS-3 → WS-2 → WS-1.**
+
+## Non-Goals (consolidated — these were scattered across six locations and the two that matter most were easiest to miss)
+
+1. **This bundle claims NO behavioral fix for [[R-JPCM]]** (`converged` at score 4). That is a **code** defect
+   (`isConverged` bare-`true`) and stays in [[B-RLH]] WS-4.
+2. **This bundle claims NO behavioral fix for [[R-GRLS]]** (the false-GREEN remediator). It is at least partly
+   **caller-side** and stays in [[B-RLH]].
+3. **R-BCFR is not a prompt defect at all** — it is a hardcoded string literal (`banned-constructs-audit.ts:129`).
+   Infusion cannot fix it. Stays in [[B-RLH]] WS-1.
+4. **WS-4 does not gate, block, or down-weight anything.** It is advisory by construction, and after C-1 it is not
+   even a fabrication detector. Do **not** build a fabrication gate (W5b).
+5. **Verifying that a cited line SAYS what is claimed is out of scope** — not machine-checkable. That burden lives in
+   the analyst prompt (WS-2). This is the whole lesson of C-1.
+6. **Do NOT add the shape test to `RELEASE_GATE_COMMAND`** — `release-gate-parity.test.js` pins that string
+   byte-for-byte against `ci.yml`+`release.yml`; a 3-file coupled edit for zero gain. `@tier: fast` is enough.
 
 ### WS-1 — the enforcement mechanism (build this FIRST; everything else is inert without it)
 
@@ -184,8 +278,17 @@ taxonomy:
 
 - `FOM_EVIDENCE_RULES` — *verify a citation before you assert it; a claimed grep result must be a grep you
   actually ran; an unverified mechanism is a hypothesis — label it as one.*
+  **⚠ It MUST cut both ways (C-1, C-2 — this refinement produced BOTH errors):**
+  > *A path that resolves is not a verified claim. A path that does NOT resolve is not a fabrication — it may be a
+  > file someone is proposing to create. **Verify the claim, not the token.***
+
+  This is not aspirational prose. In the refinement of this very PRD: one analyst confirmed the baseline manifest
+  said "44" and asserted the number *meant* fabrication (it meant nothing — all 44 were false positives); two
+  analysts ran a correct `git ls-files`, got a correct empty result, and declared a **proposal** to be a
+  **fabrication**. Same error, both directions: **treating the citation as the claim.**
 - `FOM_HONEST_REPORTING_RULES` — *silence is not success; a fast clean pass is a gate that did not fire; never
-  report an outcome you did not observe.*
+  report an outcome you did not observe.* **Sole donor: `.claude/agents/morty-phase-verifier.md:18`** (verified).
+  `FOM_EVIDENCE_RULES` has **no donor** — it is net-new prose (C-8).
 
 Each block: one exported constant (no backticks, no `${`) in a shared module; `.ts` builders import it; `.md`
 surfaces carry it between `<!-- BEGIN FOM_EVIDENCE_RULES -->` / `<!-- END FOM_EVIDENCE_RULES -->` sentinels.
@@ -196,20 +299,57 @@ surfaces carry it between `<!-- BEGIN FOM_EVIDENCE_RULES -->` / `<!-- END FOM_EV
   content with the block stripped, asserting it **throws via the SAME helper the live assertions use** (a
   test-local re-derivation would be the AC-DR-05 unfalsifiable-green trap door all over again).
 - `AC-FOMC-2` (re-specified — whole-block cross-language byte-identity is not achievable and GIT_BOUNDARY never
-  claimed it): (a) each block is a single exported constant containing no `` ` `` and no `${`; (b) every
-  enumerated `.ts` builder **imports** the constant — the test greps the import, so a re-typed inline copy
-  fails; (c) every enumerated `.md`/persona surface contains the constant's exact string between its sentinels.
+  claimed it): (a) each block is a single exported constant containing no `` ` `` and no `${` **in the block
+  PROSE** (the cited precedent `DECOMPOSITION_COLOCATION_PROMPT_SECTION:507` is itself declared *as* a template
+  literal — the rule is about the prose, not the declaration; say so or a worker concludes the precedent violates
+  the rule); (b) every enumerated `.ts` builder **imports** the constant — the test greps the import, so a re-typed
+  inline copy fails; (c) every enumerated `.md`/persona surface contains the constant's exact string between its
+  sentinels; **(d) (the third carrier — C-6/C-9)** the sandboxed `.claude/workflows/*.js` twins can be neither (they
+  have zero `import`/`require` and no filesystem access): they carry the block as **one top-level `const` assigned a
+  single unindented template literal at column 0**, and the test asserts substring containment. **Forbid the file's
+  own `[...].join('\n')` idiom for FOM blocks** — an array of per-line literals is **not a contiguous substring**,
+  which is exactly the property that ruled `readFileSync`+`indexOf` out for `parts.push`-assembled `.ts`. (This is
+  not hypothetical: `AC_SHAPE_CONTRACT:139` uses the array form today, and has already drifted from its twin — C-9.)
+  **(e) A FOM block carries EPISTEMICS ONLY — never output-format, schema, or emission instructions.** A shared
+  constant carrying an output contract is un-shareable **by construction**, because the two runtimes have different
+  output contracts — and the first "helpful" addition of *"and report your findings as…"* re-forks the twins
+  permanently. That is precisely how `AC_SHAPE_PROMPT_SECTION`/`AC_SHAPE_CONTRACT` drifted into contradiction.
 - `AC-FOMC-3` (**regression guard — already green at HEAD**, verified 2026-07-14; it pins the door shut, it does
   not fix anything): zero `(FOM §N)`-style unresolvable citations in any deployed prompt:
   `! grep -rE 'FOM §|see the operating manual|FABLE_OPERATING_MANUAL' .claude/ extension/src/bin/ extension/bin/ extension/templates/ persona.md`
   (widened over the first draft to include the compiled mirror and templates).
-- `AC-FOMC-11` (**the deployed tree is what workers actually run**): the shape test also asserts each enumerated
-  `.ts` surface's **compiled mirror** (`extension/bin/*.js`) carries the block string — `install.sh`'s MD5
-  parity checks cover 5 hot files and **none of the judging builders**, so source-green/deploy-stale is a live
-  failure mode. Routing note: the infusion reaches real workers only after `bash install.sh`.
-- Keep the test `@tier: fast` (like git-boundary). Do **NOT** add it to `RELEASE_GATE_COMMAND` —
-  `release-gate-parity.test.js` pins that string byte-for-byte against `ci.yml`+`release.yml`; a 3-file coupled
-  edit for zero gain.
+- `AC-FOMC-1b` (**DISCOVERY, not merely enumeration — the highest-value AC in this bundle; C-5**): the shape test
+  **globs the prompt-surface space** — `.claude/agents/*.md`, `.claude/commands/*.md`, `.claude/workflows/*.js`,
+  `extension/templates/_*.md`, `persona.md`, and every `extension/src/bin/*.ts` exporting a `*Prompt` symbol or a
+  `build*Prompt` function — and **FAILS if any discovered surface appears in neither the FAMILY list nor an
+  `EXCLUDED` list**, where each `EXCLUDED` entry is `{path, reason}`. Seed `EXCLUDED` from `## Deferred surfaces`
+  (each already carries its reason). **A new prompt surface must be CLASSIFIED, not merely ignored.**
+  **Why this is non-negotiable:** this family has been caught missing a live surface **three times** —
+  `spawn-refinement-team.ts` (the original bug), `refine-analyze.js` (the first draft), `pickle-refine-prd.md`
+  (cycle-2 refinement, *after* a 3-agent verification pass and four analyses). **Enumeration found none of the
+  three.** A ledger fails only for a surface it *names*. The sweep is what makes a skipped surface impossible.
+- `AC-FOMC-11` (**RE-SPECIFIED — the original is unsatisfiable; C-7**). The original demanded each `.ts` builder's
+  compiled mirror carry the block **string**. `tsc` emits an **import edge** and never inlines an imported constant
+  (`extension/services/dot-builder.js:5` imports `DEFAULT_FIX_BACKEND_PROMPT`; the literal appears **0** times in
+  that file). Satisfying it would require **inlining copies into every builder** — failing AC-FOMC-2(b) and
+  re-shipping the hand-mirroring antipattern across every judging surface at once. **That is the escape hatch an
+  unattended worker is most likely to take. Do not leave it open.** Replace with:
+  - `AC-FOMC-11a` (**import-edge form**): the shape test asserts (a) the **constants module's** compiled mirror
+    (`extension/services/fom-blocks.js`) contains each block string verbatim, **and** (b) each enumerated `.ts`
+    builder's compiled mirror contains an **import of the block symbol**.
+  - `AC-FOMC-11b` (**the real deploy pin — REUSE, do not invent**): add `bin/spawn-refinement-team.js`,
+    `bin/microverse-runner.js`, `bin/spawn-gate-remediator.js` to `install.sh`'s `_parity_files` MD5 array
+    (`:408-414` — today exactly **5** entries, **none of them judging builders**; verified). This reuses the shipped
+    post-rsync parity probe, the only mechanism in the repo that fails on source-green/deploy-stale.
+  - `AC-FOMC-11c` (**the rubric has no compiled mirror**): `szechuan-sauce-*-principles.md` deploy by a `cp` loop
+    (`install.sh:517-518`). Extend the existing `install-ui-principles.test.js` (`AC-PIAP-B3-1`) from an
+    **existence** assertion to a **content** assertion. Do not invent a new check.
+- `AC-FOMC-13` (**bound the bloat — the top-listed Risk had no AC; the shape test already opens every file**): each
+  FOM constant is **≤ 5 lines and ≤ 400 bytes**. `persona.md` is 85 lines / 4930 bytes (verified) and rides in
+  **every** worker spawn. **An unenforced budget in a Risks section is how prompts rot — which is the thesis of this
+  very PRD.**
+- Keep the test `@tier: fast` (like git-boundary; `// @tier: fast` on **line 1** or `audit-test-tiers.sh` fails the
+  release gate). Do **NOT** add it to `RELEASE_GATE_COMMAND` — see Non-Goals #6.
 
 ### WS-2 — infuse the judging surfaces (folds in R-RAFC)
 
@@ -225,6 +365,22 @@ The enumerated set (each also lands in WS-1's ledger):
 4. `spawn-gate-remediator.ts:buildBriefContent` (`:76`) **and its agent mirror
    `.claude/agents/morty-gate-remediator.md`** (another twin pair — both or neither).
 5. `.claude/workflows/council-round.js` — `subagentPrompt`, `codexSweepPrompt`, `synthesisPrompt`.
+6. **`.claude/commands/pickle-refine-prd.md` — THE DEFAULT PATH'S SYNTHESIZER AND TICKET-WRITER (NEW; C-5).**
+   Step 6 "Synthesize Refined PRD" (`:150`); Step 7 "Task Decomposition" (`:168`); the `Write` of
+   `rick_ticket_<hash>.md` (`:210`). Probes **0**; appeared **0** times in the first draft.
+   `spawn-refinement-team.ts` contains **no synthesis prompt** — on the deployed `.ts` path, the synthesizer **is
+   this command file**. **It is the last hop before a ticket exists, and `rick_ticket_<hash>.md` is exactly the
+   artifact WS-5's primary metric hand-audits — the falsifier was measuring the output of a surface no AC covered.**
+   Carrier: `.md` sentinel (clause c). Note the symmetry: Step 5 of that same file already tells the synthesizer to
+   read `refinement_manifest.json` — the file WS-4's warnings land in. **Infusing this surface is what makes WS-4's
+   output actionable rather than merely legible.**
+
+**⚠ Reach note (C-6), so no coverage claim rests on a fiction:** `refine-analyze.js` is **not deployed**
+(`grep -c workflows install.sh` → 0; `~/.claude/workflows/` does not exist). It is infused **because a twin that
+drifts is the antipattern this bundle exists to kill** — not because it has reach. It carries **zero** autonomous
+reach, AC-FOMC-4 must not count it as coverage, and WS-5 does not measure it. Likewise the `-ui-` and `-financial-`
+rubrics load **only** under `--szechuan-domain`, which no default caller passes — the *same* predicate under which
+this PRD defers `send-to-morty-review.md`. Infuse them, but **claim no reach from them.**
 
 **R-RAFC's specific fix belongs here.** `spawn-refinement-team.ts:569` currently instructs:
 
@@ -266,12 +422,30 @@ So WS-3 is real but its leverage is **worker-prompt reach + whatever CLAUDE.md t
 "O(1), 100% reach, reaches the judge." The judge is reached only by WS-2.
 
 - `AC-FOMC-7`: `persona.md` carries both blocks and is enumerated in WS-1's test.
-- `AC-FOMC-7b` (**research-phase decision gate, MANDATORY — do not let this AC pass by omission**): the research
-  artifact states, with the exact `install.sh` line, how `~/.claude/CLAUDE.md`'s persona block gets updated,
-  then the ticket does ONE of: (a) make `install.sh` actually maintain the marker-delimited block it already
-  claims to manage (declared new machinery, small, makes an existing lie true), or (b) downscope to
-  worker-prompt reach + documented manual propagation, striking every "100% reach" claim. Either is
-  acceptable; silence is not.
+- `AC-FOMC-7b` — **DECIDED IN THE PRD: option (b). Do not re-litigate this in a worker's research phase.**
+
+  **The decision, and the argument that settles it.** The Codebase analyst argued for option (a) (make `install.sh`
+  maintain the `~/.claude/CLAUDE.md` persona block) on the ground that the CLAUDE.md channel is *"the ONLY automated
+  mechanism that reaches the ticket-writer"* — because the analysts and the synthesizer are plain `claude -p`
+  subprocesses with no persona firewall, so they inherit `~/.claude/CLAUDE.md` through the harness. **That reach
+  claim is correct** (and the judge's explicit firewall — *"Do NOT adopt any persona from CLAUDE.md"*,
+  `microverse-runner.ts:1595` — is the proof the channel is live: you do not firewall a channel that isn't there).
+
+  **But its premise died with C-5.** The argument rests on *"WS-2 cannot reach the synthesizer — there is no `.ts`
+  builder to import a constant into."* **WS-2 item 6 now reaches it directly, via the `.md` sentinel — an
+  ENFORCEABLE carrier, pinned by the shape test.** So option (a) buys nothing that WS-2 item 6 does not already buy,
+  **enforceably**, and pays for it with the largest blast radius in the repo (a write to the operator's global
+  config, outside the repo). Option (a) is **additive machinery to reach a surface we now reach subtractively.**
+  Three further nails: a worker **cannot** demonstrate it green (`bash install.sh` is bash-scanner-blocked with **no
+  override flag**); `install.sh` today never even mentions `~/.claude/CLAUDE.md` — it only *prints* instructions for
+  the **project's** `.claude/CLAUDE.md` (`:758`, `:762`), so option (a) would have to invent which file it maintains
+  and ship a third variant; and the un-maintained `<!-- BEGIN PICKLE RICK PERSONA -->` marker is a **doc lie**, which
+  is cheaper to fix by **deleting the false claim** than by building machinery to make it true.
+
+  **Therefore:** (b) — downscope to worker-prompt reach + documented manual propagation, and **strike every "100%
+  reach" / "O(1)" claim** from the PRD. Additionally, **subtract the lie**: correct the `<!-- BEGIN PICKLE RICK
+  PERSONA (managed by install.sh …) -->` marker text so it no longer claims to be script-managed when nothing
+  manages it. That is a doc edit, not machinery — and it is the honest version of "make an existing lie true."
 - **Do NOT hand-edit `~/.claude/CLAUDE.md`** — edit `persona.md`, run `bash install.sh`
   ([[feedback_persona_source_of_truth]]) — noting per above that today this updates worker-prompt reach only.
 - Pin-test note (corrected): the only test that reads the real `persona.md` is
@@ -296,12 +470,56 @@ analyst output for backticked paths and git-verifies **path existence**. Two har
 All three R-RAFC fabrications cite real files and were invisible or unremarked to this checker. It emitted
 **44 warnings** on the 2026-07-14 baseline run and blocked/down-weighted nothing.
 
-- `AC-FOMC-8`: a new `file:line` parsing branch: cited file exists AND contains ≥ N lines. **Explicitly out of
-  scope: verifying the line SAYS what is claimed** — not machine-checkable; that verification burden moves into
-  the analyst prompt itself (WS-2), where it belongs.
-- `AC-FOMC-9` (re-specified): attribution surfaced via dedicated fields (`analyst`, and `cycle` **only if** the
-  builder scans the per-cycle `worker_<role>_c<N>` artifacts — otherwise drop the word "cycle" and record why).
-  Do **not** overload `ticket_id`; it is correctly empty here.
+**⚠ READ C-1 FIRST. WS-4 is HYGIENE, not detection.** The checker verifies **path existence**; R-RAFC's fabrications
+**cite real files and lie about what those files do**. It therefore caught **0 of 2**, and a `file:line` + line-count
+widening still catches **0 of 2** (the file exists; the line is in range). **WS-4 cannot reduce fabrication and must
+claim no such thing.** Its honest job is to stop lying at *us* — the instrument is **98% false-positive** today, and
+`AC-FOMC-9` as originally written would have promoted that noise into dedicated attribution fields: **a dashboard on
+a broken gauge.** Fix the flaky input; do not decorate it ([[feedback_subtract_flaky_gate_input_not_add_resistance]]).
+
+- `AC-FOMC-8` (**RE-SPECIFIED — the original ships green and sees 19% of citations; C-4**): the shipped regex
+  (`:484`) **mandates a slash** (`/`` `([a-zA-Z][a-zA-Z0-9/_.-]*\/[a-zA-Z0-9/_.-]+)` ``/`), but **264 of 327 (81%)
+  of real citations are bare basenames** (`microverse-runner.ts:1613`). Adding `:` to the character class — the
+  obvious reading of the original AC — leaves the `\/` in place and **matches 0 of the 264**. Instead:
+  - **(a) A token is a citation only if it carries a FILE EXTENSION**, with or without slashes, optionally suffixed
+    `:<line>`. This is **subtractive**: it kills the `not_a_path` class (`R-JPCM/WS-2`, `B-RLH/WS-1..5`,
+    `MICROVERSE_FATAL/FAILURE_REASONS`) by *removing* matches, rather than adding a rule to suppress them.
+  - **(b) Resolution is SUFFIX-based, not root-anchored, and NOT a prefix ladder:** a citation resolves if **any
+    tracked file ends with it** — `git ls-files -- '*<token>'`. **Hand-verified 2026-07-14: this resolves every
+    misresolved baseline citation with exactly ONE match each — zero over-match** (`*tests/microverse.test.js` →
+    `extension/tests/microverse.test.js`; `*types/index.ts` → `extension/src/types/index.ts`;
+    `*bin/spawn-gate-remediator.ts` → `extension/src/bin/spawn-gate-remediator.ts`). It handles bare basenames,
+    `extension/`-relative, and `extension/src/`-relative citations **in one rule**, and it **deletes** the
+    root-anchoring assumption rather than adding a special case.
+    **⛔ Do NOT hardcode an `extension/` (or `extension/src/`) prefix fallback.** `extension/` exists in **exactly one
+    repository on earth — this one** — and this checker runs inside the shared refinement runtime that refines
+    `octy`, `loanlight-api`, and `attractor`. A prefix ladder is **a per-stack adapter inside the repo-agnostic
+    core** — a defect by invariant ([[feedback_pickle_rick_must_be_repo_agnostic_invariant]]), and it would be shipped
+    by the bundle whose entire subject is not shipping unverified assumptions. *(One analyst proposed exactly this in
+    cycle 2 and retracted it in cycle 3 on precisely this ground. A second analyst then attacked the **withdrawn**
+    version and proposed a 4-rung ladder in its place. Take the suffix form.)*
+  - **(c)** When `<line>` is present and the file resolves, assert **`<line>` ≤ the file's line count.** (This
+    deletes the original's unbound free variable `N` — *"contains ≥ N lines"* never defined `N`.)
+  - **(d) Ambiguity is explicit:** if `git ls-files -- '*<token>'` returns >1 match, emit `ambiguous_citation`.
+    Measured: of 40 unique cited basenames, exactly **one** (`activity-events.schema.json`, 2 candidates) is
+    ambiguous. Do not silently pick the first.
+  - **Still explicitly out of scope: verifying the line SAYS what is claimed.** Not machine-checkable. **That is the
+    entire defect class (C-1), and its only countermeasure is the analyst prompt (WS-2).**
+- `AC-FOMC-9` (**re-specified**): `defect_class` is **split, not bucketed** — `path_not_found` |
+  `line_out_of_range` | `not_tracked_forward_created` | `ambiguous_citation`. **One bucket destroys the only
+  comparison this bundle has.** `not_tracked_forward_created` is **mandatory, not optional**: it is the C-2 class
+  (a file the analyst is *proposing to create*), and **this bundle forward-creates its own `fom-blocks.ts` and
+  `fom-infusion-prompts.test.js`** — without the split, the bundle's own new files inflate the very signal it is
+  measured by. Attribution surfaces via dedicated `analyst` and `cycle` fields; `cycle` **is** recoverable — the
+  per-cycle artifacts are `analysis_<role>_c<N>.md`, in the directory the scanner already reads (the original AC's
+  `worker_<role>_c<N>` premise was false — those are worker *logs*). Do **not** overload `ticket_id`; it is
+  correctly empty (these fire pre-decomposition).
+- `AC-FOMC-14` (**bound the hot path — this is a Worker Forbidden Op TODAY**): the `git ls-files` `spawnSync`
+  (`:487-492`) passes **no `timeout`** (verified) — CLAUDE.md's Worker Forbidden Ops table names an un-timeout'd
+  `spawnSync` as requiring a declared per-callsite trap door. It fires **44 un-deduped subprocesses for 21 unique
+  paths** today (2.1× pure waste), and WS-4 makes every one of 327 citations resolvable. **Memoize per unique token
+  and add a `timeout`** (or declare the trap door). Both are strictly subtractive against the current hot path.
+  `:361` (`runReadinessGate`) needs the same.
 - **Stays ADVISORY.** Per W5b, do **not** build a fabrication gate. The cross-cycle catch already works — both
   R-RAFC fabrications were caught by a later cycle. Make the signal legible and let the next cycle use it.
 - Scope note: the workflow twin (`refine-analyze.js`) has no equivalent checker; building one there is NOT in
@@ -312,12 +530,37 @@ All three R-RAFC fabrications cite real files and were invisible or unremarked t
 
 The correlation above is a hypothesis. Test it.
 
-- `AC-FOMC-10`: re-run the B-RLH refinement on the **infused** analyst team and record, against the preserved
-  2026-07-14 baseline (`~/.local/share/pickle-rick/sessions/2026-07-14-ef12a95a/refinement_round1/`; round-1
-  manifest: **44** `analyst_path_not_verified` warnings, **2** fabricated mechanisms): (a) the widened checker's
-  warning count + attributions, and (b) a hand-audited fabrication count over the resulting tickets. **A null
-  result is a real result and must be recorded** — if infusion changes nothing, the disease is elsewhere and
-  B-RLH's three symptom-fixes are the right level after all.
+- `AC-FOMC-10` (**RE-SPECIFIED — the original's primary metric is structurally blind; C-1**). **Pre-registered
+  decision rule, written BEFORE any soak run** (with the instrument moving and n=1 on a stochastic system, every
+  outcome otherwise narrates as confirmation):
+  - **Primary metric: hand-audited fabrication count over the resulting `rick_ticket_<hash>.md` files.**
+    Baseline = **2** (R-RAFC's two fabricated mechanisms). **Success = 0. Null = ≥ baseline. Anything between is
+    null.**
+  - **⛔ Warning count is DESCRIPTIVE ONLY and is NOT a success metric.** The checker verifies path *existence*;
+    both baseline fabrications **cite real files and lie about what they do**, so the checker caught **0 of 2** and
+    a repaired checker still catches **0 of 2**. **An infusion that eliminated 100% of fabrication would move the
+    warning count by ~0.** Record it; never read it as the result. *(Re-baseline the repaired checker over the
+    preserved artifacts anyway — expect it to fall to near zero, which is the honest finding: the instrument never
+    measured fabrication.)*
+  - **Name the path.** The soak exercises the **`spawn-refinement-team.ts`** spawn path. `refine-analyze.js` is
+    **not deployed** and is **not measured** (C-6). **Verify the infusion is live post-`bash install.sh` before
+    reading any result** — a null from an un-infused path is a **false null**, and this PRD pre-commits to treating
+    nulls as disconfirming. Likewise **assert the deployed rubric exists** before reading any judge result (C-10:
+    `pipeline-runner.ts:2142` returns `undefined` silently).
+  - **The soak is a THROWAWAY refinement of the preserved B-RLH PRD into a scratch session dir, explicitly
+    discarded.** It is **NOT** B-RLH's real decomposition. This PRD `blocks:` B-RLH, so running the soak *as* B-RLH's
+    refinement would mean (i) a second sample produces a second, divergent decomposition of B-RLH with no assigned
+    tie-breaker, and (ii) a verdict of *"revert the refinement-path edit"* would arrive **after** B-RLH had already
+    been decomposed by the reverted prompts. Cost per run: 3 cycles × 3 analysts = **9 spawns**.
+  - **n=1 cannot separate infusion effect from LLM variance.** Run it twice, or **record explicitly that the result
+    is under-powered and supports no causal claim.**
+  - **A null result is a real result and must ship as one** — if infusion changes nothing, the disease is elsewhere
+    and B-RLH's three symptom-fixes are the right level after all.
+- `AC-FOMC-10b` (**the revert lever the Rollback section wrongly waived**): WS-2 edits `spawn-refinement-team.ts` —
+  **the front door of every future PRD refinement in this repo.** "No kill-switch is warranted" is right for the
+  judging surfaces and **wrong for the analysts**: if the infused prompt degrades analyst output (over-cautious
+  citation, turns burned self-verifying), every future refinement degrades with no lever. **WS-5 is a GATE on
+  retaining WS-2's refinement-path edit, with a named revert trigger.**
 
 ## Deferred surfaces (enumerated so the skip is a decision, not a drift)
 
@@ -340,15 +583,21 @@ family** — each with the reason on the record:
 
 ## Simplification Review (subtract-before-add)
 
-1. **Is the addition necessary at all?** WS-1 adds one shape test (~30 lines) plus one shared constants module —
-   the enforcement mechanism and single source; both declared. WS-2/WS-3 add **prose to existing prompts**,
-   copied from the shipped `send-to-morty.md` blocks. WS-4 adds **one parsing branch** to an existing checker
-   (the first draft's "adds nothing" was false — the current regex cannot even see `file:line`). WS-5 is
-   measurement.
-2. **Can it REUSE instead of ADD?** That is the entire bundle. Enforcement = GIT_BOUNDARY's enumeration ledger.
-   Identity = the `DECOMPOSITION_COLOCATION_PROMPT_SECTION` single-constant pattern
-   (`spawn-refinement-team.ts:507`) — both already shipped in this repo. The prose comes from the infused
-   BUILDS surfaces. The checker is the one already wired.
+1. **Is the addition necessary at all?** *(corrected — the original under-declared its own additions in the section
+   whose entire purpose is declaring them; C-8)* WS-1 adds one shape test **plus a discovery sweep** (AC-FOMC-1b)
+   plus one shared constants module. **WS-2 ships NET-NEW AUTHORED PROSE — it is an ADDITION, not a reuse.**
+   `FOM_EVIDENCE_RULES` has **no donor anywhere in the repo** (verified); the PRD's named donor, `send-to-morty.md:38`,
+   is a *session-checkpointing* section (*"Checkpoint as you work"*). `FOM_HONEST_REPORTING_RULES` has exactly one
+   real donor (`morty-phase-verifier.md:18`) **on a default-OFF surface this PRD defers.** So the honest declaration
+   is: **unproven prose, authored once, injected simultaneously into the analysts, the synthesizer, the judge, three
+   rubrics, the remediator, and the council.** That is the bundle's real risk profile and it was hidden behind the
+   word "reuse." WS-4 is an **instrument repair**, not "one parsing branch." WS-5 is measurement.
+2. **Can it REUSE instead of ADD?** Where it genuinely can, it does — and those are named honestly.
+   Enforcement = GIT_BOUNDARY's enumeration ledger. Identity = the `DECOMPOSITION_COLOCATION_PROMPT_SECTION`
+   single-constant pattern (`spawn-refinement-team.ts:507`). The deploy pin = `install.sh`'s existing `_parity_files`
+   MD5 probe (AC-FOMC-11b) — **not a new check.** The rubric deploy assertion = the existing
+   `install-ui-principles.test.js` extended from existence to content (AC-FOMC-11c) — **not a new test.** The checker
+   is the one already wired. **But the PROSE is not reuse, and this section will not pretend otherwise.**
 3. **Does it guard EXISTING brittle complexity that should instead be SUBTRACTED?** No new guards. WS-4
    explicitly **refuses** to add a fabrication gate — the honest fix is to *tell the analysts to verify*, not to
    police them after the fact. Adding a gate around an un-instructed worker is the guard-on-a-guard smell.
@@ -410,3 +659,20 @@ the source diff), but the decomposition **must be citation-checked by hand** bef
 make automatic.** (This PRD practiced it on itself: a 3-agent verification pass on 2026-07-14 caught the first
 draft's own false mechanism claim (`install.sh:516`), an unbuildable AC (cross-language byte-identity), a
 probe that counted comments as infusion, and the missing `refine-analyze.js` twin.)
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Tier | Entry | Exit | Files |
+|---|---|---|---|---|---|---|---|
+| 10 | `33681a13` | Build the FOM enforcement mechanism (constants + ledger + discovery sweep) | High | medium | HEAD clean | Registration sites exist; FAMILY empty; red-proof green | `fom-blocks.ts`, `fom-infusion-prompts.test.js`, `install.sh`, `install-ui-principles.test.js` |
+| 20 | `c4ee67ff` | Infuse every judging surface + enroll in the ledger (ONE parametrized ticket, 10 surfaces) | High | medium | `33681a13` done | All 10 surfaces carry blocks; zero `pending` in EXCLUDED | the 3 `.ts` builders, 2 `.js` workflows, `pickle-refine-prd.md`, `morty-gate-remediator.md`, 3 rubrics |
+| 30 | `a460cad3` | Infuse `persona.md` (option **b**) + subtract the install.sh marker lie | Medium | small | `33681a13` done | persona.md in FAMILY; no "100% reach" claim survives | `persona.md`, `install.sh` |
+| 40 | `16e6923f` | Repair the analyst-citation checker (suffix resolution, split `defect_class`, memoize+timeout) | Medium | medium | `c4ee67ff` done | 44 warnings collapse to ~0; still ADVISORY | `spawn-refinement-team.ts`, checker test |
+| 50 | `aa67d49a` | **Wire + deploy + prove live** `[manager]` | High | medium | All impl done | Infusion live in `~/.claude/pickle-rick/` | `install.sh` (deploy) |
+| 60 | `634ee56f` | **The soak — the falsifier** `[manager]` | High | medium | `aa67d49a` done | `soak_result.md` against a PRE-REGISTERED rule | `soak_result.md` |
+| 70 | `1e780803` | Harden: code quality of the infusion diff | High | large | All prior | Zero P0-P1 | MODIFIED_FILES |
+| 80 | `a4038d7c` | Audit: data flow (constant → mirror → deploy → prompt → LLM) | High | large | All prior | Zero CRITICAL/HIGH | MODIFIED_FILES |
+| 90 | `a83d7ead` | Harden: test quality — **prove the shape test can FAIL** | High | large | All prior | Suite proven RED by hand ×2 | TEST_FILES |
+| 100 | `f27e591f` | Audit: cross-reference consistency (docs ↔ prompts ↔ code) | High | medium | All prior | Zero unresolvable citations survive | DOC_FILES |
+
+**Rollback order is the REVERSE of build order: WS-4 → WS-3 → WS-2 → WS-1.**
