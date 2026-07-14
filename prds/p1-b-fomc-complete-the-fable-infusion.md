@@ -453,6 +453,38 @@ So WS-3 is real but its leverage is **worker-prompt reach + whatever CLAUDE.md t
   `release-gate-parity` / `codegraph-docs-optin-parity` pin the repo-root `CLAUDE.md`/`README.md`, **not**
   persona.md; they are unaffected. ⚠ Watch the token budget regardless: persona.md rides in every worker prompt.
 
+#### WS-3 gate corrections (manager, 2026-07-14, ticket `a460cad3`) — both gates were broken
+
+The worker refused to fake either gate and escalated. It was right. Recorded here rather than quietly
+re-written, because a silently-relaxed gate is the exact failure this bundle exists to kill.
+
+- **AC-FOMC-7c passed VACUOUSLY — the subtraction has no in-repo target.** The string
+  `managed by install.sh` appears **nowhere in `install.sh`**, and nowhere in the repo except this PRD
+  *quoting* it (`:413`, `:447`). Nothing in the tree emits the marker — not `install.sh`, not
+  `persona.md`. It exists **only** at `~/.claude/CLAUDE.md:1`, which is unversioned, written by no
+  script, and which this PRD (`:449`) forbids hand-editing. So `! grep -q 'managed by install.sh'
+  install.sh` goes green **by finding a string that was never there** — the bundle's own
+  `FOM_HONEST_REPORTING_RULES` verbatim: *a fast clean pass may mean the gate never fired.* The PRD
+  ordered a doc edit to a file it put off-limits. **Not claimed green. Demoted to an operator
+  residual** (see Drain Queue below).
+- **AC-FOMC-7b could NEVER pass as written — the gate matched its own success condition.** Its verify,
+  `! grep -rniE '100% reach|O\(1\) reach' persona.md <this-PRD>`, hits exactly two lines, and **neither
+  is a live claim**: `:422` is this PRD *quoting the dead claim in order to refute it* ("…not `"O(1),
+  100% reach, reaches the judge."` The judge is reached only by WS-2"), and `:669` is the ticket table
+  row **stating the acceptance criterion itself** (`no "100% reach" claim survives`). A grep that cannot
+  tell **use from mention** fires on its own retraction and on its own AC. Permanently red ⇒ permanently
+  ignored, which is worse than no gate. `persona.md` — the only surface where such a claim ships (it
+  rides in every worker prompt) — has **zero** matches.
+  **Resolution (subtractive, per [[feedback_subtract_flaky_gate_input_not_add_resistance]]):** scope the
+  verify to `persona.md`. We did **not** add use/mention resistance to the regex, and we did **not**
+  paraphrase the PRD's refutation to dodge a token — contorting the doc to satisfy a broken instrument
+  is the dishonesty, not the fix. Read the sentence, not the token
+  ([[feedback_analyst_majority_is_not_truth_grep_the_sentence]]).
+
+**Both defects are the same species as C-1** ([[project_b_fomc_checker_structurally_blind_to_fabrication]]):
+a checker that cannot detect what it was built to detect. This bundle has now caught it in its own ACs
+**twice**. That is the discipline working — on itself.
+
 ### WS-4 — make the EXISTING checker earn its keep (a small honest addition, not "nothing")
 
 `checkAnalystOutputPaths` (`spawn-refinement-team.ts:479-500`; emission loop at `:2142-2151`) already parses
