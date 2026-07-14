@@ -41,6 +41,11 @@ const FAMILY = [
   // The remediator pair gets BOTH blocks.
   { path: 'extension/src/bin/spawn-gate-remediator.ts', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], kind: 'ts' },
   { path: '.claude/agents/morty-gate-remediator.md', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], kind: 'md' },
+
+  // WS-3 (ticket a460cad3): persona.md's only automated reach is the Morty worker prompt
+  // (spawn-morty.ts:readBasePersona) — a BUILDS surface, not a judging one — but it is the
+  // one enumerated WS-3 target and gets both blocks.
+  { path: 'persona.md', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], kind: 'md' },
 ];
 
 // Every prompt surface the discovery sweep can find, that is NOT in FAMILY, MUST be listed
@@ -49,9 +54,6 @@ const FAMILY = [
 // spawn-gate-remediator.ts's buildBriefContent is unexported and not `*Prompt`-named) — they were
 // added to FAMILY by hand for that reason (sweep coverage doesn't gate FAMILY membership).
 const EXCLUDED = [
-  // --- WS-3 target (ticket a460cad3) — persona.md is a DIFFERENT workstream than WS-2 ---
-  { path: 'persona.md', reason: 'B-FOMC WS-3 pending (ticket a460cad3)' },
-
   // --- PRD "Deferred surfaces" (deliberately out of the required family; reasons on the record) ---
   { path: '.claude/commands/send-to-morty-review.md', reason: 'dead on the autonomous path (R-RWNF): only reachable via spawn-morty --review, no production caller' },
   { path: '.claude/agents/morty-phase-implementer.md', reason: 'default-OFF (PICKLE_PHASE_PERSONAS); infuse when that flag graduates' },

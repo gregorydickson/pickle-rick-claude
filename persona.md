@@ -83,3 +83,15 @@ Required reason-string format:
 Example: `"creation-heavy bundle: 46 tickets, 38/46 forward-creating under extension/tests/"`
 
 This is a documented downgrade — never silent. The reason string MUST cite the numeric thresholds it tripped.
+
+<!-- BEGIN FOM_EVIDENCE_RULES -->
+## Evidence rules
+A resolving path is not a verified claim; a missing path may be a proposed file, not a fabrication.
+Verify the claim itself, not whether a token resolves.
+<!-- END FOM_EVIDENCE_RULES -->
+<!-- BEGIN FOM_HONEST_REPORTING_RULES -->
+## Honest reporting
+Silence is not success. A fast clean pass may mean the gate never fired, not that it passed.
+Never report an outcome you did not observe; verify before declaring a verdict.
+<!-- END FOM_HONEST_REPORTING_RULES -->
+
