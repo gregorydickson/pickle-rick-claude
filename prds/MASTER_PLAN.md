@@ -396,6 +396,22 @@ completion-evidence PROVEN, LOA-1363 run 4) are preserved in
 
 ## Drain Queue — shipped + remaining (deferred / blocked / external-gated)
 
+> **⚠ NEW (2026-07-14) — two findings surfaced BY the B-FOMC run itself, both about not knowing the ground was red:**
+>
+> | Finding | Pri | What | PRD |
+> |---|---|---|---|
+> | [[R-WGVI]] | **P1** | **The worker gate verdict carries no information about the ticket.** A `small`-tier ticket **skips `test:fast`** (`spawn-morty.ts:1405`) and persists `worker_gate_verdict: "green"` — a **vacuous green** while the tier was actually RED (`a460cad3`, measured). A `medium`-tier ticket runs the **whole** tier, so it goes **red for inherited debt it never touched**, and flipped **Done over red** anyway (`c4ee67ff`, `worker_gate_verdict: "red"` + `status: "Done"`). Green can mean "never ran"; red can mean "someone else's". **Fix = REUSE `convergence-gate.ts`'s baseline subtraction** (judge the delta vs `start_commit`), and never emit `green` from a gate that did not run (`"not_run"`). ⛔ Do NOT add a skip flag; do NOT fail-closed on raw red (it would deadlock every ticket on inherited debt). | `BUG-REPORT-2026-07-14-worker-gate-verdict-is-information-free.md` |
+> | [[R-PLGR]] | P2 | **The mandated pre-launch check asks "is the fix still needed?" and never "is the tree green?"** B-FOMC's stale-premise check passed cleanly and the branch was **already red** (`extension/CLAUDE.md` trap-door entry 1662 chars vs a 1500 cap, over-cap since `69829ec5`; on the release gate via `trap-door-conformance.test.js` + `audit-trap-door-enforcement.sh`). **R-PLGR is what put the red there; R-WGVI is why nobody could tell.** Fix = a **doc-only** green-tree precondition in `prds/CLAUDE.md` + record the launch-commit tier result as the baseline R-WGVI subtracts. ⛔ NOT a blocking launch gate (it would false-block on the ENOBUFS flake already in that tier). | `BUG-REPORT-2026-07-14-prelaunch-check-never-asks-if-the-tree-is-green.md` |
+>
+> **The poetry, recorded because it is evidence and not a joke:** `a460cad3`'s vacuous green is a live violation of
+> the exact rule that ticket's own bundle shipped — *"Silence is not success. A fast clean pass may mean the gate
+> never fired, not that it passed."* (`FOM_HONEST_REPORTING_RULES`). The runtime that built the honesty bundle
+> violated the honesty bundle, in the same session, while the ink was wet.
+>
+> The pre-existing trap-door red itself is **FIXED** (`ff584d84` — compressed 1651→1433 chars, no constraint dropped;
+> `trap-door-conformance` 177/177, audit PASS). The two findings above remain open.
+
+
 > **Consolidating bundle authored (2026-06-26):** [[R-DPGT]] + [[R-DOTR]] + [[R-CRSR]] (Facets A+B) + the LOA-1588
 > foreign-hash sub-finding are one wound — the **pickle phase-exit / per-ticket-budget boundary does not read the
 > single `readEvidence` oracle.** PRD: `archive/bundles/p2-bug-fix-bundle-b-pxbo-phase-exit-boundary-oracle-2026-06-26.md`
