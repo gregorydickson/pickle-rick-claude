@@ -210,19 +210,40 @@ and `:4029-4032` does `log('Phase X AC gate failed — stopping pipeline'); retu
 It reads `<sessionDir>/ac-phase-manifest.json` (`services/ac-phase-gate.ts:197`) — and on a **missing** manifest
 returns `{ status: 'pass' }` (`:198-200`). **Fail-open.**
 
-The string `ac-phase-manifest` appears **exactly once in the entire repository**: its own constant declaration at
-`services/ac-phase-gate.ts:9`. Zero producers in `src/`, zero in `tests/`, zero in `.claude/commands/`.
-`find ~/.local/share/pickle-rick/sessions -name 'ac-phase-manifest.json'` returns **nothing** — no session has
-ever produced one. **The gate has never fired. It evaluates zero criteria and returns `pass` on every run that
-has ever executed.**
+**⚠ The original "zero producers" evidence was a grep of the STRING, not the SYMBOL — see the correction below.**
+The accurate statement: the gate has **four call sites** and **four test-fixture producers**, but **no
+PRODUCTION producer**. `find ~/.local/share/pickle-rick/sessions -name 'ac-phase-manifest.json'` returns
+**nothing** — **no real session has ever emitted one.** So in every run that has ever executed, the gate reads a
+missing manifest, hits the fail-open at `ac-phase-gate.ts:198-200`, evaluates **zero criteria**, and returns
+`pass`. **The finding survives; only its evidence needed correcting.**
 
-**⚠ CORRECTION (refinement cycle 3): OPTION (a) IS STRUCK. The fork rested on a bad grep.** The
-"appears exactly once in the entire repository" finding matched the **string literal**, not the **symbol**.
-`runAcPhaseGate` has **FOUR call sites** — `spawn-refinement-team.ts:1127`, `:2279`; `pipeline-runner.ts:4021`;
-`finalize-gate.ts:380` — plus an export-inventory pin (`src/services/CLAUDE.md:56`) and **two trap-door INVARIANTs
-policed by the release gate** (`audit-trap-door-enforcement.sh`). Deleting it is **~10× the represented blast
-radius**, and the AC as originally written invited a worker to pick (a) on the strength of a wrong grep. **The gate
-is wired; what is missing is its PRODUCER.**
+**⚠ CORRECTION: OPTION (a) IS STRUCK. The fork rested on a bad grep.** The "appears exactly once in the entire
+repository" finding matched the **string literal** (`'ac-phase-manifest.json'`), not the **symbol**
+(`AC_PHASE_MANIFEST`). Verified 2026-07-14:
+
+- `runAcPhaseGate` has **FOUR call sites** — `spawn-refinement-team.ts:1127`, `:2279`; `pipeline-runner.ts:4021`;
+  `finalize-gate.ts:380` — plus an export-inventory pin (`src/services/CLAUDE.md:56`, policed by
+  `audit-subsystem-claude-md.sh`).
+- **FOUR test files construct manifest fixtures** via the symbol: `tests/pipeline-runner.test.js`,
+  `tests/bin/finalize-gate.test.js`, `tests/services/ac-phase-gate-glob-safety.test.js`,
+  `tests/services/ac-phase-gate-tool-preflight.test.js`.
+
+Deleting the gate is **~10× the represented blast radius**, and the AC as originally written invited a worker to
+pick (a) on the strength of a wrong grep.
+
+> **⚠⚠ RETRACTION (2026-07-14) — this PRD previously cited "two trap-door INVARIANTs policed by the release gate
+> (`audit-trap-door-enforcement.sh`)". THAT CITATION WAS FABRICATED** and is withdrawn. Verified false:
+> `audit-trap-door-enforcement.sh` contains **0** references to `ac-phase-gate` (it polices `mux-runner.ts`,
+> `spawn-morty.ts`, `microverse-runner.ts`, `ticket-completion-evidence.ts`, `auto-fill-completion-commit.ts`),
+> and `ac-phase-gate.ts` carries **0** trap-door/INVARIANT markers. It was emitted by a refinement analyst and
+> copied here unverified. **Option (a) stays struck — on the real evidence above, which does not need it.**
+> Filed as **[[R-RAFC]]** (`BUG-REPORT-2026-07-14-refinement-analysts-fabricate-citations-fom-infusion-gap.md`):
+> the analyst prompt mandates file:line citations and nothing verifies them. This is R-BCFR's own shape, one
+> level up the stack, inside the bundle that exists to kill it.
+
+**The gate is WIRED and TESTED; what is missing is a PRODUCTION producer** — no *session* has ever emitted a
+manifest (the four producers are test fixtures), so in every real run the gate evaluates nothing and returns
+`pass`.
 
 **RESOLVED: option (b) — WIRE it. Phase-scoped, producer-before-gate.**
 
