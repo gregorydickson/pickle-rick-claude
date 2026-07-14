@@ -530,7 +530,7 @@ export function __resetGitLsFilesSuffixCacheForTests(): void {
 // refined (octy, loanlight-api, ...), so a hardcoded `extension/`-relative
 // fallback would be a repo-specific defect baked into a repo-agnostic core.
 function resolveTrackedSuffixMatches(workingDir: string, token: string): string[] {
-  const cacheKey = `${workingDir} ${token}`;
+  const cacheKey = `${workingDir}\0${token}`;
   const cached = gitLsFilesSuffixCache.get(cacheKey);
   if (cached !== undefined) return cached;
   let matches: string[] = [];
