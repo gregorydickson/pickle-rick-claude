@@ -97,6 +97,18 @@ test('flake-budget fails when failures exceed the budget', () => {
   }
 });
 
+// R-FBTN: the exceeded report must NAME the flaky test(s), not just count them.
+test('flake-budget names the flaky test when the budget is exceeded', () => {
+  const run = runBudgetCheck({ runs: 4, failBudget: 1, failRuns: 2 });
+  try {
+    assert.equal(run.result.status, 1, `stdout: ${run.result.stdout}\nstderr: ${run.result.stderr}`);
+    assert.match(run.result.stderr, /FLAKY_TESTS/);
+    assert.match(run.result.stderr, /synthetic flake budget probe/);
+  } finally {
+    run.cleanup();
+  }
+});
+
 test('flake-budget child spawn passes a maxBuffer well above the 1MB spawnSync default', async () => {
   // Regression: the fast tier (~5000 tests at concurrency 8) emits >1MB of stdout
   // on CI; without an explicit maxBuffer spawnSync throws ENOBUFS and the run is

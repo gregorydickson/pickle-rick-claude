@@ -66,6 +66,23 @@ function isBudgetableTestFailure(stdout, stderr) {
     const combined = `${stdout}\n${stderr}`;
     return /(^✖\s)|(^not ok\s)|(^ℹ tests\s+\d+)/m.test(combined);
 }
+// R-FBTN: node --test names each failure as `✖ <name> (…ms)` or TAP `not ok N - <name>`.
+// Surface WHICH tests flaked, not just how many — a bare count is unactionable.
+function extractFailingTestNames(stdout, stderr) {
+    const names = [];
+    for (const line of `${stdout}\n${stderr}`.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        const crossed = /^✖\s+(.+?)(?:\s+\(\d[\d.]*ms\))?$/.exec(trimmed);
+        if (crossed) {
+            names.push(crossed[1].trim());
+            continue;
+        }
+        const tap = /^not ok\s+\d+\s+-\s+(.+?)(?:\s+#.*)?$/.exec(trimmed);
+        if (tap)
+            names.push(tap[1].trim());
+    }
+    return names;
+}
 function summarizeHarnessFailure(stdout, stderr) {
     const firstLine = `${stderr}\n${stdout}`
         .split(/\r?\n/)
@@ -75,6 +92,7 @@ function summarizeHarnessFailure(stdout, stderr) {
 }
 function runIterations(parsed, opts) {
     let failures = 0;
+    const failingTests = new Set();
     const childEnv = { ...opts.env };
     const invocation = buildRunInvocation(opts.env);
     delete childEnv.NODE_TEST_CONTEXT;
@@ -95,12 +113,15 @@ function runIterations(parsed, opts) {
                 throw new Error(`Flake-budget child failed before reporting test results: ${summarizeHarnessFailure(result.stdout ?? '', result.stderr ?? '')}`);
             }
             failures += 1;
+            for (const name of extractFailingTestNames(result.stdout ?? '', result.stderr ?? '')) {
+                failingTests.add(name);
+            }
             if (failures > parsed.failBudget) {
-                return { failures, runsCompleted: runIndex + 1 };
+                return { failures, runsCompleted: runIndex + 1, failingTests: [...failingTests] };
             }
         }
     }
-    return { failures, runsCompleted: parsed.runs };
+    return { failures, runsCompleted: parsed.runs, failingTests: [...failingTests] };
 }
 export async function checkFlakeBudgetMain(opts) {
     const stdout = opts.stdout ?? ((msg) => process.stdout.write(`${msg}\n`));
@@ -115,6 +136,10 @@ export async function checkFlakeBudgetMain(opts) {
         });
         if (summary.failures > parsed.failBudget) {
             stderr(`FAIL_BUDGET_EXCEEDED failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs}`);
+            // R-FBTN: name the flaky tests so the failure is actionable, not a bare count.
+            stderr(summary.failingTests.length > 0
+                ? `FLAKY_TESTS ${summary.failingTests.map((n) => `\n  - ${n}`).join('')}`
+                : 'FLAKY_TESTS (none captured — child emitted no ✖/not-ok test names)');
             return 1;
         }
         stdout(`flake-budget OK failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs}`);
