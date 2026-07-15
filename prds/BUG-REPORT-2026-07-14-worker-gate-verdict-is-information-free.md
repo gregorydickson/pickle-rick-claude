@@ -188,3 +188,47 @@ Read the actual code + the `bin/CLAUDE.md` trap-door catalog before editing. Two
 3. **Reliability-tier**: R-WGVI bites pickle-rick building **itself** (the test harness), not a target repo ([[feedback_autonomy_means_building_other_repos_not_itself]]). Important, but not a ship-into-the-Done-flip-path-without-review priority.
 
 **DECISION NEEDED (one line for the operator):** adopt the subtractive parity fix — **drop `test:fast` from the worker-gate writer so the verdict is eslint+tsc at both writer and recompute** (regressions caught at the closer)? If yes, the hand-build is small and I'll do it with the AC-WGVI-4 regression test. If a per-diff test-scoping scheme is wanted instead, that's larger and needs its own design (no clean "run only affected tests" mechanism exists; baseline-subtraction is rejected by RC-4).
+
+---
+
+## ⚠ Measured true scope (2026-07-15, on starting the hand-build) — operator chose REFINE-FIRST
+
+Policy is APPROVED (drop test:fast from the writer → verdict is eslint+tsc, parity with the recompute). On starting
+the hand-build I measured the blast radius against ground truth; it is **materially bigger than "a small edit"**, so
+the operator chose to refine it into a build-ready bundle first (attended build — NOT pipeline; this is R-PSRB).
+
+**The "worker runs test:fast" behavior is pinned by TWO release-gate trap-door INVARIANTs, not just code:**
+- `extension/CLAUDE.md:186` (worker lint gate): *"Non-`small` tickets MUST then run `npm run test:fast`; `full`
+  gate tier additionally runs `npm run test:integration`. … The gate's pass/fail is persisted as the single
+  `worker_gate_verdict`."*
+- `extension/CLAUDE.md:187` (R-CWGE verdict enforcement reach): *"persistWorkerGateVerdict writes ONE
+  `worker_gate_verdict` field (green|red|absent, **eslint+tsc+test**)."*
+
+**And ~10 pinned tests in `spawn-morty-worker-gate.test.js`** assert the worker gate runs test:fast and that the
+test result feeds the verdict: `runs test:fast` (`:201`/`:239`), `narrow stops after tsc` (`:246`), `small skips +
+tier_phase_skipped` (`:300`/`:342`), `returns testFailures when test:fast fails` (`:350`/`:384`), `full runs
+test:fast then test:integration` (`:417`), `integration failure emits worker_gate_failed` (`:461`), plus the
+test:fast-fail suppression/reset cases (`:534`/`:611`). Sibling verdict tests
+(`worker-gate-verdict-recompute.test.js`, the R-CWGE reach + failed-flip-suppression suites) also key on it.
+
+**Exact code sites** (all verified): `runWorkerGateChecks` (`spawn-morty.ts:1374`) runs test:fast (`:1423`) +
+test:integration (`:1442`); the persisted verdict is `didWorkerGateFail(lintOk, tscOk, testsOk)` at `:1608`; the
+worker's OWN turn pass/fail is the same predicate at `:1610`. `runWorkerGateTestCommand` (`:1307`) is independently
+exercised by `worker-gate-test-command-timeout.test.js` (do not delete it — decouple, don't remove the export).
+
+**The subtlety a naive cut introduces (must be designed away, not hand-waved):** if the persisted verdict (`:1608`)
+is decoupled to eslint+tsc but the worker still runs test:fast and its OWN turn (`:1610`) still fails on it, a
+ticket can end with `worker_gate_verdict: green` while the worker took the **test-fail reset path** (tree reset,
+no commit). The refinement MUST decide the coherent combination — either the worker gate stops running test:fast
+for ALL tiers (so `:1608` and `:1610` are both eslint+tsc and there is no split), or the verdict-vs-turn split is
+proven safe against `guardCompletionCommitBeforeDone` (green verdict alone does not flip Done — a completion_commit
+is also required, so a reset/no-commit tree cannot Done; verify this holds on EVERY Done-flip path). Pick one,
+prove it, and enumerate every trap-door + test edit the choice forces.
+
+**Decomposition constraints for the refinement:**
+- This is R-PSRB (Done-flip path) → the resulting tickets are **hand-built, attended** — NOT run through the
+  pipeline. Refinement is planning only.
+- Every ticket that changes worker-gate behavior MUST co-scope the matching trap-door rewrite (`186`/`187`) and the
+  affected tests — a code change without the trap-door + test update fails the release gate.
+- `AC-WGVI-4` regression (no `worker_gate_verdict: red` + `status: Done`) is mandatory.
+- `schema_neutral: true` is FALSE — flip it (control-flow edits).
