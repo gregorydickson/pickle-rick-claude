@@ -232,3 +232,59 @@ prove it, and enumerate every trap-door + test edit the choice forces.
   affected tests — a code change without the trap-door + test update fails the release gate.
 - `AC-WGVI-4` regression (no `worker_gate_verdict: red` + `status: Done`) is mandatory.
 - `schema_neutral: true` is FALSE — flip it (control-flow edits).
+
+---
+
+## ✅ Refined build-ready spec (2026-07-15, session 70dc13b8, 3 cycles — every citation hand-verified)
+
+Refine-first found the approved fix was **incomplete** and reshaped it. Three decisive findings, all hand-verified:
+
+**F1 — THREE verdict writers, not one** (hand-verified at HEAD):
+- w1 `spawn-morty.ts:1608` — `didWorkerGateFail(lintOk, tscOk, testsOk)` (the writer the decision targets).
+- w2 `mux-runner.ts:4658` — recompute persist-back, **already eslint+tsc** (`recomputeAbsentWorkerGateVerdict`).
+- w3 `mux-runner.ts:4988 persistRunnerAuthoredGreenVerdict` — `upsertFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD, 'green')`, **UNCONDITIONAL green** for the runner-authored commit-and-continue path.
+  Dropping test:fast from w1 alone does NOT make the verdict "eslint+tsc everywhere" — w3 stamps green regardless.
+  **Scoped as a Non-Goal**: w3 is a deliberate runner-vouches path, documented, not changed by this bundle.
+
+**F2 — `red`+`Done` via a Done-FLIP is UNREACHABLE on HEAD** (hand-verified): all mux `markTicketDone` callsites are
+guard-dominated, and `setup.ts:1305` resume-reattach is gated `if (gate.verdict !== 'green') return` (`:1296-1303`).
+The `c4ee67ff` observation was a **write-after-Done relabel** (the verdict written red *after* the ticket was
+already Done), not a live flip bug. So the original `AC-WGVI-4` ("no ticket ever HOLDS red+Done") targeted a
+benign state; it is replaced by the temporal invariant P5.
+
+**F3 — the coherence worry dissolves by construction**: `:1608` (verdict) and `:1610` (worker turn) consume the
+**same** `testsOk`. Remove the test branch → `testsOk` is always true → both reduce to eslint+tsc with **no
+verdict-vs-turn split**. The "green verdict while the worker took the test-fail reset path" inconsistency cannot
+arise because the worker no longer takes a test-fail path.
+
+### The ACs to build (supersede the original AC-WGVI-1..4, which specced the rejected `not_run`/baseline approach)
+
+- **`AC-WGVI-P1`** (writer no longer runs tests): `runWorkerGateChecks` (`spawn-morty.ts:1374`) removes the
+  tier-conditional test branch (`:1419-1457`); `testsOk` is always true; the worker gate is eslint+tsc.
+- **`AC-WGVI-P2`** (coherence, free by construction): `:1608` and `:1610` both consume the same `testsOk`, so both
+  become eslint+tsc together — no split to prove.
+- **`AC-WGVI-P3`** (parity, test-dimension-scoped): the persisted verdict and `recomputeAbsentWorkerGateVerdict`
+  (`mux-runner.ts:4615`) now agree on the test dimension (neither runs it). State the eslint-scope residual: w1's
+  eslint scope (changed files) and the recompute's (`src/`) never run on the same ticket, so they cannot disagree
+  on a live Done-flip.
+- **`AC-WGVI-P4`** (trap-door parity — release-gate-blocking, co-scoped): amend `extension/CLAUDE.md:186` (drop
+  "Non-`small` tickets MUST then run `npm run test:fast`…") and the R-CWGE reach entry `:187` (verdict is
+  **eslint+tsc**, not eslint+tsc+test).
+- **`AC-WGVI-P5`** (temporal invariant, replaces AC-WGVI-4): no ticket may **flip** to `status: Done` while its
+  worker-gate verdict is `red` **at flip time** (simultaneity of red+Done from a later relabel is benign).
+- **`AC-WGVI-P6`**: `schema_neutral: false` (control-flow edits: `:1419-1421`, `:1584`, `:1602`, `:1608`, `:1610`).
+- **Preserve** `runWorkerGateTestCommand` (`spawn-morty.ts:1307`) — decouple, don't delete (live consumer
+  `worker-gate-test-command-timeout.test.js`).
+- **Strike** the dead candidates at the top of this PRD (baseline subtraction #1, `not_run` #2 — both refuted by
+  RC-2/RC-4) so a top-down reader doesn't build them.
+
+### Test edits forced by P1/P4 (~10, `spawn-morty-worker-gate.test.js`)
+`runs test:fast` (`:201`/`:239`), `narrow` (`:246`), `small skips` (`:300`/`:342`), `test:fast fail` (`:350`),
+`full runs test:fast+integration` (`:417`), `integration failure` (`:461`), the test:fast suppression/reset cases
+(`:534`/`:611`) — plus the R-CWGE reach + failed-flip-suppression siblings. Each rewrites to the eslint+tsc gate.
+
+### Routing
+**Attended hand-build — NOT pipeline** (R-PSRB Done-flip path). Refinement is planning only; analyses preserved at
+`~/.local/share/pickle-rick/sessions/2026-07-15-70dc13b8/refinement/`. **North-star note:** the entire
+worker-gate-verdict machinery is inert (green) on every non-pickle-rick target repo (`mux-runner.ts:4647`), so
+R-WGVI is a **self-build-only** reliability fix — real, but it does not bite octy/loanlight-api builds.
