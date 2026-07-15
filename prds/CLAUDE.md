@@ -122,3 +122,26 @@ Two further authoring rules, same provenance:
   assert the match IN THE RESEARCH ARTIFACT. An unanswered mandatory check in a shipped PRD is
   a process failure. (B-PSCG asked the question, nobody answered it, and a review-base
   primitive shipped as a session baseline — 97 commits wrong.)
+
+## Green-tree precondition (MANDATORY — earned by R-WGVI/R-PLGR, 2026-07-15)
+
+The stale-premise check above asks *"is this fix still needed?"* It never asks *"is the ground I'm building
+on solid?"* — and B-FOMC launched onto a branch whose fast tier was already red (a trap-door entry over its
+char cap, red since before the bundle existed). Every worker then inherited a gate that was red for a reason
+it did not cause, and **no downstream gate verdict could be attributed** (R-WGVI: the unattributable-red and
+the vacuous-green both trace to launching onto un-green ground).
+
+**Before launching any bug/fix bundle, the release-gate fast tier MUST be green on the launch commit:**
+
+```
+cd extension && npm run test:fast
+```
+
+- A red tier is a **HARD STOP**. Either fix it first, or explicitly record the failures as *inherited*
+  (name the commit that introduced them, per the stale-premise discipline) before launching — a bundle
+  launched onto a red tree cannot tell its own breakage from the debt it inherited.
+- Run the check **once on a quiet box**. Overlapping `test:fast` runs self-inflict timeout-shaped flakes in
+  the `runGate`/hang-guard suite; a lone re-run at rest is authoritative (cf. the c=8 concurrency-flake note).
+- This is a **doc-discipline precondition, not a new blocking gate** — do not build launch-blocking machinery
+  to enforce it (that would false-block on a genuine flake, e.g. the `spawnSync ps ENOBUFS` case already
+  living in the tier). Same posture as the Simplification Review: a rule authors follow, not a runtime lock.

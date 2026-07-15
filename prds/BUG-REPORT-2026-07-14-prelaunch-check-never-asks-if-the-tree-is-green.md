@@ -2,7 +2,7 @@
 title: "R-PLGR — the mandated pre-launch check asks 'is the fix still needed?' and never 'is the ground green?', so bundles launch onto a red tree"
 finding: R-PLGR
 priority: P2
-status: open
+status: shipped
 type: bug-report
 schema_neutral: true
 surfaced: "2026-07-14, launching B-FOMC. The pre-launch check passed cleanly and the branch was already red."
