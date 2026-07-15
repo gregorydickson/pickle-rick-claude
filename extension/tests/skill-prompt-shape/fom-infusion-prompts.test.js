@@ -302,9 +302,17 @@ function assertSweepCoversDiscovered(discovered, familyPaths, excludedPaths) {
   );
 }
 
+// AC-FOMC-4b: an EXCLUDED entry needs a REAL reason, not a placeholder. A bare `pending`/`todo`/etc.
+// is non-empty but carries no classification — the exact "pending reason" AC-FOMC-4b forbids. Anchored
+// whole-string match so a legitimate reason that merely contains the word "pending" mid-sentence is safe.
+const PLACEHOLDER_REASON_RE = /^(pending|todo|tbd|fixme|xxx|placeholder|n\/a|-)$/i;
 test('fom-infusion sweep: every discovered prompt surface is in FAMILY or EXCLUDED with a non-empty reason', () => {
   for (const entry of EXCLUDED) {
     assert.ok(typeof entry.reason === 'string' && entry.reason.trim().length > 0, `EXCLUDED entry ${entry.path} has an empty reason`);
+    assert.ok(
+      !PLACEHOLDER_REASON_RE.test(entry.reason.trim()),
+      `EXCLUDED entry ${entry.path} carries a placeholder reason ("${entry.reason.trim()}") — AC-FOMC-4b forbids pending/TODO reasons`,
+    );
   }
   const discovered = discoverPromptSurfaces();
   const familyPaths = new Set(FAMILY.map((e) => e.path));
