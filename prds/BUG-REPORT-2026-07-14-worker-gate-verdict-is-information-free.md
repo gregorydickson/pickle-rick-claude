@@ -166,3 +166,25 @@ analyst), not type annotations. Re-label before building.
 edit where avoidable), scope the persisted test dimension to the diff, keep eslint as-is, and prove the red+Done
 regression (AC-WGVI-4). But it sits on the R-PSRB path → **hand-build the load-bearing sites**, deploy via install.sh.
 Refinement analyses preserved at `~/.local/share/pickle-rick/sessions/2026-07-14-a1ea3e53/refinement/`.
+
+---
+
+## ⚠ Hand-build attempt (2026-07-15): DEEPENED the diagnosis, then STOPPED for a design sign-off
+
+Read the actual code + the `bin/CLAUDE.md` trap-door catalog before editing. Two findings change the fix, and the second is a policy decision I will not make autonomously in this subsystem.
+
+**HB-1 — the RC-2 deadlock fear is FALSE; `recomputeAbsentWorkerGateVerdict` is eslint+tsc ONLY.**
+`mux-runner.ts:4615-4622` (verified): the absent-verdict recompute runs **only** `eslint src/` + `tsc --noEmit` — its own comment says *"R-WGFR drops the flaky `test:fast` dimension."* So persisting `absent` for a small-tier gate does NOT reroute its Done-flip through a whole-repo `test:fast`; it reroutes through a **deterministic eslint+tsc recompute**. **There is no inherited-red deadlock on that path.** RC-2's "one branch is a verified live deadlock" does not apply to the `absent` reuse.
+
+**HB-2 — the REAL defect is writer/recompute ASYMMETRY, and the honest fix is subtractive but is a POLICY change.**
+- The **writer** (`runWorkerGateChecks`, `spawn-morty.ts:1423`) runs **whole-repo `test:fast`** for medium/large tiers → the unattributable red B-FOMC's `c4ee67ff` hit.
+- The **authoritative recompute** (the fallback every Done-flip consults) **dropped `test:fast`** as flaky (R-WGFR).
+- So the two disagree by construction: a medium ticket can be persisted `red` from whole-repo `test:fast`, while the recompute that governs its Done-flip would say `green` on eslint+tsc. And small-tier `green` (eslint+tsc ok, tests skipped) is actually **consistent** with the recompute.
+- **Subtractive fix candidate (writer/recompute parity, AC-WGVI-P):** align the writer to the recompute — **drop `test:fast` from the worker-gate writer**, so `worker_gate_verdict` means eslint+tsc consistently at both the write and recompute sites. This kills BOTH symptoms at once (no vacuous test-claim, no unattributable whole-repo red) and matches the policy R-WGFR already shipped for the recompute. `AC-WGVI-4` (no `red`+`Done`) becomes largely moot because the gate stops producing whole-repo red.
+
+**Why I STOPPED (per the hand-build protocol: bigger/different than framed → re-record, don't force):**
+1. **It's a worker-gate POLICY change, not a relabel.** Dropping `test:fast` from the writer means workers no longer run the fast suite at their own gate — test regressions are caught at the **closer's full release gate** instead (which already runs `test:fast` + integration + expensive). Defensible, and consistent with R-WGFR — but a policy call that deserves explicit sign-off.
+2. **It sits in the most trap-door-dense subsystem on the R-PSRB Done-flip path** (`guardCompletionCommitBeforeDone`, the two phantom-Done watchers, `setup.ts` resume-reattach Done-flip, `ticket-completion-evidence.ts:813`, the R-CXOR-2/R-RIC-EXPLICIT-4/R-CWGE trap doors all read this verdict). A wrong move here breaks a completion oracle, not a leaf function.
+3. **Reliability-tier**: R-WGVI bites pickle-rick building **itself** (the test harness), not a target repo ([[feedback_autonomy_means_building_other_repos_not_itself]]). Important, but not a ship-into-the-Done-flip-path-without-review priority.
+
+**DECISION NEEDED (one line for the operator):** adopt the subtractive parity fix — **drop `test:fast` from the worker-gate writer so the verdict is eslint+tsc at both writer and recompute** (regressions caught at the closer)? If yes, the hand-build is small and I'll do it with the AC-WGVI-4 regression test. If a per-diff test-scoping scheme is wanted instead, that's larger and needs its own design (no clean "run only affected tests" mechanism exists; baseline-subtraction is rejected by RC-4).
