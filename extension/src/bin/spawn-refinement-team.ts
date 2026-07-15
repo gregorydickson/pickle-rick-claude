@@ -624,8 +624,7 @@ Do NOT defer the registration edit to a later "wiring" ticket — that strands e
 
 /**
  * Assemble the shared analyst prompt-guidance sections in their canonical order.
- * Extracted from buildWorkerPrompt to keep that function under the line ceiling;
- * the `\n` join reproduces the original inline template byte-for-byte.
+ * Extracted from buildWorkerPrompt to keep that function under the line ceiling.
  */
 function buildPromptGuidanceSections(): string {
   return [

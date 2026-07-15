@@ -416,8 +416,7 @@ When a ticket forward-creates a **registerable symbol** AND a **same-ticket** fi
 Do NOT defer the registration edit to a later "wiring" ticket — that strands every intermediate per-symbol ticket behind the scope fence. Do NOT loosen the fence; co-scope at decomposition time instead.`;
 /**
  * Assemble the shared analyst prompt-guidance sections in their canonical order.
- * Extracted from buildWorkerPrompt to keep that function under the line ceiling;
- * the `\n` join reproduces the original inline template byte-for-byte.
+ * Extracted from buildWorkerPrompt to keep that function under the line ceiling.
  */
 function buildPromptGuidanceSections() {
     return [
