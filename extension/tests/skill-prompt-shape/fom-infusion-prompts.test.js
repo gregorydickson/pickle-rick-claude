@@ -5,6 +5,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FOM_EVIDENCE_RULES, FOM_HONEST_REPORTING_RULES } from '../../services/fom-blocks.js';
+// Data-flow integrity (ticket a4038d7c): the two builders whose assembled OUTPUT can be exercised
+// directly. Asserting the block is in the returned prompt string — not merely imported/declared —
+// is what proves the constant actually reaches the LLM (the "carries but never splices" class).
+import { buildJudgePrompt } from '../../bin/microverse-runner.js';
+import { buildWorkerPrompt } from '../../bin/spawn-refinement-team.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -315,3 +320,56 @@ test('fom-infusion sweep: a synthetic unclassified surface makes the sweep throw
   const excludedPaths = new Set(EXCLUDED.map((e) => e.path));
   assert.throws(() => assertSweepCoversDiscovered(discovered, familyPaths, excludedPaths));
 });
+
+// --- ticket a4038d7c: OUTPUT-splice — the block reaches the ASSEMBLED prompt, not merely the file.
+// The tests above prove each surface CARRIES its block (md sentinel / ts import / workflow const).
+// They do NOT prove the builder SPLICES the imported constant into the string it returns — a
+// regression that keeps the import but drops the `parts.push(...)`/`${...}` splice ships green.
+// These exercise the actual constant → builder → prompt-string flow the ticket calls CRITICAL. ---
+
+// The two builders whose assembled output is directly callable get real output assertions.
+test('fom-infusion output-splice: buildJudgePrompt output carries FOM_HONEST_REPORTING_RULES', () => {
+  const prompt = buildJudgePrompt('fix bugs', '/tmp');
+  assert.ok(
+    prompt.includes(FOM_HONEST_REPORTING_RULES),
+    'buildJudgePrompt must splice FOM_HONEST_REPORTING_RULES into the returned judge prompt, not merely import it',
+  );
+});
+
+for (const role of ['requirements', 'codebase', 'risk-scope']) {
+  test(`fom-infusion output-splice: buildWorkerPrompt(${role}) output carries BOTH FOM blocks`, () => {
+    const prompt = buildWorkerPrompt(role, '# PRD', '/tmp/out.md', '/tmp/wd', 1);
+    assert.ok(
+      prompt.includes(FOM_EVIDENCE_RULES),
+      `buildWorkerPrompt(${role}) must splice FOM_EVIDENCE_RULES into the returned analyst prompt`,
+    );
+    assert.ok(
+      prompt.includes(FOM_HONEST_REPORTING_RULES),
+      `buildWorkerPrompt(${role}) must splice FOM_HONEST_REPORTING_RULES into the returned analyst prompt`,
+    );
+  });
+}
+
+// The remaining builders cannot be imported and called in isolation without breaching the scope
+// fence (workflow twins are Workflow-runtime meta-scripts with top-level await + the `agent()`
+// global; spawn-gate-remediator's buildBriefContent is unexported and exporting it would widen the
+// bin/ Module Export Catalog outside MODIFIED_FILES). Guard their splice TEXTUALLY: assert each
+// imported/declared const is actually consumed in a splice position, not merely declared.
+const SPLICE_GUARDS = [
+  // Workflow twins splice via `${BLOCK}` interpolation in a returned template literal.
+  { path: '.claude/workflows/refine-analyze.js', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], splice: (b) => new RegExp(`\\$\\{\\s*${b}\\s*\\}`) },
+  { path: '.claude/workflows/council-round.js', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], splice: (b) => new RegExp(`\\$\\{\\s*${b}\\s*\\}`) },
+  // The remediator brief splices via `sections.push(BLOCK ...)`.
+  { path: 'extension/src/bin/spawn-gate-remediator.ts', blocks: ['FOM_EVIDENCE_RULES', 'FOM_HONEST_REPORTING_RULES'], splice: (b) => new RegExp(`\\.push\\(\\s*${b}\\b`) },
+];
+for (const entry of SPLICE_GUARDS) {
+  test(`fom-infusion output-splice: ${entry.path} consumes (not merely declares) its FOM block(s)`, () => {
+    const content = fs.readFileSync(path.join(repoRoot, entry.path), 'utf8');
+    for (const blockKey of entry.blocks) {
+      assert.ok(
+        entry.splice(blockKey).test(content),
+        `${entry.path} imports/declares ${blockKey} but never splices it into an assembled prompt`,
+      );
+    }
+  });
+}
