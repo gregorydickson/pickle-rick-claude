@@ -256,6 +256,33 @@ for (const entry of tsFamilyEntries) {
   });
 }
 
+// --- AC-FOMC-3: no deployed prompt surface carries an unresolvable FOM citation. The PRD names this
+// the regression pin that keeps the door shut (a `(FOM §N)` / "see the operating manual" citation that
+// resolves to nothing is the failure mode the whole bundle exists to eliminate). It was green at HEAD
+// but pinned by NOTHING in the suite — only a manual grep. This test opens every family + excluded +
+// discovered surface (the same space the sweep governs) and asserts the citation never appears. ---
+const UNRESOLVABLE_FOM_CITATION_RE = /FOM §|see the operating manual|FABLE_OPERATING_MANUAL/i;
+test('fom-infusion AC-FOMC-3: no deployed prompt surface carries an unresolvable FOM citation', () => {
+  const surfaces = new Set([
+    ...FAMILY.map((e) => e.path),
+    ...EXCLUDED.map((e) => e.path),
+    ...discoverPromptSurfaces(),
+  ]);
+  const offenders = [];
+  for (const rel of surfaces) {
+    const abs = path.join(repoRoot, rel);
+    if (!fs.existsSync(abs)) continue;
+    const content = fs.readFileSync(abs, 'utf8');
+    const m = UNRESOLVABLE_FOM_CITATION_RE.exec(content);
+    if (m) offenders.push(`${rel} (matched "${m[0]}")`);
+  }
+  assert.deepStrictEqual(
+    offenders,
+    [],
+    `deployed prompt surface(s) carry an unresolvable FOM citation: ${offenders.join(', ')}`,
+  );
+});
+
 // --- AC-FOMC-1b: discovery sweep over the five glob classes AC-FOMC-1b names ---
 function discoverPromptSurfaces() {
   const discovered = new Set();
