@@ -128,3 +128,41 @@ trap above). Both add resistance around a flaky input instead of fixing the inpu
 - [[R-PLGR]] — the pre-launch check never asks whether the tree is green, which is *why* the bundle inherited red.
 - [[project_codex_soak_worker_gate_not_enforced_revert]] — a prior instance of "the worker gate is not enforced →
   Done over red." **This is the same disease with a measured mechanism.**
+
+---
+
+## ⚠ Refinement Corrections + Routing (3 cycles × 3 analysts, session a1ea3e53; citations hand-verified 2026-07-14)
+
+The refinement materially reshaped this fix. Every cited line below was re-greped by hand and resolves exactly.
+
+**RC-1 — ROUTING: this is an R-PSRB self-modifying-recovery bundle → HAND-BUILD, not pipeline.** The fix touches
+`ticket-completion-evidence.ts:813` (`if (gate.verdict === 'green') return null` — the completion-evidence reader)
+and the Done-flip guard `guardCompletionCommitBeforeDone` (`mux-runner.ts:4726`). `ticket-completion-evidence.ts`
+is **explicitly on the R-PSRB salvage/completion-evidence list** in CLAUDE.md. The requirements analyst confirmed
+"every ticket touches the worker gate + Done-flip guard + verdict-writer contract → no ticket is `small`." The
+first-draft pre-flight call of "pipeline-safe" was **wrong** — corrected here.
+
+**RC-2 — AC-WGVI-1 (`not_run`) is INVALID as written; replace it.** A `not_run` verdict is **silently swallowed**:
+coerced to `absent` at the read-path (`mux-runner.ts:4579`, `return v === 'green' || v === 'red' ? v : 'absent'`)
+and refused at `ticket-completion-evidence.ts:813`. Its Done-flip behaviour is undefined and **one branch is a
+verified live deadlock** (all three analysts). It also **re-opens R-DOTR** (writer-side subtraction). Do NOT invent
+a new verdict token. **Subtractive replacement: reuse the existing `absent` state** — a gate that did not consult
+eslint+tsc for THIS ticket must not persist `green`; emit `absent`, which the existing recompute machinery already
+handles — avoiding the `:4579`/`:813` control-flow edits entirely.
+
+**RC-3 — the real root defect is writer/recompute PARITY, and the verdict has THREE independent dimensions.** The
+testable defect (requirements analyst, `AC-WGVI-P`): *the PERSISTED `worker_gate_verdict`'s test dimension must be
+scoped to the ticket's diff, not the whole repo.* The three inputs scope differently: **eslint** (`spawn-morty.ts:1387`)
+is **already diff-scoped** — leave it; **tsc** — per-ticket; **test:fast** — unscoped = today's unattributable red.
+
+**RC-4 — baseline-subtraction over `test:fast` is NOT recommended** (risk analyst, reversing its own cycle-2
+headline): it **doubles the flake surface** and its failure mode is **the exact deadlock** the PRD's Risks section
+warns about. Prefer scoping the persisted verdict's test dimension to the diff over subtracting a whole-repo baseline.
+
+**RC-5 — `schema_neutral: true` is FALSE.** The load-bearing sites are **control-flow lines** (3–7 per the codebase
+analyst), not type annotations. Re-label before building.
+
+**Net:** the fix is smaller AND safer than the PRD framed — reuse `absent` (no new token, no completion-evidence
+edit where avoidable), scope the persisted test dimension to the diff, keep eslint as-is, and prove the red+Done
+regression (AC-WGVI-4). But it sits on the R-PSRB path → **hand-build the load-bearing sites**, deploy via install.sh.
+Refinement analyses preserved at `~/.local/share/pickle-rick/sessions/2026-07-14-a1ea3e53/refinement/`.
