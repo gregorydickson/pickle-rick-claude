@@ -2,13 +2,23 @@
 title: "B-TRGP (re-scoped ②-tight) — Subtract the off-repo fake-green gate special-case"
 priority: P1
 r_codes: [B-TRGP]
-status: build-ready
+status: SUPERSEDED-DO-NOT-BUILD
 build_protocol: PIPELINE
 line: release/v2.1-beta
 composes: []
 ---
 
-# B-TRGP — Delete the off-repo fake-green gating (option ②-tight: subtract, don't add)
+> ## ⛔ CONCLUSION 2026-07-16 — DO NOT BUILD THIS PRD. B-TRGP is PROVEN NON-SUBTRACTIVE.
+> A 4-round `/pickle-refine-prd` dogfood (④ run-the-portable-gate → ③ unverified-state → ②-tight → ②-tight-bounded)
+> proved the off-repo fake green is **LOAD-BEARING**: `workerGateRefusal` (`ticket-completion-evidence.ts:812`)
+> proceeds ONLY on `verdict==='green'`, so removing the fabrication refuses every target-repo Done (bricks the
+> build); the fabrication lives at 7 sites incl. a durable persisted one (`persistRunnerAuthoredGreenVerdict:4988`);
+> and the honest fix is ADDITIVE + collides with the `bin/CLAUDE.md:80` trap-door. **Options: ① LEAVE
+> (recommended — the review/closer portable gate already verifies target repos) · ② full-remove (loses on-repo
+> fail-fast) · ③ additive honest fix.** The ②-tight body below is RETAINED as the design record; it is
+> superseded by this conclusion. See `MASTER_PLAN §B.2` + memory `project_btrgp_fakegreen_is_loadbearing_no_subtractive_fix`.
+
+# B-TRGP — Delete the off-repo fake-green gating (option ②-tight: subtract, don't add) [SUPERSEDED — see banner]
 
 **Thesis: the per-ticket worker gate is NOT APPLICABLE off a pickle-rick checkout — its commands are
 hardcoded to `extension/` (eslint `extension/src`, `tsc`, `npm run test:fast`). Today it fabricates a
