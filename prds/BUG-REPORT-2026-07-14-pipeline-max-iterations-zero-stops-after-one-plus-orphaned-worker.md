@@ -3,7 +3,9 @@
 **Filed:** 2026-07-14 · **Hit while:** running `/pickle-pipeline` for LOA-1763 (loanlight-api, 66-ticket bundle)
 **Component:** `extension/bin/pipeline-runner.js` (pickle phase relaunch loop) + the tmux pickle manager worker-spawn path
 **Severity:** HIGH — a documented "unlimited" launch form silently builds **one** ticket of N and reports success-shaped `Pipeline finished`.
-**Status:** CAPTURE-ONLY
+**Status:** CAPTURE-ONLY · **⚠ ROOT-CAUSE CORRECTED 2026-07-16 (source trace) — see banner.**
+
+> **⚠ CORRECTION (2026-07-16, verified against `release/v2.1-beta` source).** Defect (1) below — *"`--max-iterations 0` means stop-after-one"* — **DOES NOT EXIST.** `max_iterations=0` is already treated as UNLIMITED at every loop-governing seam: the global cap `mux-runner.ts:9426` is `if (globalMaxIter > 0 && curIter >= globalMaxIter)` (0 skips the guard), and the hypothesized `iteration <= max_iterations` relaunch guard is not in the source. The `--max-iterations 0` / `--max-time 0` flags are NOT asymmetric. The real, single root cause is **defect (2)**: the tmux pickle manager (a `claude -p` agent) lets the harness background its worker, then exits `end_turn` while the worker is mid-Implement → the ticket is commit-less → `guardCompletionCommitBeforeDone` does a bare `return` (`mux-runner.ts:10462/10953/11028`) that **bypasses the exit-code map** (`:11306-11351`) → the recorded FAILURE exits with Node's default **code 0**, so pipeline-runner's graduation gate reads it as benign and reports `0/4`. Fix = (a) manager runs its worker synchronously before `end_turn` (the R-MWBG guard that already exists in the *jar* flow, ported to the *pickle-manager* path — pipeline-safe); (b) the guards set `exitReason` + `break` instead of bare `return` (**R-PSRB hand-build** — Done-flip/completion path). Re-filed as **R-MWMO** in MASTER_PLAN §B.1. Do NOT build a `max_iterations` fix.
 
 ## What happened
 
