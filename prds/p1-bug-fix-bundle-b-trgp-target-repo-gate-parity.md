@@ -38,7 +38,10 @@ genuinely simpler), unlike ③ (honest but net-additive) or ④ (a large paralle
 that became a defect at the build-other-repos pivot. B-CWGE (`c4291522`, 2026-06-28) deferred the off-repo
 green with a "NOT fail-closed" comment. Foundational debt.
 
-## The defect — five sites answering "is there an `extension/` dir?" with fabricated constants
+## The defect — a BOUNDED set of sites answering "is there an `extension/` dir?" with fabricated constants
+
+The refinement ran the exhaustive sweep the first draft did not (`grep -rn existsSync src | grep -i extension`
+→ 4 hits; `grep "join(.*'extension'"` → 42 triaged); the table is **stable at seven and can be closed**:
 
 | # | Site | `file:line` | Off-repo constant today |
 |---|---|---|---|
@@ -47,11 +50,21 @@ green with a "NOT fail-closed" comment. Foundational debt.
 | 3 | `extensionGreenGate` | `mux-runner.ts:4669-4672` | `'failing'` (contradicts #2) |
 | 4 | `commitGatePassingDeliverableOnExitPath` | `mux-runner.ts:5153-5154` | `'no-extension-dir'` (declines) |
 | 5 | `runBetweenTicketFastGate` | `mux-runner.ts:670-671` | `null` (skipped) |
+| 6 | `recomputeAbsentWorkerGateVerdict` (recompute path) | `mux-runner.ts` | runs `tsc` over a missing `extension/` |
+| 7 | **`runArmedGate` → `persistRunnerAuthoredGreenVerdict`** | `mux-runner.ts:4988` (called `:1521`/`:5020`) | **PERSISTS `worker_gate_verdict:'green'` to ticket frontmatter** |
 
-Five hardcoded off-repo answers, two of them (#2, #3) mutually contradictory. R-CWGE's invariant ("Done
-requires a GREEN worker-gate verdict") is satisfied VACUOUSLY by #2 off-repo — the lie. Also note the
-`absent`→recompute path: `recomputeAbsentWorkerGateVerdict` runs `tsc` over `extensionDir` and must not fire
-where that dir is absent (analyst finding: `absent` is a live "recompute" sentinel).
+**⚠ #7 is the site that BREAKS a naive fix (verified).** On the recovery/armed-gate path, `runArmedGate`
+returns a fabricated `{ok:true}` off-repo (site #1's twin), and `commitAndContinueDoneFlip` calls
+`persistRunnerAuthoredGreenVerdict` which WRITES `green` into the ticket file. `resolveWorkerGateVerdict:4641`
+reads that persisted verdict FIRST (`if (persisted !== 'absent') return persisted`) — **before** the `:4647`
+`existsSync` branch. So deleting `:4647` alone leaves the off-repo fake green fully intact on the recovery
+path, now DURABLE ON DISK. The fix must gate the fabrication at its SOURCE (the gate functions #1/#7 and the
+persist), not at the read site. Also: `recovery-controller.ts:91` records `'committed gate-passing tree for
+<ticket>'` into persisted `state.recovery_attempts[]` off-repo — a fabricated CREDIT about a tree nothing
+examined (violates AC-2-3's "never credited to").
+
+Seven hardcoded off-repo answers, #2/#3 mutually contradictory, and #7 durably persisted. R-CWGE's invariant
+("Done requires a GREEN worker-gate verdict") is satisfied VACUOUSLY off-repo — the lie, at multiple sites.
 
 ## Workstreams
 
@@ -60,17 +73,24 @@ Introduce `isWorkerGateApplicable(workingDir): boolean` = `fs.existsSync(path.jo
 — naming the check that today lives inline at five sites. This is the ONE seam every site routes through
 (the R-AFCC-CALLER-ENUMERATION pattern), pinned by an audit so a future divergence fails the gate.
 
-### WS-2 — where the gate is not applicable, it DOES NOT GATE [SUBTRACT the fabrications]
-- `resolveWorkerGateVerdict` (#2): when not applicable, it is NOT consulted — `guardCompletionCommitBeforeDone`
-  drops the worker-gate conjunct entirely (Done proceeds on commit-evidence). Delete the `return {verdict:'green'}`.
-- `runWorkerGate` (#1): when not applicable, return a value the caller reads as "not gated" — NOT a fake pass
-  that downstream mistakes for verification.
-- Reconcile #3/#4/#5 to the SAME "not applicable → does not gate" semantics through `isWorkerGateApplicable`,
-  so the five constants collapse to one honest answer and the fail-open⇄fail-closed contradiction (#2 vs #3)
-  disappears. (Verify each site's consumers first — #3 `extensionGreenGate` feeds the R-CECB attribution
-  oracle; "not applicable" must be correct for that consumer too, not merely for the Done-flip.)
+### WS-2 — gate the fabrication at its SOURCE, so no fake green is produced OR persisted [SUBTRACT]
+The lie must die where it is MADE (the gate functions #1/#7), not only where it is read (#2) — else the
+recovery path persists it to disk and reads it back (verified). All routed through `isWorkerGateApplicable`:
+- `runWorkerGate` (#1) AND `runArmedGate` (#7): when not applicable, return a value the caller reads as
+  "not gated" — NEVER a fabricated `{ok:true}` pass.
+- `persistRunnerAuthoredGreenVerdict` (#7, `mux-runner.ts:4988`): MUST NOT write `worker_gate_verdict:'green'`
+  when the gate is not applicable — the highest-severity site (durable on-disk fake green). With #1/#7's
+  source fixed it is never called with a fabricated pass; belt-and-suspenders, gate the write too.
+- `resolveWorkerGateVerdict` (#2): delete the `return {verdict:'green'}` off-repo branch; when not applicable
+  the worker-gate conjunct is dropped and `guardCompletionCommitBeforeDone` proceeds on commit-evidence.
+- Reconcile #3 `extensionGreenGate` / #4 / #5 to the same "not applicable → does not gate" semantics, so the
+  seven constants collapse to one honest answer and the #2/#3 contradiction disappears. **Verify each site's
+  consumers first** — #3 feeds the R-CECB attribution oracle; "not applicable" must be correct for THAT
+  consumer too, not merely for the Done-flip.
+- `recovery-controller.ts:91`: do not record a `'gate-passing tree'` CREDIT into `state.recovery_attempts[]`
+  when no gate ran; reword to the truthful "committed tree (gate not applicable)" off-repo.
 
-### WS-3 — the recompute path is applicability-gated too [reuse the seam]
+### WS-3 — the recompute path is applicability-gated too (#6) [reuse the seam]
 `recomputeAbsentWorkerGateVerdict` must not run `tsc`/eslint over a non-existent `extension/`; gate it on
 `isWorkerGateApplicable`. When not applicable, an `absent` verdict stays "not gated," never a recompute that
 errors or a fall-through to fake green.
@@ -109,8 +129,10 @@ R-CWGE entry in `extension/CLAUDE.md`, `completion-authority-single-source.test.
 `integration/codex-worker-gate-fail-closed.test.js`, `bash scripts/audit-trap-door-enforcement.sh`.
 
 ## Acceptance Criteria (machine-checkable)
-- **AC-2-1** — `it("off a pickle-rick checkout (no extension/), the Done-flip does NOT consult a worker-gate verdict — no 'green' is fabricated at any of the five sites")`.
-- **AC-2-2** — `it("all five sites derive their applicability from the single isWorkerGateApplicable seam; no bare off-repo constant (ok:true / 'green' / 'failing' / null / 'no-extension-dir') survives")` — call-site audit.
+- **AC-2-1 (universal)** — `it("off a pickle-rick checkout (no extension/), NO worker-gate PASS is fabricated at ANY of the seven bounded sites — not a returned ok:true/'green', and not a PERSISTED worker_gate_verdict:'green' in ticket frontmatter")`. Property over the bounded set, not an enumerated five.
+- **AC-2-7 (the recovery path — the site that breaks a naive fix)** — `it("on the armed-gate/commit-and-continue recovery path off-repo, persistRunnerAuthoredGreenVerdict does NOT write green to frontmatter, so resolveWorkerGateVerdict:4641 cannot read back a fabricated verdict")`.
+- **AC-2-8** — `it("recovery-controller records no 'gate-passing tree' credit into state.recovery_attempts when the gate is not applicable")`.
+- **AC-2-2** — `it("all seven sites derive their applicability from the single isWorkerGateApplicable seam; no bare off-repo constant (ok:true / 'green' / 'failing' / null / 'no-extension-dir' / the persisted green) survives")` — call-site audit.
 - **AC-2-3** — `it("a Done-flip off-repo PROCEEDS on commit-evidence alone — it is never blocked by, and never credited to, the per-ticket worker gate")`.
 - **AC-2-4** — `it("recomputeAbsentWorkerGateVerdict does not run tsc/eslint when the worker gate is not applicable")`.
 - **AC-2-5** — `it("on a pickle-rick checkout (extension/ present) the native gate behavior — green/red and its Done-flip gating — is byte-identical to pre-fix")`.
