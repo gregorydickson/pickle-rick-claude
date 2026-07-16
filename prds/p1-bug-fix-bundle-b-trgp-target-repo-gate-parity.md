@@ -3,7 +3,7 @@ title: "B-TRGP — Target-Repo Gate Parity: make Done mean something on ANY repo
 priority: P1
 r_codes: [B-TRGP, R-TCVC]
 status: build-ready
-build_protocol: R-PSRB-HAND-BUILD
+build_protocol: PIPELINE
 line: release/v2.1-beta
 composes: []
 ---
@@ -132,12 +132,18 @@ bare recovery/salvage commit as SOLE Done evidence — detect the `R-ORSR-2`/`co
 is weighed against the additive AC-runner. **B-TRGP makes the gate real; it does not run per-ticket ACs —
 say so, don't let the thesis swallow R-ORSR-2.**
 
-## ⚠ R-PSRB — HAND-BUILD
+## Build protocol: `/pickle-pipeline` (PIPELINE-SAFE — dogfood, do NOT hand-build)
 
-Touches the salvage / completion-evidence / Done-flip path (`resolveWorkerGateVerdict` feeds
-`buildCompletionCtx`/`guardCompletionCommitBeforeDone`; `commitGatePassingDeliverableOnExitPath` is the
-salvage committer). The deployed pre-fix runtime applies this logic to the worker building the fix →
-**hand-build**, not a `/pickle-pipeline` dogfood. Build then `install.sh`-deploy incrementally.
+This touches `resolveWorkerGateVerdict` / `guardCompletionCommitBeforeDone` — the Done-flip path — so it
+LOOKS like an R-PSRB hand-build. It is not. **The R-PSRB test is "does the deployed BUGGY behavior bite the
+worker building the fix?" — not "does it touch mux-runner."** B-TRGP's bug is **off-repo only** (the
+`!fs.existsSync(<wd>/extension)` no-op branch). The pipeline builds B-TRGP with `working_dir` =
+pickle-rick-claude, which **HAS** `extension/`, so the deployed runtime takes the ON-repo native-gate path
+for every build worker — the changed off-repo branch is **never exercised** during the build. AC-TRGP-4
+pins on-repo behavior byte-identical, so WS-3's sibling reconciliation doesn't perturb the build worker
+either. ⇒ **fully pipeline-safe; launch via `/pickle-pipeline`.** (Precedent: B-RASO beta.43 shipped a
+salvage-path fix via an attended pipeline for the same "the deployed bug never fires on the build worker"
+reason.) Per operator directive 2026-07-16: **NOTHING is hand-built — always run a pipeline.**
 
 **Trap-doors / tests to update in LOCKSTEP** (changing the off-repo verdict shape will red these until
 synced): `extension/tests/completion-authority-single-source.test.js`, the R-CWGE trap-door in
