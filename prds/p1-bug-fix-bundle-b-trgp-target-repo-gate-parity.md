@@ -1,5 +1,5 @@
 ---
-title: "B-TRGP (re-scoped ③) — Honest off-repo worker-gate verdict: stop fabricating green"
+title: "B-TRGP (re-scoped ②-tight) — Subtract the off-repo fake-green gate special-case"
 priority: P1
 r_codes: [B-TRGP]
 status: build-ready
@@ -8,119 +8,120 @@ line: release/v2.1-beta
 composes: []
 ---
 
-# B-TRGP — Honest off-repo worker-gate verdict (option ③: stop the lie, don't build the gate)
+# B-TRGP — Delete the off-repo fake-green gating (option ②-tight: subtract, don't add)
 
-**Thesis: the per-ticket worker gate cannot verify a non-pickle-rick repo — its commands are hardcoded to
-`extension/` (eslint `extension/src`, `tsc`, `npm run test:fast`). So off-repo it must return an honest
-`unverified` verdict, NEVER a fabricated `green`. Done still PROCEEDS on `unverified` (target-repo builds
-must not brick), but is honestly labeled; the portable review/closer gate (`runGate`/`detectProjectType`),
-which ALREADY verifies target repos, remains the verification authority.**
+**Thesis: the per-ticket worker gate is NOT APPLICABLE off a pickle-rick checkout — its commands are
+hardcoded to `extension/` (eslint `extension/src`, `tsc`, `npm run test:fast`). Today it fabricates a
+`green` verdict there and every Done-flip trusts the lie. SUBTRACT the fabrication: name applicability once,
+and where the gate is not applicable, the worker-gate verdict simply DOES NOT GATE the Done-flip — no fake
+green, no new state. Off-repo Done rests on commit-evidence; the portable review/closer gate
+(`runGate`/`detectProjectType`), which already verifies target repos, is the verification authority.**
 
-## Why ③, not ④ — the re-scope decision (2026-07-16, operator)
+This is the subtractive answer, chosen over ③ (add an `unverified` state) and ④ (run the portable gate
+per-ticket). It removes the lie by removing the mechanism that tells it, and it **collapses five divergent
+off-repo constants onto ONE applicability predicate** — it moves both operator needles (less brittleness,
+genuinely simpler), unlike ③ (honest but net-additive) or ④ (a large parallel-verification build).
 
-A 3-analyst × 3-cycle refinement of the original ④ scope ("route the per-ticket gate through the portable
-`runGate`") mapped it, with independent corroboration, as a **large completion-authority-entangled build**:
-the `runGate` call doesn't compile without a `scope` decision; the portable gate is repo-scoped where the
-native gate is diff-scoped (judges the worker on untouched packages); the 600s cumulative cap + timeout
-paths red healthy code on the loanlight-api fixture; and the verdict adapter **cannot be written against the
-current `GateResult`** (`emptyGateResult` hardcodes green; skip reasons escape only via a side-channel
-`emit`). Worst: ④ **duplicates** verification the review/closer layer already does repo-agnostically.
+## Why ②-tight, not ③ / ④ (decision trail, 2026-07-16)
 
-**Operator ruling: subtract the LIE (③), do not build the parallel gate (④).** The repo-agnostic
-verification already exists downstream — the per-ticket gate's only job off-repo is to stop *claiming it
-verified when it didn't*.
+- **④ (run `runGate` per-ticket) — REJECTED.** A 3×3 refinement mapped it as a large
+  completion-authority-entangled build (scope/since decision, repo-vs-diff scoping, 600s-cap + timeout →
+  red on healthy code, a verdict adapter that cannot be written against the current `GateResult`) that
+  DUPLICATES the review/closer verification.
+- **③ (return `unverified`) — REJECTED as net-additive.** It removes the lie but ADDS a third verdict state,
+  persistence widening, a Done-flip branch, and an event. Honest, but not simplification.
+- **②-tight — CHOSEN.** Delete the fake-green special-case; make the worker-gate conjunct CONDITIONAL on
+  applicability. No new state, no event, no portable-gate machinery. Subtraction.
 
-**Born-in context (git-verified):** the off-repo no-op has existed since the gate's FIRST commit
-(`4e2e8bf8`, 2026-05-06 — `if (!fs.existsSync(extensionDir)) return { ok: true }`), a *correct*
-self-hosting-era assumption (the gate lints/tests pickle-rick's own `extension/`) that became a defect at
-the "build other repos" pivot. B-CWGE (`c4291522`, 2026-06-28) — the fix that made the Done-flip
-fail-closed — consciously *deferred* the off-repo green with a "NOT fail-closed" comment rather than
-closing it. This is foundational debt, not a regression.
+**Born-in, not a regression (git-verified):** the off-repo no-op is in the gate's FIRST commit (`4e2e8bf8`,
+2026-05-06 — `if (!fs.existsSync(extensionDir)) return { ok: true }`), a correct self-hosting-era assumption
+that became a defect at the build-other-repos pivot. B-CWGE (`c4291522`, 2026-06-28) deferred the off-repo
+green with a "NOT fail-closed" comment. Foundational debt.
 
-## The defect
+## The defect — five sites answering "is there an `extension/` dir?" with fabricated constants
 
-- `runWorkerGate` (`spawn-morty.ts:1538-1553`) — `if (!fs.existsSync(<wd>/extension)) return { ok: true }`,
-  verifying nothing off-repo.
-- `resolveWorkerGateVerdict` (`mux-runner.ts:4643-4647`) — the Done-flip authority returns `verdict:'green'`
-  off-repo (own comment: "NOT fail-closed").
-- **R-CWGE's trap-door invariant ("Done requires a GREEN worker-gate verdict") is satisfied VACUOUSLY off-repo**
-  — the lie. All 25 loanlight-api sessions stamped Done on a green verdict that verified nothing.
+| # | Site | `file:line` | Off-repo constant today |
+|---|---|---|---|
+| 1 | `runWorkerGate` | `spawn-morty.ts:1538-1553` | `{ok:true}` (fake pass) |
+| 2 | `resolveWorkerGateVerdict` (Done-flip authority) | `mux-runner.ts:4643-4647` | `'green'` (fake pass) |
+| 3 | `extensionGreenGate` | `mux-runner.ts:4669-4672` | `'failing'` (contradicts #2) |
+| 4 | `commitGatePassingDeliverableOnExitPath` | `mux-runner.ts:5153-5154` | `'no-extension-dir'` (declines) |
+| 5 | `runBetweenTicketFastGate` | `mux-runner.ts:670-671` | `null` (skipped) |
+
+Five hardcoded off-repo answers, two of them (#2, #3) mutually contradictory. R-CWGE's invariant ("Done
+requires a GREEN worker-gate verdict") is satisfied VACUOUSLY by #2 off-repo — the lie. Also note the
+`absent`→recompute path: `recomputeAbsentWorkerGateVerdict` runs `tsc` over `extensionDir` and must not fire
+where that dir is absent (analyst finding: `absent` is a live "recompute" sentinel).
 
 ## Workstreams
 
-### WS-1 — off-repo verdict is `unverified`, not fabricated green [SUBTRACTS the lie]
-- `runWorkerGate` off-repo early return stops claiming `ok:true`; it returns a signal the verdict layer maps
-  to `unverified` (it still does not RUN anything — it honestly reports it cannot verify this repo).
-- `resolveWorkerGateVerdict` off-repo path returns `unverified`, not `green`.
-- **The on-repo path (`extension/` present) is UNCHANGED** — the native eslint/tsc/test:fast gate still runs
-  and still yields green/red. (Pinned byte-identical by AC-3-4.)
+### WS-1 — one applicability predicate [the single seam]
+Introduce `isWorkerGateApplicable(workingDir): boolean` = `fs.existsSync(path.join(workingDir, 'extension'))`
+— naming the check that today lives inline at five sites. This is the ONE seam every site routes through
+(the R-AFCC-CALLER-ENUMERATION pattern), pinned by an audit so a future divergence fails the gate.
 
-### WS-2 — tri-state persistence with a DISTINCT `unverified` token (NOT the `absent` sentinel) [honesty plumbing]
-- `persistWorkerGateVerdict` (`spawn-morty.ts:1479`) is typed `'green'|'red'`; widen to include
-  `'unverified'`. ⚠ **Do NOT reuse `absent`** — `readWorkerGateVerdict` (`mux-runner.ts:4579`) already uses
-  `absent` as a control-flow SENTINEL meaning "no data → recompute" (analyst finding, independently
-  confirmed 3 cycles). A distinct `unverified` token so a persisted `unverified` is NOT re-read as
-  "recompute" and does NOT fall through to the hardcoded off-repo green.
-- Round-trip `unverified` through `readWorkerGateVerdict` / `resolveWorkerGateVerdict`.
+### WS-2 — where the gate is not applicable, it DOES NOT GATE [SUBTRACT the fabrications]
+- `resolveWorkerGateVerdict` (#2): when not applicable, it is NOT consulted — `guardCompletionCommitBeforeDone`
+  drops the worker-gate conjunct entirely (Done proceeds on commit-evidence). Delete the `return {verdict:'green'}`.
+- `runWorkerGate` (#1): when not applicable, return a value the caller reads as "not gated" — NOT a fake pass
+  that downstream mistakes for verification.
+- Reconcile #3/#4/#5 to the SAME "not applicable → does not gate" semantics through `isWorkerGateApplicable`,
+  so the five constants collapse to one honest answer and the fail-open⇄fail-closed contradiction (#2 vs #3)
+  disappears. (Verify each site's consumers first — #3 `extensionGreenGate` feeds the R-CECB attribution
+  oracle; "not applicable" must be correct for that consumer too, not merely for the Done-flip.)
 
-### WS-3 — Done-flip contract: `unverified` PROCEEDS (don't brick) but is honestly recorded [redefine the invariant]
-- `guardCompletionCommitBeforeDone`: on `unverified`, ALLOW the Done-flip (a target-repo build MUST be able
-  to complete) but record it and emit a `worker_gate_unverified` observability event carrying the repo +
-  ticket. It is NOT fail-closed (that bricks every target-repo Done) and NOT counted as green.
-- **Redefine the R-CWGE invariant honestly:** "a Done-flip requires a GREEN verdict on pickle-rick-claude;
-  on a repo without `extension/`, `unverified` is permitted, and the portable review/closer gate is the
-  verification authority." Update the R-CWGE trap-door text + its tests in lockstep.
+### WS-3 — the recompute path is applicability-gated too [reuse the seam]
+`recomputeAbsentWorkerGateVerdict` must not run `tsc`/eslint over a non-existent `extension/`; gate it on
+`isWorkerGateApplicable`. When not applicable, an `absent` verdict stays "not gated," never a recompute that
+errors or a fall-through to fake green.
 
-### WS-4 — name the portable review/closer gate as the off-repo verification authority [pure reuse / doc + pin]
-- The review phases (citadel/anatomy/szechuan) ALREADY run `runGate`/`detectProjectType` on the target repo.
-  Make the handoff explicit (doc + one pin): off-repo verification lives THERE, not in the per-ticket gate.
-  No new verification machinery — the honest label from WS-1/2/3 is the whole contribution.
+### WS-4 — redefine the R-CWGE invariant honestly [doc + lockstep tests]
+"A Done-flip requires a GREEN worker-gate verdict WHEN the worker gate is applicable (a pickle-rick
+checkout with `extension/`); off a pickle-rick checkout the per-ticket worker gate does not apply and does
+not gate — the portable review/closer gate is the verification authority." Update the R-CWGE trap-door text
++ `completion-authority-single-source.test.js` + `codex-worker-gate-fail-closed.test.js` in lockstep.
 
 ## Simplification Review (subtract-before-add — REQUIRED, per WS)
 
-- **WS-1.** (1) Necessary — it removes a fabricated verdict. (2) Reuse — edits the existing early return; adds
-  nothing. (3) It SUBTRACTS the fake-green LIE (the brittle thing). (4) Subtraction: the `ok:true` claim is
-  gone. ✓ ideal.
-- **WS-2.** (1) Necessary to carry an honest third state. (2) Reuse the existing persist/read seam; add ONE
-  token. (3) It subtracts AMBIGUITY (stops overloading `absent`). (4) Net: +1 enum member, honesty plumbing —
-  NOT a parallel verification system.
-- **WS-3.** (1) Necessary — the invariant must match reality. (2) Reuse `guardCompletionCommitBeforeDone`. (3)
-  Redefines an invariant to be honest rather than adding a guard. (4) +1 observability event.
-- **WS-4.** Pure reuse — the portable gate already exists and runs.
-- **Contrast ④ (REJECTED):** running the portable gate per-ticket needs a `scope`/`since` decision +
-  diff-scoping + the 600s-cap fix + timeout classification + a bun row + a `GateResult`→verdict adapter that
-  cannot be written today — a large parallel verification system duplicating the review layer. **③ builds
-  none of it.**
+- **WS-1.** (1) Necessary — one seam. (2) Reuse — it NAMES an existing inline check, adds no new logic. (3)
+  Collapses five divergent inline checks. (4) Subtraction of duplication. ✓
+- **WS-2.** (1) Necessary — remove the fabrications. (2) Reuse the guard/verdict seam. (3) **Directly
+  subtracts** the fake-green fail-open AND the #2/#3 contradiction. (4) Five hardcoded off-repo constants →
+  ONE "not applicable → does not gate." Net **−branches, −contradiction, −lie**. ✓ ideal.
+- **WS-3.** (1) Necessary — the recompute path must respect applicability. (2) Reuse the WS-1 predicate. (3)
+  Subtracts an off-repo error/fall-through path. (4) −1 latent failure mode.
+- **WS-4.** Doc + honest invariant; no new mechanism.
+- **No new verdict state, no persisted field, no event, no portable-gate call.** This is the version that
+  reduces brittleness (kills the lie + the contradiction) AND simplifies (five constants → one predicate).
 
 ## Explicitly NOT in scope
-- Running the portable gate per-ticket off-repo (④ / B-TRGP-full — deferred, likely rejected: duplicates the
-  review/closer verification).
-- diff-scoping parity, the 600s cumulative-cap fix, timeout→verdict classification, the bun
-  `gate-commands.json` row, the `GateResult`→verdict adapter — ALL ④ concerns, none needed for ③.
+- ④ (run the portable gate per-ticket) — rejected; duplicates review/closer verification.
+- ③ (`unverified` state + event) — rejected as net-additive.
 - **[[R-ORSR-2]]** (own PRD) — re-running a ticket's own `acceptance_test` at Done needs a NEW AC-execution
-  helper (none exists); additive, distinct mechanism.
+  helper (none exists); additive, distinct.
 
 ## Build protocol: `/pickle-pipeline` (PIPELINE-SAFE — no hand-build)
 The change only affects the OFF-repo branch. The pipeline builds B-TRGP with `working_dir` =
-pickle-rick-claude (which HAS `extension/`), so every build worker's deployed runtime takes the UNCHANGED
-on-repo path — the changed off-repo branch never fires on the build worker. Per operator directive
-(2026-07-16): NOTHING hand-built — always `/pickle-pipeline`. **Lockstep trap-doors/tests:** the R-CWGE
-entry in `extension/CLAUDE.md`, `extension/tests/completion-authority-single-source.test.js`,
-`extension/tests/integration/codex-worker-gate-fail-closed.test.js`, `bash scripts/audit-trap-door-enforcement.sh`.
+pickle-rick-claude (HAS `extension/`), so every build worker's deployed runtime takes the UNCHANGED,
+applicable, on-repo path — the deleted off-repo branch never fires on the build worker. Per operator
+directive (2026-07-16): NOTHING hand-built — always `/pickle-pipeline`. **Lockstep trap-doors/tests:** the
+R-CWGE entry in `extension/CLAUDE.md`, `completion-authority-single-source.test.js`,
+`integration/codex-worker-gate-fail-closed.test.js`, `bash scripts/audit-trap-door-enforcement.sh`.
 
 ## Acceptance Criteria (machine-checkable)
-- **AC-3-1** — `it("off-repo (no extension/ dir), runWorkerGate/resolveWorkerGateVerdict resolve 'unverified', never 'green'")`.
-- **AC-3-2** — `it("a persisted 'unverified' round-trips DISTINCTLY from 'absent' — it is not re-read as recompute and does not fall through to the hardcoded off-repo green")`.
-- **AC-3-3** — `it("a Done-flip on an 'unverified' verdict PROCEEDS (target build completes) AND emits worker_gate_unverified; it is never recorded as green")`.
-- **AC-3-4** — `it("on-repo (extension/ present), the native gate behavior is byte-identical to pre-fix — green/red unchanged")`.
-- **AC-3-5** — `it("the R-CWGE trap-door + tests encode the honest contract: green required on pickle-rick-claude, unverified permitted off-repo")`.
+- **AC-2-1** — `it("off a pickle-rick checkout (no extension/), the Done-flip does NOT consult a worker-gate verdict — no 'green' is fabricated at any of the five sites")`.
+- **AC-2-2** — `it("all five sites derive their applicability from the single isWorkerGateApplicable seam; no bare off-repo constant (ok:true / 'green' / 'failing' / null / 'no-extension-dir') survives")` — call-site audit.
+- **AC-2-3** — `it("a Done-flip off-repo PROCEEDS on commit-evidence alone — it is never blocked by, and never credited to, the per-ticket worker gate")`.
+- **AC-2-4** — `it("recomputeAbsentWorkerGateVerdict does not run tsc/eslint when the worker gate is not applicable")`.
+- **AC-2-5** — `it("on a pickle-rick checkout (extension/ present) the native gate behavior — green/red and its Done-flip gating — is byte-identical to pre-fix")`.
+- **AC-2-6** — `it("the R-CWGE trap-door + tests encode the applicability-scoped invariant")`.
 
 ## Risks
-- **`absent`-sentinel collision (the one surviving analyst P0)** — use a DISTINCT `unverified` token; pin
-  that a persisted `unverified` never routes to recompute or green (AC-3-2).
-- **`unverified` must NOT block Done** — else every target-repo build bricks; AC-3-3 pins proceed.
-- **Completion-authority trap-doors (R-CWGE / B-1SEAM)** — update in lockstep; verify the full release gate
-  (this is the most-pinned code in the repo).
-- **Honest, not verifying** — ③ makes the per-ticket state truthful; it does NOT verify target-repo diffs
-  per-ticket (by design). Real target-repo verification stays at the review/closer portable gate (WS-4).
-  If per-ticket fail-fast on target repos later proves load-bearing, that is a SEPARATE ④ decision.
+- **#3 `extensionGreenGate` has a non-Done-flip consumer (R-CECB attribution)** — "not applicable" must be
+  correct for THAT consumer, not only the Done-flip. WS-2 requires reading each site's consumers first.
+- **Predicate correctness** — `isWorkerGateApplicable` must be TRUE on every real pickle-rick checkout, or
+  the on-repo gate silently stops gating (a regression the wrong way). AC-2-5 pins on-repo byte-identity.
+- **Off-repo Done is now un-gated by the per-ticket gate (by design)** — same functional behavior as today
+  (Done proceeds) minus the false green; real target-repo verification lives at the review/closer portable
+  gate. If per-ticket fail-fast on target repos later proves load-bearing, that is a separate ④ decision.
+- **Completion-authority trap-doors (R-CWGE / B-1SEAM)** — update in lockstep; verify the full release gate.
