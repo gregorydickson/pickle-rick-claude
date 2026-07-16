@@ -196,6 +196,7 @@ const WORKER_ROLES = [
     { id: 'codebase' },
     { id: 'risk-scope' },
 ];
+const READINESS_GATE_SUBPROCESS_TIMEOUT_MS = 60_000;
 export function runReadinessGate(sessionDir, workingDir, manifestPath) {
     const binPath = path.join(getExtensionRoot(), 'extension', 'bin', 'check-readiness.js');
     if (!fs.existsSync(binPath))
@@ -211,6 +212,7 @@ export function runReadinessGate(sessionDir, workingDir, manifestPath) {
         cwd: workingDir,
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: READINESS_GATE_SUBPROCESS_TIMEOUT_MS,
     });
     if (result.stdout)
         process.stdout.write(result.stdout);
@@ -292,23 +294,99 @@ export function emitStaleAnchorWarnings(warnings) {
         process.stderr.write(`[pickle-rick] stale-anchor ${citation.raw} (PRD line ${citation.sourceLine}): ${warning.detail}\n`);
     }
 }
-// Parses analyst output for backtick file paths, checks each via git ls-files,
-// and emits path_not_verified breadcrumbs for unclaimed non-existent paths.
-// Section I will land these in refinement_manifest.json.ticket_quality_warnings[].
-export function checkAnalystOutputPaths(content, workingDir) {
-    const warnings = [];
-    const backtickPathRe = /`([a-zA-Z][a-zA-Z0-9/_.-]*\/[a-zA-Z0-9/_.-]+)`/g;
-    let match;
-    while ((match = backtickPathRe.exec(content)) !== null) {
-        const citedPath = match[1];
-        const result = spawnSync('git', ['ls-files', citedPath], {
+// Same extension allowlist as CITATION_RE (PRD anchor citations) — a
+// backticked token is a citation only when it carries one of these
+// extensions, optionally suffixed `:<line>`. No slash is required: bare
+// basenames (the 81% of real citations the old slash-mandatory regex never
+// saw) are citations too.
+const CITATION_FILE_EXTENSIONS = 'ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|sh|py|css|scss|html';
+const BACKTICK_CITATION_RE = new RegExp(`\`((?:[\\w.-]+/)*[\\w.-]+\\.(?:${CITATION_FILE_EXTENSIONS}))(?::(\\d+))?\``, 'g');
+// Text immediately around a phantom citation that reads as a PROPOSAL to
+// create the file, not a claim that it already exists — distinguishes a
+// fabrication from a forward-created plan (R-RAFC's only "suspicious" path
+// was, in fact, exactly this).
+const FORWARD_CREATE_INTENT_RE = /\brename[sd]?\b[^`]{0,40}\bto\b|→|\bcreat(?:e|es|ed|ing)\b|\bforward[- ]creat|\bpropos(?:e|es|ed|ing)\b|\bnew file\b|\bscaffold(?:s|ed|ing)?\b/i;
+const FORWARD_CREATE_CONTEXT_BEFORE = 200;
+const FORWARD_CREATE_CONTEXT_AFTER = 40;
+function looksForwardCreated(content, matchStart, matchEnd) {
+    const before = content.slice(Math.max(0, matchStart - FORWARD_CREATE_CONTEXT_BEFORE), matchStart);
+    const after = content.slice(matchEnd, Math.min(content.length, matchEnd + FORWARD_CREATE_CONTEXT_AFTER));
+    return FORWARD_CREATE_INTENT_RE.test(before) || FORWARD_CREATE_INTENT_RE.test(after);
+}
+// R-APV-8/AC-FOMC-14: git ls-files is spawned once per unique (workingDir,
+// token) pair for the life of the process, never re-spawned for a repeated
+// citation.
+const GIT_LS_FILES_SUFFIX_TIMEOUT_MS = 30_000;
+const gitLsFilesSuffixCache = new Map();
+export function __resetGitLsFilesSuffixCacheForTests() {
+    gitLsFilesSuffixCache.clear();
+}
+// Suffix-based resolution: a citation resolves if ANY tracked file ends with
+// it. This deletes the root-anchoring assumption on purpose — the checker
+// runs inside the shared refinement runtime against whichever repo is being
+// refined (octy, loanlight-api, ...), so a hardcoded `extension/`-relative
+// fallback would be a repo-specific defect baked into a repo-agnostic core.
+function resolveTrackedSuffixMatches(workingDir, token) {
+    const cacheKey = `${workingDir}\0${token}`;
+    const cached = gitLsFilesSuffixCache.get(cacheKey);
+    if (cached !== undefined)
+        return cached;
+    let matches = [];
+    try {
+        const result = spawnSync('git', ['ls-files', '--', `*${token}`], {
             cwd: workingDir,
             encoding: 'utf-8',
             stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: GIT_LS_FILES_SUFFIX_TIMEOUT_MS,
         });
-        if (result.status !== 0 || result.stdout.trim() === '') {
-            warnings.push({ type: 'path_not_verified', path: citedPath });
-            process.stderr.write(`[pickle-rick] path_not_verified: ${citedPath}\n`);
+        if (result.status === 0 && typeof result.stdout === 'string') {
+            matches = result.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+        }
+    }
+    catch {
+        matches = [];
+    }
+    gitLsFilesSuffixCache.set(cacheKey, matches);
+    return matches;
+}
+// Parses analyst output for backticked file citations, resolves each via a
+// suffix-based git ls-files match, and emits a specific defect_class per
+// unresolved/ambiguous/out-of-range citation. Section I lands these in
+// refinement_manifest.json.ticket_quality_warnings[]. ADVISORY ONLY: never
+// throws, never blocks — a git failure just yields a path_not_found warning.
+export function checkAnalystOutputPaths(content, workingDir) {
+    const warnings = [];
+    let match;
+    BACKTICK_CITATION_RE.lastIndex = 0;
+    while ((match = BACKTICK_CITATION_RE.exec(content)) !== null) {
+        const citedPath = match[1];
+        const citedLine = match[2] !== undefined ? Number(match[2]) : undefined;
+        const matches = resolveTrackedSuffixMatches(workingDir, citedPath);
+        if (matches.length > 1) {
+            warnings.push({ defect_class: 'ambiguous_citation', path: citedPath, line: citedLine });
+            process.stderr.write(`[pickle-rick] ambiguous_citation: ${citedPath} (${matches.length} matches)\n`);
+            continue;
+        }
+        if (matches.length === 0) {
+            const defectClass = looksForwardCreated(content, match.index, match.index + match[0].length)
+                ? 'not_tracked_forward_created'
+                : 'path_not_found';
+            warnings.push({ defect_class: defectClass, path: citedPath, line: citedLine });
+            process.stderr.write(`[pickle-rick] ${defectClass}: ${citedPath}\n`);
+            continue;
+        }
+        if (citedLine !== undefined) {
+            try {
+                const fileContent = fs.readFileSync(path.join(workingDir, matches[0]), 'utf-8');
+                const lineCount = fileContent === '' ? 0 : fileContent.split(/\r?\n/).length;
+                if (citedLine > lineCount) {
+                    warnings.push({ defect_class: 'line_out_of_range', path: citedPath, line: citedLine });
+                    process.stderr.write(`[pickle-rick] line_out_of_range: ${citedPath}:${citedLine} exceeds ${lineCount}\n`);
+                }
+            }
+            catch {
+                // best-effort: unreadable resolved file — advisory checker never throws
+            }
         }
     }
     return warnings;
@@ -1824,6 +1902,23 @@ function readCrossDocDriftWarnings(sessionDir) {
  * path so refinement can re-run with corrective guidance instead of halting
  * downstream.
  */
+// The per-cycle archive is a byte copy of the canonical file taken right
+// after that cycle ran (archiveCycleResults); the canonical file's content
+// belongs to the highest archived cycle for that role, or cycle 1 when
+// cycles_requested <= 1 (no archives are ever written).
+function resolveAnalystCycleFromEntries(entries, role) {
+    const cycleRe = new RegExp(`^analysis_${role}_c(\\d+)\\.md$`);
+    let maxCycle = 0;
+    for (const entry of entries) {
+        const m = cycleRe.exec(entry);
+        if (!m)
+            continue;
+        const n = Number(m[1]);
+        if (Number.isFinite(n) && n > maxCycle)
+            maxCycle = n;
+    }
+    return maxCycle > 0 ? maxCycle : 1;
+}
 export function scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir) {
     const warnings = [];
     let entries;
@@ -1840,6 +1935,7 @@ export function scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir) 
         const m = canonicalRe.exec(entry);
         if (!m)
             continue;
+        const role = m[1];
         const filePath = path.join(refinementDir, entry);
         let content;
         try {
@@ -1848,14 +1944,17 @@ export function scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir) 
         catch {
             continue;
         }
+        const cycle = resolveAnalystCycleFromEntries(entries, role);
         const pathWarnings = checkAnalystOutputPaths(content, workingDir);
         for (const w of pathWarnings) {
             warnings.push({
                 ticket_id: '',
-                defect_class: 'analyst_path_not_verified',
-                evidence: `analyst=${m[1]} path=${w.path}`,
+                defect_class: w.defect_class,
+                evidence: `analyst=${role} path=${w.path}${w.line !== undefined ? `:${w.line}` : ''}`,
                 source: 'analyst',
                 file_line: `${entry}`,
+                analyst: role,
+                cycle,
             });
         }
     }
