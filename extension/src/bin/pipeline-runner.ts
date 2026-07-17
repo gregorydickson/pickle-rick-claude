@@ -3671,6 +3671,29 @@ function readPickleReadinessHalt(statePath: string): boolean {
   }
 }
 
+// AC-MWMO-D2-10: any non-empty exit_reason already recorded on this failure
+// (e.g. done_without_commit_evidence) — read so finalizePipeline can preserve
+// it instead of overwriting with the generic 'failed'.
+function readExistingExitReason(statePath: string): string | null {
+  try {
+    const reason = sm.read(statePath).exit_reason;
+    return typeof reason === 'string' && reason.trim() ? reason : null;
+  } catch {
+    return null;
+  }
+}
+
+// Same precedent as the phaseIncomplete/handoffStop/readinessHalt branch in
+// finalizePipeline: a specific reason already stamped on this failure (e.g.
+// done_without_commit_evidence) is preserved rather than overwritten by the
+// generic 'failed'. Only stamp 'failed' when no reason was recorded.
+function finalizeFailedPipeline(statePath: string): void {
+  finalizeTerminalState(
+    statePath,
+    readExistingExitReason(statePath) ? { step: 'completed' } : { step: 'completed', exitReason: 'failed' },
+  );
+}
+
 function finalizePipeline(
   runtime: PipelineRuntime,
   counters: PhaseCounters,
@@ -3696,7 +3719,7 @@ function finalizePipeline(
     // ground-truth authority (which would clobber the preserved reason).
     finalizeTerminalState(runtime.statePath, { step: 'completed' });
   } else if (pipelineFailed) {
-    finalizeTerminalState(runtime.statePath, { step: 'completed', exitReason: 'failed' });
+    finalizeFailedPipeline(runtime.statePath);
   } else {
     // B-GROUND2 WS1: the success finalize is the one transition that asserts the
     // ticket bundle is truly complete — route it through the single authority so
@@ -3793,7 +3816,17 @@ function getFatalPickleHaltReason(runtime: PipelineRuntime): string {
     if (commitCount === 0) {
       return `zero commits since baseline ${shortSha} — no build progress this run`;
     }
-    return `${commitCount} commit(s) since baseline ${shortSha} — halted for a reason other than build progress (e.g. strict phase policy)`;
+    // AC-MWMO-D2-11: commits landed since baseline does not mean the halt was
+    // "a reason other than build progress" — a done_without_commit_evidence
+    // halt IS about build progress (this ticket's own commit is missing) and
+    // has nothing to do with strict-phase policy. Report the recorded reason
+    // on disk instead of inferring one from the commit count.
+    const recordedReason = typeof runnerState.exit_reason === 'string' && runnerState.exit_reason.trim()
+      ? runnerState.exit_reason.trim()
+      : null;
+    return recordedReason
+      ? `${commitCount} commit(s) since baseline ${shortSha} — halted with recorded reason: ${recordedReason}`
+      : `${commitCount} commit(s) since baseline ${shortSha} — halted for an unrecorded reason`;
   } catch {
     return 'fatal phase failure';
   }
