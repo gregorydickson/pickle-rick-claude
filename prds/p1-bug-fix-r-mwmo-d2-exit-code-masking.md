@@ -121,26 +121,96 @@ typed; only the control flow is wrong.
 so that `break` targets the outer loop. If any site sits in a nested loop, that site needs a
 labelled break or an equivalent — flag it rather than silently changing semantics.
 
+## Interface Contracts
+
+The fix changes **control flow only**. No signature, type, or payload changes. The contracts below are
+the ones the change must PRESERVE (they already exist) plus the one it RESTORES.
+
+**`ExitReason` (unchanged)** — `extension/src/bin/mux-runner.ts:4367`:
+```ts
+export type ExitReason = 'success' | 'cancelled' | 'error' | 'limit' | 'iteration_cap_exhausted'
+  | 'stall' | 'circuit_open' | ... | 'done_without_commit_evidence' | ...;
+```
+`'done_without_commit_evidence'` is ALREADY a member. **Do not add, rename, or reclassify it.**
+
+**Classifiers (unchanged — assert, don't edit):**
+```ts
+isHaltExit('done_without_commit_evidence')    === true   // mux-runner.ts:4370
+isFailureExit('done_without_commit_evidence') === true   // mux-runner.ts:4376/4379 (FAILURE_EXIT_REASONS)
+```
+
+**Module-scope binding the fix writes (unchanged declaration)** — `mux-runner.ts:9220`:
+```ts
+let exitReason: ExitReason = 'error';
+```
+
+**The process-exit contract this fix RESTORES** — `mux-runner.ts:~11345-11351`:
+```
+Inputs:   exitReason: ExitReason
+Outputs:  process exit code: 3 if 'iteration_cap_exhausted'; 1 if isFailureExit(exitReason); else 0
+Errors:   none (pure map)
+Invariant: a run that called recordExitReason(statePath, R) where isFailureExit(R) MUST exit non-zero.
+           TODAY THIS INVARIANT IS VIOLATED at the three guard sites. That is the whole bug.
+```
+
+**`guardCompletionCommitBeforeDone` (READ-ONLY for this bundle)** — its return shape
+`{ ok: boolean; reason?: string; sha?: string }` and its predicate are **out of scope**. The fix
+consumes `!guard.ok` exactly as today.
+
+**Consumer contract (`pipeline-runner`, unchanged):** the graduation gate trusts the phase's
+**process exit code**. It must keep doing so — do not teach it to re-read `state.json`.
+
 ## Acceptance criteria (machine-checkable)
 
-- **AC-MWMO-D2-1** — No `guardCompletionCommitBeforeDone` failure branch in
-  `extension/src/bin/mux-runner.ts` exits via a bare `return`. Pinned by a test that asserts each of
-  the three `!guard.ok` blocks assigns `exitReason = 'done_without_commit_evidence'` and `break`s.
-- **AC-MWMO-D2-2** — A unit/integration test drives a mux run to a commit-less Done on each of the
-  three paths and asserts the process exit code is **1** (not 0). If driving all three end-to-end is
-  disproportionate, at minimum one is driven end-to-end and the other two are pinned structurally
-  per AC-MWMO-D2-1; the test names which is which.
-- **AC-MWMO-D2-3** — On a `done_without_commit_evidence` halt, a `session_end` activity event IS
-  emitted and carries `error: 'done_without_commit_evidence'` (today: no event at all).
-- **AC-MWMO-D2-4** — `isFailureExit('done_without_commit_evidence') === true` and the exit map yields
-  `1`; pinned so a future reclassification cannot silently re-mask the failure.
-- **AC-MWMO-D2-5** — A regression guard (test or audit) asserts no NEW bare-`return` failure exit is
-  added inside the `mux-runner.ts` main loop after a `recordExitReason(...)` call — i.e. every
-  `recordExitReason` inside the loop is followed by an `exitReason = …; break;`, not a `return`.
-  Scope this to the main loop; do not make it a repo-wide grep that false-positives.
-- **AC-MWMO-D2-6** — Full release gate green from `extension/` (the CLAUDE.md release-gate command).
-- **AC-MWMO-D2-7** — No behavior change to *whether* the guard fires: the guard's own predicate
-  (`guardCompletionCommitBeforeDone`) is NOT modified. Diff touches control flow + tests only.
+Every criterion below is verified from `extension/` unless stated otherwise.
+
+- **AC-MWMO-D2-1** — **For ALL three** `!guard.ok` blocks guarding
+  `recordExitReason(statePath, 'done_without_commit_evidence')` in `extension/src/bin/mux-runner.ts`:
+  each assigns `exitReason = 'done_without_commit_evidence'` and exits the main loop via `break`, and
+  **none** exits via a bare `return`. Pin with `describe.each` over the three sites.
+  — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
+- **AC-MWMO-D2-2** — A test drives the runner to a commit-less Done and asserts the observed process
+  exit code is **1**, not 0. At minimum ONE site is driven end-to-end; the other two may be pinned
+  structurally per AC-MWMO-D2-1, and the test file MUST name which site is driven and which are
+  structural (no silent coverage gap).
+  — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
+- **AC-MWMO-D2-3** — On a `done_without_commit_evidence` halt a `session_end` activity event IS
+  emitted and carries `error: 'done_without_commit_evidence'`. Today **no event is emitted at all**,
+  so a test asserting its absence would pass today and MUST fail before the fix (assert presence).
+  — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
+- **AC-MWMO-D2-4** — `isHaltExit('done_without_commit_evidence') === true`,
+  `isFailureExit('done_without_commit_evidence') === true`, and the exit map yields `1` for it —
+  pinned so a future reclassification cannot silently re-mask the failure.
+  — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
+- **AC-MWMO-D2-5** — Regression guard: **for EVERY** `recordExitReason(...)` call inside the
+  `mux-runner.ts` main loop (`while (true)` at `:9287`), the enclosing block exits via
+  `exitReason = …; break;` and NOT via a bare `return`. Scoped to the main loop only — a repo-wide
+  grep that false-positives on out-of-loop callers FAILS this AC.
+  — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
+- **AC-MWMO-D2-6** — Full release gate green from `extension/`.
+  — Verify: `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-un-terminalize-single-path.sh && npm run test:fast:budget && npm run test:integration`
+  — Type: test
+- **AC-MWMO-D2-7** — No behavior change to *whether* the guard fires: `guardCompletionCommitBeforeDone`'s
+  body is byte-identical to `main`'s, and the bundle diff touches only control flow + tests.
+  — Verify: `git diff release/v2.1-beta -- src/bin/mux-runner.ts | grep -E '^[-+]' | grep -v '^[-+][-+]' | grep -vE "exitReason|break;|return;|^[-+]\s*$"` returns no functional-logic lines
+  — Type: llm-conformance
+
+## Test Expectations
+
+All in ONE new file: `extension/tests/mux-runner-done-without-commit-evidence-exit.test.js`
+(fast tier, `node --test`, no subprocess >5s — see `scripts/audit-subprocess-heavy-tests.sh`).
+
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-MWMO-D2-1 | `tests/mux-runner-done-without-commit-evidence-exit.test.js` | `describe.each` over the 3 `!guard.ok` sites; parse `src/bin/mux-runner.ts` source | Each site's block contains `exitReason = 'done_without_commit_evidence'` AND `break`; matches `/\breturn;/` = **0** |
+| AC-MWMO-D2-2 | same | Drive the runner to a commit-less Done on ≥1 site with a stubbed failing `guardCompletionCommitBeforeDone` | Observed process exit code `=== 1`; test names the driven site vs the structurally-pinned ones |
+| AC-MWMO-D2-3 | same | Capture activity events emitted during the halt | An event with `event: 'session_end'` exists AND its `error === 'done_without_commit_evidence'` |
+| AC-MWMO-D2-4 | same | Call the exported classifiers + exit map directly | `isHaltExit(r) === true`; `isFailureExit(r) === true`; exit map returns `1` |
+| AC-MWMO-D2-5 | same | Extract the `while (true)` main-loop body (`:9287`→ its close) and find every `recordExitReason(` | For every match, the enclosing block has `break;` and no bare `return;`; out-of-loop callers are NOT inspected |
+
+**Red-first requirement:** AC-MWMO-D2-2 and AC-MWMO-D2-3 MUST fail against the pre-fix source
+(exit `0`; no `session_end` event). A test that passes before the fix has not pinned this bug —
+demonstrate red before green.
 
 ## Simplification Review (subtract-before-add — required)
 
