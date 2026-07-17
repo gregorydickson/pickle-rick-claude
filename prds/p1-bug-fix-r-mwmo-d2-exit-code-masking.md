@@ -11,12 +11,29 @@ bug: prds/BUG-REPORT-2026-07-14-pipeline-max-iterations-zero-stops-after-one-plu
 
 # R-MWMO defect 2 — a recorded FAILURE currently exits 0 and reports as benign
 
-**Thesis: three `guardCompletionCommitBeforeDone` failure sites in `mux-runner.ts` do a bare `return`
-that leaves the `while (true)` loop's own exit path unreached. The run has already RECORDED
-`done_without_commit_evidence` — a failure reason — but Node falls off the end of the function and
-exits with its default code **0**. `pipeline-runner`'s graduation gate reads 0 as benign and prints a
-success-shaped `Pipeline finished: 0/4 phases`. Make the three sites use the loop's canonical exit
-pattern so the recorded failure becomes an HONEST non-zero exit.**
+**Thesis: a `done_without_commit_evidence` halt is invisible to the operator, and it takes TWO
+changes to make it visible — WS-1 (the runner must exit non-zero) and WS-2 (the runner's consumer
+must treat that exit as fatal). WS-1 alone is NECESSARY BUT NOT SUFFICIENT.**
+
+- **WS-1 — three `guardCompletionCommitBeforeDone` failure sites in `mux-runner.ts` do a bare
+  `return`** that leaves the `while (true)` loop's own exit path unreached. The run has already
+  RECORDED `done_without_commit_evidence` — a failure reason — but Node falls off the end of the
+  function and exits with its default code **0**. Make the three sites use the loop's canonical exit
+  pattern so the recorded failure becomes an HONEST non-zero exit.
+- **WS-2 — `pipeline-runner` would STILL continue on that non-zero exit.** `isFatalPhaseFailure`
+  (`extension/src/bin/pipeline-runner.ts:2774`) classifies a pickle-phase failure as fatal only when
+  `countCommitsSince(startCommit) === 0`. A `done_without_commit_evidence` halt means **this ticket**
+  has no commit — it says nothing about the session. So whenever an earlier ticket committed, the
+  WS-1 exit is classified NON-fatal, `shouldHaltAfterPhase` returns false, and the runner calls
+  `recordRecoverablePhaseFailure(…, 'continue')` and proceeds to citadel anyway. Add the sibling
+  always-fatal check, mirroring the SHIPPED precedent one line above it.
+
+> **⚠ AUTHORING CORRECTION (2026-07-16).** WS-2 did not exist in this PRD's first draft, which
+> claimed WS-1 alone made the failure honest. **That claim was FALSE.** It was caught by the
+> `requirements` analyst during refinement and then independently verified against source. The
+> lesson is the session's own headline restated: *a citation is not a verification* — the first
+> draft cited real functions at real lines and still reached a wrong conclusion, because it verified
+> the MECHANISM (the exit code changes) without verifying the OUTCOME (what the operator sees).
 
 This is a **honesty fix, not a recovery fix.** It does not rescue an orphaned worker and does not
 change *whether* the guard fires. It changes only what the process reports when the guard has
@@ -128,6 +145,36 @@ typed; only the control flow is wrong.
 so that `break` targets the outer loop. If any site sits in a nested loop, that site needs a
 labelled break or an equivalent — flag it rather than silently changing semantics.
 
+### WS-2 — make the consumer treat the halt as fatal (source-verified 2026-07-16)
+
+`extension/src/bin/pipeline-runner.ts:2774-2785`, the `phase === 'pickle'` branch:
+
+```ts
+// R-PRNF-9: readiness halt is always a hard failure regardless of prior-session commits.
+// Checking exit_reason here covers resumed sessions where countCommitsSince > 0 (prior runs)
+// but this run produced zero build progress.
+if (runnerState.exit_reason === 'readiness_halt') return true;
+const startCommit = runnerState.start_commit?.trim();
+if (!startCommit) return true;
+return countCommitsSince(startCommit, runtime.repoRoot) === 0;
+```
+
+**`readiness_halt` is the SHIPPED PRECEDENT, and its comment describes this exact hole.**
+`done_without_commit_evidence` is the same class — a halt whose fatality must not depend on whether
+some *other* ticket happened to commit. The completion is one line beside its sibling:
+
+```ts
+if (runnerState.exit_reason === 'done_without_commit_evidence') return true;
+```
+
+**Why not rely on `--strict-phases`?** `pipeline_continue_on_phase_fail === false`
+(`extension/src/bin/pipeline-runner.ts:2816`) would also halt — but it is **opt-in**, it halts on
+*every* non-zero exit (not this class), and the LOA-1763 launch did not use it. An honesty fix that
+only works when the operator opted in is not an honesty fix.
+
+**Consequence if WS-2 is dropped:** the bundle can go fully green and **change nothing the operator
+sees** in the exact scenario the bug report cites. WS-1 and WS-2 ship together or the thesis fails.
+
 ## Interface Contracts
 
 The fix changes **control flow only**. No signature, type, or payload changes. The contracts below are
@@ -179,7 +226,11 @@ Every criterion below is verified from `extension/` unless stated otherwise.
 - **AC-MWMO-D2-1** — **For ALL three** `!guard.ok` blocks guarding
   `recordExitReason(statePath, 'done_without_commit_evidence')` in `extension/src/bin/mux-runner.ts`:
   each assigns `exitReason = 'done_without_commit_evidence'` and exits the main loop via `break`, and
-  **none** exits via a bare `return`. Pin with `describe.each` over the three sites.
+  **none** exits via a bare `return`. Pin as ONE parametrized test over the three sites — iterate an
+  array of the sites inside a single `test()`/`describe()`, asserting per site.
+  **⚠ `describe.each` DOES NOT EXIST in `node:test`** (`typeof describe.each === 'undefined'`; it is
+  a Jest/Vitest API). Do NOT use it — this is the universal-quantifier shape the AC-shape gate wants,
+  expressed in the runner this repo actually uses.
   — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
 - **AC-MWMO-D2-2** — A test drives the runner to a commit-less Done and asserts the observed process
   exit code is **1**, not 0. At minimum ONE site is driven end-to-end; the other two may be pinned
@@ -199,12 +250,26 @@ Every criterion below is verified from `extension/` unless stated otherwise.
   `exitReason = …; break;` and NOT via a bare `return`. Scoped to the main loop only — a repo-wide
   grep that false-positives on out-of-loop callers FAILS this AC.
   — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
+- **AC-MWMO-D2-8 (WS-2 — the thesis test)** — `isFatalPhaseFailure('pickle', …)` returns `true` when
+  `exit_reason` is `done_without_commit_evidence`, **even when `countCommitsSince(startCommit) > 0`**
+  (i.e. an earlier ticket committed). Today it returns `false` in that case and the pipeline
+  continues to citadel. Pin the sibling `readiness_halt` case in the same test so the two always-fatal
+  reasons stay symmetric.
+  — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
+- **AC-MWMO-D2-9 (WS-1 + WS-2 end-to-end)** — the operator-visible outcome changes: a pickle phase
+  that halts on `done_without_commit_evidence` with a prior ticket committed does **NOT** report
+  `Phase pickle completed successfully` and does **NOT** advance to citadel.
+  — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
 - **AC-MWMO-D2-6** — Full release gate green from `extension/`.
   — Verify: `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-un-terminalize-single-path.sh && npm run test:fast:budget && npm run test:integration`
   — Type: test
-- **AC-MWMO-D2-7** — No behavior change to *whether* the guard fires: `guardCompletionCommitBeforeDone`'s
-  body is byte-identical to `main`'s, and the bundle diff touches only control flow + tests.
-  — Verify: `git diff release/v2.1-beta -- src/bin/mux-runner.ts | grep -E '^[-+]' | grep -v '^[-+][-+]' | grep -vE "exitReason|break;|return;|^[-+]\s*$"` returns no functional-logic lines
+- **AC-MWMO-D2-7** — No behavior change to *whether* the guard fires: the body of
+  `guardCompletionCommitBeforeDone` is unchanged by this bundle, and the diff touches only control
+  flow + the WS-2 sibling check + tests.
+  **⚠ The first draft's verify command was VACUOUS** — it diffed `release/v2.1-beta` while checked
+  out ON `release/v2.1-beta`, so it self-diffed to empty and passed unconditionally. Diff against the
+  bundle's own `start_commit` instead.
+  — Verify: `git diff "$(node -e 'console.log(process.env.PICKLE_START_COMMIT||"")')" -- src/bin/mux-runner.ts` reviewed to contain no edit inside the `guardCompletionCommitBeforeDone` body (reviewer states the verdict; a self-diff that returns empty is NOT a pass)
   — Type: llm-conformance
 
 ## Test Expectations
@@ -224,23 +289,52 @@ All in ONE new file: `extension/tests/mux-runner-done-without-commit-evidence-ex
 (exit `0`; no `session_end` event). A test that passes before the fix has not pinned this bug —
 demonstrate red before green.
 
+**⚠ Red-first hazard — `PICKLE_TEST_MODE=1`.** The fast tier sets it, and it gates bypasses in
+`mux-runner.ts` (`:4743`, `:4967`). If the harness path used to drive AC-2/AC-3 is short-circuited by
+one of those bypasses, the test can go green **without ever executing the guard sites** — a vacuous
+pass that looks like a fix. **Research MUST determine whether a red-first demonstration is reachable
+in the mandated tier.** If it is not, say so explicitly and choose: drive the site through a path
+that is not bypassed, or move AC-2/AC-3 to the integration tier and record why. **Do NOT silently
+downgrade to a structural-only pin** — that is exactly the "the gate never fired, so it passed"
+failure this bundle exists to eliminate.
+
+**WS-2 test expectations** (same file or a sibling — the author picks, but both WS need pins):
+
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-MWMO-D2-8 | `tests/mux-runner-done-without-commit-evidence-exit.test.js` (or a `pipeline-runner-*` sibling) | `isFatalPhaseFailure('pickle', …)` with `exit_reason='done_without_commit_evidence'` **and `countCommitsSince > 0`** (an earlier ticket committed) | returns `true` — the LOA-1763 scenario. **This is the test that fails without WS-2.** |
+
 ## Simplification Review (subtract-before-add — required)
 
-1. **What does this DELETE?** It deletes a divergence: three sites that invented their own exit path
+1. **What does this DELETE?** WS-1 deletes a divergence: three sites that invented their own exit path
    instead of using the loop's one canonical exit. Net LOC is ~+2/site, but it removes a *second way
    to leave the loop* — the seam that produced the bug. Fewer exit paths, not more.
-2. **Could this be fixed by subtracting instead of adding?** This IS the subtractive shape available:
-   collapse the ad-hoc exits onto the existing pattern. The additive alternative — teaching
-   `pipeline-runner` to re-read the `exit_reason` field out of `state.json` rather than trusting the
-   process exit status — was **rejected**: it would paper over a broken contract (a failing process
-   must exit non-zero) and add a second source of truth for phase success. Fix the liar, not the
-   listener.
-3. **What guard is being added, and has its failure ever fired?** AC-MWMO-D2-5 adds one regression
-   guard. Justified: this exact class (in-loop `return` bypassing the exit map) fired in the field at
-   LOA-1763 and exists at three independent sites — i.e. it has already recurred twice on its own.
-4. **What is the smallest diff that satisfies the thesis?** Three 2-line changes + tests. Anything
-   larger — new state, new event types, a manager-path guard, a `max_iterations` change — is out of
-   scope and must be rejected in refinement.
+2. **Can it REUSE instead of ADD?** **Yes — both workstreams are pure reuse of shipped precedent, and
+   neither adds a mechanism.** WS-1 reuses the loop's own canonical exit
+   (`exitReason = …; break;`, `extension/src/bin/mux-runner.ts:~11300`). WS-2 reuses the
+   `readiness_halt` always-fatal check (`extension/src/bin/pipeline-runner.ts:2781`) — same function,
+   one line above, same class of halt, and its comment already describes this hole. **No new state,
+   no new flag, no new event, no new enum member** (`done_without_commit_evidence` is already an
+   `ExitReason` and already in `FAILURE_EXIT_REASONS`).
+   The additive alternative — teaching `pipeline-runner` to re-read the `exit_reason` field out of
+   `state.json` rather than trusting the process exit status — was **rejected**: it would paper over a
+   broken contract (a failing process must exit non-zero) and add a second source of truth for phase
+   success. Fix the liar, not the listener.
+3. **Does it guard EXISTING brittle complexity that should instead be SUBTRACTED?** Partly, and this
+   is worth naming: `isFatalPhaseFailure`'s `countCommitsSince(startCommit) === 0` heuristic is the
+   brittle thing — it infers "did this phase fail?" from *session-wide* commit counting, which is why
+   it needs a growing list of always-fatal exception reasons (`readiness_halt` was the first; this
+   bundle adds the second). **The honest long-term subtraction is to stop inferring phase failure
+   from commit counts and trust the phase's own exit reason.** That is a larger, separate
+   re-scoping — **explicitly OUT of scope here** — but WS-2 adding the *second* exception is the
+   evidence that the heuristic is wrong. **Log it as a follow-up finding; do not build it here, and
+   do not let refinement expand this bundle into it.**
+4. **What is the smallest diff that satisfies the thesis?** Three 2-line changes (WS-1) + one line
+   (WS-2) + tests. AC-MWMO-D2-5 adds one regression guard, justified: this exact class (in-loop
+   `return` bypassing the exit map) fired in the field at LOA-1763 and exists at three independent
+   sites — it has already recurred twice on its own. Anything larger — new state, new event types, a
+   manager-path guard, a `max_iterations` change, or re-architecting `isFatalPhaseFailure` — is out
+   of scope and must be rejected in refinement.
 
 ## Build protocol
 

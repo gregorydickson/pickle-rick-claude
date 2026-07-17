@@ -106,16 +106,41 @@ carries both the trigger and a foreign symbol. **That is gaming a broken gate, n
 **Do NOT "fix" this by rewording PRDs.** That trains the team to write vaguer PRDs to appease a
 broken gate — the opposite of the citation discipline the checker exists to enforce.
 
-## Secondary finding (same run) — the `requirements` analyst failed all 3 cycles
+## Secondary finding (same run) — **[[R-WDTF]] IS A CLASS, AND THIS IS ITS SECOND SITE** (P1)
 
-`refinement_manifest.json` → `workers[requirements].success: false` for c1, c2, and c3, while
-`codebase` and `risk-scope` succeeded. `all_success: false`. The refined PRD was never synthesized
-(`prd_refined.md` absent). Worker logs contain only a benign permission-rule notice:
-> `Permission allow rule (.claude/settings.local.json): Write(.claude/commands/**) is not matched by file permission checks — only Edit(path) rules are.`
+**The `requirements` analyst did NOT fail.** `refinement_manifest.json` marks it
+`success: false` for c1, c2 **and** c3 — while it wrote **`analysis_requirements.md` at 37,989 bytes**,
+the single most valuable artifact of the run (it caught a genuine false-sufficiency claim in the PRD
+under refinement, verified independently and confirmed).
 
-Needs its own diagnosis — 1-of-3 analysts silently failing every cycle degrades refinement quality
-even when the run is not blocked. Possibly related to the settings.local.json `Write(...)` rule
-mismatch the notice describes.
+**Root cause — `extension/src/bin/spawn-refinement-team.ts:933`:**
+```ts
+const success = !workerTimedOut && hasToken(logContent, PromiseTokens.ANALYSIS_DONE);
+```
+
+This is **exactly the R-WDTF defect**, at a second, previously-unrecorded site: a **narrative signal
+(did the model emit a string?) is a hard AND-conjunct that outranks ground truth** (a large, valid,
+on-disk analysis artifact). It can only ever DESTROY information. R-WDTF's own bug report frames the
+principle: *"`I AM DONE` is a claim, not a fact"* — the same inversion lives here.
+
+| | R-WDTF site 1 | R-WDTF site 2 (NEW) |
+|---|---|---|
+| File | `extension/src/bin/spawn-morty.ts:2336` | `extension/src/bin/spawn-refinement-team.ts:933` |
+| Token | `WORKER_DONE` | `ANALYSIS_DONE` |
+| Ground truth ignored | artifacts + edits + `completion_commit` | the written `analysis_*.md` |
+| Damage | ticket → `Failed`, `completion_commit: null` | analyst → `success:false`, `all_success:false` |
+
+**Impact:** `all_success:false` degrades or skips synthesis, so the run's best analysis is discarded
+as a failure. This makes refinement quality silently non-deterministic — and it is **repo-agnostic**
+(it bites on every target repo). **Fix R-WDTF at the CLASS level, not just `spawn-morty`:** consult
+ground truth (does the artifact exist and is it substantive?) before recording failure. Note the
+existing artifact-based heuristic already used elsewhere — memory
+`feedback_morty_validation_log_heuristic` / `feedback_dont_respawn_morty_on_garbled_output` — is the
+same recurring lesson.
+
+The benign permission-rule notice in the worker logs
+(`Permission allow rule (.claude/settings.local.json): Write(.claude/commands/**) ... use Edit(...)`)
+is **NOT** the cause — it appears in the succeeding `codebase`/`risk-scope` logs too.
 
 ## Related
 
