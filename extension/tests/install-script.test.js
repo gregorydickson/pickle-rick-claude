@@ -377,8 +377,8 @@ function makeKillSwitchForceFixture({ deployedAutoUpdateEnabled, deployedTimeout
       auto_update_enabled: deployedAutoUpdateEnabled,
       user_only: 'preserved',
     };
-    if (deployedTimeoutMs !== undefined) deployed.worker_test_gate_timeout_ms = deployedTimeoutMs;
-    if (deployedCodegraph !== undefined) deployed.codegraph = deployedCodegraph;
+    if (deployedTimeoutMs !== undefined) { deployed.worker_test_gate_timeout_ms = deployedTimeoutMs; }
+    if (deployedCodegraph !== undefined) { deployed.codegraph = deployedCodegraph; }
     writeFileSync(deployedSettingsPath, JSON.stringify(deployed, null, 2));
   }
   const sourceBefore = readFileSync(sourceSettingsPath, 'utf8');
@@ -714,9 +714,9 @@ function extractManagedKeysJqFromInstallSh() {
   const src = readFileSync(INSTALL_SH, 'utf8');
   const marker = '# --- MANAGED_KEYS: force code-owned settings source-authoritative ---';
   const idx = src.indexOf(marker);
-  if (idx === -1) throw new Error('MANAGED_KEYS marker not found in install.sh');
+  if (idx === -1) { throw new Error('MANAGED_KEYS marker not found in install.sh'); }
   const match = src.slice(idx).match(/jq '([^']*)'/);
-  if (!match) throw new Error('MANAGED_KEYS jq expression not found in install.sh');
+  if (!match) { throw new Error('MANAGED_KEYS jq expression not found in install.sh'); }
   return match[1];
 }
 
