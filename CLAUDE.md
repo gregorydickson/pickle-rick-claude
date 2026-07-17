@@ -113,3 +113,10 @@ Kill-switches are the literal lowercase `"off"` (any other value / absent = feat
 | `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` | int ms ≥60000 (default 600000) | Per-gate-phase cap for `test:fast`/`test:integration` in the worker lint gate (R-WTFT). Below floor clamps up; invalid → default. |
 | `PICKLE_EXIT_DRAIN_FALLBACK_MS` | int ms (default 30000) | Fallback drain window for the manager `'exit'` event when the `'close'`-primary stdio drain never fires. Invalid/≤0/fractional → default. Resolver `resolveExitDrainFallbackMs` (`mux-runner.ts`). |
 | `PICKLE_ORPHAN_REAP` | `off` | Makes the R-CXHANG setup-time orphaned-worker-proc reaper inert (no ps scan, no kills); otherwise setup bootstrap reaps worker procs whose owning session is provably dead (positive ownership + min-age required). Reads `src/bin/setup.ts` (`runSetupOrphanReap`) + `src/services/orphan-reaper.ts`. |
+
+## Tune-Back CUJs
+
+Two distinct journeys for tuning behavior back — they use different mechanisms, don't conflate them:
+
+1. **Worker test-gate timeout (per-machine)**: `export PICKLE_WORKER_TEST_FAST_TIMEOUT_MS=<ms>` (floor 60000). Env-only — do NOT re-add `worker_test_gate_timeout_ms` to `pickle_settings.json`; the key is source-authoritative (B-SSAT) and `install.sh` strips any deployed pin via MANAGED_KEYS every deploy.
+2. **Codegraph enable (B-CGHARD soak)**: set `codegraph.enabled:true` / `index_at_setup:true` in **source** `pickle_settings.json`, then `bash install.sh`. Source-edit only — there is no env kill-switch's positive counterpart (`PICKLE_CODEGRAPH=off` only disables; there is no env-on).
