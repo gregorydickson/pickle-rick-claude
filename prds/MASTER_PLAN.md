@@ -155,22 +155,33 @@ of these oracles, that is the wrong arm — reject it in refinement.**
    conjunct.** ⚠ **The sibling arm ("hoist `evaluateFailedFlipSuppression` out of `runWorkerGate`") is
    ADDITIVE — do not take it.** Both sites: `spawn-morty.ts:2336`, `spawn-refinement-team.ts:933`
    (both CONFIRMED verbatim 2026-07-17). **✅ SUBTRACTIVE.**
-7. **[[B-CGHARD]] — ⛔ DEFERRED, NOT NEXT (was #7 "build it"). Re-scoped 2026-07-17.** **B.5(b) alone
-   turns codegraph OFF in the field for free** — source is `enabled:false`/`index_at_setup:false`,
-   deployed is `true`/`true`, and the ONLY reason the field runs it is the merge bug at #1. **So step 1
-   deletes this entire problem without building anything:** a 507-LOC service + native dep + the junk
-   payload (`return`, bare line numbers, 100-char prose sentences filling the 8192-byte cap on every
-   worker) all go dark. **B-CGHARD is ADDITIVE feature work — filters and ranking bolted onto an
-   OFF-by-default optional subsystem that is provably feeding noise.** Under subtract-before-add and the
-   north star ([[feedback_autonomous_first_subtract_features_back_to_reliable_baseline]]) it does not
-   belong in a reliability queue during a stoppage month. **The old sequence had it BACKWARDS: harden the
-   feature (#7) *before* deciding whether to delete it (#8).** ⇒ **Decide [[B-CGCAP]] FIRST.** WS-CGH-D is
-   only a prerequisite for making the *soak* measurable — i.e. it is B-CGCAP's measurement cost, not a
-   reliability fix. **❌ ADDITIVE · no stoppage · DEFER.**
-8. **[[B-CGCAP]] verdict — now the codegraph decision point, ahead of any hardening.** May subtract
-   ~1.3k LOC + a native dep. Post-#1 the field is OFF, so the honest question is no longer "harden it"
-   but **"has anything regressed with it dark?"** — if not, that is the subtraction, and WS-CGH-D/the
-   soak are never paid for. **✅ SUBTRACTIVE.**
+7. **[[B-CGHARD]] — PRIORITY BUILD (operator directive 2026-07-17: codegraph's capability is PROVEN in
+   independent tests; this is important work, not deferrable feature polish). Lead WS is WS-CGH-D.** The
+   two facts reconcile into a mandate, not a conflict: **the engine is proven-capable, and on THIS repo
+   it is fed garbage — so the input harvester is the ENTIRE gap between us and that proven capability.**
+   `deriveCodegraphTerms` (`spawn-morty.ts:584-602`) takes the first 8 backticked spans in DOCUMENT ORDER
+   (`CODEGRAPH_MAX_TERMS = 8`, `slice(0,8)`), so precise `file.ts:NNNN` citations flood the harvest with
+   bare line numbers and keywords (`return`, `while (true)`) — **the better a ticket's citation
+   discipline, the worse its payload.** Fixing that is what lets the proven engine actually help here.
+   **This is NOT "add a filter" — it REUSES an existing oracle:** rank terms through
+   `countUnresolvedReferences`/`resolveSymbolRef` (`check-readiness.ts:525`), which already answer "is
+   this a real symbol?" (names the reuse per `prds/CLAUDE.md` Q2 — passes the Simplification Review).
+   Build **WS-CGH-D** (rank-not-take-first; the root is `slice(0,8)` over document order) + **WS-CGH-A**
+   (bound the `buildContext` query hang — the `runWithTimeout(query_timeout_ms)` seam exists at
+   `codegraph-service.ts:215`) + **WS-CGH-B** (verify-before-inject — the `injected` counter is at
+   `:159-161`). **PRD: `prds/p2-codegraph-harden-then-soak-v2.1.md`.** **✅ mostly-REUSE, real capability
+   payoff · BUILD.**
+   - **⚙ ONE HARD DEPENDENCY (verified, not resistance): B.5(b) source-wins (#1) must land first — else
+     the field runs an UNLABELED codegraph arm and no soak can name which arm it measured.** Source is
+     `enabled:false`/`index_at_setup:false`, deployed is `true`/`true`; today the merge bug (#1) is the
+     only reason the field runs it at all. After #1, turning codegraph ON is a deliberate, source-tracked
+     choice — which is exactly what makes WS-CGH-D's payoff measurable. **#1 is one line and already the
+     queue's #1, so this dependency costs nothing extra.** Then run WS-CGH-C soak on the fixed harvester.
+8. **[[B-CGCAP]] verdict — the codegraph keep/subtract decision, now taken AFTER WS-CGH-D lands and soaks
+   (not before).** Reordered under the operator directive: with capability proven and the input fixed, the
+   soak measures the real thing, and B-CGCAP judges the hardened engine on its merits. If it earns its
+   keep it stays; if the soak still shows no lift on a CLEAN harvest, the ~1.3k-LOC + native-dep
+   subtraction is on the table with honest evidence behind it. **Post-soak only.**
 
 <details><summary>Prior state block (2026-07-16 late) — retained</summary>
 
@@ -223,10 +234,10 @@ of these oracles, that is the wrong arm — reject it in refinement.**
 | **[[B-TRGP]]** | no — fake-green, downstream-covered | LEAVE (proven non-subtractive) | 🗄 **DE-QUEUE** → decision record |
 | **[[R-ORSR-2]]** | Done-without-impl | re-scope; **additive risk — watch it** | ⚠ hold |
 | **[[B-RLH]]** | **NO — honesty, not stoppage** | **MIXED**: WS-4 **ADDS** `stalled_below_target` (new field, **0 hits in src**, on `isConverged` `microverse-state.ts:390-402` which returns bare `true` for both stall + target); R-BCFR "delete the arms" + WS-5 DELETE-or-WIRE genuinely **SUBTRACT** | ⚠ **SPLIT — build the subtractions, defer WS-4** |
-| **[[B-CGHARD]]** | **NO** — and **#1 turns codegraph OFF in the field for free** | **ADDS** filters/ranking to a 507-LOC OFF-by-default optional feature | ❌ **DEFER — feature work in a reliability queue** |
-| **[[B-CGCAP]]** | no | **SUBTRACTS** ~1.3k LOC + native dep | ✅ **decide BEFORE hardening** |
+| **[[B-CGHARD]]** | unlocks a PROVEN-capable engine that this repo currently starves with junk input | **mostly REUSE** — WS-CGH-D ranks via existing `countUnresolvedReferences` (`check-readiness.ts:525`), not a new filter | ✅ **PRIORITY BUILD (#7) — operator: proven in independent tests** |
+| **[[B-CGCAP]]** | no | **SUBTRACTS** ~1.3k LOC + native dep | ✅ **decide AFTER WS-CGH-D soaks** |
 
-**The pattern this scorecard exists to stop:** the old sequence put the two **ADDITIVE feature** items (B-CGHARD, then B-CGCAP) at #7–#8 *in that order* — hardening a subsystem before deciding whether to delete it — while the two **one-line SUBTRACTIONS** that unblock every hands-off rep sat at #1 (inert as prescribed) and #6 (the prerequisite). **Sequence subtractions first; they are cheap, they cannot regress what they remove, and they frequently delete the problem the additive item was going to solve.**
+**Two things this scorecard enforces.** (1) **Sequence the one-line SUBTRACTIONS first** — B.5(b) and the timeout-pin deletion unblock every hands-off rep, cost two lines total, cannot regress what they remove, and B.5(b) is *also* codegraph's measurement prerequisite. They lead regardless. (2) **Additive is not automatically deferrable — capability earns a build.** B-CGHARD is elevated because independent tests prove the engine's capability and the ONLY thing blocking it on this repo is the input harvester (WS-CGH-D), whose fix is mostly REUSE. The subtract-before-add rule challenges additions; it does not veto a proven-value one that reuses existing primitives. What the rule *does* still fix here: **decide keep-vs-subtract (B-CGCAP) on a CLEAN harvest, after WS-CGH-D — never soak the junk-input version, which would flip a hollow verdict in either direction.**
 
 Original framing (retained): the lead cluster is the FRESH 2026-07-14/16 LOA-1763 captures: on a target repo, the run stops early AND Done means nothing. Highest-signal class (target-repo-surfaced), directly gates autonomy-on-other-repos.
 
@@ -399,7 +410,7 @@ whose ticket is Done with no `completion_commit`, then asserts observed exit sta
 - **🆕 [[R-PRNF9-DEAD]] — the `readiness_halt` cluster is DEAD CODE (found 2026-07-16 dogfooding R-MWMO d2; source-verified).** `pipeline-runner.ts:2781` special-cases `exit_reason === 'readiness_halt'` as always-fatal, and `:3917-3924` comments that it "promotes **mux-runner's** generic `readiness_halt`" — **but that producer does not exist**: `readiness_halt` is **NOT a member of the `ExitReason` union** (`mux-runner.ts:4367`), `mux-runner` has **zero** `recordExitReason(…, 'readiness_halt')` call sites, and the **deployed** `mux-runner.js` contains no `readiness_halt` at all. The whole R-PRNF-9 cluster (`:2781`, `:3662`, `:3774`, `:3917-3924`) **has never fired.** **R-CCNW-2 discipline applies: a gate that has never fired is dead weight or an unwired safety net — pick one** (wire it by making `mux-runner` produce the reason, or delete it). Same DELETE-or-WIRE shape as B-RLH WS-5's ac-phase-gate; consider bundling the two decisions. **Notable second-order effect:** it silently falsified the R-MWMO d2 PRD's WS-2 justification ("mirror the shipped precedent") — a dead guard cited as proof a pattern works is proof only that it was never exercised.
 - **ac-phase-gate: decide DELETE-vs-WIRE inside B-RLH WS-5** (R-CCNW-2 discipline — a gate that has never fired is dead weight or an unwired safety net; pick one).
 - **install.sh settings-merge → source-wins** (B.4b) is the live subtraction with real yield.
-- **🆕 [[B-CGHARD]] WS-CGH-D — FIX THE CODEGRAPH INPUT TERMS (added 2026-07-17; the codegraph work item, sequenced at #7 in the state block above; PRD `prds/p2-codegraph-harden-then-soak-v2.1.md`).** **Codegraph IS running and IS healthy — and IS feeding workers noise.** Verified on the R-MWMO run (`2026-07-16-6fe9b904`): `index_status: healthy`, `injected: 11`, `skipped: 0`, `degraded_ops: 0`, `hits_count` 122–185, **`bytes` 8130–8141 = filling the 8192 cap**. Then the terms were dumped from the REAL harvester on the REAL tickets:
+- **🆕 [[B-CGHARD]] WS-CGH-D — FIX THE CODEGRAPH INPUT TERMS (PRIORITY BUILD per operator 2026-07-17: capability PROVEN in independent tests; sequenced #7 in NEXT ACTIONS). Listed here because the fix is mostly REUSE — not because it is deferrable.** The harvester is the sole gap between this repo and the engine's proven capability, so WS-CGH-D is capability-unlock work; the "noise" finding below is the evidence FOR building it, not against. **Codegraph IS running and IS healthy — and IS feeding workers noise.** Verified on the R-MWMO run (`2026-07-16-6fe9b904`): `index_status: healthy`, `injected: 11`, `skipped: 0`, `degraded_ops: 0`, `hits_count` 122–185, **`bytes` 8130–8141 = filling the 8192 cap**. Then the terms were dumped from the REAL harvester on the REAL tickets:
   - `de25ce90` → `` `!guard.ok` ``, a bare path, `done_without_commit_evidence`, **`return`**, **`while (true)`**, **`:9287`**, **`:~11300`**, **`:~11345`** — **~1 of 8 is a symbol; three are bare LINE NUMBERS; two are KEYWORDS.**
   - `be604d1d` → **ZERO of 8**, and two slots burned on ~100-char **PROSE SENTENCES** (`zero commits since baseline ${shortSha} — no build progress this run`).
   - `a5f8cf4f` → `isFatalPhaseFailure`, `finalizePhaseSuccess`, `maybeStampPhaseGraduation` — **3 of 8, the best of the bundle.**
