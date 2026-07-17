@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MUX_RUNNER_TS = path.resolve(__dirname, '..', 'src', 'bin', 'mux-runner.ts');
 
-const { isHaltExit, isFailureExit } = await import('../bin/mux-runner.js');
+const { isHaltExit, isFailureExit, deriveCompletionVerdict, buildTmuxNotification } = await import('../bin/mux-runner.js');
 
 function findDoneWithoutCommitEvidenceSites(sourceText) {
   const lines = sourceText.split('\n');
@@ -194,5 +194,96 @@ test('mux-runner: applyAutoTicketCompletionValidation call site honors the fatal
     window,
     /exitReason\s*=\s*'done_without_commit_evidence';[\s\S]{0,80}?break;/,
     "on the fatal guard-failure verdict, the call site must set exitReason = 'done_without_commit_evidence' and break out of the while(true) loop — matching the sibling precedent at the 'ticket already marked Done' branch",
+  );
+});
+
+// WS-1c (ticket c0293300) — de25ce90 (WS-1) made the done_without_commit_evidence
+// halt path reach the post-loop tail, which called
+// `printMinimalPanel('mux-runner Complete', {...}, 'GREEN', '🥒')` with a HARDCODED
+// GREEN — a FATAL halt printed a green "Complete" panel while
+// buildTmuxNotification (11 lines below) correctly titled it "Pickle Run Failed".
+// The fix derives ONE verdict (`deriveCompletionVerdict`) from `isFailureExit`
+// and feeds both renderers, so they cannot diverge again.
+
+test('mux-runner: a done_without_commit_evidence halt does not render a GREEN "Complete" panel', () => {
+  const verdict = deriveCompletionVerdict('done_without_commit_evidence');
+  assert.notEqual(verdict.colorName, 'GREEN', "done_without_commit_evidence must NOT render GREEN — MUST fail on pre-fix source (hardcoded 'GREEN')");
+  assert.ok(
+    !verdict.panelTitle.includes('Complete'),
+    "done_without_commit_evidence must NOT title itself 'Complete' — MUST fail on pre-fix source (hardcoded 'mux-runner Complete')",
+  );
+});
+
+test('mux-runner: the completion panel verdict matches buildTmuxNotification for every member of the ExitReason union', () => {
+  const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
+
+  // Derive the reason list from the ExitReason union itself — a NEW ExitReason
+  // member must be picked up here automatically, never hand-added to a list.
+  const unionMatch = source.match(/export type ExitReason = ([^;]+);/);
+  assert.ok(unionMatch, 'ExitReason union declaration must be present in source');
+  const reasons = [...unionMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(reasons.length > 10, `expected the ExitReason union to yield a substantial member list, found ${reasons.length}`);
+
+  for (const reason of reasons) {
+    const groundTruth = isFailureExit(reason);
+    const panelVerdict = deriveCompletionVerdict(reason);
+
+    assert.equal(panelVerdict.isFailure, groundTruth, `panel verdict for '${reason}' must match isFailureExit(exitReason)`);
+    assert.equal(
+      panelVerdict.colorName,
+      groundTruth ? 'RED' : 'GREEN',
+      `panel color for '${reason}' must be RED on failure, GREEN otherwise`,
+    );
+    assert.equal(
+      panelVerdict.panelTitle.includes('Complete'),
+      !groundTruth,
+      `panel title for '${reason}' must say "Complete" only when it is NOT a failure exit`,
+    );
+
+    const notif = buildTmuxNotification(reason, 'unknown', 1, 10);
+    const notifIsFailure = notif.title.includes('Failed');
+    assert.equal(notifIsFailure, groundTruth, `notification title for '${reason}' must match isFailureExit(exitReason)`);
+
+    assert.equal(
+      panelVerdict.isFailure,
+      notifIsFailure,
+      `panel verdict and buildTmuxNotification verdict must agree for '${reason}' — they must never diverge`,
+    );
+  }
+});
+
+test('mux-runner: buildTmuxNotification behavior is unchanged — success and failure titles/subtitles', () => {
+  const success = buildTmuxNotification('success', 'implement', 3, 125);
+  assert.equal(success.title, '🥒 Pickle Run Complete');
+  assert.match(success.subtitle, /^Finished in /);
+
+  const failure = buildTmuxNotification('error', 'implement', 3, 125);
+  assert.equal(failure.title, '🥒 Pickle Run Failed');
+  assert.equal(failure.subtitle, 'Exit: error (phase: implement)');
+
+  const stopped = buildTmuxNotification('cancelled', 'implement', 3, 125);
+  assert.equal(stopped.title, '🥒 Pickle Run Complete');
+  assert.match(stopped.subtitle, /^Stopped: cancelled /);
+});
+
+test('mux-runner: printMinimalPanel has exactly one call site in mux-runner.ts, and it is not hardcoded to a fixed color', () => {
+  const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
+  const callSites = [...source.matchAll(/printMinimalPanel\(/g)];
+  assert.equal(
+    callSites.length,
+    1,
+    `expected exactly 1 printMinimalPanel( call site in mux-runner.ts, found ${callSites.length} — a NEW panel call site on a failure-reachable path must derive its color from deriveCompletionVerdict/isFailureExit, never hardcode a literal colour`,
+  );
+
+  assert.ok(
+    !/printMinimalPanel\([^)]*'GREEN'/.test(source),
+    "no printMinimalPanel( call site may hardcode a literal 'GREEN' color argument",
+  );
+
+  const callSiteWindow = source.slice(callSites[0].index, callSites[0].index + 400);
+  assert.match(
+    callSiteWindow,
+    /completionVerdict\.colorName/,
+    'the completion panel call site must pass a color derived from completionVerdict (deriveCompletionVerdict), not a literal',
   );
 });

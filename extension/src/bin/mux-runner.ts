@@ -11337,13 +11337,14 @@ async function runMuxRunnerMain() {
     finalMinIter = Number.isFinite(rawFinalMinIter) ? rawFinalMinIter : 0;
   } catch { /* use fallback values */ }
 
-  printMinimalPanel('mux-runner Complete', {
+  const completionVerdict = deriveCompletionVerdict(exitReason);
+  printMinimalPanel(completionVerdict.panelTitle, {
     Iterations: iteration,
     Elapsed: formatTime(totalElapsed),
     FinalPhase: finalStep,
     Active: finalActive,
     ...(finalMinIter > 0 ? { 'Min Passes': finalMinIter } : {}),
-  }, 'GREEN', '🥒');
+  }, completionVerdict.colorName, '🥒');
 
   log(`mux-runner finished. ${iteration} iterations, ${formatTime(totalElapsed)}`);
 
@@ -11363,8 +11364,29 @@ async function runMuxRunnerMain() {
   process.exit(exitCode);
 }
 
-export function buildTmuxNotification(exitReason: ExitReason, finalStep: string, iteration: number, totalElapsed: number) {
+/**
+ * WS-1c: the ONE verdict derivation for a terminal ExitReason. Both the console
+ * completion panel (`printMinimalPanel`) and `buildTmuxNotification` consume this
+ * — never re-derive `isFailureExit(exitReason)` independently at either call
+ * site — so the two renderers cannot disagree about whether a run succeeded.
+ */
+export type CompletionVerdict = {
+  isFailure: boolean;
+  colorName: 'GREEN' | 'RED';
+  panelTitle: string;
+};
+
+export function deriveCompletionVerdict(exitReason: ExitReason): CompletionVerdict {
   const isFailure = isFailureExit(exitReason);
+  return {
+    isFailure,
+    colorName: isFailure ? 'RED' : 'GREEN',
+    panelTitle: isFailure ? 'mux-runner Failed' : 'mux-runner Complete',
+  };
+}
+
+export function buildTmuxNotification(exitReason: ExitReason, finalStep: string, iteration: number, totalElapsed: number) {
+  const isFailure = deriveCompletionVerdict(exitReason).isFailure;
   const title = isFailure
     ? '🥒 Pickle Run Failed'
     : '🥒 Pickle Run Complete';

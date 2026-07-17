@@ -10071,13 +10071,14 @@ async function runMuxRunnerMain() {
         finalMinIter = Number.isFinite(rawFinalMinIter) ? rawFinalMinIter : 0;
     }
     catch { /* use fallback values */ }
-    printMinimalPanel('mux-runner Complete', {
+    const completionVerdict = deriveCompletionVerdict(exitReason);
+    printMinimalPanel(completionVerdict.panelTitle, {
         Iterations: iteration,
         Elapsed: formatTime(totalElapsed),
         FinalPhase: finalStep,
         Active: finalActive,
         ...(finalMinIter > 0 ? { 'Min Passes': finalMinIter } : {}),
-    }, 'GREEN', '🥒');
+    }, completionVerdict.colorName, '🥒');
     log(`mux-runner finished. ${iteration} iterations, ${formatTime(totalElapsed)}`);
     const notif = buildTmuxNotification(exitReason, finalStep, iteration, totalElapsed);
     displayMacNotification(notif.title, notif.body, notif.subtitle);
@@ -10096,8 +10097,16 @@ async function runMuxRunnerMain() {
     closePhantomDoneWatchers();
     process.exit(exitCode);
 }
-export function buildTmuxNotification(exitReason, finalStep, iteration, totalElapsed) {
+export function deriveCompletionVerdict(exitReason) {
     const isFailure = isFailureExit(exitReason);
+    return {
+        isFailure,
+        colorName: isFailure ? 'RED' : 'GREEN',
+        panelTitle: isFailure ? 'mux-runner Failed' : 'mux-runner Complete',
+    };
+}
+export function buildTmuxNotification(exitReason, finalStep, iteration, totalElapsed) {
+    const isFailure = deriveCompletionVerdict(exitReason).isFailure;
     const title = isFailure
         ? '🥒 Pickle Run Failed'
         : '🥒 Pickle Run Complete';
