@@ -13,8 +13,39 @@
  * a3812edd's discarded-verdict return) are named as the known non-bare-return
  * exclusions.
  *
- * node:test has no describe.each — the "for every live site" assertion is a
- * plain loop inside one test().
+ * node:test has no per-case table helper (the Jest/Vitest style API the PRD
+ * originally mandated by name simply does not exist in this runner) — so the
+ * "for every live site" universal is a plain loop over the derived array,
+ * inside one test().
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * REPORTED GAP — AC-MWMO-D2-2 and AC-MWMO-D2-3 are NOT pinned in this file, and
+ * are NOT reachable in this (fast) tier. Recorded here rather than papered over
+ * with a structural pin, because a structural stand-in for an outcome AC is the
+ * same "the gate never fired, so it passed" failure this bundle exists to kill.
+ *
+ *   AC-MWMO-D2-2 — "drive the runner to a commit-less Done; observed process
+ *                   exit code === 1"
+ *   AC-MWMO-D2-3 — "the halt emits a session_end activity event"
+ *
+ * WHY UNREACHABLE (both facts are asserted by the bypass test below, so this
+ * paragraph cannot rot silently):
+ *   1. `guardCompletionCommitBeforeDone` (src/bin/mux-runner.ts:4726) returns
+ *      `{ok: true, sha: 'pickle-test-mode-bypass'}` UNCONDITIONALLY when
+ *      PICKLE_TEST_MODE=1 (:4743), and the fast tier sets it. All three live
+ *      guard sites branch on `!guard.ok`, so in this tier the guard never
+ *      refuses and the halt can never fire.
+ *   2. `runMuxRunnerMain` (:8815) is not exported, so the loop that owns the
+ *      exit map cannot be driven in-process at all.
+ *
+ * HANDOFF [manager] — to pin D2-2/D2-3 honestly they must move to the
+ * integration tier: spawn mux-runner as a subprocess WITHOUT PICKLE_TEST_MODE,
+ * against a synthetic tmp git repo whose ticket is Done with no
+ * completion_commit, then assert the observed exit status is 1 and that a
+ * session_end event carrying error === 'done_without_commit_evidence' was
+ * emitted. That needs a NEW integration-tier file, which is outside the file
+ * fence of the ticket (31ed007a) that wrote this note.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,7 +56,14 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MUX_RUNNER_TS = path.resolve(__dirname, '..', 'src', 'bin', 'mux-runner.ts');
 
-const { isHaltExit, isFailureExit, deriveCompletionVerdict, buildTmuxNotification } = await import('../bin/mux-runner.js');
+const muxRunner = await import('../bin/mux-runner.js');
+const {
+  isHaltExit,
+  isFailureExit,
+  deriveCompletionVerdict,
+  buildTmuxNotification,
+  guardCompletionCommitBeforeDone,
+} = muxRunner;
 
 function findDoneWithoutCommitEvidenceSites(sourceText) {
   const lines = sourceText.split('\n');
@@ -128,30 +166,127 @@ test('mux-runner: every live done_without_commit_evidence guard routes to exitRe
   assert.equal(iterationOutcomeCallers.length, 1, `processIterationOutcome must have zero production callers (declaration only); found ${iterationOutcomeCallers.length} occurrences`);
 });
 
-test('mux-runner: done_without_commit_evidence classifiers map to a non-zero exit', () => {
+// The executable half of the REPORTED GAP in this file's header. It asserts the
+// two facts that make AC-MWMO-D2-2/D2-3 unreachable in this tier. It is not a
+// stand-in for those ACs — it pins the REASON they are absent, so the reason
+// cannot rot into a stale comment. If the PICKLE_TEST_MODE bypass is ever
+// removed or the runner main is ever exported, this test FAILS, which is the
+// signal to revisit whether D2-2/D2-3 have become reachable in-tier.
+test('mux-runner: the PICKLE_TEST_MODE=1 bypass disarms the completion guard — why AC-D2-2/D2-3 cannot be driven in this tier', () => {
+  const originalTestMode = process.env.PICKLE_TEST_MODE;
+  process.env.PICKLE_TEST_MODE = '1';
+  try {
+    // Deliberately non-existent paths: the bypass at :4743 is the function's
+    // first statement, so it must return BEFORE any filesystem or git access.
+    // A verdict that comes back ok with the sentinel sha proves no IO ran —
+    // any real evidence probe against these paths could not produce it.
+    const verdict = guardCompletionCommitBeforeDone({
+      sessionDir: path.join(path.sep, 'nonexistent-31ed007a', 'session'),
+      ticketId: 'deadbeef',
+      workingDir: path.join(path.sep, 'nonexistent-31ed007a', 'working-dir'),
+      flags: null,
+    });
+
+    assert.equal(
+      verdict.ok,
+      true,
+      'PICKLE_TEST_MODE=1 must make guardCompletionCommitBeforeDone return ok — this is exactly why a fast-tier test can never drive the !guard.ok halt that AC-D2-2/D2-3 require',
+    );
+    assert.equal(
+      verdict.sha,
+      'pickle-test-mode-bypass',
+      'the verdict must carry the bypass sentinel sha — proving the guard short-circuited at src/bin/mux-runner.ts:4743 without probing the (non-existent) paths above',
+    );
+  } finally {
+    if (originalTestMode === undefined) {
+      delete process.env.PICKLE_TEST_MODE;
+    } else {
+      process.env.PICKLE_TEST_MODE = originalTestMode;
+    }
+  }
+
+  // The compounding half: even without the bypass, the loop that owns the exit
+  // map is unreachable in-process because its entry point is not exported.
+  assert.equal(
+    muxRunner.runMuxRunnerMain,
+    undefined,
+    'runMuxRunnerMain must remain unexported — if it is ever exported, AC-D2-2 (observed exit code) may become drivable in-process and this file\'s REPORTED GAP must be re-evaluated',
+  );
+});
+
+/**
+ * Parse the exit-code decision out of the TS source instead of re-implementing
+ * it in the test. A hand-copied `if/else` would only ever prove the test's own
+ * copy of the logic — it would keep passing while the source's mapping drifted.
+ *
+ * Fails CLOSED: an unparseable or reshaped exit map throws here rather than
+ * yielding an empty/degenerate mapping that quietly passes.
+ */
+function deriveExitCodeMapFromSource(sourceText) {
+  const capBranch = /if \(exitReason === '(\w+)'\) exitCode = (\d+);/.exec(sourceText);
+  assert.ok(capBranch, 'exit map: could not parse the leading `if (exitReason === …) exitCode = N;` branch from mux-runner.ts — the map was reshaped, so this AC can no longer verify it');
+
+  const failBranch = /else if \(isFailedExit\) exitCode = (\d+);/.exec(sourceText);
+  assert.ok(failBranch, 'exit map: could not parse the `else if (isFailedExit) exitCode = N;` branch from mux-runner.ts — the map was reshaped, so this AC can no longer verify it');
+
+  const defaultBranch = /else exitCode = (\d+);/.exec(sourceText);
+  assert.ok(defaultBranch, 'exit map: could not parse the trailing `else exitCode = N;` branch from mux-runner.ts — the map was reshaped, so this AC can no longer verify it');
+
+  const capReason = capBranch[1];
+  const capCode = Number(capBranch[2]);
+  const failCode = Number(failBranch[1]);
+  const defaultCode = Number(defaultBranch[1]);
+
+  return (reason) => {
+    if (reason === capReason) return capCode;
+    if (isFailureExit(reason)) return failCode;
+    return defaultCode;
+  };
+}
+
+// FORWARD-REGRESSION PIN — NOT red-first, and deliberately retained.
+//
+// Red-first verdict (ticket 31ed007a): this AC is VACUOUS against pre-fix source.
+// At the pre-bundle baseline 3fc1d535, `isHaltExit` already included
+// 'done_without_commit_evidence' (:4370), FAILURE_EXIT_REASONS already included
+// it (:4372-4377), and BOTH exit-map branches already existed. Every assertion
+// below passes on pre-fix source, so it cannot be shown red.
+//
+// That is consistent with the bug thesis rather than a defect in the AC: the
+// classifiers were never wrong. The bug was that the three bare `return;` sites
+// meant control never REACHED this map — which is AC-MWMO-D2-1's territory, and
+// that AC is genuinely red-first. This AC is kept (not deleted) because the PRD's
+// stated intent for it is forward-facing: "pinned so a future reclassification
+// cannot silently re-mask the failure". It is strengthened here from a
+// single-reason self-replication into a universal over the whole ExitReason
+// union, evaluated against the mapping PARSED FROM SOURCE.
+test('mux-runner: the source exit map sends every failure ExitReason non-zero (forward-regression pin; vacuous pre-fix — see comment)', () => {
   assert.equal(isHaltExit('done_without_commit_evidence'), true, "isHaltExit('done_without_commit_evidence') must be true");
   assert.equal(isFailureExit('done_without_commit_evidence'), true, "isFailureExit('done_without_commit_evidence') must be true");
 
   const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
-  assert.ok(
-    source.includes("if (exitReason === 'iteration_cap_exhausted') exitCode = 3;"),
-    'TS source must map iteration_cap_exhausted to exit code 3 ahead of the isFailedExit branch',
-  );
-  assert.ok(
-    source.includes('else if (isFailedExit) exitCode = 1;'),
-    'TS source must map every other isFailureExit(exitReason) to exit code 1',
-  );
+  const exitCodeFor = deriveExitCodeMapFromSource(source);
 
-  // Replicate the exact exit-code decision at :11347-11349 to prove
-  // 'done_without_commit_evidence' resolves to exit code 1, without invoking
-  // the process.exit-driving main().
-  const exitReason = 'done_without_commit_evidence';
-  const isFailedExit = isFailureExit(exitReason);
-  let exitCode;
-  if (exitReason === 'iteration_cap_exhausted') exitCode = 3;
-  else if (isFailedExit) exitCode = 1;
-  else exitCode = 0;
-  assert.equal(exitCode, 1, "'done_without_commit_evidence' must map to exit code 1");
+  // The AC's literal requirement.
+  assert.equal(exitCodeFor('done_without_commit_evidence'), 1, "'done_without_commit_evidence' must map to exit code 1");
+
+  // Derive the reason list from the ExitReason union itself, so a NEW failure
+  // reason is covered automatically instead of being hand-added to a list.
+  const unionMatch = source.match(/export type ExitReason = ([^;]+);/);
+  assert.ok(unionMatch, 'ExitReason union declaration must be present in source');
+  const reasons = [...unionMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(reasons.length > 10, `expected the ExitReason union to yield a substantial member list, found ${reasons.length}`);
+
+  for (const reason of reasons) {
+    const code = exitCodeFor(reason);
+    if (reason === 'iteration_cap_exhausted') {
+      assert.equal(code, 3, "'iteration_cap_exhausted' must keep its distinct exit code 3 (R-ICP-1)");
+    } else if (isFailureExit(reason)) {
+      assert.equal(code, 1, `'${reason}' is a failure exit and must map to a non-zero exit code 1 — a reclassification that sends it to 0 re-masks the failure`);
+    } else {
+      assert.equal(code, 0, `'${reason}' is not a failure exit and must map to exit code 0`);
+    }
+  }
 });
 
 // WS-1b (ticket a3812edd) — the FOURTH masking mechanism, distinct from the three
