@@ -7,8 +7,9 @@
  *
  * The site list is DERIVED by scanning the source for every
  * recordExitReason(..., 'done_without_commit_evidence') call, so a NEW future
- * site fails this test instead of silently escaping it. :7324 (dead code in
- * processIterationOutcome, zero production callers) and :2892 (ticket
+ * site fails this test instead of silently escaping it. :7324 (inside
+ * processTaskCompleted, reachable only from processIterationOutcome, which
+ * has zero production callers — transitively dead) and :2892 (ticket
  * a3812edd's discarded-verdict return) are named as the known non-bare-return
  * exclusions.
  *
