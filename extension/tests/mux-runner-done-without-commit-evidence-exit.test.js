@@ -215,6 +215,20 @@ test('mux-runner: the PICKLE_TEST_MODE=1 bypass disarms the completion guard —
 });
 
 /**
+ * Derive the ExitReason members from the union declaration itself, so a NEW
+ * member is picked up automatically and never hand-added to a list here.
+ * Fails CLOSED: an absent or empty union throws rather than yielding [], which
+ * would make every "for every reason" loop below pass by iterating nothing.
+ */
+function deriveExitReasonsFromSource(sourceText) {
+  const unionMatch = sourceText.match(/export type ExitReason = ([^;]+);/);
+  assert.ok(unionMatch, 'ExitReason union declaration must be present in source');
+  const reasons = [...unionMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(reasons.length > 10, `expected the ExitReason union to yield a substantial member list, found ${reasons.length}`);
+  return reasons;
+}
+
+/**
  * Parse the exit-code decision out of the TS source instead of re-implementing
  * it in the test. A hand-copied `if/else` would only ever prove the test's own
  * copy of the logic — it would keep passing while the source's mapping drifted.
@@ -270,14 +284,8 @@ test('mux-runner: the source exit map sends every failure ExitReason non-zero (f
   // The AC's literal requirement.
   assert.equal(exitCodeFor('done_without_commit_evidence'), 1, "'done_without_commit_evidence' must map to exit code 1");
 
-  // Derive the reason list from the ExitReason union itself, so a NEW failure
-  // reason is covered automatically instead of being hand-added to a list.
-  const unionMatch = source.match(/export type ExitReason = ([^;]+);/);
-  assert.ok(unionMatch, 'ExitReason union declaration must be present in source');
-  const reasons = [...unionMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
-  assert.ok(reasons.length > 10, `expected the ExitReason union to yield a substantial member list, found ${reasons.length}`);
-
-  for (const reason of reasons) {
+  // A NEW failure reason is covered automatically instead of hand-added here.
+  for (const reason of deriveExitReasonsFromSource(source)) {
     const code = exitCodeFor(reason);
     if (reason === 'iteration_cap_exhausted') {
       assert.equal(code, 3, "'iteration_cap_exhausted' must keep its distinct exit code 3 (R-ICP-1)");
@@ -352,14 +360,8 @@ test('mux-runner: a done_without_commit_evidence halt does not render a GREEN "C
 test('mux-runner: the completion panel verdict matches buildTmuxNotification for every member of the ExitReason union', () => {
   const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
 
-  // Derive the reason list from the ExitReason union itself — a NEW ExitReason
-  // member must be picked up here automatically, never hand-added to a list.
-  const unionMatch = source.match(/export type ExitReason = ([^;]+);/);
-  assert.ok(unionMatch, 'ExitReason union declaration must be present in source');
-  const reasons = [...unionMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
-  assert.ok(reasons.length > 10, `expected the ExitReason union to yield a substantial member list, found ${reasons.length}`);
-
-  for (const reason of reasons) {
+  // A NEW ExitReason member is picked up automatically, never hand-added.
+  for (const reason of deriveExitReasonsFromSource(source)) {
     const groundTruth = isFailureExit(reason);
     const panelVerdict = deriveCompletionVerdict(reason);
 
