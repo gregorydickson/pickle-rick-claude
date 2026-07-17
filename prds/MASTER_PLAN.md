@@ -103,24 +103,74 @@ WS-1 (`a29bef4f`) · WS-1b (`e4687b95`) · WS-1c (`ae4297d4`) · WS-2 (`c4f0e5a8
 below the ~305–352s suite runtime (row below) false-fails every `medium`+ worker gate — 3 of 7
 tickets carry `worker_gate_verdict: red` while their work is real and committed.
 
-**▶ NEXT ACTIONS, in order (sequenced 2026-07-17; codegraph placed with its dependency made explicit):**
-1. **Fix `worker_test_gate_timeout_ms` (row below).** Gates every hands-off rep on this repo.
-   **Raising the constant is not the fix** — see that row.
-2. **Finish/close `bcc20f74`**, then run the FULL release gate before any tag.
-3. **`bash install.sh`** — the fix is committed but **NOT deployed**; the running runtime still has
-   the bug it fixes.
-4. **[[R-SAFP]] (§B.1b)** — open, on the GA line, a catch-22 for every exit-path PRD.
-5. **[[R-WDTF]] class fix (§B.3 + 3b)** — 6 data points; `spawn-refinement-team.ts:933`.
-6. **B.5(b) `install.sh` → source-wins** — *cheap, and it is the **PREREQUISITE** for all codegraph
-   work below.* Today deployed silently overrides source (`enabled:true` vs source `false`), so the
-   field runs a codegraph arm nobody chose and **no soak can name which arm it measured**. Flipping
-   to source-wins makes the codegraph state *intentional*: the field goes OFF (source's value), and
-   the soak turns it ON deliberately. **Sequence it before 7 — otherwise 7's measurement is unlabeled.**
-7. **[[B-CGHARD]] — improve codegraph (PRD `prds/p2-codegraph-harden-then-soak-v2.1.md`).** Operator
-   ruling stands: **KEEP-AND-REFINE**. Build WS-CGH-A (bound the query hang) + WS-CGH-B
-   (verify-before-inject) + **🆕 WS-CGH-D (fix the INPUT terms — added 2026-07-17, see §C)**. **D
-   BEFORE the WS-CGH-C soak RUN.**
-8. **[[B-CGCAP]] verdict — measurement-blocked on 7.** Post-soak only.
+**▶ NEXT ACTIONS — RE-SEQUENCED + FIX-SHAPE-SCORED 2026-07-17 (supersedes the prior 8-step list, which
+was dependency-inverted and mixed feature work into a reliability queue).**
+
+**⛔ THE PRIOR #1 COULD NOT HAVE WORKED — `install.sh:510` defeats it.** The old step 1 said "fix the
+**source** `pickle_settings.json` + `bash install.sh` — never the deployed copy." **Proven inert
+2026-07-17:** the merge is `jq -s '.[0] * .[1]' "$SCRIPT_DIR/…" "$EXTENSION_ROOT/…"` — **deployed is
+the RIGHT operand and jq's `*` lets the right side win.** Demonstrated:
+`source 600000 * deployed 240000 → 240000`, and **even deleting the key from source → 240000 survives**
+(a key absent on the left cannot unset the right). ⇒ **Nothing in `pickle_settings.json` is fixable
+until B.5(b) source-wins lands.** The prerequisite was sequenced at #6, the dependent at #1. Fixed below.
+
+**🔑 SCORING RULE (operator directive 2026-07-17 — one month of brittleness + pipeline stoppage):** every
+queue item is now scored on TWO axes before it builds: **(1) does it fix a STOPPAGE?** and **(2) does the
+fix SUBTRACT machinery or ADD it?** An item that adds a mechanism to a system whose defining failure is
+too many brittle mechanisms must justify itself or leave the queue. Scored table at §B header.
+
+**🔑 THE QUEUE'S TOP 4 ARE ONE CLASS, NOT FOUR BUGS — name it and fix it once.** [[R-SAFP]], [[R-WDTF]]
+(both sites), the `worker_test_gate_timeout_ms` cap, and [[B-TRGP]] are all **an oracle that cannot
+distinguish signal from co-occurrence, wired as a HARD gate**: a symbol near the word "exit code" *is* a
+membership claim; a missing narrative token *is* worker failure; a suite slower than a stale constant *is*
+a red test; an absent `extension/` dir *is* a green gate. Same shape as [[B-FOMC]] C-1. **The precedent is
+already set and it is SUBTRACTIVE** — beta.33 deleted the gate-overreach cluster (R-RTRC ×8 + R-FRA ×7,
+the top recurring bug source) rather than hardening it; [[feedback_subtract_flaky_gate_input_not_add_resistance]]
+is the rule. **Every fix below takes the subtractive arm. If a workstream proposes to ADD resistance to one
+of these oracles, that is the wrong arm — reject it in refinement.**
+
+1. **B.5(b) `install.sh` → source-wins (§B.5b).** **PROMOTED from #6 → #1: it is the PREREQUISITE for
+   #2, not just for codegraph.** One-line merge-direction fix (`install.sh:510`). **Subtracts a whole
+   divergence surface** — the class where source and field silently disagree forever. Precedent already
+   in-tree: `:516-517` already force-overrides `auto_update_enabled` post-merge, so source-wins would
+   not regress it. **✅ SUBTRACTIVE · fixes a stoppage-enabler · unblocks 2, 6, 7.**
+2. **`worker_test_gate_timeout_ms` — DELETE THE PIN (row below; premises CORRECTED there).** Blocked on
+   1. **The subtractive fix already exists and shipped**: `0173662d fix(worker-gate): raise test:fast
+   timeout 240s -> 600s + env override (R-WTFT)` raised `DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS` 240_000 →
+   600_000 **but left `pickle_settings.json:36` pinned at 240000** — and settings outrank the default, so
+   **R-WTFT shipped INERT.** Textbook B-1SEAM asymmetric fix: repaired at one site, missed its sibling.
+   ⇒ **Delete the stale pin; the documented, trap-door-protected, env-overridable 600_000 default
+   applies.** **✅ PURE SUBTRACTION (−1 line, no new machinery).** **Immediate unblock available with
+   zero build:** `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS=600000` in the worker env wins over both.
+3. **Finish/close `bcc20f74`**, then run the FULL release gate before any tag.
+4. **`bash install.sh`** — the R-MWMO d2 fix is committed but **NOT deployed**; the running runtime still
+   has the bug it fixes.
+5. **[[R-SAFP]] (§B.1b) — take arm ① SUBTRACT the `exit_code` category.** ⚠ **Arguably belongs at #1 and
+   the plan has flagged that as an OPEN QUESTION twice without resolving it — resolving it now: it ranks
+   above the timeout on BLAST RADIUS** (it hard-fails refinement to `exit 2` / 0 tickets, and under the
+   standing "never hand-author tickets" protocol that blocks the *only* sanctioned build path; it is also
+   **on `main`/GA**), but **below B.5(b)+timeout on COST** (those are 2 lines and unblock every rep on
+   this repo). Build it immediately after. **✅ SUBTRACTIVE.**
+6. **[[R-WDTF]] class fix (§B.3 + 3b) — take the SUBTRACTIVE arm: drop `tokenPresent` from the `:2336`
+   conjunct.** ⚠ **The sibling arm ("hoist `evaluateFailedFlipSuppression` out of `runWorkerGate`") is
+   ADDITIVE — do not take it.** Both sites: `spawn-morty.ts:2336`, `spawn-refinement-team.ts:933`
+   (both CONFIRMED verbatim 2026-07-17). **✅ SUBTRACTIVE.**
+7. **[[B-CGHARD]] — ⛔ DEFERRED, NOT NEXT (was #7 "build it"). Re-scoped 2026-07-17.** **B.5(b) alone
+   turns codegraph OFF in the field for free** — source is `enabled:false`/`index_at_setup:false`,
+   deployed is `true`/`true`, and the ONLY reason the field runs it is the merge bug at #1. **So step 1
+   deletes this entire problem without building anything:** a 507-LOC service + native dep + the junk
+   payload (`return`, bare line numbers, 100-char prose sentences filling the 8192-byte cap on every
+   worker) all go dark. **B-CGHARD is ADDITIVE feature work — filters and ranking bolted onto an
+   OFF-by-default optional subsystem that is provably feeding noise.** Under subtract-before-add and the
+   north star ([[feedback_autonomous_first_subtract_features_back_to_reliable_baseline]]) it does not
+   belong in a reliability queue during a stoppage month. **The old sequence had it BACKWARDS: harden the
+   feature (#7) *before* deciding whether to delete it (#8).** ⇒ **Decide [[B-CGCAP]] FIRST.** WS-CGH-D is
+   only a prerequisite for making the *soak* measurable — i.e. it is B-CGCAP's measurement cost, not a
+   reliability fix. **❌ ADDITIVE · no stoppage · DEFER.**
+8. **[[B-CGCAP]] verdict — now the codegraph decision point, ahead of any hardening.** May subtract
+   ~1.3k LOC + a native dep. Post-#1 the field is OFF, so the honest question is no longer "harden it"
+   but **"has anything regressed with it dark?"** — if not, that is the subtraction, and WS-CGH-D/the
+   soak are never paid for. **✅ SUBTRACTIVE.**
 
 <details><summary>Prior state block (2026-07-16 late) — retained</summary>
 
@@ -158,7 +208,27 @@ tickets carry `worker_gate_verdict: red` while their work is real and committed.
 3. ⏳ **STILL OPEN (GA blocker, carried) — config-protection tests for `4fcc02fc`.** The "parked patch" is GONE — both lines carry the state-gate suite at 34 tests (the claimed 34→41 patch is not on disk or on either branch). These 7 regression tests must be **written from scratch** (reproduce: pre-fix the gate APPROVED `sed -i`/`perl -i`/`vim`/`ed` edits of live `state.json`, `~/.claude/pickle-rick/**`, operator settings). Correctly scoped OUT of beta.47 (pre-existing beta debt, not a new regression) but **blocks v2.0 GA (non-prerelease)**.
 4. ✅ beta.47 tagged + `gh release` (prerelease, **0 assets — R-RNTA**, consistent with every beta since 43; auto-updater has nothing to download). **NOT deployed** — deployed runtime stays v2.1-beta.2; `install.sh` main only if/when v2.0 GA deploys.
 
-### B. Reliability queue on v2.1 — drain in THIS order. The lead cluster is the FRESH 2026-07-14/16 LOA-1763 captures: on a target repo, the run stops early AND Done means nothing. Highest-signal class (target-repo-surfaced), directly gates autonomy-on-other-repos.
+### B. Reliability queue on v2.1. ⚠ **THE NUMBERING BELOW IS STALE — the `▶ NEXT ACTIONS` block above is the ONE authoritative order (re-sequenced + fix-shape-scored 2026-07-17).** The §B numbers below are retained for their per-entry source-grounding, NOT for their sequence.
+
+**Why the §B numbering was retired (2026-07-17):** it disagreed with the state block's own list, and two of its top slots were dead. **#1 [[R-MWMO]] is already BUILT** (7/7). **#2 [[B-TRGP]] is a decided LEAVE — it is a decision record, not work, and it was squatting the queue's second slot.** Meanwhile the item the plan itself calls *"the **actual** highest-leverage de-flaker of hands-off reps"* (`worker_test_gate_timeout_ms`) **appeared nowhere in this numbered list** — it sat in a loose row underneath. **Two contradictory ordered lists is itself a reliability defect in the ledger** ([[feedback_reground_the_ledger_before_building_from_it]]).
+
+**📊 FIX-SHAPE SCORECARD (2026-07-17 — operator directive: one month of brittleness + pipeline stoppage. Score EVERY item on both axes before it builds.)**
+
+| Item | Fixes a STOPPAGE? | Fix shape | Verdict |
+|---|---|---|---|
+| **B.5(b) source-wins** | enabler — unblocks all of `pickle_settings.json` | **SUBTRACTS** a divergence surface (1 line) | ✅ **#1** |
+| **`worker_test_gate_timeout_ms`** | YES — every `medium`+ gate false-fails; burns a suppression slot/ticket (cap 2); a 3rd strike flips a **green** ticket **Failed** | **PURE SUBTRACTION** (−1 line; restores shipped 600_000) | ✅ **#2** |
+| **[[R-SAFP]]** | YES — refinement `exit 2` / 0 tickets; blocks the only sanctioned build path; **on GA** | **SUBTRACT** the `exit_code` category (arm ①) | ✅ **#5** |
+| **[[R-WDTF]]** (2 sites) | YES — destroys verified work | **SUBTRACT** `tokenPresent` conjunct ⚠ *the "hoist suppression" arm is ADDITIVE — reject it* | ✅ **#6** |
+| **[[B-TRGP]]** | no — fake-green, downstream-covered | LEAVE (proven non-subtractive) | 🗄 **DE-QUEUE** → decision record |
+| **[[R-ORSR-2]]** | Done-without-impl | re-scope; **additive risk — watch it** | ⚠ hold |
+| **[[B-RLH]]** | **NO — honesty, not stoppage** | **MIXED**: WS-4 **ADDS** `stalled_below_target` (new field, **0 hits in src**, on `isConverged` `microverse-state.ts:390-402` which returns bare `true` for both stall + target); R-BCFR "delete the arms" + WS-5 DELETE-or-WIRE genuinely **SUBTRACT** | ⚠ **SPLIT — build the subtractions, defer WS-4** |
+| **[[B-CGHARD]]** | **NO** — and **#1 turns codegraph OFF in the field for free** | **ADDS** filters/ranking to a 507-LOC OFF-by-default optional feature | ❌ **DEFER — feature work in a reliability queue** |
+| **[[B-CGCAP]]** | no | **SUBTRACTS** ~1.3k LOC + native dep | ✅ **decide BEFORE hardening** |
+
+**The pattern this scorecard exists to stop:** the old sequence put the two **ADDITIVE feature** items (B-CGHARD, then B-CGCAP) at #7–#8 *in that order* — hardening a subsystem before deciding whether to delete it — while the two **one-line SUBTRACTIONS** that unblock every hands-off rep sat at #1 (inert as prescribed) and #6 (the prerequisite). **Sequence subtractions first; they are cheap, they cannot regress what they remove, and they frequently delete the problem the additive item was going to solve.**
+
+Original framing (retained): the lead cluster is the FRESH 2026-07-14/16 LOA-1763 captures: on a target repo, the run stops early AND Done means nothing. Highest-signal class (target-repo-surfaced), directly gates autonomy-on-other-repos.
 
 **⛔ BUILD PROTOCOL (operator directive 2026-07-16): NOTHING is hand-built — ALWAYS `/pickle-pipeline`.** The R-PSRB "hand-build" reflex is retired. Even Done-flip/salvage-path fixes pipeline: test the ACTUAL bite (does the deployed bug fire on the on-repo build worker?), and where it genuinely would, build-then-`install.sh`-incrementally so later tickets run the fixed runtime — never hand-build. See [[feedback_never_hand_build_always_pipeline]].
 
@@ -259,23 +329,61 @@ last several entries carried wrong premises; this is another. **Reground before 
 **Reproduced on every `medium`+ ticket of the R-MWMO bundle.** The worker lint/test gate SIGTERMs
 `npm run test:fast` at **240000ms**: `{"event":"worker_gate_failed","gate_phase":"test:fast","failures":[{"name":"__timeout__","file":"npm run test:fast","message":"timed out after 240000ms; sent SIGTERM to process tree"}]}` — **not a red test.** The same suite, run by the manager at rest, is **green in ~305–352s** (6813/0). The cap cannot be met; the gate is unpassable by construction, independent of the code under test.
 
-**The cap's source is FOUND — and it is NOT the documented knob.** It is the settings key
-**`worker_test_gate_timeout_ms`** (`pickle_settings.json:36` = `240000`), **not** the
-`PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` env var that `extension/CLAUDE.md` documents with a 600000ms
-default / 60000ms floor (a *different* per-gate-phase budget). That mismatch is why earlier sessions
-looked for it and could not find it. Fix the **source** `pickle_settings.json` + `bash install.sh` —
-never the deployed copy.
+**The cap's source is `worker_test_gate_timeout_ms`** (`pickle_settings.json:36` = `240000`; **the
+deployed copy carries the same 240000**).
+
+**⚠ TWO PREMISES OF THIS ROW WERE DRIFTED — CORRECTED 2026-07-17 (source-verified; do NOT build from
+the struck text).**
+
+- ~~"It is NOT the documented knob... `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` is a *different*
+  per-gate-phase budget. That mismatch is why earlier sessions looked for it and could not find it."~~
+  **FALSE — they are the SAME knob, one resolver.** `resolveWorkerTestGateTimeoutMs`
+  (`pickle-utils.ts:883-902`): **env override wins → settings key → `DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS`
+  (600_000)**. `extension/CLAUDE.md:188` states it in as many words: *"The env override wins over
+  `pickle_settings.json:worker_test_gate_timeout_ms`."* There is no mismatch to explain the earlier
+  misses. **Consequence: `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS=600000` unblocks every worker gate right
+  now, with no build and no deploy.**
+- ~~"Fix the **source** `pickle_settings.json` + `bash install.sh` — never the deployed copy."~~
+  **INERT — `install.sh:510` defeats it.** `jq -s '.[0] * .[1]'` with deployed as the RIGHT operand:
+  `source 600000 * deployed 240000 → 240000`, and **deleting the key from source still → 240000**.
+  ⇒ **BLOCKED ON B.5(b) source-wins** (now sequenced #1). Fixing source and running `install.sh` would
+  change nothing while looking done — the same failure mode as R-WTFT below.
+
+**🔑 ROOT CAUSE — R-WTFT SHIPPED INERT; THIS IS A B-1SEAM ASYMMETRIC FIX, NOT A NEW BUG.**
+`0173662d fix(worker-gate): raise test:fast timeout 240s -> 600s + env override (R-WTFT)` raised
+`DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS` **240_000 → 600_000** but left `pickle_settings.json:36` pinned at
+**240000** — born at 240000 in `e34894ea` (2026-05-11) and never touched since. **Because settings
+outrank the default, the fix's own constant is unreachable and R-WTFT has been dead on arrival since the
+day it shipped.** A defect repaired at ONE site and not its sibling — the exact antipattern B-1SEAM was
+built to collapse.
+
+**The trap-door invariant is guarding the WRONG SITE.** `extension/CLAUDE.md:188` declares *"BREAKS:
+shrinking the default back below ~5 min reopens the R-WUWC-1 class (4994-test fast suite SIGTERMs
+mid-validation, rolls back worker artifacts, flips ticket Failed)"* — and enforces it on the **constant**,
+which is compliant at 600_000, while **`pickle_settings.json` violates it at 240000, unguarded.**
+R-WUWC-1 is therefore **already reopened in the field**, via the file the invariant does not watch.
+Fold "extend the invariant to the settings key (or delete the key so there is only one site)" into the fix.
 
 **Why it hasn't bitten harder:** `failed_flip_suppressed` (evidence=both) catches it every time, so
 work is preserved and the worker still self-flips Done — but it **burns a suppression slot (cap 2)
 per ticket**, and a third strike in one ticket would flip a **green** ticket **Failed**. It also
 trains operators to ignore gate failures, which is exactly the wrong reflex.
 
-**⚠ The subtractive answer is NOT "raise 240000."** Raising the constant only buys time until the
-suite grows again (it already drifted 258–294s → 305–352s across six days). The durable fix makes the
-budget **track the suite** (or subtracts the duplicated tier from the worker gate entirely — the
-closer's full gate already covers it; cf. [[feedback_subtract_flaky_gate_input_not_add_resistance]]:
-when a gate false-blocks on a flaky/mis-scoped input, subtract the dimension, don't add resistance).
+**⚠ THE FIX IS "DELETE THE PIN" — and the earlier "make the budget track the suite" answer was the
+ADDITIVE arm (corrected 2026-07-17).** That framing was right that *raising* 240000 only buys time until
+the suite grows again (it already drifted 258–294s → 305–352s across six days) — **but it then reached
+for new machinery to solve a problem R-WTFT already solved.** The 600_000 default is *already* the
+intended value, *already* trap-door-documented, and *already* env-overridable per machine. **Nothing
+needs to be built. Delete the stale settings pin (−1 line) and the intended behavior returns.** Building
+a suite-tracking budget would ADD a self-adjusting mechanism to a system whose defining failure is too
+many brittle mechanisms — and it would sit on top of a knob that was only ever broken because two sites
+disagreed. **Take the subtraction; do not build the tracker.**
+
+**Fix, in order:** (1) B.5(b) source-wins — without it nothing here reaches the field; (2) delete
+`worker_test_gate_timeout_ms` from `pickle_settings.json`; (3) extend the CLAUDE.md:188 invariant to
+cover the settings key, or rely on its deletion leaving a single site. **Optional zero-cost mitigation
+available today:** `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS=600000`.
+
 Strong small-bundle candidate; this is the **actual** highest-leverage de-flaker of hands-off reps.
 
 ### 🟡 FOLLOW-UP — pin AC-MWMO-D2-2/D2-3 at the integration tier (test-only; R-MWMO d2 residual)
