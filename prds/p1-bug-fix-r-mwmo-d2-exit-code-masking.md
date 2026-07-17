@@ -195,6 +195,43 @@ only works when the operator opted in is not an honesty fix.
 **Consequence if WS-2 is dropped:** the bundle can go fully green and **change nothing the operator
 sees** in the exact scenario the bug report cites. WS-1 and WS-2 ship together or the thesis fails.
 
+### WS-3 — make the halt LEGIBLE (source-verified 2026-07-16, cycle 3)
+
+WS-1 makes the process exit non-zero. WS-2 makes the pipeline halt on it. **Neither makes the
+operator able to tell WHY.** Two independent defects erase/misattribute the reason:
+
+**(a) The reason is ERASED** — `extension/src/bin/pipeline-runner.ts:3693`:
+```ts
+} else if (pipelineFailed) {
+  finalizeTerminalState(runtime.statePath, { step: 'completed', exitReason: 'failed' });
+```
+The specific `done_without_commit_evidence` is overwritten with a generic `'failed'`. Note the
+sibling branch immediately above (`:3688-3691`) **deliberately preserves a prior reason** and says so
+in its comment — so preserve-the-reason is an established behavior in this very function; this branch
+just doesn't do it.
+
+**(b) The reason is MISATTRIBUTED** — `extension/src/bin/pipeline-runner.ts:3786-3790`:
+```ts
+const commitCount = countCommitsSince(startCommit, runtime.repoRoot);
+if (commitCount === 0) {
+  return `zero commits since baseline ${shortSha} — no build progress this run`;
+}
+return `${commitCount} commit(s) since baseline ${shortSha} — halted for a reason other than build progress (e.g. strict phase policy)`;
+```
+**This is exactly the case WS-2 creates** (a `done_without_commit_evidence` halt with
+`commitCount > 0`), and it reports it as *"halted for a reason other than build progress (e.g. strict
+phase policy)"* — **actively wrong**. The operator is told the opposite of the truth: the halt IS
+about build progress (a ticket produced no commit); it is not strict-phase policy.
+
+**Fix:** report the recorded `exit_reason` when one is present rather than inferring the reason from
+a commit count. This is a **subtraction** — it deletes an inference in favour of the fact already on
+disk. It is also the same root as the §C `R-PRNF9-DEAD` finding and the Simplification-Review Q3
+note: `countCommitsSince` is being asked a question it cannot answer.
+
+**The thesis chain:** the halt must **exit** non-zero (WS-1) → be **classified** fatal (WS-2) → be
+**reported** truthfully (WS-3). Any one link missing and the operator still cannot see the failure.
+**All three, or the bundle is theatre.**
+
 ## Interface Contracts
 
 The fix changes **control flow only**. No signature, type, or payload changes. The contracts below are
@@ -279,6 +316,16 @@ Every criterion below is verified from `extension/` unless stated otherwise.
 - **AC-MWMO-D2-9 (WS-1 + WS-2 end-to-end)** — the operator-visible outcome changes: a pickle phase
   that halts on `done_without_commit_evidence` with a prior ticket committed does **NOT** report
   `Phase pickle completed successfully` and does **NOT** advance to citadel.
+  — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
+- **AC-MWMO-D2-10 (WS-3a — the reason survives)** — after a `done_without_commit_evidence` halt, the
+  terminal state's `exit_reason` is still `done_without_commit_evidence`, NOT the generic `'failed'`
+  (`extension/src/bin/pipeline-runner.ts:3693` overwrites it today).
+  — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
+- **AC-MWMO-D2-11 (WS-3b — the reason is not a lie)** — for a `done_without_commit_evidence` halt with
+  `countCommitsSince(startCommit) > 0`, the operator-facing reason string does **NOT** claim the phase
+  "halted for a reason other than build progress (e.g. strict phase policy)"; it names the recorded
+  `exit_reason`. **This assertion FAILS on today's source** (`:3790` returns exactly that string) —
+  red-first is mandatory here.
   — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
 - **AC-MWMO-D2-6** — Full release gate green from `extension/`.
   — Verify: `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-un-terminalize-single-path.sh && npm run test:fast:budget && npm run test:integration`
