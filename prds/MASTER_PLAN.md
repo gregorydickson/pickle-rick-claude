@@ -103,14 +103,24 @@ WS-1 (`a29bef4f`) · WS-1b (`e4687b95`) · WS-1c (`ae4297d4`) · WS-2 (`c4f0e5a8
 below the ~305–352s suite runtime (row below) false-fails every `medium`+ worker gate — 3 of 7
 tickets carry `worker_gate_verdict: red` while their work is real and committed.
 
-**▶ NEXT ACTIONS, in order:**
-1. **Fix `worker_test_gate_timeout_ms` (the row below).** It gates every hands-off rep on this repo.
+**▶ NEXT ACTIONS, in order (sequenced 2026-07-17; codegraph placed with its dependency made explicit):**
+1. **Fix `worker_test_gate_timeout_ms` (row below).** Gates every hands-off rep on this repo.
    **Raising the constant is not the fix** — see that row.
 2. **Finish/close `bcc20f74`**, then run the FULL release gate before any tag.
 3. **`bash install.sh`** — the fix is committed but **NOT deployed**; the running runtime still has
    the bug it fixes.
-4. **[[R-SAFP]] (§B.1b)** — still open, still on the GA line, still a catch-22 for exit-path PRDs.
+4. **[[R-SAFP]] (§B.1b)** — open, on the GA line, a catch-22 for every exit-path PRD.
 5. **[[R-WDTF]] class fix (§B.3 + 3b)** — 6 data points; `spawn-refinement-team.ts:933`.
+6. **B.5(b) `install.sh` → source-wins** — *cheap, and it is the **PREREQUISITE** for all codegraph
+   work below.* Today deployed silently overrides source (`enabled:true` vs source `false`), so the
+   field runs a codegraph arm nobody chose and **no soak can name which arm it measured**. Flipping
+   to source-wins makes the codegraph state *intentional*: the field goes OFF (source's value), and
+   the soak turns it ON deliberately. **Sequence it before 7 — otherwise 7's measurement is unlabeled.**
+7. **[[B-CGHARD]] — improve codegraph (PRD `prds/p2-codegraph-harden-then-soak-v2.1.md`).** Operator
+   ruling stands: **KEEP-AND-REFINE**. Build WS-CGH-A (bound the query hang) + WS-CGH-B
+   (verify-before-inject) + **🆕 WS-CGH-D (fix the INPUT terms — added 2026-07-17, see §C)**. **D
+   BEFORE the WS-CGH-C soak RUN.**
+8. **[[B-CGCAP]] verdict — measurement-blocked on 7.** Post-soak only.
 
 <details><summary>Prior state block (2026-07-16 late) — retained</summary>
 
@@ -281,7 +291,15 @@ whose ticket is Done with no `completion_commit`, then asserts observed exit sta
 - **🆕 [[R-PRNF9-DEAD]] — the `readiness_halt` cluster is DEAD CODE (found 2026-07-16 dogfooding R-MWMO d2; source-verified).** `pipeline-runner.ts:2781` special-cases `exit_reason === 'readiness_halt'` as always-fatal, and `:3917-3924` comments that it "promotes **mux-runner's** generic `readiness_halt`" — **but that producer does not exist**: `readiness_halt` is **NOT a member of the `ExitReason` union** (`mux-runner.ts:4367`), `mux-runner` has **zero** `recordExitReason(…, 'readiness_halt')` call sites, and the **deployed** `mux-runner.js` contains no `readiness_halt` at all. The whole R-PRNF-9 cluster (`:2781`, `:3662`, `:3774`, `:3917-3924`) **has never fired.** **R-CCNW-2 discipline applies: a gate that has never fired is dead weight or an unwired safety net — pick one** (wire it by making `mux-runner` produce the reason, or delete it). Same DELETE-or-WIRE shape as B-RLH WS-5's ac-phase-gate; consider bundling the two decisions. **Notable second-order effect:** it silently falsified the R-MWMO d2 PRD's WS-2 justification ("mirror the shipped precedent") — a dead guard cited as proof a pattern works is proof only that it was never exercised.
 - **ac-phase-gate: decide DELETE-vs-WIRE inside B-RLH WS-5** (R-CCNW-2 discipline — a gate that has never fired is dead weight or an unwired safety net; pick one).
 - **install.sh settings-merge → source-wins** (B.4b) is the live subtraction with real yield.
-- **[[B-CGCAP]] codegraph verdict — POST-GA, deferred as earned** (may subtract ~1.3k LOC + a native dep). Do NOT run the soak before fixing the injection payload (`deriveCodegraphTerms` harvests backticked spans → 5/6 recent tickets yielded ZERO code symbols). Not calendar-blocked; measurement-blocked.
+- **🆕 [[B-CGHARD]] WS-CGH-D — FIX THE CODEGRAPH INPUT TERMS (added 2026-07-17; the codegraph work item, sequenced at #7 in the state block above; PRD `prds/p2-codegraph-harden-then-soak-v2.1.md`).** **Codegraph IS running and IS healthy — and IS feeding workers noise.** Verified on the R-MWMO run (`2026-07-16-6fe9b904`): `index_status: healthy`, `injected: 11`, `skipped: 0`, `degraded_ops: 0`, `hits_count` 122–185, **`bytes` 8130–8141 = filling the 8192 cap**. Then the terms were dumped from the REAL harvester on the REAL tickets:
+  - `de25ce90` → `` `!guard.ok` ``, a bare path, `done_without_commit_evidence`, **`return`**, **`while (true)`**, **`:9287`**, **`:~11300`**, **`:~11345`** — **~1 of 8 is a symbol; three are bare LINE NUMBERS; two are KEYWORDS.**
+  - `be604d1d` → **ZERO of 8**, and two slots burned on ~100-char **PROSE SENTENCES** (`zero commits since baseline ${shortSha} — no build progress this run`).
+  - `a5f8cf4f` → `isFatalPhaseFailure`, `finalizePhaseSuccess`, `maybeStampPhaseGraduation` — **3 of 8, the best of the bundle.**
+  - **Mechanism:** `deriveCodegraphTerms` (`extension/src/bin/spawn-morty.ts:584-602`) takes **every backticked span in DOCUMENT ORDER**, then `.slice(0, 8)`. **The first eight backticks win** ⇒ **the better a ticket's citation discipline, the worse its payload** (precise `file.ts:NNNN` refs flood the harvest). This is worse than the old "5/6 yield zero symbols" note: it is not a miss-rate, it is a *systematic inversion*.
+  - **`hits_count` is a NOISE metric, not a value metric — the soak must not use it.** `return` occurs **859× in `mux-runner.ts` alone**; a keyword term yields huge hits and zero information. **Every telemetry field read green while the payload was junk** — the "silence is not success" shape, now demonstrated on codegraph itself.
+  - **Fix candidates (refinement decides):** filter line-refs/keywords/long spans (necessary, not sufficient) · **rank instead of take-first — `slice(0,8)` over document order IS the root** · strip call-expression noise (`applyAutoTicketCompletionValidation({...});` → the symbol) · **REUSE `resolveSymbolRef`/`countUnresolvedReferences` (`check-readiness.ts:525`), which already answer "is this a real symbol?"** — name the reuse or justify why not (`prds/CLAUDE.md` Q2).
+  - **Depends on B.5(b) source-wins** (else the arm is unlabeled). **Blocks the WS-CGH-C soak and [[B-CGCAP]].**
+- **[[B-CGCAP]] codegraph verdict — POST-GA, measurement-blocked on WS-CGH-D above** (may subtract ~1.3k LOC + a native dep). **Do NOT run the soak first:** on today's payload it returns "injected: N" for N restatements of the ticket's own file list plus the word `return`, and B-CGCAP would flip a **hollow verdict in EITHER direction**. Not calendar-blocked; measurement-blocked.
 - **Do NOT chase** (the B-GSUB over-subtraction lesson): the ~38-guard manager-loop-continuation cluster and the dead-pid/orphan liveness triplication — earned distinct signals already sharing plumbing, low ROI.
 
 **Sequencing rationale:** A ships the v2.0 line (cheap, mostly done). B is reliability-first and every item is repo-agnostic — B1/B2 fix the "Done means nothing on a target repo" pair that most directly gates autonomy-on-other-repos; B3/B4 are the honesty/subtraction follow-through. The un-automated closer stays an **explicit NON-ISSUE** (operator ⓪) — do not queue it.

@@ -147,6 +147,62 @@ SOAK RUN needs the deployed runtime, post v2.0 GA.
   — Type: test (schema conformance + payload tests; `activity-event-payload.test.js` +
   `codegraph-context-events-schema-conformance.test.js`)
 
+### WS-CGH-D — Fix the INPUT terms (NEW 2026-07-17; **blocks WS-CGH-C's soak and [[B-CGCAP]]'s verdict**)
+
+**Thesis: WS-CGH-B verifies the OUTPUT entries, but the INPUT terms are already noise — so B can
+faithfully verify garbage, and a soak on today's path measures how well we look up the word
+`return`.** This is the missing upstream workstream.
+
+**Mechanism** — `deriveCodegraphTerms` (`extension/src/bin/spawn-morty.ts:584-602`) harvests **every
+backticked span from title + full ticket body, in DOCUMENT ORDER**, appends title words ≥4 chars,
+then `.slice(0, max)` with `max = CODEGRAPH_MAX_TERMS` (8). **The first eight backticks win** — and in
+a well-cited ticket those are file paths and `file.ts:NNNN` line refs. **The better the citation
+discipline, the worse the payload.**
+
+**EVIDENCE — the actual terms injected into the R-MWMO bundle (2026-07-17, run against the real
+harvester on the real tickets; session `2026-07-16-6fe9b904`):**
+
+| Ticket | Terms actually sent | Real code symbols |
+|---|---|---|
+| `de25ce90` | `!guard.ok`, `extension/src/bin/mux-runner.ts`, `done_without_commit_evidence`, **`return`**, **`while (true)`**, **`:9287`**, **`:~11300`**, **`:~11345`** | ~1 of 8 (3 are bare line numbers; 2 are keywords) |
+| `be604d1d` | path, **`:3693`**, `done_without_commit_evidence`, `'failed'`, **`:3688-3691`**, **`:3786-3790`**, + **two ~100-char PROSE SENTENCES** (`zero commits since baseline ${shortSha} — no build progress this run`, and the strict-phase-policy string) | **0 of 8** |
+| `a5f8cf4f` | `isFatalPhaseFailure`, `finalizePhaseSuccess`, `maybeStampPhaseGraduation`, + 5 line-refs/expressions | **3 of 8 — the best of the bundle** |
+| `a3812edd` | `safeDeactivate` + `applyAutoTicketCompletionValidation({...});` (symbol with `({...});` glued on — will not resolve), rest paths/keywords/fragments | ~1 of 8 |
+
+**`hits_count` IS NOT A VALUE METRIC — it is a NOISE metric, and the soak must not use it.** The
+run logged `hits_count` 122–185 and `bytes` 8130–8141 (i.e. **filling the 8192 cap**) while
+`index_status: healthy`, `degraded_ops: 0`, `skipped: 0`. But **`return` occurs 859× in
+`mux-runner.ts` alone** — a keyword term produces enormous hit counts and zero information. **A green
+session summary (`injected: 11, skipped: 0, degraded: 0`) is exactly the "silence is not success"
+shape this repo keeps relearning:** every telemetry field says healthy while the payload is junk.
+
+**Fix shape — DECIDE IN REFINEMENT, do not pre-commit. Candidates:**
+1. **Filter (necessary, not sufficient):** drop bare line-refs (`^:?~?\d+(-\d+)?\+?$`), language
+   keywords (`return`, `break`, `while`, …), and over-long spans (a ~100-char prose sentence is never
+   a symbol). Cheap, mechanical, high yield — `be604d1d` goes 0 → several.
+2. **Rank, don't take-first (this is the actual root).** `slice(0, 8)` over **document order** is the
+   bug: relevance is unrelated to position. Prefer identifier-shaped tokens, then dedupe, then cap.
+3. **Strip call/expression noise** so `applyAutoTicketCompletionValidation({...});` → the bare symbol.
+4. **Consider REUSE over new machinery** (`prds/CLAUDE.md` Q2): `check-readiness.ts:525`
+   `resolveSymbolRef` / `countUnresolvedReferences` already decide "is this token a real symbol?" —
+   **name the reuse or justify why it cannot be used.** A bespoke tokenizer beside an existing
+   resolver is the smell this repo keeps paying for.
+
+**ACs must verify the OUTCOME, not the mechanism** ([[feedback_verify_the_outcome_not_the_mechanism]]):
+- **AC-CGH-D1** — for EVERY ticket in a fixture set drawn from REAL shipped tickets (use the R-MWMO
+  five — they are adversarial by construction: citation-dense), **≥N of the derived terms resolve to
+  a real symbol**, and **zero** are bare line-refs, keywords, or >40-char spans. Pin `be604d1d`
+  (today: 0 symbols) as the regression case — **it must fail before the fix**.
+- **AC-CGH-D2** — the injected section for a ticket whose terms are all noise is **not emitted**
+  (or is emitted with an honest skip reason), rather than burning 8KB of worker context. Today it
+  emits 8141 bytes of it.
+- **AC-CGH-D3** — the soak/telemetry records **distinct RESOLVED SYMBOLS**, not `hits_count`. A metric
+  that rises when a term matches `return` 859× is measuring the wrong thing.
+
+**⚠ SEQUENCING (binding): WS-CGH-D lands BEFORE the WS-CGH-C soak RUN.** A soak on today's payload
+returns "injected: N" for N restatements of the ticket's own file list plus the word `return`, and
+[[B-CGCAP]] would flip a hollow verdict on it — in EITHER direction.
+
 ### WS-CGH-C — Soak readiness + protocol (RUN is a post-GA operator step)
 
 - **AC-CGH-C1 — soak runbook documented with honest semantics, no new machinery.** The `## Soak
