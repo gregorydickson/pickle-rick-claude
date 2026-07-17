@@ -569,3 +569,25 @@ lose work by the deployed (unfixed) runtime than by the fixed one. Therefore inc
 - Making `pipeline-runner` read the `exit_reason` field from `state.json` instead of trusting the
   process exit status.
 - Recovering the orphaned worker (a real but separate problem — needs its own diagnosis).
+
+---
+
+## Implementation Task Breakdown
+
+*(Refined 2026-07-16 over 5 refinement rounds. Every draft of this PRD was wrong at least once —
+see the AUTHORING CORRECTIONS banner. Hold every ticket to: **verify the OUTCOME, not the mechanism**.)*
+
+| Order | ID | Title | Priority | Tier | Entry | Exit | Files |
+|---|---|---|---|---|---|---|---|
+| 10 | `de25ce90` | WS-1: route the 3 bare-return guards to the loop's canonical exit | High | medium | fast tier green | the 3 live sites reach the exit map; exit non-zero | `src/bin/mux-runner.ts` |
+| 20 | `a3812edd` | WS-1b: stop discarding the fatal verdict at `:10497` | High | medium | fast tier green | `:2892`'s failure exits with its own reason, not `'cancelled'` | `src/bin/mux-runner.ts` |
+| 30 | `c0293300` | WS-1c: panel verdict agrees with the notification's (no hardcoded GREEN) | High | medium | de25ce90 | a fatal halt never renders GREEN/"Complete" | `src/bin/mux-runner.ts` |
+| 40 | `a5f8cf4f` | WS-2: fatal when all tickets terminal (not the pending case) | High | medium | de25ce90 | an all-terminal commit-less bundle cannot graduate fake-green | `src/bin/pipeline-runner.ts` |
+| 50 | `be604d1d` | WS-3: report the recorded `exit_reason`; stop inferring a false one | High | medium | a5f8cf4f | the reason survives and names itself | `src/bin/pipeline-runner.ts` |
+| 60 | `bcc20f74` | Harden: code quality across the bundle diff | High | large | 10–50 done | zero P0–P1; one canonical exit; no scope creep | both + test |
+| 70 | `31ed007a` | Harden: test quality — prove every AC fails pre-fix | High | large | 60 done | every AC red-first or reported unreachable | test files |
+
+**No wiring ticket** — this bundle edits existing, already-wired control flow; it creates no modules
+to integrate. **Data-flow and cross-reference hardening SKIPPED with cause** — the bundle changes
+control flow only: no DTOs, schemas, field transformations, docs, prompts, or command files, so those
+two templates have no surface here. Recorded rather than silently dropped.
