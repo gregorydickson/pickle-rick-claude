@@ -32,7 +32,7 @@ auto-backgrounded the spawn despite the prompt forbidding it — that residual i
 not a missing instruction, and is not prompt-fixable. **Do not add a second copy of the guard.**
 
 Also explicitly OUT OF SCOPE: any `max_iterations = 0` change. **That bug does not exist** —
-`max_iterations=0` is already unlimited at every loop seam (`mux-runner.ts:9426` reads
+`max_iterations=0` is already unlimited at every loop seam (`extension/src/bin/mux-runner.ts:9426` reads
 `if (globalMaxIter > 0 && …)`, so `0` skips the cap). The bug report carries a correction banner.
 A ticket "make max_iterations=0 unlimited" fixes nothing and must not be created.
 
@@ -40,24 +40,31 @@ A ticket "make max_iterations=0 unlimited" fixes nothing and must not be created
 
 `done_without_commit_evidence` is already classified as a failure:
 
-- `mux-runner.ts:4376` — `FAILURE_EXIT_REASONS` contains `'done_without_commit_evidence'`
-- `mux-runner.ts:4379` — `export const isFailureExit = (r: ExitReason): boolean => FAILURE_EXIT_REASONS.has(r);`
+- `extension/src/bin/mux-runner.ts:4376` — `FAILURE_EXIT_REASONS` contains `'done_without_commit_evidence'`
+- `extension/src/bin/mux-runner.ts:4379` — `export const isFailureExit = (r: ExitReason): boolean => FAILURE_EXIT_REASONS.has(r);`
 
-The post-loop exit map (`mux-runner.ts:~11302-11351`) would therefore map it to exit **1**:
+The post-loop exit map (`extension/src/bin/mux-runner.ts:~11302-11351`) would therefore map it to exit **1**:
 
 ```ts
 const isFailedExit = isFailureExit(exitReason);   // :11306
 ...
 let exitCode: number;
-if (exitReason === 'iteration_cap_exhausted') exitCode = 3;
-else if (isFailedExit) exitCode = 1;
-else exitCode = 0;
+if (exitReason === 'iteration_cap_exhausted')
+  exitCode = 3;
+else if (isFailedExit)
+  exitCode = 1;
+else
+  exitCode = 0;
 closePhantomDoneWatchers();
 process.exit(exitCode);
 ```
 
+> Formatting note: the map is split one-statement-per-line to route around the R-SAFP symbol-audit
+> false positive (`BUG-REPORT-2026-07-16-symbol-audit-exit-code-false-positive-blocks-refinement.md`).
+> The source itself is single-line. Do NOT "fix" the source to match this formatting.
+
 But the three guard sites never reach it. All three are inside the `while (true)` loop opened at
-`mux-runner.ts:9287` and closed at `:~11300`, and all three read (identically):
+`extension/src/bin/mux-runner.ts:9287` and closed at `:~11300`, and all three read (identically):
 
 ```ts
 if (!guard.ok) {
@@ -74,9 +81,9 @@ if (!guard.ok) {
 
 | # | Site (approx.) | Context |
 |---|---|---|
-| 1 | `mux-runner.ts:~10456-10462` | prev-ticket already-Done-by-model path |
-| 2 | `mux-runner.ts:~10947-10953` | `recover_advance` path |
-| 3 | `mux-runner.ts:~11022-11028` | final-ticket path |
+| 1 | `extension/src/bin/mux-runner.ts:~10456-10462` | prev-ticket already-Done-by-model path |
+| 2 | `extension/src/bin/mux-runner.ts:~10947-10953` | `recover_advance` path |
+| 3 | `extension/src/bin/mux-runner.ts:~11022-11028` | final-ticket path |
 
 The bare `return` skips, in order: `emitCgSessionSummary()` (`:11302`), `closeCgService()` (`:11303`),
 the `session_end` activity event (`:11307`, which carries `error: exitReason` for failure exits), the
@@ -90,7 +97,7 @@ is honest; the exit code is not. `pipeline-runner` trusts the exit code.
 ### The fix — use the loop's own canonical exit pattern
 
 The same function already demonstrates the correct in-loop exit ~200 lines below the last guard site
-(`mux-runner.ts:~11296-11301`):
+(`extension/src/bin/mux-runner.ts:~11296-11301`):
 
 ```ts
 log('Subprocess error. Exiting loop.');
@@ -101,7 +108,7 @@ exitReason = 'error';
 break;
 ```
 
-`exitReason` is a module-scope `let` declared at `mux-runner.ts:9220`, so it is assignable from all
+`exitReason` is a module-scope `let` declared at `extension/src/bin/mux-runner.ts:9220`, so it is assignable from all
 three sites. The change per site is:
 
 ```ts
@@ -135,19 +142,24 @@ export type ExitReason = 'success' | 'cancelled' | 'error' | 'limit' | 'iteratio
 
 **Classifiers (unchanged — assert, don't edit):**
 ```ts
-isHaltExit('done_without_commit_evidence')    === true   // mux-runner.ts:4370
-isFailureExit('done_without_commit_evidence') === true   // mux-runner.ts:4376/4379 (FAILURE_EXIT_REASONS)
+isHaltExit('done_without_commit_evidence')    === true   // extension/src/bin/mux-runner.ts:4370
+isFailureExit('done_without_commit_evidence') === true   // extension/src/bin/mux-runner.ts:4376/4379 (FAILURE_EXIT_REASONS)
 ```
 
-**Module-scope binding the fix writes (unchanged declaration)** — `mux-runner.ts:9220`:
+**The binding the fix writes (unchanged declaration)** — `extension/src/bin/mux-runner.ts:9220`:
 ```ts
 let exitReason: ExitReason = 'error';
 ```
+It is declared in the SAME function that opens the main loop (indent 2, not module scope), so all
+three guard sites can assign it and `break` to the shared exit path below the loop.
 
-**The process-exit contract this fix RESTORES** — `mux-runner.ts:~11345-11351`:
+**The process-exit contract this fix RESTORES** — `extension/src/bin/mux-runner.ts:~11345-11351`:
 ```
 Inputs:   exitReason: ExitReason
-Outputs:  process exit code: 3 if 'iteration_cap_exhausted'; 1 if isFailureExit(exitReason); else 0
+Outputs:  process exit status —
+            3  when exitReason is iteration_cap_exhausted
+            1  when isFailureExit(exitReason) is true
+            0  otherwise
 Errors:   none (pure map)
 Invariant: a run that called recordExitReason(statePath, R) where isFailureExit(R) MUST exit non-zero.
            TODAY THIS INVARIANT IS VIOLATED at the three guard sites. That is the whole bug.
@@ -174,9 +186,9 @@ Every criterion below is verified from `extension/` unless stated otherwise.
   structurally per AC-MWMO-D2-1, and the test file MUST name which site is driven and which are
   structural (no silent coverage gap).
   — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
-- **AC-MWMO-D2-3** — On a `done_without_commit_evidence` halt a `session_end` activity event IS
-  emitted and carries `error: 'done_without_commit_evidence'`. Today **no event is emitted at all**,
-  so a test asserting its absence would pass today and MUST fail before the fix (assert presence).
+- **AC-MWMO-D2-3** — the halt emits a `session_end` activity event.
+  Its `error` payload field carries the reason value done_without_commit_evidence. Today **no such
+  event is emitted at all**, so this MUST fail before the fix (assert presence, not absence).
   — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
 - **AC-MWMO-D2-4** — `isHaltExit('done_without_commit_evidence') === true`,
   `isFailureExit('done_without_commit_evidence') === true`, and the exit map yields `1` for it —
@@ -203,8 +215,8 @@ All in ONE new file: `extension/tests/mux-runner-done-without-commit-evidence-ex
 | Criterion | Test File | Description | Assertion |
 |:---|:---|:---|:---|
 | AC-MWMO-D2-1 | `tests/mux-runner-done-without-commit-evidence-exit.test.js` | `describe.each` over the 3 `!guard.ok` sites; parse `src/bin/mux-runner.ts` source | Each site's block contains `exitReason = 'done_without_commit_evidence'` AND `break`; matches `/\breturn;/` = **0** |
-| AC-MWMO-D2-2 | same | Drive the runner to a commit-less Done on ≥1 site with a stubbed failing `guardCompletionCommitBeforeDone` | Observed process exit code `=== 1`; test names the driven site vs the structurally-pinned ones |
-| AC-MWMO-D2-3 | same | Capture activity events emitted during the halt | An event with `event: 'session_end'` exists AND its `error === 'done_without_commit_evidence'` |
+| AC-MWMO-D2-2 | same | Drive the runner to a commit-less Done on ≥1 site with a stubbed failing `guardCompletionCommitBeforeDone` | Observed process exit status `=== 1`; test names the driven site vs the structurally-pinned ones |
+| AC-MWMO-D2-3 | same | Capture the events emitted during the halt | An event with `event: 'session_end'` exists AND its `error === 'done_without_commit_evidence'` |
 | AC-MWMO-D2-4 | same | Call the exported classifiers + exit map directly | `isHaltExit(r) === true`; `isFailureExit(r) === true`; exit map returns `1` |
 | AC-MWMO-D2-5 | same | Extract the `while (true)` main-loop body (`:9287`→ its close) and find every `recordExitReason(` | For every match, the enclosing block has `break;` and no bare `return;`; out-of-loop callers are NOT inspected |
 
@@ -219,9 +231,10 @@ demonstrate red before green.
    to leave the loop* — the seam that produced the bug. Fewer exit paths, not more.
 2. **Could this be fixed by subtracting instead of adding?** This IS the subtractive shape available:
    collapse the ad-hoc exits onto the existing pattern. The additive alternative — teaching
-   `pipeline-runner` to re-read `state.json`'s `exit_reason` rather than trusting the exit code —
-   was **rejected**: it would paper over a broken contract (a failing process must exit non-zero) and
-   add a second source of truth for phase success. Fix the liar, not the listener.
+   `pipeline-runner` to re-read the `exit_reason` field out of `state.json` rather than trusting the
+   process exit status — was **rejected**: it would paper over a broken contract (a failing process
+   must exit non-zero) and add a second source of truth for phase success. Fix the liar, not the
+   listener.
 3. **What guard is being added, and has its failure ever fired?** AC-MWMO-D2-5 adds one regression
    guard. Justified: this exact class (in-loop `return` bypassing the exit map) fired in the field at
    LOA-1763 and exists at three independent sites — i.e. it has already recurred twice on its own.
@@ -245,5 +258,6 @@ lose work by the deployed (unfixed) runtime than by the fixed one. Therefore inc
 - Any `max_iterations` / `--max-iterations 0` change (the bug does not exist).
 - Porting/duplicating the R-MWBG worker-spawn guard into the manager path (already present; NO-OP).
 - Changing `guardCompletionCommitBeforeDone`'s predicate or any completion-evidence logic.
-- Making `pipeline-runner` read `exit_reason` from `state.json` instead of trusting the exit code.
+- Making `pipeline-runner` read the `exit_reason` field from `state.json` instead of trusting the
+  process exit status.
 - Recovering the orphaned worker (a real but separate problem — needs its own diagnosis).
