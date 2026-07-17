@@ -6,6 +6,7 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { resolveWorkerTestGateTimeoutMs } from '../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -314,6 +315,10 @@ function runCacheHygieneFixture(fixture) {
   });
 }
 
+// The MANAGED_KEYS jq transform, extracted verbatim so it can be asserted
+// byte-identical against the real install.sh jq expression (R2 lockstep).
+const MANAGED_KEYS_JQ_EXPR = 'del(.worker_test_gate_timeout_ms) | .codegraph.enabled = false | .codegraph.index_at_setup = false | .auto_update_enabled = false';
+
 function buildKillSwitchForceFixtureScript(scriptDir) {
   return `#!/bin/bash
 set -euo pipefail
@@ -328,13 +333,34 @@ if [ -f "$EXTENSION_ROOT/pickle_settings.json" ]; then
 else
   cp "$SCRIPT_DIR/pickle_settings.json" "$EXTENSION_ROOT/"
 fi
+
+# --- MANAGED_KEYS: force code-owned settings source-authoritative ---
+_managed_before_timeout="$(jq -r 'if .worker_test_gate_timeout_ms == null then "null" else (.worker_test_gate_timeout_ms | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
+_managed_before_cg_enabled="$(jq -r 'if .codegraph.enabled == null then "null" else (.codegraph.enabled | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
+_managed_before_cg_setup="$(jq -r 'if .codegraph.index_at_setup == null then "null" else (.codegraph.index_at_setup | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
+_managed_before_auto_update="$(jq -r 'if .auto_update_enabled == null then "null" else (.auto_update_enabled | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
+
 TMPFILE="$(mktemp)"
-jq '.auto_update_enabled = false' "$EXTENSION_ROOT/pickle_settings.json" > "$TMPFILE" \\
+jq '${MANAGED_KEYS_JQ_EXPR}' \\
+  "$EXTENSION_ROOT/pickle_settings.json" > "$TMPFILE" \\
   && mv "$TMPFILE" "$EXTENSION_ROOT/pickle_settings.json"
+
+if [ "$_managed_before_timeout" != "null" ]; then
+  echo "[install.sh] MANAGED_KEYS forced worker_test_gate_timeout_ms: \${_managed_before_timeout} -> deleted" >&2
+fi
+if [ "$_managed_before_cg_enabled" != "false" ]; then
+  echo "[install.sh] MANAGED_KEYS forced codegraph.enabled: \${_managed_before_cg_enabled} -> false" >&2
+fi
+if [ "$_managed_before_cg_setup" != "false" ]; then
+  echo "[install.sh] MANAGED_KEYS forced codegraph.index_at_setup: \${_managed_before_cg_setup} -> false" >&2
+fi
+if [ "$_managed_before_auto_update" != "false" ]; then
+  echo "[install.sh] MANAGED_KEYS forced auto_update_enabled: \${_managed_before_auto_update} -> false" >&2
+fi
 `;
 }
 
-function makeKillSwitchForceFixture({ deployedAutoUpdateEnabled }) {
+function makeKillSwitchForceFixture({ deployedAutoUpdateEnabled, deployedTimeoutMs, deployedCodegraph }) {
   const dir = mkdtempSync(path.join(tmpdir(), 'install-kill-switch-force-'));
   const homeDir = path.join(dir, 'home');
   const runtimeRoot = path.join(homeDir, '.claude', 'pickle-rick');
@@ -347,10 +373,13 @@ function makeKillSwitchForceFixture({ deployedAutoUpdateEnabled }) {
     source_only: 'kept',
   }, null, 2));
   if (deployedAutoUpdateEnabled !== null) {
-    writeFileSync(deployedSettingsPath, JSON.stringify({
+    const deployed = {
       auto_update_enabled: deployedAutoUpdateEnabled,
       user_only: 'preserved',
-    }, null, 2));
+    };
+    if (deployedTimeoutMs !== undefined) deployed.worker_test_gate_timeout_ms = deployedTimeoutMs;
+    if (deployedCodegraph !== undefined) deployed.codegraph = deployedCodegraph;
+    writeFileSync(deployedSettingsPath, JSON.stringify(deployed, null, 2));
   }
   const sourceBefore = readFileSync(sourceSettingsPath, 'utf8');
   const scriptPath = path.join(dir, 'install.sh');
@@ -678,6 +707,117 @@ describe('install.sh kill-switch force-write', () => {
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
+  });
+});
+
+function extractManagedKeysJqFromInstallSh() {
+  const src = readFileSync(INSTALL_SH, 'utf8');
+  const marker = '# --- MANAGED_KEYS: force code-owned settings source-authoritative ---';
+  const idx = src.indexOf(marker);
+  if (idx === -1) throw new Error('MANAGED_KEYS marker not found in install.sh');
+  const match = src.slice(idx).match(/jq '([^']*)'/);
+  if (!match) throw new Error('MANAGED_KEYS jq expression not found in install.sh');
+  return match[1];
+}
+
+describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
+  test('AC-SSAT-3/6: strips timeout, forces codegraph off, preserves sibling tunable', () => {
+    const fixture = makeKillSwitchForceFixture({
+      deployedAutoUpdateEnabled: true,
+      deployedTimeoutMs: 240000,
+      deployedCodegraph: { enabled: true, index_at_setup: true, staleness_max_age_minutes: 15 },
+    });
+    try {
+      const result = runKillSwitchForceFixture(fixture);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      const deployedSettings = readJson(fixture.deployedSettingsPath);
+      assert.equal('worker_test_gate_timeout_ms' in deployedSettings, false);
+      assert.equal(deployedSettings.codegraph.enabled, false);
+      assert.equal(deployedSettings.codegraph.index_at_setup, false);
+      assert.equal(deployedSettings.codegraph.staleness_max_age_minutes, 15);
+      assert.equal(deployedSettings.auto_update_enabled, false);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-SSAT-8: fresh install (no deployed file) still forces managed keys', () => {
+    const fixture = makeKillSwitchForceFixture({ deployedAutoUpdateEnabled: null });
+    try {
+      const result = runKillSwitchForceFixture(fixture);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      const deployedSettings = readJson(fixture.deployedSettingsPath);
+      assert.equal('worker_test_gate_timeout_ms' in deployedSettings, false);
+      assert.equal(deployedSettings.codegraph.enabled, false);
+      assert.equal(deployedSettings.codegraph.index_at_setup, false);
+      assert.equal(deployedSettings.auto_update_enabled, false);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-SSAT-9: differing deployed value emits an observability line', () => {
+    const fixture = makeKillSwitchForceFixture({
+      deployedAutoUpdateEnabled: false,
+      deployedCodegraph: { enabled: true, index_at_setup: false },
+    });
+    try {
+      const result = runKillSwitchForceFixture(fixture);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      assert.match(result.stderr, /MANAGED_KEYS forced codegraph\.enabled: true -> false/);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-SSAT-9: already-matching deployed values emit no observability line', () => {
+    const fixture = makeKillSwitchForceFixture({
+      deployedAutoUpdateEnabled: false,
+      deployedCodegraph: { enabled: false, index_at_setup: false },
+    });
+    try {
+      const result = runKillSwitchForceFixture(fixture);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      assert.doesNotMatch(result.stderr, /MANAGED_KEYS forced/);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-SSAT-4: resolver returns compiled default off the produced file', () => {
+    const fixture = makeKillSwitchForceFixture({
+      deployedAutoUpdateEnabled: true,
+      deployedTimeoutMs: 240000,
+      deployedCodegraph: { enabled: true, index_at_setup: true },
+    });
+    try {
+      const result = runKillSwitchForceFixture(fixture);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      const producedRoot = path.dirname(fixture.deployedSettingsPath);
+      assert.equal(resolveWorkerTestGateTimeoutMs(producedRoot), 600_000);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-SSAT-5: env override wins and floor is env-only', () => {
+    const fixture = makeKillSwitchForceFixture({
+      deployedAutoUpdateEnabled: true,
+      deployedTimeoutMs: 240000,
+    });
+    try {
+      const result = runKillSwitchForceFixture(fixture);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      const producedRoot = path.dirname(fixture.deployedSettingsPath);
+      assert.equal(resolveWorkerTestGateTimeoutMs(producedRoot, null, { PICKLE_WORKER_TEST_FAST_TIMEOUT_MS: '30000' }), 60_000);
+      assert.equal(resolveWorkerTestGateTimeoutMs(producedRoot, null, { PICKLE_WORKER_TEST_FAST_TIMEOUT_MS: '600000' }), 600_000);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('R2 lockstep: fixture jq matches the real install.sh MANAGED_KEYS jq', () => {
+    assert.equal(extractManagedKeysJqFromInstallSh(), MANAGED_KEYS_JQ_EXPR);
   });
 });
 
