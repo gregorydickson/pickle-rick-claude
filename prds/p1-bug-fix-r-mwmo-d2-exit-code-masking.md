@@ -101,15 +101,15 @@ exhaustive sweep (`grep -n "done_without_commit_evidence" extension/src/bin/mux-
 
 | # | Site | Mechanism | In scope? |
 |---|---|---|---|
-| 1 | `mux-runner.ts:~10460` | bare `return` → bypasses exit map | ✅ WS-1 |
-| 2 | `mux-runner.ts:~10951` | bare `return` → bypasses exit map | ✅ WS-1 |
-| 3 | `mux-runner.ts:~11026` | bare `return` → bypasses exit map | ✅ WS-1 |
-| 4 | `mux-runner.ts:2892` | **DIFFERENT mechanism — see WS-1b** | ✅ **WS-1b (NEW)** |
-| 5 | `mux-runner.ts:7324` | **DEAD CODE — see below** | ❌ excluded, with evidence |
+| 1 | `extension/src/bin/mux-runner.ts:~10460` | bare `return` → bypasses exit map | ✅ WS-1 |
+| 2 | `extension/src/bin/mux-runner.ts:~10951` | bare `return` → bypasses exit map | ✅ WS-1 |
+| 3 | `extension/src/bin/mux-runner.ts:~11026` | bare `return` → bypasses exit map | ✅ WS-1 |
+| 4 | `extension/src/bin/mux-runner.ts:2892` | **DIFFERENT mechanism — see WS-1b** | ✅ **WS-1b (NEW)** |
+| 5 | `extension/src/bin/mux-runner.ts:7324` | **DEAD CODE — see below** | ❌ excluded, with evidence |
 
 **Site 5 (`:7324`) is DEAD and is excluded from the universal.** It lives in `processIterationOutcome`
 (`extension/src/bin/mux-runner.ts:6924`), which has **ZERO production callers** — its only other hit in
-`src/` is the symbol inventory string in `src/bin/CLAUDE.md:162`. Do **not** patch it; **do** record
+`src/` is the symbol inventory string in `extension/src/bin/CLAUDE.md:162`. Do **not** patch it; **do** record
 it as a subtraction candidate (a dead twin of the live path — same DELETE-or-WIRE question as
 `R-PRNF9-DEAD`). Any AC's universal quantifier MUST say "all four LIVE sites" and name `:7324` as the
 excluded dead one, or it is asserting something false.
