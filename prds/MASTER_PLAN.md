@@ -88,7 +88,33 @@ For EACH open queue entry (R-WDTF, R-ORSR-2, B-RLH + its R-JPCM/R-GRLS/R-BCFR, t
 **The analysts' verdict on the PRD is the session's lesson in miniature:** it was *"consistently stopping one frame short of the outcome"* — verifying that the exit code changes, not what the operator sees; that `readiness_halt` exists, not that it fires; that an env var interpolates, not that it is set. **A citation is not a verification.**
 **Scope = defect 2 ONLY** (defect 1 is a NO-OP — guard already present; its residual is harness auto-backgrounding, not prompt-fixable). The 3 `done_without_commit_evidence` guard sites (`mux-runner.ts:10463` + siblings ~`:10951`/`:11026`) do a bare `return` that skips post-loop cleanup (`emitCgSessionSummary`/`closeCgService`/`session_end` event) AND the exit-code map (`:11347`) → Node exits **0**, so a genuine halt reports benign `Pipeline finished: 0/4`. Fix: `exitReason='done_without_commit_evidence'; break;` → reaches the map, exits **1** (`done_without_commit_evidence` ∈ `isFailureExit`, `:4376`) = HONEST failure. **Verified safe** — the skipped post-loop code is cleanup that SHOULD run. Author PRD → `/pickle-pipeline` (pipeline; the exit-path change is `install.sh`-incrementally). Modest honesty fix (makes a failure visible; does not itself recover an orphaned-worker build). Bug: `BUG-REPORT-2026-07-14-pipeline-max-iterations-zero-...md` (correction banner).
 
-### 📌 SESSION STATE 2026-07-16 (late) — Step B DONE, Step A's PRD converged + BUILD-READY, build NOT yet launched
+### 📌 SESSION STATE 2026-07-17 — **Step B DONE · Step A BUILT (7/7, hands-off overnight) · NOT deployed, NOT released**
+
+**✅ [[R-MWMO]] d2 BUILT via `/pickle-pipeline`** — session `2026-07-16-6fe9b904`, 8 commits
+(`00dd6fd2` WS-1 → `431fa6f3`), **+48 `mux-runner.ts` / +43 `pipeline-runner.ts` / +966 lines of new
+tests across 3 files**. Tree clean. Fast tier **6813/0 at rest**. All 5 workstreams landed:
+WS-1 (`a29bef4f`) · WS-1b (`e4687b95`) · WS-1c (`ae4297d4`) · WS-2 (`c4f0e5a8`) · WS-3 (`5e544152`).
+**This is the drain-queue's first R-MWMO fix and it was built by the pipeline, not by hand.**
+
+**⚠ NOT a clean rep.** `exit_reason=pipeline_phase_incomplete`; `pipeline-status.json` = `failed`,
+**0/4 phases** (citadel / anatomy-park / szechuan-sauce **never ran**). Ticket `bcc20f74`
+(code-quality hardening) is still `In Progress` — its two `harden:` commits are attributed to
+`31ed007a`. **Cause is CONFIRMED and is NOT the bundle:** the `worker_test_gate_timeout_ms` 240s cap
+below the ~305–352s suite runtime (row below) false-fails every `medium`+ worker gate — 3 of 7
+tickets carry `worker_gate_verdict: red` while their work is real and committed.
+
+**▶ NEXT ACTIONS, in order:**
+1. **Fix `worker_test_gate_timeout_ms` (the row below).** It gates every hands-off rep on this repo.
+   **Raising the constant is not the fix** — see that row.
+2. **Finish/close `bcc20f74`**, then run the FULL release gate before any tag.
+3. **`bash install.sh`** — the fix is committed but **NOT deployed**; the running runtime still has
+   the bug it fixes.
+4. **[[R-SAFP]] (§B.1b)** — still open, still on the GA line, still a catch-22 for exit-path PRDs.
+5. **[[R-WDTF]] class fix (§B.3 + 3b)** — 6 data points; `spawn-refinement-team.ts:933`.
+
+<details><summary>Prior state block (2026-07-16 late) — retained</summary>
+
+**Step B DONE, Step A's PRD converged + BUILD-READY, build NOT yet launched**
 
 **Step B ✅ COMPLETE** (`ffc70da4`, `625e5c6b`). **Step A ⏳ PRD converged after 4 refinement rounds** — `prds/p1-bug-fix-r-mwmo-d2-exit-code-masking.md` (`885a75fb`). It passes the symbol audit + stale-anchor checker clean (verify in seconds with the standalone harness pattern: import `evaluateSymbolAudit`/`findStaleAnchorWarnings` from the deployed `spawn-refinement-team.js` — do NOT burn a 20-min refinement to find out).
 
@@ -103,6 +129,8 @@ For EACH open queue entry (R-WDTF, R-ORSR-2, B-RLH + its R-JPCM/R-GRLS/R-BCFR, t
 **▶ NEXT ACTION (resume here):** refinement CONVERGED at round 4 (session `2026-07-16-6fe9b904`) — EXIT=0, all_success 3/3, 0 smells — **but its analysts then found 3 P0s (now folded into §B.1; PRD is clean at `c2e7846e`)**. Remaining: synthesize `prd_refined.md` (skill Step 6) → decompose tickets (Step 7) → launch the build. **Scope decided with the operator: `--scope paths:extension/src/bin/mux-runner.ts,extension/bin/mux-runner.js,extension/tests/**`** — NOT `--scope branch` (this branch is 185 commits / 203 files ahead of `main`, so branch-scope aims the review phases at the whole v2.1 line). **The compiled mirror `extension/bin/mux-runner.js` MUST stay in scope** — a `src/`-only scope deadlocks szechuan ([[project_szechuan_src_only_scope_deadlocks_on_ts_mirror]]).
 
 **⚠ OPEN STRATEGIC QUESTION for the operator:** R-SAFP blocks refinement for *every* exit-path PRD and is on the GA line. It arguably outranks R-MWMO d2 (a modest honesty fix) under the reliability-first north star. **Consider building R-SAFP first** — note its own PRD will trip the bug it fixes, so scope that catch-22 deliberately.
+
+</details>
 
 ### Context saved for a clean clear
 - **Shipped this session:** `v2.0.0-beta.47` (§A). Branch → `release/v2.1-beta` (below). Plan reprioritized to the north star.
@@ -155,7 +183,35 @@ entry names as genuinely red **pass**:
 - Full fast tier at rest, **three independent runs across the bundle**: **6803/0**, **6812/0**, **6813/0** (c=4). Never a single failure.
 - The R-MWMO bundle **never touched them**: `git log 3fc1d535..HEAD -- tests/services/convergence-gate-*.test.js src/services/convergence-gate.ts` → **empty**. So this is not a bundle-side repair.
 
-**Most likely cause — and this file's own rule predicted it.** The green-tree precondition in
+**🔑 ROOT CAUSE OF THE FALSE FINDING — CONFIRMED 2026-07-17, and it is NOT (only) load. It was a
+BROKEN REPRO COMMAND. The operator's own "isolated re-run" was the bug.** Demonstrated side-by-side
+on a quiet box, same tree, same files, same instant:
+
+| Invocation | Result |
+|---|---|
+| `node --test tests/services/convergence-gate-{flake-allowlist,hang-guard}.test.js` | **2 pass / 5 fail** (`EXIT=1`) |
+| `PATH="$PWD/node_modules/.bin:$PATH" node --test <same two files>` | **7 pass / 0 fail** (`EXIT=0`) |
+
+**`npm run` puts `node_modules/.bin` on `PATH`; bare `node --test` does not.** These fixtures spawn
+`lint`/`typecheck` into temp workspaces; without `.bin` on `PATH` the binary is unresolvable and exits
+**1 immediately** — so the fixture that expects a HANG gets a fast failure (`Expected
+GATE_CHECK_TIMEOUT failure, got: lint failed with exit code 1`) and the gate reads `red` instead of
+`green`. **The "genuine, reproduced-isolated red" was manufactured by the repro command itself.**
+
+⇒ **TRAP (reusable, add to any green-tree investigation): `node --test <file>` is NOT a valid
+reduction of `npm run test:fast`.** Changing the invocation changed the environment. Any single-file
+repro of a gate/spawn-heavy test MUST carry `node_modules/.bin` on `PATH` or it fabricates failures.
+The honest reduction is `npm run test:fast -- <file>` (or the `PATH=` prefix above).
+
+⇒ **The meta-lesson, on the operator this time.** The 2026-07-16 record reasoned: *"reproduced
+isolated ⇒ not the load flake ⇒ genuine red."* Both premises were wrong — the box was **not** at rest
+(three pipelines running), **and** the isolation itself was invalid. This is precisely
+[[feedback_verify_the_outcome_not_the_mechanism]] — verifying that *the files fail* (a mechanism)
+instead of that *the tree is red* (the outcome) — committed by the same session that authored that
+memory, one hour later. **The pipeline's worker caught it.** Strongest possible argument for the
+dogfood rule: the tool corrected its operator.
+
+**Contributing cause — this file's own rule also predicted it.** The green-tree precondition in
 `prds/CLAUDE.md` says verbatim: *"Run the check **once on a quiet box**. Overlapping `test:fast` runs
 self-inflict timeout-shaped flakes in the `runGate`/hang-guard suite; a lone re-run at rest is
 authoritative."* **The two failing files ARE that `runGate`/hang-guard suite**, and the original
