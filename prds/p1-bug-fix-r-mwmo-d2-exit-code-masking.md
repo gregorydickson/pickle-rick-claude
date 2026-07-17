@@ -159,13 +159,33 @@ if (!startCommit) return true;
 return countCommitsSince(startCommit, runtime.repoRoot) === 0;
 ```
 
-**`readiness_halt` is the SHIPPED PRECEDENT, and its comment describes this exact hole.**
-`done_without_commit_evidence` is the same class — a halt whose fatality must not depend on whether
-some *other* ticket happened to commit. The completion is one line beside its sibling:
+**⚠ CORRECTION (cycle 3, source-verified — the "shipped precedent" is DEAD CODE).** Draft 2 justified
+WS-2 as *"mirror the shipped `readiness_halt` precedent."* **`readiness_halt` never fires:**
+- it is **NOT a member** of the `ExitReason` union (`extension/src/bin/mux-runner.ts:4367`);
+- `mux-runner` **never records it** (zero `recordExitReason(…, 'readiness_halt')` call sites);
+- the **deployed** `~/.claude/pickle-rick/extension/bin/mux-runner.js` contains no `readiness_halt` at all;
+- yet `extension/src/bin/pipeline-runner.ts:3917-3924` comments that it "promotes **mux-runner's**
+  generic `readiness_halt`" — **from a producer that does not exist.**
+
+So the `:2781` check, and the R-PRNF-9 cluster around it (`:3662`, `:3774`, `:3917-3924`), is a guard
+that **has never fired**. The honest reading: **WS-2 is not "the second exception mirroring a shipped
+one" — it is the FIRST LIVE always-fatal exception**, and it sits beside dead code.
+
+**This does NOT invalidate WS-2** — the defect it fixes is real and verified (see the
+`countCommitsSince` trace above). It changes the *justification*: WS-2 must be justified on its own
+evidence (LOA-1763), **not** by appeal to a precedent that never runs. Do not cite `readiness_halt`
+as proof the pattern works; it is proof the pattern was never exercised.
+
+The completion is one line:
 
 ```ts
 if (runnerState.exit_reason === 'done_without_commit_evidence') return true;
 ```
+
+**Follow-up finding, OUT OF SCOPE here (do NOT let refinement expand into it):** the dead
+`readiness_halt` cluster is a **subtraction candidate** under the R-CCNW-2 discipline — *a gate that
+has never fired is either dead weight or an unwired safety net; pick one.* Either wire it (make
+`mux-runner` produce the reason) or delete it. Filed to MASTER_PLAN §C; not this bundle's work.
 
 **Why not rely on `--strict-phases`?** `pipeline_continue_on_phase_fail === false`
 (`extension/src/bin/pipeline-runner.ts:2816`) would also halt — but it is **opt-in**, it halts on
@@ -266,10 +286,12 @@ Every criterion below is verified from `extension/` unless stated otherwise.
 - **AC-MWMO-D2-7** — No behavior change to *whether* the guard fires: the body of
   `guardCompletionCommitBeforeDone` is unchanged by this bundle, and the diff touches only control
   flow + the WS-2 sibling check + tests.
-  **⚠ The first draft's verify command was VACUOUS** — it diffed `release/v2.1-beta` while checked
-  out ON `release/v2.1-beta`, so it self-diffed to empty and passed unconditionally. Diff against the
-  bundle's own `start_commit` instead.
-  — Verify: `git diff "$(node -e 'console.log(process.env.PICKLE_START_COMMIT||"")')" -- src/bin/mux-runner.ts` reviewed to contain no edit inside the `guardCompletionCommitBeforeDone` body (reviewer states the verdict; a self-diff that returns empty is NOT a pass)
+  **⚠ TWO vacuous-verify defects already caught here — do not add a third.** Draft 1 diffed
+  `release/v2.1-beta` while checked out ON it (self-diff → always empty → passed unconditionally).
+  Draft 2 then referenced `PICKLE_START_COMMIT`, which **has ZERO producers in the codebase** (an env
+  var that is never set → the command expands to a bare `git diff` → also not what it claims).
+  Read the bundle's `start_commit` from session state, the one place it actually lives.
+  — Verify: `git diff "$(node -e 'const s=require(process.env.SESSION_ROOT+"/state.json");console.log(s.start_commit)')" -- src/bin/mux-runner.ts` — reviewer confirms no edit inside the `guardCompletionCommitBeforeDone` body. **An empty diff is NOT a pass** — if the command errors or returns empty, the AC FAILS pending a working command.
   — Type: llm-conformance
 
 ## Test Expectations
