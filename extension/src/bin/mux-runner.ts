@@ -10459,7 +10459,8 @@ async function runMuxRunnerMain() {
             process.stderr.write(`${msg}\n`);
             recordExitReason(statePath, 'done_without_commit_evidence');
             safeDeactivate(statePath);
-            return;
+            exitReason = 'done_without_commit_evidence';
+            break;
           }
           // R-PEDC: clear stale prior-iteration stamp on recovery.
           clearStaleDoneWithoutCommitEvidence(statePath);
@@ -10950,7 +10951,8 @@ async function runMuxRunnerMain() {
             process.stderr.write(`${msg}\n`);
             recordExitReason(statePath, 'done_without_commit_evidence');
             safeDeactivate(statePath);
-            return;
+            exitReason = 'done_without_commit_evidence';
+            break;
           }
           // R-PEDC: clear stale prior-iteration stamp on recovery.
           clearStaleDoneWithoutCommitEvidence(statePath);
@@ -11025,7 +11027,8 @@ async function runMuxRunnerMain() {
           process.stderr.write(`${msg}\n`);
           recordExitReason(statePath, 'done_without_commit_evidence');
           safeDeactivate(statePath);
-          return;
+          exitReason = 'done_without_commit_evidence';
+          break;
         }
         // R-PEDC: clear stale prior-iteration stamp on recovery so a
         // fully-shipped bundle finalizes as 'completed', not 'failed'.
