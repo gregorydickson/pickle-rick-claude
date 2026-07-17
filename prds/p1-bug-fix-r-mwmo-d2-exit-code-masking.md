@@ -11,33 +11,39 @@ bug: prds/BUG-REPORT-2026-07-14-pipeline-max-iterations-zero-stops-after-one-plu
 
 # R-MWMO defect 2 — a recorded FAILURE currently exits 0 and reports as benign
 
-**Thesis: a `done_without_commit_evidence` halt is invisible to the operator, and it takes TWO
-changes to make it visible — WS-1 (the runner must exit non-zero) and WS-2 (the runner's consumer
-must treat that exit as fatal). WS-1 alone is NECESSARY BUT NOT SUFFICIENT.**
+**Thesis: a `done_without_commit_evidence` halt is INVISIBLE to the operator, and it takes a CHAIN of
+four changes to make it visible — EXIT (WS-1, WS-1b) → CLASSIFY (WS-2) → REPORT (WS-3). Each link is
+independently broken. Any one link left unfixed and the bundle goes fully green while changing
+nothing the operator sees.**
 
-- **WS-1 — three `guardCompletionCommitBeforeDone` failure sites in `mux-runner.ts` do a bare
-  `return`** that leaves the `while (true)` loop's own exit path unreached. The run has already
-  RECORDED `done_without_commit_evidence` — a failure reason — but Node falls off the end of the
-  function and exits with its default code **0**. Make the three sites use the loop's canonical exit
-  pattern so the recorded failure becomes an HONEST non-zero exit.
-- **WS-2 — `pipeline-runner` would STILL continue on that non-zero exit.** `isFatalPhaseFailure`
-  (`extension/src/bin/pipeline-runner.ts:2774`) classifies a pickle-phase failure as fatal only when
-  `countCommitsSince(startCommit) === 0`. A `done_without_commit_evidence` halt means **this ticket**
-  has no commit — it says nothing about the session. So whenever an earlier ticket committed, the
-  WS-1 exit is classified NON-fatal, `shouldHaltAfterPhase` returns false, and the runner calls
-  `recordRecoverablePhaseFailure(…, 'continue')` and proceeds to citadel anyway. Add the sibling
-  always-fatal check, mirroring the SHIPPED precedent one line above it.
+- **WS-1 — EXIT: three `!guard.ok` sites bare-`return`** out of the `while (true)` loop
+  (`extension/src/bin/mux-runner.ts:~10460/~10951/~11026`), leaving the loop's own exit path
+  unreached. The run has already RECORDED a failure reason, but Node falls off the end of the
+  function and exits **0**. Use the loop's canonical `exitReason = …; break;`.
+- **WS-1b — EXIT: a FOURTH site (`:2892`) masks via a DISCARDED VERDICT.** It returns
+  `{action:'leave'}`; its caller at `:10497` throws that away, `safeDeactivate` flips `active=false`,
+  and the next iteration exits as `'cancelled'` — not a failure reason → **exit 0**, reason
+  overwritten. (A fifth site, `:7324`, is DEAD — excluded with evidence.)
+- **WS-2 — CLASSIFY: `pipeline-runner` continues anyway.** `isFatalPhaseFailure`
+  (`extension/src/bin/pipeline-runner.ts:2774`) calls a pickle failure fatal only when
+  `countCommitsSince(startCommit) === 0`. This halt means **this ticket** has no commit — nothing
+  about the session — so once any earlier ticket committed the halt is NON-fatal and the runner
+  proceeds to citadel.
+- **WS-3 — REPORT: the reason is erased and misattributed.** `:3693` overwrites it with a generic
+  `'failed'`; `:3790` reports the `commitCount > 0` case as *"halted for a reason other than build
+  progress (e.g. strict phase policy)"* — the opposite of the truth.
 
-> **⚠ AUTHORING CORRECTION (2026-07-16).** WS-2 did not exist in this PRD's first draft, which
-> claimed WS-1 alone made the failure honest. **That claim was FALSE.** It was caught by the
-> `requirements` analyst during refinement and then independently verified against source. The
-> lesson is the session's own headline restated: *a citation is not a verification* — the first
-> draft cited real functions at real lines and still reached a wrong conclusion, because it verified
-> the MECHANISM (the exit code changes) without verifying the OUTCOME (what the operator sees).
+> **⚠ AUTHORING CORRECTIONS — this PRD was WRONG four times, each caught by refinement and then
+> independently verified against source.** Draft 1 claimed WS-1 alone sufficed (**false** — WS-2).
+> Draft 2 justified WS-2 by a "shipped precedent" that is **dead code** (`readiness_halt` has no
+> producer). Draft 3 verified the phase *halts* but not that the halt is *legible* (**WS-3**).
+> Drafts 1–3 asserted a universal over an **incomplete enumeration** — three sites, when source has
+> five (**WS-1b**). Every draft cited real functions at real lines and was still wrong.
+> **The pattern: verifying that a MECHANISM changes, never that the OUTCOME changes.** *A citation is
+> not a verification.* Hold every AC below to that bar.
 
-This is a **honesty fix, not a recovery fix.** It does not rescue an orphaned worker and does not
-change *whether* the guard fires. It changes only what the process reports when the guard has
-already decided to halt. Scope is deliberately narrow.
+This is an **honesty fix, not a recovery fix.** It does not rescue an orphaned worker and does not
+change *whether* the guard fires — only what the system reports once the guard has decided to halt.
 
 ## Scope fence — defect 2 ONLY
 
@@ -80,7 +86,7 @@ process.exit(exitCode);
 > false positive (`BUG-REPORT-2026-07-16-symbol-audit-exit-code-false-positive-blocks-refinement.md`).
 > The source itself is single-line. Do NOT "fix" the source to match this formatting.
 
-But the three guard sites never reach it. All three are inside the `while (true)` loop opened at
+But those three sites never reach it. All three are inside the `while (true)` loop opened at
 `extension/src/bin/mux-runner.ts:9287` and closed at `:~11300`, and all three read (identically):
 
 ```ts
