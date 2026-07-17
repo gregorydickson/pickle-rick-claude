@@ -33,7 +33,6 @@
   "default_worker_timeout_seconds": 2400,
   "pipeline_continue_on_phase_fail": true,
   "worker_gate_tier": "fast",
-  "worker_test_gate_timeout_ms": 240000,
   "default_manager_max_turns": 50,
   "default_tmux_max_turns": 400,
   "default_refinement_cycles": 3,
