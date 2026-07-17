@@ -10495,7 +10495,7 @@ async function runMuxRunnerMain() {
         } else {
           // Drift scenario: model changed current_ticket without following protocol
           const ticketWorkingDir = prevTicketInfo?.working_dir || state.working_dir || process.cwd();
-          applyAutoTicketCompletionValidation({
+          const autoValidation = applyAutoTicketCompletionValidation({
             sessionDir,
             ticketId: previousTicket,
             workingDir: ticketWorkingDir,
@@ -10505,6 +10505,15 @@ async function runMuxRunnerMain() {
             statePath,
             flags: (state.flags as Record<string, unknown> | undefined) ?? null,
           });
+          // WS-1b: honor the fatal guard-failure verdict — mirrors the sibling
+          // "already marked Done" branch above, which sets exitReason + breaks
+          // inline. Without this, safeDeactivate's active=false is picked up by
+          // the NEXT loop iteration's inactive-session check, which overwrites
+          // exitReason with 'cancelled' (exit 0) instead of this guard's reason.
+          if (autoValidation.action === 'leave' && autoValidation.reason === 'guard_failed_no_commit_evidence') {
+            exitReason = 'done_without_commit_evidence';
+            break;
+          }
         }
         completedBoundary = {
           ticketId: previousTicket,

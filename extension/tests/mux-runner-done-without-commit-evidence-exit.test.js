@@ -153,3 +153,46 @@ test('mux-runner: done_without_commit_evidence classifiers map to a non-zero exi
   else exitCode = 0;
   assert.equal(exitCode, 1, "'done_without_commit_evidence' must map to exit code 1");
 });
+
+// WS-1b (ticket a3812edd) — the FOURTH masking mechanism, distinct from the three
+// bare-return sites de25ce90 fixed above. applyAutoTicketCompletionValidation (the
+// :2892 excluded site) never bare-returns — it returns a verdict object. The bug is
+// that its ONE production call site discarded that verdict entirely (a bare
+// statement call), so a fatal `{action:'leave', reason:'guard_failed_no_commit_evidence'}`
+// never reached the loop's exitReason+break exit path; the NEXT iteration's
+// `state.active !== true` check then laundered it into 'cancelled' (exit 0).
+test('mux-runner: applyAutoTicketCompletionValidation call site honors the fatal leave verdict', () => {
+  const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
+
+  const callSiteRe = /applyAutoTicketCompletionValidation\(\{/g;
+  const callSites = [...source.matchAll(callSiteRe)];
+  assert.equal(
+    callSites.length,
+    1,
+    `expected exactly 1 applyAutoTicketCompletionValidation({ call site, found ${callSites.length} — a new call site changes this fix's scope`,
+  );
+
+  const callIndex = callSites[0].index;
+  // Window: a short head before the call (to catch a `const x = ` capture prefix
+  // on the same or preceding line) through a generous tail covering the enclosing
+  // else-branch close, so the fatal-branch check (if present) is captured.
+  const window = source.slice(Math.max(0, callIndex - 100), callIndex + 1200);
+
+  assert.match(
+    window,
+    /(?:const|let)\s+\w+\s*=\s*applyAutoTicketCompletionValidation\(\{/,
+    'the call site must capture the return value into a variable, not discard it as a bare statement call',
+  );
+
+  assert.match(
+    window,
+    /reason\s*===\s*'guard_failed_no_commit_evidence'/,
+    "the call site must check the verdict's reason for the fatal guard-failure case specifically (not a bare action === 'leave' check, which would also fire on the benign ticket_already_terminal / malformed_or_missing_ticket_frontmatter leave-reasons)",
+  );
+
+  assert.match(
+    window,
+    /exitReason\s*=\s*'done_without_commit_evidence';[\s\S]{0,80}?break;/,
+    "on the fatal guard-failure verdict, the call site must set exitReason = 'done_without_commit_evidence' and break out of the while(true) loop — matching the sibling precedent at the 'ticket already marked Done' branch",
+  );
+});
