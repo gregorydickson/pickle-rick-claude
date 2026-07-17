@@ -57,7 +57,19 @@ The dogfood loop caught both before a broken fix shipped, but only after multi-r
 For EACH open queue entry (R-WDTF, R-ORSR-2, B-RLH + its R-JPCM/R-GRLS/R-BCFR, the honesty subtractions, the simplification levers), grep its cited seam on `release/v2.1-beta` **and** the deployed tree and mark: **CONFIRMED** (premise holds at cited lines) / **DRIFTED** (premise wrong → re-diagnose, correct the entry) / **STALE** (already fixed/shipped → de-queue). Output = a queue whose every entry is source-verified, so the survivors build fast without the 4-round thrash. Cheap, high-leverage — the queue's own honesty is reliability work. This is the [[feedback_analyze_failures_then_subtract_not_add_guards]] discipline applied to the ledger itself. (Do it as a read-only agent fan-out, one entry per agent, or inline.)
 </details>
 
-### ▶ STEP A (SECOND) — ⏳ **IN FLIGHT 2026-07-16** — build R-MWMO defect 2 via `/pickle-pipeline`. **PRD: `prds/p1-bug-fix-r-mwmo-d2-exit-code-masking.md`** (`40dc17ab` → refined 2 rounds → `0c538c4a`+).
+### ▶ STEP A (SECOND) — ✅ **BUILT 2026-07-17** — R-MWMO defect 2, all 7 tickets Done via `/pickle-tmux` on `release/v2.1-beta`. **PRD: `prds/p1-bug-fix-r-mwmo-d2-exit-code-masking.md`** (`40dc17ab` → refined 2 rounds → `0c538c4a`+). **NOT yet released/back-ported** — no PR opened (this branch IS the v2.1 beta line; main ships v2.0 GA first).
+
+**Commits (8):** `00dd6fd2`+`a29bef4f` (WS-1 EXIT — 3 bare-return sites → `exitReason=…; break;`), `e4687b95` (WS-1b — honor the discarded verdict at the single `applyAutoTicketCompletionValidation` call site; the subtractive "delete the return" answer was **rejected with evidence**: the function cannot `break` the caller's loop, so the return is the only channel), `ae4297d4` (WS-1c — `deriveCompletionVerdict` feeds BOTH panel and notification; agreement is now structural), `c4f0e5a8` (WS-2 CLASSIFY — one always-fatal check), `5e544152` (WS-3 REPORT — `readExistingExitReason`/`finalizeFailedPipeline`; report the recorded reason instead of inferring it), `2d234cbf`+`431fa6f3` (test-quality hardening).
+
+**Gate:** fast tier **6813 pass / 0 fail** (c=4, at rest), `tsc` 0, `eslint src/` 0, compiled mirrors in sync, tree clean. **Hardening review: ZERO P0/P1** — one exit idiom, one predicate, zero new persisted fields/events, `countCommitsSince`/`readiness_halt`/`processIterationOutcome`/`guardCompletionCommitBeforeDone` all **0 changed lines**.
+
+**Every AC mutation-proven to bite** (manager-run, not asserted): re-hardcode the panel to `'GREEN'` → 1 fail; delete the WS-2 always-fatal check → **both** WS-2 tests fail; revert `finalizeFailedPipeline` to generic `'failed'` → 1 fail; restore the `strict phase policy` string → 1 fail. Restoring each fix → green, tree clean.
+
+**⚠ THE TEST-QUALITY TICKET FOUND ONE VACUOUS AC — the PRD's sixth.** **AC-MWMO-D2-4** (classifiers + exit map) **passed pre-fix**: at `3fc1d535` `isHaltExit` and `FAILURE_EXIT_REASONS` ALREADY contained `done_without_commit_evidence` and both exit-map strings were already present. It was **retained but honestly relabelled** a *"forward-regression pin; vacuous pre-fix"* rather than quietly kept as coverage. **Six for six — every refinement round found a vacuous AC, including the round whose job was finding vacuous ACs.**
+
+**RESIDUAL (test-only, follow-up):** **AC-MWMO-D2-2** (observed exit code === 1) and **AC-MWMO-D2-3** (halt emits `session_end`) are **IMPLEMENTED but UNPINNED** — unreachable in the fast tier because `guardCompletionCommitBeforeDone` (`mux-runner.ts:4726`) returns `{ok:true, sha:'pickle-test-mode-bypass'}` unconditionally under `PICKLE_TEST_MODE=1` (`:4743`, which the fast tier sets), and `runMuxRunnerMain` (`:8815`) is unexported. **Reported, not papered over with a structural pin** — and the bypass fact is itself pinned by a test that calls the guard with non-existent paths and asserts the sentinel sha, so the explanatory comment cannot rot silently. To pin honestly: a NEW integration-tier file spawning mux-runner as a subprocess WITHOUT `PICKLE_TEST_MODE` against a synthetic tmp repo (ticket Done, no `completion_commit`), asserting exit status 1 and a `session_end` carrying `error === 'done_without_commit_evidence'`.
+
+**⚠ [manager] CORRECTION — the worker's D2-3 residual carried a WRONG premise; do NOT act on it.** Its handoff claims *"D2-3 also needs an impl change — no `session_end` is emitted on the halt path today."* **FALSE.** The worker grepped only the three bundle TEST files. Manager verification: the `while(true)` opens at `:9287` and **closes at `:11312`**; `logActivity({event:'session_end', …})` sits at **`:11319-11327` — in the post-loop tail**, exactly where WS-1's `break` now lands; `:11318` computes `isFailedExit` and `:11326` spreads `...(isFailedExit ? { error: exitReason } : {})`; `isFailureExit('done_without_commit_evidence')` is `true` (`:4376`). **D2-3 is already satisfied by the implementation — it is untested, not unimplemented. The residual is TEST-ONLY.** (A citation is not a verification — the bundle's own thesis, biting its own audit.)
 
 **⚠ THE LEDGER WAS WRONG ABOUT THIS ENTRY TOO — "the one clean, source-verified fix" is RETIRED.** Two refinement rounds (3 analyst cycles each) proved R-MWMO d2 is **NOT** a 3-line control-flow fix. It is a **three-link honesty chain, each link independently broken**; any missing link and the bundle **goes fully green while changing nothing the operator sees**:
 - **WS-1 — EXIT.** The three bare `return`s (`extension/src/bin/mux-runner.ts:~10460/~10951/~11026`, inside the `while(true)` at `:9287`) bypass the exit map → Node exits **0**. ✅ premise held.
@@ -134,13 +146,80 @@ For EACH open queue entry (R-WDTF, R-ORSR-2, B-RLH + its R-JPCM/R-GRLS/R-BCFR, t
    - **(b) `install.sh` settings-merge — CONFIRMED; deployed WINS.** ⚠ **Correct cite is `install.sh:507-511`** (plan said `:504-508`). `jq -s '.[0] * .[1]'` with `.[0]` = `$SCRIPT_DIR` (repo source, `:4`) and `.[1]` = `$EXTENSION_ROOT` (deployed, `:34`); jq's `*` is a recursive merge where **the RIGHT operand wins** on scalar conflicts ⇒ deployed pins stale field state forever. **Live divergence verified on this machine:** source `codegraph.enabled: false` / `index_at_setup: false` vs deployed **`true` / `true`**. **17 phantom `codegraph_context_injected` events corroborated EXACTLY** — 10 in session `2026-07-11-255ad373` + 7 in `2026-07-11-86dd509f`. ⚠ **Events live under `~/.local/share/pickle-rick/sessions/*/state.json`, NOT the repo-local `activity/`** (which has zero) — correct the plan's implied location. **Precedent FOR the flip (new):** `:516-517` already unconditionally overwrites `auto_update_enabled=false` on the deployed file *after* the merge, so that key is effectively source-controlled today — source-wins would not regress it.
    - **(c) `convergence-gate.ts:1334` — CONFIRMED; the `null` fix is load-bearing, not cosmetic.** The `!cmdMap` branch (`:1333-1336`) passes **`projectType`, not `null`** — unlike its sibling at `:1329` which correctly passes `null`. **`bun` reachability is real, not hypothetical:** `detectProjectType:362-367` returns `'bun'` on `bun.lock`/`bun.lockb`, but `extension/data/gate-commands.json` keys are `["_schema","cargo","go","npm","pnpm","yarn"]` — **no `bun`**. Why `null` matters: `emitSkippedAndReturn:1254-1267` forwards `projectType` into `persistGateBaseline:1105` (`project_type: projectType`), and **`project_type === null` is the ESTABLISHED uncertifiable-baseline signal** consumed by `microverse-runner.ts:618-621` `isBaselineUncertifiable` → `:672` → `recordUncertifiableBaselineDefer:626-636` ("cannot force-converge"). Same `null`-as-signal reuse is already documented at `convergence-gate.ts:1167-1170` (R-SZGB-D). Today `validateBaselineStructure:131-136` accepts `'bun'` as valid, so a bun baseline with `checks: []`/`failures: []` **validates cleanly and reads as CERTIFIABLE — a green certification over ZERO inspected checks.** Passing `null` flips it onto the existing fail-closed path **with no new field** (pure reuse).
 
-### 🔴 INHERITED RED on `release/v2.1-beta` — recorded 2026-07-16 per the green-tree precondition (NOT caused by the R-MWMO bundle)
+### ✅ ~~🔴 INHERITED RED~~ on `release/v2.1-beta` — **DOES NOT REPRODUCE AT REST; RETRACTED 2026-07-17** (evidence below; the original 2026-07-16 record is retained beneath it, struck)
+
+**Re-verified 2026-07-17 at the close of the R-MWMO bundle, on a quiet box.** The two files this
+entry names as genuinely red **pass**:
+
+- `node --test tests/services/convergence-gate-flake-allowlist.test.js tests/services/convergence-gate-hang-guard.test.js` → **7 pass / 0 fail**, isolated (their own repro command).
+- Full fast tier at rest, **three independent runs across the bundle**: **6803/0**, **6812/0**, **6813/0** (c=4). Never a single failure.
+- The R-MWMO bundle **never touched them**: `git log 3fc1d535..HEAD -- tests/services/convergence-gate-*.test.js src/services/convergence-gate.ts` → **empty**. So this is not a bundle-side repair.
+
+**Most likely cause — and this file's own rule predicted it.** The green-tree precondition in
+`prds/CLAUDE.md` says verbatim: *"Run the check **once on a quiet box**. Overlapping `test:fast` runs
+self-inflict timeout-shaped flakes in the `runGate`/hang-guard suite; a lone re-run at rest is
+authoritative."* **The two failing files ARE that `runGate`/hang-guard suite**, and the original
+record itself notes three other tmux pipelines were running at the time. The "reproduced ISOLATED"
+step re-ran the files but **not at rest** — isolation of the *files* is not isolation from *load*, so
+it did not clear the very flake class the rule warns about. The `46900269` fail-CLOSED suspicion was
+explicitly filed UNVERIFIED; it should **not** be bisected on this evidence.
+
+**⚠ CONSEQUENCE — RETRACTED, and it inverts.** This entry declared itself *"the single
+highest-leverage de-flaker on the queue"* and a launch-blocker for every `medium`+ worker. On this
+evidence **it is not a genuine red and must not anchor a PRD.** The R-MWMO bundle launched onto this
+"red" ground and shipped 7/7 with a 0-fail tier — the ground was green the whole time. **The real
+worker-gate false-fail on this branch is a DIFFERENT, confirmed bug: `worker_test_gate_timeout_ms`
+(see below).** Before any de-flaker PRD is authored from this row, re-run the tier once at rest and
+believe that result ([[feedback_reground_the_ledger_before_building_from_it]]).
+
+**Meta:** a ledger entry asserting a red that isn't there is the same failure mode as a runner
+asserting a green it hasn't earned — this bundle's own thesis, pointed back at the ledger. Two of the
+last several entries carried wrong premises; this is another. **Reground before building.**
+
+<details><summary>Original 2026-07-16 record (struck — retained for provenance)</summary>
+
+#### ~~🔴 INHERITED RED on `release/v2.1-beta` — recorded 2026-07-16 per the green-tree precondition (NOT caused by the R-MWMO bundle)~~
 
 `cd extension && npm run test:fast` → **6792 pass / 8 fail** (`EXIT=1`) on HEAD. **Reproduced ISOLATED** (`node --test tests/services/convergence-gate-flake-allowlist.test.js tests/services/convergence-gate-hang-guard.test.js` → `EXIT=1`), so it is **NOT** the known load/concurrency flake ([[feedback_release_gate_fast_suite_concurrency_flakes]]) — it is a genuine red. Confirmed **not ours**: the session that found it is **docs-only** (`git diff 17150a9c..HEAD` touches `prds/` exclusively); the three other tmux pipelines live in **other repos** (`loa-1763-worktree`, `loa-1093-worktree`), and this tree is clean with the compiled mirror intact.
 
 **Failing files (2):** `extension/tests/services/convergence-gate-flake-allowlist.test.js`, `extension/tests/services/convergence-gate-hang-guard.test.js`. **Shape:** gate fixtures spawn `lint`/`typecheck` in temp workspaces and get an unexpected **exit 1** instead of the expected verdict/timeout — e.g. `flake failure should yield green-with-known-flake-warnings` got `'red'`; `Expected GATE_CHECK_TIMEOUT failure, got: lint failed with exit code 1`; a `typecheck` check returning `status:'red', failure_count:1` where `green/0` was expected. **Suspect provenance:** `46900269` (`fix(R-SZGB-D): classify unrunnable check as uncertifiable, fail-CLOSED`) is the newest `convergence-gate.ts` change and its fail-CLOSED reclassification matches the symptom (an unrunnable/exit-1 check now reading `red` where fixtures still expect `green`/timeout) — **UNVERIFIED, bisect before believing it** ([[feedback_verify_the_outcome_not_the_mechanism]]: this is a plausible mechanism, not a verified outcome).
 
 **⚠ CONSEQUENCE FOR ANY LAUNCH — this is [[R-WGFR]] biting.** The worker gate runs `test:fast` for `medium`+ tickets, so **every worker in every bundle inherits this red** and its gate false-fails. The R-MWMO bundle's 7 tickets are all `medium`+. **This red should be fixed (or the two files quarantined) BEFORE a clean hands-off rep is possible** — it is the single highest-leverage de-flaker on the queue, exactly as the beta.44 scorecard predicted ("(a0) R-WGFR — the biggest single de-flaker of hands-off reps; fix it first"). Its own PRD is a strong small-bundle candidate.
+
+</details>
+
+### 🔴 CONFIRMED — `worker_test_gate_timeout_ms` (240s) is BELOW the fast suite's real runtime (~305–352s) ⇒ EVERY worker gate false-fails (recorded 2026-07-17; this is the real worker-gate bug the retracted "inherited red" was masking)
+
+**Reproduced on every `medium`+ ticket of the R-MWMO bundle.** The worker lint/test gate SIGTERMs
+`npm run test:fast` at **240000ms**: `{"event":"worker_gate_failed","gate_phase":"test:fast","failures":[{"name":"__timeout__","file":"npm run test:fast","message":"timed out after 240000ms; sent SIGTERM to process tree"}]}` — **not a red test.** The same suite, run by the manager at rest, is **green in ~305–352s** (6813/0). The cap cannot be met; the gate is unpassable by construction, independent of the code under test.
+
+**The cap's source is FOUND — and it is NOT the documented knob.** It is the settings key
+**`worker_test_gate_timeout_ms`** (`pickle_settings.json:36` = `240000`), **not** the
+`PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` env var that `extension/CLAUDE.md` documents with a 600000ms
+default / 60000ms floor (a *different* per-gate-phase budget). That mismatch is why earlier sessions
+looked for it and could not find it. Fix the **source** `pickle_settings.json` + `bash install.sh` —
+never the deployed copy.
+
+**Why it hasn't bitten harder:** `failed_flip_suppressed` (evidence=both) catches it every time, so
+work is preserved and the worker still self-flips Done — but it **burns a suppression slot (cap 2)
+per ticket**, and a third strike in one ticket would flip a **green** ticket **Failed**. It also
+trains operators to ignore gate failures, which is exactly the wrong reflex.
+
+**⚠ The subtractive answer is NOT "raise 240000."** Raising the constant only buys time until the
+suite grows again (it already drifted 258–294s → 305–352s across six days). The durable fix makes the
+budget **track the suite** (or subtracts the duplicated tier from the worker gate entirely — the
+closer's full gate already covers it; cf. [[feedback_subtract_flaky_gate_input_not_add_resistance]]:
+when a gate false-blocks on a flaky/mis-scoped input, subtract the dimension, don't add resistance).
+Strong small-bundle candidate; this is the **actual** highest-leverage de-flaker of hands-off reps.
+
+### 🟡 FOLLOW-UP — pin AC-MWMO-D2-2/D2-3 at the integration tier (test-only; R-MWMO d2 residual)
+
+Both ACs are **implemented but unpinned** — see STEP A's residual + the `[manager]` correction above
+(**D2-3 needs NO impl change**; `session_end` with `error` already fires in the post-loop tail at
+`mux-runner.ts:11319-11327`, which WS-1's `break` reaches). Needs a NEW integration-tier file that
+spawns mux-runner as a subprocess **without** `PICKLE_TEST_MODE`, against a synthetic tmp git repo
+whose ticket is Done with no `completion_commit`, then asserts observed exit status **1** and a
+`session_end` carrying `error === 'done_without_commit_evidence'`. Small, self-contained.
 
 ### C. Simplification (subtract-before-add — guard the discipline, don't manufacture work)
 - **🆕 [[R-PRNF9-DEAD]] — the `readiness_halt` cluster is DEAD CODE (found 2026-07-16 dogfooding R-MWMO d2; source-verified).** `pipeline-runner.ts:2781` special-cases `exit_reason === 'readiness_halt'` as always-fatal, and `:3917-3924` comments that it "promotes **mux-runner's** generic `readiness_halt`" — **but that producer does not exist**: `readiness_halt` is **NOT a member of the `ExitReason` union** (`mux-runner.ts:4367`), `mux-runner` has **zero** `recordExitReason(…, 'readiness_halt')` call sites, and the **deployed** `mux-runner.js` contains no `readiness_halt` at all. The whole R-PRNF-9 cluster (`:2781`, `:3662`, `:3774`, `:3917-3924`) **has never fired.** **R-CCNW-2 discipline applies: a gate that has never fired is dead weight or an unwired safety net — pick one** (wire it by making `mux-runner` produce the reason, or delete it). Same DELETE-or-WIRE shape as B-RLH WS-5's ac-phase-gate; consider bundling the two decisions. **Notable second-order effect:** it silently falsified the R-MWMO d2 PRD's WS-2 justification ("mirror the shipped precedent") — a dead guard cited as proof a pattern works is proof only that it was never exercised.
