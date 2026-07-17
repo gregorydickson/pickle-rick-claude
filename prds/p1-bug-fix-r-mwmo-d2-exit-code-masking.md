@@ -94,13 +94,55 @@ if (!guard.ok) {
 }
 ```
 
-**Sites (verify exact lines at build time — they drift):**
+**⚠ SITE COUNT CORRECTED (cycle 4, AC-shape gate + source-verified): there are FIVE `!guard.ok`
+blocks recording `done_without_commit_evidence`, not three.** Drafts 1–3 enumerated 3 and asserted a
+universal ("for ALL three") over an **incomplete enumeration** — the AC-shape gate caught it. The
+exhaustive sweep (`grep -n "done_without_commit_evidence" extension/src/bin/mux-runner.ts`):
 
-| # | Site (approx.) | Context |
-|---|---|---|
-| 1 | `extension/src/bin/mux-runner.ts:~10456-10462` | prev-ticket already-Done-by-model path |
-| 2 | `extension/src/bin/mux-runner.ts:~10947-10953` | `recover_advance` path |
-| 3 | `extension/src/bin/mux-runner.ts:~11022-11028` | final-ticket path |
+| # | Site | Mechanism | In scope? |
+|---|---|---|---|
+| 1 | `mux-runner.ts:~10460` | bare `return` → bypasses exit map | ✅ WS-1 |
+| 2 | `mux-runner.ts:~10951` | bare `return` → bypasses exit map | ✅ WS-1 |
+| 3 | `mux-runner.ts:~11026` | bare `return` → bypasses exit map | ✅ WS-1 |
+| 4 | `mux-runner.ts:2892` | **DIFFERENT mechanism — see WS-1b** | ✅ **WS-1b (NEW)** |
+| 5 | `mux-runner.ts:7324` | **DEAD CODE — see below** | ❌ excluded, with evidence |
+
+**Site 5 (`:7324`) is DEAD and is excluded from the universal.** It lives in `processIterationOutcome`
+(`extension/src/bin/mux-runner.ts:6924`), which has **ZERO production callers** — its only other hit in
+`src/` is the symbol inventory string in `src/bin/CLAUDE.md:162`. Do **not** patch it; **do** record
+it as a subtraction candidate (a dead twin of the live path — same DELETE-or-WIRE question as
+`R-PRNF9-DEAD`). Any AC's universal quantifier MUST say "all four LIVE sites" and name `:7324` as the
+excluded dead one, or it is asserting something false.
+
+### WS-1b — the discarded-verdict masking path (`:2892`), a FOURTH exit-0 route
+
+`extension/src/bin/mux-runner.ts:2888-2894` does **not** bare-`return` — it returns a verdict:
+```ts
+if (!guard.ok) {
+  ...
+  recordExitReason(input.statePath, 'done_without_commit_evidence');
+  safeDeactivate(input.statePath);
+  return { action: 'leave', reason: 'guard_failed_no_commit_evidence' };
+}
+```
+**Its caller throws that verdict away.** At `extension/src/bin/mux-runner.ts:10497`,
+`applyAutoTicketCompletionValidation({...});` is invoked as a **bare call statement** — the returned
+`{action:'leave'}` is discarded and execution falls through. The `safeDeactivate` then sets
+`active=false`, so the **next** loop iteration hits `extension/src/bin/mux-runner.ts:9301`:
+```ts
+if (state.active !== true) {
+  log('Session inactive. Exiting.');
+  exitReason = 'cancelled';
+```
+→ the run exits as **`'cancelled'`**, which is **NOT** in `FAILURE_EXIT_REASONS` → **exit 0**, no
+`session_end` error field, and the recorded `done_without_commit_evidence` is **overwritten by
+`'cancelled'`**. Same operator-visible lie as WS-1, reached by a different route: **a fatal verdict
+computed and then ignored.**
+
+**WS-1b fix shape:** honor the returned verdict at `:10497` (or make the guard's failure reach the
+exit path directly). **Research must decide** whether other callers of
+`applyAutoTicketCompletionValidation` also discard the verdict — if the return value is discarded at
+every call site, the honest question is whether the verdict should exist at all.
 
 The bare `return` skips, in order: `emitCgSessionSummary()` (`:11302`), `closeCgService()` (`:11303`),
 the `session_end` activity event (`:11307`, which carries `error: exitReason` for failure exits), the
@@ -280,14 +322,19 @@ consumes `!guard.ok` exactly as today.
 
 Every criterion below is verified from `extension/` unless stated otherwise.
 
-- **AC-MWMO-D2-1** — **For ALL three** `!guard.ok` blocks guarding
-  `recordExitReason(statePath, 'done_without_commit_evidence')` in `extension/src/bin/mux-runner.ts`:
-  each assigns `exitReason = 'done_without_commit_evidence'` and exits the main loop via `break`, and
-  **none** exits via a bare `return`. Pin as ONE parametrized test over the three sites — iterate an
-  array of the sites inside a single `test()`/`describe()`, asserting per site.
+- **AC-MWMO-D2-1** — **For EVERY LIVE `!guard.ok` block** recording
+  `done_without_commit_evidence` in `extension/src/bin/mux-runner.ts` — all **four**: `:~10460`,
+  `:~10951`, `:~11026` (WS-1) and `:2892` (WS-1b) — the recorded failure reaches the exit map and the
+  process exits non-zero. **`:7324` is excluded as DEAD** (`processIterationOutcome`, zero production
+  callers) and the test MUST name it as the known exclusion, so the enumeration is closed and honest.
+  The test derives the site list **by grepping the source** rather than hard-coding it, so a NEW
+  sixth site fails the AC instead of silently escaping it (drafts 1–3 asserted "all three" over an
+  incomplete enumeration — that is the failure this AC now prevents).
   **⚠ `describe.each` DOES NOT EXIST in `node:test`** (`typeof describe.each === 'undefined'`; it is
-  a Jest/Vitest API). Do NOT use it — this is the universal-quantifier shape the AC-shape gate wants,
-  expressed in the runner this repo actually uses.
+  a Jest/Vitest API). Express the universal as a loop over the derived array inside one
+  `test()`/`describe()`. NOTE: the AC-shape gate currently asks for `describe.each` by name — that is
+  the known open bug `BUG-REPORT-2026-07-14-ac-shape-gate-rejects-derived-describe-each.md`; satisfy
+  the gate's INTENT (a universal quantifier over a derived list), not its impossible literal.
   — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
 - **AC-MWMO-D2-2** — A test drives the runner to a commit-less Done and asserts the observed process
   exit code is **1**, not 0. At minimum ONE site is driven end-to-end; the other two may be pinned
