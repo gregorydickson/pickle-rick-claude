@@ -247,22 +247,41 @@ Pipeline finished: 0/4 phases, 8m 17s
 "**not advancing**" and "**65/66 remain unfinished**" — the pipeline stopped and said why. That is
 **not** the "proceeds to citadel anyway" failure WS-2 was written to fix.
 
-**⇒ RESEARCH MUST RESOLVE THIS FIRST — it decides whether WS-2 exists at all.** Answer, with
-evidence, before writing a line of WS-2:
-1. On a `done_without_commit_evidence` halt, does `maybeStampPhaseGraduation` / 
-   `maybeStampPickleIncompleteRobust` **always** break first, making `isFatalPhaseFailure`
-   unreachable for the pickle phase? If yes → **WS-2 IS DEAD CODE; DELETE IT FROM THIS BUNDLE.**
-2. If it is reachable only when **all tickets are terminal** but a ticket lacks a commit, is that
-   scenario real? Construct it or drop the workstream.
-3. If WS-2 survives, its AC must assert the **operator-visible outcome** (does not advance to
-   citadel), not merely that `isFatalPhaseFailure` returns `true` — a true return that nothing
-   reaches changes nothing.
+**✅ CHALLENGE RESOLVED (source-verified 2026-07-16) — WS-2 SURVIVES, but its JUSTIFICATION CHANGES
+and its AC must be rewritten. The analyst's P0 was HALF right; taking it at face value would have
+wrongly deleted WS-2.**
 
-**Default posture: DROP WS-2 unless research proves the seam is reachable.** Per
-`prds/CLAUDE.md` Simplification Review Q1, an unnecessary addition is the failure mode this repo
-keeps repeating — and per this PRD's own history, *a citation is not a verification*: WS-2 was added
-on a verified `countCommitsSince` trace that never checked whether that code path **runs**. **The
-same error, one level up.** The real defect may be only WS-1 + WS-1b + WS-1c (exit) and WS-3 (report).
+**Ordering (the analyst had it backwards):** `shouldHaltAfterPhase` → `isFatalPhaseFailure` — WS-2's
+seam — is called at `extension/src/bin/pipeline-runner.ts:4011`, **BEFORE** `finalizePhaseSuccess`
+(`:4033`), which is where the graduation gate lives. **The seam IS reachable.**
+
+**But the graduation gate is a genuine second net** (`maybeStampPhaseGraduation`,
+`extension/src/bin/pipeline-runner.ts:3586+`): for pickle it returns `null` **only** when
+`verdict.decision === 'graduate'`; on any refusal **both** branches
+`return { action: 'break', phaseIncomplete: true }`. **That is why LOA-1763 printed "not advancing"
+despite exit 0** — 65/66 tickets pending ⇒ graduation refused ⇒ break. So in the **pending-tickets
+common case, WS-2 changes nothing about advancing** — the analyst was right that far, and the PRD's
+original "proceeds to citadel anyway" claim was **wrong for that case**.
+
+**WS-2's REAL justification — the all-terminal case.** When every ticket IS terminal but one lacks a
+commit, graduation **succeeds** → `maybeStampPhaseGraduation` returns `null` → falls through to
+`counters.completed++` → **`Phase pickle completed successfully`** and advance. That is exactly the
+**final-ticket path (site `:11026`)**: the last ticket marked Done with no commit. **WS-2 is the only
+thing standing between that and a fake-green pipeline.**
+
+**⇒ REWRITE AC-MWMO-D2-8 to pin the case that actually matters:** `done_without_commit_evidence`
+with **ALL tickets terminal** (graduation would otherwise succeed) ⇒ phase does NOT report
+`completed successfully` and does NOT advance. **The old AC (`countCommitsSince > 0` with tickets
+pending) passes today via the graduation gate and would have been a VACUOUS pin** — green without
+WS-2, i.e. it proves nothing. **AC-MWMO-D2-9 must assert the operator-visible outcome** (does not
+advance), never merely that `isFatalPhaseFailure` returns `true` — a `true` that nothing acts on
+changes nothing.
+
+> **The meta-lesson, twice over.** WS-2 was originally added on a verified `countCommitsSince` trace
+> that never checked whether that path **runs** — *a citation is not a verification*, one level up.
+> And the analyst's rebuttal was itself **half wrong** (it inverted the call order), so deleting WS-2
+> on its say-so would have been the same error a third time. [[feedback_analyst_majority_is_not_truth_grep_the_sentence]]:
+> **grep the sentence — including when the grep is telling you your own fix is unnecessary.**
 
 ### WS-2 (retained pending the challenge above) — make the consumer treat the halt as fatal
 
@@ -431,11 +450,13 @@ Every criterion below is verified from `extension/` unless stated otherwise.
   `exitReason = …; break;` and NOT via a bare `return`. Scoped to the main loop only — a repo-wide
   grep that false-positives on out-of-loop callers FAILS this AC.
   — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
-- **AC-MWMO-D2-8 (WS-2 — the thesis test)** — `isFatalPhaseFailure('pickle', …)` returns `true` when
-  `exit_reason` is `done_without_commit_evidence`, **even when `countCommitsSince(startCommit) > 0`**
-  (i.e. an earlier ticket committed). Today it returns `false` in that case and the pipeline
-  continues to citadel. Pin the sibling `readiness_halt` case in the same test so the two always-fatal
-  reasons stay symmetric.
+- **AC-MWMO-D2-8 (WS-2 — the thesis test; REWRITTEN cycle 5)** — with `exit_reason` =
+  `done_without_commit_evidence` and **ALL tickets terminal** (so the graduation gate would otherwise
+  `graduate`), the pickle phase does **NOT** report `completed successfully` and does **NOT** advance.
+  **⚠ Do NOT pin the `countCommitsSince > 0` + tickets-pending case** — that is caught today by the
+  graduation gate (`maybeStampPhaseGraduation` breaks on refusal), so such a test **passes without
+  WS-2 and proves nothing** (this PRD's draft-4 AC was exactly that vacuous pin).
+  Do not pin `readiness_halt` symmetry — it is **dead code** (see WS-2 section / `R-PRNF9-DEAD`).
   — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
 - **AC-MWMO-D2-9 (WS-1 + WS-2 end-to-end)** — the operator-visible outcome changes: a pickle phase
   that halts on `done_without_commit_evidence` with a prior ticket committed does **NOT** report
