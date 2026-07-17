@@ -182,18 +182,89 @@ three sites. The change per site is:
 +  break;
 ```
 
-**Verified safe:** the post-loop code the `return` currently skips is cleanup that SHOULD run on this
-path — service teardown, the `session_end` event, and the exit map. Reaching it is strictly more
-correct than skipping it. `done_without_commit_evidence` is already in `isHaltExit` (`:4370`) and
-`isFailureExit` (`:4376`), so no classification change is needed — the reason is already correctly
-typed; only the control flow is wrong.
+**⛔ "VERIFIED SAFE" WAS FALSE — RETRACTED (cycle 5). WS-1 as drafted introduces a NEW
+operator-visible lie, and this PRD's own "Verified safe" sentence is what hid it.**
+
+Drafts 1–4 claimed: *"the post-loop code the `return` currently skips is cleanup that SHOULD run…
+reaching it is strictly more correct than skipping it."* **That sentence asserted safety without
+checking what the post-loop actually does.** It prints a hardcoded GREEN success panel —
+`extension/src/bin/mux-runner.ts:11328-11334`:
+
+```ts
+printMinimalPanel('mux-runner Complete', {
+  Iterations: iteration,
+  ...
+}, 'GREEN', '🥒');
+```
+
+So `break`-ing a **fatal** halt into that tail renders a **green "mux-runner Complete" panel** — the
+operator is shown success for a failure. WS-1 would trade an exit-code lie for a **console lie**.
+`done_without_commit_evidence` remains correctly typed (`isHaltExit` `:4370`, `isFailureExit`
+`:4376`) — no classification change needed — but "only the control flow is wrong" was **not true**.
+
+### WS-1c — make the completion panel honest (REQUIRED by WS-1; do not ship WS-1 without it)
+
+**The precedent is 11 lines below, in the same function** — `buildTmuxNotification`
+(`extension/src/bin/mux-runner.ts:~11355`) **already** branches correctly:
+```ts
+const isFailure = isFailureExit(exitReason);
+const title = isFailure ? '🥒 Pickle Run Failed' : '🥒 Pickle Run Complete';
+```
+The mac notification tells the truth while the console panel lies — **they disagree today.** WS-1c
+makes the panel derive its title/colour from `isFailureExit(exitReason)`, exactly as its neighbour
+does. This is **reuse, not addition**, and it collapses a real divergence (two renderers, one truth).
+
+**AC-MWMO-D2-12 (WS-1c)** — on a `done_without_commit_evidence` halt the completion panel does NOT
+render `GREEN`/`Complete`; its title and colour agree with `buildTmuxNotification`'s verdict for the
+same `exitReason`. Pin the agreement (panel verdict === notification verdict) so they cannot diverge
+again. — Verify: `node --test tests/mux-runner-done-without-commit-evidence-exit.test.js` — Type: test
 
 **Research must confirm** (do not assume): that each of the three sites is lexically inside the
 `while (true)` at `:9287` and **not** inside a nested loop (e.g. the sleep-poll `while` at `:~10638`),
 so that `break` targets the outer loop. If any site sits in a nested loop, that site needs a
 labelled break or an equivalent — flag it rather than silently changing semantics.
 
-### WS-2 — make the consumer treat the halt as fatal (source-verified 2026-07-16)
+### ⛔ WS-2 — BLOCKING CHALLENGE: WS-2 MAY BE UNNECESSARY. RESOLVE BEFORE BUILDING IT.
+
+**Cycle-5 P0 (codebase analyst):** `pipeline-runner` may **already** halt the pickle phase in the
+common case, via the B-GROUND2 proportional graduation gate — **before** `isFatalPhaseFailure` is
+ever consulted. `finalizePhaseSuccess` (`extension/src/bin/pipeline-runner.ts:4115-4133`) opens with
+two **pickle-only** guards that both `break` early:
+```ts
+const robustBreak = maybeStampPickleIncompleteRobust(runtime, rawPhase, log);
+if (robustBreak) return robustBreak;
+const graduationBreak = maybeStampPhaseGraduation(runtime, rawPhase, exitCode, log);
+if (graduationBreak) { return graduationBreak; }
+counters.completed++;
+```
+
+**The bug report's own console output corroborates the challenge** — the phase did **NOT** advance:
+```
+Phase pickle exited but 65/66 tickets remain pending (1 Done) — not all-tickets-terminal, marking phase incomplete (not advancing)
+Phase pickle exited (exit_reason=done_without_commit_evidence); 65/66 tickets remain unfinished.
+Pipeline finished: 0/4 phases, 8m 17s
+```
+"**not advancing**" and "**65/66 remain unfinished**" — the pipeline stopped and said why. That is
+**not** the "proceeds to citadel anyway" failure WS-2 was written to fix.
+
+**⇒ RESEARCH MUST RESOLVE THIS FIRST — it decides whether WS-2 exists at all.** Answer, with
+evidence, before writing a line of WS-2:
+1. On a `done_without_commit_evidence` halt, does `maybeStampPhaseGraduation` / 
+   `maybeStampPickleIncompleteRobust` **always** break first, making `isFatalPhaseFailure`
+   unreachable for the pickle phase? If yes → **WS-2 IS DEAD CODE; DELETE IT FROM THIS BUNDLE.**
+2. If it is reachable only when **all tickets are terminal** but a ticket lacks a commit, is that
+   scenario real? Construct it or drop the workstream.
+3. If WS-2 survives, its AC must assert the **operator-visible outcome** (does not advance to
+   citadel), not merely that `isFatalPhaseFailure` returns `true` — a true return that nothing
+   reaches changes nothing.
+
+**Default posture: DROP WS-2 unless research proves the seam is reachable.** Per
+`prds/CLAUDE.md` Simplification Review Q1, an unnecessary addition is the failure mode this repo
+keeps repeating — and per this PRD's own history, *a citation is not a verification*: WS-2 was added
+on a verified `countCommitsSince` trace that never checked whether that code path **runs**. **The
+same error, one level up.** The real defect may be only WS-1 + WS-1b + WS-1c (exit) and WS-3 (report).
+
+### WS-2 (retained pending the challenge above) — make the consumer treat the halt as fatal
 
 `extension/src/bin/pipeline-runner.ts:2774-2785`, the `phase === 'pickle'` branch:
 
