@@ -2779,6 +2779,12 @@ export function isFatalPhaseFailure(phase: PhaseName, runtime: PipelineRuntime):
       // Checking exit_reason here covers resumed sessions where countCommitsSince > 0 (prior runs)
       // but this run produced zero build progress.
       if (runnerState.exit_reason === 'readiness_halt') return true;
+      // AC-MWMO-D2-8: a done_without_commit_evidence halt means THIS ticket has no commit — it
+      // says nothing about the session-wide commit count. Without this check, an all-terminal
+      // bundle where an earlier ticket landed a commit (countCommitsSince > 0) but the LAST
+      // ticket exited with no commit would pass through to graduation (pendingCount === 0
+      // graduates unconditionally) and fake-green "Phase pickle completed successfully".
+      if (runnerState.exit_reason === 'done_without_commit_evidence') return true;
       const startCommit = runnerState.start_commit?.trim();
       if (!startCommit) return true;
       return countCommitsSince(startCommit, runtime.repoRoot) === 0;
