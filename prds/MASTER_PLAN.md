@@ -32,6 +32,16 @@ remains field-soak repeatability (esp. codex) — now on the simpler single-life
 
 ---
 
+## 📦 SHIP STATE 2026-07-18 (newest first — the release-ready + in-flight ledger)
+
+- ✅ **v2.1.0-beta.3 RELEASED + DEPLOYED 2026-07-18** (`gh release`, prerelease; deployed runtime carries beta.3). Three bundles: **B-SSAT** (settings source-authoritative + worker-gate timeout — R-WTFT was inert since May, now `resolveWorkerTestGateTimeoutMs()` returns 600000 live), **R-MWMO d2** (exit-code masking), **B-CGHARD** (codegraph input harvester + soak enable-path docs; WS-CGH-A/B were found already-shipped and dropped). Full gate green; two gate-infra caps fixed while running it (see §B.6(e) + [[project_release_gate_runner_timeout_equals_soak_duration]]).
+- ⏳ **R-SAFP BUILDING 2026-07-18** via `/pickle-pipeline` (session `2026-07-18-c06fd902`, PHASE 4/4 szechuan at last check). All 4 tickets Done. **The symbol-audit false-positive is FIXED and verified** — B-NONSTOP's PRD now returns `ok:true, 0 findings` (was 4); net −144 LOC subtraction. **PRD: `prds/p1-r-safp-symbol-audit-false-positive-unblock.md`.** NOT yet released.
+  - **🔑 R11 verification (ticket `630b7aca`) did its job — it caught TWO wrong predictions:** (1) my PRD asserted "unblocks B-NONSTOP" as fact; (2) it predicted the next block would be one of three downstream gates (ac-shape/AC-phase/readiness). **Both wrong.** Running the actual refinement showed B-NONSTOP crashes *upstream* of all three, at manifest build, on a NEW bug — and the three gates are STILL untested. The ticket **retracted the unblock claim** rather than asserting it. This is [[feedback_verify_the_outcome_not_the_mechanism]] enforced on our own work; **no R-SAFP artifact may claim it unblocks B-NONSTOP.**
+- 🆕 **[[R-RPFL]] FILED 2026-07-18 (P2)** — `prds/BUG-REPORT-2026-07-18-refinement-relative-prd-fail-late-manifest-crash.md`. A **relative** `--prd` runs all 3 analyst cycles (~15 min) then hard-crashes at `enrichManifestTicketsFromSourcePrds` (`spawn-refinement-team.ts:1646`, `!path.isAbsolute`). **Fail-late on a parse-time-knowable condition.** Fix subtractive: resolve `--prd` at argv-parse. **⚠ The normal pipeline flow DODGES it** — setup.js mints absolute session dirs; 3/3 refinements this session (B-SSAT/B-CGHARD/R-SAFP) used absolute `prd_path` and reached manifest build. So **B-NONSTOP built via `/pickle-pipeline` is NOT blocked by this** — the R11 test hit it only because it used a relative path.
+- ⏭ **[[B-NONSTOP]] status corrected 2026-07-18:** its symbol-audit block is REMOVED (R-SAFP). It is **very likely buildable via the normal pipeline now** (absolute-path evidence above), NOT chained behind R-RPFL as first feared. Confirm by launching it once R-SAFP releases. **PRD: `prds/p1-b-nonstop-generous-caps-honest-nonconvergence-observability.md`** (committed, was the R-SAFP fixture). Note WS-4 in the B-NONSTOP PRD (the release-gate runner-timeout cap) overlaps §B.6(e).
+
+---
+
 ## ⚖ OPERATING PRINCIPLES (operator-set 2026-07-18 — BINDING, supersede prior framings on conflict)
 
 Every queue item, PRD, and workstream is scored against these two, **in this order**:
