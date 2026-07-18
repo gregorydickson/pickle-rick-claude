@@ -435,6 +435,8 @@ function normalizeCitationPath(filePath: string): string {
   return filePath.replace(/^\.\//, '').replace(/\\/g, '/');
 }
 
+const GIT_SHOW_HEAD_TIMEOUT_MS = 30_000;
+
 function readHeadFile(workingDir: string, filePath: string): string | undefined {
   try {
     return execFileSync('git', ['show', `HEAD:${filePath}`], {
@@ -442,6 +444,7 @@ function readHeadFile(workingDir: string, filePath: string): string | undefined 
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       maxBuffer: 20 * 1024 * 1024,
+      timeout: GIT_SHOW_HEAD_TIMEOUT_MS,
     });
   } catch {
     return undefined;

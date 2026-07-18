@@ -310,19 +310,69 @@ test('AC-FOMC-14: repeating the same token spawns git ls-files exactly once', ()
     }
 });
 
-test('AC-FOMC-14: git ls-files spawnSync carries a finite timeout', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'bin', 'spawn-refinement-team.ts'), 'utf-8');
-    const lsFilesCallMatch = /spawnSync\('git', \['ls-files',[\s\S]{0,220}?\)/.exec(source);
-    assert.ok(lsFilesCallMatch, 'expected a git ls-files spawnSync call site');
-    assert.match(lsFilesCallMatch[0], /timeout:/);
+// --- AP-RMS-9: uniform subprocess-timeout pin --------------------------------
+//
+// bin/CLAUDE.md contract #3: every subprocess spawn passes a finite `timeout`.
+// This replaces the two hand-enumerated per-callsite assertions (git ls-files,
+// runReadinessGate). Enumerating call sites by hand is exactly why the third
+// one — `readHeadFile`'s `git show HEAD:<path>`, on the main refinement path,
+// once per PRD citation — shipped unbounded: no assertion named it, so nothing
+// went red. A per-callsite pin can only defend the callsites someone
+// remembered. This scans them all, so a NEW spawn is red by default.
+//
+// `spawn()` (the analyst worker) is exempt by construction: it is async, takes
+// no `timeout` option, and is bounded by an explicit SIGTERM/SIGKILL
+// escalation plus a hangGuard. The exemption is asserted, not assumed.
+const SYNC_SPAWN_RE = /\b(execFileSync|execSync|spawnSync)\s*\(/g;
+
+function readRefinementSource() {
+    return fs.readFileSync(path.resolve(__dirname, '..', 'src', 'bin', 'spawn-refinement-team.ts'), 'utf-8');
+}
+
+// Slice from a call's opening paren to its balanced close, so the options
+// object is inside the window regardless of how the call is formatted.
+function callExpressionAt(source, openParenIndex) {
+    let depth = 0;
+    for (let i = openParenIndex; i < source.length; i += 1) {
+        if (source[i] === '(') depth += 1;
+        else if (source[i] === ')') {
+            depth -= 1;
+            if (depth === 0) return source.slice(openParenIndex, i + 1);
+        }
+    }
+    return source.slice(openParenIndex);
+}
+
+function syncSpawnCallSites(source) {
+    const sites = [];
+    SYNC_SPAWN_RE.lastIndex = 0;
+    let match;
+    while ((match = SYNC_SPAWN_RE.exec(source)) !== null) {
+        const openParen = source.indexOf('(', match.index);
+        sites.push({
+            fn: match[1],
+            line: source.slice(0, match.index).split('\n').length,
+            text: callExpressionAt(source, openParen),
+        });
+    }
+    return sites;
+}
+
+test('AP-RMS-9: EVERY synchronous subprocess spawn carries a finite timeout', () => {
+    const source = readRefinementSource();
+    const sites = syncSpawnCallSites(source);
+    assert.ok(sites.length >= 3, `expected the known sync spawn sites, found ${sites.length}`);
+    const unbounded = sites
+        .filter((s) => !/\btimeout:\s*[A-Za-z0-9_]/.test(s.text))
+        .map((s) => `${s.fn} at spawn-refinement-team.ts:${s.line}`);
+    assert.deepEqual(unbounded, [], `unbounded subprocess spawn(s): ${unbounded.join(', ')}`);
 });
 
-test('AC-FOMC-14: runReadinessGate spawnSync carries a finite timeout', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'bin', 'spawn-refinement-team.ts'), 'utf-8');
-    const runReadinessGateStart = source.indexOf('export function runReadinessGate');
-    assert.ok(runReadinessGateStart >= 0);
-    const body = source.slice(runReadinessGateStart, runReadinessGateStart + 800);
-    assert.match(body, /timeout:/);
+test('AP-RMS-9: the async analyst spawn is bounded by explicit kill escalation', () => {
+    const source = readRefinementSource();
+    // Not a `timeout:` option — prove the escalation that stands in for one.
+    assert.match(source, /\.kill\('SIGTERM'\)/, 'expected a SIGTERM escalation for the async worker spawn');
+    assert.match(source, /\.kill\('SIGKILL'\)/, 'expected a SIGKILL escalation for the async worker spawn');
 });
 
 // --- Regression corpus: replay the preserved 44-warning baseline ------------

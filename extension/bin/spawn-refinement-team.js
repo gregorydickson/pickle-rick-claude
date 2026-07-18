@@ -264,6 +264,7 @@ export function extractAnchorCitations(prdContent) {
 function normalizeCitationPath(filePath) {
     return filePath.replace(/^\.\//, '').replace(/\\/g, '/');
 }
+const GIT_SHOW_HEAD_TIMEOUT_MS = 30_000;
 function readHeadFile(workingDir, filePath) {
     try {
         return execFileSync('git', ['show', `HEAD:${filePath}`], {
@@ -271,6 +272,7 @@ function readHeadFile(workingDir, filePath) {
             encoding: 'utf-8',
             stdio: ['ignore', 'pipe', 'ignore'],
             maxBuffer: 20 * 1024 * 1024,
+            timeout: GIT_SHOW_HEAD_TIMEOUT_MS,
         });
     }
     catch {
