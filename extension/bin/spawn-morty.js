@@ -11,6 +11,8 @@ import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths,
 import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup } from '../services/backend-spawn.js';
 import { scrubForbiddenWorkerTokens } from '../services/promise-tokens.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
+import { createResolverCache } from '../services/signature-caller-gap.js';
+import { computeOneHop } from '../services/scope-resolver.js';
 import { autoFillCompletionCommit } from './auto-fill-completion-commit.js';
 // 7eb9fa20: shared Failed-flip suppression policy. Runtime-only usage — safe
 // despite mux-runner's own import of `resolveCodexModel` from this module
@@ -444,7 +446,110 @@ const CODEGRAPH_TERM_STOPWORDS = new Set([
     'into', 'with', 'from', 'this', 'that', 'when', 'then', 'tier', 'code', 'graph',
     'context', 'worker', 'prompt', 'build', 'inject', 'section', 'only', 'over',
     'each', 'them', 'their', 'must', 'should',
+    // D1 (WS-CGH-D): language keywords. resolveSymbolRef word-matches almost every tracked
+    // file for these (e.g. `return` occurs 859x in mux-runner.ts alone) — pure noise, not a
+    // real symbol reference.
+    'return', 'break', 'while', 'for', 'if', 'else', 'const', 'let', 'var', 'function',
+    'class', 'true', 'false', 'null', 'undefined', 'new', 'typeof', 'instanceof', 'in',
+    'of', 'do', 'switch', 'case', 'default', 'try', 'catch', 'finally', 'throw', 'delete',
+    'void', 'async', 'await', 'yield', 'static', 'import', 'export', 'extends',
+    'implements', 'interface', 'enum', 'namespace', 'public', 'private', 'protected',
+    'readonly', 'super', 'get', 'set',
 ]);
+const CODEGRAPH_TERM_MAX_SPAN_LEN = 40;
+const CODEGRAPH_TERM_RESOLVE_WALL_MS = 3_000;
+const CODEGRAPH_TERM_FIND_IMPORTERS_TIMEOUT_MS = 2_000;
+/** Reserve this much of the shared cache.deadline before starting a one-hop confirmation walk,
+ *  so process-kill teardown latency on the walk's own subprocess timeout can never carry total
+ *  resolution work past the caller's wall bound (AC-CGH-D4). */
+const CODEGRAPH_TERM_ONEHOP_SAFETY_MARGIN_MS = 1_000;
+const CODEGRAPH_TERM_IDENTIFIER_RE = /^[A-Za-z_$][\w$.]*$/;
+const CODEGRAPH_TERM_CALL_EXPR_RE = /^([A-Za-z_$][\w$.]*)\s*\([\s\S]*\)$/;
+/** Ticket's exact bare-line-ref shape, e.g. `:594-595`, `45-67`, `12+`. */
+const CODEGRAPH_TERM_BARE_LINE_REF_RE = /^:?~?\d+(-\d+)?\+?$/;
+/** Path-qualified citation shape, e.g. `spawn-morty.ts:584-602` — the dominant real-world
+ *  noise class; a bare-line-ref check alone misses these because they carry a path prefix. */
+const CODEGRAPH_TERM_PATH_LINE_REF_RE = /^[\w./-]+:~?\d+(-\d+)?\+?$/;
+/** Strip a trailing call-expression shell, e.g. `applyFoo({...});` -> `applyFoo`. */
+function stripCodegraphCallExpressionNoise(raw) {
+    const trimmed = raw.trim().replace(/;\s*$/, '');
+    const m = trimmed.match(CODEGRAPH_TERM_CALL_EXPR_RE);
+    return m ? m[1] : trimmed;
+}
+/** True when `v` is a bare/path-qualified line-ref, a keyword, or >40 chars of prose. */
+function isCodegraphTermNoise(v) {
+    if (v.length === 0 || v.length > CODEGRAPH_TERM_MAX_SPAN_LEN)
+        return true;
+    if (CODEGRAPH_TERM_BARE_LINE_REF_RE.test(v) || CODEGRAPH_TERM_PATH_LINE_REF_RE.test(v))
+        return true;
+    if (CODEGRAPH_TERM_STOPWORDS.has(v.toLowerCase()))
+        return true;
+    return false;
+}
+/**
+ * Local mirror of check-readiness.ts's (unexported) resolveSymbolRef, built on the same
+ * exported ResolverCache/computeOneHop primitives that function already consumes — literal
+ * reuse would require exporting a private helper from a file outside this ticket's scope
+ * fence (extension/src/bin/CLAUDE.md R-PIPE-4). Bounded by `cache.deadline`: once the shared
+ * wall budget is exhausted, remaining terms resolve to `false` rather than continuing to
+ * scan — never hangs (WS-CGH-A closed the O(terms×files) unbounded-scan hang class).
+ */
+function resolveCodegraphIdentifierTerm(term, repoRoot, cache) {
+    if (Date.now() > cache.deadline)
+        return false;
+    const normalized = term.replace(/\(\)$/, '');
+    const parts = normalized.split('.').filter(Boolean);
+    if (parts.length === 0)
+        return false;
+    const partPatterns = parts.map((part) => new RegExp(`\\b${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`));
+    // Manual loop (not Array#filter): the wall-bound check must be reachable BETWEEN file
+    // scans, and the scan stops as soon as a second candidate is found (0/1/>1 is all the
+    // caller distinguishes — >1 always resolves via the first candidate's one-hop check, so
+    // continuing to scan the remaining tracked files buys nothing but wall-clock).
+    const candidates = [];
+    for (const file of cache.trackedSourceFiles) {
+        if (Date.now() > cache.deadline)
+            break;
+        const abs = path.join(repoRoot, file);
+        let content = cache.fileContents.get(abs);
+        if (content === undefined) {
+            try {
+                content = fs.readFileSync(abs, 'utf-8');
+                cache.fileContents.set(abs, content);
+            }
+            catch {
+                continue;
+            }
+        }
+        if (partPatterns.every((pattern) => pattern.test(content))) {
+            candidates.push(file);
+            if (candidates.length > 1)
+                break;
+        }
+    }
+    if (candidates.length === 0)
+        return false;
+    if (candidates.length === 1)
+        return true;
+    // The one-hop confirmation defaults its own walkWallMs to 60s (scope-resolver.ts) — fully
+    // independent of the shared cache.deadline. Without clamping both knobs to the REMAINING
+    // budget (minus a teardown-latency safety margin), one ambiguous term can single-handedly
+    // blow past the wall bound the caller relies on (AC-CGH-D4): the cheap per-file deadline
+    // check above only rejects work started AFTER the deadline, not work already in flight.
+    const remainingMs = cache.deadline - Date.now() - CODEGRAPH_TERM_ONEHOP_SAFETY_MARGIN_MS;
+    if (remainingMs <= 0)
+        return false;
+    try {
+        computeOneHop(candidates.slice(0, 1), repoRoot, {
+            findImportersTimeoutMs: Math.min(CODEGRAPH_TERM_FIND_IMPORTERS_TIMEOUT_MS, remainingMs),
+            walkWallMs: remainingMs,
+        });
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 /** True when the tier's lifecycle includes research or plan (small/medium/large; not trivial). */
 export function tierUsesGraphContext(tier) {
     const phases = TIER_LIFECYCLE[tier] ?? [];
@@ -452,26 +557,55 @@ export function tierUsesGraphContext(tier) {
 }
 /**
  * Derive search terms: backticked symbols from title+ACs ∪ title nouns, deduped
- * (case-sensitive, first-occurrence wins), capped at `max` (default 8).
+ * (case-sensitive, first-occurrence wins), lexically filtered (line-refs, keywords,
+ * >40-char prose, call-expression noise dropped), ranked (resolving identifiers first,
+ * then identifier-shaped, then everything else) before capping at `max` (default 8).
+ * `opts.repoRoot` gates the resolution pass — absent means rank-only (legacy shape for
+ * callers/tests that don't wire a real working tree), matching the same opt-in pattern
+ * `CodegraphContextOptions.workingDir` already uses in this file.
  */
-export function deriveCodegraphTerms(title, acText, max = CODEGRAPH_MAX_TERMS) {
-    const out = [];
+export function deriveCodegraphTerms(title, acText, max = CODEGRAPH_MAX_TERMS, opts = {}) {
     const seen = new Set();
+    const candidates = [];
     const push = (raw) => {
         const v = raw.trim();
         if (v.length > 0 && !seen.has(v)) {
             seen.add(v);
-            out.push(v);
+            candidates.push(v);
         }
     };
     for (const m of `${title}\n${acText}`.matchAll(/`([^`\n]+)`/g)) {
-        push(m[1]);
+        const stripped = stripCodegraphCallExpressionNoise(m[1]);
+        if (!isCodegraphTermNoise(stripped))
+            push(stripped);
     }
     for (const w of title.split(/[^A-Za-z0-9_]+/)) {
-        if (w.length >= 4 && !CODEGRAPH_TERM_STOPWORDS.has(w.toLowerCase()))
+        if (w.length >= 4 && !isCodegraphTermNoise(w))
             push(w);
     }
-    return out.slice(0, max);
+    if (candidates.length === 0)
+        return [];
+    const identifierShaped = candidates.filter((c) => CODEGRAPH_TERM_IDENTIFIER_RE.test(c));
+    const resolved = new Set();
+    if (opts.repoRoot && identifierShaped.length > 0) {
+        const cache = opts.cache ?? createResolverCache(opts.repoRoot, opts.maxWallMs ?? CODEGRAPH_TERM_RESOLVE_WALL_MS);
+        for (const term of identifierShaped) {
+            if (resolveCodegraphIdentifierTerm(term, opts.repoRoot, cache))
+                resolved.add(term);
+        }
+    }
+    const rankOf = (t) => {
+        if (resolved.has(t))
+            return 0;
+        if (CODEGRAPH_TERM_IDENTIFIER_RE.test(t))
+            return 1;
+        return 2;
+    };
+    return candidates
+        .map((t, i) => ({ t, i, r: rankOf(t) }))
+        .sort((a, b) => a.r - b.r || a.i - b.i)
+        .map((x) => x.t)
+        .slice(0, max);
 }
 /**
  * Render `entries` (each a single symbol-boundary line) under the section header,
@@ -711,7 +845,7 @@ export async function buildCodegraphContextSection(opts) {
         emitSkipped('non_graph_tier');
         return '';
     }
-    const terms = deriveCodegraphTerms(title, ticketContent);
+    const terms = deriveCodegraphTerms(title, ticketContent, CODEGRAPH_MAX_TERMS, { repoRoot: workingDir });
     if (terms.length === 0) {
         emitSkipped('no_terms');
         return '';
