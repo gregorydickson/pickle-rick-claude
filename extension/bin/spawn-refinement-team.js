@@ -1478,8 +1478,38 @@ const ACTIVITY_EVENT_TRIGGER_RE = /\b(?:activity[-_\s]?events?|event_type|logAct
 const ACTIVITY_EVENT_CLAIM_RE = /\b(?:activity[-_\s]?events?|activity_event|event_type)\s*[:=]|\blogged\s+as\b|\b(?:emit|emits|emitted)\b|\blogActivity\b|\bVALID_ACTIVITY_EVENTS\b/i;
 const SOURCE_FILE_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|sh|py|css|scss|html)$/;
 const SKIP_SOURCE_DIRS = new Set(['.git', 'node_modules', 'dist', 'coverage', '.turbo', '.next']);
+const FENCE_MARKER_RE = /^ {0,3}(`{3,}|~{3,})/;
+// Fence-aware split: excludes fenced code blocks (``` or ~~~, including info
+// strings) and their marker lines from the scanned set, so pasted evidence
+// (e.g. this checker's own symbol_audit.md output) doesn't get re-harvested
+// as claimed symbols. An unterminated fence is treated as fenced-to-EOF.
 function lineRefs(content) {
-    return content.split(/\r?\n/).map((line, index) => ({ line, sourceLine: index + 1 }));
+    const allLines = content.split(/\r?\n/);
+    const result = [];
+    let inFence = false;
+    let fenceChar = '';
+    let fenceLen = 0;
+    for (let index = 0; index < allLines.length; index++) {
+        const line = allLines[index];
+        const match = FENCE_MARKER_RE.exec(line);
+        if (match) {
+            const marker = match[1];
+            if (!inFence) {
+                inFence = true;
+                fenceChar = marker[0];
+                fenceLen = marker.length;
+                continue;
+            }
+            if (marker[0] === fenceChar && marker.length >= fenceLen) {
+                inFence = false;
+                continue;
+            }
+        }
+        if (inFence)
+            continue;
+        result.push({ line, sourceLine: index + 1 });
+    }
+    return result;
 }
 function sectionByHeading(content, headingPattern) {
     const lines = content.split(/\r?\n/);
