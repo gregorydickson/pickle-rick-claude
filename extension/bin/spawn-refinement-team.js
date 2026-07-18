@@ -5,7 +5,7 @@ import { execFileSync, spawn, spawnSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, safeErrorMessage, classifyTicketTier, loadPickleSettingsBag, VALID_TICKET_COMPLEXITY_TIERS, } from '../services/pickle-utils.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
 import { buildWorkerInvocation, isBackend } from '../services/backend-spawn.js';
-import { PromiseTokens, hasToken, Defaults, VALID_ACTIVITY_EVENTS, PipelineRunnerExitCode } from '../types/index.js';
+import { PromiseTokens, hasToken, Defaults, VALID_ACTIVITY_EVENTS } from '../types/index.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { FOM_EVIDENCE_RULES, FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
@@ -1818,15 +1818,14 @@ export async function writeSymbolAudit(refinementDir, prdContent, workingDir, ma
     await fs.promises.writeFile(auditPath, renderSymbolAuditMarkdown(report));
     return report;
 }
-export function runSymbolAuditEnforcement(report) {
+export function reportSymbolAuditFindings(report) {
     if (report.ok)
-        return PipelineRunnerExitCode.Success;
+        return;
     process.stderr.write(`[pickle-rick] symbol audit failed: ${report.findings.length} phantom symbol(s).\n`);
     process.stderr.write("[pickle-rick] Ensure each cited symbol is declared at HEAD or in a PRD listed in this bundle's `composes:` frontmatter.\n");
     for (const finding of report.findings) {
         process.stderr.write(`[pickle-rick] ${finding.category} ${finding.symbol} (PRD line ${finding.sourceLine}): ${finding.reason}\n`);
     }
-    return PipelineRunnerExitCode.AuditFailure;
 }
 export function buildRefinementManifest(args, results, ticketQualityWarnings) {
     const shapeData = collectAcShapeData(results);
@@ -2084,7 +2083,7 @@ async function main() {
     }
     catch { /* guard must never throw or change exit code */ }
     const symbolAudit = await writeSymbolAudit(cycleResults.refinementDir, prdContent, runtime.workingDir, manifest, args.prdPath);
-    runSymbolAuditEnforcement(symbolAudit);
+    reportSymbolAuditFindings(symbolAudit);
     try {
         if (!symbolAudit.ok) {
             const symbolAuditWarnings = symbolAudit.findings.map((finding) => ({

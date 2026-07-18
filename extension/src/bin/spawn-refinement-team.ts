@@ -17,7 +17,7 @@ import {
 } from '../services/pickle-utils.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
 import { buildWorkerInvocation, isBackend, SpawnInvocation } from '../services/backend-spawn.js';
-import { Backend, PromiseTokens, hasToken, Defaults, VALID_ACTIVITY_EVENTS, PipelineRunnerExitCode } from '../types/index.js';
+import { Backend, PromiseTokens, hasToken, Defaults, VALID_ACTIVITY_EVENTS } from '../types/index.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { FOM_EVIDENCE_RULES, FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
@@ -2131,8 +2131,8 @@ export async function writeSymbolAudit(
   return report;
 }
 
-export function runSymbolAuditEnforcement(report: SymbolAuditReport): number {
-  if (report.ok) return PipelineRunnerExitCode.Success;
+export function reportSymbolAuditFindings(report: SymbolAuditReport): void {
+  if (report.ok) return;
   process.stderr.write(`[pickle-rick] symbol audit failed: ${report.findings.length} phantom symbol(s).\n`);
   process.stderr.write(
     "[pickle-rick] Ensure each cited symbol is declared at HEAD or in a PRD listed in this bundle's `composes:` frontmatter.\n"
@@ -2140,7 +2140,6 @@ export function runSymbolAuditEnforcement(report: SymbolAuditReport): number {
   for (const finding of report.findings) {
     process.stderr.write(`[pickle-rick] ${finding.category} ${finding.symbol} (PRD line ${finding.sourceLine}): ${finding.reason}\n`);
   }
-  return PipelineRunnerExitCode.AuditFailure;
 }
 
 export function buildRefinementManifest(args: RefinementArgs, results: CycleResults, ticketQualityWarnings?: TicketQualityWarning[]): RefinementManifest {
@@ -2408,7 +2407,7 @@ async function main() {
     }
   } catch { /* guard must never throw or change exit code */ }
   const symbolAudit = await writeSymbolAudit(cycleResults.refinementDir, prdContent, runtime.workingDir, manifest, args.prdPath);
-  runSymbolAuditEnforcement(symbolAudit);
+  reportSymbolAuditFindings(symbolAudit);
   try {
     if (!symbolAudit.ok) {
       const symbolAuditWarnings: TicketQualityWarning[] = symbolAudit.findings.map((finding) => ({
