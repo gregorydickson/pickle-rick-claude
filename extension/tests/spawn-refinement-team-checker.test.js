@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import {
     checkAnalystOutputPaths,
     scanAnalystOutputsForUnverifiedPaths,
+    UNATTRIBUTED_TICKET_ID,
     __resetGitLsFilesSuffixCacheForTests,
 } from '../bin/spawn-refinement-team.js';
 
@@ -54,7 +55,7 @@ test('scanAnalystOutputsForUnverifiedPaths: emits path_not_found for a phantom b
         assert.equal(warnings[0].analyst, 'codebase');
         // No analysis_codebase_c<N>.md archive exists in this fixture, so this is cycle 1.
         assert.equal(warnings[0].cycle, 1);
-        assert.equal(warnings[0].ticket_id, '');
+        assert.equal(warnings[0].ticket_id, UNATTRIBUTED_TICKET_ID);
     } finally {
         fs.rmSync(refinementDir, { recursive: true, force: true });
         fs.rmSync(workingDir, { recursive: true, force: true });
@@ -232,7 +233,10 @@ test('AC-FOMC-8d: >1 tracked suffix match emits ambiguous_citation, never a sile
     }
 });
 
-// --- AC-FOMC-9: defect_class split, analyst/cycle fields, ticket_id empty ----
+// --- AC-FOMC-9: defect_class split, analyst/cycle fields, ticket_id sentinel -
+// ticket_id carries UNATTRIBUTED_TICKET_ID, not '': these warnings have no
+// owning ticket, but refinement-manifest.schema.json requires ticket_id with
+// minLength: 1, so '' would fail ajv over the whole manifest.
 
 test('AC-FOMC-9: not_tracked_forward_created is distinguished from a bare path_not_found fabrication', () => {
     __resetGitLsFilesSuffixCacheForTests();
@@ -252,7 +256,7 @@ test('AC-FOMC-9: not_tracked_forward_created is distinguished from a bare path_n
     }
 });
 
-test('AC-FOMC-9: scanAnalystOutputsForUnverifiedPaths surfaces analyst + cycle as dedicated fields, ticket_id stays empty', () => {
+test('AC-FOMC-9: scanAnalystOutputsForUnverifiedPaths surfaces analyst + cycle as dedicated fields, ticket_id is the unattributed sentinel', () => {
     __resetGitLsFilesSuffixCacheForTests();
     const refinementDir = tmpDir('pickle-apv-refine-');
     const workingDir = tmpDir('pickle-apv-work-');
@@ -266,7 +270,7 @@ test('AC-FOMC-9: scanAnalystOutputsForUnverifiedPaths surfaces analyst + cycle a
         assert.equal(warnings.length, 1);
         assert.equal(warnings[0].analyst, 'requirements');
         assert.equal(typeof warnings[0].cycle, 'number');
-        assert.equal(warnings[0].ticket_id, '');
+        assert.equal(warnings[0].ticket_id, UNATTRIBUTED_TICKET_ID);
         assert.ok(['path_not_found', 'line_out_of_range', 'not_tracked_forward_created', 'ambiguous_citation']
             .includes(warnings[0].defect_class));
     } finally {
@@ -357,7 +361,7 @@ test('regression corpus: the preserved 44-warning baseline collapses well below 
         assert.notEqual(w.defect_class, 'analyst_path_not_verified');
         assert.ok(typeof w.analyst === 'string' && w.analyst.length > 0);
         assert.ok(typeof w.cycle === 'number');
-        assert.equal(w.ticket_id, '');
+        assert.equal(w.ticket_id, UNATTRIBUTED_TICKET_ID);
     }
 
     // The originally-misresolved (root-anchoring false positives) baseline
@@ -386,4 +390,88 @@ test('regression corpus: the preserved 44-warning baseline collapses well below 
         forwardCreated.some((w) => w.evidence.includes('changed-source-helpers.ts')),
         'expected citadel/changed-source-helpers.ts (or its bare form) to classify as not_tracked_forward_created'
     );
+});
+
+// --- AP-RMS-3: ticket_id sentinel vs refinement-manifest.schema.json --------
+// Every writer into `manifest.ticket_quality_warnings` must emit a ticket_id
+// the schema accepts (required, minLength: 1). Two writers emitted `''`.
+// ajv validates the manifest as ONE document, so a single '' entry fails the
+// whole manifest, not just the offending warning.
+
+const SCHEMA_PATH = path.resolve(__dirname, '../src/types/refinement-manifest.schema.json');
+const REFINE_SRC_PATH = path.resolve(__dirname, '../src/bin/spawn-refinement-team.ts');
+
+/** Item-level constraints read from the REAL schema, not a local restatement. */
+function warningItemSchema() {
+    const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
+    return schema.properties.ticket_quality_warnings.items;
+}
+
+function schemaFailuresFor(entry, items) {
+    const failures = [];
+    for (const key of items.required) {
+        const spec = items.properties[key];
+        const value = entry[key];
+        if (typeof value !== 'string') {
+            failures.push(`${key}: expected string, got ${typeof value}`);
+            continue;
+        }
+        if (typeof spec.minLength === 'number' && value.length < spec.minLength) {
+            failures.push(`${key}: length ${value.length} < minLength ${spec.minLength}`);
+        }
+    }
+    return failures;
+}
+
+test('AP-RMS-3: the schema still requires a non-empty ticket_id (guards the assertions below)', () => {
+    const items = warningItemSchema();
+    assert.ok(items.required.includes('ticket_id'), 'ticket_id must stay required');
+    assert.equal(items.properties.ticket_id.minLength, 1, 'ticket_id must keep minLength: 1');
+});
+
+test('AP-RMS-3: analyst-path warnings carry a schema-valid ticket_id', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    const refinementDir = tmpDir('pickle-apv-refine-');
+    // Non-repo working dir: `git ls-files` fails, so the cited path resolves to
+    // zero tracked matches and the scanner emits a path_not_found warning.
+    const workingDir = tmpDir('pickle-apv-work-');
+    try {
+        fs.writeFileSync(
+            path.join(refinementDir, 'analysis_architect.md'),
+            'The fix belongs in `src/does/not/exist.ts`.\n'
+        );
+
+        const warnings = scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir);
+        assert.ok(warnings.length > 0, 'fixture must actually produce a warning');
+
+        const items = warningItemSchema();
+        for (const warning of warnings) {
+            const failures = schemaFailuresFor(warning, items);
+            assert.deepEqual(
+                failures,
+                [],
+                `warning violates refinement-manifest.schema.json: ${JSON.stringify(warning)} -> ${failures.join('; ')}`
+            );
+        }
+    } finally {
+        fs.rmSync(refinementDir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-RMS-3: no writer emits the empty-string ticket_id', () => {
+    const src = fs.readFileSync(REFINE_SRC_PATH, 'utf-8');
+    assert.ok(
+        !/ticket_id:\s*''/.test(src),
+        "ticket_id: '' is schema-invalid (minLength: 1) — use UNATTRIBUTED_TICKET_ID"
+    );
+});
+
+test('AP-RMS-3: the sentinel itself satisfies the schema', () => {
+    const items = warningItemSchema();
+    const failures = schemaFailuresFor(
+        { ticket_id: UNATTRIBUTED_TICKET_ID, defect_class: 'probe', evidence: 'probe' },
+        items
+    );
+    assert.deepEqual(failures, [], 'UNATTRIBUTED_TICKET_ID must be a valid ticket_id');
 });

@@ -291,6 +291,14 @@ export interface RefinementTicketManifestEntry {
   complexity_tier?: TicketComplexityTier;
 }
 
+/**
+ * Sentinel `ticket_id` for warnings that are not attributable to a single
+ * ticket (PRD-scoped or analyst-scoped). `refinement-manifest.schema.json`
+ * declares `ticket_id` required with `minLength: 1`, so '' is schema-invalid
+ * and would fail the whole manifest under an ajv-validating consumer.
+ */
+export const UNATTRIBUTED_TICKET_ID = '<prd>';
+
 export interface TicketQualityWarning {
   ticket_id: string;
   defect_class: string;
@@ -2241,7 +2249,7 @@ export function scanAnalystOutputsForUnverifiedPaths(refinementDir: string, work
     const pathWarnings = checkAnalystOutputPaths(content, workingDir);
     for (const w of pathWarnings) {
       warnings.push({
-        ticket_id: '',
+        ticket_id: UNATTRIBUTED_TICKET_ID,
         defect_class: w.defect_class,
         evidence: `analyst=${role} path=${w.path}${w.line !== undefined ? `:${w.line}` : ''}`,
         source: 'analyst',
@@ -2347,7 +2355,7 @@ async function main() {
     const overCollapseResult = detectBundleOfBundlesOverCollapse(args.prdPath, manifest);
     if (overCollapseResult.detected) {
       const overCollapseWarning: TicketQualityWarning = {
-        ticket_id: '',
+        ticket_id: UNATTRIBUTED_TICKET_ID,
         defect_class: 'bundle_of_bundles_over_collapse',
         evidence: `composed_sources=${overCollapseResult.composedCount} tickets=${overCollapseResult.ticketCount} atomic_sources=${overCollapseResult.sourcesWithAtomicSection.join(',')}`,
         source: 'post-decomp',
@@ -2376,7 +2384,7 @@ async function main() {
   try {
     if (!symbolAudit.ok) {
       const symbolAuditWarnings: TicketQualityWarning[] = symbolAudit.findings.map((finding) => ({
-        ticket_id: '<prd>',
+        ticket_id: UNATTRIBUTED_TICKET_ID,
         defect_class: 'symbol_audit_finding',
         evidence: `category=${finding.category} symbol=${finding.symbol} line=${finding.sourceLine} reason=${finding.reason}`,
         source: 'post-decomp',
