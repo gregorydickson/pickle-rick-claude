@@ -605,9 +605,9 @@ function stripCodegraphCallExpressionNoise(raw: string): string {
 
 /** True when `v` is a bare/path-qualified line-ref, a keyword, or >40 chars of prose. */
 function isCodegraphTermNoise(v: string): boolean {
-  if (v.length === 0 || v.length > CODEGRAPH_TERM_MAX_SPAN_LEN) return true;
-  if (CODEGRAPH_TERM_BARE_LINE_REF_RE.test(v) || CODEGRAPH_TERM_PATH_LINE_REF_RE.test(v)) return true;
-  if (CODEGRAPH_TERM_STOPWORDS.has(v.toLowerCase())) return true;
+  if (v.length === 0 || v.length > CODEGRAPH_TERM_MAX_SPAN_LEN) { return true; }
+  if (CODEGRAPH_TERM_BARE_LINE_REF_RE.test(v) || CODEGRAPH_TERM_PATH_LINE_REF_RE.test(v)) { return true; }
+  if (CODEGRAPH_TERM_STOPWORDS.has(v.toLowerCase())) { return true; }
   return false;
 }
 
@@ -620,10 +620,10 @@ function isCodegraphTermNoise(v: string): boolean {
  * scan — never hangs (WS-CGH-A closed the O(terms×files) unbounded-scan hang class).
  */
 function resolveCodegraphIdentifierTerm(term: string, repoRoot: string, cache: ResolverCache): boolean {
-  if (Date.now() > cache.deadline) return false;
+  if (Date.now() > cache.deadline) { return false; }
   const normalized = term.replace(/\(\)$/, '');
   const parts = normalized.split('.').filter(Boolean);
-  if (parts.length === 0) return false;
+  if (parts.length === 0) { return false; }
   const partPatterns = parts.map((part) => new RegExp(`\\b${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`));
   // Manual loop (not Array#filter): the wall-bound check must be reachable BETWEEN file
   // scans, and the scan stops as soon as a second candidate is found (0/1/>1 is all the
@@ -631,7 +631,7 @@ function resolveCodegraphIdentifierTerm(term: string, repoRoot: string, cache: R
   // continuing to scan the remaining tracked files buys nothing but wall-clock).
   const candidates: string[] = [];
   for (const file of cache.trackedSourceFiles) {
-    if (Date.now() > cache.deadline) break;
+    if (Date.now() > cache.deadline) { break; }
     const abs = path.join(repoRoot, file);
     let content = cache.fileContents.get(abs);
     if (content === undefined) {
@@ -644,18 +644,18 @@ function resolveCodegraphIdentifierTerm(term: string, repoRoot: string, cache: R
     }
     if (partPatterns.every((pattern) => pattern.test(content as string))) {
       candidates.push(file);
-      if (candidates.length > 1) break;
+      if (candidates.length > 1) { break; }
     }
   }
-  if (candidates.length === 0) return false;
-  if (candidates.length === 1) return true;
+  if (candidates.length === 0) { return false; }
+  if (candidates.length === 1) { return true; }
   // The one-hop confirmation defaults its own walkWallMs to 60s (scope-resolver.ts) — fully
   // independent of the shared cache.deadline. Without clamping both knobs to the REMAINING
   // budget (minus a teardown-latency safety margin), one ambiguous term can single-handedly
   // blow past the wall bound the caller relies on (AC-CGH-D4): the cheap per-file deadline
   // check above only rejects work started AFTER the deadline, not work already in flight.
   const remainingMs = cache.deadline - Date.now() - CODEGRAPH_TERM_ONEHOP_SAFETY_MARGIN_MS;
-  if (remainingMs <= 0) return false;
+  if (remainingMs <= 0) { return false; }
   try {
     computeOneHop(candidates.slice(0, 1), repoRoot, {
       findImportersTimeoutMs: Math.min(CODEGRAPH_TERM_FIND_IMPORTERS_TIMEOUT_MS, remainingMs),
@@ -707,24 +707,24 @@ export function deriveCodegraphTerms(
   };
   for (const m of `${title}\n${acText}`.matchAll(/`([^`\n]+)`/g)) {
     const stripped = stripCodegraphCallExpressionNoise(m[1]);
-    if (!isCodegraphTermNoise(stripped)) push(stripped);
+    if (!isCodegraphTermNoise(stripped)) { push(stripped); }
   }
   for (const w of title.split(/[^A-Za-z0-9_]+/)) {
-    if (w.length >= 4 && !isCodegraphTermNoise(w)) push(w);
+    if (w.length >= 4 && !isCodegraphTermNoise(w)) { push(w); }
   }
-  if (candidates.length === 0) return [];
+  if (candidates.length === 0) { return []; }
 
   const identifierShaped = candidates.filter((c) => CODEGRAPH_TERM_IDENTIFIER_RE.test(c));
   const resolved = new Set<string>();
   if (opts.repoRoot && identifierShaped.length > 0) {
     const cache = opts.cache ?? createResolverCache(opts.repoRoot, opts.maxWallMs ?? CODEGRAPH_TERM_RESOLVE_WALL_MS);
     for (const term of identifierShaped) {
-      if (resolveCodegraphIdentifierTerm(term, opts.repoRoot, cache)) resolved.add(term);
+      if (resolveCodegraphIdentifierTerm(term, opts.repoRoot, cache)) { resolved.add(term); }
     }
   }
   const rankOf = (t: string): number => {
-    if (resolved.has(t)) return 0;
-    if (CODEGRAPH_TERM_IDENTIFIER_RE.test(t)) return 1;
+    if (resolved.has(t)) { return 0; }
+    if (CODEGRAPH_TERM_IDENTIFIER_RE.test(t)) { return 1; }
     return 2;
   };
   return candidates
