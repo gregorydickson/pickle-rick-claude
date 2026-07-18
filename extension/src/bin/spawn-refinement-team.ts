@@ -1803,7 +1803,9 @@ function lineRefs(content: string): { line: string; sourceLine: number }[] {
         continue;
       }
     }
-    if (inFence) continue;
+    if (inFence) {
+      continue;
+    }
     result.push({ line, sourceLine: index + 1 });
   }
   return result;
@@ -1901,8 +1903,12 @@ function collectActivityEventReferences(prdContent: string, declaredSymbols: Ite
   const valid = new Set<string>([...VALID_ACTIVITY_EVENTS, ...declaredSymbols]);
   const refs: SymbolAuditReference[] = [];
   for (const { line, sourceLine } of lineRefs(prdContent)) {
-    if (!ACTIVITY_EVENT_TRIGGER_RE.test(line)) continue;
-    if (!ACTIVITY_EVENT_CLAIM_RE.test(line)) continue;
+    if (!ACTIVITY_EVENT_TRIGGER_RE.test(line)) {
+      continue;
+    }
+    if (!ACTIVITY_EVENT_CLAIM_RE.test(line)) {
+      continue;
+    }
     for (const symbol of quotedSymbols(line)) {
       if (!/^[a-z][a-z0-9_]*$/.test(symbol)) continue;
       const status = valid.has(symbol) ? 'valid' : 'phantom';
