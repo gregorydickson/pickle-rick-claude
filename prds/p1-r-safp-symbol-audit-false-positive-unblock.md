@@ -18,6 +18,11 @@ source_assessment: "Filed 2026-07-16; re-proven 2026-07-18 when it hard-blocked 
 > file is the one sanctioned exception, and it exists to delete the reason for it. **See R13 (§6): this
 > accommodation must NOT be ratified into the test suite as a passing fixture.**
 
+> **⚠ OUTCOME (2026-07-18, AC-SAFP-8): the title's "unblock" is NOT achieved — read §7 before citing this
+> bundle.** The symbol-audit false positive IS fixed and verified. B-NONSTOP still yields 0 tickets, now
+> via a different, earlier terminator (`spawn-refinement-team.ts:2106`, relative `--prd`). The three gates
+> this PRD predicted remain unevaluated.
+
 ## 0. Thesis
 The audit hard-fails refinement (0 tickets) on **correct** PRDs because two categories treat
 **line-proximity as a membership claim**. There is no bypass — the enforcement's exit runs before the
@@ -186,8 +191,53 @@ point for **all four collectors**. One fence-aware change removes the whole clas
   capability removed is smaller than it appears.
 
 ## 7. Observed downstream gate (filled in by AC-SAFP-8 at build time)
-> **TO BE RECORDED:** which gate, if any, blocks B-NONSTOP once the audit passes. Do not ship this
-> section empty and do not assert the unblock without it.
+
+**Observed 2026-07-18 at HEAD `b0a6d1e9`. Session `2026-07-18-18fa6417`
+(`~/.local/share/pickle-rick/sessions/2026-07-18-18fa6417`), run log `/tmp/r-safp-refinement-run.log`.**
+
+### ⚠ THE UNBLOCK IS NOT CLAIMED — B-NONSTOP still yields 0 tickets
+
+**What passed.** The symbol audit is fixed and no longer blocks. `evaluateSymbolAudit` on the committed
+B-NONSTOP PRD returns `{ok: true, findingsCount: 0}` (independently re-verified by the manager at
+`b0a6d1e9`, not merely reported by the worker). The refinement then ran **all three analyst cycles to
+completion** — 12 analyses on disk under `refinement/` (`analysis_{requirements,codebase,risk-scope}_c{1,2,3}.md`
+plus the three merged files). Pre-fix, the audit terminated the run before this point. **WS-1…WS-4 did
+what they claimed.**
+
+**What blocked instead — NOT one of the three predicted gates.** The run died at manifest build,
+*upstream* of every gate this PRD predicted:
+
+```
+❌ Fatal: enrichManifestTicketsFromSourcePrds requires absolute parentPrdPath
+  at enrichManifestTicketsFromSourcePrds (spawn-refinement-team.js:1316)
+  at buildRefinementManifest (spawn-refinement-team.js:1797)
+  at main (spawn-refinement-team.js:2021)
+```
+
+Source seam (`extension/src/bin/spawn-refinement-team.ts`): `--prd` is read raw at `:993`
+(`argv[prdIndex + 1]`) and carried unresolved to `:2106`, where `enrichManifestTicketsFromSourcePrds`
+hard-throws on `!path.isAbsolute(prdPath)` (`:1609`). No `path.resolve` exists anywhere between the two.
+
+The three gates named in §7's premise — `runAcShapeEnforcement` (`:2383`), the post-refinement AC-phase
+gate (`:2385`), `runReadinessGate` (`:2393`) — sit **after** the `:2106` crash and were therefore *still*
+never evaluated against a blocked PRD. The original hypothesis remains untested; the terminator merely
+moved earlier.
+
+**Cost shape (why this matters more than a path bug sounds).** The guard fires *after* ~15 minutes of
+analyst work, not at argv-parse time. A relative `--prd` burns the entire refinement and then discards
+it — the 12 analyses above survive only as orphaned files in the session dir. Fail-late on a condition
+knowable at `:993`.
+
+**Honest bottom line.** B-NONSTOP relaunched today produces the **same 0-ticket outcome as before, for a
+different reason**. This bundle fixed the symbol-audit false positive — a real, verified subtraction — but
+it does **not** unblock B-NONSTOP, and no artifact of this bundle (parent ticket, release notes, commit
+messages) may say that it does. Per this ticket's scope the crash was **named, not fixed**; whether the
+normal pipeline invocation passes an absolute path (and so dodges it) is itself unverified and must be
+established by the follow-up, not assumed.
+
+**Follow-up finding (new, unfiled):** `spawn-refinement-team.ts` accepts a relative `--prd` at `:993`
+and fail-lates on it at `:2106` after the full analyst spend. Fix is subtractive — resolve once at parse
+time — but it is out of scope here.
 
 ## 8. Build notes
 - **Pipeline-safe** — the refinement spawner is not the salvage/completion-evidence path.
