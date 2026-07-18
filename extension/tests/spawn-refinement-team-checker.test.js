@@ -487,15 +487,23 @@ test('AP-RMS-3: the sentinel itself satisfies the schema', () => {
 /** Root keys the TS interface declares but the schema does not — known-open, fenced. */
 const KNOWN_UNDECLARED_MANIFEST_KEYS = ['decomposition_quality_flags', 'prd_advisory_shape_concerns'];
 
-/** Root property names off the real RefinementManifest interface in the TS source. */
-function refinementManifestInterfaceKeys() {
+/**
+ * Property names off a real interface in the TS source. ONE extractor for every
+ * schema-drift pin: a per-pin copy would let the character class drift again
+ * (the AP-RMS-6 red-check caught a `[a-z_]+` blind to digits/camelCase).
+ */
+function interfaceKeys(interfaceName) {
     const src = fs.readFileSync(REFINE_SRC_PATH, 'utf-8');
-    const start = src.indexOf('export interface RefinementManifest');
-    assert.notEqual(start, -1, 'RefinementManifest interface must exist in spawn-refinement-team.ts');
+    const start = src.indexOf(`export interface ${interfaceName}`);
+    assert.notEqual(start, -1, `${interfaceName} interface must exist in spawn-refinement-team.ts`);
     const body = src.slice(start, src.indexOf('\n}', start));
-    // Character class must admit digits and camelCase: a narrower [a-z_]+ makes
-    // keys like `schema_version_2` invisible, so drift slips past silently.
     return [...body.matchAll(/^ {2}([A-Za-z0-9_]+)\??:/gm)].map((m) => m[1]);
+}
+
+/** Keys the interface declares that the strict schema object does not. */
+function undeclaredKeys(interfaceName, schemaObject) {
+    const declared = Object.keys(schemaObject.properties);
+    return interfaceKeys(interfaceName).filter((k) => !declared.includes(k));
 }
 
 test('AP-RMS-6: the manifest root still forbids additional properties (guards the assertion below)', () => {
@@ -505,8 +513,7 @@ test('AP-RMS-6: the manifest root still forbids additional properties (guards th
 
 test('AP-RMS-6: no NEW manifest root key drifts from the schema', () => {
     const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
-    const declared = Object.keys(schema.properties);
-    const undeclared = refinementManifestInterfaceKeys().filter((k) => !declared.includes(k));
+    const undeclared = undeclaredKeys('RefinementManifest', schema);
 
     assert.deepEqual(
         undeclared.slice().sort(),
@@ -527,5 +534,67 @@ test('AP-RMS-6: every pinned key is genuinely written by buildRefinementManifest
             new RegExp(`\\b${key}\\b`).test(src),
             `${key} is pinned as known-undeclared but no longer appears in spawn-refinement-team.ts`
         );
+    }
+});
+
+// --- AP-RMS-8: warning-ITEM keys vs refinement-manifest.schema.json ----------
+// AP-RMS-6 pinned the manifest ROOT. `ticket_quality_warnings.items` is the
+// second strict object in the same schema and carries the same two-key drift
+// (AP-RMS-2), but nothing pinned it: `schemaFailuresFor` above iterates
+// `items.required`, so it is structurally blind to EXTRA properties. Without
+// this equality a third item key joins the fenced backlog as silently as
+// `decomposition_quality_flags` did.
+
+/** Item keys the TS interface declares but the schema does not — known-open, fenced. */
+const KNOWN_UNDECLARED_WARNING_ITEM_KEYS = ['analyst', 'cycle'];
+
+test('AP-RMS-8: the warning item still forbids additional properties (guards the assertion below)', () => {
+    assert.equal(
+        warningItemSchema().additionalProperties,
+        false,
+        'ticket_quality_warnings.items must keep additionalProperties: false'
+    );
+});
+
+test('AP-RMS-8: no NEW warning-item key drifts from the schema', () => {
+    const undeclared = undeclaredKeys('TicketQualityWarning', warningItemSchema());
+
+    assert.deepEqual(
+        undeclared.slice().sort(),
+        KNOWN_UNDECLARED_WARNING_ITEM_KEYS.slice().sort(),
+        'TicketQualityWarning gained or lost an undeclared key. A NEW key must be added to ' +
+            'refinement-manifest.schema.json ticket_quality_warnings.items.properties ' +
+            '(additionalProperties:false fails the whole manifest otherwise). A key that ' +
+            'disappeared here was fixed — drop it from KNOWN_UNDECLARED_WARNING_ITEM_KEYS.'
+    );
+});
+
+test('AP-RMS-8: a really-emitted warning carries exactly the pinned undeclared keys', () => {
+    // Guards the pin against staleness at the OUTCOME, not the source text: a
+    // pinned key that no writer emits any more must shrink the pin, and a
+    // writer that starts emitting a third key must fail here.
+    __resetGitLsFilesSuffixCacheForTests();
+    const refinementDir = tmpDir('pickle-apv-item-refine-');
+    const workingDir = tmpDir('pickle-apv-item-work-');
+    try {
+        fs.writeFileSync(
+            path.join(refinementDir, 'analysis_architect.md'),
+            'The fix belongs in `src/does/not/exist.ts`.\n'
+        );
+
+        const warnings = scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir);
+        assert.ok(warnings.length > 0, 'fixture must actually produce a warning');
+
+        const declared = Object.keys(warningItemSchema().properties);
+        for (const warning of warnings) {
+            assert.deepEqual(
+                Object.keys(warning).filter((k) => !declared.includes(k)).sort(),
+                KNOWN_UNDECLARED_WARNING_ITEM_KEYS.slice().sort(),
+                `emitted warning's undeclared keys drifted from the pin: ${JSON.stringify(warning)}`
+            );
+        }
+    } finally {
+        fs.rmSync(refinementDir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
     }
 });
