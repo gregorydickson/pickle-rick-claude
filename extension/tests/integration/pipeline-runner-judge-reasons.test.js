@@ -163,7 +163,16 @@ test('all_judge_backends_exhausted + gate fail → exit code 1 (failed), auto-re
 
     const statePath = path.join(sessionDir, 'state.json');
     const finalState = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    assert.equal(finalState.exit_reason, 'failed', 'exit_reason must be failed when gate fails');
+    // AC-MWMO-D2-10 (R-MWMO d2 WS-3, `5e544152`): finalizePipeline no longer overwrites a
+    // specific recorded exit_reason with the generic 'failed' — it preserves it, matching the
+    // sibling phaseIncomplete/handoffStop branch (and the `pipeline_phase_incomplete` assertion
+    // above). 'failed' is stamped ONLY when no reason was recorded. Erasing a named disposition
+    // into a generic one is the observability loss the operating principles forbid.
+    assert.equal(
+      finalState.exit_reason,
+      'all_judge_backends_exhausted',
+      'exit_reason must PRESERVE the recorded reason when the gate fails (not erase it to "failed")',
+    );
 
     const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.match(runnerLog, /all_judge_backends_exhausted/);
