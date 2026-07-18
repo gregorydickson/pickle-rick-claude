@@ -475,3 +475,57 @@ test('AP-RMS-3: the sentinel itself satisfies the schema', () => {
     );
     assert.deepEqual(failures, [], 'UNATTRIBUTED_TICKET_ID must be a valid ticket_id');
 });
+
+// --- AP-RMS-6: RefinementManifest root keys vs refinement-manifest.schema.json
+// The schema sets additionalProperties:false at the manifest root, so any key
+// present on the TS interface but absent from schema.properties fails ajv over
+// the WHOLE manifest. Two keys already drifted (AP-RMS-1 discovery,
+// AP-RMS-7 replay); the schema fix is fenced out of the active scope, so they
+// are PINNED here. This assertion is an equality, not a subset check: a third
+// undeclared key breaks the build instead of silently joining the backlog.
+
+/** Root keys the TS interface declares but the schema does not — known-open, fenced. */
+const KNOWN_UNDECLARED_MANIFEST_KEYS = ['decomposition_quality_flags', 'prd_advisory_shape_concerns'];
+
+/** Root property names off the real RefinementManifest interface in the TS source. */
+function refinementManifestInterfaceKeys() {
+    const src = fs.readFileSync(REFINE_SRC_PATH, 'utf-8');
+    const start = src.indexOf('export interface RefinementManifest');
+    assert.notEqual(start, -1, 'RefinementManifest interface must exist in spawn-refinement-team.ts');
+    const body = src.slice(start, src.indexOf('\n}', start));
+    // Character class must admit digits and camelCase: a narrower [a-z_]+ makes
+    // keys like `schema_version_2` invisible, so drift slips past silently.
+    return [...body.matchAll(/^ {2}([A-Za-z0-9_]+)\??:/gm)].map((m) => m[1]);
+}
+
+test('AP-RMS-6: the manifest root still forbids additional properties (guards the assertion below)', () => {
+    const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
+    assert.equal(schema.additionalProperties, false, 'manifest root must keep additionalProperties: false');
+});
+
+test('AP-RMS-6: no NEW manifest root key drifts from the schema', () => {
+    const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
+    const declared = Object.keys(schema.properties);
+    const undeclared = refinementManifestInterfaceKeys().filter((k) => !declared.includes(k));
+
+    assert.deepEqual(
+        undeclared.slice().sort(),
+        KNOWN_UNDECLARED_MANIFEST_KEYS.slice().sort(),
+        'RefinementManifest gained or lost an undeclared root key. A NEW key must be added to ' +
+            'refinement-manifest.schema.json properties (additionalProperties:false fails the whole ' +
+            'manifest otherwise). A key that disappeared here was fixed — drop it from ' +
+            'KNOWN_UNDECLARED_MANIFEST_KEYS.'
+    );
+});
+
+test('AP-RMS-6: every pinned key is genuinely written by buildRefinementManifest', () => {
+    // Guards the pin itself: if a key is stale (no longer emitted), the pin
+    // must shrink rather than mask a real schema gap forever.
+    const src = fs.readFileSync(REFINE_SRC_PATH, 'utf-8');
+    for (const key of KNOWN_UNDECLARED_MANIFEST_KEYS) {
+        assert.ok(
+            new RegExp(`\\b${key}\\b`).test(src),
+            `${key} is pinned as known-undeclared but no longer appears in spawn-refinement-team.ts`
+        );
+    }
+});
