@@ -61,7 +61,7 @@ function seedSource(repoDir) {
   ].join('\n'));
 }
 
-test('symbol audit passes grounded activity events, exit codes, NEW files, and helpers', () => {
+test('symbol audit passes grounded activity events, NEW files, and helpers', () => {
   const repo = makeTmpDir();
   try {
     seedSource(repo);
@@ -69,7 +69,6 @@ test('symbol audit passes grounded activity events, exit codes, NEW files, and h
 
     assert.equal(report.ok, true, JSON.stringify(report.findings, null, 2));
     assert.equal(report.activityEvents.length, 5);
-    assert.equal(report.exitCodes.length, 3);
     assert.equal(report.newFiles.length, 4);
     assert.equal(report.helperSentinels.length, 2);
     assert.deepEqual(report.findings, []);

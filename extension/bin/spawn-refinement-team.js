@@ -1475,7 +1475,7 @@ export function runAcShapeEnforcement(manifest, opts) {
 }
 const QUOTED_SYMBOL_RE = /[`'"]([A-Za-z][A-Za-z0-9_.-]*)[`'"]/g;
 const ACTIVITY_EVENT_TRIGGER_RE = /\b(?:activity[-_\s]?events?|event_type|logActivity|VALID_ACTIVITY_EVENTS)\b/i;
-const NON_EVENT_ACTIVITY_CONTEXT_RE = /\b(?:enum value|state field|phase outcome|gate outcome)\b/i;
+const ACTIVITY_EVENT_CLAIM_RE = /\b(?:activity[-_\s]?events?|activity_event|event_type)\s*[:=]|\blogged\s+as\b|\b(?:emit|emits|emitted)\b|\blogActivity\b|\bVALID_ACTIVITY_EVENTS\b/i;
 const SOURCE_FILE_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|sh|py|css|scss|html)$/;
 const SKIP_SOURCE_DIRS = new Set(['.git', 'node_modules', 'dist', 'coverage', '.turbo', '.next']);
 function lineRefs(content) {
@@ -1566,36 +1566,21 @@ function uniqueReferences(refs) {
         return true;
     });
 }
-// enum-value heuristic:
-// Trigger-phrase lines are still the entrypoint for activity-event auditing.
-// When the same line also advertises enum/state prose, quoted snake_case values
-// are ignored unless the token itself sits next to explicit event wording.
-// This keeps `gate outcome G ∈ { ... }` values out of the audit while still
-// preserving true positives such as `logged as \`token\`` or emitted-event text.
-function shouldAuditActivityEventToken(line, matchIndex, raw) {
-    if (!NON_EVENT_ACTIVITY_CONTEXT_RE.test(line))
-        return true;
-    const before = line.slice(Math.max(0, matchIndex - 24), matchIndex);
-    const after = line.slice(matchIndex + raw.length, Math.min(line.length, matchIndex + raw.length + 24));
-    return (/\b(?:activity[-_\s]?events?|activity[-_\s]?event|event_type|activity_event|logged as)\s*[:=]?\s*$/i.test(before) ||
-        /\b(?:emit|emits|emitted)\s*$/i.test(before) ||
-        /^\s*(?:is\s+)?(?:emit|emits|emitted)\b/i.test(after) ||
-        /^\s*(?:as\s+)?(?:an?\s+)?activity[-_\s]?event\b/i.test(after) ||
-        /^\s*(?:event_type|activity_event)\b\s*[:=]/i.test(after));
-}
+// claim-shape gate: a quoted snake_case token only counts as an activity-event
+// citation when the LINE also carries genuine claim language (label form,
+// "logged as", emit/emits/emitted, or the logActivity/VALID_ACTIVITY_EVENTS
+// code-identifier mentions) — bare co-location of "activity events" prose
+// (e.g. citing a schema filename) no longer triggers the audit.
 function collectActivityEventReferences(prdContent, declaredSymbols = []) {
     const valid = new Set([...VALID_ACTIVITY_EVENTS, ...declaredSymbols]);
     const refs = [];
     for (const { line, sourceLine } of lineRefs(prdContent)) {
         if (!ACTIVITY_EVENT_TRIGGER_RE.test(line))
             continue;
-        QUOTED_SYMBOL_RE.lastIndex = 0;
-        let match;
-        while ((match = QUOTED_SYMBOL_RE.exec(line)) !== null) {
-            const [raw, symbol] = match;
+        if (!ACTIVITY_EVENT_CLAIM_RE.test(line))
+            continue;
+        for (const symbol of quotedSymbols(line)) {
             if (!/^[a-z][a-z0-9_]*$/.test(symbol))
-                continue;
-            if (!shouldAuditActivityEventToken(line, match.index, raw))
                 continue;
             const status = valid.has(symbol) ? 'valid' : 'phantom';
             refs.push({
@@ -1604,46 +1589,6 @@ function collectActivityEventReferences(prdContent, declaredSymbols = []) {
                 evidence: line.trim(),
                 status,
                 ...(status === 'phantom' ? { reason: 'not present in VALID_ACTIVITY_EVENTS' } : {}),
-            });
-        }
-    }
-    return uniqueReferences(refs);
-}
-function pipelineExitCodeMembers() {
-    const names = new Set();
-    const values = new Set();
-    for (const [key, value] of Object.entries(PipelineRunnerExitCode)) {
-        if (/^\d+$/.test(key))
-            continue;
-        names.add(key);
-        if (typeof value === 'number')
-            values.add(String(value));
-    }
-    return { names, values };
-}
-function collectExitCodeReferences(prdContent) {
-    const { names, values } = pipelineExitCodeMembers();
-    const refs = [];
-    for (const { line, sourceLine } of lineRefs(prdContent)) {
-        if (!/\b(?:exit[-_\s]?codes?|PipelineRunnerExitCode|process\.exit)\b/i.test(line))
-            continue;
-        const symbols = new Set();
-        for (const symbol of quotedSymbols(line))
-            symbols.add(symbol.replace(/^PipelineRunnerExitCode\./, ''));
-        for (const match of line.matchAll(/\bPipelineRunnerExitCode\.([A-Za-z][A-Za-z0-9_]*)\b/g))
-            symbols.add(match[1]);
-        for (const match of line.matchAll(/\bexit[-_\s]?codes?\s*[:=]?\s*(\d+)\b/gi))
-            symbols.add(match[1]);
-        for (const symbol of symbols) {
-            if (!/^(?:[A-Za-z][A-Za-z0-9_]*|\d+)$/.test(symbol))
-                continue;
-            const status = names.has(symbol) || values.has(symbol) ? 'pass' : 'fail';
-            refs.push({
-                symbol,
-                sourceLine,
-                evidence: line.trim(),
-                status,
-                ...(status === 'fail' ? { reason: 'not present in PipelineRunnerExitCode' } : {}),
             });
         }
     }
@@ -1750,19 +1695,16 @@ function findingsFrom(category, refs) {
 export function evaluateSymbolAudit(prdContent, workingDir, manifest, prdPath) {
     const composedSymbols = prdPath ? resolveComposesChain(prdPath) : { events: new Set(), helpers: new Set() };
     const activityEvents = collectActivityEventReferences(prdContent, composedSymbols.events);
-    const exitCodes = collectExitCodeReferences(prdContent);
     const newFiles = collectNewFileReferences(prdContent, manifest);
     const helperSentinels = collectHelperSentinelReferences(prdContent, workingDir, composedSymbols.helpers);
     const findings = [
         ...findingsFrom('activity_event', activityEvents),
-        ...findingsFrom('exit_code', exitCodes),
         ...findingsFrom('new_file', newFiles),
         ...findingsFrom('helper_sentinel', helperSentinels),
     ];
     return {
         ok: findings.length === 0,
         activityEvents,
-        exitCodes,
         newFiles,
         helperSentinels,
         findings,
@@ -1783,11 +1725,6 @@ export function renderSymbolAuditMarkdown(report) {
         '| Symbol | Status | PRD Line | Detail |',
         '|---|---:|---:|---|',
         ...renderSymbolRows(report.activityEvents),
-        '',
-        '## Exit Codes',
-        '| Symbol | Status | PRD Line | Detail |',
-        '|---|---:|---:|---|',
-        ...renderSymbolRows(report.exitCodes),
         '',
         '## NEW Files',
         '| Symbol | Status | PRD Line | Detail |',
