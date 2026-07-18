@@ -67,9 +67,17 @@ test('deploy-lifecycle soak: package.json version remains stable', { timeout: 2 
     process.env.PICKLE_INSTALL_ROOT = tmpDir;
     process.env.PICKLE_DATA_ROOT = path.join(dataDir, 'data');
 
+    // Setup plumbing, NOT a performance assertion — the test's thesis is version
+    // stability during the soak; `assert.equal(install.status, 0)` below is unchanged.
+    // The old 120_000 cap was a false-failure source: install.sh runs a NETWORKED
+    // `npm install @colbymchenry/codegraph` and measures ~95s cold on the operator host
+    // (2026-07-18), i.e. only ~21% headroom, so ordinary network/load variance killed the
+    // process (spawnSync returns status `null` on timeout → `null !== 0`, which reads as
+    // "install.sh failed" rather than "the cap was too tight"). Per operating principle 1a
+    // (caps are runaway backstops, not schedulers) this is a generous backstop.
     const install = spawnSync('bash', [INSTALL_SH, '--prefix', tmpDir, '--no-confirm'], {
         encoding: 'utf-8',
-        timeout: 120_000,
+        timeout: 600_000,
         env: { ...process.env, PICKLE_INSTALL_ROOT: tmpDir },
     });
     assert.equal(install.status, 0, `install.sh failed: ${install.stderr}`);
