@@ -599,6 +599,7 @@ export function deriveCodegraphTerms(title, acText, max = CODEGRAPH_MAX_TERMS, o
         return [];
     }
     const identifierShaped = candidates.filter((c) => CODEGRAPH_TERM_IDENTIFIER_RE.test(c));
+    const identifierShapedSet = new Set(identifierShaped);
     const resolved = new Set();
     if (opts.repoRoot && identifierShaped.length > 0) {
         const cache = opts.cache ?? createResolverCache(opts.repoRoot, opts.maxWallMs ?? CODEGRAPH_TERM_RESOLVE_WALL_MS);
@@ -612,7 +613,7 @@ export function deriveCodegraphTerms(title, acText, max = CODEGRAPH_MAX_TERMS, o
         if (resolved.has(t)) {
             return 0;
         }
-        if (CODEGRAPH_TERM_IDENTIFIER_RE.test(t)) {
+        if (identifierShapedSet.has(t)) {
             return 1;
         }
         return 2;

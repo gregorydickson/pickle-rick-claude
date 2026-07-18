@@ -715,6 +715,7 @@ export function deriveCodegraphTerms(
   if (candidates.length === 0) { return []; }
 
   const identifierShaped = candidates.filter((c) => CODEGRAPH_TERM_IDENTIFIER_RE.test(c));
+  const identifierShapedSet = new Set(identifierShaped);
   const resolved = new Set<string>();
   if (opts.repoRoot && identifierShaped.length > 0) {
     const cache = opts.cache ?? createResolverCache(opts.repoRoot, opts.maxWallMs ?? CODEGRAPH_TERM_RESOLVE_WALL_MS);
@@ -724,7 +725,7 @@ export function deriveCodegraphTerms(
   }
   const rankOf = (t: string): number => {
     if (resolved.has(t)) { return 0; }
-    if (CODEGRAPH_TERM_IDENTIFIER_RE.test(t)) { return 1; }
+    if (identifierShapedSet.has(t)) { return 1; }
     return 2;
   };
   return candidates
