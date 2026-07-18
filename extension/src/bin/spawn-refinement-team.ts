@@ -551,6 +551,15 @@ export function __resetGitLsFilesSuffixCacheForTests(): void {
 // runs inside the shared refinement runtime against whichever repo is being
 // refined (octy, loanlight-api, ...), so a hardcoded `extension/`-relative
 // fallback would be a repo-specific defect baked into a repo-agnostic core.
+// AP-RMS-12: the `*<token>` pathspec is a cheap git-side PREFILTER, not the
+// resolution rule. Git's wildmatch runs without WM_PATHNAME here, so `*` crosses
+// `/` and `manager.ts` matches `services/state-manager.ts`. A citation resolves
+// only when the token sits on a path boundary: the whole tracked path, or
+// preceded by `/`.
+function matchesOnPathBoundary(trackedPath: string, token: string): boolean {
+  return trackedPath === token || trackedPath.endsWith(`/${token}`);
+}
+
 function resolveTrackedSuffixMatches(workingDir: string, token: string): string[] {
   const cacheKey = `${workingDir}\0${token}`;
   const cached = gitLsFilesSuffixCache.get(cacheKey);
@@ -564,7 +573,11 @@ function resolveTrackedSuffixMatches(workingDir: string, token: string): string[
       timeout: GIT_LS_FILES_SUFFIX_TIMEOUT_MS,
     });
     if (result.status === 0 && typeof result.stdout === 'string') {
-      matches = result.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+      matches = result.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter((tracked) => matchesOnPathBoundary(tracked, token));
     }
   } catch {
     matches = [];

@@ -235,6 +235,70 @@ test('AC-FOMC-8d: >1 tracked suffix match emits ambiguous_citation, never a sile
     }
 });
 
+// --- AP-RMS-12: suffix resolution anchors on a path boundary -----------------
+// `git ls-files -- '*<token>'` globs across `/`, so a fabricated `manager.ts`
+// resolved to the single real `services/state-manager.ts`: the fabrication got
+// NO path_not_found, and a line citation was range-checked against a file the
+// analyst never named. Resolution must anchor on `/` or whole-path.
+
+test('AP-RMS-12: a fabricated basename that is only a mid-segment glob hit still reads path_not_found', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    const workingDir = tmpDir('pickle-apv-work-');
+    try {
+        initGitRepo(workingDir);
+        fs.mkdirSync(path.join(workingDir, 'services'), { recursive: true });
+        // Ends with "manager.ts" but only mid-segment — `manager.ts` is not a real file.
+        fs.writeFileSync(path.join(workingDir, 'services', 'state-manager.ts'), 'a\nb\nc\n');
+        spawnSync('git', ['add', '.'], { cwd: workingDir });
+        spawnSync('git', ['commit', '-q', '-m', 'add file'], { cwd: workingDir });
+
+        const warnings = checkAnalystOutputPaths('Cited: `manager.ts`.\n', workingDir);
+        assert.equal(warnings.length, 1);
+        assert.equal(warnings[0].defect_class, 'path_not_found');
+        assert.equal(warnings[0].path, 'manager.ts');
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-RMS-12: a line citation is never range-checked against a mid-segment glob hit', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    const workingDir = tmpDir('pickle-apv-work-');
+    try {
+        initGitRepo(workingDir);
+        fs.mkdirSync(path.join(workingDir, 'services'), { recursive: true });
+        // 3 lines: an unanchored resolve would emit line_out_of_range for :9.
+        fs.writeFileSync(path.join(workingDir, 'services', 'state-manager.ts'), 'a\nb\nc\n');
+        spawnSync('git', ['add', '.'], { cwd: workingDir });
+        spawnSync('git', ['commit', '-q', '-m', 'add file'], { cwd: workingDir });
+
+        const warnings = checkAnalystOutputPaths('Cited: `manager.ts:9`.\n', workingDir);
+        assert.equal(warnings.length, 1);
+        // The defect is the missing file, NOT a line range read off a foreign file.
+        assert.equal(warnings[0].defect_class, 'path_not_found');
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-RMS-12: a genuine nested path still resolves through the boundary filter', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    const workingDir = tmpDir('pickle-apv-work-');
+    try {
+        initGitRepo(workingDir);
+        fs.mkdirSync(path.join(workingDir, 'services'), { recursive: true });
+        fs.writeFileSync(path.join(workingDir, 'services', 'state-manager.ts'), 'a\nb\nc\n');
+        spawnSync('git', ['add', '.'], { cwd: workingDir });
+        spawnSync('git', ['commit', '-q', '-m', 'add file'], { cwd: workingDir });
+
+        // Bare basename, partial path, and full path all sit on a boundary.
+        assert.equal(checkAnalystOutputPaths('`state-manager.ts:2`\n', workingDir).length, 0);
+        assert.equal(checkAnalystOutputPaths('`services/state-manager.ts:2`\n', workingDir).length, 0);
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
 // --- AC-FOMC-9: defect_class split, analyst/cycle fields, ticket_id sentinel -
 // ticket_id carries UNATTRIBUTED_TICKET_ID, not '': these warnings have no
 // owning ticket, but refinement-manifest.schema.json requires ticket_id with
