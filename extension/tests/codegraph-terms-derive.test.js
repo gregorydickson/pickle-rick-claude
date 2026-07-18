@@ -29,7 +29,7 @@ const MAX_SPAN_LEN = 40;
 function loadFixture(id) {
   const raw = readFileSync(path.join(FIXTURES_DIR, `${id}.md`), 'utf-8');
   const titleMatch = raw.match(/^title:\s*"(.*)"\s*$/m);
-  if (!titleMatch) throw new Error(`fixture ${id} has no title: frontmatter field`);
+  if (!titleMatch) { throw new Error(`fixture ${id} has no title: frontmatter field`); }
   const title = titleMatch[1];
   // Production passes the FULL ticket file content as acText (spawn-morty.ts:381,408
   // fs.readFileSync of the whole file), not just the post-frontmatter body — match that here.
@@ -41,7 +41,7 @@ function loadFixture(id) {
 function resolvesInRepo(term, repoRoot, cache) {
   const normalized = term.replace(/\(\)$/, '');
   const parts = normalized.split('.').filter(Boolean);
-  if (parts.length === 0) return false;
+  if (parts.length === 0) { return false; }
   const partPatterns = parts.map((part) => new RegExp(`\\b${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`));
   const candidates = cache.trackedSourceFiles.filter((file) => {
     const abs = path.join(repoRoot, file);
@@ -56,8 +56,8 @@ function resolvesInRepo(term, repoRoot, cache) {
     }
     return partPatterns.every((pattern) => pattern.test(content));
   });
-  if (candidates.length === 0) return false;
-  if (candidates.length === 1) return true;
+  if (candidates.length === 0) { return false; }
+  if (candidates.length === 1) { return true; }
   try {
     computeOneHop(candidates.slice(0, 1), repoRoot, { findImportersTimeoutMs: 2000 });
     return true;
@@ -106,7 +106,7 @@ test('AC-CGH-D1 regression: be604d1d — pre-fix raw first-8 backticks are noise
   const rawSpans = [];
   for (const m of `${title}\n${body}`.matchAll(/`([^`\n]+)`/g)) {
     rawSpans.push(m[1].trim());
-    if (rawSpans.length >= 8) break;
+    if (rawSpans.length >= 8) { break; }
   }
   assert.ok(rawSpans.length > 0, 'be604d1d: expected at least one raw backtick span');
 
