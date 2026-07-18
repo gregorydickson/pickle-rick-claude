@@ -2408,18 +2408,16 @@ async function main() {
   } catch { /* guard must never throw or change exit code */ }
   const symbolAudit = await writeSymbolAudit(cycleResults.refinementDir, prdContent, runtime.workingDir, manifest, args.prdPath);
   reportSymbolAuditFindings(symbolAudit);
-  try {
-    if (!symbolAudit.ok) {
-      const symbolAuditWarnings: TicketQualityWarning[] = symbolAudit.findings.map((finding) => ({
-        ticket_id: UNATTRIBUTED_TICKET_ID,
-        defect_class: 'symbol_audit_finding',
-        evidence: `category=${finding.category} symbol=${finding.symbol} line=${finding.sourceLine} reason=${finding.reason}`,
-        source: 'post-decomp',
-        file_line: null,
-      }));
-      manifest.ticket_quality_warnings = [...(manifest.ticket_quality_warnings ?? []), ...symbolAuditWarnings];
-    }
-  } catch { /* guard must never throw or change exit code */ }
+  if (!symbolAudit.ok) {
+    const symbolAuditWarnings: TicketQualityWarning[] = symbolAudit.findings.map((finding) => ({
+      ticket_id: UNATTRIBUTED_TICKET_ID,
+      defect_class: 'symbol_audit_finding',
+      evidence: `category=${finding.category} symbol=${finding.symbol} line=${finding.sourceLine} reason=${finding.reason}`,
+      source: 'post-decomp',
+      file_line: null,
+    }));
+    manifest.ticket_quality_warnings = [...(manifest.ticket_quality_warnings ?? []), ...symbolAuditWarnings];
+  }
   await writeManifestAtomic(manifestPath, manifest);
   const acShapeStatus = runAcShapeEnforcement(manifest, { sessionDir: args.sessionDir, skipAcShapeGate: args.skipAcShapeGate });
   if (acShapeStatus !== 0) process.exit(acShapeStatus);
