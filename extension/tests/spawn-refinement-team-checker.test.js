@@ -16,6 +16,8 @@ import {
     scanAnalystOutputsForUnverifiedPaths,
     UNATTRIBUTED_TICKET_ID,
     __resetGitLsFilesSuffixCacheForTests,
+    countContentLines,
+    findStaleAnchorWarnings,
 } from '../bin/spawn-refinement-team.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -647,4 +649,82 @@ test('AP-RMS-8: a really-emitted warning carries exactly the pinned undeclared k
         fs.rmSync(refinementDir, { recursive: true, force: true });
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
+});
+
+// --- AP-RMS-10: one line-count oracle, off-by-one closed ---------------------
+// A POSIX file ends in a newline, so `split(/\r?\n/).length` counts a phantom
+// trailing empty element. Both staleness checks hand-rolled that expression, so
+// a citation exactly ONE line past EOF read as in-range at BOTH sites and the
+// reported count was inflated by one. Collapsed into `countContentLines`.
+
+test('AP-RMS-10: the line-count oracle is exact across newline shapes', () => {
+    assert.equal(countContentLines(''), 0, 'empty file has no lines');
+    assert.equal(countContentLines('line1\nline2\nline3\n'), 3, 'trailing newline must not inflate');
+    assert.equal(countContentLines('line1\nline2\nline3'), 3, 'no trailing newline');
+    assert.equal(countContentLines('a\r\nb\r\n'), 2, 'CRLF trailing must not inflate');
+    assert.equal(countContentLines('a\r\nb'), 2, 'CRLF no trailing');
+    assert.equal(countContentLines('\n'), 1, 'a single blank line is one line');
+    assert.equal(countContentLines('only\n'), 1, 'single-line file');
+    // the phantom-element shape must not come back
+    assert.notEqual(countContentLines('line1\nline2\nline3\n'), 'line1\nline2\nline3\n'.split(/\r?\n/).length);
+});
+
+test('AP-RMS-10: analyst path (checkAnalystOutputPaths) flags a citation exactly one line past EOF', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    const workingDir = tmpDir('pickle-apv-work-');
+    try {
+        initGitRepo(workingDir);
+        fs.mkdirSync(path.join(workingDir, 'extension', 'src', 'bin'), { recursive: true });
+        // a normal 3-line POSIX file
+        fs.writeFileSync(path.join(workingDir, 'extension', 'src', 'bin', 'microverse-runner.ts'), 'line1\nline2\nline3\n');
+        spawnSync('git', ['add', '.'], { cwd: workingDir });
+        spawnSync('git', ['commit', '-q', '-m', 'add file'], { cwd: workingDir });
+
+        // line 4 does not exist — pre-fix this slipped through (4 > 4 === false)
+        const boundary = checkAnalystOutputPaths('Cited: `microverse-runner.ts:4`.\n', workingDir);
+        assert.equal(boundary.length, 1, 'one-past-EOF must be line_out_of_range');
+        assert.equal(boundary[0].defect_class, 'line_out_of_range');
+        assert.equal(boundary[0].line, 4);
+
+        // the last REAL line must still be accepted — guards against over-correction
+        const lastReal = checkAnalystOutputPaths('Cited: `microverse-runner.ts:3`.\n', workingDir);
+        assert.equal(lastReal.length, 0, 'the final real line is in range');
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-RMS-10: anchor path (findStaleAnchorWarnings) flags one-past-EOF and reports the TRUE count', () => {
+    const workingDir = tmpDir('pickle-apv-anchor-');
+    try {
+        initGitRepo(workingDir);
+        fs.mkdirSync(path.join(workingDir, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(workingDir, 'src', 'short.ts'), 'line1\nline2\nline3\n');
+        spawnSync('git', ['add', '.'], { cwd: workingDir });
+        spawnSync('git', ['commit', '-q', '-m', 'add file'], { cwd: workingDir });
+
+        const boundary = findStaleAnchorWarnings('See `src/short.ts:4` here.\n', workingDir);
+        assert.equal(boundary.length, 1, 'one-past-EOF must be line-out-of-range at the anchor site too');
+        assert.equal(boundary[0].reason, 'line-out-of-range');
+        // the operator-facing detail must cite 3, not the inflated 4
+        assert.match(boundary[0].detail, /HEAD line count 3\b/);
+
+        const lastReal = findStaleAnchorWarnings('See `src/short.ts:3` here.\n', workingDir);
+        assert.equal(lastReal.length, 0, 'the final real line is in range');
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-RMS-10: neither staleness site hand-rolls its own line count', () => {
+    const src = fs.readFileSync(
+        path.join(REPO_ROOT, 'extension', 'src', 'bin', 'spawn-refinement-team.ts'),
+        'utf-8',
+    );
+    // the phantom-element expression must exist nowhere outside the one oracle
+    const handRolled = src.match(/(?:headContent|fileContent|content)\s*===\s*''\s*\?\s*0\s*:[^\n]*split\(\/\\r\?\\n\/\)\.length/g) ?? [];
+    assert.equal(handRolled.length, 0, `line-count logic re-forked: ${JSON.stringify(handRolled)}`);
+    // both consumers route through the oracle
+    const oracleUses = src.match(/countContentLines\(/g) ?? [];
+    assert.ok(oracleUses.length >= 3, `expected 1 definition + 2 call sites, saw ${oracleUses.length}`);
 });

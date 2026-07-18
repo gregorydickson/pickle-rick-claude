@@ -451,6 +451,18 @@ function readHeadFile(workingDir: string, filePath: string): string | undefined 
   }
 }
 
+/**
+ * AP-RMS-10: the ONE line-count oracle for citation staleness checks.
+ * A POSIX file ends in a newline, so a bare `split(/\r?\n/).length` counts a
+ * phantom trailing empty element and inflates the count by one — letting a
+ * citation exactly one line past EOF read as in-range. Strip a single trailing
+ * newline (CRLF-aware) before counting.
+ */
+export function countContentLines(content: string): number {
+  if (content === '') return 0;
+  return content.replace(/\r?\n$/, '').split(/\r?\n/).length;
+}
+
 export function findStaleAnchorWarnings(prdContent: string, workingDir: string): StaleAnchorWarning[] {
   return extractAnchorCitations(prdContent).flatMap((citation): StaleAnchorWarning[] => {
     const headContent = readHeadFile(workingDir, citation.filePath);
@@ -462,7 +474,7 @@ export function findStaleAnchorWarnings(prdContent: string, workingDir: string):
       }];
     }
 
-    const lineCount = headContent === '' ? 0 : headContent.split(/\r?\n/).length;
+    const lineCount = countContentLines(headContent);
     if (citation.lineNumber > lineCount) {
       return [{
         citation,
@@ -601,7 +613,7 @@ export function checkAnalystOutputPaths(
     if (citedLine !== undefined) {
       try {
         const fileContent = fs.readFileSync(path.join(workingDir, matches[0]), 'utf-8');
-        const lineCount = fileContent === '' ? 0 : fileContent.split(/\r?\n/).length;
+        const lineCount = countContentLines(fileContent);
         if (citedLine > lineCount) {
           warnings.push({ defect_class: 'line_out_of_range', path: citedPath, line: citedLine });
           process.stderr.write(`[pickle-rick] line_out_of_range: ${citedPath}:${citedLine} exceeds ${lineCount}\n`);
