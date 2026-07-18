@@ -1,138 +1,195 @@
 ---
-title: "R-SAFP — the refinement symbol audit hard-fails legitimate PRDs (subtract the co-occurrence categories)"
+title: "R-SAFP — the refinement symbol audit hard-fails legitimate PRDs (subtract the co-occurrence categories) [REFINED]"
 priority: P1
 finding: R-SAFP
 status: ready
 type: bug-fix-bundle
-schema_neutral: true
+schema_neutral: false
 target_version: v2.1.0
 branch: release/v2.1-beta
-source_assessment: "Filed 2026-07-16 (BUG-REPORT-2026-07-16-symbol-audit-exit-code-false-positive-blocks-refinement.md); re-proven 2026-07-18 when it hard-blocked the B-NONSTOP PRD. Lifetime record: 11 findings, 0 real."
+source_assessment: "Filed 2026-07-16; re-proven 2026-07-18 when it hard-blocked B-NONSTOP. Refined by the 3x3 analyst team (session 2026-07-18-c06fd902), which RETRACTED a three-analyst consensus — see §0.1."
 ---
 
-# R-SAFP — unblock refinement: the symbol audit cannot tell a citation from a claim
+# R-SAFP — unblock refinement: the audit cannot tell a citation from a claim *(refined)*
 
-> **⚠ AUTHORING NOTE (deliberate, not evasion).** This PRD describes the very checker that scans it, so
-> it is laid out to avoid co-locating the checker's own trigger words with backticked identifiers on a
-> single line. No claim is softened and no citation is dropped — only line layout changed. The
-> MASTER_PLAN sanctions scoping this catch-22 deliberately. Rewording PRDs to appease this gate is
-> otherwise FORBIDDEN; this file is the one exception, and it exists to delete the reason for it.
+> **⚠ AUTHORING NOTE (deliberate, not evasion).** This file describes the checker that scans it, so it
+> avoids co-locating the checker's trigger words with backticked identifiers on one line. No claim is
+> softened; only line layout changed. Rewording PRDs to appease this gate is otherwise FORBIDDEN — this
+> file is the one sanctioned exception, and it exists to delete the reason for it. **See R13 (§6): this
+> accommodation must NOT be ratified into the test suite as a passing fixture.**
 
 ## 0. Thesis
+The audit hard-fails refinement (0 tickets) on **correct** PRDs because two categories treat
+**line-proximity as a membership claim**. There is no bypass — the enforcement's exit runs before the
+only gate honoring a skip flag. Result: a catch-22 blocking every PRD touching the run-disposition surface.
 
-The refinement symbol audit hard-fails (`process.exit`, 0 tickets) on **correct** PRDs because two of
-its categories treat **line-proximity as a membership claim**. A symbol that merely appears near a
-trigger word must, per the checker, be a member of an enum — so citing the code a PRD is about is
-penalized. **There is no override**: the enforcement runs before the ac-shape gate, and only the latter
-has a skip flag. The result is a catch-22 that blocks every PRD touching the run-disposition surface.
+### 0.1 ⚠ THREE-ANALYST RETRACTION — the prescription in the pre-refinement draft was WRONG
+All three analysts (and the draft) claimed the warnings array is frozen at `buildRefinementManifest`
+(`:2370`) and that the fix must thread a new parameter through it. **Refuted by an in-repo precedent
+~9 lines below the cited seam:** the over-collapse guard at `:2379` already does
+`manifest.ticket_quality_warnings = [...(manifest.ticket_quality_warnings ?? []), overCollapseWarning]`
+— i.e. a post-build in-place mutation on the returned object — and `writeManifestAtomic` runs at `:2398`.
+**No circular dependency exists. No parameter threading. No second warnings array. No double write.**
+⇒ WS-3 is a statement move plus an append, not a `main()` restructure.
 
-## 1. Evidence — the category has never worked
+**Second retraction:** `runSymbolAuditEnforcement` (`:2123-2133`) **does not terminate the process** — it
+returns a status code. The single termination is at the callsite `:2401`. Two analysts tiered WS-3 up on
+that false premise. **Name `:2401` as the deletion target** so no worker hunts for an exit that isn't there.
 
-| PRD | findings | verified real |
-|---|---|---|
-| R-MWMO d2 (2026-07-16) | 7 | **0** |
-| B-NONSTOP (2026-07-18) | 4 | **0** |
-| **lifetime** | **11** | **0** |
+## 1. Evidence — the enum-membership category has never worked
+| PRD | findings | verified real | reproducible from git today? |
+|---|---|---|---|
+| R-MWMO d2 (2026-07-16) | 7 | **0** | ❌ **NO — see below** |
+| B-NONSTOP (2026-07-18) | 4 | **0** | ✅ yes (committed, re-runs to 4) |
+| **lifetime** | **11** | **0** | |
 
-The 2026-07-18 run, reproduced with the standalone harness against a legitimate PRD, produced four
-reports. Each is provably wrong, and the reason is listed separately from any trigger word so that this
-paragraph can itself survive the scan:
+**⚠ HONESTY CORRECTION (executed 2026-07-18, supersedes both the draft AND the refinement's R13
+recommendation):** the 2026-07-16 evidence is **not reproducible from git at all.** Every revision of
+that PRD — `e7ac8929`, `c2e7846e`, `dcd32b59`, `885a75fb`, `83c26353`, `3f363e5d` — now returns **0
+findings / ok=true** under the current checker. The risk analyst proposed pinning `885a75fb^` as "the
+revision that actually produced 7 findings"; **it does not** (0 findings, executed). So the historical 7
+rest on the contemporaneous bug report, not on a re-runnable artifact, and **no revision of that file may
+be used as a fixture in either direction.** This resolves R13 more cleanly than the proposed remedy: by
+pinning nothing from that file, the suite cannot ratify the appeasement.
+
+Today's four, each provably wrong (reasons listed away from trigger words so this table survives its own scan):
 
 | # | reported symbol | what it actually is |
 |---|---|---|
-| 1 | `anatomy_non_convergent` | a **real union member**, declared at `extension/src/types/index.ts:1284` — validated against the wrong set |
+| 1 | `anatomy_non_convergent` | a **real union member** at `extension/src/types/index.ts:1284` — validated against the wrong set |
 | 2 | `finalizePhaseSuccess` | a **function**, declared at HEAD |
 | 3 | `maybeStampPhaseGraduation` | a **function**, declared at HEAD |
-| 4 | the bare parameter identifier on the reporting function's signature | a **parameter name** — the trigger pattern matches that identifier itself, so citing the real fix site self-trips the gate |
+| 4 | the bare parameter identifier on the reporting function's signature | a **parameter name** — the trigger pattern matches that identifier itself |
 
-**🆕 THIRD DEFECT, found 2026-07-18 while authoring THIS file — the scanner does not skip fenced code
-blocks, and it harvests JSON field names as claimed symbols.** Pasting the checker's own machine output
-as evidence caused it to report `category`, `symbol`, and `reason` — the literal field names of its own
-report format — as phantom symbols. **The checker cannot read its own output without failing itself.**
-That is the cleanest possible demonstration that the rule harvests tokens rather than claims, and it is
-why the evidence above is a prose table instead of a verbatim paste.
+**🆕 Defect 3 — the scanner does not skip fenced blocks and harvests JSON field names as claimed
+symbols.** Pasting the checker's own machine output as evidence made it report `category`, `symbol` and
+`reason` — its own report-format field names — as phantoms. Executed count on a fenced block: 6+4+1
+findings across three categories. **The checker cannot read its own output without failing itself.**
+Compounding: `renderSymbolAuditMarkdown` (`:2100-2105`) writes each finding as a line carrying the word
+category **and** a backticked symbol, so any future PRD citing `symbol_audit.md` as evidence re-enters
+the trap through a second door.
 
-**🆕 Scope correction vs the original bug report:** the defect is NOT confined to the
-enum-membership category (PipelineRunnerExitCode, un-quoted here so this line survives its own
-scan). The sibling activity-event category false-positives too (finding 1),
-even though it already unions `declaredSymbols` (`spawn-refinement-team.ts:1885-1886`). So a
-`declaredSymbols` escape alone is **necessary but not sufficient** — proven, not asserted.
+**🔑 The ill-posedness in one sentence (the warrant for subtraction, not rewrite):**
+`declaredActivityEventSymbols` (`:1807-1816`) harvests — from trigger-word lines, with the same regex and
+the same `/^[a-z][a-z0-9_]*$/` shape filter — exactly the tokens that `collectActivityEventReferences`
+(`:1888-1894`) reports as phantom. The checker runs it on **composed** PRDs (`:1846`) to build its pass-set
+and pointedly never runs it on the file under audit. ⇒ *A token is "declared" if it appears this way in
+another PRD and "phantom" if it appears this way in this one.*
 
-## 2. Verified mechanism (HEAD `v2.1.0-beta.3`)
+## 2. Verified mechanism (HEAD `f33c4952`)
+```
+buildRefinementManifest(:2370) → over-collapse guard MUTATES ticket_quality_warnings (:2379)
+  → writeManifestAtomic(:2398) → writeSymbolAudit(:2399) → runSymbolAuditEnforcement(:2400)
+  → if (status !== 0) terminate (:2401)   ← the ONLY termination; delete THIS line
+  → runAcShapeEnforcement(:2402, owns skipAcShapeGate) → AC-phase(:2412) → readiness(:2414)
+```
+- `collectExitCodeReferences` (`:1920`) accepts **no** `declaredSymbols`; its sibling (`:1885`) does and
+  unions it at `:1886`. A symbol declared at HEAD can never pass the former — **while the error message
+  instructs the author to ensure each cited symbol is declared at HEAD.**
+- `TicketQualityWarning` (`:294-304`) = `{ticket_id, defect_class, evidence, source?, file_line?}`,
+  schema `additionalProperties: false`, `required: [ticket_id, defect_class, evidence]`,
+  `ticket_id.minLength: 1`. **No runtime validator exists in `src/`** — it is a test-asserted contract.
 
-- `collectExitCodeReferences` (`spawn-refinement-team.ts:1920`) accepts **no** `declaredSymbols`
-  parameter, while its sibling `collectActivityEventReferences` (`:1885`) does and unions it at `:1886`.
-  That asymmetry means a symbol genuinely declared at HEAD can never pass the former — **while the
-  enforcement message instructs the author to ensure each cited symbol is declared at HEAD.** Following
-  the error's own advice cannot clear it.
-- The trigger pattern for the sibling category is `ACTIVITY_EVENT_TRIGGER_RE` (`:1774`); the failing
-  category uses the analogous same-line proximity rule.
-- Enforcement: the audit-enforcement entry point (runSymbolAuditEnforcement) terminates the process **before**
-  `runAcShapeEnforcement`, which is the only one honoring `skipAcShapeGate`. **No bypass exists.**
+## 3. Workstreams — WS-1 and WS-2 are JOINTLY REQUIRED (R14)
+Today's 4 findings split **3 enum-membership / 1 activity-event**. WS-1 alone reaches 1; WS-2 alone
+reaches 3; **only both reach 0.** ⇒ **The bundle MUST NOT be declared done on WS-1 alone**, and the
+decomposition must not queue them as independently shippable.
 
-## 3. Workstreams
+### WS-1 — Subtract the enum-membership category (small)
+Remove it. Rationale: §1's 11-findings/0-real record. Per R-CCNW-2 a gate that has never once been right
+is deleted or wired — pick one. **Do not** replace it with a stricter variant of the same proximity rule.
 
-### WS-1 — Subtract the co-occurrence category (the preferred arm)
-Remove the enum-membership category (PipelineRunnerExitCode) from the audit. Rationale is the §1 table: 11
-findings, 0 real, across every recorded run. A check that has never once been right is dead weight, and
-per R-CCNW-2 discipline a gate that has never fired correctly is **deleted or wired** — pick one.
-**Do not** replace it with a stricter variant of the same co-occurrence rule.
+### WS-2 — Make the activity-event category claim-shaped, not proximity-shaped (small)
+Restrict to a real claim shape, or union the declared union members so a HEAD-declared symbol passes.
+**REUSE `declaredActivityEventSymbols` (`:1807`)** — the checker already owns it (§1). ⚠ **Do NOT adopt
+`hasSourceHit`/`sourceRoots` (R7):** `sourceRoots` falls back to `[workingDir]` when neither `src/` nor
+`extension/src/` exists, so on a target repo laid out as `lib/`/`app/`/`pkg/` the scan swallows the PRD
+directory and **an invented symbol grounds itself from the PRD that invented it** — a repo-agnosticism
+violation invisible from this repo.
 
-### WS-2 — Make the sibling category claim-shaped (not proximity-shaped)
-The activity-event category must also stop treating same-line proximity as a claim (finding 1 above).
-Either restrict it to a real claim shape (a qualified reference such as `Type.Member`), or union the
-declared union members so a symbol declared at HEAD passes. **Verify the OUTCOME**: a PRD citing a real
-member near a trigger word must PASS.
+### WS-3 — Fail open; never terminate refinement on a heuristic (small)
+Evaluate the audit **before** `writeManifestAtomic` (`:2398`), append findings in place exactly as the
+over-collapse precedent does at `:2379`, emit the stderr line, and **delete `:2401`**. Per §0.1 this is a
+statement move + append — not a control-flow restructure.
+- **Warning shape (schema-fixed):** entries MUST be `{ticket_id, defect_class, evidence}`. The
+  `{category, symbol, source_line, reason}` shape every analyst proposed is **unwritable**
+  (`additionalProperties: false`). Fold category/symbol/line into `evidence`, matching the precedent's
+  `evidence: "composed_sources=… tickets=…"` style.
+- **`ticket_id` decision (required, `minLength: 1`; findings are PRD-scoped):** use the sentinel
+  **`ticket_id: '<prd>'`**. Do NOT copy the precedent's `ticket_id: ''` — that violates the schema it is
+  declared against (invisible only because no runtime validator exists). This is why the frontmatter is
+  **`schema_neutral: false`**.
+- **⚠ REGISTRATION CO-LOCATION:** if WS-3 emits an activity event, its name MUST be enrolled in
+  `VALID_ACTIVITY_EVENTS` (`types/index.ts:586`) or `assertValidActivityEvent` (`state-manager.ts:1574`)
+  throws. **The WS-3 ticket allowlist MUST include `extension/src/types/index.ts`** or the scope fence
+  blocks the registration edit and the ticket deadlocks at zero commits. *(Noted irony: the audit's own
+  advisory event must be enrolled in the same union whose citation started this bug.)*
 
-### WS-3 — Fail open, never hard-stop refinement on a heuristic
-A heuristic that cannot distinguish a citation from a claim must not be able to `process.exit` a
-refinement run to 0 tickets. Demote the remaining audit output to **advisory** (recorded in the manifest
-as a warning), consistent with the beta.33 gate-overreach subtraction that demoted the readiness and
-ticket-audit gates. Ordering note: whatever remains must not exit before the gate that owns the skip flag.
+### WS-4 — Fence-aware line scanning (small) — IN SCOPE per Defect 3
+`lineRefs` (`:1780`) is a bare `content.split(/\r?\n/)` with **zero fence state** and is the shared entry
+point for **all four collectors**. One fence-aware change removes the whole class. Chosen in-scope over
+"advisory noise is tolerable" because R11 leaves us unable to assume downstream tolerance.
 
 ## 4. Acceptance criteria — OUTCOME-based
-
-- **AC-SAFP-1 (the headline):** the two PRDs this bug has blocked —
-  `prds/p1-b-nonstop-generous-caps-honest-nonconvergence-observability.md` and
-  `prds/p1-bug-fix-r-mwmo-d2-exit-code-masking.md` — both **pass** the audit (`ok === true`).
-  — Verify: test imports `evaluateSymbolAudit` and asserts `ok` on both committed fixtures — Type: test
-- **AC-SAFP-2:** a symbol **declared at HEAD** cited near a trigger word is NOT reported. Fixture uses
-  `anatomy_non_convergent` (a real member at `types/index.ts:1284`). — Verify: unit test — Type: test
-- **AC-SAFP-3:** a function name cited near a trigger word is NOT reported. Fixture uses
-  `finalizePhaseSuccess`. — Verify: unit test — Type: test
-- **AC-SAFP-4 (no hard-stop):** with findings present, refinement does **not** terminate at 0 tickets;
-  findings surface as manifest warnings. — Verify: integration test asserts a non-terminating run and a
-  warning entry — Type: test
-- **AC-SAFP-5 (regression pin, fail-before/pass-after):** a fixture reproducing today's 4 findings
-  returns 4 on the pre-fix code path and 0 after. — Verify: test pins both directions — Type: test
-- **AC-SAFP-6 (no capability lost):** if any category is retained, a genuinely invented symbol (absent
-  from HEAD and from every union) is still reported. — Verify: unit test with a fabricated name — Type: test
+- **AC-SAFP-1 (headline):** B-NONSTOP's PRD passes the audit (`ok === true`) after the fix. ⚠ **Fixture
+  governance (R13, resolved by execution):** B-NONSTOP is the **sole** fixture — commit its current
+  (4-finding) revision under `extension/tests/fixtures/symbol-audit/`. **Do NOT pin any revision of the
+  R-MWMO d2 PRD in either direction**: none reproduces its historical findings (all return 0 today, §1),
+  so a "fails-before" pin is impossible and a "passes-after" pin would ratify an appeased document.
+  — Type: test
+- **AC-SAFP-2:** a HEAD-declared symbol cited near a trigger word is NOT reported (fixture:
+  `anatomy_non_convergent`). — Type: test
+- **AC-SAFP-3:** a function name cited near a trigger word is NOT reported (fixture:
+  `finalizePhaseSuccess`). — Type: test
+- **AC-SAFP-4 (no hard-stop, schema-legal):** with findings present, refinement does **not** terminate at
+  0 tickets, and each finding appears in `ticket_quality_warnings` as a schema-legal
+  `{ticket_id:'<prd>', defect_class, evidence}` entry validating against
+  `refinement-manifest.schema.json`. — Type: test
+- **AC-SAFP-5 (regression pin):** post-fix findings on the today-fixture = **0**. ⚠ The fail-before
+  direction is **unrecoverable in-tree** (it would require retaining `collectExitCodeReferences`,
+  `shouldAuditActivityEventToken` (`:1872`), and `NON_EVENT_ACTIVITY_CONTEXT_RE` (`:1775`) as dead code).
+  Capture the pre-fix count out-of-tree against tag `v2.1.0-beta.3`, record it as ticket evidence, and
+  assert only the post-fix `0` in CI. **Do not mandate dead code.** — Type: test
+- **AC-SAFP-6 (no capability lost, repo-agnostic):** a genuinely invented symbol is still reported —
+  executed against a fixture working dir containing **no** `src/` and no `extension/src/`, so the
+  `sourceRoots` whole-repo fallback (R7) cannot self-ground it. — Type: test
+- **AC-SAFP-7 (fences):** a fenced code block contributes **zero** findings. — Type: test
+- **🔴 AC-SAFP-8 (R11 — the unblock is TESTED, not asserted):** after the fix, a refinement run on
+  B-NONSTOP **reaches ticket decomposition**. If a downstream gate (`:2402` ac-shape, `:2412` AC-phase,
+  `:2414` readiness) blocks it instead, that gate is **named in §7 as a known limitation** and the
+  bundle does not claim the unblock. — Type: integration
 
 ## 5. Simplification Review
-
-1. **Necessary?** WS-1 and WS-3 are pure removal/demotion. WS-2 either narrows or reuses an existing
-   union — no new machinery in any workstream.
-2. **REUSE not ADD?** Yes — WS-2 reuses the `declaredSymbols` union the sibling already builds
-   (`:1886`); WS-3 reuses the advisory-warning channel the manifest already carries
-   (`ticket_quality_warnings`). No new gate, no new report.
-3. **Guards brittle complexity that should be SUBTRACTED?** Yes, and this is the core: the brittle thing
-   is a proximity heuristic promoted to a hard gate. The fix removes the false input rather than adding
-   resistance around it — the standing rule when a gate false-blocks on an ill-posed dimension.
-4. **SUBTRACTS:** one whole audit category (11/11 wrong), one hard-stop path, and the catch-22 that
-   currently blocks the entire run-disposition queue. **NOT built:** a stricter proximity rule; a
-   per-PRD allowlist; any rewording convention for authors.
+1. **Necessary?** WS-1/WS-3/WS-4 are pure removal or demotion. WS-2 narrows or reuses an existing
+   harvester. No new machinery in any workstream.
+2. **REUSE not ADD?** Yes — WS-2 reuses `declaredActivityEventSymbols` (`:1807`); WS-3 reuses the
+   over-collapse append precedent (`:2379`) and the manifest's existing warning channel; WS-4 changes one
+   shared entry point rather than four collectors.
+3. **Guards brittle complexity that should be SUBTRACTED?** Yes — a proximity heuristic promoted to a hard
+   gate. Remove the false input; do not add resistance around it.
+4. **SUBTRACTS:** one whole category (11/11 wrong), one termination path, the fence-blindness class, and
+   the catch-22 blocking the run-disposition queue. **NOT built:** a stricter proximity rule; a per-PRD
+   allowlist; `hasSourceHit` adoption (R7); any author-facing rewording convention.
 
 ## 6. Risks
+- **R11 (highest) — "unblocks B-NONSTOP" is a hypothesis about three never-executed gates.** `:2402`
+  fires first today, so `:2404`/`:2412`/`:2414` have never been evaluated against a blocked PRD.
+  `runReadinessGate` (`:365-384`) spawns `check-readiness.js` and returns its status directly — a
+  non-zero verdict terminates exactly as the audit does now. **Mitigation: AC-SAFP-8 makes the unblock a
+  tested outcome; §7 must record the observed next gate.**
+- **R13 (governance) — do not ratify the appeasement.** Handled in AC-SAFP-1 by pinning the
+  pre-rewording revision.
+- **R14 — partial ship.** Handled in §3: WS-1 and WS-2 are jointly required.
+- **R7 — repo-agnosticism.** Handled in WS-2 (no `hasSourceHit`) and AC-SAFP-6 (no-`src/` fixture).
+- **R1 — removing a check could let a fabricated symbol through.** Bounded by AC-SAFP-6; note the honest
+  limit: this checker is structurally blind to fabrication anyway (real paths + invented claims), so the
+  capability removed is smaller than it appears.
 
-- **R1 — removing a check could let a fabricated symbol through.** Mitigated by **AC-SAFP-6**. Note the
-  honest bound: this checker is structurally blind to fabrication anyway (real paths + invented claims),
-  the same limitation recorded for the B-FOMC path-checker — so the capability being removed is smaller
-  than it appears.
-- **R2 — this PRD is scanned by the checker it fixes.** Handled by the authoring note above and pinned
-  by AC-SAFP-1, which makes "a legitimate PRD passes" a permanent test rather than a one-time dodge.
+## 7. Observed downstream gate (filled in by AC-SAFP-8 at build time)
+> **TO BE RECORDED:** which gate, if any, blocks B-NONSTOP once the audit passes. Do not ship this
+> section empty and do not assert the unblock without it.
 
-## 7. Build notes
-- **Pipeline-safe** — the refinement analyst spawner is not the salvage/completion-evidence path, and the
-  running pipeline executes deployed JS.
-- **Unblocks:** B-NONSTOP (queued next), and every future PRD touching run dispositions.
+## 8. Build notes
+- **Pipeline-safe** — the refinement spawner is not the salvage/completion-evidence path.
+- Tiering: WS-1/WS-2/WS-3/WS-4 all **small** (§0.1 removes the stated reason WS-3 could not be small).
 - Green-tree precondition on the launch commit.
