@@ -35,7 +35,7 @@ remains field-soak repeatability (esp. codex) — now on the simpler single-life
 ## 📦 SHIP STATE 2026-07-18 (newest first — the release-ready + in-flight ledger)
 
 - ✅ **v2.1.0-beta.3 RELEASED + DEPLOYED 2026-07-18** (`gh release`, prerelease; deployed runtime carries beta.3). Three bundles: **B-SSAT** (settings source-authoritative + worker-gate timeout — R-WTFT was inert since May, now `resolveWorkerTestGateTimeoutMs()` returns 600000 live), **R-MWMO d2** (exit-code masking), **B-CGHARD** (codegraph input harvester + soak enable-path docs; WS-CGH-A/B were found already-shipped and dropped). Full gate green; two gate-infra caps fixed while running it (see §B.6(e) + [[project_release_gate_runner_timeout_equals_soak_duration]]).
-- ⏳ **R-SAFP BUILDING 2026-07-18** via `/pickle-pipeline` (session `2026-07-18-c06fd902`, PHASE 4/4 szechuan at last check). All 4 tickets Done. **The symbol-audit false-positive is FIXED and verified** — B-NONSTOP's PRD now returns `ok:true, 0 findings` (was 4); net −144 LOC subtraction. **PRD: `prds/p1-r-safp-symbol-audit-false-positive-unblock.md`.** NOT yet released.
+- ✅ **R-SAFP BUILT 2026-07-18** via `/pickle-pipeline` (session `2026-07-18-c06fd902`, **4/4 phases, 298 min, hands-off**). All 4 tickets Done. anatomy-park exited code-1 non-fatally and continued (see §B.6(f) — that run is now our own live B-NONSTOP evidence). NOT yet released. **The symbol-audit false-positive is FIXED and verified** — B-NONSTOP's PRD now returns `ok:true, 0 findings` (was 4); net −144 LOC subtraction. **PRD: `prds/p1-r-safp-symbol-audit-false-positive-unblock.md`.** NOT yet released.
   - **🔑 R11 verification (ticket `630b7aca`) did its job — it caught TWO wrong predictions:** (1) my PRD asserted "unblocks B-NONSTOP" as fact; (2) it predicted the next block would be one of three downstream gates (ac-shape/AC-phase/readiness). **Both wrong.** Running the actual refinement showed B-NONSTOP crashes *upstream* of all three, at manifest build, on a NEW bug — and the three gates are STILL untested. The ticket **retracted the unblock claim** rather than asserting it. This is [[feedback_verify_the_outcome_not_the_mechanism]] enforced on our own work; **no R-SAFP artifact may claim it unblocks B-NONSTOP.**
 - 🆕 **[[R-RPFL]] FILED 2026-07-18 (P2)** — `prds/BUG-REPORT-2026-07-18-refinement-relative-prd-fail-late-manifest-crash.md`. A **relative** `--prd` runs all 3 analyst cycles (~15 min) then hard-crashes at `enrichManifestTicketsFromSourcePrds` (`spawn-refinement-team.ts:1646`, `!path.isAbsolute`). **Fail-late on a parse-time-knowable condition.** Fix subtractive: resolve `--prd` at argv-parse. **⚠ The normal pipeline flow DODGES it** — setup.js mints absolute session dirs; 3/3 refinements this session (B-SSAT/B-CGHARD/R-SAFP) used absolute `prd_path` and reached manifest build. So **B-NONSTOP built via `/pickle-pipeline` is NOT blocked by this** — the R11 test hit it only because it used a relative path.
 - ⏭ **[[B-NONSTOP]] status corrected 2026-07-18:** its symbol-audit block is REMOVED (R-SAFP). It is **very likely buildable via the normal pipeline now** (absolute-path evidence above), NOT chained behind R-RPFL as first feared. Confirm by launching it once R-SAFP releases. **PRD: `prds/p1-b-nonstop-generous-caps-honest-nonconvergence-observability.md`** (committed, was the R-SAFP fixture). Note WS-4 in the B-NONSTOP PRD (the release-gate runner-timeout cap) overlaps §B.6(e).
@@ -326,6 +326,33 @@ Original framing (retained): the lead cluster is the FRESH 2026-07-14/16 LOA-176
    - **(c) Observability — the operator must see WHERE it fell short.** The disposition must reach `pipeline-status.json` / the phase summary, not just a log line. Today `finalizePhaseSuccess` (`pipeline-runner.ts:4137`) ignores its `exitCode` param (B.5(a)) and `handleMetricMode` discards `targetHit` (§B.4) — **two independent places where the truth is computed and thrown away.** Fix both or the run still reads green.
    - **(d) Simplification angle (principle 2):** `successfulReasons` conflating five dispositions into one boolean IS the complexity to subtract — replace the "is it in the success list?" test with an explicit disposition→(exit, report, continue?) mapping so a new reason can't silently inherit "success." **Name the reuse:** `anatomy_non_convergent`'s existing producer/consumer pair is the template; do not invent a parallel mechanism.
    - **Verify the OUTCOME, not the mechanism:** the acceptance test must be *"a run that exhausts its szechuan iteration budget is reported as non-convergent AND the pipeline still reaches the next phase"* — not "a new enum member exists."
+   - **🔴🆕 (f) LIVE FIELD INSTANCE CAPTURED 2026-07-18 — our own R-SAFP run, session `2026-07-18-c06fd902`. This is the defect happening to us, verbatim, and it cleanly separates what is ALREADY RIGHT from what is BROKEN.**
+     ```
+     21:22:36.575  Phase anatomy-park exited with code 1
+     21:22:36.579  Phase anatomy-park exited with code 1 (non-fatal) — continuing to szechuan-sauce
+                   for automated remediation          ← ✅ PRINCIPLE 1 WORKING: nonstop, honest, correct
+     21:22:36.580  Phase anatomy-park completed successfully   ← ❌ PRINCIPLE 1b VIOLATED: a code-1 exit
+                                                                  reported as success, 1ms later
+     ```
+     And the artifact an operator actually reads records **nothing at all**:
+     ```json
+     pipeline-status.json → {"status":"completed","completed_phases":4,"skipped_phases":0,"total_phases":4}
+     ```
+     **No `exit_code`, no per-phase status, no disposition — the code-1 is invisible outside the log.**
+     **Three things this proves, and they sharpen the whole bundle:**
+     1. **The continuation is ALREADY CORRECT — do not touch it.** Line `:579` is the shipped non-fatal
+        path doing exactly what principle 1 demands. Confirms §1e: honest ≠ halting. **WS-1 must change
+        only the REPORTING, never the routing.**
+     2. **WS-2 is confirmed necessary and is the visible half.** `finalizePhaseSuccess` logs
+        "completed successfully" **1 millisecond after** the runner itself logged a non-fatal code-1 —
+        two statements, one truth, opposite claims.
+     3. **AC-NS-5 is under-specified as written and must be strengthened.** It says the disposition must
+        reach `pipeline-status.json`; the real state is that this file **has no per-phase structure at
+        all** — only four counters. So the AC must require adding per-phase entries (name, exit code,
+        disposition), not just "carry the disposition." Without that there is nowhere for the truth to go.
+     **Bonus corroboration:** the same run reports `completed_phases: 4` with `skipped_phases: 0` while one
+     of those four ended code-1 — i.e. the counter that feeds the summary is itself the `counters.completed++`
+     line B.5(a) names. The three defects (routing OK / reporting wrong / artifact empty) are one chain.
    - **🔴 (e) NEW INSTANCE FOUND 2026-07-18 DURING THE beta.3 RELEASE GATE — THE RELEASE GATE ITSELF IS UNPASSABLE AS DOCUMENTED. Same defect class, third sighting today.**
      `bin/test-runner.js:32` `DEFAULT_TEST_RUNNER_TIMEOUT_MS = 30 * 60 * 1000` (**1,800,000 ms**) vs the documented soak minimum `SOAK_SECONDS = 1800` s (**1,800,000 ms**) — **the soak consumes 100% of the runner's timeout budget.** Observed: soak ran `1799117 ms`, tier hit `1799974 ms`, runner timeout fired at completion and **cancelled the soak AND `worker-mcp-access.test.js`** (queued behind it in `tests/expensive/.serial-tests.json`, never ran). Reported as `fail 0, cancelled 2` + `'Promise resolution is still pending but the event loop has already resolved'` + `spawnSync ETIMEDOUT` — **a cancellation dressed as a failure, with the soak's own assertions all green.** Workaround used for beta.3: `PICKLE_TEST_RUNNER_TIMEOUT_MS=7200000` (env override, capped 24h).
      **This is the SAME class as the two caps already fixed/queued today — a cap set below the real runtime is a guaranteed false failure, not a safety net:**
