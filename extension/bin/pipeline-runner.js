@@ -3480,6 +3480,13 @@ export function classifyMicroverseHaltDecision(exitReason) {
     if (exitReason === 'anatomy_non_convergent') {
         return { action: 'run-finalize-gate-incomplete', recognizedExitReason: exitReason };
     }
+    // B-NS: Template-A non-convergent dispositions are non-fatal phase ends — run the finalize gate
+    // over the converged work and continue, never an unattributed abort (AC-NS-4).
+    if (exitReason === 'stalled_below_target'
+        || exitReason === 'iteration_budget_exhausted'
+        || exitReason === 'time_budget_exhausted') {
+        return { action: 'run-finalize-gate-incomplete', recognizedExitReason: exitReason };
+    }
     if (typeof exitReason === 'string'
         && (isMicroverseFatalReason(exitReason)
             || isMicroverseFailureExit(exitReason))) {
