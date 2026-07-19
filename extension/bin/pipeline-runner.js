@@ -3469,22 +3469,23 @@ async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, inde
     return finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, exitCode, log);
 }
 export function classifyMicroverseHaltDecision(exitReason) {
+    // `judge_timeout` and the two below share `reportAs: 'non-fatal-halt'` but take DIFFERENT
+    // actions, so the disposition map cannot disambiguate them — they stay literal, and must stay
+    // ABOVE the map-driven guard.
     if (exitReason === 'judge_timeout') {
         return { action: 'run-finalize-gate', recognizedExitReason: exitReason };
     }
     if (exitReason === 'all_judge_backends_exhausted' || exitReason === 'baseline_unmeasurable_transient') {
         return { action: 'run-finalize-gate-incomplete', recognizedExitReason: exitReason };
     }
-    // B-APNC WS-1: a non-convergent subsystem halt is a NON-FATAL phase end — run the
-    // finalize gate over the converged work and continue to szechuan (R-PHC-6), never abort.
-    if (exitReason === 'anatomy_non_convergent') {
-        return { action: 'run-finalize-gate-incomplete', recognizedExitReason: exitReason };
-    }
-    // B-NS: Template-A non-convergent dispositions are non-fatal phase ends — run the finalize gate
-    // over the converged work and continue, never an unattributed abort (AC-NS-4).
-    if (exitReason === 'stalled_below_target'
-        || exitReason === 'iteration_budget_exhausted'
-        || exitReason === 'time_budget_exhausted') {
+    // B-NS / B-APNC WS-1 (AC-NS-4): every Template-A non-convergent disposition is a non-fatal
+    // phase end — run the finalize gate over the converged work and continue, never an
+    // unattributed abort. Classified by the single disposition map so this stays exhaustive as
+    // the union grows; the literal chain this replaced had silently desynchronized from the map
+    // and dropped `limit_reached`, `no_progress`, `stopped`, and `approach_exhaustion` into the
+    // unattributed abort below.
+    if (typeof exitReason === 'string'
+        && classifyMicroverseDisposition(exitReason).reportAs === 'non-convergent') {
         return { action: 'run-finalize-gate-incomplete', recognizedExitReason: exitReason };
     }
     if (typeof exitReason === 'string'

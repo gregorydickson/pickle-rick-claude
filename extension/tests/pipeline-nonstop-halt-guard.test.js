@@ -21,6 +21,7 @@ import {
   isFatalPhaseFailure,
   shouldHaltAfterPhase,
 } from '../bin/pipeline-runner.js';
+import { classifyMicroverseDisposition } from '../bin/microverse-runner.js';
 
 function tmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -102,6 +103,45 @@ describe('AC-NS-4: strict-mode arms route the three new dispositions to run-fina
         action: 'run-finalize-gate-incomplete',
         recognizedExitReason: exitReason,
       });
+    });
+  }
+});
+
+/**
+ * d03738ee (harden): the four Template-A dispositions the original literal chain omitted.
+ * The map classifies all of them `non-convergent`, but they are in neither
+ * MICROVERSE_FATAL_REASONS nor MICROVERSE_FAILURE_REASONS, so pre-fix they fell straight
+ * through to the unattributed abort. `limit_reached` is still live-emitted by
+ * microverse-runner (rate-limit poll + wait-budget exhaustion), so this was reachable.
+ */
+describe('AC-NS-4: map-recognized dispositions the literal chain omitted also route to finalize-gate-incomplete', () => {
+  for (const exitReason of ['limit_reached', 'no_progress', 'stopped', 'approach_exhaustion']) {
+    test(`classifyMicroverseHaltDecision(${exitReason}) → run-finalize-gate-incomplete, non-null recognizedExitReason`, () => {
+      assert.deepEqual(classifyMicroverseHaltDecision(exitReason), {
+        action: 'run-finalize-gate-incomplete',
+        recognizedExitReason: exitReason,
+      });
+    });
+  }
+});
+
+/**
+ * Drift guard: derives the expectation from the disposition map rather than a hand-written
+ * list, so a future addition to MicroverseExitReason classified `non-convergent` fails here
+ * instead of silently falling through to the unattributed abort — the exact way the original
+ * four-reason gap survived T1–T7 and the wiring ticket.
+ */
+describe('AC-NS-4: every map-non-convergent reason is attributed (drift guard)', () => {
+  for (const exitReason of TEMPLATE_A_DISPOSITIONS) {
+    test(`${exitReason} is map-non-convergent and therefore attributed`, () => {
+      assert.equal(
+        classifyMicroverseDisposition(exitReason).reportAs,
+        'non-convergent',
+        `${exitReason} is listed as Template-A but the map does not classify it non-convergent`,
+      );
+      const decision = classifyMicroverseHaltDecision(exitReason);
+      assert.equal(decision.action, 'run-finalize-gate-incomplete');
+      assert.equal(decision.recognizedExitReason, exitReason);
     });
   }
 });
