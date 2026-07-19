@@ -42,6 +42,9 @@ import {
   type DiffVisualStat,
 } from '../services/pickle-utils.js';
 import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
+// B-NONSTOP WS-2 (AC-NS-6): reuse the T3 disposition map to classify a non-pickle
+// phase's `state.exit_reason` (no re-mapping — single source of truth in microverse-runner).
+import { classifyMicroverseDisposition } from './microverse-runner.js';
 // Re-export the single cap literal so existing importers (tests, Module Export Catalog)
 // keep resolving it from pipeline-runner without a second definition.
 export { SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
@@ -136,6 +139,10 @@ interface PipelineStatus {
   total_phases: number;
   // R-PSSS-3: per-phase skip disposition (additive — absent on older statuses).
   phase_skips?: Record<string, PhaseSkipReason>;
+  // B-NONSTOP WS-2 (AC-NS-6): per-phase non-convergent disposition (additive-optional —
+  // absent on older statuses and clean/all-converged runs). Keyed by phase name, value is
+  // the raw microverse `exit_reason` (e.g. `approach_exhaustion`).
+  phase_dispositions?: Record<string, string>;
   // B-CSOR T50: count of by-design-never-remediated citadel findings (sub-threshold AND
   // non-mechanical) surfaced for operator awareness. Additive optional — schema-neutral.
   citadel_advisory_findings?: number;
@@ -1371,6 +1378,11 @@ export function writePipelineStatus(
   if (details.phase_skips && Object.keys(details.phase_skips).length > 0) {
     payload.phase_skips = details.phase_skips;
   }
+  // B-NONSTOP WS-2 (AC-NS-6): carry per-phase non-convergent dispositions only when
+  // non-empty so older status consumers and all-converged runs see no spurious key.
+  if (details.phase_dispositions && Object.keys(details.phase_dispositions).length > 0) {
+    payload.phase_dispositions = details.phase_dispositions;
+  }
   // B-CSOR T50: additive advisory count — assigned only when a numeric value is supplied
   // so clean runs and older consumers see no spurious key.
   if (typeof details.citadel_advisory_findings === 'number') {
@@ -2309,6 +2321,12 @@ interface PhaseCounters {
   // R-PSSS-3: phase name → skip disposition, accumulated across the run and
   // surfaced in `pipeline-status.json:phase_skips` + the final summary.
   phaseSkips: Record<string, PhaseSkipReason>;
+  // B-NONSTOP WS-2 (AC-NS-6): count of non-pickle phases that ended non-convergent
+  // (reported honestly instead of counted `completed`), surfaced in the final summary.
+  nonConvergent: number;
+  // B-NONSTOP WS-2 (AC-NS-6): phase name → non-convergent `state.exit_reason` disposition,
+  // surfaced in `pipeline-status.json:phase_dispositions` (additive-optional).
+  phaseDispositions: Record<string, string>;
 }
 
 export interface CloserReleasePlan {
@@ -3344,6 +3362,7 @@ function writeRunningStatus(runtime: PipelineRuntime, counters: PhaseCounters, c
     skipped_phases: counters.skipped,
     total_phases: runtime.config.phases.length,
     phase_skips: counters.phaseSkips,
+    phase_dispositions: counters.phaseDispositions,
   });
 }
 
@@ -3694,6 +3713,22 @@ function finalizeFailedPipeline(statePath: string): void {
   );
 }
 
+/**
+ * B-NONSTOP WS-2 (AC-NS-6): the end-of-pipeline panel fields. Extracted from
+ * `finalizePipeline` so the non-convergent conditional does not push that
+ * function past the cyclomatic-complexity ceiling.
+ */
+function buildPipelineCompletePanel(
+  counters: PhaseCounters,
+  phasesSummary: string,
+  totalElapsed: number,
+): Record<string, string> {
+  const panel: Record<string, string> = { Phases: phasesSummary };
+  if (counters.nonConvergent > 0) panel['Non-convergent'] = String(counters.nonConvergent);
+  panel.Elapsed = formatTime(totalElapsed);
+  return panel;
+}
+
 function finalizePipeline(
   runtime: PipelineRuntime,
   counters: PhaseCounters,
@@ -3740,10 +3775,7 @@ function finalizePipeline(
     ? `${counters.completed}/${runtime.config.phases.length} (${counters.skipped} skipped${skipDetail ? ` — ${skipDetail}` : ''})`
     : `${counters.completed}/${runtime.config.phases.length}`;
 
-  printMinimalPanel('Pipeline Complete', {
-    Phases: phasesSummary,
-    Elapsed: formatTime(totalElapsed),
-  }, 'GREEN', '🧪');
+  printMinimalPanel('Pipeline Complete', buildPipelineCompletePanel(counters, phasesSummary, totalElapsed), 'GREEN', '🧪');
 
   writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, effectiveFailed);
 
@@ -4150,8 +4182,11 @@ function maybeStampPickleIncompleteRobust(
  * R-PIPE-2: post-AC-gate success path extracted from `runPhaseIteration` so
  * the no-progress gate, counter increment, cancel-marker check, and success
  * log do not push `runPhaseIteration` past the cyclomatic-complexity ceiling.
+ *
+ * Exported (B-NONSTOP WS-2) so the honesty gate can be exercised directly by
+ * `tests/pipeline-finalize-honesty.test.js`.
  */
-function finalizePhaseSuccess(
+export function finalizePhaseSuccess(
   runtime: PipelineRuntime,
   counters: PhaseCounters,
   cancelMarker: string,
@@ -4167,6 +4202,25 @@ function finalizePhaseSuccess(
   // let a breaker/error pickle exit silently graduate with pending tickets.
   const graduationBreak = maybeStampPhaseGraduation(runtime, rawPhase, exitCode, log);
   if (graduationBreak) { return graduationBreak; }
+  // B-NONSTOP WS-2 (AC-NS-6): non-pickle honesty gate. `maybeStampPhaseGraduation`
+  // is pickle-only (`:3592`), so a non-convergent anatomy-park / szechuan-sauce phase
+  // — which reaches here with exitCode 1 (R-PHC-6 continue-by-default) — would otherwise
+  // fall straight through to `counters.completed++` and be reported a clean success
+  // (the live fake-green: `approach_exhaustion` recorded as success, 2026-07-17-a1597bbe).
+  // Citadel carries no microverse disposition and never enters this branch. Template-A
+  // continue only (no halt/abort — that routing is T5's scope).
+  if (rawPhase === 'anatomy-park' || rawPhase === 'szechuan-sauce') {
+    let exitReason: unknown = null;
+    try { exitReason = sm.read(runtime.statePath).exit_reason; } catch { /* best-effort — unreadable state defers to the success path below */ }
+    if (typeof exitReason === 'string' && classifyMicroverseDisposition(exitReason).reportAs === 'non-convergent') {
+      counters.nonConvergent++;
+      counters.phaseDispositions[rawPhase] = exitReason;
+      // Errors are non-blocking: a failed status write still reports the phase and continues.
+      try { writeRunningStatus(runtime, counters, null); } catch { /* non-blocking */ }
+      log(`Phase ${rawPhase} did NOT converge (${exitReason}) — reported non-convergent, not counted as completed`);
+      return { action: 'continue' };
+    }
+  }
   counters.completed++;
   writeRunningStatus(runtime, counters, null);
   if (fs.existsSync(cancelMarker)) {
@@ -4215,7 +4269,7 @@ export async function main(sessionDir: string, opts: MainOpts = {}): Promise<voi
   const log = createPipelineLog(sessionDir);
   log('pipeline-runner started');
   const runtime = loadPipelineRuntime(sessionDir, opts, log);
-  const counters: PhaseCounters = { completed: 0, skipped: 0, phaseSkips: {} };
+  const counters: PhaseCounters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
   const cancelMarker = path.join(sessionDir, 'pipeline-cancel');
   const cleanupShutdownHandlers = installShutdownHandlers(runtime, counters, cancelMarker);
   const startTime = Date.now();
