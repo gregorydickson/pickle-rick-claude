@@ -97,7 +97,7 @@ test('convergence scenario: 5 events — 4 history entries, 3 accepted, 1 revert
     const entry1 = makeEntry(1, 7.0, 'accept');
     mv = recordIteration(mv, entry1, class1);
     assert.equal(mv.convergence.stall_counter, 0, 'stall_counter resets after improvement');
-    assert.equal(isConverged(mv), false);
+    assert.equal(isConverged(mv), null);
 
     // --- Iter 2: score=9.0 vs prev=7.0 → improved → accept ---
     const class2 = compareMetric(9.0, 7.0, 0.5, 'higher');
@@ -105,7 +105,7 @@ test('convergence scenario: 5 events — 4 history entries, 3 accepted, 1 revert
     const entry2 = makeEntry(2, 9.0, 'accept');
     mv = recordIteration(mv, entry2, class2);
     assert.equal(mv.convergence.stall_counter, 0, 'stall_counter stays 0 on second improvement');
-    assert.equal(isConverged(mv), false);
+    assert.equal(isConverged(mv), null);
 
     // --- Iter 3: score=4.0 vs prev=9.0 → regressed → revert + failedApproach ---
     const class3 = compareMetric(4.0, 9.0, 0.5, 'higher');
@@ -115,14 +115,14 @@ test('convergence scenario: 5 events — 4 history entries, 3 accepted, 1 revert
     mv = recordIteration(mv, entry3, class3);
     assert.equal(mv.convergence.stall_counter, 1, 'stall_counter increments on revert');
     assert.equal(mv.failed_approaches.length, 1, 'failed approach recorded');
-    assert.equal(isConverged(mv), false);
+    assert.equal(isConverged(mv), null);
 
     // --- Iter 4: no commits (non-consecutive stall) → recordStall only ---
     // Non-consecutive: two improvements preceded this stall, so it's isolated
     mv = recordStall(mv);
     assert.equal(mv.convergence.stall_counter, 2, 'stall_counter increments on no-commit stall');
     assert.equal(mv.convergence.history.length, 3, 'recordStall does not add history entry');
-    assert.equal(isConverged(mv), false);
+    assert.equal(isConverged(mv), null);
 
     // --- Iter 5: score=9.1 vs last-accepted=9.0, delta=0.1 < tolerance=0.5 → held → accept ---
     const lastAccepted = [...mv.convergence.history].reverse().find(h => h.action === 'accept');
@@ -133,7 +133,7 @@ test('convergence scenario: 5 events — 4 history entries, 3 accepted, 1 revert
     const entry5 = makeEntry(5, 9.1, 'accept');
     mv = recordIteration(mv, entry5, class5);
     assert.equal(mv.convergence.stall_counter, 3, 'held entry increments stall_counter');
-    assert.equal(isConverged(mv), true, 'stall_counter=3 >= stall_limit=3 → converged');
+    assert.equal(isConverged(mv), 'stall', 'stall_counter=3 >= stall_limit=3 → converged');
 
     // --- Final assertions ---
     const history = mv.convergence.history;
@@ -170,10 +170,10 @@ test('convergence: not triggered when stall_counter < stall_limit', () => {
     // 4 stalls — should not converge until 5th
     for (let i = 0; i < 4; i++) {
         mv = recordStall(mv);
-        assert.equal(isConverged(mv), false, `should not converge at stall ${i + 1}`);
+        assert.equal(isConverged(mv), null, `should not converge at stall ${i + 1}`);
     }
     mv = recordStall(mv);
-    assert.equal(isConverged(mv), true, 'converges at stall_limit=5');
+    assert.equal(isConverged(mv), 'stall', 'converges at stall_limit=5');
 });
 
 // ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ test('convergence: improvement resets stall_counter to 0', () => {
     const entry = makeEntry(1, 5.0, 'accept');
     mv = recordIteration(mv, entry, 'improved');
     assert.equal(mv.convergence.stall_counter, 0, 'improvement resets stall_counter');
-    assert.equal(isConverged(mv), false, 'not converged after reset');
+    assert.equal(isConverged(mv), null, 'not converged after reset');
 });
 
 // ---------------------------------------------------------------------------

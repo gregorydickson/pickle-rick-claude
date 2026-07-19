@@ -245,7 +245,7 @@ test('isConverged returns true when last accepted score equals convergence_targe
     state.convergence.history = [
         { iteration: 1, metric_value: '0', score: 0, action: 'accept', description: 'fixed all', pre_iteration_sha: 'abc', timestamp: new Date().toISOString() },
     ];
-    assert.equal(isConverged(state), true, 'should converge when score equals convergence_target');
+    assert.equal(isConverged(state), 'target', 'should converge when score equals convergence_target');
 });
 
 test('isConverged returns false when last accepted score does not equal convergence_target', () => {
@@ -261,7 +261,7 @@ test('isConverged returns false when last accepted score does not equal converge
     state.convergence.history = [
         { iteration: 1, metric_value: '3', score: 3, action: 'accept', description: 'some fixes', pre_iteration_sha: 'abc', timestamp: new Date().toISOString() },
     ];
-    assert.equal(isConverged(state), false, 'should not converge when score > convergence_target');
+    assert.equal(isConverged(state), null, 'should not converge when score > convergence_target');
 });
 
 // ---------------------------------------------------------------------------
@@ -282,7 +282,7 @@ test('isConverged returns true when score overshoots convergence_target (lower d
     state.convergence.history = [
         { iteration: 1, metric_value: '-1', score: -1, action: 'accept', description: 'overshot', pre_iteration_sha: 'abc', timestamp: new Date().toISOString() },
     ];
-    assert.equal(isConverged(state), true, 'should converge when score undershoots target in lower direction');
+    assert.equal(isConverged(state), 'target', 'should converge when score undershoots target in lower direction');
 });
 
 test('isConverged returns true when score overshoots convergence_target (higher direction)', () => {
@@ -298,7 +298,7 @@ test('isConverged returns true when score overshoots convergence_target (higher 
     state.convergence.history = [
         { iteration: 1, metric_value: '95', score: 95, action: 'accept', description: 'exceeded target', pre_iteration_sha: 'abc', timestamp: new Date().toISOString() },
     ];
-    assert.equal(isConverged(state), true, 'should converge when score exceeds target in higher direction');
+    assert.equal(isConverged(state), 'target', 'should converge when score exceeds target in higher direction');
 });
 
 test('isConverged returns false when score has not reached target (higher direction)', () => {
@@ -314,7 +314,7 @@ test('isConverged returns false when score has not reached target (higher direct
     state.convergence.history = [
         { iteration: 1, metric_value: '70', score: 70, action: 'accept', description: 'partial', pre_iteration_sha: 'abc', timestamp: new Date().toISOString() },
     ];
-    assert.equal(isConverged(state), false, 'should not converge when score < target in higher direction');
+    assert.equal(isConverged(state), null, 'should not converge when score < target in higher direction');
 });
 
 // ---------------------------------------------------------------------------

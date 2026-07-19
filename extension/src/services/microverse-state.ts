@@ -387,8 +387,8 @@ export function classifyFailure(
   return null;
 }
 
-export function isConverged(state: MicroverseSessionState): boolean {
-  if (state.convergence.stall_counter >= state.convergence.stall_limit) return true;
+export function isConverged(state: MicroverseSessionState): 'target' | 'stall' | null {
+  if (state.convergence.stall_counter >= state.convergence.stall_limit) return 'stall';
   // Early exit: if a convergence_target is set and score has reached (or passed) it, we're done.
   // Direction-aware: for 'lower', score <= target; for 'higher', score >= target.
   if (state.convergence_target != null) {
@@ -396,9 +396,9 @@ export function isConverged(state: MicroverseSessionState): boolean {
     const direction = state.key_metric.direction ?? 'higher';
     if (direction === 'lower'
       ? currentScore <= state.convergence_target
-      : currentScore >= state.convergence_target) return true;
+      : currentScore >= state.convergence_target) return 'target';
   }
-  return false;
+  return null;
 }
 
 export function writeMicroverseState(

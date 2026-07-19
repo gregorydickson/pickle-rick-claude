@@ -49,7 +49,7 @@ test('MV-int-1: createMicroverseState produces a valid initial state persisted t
     assert.equal(restored.key_metric.description, TEST_METRIC.description);
     assert.equal(restored.convergence.stall_limit, 3);
     assert.equal(restored.convergence.stall_counter, 0);
-    assert.equal(isConverged(restored), false);
+    assert.equal(isConverged(restored), null);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -61,7 +61,7 @@ test('MV-int-2: isConverged returns false when stall_counter < stall_limit', () 
     let state = createMicroverseState({ prdPath: 'prd.md', metric: TEST_METRIC, stallLimit: 3 });
     state = { ...state, convergence: { ...state.convergence, stall_counter: 2 } };
     writeMicroverseState(dir, state);
-    assert.equal(isConverged(readMicroverseState(dir)), false);
+    assert.equal(isConverged(readMicroverseState(dir)), null);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -73,7 +73,7 @@ test('MV-int-3: isConverged returns true when stall_counter >= stall_limit', () 
     let state = createMicroverseState({ prdPath: 'prd.md', metric: TEST_METRIC, stallLimit: 3 });
     state = { ...state, convergence: { ...state.convergence, stall_counter: 3 } };
     writeMicroverseState(dir, state);
-    assert.equal(isConverged(readMicroverseState(dir)), true);
+    assert.equal(isConverged(readMicroverseState(dir)), 'stall');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -104,7 +104,7 @@ test('MV-int-4: improve → stall → stall convergence cycle with real tmpdir',
     state = readMicroverseState(dir);
     state = recordIteration(state, { score: 62, iteration: 3, sha: 'abc003' });
     writeMicroverseState(dir, state);
-    assert.equal(isConverged(readMicroverseState(dir)), true, 'should converge after stall_limit holds');
+    assert.equal(isConverged(readMicroverseState(dir)), 'stall', 'should converge after stall_limit holds');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -231,7 +231,7 @@ test('MV-int-11: 5-iteration walk: improve×2, revert, stall (non-consecutive), 
     state = recordIteration(state, { score: 81, iteration: 4, sha: 'sha4' });
     writeMicroverseState(dir, state);
     state = readMicroverseState(dir);
-    assert.equal(isConverged(state), false, 'non-consecutive stall must not trigger convergence');
+    assert.equal(isConverged(state), null, 'non-consecutive stall must not trigger convergence');
     assert.equal(state.convergence.stall_counter, 2);
 
     // Iter 5: improved vs last accepted 80 → accept, stall_counter resets to 0

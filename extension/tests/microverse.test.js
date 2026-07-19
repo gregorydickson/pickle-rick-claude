@@ -383,19 +383,19 @@ test('createMicroverseState preserves explicit direction lower', () => {
 test('isConverged returns true when stall_counter >= stall_limit', () => {
     const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
     state.convergence.stall_counter = 3;
-    assert.equal(isConverged(state), true);
+    assert.equal(isConverged(state), 'stall');
 });
 
 test('isConverged returns false when stall_counter < stall_limit', () => {
     const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
     state.convergence.stall_counter = 2;
-    assert.equal(isConverged(state), false);
+    assert.equal(isConverged(state), null);
 });
 
 test('isConverged returns true when convergence_target is reached', () => {
     const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 5, convergenceTarget: 0 });
     // baseline_score=0 matches convergence_target=0, no history
-    assert.equal(isConverged(state), true);
+    assert.equal(isConverged(state), 'target');
 });
 
 test('isConverged uses last accepted score for convergence_target check', () => {
@@ -405,7 +405,7 @@ test('isConverged uses last accepted score for convergence_target check', () => 
         { iteration: 1, metric_value: '5', score: 5, action: 'accept', description: 'improved', pre_iteration_sha: 'abc', timestamp: new Date().toISOString() },
         { iteration: 2, metric_value: '0', score: 0, action: 'accept', description: 'improved', pre_iteration_sha: 'def', timestamp: new Date().toISOString() },
     ];
-    assert.equal(isConverged(state), true);
+    assert.equal(isConverged(state), 'target');
 });
 
 test('isConverged returns false when convergence_target not reached', () => {
@@ -415,13 +415,13 @@ test('isConverged returns false when convergence_target not reached', () => {
     state.convergence.history = [
         { iteration: 1, metric_value: '5', score: 5, action: 'accept', description: 'improved', pre_iteration_sha: 'abc', timestamp: new Date().toISOString() },
     ];
-    assert.equal(isConverged(state), false);
+    assert.equal(isConverged(state), null);
 });
 
 test('isConverged ignores convergence_target when not set', () => {
     const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 5 });
     state.baseline_score = 0; // score is 0 but no convergence_target set
-    assert.equal(isConverged(state), false);
+    assert.equal(isConverged(state), null);
 });
 
 test('createMicroverseState sets convergence_target when provided', () => {
@@ -1448,9 +1448,9 @@ test('recordStall increments stall_counter without adding history', () => {
 test('recordStall triggers convergence when hitting stall_limit', () => {
     let state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 2 });
     state = recordStall(state);
-    assert.equal(isConverged(state), false);
+    assert.equal(isConverged(state), null);
     state = recordStall(state);
-    assert.equal(isConverged(state), true);
+    assert.equal(isConverged(state), 'stall');
 });
 
 // --- createMicroverseState validation tests ---
@@ -1497,7 +1497,7 @@ test('convergence: 3 consecutive holds with stall_limit=3 stops loop', () => {
     }
 
     assert.equal(mvState.convergence.stall_counter, 3, 'stall_counter should be 3');
-    assert.equal(isConverged(mvState), true, 'should be converged');
+    assert.equal(isConverged(mvState), 'stall', 'should be converged');
 });
 
 // --- Hard cap enforcement ---
@@ -2878,7 +2878,7 @@ test('worker mode: isConverged is irrelevant — runner checks convergence file 
     assert.equal(state.convergence_mode, 'worker');
     assert.equal(state.convergence_file, 'convergence.json');
     // isConverged itself still works — runner just bypasses it
-    assert.equal(isConverged(state), true);
+    assert.equal(isConverged(state), 'stall');
 });
 
 test('worker mode: convergence file with converged=true triggers exit', () => {

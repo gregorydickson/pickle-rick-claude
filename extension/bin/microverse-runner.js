@@ -2781,7 +2781,8 @@ export async function handleNoCommitStall(state, ctx, iterLogFile) {
     }));
     replaceMicroverseState(state, recordStall(state));
     writeMicroverseState(ctx.sessionDir, state);
-    if (isConverged(state)) {
+    const convergedBranch = isConverged(state);
+    if (convergedBranch) {
         ctx.log('Converged (stall limit reached with no new commits)');
         return 'converged';
     }
@@ -3277,13 +3278,11 @@ async function handleMetricMode(state, baseline, ctx, iterLogFile) {
     if (failureExit)
         return failureExit;
     maybeEmitConsecutiveNoProgressWarning(state, ctx.sessionDir);
-    if (!isConverged(state))
+    const convergedBranch = isConverged(state);
+    if (!convergedBranch)
         return null;
-    const targetHit = classification.kind === 'improved' &&
-        state.convergence_target != null &&
-        classification.metric.score === state.convergence_target;
-    ctx.log(`Converged after ${ctx.iteration} iterations (${targetHit ? `target=${state.convergence_target} reached` : `stall_counter=${state.convergence.stall_counter}`})`);
-    return 'converged';
+    ctx.log(`Converged after ${ctx.iteration} iterations (${convergedBranch === 'target' ? `target=${state.convergence_target} reached` : `stall_counter=${state.convergence.stall_counter}`})`);
+    return convergedBranch === 'target' ? 'converged' : 'stalled_below_target';
 }
 async function handleManagerErrorOutcome(ctx) {
     let postState = ctx.currentRunnerState;
