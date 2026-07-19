@@ -123,6 +123,23 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     fs.rmSync(dir, { recursive: true });
   });
 
+  test('non-convergent phase still honors operator cancellation (cancel marker → break)', () => {
+    const dir = tmpDir();
+    const { runtime, statePath, cancelMarker } = makeRuntime(dir);
+    writeState(statePath, 'stalled_below_target');
+    fs.writeFileSync(cancelMarker, 'SIGINT'); // operator cancelled mid-phase
+    const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 1, runtime.log);
+
+    assert.equal(outcome.action, 'break', 'cancelled pipeline must not advance to the next phase');
+    // The phase is still reported non-convergent before the break.
+    assert.equal(counters.nonConvergent, 1);
+    assert.equal(counters.phaseDispositions['anatomy-park'], 'stalled_below_target');
+    assert.equal(counters.completed, 0);
+    fs.rmSync(dir, { recursive: true });
+  });
+
   test('AC-NS-5 backward parse: a status file written without phase_dispositions parses cleanly', () => {
     const dir = tmpDir();
     // Simulate an older / all-converged run: no phase_dispositions supplied.

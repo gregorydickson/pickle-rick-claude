@@ -4218,6 +4218,12 @@ export function finalizePhaseSuccess(
       // Errors are non-blocking: a failed status write still reports the phase and continues.
       try { writeRunningStatus(runtime, counters, null); } catch { /* non-blocking */ }
       log(`Phase ${rawPhase} did NOT converge (${exitReason}) — reported non-convergent, not counted as completed`);
+      // Honor operator cancellation here too — the phase loop has no independent
+      // cancel check and relies on this exit (mirrors the success path below).
+      if (fs.existsSync(cancelMarker)) {
+        log('Pipeline cancelled (cancel marker found) — stopping');
+        return { action: 'break' };
+      }
       return { action: 'continue' };
     }
   }
