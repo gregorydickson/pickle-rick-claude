@@ -4033,7 +4033,7 @@ async function handleWorkerMode(
   return null;
 }
 
-function readLoopExit(ctx: RunContext): ExitReason | null {
+export function readLoopExit(ctx: RunContext): ExitReason | null {
   try {
     ctx.currentRunnerState = readRunnerState(ctx.statePath);
   } catch (err) {
@@ -4052,12 +4052,12 @@ function readLoopExit(ctx: RunContext): ExitReason | null {
     : 0;
   if (maxIter > 0 && ctx.iteration >= maxIter) {
     ctx.log(`Max iterations reached (${ctx.iteration}/${maxIter}). Exiting.`);
-    return 'limit_reached';
+    return 'iteration_budget_exhausted';
   }
   const remaining = remainingSessionSeconds(ctx.currentRunnerState);
   if (remaining !== null && remaining <= 0) {
     ctx.log('Time limit reached. Exiting.');
-    return 'limit_reached';
+    return 'time_budget_exhausted';
   }
   return null;
 }

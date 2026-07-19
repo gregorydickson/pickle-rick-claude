@@ -421,6 +421,17 @@ export var PipelineRunnerExitCode;
     PipelineRunnerExitCode[PipelineRunnerExitCode["AuditFailure"] = 2] = "AuditFailure";
     PipelineRunnerExitCode[PipelineRunnerExitCode["PhaseIncomplete"] = 3] = "PhaseIncomplete";
 })(PipelineRunnerExitCode || (PipelineRunnerExitCode = {}));
+/**
+ * Mirror of the `MicroverseExitReason` union above — not a runtime array (TS unions erase at
+ * compile time), this comment is the only place the compiled `types/index.js` reflects the
+ * type's membership. Keep in lockstep with the union on every edit:
+ * 'converged' | 'limit_reached' | 'stopped' | 'error'
+ * | 'rate_limit_exhausted' | 'approach_exhaustion' | 'no_progress'
+ * | 'judge_unreachable' | 'judge_timeout' | 'baseline_unmeasurable' | 'judge_cli_missing'
+ * | 'baseline_unmeasurable_transient' | 'baseline_unmeasurable_unrecoverable'
+ * | 'all_judge_backends_exhausted' | 'anatomy_non_convergent'
+ * | 'stalled_below_target' | 'iteration_budget_exhausted' | 'time_budget_exhausted'
+ */
 export const MICROVERSE_FATAL_REASONS = [
     'judge_cli_missing',
     'session_state_corrupted',
