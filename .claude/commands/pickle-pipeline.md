@@ -136,11 +136,11 @@ From `$ARGUMENTS`:
 - `--backend <claude|codex|hermes>` → BACKEND (default `claude`; `codex` routes phase spawns through `codex exec`, `hermes` routes phase spawns through `hermes chat -q`; both propagate via `PICKLE_BACKEND` to sub-runners)
 
 **Anatomy Park flags:**
-- `--anatomy-max-iterations <N>` → AP_MAX_ITER (default: 100)
+- `--anatomy-max-iterations <N>` → AP_MAX_ITER (default: 500)
 - `--anatomy-stall-limit <N>` → AP_STALL (default: 3)
 
 **Szechuan Sauce flags:**
-- `--szechuan-max-iterations <N>` → SZ_MAX_ITER (default: 50)
+- `--szechuan-max-iterations <N>` → SZ_MAX_ITER (default: 500)
 - `--szechuan-stall-limit <N>` → SZ_STALL (default: 5)
 - `--szechuan-domain <name>` → SZ_DOMAIN (optional)
 - `--szechuan-focus "<text>"` → SZ_FOCUS (optional)
