@@ -39,7 +39,9 @@ function validateWarningEntry(entry) {
   }
   const allowed = new Set(['ticket_id', 'defect_class', 'evidence', 'source', 'file_line']);
   for (const k of Object.keys(entry)) {
-    if (!allowed.has(k)) failures.push(`unexpected property: ${k}`);
+    if (!allowed.has(k)) {
+      failures.push(`unexpected property: ${k}`);
+    }
   }
   return failures;
 }
