@@ -4570,9 +4570,46 @@ function finalizeMicroverseRun(sessionDir: string, ctx: RunContext, outcome: Exi
   log(`microverse-runner finished. ${outcome.iterations} iterations, ${formatTime(outcome.elapsedSeconds)}, exit: ${outcome.exitReason}`);
 }
 
+// R-NS-9: single exhaustive disposition map governing every "was this exit a success?" decision.
+// Exhaustive `Record<MicroverseExitReason, ...>` — omitting a union member is a compile error;
+// unrecognized strings (e.g. a corrupted microverse.json field) fall through to the explicit
+// DEFAULT below, never to an implicit success. Authoritative source: the WS-5 table in
+// prds/p1-b-nonstop-generous-caps-honest-nonconvergence-observability.md (refined).
+export interface MicroverseDisposition {
+  reportAs: 'success' | 'non-convergent' | 'non-fatal-halt' | 'failure' | 'non-success';
+  exitCode: 0 | 1;
+  template: 'A' | 'B' | 'failure';
+}
+
+const DEFAULT_MICROVERSE_DISPOSITION: MicroverseDisposition = { reportAs: 'non-success', exitCode: 1, template: 'A' };
+
+const MICROVERSE_DISPOSITIONS: Record<MicroverseExitReason, MicroverseDisposition> = {
+  converged: { reportAs: 'success', exitCode: 0, template: 'A' },
+  stalled_below_target: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
+  iteration_budget_exhausted: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
+  time_budget_exhausted: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
+  limit_reached: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
+  no_progress: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
+  stopped: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
+  approach_exhaustion: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
+  anatomy_non_convergent: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
+  rate_limit_exhausted: { reportAs: 'failure', exitCode: 1, template: 'failure' },
+  error: { reportAs: 'failure', exitCode: 1, template: 'failure' },
+  judge_unreachable: { reportAs: 'failure', exitCode: 1, template: 'failure' },
+  judge_timeout: { reportAs: 'non-fatal-halt', exitCode: 1, template: 'B' },
+  all_judge_backends_exhausted: { reportAs: 'non-fatal-halt', exitCode: 1, template: 'B' },
+  baseline_unmeasurable_transient: { reportAs: 'non-fatal-halt', exitCode: 1, template: 'B' },
+  baseline_unmeasurable: { reportAs: 'failure', exitCode: 1, template: 'failure' },
+  baseline_unmeasurable_unrecoverable: { reportAs: 'failure', exitCode: 1, template: 'failure' },
+  judge_cli_missing: { reportAs: 'failure', exitCode: 1, template: 'failure' },
+};
+
+export function classifyMicroverseDisposition(exitReason: string): MicroverseDisposition {
+  return (MICROVERSE_DISPOSITIONS as Record<string, MicroverseDisposition>)[exitReason] ?? DEFAULT_MICROVERSE_DISPOSITION;
+}
+
 function microverseExitCode(exitReason: ExitReason): number {
-  const successfulReasons: ExitReason[] = ['converged', 'stopped', 'limit_reached', 'approach_exhaustion', 'no_progress'];
-  return successfulReasons.includes(exitReason) ? 0 : 1;
+  return classifyMicroverseDisposition(exitReason).exitCode;
 }
 
 export async function main(sessionDir: string): Promise<void> {
@@ -4598,8 +4635,7 @@ export function markMicroverseFatalError(sessionDir: string): FatalErrorMarkResu
   const recovered = readRecoverableJsonObject(mvPath);
   if (!recovered) return null;
   const mv = recovered as Record<string, unknown>;
-  const successfulReasons = new Set(['converged', 'stopped', 'limit_reached', 'approach_exhaustion', 'no_progress', 'completed', 'success']);
-  if (typeof mv.exit_reason === 'string' && successfulReasons.has(mv.exit_reason)) {
+  if (typeof mv.exit_reason === 'string' && classifyMicroverseDisposition(mv.exit_reason).reportAs === 'success') {
     sm.forceWrite(path.join(sessionDir, 'microverse-finalizer-error.json'), {
       status: 'stopped',
       exit_reason: 'error',
