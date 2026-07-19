@@ -42,7 +42,35 @@ remains field-soak repeatability (esp. codex) — now on the simpler single-life
 
 ---
 
-## ⚖ OPERATING PRINCIPLES (operator-set 2026-07-18 — BINDING, supersede prior framings on conflict)
+## ⚖ OPERATING PRINCIPLES (operator-set 2026-07-18, sharpened 2026-07-19 — BINDING, supersede prior framings on conflict)
+
+**🎯 THE LENS (operator-set 2026-07-19, applies to EVERY item below):** the goal is **reliability
+through LESS**, not reliability through more. Two directives, and they are the same directive:
+1. **Reliability while REDUCING COMPLEXITY** — the fix that removes a mechanism beats the fix that adds
+   one. A PRD whose `## Simplification Review` cannot name a subtraction is suspect. Net-negative LOC is
+   the expected shape of a reliability fix here, not the exception.
+2. **REDUCE BRITTLENESS** — every fix must leave the system *less* able to false-fail, not more. Adding a
+   guard around a brittle guard makes both worse ([[feedback_analyze_failures_then_subtract_not_add_guards]]).
+   When something false-fails, **subtract the ill-posed input**, do not add resistance around it.
+
+**This session (2026-07-17→19) is the proof these two are one lens.** Every fix that shipped or queued was
+a subtraction, and each removed a *class* of brittleness:
+- **B-SSAT** — deleted the stale settings pin; R-WTFT stopped being inert (−1 pin, made 600_000 reachable).
+- **B-CGHARD** — the harvester now emits fewer, real terms; an all-noise ticket emits *nothing* (−8KB junk).
+- **R-SAFP** — deleted an audit category with an **11-findings / 0-real** lifetime record (net −144 LOC).
+- **B-NONSTOP (queued)** — subtracts the five-dispositions-into-one-boolean `successfulReasons` list.
+- **The defect class this session named 5×:** *a cap set below the real runtime is a guaranteed false
+  failure, not a safety net* (worker gate 240s vs 402s suite; szechuan iter 50; runner timeout == soak;
+  soak install 120s vs 95s; and the readiness-vs-convergence exits). **De-brittling = generous backstops +
+  honest dispositions, never tighter caps.** See §B.6 [[B-NONSTOP]] and
+  [[project_release_gate_runner_timeout_equals_soak_duration]].
+
+**What "reduce complexity" does NOT license (the B-GSUB guardrail):** subtraction is the DEFAULT, not a
+mandate to strip earned signal. Do not delete a guard that fires correctly, and do not chase the
+low-ROV clusters flagged in §C ("Do NOT chase"). Reducing complexity means removing the mechanism that
+*causes* false-fails, not removing the mechanism that *catches real ones*. When unsure which a given
+guard is, the [[feedback_verify_the_outcome_not_the_mechanism]] test decides it: *has it ever caught a
+real defect?* (R-SAFP's category: no, 0/11 — delete. R-CWGE's on-repo gate: yes — keep.)
 
 Every queue item, PRD, and workstream is scored against these two, **in this order**:
 
