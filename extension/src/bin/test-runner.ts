@@ -31,7 +31,15 @@ function clampTestConcurrency(args: string[]): string[] {
 
 const VALID_TIERS = new Set(['fast', 'integration', 'expensive', 'contract']);
 const QUARANTINED_TIER_EXCLUSIONS = new Set(['fast', 'integration']);
-const DEFAULT_TEST_RUNNER_TIMEOUT_MS = 30 * 60 * 1000;
+// Serial-manifest worst case: SOAK_SECONDS default (1800s, deploy-lifecycle-soak) is the long pole
+// among the 3 `tests/expensive/.serial-tests.json` entries. A runner timeout equal to the soak
+// alone starves its serial siblings (`fail 0, cancelled 2`), making the release gate unpassable at
+// its documented default. Derive the default from soak-worst-case * serial-entry-count, with
+// headroom, rather than shortening the soak (see extension/CLAUDE.md `PICKLE_TEST_RUNNER_TIMEOUT_MS`).
+const SOAK_SECONDS_DEFAULT = 1800;
+const SERIAL_MANIFEST_WORST_CASE_ENTRY_COUNT = 3;
+const DEFAULT_TEST_RUNNER_TIMEOUT_MS =
+  SOAK_SECONDS_DEFAULT * 1000 * SERIAL_MANIFEST_WORST_CASE_ENTRY_COUNT * 2;
 const MAX_TEST_RUNNER_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 type Tier = 'fast' | 'integration' | 'expensive' | 'contract';
