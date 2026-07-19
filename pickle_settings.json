@@ -17,10 +17,10 @@
     "judge_model_codex": "gpt-5.4"
   },
   "default_max_iterations": 500,
-  "_iteration_budget_per_backend_doc": "Per-backend iteration budget overrides default_max_iterations. Codex iteration semantics are coarser than claude — same wall-clock work fits in fewer codex iterations, so 80 vs 100 keeps the wall-time budget comparable.",
+  "_iteration_budget_per_backend_doc": "Per-backend iteration budget overrides default_max_iterations. Codex iteration semantics are coarser than claude — same wall-clock work fits in fewer codex iterations, so 400 vs 500 keeps the wall-time budget comparable.",
   "iteration_budget_per_backend": {
-    "claude": 100,
-    "codex": 80
+    "claude": 500,
+    "codex": 400
   },
   "throughput_baselines_units": "tickets_per_hour",
   "_throughput_baselines_doc": "AC-LPB-02: per-backend throughput estimates used by setup.js to warn when --max-time is undersized for the planned ticket count. Tune these per fleet — claude is generally faster on simple tickets, codex slower on complex; deepseek sits between.",
