@@ -3826,11 +3826,18 @@ function finalizePipeline(
 
   try { fs.unlinkSync(cancelMarker); } catch { /* may not exist */ }
 
+  // AC-NS-1b(i): the terminal write REPLACES pipeline-status.json wholesale
+  // (writePipelineStatus builds a fresh payload — it never merges), so any key the
+  // mid-run writeRunningStatus recorded is erased unless it is repeated here. The
+  // dispositions are the only attribution for a non-success exit, and they are read
+  // after the process is gone; dropping them leaves an operator a bare `failed`.
   writePipelineStatus(runtime.sessionDir, effectiveFailed ? 'failed' : 'completed', {
     current_phase: null,
     completed_phases: counters.completed,
     skipped_phases: counters.skipped,
     total_phases: runtime.config.phases.length,
+    phase_skips: counters.phaseSkips,
+    phase_dispositions: counters.phaseDispositions,
   });
   if (phaseIncomplete) {
     process.exit(PipelineRunnerExitCode.PhaseIncomplete);

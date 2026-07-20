@@ -301,31 +301,19 @@ test('AC-NS-1b: szechuan-sauce budget exhaustion finalizes honestly without abor
 // ---------------------------------------------------------------------------
 // AC-NS-1b (i) — CANARY: the disposition must survive into the TERMINAL status file.
 //
-// @xfail: pipeline-runner.ts:3793 drops phase_dispositions at finalize.
+// `writeRunningStatus` supplies `phase_dispositions` mid-run, but `writePipelineStatus`
+// builds a FRESH payload and renameSync-overwrites rather than merging — so whatever the
+// terminal `writePipelineStatus` call in `finalizePipeline` omits is erased at exit. This
+// canary pins that call to keep carrying `phase_dispositions` (and `phase_skips`, dropped
+// by the identical mechanism): without them the operator-visible artifact reports a bare
+// `failed` with no reason the phase gave up — the fake-green reporting this bundle exists
+// to eliminate, one frame later.
 //
-// `writeRunningStatus` (pipeline-runner.ts:3358-3366) supplies `phase_dispositions`,
-// but the terminal `writePipelineStatus` call in `finalizePipeline`
-// (pipeline-runner.ts:3793-3798) supplies only current_phase/completed/skipped/total —
-// and `writePipelineStatus` (:1368-1394) builds a FRESH payload and renameSync-overwrites
-// rather than merging. So the disposition recorded mid-run is erased at exit, and the
-// operator-visible artifact loses the reason the phase gave up. `phase_skips` is dropped
-// by the identical mechanism.
-//
-// This is the one part of AC-NS-1b that the assembled code does not satisfy. It is NOT
-// repairable from this ticket: the fix is in `pipeline-runner.ts`, which is outside this
-// ticket's scope fence (its only in-scope file is this test). Weakening the assertion to
-// read the mid-run value instead would manufacture exactly the fake-green reporting this
-// bundle exists to eliminate, so the assertion is kept verbatim and marked xfail.
-//
-// FIX (one line, in the terminal writePipelineStatus call at pipeline-runner.ts:3793):
-//     phase_skips: counters.phaseSkips,
-//     phase_dispositions: counters.phaseDispositions,
-// Remove the `t.todo` marker below in that same commit (audit-canary-flip.sh enforces
-// that the marker is dropped by the fix commit).
+// Was xfail through the WS-2 ticket, whose scope fence held only this test; the fix landed
+// with the szechuan-sauce deslop pass that read the canary.
 // ---------------------------------------------------------------------------
 
-test('AC-NS-1b (i): terminal pipeline-status.json carries the non-convergent disposition', async (t) => {
-  t.todo('xfail until pipeline-runner.ts:3793 passes phase_dispositions to the terminal write');
+test('AC-NS-1b (i): terminal pipeline-status.json carries the non-convergent disposition', async () => {
   const { repo, sessionDir } = makeSession(['szechuan-sauce']);
 
   __setSpawnRunnerForTests(async () => {
