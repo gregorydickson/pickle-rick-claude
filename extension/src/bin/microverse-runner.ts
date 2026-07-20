@@ -4549,17 +4549,13 @@ export function finalizeMicroverseRun(sessionDir: string, ctx: RunContext, outco
       exitReason: outcome.exitReason,
     });
   } catch (err) {
-    log(`finalizeTerminalState failed at finalize path, falling back to safeDeactivate: ${safeErrorMessage(err)}`);
+    log(`finalizeTerminalState failed at finalize path, falling back to safeDeactivate + exit_reason stamp: ${safeErrorMessage(err)}`);
     deactivateRunnerState(ctx.statePath);
-    // B-NONSTOP WS-5: `microverse.json` already carries the disposition (written above,
-    // BEFORE the try), so a bare deactivate here leaves the two surfaces disagreeing —
-    // `state.json.exit_reason` stays unstamped and `finalizePhaseSuccess`'s
-    // `typeof exitReason === 'string'` guard (pipeline-runner.ts) falls through to
-    // `counters.completed++`, reporting a non-convergent phase as a clean success.
-    // Stamp it so both surfaces carry ONE string, matching the `safeDeactivate` +
-    // `recordExitReason` shape the sibling forensic paths already use.
-    // Best-effort: this is already the degraded path, and an escaping throw would skip
-    // the final report and the session_end event below.
+    // B-NONSTOP WS-5: `microverse.json` already has the disposition (written before the
+    // try), so a bare deactivate leaves the surfaces disagreeing — an unstamped
+    // `state.json.exit_reason` fails finalizePhaseSuccess's string guard and a
+    // non-convergent phase is counted a clean success. Best-effort: an escaping throw
+    // would skip the final report and session_end below.
     try {
       _deps.recordExitReason(ctx.statePath, outcome.exitReason);
     } catch (stampErr) {
