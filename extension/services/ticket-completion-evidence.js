@@ -140,6 +140,13 @@ function commitMessage(workingDir, sha) {
  * R-OMA: every OTHER ticket id (directory basename) under `sessionDir`,
  * lowercased, excluding `selfTicketId`. Best-effort → `[]`. Reused to detect a
  * commit whose subject positively names a DIFFERENT ticket (foreign attribution).
+ *
+ * R-OMASD: a session root also holds NON-ticket directories (`gate`, `archive`,
+ * `refinement`, `microverse_*`, and anatomy-park subsystem dirs like `bin` /
+ * `extension`). Those basenames are ordinary English words that word-boundary-match
+ * routine commit subjects, so admitting them manufactures foreign attribution
+ * against a ticket's OWN commit. A ticket dir is identified the same way
+ * `enumerateSiblingDeclaredFiles` identifies one: it holds a `rick_ticket_*.md`.
  */
 function enumerateSiblingTicketIds(sessionDir, selfTicketId) {
     const out = [];
@@ -157,9 +164,20 @@ function enumerateSiblingTicketIds(sessionDir, selfTicketId) {
         const id = entry.name.toLowerCase();
         if (selfLower && id === selfLower)
             continue;
+        if (!isTicketDir(path.join(sessionDir, entry.name)))
+            continue;
         out.push(id);
     }
     return out;
+}
+/** True iff `dir` holds a `rick_ticket_<hash>.md` artifact (i.e. it is a ticket dir). */
+function isTicketDir(dir) {
+    try {
+        return fs.readdirSync(dir).some(f => f.startsWith('rick_ticket_') && f.endsWith('.md'));
+    }
+    catch {
+        return false;
+    }
 }
 /**
  * R-OMA (LOA-1588): true iff the explicit-completion-commit `sha` is POSITIVELY
