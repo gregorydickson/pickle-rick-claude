@@ -4593,30 +4593,29 @@ export function finalizeMicroverseRun(sessionDir: string, ctx: RunContext, outco
 export interface MicroverseDisposition {
   reportAs: 'success' | 'non-convergent' | 'non-fatal-halt' | 'failure' | 'non-success';
   exitCode: 0 | 1;
-  template: 'A' | 'B' | 'failure';
 }
 
-const DEFAULT_MICROVERSE_DISPOSITION: MicroverseDisposition = { reportAs: 'non-success', exitCode: 1, template: 'A' };
+const DEFAULT_MICROVERSE_DISPOSITION: MicroverseDisposition = { reportAs: 'non-success', exitCode: 1 };
 
 const MICROVERSE_DISPOSITIONS: Record<MicroverseExitReason, MicroverseDisposition> = {
-  converged: { reportAs: 'success', exitCode: 0, template: 'A' },
-  stalled_below_target: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
-  iteration_budget_exhausted: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
-  time_budget_exhausted: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
-  limit_reached: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
-  no_progress: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
-  stopped: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
-  approach_exhaustion: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
-  anatomy_non_convergent: { reportAs: 'non-convergent', exitCode: 1, template: 'A' },
-  rate_limit_exhausted: { reportAs: 'failure', exitCode: 1, template: 'failure' },
-  error: { reportAs: 'failure', exitCode: 1, template: 'failure' },
-  judge_unreachable: { reportAs: 'failure', exitCode: 1, template: 'failure' },
-  judge_timeout: { reportAs: 'non-fatal-halt', exitCode: 1, template: 'B' },
-  all_judge_backends_exhausted: { reportAs: 'non-fatal-halt', exitCode: 1, template: 'B' },
-  baseline_unmeasurable_transient: { reportAs: 'non-fatal-halt', exitCode: 1, template: 'B' },
-  baseline_unmeasurable: { reportAs: 'failure', exitCode: 1, template: 'failure' },
-  baseline_unmeasurable_unrecoverable: { reportAs: 'failure', exitCode: 1, template: 'failure' },
-  judge_cli_missing: { reportAs: 'failure', exitCode: 1, template: 'failure' },
+  converged: { reportAs: 'success', exitCode: 0 },
+  stalled_below_target: { reportAs: 'non-convergent', exitCode: 1 },
+  iteration_budget_exhausted: { reportAs: 'non-convergent', exitCode: 1 },
+  time_budget_exhausted: { reportAs: 'non-convergent', exitCode: 1 },
+  limit_reached: { reportAs: 'non-convergent', exitCode: 1 },
+  no_progress: { reportAs: 'non-convergent', exitCode: 1 },
+  stopped: { reportAs: 'non-convergent', exitCode: 1 },
+  approach_exhaustion: { reportAs: 'non-convergent', exitCode: 1 },
+  anatomy_non_convergent: { reportAs: 'non-convergent', exitCode: 1 },
+  rate_limit_exhausted: { reportAs: 'failure', exitCode: 1 },
+  error: { reportAs: 'failure', exitCode: 1 },
+  judge_unreachable: { reportAs: 'failure', exitCode: 1 },
+  judge_timeout: { reportAs: 'non-fatal-halt', exitCode: 1 },
+  all_judge_backends_exhausted: { reportAs: 'non-fatal-halt', exitCode: 1 },
+  baseline_unmeasurable_transient: { reportAs: 'non-fatal-halt', exitCode: 1 },
+  baseline_unmeasurable: { reportAs: 'failure', exitCode: 1 },
+  baseline_unmeasurable_unrecoverable: { reportAs: 'failure', exitCode: 1 },
+  judge_cli_missing: { reportAs: 'failure', exitCode: 1 },
 };
 
 export function classifyMicroverseDisposition(exitReason: string): MicroverseDisposition {
