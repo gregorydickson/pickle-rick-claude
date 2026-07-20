@@ -101,6 +101,18 @@ function tailRunnerLog(sessionDir) {
   return lines.slice(-20).join('\n');
 }
 
+// The fixture drives the runner to its 10-iteration cap, so it exits `iteration_budget_exhausted`.
+// The R-NS-9 disposition map (src/bin/microverse-runner.ts) governs that exit:
+// `{ reportAs: 'non-convergent', exitCode: 1 }` — budget exhaustion is honestly non-convergent,
+// never a success. Assert the code TOGETHER with the reason so a disposition change cannot drift
+// the exit code past this test the way a bare `status === 0` did.
+const BUDGET_EXHAUSTED_EXIT_CODE = 1;
+
+function assertBudgetExhaustedExit(fixture) {
+  assert.equal(fixture.result.status, BUDGET_EXHAUSTED_EXIT_CODE, fixture.failureContext);
+  assert.match(fixture.combinedOutput, /exit: iteration_budget_exhausted/, fixture.failureContext);
+}
+
 function runFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rapmw8-'));
   try {
@@ -152,7 +164,7 @@ function runFixture() {
 
 test('R-APMW-8: runner recovers from one error at iter 5', { timeout: 60_000 }, () => {
   const fixture = runFixture();
-  assert.equal(fixture.result.status, 0, fixture.failureContext);
+  assertBudgetExhaustedExit(fixture);
   assert.match(fixture.combinedOutput, /--- Iteration 6 ---/, fixture.failureContext);
   assert.match(fixture.combinedOutput, /Max iterations reached \(10\/10\)\. Exiting\./, fixture.failureContext);
   assert.equal(fixture.finalRunnerState.iteration, 10);
@@ -160,13 +172,13 @@ test('R-APMW-8: runner recovers from one error at iter 5', { timeout: 60_000 }, 
 
 test('R-APMW-8: final state shows reset counter', { timeout: 60_000 }, () => {
   const fixture = runFixture();
-  assert.equal(fixture.result.status, 0, fixture.failureContext);
+  assertBudgetExhaustedExit(fixture);
   assert.equal(fixture.finalMicroverseState.consecutive_subprocess_errors, 0);
 });
 
 test('R-APMW-8: final state records last_subprocess_error.iteration', { timeout: 60_000 }, () => {
   const fixture = runFixture();
-  assert.equal(fixture.result.status, 0, fixture.failureContext);
+  assertBudgetExhaustedExit(fixture);
   assert.equal(fixture.finalRunnerState.last_subprocess_error.iteration, 5);
   assert.equal(fixture.finalRunnerState.last_error.iteration, 5);
 });
