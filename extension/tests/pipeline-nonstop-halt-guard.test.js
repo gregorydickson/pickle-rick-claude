@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   classifyMicroverseHaltDecision,
@@ -23,8 +24,27 @@ import {
 } from '../bin/pipeline-runner.js';
 import { classifyMicroverseDisposition } from '../bin/microverse-runner.js';
 
+const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
 function tmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+/**
+ * Reads the `MicroverseExitReason` members from the doc-comment mirror in the compiled
+ * `types/index.js` (the union erases at compile time, so the comment is the only runtime
+ * reflection of its membership).
+ *
+ * Intentionally duplicated from microverse-disposition-map.test.js: a shared helper would
+ * live in `tests/helpers/`, which is outside this ticket's scope fence. Five lines is the
+ * cheaper of the two wrongs; collapse them when a ticket can create files.
+ */
+function readUnionMembersFromMirror() {
+  const source = fs.readFileSync(path.join(EXTENSION_ROOT, 'types', 'index.js'), 'utf-8');
+  const start = source.indexOf('Keep in lockstep with the union on every edit:');
+  assert.ok(start !== -1, 'the MicroverseExitReason mirror comment must be present in types/index.js');
+  const block = source.slice(start, source.indexOf('*/', start));
+  return [...block.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
 }
 
 function writeStateWithExitReason(sessionDir, exitReason) {
@@ -144,6 +164,29 @@ describe('AC-NS-4: every map-non-convergent reason is attributed (drift guard)',
       assert.equal(decision.recognizedExitReason, exitReason);
     });
   }
+});
+
+/**
+ * The drift guard above runs listed -> map: every name in TEMPLATE_A_DISPOSITIONS must
+ * classify non-convergent. That direction cannot see a member the list is MISSING — a new
+ * non-convergent exit reason simply never gets iterated, and the unattributed-abort gap this
+ * whole file exists to close silently reopens for it.
+ *
+ * This closes the converse (map -> listed) by deriving the non-convergent set from the union
+ * mirror rather than trusting the hand-written list to be exhaustive.
+ */
+describe('AC-NS-4: TEMPLATE_A_DISPOSITIONS is exhaustive over the map (converse drift guard)', () => {
+  test('every map-non-convergent union member appears in TEMPLATE_A_DISPOSITIONS', () => {
+    const derived = readUnionMembersFromMirror()
+      .filter((reason) => classifyMicroverseDisposition(reason).reportAs === 'non-convergent');
+    assert.ok(derived.length > 0, 'the mirror must yield at least one non-convergent member');
+    assert.deepEqual(
+      new Set(derived),
+      new Set(TEMPLATE_A_DISPOSITIONS),
+      'a non-convergent exit reason exists that TEMPLATE_A_DISPOSITIONS does not enumerate — '
+        + 'the rows above never run for it, so its halt routing is unpinned',
+    );
+  });
 });
 
 describe('AC-NS-4: unattributed default abort is unchanged for genuinely unrecognized reasons', () => {
