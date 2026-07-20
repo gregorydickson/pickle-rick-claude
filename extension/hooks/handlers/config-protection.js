@@ -5,16 +5,19 @@ import { resolveStateFile, loadActiveState, approve } from '../resolve-state.js'
 import { getExtensionRoot, getDataRoot } from '../../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../../services/microverse-state.js';
 import { logActivity } from '../../services/activity-logger.js';
+// `/i` on every pattern for the same case-insensitive-filesystem reason as
+// `matchProtectedStateBasename`, and for parity with the sibling config regexes
+// in `tsc-gate.ts`, which already carry `/i`.
 const PROTECTED_PATTERNS = [
-    /^\.eslintrc(\..*)?$/,
-    /^eslint\.config\..+$/,
-    /^\.prettierrc(\..*)?$/,
-    /^biome\.json$/,
-    /^tsconfig(\..*)?\.json$/,
-    /^pyproject\.toml$/,
-    /^\.ruff\.toml$/,
-    /^jest\.config\./,
-    /^vitest\.config\./,
+    /^\.eslintrc(\..*)?$/i,
+    /^eslint\.config\..+$/i,
+    /^\.prettierrc(\..*)?$/i,
+    /^biome\.json$/i,
+    /^tsconfig(\..*)?\.json$/i,
+    /^pyproject\.toml$/i,
+    /^\.ruff\.toml$/i,
+    /^jest\.config\./i,
+    /^vitest\.config\./i,
 ];
 const SHELL_PATTERN_CHARS = /[*?[\]{}]/;
 const PROTECTED_BASH_CANDIDATES = [
@@ -92,11 +95,22 @@ function stripTmpSuffix(basename) {
  * Returns the matching protected basename ('state.json' etc.) for the given
  * absolute or relative file path, including `.tmp.<pid>` variants. Returns
  * null when the path does not target a protected runtime state file.
+ *
+ * Case-folds BEFORE matching: on a case-insensitive filesystem (macOS/APFS
+ * default, Windows) `State.json` and `STATE.JSON` resolve to the SAME INODE as
+ * `state.json`, so exact-equality against the all-lowercase
+ * PROTECTED_STATE_BASENAMES literals approved a write to the real runtime state
+ * file — defeating the state, settings, and circuit-breaker gates at once.
+ * Folding the input here (rather than adding a second per-candidate compare)
+ * keeps ONE comparison, and folding before `stripTmpSuffix` also covers
+ * `State.json.TMP.<pid>`. On a case-SENSITIVE filesystem this over-matches a
+ * genuinely distinct `STATE.JSON`; that direction is fail-closed and the
+ * `allow_state_writes_reason` override remains the escape hatch.
  */
 function matchProtectedStateBasename(filePath) {
     if (!filePath)
         return null;
-    const base = path.basename(filePath);
+    const base = path.basename(filePath).toLowerCase();
     const stripped = stripTmpSuffix(base);
     for (const candidate of PROTECTED_STATE_BASENAMES) {
         if (base === candidate || stripped === candidate)
@@ -127,12 +141,18 @@ function expandLeadingHome(filePath) {
  * worker may not have the target on disk yet; symlink resolution is not
  * the threat model here. Leading `~`/`$HOME` forms are expanded first so the
  * shell-expanded destination is checked, not a literal `~` under the cwd.
+ *
+ * Both sides are case-folded for the same reason as
+ * `matchProtectedStateBasename`: `~/.CLAUDE/pickle-rick/**` and
+ * `~/.claude/Pickle-Rick/**` are the SAME directory on a case-insensitive
+ * filesystem, so a case-sensitive prefix compare let a worker Edit the deployed
+ * runtime tree.
  */
 function isInsideRuntimeRoot(filePath) {
     if (!filePath)
         return false;
-    const runtimeRoot = getProtectedRuntimeRoot();
-    const resolved = path.resolve(expandLeadingHome(filePath));
+    const runtimeRoot = getProtectedRuntimeRoot().toLowerCase();
+    const resolved = path.resolve(expandLeadingHome(filePath)).toLowerCase();
     if (resolved === runtimeRoot)
         return true;
     return resolved.startsWith(runtimeRoot + path.sep);
@@ -197,7 +217,10 @@ function shellPatternToRegex(pattern) {
         regex += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
     regex += '$';
-    return new RegExp(regex);
+    // Case-insensitive so a glob written in another case (`TSCONFIG*.json`) still
+    // matches the lowercase PROTECTED_BASH_CANDIDATES on a case-insensitive
+    // filesystem, matching PROTECTED_PATTERNS above.
+    return new RegExp(regex, 'i');
 }
 function isProtectedShellPattern(token) {
     const base = path.basename(token);
@@ -234,7 +257,9 @@ function findBashWriteTarget(command, probe) {
     // Pass 2: write/editor commands that mutate a positional FILE arg
     // (`tee`/`cp`/`mv`/`rsync` destinations, `sed -i FILE`, `vim FILE`, ...).
     for (let i = 0; i < tokens.length; i++) {
-        if (!WRITE_COMMANDS.has(path.basename(tokens[i])))
+        // execName (not path.basename): folds case and strips a trailing `;`, so
+        // `SED -i`, `/usr/bin/sed -i`, and `TEE` all match the lowercase set.
+        if (!WRITE_COMMANDS.has(execName(tokens[i])))
             continue;
         for (let j = i + 1; j < tokens.length; j++) {
             const arg = tokens[j];
@@ -474,27 +499,77 @@ function splitShellSegments(command) {
     return segments.length > 0 ? segments : [command];
 }
 /**
+ * Folds a shell executable token to its comparable form: trailing `;` stripped,
+ * basename taken, lowercased. THE single normalizer for every "is this token
+ * command X?" comparison in this file — the git-verb chain, the `install.sh`
+ * detector, and the `WRITE_COMMANDS` probe all route through it.
+ *
+ * Three bug classes collapse into this one fold:
+ *   - case: the filesystem is case-insensitive on macOS/Windows, so `GIT reset
+ *     --hard` and `bash INSTALL.SH` really do execute git / install.sh (verified
+ *     — `GIT --version` prints the git version). A `=== 'git'` compare approved
+ *     them. Note `findGitVerb` already lowercased the VERB, so `git RESET`
+ *     blocked while `GIT reset` did not — the fold was applied to half the pair.
+ *   - path: `tokens[0] === 'bash'` missed `/bin/bash`; taking the basename fixes
+ *     the wrapper skip for absolute-path interpreters.
+ *   - duplication: `parseFirstShellWord` and `segmentInvokesInstallSh` each
+ *     carried their own copy of the strip-`;`-then-basename logic and drifted.
+ */
+function execName(token) {
+    const clean = token.replace(/;+$/, '');
+    const base = clean.includes('/') ? clean.substring(clean.lastIndexOf('/') + 1) : clean;
+    return base.toLowerCase();
+}
+/** True when the token is a `bash`/`sh` wrapper to be skipped before the real exec. */
+function isShellWrapper(token) {
+    if (!token)
+        return false;
+    const name = execName(token);
+    return name === 'bash' || name === 'sh';
+}
+const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/**
+ * Advances past a shell command's prelude and returns the index of the real
+ * executable token: leading `KEY=value` env assignments, then an optional
+ * `bash`/`sh` wrapper, then any assignments between the wrapper and its target.
+ *
+ * Order matters and was previously wrong in two of the three detectors: the
+ * shell writes assignments BEFORE the interpreter (`PICKLE_ROLE=x bash
+ * install.sh`), so a wrapper-skip-then-env-skip prelude never recognized `bash`
+ * and read the assignment as the executable. One helper for all three detectors
+ * so the ordering cannot drift apart again.
+ */
+function execTokenIndex(tokens) {
+    let idx = 0;
+    while (idx < tokens.length && ENV_ASSIGNMENT_RE.test(tokens[idx]))
+        idx++;
+    if (isShellWrapper(tokens[idx]))
+        idx++;
+    while (idx < tokens.length && ENV_ASSIGNMENT_RE.test(tokens[idx]))
+        idx++;
+    return idx;
+}
+/**
  * Returns true if a single (already-segmented) shell command invokes
- * `install.sh` as its executable token, skipping a leading `bash`/`sh` wrapper.
- * Does not match read-only references (`cat install.sh`) or suffixed filenames
- * (`pre-install.sh`).
+ * `install.sh` as its executable token, skipping a leading `bash`/`sh` wrapper
+ * and any `KEY=value` env prefixes. Does not match read-only references
+ * (`cat install.sh`) or suffixed filenames (`pre-install.sh`).
+ *
+ * Tokenizes quote-aware via `tokenizeGitCommand` for the same reason the git
+ * chain does (the "quoted-token parity" trap door): a bare `split(/\s+/)` read
+ * `"install.sh"` with the quotes attached, so `bash "install.sh"` — which the
+ * shell runs as `bash install.sh` — slipped the guard. This detector was the
+ * last of the three leading-command detectors still on the bare split.
  */
 function segmentInvokesInstallSh(segment) {
     const trimmed = segment.trim();
     if (!trimmed)
         return false;
-    const tokens = trimmed.split(/\s+/);
-    let execIdx = 0;
-    if (tokens[execIdx] === 'bash' || tokens[execIdx] === 'sh')
-        execIdx = 1;
-    const exec = tokens[execIdx];
+    const tokens = tokenizeGitCommand(trimmed);
+    const exec = tokens[execTokenIndex(tokens)];
     if (!exec)
         return false;
-    const cleanExec = exec.replace(/;+$/, '');
-    const base = cleanExec.includes('/')
-        ? cleanExec.substring(cleanExec.lastIndexOf('/') + 1)
-        : cleanExec;
-    return base === 'install.sh';
+    return execName(exec) === 'install.sh';
 }
 /**
  * R-PIPE-3 / R-WSRC: Explicit detection for `bash install.sh` (and variants)
@@ -530,16 +605,10 @@ function parseFirstShellWord(command) {
     // and the destructive reset slipped the R-WSRC-GR guard. Same root cause and
     // same fix as findGitVerb's quoted-verb gap.
     const tokens = tokenizeGitCommand(trimmed);
-    let idx = 0;
-    if (tokens[idx] === 'bash' || tokens[idx] === 'sh')
-        idx++;
-    while (idx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx]))
-        idx++;
-    const exec = tokens[idx];
+    const exec = tokens[execTokenIndex(tokens)];
     if (!exec)
         return null;
-    const clean = exec.replace(/;+$/, '');
-    return clean.includes('/') ? clean.substring(clean.lastIndexOf('/') + 1) : clean;
+    return execName(exec);
 }
 const PROHIBITED_GIT_VERBS_SIMPLE = new Set(['reset', 'switch', 'stash', 'rebase', 'pull', 'push']);
 /**
@@ -604,11 +673,7 @@ function tokenizeGitCommand(command) {
  */
 function findGitVerb(command) {
     const tokens = tokenizeGitCommand(command);
-    let idx = 0;
-    if (tokens[idx] === 'bash' || tokens[idx] === 'sh')
-        idx++;
-    while (idx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx]))
-        idx++;
+    let idx = execTokenIndex(tokens);
     idx++; // skip 'git' itself
     const rest = tokens.slice(idx).filter(t => t.length > 0);
     let verbIdx = -1;

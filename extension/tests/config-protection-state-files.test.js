@@ -562,3 +562,170 @@ test('R-WSRC-3: no active session approves protected state writes (fail-open)', 
   });
   assert.equal(JSON.parse(stdout.trim()).decision, 'approve');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-CASEFOLD: case-insensitive-filesystem parity (EXT-ITER7-01)
+//
+// On macOS/APFS (and Windows) `State.json` and `state.json` are the SAME INODE,
+// so an exact-equality match against the all-lowercase PROTECTED_STATE_BASENAMES
+// approved a write to the real runtime state file. These pin the case-folding in
+// `matchProtectedStateBasename` and `isInsideRuntimeRoot`.
+// ---------------------------------------------------------------------------
+
+for (const variant of ['State.json', 'STATE.JSON', 'state.JSON']) {
+  test(`AP-EXT-CASEFOLD: blocks Write to case-variant ${variant}`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir,
+      stateFile,
+      toolName: 'Write',
+      toolInput: { file_path: path.join(sessionDir, variant) },
+    });
+    assert.equal(result.decision, 'block', `${variant} must not bypass the state gate`);
+  });
+}
+
+test('AP-EXT-CASEFOLD: blocks Bash redirect to case-variant STATE.JSON', () => {
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  const target = path.join(sessionDir, 'STATE.JSON');
+  const result = runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `echo '{}' > ${target}` },
+  });
+  assert.equal(result.decision, 'block');
+});
+
+test('AP-EXT-CASEFOLD: blocks Write to case-variant state.json.TMP.<pid>', () => {
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Write',
+    toolInput: { file_path: path.join(sessionDir, 'State.json.TMP.4242') },
+  });
+  assert.equal(result.decision, 'block');
+});
+
+for (const variant of ['Pickle_Settings.json', 'Circuit_Breaker.json', 'Pipeline-Status.json']) {
+  test(`AP-EXT-CASEFOLD: blocks Write to case-variant ${variant}`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir,
+      stateFile,
+      toolName: 'Write',
+      toolInput: { file_path: path.join(sessionDir, variant) },
+    });
+    assert.equal(result.decision, 'block', `${variant} must not bypass the state gate`);
+  });
+}
+
+for (const rootVariant of ['.CLAUDE/pickle-rick', '.claude/Pickle-Rick', '.Claude/PICKLE-RICK']) {
+  test(`AP-EXT-CASEFOLD: blocks Edit to case-variant runtime root ~/${rootVariant}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir,
+      stateFile,
+      toolName: 'Edit',
+      toolInput: { file_path: path.join(os.homedir(), rootVariant, 'extension', 'bin', 'mux-runner.js') },
+    });
+    assert.equal(result.decision, 'block', `~/${rootVariant} must not bypass the runtime-root guard`);
+  });
+}
+
+test('AP-EXT-CASEFOLD: unrelated case-variant file is still approved', () => {
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Write',
+    toolInput: { file_path: path.join(sessionDir, 'Notes.JSON') },
+  });
+  assert.equal(result.decision, 'approve');
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-STATE-GATE: in-place-editor block cases.
+//
+// These pin the WRITE_COMMANDS in-place-editor members against the STATE gate.
+// The config gate pins only `sed` (config-protection.test.js), so deleting
+// `perl`/`vim`/`vi`/`nano`/`emacs`/`ed`/`ex` from the shared set previously
+// broke no test at all — proven by mutation. The `4fcc02fc` collapse landed the
+// fix without these cases; they are landed here.
+// ---------------------------------------------------------------------------
+
+for (const editor of ['sed -i', 'perl -i -pe', 'vim', 'vi', 'nano', 'emacs', 'ed', 'ex']) {
+  test(`AP-EXT-STATE-GATE: blocks Bash in-place editor \`${editor}\` on state.json`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const target = path.join(sessionDir, 'state.json');
+    const result = runHandler({
+      tmpDir,
+      stateFile,
+      toolName: 'Bash',
+      toolInput: { command: `${editor} ${target}` },
+    });
+    assert.equal(result.decision, 'block', `${editor} must not bypass the state gate`);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// AP-EXT-EXECNAME: executable-token folding (EXT-ITER7-01 replay).
+//
+// `GIT --version` really does run git on a case-insensitive filesystem, so a
+// `=== 'git'` compare let `GIT reset --hard` past the R-WSRC-GR guard while
+// `git RESET --hard` was blocked (findGitVerb already folded the VERB). Same
+// class for the install.sh detector and the `bash`/`sh` wrapper skip, which
+// also missed the absolute-path form `/bin/bash`.
+// ---------------------------------------------------------------------------
+
+function runWorkerBash(command) {
+  const { tmpDir, stateFile } = bootstrapSession();
+  return runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+}
+
+for (const cmd of ['GIT reset --hard', 'Git reset --hard', 'GIT push', 'GIT stash', 'GIT rebase -i']) {
+  test(`AP-EXT-EXECNAME: blocks case-variant git verb \`${cmd}\``, () => {
+    assert.equal(runWorkerBash(cmd).decision, 'block', `${cmd} must not bypass R-WSRC-GR`);
+  });
+}
+
+test('AP-EXT-EXECNAME: blocks absolute-path interpreter /bin/bash wrapping a git reset', () => {
+  assert.equal(runWorkerBash('/bin/bash -c x; git reset --hard').decision, 'block');
+});
+
+test('AP-EXT-EXECNAME: still approves a benign case-variant git verb', () => {
+  assert.equal(runWorkerBash('GIT status').decision, 'approve');
+});
+
+for (const cmd of ['bash INSTALL.SH', 'BASH install.sh', 'bash "install.sh"', "bash 'install.sh'", '/bin/bash install.sh', 'PICKLE_ROLE=x bash install.sh']) {
+  test(`AP-EXT-EXECNAME: blocks install.sh variant \`${cmd}\``, () => {
+    assert.equal(runWorkerBash(cmd).decision, 'block', `${cmd} must not bypass the install.sh guard`);
+  });
+}
+
+test('AP-EXT-EXECNAME: still approves a read-only reference to install.sh', () => {
+  assert.equal(runWorkerBash('cat install.sh').decision, 'approve');
+});
+
+test('AP-EXT-EXECNAME: still approves a differently-named script', () => {
+  assert.equal(runWorkerBash('bash pre-install.sh').decision, 'approve');
+});
+
+test('AP-EXT-EXECNAME: blocks case-variant in-place editor SED -i on state.json', () => {
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  const target = path.join(sessionDir, 'state.json');
+  const result = runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `SED -i s/a/b/ ${target}` },
+  });
+  assert.equal(result.decision, 'block');
+});
