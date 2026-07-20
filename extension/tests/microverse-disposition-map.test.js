@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, _deps } from '../bin/microverse-runner.js';
+import { MICROVERSE_EXIT_REASONS } from '../types/index.js';
 
 const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -15,31 +16,25 @@ function tmpDir(prefix = 'pickle-mv-disposition-') {
 }
 
 /**
- * `MicroverseExitReason` is a TS union and erases at compile time, so there is no runtime
- * array to enumerate. `types/index.ts` therefore carries a doc-comment mirror that is
- * deliberately retained in the compiled `types/index.js` — by its own words, "the only place
- * the compiled `types/index.js` reflects the type's membership."
+ * `MicroverseExitReason` is DERIVED from the runtime `MICROVERSE_EXIT_REASONS` array
+ * (`typeof MICROVERSE_EXIT_REASONS[number]`), so the compiled `types/index.js` carries the
+ * membership as real data — no doc-comment mirror to scrape and no way for the two to drift.
  *
- * Parsing that mirror is what makes the completeness test below real. The previous assertion
- * counted `EXPECTED`'s own keys against a hardcoded 18, so a 19th union member could ship
- * without ever reddening the test named to prevent exactly that.
+ * Enumerating it is what makes the completeness test below real. An earlier assertion counted
+ * `EXPECTED`'s own keys against a hardcoded 18, so a 19th union member could ship without ever
+ * reddening the test named to prevent exactly that.
  */
 function readUnionMembersFromMirror() {
-  const source = fs.readFileSync(path.join(EXTENSION_ROOT, 'types', 'index.js'), 'utf-8');
-  const start = source.indexOf('Keep in lockstep with the union on every edit:');
-  assert.ok(start !== -1, 'the MicroverseExitReason mirror comment must be present in types/index.js');
-  const block = source.slice(start, source.indexOf('*/', start));
-  const members = [...block.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
-  assert.ok(members.length > 0, 'the mirror comment must enumerate at least one member');
-  return new Set(members);
+  assert.ok(MICROVERSE_EXIT_REASONS.length > 0, 'MICROVERSE_EXIT_REASONS must enumerate at least one member');
+  return new Set(MICROVERSE_EXIT_REASONS);
 }
 
-/** The same union, read from the TS source of truth rather than the compiled mirror. */
+/** The same membership, read from the TS source of truth rather than the compiled array. */
 function readUnionMembersFromSource(srcTypesPath) {
   const source = fs.readFileSync(srcTypesPath, 'utf-8');
-  const start = source.indexOf('export type MicroverseExitReason =');
-  assert.ok(start !== -1, 'the MicroverseExitReason union must be present in src/types/index.ts');
-  const block = source.slice(start, source.indexOf(';', start));
+  const start = source.indexOf('export const MICROVERSE_EXIT_REASONS = [');
+  assert.ok(start !== -1, 'MICROVERSE_EXIT_REASONS must be present in src/types/index.ts');
+  const block = source.slice(start, source.indexOf('];', start));
   return new Set([...block.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
 }
 
@@ -77,11 +72,10 @@ test('every MicroverseExitReason member is covered by EXPECTED (fixture complete
   assert.deepEqual(new Set(Object.keys(EXPECTED)), readUnionMembersFromMirror());
 });
 
-// The mirror comment instructs "keep in lockstep with the union on every edit" but nothing
-// enforced it — a union edit that skipped the comment would leave the test above validating
-// EXPECTED against a stale mirror, i.e. passing while blind. In a deployed tree `src/` is
-// absent and there is nothing to compare, so this pins source-vs-compiled only in-repo.
-test('the compiled mirror stays in lockstep with the TS union (in-repo only)', (t) => {
+// Source and compiled now share ONE declaration, so lockstep holds by construction rather than
+// by discipline — this pins that `npx tsc` was actually run, catching a stale compiled tree.
+// In a deployed tree `src/` is absent and there is nothing to compare.
+test('the compiled array stays in lockstep with the TS source (in-repo only)', (t) => {
   const srcTypesPath = path.join(EXTENSION_ROOT, 'src', 'types', 'index.ts');
   if (!fs.existsSync(srcTypesPath)) {
     t.skip('src/types/index.ts absent — deployed tree, no source to compare');

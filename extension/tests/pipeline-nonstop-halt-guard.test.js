@@ -23,6 +23,7 @@ import {
   shouldHaltAfterPhase,
 } from '../bin/pipeline-runner.js';
 import { classifyMicroverseDisposition } from '../bin/microverse-runner.js';
+import { MICROVERSE_EXIT_REASONS } from '../types/index.js';
 
 const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -31,20 +32,13 @@ function tmpDir(prefix) {
 }
 
 /**
- * Reads the `MicroverseExitReason` members from the doc-comment mirror in the compiled
- * `types/index.js` (the union erases at compile time, so the comment is the only runtime
- * reflection of its membership).
- *
- * Intentionally duplicated from microverse-disposition-map.test.js: a shared helper would
- * live in `tests/helpers/`, which is outside this ticket's scope fence. Five lines is the
- * cheaper of the two wrongs; collapse them when a ticket can create files.
+ * The `MicroverseExitReason` members, read straight off the runtime `MICROVERSE_EXIT_REASONS`
+ * array the union is derived from. This used to scrape a doc-comment mirror and was duplicated
+ * verbatim in microverse-disposition-map.test.js because a scope fence blocked a shared helper;
+ * with the membership exported as real data both copies collapse to this import.
  */
 function readUnionMembersFromMirror() {
-  const source = fs.readFileSync(path.join(EXTENSION_ROOT, 'types', 'index.js'), 'utf-8');
-  const start = source.indexOf('Keep in lockstep with the union on every edit:');
-  assert.ok(start !== -1, 'the MicroverseExitReason mirror comment must be present in types/index.js');
-  const block = source.slice(start, source.indexOf('*/', start));
-  return [...block.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+  return [...MICROVERSE_EXIT_REASONS];
 }
 
 function writeStateWithExitReason(sessionDir, exitReason) {
