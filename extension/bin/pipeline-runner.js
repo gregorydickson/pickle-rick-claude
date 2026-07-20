@@ -2830,9 +2830,6 @@ export function readResumePhasePlan(runtime) {
         skipped: resumeCount(prior.skipped_phases),
     };
 }
-export function computeResumePhaseIndex(runtime) {
-    return readResumePhasePlan(runtime).index;
-}
 function logPhaseStart(runtime, phase, index) {
     const phaseLabel = `${index + 1}/${runtime.config.phases.length}`;
     runtime.log(`\n${'═'.repeat(60)}`);

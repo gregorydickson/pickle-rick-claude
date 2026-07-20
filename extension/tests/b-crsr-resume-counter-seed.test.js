@@ -32,7 +32,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { readResumePhasePlan, computeResumePhaseIndex } from '../bin/pipeline-runner.js';
+import { readResumePhasePlan } from '../bin/pipeline-runner.js';
 
 const PHASES = ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'];
 
@@ -150,17 +150,4 @@ test('AC-CWRR-6: malformed counts never seed a counter', () => {
     assert.equal(plan.skipped, 0, `skipped_phases=${String(skipped)}`);
     assert.equal(plan.completed, 2, `skipped_phases=${String(skipped)}`);
   }
-});
-
-test('AC-CWRR-6: computeResumePhaseIndex still delegates to the one reader', () => {
-  const sessionDir = mkSession();
-  writeStatus(sessionDir, {
-    status: 'running',
-    current_phase: 'citadel',
-    completed_phases: 1,
-    skipped_phases: 0,
-    total_phases: 4,
-  });
-  const runtime = runtimeFor(sessionDir);
-  assert.equal(computeResumePhaseIndex(runtime), readResumePhasePlan(runtime).index);
 });

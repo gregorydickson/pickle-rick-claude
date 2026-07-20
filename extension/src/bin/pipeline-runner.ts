@@ -3427,10 +3427,6 @@ export function readResumePhasePlan(
   };
 }
 
-export function computeResumePhaseIndex(runtime: Pick<PipelineRuntime, 'sessionDir' | 'config'>): number {
-  return readResumePhasePlan(runtime).index;
-}
-
 function logPhaseStart(runtime: PipelineRuntime, phase: PhaseName, index: number): void {
   const phaseLabel = `${index + 1}/${runtime.config.phases.length}`;
   runtime.log(`\n${'═'.repeat(60)}`);

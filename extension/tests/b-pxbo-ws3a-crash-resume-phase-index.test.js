@@ -3,7 +3,7 @@
 // B-PXBO WS-3-FacetA (R-CRSR) regression tests.
 //
 // On pipeline-runner crash-resume, the phase loop must RESUME from the recorded
-// prior phase instead of restarting at phases[0]. `computeResumePhaseIndex`
+// prior phase instead of restarting at phases[0]. `readResumePhasePlan`
 // reads the existing pipeline-status.json (via the recoverable-read primitive,
 // NO new state field) and returns the loop start index:
 //   AC-CRSR-1: {status:'running', completed_phases>0, current_phase:'anatomy-park'}
@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { computeResumePhaseIndex } from '../bin/pipeline-runner.js';
+import { readResumePhasePlan } from '../bin/pipeline-runner.js';
 
 const PHASES = ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'];
 
@@ -50,7 +50,7 @@ test('AC-CRSR-1: running + completed_phases>0 resumes at the recorded current_ph
     skipped_phases: 0,
     total_phases: 4,
   });
-  assert.equal(computeResumePhaseIndex(runtimeFor(sessionDir)), 2);
+  assert.equal(readResumePhasePlan(runtimeFor(sessionDir)).index, 2);
 });
 
 test('AC-CRSR-1: resumes at citadel (index 1) after one completed phase', () => {
@@ -61,12 +61,12 @@ test('AC-CRSR-1: resumes at citadel (index 1) after one completed phase', () => 
     completed_phases: 1,
     total_phases: 4,
   });
-  assert.equal(computeResumePhaseIndex(runtimeFor(sessionDir)), 1);
+  assert.equal(readResumePhasePlan(runtimeFor(sessionDir)).index, 1);
 });
 
 test('AC-CRSR-2: no pipeline-status.json -> cold start at 0', () => {
   const sessionDir = mkSession();
-  assert.equal(computeResumePhaseIndex(runtimeFor(sessionDir)), 0);
+  assert.equal(readResumePhasePlan(runtimeFor(sessionDir)).index, 0);
 });
 
 test('AC-CRSR-2: completed_phases === 0 -> cold start at 0 (no skip)', () => {
@@ -77,7 +77,7 @@ test('AC-CRSR-2: completed_phases === 0 -> cold start at 0 (no skip)', () => {
     completed_phases: 0,
     total_phases: 4,
   });
-  assert.equal(computeResumePhaseIndex(runtimeFor(sessionDir)), 0);
+  assert.equal(readResumePhasePlan(runtimeFor(sessionDir)).index, 0);
 });
 
 test('AC-CRSR-2: terminal status (completed/failed/cancelled) -> cold start at 0', () => {
@@ -89,7 +89,7 @@ test('AC-CRSR-2: terminal status (completed/failed/cancelled) -> cold start at 0
       completed_phases: 2,
       total_phases: 4,
     });
-    assert.equal(computeResumePhaseIndex(runtimeFor(sessionDir)), 0, `status=${status}`);
+    assert.equal(readResumePhasePlan(runtimeFor(sessionDir)).index, 0, `status=${status}`);
   }
 });
 
@@ -101,7 +101,7 @@ test('AC-CRSR-2: null/unrecognized current_phase -> cold start at 0', () => {
     completed_phases: 2,
     total_phases: 4,
   });
-  assert.equal(computeResumePhaseIndex(runtimeFor(sessionDir)), 0);
+  assert.equal(readResumePhasePlan(runtimeFor(sessionDir)).index, 0);
 
   const sessionDir2 = mkSession();
   writeStatus(sessionDir2, {
@@ -110,7 +110,7 @@ test('AC-CRSR-2: null/unrecognized current_phase -> cold start at 0', () => {
     completed_phases: 2,
     total_phases: 4,
   });
-  assert.equal(computeResumePhaseIndex(runtimeFor(sessionDir2)), 0);
+  assert.equal(readResumePhasePlan(runtimeFor(sessionDir2)).index, 0);
 });
 
 test('AC-CRSR-2: non-numeric completed_phases -> cold start at 0', () => {
@@ -121,7 +121,7 @@ test('AC-CRSR-2: non-numeric completed_phases -> cold start at 0', () => {
     completed_phases: 'two',
     total_phases: 4,
   });
-  assert.equal(computeResumePhaseIndex(runtimeFor(sessionDir)), 0);
+  assert.equal(readResumePhasePlan(runtimeFor(sessionDir)).index, 0);
 });
 
 test('AC-CRSR-1: current_phase not in this run\'s configured phases -> 0', () => {
@@ -134,7 +134,7 @@ test('AC-CRSR-1: current_phase not in this run\'s configured phases -> 0', () =>
     total_phases: 2,
   });
   const runtime = { sessionDir, config: { phases: ['pickle', 'citadel'] } };
-  assert.equal(computeResumePhaseIndex(runtime), 0);
+  assert.equal(readResumePhasePlan(runtime).index, 0);
 });
 
 test('recoverable read: promotes a dead-pid pipeline-status.json.tmp snapshot', () => {
@@ -151,5 +151,5 @@ test('recoverable read: promotes a dead-pid pipeline-status.json.tmp snapshot', 
       total_phases: 4,
     }),
   );
-  assert.equal(computeResumePhaseIndex(runtimeFor(sessionDir)), 2);
+  assert.equal(readResumePhasePlan(runtimeFor(sessionDir)).index, 2);
 });
