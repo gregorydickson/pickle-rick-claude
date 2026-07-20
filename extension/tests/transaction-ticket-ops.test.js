@@ -313,6 +313,133 @@ test('recoverCourseCorrectionFromLedger reverse-replays applied steps and record
   });
 });
 
+// AP-EXT-ITER12-01: a SIGKILL between the forward writeFileSync and the 'applied'
+// ledger append leaves the file overwritten on disk under a 'started'-only entry.
+// Reverse recovery MUST restore it — the restore content is already in the ledger.
+test('recoverCourseCorrectionFromLedger reverse-restores a started-only crash-window step', () => {
+  withDir((sessionDir) => {
+    const applied = writeTicket(sessionDir, 'aaa111', 'Todo');
+    const crashed = writeTicket(sessionDir, 'bbb222', 'Todo');
+    writeState(sessionDir, { activity: [] });
+
+    // Both files are already overwritten on disk — the forward pass got that far.
+    fs.writeFileSync(applied.ticketPath, 'OVERWRITTEN-APPLIED');
+    fs.writeFileSync(crashed.ticketPath, 'OVERWRITTEN-CRASHED');
+
+    const entry = (step, ticket, status) => JSON.stringify({
+      step,
+      action: 'write',
+      operation: 'kill_ticket',
+      ticket_id: path.basename(path.dirname(ticket.ticketPath)),
+      path: ticket.ticketPath,
+      status,
+      recovery_class: 'restore-previous-content',
+      beforeContent: ticket.content,
+      previousContent: ticket.content,
+      afterContent: 'OVERWRITTEN',
+      createdAt: '2026-04-30T15:00:00.000Z',
+    });
+
+    const ledgerPath = path.join(sessionDir, 'change_proposal_2026-04-30T15-00-00Z_apply.log');
+    fs.writeFileSync(ledgerPath, [
+      entry(1, applied, 'started'),
+      entry(1, applied, 'applied'),
+      entry(2, crashed, 'started'), // crash landed here — no 'applied' line follows
+      '',
+    ].join('\n'));
+
+    const result = recoverCourseCorrectionFromLedger({
+      sessionRoot: sessionDir,
+      ledgerPath,
+      mode: 'reverse',
+      now: '2026-04-30T15:05:00.000Z',
+    });
+
+    // The crashed step is recovered, and reported — not silently skipped.
+    assert.deepEqual(result.recoveredSteps, [2, 1]);
+    assert.equal(fs.readFileSync(crashed.ticketPath, 'utf-8'), crashed.content);
+    assert.equal(fs.readFileSync(applied.ticketPath, 'utf-8'), applied.content);
+    // lastSuccessfulStep keeps its 'last applied step' meaning and does not cap reversal.
+    assert.equal(result.lastSuccessfulStep, 1);
+  });
+});
+
+// A 'failed' entry means writeFileSync threw — which can still leave a partial
+// file (ENOSPC). Same ledger, same rule: reverse it.
+test('recoverCourseCorrectionFromLedger reverse-restores a failed step with a partial write', () => {
+  withDir((sessionDir) => {
+    const ticket = writeTicket(sessionDir, 'ccc333', 'Todo');
+    writeState(sessionDir, { activity: [] });
+    fs.writeFileSync(ticket.ticketPath, 'PARTIAL-WRI');
+
+    const ledgerPath = path.join(sessionDir, 'change_proposal_2026-04-30T15-00-00Z_apply.log');
+    fs.writeFileSync(ledgerPath, [
+      JSON.stringify({
+        step: 1,
+        action: 'write',
+        operation: 'kill_ticket',
+        ticket_id: 'ccc333',
+        path: ticket.ticketPath,
+        status: 'failed',
+        error: 'ENOSPC: no space left on device',
+        recovery_class: 'restore-previous-content',
+        beforeContent: ticket.content,
+        previousContent: ticket.content,
+        afterContent: 'OVERWRITTEN',
+        createdAt: '2026-04-30T15:00:00.000Z',
+      }),
+      '',
+    ].join('\n'));
+
+    const result = recoverCourseCorrectionFromLedger({
+      sessionRoot: sessionDir,
+      ledgerPath,
+      mode: 'reverse',
+      now: '2026-04-30T15:05:00.000Z',
+    });
+
+    assert.deepEqual(result.recoveredSteps, [1]);
+    assert.equal(fs.readFileSync(ticket.ticketPath, 'utf-8'), ticket.content);
+  });
+});
+
+// A create-step reversal deletes; if the crashed write never landed, the
+// existsSync guard makes it a no-op. Pins the safe fail direction.
+test('reverse recovery of a started create-step whose write never landed is a no-op', () => {
+  withDir((sessionDir) => {
+    writeState(sessionDir, { activity: [] });
+    const neverCreated = path.join(sessionDir, 'ddd444', 'rick_ticket_ddd444.md');
+
+    const ledgerPath = path.join(sessionDir, 'change_proposal_2026-04-30T15-00-00Z_apply.log');
+    fs.writeFileSync(ledgerPath, [
+      JSON.stringify({
+        step: 1,
+        action: 'create',
+        operation: 'add_ticket',
+        ticket_id: 'ddd444',
+        path: neverCreated,
+        status: 'started',
+        recovery_class: 'delete-created',
+        beforeContent: null,
+        previousContent: null,
+        afterContent: 'NEW',
+        createdAt: '2026-04-30T15:00:00.000Z',
+      }),
+      '',
+    ].join('\n'));
+
+    const result = recoverCourseCorrectionFromLedger({
+      sessionRoot: sessionDir,
+      ledgerPath,
+      mode: 'reverse',
+      now: '2026-04-30T15:05:00.000Z',
+    });
+
+    assert.deepEqual(result.recoveredSteps, [1]);
+    assert.equal(fs.existsSync(neverCreated), false);
+  });
+});
+
 test('recoverCourseCorrectionFromLedger forward-replays ledger only with force', () => {
   withDir((sessionDir) => {
     const ticket = writeTicket(sessionDir, 'abc123', 'Todo');

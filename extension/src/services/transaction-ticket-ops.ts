@@ -513,9 +513,9 @@ function lastSuccessfulStep(entries: CourseCorrectionApplyLedgerEntry[]): number
   return entries.reduce((max, entry) => entry.status === 'applied' ? Math.max(max, entry.step) : max, 0);
 }
 
-function reverseAppliedEntries(entries: CourseCorrectionApplyLedgerEntry[], sessionRoot: string, throughStep: number): number[] {
+function reverseAppliedEntries(entries: CourseCorrectionApplyLedgerEntry[], sessionRoot: string): number[] {
   const reversedSteps: number[] = [];
-  for (const entry of entries.filter(item => item.status === 'applied' && item.step <= throughStep).reverse()) {
+  for (const entry of [...selectForwardEntries(entries)].reverse()) {
     const targetPath = resolveLedgerPath(sessionRoot, entry.path);
     const priorContent = restoreContent(entry);
     if (priorContent === undefined || priorContent === null) {
@@ -569,7 +569,7 @@ export function recoverCourseCorrectionFromLedger(input: RecoverCourseCorrection
       throw new Error('--recover requires --force for forward ledger replay');
     }
     const recoveredSteps = input.mode === 'reverse'
-      ? reverseAppliedEntries(entries, sessionRoot, lastStep)
+      ? reverseAppliedEntries(entries, sessionRoot)
       : forwardReplayEntries(entries, sessionRoot);
 
     appendStateActivity(sessionRoot, stateManager, {
