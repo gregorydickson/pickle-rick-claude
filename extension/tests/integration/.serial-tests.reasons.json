@@ -1,6 +1,7 @@
 {
   "reasons": {
     "tests/timeout-happy-path.test.js": "load-dependent-timeout",
+    "tests/integration/check-update-extraction-containment.test.js": "subprocess-timeout-coupling",
     "tests/integration/pntr-teams-tmux.test.js": "subprocess-spawn-timing",
     "tests/integration/pntr-pickle-deprecated.test.js": "subprocess-timeout-coupling",
     "tests/integration/spawn-morty-backend-resolution.test.js": "subprocess-timeout-coupling",
