@@ -2799,36 +2799,39 @@ function writeRunningStatus(runtime, counters, currentPhase) {
         phase_dispositions: counters.phaseDispositions,
     });
 }
-/**
- * R-CRSR (WS-3-FacetA): on crash-resume, seed the phase loop start index from
- * the prior `pipeline-status.json` instead of restarting at phases[0]. The
- * status file is the only persisted record of which phase the prior process had
- * reached; `writePipelineStatus` writes `current_phase` to the same PhaseName
- * union the loop iterates, so `phases.indexOf(current_phase)` is the resume
- * index. Resume ONLY when status is still `running` (an interrupted run, not a
- * completed/failed/cancelled one) AND at least one phase already completed.
- * Cold-start (no/unreadable file, non-running status, completed_phases === 0,
- * or an unrecognized phase) returns 0 — behavior unchanged.
- * Reuses `readRecoverableJsonObject` (recoverable-read invariant) — no new read
- * path and no new state field.
- */
-export function computeResumePhaseIndex(runtime) {
+// Frozen: returned by reference from every cold-start path, so a caller that
+// mutated the plan would otherwise corrupt the shared constant.
+const COLD_START_PLAN = Object.freeze({ index: 0, completed: 0, skipped: 0 });
+/** Non-negative integer or 0 — a malformed count must never seed a counter. */
+function resumeCount(raw) {
+    return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : 0;
+}
+export function readResumePhasePlan(runtime) {
     let prior = null;
     try {
         prior = readRecoverableJsonObject(path.join(runtime.sessionDir, 'pipeline-status.json'));
     }
     catch { /* best-effort — unreadable status falls through to cold-start */ }
     if (!prior)
-        return 0;
+        return COLD_START_PLAN;
     if (prior.status !== 'running')
-        return 0;
+        return COLD_START_PLAN;
     if (typeof prior.completed_phases !== 'number' || prior.completed_phases <= 0)
-        return 0;
+        return COLD_START_PLAN;
     const priorPhase = prior.current_phase;
     if (!isPhaseName(priorPhase))
-        return 0;
+        return COLD_START_PLAN;
     const idx = runtime.config.phases.indexOf(priorPhase);
-    return idx >= 0 ? idx : 0;
+    if (idx < 0)
+        return COLD_START_PLAN;
+    return {
+        index: idx,
+        completed: resumeCount(prior.completed_phases),
+        skipped: resumeCount(prior.skipped_phases),
+    };
+}
+export function computeResumePhaseIndex(runtime) {
+    return readResumePhasePlan(runtime).index;
 }
 function logPhaseStart(runtime, phase, index) {
     const phaseLabel = `${index + 1}/${runtime.config.phases.length}`;
@@ -3649,9 +3652,17 @@ export async function main(sessionDir, opts = {}) {
     };
     // R-CRSR (WS-3-FacetA): seed the loop start from the prior recorded phase on
     // crash-resume (skip already-completed phases); cold-start resolves to 0.
-    const resumeStartIndex = computeResumePhaseIndex(runtime);
+    const resumePlan = readResumePhasePlan(runtime);
+    const resumeStartIndex = resumePlan.index;
     if (resumeStartIndex > 0) {
-        log(`Crash-resume: starting phase loop at index ${resumeStartIndex} (${runtime.config.phases[resumeStartIndex]}) per prior pipeline-status.json`);
+        // AC-CWRR-6: skipping phases WITHOUT carrying their counts forward leaves
+        // `finalizePipeline`'s (completed + skipped) < phases.length permanently
+        // true — a fully-successful resumed pipeline would finalize FAILED and
+        // skip the closer install/tag. Seed from the same status file that chose
+        // the index.
+        counters.completed = resumePlan.completed;
+        counters.skipped = resumePlan.skipped;
+        log(`Crash-resume: starting phase loop at index ${resumeStartIndex} (${runtime.config.phases[resumeStartIndex]}) per prior pipeline-status.json; seeded counters completed=${counters.completed} skipped=${counters.skipped}`);
     }
     writeRunningStatus(runtime, counters, null);
     try {

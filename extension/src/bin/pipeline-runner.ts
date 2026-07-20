@@ -3378,21 +3378,57 @@ function writeRunningStatus(runtime: PipelineRuntime, counters: PhaseCounters, c
  * or an unrecognized phase) returns 0 — behavior unchanged.
  * Reuses `readRecoverableJsonObject` (recoverable-read invariant) — no new read
  * path and no new state field.
+ *
+ * AC-CWRR-6: the resume index and the prior phase counts come from ONE read of
+ * the same status file, because they are two halves of one fact. Skipping
+ * phases without also seeding `counters` makes `finalizePipeline`'s
+ * `(completed + skipped) < phases.length` predicate permanently true on resume:
+ * a fully-successful resumed pipeline finalizes FAILED, the closer
+ * `install()`+`tag()` (gated `!pipelineFailed`) is skipped, and it exits 1.
  */
-export function computeResumePhaseIndex(runtime: Pick<PipelineRuntime, 'sessionDir' | 'config'>): number {
+export interface ResumePhasePlan {
+  /** Phase-loop start index; 0 on cold start. */
+  index: number;
+  /** Phases the prior process completed, to seed `counters.completed`. */
+  completed: number;
+  /** Phases the prior process skipped, to seed `counters.skipped`. */
+  skipped: number;
+}
+
+// Frozen: returned by reference from every cold-start path, so a caller that
+// mutated the plan would otherwise corrupt the shared constant.
+const COLD_START_PLAN: Readonly<ResumePhasePlan> = Object.freeze({ index: 0, completed: 0, skipped: 0 });
+
+/** Non-negative integer or 0 — a malformed count must never seed a counter. */
+function resumeCount(raw: unknown): number {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : 0;
+}
+
+export function readResumePhasePlan(
+  runtime: Pick<PipelineRuntime, 'sessionDir' | 'config'>,
+): ResumePhasePlan {
   let prior: Record<string, unknown> | null = null;
   try {
     prior = readRecoverableJsonObject(
       path.join(runtime.sessionDir, 'pipeline-status.json'),
     ) as Record<string, unknown> | null;
   } catch { /* best-effort — unreadable status falls through to cold-start */ }
-  if (!prior) return 0;
-  if (prior.status !== 'running') return 0;
-  if (typeof prior.completed_phases !== 'number' || prior.completed_phases <= 0) return 0;
+  if (!prior) return COLD_START_PLAN;
+  if (prior.status !== 'running') return COLD_START_PLAN;
+  if (typeof prior.completed_phases !== 'number' || prior.completed_phases <= 0) return COLD_START_PLAN;
   const priorPhase = prior.current_phase;
-  if (!isPhaseName(priorPhase)) return 0;
+  if (!isPhaseName(priorPhase)) return COLD_START_PLAN;
   const idx = runtime.config.phases.indexOf(priorPhase);
-  return idx >= 0 ? idx : 0;
+  if (idx < 0) return COLD_START_PLAN;
+  return {
+    index: idx,
+    completed: resumeCount(prior.completed_phases),
+    skipped: resumeCount(prior.skipped_phases),
+  };
+}
+
+export function computeResumePhaseIndex(runtime: Pick<PipelineRuntime, 'sessionDir' | 'config'>): number {
+  return readResumePhasePlan(runtime).index;
 }
 
 function logPhaseStart(runtime: PipelineRuntime, phase: PhaseName, index: number): void {
@@ -4297,9 +4333,17 @@ export async function main(sessionDir: string, opts: MainOpts = {}): Promise<voi
   };
   // R-CRSR (WS-3-FacetA): seed the loop start from the prior recorded phase on
   // crash-resume (skip already-completed phases); cold-start resolves to 0.
-  const resumeStartIndex = computeResumePhaseIndex(runtime);
+  const resumePlan = readResumePhasePlan(runtime);
+  const resumeStartIndex = resumePlan.index;
   if (resumeStartIndex > 0) {
-    log(`Crash-resume: starting phase loop at index ${resumeStartIndex} (${runtime.config.phases[resumeStartIndex]}) per prior pipeline-status.json`);
+    // AC-CWRR-6: skipping phases WITHOUT carrying their counts forward leaves
+    // `finalizePipeline`'s (completed + skipped) < phases.length permanently
+    // true — a fully-successful resumed pipeline would finalize FAILED and
+    // skip the closer install/tag. Seed from the same status file that chose
+    // the index.
+    counters.completed = resumePlan.completed;
+    counters.skipped = resumePlan.skipped;
+    log(`Crash-resume: starting phase loop at index ${resumeStartIndex} (${runtime.config.phases[resumeStartIndex]}) per prior pipeline-status.json; seeded counters completed=${counters.completed} skipped=${counters.skipped}`);
   }
   writeRunningStatus(runtime, counters, null);
 
