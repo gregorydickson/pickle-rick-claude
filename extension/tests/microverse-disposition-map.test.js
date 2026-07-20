@@ -138,7 +138,8 @@ test('finalize fallback stamps the disposition into state.json when finalizeTerm
       iterations: 4,
       elapsedSeconds: 12,
     };
-    finalizeMicroverseRun(sessionDir, { statePath, sessionDir, iteration: 4 }, outcome, () => {});
+    // ctx carries only what the finalizer reads: statePath + iteration.
+    finalizeMicroverseRun(sessionDir, { statePath, iteration: 4 }, outcome, () => {});
 
     const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
     const mv = JSON.parse(fs.readFileSync(path.join(sessionDir, 'microverse.json'), 'utf-8'));
