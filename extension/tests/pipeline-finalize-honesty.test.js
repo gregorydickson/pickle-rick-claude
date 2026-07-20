@@ -81,6 +81,57 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     fs.rmSync(dir, { recursive: true });
   });
 
+  /**
+   * The two tests above/below vary BOTH exitCode and exit_reason together, so neither one
+   * isolates which input drives the honesty branch. It is `exit_reason`: the branch at
+   * pipeline-runner.ts:4221-4238 reads `rawPhase` + `state.exit_reason` and never looks at
+   * `exitCode` (that is consumed only by the pickle-only `maybeStampPhaseGraduation`).
+   *
+   * These two tests supply the isolated axes. The exit-0 case is also the genuinely
+   * untested reachable edge: a microverse phase CAN exit 0 having stamped a give-up reason,
+   * and the honesty gate is the only thing standing between that and a fake-green.
+   */
+  test('AC-NS-6 (exit_reason is the discriminant): exit 0 + non-convergent reason is still reported non-convergent', () => {
+    const dir = tmpDir();
+    const { runtime, statePath, cancelMarker } = makeRuntime(dir);
+    writeState(statePath, 'iteration_budget_exhausted');
+    const logs = [];
+    runtime.log = (m) => logs.push(m);
+    const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+
+    // Only exitCode differs from the exit-1 case above — the verdict must not.
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 0, runtime.log);
+
+    assert.equal(outcome.action, 'continue');
+    assert.equal(counters.completed, 0, 'a zero exit code must not launder a give-up into a completion');
+    assert.equal(counters.nonConvergent, 1);
+    assert.equal(counters.phaseDispositions['szechuan-sauce'], 'iteration_budget_exhausted');
+    assert.ok(!logs.some((l) => l.includes('completed successfully')), 'no false success log on exit 0');
+    assert.equal(readStatus(dir).phase_dispositions['szechuan-sauce'], 'iteration_budget_exhausted');
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test('AC-NS-6 (exit_reason is the discriminant): exit 1 + converged still counts completed', () => {
+    const dir = tmpDir();
+    const { runtime, statePath, cancelMarker } = makeRuntime(dir);
+    writeState(statePath, 'converged');
+    const logs = [];
+    runtime.log = (m) => logs.push(m);
+    const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+
+    // The mirror image: a non-zero exit does not by itself make a converged phase dishonest.
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 1, runtime.log);
+
+    assert.equal(outcome.action, 'continue');
+    assert.equal(counters.completed, 1, 'convergence is decided by exit_reason, not the exit code');
+    assert.equal(counters.nonConvergent, 0);
+    assert.equal(counters.phaseDispositions['szechuan-sauce'], undefined);
+    assert.equal(readStatus(dir).phase_dispositions, undefined);
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  // Both-clean case. Retained as the plain happy path; the two tests above are what pin
+  // WHICH input the branch keys on.
   test('AC-NS-6: genuine success (exit 0, converged) still counts completed, no disposition', () => {
     const dir = tmpDir();
     const { runtime, statePath, cancelMarker } = makeRuntime(dir);
