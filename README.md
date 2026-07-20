@@ -461,6 +461,17 @@ Auto-discovers subsystems, rotates through them round-robin, three-phase protoco
 
 **Microverse opt-in** — `/pickle-microverse` runs are NOT gated by default. Add a filename to `convergence_gate.enabled_convergence_files` (default `["anatomy-park.json"]`) to opt a microverse-driven convergence file into per-iteration gating.
 
+**Non-convergent honesty** — a `szechuan-sauce`/`anatomy-park` run that exhausts its iteration budget, its
+time budget, or stalls below its convergence target never gets reported as `Phase … completed
+successfully`; only a genuine `converged` exit reports success. Non-convergent dispositions
+(`iteration_budget_exhausted`, `time_budget_exhausted`, `stalled_below_target`, plus `limit_reached`,
+`no_progress`, `stopped`, `approach_exhaustion`, `anatomy_non_convergent`) are written to
+`pipeline-status.json`'s additive-optional `phase_dispositions` field (older status files without the
+field still parse), and the end-of-pipeline summary shows a `Non-convergent` count whenever any phase
+reports one — so a give-up is always visible in the artifact an operator actually reads, never silently
+printed as success. Citadel carries no disposition (it reports its own audit exit code, not a microverse
+exit reason).
+
 ### 🕸️ Code Graph — Symbol-Graph Worker Context *(v2.0, beta)*
 
 > *"Workers don't grep blind anymore, Morty — they get a map."*
