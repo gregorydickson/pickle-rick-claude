@@ -4,11 +4,43 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, _deps } from '../bin/microverse-runner.js';
 
+const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
 function tmpDir(prefix = 'pickle-mv-disposition-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+/**
+ * `MicroverseExitReason` is a TS union and erases at compile time, so there is no runtime
+ * array to enumerate. `types/index.ts` therefore carries a doc-comment mirror that is
+ * deliberately retained in the compiled `types/index.js` — by its own words, "the only place
+ * the compiled `types/index.js` reflects the type's membership."
+ *
+ * Parsing that mirror is what makes the completeness test below real. The previous assertion
+ * counted `EXPECTED`'s own keys against a hardcoded 18, so a 19th union member could ship
+ * without ever reddening the test named to prevent exactly that.
+ */
+function readUnionMembersFromMirror() {
+  const source = fs.readFileSync(path.join(EXTENSION_ROOT, 'types', 'index.js'), 'utf-8');
+  const start = source.indexOf('Keep in lockstep with the union on every edit:');
+  assert.ok(start !== -1, 'the MicroverseExitReason mirror comment must be present in types/index.js');
+  const block = source.slice(start, source.indexOf('*/', start));
+  const members = [...block.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+  assert.ok(members.length > 0, 'the mirror comment must enumerate at least one member');
+  return new Set(members);
+}
+
+/** The same union, read from the TS source of truth rather than the compiled mirror. */
+function readUnionMembersFromSource(srcTypesPath) {
+  const source = fs.readFileSync(srcTypesPath, 'utf-8');
+  const start = source.indexOf('export type MicroverseExitReason =');
+  assert.ok(start !== -1, 'the MicroverseExitReason union must be present in src/types/index.ts');
+  const block = source.slice(start, source.indexOf(';', start));
+  return new Set([...block.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
 }
 
 const EXPECTED = {
@@ -39,7 +71,23 @@ for (const [reason, expected] of Object.entries(EXPECTED)) {
 }
 
 test('every MicroverseExitReason member is covered by EXPECTED (fixture completeness)', () => {
-  assert.equal(Object.keys(EXPECTED).length, 18);
+  // Derived from the union itself, not a hardcoded count: a new exit reason that nobody adds
+  // to EXPECTED fails HERE, and the diff names the missing member instead of reporting
+  // "expected 18, got 19".
+  assert.deepEqual(new Set(Object.keys(EXPECTED)), readUnionMembersFromMirror());
+});
+
+// The mirror comment instructs "keep in lockstep with the union on every edit" but nothing
+// enforced it — a union edit that skipped the comment would leave the test above validating
+// EXPECTED against a stale mirror, i.e. passing while blind. In a deployed tree `src/` is
+// absent and there is nothing to compare, so this pins source-vs-compiled only in-repo.
+test('the compiled mirror stays in lockstep with the TS union (in-repo only)', (t) => {
+  const srcTypesPath = path.join(EXTENSION_ROOT, 'src', 'types', 'index.ts');
+  if (!fs.existsSync(srcTypesPath)) {
+    t.skip('src/types/index.ts absent — deployed tree, no source to compare');
+    return;
+  }
+  assert.deepEqual(readUnionMembersFromMirror(), readUnionMembersFromSource(srcTypesPath));
 });
 
 test('an unknown exit reason classifies non-success through classifyMicroverseDisposition', () => {
