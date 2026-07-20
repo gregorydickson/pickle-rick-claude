@@ -4110,6 +4110,11 @@ export interface MicroverseHaltDecision {
 }
 
 export function classifyMicroverseHaltDecision(exitReason: unknown): MicroverseHaltDecision {
+  // A non-string exit_reason (absent/corrupted state.json field) is unrecognizable by
+  // construction — abort unattributed rather than let it reach a classifier.
+  if (typeof exitReason !== 'string') {
+    return { action: 'abort', recognizedExitReason: null };
+  }
   // `judge_timeout` and the two below share `reportAs: 'non-fatal-halt'` but take DIFFERENT
   // actions, so the disposition map cannot disambiguate them — they stay literal, and must stay
   // ABOVE the map-driven guard.
@@ -4125,18 +4130,12 @@ export function classifyMicroverseHaltDecision(exitReason: unknown): MicroverseH
   // the union grows; the literal chain this replaced had silently desynchronized from the map
   // and dropped `limit_reached`, `no_progress`, `stopped`, and `approach_exhaustion` into the
   // unattributed abort below.
-  if (
-    typeof exitReason === 'string'
-    && classifyMicroverseDisposition(exitReason).reportAs === 'non-convergent'
-  ) {
+  if (classifyMicroverseDisposition(exitReason).reportAs === 'non-convergent') {
     return { action: 'run-finalize-gate-incomplete', recognizedExitReason: exitReason };
   }
   if (
-    typeof exitReason === 'string'
-    && (
-      isMicroverseFatalReason(exitReason as MicroverseFatalReason)
-      || isMicroverseFailureExit(exitReason as MicroverseExitReason)
-    )
+    isMicroverseFatalReason(exitReason as MicroverseFatalReason)
+    || isMicroverseFailureExit(exitReason as MicroverseExitReason)
   ) {
     return { action: 'abort', recognizedExitReason: exitReason };
   }
