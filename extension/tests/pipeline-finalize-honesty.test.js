@@ -126,6 +126,7 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     assert.equal(counters.completed, 1, 'convergence is decided by exit_reason, not the exit code');
     assert.equal(counters.nonConvergent, 0);
     assert.equal(counters.phaseDispositions['szechuan-sauce'], undefined);
+    assert.ok(logs.some((l) => l.includes('completed successfully')), 'genuine convergence logs success');
     assert.equal(readStatus(dir).phase_dispositions, undefined);
     fs.rmSync(dir, { recursive: true });
   });
