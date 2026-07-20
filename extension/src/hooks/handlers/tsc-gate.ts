@@ -7,6 +7,7 @@ import { approve, loadActiveState, resolveStateFile } from '../resolve-state.js'
 import { logActivity } from '../../services/activity-logger.js';
 import { getDataRoot, safeErrorMessage } from '../../services/pickle-utils.js';
 import { StateManager } from '../../services/state-manager.js';
+import { execName } from '../shell-exec.js';
 
 interface PreToolUseHookPayload {
   tool_name?: string;
@@ -194,8 +195,16 @@ function segmentIsGitCommit(segment: string): boolean {
   // vs the sibling detector (which catches `GIT_DIR=x git reset`).
   let gitIdx = 0;
   while (gitIdx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[gitIdx])) gitIdx++;
-  if (tokens[gitIdx] === 'gh') return false;
-  if (tokens[gitIdx] !== 'git') return false;
+  // execName (not a raw compare): folds case and takes the basename, so
+  // `GIT commit` and `/usr/bin/git commit` — which really do run git on a
+  // case-insensitive filesystem — still classify as commits. A raw
+  // `!== 'git'` here classified them non-commit and SKIPPED the R-WACT gate
+  // entirely, letting a worker land broken TypeScript. The sibling detector
+  // in config-protection.ts already folded through `execName`; this was the
+  // remaining half of that parity pair.
+  const execToken = execName(tokens[gitIdx]);
+  if (execToken === 'gh') return false;
+  if (execToken !== 'git') return false;
 
   let index = gitIdx + 1;
   while (index < tokens.length) {

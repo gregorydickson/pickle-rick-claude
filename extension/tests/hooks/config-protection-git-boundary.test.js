@@ -702,6 +702,29 @@ test('R-CSIS-B1 chained: worker blocks `cd extension && node --test <expensive>`
   assert.match(result.reason, /R-CSIS-B1/);
 });
 
+// AP-EXT-EXECFOLD replay: the expensive-test guard read a RAW `tokens[idx] !==
+// 'node'`, so a case- or path-varied interpreter slipped it while the identical
+// lowercase bare-name form blocked. Same fold as every other exec-token compare.
+test('AP-EXT-EXECFOLD replay: worker blocks case/path-varied `node --test <expensive>`', () => {
+  for (const command of [
+    'NODE --test soak.test.js',
+    '/usr/bin/node --test soak.test.js',
+    'cd extension && NODE --test soak.test.js',
+    'PICKLE_ROLE=worker /usr/local/bin/node --test soak.test.js',
+  ]) {
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'soak.test.js'), '// @tier: expensive\n');
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-CSIS-B1/);
+  }
+});
+
 test('R-CSIS-B1: recommended `RUN_EXPENSIVE_TESTS=1 npm run test:expensive` is NOT blocked', () => {
   const { tmpDir, stateFile } = bootstrapSession();
   const result = runHandler({

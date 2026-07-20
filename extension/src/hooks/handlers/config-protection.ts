@@ -6,6 +6,7 @@ import { resolveStateFile, loadActiveState, approve } from '../resolve-state.js'
 import { getExtensionRoot, getDataRoot } from '../../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../../services/microverse-state.js';
 import { logActivity } from '../../services/activity-logger.js';
+import { execName } from '../shell-exec.js';
 
 interface PreToolUseInput {
   tool_name?: string;
@@ -532,29 +533,6 @@ function splitShellSegments(command: string): string[] {
   return segments.length > 0 ? segments : [command];
 }
 
-/**
- * Folds a shell executable token to its comparable form: trailing `;` stripped,
- * basename taken, lowercased. THE single normalizer for every "is this token
- * command X?" comparison in this file — the git-verb chain, the `install.sh`
- * detector, and the `WRITE_COMMANDS` probe all route through it.
- *
- * Three bug classes collapse into this one fold:
- *   - case: the filesystem is case-insensitive on macOS/Windows, so `GIT reset
- *     --hard` and `bash INSTALL.SH` really do execute git / install.sh (verified
- *     — `GIT --version` prints the git version). A `=== 'git'` compare approved
- *     them. Note `findGitVerb` already lowercased the VERB, so `git RESET`
- *     blocked while `GIT reset` did not — the fold was applied to half the pair.
- *   - path: `tokens[0] === 'bash'` missed `/bin/bash`; taking the basename fixes
- *     the wrapper skip for absolute-path interpreters.
- *   - duplication: `parseFirstShellWord` and `segmentInvokesInstallSh` each
- *     carried their own copy of the strip-`;`-then-basename logic and drifted.
- */
-function execName(token: string): string {
-  const clean = token.replace(/;+$/, '');
-  const base = clean.includes('/') ? clean.substring(clean.lastIndexOf('/') + 1) : clean;
-  return base.toLowerCase();
-}
-
 /** True when the token is a `bash`/`sh` wrapper to be skipped before the real exec. */
 function isShellWrapper(token: string | undefined): boolean {
   if (!token) return false;
@@ -747,7 +725,11 @@ function extractNodeTestPathFromSegment(segment: string): string | null {
   const tokens = trimmed.split(/\s+/);
   let idx = 0;
   while (idx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx])) idx++;
-  if (tokens[idx] !== 'node') return null;
+  // execName, not a raw compare: `NODE --test <expensive>` and
+  // `/usr/bin/node --test <expensive>` both really run node, and a raw
+  // `!== 'node'` let them slip the expensive-test guard. Same fold as every
+  // other exec-token compare in this file.
+  if (execName(tokens[idx]) !== 'node') return null;
   idx++;
   let foundTestFlag = false;
   while (idx < tokens.length) {

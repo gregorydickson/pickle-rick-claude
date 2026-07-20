@@ -484,6 +484,43 @@ it('isGitCommitCommand detects commit behind leading env-var assignments', async
   }
 });
 
+it('AP-EXT-EXECFOLD isGitCommitCommand folds the executable token case and path', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  // On a case-insensitive filesystem (macOS/APFS, Windows) `GIT commit` really
+  // runs git — `GIT --version` prints the git version. Before this fix
+  // segmentIsGitCommit compared the raw token (`tokens[gitIdx] !== 'git'`), so
+  // every variant below classified NON-commit and skipped the R-WACT tsc gate
+  // entirely at tsc-gate.ts's `!isGitCommitCommand(command) -> approve()`,
+  // letting a worker land broken TypeScript. config-protection.ts already
+  // folded through execName (it blocks `GIT reset --hard`); this closes the
+  // remaining half of that parity pair.
+  const positives = [
+    'GIT commit -m "x"',
+    'Git commit -m "x"',
+    '/usr/bin/git commit -m "x"',
+    'GIT_AUTHOR_DATE=2020-01-01 GIT commit -m "x"',
+    'cd extension && GIT commit -m "x"',
+    'git add -A\n/usr/bin/git commit -m "x"',
+    'GIT --no-pager commit -m "x"',
+    'GIT -C extension commit -m "x"',
+  ];
+  for (const command of positives) {
+    assert.equal(isGitCommitCommand(command), true, JSON.stringify(command));
+  }
+  // The fold must not widen what counts as a commit: `gh` stays excluded in any
+  // case, and a folded non-commit subcommand stays non-commit.
+  const negatives = [
+    'GH pr create --fill',
+    'gh pr create --fill',
+    'GIT log --oneline',
+    '/usr/bin/git status',
+    'GITHUB_TOKEN=x GIT status',
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, JSON.stringify(command));
+  }
+});
+
 it('isGitCommitCommand segments on unquoted newlines (newline-separated add+commit)', async () => {
   const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
   // A worker naturally emits sequential commands one per line. Before the fix the
