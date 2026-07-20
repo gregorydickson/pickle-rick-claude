@@ -1033,13 +1033,18 @@ export function parseAndValidateArgs(argv: string[]): RefinementArgs {
     usageAndExit();
   }
 
-  if (!fs.existsSync(prdPath)) {
-    console.error(`${Style.RED}❌ PRD not found: ${prdPath}${Style.RESET}`);
+  // Absolutize at the entry point: enrichManifestTicketsFromSourcePrds requires an
+  // absolute parent PRD path and otherwise throws at manifest build — after every
+  // analyst cycle has already run, discarding the whole refinement.
+  const resolvedPrdPath = path.resolve(prdPath);
+
+  if (!fs.existsSync(resolvedPrdPath)) {
+    console.error(`${Style.RED}❌ PRD not found: ${resolvedPrdPath}${Style.RESET}`);
     process.exit(1);
   }
 
   return {
-    prdPath,
+    prdPath: resolvedPrdPath,
     sessionDir,
     timeout: parseTimeoutFlag(argv),
     cycles: parsePositiveFlag(argv, argv.indexOf('--cycles'), '--cycles'),
