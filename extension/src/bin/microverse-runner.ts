@@ -1325,6 +1325,11 @@ export const _deps = {
   sleep: sleep as typeof sleep,
   collectTickets: collectTickets as typeof collectTickets,
   logActivity: logActivity as typeof logActivity,
+  // B-NONSTOP WS-5: injected so the finalize-fallback disposition stamp is reachable by a
+  // test. Without a seam here the catch in `finalizeMicroverseRun` is unreachable, and the
+  // only "test" possible is a source grep — which cannot be reddened by a real regression.
+  finalizeTerminalState: finalizeTerminalState as typeof finalizeTerminalState,
+  recordExitReason: recordExitReason as typeof recordExitReason,
   metricParkMaxMs: METRIC_PARK_MAX_MINUTES * 60 * 1000,
   metricParkWaitMs: METRIC_PARK_WAIT_MS,
 };
@@ -4532,13 +4537,13 @@ async function runMicroversePhases(currentMv: MicroverseState, ctx: RunContext, 
   return outcome;
 }
 
-function finalizeMicroverseRun(sessionDir: string, ctx: RunContext, outcome: ExitOutcome, log: (msg: string) => void): void {
+export function finalizeMicroverseRun(sessionDir: string, ctx: RunContext, outcome: ExitOutcome, log: (msg: string) => void): void {
   outcome.state.status = outcome.exitReason === 'converged' ? 'converged' : 'stopped';
   outcome.state.exit_reason = outcome.exitReason;
   writeMicroverseState(sessionDir, outcome.state);
 
   try {
-    finalizeTerminalState(ctx.statePath, {
+    _deps.finalizeTerminalState(ctx.statePath, {
       step: 'completed',
       runnerIteration: ctx.iteration,
       exitReason: outcome.exitReason,
@@ -4546,6 +4551,20 @@ function finalizeMicroverseRun(sessionDir: string, ctx: RunContext, outcome: Exi
   } catch (err) {
     log(`finalizeTerminalState failed at finalize path, falling back to safeDeactivate: ${safeErrorMessage(err)}`);
     deactivateRunnerState(ctx.statePath);
+    // B-NONSTOP WS-5: `microverse.json` already carries the disposition (written above,
+    // BEFORE the try), so a bare deactivate here leaves the two surfaces disagreeing —
+    // `state.json.exit_reason` stays unstamped and `finalizePhaseSuccess`'s
+    // `typeof exitReason === 'string'` guard (pipeline-runner.ts) falls through to
+    // `counters.completed++`, reporting a non-convergent phase as a clean success.
+    // Stamp it so both surfaces carry ONE string, matching the `safeDeactivate` +
+    // `recordExitReason` shape the sibling forensic paths already use.
+    // Best-effort: this is already the degraded path, and an escaping throw would skip
+    // the final report and the session_end event below.
+    try {
+      _deps.recordExitReason(ctx.statePath, outcome.exitReason);
+    } catch (stampErr) {
+      log(`recordExitReason failed at finalize fallback: ${safeErrorMessage(stampErr)}`);
+    }
   }
 
   writeFinalReport(sessionDir, outcome.state, outcome.exitReason, outcome.iterations, outcome.elapsedSeconds);

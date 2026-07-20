@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { classifyMicroverseDisposition, markMicroverseFatalError } from '../bin/microverse-runner.js';
+import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, _deps } from '../bin/microverse-runner.js';
 
 function tmpDir(prefix = 'pickle-mv-disposition-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -113,6 +113,42 @@ test('markMicroverseFatalError overwrites an unknown exit reason (no fallthrough
     fs.writeFileSync(mvPath, JSON.stringify({ status: 'iterating', exit_reason: 'totally_unrecognized_reason' }, null, 2));
     assert.equal(markMicroverseFatalError(sessionDir), 'overwritten');
   } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// B-NONSTOP WS-5 regression (ticket 5f076d7c): the finalize fallback must stamp the
+// disposition into state.json. `microverse.json` is written BEFORE the try, so a bare
+// `safeDeactivate` in the catch leaves the two surfaces disagreeing — state.json has no
+// exit_reason, `finalizePhaseSuccess`'s `typeof exitReason === 'string'` guard falls
+// through, and a NON-CONVERGENT phase gets counted as a clean success (fake-green).
+test('finalize fallback stamps the disposition into state.json when finalizeTerminalState throws', () => {
+  const sessionDir = tmpDir();
+  const realFinalize = _deps.finalizeTerminalState;
+  try {
+    const statePath = path.join(sessionDir, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({ active: true, exit_reason: null }, null, 2));
+
+    // Force the documented degraded path.
+    _deps.finalizeTerminalState = () => { throw new Error('injected lock failure'); };
+
+    const outcome = {
+      state: { status: 'iterating', exit_reason: null, history: [], failed_approaches: [], failure_history: [] },
+      exitReason: 'approach_exhaustion',
+      iterations: 4,
+      elapsedSeconds: 12,
+    };
+    finalizeMicroverseRun(sessionDir, { statePath, sessionDir, iteration: 4 }, outcome, () => {});
+
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+    const mv = JSON.parse(fs.readFileSync(path.join(sessionDir, 'microverse.json'), 'utf-8'));
+
+    // The finding is a DIVERGENCE, so pin both surfaces, not just one.
+    assert.equal(state.exit_reason, 'approach_exhaustion');
+    assert.equal(mv.exit_reason, 'approach_exhaustion');
+    assert.equal(state.exit_reason, mv.exit_reason);
+  } finally {
+    _deps.finalizeTerminalState = realFinalize;
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
