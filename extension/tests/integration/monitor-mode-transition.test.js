@@ -48,6 +48,37 @@ test('pickle-utils.ts exports respawnMonitorWindowForMode for downstream consume
   );
 });
 
+test('handlePhaseBoundaryRespawn end-of-pipeline fallback is a mode monitor.ts accepts', () => {
+  const runnerSrc = fs.readFileSync(
+    path.join(REPO_ROOT, 'src', 'bin', 'pipeline-runner.ts'),
+    'utf-8',
+  );
+  const monitorSrc = fs.readFileSync(
+    path.join(REPO_ROOT, 'src', 'bin', 'monitor.ts'),
+    'utf-8',
+  );
+
+  // The last phase boundary has no next phase, so the respawn falls back to a
+  // literal. That literal is forwarded verbatim as `node monitor.js --mode <it>`;
+  // parseMonitorArgs exits 64 on anything outside VALID_MODES, which would kill
+  // the dashboard pane at the end of every pipeline.
+  const fallback = runnerSrc.match(/nextRawPhase \?\? '([^']+)'/)?.[1];
+  assert.ok(fallback, 'handlePhaseBoundaryRespawn must keep an end-of-pipeline fallback literal');
+
+  const validModes = monitorSrc
+    .match(/const VALID_MODES: ReadonlyArray<MonitorMode> = \[([^\]]+)\]/)?.[1]
+    .match(/'([^']+)'/g)
+    .map((m) => m.slice(1, -1));
+  assert.ok(validModes?.length, 'monitor.ts must declare VALID_MODES');
+
+  assert.ok(
+    validModes.includes(fallback),
+    `handlePhaseBoundaryRespawn falls back to '${fallback}', which monitor.ts rejects with exit 64 ` +
+      `(VALID_MODES: ${validModes.join(' | ')}). The respawn param is a MODE, not a phase — ` +
+      `the phase->mode mapping lives only in the unwired src/lib/monitor-respawn.ts copy.`,
+  );
+});
+
 test('monitor.ts mode dispatcher recognizes microverse-class modes', async () => {
   const mod = await import('../../bin/monitor.js');
   assert.equal(

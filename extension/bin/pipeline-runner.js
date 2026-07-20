@@ -3637,8 +3637,12 @@ async function handlePhaseBoundaryRespawn(runtime, rawPhase, nextRawPhase) {
         return;
     // R-MDS-6: signal pane 2 producer is done BEFORE respawn
     setProducerDone(runtime, true);
-    const phase = nextRawPhase ?? 'exit';
-    await respawnMonitorWindowForMode(runtime.sessionDir, phase, { log: runtime.log });
+    // The second arg is a monitor MODE, not a pipeline phase: it is forwarded verbatim
+    // as `node monitor.js --mode <it>`, and parseMonitorArgs exits 64 on anything outside
+    // VALID_MODES. 'anatomy-park'/'szechuan-sauce' are modes in their own right; the
+    // end-of-pipeline case has no next phase and must name the idle mode directly.
+    const mode = nextRawPhase ?? 'idle';
+    await respawnMonitorWindowForMode(runtime.sessionDir, mode, { log: runtime.log });
     // R-MDS-6: reset flag so replacement watcher shows normal no-data message
     setProducerDone(runtime, false);
 }
