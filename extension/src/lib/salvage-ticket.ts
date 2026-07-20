@@ -163,7 +163,20 @@ function salvageCleanTree(
  * Salvage one ticket before any fail/cancel/relaunch. Ground-truth-driven,
  * disposition-returning, best-effort.
  */
-export function salvageTicket(input: SalvageTicketInput, deps: SalvageDeps = defaultDeps): SalvageOutcome {
+export function salvageTicket(input: SalvageTicketInput, depsIn: Partial<SalvageDeps> = {}): SalvageOutcome {
+  // Partial injection MERGES over the defaults — it never replaces them. A caller
+  // that supplies only the deps it wants to steer (e.g. pickle-recover's
+  // `--reset-ticket`, which pins `gate: 'failing'` to force the archive+Todo
+  // branch) still gets a real `ffReattach`/`archive`/`resetTodo`. Replacement
+  // semantics left every unsupplied dep `undefined`, so the FIRST call
+  // (`deps.ffReattach`) threw, the catch below swallowed it, and the transition
+  // reported success while archiving nothing and resetting nothing.
+  // Undefined-valued keys are dropped so an explicit `{ffReattach: undefined}`
+  // cannot re-open the same hole.
+  const definedOverrides = Object.fromEntries(
+    Object.entries(depsIn).filter(([, v]) => v !== undefined),
+  ) as Partial<SalvageDeps>;
+  const deps: SalvageDeps = { ...defaultDeps, ...definedOverrides };
   const log = input.log ?? (() => { /* silent */ });
   try {
     // 1. HEAD regressed off a committed ticket -> auto-ff-reattach the orphan.

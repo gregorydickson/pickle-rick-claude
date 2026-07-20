@@ -72,7 +72,7 @@ export interface RecoverDeps {
   resolveSessionPath: (cwd: string) => string | null;
   collectTickets: typeof collectTickets;
   ticketStatus: typeof getTicketStatus;
-  salvage: (input: { sessionDir: string; workingDir: string; ticketId: string; startCommit?: string | null; completionCommitSha?: string | null }, deps?: SalvageDeps) => SalvageOutcome;
+  salvage: (input: { sessionDir: string; workingDir: string; ticketId: string; startCommit?: string | null; completionCommitSha?: string | null }, deps?: Partial<SalvageDeps>) => SalvageOutcome;
   reattach: typeof detectAndRecoverHeadRegression;
   setTicketTodo: (ticketId: string, sessionDir: string) => void;
   emit: (transition: RecoverTransition, sessionDir: string) => void;
@@ -175,7 +175,10 @@ function resetTicketViaSalvage(
     reconcile: () => reconcileTicketTruth({ sessionDir: input.sessionDir, workingDir: input.workingDir }),
     gate: () => 'failing',
   };
-  return deps.salvage(input, salvageDeps as SalvageDeps);
+  // No cast: salvageTicket takes Partial<SalvageDeps> and merges over its own
+  // defaults. The `as SalvageDeps` that used to sit here laundered a 2-key object
+  // into a 6-key type, so every unsupplied dep was `undefined` at runtime.
+  return deps.salvage(input, salvageDeps);
 }
 
 export interface RunRecoverResult {

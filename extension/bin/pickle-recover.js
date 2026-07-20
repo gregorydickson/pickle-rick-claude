@@ -121,6 +121,9 @@ function resetTicketViaSalvage(input, deps) {
         reconcile: () => reconcileTicketTruth({ sessionDir: input.sessionDir, workingDir: input.workingDir }),
         gate: () => 'failing',
     };
+    // No cast: salvageTicket takes Partial<SalvageDeps> and merges over its own
+    // defaults. The `as SalvageDeps` that used to sit here laundered a 2-key object
+    // into a 6-key type, so every unsupplied dep was `undefined` at runtime.
     return deps.salvage(input, salvageDeps);
 }
 /**
