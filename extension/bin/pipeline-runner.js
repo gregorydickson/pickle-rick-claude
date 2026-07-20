@@ -3136,6 +3136,18 @@ function buildPipelineCompletePanel(counters, phasesSummary, totalElapsed) {
     panel.Elapsed = formatTime(totalElapsed);
     return panel;
 }
+/**
+ * The terminal banner derives from the SAME `effectiveFailed` predicate that drives the
+ * `pipeline-status.json` write and the exit code — a run that exits non-zero must not print
+ * a GREEN "Complete". A non-convergent phase leaves `(completed + skipped) < phases.length`,
+ * so it lands here as a failure and the `Non-convergent: N` row explains a RED banner rather
+ * than contradicting a green one.
+ */
+function buildPipelineTerminalBanner(effectiveFailed) {
+    return effectiveFailed
+        ? { title: 'Pipeline Failed', color: 'RED' }
+        : { title: 'Pipeline Complete', color: 'GREEN' };
+}
 function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncomplete) {
     const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
     const pipelineFailed = (counters.completed + counters.skipped) < runtime.config.phases.length;
@@ -3172,7 +3184,8 @@ function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncom
     const phasesSummary = counters.skipped > 0
         ? `${counters.completed}/${runtime.config.phases.length} (${counters.skipped} skipped${skipDetail ? ` — ${skipDetail}` : ''})`
         : `${counters.completed}/${runtime.config.phases.length}`;
-    printMinimalPanel('Pipeline Complete', buildPipelineCompletePanel(counters, phasesSummary, totalElapsed), 'GREEN', '🧪');
+    const banner = buildPipelineTerminalBanner(effectiveFailed);
+    printMinimalPanel(banner.title, buildPipelineCompletePanel(counters, phasesSummary, totalElapsed), banner.color, '🧪');
     writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, effectiveFailed);
     // handoff stops skip closer-release
     if (!pipelineFailed && !handoffStop) {
