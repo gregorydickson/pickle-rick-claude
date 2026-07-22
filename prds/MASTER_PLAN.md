@@ -32,8 +32,13 @@ remains field-soak repeatability (esp. codex) — now on the simpler single-life
 
 ---
 
-## 📦 SHIP STATE 2026-07-19 (newest first — the release-ready + in-flight ledger)
+## 📦 SHIP STATE 2026-07-22 (newest first — the release-ready + in-flight ledger)
 
+- 🟡 **[[B-NONSTOP]] BUILT, NOT SHIPPED — 39 commits on `release/v2.1-beta`, un-gated, unpushed, undeployed.** Session `2026-07-19-afe23e5b`, **4/4 phases, 736 min**, finished 2026-07-20 07:59Z. WS-1 disposition map (`81820cc4`/`9f83e2c1`/`66eb7a69`), WS-2 non-pickle honesty gate (`22dcccd7`/`340f1313`), WS-4 release-gate runner timeout fixed at root (`b8616545` — retires the `PICKLE_TEST_RUNNER_TIMEOUT_MS` workaround), + 9 anatomy-park CRITICAL/HIGH fixes + 5 szechuan subtractions. Tree clean, `tsc` + `eslint` green. **Version NOT bumped (still `2.1.0-beta.4`, an already-released tag).**
+  - **Closer correctly refused the tag:** `Closer: prior phase non-zero exit detected — skipping install and tag` (anatomy-park exited 1, `converged:false`, extension subsystem 8 passes / 0 consecutive-clean; szechuan held at metric 8 for 5 iterations).
+  - **🔑 The run logged its own defect verbatim:** `Phase anatomy-park exited with code 1 (non-fatal)` immediately followed by `Phase anatomy-park completed successfully` — emitted by the beta.4 runtime *while building the fix for exactly that lie*. Evidence B-NONSTOP was aimed correctly; the fix is in the un-deployed source.
+  - **Build ran with quality gates DOWNGRADED** — `skip_quality_gates_reason: "creation-heavy bundle: 12 tickets, 7/12 forward-creating under extension/tests/"`. The full release gate has **never run** against this bundle.
+- 🆕 **[[B-WDSUB]] QUEUED 2026-07-22 (P1, composes R-WDTF + R-PRNF9-DEAD)** — `prds/p1-b-wdsub-worker-evidence-truth-and-dead-readiness-halt-subtraction.md`. Batched onto the 39 B-NONSTOP commits **so one release gate covers both** (the gate is the expensive serialized step; the build is not).
 - ✅ **v2.1.0-beta.4 RELEASED + DEPLOYED 2026-07-19** (`gh release`, prerelease; deployed runtime carries beta.4). One bundle: **[[R-SAFP]]** — subtract the refinement symbol audit's false-positive categories (enum-membership category deleted [11 findings / 0 real lifetime], sibling made claim-shaped, fail-open, fence-aware). **Net −144 LOC.** Built hands-off via `/pickle-pipeline` (session `2026-07-18-c06fd902`, 4/4 phases). Full gate green 5/5 (fast-budget 0 failures, integration 582+531/0, expensive 13+8/0, soak ran its full 32min). **Release notes explicitly RETRACT any B-NONSTOP unblock claim** (R11, below). Deployed via `--override-active` after confirming the blast radius was one file the live build never executed + a state snapshot — the URAR target-repo build had already finished during a pause, so the override was risk-free in the event.
   - **🔑 R11 verification (ticket `630b7aca`) caught TWO of my own wrong predictions:** (1) the PRD asserted "unblocks B-NONSTOP" as fact; (2) it predicted the next block would be a downstream gate. **Both wrong** — running the real refinement showed B-NONSTOP crashes *upstream* at manifest build ([[R-RPFL]]), gates never reached. Ticket retracted the claim. [[feedback_verify_the_outcome_not_the_mechanism]] enforced on our own work; memory [[feedback_add_a_verification_ticket_that_runs_the_claim]].
 - ✅ **v2.1.0-beta.3 RELEASED + DEPLOYED 2026-07-18.** Three bundles: **B-SSAT** (settings source-authoritative + worker-gate timeout — R-WTFT was inert since May, now `resolveWorkerTestGateTimeoutMs()` returns 600000 live), **R-MWMO d2** (exit-code masking), **B-CGHARD** (codegraph input harvester + soak enable-path docs; WS-CGH-A/B were found already-shipped and dropped). Two gate-infra caps fixed while running it (§B.6(e) + [[project_release_gate_runner_timeout_equals_soak_duration]]).
@@ -42,6 +47,25 @@ remains field-soak repeatability (esp. codex) — now on the simpler single-life
 ---
 
 ## ▶▶ NEXT STEPS — set 2026-07-19, scored by THE LENS (reliability through LESS). Drain in this order.
+
+> ### ⚠ REGROUND 2026-07-22 — SUPERSEDES items 1–5 below
+>
+> All six queue items were re-grepped against HEAD `a17e9258` (post-B-NONSTOP) **and** the deployed
+> tree. **Two of six were already fixed by the 39 landed commits** — the ~2-in-6 ledger-drift rate,
+> confirmed again. [[feedback_reground_the_ledger_before_building_from_it]] earns its keep.
+>
+> | # | Item | Verdict at HEAD |
+> |---|---|---|
+> | 1 | **B-NONSTOP** | ✅ **BUILT** — see SHIP STATE. Not shipped: gate + bump + tag + deploy pending. |
+> | 2 | **R-RPFL** | ❌ **DEAD — already fixed** by `2de40025` (`path.resolve(prdPath)` at argv-parse, `spawn-refinement-team.ts:1039`). Dropped, not built. |
+> | 3 | **R-WDTF** | ✅ **LIVE, both sites, worse than filed** → [[B-WDSUB]] WS-1. `spawn-morty.ts:2471` has the `tokenPresent &&` conjunct; `spawn-refinement-team.ts:968` is `!workerTimedOut && hasToken(ANALYSIS_DONE)` — the token is the **only** positive evidence there, no artifact fallback. |
+> | 4a | **B.5 `finalizePhaseSuccess`** | ❌ **DEAD — already fixed** by B-NONSTOP WS-2 / AC-NS-6 (`22dcccd7`), `pipeline-runner.ts:4275`. Dropped. |
+> | 4b | **B.5 convergence-gate `null` projectType** | ⚠️ still live (`convergence-gate.ts:1329` returns `emitSkippedAndReturn(opts, null, 'no_project_type_detected')`) but the skip-reads-as-pass claim needs its own scoping. **Deferred — not in B-WDSUB.** |
+> | 5 | **R-PRNF9-DEAD** | ✅ **CONFIRMED DEAD end-to-end** → [[B-WDSUB]] WS-2. Zero producers of `'readiness_halt'` in src **or** deployed. Chain: `:4047` reader never true → `:4048` never writes `pickle_readiness_halt` → `:3719` predicate never true → `:2799` + `:3890` never fire. |
+> | 6 | **B-CGCAP** | ⛔ still blocked by its own rule — no soak until B-NONSTOP **ships**. |
+>
+> **Drain order now:** (a) green-tree check → full release gate on the B-NONSTOP + B-WDSUB stack →
+> bump `2.1.0-beta.5` → tag → deploy; (b) then B.5(b) scoping; (c) then B-CGCAP soak on the shipped base.
 
 **Every item below is a SUBTRACTION or a de-brittler — that is not a coincidence, it is the selection criterion.** Anything that would ADD a mechanism is not on this list; if a fix looks additive, re-scope it or drop it (the B-CGHARD "already-shipped, dropped" and B-TRGP "LEAVE" precedents). Score each on landing: *did it leave the system smaller/flatter AND less able to false-fail?*
 
