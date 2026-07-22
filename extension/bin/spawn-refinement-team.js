@@ -5,7 +5,7 @@ import { execFileSync, spawn, spawnSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, safeErrorMessage, classifyTicketTier, loadPickleSettingsBag, VALID_TICKET_COMPLEXITY_TIERS, } from '../services/pickle-utils.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
 import { buildWorkerInvocation, isBackend } from '../services/backend-spawn.js';
-import { PromiseTokens, hasToken, Defaults, VALID_ACTIVITY_EVENTS } from '../types/index.js';
+import { PromiseTokens, Defaults, VALID_ACTIVITY_EVENTS } from '../types/index.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { FOM_EVIDENCE_RULES, FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
@@ -601,7 +601,24 @@ ${prdContent}
 
 ${outputInstructions}`;
 }
-function spawnWorker(roleId, prompt, refinementDir, extensionRoot, timeout, workingDir, maxTurns, cycle, onComplete, sessionDir) {
+// Mirrors evaluateWorkerOutcome (spawn-morty.ts): success is decided by fresh-artifact
+// evidence, never narrative log tokens. The freshness comparator matches checkGitEdits'
+// `>=` semantics — an artifact written at the same instant the worker started still counts.
+export function evaluateAnalystSuccess(opts) {
+    const { workerTimedOut, outputFile, startTime } = opts;
+    if (workerTimedOut)
+        return false;
+    try {
+        if (!fs.existsSync(outputFile))
+            return false;
+        return fs.statSync(outputFile).mtimeMs >= startTime;
+    }
+    catch {
+        return false;
+    }
+}
+function spawnWorker(roleId, prompt, refinementDir, extensionRoot, timeout, workingDir, maxTurns, cycle, outputFile, onComplete, sessionDir) {
+    const startTime = Date.now();
     const logPath = path.join(refinementDir, `worker_${roleId}_c${cycle}.log`);
     const logStream = fs.createWriteStream(logPath, { flags: 'w' });
     logStream.on('error', (err) => {
@@ -715,12 +732,7 @@ function spawnWorker(roleId, prompt, refinementDir, extensionRoot, timeout, work
             });
             logStream.end();
             function finalize() {
-                let logContent = '';
-                try {
-                    logContent = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf-8') : '';
-                }
-                catch { /* */ }
-                const success = !workerTimedOut && hasToken(logContent, PromiseTokens.ANALYSIS_DONE);
+                const success = evaluateAnalystSuccess({ workerTimedOut, outputFile, startTime });
                 settleWith({ roleId, success, logPath, cycle, exitCode: workerExitCode });
             }
         });
@@ -946,7 +958,7 @@ async function runCycle(opts) {
         const workerPromises = WORKER_ROLES.map(({ id }) => {
             const outputFile = path.join(opts.refinementDir, `analysis_${id}.md`);
             const prompt = buildWorkerPrompt(id, opts.prd, outputFile, opts.workingDir, opts.cycle, opts.previousAnalyses, opts.portalContext);
-            return spawnWorker(id, prompt, opts.refinementDir, opts.extensionRoot, opts.timeout, opts.workingDir, opts.maxTurns, opts.cycle, (result) => {
+            return spawnWorker(id, prompt, opts.refinementDir, opts.extensionRoot, opts.timeout, opts.workingDir, opts.maxTurns, opts.cycle, outputFile, (result) => {
                 statuses.set(id, result.success ? '✅' : '❌');
                 if (result.exitCode !== null && result.exitCode !== 0)
                     killSiblingWorkers(result);
