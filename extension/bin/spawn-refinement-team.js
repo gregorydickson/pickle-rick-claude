@@ -609,8 +609,6 @@ export function evaluateAnalystSuccess(opts) {
     if (workerTimedOut)
         return false;
     try {
-        if (!fs.existsSync(outputFile))
-            return false;
         return fs.statSync(outputFile).mtimeMs >= startTime;
     }
     catch {
