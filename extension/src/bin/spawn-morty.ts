@@ -28,7 +28,7 @@ import {
   type TicketComplexityTier,
 } from '../services/pickle-utils.js';
 import { spawn, execFileSync } from 'child_process';
-import { PromiseTokens, hasToken, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type BackendResolutionSource, type CodegraphContextSkipReason, type CodegraphSettings, type LastToolErrorState, type PickleSettings, type State } from '../types/index.js';
+import { PromiseTokens, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type BackendResolutionSource, type CodegraphContextSkipReason, type CodegraphSettings, type LastToolErrorState, type PickleSettings, type State } from '../types/index.js';
 import { CodegraphService, type CodegraphEmitEvent } from '../services/codegraph-service.js';
 import { isRecord } from '../lib/is-record.js';
 import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths, resetToSha, updateTicketFrontmatter, updateTicketStatus } from '../services/git-utils.js';
@@ -2397,7 +2397,6 @@ function readTicketFiles(ticketPath: string): string[] {
 
 function buildValidationFailureReasons(checks: {
   timedOut: boolean;
-  tokenPresent: boolean;
   hasArtifact: boolean;
   role: string;
   logContentLength: number;
@@ -2406,7 +2405,6 @@ function buildValidationFailureReasons(checks: {
 }): string {
   return [
     checks.timedOut ? 'timeout' : null,
-    !checks.tokenPresent ? 'no WORKER_DONE token' : null,
     !checks.hasArtifact ? `no ${checks.role} lifecycle artifact` : null,
     (!checks.logNonTrivial && !checks.hasEdits) ? `log ${checks.logContentLength}B < 200B and no git edits` : null,
   ].filter(Boolean).join(', ');
@@ -2456,7 +2454,7 @@ function attachCompletionCommitAckListener(
   });
 }
 
-function evaluateWorkerOutcome(params: {
+export function evaluateWorkerOutcome(params: {
   ctx: WorkerProcessContext;
   logContent: string;
   startTime: number;
@@ -2464,14 +2462,13 @@ function evaluateWorkerOutcome(params: {
   const { ctx, logContent, startTime } = params;
   const role = ctx.args.isReviewTicket ? 'review' : 'implementation';
   const ticketFiles = readTicketFiles(ctx.ticketPath);
-  const tokenPresent = hasToken(logContent, PromiseTokens.WORKER_DONE);
   const logNonTrivial = logContent.length > 200;
   const hasArtifact = hasLifecycleArtifact(ticketFiles, role);
   const hasEdits = checkGitEdits(ctx.sessionWorkingDir, Math.floor(startTime / 1000));
-  const isSuccess = !ctx.mutableState.timedOut && tokenPresent && hasArtifact && (logNonTrivial || hasEdits);
+  const isSuccess = !ctx.mutableState.timedOut && hasArtifact && (logNonTrivial || hasEdits);
   if (!isSuccess) {
     const reasons = buildValidationFailureReasons({
-      timedOut: ctx.mutableState.timedOut, tokenPresent, hasArtifact, role,
+      timedOut: ctx.mutableState.timedOut, hasArtifact, role,
       logContentLength: logContent.length, logNonTrivial, hasEdits,
     });
     console.error(`${Style.RED}Worker validation failed: ${reasons}${Style.RESET}`);
