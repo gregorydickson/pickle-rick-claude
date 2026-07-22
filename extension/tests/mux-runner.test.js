@@ -1064,7 +1064,6 @@ test('mux-runner: runs readiness gate at iteration 0 before manager spawn', () =
 
         assert.match(runnerLog, /readiness advisory/);          // gate ran, logged its finding
         assert.doesNotMatch(result.stderr + runnerLog, /READINESS HALT/);
-        assert.notEqual(state.exit_reason, 'readiness_halt');   // did NOT halt at the gate
         assert.ok(fs.readdirSync(sessionDir).some((file) => /^readiness_\d{4}-\d{2}-\d{2}/.test(file)));
     } finally {
         fs.rmSync(tmpRoot, { recursive: true, force: true });

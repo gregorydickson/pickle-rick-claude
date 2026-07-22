@@ -2278,11 +2278,6 @@ export function isFatalPhaseFailure(phase, runtime) {
     try {
         const runnerState = sm.read(runtime.statePath);
         if (phase === 'pickle') {
-            // R-PRNF-9: readiness halt is always a hard failure regardless of prior-session commits.
-            // Checking exit_reason here covers resumed sessions where countCommitsSince > 0 (prior runs)
-            // but this run produced zero build progress.
-            if (runnerState.exit_reason === 'readiness_halt')
-                return true;
             // AC-MWMO-D2-8: a done_without_commit_evidence halt means THIS ticket has no commit — it
             // says nothing about the session-wide commit count. Without this check, an all-terminal
             // bundle where an earlier ticket landed a commit (countCommitsSince > 0) but the LAST
@@ -3091,17 +3086,6 @@ function readHandoffExitReason(statePath) {
         return null;
     }
 }
-// R-PRNF-9: detect the distinct readiness-halt marker stamped by dispatchHaltAction.
-// Preserving it in finalizePipeline prevents the generic 'failed' from overwriting it
-// while still allowing effectiveFailed=true (pipeline-status.json reports 'failed').
-function readPickleReadinessHalt(statePath) {
-    try {
-        return sm.read(statePath).exit_reason === 'pickle_readiness_halt';
-    }
-    catch {
-        return false;
-    }
-}
 // AC-MWMO-D2-10: any non-empty exit_reason already recorded on this failure
 // (e.g. done_without_commit_evidence) — read so finalizePipeline can preserve
 // it instead of overwriting with the generic 'failed'.
@@ -3114,7 +3098,7 @@ function readExistingExitReason(statePath) {
         return null;
     }
 }
-// Same precedent as the phaseIncomplete/handoffStop/readinessHalt branch in
+// Same precedent as the phaseIncomplete/handoffStop branch in
 // finalizePipeline: a specific reason already stamped on this failure (e.g.
 // done_without_commit_evidence) is preserved rather than overwritten by the
 // generic 'failed'. Only stamp 'failed' when no reason was recorded.
@@ -3149,19 +3133,15 @@ function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncom
     const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
     const pipelineFailed = (counters.completed + counters.skipped) < runtime.config.phases.length;
     const handoffStop = !!readHandoffExitReason(runtime.statePath);
-    // R-PRNF-9: preserve 'pickle_readiness_halt' stamped by dispatchHaltAction;
-    // effectiveFailed stays true (pipelineFailed=true, handoffStop=false) so
-    // writePipelineStatus still reports 'failed' and process.exit(1) (AC-PRNF-9-3).
-    const readinessHalt = readPickleReadinessHalt(runtime.statePath);
     // A handoff stop is a deliberate pause, not a failure — fold it out once.
     const effectiveFailed = pipelineFailed && !handoffStop;
-    if (phaseIncomplete || handoffStop || readinessHalt) {
-        // Preserve the exit_reason already stamped by reportPhaseIncomplete, by a
-        // phase runner's manager/closer handoff (R-PRH), or by dispatchHaltAction
-        // for a readiness halt (R-PRNF-9); do not overwrite with the generic 'failed'.
-        // This is a deliberate non-success terminal that preserves a prior reason,
-        // NOT a fresh "bundle truly complete" claim — it does NOT route through the
-        // ground-truth authority (which would clobber the preserved reason).
+    if (phaseIncomplete || handoffStop) {
+        // Preserve the exit_reason already stamped by reportPhaseIncomplete or by a
+        // phase runner's manager/closer handoff (R-PRH); do not overwrite with the
+        // generic 'failed'. This is a deliberate non-success terminal that preserves
+        // a prior reason, NOT a fresh "bundle truly complete" claim — it does NOT
+        // route through the ground-truth authority (which would clobber the
+        // preserved reason).
         finalizeTerminalState(runtime.statePath, { step: 'completed' });
     }
     else if (pipelineFailed) {
@@ -3241,9 +3221,6 @@ function emitHeadMismatchStderr(statePath) {
 function getFatalPickleHaltReason(runtime) {
     try {
         const runnerState = sm.read(runtime.statePath);
-        if (runnerState.exit_reason === 'readiness_halt') {
-            return 'readiness halt';
-        }
         const startCommit = runnerState.start_commit?.trim();
         if (!startCommit) {
             return 'baseline unmeasurable — start_commit was never recorded for this session';
@@ -3374,16 +3351,6 @@ async function runAllBackendsExhaustedFinalizeGate(runtime, counters, rawPhase, 
 }
 async function dispatchHaltAction(runtime, counters, rawPhase, exitCode, log) {
     const haltAction = logPhaseHaltReason(runtime, rawPhase, exitCode, log);
-    // R-PRNF-9: promote mux-runner's generic 'readiness_halt' to the distinct
-    // pipeline-runner exit_reason so finalizePipeline can preserve it (AC-PRNF-9-2).
-    if (rawPhase === 'pickle') {
-        try {
-            if (sm.read(runtime.statePath).exit_reason === 'readiness_halt') {
-                recordExitReason(runtime.statePath, 'pickle_readiness_halt');
-            }
-        }
-        catch { /* best-effort; original readiness_halt still signals failure */ }
-    }
     if (haltAction === 'run-finalize-gate') {
         return runJudgeTimeoutFinalizeGate(runtime, counters, rawPhase, log);
     }

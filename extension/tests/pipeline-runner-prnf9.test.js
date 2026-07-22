@@ -3,12 +3,8 @@
  * R-PRNF-9 regression tests — one per AC.
  *
  * AC-PRNF-9-1: zero commits-since-start_commit → isFatalPhaseFailure returns true.
- * AC-PRNF-9-2: readiness_halt exit_reason → isFatalPhaseFailure returns true EVEN when
- *              commits exist (early-return path, not commit-count path).
- * AC-PRNF-9-3: zero-build run finalizes as failed (pipeline-status 'failed') and the
- *              pickle_readiness_halt exit_reason is preserved, not overwritten.
- * AC-PRNF-9-4: partial build with commits (exit_reason NOT readiness_halt) →
- *              isFatalPhaseFailure returns false (no regression of continue path).
+ * AC-PRNF-9-4: partial build with commits → isFatalPhaseFailure returns false
+ *              (no regression of continue path; AC-WDSUB-9 over-reach proof).
  * AC-PRNF-9-5: R-PHC-6 / R-ICP-2 not regressed — shouldHaltAfterPhase returns false for
  *              a non-fatal pickle non-zero exit with downstream phases queued.
  */
@@ -23,9 +19,7 @@ import {
   __setSpawnRunnerForTests,
   isFatalPhaseFailure,
   shouldHaltAfterPhase,
-  writePipelineStatus,
 } from '../bin/pipeline-runner.js';
-import { recordExitReason } from '../services/state-manager.js';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -134,55 +128,6 @@ test('AC-PRNF-9-1: isFatalPhaseFailure returns true when pickle exits with zero 
   const result = isFatalPhaseFailure('pickle', runtime);
   assert.equal(result, true,
     'isFatalPhaseFailure should return true when zero commits exist since start_commit');
-});
-
-// ─── AC-PRNF-9-2 ────────────────────────────────────────────────────────────
-test('AC-PRNF-9-2: readiness_halt causes isFatalPhaseFailure to return true EVEN when commits exist', () => {
-  // withFollowupCommit=true → countCommitsSince > 0, so ONLY the early-return on
-  // exit_reason==='readiness_halt' can make this return true.
-  const { runtime, statePath } = makeRuntime({
-    withFollowupCommit: true,
-    stateOverrides: { exit_reason: 'readiness_halt' },
-  });
-
-  // Sanity: without readiness_halt and WITH commits, it would be false
-  const { runtime: runtimeNoHalt } = makeRuntime({ withFollowupCommit: true });
-  assert.equal(isFatalPhaseFailure('pickle', runtimeNoHalt), false,
-    'sanity: with commits and no readiness_halt should be false');
-
-  // Target assertion: readiness_halt triggers the early-return regardless of commits
-  const result = isFatalPhaseFailure('pickle', runtime);
-  assert.equal(result, true,
-    'isFatalPhaseFailure must early-return true for readiness_halt even when commits exist');
-});
-
-// ─── AC-PRNF-9-3 ────────────────────────────────────────────────────────────
-test('AC-PRNF-9-3: pickle_readiness_halt exit_reason is preserved; pipeline-status reports failed', () => {
-  // Simulate the state that dispatchHaltAction leaves behind: exit_reason stamped
-  // as 'pickle_readiness_halt' (the promoted form of 'readiness_halt').
-  const { sessionDir, statePath, runtime } = makeRuntime({
-    withFollowupCommit: false,
-    stateOverrides: { exit_reason: 'pickle_readiness_halt' },
-  });
-
-  // Write pipeline-status as 'failed' — mirrors finalizePipeline's effectiveFailed=true path
-  writePipelineStatus(sessionDir, 'failed', {
-    current_phase: null,
-    completed_phases: 0,
-    total_phases: 4,
-  });
-
-  // 1. pipeline-status.json must report 'failed'
-  const statusPath = path.join(sessionDir, 'pipeline-status.json');
-  assert.ok(fs.existsSync(statusPath), 'pipeline-status.json should exist');
-  const status = JSON.parse(fs.readFileSync(statusPath, 'utf-8'));
-  assert.equal(status.status, 'failed',
-    'pipeline-status.json must report failed, not completed');
-
-  // 2. exit_reason must still be 'pickle_readiness_halt', not overwritten by generic 'failed'
-  const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-  assert.equal(state.exit_reason, 'pickle_readiness_halt',
-    'exit_reason must remain pickle_readiness_halt — finalizePipeline must not overwrite it');
 });
 
 // ─── AC-PRNF-9-4 ────────────────────────────────────────────────────────────
