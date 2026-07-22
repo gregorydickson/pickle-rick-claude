@@ -72,9 +72,24 @@ arm it took and why):**
 holds, say so in the ticket and leave site 2 unchanged rather than guessing — a half-fix here is
 worse than none.
 
+### WS-1 test seam (verified at HEAD — do not skip)
+
+`evaluateWorkerOutcome` is currently **NOT exported** (`spawn-morty.ts:2459` is a bare
+`function evaluateWorkerOutcome(`) and has **zero** referencing tests
+(`grep -rln evaluateWorkerOutcome tests/` → empty). AC-WDSUB-2/3 are therefore not testable until it
+is exported.
+
+**Add the `export` keyword**, following the established precedent in this exact file: tests import
+named exports from the compiled `../bin/spawn-morty.js`, and `runWorkerGate` is already exported for
+precisely this reason (see `tests/spawn-morty-worker-gate.test.js:9`). 29 symbols in
+`spawn-morty.ts` are already exported this way. Do **not** invent a new test harness, a DI seam, or
+a `__testables` object — one keyword, matching the file's own convention.
+
 ### WS-1 Acceptance Criteria
 
 - **AC-WDSUB-1** — `grep -c "tokenPresent" extension/src/bin/spawn-morty.ts` returns `0`.
+- **AC-WDSUB-2a** — `evaluateWorkerOutcome` is exported from `spawn-morty.ts` and imported by name
+  in the new test file (no `__testables` bag, no default export).
 - **AC-WDSUB-2** — regression test: `evaluateWorkerOutcome` returns `isSuccess: true` for a worker
   that did **not** time out, has a lifecycle artifact, has git edits, and whose log contains **no**
   `WORKER_DONE` token. This test must FAIL against HEAD before the fix (red-green proof recorded in
@@ -158,11 +173,64 @@ claim, retract the claim in the ticket rather than restating the prediction.**
 
 ---
 
+## Interface Contracts
+
+### WS-1 site 1 — `evaluateWorkerOutcome` (`extension/src/bin/spawn-morty.ts`)
+
+**Inputs** (unchanged): `{ ctx: WorkerProcessContext; logContent: string; startTime: number }`
+**Outputs** (unchanged): `{ isSuccess: boolean; role: 'review' | 'implementation' }`
+
+| Predicate | Before (HEAD) | After |
+|---|---|---|
+| `isSuccess` | `!timedOut && tokenPresent && hasArtifact && (logNonTrivial \|\| hasEdits)` | `!timedOut && hasArtifact && (logNonTrivial \|\| hasEdits)` |
+
+**Invariant:** the surviving conjuncts are all ground truth (process state, disk artifact, git edits).
+No narrative-token term may appear in the predicate.
+
+`buildValidationFailureReasons` `checks` param — before: `{ timedOut, tokenPresent, hasArtifact, role,
+logContentLength, logNonTrivial, hasEdits }`; after: same **minus** `tokenPresent`. Emitted reason
+strings after: `'timeout'`, `` `no ${role} lifecycle artifact` ``, `` `log ${n}B < 200B and no git edits` ``.
+The string `'no WORKER_DONE token'` must not survive anywhere.
+
+### WS-1 site 2 — refinement analyst (`extension/src/bin/spawn-refinement-team.ts:968`)
+
+**Before:** `success = !workerTimedOut && hasToken(logContent, PromiseTokens.ANALYSIS_DONE)`
+**After:** determined by the Arm A / Arm B / unchanged decision above. Whichever arm is taken, the
+resulting predicate and its evidence source MUST be written into the ticket's Interface Contracts.
+
+### WS-2 — `readiness_halt` (`extension/src/bin/pipeline-runner.ts`)
+
+**Before:** `exit_reason: 'readiness_halt' | 'pickle_readiness_halt' | 'done_without_commit_evidence' | …`
+**After:** both `readiness_halt` variants removed from the read surface.
+`done_without_commit_evidence` and every other `exit_reason` value are **unchanged** —
+`isFatalPhaseFailure` and `getFatalPickleHaltReason` keep their remaining branches intact.
+
+## Test Expectations
+
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-WDSUB-2 | `extension/tests/spawn-morty-worker-evidence.test.js` *(new)* | Worker finished, artifact on disk, git edits present, log has NO `WORKER_DONE` | `isSuccess === true` — must fail at HEAD first |
+| AC-WDSUB-3 | `extension/tests/spawn-morty-worker-evidence.test.js` *(new)* | Same worker but lifecycle artifact absent; and separately `timedOut: true` | `isSuccess === false` in both cases |
+| AC-WDSUB-4 | `extension/tests/spawn-morty-worker-evidence.test.js` *(new)* | Failure-reason string for an artifact-less worker | Result excludes `'no WORKER_DONE token'`; includes the artifact reason |
+| AC-WDSUB-5 | `extension/tests/refinement-worker-evidence.test.js` *(new, only if Arm A or B is taken)* | Analyst finished without `ANALYSIS_DONE`, evidence per chosen arm | Pins the chosen arm's predicate; omitted entirely if "unchanged + why" is the outcome |
+| AC-WDSUB-7 | `extension/tests/pipeline-runner-prnf9.test.js` *(triage existing)* | Assertions whose subject is the dead cluster | Deleted; surviving assertions still green |
+| AC-WDSUB-9 | `extension/tests/pipeline-runner-prnf9.test.js` *(triage existing)* | `exit_reason: 'done_without_commit_evidence'` on the pickle phase | `isFatalPhaseFailure === true` — proves WS-2 did not over-reach |
+| AC-WDSUB-11 | verification ticket artifact | Real/faithful worker run with no token emitted | Records observed Done-vs-Failed; retracts the claim if Failed |
+| AC-WDSUB-12 | verification ticket artifact | Readiness-halt scenario after deletion | Names the catching path, or WS-2 reduces to a comment fix |
+
+Runner: `node --test` via `npm run test:fast` (never bare `node --test <file>` — it drops
+`node_modules/.bin` from PATH and fabricates failures). Both new files carry the `// @tier: fast`
+marker on line 1, matching every sibling in `extension/tests/`.
+
 ## Simplification Review (subtract-before-add)
 
-(1) **Adds nothing.** No gate, flag, state field, setting, or file. WS-1 removes a conjunct and a
-reason string; WS-2 removes four reader sites and a promotion block. Every AC that could tempt an
-additive fix (site 2's Arm B, WS-2's over-reach guard) is explicitly bounded to reuse-or-stop.
+(1) **Adds no runtime mechanism** — no gate, flag, state field, setting, or code path. WS-1 removes a
+conjunct and a reason string; WS-2 removes four reader sites and a promotion block. Two additions are
+declared honestly rather than hidden: **one `export` keyword** on `evaluateWorkerOutcome` (it is
+currently untestable — zero tests reference it — and `runWorkerGate` in the same file sets the exact
+precedent), and **two new test files**. Neither is a runtime mechanism; tests and test seams are the
+cost of pinning a subtraction, not feature accretion. Every AC that could tempt a genuinely additive
+fix (site 2's Arm B, WS-2's over-reach guard) is explicitly bounded to reuse-or-stop.
 (2) **REUSE:** WS-1 reuses the ground-truth evidence *already computed* in the same function
 (`hasArtifact`, `hasEdits`, `logNonTrivial`) — no new evidence source. Site 2 Arm A must reuse an
 artifact the analyst already writes; inventing one is out of scope. WS-2's over-reach test reuses
