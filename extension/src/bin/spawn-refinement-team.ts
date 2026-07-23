@@ -847,7 +847,9 @@ export function evaluateAnalystSuccess(opts: {
   startTime: number;
 }): boolean {
   const { workerTimedOut, outputFile, startTime } = opts;
-  if (workerTimedOut) return false;
+  if (workerTimedOut) {
+    return false;
+  }
   try {
     return fs.statSync(outputFile).mtimeMs >= startTime;
   } catch {
