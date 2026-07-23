@@ -115,6 +115,49 @@ test('no tracked bundle artifact names a test file as its checker', () => {
   );
 });
 
+// --no-index is load-bearing: without it `git check-ignore` skips paths that are in the index,
+// so it reports every TRACKED file as not-ignored no matter how broad the pattern — which makes
+// the over-broad assertion below unfalsifiable. --no-index evaluates the pattern itself.
+function isIgnored(rel) {
+  try {
+    execFileSync('git', ['check-ignore', '-q', '--no-index', '--', rel], {
+      cwd: REPO_ROOT,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Same repo-tree-cleanliness invariant as the artifacts above, one directory over: a file under
+// a TRACKED dir must not dirty the tree across runs. extension/audit/ receives two run-scoped
+// artifacts — the OUTPUT_FILE_OVERRIDE test path and audit-subsystem-claude-md.sh's own mktemp
+// default when TMPDIR is unset. Both clean up in a `finally` a killed process skips, and the
+// launch guard (pipeline-runner.ts allowedDirtyPathsForLaunch) exempts only prds/docs, the
+// empty .pipeline-runner-dirty-allowed.json allowlist, and gitignore matches — so a strand is a
+// hard launch blocker. Asserted as the outcome (is it ignored?), not as .gitignore text.
+test('ephemeral subsystem-CLAUDE audit artifacts are git-ignored', () => {
+  for (const rel of [
+    'extension/audit/subsystem-claude-md.override.99999.json',
+    'extension/audit/subsystem-claude-md.Ab3XyZ',
+  ]) {
+    assert.ok(
+      isIgnored(rel),
+      `${rel} is ephemeral audit debris; unignored it strands as a dirty path and fails `
+      + 'assertCleanWorkingTree, blocking pipeline launch',
+    );
+  }
+});
+
+test('the tracked subsystem-CLAUDE audit report is NOT swept up by the ephemeral rule', () => {
+  // Guards the discriminator: ephemeral shapes take a dot after `subsystem-claude-md`, the
+  // committed report a dash. An over-broad rule would hide real edits to the tracked report.
+  const rel = 'extension/audit/subsystem-claude-md-2026-05-08.json';
+  assert.ok(existsSync(path.join(REPO_ROOT, rel)), `${rel} must exist as the tracked report`);
+  assert.ok(!isIgnored(rel), `${rel} is the committed report and must stay visible to git`);
+});
+
 test('tracked bundle artifacts that remain still satisfy the verifier', () => {
   // Guards the subtraction: removing a false-green artifact must not disturb the legitimate
   // manual receipts (e.g. ac-dr-04d, whose checker is a human RCA, not a test).
