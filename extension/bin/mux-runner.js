@@ -2835,6 +2835,28 @@ export function drawParkResumeJitterMs(rand = Math.random) {
 export function isParkExhausted(cumulativeParkedMs, maxParkMinutes) {
     return cumulativeParkedMs > maxParkMinutes * 60 * 1000;
 }
+/**
+ * Pure: fold a completed park into the episode ledger (ticket e9bdac75, B5).
+ *
+ * `cumulative_parked_ms` is the term `isParkExhausted` weighs against the
+ * `max_park_minutes` ceiling, so a resume MUST add the wall it just burned.
+ * Discarding the arm here made the ceiling UNREACHABLE: `computeRateLimitAction`
+ * already clamps a single wait to `maxParkMs`, so with the accumulator pinned at
+ * 0 the predicate reduces to `waitMs > maxParkMs` — never true. Parked wall is
+ * also excluded from `max_time_minutes` (B3), so nothing else bounded the loop.
+ *
+ * `reset_at_epoch_sec` drops to null because the window has been consumed — a
+ * persisted FUTURE reset_at is exactly what re-arms a park on `--resume`, and
+ * keeping a spent one would re-park a healthy relaunch.
+ */
+export function foldParkIntoEpisode(priorPark, parkedMs, consecutiveWaits, nowMs) {
+    return {
+        reset_at_epoch_sec: null,
+        parked_started_epoch_ms: priorPark?.parked_started_epoch_ms ?? nowMs,
+        cumulative_parked_ms: (priorPark?.cumulative_parked_ms ?? 0) + Math.max(0, parkedMs),
+        consecutive_waits: consecutiveWaits,
+    };
+}
 function readIterationStateOrThrow(sessionDir, iterationNum) {
     const statePath = path.join(sessionDir, 'state.json');
     try {
@@ -9431,7 +9453,9 @@ async function runMuxRunnerMain() {
                     if (typeof s.start_time_epoch === 'number' && Number.isFinite(s.start_time_epoch)) {
                         s.start_time_epoch += parkedSeconds;
                     }
-                    s.rate_limit_park = null; // clear the park-arm on clean resume
+                    // B5: fold the burned wall into the episode ledger — nulling it here
+                    // pinned cumulative_parked_ms at 0 and made the ceiling unreachable.
+                    s.rate_limit_park = foldParkIntoEpisode(priorPark, parkedMs, consecutiveRateLimits, Date.now());
                 });
             }
             catch { /* best-effort */ }
@@ -9453,8 +9477,18 @@ async function runMuxRunnerMain() {
             writeHandoffAtomic(sessionDir, handoffContent, process.pid, log);
             continue; // Skip CB recording + result branching entirely
         }
-        if (exitType === 'success')
+        if (exitType === 'success') {
             consecutiveRateLimits = 0;
+            // B5: a clean iteration ENDS the rate-limit episode — drop the park ledger so
+            // max_park_minutes measures one episode, not cumulative wall across the session.
+            // Stateless (survives --resume): clear only when an arm is actually present.
+            try {
+                if (readRunnerState(statePath).rate_limit_park) {
+                    sm.update(statePath, (s) => { s.rate_limit_park = null; });
+                }
+            }
+            catch { /* best-effort */ }
+        }
         // --- Per-ticket timeout halt (FR-B3/B4/B12/B14) — MUST run BEFORE CB recording ---
         let ticketForTimeout = state.current_ticket || null;
         try {

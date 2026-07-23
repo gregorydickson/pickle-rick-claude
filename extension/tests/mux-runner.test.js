@@ -4577,3 +4577,95 @@ test('AC-R-WPEXA-9: invalid / zero / negative / fractional / non-numeric -> 3000
 test('AC-R-WPEXA-9: blank/whitespace env value falls back (does not parse to 0)', () => {
     assert.equal(resolveExitDrainFallbackMs({ [EXIT_DRAIN_FALLBACK_ENV_VAR]: ' ' }), 30000);
 });
+
+// ---------------------------------------------------------------------------
+// B5 (ticket e9bdac75): the cumulative rate-limit park ceiling must be REACHABLE.
+//
+// `computeRateLimitAction` clamps a single wait to `maxParkMs`, so the ceiling
+// predicate `isParkExhausted(cumulative + waitMs, max)` can only ever fire on the
+// CUMULATIVE term. The shipped resume path used to null `state.rate_limit_park`
+// outright, pinning `cumulative_parked_ms` at 0 forever — which reduced the
+// predicate to `waitMs > maxParkMs` (never true) and made
+// `rate_limit_park_exhausted` dead code. Parked wall is also excluded from
+// `max_time_minutes` (B3), so nothing else bounded a 429 storm.
+// ---------------------------------------------------------------------------
+import { foldParkIntoEpisode as foldPark, isParkExhausted as parkExhausted } from '../bin/mux-runner.js';
+
+const MIN_MS = 60 * 1000;
+
+test('B5: foldParkIntoEpisode accumulates parked wall across consecutive parks', () => {
+    const first = foldPark(null, 30 * MIN_MS, 1, 1_000);
+    assert.equal(first.cumulative_parked_ms, 30 * MIN_MS);
+    assert.equal(first.parked_started_epoch_ms, 1_000, 'episode start seeded on first park');
+
+    const second = foldPark(first, 20 * MIN_MS, 2, 9_999);
+    assert.equal(second.cumulative_parked_ms, 50 * MIN_MS, 'second park ADDS to the ledger');
+    assert.equal(second.parked_started_epoch_ms, 1_000, 'episode start is inherited, not reseeded');
+    assert.equal(second.consecutive_waits, 2);
+});
+
+test('B5: fold drops the spent reset_at so a healthy --resume does not re-arm a park', () => {
+    // The startup re-arm keys on a still-FUTURE reset_at_epoch_sec; carrying a spent
+    // one forward would re-park a relaunch that has nothing to wait for.
+    const prior = { reset_at_epoch_sec: 1_700_000_000, parked_started_epoch_ms: 5, cumulative_parked_ms: 0, consecutive_waits: 1 };
+    assert.equal(foldPark(prior, 10 * MIN_MS, 2, 50).reset_at_epoch_sec, null);
+});
+
+test('B5: negative/zero parked wall never decrements the ledger', () => {
+    const prior = { reset_at_epoch_sec: null, parked_started_epoch_ms: 5, cumulative_parked_ms: 40 * MIN_MS, consecutive_waits: 1 };
+    assert.equal(foldPark(prior, -5 * MIN_MS, 2, 50).cumulative_parked_ms, 40 * MIN_MS);
+    assert.equal(foldPark(prior, 0, 2, 50).cumulative_parked_ms, 40 * MIN_MS);
+});
+
+test('B5: OUTCOME — repeated sub-ceiling parks eventually exhaust the ceiling', () => {
+    // 30-min parks against a 60-min ceiling. Each individual wait is UNDER the
+    // ceiling (that is what computeRateLimitAction guarantees), so the ceiling can
+    // only fire if the ledger accumulates. This is the assertion that goes RED if
+    // the resume path reverts to `s.rate_limit_park = null`.
+    const CEILING_MIN = 60;
+    const WAIT = 30 * MIN_MS;
+    let park = null;
+    let firedOnPark = -1;
+
+    for (let i = 1; i <= 5; i++) {
+        if (parkExhausted((park?.cumulative_parked_ms ?? 0) + WAIT, CEILING_MIN)) { firedOnPark = i; break; }
+        park = foldPark(park, WAIT, i, 1_000);
+    }
+
+    assert.equal(firedOnPark, 3, 'ceiling must fire on the 3rd park (30+30 burned, 3rd would exceed 60)');
+
+    // Control: the pre-fix behaviour (ledger discarded on every resume) never fires.
+    let neverFires = true;
+    for (let i = 1; i <= 50; i++) {
+        if (parkExhausted(0 + WAIT, CEILING_MIN)) neverFires = false;
+    }
+    assert.ok(neverFires, 'with a pinned-at-0 ledger the ceiling is unreachable — the bug this test pins');
+});
+
+test('B5: the SHIPPED main-loop resume folds the ledger and does not null it', () => {
+    // Reaches the inline `runMuxRunnerMain` park path, which has no callable seam.
+    // Scoped tightly to the wake block so it cannot match the (dead, out-of-scope
+    // test-pinned) processRateLimitWait twin.
+    const srcPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'bin', 'mux-runner.ts');
+    const muxSrc = fs.readFileSync(srcPath, 'utf-8');
+    const wakeStart = muxSrc.indexOf('// Wake: B3 exclude parked wall from max_time_minutes');
+    assert.ok(wakeStart > 0, 'main-loop wake block anchor found');
+    const wakeBlock = muxSrc.slice(wakeStart, muxSrc.indexOf('continue;  // Skip CB recording', wakeStart));
+
+    assert.match(wakeBlock, /s\.rate_limit_park = foldParkIntoEpisode\(priorPark, parkedMs, consecutiveRateLimits/,
+        'the shipped resume must FOLD the park into the episode ledger');
+    assert.ok(!/s\.rate_limit_park = null/.test(wakeBlock),
+        'nulling the arm on resume pins cumulative_parked_ms at 0 and disarms the ceiling');
+});
+
+test('B5: a clean iteration ends the episode by clearing the park ledger', () => {
+    // Without an episode boundary the ledger would accumulate across the whole
+    // session and eventually exit a HEALTHY long run.
+    const srcPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'bin', 'mux-runner.ts');
+    const muxSrc = fs.readFileSync(srcPath, 'utf-8');
+    const successIdx = muxSrc.indexOf("if (exitType === 'success') {");
+    assert.ok(successIdx > 0, 'success branch found');
+    const successBlock = muxSrc.slice(successIdx, successIdx + 700);
+    assert.match(successBlock, /rate_limit_park\b/, 'the success branch must reset the episode ledger');
+    assert.match(successBlock, /s\.rate_limit_park = null/);
+});
