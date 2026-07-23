@@ -64,9 +64,20 @@ remains field-soak repeatability (esp. codex) — now on the simpler single-life
 > | 5 | **R-PRNF9-DEAD** | ✅ **CONFIRMED DEAD end-to-end** → [[B-WDSUB]] WS-2. Zero producers of `'readiness_halt'` in src **or** deployed. Chain: `:4047` reader never true → `:4048` never writes `pickle_readiness_halt` → `:3719` predicate never true → `:2799` + `:3890` never fire. |
 > | 6 | **B-CGCAP** | 🔄 **SUPERSEDED by operator decision 2026-07-22** — codegraph is the v2.1 headline feature. The keep-vs-subtract question is closed in favour of **KEEP + ENABLE**. See [[B-CGEN]] below. |
 >
-> **Drain order now:** (a) full release gate on the B-NONSTOP + B-WDSUB stack → bump `2.1.0-beta.5`
-> → tag → deploy; (b) **[[B-CGEN]] — enable codegraph, the v2.1 headline feature** (own section below);
+> **Drain order now (revised 2026-07-23):** (a) full release gate on the B-NONSTOP + B-WDSUB stack →
+> bump `2.1.0-beta.5` → tag → deploy; (b) **[[B-GTRUTH]] — ONE PRD combining the reliability
+> subtractions with [[B-CGEN]] codegraph enablement** (`prds/p1-b-gtruth-ground-truth-over-proxies-and-codegraph-enablement.md`);
 > (c) then B.5(b) scoping. **[[B-CGCAP]]'s subtract arm is retired by operator decision.**
+>
+> **Why one PRD** (operator decision 2026-07-23): the codegraph efficacy soak is only trustworthy on the
+> repaired runtime. Track A (reliability) must be built, gated **and deployed** before Track C (the soak)
+> runs — one PRD makes that a hard ordering constraint rather than a hope, and one release gate covers both.
+>
+> **The measured case for Track A** (scanned across all sessions, 2026-07-23): **10/10 red-gate tickets
+> ended `Done`** — a verdict overridden 100% of the time is not a gate. Both recorded phase halts were
+> `done_without_commit_evidence`, and **both were wrong**. One 6-ticket bundle required **2 operator
+> interventions**. Five distinct incidents, **one shape**: a proxy signal outranking recoverable ground
+> truth. B-WDSUB closed two instances; B-GTRUTH closes the class.
 
 **Every item below is a SUBTRACTION or a de-brittler — that is not a coincidence, it is the selection criterion.** Anything that would ADD a mechanism is not on this list; if a fix looks additive, re-scope it or drop it (the B-CGHARD "already-shipped, dropped" and B-TRGP "LEAVE" precedents). Score each on landing: *did it leave the system smaller/flatter AND less able to false-fail?*
 
