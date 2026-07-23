@@ -123,3 +123,40 @@ test('AP-EXT-ITER10-01: a full deps object is unaffected by the merge', () => {
     assert.ok(!recorder.includes('archive'), 'gate-passing never archives');
     assert.ok(!recorder.includes('reset-todo'), 'gate-passing never resets');
 });
+
+// AP-EXT-ITER10-01 anchor executability (anatomy-park iter 9).
+//
+// The catalog anchor read "no `as SalvageDeps` in `src/`". A bare
+// `grep -rn "as SalvageDeps" src/` returns 1 — and the hit is the
+// `pickle-recover.ts` COMMENT naming the retired cast. The prohibition's own
+// prose defeats its grep, so the un-filtered form reports a phantom violation
+// over intact code (same shape as R-CNAR-2, anatomy-park iter 8).
+//
+// The comment is worth keeping: it is why nobody re-adds the cast. So the
+// anchor must be comment-stripped, and this test runs the corrected form.
+test('AP-EXT-ITER10-01: no `as SalvageDeps` cast on any non-comment line in src/', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  const srcRoot = path.resolve(import.meta.dirname, '../src');
+  const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => {
+    const p = path.join(dir, e.name);
+    return e.isDirectory() ? walk(p) : (p.endsWith('.ts') ? [p] : []);
+  });
+
+  const codeHits = [];
+  const commentHits = [];
+  for (const file of walk(srcRoot)) {
+    fs.readFileSync(file, 'utf-8').split('\n').forEach((line, i) => {
+      if (!line.includes('as SalvageDeps')) return;
+      (/^\s*(\/\/|\*|\/\*)/.test(line) ? commentHits : codeHits).push(`${file}:${i + 1}`);
+    });
+  }
+
+  assert.deepEqual(codeHits, [], `partial deps laundered into SalvageDeps at: ${codeHits.join(', ')}`);
+  // Pin the reason the anchor needs stripping at all: a bare grep is NOT zero.
+  assert.ok(
+    commentHits.length > 0,
+    'the retired-cast comment is gone — simplify the catalog anchor back to a bare grep',
+  );
+});

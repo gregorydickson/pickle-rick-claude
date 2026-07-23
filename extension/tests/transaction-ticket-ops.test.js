@@ -558,3 +558,91 @@ test('existing ticket status wrappers write planned content at the wrapper bound
     assert.match(skippedContent, /^skipped_at: ".+"$/m);
   });
 });
+
+// AP-EXT-ITER12-01 anchor executability (anatomy-park iter 9).
+//
+// The catalog entry read "BOTH rollback paths over the apply ledger select via
+// `selectForwardEntries`". That was false at its own authoring commit d1e6302c:
+// the two consumers are `reverseAppliedEntries` and `forwardReplayEntries` (a
+// FORWARD replay, not a rollback), while the in-transaction rollback
+// `replayReverseLedger` filters nothing. The guarded behaviour — a `started`-only
+// crash-window step IS reversed — held on every path; only the anchor was wrong,
+// which sends a reviewer hunting a guard that never existed.
+//
+// This pins the anchor by RUNNING it, not by restating it.
+test('AP-EXT-ITER12-01: selectForwardEntries has exactly two consumers, and replayReverseLedger is not one', () => {
+  const src = fs.readFileSync(
+    path.resolve(import.meta.dirname, '../src/services/transaction-ticket-ops.ts'),
+    'utf-8',
+  );
+  const consumers = src
+    .split('\n')
+    .filter(line => line.includes('selectForwardEntries(') && !line.includes('function selectForwardEntries'));
+  assert.equal(consumers.length, 2, 'selectForwardEntries consumer count drifted from the catalog anchor');
+
+  const bodyOf = (name) => {
+    const start = src.indexOf(`function ${name}(`);
+    assert.ok(start > -1, `${name} not found`);
+    const next = src.indexOf('\nfunction ', start + 1);
+    const nextExport = src.indexOf('\nexport function ', start + 1);
+    const ends = [next, nextExport].filter(i => i > -1);
+    return src.slice(start, ends.length ? Math.min(...ends) : src.length);
+  };
+
+  assert.match(bodyOf('reverseAppliedEntries'), /selectForwardEntries\(entries\)/);
+  assert.match(bodyOf('forwardReplayEntries'), /selectForwardEntries\(entries\)/);
+  // The in-transaction rollback deliberately filters NOTHING — a status filter
+  // here would drop the `started`-only crash window the invariant exists to save.
+  const replay = bodyOf('replayReverseLedger');
+  assert.match(replay, /parseLedgerContent\(fs\.readFileSync\(ledgerPath/);
+  assert.doesNotMatch(replay, /selectForwardEntries/);
+});
+
+// The behavioural half: whatever the anchor says, the in-transaction rollback
+// must restore a step whose ledger only ever reached `started` (SIGKILL between
+// the overwrite and the `applied` append — its beforeContent is the only copy).
+test('AP-EXT-ITER12-01: replayReverseLedger reverses a started-only crash-window step', () => {
+  withDir((dir) => {
+    // The shape `rollbackAndHaltApply` actually sees: step 1 completed
+    // (started+applied), step 2 died in the crash window (started only, its
+    // `failed` append never landed). BOTH must be reversed — the started-only
+    // entry's beforeContent is the only copy of that file.
+    const fileA = path.join(dir, 'ticket-a', 'rick_ticket_a.md');
+    const fileB = path.join(dir, 'ticket-b', 'rick_ticket_b.md');
+    for (const f of [fileA, fileB]) {
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, 'AFTER (half-applied)', 'utf-8');
+    }
+
+    const entry = (step, target, status) => JSON.stringify({
+      step,
+      action: 'write',
+      operation: 'kill_ticket',
+      ticket_id: path.basename(path.dirname(target)),
+      path: target,
+      status,
+      recovery_class: 'restore-previous-content',
+      beforeContent: `BEFORE ${step} (the only copy)`,
+      previousContent: `BEFORE ${step} (the only copy)`,
+      afterContent: 'AFTER (half-applied)',
+      content: 'AFTER (half-applied)',
+      createdAt: '2026-07-23T00:00:00.000Z',
+    });
+
+    const ledgerPath = path.join(dir, 'change_proposal_x_apply.log');
+    fs.writeFileSync(ledgerPath, [
+      entry(1, fileA, 'started'),
+      entry(1, fileA, 'applied'),
+      entry(2, fileB, 'started'),
+    ].join('\n') + '\n', 'utf-8');
+
+    replayReverseLedger(ledgerPath, dir);
+
+    assert.equal(fs.readFileSync(fileA, 'utf-8'), 'BEFORE 1 (the only copy)');
+    assert.equal(
+      fs.readFileSync(fileB, 'utf-8'),
+      'BEFORE 2 (the only copy)',
+      'the started-only crash-window step was not reversed',
+    );
+  });
+});

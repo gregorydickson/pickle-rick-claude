@@ -4669,3 +4669,41 @@ test('B5: a clean iteration ends the episode by clearing the park ledger', () =>
     assert.match(successBlock, /rate_limit_park\b/, 'the success branch must reset the episode ledger');
     assert.match(successBlock, /s\.rate_limit_park = null/);
 });
+
+// R-WSRC-2 anchor executability (anatomy-park iter 9).
+//
+// The catalog PATTERN_SHAPE demanded
+//   grep -c "sm\.read(statePath)"  ==  grep -c "readRunnerState(" + grep -c "classifyCapCheckReadError("
+// which was already false at its own authoring commit e0d37d1c (1 vs 21) and is
+// 1 vs 27 today. It equates ONE raw read against the wrapper's CALL count — two
+// numbers that grow in opposite directions, so it can never hold. The guarded
+// behaviour is intact; the anchor is the defect.
+//
+// The executable form: exactly one raw `sm.read(statePath)` exists, and it is
+// the one inside `readRunnerState`. A second raw read IS an unwrapped site.
+test('R-WSRC-2: the only raw sm.read(statePath) in mux-runner.ts is inside readRunnerState', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '../src/bin/mux-runner.ts'), 'utf-8');
+  const lines = src.split('\n');
+
+  // Comment lines are stripped for the same reason AP-EXT-ITER10-01 needs it:
+  // prose naming the guarded token would otherwise falsify this pin — which is
+  // the very failure mode this family of anchors keeps hitting.
+  const rawReads = lines
+    .map((line, i) => ({ line, no: i + 1 }))
+    .filter(({ line }) => line.includes('sm.read(statePath)') && !/^\s*(\/\/|\*|\/\*)/.test(line));
+  assert.equal(
+    rawReads.length,
+    1,
+    `expected exactly 1 raw sm.read(statePath); found ${rawReads.length} at lines ` +
+    `${rawReads.map(r => r.no).join(', ')} — any site outside readRunnerState is unwrapped`,
+  );
+
+  const wrapperStart = lines.findIndex(l => l.includes('export function readRunnerState('));
+  assert.ok(wrapperStart > -1, 'readRunnerState wrapper is gone');
+  const wrapperEnd = lines.findIndex((l, i) => i > wrapperStart && /^}/.test(l));
+  assert.ok(
+    rawReads[0].no > wrapperStart + 1 && rawReads[0].no <= wrapperEnd + 1,
+    `the raw sm.read(statePath) at line ${rawReads[0].no} escaped readRunnerState ` +
+    `(lines ${wrapperStart + 1}-${wrapperEnd + 1})`,
+  );
+});
