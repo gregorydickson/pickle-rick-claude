@@ -118,6 +118,38 @@ only ever disables.
 | 6 | **Keep `PICKLE_CODEGRAPH=off`** | The kill-switch is the escape hatch — do NOT remove it |
 | 7 | **`expose_mcp_to_workers` stays `false`** | Two-lane split (`4e641a88`): the injected-context lane keys on `codegraph.enabled`; the interactive MCP lane is a separate C0-gated flip. Enabling the first is NOT enabling the second. |
 
+### Indexing workstreams (added 2026-07-23 — grounded in `cgResolveIndexAction`, `bin/setup.ts`)
+
+**The freshness check is dead code on the launch path:**
+
+```ts
+function cgResolveIndexAction(isResume, dbPath, staleMs): 'full' | 'sync' | 'noop' {
+  if (!isResume) return 'full';                  // <- every fresh session: FULL index
+  const ageMs = Date.now() - fs.statSync(dbPath).mtimeMs;
+  return ageMs >= staleMs ? 'sync' : 'noop';     // <- only ever reached on --resume
+}
+```
+
+A fresh pipeline in a repo holding a ten-minute-old `.codegraph/codegraph.db` still pays a **full**
+re-index. `staleness_max_age_minutes: 30` only does work on `--resume`.
+
+| WS | Change | Shape |
+|---|---|---|
+| **WS-CGEN-A** | **Delete the `!isResume` shortcut** — let the freshness check govern every path. Cold repo → `full`; recent db → `sync` (30 s cap) or `noop` (free). | **SUBTRACTIVE** — removes a special case, adds no scheduler. **Do this first.** |
+| **WS-CGEN-B** | **`sync()` at key points** — post-ticket-commit and phase transitions. `CodegraphService.sync()` already exists and is already bounded by `sync_timeout_ms` (30 s). | Additive, but reuses an existing bounded op. **The accuracy fix — see below.** |
+| **WS-CGEN-C** *(only if A+B leave setup too slow)* | Move the initial warm index into the session-scoped service `mux-runner.ts:9268` **already creates** — documented *"fail-open — never blocks session start"* — and let it run concurrently with ticket 1. `spawn-morty`'s `buildContext` already degrades when the graph isn't ready. | Async **without a new lifecycle** — in-process, on a process that already outlives the run. |
+
+**WS-CGEN-B carries the real value, and it is about correctness, not latency.** A pipeline mutates the
+repo it is indexing: the B-WDSUB run landed **6 commits in ~3 hours**. An index taken once at setup is
+stale by ticket three, so every later worker receives context describing a repo that no longer exists.
+The staleness is **silent** — `buildContext` still returns something, so nothing looks wrong.
+
+> ⛔ **Do NOT spawn a detached indexer.** That reintroduces the exact failure class [[B-WSPU]] deleted
+> (~1000 LOC — detached workers silently died; the field evidence was a detached worker dying while
+> building its own deletion). A background index racing `buildContext`'s 5 s query also fails
+> *quietly*: the service degrades rather than crashes, so workers silently get thinner context.
+> WS-CGEN-C is safe **only** because it runs in-process on the already-long-lived mux-runner.
+
 ### Prior art — it was ON before, and why it went off
 
 `3bab38f2` (2026-06-14) flipped codegraph default-ON. `b5a4f5b0` (2026-06-16, **B-GA**) flipped it back
@@ -137,9 +169,12 @@ that stalls on an iteration cap and reads as "converged" measures nothing.
 
 ### Risks to own
 
-- **Setup-time cost.** `index_at_setup: true` adds up to `index_timeout_ms` (**120 s**) to every
-  session bootstrap. `codegraph-index-cost.test.js` exists to bound it — pin the observed cost before
-  shipping.
+- **Setup-time cost — corrected 2026-07-23, was overstated here.** `index_at_setup: true` costs up to
+  `index_timeout_ms` (**120 s**) on every **non-resume** setup — i.e. one full index per pipeline
+  launch, then `noop`/`sync` on resumes. For a 12-hour run that is ~0.3% overhead and is **not** the
+  real problem. The real problems are WS-CGEN-A and WS-CGEN-B above: the freshness check never runs at
+  launch, and the graph goes stale mid-run. `codegraph-index-cost.test.js` exists to bound the observed
+  cost — pin it before shipping.
 - **Native dependency.** `@colbymchenry/codegraph@0.9.9` is platform-specific and symlinked per-platform
   by `install.sh:473-491`. Confirm a missing/incompatible binary **degrades** rather than crashes
   (`codegraph-degradation.test.js` covers the degraded path) — turning this on by default makes that
