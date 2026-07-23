@@ -32,8 +32,9 @@ Otherwise → **Setup Mode**.
 
 ## Session Knowledge Transfer (soft hint — skip if inaccessible)
 
-> **If `FIREWALL_DETECTED=true` appears in your EXECUTION CONTEXT**, skip this section
-> silently — no error, no negotiation.
+> **If either path is unreadable, skip this section silently** — no error, no negotiation.
+> (Do not wait for a `FIREWALL_DETECTED` flag: it is appended by `spawn-morty.ts` to
+> pickle-phase worker prompts only, and never reaches a microverse worker.)
 
 If readable, check `<working_dir>/.pickle-rick/sessions/<session_hash>/TASK_NOTES.md`
 (fallback: `$SESSION_ROOT/TASK_NOTES.md`) for Dead Ends and Key Discoveries from
@@ -398,10 +399,9 @@ When `design_safe: true` (check `${SESSION_ROOT}/microverse.json`), skip any fin
 4.5. **Scope preflight** (when `${SESSION_ROOT}/scope.json` exists): Before committing, run:
      ```bash
      node "$HOME/.claude/pickle-rick/extension/bin/check-scope-diff.js" \
-       --scope-json "${SESSION_ROOT}/scope.json" \
-       --ticket-id "$TICKET_ID"
+       --scope-json "${SESSION_ROOT}/scope.json"
      ```
-     Pass `--ticket-id` with the value of `TICKET_ID` from the EXECUTION CONTEXT block; on exit 1 the gate emits a `worker_edit_outside_scope` activity event with that ticket id so `/pickle-status` can surface the drift.
+     Do NOT pass `--ticket-id`: a microverse worker has no ticket. `# EXECUTION CONTEXT` (and `TICKET_ID` with it) is emitted only by `spawn-morty.ts` for pickle-phase workers, so the flag can only be filled with a phantom. On exit 1 the gate emits a `worker_edit_outside_scope` activity event to the activity JSONL, and the runner-side R-SSOC audit emits its own copy keyed by subsystem. `/pickle-status` surfaces NEITHER — `renderScopeDrift` keeps only ids present in `collectTickets`, and a subsystem name never is. Read the activity JSONL or `anatomy-park.json` for the record.
      - **Exit 0**: proceed with `git commit`.
      - **Exit 1** (cross-scope staged paths): DO NOT commit. Surface the outside-scope paths as a CRITICAL finding in `anatomy-park.json` under the current subsystem (`category: "scope"`, `phase: "discovery"`), increment `stall_counts` for the subsystem, run `git reset HEAD <outside_paths>` to unstage them, and treat this iteration as a stall — skip Phase 2.5 and Phase 3.
      - **Exit 2** (malformed scope.json): log the error to stderr and proceed without the scope check.

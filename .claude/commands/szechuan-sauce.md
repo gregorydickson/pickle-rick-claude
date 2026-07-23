@@ -10,9 +10,10 @@ Otherwise → **Setup Mode**.
 
 ## Session Knowledge Transfer (best-effort — never a blocker)
 
-> **If `FIREWALL_DETECTED=true` appears in your EXECUTION CONTEXT** (injected when
-> the working directory contains an `AGENTS.md` firewall), this entire section is a
-> **soft suggestion only** — skip silently without error, negotiation, or report.
+> This entire section is a **soft suggestion only** — skip silently without error,
+> negotiation, or report whenever the paths below are inaccessible. (Do not wait for a
+> `FIREWALL_DETECTED` flag: it is appended by `spawn-morty.ts` to pickle-phase worker
+> prompts only, and never reaches a microverse worker.)
 
 Primary path (new sessions): `<working_dir>/.pickle-rick/sessions/<session_hash>/TASK_NOTES.md`
 Fallback path (legacy): `$SESSION_ROOT/TASK_NOTES.md`
@@ -420,10 +421,9 @@ Examples:
 **Scope preflight** (when `${SESSION_ROOT}/scope.json` exists): Before every `git commit`, run:
 ```bash
 node "$HOME/.claude/pickle-rick/extension/bin/check-scope-diff.js" \
-  --scope-json "${SESSION_ROOT}/scope.json" \
-  --ticket-id "$TICKET_ID"
+  --scope-json "${SESSION_ROOT}/scope.json"
 ```
-Pass `--ticket-id` with the value of `TICKET_ID` from the EXECUTION CONTEXT block; on exit 1 the gate emits a `worker_edit_outside_scope` activity event with that ticket id so `/pickle-status` can surface the drift.
+Do NOT pass `--ticket-id`: a microverse worker has no ticket. `# EXECUTION CONTEXT` (and `TICKET_ID` with it) is emitted only by `spawn-morty.ts` for pickle-phase workers, so the flag can only be filled with a phantom. On exit 1 the gate emits a `worker_edit_outside_scope` activity event to the activity JSONL. `/pickle-status` does NOT surface it — `renderScopeDrift` keeps only ids present in `collectTickets`. Read the activity JSONL or `gap_analysis.md` for the record.
 - **Exit 0**: proceed with commit.
 - **Exit 1**: DO NOT commit. Surface the outside-scope paths as a P1 principle violation (`Scope boundary crossed — files outside allowed_paths staged`), unstage the outside-scope paths with `git reset HEAD <paths>`, and treat it as the iteration's violation — record it in `gap_analysis.md` and move on.
 - **Exit 2** (malformed scope.json): log the error to stderr and proceed without the scope check.

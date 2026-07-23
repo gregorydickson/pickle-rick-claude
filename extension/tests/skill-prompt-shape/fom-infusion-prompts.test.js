@@ -408,3 +408,79 @@ for (const entry of SPLICE_GUARDS) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// AP-EXT-SCOPEDRIFT-01 — the same declares-vs-reaches class, inverted: a prompt
+// that SPLICES a reference to a variable its own builder never carries.
+//
+// `# EXECUTION CONTEXT` (and `TICKET_ID` with it) is emitted only by
+// spawn-morty.ts, for pickle-phase workers. Microverse workers (anatomy-park /
+// szechuan-sauce) are spawned by microverse-runner.ts, which never emits it — so
+// `--ticket-id "$TICKET_ID"` in those two prompts can only be filled with a
+// phantom, and the resulting `worker_edit_outside_scope` event carries no
+// ticket_id at all. Its sibling producer (the R-SSOC runner audit) keys the
+// event by SUBSYSTEM name. status.ts:renderScopeDrift keeps only ids present in
+// collectTickets(), so BOTH shapes are dropped and `/pickle-status` shows
+// nothing. These assertions pin the doc to that code: fix the consumer and they
+// go RED, forcing the prompts' guidance back in step.
+// ---------------------------------------------------------------------------
+const MICROVERSE_COMMAND_PROMPTS = [
+  '.claude/commands/anatomy-park.md',
+  '.claude/commands/szechuan-sauce.md',
+];
+
+test('scope-drift claim: EXECUTION CONTEXT/TICKET_ID is a pickle-phase-only prompt block', () => {
+  const spawnMorty = fs.readFileSync(path.join(repoRoot, 'extension/src/bin/spawn-morty.ts'), 'utf8');
+  assert.match(
+    spawnMorty,
+    /# EXECUTION CONTEXT[\s\S]{0,120}TICKET_ID:/,
+    'spawn-morty.ts must remain the emitter of the EXECUTION CONTEXT/TICKET_ID block',
+  );
+  const microverseRunner = fs.readFileSync(path.join(repoRoot, 'extension/src/bin/microverse-runner.ts'), 'utf8');
+  assert.ok(
+    !microverseRunner.includes('EXECUTION CONTEXT'),
+    'microverse-runner.ts emits no EXECUTION CONTEXT block — microverse workers have no TICKET_ID',
+  );
+});
+
+for (const promptPath of MICROVERSE_COMMAND_PROMPTS) {
+  test(`scope-drift claim: ${promptPath} cites no phantom TICKET_ID and no /pickle-status surfacing`, () => {
+    const content = fs.readFileSync(path.join(repoRoot, promptPath), 'utf8');
+    // Both `$TICKET_ID` and `${TICKET_ID}` — the anchor this whole finding is about is one
+    // that failed to hold, so do not leave a trivially-adjacent form unmatched.
+    assert.ok(
+      !/--ticket-id\s+"?\$\{?TICKET_ID\}?"?/.test(content),
+      `${promptPath} passes --ticket-id "$TICKET_ID", but no microverse worker prompt defines TICKET_ID`,
+    );
+    // Naming the block to WARN that it is absent is fine; keying behaviour off it is not.
+    assert.ok(
+      !/(?:value of|from|appears in)\s+(?:the\s+|your\s+)?`?(?:\$)?(?:TICKET_ID|EXECUTION CONTEXT)`?/.test(content),
+      `${promptPath} keys off an EXECUTION CONTEXT field that microverse-runner.ts never emits`,
+    );
+    assert.ok(
+      !/If\s+`?FIREWALL_DETECTED=true`?\s+appears/.test(content),
+      `${promptPath} gates a section on FIREWALL_DETECTED, appended by spawn-morty.ts to `
+        + 'pickle-phase prompts only — the branch is unreachable for a microverse worker',
+    );
+    assert.ok(
+      !/`\/pickle-status`[^.\n]*surface the drift/.test(content),
+      `${promptPath} claims /pickle-status surfaces scope drift; renderScopeDrift drops both producer shapes`,
+    );
+  });
+}
+
+test('scope-drift claim: renderScopeDrift still gates worker_edit_outside_scope on collectTickets ids', () => {
+  const status = fs.readFileSync(path.join(repoRoot, 'extension/src/bin/status.ts'), 'utf8');
+  const start = status.indexOf('function renderScopeDrift');
+  assert.notEqual(start, -1, 'renderScopeDrift not found in status.ts — this pin has gone blind');
+  const fn = status.slice(start);
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+  assert.match(body, /collectTickets\(sessionPath\)/, 'renderScopeDrift derives its id set from collectTickets');
+  assert.match(
+    body,
+    /ev\.event === 'worker_edit_outside_scope'[\s\S]*ticketIds\.has\(ev\.ticket_id\)/,
+    'renderScopeDrift intersects the event ticket_id with collectTickets ids — the reason both '
+      + 'microverse producer shapes (absent id, subsystem-name id) are invisible at /pickle-status. '
+      + 'If this gate is widened, update the two microverse command prompts to match.',
+  );
+});
