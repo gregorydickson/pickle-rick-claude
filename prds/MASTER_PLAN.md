@@ -62,10 +62,11 @@ remains field-soak repeatability (esp. codex) — now on the simpler single-life
 > | 4a | **B.5 `finalizePhaseSuccess`** | ❌ **DEAD — already fixed** by B-NONSTOP WS-2 / AC-NS-6 (`22dcccd7`), `pipeline-runner.ts:4275`. Dropped. |
 > | 4b | **B.5 convergence-gate `null` projectType** | ⚠️ still live (`convergence-gate.ts:1329` returns `emitSkippedAndReturn(opts, null, 'no_project_type_detected')`) but the skip-reads-as-pass claim needs its own scoping. **Deferred — not in B-WDSUB.** |
 > | 5 | **R-PRNF9-DEAD** | ✅ **CONFIRMED DEAD end-to-end** → [[B-WDSUB]] WS-2. Zero producers of `'readiness_halt'` in src **or** deployed. Chain: `:4047` reader never true → `:4048` never writes `pickle_readiness_halt` → `:3719` predicate never true → `:2799` + `:3890` never fire. |
-> | 6 | **B-CGCAP** | ⛔ still blocked by its own rule — no soak until B-NONSTOP **ships**. |
+> | 6 | **B-CGCAP** | 🔄 **SUPERSEDED by operator decision 2026-07-22** — codegraph is the v2.1 headline feature. The keep-vs-subtract question is closed in favour of **KEEP + ENABLE**. See [[B-CGEN]] below. |
 >
-> **Drain order now:** (a) green-tree check → full release gate on the B-NONSTOP + B-WDSUB stack →
-> bump `2.1.0-beta.5` → tag → deploy; (b) then B.5(b) scoping; (c) then B-CGCAP soak on the shipped base.
+> **Drain order now:** (a) full release gate on the B-NONSTOP + B-WDSUB stack → bump `2.1.0-beta.5`
+> → tag → deploy; (b) **[[B-CGEN]] — enable codegraph, the v2.1 headline feature** (own section below);
+> (c) then B.5(b) scoping. **[[B-CGCAP]]'s subtract arm is retired by operator decision.**
 
 **Every item below is a SUBTRACTION or a de-brittler — that is not a coincidence, it is the selection criterion.** Anything that would ADD a mechanism is not on this list; if a fix looks additive, re-scope it or drop it (the B-CGHARD "already-shipped, dropped" and B-TRGP "LEAVE" precedents). Score each on landing: *did it leave the system smaller/flatter AND less able to false-fail?*
 
@@ -79,6 +80,71 @@ remains field-soak repeatability (esp. codex) — now on the simpler single-life
 **Deferred / not on the reliability path:** B-RLH (review-loop honesty — has real subtractions but is honesty-not-stoppage; fold its WS-4 into B-NONSTOP, queue the rest after). B-TRGP stays **LEAVE** (proven non-subtractive — a decision record, not work). R-ORSR-2 needs its own re-scope (§B.2 drifts). Do NOT chase the ~38-guard manager-loop cluster or the dead-pid triplication (B-GSUB over-subtraction lesson — earned signal, low ROI).
 
 ---
+
+---
+
+## 🚀 v2.1 HEADLINE FEATURE — [[B-CGEN]] ENABLE CODEGRAPH (operator-set 2026-07-22)
+
+**Operator decision:** codegraph is the key new feature for the v2.1 release. Enablement is the next
+step once the B-NONSTOP + B-WDSUB stack ships. **This supersedes [[B-CGCAP]]'s keep-vs-subtract
+framing — the subtract arm is OFF the table.**
+
+> ⚠ **This is an ADDITIVE item on a list whose stated selection criterion is "every item is a
+> SUBTRACTION or a de-brittler."** It is admitted by explicit **operator decision** as the v2.1
+> headline feature, not by THE LENS. Recorded as a declared exception so the queue does not silently
+> violate its own rule. THE LENS still governs *how* it lands: no new mechanism beyond the flip.
+
+### ⛔ The trap — flipping the source setting is INERT
+
+`install.sh:529` MANAGED_KEYS force-resets **both** keys on **every** deploy:
+
+```
+jq 'del(.worker_test_gate_timeout_ms) | .codegraph.enabled = false | .codegraph.index_at_setup = false | .auto_update_enabled = false'
+```
+
+A source flip alone ships a **disabled** feature to every install. **Amending that line is the
+load-bearing change** — not the setting. There is also no env-on counterpart: `PICKLE_CODEGRAPH=off`
+only ever disables.
+
+### The real work (every line verified at HEAD, 2026-07-22)
+
+| # | Change | Why |
+|---|---|---|
+| 1 | **`install.sh:529`** — drop `.codegraph.enabled = false \| .codegraph.index_at_setup = false` from the MANAGED_KEYS jq | **Load-bearing.** Without it every deploy re-disables the feature. Keep the other two managed keys intact. |
+| 2 | `pickle_settings.json` — `enabled: true`, `index_at_setup: true` | The flip itself |
+| 3 | **Invert two guard tests** — `codegraph-default-optin.test.js` (AC-GA-CG-1 asserts both `false`) + `codegraph-docs-optin-parity.test.js` (AC-GA-CG-2 requires CLAUDE.md read *"Opt-in / disabled by default"*) | Both **WILL red** on the flip. **Invert, do not delete** — they become the guard that codegraph stays ON. |
+| 4 | Docs — CLAUDE.md settings row + README two-lane split | AC-GA-CG-2 parity is test-enforced |
+| 5 | **Retire Tune-Back CUJ #2** (CLAUDE.md) | Its entire purpose was working around MANAGED_KEYS; obsolete once #1 lands |
+| 6 | **Keep `PICKLE_CODEGRAPH=off`** | The kill-switch is the escape hatch — do NOT remove it |
+| 7 | **`expose_mcp_to_workers` stays `false`** | Two-lane split (`4e641a88`): the injected-context lane keys on `codegraph.enabled`; the interactive MCP lane is a separate C0-gated flip. Enabling the first is NOT enabling the second. |
+
+### Prior art — it was ON before, and why it went off
+
+`3bab38f2` (2026-06-14) flipped codegraph default-ON. `b5a4f5b0` (2026-06-16, **B-GA**) flipped it back
+to opt-in — rationale verbatim: *"matching deployed reality."* **No defect forced it off**; it was a
+source/deployed consistency fix during **2.0** GA-readiness. Re-enabling on the **2.1** line is
+therefore coherent with that decision, not a reversal of a safety call. It ran default-ON for two days
+with no recorded failure.
+
+### Evidence status — the soak still matters
+
+Codegraph **has** run: **91 `codegraph_context_injected`** + 19 `codegraph_sync_completed` across 5
+sessions (2026-07-16/17), then silence once beta.3 turned the arm off. **All of it predates the
+2026-07-18 B-CGHARD harvester fix**, so none of it measures the shipping configuration. Reuse the
+probes that already exist: `codegraph-efficacy-probe.test.js`, `codegraph-index-cost.test.js`.
+**Sequencing:** land #1–#7, then soak on the shipped base. Do not soak before the stack ships — a run
+that stalls on an iteration cap and reads as "converged" measures nothing.
+
+### Risks to own
+
+- **Setup-time cost.** `index_at_setup: true` adds up to `index_timeout_ms` (**120 s**) to every
+  session bootstrap. `codegraph-index-cost.test.js` exists to bound it — pin the observed cost before
+  shipping.
+- **Native dependency.** `@colbymchenry/codegraph@0.9.9` is platform-specific and symlinked per-platform
+  by `install.sh:473-491`. Confirm a missing/incompatible binary **degrades** rather than crashes
+  (`codegraph-degradation.test.js` covers the degraded path) — turning this on by default makes that
+  path load-bearing for every install, on every platform we ship to.
+- **Surface being switched on:** 507 LOC service across 14 files in `src/`.
 
 ## ⚖ OPERATING PRINCIPLES (operator-set 2026-07-18, sharpened 2026-07-19 — BINDING, supersede prior framings on conflict)
 
