@@ -159,3 +159,46 @@ test('pipeline-runner persists phase history for anatomy windows used by verify-
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+// Regression guard for the doc/code drift that shipped alongside the phase-history append
+// (43fdd55d added the runner append + the src/bin/CLAUDE.md mandate + this file, but left
+// extension/CLAUDE.md asserting the pre-fix "runners do NOT append"). Two authoritative trap
+// doors in direct contradiction is how a later re-verification pass talks itself into deleting
+// a load-bearing append. Pin BOTH docs to the shipped code, not to each other.
+test('AC-EXTHIST-1: state.history trap doors in both CLAUDE.md files match the shipped runner append', () => {
+  const extensionRoot = path.resolve(import.meta.dirname, '..');
+  const runnerSource = fs.readFileSync(
+    path.join(extensionRoot, 'src', 'bin', 'pipeline-runner.ts'), 'utf-8');
+
+  // Code truth: persistPhaseTransition appends to state.history. If this ever stops being
+  // true the docs below are no longer the drifted side — re-derive before "fixing" them.
+  const persistFn = runnerSource.slice(runnerSource.indexOf('function persistPhaseTransition'));
+  assert.match(
+    persistFn.slice(0, persistFn.indexOf('\n}\n')),
+    /s\.history = \[\.\.\.history,/,
+    'pipeline-runner.ts:persistPhaseTransition must append to state.history',
+  );
+
+  // src/bin/CLAUDE.md must keep mandating it.
+  assert.match(
+    fs.readFileSync(path.join(extensionRoot, 'src', 'bin', 'CLAUDE.md'), 'utf-8'),
+    /INVARIANT: persisted phase transitions MUST append canonical `\{step,timestamp\}` entries to `state\.history`/,
+    'src/bin/CLAUDE.md must mandate the pipeline-runner phase-history append',
+  );
+
+  // extension/CLAUDE.md's history field invariant must not contradict that mandate.
+  const historyInvariant = fs.readFileSync(path.join(extensionRoot, 'CLAUDE.md'), 'utf-8')
+    .split('\n')
+    .find(line => line.includes('INVARIANT: `history`'));
+  assert.ok(historyInvariant, 'extension/CLAUDE.md must document a `history` field invariant');
+  assert.doesNotMatch(
+    historyInvariant,
+    /runners do NOT append|written only by `setup\.ts`/,
+    'extension/CLAUDE.md `history` invariant contradicts the pipeline-runner append mandated by src/bin/CLAUDE.md',
+  );
+  assert.match(
+    historyInvariant,
+    /pipeline-runner\.ts/,
+    'extension/CLAUDE.md `history` invariant must name pipeline-runner.ts as the appending runner',
+  );
+});
