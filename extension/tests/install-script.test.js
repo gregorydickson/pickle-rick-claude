@@ -1478,3 +1478,58 @@ describe('install.sh parity gate (R-ITS-1 / R-ITS-2)', () => {
     }
   });
 });
+
+// R-PJV-6 producer pin.
+//
+// The trap door for `pkgjson_revert_forensic_captured` asserted for months that
+// `install.sh` MUST log the event. It never did (`grep -c` = 0), and the entry's
+// own ENFORCE test (install-pkgjson-version-trace.test.js) only checks that the
+// event is REGISTERED — CLAUDE.md text, schema definition, `oneOf` $ref, fixture
+// shape. Registration proves nothing about emission, so the suite stayed green
+// with no producer named anywhere in the claim.
+//
+// These tests pin the two things registration cannot: that the emission exists in
+// its real home, and that the trap door's install.sh claim agrees with install.sh.
+describe('install.sh R-PJV-6 pkgjson forensic emission (producer pin)', () => {
+  const EVENT = 'pkgjson_revert_forensic_captured';
+  const CAPTURE_SH = path.join(REPO_ROOT, 'extension', 'scripts', 'capture-pkgjson-revert-forensic.sh');
+  const EXT_CLAUDE_MD = path.join(REPO_ROOT, 'extension', 'CLAUDE.md');
+
+  test('the operator-run capture script is the real producer', () => {
+    const src = readFileSync(CAPTURE_SH, 'utf8');
+    assert.ok(
+      src.includes(EVENT),
+      `${EVENT} must be emitted by extension/scripts/capture-pkgjson-revert-forensic.sh — ` +
+        'it is the only producer; losing it leaves the event with none',
+    );
+    assert.ok(
+      src.includes('log-activity.js') || src.includes('$LOG_ACTIVITY'),
+      'the capture script must emit through log-activity.js',
+    );
+    assert.ok(
+      src.includes('--gate-payload'),
+      `${EVENT} requires a gate_payload (forensic_artifact_path, suspected_hypothesis, ` +
+        'src_version, deployed_version) — the emission must pass --gate-payload',
+    );
+  });
+
+  test('the R-PJV-6 trap door claim about install.sh matches install.sh', () => {
+    const claudeMd = readFileSync(EXT_CLAUDE_MD, 'utf8');
+    const entry = claudeMd.split('\n').find((l) => l.includes('R-PJV-6'));
+    assert.ok(entry, 'extension/CLAUDE.md must carry an R-PJV-6 trap-door entry');
+
+    // Does the entry assert that install.sh emits the event?
+    const claimsInstallShEmits = /`install\.sh`\s+MUST\s+log\s+a\s+`pkgjson_revert_forensic_captured`/.test(entry);
+    const installShEmits = readFileSync(INSTALL_SH, 'utf8').includes(EVENT);
+
+    assert.equal(
+      claimsInstallShEmits,
+      installShEmits,
+      claimsInstallShEmits
+        ? 'R-PJV-6 claims install.sh MUST log pkgjson_revert_forensic_captured, but install.sh ' +
+          'contains no such emission — implement it or correct the trap door'
+        : 'install.sh emits pkgjson_revert_forensic_captured but R-PJV-6 no longer documents it — ' +
+          'restore the claim so the trap door names every producer',
+    );
+  });
+});
