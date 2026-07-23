@@ -55,6 +55,7 @@
     "tests/bin/test-runner-tier-discovery.test.js",
     "tests/rpgt-exit-paths.test.js",
     "tests/worker-gate-test-command-timeout.test.js",
+    "tests/tsc-gate.test.js",
     "tests/integration/audit-ticket-bundle-baseline.test.js",
     "tests/integration/lock-steal-live-holder.test.js",
     "tests/integration/start-commit-pinned-sha.test.js"

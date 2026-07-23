@@ -117,6 +117,39 @@ test('each serial manifest is passed to exactly one tier', () => {
   }
 });
 
+// AC-ITIH-6 — tsc-gate.test.js starved the fast tier at --test-concurrency=8 (observed
+// 2026-07-23: 3 of its 15 tests failed in one run). Two blew their own outer spawn budgets
+// (6155ms > 6000ms, 15244ms > 15000ms) and one saw the handler's internal 5s `git` spawn
+// time out, reporting `setup_error` where the test asserts `compile_error`.
+//
+// The R-TFP-C2 audit cannot catch this class here: it matches `spawnSync('bash'|'sh', …)`,
+// while this file drives the handler through `spawnSync(process.execPath, …)`. Serialization
+// is therefore the ONLY guard on it, which is what this test holds in place.
+test('AC-ITIH-6: tsc-gate.test.js is serialized (the R-TFP-C2 audit cannot see its spawn shape)', () => {
+  const entry = 'tests/tsc-gate.test.js';
+  const source = fs.readFileSync(path.join(EXTENSION_ROOT, entry), 'utf8');
+
+  assert.match(
+    source,
+    /spawnSync\(\s*process\.execPath\s*,/,
+    `${entry} must still drive the gate handler via spawnSync(process.execPath, …). If it now ` +
+      `spawns bash/sh instead, audit-subprocess-heavy-tests.sh can see it and this pin should be revisited.`,
+  );
+  assert.doesNotMatch(
+    source,
+    /spawnSync\(\s*['"](?:bash|sh)['"]\s*,\s*\[\s*['"][^'"-]/,
+    `${entry} gained a bash/sh script spawn — re-evaluate whether the R-TFP-C2 audit now covers it.`,
+  );
+
+  const manifest = readJson(MANIFEST_PATH);
+  assert.ok(
+    manifest.entries.includes(entry),
+    `${entry} must stay in ${path.basename(MANIFEST_PATH)}; removing it puts a load-starved ` +
+      `subprocess-heavy test back on the c=8 surface with no audit coverage to catch it.`,
+  );
+  assert.equal(readJson(REASONS_PATH).reasons[entry], 'subprocess-timeout-coupling');
+});
+
 test('every serial manifest entry declares the tier that governs its manifest', () => {
   for (const [manifest, tiers] of manifestGoverningTiers()) {
     const [governingTier] = [...tiers];
