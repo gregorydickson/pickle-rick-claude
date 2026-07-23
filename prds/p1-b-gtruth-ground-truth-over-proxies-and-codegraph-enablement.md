@@ -79,20 +79,34 @@ second-class.
 **Do NOT** weaken the commit requirement for ordinary implementation tickets — that is the anti-fake-green
 intent of AC-MWMO-D2-8 and it must survive (B-GSUB guardrail).
 
-## WS-A2 — no single ticket-level signal may halt a phase
+## WS-A2 — reroute `done_without_commit_evidence` to the recovery path that already exists
 
-**The defect.** `isHaltExit` (`bin/mux-runner.ts:4370`) makes six exit reasons phase-fatal, including
-`done_without_commit_evidence`. One ambiguous ticket therefore stops a four-phase pipeline.
+**This is a one-line classification fix, NOT new machinery.** Verified 2026-07-23: the runtime already
+has three working recovery layers, and the wedge bypassed all of them.
 
-**Observed blast radius.** Both halts this session occurred with **5 of 6 tickets `Done`** and the sixth's
-work **verifiably complete on disk**. Cost: ~4.5 h of wall-clock across two halts, plus two interventions.
+| Layer | Mechanism | Status this session |
+|---|---|---|
+| Ticket | `failed_flip_suppressed` / salvage / reconcile | **fired 5/5, every one `outcome: success`** — caught each pnpm false-red, saw fresh artifacts, preserved the work |
+| Child-stall | `child_mux_runner_wedge_detected`, `child_mux_runner_heartbeat_ms` (60 s) | armed — but detects a **hung** child, and ours did not hang |
+| Phase | `isFatalPhaseFailure` → `false` → `recordRecoverablePhaseFailure(..., 'continue')` (`pipeline-runner.ts:4109`) | **works** — this is the path anatomy-park took in the B-NONSTOP run |
 
-**The fix.** A ticket-scoped signal parks **that ticket** and reports it; it does not terminate the run.
-Phase-level halts remain for genuinely phase-level conditions (operator cancel, limit, schema-ahead).
-This is [[B-NONSTOP]]'s principle — an honest disposition instead of a false stop — applied one level down:
-"pipeline dead, human required" becomes "5/6 shipped, 1 parked, reported."
+**The defect is one line.** `pipeline-runner.ts:2801` hardcodes
+`if (runnerState.exit_reason === 'done_without_commit_evidence') return true;` — classifying a
+**ticket-scoped** condition as **phase-fatal**, which bypasses the recoverable path 1300 lines below it.
 
-**Subtraction paid:** shrinks `isHaltExit`; removes ticket-scoped reasons from the phase-fatal surface.
+**The fix:** route `done_without_commit_evidence` to `recordRecoverablePhaseFailure(..., 'continue')`
+when the bundle's other tickets are terminal and their work is present — park the ambiguous ticket,
+report it, continue. Narrow `isHaltExit` (`bin/mux-runner.ts:4370`) accordingly.
+
+**Measured blast radius of getting this wrong:** both halts occurred with **5 of 6 tickets `Done`** and
+the sixth's work verifiably complete on disk. Launch 3 then completed the entire pickle phase in
+**1.06 seconds** — proving there was no work left. The pipeline had been halting over bookkeeping while
+holding finished work.
+
+**Subtraction paid:** removes a reason from the phase-fatal surface; adds nothing. The recovery it routes
+to already exists and is already exercised.
+
+**Do NOT** demote genuinely phase-level reasons (`cancelled`, `limit`, schema-ahead) — only ticket-scoped ones.
 
 ## WS-A3 — the gate must measure the code, not the ambient environment
 
@@ -113,6 +127,24 @@ record, then either repair the input or stop computing a verdict nobody honours.
 if it argues for keeping the gate exactly as it is.
 
 **Subtraction paid:** removes the environment as an input to a code-quality verdict.
+
+## WS-A4 — external liveness (DEFERRED — measure before building)
+
+**The one genuine gap: nothing watches a pipeline that has cleanly EXITED.** All three recovery layers
+above are *in-process*; a dead process cannot monitor itself. That gap is what cost **9 h 35 m of dead
+time (63% of elapsed wall-clock)** in the B-WDSUB run — two halts sat unnoticed for 2 h 24 m and 7 h 12 m.
+
+**Do NOT build a supervisor in this bundle.** WS-A1 + WS-A2 remove both *known* wedge causes; a watchdog
+built now is insurance against a problem being deleted in the same PRD, and a guard wrapped around guards
+is the documented anti-pattern ([[feedback_analyze_failures_then_subtract_not_add_guards]]).
+
+**Sequence instead:** ship A1–A3, then run one **unattended** bundle and measure whether it still stalls.
+Only if it does:
+- The watchdog **must be external** to the runtime — an in-process watcher dies with the process it watches.
+- It needs no new state: `pipeline-status.json` already carries `status` + `updated_at`. "status is not
+  `running`/`completed` **and** `updated_at` is stale" is a ~10-line check, not a subsystem.
+- The natural home is the **babysitter**, which already exists and already drains the MASTER_PLAN queue —
+  extend it to check pipeline liveness rather than inventing a supervisor.
 
 ---
 
