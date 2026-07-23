@@ -465,3 +465,35 @@ test('startRespawnWatchdog: temp dir without state.json returns null, no timer a
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
 });
+
+// R-MWR-1 seam-alias pin (anatomy-park iter 8).
+//
+// The trap-door PATTERN_SHAPE named the bare `setInterval` identifier
+// (`const handle = setInterval(tick, intervalMs)`), but the scheduler is the
+// injectable seam alias `_setInterval` (`opts.setIntervalFn ?? setInterval`).
+// The anchor therefore matched NOTHING in monitor.ts: replaying it reports a
+// phantom violation of a contract the code actually honors.
+test('R-MWR-1: watchdog arms via the _setInterval seam alias, then ticks synchronously', () => {
+    const src = fs.readFileSync(new URL('../src/bin/monitor.ts', import.meta.url), 'utf-8');
+
+    assert.match(
+        src,
+        /const _setInterval = opts\.setIntervalFn \?\? setInterval;/,
+        'R-MWR-1: the scheduler must stay injectable so the watchdog is testable without real timers',
+    );
+
+    const armIdx = src.indexOf('const handle = _setInterval(tick, intervalMs)');
+    assert.ok(armIdx > 0, 'R-MWR-1: the recurring interval must be armed via the _setInterval alias');
+
+    const syncTickIdx = src.indexOf('\n  tick();', armIdx);
+    assert.ok(
+        syncTickIdx > armIdx,
+        'R-MWR-1: a synchronous first tick must follow arming so collapsed panes recover ' +
+        'immediately instead of waiting a full interval',
+    );
+
+    assert.ok(
+        src.indexOf('return handle;', syncTickIdx) > syncTickIdx,
+        'R-MWR-1: the armed handle must still be returned after the synchronous first tick',
+    );
+});

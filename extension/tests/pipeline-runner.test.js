@@ -2509,3 +2509,47 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
     }
   });
 });
+
+// R-MDS-1 / R-MDS-4 centralized-dispatcher pin (anatomy-park iter 8).
+//
+// The trap-door PATTERN_SHAPE demanded `respawnMonitorWindowForMode` invocation
+// count >= 3 in pipeline-runner.ts, "one per non-citadel boundary". Those calls
+// were centralized into a single `handlePhaseBoundaryRespawn` dispatcher, so the
+// real count is 1 and the anchor was FALSE — a replay reports a phantom violation
+// and reads as "phase-boundary respawn was deleted". Every pre-existing R-MDS test
+// exercises the respawn FUNCTION's behavior; none asserted the wiring shape, so
+// nothing could detect the drift. These pin the shape the catalog now documents.
+describe('R-MDS-1 centralized phase-boundary monitor dispatcher', () => {
+  const PR_SRC = fs.readFileSync(new URL('../src/bin/pipeline-runner.ts', import.meta.url), 'utf-8');
+
+  test('respawnMonitorWindowForMode is invoked from exactly one dispatcher', () => {
+    const invocations = PR_SRC.match(/await respawnMonitorWindowForMode\(/g) ?? [];
+    assert.equal(
+      invocations.length,
+      1,
+      'R-MDS-1: the per-boundary respawn calls are centralized into handlePhaseBoundaryRespawn. ' +
+      'A count != 1 means the dispatcher was forked or removed — reconcile the trap door too.',
+    );
+  });
+
+  test('the dispatcher is awaited once per phase boundary in the phase loop', () => {
+    assert.match(
+      PR_SRC,
+      /await handlePhaseBoundaryRespawn\(runtime, rawPhase, nextRawPhase\);/,
+      'R-MDS-4: every completed phase must reach the respawn dispatcher from the phase loop',
+    );
+  });
+
+  test('the dispatcher forwards the phase being ENTERED as the monitor mode', () => {
+    assert.match(
+      PR_SRC,
+      /const mode = nextRawPhase \?\? 'idle';/,
+      'R-MDS-4: the monitor mode is the phase being entered, not the phase just finished',
+    );
+    assert.match(
+      PR_SRC,
+      /respawnMonitorWindowForMode\(runtime\.sessionDir, mode,/,
+      'R-MDS-4: passing currentPhase would rebind pane 1.0 one phase behind',
+    );
+  });
+});
