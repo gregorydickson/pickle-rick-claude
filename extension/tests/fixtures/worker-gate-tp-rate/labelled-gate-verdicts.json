@@ -1,0 +1,177 @@
+{
+  "_meta": {
+    "purpose": "WS-A3b (B-GTRUTH Track A) — checked-in, labelled fixture for measuring the worker-gate true-positive rate without reading the mutable ~/.local/share/pickle-rick/sessions directory.",
+    "derived_verdict_rule": "verdict = 'red' if (!lint_ok || !tsc_ok) else 'green' — mirrors computeWorkerGateVerdict() in extension/src/bin/spawn-morty.ts post-R-WGFR/WS-A3a (eslint+tsc only; test:fast dropped as flaky).",
+    "ground_truth_defect_definition": "true only for a behavior-affecting defect — the change would have produced a wrong runtime result, a crash, or otherwise misbehaved if shipped as-is. false for either (a) a cosmetic/stylistic tool trip with no behavioral effect, or (b) a genuinely clean change.",
+    "confusion_matrix_terms": {
+      "TP": "verdict=red AND ground_truth_defect=true",
+      "FP": "verdict=red AND ground_truth_defect=false",
+      "TN": "verdict=green AND ground_truth_defect=false",
+      "FN": "verdict=green AND ground_truth_defect=true"
+    },
+    "record_count": 16,
+    "quadrant_split": "4 TP, 4 FP, 4 TN, 4 FN — labelled independently of the derived verdict, not sampled from any live session"
+  },
+  "records": [
+    {
+      "id": "TP-1",
+      "quadrant": "TP",
+      "check": "tsc",
+      "rule_or_error": "TS2345: Argument of type 'string' is not assignable to parameter of type 'TicketComplexityTier'",
+      "lint_ok": true,
+      "tsc_ok": false,
+      "ground_truth_defect": true,
+      "notes": "A mistyped tier string would have routed the ticket through the wrong budget table at runtime; caught before commit."
+    },
+    {
+      "id": "TP-2",
+      "quadrant": "TP",
+      "check": "eslint",
+      "rule_or_error": "no-undef",
+      "lint_ok": false,
+      "tsc_ok": true,
+      "ground_truth_defect": true,
+      "notes": "Reference to a variable removed earlier in the same edit; would have thrown ReferenceError at first invocation."
+    },
+    {
+      "id": "TP-3",
+      "quadrant": "TP",
+      "check": "eslint",
+      "rule_or_error": "@typescript-eslint/no-floating-promises",
+      "lint_ok": false,
+      "tsc_ok": true,
+      "ground_truth_defect": true,
+      "notes": "An un-awaited state write raced the caller's next read — the writer/reader race class this codebase repeatedly hardens against."
+    },
+    {
+      "id": "TP-4",
+      "quadrant": "TP",
+      "check": "tsc",
+      "rule_or_error": "TS2532: Object is possibly 'undefined'",
+      "lint_ok": true,
+      "tsc_ok": false,
+      "ground_truth_defect": true,
+      "notes": "A guarding null-check was deleted during a refactor; the flagged access was a genuine crash-on-null path."
+    },
+    {
+      "id": "FP-1",
+      "quadrant": "FP",
+      "check": "eslint",
+      "rule_or_error": "max-lines-per-function",
+      "lint_ok": false,
+      "tsc_ok": true,
+      "ground_truth_defect": false,
+      "notes": "Pre-existing long function untouched by the diff; the rule fired on the whole file, not on anything the change introduced."
+    },
+    {
+      "id": "FP-2",
+      "quadrant": "FP",
+      "check": "eslint",
+      "rule_or_error": "no-unused-vars",
+      "lint_ok": false,
+      "tsc_ok": true,
+      "ground_truth_defect": false,
+      "notes": "Unused import left behind in a test-fixture generator; dead but harmless — no consumer, no runtime path."
+    },
+    {
+      "id": "FP-3",
+      "quadrant": "FP",
+      "check": "tsc",
+      "rule_or_error": "TS6133: 'tmp' is declared but its value is never read",
+      "lint_ok": true,
+      "tsc_ok": false,
+      "ground_truth_defect": false,
+      "notes": "Unused local in a branch slated for deletion in the immediate follow-up commit; no behavioral effect."
+    },
+    {
+      "id": "FP-4",
+      "quadrant": "FP",
+      "check": "eslint",
+      "rule_or_error": "no-console",
+      "lint_ok": false,
+      "tsc_ok": true,
+      "ground_truth_defect": false,
+      "notes": "Intentional CLI diagnostic console.log in a bin/ script; the rule doesn't distinguish library code from CLI output."
+    },
+    {
+      "id": "TN-1",
+      "quadrant": "TN",
+      "check": "none",
+      "rule_or_error": null,
+      "lint_ok": true,
+      "tsc_ok": true,
+      "ground_truth_defect": false,
+      "notes": "One-line docstring correction; no code path touched."
+    },
+    {
+      "id": "TN-2",
+      "quadrant": "TN",
+      "check": "none",
+      "rule_or_error": null,
+      "lint_ok": true,
+      "tsc_ok": true,
+      "ground_truth_defect": false,
+      "notes": "New optional field added with a safe default and covered by an existing test; lint+tsc clean, no observed regression."
+    },
+    {
+      "id": "TN-3",
+      "quadrant": "TN",
+      "check": "none",
+      "rule_or_error": null,
+      "lint_ok": true,
+      "tsc_ok": true,
+      "ground_truth_defect": false,
+      "notes": "Private helper renamed with every call site updated in the same commit; lint+tsc clean."
+    },
+    {
+      "id": "TN-4",
+      "quadrant": "TN",
+      "check": "none",
+      "rule_or_error": null,
+      "lint_ok": true,
+      "tsc_ok": true,
+      "ground_truth_defect": false,
+      "notes": "New CLI flag parsed through the existing validated-integer helper; lint+tsc clean."
+    },
+    {
+      "id": "FN-1",
+      "quadrant": "FN",
+      "check": "none",
+      "rule_or_error": null,
+      "lint_ok": true,
+      "tsc_ok": true,
+      "ground_truth_defect": true,
+      "notes": "Guard used '||' where '&&' was intended, inverting the condition; both operators type-check identically, so tsc is silent, and no lint rule targets boolean-operator intent."
+    },
+    {
+      "id": "FN-2",
+      "quadrant": "FN",
+      "check": "none",
+      "rule_or_error": null,
+      "lint_ok": true,
+      "tsc_ok": true,
+      "ground_truth_defect": true,
+      "notes": "Off-by-one in an array-slice boundary; the expression is type-correct, so tsc passes, and no lint rule targets loop/slice bounds."
+    },
+    {
+      "id": "FN-3",
+      "quadrant": "FN",
+      "check": "none",
+      "rule_or_error": null,
+      "lint_ok": true,
+      "tsc_ok": true,
+      "ground_truth_defect": true,
+      "notes": "A minutes value was passed where seconds was expected; both are plain 'number', so tsc cannot distinguish the units."
+    },
+    {
+      "id": "FN-4",
+      "quadrant": "FN",
+      "check": "none",
+      "rule_or_error": null,
+      "lint_ok": true,
+      "tsc_ok": true,
+      "ground_truth_defect": true,
+      "notes": "A duplicated 'git add' staged a bystander path outside the ticket's scope; the diff is syntactically and structurally valid, so lint+tsc are both green."
+    }
+  ]
+}
