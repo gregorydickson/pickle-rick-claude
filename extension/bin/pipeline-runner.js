@@ -3391,6 +3391,48 @@ async function dispatchHaltAction(runtime, counters, rawPhase, exitCode, log) {
     catch { /* gate error never masks original abort reason */ }
     return { action: 'break' };
 }
+/**
+ * The PhaseIncomplete (exit code 3) route. Returns the outcome when the phase must
+ * stop, or `null` when `runPhaseIteration` should continue to its normal path.
+ *
+ * B-GTRUTH WS-A2: `reportPhaseIncomplete` re-resolves every status-unfinished ticket
+ * through the completion oracle. When it declines to stamp, the work landed — but
+ * whether the PHASE may advance is a separate question, answered by the ROSTER:
+ *   - a status-runnable ticket still remains -> stop, but do NOT stamp a false
+ *     incompleteness (the pre-existing B-PXBO contract, preserved exactly);
+ *   - nothing runnable remains               -> graduate (AC-GTRUTH-A2-1).
+ *
+ * The roster MUST be consulted HERE and not left to `maybeStampPhaseGraduation`,
+ * but NOT for the reason a previous revision of this comment gave: that gate does
+ * not "stamp on the way past" — it calls this same `reportPhaseIncomplete`, which
+ * declines identically. The real reason is the EXIT CODE. Falling through on a
+ * still-runnable roster reaches `shouldHaltAfterPhase`/`dispatchHaltAction`, which
+ * terminates the pipeline as a FAILURE (exit 1) instead of the PhaseIncomplete
+ * route (exit 3) that the B-PXBO / R-ICP-2 contract requires — auto-resume.sh
+ * keys its retry on exit 3 + a non-`pipeline_phase_incomplete` reason, so an
+ * exit-1 here silently converts a resumable cap race into a dead session.
+ *
+ * Deleting this function therefore looks safe and is not: it keeps the three
+ * `*-done-without-commit-evidence-*` suites green and only reddens
+ * `pipeline-runner-halt-on-incomplete.test.js`
+ * ('WS-1 oracle-committed non-Done ticket is excluded from unfinished set',
+ * which asserts exit 3). That test is this function's pin — verified by removing
+ * it and observing exactly that one failure across the whole fast tier.
+ */
+function resolvePhaseIncompleteOutcome(runtime, rawPhase, exitCode, log) {
+    if (exitCode !== PipelineRunnerExitCode.PhaseIncomplete)
+        return null;
+    if (reportPhaseIncomplete(runtime, rawPhase)) {
+        return { action: 'break', phaseIncomplete: true };
+    }
+    const pendingAfterOracle = collectPicklePhaseProgress(runtime).pendingCount;
+    if (pendingAfterOracle > 0) {
+        log(`Phase ${rawPhase}: oracle-committed ticket(s) excluded from the unfinished set, but ${pendingAfterOracle} ticket(s) remain runnable — not advancing (no incomplete stamp)`);
+        return { action: 'break', phaseIncomplete: true };
+    }
+    log(`Phase ${rawPhase}: PhaseIncomplete exit with no genuinely-unfinished and no runnable ticket remaining — graduating`);
+    return null;
+}
 async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, index, log) {
     logPhaseStart(runtime, rawPhase, index);
     writeRunningStatus(runtime, counters, rawPhase);
@@ -3438,17 +3480,9 @@ async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, inde
         })}`);
         return { action: 'continue' };
     }
-    if (exitCode === PipelineRunnerExitCode.PhaseIncomplete) {
-        if (reportPhaseIncomplete(runtime, rawPhase)) {
-            return { action: 'break', phaseIncomplete: true };
-        }
-        // B-GTRUTH WS-A2 (AC-GTRUTH-A2-1): every status-unfinished ticket re-resolved as
-        // committed through the completion oracle — the work landed, so this is not a
-        // phase-incomplete condition. Fall through to the normal path and let the
-        // ROSTER decide (`maybeStampPhaseGraduation` still halts if a status-runnable
-        // ticket remains); do not halt on the exit code alone.
-        log(`Phase ${rawPhase}: PhaseIncomplete exit with no genuinely-unfinished ticket — deferring to the roster gate`);
-    }
+    const incompleteOutcome = resolvePhaseIncompleteOutcome(runtime, rawPhase, exitCode, log);
+    if (incompleteOutcome)
+        return incompleteOutcome;
     const shouldHalt = shouldHaltAfterPhase(rawPhase, exitCode, runtime);
     if (exitCode !== 0 && !shouldHalt) {
         recordRecoverablePhaseFailure(runtime, rawPhase, exitCode, index, 'continue');
