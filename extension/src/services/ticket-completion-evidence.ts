@@ -27,6 +27,8 @@ import {
   ticketFilePath,
 } from './pickle-utils.js';
 import { readDeclaredFiles } from './ticket-declared-files.js';
+import { findMissingPrefixes, requiredTierArtifactPrefixes } from './artifact-validation.js';
+import { VALID_TICKET_COMPLEXITY_TIERS, type TicketComplexityTier } from './pickle-utils.js';
 import type { GateVerdict } from '../lib/salvage-ticket.js';
 
 // ---------------------------------------------------------------------------
@@ -704,6 +706,14 @@ export interface CompletionDecisionCtx extends EvidenceCtx {
   announcedSha?: () => string | null;
   /** R-CCGR: backoff (ms) before the single absent re-read; defaults to the env-clamped 500ms. */
   rereadBackoffMs?: number;
+  /**
+   * B-GTRUTH WS-A1: the ticket's DECLARED zero-diff intent, raw (un-validated) as
+   * written in frontmatter. Membership is checked here in the policy home — the
+   * wiring site only reads the field, so `guardCompletionCommitBeforeDone` stays
+   * policy-free. An un-injected resolver means "no declaration" → no zero-diff arm
+   * (fail-closed, same posture as `workerGateVerdict`).
+   */
+  zeroDiffIntent?: () => string | null;
 }
 
 export type CompletionDecisionRefusalReason =
@@ -711,14 +721,68 @@ export type CompletionDecisionRefusalReason =
   | 'worker_gate_red'
   | 'worker_gate_unavailable';
 
+/**
+ * B-GTRUTH WS-A1: the declared reasons a ticket can legitimately complete with NO
+ * diff — verification-only work, an audit, or a requirement already satisfied by
+ * shipped code. A ticket must DECLARE one (frontmatter `zero_diff_intent`); the
+ * absence of a diff is never inferred.
+ */
+export type ZeroDiffIntent = 'verification' | 'audit' | 'already-satisfied';
+
+const ZERO_DIFF_INTENTS: ReadonlySet<string> = new Set<ZeroDiffIntent>([
+  'verification',
+  'audit',
+  'already-satisfied',
+]);
+
+/**
+ * B-GTRUTH WS-A1: the success arm is a UNION — a committed accept carries a SHA,
+ * a declared zero-diff accept carries NONE. Fabricating a sentinel SHA for the
+ * second case is the empty-marker-commit forgery moved into a string, so the
+ * absence is modelled in the type instead (`sha?: undefined`).
+ *
+ * The `?: undefined` slots on each arm are deliberate: they keep `decision.sha`
+ * and `decision.usedFallback` reachable across the whole `ok: true` union so
+ * existing consumers (e.g. `gateForPhantomDoneRevert`) need no `in` narrowing.
+ */
+/** An accept backed by an attributable git commit. */
+export type CompletionCommittedAccept = {
+  ok: true;
+  sha: string;
+  via: EvidenceVia | 'announcement';
+  usedFallback?: boolean;
+  zeroDiffIntent?: undefined;
+};
+
+/** B-GTRUTH WS-A1: an accept backed by a DECLARED zero-diff intent — no SHA exists. */
+export type CompletionZeroDiffAccept = {
+  ok: true;
+  sha?: undefined;
+  via: 'zero-diff';
+  usedFallback?: undefined;
+  zeroDiffIntent: ZeroDiffIntent;
+};
+
+export type CompletionRefusal = {
+  ok: false;
+  reason: CompletionDecisionRefusalReason;
+  /** Present on worker-gate refusals so callers can log/emit verdict detail. */
+  gate?: { verdict: 'green' | 'red' | 'absent'; computedVia: string };
+};
+
+/**
+ * B-GTRUTH WS-A1: the decision shape for `decision: 'attribution'`, which the
+ * zero-diff arm REFUSES by construction (`zeroDiffAccept`'s first guard). An
+ * attribution accept therefore always carries a SHA, and its consumers keep a
+ * non-nullable `sha` with no narrowing — see the overload on
+ * `evaluateCompletionEvidence`.
+ */
+export type CompletionAttributionDecision = CompletionCommittedAccept | CompletionRefusal;
+
 export type CompletionDecision =
-  | { ok: true; sha: string; via: EvidenceVia | 'announcement'; usedFallback?: boolean }
-  | {
-      ok: false;
-      reason: CompletionDecisionRefusalReason;
-      /** Present on worker-gate refusals so callers can log/emit verdict detail. */
-      gate?: { verdict: 'green' | 'red' | 'absent'; computedVia: string };
-    };
+  | CompletionCommittedAccept
+  | CompletionZeroDiffAccept
+  | CompletionRefusal;
 
 /**
  * R-CCGR: a process-blocking sleep for the single backoff re-read.
@@ -779,6 +843,12 @@ function recoverFromAnnouncement(ctx: CompletionDecisionCtx): EvidenceResult | n
  *   2. Single backoff re-read on absent (R-CCGR flush race).
  *   3. Announcement recovery (R-CCEM): persist the worker-announced SHA as
  *      completion_commit_inferred + re-probe.
+ *   3b. B-GTRUTH WS-A1 zero-diff arm: with every attribution path exhausted, a ticket
+ *      that DECLARES a recognized `zero_diff_intent` and has its tier's lifecycle
+ *      artifacts on disk is complete WITHOUT a SHA (verdict required on 'done-flip',
+ *      exempt on the 'phantom-watch' keep, refused for 'attribution'). Placed after
+ *      every attribution branch so committed evidence always wins, and before
+ *      `refuseAbsent` so the declaration is the last thing consulted, never the first.
  *   4. Promote-once (R-WUWC SOFT-variant): persistEvidence writes the committed
  *      SHA into the explicit field (no-ops when already present) + re-probe.
  *   5. decision === 'done-flip' ONLY: worker-gate verdict fail-closed (R-CWGE) —
@@ -835,6 +905,108 @@ function workerGateRefusal(ctx: CompletionDecisionCtx): CompletionDecision | nul
   };
 }
 
+/**
+ * B-GTRUTH WS-A1: the ticket's lifecycle artifacts are all present on disk.
+ *
+ * The required prefix set is derived from the ticket's OWN declared
+ * `complexity_tier` via `requiredTierArtifactPrefixes` (which reads
+ * `TIER_LIFECYCLE`) — never a hardcoded list. An absent or unrecognized tier
+ * REFUSES: `normalizeTicketComplexityTier` would default it to `medium`, and
+ * silently inventing a tier for a ticket that never declared one is exactly the
+ * proxy-over-truth move this arm exists to remove.
+ *
+ * Fail-closed: any read error yields false, so a zero-diff accept never rests on
+ * an unreadable ticket directory.
+ */
+function hasLifecycleArtifacts(ctx: CompletionDecisionCtx): boolean {
+  const tPath = resolveTicketPath(ctx);
+  if (!tPath) return false;
+  try {
+    const raw = fs.readFileSync(tPath, 'utf8');
+    const declaredTier = readFrontmatterField(raw, 'complexity_tier')?.trim().toLowerCase();
+    if (!declaredTier || !(VALID_TICKET_COMPLEXITY_TIERS as readonly string[]).includes(declaredTier)) {
+      return false;
+    }
+    const required = requiredTierArtifactPrefixes(declaredTier as TicketComplexityTier);
+    const files = fs.readdirSync(path.dirname(tPath));
+    return findMissingPrefixes(files, required).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * B-GTRUTH WS-A1: the zero-diff completion arm — the ONE place "complete, and
+ * correctly produced no diff" becomes representable.
+ *
+ * Three independent conditions, ALL required; none is inferred:
+ *   1. the ticket DECLARES a recognized `zero_diff_intent`;
+ *   2. its tier's lifecycle artifacts are all on disk (the work actually happened);
+ *   3. `done-flip` additionally requires a GREEN worker-gate verdict (R-CWGE).
+ *
+ * Decision-kind reach:
+ *   - `done-flip`     — accept (with the verdict), so the Done flip is permitted.
+ *   - `phantom-watch` — accept as a KEEP. Without this the arm is inert BY
+ *     CONSTRUCTION: a zero-diff Done carries no `completion_commit`, so the
+ *     phantom-Done watcher would revert it on the next sweep. The verdict is
+ *     exempt here for the same reason it is exempt for every other keep-decision
+ *     (see the ladder note above: reverting shipped Done work on an absent
+ *     verdict violates R-DSAN never-discard).
+ *   - `attribution`   — REFUSED. `isTicketOracleCommitted` feeds
+ *     `reportPhaseIncomplete`'s unfinished roster; admitting a declaration there
+ *     would let a frontmatter field hide a genuinely-unfinished ticket from the
+ *     operator, which is the failure this bundle removes rather than relocates.
+ *
+ * Hard-absent evidence (`baseline_sha` R-CXOR-2, `foreign_attribution` R-OMA) is
+ * NEVER laundered by a declaration: those mean a stamp was positively
+ * mis-attributed, and a zero-diff ticket has no business carrying a stamp at all.
+ */
+function zeroDiffAccept(
+  ctx: CompletionDecisionCtx,
+  evidence: EvidenceResult,
+): CompletionDecision | null {
+  if (ctx.decision === 'attribution') return null;
+  if (evidence.absentReason === 'baseline_sha' || evidence.absentReason === 'foreign_attribution') {
+    return null;
+  }
+  if (!ctx.zeroDiffIntent) return null;
+  let declared: string | null;
+  try {
+    declared = ctx.zeroDiffIntent();
+  } catch {
+    return null;
+  }
+  const intent = declared?.trim().toLowerCase();
+  if (!intent || !ZERO_DIFF_INTENTS.has(intent)) return null;
+  if (!hasLifecycleArtifacts(ctx)) return null;
+  if (ctx.decision === 'done-flip') {
+    // Return the gate's OWN refusal rather than null. Falling through to
+    // `refuseAbsent` would report `no_evidence` — true but useless — for a ticket
+    // whose declaration and artifacts both checked out and whose only problem is a
+    // red/unverifiable gate. Surfacing `worker_gate_red` / `worker_gate_unavailable`
+    // also routes this through the existing R-CWGE `worker_gate_verdict_fail_closed`
+    // telemetry in `guardCompletionCommitBeforeDone`.
+    const gateRefusal = workerGateRefusal(ctx);
+    if (gateRefusal) return gateRefusal;
+  }
+  return { ok: true, via: 'zero-diff', zeroDiffIntent: intent as ZeroDiffIntent };
+}
+
+/**
+ * B-GTRUTH WS-A1: `attribution` callers keep a non-nullable `sha`.
+ *
+ * The narrowing is not a convenience — it is the type-level statement of the
+ * roster-honesty rule: a declared zero-diff ticket is NEVER "attributably
+ * committed", so `isTicketOracleCommitted` (and through it
+ * `reportPhaseIncomplete`'s unfinished roster) cannot be satisfied by a
+ * frontmatter declaration. Enforced at runtime by `zeroDiffAccept`'s first guard
+ * and pinned behaviourally by the attribution-refusal case in
+ * `zero-diff-completion-arm.test.js`.
+ */
+export function evaluateCompletionEvidence(
+  ctx: CompletionDecisionCtx & { decision: 'attribution' },
+): CompletionAttributionDecision;
+export function evaluateCompletionEvidence(ctx: CompletionDecisionCtx): CompletionDecision;
 export function evaluateCompletionEvidence(ctx: CompletionDecisionCtx): CompletionDecision {
   let evidence = readEvidence(ctx);
   if (!isAcceptedEvidence(evidence)) {
@@ -852,7 +1024,15 @@ export function evaluateCompletionEvidence(ctx: CompletionDecisionCtx): Completi
       if (isAcceptedEvidence(recovered)) via = 'announcement';
     }
   }
-  if (!isAcceptedEvidence(evidence)) return refuseAbsent(evidence);
+  if (!isAcceptedEvidence(evidence)) {
+    // B-GTRUTH WS-A1: no attributable commit — but a DECLARED zero-diff ticket with
+    // its artifacts (and, on a Done-flip, a green gate) is complete, not absent.
+    // Placed here so committed evidence always wins: the arm is reached only after
+    // every attribution path has come up empty.
+    const zeroDiff = zeroDiffAccept(ctx, evidence);
+    if (zeroDiff) return zeroDiff;
+    return refuseAbsent(evidence);
+  }
   const viaAtAccept: EvidenceVia | 'announcement' = via ?? evidence.via ?? 'scan';
   const reprobed = promoteOnceAndReprobe(ctx, evidence.sha);
   if (reprobed) evidence = reprobed;

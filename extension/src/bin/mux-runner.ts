@@ -2896,7 +2896,7 @@ export function applyAutoTicketCompletionValidation(input: ApplyAutoTicketComple
     // R-PEDC: clear any stale done_without_commit_evidence before marking Done.
     clearStaleDoneWithoutCommitEvidence(input.statePath);
     if (markTicketDone(input.sessionDir, input.ticketId)) {
-      input.log?.(`Marked ticket ${input.ticketId} as Done (validated: evidence found, completion_commit: ${guard.sha})`);
+      input.log?.(`Marked ticket ${input.ticketId} as Done (validated: evidence found, completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
     }
     // R-WUWC SOFT-variant (manager path): ticket was 'In Progress' at guard
     // time so the inline upsert inside guardCompletionCommitBeforeDone couldn't
@@ -4394,14 +4394,33 @@ export function appendPipelineRunnerMarker(sessionDir: string, message: string):
 
 export type ExitReason = 'success' | 'cancelled' | 'error' | 'limit' | 'iteration_cap_exhausted' | 'stall' | 'circuit_open' | 'rate_limit_exhausted' | 'timeout_repeat' | 'manager_persistent_hallucination' | 'codex_unhealthy_consecutive_failures' | 'working_tree_modified_externally' | 'state_schema_version_ahead' | 'closer_handoff_terminal' | 'manager_handoff_pending' | 'done_without_commit_evidence' | 'codex_manager_no_progress' | 'recovery_exhausted' | 'idle_stall_unrecoverable' | 'state_working_dir_missing' | 'toolchain_unavailable';
 
-/** R-CNAR-4(c): halt exits pause/defer — auto-resume.sh may retry. Does NOT include 'recovery_exhausted' (fatal, non-recoverable). */
-export const isHaltExit = (r: ExitReason): boolean => r === 'cancelled' || r === 'limit' || r === 'timeout_repeat' || r === 'closer_handoff_terminal' || r === 'manager_handoff_pending' || r === 'done_without_commit_evidence';
-/** R-CNAR-4(c): failure exits stop auto-resume.sh. Includes 'recovery_exhausted' — a non-recoverable terminal state. */
+/**
+ * R-CNAR-4(c): halt exits pause/defer — auto-resume.sh may retry. Does NOT include
+ * 'recovery_exhausted' (fatal, non-recoverable).
+ *
+ * B-GTRUTH WS-A2: 'done_without_commit_evidence' is NOT a member. It is a
+ * TICKET-scoped condition ("this ticket produced no attributable commit"), not a
+ * session-scoped pause, and it now routes into the PhaseIncomplete contract via
+ * exit code 3 (see the exit map in `main`). Demoted in lockstep with
+ * FAILURE_EXIT_REASONS below and `isFatalPhaseFailure` in pipeline-runner.ts, so
+ * the three classifiers cannot disagree. 'state_schema_version_ahead' is likewise
+ * not a member — do not add it.
+ */
+export const isHaltExit = (r: ExitReason): boolean => r === 'cancelled' || r === 'limit' || r === 'timeout_repeat' || r === 'closer_handoff_terminal' || r === 'manager_handoff_pending';
+/**
+ * R-CNAR-4(c): failure exits stop auto-resume.sh. Includes 'recovery_exhausted' — a
+ * non-recoverable terminal state.
+ *
+ * B-GTRUTH WS-A2: 'done_without_commit_evidence' removed — a run that reaches it is
+ * INCOMPLETE, not failed, so the completion panel must not render RED
+ * (`deriveCompletionVerdict`). Removing it here alone would send the run to exit
+ * code 0 (a silent fake-green); the exit map in `main` maps it to 3 instead.
+ */
 const FAILURE_EXIT_REASONS: ReadonlySet<ExitReason> = new Set<ExitReason>([
   'error', 'stall', 'circuit_open', 'rate_limit_exhausted', 'timeout_repeat',
   'manager_persistent_hallucination', 'iteration_cap_exhausted', 'codex_unhealthy_consecutive_failures',
   'working_tree_modified_externally', 'state_schema_version_ahead',
-  'done_without_commit_evidence', 'codex_manager_no_progress', 'recovery_exhausted',
+  'codex_manager_no_progress', 'recovery_exhausted',
   'idle_stall_unrecoverable', 'state_working_dir_missing', 'toolchain_unavailable',
 ]);
 export const isFailureExit = (r: ExitReason): boolean => FAILURE_EXIT_REASONS.has(r);
@@ -4718,7 +4737,7 @@ function extensionGreenGate(workingDir: string): () => 'passing' | 'failing' | '
  * Every site building its ctx here evaluates the SAME policy — no per-site
  * ladder drift (the R-AICF accept-here-revert-there class).
  */
-function buildCompletionCtx(
+function buildCompletionCtx<K extends CompletionDecisionKind>(
   args: {
     sessionDir: string;
     ticketId: string;
@@ -4730,8 +4749,8 @@ function buildCompletionCtx(
     /** R-PDUP sanctioned twin-borrow: twin ids counted as own attribution (R-OMA). */
     ownAttributionTokens?: string[];
   },
-  decision: CompletionDecisionKind,
-): CompletionDecisionCtx {
+  decision: K,
+): CompletionDecisionCtx & { decision: K } {
   const { startCommit, pinnedSha } = resolveSessionBaselineShas(args.sessionDir);
   return {
     sessionDir: args.sessionDir,
@@ -4748,7 +4767,33 @@ function buildCompletionCtx(
     greenGate: extensionGreenGate(args.workingDir),
     workerGateVerdict: () => resolveWorkerGateVerdict(args.sessionDir, args.ticketId, args.workingDir),
     announcedSha: () => readAnnouncedCompletionSha(args.sessionDir, args.ticketId),
+    zeroDiffIntent: () => readDeclaredZeroDiffIntent(args.sessionDir, args.ticketId),
   };
+}
+
+/**
+ * B-GTRUTH WS-A1: render a guard's completion SHA for a log line. A declared
+ * zero-diff accept legitimately has none, and this is the ONE place that absence is
+ * spelled out — keeping the `??` out of the three call sites' cyclomatic budgets.
+ */
+function formatCompletionCommitForLog(sha: string | null | undefined): string {
+  return sha ?? 'none (declared zero-diff)';
+}
+
+/**
+ * B-GTRUTH WS-A1: read the ticket's DECLARED `zero_diff_intent` frontmatter field,
+ * raw. Deliberately does NOT validate the value — membership in the recognized set
+ * is the oracle's policy (`ZERO_DIFF_INTENTS` in ticket-completion-evidence.ts), so
+ * this stays pure wiring and the single-seam invariant holds. Best-effort: an
+ * unreadable ticket yields null (no declaration → no zero-diff arm).
+ */
+function readDeclaredZeroDiffIntent(sessionDir: string, ticketId: string): string | null {
+  try {
+    const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf8');
+    return readFrontmatterField(raw, 'zero_diff_intent') ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function guardCompletionCommitBeforeDone(args: {
@@ -4764,7 +4809,7 @@ export function guardCompletionCommitBeforeDone(args: {
    * (the borrowed twin sha's message names the twin, not the original).
    */
   ownAttributionTokens?: string[];
-}): { ok: true; sha: string } | { ok: false; reason: string; source: CompletionCommitEvidence['source'] } {
+}): { ok: true; sha: string | null } | { ok: false; reason: string; source: CompletionCommitEvidence['source'] } {
   // R-WSRC-4 parity: PICKLE_TEST_MODE=1 bypasses for sandboxed test fixtures
   // whose workingDir is a synthetic temp dir without a real git repo.
   // Production sessions never set this env var; production guard is intact.
@@ -4784,7 +4829,10 @@ export function guardCompletionCommitBeforeDone(args: {
     ownAttributionTokens: args.ownAttributionTokens,
   }, 'done-flip'));
   if (decision.ok) {
-    return { ok: true, sha: decision.sha };
+    // B-GTRUTH WS-A1 shape mapping ONLY: a declared zero-diff accept has no SHA, so
+    // it maps to `sha: null`. No decision is taken here — the arm and all three of
+    // its conditions live in evaluateCompletionEvidence (AC-GTRUTH-A1-5).
+    return { ok: true, sha: decision.sha ?? null };
   }
   if (decision.reason === 'worker_gate_red' || decision.reason === 'worker_gate_unavailable') {
     const gate = decision.gate ?? { verdict: 'absent' as const, computedVia: 'unavailable' };
@@ -5057,7 +5105,7 @@ export function commitAndContinueDoneFlip(input: CommitAndContinueDoneFlipInput)
   }
   clearStaleDoneWithoutCommitEvidence(input.statePath);
   if (markTicketDone(input.sessionDir, input.ticketId)) {
-    input.log(`commit-and-continue: marked ${input.ticketId} Done (completion_commit: ${guard.sha})`);
+    input.log(`commit-and-continue: marked ${input.ticketId} Done (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
   }
   // Persist completion_commit now that status is Done (mirrors applyAutoTicketCompletionValidation).
   try {
@@ -5068,7 +5116,7 @@ export function commitAndContinueDoneFlip(input: CommitAndContinueDoneFlipInput)
       if (upd) fs.writeFileSync(fp, upd);
     }
   } catch { /* best-effort — guard already proved evidence */ }
-  return { ok: true, sha: guard.sha };
+  return { ok: true, sha: guard.sha ?? undefined };
 }
 
 // ---------------------------------------------------------------------------
@@ -10492,7 +10540,7 @@ async function runMuxRunnerMain() {
           }
           // R-PEDC: clear stale prior-iteration stamp on recovery.
           clearStaleDoneWithoutCommitEvidence(statePath);
-          log(`Ticket ${previousTicket} already marked Done by model — skipping validation (completion_commit: ${guard.sha})`);
+          log(`Ticket ${previousTicket} already marked Done by model — skipping validation (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
           // R-CXOR-1: detect HEAD regression — worker may have committed then git-reset to baseline.
           if (previousTicketStartCommit) {
             try {
@@ -11396,8 +11444,14 @@ async function runMuxRunnerMain() {
   // R-ICP-1: 'iteration_cap_exhausted' is a distinct exit code (3) so
   // pipeline-runner can halt the pipeline instead of treating cap-without-
   // EPIC_COMPLETED as either silent success (0) or a generic failure (1).
+  // B-GTRUTH WS-A2: 'done_without_commit_evidence' joins the cap exit on code 3 so
+  // pipeline-runner routes it through `reportPhaseIncomplete` (which consults the
+  // completion oracle to separate committed-but-unflipped from genuinely-unfinished)
+  // instead of fataling the whole pipeline over one ticket. It must NOT fall through
+  // to the `else exitCode = 0` default — that would graduate the phase silently.
   let exitCode: number;
   if (exitReason === 'iteration_cap_exhausted') exitCode = 3;
+  else if (exitReason === 'done_without_commit_evidence') exitCode = 3;
   else if (isFailedExit) exitCode = 1;
   else exitCode = 0;
   closePhantomDoneWatchers();

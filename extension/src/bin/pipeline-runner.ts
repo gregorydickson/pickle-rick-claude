@@ -2793,12 +2793,14 @@ export function isFatalPhaseFailure(phase: PhaseName, runtime: PipelineRuntime):
   try {
     const runnerState = sm.read(runtime.statePath);
     if (phase === 'pickle') {
-      // AC-MWMO-D2-8: a done_without_commit_evidence halt means THIS ticket has no commit — it
-      // says nothing about the session-wide commit count. Without this check, an all-terminal
-      // bundle where an earlier ticket landed a commit (countCommitsSince > 0) but the LAST
-      // ticket exited with no commit would pass through to graduation (pendingCount === 0
-      // graduates unconditionally) and fake-green "Phase pickle completed successfully".
-      if (runnerState.exit_reason === 'done_without_commit_evidence') return true;
+      // B-GTRUTH WS-A2: `done_without_commit_evidence` is no longer phase-fatal here.
+      // AC-MWMO-D2-8's concern (an all-terminal bundle whose LAST ticket has no commit
+      // must not fake-green) is preserved by a BETTER mechanism: mux-runner now exits
+      // code 3, so `runPhaseIteration` routes it to `reportPhaseIncomplete` BEFORE
+      // reaching this function, and that path consults the completion oracle instead
+      // of the session-wide commit count. Demoted in lockstep with `isHaltExit` and
+      // `FAILURE_EXIT_REASONS` (mux-runner.ts) so the three classifiers agree.
+      // The two arms below are UNCHANGED and still fatal.
       const startCommit = runnerState.start_commit?.trim();
       if (!startCommit) return true;
       return countCommitsSince(startCommit, runtime.repoRoot) === 0;
@@ -3502,7 +3504,15 @@ function logUnfinishedTickets(runtime: PipelineRuntime, unfinished: ReturnType<t
   if (overflow > 0) runtime.log(`  ... and ${overflow} more`);
 }
 
-function reportPhaseIncomplete(runtime: PipelineRuntime, phase: PhaseName): void {
+/**
+ * Returns TRUE when `pipeline_phase_incomplete` was stamped (genuine incompleteness),
+ * FALSE when the B-PXBO oracle re-resolution found nothing genuinely unfinished.
+ *
+ * B-GTRUTH WS-A2: the boolean makes the no-stamp verdict OBSERVABLE to
+ * `runPhaseIteration`, which previously broke the pipeline either way — so a phase
+ * whose every status-unfinished ticket had in fact landed still halted on a proxy.
+ */
+function reportPhaseIncomplete(runtime: PipelineRuntime, phase: PhaseName): boolean {
   const tickets = collectTickets(runtime.sessionDir);
   const unfinished = resolveUnfinishedTickets(runtime, tickets);
   const total = tickets.length;
@@ -3518,7 +3528,7 @@ function reportPhaseIncomplete(runtime: PipelineRuntime, phase: PhaseName): void
     // Gated on statusUnfinished so a non-ticket incompleteness (none unfinished by
     // status, e.g. judge-exhausted) still falls through to the genuine stamp below.
     runtime.log(`Phase ${phase}: ${statusUnfinished} ticket(s) committed/terminal via oracle re-resolution — no phase-incomplete stamp.`);
-    return;
+    return false;
   }
   let priorExitReason: string | null = null;
   try {
@@ -3534,6 +3544,7 @@ function reportPhaseIncomplete(runtime: PipelineRuntime, phase: PhaseName): void
   runtime.log(`Phase ${phase} ${cause}; ${unfinished.length}/${total} tickets remain unfinished.`);
   if (unfinished.length > 0) logUnfinishedTickets(runtime, unfinished);
   recordExitReason(runtime.statePath, 'pipeline_phase_incomplete');
+  return true;
 }
 
 /**
@@ -4101,8 +4112,15 @@ async function runPhaseIteration(
     return { action: 'continue' };
   }
   if (exitCode === PipelineRunnerExitCode.PhaseIncomplete) {
-    reportPhaseIncomplete(runtime, rawPhase);
-    return { action: 'break', phaseIncomplete: true };
+    if (reportPhaseIncomplete(runtime, rawPhase)) {
+      return { action: 'break', phaseIncomplete: true };
+    }
+    // B-GTRUTH WS-A2 (AC-GTRUTH-A2-1): every status-unfinished ticket re-resolved as
+    // committed through the completion oracle — the work landed, so this is not a
+    // phase-incomplete condition. Fall through to the normal path and let the
+    // ROSTER decide (`maybeStampPhaseGraduation` still halts if a status-runnable
+    // ticket remains); do not halt on the exit code alone.
+    log(`Phase ${rawPhase}: PhaseIncomplete exit with no genuinely-unfinished ticket — deferring to the roster gate`);
   }
   const shouldHalt = shouldHaltAfterPhase(rawPhase, exitCode, runtime);
   if (exitCode !== 0 && !shouldHalt) {

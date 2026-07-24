@@ -134,7 +134,18 @@ afterEach(() => {
   __setSpawnRunnerForTests(null);
 });
 
-test('AC-MWMO-D2-10: a done_without_commit_evidence halt keeps its recorded exit_reason through finalize, not the generic failed', async () => {
+// B-GTRUTH WS-A2 RECONCILIATION.
+//
+// AC-MWMO-D2-10's guarantee is "finalize must not launder a specific halt into the
+// generic 'failed'". That guarantee HOLDS — but WS-A2 changes which specific reason
+// finalize lands on. The ticket-scoped `done_without_commit_evidence` is now rerouted
+// into the PhaseIncomplete contract (mux exit code 3), so the pipeline-level exit_reason
+// becomes `pipeline_phase_incomplete` — still specific, still not 'failed'.
+//
+// The originating reason is not lost: `reportPhaseIncomplete` reads the prior
+// exit_reason and names it in its own log line, which this test now asserts. That is
+// the "recovery-path report" the reroute is supposed to produce.
+test('AC-MWMO-D2-10 (post-WS-A2): a rerouted done_without_commit_evidence lands on pipeline_phase_incomplete, never the generic failed', async () => {
   const repo = tmpDir('pipe-dwce-rr-repo-');
   const sessionDir = tmpDir('pipe-dwce-rr-session-');
   try {
@@ -151,17 +162,28 @@ test('AC-MWMO-D2-10: a done_without_commit_evidence halt keeps its recorded exit
     writeTicket(sessionDir, 'aaa11111', 1, 'Done');
     writeTicket(sessionDir, 'bbb22222', 2, 'Done');
 
+    // Post-WS-A2 mux mapping: done_without_commit_evidence exits 3, not 1.
     __setSpawnRunnerForTests(async () => {
-      return { exitCode: 1, stdout: '', stderr: '' };
+      return { exitCode: PipelineRunnerExitCode.PhaseIncomplete, stdout: '', stderr: '' };
     });
 
-    await captureMainExit(sessionDir, PipelineRunnerExitCode.Failure);
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
 
     const finalState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
     assert.equal(
       finalState.exit_reason,
-      'done_without_commit_evidence',
-      'AC-MWMO-D2-10: finalizePipeline must preserve the recorded exit_reason, not overwrite it with the generic "failed"',
+      'pipeline_phase_incomplete',
+      'AC-MWMO-D2-10: finalizePipeline must record the specific PhaseIncomplete reason, never the generic "failed"',
+    );
+    assert.notEqual(finalState.exit_reason, 'failed', 'the generic label is what this AC forbids');
+
+    // The demotion must not cost the operator the diagnosis: the originating
+    // ticket-scoped reason is still named in the halt report.
+    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.match(
+      log,
+      /exit_reason=done_without_commit_evidence/,
+      'reportPhaseIncomplete must name the prior mux exit_reason so the rerouted halt stays diagnosable',
     );
   } finally {
     __setSpawnRunnerForTests(null);

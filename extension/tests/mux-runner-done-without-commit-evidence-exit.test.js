@@ -237,8 +237,19 @@ function deriveExitReasonsFromSource(sourceText) {
  * yielding an empty/degenerate mapping that quietly passes.
  */
 function deriveExitCodeMapFromSource(sourceText) {
-  const capBranch = /if \(exitReason === '(\w+)'\) exitCode = (\d+);/.exec(sourceText);
-  assert.ok(capBranch, 'exit map: could not parse the leading `if (exitReason === …) exitCode = N;` branch from mux-runner.ts — the map was reshaped, so this AC can no longer verify it');
+  // B-GTRUTH WS-A2: the map now carries MORE THAN ONE reason-specific branch
+  // ('iteration_cap_exhausted' and 'done_without_commit_evidence' both map to 3), so
+  // parse every one of them instead of only the leading branch. Generalizing the
+  // parser — rather than reshaping the source to fit a single-branch regex — keeps the
+  // mapping read FROM source; a hand-copied if/else would only ever prove the test's
+  // own copy of the logic.
+  const reasonBranches = [
+    ...sourceText.matchAll(/(?:if|else if) \(exitReason === '(\w+)'\) exitCode = (\d+);/g),
+  ].map((m) => [m[1], Number(m[2])]);
+  assert.ok(
+    reasonBranches.length > 0,
+    'exit map: could not parse any `(else )?if (exitReason === …) exitCode = N;` branch from mux-runner.ts — the map was reshaped, so this AC can no longer verify it',
+  );
 
   const failBranch = /else if \(isFailedExit\) exitCode = (\d+);/.exec(sourceText);
   assert.ok(failBranch, 'exit map: could not parse the `else if (isFailedExit) exitCode = N;` branch from mux-runner.ts — the map was reshaped, so this AC can no longer verify it');
@@ -246,13 +257,12 @@ function deriveExitCodeMapFromSource(sourceText) {
   const defaultBranch = /else exitCode = (\d+);/.exec(sourceText);
   assert.ok(defaultBranch, 'exit map: could not parse the trailing `else exitCode = N;` branch from mux-runner.ts — the map was reshaped, so this AC can no longer verify it');
 
-  const capReason = capBranch[1];
-  const capCode = Number(capBranch[2]);
+  const perReason = new Map(reasonBranches);
   const failCode = Number(failBranch[1]);
   const defaultCode = Number(defaultBranch[1]);
 
   return (reason) => {
-    if (reason === capReason) return capCode;
+    if (perReason.has(reason)) return perReason.get(reason);
     if (isFailureExit(reason)) return failCode;
     return defaultCode;
   };
@@ -274,21 +284,56 @@ function deriveExitCodeMapFromSource(sourceText) {
 // cannot silently re-mask the failure". It is strengthened here from a
 // single-reason self-replication into a universal over the whole ExitReason
 // union, evaluated against the mapping PARSED FROM SOURCE.
-test('mux-runner: the source exit map sends every failure ExitReason non-zero (forward-regression pin; vacuous pre-fix — see comment)', () => {
-  assert.equal(isHaltExit('done_without_commit_evidence'), true, "isHaltExit('done_without_commit_evidence') must be true");
-  assert.equal(isFailureExit('done_without_commit_evidence'), true, "isFailureExit('done_without_commit_evidence') must be true");
+// B-GTRUTH WS-A2 (AC-GTRUTH-A2-3): the halt set is pinned EXACTLY, so a future
+// reclassification cannot quietly re-admit a ticket-scoped reason. Derived over the
+// whole ExitReason union, so 'state_schema_version_ahead' (explicitly not a member)
+// and every future member are covered without being hand-listed.
+const EXPECTED_HALT_EXITS = [
+  'cancelled',
+  'closer_handoff_terminal',
+  'limit',
+  'manager_handoff_pending',
+  'timeout_repeat',
+];
 
+test('AC-GTRUTH-A2-3: isHaltExit is true for EXACTLY the five session-scoped pause reasons', () => {
+  const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
+  const actual = deriveExitReasonsFromSource(source).filter((r) => isHaltExit(r)).sort();
+  assert.deepEqual(
+    actual,
+    EXPECTED_HALT_EXITS,
+    'isHaltExit must contain exactly the session-scoped pause/defer reasons. ' +
+    "'done_without_commit_evidence' is TICKET-scoped and was removed (WS-A2); " +
+    "'state_schema_version_ahead' is not a member and must not be added.",
+  );
+});
+
+test('AC-GTRUTH-A2-3/A2-4: done_without_commit_evidence is demoted out of BOTH classifier sets', () => {
+  assert.equal(isHaltExit('done_without_commit_evidence'), false, "isHaltExit('done_without_commit_evidence') must be false after WS-A2 — MUST fail on pre-fix source");
+  assert.equal(isFailureExit('done_without_commit_evidence'), false, "isFailureExit('done_without_commit_evidence') must be false after WS-A2 — MUST fail on pre-fix source");
+});
+
+test('AC-GTRUTH-A2-4: the source exit map routes done_without_commit_evidence to PhaseIncomplete (3), never 0', () => {
   const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
   const exitCodeFor = deriveExitCodeMapFromSource(source);
 
-  // The AC's literal requirement.
-  assert.equal(exitCodeFor('done_without_commit_evidence'), 1, "'done_without_commit_evidence' must map to exit code 1");
+  // The whole point of the coupling: demoting the reason out of FAILURE_EXIT_REASONS
+  // without adding this branch would send it to the `else exitCode = 0` default, and a
+  // 0 exit graduates the phase — turning a loud halt into a silent fake-green. Exit 3
+  // is what makes pipeline-runner call reportPhaseIncomplete.
+  assert.equal(
+    exitCodeFor('done_without_commit_evidence'),
+    3,
+    "'done_without_commit_evidence' must map to exit code 3 (PipelineRunnerExitCode.PhaseIncomplete) — " +
+    'NOT 1 (pre-fix: fatal) and emphatically NOT 0 (silent graduation)',
+  );
 
   // A NEW failure reason is covered automatically instead of hand-added here.
+  const phaseIncompleteReasons = new Set(['iteration_cap_exhausted', 'done_without_commit_evidence']);
   for (const reason of deriveExitReasonsFromSource(source)) {
     const code = exitCodeFor(reason);
-    if (reason === 'iteration_cap_exhausted') {
-      assert.equal(code, 3, "'iteration_cap_exhausted' must keep its distinct exit code 3 (R-ICP-1)");
+    if (phaseIncompleteReasons.has(reason)) {
+      assert.equal(code, 3, `'${reason}' must keep its distinct exit code 3 (R-ICP-1 / WS-A2)`);
     } else if (isFailureExit(reason)) {
       assert.equal(code, 1, `'${reason}' is a failure exit and must map to a non-zero exit code 1 — a reclassification that sends it to 0 re-masks the failure`);
     } else {
@@ -348,12 +393,26 @@ test('mux-runner: applyAutoTicketCompletionValidation call site honors the fatal
 // The fix derives ONE verdict (`deriveCompletionVerdict`) from `isFailureExit`
 // and feeds both renderers, so they cannot diverge again.
 
-test('mux-runner: a done_without_commit_evidence halt does not render a GREEN "Complete" panel', () => {
+// B-GTRUTH WS-A2 INVERSION. WS-1c's original assertion (must NOT render GREEN) was
+// correct while the reason was classified a FAILURE. WS-A2 reclassifies it as
+// INCOMPLETE — the run did not fail, it did not finish — so AC-GTRUTH-A2-4 requires
+// the panel not to render RED. The invariant being protected is unchanged and is what
+// the union-wide parity test below actually enforces: ONE verdict derivation
+// (deriveCompletionVerdict) feeds both renderers, so the panel and the notification
+// can never disagree. Neither renderer may hardcode a colour.
+test('AC-GTRUTH-A2-4: a done_without_commit_evidence exit does not render a RED "Failed" panel', () => {
   const verdict = deriveCompletionVerdict('done_without_commit_evidence');
-  assert.notEqual(verdict.colorName, 'GREEN', "done_without_commit_evidence must NOT render GREEN — MUST fail on pre-fix source (hardcoded 'GREEN')");
-  assert.ok(
-    !verdict.panelTitle.includes('Complete'),
-    "done_without_commit_evidence must NOT title itself 'Complete' — MUST fail on pre-fix source (hardcoded 'mux-runner Complete')",
+  assert.notEqual(
+    verdict.colorName,
+    'RED',
+    'done_without_commit_evidence is INCOMPLETE, not failed — rendering the session RED told ' +
+    'the operator a shipped bundle had failed. MUST fail on pre-fix source.',
+  );
+  assert.equal(verdict.isFailure, false, 'the demoted reason must not read as a failure verdict');
+  assert.equal(
+    buildTmuxNotification('done_without_commit_evidence', 'implement', 3, 125).title,
+    '🥒 Pickle Run Complete',
+    'the notification must agree with the panel — the two renderers share one verdict derivation',
   );
 });
 
