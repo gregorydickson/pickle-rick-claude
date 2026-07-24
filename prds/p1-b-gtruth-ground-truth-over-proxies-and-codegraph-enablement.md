@@ -29,6 +29,31 @@ Scanned every session under `~/.local/share/pickle-rick/sessions`:
 each red runs suppression, draws down the persistent `failed_flip_suppression_cap` ledger, risks a
 `reset --hard` + `git clean -fd`, and — twice in one bundle — required a human.
 
+## Field occurrence — 2026-07-23, a real target-repo codex pipeline (post-authoring, corroborating WS-A2)
+
+A **third** `done_without_commit_evidence` phase-halt, and the first observed OUTSIDE a self-build
+session — a `/pickle-pipeline --backend codex` run against **loanlight-api** (session
+`2026-07-23-e89c5c77`, the LOA-1972/1973 appraisal-flag epic, 14 tickets).
+
+- **Symptom (verified):** pickle exited code 1 with `exit_reason: done_without_commit_evidence` after
+  6 clean ticket commits (R1–R7). `pipeline-runner` then halted **all 4 phases** (`Phase pickle failed
+  (exit 1) — stopping pipeline`, `0/4 phases`) — the WS-A2 phase-fatal misclassification, now confirmed
+  on a real target repo. `pipeline_continue_on_phase_fail: true` did not help (it does not cover the
+  build phase).
+- **The in-flight ticket was genuinely mid-work, not zero-diff.** R9 was `In Progress` with a clean
+  tree at exit; on recovery it committed real changes (`b224c6c25`). So this instance is the
+  *committed-but-unflipped / manager-declared-done-early* flavor — WS-A1's zero-diff widening would NOT
+  have covered it; only WS-A2's reroute-to-recovery does.
+- **`allow_inferred_completion_commit: true` was set at launch and did NOT prevent the halt** — evidence
+  that the launch-time inferred-commit allowance is not a substitute for the WS-A2 reclassification.
+- **Recovery (same 4 steps as the recorded cases):** verify ground truth (`git log`) → reset
+  `step`/`current_ticket` to the in-flight ticket via `update-state.js` → clear `exit_reason` → relaunch
+  `launch.sh`. Resumed cleanly; R9→R6 advanced next iteration. Handled by the operator babysitter loop.
+
+**Bearing on the bundle:** strengthens WS-A2's P1 case (not self-build-specific — it bites real
+target-repo pipelines and stalls the entire review chain) and confirms WS-A1 alone is insufficient for
+this flavor (a genuinely-incomplete in-flight ticket, not a zero-diff one).
+
 ## The single pattern
 
 Five distinct incidents this session; **one shape**. A proxy signal was treated as authoritative over
@@ -43,6 +68,16 @@ ground truth that was one command away.
 | anatomy `exit 1` → *"completed successfully"* | phase outcome | non-convergence | the disposition itself — **B-NONSTOP fixed** |
 
 B-WDSUB closed two instances. **This bundle closes the class**, then ships codegraph on top of it.
+
+> **Full site inventory:** [`RELIABILITY-INVENTORY-2026-07-23-proxy-over-ground-truth.md`](RELIABILITY-INVENTORY-2026-07-23-proxy-over-ground-truth.md)
+> — six parallel auditors, one invariant (*git working-tree state is the sole authority on completion; every
+> other signal is advisory*). Headline: the system is **already ~85% git-authoritative**; the destruction
+> surface is **~7 concrete sites, not 94**, and the 94 recovery recipes are the *symptom* of those leaks —
+> each historically patched with a new proxy instead of closing the leak. Track A here ships the inventory's
+> **Tier 1** (A+B → WS-A1/WS-A2, today's incident, pure subtraction) and **Tier 2** (C → the R-WDTF class,
+> already closed by B-WDSUB); the inventory's **Tier 4** structural enabler (a real `ExitReason` enum so a
+> single git-consultation guard can live at the `StateManager` choke-point) and **Tier 3** design-conflict
+> sites are scoped OUT of this bundle and left as the inventory's recommended follow-on sequencing.
 
 ## Why one PRD (the ordering constraint that justifies batching)
 

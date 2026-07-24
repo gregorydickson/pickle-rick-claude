@@ -843,3 +843,842 @@ recovered ticket individually, never batch across a turn) — the gap that turne
 the B-APNC 0/4. Built on the IMMUNE in-process path (no detached `claude -p` spawned during the build); full
 local gate green (tsc/eslint/10 audits + fast-c4 6727/6730 0-fail + integration 495/496 [F22-1 isolation-green
 load-flake] + expensive 0-fail).
+
+## Swept 2026-07-24 — post-beta.5 hygiene (superseded planning strata removed from the live file)
+
+Removed from `MASTER_PLAN.md` on 2026-07-24 because they were fully superseded by the SHIP STATE 2026-07-23 / NEXT STEPS / OPERATING PRINCIPLES blocks: the stale v12 changelog banner; the superseded numbered drain items 1–6 (all shipped/dead/folded into B-GTRUTH+B-CGEN, per the REGROUND 2026-07-22 table that replaced them); the entire 2026-07-16/17 "do B then A" saga incl. §A/§B/§C source-grounded queue, the retracted INHERITED RED, and the worker-test-gate-timeout row (R-MWMO d2 shipped beta.3, R-SAFP beta.4, B-NONSTOP+B-WDSUB beta.5); the B-1SEAM design record (shipped beta.37); the 2026-06-30 STRATEGIC SHIFT; the autonomous-dev scorecard; the 2026-07-08 RESUME-HERE + B-FOMC TOP-ITEM region (B-FOMC shipped 10/10); and the B-SIGFH codex soak findings (R-CXHANG beta.37, R-SSPB beta.38). Preserved verbatim below.
+
+### [swept] stale-v12-banner (was L9–L32)
+
+**Updated 2026-07-15 (v12 — babysitter drain loop).** ✅ **[[B-FOMC]] SHIPPED** (10/10 tickets, deployed + WS-5
+soaked to an honest NULL; recovered from 3 mux soft-wedges + the R-AICF zero-diff-manager-ticket Done-flip fatal via
+marker commits; last two hardening tickets hand-built after the headless mux couldn't hold large-tier workers).
+✅ **[[R-PLGR]] SHIPPED** (`a67ca3d6`, green-tree precondition). ✅ **[[R-FBTN]] SHIPPED** (`495d5e50`, flaky-test
+names). **[[R-RWNF]] verified-dead + scoped** for attended removal (`1c84b520`). **[[R-WGVI]] policy-approved,
+refined, build-ready (AC-WGVI-P1..P6, `80b0c20a`), ATTENDED build deferred** — self-build-only, not autonomy-urgent.
+**[[R-AICF]] REPRODUCED this session** (B-FOMC's deploy/soak zero-diff manager tickets tripped the Done-flip fatal;
+workaround = empty marker commit naming the ticket) — strengthens its P1 row below. New reliability findings filed:
+[[R-WGVI]] + [[R-PLGR]] (both from the B-FOMC run itself) + the operator's `--max-iterations 0` capture (bottom).
+Prior:
+
+**Updated 2026-07-08 (v11 — ✅ beta.44 [[R-LTNC]] SHIPPED (internal-artifact rename `linear_ticket_`→`rick_ticket_`; CODEX build, closer-assisted). Codex autonomously executed the 225-file rename + hermetic test + globs + regression guard (strongest codex-capability evidence yet, self-recovered a wedge) but shipping needed a FULL closer-takeover — a flaky gate ([[R-WGFR]]) killed run 1, the full release gate caught 6 rename-gap escapes, and a stale-deploy masqueraded as a regression. So codex is "viable-with-closer," NOT clean-hands-off — beta.38 remains the ONLY clean codex rep. **[[R-WGFR]] RE-OPENS the reliability-fix queue and now LEADS** (flaky-gate false-red-fatal on a green bundle). PRIORITY ORDER SET BY OPERATOR: RELIABILITY → AUTONOMOUS EXECUTION → SIMPLICITY. THREE clean hands-off soak reps banked 2026-07-07: beta.41 [[R-MPGD]] WS-1 + beta.42 [[B-RRPC]] + beta.43 [[B-RASO]] (recovery attributable-work single oracle — one `git cat-file`-verified `resolveAttributableFrontmatterSha` for both silent-death + Failed-flip detectors, closing the latent false-hold). All 4/4, ZERO interventions. B-RASO is the FIRST R-PSRB salvage-path RELIABILITY fix shipped via an ATTENDED `/pickle-pipeline` rather than hand-built — the deployed false-hold is low-base-rate and never fired on the build worker. With B-RASO the recovery-sprawl simplification lever is fully worked (B-RASO + B-RRPC + B-CSHYG all shipped/closed), but the reliability-fix queue RE-OPENED at beta.44 with [[R-WGFR]] (the between-ticket gate's single flaky `test:fast` false-red-fatals a green bundle) — prior HISTORICAL classes stay code-fixed. Focus now (reliability-first): (1) [[R-WGFR]] — the fresh reliability fix that ALSO de-flakes autonomous reps; (2) a CLEAN hands-off CODEX rep (beta.44 was closer-assisted) once R-WGFR de-flakes the gate; (3) [[B-CSOR]] simplicity, a good dogfood vehicle for the codex rep. Recovery-sprawl map: `RECOVERY-SPRAWL-COLLAPSE-ANALYSIS-2026-07-07.md`. Prior: R-SZGB fail-OPEN family CLOSED (beta.39–40)).** ✅ **THE SIMPLIFICATION DROP SHIPPED — v2.0.0-beta.37 RELEASED + DEPLOYED 2026-07-02 (install.sh, MD5 parity OK on all hot files; gate: tsc/eslint/9-audits/fast-c4/expensive green, budget-c8 + 4 integration reds proven isolation-green load-flakes per posture).** One ultracode session executed `SIMPLIFICATION-AND-FIX-PLAN-2026-07-02.md` end-to-end: **B-1SEAM all 3 WS** (`7b52789d` WS-1 ONE completion predicate `evaluateCompletionEvidence` routing ALL 8 former divergent decision sites [not 3 oracles — 7 sites/3 policy shapes + the bare-field `defaultDoneGuard`] + spawn-morty verified-sha/`Pickle-Ticket`-trailer reconciliation killing the codex untagged/hallucinated-sha trigger at the source; `2bbf5770` WS-2 `healPipelineRequiredFields` symmetric prd_path+start_commit self-heal; WS-3 in `885efb73` — ONE dirty-tree salvage seam, `stageAutoCommitPaths` empty-excludes sweep deleted) + **R-CXHANG orphan reaper + B-RSHM subtraction** (`885efb73`: stop-hook dead branches + whole chain_meeseeks subsystem retired) + **the guard-layer prune** (`2957f0c2`: 4 orphan audits + 2 advisory audits DELETED, design-ground-truth demoted [canonical gate now 9 audits], ONE quality-gate bypass surface, legacy kill-switches PICKLE_CITADEL_MECHANICAL/PICKLE_RECOVERY_CONSOLIDATION removed, codex-manager-relaunch shim collapsed). R-AICF/R-PSCG/R-MACB/R-CXHANG all closed; net ~−3,650 LOC. Shipped + deployed + released through **v2.0.0-beta.36** (✅ **B-SIGFH** scope-fence detector hardening — codex GA soak, DEPLOYED 2026-07-02; prior **B-WSPU — the DUAL WORKER-SPAWN MODEL COLLAPSED**: the entire detached lifecycle DELETED (~1000+ LOC pure subtraction), all tiers now run one synchronous re-spawn-resume path; the operator-flagged #1 structural subtraction, DONE + DEPLOYED 2026-07-01 — the R-LTDM/R-WPEX/R-MWBG failure-mode class is gone. Field evidence FOR the collapse: a detached worker silent-died building its own deletion while the synchronous path built it clean). beta.34 ✅ **B-SSVR** (R-SSBR scope-resolver fail-CLOSED + R-ISVP install.sh prerelease semver, both DEPLOYED). beta.33 (✅ **gate-overreach subtraction** — Phase 1 made the iteration-0 readiness + ticket-audit gates ADVISORY, Phase 2 DELETED the forward-ref annotation grammar, the top recurring bug source [R-RTRC ×8 + R-FRA ×7]; ~35 files of pure subtraction, KEPT resolution fixes R-RTRC-3/4/5 / R-RHFP / R-RCEX / R-RTPS; commit `9a5c047e`). beta.32 ✅ **[[R-LTDM]]** detached-poll throttle (R-MWBG RE-CLOSED). Operator flagged the underlying brittleness — the dual worker-spawn model — logged as **[[B-WSPU]]** and now ✅ SHIPPED+DEPLOYED beta.35 — the real subtraction, done. (R-MWBG runtime half:
+explicit-tier detached-routing gate — R-MWBG now FULLY closed; beta.30 B-RELHYG; beta.29 R-SIGF scope-fence +
+R-MWBG half-1; beta.28 R-WPEX; beta.27 B-APNC; beta.26 B-CWGE; beta.25 B-PXBO). **The historical reliability
+defect classes are code-fixed at root** — the completion-commit/Done-flip cluster (B-PCOMP beta.22 + B-DURA
+beta.23), the review-phase 0/4 cause (B-RPGT beta.24), the codex worker-gate (B-CWGE beta.26), the phase-exit
+oracle (B-PXBO beta.25), the codex scope-fence GA blocker (R-SIGF beta.29), and the medium-tier ceiling-survival
+gap (R-MWBG beta.31). **OBSERVATION mode is now producing new evidence-backed work, as designed:** two fresh
+bugs surfaced this window — **[[R-SSBR]] (P2, scope-resolver trusts a stale `origin/main` → false
+`SCOPE_EMPTY_DIFF` → review phases run UNSCOPED, fail-open on the scope boundary; surfaced babysitting the
+LOA-1614 pipeline)** and **[[R-ISVP]] (P3, install.sh `compare_semver` rejects prerelease → downgrade guard dead
+for the `beta.*` line)**. Both R-SSBR and R-ISVP ✅ SHIPPED+DEPLOYED beta.34, and the detached-spawn brittleness they exposed is now SUBTRACTED (B-WSPU beta.35). GA gate
+remains field-soak repeatability (esp. codex) — now on the simpler single-lifecycle runtime. See `## ⏯ RESUME HERE`.
+
+
+
+### [swept] superseded-numbered-drain-items (was L93–L102)
+
+**Every item below is a SUBTRACTION or a de-brittler — that is not a coincidence, it is the selection criterion.** Anything that would ADD a mechanism is not on this list; if a fix looks additive, re-scope it or drop it (the B-CGHARD "already-shipped, dropped" and B-TRGP "LEAVE" precedents). Score each on landing: *did it leave the system smaller/flatter AND less able to false-fail?*
+
+1. **🥇 [[B-NONSTOP]] — the standing #1 reliability item. BUILD NEXT via `/pickle-pipeline`.** Honest non-convergence + generous caps + observability = the direct implementation of OPERATING PRINCIPLE 1. **Unblocked** (R-SAFP deployed; symbol-audit no longer stops it; normal flow dodges R-RPFL). **PRD: `prds/p1-b-nonstop-generous-caps-honest-nonconvergence-observability.md`** (committed). **Subtraction paid:** collapses the five-dispositions-into-one-boolean `successfulReasons` list into an explicit disposition→(exit, report, continue) map; WS-4 fixes the release-gate runner-timeout cap at root (retires the `PICKLE_TEST_RUNNER_TIMEOUT_MS` workaround this session leaned on 2×). **De-brittles:** a give-up stops reading as success; a cap exit becomes a named, visible disposition. **Launch with `--szechuan-max-iterations 500 --anatomy-max-iterations 500`** so it isn't strangled by the caps it raises. **⚠ Build-time reminders in the PRD:** WS-1 changes REPORTING only, never routing (the nonstop continuation is already correct — §B.6(f)); AC-NS-5 must ADD per-phase structure to `pipeline-status.json` (today it has none); ship WS-1 + WS-2 together or the log still lies.
+2. **🥈 [[R-RPFL]] — cheap P2 subtraction.** Resolve `--prd` to absolute at argv-parse (`spawn-refinement-team.ts`). Fail-late → fail-never; deletes a ~15-min-wasted-analyst-spend failure mode. Small bundle; pairs naturally after B-NONSTOP (same file neighborhood). **Subtractive:** removes a guard-throw's ability to fire by making the input satisfy the invariant early.
+3. **🥉 [[R-WDTF]] class fix — subtract the `tokenPresent` conjunct (both sites).** `spawn-morty.ts:2336` + `spawn-refinement-team.ts:933` — a narrative token as a hard AND-conjunct outranking ground truth destroys verified work. **CONFIRMED at both sites** (§B.3). **Take the subtractive arm** (drop the conjunct); the "hoist suppression" arm is ADDITIVE — reject it. Repo-agnostic; bites every target repo.
+4. **[[B.5]] honesty subtractions (one small bundle).** All three CONFIRMED LIVE (§B.5): `finalizePhaseSuccess:4137` exit-code ignored on non-pickle phases (overlaps B-NONSTOP WS-2 — fold in or sequence right after), `convergence-gate.ts:1334` `null`-not-projectType, and note `install.sh` source-wins already SHIPPED in B-SSAT. Trim to what's left after B-NONSTOP lands.
+5. **[[R-PRNF9-DEAD]] — DELETE the dead `readiness_halt` cluster (§C).** `pipeline-runner.ts:2781/3662/3774/3917-3924` has readers but **no producer anywhere** (not in source, not deployed) — never fired. Pure subtraction; R-CCNW-2 "delete-or-wire → delete." Bundle with B-RLH WS-5's ac-phase-gate DELETE-or-WIRE decision.
+6. **[[B-CGCAP]] — the big codegraph keep-vs-subtract decision (POST-GA, ~−1.3k LOC + native dep on the table).** Now measurable: B-SSAT made the field arm OFF/labeled, B-CGHARD fixed the input. The honest question is "with the harvester fixed and the arm off, has anything regressed?" If a clean-harvest soak shows no lift → **subtract codegraph entirely** (the largest single de-brittling available: removes a native dep, a kill-switch, MANAGED_KEYS entries, 507 LOC of service). Do NOT run the soak until B-NONSTOP ships (a soak that stalls on an iteration cap and reads as "converged" measures nothing).
+
+**Deferred / not on the reliability path:** B-RLH (review-loop honesty — has real subtractions but is honesty-not-stoppage; fold its WS-4 into B-NONSTOP, queue the rest after). B-TRGP stays **LEAVE** (proven non-subtractive — a decision record, not work). R-ORSR-2 needs its own re-scope (§B.2 drifts). Do NOT chase the ~38-guard manager-loop cluster or the dead-pid triplication (B-GSUB over-subtraction lesson — earned signal, low ROI).
+
+
+### [swept] 2026-07-16-17-saga-and-B-FOMC (was L273–L1047)
+
+## ⏭ NEXT — REPRIORITIZED 2026-07-16 (reliability + simplification, aligned to the operator re-frame at ②/⓪ below). Supersedes the stale "TOP ITEM = B-FOMC" block (B-FOMC ✅ SHIPPED 10/10).
+
+**Branch renamed 2026-07-16:** `experiment/fable-operating-manual` → **`release/v2.1-beta`** (local + remote + docs; old remote deleted). v2.1 = `2.1.0-beta.2`; `main` = v2.0.0-beta.46.
+
+**The re-axing (line 189, binding) reorders the queue.** "Autonomous development = pickle-rick building **OTHER** repos"; repo-agnosticism is an **INVARIANT**; reliability is the precondition.
+
+---
+
+## ⏭⏭ IMMEDIATE NEXT — operator-set 2026-07-16: do **B, then A**. (RESUME POINT — this block is self-contained; safe to clear context.)
+
+**⛔ STANDING BUILD PROTOCOL:** NEVER hand-build a fix, NEVER hand-author ticket decompositions — ALWAYS `/pickle-pipeline`; refinement produces the tickets; a flaky 0-ticket/failed refinement run is RE-RUN, not substituted. Even Done-flip/salvage-path fixes pipeline (test the actual bite / `install.sh`-incrementally). Memories: [[feedback_never_hand_build_always_pipeline]], [[feedback_never_hand_author_tickets_refinement_produces_them]].
+
+**🔑 THE SESSION'S HEADLINE FINDING — the reliability ledger has DRIFTED FROM THE CODE (2-for-2).** Both top reliability items had WRONG premises in this plan, caught only by reading source before authoring:
+- **[[B-TRGP]]** "clean subtraction" → actually a **LOAD-BEARING lie, no subtractive fix exists** (see §B.2 + [[project_btrgp_fakegreen_is_loadbearing_no_subtractive_fix]]).
+- **[[R-MWMO]]** "R-MWBG guard missing from the manager path" → the guard **IS present** (`_pickle-manager-prompt.md:155`); defect 1 misdiagnosed (see §B.1).
+
+The dogfood loop caught both before a broken fix shipped, but only after multi-round PRD thrash. Prioritizing/building from a drifted queue ships fake fixes. ⇒ **re-ground the queue before building more of it.**
+
+### ▶ STEP B — ✅ **DONE 2026-07-16** (`ffc70da4`). Every §B entry is now source-verified. Verdicts: **R-WDTF** CONFIRMED at both fix sites, 1 wording drift corrected (the "unenterable branch" sentence was wrong — see §B.3). **R-ORSR-2** mechanism CONFIRMED + **2 material drifts** (the "no AC-execution helper exists" premise is FALSE — `ac-phase-gate.ts:171` already executes ACs; and on a target repo `runArmedGate:5758` is VACUOUS, so the fix must be re-scoped around the forged verdict — see §B.2). **B-RLH** ALL FIVE workstreams CONFIRMED — **the strongest entry; build it** (2 corrections: narrow AC-RLH-6's thesis, strike AC-RLH-5's fabricated clause). **Honesty subtractions (B.5)** all three CONFIRMED LIVE, cites corrected — **build-ready**. **Net: 2 of 6 entries carried premises that would have shipped a wrong fix — the same 2-for-2 drift rate as the headline finding. The queue is now honest.**
+<details><summary>Original Step B instructions (retained)</summary>
+
+**▶ STEP B (FIRST) — re-ground the §B/§C reliability queue against source [READ, don't build]**
+For EACH open queue entry (R-WDTF, R-ORSR-2, B-RLH + its R-JPCM/R-GRLS/R-BCFR, the honesty subtractions, the simplification levers), grep its cited seam on `release/v2.1-beta` **and** the deployed tree and mark: **CONFIRMED** (premise holds at cited lines) / **DRIFTED** (premise wrong → re-diagnose, correct the entry) / **STALE** (already fixed/shipped → de-queue). Output = a queue whose every entry is source-verified, so the survivors build fast without the 4-round thrash. Cheap, high-leverage — the queue's own honesty is reliability work. This is the [[feedback_analyze_failures_then_subtract_not_add_guards]] discipline applied to the ledger itself. (Do it as a read-only agent fan-out, one entry per agent, or inline.)
+</details>
+
+### ▶ STEP A (SECOND) — ✅ **BUILT 2026-07-17** — R-MWMO defect 2, all 7 tickets Done via `/pickle-tmux` on `release/v2.1-beta`. **PRD: `prds/p1-bug-fix-r-mwmo-d2-exit-code-masking.md`** (`40dc17ab` → refined 2 rounds → `0c538c4a`+). **NOT yet released/back-ported** — no PR opened (this branch IS the v2.1 beta line; main ships v2.0 GA first).
+
+**Commits (8):** `00dd6fd2`+`a29bef4f` (WS-1 EXIT — 3 bare-return sites → `exitReason=…; break;`), `e4687b95` (WS-1b — honor the discarded verdict at the single `applyAutoTicketCompletionValidation` call site; the subtractive "delete the return" answer was **rejected with evidence**: the function cannot `break` the caller's loop, so the return is the only channel), `ae4297d4` (WS-1c — `deriveCompletionVerdict` feeds BOTH panel and notification; agreement is now structural), `c4f0e5a8` (WS-2 CLASSIFY — one always-fatal check), `5e544152` (WS-3 REPORT — `readExistingExitReason`/`finalizeFailedPipeline`; report the recorded reason instead of inferring it), `2d234cbf`+`431fa6f3` (test-quality hardening).
+
+**Gate:** fast tier **6813 pass / 0 fail** (c=4, at rest), `tsc` 0, `eslint src/` 0, compiled mirrors in sync, tree clean. **Hardening review: ZERO P0/P1** — one exit idiom, one predicate, zero new persisted fields/events, `countCommitsSince`/`readiness_halt`/`processIterationOutcome`/`guardCompletionCommitBeforeDone` all **0 changed lines**.
+
+**Every AC mutation-proven to bite** (manager-run, not asserted): re-hardcode the panel to `'GREEN'` → 1 fail; delete the WS-2 always-fatal check → **both** WS-2 tests fail; revert `finalizeFailedPipeline` to generic `'failed'` → 1 fail; restore the `strict phase policy` string → 1 fail. Restoring each fix → green, tree clean.
+
+**⚠ THE TEST-QUALITY TICKET FOUND ONE VACUOUS AC — the PRD's sixth.** **AC-MWMO-D2-4** (classifiers + exit map) **passed pre-fix**: at `3fc1d535` `isHaltExit` and `FAILURE_EXIT_REASONS` ALREADY contained `done_without_commit_evidence` and both exit-map strings were already present. It was **retained but honestly relabelled** a *"forward-regression pin; vacuous pre-fix"* rather than quietly kept as coverage. **Six for six — every refinement round found a vacuous AC, including the round whose job was finding vacuous ACs.**
+
+**RESIDUAL (test-only, follow-up):** **AC-MWMO-D2-2** (observed exit code === 1) and **AC-MWMO-D2-3** (halt emits `session_end`) are **IMPLEMENTED but UNPINNED** — unreachable in the fast tier because `guardCompletionCommitBeforeDone` (`mux-runner.ts:4726`) returns `{ok:true, sha:'pickle-test-mode-bypass'}` unconditionally under `PICKLE_TEST_MODE=1` (`:4743`, which the fast tier sets), and `runMuxRunnerMain` (`:8815`) is unexported. **Reported, not papered over with a structural pin** — and the bypass fact is itself pinned by a test that calls the guard with non-existent paths and asserts the sentinel sha, so the explanatory comment cannot rot silently. To pin honestly: a NEW integration-tier file spawning mux-runner as a subprocess WITHOUT `PICKLE_TEST_MODE` against a synthetic tmp repo (ticket Done, no `completion_commit`), asserting exit status 1 and a `session_end` carrying `error === 'done_without_commit_evidence'`.
+
+**⚠ [manager] CORRECTION — the worker's D2-3 residual carried a WRONG premise; do NOT act on it.** Its handoff claims *"D2-3 also needs an impl change — no `session_end` is emitted on the halt path today."* **FALSE.** The worker grepped only the three bundle TEST files. Manager verification: the `while(true)` opens at `:9287` and **closes at `:11312`**; `logActivity({event:'session_end', …})` sits at **`:11319-11327` — in the post-loop tail**, exactly where WS-1's `break` now lands; `:11318` computes `isFailedExit` and `:11326` spreads `...(isFailedExit ? { error: exitReason } : {})`; `isFailureExit('done_without_commit_evidence')` is `true` (`:4376`). **D2-3 is already satisfied by the implementation — it is untested, not unimplemented. The residual is TEST-ONLY.** (A citation is not a verification — the bundle's own thesis, biting its own audit.)
+
+**⚠ THE LEDGER WAS WRONG ABOUT THIS ENTRY TOO — "the one clean, source-verified fix" is RETIRED.** Two refinement rounds (3 analyst cycles each) proved R-MWMO d2 is **NOT** a 3-line control-flow fix. It is a **three-link honesty chain, each link independently broken**; any missing link and the bundle **goes fully green while changing nothing the operator sees**:
+- **WS-1 — EXIT.** The three bare `return`s (`extension/src/bin/mux-runner.ts:~10460/~10951/~11026`, inside the `while(true)` at `:9287`) bypass the exit map → Node exits **0**. ✅ premise held.
+- **WS-1b — EXIT via a DISCARDED VERDICT (NEW, cycle 4 — the AC-shape gate caught the incomplete enumeration).** **There are FIVE `!guard.ok` sites, not three.** `:2892` does not bare-`return` — it returns `{action:'leave', reason:'guard_failed_no_commit_evidence'}`, and its caller at **`:10497` invokes it as a bare call statement and DISCARDS the verdict**. `safeDeactivate` then flips `active=false`, so the next iteration hits `:9301` → `exitReason='cancelled'` → **`'cancelled'` ∉ `FAILURE_EXIT_REASONS`** → **exit 0**, no `session_end` error, and the recorded reason **overwritten by `'cancelled'`**. A fatal verdict computed and then ignored. **`:7324` is the fifth site and is DEAD** — `processIterationOutcome` (`:6924`) has ZERO production callers (only the `src/bin/CLAUDE.md:162` inventory string) → excluded, and logged as a dead-twin subtraction candidate alongside [[R-PRNF9-DEAD]]. Drafts 1–3 asserted a universal ("for ALL three") over an **incomplete enumeration** — the AC now derives the site list by grepping source so a sixth site fails the AC instead of escaping it.
+- **WS-2 — CLASSIFY (NEW; draft 1's claim was FALSE).** Even at exit 1, `isFatalPhaseFailure` (`extension/src/bin/pipeline-runner.ts:2774`) calls a pickle failure fatal only when `countCommitsSince(startCommit) === 0`. A `done_without_commit_evidence` halt means *this ticket* has no commit — nothing about the session — so once **any earlier ticket committed**, the halt is classified NON-fatal and the pipeline **proceeds to citadel**.
+- **WS-1c — EXIT into a GREEN LIE (NEW, cycle 5 — and the PRD's own "Verified safe" sentence hid it).** Drafts 1–4 asserted the post-loop tail WS-1 `break`s into "is cleanup that SHOULD run… strictly more correct than skipping it." **FALSE:** `extension/src/bin/mux-runner.ts:11328` prints a **hardcoded GREEN `'mux-runner Complete'` panel**. WS-1 alone would trade an exit-code lie for a **console lie**. Fix = derive the panel's title/colour from `isFailureExit(exitReason)` — **the precedent is 11 lines below in the same function** (`buildTmuxNotification:~11355` already branches to `'🥒 Pickle Run Failed'`), so **the mac notification tells the truth while the console panel lies today.** Reuse; collapses two renderers onto one truth.
+- **WS-2 — CLASSIFY: ⚠ SURVIVED A DELETION CHALLENGE, but its justification is REWRITTEN.** A cycle-5 analyst P0 claimed WS-2 was unnecessary (the graduation gate already halts). **Half right — grepping it saved the workstream.** Ordering: `shouldHaltAfterPhase`→`isFatalPhaseFailure` runs at `:4011`, **before** `finalizePhaseSuccess` (`:4033`) where the gate lives ⇒ the seam **is** reachable. **But** `maybeStampPhaseGraduation` (`:3586+`) returns `null` only on `'graduate'`; every refusal `break`s — **which is why LOA-1763 printed "not advancing" on exit 0** (65/66 pending). ⇒ **In the pending-tickets common case WS-2 changes nothing, and the PRD's original "proceeds to citadel anyway" was WRONG.** WS-2's **real** value is the **all-terminal case**: every ticket terminal but one lacking a commit ⇒ graduation **succeeds** ⇒ falls through to `counters.completed++` ⇒ **"Phase pickle completed successfully"** — exactly site `:11026`'s final-ticket path. **WS-2 is the only thing between that and a fake-green pipeline.** Consequence: the draft-4 AC would have been a **VACUOUS pin** (green without WS-2).
+- **WS-3 — REPORT (cycle 3).** Even halted, the reason is (a) **ERASED** — `:3693` overwrites the specific reason with a generic `'failed'` (while the sibling branch at `:3688-3691` deliberately *preserves* a reason and says so), and (b) **MISATTRIBUTED** — `:3790` reports the `commitCount > 0` case as *"halted for a reason other than build progress (e.g. strict phase policy)"* — **the opposite of the truth**.
+
+**🔑 THE CYCLE-5 META-FINDING — ALL GATES PASSED WHILE THE PRD STILL CARRIED THREE P0s.** Round 4 was the first fully-clean refinement: `EXIT=0`, `all_success:true` (3/3 analysts), **0** AC-shape smells, symbol audit clean. The analysts then produced three P0s (WS-1c, the WS-2 challenge, the vacuous AC). **The gates are hygiene, not correctness — a clean gate sheet is not evidence the PRD is right.** This is `## Honest reporting` ("silence is not success") demonstrated on our own toolchain, and it is the strongest argument in this ledger for **never** treating a green refinement as a verdict.
+
+**⚠ WS-2's cited "shipped precedent" is DEAD CODE** — see the new §C **[[R-PRNF9-DEAD]]** row. WS-2 stands on its own LOA-1763 evidence, not on `readiness_halt`.
+
+**Also caught in-PRD (all source-verified):** an AC mandating `describe.each`, which **does not exist in `node:test`**; **two successive vacuous verify commands** (a self-diff of the branch you're already on; then `PICKLE_START_COMMIT`, an env var with **zero producers**); and a `PICKLE_TEST_MODE=1` red-first hazard that could let the mandated tier pass vacuously.
+
+**The analysts' verdict on the PRD is the session's lesson in miniature:** it was *"consistently stopping one frame short of the outcome"* — verifying that the exit code changes, not what the operator sees; that `readiness_halt` exists, not that it fires; that an env var interpolates, not that it is set. **A citation is not a verification.**
+**Scope = defect 2 ONLY** (defect 1 is a NO-OP — guard already present; its residual is harness auto-backgrounding, not prompt-fixable). The 3 `done_without_commit_evidence` guard sites (`mux-runner.ts:10463` + siblings ~`:10951`/`:11026`) do a bare `return` that skips post-loop cleanup (`emitCgSessionSummary`/`closeCgService`/`session_end` event) AND the exit-code map (`:11347`) → Node exits **0**, so a genuine halt reports benign `Pipeline finished: 0/4`. Fix: `exitReason='done_without_commit_evidence'; break;` → reaches the map, exits **1** (`done_without_commit_evidence` ∈ `isFailureExit`, `:4376`) = HONEST failure. **Verified safe** — the skipped post-loop code is cleanup that SHOULD run. Author PRD → `/pickle-pipeline` (pipeline; the exit-path change is `install.sh`-incrementally). Modest honesty fix (makes a failure visible; does not itself recover an orphaned-worker build). Bug: `BUG-REPORT-2026-07-14-pipeline-max-iterations-zero-...md` (correction banner).
+
+### 📌 SESSION STATE 2026-07-17 — **Step B DONE · Step A BUILT (7/7, hands-off overnight) · NOT deployed, NOT released**
+
+**✅ [[R-MWMO]] d2 BUILT via `/pickle-pipeline`** — session `2026-07-16-6fe9b904`, 8 commits
+(`00dd6fd2` WS-1 → `431fa6f3`), **+48 `mux-runner.ts` / +43 `pipeline-runner.ts` / +966 lines of new
+tests across 3 files**. Tree clean. Fast tier **6813/0 at rest**. All 5 workstreams landed:
+WS-1 (`a29bef4f`) · WS-1b (`e4687b95`) · WS-1c (`ae4297d4`) · WS-2 (`c4f0e5a8`) · WS-3 (`5e544152`).
+**This is the drain-queue's first R-MWMO fix and it was built by the pipeline, not by hand.**
+
+**⚠ NOT a clean rep.** `exit_reason=pipeline_phase_incomplete`; `pipeline-status.json` = `failed`,
+**0/4 phases** (citadel / anatomy-park / szechuan-sauce **never ran**). Ticket `bcc20f74`
+(code-quality hardening) is still `In Progress` — its two `harden:` commits are attributed to
+`31ed007a`. **Cause is CONFIRMED and is NOT the bundle:** the `worker_test_gate_timeout_ms` 240s cap
+below the ~305–352s suite runtime (row below) false-fails every `medium`+ worker gate — 3 of 7
+tickets carry `worker_gate_verdict: red` while their work is real and committed.
+
+**▶ NEXT ACTIONS — RE-SEQUENCED + FIX-SHAPE-SCORED 2026-07-17 (supersedes the prior 8-step list, which
+was dependency-inverted and mixed feature work into a reliability queue).**
+
+**⛔ THE PRIOR #1 COULD NOT HAVE WORKED — `install.sh:510` defeats it.** The old step 1 said "fix the
+**source** `pickle_settings.json` + `bash install.sh` — never the deployed copy." **Proven inert
+2026-07-17:** the merge is `jq -s '.[0] * .[1]' "$SCRIPT_DIR/…" "$EXTENSION_ROOT/…"` — **deployed is
+the RIGHT operand and jq's `*` lets the right side win.** Demonstrated:
+`source 600000 * deployed 240000 → 240000`, and **even deleting the key from source → 240000 survives**
+(a key absent on the left cannot unset the right). ⇒ **Nothing in `pickle_settings.json` is fixable
+until B.5(b) source-wins lands.** The prerequisite was sequenced at #6, the dependent at #1. Fixed below.
+
+**🔑 SCORING RULE (operator directive 2026-07-17 — one month of brittleness + pipeline stoppage):** every
+queue item is now scored on TWO axes before it builds: **(1) does it fix a STOPPAGE?** and **(2) does the
+fix SUBTRACT machinery or ADD it?** An item that adds a mechanism to a system whose defining failure is
+too many brittle mechanisms must justify itself or leave the queue. Scored table at §B header.
+
+**🔑 THE QUEUE'S TOP 4 ARE ONE CLASS, NOT FOUR BUGS — name it and fix it once.** [[R-SAFP]], [[R-WDTF]]
+(both sites), the `worker_test_gate_timeout_ms` cap, and [[B-TRGP]] are all **an oracle that cannot
+distinguish signal from co-occurrence, wired as a HARD gate**: a symbol near the word "exit code" *is* a
+membership claim; a missing narrative token *is* worker failure; a suite slower than a stale constant *is*
+a red test; an absent `extension/` dir *is* a green gate. Same shape as [[B-FOMC]] C-1. **The precedent is
+already set and it is SUBTRACTIVE** — beta.33 deleted the gate-overreach cluster (R-RTRC ×8 + R-FRA ×7,
+the top recurring bug source) rather than hardening it; [[feedback_subtract_flaky_gate_input_not_add_resistance]]
+is the rule. **Every fix below takes the subtractive arm. If a workstream proposes to ADD resistance to one
+of these oracles, that is the wrong arm — reject it in refinement.**
+
+1. **B.5(b) `install.sh` → source-wins (§B.5b).** **PROMOTED from #6 → #1: it is the PREREQUISITE for
+   #2, not just for codegraph.** One-line merge-direction fix (`install.sh:510`). **Subtracts a whole
+   divergence surface** — the class where source and field silently disagree forever. Precedent already
+   in-tree: `:516-517` already force-overrides `auto_update_enabled` post-merge, so source-wins would
+   not regress it. **✅ SUBTRACTIVE · fixes a stoppage-enabler · unblocks 2, 6, 7.**
+2. **`worker_test_gate_timeout_ms` — DELETE THE PIN (row below; premises CORRECTED there).** Blocked on
+   1. **The subtractive fix already exists and shipped**: `0173662d fix(worker-gate): raise test:fast
+   timeout 240s -> 600s + env override (R-WTFT)` raised `DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS` 240_000 →
+   600_000 **but left `pickle_settings.json:36` pinned at 240000** — and settings outrank the default, so
+   **R-WTFT shipped INERT.** Textbook B-1SEAM asymmetric fix: repaired at one site, missed its sibling.
+   ⇒ **Delete the stale pin; the documented, trap-door-protected, env-overridable 600_000 default
+   applies.** **✅ PURE SUBTRACTION (−1 line, no new machinery).** **Immediate unblock available with
+   zero build:** `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS=600000` in the worker env wins over both.
+3. **Finish/close `bcc20f74`**, then run the FULL release gate before any tag.
+4. **`bash install.sh`** — the R-MWMO d2 fix is committed but **NOT deployed**; the running runtime still
+   has the bug it fixes.
+5. **[[R-SAFP]] (§B.1b) — take arm ① SUBTRACT the `exit_code` category.** ⚠ **Arguably belongs at #1 and
+   the plan has flagged that as an OPEN QUESTION twice without resolving it — resolving it now: it ranks
+   above the timeout on BLAST RADIUS** (it hard-fails refinement to `exit 2` / 0 tickets, and under the
+   standing "never hand-author tickets" protocol that blocks the *only* sanctioned build path; it is also
+   **on `main`/GA**), but **below B.5(b)+timeout on COST** (those are 2 lines and unblock every rep on
+   this repo). Build it immediately after. **✅ SUBTRACTIVE.**
+6. **[[R-WDTF]] class fix (§B.3 + 3b) — take the SUBTRACTIVE arm: drop `tokenPresent` from the `:2336`
+   conjunct.** ⚠ **The sibling arm ("hoist `evaluateFailedFlipSuppression` out of `runWorkerGate`") is
+   ADDITIVE — do not take it.** Both sites: `spawn-morty.ts:2336`, `spawn-refinement-team.ts:933`
+   (both CONFIRMED verbatim 2026-07-17). **✅ SUBTRACTIVE.**
+7. **[[B-CGHARD]] — PRIORITY BUILD (operator directive 2026-07-17: codegraph's capability is PROVEN in
+   independent tests; this is important work, not deferrable feature polish). Lead WS is WS-CGH-D.** The
+   two facts reconcile into a mandate, not a conflict: **the engine is proven-capable, and on THIS repo
+   it is fed garbage — so the input harvester is the ENTIRE gap between us and that proven capability.**
+   `deriveCodegraphTerms` (`spawn-morty.ts:584-602`) takes the first 8 backticked spans in DOCUMENT ORDER
+   (`CODEGRAPH_MAX_TERMS = 8`, `slice(0,8)`), so precise `file.ts:NNNN` citations flood the harvest with
+   bare line numbers and keywords (`return`, `while (true)`) — **the better a ticket's citation
+   discipline, the worse its payload.** Fixing that is what lets the proven engine actually help here.
+   **This is NOT "add a filter" — it REUSES an existing oracle:** rank terms through
+   `countUnresolvedReferences`/`resolveSymbolRef` (`check-readiness.ts:525`), which already answer "is
+   this a real symbol?" (names the reuse per `prds/CLAUDE.md` Q2 — passes the Simplification Review).
+   Build **WS-CGH-D** (rank-not-take-first; the root is `slice(0,8)` over document order) + **WS-CGH-A**
+   (bound the `buildContext` query hang — the `runWithTimeout(query_timeout_ms)` seam exists at
+   `codegraph-service.ts:215`) + **WS-CGH-B** (verify-before-inject — the `injected` counter is at
+   `:159-161`). **PRD: `prds/p2-codegraph-harden-then-soak-v2.1.md`.** **✅ mostly-REUSE, real capability
+   payoff · BUILD.**
+   - **⚙ ONE HARD DEPENDENCY (verified, not resistance): B.5(b) source-wins (#1) must land first — else
+     the field runs an UNLABELED codegraph arm and no soak can name which arm it measured.** Source is
+     `enabled:false`/`index_at_setup:false`, deployed is `true`/`true`; today the merge bug (#1) is the
+     only reason the field runs it at all. After #1, turning codegraph ON is a deliberate, source-tracked
+     choice — which is exactly what makes WS-CGH-D's payoff measurable. **#1 is one line and already the
+     queue's #1, so this dependency costs nothing extra.** Then run WS-CGH-C soak on the fixed harvester.
+8. **[[B-CGCAP]] verdict — the codegraph keep/subtract decision, now taken AFTER WS-CGH-D lands and soaks
+   (not before).** Reordered under the operator directive: with capability proven and the input fixed, the
+   soak measures the real thing, and B-CGCAP judges the hardened engine on its merits. If it earns its
+   keep it stays; if the soak still shows no lift on a CLEAN harvest, the ~1.3k-LOC + native-dep
+   subtraction is on the table with honest evidence behind it. **Post-soak only.**
+
+<details><summary>Prior state block (2026-07-16 late) — retained</summary>
+
+**Step B DONE, Step A's PRD converged + BUILD-READY, build NOT yet launched**
+
+**Step B ✅ COMPLETE** (`ffc70da4`, `625e5c6b`). **Step A ⏳ PRD converged after 4 refinement rounds** — `prds/p1-bug-fix-r-mwmo-d2-exit-code-masking.md` (`885a75fb`). It passes the symbol audit + stale-anchor checker clean (verify in seconds with the standalone harness pattern: import `evaluateSymbolAudit`/`findStaleAnchorWarnings` from the deployed `spawn-refinement-team.js` — do NOT burn a 20-min refinement to find out).
+
+**⚠ THE HEADLINE, EXTENDED: ledger drift is now 4-for-8, and it is the NORM, not the accident.** Every R-MWMO draft cited real functions at real lines and was still wrong — **verifying that a MECHANISM changes, never that the OUTCOME changes.** Memory: [[feedback_verify_the_outcome_not_the_mechanism]] (⭐ the session's most transferable lesson), [[feedback_reground_the_ledger_before_building_from_it]].
+
+**4 NEW findings filed this session, ALL from dogfooding rather than reading:**
+1. **[[R-SAFP]] (P1, §B.1b)** — the refinement symbol audit false-positives and HARD-FAILS refinement; **also on `main` (GA)**; creates a catch-22 (the PRD that fixes it is itself blocked). Unblocked here only by a **documented reformat workaround — that is gaming a broken gate, not a fix.**
+2. **[[R-WDTF]] is a CLASS (§B.3b)** — 2nd site `spawn-refinement-team.ts:933`. **6 data points across 4 runs: a DIFFERENT analyst is stamped `success:false` every run while writing 26–38KB of excellent analysis.** The analysts are not flaky; **the token oracle is.** This is the single strongest evidence for the R-WDTF class.
+3. **[[R-PRNF9-DEAD]] (§C)** — the `readiness_halt` cluster has readers but **no producer anywhere, incl. the deployed runtime**. Never fired. DELETE-or-WIRE.
+4. **R-MWMO d2 is a 5-site / 4-WS chain**, not "one clean fix" — see §B.1.
+
+**▶ NEXT ACTION (resume here):** refinement CONVERGED at round 4 (session `2026-07-16-6fe9b904`) — EXIT=0, all_success 3/3, 0 smells — **but its analysts then found 3 P0s (now folded into §B.1; PRD is clean at `c2e7846e`)**. Remaining: synthesize `prd_refined.md` (skill Step 6) → decompose tickets (Step 7) → launch the build. **Scope decided with the operator: `--scope paths:extension/src/bin/mux-runner.ts,extension/bin/mux-runner.js,extension/tests/**`** — NOT `--scope branch` (this branch is 185 commits / 203 files ahead of `main`, so branch-scope aims the review phases at the whole v2.1 line). **The compiled mirror `extension/bin/mux-runner.js` MUST stay in scope** — a `src/`-only scope deadlocks szechuan ([[project_szechuan_src_only_scope_deadlocks_on_ts_mirror]]).
+
+**⚠ OPEN STRATEGIC QUESTION for the operator:** R-SAFP blocks refinement for *every* exit-path PRD and is on the GA line. It arguably outranks R-MWMO d2 (a modest honesty fix) under the reliability-first north star. **Consider building R-SAFP first** — note its own PRD will trip the bug it fixes, so scope that catch-22 deliberately.
+
+</details>
+
+### Context saved for a clean clear
+- **Shipped this session:** `v2.0.0-beta.47` (§A). Branch → `release/v2.1-beta` (below). Plan reprioritized to the north star.
+- **PRDs:** `prds/p1-bug-fix-bundle-b-trgp-target-repo-gate-parity.md` (B-TRGP ②-tight content — **superseded by the LEAVE conclusion; do NOT build as-scoped**). R-MWMO defect-2 has no PRD yet (author in Step A).
+- **Memories:** the 3 above + [[project_fable_infusion_branch_experiment]] (branch/backport state).
+- **This ⏭⏭ block + §B.1/§B.2 are the resume point. SAFE TO CLEAR CONTEXT.**
+
+---
+
+**The old reprioritization (retained; the ⏭⏭ block above supersedes what's NEXT).** Under the re-axing, the queue's top was framed as the two defects that make every Done on a target repo untrustworthy — B-TRGP + R-MWMO — now re-grounded per the headline finding above.
+
+### A. v2.0 GA — ✅ **beta.47 SHIPPED 2026-07-16** (`origin/main` = `e0c91e17`, tag `v2.0.0-beta.47`, prerelease). Full local gate GREEN (tsc/eslint/10 audits/fast-budget 5-5/integration 508-509 [1 confirmed install-script-prefix teardown-race, 5/5 isolated]/expensive parallel-13-0 + serial-7-0 with the deploy soak actually run 36.5m).
+1. ✅ **Fixed `main:extension/CLAUDE.md:181` (1508 → 1406)** — `b0eda982`. The v2.0 gate was red on its own 1500-char cap.
+2. ✅ **Back-ported `7980eaf4` + `5e8284d1`** — analyst-citation checker (`2ac84924`); no FOM leak, mirror recompiled from source. The ONLY genuine GA fix new on v2.1 since B-V20BP.
+3. ⏳ **STILL OPEN (GA blocker, carried) — config-protection tests for `4fcc02fc`.** The "parked patch" is GONE — both lines carry the state-gate suite at 34 tests (the claimed 34→41 patch is not on disk or on either branch). These 7 regression tests must be **written from scratch** (reproduce: pre-fix the gate APPROVED `sed -i`/`perl -i`/`vim`/`ed` edits of live `state.json`, `~/.claude/pickle-rick/**`, operator settings). Correctly scoped OUT of beta.47 (pre-existing beta debt, not a new regression) but **blocks v2.0 GA (non-prerelease)**.
+4. ✅ beta.47 tagged + `gh release` (prerelease, **0 assets — R-RNTA**, consistent with every beta since 43; auto-updater has nothing to download). **NOT deployed** — deployed runtime stays v2.1-beta.2; `install.sh` main only if/when v2.0 GA deploys.
+
+### B. Reliability queue on v2.1. ⚠ **THE NUMBERING BELOW IS STALE — the `▶ NEXT ACTIONS` block above is the ONE authoritative order (re-sequenced + fix-shape-scored 2026-07-17).** The §B numbers below are retained for their per-entry source-grounding, NOT for their sequence.
+
+**Why the §B numbering was retired (2026-07-17):** it disagreed with the state block's own list, and two of its top slots were dead. **#1 [[R-MWMO]] is already BUILT** (7/7). **#2 [[B-TRGP]] is a decided LEAVE — it is a decision record, not work, and it was squatting the queue's second slot.** Meanwhile the item the plan itself calls *"the **actual** highest-leverage de-flaker of hands-off reps"* (`worker_test_gate_timeout_ms`) **appeared nowhere in this numbered list** — it sat in a loose row underneath. **Two contradictory ordered lists is itself a reliability defect in the ledger** ([[feedback_reground_the_ledger_before_building_from_it]]).
+
+**📊 FIX-SHAPE SCORECARD (2026-07-17 — operator directive: one month of brittleness + pipeline stoppage. Score EVERY item on both axes before it builds.)**
+
+| Item | Fixes a STOPPAGE? | Fix shape | Verdict |
+|---|---|---|---|
+| **B.5(b) source-wins** | enabler — unblocks all of `pickle_settings.json` | **SUBTRACTS** a divergence surface (1 line) | ✅ **#1** |
+| **`worker_test_gate_timeout_ms`** | YES — every `medium`+ gate false-fails; burns a suppression slot/ticket (cap 2); a 3rd strike flips a **green** ticket **Failed** | **PURE SUBTRACTION** (−1 line; restores shipped 600_000) | ✅ **#2** |
+| **[[R-SAFP]]** | YES — refinement `exit 2` / 0 tickets; blocks the only sanctioned build path; **on GA** | **SUBTRACT** the `exit_code` category (arm ①) | ✅ **#5** |
+| **[[R-WDTF]]** (2 sites) | YES — destroys verified work | **SUBTRACT** `tokenPresent` conjunct ⚠ *the "hoist suppression" arm is ADDITIVE — reject it* | ✅ **#6** |
+| **[[B-TRGP]]** | no — fake-green, downstream-covered | LEAVE (proven non-subtractive) | 🗄 **DE-QUEUE** → decision record |
+| **[[R-ORSR-2]]** | Done-without-impl | re-scope; **additive risk — watch it** | ⚠ hold |
+| **[[B-RLH]]** | **NO — honesty, not stoppage** | **MIXED**: WS-4 **ADDS** `stalled_below_target` (new field, **0 hits in src**, on `isConverged` `microverse-state.ts:390-402` which returns bare `true` for both stall + target); R-BCFR "delete the arms" + WS-5 DELETE-or-WIRE genuinely **SUBTRACT** | ⚠ **SPLIT — build the subtractions, defer WS-4** |
+| **[[B-CGHARD]]** | unlocks a PROVEN-capable engine that this repo currently starves with junk input | **mostly REUSE** — WS-CGH-D ranks via existing `countUnresolvedReferences` (`check-readiness.ts:525`), not a new filter | ✅ **PRIORITY BUILD (#7) — operator: proven in independent tests** |
+| **[[B-CGCAP]]** | no | **SUBTRACTS** ~1.3k LOC + native dep | ✅ **decide AFTER WS-CGH-D soaks** |
+
+**Two things this scorecard enforces.** (1) **Sequence the one-line SUBTRACTIONS first** — B.5(b) and the timeout-pin deletion unblock every hands-off rep, cost two lines total, cannot regress what they remove, and B.5(b) is *also* codegraph's measurement prerequisite. They lead regardless. (2) **Additive is not automatically deferrable — capability earns a build.** B-CGHARD is elevated because independent tests prove the engine's capability and the ONLY thing blocking it on this repo is the input harvester (WS-CGH-D), whose fix is mostly REUSE. The subtract-before-add rule challenges additions; it does not veto a proven-value one that reuses existing primitives. What the rule *does* still fix here: **decide keep-vs-subtract (B-CGCAP) on a CLEAN harvest, after WS-CGH-D — never soak the junk-input version, which would flip a hollow verdict in either direction.**
+
+Original framing (retained): the lead cluster is the FRESH 2026-07-14/16 LOA-1763 captures: on a target repo, the run stops early AND Done means nothing. Highest-signal class (target-repo-surfaced), directly gates autonomy-on-other-repos.
+
+**⛔ BUILD PROTOCOL (operator directive 2026-07-16): NOTHING is hand-built — ALWAYS `/pickle-pipeline`.** The R-PSRB "hand-build" reflex is retired. Even Done-flip/salvage-path fixes pipeline: test the ACTUAL bite (does the deployed bug fire on the on-repo build worker?), and where it genuinely would, build-then-`install.sh`-incrementally so later tickets run the fixed runtime — never hand-build. See [[feedback_never_hand_build_always_pipeline]].
+
+1. **[[R-MWMO]] the pickle MANAGER orphans its own worker → the phase halts commit-less, masked as exit-0 (P1 — NEW, LOA-1763). ⚠ RE-SCOPED 2026-07-16 by a source trace — this was mis-filed as "[[R-MXI0]] `--max-iterations 0` builds 1-of-N".** `bug: BUG-REPORT-2026-07-14-pipeline-max-iterations-zero-stops-after-one-plus-orphaned-worker.md` (carries a correction banner). **THERE IS NO `max_iterations=0` bug** — `0` is already unlimited at every loop seam (global cap `mux-runner.ts:9426` `globalMaxIter>0 && …` skips on 0; the report's hypothesized `iteration <= max_iterations` guard does not exist). The 1-of-N symptom is entirely downstream of TWO real defects: **(1) [R-MWBG in the pickle-manager path, LIVE post-B-WSPU]** — the tmux manager (a `claude -p` agent) lets the harness background its worker, hits `end_turn`, and exits while the worker is mid-Implement → commit-less ticket → `guardCompletionCommitBeforeDone` halts. ⚠ **DEFECT 1 MISDIAGNOSED (source-verified 2026-07-16): the R-MWBG guard is NOT missing from the manager path.** It IS in `extension/templates/_pickle-manager-prompt.md:155` ("Worker-spawn discipline (mandatory — R-MWBG). Run spawn-morty.js in the FOREGROUND. NEVER background it…" + re-spawn-resume). At LOA-1763 the HARNESS auto-backgrounded the spawn ("I didn't request it") despite the prompt forbidding it — not prompt-fixable (the prompt already forbids it). So "port the guard" is a NO-OP. Residual defect-1 is a harness auto-background behavior, not a missing instruction — needs a different diagnosis (or is subsumed by defect 2: if the mux relaunched via R-MMTR instead of halting, the re-spawn-resume would recover the worker). **(2) exit-code masking** — the `done_without_commit_evidence` guards at `mux-runner.ts:10462/10953/11028` do a bare `return` that BYPASSES the exit-code map (`:11306-11351`), so a recorded FAILURE exits Node's default **code 0** → pipeline-runner's graduation gate reads it as benign and reports `0/4`. Fix: set `exitReason='done_without_commit_evidence'` + `break`. **Pipeline** (build-then-`install.sh`-incrementally — the manager-orphan bug can bite the build worker, so deploy the fix before later tickets exercise it). Bundle (1)+(2) as ONE fix; DROP any "make `max_iterations=0` unlimited" ticket (fixes a nonexistent bug). Trace: agent root-cause 2026-07-16.
+1b. **🆕 [[R-SAFP]] (P1, NEW 2026-07-16 — filed from a dogfood block; JUMPS THE QUEUE) — the refinement symbol audit's `exit_code` category false-positives and HARD-FAILS refinement (`exit 2`, 0 tickets) on a CORRECT PRD.** `bug: BUG-REPORT-2026-07-16-symbol-audit-exit-code-false-positive-blocks-refinement.md`. **Found by running Step A**: `/pickle-refine-prd` on the source-verified R-MWMO d2 PRD died with 7 phantom-symbol findings, **all 7 false positives** (`guardCompletionCommitBeforeDone` = a function declared at HEAD; `exit_reason` = a `state.json` field; `iteration_cap_exhausted` = a `mux-runner` `ExitReason`, flagged **while quoting real source verbatim**; `done_without_commit_evidence` = the `error` *payload field* of `session_end`, not an event name). **Three compounding defects in `collectExitCodeReferences` (`spawn-refinement-team.ts:1919-1941`):** (1) **line-proximity is treated as a membership CLAIM** — every quoted symbol on any line merely *mentioning* exit codes must be a `PipelineRunnerExitCode` member (same structural error as [[B-FOMC]] C-1: cannot distinguish "token appears near a word" from "token is claimed to be in that set"); (2) **no `declaredSymbols` escape, asymmetric with the sibling `activity_event` branch** (`:1886` unions `declaredSymbols`; `:1920` validates against `PipelineRunnerExitCode` ONLY) — so a symbol genuinely declared at HEAD can NEVER pass **while the enforcement message instructs you to "Ensure each cited symbol is declared at HEAD"; following the error's own advice cannot clear it**; (3) **the trigger regex `/\bexit[-_\s]?codes?\b/i` matches the identifier `exitCode`**, so quoting the real fix site self-trips — **a PRD is penalized for citing the code it is about.** **Impact: a CATCH-22** — every exit-path PRD is unbuildable, *including the PRD that would fix this checker* (a refinement-stage sibling of [[R-PSRB]]). Blast radius covers much of this queue (R-MWMO, B.5(a)). **⚠ ALSO ON `main`** — this is the checker back-ported for v2.0 GA (§A.2, `2ac84924`), so it is a **GA-line defect**. **Fix candidates (decide in refinement, not here): ① SUBTRACT the `exit_code` category** (preferred — it has produced only false positives; first answer "has it EVER caught a real phantom?"; per [[feedback_subtract_flaky_gate_input_not_add_resistance]] subtract the ill-posed dimension, don't add resistance) · ② narrow to real claim shapes (`PipelineRunnerExitCode.Foo`) · ③ add the `declaredSymbols` escape (necessary, NOT sufficient) · ④ fail OPEN — a checker that cannot tell a claim from a co-occurrence must not be a hard gate. **Do NOT "fix" it by rewording PRDs** — that trains vaguer PRDs to appease a broken gate, inverting the citation discipline it exists to enforce. **Secondary finding (same run, needs own diagnosis):** the `requirements` analyst failed **all 3 cycles** (`codebase`/`risk-scope` succeeded) → `all_success:false`, no `prd_refined.md`; logs carry only a benign `settings.local.json` `Write(...)`-vs-`Edit(...)` permission notice.
+2. **[[B-TRGP]] — off-repo fake-green worker gate. ⛔ CONCLUSION 2026-07-16: PROVEN NON-SUBTRACTIVE — DO NOT BUILD the PRD as-scoped; recommend LEAVE.** THE apparent autonomy defect: `runWorkerGate` (`spawn-morty.ts:1538`) → `{ok:true}` off-repo and `resolveWorkerGateVerdict` (`mux-runner.ts:4643`) → `green` for the Done-flip, verifying **nothing** on a non-pickle-rick repo (R-CWGE VACUOUS off-repo; 25 loanlight-api sessions stamped Done on fake-green). **Born-in, not a regression** (git: no-op in the gate's FIRST commit `4e2e8bf8` 2026-05-06). **A 4-round `/pickle-refine-prd` dogfood (④→③→②-tight→②-tight-bounded) PROVED the fake green is LOAD-BEARING and no subtractive fix exists:** `workerGateRefusal` (`ticket-completion-evidence.ts:812`) proceeds ONLY on `verdict==='green'`, so off-repo the fabricated green is the ONLY thing that lets a Done-flip proceed — remove it and every target-repo Done is refused (bricks the build). The fabrication is at **7 bounded sites** incl. a DURABLE one (`persistRunnerAuthoredGreenVerdict:4988` writes green to frontmatter, read back before the deletable branch). The honest fix (a `workerGateApplicable` concept threaded through `CompletionDecisionCtx`) is **ADDITIVE**, on the most-pinned code, and **collides with a trap-door invariant** (`bin/CLAUDE.md:80` mandates the resume-reattach Done write be gated on `verdict==='green'`). **Options collapse to THREE:** ① LEAVE (recommended — the review/closer portable gate `runGate`/`detectProjectType` ALREADY verifies target repos; per-ticket lie is downstream-covered; zero-change) · ② full-remove (subtractive but loses ON-repo fail-fast — B-CWGE exists because Done-over-red was real) · ③ additive honest fix. ④ (run the portable gate per-ticket) rejected as a large parallel-verification duplicate. **The 4-round dogfood IS the deliverable** (proved no cheap win + caught 2 fake fixes). Detail: `prds/p1-bug-fix-bundle-b-trgp-target-repo-gate-parity.md` (②-tight content, SUPERSEDED) + [[project_btrgp_fakegreen_is_loadbearing_no_subtractive_fix]]. R-ORSR-2 stays split out (below).
+   - **[[R-ORSR-2]] SPLIT OUT (own PRD, NOT in B-TRGP). ⚠ RE-GROUNDED 2026-07-16 — mechanism CONFIRMED, but TWO material drifts; the entry as written would have sent the builder at the WRONG fix.** `bug: BUG-REPORT-2026-07-16-r-orsr2-recovery-flips-ticket-done-without-impl.md`.
+     - **✅ MECHANISM CONFIRMED.** A dirty tree is the ONLY trigger (`recovery-controller.ts:185-190`); `treeDirty` is a bare `isWorkingTreeDirty(workingDir)` (`mux-runner.ts:5467-5485`) — smoke-test/diagnostic artifacts satisfy it; nothing consults the ticket's ACs, target files, or `declared_files`. Produce → forge → consume all live in ONE function, seven lines apart, with **no independent oracle between them**: salvage commit `fix(${ticketId}): commit-and-continue recovery (R-ORSR-2)` (`mux-runner.ts:5009-5014`) → `persistRunnerAuthoredGreenVerdict` (`:5020`) → `guardCompletionCommitBeforeDone` (`:5021`) → `markTicketDone` (`:5031`). The oracle accepts it because the commit SUBJECT carries the ticket id (`ticket-completion-evidence.ts:446` `scanGitLogByRefToken` word-boundary match) — **the oracle has no notion of commit KIND**; a salvage commit and an implementation commit are indistinguishable to it. **Report imprecision:** there is NO retry budget on this path — rung 1 commits and flips Done on the FIRST halt with a dirty tree; the 10 attempts were the worker respawning, each independently able to flip it.
+     - **⚠ DRIFT 1 — "needs a NEW AC-execution helper, none exists" is FALSE.** `services/ac-phase-gate.ts:171-194` `runCriterion` **already executes** acceptance-criterion commands (expected exit code, finite timeout, host-tool preflight, glob safety), and `AcEvaluationPhase` (`:12`) is already a four-member extension point (`pre-refinement|post-refinement|per-phase|bundle-end`) with 4 production call sites (`spawn-refinement-team.ts:1233`/`:2405`, `pipeline-runner.ts:4021`, `finalize-gate.ts:380`). Two MORE executors exist: `recovery-controller.ts:264` `parsePlanPhases` + `:323` `executePhaseLoop` (already runs `**Verify:** \`cmd\`` blocks and is **already rung 3 of this very ladder**, `mux-runner.ts:5710-5733`), and `check-readiness.ts:210` `extractAcceptanceCriteria` + `:233` `isMachineCheckable`. **Honest statement: the executor EXISTS and would be REUSED** (`runAcPhaseGate` + a fifth `AcEvaluationPhase`, e.g. `'ticket-done'`); **what's missing is a prose-AC → command BINDING** (a ticket's `acceptance_test` lives only in the refinement manifest and is consumed as shape text, never as a command — `spawn-refinement-team.ts:1328`/`:1392`/`:2330`). The old "ADDITIVE, no helper exists" framing **would fail our own mandatory `## Simplification Review` Q2** (`prds/CLAUDE.md`: "Can it REUSE instead of ADD? Name the reuse or justify why it cannot").
+     - **🔴 DRIFT 2 (THE ONE THAT MATTERS) — on a TARGET repo there is NO GATE AT ALL, and the proposed subtractive fix does not touch it.** `runArmedGate` (`mux-runner.ts:5758-5762`) opens `if (!fs.existsSync(extensionDir)) return { ok: true };` with `extensionDir = path.join(input.workingDir, 'extension')` (`:5749`). LOA-1763's workingDir has **no `extension/`** → the gate returns ok **without running anything** → rung 1 fires unconditionally on any dirty tree. `:5015-5019` then justifies the forged verdict with a comment asserting the opposite: *"the caller already proved GREEN via its own armed #99 gate"* — **the caller proved nothing.** This is **NOT** the pickle-rick-only path the R-ORSR-6 invariant describes (`recovery-controller.ts:56-60`): on **every target repo** the gate is a no-op and the green verdict is fabricated. ⇒ **Same off-repo fake-green family as [[B-TRGP]] §B.2** — cross-reference before scoping. The MASTER_PLAN's proposed subtractive fix (reject a bare salvage commit as sole Done evidence) **does NOT touch the forged `worker_gate_verdict: green` at `:5020`**, which independently disarms the R-CWGE fail-closed recompute. **Re-scope the PRD around BOTH the vacuous armed gate and the forged verdict**, not the salvage-commit-as-evidence framing alone.
+3. **[[R-WDTF]] (P1) — stop destroying verified work. ✅ RE-GROUNDED 2026-07-16 (source-verified, `17150a9c`): premise CONFIRMED at both fix sites; ONE wording drift CORRECTED below. 🆕 SCOPE GREW SAME DAY — R-WDTF IS A CLASS WITH A SECOND SITE, found by dogfooding (see 3b).**
+   - **🆕 3b. SECOND SITE — `extension/src/bin/spawn-refinement-team.ts:933`** (`const success = !workerTimedOut && hasToken(logContent, PromiseTokens.ANALYSIS_DONE);`). **Identical defect shape**: a narrative token is a hard AND-conjunct outranking ground truth. Caught live 2026-07-16 — the `requirements` analyst wrote a **37,989-byte** `analysis_requirements.md` (the run's most valuable artifact; it caught a genuine false-sufficiency claim in the R-MWMO d2 PRD, independently verified) and was stamped `success:false` for all 3 cycles → `all_success:false` → synthesis degraded/skipped, best analysis discarded as a failure. **Repo-agnostic; bites every target repo; makes refinement quality silently non-deterministic.** ⇒ **Fix R-WDTF at the CLASS level (both sites), not just `spawn-morty`** — consult ground truth (artifact exists + substantive) before recording failure. Detail: `BUG-REPORT-2026-07-16-symbol-audit-exit-code-false-positive-blocks-refinement.md` § Secondary finding. Deployed tree (`~/.claude/pickle-rick/extension/bin/spawn-morty.js:1616`) is IN SYNC with source — the bug is live, not a build artifact. **CONFIRMED:** `tokenPresent` is a hard AND-conjunct in `isSuccess` (`spawn-morty.ts:2336` — exact, no drift): `const isSuccess = !ctx.mutableState.timedOut && tokenPresent && hasArtifact && (logNonTrivial || hasEdits);`. **CONFIRMED:** the write at `:1861` sets `{status:'Failed', completion_commit:null}`, erasing the pointer to the worker's own real commit. **⚠ DRIFTED — "flip-suppression nested inside the branch it can never enter" is WRONG wording; do NOT hand a builder that sentence** (they will hunt a dead branch that does not exist and thrash). The branch is `if (isSuccess)` at `:1885` — the **happy path**, entered on every successful turn, where `flipSuppressed` genuinely goes `true` (`:1901`). **Correct diagnosis:** `flipSuppressed` is only ever *computed* INSIDE that branch (declared `false` at `:1884`, reassigned only at `:1901`), so the two disjoint routes to `isSuccess === false` are asymmetric — a **worker-gate** RED (`:1896`) can be suppressed, but an **`evaluateWorkerOutcome`** RED (`:2336`, e.g. no `WORKER_DONE` token) reaches `persistWorkerOutcomeStatus` with `flipSuppressed` pinned `false`, so `:1860`'s `!input.flipSuppressed` is always true → the `:1861` hard-Failed write. The token-absent path never calls `evaluateFailedFlipSuppression` (single call-site, inside `runWorkerGate` at `:1632-1643`) — it never asks whether artifacts, edits, or a commit exist. **Fix shape (subtractive):** make the ground-truth suppression check dominate BOTH red paths — either hoist `evaluateFailedFlipSuppression` out of `runWorkerGate` to cover the `:1881` verdict too, or drop `tokenPresent` from the `:2336` conjunct so a token-less-but-productive worker reaches the gate (and thus the suppression) at all. **Pipeline** (own PRD; build-then-`install.sh`-incrementally — this deployed bug DOES bite the build worker, so deploy before later tickets), NOT hand-build.
+4. **[[B-RLH]] — review-loop honesty (now UNBLOCKED; B-FOMC shipped). ✅ RE-GROUNDED 2026-07-16 — the STRONGEST entry in the queue: R-BCFR / R-GRLS / R-JPCM / WS-4 / WS-5 ALL CONFIRMED at source. Two corrections + a line-drift warning below; then BUILD.** Composes R-BCFR + R-GRLS + R-JPCM, amended with WS-4 (`isConverged` (`microverse-state.ts:390-402`) returns bare `true` for BOTH stall-exhaustion (`:391`) and target-reached (`:399`) — same value, no discriminant → add `stalled_below_target` (0 hits in source today), mirroring anatomy's SHIPPED `anatomy_non_convergent` — **all six mirror sites verified**, producer `maybeHaltAnatomyNonConvergent` at `microverse-runner.ts:3889-3914`; a real working template, ~30 LOC reuse) and WS-5 (the ac-phase-gate → **DELETE or WIRE**). Pipeline-safe, dogfoodable, carries genuine subtraction.
+   - **⚠ CORRECTION 1 — AC-RLH-6's thesis "today NONE can fail" is DRIFTED/over-broad. Narrow it before building.** **anatomy-park CAN already halt on a quality verdict** (`anatomy_non_convergent` → exit 1 → `run-finalize-gate-incomplete`, `pipeline-runner.ts:4050-4052`) — that phase reports non-convergence honestly. The TRUE (and stronger) thesis: **szechuan/metric mode cannot fail** — `handleMetricMode` returns only `'converged'` on any `isConverged` truth (`microverse-runner.ts:4173`), which is in `successfulReasons` (`:4575`) → exit 0 → the halt classifier is never consulted (`:3808` short-circuits on `exitCode === 0`). **NEW, unlisted sibling found: `no_progress` ALSO exits 0** (`:4575`) — a second stall-shaped disposition reading as success; fold it in. Accurate framing = *anatomy shipped the honest disposition, szechuan did not.* The ac-phase-gate is the ONLY quality verdict with `break` power (`pipeline-runner.ts:4021` → `:4029-4032`) and has never fired — that half of the thesis HOLDS.
+   - **⚠ CORRECTION 2 — the PRD contradicts its own retraction.** AC-RLH-5's prose (PRD line ~311) still asserts *"four call sites and two release-gate-policed trap-door invariants"* — the SAME fabricated citation the PRD retracts at its lines 234-242. Verified: `audit-trap-door-enforcement.sh` has **0** references to `ac-phase-gate`, which carries no trap-door/INVARIANT markers. **Strike the clause**; the retraction's real evidence carries the AC without it.
+   - **WS-5 CONFIRMED as amended:** not "zero producers" but **zero PRODUCTION producers** — `AC_PHASE_MANIFEST` appears in exactly 3 places in `extension/src/`, all inside `ac-phase-gate.ts` itself (`:9` decl, `:197` read, `:211` label); only test fixtures write it. Fail-open at `ac-phase-gate.ts:196-200` (missing manifest → `status:'pass'`). The "blanket fail-closed bricks every run" warning STANDS (pre-refinement runs first).
+   - **⚠ LINE-DRIFT WARNING (hand the builder SYMBOLS, not line numbers).** `spawn-refinement-team.ts` cites are **stale by +106/+126** (`:1127`→**`:1233`**, `:2279`→**`:2405`**); `microverse-runner.ts` cites are ~4 low; `spawn-gate-remediator.ts` ~3 low (`:125`→`:126`, `:240`→`:237`). **Exact:** `types/index.ts`, `pipeline-runner.ts:4021`/`4041-4062`, `ac-phase-gate.ts:196-200`, `microverse-state.ts:390-391`, `banned-constructs-audit.ts:129`, `finalize-gate.ts:319`/`323`.
+   - **R-GRLS "worse than described" CONFIRMED:** the lockfile is opened `O_CREAT|O_EXCL` then closed with **no payload written** (`spawn-gate-remediator.ts:237-270`), so `isDeadPidPayload` can never prove death; the EEXIST branch `return { ok: false, exitCode: 0 }` (`:266`) exits CLEAN having remediated nothing; **`LOCKOUT_PATH` has ZERO consumers** (only `BRIEF_PATH=` is read anywhere). `finalize-gate.ts:319`/`:323` return **byte-identical** `{ code: null, result }` on the lockout and success paths — the caller cannot structurally distinguish them. `microverse-runner.ts:303-305` is ALREADY HONEST and consumed at `:680-681` — **do not touch**.
+   - **R-BCFR CONFIRMED:** fabricated citation exact at `banned-constructs-audit.ts:129`; sibling `isNestedTernary` carries the identical fabrication at `:118`; eslint `curly` premise re-verified (0 `curly` refs in `eslint.config.js`, the only config). "Delete the module" is **unbuildable** — `banned-casts-audit.ts:3-8` imports 4 helpers from it; **"delete the arms" is correct**. The analyzer is itself written in brace-free `if` (`:50,62,65,88,92,95,98,100-102`). Removing the arm **empties** `MECHANICAL_FINDING_MATCHERS` (`mechanical-finding-classifier.ts:27-30`, exactly one entry).
+   - **✅ RE-VALIDATED 2026-07-18 against the new OPERATING PRINCIPLES — WS-4 + CORRECTION 1 both HOLD, and WS-4 is CHEAPER than written. Operator field report: *"I have pipelines that run and exit due to time and not convergence."* CONFIRMED at source, and it is a principle-1b violation:**
+     - **The give-up-reads-as-success path is exact.** `checkExitConditions` (`microverse-runner.ts:4053-4062`) returns **`limit_reached` for BOTH caps** — iteration (`maxIter > 0 && ctx.iteration >= maxIter`) and **wall-clock** (`remainingSessionSeconds(...) <= 0`). Then `:4575` `successfulReasons = ['converged','stopped','limit_reached','approach_exhaustion','no_progress']` → **exit 0**. **FOUR of those five are give-up conditions**; only `converged` is genuine. So a phase that runs out of clock exits 0 and `pipeline-runner` prints *"completed successfully."*
+     - **🆕 WS-4 IS A ~5-LINE FIX, NOT ~30 — THE DISCRIMINANT IS ALREADY COMPUTED AND THROWN AWAY.** `handleMetricMode` (`microverse-runner.ts:4169-4173`) already computes `targetHit` (`classification.kind === 'improved' && convergence_target != null && score === convergence_target`) and uses it **only inside the log string** (`target=… reached` vs `stall_counter=…`), then returns `'converged'` **unconditionally**. ⇒ Return `stalled_below_target` when `!targetHit`; the computation already exists. This is the *exact* shape of the observability rule above: **a discriminant computed and discarded.**
+     - **⚠ CORRECTION TO THE CORRECTION — "mirror anatomy" does NOT violate principle 1 (nonstop). Earlier fear was WRONG.** `anatomy_non_convergent` is **non-fatal**: `pipeline-runner.ts:4086-4089` returns `{action:'run-finalize-gate-incomplete'}` with the comment *"a non-convergent subsystem halt is a NON-FATAL phase end — run the finalize gate over the converged work and continue to szechuan (R-PHC-6), never abort."* And `shouldHaltAfterPhase` halts ONLY on `isFatalPhaseFailure` or `pipeline_continue_on_phase_fail === false` (default `true` in `pickle_settings.json`). ⇒ **Honest + nonstop is already achievable; anatomy is the working template. Do NOT implement WS-4 as "exit 1 to halt."**
+     - **WS-4 is INCOMPLETE without B.5(a).** Even with `stalled_below_target` returned, `finalizePhaseSuccess` (`pipeline-runner.ts:4137`) still prints *"completed successfully"* because **`exitCode` is a parameter it never tests** (B.5(a), CONFIRMED LIVE). ⇒ **Build WS-4 and B.5(a) TOGETHER** — the disposition without the reporting fix is still invisible to the operator, which fails the observability precondition.
+     - **Scope note:** `isConverged` (`microverse-state.ts:390-402`) itself may stay as-is (a bare "should we stop?" predicate); the discriminant belongs at the `handleMetricMode` return, where `targetHit` already lives. Prefer that over threading a new field through `isConverged` — smaller, and it keeps the stop-predicate single-purpose.
+   - Re-refine on the now-infused, citation-checking analyst team.
+5. **Cheap honesty subtractions (one small bundle). ✅ RE-GROUNDED 2026-07-16 — ALL THREE CONFIRMED / LIVE, none stale, none misdiagnosed. BUILD-READY (cites corrected below).**
+   - **(a) `pipeline-runner.ts:4137` — CONFIRMED LIVE** ([[R-MPGD]] WS-2). ⚠ **Scope wording corrected: NOT "unconditionally" — it is "on every NON-PICKLE phase."** In `finalizePhaseSuccess` (`:4115-4139`) `exitCode` is **a parameter that is never tested**; the only two guards above it are pickle-only (`maybeStampPickleIncompleteRobust:4098` and `maybeStampPhaseGraduation:3586` both open `if (rawPhase !== 'pickle') return null;`). So citadel / anatomy-park / szechuan-sauce have **no gate at all**. Reaching path (`:4011-4033`): `shouldHaltAfterPhase` (`:2807-2823`) returns **false** for a non-zero exit unless fatal or `pipeline_continue_on_phase_fail === false` → `recordRecoverablePhaseFailure(…, 'continue')` → AC gate (fail-opens) → `counters.completed++` (`:4133`) → `"completed successfully"` (`:4137`). **This is exactly the LOA-1570 "4/4 phases" mechanism.** Fix belongs in `finalizePhaseSuccess` — it already receives `exitCode` and ignores it.
+   - **(b) `install.sh` settings-merge — CONFIRMED; deployed WINS.** ⚠ **Correct cite is `install.sh:507-511`** (plan said `:504-508`). `jq -s '.[0] * .[1]'` with `.[0]` = `$SCRIPT_DIR` (repo source, `:4`) and `.[1]` = `$EXTENSION_ROOT` (deployed, `:34`); jq's `*` is a recursive merge where **the RIGHT operand wins** on scalar conflicts ⇒ deployed pins stale field state forever. **Live divergence verified on this machine:** source `codegraph.enabled: false` / `index_at_setup: false` vs deployed **`true` / `true`**. **17 phantom `codegraph_context_injected` events corroborated EXACTLY** — 10 in session `2026-07-11-255ad373` + 7 in `2026-07-11-86dd509f`. ⚠ **Events live under `~/.local/share/pickle-rick/sessions/*/state.json`, NOT the repo-local `activity/`** (which has zero) — correct the plan's implied location. **Precedent FOR the flip (new):** `:516-517` already unconditionally overwrites `auto_update_enabled=false` on the deployed file *after* the merge, so that key is effectively source-controlled today — source-wins would not regress it.
+   - **(c) `convergence-gate.ts:1334` — CONFIRMED; the `null` fix is load-bearing, not cosmetic.** The `!cmdMap` branch (`:1333-1336`) passes **`projectType`, not `null`** — unlike its sibling at `:1329` which correctly passes `null`. **`bun` reachability is real, not hypothetical:** `detectProjectType:362-367` returns `'bun'` on `bun.lock`/`bun.lockb`, but `extension/data/gate-commands.json` keys are `["_schema","cargo","go","npm","pnpm","yarn"]` — **no `bun`**. Why `null` matters: `emitSkippedAndReturn:1254-1267` forwards `projectType` into `persistGateBaseline:1105` (`project_type: projectType`), and **`project_type === null` is the ESTABLISHED uncertifiable-baseline signal** consumed by `microverse-runner.ts:618-621` `isBaselineUncertifiable` → `:672` → `recordUncertifiableBaselineDefer:626-636` ("cannot force-converge"). Same `null`-as-signal reuse is already documented at `convergence-gate.ts:1167-1170` (R-SZGB-D). Today `validateBaselineStructure:131-136` accepts `'bun'` as valid, so a bun baseline with `checks: []`/`failures: []` **validates cleanly and reads as CERTIFIABLE — a green certification over ZERO inspected checks.** Passing `null` flips it onto the existing fail-closed path **with no new field** (pure reuse).
+6. **🆕 [[B-NONSTOP]] — GENEROUS CAPS + HONEST NON-CONVERGENCE + OBSERVABILITY (NEW 2026-07-18, operator-set; the direct implementation of OPERATING PRINCIPLE 1). Bundle this with B-RLH WS-4 + B.5(a) — they are one thesis.**
+   **Field evidence (operator):** *"time limits are too restrictive on anatomy-park and szechuan-sauce… I have pipelines that run and exit due to time and not convergence."* Root-caused above (§B.4 re-validation): a cap exit returns `limit_reached`, which is in `successfulReasons` → exit 0 → *"completed successfully."*
+   - **(a) The caps are too small for large PRDs — raise them hard.** Today's binding values: `pipeline.json` per-run **`szechuan_max_iterations: 50`**, **`anatomy_max_iterations: 100`** (the `/pickle-pipeline` skill's own defaults), plus `pickle_settings.json` **`iteration_budget_per_backend: {claude: 100, codex: 80}`** and `default_max_iterations: 500`. **Szechuan at 50 is the tightest and the one that bites a large deslop.** Raise to a runaway-backstop scale (order-of-magnitude, not +20%), or accept `0 = unlimited` where the loop already supports it (the mux global cap already treats `0` as unlimited — `globalMaxIter > 0 && …`). **Wall-clock stays opt-in/disabled by default (already correct — do NOT arm a default `--max-time`).**
+   - **(b) Honest non-convergent continuation (= B-RLH WS-4 + the anatomy template).** A cap/stall exit is named (`stalled_below_target`, `iteration_budget_exhausted`) and routed like `anatomy_non_convergent`: **finalize-gate over converged work, then CONTINUE.** Never abort, never report success. Remove `limit_reached`/`no_progress` from `successfulReasons` **only in the reporting sense** — they must stop reading as *success*, NOT start halting the run (principle 1c).
+   - **(c) Observability — the operator must see WHERE it fell short.** The disposition must reach `pipeline-status.json` / the phase summary, not just a log line. Today `finalizePhaseSuccess` (`pipeline-runner.ts:4137`) ignores its `exitCode` param (B.5(a)) and `handleMetricMode` discards `targetHit` (§B.4) — **two independent places where the truth is computed and thrown away.** Fix both or the run still reads green.
+   - **(d) Simplification angle (principle 2):** `successfulReasons` conflating five dispositions into one boolean IS the complexity to subtract — replace the "is it in the success list?" test with an explicit disposition→(exit, report, continue?) mapping so a new reason can't silently inherit "success." **Name the reuse:** `anatomy_non_convergent`'s existing producer/consumer pair is the template; do not invent a parallel mechanism.
+   - **Verify the OUTCOME, not the mechanism:** the acceptance test must be *"a run that exhausts its szechuan iteration budget is reported as non-convergent AND the pipeline still reaches the next phase"* — not "a new enum member exists."
+   - **🔴🆕 (f) LIVE FIELD INSTANCE CAPTURED 2026-07-18 — our own R-SAFP run, session `2026-07-18-c06fd902`. This is the defect happening to us, verbatim, and it cleanly separates what is ALREADY RIGHT from what is BROKEN.**
+     ```
+     21:22:36.575  Phase anatomy-park exited with code 1
+     21:22:36.579  Phase anatomy-park exited with code 1 (non-fatal) — continuing to szechuan-sauce
+                   for automated remediation          ← ✅ PRINCIPLE 1 WORKING: nonstop, honest, correct
+     21:22:36.580  Phase anatomy-park completed successfully   ← ❌ PRINCIPLE 1b VIOLATED: a code-1 exit
+                                                                  reported as success, 1ms later
+     ```
+     And the artifact an operator actually reads records **nothing at all**:
+     ```json
+     pipeline-status.json → {"status":"completed","completed_phases":4,"skipped_phases":0,"total_phases":4}
+     ```
+     **No `exit_code`, no per-phase status, no disposition — the code-1 is invisible outside the log.**
+     **Three things this proves, and they sharpen the whole bundle:**
+     1. **The continuation is ALREADY CORRECT — do not touch it.** Line `:579` is the shipped non-fatal
+        path doing exactly what principle 1 demands. Confirms §1e: honest ≠ halting. **WS-1 must change
+        only the REPORTING, never the routing.**
+     2. **WS-2 is confirmed necessary and is the visible half.** `finalizePhaseSuccess` logs
+        "completed successfully" **1 millisecond after** the runner itself logged a non-fatal code-1 —
+        two statements, one truth, opposite claims.
+     3. **AC-NS-5 is under-specified as written and must be strengthened.** It says the disposition must
+        reach `pipeline-status.json`; the real state is that this file **has no per-phase structure at
+        all** — only four counters. So the AC must require adding per-phase entries (name, exit code,
+        disposition), not just "carry the disposition." Without that there is nowhere for the truth to go.
+     **Bonus corroboration:** the same run reports `completed_phases: 4` with `skipped_phases: 0` while one
+     of those four ended code-1 — i.e. the counter that feeds the summary is itself the `counters.completed++`
+     line B.5(a) names. The three defects (routing OK / reporting wrong / artifact empty) are one chain.
+   - **🔴 (e) NEW INSTANCE FOUND 2026-07-18 DURING THE beta.3 RELEASE GATE — THE RELEASE GATE ITSELF IS UNPASSABLE AS DOCUMENTED. Same defect class, third sighting today.**
+     `bin/test-runner.js:32` `DEFAULT_TEST_RUNNER_TIMEOUT_MS = 30 * 60 * 1000` (**1,800,000 ms**) vs the documented soak minimum `SOAK_SECONDS = 1800` s (**1,800,000 ms**) — **the soak consumes 100% of the runner's timeout budget.** Observed: soak ran `1799117 ms`, tier hit `1799974 ms`, runner timeout fired at completion and **cancelled the soak AND `worker-mcp-access.test.js`** (queued behind it in `tests/expensive/.serial-tests.json`, never ran). Reported as `fail 0, cancelled 2` + `'Promise resolution is still pending but the event loop has already resolved'` + `spawnSync ETIMEDOUT` — **a cancellation dressed as a failure, with the soak's own assertions all green.** Workaround used for beta.3: `PICKLE_TEST_RUNNER_TIMEOUT_MS=7200000` (env override, capped 24h).
+     **This is the SAME class as the two caps already fixed/queued today — a cap set below the real runtime is a guaranteed false failure, not a safety net:**
+     | # | Cap | Real runtime | Result |
+     |---|---|---|---|
+     | 1 | worker gate `worker_test_gate_timeout_ms` 240s | fast suite ~402s | every `medium`+ gate false-failed (**B-SSAT — FIXED, deployed beta.3**) |
+     | 2 | `szechuan_max_iterations` 50 | large-PRD deslop | exits `limit_reached`→reads as success (**B-NONSTOP (a)/(b)**) |
+     | 3 | `DEFAULT_TEST_RUNNER_TIMEOUT_MS` 30min | soak 30min + 2 serial siblings | **release gate cannot pass as documented** (this row) |
+     **Fix (principle 1a):** the runner default must exceed the *sum* of its serial manifest's worst case, not equal its largest member — e.g. default ≥ `SOAK_SECONDS + headroom for the other serial entries`, or derive it from the manifest. **Do NOT "fix" it by shortening the soak** (that subtracts the evidence, not the defect). Also reconcile `extension/CLAUDE.md`'s release-gate command, which prescribes `SOAK_SECONDS=1800` without the runner-timeout override — following the documented gate verbatim fails today.
+
+### ✅ ~~🔴 INHERITED RED~~ on `release/v2.1-beta` — **DOES NOT REPRODUCE AT REST; RETRACTED 2026-07-17** (evidence below; the original 2026-07-16 record is retained beneath it, struck)
+
+**Re-verified 2026-07-17 at the close of the R-MWMO bundle, on a quiet box.** The two files this
+entry names as genuinely red **pass**:
+
+- `node --test tests/services/convergence-gate-flake-allowlist.test.js tests/services/convergence-gate-hang-guard.test.js` → **7 pass / 0 fail**, isolated (their own repro command).
+- Full fast tier at rest, **three independent runs across the bundle**: **6803/0**, **6812/0**, **6813/0** (c=4). Never a single failure.
+- The R-MWMO bundle **never touched them**: `git log 3fc1d535..HEAD -- tests/services/convergence-gate-*.test.js src/services/convergence-gate.ts` → **empty**. So this is not a bundle-side repair.
+
+**🔑 ROOT CAUSE OF THE FALSE FINDING — CONFIRMED 2026-07-17, and it is NOT (only) load. It was a
+BROKEN REPRO COMMAND. The operator's own "isolated re-run" was the bug.** Demonstrated side-by-side
+on a quiet box, same tree, same files, same instant:
+
+| Invocation | Result |
+|---|---|
+| `node --test tests/services/convergence-gate-{flake-allowlist,hang-guard}.test.js` | **2 pass / 5 fail** (`EXIT=1`) |
+| `PATH="$PWD/node_modules/.bin:$PATH" node --test <same two files>` | **7 pass / 0 fail** (`EXIT=0`) |
+
+**`npm run` puts `node_modules/.bin` on `PATH`; bare `node --test` does not.** These fixtures spawn
+`lint`/`typecheck` into temp workspaces; without `.bin` on `PATH` the binary is unresolvable and exits
+**1 immediately** — so the fixture that expects a HANG gets a fast failure (`Expected
+GATE_CHECK_TIMEOUT failure, got: lint failed with exit code 1`) and the gate reads `red` instead of
+`green`. **The "genuine, reproduced-isolated red" was manufactured by the repro command itself.**
+
+⇒ **TRAP (reusable, add to any green-tree investigation): `node --test <file>` is NOT a valid
+reduction of `npm run test:fast`.** Changing the invocation changed the environment. Any single-file
+repro of a gate/spawn-heavy test MUST carry `node_modules/.bin` on `PATH` or it fabricates failures.
+The honest reduction is `npm run test:fast -- <file>` (or the `PATH=` prefix above).
+
+⇒ **The meta-lesson, on the operator this time.** The 2026-07-16 record reasoned: *"reproduced
+isolated ⇒ not the load flake ⇒ genuine red."* Both premises were wrong — the box was **not** at rest
+(three pipelines running), **and** the isolation itself was invalid. This is precisely
+[[feedback_verify_the_outcome_not_the_mechanism]] — verifying that *the files fail* (a mechanism)
+instead of that *the tree is red* (the outcome) — committed by the same session that authored that
+memory, one hour later. **The pipeline's worker caught it.** Strongest possible argument for the
+dogfood rule: the tool corrected its operator.
+
+**Contributing cause — this file's own rule also predicted it.** The green-tree precondition in
+`prds/CLAUDE.md` says verbatim: *"Run the check **once on a quiet box**. Overlapping `test:fast` runs
+self-inflict timeout-shaped flakes in the `runGate`/hang-guard suite; a lone re-run at rest is
+authoritative."* **The two failing files ARE that `runGate`/hang-guard suite**, and the original
+record itself notes three other tmux pipelines were running at the time. The "reproduced ISOLATED"
+step re-ran the files but **not at rest** — isolation of the *files* is not isolation from *load*, so
+it did not clear the very flake class the rule warns about. The `46900269` fail-CLOSED suspicion was
+explicitly filed UNVERIFIED; it should **not** be bisected on this evidence.
+
+**⚠ CONSEQUENCE — RETRACTED, and it inverts.** This entry declared itself *"the single
+highest-leverage de-flaker on the queue"* and a launch-blocker for every `medium`+ worker. On this
+evidence **it is not a genuine red and must not anchor a PRD.** The R-MWMO bundle launched onto this
+"red" ground and shipped 7/7 with a 0-fail tier — the ground was green the whole time. **The real
+worker-gate false-fail on this branch is a DIFFERENT, confirmed bug: `worker_test_gate_timeout_ms`
+(see below).** Before any de-flaker PRD is authored from this row, re-run the tier once at rest and
+believe that result ([[feedback_reground_the_ledger_before_building_from_it]]).
+
+**Meta:** a ledger entry asserting a red that isn't there is the same failure mode as a runner
+asserting a green it hasn't earned — this bundle's own thesis, pointed back at the ledger. Two of the
+last several entries carried wrong premises; this is another. **Reground before building.**
+
+<details><summary>Original 2026-07-16 record (struck — retained for provenance)</summary>
+
+#### ~~🔴 INHERITED RED on `release/v2.1-beta` — recorded 2026-07-16 per the green-tree precondition (NOT caused by the R-MWMO bundle)~~
+
+`cd extension && npm run test:fast` → **6792 pass / 8 fail** (`EXIT=1`) on HEAD. **Reproduced ISOLATED** (`node --test tests/services/convergence-gate-flake-allowlist.test.js tests/services/convergence-gate-hang-guard.test.js` → `EXIT=1`), so it is **NOT** the known load/concurrency flake ([[feedback_release_gate_fast_suite_concurrency_flakes]]) — it is a genuine red. Confirmed **not ours**: the session that found it is **docs-only** (`git diff 17150a9c..HEAD` touches `prds/` exclusively); the three other tmux pipelines live in **other repos** (`loa-1763-worktree`, `loa-1093-worktree`), and this tree is clean with the compiled mirror intact.
+
+**Failing files (2):** `extension/tests/services/convergence-gate-flake-allowlist.test.js`, `extension/tests/services/convergence-gate-hang-guard.test.js`. **Shape:** gate fixtures spawn `lint`/`typecheck` in temp workspaces and get an unexpected **exit 1** instead of the expected verdict/timeout — e.g. `flake failure should yield green-with-known-flake-warnings` got `'red'`; `Expected GATE_CHECK_TIMEOUT failure, got: lint failed with exit code 1`; a `typecheck` check returning `status:'red', failure_count:1` where `green/0` was expected. **Suspect provenance:** `46900269` (`fix(R-SZGB-D): classify unrunnable check as uncertifiable, fail-CLOSED`) is the newest `convergence-gate.ts` change and its fail-CLOSED reclassification matches the symptom (an unrunnable/exit-1 check now reading `red` where fixtures still expect `green`/timeout) — **UNVERIFIED, bisect before believing it** ([[feedback_verify_the_outcome_not_the_mechanism]]: this is a plausible mechanism, not a verified outcome).
+
+**⚠ CONSEQUENCE FOR ANY LAUNCH — this is [[R-WGFR]] biting.** The worker gate runs `test:fast` for `medium`+ tickets, so **every worker in every bundle inherits this red** and its gate false-fails. The R-MWMO bundle's 7 tickets are all `medium`+. **This red should be fixed (or the two files quarantined) BEFORE a clean hands-off rep is possible** — it is the single highest-leverage de-flaker on the queue, exactly as the beta.44 scorecard predicted ("(a0) R-WGFR — the biggest single de-flaker of hands-off reps; fix it first"). Its own PRD is a strong small-bundle candidate.
+
+</details>
+
+### 🔴 CONFIRMED — `worker_test_gate_timeout_ms` (240s) is BELOW the fast suite's real runtime (~305–352s) ⇒ EVERY worker gate false-fails (recorded 2026-07-17; this is the real worker-gate bug the retracted "inherited red" was masking)
+
+**Reproduced on every `medium`+ ticket of the R-MWMO bundle.** The worker lint/test gate SIGTERMs
+`npm run test:fast` at **240000ms**: `{"event":"worker_gate_failed","gate_phase":"test:fast","failures":[{"name":"__timeout__","file":"npm run test:fast","message":"timed out after 240000ms; sent SIGTERM to process tree"}]}` — **not a red test.** The same suite, run by the manager at rest, is **green in ~305–352s** (6813/0). The cap cannot be met; the gate is unpassable by construction, independent of the code under test.
+
+**The cap's source is `worker_test_gate_timeout_ms`** (`pickle_settings.json:36` = `240000`; **the
+deployed copy carries the same 240000**).
+
+**⚠ TWO PREMISES OF THIS ROW WERE DRIFTED — CORRECTED 2026-07-17 (source-verified; do NOT build from
+the struck text).**
+
+- ~~"It is NOT the documented knob... `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` is a *different*
+  per-gate-phase budget. That mismatch is why earlier sessions looked for it and could not find it."~~
+  **FALSE — they are the SAME knob, one resolver.** `resolveWorkerTestGateTimeoutMs`
+  (`pickle-utils.ts:883-902`): **env override wins → settings key → `DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS`
+  (600_000)**. `extension/CLAUDE.md:188` states it in as many words: *"The env override wins over
+  `pickle_settings.json:worker_test_gate_timeout_ms`."* There is no mismatch to explain the earlier
+  misses. **Consequence: `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS=600000` unblocks every worker gate right
+  now, with no build and no deploy.**
+- ~~"Fix the **source** `pickle_settings.json` + `bash install.sh` — never the deployed copy."~~
+  **INERT — `install.sh:510` defeats it.** `jq -s '.[0] * .[1]'` with deployed as the RIGHT operand:
+  `source 600000 * deployed 240000 → 240000`, and **deleting the key from source still → 240000**.
+  ⇒ **BLOCKED ON B.5(b) source-wins** (now sequenced #1). Fixing source and running `install.sh` would
+  change nothing while looking done — the same failure mode as R-WTFT below.
+
+**🔑 ROOT CAUSE — R-WTFT SHIPPED INERT; THIS IS A B-1SEAM ASYMMETRIC FIX, NOT A NEW BUG.**
+`0173662d fix(worker-gate): raise test:fast timeout 240s -> 600s + env override (R-WTFT)` raised
+`DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS` **240_000 → 600_000** but left `pickle_settings.json:36` pinned at
+**240000** — born at 240000 in `e34894ea` (2026-05-11) and never touched since. **Because settings
+outrank the default, the fix's own constant is unreachable and R-WTFT has been dead on arrival since the
+day it shipped.** A defect repaired at ONE site and not its sibling — the exact antipattern B-1SEAM was
+built to collapse.
+
+**The trap-door invariant is guarding the WRONG SITE.** `extension/CLAUDE.md:188` declares *"BREAKS:
+shrinking the default back below ~5 min reopens the R-WUWC-1 class (4994-test fast suite SIGTERMs
+mid-validation, rolls back worker artifacts, flips ticket Failed)"* — and enforces it on the **constant**,
+which is compliant at 600_000, while **`pickle_settings.json` violates it at 240000, unguarded.**
+R-WUWC-1 is therefore **already reopened in the field**, via the file the invariant does not watch.
+Fold "extend the invariant to the settings key (or delete the key so there is only one site)" into the fix.
+
+**Why it hasn't bitten harder:** `failed_flip_suppressed` (evidence=both) catches it every time, so
+work is preserved and the worker still self-flips Done — but it **burns a suppression slot (cap 2)
+per ticket**, and a third strike in one ticket would flip a **green** ticket **Failed**. It also
+trains operators to ignore gate failures, which is exactly the wrong reflex.
+
+**⚠ THE FIX IS "DELETE THE PIN" — and the earlier "make the budget track the suite" answer was the
+ADDITIVE arm (corrected 2026-07-17).** That framing was right that *raising* 240000 only buys time until
+the suite grows again (it already drifted 258–294s → 305–352s across six days) — **but it then reached
+for new machinery to solve a problem R-WTFT already solved.** The 600_000 default is *already* the
+intended value, *already* trap-door-documented, and *already* env-overridable per machine. **Nothing
+needs to be built. Delete the stale settings pin (−1 line) and the intended behavior returns.** Building
+a suite-tracking budget would ADD a self-adjusting mechanism to a system whose defining failure is too
+many brittle mechanisms — and it would sit on top of a knob that was only ever broken because two sites
+disagreed. **Take the subtraction; do not build the tracker.**
+
+**Fix, in order:** (1) B.5(b) source-wins — without it nothing here reaches the field; (2) delete
+`worker_test_gate_timeout_ms` from `pickle_settings.json`; (3) extend the CLAUDE.md:188 invariant to
+cover the settings key, or rely on its deletion leaving a single site. **Optional zero-cost mitigation
+available today:** `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS=600000`.
+
+Strong small-bundle candidate; this is the **actual** highest-leverage de-flaker of hands-off reps.
+
+### 🟡 FOLLOW-UP — pin AC-MWMO-D2-2/D2-3 at the integration tier (test-only; R-MWMO d2 residual)
+
+Both ACs are **implemented but unpinned** — see STEP A's residual + the `[manager]` correction above
+(**D2-3 needs NO impl change**; `session_end` with `error` already fires in the post-loop tail at
+`mux-runner.ts:11319-11327`, which WS-1's `break` reaches). Needs a NEW integration-tier file that
+spawns mux-runner as a subprocess **without** `PICKLE_TEST_MODE`, against a synthetic tmp git repo
+whose ticket is Done with no `completion_commit`, then asserts observed exit status **1** and a
+`session_end` carrying `error === 'done_without_commit_evidence'`. Small, self-contained.
+
+### C. Simplification (subtract-before-add — guard the discipline, don't manufacture work)
+- **🆕 [[R-PRNF9-DEAD]] — the `readiness_halt` cluster is DEAD CODE (found 2026-07-16 dogfooding R-MWMO d2; source-verified).** `pipeline-runner.ts:2781` special-cases `exit_reason === 'readiness_halt'` as always-fatal, and `:3917-3924` comments that it "promotes **mux-runner's** generic `readiness_halt`" — **but that producer does not exist**: `readiness_halt` is **NOT a member of the `ExitReason` union** (`mux-runner.ts:4367`), `mux-runner` has **zero** `recordExitReason(…, 'readiness_halt')` call sites, and the **deployed** `mux-runner.js` contains no `readiness_halt` at all. The whole R-PRNF-9 cluster (`:2781`, `:3662`, `:3774`, `:3917-3924`) **has never fired.** **R-CCNW-2 discipline applies: a gate that has never fired is dead weight or an unwired safety net — pick one** (wire it by making `mux-runner` produce the reason, or delete it). Same DELETE-or-WIRE shape as B-RLH WS-5's ac-phase-gate; consider bundling the two decisions. **Notable second-order effect:** it silently falsified the R-MWMO d2 PRD's WS-2 justification ("mirror the shipped precedent") — a dead guard cited as proof a pattern works is proof only that it was never exercised.
+- **ac-phase-gate: decide DELETE-vs-WIRE inside B-RLH WS-5** (R-CCNW-2 discipline — a gate that has never fired is dead weight or an unwired safety net; pick one).
+- **install.sh settings-merge → source-wins** (B.4b) is the live subtraction with real yield.
+- **🆕 [[B-CGHARD]] WS-CGH-D — FIX THE CODEGRAPH INPUT TERMS (PRIORITY BUILD per operator 2026-07-17: capability PROVEN in independent tests; sequenced #7 in NEXT ACTIONS). Listed here because the fix is mostly REUSE — not because it is deferrable.** The harvester is the sole gap between this repo and the engine's proven capability, so WS-CGH-D is capability-unlock work; the "noise" finding below is the evidence FOR building it, not against. **Codegraph IS running and IS healthy — and IS feeding workers noise.** Verified on the R-MWMO run (`2026-07-16-6fe9b904`): `index_status: healthy`, `injected: 11`, `skipped: 0`, `degraded_ops: 0`, `hits_count` 122–185, **`bytes` 8130–8141 = filling the 8192 cap**. Then the terms were dumped from the REAL harvester on the REAL tickets:
+  - `de25ce90` → `` `!guard.ok` ``, a bare path, `done_without_commit_evidence`, **`return`**, **`while (true)`**, **`:9287`**, **`:~11300`**, **`:~11345`** — **~1 of 8 is a symbol; three are bare LINE NUMBERS; two are KEYWORDS.**
+  - `be604d1d` → **ZERO of 8**, and two slots burned on ~100-char **PROSE SENTENCES** (`zero commits since baseline ${shortSha} — no build progress this run`).
+  - `a5f8cf4f` → `isFatalPhaseFailure`, `finalizePhaseSuccess`, `maybeStampPhaseGraduation` — **3 of 8, the best of the bundle.**
+  - **Mechanism:** `deriveCodegraphTerms` (`extension/src/bin/spawn-morty.ts:584-602`) takes **every backticked span in DOCUMENT ORDER**, then `.slice(0, 8)`. **The first eight backticks win** ⇒ **the better a ticket's citation discipline, the worse its payload** (precise `file.ts:NNNN` refs flood the harvest). This is worse than the old "5/6 yield zero symbols" note: it is not a miss-rate, it is a *systematic inversion*.
+  - **`hits_count` is a NOISE metric, not a value metric — the soak must not use it.** `return` occurs **859× in `mux-runner.ts` alone**; a keyword term yields huge hits and zero information. **Every telemetry field read green while the payload was junk** — the "silence is not success" shape, now demonstrated on codegraph itself.
+  - **Fix candidates (refinement decides):** filter line-refs/keywords/long spans (necessary, not sufficient) · **rank instead of take-first — `slice(0,8)` over document order IS the root** · strip call-expression noise (`applyAutoTicketCompletionValidation({...});` → the symbol) · **REUSE `resolveSymbolRef`/`countUnresolvedReferences` (`check-readiness.ts:525`), which already answer "is this a real symbol?"** — name the reuse or justify why not (`prds/CLAUDE.md` Q2).
+  - **Depends on B.5(b) source-wins** (else the arm is unlabeled). **Blocks the WS-CGH-C soak and [[B-CGCAP]].**
+- **[[B-CGCAP]] codegraph verdict — POST-GA, measurement-blocked on WS-CGH-D above** (may subtract ~1.3k LOC + a native dep). **Do NOT run the soak first:** on today's payload it returns "injected: N" for N restatements of the ticket's own file list plus the word `return`, and B-CGCAP would flip a **hollow verdict in EITHER direction**. Not calendar-blocked; measurement-blocked.
+- **Do NOT chase** (the B-GSUB over-subtraction lesson): the ~38-guard manager-loop-continuation cluster and the dead-pid/orphan liveness triplication — earned distinct signals already sharing plumbing, low ROI.
+
+**Sequencing rationale:** A ships the v2.0 line (cheap, mostly done). B is reliability-first and every item is repo-agnostic — B1/B2 fix the "Done means nothing on a target repo" pair that most directly gates autonomy-on-other-repos; B3/B4 are the honesty/subtraction follow-through. The un-automated closer stays an **explicit NON-ISSUE** (operator ⓪) — do not queue it.
+
+---
+
+**Autonomous-development scorecard.** The build→citadel→anatomy-park→szechuan-sauce pipeline runs real
+multi-ticket bundles **fully hands-off** — FOUR clean 4/4 zero-intervention reps banked (beta.38 codex, beta.41/42/43
+claude). **beta.44 [[R-LTNC]] was a FIFTH build but NOT a clean rep** — codex did the substantive 225-file rename
+work autonomously (self-recovering a wedge), but shipping needed a full closer-takeover (flaky [[R-WGFR]] gate killed
+run 1; the full gate caught 6 rename-gap escapes; a stale-deploy masqueraded as a regression). Codex is
+"viable-with-closer," and the GA bar still wants a CLEAN hands-off codex rep. Remaining autonomy gaps, in order of
+bite: (a0) **[[R-WGFR]] flaky-gate false-red-fatal** — the biggest single de-flaker of hands-off reps (fix it first);
+(a) the **closer** (version bump · `install.sh` deploy · `gh release`) is NOT auto-run by `pipeline-runner` — it
+finishes then stops, so a babysitter still ships;
+(b) **R-PSRB self-build is NARROWER than "recovery bundles can't self-build"** — B-RASO (beta.43) proved a
+salvage-path RELIABILITY fix ships fine via an ATTENDED pipeline when the deployed bug is low-base-rate (the
+false-hold never fired on the build worker). R-PSRB hand-build is only forced when the deployed recovery path is
+*routinely* breaking (B-PCOMP class), not merely *touched*; (c) per-phase gates don't run the FULL release gate,
+so debt surfaces at the closer — **B-RASO's closer caught 3 escapes** (compiled-mirror drift, a 2141-char
+trap-door line tripping AC-BUNDLE-17, and a stale integration test asserting the pre-fix `hold` contract in a file
+outside the worker allowlist) — none a design fault, all fixed forward. The full gate earning its keep is the
+argument for eventually wiring a FULL-gate check into the per-phase pipeline (candidate, not yet scoped).
+
+## ▶▶ NEXT FIX RUN (2026-07-02) — B-1SEAM: collapse the asymmetric-fix siblings [✅ BUILT 2026-07-02 — `7b52789d`/`2bbf5770`/`885efb73`; retained as the design record]
+
+**The three fresh 2026-07-02 bug reports are ONE antipattern, not three unrelated bugs.** Each is an
+**asymmetric / incomplete fix** — a defect repaired at ONE site/field/oracle/path but not its
+symmetric twin, so the *same* bug re-surfaced on the sibling. This is the operator's "recurring /
+failed fixes" signal, and R-AICF specifically **re-opens the Reliability-Plan #1 meta-defect
+(completion-oracle plurality)** that B-DURA/B-PXBO/R-CWGE were believed to have collapsed to one
+oracle — it was never actually single.
+
+| Bug | Pri | Fixed at ONE site / NOT at its twin | Twin of |
+|---|---|---|---|
+| [[R-AICF]] | **P1** | `allow_inferred_completion_commit` honored by `done-guard` but NOT by the phantom-Done watcher NOR `readEvidence()` Done-flip fatal → **3 oracles disagree**, strand a clean codex bundle 0/4 | reopens [[R-CCC]] / [[B-PDBL]] — the "single oracle" is still 3 |
+| [[R-PSCG]] | P2 | citadel self-heal added for `prd_path`, absent for the sibling `start_commit` → citadel hard-fails 1/4 after a clean 11/11 build | mirror of shipped [[R-PRPATH]] |
+| [[R-MACB]] | P2 | bystander-stash (owned-paths-only) on the mux-runner exit path, never ported to the microverse auto-rescue path → foreign session's doc swept onto the feature branch | twin of B-PCOMP `#b736337f` |
+
+**Simplification + reliability re-think (the meta-lesson the operator asked for):** we keep *patching
+one instance* of a defect class and leaving its twin, because these fixes live as **parallel
+implementations** (3 completion oracles · 2 citadel self-heal branches · 2 staging call-sites) instead
+of ONE shared predicate/helper every site routes through. The durable move is NOT three more patches —
+it is to **collapse each defect's sibling-sites onto a single seam and PIN the collapse** with a
+call-site-count audit (the R-AFCC-CALLER-ENUMERATION pattern) so a future divergence fails the gate.
+"Collapse seams, don't gate them" — [[feedback_analyze_failures_then_subtract_not_add_guards]]. This
+also sharpens the standing GA question: the completion-oracle plurality is the ROOT that keeps
+re-surfacing on codex; **B-1SEAM WS-1 is the real codex-GA completion fix, ahead of any further soak.**
+
+**⚠ PREMISE CORRECTION (2026-07-02, source-verified — read before authoring):**
+`allow_inferred_completion_commit` **does not exist in source** — deleted by B-DURA T60 (beta.23,
+`05650df1`); `check-no-inferred-completion-flag.sh` + `allow-inferred-completion-commit-deleted.test.js`
+pin its absence. The flag set at LOA-1078 launch was inert JSON; the R-AICF report's flag attribution is
+impossible. The REAL divergence: `readEvidence()` is already the single evidence *function*, but its **6
+decision call-sites apply different policy** — only `guardCompletionCommitBeforeDone` (`mux-runner.ts:4697`)
+applies baseline-SHA rejection (`:4714`) + worker-gate fail-closed verdict (`:4769`); the phantom-Done
+watcher (`ticket-completion-evidence.ts:626`), R-PDUP twin auto-close (`mux-runner.ts:1427`), salvage
+attribution (`mux-runner.ts:5358`), auto-fill (`auto-fill-completion-commit.ts:75`), and
+`validateAutoTicketCompletion` (`mux-runner.ts:2792`) apply none of it. WS-1 = route all 6 sites through
+ONE predicate (baseline + gate verdict + frontmatter-sha resolution) + deterministic post-commit hash-tag
+trailer injection in the worker wrapper (kills the codex untagged-commit trigger, no flag) — do NOT "teach
+the flag" to anything. WS-1 must open with a mechanism trace of session `2026-07-01-9e922602` against the 6
+sites. Full analysis + phased simplification plan: `SIMPLIFICATION-AND-FIX-PLAN-2026-07-02.md`.
+
+**THE BUNDLE — B-1SEAM (author the PRD next context from the 3 bug reports, then build):** one thesis
+— *fix at the seam, not the site.*
+- **WS-1 (R-AICF, P1) — collapse the completion oracles onto one predicate.** The phantom-Done
+  watcher AND the `readEvidence()` Done-flip fatal MUST consult the SAME predicate `done-guard` uses;
+  with `allow_inferred_completion_commit=true`, a frontmatter `completion_commit` sha resolving to a
+  real in-scope commit counts as `committed` even without the message hash-tag. Pin the call-site
+  collapse with an audit so no oracle can diverge again. **Preferred root-cause alt (subtract, don't
+  flag):** deterministic post-commit hash-tag trailer injection in the worker wrapper so all oracles
+  agree WITHOUT the flag. **⚠ R-PSRB — HAND-BUILD** (touches `ticket-completion-evidence.ts` /
+  `reconcile-ticket-truth.ts` / mux-runner Done-flip; the deployed buggy runtime applies this logic
+  to the very worker building the fix).
+- **WS-2 (R-PSCG, P2) — symmetric citadel self-heal.** Extend the `pipeline-runner.ts:2062-2071`
+  self-heal to also heal `start_commit` (`git merge-base <default> HEAD` when unset + repo is git);
+  `setup.js --resume` recomputes `start_commit` when unset and cwd is now a git repo; WARN on
+  `--paused` in a non-git cwd. Pipeline-safe.
+- **WS-3 (R-MACB, P2) — port the bystander-stash to microverse auto-rescue.** `autoRescueDirtyTree` →
+  `stageAutoCommitPaths` must stage only session-owned paths (reuse `stashUnattributableRemainder`),
+  never `git add -A`/empty-excludes; pin the `microverse-runner.ts:~3628` call-site with a test.
+  Pipeline-safe.
+
+**Build strategy:** WS-1 forces HAND-BUILD (R-PSRB salvage/completion path); WS-2+WS-3 are pipeline-safe
+but small → **hand-build all three in one session** is cleanest (WS-1 dominates), or hand-build WS-1 +
+pipeline WS-2/WS-3. **Build on claude** (codex is the SOURCE of R-AICF and carries the R-CXHANG hang).
+**Sequencing:** B-1SEAM is the new top of the queue (P1 R-AICF, completion-oracle root); then
+[[R-CXHANG]] (codex reaper, unblocks a clean codex soak); then [[B-RSHM]] (subtraction). Each WS closes
+its bug AND collapses a sibling-seam — reliability + simplification in the same cut.
+
+---
+
+## ▶▶ STRATEGIC SHIFT (2026-06-30) — SUBTRACT THE BRITTLE FEATURES (read this first; supersedes the drain-queue posture below)
+
+**North star (operator, 2026-06-30):** *"We had a version that ran completely autonomously and reliably; it only became brittle as we added features. Autonomous is the first goal, quality output is the second goal."* Reliability is goal #1, quality #2 — when a feature trades reliability for output quality, cut the feature. The reliable baseline was **~v1.5, before codex (`--backend codex` landed v1.51.0 / 2026-04-24)**. We do NOT roll back (a month of real value sits on top); we **subtract the specific small additions that broke it.** The reliability bar is empirical: **build N real bundles hands-off, in a row** — not green tests. See [[feedback_autonomous_first_subtract_features_back_to_reliable_baseline]].
+
+**Brittle-feature attribution (data-grounded, BUG-INDEX + trap-door catalog).** Ranked by RECURRENCE (the real signal):
+| Feature | Brittleness evidence | Operator decision |
+|---|---|---|
+| Multi-backend / codex (v1.51) | ~25 findings; codex manager-wall re-filed 4×; worker-gate reverted; infects completion/scope/judge | **KEEP — we need codex** |
+| Review phases (microverse/anatomy/szechuan/council/death-crystal) | largest guard cluster (~59 trap-doors) but post-build polish | **KEEP — anatomy-park/szechuan are reliable + valued** |
+| **Gate overreach** (readiness/forward-ref/scope/audit) | **R-RTRC ×8 + R-FRA ×7 = 15 sub-fixes, ~99 commits; R-ATBG = "guard around a brittle guard" archetype** | **★ THE TARGET — cut the small over-strict guards** |
+| Detached large-tier spawn | was newest + still-failing (R-LTDM, R-MWBG, R-WPEX) | ✅ **SUBTRACTED — B-WSPU beta.35, DEPLOYED 2026-07-01**: the whole detached lifecycle deleted, all tiers unified on synchronous re-spawn-resume. The failure-mode class is gone. |
+| Monitor/watchdog TUI | ~19 trap-doors for a cosmetic dashboard | candidate, low priority |
+
+**✅ SHIPPED v2.0.0-beta.33 (2026-06-30) — the gate-overreach subtraction (Phase 1 + Phase 2 bundled). Commit `9a5c047e`, deployed via `install.sh`, released.**
+- **Phase 1 ✅ R-GATE-ADVISORY (`87d837f6`).** The iteration-0 readiness + ticket-audit gates **log findings and PROCEED instead of halting**. A genuinely-bad bundle surfaces at the build/review phases, not via a heuristic pre-flight false-killing good runs. `ticket_audit_failed`/`readiness_halt` retained-but-unemitted.
+- **Phase 2 ✅ DELETED the forward-ref annotation grammar (`9a5c047e`)** — the top recurring bug source (R-RTRC ×8 + R-FRA ×7 = 15 sub-fixes), made inert by Phase 1's advisory gates. Pure subtraction across ~35 files. **KEPT** the separate resolution/allowlist fixes (R-RTRC-3/4/5, R-RHFP/R-RCEX/R-RTPS) and the shared gate-parity resolver `resolveExtensionDir`/`resolveExtensionRelativePath`. **HARD-WON LESSONS (encode):**
+  - The plan said "DELETE `forward-ref-annotation.ts`" but `gate-parity-shared-resolver.test.js` (NOT in the deletion list) pins `resolveExtensionDir`/`resolveExtensionRelativePath` to that module — deleting the file would have red-gated. Correct move: strip the grammar IN PLACE, keep the resolvers. **When a plan says "delete file X," grep for tests/consumers pinning OTHER exports of X first.**
+  - The forward-create suppression spanned annotation grammar AND the "Files to create" declared-path index (`buildBundleCreationIndex`/`extractForwardCreatePaths`, R-RCFF) AND `isForwardCreated`; removed the whole feature (all inert post-advisory), kept pure resolution. `audit-design-ground-truth.sh` CHECK(iii) REQUIRED `isForwardCreated` — had to remove that check too.
+  - **A delegated `fork` came back role-confused** (inherited my context, returned a meta-summary of the overall task instead of doing the 9 test-trims). Verified via `git status` it had done nothing useful; did the trims myself. **Don't trust a fork's self-report — diff the filesystem.**
+  - **Phase 1 left two obsolete tests red** (`mux-runner-halt-error-format.test.js` asserting the removed halt-with-skip-flag behavior) — only surfaced at the full fast-tier gate. Deleted them; advisory behavior is covered by `mux-runner.test.js audit-bundle-advisory`. The c=8 `test:fast:budget` WEDGED (0% CPU whole-suite load-flake) — re-ran at c=4 for the authoritative 6648/0; integration's lone fail was the known isolation-green lockdown-downgrade flake.
+
+**Other open (post-subtraction) — ⚠ 2026-07-02 NOTE: the three "NEW capture-only" findings below (R-PSCG / R-AICF / R-MACB) are now ✅ CLOSED in beta.37 (B-1SEAM); the paragraph is retained as the capture record, and R-AICF's flag attribution was later disproven (flag deleted beta.23 — see the premise correction above).** R-LTDM ✅ shipped beta.32 (detached-poll throttle). [[B-WSPU]] dual-spawn-model collapse — DEFERRED (operator keeps the structure). Detached-worker-dies-at-~10min (the SECOND B-SSVR failure, distinct from R-LTDM) — uninvestigated, deferred. **B-SSVR** (R-SSBR + R-ISVP) PRD+2 tickets READY on main, session `2026-06-30-38285dba`, hand-build or pipeline-build once stable. **NEW [[R-PSCG]] (P2, capture-only, 2026-07-02)** — paused-PRD → `/pickle-pipeline` resume leaves `state.start_commit` unset → **citadel hard-fails, pipeline stops 1/4** (built 11/11 tickets clean first). The **exact mirror of the shipped [[R-PRPATH]]**: that fix self-heals a missing `prd_path` but NOT the sibling `start_commit`; origin is `setup.js` computing `start_commit` only for a git-repo cwd (the `loanlight/` root is not one) and `--resume` never recomputing it. Fix = symmetric self-heal + recompute-on-resume (`BUG-REPORT-2026-07-02-pipeline-resume-start-commit-gap-citadel-hardfail.md`). Surfaced babysitting LOA-1356. **NEW [[R-AICF]] (P1, capture-only, 2026-07-02)** — codex bundle stranded **0/4 phases (4/16 tickets committed, clean)** by a live **3-oracle disagreement**: `allow_inferred_completion_commit=true` is honored by `done-guard` (accepts) but NOT by the `phantom-Done watcher` (reverts to Todo) nor `readEvidence()` (FATAL) — the latter two git-log-scan for the `(<hash>)` tag and ignore both the frontmatter `completion_commit` sha AND the flag. Trigger = a codex worker committed real in-scope work WITHOUT the hash tag (~1-in-4 empirically; 3/4 tagged). **Corroborates + reopens [[R-CCC]]** (marked fixed 2026-05-05 — did NOT survive codex + inferred-flag) **and [[B-PDBL]]**. Salvage-path fix = **R-PSRB hand-build** (touches `ticket-completion-evidence.ts` / `reconcile-ticket-truth.ts` / phantom-Done watcher — unify all three oracles behind one predicate). Surfaced babysitting LOA-1078 (`BUG-REPORT-2026-07-02-codex-inferred-commit-flag-unhonored-3oracle-disagreement.md`). **NEW [[R-MACB]] (P2, capture-only, 2026-07-02)** — the microverse **worker-timeout auto-rescue** (`autoRescueDirtyTree` → `stageAutoCommitPaths(ctx.workingDir)` at `microverse-runner.ts:~3628`) is called with **empty `excludePrefixes`**, so it `git add -u` + stages **every** untracked `?? ` path with no docs/prds exclude and no attribution check — sweeping a **foreign** session's pre-existing untracked `docs/prd-statement-analyzer-*.md` (LOA-1365 WIP) onto the LOA-1570 feature branch under `microverse: auto-commit (worker timed out before committing)` (`6272304fc`). **Violates the module's own documented invariant** ("auto-commit rescue … honoring docs/prds exclusions") — the pre-flight call site (`:2947`) passes `PREFLIGHT_DIRT_EXCLUDES`, the rescue site passes none. **Exact microverse-side twin of the already-fixed [[B-PCOMP]] `#b736337f` bystander-stash** (mux-runner exit path stages only positively-owned paths + `stashUnattributableRemainder`) — never ported to the microverse rescue path; adjacent to R-APWS/R-APXG. Fix = port the bystander pattern (owned-paths-only + stash remainder) or minimally pass the docs/prds excludes; ENFORCE pins the `:3628` call site to a non-empty exclude/owned arg. Surfaced babysitting LOA-1570 First Colony Phase 2/3 (`BUG-REPORT-2026-07-02-microverse-autorescue-bystander-untracked-sweep.md`). The drain-queue / OBSERVATION posture is SUPERSEDED by this subtraction strategy (the OBSERVATION block was swept to `MASTER_PLAN-archive.md` → "Swept 2026-07-02").
+
+---
+
+## ⏯ RESUME HERE (updated 2026-07-08 — beta.44 R-LTNC shipped+deployed via a CLOSER-ASSISTED codex build; R-WGFR re-opened the reliability-fix queue and now LEADS)
+
+## 🔝 TOP ITEM — [[B-FOMC]]: COMPLETE THE FABLE INFUSION (P1, operator-set 2026-07-14)
+
+**PRD: `prds/p1-b-fomc-complete-the-fable-infusion.md`. This is the NEXT BUILD. [[B-RLH]] is HELD behind it.**
+
+**THE THESIS (one line): the fable infusion reached every surface that BUILDS and skipped every surface that JUDGES — and every open honesty defect lives in a skipped surface.**
+
+**The coverage map (measured against HEAD 2026-07-14; re-verified by a 3-agent adversarial pass same day — the PRD carries the corrected full map. ⚠ probe caveat: the grep counts code comments — `spawn-morty.ts`'s "3 hits" are git-reconciliation comments; the implementer's REAL infusion lives in the loaded `send-to-morty.md` + `morty-implementer.md`, so BUILDS is infused but the .ts grep misattributes):**
+
+| Prompt surface | The worker it prompts | Role | FOM content |
+|---|---|---|---|
+| `send-to-morty.md`+`morty-implementer.md` (loaded by `spawn-morty.ts`) | Morty implementer | **BUILDS** | **✅ infused** |
+| `spawn-refinement-team.ts` **and its workflow twin `.claude/workflows/refine-analyze.js`** | the 3 analysts | **JUDGES the PRD** | **0 ❌ both** |
+| `spawn-gate-remediator.ts` (`buildBriefContent:76`) + agent mirror `morty-gate-remediator.md` | the gate remediator | **REMEDIATES the gate** (clean exit read as GREEN) | **0 ❌ both** |
+| `microverse-runner.ts` `buildJudgePrompt:1613` **and `JUDGE_SYSTEM_PROMPT:1593`** + rubrics `szechuan-sauce-*principles.md` | the LLM judge | **JUDGES code quality** | **0 ❌ all** |
+| `.claude/workflows/council-round.js` (3 review prompts) | review panel | **JUDGES/REVIEWS** | **0 ❌** |
+
+Also: `_pickle-manager-prompt.md` ✅ · `.claude/commands/` **8/33** · `.claude/agents/` **2/18** (but `morty-phase-*` are default-OFF — 2/18 overstates live reach) · **`persona.md` 0**. ⚠ CORRECTED (3-agent pass): `install.sh:516` only copies persona.md into the deployed EXTENSION root — it does NOT write `~/.claude/CLAUDE.md` (that's a manual paste install.sh merely prints at `:755-762`); persona.md's real automated reach is `spawn-morty.ts:readBasePersona` → the WORKER prompt only, and the judge is persona-FIREWALLED (`JUDGE_SYSTEM_PROMPT:1595` "Do NOT adopt any persona from CLAUDE.md") — the judge is reachable ONLY by infusing its own prompt. Tell: `szechuan-sauce.md` + `pickle-microverse.md` ARE infused — the human-facing command prose got it — **while the runtime-generated judge prompt they spawn did not.** The infusion stopped at the surfaces a human reads.
+
+**Line that up against the open honesty defects — they are EXACT COMPLEMENTS:**
+- [[R-JPCM]] (judge reports `converged` at 4 vs target 0) → `microverse-runner.ts` — **un-infused**
+- [[R-GRLS]] (remediator exits clean having remediated nothing — false-GREEN gate) → `spawn-gate-remediator.ts` — **un-infused**
+- [[R-RAFC]] (analysts fabricate `file:line` citations) → `spawn-refinement-team.ts` — **un-infused**
+- The infused surfaces (implementer, manager) have produced **none**.
+
+**⚠ HONESTY NOTE (do not let a ticket restate this as causation):** the defects PREDATE the infusion (2026-07-10/11), so it did not *cause* them, and "un-infused ⇒ fabricates" is NOT causally established. What IS established is that the two maps are exact complements — which makes completing the infusion a credible **systemic** countermeasure rather than four separate patches, and makes **B-RLH look like three symptoms of one disease.** WS-5 is the falsifier; **a null result must ship as a null result.**
+
+**ROOT CAUSE: the infusion is hand-mirrored prose with NO source, NO markers, and NO test** — so coverage is untracked and a MISSING surface is invisible. **The manual predicted this in its own addendum** (*"Mirrored prose drifts like mirrored code… a mirrored instruction family needs a pin test or a single source; 'I'll keep them in sync' is the asymmetric-fix antipattern in slow motion"*) **and shipped anyway.**
+
+**FIX = REUSE THE MECHANISM THIS REPO ALREADY PROVED.** `GIT_BOUNDARY_RULES` (`extension/tests/skill-prompt-shape/git-boundary-prompts.test.js`) is the same problem, already solved: a delimited block + an **enumerated file list** + a shape test that fails when a listed surface lacks the block. **The enumeration IS the coverage ledger** — a surface cannot be silently skipped because the test names it. ~30 lines. Its own comment records that it was hardened *"after the copies were found silently drifting."* **This is [[R-FOMH]] leg (e), unbuilt only because it was mis-filed as needing an "operator decision" — it is not a decision; GIT_BOUNDARY already made it.**
+
+**⛔ HARD CONSTRAINT — deployed prompts must be SELF-CONTAINED.** Workers run with cwd = the TARGET repo and the runtime **never deploys `docs/`**, so `docs/FABLE_OPERATING_MANUAL.md` is **physically unreachable** from a worker in loanlight-api. The prose must live IN the prompt. **No `(FOM §N)` citations** — that is exactly how the first infusion failed (its own addendum, bullet 1).
+
+**WS (per the UPGRADED PRD, 2026-07-14 3-agent verification pass):** (1) the shape test + **single-source exported constants** (byte-identity across `.md`/`.ts` is unachievable — the `.ts` builders assemble prompts via `parts.push`; reuse the `DECOMPOSITION_COLOCATION_PROMPT_SECTION` pattern, `spawn-refinement-team.ts:507`) — **build FIRST, everything else is inert without it**; includes AC-FOMC-11 pinning the **compiled `extension/bin/*.js` mirror** (install.sh MD5 parity covers none of the judging builders); (2) infuse the judging surfaces — BOTH refinement twins (`spawn-refinement-team.ts` + `refine-analyze.js`), BOTH judge prompts (`buildJudgePrompt` + `JUDGE_SYSTEM_PROMPT`), the szechuan rubric files, remediator brief + agent mirror, council-round prompts (**folds in [[R-RAFC]]** — `spawn-refinement-team.ts:569` *mandates* "file:line references for every codebase claim" and **never asks anyone to verify one**; research must record per-defect whether R-JPCM/R-GRLS are prompt-causal or code-causal — the behavioral fixes stay in B-RLH); (3) **`persona.md`** — worker-prompt reach via `readBasePersona` (NOT 100%/judge reach; AC-FOMC-7b forces the install.sh-maintains-the-block-or-downscope decision); (4) NEW `file:line` parsing branch in `checkAnalystOutputPaths` (its regex has no `:` — line citations are currently INVISIBLE to it, not merely unchecked) + surface attribution via dedicated fields (`ticket_id:""` is CORRECT pre-decomposition; role already in `evidence`) — **stays ADVISORY, do NOT build a fabrication gate** (W5b); (5) **SOAK** — re-run the B-RLH refinement on the infused team vs the recorded baseline (2 fabricated mechanisms, 44 path warnings; artifacts preserved at `~/.local/share/pickle-rick/sessions/2026-07-14-ef12a95a/refinement_round1/`).
+
+**⚠ R-BCFR is NOT a prompt defect** — citadel's fabricated `"is banned by CLAUDE.md"` is a **hardcoded string literal in code** (`banned-constructs-audit.ts:129`), not an LLM hallucination. Same shape, different cause; infusion cannot fix it; it stays in B-RLH WS-1. **Do not let the thesis's elegance swallow a defect it cannot fix.**
+
+**⚠ SELF-REFERENCE:** this bundle is refined by the very analysts it fixes. Pipeline-safe (the run executes the DEPLOYED runtime, not the source diff), but **hand-check every `file:line` in the resulting tickets before launch** — treat each as unverified until greped. That discipline is what this bundle exists to make automatic.
+
+---
+
+**▶ 2026-07-14 SESSION UPDATE — 39-AGENT PLAN RE-REVIEW + [[B-RLH]] AMENDED (then HELD — see TOP ITEM above).**
+
+**⓪ OPERATOR RE-FRAME (binding — supersedes the reliability-first/autonomy-second posture below).** Priority axes restated as: **(1) autonomous development, (2) reliability, (3) quality of outputs, (4) fable infusion, (5) codegraph polish** — with two corrections that dominate all planning:
+- **"Autonomous development" = pickle-rick implementing OTHER systems, not itself.** Verbatim: *"it doesn't matter who does our installs and version bumps, what I'm referring to is using pickle rick to implement other systems, not itself."* Self-host reps are the TEST HARNESS, not the goal. **The un-automated closer (bump / install.sh / gh release) is an EXPLICIT NON-ISSUE — do not queue it, do not cite it as autonomy gap (a).**
+- **"Autonomy and reliability are two sides of the same coin — can't have autonomy without reliability."** Reliability is the PRECONDITION, never a competitor for rank.
+- **Repo-agnosticism is an INVARIANT:** *"pickle rick shouldn't care what repo it's working in, it should have the same characteristics."* Any behavior that depends on WHICH repo it is in is a **defect**, and the fix is **subtractive** (delete the hardcoded assumption / read the target's own manifest) — **never a per-stack adapter matrix.**
+
+**① VERDICT: THE RELIABILITY QUEUE IS CORRECTLY AIMED — KEEP DRAINING.** A 39-agent re-review (1 inventory + 30 stale-premise verifiers + 6 axis analysts + synthesis + adversarial skeptic; every citation checked against HEAD **and** the deployed tree) confirmed the plan's items. **29 of 30 inventory items verified STILL OPEN** at their cited lines; only [[B-CSOR]] is stale (correctly de-queued already). The queue is **not** a closed self-observation loop: **9 of the 24 `BUG-REPORT-*.md` files were surfaced on loanlight-api runs** (LOA-1078/1356/1359/1363/1488/1570/1588/1614) — and they are disproportionately the *structural* ones (completion-evidence fatal + cross-iteration work corruption, evidence-oracle disagreement, scope-resolver false-empty-diff, review phases silently skipped). **Draining the queue IS the target-repo work.** The one real signal: **the last target-repo bug report is 2026-07-06**; all 5 filed since are self-derived, matching the session cliff exactly.
+
+**② ⚠ THE LEDGER HAS DRIFTED FROM THE CODE.** Nearly every item is genuinely open, but the plan **mis-describes most of them** — mis-cited fix sites, understated blast radius, stale blocking premises. This is a reliability defect in its own right: **the babysitter drains from this ledger.** Load-bearing corrections:
+- **[[R-WDTF]] (P1, OPEN, in no bundle) — ✅ RE-GROUNDED 2026-07-16; see the corrected §B.3 row for the authoritative diagnosis.** Fix sites CONFIRMED (`spawn-morty.ts:2336` conjunct + `:1861` `{status:'Failed', completion_commit:null}` write). The old "flip-suppression nested inside the branch it can never enter" wording is **DRIFTED/WRONG** — that branch (`:1885 if (isSuccess)`) is the happy path; the real defect is that `flipSuppressed` is only COMPUTED inside it, so the token-absent red path arrives with it pinned `false`. **This is the top reliability issue by severity** (it destroys verified work). **BUILD PROTOCOL CORRECTED: PIPELINE, not hand-build** — the R-PSRB hand-build reflex is retired by the 2026-07-16 operator directive (see §B build protocol + [[feedback_never_hand_build_always_pipeline]]). **Needs its own PRD.**
+- **The worker gate is a NO-OP on every repo that is not pickle-rick-claude.** `runWorkerGate` (`spawn-morty.ts:1538`) keys on `fs.existsSync(<workingDir>/extension)` and returns `{ok:true}` having linted/typechecked/tested **nothing**; `resolveWorkerGateVerdict` (`mux-runner.ts:4647`) returns `verdict:'green'` for the Done-flip — **its own source comment names loanlight-api and concedes "NOT fail-closed"**; the recovery armed gate (`:5759`) returns `{ok:true}`. Meanwhile TWO SIBLING SITES on the identical fact fail **CLOSED** (`extensionGreenGate` → `'failing'` `:4672`; the B-PCOMP boundary committer → `'no-extension-dir'` `:5154`), so the one mechanism that stops the runner destroying verified work **never commits on a target repo**. **R-CWGE's trap-door invariant ("Done requires a GREEN worker-gate verdict") is VACUOUS outside this repo** — all 25 loanlight-api sessions stamped Done with nothing verified. The portable gate **already exists** and the review phases use it (`convergence-gate.ts:362 detectProjectType` — pnpm/yarn/npm/bun/cargo/go, workspace-glob resolution, missing-script classification). **The build phase just doesn't call it.** ⇒ NEW: **[[B-TRGP]]** (target-repo gate parity; R-PSRB hand-build; bundle WITH [[R-TCVC]] — a portable gate must decide what to RUN on a repo whose only test script is a container-backed e2e suite).
+- **`install.sh` lets the DEPLOYED settings WIN** (`jq -s '.[0] * .[1]'`, `:504-508`) — so **the deployed runtime has `codegraph.enabled:true` / `index_at_setup:true` while source says `false`/`false`.** ⇒ **every "clean hands-off rep" banked toward GA ran on an unlabeled codegraph-ENABLED arm**, and any future default flip is undeliverable to an installed machine. Also **falsifies the "zero productive injections" premise**: 17 `codegraph_context_injected` events exist (sessions 2026-07-11-255ad373 ×10, -86dd509f ×7). [[B-CGCAP]]'s NO-GO rests on a claim the runtime already disproved.
+- **[[R-MPGD]] WS-2 is STILL LIVE** (the plan implies beta.41 shipped R-MPGD; only WS-1 did). `pipeline-runner.ts:4137` logs `Phase X completed successfully` unconditionally after `counters.completed++` — **a phase that exits non-zero with zero iterations is reported as success.** This is the exact mechanism that reported "4/4 phases, 124m" over two review phases that aborted in <1s on LOA-1570.
+- **The CONFIG-PROTECTION patch is NOT lost.** The plan says its 7 regression tests "must be rewritten." They exist: the patch is on disk, `git apply --check` passes, and it takes the state-gate suite 34 → **41 green**. It is a `git apply` + commit.
+- Other verified drift: [[R-RNTA]] blast radius is **~25× the claim** (scanned all 100 releases, not 4); [[B-CIINT]] is **NOT flakiness** — 7 deterministic env gaps (`rg` absent on ubuntu-latest; `~/.claude/pickle-rick` absent so fixtures' EXTENSION_DIR falls back to it), and `ci.yml` doesn't run on the v2.1 branch at all; [[R-CSI]]'s "external-event-gated" exemption is stale (the forensics WERE captured; the field mechanism shipped as `45d9659d`); [[B-GIMA]]'s codegraph "hard dependency" is fictional (AC-GIMA-A5 is satisfiable today via `check-readiness.ts:525`) — **stop using B-GIMA as an argument against subtracting codegraph**; [[V21-MERGE]] is **not** a 22-commit byte-exact graft (branch is 141 ahead / 54 behind; `merge-tree` returns **16 conflicted files**).
+
+**③ ▶ LAUNCHED: [[B-RLH]] — AMENDED, via `/pickle-pipeline --backend codex`.** The bundle was **insufficient to satisfy its own thesis** and would have **shipped green while the field bug kept reproducing**. Amendments committed before launch:
+- **`AC-JPCM-8` RE-KEYED — it was SELF-DISARMING.** It keyed on a *conjunction* including `violation_ledger` **emptiness** — but WS-1's whole purpose is to make the ledger NON-empty (`AC-JPCM-3`). The moment WS-1 lands the precondition is false and the AC passes **vacuously**. Re-keyed onto the invariant no workstream can destroy: **score-vs-`convergence_target`**.
+- **WS-4 ADDED — the defect UNDER R-JPCM.** `isConverged` (`microverse-state.ts:391`) returns the **same bare `true`** for stall-exhaustion as for target-reached; `handleMetricMode` computes `targetHit` (`microverse-runner.ts:4165-4167`) and consumes it **only to pick a log string**, returning `'converged'` unconditionally (`:4169`). **This — not the judge contract — is what reported `status:'converged'` at score 4 against `convergence_target: 0`. A perfect judge changes nothing here.** Fix = mirror anatomy-park's shipped `anatomy_non_convergent` disposition → add `stalled_below_target`. ~30 LOC, pure reuse.
+- **WS-5 ADDED — the pipeline's ONLY quality fail-stop has ZERO PRODUCERS.** `runAcPhaseGate` is the sole verdict that can halt the run (`pipeline-runner.ts:4021`→`:4029-4032` `return {action:'break'}`). It reads `<sessionDir>/ac-phase-manifest.json` and **fail-OPENS to `pass` on a missing manifest** (`ac-phase-gate.ts:198-200`). The string `ac-phase-manifest` appears **exactly once in the whole repo** — its own constant declaration (`:9`). **No session has ever produced one; the gate has never fired.** Decide: DELETE it (R-CCNW-2 discipline) or WIRE it (have refinement persist the PRD's already-required machine-checkable ACs → the highest-value single wire in the codebase, converting the PRD's own ACs into the pipeline's one real fail-stop).
+- **`AC-RLH-6` ADDED — the thesis test:** *a review phase can FAIL.* Today **none can**: citadel's own source comment says *"The phase ALWAYS returns success"* (`pipeline-runner.ts:2683-2684`; both loop exits `return {exitCode:0}`), anatomy's non-convergence is commented *"never abort"*, szechuan cannot report failure at all, and `--strict-phases` is opt-in, default-OFF, and **inert regardless** (it honors a failure that is never reported). A bundle can carry 43 unremediated findings, an anatomy phase still surfacing CRITICALs, and a szechuan score of 4 against a target of 0 — and the pipeline exits 0.
+- Child-PRD corrections folded in: R-BCFR's "delete the module" is **unbuildable** (`banned-casts-audit.ts:3-8` imports 4 helpers from it) → delete the ARMS, and subtract the now-empty mechanical floor + classifier + its auto-armed `skip_quality_gates_reason` bypass together; R-JPCM's `judge_json_parse_failed` **is already registered** (the `:1769` "pending R-SLLJ-6" comment is stale) — only the EMITTER is missing, so **do not re-add a duplicate registration**; the degraded judge shape is `malformed`, not `legacy`; R-GRLS's blast radius is **caller-side** — all three callers check only for `BRIEF_PATH` and read a lockout as success; **no caller reads `LOCKOUT_PATH` at all.**
+
+**③′ 🔴 NEW FINDING — [[R-RAFC]] (P2): THE REFINEMENT ANALYSTS FABRICATE `file:line` CITATIONS, AND NOTHING VERIFIES THEM. This is a FABLE-INFUSION GAP, and it HALTED the B-RLH launch.** Refining B-RLH — *the anti-fabrication bundle* — the analyst team **fabricated a citation into the PRD** ("two trap-door INVARIANTs policed by `audit-trap-door-enforcement.sh`"), which was copied in and committed (`17bfbf4f`, now retracted). **Verified false:** that audit contains **0** references to `ac-phase-gate` and `ac-phase-gate.ts` carries **0** trap-door markers. A second fabrication (cycle-2: *"`microverseExitCode` is typed against a DIFFERENT union"* — it is a **local alias**, `microverse-runner.ts:84`) was self-retracted a cycle later. **Both were caught ONLY by a later cycle — cross-cycle corroboration is the sole working verifier, and it is emergent, not designed.**
+- **ROOT CAUSE = the FOM infusion reached the worker that BUILDS and skipped the workers that ANALYZE.** Evidence-hierarchy/anti-fabrication content: `spawn-morty.ts` (implementer) **5 hits — infused**; `spawn-refinement-team.ts` (analysts) **0 hits — NOT infused**; `.claude/commands/*.md` **3 of ~30**; **`persona.md` 0** — the one surface appended into every project's CLAUDE.md, in context on every turn of **every session in every repo**, is the single place where infusion cost is O(1) and reach is 100%, and the infusion skipped it. `spawn-refinement-team.ts:569` *mandates* "use file:line references for **every** codebase claim" and **never asks the analyst to verify one**. **This is NOT a fable-infusion symptom — it is the gap where the infusion never landed.**
+- **The one existing verifier checks the wrong thing and is advisory.** `checkAnalystOutputPaths` → `analyst_path_not_verified` (`spawn-refinement-team.ts:2142-2149`) checks only that a cited **path exists** — never that the cited **line** says what is claimed, that a claimed **grep result** is real, or that a claimed **relationship** exists. **All three fabrications cite real files and sail straight through it.** It emitted **44 warnings on this run**, wrote them with `ticket_id: ""` (**unattributed**), and blocked/down-weighted **nothing**. *A warning nobody reads is the same shape as the bug B-RLH exists to fix.*
+- **FIX (reuse, not new machinery; repo-agnostic):** (WS-A) infuse the analyst prompt with the evidence-hierarchy block `spawn-morty.ts` **already carries**, and widen `:569` to *"file:line references **you have verified**; mark anything unverified as a hypothesis"* — **plus infuse `persona.md`** (3–5 lines, O(1) cost, 100% reach, lands in **every target repo**). (WS-B) widen the **existing** `checkAnalystOutputPaths` from *path-exists* to *line-exists* and **attribute** each warning to the emitting analyst+cycle. **Explicitly NOT in scope:** a new citation-verifier service or a fabrication gate — the cross-cycle catch already works; the analysts were simply never told to verify. Bug: `BUG-REPORT-2026-07-14-refinement-analysts-fabricate-citations-fom-infusion-gap.md`.
+- **B-RLH IS HELD** pending this (operator call, 2026-07-14: *"stop and fix the analysts"*). Building a 5-WS anti-fabrication bundle on a decomposition whose citations are unverified is the R-BCFR trap, self-inflicted. **R-RAFC is now FOLDED INTO [[B-FOMC]] as WS-2** (see the TOP ITEM block at the head of this file) — the analyst fabrication is one instance of the general infusion gap, not a standalone bug. **B-FOMC ships FIRST, then B-RLH is re-refined on an infused, citation-checking analyst team.**
+
+**④ ▶ NEXT AFTER R-RAFC + B-RLH:** (a) **[[R-WDTF]]** — author the PRD + **hand-build** (P1, destroys verified work, R-PSRB salvage-path). (b) **[[B-TRGP]]** + [[R-TCVC]] — the target-repo gate void (②); scope from the field, not from source-reading. (c) the three cheap honesty subtractions: `install.sh` settings-merge direction, `pipeline-runner.ts:4137` honest phase reporting (R-MPGD WS-2), `convergence-gate.ts:1334` pass `null` on the `!cmdMap` branch (a `bun` project currently certifies convergence having inspected nothing). (d) land the config-protection patch (`git apply`). **DEPRIORITIZED by the re-axing:** [[B-APRP]] (self-only; and still correctly blocked — re-running szechuan before WS-4, not merely before R-JPCM, reproduces the identical false-`converged`); the codegraph soak (**do NOT run it before fixing the injection payload** — `deriveCodegraphTerms` harvests ALL backticked spans in document order capped at 8, so on the 6 newest real tickets **5 of 6 yielded ZERO code symbols**; actual injected "terms" include `git stash` and `cd extension && npm run test:fast`. A soak on today's path returns "injected: N" for N restatements of the ticket's own file list, and [[B-CGCAP]] would flip a hollow win on).
+
+**▶ 2026-07-13/14 SESSION UPDATE (superseded by the block above for what's NEXT; retained for the beta.45/46 record).**
+
+**① TWO RELEASES CUT AND PUSHED on the v2.0 line.** `origin/main` = **v2.0.0-beta.46** (`d872f937`, tagged, pre-release). beta.45 = the [[B-V20BP]] back-port; beta.46 = [[R-LSPC-2]] + [[R-IWGM]]. Both cut on a genuinely complete local release gate (incl. `test:expensive` with the deploy soak *actually running* 31.6 min — it self-skips in ~30s if `PICKLE_INSTALL_ROOT` is left on `$HOME`).
+
+**② [[B-V20BP]] — the v2.1→main reliability back-port SHIPPED.** main was **135 commits** behind v2.1; per-commit triage took **30 GA-FIX + 11 prerequisite companions**, left ~48 QUALITY / 22 V21-ONLY (FOM + codegraph) / 29 LEDGER / 5 SUPERSEDED. Landed on the ship line: config-protection APPROVING `sed -i`/`perl -i` edits of live `state.json` + `~/.claude/pickle-rick/**` (SECURITY); release-gate tar scan blind to symlink TARGETS (SECURITY — the auto-updater writes through it and escapes the install prefix); orphan-tmp scans destroying an UNREADABLE newer snapshot (DATA LOSS); `setup --resume` resurrecting a RED-gated ticket to terminal Done; the 4-lock dead-holder cluster; the ambient-`#S` tmux hijack (30 mutating calls into a STRANGER's live tmux session → 0). Ledger + full branch→main SHA mapping: `BACKPORT-2026-07-13-v2.0-ledger.md`.
+
+**③ [[R-LSPC]] / [[R-LSPC-2]] — the lock cluster shipped TWO defects; both FIXED on BOTH lines.** (a) **R-LSPC**: the acquire/steal scratch filename was keyed on `process.pid` alone — worker threads share a pid, so two collide, one truncates the other's payload, and `linkSync` publishes a lock **naming the WRONG pid**. (b) **R-LSPC-2** (the serious one): `stealLockFile`/`releaseLockFile` treated the **inode NUMBER** as durable identity. **ext4 recycles inode numbers**, so a rival's brand-new lock lands on the dead holder's number, the check reads "same file", and it **EVICTS A LIVE HOLDER** — the exact catastrophe the lock redesign exists to prevent, re-opened one layer down. APFS doesn't recycle eagerly ⇒ macOS green, Linux CI red, and it **shipped in beta.45**. Identity is now `sameLock` = inode **AND** raw bytes (bytes carry a per-acquisition nonce). The regression test reproduces it **deterministically on any filesystem** (hands `stealLockFile` the verdict wearing the live file's inode) and was verified to FAIL against an ino-only comparison. main `224805e9` / v2.1 `130215c7`.
+
+**④ [[R-APGG]] VALIDATED — the process bug behind ③.** anatomy-park and szechuan land CRITICAL changes **after** the pipeline's only full gate (which runs at the PICKLE phase). **29 of the 50 commits v2.1 carried over main (58%) had NEVER been gated**; six of them rewrote the lock primitives. R-LSPC-2 was found ONLY because the code was back-ported to main and gated there. **Fix = gate PLACEMENT, not a new gate:** run the full gate (or at minimum `test:integration`) at the END of the pipeline, after szechuan, over the FINAL tree.
+
+**⑤ v2.1 FULL GATE RUN — the first ever over its post-pickle surface — comes back GREEN.** tsc 0 / eslint 0 / 0 mirror drift / **9-9 audits** / `test:fast:budget` 0 failures 5-5 runs / `test:integration` 1113 / `test:expensive` 8-8 with the soak genuinely run. **Verdict: R-LSPC-2 was the only real thing hiding in there.** The exposure was real; the damage was contained to the locks.
+
+**⑥ DEPLOYED RUNTIME = `2.1.0-beta.2`** (the v2.1 branch, MD5 parity verified on all 5 hot files). It carries dead-holder lock recovery, the tmux ownership guard, the `setup --resume` Done-flip fix, and R-LSPC-2. Earlier runs on the deployed `beta.1` were exposed to all four — **that is why the honesty bundle was NOT launched until after `bash install.sh`.**
+
+**▶ NEXT ACTION: launch [[B-RLH]] via `/pickle-pipeline`.** The bundle PRD is authored + committed (`prds/p2-bug-fix-bundle-b-rlh-review-loop-honesty.md`, composes the three sibling PRDs — all three `composes:` paths verified to resolve). All three findings re-verified STILL OPEN against HEAD. Command: `/pickle-pipeline prds/p2-bug-fix-bundle-b-rlh-review-loop-honesty.md`. THEN: [[B-APRP]] anatomy re-pass (its szechuan half stays blocked on [[R-JPCM]]), then [[R-APGG]], then [[B-CGPROBE]].
+
+**⚠ OPEN GAPS carried forward:** (i) **`4fcc02fc` (config-protection SECURITY fix) is on main with NO TESTS** — v2.0 GA blocker, coverage must be rewritten. (ii) [[R-RNTA]] — **every release since beta.43 has ZERO assets**, so the auto-updater has had nothing to download for four releases. (iii) [[R-FBTN]] — `check-flake-budget` reports a COUNT, never test names; it mislabeled a deterministic Linux failure as flakiness and hid its identity for three releases.
+
+**▶ 2026-07-11 SESSION UPDATE (NEWEST — read FIRST; supersedes the beta.44 block below for what's NEXT).** Version-line policy: all work lands on the v2.1 branch `experiment/fable-operating-manual` FIRST, back-port to `main` (v2.0) as needed (operator 2026-07-11; Version-lines row). **① [[R-WGFR]] ✅ SHIPPED (subtractive) BOTH lines, UNPUSHED** — reframed from the additive c=4 path to a net **subtraction**: `recomputeAbsentWorkerGateVerdict` now verifies **eslint+tsc only** (drops the flaky, redundant `test:fast`; deterministic dimensions can't flake → the false-red-fatal class that killed beta.44 0/4 is closed at the root; B-CWGE's lint/tsc-RED-behind-passing-test protection preserved; a genuine boundary test-red defers to the closer's full gate). v2.1 `ebb33a6c` (dogfooded `/pickle-pipeline` 4/4 phases 32m; core release gate GREEN — tsc+eslint+9-audits+test:fast:budget+integration 489/0) + main back-port `cad28cb2` (recompiled on main; recompute test 3/3 both lines). Craft lesson [[feedback-subtract-flaky-gate-input-not-add-resistance]]: subtract a gate's flaky INPUT dimension, don't wrap it in flake-resistance. **② [[B-CSOR]] ✅ DE-QUEUED (revalidated stale 2026-07-11)** — the graduated-remediation core is already SHIPPED at beta.11 (`750e3f58`, #118 struck; `mechanical-finding-classifier.ts` + the `remediable∪mechanical` union are live in `executeCitadelPhase:2733-2738`). The "citadel commits its own remediation" residual is obviated by [[R-MPGD]] WS-1's `preflightAutoCommit` (commits the dirt downstream) and enables no clean subtraction (its worker-timeout-rescue arm stays); the autofix-instead angle is blocked (brace-free-`if` isn't default-eslint-autofixable — the reason #118 exists).
+
+**✅ ③ RESOLVED (operator decision 2026-07-11): KEEP-AND-REFINE codegraph — [[B-CGHARD]] supersedes the B-CGPROBE build.** Operator ruling: codegraph has never caused *run* instability (it has never been enabled in a run; its costs were maintenance-side), so the bet stays. With the subtract branch off the table the synthetic probe loses its main verdict branch and its price (one L build item — `captureWorkerDiff` is a bare spawnSync shell, zero spawn-harness exists — plus a ≥40-worker-spawn RUN) is disproportionate; the cheaper live instrument is the feature itself. **▶ NEXT = ③′ [[B-CGHARD]] harden-then-soak** (`prds/p2-codegraph-harden-then-soak-v2.1.md`): WS-A bound the unraceable sync-query hang (`runSyncQuery` codegraph-service.ts:260; SUBTRACT dead `getImpactRadius` — zero production callers) · WS-B verify-before-inject (drop non-resolving `file:line` entries; `stale_refs` skip reason) · WS-C soak protocol (post-GA codegraph-ENABLED window, ≥5 real reps, live telemetry → `prds/research/codegraph-soak-baseline.md` feeds the [[B-CGCAP]] verdict). BUILD via `/pickle-pipeline` on the v2.1 checkout (deploy-agnostic, dogfoods fable prompts); B-CGPROBE demoted to OPTIONAL follow-up iff soak is ambiguous. Also found (4-agent audit 2026-07-11): B-GIMA's AC-GIMA-A5 liveness need is satisfiable by the existing `countUnresolvedReferences`/`resolveSymbolRef` (check-readiness.ts:525) — the codegraph dependency is corroboration-only, so a future subtract verdict would NOT shelve B-GIMA (re-point A5 at the existing resolver). *(Superseded original decision record below retained for grounding.)* GROUNDING: the probe (`extension/src/bin/codegraph-efficacy-probe.ts`, 201 lines) is a well-built STUB — the deterministic scorers all EXIST and are sound (`diffTouchedFiles`, `consumerFileJaccard`, `hallucinatedRefCount`→check-readiness `countUnresolvedReferences`, `buildEfficacySample`, `captureWorkerDiff`, `loadCorpus`); ONLY `runProbe` (`:173`) is stubbed (returns `loadCorpus()`, no WITH/WITHOUT loop). BUILD scope = 5 items: (1) implement `runProbe`'s WITH/WITHOUT×reps spawn-and-score loop (build the worker prompt with/without the `## Code Graph Context` section, spawn via `captureWorkerDiff`, score, emit one `codegraph_efficacy_sample` per sample); (2) FIX corpus oracle-leakage — corpus tickets must NOT name the expected files in `### Files to modify` (else Jaccard pre-saturates ~1.0 on BOTH arms → zero discrimination; the `expected_consumer_files.json` oracle label stays OUT of the ticket body); (3) point `hallucinatedRefCount` at the research/plan ARTIFACTS, not the final diff (the hallucinated-premise class); (4) verify each WITH-arm actually injected via a `codegraph_context_injected` event (arm-label trust gap); (5) wire `gate_pass`=`runWorkerGate(...).ok`. Then RUN (⑤, deferred post-GA to a codegraph-ENABLED window): ≥5 tickets × 2 arms × ≥3 reps + an A/A control → `prds/research/codegraph-efficacy-baseline.md`.
+**THE DECISION (apply simplify → autonomy → quality):** codegraph has ZERO recorded productive injections and ships opt-in/DISABLED. The probe is an INSTRUMENT whose sole purpose is to decide codegraph's fate ([[B-CGCAP]] verdict: flip-on / SUBTRACT ~1.3k LOC + native dep / stay opt-in). Building it ADDS code to enable a *possible large subtraction*. Two paths:
+- **(a) BUILD the instrument (ratified sequence)** — author the B-CGPROBE build PRD, dogfood via `/pickle-pipeline` on the v2.1 checkout (deploy-agnostic, also dogfoods the fable prompts); fixes the stub so the [[B-CGCAP]] verdict is trustworthy ("a stub instrument is worse than none — run the A/A first").
+- **(b) SUBTRACT codegraph outright NOW** — the bigger simplification, but it SHELVES [[B-GIMA]] (v2.2 hard-depends on codegraph as its code-liveness substrate, AC-GIMA-A5). Pick this only if the appetite is to drop the codegraph bet rather than measure it.
+Constraint unchanged: ONE deployed runtime — the probe RUN needs a codegraph-enabled window and must NOT perturb v2.0 GA soak reps; the BUILD is deploy-agnostic and interleaves freely.
+
+---
+
+**▶ STATE (2026-07-14): `origin/main` = v2.0.0-beta.46 (`d872f937`, PUSHED + tagged, pre-release; beta.45 = the B-V20BP back-port, beta.46 = R-LSPC-2 + R-IWGM). v2.1 branch `experiment/fable-operating-manual` = `150a4d33`, 43 commits UNPUSHED, full release gate GREEN. DEPLOYED runtime = `2.1.0-beta.2` (the v2.1 branch; MD5 parity verified). Tree clean on both lines. NEXT: launch B-RLH via `/pickle-pipeline`. (Superseded beta.44 STATE below kept for history.)**
+
+**▶ (historic) STATE: `origin/main` = v2.0.0-beta.44 ([[R-LTNC]] internal-artifact rename `linear_ticket_`→`rick_ticket_`, HEAD `ac7b9dbe`); tree clean; no active pickle-rick pipeline; deployed runtime = beta.44 (MD5 parity OK). beta.44 was a CODEX build via `/pickle-pipeline` — codex autonomously did the 225-file rename (`2028aeb0`) + hermetic backfill test (`88a49eea`) + prompt globs incl. the `:25` vacuous-completion fix (`98b3df84`) + glob↔writer regression guard (`598e1a74`), self-recovering a mid-build wedge (strongest codex-capability evidence yet). But it needed a FULL babysitter closer-takeover: (i) the flaky [[R-WGFR]] between-ticket gate false-red-fatal-killed run 1 (tree was green via `test:fast:budget` 5/5) — filed `62a190ba`; (ii) the full release gate caught 6 rename-gap escapes the worker/scoped gates missed — 4 non-underscore `.find()` regexes (`e0349c4b`) + 2 `extension/scripts/` writers (`9db3b934`) — because the completeness ACs used the trailing-underscore `linear_ticket_` form; (iii) a phantom gate-ergonomics "regression" that was actually a STALE DEPLOY ([[project_gate_ergonomics_resolves_deployed_tree_install_before_integration]] — gate-ergonomics resolves the DEPLOYED check-readiness via `getExtensionRoot`; `install.sh` fixed it, cost ~46 solo tool-calls before delegating). Full gate GREEN (tsc/eslint/audits/fast-6666-0/integration-489-0/expensive-deploy-soak-7-7). **The reliability-fix queue is NO LONGER drained — [[R-WGFR]] is a fresh verified reliability bug and LEADS the priority order.** NEXT ACTION (reliability-first): (a) [[R-WGFR]] — flaky-gate false-red-fatal fix (reuse-first: gate `test:fast` at c=4 / `check-flake-budget`; also de-flakes future codex reps) + widen R-CXHANG reaper to `codex app-server` orphans; (b) a CLEAN hands-off CODEX rep once the gate is de-flaked (beta.44 was closer-assisted; beta.38 is still the only clean codex rep); (c) [[B-CSOR]] simplicity (dogfood vehicle for the codex rep). Prior state: beta.43 B-RASO. TODAY (2026-07-07) banked THREE clean hands-off `/pickle-pipeline` soak reps: beta.41 R-MPGD WS-1 (`fbde530c`, 4/4 56m) + beta.42 B-RRPC (4/4 103m) + beta.43 B-RASO (4/4 ~28m — WS-1 collapse `4aae80ad` + WS-2 DEFER doc `6fc22e9c`; ZERO interventions, the R-PSRB false-hold NEVER fired on the build worker). All zero-intervention. B-RASO is the FIRST R-PSRB salvage-path RELIABILITY FIX shipped end-to-end through an ATTENDED `/pickle-pipeline` (not hand-built) — the deployed buggy runtime governed the build worker but the latent false-hold is low-base-rate and never triggered. Closer's full gate caught 3 escapes the scoped per-phase gates don't run: compiled-mirror drift (`4cb81885`), a 2141-char trap-door line vs the 1500 limit (`f2025ae4`), and a stale `v2-E2E-9` integration test asserting the pre-fix `hold` contract on a non-resolvable sha (`ab47b3b6`, reconciled to a git-resolvable fixture — same class as the analyst-caught `silent-death-recovery.test.js:191`, in a second file outside the worker allowlist). Deploy-soak needed `PICKLE_TEST_RUNNER_TIMEOUT_MS`>30min (the runner's DEFAULT_TEST_RUNNER_TIMEOUT_MS=1800000 kills a SOAK_SECONDS=1800 soak at the finish line — set 2700000). B-CSHYG-a resolved as DEFER (`prds/BUG-REPORT-2026-07-07-b-cshyg-a-defer-evidence.md`). *(The reliability-fix queue was drained after B-RASO but RE-OPENED at beta.44 with [[R-WGFR]] — see the beta.44 STATE + NEXT ACTION above; the old "≥1 more CODEX rep leads" posture is superseded by "R-WGFR leads.")* NOTE for next contexts: `PICKLE_SIGF`, `PICKLE_CITADEL_MECHANICAL`, `PICKLE_RECOVERY_CONSOLIDATION`, `skip_readiness_reason`/`skip_ticket_audit_reason`, chain_meeseeks, `evaluateCodexManagerRelaunch`, `getPhaseExitReason`, `resolveBreakerRecoveryGraceSeconds` / `evaluateSimpleManagerRelaunch` / `hasCommitReferencingTicketSince`, and (as of beta.43) `hasFrontmatterCompletionSha` / `hasVerifiedFrontmatterCompletionSha` (collapsed into `resolveAttributableFrontmatterSha`) NO LONGER EXIST — do not cite them.**
+**✅ B-SSVR SHIPPED beta.34** (via /pickle-pipeline + babysitter closer-takeover): **[[R-SSBR]] scope-resolver fail-CLOSED**
+on a stale/ahead base ref (`9592eb46`) — `resolveAllowedFromDiffMode` now detects `baseSha===headSha` with a differing
+baseRef tip and either recomputes via `resolveForkPointBase` or throws `SCOPE_BASE_AHEAD_OF_HEAD` (never a false
+`SCOPE_EMPTY_DIFF` → no more unscoped review runs); **[[R-ISVP]] install.sh prerelease semver** (`d260012e`) — widened
+`compare_semver` mirrors `check-update.ts:compareSemver` (release > prerelease, ident-lexical then num), re-arming the
+downgrade guard for the `beta.*` line. The **build's own pickle phase false-failed `phase_no_progress`** (late-flushing
+detached workers landed both workstreams' green output AFTER the no-progress verdict — R-WPEX/B-WSPU class); babysitter
+verified + committed both, then ran citadel/anatomy/szechuan 3/3 clean. The **full release gate caught 2 real bugs the
+review phases missed**: WS-1's trap-door entry was multi-line (citadel `rule-set-invariant-audit` parser is line-oriented
+→ `73f780bf` collapse to one line) and **beta.33 shipped `gate-ergonomics-keystone.test.js` RED** (its forward-ref
+grammar deletion left the fixture relying on deleted `(forward-created)` handling → synced fixture `8e987d87`). The
+historical completion/scope/recovery/ceiling defect classes are all code-fixed and shipped. Per the GA path the gate
+remains field-soak **repeatability** (esp. codex).
+
+**▶ NEXT ACTION — priority order (operator, 2026-07-08): RELIABILITY → AUTONOMOUS EXECUTION → SIMPLICITY.**
+**The reliability-fix queue re-opened at beta.44:** the R-LTNC codex build surfaced **[[R-WGFR]] (P2)** — the
+between-ticket worker-gate verifies with a SINGLE flaky `npm run test:fast`, so a c=8 timeout-flake false-red
+fatal-stops a GREEN bundle (it killed the FIRST beta.44 run 0/4; the tree was provably green via `test:fast:budget`
+5/5). This is BOTH a reliability defect (goal #1) AND the single biggest de-flaker of autonomous reps (goal #2) —
+the flaky gate is what forced heavy babysitter takeover on beta.44. **Top recommendation: [[R-WGFR]] first** —
+reuse-first (run the gate's `test:fast` at c=4 / consult the `check-flake-budget` signal the release gate already
+uses; keep R-CWGE fail-CLOSED, make its INPUT reliable). Then a **clean hands-off codex rep** (beta.44's codex build
+did the substantive work but needed a full closer-takeover — it is NOT a clean rep; the GA bar still wants one).
+[[B-CSOR]] (simplicity) is a good dogfood vehicle for that codex rep once R-WGFR de-flakes the gate.
+
+**A. Reliability (goal #1) — ONE open verified bug: [[R-WGFR]] (re-opened beta.44).** Every HISTORICAL defect class
+is still code-fixed at root: completion-oracle plurality (B-1SEAM ✅), scope-fence under/over-extend (R-SIGF ✅), the
+R-SZGB fail-OPEN gate family (A/B/C/D, beta.39–40 ✅), dual-spawn brittleness (B-WSPU beta.35 ✅), microverse
+git-detect silent-skip ([[R-MPGD]] WS-1 beta.41 ✅), the recovery attributable-work false-hold ([[B-RASO]] beta.43 ✅).
+But **R-WGFR is a fresh verified regression** (a flaky gate signal fatal-stopping a green bundle) — reliability-first
+means it LEADS. It is reuse-first, pipeline-safe (gate-decision seam, NOT R-PSRB), and directly reduces the closer
+intervention future codex reps need. A `## Risks` section on every bundle stays the negative-maintenance discipline.
+
+**B. Autonomous execution (goal #2 = the GA bar: N clean hands-off reps in a row, BOTH backends).** ✅ **FOUR clean
+reps banked:** B-SCOPESEED beta.38 (**codex**, 4/4 139m) + R-MPGD beta.41 (claude) + B-RRPC beta.42 (claude) + B-RASO
+beta.43 (claude). **beta.44 R-LTNC is a FIFTH build but NOT a clean rep** — the codex worker autonomously executed the
+225-file rename + hermetic test + globs + regression guard (self-recovering a wedge, the strongest codex-capability
+evidence yet), but shipping required a **full babysitter closer-takeover**: the flaky R-WGFR gate killed run 1, the
+full release gate caught 6 rename-gap escapes the worker/scoped gates missed, and a stale-deploy masqueraded as a
+test regression ([[project_gate_ergonomics_resolves_deployed_tree_install_before_integration]]). So codex is
+**"viable-with-closer," not "clean hands-off"** — **beta.38 remains the ONLY clean codex hands-off rep**, and the GA
+gap is still **≥1 clean hands-off CODEX rep**. Fixing R-WGFR is the highest-leverage step toward it (it removes the
+gate-flake that forced the beta.44 takeover). Each rep should ALSO do reliability/simplicity work — never a rep for its own sake.
+
+**▶ RECOMMENDED SEQUENCE** (priority order — reliability [goal #1] → autonomy [goal #2] → simplicity [goal #3]):
+1. **[[R-WGFR]]** — the reliability fix that re-opened at beta.44 (goal #1) AND the highest-leverage autonomy
+   de-flaker (goal #2). Make the between-ticket gate's `test:fast` verdict flake-resistant — run at **c=4** and/or
+   consult `check-flake-budget` (the signal the release gate already uses); keep R-CWGE fail-CLOSED, make its INPUT
+   reliable. Reuse-first (NOT a retry-guard), pipeline-safe (gate-decision seam, NOT R-PSRB). Also widen the
+   R-CXHANG reaper to catch age-old `codex app-server` orphans (the contention amplifier). Ship on claude.
+   Bug: `BUG-REPORT-2026-07-08-worker-gate-single-flaky-testfast-false-red-fatal.md`.
+2. **A clean hands-off CODEX rep** — the standing GA gap (beta.38 is still the ONLY clean codex rep; beta.44 was
+   closer-assisted). Do it AFTER R-WGFR so the de-flaked gate gives it a fair shot at hands-off. Watch for
+   [[R-CXHANG]] D-state / `codex app-server` orphans (reap by specific old PID before launch). **Deploy discipline:**
+   a bundle renaming a runtime artifact resolved via `getExtensionRoot` must `install.sh` before the release-gate
+   integration tier ([[project_gate_ergonomics_resolves_deployed_tree_install_before_integration]]).
+3. **[[B-CSOR]]** — the subtractive root fix (goal #3 simplicity); a good dogfood vehicle for the codex rep in (2).
+   Make citadel COMMIT its own mechanical remediation → no downstream dirty-tree abort → [[R-MPGD]]'s safety-net
+   becomes vestigial. **PRD (revalidate vs HEAD — predates beta.37–44):**
+   `prds/archive/bundles/p2-bug-fix-bundle-b-csor-citadel-graduated-remediation.md`. Per the Simplification Review
+   guard, make citadel commit its OWN remediation, NOT a finding-classifier/hand-fix class (brace-free-`if` →
+   eslint/prettier autofix). **To build:** author/refresh a PRD → `/pickle-pipeline`.
+3. P3 filler, only to give a rep a payload: [[R-LTNC]] (PRD ready — internal `linear_ticket_*` rename) ·
+   [[R-TCVC]] + [[R-HNCG]] (the two worker-continuity fixes, bundle-able).
+
+**C. Simplicity (subtract-before-add — the major levers are shipped; guard the discipline, don't manufacture work).**
+The Reliability Plan's 5 structural meta-defects are all substantially addressed: completion-oracle plurality → ONE
+`readEvidence`/`evaluateCompletionEvidence` oracle (B-1SEAM ✅); scope-fence → R-SIGF ✅; guards-on-guards → B-GSUB
+doc track CLOSED (−9) + B-GROUND2 ✅; self-build trap → R-PSRB protocol ✅; recovery sprawl → B-WSPU (detached
+half deleted) + B-RRPC (resolver plumbing) + **B-RASO (attributable-work oracle collapse) ✅**. **The recovery-sprawl
+lever is now fully worked** (`RECOVERY-SPRAWL-COLLAPSE-ANALYSIS-2026-07-07.md`): B-RASO + B-RRPC + B-CSHYG all
+shipped/closed. **DEFERRED as EARNED, not lazy — do NOT chase these (the B-GSUB over-subtraction lesson):** the
+~38-guard manager-loop-continuation cluster (distinct earned detection signals already sharing termination
+plumbing) and the dead-pid/orphan liveness-probe triplication (`killProcessGroup` already shared — only detection
+is triplicated, low ROI). The remaining subtractive act with real yield is **B-CSOR** (above). **[[B-GIMA]]**
+(report-only guard-inventory mining) stays DEFERRED — design dependency on codegraph (v2.1), not calendar.
+
+Other open residuals (none block a clean autonomous launch): **R-SLEAK** (P3 — session/process GC; new machinery
+that conflicts with subtract-before-add — build ONLY if leaks actually bite; a day-old stray `pipeline-*` tmux
+seen 2026-07-08 is this class, harmless); **B-CIINT** (P3 — Linux-CI-only, not locally verifiable, CI-green is
+never a release gate); **#25 R-CSI** (P1 — external-event-gated). **Capability is DEFERRED post-GA**
+(reliability-first / capability-second): **[[B-CGCAP]]** codegraph default-on (v2.1), **[[B-ARBR]]** (idea).
+
+**OBSERVATION (2026-07-06, field-surfaced babysitting the LOA-1570 Phase-5 pipeline):** **[[R-MPGD]] (P2 —
+microverse `preflightAutoCommit` gates its dirty-tree auto-commit on `fs.existsSync(path.join(workingDir,'.git'))`
+(`microverse-runner.ts:2935`); false-negative when `workingDir` is a monorepo package subdir → the recovery that
+already exists never fires → anatomy-park + szechuan abort at setup with `pass_counts:0`, and `pipeline-runner`
+logs both phases "completed successfully" (`:4137`) with `skipped_phases:0` — silent deletion of the review
+phases on a green ledger).** **✅ REVIEWED + ACCEPTED 2026-07-06 (verified vs source at `8f94f620`):** D1 core
+claim confirmed AND blast radius corrected — the SAME naive `.git`-existsSync check exists at a SECOND site the
+report missed, `autoRescueDirtyTree` (`microverse-runner.ts:3619`), where it silently SKIPS the worker-timeout
+rescue (loses a timed-out worker's dirty in-scope output on a monorepo subdir) rather than throwing. Fix = extract
+ONE shared `isInsideWorkTree(dir)` helper (`git rev-parse --is-inside-work-tree`, cwd:dir) used at BOTH `:2935`
+and `:3619` (net-subtraction: 2 naive checks → 1 correct helper) + D2 classify a 0-pass non-zero microverse phase
+exit as `skipped`/`setup_aborted` (not `completed`) at the `getPhaseExitReason` seam (`pipeline-runner.ts:2873`).
+D2 is HONESTY-relevant (a green ledger hiding silently-deleted phases). Adjacent to [[R-MACB]] (microverse
+auto-rescue scope-leak) and [[B-GNDT]] (launch-time dirty-tree self-brick); source of the inter-phase dirt is
+[[B-CSOR]] citadel remediation left uncommitted. Pipeline-safe (NOT R-PSRB). Forensics:
+`prds/BUG-REPORT-2026-07-06-microverse-preflight-git-detect-false-negative-silently-skips-review-phases.md`.
+
+**▶ HARD-WON LESSONS this session (encode before clearing):**
+- **A fix touching the iteration loop / orchestrator MUST be built ≥`medium` tier** — a `small`-tier worker gate
+  SKIPS `test:fast`, so the B-MWBG regression slipped past the build and only surfaced at the closer's full gate.
+- **Do NOT token-optimize the project `CLAUDE.md`** — it carries test-pinned literal phrases; the beta.30
+  token-optimize broke `release-gate-parity` + `codegraph-docs-optin-parity` (restored at the closer).
+- **A null-diff audit ticket** (e.g. WS-2 found zero time-bombs) can't satisfy the commit-evidence gate → the
+  manager correctly resolved it by committing the audit findings as a durable repo doc. Pre-stage that recovery.
+- **Closer compile-drift**: a worker can commit `.ts` source but a stale compiled `.js` → run `npx tsc` and
+  `git status` before bump; commit the recompile (and commit it EARLY, before `test:integration`, which can
+  delete the compiled tree and a `git restore` would revert your fresh `.js`).
+- **R-SLEAK symptom seen**: a `node require` looping over ALL session `state.json`s timed out on an old
+  slow/locked one → use `timeout 3 node -e ...` per-file for phantom scans.
+
+Rate note: the babysitter cron is **session-only** (dies when this Claude process exits) and the 5-hour rate
+window cycles ~04:13/09:13/14:13/19:13 CDT — heavy work (pipelines, gates) should run with headroom, not near a
+window edge.
+
+
+### [swept] B-SIGFH-soak-findings (was L1061–L1069)
+
+### B-SIGFH codex GA field-soak — findings (2026-07-01)
+
+Ran B-SIGFH (scope-fence detector hardening) as a `--backend codex` soak. **Verdict: codex is viable-but-fragile.** On a clean machine it completed WS-2 + WS-3 autonomously — **including the subtle cross-file cache-thread AC** (threaded `ResolverCache` into `pipeline-runner.ts:1638`) — and the completion-authority + phase-graduation guards held throughout (`phase_graduation_refused` correctly blocked false-done). But three real findings surfaced:
+- **[[R-CXHANG]] codex CLI hangs in uninterruptible (D-state) sleep and accumulates unkillably across sessions (R-SLEAK amplified on codex).** 8 orphans from prior days' runs (16h–2d old) survived SIGKILL, saturated the machine, and starved my workers into 0-byte hangs — **this killed run 1.** Only an operator kill/reboot cleared them. P2, codex-GA-relevant. Needs: reap-on-exit / a session-GC that force-kills codex subtrees, or a codex-spawn watchdog. *(No PRD yet — author before the next codex soak.)*
+- **codex non-convergence under load:** the WS-1 worker shipped an inconsistent deliverable (a *correct* test that caught its own incomplete code — schema-shape deadline gap) and could not converge it in 6 iterations under the degraded machine. Hand-finished (`1d095e06`).
+- **[[R-SSPB]] on-`main` `--scope branch` mis-scopes the pickle phase** to the pre-build diff (the build's own commits don't exist yet at setup → workers fenced out of their target files). Patched live by broadening `scope.json`; the review-phase refresh is correct. Fix: seed pickle-phase branch-scope from the ticket file-impact set. P3. **✅ FIXED beta.38** (B-SCOPESEED WS-1 `621ce1b2`).
+
+**POSITIVE (banked):** beta.35 synchronous re-spawn-resume held across WS-1's 6 iterations *and* preserved uncommitted work through a Failed-flip (no git-reset) — the collapse is validated under real load. **Operator lesson:** never hand-complete a ticket then resume the same pipeline — it churns the completion oracle (phantom-revert, `false_epic ×4`, duplicate commit); let the pipeline own completion, or reset fully first.
+
+
+
