@@ -35,6 +35,7 @@ import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths,
 import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup } from '../services/backend-spawn.js';
 import { scrubForbiddenWorkerTokens } from '../services/promise-tokens.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
+import { isUnrunnableCheckResult } from '../services/convergence-gate.js';
 import { createResolverCache, type ResolverCache } from '../services/signature-caller-gap.js';
 import { computeOneHop } from '../services/scope-resolver.js';
 import { autoFillCompletionCommit } from './auto-fill-completion-commit.js';
@@ -1230,6 +1231,14 @@ type WorkerGateCheckResult = {
   testFailures: WorkerGateTestFailure[];
   gateFailures: WorkerGateTestFailure[];
   gatePhase: WorkerGatePhase | null;
+  /**
+   * R-WGFR: true when the corresponding check's COMMAND never ran (binary
+   * absent from PATH / ENOENT / exit 127 / missing script), per the shared
+   * `isUnrunnableCheckResult` classifier (convergence-gate.ts) — distinct from
+   * a genuine lint/tsc failure. Always false when the check passed.
+   */
+  lintUnrunnable: boolean;
+  tscUnrunnable: boolean;
 };
 
 export function resolveWorkerGateTier(
@@ -1506,6 +1515,17 @@ function stageAndCommitLintAutofix(workingDir: string, ticketId: string, fileLis
   return getHeadSha(workingDir);
 }
 
+/**
+ * R-WGFR (AC-GTRUTH-A3a-2): a check whose COMMAND never ran (binary absent from
+ * PATH / ENOENT / exit 127 / missing script) is an environment problem, not a
+ * code-quality failure. Reuses the shared classifier instead of adding a new
+ * session-start PATH probe. Passing results are never unrunnable by definition.
+ */
+function isCommandResultUnrunnable(result: CommandResult): boolean {
+  if (result.ok) return false;
+  return isUnrunnableCheckResult({ stdout: result.stdout, stderr: result.stderr, exitCode: result.status ?? 1 });
+}
+
 async function runWorkerGateChecks(args: {
   lintTargets: string[];
   extensionDir: string;
@@ -1515,6 +1535,7 @@ async function runWorkerGateChecks(args: {
 }): Promise<WorkerGateCheckResult> {
   let lintOk = true;
   let lintErrors = 0;
+  let lintUnrunnable = false;
   let gateFailures: WorkerGateTestFailure[] = [];
   let gatePhase: WorkerGatePhase | null = null;
 
@@ -1523,6 +1544,7 @@ async function runWorkerGateChecks(args: {
     const lintOutput = `${lintResult.stdout}\n${lintResult.stderr}`;
     lintErrors = countLintErrors(lintOutput);
     lintOk = lintResult.ok;
+    lintUnrunnable = isCommandResultUnrunnable(lintResult);
     if (!lintOk) {
       gatePhase = 'lint';
       gateFailures = parseWorkerGateLintFailures(lintOutput, args.extensionDir);
@@ -1532,6 +1554,7 @@ async function runWorkerGateChecks(args: {
   const tscResult = await runCommand('npx', ['tsc', '--noEmit'], args.extensionDir);
   const tscOutput = `${tscResult.stdout}\n${tscResult.stderr}`;
   const tscErrors = countTscErrors(tscOutput);
+  const tscUnrunnable = isCommandResultUnrunnable(tscResult);
   if (lintOk && !tscResult.ok) {
     gatePhase = 'tsc';
     gateFailures = parseWorkerGateTscFailures(tscOutput, args.extensionDir);
@@ -1549,6 +1572,8 @@ async function runWorkerGateChecks(args: {
     testFailures: [],
     gateFailures,
     gatePhase,
+    lintUnrunnable,
+    tscUnrunnable,
   });
 
   if (!lintOk || !tscResult.ok) return preTestResult();
@@ -1571,6 +1596,8 @@ async function runWorkerGateChecks(args: {
       testFailures: fastTierResult.failures,
       gateFailures,
       gatePhase,
+      lintUnrunnable,
+      tscUnrunnable,
     };
   }
 
@@ -1589,6 +1616,8 @@ async function runWorkerGateChecks(args: {
     testFailures: integrationTierResult.failures,
     gateFailures,
     gatePhase,
+    lintUnrunnable,
+    tscUnrunnable,
   };
 }
 
@@ -1601,15 +1630,38 @@ function didWorkerGateFail(lintOk: boolean, tscOk: boolean, testsOk: boolean): b
 }
 
 /**
- * B-CWGE WS-2 (R-CWGE): persist the worker gate's overall verdict (the combined
- * eslint + tsc + test outcome) into the ticket frontmatter
- * (`WORKER_GATE_VERDICT_FIELD`) so the Done-flip guard
+ * R-WGFR: parity with the fallback recompute (`recomputeAbsentWorkerGateVerdict`,
+ * mux-runner.ts:4662) — the PERSISTED `worker_gate_verdict` never counts the
+ * flaky `test:fast` dimension, and a check whose command never ran (ENOENT /
+ * exit 127 / missing script, per `isCommandResultUnrunnable`) is exempted
+ * rather than counted red. `ok` / the gate-fail reset / Failed-flip suppression
+ * stay driven by `didWorkerGateFail` (unchanged, still test-inclusive) — this
+ * function governs ONLY the sticky field a later `resolveWorkerGateVerdict`
+ * trusts without re-running the gate.
+ */
+function computeWorkerGateVerdict(result: {
+  lintOk: boolean;
+  tscOk: boolean;
+  lintUnrunnable: boolean;
+  tscUnrunnable: boolean;
+}): 'green' | 'red' {
+  const lintRed = !result.lintOk && !result.lintUnrunnable;
+  const tscRed = !result.tscOk && !result.tscUnrunnable;
+  return lintRed || tscRed ? 'red' : 'green';
+}
+
+/**
+ * B-CWGE WS-2 (R-CWGE): persist the worker gate's verdict into the ticket
+ * frontmatter (`WORKER_GATE_VERDICT_FIELD`) so the Done-flip guard
  * (`guardCompletionCommitBeforeDone`) can make the recorded verdict
- * authoritative on EVERY Done-flip path WITHOUT re-running the gate. Best-effort:
- * the ticket frontmatter file lives under the session root (never touched by the
- * gate-fail tree reset), so the value survives. Reuses the existing
- * `upsertFrontmatterField` write path. Silent on any FS error so a write hiccup
- * never blocks the gate (the guard treats an absent field as fail-closed).
+ * authoritative on EVERY Done-flip path WITHOUT re-running the gate. R-WGFR:
+ * the verdict reflects eslint + tsc only (see `computeWorkerGateVerdict`) —
+ * `test:fast` is dropped as flaky and an unrunnable lint/tsc check is exempted,
+ * not red. Best-effort: the ticket frontmatter file lives under the session
+ * root (never touched by the gate-fail tree reset), so the value survives.
+ * Reuses the existing `upsertFrontmatterField` write path. Silent on any FS
+ * error so a write hiccup never blocks the gate (the guard treats an absent
+ * field as fail-closed).
  */
 function persistWorkerGateVerdict(statePath: string, ticketId: string, verdict: 'green' | 'red'): void {
   try {
@@ -1737,10 +1789,10 @@ export async function runWorkerGate(changedFiles: string[], args: {
     ({ lintOk, tscOk, testsOk } = gateResult);
   }
 
-  // B-CWGE WS-2 (R-CWGE): persist the overall worker-gate verdict (eslint+tsc+test)
-  // so the Done-flip guard can read it on EVERY path without re-running the gate.
-  // Written on BOTH the pass and fail paths below.
-  persistWorkerGateVerdict(args.statePath, args.ticketId, didWorkerGateFail(lintOk, tscOk, testsOk) ? 'red' : 'green');
+  // B-CWGE WS-2 (R-CWGE): persist the worker-gate verdict (eslint+tsc only —
+  // R-WGFR drops test:fast) so the Done-flip guard can read it on EVERY path
+  // without re-running the gate. Written on BOTH the pass and fail paths below.
+  persistWorkerGateVerdict(args.statePath, args.ticketId, computeWorkerGateVerdict(gateResult));
 
   if (didWorkerGateFail(lintOk, tscOk, testsOk)) {
     writeActivityEntry(args.statePath, {

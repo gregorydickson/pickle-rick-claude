@@ -96,6 +96,37 @@ function writeNpxPassShim(binDir, logPath) {
   writeCommandShim(binDir, 'npx', logPath);
 }
 
+// R-WGFR: a single 'npx' shim whose eslint invocation can fail independently
+// of its tsc invocation, so a test can isolate "lint is unrunnable" or
+// "lint genuinely failed" from a passing tsc check.
+function writeConditionalNpxShim(binDir, logPath, eslintOptions = {}) {
+  fs.mkdirSync(binDir, { recursive: true });
+  const shimPath = path.join(binDir, 'npx');
+  const exitCode = eslintOptions.exitCode ?? 0;
+  const stdout = eslintOptions.stdout ?? '';
+  const stderr = eslintOptions.stderr ?? '';
+  fs.writeFileSync(shimPath, `#!/usr/bin/env node
+const fs = require('fs');
+const logPath = ${JSON.stringify(logPath)};
+const existing = fs.existsSync(logPath) ? JSON.parse(fs.readFileSync(logPath, 'utf8')) : [];
+existing.push(['npx', ...process.argv.slice(2)]);
+fs.writeFileSync(logPath, JSON.stringify(existing, null, 2));
+if (process.argv[2] === 'eslint') {
+  if (${JSON.stringify(stdout)}.length > 0) process.stdout.write(${JSON.stringify(stdout)});
+  if (${JSON.stringify(stderr)}.length > 0) process.stderr.write(${JSON.stringify(stderr)});
+  process.exit(${JSON.stringify(exitCode)});
+}
+process.exit(0);
+`);
+  fs.chmodSync(shimPath, 0o755);
+}
+
+function readWorkerGateVerdict(ticketDir, ticketId) {
+  const content = fs.readFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), 'utf8');
+  const match = content.match(/^worker_gate_verdict:\s*"?([^"\s]+)"?\s*$/m);
+  return match ? match[1] : null;
+}
+
 function writeNpmFailShim(binDir, logPath, stdout) {
   writeCommandShim(binDir, 'npm', logPath, { exitCode: 1, stdout });
 }
@@ -795,6 +826,130 @@ test('runWorkerGate: honors worker_test_gate_timeout_ms, reports timeout details
       ['npx', 'tsc', '--noEmit'],
       ['npm', 'run', 'test:fast'],
     ]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// R-WGFR (AC-GTRUTH-A3a-1/2/3): the PERSISTED worker_gate_verdict must drop the
+// flaky test:fast dimension and exempt unrunnable lint/tsc checks, while a
+// genuine lint/tsc failure still reds — parity with the fallback recompute at
+// mux-runner.ts:recomputeAbsentWorkerGateVerdict. `result.ok` (current-turn
+// reset/Failed-flip signal) is intentionally UNCHANGED by this fix.
+// ---------------------------------------------------------------------------
+
+function setupWorkerGateVerdictFixture(root, ticketId) {
+  initGitRepo(root);
+  fs.mkdirSync(path.join(root, 'extension', 'src', 'demo'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'extension', 'src', 'demo', 'one.ts'), 'export const one = 1;\n');
+  execFileSync('git', ['add', '.'], { cwd: root });
+  execFileSync('git', ['commit', '-m', 'base', '--no-gpg-sign'], { cwd: root, stdio: 'ignore' });
+  fs.writeFileSync(path.join(root, 'extension', 'src', 'demo', 'one.ts'), 'export const one = 2;\n');
+  execFileSync('git', ['add', '.'], { cwd: root });
+  execFileSync('git', ['commit', '-m', `worker change ${ticketId}`, '--no-gpg-sign'], { cwd: root, stdio: 'ignore' });
+  return writeSession(root, ticketId);
+}
+
+test('runWorkerGate: R-WGFR AC1 — a failing test:fast does not red the persisted worker_gate_verdict', async () => {
+  const root = makeTmpRoot();
+  try {
+    const ticketId = 'abc12345';
+    const { sessionRoot, ticketDir } = setupWorkerGateVerdictFixture(root, ticketId);
+    const statePath = path.join(sessionRoot, 'state.json');
+    const shimDir = path.join(root, 'bin');
+    const logPath = path.join(root, 'gate-log.json');
+    writeCommandShim(shimDir, 'npx', logPath);
+    writeCommandShim(shimDir, 'npm', logPath, {
+      exitCode: 1,
+      stdout: `not ok 1 - fast tier fails\n  ---\n  location: '${path.join(root, 'extension', 'tests', 'demo.test.js')}:12:4'\n  error: 'boom'\n  ...\n`,
+    });
+
+    const result = await withPathPrefix(shimDir, () => runWorkerGate([
+      'extension/src/demo/one.ts',
+    ], {
+      workingDir: root,
+      ticketId,
+      statePath,
+      preWorkerHead: null,
+    }));
+
+    assert.equal(result.ok, false, 'current-turn ok is unchanged: a genuine test:fast failure still fails this turn');
+    assert.equal(result.gatePhase, 'test:fast');
+    assert.equal(
+      readWorkerGateVerdict(ticketDir, ticketId),
+      'green',
+      'the persisted verdict must not be poisoned by a test:fast failure (parity with the fallback recompute)',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runWorkerGate: R-WGFR AC2 — an unrunnable lint check (exit 127) does not red the persisted worker_gate_verdict', async () => {
+  const root = makeTmpRoot();
+  try {
+    const ticketId = 'abc12346';
+    const { sessionRoot, ticketDir } = setupWorkerGateVerdictFixture(root, ticketId);
+    const statePath = path.join(sessionRoot, 'state.json');
+    const shimDir = path.join(root, 'bin');
+    const logPath = path.join(root, 'gate-log.json');
+    writeConditionalNpxShim(shimDir, logPath, { exitCode: 127 });
+    writeCommandShim(shimDir, 'npm', logPath);
+
+    const result = await withPathPrefix(shimDir, () => runWorkerGate([
+      'extension/src/demo/one.ts',
+    ], {
+      workingDir: root,
+      ticketId,
+      statePath,
+      preWorkerHead: null,
+    }));
+
+    assert.equal(result.ok, false, 'current-turn ok is unchanged: lint still could not be verified this turn');
+    assert.equal(
+      readWorkerGateVerdict(ticketDir, ticketId),
+      'green',
+      'an unrunnable lint check (ENOENT-class / exit 127) must be exempted, not counted red',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runWorkerGate: R-WGFR AC3 — a genuine eslint violation still reds the persisted worker_gate_verdict', async () => {
+  const root = makeTmpRoot();
+  try {
+    const ticketId = 'abc12347';
+    const { sessionRoot, ticketDir } = setupWorkerGateVerdictFixture(root, ticketId);
+    const statePath = path.join(sessionRoot, 'state.json');
+    const shimDir = path.join(root, 'bin');
+    const logPath = path.join(root, 'gate-log.json');
+    const eslintStdout = [
+      path.join(root, 'extension', 'src', 'demo', 'one.ts'),
+      "  1:1  error  'foo' is defined but never used  no-unused-vars",
+      '',
+      '✖ 1 problem (1 error, 0 warnings)',
+      '',
+    ].join('\n');
+    writeConditionalNpxShim(shimDir, logPath, { exitCode: 1, stdout: eslintStdout });
+    writeCommandShim(shimDir, 'npm', logPath);
+
+    const result = await withPathPrefix(shimDir, () => runWorkerGate([
+      'extension/src/demo/one.ts',
+    ], {
+      workingDir: root,
+      ticketId,
+      statePath,
+      preWorkerHead: null,
+    }));
+
+    assert.equal(result.ok, false);
+    assert.equal(
+      readWorkerGateVerdict(ticketDir, ticketId),
+      'red',
+      'a genuine eslint failure must still red the persisted verdict — no over-subtraction',
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
