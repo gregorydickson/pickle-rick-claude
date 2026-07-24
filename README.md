@@ -522,8 +522,8 @@ The three timeouts are independent — index, sync, and query each get their own
 ### Soak protocol
 
 Post-GA operator runbook for validating Code Graph's efficacy with live telemetry (not a build
-step — this section documents the RUN, not new code). Existing opt-in default and kill-switch
-semantics above are unchanged; this only adds an operator procedure on top of them.
+step — this section documents the RUN, not new code). Existing enabled-by-default and
+kill-switch semantics above are unchanged; this only adds an operator procedure on top of them.
 
 1. **Deploy — pin the exact build.** Deploy the target line via `bash install.sh` and **record
    the exact tag/SHA in the soak artifact** (no "or cherry-picked" ambiguity). Confirm the
