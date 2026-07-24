@@ -735,16 +735,6 @@ const ZERO_DIFF_INTENTS: ReadonlySet<string> = new Set<ZeroDiffIntent>([
   'already-satisfied',
 ]);
 
-/**
- * B-GTRUTH WS-A1: the success arm is a UNION — a committed accept carries a SHA,
- * a declared zero-diff accept carries NONE. Fabricating a sentinel SHA for the
- * second case is the empty-marker-commit forgery moved into a string, so the
- * absence is modelled in the type instead (`sha?: undefined`).
- *
- * The `?: undefined` slots on each arm are deliberate: they keep `decision.sha`
- * and `decision.usedFallback` reachable across the whole `ok: true` union so
- * existing consumers (e.g. `gateForPhantomDoneRevert`) need no `in` narrowing.
- */
 /** An accept backed by an attributable git commit. */
 export type CompletionCommittedAccept = {
   ok: true;
@@ -779,6 +769,17 @@ export type CompletionRefusal = {
  */
 export type CompletionAttributionDecision = CompletionCommittedAccept | CompletionRefusal;
 
+/**
+ * B-GTRUTH WS-A1: the success arm is a UNION — a committed accept carries a SHA, a
+ * declared zero-diff accept carries NONE. Fabricating a sentinel SHA for the second
+ * case would be the empty-marker-commit forgery moved into a string, so the absence
+ * is modelled in the type instead (`sha?: undefined`).
+ *
+ * The `?: undefined` slots on each accept arm are deliberate: they keep
+ * `decision.sha` and `decision.usedFallback` reachable across the whole `ok: true`
+ * union, so existing consumers (e.g. `gateForPhantomDoneRevert`) need no `in`
+ * narrowing.
+ */
 export type CompletionDecision =
   | CompletionCommittedAccept
   | CompletionZeroDiffAccept

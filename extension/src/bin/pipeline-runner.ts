@@ -4058,39 +4058,6 @@ async function dispatchHaltAction(
   return { action: 'break' };
 }
 
-/**
- * The PhaseIncomplete (exit code 3) route. Returns the outcome when the phase must
- * stop, or `null` when `runPhaseIteration` should continue to its normal path.
- *
- * B-GTRUTH WS-A2: `reportPhaseIncomplete` re-resolves every status-unfinished ticket
- * through the completion oracle. When it declines to stamp, the work landed — but
- * whether the PHASE may advance is a separate question, answered by the ROSTER:
- *   - a status-runnable ticket still remains -> stop, but do NOT stamp a false
- *     incompleteness (the pre-existing B-PXBO contract, preserved exactly);
- *   - nothing runnable remains               -> graduate (AC-GTRUTH-A2-1).
- * The roster is consulted HERE rather than left to `maybeStampPhaseGraduation`
- * because that gate would stamp `pipeline_phase_incomplete` on the way past,
- * re-introducing the very stamp the oracle exclusion just declined.
- */
-function resolvePhaseIncompleteOutcome(
-  runtime: PipelineRuntime,
-  rawPhase: PhaseName,
-  exitCode: number,
-  log: (msg: string) => void,
-): PhaseIterationOutcome | null {
-  if (exitCode !== PipelineRunnerExitCode.PhaseIncomplete) return null;
-  if (reportPhaseIncomplete(runtime, rawPhase)) {
-    return { action: 'break', phaseIncomplete: true };
-  }
-  const pendingAfterOracle = collectPicklePhaseProgress(runtime).pendingCount;
-  if (pendingAfterOracle > 0) {
-    log(`Phase ${rawPhase}: oracle-committed ticket(s) excluded from the unfinished set, but ${pendingAfterOracle} ticket(s) remain runnable — not advancing (no incomplete stamp)`);
-    return { action: 'break', phaseIncomplete: true };
-  }
-  log(`Phase ${rawPhase}: PhaseIncomplete exit with no genuinely-unfinished and no runnable ticket remaining — graduating`);
-  return null;
-}
-
 async function runPhaseIteration(
   runtime: PipelineRuntime,
   counters: PhaseCounters,
@@ -4144,8 +4111,17 @@ async function runPhaseIteration(
     })}`);
     return { action: 'continue' };
   }
-  const incompleteOutcome = resolvePhaseIncompleteOutcome(runtime, rawPhase, exitCode, log);
-  if (incompleteOutcome) return incompleteOutcome;
+  if (exitCode === PipelineRunnerExitCode.PhaseIncomplete) {
+    if (reportPhaseIncomplete(runtime, rawPhase)) {
+      return { action: 'break', phaseIncomplete: true };
+    }
+    // B-GTRUTH WS-A2 (AC-GTRUTH-A2-1): every status-unfinished ticket re-resolved as
+    // committed through the completion oracle — the work landed, so this is not a
+    // phase-incomplete condition. Fall through to the normal path and let the
+    // ROSTER decide (`maybeStampPhaseGraduation` still halts if a status-runnable
+    // ticket remains); do not halt on the exit code alone.
+    log(`Phase ${rawPhase}: PhaseIncomplete exit with no genuinely-unfinished ticket — deferring to the roster gate`);
+  }
   const shouldHalt = shouldHaltAfterPhase(rawPhase, exitCode, runtime);
   if (exitCode !== 0 && !shouldHalt) {
     recordRecoverablePhaseFailure(runtime, rawPhase, exitCode, index, 'continue');

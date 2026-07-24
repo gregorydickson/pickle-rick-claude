@@ -4790,7 +4790,7 @@ function formatCompletionCommitForLog(sha: string | null | undefined): string {
 function readDeclaredZeroDiffIntent(sessionDir: string, ticketId: string): string | null {
   try {
     const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf8');
-    return readFrontmatterField(raw, 'zero_diff_intent') ?? null;
+    return readFrontmatterField(raw, 'zero_diff_intent');
   } catch {
     return null;
   }

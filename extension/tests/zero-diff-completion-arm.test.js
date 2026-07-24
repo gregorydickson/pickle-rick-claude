@@ -107,9 +107,9 @@ function withFixture(fn, ticketOpts) {
   const repo = mkTmp('pickle-zd-repo-');
   const sessionDir = mkTmp('pickle-zd-session-');
   try {
-    const head = initGitRepo(repo);
+    initGitRepo(repo);
     writeZeroDiffTicket(sessionDir, ticketOpts);
-    return fn({ repo, sessionDir, head });
+    return fn({ repo, sessionDir });
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
