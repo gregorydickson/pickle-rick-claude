@@ -317,7 +317,7 @@ function runCacheHygieneFixture(fixture) {
 
 // The MANAGED_KEYS jq transform, extracted verbatim so it can be asserted
 // byte-identical against the real install.sh jq expression (R2 lockstep).
-const MANAGED_KEYS_JQ_EXPR = 'del(.worker_test_gate_timeout_ms) | .codegraph.enabled = false | .codegraph.index_at_setup = false | .auto_update_enabled = false';
+const MANAGED_KEYS_JQ_EXPR = 'del(.worker_test_gate_timeout_ms) | .codegraph.enabled = true | .codegraph.index_at_setup = true | .auto_update_enabled = false';
 
 function buildKillSwitchForceFixtureScript(scriptDir) {
   return `#!/bin/bash
@@ -348,11 +348,11 @@ jq '${MANAGED_KEYS_JQ_EXPR}' \\
 if [ "$_managed_before_timeout" != "null" ]; then
   echo "[install.sh] MANAGED_KEYS forced worker_test_gate_timeout_ms: \${_managed_before_timeout} -> deleted" >&2
 fi
-if [ "$_managed_before_cg_enabled" != "false" ]; then
-  echo "[install.sh] MANAGED_KEYS forced codegraph.enabled: \${_managed_before_cg_enabled} -> false" >&2
+if [ "$_managed_before_cg_enabled" != "true" ]; then
+  echo "[install.sh] MANAGED_KEYS forced codegraph.enabled: \${_managed_before_cg_enabled} -> true" >&2
 fi
-if [ "$_managed_before_cg_setup" != "false" ]; then
-  echo "[install.sh] MANAGED_KEYS forced codegraph.index_at_setup: \${_managed_before_cg_setup} -> false" >&2
+if [ "$_managed_before_cg_setup" != "true" ]; then
+  echo "[install.sh] MANAGED_KEYS forced codegraph.index_at_setup: \${_managed_before_cg_setup} -> true" >&2
 fi
 if [ "$_managed_before_auto_update" != "false" ]; then
   echo "[install.sh] MANAGED_KEYS forced auto_update_enabled: \${_managed_before_auto_update} -> false" >&2
@@ -721,19 +721,19 @@ function extractManagedKeysJqFromInstallSh() {
 }
 
 describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
-  test('AC-SSAT-3/6: strips timeout, forces codegraph off, preserves sibling tunable', () => {
+  test('AC-SSAT-3/6: strips timeout, forces codegraph on, preserves sibling tunable', () => {
     const fixture = makeKillSwitchForceFixture({
       deployedAutoUpdateEnabled: true,
       deployedTimeoutMs: 240000,
-      deployedCodegraph: { enabled: true, index_at_setup: true, staleness_max_age_minutes: 15 },
+      deployedCodegraph: { enabled: false, index_at_setup: false, staleness_max_age_minutes: 15 },
     });
     try {
       const result = runKillSwitchForceFixture(fixture);
       assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
       const deployedSettings = readJson(fixture.deployedSettingsPath);
       assert.equal('worker_test_gate_timeout_ms' in deployedSettings, false);
-      assert.equal(deployedSettings.codegraph.enabled, false);
-      assert.equal(deployedSettings.codegraph.index_at_setup, false);
+      assert.equal(deployedSettings.codegraph.enabled, true);
+      assert.equal(deployedSettings.codegraph.index_at_setup, true);
       assert.equal(deployedSettings.codegraph.staleness_max_age_minutes, 15);
       assert.equal(deployedSettings.auto_update_enabled, false);
     } finally {
@@ -748,8 +748,8 @@ describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
       assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
       const deployedSettings = readJson(fixture.deployedSettingsPath);
       assert.equal('worker_test_gate_timeout_ms' in deployedSettings, false);
-      assert.equal(deployedSettings.codegraph.enabled, false);
-      assert.equal(deployedSettings.codegraph.index_at_setup, false);
+      assert.equal(deployedSettings.codegraph.enabled, true);
+      assert.equal(deployedSettings.codegraph.index_at_setup, true);
       assert.equal(deployedSettings.auto_update_enabled, false);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -759,12 +759,12 @@ describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
   test('AC-SSAT-9: differing deployed value emits an observability line', () => {
     const fixture = makeKillSwitchForceFixture({
       deployedAutoUpdateEnabled: false,
-      deployedCodegraph: { enabled: true, index_at_setup: false },
+      deployedCodegraph: { enabled: false, index_at_setup: true },
     });
     try {
       const result = runKillSwitchForceFixture(fixture);
       assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
-      assert.match(result.stderr, /MANAGED_KEYS forced codegraph\.enabled: true -> false/);
+      assert.match(result.stderr, /MANAGED_KEYS forced codegraph\.enabled: false -> true/);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
@@ -773,7 +773,7 @@ describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
   test('AC-SSAT-9: already-matching deployed values emit no observability line', () => {
     const fixture = makeKillSwitchForceFixture({
       deployedAutoUpdateEnabled: false,
-      deployedCodegraph: { enabled: false, index_at_setup: false },
+      deployedCodegraph: { enabled: true, index_at_setup: true },
     });
     try {
       const result = runKillSwitchForceFixture(fixture);

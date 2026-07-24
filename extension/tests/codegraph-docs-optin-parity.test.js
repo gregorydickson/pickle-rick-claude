@@ -19,16 +19,16 @@ test('AC-GA-CG-2: CLAUDE.md no longer claims codegraph is Default-ON', () => {
   assert.equal(claudeMd.includes('Default-ON since B-CGH'), false);
 });
 
-test('AC-GA-CG-2: CLAUDE.md codegraph row describes opt-in / disabled-by-default', () => {
+test('AC-GA-CG-2: CLAUDE.md codegraph row describes enabled-by-default', () => {
   const row = claudeMd.split('\n').find((l) => l.startsWith('| `codegraph`'));
   assert.ok(row, 'codegraph settings row present in CLAUDE.md');
-  assert.match(row, /Opt-in \/ disabled by default/);
-  assert.match(row, /`enabled` \(`false`\)/);
-  assert.match(row, /`index_at_setup` \(`false`\)/);
+  assert.match(row, /Enabled by default/);
+  assert.match(row, /`enabled` \(`true`\)/);
+  assert.match(row, /`index_at_setup` \(`true`\)/);
 });
 
-test('AC-GA-CG-2: README describes codegraph as opt-in / disabled by default', () => {
-  assert.match(readme, /Code Graph is opt-in and ships disabled by default/);
+test('AC-GA-CG-2: README describes codegraph as enabled by default', () => {
+  assert.match(readme, /Code Graph is enabled by default/);
 });
 
 test('AC-GA-CG-2: README has no unconditional serve --mcp-by-default claim; lane split documented', () => {
@@ -41,7 +41,7 @@ test('AC-GA-CG-2: README has no unconditional serve --mcp-by-default claim; lane
   assert.match(readme, /gated OFF unless `expose_mcp_to_workers === true`/);
 });
 
-test('AC-GA-CG-2: source pickle_settings.json codegraph booleans match the opt-in docs', () => {
-  assert.equal(settings.codegraph.enabled, false);
-  assert.equal(settings.codegraph.index_at_setup, false);
+test('AC-GA-CG-2: source pickle_settings.json codegraph booleans match the enabled-by-default docs', () => {
+  assert.equal(settings.codegraph.enabled, true);
+  assert.equal(settings.codegraph.index_at_setup, true);
 });

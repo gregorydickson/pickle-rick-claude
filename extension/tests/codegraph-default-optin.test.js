@@ -13,14 +13,14 @@ function loadSourceSettings() {
   return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
 }
 
-test('AC-GA-CG-1: source codegraph.enabled is false (opt-in)', () => {
+test('AC-GA-CG-1: source codegraph.enabled is true (enabled by default)', () => {
   const settings = loadSourceSettings();
-  assert.equal(settings.codegraph.enabled, false);
+  assert.equal(settings.codegraph.enabled, true);
 });
 
-test('AC-GA-CG-1: source codegraph.index_at_setup is false (opt-in)', () => {
+test('AC-GA-CG-1: source codegraph.index_at_setup is true (enabled by default)', () => {
   const settings = loadSourceSettings();
-  assert.equal(settings.codegraph.index_at_setup, false);
+  assert.equal(settings.codegraph.index_at_setup, true);
 });
 
 test('AC-GA-CG-1: other codegraph fields remain present and unchanged', () => {

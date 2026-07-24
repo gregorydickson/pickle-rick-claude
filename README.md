@@ -476,9 +476,9 @@ exit reason).
 
 > *"Workers don't grep blind anymore, Morty — they get a map."*
 
-**Beta release.** Code Graph is opt-in and ships disabled by default. It indexes the repo into a symbol graph (backed by `@colbymchenry/codegraph`, a per-platform native bundle that may be absent — the service fails open and never crashes a session when it can't load). There are two independent lanes, both off by default: the injected-context lane (`buildCodegraphContextSection`) keys on `codegraph.enabled` and is live only for opted-in sessions — dormant by default; the interactive MCP lane (`codegraph serve --mcp`, which lets Claude-family workers query callers/impact-radius/symbols instead of grepping) is gated OFF unless `expose_mcp_to_workers === true`. The upstream project claims **~58% fewer tool calls** per task — treat this as an **UNVALIDATED upstream claim**; we have not independently measured it.
+**Beta release.** Code Graph is enabled by default as of WS-B3 (opt-out via `PICKLE_CODEGRAPH=off` or by setting `codegraph.enabled: false`). It indexes the repo into a symbol graph (backed by `@colbymchenry/codegraph`, a per-platform native bundle that may be absent — the service fails open and never crashes a session when it can't load). There are two independent lanes: the injected-context lane (`buildCodegraphContextSection`) keys on `codegraph.enabled` and is live by default now that the setting ships `true`; the interactive MCP lane (`codegraph serve --mcp`, which lets Claude-family workers query callers/impact-radius/symbols instead of grepping) stays dormant by default — gated OFF unless `expose_mcp_to_workers === true`. The upstream project claims **~58% fewer tool calls** per task — treat this as an **UNVALIDATED upstream claim**; we have not independently measured it.
 
-**Settings** — add a `codegraph:` block to `extension/pickle_settings.json` (resolved by `resolveCodegraphSettings`; an absent/partial/malformed block falls back per field):
+**Settings** — add a `codegraph:` block to `extension/pickle_settings.json` (resolved by `resolveCodegraphSettings`; an absent/partial/malformed block falls back per field). The shipped `pickle_settings.json` sets `enabled`/`index_at_setup` to `true` (WS-B3); the table's defaults below are the code's fail-safe fallback used only when the block itself is absent or malformed:
 
 | Field | Default | Notes |
 |---|---|---|
@@ -529,16 +529,13 @@ semantics above are unchanged; this only adds an operator procedure on top of th
    the exact tag/SHA in the soak artifact** (no "or cherry-picked" ambiguity). Confirm the
    deployed gate is green (`extension/`: `npm run test:fast`). Deploy-soak variants need
    `PICKLE_INSTALL_ROOT` set off-`$HOME`.
-2. **Flip settings — precondition: no active pipeline session.** Edit the **deployed**
-   `~/.claude/pickle-rick/pickle_settings.json` (`codegraph.enabled: true`,
-   `index_at_setup: true`) via a tmp-write + `mv` (e.g. `jq … > tmp && mv tmp …`), and **do NOT
-   run `bash install.sh` again until the soak completes.** `install.sh:529` MANAGED_KEYS
-   force-resets both keys to `false` on every deploy, so a *source* flip never enables codegraph
-   (MANAGED_KEYS overrides it post-merge regardless), and any *mid-soak redeploy* silently
-   disables the feature — **discard and restart any rep that straddled a redeploy.** Do NOT
-   commit `enabled: true` to source `pickle_settings.json` (breaks the opt-in default +
-   `codegraph-docs-optin-parity` pin). Deployed *code* remains hands-off — this exception is the
-   settings file only.
+2. **Settings — no action needed.** As of WS-B3, `codegraph.enabled`/`index_at_setup` ship
+   `true` by default (source `pickle_settings.json` and the `install.sh:529` MANAGED_KEYS force
+   agree), so every deploy already runs with codegraph on — confirm with
+   `jq '.codegraph' ~/.claude/pickle-rick/pickle_settings.json` before a rep if you want to
+   double-check. To run a **disabled** comparison rep, set `PICKLE_CODEGRAPH=off` in the
+   launching shell for that rep only (per-session kill-switch, see Abort semantics below) — do
+   NOT hand-edit the deployed settings file to force it off.
 3. **Run ≥5 real bundle reps** through `/pickle-pipeline` (normal drain-queue payloads).
    **Rep validity:** a rep counts toward the ≥5 only if ≥1 graph-tier ticket spawned with
    codegraph enabled. **Run ≥2 contemporaneous DISABLED reps on the SAME deploy** as the primary

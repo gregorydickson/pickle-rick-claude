@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "codegraph": {
-    "enabled": false,
-    "index_at_setup": false,
+    "enabled": true,
+    "index_at_setup": true,
     "index_timeout_ms": 120000,
     "sync_timeout_ms": 30000,
     "query_timeout_ms": 5000,

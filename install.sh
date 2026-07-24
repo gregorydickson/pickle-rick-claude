@@ -526,18 +526,18 @@ _managed_before_cg_setup="$(jq -r 'if .codegraph.index_at_setup == null then "nu
 _managed_before_auto_update="$(jq -r 'if .auto_update_enabled == null then "null" else (.auto_update_enabled | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
 
 TMPFILE="$(mktemp)"
-jq 'del(.worker_test_gate_timeout_ms) | .codegraph.enabled = false | .codegraph.index_at_setup = false | .auto_update_enabled = false' \
+jq 'del(.worker_test_gate_timeout_ms) | .codegraph.enabled = true | .codegraph.index_at_setup = true | .auto_update_enabled = false' \
   "$EXTENSION_ROOT/pickle_settings.json" > "$TMPFILE" \
   && mv "$TMPFILE" "$EXTENSION_ROOT/pickle_settings.json"
 
 if [ "$_managed_before_timeout" != "null" ]; then
   echo "[install.sh] MANAGED_KEYS forced worker_test_gate_timeout_ms: ${_managed_before_timeout} -> deleted" >&2
 fi
-if [ "$_managed_before_cg_enabled" != "false" ]; then
-  echo "[install.sh] MANAGED_KEYS forced codegraph.enabled: ${_managed_before_cg_enabled} -> false" >&2
+if [ "$_managed_before_cg_enabled" != "true" ]; then
+  echo "[install.sh] MANAGED_KEYS forced codegraph.enabled: ${_managed_before_cg_enabled} -> true" >&2
 fi
-if [ "$_managed_before_cg_setup" != "false" ]; then
-  echo "[install.sh] MANAGED_KEYS forced codegraph.index_at_setup: ${_managed_before_cg_setup} -> false" >&2
+if [ "$_managed_before_cg_setup" != "true" ]; then
+  echo "[install.sh] MANAGED_KEYS forced codegraph.index_at_setup: ${_managed_before_cg_setup} -> true" >&2
 fi
 if [ "$_managed_before_auto_update" != "false" ]; then
   echo "[install.sh] MANAGED_KEYS forced auto_update_enabled: ${_managed_before_auto_update} -> false" >&2
