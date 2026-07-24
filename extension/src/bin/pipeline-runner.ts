@@ -4069,22 +4069,25 @@ async function dispatchHaltAction(
  *     incompleteness (the pre-existing B-PXBO contract, preserved exactly);
  *   - nothing runnable remains               -> graduate (AC-GTRUTH-A2-1).
  *
- * The roster MUST be consulted HERE and not left to `maybeStampPhaseGraduation`,
- * but NOT for the reason a previous revision of this comment gave: that gate does
- * not "stamp on the way past" — it calls this same `reportPhaseIncomplete`, which
- * declines identically. The real reason is the EXIT CODE. Falling through on a
- * still-runnable roster reaches `shouldHaltAfterPhase`/`dispatchHaltAction`, which
- * terminates the pipeline as a FAILURE (exit 1) instead of the PhaseIncomplete
- * route (exit 3) that the B-PXBO / R-ICP-2 contract requires — auto-resume.sh
- * keys its retry on exit 3 + a non-`pipeline_phase_incomplete` reason, so an
- * exit-1 here silently converts a resumable cap race into a dead session.
+ * The roster MUST be consulted HERE rather than left to `maybeStampPhaseGraduation`.
+ * The observed consequence of falling through, measured by deleting this function
+ * and running the whole fast tier, is the EXIT CODE: a still-runnable roster reaches
+ * `shouldHaltAfterPhase`/`dispatchHaltAction` and the pipeline terminates as a
+ * FAILURE (exit 1) instead of taking the PhaseIncomplete route (exit 3) that the
+ * B-PXBO / R-ICP-2 contract requires. auto-resume.sh keys its retry on exit 3, so
+ * an exit-1 here silently converts a resumable cap race into a dead session.
  *
- * Deleting this function therefore looks safe and is not: it keeps the three
- * `*-done-without-commit-evidence-*` suites green and only reddens
- * `pipeline-runner-halt-on-incomplete.test.js`
- * ('WS-1 oracle-committed non-Done ticket is excluded from unfinished set',
- * which asserts exit 3). That test is this function's pin — verified by removing
- * it and observing exactly that one failure across the whole fast tier.
+ * (On the stamp: in THIS branch the oracle exclusion has already made
+ * `reportPhaseIncomplete` return false, and the graduation gate calls that same
+ * function, so it declines there too — the stamp is not what differs between the
+ * two shapes on the pinned fixture. The exit code is. Both readings agree on the
+ * conclusion: this function is load-bearing.)
+ *
+ * Deleting it therefore LOOKS safe and is not: all three
+ * `*-done-without-commit-evidence-*` suites stay green (24/24) and only
+ * `pipeline-runner-halt-on-incomplete.test.js` reddens — 'WS-1 oracle-committed
+ * non-Done ticket is excluded from unfinished set', which asserts exit 3. That
+ * single test is this function's pin; run it before believing a removal is safe.
  */
 function resolvePhaseIncompleteOutcome(
   runtime: PipelineRuntime,
