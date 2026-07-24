@@ -2,317 +2,175 @@
 title: "B-GTRUTH — ground truth over proxy signals + codegraph enablement (v2.1)"
 priority: P1
 finding: B-GTRUTH
-composes: [B-CGEN, R-AICF, R-WGFR]
+composes: []   # was [B-CGEN, R-AICF, R-WGFR] — all shipped/inline; see AUTHOR'S RETRACTION §0
 status: ready
 type: bug-fix-bundle
 schema_neutral: true
 target_version: v2.1.0
 branch: release/v2.1-beta
-source_assessment: "Operator direction 2026-07-23 ('we seem to still not be reliable — focus on how to actually become less brittle') plus the empirical failure record measured the same day across ~/.local/share/pickle-rick/sessions. Combined with B-CGEN (operator-set: codegraph is the v2.1 headline feature) into ONE PRD because the codegraph efficacy soak is only trustworthy on the repaired runtime — see ## Why one PRD."
+self_modifying_recovery: true   # WS-A1 edits ticket-completion-evidence.ts (R-PSRB completion path) — pipelined + attended per B-RASO precedent, NOT hand-built
+source_assessment: "Operator direction 2026-07-23 plus the empirical failure record measured the same day. Combined with B-CGEN (operator-set headline feature) into ONE PRD; Track C soak DEFERRED to a post-deploy follow-on per operator decision 2026-07-24 (see §Scope after refinement)."
 ---
 
 # B-GTRUTH — a proxy signal may never outrank recoverable ground truth
 
-## The measured failure record (2026-07-23, not anecdote)
+*(refined 2026-07-24 from the 3-analyst refinement team; original preserved at `prd.md`. Every WS below carries corrected edit sites — the hand-authored PRD's premises were re-derived against the shipped runtime and several were wrong. See §0.)*
 
-Scanned every session under `~/.local/share/pickle-rick/sessions`:
+## §0 — AUTHOR'S RETRACTION (what refinement corrected)
+
+All three analysts converged, across three cycles, on the following corrections. Each is grounded in the shipped code, not the ledger. The build set below is derived from the **corrected** premises.
+
+| # | Hand-authored premise | Verdict | Correction (the build follows THIS) |
+|---|---|---|---|
+| R1 | WS-A1: "`ticket-completion-evidence.ts` is CONSUMED, not edited — keeps this bundle off the R-PSRB path." | **FALSE (type-level).** `CompletionDecision`'s success arm carries non-nullable `sha: string` (`ticket-completion-evidence.ts:715`); `guardCompletionCommitBeforeDone` (`mux-runner.ts:4754`) holds **zero policy** ("the ladder lives in `evaluateCompletionEvidence`"). A zero-diff ticket has no sha, so it is unrepresentable without editing the oracle. | **Strike the Non-Goal.** WS-A1 **widens** `evaluateCompletionEvidence` with a zero-diff arm (operator decision 2026-07-24: "widen the oracle, attended"). Bundle is `self_modifying_recovery: true` — pipelined + attended per [[feedback_never_hand_build_always_pipeline]] / B-RASO, interventions budgeted. NOT reclassified as hand-build. |
+| R2 | WS-A2: "the defect is one line, `pipeline-runner.ts:2801`; narrow `isHaltExit`." | **Wrong sites.** `isHaltExit` (`mux-runner.ts:4398`) has exactly ONE consumer — the rate-limit park loop (`:10683`) — irrelevant to the phase halt. The decisive set is `FAILURE_EXIT_REASONS` (`:4404`). And `recordRecoverablePhaseFailure(...,'continue')` **graduates the phase** (`:4106-4113` falls through to `finalizePhaseSuccess`) → advances over unbuilt tickets = fake-green. | WS-A2 routes to the existing **`PhaseIncomplete` contract** (`reportPhaseIncomplete` + `{action:'break', phaseIncomplete:true}`, per `maybeStampPickleIncompleteRobust:4198`). Demote in lockstep across all three sets so the session doesn't render RED. |
+| R3 | WS-A3: "`worker_gate_verdict: red` fired on pnpm absent from PATH." | **Two gates conflated.** The 10/10-red metric is `worker_gate_verdict` (worker gate: `npx eslint`/`npx tsc`/`npm run test:fast` — **no pnpm**). pnpm lives only in `convergence-gate.ts`. The pnpm probe would move **zero** of those 10 verdicts. | Split **A3a** (subtractive: finish R-WGFR — drop the flaky `test:fast` dimension from the *primary* `runWorkerGate`, matching the fallback at `mux-runner.ts:4656`; prefer wiring the existing `classifyUnrunnableCheck`/`isUnrunnableCheckResult` over a new PATH probe) + **A3b** (report-only measurement, acceptance = "the number is recorded"). |
+| R4 | WS-B3: "drop the `.codegraph.*` clauses from MANAGED_KEYS." | **Inert on every upgrade.** `install.sh:509` merges source×deployed with **deployed winning per-key** (`:511-513`). Every existing install carries deployed `enabled:false`; dropping the clauses lets the stale `false` win → codegraph ships OFF on every upgrade, silently. | **Flip the managed value:** `jq 'del(.worker_test_gate_timeout_ms) \| .codegraph.enabled = true \| .codegraph.index_at_setup = true \| .auto_update_enabled = false'`, and update the two `!= "false"` warning blocks (`:536-541`) to report `-> true`. Preserves the source-authoritative property + keeps `install-script.test.js:767` checkable (`false -> true`). |
+| R5 | WS-B3: "invert two guard tests." | **Undercounts.** ≥3 files, ~19 assertions, incl. `install-script.test.js` (never named), a must-NOT-invert MCP-lane subset, and one negative assertion where "invert" is undefined. Also a scope-fence deadlock if split. | **ONE `medium` ticket**, 7-file allowlist, per-assertion flip/survive table (WS-B3 below). |
+| R6 | WS-B2: "call `sync()` at post-ticket-commit and phase transitions." | **Already ships** at `mux-runner.ts:10105`; `pipeline-runner.ts` holds **zero** `CodegraphService` refs (grep=0). Each phase spawns a fresh mux-runner child that runs its own setup index + per-iteration sync. | **DROP** (B-CGHARD precedent: already-satisfied WS are dropped, not built). |
+| R7 | `composes: [B-CGEN, R-AICF, R-WGFR]` | **Stale.** R-WGFR shipped both lines (`ebb33a6c`/`cad28cb2`); R-AICF folded into B-1SEAM (shipped, premise corrected — flag deleted beta.23); B-CGEN is the inline Track B decision, not a PRD. Composing shipped work → zero-diff tickets that trip the very WS-A1 wedge. | `composes: []`. No ticket for R-AICF/R-WGFR. |
+| R8 | Field-occurrence flags: `allow_inferred_completion_commit` + `pipeline_continue_on_phase_fail` "does not cover the build phase". | **Both wrong.** The first was deleted beta.23 (absent from `src/`). The second is a strict-only lever (`pipeline-runner.ts:2838`, reached only *after* `isFatalPhaseFailure` returns) — no phase-coverage dimension. Conclusions survive, mechanisms don't. | Both reframed as operator-habit notes. **No AC may cite either flag** (build-time reminder). |
+| R9 | WS-B1: "delete the `!isResume` shortcut, let freshness govern." | **Replaces one proxy with another** — mtime is a proxy; the ground truth for "does this index describe this tree" is indexed-HEAD == current-HEAD. mtime can't detect a branch switch. | WS-B1 adds a **HEAD-sha equality check** as the freshness ground truth (mtime as cheap pre-filter) — coherent with this PRD's own thesis. |
+| R10 | WS-C1 precondition 3: "confirm degradation." | `codegraph-degradation.test.js` **already exists** (17.8K, `enabled:true` fixture). | Reworded to verification; Track C **deferred** to post-deploy follow-on anyway (operator 2026-07-24). |
+
+**Non-goal correction that SURVIVES:** the anti-fake-green guard AC-MWMO-D2-8 must survive — an *undeclared* zero-commit ordinary ticket still `refuseAbsent`s (WS-A1 AC-A1-2). Do not weaken the commit requirement for ordinary tickets.
+
+---
+
+## The measured failure record (2026-07-23, unchanged — the symptoms are real; only the mechanism attributions in §0/R8 were wrong)
 
 | Measurement | Value |
 |---|---|
 | Tickets carrying a `worker_gate_verdict` | 22 (12 green / **10 red**) |
-| **Red-gate tickets that ended `Done` anyway** | **10 / 10 — 100%** |
-| Phase halts recorded | 2, **both** `done_without_commit_evidence` |
-| Those halts that were correct | **0 / 2** |
-| Operator interventions required in one 6-ticket bundle | **2** |
+| Red-gate tickets that ended `Done` anyway | **10 / 10 — 100%** |
+| Phase halts recorded | 2, both `done_without_commit_evidence`, both wrong |
+| Field occurrence (loanlight-api codex, `2026-07-23-e89c5c77`) | 3rd `done_without_commit_evidence`, first on a real target repo — operator-attested; the *code* claim (ticket-scoped reason → phase-fatal classifier) is independently verified |
 
-**A verdict overridden 100% of the time is not a gate.** It is noise that charges a recovery tax:
-each red runs suppression, draws down the persistent `failed_flip_suppression_cap` ledger, risks a
-`reset --hard` + `git clean -fd`, and — twice in one bundle — required a human.
+**A verdict overridden 100% of the time is not a gate.** B-WDSUB closed two instances (`tokenPresent`/`ANALYSIS_DONE`). This bundle closes the class, then ships codegraph on top of it. **Coverage-and-residual:** WS-A1 closes the zero-diff flavor; WS-A2 closes committed-but-unflipped + genuinely-in-flight; any 4th flavor STILL halts loudly by design (negative AC in the coupled ticket).
 
-## Field occurrence — 2026-07-23, a real target-repo codex pipeline (post-authoring, corroborating WS-A2)
+## Scope after refinement (operator 2026-07-24: auto-correct + launch, Track C deferred)
 
-A **third** `done_without_commit_evidence` phase-halt, and the first observed OUTSIDE a self-build
-session — a `/pickle-pipeline --backend codex` run against **loanlight-api** (session
-`2026-07-23-e89c5c77`, the LOA-1972/1973 appraisal-flag epic, 14 tickets).
+**Build + ship in THIS bundle:** Track A (WS-A1+A2 coupled, WS-A3a, WS-A3b) + Track B enablement (WS-B3, WS-B1). **Track A tickets ordered before Track B.**
+**Deferred to a post-deploy follow-on PRD:** Track C soak (WS-C1) — it must run on the deployed repaired runtime; carry its precondition AC-GTRUTH-C1-0 forward. WS-B2 (already-satisfied), WS-B4 (numberless, baseline shifted).
 
-- **Symptom (verified):** pickle exited code 1 with `exit_reason: done_without_commit_evidence` after
-  6 clean ticket commits (R1–R7). `pipeline-runner` then halted **all 4 phases** (`Phase pickle failed
-  (exit 1) — stopping pipeline`, `0/4 phases`) — the WS-A2 phase-fatal misclassification, now confirmed
-  on a real target repo. `pipeline_continue_on_phase_fail: true` did not help (it does not cover the
-  build phase).
-- **The in-flight ticket was genuinely mid-work, not zero-diff.** R9 was `In Progress` with a clean
-  tree at exit; on recovery it committed real changes (`b224c6c25`). So this instance is the
-  *committed-but-unflipped / manager-declared-done-early* flavor — WS-A1's zero-diff widening would NOT
-  have covered it; only WS-A2's reroute-to-recovery does.
-- **`allow_inferred_completion_commit: true` was set at launch and did NOT prevent the halt** — evidence
-  that the launch-time inferred-commit allowance is not a substitute for the WS-A2 reclassification.
-- **Recovery (same 4 steps as the recorded cases):** verify ground truth (`git log`) → reset
-  `step`/`current_ticket` to the in-flight ticket via `update-state.js` → clear `exit_reason` → relaunch
-  `launch.sh`. Resumed cleanly; R9→R6 advanced next iteration. Handled by the operator babysitter loop.
+---
 
-**Bearing on the bundle:** strengthens WS-A2's P1 case (not self-build-specific — it bites real
-target-repo pipelines and stalls the entire review chain) and confirms WS-A1 alone is insufficient for
-this flavor (a genuinely-incomplete in-flight ticket, not a zero-diff one).
+# TRACK A — reliability (subtractive; self-modifying-recovery; ordered first)
 
-## The single pattern
+## WS-A1 — make "complete, no diff" a representable outcome (widen the oracle)
 
-Five distinct incidents this session; **one shape**. A proxy signal was treated as authoritative over
-ground truth that was one command away.
+**Write-site (mandatory, operator-chosen):** edit `services/ticket-completion-evidence.ts`, widening the ONE predicate (B-1SEAM WS-1) `evaluateCompletionEvidence` with a zero-diff arm + a ctx resolver alongside the existing `workerGateVerdict?` / `announcedSha?` fields (`:698-704`), for `decision === 'done-flip'` (the only decision kind that consults the R-CWGE verdict, `:820-836`). `guardCompletionCommitBeforeDone` stays policy-free (ctx wiring + shape mapping only). Name the existing `clearStaleDoneWithoutCommitEvidence` clear-path (`mux-runner.ts:2896/4493/7356/10493/11085`) so no redundant clear is added.
 
-| Proxy | Claims to measure | Actually fired on | Ground truth (cheap, and correct) |
+| AC | Assertion |
+|---|---|
+| AC-GTRUTH-A1-1 | A ticket declaring `zero_diff_intent ∈ {verification, audit, already-satisfied}`, with lifecycle artifacts present and `worker_gate_verdict === green` (eslint+tsc per R-WGFR — **never** test:fast), yields `evaluateCompletionEvidence(...).ok === true` with **no sha** (new arm), for `decision === 'done-flip'`. |
+| AC-GTRUTH-A1-2 | A ticket **without** the declaration and with no sha still `refuseAbsent`s — **AC-MWMO-D2-8 survives**. |
+| AC-GTRUTH-A1-3 | **No sentinel sha.** `grep -n "sha: '"` over the branch diff yields only the pre-existing `pickle-test-mode-bypass` (`mux-runner.ts:4772`). Fabricating a sentinel is the marker-commit forgery moved into a string — forbidden. |
+| AC-GTRUTH-A1-4 | No empty-marker commit on any zero-diff path (grep the branch diff for empty-tree commits). |
+| AC-GTRUTH-A1-5 | Policy remains single-seam: `guardCompletionCommitBeforeDone`'s diff adds **no** decision logic. |
+
+## WS-A2 — route `done_without_commit_evidence` to the existing PhaseIncomplete contract
+
+Route into the `PhaseIncomplete` contract (`reportPhaseIncomplete(runtime, rawPhase)` + `{action:'break', phaseIncomplete:true}`, per `maybeStampPickleIncompleteRobust:4198`), NOT `recordRecoverablePhaseFailure(...,'continue')`. Its `resolveUnfinishedTickets` oracle exclusion (`:3483` via `isTicketOracleCommitted`) — now consulting WS-A1's widened oracle — distinguishes committed-but-unflipped from genuinely-unfinished with no new predicate. Demote in lockstep across `isHaltExit`(`4398`)/`FAILURE_EXIT_REASONS`(`4404`)/`isFatalPhaseFailure`(`2801`) so the session does not render RED.
+
+| AC | Assertion |
+|---|---|
+| AC-GTRUTH-A2-1 | done-on-disk-unflipped (self-build shape): N-1 terminal + Nth committed-but-unflipped → `statusUnfinished>0 && unfinished.length===0` → NO `pipeline_phase_incomplete` stamp, pickle graduates, pipeline advances. |
+| AC-GTRUTH-A2-2 | genuinely-incomplete-in-flight (loanlight shape: 14 tickets / 7 committed / R9 In Progress, clean tree — others NOT all terminal) → pipeline does NOT advance to anatomy-park; `exit_reason=pipeline_phase_incomplete`; unfinished roster logged; **every non-terminal ticket's frontmatter status UNCHANGED** (stays runnable — no flip to Failed/Skipped). |
+| AC-GTRUTH-A2-3 | `isHaltExit` returns true for EXACTLY `{cancelled, limit, timeout_repeat, closer_handoff_terminal, manager_handoff_pending}` and false for `done_without_commit_evidence`. `state_schema_version_ahead` is NOT a member (do not add). |
+| AC-GTRUTH-A2-4 | Lockstep demotion: `isHaltExit`, `isFailureExit` (`FAILURE_EXIT_REASONS`), `isFatalPhaseFailure` agree; `deriveCompletionVerdict('done_without_commit_evidence').colorName !== 'RED'` on the recovered path. |
+| AC-GTRUTH-A2-5 | `isFatalPhaseFailure`'s `!startCommit` guard (`:2803`) still returns true — untouched. `getFatalPickleHaltReason` (`:3868`) + `getRecoverablePhaseFailureReason` (`:2844`) untouched (telemetry-only). |
+| AC-GTRUTH-A2-6 | `pipeline_continue_on_phase_fail` is NOT modified (tightening-only switch, `:2838`). |
+| AC-GTRUTH-A2-7 | Synthetic 4th-flavor case (neither zero-diff-declared nor committed-but-unflipped) still returns **fatal** — "closes the class" is bounded, not universal. |
+
+### WS-A1+A2 are ONE coupled `large` ticket. Track-A red-test table (INVERT, do not delete):
+
+| Test file | Currently asserts | Post-fix expected | Action |
 |---|---|---|---|
-| `tokenPresent` | worker did the work | model forgot to narrate | artifacts + git edits — **B-WDSUB fixed** |
-| `ANALYSIS_DONE` | analyst produced analysis | same | fresh artifact on disk — **B-WDSUB fixed** |
-| `done_without_commit_evidence` | ticket is complete | committed-but-unflipped; **verification ticket with nothing to commit** | `git log`, artifacts — **OPEN, WS-A1/A2** |
-| `worker_gate_verdict: red` | the change is sound | `pnpm` absent from PATH | isolated test run — **OPEN, WS-A3** |
-| anatomy `exit 1` → *"completed successfully"* | phase outcome | non-convergence | the disposition itself — **B-NONSTOP fixed** |
+| `pipeline-runner-done-without-commit-evidence-fatal.test.js` | `:214` fatal regardless of countCommitsSince; `:195` pipeline-status==failed | non-fatal on declared/all-terminal path; UNDECLARED zero-commit still fatal | **INVERT** |
+| `mux-runner-done-without-commit-evidence-exit.test.js` | ticket-scoped exit mapping | demoted mapping | **INVERT** |
+| `pipeline-runner-done-without-commit-evidence-reason-report.test.js` | halt-reason report string | recovery-path report | **RECONCILE** |
+| `completion-decision-3way-parity.test.js` | 3-way oracle parity | parity preserved under demotion | **MUST STAY GREEN** |
+| `characterization/completion-commit-cluster/path-5-*.test.js` | direct guard calls | unchanged | **MUST STAY GREEN — release-gate invariant; needs an R-AFCC-DEEP-CONSOLIDATED exception record to touch** |
+| `pipeline-runner-phase-fail-continue.test.js` (cases 1,3,7) | R-PHC-6 continue-by-default | still green (same-direction) | **CO-SCOPE, verify** |
 
-B-WDSUB closed two instances. **This bundle closes the class**, then ships codegraph on top of it.
+## WS-A3a — finish the R-WGFR subtraction (subtractive)
 
-> **Full site inventory:** [`RELIABILITY-INVENTORY-2026-07-23-proxy-over-ground-truth.md`](RELIABILITY-INVENTORY-2026-07-23-proxy-over-ground-truth.md)
-> — six parallel auditors, one invariant (*git working-tree state is the sole authority on completion; every
-> other signal is advisory*). Headline: the system is **already ~85% git-authoritative**; the destruction
-> surface is **~7 concrete sites, not 94**, and the 94 recovery recipes are the *symptom* of those leaks —
-> each historically patched with a new proxy instead of closing the leak. Track A here ships the inventory's
-> **Tier 1** (A+B → WS-A1/WS-A2, today's incident, pure subtraction) and **Tier 2** (C → the R-WDTF class,
-> already closed by B-WDSUB); the inventory's **Tier 4** structural enabler (a real `ExitReason` enum so a
-> single git-consultation guard can live at the `StateManager` choke-point) and **Tier 3** design-conflict
-> sites are scoped OUT of this bundle and left as the inventory's recommended follow-on sequencing.
+Drop the flaky `test:fast` dimension from the **primary** `runWorkerGate` that writes the persisted `worker_gate_verdict`, matching the fallback recompute (`mux-runner.ts:4656`) that R-WGFR already subtracted. Prefer wiring the existing `classifyUnrunnableCheck`/`isUnrunnableCheckResult` (`convergence-gate.ts:727-746`, exported with zero external consumers) over adding a session-start PATH probe. Do NOT touch `runWorkerGate:1673` (off-repo fake-green — out of scope).
 
-## Why one PRD (the ordering constraint that justifies batching)
+## WS-A3b — report-only measurement (acceptance = the number is recorded)
 
-Codegraph's enablement is only as trustworthy as the soak that measures it — and a soak verdict read
-through the proxies above measures nothing. Track A must be **built, gated, and DEPLOYED** before the
-Track C soak runs. A running pipeline executes the **deployed** JS, so Track A's fixes do not help this
-bundle's own run — they help the soak that follows the deploy. One PRD makes that sequencing a hard
-constraint instead of a hope. One release gate covers all of it.
+Compute the worker-gate true-positive rate from a **checked-in fixture** (not the mutable sessions dir), with a pre-declared repair-vs-retire threshold, reported regardless of sign. Un-gateable on outcome by construction — acceptance is that the number is recorded and the threshold stated. (Candidate zero-diff ticket per WS-A1.)
 
 ---
 
-# TRACK A — reliability (subtractive; must deploy before Track C)
+# TRACK B — codegraph enablement (additive by operator decision; ordered after Track A)
 
-## WS-A1 — make "complete, no diff" a representable outcome
+## WS-B3 — the enablement (ONE `medium` ticket)
 
-**The defect.** Every completion predicate in the runtime assumes a commit exists.
-`evaluateCompletionEvidence` (`services/ticket-completion-evidence.ts:838`) is sha-centric —
-`refuseAbsent` when there is no sha. So a ticket that **correctly** produces no diff is
-structurally unrepresentable as complete.
+Allowlist (+ compiled mirrors): `install.sh`, `pickle_settings.json`, `CLAUDE.md`, `README.md`, `extension/tests/codegraph-default-optin.test.js`, `extension/tests/codegraph-docs-optin-parity.test.js`, `extension/tests/install-script.test.js`.
 
-**Observed twice, and the workaround is a forgery.** Ticket `8784c6cb` (compiled-mirror parity) did its
-job perfectly — verified 0 drift files, `tokenPresent` gone from both trees, `readiness_halt` gone from
-both — and therefore had **nothing to commit**, so the phase halted. The documented precedent is worse:
-B-FOMC's zero-diff manager tickets (**R-AICF**) were recovered by fabricating **empty marker commits**
-naming the ticket. *The proxy is so load-bearing that operators forge the evidence it demands.*
+| AC | Assertion |
+|---|---|
+| AC-GTRUTH-B3-1 | Deploy over a pre-existing deployed settings containing `codegraph.enabled=false` → post-install **DEPLOYED** `codegraph.enabled===true && index_at_setup===true` (**upgrade path**, not just fresh install). |
+| AC-GTRUTH-B3-2 | Sibling tunables survive: deployed `staleness_max_age_minutes===15`, all `*_timeout_ms` unchanged (AC-SSAT-3/6), `expose_mcp_to_workers===false`. |
+| AC-GTRUTH-B3-3 | install.sh stderr prints `MANAGED_KEYS forced codegraph.enabled: false -> true` (both `!= "false"` warning blocks + install-script.test.js:767 updated, not deleted). |
+| AC-GTRUTH-B3-4 | Enumerated flip/survive: `codegraph-default-optin` (2 flip / 1 survive incl. all 6 sibling tunables + expose_mcp_to_workers false); `codegraph-docs-optin-parity` (3 flip / 2 MCP-lane survive: `/injected-context lane/`, `/dormant by default/`, `/gated OFF unless .expose_mcp_to_workers === true./`). Do NOT assert `Default-ON since B-CGH` (enabled on the 2.1 line, not since B-CGH). No test file deleted. |
+| AC-GTRUTH-B3-5 | CLAUDE.md codegraph row + README lane text match NEW exact strings; docs-parity regexes updated in the same commit. Retire Tune-Back CUJ #2. Keep `PICKLE_CODEGRAPH=off`. |
+| AC-GTRUTH-C1-0 | *(carried to the Track C follow-on)* Soak precondition: deployed `codegraph.enabled===true` AND `codegraph_context_injected > 0` before any efficacy number is recorded; a zero-injection run is `feature_not_enabled`, never an efficacy result. |
 
-**The fix.** A ticket may declare a zero-diff intent (verification / audit / already-satisfied). Such a
-ticket is complete when its lifecycle artifacts exist and its gate did not fail — no commit required, no
-marker commit fabricated. Verification, audit, parity, and "already fixed upstream" tickets stop being
-second-class.
+*Note in the ticket:* `install-*` tests fail in the MAIN REPO and pass in a worktree at **every** commit ([[project_install_tests_fail_in_main_repo_pass_in_worktree]]) — do not misread a pre-existing failure as a regression; tier `medium` (not small: skips test:fast; not large: red-main resetToSha wipes doc edits).
 
-**Subtraction paid:** deletes the empty-marker-commit ritual and the class of wedge it works around.
+## WS-B1 — freshness by ground truth, not mtime
 
-**Do NOT** weaken the commit requirement for ordinary implementation tickets — that is the anti-fake-green
-intent of AC-MWMO-D2-8 and it must survive (B-GSUB guardrail).
-
-## WS-A2 — reroute `done_without_commit_evidence` to the recovery path that already exists
-
-**This is a one-line classification fix, NOT new machinery.** Verified 2026-07-23: the runtime already
-has three working recovery layers, and the wedge bypassed all of them.
-
-| Layer | Mechanism | Status this session |
-|---|---|---|
-| Ticket | `failed_flip_suppressed` / salvage / reconcile | **fired 5/5, every one `outcome: success`** — caught each pnpm false-red, saw fresh artifacts, preserved the work |
-| Child-stall | `child_mux_runner_wedge_detected`, `child_mux_runner_heartbeat_ms` (60 s) | armed — but detects a **hung** child, and ours did not hang |
-| Phase | `isFatalPhaseFailure` → `false` → `recordRecoverablePhaseFailure(..., 'continue')` (`pipeline-runner.ts:4109`) | **works** — this is the path anatomy-park took in the B-NONSTOP run |
-
-**The defect is one line.** `pipeline-runner.ts:2801` hardcodes
-`if (runnerState.exit_reason === 'done_without_commit_evidence') return true;` — classifying a
-**ticket-scoped** condition as **phase-fatal**, which bypasses the recoverable path 1300 lines below it.
-
-**The fix:** route `done_without_commit_evidence` to `recordRecoverablePhaseFailure(..., 'continue')`
-when the bundle's other tickets are terminal and their work is present — park the ambiguous ticket,
-report it, continue. Narrow `isHaltExit` (`bin/mux-runner.ts:4370`) accordingly.
-
-**Measured blast radius of getting this wrong:** both halts occurred with **5 of 6 tickets `Done`** and
-the sixth's work verifiably complete on disk. Launch 3 then completed the entire pickle phase in
-**1.06 seconds** — proving there was no work left. The pipeline had been halting over bookkeeping while
-holding finished work.
-
-**Subtraction paid:** removes a reason from the phase-fatal surface; adds nothing. The recovery it routes
-to already exists and is already exercised.
-
-**Do NOT** demote genuinely phase-level reasons (`cancelled`, `limit`, schema-ahead) — only ticket-scoped ones.
-
-## WS-A3 — the gate must measure the code, not the ambient environment
-
-**The defect.** `tests/services/convergence-gate.test.js` plants a `pnpm-lock.yaml` and shells out to
-`pnpm test`. When `pnpm` is absent from a worker-gate subprocess's PATH the gate returns `red`, and the
-assertion reads `'red' !== 'green'` — indistinguishable from a real regression. Diagnosed live this
-session; `convergence-gate.ts` and its test were **untouched** by all 40 commits.
-
-**REUSE, not new machinery.** A toolchain precondition already exists: `toolchain_unavailable`
-(`bin/mux-runner.ts:9316`) fails loudly when a target repo has `package.json` but no `node_modules`.
-It simply does not cover the **binaries the gate itself invokes**. Extend that existing check to assert
-them once, at session start, and fail loudly — instead of N false reds, one per ticket.
-
-**Then decide the verdict question with data.** 10/10 red-gate tickets ended `Done`. Either the gate is
-wrong, or it is right and we systematically ship over red — **both are unacceptable, and the second is
-worse.** This workstream MUST NOT pre-decide: measure the gate's true-positive rate across the session
-record, then either repair the input or stop computing a verdict nobody honours. Report the number even
-if it argues for keeping the gate exactly as it is.
-
-**Subtraction paid:** removes the environment as an input to a code-quality verdict.
-
-## WS-A4 — external liveness (DEFERRED — measure before building)
-
-**The one genuine gap: nothing watches a pipeline that has cleanly EXITED.** All three recovery layers
-above are *in-process*; a dead process cannot monitor itself. That gap is what cost **9 h 35 m of dead
-time (63% of elapsed wall-clock)** in the B-WDSUB run — two halts sat unnoticed for 2 h 24 m and 7 h 12 m.
-
-**Do NOT build a supervisor in this bundle.** WS-A1 + WS-A2 remove both *known* wedge causes; a watchdog
-built now is insurance against a problem being deleted in the same PRD, and a guard wrapped around guards
-is the documented anti-pattern ([[feedback_analyze_failures_then_subtract_not_add_guards]]).
-
-**Sequence instead:** ship A1–A3, then run one **unattended** bundle and measure whether it still stalls.
-Only if it does:
-- The watchdog **must be external** to the runtime — an in-process watcher dies with the process it watches.
-- It needs no new state: `pipeline-status.json` already carries `status` + `updated_at`. "status is not
-  `running`/`completed` **and** `updated_at` is stale" is a ~10-line check, not a subsystem.
-- The natural home is the **babysitter**, which already exists and already drains the MASTER_PLAN queue —
-  extend it to check pipeline liveness rather than inventing a supervisor.
+`cgResolveIndexAction` (`bin/setup.ts:173-185`) currently returns before service creation on `'noop'` (`:217`), and deleting the `!isResume` shortcut would make **mtime** the sole arbiter — a proxy that can't detect a branch switch. Add an **indexed-HEAD == current-HEAD** equality check as the freshness ground truth (mtime as cheap pre-filter); requires HEAD-sha tracking in `codegraph-service.ts` (none exists today). Cold repo / sha-mismatch → `full`; sha-match + fresh mtime → `noop`; sha-match + stale → `sync`.
 
 ---
 
-# TRACK B — codegraph enablement (the v2.1 headline feature)
+## Non-Goals (with negative-assertion ACs)
 
-> ⚠ **Additive by explicit operator decision**, not by THE LENS. Recorded so this bundle does not
-> silently violate the subtraction criterion. THE LENS still governs *how* it lands.
-
-## WS-B1 — delete the `!isResume` shortcut (subtractive)
-
-`cgResolveIndexAction` (`bin/setup.ts`):
-
-```ts
-if (!isResume) return 'full';                  // every fresh session: FULL index
-const ageMs = Date.now() - fs.statSync(dbPath).mtimeMs;
-return ageMs >= staleMs ? 'sync' : 'noop';     // only ever reached on --resume
-```
-
-The freshness check is **dead code on the launch path** — a fresh pipeline in a repo holding a
-ten-minute-old `.codegraph/codegraph.db` still pays a full re-index. Delete the shortcut; let freshness
-govern every path. Cold repo → `full`; recent db → `sync` (30 s cap) or `noop` (free).
-
-## WS-B2 — `sync()` at key points (the accuracy fix, not a speed fix)
-
-A pipeline mutates the repo it is indexing: the B-WDSUB run landed **8 commits in ~9 h**. An index taken
-once at setup is stale by ticket three, so later workers receive context describing a repo that no longer
-exists — and the staleness is **silent**, because `buildContext` still returns something.
-
-Call the existing `CodegraphService.sync()` (already bounded by `sync_timeout_ms`, 30 s) at
-post-ticket-commit and phase transitions.
-
-> ⛔ **Do NOT spawn a detached indexer.** That reintroduces the failure class [[B-WSPU]] deleted
-> (~1000 LOC; detached workers silently died — the field evidence was a detached worker dying while
-> building its own deletion). A background index racing `buildContext`'s 5 s query also fails *quietly*:
-> the service degrades rather than crashes, so workers silently receive thinner context.
-
-## WS-B3 — the enablement itself
-
-| # | Change | Why |
-|---|---|---|
-| 1 | **`install.sh:529`** — drop `.codegraph.enabled = false \| .codegraph.index_at_setup = false` from the MANAGED_KEYS jq | **Load-bearing.** Without it every deploy re-disables the feature and a source flip is INERT. Keep the other two managed keys. |
-| 2 | `pickle_settings.json` — `enabled: true`, `index_at_setup: true` | The flip itself |
-| 3 | **Invert two guard tests** — `codegraph-default-optin.test.js` (AC-GA-CG-1) + `codegraph-docs-optin-parity.test.js` (AC-GA-CG-2) | Both **WILL red**. **Invert, do not delete** — they become the guard that codegraph stays ON. |
-| 4 | Docs — CLAUDE.md settings row + README two-lane split; **retire Tune-Back CUJ #2** | CUJ #2 existed only to work around MANAGED_KEYS |
-| 5 | **Keep `PICKLE_CODEGRAPH=off`** | The kill-switch is the escape hatch |
-| 6 | **`expose_mcp_to_workers` stays `false`** | Two-lane split (`4e641a88`): the injected-context lane is NOT the interactive MCP lane |
-
-**Prior art:** `3bab38f2` (06-14) flipped it ON; `b5a4f5b0` (06-16, B-GA) flipped it back — verbatim
-rationale *"matching deployed reality."* **No defect forced it off**; it was a source/deployed consistency
-fix during **2.0** GA-readiness. Re-enabling on the **2.1** line is coherent with that.
-
-## WS-B4 — conditional: warm the index inside the existing session-scoped service
-
-**Only if WS-B1 + WS-B2 leave setup too slow.** `mux-runner.ts:9268` already creates a session-scoped
-`CodegraphService`, documented *"fail-open — never blocks session start"*, that lives for the whole run.
-Start the warm index there and let it run concurrently with ticket 1; `spawn-morty`'s `buildContext`
-already degrades when the graph is not ready. **Async without a new lifecycle** — in-process, on a process
-that already outlives the work. If WS-B1/B2 suffice, **drop this workstream** (B-CGHARD precedent:
-already-satisfied workstreams are dropped, not built).
-
----
-
-# TRACK C — the soak (runs LAST, post-deploy)
-
-## WS-C1 — codegraph efficacy soak on the repaired runtime
-
-Existing probes to reuse: `codegraph-efficacy-probe.test.js`, `codegraph-index-cost.test.js`.
-
-**Evidence status:** codegraph *has* run — **91 `codegraph_context_injected`** + 19 syncs across 5
-sessions (2026-07-16/17) — but **all of it predates the 2026-07-18 B-CGHARD harvester fix**, so none of it
-measures the shipping configuration.
-
-**Hard preconditions (the reason this is one PRD):**
-1. Track A built, gated, **and deployed** (`install.sh`) — the soak must run on the repaired runtime.
-2. Pin the observed setup-index cost (`codegraph-index-cost.test.js`) before shipping.
-3. Confirm a missing/incompatible native binary **degrades** rather than crashes
-   (`codegraph-degradation.test.js`) — on-by-default makes that path load-bearing for every install.
-
-**Record the number even if it argues against the feature.** Per
-[[feedback_verify_the_outcome_not_the_mechanism]], a soak that cannot produce a disconfirming result is
-not a measurement.
-
----
-
-## Non-Goals
-
-- **`persistWorkerOutcomeStatus` is NOT edited.** `spawn-morty.ts:1996`'s `completion_commit: null` write
-  is adjacent to this work and remains out of scope — it is the narrow R-PSRB completion-evidence path.
-- **`src/lib/salvage-ticket.ts` is NOT edited**, and the dead `backfillDone` wiring is not restored here
-  (filed separately as R-SBFD).
-- **`ticket-completion-evidence.ts` is CONSUMED, not edited** — WS-A1 changes the *caller's* notion of
-  acceptable completion, not the oracle's internals. Keeps this bundle off the R-PSRB path.
-- **No exit-reason value is renamed or removed** beyond narrowing the `isHaltExit` membership in WS-A2.
-- **`expose_mcp_to_workers` stays `false`** — separate C0-gated flip.
-- **The off-repo fake-green at `runWorkerGate:1673` is NOT fixed here.**
+- `persistWorkerOutcomeStatus` (`spawn-morty.ts:1996`) NOT edited — diff empty.
+- `src/lib/salvage-ticket.ts` NOT edited — diff empty. `reconcile-ticket-truth.ts` NOT edited — diff empty. (WS-A1 lands in `ticket-completion-evidence.ts`, NOT these.)
+- `runWorkerGate:1673` off-repo fake-green NOT fixed here.
+- `expose_mcp_to_workers` stays `false` — separate C0-gated flip.
+- No AC cites `allow_inferred_completion_commit` or `pipeline_continue_on_phase_fail` (R8).
 
 ## Simplification Review (subtract-before-add)
 
-1. **Track A adds no mechanism.** WS-A1 widens an existing completion notion and **deletes the
-   marker-commit ritual**; WS-A2 **shrinks** `isHaltExit`; WS-A3 **extends an existing precondition**
-   (`toolchain_unavailable`) and removes the environment as a gate input. Track B is additive **by
-   declared operator decision**, and even there WS-B1 is a pure deletion.
-2. **REUSE:** WS-A1 consumes `evaluateCompletionEvidence` rather than adding a predicate. WS-A3 reuses
-   `toolchain_unavailable`. WS-B2 reuses `CodegraphService.sync()`. WS-B4 reuses the session-scoped
-   service that already exists. WS-C1 reuses two existing probes.
-3. **The brittle thing being subtracted** is the whole proxy-over-ground-truth family: a narrative token,
-   a commit count, and an ambient binary each outranking evidence on disk. Every fix removes the proxy's
-   authority rather than wrapping it in a second guard.
-4. **Net shape:** Track A is net-negative LOC. Track B is net-positive by decision, and its own WS-B1 is
-   negative. **Do not delete a guard that fires correctly** — WS-A3 must report its measurement even when
-   it argues for keeping the gate.
+1. **Track A adds no mechanism it can avoid.** WS-A1 widens ONE existing predicate (not a new one) + deletes the marker-commit ritual; WS-A2 reuses the existing `PhaseIncomplete` contract (deletes a bespoke continue-branch) and shrinks the halt sets; WS-A3a is a pure dimension **subtraction** (finish R-WGFR). Track B is additive by declared operator decision; WS-B3's install.sh change is a value-flip (not new machinery), WS-B1 adds sha-tracking (minimal, thesis-coherent).
+2. **REUSE:** WS-A1 widens `evaluateCompletionEvidence`; WS-A2 reuses `reportPhaseIncomplete`/`resolveUnfinishedTickets`; WS-A3a wires existing `classifyUnrunnableCheck`; WS-B3 reuses the MANAGED_KEYS block; Track C reuses 3 existing probes.
+3. **Brittle thing subtracted:** the proxy-over-ground-truth family — a commit count and an ambient test dimension each outranking evidence on disk. Removes the proxy's authority, does not wrap it.
+4. **Net shape:** Track A net-negative except WS-A1's one widened arm. WS-B2/B4 dropped as already-satisfied. Track C deferred. **Do not delete a guard that fires correctly** — AC-MWMO-D2-8 survives (AC-A1-2); WS-A3b reports its number even if it argues for keeping the gate.
 
 ## Risks
 
-- **Track A's fixes do not protect this bundle's own run.** The pipeline executes deployed JS; source
-  edits land only at `install.sh`. Expect this run to hit the same wedges — budget for interventions and
-  recover with the documented recipe (verify ground truth → flip → clear `exit_reason` → relaunch).
-- **Bundle size.** B-WDSUB was 6 tickets and required 2 interventions. This is larger. Keep Track A tight
-  and ordered first; if refinement produces an unwieldy count, split Track C into a follow-up rather than
-  padding the run.
-- **WS-A1 over-subtraction** — if zero-diff completion is too permissive, a genuinely failed ticket reads
-  as complete. Bound it: the declaration must be explicit in the ticket, and artifacts + non-failing gate
-  are still required.
-- **WS-A2 under-halting** — parking instead of halting could let a run continue past a condition that
-  genuinely should stop it. Phase-level reasons must remain fatal; only ticket-scoped ones are demoted.
-- **Codegraph on-by-default makes the native dep load-bearing** on every install and every platform.
+- **Track A's fixes do not protect this bundle's own run** (deployed JS executes; source lands at `install.sh`). Expect the same `done_without_commit_evidence`/zero-diff wedges — recover with: verify ground truth → flip → clear `exit_reason` → relaunch. Attended.
+- **Bundle size** ~10 tickets (≥ B-WDSUB's 6, which needed 2 interventions). Track C deferred to hold the line.
+- **WS-A1 over-subtraction** — declaration must be explicit; artifacts + non-failing gate still required (AC-A1-2).
+- **WS-A2 under-halting** — phase-level reasons stay fatal; only ticket-scoped demoted; rerouted ticket never flipped.
+- **Codegraph on-by-default makes the native dep load-bearing** on every platform (degradation oracle already covers it).
 
 ## Build-time reminders
 
-- Branch `release/v2.1-beta`. Baseline = the beta.5 release commit (after B-WDSUB ships).
-- **Compiled-mirror co-scoping is MANDATORY** — `install.sh:389` rsyncs with `--exclude='src'`, so
-  `extension/bin/*.js` IS the deployed runtime. Every ticket allowlist names both trees. A src-only commit
-  passes every grep AC green while the runtime keeps the bug.
-- Launch with `--szechuan-max-iterations 500 --anatomy-max-iterations 500`.
-- **Track A tickets must be ordered before Track B**, and **WS-C1 must run after deploy** — not inside the
-  build phase.
+- Branch `release/v2.1-beta`. Baseline = the beta.5 release commit.
+- **Compiled-mirror co-scoping MANDATORY** — `install.sh:389` rsyncs `--exclude='src'`, so `extension/bin/*.js` IS the deployed runtime. Every ticket allowlist names both `src/` and the compiled mirror.
+- Re-anchor on **symbols**, not line numbers (drift present): `isHaltExit` (`4398`), `FAILURE_EXIT_REASONS` (`4404`), `shouldHaltAfterPhase`, `isFatalPhaseFailure`, `evaluateCompletionEvidence` (`838`), `CompletionDecision` (`715`), `cgResolveIndexAction` (`173-185`), `targetToolchainMissing`.
+- Track A tickets ordered before Track B. WS-C1 is a post-deploy follow-on — NOT in this build.
+- Launch `--szechuan-max-iterations 500 --anatomy-max-iterations 500`.
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Tier | Entry | Exit |
+|---|---|---|---|---|---|---|
+| 10 | a7e9b33b | Zero-diff completion + reroute to PhaseIncomplete (WS-A1+A2 coupled) | High | large | green tree @beta.5 | zero-diff representable; reroute live; class closed |
+| 20 | 003aca59 | Finish R-WGFR: drop flaky test:fast from primary worker gate (WS-A3a) | High | medium | a7e9b33b done | gate measures code not environment |
+| 30 | 0b3202e0 | Record worker-gate TP-rate (WS-A3b, report-only) | Medium | small | a7e9b33b+003aca59 | number recorded from fixture |
+| 40 | 1754b642 | Enable codegraph via managed-value flip (WS-B3) | High | medium | Track A done | codegraph ON fresh+upgrade; guards enforce |
+| 50 | 28fb378e | Freshness by HEAD-sha ground truth (WS-B1) | Medium | medium | 1754b642 done | stale-branch index never noop |
+| 60 | 08e2c7a2 | Wire + verify coupled behaviors end-to-end | High | medium | all impl done | fast+integration green, seams live |
+| 70 | 5121a116 | Harden: code quality | High | large | wiring done | zero P0-P1 in diff |
+| 80 | 26ac413e | Audit: data flow integrity | High | large | 5121a116 done | zero CRITICAL+HIGH |
+| 90 | 265e89b5 | Harden: test quality | High | large | 26ac413e done | every AC mapped; zero P0-P1 gaps |
+| 100 | 6521404c | Audit: cross-reference consistency | High | medium | 265e89b5 done | docs match reality |
+
+**Deferred (post-deploy follow-on PRD):** WS-C1 codegraph efficacy soak (precondition AC-GTRUTH-C1-0 carried forward), WS-B2 (already ships), WS-B4 (baseline shifted).
