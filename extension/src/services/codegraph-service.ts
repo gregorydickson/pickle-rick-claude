@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import type { CodegraphSettings } from '../types/index.js';
 import { logActivity } from './activity-logger.js';
+import { getHeadSha } from './git-utils.js';
 import { runCodegraphQueryBatch, type CodegraphQueryBatchResult } from './codegraph-query-runner.js';
 
 // NOTE: `@colbymchenry/codegraph` is NEVER imported at module top level. It is a
@@ -79,6 +80,12 @@ export interface CodegraphDeps {
   withFileLock?: <T>(fn: () => Promise<T>) => Promise<T>;
   /** Resolve the on-disk db path. Default: lazy `getDatabasePath(workingDir)`. */
   dbPath?: string;
+  /**
+   * Resolve the current git HEAD sha for indexed-sha persistence (WS-B1 ground-truth freshness).
+   * Default: `git rev-parse HEAD` via `git-utils.getHeadSha`, returning null on failure/non-repo
+   * (fail-open — a resolution failure must never throw out of the indexing path).
+   */
+  getHeadSha?: (workingDir: string) => string | null;
   /** Sleep helper for retry/backoff — injectable for tests to skip real delays. */
   sleep?: (ms: number) => Promise<void>;
   /**
@@ -111,6 +118,46 @@ function classifyError(message: string): CodegraphDegradeReason {
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Best-effort HEAD sha resolution — null on any failure (non-repo, detached, git absent). Exported
+ * so `setup.ts`'s `cgResolveIndexAction` (WS-B1) shares the same resolver as this service's own
+ * `persistIndexedHeadSha`, rather than each maintaining its own try/catch wrapper.
+ */
+export function defaultGetHeadSha(workingDir: string): string | null {
+  try {
+    return getHeadSha(workingDir);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * WS-B1: sidecar path for the HEAD sha the db was indexed at. A plain-text sibling of the db file,
+ * mirroring the existing `${dbPath}.lock` sibling-file convention used by `defaultWithFileLock`.
+ */
+export function indexedHeadShaPath(dbPath: string): string {
+  return `${dbPath}.head-sha`;
+}
+
+/** Read the persisted indexed-HEAD sha. Returns null when absent, empty, or unreadable. */
+export function readIndexedHeadSha(dbPath: string): string | null {
+  try {
+    const raw = fs.readFileSync(indexedHeadShaPath(dbPath), 'utf8').trim();
+    return raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the indexed-HEAD sha. Best-effort — a write failure must never fail an index/sync op. */
+export function writeIndexedHeadSha(dbPath: string, sha: string): void {
+  try {
+    fs.writeFileSync(indexedHeadShaPath(dbPath), sha);
+  } catch {
+    // best-effort — indexing succeeded regardless of sha bookkeeping
+  }
 }
 
 /** Lazy-load the upstream default bag (CJS dynamic re-export — must default-import). */
@@ -197,6 +244,7 @@ export class CodegraphService {
         operation: 'indexAll',
         gate_payload: { duration_ms, ...(files_indexed !== undefined ? { files_indexed } : {}) },
       });
+      this.persistIndexedHeadSha();
     }
     return result.ok ? result.value : null;
   }
@@ -205,7 +253,10 @@ export class CodegraphService {
     const impl = await this.beginOp();
     if (!impl) return null;
     const result = await this.runWithTimeout('sync', this.settings.sync_timeout_ms, () => impl.sync());
-    if (result.ok) this.emit({ event: 'codegraph_sync_completed', ts: this.now(), operation: 'sync' });
+    if (result.ok) {
+      this.emit({ event: 'codegraph_sync_completed', ts: this.now(), operation: 'sync' });
+      this.persistIndexedHeadSha();
+    }
     return result.ok ? result.value : null;
   }
 
@@ -446,6 +497,17 @@ export class CodegraphService {
     // Conventional path from the inventory (`.codegraph/codegraph.db`); the
     // injected `dbPath` wins so production can pass `getDatabasePath(workingDir)`.
     return this.deps.dbPath ?? `${this.workingDir}/.codegraph/codegraph.db`;
+  }
+
+  /** WS-B1: best-effort persist of the HEAD sha a successful index/sync ran at. */
+  private persistIndexedHeadSha(): void {
+    try {
+      const resolve = this.deps.getHeadSha ?? defaultGetHeadSha;
+      const sha = resolve(this.workingDir);
+      if (sha) writeIndexedHeadSha(this.dbPath(), sha);
+    } catch {
+      // best-effort — indexing succeeded regardless of sha bookkeeping
+    }
   }
 }
 

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import { logActivity } from './activity-logger.js';
+import { getHeadSha } from './git-utils.js';
 import { runCodegraphQueryBatch } from './codegraph-query-runner.js';
 const KILL_SWITCH_ENV = 'PICKLE_CODEGRAPH';
 const KILL_SWITCH_VALUE = 'off';
@@ -20,6 +21,45 @@ function classifyError(message) {
 }
 function errMessage(err) {
     return err instanceof Error ? err.message : String(err);
+}
+/**
+ * Best-effort HEAD sha resolution — null on any failure (non-repo, detached, git absent). Exported
+ * so `setup.ts`'s `cgResolveIndexAction` (WS-B1) shares the same resolver as this service's own
+ * `persistIndexedHeadSha`, rather than each maintaining its own try/catch wrapper.
+ */
+export function defaultGetHeadSha(workingDir) {
+    try {
+        return getHeadSha(workingDir);
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * WS-B1: sidecar path for the HEAD sha the db was indexed at. A plain-text sibling of the db file,
+ * mirroring the existing `${dbPath}.lock` sibling-file convention used by `defaultWithFileLock`.
+ */
+export function indexedHeadShaPath(dbPath) {
+    return `${dbPath}.head-sha`;
+}
+/** Read the persisted indexed-HEAD sha. Returns null when absent, empty, or unreadable. */
+export function readIndexedHeadSha(dbPath) {
+    try {
+        const raw = fs.readFileSync(indexedHeadShaPath(dbPath), 'utf8').trim();
+        return raw.length > 0 ? raw : null;
+    }
+    catch {
+        return null;
+    }
+}
+/** Persist the indexed-HEAD sha. Best-effort — a write failure must never fail an index/sync op. */
+export function writeIndexedHeadSha(dbPath, sha) {
+    try {
+        fs.writeFileSync(indexedHeadShaPath(dbPath), sha);
+    }
+    catch {
+        // best-effort — indexing succeeded regardless of sha bookkeeping
+    }
 }
 /** Lazy-load the upstream default bag (CJS dynamic re-export — must default-import). */
 async function loadCodegraphBag() {
@@ -99,6 +139,7 @@ export class CodegraphService {
                 operation: 'indexAll',
                 gate_payload: { duration_ms, ...(files_indexed !== undefined ? { files_indexed } : {}) },
             });
+            this.persistIndexedHeadSha();
         }
         return result.ok ? result.value : null;
     }
@@ -107,8 +148,10 @@ export class CodegraphService {
         if (!impl)
             return null;
         const result = await this.runWithTimeout('sync', this.settings.sync_timeout_ms, () => impl.sync());
-        if (result.ok)
+        if (result.ok) {
             this.emit({ event: 'codegraph_sync_completed', ts: this.now(), operation: 'sync' });
+            this.persistIndexedHeadSha();
+        }
         return result.ok ? result.value : null;
     }
     async buildContext(task) {
@@ -336,6 +379,18 @@ export class CodegraphService {
         // Conventional path from the inventory (`.codegraph/codegraph.db`); the
         // injected `dbPath` wins so production can pass `getDatabasePath(workingDir)`.
         return this.deps.dbPath ?? `${this.workingDir}/.codegraph/codegraph.db`;
+    }
+    /** WS-B1: best-effort persist of the HEAD sha a successful index/sync ran at. */
+    persistIndexedHeadSha() {
+        try {
+            const resolve = this.deps.getHeadSha ?? defaultGetHeadSha;
+            const sha = resolve(this.workingDir);
+            if (sha)
+                writeIndexedHeadSha(this.dbPath(), sha);
+        }
+        catch {
+            // best-effort — indexing succeeded regardless of sha bookkeeping
+        }
     }
 }
 /** Default lazy loader: open an existing graph, falling back to init. */

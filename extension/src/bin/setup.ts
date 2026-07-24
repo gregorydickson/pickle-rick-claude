@@ -15,7 +15,7 @@ import { logActivity, pruneActivity } from '../services/activity-logger.js';
 import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts } from '../services/orphan-reaper.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { updateTicketStatusInTransaction } from '../services/transaction-ticket-ops.js';
-import { CodegraphService } from '../services/codegraph-service.js';
+import { CodegraphService, readIndexedHeadSha, defaultGetHeadSha } from '../services/codegraph-service.js';
 import type { CodegraphDeps, CodegraphEmitEvent } from '../services/codegraph-service.js';
 
 const sm = new StateManager();
@@ -170,18 +170,30 @@ function cgApplyGitExclude(workingDir: string): void {
   fs.appendFileSync(excludePath, `${sep}.codegraph/\n`);
 }
 
+/**
+ * WS-B1: HEAD-sha is the freshness ground truth; mtime is only a pre-filter once the sha
+ * matches. Cold repo (no db) or a sha mismatch (missing metadata counts as a mismatch) always
+ * resolves 'full' — a sha-mismatch must NEVER resolve 'noop'. Fail-open by construction: every
+ * failure mode (absent db, absent/unreadable sidecar, unresolvable current HEAD) routes to 'full',
+ * never throws, never blocks session start.
+ */
 function cgResolveIndexAction(
-  isResume: boolean,
+  workingDir: string,
   dbPath: string,
   staleMs: number,
+  getCurrentHeadSha: (workingDir: string) => string | null = defaultGetHeadSha,
 ): 'full' | 'sync' | 'noop' {
-  if (!isResume) return 'full';
+  let mtimeMs: number;
   try {
-    const ageMs = Date.now() - fs.statSync(dbPath).mtimeMs;
-    return ageMs >= staleMs ? 'sync' : 'noop';
+    mtimeMs = fs.statSync(dbPath).mtimeMs;
   } catch {
     return 'full'; // db absent
   }
+  const indexedSha = readIndexedHeadSha(dbPath);
+  const currentSha = getCurrentHeadSha(workingDir);
+  if (!indexedSha || !currentSha || indexedSha !== currentSha) return 'full';
+  const ageMs = Date.now() - mtimeMs;
+  return ageMs >= staleMs ? 'sync' : 'noop';
 }
 
 function cgMakeEmit(injected: CodegraphDeps['emit']): (evt: CodegraphEmitEvent) => void {
@@ -203,7 +215,7 @@ function cgMakeEmit(injected: CodegraphDeps['emit']): (evt: CodegraphEmitEvent) 
 export async function runCodegraphIndexAtSetup(
   workingDir: string,
   settings: CodegraphSettings,
-  isResume: boolean,
+  _isResume: boolean,
   deps: CodegraphIndexAtSetupDeps = {},
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
@@ -213,7 +225,12 @@ export async function runCodegraphIndexAtSetup(
   try { cgApplyGitExclude(workingDir); } catch { /* best-effort */ }
 
   const dbPath = deps.dbPath ?? path.join(workingDir, '.codegraph', 'codegraph.db');
-  const indexAction = cgResolveIndexAction(isResume, dbPath, settings.staleness_max_age_minutes * 60_000);
+  const indexAction = cgResolveIndexAction(
+    workingDir,
+    dbPath,
+    settings.staleness_max_age_minutes * 60_000,
+    deps.getHeadSha ?? defaultGetHeadSha,
+  );
   if (indexAction === 'noop') return;
 
   const emit = cgMakeEmit(deps.emit);

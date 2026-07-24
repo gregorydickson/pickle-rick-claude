@@ -19,8 +19,10 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
 
-const { CodegraphService } = await import(path.join(EXTENSION_ROOT, 'services/codegraph-service.js'));
+const { CodegraphService, writeIndexedHeadSha } = await import(path.join(EXTENSION_ROOT, 'services/codegraph-service.js'));
 const { runCodegraphIndexAtSetup } = await import(path.join(EXTENSION_ROOT, 'bin/setup.js'));
+
+const FIXED_SHA = 'abc123fixedsha';
 
 // --- cleanup -----------------------------------------------------------------
 
@@ -136,7 +138,8 @@ test('CGH4-T1b: gate_payload.duration_ms present even when upstream has no files
 // CGH4-T2: warm resume with fresh DB → noop (action='noop') → neither indexAll nor sync called
 test('CGH4-T2: warm resume with fresh DB → noop — no indexAll or sync called', async () => {
   const workDir = makeTmp();
-  createFreshDb(workDir);
+  const dbPath = createFreshDb(workDir);
+  writeIndexedHeadSha(dbPath, FIXED_SHA); // sha matches current HEAD (WS-B1 ground truth)
 
   let indexAllCalled = false;
   let syncCalled = false;
@@ -150,7 +153,7 @@ test('CGH4-T2: warm resume with fresh DB → noop — no indexAll or sync called
     workDir,
     cgSettings({ staleness_max_age_minutes: 30 }),
     /* isResume */ true,
-    { impl, emit: (e) => events.push(e) },
+    { impl, emit: (e) => events.push(e), getHeadSha: () => FIXED_SHA },
     {},
   );
 
@@ -163,7 +166,8 @@ test('CGH4-T2: warm resume with fresh DB → noop — no indexAll or sync called
 // CGH4-T3: warm resume with stale DB → sync called (action='sync'), indexAll NOT called
 test('CGH4-T3: warm resume with stale DB → sync called, indexAll NOT called (action=sync)', async () => {
   const workDir = makeTmp();
-  createStaleDb(workDir, 60); // 60 min old → stale vs 30-min threshold
+  const dbPath = createStaleDb(workDir, 60); // 60 min old → stale vs 30-min threshold
+  writeIndexedHeadSha(dbPath, FIXED_SHA); // sha matches current HEAD (WS-B1 ground truth)
 
   let indexAllCalled = false;
   let syncCalled = false;
@@ -177,7 +181,7 @@ test('CGH4-T3: warm resume with stale DB → sync called, indexAll NOT called (a
     workDir,
     cgSettings({ staleness_max_age_minutes: 30 }),
     /* isResume */ true,
-    { impl, emit: (e) => events.push(e) },
+    { impl, emit: (e) => events.push(e), getHeadSha: () => FIXED_SHA },
     {},
   );
 
