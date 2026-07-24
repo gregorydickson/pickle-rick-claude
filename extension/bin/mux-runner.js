@@ -10171,8 +10171,12 @@ async function runMuxRunnerMain() {
     // B-GTRUTH WS-A2: 'done_without_commit_evidence' joins the cap exit on code 3 so
     // pipeline-runner routes it through `reportPhaseIncomplete` (which consults the
     // completion oracle to separate committed-but-unflipped from genuinely-unfinished)
-    // instead of fataling the whole pipeline over one ticket. It must NOT fall through
-    // to the `else exitCode = 0` default — that would graduate the phase silently.
+    // instead of fataling the whole pipeline over one ticket. Its own branch is
+    // REQUIRED: having been demoted out of FAILURE_EXIT_REASONS it would otherwise
+    // reach the trailing success default and graduate the phase silently.
+    // (Deliberately phrased without the literal assignment text — the exit-map
+    // ordering pin in mux-runner-iteration-cap-exit.test.js locates the branches by
+    // `indexOf`, so restating them in prose here would shadow the real code sites.)
     let exitCode;
     if (exitReason === 'iteration_cap_exhausted')
         exitCode = 3;

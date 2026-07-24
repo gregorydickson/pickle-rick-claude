@@ -37,6 +37,12 @@ test('all-sites: every failure-bucket exitReason === site handles timeout_repeat
     // R-ICP-1: 'iteration_cap_exhausted' is an exit-code mapping (→ 3), not a failure-bucket
     // notification site — it gets the standard failed-exit notification via isFailedExit.
     if (line.includes("exitReason === 'iteration_cap_exhausted'")) return;
+    // B-GTRUTH WS-A2: 'done_without_commit_evidence' is the SECOND member of that same
+    // exit-code mapping (→ 3, the PhaseIncomplete route) — likewise not a failure-bucket
+    // notification site. Its notification comes from deriveCompletionVerdict, which reads
+    // isFailureExit; the union-wide panel/notification parity loop in
+    // mux-runner-done-without-commit-evidence-exit.test.js is what covers it.
+    if (line.includes("exitReason === 'done_without_commit_evidence'")) return;
     if (!line.includes("'timeout_repeat'")) {
       unhandled.push({ line: i + 1, content: line.trim() });
     }
