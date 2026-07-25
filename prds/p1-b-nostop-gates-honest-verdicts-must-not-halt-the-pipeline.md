@@ -147,25 +147,74 @@ only its authority over the loop is removed.
 **Defect:** links 5-6 above. `statusUnfinished === 0 && unfinished.length === 0` — the healthiest
 possible roster — falls through to the stamp and the break.
 
-**Fix (subtractive, control-flow only):** the PhaseIncomplete route reports honestly and **advances**
-when the roster is fully terminal. Concretely: `reportPhaseIncomplete` keeps stamping (honesty is
-B-NONSTOP's win — do not regress it), and `resolvePhaseIncompleteOutcome` stops converting that stamp
-into `{action:'break'}` when no ticket is genuinely unfinished AND no ticket is status-runnable. The
-residual is flagged for a human (WS-3), the phase advances, citadel/anatomy/szechuan run.
+**Fix (control-flow only):** the PhaseIncomplete route reports honestly and **advances** when the
+roster is fully terminal. `reportPhaseIncomplete` keeps stamping (honesty is B-NONSTOP's win — do not
+regress it); the callers stop converting that stamp into `{action:'break'}`. The residual is flagged
+for a human (WS-3), the phase advances, citadel/anatomy/szechuan run.
 
-**Acceptance (machine-checkable):**
-- **AC-NS-1** Fixture: 6 tickets all `status: Done`, mux exit code 3, `exit_reason=done_without_commit_evidence`. `runPhaseIteration` returns an outcome whose `action` is **not** `'break'`, and the pipeline reaches the citadel phase. Asserted on the outcome object, not on a log string.
-- **AC-NS-2** The same fixture still records `exit_reason` ∈ {`pipeline_phase_incomplete`, `done_without_commit_evidence`} in `state.json` — the verdict is preserved, only the disposition changed. (Pins "we did not fix this by lying.")
-- **AC-NS-3** Anti-fake-green pin, **re-aimed at the verdict**: fixture with **0 Done of 6** and **0 commits since `start_commit`** (a) stamps an incomplete `exit_reason`, (b) `deriveCompletionVerdict` does **not** return a success/"Complete" verdict, and (c) the phase **still advances**. AC-NS-6 / AC-MWMO-D2-8 are re-expressed as assertions on (a)+(b) — assert the verdict and the panel, never the `break`.
-- **AC-NS-4** A status-runnable roster (3 Done, 3 `Todo`) does **not** silently advance *as if complete*: it parks the 3 runnable tickets with a residual (WS-3) and reports `pipeline_phase_incomplete`. **The B-PXBO / R-ICP-2 exit-3 contract is preserved at the EXIT CODE, not by breaking early** — `pipeline-runner-halt-on-incomplete.test.js` must be updated deliberately, not deleted, and the ticket artifact must show the old and new assertion side by side with a one-line rationale.
-- **AC-NS-5** Exit code on the AC-NS-1 and AC-NS-4 paths is **0 or 3, never 1** — `auto-resume.sh` keys retry on 3 (see the `resolvePhaseIncompleteOutcome` docstring warning: an exit-1 here silently converts a resumable race into a dead session).
-- **AC-NS-5b** No quality/completion verdict reaches `dispatchHaltAction` (`:4024`): assert that for every reason in `INCOMPLETE_EXIT_REASONS` ∪ {`pipeline_phase_incomplete`, `phase_no_progress`}, `shouldHaltAfterPhase` returns `false`. This is the ONE RULE as a single machine-checkable invariant — prefer it over per-site tests.
+**Edit surface — 4 sites across 3 functions (corrected; the first draft named only 2).** A worker that
+believes WS-1 is a two-line change will mis-tier the ticket and hit the wrong gate tier:
+
+| Site | Change |
+|---|---|
+| `reportPhaseIncomplete` `:3527` | the skip is gated on `statusUnfinished > 0`, unreachable for an all-Done roster — the field wedge |
+| `resolvePhaseIncompleteOutcome` `:4100`,`:4105` | stop returning `{action:'break'}` on the terminal-roster paths |
+| `maybeStampPhaseGraduation` `:3668`,`:3672` | **both** arms return `{action:'break', phaseIncomplete:true}`; row 2 of AC-NS-1 is gated here, not in `reportPhaseIncomplete` |
+| `isFatalPhaseFailure` `:2806` | neutralize the `countCommitsSince === 0` arm **while preserving its `!startCommit` sibling at `:2805` in the same function** |
+| `maybeStampPickleIncompleteRobust` `:4270` | sentinel path — same treatment |
+
+**Tier: `medium` minimum.** Orchestrator control flow + recovery path; `small` would skip `test:fast`
+in the worker gate, and every one of these sites is pinned by fast-tier suites.
+
+**Acceptance (machine-checkable).** *(Collapsed 2026-07-25 per the AC-shape gate: the four original
+ACs asserted four facets of ONE outcome object over one fixture family. They are now a single
+table-driven invariant. Nothing was dropped — each former AC is a column.)*
+
+- **AC-NS-1 — ALL quality-verdict phase exits advance the pipeline while reporting honestly.**
+  One parametrized suite, `describe.each([...])` over the roster matrix below. For **every** row:
+  (a) the outcome's `action !== 'break'` when `advances` is true (asserted on the returned object, never a log string);
+  (b) the honesty verdict equals `reports`;
+  (c) `deriveCompletionVerdict()` returns success **only** where `panel_success` is true;
+  (d) the terminating `exit_reason` matches `terminal_reason` — and is **never** one of the three
+  auto-resume triggers when the run advanced through all phases;
+  (e) the process exit code equals `exit`, and is **never 1**.
+
+  | # | Roster / state | advances | reports | panel_success | terminal_reason | exit |
+  |---|---|---|---|---|---|---|
+  | 1 | 6/6 `Done`, mux exit 3, `done_without_commit_evidence` (**the field wedge**) | ✅ | incomplete | ❌ | NOT an auto-resume trigger | 0 |
+  | 2 | 0 Done of 6, 0 commits since `start_commit` (**anti-fake-green**) | ✅ | incomplete | ❌ | NOT an auto-resume trigger | 0 |
+  | 3 | 3 `Done` / 3 `Todo` — status-runnable remains | ❌ (stops, resumable) | incomplete | ❌ | `pipeline_phase_incomplete` | 3 |
+  | 4 | 6/6 `Done`, all evidenced, clean | ✅ | complete | ✅ | `completed` | 0 |
+
+  Row 2 is the re-aimed **AC-NS-6 / AC-MWMO-D2-8** pin: what those guards *assert* is unchanged and
+  now stronger (columns `reports` + `panel_success`); only their authority over the loop is gone.
+  Row 3 preserves the B-PXBO / R-ICP-2 exit-3 contract — a *runnable* roster still stops, and stops
+  **resumably**. Row 4 is the no-cosmetic-regression control.
+  `pipeline-runner-halt-on-incomplete.test.js` must be updated **deliberately, not deleted**: the
+  ticket artifact must show the old and new assertion side by side with a one-line rationale.
+
+- **AC-NS-5b — the ONE RULE as one invariant (CORRECTED; the original was unsatisfiable).**
+  For **every** reason `r` ∈ `INCOMPLETE_EXIT_REASONS` ∪ {`pipeline_phase_incomplete`,
+  `phase_no_progress`} and **every** `exitCode` ∈ {1, 3}: `shouldHaltAfterPhase(phase, exitCode, runtime)`
+  returns `false` — **given a runtime where both reason-independent arms are absent**, i.e.
+  `start_commit` is present and `pipeline_continue_on_phase_fail !== false`.
+  **Plus two paired positive pins that must hold in the same suite:**
+  - `pipeline_continue_on_phase_fail === false` **still returns `true`** for those same reasons
+    (`:2840` — the `--strict-phases` operator override, and this bundle's only rollback path);
+  - a missing `start_commit` **still returns `true`** (`:2805`).
+
+  > **Why the correction:** the original AC quantified over reasons while `shouldHaltAfterPhase`
+  > halts at `:2835`/`:2840` *before consulting any reason*. A worker could satisfy the bare ∀ **only
+  > by deleting the sanctioned `--strict-phases` override** — killing the contract pinned by
+  > `pipeline-runner-phase-fail-continue.test.js` **and** the bundle's rollback. It was also
+  > trivially passable, since `:2830` early-returns `false` for `exitCode === 0` — hence the explicit
+  > `exitCode ∈ {1,3}` quantifier. **No ticket may satisfy AC-NS-5b by weakening `:2805` or `:2840`.**
 
 **Simplification Review:**
-1. *Necessary?* Adds **no** state field, flag, or guard. Deletes/relaxes one conjunct and one `break`. Pure removal.
-2. *Reuse?* Yes — reuses the existing `PhaseIterationOutcome` union and `recordExitReason`. No parallel mechanism.
+1. *Necessary?* Adds **no** state field, flag, or guard. One optional type field moves onto an existing union arm; the rest is deletion and re-wiring.
+2. *Reuse?* Yes — the existing `PhaseIterationOutcome` union, `recordExitReason`, and `deriveCompletionVerdict`. No parallel mechanism. **Rollback reuses the existing `--strict-phases` / `pipeline_continue_on_phase_fail: false` lever — no new kill-switch flag** (which is a second reason AC-NS-5b must not let a worker delete it).
 3. *Guards brittle complexity?* Yes, and it **subtracts** it: five stacked refinements of one predicate is the brittleness. We stop refining the predicate and cut its authority over the loop instead.
-4. *Subtracts?* One conjunct (`statusUnfinished > 0`) and one control-flow edge. Net LOC negative.
+4. *Subtracts?* One conjunct (`statusUnfinished > 0`) and four control-flow edges. **Correction: the earlier "net LOC negative" claim does not survive** — 4 sites across 3 functions, plus a parametrized test suite, is likely LOC-neutral-to-positive. The subtraction is in *authority and branch count*, not line count. Claiming otherwise would be the kind of unverified assertion this PRD exists to punish.
 
 ---
 
@@ -200,7 +249,15 @@ evidence, not preference:
   artifacts, which is exactly what it is built for and what it would have accepted.
 - **(b) if (a) proves too narrow** (i.e. undeclared tickets hit the same promote→reject flip): apply the
   R-OMA foreign check **in the scan arm too**, so a foreign SHA is never accepted as scan evidence in
-  the first place. This *unifies* the two arms rather than adding a third rule — strictly simplifying.
+  the first place. This *unifies* the two arms rather than adding a third rule.
+  ⚠️ **(b) carries a real blast radius — it is NOT free simplification.** The scan arm deliberately
+  accepts by `r_code` and by recovery-commit shape (`fix(<dropped-sha>): recover R-CODE …`, the
+  **R-CCRC-1** contract). Narrowing it risks a **new** false-`absent` class on precisely the recovery
+  path that exists to un-wedge sessions — a new halt family, created by the bundle that exists to
+  remove halts. **Gate on (b):** research may select it ONLY after demonstrating
+  `node bin/test-runner.js tests/has-completion-commit-ref-code.test.js` green with the narrowing
+  applied, and the artifact must state that R-CCRC-1 ref-code/recovery acceptance is unchanged.
+  Prefer **(a)**.
 
 ### Authorship constraint — HARD, do not trip this pin
 
@@ -214,9 +271,13 @@ re-introduce it here.
 - **WS-2 adds NO writer of `zero_diff_intent`.** Fix (a) is a **read** — implement it by calling the
   existing `readDeclaredZeroDiffIntent` (`mux-runner.ts:4806`), whose call site contains no
   `zero_diff_intent` literal and therefore does not extend the pin's scan surface.
-- **AC-NS-8b:** `tests/zero-diff-completion-arm.test.js` (both F9 pins) stays green **unmodified**. If
-  a ticket believes it must extend the sanctioned set, that is a STOP — escalate to the operator
-  rather than editing the pin. The test's own message says: *"Do not simply delete this assertion."*
+- **AC-NS-8b (CORRECTED — the original verify command could not fail):** `tests/zero-diff-completion-arm.test.js`
+  stays byte-identical **relative to the bundle's `start_commit`**, not to `HEAD`:
+  `git diff --exit-code <start_commit> -- extension/tests/zero-diff-completion-arm.test.js`.
+  The original pinned against `HEAD`, which a worker satisfies by modifying the file **and committing
+  it** — a tautology guarding the PRD's only "HARD" constraint. If a ticket believes it must extend the
+  sanctioned set, that is a STOP — escalate to the operator. The test's own message says: *"Do not
+  simply delete this assertion."*
 
 **Research MUST answer, in the artifact:** which seam actually wrote it (instrument or replay — the
 moving-SHA observation above is the discriminator), and whether the promote→reject flip reproduces for
@@ -310,11 +371,11 @@ loop, and `exit_reason` on disk is already the durable record.
 |---|---|
 | `reportPhaseIncomplete(runtime, phase)` | `-> boolean`. UNCHANGED semantics: `true` = stamped `pipeline_phase_incomplete`. Callers may no longer treat `true` as "break". |
 | `resolvePhaseIncompleteOutcome(runtime, rawPhase, exitCode, log)` | `-> PhaseIterationOutcome \| null`. Returns `{action:'continue', phaseIncomplete:true}` when the roster is fully terminal; `null` to fall through; `{action:'break'}` only for crash-floor reasons. |
-| `shouldHaltAfterPhase(phase, exitCode, runtime)` | `-> boolean`. MUST return `false` for every reason in `INCOMPLETE_EXIT_REASONS` ∪ {`pipeline_phase_incomplete`, `phase_no_progress`}. This is the invariant of AC-NS-5b. |
+| `shouldHaltAfterPhase(phase, exitCode, runtime)` | `-> boolean`. **Reason-keyed invariant only** (AC-NS-5b), and ONLY once the two reason-independent arms are excluded: `:2835` `isFatalPhaseFailure` and `:2840` the `pipeline_continue_on_phase_fail === false` override both return `true` **before any reason is consulted** and are SANCTIONED. See "AC-NS-5b, corrected". |
 | `evaluateCompletionEvidence(ctx)` | **UNCHANGED.** Success arm keeps non-nullable `sha` (or `via:'zero-diff'`); `zeroDiffAccept`'s hard-absent guard is untouched. |
 | `readDeclaredZeroDiffIntent(sessionDir, ticketId)` | `-> string \| null`. Read-only. WS-2 reuses it; adds NO writer of `zero_diff_intent`. |
-| Exit codes | `0` Success, `1` Failure, `3` PhaseIncomplete. A quality verdict yields **0 or 3, never 1** (`auto-resume.sh` keys retry on 3). |
-| Residual event (WS-3) | `logActivity({event, source:'pickle', ticket_id, phase, reason})` — existing surface, no new schema. |
+| Exit codes | `0` Success, `1` Failure, `3` PhaseIncomplete. **`exit_reason` is DISPOSITION, not verdict** — `auto-resume.sh:154` relaunches iff `exit_reason` ∈ {`pipeline_phase_incomplete`, `phase_no_progress`, `phase_incomplete_tickets`} (verified at HEAD). A run that ADVANCED through all phases MUST NOT terminate carrying one of those three, or it arms an auto-relaunch of a pipeline that deliberately continued. Durable honesty lives in the residual events + panel. |
+| Residual event (WS-3) | **REUSE the existing valid event `ticket_auto_skip_no_evidence`** (`types/index.ts:646`), already emitted at `mux-runner.ts:2920` with exactly this shape: `logActivity({event:'ticket_auto_skip_no_evidence', source:'pickle', session, ticket, iteration})`. Sink = **`logActivity` → activity JSONL** (auto-stamps `ts`), **NOT** `writeActivityEntry` → `state.json.activity`. Adds nothing to `VALID_ACTIVITY_EVENTS` and nothing to `activity-events.schema.json`. Field is `ticket`, not `ticket_id`. |
 
 ---
 
@@ -326,12 +387,8 @@ All commands run from `extension/`. Single-file form is `node bin/test-runner.js
 
 | AC | Verify command | Type |
 |---|---|---|
-| AC-NS-1 | `node bin/test-runner.js tests/nostop-gates-phase-loop.test.js` | test |
-| AC-NS-2 | `node bin/test-runner.js tests/nostop-gates-phase-loop.test.js --grep "exit_reason preserved"` | test |
-| AC-NS-3 | `node bin/test-runner.js tests/pipeline-nonstop-halt-guard.test.js tests/nostop-gates-phase-loop.test.js` | test |
-| AC-NS-4 | `node bin/test-runner.js tests/pipeline-runner-halt-on-incomplete.test.js` | test |
-| AC-NS-5 | `node bin/test-runner.js tests/nostop-gates-phase-loop.test.js --grep "exit code"` | test |
-| **AC-NS-5b** | `node bin/test-runner.js tests/halt-or-recover-choke-point.test.js tests/nostop-gates-invariant.test.js` | test |
+| **AC-NS-1** (all 4 matrix rows) | `node bin/test-runner.js tests/nostop-gates-phase-loop.test.js tests/pipeline-nonstop-halt-guard.test.js tests/pipeline-runner-halt-on-incomplete.test.js` | test |
+| **AC-NS-5b** (+ both positive pins) | `node bin/test-runner.js tests/halt-or-recover-choke-point.test.js tests/nostop-gates-invariant.test.js tests/pipeline-runner-phase-fail-continue.test.js` | test |
 | AC-NS-7 | `node bin/test-runner.js tests/nostop-gates-zero-diff-stamp.test.js` | test |
 | AC-NS-8 | `node bin/test-runner.js tests/zero-diff-completion-arm.test.js` | test |
 | AC-NS-8b | `git diff --exit-code HEAD -- tests/zero-diff-completion-arm.test.js` (**must exit 0** — the F9 pins stay byte-identical) | lint |
@@ -354,12 +411,10 @@ tests that must exist somewhere.
 
 | Criterion | Test File | Description | Assertion |
 |:---|:---|:---|:---|
-| AC-NS-1 | `tests/nostop-gates-phase-loop.test.js` | 6/6 Done roster, mux exit 3, `done_without_commit_evidence` | Outcome object's `action !== 'break'`; citadel phase is reached |
-| AC-NS-2 | `tests/nostop-gates-phase-loop.test.js` | Same fixture, verdict durability | `state.json.exit_reason` ∈ {`pipeline_phase_incomplete`,`done_without_commit_evidence`} |
-| AC-NS-3 | `tests/nostop-gates-phase-loop.test.js` | 0 Done / 0 commits — anti-fake-green | Stamps incomplete AND `deriveCompletionVerdict()` is not success AND phase advances |
-| AC-NS-4 | `tests/pipeline-runner-halt-on-incomplete.test.js` | 3 Done / 3 Todo runnable roster | 3 tickets parked with residuals; `pipeline_phase_incomplete` reported; exit 3 |
-| AC-NS-5 | `tests/nostop-gates-phase-loop.test.js` | Exit-code mapping on the quality-verdict path | Exit code ∈ {0,3}; **never 1** |
-| **AC-NS-5b** | `tests/nostop-gates-invariant.test.js` | THE one rule, as one test | `∀ r ∈ INCOMPLETE_EXIT_REASONS ∪ {pipeline_phase_incomplete, phase_no_progress}: shouldHaltAfterPhase(...) === false` |
+| **AC-NS-1** | `tests/nostop-gates-phase-loop.test.js` | `describe.each` over all 4 roster-matrix rows | Per row: `action`, honesty verdict, `deriveCompletionVerdict()`, `terminal_reason` ∉ auto-resume triggers when advanced, exit code — never 1 |
+| AC-NS-1 row 3 | `tests/pipeline-runner-halt-on-incomplete.test.js` | 3 Done / 3 Todo runnable roster (deliberate update, not deletion) | 3 tickets parked with residuals; stops resumably at `pipeline_phase_incomplete`; exit 3 |
+| **AC-NS-5b** | `tests/nostop-gates-invariant.test.js` | THE one rule, plus its two crash-floor pins | `∀ r ∈ INCOMPLETE_EXIT_REASONS ∪ {pipeline_phase_incomplete, phase_no_progress}, ∀ exitCode ∈ {1,3}` with `start_commit` present and no strict override → `false`; **and** `pipeline_continue_on_phase_fail === false` → `true`; **and** missing `start_commit` → `true` |
+| AC-NS-5b pin | `tests/pipeline-runner-phase-fail-continue.test.js` | `--strict-phases` contract survives | Existing suite stays green unmodified |
 | AC-NS-7 | `tests/nostop-gates-zero-diff-stamp.test.js` | Declared-zero-diff ticket + Done sibling w/ commit naming the sibling | No `completion_commit` in frontmatter; oracle returns `{ok:true, via:'zero-diff'}` |
 | AC-NS-8 | `tests/zero-diff-completion-arm.test.js` | Hard-absent guard is not laundered | Declared zero-diff ticket carrying a foreign SHA still refuses |
 | AC-NS-8b | `tests/zero-diff-completion-arm.test.js` | Both F9 pins survive unmodified | `git diff --exit-code` on the file exits 0 |
@@ -369,6 +424,30 @@ tests that must exist somewhere.
 | AC-NS-11 | `tests/nostop-gates-residual.test.js` | Residual emission on the parked path | Exactly one activity event per parked ticket, carrying `{ticket_id, phase, verdict}` |
 | AC-NS-12 | `tests/pipeline-finalize-honesty.test.js` | Panel honesty with parked items | Panel states parked count; no unqualified "Complete" when count > 0 |
 | AC-NS-13 | `tests/nostop-gates-residual.test.js` | Zero-parked cosmetic neutrality | Panel output byte-identical to the clean-run baseline |
+
+---
+
+# Risks
+
+| # | Risk | Position / pin |
+|---|---|---|
+| R1 | **Continuing feeds a partial tree to phases that have destroyed good work.** The PRD's justification — *"citadel/anatomy/szechuan operate on the tree, not the roster"* — was asserted, not risk-assessed. This repo's history contradicts the safety half: an **unscoped szechuan judge has reverted a GOOD commit** (whole-repo scan → runner revert), szechuan deadlocks on the TS/compiled mirror, and the anatomy runner 429-spins past its convergence check. Advancing over Done-but-unevidenced tickets is therefore a **new destruction surface for verified work** — the one thing under standing instruction never to create. | **PROCEED, with two pins:** (1) the parked-ticket set is passed to downstream phases, and **no downstream phase may revert a commit attributed to a parked ticket**; (2) downstream phases in this bundle's own runs must be **scope-locked** (`--scope branch`), never unscoped. Ref: [[project_unscoped_szechuan_judge_fakes_regressions]]. |
+| R2 | A worker satisfies AC-NS-5b by deleting the `--strict-phases` override — which is also the only rollback. | AC-NS-5b rewritten with crash-floor exemptions **plus paired positive pins** that `:2840` and `:2805` still halt. Explicit prohibition in the AC text. |
+| R3 | A preserved `pipeline_phase_incomplete` on an advancing run arms `auto-resume.sh:154` → relaunch loop. | Verified at HEAD. `exit_reason` is disposition; a fully-advanced run must not terminate on an auto-resume trigger. Row 1/2 of AC-NS-1 assert `terminal_reason` is NOT a trigger. |
+| R4 | WS-2 option (b) creates a new false-`absent` class on the R-CCRC-1 recovery path. | (b) gated behind a green `has-completion-commit-ref-code.test.js` + an explicit artifact statement. (a) preferred. |
+| R5 | WS-3 emits to the wrong sink / per-iteration → the documented 20MB `state.json` class. | Sink named: `logActivity` → activity JSONL, reusing `ticket_auto_skip_no_evidence`. **Never** `writeActivityEntry`/`state.json.activity`. Emission is **per parked ticket, once per phase**, not per iteration. Cap precedent if a list is ever embedded: `EVERYTHING_BUT_COMMIT_PATH_CAP = 20` with `truncated` + `total_count`. |
+| R6 | No kill-switch for globally removing halt authority. | **No new flag.** `pipeline_continue_on_phase_fail: false` / `--strict-phases` already restores pre-bundle halting and MUST survive (see R2). |
+
+**Forward-created files** (do not exist at `start_commit`; `path_not_found` on these is expected, not drift):
+`extension/tests/nostop-gates-phase-loop.test.js`, `extension/tests/nostop-gates-invariant.test.js`,
+`extension/tests/nostop-gates-zero-diff-stamp.test.js`, `extension/tests/nostop-gates-arm-agreement.test.js`,
+`extension/tests/nostop-gates-residual.test.js`. Refinement may fold these into existing suites; only
+AC-NS-5b's and AC-NS-10b's invariants must exist somewhere.
+
+**Citation disambiguation:** unqualified "CLAUDE.md" is ambiguous in this repo (9 matches). This PRD
+means `pickle-rick-claude/CLAUDE.md` for the dogfood/R-WSRC rules and
+`pickle-rick-claude/prds/CLAUDE.md` for the authoring rules; `state.json` refers to the live session
+state at `<SESSION_ROOT>/state.json` (runtime artifact, not a repo path).
 
 ---
 
