@@ -25,6 +25,12 @@ const { shouldSyncCodegraph } = await import(
   path.resolve(__dirname, '../../bin/mux-runner.js')
 );
 
+const { writeIndexedHeadSha } = await import(
+  path.resolve(__dirname, '../../services/codegraph-service.js')
+);
+
+const FIXED_SHA = 'ac4c4index-fixed-sha';
+
 const sandboxDirs = [];
 after(() => {
   for (const d of sandboxDirs) {
@@ -136,6 +142,7 @@ test('AC-C4-NOOP: resume + fresh db (< staleness) → no call, no events', async
   fs.writeFileSync(dbPath, 'fake');
   const nowSec = Date.now() / 1000;
   fs.utimesSync(dbPath, nowSec, nowSec);
+  writeIndexedHeadSha(dbPath, FIXED_SHA);
 
   let called = false;
   const impl = fakeImpl({
@@ -145,7 +152,7 @@ test('AC-C4-NOOP: resume + fresh db (< staleness) → no call, no events', async
   const events = [];
   await runCodegraphIndexAtSetup(
     dir, baseSettings({ staleness_max_age_minutes: 60 }), true,
-    { impl, emit: (e) => events.push(e), dbPath }, {}
+    { impl, emit: (e) => events.push(e), dbPath, getHeadSha: () => FIXED_SHA }, {}
   );
   assert.ok(!called, 'service must not be called for a fresh db on resume');
   assert.equal(events.length, 0);
@@ -160,12 +167,13 @@ test('AC-C4-SYNC: resume + stale db (> staleness) → sync called, codegraph_syn
   // Set mtime to 2 hours ago (stale against default 30min threshold)
   const staleSec = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
   fs.utimesSync(dbPath, staleSec, staleSec);
+  writeIndexedHeadSha(dbPath, FIXED_SHA);
 
   const events = [];
   const impl = fakeImpl();
   await runCodegraphIndexAtSetup(
     dir, baseSettings(), true,
-    { impl, emit: (e) => events.push(e), dbPath }, {}
+    { impl, emit: (e) => events.push(e), dbPath, getHeadSha: () => FIXED_SHA }, {}
   );
   const synced = events.find((e) => e.event === 'codegraph_sync_completed');
   assert.ok(synced, `expected codegraph_sync_completed, got: ${JSON.stringify(events)}`);
