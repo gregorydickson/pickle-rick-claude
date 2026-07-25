@@ -336,7 +336,10 @@ try {
   logOutput = execFileSync(
     'git',
     ['log', '--format=%H%x00%s%x00%b%x02', range],
-    { encoding: 'utf8', cwd: repoRoot, timeout: 15000 }
+    // Full commit BODIES accumulate here, so this output grows without bound as the
+    // branch advances; Node's 1MB default maxBuffer breached at 96b08eba (1049881B)
+    // and turned the whole audit into `spawnSync git ENOBUFS`.
+    { encoding: 'utf8', cwd: repoRoot, timeout: 15000, maxBuffer: 64 * 1024 * 1024 }
   );
 } catch (e) {
   const msg = e instanceof Error ? e.message : String(e);
