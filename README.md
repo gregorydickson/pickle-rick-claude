@@ -484,7 +484,7 @@ exit reason).
 |---|---|---|
 | `codegraph.enabled` | `false` | Master switch for the integration. |
 | `index_at_setup` | `false` | Build/refresh the index at session setup. |
-| `staleness_max_age_minutes` | `30` | On resume, re-`sync` the index when older than this (min `1`). |
+| `staleness_max_age_minutes` | `30` | Secondary mtime pre-filter, consulted only once the persisted indexed-HEAD sha matches current HEAD — a sha mismatch (e.g. a branch switch) always triggers a full reindex regardless of age. On a sha match, re-`sync` fires once the index is older than this (min `1`). |
 | `context_max_bytes` | `8192` | Max injected context size (clamped `1024`–`65536`). |
 | `expose_mcp_to_workers` | `false` | Materialize the worker MCP config so Claude workers get the `codegraph` server. |
 | `index_timeout_ms` | `120000` | **Split timeout** for the full `indexAll` build (floor `5000`). |
