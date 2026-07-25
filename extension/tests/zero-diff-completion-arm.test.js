@@ -310,24 +310,49 @@ test('R-CXOR-2: a declaration does NOT launder a baseline-sha stamp', () => {
 const ORACLE_TS = path.join(import.meta.dirname, '..', 'src', 'services', 'ticket-completion-evidence.ts');
 const MUX_TS = path.join(import.meta.dirname, '..', 'src', 'bin', 'mux-runner.ts');
 
+/**
+ * AC-GTRUTH-A1-3 is stated over the BRANCH DIFF, so scanning only the oracle and
+ * mux-runner would leave four of this bundle's six modified source files free to carry a
+ * fabricated sentinel. This list is that six-file set.
+ *
+ * It is a hand-maintained FLOOR, not a derivation: deriving it from a live `git diff`
+ * would make a fast-tier test depend on branch state and on which baseline it is diffed
+ * against. The cost is that a SEVENTH file modified by a future bundle is not covered
+ * until someone adds it here — so add it here.
+ */
+const BRANCH_MODIFIED_SRC = [
+  ['services/ticket-completion-evidence.ts', []],
+  // The one permitted literal in the whole set: the pre-existing PICKLE_TEST_MODE bypass.
+  ['bin/mux-runner.ts', ['pickle-test-mode-bypass']],
+  ['bin/pipeline-runner.ts', []],
+  ['bin/setup.ts', []],
+  ['bin/spawn-morty.ts', []],
+  ['services/codegraph-service.ts', []],
+];
+
 test("AC-GTRUTH-A1-3: no sentinel sha literal beyond the pre-existing test-mode bypass", () => {
-  const oracle = fs.readFileSync(ORACLE_TS, 'utf8');
-  const mux = fs.readFileSync(MUX_TS, 'utf8');
+  for (const [relPath, expected] of BRANCH_MODIFIED_SRC) {
+    const absPath = path.join(import.meta.dirname, '..', 'src', ...relPath.split('/'));
 
-  assert.deepEqual(
-    [...oracle.matchAll(/sha:\s*'/g)].map((m) => m[0]),
-    [],
-    'the oracle must never assign a string literal to `sha` — that is the empty-marker-commit '
-    + 'forgery moved into a string',
-  );
+    // Fail CLOSED: a rename would otherwise silently empty this file's scan, and an
+    // assertion over a file that does not exist passes for the worst possible reason.
+    assert.ok(fs.existsSync(absPath), `${relPath} must exist — AC-GTRUTH-A1-3's scan cannot `
+      + 'cover a file it cannot read, and a missing path here means this list went stale');
 
-  const muxShaLiterals = [...mux.matchAll(/sha:\s*'([^']*)'/g)].map((m) => m[1]);
-  assert.deepEqual(
-    muxShaLiterals,
-    ['pickle-test-mode-bypass'],
-    'the ONLY sha string literal permitted in mux-runner.ts is the pre-existing PICKLE_TEST_MODE '
-    + `bypass; found: ${JSON.stringify(muxShaLiterals)}`,
-  );
+    // Both quote styles: single is the house style, but the AC forbids the VALUE, not a
+    // particular spelling of it, and a double-quoted sentinel is the same forgery.
+    const source = fs.readFileSync(absPath, 'utf8');
+    const literals = [...source.matchAll(/sha:\s*(?:'([^']*)'|"([^"]*)")/g)]
+      .map((m) => m[1] ?? m[2]);
+
+    assert.deepEqual(
+      literals,
+      expected,
+      `${relPath}: assigning a string literal to \`sha\` is the empty-marker-commit forgery `
+      + 'moved into a string — the zero-diff arm exists precisely so no sentinel is needed. '
+      + `Expected ${JSON.stringify(expected)}, found ${JSON.stringify(literals)}.`,
+    );
+  }
 });
 
 test('AC-GTRUTH-A1-5: guardCompletionCommitBeforeDone stays policy-free (shape mapping only)', () => {
