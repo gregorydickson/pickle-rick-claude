@@ -1623,14 +1623,35 @@ function didWorkerGateFail(lintOk: boolean, tscOk: boolean, testsOk: boolean): b
 }
 
 /**
- * R-WGFR: parity with the fallback recompute (`recomputeAbsentWorkerGateVerdict`,
- * mux-runner.ts:4662) — the PERSISTED `worker_gate_verdict` never counts the
- * flaky `test:fast` dimension, and a check whose command never ran (ENOENT /
- * exit 127 / missing script, per `isCommandResultUnrunnable`) is exempted
- * rather than counted red. `ok` / the gate-fail reset / Failed-flip suppression
- * stay driven by `didWorkerGateFail` (unchanged, still test-inclusive) — this
- * function governs ONLY the sticky field a later `resolveWorkerGateVerdict`
- * trusts without re-running the gate.
+ * R-WGFR: the PERSISTED `worker_gate_verdict`. `ok` / the gate-fail reset /
+ * Failed-flip suppression stay driven by `didWorkerGateFail` (unchanged, still
+ * test-inclusive) — this function governs ONLY the sticky field a later
+ * `resolveWorkerGateVerdict` trusts without re-running the gate.
+ *
+ * Two dimensions, and the fallback recompute
+ * (`recomputeAbsentWorkerGateVerdict`, mux-runner.ts:4662) agrees on exactly one
+ * of them:
+ *   - `test:fast` — DROPPED by both. A c=8 flake false-reddening a sticky verdict
+ *     is fatal, so neither the worker path nor the recompute counts it.
+ *   - unrunnable (ENOENT / exit 127 / missing script, per
+ *     `isCommandResultUnrunnable`) — DIVERGENT. Exempted here; the recompute
+ *     counts it red, because its own check helper tests for a zero exit status
+ *     and an ENOENT spawn reports no status at all. Do not read this function as
+ *     parity with that one: on a broken toolchain they disagree by design of the
+ *     exemption, not by oversight.
+ *
+ * Consequence of the exemption, stated here because the caller cannot see it:
+ * when BOTH dimensions are unrunnable, neither counts red and the verdict this
+ * returns is the positive one — a claim of verification over a tree where
+ * nothing was verified. `resolveWorkerGateVerdict` then trusts any non-absent
+ * persisted value permanently (mux-runner.ts:4689), so no later recompute
+ * revisits it and the Done-flip guard is satisfied. Reachable when `extension/`
+ * exists but the package runner is off PATH for both checks — a recurrent
+ * condition in this repo's own history. Unpinned by any test: the R-WGFR
+ * verdict fixture in `tests/spawn-morty-worker-gate.test.js` makes only eslint
+ * unrunnable, leaving a genuinely-green tsc to carry the verdict. Reported as
+ * finding F1 of ticket 5121a116, unfixed there: a compliant fix is behavioral
+ * and needs a regression test, which that ticket's scope fence excludes.
  */
 function computeWorkerGateVerdict(result: {
   lintOk: boolean;
