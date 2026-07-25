@@ -1306,10 +1306,6 @@ function tryResumeOrphanReattach(
 
     if (!result.recovered) return;
 
-    // R-CWGE: the ff-reattach already preserved the commit — that part is unconditional. Done is
-    // terminal and bypasses every later gate, so it requires the GREEN worker-gate verdict every
-    // Done-flip path in mux-runner consults. Fail closed: a red or unverifiable verdict leaves the
-    // ticket at its current status, where the runner can still re-select it.
     const gate = resolveWorkerGateVerdict(fullSessionPath, currentTicket, workingDir);
     const notFlippedPrefix = `[resume-reattach] ticket ${currentTicket} reattached at ${completionCommitSha} but NOT flipped Done: ` +
       `worker_gate_verdict='${gate.verdict}' (computed_via=${gate.computedVia}). `;
