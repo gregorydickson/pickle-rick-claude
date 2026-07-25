@@ -376,6 +376,66 @@ test('AC-GTRUTH-A1-5: guardCompletionCommitBeforeDone stays policy-free (shape m
   );
 });
 
+// ---------------------------------------------------------------------------
+// F9 — the arm has no production producer, and that is load-bearing
+// ---------------------------------------------------------------------------
+
+/** Every `.ts` under src/, so a producer cannot hide in a file this list forgot. */
+function collectSourceTs(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return collectSourceTs(full);
+    return entry.isFile() && entry.name.endsWith('.ts') ? [full] : [];
+  });
+}
+
+/** Comments legitimately discuss the field at length; only code can produce it. */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+test('F9: `zero_diff_intent` is READ-ONLY in production — a producer must bring an authorship constraint', () => {
+  const SRC_ROOT = path.join(import.meta.dirname, '..', 'src');
+  const sanctionedRead = /readFrontmatterField\([^,]+,\s*'zero_diff_intent'\)/;
+
+  const unsanctioned = [];
+  for (const file of collectSourceTs(SRC_ROOT)) {
+    const lines = stripComments(fs.readFileSync(file, 'utf8')).split('\n');
+    lines.forEach((line, i) => {
+      if (!line.includes('zero_diff_intent')) return;
+      if (sanctionedRead.test(line)) return;
+      unsanctioned.push(`${path.relative(SRC_ROOT, file)}:${i + 1}: ${line.trim()}`);
+    });
+  }
+
+  assert.deepEqual(
+    unsanctioned,
+    [],
+    'The zero-diff arm accepts a ticket as complete with NO commit. Today nothing in '
+    + 'production ever WRITES `zero_diff_intent` — the declaration can only arrive from a '
+    + 'human or a refinement-time author, which is what makes the arm safe. Both of its '
+    + 'corroborating conditions are worker-producible: a worker writes its own lifecycle '
+    + 'artifacts, and a worker runs its own gate. So a producer that lets the WORKER author '
+    + 'the declaration closes the loop and a worker can self-authorize a commit-less Done — '
+    + 'the exact self-certification this bundle removed from the commit-count proxy.\n\n'
+    + 'This test cannot verify an authorship constraint mechanically; it can only notice a '
+    + 'producer appearing. If you are adding one deliberately: state who may author the '
+    + 'declaration and how that is enforced, add a test for it, then extend the sanctioned '
+    + 'set here. Do not simply delete this assertion.\n\n'
+    + `Unsanctioned occurrences:\n${unsanctioned.join('\n')}`,
+  );
+});
+
+test('F9: the sanctioned read is still present — this pin fails closed', () => {
+  const mux = fs.readFileSync(MUX_TS, 'utf8');
+  assert.match(
+    mux,
+    /readFrontmatterField\([^,]+,\s*'zero_diff_intent'\)/,
+    'the read that feeds the arm must exist. If it is gone the arm is unreachable, and the '
+    + 'producer-absence test above would pass vacuously over a feature that no longer exists.',
+  );
+});
+
 test('AC-GTRUTH-A1-4: the zero-diff path performs no git write', () => {
   const oracle = fs.readFileSync(ORACLE_TS, 'utf8');
   const start = oracle.indexOf('function zeroDiffAccept(');
