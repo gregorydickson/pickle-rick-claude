@@ -277,6 +277,101 @@ happened, including the NEXT blocker.
 
 ---
 
+---
+
+# Interface Contracts
+
+## The type IS the bug (WS-1)
+
+```ts
+// pipeline-runner.ts:3852 — CURRENT
+type PhaseIterationOutcome =
+  | { action: 'continue' }
+  | { action: 'break'; phaseIncomplete?: boolean };   // <-- 'incomplete' EXISTS ONLY ON 'break'
+```
+
+`phaseIncomplete` is reachable only on the `'break'` arm, and `:3846` turns it into the process exit
+code (`if (phaseIncomplete) process.exit(PhaseIncomplete /* 3 */)`). **"This phase is incomplete" and
+"stop the pipeline" are the same field.** The verdict/disposition split is therefore not a metaphor —
+it is a one-line type widening:
+
+```ts
+// TARGET — the minimal change that makes the rule expressible
+type PhaseIterationOutcome =
+  | { action: 'continue'; phaseIncomplete?: boolean }   // report incomplete AND advance
+  | { action: 'break'; phaseIncomplete?: boolean };     // unchanged (crash floor only)
+```
+
+The session's final exit code then derives from **whether any phase reported incomplete**, not from
+which arm ended the loop. No new state field, no new file: the accumulator is a local in the phase
+loop, and `exit_reason` on disk is already the durable record.
+
+| Symbol | Contract |
+|---|---|
+| `reportPhaseIncomplete(runtime, phase)` | `-> boolean`. UNCHANGED semantics: `true` = stamped `pipeline_phase_incomplete`. Callers may no longer treat `true` as "break". |
+| `resolvePhaseIncompleteOutcome(runtime, rawPhase, exitCode, log)` | `-> PhaseIterationOutcome \| null`. Returns `{action:'continue', phaseIncomplete:true}` when the roster is fully terminal; `null` to fall through; `{action:'break'}` only for crash-floor reasons. |
+| `shouldHaltAfterPhase(phase, exitCode, runtime)` | `-> boolean`. MUST return `false` for every reason in `INCOMPLETE_EXIT_REASONS` ∪ {`pipeline_phase_incomplete`, `phase_no_progress`}. This is the invariant of AC-NS-5b. |
+| `evaluateCompletionEvidence(ctx)` | **UNCHANGED.** Success arm keeps non-nullable `sha` (or `via:'zero-diff'`); `zeroDiffAccept`'s hard-absent guard is untouched. |
+| `readDeclaredZeroDiffIntent(sessionDir, ticketId)` | `-> string \| null`. Read-only. WS-2 reuses it; adds NO writer of `zero_diff_intent`. |
+| Exit codes | `0` Success, `1` Failure, `3` PhaseIncomplete. A quality verdict yields **0 or 3, never 1** (`auto-resume.sh` keys retry on 3). |
+| Residual event (WS-3) | `logActivity({event, source:'pickle', ticket_id, phase, reason})` — existing surface, no new schema. |
+
+---
+
+# Verification Strategy
+
+All commands run from `extension/`. Single-file form is `node bin/test-runner.js <file>` — **never bare
+`node --test <file>`**, which drops `node_modules/.bin` from PATH and fabricates failures
+([[project_node_test_single_file_repro_fabricates_failures]]).
+
+| AC | Verify command | Type |
+|---|---|---|
+| AC-NS-1 | `node bin/test-runner.js tests/nostop-gates-phase-loop.test.js` | test |
+| AC-NS-2 | `node bin/test-runner.js tests/nostop-gates-phase-loop.test.js --grep "exit_reason preserved"` | test |
+| AC-NS-3 | `node bin/test-runner.js tests/pipeline-nonstop-halt-guard.test.js tests/nostop-gates-phase-loop.test.js` | test |
+| AC-NS-4 | `node bin/test-runner.js tests/pipeline-runner-halt-on-incomplete.test.js` | test |
+| AC-NS-5 | `node bin/test-runner.js tests/nostop-gates-phase-loop.test.js --grep "exit code"` | test |
+| **AC-NS-5b** | `node bin/test-runner.js tests/halt-or-recover-choke-point.test.js tests/nostop-gates-invariant.test.js` | test |
+| AC-NS-7 | `node bin/test-runner.js tests/nostop-gates-zero-diff-stamp.test.js` | test |
+| AC-NS-8 | `node bin/test-runner.js tests/zero-diff-completion-arm.test.js` | test |
+| AC-NS-8b | `git diff --exit-code HEAD -- tests/zero-diff-completion-arm.test.js` (**must exit 0** — the F9 pins stay byte-identical) | lint |
+| AC-NS-9 | `node bin/test-runner.js tests/nostop-gates-zero-diff-stamp.test.js --grep "split original"` | test |
+| AC-NS-10 | `node bin/test-runner.js tests/nostop-gates-zero-diff-stamp.test.js --grep "7af891d4"` | test |
+| AC-NS-10b | `node bin/test-runner.js tests/nostop-gates-arm-agreement.test.js` | test |
+| AC-NS-11 | `node bin/test-runner.js tests/nostop-gates-residual.test.js` | test |
+| AC-NS-12 | `node bin/test-runner.js tests/pipeline-finalize-honesty.test.js tests/nostop-gates-residual.test.js` | test |
+| AC-NS-13 | `node bin/test-runner.js tests/nostop-gates-residual.test.js --grep "byte-identical"` | test |
+| AC-NS-14/15/16 | artifact review — the ticket artifact must contain the phase count reached, the named next blocker, and the inventory-completeness statement | llm-conformance |
+| ALL (gate) | `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npm run test:fast && npm run test:integration` | typecheck+lint+test |
+
+**Test-file naming is a proposal, not a constraint** — refinement may fold these into existing suites.
+What is fixed: every AC above has a runnable command, and AC-NS-5b + AC-NS-10b are the two invariant
+tests that must exist somewhere.
+
+---
+
+# Test Expectations
+
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-NS-1 | `tests/nostop-gates-phase-loop.test.js` | 6/6 Done roster, mux exit 3, `done_without_commit_evidence` | Outcome object's `action !== 'break'`; citadel phase is reached |
+| AC-NS-2 | `tests/nostop-gates-phase-loop.test.js` | Same fixture, verdict durability | `state.json.exit_reason` ∈ {`pipeline_phase_incomplete`,`done_without_commit_evidence`} |
+| AC-NS-3 | `tests/nostop-gates-phase-loop.test.js` | 0 Done / 0 commits — anti-fake-green | Stamps incomplete AND `deriveCompletionVerdict()` is not success AND phase advances |
+| AC-NS-4 | `tests/pipeline-runner-halt-on-incomplete.test.js` | 3 Done / 3 Todo runnable roster | 3 tickets parked with residuals; `pipeline_phase_incomplete` reported; exit 3 |
+| AC-NS-5 | `tests/nostop-gates-phase-loop.test.js` | Exit-code mapping on the quality-verdict path | Exit code ∈ {0,3}; **never 1** |
+| **AC-NS-5b** | `tests/nostop-gates-invariant.test.js` | THE one rule, as one test | `∀ r ∈ INCOMPLETE_EXIT_REASONS ∪ {pipeline_phase_incomplete, phase_no_progress}: shouldHaltAfterPhase(...) === false` |
+| AC-NS-7 | `tests/nostop-gates-zero-diff-stamp.test.js` | Declared-zero-diff ticket + Done sibling w/ commit naming the sibling | No `completion_commit` in frontmatter; oracle returns `{ok:true, via:'zero-diff'}` |
+| AC-NS-8 | `tests/zero-diff-completion-arm.test.js` | Hard-absent guard is not laundered | Declared zero-diff ticket carrying a foreign SHA still refuses |
+| AC-NS-8b | `tests/zero-diff-completion-arm.test.js` | Both F9 pins survive unmodified | `git diff --exit-code` on the file exits 0 |
+| AC-NS-9 | `tests/nostop-gates-zero-diff-stamp.test.js` | Genuine split original, no declaration | Still auto-closes with twin's SHA; field is EXPLICIT, never `_inferred` |
+| AC-NS-10 | `tests/nostop-gates-zero-diff-stamp.test.js` | Field replay of the real wedge frontmatter | End-to-end verdict is committed-or-zero-diff, not `absent` |
+| **AC-NS-10b** | `tests/nostop-gates-arm-agreement.test.js` | Scan-arm/explicit-arm agreement, over a fixture matrix (own / foreign / baseline / unreachable) | If scan accepts `S` for `T`, persisting `S` as `T`'s explicit SHA and re-reading never yields `absent` |
+| AC-NS-11 | `tests/nostop-gates-residual.test.js` | Residual emission on the parked path | Exactly one activity event per parked ticket, carrying `{ticket_id, phase, verdict}` |
+| AC-NS-12 | `tests/pipeline-finalize-honesty.test.js` | Panel honesty with parked items | Panel states parked count; no unqualified "Complete" when count > 0 |
+| AC-NS-13 | `tests/nostop-gates-residual.test.js` | Zero-parked cosmetic neutrality | Panel output byte-identical to the clean-run baseline |
+
+---
+
 ## Build protocol
 
 - **`self_modifying_recovery: true`** — WS-2 edits the completion-evidence / Done-flip stamper, which
