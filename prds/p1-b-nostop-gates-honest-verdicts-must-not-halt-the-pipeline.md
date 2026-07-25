@@ -135,8 +135,8 @@ the right column is the *disposition*, which becomes CONTINUE unless the runner 
 **reporting**. Their job is to prevent the runner *claiming success* over an empty build, and that job
 is done entirely by `deriveCompletionVerdict` / `INCOMPLETE_EXIT_REASONS` / the panel (B-NONSTOP WS-2).
 Breaking the phase loop was never what made them honest; it is a second, separable effect that costs
-us every downstream review phase. **AC-NS-6 and AC-MWMO-D2-8 survive intact, re-pinned against the
-verdict and the panel instead of against the break** — see AC-NS-3. Any reviewer reading "we relaxed
+us every downstream review phase. **B-NONSTOP AC-NS-6 and AC-MWMO-D2-8 survive intact, re-pinned against the
+verdict and the panel instead of against the break** — see AC-NSG-1 row 2. Any reviewer reading "we relaxed
 the fake-green guard" has misread this: the guard's *assertion* is unchanged and newly test-pinned;
 only its authority over the loop is removed.
 
@@ -159,7 +159,7 @@ believes WS-1 is a two-line change will mis-tier the ticket and hit the wrong ga
 |---|---|
 | `reportPhaseIncomplete` `:3527` | the skip is gated on `statusUnfinished > 0`, unreachable for an all-Done roster — the field wedge |
 | `resolvePhaseIncompleteOutcome` `:4100`,`:4105` | stop returning `{action:'break'}` on the terminal-roster paths |
-| `maybeStampPhaseGraduation` `:3668`,`:3672` | **both** arms return `{action:'break', phaseIncomplete:true}`; row 2 of AC-NS-1 is gated here, not in `reportPhaseIncomplete` |
+| `maybeStampPhaseGraduation` `:3668`,`:3672` | **both** arms return `{action:'break', phaseIncomplete:true}`; row 2 of AC-NSG-1 is gated here, not in `reportPhaseIncomplete` |
 | `isFatalPhaseFailure` `:2806` | neutralize the `countCommitsSince === 0` arm **while preserving its `!startCommit` sibling at `:2805` in the same function** |
 | `maybeStampPickleIncompleteRobust` `:4270` | sentinel path — same treatment |
 
@@ -170,7 +170,7 @@ in the worker gate, and every one of these sites is pinned by fast-tier suites.
 ACs asserted four facets of ONE outcome object over one fixture family. They are now a single
 table-driven invariant. Nothing was dropped — each former AC is a column.)*
 
-- **AC-NS-1 — ALL quality-verdict phase exits advance the pipeline while reporting honestly.**
+- **AC-NSG-1 — ALL quality-verdict phase exits advance the pipeline while reporting honestly.**
   One parametrized suite, `describe.each([...])` over the roster matrix below. For **every** row:
   (a) the outcome's `action !== 'break'` when `advances` is true (asserted on the returned object, never a log string);
   (b) the honesty verdict equals `reports`;
@@ -186,14 +186,14 @@ table-driven invariant. Nothing was dropped — each former AC is a column.)*
   | 3 | 3 `Done` / 3 `Todo` — status-runnable remains | ❌ (stops, resumable) | incomplete | ❌ | `pipeline_phase_incomplete` | 3 |
   | 4 | 6/6 `Done`, all evidenced, clean | ✅ | complete | ✅ | `completed` | 0 |
 
-  Row 2 is the re-aimed **AC-NS-6 / AC-MWMO-D2-8** pin: what those guards *assert* is unchanged and
+  Row 2 is the re-aimed **B-NONSTOP AC-NS-6 / AC-MWMO-D2-8** pin: what those guards *assert* is unchanged and
   now stronger (columns `reports` + `panel_success`); only their authority over the loop is gone.
   Row 3 preserves the B-PXBO / R-ICP-2 exit-3 contract — a *runnable* roster still stops, and stops
   **resumably**. Row 4 is the no-cosmetic-regression control.
   `pipeline-runner-halt-on-incomplete.test.js` must be updated **deliberately, not deleted**: the
   ticket artifact must show the old and new assertion side by side with a one-line rationale.
 
-- **AC-NS-5b — the ONE RULE as one invariant (CORRECTED; the original was unsatisfiable).**
+- **AC-NSG-5b — the ONE RULE as one invariant (CORRECTED; the original was unsatisfiable).**
   For **every** reason `r` ∈ `INCOMPLETE_EXIT_REASONS` ∪ {`pipeline_phase_incomplete`,
   `phase_no_progress`} and **every** `exitCode` ∈ {1, 3}: `shouldHaltAfterPhase(phase, exitCode, runtime)`
   returns `false` — **given a runtime where both reason-independent arms are absent**, i.e.
@@ -208,11 +208,11 @@ table-driven invariant. Nothing was dropped — each former AC is a column.)*
   > by deleting the sanctioned `--strict-phases` override** — killing the contract pinned by
   > `pipeline-runner-phase-fail-continue.test.js` **and** the bundle's rollback. It was also
   > trivially passable, since `:2830` early-returns `false` for `exitCode === 0` — hence the explicit
-  > `exitCode ∈ {1,3}` quantifier. **No ticket may satisfy AC-NS-5b by weakening `:2805` or `:2840`.**
+  > `exitCode ∈ {1,3}` quantifier. **No ticket may satisfy AC-NSG-5b by weakening `:2805` or `:2840`.**
 
 **Simplification Review:**
 1. *Necessary?* Adds **no** state field, flag, or guard. One optional type field moves onto an existing union arm; the rest is deletion and re-wiring.
-2. *Reuse?* Yes — the existing `PhaseIterationOutcome` union, `recordExitReason`, and `deriveCompletionVerdict`. No parallel mechanism. **Rollback reuses the existing `--strict-phases` / `pipeline_continue_on_phase_fail: false` lever — no new kill-switch flag** (which is a second reason AC-NS-5b must not let a worker delete it).
+2. *Reuse?* Yes — the existing `PhaseIterationOutcome` union, `recordExitReason`, and `deriveCompletionVerdict`. No parallel mechanism. **Rollback reuses the existing `--strict-phases` / `pipeline_continue_on_phase_fail: false` lever — no new kill-switch flag** (which is a second reason AC-NSG-5b must not let a worker delete it).
 3. *Guards brittle complexity?* Yes, and it **subtracts** it: five stacked refinements of one predicate is the brittleness. We stop refining the predicate and cut its authority over the loop instead.
 4. *Subtracts?* One conjunct (`statusUnfinished > 0`) and four control-flow edges. **Correction: the earlier "net LOC negative" claim does not survive** — 4 sites across 3 functions, plus a parametrized test suite, is likely LOC-neutral-to-positive. The subtraction is in *authority and branch count*, not line count. Claiming otherwise would be the kind of unverified assertion this PRD exists to punish.
 
@@ -271,7 +271,7 @@ re-introduce it here.
 - **WS-2 adds NO writer of `zero_diff_intent`.** Fix (a) is a **read** — implement it by calling the
   existing `readDeclaredZeroDiffIntent` (`mux-runner.ts:4806`), whose call site contains no
   `zero_diff_intent` literal and therefore does not extend the pin's scan surface.
-- **AC-NS-8b (CORRECTED — the original verify command could not fail):** `tests/zero-diff-completion-arm.test.js`
+- **AC-NSG-8b (CORRECTED — the original verify command could not fail):** `tests/zero-diff-completion-arm.test.js`
   stays byte-identical **relative to the bundle's `start_commit`**, not to `HEAD`:
   `git diff --exit-code <start_commit> -- extension/tests/zero-diff-completion-arm.test.js`.
   The original pinned against `HEAD`, which a worker satisfies by modifying the file **and committing
@@ -284,11 +284,11 @@ moving-SHA observation above is the discriminator), and whether the promote→re
 an **undeclared** ticket. If it does, the defect is wider than zero-diff and (b) is the fix.
 
 **Acceptance:**
-- **AC-NS-7** Fixture: ticket declaring `zero_diff_intent: audit` + a Done sibling with a commit naming the sibling. After the phantom-Done/auto-close pass, the declared ticket's frontmatter has **no** `completion_commit`, and `evaluateCompletionEvidence` returns `{ok: true, via: 'zero-diff'}`.
-- **AC-NS-8** `zeroDiffAccept`'s `baseline_sha`/`foreign_attribution` hard-absent guard is **unchanged** — assert the guard's behavior directly (a declared zero-diff ticket that IS carrying a foreign SHA still refuses). Laundering is not the fix.
-- **AC-NS-9** Negative pin: a genuine split original **without** a `zero_diff_intent` declaration still auto-closes with the twin's SHA (R-PDUP unchanged; the 20MB-state infinite-loop guard — EXPLICIT never `_inferred` — survives).
-- **AC-NS-10** Regression pin on the real shape: reconstruct the `7af891d4` frontmatter as a fixture; the end-to-end oracle verdict is committed-or-zero-diff, **not** `absent`.
-- **AC-NS-10b** **Arm-agreement invariant** (the general statement of this defect): for any SHA `S` and ticket `T`, if the scan arm accepts `S` as `T`'s evidence, then persisting `S` as `T`'s EXPLICIT `completion_commit` and re-reading MUST NOT yield `absent`. Property-style test over a small fixture matrix (own-commit / foreign-commit / baseline / unreachable). **This one assertion would have caught the wedge**, and it pins fix (a) and (b) equally — it is the AC to write first.
+- **AC-NSG-7** Fixture: ticket declaring `zero_diff_intent: audit` + a Done sibling with a commit naming the sibling. After the phantom-Done/auto-close pass, the declared ticket's frontmatter has **no** `completion_commit`, and `evaluateCompletionEvidence` returns `{ok: true, via: 'zero-diff'}`.
+- **AC-NSG-8** `zeroDiffAccept`'s `baseline_sha`/`foreign_attribution` hard-absent guard is **unchanged** — assert the guard's behavior directly (a declared zero-diff ticket that IS carrying a foreign SHA still refuses). Laundering is not the fix.
+- **AC-NSG-9** Negative pin: a genuine split original **without** a `zero_diff_intent` declaration still auto-closes with the twin's SHA (R-PDUP unchanged; the 20MB-state infinite-loop guard — EXPLICIT never `_inferred` — survives).
+- **AC-NSG-10** Regression pin on the real shape: reconstruct the `7af891d4` frontmatter as a fixture; the end-to-end oracle verdict is committed-or-zero-diff, **not** `absent`.
+- **AC-NSG-10b** **Arm-agreement invariant** (the general statement of this defect): for any SHA `S` and ticket `T`, if the scan arm accepts `S` as `T`'s evidence, then persisting `S` as `T`'s EXPLICIT `completion_commit` and re-reading MUST NOT yield `absent`. Property-style test over a small fixture matrix (own-commit / foreign-commit / baseline / unreachable). **This one assertion would have caught the wedge**, and it pins fix (a) and (b) equally — it is the AC to write first.
 
 **Simplification Review:**
 1. *Necessary?* Adds a skip condition (one predicate) on an existing write. No new state/flag.
@@ -310,9 +310,9 @@ existing `logActivity` surface naming the ticket, the phase, and the verdict, an
 completion panel reports the parked count. **No new state field, no new file, no new gate.**
 
 **Acceptance:**
-- **AC-NS-11** The AC-NS-1 fixture emits exactly one activity event per parked ticket, carrying `{ticket_id, phase, verdict/exit_reason}`; asserted on the parsed event object.
-- **AC-NS-12** The end-of-run completion panel states the parked count and does **not** render an unqualified "Complete" when it is > 0 (reuses `deriveCompletionVerdict` / `INCOMPLETE_EXIT_REASONS` — B-NONSTOP WS-2's honesty gate stays authoritative).
-- **AC-NS-13** Zero parked items ⇒ panel output byte-identical to today's clean-run panel (no cosmetic churn).
+- **AC-NSG-11** The AC-NSG-1 fixture emits exactly one activity event per parked ticket, carrying `{ticket_id, phase, verdict/exit_reason}`; asserted on the parsed event object.
+- **AC-NSG-12** The end-of-run completion panel states the parked count and does **not** render an unqualified "Complete" when it is > 0 (reuses `deriveCompletionVerdict` / `INCOMPLETE_EXIT_REASONS` — B-NONSTOP WS-2's honesty gate stays authoritative).
+- **AC-NSG-13** Zero parked items ⇒ panel output byte-identical to today's clean-run panel (no cosmetic churn).
 
 **Simplification Review:**
 1. *Necessary?* Yes — it is the "flag" half of directive 2; without it WS-1 is a fake-green regression.
@@ -330,9 +330,9 @@ pipeline no longer halts on an honest verdict" must **run a pipeline** and recor
 happened, including the NEXT blocker.
 
 **Acceptance:**
-- **AC-NS-14** Replay the wedged fixture (session `2026-07-25-38095284`'s roster shape) through `pipeline-runner` end-to-end and record, in the ticket artifact, the phase count reached. Must be **> 1** (pre-fix: 0/4).
-- **AC-NS-15** The artifact NAMES the next blocker encountered (or states "none reached") and whether it is CONTINUE-class (a WS-1 miss — file it) or CRASH-FLOOR-class (correct). **A "no next blocker, all green" verdict without a named phase count is not acceptance.**
-- **AC-NS-16** The artifact states, explicitly, whether the halt-site inventory table above was found COMPLETE at research time, listing any site found that this PRD missed. Ledger drift runs ~2-in-6; this AC assumes this PRD is wrong somewhere.
+- **AC-NSG-14** Replay the wedged fixture (session `2026-07-25-38095284`'s roster shape) through `pipeline-runner` end-to-end and record, in the ticket artifact, the phase count reached. Must be **> 1** (pre-fix: 0/4).
+- **AC-NSG-15** The artifact NAMES the next blocker encountered (or states "none reached") and whether it is CONTINUE-class (a WS-1 miss — file it) or CRASH-FLOOR-class (correct). **A "no next blocker, all green" verdict without a named phase count is not acceptance.**
+- **AC-NSG-16** The artifact states, explicitly, whether the halt-site inventory table above was found COMPLETE at research time, listing any site found that this PRD missed. Ledger drift runs ~2-in-6; this AC assumes this PRD is wrong somewhere.
 
 **Simplification Review:** pure verification, adds no product code. Subtraction: n/a (verification ticket).
 
@@ -371,7 +371,7 @@ loop, and `exit_reason` on disk is already the durable record.
 |---|---|
 | `reportPhaseIncomplete(runtime, phase)` | `-> boolean`. UNCHANGED semantics: `true` = stamped `pipeline_phase_incomplete`. Callers may no longer treat `true` as "break". |
 | `resolvePhaseIncompleteOutcome(runtime, rawPhase, exitCode, log)` | `-> PhaseIterationOutcome \| null`. Returns `{action:'continue', phaseIncomplete:true}` when the roster is fully terminal; `null` to fall through; `{action:'break'}` only for crash-floor reasons. |
-| `shouldHaltAfterPhase(phase, exitCode, runtime)` | `-> boolean`. **Reason-keyed invariant only** (AC-NS-5b), and ONLY once the two reason-independent arms are excluded: `:2835` `isFatalPhaseFailure` and `:2840` the `pipeline_continue_on_phase_fail === false` override both return `true` **before any reason is consulted** and are SANCTIONED. See "AC-NS-5b, corrected". |
+| `shouldHaltAfterPhase(phase, exitCode, runtime)` | `-> boolean`. **Reason-keyed invariant only** (AC-NSG-5b), and ONLY once the two reason-independent arms are excluded: `:2835` `isFatalPhaseFailure` and `:2840` the `pipeline_continue_on_phase_fail === false` override both return `true` **before any reason is consulted** and are SANCTIONED. See "AC-NSG-5b, corrected". |
 | `evaluateCompletionEvidence(ctx)` | **UNCHANGED.** Success arm keeps non-nullable `sha` (or `via:'zero-diff'`); `zeroDiffAccept`'s hard-absent guard is untouched. |
 | `readDeclaredZeroDiffIntent(sessionDir, ticketId)` | `-> string \| null`. Read-only. WS-2 reuses it; adds NO writer of `zero_diff_intent`. |
 | Exit codes | `0` Success, `1` Failure, `3` PhaseIncomplete. **`exit_reason` is DISPOSITION, not verdict** — `auto-resume.sh:154` relaunches iff `exit_reason` ∈ {`pipeline_phase_incomplete`, `phase_no_progress`, `phase_incomplete_tickets`} (verified at HEAD). A run that ADVANCED through all phases MUST NOT terminate carrying one of those three, or it arms an auto-relaunch of a pipeline that deliberately continued. Durable honesty lives in the residual events + panel. |
@@ -387,22 +387,22 @@ All commands run from `extension/`. Single-file form is `node bin/test-runner.js
 
 | AC | Verify command | Type |
 |---|---|---|
-| **AC-NS-1** (all 4 matrix rows) | `node bin/test-runner.js tests/nostop-gates-phase-loop.test.js tests/pipeline-nonstop-halt-guard.test.js tests/pipeline-runner-halt-on-incomplete.test.js` | test |
-| **AC-NS-5b** (+ both positive pins) | `node bin/test-runner.js tests/halt-or-recover-choke-point.test.js tests/nostop-gates-invariant.test.js tests/pipeline-runner-phase-fail-continue.test.js` | test |
-| AC-NS-7 | `node bin/test-runner.js tests/nostop-gates-zero-diff-stamp.test.js` | test |
-| AC-NS-8 | `node bin/test-runner.js tests/zero-diff-completion-arm.test.js` | test |
-| AC-NS-8b | `git diff --exit-code HEAD -- tests/zero-diff-completion-arm.test.js` (**must exit 0** — the F9 pins stay byte-identical) | lint |
-| AC-NS-9 | `node bin/test-runner.js tests/nostop-gates-zero-diff-stamp.test.js --grep "split original"` | test |
-| AC-NS-10 | `node bin/test-runner.js tests/nostop-gates-zero-diff-stamp.test.js --grep "7af891d4"` | test |
-| AC-NS-10b | `node bin/test-runner.js tests/nostop-gates-arm-agreement.test.js` | test |
-| AC-NS-11 | `node bin/test-runner.js tests/nostop-gates-residual.test.js` | test |
-| AC-NS-12 | `node bin/test-runner.js tests/pipeline-finalize-honesty.test.js tests/nostop-gates-residual.test.js` | test |
-| AC-NS-13 | `node bin/test-runner.js tests/nostop-gates-residual.test.js --grep "byte-identical"` | test |
-| AC-NS-14/15/16 | artifact review — the ticket artifact must contain the phase count reached, the named next blocker, and the inventory-completeness statement | llm-conformance |
+| **AC-NSG-1** (all 4 matrix rows) | `node bin/test-runner.js tests/nostop-gates-phase-loop.test.js tests/pipeline-nonstop-halt-guard.test.js tests/pipeline-runner-halt-on-incomplete.test.js` | test |
+| **AC-NSG-5b** (+ both positive pins) | `node bin/test-runner.js tests/halt-or-recover-choke-point.test.js tests/nostop-gates-invariant.test.js tests/pipeline-runner-phase-fail-continue.test.js` | test |
+| AC-NSG-7 | `node bin/test-runner.js tests/nostop-gates-zero-diff-stamp.test.js` | test |
+| AC-NSG-8 | `node bin/test-runner.js tests/zero-diff-completion-arm.test.js` | test |
+| AC-NSG-8b | `git diff --exit-code "$(node -e "process.stdout.write(require('<SESSION_ROOT>/state.json').start_commit)")" -- extension/tests/zero-diff-completion-arm.test.js` (**must exit 0**). Base is the bundle's `start_commit` from `state.json`, **never `HEAD`** — a `HEAD` base is satisfied by modifying the file *and committing it*, i.e. a tautology guarding the PRD's only HARD constraint. | lint |
+| AC-NSG-9 | `node bin/test-runner.js tests/nostop-gates-zero-diff-stamp.test.js --grep "split original"` | test |
+| AC-NSG-10 | `node bin/test-runner.js tests/nostop-gates-zero-diff-stamp.test.js --grep "7af891d4"` | test |
+| AC-NSG-10b | `node bin/test-runner.js tests/nostop-gates-arm-agreement.test.js` | test |
+| AC-NSG-11 | `node bin/test-runner.js tests/nostop-gates-residual.test.js` | test |
+| AC-NSG-12 | `node bin/test-runner.js tests/pipeline-finalize-honesty.test.js tests/nostop-gates-residual.test.js` | test |
+| AC-NSG-13 | `node bin/test-runner.js tests/nostop-gates-residual.test.js --grep "byte-identical"` | test |
+| AC-NSG-14/15/16 | artifact review — the ticket artifact must contain the phase count reached, the named next blocker, and the inventory-completeness statement | llm-conformance |
 | ALL (gate) | `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npm run test:fast && npm run test:integration` | typecheck+lint+test |
 
 **Test-file naming is a proposal, not a constraint** — refinement may fold these into existing suites.
-What is fixed: every AC above has a runnable command, and AC-NS-5b + AC-NS-10b are the two invariant
+What is fixed: every AC above has a runnable command, and AC-NSG-5b + AC-NSG-10b are the two invariant
 tests that must exist somewhere.
 
 ---
@@ -411,19 +411,19 @@ tests that must exist somewhere.
 
 | Criterion | Test File | Description | Assertion |
 |:---|:---|:---|:---|
-| **AC-NS-1** | `tests/nostop-gates-phase-loop.test.js` | `describe.each` over all 4 roster-matrix rows | Per row: `action`, honesty verdict, `deriveCompletionVerdict()`, `terminal_reason` ∉ auto-resume triggers when advanced, exit code — never 1 |
-| AC-NS-1 row 3 | `tests/pipeline-runner-halt-on-incomplete.test.js` | 3 Done / 3 Todo runnable roster (deliberate update, not deletion) | 3 tickets parked with residuals; stops resumably at `pipeline_phase_incomplete`; exit 3 |
-| **AC-NS-5b** | `tests/nostop-gates-invariant.test.js` | THE one rule, plus its two crash-floor pins | `∀ r ∈ INCOMPLETE_EXIT_REASONS ∪ {pipeline_phase_incomplete, phase_no_progress}, ∀ exitCode ∈ {1,3}` with `start_commit` present and no strict override → `false`; **and** `pipeline_continue_on_phase_fail === false` → `true`; **and** missing `start_commit` → `true` |
-| AC-NS-5b pin | `tests/pipeline-runner-phase-fail-continue.test.js` | `--strict-phases` contract survives | Existing suite stays green unmodified |
-| AC-NS-7 | `tests/nostop-gates-zero-diff-stamp.test.js` | Declared-zero-diff ticket + Done sibling w/ commit naming the sibling | No `completion_commit` in frontmatter; oracle returns `{ok:true, via:'zero-diff'}` |
-| AC-NS-8 | `tests/zero-diff-completion-arm.test.js` | Hard-absent guard is not laundered | Declared zero-diff ticket carrying a foreign SHA still refuses |
-| AC-NS-8b | `tests/zero-diff-completion-arm.test.js` | Both F9 pins survive unmodified | `git diff --exit-code` on the file exits 0 |
-| AC-NS-9 | `tests/nostop-gates-zero-diff-stamp.test.js` | Genuine split original, no declaration | Still auto-closes with twin's SHA; field is EXPLICIT, never `_inferred` |
-| AC-NS-10 | `tests/nostop-gates-zero-diff-stamp.test.js` | Field replay of the real wedge frontmatter | End-to-end verdict is committed-or-zero-diff, not `absent` |
-| **AC-NS-10b** | `tests/nostop-gates-arm-agreement.test.js` | Scan-arm/explicit-arm agreement, over a fixture matrix (own / foreign / baseline / unreachable) | If scan accepts `S` for `T`, persisting `S` as `T`'s explicit SHA and re-reading never yields `absent` |
-| AC-NS-11 | `tests/nostop-gates-residual.test.js` | Residual emission on the parked path | Exactly one activity event per parked ticket, carrying `{ticket_id, phase, verdict}` |
-| AC-NS-12 | `tests/pipeline-finalize-honesty.test.js` | Panel honesty with parked items | Panel states parked count; no unqualified "Complete" when count > 0 |
-| AC-NS-13 | `tests/nostop-gates-residual.test.js` | Zero-parked cosmetic neutrality | Panel output byte-identical to the clean-run baseline |
+| **AC-NSG-1** | `tests/nostop-gates-phase-loop.test.js` | `describe.each` over all 4 roster-matrix rows | Per row: `action`, honesty verdict, `deriveCompletionVerdict()`, `terminal_reason` ∉ auto-resume triggers when advanced, exit code — never 1 |
+| AC-NSG-1 row 3 | `tests/pipeline-runner-halt-on-incomplete.test.js` | 3 Done / 3 Todo runnable roster (deliberate update, not deletion) | 3 tickets parked with residuals; stops resumably at `pipeline_phase_incomplete`; exit 3 |
+| **AC-NSG-5b** | `tests/nostop-gates-invariant.test.js` | THE one rule, plus its two crash-floor pins | `∀ r ∈ INCOMPLETE_EXIT_REASONS ∪ {pipeline_phase_incomplete, phase_no_progress}, ∀ exitCode ∈ {1,3}` with `start_commit` present and no strict override → `false`; **and** `pipeline_continue_on_phase_fail === false` → `true`; **and** missing `start_commit` → `true` |
+| AC-NSG-5b pin | `tests/pipeline-runner-phase-fail-continue.test.js` | `--strict-phases` contract survives | Existing suite stays green unmodified |
+| AC-NSG-7 | `tests/nostop-gates-zero-diff-stamp.test.js` | Declared-zero-diff ticket + Done sibling w/ commit naming the sibling | No `completion_commit` in frontmatter; oracle returns `{ok:true, via:'zero-diff'}` |
+| AC-NSG-8 | `tests/zero-diff-completion-arm.test.js` | Hard-absent guard is not laundered | Declared zero-diff ticket carrying a foreign SHA still refuses |
+| AC-NSG-8b | `tests/zero-diff-completion-arm.test.js` | Both F9 pins survive unmodified | `git diff --exit-code <start_commit from state.json> -- extension/tests/zero-diff-completion-arm.test.js` exits 0. **Base MUST be `start_commit`, never `HEAD`** — a `HEAD` base cannot fail. |
+| AC-NSG-9 | `tests/nostop-gates-zero-diff-stamp.test.js` | Genuine split original, no declaration | Still auto-closes with twin's SHA; field is EXPLICIT, never `_inferred` |
+| AC-NSG-10 | `tests/nostop-gates-zero-diff-stamp.test.js` | Field replay of the real wedge frontmatter | End-to-end verdict is committed-or-zero-diff, not `absent` |
+| **AC-NSG-10b** | `tests/nostop-gates-arm-agreement.test.js` | Scan-arm/explicit-arm agreement, over a fixture matrix (own / foreign / baseline / unreachable) | If scan accepts `S` for `T`, persisting `S` as `T`'s explicit SHA and re-reading never yields `absent` |
+| AC-NSG-11 | `tests/nostop-gates-residual.test.js` | Residual emission on the parked path | Exactly one activity event per parked ticket, carrying `{ticket_id, phase, verdict}` |
+| AC-NSG-12 | `tests/pipeline-finalize-honesty.test.js` | Panel honesty with parked items | Panel states parked count; no unqualified "Complete" when count > 0 |
+| AC-NSG-13 | `tests/nostop-gates-residual.test.js` | Zero-parked cosmetic neutrality | Panel output byte-identical to the clean-run baseline |
 
 ---
 
@@ -431,9 +431,9 @@ tests that must exist somewhere.
 
 | # | Risk | Position / pin |
 |---|---|---|
-| R1 | **Continuing feeds a partial tree to phases that have destroyed good work.** The PRD's justification — *"citadel/anatomy/szechuan operate on the tree, not the roster"* — was asserted, not risk-assessed. This repo's history contradicts the safety half: an **unscoped szechuan judge has reverted a GOOD commit** (whole-repo scan → runner revert), szechuan deadlocks on the TS/compiled mirror, and the anatomy runner 429-spins past its convergence check. Advancing over Done-but-unevidenced tickets is therefore a **new destruction surface for verified work** — the one thing under standing instruction never to create. | **PROCEED, with two pins:** (1) the parked-ticket set is passed to downstream phases, and **no downstream phase may revert a commit attributed to a parked ticket**; (2) downstream phases in this bundle's own runs must be **scope-locked** (`--scope branch`), never unscoped. Ref: [[project_unscoped_szechuan_judge_fakes_regressions]]. |
-| R2 | A worker satisfies AC-NS-5b by deleting the `--strict-phases` override — which is also the only rollback. | AC-NS-5b rewritten with crash-floor exemptions **plus paired positive pins** that `:2840` and `:2805` still halt. Explicit prohibition in the AC text. |
-| R3 | A preserved `pipeline_phase_incomplete` on an advancing run arms `auto-resume.sh:154` → relaunch loop. | Verified at HEAD. `exit_reason` is disposition; a fully-advanced run must not terminate on an auto-resume trigger. Row 1/2 of AC-NS-1 assert `terminal_reason` is NOT a trigger. |
+| R1 | **Continuing feeds a partial tree to phases that have destroyed good work.** The PRD's justification — *"citadel/anatomy/szechuan operate on the tree, not the roster"* — was asserted, not risk-assessed. This repo's history contradicts the safety half: an **unscoped szechuan judge has reverted a GOOD commit** (whole-repo scan → runner revert), szechuan deadlocks on the TS/compiled mirror, and the anatomy runner 429-spins past its convergence check. Advancing over Done-but-unevidenced tickets is therefore a **new destruction surface for verified work** — the one thing under standing instruction never to create. | **PROCEED, mitigated by scope-lock ONLY — with the residual risk stated honestly, not pinned away.** Every run of this bundle (and every pipeline launched on the repaired runtime) MUST pass `--scope branch`; scope is **opt-in** in code (`pipeline-runner.ts:3203` `if (!scopeFlag) return;`), so omitting it arms exactly this surface. **Encoded in Operator Decision 2 + Build protocol, not left to prose.** Ref: [[project_unscoped_szechuan_judge_fakes_regressions]]. **RESIDUAL, ACCEPTED:** a scope-locked downstream phase can still, in principle, revert a commit belonging to a parked ticket. The stronger pin — passing the parked set across the phase boundary so downstream refuses those commits — is **deliberately NOT taken in this bundle**: it is new cross-phase machinery (a new state field or file), which WS-3 §2 explicitly rejects and which contradicts this bundle's subtractive thesis. Requiring and forbidding the same mechanism would be incoherent. If R1's residual bites in the field, it earns its **own** PRD with that mechanism scoped properly. |
+| R2 | A worker satisfies AC-NSG-5b by deleting the `--strict-phases` override — which is also the only rollback. | AC-NSG-5b rewritten with crash-floor exemptions **plus paired positive pins** that `:2840` and `:2805` still halt. Explicit prohibition in the AC text. |
+| R3 | A preserved `pipeline_phase_incomplete` on an advancing run arms `auto-resume.sh:154` → relaunch loop. | Verified at HEAD. `exit_reason` is disposition; a fully-advanced run must not terminate on an auto-resume trigger. Row 1/2 of AC-NSG-1 assert `terminal_reason` is NOT a trigger. |
 | R4 | WS-2 option (b) creates a new false-`absent` class on the R-CCRC-1 recovery path. | (b) gated behind a green `has-completion-commit-ref-code.test.js` + an explicit artifact statement. (a) preferred. |
 | R5 | WS-3 emits to the wrong sink / per-iteration → the documented 20MB `state.json` class. | Sink named: `logActivity` → activity JSONL, reusing `ticket_auto_skip_no_evidence`. **Never** `writeActivityEntry`/`state.json.activity`. Emission is **per parked ticket, once per phase**, not per iteration. Cap precedent if a list is ever embedded: `EVERYTHING_BUT_COMMIT_PATH_CAP = 20` with `truncated` + `total_count`. |
 | R6 | No kill-switch for globally removing halt authority. | **No new flag.** `pipeline_continue_on_phase_fail: false` / `--strict-phases` already restores pre-bundle halting and MUST survive (see R2). |
@@ -442,7 +442,13 @@ tests that must exist somewhere.
 `extension/tests/nostop-gates-phase-loop.test.js`, `extension/tests/nostop-gates-invariant.test.js`,
 `extension/tests/nostop-gates-zero-diff-stamp.test.js`, `extension/tests/nostop-gates-arm-agreement.test.js`,
 `extension/tests/nostop-gates-residual.test.js`. Refinement may fold these into existing suites; only
-AC-NS-5b's and AC-NS-10b's invariants must exist somewhere.
+AC-NSG-5b's and AC-NSG-10b's invariants must exist somewhere.
+
+**AC ID namespace — `AC-NSG-*` (NOSTOP-GATES).** This bundle's ACs are prefixed `AC-NSG-`, **not**
+`AC-NS-`. `AC-NS-*` belongs to the live sibling [[B-NONSTOP]], and an earlier draft of this PRD
+double-defined `AC-NS-1/7/8/9/10` across both files while *citing* `AC-NS-3`/`AC-NS-6` as its own when
+they resolve to the sibling. Any reference here to `B-NONSTOP AC-NS-6` means the **sibling's**
+criterion, preserved unchanged. No ticket may introduce a bare `AC-NS-<n>` for this bundle.
 
 **Citation disambiguation:** unqualified "CLAUDE.md" is ambiguous in this repo (9 matches). This PRD
 means `pickle-rick-claude/CLAUDE.md` for the dogfood/R-WSRC rules and
@@ -482,6 +488,15 @@ state at `<SESSION_ROOT>/state.json` (runtime artifact, not a repo path).
    the build is not."* Consequence: **R-WDTF-TO's review phases are not skipped** — once WS-1 lands,
    relaunch them and they run on the repaired runtime. Ordering constraint only; WS-1 does not touch
    R-WDTF-TO's diff. **No separate beta.7-for-R-WDTF-TO gate.**
+2b. **MANDATORY LAUNCH FLAG: `--scope branch`.** Scope is **opt-in** in code
+   (`pipeline-runner.ts:3203` `if (!scopeFlag) return;`), so an unattended launch that omits it runs
+   citadel / anatomy-park / szechuan-sauce **unscoped over the whole repo** — arming precisely the
+   destruction surface R1 identifies (an unscoped szechuan judge has reverted a GOOD commit in this
+   repo). The launch command is therefore
+   `/pickle-pipeline --scope branch --prd <this file>`. This also suppresses the scope-inference
+   prompt, keeping the run genuinely unattended. **An unscoped launch of this bundle is a protocol
+   violation, not a default.**
+
 2. **Launch NOW, unattended, WS-1 FIRST.** WS-1/WS-3 are pipeline-safe (pipeline-runner control flow
    + `logActivity` — the run executes DEPLOYED JS, not this source diff, which lands only at
    `install.sh`). Ordering WS-1 first means a mid-bundle wedge on WS-2 still leaves the core halt
@@ -496,9 +511,9 @@ state at `<SESSION_ROOT>/state.json` (runtime artifact, not a repo path).
 - No new completion-oracle case, no new evidence arm, no laundering of hard-absent evidence (directive 4).
 - No weakening of what the anti-fake-green guards **assert** (`phase_no_progress`,
   `countCommitsSince === 0`) or of the honesty panel. Only their authority over the phase loop is
-  removed — see "On the two fake-green guards" above and AC-NS-3.
+  removed — see "On the two fake-green guards" above and AC-NSG-1 row 2.
 - **No per-site halt-classification matrix.** If the build produces a table of "these verdicts halt,
-  these continue," it has reproduced the treadmill. One rule, one invariant test (AC-NS-5b).
+  these continue," it has reproduced the treadmill. One rule, one invariant test (AC-NSG-5b).
 - No change to `state.json` schema (`schema_neutral: true`).
 - **B-RGATE is NOT in scope** (drain item 2) — the *release* gate's environment-vs-code problem is a
   sibling thesis one level up, and its "unrunnable ≠ red" class is referenced here only as a naming
