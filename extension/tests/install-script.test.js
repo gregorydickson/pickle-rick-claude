@@ -721,20 +721,55 @@ function extractManagedKeysJqFromInstallSh() {
 }
 
 describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
-  test('AC-SSAT-3/6: strips timeout, forces codegraph on, preserves sibling tunable', () => {
+  // AC-GTRUTH-B3-1 (upgrade path: deployed enabled=false -> true) and AC-GTRUTH-B3-2
+  // (every sibling tunable survives) are asserted here together, because they are two
+  // halves of one claim about the SAME MANAGED_KEYS pass: it forces exactly two keys and
+  // touches nothing else in the codegraph block.
+  //
+  // Every sibling below is seeded with a value DIFFERENT from the source default
+  // (index_timeout_ms 120000 / sync 30000 / query 5000 / staleness 30 / context 8192), so a
+  // regression that overwrote the whole codegraph block with source values would be caught.
+  // Seeding them at the defaults would let that regression pass by coincidence.
+  //
+  // `expose_mcp_to_workers` is the one sibling seeded AT its default, and deliberately: it
+  // is a Non-Goal of this bundle ("stays false — separate C0-gated flip"), so what needs
+  // pinning is that MANAGED_KEYS neither flips it true nor drops the key.
+  test('AC-GTRUTH-B3-1/B3-2 (AC-SSAT-3/6): strips timeout, forces codegraph on, preserves EVERY sibling tunable', () => {
+    const deployedCodegraph = {
+      enabled: false,
+      index_at_setup: false,
+      index_timeout_ms: 111000,
+      sync_timeout_ms: 22000,
+      query_timeout_ms: 3300,
+      staleness_max_age_minutes: 15,
+      context_max_bytes: 4444,
+      expose_mcp_to_workers: false,
+    };
     const fixture = makeKillSwitchForceFixture({
       deployedAutoUpdateEnabled: true,
       deployedTimeoutMs: 240000,
-      deployedCodegraph: { enabled: false, index_at_setup: false, staleness_max_age_minutes: 15 },
+      deployedCodegraph,
     });
     try {
       const result = runKillSwitchForceFixture(fixture);
       assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
       const deployedSettings = readJson(fixture.deployedSettingsPath);
       assert.equal('worker_test_gate_timeout_ms' in deployedSettings, false);
+
+      // AC-GTRUTH-B3-1 — the upgrade path, not just a fresh install.
       assert.equal(deployedSettings.codegraph.enabled, true);
       assert.equal(deployedSettings.codegraph.index_at_setup, true);
-      assert.equal(deployedSettings.codegraph.staleness_max_age_minutes, 15);
+
+      // AC-GTRUTH-B3-2 — the exhaustive survivor set, asserted as a whole object so a key
+      // ADDED to the forced set is caught too. A per-key sweep would miss that.
+      assert.deepEqual(
+        deployedSettings.codegraph,
+        { ...deployedCodegraph, enabled: true, index_at_setup: true },
+        'MANAGED_KEYS must force exactly codegraph.enabled and codegraph.index_at_setup. Any '
+        + 'other difference means it now overwrites an operator tunable — and if that key is '
+        + 'expose_mcp_to_workers, the C0-gated MCP flip has shipped by accident.',
+      );
+
       assert.equal(deployedSettings.auto_update_enabled, false);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -756,7 +791,7 @@ describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
     }
   });
 
-  test('AC-SSAT-9: differing deployed value emits an observability line', () => {
+  test('AC-GTRUTH-B3-3 (AC-SSAT-9): differing deployed value emits an observability line', () => {
     const fixture = makeKillSwitchForceFixture({
       deployedAutoUpdateEnabled: false,
       deployedCodegraph: { enabled: false, index_at_setup: true },
