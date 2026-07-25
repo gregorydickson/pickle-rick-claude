@@ -183,6 +183,55 @@ test('setup --resume (AC-WDTFTO-2-1): a RECOMPUTED green worker-gate verdict mus
     });
 });
 
+test('setup --resume (AC-WDTFTO-1-4): a WS-1 preserved-SHA Failed timeout ticket is NOT auto-promoted to Done under a recomputed verdict', () => {
+    withResumeFixture('pickle-resume-preserved-timeout', ({ dataRoot, repo, git }) => {
+        const ticketId = 'aa77wdtf';
+
+        // extension/ exists and its fake eslint/tsc both pass, driving the
+        // RECOMPUTE path green (same setup as AC-WDTFTO-2-1).
+        seedFakePassingRecomputeToolchain(repo);
+        git('add', '-A');
+        git('commit', '-q', '-m', 'toolchain');
+        const toolchainBase = git('rev-parse', 'HEAD');
+
+        // Simulates the WS-1 fix outcome: a worker that timed out mid-run had
+        // already committed gate-attributable work; persistWorkerOutcomeStatus
+        // preserves this window sha into completion_commit instead of nulling
+        // it, but the ticket correctly stays status: Failed (the timeout itself
+        // is real — WS-1 never flips Failed to Done on its own).
+        fs.writeFileSync(path.join(repo, 'c.txt'), 'work committed before the worker timed out\n');
+        git('add', '-A');
+        git('commit', '-q', '-m', 'worker commit before timeout');
+        const preservedSha = git('rev-parse', 'HEAD');
+        git('reset', '--hard', '-q', toolchainBase); // strand the preserved commit off HEAD
+
+        // No persisted worker_gate_verdict — forces the RECOMPUTE path.
+        const { sessionPath, ticketDir } = seedResumableSession(dataRoot, repo, ticketId, preservedSha);
+
+        runSetupWithEnv(['--resume', sessionPath], {
+            PICKLE_DATA_ROOT: dataRoot,
+            PICKLE_ORPHAN_REAP: 'off',
+        });
+
+        assert.equal(
+            git('rev-parse', 'HEAD'),
+            preservedSha,
+            'the WS-1 preserved sha must still be ff-reattached — commit preservation is unconditional',
+        );
+        assert.equal(
+            readTicketCompletionCommit(ticketDir, ticketId),
+            preservedSha,
+            'the WS-1 preserved completion_commit must survive resume untouched',
+        );
+        assert.notEqual(
+            readTicketStatus(ticketDir, ticketId),
+            'Done',
+            'a preserved-SHA Failed timeout ticket must not be auto-promoted to Done on a RECOMPUTED ' +
+                '(eslint+tsc-only, test:fast excluded per R-WGFR) verdict',
+        );
+    });
+});
+
 test('setup --resume (AC-WDTFTO-2-2): a PERSISTED real-gate green worker-gate verdict still flips Done', () => {
     withResumeFixture('pickle-resume-persisted', ({ dataRoot, repo, git, base }) => {
         const ticketId = 'aa66pers';

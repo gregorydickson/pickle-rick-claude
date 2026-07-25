@@ -1810,16 +1810,46 @@ export function reconcileWorkerCommitAttribution(workingDir, ticketId, preWorker
     }
 }
 /**
+ * R-WDTF-TO WS-1: on the non-success (timeout/failure) path, probe the worker
+ * window for a verified ticket-scoped SHA instead of discarding it. Reuses
+ * `reconcileWorkerCommitAttribution` (windowShas -> pickAttributionCommit)
+ * best-effort — a probe error or no in-window commit yields null, never an
+ * invented sha.
+ */
+export function resolveFailurePathCommitSha(ctx) {
+    try {
+        const changedFiles = collectChangedFilesForLintGate(ctx.sessionWorkingDir, ctx.preWorkerHead);
+        return reconcileWorkerCommitAttribution(ctx.sessionWorkingDir, ctx.ticketId, ctx.preWorkerHead, readWorkerClaimedCompletionSha(ctx), { declaredFiles: changedFiles });
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * R-WDTF-TO WS-1: a non-success outcome (timeout, missing artifacts, or a
+ * failed worker gate) may still have a real, gate-attributable window
+ * commit — probe git ground truth instead of letting persistWorkerOutcomeStatus
+ * discard it. Kept as its own function (rather than inline in
+ * `finalizeWorkerTurn`) to stay under that function's complexity budget.
+ */
+function resolveFinalCompletionCommitSha(ctx, isSuccess, completionCommitSha) {
+    if (isSuccess || completionCommitSha)
+        return completionCommitSha;
+    return resolveFailurePathCommitSha(ctx);
+}
+/**
  * Persist the worker-turn outcome to ticket frontmatter. 7eb9fa20: a
  * suppressed gate-fail preserves the existing status — no Failed flip.
+ * R-WDTF-TO WS-1: the Failed path never nulls `completion_commit` — a
+ * verified window sha is stamped, otherwise the field is left UNTOUCHED.
  */
-function persistWorkerOutcomeStatus(input) {
+export function persistWorkerOutcomeStatus(input) {
     try {
         if (input.isSuccess) {
             updateTicketFrontmatter(input.ticketId, input.sessionRoot, { status: 'Done', completion_commit: input.completionCommitSha ?? getHeadSha(input.sessionWorkingDir) });
         }
         else if (!input.flipSuppressed) {
-            updateTicketFrontmatter(input.ticketId, input.sessionRoot, { status: 'Failed', completion_commit: null });
+            updateTicketFrontmatter(input.ticketId, input.sessionRoot, input.completionCommitSha ? { status: 'Failed', completion_commit: input.completionCommitSha } : { status: 'Failed' });
         }
     }
     catch {
@@ -1870,6 +1900,7 @@ async function finalizeWorkerTurn(params) {
                 completionCommitSha = verifiedSha;
         }
     }
+    completionCommitSha = resolveFinalCompletionCommitSha(ctx, isSuccess, completionCommitSha);
     persistWorkerOutcomeStatus({ ticketId, sessionRoot, sessionWorkingDir, isSuccess, flipSuppressed, completionCommitSha });
     if (isSuccess) {
         // R-CCC-2: Auto-fill completion_commit: for Done tickets that missed the ACK.
