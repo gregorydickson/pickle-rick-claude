@@ -99,23 +99,30 @@ function writeNpxPassShim(binDir, logPath) {
 // R-WGFR: a single 'npx' shim whose eslint invocation can fail independently
 // of its tsc invocation, so a test can isolate "lint is unrunnable" or
 // "lint genuinely failed" from a passing tsc check.
-function writeConditionalNpxShim(binDir, logPath, eslintOptions = {}) {
+function writeConditionalNpxShim(binDir, logPath, eslintOptions = {}, tscOptions = {}) {
   fs.mkdirSync(binDir, { recursive: true });
   const shimPath = path.join(binDir, 'npx');
-  const exitCode = eslintOptions.exitCode ?? 0;
-  const stdout = eslintOptions.stdout ?? '';
-  const stderr = eslintOptions.stderr ?? '';
+  // Each dimension gets its own branch so a test can make eslint and tsc fail (or
+  // be unrunnable) independently. Omitting a branch's options leaves it exiting 0,
+  // which is what the pre-existing eslint-only call sites rely on.
+  const branch = (name, options) => {
+    const exitCode = options.exitCode ?? 0;
+    const stdout = options.stdout ?? '';
+    const stderr = options.stderr ?? '';
+    return `if (process.argv[2] === ${JSON.stringify(name)}) {
+  if (${JSON.stringify(stdout)}.length > 0) process.stdout.write(${JSON.stringify(stdout)});
+  if (${JSON.stringify(stderr)}.length > 0) process.stderr.write(${JSON.stringify(stderr)});
+  process.exit(${JSON.stringify(exitCode)});
+}`;
+  };
   fs.writeFileSync(shimPath, `#!/usr/bin/env node
 const fs = require('fs');
 const logPath = ${JSON.stringify(logPath)};
 const existing = fs.existsSync(logPath) ? JSON.parse(fs.readFileSync(logPath, 'utf8')) : [];
 existing.push(['npx', ...process.argv.slice(2)]);
 fs.writeFileSync(logPath, JSON.stringify(existing, null, 2));
-if (process.argv[2] === 'eslint') {
-  if (${JSON.stringify(stdout)}.length > 0) process.stdout.write(${JSON.stringify(stdout)});
-  if (${JSON.stringify(stderr)}.length > 0) process.stderr.write(${JSON.stringify(stderr)});
-  process.exit(${JSON.stringify(exitCode)});
-}
+${branch('eslint', eslintOptions)}
+${branch('tsc', tscOptions)}
 process.exit(0);
 `);
   fs.chmodSync(shimPath, 0o755);
@@ -949,6 +956,79 @@ test('runWorkerGate: R-WGFR AC3 — a genuine eslint violation still reds the pe
       readWorkerGateVerdict(ticketDir, ticketId),
       'red',
       'a genuine eslint failure must still red the persisted verdict — no over-subtraction',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// R-WGFR AC4/AC5: the unrunnable exemption has a floor. It exists so ONE broken tool
+// cannot false-red a tree the other tool verified — never to manufacture a green over a
+// tree where nothing ran. Both cases assert the PERSISTED frontmatter field rather than
+// the return value: that field is what `resolveWorkerGateVerdict` trusts permanently
+// (it short-circuits on any non-absent persisted value), so it is the actual defect
+// surface. Both go RED if the floor in `computeWorkerGateVerdict` is removed.
+
+test('runWorkerGate: R-WGFR AC4 — BOTH checks unrunnable (exit 127) reds the persisted worker_gate_verdict', async () => {
+  const root = makeTmpRoot();
+  try {
+    const ticketId = 'abc12348';
+    const { sessionRoot, ticketDir } = setupWorkerGateVerdictFixture(root, ticketId);
+    const statePath = path.join(sessionRoot, 'state.json');
+    const shimDir = path.join(root, 'bin');
+    const logPath = path.join(root, 'gate-log.json');
+    writeConditionalNpxShim(shimDir, logPath, { exitCode: 127 }, { exitCode: 127 });
+    writeCommandShim(shimDir, 'npm', logPath);
+
+    const result = await withPathPrefix(shimDir, () => runWorkerGate([
+      'extension/src/demo/one.ts',
+    ], {
+      workingDir: root,
+      ticketId,
+      statePath,
+      preWorkerHead: null,
+    }));
+
+    assert.equal(result.ok, false, 'current-turn ok is unchanged: neither check could be verified this turn');
+    assert.equal(
+      readWorkerGateVerdict(ticketDir, ticketId),
+      'red',
+      'no dimension ran, so there is nothing to exempt — a green here would claim verification that never happened',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runWorkerGate: R-WGFR AC5 — no lint targets plus an unrunnable tsc reds the persisted worker_gate_verdict', async () => {
+  const root = makeTmpRoot();
+  try {
+    const ticketId = 'abc12349';
+    const { sessionRoot, ticketDir } = setupWorkerGateVerdictFixture(root, ticketId);
+    const statePath = path.join(sessionRoot, 'state.json');
+    const shimDir = path.join(root, 'bin');
+    const logPath = path.join(root, 'gate-log.json');
+    writeConditionalNpxShim(shimDir, logPath, {}, { exitCode: 127 });
+    writeCommandShim(shimDir, 'npm', logPath);
+
+    // Not under extension/src/, so toExtensionLintTargets yields an empty list and the
+    // lint dimension is never attempted. That record is `ok: true, unrunnable: false` —
+    // shaped exactly like a clean lint run — so only `lintRan` keeps it from carrying
+    // the verdict on its own. A tests-only or docs-only ticket takes this path.
+    const result = await withPathPrefix(shimDir, () => runWorkerGate([
+      'extension/tests/demo.test.js',
+    ], {
+      workingDir: root,
+      ticketId,
+      statePath,
+      preWorkerHead: null,
+    }));
+
+    assert.equal(result.ok, false, 'current-turn ok is unchanged: tsc still could not be verified this turn');
+    assert.equal(
+      readWorkerGateVerdict(ticketDir, ticketId),
+      'red',
+      'lint was never attempted and tsc could not run — a lint phase that did not run must not carry a green',
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

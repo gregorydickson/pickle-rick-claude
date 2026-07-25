@@ -1317,7 +1317,7 @@ function isCommandResultUnrunnable(result) {
     return isUnrunnableCheckResult({ stdout: result.stdout, stderr: result.stderr, exitCode: result.status ?? 1 });
 }
 /** No lint targets: nothing to lint, so the tsc dimension alone decides the gate. */
-const LINT_PHASE_NOT_RUN = { ok: true, errors: 0, unrunnable: false, failures: [] };
+const LINT_PHASE_NOT_RUN = { ok: true, errors: 0, ran: false, unrunnable: false, failures: [] };
 /**
  * Run one deterministic gate dimension. eslint and tsc have the SAME shape — run a
  * command, count its errors, classify a command that never ran as an environment
@@ -1330,6 +1330,7 @@ async function runWorkerGateCheckPhase(cmdArgs, extensionDir, countErrors, parse
     return {
         ok: result.ok,
         errors: countErrors(output),
+        ran: true,
         unrunnable: isCommandResultUnrunnable(result),
         failures: result.ok ? [] : parseFailures(output, extensionDir),
     };
@@ -1364,6 +1365,7 @@ async function runWorkerGateChecks(args) {
         gatePhase,
         lintUnrunnable: lint.unrunnable,
         tscUnrunnable: tsc.unrunnable,
+        lintRan: lint.ran,
     });
     if (!lint.ok || !tsc.ok)
         return settle(true, []);
@@ -1398,35 +1400,42 @@ function didWorkerGateFail(lintOk, tscOk, testsOk) {
  * test-inclusive) — this function governs ONLY the sticky field a later
  * `resolveWorkerGateVerdict` trusts without re-running the gate.
  *
- * Two dimensions, and the fallback recompute
- * (`recomputeAbsentWorkerGateVerdict`, mux-runner.ts:4662) agrees on exactly one
- * of them:
- *   - `test:fast` — DROPPED by both. A c=8 flake false-reddening a sticky verdict
- *     is fatal, so neither the worker path nor the recompute counts it.
+ * Two dimensions:
+ *   - `test:fast` — DROPPED, here and in the fallback recompute
+ *     (`recomputeAbsentWorkerGateVerdict`, mux-runner.ts). A c=8 flake
+ *     false-reddening a sticky verdict is fatal, so neither path counts it.
  *   - unrunnable (ENOENT / exit 127 / missing script, per
- *     `isCommandResultUnrunnable`) — DIVERGENT. Exempted here; the recompute
- *     counts it red, because its own check helper tests for a zero exit status
- *     and an ENOENT spawn reports no status at all. Do not read this function as
- *     parity with that one: on a broken toolchain they disagree by design of the
- *     exemption, not by oversight.
+ *     `isCommandResultUnrunnable`) — EXEMPTED, but only up to the floor below.
  *
- * Consequence of the exemption, stated here because the caller cannot see it:
- * when BOTH dimensions are unrunnable, neither counts red and the verdict this
- * returns is the positive one — a claim of verification over a tree where
- * nothing was verified. `resolveWorkerGateVerdict` then trusts any non-absent
- * persisted value permanently (mux-runner.ts:4689), so no later recompute
- * revisits it and the Done-flip guard is satisfied. Reachable when `extension/`
- * exists but the package runner is off PATH for both checks — a recurrent
- * condition in this repo's own history. Unpinned by any test: the R-WGFR
- * verdict fixture in `tests/spawn-morty-worker-gate.test.js` makes only eslint
- * unrunnable, leaving a genuinely-green tsc to carry the verdict. Reported as
- * finding F1 of ticket 5121a116, unfixed there: a compliant fix is behavioral
- * and needs a regression test, which that ticket's scope fence excludes.
+ * The exemption exists so ONE broken tool cannot false-red a tree the other tool
+ * genuinely verified. It is not a licence to manufacture a verdict: green
+ * additionally requires that at least one dimension actually ran AND passed.
+ * Without that floor, an all-unrunnable gate returned the positive verdict — a
+ * claim of verification over a tree where nothing was verified — and
+ * `resolveWorkerGateVerdict` trusts any non-absent persisted value permanently,
+ * so no later recompute revisited it and the Done-flip guard was satisfied.
+ *
+ * `lintRan` is load-bearing and cannot be derived from `lintOk`: a lint phase
+ * with no targets is `ok: true, unrunnable: false`, identical in shape to a lint
+ * phase that ran clean. A tests-only or docs-only ticket therefore reaches the
+ * floor with lint never attempted, and only `lintRan` distinguishes it. `tscOk`
+ * needs no companion — `isCommandResultUnrunnable` returns false whenever the
+ * result is ok, so a true `tscOk` already implies the command ran.
+ *
+ * The floor also restores parity with the fallback recompute on the input the
+ * two used to disagree about: its check helper tests for a zero exit status and
+ * an ENOENT spawn reports no status at all, so it has always called a broken
+ * toolchain red. They now agree. The surviving asymmetry is deliberate and is
+ * what the R-WGFR fixture pins: a single unrunnable dimension beside a
+ * genuinely-green one stays green here and would be red there.
  */
 function computeWorkerGateVerdict(result) {
     const lintRed = !result.lintOk && !result.lintUnrunnable;
     const tscRed = !result.tscOk && !result.tscUnrunnable;
-    return lintRed || tscRed ? 'red' : 'green';
+    if (lintRed || tscRed)
+        return 'red';
+    const lintVerified = result.lintRan && result.lintOk;
+    return lintVerified || result.tscOk ? 'green' : 'red';
 }
 /**
  * B-CWGE WS-2 (R-CWGE): persist the worker gate's verdict into the ticket
