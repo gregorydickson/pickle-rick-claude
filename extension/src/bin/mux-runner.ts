@@ -4414,7 +4414,8 @@ export const isHaltExit = (r: ExitReason): boolean => r === 'cancelled' || r ===
  * B-GTRUTH WS-A2: 'done_without_commit_evidence' removed — a run that reaches it is
  * INCOMPLETE, not failed, so the completion panel must not render RED
  * (`deriveCompletionVerdict`). Removing it here alone would send the run to exit
- * code 0 (a silent fake-green); the exit map in `main` maps it to 3 instead.
+ * code 0 (a silent fake-green); the exit map in `main` maps it to 3 instead, and
+ * `INCOMPLETE_EXIT_REASONS` below keeps the panel from claiming "Complete".
  */
 const FAILURE_EXIT_REASONS: ReadonlySet<ExitReason> = new Set<ExitReason>([
   'error', 'stall', 'circuit_open', 'rate_limit_exhausted', 'timeout_repeat',
@@ -4424,6 +4425,27 @@ const FAILURE_EXIT_REASONS: ReadonlySet<ExitReason> = new Set<ExitReason>([
   'idle_stall_unrecoverable', 'state_working_dir_missing', 'toolchain_unavailable',
 ]);
 export const isFailureExit = (r: ExitReason): boolean => FAILURE_EXIT_REASONS.has(r);
+
+/**
+ * Exits that are NEITHER a failure NOR a completion — the run did not fail, and it
+ * did not finish. This is the THIRD class WS-A2 created and the binary verdict could
+ * not express.
+ *
+ * Membership is an explicit declaration, never the absence of failure-membership: a
+ * reason demoted out of `FAILURE_EXIT_REASONS` for routing reasons otherwise lands in
+ * the success arm by default, which is how `done_without_commit_evidence` came to
+ * print a green "mux-runner Complete" panel for a bundle that halted mid-flight. A
+ * future reason demoted the same way must be listed here in the same commit.
+ *
+ * Deliberately disjoint from `isHaltExit`: a halt ('cancelled', 'limit', …) is an
+ * operator-or-budget decision to stop, which the panel already reports honestly as
+ * "Stopped: <reason>". An incomplete exit is the runner reporting that it could not
+ * account for the work it was asked to do.
+ */
+const INCOMPLETE_EXIT_REASONS: ReadonlySet<ExitReason> = new Set<ExitReason>([
+  'done_without_commit_evidence',
+]);
+export const isIncompleteExit = (r: ExitReason): boolean => INCOMPLETE_EXIT_REASONS.has(r);
 
 /**
  * WS-2c (R-PFNT): cheap, best-effort target-toolchain pre-flight. When the TARGET
@@ -11470,29 +11492,42 @@ async function runMuxRunnerMain() {
  */
 export type CompletionVerdict = {
   isFailure: boolean;
-  colorName: 'GREEN' | 'RED';
+  /** WS-A2's third class: the run neither failed nor finished. See `isIncompleteExit`. */
+  isIncomplete: boolean;
+  colorName: 'GREEN' | 'RED' | 'YELLOW';
   panelTitle: string;
 };
 
 export function deriveCompletionVerdict(exitReason: ExitReason): CompletionVerdict {
   const isFailure = isFailureExit(exitReason);
+  // Failure wins on overlap, so a reason listed in both sets can never soften a RED.
+  if (!isFailure && isIncompleteExit(exitReason)) {
+    return { isFailure: false, isIncomplete: true, colorName: 'YELLOW', panelTitle: 'mux-runner Incomplete' };
+  }
   return {
     isFailure,
+    isIncomplete: false,
     colorName: isFailure ? 'RED' : 'GREEN',
     panelTitle: isFailure ? 'mux-runner Failed' : 'mux-runner Complete',
   };
 }
 
 export function buildTmuxNotification(exitReason: ExitReason, finalStep: string, iteration: number, totalElapsed: number) {
-  const isFailure = deriveCompletionVerdict(exitReason).isFailure;
+  const { isFailure, isIncomplete } = deriveCompletionVerdict(exitReason);
+  // 'Incomplete' does NOT contain 'Complete' (capital C), so the three titles stay
+  // mutually exclusive under the substring checks every consumer and test uses.
   const title = isFailure
     ? '🥒 Pickle Run Failed'
-    : '🥒 Pickle Run Complete';
+    : isIncomplete
+      ? '🥒 Pickle Run Incomplete'
+      : '🥒 Pickle Run Complete';
   const subtitle = isFailure
     ? `Exit: ${exitReason} (phase: ${finalStep})`
-    : exitReason === 'success'
-      ? `Finished in ${formatTime(totalElapsed)}`
-      : `Stopped: ${exitReason} (${formatTime(totalElapsed)})`;
+    : isIncomplete
+      ? `Incomplete: ${exitReason} (phase: ${finalStep})`
+      : exitReason === 'success'
+        ? `Finished in ${formatTime(totalElapsed)}`
+        : `Stopped: ${exitReason} (${formatTime(totalElapsed)})`;
   const body = `${iteration} iterations, ${formatTime(totalElapsed)}`;
   return { title, subtitle, body };
 }

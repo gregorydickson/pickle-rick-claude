@@ -60,6 +60,7 @@ const muxRunner = await import('../bin/mux-runner.js');
 const {
   isHaltExit,
   isFailureExit,
+  isIncompleteExit,
   deriveCompletionVerdict,
   buildTmuxNotification,
   guardCompletionCommitBeforeDone,
@@ -400,7 +401,15 @@ test('mux-runner: applyAutoTicketCompletionValidation call site honors the fatal
 // the union-wide parity test below actually enforces: ONE verdict derivation
 // (deriveCompletionVerdict) feeds both renderers, so the panel and the notification
 // can never disagree. Neither renderer may hardcode a colour.
-test('AC-GTRUTH-A2-4: a done_without_commit_evidence exit does not render a RED "Failed" panel', () => {
+//
+// THIRD-STATE CORRECTION. "not RED" was WS-A2's requirement, and this test used to
+// spell the other half as `title === '🥒 Pickle Run Complete'` — because the verdict
+// was BINARY, so "not a failure" left only the success arm. That made the renderers
+// claim a bundle that halted mid-flight had COMPLETED, contradicting this very
+// comment's own "it did not finish". `CompletionVerdict` now carries the third state
+// (`isIncomplete` / YELLOW / "Incomplete"), so both halves of the AC hold at once:
+// not RED, and not a claim of completion.
+test('AC-GTRUTH-A2-4: a done_without_commit_evidence exit renders neither a RED "Failed" nor a "Complete" panel', () => {
   const verdict = deriveCompletionVerdict('done_without_commit_evidence');
   assert.notEqual(
     verdict.colorName,
@@ -409,9 +418,16 @@ test('AC-GTRUTH-A2-4: a done_without_commit_evidence exit does not render a RED 
     'the operator a shipped bundle had failed. MUST fail on pre-fix source.',
   );
   assert.equal(verdict.isFailure, false, 'the demoted reason must not read as a failure verdict');
+  assert.equal(verdict.isIncomplete, true, 'the demoted reason must read as the INCOMPLETE third state');
+  assert.equal(
+    verdict.panelTitle.includes('Complete'),
+    false,
+    'the panel must not claim "Complete" for a run that halted mid-bundle with an ' +
+    'unaccounted-for ticket — honest reporting: never report an outcome you did not observe',
+  );
   assert.equal(
     buildTmuxNotification('done_without_commit_evidence', 'implement', 3, 125).title,
-    '🥒 Pickle Run Complete',
+    '🥒 Pickle Run Incomplete',
     'the notification must agree with the panel — the two renderers share one verdict derivation',
   );
 });
@@ -422,23 +438,43 @@ test('mux-runner: the completion panel verdict matches buildTmuxNotification for
   // A NEW ExitReason member is picked up automatically, never hand-added.
   for (const reason of deriveExitReasonsFromSource(source)) {
     const groundTruth = isFailureExit(reason);
+    // Failure wins on overlap, mirroring deriveCompletionVerdict's own precedence.
+    const incomplete = !groundTruth && isIncompleteExit(reason);
     const panelVerdict = deriveCompletionVerdict(reason);
 
     assert.equal(panelVerdict.isFailure, groundTruth, `panel verdict for '${reason}' must match isFailureExit(exitReason)`);
+    assert.equal(panelVerdict.isIncomplete, incomplete, `panel verdict for '${reason}' must match isIncompleteExit(exitReason)`);
     assert.equal(
       panelVerdict.colorName,
-      groundTruth ? 'RED' : 'GREEN',
-      `panel color for '${reason}' must be RED on failure, GREEN otherwise`,
+      groundTruth ? 'RED' : incomplete ? 'YELLOW' : 'GREEN',
+      `panel color for '${reason}' must be RED on failure, YELLOW when incomplete, GREEN otherwise`,
     );
+    // 'Incomplete' does not contain 'Complete' (capital C), so these two are a real
+    // three-way partition and not a pair that can both pass on the same title.
     assert.equal(
       panelVerdict.panelTitle.includes('Complete'),
-      !groundTruth,
-      `panel title for '${reason}' must say "Complete" only when it is NOT a failure exit`,
+      !groundTruth && !incomplete,
+      `panel title for '${reason}' must claim "Complete" only when the run neither failed nor ended incomplete`,
+    );
+    assert.equal(
+      panelVerdict.panelTitle.includes('Incomplete'),
+      incomplete,
+      `panel title for '${reason}' must say "Incomplete" exactly when isIncompleteExit says so`,
     );
 
     const notif = buildTmuxNotification(reason, 'unknown', 1, 10);
     const notifIsFailure = notif.title.includes('Failed');
     assert.equal(notifIsFailure, groundTruth, `notification title for '${reason}' must match isFailureExit(exitReason)`);
+    assert.equal(
+      notif.title.includes('Incomplete'),
+      incomplete,
+      `notification title for '${reason}' must say "Incomplete" exactly when the panel does`,
+    );
+    assert.equal(
+      notif.title.includes('Complete'),
+      !groundTruth && !incomplete,
+      `notification title for '${reason}' must claim "Complete" exactly when the panel does`,
+    );
 
     assert.equal(
       panelVerdict.isFailure,
