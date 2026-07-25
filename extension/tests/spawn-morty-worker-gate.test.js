@@ -96,9 +96,10 @@ function writeNpxPassShim(binDir, logPath) {
   writeCommandShim(binDir, 'npx', logPath);
 }
 
-// R-WGFR: a single 'npx' shim whose eslint invocation can fail independently
-// of its tsc invocation, so a test can isolate "lint is unrunnable" or
-// "lint genuinely failed" from a passing tsc check.
+// R-WGFR: a single 'npx' shim whose eslint and tsc invocations fail independently
+// of each other, so a test can isolate "unrunnable" from "genuinely failed" on
+// either dimension — including driving both at once (AC4). Each dimension defaults
+// to exit 0, so a call that names only eslint leaves tsc genuinely passing.
 function writeConditionalNpxShim(binDir, logPath, eslintOptions = {}, tscOptions = {}) {
   fs.mkdirSync(binDir, { recursive: true });
   const shimPath = path.join(binDir, 'npx');
