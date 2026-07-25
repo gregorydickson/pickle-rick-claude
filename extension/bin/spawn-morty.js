@@ -1316,88 +1316,75 @@ function isCommandResultUnrunnable(result) {
         return false;
     return isUnrunnableCheckResult({ stdout: result.stdout, stderr: result.stderr, exitCode: result.status ?? 1 });
 }
+/** No lint targets: nothing to lint, so the tsc dimension alone decides the gate. */
+const LINT_PHASE_NOT_RUN = { ok: true, errors: 0, unrunnable: false, failures: [] };
+/**
+ * Run one deterministic gate dimension. eslint and tsc have the SAME shape — run a
+ * command, count its errors, classify a command that never ran as an environment
+ * problem rather than a code failure (R-WGFR), and parse failures for the report —
+ * so they share one runner instead of two near-identical blocks.
+ */
+async function runWorkerGateCheckPhase(cmdArgs, extensionDir, countErrors, parseFailures) {
+    const result = await runCommand('npx', cmdArgs, extensionDir);
+    const output = `${result.stdout}\n${result.stderr}`;
+    return {
+        ok: result.ok,
+        errors: countErrors(output),
+        unrunnable: isCommandResultUnrunnable(result),
+        failures: result.ok ? [] : parseFailures(output, extensionDir),
+    };
+}
 async function runWorkerGateChecks(args) {
-    let lintOk = true;
-    let lintErrors = 0;
-    let lintUnrunnable = false;
-    let gateFailures = [];
+    const lint = args.lintTargets.length > 0
+        ? await runWorkerGateCheckPhase(['eslint', ...args.lintTargets, '--max-warnings=-1'], args.extensionDir, countLintErrors, parseWorkerGateLintFailures)
+        : LINT_PHASE_NOT_RUN;
+    const tsc = await runWorkerGateCheckPhase(['tsc', '--noEmit'], args.extensionDir, countTscErrors, parseWorkerGateTscFailures);
+    // Gate-phase attribution is lint-first: tsc is blamed only when lint was clean.
     let gatePhase = null;
-    if (args.lintTargets.length > 0) {
-        const lintResult = await runCommand('npx', ['eslint', ...args.lintTargets, '--max-warnings=-1'], args.extensionDir);
-        const lintOutput = `${lintResult.stdout}\n${lintResult.stderr}`;
-        lintErrors = countLintErrors(lintOutput);
-        lintOk = lintResult.ok;
-        lintUnrunnable = isCommandResultUnrunnable(lintResult);
-        if (!lintOk) {
-            gatePhase = 'lint';
-            gateFailures = parseWorkerGateLintFailures(lintOutput, args.extensionDir);
-        }
+    let gateFailures = [];
+    if (!lint.ok) {
+        gatePhase = 'lint';
+        gateFailures = lint.failures;
     }
-    const tscResult = await runCommand('npx', ['tsc', '--noEmit'], args.extensionDir);
-    const tscOutput = `${tscResult.stdout}\n${tscResult.stderr}`;
-    const tscErrors = countTscErrors(tscOutput);
-    const tscUnrunnable = isCommandResultUnrunnable(tscResult);
-    if (lintOk && !tscResult.ok) {
+    else if (!tsc.ok) {
         gatePhase = 'tsc';
-        gateFailures = parseWorkerGateTscFailures(tscOutput, args.extensionDir);
+        gateFailures = tsc.failures;
     }
-    // Pre-test exits (lint/tsc fail, narrow tier, small tier) all report the same
-    // shape: tests were not run, so testsOk:true and testFailures empty. The closure
-    // captures the live lint/tsc bindings so each site reports its own settled values.
-    const preTestResult = () => ({
-        lintOk,
-        tscOk: tscResult.ok,
-        testsOk: true,
-        lintErrors,
-        tscErrors,
-        testFailures: [],
+    // Every exit reports the same shape; only the test dimension varies. `testsOk: true`
+    // with no failures is the pre-test reading (the test phases were not run). Reads the
+    // live gatePhase/gateFailures bindings, so each exit carries its own settled values.
+    const settle = (testsOk, testFailures) => ({
+        lintOk: lint.ok,
+        tscOk: tsc.ok,
+        testsOk,
+        lintErrors: lint.errors,
+        tscErrors: tsc.errors,
+        testFailures,
         gateFailures,
         gatePhase,
-        lintUnrunnable,
-        tscUnrunnable,
+        lintUnrunnable: lint.unrunnable,
+        tscUnrunnable: tsc.unrunnable,
     });
-    if (!lintOk || !tscResult.ok)
-        return preTestResult();
+    if (!lint.ok || !tsc.ok)
+        return settle(true, []);
     if (args.workerGateTier === 'narrow')
-        return preTestResult();
+        return settle(true, []);
     if (args.ticketTier === 'small')
-        return preTestResult();
+        return settle(true, []);
     const fastTierResult = await runWorkerGateTestCommand('test:fast', args.extensionDir, args.workerTestGateTimeoutMs);
     if (!fastTierResult.ok) {
         gatePhase = fastTierResult.gatePhase;
         gateFailures = fastTierResult.failures;
     }
     if (!fastTierResult.ok || args.workerGateTier !== 'full') {
-        return {
-            lintOk,
-            tscOk: tscResult.ok,
-            testsOk: fastTierResult.ok,
-            lintErrors,
-            tscErrors,
-            testFailures: fastTierResult.failures,
-            gateFailures,
-            gatePhase,
-            lintUnrunnable,
-            tscUnrunnable,
-        };
+        return settle(fastTierResult.ok, fastTierResult.failures);
     }
     const integrationTierResult = await runWorkerGateTestCommand('test:integration', args.extensionDir, args.workerTestGateTimeoutMs);
     if (!integrationTierResult.ok) {
         gatePhase = integrationTierResult.gatePhase;
         gateFailures = integrationTierResult.failures;
     }
-    return {
-        lintOk,
-        tscOk: tscResult.ok,
-        testsOk: integrationTierResult.ok,
-        lintErrors,
-        tscErrors,
-        testFailures: integrationTierResult.failures,
-        gateFailures,
-        gatePhase,
-        lintUnrunnable,
-        tscUnrunnable,
-    };
+    return settle(integrationTierResult.ok, integrationTierResult.failures);
 }
 function shouldRetryWorkerGate(lintOk, tscOk, lintTargetCount) {
     return (!lintOk || !tscOk) && lintTargetCount > 0;
