@@ -1687,6 +1687,18 @@ function computeWorkerGateVerdict(result: {
 }
 
 /**
+ * R-WDTF-TO WS-3: `WORKER_GATE_VERDICT_FIELD` is eslint+tsc-only (R-WGFR) even
+ * on a REAL (non-recomputed) worker turn — `computeWorkerGateVerdict` never
+ * sees `testsOk`. A resume-time Done-flip guard that trusts a persisted green
+ * verdict as proof "the tier's full gate ran" is therefore wrong whenever the
+ * SAME turn's own test dimension genuinely failed (not a later flaky re-run —
+ * `testsOk` here is the fresh, just-computed result). This sibling field
+ * records that in-turn fact so a resume guard can consult it without
+ * reinterpreting `WORKER_GATE_VERDICT_FIELD`'s R-WGFR semantics.
+ */
+const WORKER_GATE_TESTS_VERDICT_FIELD = 'worker_gate_tests_verdict';
+
+/**
  * B-CWGE WS-2 (R-CWGE): persist the worker gate's verdict into the ticket
  * frontmatter (`WORKER_GATE_VERDICT_FIELD`) so the Done-flip guard
  * (`guardCompletionCommitBeforeDone`) can make the recorded verdict
@@ -1698,12 +1710,18 @@ function computeWorkerGateVerdict(result: {
  * Reuses the existing `upsertFrontmatterField` write path. Silent on any FS
  * error so a write hiccup never blocks the gate (the guard treats an absent
  * field as fail-closed).
+ *
+ * R-WDTF-TO WS-3: also persists `WORKER_GATE_TESTS_VERDICT_FIELD` from this
+ * turn's own `testsOk` (green when tests passed OR were legitimately skipped —
+ * `testsOk` already defaults `true` for skip cases, per `runWorkerGateChecks` —
+ * red only when tests actually ran and failed).
  */
-function persistWorkerGateVerdict(statePath: string, ticketId: string, verdict: 'green' | 'red'): void {
+function persistWorkerGateVerdict(statePath: string, ticketId: string, verdict: 'green' | 'red', testsOk: boolean): void {
   try {
     const fp = ticketFilePath(path.dirname(statePath), ticketId);
     const raw = fs.readFileSync(fp, 'utf8');
-    const upd = upsertFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD, verdict);
+    let upd = upsertFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD, verdict);
+    upd = upsertFrontmatterField(upd ?? raw, WORKER_GATE_TESTS_VERDICT_FIELD, testsOk ? 'green' : 'red');
     if (upd) fs.writeFileSync(fp, upd);
   } catch { /* best-effort — guard treats an absent field as fail-closed */ }
 }
@@ -1828,7 +1846,7 @@ export async function runWorkerGate(changedFiles: string[], args: {
   // B-CWGE WS-2 (R-CWGE): persist the worker-gate verdict (eslint+tsc only —
   // R-WGFR drops test:fast) so the Done-flip guard can read it on EVERY path
   // without re-running the gate. Written on BOTH the pass and fail paths below.
-  persistWorkerGateVerdict(args.statePath, args.ticketId, computeWorkerGateVerdict(gateResult));
+  persistWorkerGateVerdict(args.statePath, args.ticketId, computeWorkerGateVerdict(gateResult), testsOk);
 
   if (didWorkerGateFail(lintOk, tscOk, testsOk)) {
     writeActivityEntry(args.statePath, {

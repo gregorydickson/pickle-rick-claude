@@ -1222,6 +1222,26 @@ function emitResumeEpochReset(fullSessionPath: string, originalEpoch: number | n
  * Best-effort throughout: every external call is wrapped in try/catch and errors
  * go to stderr only. This MUST NOT throw out of the resume path.
  */
+/**
+ * R-WDTF-TO WS-3: sibling of `WORKER_GATE_VERDICT_FIELD` (spawn-morty's
+ * `persistWorkerGateVerdict`) — `worker_gate_tests_verdict` records whether
+ * THIS ticket's own worker turn observed a genuine, in-turn test failure.
+ * `WORKER_GATE_VERDICT_FIELD` itself is eslint+tsc-only (R-WGFR), even on a
+ * real (non-recomputed) run, so a green persisted verdict alone does not
+ * prove the tier's tests passed. Absent (older tickets / field never
+ * written) reads as `null` — fail-open on this dimension only, unchanged
+ * from pre-WS-3 behavior.
+ */
+function readTicketWorkerGateTestsVerdict(sessionRoot: string, ticketId: string): 'green' | 'red' | null {
+  try {
+    const raw = fs.readFileSync(path.join(sessionRoot, ticketId, `rick_ticket_${ticketId}.md`), 'utf-8');
+    const v = (readFrontmatterField(raw, 'worker_gate_tests_verdict') ?? '').trim();
+    return v === 'green' || v === 'red' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Read `completion_commit` from the current ticket's frontmatter, or null. */
 function readTicketCompletionCommit(sessionRoot: string, ticketId: string): string | null {
   let status: string | null;
@@ -1328,6 +1348,17 @@ function tryResumeOrphanReattach(
     // ticket at its current status, where the runner can still re-select it.
     if (gate.verdict !== 'green') {
       process.stderr.write(`${notFlippedPrefix}Done requires a GREEN worker-gate verdict (R-CWGE).\n`);
+      return;
+    }
+    // R-WDTF-TO WS-3: a PERSISTED green verdict (computed_via='worker_gate') still only proves
+    // eslint+tsc — computeWorkerGateVerdict never sees testsOk (R-WGFR). Consult the sibling
+    // in-turn test marker: if THIS ticket's own worker turn observed a genuine test failure,
+    // a clean lint/tsc reading must not resurrect it to Done. Absent (older tickets) fails open.
+    if (readTicketWorkerGateTestsVerdict(fullSessionPath, currentTicket) === 'red') {
+      process.stderr.write(
+        `${notFlippedPrefix}the worker's own test run failed this turn (worker_gate_tests_verdict='red') — ` +
+        `a clean eslint+tsc reading does not authorize a terminal Done flip (R-WDTF-TO WS-3).\n`,
+      );
       return;
     }
     updateTicketFrontmatter(currentTicket, fullSessionPath, { status: 'Done', completion_commit: completionCommitSha });

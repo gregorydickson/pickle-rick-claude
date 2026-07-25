@@ -135,6 +135,12 @@ function readWorkerGateVerdict(ticketDir, ticketId) {
   return match ? match[1] : null;
 }
 
+function readWorkerGateTestsVerdict(ticketDir, ticketId) {
+  const content = fs.readFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), 'utf8');
+  const match = content.match(/^worker_gate_tests_verdict:\s*"?([^"\s]+)"?\s*$/m);
+  return match ? match[1] : null;
+}
+
 function writeNpmFailShim(binDir, logPath, stdout) {
   writeCommandShim(binDir, 'npm', logPath, { exitCode: 1, stdout });
 }
@@ -888,6 +894,45 @@ test('runWorkerGate: R-WGFR AC1 — a failing test:fast does not red the persist
       readWorkerGateVerdict(ticketDir, ticketId),
       'green',
       'the persisted verdict must not be poisoned by a test:fast failure (parity with the fallback recompute)',
+    );
+    assert.equal(
+      readWorkerGateTestsVerdict(ticketDir, ticketId),
+      'red',
+      'R-WDTF-TO WS-3: the sibling in-turn test marker must record the genuine test:fast failure — ' +
+        'a resume-time Done-flip guard reading only worker_gate_verdict would otherwise see a clean eslint+tsc ' +
+        'reading and wrongly treat it as proof the tier\'s tests passed',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runWorkerGate: R-WGFR AC1b — a passing gate persists a green worker_gate_tests_verdict', async () => {
+  const root = makeTmpRoot();
+  try {
+    const ticketId = 'abc123ac1b';
+    const { sessionRoot, ticketDir } = setupWorkerGateVerdictFixture(root, ticketId);
+    const statePath = path.join(sessionRoot, 'state.json');
+    const shimDir = path.join(root, 'bin');
+    const logPath = path.join(root, 'gate-log.json');
+    writeCommandShim(shimDir, 'npx', logPath);
+    writeCommandShim(shimDir, 'npm', logPath);
+
+    const result = await withPathPrefix(shimDir, () => runWorkerGate([
+      'extension/src/demo/one.ts',
+    ], {
+      workingDir: root,
+      ticketId,
+      statePath,
+      preWorkerHead: null,
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(readWorkerGateVerdict(ticketDir, ticketId), 'green');
+    assert.equal(
+      readWorkerGateTestsVerdict(ticketDir, ticketId),
+      'green',
+      'a genuinely clean gate (including tests) must persist a green in-turn test marker too',
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

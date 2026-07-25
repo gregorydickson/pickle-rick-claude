@@ -232,6 +232,45 @@ test('setup --resume (AC-WDTFTO-1-4): a WS-1 preserved-SHA Failed timeout ticket
     });
 });
 
+test('setup --resume (AC-WDTFTO-3-1): a PERSISTED green worker-gate verdict with a red in-turn test marker must NOT flip Done', () => {
+    withResumeFixture('pickle-resume-tests-red', ({ dataRoot, repo, git, base }) => {
+        const ticketId = 'aa88test';
+        fs.writeFileSync(path.join(repo, 'b.txt'), 'lint+tsc clean, but this turn\'s own test:fast run failed\n');
+        git('add', '-A');
+        git('commit', '-q', '-m', 'worker commit');
+        const orphan = git('rev-parse', 'HEAD');
+        git('reset', '--hard', '-q', base); // strand the worker's commit off HEAD
+
+        // WORKER_GATE_VERDICT_FIELD is eslint+tsc-only (R-WGFR) even on a real, persisted,
+        // non-recomputed run — computeWorkerGateVerdict never sees testsOk. This fixture
+        // reproduces exactly that: a persisted green verdict (computed_via: 'worker_gate',
+        // short-circuiting any recompute) sitting beside the sibling in-turn marker recording
+        // that THIS ticket's own test dimension genuinely failed.
+        const { sessionPath, ticketDir } = seedResumableSession(
+            dataRoot, repo, ticketId, orphan,
+            'worker_gate_verdict: green\nworker_gate_tests_verdict: red\n',
+        );
+
+        runSetupWithEnv(['--resume', sessionPath], {
+            PICKLE_DATA_ROOT: dataRoot,
+            PICKLE_ORPHAN_REAP: 'off',
+        });
+
+        assert.equal(git('rev-parse', 'HEAD'), orphan, 'ff-reattach commit preservation is unconditional');
+        assert.equal(
+            readTicketCompletionCommit(ticketDir, ticketId),
+            orphan,
+            'completion_commit must remain stamped even though the Done flip was refused',
+        );
+        assert.notEqual(
+            readTicketStatus(ticketDir, ticketId),
+            'Done',
+            'a clean eslint+tsc verdict is not proof the tier\'s tests passed — worker_gate_tests_verdict=' +
+                '\'red\' records that THIS turn\'s own tests genuinely failed, so Done must not be authorized (R-WDTF-TO WS-3)',
+        );
+    });
+});
+
 test('setup --resume (AC-WDTFTO-2-2): a PERSISTED real-gate green worker-gate verdict still flips Done', () => {
     withResumeFixture('pickle-resume-persisted', ({ dataRoot, repo, git, base }) => {
         const ticketId = 'aa66pers';
