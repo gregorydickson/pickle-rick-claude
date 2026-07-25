@@ -1220,18 +1220,24 @@ function tryResumeOrphanReattach(fullSessionPath, statePath, currentTicket, work
         // Done-flip path in mux-runner consults. Fail closed: a red or unverifiable verdict leaves the
         // ticket at its current status, where the runner can still re-select it.
         const gate = resolveWorkerGateVerdict(fullSessionPath, currentTicket, workingDir);
+        const notFlippedPrefix = `[resume-reattach] ticket ${currentTicket} reattached at ${completionCommitSha} but NOT flipped Done: ` +
+            `worker_gate_verdict='${gate.verdict}' (computed_via=${gate.computedVia}). `;
         // R-WDTF-TO WS-2: a green verdict with computed_via='between_ticket_gate' was RECOMPUTED
         // (eslint+tsc only — test:fast excluded per R-WGFR), not read from a real persisted
         // worker-gate run. That recompute is not proof the tier's full gate ran, so it must not
         // authorize a terminal Done flip — Done bypasses every later gate. Only a persisted verdict
         // (or the no-extension/ N/A case, both computed_via='worker_gate') may flip Done.
-        if (gate.verdict !== 'green' || gate.computedVia === 'between_ticket_gate') {
-            process.stderr.write(`[resume-reattach] ticket ${currentTicket} reattached at ${completionCommitSha} but NOT flipped Done: ` +
-                `worker_gate_verdict='${gate.verdict}' (computed_via=${gate.computedVia}). ` +
-                (gate.computedVia === 'between_ticket_gate'
-                    ? `A recomputed verdict (eslint+tsc only, test:fast excluded per R-WGFR) does not authorize ` +
-                        `a terminal Done flip (R-WDTF-TO).\n`
-                    : `Done requires a GREEN worker-gate verdict (R-CWGE).\n`));
+        if (gate.computedVia === 'between_ticket_gate') {
+            process.stderr.write(`${notFlippedPrefix}A recomputed verdict (eslint+tsc only, test:fast excluded per R-WGFR) does not ` +
+                `authorize a terminal Done flip (R-WDTF-TO).\n`);
+            return;
+        }
+        // R-CWGE: the ff-reattach already preserved the commit — that part is unconditional. Done is
+        // terminal and bypasses every later gate, so it requires the GREEN worker-gate verdict every
+        // Done-flip path in mux-runner consults. Fail closed: a red or unverifiable verdict leaves the
+        // ticket at its current status, where the runner can still re-select it.
+        if (gate.verdict !== 'green') {
+            process.stderr.write(`${notFlippedPrefix}Done requires a GREEN worker-gate verdict (R-CWGE).\n`);
             return;
         }
         updateTicketFrontmatter(currentTicket, fullSessionPath, { status: 'Done', completion_commit: completionCommitSha });
