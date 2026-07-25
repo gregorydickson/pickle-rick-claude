@@ -6,99 +6,98 @@ composes: []
 status: ready
 type: bug-fix-bundle
 schema_neutral: true
-self_modifying_recovery: true   # edits persistWorkerOutcomeStatus (R-PSRB completion-evidence path) + reuses evaluateFailedFlipSuppression; pipelined + attended per B-RASO, NOT hand-built
+self_modifying_recovery: true
 target_version: v2.1.0
 branch: release/v2.1-beta
-source_assessment: "Reliability review 2026-07-25 regrounded the ledger: the RELIABILITY-INVENTORY Tier-2-C leak was MIS-TRACKED as shipped (B-WDSUB subtracted the tokenPresent/ANALYSIS_DONE conjuncts, NOT the timeout conjunct). Grep-verified still-live at HEAD 4ed6e945. Highest-frequency historical leak; bites target repos; subtractive fix reusing an existing guard."
+source_assessment: "Reliability review 2026-07-25 (inventory Tier-2-C, mis-tracked as shipped). Refinement 2026-07-25 REJECTED the original evaluateFailedFlipSuppression route and reshaped to the subtractive route + auto-promote guard — see §0."
 ---
 
 # R-WDTF-TO — the timeout proxy must not outrank committed git work
 
-## The single leak (reliability inventory Tier-2-C)
+## §0 — AUTHOR'S RETRACTION (what refinement corrected)
 
-`git working-tree state is the sole authority on whether a ticket's work is complete.` A worker that
-**committed gate-green work and then blew its wall-clock budget** (often *during* the `test:fast` gate)
-has its committed SHA erased with **zero git probe**. This is the inventory's highest-frequency
-historical leak — the root of the entire "recover a timed-out worker's committed work" recovery-recipe
-family ([[feedback_commit_before_respawn]], [[project_spawn_morty_false_failed_over_completed_work]]).
+The original PRD proposed routing the timeout Failed-flip through `evaluateFailedFlipSuppression`. All three
+analysts, grep-verified at HEAD `a56c9e85`, converged on rejecting that and on a cleaner subtractive route.
 
-**Not fixed by B-WDSUB.** B-WDSUB subtracted the *narrative-token* conjuncts (`tokenPresent`,
-`ANALYSIS_DONE`). The **timeout** conjunct is a separate blinder and is still live.
+| # | Original premise | Verdict | Correction (build follows THIS) |
+|---|---|---|---|
+| R1 | "Route the timeout flip through `evaluateFailedFlipSuppression` (reuse the guard)." | **REJECTED.** Suppression skips the frontmatter write, imposing a `readActiveFailedFlipHolds` park excluded from **both** selection sites (`mux-runner.ts:1144`, `:1182`), released only momentarily and **self-revoking**: `refundRecoveryBudgetOnReset` (`:6122`) refunds only `BOUNDED_ESCAPE_STRATEGY`/`outcome:'failed'`, never the suppression entry, so "reset to Todo + relaunch" buys exactly ONE spawn then re-parks. Every terminal reachable from a permanent hold (`manager_persistent_hallucination`/`recovery_exhausted`/`iteration_cap_exhausted`) is a **failure exit** (`:4422-4424`) that **stops auto-resume** — converting a single-ticket data-loss bug into a session-level halt of unattended operation. | **Subtractive route:** keep the `Failed` flip (a timed-out run genuinely did not finish; `Failed` stays **selectable** via `isPendingMuxTicket` → preserves liveness, no halt), and **stop writing `completion_commit: null`** — reuse `reconcileWorkerCommitAttribution` to probe the worker window and write the ticket-scoped SHA; absent a commit, leave the field untouched. Do NOT route through suppression. |
+| R2 | (implicit) "preserving the SHA is safe." | **HAZARD — verified.** A `completion_commit` present on a `Failed` timeout ticket auto-promotes to **terminal `Done`** on the next `setup.js --resume`: `tryResumeOrphanReattach` (`setup.ts:1284`) ff-reattaches an orphaned window commit and flips `status:'Done'` (`:1322`) whenever `resolveWorkerGateVerdict(...).verdict === 'green'` (`:1314`) — **with no check of the current status** (grep confirmed). On a timeout the verdict is `absent` and `resolveWorkerGateVerdict` **recomputes** it via `recomputeAbsentWorkerGateVerdict` = **eslint+tsc only (test:fast excluded, R-WGFR)**. Since timeouts land *during* test:fast, the stamp would ship **unverified work as terminal Done, bypassing every later gate** — inverting the bundle's value on the dominant path. | **Close it in-bundle (WS-2):** add a clause to `tryResumeOrphanReattach`'s existing fail-closed guard so a **recomputed** (test:fast-excluded) green verdict does NOT authorize the terminal Done. Leave the reattached ticket at `Failed` (commit preserved, selectable) so the runner re-runs the full lifecycle including test:fast. |
+| R3 | ACs simulate a timeout at sub-second budgets. | **Possibly unbuildable** — the minimum real worker timeout is 300s; the only sub-second lever is `state.flags.tier_cap_override.<tier>.worker_timeout_seconds`. | ACs name that lever (or unit-test `evaluateWorkerOutcome`/`persistWorkerOutcomeStatus` directly with a synthesized `timedOut:true` ctx, avoiding a real wall-clock wait). |
+| R4 | "Blocking pre-adoption check: does anything pin `Failed ⇒ completion_commit:null`?" | **CLEARED (verified 4 ways).** No release-gate audit pins it; `audit-trap-door-enforcement.sh` has zero matches; the AC-D4 scanner's `TERMINAL_STATUS_WRITE_RE` spares `status:'Failed'` **by design** and ships a false-positive **decoy** at `tests/completion-authority-single-source.test.js:226`; `git-utils.ts:114` early-returns before the `completion_commit_inferred` clear when the SHA is non-null. `spawn-morty.ts` is already on the AC-D4 allowlist. | The subtractive write is legal. No AC-D4 change needed. |
 
-## The defect — grounded at HEAD (`4ed6e945`)
+---
 
-`evaluateWorkerOutcome` (`bin/spawn-morty.ts`):
+# TRACK A — the fix (ordered: WS-2 guard first, then WS-1 stamp)
 
-```ts
-const hasEdits = checkGitEdits(ctx.sessionWorkingDir, Math.floor(startTime / 1000)); // the GIT signal
-const isSuccess = !ctx.mutableState.timedOut && hasArtifact && (logNonTrivial || hasEdits);
-//                ^^^^^^^^^^^^^^^^^^^^^^^^^^ wall-clock PROXY AND-gates the git signal
-```
+## WS-2 — close the resume-time auto-promote (guard first, standalone-safe)
 
-A timed-out worker → `isSuccess === false` **regardless of `hasEdits`**. In `runWorkerProcess` the
-`if (isSuccess) { … runWorkerGate … evaluateFailedFlipSuppression … }` block is then **skipped
-entirely**, so the timeout path **never reaches** the git-consultation guard
-`evaluateFailedFlipSuppression` — which today is wired **only** inside the worker-gate-fail branch
-(`spawn-morty.ts` ~`:1854`, `callsite: 'worker_gate_fail'`). The downstream
-`persistWorkerOutcomeStatus` then writes `updateTicketFrontmatter(…, { status: 'Failed',
-completion_commit: null })` — erasing a real, reachable, ticket-scoped commit.
+`tryResumeOrphanReattach` (`bin/setup.ts`) flips a reattached ticket to terminal `Done` on
+`resolveWorkerGateVerdict(...).verdict === 'green'` (`:1314`) regardless of current status. The verdict may
+be **recomputed** from eslint+tsc only (test:fast excluded) via `recomputeAbsentWorkerGateVerdict`. Add a
+clause to the existing fail-closed guard: a verdict whose `computedVia` indicates it was **recomputed**
+(not a persisted verdict from a real worker-gate run that included the tier's test gate) MUST NOT authorize
+the terminal `Done` flip — leave the ticket at its current status (selectable), log the reason. This is a
+tightening of an existing guard, no new machinery, and is safe to land independently.
 
-**The guard already exists and already does the right thing** for the gate-fail branch: on evidence of
-real work (fresh artifacts OR a ticket-scoped commit in the worker window) it returns
-`action: 'suppress' | 'escalate'` and the gate-fail branch preserves the SHA + frontmatter status
-(comment `7eb9fa20`: *"gate-fail reset and Failed flip suppressed … work preserved for triage"*). The
-gap is purely that the **timeout / no-artifact** flip does not consult it.
+| AC | Assertion |
+|---|---|
+| AC-WDTFTO-2-1 | `tryResumeOrphanReattach` on a ticket whose `worker_gate_verdict` was **recomputed** (eslint+tsc-only, `computedVia` = the recompute value read from `resolveWorkerGateVerdict`'s return) leaves `status` **non-`Done`** and preserves the reattached `completion_commit` — Verify: `npm run test:fast -- extension/tests/<new>-resume-reattach-recomputed-verdict.test.js` — Type: test |
+| AC-WDTFTO-2-2 | a ticket with a **persisted** green verdict from a real gate run still flips `Done` (no regression to the legitimate reattach) — Type: test |
+| AC-WDTFTO-2-3 | type + lint clean; compiled mirror `bin/setup.js` regenerated — Verify: `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && git diff --exit-code extension/bin/setup.js` — Type: typecheck |
 
-## The fix — reuse the existing guard on the timeout path (no new machinery)
+## WS-1 — stop the timeout flip from erasing the SHA (subtractive stamp)
 
-Route the `persistWorkerOutcomeStatus` Failed-flip through the **existing**
-`evaluateFailedFlipSuppression` before it nulls the commit — the same call the gate-fail branch already
-makes, with a distinct `callsite` (e.g. `'worker_outcome_no_success'`). When it returns
-`suppress`/`escalate` (committed work found in the worker window):
-- do **NOT** write `completion_commit: null`,
-- do **NOT** flip `status: 'Failed'` (leave the ticket's frontmatter status runnable — the worker still
-  exits non-zero, and the manager-side non-runnable hold parks it for triage, identical to the gate-fail
-  path).
+`persistWorkerOutcomeStatus` (`bin/spawn-morty.ts:2072`) writes `{ status:'Failed', completion_commit: null }`
+on the non-success path with zero git probe. Replace the `null` write: call the existing
+`reconcileWorkerCommitAttribution` (`:2039` — probes the worker window `windowShas` → `pickAttributionCommit`
+→ verified ticket-scoped SHA) and, if it returns a SHA, write `{ status:'Failed', completion_commit: <sha> }`;
+if it returns `null` (no commit), write `{ status:'Failed' }` leaving `completion_commit` untouched. Keep the
+`Failed` flip. Do NOT route through `evaluateFailedFlipSuppression`. The `!timedOut` conjunct in
+`evaluateWorkerOutcome`'s `isSuccess` may remain (the run is legitimately non-successful) — only the
+destructive `null` write is removed.
 
-The `!timedOut` conjunct in `isSuccess` **may stay** (a timed-out run is legitimately non-successful —
-it did not finish); what must change is the *consequence*: nulling the SHA / flipping Failed must consult
-git first. Evidence-check errors **fail open** to today's behavior (matches the gate-fail branch).
-
-## Acceptance Criteria
-
-- [ ] AC-WDTFTO-1: a worker that **timed out** but left a ticket-scoped commit in its window → `evaluateFailedFlipSuppression(callsite:'worker_outcome_no_success')` returns `suppress`/`escalate`; the ticket's `completion_commit` is **NOT** nulled and `status` is **NOT** flipped to `Failed` — Verify: `npm run test:fast -- extension/tests/<new>-worker-timeout-preserves-commit.test.js` — Type: test
-- [ ] AC-WDTFTO-2: a worker that timed out with **no commit and no artifact** still flips `Failed` (no false-preserve; the leak's negative path survives) — Type: test
-- [ ] AC-WDTFTO-3: the git-consultation guard is **reused, not reimplemented** — the timeout path calls the same `evaluateFailedFlipSuppression` symbol as the gate-fail branch (grep shows exactly one definition; ≥2 callsites) — Verify: `grep -c 'function evaluateFailedFlipSuppression' extension/src/bin/mux-runner.ts` returns 1 — Type: lint
-- [ ] AC-WDTFTO-4: evidence-check error **fails open** to the pre-fix flip (no new hard-fail surface) — Type: test
-- [ ] AC-WDTFTO-5: the gate-fail branch's existing suppression behavior is **unchanged** (no regression to `callsite:'worker_gate_fail'`) — Verify: `npm run test:fast -- extension/tests/spawn-morty-worker-gate.test.js` — Type: test
-- [ ] AC-WDTFTO-6: type + lint clean, compiled mirror regenerated — Verify: `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && git diff --exit-code extension/bin/spawn-morty.js` — Type: typecheck
-
-## Interface Contracts
-
-**Reused:** `evaluateFailedFlipSuppression(args: { sessionDir, statePath, ticketId, workingDir, iteration, callsite, windowStartMs, windowEndMs, preSha, log }) → { action: 'suppress' | 'escalate' | 'flip' | … }`. **New callsite value only** — no signature change. **Inputs on the timeout path:** the worker window is `windowStartMs = spawnTsMs`, `windowEndMs = Date.now()`, `preSha = preWorkerHead` (identical to the gate-fail call). **Invariant:** a `Failed` flip / `completion_commit: null` write is emitted only after the guard returns non-suppress.
+| AC | Assertion |
+|---|---|
+| AC-WDTFTO-1-1 | a timed-out worker with a ticket-scoped commit in its window → `persistWorkerOutcomeStatus` writes `status:'Failed'` with `completion_commit === <the window SHA>` (NOT null). Simulate via a synthesized `timedOut:true` ctx (or `state.flags.tier_cap_override.<tier>.worker_timeout_seconds`), not a real wall-clock wait — Verify: `npm run test:fast -- extension/tests/<new>-worker-timeout-preserves-commit.test.js` — Type: test |
+| AC-WDTFTO-1-2 | a timed-out worker with **no** commit → writes `status:'Failed'` and does NOT invent a `completion_commit` (field untouched/absent) — Type: test |
+| AC-WDTFTO-1-3 | the ticket remains **selectable** after the flip (`isPendingMuxTicket` true for `Failed`) — no session halt — Type: test |
+| AC-WDTFTO-1-4 | end-to-end (guard from WS-2 present): a preserved-SHA `Failed` timeout ticket is NOT auto-promoted to `Done` on `--resume` when the verdict is recomputed (test:fast never ran) — Type: test |
+| AC-WDTFTO-1-5 | `evaluateFailedFlipSuppression` is NOT called from the timeout path — Verify: `git diff <base>..HEAD -- extension/src/bin/spawn-morty.ts` shows no new `evaluateFailedFlipSuppression` callsite — Type: lint |
+| AC-WDTFTO-1-6 | type + lint clean; compiled mirror `bin/spawn-morty.js` regenerated — Type: typecheck |
 
 ## Non-Goals
-
-- **No new machinery** — no new git-probe helper, no new state field, no new predicate. Reuse `evaluateFailedFlipSuppression` verbatim.
-- **`evaluateFailedFlipSuppression` internals are NOT edited** (it lives on the mux-runner side; this bundle only adds a callsite from spawn-morty).
-- **The `!timedOut` conjunct in `isSuccess` is NOT required to change** — the run stays non-successful; only the destructive consequence is git-gated.
-- Inventory Tier-3-F (`executeBoundedEscape`), Tier-1-B (`readEvidence` residual), and the fail-OPEN branches (Tier-3-G) are **out of scope** — separate findings.
+- `evaluateFailedFlipSuppression` is NOT edited and NOT newly called (the rejected route). `FailedFlipCallsite` untouched.
+- The `!timedOut` conjunct in `evaluateWorkerOutcome` is NOT required to change — only the `null` write is removed.
+- No AC-D4 / `completion-authority-single-source` change (the scanner spares `Failed` by design).
+- Inventory Tier-3-F (`executeBoundedEscape`), Tier-1-B (`readEvidence`), Tier-3-G (fail-open) — separate findings.
 
 ## Simplification Review (subtract-before-add)
-
-1. **Adds no mechanism.** The only addition is a second **callsite** of an existing function; the behavior it triggers (suppress the flip, preserve the SHA) already exists. The net effect is *removing* the timeout proxy's authority to erase git-committed work.
-2. **REUSE:** `evaluateFailedFlipSuppression` — the exact guard the gate-fail branch already uses. Named, not rebuilt (AC-WDTFTO-3 enforces one definition).
-3. **The brittle thing subtracted:** a wall-clock proxy outranking a reachable git commit. The fix removes that authority rather than wrapping it in a new guard.
-4. **Net shape:** ~neutral LOC (one guarded callsite), net-negative *brittleness* — one fewer proxy-erases-git site. Retires a whole recovery-recipe family.
+1. **WS-1 removes a destructive write** (the `null` erasure) and REUSES `reconcileWorkerCommitAttribution` (the attribution helper the inventory calls "done right") — no new probe. WS-2 adds one clause to an existing fail-closed guard — no new mechanism.
+2. **REUSE:** `reconcileWorkerCommitAttribution` (WS-1); the existing `tryResumeOrphanReattach` fail-closed guard + `resolveWorkerGateVerdict.computedVia` (WS-2).
+3. **Brittle thing subtracted:** a wall-clock proxy erasing a reachable git commit (WS-1); an eslint+tsc-only proxy authorizing terminal Done over an unrun test tier (WS-2). Both remove a proxy's authority over git/gate ground truth.
+4. **Net shape:** WS-1 net-negative (deletes the null write). WS-2 net-neutral (one guard clause). No new state field, no new predicate, no suppression callsite.
 
 ## Risks
-
-- **Self-modifying-recovery:** edits `persistWorkerOutcomeStatus` (R-PSRB completion-evidence path). The run executes DEPLOYED (pre-fix) JS, so a timed-out worker building this fix could itself have work erased — budget one intervention, recover with the documented recipe (verify ground truth → commit before relaunch → `setup --resume` → relaunch). Pipelined + attended, NOT hand-built ([[feedback_never_hand_build_always_pipeline]]).
-- **Over-preserve:** if the suppression check were too lax it could preserve a genuinely-failed ticket. Bounded — it requires a ticket-scoped commit in the worker window (the same bar the gate-fail branch already trusts), and AC-WDTFTO-2 pins the no-commit negative path.
+- **Self-modifying-recovery:** edits `persistWorkerOutcomeStatus` (R-PSRB completion-evidence path). Runs on DEPLOYED beta.6 JS — the `done_without_commit_evidence` wedge is now fixed (WS-A2 deployed), but R-WDTF-TO's OWN leak (timeout nulls committed work) is still live until this ships, so a timed-out worker building this fix could still have work erased. Budget one intervention; recover with the documented recipe. Pipelined + attended, NOT hand-built.
+- **Ordering:** WS-2 (guard) must land before/with WS-1 (stamp) — a stamped SHA without the guard ships the auto-promote hazard. Within one bundle/release this is guaranteed (deploy is at install.sh after the whole bundle); ticket order = WS-2 (10) → WS-1 (20).
+- **Over-preserve:** WS-1 writes a SHA only when `reconcileWorkerCommitAttribution` verifies a ticket-scoped window commit (the same bar the gate-fail branch trusts). AC-WDTFTO-1-2 pins the no-commit negative path.
 
 ## Build-time reminders
+- Branch `release/v2.1-beta`, baseline = beta.6 (`165a1a43`) + doc commits.
+- **Compiled-mirror co-scoping MANDATORY** — ticket allowlists name both `src/bin/{spawn-morty,setup}.ts` and `bin/{spawn-morty,setup}.js`.
+- Re-anchor on symbols (`persistWorkerOutcomeStatus`, `reconcileWorkerCommitAttribution`, `tryResumeOrphanReattach`, `resolveWorkerGateVerdict`).
+- Order WS-2 before WS-1. Launch `--szechuan-max-iterations 500 --anatomy-max-iterations 500`.
 
-- Branch `release/v2.1-beta`, baseline = the beta.6 release commit.
-- **Compiled-mirror co-scoping MANDATORY** — `extension/bin/spawn-morty.js` IS the deployed runtime; the ticket allowlist names both `src/bin/spawn-morty.ts` and `bin/spawn-morty.js`.
-- Re-anchor on symbols (`evaluateWorkerOutcome`, `persistWorkerOutcomeStatus`, `evaluateFailedFlipSuppression`), not line numbers.
-- Launch via refine→pipeline.
+## Implementation Task Breakdown
+
+| Order | ID | Title | Tier | Entry | Exit |
+|---|---|---|---|---|---|
+| 10 | 47ddf936 | WS-2 guard: no auto-Done on recomputed verdict (`setup.ts`) | medium | green @beta.6 | recomputed verdict can't terminal-Done a reattach |
+| 20 | 4404d032 | WS-1 stamp: stop nulling SHA, reuse `reconcileWorkerCommitAttribution` (`spawn-morty.ts`) | medium | 47ddf936 done | timeout preserves SHA, stays Failed-selectable |
+| 30 | 89da513d | Harden: code quality | medium | impl done | zero P0-P1 in diff |
+| 40 | 33f4960b | Audit: data flow (SHA path end-to-end) | medium | 89da513d done | zero CRITICAL+HIGH |
+| 50 | 7af891d4 | Harden: test quality (synthesized timeouts, exact-SHA) | medium | 33f4960b done | every AC mapped |
+| 60 | ef394937 | Audit: cross-ref (trap-door docs vs code) | medium | 7af891d4 done | docs match new behavior |
+
+Wiring skipped (≤2 impl tickets).
