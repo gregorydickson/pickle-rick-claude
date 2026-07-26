@@ -2928,11 +2928,17 @@ function buildIterationPromptContext(state, sessionDir, iterationNum, extensionR
         settings,
     };
 }
-function createIterationSpawnEnv(state, backend, invocation, statePath, runtimeOverrides, sessionDir) {
+/**
+ * Builds the manager iteration subprocess env, including the `core.hooksPath` +
+ * `PICKLE_TICKET_ID` trailer-hooks fragment (B-GITATTR WS-1, ticket cb36a189) keyed off
+ * `state.current_ticket`. Exported so tests can assert on the real construction path
+ * without spawning a process.
+ */
+export function createIterationSpawnEnv(state, backend, invocation, statePath, runtimeOverrides, sessionDir) {
     const env = {
         ...process.env,
         ...runtimeOverrides.envOverrides,
-        ...backendEnvOverrides(backend),
+        ...backendEnvOverrides(backend, { workingDir: state.working_dir || process.cwd(), ticketId: state.current_ticket, sessionDir }),
         ...(invocation.env ?? {}),
         ...sessionStampEnv(path.basename(sessionDir), state.working_dir || process.cwd()),
         PICKLE_STATE_FILE: statePath,
@@ -5032,7 +5038,7 @@ export function attemptRecoveryBeforeTerminal(input) {
                         });
                         const r = spawnSync(invocation.cmd, invocation.args, {
                             cwd: opts.workingDir,
-                            env: { ...process.env, ...backendEnvOverrides(backend), ...(invocation.env ?? {}), PICKLE_STATE_FILE: opts.statePath },
+                            env: { ...process.env, ...backendEnvOverrides(backend, { workingDir: opts.workingDir, ticketId: opts.ticketId, sessionDir: opts.sessionDir }), ...(invocation.env ?? {}), PICKLE_STATE_FILE: opts.statePath },
                             encoding: 'utf-8',
                             timeout: CONVERGED_PLAN_VERIFY_TIMEOUT_MS,
                         });

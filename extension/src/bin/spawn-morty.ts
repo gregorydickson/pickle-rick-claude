@@ -2640,6 +2640,19 @@ export function evaluateWorkerOutcome(params: {
 // mapping and the emission below; add a new native-CLI backend here only.
 const NATIVE_CLI_BINARY_MISSING_BACKENDS: readonly Backend[] = ['hermes', 'grok', 'kimi', 'gemini'];
 
+/**
+ * Builds the worker subprocess env, including the `core.hooksPath` + `PICKLE_TICKET_ID`
+ * trailer-hooks fragment (B-GITATTR WS-1, ticket cb36a189) keyed off this ctx's own
+ * `ticketId` — the ticket this worker is spawned for is always the ticket in flight.
+ * Exported so tests can assert on the real construction path without spawning a process.
+ */
+export function buildWorkerSpawnEnv(ctx: WorkerProcessContext, invocation: ReturnType<typeof buildWorkerInvocation>): NodeJS.ProcessEnv {
+  const { args, sessionRoot, sessionWorkingDir } = ctx;
+  const env: NodeJS.ProcessEnv = { ...process.env, ...backendEnvOverrides(args.backend, { workingDir: sessionWorkingDir, ticketId: ctx.ticketId, sessionDir: sessionRoot }), ...(invocation.env ?? {}), ...sessionStampEnv(path.basename(sessionRoot), sessionWorkingDir), PICKLE_STATE_FILE: ctx.timeoutStatePath || ctx.workerStatePath, PICKLE_ROLE: 'worker', PYTHONUNBUFFERED: '1' };
+  delete env['CLAUDECODE'];
+  return env;
+}
+
 export async function runWorkerProcess(ctx: WorkerProcessContext): Promise<{ exitCode: number; isSuccess: boolean }> {
   const { args, ticketPath, ticketId, sessionRoot, sessionLog, sessionLogPath, sessionWorkingDir } = ctx;
   // C7: resolve session-merged worker MCP config (expose_mcp_to_workers).
@@ -2664,8 +2677,7 @@ export async function runWorkerProcess(ctx: WorkerProcessContext): Promise<{ exi
   });
   try { updateTicketStatus(ticketId, 'In Progress', sessionRoot); } catch { /* best-effort */ }
   sessionLog.on('error', err => console.error(`${Style.RED}❌ Log stream error: ${safeErrorMessage(err)}${Style.RESET}`));
-  const env: NodeJS.ProcessEnv = { ...process.env, ...backendEnvOverrides(args.backend), ...(invocation.env ?? {}), ...sessionStampEnv(path.basename(sessionRoot), sessionWorkingDir), PICKLE_STATE_FILE: ctx.timeoutStatePath || ctx.workerStatePath, PICKLE_ROLE: 'worker', PYTHONUNBUFFERED: '1' };
-  delete env['CLAUDECODE'];
+  const env = buildWorkerSpawnEnv(ctx, invocation);
   // R-CSI / W2.R1: detach so the worker subtree leads its own process group;
   // killProcessTree's existing `process.kill(-pid, sig)` then reaps exactly this
   // session's group and cannot reach a concurrent session's healthy workers.

@@ -11,6 +11,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { backendEnvOverrides, __resetBackendWarnings } from '../../services/backend-spawn.js';
+import { buildWorkerSpawnEnv } from '../../bin/spawn-morty.js';
+import { createIterationSpawnEnv } from '../../bin/mux-runner.js';
 
 const GIT_TIMEOUT_MS = 10_000;
 
@@ -183,19 +185,102 @@ test('backendEnvOverrides: null ticketId omits PICKLE_TICKET_ID and skips materi
   }
 });
 
-// --- Manager parity ---
+// --- Real worker + manager spawn-env construction (ticket cb36a189 DEFECT 2 fix) ---
+//
+// The prior "manager parity" case called `backendEnvOverrides('claude', opts)` twice with the
+// identical `opts` object and asserted the two results equal each other — a tautology that would
+// pass even if neither real spawn site ever wired `trailerOpts` through. These cases instead
+// exercise the ACTUAL env-construction functions used at the real worker spawn
+// (`spawn-morty.ts:runWorkerProcess` via the exported `buildWorkerSpawnEnv` seam) and the real
+// manager iteration spawn (`mux-runner.ts:runIteration` via the exported `createIterationSpawnEnv`
+// seam), proving the wiring at cb36a189's two call sites is live.
 
-test('backendEnvOverrides: manager invocation yields the same fragment as worker invocation', () => {
-  const workingDir = mkTmpDir('trailer-env-parity-');
-  const sessionDir = mkTmpDir('trailer-env-parity-session-');
+test('buildWorkerSpawnEnv (real worker spawn path): ticket in flight injects core.hooksPath + PICKLE_TICKET_ID', () => {
+  const workingDir = mkTmpDir('trailer-env-realworker-');
+  const sessionDir = mkTmpDir('trailer-env-realworker-session-');
   try {
     initGitRepo(workingDir);
 
-    const opts = { workingDir, ticketId: 'parity001', sessionDir, env: {} };
-    const workerEnv = backendEnvOverrides('claude', opts);
-    const managerEnv = backendEnvOverrides('claude', opts);
+    const ctx = {
+      args: { backend: 'claude' },
+      sessionRoot: sessionDir,
+      sessionWorkingDir: workingDir,
+      ticketId: 'realworker1',
+      timeoutStatePath: null,
+      workerStatePath: path.join(sessionDir, 'worker-state.json'),
+    };
+    const env = buildWorkerSpawnEnv(ctx, { cmd: 'claude', args: [], backend: 'claude' });
 
-    assert.deepEqual(workerEnv, managerEnv);
+    assert.equal(env.GIT_CONFIG_KEY_0, 'core.hooksPath');
+    assert.equal(typeof env.GIT_CONFIG_VALUE_0, 'string');
+    assert.equal(env.GIT_CONFIG_COUNT, '1');
+    assert.equal(env.PICKLE_TICKET_ID, 'realworker1');
+  } finally {
+    cleanDir(workingDir);
+    cleanDir(sessionDir);
+  }
+});
+
+test('buildWorkerSpawnEnv (real worker spawn path): no ticket in flight injects neither key', () => {
+  const workingDir = mkTmpDir('trailer-env-realworker-null-');
+  const sessionDir = mkTmpDir('trailer-env-realworker-null-session-');
+  try {
+    initGitRepo(workingDir);
+
+    const ctx = {
+      args: { backend: 'claude' },
+      sessionRoot: sessionDir,
+      sessionWorkingDir: workingDir,
+      ticketId: null,
+      timeoutStatePath: null,
+      workerStatePath: path.join(sessionDir, 'worker-state.json'),
+    };
+    const env = buildWorkerSpawnEnv(ctx, { cmd: 'claude', args: [], backend: 'claude' });
+
+    assert.equal('PICKLE_TICKET_ID' in env, false);
+    assert.equal('GIT_CONFIG_COUNT' in env, false);
+    assert.equal('GIT_CONFIG_KEY_0' in env, false);
+  } finally {
+    cleanDir(workingDir);
+    cleanDir(sessionDir);
+  }
+});
+
+test('createIterationSpawnEnv (real manager spawn path): ticket in flight injects core.hooksPath + PICKLE_TICKET_ID', () => {
+  const workingDir = mkTmpDir('trailer-env-realmanager-');
+  const sessionDir = mkTmpDir('trailer-env-realmanager-session-');
+  try {
+    initGitRepo(workingDir);
+
+    const state = { working_dir: workingDir, current_ticket: 'realmanager1' };
+    const invocation = { cmd: 'claude', args: [], backend: 'claude' };
+    const statePath = path.join(sessionDir, 'state.json');
+    const env = createIterationSpawnEnv(state, 'claude', invocation, statePath, {}, sessionDir);
+
+    assert.equal(env.GIT_CONFIG_KEY_0, 'core.hooksPath');
+    assert.equal(typeof env.GIT_CONFIG_VALUE_0, 'string');
+    assert.equal(env.GIT_CONFIG_COUNT, '1');
+    assert.equal(env.PICKLE_TICKET_ID, 'realmanager1');
+  } finally {
+    cleanDir(workingDir);
+    cleanDir(sessionDir);
+  }
+});
+
+test('createIterationSpawnEnv (real manager spawn path): no ticket in flight injects neither key', () => {
+  const workingDir = mkTmpDir('trailer-env-realmanager-null-');
+  const sessionDir = mkTmpDir('trailer-env-realmanager-null-session-');
+  try {
+    initGitRepo(workingDir);
+
+    const state = { working_dir: workingDir, current_ticket: null };
+    const invocation = { cmd: 'claude', args: [], backend: 'claude' };
+    const statePath = path.join(sessionDir, 'state.json');
+    const env = createIterationSpawnEnv(state, 'claude', invocation, statePath, {}, sessionDir);
+
+    assert.equal('PICKLE_TICKET_ID' in env, false);
+    assert.equal('GIT_CONFIG_COUNT' in env, false);
+    assert.equal('GIT_CONFIG_KEY_0' in env, false);
   } finally {
     cleanDir(workingDir);
     cleanDir(sessionDir);
