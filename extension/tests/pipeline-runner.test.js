@@ -2421,7 +2421,16 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
     }
   });
 
-  test('captured baseline with zero commits halt says "zero commits", never "baseline unmeasurable"', () => {
+  // B-NOSTOP-GATES WS-1: zero commits since baseline is a QUALITY signal
+  // (reported via maybeStampPhaseGraduation's phase_no_progress branch, which
+  // now advances instead of halting), not a crash-floor cannot-continue
+  // condition. The isFatalPhaseFailure halt/no-halt decision DID change here —
+  // OLD (pre-WS-1): true (fatal). NEW (WS-1): false. `getFatalPickleHaltReason`'s
+  // message-generation logic is UNCHANGED (still reachable via the
+  // `--strict-phases` / `pipeline_continue_on_phase_fail: false` opt-in halt
+  // path, per its own inline comment), so this test now exercises the messaging
+  // function directly rather than via the (no longer applicable) fatal decision.
+  test('captured baseline with zero commits reports "zero commits", never "baseline unmeasurable"', () => {
     const dir = scpinTmpDir();
     try {
       const startCommit = seedGitRepoAndCommit(dir);
@@ -2431,8 +2440,8 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
 
       assert.equal(
         isFatalPhaseFailure('pickle', runtime),
-        true,
-        'zero commits since a captured baseline must still be fatal (halt/no-halt decision unchanged)',
+        false,
+        'zero commits since a captured baseline is no longer fatal — B-NOSTOP-GATES WS-1 neutralized this arm',
       );
 
       const logged = [];

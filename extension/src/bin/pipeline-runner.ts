@@ -2800,10 +2800,16 @@ export function isFatalPhaseFailure(phase: PhaseName, runtime: PipelineRuntime):
       // reaching this function, and that path consults the completion oracle instead
       // of the session-wide commit count. Demoted in lockstep with `isHaltExit` and
       // `FAILURE_EXIT_REASONS` (mux-runner.ts) so the three classifiers agree.
-      // The two arms below are UNCHANGED and still fatal.
+      //
+      // B-NOSTOP-GATES WS-1: the `countCommitsSince === 0` arm below is a SECOND
+      // demotion. Zero commits since baseline is a QUALITY signal — reported via
+      // `maybeStampPhaseGraduation`'s `phase_no_progress` branch, which now advances
+      // instead of halting — not a crash-floor cannot-continue condition. Only the
+      // `!startCommit` arm remains fatal: a missing baseline means progress is
+      // literally unmeasurable, which no downstream honesty gate can report around.
       const startCommit = runnerState.start_commit?.trim();
       if (!startCommit) return true;
-      return countCommitsSince(startCommit, runtime.repoRoot) === 0;
+      return false;
     }
     if (phase === 'anatomy-park' || phase === 'szechuan-sauce') {
       const reason = runnerState.exit_reason;
@@ -3516,18 +3522,17 @@ function reportPhaseIncomplete(runtime: PipelineRuntime, phase: PhaseName): bool
   const tickets = collectTickets(runtime.sessionDir);
   const unfinished = resolveUnfinishedTickets(runtime, tickets);
   const total = tickets.length;
-  // B-PXBO WS-1: count status-unfinished (non-Done) tickets BEFORE oracle exclusion.
-  // The stamp-skip applies ONLY when such tickets existed and all became
-  // oracle-committed/terminal. When there are NO status-unfinished tickets, the phase
-  // is incomplete for a NON-ticket reason (e.g. all_judge_backends_exhausted + gate
-  // pass) and must still stamp pipeline_phase_incomplete.
-  const statusUnfinished = tickets.filter(t => (t.status || '').toLowerCase() !== 'done').length;
-  if (statusUnfinished > 0 && unfinished.length === 0) {
-    // Status-unfinished tickets all became oracle-committed/terminal via oracle
-    // exclusion → the work landed; do NOT stamp pipeline_phase_incomplete.
-    // Gated on statusUnfinished so a non-ticket incompleteness (none unfinished by
-    // status, e.g. judge-exhausted) still falls through to the genuine stamp below.
-    runtime.log(`Phase ${phase}: ${statusUnfinished} ticket(s) committed/terminal via oracle re-resolution — no phase-incomplete stamp.`);
+  // B-NOSTOP-GATES WS-1: the skip gate used to require `statusUnfinished > 0` (at
+  // least one non-Done ticket) BEFORE checking oracle exclusion — which an all-Done
+  // roster (the healthiest possible state) can never satisfy, so it fell straight
+  // through to the stamp below regardless of `unfinished.length`. The gate now keys
+  // on `unfinished.length === 0` directly: every REAL ticket in the roster is
+  // accounted for, whether by explicit `Done` status or oracle re-resolution. The
+  // `total > 0` guard preserves the fallthrough for ticket-less phases (e.g.
+  // `all_judge_backends_exhausted` + gate pass on anatomy-park/szechuan-sauce, which
+  // have no ticket roster at all) — those still stamp genuinely below.
+  if (unfinished.length === 0 && total > 0) {
+    runtime.log(`Phase ${phase}: all ${total} ticket(s) accounted for (Done or oracle-committed/terminal) — no phase-incomplete stamp.`);
     return false;
   }
   let priorExitReason: string | null = null;
@@ -3637,9 +3642,16 @@ function pipelineBundleScan(runtime: PipelineRuntime): GraduationCounts | null {
  * anatomy-park / szechuan-sauce is untouched) and `ticketCount === 0`
  * (never-decomposed / dispatch-only bundles, handled inside `graduationDecision`).
  *
- * The gate keys on REAL progress (`doneCount + commitCount`) for the halt REASON
+ * The gate keys on REAL progress (`doneCount + commitCount`) for the reported REASON
  * (`phase_no_progress` vs `pipeline_phase_incomplete`), NEVER the skip-dampened
- * `pendingCount / ticketCount` ratio for the graduate-vs-halt decision.
+ * `pendingCount / ticketCount` ratio for the graduate-vs-report decision.
+ *
+ * B-NOSTOP-GATES WS-1: neither non-graduate verdict halts the pipeline any more.
+ * Honesty (the exit_reason stamp + `phaseIncomplete` flag) and halting are separate
+ * wires — both verdicts now report and ADVANCE (`{action:'continue'}`); a real
+ * cannot-continue condition is reserved for the crash floor
+ * (`isFatalPhaseFailure`'s missing-`start_commit` arm) and the explicit
+ * `--strict-phases` / `pipeline_continue_on_phase_fail: false` opt-in.
  */
 function maybeStampPhaseGraduation(
   runtime: PipelineRuntime,
@@ -3663,13 +3675,13 @@ function maybeStampPhaseGraduation(
   emitPhaseGraduationRefused(runtime, counts, _exitCode);
   if (verdict.reason === 'phase_no_progress') {
     const shortStart = progress.startCommit ? progress.startCommit.slice(0, 8) : 'session start';
-    log(`Phase ${rawPhase} exited with no progress (0 Done of ${progress.ticketCount} tickets, 0 commits since ${shortStart})`);
+    log(`Phase ${rawPhase} exited with no progress (0 Done of ${progress.ticketCount} tickets, 0 commits since ${shortStart}) — reporting incomplete, advancing`);
     recordExitReason(runtime.statePath, 'phase_no_progress');
-    return { action: 'break', phaseIncomplete: true };
+    return { action: 'continue', phaseIncomplete: true };
   }
-  log(`Phase ${rawPhase} exited but ${progress.pendingCount}/${progress.ticketCount} tickets remain pending (${progress.doneCount} Done) — not all-tickets-terminal, marking phase incomplete (not advancing)`);
+  log(`Phase ${rawPhase} exited but ${progress.pendingCount}/${progress.ticketCount} tickets remain pending (${progress.doneCount} Done) — not all-tickets-terminal, reporting phase incomplete, advancing`);
   reportPhaseIncomplete(runtime, rawPhase);
-  return { action: 'break', phaseIncomplete: true };
+  return { action: 'continue', phaseIncomplete: true };
 }
 
 /**
@@ -3850,7 +3862,7 @@ function finalizePipeline(
 }
 
 type PhaseIterationOutcome =
-  | { action: 'continue' }
+  | { action: 'continue'; phaseIncomplete?: boolean }
   | { action: 'break'; phaseIncomplete?: boolean };
 
 function emitHeadMismatchStderr(statePath: string): boolean {
@@ -4096,13 +4108,26 @@ function resolvePhaseIncompleteOutcome(
   log: (msg: string) => void,
 ): PhaseIterationOutcome | null {
   if (exitCode !== PipelineRunnerExitCode.PhaseIncomplete) return null;
+  // Branch A: `reportPhaseIncomplete` still found genuinely-unfinished,
+  // non-oracle-excludable tickets (real Todo/In-Progress work the oracle cannot
+  // vouch for). This IS the resumability contract this function's docstring
+  // protects — mux-runner ran out of iteration budget mid-ticket with real work
+  // outstanding, and auto-resume.sh needs exactly this exit-3 +
+  // `pipeline_phase_incomplete` signal to relaunch and finish it. Stays `break`.
   if (reportPhaseIncomplete(runtime, rawPhase)) {
     return { action: 'break', phaseIncomplete: true };
   }
+  // Branch B: every ticket is oracle-accounted-for (Done or oracle-confirmed
+  // committed), but the raw frontmatter `pendingCount` (status-only, no oracle) still
+  // shows tickets outside `done`/`skipped` — a status/evidence desync (e.g. a
+  // Failed/In-Progress ticket whose commit the oracle already confirms landed). The
+  // work is terminal from a truth standpoint; halting the whole session over a stale
+  // status string is the same "stop on a proxy, not truth" class this campaign
+  // targets. B-NOSTOP-GATES WS-1: report incomplete for reconciliation, advance.
   const pendingAfterOracle = collectPicklePhaseProgress(runtime).pendingCount;
   if (pendingAfterOracle > 0) {
-    log(`Phase ${rawPhase}: oracle-committed ticket(s) excluded from the unfinished set, but ${pendingAfterOracle} ticket(s) remain runnable — not advancing (no incomplete stamp)`);
-    return { action: 'break', phaseIncomplete: true };
+    log(`Phase ${rawPhase}: oracle-committed ticket(s) excluded from the unfinished set, but ${pendingAfterOracle} ticket(s) remain runnable by status — advancing, reporting incomplete for reconciliation`);
+    return { action: 'continue', phaseIncomplete: true };
   }
   log(`Phase ${rawPhase}: PhaseIncomplete exit with no genuinely-unfinished and no runnable ticket remaining — graduating`);
   return null;
@@ -4251,8 +4276,9 @@ const PICKLE_INCOMPLETE_SENTINEL = 'pickle_incomplete.json';
  * keys on the frontmatter ground-truth counts).
  *
  * Reuses `reportPhaseIncomplete`'s `pipeline_phase_incomplete` exit_reason and the
- * `{action:'break', phaseIncomplete:true}` outcome so the halt path is identical
- * to the existing PhaseIncomplete contract.
+ * `{action:'continue', phaseIncomplete:true}` outcome — B-NOSTOP-GATES WS-1: an
+ * abnormal-teardown sentinel is a REPORTING signal, not a halt. It reports
+ * incomplete for reconciliation but still advances to citadel.
  */
 function maybeStampPickleIncompleteRobust(
   runtime: PipelineRuntime,
@@ -4265,9 +4291,9 @@ function maybeStampPickleIncompleteRobust(
     sentinelPresent = fs.existsSync(path.join(runtime.sessionDir, PICKLE_INCOMPLETE_SENTINEL));
   } catch { /* best-effort — unreadable treated as absent; existing gates still apply */ }
   if (!sentinelPresent) return null;
-  log(`Phase ${rawPhase} did NOT complete — not advancing to citadel (${PICKLE_INCOMPLETE_SENTINEL} sentinel present)`);
+  log(`Phase ${rawPhase} did NOT complete — advancing with phase reported incomplete (${PICKLE_INCOMPLETE_SENTINEL} sentinel present)`);
   reportPhaseIncomplete(runtime, rawPhase);
-  return { action: 'break', phaseIncomplete: true };
+  return { action: 'continue', phaseIncomplete: true };
 }
 
 /**
@@ -4406,8 +4432,11 @@ export async function main(sessionDir: string, opts: MainOpts = {}): Promise<voi
         continue;
       }
       const outcome = await runPhaseIteration(runtime, counters, cancelMarker, rawPhase, i, log);
+      // B-NOSTOP-GATES WS-1: the session's exit code derives from WHETHER any phase
+      // reported incomplete, not from which arm ended the loop — honesty and halting
+      // are separate wires.
+      if (outcome.phaseIncomplete) phaseIncomplete = true;
       if (outcome.action === 'break') {
-        if (outcome.phaseIncomplete) phaseIncomplete = true;
         break;
       }
       // R-MDS-1: Rebind monitor dashboard pane at non-citadel phase boundaries.

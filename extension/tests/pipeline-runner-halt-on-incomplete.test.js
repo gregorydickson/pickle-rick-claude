@@ -175,12 +175,22 @@ test('pipeline-runner.halt-on-incomplete-phase', async () => {
   }
 });
 
-// AC-A1 (WS-A): a CLEAN mux exit-0 with ≥1 pending ticket AND partial progress
-// (≥1 Done + ≥1 commit since start_commit) must NOT be treated as phase success.
-// This is the R-CMWL-2 partial-progress carve-out leak: maybeStampPhaseIncompleteTickets
-// advances when doneCount>0||commitCount>0, so the catch-all maybeStampPicklePendingTickets
-// gate must stamp pipeline_phase_incomplete and finalize must exit 3 (no advance).
-test('pipeline-runner.clean-exit0-with-pending-and-progress halts incomplete', async () => {
+// AC-A1 (WS-A) / B-NOSTOP-GATES WS-1: a CLEAN mux exit-0 with ≥1 pending ticket AND
+// partial progress (≥1 Done + ≥1 commit since start_commit) is a QUALITY signal, not
+// a crash-floor halt.
+//
+// OLD (pre-WS-1): maybeStampPhaseGraduation's "not all-tickets-terminal" branch
+// returned {action:'break', phaseIncomplete:true} — pipeline stopped BEFORE citadel,
+// exit 3, no advance. Rationale then: "must NOT be treated as phase success."
+// NEW (WS-1): the same branch returns {action:'continue', phaseIncomplete:true} —
+// the phase reports incomplete for reconciliation but ADVANCES to citadel. In this
+// fixture citadel then fails for an unrelated reason (no state.prd_path wired), so
+// the session still exits 3 overall — but now because the earlier phaseIncomplete
+// flag survives citadel's own break via the main-loop accumulator (WS-1 Phase 7),
+// not because pickle itself halted. The behavioral change this test now pins is
+// that citadel is REACHED at all — asserted directly against the pipeline log
+// rather than inferred from the exit code alone.
+test('pipeline-runner.clean-exit0-with-pending-and-progress advances to citadel, reporting incomplete', async () => {
   const repo = tmpDir('pipeline-halt0-repo-');
   const sessionDir = tmpDir('pipeline-halt0-session-');
   try {
@@ -203,7 +213,8 @@ test('pipeline-runner.clean-exit0-with-pending-and-progress halts incomplete', a
       return { exitCode: 0, stdout: '', stderr: '' };
     });
 
-    // finalize MUST exit 3 (PhaseIncomplete), not 0 — no advance to citadel.
+    // finalize exits 3 in THIS fixture (citadel's own unrelated failure keeps the
+    // earlier phaseIncomplete flag alive) — see the WS-1 rationale comment above.
     await captureMainExit(sessionDir, 3);
 
     const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
@@ -211,6 +222,14 @@ test('pipeline-runner.clean-exit0-with-pending-and-progress halts incomplete', a
       state.exit_reason,
       'pipeline_phase_incomplete',
       'clean exit-0 with a pending ticket must stamp pipeline_phase_incomplete',
+    );
+
+    // WS-1: citadel MUST be reached — pickle's partial-progress verdict reports
+    // incomplete but advances instead of halting before citadel.
+    const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.ok(
+      /PHASE 2\/2: CITADEL/.test(runnerLog),
+      'pickle must advance to citadel on partial-progress incomplete, not halt before it',
     );
 
     // The pending ticket stays Todo (pipeline did not falsely complete it).

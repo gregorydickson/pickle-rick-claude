@@ -145,7 +145,22 @@ afterEach(() => {
 // The originating reason is not lost: `reportPhaseIncomplete` reads the prior
 // exit_reason and names it in its own log line, which this test now asserts. That is
 // the "recovery-path report" the reroute is supposed to produce.
-test('AC-MWMO-D2-10 (post-WS-A2): a rerouted done_without_commit_evidence lands on pipeline_phase_incomplete, never the generic failed', async () => {
+//
+// SUPERSEDED (SECOND TIME) by B-NOSTOP-GATES WS-1: this exact fixture (2/2 Done,
+// earlier session commit, mux exit 3 done_without_commit_evidence) is the wedge
+// from the PRD's own bug report (session 2026-07-25-38095284) — an all-terminal
+// roster is the healthiest possible state, so it no longer reaches
+// `reportPhaseIncomplete`'s stamp path at all (the skip gate fires first).
+// OLD (pre-WS-1): pickle halts, stamps `pipeline_phase_incomplete`, names the
+// prior reason in the log — "not laundered" via the halt-reason-preservation
+// mechanism.
+// NEW (WS-1): pickle GRADUATES (no stamp — nothing was genuinely unfinished),
+// advances to citadel, which then fails for an unrelated fixture reason (no
+// `state.prd_path` wired). The "not laundered" guarantee still holds, but via a
+// different mechanism now: pickle never touches `exit_reason` because it never
+// halted, and `finalizeFailedPipeline` preserves an existing reason rather than
+// overwriting it with the generic 'failed'.
+test('AC-MWMO-D2-10 (superseded by B-NOSTOP-GATES WS-1): an all-terminal done_without_commit_evidence roster graduates, and the prior reason survives unlaundered', async () => {
   const repo = tmpDir('pipe-dwce-rr-repo-');
   const sessionDir = tmpDir('pipe-dwce-rr-session-');
   try {
@@ -167,24 +182,31 @@ test('AC-MWMO-D2-10 (post-WS-A2): a rerouted done_without_commit_evidence lands 
       return { exitCode: PipelineRunnerExitCode.PhaseIncomplete, stdout: '', stderr: '' };
     });
 
-    await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
+    // WS-1: pickle graduates (all-terminal roster), citadel is reached and then
+    // fails for an unrelated reason (no prd_path) — exit 1, not 3.
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.Failure);
+
+    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.match(
+      log,
+      /all 2 ticket\(s\) accounted for \(Done or oracle-committed\/terminal\) — no phase-incomplete stamp/,
+      'an all-terminal roster must skip the phase-incomplete stamp entirely',
+    );
+    assert.match(
+      log,
+      /PHASE 2\/2: CITADEL/,
+      'pickle must graduate and reach citadel instead of halting on an all-terminal roster',
+    );
 
     const finalState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
     assert.equal(
       finalState.exit_reason,
-      'pipeline_phase_incomplete',
-      'AC-MWMO-D2-10: finalizePipeline must record the specific PhaseIncomplete reason, never the generic "failed"',
+      'done_without_commit_evidence',
+      'AC-MWMO-D2-10: the prior reason must survive unlaundered — pickle never touches it (it ' +
+      'never halted) and finalizeFailedPipeline preserves an existing reason rather than ' +
+      'overwriting it with the generic "failed"',
     );
     assert.notEqual(finalState.exit_reason, 'failed', 'the generic label is what this AC forbids');
-
-    // The demotion must not cost the operator the diagnosis: the originating
-    // ticket-scoped reason is still named in the halt report.
-    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
-    assert.match(
-      log,
-      /exit_reason=done_without_commit_evidence/,
-      'reportPhaseIncomplete must name the prior mux exit_reason so the rerouted halt stays diagnosable',
-    );
   } finally {
     __setSpawnRunnerForTests(null);
     fs.rmSync(repo, { recursive: true, force: true });

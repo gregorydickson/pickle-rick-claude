@@ -120,14 +120,21 @@ afterEach(() => {
 });
 
 // ─── AC-PRNF-9-1 ────────────────────────────────────────────────────────────
-test('AC-PRNF-9-1: isFatalPhaseFailure returns true when pickle exits with zero commits since start_commit', () => {
+// SUPERSEDED by B-NOSTOP-GATES WS-1: zero commits since baseline is a QUALITY
+// signal (reported via maybeStampPhaseGraduation's phase_no_progress branch,
+// which now advances instead of halting), not a crash-floor cannot-continue
+// condition.
+// OLD (pre-WS-1): isFatalPhaseFailure returned true for zero commits — this test
+// pinned that as R-PRNF-9's regression guard.
+// NEW (WS-1): isFatalPhaseFailure returns false for zero commits with a
+// start_commit present; only the `!startCommit` arm stays fatal for pickle.
+test('AC-PRNF-9-1 (superseded): isFatalPhaseFailure does not fatal pickle on zero commits since start_commit', () => {
   // No followup commit — countCommitsSince(startCommit, repo) === 0
   const { runtime } = makeRuntime({ withFollowupCommit: false });
 
-  // No readiness_halt is set, so code must fall through to commit-count path
   const result = isFatalPhaseFailure('pickle', runtime);
-  assert.equal(result, true,
-    'isFatalPhaseFailure should return true when zero commits exist since start_commit');
+  assert.equal(result, false,
+    'isFatalPhaseFailure must NOT return true for zero commits — B-NOSTOP-GATES WS-1 neutralized this arm');
 });
 
 // ─── AC-PRNF-9-4 ────────────────────────────────────────────────────────────

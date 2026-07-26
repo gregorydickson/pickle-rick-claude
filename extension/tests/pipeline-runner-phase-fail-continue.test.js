@@ -194,11 +194,20 @@ describe('shouldHaltAfterPhase', () => {
     assert.equal(shouldHaltAfterPhase('pickle', 1, runtime), false);
   });
 
-  test('shouldHaltAfterPhase pickle halt when zero commits exist after start_commit', () => {
+  // B-NOSTOP-GATES WS-1: zero commits since baseline is a QUALITY signal (reported
+  // via maybeStampPhaseGraduation's phase_no_progress branch, which now advances
+  // instead of halting), not a crash-floor cannot-continue condition.
+  // OLD (pre-WS-1): isFatalPhaseFailure/shouldHaltAfterPhase both returned true —
+  // zero commits hard-halted the pipeline before the honest-report-and-advance path
+  // ever ran.
+  // NEW (WS-1): both return false — the `!startCommit` arm (:2805) is the only
+  // remaining fatal condition for pickle; zero commits with a startCommit present
+  // falls through to the non-fatal, continue-by-default path (R-PHC-6).
+  test('shouldHaltAfterPhase pickle does not halt when zero commits exist after start_commit', () => {
     const { runtime } = makeRuntime();
 
-    assert.equal(isFatalPhaseFailure('pickle', runtime), true);
-    assert.equal(shouldHaltAfterPhase('pickle', 1, runtime), true);
+    assert.equal(isFatalPhaseFailure('pickle', runtime), false);
+    assert.equal(shouldHaltAfterPhase('pickle', 1, runtime), false);
   });
 
   test('shouldHaltAfterPhase anatomy fatal when exit_reason is judge_cli_missing', () => {

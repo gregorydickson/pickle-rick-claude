@@ -22,6 +22,21 @@
  * completed phases. Previously that rested on the session-wide commit count; it now
  * rests on `reportPhaseIncomplete`, which consults the completion oracle per ticket.
  * The operator-visible outcome is asserted, not the boolean.
+ *
+ * SUPERSEDED (SECOND TIME) by B-NOSTOP-GATES WS-1: the "AC-MWMO-D2-8/D2-9
+ * guarantee" above — that an all-terminal bundle with a commit-less final
+ * ticket must halt pickle as INCOMPLETE, never reach citadel — is exactly the
+ * bug this campaign fixes. Session 2026-07-25-38095284 hit precisely this
+ * shape (6/6 Done, mux exit 3 done_without_commit_evidence) and it stamped
+ * pipeline_phase_incomplete and broke 0/4 phases; citadel never ran. An
+ * all-terminal roster is the healthiest possible state — halting on it is the
+ * bug, not the guarantee.
+ * OLD (pre-WS-1): pickle halts, citadel never entered, exit stays 3.
+ * NEW (WS-1): pickle reports honestly (or, when nothing is genuinely
+ * unfinished, doesn't stamp at all) and GRADUATES — citadel is reached. In
+ * this fixture citadel then fails for an unrelated reason (no state.prd_path
+ * wired), so the overall session exits 1 (citadel's own genuine failure), not
+ * because pickle halted.
  */
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -139,7 +154,7 @@ afterEach(() => {
   __setSpawnRunnerForTests(null);
 });
 
-test('AC-MWMO-D2-8/D2-9 (post-WS-A2): all-terminal bundle with a commit-less final ticket halts pickle as INCOMPLETE — never fake-green — even with earlier session commits', async () => {
+test('AC-MWMO-D2-8/D2-9 (superseded by B-NOSTOP-GATES WS-1): all-terminal bundle with a commit-less final ticket GRADUATES — citadel is reached, even with earlier session commits', async () => {
   const repo = tmpDir('pipe-dwce-repo-');
   const sessionDir = tmpDir('pipe-dwce-session-');
   try {
@@ -170,54 +185,50 @@ test('AC-MWMO-D2-8/D2-9 (post-WS-A2): all-terminal bundle with a commit-less fin
       return { exitCode: PipelineRunnerExitCode.PhaseIncomplete, stdout: '', stderr: '' };
     });
 
-    await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
+    // WS-1: citadel is REACHED (pickle graduates instead of halting), then fails
+    // for an unrelated fixture reason (no state.prd_path wired) — exit 1 is
+    // citadel's own genuine failure, not a pickle halt.
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.Failure);
 
     const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
 
-    // Operator-visible outcome #1: no fake-green completion claim for pickle.
-    assert.ok(
-      !/Phase pickle completed successfully/.test(log),
-      'AC-MWMO-D2-8: an all-terminal bundle with a commit-less final ticket must NOT log ' +
-      '"Phase pickle completed successfully" — this line is the red-before-green marker ' +
-      '(present pre-fix, absent post-fix)',
-    );
-
-    // Operator-visible outcome #2: citadel is never entered.
-    assert.ok(
-      !/CITADEL/.test(log),
-      'AC-MWMO-D2-9: citadel must not be reached when the pickle halt is fatal',
-    );
-
-    // Operator-visible outcome #3: pipeline-status.json records zero completed
-    // phases and a failed status — the pipeline did not advance.
-    const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
-    assert.notEqual(
-      status.status,
-      'completed',
-      'pipeline-status.json must NOT report completed — the reroute changes the halt REASON, ' +
-      'never the refusal to advance',
-    );
-    assert.equal(
-      status.completed_phases,
-      0,
-      'AC-MWMO-D2-9: zero phases may be recorded complete — the pickle phase itself must not ' +
-      'count as completed',
-    );
-
-    // WS-A2: the halt is now recorded as phase-incompleteness rather than a fatal
-    // failure, and the forensic trail survives — reportPhaseIncomplete names the
-    // prior mux exit_reason in its log line.
-    const finalState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
-    assert.equal(
-      finalState.exit_reason,
-      'pipeline_phase_incomplete',
-      'the rerouted halt must land on the PhaseIncomplete contract\'s exit_reason',
+    // Operator-visible outcome #1 (WS-1, inverted): pickle DOES report success and
+    // advance — the roster is all-terminal, so there is nothing to report incomplete.
+    assert.match(
+      log,
+      /all 2 ticket\(s\) accounted for.*no phase-incomplete stamp/,
+      'an all-terminal roster (Done or oracle-committed/terminal) must skip the ' +
+      'phase-incomplete stamp entirely',
     );
     assert.match(
       log,
-      /exit_reason=done_without_commit_evidence/,
-      'the originating ticket-scoped reason must still be named in the log — demoting it must ' +
-      'not cost the operator the diagnosis',
+      /Phase pickle completed successfully/,
+      'AC-MWMO-D2-8 (WS-1): an all-terminal bundle must GRADUATE — halting the healthiest ' +
+      'possible roster state was the bug this campaign fixes',
+    );
+
+    // Operator-visible outcome #2 (WS-1, inverted): citadel IS reached.
+    assert.match(
+      log,
+      /PHASE 2\/2: CITADEL/,
+      'AC-MWMO-D2-9 (WS-1): citadel must be reached when pickle graduates an all-terminal roster',
+    );
+
+    // The pipeline still correctly reports the citadel-originated failure (an
+    // unrelated fixture gap, not a pickle halt) — it is not falsely "completed".
+    const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+    assert.notEqual(status.status, 'completed', 'citadel\'s own failure must still be reported honestly');
+    assert.equal(status.completed_phases, 1, 'pickle counts as completed; citadel does not');
+
+    // The prior mux exit_reason is neither stamped over by pickle (it never halted)
+    // nor laundered into the generic 'failed' by finalizeFailedPipeline (which
+    // preserves an existing reason rather than overwriting it).
+    const finalState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+    assert.equal(
+      finalState.exit_reason,
+      'done_without_commit_evidence',
+      'pickle must not stamp pipeline_phase_incomplete over a roster with nothing genuinely ' +
+      'unfinished, and the prior reason must survive citadel\'s unrelated failure unlaundered',
     );
   } finally {
     __setSpawnRunnerForTests(null);
@@ -283,13 +294,23 @@ test('AC-GTRUTH-A2-5: the !startCommit guard is untouched — still fatal', () =
   }, { stateOverrides: { start_commit: '', exit_reason: 'done_without_commit_evidence' } });
 });
 
-test('AC-GTRUTH-A2-7: zero commits since baseline is STILL fatal (the demotion is bounded)', () => {
+// SUPERSEDED by B-NOSTOP-GATES WS-1: the "bounded demotion" framing here was
+// itself one of the five stacked refinements the campaign subtracts. Zero
+// commits since baseline is a QUALITY signal (reported via
+// maybeStampPhaseGraduation's phase_no_progress branch, which now advances
+// instead of halting), not a crash-floor cannot-continue condition.
+// OLD (pre-WS-1): isFatalPhaseFailure('pickle', ...) === true for zero commits
+// — "the demotion is bounded, not universal."
+// NEW (WS-1): isFatalPhaseFailure('pickle', ...) === false for zero commits —
+// the demotion IS now universal for pickle, bounded only by the `!startCommit`
+// arm (still fatal, per the sibling AC-GTRUTH-A2-5 test above).
+test('AC-GTRUTH-A2-7 (superseded): zero commits since baseline is NO LONGER fatal for pickle', () => {
   withFatalFixture((runtime) => {
     assert.equal(
       isFatalPhaseFailure('pickle', runtime),
-      true,
-      'a run that produced no commits at all is genuinely fatal. "Closes the class" is bounded, ' +
-      'not universal: WS-A2 demotes ONE reason, it does not disarm isFatalPhaseFailure.',
+      false,
+      'B-NOSTOP-GATES WS-1 neutralizes the countCommitsSince===0 arm — a run with zero commits ' +
+      'reports incomplete and advances instead of halting fatally.',
     );
   }, { commitFollowupWork: false, stateOverrides: { exit_reason: 'done_without_commit_evidence' } });
 });
@@ -348,7 +369,7 @@ test('AC-GTRUTH-A2-1: committed-but-unflipped + roster-terminal → NO phase-inc
     const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.match(
       log,
-      /committed\/terminal via oracle re-resolution — no phase-incomplete stamp/,
+      /all 2 ticket\(s\) accounted for \(Done or oracle-committed\/terminal\) — no phase-incomplete stamp/,
       'the oracle re-resolution must recognize the committed-but-unflipped ticket',
     );
     assert.match(
