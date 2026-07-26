@@ -99,7 +99,7 @@ afterEach(() => {
   __setSpawnRunnerForTests(null);
 });
 
-test('all_judge_backends_exhausted + gate pass → exit code 3 (PhaseIncomplete), exit_reason=pipeline_phase_incomplete, auto-resume=true', async () => {
+test('all_judge_backends_exhausted + gate pass → exit code 0 (Success), phase continues (sibling parity with judge_timeout)', async () => {
   const { repo, sessionDir } = makeSession(['szechuan-sauce']);
   const spawnCalls = [];
   let callCount = 0;
@@ -118,19 +118,21 @@ test('all_judge_backends_exhausted + gate pass → exit code 3 (PhaseIncomplete)
     return { exitCode: 0, stdout: '', stderr: '' };
   });
   try {
-    // PhaseIncomplete = exit code 3
-    await expectMainExit(sessionDir, 3);
+    // A PASSING recovery gate continues the phase (AC-GA-9 sibling parity with
+    // runJudgeTimeoutFinalizeGate), so main() reaches normal success: exit code 0.
+    await expectMainExit(sessionDir, 0);
 
     const finalizeGateCalls = spawnCalls.filter(c => c.args.some(a => String(a).includes('finalize-gate.js')));
     assert.equal(finalizeGateCalls.length, 1, 'finalize-gate.js must be spawned once for all_judge_backends_exhausted');
 
     const statePath = path.join(sessionDir, 'state.json');
     const finalState = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    assert.equal(finalState.exit_reason, 'pipeline_phase_incomplete', 'exit_reason must be pipeline_phase_incomplete on gate pass');
+    assert.equal(finalState.exit_reason, 'completed', 'a passing recovery gate must finalize as completed, never phase-incomplete');
 
     const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.match(runnerLog, /all_judge_backends_exhausted/, 'log must mention the exit reason');
-    assert.match(runnerLog, /marking phase incomplete/, 'log must mention phase incomplete');
+    assert.match(runnerLog, /finalize-gate passed after all_judge_backends_exhausted/, 'log must record the passing recovery gate');
+    assert.doesNotMatch(runnerLog, /marking phase incomplete/, 'a PASSING gate must NOT mark the phase incomplete');
     assert.doesNotMatch(runnerLog, /aborting \(no finalize-gate\)/, 'log must NOT contain abort message');
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
