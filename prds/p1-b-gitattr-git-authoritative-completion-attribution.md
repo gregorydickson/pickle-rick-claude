@@ -221,6 +221,59 @@ resolution to a git trailer lookup.
 
 ---
 
+## §4b Interface Contracts
+
+**Producer — the `prepare-commit-msg` hook**
+- **Inputs:** `$1: string` — path to the commit-message file (git-supplied). Env `PICKLE_TICKET_ID: string`
+  (8-char hex ticket id); absent or empty → no-op `exit 0`.
+- **Outputs:** the message file with `\nPickle-Ticket: <id>\n` appended exactly once.
+- **Errors:** when a pre-existing `prepare-commit-msg` is present it is exec'd *after* the append and
+  **its** exit code is returned verbatim — a non-zero pre-existing hook must still abort the commit.
+- **Invariants:** idempotent (an existing `^Pickle-Ticket:` line yields no second trailer); never writes
+  target-repo config; absent env leaves the message byte-identical.
+
+**Producer — env injection at spawn**
+- **Inputs:** `workingDir: string`, `ticketId: string`.
+- **Outputs:** env fragment `{ GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<n>: 'core.hooksPath',
+  GIT_CONFIG_VALUE_<n>: <managed hooks dir>, PICKLE_TICKET_ID }`. **Must compose with an inherited
+  `GIT_CONFIG_COUNT`** — append at index `n = existing count` and increment, never hardcode index `0`,
+  or an inherited git env-config entry is silently clobbered.
+- **Errors:** pre-existing hooks dir unresolvable → return **no** fragment and log; never a partial
+  injection (hooksPath set without `PICKLE_TICKET_ID`, or vice versa).
+- **Invariants:** no target-repo mutation; a forwarding stub exists for **every** hook name present in
+  the repo's original hooks dir.
+
+**Consumer — trailer lookup**
+- **Inputs:** `{ workingDir: string, ticketId: string, startTimeEpoch?: number | null }`.
+- **Outputs:** `{ sha: string } | null`.
+- **Errors:** any git failure → `null` (best-effort, never throws — matches the existing scan contract).
+- **Invariants:** exact ticket-id match only; a trailer naming a **different** ticket is refused as
+  foreign attribution; reachability (`commitExists`) and baseline rejection (`isBaselineSha`) still apply.
+
+## §4c Test Expectations
+
+| AC | Test file | `@tier:` | Assertion |
+|:---|:---|:---|:---|
+| AC-GA-1 | `extension/tests/integration/gitattr-trailer-producer.test.js` | integration (serial) | real `git commit` in a temp repo yields exactly one trailer, readable via `%(trailers:key=Pickle-Ticket,valueonly)` |
+| AC-GA-2 | same | integration (serial) | a message already carrying the trailer ends with trailer count `== 1` |
+| AC-GA-3 | same | integration (serial) | `git config --local --get core.hooksPath` absent after the commit |
+| AC-GA-4 | `extension/tests/integration/gitattr-hook-forwarding.test.js` | integration (serial) | pre-existing `pre-commit` **and** `prepare-commit-msg` both execute; a non-zero pre-existing hook aborts the commit |
+| AC-GA-5 | same | integration (serial) | unresolvable hooks dir → no injection, one log line, commit succeeds trailer-less |
+| AC-GA-6 | `extension/tests/integration/gitattr-trailer-consumer.test.js` | integration (serial) | a subject with no ticket-id and no `r_code` attributes via trailer, `kind === 'committed'` |
+| AC-GA-7 | same | integration (serial) | a trailer naming a different ticket is refused as foreign attribution |
+| AC-GA-8 | `extension/tests/gitattr-inference-deleted.test.js` | fast | grep of `extension/src/` for the 7 named symbols returns `0`; `ticket-declared-files.ts` does not exist |
+| AC-GA-9 | `extension/tests/nostop-gates-sibling-parity.test.js` | fast | `runAllBackendsExhaustedFinalizeGate` returns `action:'continue'` and increments `counters.completed` on gate exit 0 |
+| AC-GA-10 | `extension/tests/nostop-gates-invariant.test.js` (widen existing) | fast | every `PhaseIterationOutcome` producer is enumerated; none returns `break` for a passing gate or an `INCOMPLETE_EXIT_REASONS` reason |
+| AC-GA-11 | WS-5 live run | n/a | session artifacts show trailer attribution and zero `ticket_phantom_done_corrected` for the ticket |
+
+**Mandatory tiering constraint.** Every test above that spawns real `git` is subprocess-heavy and MUST be
+`@tier: integration` **and** listed in `extension/tests/integration/.serial-tests.json`, with a matching
+entry in `.serial-tests.reasons.json` (class: `subprocess-spawn-timing`). A `@tier: fast` git-spawning
+test will starve at `--test-concurrency=8` and trip `audit-subprocess-heavy-tests.sh`. Per the
+serial-manifest hygiene principle: never shrink a spawn timeout to make a load-starved test pass.
+
+---
+
 ## §5 Risks
 
 **R1 — `core.hooksPath` disables a target repo's own hooks.** The main hazard; a husky/lint-staged repo
