@@ -151,22 +151,21 @@ test('pipeline-runner.halt-on-incomplete-phase', async () => {
       'pipeline-runner must stamp pipeline_phase_incomplete, not iteration_cap_exhausted',
     );
 
-    // pipeline-runner.log must mention unfinished ticket count
+    // pipeline-runner.log must mention unfinished ticket count — pinned against the
+    // exact literal strings the runtime emits (bin/pipeline-runner.js:2972 'hit
+    // iteration cap', :2893 'Unfinished tickets:'), not a broad OR-of-substrings
+    // that would also match unrelated log prose.
     const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
-    assert.ok(
-      /hit iteration cap/.test(log) || /iteration cap/.test(log),
-      'log must contain iteration cap message',
-    );
-    assert.ok(
-      /unfinished/.test(log) || /remain/.test(log),
-      'log must mention unfinished ticket count',
-    );
+    assert.ok(log.includes('hit iteration cap'), 'log must contain the iteration-cap halt message');
+    assert.ok(log.includes('Unfinished tickets:'), 'log must contain the unfinished-tickets header');
 
-    // All 3 tickets must still be Todo (pipeline did not falsely complete them)
+    // All 3 tickets must still be Todo (pipeline did not falsely complete them) —
+    // anchored to the frontmatter field line, not a bare substring that would also
+    // match an unrelated field or prose containing the same words.
     for (const id of ['aaa11111', 'bbb22222', 'ccc33333']) {
       const ticketFile = path.join(sessionDir, id, `rick_ticket_${id}.md`);
       const content = fs.readFileSync(ticketFile, 'utf-8');
-      assert.ok(content.includes('status: Todo'), `ticket ${id} must remain Todo after pipeline halt`);
+      assert.ok(/^status: Todo$/m.test(content), `ticket ${id} must remain Todo after pipeline halt`);
     }
   } finally {
     __setSpawnRunnerForTests(null);
@@ -232,10 +231,11 @@ test('pipeline-runner.clean-exit0-with-pending-and-progress advances to citadel,
       'pickle must advance to citadel on partial-progress incomplete, not halt before it',
     );
 
-    // The pending ticket stays Todo (pipeline did not falsely complete it).
+    // The pending ticket stays Todo (pipeline did not falsely complete it) —
+    // anchored to the frontmatter field line, not a bare substring.
     const pendingFile = path.join(sessionDir, 'eee55555', 'rick_ticket_eee55555.md');
     assert.ok(
-      fs.readFileSync(pendingFile, 'utf-8').includes('status: Todo'),
+      /^status: Todo$/m.test(fs.readFileSync(pendingFile, 'utf-8')),
       'pending ticket must remain Todo (no false advance)',
     );
 
