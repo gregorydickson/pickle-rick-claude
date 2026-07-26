@@ -5,7 +5,16 @@ import { isoCompactStamp, safeErrorMessage } from '../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { isBackend } from '../services/backend-spawn.js';
 import type { Backend, GateResult, GateFailure } from '../types/index.js';
-import { writeActivityEntry } from '../services/state-manager.js';
+import {
+  acquireLockFile,
+  inspectLockFile,
+  isDeadPidPayload,
+  releaseLockFile,
+  stealLockFile,
+  withStealRight,
+  writeActivityEntry,
+  type LockHandle,
+} from '../services/state-manager.js';
 import { FOM_EVIDENCE_RULES, FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 
 const USAGE = 'Usage: spawn-gate-remediator --gate-result <path> --session-root <path> --reason strict|per-iteration';
@@ -18,12 +27,8 @@ export interface SpawnGateRemediatorOpts {
   isoOverride?: string;
   extensionClaudeMdContent?: string;
   readFileFn?: (p: string, enc: 'utf-8') => string;
-  openSyncFn?: (p: string, flags: number) => number;
-  closeSyncFn?: (fd: number) => void;
   writeFileFn?: (p: string, data: string, enc: 'utf-8') => void;
   mkdirSyncFn?: (p: string, opts: { recursive: boolean }) => void;
-  unlinkSyncFn?: (p: string) => void;
-  existsSyncFn?: (p: string) => boolean;
   stdout?: (msg: string) => void;
   stderr?: (msg: string) => void;
 }
@@ -160,10 +165,6 @@ interface SpawnGateRemediatorDeps {
   readFile: (p: string, enc: 'utf-8') => string;
   writeFile: (p: string, data: string, enc: 'utf-8') => void;
   mkdirSync: (p: string, opts: { recursive: boolean }) => void;
-  openSync: (p: string, flags: number) => number;
-  closeSync: (fd: number) => void;
-  unlinkSync: (p: string) => void;
-  existsSync: (p: string) => boolean;
 }
 
 interface ParsedRemediatorFlags {
@@ -184,10 +185,6 @@ function resolveDeps(opts: SpawnGateRemediatorOpts): SpawnGateRemediatorDeps {
     readFile: opts.readFileFn ?? ((p: string, enc: 'utf-8') => fs.readFileSync(p, enc)),
     writeFile: opts.writeFileFn ?? ((p: string, data: string, enc: 'utf-8') => fs.writeFileSync(p, data, enc)),
     mkdirSync: opts.mkdirSyncFn ?? ((p: string, o: { recursive: boolean }) => fs.mkdirSync(p, o)),
-    openSync: opts.openSyncFn ?? ((p: string, flags: number) => fs.openSync(p, flags)),
-    closeSync: opts.closeSyncFn ?? ((fd: number) => fs.closeSync(fd)),
-    unlinkSync: opts.unlinkSyncFn ?? ((p: string) => fs.unlinkSync(p)),
-    existsSync: opts.existsSyncFn ?? ((p: string) => fs.existsSync(p)),
   };
 }
 
@@ -234,37 +231,57 @@ function ensureGateDir(gateDir: string, deps: Pick<SpawnGateRemediatorDeps, 'mkd
   }
 }
 
+/**
+ * Reclaim a remediator lock stranded by an abrupt death (SIGKILL/SIGTERM/OOM), which skips the
+ * `process.on('exit')` release. Positive proof of death is the ONLY licence to evict: a remediator
+ * legitimately holds for minutes (it drives a full worker turn), so the age-based arm `withRetryLock`
+ * carries would evict a LIVE holder here. Empty, unparseable and live payloads defer.
+ */
+function reclaimDeadRemediatorLock(lockfilePath: string): void {
+  withStealRight(lockfilePath, () => {
+    const snapshot = inspectLockFile(lockfilePath);
+    if (!snapshot || !isDeadPidPayload(snapshot.payload)) return false;
+    return stealLockFile(lockfilePath, snapshot);
+  });
+}
+
 function acquireLockfile(
   lockfilePath: string,
   flags: Pick<ParsedRemediatorFlags, 'sessionRoot' | 'reason'>,
   iso: string,
-  deps: Pick<SpawnGateRemediatorDeps, 'openSync' | 'closeSync' | 'writeFile'>,
+  deps: Pick<SpawnGateRemediatorDeps, 'writeFile'>,
   stdout: (msg: string) => void,
-): { ok: true } | { ok: false; exitCode: number; error?: string } {
+): { ok: true; held: LockHandle } | { ok: false; exitCode: number; error?: string } {
   try {
-    const fd = deps.openSync(lockfilePath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-    deps.closeSync(fd);
-    return { ok: true };
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
-      const lockoutPath = path.join(path.dirname(lockfilePath), `remediator_concurrent_lockout_${iso}.md`);
-      const lockoutContent = [
-        `# Concurrent Remediator Lockout`,
-        ``,
-        `A remediator is already running (lockfile present at \`${lockfilePath}\`).`,
-        ``,
-        `**Timestamp**: ${iso}`,
-        `**Session root**: ${flags.sessionRoot}`,
-        `**Reason requested**: ${flags.reason}`,
-        ``,
-        `This invocation exited cleanly without performing any work. The active remediator will complete and release the lock.`,
-      ].join('\n');
-      try {
-        deps.writeFile(lockoutPath, lockoutContent, 'utf-8');
-        stdout(`LOCKOUT_PATH=${lockoutPath}`);
-      } catch { /* best-effort */ }
-      return { ok: false, exitCode: 0 };
+    // Payload is the BARE holder pid — the one encoding `isDeadPidPayload` reads. The prior
+    // create-then-close published an EMPTY payload, which parses to NaN there, so any steal
+    // bolted onto it would have silently never fired.
+    let held = acquireLockFile(lockfilePath, String(process.pid));
+    if (held === null) {
+      reclaimDeadRemediatorLock(lockfilePath);
+      held = acquireLockFile(lockfilePath, String(process.pid));
     }
+    if (held !== null) return { ok: true, held };
+
+    // Still held after a reclaim attempt => a provably LIVE remediator owns it. Defer to it.
+    const lockoutPath = path.join(path.dirname(lockfilePath), `remediator_concurrent_lockout_${iso}.md`);
+    const lockoutContent = [
+      `# Concurrent Remediator Lockout`,
+      ``,
+      `A live remediator is already running (lockfile held at \`${lockfilePath}\`).`,
+      ``,
+      `**Timestamp**: ${iso}`,
+      `**Session root**: ${flags.sessionRoot}`,
+      `**Reason requested**: ${flags.reason}`,
+      ``,
+      `This invocation exited cleanly without performing any work. The active remediator will complete and release the lock.`,
+    ].join('\n');
+    try {
+      deps.writeFile(lockoutPath, lockoutContent, 'utf-8');
+      stdout(`LOCKOUT_PATH=${lockoutPath}`);
+    } catch { /* best-effort */ }
+    return { ok: false, exitCode: 0 };
+  } catch (e) {
     return { ok: false, exitCode: 1, error: `Failed to acquire lockfile ${lockfilePath}: ${safeErrorMessage(e)}` };
   }
 }
@@ -352,9 +369,11 @@ export async function spawnGateRemediatorMain(opts: SpawnGateRemediatorOpts): Pr
     return lock.exitCode;
   }
 
+  // Release is identity-bound (inode AND payload bytes): a lock we no longer own — ours was reclaimed
+  // by a contender after an abrupt death — is left for its new holder, never unlinked out from under it.
   const cleanup = () => {
     try {
-      if (deps.existsSync(lockfilePath)) deps.unlinkSync(lockfilePath);
+      releaseLockFile(lockfilePath, lock.held);
     } catch { /* already gone */ }
   };
   process.on('exit', cleanup);

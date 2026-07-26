@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url';
 
 import { acquireLockFile, inspectLockFile, isDeadPidPayload, stealLockFile, withLock } from '../../services/state-manager.js';
 import { applyCourseCorrectionRestructure } from '../../services/transaction-ticket-ops.js';
+import { spawnGateRemediatorMain } from '../../bin/spawn-gate-remediator.js';
 import { LockError } from '../../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -441,6 +442,124 @@ test('applyCourseCorrectionRestructure: a LIVE restructure holder is never stole
     assert.equal(fs.readFileSync(killed.ticketPath, 'utf-8'), killed.content,
       'the live holder’s in-flight transaction must be untouched');
     assert.equal(fs.readFileSync(lock, 'utf-8'), String(process.pid), 'the live holder’s lock must survive');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- the sixth lock: remediator.lockfile ------------------------------------------------------
+//
+// R-GRLS. The gate remediator was the last holdout of the shape the gate and restructure locks shed:
+// an O_EXCL create with NO payload at all, and a release wired only to `process.on('exit')` — which
+// SIGKILL/SIGTERM skip. One abrupt death stranded gate/remediator.lockfile, and because the EEXIST
+// branch returns exit code 0, every later remediator for that session exited CLEAN having edited
+// nothing — indistinguishable from a successful remediation. That is the false-GREEN class: a red
+// gate reported as handled. Like its siblings it now reclaims ONLY on proof of death — a remediator
+// legitimately holds for minutes while it drives a worker turn, so an age verdict would evict a live one.
+
+function writeGateResult(sessionDir) {
+  const gateDir = path.join(sessionDir, 'gate');
+  fs.mkdirSync(gateDir, { recursive: true });
+  const gateResultPath = path.join(gateDir, 'gate_result.json');
+  fs.writeFileSync(gateResultPath, JSON.stringify({
+    status: 'red',
+    elapsed_ms: 1234,
+    failures: [{
+      check: 'typecheck', file: 'src/thing.ts', line: 12, ruleOrCode: 'TS2345',
+      message: 'Argument of type string is not assignable to parameter of type number',
+      severity: 'error', occurrence_index: 0,
+    }],
+  }));
+  return { gateDir, gateResultPath };
+}
+
+async function runRemediator(sessionDir, gateResultPath) {
+  const out = [];
+  const code = await spawnGateRemediatorMain({
+    argv: ['--gate-result', gateResultPath, '--session-root', sessionDir, '--reason', 'strict'],
+    isoOverride: '2026-04-30T12-00-00Z',
+    extensionClaudeMdContent: '## Trap Doors\n\n_none_\n',
+    stdout: (m) => out.push(m),
+    stderr: () => {},
+  });
+  return { code, out };
+}
+
+test('spawn-gate-remediator: a remediator lock stranded by a dead holder is reclaimed and the gate IS remediated', async () => {
+  const dir = tmpDir();
+  try {
+    const { gateDir, gateResultPath } = writeGateResult(dir);
+
+    // A remediator was SIGKILLed mid-run: its payload-bearing lockfile outlives the process.
+    const lock = path.join(gateDir, 'remediator.lockfile');
+    fs.writeFileSync(lock, String(await deadPid()));
+
+    const { code, out } = await runRemediator(dir, gateResultPath);
+
+    assert.equal(code, 0);
+    // The load-bearing assertion: real work, not a clean no-op. Pre-fix this emitted LOCKOUT_PATH
+    // and wrote no brief, while still exiting 0 — the caller could not tell the two apart.
+    assert.ok(out.some(l => l.startsWith('BRIEF_PATH=')),
+      'the strand must be reclaimed and the brief written, not skipped as a concurrent run');
+    assert.ok(!out.some(l => l.startsWith('LOCKOUT_PATH=')), 'a dead holder must not produce a lockout');
+    const briefs = fs.readdirSync(gateDir).filter(f => f.endsWith('_brief.md'));
+    assert.equal(briefs.length, 1, 'exactly one remediation brief must exist on disk');
+    assert.equal(fs.existsSync(lock), false, 'the reclaimed lock is released on the way out, not leaked');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('spawn-gate-remediator: a LIVE remediator holder is never stolen', async () => {
+  const dir = tmpDir();
+  try {
+    const { gateDir, gateResultPath } = writeGateResult(dir);
+
+    // The holder is this very process — demonstrably alive, so its pid can never read as dead.
+    const lock = path.join(gateDir, 'remediator.lockfile');
+    fs.writeFileSync(lock, String(process.pid));
+
+    const { code, out } = await runRemediator(dir, gateResultPath);
+
+    assert.equal(code, 0, 'deferring to a live remediator is still a clean exit');
+    assert.ok(out.some(l => l.startsWith('LOCKOUT_PATH=')), 'a live holder must produce a lockout');
+    assert.ok(!out.some(l => l.startsWith('BRIEF_PATH=')), 'a live holder must not be raced into a second brief');
+    assert.equal(fs.readFileSync(lock, 'utf-8'), String(process.pid), 'the live holder’s lock must survive');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('spawn-gate-remediator: the lock it publishes carries a bare pid, so a later strand is reclaimable', async () => {
+  const dir = tmpDir();
+  try {
+    const { gateDir, gateResultPath } = writeGateResult(dir);
+    const lock = path.join(gateDir, 'remediator.lockfile');
+
+    // Observe the payload while the lock is held: readFile runs mid-run, before the release.
+    let payloadWhileHeld = null;
+    await spawnGateRemediatorMain({
+      argv: ['--gate-result', gateResultPath, '--session-root', dir, '--reason', 'strict'],
+      isoOverride: '2026-04-30T12-00-00Z',
+      extensionClaudeMdContent: '## Trap Doors\n\n_none_\n',
+      readFileFn: (p, enc) => {
+        // `loadGateResult` also runs through this seam, BEFORE the lock is taken — capture only
+        // once the lockfile actually exists, or we would sample the pre-acquire absence.
+        if (payloadWhileHeld === null && fs.existsSync(lock)) {
+          payloadWhileHeld = fs.readFileSync(lock, 'utf-8');
+        }
+        return fs.readFileSync(p, enc);
+      },
+      stdout: () => {},
+      stderr: () => {},
+    });
+
+    // The pre-fix create-then-close published an EMPTY payload; isDeadPidPayload('') is NaN → never
+    // dead → a steal bolted onto it would silently never fire. The payload IS the reclaimability.
+    assert.ok(payloadWhileHeld !== null, 'the lock must have been observed while held');
+    assert.match(payloadWhileHeld, new RegExp(`(^|\\n)${process.pid}(\\n|$)`),
+      'the held lock must carry this process’s bare pid, the encoding isDeadPidPayload reads');
+    assert.equal(isDeadPidPayload(String(process.pid)), false, 'a live bare pid must read as not-dead');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
