@@ -3400,7 +3400,7 @@ export function logPhaseHaltReason(runtime, rawPhase, exitCode, log) {
  * a red gate breaks the pipeline. Extracted from `runPhaseIteration` to keep
  * that function under the eslint complexity ceiling.
  */
-async function runJudgeTimeoutFinalizeGate(runtime, counters, rawPhase, log) {
+export async function runJudgeTimeoutFinalizeGate(runtime, counters, rawPhase, log) {
     try {
         logActivity({
             event: 'pipeline_judge_timeout_recovery_attempted',
@@ -3427,10 +3427,10 @@ async function runJudgeTimeoutFinalizeGate(runtime, counters, rawPhase, log) {
     return { action: 'break' };
 }
 /**
- * all_judge_backends_exhausted recovery: spawn finalize-gate; on pass mark the
- * phase incomplete so auto-resume can retry; on fail break the pipeline.
+ * all_judge_backends_exhausted recovery: spawn finalize-gate; on pass continue the
+ * phase (matches `runJudgeTimeoutFinalizeGate`); on fail break the pipeline.
  */
-async function runAllBackendsExhaustedFinalizeGate(runtime, counters, rawPhase, log) {
+export async function runAllBackendsExhaustedFinalizeGate(runtime, counters, rawPhase, log) {
     try {
         logActivity({
             event: 'pipeline_all_backends_exhausted_recovery_attempted',
@@ -3447,9 +3447,10 @@ async function runAllBackendsExhaustedFinalizeGate(runtime, counters, rawPhase, 
         skill,
     ], runtime.phaseEnv);
     if (gateResult.exitCode === 0) {
-        reportPhaseIncomplete(runtime, rawPhase);
-        log(`Phase ${rawPhase} finalize-gate passed after all_judge_backends_exhausted — marking phase incomplete for auto-resume`);
-        return { action: 'break', phaseIncomplete: true };
+        counters.completed++;
+        writeRunningStatus(runtime, counters, null);
+        log(`Phase ${rawPhase} finalize-gate passed after all_judge_backends_exhausted`);
+        return { action: 'continue' };
     }
     log(`Phase ${rawPhase} finalize-gate failed after all_judge_backends_exhausted (exit ${gateResult.exitCode})`);
     return { action: 'break' };

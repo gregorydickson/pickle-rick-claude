@@ -14,6 +14,19 @@
  *     persisted opt-in) still halts regardless of exit_reason/exitCode.
  *   - a missing `start_commit` still halts — progress is unmeasurable, and no
  *     downstream honesty gate can report around that.
+ *
+ * Widened reach (ticket 6dc7d243): the two describe blocks above only exercise
+ * `shouldHaltAfterPhase`/`isFatalPhaseFailure` — the direct pickle-phase halt
+ * decision. They never reach `dispatchHaltAction`'s recovery-gate producers
+ * (`runJudgeTimeoutFinalizeGate`, `runAllBackendsExhaustedFinalizeGate`), which
+ * is exactly how `runAllBackendsExhaustedFinalizeGate` shipped returning
+ * `{action:'break'}` for a PASSING gate undetected. The third describe block
+ * below structurally enumerates every `PhaseIterationOutcome` producer in
+ * `pipeline-runner.ts` by regex over the source (not a hand-listed name set),
+ * then asserts the ONE RULE over every producer shaped like a finalize-gate
+ * recovery (spawns finalize-gate.js, branches on `gateResult.exitCode === 0`):
+ * a passing gate's branch must never contain `action: 'break'`. A future
+ * producer with the same shape is caught automatically — no test edit needed.
  */
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,12 +34,83 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   __setSpawnRunnerForTests,
   isFatalPhaseFailure,
   shouldHaltAfterPhase,
 } from '../bin/pipeline-runner.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PIPELINE_RUNNER_SRC = path.resolve(__dirname, '../src/bin/pipeline-runner.ts');
+
+/**
+ * Minimum set of `PhaseIterationOutcome` producers known at authoring time
+ * (research: `grep -n "PhaseIterationOutcome" src/bin/pipeline-runner.ts`,
+ * minus the type declaration itself). `discoverPhaseIterationOutcomeProducers`
+ * must find AT LEAST these — a superset check, so a 9th producer added later
+ * does not require editing this list.
+ */
+const KNOWN_PRODUCERS = [
+  'maybeStampPhaseGraduation',
+  'runJudgeTimeoutFinalizeGate',
+  'runAllBackendsExhaustedFinalizeGate',
+  'dispatchHaltAction',
+  'resolvePhaseIncompleteOutcome',
+  'runPhaseIteration',
+  'maybeStampPickleIncompleteRobust',
+  'finalizePhaseSuccess',
+];
+
+/** Every function whose return type is `PhaseIterationOutcome` (bare, `| null`, or `Promise<...>`). */
+function discoverPhaseIterationOutcomeProducers(sourceText) {
+  const funcNameRe = /(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/g;
+  const funcStarts = [];
+  let m;
+  while ((m = funcNameRe.exec(sourceText))) {
+    funcStarts.push({ idx: m.index, name: m[1] });
+  }
+  const returnTypeRe = /\):\s*(?:Promise<PhaseIterationOutcome>|PhaseIterationOutcome(?:\s*\|\s*null)?)\s*\{/g;
+  const producers = new Set();
+  while ((m = returnTypeRe.exec(sourceText))) {
+    let owner = null;
+    for (const f of funcStarts) {
+      if (f.idx <= m.index) owner = f;
+      else break;
+    }
+    if (owner) producers.add(owner.name);
+  }
+  return [...producers].sort();
+}
+
+/** Brace-matched body of a top-level `function <name>(` / `async function <name>(` declaration. */
+function extractFunctionBody(sourceText, name) {
+  const declRe = new RegExp(`(?:export\\s+)?(?:async\\s+)?function\\s+${name}\\s*\\(`);
+  const declMatch = declRe.exec(sourceText);
+  if (!declMatch) throw new Error(`declaration not found for ${name}`);
+  const braceStart = sourceText.indexOf('{', declMatch.index);
+  return extractBraceBlock(sourceText, braceStart);
+}
+
+/** Brace-matched substring starting at an opening `{` index, through its balanced closing `}`. */
+function extractBraceBlock(sourceText, openBraceIdx) {
+  let depth = 0;
+  for (let i = openBraceIdx; i < sourceText.length; i++) {
+    const ch = sourceText[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return sourceText.slice(openBraceIdx, i + 1);
+    }
+  }
+  throw new Error('unbalanced braces starting at ' + openBraceIdx);
+}
+
+/** True when a producer body spawns finalize-gate.js and branches on its exit code. */
+function isFinalizeGateShaped(body) {
+  return body.includes('finalize-gate.js') && body.includes('gateResult.exitCode === 0');
+}
 
 const TMP_DIRS = new Set();
 
@@ -198,5 +282,54 @@ describe('AC-NSG-5b — crash-floor pins (the invariant is bounded, not universa
       'gate can report around that, so this arm (:2805 in the plan) stays fatal',
     );
     assert.equal(shouldHaltAfterPhase('pickle', 3, runtime), true);
+  });
+});
+
+describe('AC-NSG-5b — structural producer enumeration (widened reach)', () => {
+  const sourceText = fs.readFileSync(PIPELINE_RUNNER_SRC, 'utf-8');
+  const producers = discoverPhaseIterationOutcomeProducers(sourceText);
+
+  test('every PhaseIterationOutcome producer is discovered', () => {
+    for (const name of KNOWN_PRODUCERS) {
+      assert.ok(
+        producers.includes(name),
+        `structural discovery must find producer "${name}" — did its return-type annotation change?`,
+      );
+    }
+  });
+
+  test('every finalize-gate-shaped producer continues on a passing gate, never breaks', () => {
+    const gateShapedProducers = producers.filter((name) => isFinalizeGateShaped(extractFunctionBody(sourceText, name)));
+
+    // Guards the filter itself: if this list goes empty (e.g. a refactor renames
+    // `gateResult`/`exitCode`), the assertion below would vacuously pass over zero
+    // producers. Fail loud instead so the filter's own drift is caught.
+    assert.ok(
+      gateShapedProducers.length > 0,
+      'no finalize-gate-shaped producer found — the shape-detection filter may have drifted',
+    );
+    assert.deepEqual(
+      gateShapedProducers,
+      ['runAllBackendsExhaustedFinalizeGate', 'runJudgeTimeoutFinalizeGate'],
+      'the set of finalize-gate-shaped producers changed — a new one must also satisfy the ONE RULE below',
+    );
+
+    for (const name of gateShapedProducers) {
+      const body = extractFunctionBody(sourceText, name);
+      const condIdx = body.indexOf('gateResult.exitCode === 0');
+      assert.ok(condIdx !== -1, `${name}: expected a gateResult.exitCode === 0 branch`);
+      const braceIdx = body.indexOf('{', condIdx);
+      const passingBranch = extractBraceBlock(body, braceIdx);
+
+      assert.ok(
+        passingBranch.includes("action: 'continue'"),
+        `${name}: a PASSING finalize-gate must return { action: 'continue' } — found:\n${passingBranch}`,
+      );
+      assert.ok(
+        !passingBranch.includes("action: 'break'"),
+        `${name}: a PASSING finalize-gate must never return { action: 'break' } (B-NOSTOP-GATES ONE ` +
+        `RULE) — found:\n${passingBranch}`,
+      );
+    }
   });
 });

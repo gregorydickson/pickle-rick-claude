@@ -4063,7 +4063,7 @@ export function logPhaseHaltReason(
  * a red gate breaks the pipeline. Extracted from `runPhaseIteration` to keep
  * that function under the eslint complexity ceiling.
  */
-async function runJudgeTimeoutFinalizeGate(
+export async function runJudgeTimeoutFinalizeGate(
   runtime: PipelineRuntime,
   counters: PhaseCounters,
   rawPhase: PhaseName,
@@ -4095,10 +4095,10 @@ async function runJudgeTimeoutFinalizeGate(
 }
 
 /**
- * all_judge_backends_exhausted recovery: spawn finalize-gate; on pass mark the
- * phase incomplete so auto-resume can retry; on fail break the pipeline.
+ * all_judge_backends_exhausted recovery: spawn finalize-gate; on pass continue the
+ * phase (matches `runJudgeTimeoutFinalizeGate`); on fail break the pipeline.
  */
-async function runAllBackendsExhaustedFinalizeGate(
+export async function runAllBackendsExhaustedFinalizeGate(
   runtime: PipelineRuntime,
   counters: PhaseCounters,
   rawPhase: PhaseName,
@@ -4119,9 +4119,10 @@ async function runAllBackendsExhaustedFinalizeGate(
     skill,
   ], runtime.phaseEnv);
   if (gateResult.exitCode === 0) {
-    reportPhaseIncomplete(runtime, rawPhase);
-    log(`Phase ${rawPhase} finalize-gate passed after all_judge_backends_exhausted — marking phase incomplete for auto-resume`);
-    return { action: 'break', phaseIncomplete: true };
+    counters.completed++;
+    writeRunningStatus(runtime, counters, null);
+    log(`Phase ${rawPhase} finalize-gate passed after all_judge_backends_exhausted`);
+    return { action: 'continue' };
   }
   log(`Phase ${rawPhase} finalize-gate failed after all_judge_backends_exhausted (exit ${gateResult.exitCode})`);
   return { action: 'break' };
