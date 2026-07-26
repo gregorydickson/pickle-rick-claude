@@ -79,15 +79,15 @@ test('R-CCQF trap door names the live readEvidence anchor, not the deprecated ha
   );
 });
 
-test('R-CCRC-1 trap door names the live readEvidence anchor, not the deprecated hasCompletionCommit shim', () => {
-  const entry = trapDoorEntry('R-CCRC-1 ref-code fallback');
+test('R-CCRC-1 trap door is marked RETIRED and no longer claims a live r_code fallback', () => {
+  const entry = trapDoorEntry('R-CCRC-1');
   assert.ok(
-    entry.includes('readEvidence'),
-    'R-CCRC-1 trap door must reference readEvidence (the live r_code grep home)',
+    entry.includes('RETIRED'),
+    'R-CCRC-1 trap door must be marked RETIRED — the r_code/ref-token fallback it pinned was deleted by B-GITATTR WS-3',
   );
   assert.ok(
-    !entry.includes('`hasCompletionCommit` reads `r_code:`'),
-    'R-CCRC-1 PATTERN_SHAPE still anchors r_code reading to the deprecated hasCompletionCommit shim',
+    !entry.includes("readFrontmatterField(content, 'r_code')"),
+    'R-CCRC-1 trap door must not claim readEvidence still reads r_code — that fallback is gone',
   );
 });
 
@@ -116,7 +116,7 @@ test('R-RIC-EXPLICIT trap door names the live readEvidence anchor in ticket-comp
   );
 });
 
-test('ticket-completion-evidence.ts implements the R-CCQF/R-CCRC-1/R-RIC-EXPLICIT invariants the trap doors point at (post R-AFCC-DEEP-4A)', () => {
+test('ticket-completion-evidence.ts implements the R-CCQF/R-RIC-EXPLICIT invariants the trap doors point at (post R-AFCC-DEEP-4A)', () => {
   const evidenceSrc = fs.readFileSync(
     path.join(repoRoot, 'extension', 'src', 'services', 'ticket-completion-evidence.ts'),
     'utf8',
@@ -124,14 +124,21 @@ test('ticket-completion-evidence.ts implements the R-CCQF/R-CCRC-1/R-RIC-EXPLICI
   for (const symbol of [
     "normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit')",
     "normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit_inferred')",
-    "readFrontmatterField(content, 'r_code')",
     'export function readEvidence',
   ]) {
     assert.ok(
       evidenceSrc.includes(symbol),
-      `ticket-completion-evidence.ts missing R-CCQF/R-CCRC-1 anchor: ${symbol}`,
+      `ticket-completion-evidence.ts missing R-CCQF anchor: ${symbol}`,
     );
   }
+  // B-GITATTR WS-3: the r_code ref-token scan fallback (R-CCRC-1) is deleted — readEvidence's
+  // scan is trailer-only now. `readFrontmatterField(content, 'r_code')` legitimately
+  // SURVIVES inside isForeignAttributedExplicitSha's own-attribution check (R-OMA/R-PDUP),
+  // so the extractRCodeTokens symbol is the precise anchor for the deleted scan fallback.
+  assert.ok(
+    !evidenceSrc.includes('extractRCodeTokens'),
+    'R-CCRC-1 extractRCodeTokens ref-token helper must stay deleted (B-GITATTR WS-3)',
+  );
   // R-RIC-EXPLICIT: the explicit completion_commit field MUST be honored before
   // the git-log scan. Pin the source ordering so the explicit branch can never
   // silently regress below scanGitLog (which would re-open the MASTER_PLAN #83 fatal).

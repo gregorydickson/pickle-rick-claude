@@ -27,7 +27,11 @@ test('inspectPhantomDoneTicketFile: promotes git-inferred SHA to EXPLICIT comple
     initGitRepo(root);
     fs.writeFileSync(path.join(root, 'worker.txt'), 'work\n');
     execFileSync('git', ['add', 'worker.txt'], { cwd: root });
-    execFileSync('git', ['commit', '-m', 'bundle/C: R-CCC-5 watcher inference', '--no-gpg-sign'], { cwd: root, stdio: 'ignore' });
+    execFileSync(
+      'git',
+      ['commit', '-m', 'watcher inference', '--trailer', 'Pickle-Ticket: phantom01', '--no-gpg-sign'],
+      { cwd: root, stdio: 'ignore' },
+    );
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 
     const sessionDir = path.join(root, 'session');

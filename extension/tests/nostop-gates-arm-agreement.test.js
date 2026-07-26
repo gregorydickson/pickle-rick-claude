@@ -44,6 +44,18 @@ function commitWith(dir, file, message) {
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
 }
 
+/** A commit carrying a `Pickle-Ticket: <ticketId>` trailer — the git-authoritative scan path. */
+function commitWithTrailer(dir, file, message, ticketId) {
+  fs.writeFileSync(path.join(dir, file), `work for ${file}\n`);
+  execFileSync('git', ['add', file], { cwd: dir });
+  execFileSync(
+    'git',
+    ['commit', '-q', '-m', message, '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'],
+    { cwd: dir, stdio: 'ignore' },
+  );
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+}
+
 function writeTicket(sessionDir, ticketId, lines) {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
@@ -60,7 +72,7 @@ test('AC-NSG-10b (own-commit): scan accept round-trips to explicit, never absent
   const root = mkTmp('pickle-arm-own-');
   try {
     initGitRepo(root);
-    const sha = commitWith(root, 'own.txt', 'fix(agown001): real own-ticket work');
+    const sha = commitWithTrailer(root, 'own.txt', 'real own-ticket work', 'agown001');
 
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'agsib002', ['---', 'id: agsib002', 'status: "Done"', '---', '# sibling']);

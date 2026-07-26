@@ -1203,9 +1203,9 @@ function promoteInferredToExplicit(content, sha) {
 function batchLoopPhantomDoneKind(input, ticketId, workingDir) {
     // R-AFCC-DEEP-4A: migrated from hasCompletionCommit to gateForPhantomDoneRevert.
     // B-1SEAM WS-1: ctx built by buildCompletionCtx (resolveSessionBaselineShas
-    // baseline SHAs per B-DURA T30/AC-DURA-6, plus the extension/-greenGate and the
-    // announcement reader) so the watcher evaluates the SAME predicate policy as the
-    // flip-gate — no accept-here-fatal-there split (R-CXOR-2 parity, R-AICF).
+    // baseline SHAs per B-DURA T30/AC-DURA-6, plus the announcement reader) so
+    // the watcher evaluates the SAME predicate policy as the flip-gate — no
+    // accept-here-fatal-there split (R-CXOR-2 parity, R-AICF).
     const ctx = buildCompletionCtx({ sessionDir: input.sessionDir, ticketId, workingDir, fallbackDir: input.workingDir }, 'phantom-watch');
     const decision = gateForPhantomDoneRevert(ctx, { flags: input.flags });
     if (decision.action === 'keep') {
@@ -4100,30 +4100,11 @@ export function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
     return { verdict, computedVia: 'between_ticket_gate' };
 }
 /**
- * R-CECB: greenness oracle for declared-file-touch branch attribution —
- * reuses the salvage gate_passing_committed probe (runBetweenTicketFastTests),
- * lazily invoked only when a declared-file-touch candidate is found.
- */
-function extensionGreenGate(workingDir) {
-    return () => {
-        const ext = path.join(workingDir, 'extension');
-        if (!fs.existsSync(ext))
-            return 'failing';
-        try {
-            return runBetweenTicketFastTests(ext).ok ? 'passing' : 'failing';
-        }
-        catch {
-            return 'errored';
-        }
-    };
-}
-/**
  * B-1SEAM WS-1: build the `CompletionDecisionCtx` every mux-runner decision site
  * feeds into `evaluateCompletionEvidence` (the ONE completion predicate in
  * ticket-completion-evidence.ts). Wires the runtime capabilities the predicate
  * cannot own itself:
  *   - session baseline SHAs (R-CXOR-2 rejection) via resolveSessionBaselineShas;
- *   - the extension/-scoped greenGate (R-CECB declared-file-touch attribution);
  *   - the worker-gate verdict resolver (R-CWGE, consulted only on 'done-flip');
  *   - the worker's announced completion SHA (R-CCEM recovery).
  * Every site building its ctx here evaluates the SAME policy — no per-site
@@ -4143,7 +4124,6 @@ function buildCompletionCtx(args, decision) {
         startCommit,
         pinnedSha,
         decision,
-        greenGate: extensionGreenGate(args.workingDir),
         workerGateVerdict: () => resolveWorkerGateVerdict(args.sessionDir, args.ticketId, args.workingDir),
         announcedSha: () => readAnnouncedCompletionSha(args.sessionDir, args.ticketId),
         zeroDiffIntent: () => readDeclaredZeroDiffIntent(args.sessionDir, args.ticketId),

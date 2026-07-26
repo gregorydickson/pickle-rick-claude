@@ -54,6 +54,20 @@ function commitFile(dir, rel, message) {
   return head(dir);
 }
 
+/** WS-2: a commit carrying a `Pickle-Ticket: <ticketId>` trailer (the git-authoritative attribution path). */
+function commitFileWithTrailer(dir, rel, message, ticketId) {
+  const abs = path.join(dir, rel);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, `work in ${rel}\n`);
+  execFileSync('git', ['add', rel], { cwd: dir });
+  execFileSync(
+    'git',
+    ['commit', '-q', '-m', message, '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'],
+    { cwd: dir, stdio: 'ignore' },
+  );
+  return head(dir);
+}
+
 function writeTicket(sessionDir, ticketId, { completionCommit, declaredFiles = [], title = `Test ${ticketId}` } = {}) {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
@@ -90,13 +104,14 @@ const baseCtx = (sessionDir, ticketId, workingDir, extra = {}) => ({
 
 // ── R-AICF: unreachable-explicit falls through to the scan branches ──────────
 
-test('R-AICF: readEvidence — hallucinated explicit sha + real untagged declared-file commit → committed via scan', () => {
+test('R-AICF: readEvidence — hallucinated explicit sha + real trailer-attributed commit → committed via scan', () => {
   const root = mkTmp('pickle-1seam-aicf-');
   try {
     initGitRepo(root);
     const declared = 'src/circuit-store.ts';
-    // Real work, message carries NO ticket id / r-code (codex untagged commit).
-    const realSha = commitFile(root, declared, 'Add Reducto Redis circuit store');
+    // Real work, message carries NO ticket id / r-code (codex untagged commit) —
+    // only the Pickle-Ticket trailer attributes it.
+    const realSha = commitFileWithTrailer(root, declared, 'Add Reducto Redis circuit store', 'c46045a6');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'c46045a6', { completionCommit: HALLUCINATED_SHA, declaredFiles: [declared] });
 
@@ -104,10 +119,9 @@ test('R-AICF: readEvidence — hallucinated explicit sha + real untagged declare
       sessionDir,
       ticketId: 'c46045a6',
       workingDir: root,
-      greenGate: () => 'passing',
     });
     assert.equal(ev.kind, 'committed', 'unreachable explicit sha must fall through to the scan branches (R-AICF)');
-    assert.equal(ev.sha, realSha, 'scan fallback must attribute the real declared-file commit');
+    assert.equal(ev.sha, realSha, 'scan fallback must attribute the real trailer-stamped commit');
     assert.equal(ev.via, 'scan');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -292,7 +306,7 @@ test('predicate: scan-attributed evidence is promoted once into explicit complet
   const root = mkTmp('pickle-1seam-scan-');
   try {
     initGitRepo(root);
-    const realSha = commitFile(root, 'w.txt', 'fix(cdcd9999): tagged work');
+    const realSha = commitFileWithTrailer(root, 'w.txt', 'tagged work', 'cdcd9999');
     const sessionDir = path.join(root, 'session');
     const fp = writeTicket(sessionDir, 'cdcd9999', {});
 
@@ -348,7 +362,7 @@ test('adapter: gateForPhantomDoneRevert keeps a hallucinated-stamp ticket whose 
   try {
     initGitRepo(root);
     const declared = 'src/circuit-store.ts';
-    const realSha = commitFile(root, declared, 'Add Reducto Redis circuit store');
+    const realSha = commitFileWithTrailer(root, declared, 'Add Reducto Redis circuit store', 'c46045a6');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'c46045a6', { completionCommit: HALLUCINATED_SHA, declaredFiles: [declared] });
 
@@ -356,7 +370,6 @@ test('adapter: gateForPhantomDoneRevert keeps a hallucinated-stamp ticket whose 
       sessionDir,
       ticketId: 'c46045a6',
       workingDir: root,
-      greenGate: () => 'passing',
     });
     assert.equal(decision.action, 'keep', 'watcher must not revert real scan-attributable work (R-AICF)');
     assert.equal(decision.kind, 'committed');

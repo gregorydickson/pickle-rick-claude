@@ -26,10 +26,8 @@ import {
   normalizeCompletionCommitField,
   ticketFilePath,
 } from './pickle-utils.js';
-import { readDeclaredFiles } from './ticket-declared-files.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from './artifact-validation.js';
 import { VALID_TICKET_COMPLEXITY_TIERS, type TicketComplexityTier } from './pickle-utils.js';
-import type { GateVerdict } from '../lib/salvage-ticket.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -104,15 +102,6 @@ export interface EvidenceCtx {
    * Empty/absent → default R-OMA behavior.
    */
   ownAttributionTokens?: string[];
-  /**
-   * R-CECB: greenness oracle for the declared-file-touch branch-attribution path.
-   * Reuses the salvage `GateVerdict` contract (`salvage-ticket.ts`); production
-   * callers wire it to the real working-tree fast-test gate
-   * (`runBetweenTicketFastTests`). Lazily invoked only when a declared-file-touch
-   * candidate is found, so the common no-candidate scan path costs nothing. Absent
-   * → the conservative built-in default treats the tree as not-green.
-   */
-  greenGate?: () => GateVerdict;
 }
 
 /** Options for persistEvidence. */
@@ -186,16 +175,6 @@ function commitExists(workingDir: string, sha: string): boolean {
   return probeCatFile(workingDir, sha) === 'exists';
 }
 
-function extractRCodeTokens(title: string | null): string[] {
-  if (!title) return [];
-  return [...new Set(Array.from(title.matchAll(/\bR-[A-Z0-9-]+\b/gi), m => m[0].toLowerCase()))];
-}
-
-function readFirstHeading(content: string): string | null {
-  const m = content.match(/^#\s+(.+)$/m);
-  return m?.[1]?.trim() || null;
-}
-
 /** R-CXOR-2: true when sha is a session baseline (start_commit or pinned_sha). */
 function isBaselineSha(sha: string, ctx: Pick<EvidenceCtx, 'startCommit' | 'pinnedSha'>): boolean {
   return (ctx.startCommit != null && sha === ctx.startCommit) ||
@@ -216,30 +195,12 @@ function probeExplicitSha(sha: string, workingDir: string, fallbackDir?: string)
   return null;
 }
 
-type GitLogEntry = { sha: string; epoch: number; message: string };
-
-function parseGitLog(raw: string): GitLogEntry[] {
-  return raw
-    .split('\n---pickle-commit-boundary---\n')
-    .map(e => e.trim())
-    .filter(Boolean)
-    .map(e => {
-      const [sha = '', epochRaw = '0', ...parts] = e.split('\n');
-      return { sha: sha.trim(), epoch: Number(epochRaw.trim()) || 0, message: parts.join('\n').trim() };
-    })
-    .filter(e => /^[0-9a-f]{40}$/i.test(e.sha));
-}
-
 type TrailerLogEntry = { sha: string; epoch: number; trailerValue: string };
-
-/** WS-2: matches a standalone `Pickle-Ticket: <value>` trailer line inside a raw `%B` body. */
-const PICKLE_TICKET_TRAILER_LINE_RE = /^pickle-ticket:\s*\S+\s*$/gim;
 
 /**
  * WS-2 consumer: parses `git log --format=%H%n%ct%n%(trailers:key=Pickle-Ticket,valueonly)%n---pickle-trailer-boundary---`
- * output. A DEDICATED parser (not `parseGitLog`) because the trailer value is a single git-parsed
- * field, not a free-text message body — reusing `parseGitLog` would mean re-deriving the trailer out
- * of `%B` by regex, defeating the point of letting git's own trailer machinery do the parsing.
+ * output. The trailer value is a single git-parsed field, not a free-text message body, so it
+ * gets its own dedicated parser rather than a shared generic git-log parser.
  */
 function parseTrailerLog(raw: string): TrailerLogEntry[] {
   return raw
@@ -311,50 +272,6 @@ function scanGitLogByTrailer(args: {
 }
 
 /**
- * R-CECB: the files a commit touched, via `git show --name-only`. Best-effort —
- * any git failure yields `[]` (commit not attributable by file-touch).
- */
-function commitTouchedFiles(workingDir: string, sha: string): string[] {
-  try {
-    const raw = execFileSync(
-      'git',
-      ['-C', workingDir, 'show', '--name-only', '--format=', sha],
-      { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-    return raw.split('\n').map(l => l.trim()).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * True when a git-tracked path in `touched` matches a declared path. `declared`
- * is already `./`-normalized by `readDeclaredFiles`; `git show --name-only` emits
- * repo-relative paths with no `./` prefix, so an exact set membership suffices.
- */
-function touchesDeclared(touched: string[], declared: string[]): boolean {
-  if (declared.length === 0) return false;
-  const set = new Set(declared);
-  return touched.some(t => set.has(t));
-}
-
-/**
- * Commit subject+body for `sha`, via `git show -s --format=%B`. Best-effort —
- * any git failure yields `''`. Lowercased by the caller's matcher.
- */
-function commitMessage(workingDir: string, sha: string): string {
-  try {
-    return execFileSync(
-      'git',
-      ['-C', workingDir, 'show', '-s', '--format=%B', sha],
-      { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    ).trim();
-  } catch {
-    return '';
-  }
-}
-
-/**
  * R-OMA: every OTHER ticket id (directory basename) under `sessionDir`,
  * lowercased, excluding `selfTicketId`. Best-effort → `[]`. Reused to detect a
  * commit whose subject positively names a DIFFERENT ticket (foreign attribution).
@@ -363,8 +280,8 @@ function commitMessage(workingDir: string, sha: string): string {
  * `refinement`, `microverse_*`, and anatomy-park subsystem dirs like `bin` /
  * `extension`). Those basenames are ordinary English words that word-boundary-match
  * routine commit subjects, so admitting them manufactures foreign attribution
- * against a ticket's OWN commit. A ticket dir is identified the same way
- * `enumerateSiblingDeclaredFiles` identifies one: it holds a `rick_ticket_*.md`.
+ * against a ticket's OWN commit. A ticket dir is identified via `isTicketDir`:
+ * it holds a `rick_ticket_*.md`.
  */
 function enumerateSiblingTicketIds(sessionDir: string, selfTicketId: string | null): string[] {
   const out: string[] = [];
@@ -402,8 +319,8 @@ function isTicketDir(dir: string): boolean {
  *
  * REJECTION-BY-POSITIVE-FOREIGN-ATTRIBUTION ONLY: default is accept. Absence of a
  * matching message is NEVER grounds for rejection (R-RIC-EXPLICIT / explicit-SHA-wins);
- * a generic or own-ticket message returns false (accept). Reuses the same
- * word-boundary matcher shape as `scanGitLogByRefToken`.
+ * a generic or own-ticket message returns false (accept). Word-boundary matcher
+ * shape shared with the trailer's foreign-attribution exclusion (`scanGitLogByTrailer`).
  */
 function isForeignAttributedExplicitSha(
   sha: string,
@@ -414,7 +331,16 @@ function isForeignAttributedExplicitSha(
   const selfId = readFrontmatterField(content, 'id') ?? ctx.ticketId ?? null;
   const siblingIds = enumerateSiblingTicketIds(ctx.sessionDir, selfId);
   if (siblingIds.length === 0) return false;
-  const message = commitMessage(ctx.workingDir, sha).toLowerCase();
+  let message: string;
+  try {
+    message = execFileSync(
+      'git',
+      ['-C', ctx.workingDir, 'show', '-s', '--format=%B', sha],
+      { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim().toLowerCase();
+  } catch {
+    message = '';
+  }
   if (!message) return false;
   const wordBoundary = (token: string): RegExp =>
     new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
@@ -432,235 +358,20 @@ function isForeignAttributedExplicitSha(
 }
 
 /**
- * R-CECB: declared in-scope files for every OTHER ticket under `sessionDir`,
- * read directly via `fs` (inlined dir walk; importing `collectTickets` from
- * pickle-utils would create an import cycle — pickle-utils imports this module).
- * Best-effort → `[]`.
+ * B-GITATTR WS-3: `scanGitLog` is reduced to the trailer lookup — the
+ * message-inference passes (ref-token, declared-file-touch) are gone now that
+ * the `Pickle-Ticket` trailer produces and consumes attribution directly.
  */
-function enumerateSiblingDeclaredFiles(
-  sessionDir: string,
-  selfTicketId: string | null,
-): Array<{ ticketId: string; files: string[] }> {
-  const out: Array<{ ticketId: string; files: string[] }> = [];
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(sessionDir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    if (selfTicketId && entry.name === selfTicketId) continue;
-    const subDir = path.join(sessionDir, entry.name);
-    let files: string[];
-    try {
-      files = fs.readdirSync(subDir);
-    } catch {
-      continue;
-    }
-    for (const file of files) {
-      if (!file.startsWith('rick_ticket_') || !file.endsWith('.md')) continue;
-      try {
-        const content = fs.readFileSync(path.join(subDir, file), 'utf8');
-        const declared = readDeclaredFiles(content);
-        if (declared.length > 0) out.push({ ticketId: entry.name, files: declared });
-      } catch {
-        /* skip unreadable sibling */
-      }
-    }
-  }
-  return out;
-}
-
-/**
- * R-CECB: declared-file-touch attribution. A post-startTimeEpoch commit attributes
- * to the ticket iff it touches ≥1 declared in-scope file AND it is green. Ref
- * tokens (id/r_code) are CORROBORATING via the existing scan, never required here.
- * Ambiguity (the commit also touches a DIFFERENT ticket's declared files) →
- * attribute to NEITHER. Newest green wins (entries iterate newest-first).
- */
-function scanGitLogByFileTouch(
-  entries: GitLogEntry[],
-  args: {
-    workingDir: string;
-    startTimeEpoch?: number | null;
-    declaredFiles: string[];
-    siblingDeclared: Array<{ ticketId: string; files: string[] }>;
-    greenGate: () => GateVerdict;
-    /** WS-2: commits whose trailer positively names a DIFFERENT ticket — never launder via file-touch match. */
-    excludeShas?: Set<string>;
-  },
-): { sha: string } | null {
-  const startEpoch = Number(args.startTimeEpoch);
-  const excludeShas = args.excludeShas ?? new Set<string>();
-  for (const e of entries) {
-    if (Number.isFinite(startEpoch) && startEpoch > 0 && e.epoch < startEpoch) continue;
-    if (excludeShas.has(e.sha.toLowerCase())) continue;
-    const touched = commitTouchedFiles(args.workingDir, e.sha);
-    if (!touchesDeclared(touched, args.declaredFiles)) continue;
-    // Ambiguity: a DIFFERENT ticket also declares one of the touched files.
-    const ambiguous = args.siblingDeclared.some(s => touchesDeclared(touched, s.files));
-    if (ambiguous) continue;
-    // Greenness — reuse the salvage GateVerdict oracle (lazy).
-    if (args.greenGate() !== 'passing') continue;
-    return { sha: e.sha };
-  }
-  return null;
-}
-
 function scanGitLog(args: {
   workingDir: string;
   ticketId: string | null;
-  title: string | null;
   startTimeEpoch?: number | null;
-  ticketPath?: string | null;
-  rCode?: string | null;
-  declaredFiles?: string[];
-  siblingDeclared?: Array<{ ticketId: string; files: string[] }>;
-  greenGate?: () => GateVerdict;
 }): { sha: string } | null {
-  // WS-2 (B-GITATTR): trailer scan is the highest-precedence pass — checked even
-  // before the "nothing to scan for" early return below, so a ticket with no
-  // r_code/declared files but a real trailer stamp still resolves. A miss still
-  // yields `foreignShas` (commits whose trailer names a DIFFERENT ticket), which
-  // Pass 1/Pass 2 below must exclude so a foreign-trailer commit is never
-  // laundered into an attribution via a coincidental message/file-touch match.
-  const trailerScan = scanGitLogByTrailer({
+  return scanGitLogByTrailer({
     workingDir: args.workingDir,
     ticketId: args.ticketId,
     startTimeEpoch: args.startTimeEpoch,
-  });
-  if (trailerScan.hit) return trailerScan.hit;
-
-  const matchers = [
-    ...(args.ticketId ? [args.ticketId.toLowerCase()] : []),
-    ...extractRCodeTokens(args.title),
-  ];
-  const rCodeRe: RegExp | null = (() => {
-    if (!args.rCode) return null;
-    const code = args.rCode.trim().toLowerCase();
-    if (!code) return null;
-    const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`\\b${escaped}\\b`);
-  })();
-  const declaredFiles = args.declaredFiles ?? [];
-  // No id/r_code matcher AND no declared-file-touch path → nothing to scan.
-  if (matchers.length === 0 && !rCodeRe && declaredFiles.length === 0) return null;
-
-  const commands: string[][] = [];
-  if (args.ticketPath) {
-    commands.push(['-C', args.workingDir, 'log', '-n', '20', '--format=%H%n%ct%n%B%n---pickle-commit-boundary---', '--', args.ticketPath]);
-  }
-  commands.push(['-C', args.workingDir, 'log', '-n', '50', '--format=%H%n%ct%n%B%n---pickle-commit-boundary---', 'HEAD']);
-
-  // Pass 1: ref-token scan (word-boundary ticket-id + word-boundary r_code).
-  // B-DURA T70 narrows the prior R-CCRC fuzzy substring widening to a
-  // word-boundary match so an unrelated commit mentioning the hash inside a
-  // longer token can no longer false-attribute. Highest-precedence match;
-  // caches the HEAD pass entries for the Pass-2 file-touch fallback.
-  const headEntries: GitLogEntry[] = [];
-  const refHit = scanGitLogByRefToken(commands, {
-    workingDir: args.workingDir,
-    matchers,
-    rCodeRe,
-    startTimeEpoch: args.startTimeEpoch,
-    headEntriesOut: headEntries,
-    excludeShas: trailerScan.foreignShas,
-  });
-  if (refHit) return refHit;
-
-  // Pass 2 (R-CECB): declared-file-touch attribution — file-touch primary, ref
-  // token corroborating (already tried above), greenness via the salvage gate,
-  // ambiguity → neither, newest green wins. Only when the ticket declares files.
-  if (declaredFiles.length > 0 && headEntries.length > 0) {
-    return scanGitLogByFileTouch(headEntries, {
-      workingDir: args.workingDir,
-      startTimeEpoch: args.startTimeEpoch,
-      declaredFiles,
-      siblingDeclared: args.siblingDeclared ?? [],
-      greenGate: args.greenGate ?? (() => 'errored' as GateVerdict),
-      excludeShas: trailerScan.foreignShas,
-    });
-  }
-  return null;
-}
-
-/**
- * Pass 1 of the git-log scan: ref-token attribution (word-boundary ticket-id +
- * word-boundary r_code). B-DURA T70 narrowed the ticket-id match from a
- * substring scan to a word-boundary scan. Captures the HEAD-pass entries into
- * `headEntriesOut` so the caller can reuse them for the file-touch fallback.
- */
-function scanGitLogByRefToken(
-  commands: string[][],
-  args: {
-    workingDir: string;
-    matchers: string[];
-    rCodeRe: RegExp | null;
-    startTimeEpoch?: number | null;
-    headEntriesOut: GitLogEntry[];
-    /** WS-2: commits whose trailer positively names a DIFFERENT ticket — never launder via message match. */
-    excludeShas?: Set<string>;
-  },
-): { sha: string } | null {
-  const startEpoch = Number(args.startTimeEpoch);
-  const lastCmd = commands[commands.length - 1];
-  const excludeShas = args.excludeShas ?? new Set<string>();
-  // B-DURA T70: word-boundary matchers (was substring `includes`). Tokens are
-  // already lowercased; escape regex metacharacters before anchoring with \b.
-  const matcherRes = args.matchers.map(
-    t => new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`),
-  );
-  const checkEntry = (e: GitLogEntry): { sha: string } | null => {
-    if (Number.isFinite(startEpoch) && startEpoch > 0 && e.epoch < startEpoch) return null;
-    if (excludeShas.has(e.sha.toLowerCase())) return null;
-    // WS-2: %B (the raw body this pass matches against) includes trailers verbatim, so a
-    // Pickle-Ticket trailer would otherwise let message inference "accidentally" re-derive
-    // the same attribution the dedicated trailer pass already owns — silently defeating that
-    // pass's precedence (it would never be the one that resolves the hit). Strip it before matching.
-    const lower = e.message.replace(PICKLE_TICKET_TRAILER_LINE_RE, '').toLowerCase();
-    if (matcherRes.some(re => re.test(lower))) return { sha: e.sha };
-    if (args.rCodeRe && args.rCodeRe.test(lower)) return { sha: e.sha };
-    return null;
-  };
-  for (const gitArgs of commands) {
-    let parsed: GitLogEntry[];
-    try {
-      const raw = execFileSync('git', gitArgs, { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-      parsed = parseGitLog(raw);
-    } catch {
-      continue;
-    }
-    if (gitArgs === lastCmd) args.headEntriesOut.push(...parsed);
-    for (const entry of parsed) {
-      const matched = checkEntry(entry);
-      if (matched) return matched;
-    }
-  }
-  return null;
-}
-
-/**
- * WS-2 (arm agreement): apply the SAME baseline/foreign-attribution guards the
- * explicit branch already applies (isBaselineSha, isForeignAttributedExplicitSha)
- * to a scan hit. A SHA the explicit arm would reject must never be accepted here
- * — the promote step (promoteOnceAndReprobe) would otherwise persist it into the
- * explicit field and manufacture exactly the disagreement AC-NSG-10b forbids.
- * Downgrades to `no_evidence`, NOT `baseline_sha`/`foreign_attribution` — a
- * scan-arm miss is "the oracle's best-effort guess didn't hold up", not a
- * positive mis-attribution someone wrote into frontmatter (that hard-absent
- * meaning stays an explicit-field-only concept, R-OMA).
- */
-function guardScanHit(
-  sha: string,
-  ctx: Pick<EvidenceCtx, 'workingDir' | 'sessionDir' | 'ticketId' | 'ownAttributionTokens' | 'startCommit' | 'pinnedSha'>,
-  content: string,
-  absent: () => EvidenceResult,
-): EvidenceResult {
-  if (isBaselineSha(sha, ctx) || isForeignAttributedExplicitSha(sha, ctx, content)) {
-    return absent();
-  }
-  return { kind: 'committed', sha, via: 'scan' };
+  }).hit;
 }
 
 // ---------------------------------------------------------------------------
@@ -735,21 +446,19 @@ export function readEvidence(ctx: EvidenceCtx): EvidenceResult {
     return absent();
   }
 
-  // --- Git log scan (ref token + R-CECB declared-file-touch) ---
+  // --- Git log scan (WS-2 Pickle-Ticket trailer) ---
   const selfId = readFrontmatterField(content, 'id') ?? ctx.ticketId ?? null;
-  const declaredFiles = readDeclaredFiles(content);
   const scan = scanGitLog({
     workingDir: ctx.workingDir,
     ticketId: selfId,
-    title: readFrontmatterField(content, 'title') ?? readFirstHeading(content),
     startTimeEpoch: ctx.startTimeEpoch,
-    ticketPath: tPath,
-    rCode: readFrontmatterField(content, 'r_code'),
-    declaredFiles,
-    siblingDeclared: ctx.sessionDir ? enumerateSiblingDeclaredFiles(ctx.sessionDir, selfId) : [],
-    greenGate: ctx.greenGate,
   });
-  if (scan) return guardScanHit(scan.sha, ctx, content, absent);
+  if (scan) {
+    if (isBaselineSha(scan.sha, ctx) || isForeignAttributedExplicitSha(scan.sha, ctx, content)) {
+      return absent();
+    }
+    return { kind: 'committed', sha: scan.sha, via: 'scan' };
+  }
 
   return absent();
 }

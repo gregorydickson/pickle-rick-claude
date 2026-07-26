@@ -45,13 +45,16 @@ function initGitRepo(dir) {
   execFileSync('git', ['commit', '-q', '-m', 'initial', '--no-gpg-sign'], { cwd: dir, stdio: 'ignore' });
 }
 
-// Commits a file whose message contains the ticket ID — so the inferred git-log
-// scan can find it and return `inferred`. The commit SHA will differ from INCIDENT_SHA.
+// Commits a file carrying a Pickle-Ticket trailer naming the ticket — so the
+// git-log scan can find it and return `scan`. The commit SHA will differ from INCIDENT_SHA.
 function makeCommitWithTicketId(gitDir, ticketId) {
   fs.writeFileSync(path.join(gitDir, `${ticketId}.txt`), 'fixture work\n');
   execFileSync('git', ['add', `${ticketId}.txt`], { cwd: gitDir });
-  execFileSync('git', ['commit', '-q', '-m', `fix(${ticketId}): fixture commit`, '--no-gpg-sign'],
-    { cwd: gitDir, stdio: 'ignore' });
+  execFileSync(
+    'git',
+    ['commit', '-q', '-m', 'fixture commit', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'],
+    { cwd: gitDir, stdio: 'ignore' },
+  );
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: gitDir, encoding: 'utf8' }).trim();
 }
 

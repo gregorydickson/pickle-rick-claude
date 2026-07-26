@@ -120,10 +120,14 @@ test('done-flip-paths-call-guard: applyAutoTicketCompletionValidation routes thr
 
     writeTicketFile(sessionDir, ticketId, 'In Progress');
 
-    // Worker makes a commit referencing the ticket ID (the standard workflow).
+    // Worker makes a commit carrying a Pickle-Ticket trailer (the standard workflow).
     fs.writeFileSync(path.join(tmpRoot, 'feature.txt'), 'implementation\n');
     execFileSync('git', ['add', 'feature.txt'], { cwd: tmpRoot });
-    execFileSync('git', ['commit', '-q', '-m', `feat(${ticketId}): implement feature`, '--no-gpg-sign'], { cwd: tmpRoot, stdio: 'ignore' });
+    execFileSync(
+      'git',
+      ['commit', '-q', '-m', 'implement feature', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'],
+      { cwd: tmpRoot, stdio: 'ignore' },
+    );
     const workSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tmpRoot, encoding: 'utf8' }).trim();
 
     const statePath = writeMinimalStateJson(sessionDir);
@@ -178,7 +182,11 @@ test('done-flip-paths-call-guard: applyAutoTicketCompletionValidation clears sta
     writeTicketFile(sessionDir, ticketId, 'In Progress');
     fs.writeFileSync(path.join(tmpRoot, 'work.txt'), 'work\n');
     execFileSync('git', ['add', 'work.txt'], { cwd: tmpRoot });
-    execFileSync('git', ['commit', '-q', '-m', `${ticketId}: implement`, '--no-gpg-sign'], { cwd: tmpRoot, stdio: 'ignore' });
+    execFileSync(
+      'git',
+      ['commit', '-q', '-m', 'implement', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'],
+      { cwd: tmpRoot, stdio: 'ignore' },
+    );
 
     // Pre-stamp exit_reason with done_without_commit_evidence (simulates a prior failed guard run).
     const statePath = writeMinimalStateJson(sessionDir, { exit_reason: 'done_without_commit_evidence' });

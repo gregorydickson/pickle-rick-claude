@@ -55,13 +55,17 @@ test('readEvidence: explicit completion_commit wins when SHA exists', () => {
   }
 });
 
-test('readEvidence: R-code commit subjects infer completion when explicit field is absent', () => {
+test('readEvidence: a Pickle-Ticket trailer infers completion when explicit field is absent', () => {
   const root = makeTmpRoot();
   try {
     initGitRepo(root);
     fs.writeFileSync(path.join(root, 'worker.txt'), 'work\n');
     execFileSync('git', ['add', 'worker.txt'], { cwd: root });
-    execFileSync('git', ['commit', '-m', 'bundle/B: R-CCC-5 inferred path', '--no-gpg-sign'], { cwd: root, stdio: 'ignore' });
+    execFileSync(
+      'git',
+      ['commit', '-m', 'inferred path', '--trailer', 'Pickle-Ticket: infer001', '--no-gpg-sign'],
+      { cwd: root, stdio: 'ignore' },
+    );
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 
     const sessionDir = path.join(root, 'session');

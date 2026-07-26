@@ -2888,7 +2888,7 @@ test('auto-mark-done.with-commit: transition marks checked ticket Done with refe
         writeAutoMarkTicket(sessionDir, ticketId, true);
         fs.writeFileSync(path.join(tmpDir, 'work.txt'), 'ticket work');
         spawnSync('git', ['add', 'work.txt'], { cwd: tmpDir });
-        spawnSync('git', ['commit', '-m', `complete ${ticketId}`, '--no-gpg-sign'], { cwd: tmpDir });
+        spawnSync('git', ['commit', '-m', 'complete', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'], { cwd: tmpDir });
 
         const verdict = applyAutoTicketCompletionValidation({
             sessionDir,
@@ -2918,7 +2918,7 @@ test('auto-mark-done.manager-tagged-ac: unchecked manager criteria do not block 
         ]);
         fs.writeFileSync(path.join(tmpDir, 'work.txt'), 'ticket work');
         spawnSync('git', ['add', 'work.txt'], { cwd: tmpDir });
-        spawnSync('git', ['commit', '-m', `complete ${ticketId}`, '--no-gpg-sign'], { cwd: tmpDir });
+        spawnSync('git', ['commit', '-m', 'complete', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'], { cwd: tmpDir });
 
         const verdict = applyAutoTicketCompletionValidation({
             sessionDir,
@@ -3079,7 +3079,7 @@ test('R-CCC-5 readEvidence: frontmatter absent + git --grep matches returns comm
         const ticketId = 'deadbeef';
         fs.writeFileSync(path.join(tmpDir, 'worker.txt'), 'work');
         spawnSync('git', ['add', '.'], { cwd: tmpDir });
-        spawnSync('git', ['commit', '-m', `feat(${ticketId}): work`, '--no-gpg-sign'], { cwd: tmpDir });
+        spawnSync('git', ['commit', '-m', 'work', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'], { cwd: tmpDir });
         const sha = gitHead(tmpDir);
         const sessionDir = path.join(tmpDir, 'session');
         // Note: status:Done frontmatter without completion_commit field.

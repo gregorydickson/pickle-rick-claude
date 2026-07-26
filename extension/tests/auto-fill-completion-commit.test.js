@@ -57,7 +57,11 @@ test('autoFillCompletionCommit: fills missing completion_commit, stages the tick
 
     fs.writeFileSync(path.join(root, 'worker-output.txt'), 'worker changes\n');
     execFileSync('git', ['add', 'worker-output.txt'], { cwd: root });
-    execFileSync('git', ['commit', '-m', `fix(${ticketId}): close completion gap`, '--no-gpg-sign'], { cwd: root, stdio: 'ignore' });
+    execFileSync(
+      'git',
+      ['commit', '-m', 'close completion gap', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'],
+      { cwd: root, stdio: 'ignore' },
+    );
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 
     const first = autoFillCompletionCommit({

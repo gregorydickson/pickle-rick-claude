@@ -335,11 +335,11 @@ test('AC-GTRUTH-A2-7: a non-pickle, non-microverse phase failure is STILL fatal'
 // "committed but not flipped" and "genuinely still in flight" get different outcomes.
 // ---------------------------------------------------------------------------
 
-/** Commits real work whose message names the ticket id, so the oracle's git-log scan attributes it. */
+/** Commits real work carrying a Pickle-Ticket trailer, so the oracle's git-log scan attributes it. */
 function commitForTicket(dir, ticketId) {
   fs.writeFileSync(path.join(dir, `${ticketId}.ts`), `export const t = '${ticketId}';\n`);
   git(['add', '.'], dir);
-  git(['commit', '-q', '-m', `fix(${ticketId}): shipped work`], dir);
+  git(['commit', '-q', '-m', 'shipped work', '--trailer', `Pickle-Ticket: ${ticketId}`], dir);
   return git(['rev-parse', 'HEAD'], dir);
 }
 

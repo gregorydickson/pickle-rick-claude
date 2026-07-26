@@ -309,15 +309,16 @@ test('pipeline-runner.WS-1 oracle-committed non-Done ticket is excluded from unf
     writeState(sessionDir, repo);
     writePipeline(sessionDir, repo, ['pickle']);
 
-    // Frontmatter says Todo, but the worker committed green referencing the ticket id
-    // (the race: the cap-check fired before the frontmatter flip landed).
+    // Frontmatter says Todo, but the worker committed green carrying the ticket's
+    // Pickle-Ticket trailer (the race: the cap-check fired before the frontmatter
+    // flip landed).
     writeTicket(sessionDir, 'aaa10001', 1, 'Todo');
 
     __setSpawnRunnerForTests(async () => {
-      // Land a commit whose subject references the ticket id → oracle reads committed.
+      // Land a commit whose Pickle-Ticket trailer names the ticket → oracle reads committed.
       fs.writeFileSync(path.join(repo, 'aaa10001.ts'), 'export const a = 1;\n');
       git(['add', '.'], repo);
-      git(['commit', '-q', '-m', 'fix(aaa10001): durable green work'], repo);
+      git(['commit', '-q', '-m', 'durable green work', '--trailer', 'Pickle-Ticket: aaa10001'], repo);
       const statePath = path.join(sessionDir, 'state.json');
       const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
       state.exit_reason = 'iteration_cap_exhausted';

@@ -58,12 +58,16 @@ test('guardCompletionCommitBeforeDone: SOFT-variant inferred SHA is auto-promote
   const root = mkTmp();
   try {
     initGitRepo(root);
-    // Worker writes a file, commits it with the ticket-id in the message,
+    // Worker writes a file, commits it carrying the ticket's Pickle-Ticket trailer,
     // edits frontmatter to status: Done — but does NOT add completion_commit:.
     const ticketId = 'be5a547d';
     fs.writeFileSync(path.join(root, 'worker.txt'), 'work\n');
     execFileSync('git', ['add', 'worker.txt'], { cwd: root });
-    execFileSync('git', ['commit', '-q', '-m', `${ticketId} add regression test`, '--no-gpg-sign'], { cwd: root, stdio: 'ignore' });
+    execFileSync(
+      'git',
+      ['commit', '-q', '-m', 'add regression test', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'],
+      { cwd: root, stdio: 'ignore' },
+    );
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 
     const sessionDir = path.join(root, 'session');

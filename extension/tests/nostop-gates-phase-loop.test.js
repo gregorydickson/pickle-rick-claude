@@ -65,11 +65,11 @@ function initRepo(dir) {
   return git(['rev-parse', 'HEAD'], dir);
 }
 
-/** Commits real work whose message names the ticket id, for oracle-attribution rows. */
+/** Commits real work carrying a Pickle-Ticket trailer, for oracle-attribution rows. */
 function commitForTicket(dir, ticketId) {
   fs.writeFileSync(path.join(dir, `${ticketId}.ts`), `export const t = '${ticketId}';\n`);
   git(['add', '.'], dir);
-  git(['commit', '-q', '-m', `fix(${ticketId}): shipped work`], dir);
+  git(['commit', '-q', '-m', 'shipped work', '--trailer', `Pickle-Ticket: ${ticketId}`], dir);
 }
 
 function writeState(sessionDir, repo, startCommit, overrides = {}) {
@@ -391,7 +391,7 @@ function seedAnatomySubsystem(repo) {
 function commitForTicketInSubsystem(repo, ticketId) {
   fs.writeFileSync(path.join(repo, 'services', `${ticketId}.ts`), `export const t = '${ticketId}';\n`);
   git(['add', '.'], repo);
-  git(['commit', '-q', '-m', `fix(${ticketId}): shipped work`], repo);
+  git(['commit', '-q', '-m', 'shipped work', '--trailer', `Pickle-Ticket: ${ticketId}`], repo);
 }
 
 describe('Terminal exit_reason survives a later phase\'s own clean finalize', () => {

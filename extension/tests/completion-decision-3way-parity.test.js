@@ -188,7 +188,7 @@ test('B-1SEAM 3-way parity: hallucinated stamp + unattributable untagged commit 
   }
 });
 
-test('B-1SEAM 3-way parity: attributable untagged commit (ref-token) → SAME committed verdict at done-guard, watcher, and guard', (t) => {
+test('B-1SEAM 3-way parity: attributable untagged commit (Pickle-Ticket trailer) → SAME committed verdict at done-guard, watcher, and guard', (t) => {
   const prev = process.env.PICKLE_TEST_MODE;
   delete process.env.PICKLE_TEST_MODE;
   t.after(() => { if (prev !== undefined) process.env.PICKLE_TEST_MODE = prev; });
@@ -199,11 +199,15 @@ test('B-1SEAM 3-way parity: attributable untagged commit (ref-token) → SAME co
   try {
     initGitRepo(workingDir);
     const ticketId = 'c46045a6';
-    // Untagged frontmatter but the commit subject references the ticket id, so
+    // Untagged frontmatter but the commit carries a Pickle-Ticket trailer, so
     // the predicate's R-AICF scan fallback attributes it at EVERY site.
     fs.writeFileSync(path.join(workingDir, 'impl.txt'), 'work\n');
     execFileSync('git', ['add', '-A'], { cwd: workingDir, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-q', '-m', `feat(${ticketId}): implement`, '--no-gpg-sign'], { cwd: workingDir, stdio: 'ignore' });
+    execFileSync(
+      'git',
+      ['commit', '-q', '-m', 'implement', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'],
+      { cwd: workingDir, stdio: 'ignore' },
+    );
     const realSha = head(workingDir);
 
     const ticketPath = writeTicket(sessionDir, ticketId, { completionCommit: HALLUCINATED_SHA });
