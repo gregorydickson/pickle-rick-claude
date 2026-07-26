@@ -116,7 +116,19 @@ Once WS-1+WS-2 are proven, delete the message-inference surface. Named deletions
 - `scanGitLogByRefToken`, `guardScanHit`, `extractRCodeTokens`, `commitMessage` (message matching)
 - `scanGitLogByFileTouch`, `touchesDeclared`, `commitTouchedFiles`, `enumerateSiblingDeclaredFiles`
   and the `greenGate` / `declaredFiles` / `siblingDeclared` plumbing on `scanGitLog` (Pass 2)
-- the whole `ticket-declared-files.ts` module (85 lines) and its `readDeclaredFiles` import
+- the evidence module's **`readDeclaredFiles` import and its two call sites** (`:385` inside
+  `enumerateSiblingDeclaredFiles`, `:633` in the ctx builder) — **but NOT the module itself**
+
+  ⚠️ **CORRECTED 2026-07-26 by refinement (cycle 3) — the original draft said "delete the whole
+  `ticket-declared-files.ts` module (85 lines)" and that is WRONG.** `readDeclaredFiles` has **three
+  live non-attribution consumers**: `pipeline-runner.ts:73` (used at `:555`/`:619`/`:933` — the
+  crashed-ticket quarantine dirty-tree guard and scope auto-extension), `check-readiness.ts:15`
+  (`:1204` — the readiness signature-caller-gap check), and `mux-runner.ts:28` (`:2074`). Deleting the
+  module would break the dirty-tree guard, the readiness gate, and a mux-runner path — three
+  subsystems with nothing to do with attribution. **`ticket-declared-files.ts` SURVIVES, PINNED**
+  (AC-GA-8b), so a future worker "finishing the deletion" cannot silently break those guards. This is
+  the beta.33 gate-overreach lesson landing on the very PRD that cited it in R4: the author grepped
+  `extensionGreenGate` and did not grep `readDeclaredFiles`.
 - `extensionGreenGate` (`mux-runner.ts:4738`) **and** its `import type { GateVerdict }` in the evidence
   module — **measured 2026-07-26: exactly one consumer**, the attribution ctx at `mux-runner.ts:4789`, so
   it becomes dead code the moment WS-3 lands. The `GateVerdict` *type* itself SURVIVES — it is owned by
@@ -205,9 +217,47 @@ resolution to a git trailer lookup.
   `r_code`, solely via its trailer, returning `kind:'committed'`. Type: test
 - **AC-GA-7** A trailer naming a different ticket is refused as foreign attribution (parity with
   `isForeignAttributedExplicitSha`). Type: test
-- **AC-GA-8** Deletion complete: `grep -c` for `scanGitLogByRefToken|scanGitLogByFileTouch|extractRCodeTokens|touchesDeclared|commitTouchedFiles|enumerateSiblingDeclaredFiles|readDeclaredFiles`
-  in `extension/src/` is `0`, and `extension/src/services/ticket-declared-files.ts` does not exist.
-  Type: test
+- **AC-GA-8** **Every** symbol in the deletion set is absent **from its own home module** — NOT from the
+  whole tree. The set is declared **once** as a `DELETED_SYMBOLS` array of `{ symbol, homeFile }` pairs
+  in the test, asserted via `describe.each(DELETED_SYMBOLS)`, one case per member, no hand-maintained
+  alternation regex. Members, all module-private: `scanGitLogByRefToken`, `guardScanHit`,
+  `extractRCodeTokens`, `commitMessage`, `scanGitLogByFileTouch`, `touchesDeclared`,
+  `commitTouchedFiles`, `enumerateSiblingDeclaredFiles` → home `src/services/ticket-completion-evidence.ts`;
+  `extensionGreenGate` → home `src/bin/mux-runner.ts`. Type: test
+
+  ⚠️ **Per-file scoping is load-bearing, not stylistic — a whole-tree grep is UNSATISFIABLE here.**
+  Measured 2026-07-26: `commitMessage` is a **name collision**, not a shared symbol —
+  `microverse-runner.ts:3534` uses it as a local `const` holding a git subject and `bundle-finalize.ts`
+  uses it as a DTO field/parameter name, both unrelated to the evidence module's private
+  `commitMessage(workingDir, sha)` at `:265`. A whole-tree absence assertion would order the deletion of
+  a field name and a local variable in two innocent modules. Every member here is module-private, so the
+  home-file invariant is both satisfiable and the one that actually means "the inference is gone".
+
+  *Shape rationale (refinement `ac_shape_smells`, AC-GA-8):* the first draft enumerated 7 symbols in a
+  single alternation grep with no universal quantifier — and §2's list had **already drifted** from §4's,
+  adding four symbols the AC omitted. Enumeration in two places is the drift. One quantified invariant
+  over one declared set replaces both. Collapsed to a single parametrized ticket rather than fanned out
+  per symbol: the predicate is identical across members and one deletion commit removes all or none, so
+  per-symbol tickets would strand intermediates behind a non-compiling tree.
+
+- **AC-GA-8b** **Survival pin (the counterweight to AC-GA-8):** `extension/src/services/ticket-declared-files.ts`
+  **still exists**, still exports `readDeclaredFiles`, and still has **at least 3 importer files** in
+  `extension/src/` outside `ticket-completion-evidence.ts` — currently `pipeline-runner.ts`,
+  `check-readiness.ts`, `mux-runner.ts`. Only the evidence module's import and its two call sites are
+  removed. Type: test
+
+- **AC-GA-8c** **Trap-door reconciliation.** `extension/src/services/CLAUDE.md` contains no `ENFORCE:` or
+  `PATTERN_SHAPE:` anchor naming a deleted symbol; the R-CECB declared-file-touch trap-door entry is
+  removed or rewritten to describe the trailer contract instead. Verify:
+  `bash extension/scripts/audit-trap-door-enforcement.sh` passes and a grep of
+  `src/services/CLAUDE.md` for each `DELETED_SYMBOLS` member returns `0`. Type: test
+
+  *Why this is an AC and not cleanup:* `enumerateSiblingDeclaredFiles` currently appears once in
+  `src/services/CLAUDE.md` as a live trap-door anchor. Deleting the code without reconciling that entry
+  leaves an ENFORCE anchor pointing at a symbol that no longer exists — which `audit-trap-door-enforcement.sh`
+  and citadel's trap-door-coverage analyzer both read. That is exactly the orphan-anchor finding class
+  that burned 3 citadel remediation cycles for 0 commits on the `AP-RMS-*` anchors in the beta.7 run. A
+  deletion that leaves its own doc anchors dangling manufactures the noise it should be removing.
 - **AC-GA-9** `runAllBackendsExhaustedFinalizeGate` returns `{action:'continue'}` on gate exit 0 and
   increments `counters.completed`, matching `runJudgeTimeoutFinalizeGate`. Type: test
 - **AC-GA-10** AC-NSG-5b's widened form asserts that **no** `PhaseIterationOutcome` producer in
@@ -261,7 +311,9 @@ resolution to a git trailer lookup.
 | AC-GA-5 | same | integration (serial) | unresolvable hooks dir → no injection, one log line, commit succeeds trailer-less |
 | AC-GA-6 | `extension/tests/integration/gitattr-trailer-consumer.test.js` | integration (serial) | a subject with no ticket-id and no `r_code` attributes via trailer, `kind === 'committed'` |
 | AC-GA-7 | same | integration (serial) | a trailer naming a different ticket is refused as foreign attribution |
-| AC-GA-8 | `extension/tests/gitattr-inference-deleted.test.js` | fast | grep of `extension/src/` for the 7 named symbols returns `0`; `ticket-declared-files.ts` does not exist |
+| AC-GA-8 | `extension/tests/gitattr-inference-deleted.test.js` | fast | `describe.each(DELETED_SYMBOLS)` — one case per symbol, each asserting zero occurrences in `extension/src/`; the set is declared once in this file |
+| AC-GA-8b | same | fast | `ticket-declared-files.ts` exists, exports `readDeclaredFiles`, and has ≥3 importer files outside the evidence module |
+| AC-GA-8c | same | fast | no `DELETED_SYMBOLS` member appears in `src/services/CLAUDE.md`; `audit-trap-door-enforcement.sh` passes |
 | AC-GA-9 | `extension/tests/nostop-gates-sibling-parity.test.js` | fast | `runAllBackendsExhaustedFinalizeGate` returns `action:'continue'` and increments `counters.completed` on gate exit 0 |
 | AC-GA-10 | `extension/tests/nostop-gates-invariant.test.js` (widen existing) | fast | every `PhaseIterationOutcome` producer is enumerated; none returns `break` for a passing gate or an `INCOMPLETE_EXIT_REASONS` reason |
 | AC-GA-11 | WS-5 live run | n/a | session artifacts show trailer attribution and zero `ticket_phantom_done_corrected` for the ticket |
@@ -290,12 +342,18 @@ target.
 already type its own ticket-id into a subject today. Corroboration (reachability, baseline rejection,
 R-CWGE verdict) is unchanged, and the hook's idempotence check deliberately does not police authorship.
 
-**R4 — WS-3 deletes a symbol with a surviving non-attribution consumer.** ✅ **RESOLVED by grep
-2026-07-26**, per the beta.33 gate-overreach lesson (grep other-export pins before deleting):
-`extensionGreenGate` has exactly one consumer (`mux-runner.ts:4789`) and is therefore safely deletable;
-the `GateVerdict` type stays (owned by `lib/salvage-ticket.ts`, unrelated consumers). WS-3 must still
-re-run the same grep at implementation time rather than trusting this line — the ledger-drift lesson
-applies to this PRD too.
+**R4 — WS-3 deletes a symbol with a surviving non-attribution consumer.** ⚠️ **This risk FIRED during
+refinement, inside this PRD.** The author grepped `extensionGreenGate` (1 consumer → safely deletable,
+still true) and did **not** grep `readDeclaredFiles`, which has **3** live non-attribution consumers.
+The draft consequently ordered the deletion of a module that the dirty-tree guard, the readiness gate,
+and a mux-runner path all depend on. Caught by refinement cycle 3; WS-3's scope is corrected above and
+AC-GA-8b now pins the module's survival.
+
+**The generalizable lesson — naming a risk is not discharging it.** R4 was written, cited the right
+precedent (beta.33: grep other-export pins before deleting), and was then marked RESOLVED on the
+strength of a grep of *one* of the symbols in its own deletion list. Any AC asserting a symbol's absence
+MUST be paired with an importer-count grep of every member of the set, and the discharge evidence must
+name each symbol checked. `GateVerdict` stays (owned by `lib/salvage-ticket.ts`).
 
 ---
 
