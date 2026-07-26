@@ -3845,12 +3845,44 @@ function buildPipelineTerminalBanner(
     : { title: 'Pipeline Complete', color: 'GREEN' };
 }
 
+/**
+ * Preserve the exit_reason stamped by reportPhaseIncomplete or by a phase
+ * runner's manager/closer handoff (R-PRH); do not overwrite with the generic
+ * 'failed'. This is a deliberate non-success terminal that preserves a prior
+ * reason, NOT a fresh "bundle truly complete" claim — it does NOT route
+ * through the ground-truth authority (which would clobber the preserved
+ * reason).
+ *
+ * `phaseIncomplete` re-asserts its CAPTURED reason explicitly rather than
+ * trusting whatever is currently on disk: a later phase (anatomy-park /
+ * szechuan-sauce) legitimately clears exit_reason on entry and stamps its OWN
+ * disposition (e.g. 'converged') on its own clean finalize, which would
+ * otherwise silently overwrite the earlier phase's incompleteness signal —
+ * the exact value auto-resume.sh:154 depends on to relaunch. handoffStop-only
+ * (no phaseIncomplete) is unaffected: its reason is set and read within the
+ * same phase call that breaks the loop, so nothing downstream can clobber it
+ * before this runs.
+ */
+function finalizeNonSuccessTerminal(
+  statePath: string,
+  phaseIncomplete: boolean,
+  phaseIncompleteReason: string | null,
+): void {
+  finalizeTerminalState(
+    statePath,
+    phaseIncomplete
+      ? { step: 'completed', exitReason: phaseIncompleteReason ?? 'pipeline_phase_incomplete' }
+      : { step: 'completed' },
+  );
+}
+
 function finalizePipeline(
   runtime: PipelineRuntime,
   counters: PhaseCounters,
   cancelMarker: string,
   startTime: number,
   phaseIncomplete: boolean,
+  phaseIncompleteReason: string | null,
 ): void {
   const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
   const pipelineFailed = (counters.completed + counters.skipped) < runtime.config.phases.length;
@@ -3858,13 +3890,7 @@ function finalizePipeline(
   // A handoff stop is a deliberate pause, not a failure — fold it out once.
   const effectiveFailed = pipelineFailed && !handoffStop;
   if (phaseIncomplete || handoffStop) {
-    // Preserve the exit_reason already stamped by reportPhaseIncomplete or by a
-    // phase runner's manager/closer handoff (R-PRH); do not overwrite with the
-    // generic 'failed'. This is a deliberate non-success terminal that preserves
-    // a prior reason, NOT a fresh "bundle truly complete" claim — it does NOT
-    // route through the ground-truth authority (which would clobber the
-    // preserved reason).
-    finalizeTerminalState(runtime.statePath, { step: 'completed' });
+    finalizeNonSuccessTerminal(runtime.statePath, phaseIncomplete, phaseIncompleteReason);
   } else if (pipelineFailed) {
     finalizeFailedPipeline(runtime.statePath);
   } else {
@@ -4464,6 +4490,7 @@ export async function main(sessionDir: string, opts: MainOpts = {}): Promise<voi
   const cleanupShutdownHandlers = installShutdownHandlers(runtime, counters, cancelMarker);
   const startTime = Date.now();
   let phaseIncomplete = false;
+  let phaseIncompleteReason: string | null = null;
   phaseRunnerContext = {
     sessionDir,
     extensionRoot: runtime.extensionRoot,
@@ -4497,7 +4524,15 @@ export async function main(sessionDir: string, opts: MainOpts = {}): Promise<voi
       // B-NOSTOP-GATES WS-1: the session's exit code derives from WHETHER any phase
       // reported incomplete, not from which arm ended the loop — honesty and halting
       // are separate wires.
-      if (outcome.phaseIncomplete) phaseIncomplete = true;
+      if (outcome.phaseIncomplete) {
+        phaseIncomplete = true;
+        // Capture the reason AT THE MOMENT it was stamped — a later phase's own
+        // clean finalize (e.g. anatomy-park's 'converged') can overwrite
+        // state.json.exit_reason before finalizePipeline runs, so the boolean
+        // alone is not enough to recover what auto-resume.sh needs to see.
+        const capturedReason = readExistingExitReason(runtime.statePath);
+        if (capturedReason) phaseIncompleteReason = capturedReason;
+      }
       if (outcome.action === 'break') {
         break;
       }
@@ -4510,7 +4545,7 @@ export async function main(sessionDir: string, opts: MainOpts = {}): Promise<voi
     cleanupShutdownHandlers();
   }
 
-  finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncomplete);
+  finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncomplete, phaseIncompleteReason);
 }
 
 /** Extract the value following `flag` in argv, or `undefined` if absent. */

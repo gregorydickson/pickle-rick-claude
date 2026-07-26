@@ -97,9 +97,9 @@ function writeState(sessionDir, repo, startCommit, overrides = {}) {
   }, null, 2));
 }
 
-function writePipeline(sessionDir, repo) {
+function writePipeline(sessionDir, repo, phases = ['pickle', 'citadel']) {
   fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
-    phases: ['pickle', 'citadel'],
+    phases,
     target: repo,
     anatomy_stall_limit: 3,
     szechuan_stall_limit: 5,
@@ -373,5 +373,85 @@ describe('AC-NSG-1 — roster shape x mux exit code, the terminal triple', () =>
     // never satisfies it, so this pre-existing fallthrough is untouched by WS-1.
     assert.equal(r.terminalReason, 'pipeline_phase_incomplete');
     assert.ok(!r.citadelReached, 'the legacy non-ticket exit-3 fallthrough still halts — out of this ticket\'s scope');
+  });
+});
+
+/** Seeds a subsystem folder so anatomy-park's discovery doesn't empty-scope-skip the phase. */
+function seedAnatomySubsystem(repo) {
+  fs.mkdirSync(path.join(repo, 'services'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 1;\n');
+  fs.writeFileSync(path.join(repo, 'services', 'b.ts'), 'export const b = 2;\n');
+  fs.writeFileSync(path.join(repo, 'services', 'c.ts'), 'export const c = 3;\n');
+  git(['add', '.'], repo);
+  git(['commit', '-q', '-m', 'seed subsystem'], repo);
+}
+
+/** Like commitForTicket, but lands the change inside services/ so a diff-based
+ * anatomy-park scope refresh keeps the seeded subsystem in scope. */
+function commitForTicketInSubsystem(repo, ticketId) {
+  fs.writeFileSync(path.join(repo, 'services', `${ticketId}.ts`), `export const t = '${ticketId}';\n`);
+  git(['add', '.'], repo);
+  git(['commit', '-q', '-m', `fix(${ticketId}): shipped work`], repo);
+}
+
+describe('Terminal exit_reason survives a later phase\'s own clean finalize', () => {
+  test('pickle reports pipeline_phase_incomplete; anatomy-park converges after — terminal reason is NOT clobbered by "converged"', async () => {
+    const repo = tmpDir('nsg-terminal-survive-repo-');
+    const sessionDir = tmpDir('nsg-terminal-survive-session-');
+    const startCommit = initRepo(repo);
+    seedAnatomySubsystem(repo);
+    writeState(sessionDir, repo, startCommit);
+    // normalizePipelinePhases inserts a mandatory 'citadel' gate between
+    // 'pickle' and 'anatomy-park' — seed a trivial PRD so citadel self-heals
+    // state.prd_path and passes cleanly instead of halting the pipeline.
+    writePipeline(sessionDir, repo, ['pickle', 'anatomy-park']);
+    writePrd(sessionDir);
+    writeTicket(sessionDir, 'aaa11111', 1, 'Done');
+    commitForTicketInSubsystem(repo, 'aaa11111');
+    writeTicket(sessionDir, 'bbb22222', 2, 'Todo');
+
+    const calls = [];
+    __setSpawnRunnerForTests(async (cmd, args) => {
+      calls.push(args[0]);
+      if (args[0].includes('microverse-runner.js')) {
+        // Mirrors microverse-runner.ts:finalizeMicroverseRun on a clean
+        // convergence: it stamps its OWN exit_reason onto the same state.json
+        // pipeline-runner reads at finalize time.
+        fs.writeFileSync(path.join(sessionDir, 'anatomy-park.json'), JSON.stringify({
+          converged: true,
+          reason: 'worker convergence complete',
+        }, null, 2));
+        const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+        state.exit_reason = 'converged';
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(state, null, 2));
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+
+    try {
+      await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
+
+      assert.ok(
+        calls.some((a) => a.includes('microverse-runner.js')),
+        'anatomy-park must have actually run (not empty-scope-skipped) for this test to prove anything',
+      );
+
+      const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+      assert.equal(
+        state.exit_reason,
+        'pipeline_phase_incomplete',
+        'the terminal exit_reason must be the ORIGINAL pickle-phase incompleteness reason, ' +
+        'not anatomy-park\'s own later "converged" stamp — auto-resume.sh:154 relaunches on ' +
+        'this exact string and must not be silently starved by a later phase\'s clean finalize',
+      );
+
+      const pipelineStatus = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+      assert.equal(pipelineStatus.status, 'failed', 'a phase-incomplete terminal must not report a green/completed status');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
   });
 });
