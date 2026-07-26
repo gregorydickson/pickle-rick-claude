@@ -117,7 +117,11 @@ Once WS-1+WS-2 are proven, delete the message-inference surface. Named deletions
 - `scanGitLogByFileTouch`, `touchesDeclared`, `commitTouchedFiles`, `enumerateSiblingDeclaredFiles`
   and the `greenGate` / `declaredFiles` / `siblingDeclared` plumbing on `scanGitLog` (Pass 2)
 - the whole `ticket-declared-files.ts` module (85 lines) and its `readDeclaredFiles` import
-- the `extensionGreenGate` wiring at the `mux-runner.ts` ctx builder, if no other consumer remains
+- `extensionGreenGate` (`mux-runner.ts:4738`) **and** its `import type { GateVerdict }` in the evidence
+  module — **measured 2026-07-26: exactly one consumer**, the attribution ctx at `mux-runner.ts:4789`, so
+  it becomes dead code the moment WS-3 lands. The `GateVerdict` *type* itself SURVIVES — it is owned by
+  `lib/salvage-ticket.ts` and has unrelated consumers; only the evidence module's import goes.
+  (This resolves Risk R4 by grep rather than leaving it for the worker.)
 
 **Honest scope of the deletion.** The two modules total **1,209 lines** (`ticket-completion-evidence.ts`
 1,124 + `ticket-declared-files.ts` 85). WS-3 removes the *inference* subset, not the file. **Explicitly
@@ -233,9 +237,12 @@ target.
 already type its own ticket-id into a subject today. Corroboration (reachability, baseline rejection,
 R-CWGE verdict) is unchanged, and the hook's idempotence check deliberately does not police authorship.
 
-**R4 — WS-3 deletes a symbol with a surviving non-attribution consumer.** `greenGate`/`extensionGreenGate`
-may be referenced elsewhere. Mitigated by grepping call sites before deletion (the beta.33 gate-overreach
-lesson: grep other-export pins before deleting).
+**R4 — WS-3 deletes a symbol with a surviving non-attribution consumer.** ✅ **RESOLVED by grep
+2026-07-26**, per the beta.33 gate-overreach lesson (grep other-export pins before deleting):
+`extensionGreenGate` has exactly one consumer (`mux-runner.ts:4789`) and is therefore safely deletable;
+the `GateVerdict` type stays (owned by `lib/salvage-ticket.ts`, unrelated consumers). WS-3 must still
+re-run the same grep at implementation time rather than trusting this line — the ledger-drift lesson
+applies to this PRD too.
 
 ---
 
