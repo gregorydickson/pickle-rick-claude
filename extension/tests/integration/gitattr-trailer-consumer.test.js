@@ -28,23 +28,14 @@ function initGitRepo(dir) {
   execFileSync('git', ['commit', '-q', '-m', 'initial', '--no-gpg-sign'], { cwd: dir, stdio: 'ignore' });
 }
 
-function makeCommit(dir, msg) {
+function makeCommit(dir, msg, trailerValue = null) {
   const file = path.join(dir, `${Date.now()}_${Math.random().toString(36).slice(2)}.txt`);
   fs.writeFileSync(file, 'work\n');
   execFileSync('git', ['add', path.basename(file)], { cwd: dir });
-  execFileSync('git', ['commit', '-q', '-m', msg, '--no-gpg-sign'], { cwd: dir, stdio: 'ignore' });
-  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
-}
-
-function makeCommitWithTrailer(dir, msg, trailerValue) {
-  const file = path.join(dir, `${Date.now()}_${Math.random().toString(36).slice(2)}.txt`);
-  fs.writeFileSync(file, 'work\n');
-  execFileSync('git', ['add', path.basename(file)], { cwd: dir });
-  execFileSync(
-    'git',
-    ['commit', '-q', '-m', msg, '--trailer', `Pickle-Ticket: ${trailerValue}`, '--no-gpg-sign'],
-    { cwd: dir, stdio: 'ignore' },
-  );
+  const args = ['commit', '-q', '-m', msg];
+  if (trailerValue !== null) args.push('--trailer', `Pickle-Ticket: ${trailerValue}`);
+  args.push('--no-gpg-sign');
+  execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
 }
 
@@ -61,7 +52,7 @@ test('AC-GA-6/7: commit with no ticket-id/r_code in subject attributes via its P
   const root = mkTmp();
   try {
     initGitRepo(root);
-    const sha = makeCommitWithTrailer(root, 'audit: [HIGH] tighten completion evidence', 'trlr0001');
+    const sha = makeCommit(root, 'audit: [HIGH] tighten completion evidence', 'trlr0001');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'trlr0001');
     const ev = readEvidence({ sessionDir, ticketId: 'trlr0001', workingDir: root });
@@ -80,7 +71,7 @@ test('AC-GA-6/7: a trailer naming a different ticket is refused as foreign attri
     // Subject WORD-BOUNDARY matches our own ticket-id — Pass 1 (ref-token) would
     // attribute this commit to us if the trailer exclusion were not wired in.
     // The trailer positively names a DIFFERENT ticket.
-    makeCommitWithTrailer(root, 'fix(trlr0002): patch adjacent to trlr0002 scope', 'other9999');
+    makeCommit(root, 'fix(trlr0002): patch adjacent to trlr0002 scope', 'other9999');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'trlr0002');
     const ev = readEvidence({ sessionDir, ticketId: 'trlr0002', workingDir: root });
@@ -96,7 +87,7 @@ test('AC-GA-6/7: explicit reachable completion_commit still wins over a conflict
   try {
     initGitRepo(root);
     const explicitSha = makeCommit(root, 'feat(trlr0003): real delivering commit');
-    makeCommitWithTrailer(root, 'chore: unrelated later commit', 'other-ticket-id');
+    makeCommit(root, 'chore: unrelated later commit', 'other-ticket-id');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'trlr0003', { completionCommit: explicitSha });
     const ev = readEvidence({ sessionDir, ticketId: 'trlr0003', workingDir: root });
@@ -112,7 +103,7 @@ test('AC-GA-6/7: a baseline sha carrying a matching trailer is still rejected', 
   const root = mkTmp();
   try {
     initGitRepo(root);
-    const baselineSha = makeCommitWithTrailer(root, 'chore: session baseline', 'trlr0004');
+    const baselineSha = makeCommit(root, 'chore: session baseline', 'trlr0004');
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'trlr0004');
     const ev = readEvidence({
@@ -155,7 +146,7 @@ test('AC-GA-6/7: precedence order — trailer pass runs and wins ahead of the re
     const oldSha = makeCommit(root, 'fix(trlr0006): initial attempt at trlr0006');
     // NEW: subject/body contains NO ticket-id token at all (Pass 1 cannot find
     // it on its own), but its trailer names this ticket.
-    const newSha = makeCommitWithTrailer(root, 'chore: follow-up cleanup', 'trlr0006');
+    const newSha = makeCommit(root, 'chore: follow-up cleanup', 'trlr0006');
     assert.notEqual(oldSha, newSha);
     const sessionDir = path.join(root, 'session');
     writeTicket(sessionDir, 'trlr0006');
