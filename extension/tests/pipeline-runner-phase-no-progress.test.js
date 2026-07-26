@@ -259,11 +259,15 @@ test('R-PIPE-2: pickle phase passes when commits landed since start_commit (no D
   }
 });
 
-test('AC-A1 (WS-A): pickle with N-of-M Done + progress but pending halts pipeline_phase_incomplete', async () => {
-  // AC-A1/WS-A all-terminal gate: even when the pickle pass made ≥1 Done ticket or
-  // ≥1 commit, a clean exit-0 with pendingCount > 0 must stamp pipeline_phase_incomplete
-  // and NOT advance the pipeline phase. The R-CMWL-2 progress carve-out applies only to
-  // the mux codex-relaunch loop, never to pipeline-phase advance (B-XSPA / #113 R-XSPA-2).
+// SUPERSEDED by B-NOSTOP-GATES WS-1: the "must NOT advance the pipeline phase"
+// framing below is exactly the treadmill this ticket subtracts.
+// OLD (pre-WS-1): a clean exit-0 with pendingCount > 0 stamped
+// pipeline_phase_incomplete AND halted (break) — never reaching citadel.
+// NEW (WS-1): the SAME stamp still happens (honesty is unchanged — this is
+// still not a success), but the phase now ADVANCES (continue) instead of
+// halting. Partial progress (>=1 Done or >=1 commit) is a quality signal
+// reported for reconciliation, not a crash-floor cannot-continue condition.
+test('AC-A1 (WS-A, superseded): pickle with N-of-M Done + progress but pending reports pipeline_phase_incomplete and ADVANCES', async () => {
   const repo = tmpDir('pipe-pppa-repo-');
   const sessionDir = tmpDir('pipe-pppa-session-');
   try {
@@ -285,11 +289,10 @@ test('AC-A1 (WS-A): pickle with N-of-M Done + progress but pending halts pipelin
       return { exitCode: 0, stdout: '', stderr: '' };
     });
 
-    // AC-A1 (WS-A) supersedes the R-CMWL-2 phase-advance carve-out for PIPELINE phase
-    // advance: a clean pickle exit-0 with pendingCount > 0 must NOT advance REGARDLESS
-    // of progress — advancing a partially-Done bundle to citadel/anatomy-park is the
-    // B-XSPA / #113 R-XSPA-2 defect. maybeStampPicklePendingTickets stamps the uniform
-    // pipeline_phase_incomplete reason and exits PhaseIncomplete (3) without advancing.
+    // B-NOSTOP-GATES WS-1: a clean pickle exit-0 with pendingCount > 0 still stamps
+    // pipeline_phase_incomplete (this single-phase fixture therefore still exits 3 —
+    // the main-loop accumulator makes exit code track phaseIncomplete regardless of
+    // action), but the phase itself now ADVANCES rather than halting.
     await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
 
     const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
@@ -301,8 +304,8 @@ test('AC-A1 (WS-A): pickle with N-of-M Done + progress but pending halts pipelin
 
     const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.ok(
-      /not all-tickets-terminal, marking phase incomplete \(not advancing\)/.test(log),
-      'AC-A1: progressing-but-pending pickle must log the all-terminal-gate incomplete line',
+      /not all-tickets-terminal, reporting phase incomplete, advancing/.test(log),
+      'AC-A1 (WS-1): progressing-but-pending pickle must log the all-terminal-gate incomplete line, now phrased as advancing',
     );
     assert.ok(
       !/Phase pickle completed successfully/.test(log),
@@ -499,7 +502,12 @@ test('R-CCR-4: real failure (no handoff) still exits Failure with status failed'
   const sessionDir = tmpDir('pipe-ccr4-fail-session-');
   try {
     const startCommit = initRepo(repo);
-    writeState(sessionDir, repo, startCommit);
+    // B-NOSTOP-GATES WS-1: a non-zero pickle exit with zero commits is no longer
+    // fatal on its own (it reports incomplete and ADVANCES instead of halting), so
+    // this fixture needs an explicit strict-phase override to still reach a genuine
+    // halt — the concern this test actually pins (real-failure status reporting),
+    // not pickle's commit-count classification.
+    writeState(sessionDir, repo, startCommit, { pipeline_continue_on_phase_fail: false });
     writePipeline(sessionDir, repo, ['pickle', 'citadel']);
     writeTicket(sessionDir, 'aaa11111', 1, 'Todo');
 
@@ -524,7 +532,9 @@ test('R-CCR-3: non-zero exit + stale manager_handoff_pending does NOT take clean
   const sessionDir = tmpDir('pipe-ccr3-nonzero-session-');
   try {
     const startCommit = initRepo(repo);
-    writeState(sessionDir, repo, startCommit);
+    // B-NOSTOP-GATES WS-1: force a genuine halt via the strict-phase override —
+    // see the rationale comment on the R-CCR-4 test above.
+    writeState(sessionDir, repo, startCommit, { pipeline_continue_on_phase_fail: false });
     writePipeline(sessionDir, repo, ['pickle', 'citadel']);
     writeTicket(sessionDir, 'aaa11111', 1, 'Todo');
 
@@ -561,7 +571,9 @@ test('R-CCR-3: non-zero exit with stale handoff reason terminates with failure m
   const sessionDir = tmpDir('pipe-ccr3-twin-session-');
   try {
     const startCommit = initRepo(repo);
-    writeState(sessionDir, repo, startCommit);
+    // B-NOSTOP-GATES WS-1: force a genuine halt via the strict-phase override —
+    // see the rationale comment on the R-CCR-4 test above.
+    writeState(sessionDir, repo, startCommit, { pipeline_continue_on_phase_fail: false });
     writePipeline(sessionDir, repo, ['pickle']);
     writeTicket(sessionDir, 'aaa11111', 1, 'Todo');
 
@@ -736,8 +748,14 @@ test('AC-A1 (WS-A): pickle with commits-only progress + pending halts pipeline_p
     );
 
     const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    // B-NOSTOP-GATES WS-1: the log wording changed from "...not advancing" to
+    // "...reporting phase incomplete, advancing" — this branch now ADVANCES
+    // (action: 'continue') instead of halting; the exit code stays 3 (and this
+    // single-phase fixture stays PhaseIncomplete) purely because phaseIncomplete
+    // is still true, per the main-loop accumulator (WS-1 Phase 7), not because
+    // the phase itself halted.
     assert.ok(
-      /not all-tickets-terminal, marking phase incomplete \(not advancing\)/.test(log),
+      /not all-tickets-terminal, reporting phase incomplete, advancing/.test(log),
       'AC-A1: commits-only-but-pending pickle must log the all-terminal-gate incomplete line',
     );
     assert.ok(

@@ -91,6 +91,11 @@ function writePipeline(sessionDir, repo, phases = ['pickle', 'citadel']) {
   }, null, 2));
 }
 
+/** A trivial PRD — citadel self-heals state.prd_path by adopting this file. */
+function writePrd(sessionDir) {
+  fs.writeFileSync(path.join(sessionDir, 'prd.md'), '# Test PRD\n\n## Acceptance Criteria\n- [ ] n/a\n');
+}
+
 function writeTicket(sessionDir, id, order, status = 'Todo') {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
@@ -124,21 +129,25 @@ afterEach(() => {
   __setSpawnRunnerForTests(null);
 });
 
-// ── AC2: SIGTERM-killed mux (sentinel) + clean exit (0) → NO citadel advance ──
+// ── AC2 (SUPERSEDED by B-NOSTOP-GATES WS-1): SIGTERM-killed mux (sentinel) +
+// clean exit (0) → reports incomplete AND ADVANCES ──
 // This is the B-XSPA bug: an external SIGTERM kills the mux with ≥1 ticket still
 // Todo, but the mux exit code reads 0 (indistinguishable from clean completion).
 // C2's teardown drops the `pickle_incomplete.json` sentinel; C1's robust gate
-// reads that sentinel and refuses to advance to citadel on the partial build.
-// (A clean exit-0 with partial progress and NO sentinel is NOT this bug — that is
-// the normal R-CMWL-2 partial-progress path and is covered by the no-progress
-// suite, where it advances so downstream remediation is preserved.)
-test('SIGTERM-killed mux drops the sentinel → pipeline does NOT advance to citadel (exit 0 disguise)', async () => {
+// reads that sentinel and reports the phase incomplete.
+// OLD (pre-WS-1): the sentinel FORCED a halt — citadel never ran.
+// NEW (WS-1): honesty (the stamp) and halting are separate wires — the sentinel
+// still reports incomplete (via reportPhaseIncomplete, unchanged: the ccc33333
+// Todo ticket is genuinely unfinished, not oracle-excluded), but the phase now
+// ADVANCES to citadel instead of halting before it.
+test('SIGTERM-killed mux drops the sentinel → reports incomplete but still ADVANCES to citadel', async () => {
   const repo = tmpDir('rrh-repo-');
   const sessionDir = tmpDir('rrh-session-');
   try {
     const head = initRepo(repo);
     writeState(sessionDir, repo, { start_commit: head });
     writePipeline(sessionDir, repo, ['pickle', 'citadel']);
+    writePrd(sessionDir);
 
     // 2 Done, 1 Todo — partial build the SIGTERM interrupted.
     writeTicket(sessionDir, 'aaa11111', 1, 'Done');
@@ -155,13 +164,16 @@ test('SIGTERM-killed mux drops the sentinel → pipeline does NOT advance to cit
       return { exitCode: 0, stdout: '', stderr: '' };
     });
 
+    // WS-1: exit code stays 3 (phaseIncomplete survives via the main-loop
+    // accumulator regardless of action), but citadel IS reached and runs.
     await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
 
-    // No PHASE 2: citadel never ran, so no citadel_report.json.
     assert.ok(
-      !fs.existsSync(path.join(sessionDir, 'citadel_report.json')),
-      'citadel must NOT run when the pickle_incomplete sentinel is present',
+      fs.existsSync(path.join(sessionDir, 'citadel_report.json')),
+      'WS-1: citadel must run — the sentinel reports incomplete but no longer blocks advance',
     );
+    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.match(log, /PHASE 2\/2: CITADEL/);
     const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
     assert.equal(state.exit_reason, 'pipeline_phase_incomplete');
   } finally {
@@ -171,14 +183,28 @@ test('SIGTERM-killed mux drops the sentinel → pipeline does NOT advance to cit
   }
 });
 
-// ── AC2b: sentinel present forces incomplete even when roster reads all-Done ──
-test('pickle_incomplete.json sentinel forces incomplete even on exit 0 with all tickets Done', async () => {
+// ── AC2b (SUPERSEDED by B-NOSTOP-GATES WS-1): sentinel + all-Done roster now
+// advances (ground truth wins), while the sentinel still forces exit code 3 ──
+// OLD (pre-WS-1): the sentinel forced BOTH a halt (citadel blocked) AND a
+// `pipeline_phase_incomplete` stamp, unconditionally — even over an honestly
+// all-Done roster (this test's original premise).
+// NEW (WS-1): `maybeStampPickleIncompleteRobust` still calls `reportPhaseIncomplete`
+// unconditionally and its RETURNED `phaseIncomplete: true` is still hardcoded
+// (the sentinel always forces exit code 3 for reconciliation, per the plan) —
+// but `reportPhaseIncomplete` ITSELF now defers to ground truth: a genuinely
+// all-Done roster (unfinished.length === 0) declines to stamp
+// `pipeline_phase_incomplete` at all, and the phase ADVANCES to citadel, which
+// runs and succeeds. The exit code (3) and the exit_reason (unstamped) can
+// therefore disagree — that split is intentional: the code is the sentinel's
+// disposition signal, the reason is the roster's honest verdict.
+test('pickle_incomplete.json sentinel forces exit 3 but an honestly all-Done roster still advances to citadel', async () => {
   const repo = tmpDir('rrh-repo-');
   const sessionDir = tmpDir('rrh-session-');
   try {
     const head = initRepo(repo);
     writeState(sessionDir, repo, { start_commit: head });
     writePipeline(sessionDir, repo, ['pickle', 'citadel']);
+    writePrd(sessionDir);
 
     writeTicket(sessionDir, 'aaa11111', 1, 'Done');
     writeTicket(sessionDir, 'bbb22222', 2, 'Done');
@@ -193,11 +219,15 @@ test('pickle_incomplete.json sentinel forces incomplete even on exit 0 with all 
     await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
 
     assert.ok(
-      !fs.existsSync(path.join(sessionDir, 'citadel_report.json')),
-      'sentinel presence must block citadel advance even when all tickets read Done',
+      fs.existsSync(path.join(sessionDir, 'citadel_report.json')),
+      'WS-1: an honestly all-Done roster must reach and run citadel despite the sentinel',
     );
     const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
-    assert.equal(state.exit_reason, 'pipeline_phase_incomplete');
+    assert.notEqual(
+      state.exit_reason,
+      'pipeline_phase_incomplete',
+      'ground truth (all-Done) must win over the sentinel for the STAMP — only the exit code stays 3',
+    );
   } finally {
     __setSpawnRunnerForTests(null);
     fs.rmSync(repo, { recursive: true, force: true });
