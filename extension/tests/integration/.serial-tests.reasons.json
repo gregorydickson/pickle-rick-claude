@@ -58,6 +58,8 @@
     "tests/tsc-gate.test.js": "subprocess-timeout-coupling",
     "tests/integration/audit-ticket-bundle-baseline.test.js": "load-dependent-timeout",
     "tests/integration/lock-steal-live-holder.test.js": "subprocess-spawn-timing",
-    "tests/integration/start-commit-pinned-sha.test.js": "real-repo-isolation"
+    "tests/integration/start-commit-pinned-sha.test.js": "real-repo-isolation",
+    "tests/integration/gitattr-trailer-producer.test.js": "subprocess-spawn-timing",
+    "tests/integration/gitattr-hook-forwarding.test.js": "subprocess-spawn-timing"
   }
 }

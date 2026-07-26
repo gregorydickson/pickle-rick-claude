@@ -58,6 +58,8 @@
     "tests/tsc-gate.test.js",
     "tests/integration/audit-ticket-bundle-baseline.test.js",
     "tests/integration/lock-steal-live-holder.test.js",
-    "tests/integration/start-commit-pinned-sha.test.js"
+    "tests/integration/start-commit-pinned-sha.test.js",
+    "tests/integration/gitattr-trailer-producer.test.js",
+    "tests/integration/gitattr-hook-forwarding.test.js"
   ]
 }
