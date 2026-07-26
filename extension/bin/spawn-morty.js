@@ -19,6 +19,10 @@ import { autoFillCompletionCommit } from './auto-fill-completion-commit.js';
 // despite mux-runner's own import of `resolveCodexModel` from this module
 // (neither module touches the other's bindings during module evaluation).
 import { evaluateFailedFlipSuppression } from './mux-runner.js';
+// AP-EXT-ITER2-01: the ONE content-line oracle (strips a single trailing newline,
+// CRLF-aware). Runtime-only usage, no cycle — spawn-refinement-team imports neither
+// this module nor mux-runner, and evaluates no top-level side effects.
+import { countContentLines } from './spawn-refinement-team.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { loadAgentMd } from '../services/agent-md-loader.js';
 import { flushAndExit } from '../services/worker-shutdown.js';
@@ -722,7 +726,10 @@ function statCodegraphFile(resolved, cache) {
         }
         else {
             try {
-                result = { resolves: true, lineCount: fs.readFileSync(resolved, 'utf-8').split('\n').length };
+                // countContentLines, NOT a bare split: `split('\n').length` counts a phantom
+                // trailing empty element on every newline-terminated file, so a node citing
+                // exactly ONE line past EOF read FRESH and survived the staleness filter.
+                result = { resolves: true, lineCount: countContentLines(fs.readFileSync(resolved, 'utf-8')) };
             }
             catch {
                 result = { resolves: true, lineCount: null };
