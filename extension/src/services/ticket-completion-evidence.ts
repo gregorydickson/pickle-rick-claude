@@ -533,6 +533,29 @@ function scanGitLogByRefToken(
   return null;
 }
 
+/**
+ * WS-2 (arm agreement): apply the SAME baseline/foreign-attribution guards the
+ * explicit branch already applies (isBaselineSha, isForeignAttributedExplicitSha)
+ * to a scan hit. A SHA the explicit arm would reject must never be accepted here
+ * — the promote step (promoteOnceAndReprobe) would otherwise persist it into the
+ * explicit field and manufacture exactly the disagreement AC-NSG-10b forbids.
+ * Downgrades to `no_evidence`, NOT `baseline_sha`/`foreign_attribution` — a
+ * scan-arm miss is "the oracle's best-effort guess didn't hold up", not a
+ * positive mis-attribution someone wrote into frontmatter (that hard-absent
+ * meaning stays an explicit-field-only concept, R-OMA).
+ */
+function guardScanHit(
+  sha: string,
+  ctx: Pick<EvidenceCtx, 'workingDir' | 'sessionDir' | 'ticketId' | 'ownAttributionTokens' | 'startCommit' | 'pinnedSha'>,
+  content: string,
+  absent: () => EvidenceResult,
+): EvidenceResult {
+  if (isBaselineSha(sha, ctx) || isForeignAttributedExplicitSha(sha, ctx, content)) {
+    return absent();
+  }
+  return { kind: 'committed', sha, via: 'scan' };
+}
+
 // ---------------------------------------------------------------------------
 // Entry point 1: readEvidence
 // ---------------------------------------------------------------------------
@@ -619,7 +642,7 @@ export function readEvidence(ctx: EvidenceCtx): EvidenceResult {
     siblingDeclared: ctx.sessionDir ? enumerateSiblingDeclaredFiles(ctx.sessionDir, selfId) : [],
     greenGate: ctx.greenGate,
   });
-  if (scan) return { kind: 'committed', sha: scan.sha, via: 'scan' };
+  if (scan) return guardScanHit(scan.sha, ctx, content, absent);
 
   return absent();
 }
@@ -835,6 +858,29 @@ function recoverFromAnnouncement(ctx: CompletionDecisionCtx): EvidenceResult | n
 }
 
 /**
+ * WS-2 (fix a): true iff `evidence` is a scan-sourced accept for a ticket that
+ * DECLARES a recognized `zero_diff_intent`. A declared zero-diff ticket must
+ * never have scan-sourced evidence promoted into its explicit field — the scan
+ * arm's best-effort guess (bundle-generic ref-token matches, per the research)
+ * is never a legitimate borrow target for a ticket that declares it produces no
+ * commit of its own. Read-only: consults the existing `ctx.zeroDiffIntent()`
+ * resolver, adds no new write and no new call site of the `zero_diff_intent`
+ * frontmatter key (the sanctioned single-occurrence pin stays intact).
+ */
+function isZeroDiffScanBorrowExcluded(ctx: CompletionDecisionCtx, evidence: EvidenceResult): boolean {
+  if (evidence.kind !== 'committed' || evidence.via !== 'scan') return false;
+  if (!ctx.zeroDiffIntent) return false;
+  let declared: string | null;
+  try {
+    declared = ctx.zeroDiffIntent();
+  } catch {
+    return false;
+  }
+  const intent = declared?.trim().toLowerCase();
+  return !!intent && ZERO_DIFF_INTENTS.has(intent);
+}
+
+/**
  * B-1SEAM WS-1: the ONE completion predicate — the single policy answering
  * "may this ticket's completion evidence be acted on?". Policy is the shipped
  * `guardCompletionCommitBeforeDone` ladder VERBATIM (the strictest site):
@@ -1010,12 +1056,18 @@ export function evaluateCompletionEvidence(
 export function evaluateCompletionEvidence(ctx: CompletionDecisionCtx): CompletionDecision;
 export function evaluateCompletionEvidence(ctx: CompletionDecisionCtx): CompletionDecision {
   let evidence = readEvidence(ctx);
+  if (isZeroDiffScanBorrowExcluded(ctx, evidence)) {
+    evidence = { kind: 'absent', absentReason: 'no_evidence' };
+  }
   if (!isAcceptedEvidence(evidence)) {
     // R-CCGR: the worker commits + stamps `completion_commit`, then emits its
     // done-promise; a decision site can read this predicate before that
     // frontmatter write is durably visible. Re-read once after a short backoff.
     sleepSyncMs(ctx.rereadBackoffMs ?? defaultRereadBackoffMs());
     evidence = readEvidence(ctx);
+    if (isZeroDiffScanBorrowExcluded(ctx, evidence)) {
+      evidence = { kind: 'absent', absentReason: 'no_evidence' };
+    }
   }
   let via: EvidenceVia | 'announcement' | undefined = evidence.via;
   if (!isAcceptedEvidence(evidence)) {
