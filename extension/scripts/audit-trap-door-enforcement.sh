@@ -6,6 +6,7 @@ EXTENSION_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXTENSION_ROOT/.." && pwd)"
 CLAUDE_PATH="${CLAUDE_PATH_OVERRIDE:-$EXTENSION_ROOT/CLAUDE.md}"
 SOURCE_CLAUDE_PATH="$EXTENSION_ROOT/src/bin/CLAUDE.md"
+SUBSYSTEM_CATALOG_ROOT="${SUBSYSTEM_CATALOG_ROOT_OVERRIDE:-$EXTENSION_ROOT/src}"
 CLOSER_AUDIT_REPO="${CLOSER_AUDIT_REPO_OVERRIDE:-$REPO_ROOT}"
 
 if [ ! -f "$CLAUDE_PATH" ]; then
@@ -105,67 +106,111 @@ fi
 
 # Parse ENFORCE: references and check reachability via node so we get the
 # same regex as trap-door-conformance.test.js (avoids BSD/GNU grep -P gap).
-if ! node - "$CLAUDE_PATH" "$EXTENSION_ROOT" "$REPO_ROOT" <<'NODE'
+#
+# Sweeps the primary catalog AND every subsystem catalog under src/*/CLAUDE.md.
+# Scoping this to extension/CLAUDE.md alone left 150 of 365 refs unverified, which
+# is how a phantom ENFORCE anchor shipped green under a gate that reported
+# "215 ENFORCE reference(s) verified" — the catalog-anchor-executability trap door
+# in extension/CLAUDE.md names this exact recurrence ("iter 8 swept only
+# extension/CLAUDE.md, and all four anchors iter 9 found false sat in the siblings").
+if ! node - "$CLAUDE_PATH" "$EXTENSION_ROOT" "$REPO_ROOT" "$SUBSYSTEM_CATALOG_ROOT" <<'NODE'
 const fs = require('fs');
 const path = require('path');
 
-const [,, claudePath, extensionRoot, repoRoot] = process.argv;
-
-const text = fs.readFileSync(claudePath, 'utf8');
-const lines = text.split('\n');
+const [,, primaryClaudePath, extensionRoot, repoRoot, subsystemCatalogRoot] = process.argv;
 
 const VALID_TIERS = new Set(['fast', 'integration', 'expensive', 'contract']);
 
-// Collect all ENFORCE: test file references using the same regex as
-// extractEnforceTestFiles() in trap-door-conformance.test.js.
-const enforceFiles = new Map(); // relative path -> line number
-
-for (let i = 0; i < lines.length; i++) {
-  const line = lines[i];
-  if (!line.includes('ENFORCE:')) continue;
-
-  // Gather entry text (current line + continuation until next entry/section)
-  let entryText = line;
-  let j = i + 1;
-  while (j < lines.length && !lines[j].startsWith('- ') && !lines[j].startsWith('## ')) {
-    entryText += '\n' + lines[j];
-    j++;
+// Discovered, never hand-listed: a new subsystem catalog enters the sweep the
+// moment it lands, so the sweep cannot drift behind the catalogs it verifies.
+function discoverCatalogs() {
+  const catalogs = [primaryClaudePath];
+  let entries;
+  try {
+    entries = fs.readdirSync(subsystemCatalogRoot, { withFileTypes: true });
+  } catch {
+    return catalogs;
   }
 
-  const matches = entryText.matchAll(/\b((?:extension\/)?tests\/[A-Za-z0-9_./-]+\.test\.js)\b/g);
-  for (const m of matches) {
-    if (!enforceFiles.has(m[1])) {
-      enforceFiles.set(m[1], i + 1);
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(subsystemCatalogRoot, entry.name, 'CLAUDE.md');
+    if (fs.existsSync(candidate) && !catalogs.includes(candidate)) {
+      catalogs.push(candidate);
     }
   }
+
+  return catalogs;
+}
+
+// Collect all ENFORCE: test file references using the same regex as
+// extractEnforceTestFiles() in trap-door-conformance.test.js.
+function collectEnforceRefs(claudePath) {
+  const lines = fs.readFileSync(claudePath, 'utf8').split('\n');
+  const enforceFiles = new Map(); // relative path -> line number
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.includes('ENFORCE:')) continue;
+
+    // Gather entry text (current line + continuation until next entry/section)
+    let entryText = line;
+    let j = i + 1;
+    while (j < lines.length && !lines[j].startsWith('- ') && !lines[j].startsWith('## ')) {
+      entryText += '\n' + lines[j];
+      j++;
+    }
+
+    const matches = entryText.matchAll(/\b((?:extension\/)?tests\/[A-Za-z0-9_./-]+\.test\.js)\b/g);
+    for (const m of matches) {
+      if (!enforceFiles.has(m[1])) {
+        enforceFiles.set(m[1], i + 1);
+      }
+    }
+  }
+
+  return enforceFiles;
 }
 
 let failures = 0;
+let verified = 0;
+const perCatalog = [];
 
-for (const [rel, lineNum] of enforceFiles) {
-  // Resolve: 'extension/tests/...' → repo root; 'tests/...' → extension root
-  const absPath = rel.startsWith('extension/')
-    ? path.join(repoRoot, rel)
-    : path.join(extensionRoot, rel);
+for (const claudePath of discoverCatalogs()) {
+  // Label carries the catalog so a phantom anchor is attributable to its file,
+  // not just a bare line number that could belong to any of six catalogs.
+  const label = path.relative(repoRoot, claudePath) || claudePath;
+  const enforceFiles = collectEnforceRefs(claudePath);
+  perCatalog.push(`${label}=${enforceFiles.size}`);
 
-  if (!fs.existsSync(absPath)) {
-    process.stderr.write(`ENFORCE: line ${lineNum}: missing file: ${rel}\n`);
-    failures++;
-    continue;
-  }
+  for (const [rel, lineNum] of enforceFiles) {
+    // Resolve: 'extension/tests/...' → repo root; 'tests/...' → extension root
+    const absPath = rel.startsWith('extension/')
+      ? path.join(repoRoot, rel)
+      : path.join(extensionRoot, rel);
 
-  // Read first meaningful line (skip shebang and blank lines)
-  const fileContent = fs.readFileSync(absPath, 'utf8');
-  const firstMeaningful = fileContent.split(/\r?\n/).find(
-    l => !l.startsWith('#!') && l.trim() !== ''
-  ) ?? '';
+    if (!fs.existsSync(absPath)) {
+      process.stderr.write(`ENFORCE: ${label}:${lineNum}: missing file: ${rel}\n`);
+      failures++;
+      continue;
+    }
 
-  const tierMatch = firstMeaningful.match(/^\/\/\s*@tier:\s*([A-Za-z0-9_-]+)\s*$/);
-  if (!tierMatch || !VALID_TIERS.has(tierMatch[1])) {
-    process.stderr.write(
-      `ENFORCE: line ${lineNum}: no valid @tier annotation in ${rel} (first line: ${firstMeaningful.substring(0, 80)})\n`
-    );
-    failures++;
+    // Read first meaningful line (skip shebang and blank lines)
+    const fileContent = fs.readFileSync(absPath, 'utf8');
+    const firstMeaningful = fileContent.split(/\r?\n/).find(
+      l => !l.startsWith('#!') && l.trim() !== ''
+    ) ?? '';
+
+    const tierMatch = firstMeaningful.match(/^\/\/\s*@tier:\s*([A-Za-z0-9_-]+)\s*$/);
+    if (!tierMatch || !VALID_TIERS.has(tierMatch[1])) {
+      process.stderr.write(
+        `ENFORCE: ${label}:${lineNum}: no valid @tier annotation in ${rel} (first line: ${firstMeaningful.substring(0, 80)})\n`
+      );
+      failures++;
+      continue;
+    }
+
+    verified++;
   }
 }
 
@@ -174,7 +219,9 @@ if (failures > 0) {
   process.exit(1);
 }
 
-console.log(`audit-trap-door-enforcement: ${enforceFiles.size} ENFORCE reference(s) verified`);
+console.log(
+  `audit-trap-door-enforcement: ${verified} ENFORCE reference(s) verified across ${perCatalog.length} catalog(s) (${perCatalog.join(', ')})`
+);
 NODE
 then
   audit_exit_code=1
