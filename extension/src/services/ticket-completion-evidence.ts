@@ -232,6 +232,9 @@ function parseGitLog(raw: string): GitLogEntry[] {
 
 type TrailerLogEntry = { sha: string; epoch: number; trailerValue: string };
 
+/** WS-2: matches a standalone `Pickle-Ticket: <value>` trailer line inside a raw `%B` body. */
+const PICKLE_TICKET_TRAILER_LINE_RE = /^pickle-ticket:\s*\S+\s*$/gim;
+
 /**
  * WS-2 consumer: parses `git log --format=%H%n%ct%n%(trailers:key=Pickle-Ticket,valueonly)%n---pickle-trailer-boundary---`
  * output. A DEDICATED parser (not `parseGitLog`) because the trailer value is a single git-parsed
@@ -611,7 +614,11 @@ function scanGitLogByRefToken(
   const checkEntry = (e: GitLogEntry): { sha: string } | null => {
     if (Number.isFinite(startEpoch) && startEpoch > 0 && e.epoch < startEpoch) return null;
     if (excludeShas.has(e.sha.toLowerCase())) return null;
-    const lower = e.message.toLowerCase();
+    // WS-2: %B (the raw body this pass matches against) includes trailers verbatim, so a
+    // Pickle-Ticket trailer would otherwise let message inference "accidentally" re-derive
+    // the same attribution the dedicated trailer pass already owns — silently defeating that
+    // pass's precedence (it would never be the one that resolves the hit). Strip it before matching.
+    const lower = e.message.replace(PICKLE_TICKET_TRAILER_LINE_RE, '').toLowerCase();
     if (matcherRes.some(re => re.test(lower))) return { sha: e.sha };
     if (args.rCodeRe && args.rCodeRe.test(lower)) return { sha: e.sha };
     return null;
