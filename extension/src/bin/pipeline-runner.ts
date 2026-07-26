@@ -3853,15 +3853,21 @@ function buildPipelineTerminalBanner(
  * through the ground-truth authority (which would clobber the preserved
  * reason).
  *
- * `phaseIncomplete` re-asserts its CAPTURED reason explicitly rather than
- * trusting whatever is currently on disk: a later phase (anatomy-park /
- * szechuan-sauce) legitimately clears exit_reason on entry and stamps its OWN
- * disposition (e.g. 'converged') on its own clean finalize, which would
- * otherwise silently overwrite the earlier phase's incompleteness signal —
- * the exact value auto-resume.sh:154 depends on to relaunch. handoffStop-only
- * (no phaseIncomplete) is unaffected: its reason is set and read within the
- * same phase call that breaks the loop, so nothing downstream can clobber it
- * before this runs.
+ * `phaseIncomplete` re-asserts its CAPTURED reason explicitly (when one was
+ * actually stamped) rather than trusting whatever is currently on disk: a
+ * later phase (anatomy-park / szechuan-sauce) legitimately clears exit_reason
+ * on entry and stamps its OWN disposition (e.g. 'converged') on its own clean
+ * finalize, which would otherwise silently overwrite the earlier phase's
+ * incompleteness signal — the exact value auto-resume.sh:154 depends on to
+ * relaunch. `phaseIncompleteReason` is null when the sentinel-forced robust
+ * path (`maybeStampPickleIncompleteRobust`) hardcodes `phaseIncomplete: true`
+ * for the exit CODE while `reportPhaseIncomplete` itself declined to stamp
+ * anything (an honestly all-Done roster — ground truth wins the STAMP, only
+ * the code stays forced); that case falls back to the bare preserve-as-is
+ * call rather than inventing a reason nothing actually produced.
+ * handoffStop-only (no phaseIncomplete) is unaffected: its reason is set and
+ * read within the same phase call that breaks the loop, so nothing downstream
+ * can clobber it before this runs.
  */
 function finalizeNonSuccessTerminal(
   statePath: string,
@@ -3870,8 +3876,8 @@ function finalizeNonSuccessTerminal(
 ): void {
   finalizeTerminalState(
     statePath,
-    phaseIncomplete
-      ? { step: 'completed', exitReason: phaseIncompleteReason ?? 'pipeline_phase_incomplete' }
+    phaseIncomplete && phaseIncompleteReason
+      ? { step: 'completed', exitReason: phaseIncompleteReason }
       : { step: 'completed' },
   );
 }
