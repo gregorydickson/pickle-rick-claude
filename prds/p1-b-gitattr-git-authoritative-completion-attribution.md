@@ -366,3 +366,64 @@ inert until `install.sh`. WS-3's deletion lands after WS-1/WS-2 are proven.
 **Green-tree precondition:** the fast tier must be green on the launch commit. Satisfied at
 `62657aff` (5/5 runs, 0 failures) with the two subsequent commits verified inert (version bump +
 docs). Re-confirm once at rest before launch.
+
+---
+
+## §0b Refinement Record *(refined: 3 cycles × 3 analysts, session 2026-07-26-013335ff)*
+
+`all_success: true`, `cycles_completed: 3`. Manifest: `refinement_manifest.json`.
+
+**What refinement changed.** One `ac_shape_smells` entry (AC-GA-8) was raised; chasing it produced three
+substantive corrections, all folded into §2/§4/§5 above rather than appended:
+
+1. **WS-3 scope corrected** — `ticket-declared-files.ts` moved from DELETE to SURVIVES-PINNED after
+   `readDeclaredFiles` was measured to have 3 live non-attribution consumers (`pipeline-runner.ts`
+   dirty-tree guard + scope auto-extension, `check-readiness.ts` signature-caller-gap, `mux-runner.ts`).
+   New AC-GA-8b pins survival.
+2. **AC-GA-8 rescoped from whole-tree to per-home-file absence** — `commitMessage` is a name collision
+   (`microverse-runner.ts:3534` local const; `bundle-finalize.ts` DTO field/param), so a whole-tree
+   absence assertion was unsatisfiable and would have ordered deletion of unrelated code.
+3. **AC-GA-8c added** — the deletion would have orphaned its own trap-door ENFORCE anchor
+   (`enumerateSiblingDeclaredFiles` in `src/services/CLAUDE.md`), manufacturing the orphan-anchor finding
+   class that burned 3 citadel cycles for 0 commits in the beta.7 run.
+
+**AC shape resolution.** AC-GA-8 is collapsed into ONE parametrized invariant with a universal
+quantifier over a `DELETED_SYMBOLS` set declared once and iterated via `describe.each`, per the
+manifest's collapse guidance. Not fanned out per symbol: the predicate is identical across members and a
+single deletion commit removes all or none, so per-symbol tickets would strand intermediates behind a
+non-compiling tree.
+
+**Analyst path warnings — assessed, benign.** `ticket_quality_warnings: 66`, overwhelmingly
+`path_not_found` for runtime artifacts that correctly do not exist as repo files (`state.json`,
+`scope.json`, `pipeline-status.json`, `circuit_breaker.json`) plus `ambiguous_citation` for `CLAUDE.md`
+(9 matches) and `README.md` (10 matches) — the repo genuinely has that many. Per the FOM evidence rule,
+a missing path may be a proposed file rather than a fabrication; none of these are fabrications. One
+`path_not_found: rick_ticket_a3c75c96.md` cites the prior session's ticket, correctly absent here.
+
+**Author's note on the R4 miss.** Risk R4 named the deletion-safety hazard, cited the correct precedent,
+and was marked RESOLVED on a grep of one symbol out of nine. Refinement caught what that shortcut
+missed. The rule now stated in R4: an absence AC must be paired with an importer-count grep of **every**
+member of its set, and the discharge evidence must name each symbol checked.
+
+---
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Tier | Entry | Exit | Files |
+|---|---|---|---|---|---|---|---|
+| 10 | `6dc7d243` | Sibling parity on a passing recovery gate + widen the halt invariant | High | medium | none | `runAllBackendsExhaustedFinalizeGate` continues on pass; invariant covers every outcome producer | `pipeline-runner.ts`, `nostop-gates-sibling-parity.test.js`, `nostop-gates-invariant.test.js` |
+| 20 | `85b0c3dc` | git-trailer hooks service: idempotent hook + forwarding stubs | High | medium | none | managed hooks dir; no repo mutation; forwards every pre-existing hook | `git-trailer-hooks.ts`, `gitattr-trailer-producer.test.js`, `gitattr-hook-forwarding.test.js`, serial manifests |
+| 30 | `cb36a189` | Inject `core.hooksPath` + `PICKLE_TICKET_ID` into spawn env | High | medium | 20 Done | worker+manager spawns activate the hook via env, composing with inherited `GIT_CONFIG_COUNT` | `backend-spawn.ts`, `backend-spawn-trailer-env.test.js` |
+| 40 | `a026c5cc` | Attribute by trailer ahead of message inference | High | medium | 20, 30 Done | trailer lookup is the first scan pass; explicit field still wins | `ticket-completion-evidence.ts`, `gitattr-trailer-consumer.test.js`, serial manifests |
+| 50 | `769690b1` | Delete the inference per home module; pin what survives | High | medium | 20, 30, 40 Done | inference gone; `ticket-declared-files.ts` pinned live; trap doors reconciled | `ticket-completion-evidence.ts`, `mux-runner.ts`, `services/CLAUDE.md`, `gitattr-inference-deleted.test.js` |
+| 60 | `6f95cff3` | Wire + live-run evidence (merged wiring/WS-5) | High | large | 20–50 Done | live run shows trailer attribution on a no-hash subject, zero phantom-Done churn | `extension/docs/gitattr-live-run-evidence.md` |
+| 70 | `8f7e1cf2` | Harden: code quality of the full diff | High | large | 10–60 Done | zero P0–P1 across MODIFIED_FILES | MODIFIED_FILES (see ticket) |
+| 80 | `b34ec6d7` | Audit: data flow integrity (id → env → hook → trailer → oracle) | High | large | 10–70 Done | zero CRITICAL+HIGH over 2 consecutive passes | MODIFIED_FILES (see ticket) |
+| 90 | `6b7c3b82` | Harden: test quality; mutation-verify every absence pin | High | large | 10–80 Done | zero P0–P1 gaps; every pin bites | TEST_FILES (see ticket) |
+| 100 | `a8af8335` | Audit: cross-reference consistency + trap-door reconciliation | High | medium | 10–90 Done | no anchor names deleted code; trailer contract documented | DOC_FILES (see ticket) |
+
+**Ordering rationale.** WS-3's deletion (50) lands only after the producer (20, 30) and consumer (40) are
+proven — deleting the inference first would strand attribution with no fallback. Ticket 10 is independent of
+the trailer and lands first as a self-contained subtraction. Ticket 60 merges the standard wiring ticket with
+WS-5's live-run requirement: for a commit-trailer chain those are the same integration concern, so two
+near-duplicate tickets were deliberately not created.
