@@ -519,3 +519,43 @@ state at `<SESSION_ROOT>/state.json` (runtime artifact, not a repo path).
   sibling thesis one level up, and its "unrunnable ≠ red" class is referenced here only as a naming
   precedent for the judge-unmeasurable rows.
 - The `git log` maxBuffer CLASS (drain item 3) stays its own PRD.
+
+---
+
+# §R — REFINEMENT OUTPUT (round 2, 2026-07-25 — 9/9 analysts, 3 cycles, AC-shape gate PASS)
+
+*(refined: 3-role × 3-cycle analyst team, session `2026-07-25-aa87fa74`. Round 1 exited 2 on the
+AC-shape gate and surfaced 3 P0s; round 2 exited 0 and surfaced 5 more. All 8 are fixed in the body
+above — see git history `465fbc07`, `57cecb79`, `313ee687`, `b267423f`.)*
+
+## §R.1 — What refinement IMPROVED over the author's version (adopted)
+
+| # | Author's version | Refinement's correction (ADOPTED) |
+|---|---|---|
+| I1 | AC-NSG-1 asserted a 4-row roster matrix | **Full cross product: 8 roster shapes × 2 mux exit codes.** Adds `6/6 Failed`, `5 Done + 1 In Progress`, `Skipped-present`, and `empty roster` — shapes the author's 4 rows never covered. |
+| I2 | AC-NSG-1 asserted `action` / verdict / panel / exit as separate columns | **The terminal triple must be asserted TOGETHER on ONE finalize invocation** — banner title+color (`buildPipelineTerminalBanner`), the parsed `pipeline-status.json` payload, and the process exit code. `pipeline-runner.ts:3759-3765` documents them as ONE predicate; asserting any one alone **permits a green banner over a non-zero exit**. This is the fake-green class the bundle exists to prevent, and the author's per-column form would have allowed it. |
+| I3 | AC-NSG-10b described as a property test in prose | Restated as an explicit fixture matrix (own-commit / foreign / baseline / unreachable) with the accept→persist→re-read round trip asserted per row. |
+
+## §R.2 — Author decisions on refinement's open items
+
+| Item | Decision |
+|---|---|
+| **Tier conflict on the WS-1 ticket** (cycle A said `small`, cycle B said `medium`, one justification said `large`) | **`medium`.** `small` skips `test:fast` in the worker gate and every WS-1 site is pinned by fast-tier suites — the documented mis-tier trap that runs red-main gates and wipes edits. Not negotiable by a worker. |
+| **WS-3 received NO ticket proposal** in any cycle | **Ticket created anyway.** WS-3 is the "flag" half of directive 2; without it WS-1 is a fake-green regression. Analysts likely dropped it because it is one `logActivity` call — small, but load-bearing. |
+| **6 "phantom symbols"** (`pickle`, `ts`, `ticket`, `ticket_id`, `truncated`, `total_count`) | **FALSE POSITIVES**, known class (`BUG-REPORT-2026-07-16-symbol-audit-exit-code-false-positive`). The auditor parsed *field names* and a `source` value as event names. Correctly non-fatal (`REFINE_EXIT=0`). The real event `ticket_auto_skip_no_evidence` was NOT flagged and is confirmed at `types/index.ts:646`. No fabrication. |
+| `path_not_found: pipeline-status.json`, `ambiguous_citation: CLAUDE.md` | Expected. `pipeline-status.json` is a runtime artifact (R-WSRC forbidden-write table), not a repo path. `CLAUDE.md` disambiguated in the Risks section. |
+
+## §R.3 — Implementation Task Breakdown
+
+Order is load-bearing: **WS-1 first** (pipeline-safe — the run executes DEPLOYED js, so a WS-2 wedge
+still leaves the core subtraction landed), WS-2 last among implementation (R-PSRB salvage path).
+
+| Order | ID | Title | Pri | Tier | ACs | Entry | Exit | Files |
+|---|---|---|---|---|---|---|---|---|
+| 10 | `ws1-phase-disposition` | For every (roster shape × mux exit code) the phase advances or stops per the declared disposition, and the terminal triple matches | High | medium | AC-NSG-1, AC-NSG-5b | fast tier green at `start_commit` | quality verdicts never break the phase loop; both crash-floor pins hold | `src/bin/pipeline-runner.ts` (5 sites/3 fns), `tests/nostop-gates-phase-loop.test.js`, `tests/nostop-gates-invariant.test.js`, `tests/pipeline-runner-halt-on-incomplete.test.js` |
+| 20 | `ws3-residual-surface` | Every parked ticket emits exactly one residual activity event and the panel refuses an unqualified Complete | High | small | AC-NSG-11, AC-NSG-12, AC-NSG-13 | WS-1 landed | parked items auditable; zero-parked output byte-identical | `src/bin/pipeline-runner.ts`, `tests/nostop-gates-residual.test.js`, `tests/pipeline-finalize-honesty.test.js` |
+| 30 | `ws2-arm-agreement` | For every ticket shape, a SHA accepted by the scan arm never becomes an absent verdict once persisted as explicit | High | medium | AC-NSG-7, AC-NSG-8, AC-NSG-8b, AC-NSG-9, AC-NSG-10, AC-NSG-10b | WS-1 + WS-3 landed | no foreign SHA stamped on a declared zero-diff ticket; both F9 pins byte-identical vs `start_commit` | `src/services/ticket-completion-evidence.ts` OR `src/bin/mux-runner.ts` (research decides the seam), `tests/nostop-gates-zero-diff-stamp.test.js`, `tests/nostop-gates-arm-agreement.test.js` |
+| 40 | `ws4-verification-artifact` | The verification artifact states every required field, including the phase count reached and the named next blocker | High | small | AC-NSG-14, AC-NSG-15, AC-NSG-16 | WS-1..3 landed | phase count > 1 recorded; next blocker named and classed; inventory completeness stated | `prds/` artifact only (no product code) |
+
+**`self_modifying_recovery: true`** — ticket 30 only. Tickets 10/20/40 are pipeline-safe.
+**Launch:** `--scope branch` MANDATORY (Operator Decision 2b; scope is opt-in at `pipeline-runner.ts:3203`).
