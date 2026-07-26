@@ -14,7 +14,7 @@ import {
   renderCodegraphSection,
   tierUsesGraphContext,
 } from '../bin/spawn-morty.js';
-import { buildWorkerPrompt as refinementBuildWorkerPrompt } from '../bin/spawn-refinement-team.js';
+import { buildWorkerPrompt as refinementBuildWorkerPrompt, countContentLines } from '../bin/spawn-refinement-team.js';
 import { countCodegraphContextEvents } from '../bin/mux-runner.js';
 
 const SECTION_HEADER = '## Code Graph Context';
@@ -453,4 +453,83 @@ test('medium-tier section is adjacent to the tier lifecycle sections', async () 
   const sectionIdx = prompt.indexOf(SECTION_HEADER);
   assert.ok(lifecycleIdx >= 0, 'medium prompt must contain the Research lifecycle section');
   assert.ok(sectionIdx > lifecycleIdx, 'Code Graph Context must follow the lifecycle sections (adjacent injection)');
+});
+
+// ── AP-EXT-ITER2-01: staleness verification counts CONTENT lines, not split length ──
+// `split('\n').length` counts a phantom trailing empty element on every newline-terminated
+// file, so a node citing exactly ONE line past EOF read FRESH, survived the filter, and was
+// rendered into the worker prompt as a live symbol ref while `dropped_stale` under-counted.
+// Relational oracle: the expected count is derived in-test from the same `countContentLines`
+// oracle production now uses, so the fixture cannot decouple into a hardcoded twin. The
+// discriminating value is `contentLines + 1` — the only one the naive count accepted.
+const LINE_COUNT_CASES = [
+  { name: 'trailing newline (LF)', body: 'line1\nline2\nline3\n', expectedLines: 3 },
+  { name: 'trailing newline (CRLF)', body: 'line1\r\nline2\r\nline3\r\n', expectedLines: 3 },
+  { name: 'no trailing newline (control)', body: 'line1\nline2\nline3', expectedLines: 3 },
+];
+
+for (const { name, body, expectedLines } of LINE_COUNT_CASES) {
+  test(`staleness line count: ${name} — node one line past EOF is STALE, last real line is FRESH`, async () => {
+    assert.equal(countContentLines(body), expectedLines, 'fixture precondition: oracle line count');
+    const pastEof = expectedLines + 1;
+    const workingDir = makeWorkingDir({ 'real.ts': body });
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-linecount-'));
+    const statePath = seedState(sessionDir);
+    try {
+      const section = await buildCodegraphContextSection({
+        tier: 'medium', title: makeTicket().task, ticketContent: makeTicket().ticketContent,
+        service: fakeService({
+          hits: [
+            { node: { id: 'n1', name: 'lastRealLineFn', file: 'real.ts', line: expectedLines }, score: 5 },
+            { node: { id: 'n2', name: 'pastEofFn', file: 'real.ts', line: pastEof }, score: 3 },
+          ],
+        }),
+        settings: makeSettings(), sessionDir, ticketId: 'tlinecount', workingDir,
+      });
+      assert.ok(section.includes('lastRealLineFn'),
+        `node citing the last real line (${expectedLines}) must survive as fresh`);
+      assert.ok(!section.includes('pastEofFn'),
+        `node citing line ${pastEof} in a ${expectedLines}-line file must be dropped as stale`);
+      // The telemetry half: dropped_stale feeds the codegraph efficacy metric, so an
+      // under-count silently inflates apparent index freshness.
+      const activity = JSON.parse(fs.readFileSync(statePath, 'utf8')).activity;
+      const injected = activity.filter((e) => e.event === 'codegraph_context_injected');
+      assert.equal(injected.length, 1, 'exactly one injected event (a survivor is present)');
+      assert.equal(injected[0].dropped_stale, 1, 'dropped_stale must count the past-EOF node');
+    } finally {
+      fs.rmSync(workingDir, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test('staleness line count: every node one line past EOF → stale_refs skip, no phantom injection', async () => {
+  const body = 'line1\nline2\n';
+  const pastEof = countContentLines(body) + 1;
+  const workingDir = makeWorkingDir({ 'real.ts': body });
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-linecount-skip-'));
+  const statePath = seedState(sessionDir);
+  try {
+    const section = await buildCodegraphContextSection({
+      tier: 'medium', title: makeTicket().task, ticketContent: makeTicket().ticketContent,
+      service: fakeService({
+        hits: [
+          { node: { id: 'n1', name: 'ghostA', file: 'real.ts', line: pastEof }, score: 5 },
+          { node: { id: 'n2', name: 'ghostB', file: 'real.ts', line: pastEof }, score: 3 },
+        ],
+      }),
+      settings: makeSettings(), sessionDir, ticketId: 'tlinecountskip', workingDir,
+    });
+    assert.equal(section, '', 'zero located survivors must yield an empty section');
+    const activity = JSON.parse(fs.readFileSync(statePath, 'utf8')).activity;
+    const skipped = activity.filter((e) => e.event === 'codegraph_context_skipped');
+    assert.equal(skipped.length, 1, 'exactly one skip event');
+    assert.equal(skipped[0].reason, 'stale_refs', 'reason must be stale_refs, not zero_hits');
+    assert.equal(skipped[0].dropped_stale, 2, 'dropped_stale must equal the dropped-node count');
+    assert.equal(activity.filter((e) => e.event === 'codegraph_context_injected').length, 0,
+      'no phantom injection built from dead refs');
+  } finally {
+    fs.rmSync(workingDir, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
 });
