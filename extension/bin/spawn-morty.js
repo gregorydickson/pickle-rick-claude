@@ -726,7 +726,7 @@ function statCodegraphFile(resolved, cache) {
         }
         else {
             try {
-                // countContentLines, NOT a bare split: `split('\n').length` counts a phantom
+                // Via the shared oracle, NOT a bare newline-split length: that counts a phantom
                 // trailing empty element on every newline-terminated file, so a node citing
                 // exactly ONE line past EOF read FRESH and survived the staleness filter.
                 result = { resolves: true, lineCount: countContentLines(fs.readFileSync(resolved, 'utf-8')) };
