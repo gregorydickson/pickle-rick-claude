@@ -5,12 +5,19 @@
 // must NOT be reported as a clean success; a genuinely converged phase still counts; the
 // pickle/citadel paths are unchanged; and pipeline-status.json carries an additive-optional
 // phase_dispositions field that older status files (without it) still parse cleanly.
-import { test, describe } from 'node:test';
+import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { finalizePhaseSuccess, writePipelineStatus } from '../bin/pipeline-runner.js';
+import {
+  __setSpawnRunnerForTests,
+  buildPipelineCompletePanel,
+  finalizePhaseSuccess,
+  main,
+  writePipelineStatus,
+} from '../bin/pipeline-runner.js';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-finalize-honesty-'));
@@ -216,5 +223,137 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     const status2 = readStatus(dir);
     assert.equal(status2.phase_dispositions['anatomy-park'], 'stalled_below_target');
     fs.rmSync(dir, { recursive: true });
+  });
+});
+
+// B-NOSTOP-GATES WS-3 (AC-NSG-12): the completion panel must state the parked
+// count and must not render an unqualified "Complete" when parked > 0.
+describe('AC-NSG-12: completion panel honesty with parked tickets', () => {
+  test('buildPipelineCompletePanel states the parked count when > 0', () => {
+    const counters = { completed: 3, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    const panel = buildPipelineCompletePanel(counters, '3/4', 0, 2);
+    assert.equal(panel.Parked, '2', 'panel must state the parked count');
+  });
+
+  function tmpSessionDir() {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-panel-session-'));
+  }
+
+  function tmpRepoDir() {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-panel-repo-'));
+  }
+
+  function git(args, cwd) {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
+  }
+
+  function initRepo(dir) {
+    git(['init', '-q', '-b', 'main'], dir);
+    git(['config', 'user.email', 'test@test.local'], dir);
+    git(['config', 'user.name', 'Test'], dir);
+    git(['config', 'commit.gpgsign', 'false'], dir);
+    fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
+    git(['add', '.'], dir);
+    git(['commit', '-q', '-m', 'seed'], dir);
+  }
+
+  function writeFullState(sessionDir, repo) {
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+      active: false,
+      working_dir: repo,
+      step: 'implement',
+      iteration: 0,
+      max_iterations: 100,
+      max_time_minutes: 720,
+      worker_timeout_seconds: 1200,
+      start_time_epoch: 1000,
+      completion_promise: null,
+      original_prompt: 'AC-NSG-12 test',
+      current_ticket: null,
+      history: [],
+      started_at: new Date().toISOString(),
+      session_dir: sessionDir,
+      schema_version: 3,
+      tmux_mode: false,
+      chain_meeseeks: false,
+      backend: 'claude',
+    }, null, 2));
+  }
+
+  function writePipelineConfig(sessionDir, repo) {
+    fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+      phases: ['pickle'],
+      target: repo,
+      anatomy_stall_limit: 3,
+      szechuan_stall_limit: 5,
+      anatomy_max_iterations: 100,
+      szechuan_max_iterations: 50,
+      dirty_exempt_segments: ['prds', 'docs'],
+    }, null, 2));
+  }
+
+  function writeTicket(sessionDir, id, order, status) {
+    const ticketDir = path.join(sessionDir, id);
+    fs.mkdirSync(ticketDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(ticketDir, `rick_ticket_${id}.md`),
+      `---\nid: ${id}\ntitle: Panel test ticket ${id}\nstatus: ${status}\norder: ${order}\n---\n\n# Test\n`,
+    );
+  }
+
+  class ExitIntercept extends Error {
+    constructor(code) {
+      super(`process.exit(${code})`);
+      this.code = code;
+    }
+  }
+
+  async function captureMainExit(sessionDir, expectedCode) {
+    const originalExit = process.exit;
+    const originalTmux = process.env.TMUX;
+    delete process.env.TMUX;
+    process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
+    try {
+      await assert.rejects(
+        () => main(sessionDir),
+        (err) => err instanceof ExitIntercept && err.code === expectedCode,
+      );
+    } finally {
+      process.exit = originalExit;
+      if (originalTmux === undefined) delete process.env.TMUX;
+      else process.env.TMUX = originalTmux;
+    }
+  }
+
+  afterEach(() => {
+    __setSpawnRunnerForTests(null);
+  });
+
+  test('a parked-ticket run refuses an unqualified Complete (status stays non-completed)', async () => {
+    const repo = tmpRepoDir();
+    const sessionDir = tmpSessionDir();
+    try {
+      initRepo(repo);
+      writeFullState(sessionDir, repo);
+      writePipelineConfig(sessionDir, repo);
+      writeTicket(sessionDir, 'ddd44444', 1, 'Todo');
+
+      __setSpawnRunnerForTests(async () => {
+        const statePath = path.join(sessionDir, 'state.json');
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        state.exit_reason = 'iteration_cap_exhausted';
+        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+        return { exitCode: 3, stdout: '', stderr: '' };
+      });
+
+      await captureMainExit(sessionDir, 3);
+
+      const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+      assert.notEqual(status.status, 'completed', 'a parked ticket must not render an unqualified Complete status');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
   });
 });

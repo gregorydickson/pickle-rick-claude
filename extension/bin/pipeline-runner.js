@@ -2900,6 +2900,41 @@ function logUnfinishedTickets(runtime, unfinished) {
         runtime.log(`  ... and ${overflow} more`);
 }
 /**
+ * B-NOSTOP-GATES WS-3 (AC-NSG-11): emits one `ticket_auto_skip_no_evidence`
+ * residual event per parked (unfinished) ticket — the audit trail for a phase
+ * that reports incomplete and advances instead of halting (directive 2: park,
+ * flag, continue). Reuses the existing event verbatim (same shape as the
+ * mux-runner.ts:2920 emission) via `logActivity` — activity JSONL ONLY, never
+ * `writeActivityEntry`/`state.json.activity` (the 20MB phantom-Done-backfill
+ * class this must not repeat). Callers invoke this ONCE per phase, never per
+ * mux iteration. `logActivity` is itself best-effort (internal try/catch,
+ * never throws), so a logging failure here cannot introduce a new halt.
+ */
+function emitParkedTicketResidualEvents(runtime, phase, unfinished) {
+    if (unfinished.length === 0)
+        return;
+    const session = path.basename(runtime.sessionDir);
+    let iteration;
+    try {
+        const it = sm.read(runtime.statePath).iteration;
+        if (typeof it === 'number' && Number.isFinite(it))
+            iteration = it;
+    }
+    catch { /* best-effort */ }
+    for (const t of unfinished) {
+        if (!t.id)
+            continue;
+        logActivity({
+            event: 'ticket_auto_skip_no_evidence',
+            source: 'pickle',
+            session,
+            ticket: t.id,
+            iteration,
+            reason: `parked_at_phase_${phase}`,
+        });
+    }
+}
+/**
  * Returns TRUE when `pipeline_phase_incomplete` was stamped (genuine incompleteness),
  * FALSE when the B-PXBO oracle re-resolution found nothing genuinely unfinished.
  *
@@ -2937,8 +2972,10 @@ function reportPhaseIncomplete(runtime, phase) {
         ? 'hit iteration cap'
         : `exited (exit_reason=${priorExitReason})`;
     runtime.log(`Phase ${phase} ${cause}; ${unfinished.length}/${total} tickets remain unfinished.`);
-    if (unfinished.length > 0)
+    if (unfinished.length > 0) {
         logUnfinishedTickets(runtime, unfinished);
+        emitParkedTicketResidualEvents(runtime, phase, unfinished);
+    }
     recordExitReason(runtime.statePath, 'pipeline_phase_incomplete');
     return true;
 }
@@ -3061,6 +3098,7 @@ function maybeStampPhaseGraduation(runtime, rawPhase, _exitCode, log) {
         const shortStart = progress.startCommit ? progress.startCommit.slice(0, 8) : 'session start';
         log(`Phase ${rawPhase} exited with no progress (0 Done of ${progress.ticketCount} tickets, 0 commits since ${shortStart}) — reporting incomplete, advancing`);
         recordExitReason(runtime.statePath, 'phase_no_progress');
+        emitParkedTicketResidualEvents(runtime, rawPhase, resolveUnfinishedTickets(runtime, collectTickets(runtime.sessionDir)));
         return { action: 'continue', phaseIncomplete: true };
     }
     log(`Phase ${rawPhase} exited but ${progress.pendingCount}/${progress.ticketCount} tickets remain pending (${progress.doneCount} Done) — not all-tickets-terminal, reporting phase incomplete, advancing`);
@@ -3131,13 +3169,34 @@ function finalizeFailedPipeline(statePath) {
  * B-NONSTOP WS-2 (AC-NS-6): the end-of-pipeline panel fields. Extracted from
  * `finalizePipeline` so the non-convergent conditional does not push that
  * function past the cyclomatic-complexity ceiling.
+ *
+ * B-NOSTOP-GATES WS-3 (AC-NSG-12/13): `parkedCount` adds a `Parked` row ONLY
+ * when > 0, so a clean run (parkedCount 0) renders byte-identical to the
+ * pre-WS-3 panel — additive, never a cosmetic change on the happy path.
  */
-function buildPipelineCompletePanel(counters, phasesSummary, totalElapsed) {
+export function buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount = 0) {
     const panel = { Phases: phasesSummary };
     if (counters.nonConvergent > 0)
         panel['Non-convergent'] = String(counters.nonConvergent);
+    if (parkedCount > 0)
+        panel.Parked = String(parkedCount);
     panel.Elapsed = formatTime(totalElapsed);
     return panel;
+}
+/**
+ * B-NOSTOP-GATES WS-3 (AC-NSG-12): the current parked-ticket count for the
+ * completion panel — every roster ticket neither Done nor oracle-committed,
+ * reusing the same `resolveUnfinishedTickets` predicate `reportPhaseIncomplete`
+ * uses. Best-effort: an unreadable roster reads as zero parked rather than
+ * crashing the terminal finalize.
+ */
+function resolveParkedTicketCount(runtime) {
+    try {
+        return resolveUnfinishedTickets(runtime, collectTickets(runtime.sessionDir)).length;
+    }
+    catch {
+        return 0;
+    }
 }
 /**
  * The terminal banner derives from the SAME `effectiveFailed` predicate that drives the
@@ -3184,7 +3243,8 @@ function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncom
         ? `${counters.completed}/${runtime.config.phases.length} (${counters.skipped} skipped${skipDetail ? ` — ${skipDetail}` : ''})`
         : `${counters.completed}/${runtime.config.phases.length}`;
     const banner = buildPipelineTerminalBanner(effectiveFailed);
-    printMinimalPanel(banner.title, buildPipelineCompletePanel(counters, phasesSummary, totalElapsed), banner.color, '🧪');
+    const parkedCount = resolveParkedTicketCount(runtime);
+    printMinimalPanel(banner.title, buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount), banner.color, '🧪');
     writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, effectiveFailed);
     // handoff stops skip closer-release
     if (!pipelineFailed && !handoffStop) {
