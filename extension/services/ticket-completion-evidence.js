@@ -103,6 +103,76 @@ function parseGitLog(raw) {
         .filter(e => /^[0-9a-f]{40}$/i.test(e.sha));
 }
 /**
+ * WS-2 consumer: parses `git log --format=%H%n%ct%n%(trailers:key=Pickle-Ticket,valueonly)%n---pickle-trailer-boundary---`
+ * output. A DEDICATED parser (not `parseGitLog`) because the trailer value is a single git-parsed
+ * field, not a free-text message body — reusing `parseGitLog` would mean re-deriving the trailer out
+ * of `%B` by regex, defeating the point of letting git's own trailer machinery do the parsing.
+ */
+function parseTrailerLog(raw) {
+    return raw
+        .split('\n---pickle-trailer-boundary---\n')
+        .map(e => e.trim())
+        .filter(Boolean)
+        .map(e => {
+        const [sha = '', epochRaw = '0', ...rest] = e.split('\n');
+        return { sha: sha.trim(), epoch: Number(epochRaw.trim()) || 0, trailerValue: rest.join('\n').trim() };
+    })
+        .filter(e => /^[0-9a-f]{40}$/i.test(e.sha));
+}
+/**
+ * WS-2 consumer (highest-precedence scan pass, ahead of Pass 1/Pass 2 message inference): reads the
+ * `Pickle-Ticket` git trailer (stamped by the WS-1 producer hook) via git's own trailer parser — exact
+ * ticket-id equality, no word-boundary regex needed since the trailer value IS the ticket id, not a
+ * token embedded in free text.
+ *
+ * Returns BOTH a same-ticket hit (if any, newest-first-wins since `git log` iterates newest-first) and
+ * `foreignShas` — every commit in the scanned window whose trailer names a DIFFERENT ticket. The caller
+ * excludes `foreignShas` from Pass 1/Pass 2: a trailer positively naming another ticket must never be
+ * laundered into an attribution to THIS ticket via a coincidental ref-token/file-touch match on the
+ * same commit (see the ticket's "do not fall back to message-matching... to launder it" requirement).
+ *
+ * Best-effort: any git failure returns the empty result (no hit, no exclusions), never throws.
+ */
+function scanGitLogByTrailer(args) {
+    const empty = { hit: null, foreignShas: new Set() };
+    if (!args.ticketId)
+        return empty;
+    const wantedId = args.ticketId.trim().toLowerCase();
+    if (!wantedId)
+        return empty;
+    let raw;
+    try {
+        raw = execFileSync('git', [
+            '-C', args.workingDir,
+            'log', '-n', '50',
+            '--format=%H%n%ct%n%(trailers:key=Pickle-Ticket,valueonly)%n---pickle-trailer-boundary---',
+            'HEAD',
+        ], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    }
+    catch {
+        return empty;
+    }
+    const startEpoch = Number(args.startTimeEpoch);
+    const entries = parseTrailerLog(raw);
+    let hit = null;
+    const foreignShas = new Set();
+    for (const e of entries) {
+        if (Number.isFinite(startEpoch) && startEpoch > 0 && e.epoch < startEpoch)
+            continue;
+        const trailerId = e.trailerValue.trim().toLowerCase();
+        if (!trailerId)
+            continue;
+        if (trailerId === wantedId) {
+            if (!hit)
+                hit = { sha: e.sha };
+        }
+        else {
+            foreignShas.add(e.sha.toLowerCase());
+        }
+    }
+    return { hit, foreignShas };
+}
+/**
  * R-CECB: the files a commit touched, via `git show --name-only`. Best-effort —
  * any git failure yields `[]` (commit not attributable by file-touch).
  */
@@ -269,8 +339,11 @@ function enumerateSiblingDeclaredFiles(sessionDir, selfTicketId) {
  */
 function scanGitLogByFileTouch(entries, args) {
     const startEpoch = Number(args.startTimeEpoch);
+    const excludeShas = args.excludeShas ?? new Set();
     for (const e of entries) {
         if (Number.isFinite(startEpoch) && startEpoch > 0 && e.epoch < startEpoch)
+            continue;
+        if (excludeShas.has(e.sha.toLowerCase()))
             continue;
         const touched = commitTouchedFiles(args.workingDir, e.sha);
         if (!touchesDeclared(touched, args.declaredFiles))
@@ -287,6 +360,19 @@ function scanGitLogByFileTouch(entries, args) {
     return null;
 }
 function scanGitLog(args) {
+    // WS-2 (B-GITATTR): trailer scan is the highest-precedence pass — checked even
+    // before the "nothing to scan for" early return below, so a ticket with no
+    // r_code/declared files but a real trailer stamp still resolves. A miss still
+    // yields `foreignShas` (commits whose trailer names a DIFFERENT ticket), which
+    // Pass 1/Pass 2 below must exclude so a foreign-trailer commit is never
+    // laundered into an attribution via a coincidental message/file-touch match.
+    const trailerScan = scanGitLogByTrailer({
+        workingDir: args.workingDir,
+        ticketId: args.ticketId,
+        startTimeEpoch: args.startTimeEpoch,
+    });
+    if (trailerScan.hit)
+        return trailerScan.hit;
     const matchers = [
         ...(args.ticketId ? [args.ticketId.toLowerCase()] : []),
         ...extractRCodeTokens(args.title),
@@ -321,6 +407,7 @@ function scanGitLog(args) {
         rCodeRe,
         startTimeEpoch: args.startTimeEpoch,
         headEntriesOut: headEntries,
+        excludeShas: trailerScan.foreignShas,
     });
     if (refHit)
         return refHit;
@@ -334,6 +421,7 @@ function scanGitLog(args) {
             declaredFiles,
             siblingDeclared: args.siblingDeclared ?? [],
             greenGate: args.greenGate ?? (() => 'errored'),
+            excludeShas: trailerScan.foreignShas,
         });
     }
     return null;
@@ -347,11 +435,14 @@ function scanGitLog(args) {
 function scanGitLogByRefToken(commands, args) {
     const startEpoch = Number(args.startTimeEpoch);
     const lastCmd = commands[commands.length - 1];
+    const excludeShas = args.excludeShas ?? new Set();
     // B-DURA T70: word-boundary matchers (was substring `includes`). Tokens are
     // already lowercased; escape regex metacharacters before anchoring with \b.
     const matcherRes = args.matchers.map(t => new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`));
     const checkEntry = (e) => {
         if (Number.isFinite(startEpoch) && startEpoch > 0 && e.epoch < startEpoch)
+            return null;
+        if (excludeShas.has(e.sha.toLowerCase()))
             return null;
         const lower = e.message.toLowerCase();
         if (matcherRes.some(re => re.test(lower)))

@@ -1,5 +1,6 @@
 {
   "entries": [
+    "tests/integration/gitattr-trailer-consumer.test.js",
     "tests/timeout-happy-path.test.js",
     "tests/integration/check-update-extraction-containment.test.js",
     "tests/integration/pntr-teams-tmux.test.js",
