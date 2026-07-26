@@ -6,6 +6,7 @@ import { createRequire } from 'module';
 import { BACKENDS } from '../types/index.js';
 import { StateManager } from './state-manager.js';
 import { logActivity } from './activity-logger.js';
+import { materializeTrailerHooks } from './git-trailer-hooks.js';
 /**
  * R-WSRC-4 — Test-harness sandbox assertion.
  *
@@ -651,9 +652,50 @@ function appendAddDirArgs(args, addDirs) {
             args.push('--add-dir', dir);
     }
 }
-export function backendEnvOverrides(backend) {
+const TRAILER_HOOKS_MANAGED_DIRNAME = 'git-trailer-hooks';
+function parseNonNegativeInt(value) {
+    if (typeof value !== 'string' || value.trim() === '')
+        return null;
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+/** Warn-once dedupe reusing the existing `_warnedBackends` set (no parallel warn mechanism). */
+function warnTrailerHooksFailure(reason) {
+    const key = `trailer-hooks:${reason}`;
+    if (_warnedBackends.has(key))
+        return;
+    _warnedBackends.add(key);
+    process.stderr.write(`[backend-spawn] trailer hooks materialization failed (${reason}) — omitting core.hooksPath + PICKLE_TICKET_ID\n`);
+}
+/**
+ * Builds the `core.hooksPath` + `PICKLE_TICKET_ID` env fragment. All-or-nothing: a null
+ * `ticketId` or a `materializeTrailerHooks` failure yields `{}` (logged once, never throws).
+ * Composes with an inherited `GIT_CONFIG_COUNT` (from `opts.env`, defaulting to `process.env`) —
+ * appends at index `n = existing count`, never hardcodes index 0.
+ */
+function buildTrailerHooksEnvFragment(opts) {
+    if (!opts.ticketId)
+        return {};
+    const managedDir = path.join(opts.sessionDir, TRAILER_HOOKS_MANAGED_DIRNAME);
+    const result = materializeTrailerHooks({ repoRoot: opts.workingDir, managedDir });
+    if (!result.ok) {
+        warnTrailerHooksFailure(result.reason);
+        return {};
+    }
+    const inheritedEnv = opts.env ?? process.env;
+    const n = parseNonNegativeInt(inheritedEnv.GIT_CONFIG_COUNT) ?? 0;
+    return {
+        GIT_CONFIG_COUNT: String(n + 1),
+        [`GIT_CONFIG_KEY_${n}`]: 'core.hooksPath',
+        [`GIT_CONFIG_VALUE_${n}`]: result.managedDir,
+        PICKLE_TICKET_ID: opts.ticketId,
+    };
+}
+export function backendEnvOverrides(backend, trailerOpts) {
     const env = { PICKLE_BACKEND: backend };
-    return env;
+    if (!trailerOpts)
+        return env;
+    return { ...env, ...buildTrailerHooksEnvFragment(trailerOpts) };
 }
 // ---------------------------------------------------------------------------
 // R-CSI / W2.R1 — session-scoped process isolation (setpgid + stamp)
