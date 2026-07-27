@@ -183,3 +183,60 @@ this ran for five iterations, in front of an attentive operator, and looked like
 schema — not the salvage / completion-evidence / Done-flip path (`mux-runner.ts` salvage logic, `salvage-ticket.ts`,
 `reconcile-ticket-truth.ts`, `ticket-completion-evidence.ts`). The build worker runs the **deployed** runner, so a
 source edit here cannot perturb the run producing it. Drain via `/pickle-pipeline`.
+
+---
+
+## SECOND FIELD OCCURRENCE — 2026-07-27, session `2026-07-26-013335ff` (B-GITATTR)
+
+Filed 2026-07-13. **Recurred identically 14 days later**, unfixed, in the szechuan-sauce phase of the
+B-GITATTR pipeline. Same signature, independently observed before this PRD was consulted.
+
+| Iteration | Score | Classification | Work landed |
+|---|---|---|---|
+| baseline | 3 | — | — |
+| 2 | 8 | regressed | — |
+| 3 | 2 | improved | `9908c7b9` one rejection gate for all three completion-evidence accept arms |
+| 4 | 2 | **held** | `495177d1` the judge's dead-ledger alarm had no producer |
+| 5 | 2 | **held** | `e4542828` the live-ledger receipt had no producer |
+| 6 | 2 | **held** | `3f3fd5d4` the legacy-fallback notice had no producer |
+| 7 | 2 | **held** | `248c5fa9` one convergence verdict, read two ways |
+
+**Four real subtractions landed while the metric never moved.** The workers were working; the metric was
+blind — verbatim the 2026-07-13 conclusion.
+
+### Confirmed at source, this run
+
+- The judge's raw output is a **bare number**: `Metric: 2 (raw: 2)` on every iteration.
+- `JSON.parse("2")` **succeeds** and yields a number, so `parseLlmJudgeOutput`'s
+  `typeof parsed !== 'object'` branch returns `degradedJudgeResult('malformed')`.
+- The ledger update is guarded — `if (judgeResult.shape === 'full')` (`microverse-runner.ts:3543`) — so
+  with a malformed shape `updateViolationLedger` is **never reached** and `currentLedger`/`previousLedger`
+  stay `undefined`.
+- `compareMetric(…, undefined, undefined)` therefore takes the **pure-numeric** branch, and the R-SLLJ
+  set-ops fix is unreachable exactly as this PRD predicted.
+- **13 `judge_json_parse_failed` activity events on 2026-07-27** (vs 5 in the original occurrence).
+  Zero on every prior day this week.
+
+### What this occurrence adds beyond the original filing
+
+1. **The telemetry works; nobody reads it.** The `judge_json_parse_failed` events fired correctly all 13
+   times. But `degradedJudgeResult` writes to **stderr**, and the operator-visible
+   `microverse-runner.log` contains **zero** occurrences — it shows only `Classification: held`. The one
+   signal that says the ledger is dead does not appear in the log an operator actually reads. That is a
+   distinct, cheap fix: route the diagnostic through `ctx.log` as well as stderr.
+2. **The wiring is NOT the problem, and the stale trap door says it is.** `extension/CLAUDE.md`'s
+   ticket-98dc9bed entry claims "no production caller invokes them." That is **false at HEAD**:
+   `parseLlmJudgeOutput` (`:3540`), `updateViolationLedger` (`:3545`) and the 6-arg `compareMetric`
+   (`:3569`) are all wired. Anyone triaging from that trap door will chase a dead-code hypothesis and miss
+   the real contract mismatch — as happened here before the source was read. **The trap door needs
+   correcting as part of this fix.**
+3. **It degrades the LAST phase of every pipeline.** szechuan-sauce is phase 4/4, so this silently caps
+   deslop quality on every `/pickle-pipeline` run, and the phase can self-report `converged` against an
+   unmet target.
+
+### Escalation argument: P2 → P1
+
+Two live occurrences in 14 days, both silent, both on the terminal phase, both ending in a false
+stall/converge over unfinished work. It bites TARGET repos (any pipeline reaching szechuan), the fix is
+subtractive (make the prompt and parser agree on ONE contract — do not add a second parser), and the
+recurrence rate is now measured rather than hypothetical.
