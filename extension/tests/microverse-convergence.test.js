@@ -37,6 +37,7 @@ import {
     extractScore,
     emitJudgeParseDiagnostic,
     emitJudgeLedgerDiagnostic,
+    emitJudgeLegacyShapeDiagnostic,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
 
@@ -868,6 +869,138 @@ test('AC-JPCM-9: updateViolationLedger stays a pure mutator — it writes no act
             'advancing the ledger must not touch the activity log',
         );
     } finally {
+        if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = previousDataRoot;
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// R-SLLJ-6 — the LEGACY-FALLBACK notice, third and last of the trio.
+//
+// `judge_legacy_shape_inferred` is registered at all four touchpoints and its
+// only emission was a payload-less `process.stderr.write`, off the activity log
+// entirely — while the schema REQUIRES `gate_payload.{score, raw_keys}`.
+//
+// Where the parse alarm says the output was unreadable and the ledger receipt
+// says the ledger moved, this one says the output was READABLE but carried no
+// set-ops terms: the ledger holds at its prior contents and compareMetric falls
+// back to bare scores. Without it, that degradation is indistinguishable from a
+// genuine hold.
+//
+// The nullable-`score` decision is pinned below. It was deferred twice because
+// `score` is null on this path while the schema typed it `number`.
+// ---------------------------------------------------------------------------
+
+const LEGACY_SHAPE_JUDGE_OUTPUT = JSON.stringify({ score: 7.5, notes: 'looks fine' });
+
+function captureLegacyDiagnostics(rawOutput) {
+    const captured = [];
+    emitJudgeLegacyShapeDiagnostic(parseLlmJudgeOutput(rawOutput), (event) => captured.push(event));
+    return captured;
+}
+
+test('AC-JPCM-10: judge_legacy_shape_inferred is registered AND reachable from the schema top-level oneOf', () => {
+    assert.ok(
+        VALID_ACTIVITY_EVENTS.includes('judge_legacy_shape_inferred'),
+        'the event must be in VALID_ACTIVITY_EVENTS or the logger rejects it',
+    );
+    assert.ok(ACTIVITY_SCHEMA.definitions.judge_legacy_shape_inferred, 'the schema must define the event');
+    // A definition without a top-level $ref is inert — it validates nothing.
+    assert.ok(
+        ACTIVITY_SCHEMA.oneOf.some((entry) => entry.$ref === '#/definitions/judge_legacy_shape_inferred'),
+        'the definition must be referenced from the top-level oneOf',
+    );
+});
+
+test('AC-JPCM-10: a legacy-shape parse emits exactly one schema-conformant event carrying the raw keys', () => {
+    const captured = captureLegacyDiagnostics(LEGACY_SHAPE_JUDGE_OUTPUT);
+
+    assert.equal(captured.length, 1, 'a legacy-shape pass must produce the registered event');
+    const definition = ACTIVITY_SCHEMA.definitions.judge_legacy_shape_inferred;
+    for (const key of definition.required) {
+        assert.ok(key in captured[0], `emitted event is missing schema-required key '${key}'`);
+    }
+    for (const key of definition.properties.gate_payload.required) {
+        assert.ok(key in captured[0].gate_payload, `gate_payload is missing schema-required key '${key}'`);
+    }
+    assert.equal(captured[0].event, definition.properties.event.const);
+    assert.equal(captured[0].source, 'pickle');
+    // raw_keys is what makes the event diagnosable: it says WHICH shape arrived,
+    // so an operator can tell a renamed field from a judge that ignored the prompt.
+    assert.deepEqual(captured[0].gate_payload, { score: 7.5, raw_keys: ['score', 'notes'] });
+});
+
+test('AC-JPCM-10: a legacy parse with NO score still emits, and the schema admits the null', () => {
+    // The decision this pins. An object with neither structured fields nor a
+    // number is the most degraded legacy parse there is — the case where the
+    // notice matters MOST. Gating the emit on a non-null score would silence the
+    // alarm exactly there, rebuilding the silent-failure defect this trio closes;
+    // substituting 0 would make the one event that says "the judge fell back"
+    // report a score the judge never produced. So it reports what arrived.
+    const captured = captureLegacyDiagnostics(JSON.stringify({ verdict: 'looks good to me' }));
+
+    assert.equal(captured.length, 1, 'a scoreless legacy pass is the loudest case, not a silent one');
+    assert.deepEqual(captured[0].gate_payload, { score: null, raw_keys: ['verdict'] });
+    assert.deepEqual(
+        ACTIVITY_SCHEMA.definitions.judge_legacy_shape_inferred.properties.gate_payload.properties.score.type,
+        ['number', 'null'],
+        'the schema must admit the null the legacy path really produces, or the emit is unconformant',
+    );
+});
+
+test('AC-JPCM-10: the non-legacy shapes stay silent — the notice is not a per-iteration heartbeat', () => {
+    // A full-shape pass is the healthy path and a malformed one already has its
+    // own alarm. Emitting here too would make "the judge degraded" ambient, which
+    // is how the stderr-only version stayed invisible for months.
+    assert.equal(captureLegacyDiagnostics(FULL_SHAPE_JUDGE_OUTPUT).length, 0, 'a full-shape pass must not emit');
+    assert.equal(captureLegacyDiagnostics('not json at all').length, 0, 'a malformed parse has its own event');
+    assert.equal(
+        captureLegacyDiagnostics(JSON.stringify({ violations: 'not-an-array' })).length,
+        0,
+        'a partial parse has its own event',
+    );
+});
+
+test('AC-JPCM-10: the diagnostic is WIRED at the runtime seam, in source and in the shipped mirror', () => {
+    // The bug being fixed is a producer that does not exist. A test exercising
+    // `emitJudgeLegacyShapeDiagnostic` directly would stay green with no seam
+    // call — rebuilding the same defect one layer up. Anchor on the CALL, not the
+    // name: the one-argument signature in the compiled mirror sits above the seam
+    // and a looser anchor would pass on a deleted call.
+    const files = [
+        ['source', new URL('../src/bin/microverse-runner.ts', import.meta.url)],
+        ['compiled mirror', new URL('../bin/microverse-runner.js', import.meta.url)],
+    ];
+    for (const [label, fileUrl] of files) {
+        const body = fs.readFileSync(fileUrl, 'utf8');
+        const parseAt = body.indexOf('const judgeResult = parseLlmJudgeOutput(metricResult.raw)');
+        assert.ok(parseAt !== -1, `${label}: the runtime judge-parse seam must exist`);
+        const emitAt = body.indexOf('emitJudgeLegacyShapeDiagnostic(judgeResult)');
+        assert.ok(
+            emitAt > parseAt,
+            `${label}: the parse must emit judge_legacy_shape_inferred AFTER it parses — an unwired producer is the bug`,
+        );
+    }
+});
+
+test('AC-JPCM-10: parseLlmJudgeOutput stays a pure query on the legacy path too', () => {
+    // Same regression guard as both siblings: "simplifying" by moving the emit
+    // into the parser would append fabricated legacy notices to the operator's
+    // real activity log on every test run that parses a score-only fixture.
+    const dataRoot = makeTmpDir();
+    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    const originalWrite = process.stderr.write;
+    process.stderr.write = () => true;
+    try {
+        parseLlmJudgeOutput(LEGACY_SHAPE_JUDGE_OUTPUT);
+        const wrote = fs
+            .readdirSync(dataRoot, { recursive: true, withFileTypes: true })
+            .some((entry) => entry.isFile() && entry.name.endsWith('.jsonl'));
+        assert.equal(wrote, false, 'parsing must not touch the activity log');
+    } finally {
+        process.stderr.write = originalWrite;
         if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
         else process.env.PICKLE_DATA_ROOT = previousDataRoot;
         fs.rmSync(dataRoot, { recursive: true, force: true });

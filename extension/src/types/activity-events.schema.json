@@ -870,7 +870,7 @@
           "type": "object",
           "required": ["score", "raw_keys"],
           "properties": {
-            "score": { "type": "number" },
+            "score": { "type": ["number", "null"] },
             "raw_keys": { "type": "array", "items": { "type": "string" } }
           }
         }

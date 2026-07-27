@@ -1853,6 +1853,39 @@ export function emitJudgeLedgerDiagnostic(
 }
 
 /**
+ * Emit the registered `judge_legacy_shape_inferred` activity event when the judge
+ * returned valid JSON without the structured fields.
+ *
+ * Third of the trio, and the same parser-reports/seam-records split as its two siblings.
+ * Where `judge_json_parse_failed` says the output was unreadable and
+ * `judge_violation_ledger_advanced` says the ledger moved, this one says the output was
+ * readable but carried no set-ops terms — so the ledger silently holds at its prior
+ * contents and `compareMetric` falls back to comparing bare scores.
+ *
+ * `score` is nullable here and the schema admits null deliberately. This event matters
+ * MOST when the judge returned an object with neither structured fields nor a number:
+ * gating the emit on a non-null score would silence the alarm in exactly the worst case,
+ * and substituting `0` would make the one event that says "the judge fell back" report a
+ * score the judge never produced. It reports what arrived, including nothing.
+ * No-op for any non-legacy shape.
+ */
+export function emitJudgeLegacyShapeDiagnostic(
+  judgeResult: JudgeResult,
+  writeActivity: typeof logActivity = logActivity,
+): void {
+  if (judgeResult.legacy_raw_keys === undefined) return;
+  writeActivity({
+    event: 'judge_legacy_shape_inferred',
+    source: 'pickle',
+    ts: new Date().toISOString(),
+    gate_payload: {
+      score: judgeResult.score,
+      raw_keys: judgeResult.legacy_raw_keys,
+    },
+  });
+}
+
+/**
  * Parse structured JSON from LLM judge output. Never throws.
  * Returns JudgeResult with shape discriminator: 'full' | 'legacy' | 'malformed' | 'partial'.
  * A degraded parse carries `parse_error_message`; `emitJudgeParseDiagnostic` turns that
@@ -1882,7 +1915,7 @@ export function parseLlmJudgeOutput(rawOutput: string): JudgeResult {
   // Legacy: valid JSON but missing structured fields
   if (!('violations' in obj) || !('resolved' in obj) || !('new' in obj) || !('remaining' in obj)) {
     process.stderr.write(`[microverse] judge_legacy_shape_inferred\n`);
-    return emptyJudgeResult('legacy', score);
+    return { ...emptyJudgeResult('legacy', score), legacy_raw_keys: Object.keys(obj) };
   }
 
   const toStringArray = (arr: unknown): string[] =>
@@ -3506,6 +3539,7 @@ export async function measureAndClassifyIteration(
     metricResult = llmOutcome.metric;
     const judgeResult = parseLlmJudgeOutput(metricResult.raw);
     emitJudgeParseDiagnostic(judgeResult, metricResult.raw);
+    emitJudgeLegacyShapeDiagnostic(judgeResult);
     if (judgeResult.shape === 'full') {
       previousLedger = { resolved: [], new: [], remaining: state.violation_ledger?.map((entry) => entry.id) ?? [] };
       updateViolationLedger(state, judgeResult, ctx.iteration);

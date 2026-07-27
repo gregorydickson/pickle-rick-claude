@@ -1399,6 +1399,13 @@ export interface JudgeResult {
    * re-parsing; the parser itself stays free of activity-log I/O.
    */
   parse_error_message?: string;
+  /**
+   * Keys of the raw judge object, set on 'legacy' only. Carried out of the parser
+   * for the same reason as `parse_error_message`: the runtime caller emits
+   * `judge_legacy_shape_inferred` without re-parsing the raw output, and the parser
+   * stays free of activity-log I/O.
+   */
+  legacy_raw_keys?: string[];
 }
 
 export interface MicroverseSessionState {
