@@ -86,10 +86,25 @@ Do NOT force-apply, and do NOT hand-edit the compiled `.js` independently of the
 
 ## §4 Scope — the whole reason this bundle exists
 
-`scope.json` `allowed_paths` **MUST** include all three files above. The prior session had 313 allowed
-paths and `extension/tests/spawn-morty-commit-attribution.test.js` was **not** among them, which is what
-blocked the fix. Launch with `--scope branch` so the full branch diff is in scope; verify the test file is
-present before the first ticket runs.
+`scope.json` `allowed_paths` **MUST** include the files below. The prior session had 313 allowed paths and
+`extension/tests/spawn-morty-commit-attribution.test.js` was **not** among them, which is what blocked the
+fix.
+
+**Use an EXPLICIT allowlist, not `--scope branch`** *(refinement P0-3 — my original plan was `--scope
+branch`; an explicit list is tighter and makes the one file that matters impossible to omit silently)*:
+
+```
+extension/src/bin/spawn-morty.ts
+extension/bin/spawn-morty.js
+extension/tests/spawn-morty-commit-attribution.test.js
+extension/src/bin/CLAUDE.md
+# conditional PAIR — add BOTH or NEITHER, only if serialization proves necessary:
+#   extension/tests/integration/.serial-tests.json
+#   extension/tests/integration/.serial-tests.reasons.json
+```
+
+**Verify the test file is present in `scope.json` BEFORE the first ticket runs** — that check is the entire
+reason this bundle exists.
 
 ## §5 Acceptance criteria
 
@@ -108,9 +123,25 @@ present before the first ticket runs.
 - **AC-LAND-6** Compiled mirror matches source — Verify: `cd extension && npx tsc && git diff --exit-code extension/bin/spawn-morty.js` — Type: test
 - **AC-LAND-7** Full fast tier green — Verify: `cd extension && npm run test:fast` — Type: test
 - **AC-LAND-8** Type + lint clean — Verify: `cd extension && npx tsc --noEmit && npx eslint src/ --max-warnings=-1` — Type: test
-- **AC-LAND-9** **Field evidence, not just unit green:** after `bash install.sh`, make a commit whose
-  subject mentions a ticket id in prose only, and show it acquires a parsed trailer. Quote the real SHA and
-  the `%(trailers:...)` output — Type: llm-conformance
+- **AC-LAND-10** A commit already carrying a `Pickle-Ticket` trailer naming a **different** ticket id ends
+  with exactly **one** parsed `Pickle-Ticket` value, and `scanGitLogByTrailer` resolves it. Assert through
+  `%(trailers:key=Pickle-Ticket,valueonly)` returning a **single line** — never `%B` — Verify:
+  `cd extension && node bin/test-runner.js tests/spawn-morty-commit-attribution.test.js` — Type: test
+
+  *Added by refinement (R5): the fix as written **regresses the different-id case**. Do not land without
+  this AC.*
+
+- **AC-LAND-9** `[manager]` **Field evidence that isolates the path under test.** Make a commit whose
+  subject mentions a ticket id in prose only, **with `PICKLE_TICKET_ID` unset / the `GIT_CONFIG_*`
+  fragment removed**, and show the **amend path** adds the parsed trailer. Quote the real SHA and the
+  `%(trailers:…)` output — Type: llm-conformance
+
+  ⚠️ **REWRITTEN by refinement (R4) — the original was TAUTOLOGICAL and I would have shipped it.** It read
+  *"after `bash install.sh`, make a commit … and show it acquires a parsed trailer."* Post-deploy the
+  **hook** stamps at `prepare-commit-msg`, *before* `reconcileWorkerCommitAttribution` runs, and a
+  correctly-fixed guard then **skips** by idempotence. So the original AC **goes green whether this fix is
+  correct, wrong, or absent** — it measures the hook, not the amend path it claims to verify. The probe
+  must suppress the hook to isolate the fallback arm, and it is `[manager]`-owned because the deploy is.
 
 ## §6 Simplification Review
 
@@ -127,25 +158,77 @@ present before the first ticket runs.
 
 ## §7 Risks
 
-**R1 — R-PSRB-shaped catch-22, mitigated but real.** This edits the completion-attribution path, and the
-**deployed** runtime carries the buggy producer (ticket 60 ran `install.sh`). So the worker building this
-fix is subject to the very defect it is fixing: its own commits will mention the ticket id in prose, not
-get stamped, and could hit `done_without_commit_evidence`.
+**R1 — the deploy is MANAGER-OWNED, between-tickets, and is a THREE-change hot-swap.** *(rewritten by
+refinement — the original under-stated this as a mitigated catch-22.)*
 
-*Mitigation, in order:* the explicit `completion_commit` field path (R-RIC-EXPLICIT) is unaffected and
-covered 8/10 tickets in the prior run, so completion remains reachable. If the worker does wedge, the
-recovery is the standard one — verify ground truth, commit the verified work, clear `exit_reason` via
-`setup.js --resume`, relaunch. Consider `bash install.sh` immediately after the fix ticket lands so any
-later ticket runs on the fixed runtime.
+`bash install.sh` is a **Worker Forbidden Op with no override flag** — a worker must never run it, and an
+unattended run therefore **cannot self-heal onto the fixed runtime**. Worse, the deployed tree
+(`~/.claude/pickle-rick/extension`, mtime 2026-07-26 13:43) **predates the entire trailer-hook channel**:
+`services/git-trailer-hooks.js` is **absent** and `services/backend-spawn.js` has **0**
+`materializeTrailerHooks` / `PICKLE_TICKET_ID` references.
 
-**R2 — patch staleness.** Cut ~15 commits ago; may not apply cleanly. Re-derive rather than force.
+So a single `install.sh` lands three things at once:
+1. this amend fix,
+2. `a7d6d9ec`'s `--git-common-dir` widening, and
+3. the **first-ever** deployment of a `prepare-commit-msg` hook that rewrites the message of **every**
+   subsequent worker commit.
 
-**R3 — a third caller.** `reconcileWorkerCommitAttribution` is one producer; if another site stamps
-trailers, it needs the same oracle. Grep for `Pickle-Ticket` writers before declaring done — the lesson
-from R-NSG-AJBE and R-MVPARK in this same bundle is that a fix landing on *the callers we enumerated* is
-how these survive.
+**Deploy only BETWEEN tickets, never mid-ticket**, and record the pre-deploy state first.
+**Rollback:** if post-deploy worker commits show absent, empty, or multi-valued `Pickle-Ticket` trailers,
+**halt the run and re-deploy the prior tree** rather than letting the pipeline continue on an unvalidated
+commit path.
+
+*Catch-22 residual (unchanged, and now better understood):* the explicit `completion_commit` path is
+unaffected, so completion stays reachable. But see the **honesty clause** below — a Done-flip proves the
+worker completed, not that the trailer channel works.
+
+**R2 — patch staleness. ✅ CHECKED at HEAD `a7d6d9ec`:** `git apply --check` exits **0** — it still applies
+despite ~20 intervening commits. Re-verify before applying rather than trusting this line; do not force.
+
+**R3 — a third writer. ✅ RESOLVED WITH EVIDENCE by refinement.** Exactly **two** producers exist:
+`spawn-morty.ts` (this fix) and `git-trailer-hooks.ts` (`prepare-commit-msg`, **already on the parsed
+oracle** — it was correct all along). No third writer in `extension/src/`. **Why the correct hook did not
+stamp `316a84e0…cea3c316`: it had never been deployed** — deployed `backend-spawn.js` (mtime 2026-07-26
+13:43) carries 0 hook references, and the 7 commits were authored 21:49–22:15 the same day. §2's
+single-root-cause attribution therefore stands, with this nuance: the hook is the primary producer and is
+already correct; this fix corrects the **fallback amend arm**.
+
+**R5 — the fix regresses the different-id case.** Pinned by **AC-LAND-10**. Do not land without it.
+
+**R6 — `git interpret-trailers` dependency.** Core git (local 2.53.0);
+`--if-exists addIfDifferentNeighbor` is long established. Low risk and a fallback is retained — but **the
+fallback arm is untested (P1)**; cover it or state explicitly that it is not.
+
+**Honesty clause (carry into the closing report).** The explicit `completion_commit` path is unaffected, so
+a Done-flip in this bundle proves the **worker completed** — it does **not** prove the trailer channel
+works. Only AC-LAND-9's isolated probe does that.
 
 ## §8 Green-tree precondition
 
 Fast tier must be green on the launch commit, and the B-GITATTR pipeline must have **fully exited** — do
 not launch this while that session still holds the branch.
+
+---
+
+## §9 Refinement Record *(3 cycles × 3 analysts, session `2026-07-27-5b2cefc5`, `all_success`)*
+
+`ac_shape_smells: 0` — the AC-shape lesson from B-GITATTR's AC-GA-8 held. But the analysts found four
+substantive defects, all folded into §4/§5/§7 above rather than appended:
+
+1. **AC-LAND-9 was TAUTOLOGICAL** (R4). It would have gone green whether the fix was correct, wrong, or
+   absent, because post-deploy the *hook* stamps before the amend path ever runs. Rewritten to suppress
+   the hook and isolate the arm under test. **This is the second consecutive PRD where refinement caught a
+   defective AC of mine** — AC-GA-8's drifting enumeration, now AC-LAND-9's wrong measurement target.
+2. **R5 — the fix regresses the different-id case.** New AC-LAND-10 pins it.
+3. **R1 badly under-stated.** `install.sh` is a Worker Forbidden Op with no override, the deployed tree
+   predates the whole hook channel, and one deploy is a **three-change hot-swap** including the
+   first-ever `prepare-commit-msg` that rewrites every subsequent worker commit. Now manager-owned,
+   between-tickets, with an explicit rollback.
+4. **R3 resolved with evidence, not a grep instruction.** Exactly two producers; the hook was already
+   correct and simply **never deployed** — which explains the 7 trailer-less commits without weakening §2.
+
+**Also adopted:** `complexity_tier: medium`, never `small` — `small` skips `test:fast` in the worker gate,
+which would disarm the gate on the one bundle that must not ship unverified.
+
+**Honesty clause** (from the risk analyst, carried into §7): a Done-flip here proves the worker completed,
+not that the trailer channel works.
