@@ -379,6 +379,123 @@ test('verify-bundle.cli-entrypoint still fires when reached through a symlinked 
   }
 });
 
+// Every rejection arm below is load-bearing: with the arm deleted, the malformed artifact
+// paired with it reports `bundle PASS` / exit 0 instead of FAIL. Only `missing required field`
+// and the `checked_at` arm carried fixtures, so the rest shipped unpinned — deleting one kept
+// the suite green while the release-evidence gate silently stopped rejecting that class.
+// `pass must be a boolean` and `ac_id must equal` are the two that forge a verdict: a
+// `pass:'false'` artifact and an artifact copy-pasted from another AC both read green without
+// them. The `artifact` argument is built per-case because several arms need a non-object.
+const REJECTION_ARMS = Object.freeze([
+  { arm: 'artifact must be an object', acId: 'AC-DR-01', payload: () => [] },
+  { arm: 'ac_id must be a string', acId: 'AC-DR-01', payload: (acId) => artifact(acId, { ac_id: 7 }) },
+  {
+    arm: 'pass must be a boolean',
+    acId: 'AC-DR-08',
+    payload: (acId) => artifact(acId, { pass: 'false', failure_reason: 'boom' }),
+  },
+  { arm: 'checker must be a string', acId: 'AC-DR-09', payload: (acId) => artifact(acId, { checker: 42 }) },
+  {
+    arm: 'checker_version must be a string',
+    acId: 'AC-DR-10',
+    payload: (acId) => artifact(acId, { checker_version: 3 }),
+  },
+  { arm: 'evidence must be an object', acId: 'AC-DR-11', payload: (acId) => artifact(acId, { evidence: [] }) },
+  {
+    arm: 'failure_reason must be a string or null',
+    acId: 'AC-DR-12',
+    payload: (acId) => artifact(acId, { failure_reason: 42 }),
+  },
+  {
+    arm: 'remediation_hint must be a string or null',
+    acId: 'AC-DR-13',
+    payload: (acId) => artifact(acId, { remediation_hint: {} }),
+  },
+  // Identity check in verifyBundle, not validateBundleArtifact: one AC's evidence copied into
+  // another AC's slot. Without this arm the forged file satisfies the AC it was never checked for.
+  { arm: 'ac_id must equal AC-DR-14', acId: 'AC-DR-14', payload: () => artifact('AC-DR-08') },
+]);
+
+test('verify-bundle.rejection-arms each reject their own malformed artifact', () => {
+  for (const { arm, acId, payload } of REJECTION_ARMS) {
+    const fixture = makeFixture(({ bundleDir }) => {
+      writeFileSync(
+        path.join(bundleDir, acFileName(acId)),
+        `${JSON.stringify(payload(acId), null, 2)}\n`,
+      );
+    });
+    try {
+      const result = verifyBundle({ repoRoot: fixture, ac: acId });
+      assert.equal(
+        result.exitCode,
+        1,
+        `${arm}: expected exit 1, got ${result.exitCode} — ${result.stdout.trim()}`,
+      );
+      assert.ok(
+        result.stderr.includes(arm),
+        `${arm}: arm not named in stderr — ${result.stderr.trim()}`,
+      );
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+});
+
+// The in-process cases above prove each arm fires; this proves the arm that matters most
+// survives all the way to the process exit code the release gate actually reads. `pass:'false'`
+// is caught ONLY by the type arm — `artifact.pass === false` is strict, so a string never
+// trips the pass-false branch.
+test('verify-bundle.non-boolean pass cannot false-green the CLI gate', () => {
+  const fixture = makeFixture(({ bundleDir }) => {
+    writeFileSync(
+      path.join(bundleDir, acFileName('AC-DR-08')),
+      `${JSON.stringify(artifact('AC-DR-08', { pass: 'false', failure_reason: 'boom' }), null, 2)}\n`,
+    );
+  });
+  try {
+    const result = runVerifier(fixture);
+    assert.equal(result.status, 1, `expected FAIL, got exit=${result.status} stdout=${result.stdout}`);
+    assert.match(result.stdout, /bundle FAIL/);
+    assert.match(result.stderr, /pass must be a boolean/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+// Forward-protection: the arms above are a hand-written list, and a hand-written list is
+// exactly what let eight arms ship unpinned. This derives the arm set from the verifier's own
+// source, so a NEW rejection arm added without a fixture reddens here instead of shipping
+// silently. It pins the message literal only — the behavioral cases above are the real guard.
+function rejectionArmLiteralsFromSource() {
+  const source = readFileSync(path.join(REPO_ROOT, 'bin', 'verify-bundle.js'), 'utf8');
+  const literals = [];
+  for (const re of [/errors\.push\(\s*(`[^`]*`|'[^']*')\s*\)/g, /return \[\s*(`[^`]*`|'[^']*')\s*\]/g]) {
+    for (const match of source.matchAll(re)) {
+      // Reduce `a ${x} b` to its longest static run so interpolated arms stay greppable.
+      const longestStatic = match[1]
+        .slice(1, -1)
+        .split(/\$\{[^}]*\}/)
+        .reduce((best, part) => (part.length > best.length ? part : best), '');
+      if (longestStatic.trim().length > 0) literals.push(longestStatic);
+    }
+  }
+  return literals;
+}
+
+test('verify-bundle.every rejection arm in the verifier source has a fixture here', () => {
+  const literals = rejectionArmLiteralsFromSource();
+  // Guards the extractor: a source-shape change must not silently empty the set.
+  assert.ok(literals.length >= 10, `extracted only ${literals.length} rejection arms from the verifier`);
+
+  const testSource = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+  for (const literal of literals) {
+    assert.ok(
+      testSource.includes(literal),
+      `rejection arm ${JSON.stringify(literal)} has no fixture in this file — a deletion of that arm would keep the suite green while the gate stops rejecting that artifact class`,
+    );
+  }
+});
+
 test('verify-bundle.exported-api defaults to repo root instead of caller cwd', () => {
   const originalCwd = process.cwd();
   try {
