@@ -182,6 +182,28 @@ function isBaselineSha(sha: string, ctx: Pick<EvidenceCtx, 'startCommit' | 'pinn
 }
 
 /**
+ * R-CXOR-2: the ONE baseline-rejection gate. EVERY arm of `readEvidence` that is
+ * about to accept a SHA routes through it, so an accept arm cannot silently skip
+ * the check — which is exactly what the inferred arm did (AP-EXT-ITER16-01): it
+ * gated on `commitExists` alone, and a baseline SHA is reachable by definition,
+ * so an announced baseline classified `committed` and the predicate's
+ * promote-once then persisted it into the explicit `completion_commit` field.
+ *
+ * Owns the rejection decision AND its operator warn. Callers own only the
+ * `absentReason` their arm reports: `baseline_sha` for the stamped-field arms
+ * (explicit / inferred), and the scan arm's deliberate `no_evidence` downgrade
+ * (a scan miss is best-effort, not a positive finding — see the WS-2
+ * arm-agreement cases in tests/nostop-gates-arm-agreement.test.js).
+ */
+function rejectsAsBaseline(sha: string, ctx: Pick<EvidenceCtx, 'startCommit' | 'pinnedSha'>): boolean {
+  if (!isBaselineSha(sha, ctx)) return false;
+  process.stderr.write(
+    `[ticket-completion-evidence] baseline sha ${sha} rejected as completion evidence — ticket did no work beyond session start\n`,
+  );
+  return true;
+}
+
+/**
  * Probes whether an explicit SHA is git-reachable, falling back to fallbackDir on
  * 'git-could-not-run'. Returns the EvidenceResult on success, or null when the
  * SHA is not reachable (caller maps null → absent).
@@ -368,6 +390,39 @@ function scanGitLog(args: {
 // ---------------------------------------------------------------------------
 
 /**
+ * The stamped `completion_commit_inferred` arm, extracted so `readEvidence`
+ * stays under the eslint complexity ceiling (W5b: absorb a variant by
+ * re-shaping, never by incrementing the caller's branch count).
+ *
+ * Applies the SAME rejection gate as its explicit sibling (R-CXOR-2,
+ * AP-EXT-ITER16-01): a baseline SHA is git-reachable BY CONSTRUCTION, so
+ * `commitExists` alone can never catch one. `inferred` is a stamped field like
+ * `completion_commit`, so it reports the hard `baseline_sha` reason.
+ *
+ * Returns null ONLY when the field is absent — that is the caller's signal to
+ * fall through to the git-log scan arm. A present-but-unusable field
+ * short-circuits via `absent()` (the scan would fail for the same reason).
+ */
+function readInferredArm(
+  ctx: EvidenceCtx,
+  content: string,
+  absent: () => EvidenceResult,
+): EvidenceResult | null {
+  const inferredField = normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit_inferred'));
+  if (!inferredField) return null;
+  if (rejectsAsBaseline(inferredField, ctx)) {
+    return { kind: 'absent', absentReason: 'baseline_sha' };
+  }
+  if (commitExists(ctx.workingDir, inferredField)) {
+    return { kind: 'committed', sha: inferredField, via: 'inferred' };
+  }
+  // R-AFCC-STAGE: field present but git can't verify (non-repo workingDir or a
+  // dropped commit). A stored-but-unverifiable SHA is not evidence the gate can
+  // act on → absent.
+  return absent();
+}
+
+/**
  * Reads completion evidence for a ticket and returns a 2-state EvidenceKind
  * (B-DURA T70):
  *   - committed: explicit completion_commit (git-reachable), git-verified
@@ -392,10 +447,7 @@ export function readEvidence(ctx: EvidenceCtx): EvidenceResult {
   if (explicit) {
     // R-CXOR-2: reject baseline SHAs — a ticket whose only "commit" is the session
     // start_commit or pinned_sha did no real work; treat it as absent evidence.
-    if (isBaselineSha(explicit, ctx)) {
-      process.stderr.write(
-        `[ticket-completion-evidence] baseline sha ${explicit} rejected as completion evidence — ticket did no work beyond session start\n`,
-      );
+    if (rejectsAsBaseline(explicit, ctx)) {
       return { kind: 'absent', absentReason: 'baseline_sha' };
     }
     const r = probeExplicitSha(explicit, ctx.workingDir, ctx.fallbackDir);
@@ -424,16 +476,8 @@ export function readEvidence(ctx: EvidenceCtx): EvidenceResult {
   });
 
   // --- Inferred field (completion_commit_inferred) ---
-  const inferredField = normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit_inferred'));
-  if (inferredField) {
-    if (commitExists(ctx.workingDir, inferredField)) {
-      return { kind: 'committed', sha: inferredField, via: 'inferred' };
-    }
-    // R-AFCC-STAGE: field present but git can't verify (non-repo workingDir or a
-    // dropped commit). A stored-but-unverifiable SHA is not evidence the gate can
-    // act on → absent. Short-circuit (the scan would fail for the same reason).
-    return absent();
-  }
+  const inferred = readInferredArm(ctx, content, absent);
+  if (inferred) return inferred;
 
   // --- Git log scan (WS-2 Pickle-Ticket trailer) ---
   const selfId = readFrontmatterField(content, 'id') ?? ctx.ticketId ?? null;
@@ -443,7 +487,9 @@ export function readEvidence(ctx: EvidenceCtx): EvidenceResult {
     startTimeEpoch: ctx.startTimeEpoch,
   });
   if (scan) {
-    if (isBaselineSha(scan.sha, ctx) || isForeignAttributedExplicitSha(scan.sha, ctx, content)) {
+    // Scan-arm rejections stay a best-effort miss (`no_evidence`), never the
+    // hard stamped-field reason — see rejectsAsBaseline's docstring.
+    if (rejectsAsBaseline(scan.sha, ctx) || isForeignAttributedExplicitSha(scan.sha, ctx, content)) {
       return absent();
     }
     return { kind: 'committed', sha: scan.sha, via: 'scan' };

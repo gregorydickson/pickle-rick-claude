@@ -68,7 +68,12 @@ function commitFileWithTrailer(dir, rel, message, ticketId) {
   return head(dir);
 }
 
-function writeTicket(sessionDir, ticketId, { completionCommit, declaredFiles = [], title = `Test ${ticketId}` } = {}) {
+function writeTicket(sessionDir, ticketId, {
+  completionCommit,
+  completionCommitInferred,
+  declaredFiles = [],
+  title = `Test ${ticketId}`,
+} = {}) {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
   const lines = [
@@ -77,6 +82,7 @@ function writeTicket(sessionDir, ticketId, { completionCommit, declaredFiles = [
     `title: "${title}"`,
     'status: "Done"',
     ...(completionCommit ? [`completion_commit: "${completionCommit}"`] : []),
+    ...(completionCommitInferred ? [`completion_commit_inferred: "${completionCommitInferred}"`] : []),
     '---',
     '# Body',
     ...(declaredFiles.length > 0
@@ -389,6 +395,102 @@ test('adapter: gateForPhantomDoneRevert still reverts when no usable evidence ex
     const decision = gateForPhantomDoneRevert({ sessionDir, ticketId: 'fafa2222', workingDir: root });
     assert.equal(decision.action, 'revert');
     assert.equal(decision.kind, 'absent');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER16-01 — the R-CXOR-2 baseline rejection reaches the INFERRED arm.
+//
+// `isBaselineSha` was wired into only 2 of readEvidence's 3 accept arms
+// (explicit, scan). The inferred arm gated on `commitExists` alone — and a
+// baseline SHA is git-reachable by construction, so an announced baseline
+// classified `committed`. The Done-flip was then saved only by accident: the
+// predicate's promote-once wrote the SHA into the explicit field and the
+// RE-PROBE's explicit arm rejected it. By then the damage was durable — a
+// baseline `completion_commit:` stamp on a ticket that did no work, which
+// `mux-runner.resolveAttributableFrontmatterSha` (R-RASO silent-death
+// respawn suppression) and `hasPresentCompletionCommitField` (B-RRH
+// signal_committed) both read with NO baseline awareness.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER16-01: a BASELINE sha in completion_commit_inferred is absent, not committed', () => {
+  const root = mkTmp('pickle-iter16-inferred-base-');
+  try {
+    initGitRepo(root);
+    const baseline = head(root);
+    // Session moves on; the baseline stays reachable — which is precisely why
+    // `commitExists` can never catch this on its own.
+    commitFile(root, 'later.txt', 'chore: unrelated later work');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'infb0001', { completionCommitInferred: baseline });
+
+    const ev = readEvidence({
+      sessionDir, ticketId: 'infb0001', workingDir: root, startCommit: baseline,
+    });
+    assert.equal(ev.kind, 'absent', 'a baseline sha must never be accepted via the inferred arm (R-CXOR-2)');
+    assert.equal(ev.absentReason, 'baseline_sha', 'inferred is a STAMPED field — it reports the hard reason, like explicit');
+    assert.equal(ev.sha, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER16-01: the predicate never PERSISTS a baseline sha into completion_commit', () => {
+  const root = mkTmp('pickle-iter16-nopersist-');
+  try {
+    initGitRepo(root);
+    const baseline = head(root);
+    commitFile(root, 'later.txt', 'chore: unrelated later work');
+
+    const sessionDir = path.join(root, 'session');
+    const fp = writeTicket(sessionDir, 'infb0002', { completionCommitInferred: baseline });
+
+    const decision = evaluateCompletionEvidence({
+      sessionDir,
+      ticketId: 'infb0002',
+      workingDir: root,
+      startCommit: baseline,
+      pinnedSha: null,
+      decision: 'done-flip',
+      rereadBackoffMs: 0,
+      workerGateVerdict: () => ({ verdict: 'green', computedVia: 'worker_gate' }),
+    });
+
+    assert.equal(decision.ok, false, 'a baseline-only ticket must not pass the Done-flip gate');
+    assert.equal(decision.reason, 'baseline_sha');
+
+    // The OUTCOME that matters: no false stamp reaches disk. Pre-fix the
+    // promote-once wrote `completion_commit: "<baseline>"` here before the
+    // re-probe caught it, leaving durable evidence the R-RASO detector trusts.
+    const after = readTicket(fp);
+    assert.ok(
+      !/^completion_commit:/m.test(after),
+      `predicate must not persist a baseline sha as completion evidence; got:\n${after}`,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER16-01 control: a NON-baseline inferred sha is still accepted via the inferred arm', () => {
+  const root = mkTmp('pickle-iter16-control-');
+  try {
+    initGitRepo(root);
+    const baseline = head(root);
+    const realSha = commitFile(root, 'real.txt', 'feat: genuine worker output');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'infb0003', { completionCommitInferred: realSha });
+
+    const ev = readEvidence({
+      sessionDir, ticketId: 'infb0003', workingDir: root, startCommit: baseline,
+    });
+    assert.equal(ev.kind, 'committed', 'the fix must not blind the inferred arm to real work');
+    assert.equal(ev.via, 'inferred');
+    assert.equal(ev.sha, realSha);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
