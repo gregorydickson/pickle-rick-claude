@@ -495,3 +495,83 @@ test('AP-EXT-ITER16-01 control: a NON-baseline inferred sha is still accepted vi
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER16-02 — the R-OMA foreign-attribution rejection reaches the
+// INFERRED arm.
+//
+// Sibling of AP-EXT-ITER16-01, same shape one rule over: the foreign-attribution
+// gate was wired into 2 of readEvidence's 3 accept arms (explicit, scan) and the
+// inferred arm skipped it, so ONE sha got THREE verdicts depending on which field
+// carried it. `commitExists` cannot catch this either — a foreign-attributed sha
+// is a real, reachable commit, just someone else's. The damage is the same
+// durable false stamp AP-EXT-ITER16-01 describes: promote-once writes the
+// borrowed sha into `completion_commit:`, which `resolveAttributableFrontmatterSha`
+// (R-RASO) and `hasPresentCompletionCommitField` (B-RRH) both read with no
+// attribution awareness.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER16-02: a SIBLING-attributed sha in completion_commit_inferred is absent, not committed', () => {
+  const root = mkTmp('pickle-iter16-inferred-foreign-');
+  try {
+    initGitRepo(root);
+    // Positively attributed to the sibling ticket, and NOT to the reader's own id.
+    const siblingSha = commitFile(root, 'sib.txt', 'feat(fgsib002): sibling ticket work');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'fgsib002', {});
+    writeTicket(sessionDir, 'infb0004', { completionCommitInferred: siblingSha });
+
+    const ev = readEvidence({ sessionDir, ticketId: 'infb0004', workingDir: root });
+    assert.equal(ev.kind, 'absent', 'a sibling-attributed sha must never be accepted via the inferred arm (R-OMA)');
+    assert.equal(ev.absentReason, 'foreign_attribution', 'inferred is a STAMPED field — it reports the hard reason, like explicit');
+    assert.equal(ev.sha, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER16-02: the explicit and inferred arms agree on one foreign sha', () => {
+  const root = mkTmp('pickle-iter16-arm-agreement-');
+  try {
+    initGitRepo(root);
+    const siblingSha = commitFile(root, 'sib.txt', 'feat(fgsib003): sibling ticket work');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'fgsib003', {});
+    writeTicket(sessionDir, 'expl0001', { completionCommit: siblingSha });
+    writeTicket(sessionDir, 'infr0001', { completionCommitInferred: siblingSha });
+
+    const viaExplicit = readEvidence({ sessionDir, ticketId: 'expl0001', workingDir: root });
+    const viaInferred = readEvidence({ sessionDir, ticketId: 'infr0001', workingDir: root });
+
+    // The point of the shared gate: one sha, one verdict, whichever field carries it.
+    assert.deepEqual(
+      { kind: viaInferred.kind, absentReason: viaInferred.absentReason },
+      { kind: viaExplicit.kind, absentReason: viaExplicit.absentReason },
+      'the inferred arm must reach the same verdict as its explicit sibling for the same sha',
+    );
+    assert.equal(viaExplicit.kind, 'absent');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER16-02 control: an OWN-attributed inferred sha is still accepted', () => {
+  const root = mkTmp('pickle-iter16-foreign-control-');
+  try {
+    initGitRepo(root);
+    const ownSha = commitFile(root, 'own.txt', 'feat(infb0005): this ticket\'s own work');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'fgsib004', {});
+    writeTicket(sessionDir, 'infb0005', { completionCommitInferred: ownSha });
+
+    const ev = readEvidence({ sessionDir, ticketId: 'infb0005', workingDir: root });
+    assert.equal(ev.kind, 'committed', 'own-attribution wins — the fix must not blind the inferred arm to real work');
+    assert.equal(ev.via, 'inferred');
+    assert.equal(ev.sha, ownSha);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

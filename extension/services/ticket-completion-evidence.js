@@ -65,18 +65,13 @@ function isBaselineSha(sha, ctx) {
         (ctx.pinnedSha != null && sha === ctx.pinnedSha);
 }
 /**
- * R-CXOR-2: the ONE baseline-rejection gate. EVERY arm of `readEvidence` that is
- * about to accept a SHA routes through it, so an accept arm cannot silently skip
- * the check — which is exactly what the inferred arm did (AP-EXT-ITER16-01): it
- * gated on `commitExists` alone, and a baseline SHA is reachable by definition,
- * so an announced baseline classified `committed` and the predicate's
- * promote-once then persisted it into the explicit `completion_commit` field.
- *
- * Owns the rejection decision AND its operator warn. Callers own only the
- * `absentReason` their arm reports: `baseline_sha` for the stamped-field arms
- * (explicit / inferred), and the scan arm's deliberate `no_evidence` downgrade
- * (a scan miss is best-effort, not a positive finding — see the WS-2
- * arm-agreement cases in tests/nostop-gates-arm-agreement.test.js).
+ * R-CXOR-2 baseline rejection: owns the decision AND its operator warn. Reached
+ * only through `rejectsAccept`, the composed gate every accept arm shares — that
+ * indirection is what stops an arm from skipping the check, which is exactly
+ * what the inferred arm did (AP-EXT-ITER16-01): it gated on `commitExists`
+ * alone, and a baseline SHA is reachable by definition, so an announced baseline
+ * classified `committed` and the predicate's promote-once then persisted it into
+ * the explicit `completion_commit` field.
  */
 function rejectsAsBaseline(sha, ctx) {
     if (!isBaselineSha(sha, ctx))
@@ -242,6 +237,32 @@ function isForeignAttributedExplicitSha(sha, ctx, content) {
     return siblingIds.some(id => wordBoundary(id).test(message));
 }
 /**
+ * AP-EXT-ITER16-01/-02: THE rejection gate. Every `readEvidence` accept arm —
+ * explicit, inferred, scan — passes its candidate SHA through this ONE function,
+ * so a rejection rule cannot land on two arms and silently miss the third. That
+ * is not hypothetical: both rules shipped wired to explicit+scan only, and the
+ * inferred arm gated on `commitExists` alone, so ONE sha drew THREE verdicts
+ * depending on which field carried it.
+ *
+ * Reachability can substitute for neither rule: a baseline SHA is git-reachable
+ * BY CONSTRUCTION, and a foreign-attributed SHA is a real commit — just someone
+ * else's. Both owns their own operator warn, so no caller can drop it.
+ *
+ * Callers own only the `absentReason` their arm reports: the stamped-field arms
+ * (explicit, inferred) surface the hard reason, while the scan arm downgrades to
+ * `no_evidence` — a scan miss is best-effort, not a positive finding (see the
+ * WS-2 arm-agreement cases in tests/nostop-gates-arm-agreement.test.js).
+ */
+function rejectsAccept(sha, ctx, content) {
+    if (rejectsAsBaseline(sha, ctx))
+        return 'baseline_sha';
+    if (isForeignAttributedExplicitSha(sha, ctx, content)) {
+        process.stderr.write(`[ticket-completion-evidence] sha ${sha} rejected — positively attributed to a different ticket (R-OMA foreign-attribution)\n`);
+        return 'foreign_attribution';
+    }
+    return null;
+}
+/**
  * B-GITATTR WS-3: `scanGitLog` is reduced to the trailer lookup — the
  * message-inference passes (ref-token, declared-file-touch) are gone now that
  * the `Pickle-Ticket` trailer produces and consumes attribution directly.
@@ -261,10 +282,10 @@ function scanGitLog(args) {
  * stays under the eslint complexity ceiling (W5b: absorb a variant by
  * re-shaping, never by incrementing the caller's branch count).
  *
- * Applies the SAME rejection gate as its explicit sibling (R-CXOR-2,
- * AP-EXT-ITER16-01): a baseline SHA is git-reachable BY CONSTRUCTION, so
- * `commitExists` alone can never catch one. `inferred` is a stamped field like
- * `completion_commit`, so it reports the hard `baseline_sha` reason.
+ * Passes its candidate through the SAME `rejectsAccept` gate as its explicit
+ * sibling (AP-EXT-ITER16-01/-02) — `commitExists` alone catches neither a
+ * baseline SHA nor a borrowed one, since both are reachable commits. `inferred`
+ * is a stamped field like `completion_commit`, so it reports the hard reason.
  *
  * Returns null ONLY when the field is absent — that is the caller's signal to
  * fall through to the git-log scan arm. A present-but-unusable field
@@ -274,9 +295,9 @@ function readInferredArm(ctx, content, absent) {
     const inferredField = normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit_inferred'));
     if (!inferredField)
         return null;
-    if (rejectsAsBaseline(inferredField, ctx)) {
-        return { kind: 'absent', absentReason: 'baseline_sha' };
-    }
+    const rejection = rejectsAccept(inferredField, ctx, content);
+    if (rejection)
+        return { kind: 'absent', absentReason: rejection };
     if (commitExists(ctx.workingDir, inferredField)) {
         return { kind: 'committed', sha: inferredField, via: 'inferred' };
     }
@@ -308,19 +329,13 @@ export function readEvidence(ctx) {
     const explicit = normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit'));
     let unreachableExplicit = false;
     if (explicit) {
-        // R-CXOR-2: reject baseline SHAs — a ticket whose only "commit" is the session
-        // start_commit or pinned_sha did no real work; treat it as absent evidence.
-        if (rejectsAsBaseline(explicit, ctx)) {
-            return { kind: 'absent', absentReason: 'baseline_sha' };
-        }
+        // R-CXOR-2 (baseline: the ticket did no work beyond session start) and R-OMA
+        // (foreign: a no-op ticket borrowing another ticket's commit hash) are both
+        // hard-absent for a stamped field. Default is accept — explicit-SHA-wins.
+        const rejection = rejectsAccept(explicit, ctx, content);
+        if (rejection)
+            return { kind: 'absent', absentReason: rejection };
         const r = probeExplicitSha(explicit, ctx.workingDir, ctx.fallbackDir);
-        // R-OMA: reject a reachable explicit SHA ONLY when it is positively attributed
-        // to a DIFFERENT ticket (a no-op/clean-audit ticket borrowing another ticket's
-        // commit hash). Default = accept (explicit-SHA-wins).
-        if (r && isForeignAttributedExplicitSha(explicit, ctx, content)) {
-            process.stderr.write(`[ticket-completion-evidence] explicit sha ${explicit} rejected — positively attributed to a different ticket (R-OMA foreign-attribution)\n`);
-            return { kind: 'absent', absentReason: 'foreign_attribution' };
-        }
         if (r)
             return { ...r, via: 'explicit' };
         // R-AICF: explicit SHA present but UNREACHABLE (hallucinated/dropped stamp).
@@ -347,10 +362,9 @@ export function readEvidence(ctx) {
     });
     if (scan) {
         // Scan-arm rejections stay a best-effort miss (`no_evidence`), never the
-        // hard stamped-field reason — see rejectsAsBaseline's docstring.
-        if (rejectsAsBaseline(scan.sha, ctx) || isForeignAttributedExplicitSha(scan.sha, ctx, content)) {
+        // hard stamped-field reason — see rejectsAccept's docstring.
+        if (rejectsAccept(scan.sha, ctx, content))
             return absent();
-        }
         return { kind: 'committed', sha: scan.sha, via: 'scan' };
     }
     return absent();
