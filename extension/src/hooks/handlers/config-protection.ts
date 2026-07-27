@@ -6,7 +6,13 @@ import { resolveStateFile, loadActiveState, approve } from '../resolve-state.js'
 import { getExtensionRoot, getDataRoot } from '../../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../../services/microverse-state.js';
 import { logActivity } from '../../services/activity-logger.js';
-import { execName } from '../shell-exec.js';
+import {
+  ENV_ASSIGNMENT_RE,
+  execName,
+  isShellWrapper,
+  splitShellSegments,
+  tokenizeShellCommand,
+} from '../shell-exec.js';
 
 interface PreToolUseInput {
   tool_name?: string;
@@ -479,122 +485,6 @@ function detectTargetedStateFile(input: PreToolUseInput): { matched: string; isS
   return null;
 }
 
-const SHELL_SEGMENT_SEPARATORS = new Set(['&&', '||', '|', '&', ';', '\n']);
-
-/**
- * Splits a shell command into top-level segments on the control operators
- * `&&`, `||`, `|`, `&`, `;`, and an unquoted newline (a top-level command
- * terminator, semantically identical to `;`). Quote-aware: a separator inside
- * single or double quotes (e.g. a commit message `-m 'fix && reset bug'`, or a
- * multi-line `-m "line1\nline2"`) is NOT a split point, so legitimate commits
- * are never mis-segmented.
- *
- * The worker-forbidden-op detectors (`detectProhibitedGitVerb`,
- * `isBashInvokingInstallSh`) only inspect the FIRST executable token of the
- * string they receive. Without segmentation, `cd sub && git reset --hard` and
- * `git status\ngit reset --hard` slip the guard because the leading token is
- * `cd` / the first git verb is benign — yet the project CLAUDE.md mandates the
- * `cd <subdir> && git <verb>` pattern AND a worker naturally emits sequential
- * commands one per line, making both forms the common case. Each segment is
- * evaluated independently so a prohibited verb in ANY position is caught.
- * Over-segmentation is fail-safe: only prohibited verbs/`install.sh` are
- * matched, so benign chained commands (`cd x && git add .`) still pass.
- *
- * Finally, a `bash -c '<cmd>'` / `sh -lc "<cmd>"` payload is itself expanded
- * into segments (`expandShellCommandStrings`). The quote-preserving tokenizer
- * keeps `<cmd>` as ONE token, so without the unwrap the only executable the
- * detectors ever see is the `-c` FLAG — `bash -c "git reset --hard"` approved
- * while the bare form blocked. Unwrapping here rather than in each detector is
- * what keeps the three of them from drifting apart again.
- */
-function splitShellSegments(command: string, depth = 0): string[] {
-  // `\n` is matched as its own alternative BEFORE `\S+` so an unquoted newline
-  // becomes a boundary token; `"[^"]*"`/`'[^']*'` span newlines (negated class
-  // includes `\n`), so a newline inside a quoted commit message is preserved.
-  const rawTokens = command.match(/"[^"]*"|'[^']*'|\n|\S+/g) ?? [];
-  const tokens: string[] = [];
-  for (const raw of rawTokens) {
-    const quoted = (raw.startsWith('"') && raw.endsWith('"')) ||
-      (raw.startsWith('\'') && raw.endsWith('\''));
-    if (quoted) {
-      tokens.push(raw);
-      continue;
-    }
-    // Separate glued `;` (e.g. `git status;git reset`) into its own token so
-    // it acts as a boundary; quoted `;` was already preserved above.
-    for (const part of raw.split(/(;)/)) {
-      if (part.length > 0) tokens.push(part);
-    }
-  }
-  const segments: string[] = [];
-  let current: string[] = [];
-  for (const token of tokens) {
-    if (SHELL_SEGMENT_SEPARATORS.has(token)) {
-      if (current.length > 0) segments.push(current.join(' '));
-      current = [];
-      continue;
-    }
-    current.push(token);
-  }
-  if (current.length > 0) segments.push(current.join(' '));
-  return expandShellCommandStrings(segments.length > 0 ? segments : [command], depth);
-}
-
-/**
- * Bounded so a pathological `bash -c "bash -c ..."` nest cannot spin the hook;
- * three levels is far past any real worker command.
- */
-const MAX_SHELL_COMMAND_STRING_DEPTH = 3;
-
-/** `-c`, and the combined forms a login/exec shell takes (`-lc`, `-ec`, `-xc`). */
-const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
-
-/**
- * Returns the command-string payload of a `bash -c '<cmd>'` segment, or null
- * when the segment is not a shell command-string invocation. Reuses the same
- * env-assignment prelude and `isShellWrapper` fold as `execTokenIndex`, so
- * `PICKLE_ROLE=x /bin/bash -lc '<cmd>'` resolves like every other exec token.
- */
-function shellCommandStringPayload(segment: string): string | null {
-  const tokens = tokenizeGitCommand(segment);
-  let idx = 0;
-  while (idx < tokens.length && ENV_ASSIGNMENT_RE.test(tokens[idx])) idx++;
-  if (!isShellWrapper(tokens[idx])) return null;
-  let sawCommandStringFlag = false;
-  for (idx++; idx < tokens.length; idx++) {
-    if (tokens[idx].startsWith('-')) {
-      sawCommandStringFlag ||= SHELL_COMMAND_STRING_FLAG_RE.test(tokens[idx]);
-      continue;
-    }
-    return sawCommandStringFlag ? tokens[idx] : null;
-  }
-  return null;
-}
-
-/**
- * Appends each `-c` payload's own segments after the wrapper segment. The
- * wrapper is KEPT (fail-safe: never removes a segment a detector already saw),
- * so `bash install.sh` — which carries no `-c` — is untouched.
- */
-function expandShellCommandStrings(segments: string[], depth: number): string[] {
-  if (depth >= MAX_SHELL_COMMAND_STRING_DEPTH) return segments;
-  const expanded: string[] = [];
-  for (const segment of segments) {
-    expanded.push(segment);
-    const payload = shellCommandStringPayload(segment);
-    if (payload !== null) expanded.push(...splitShellSegments(payload, depth + 1));
-  }
-  return expanded;
-}
-
-/** True when the token is a `bash`/`sh` wrapper to be skipped before the real exec. */
-function isShellWrapper(token: string | undefined): boolean {
-  if (!token) return false;
-  const name = execName(token);
-  return name === 'bash' || name === 'sh';
-}
-
-const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
  * Advances past a shell command's prelude and returns the index of the real
@@ -621,7 +511,7 @@ function execTokenIndex(tokens: string[]): number {
  * and any `KEY=value` env prefixes. Does not match read-only references
  * (`cat install.sh`) or suffixed filenames (`pre-install.sh`).
  *
- * Tokenizes quote-aware via `tokenizeGitCommand` for the same reason the git
+ * Tokenizes quote-aware via `tokenizeShellCommand` for the same reason the git
  * chain does (the "quoted-token parity" trap door): a bare `split(/\s+/)` read
  * `"install.sh"` with the quotes attached, so `bash "install.sh"` — which the
  * shell runs as `bash install.sh` — slipped the guard. This detector was the
@@ -630,7 +520,7 @@ function execTokenIndex(tokens: string[]): number {
 function segmentInvokesInstallSh(segment: string): boolean {
   const trimmed = segment.trim();
   if (!trimmed) return false;
-  const tokens = tokenizeGitCommand(trimmed);
+  const tokens = tokenizeShellCommand(trimmed);
   const exec = tokens[execTokenIndex(tokens)];
   if (!exec) return false;
   return execName(exec) === 'install.sh';
@@ -667,7 +557,7 @@ function parseFirstShellWord(command: string): string | null {
   // attached), so `detectProhibitedGitVerb` skipped the segment (`"git"` !== 'git')
   // and the destructive reset slipped the R-WSRC-GR guard. Same root cause and
   // same fix as findGitVerb's quoted-verb gap.
-  const tokens = tokenizeGitCommand(trimmed);
+  const tokens = tokenizeShellCommand(trimmed);
   const exec = tokens[execTokenIndex(tokens)];
   if (!exec) return null;
   return execName(exec);
@@ -702,30 +592,6 @@ function isCheckoutRefOperation(afterVerb: string[]): boolean {
 }
 
 /**
- * Tokenize a single (already-segmented) shell command, quote-aware: a quoted
- * span stays one token and its surrounding matching quotes are stripped, so
- * `git "reset"` tokenizes to `['git', 'reset']`. Mirrors tsc-gate.ts:tokenizeCommand.
- * Without quote-stripping, the bare `split(/\s+/)` read the token `"reset"`
- * (quotes attached), which is not in PROHIBITED_GIT_VERBS_SIMPLE, so
- * `git "reset" --hard` (which the shell runs as `git reset --hard`) slipped the
- * R-WSRC-GR guard — a one-sided parity gap vs segmentIsGitCommit, which already
- * strips quotes (`git "commit"` classifies as a commit).
- */
-function tokenizeGitCommand(command: string): string[] {
-  const raw = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
-  return raw.map((token) => {
-    if (token.length >= 2) {
-      const first = token[0];
-      const last = token[token.length - 1];
-      if ((first === '"' && last === '"') || (first === '\'' && last === '\'')) {
-        return token.slice(1, -1);
-      }
-    }
-    return token;
-  });
-}
-
-/**
  * R-WSRC-GR: Detects prohibited git verbs per the Git Boundary Rules.
  * Returns {verb} when the command is a prohibited git operation, null otherwise.
  *
@@ -736,7 +602,7 @@ function tokenizeGitCommand(command: string): string[] {
  *   git fetch (without --prune)  (plain fetch is allowed)
  */
 function findGitVerb(command: string): { verb: string; afterVerb: string[] } | null {
-  const tokens = tokenizeGitCommand(command);
+  const tokens = tokenizeShellCommand(command);
   let idx = execTokenIndex(tokens);
   idx++; // skip 'git' itself
   const rest = tokens.slice(idx).filter(t => t.length > 0);

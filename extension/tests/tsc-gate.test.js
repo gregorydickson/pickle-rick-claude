@@ -521,6 +521,64 @@ it('AP-EXT-EXECFOLD isGitCommitCommand folds the executable token case and path'
   }
 });
 
+it('AP-EXT-ITER12-01 isGitCommitCommand sees a commit inside a bash -c payload', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  // The quote-preserving tokenizer keeps `"git commit -m x"` as ONE token, so
+  // the only executable segmentIsGitCommit ever saw was the `-c` FLAG: execName
+  // read `bash`, classified non-commit, and main() approved WITHOUT running the
+  // R-WACT tsc check. Every form below was proven SKIPPED pre-fix while its bare
+  // twin gated. config-protection.ts closed this at its own seam
+  // (AP-EXT-ITER10-01); tsc-gate carried a private near-identical segmenter and
+  // did not inherit it — both now consume shell-exec.ts:splitShellSegments.
+  const positives = [
+    'bash -c "git commit -m x"',
+    "bash -c 'git commit -m x'",
+    'bash -lc "git commit -m x"',
+    'sh -c "git add -A && git commit -m x"',
+    '/bin/bash -c "git commit -m x"',
+    'cd extension && bash -c "git commit -m x"',
+    'GIT_COMMITTER_DATE=2020 bash -c "git commit -m x"',
+    // Unescaped nesting proves the recursion is live, not a one-level unwrap.
+    'bash -c \'bash -c "git commit -m x"\'',
+  ];
+  for (const command of positives) {
+    assert.equal(isGitCommitCommand(command), true, JSON.stringify(command));
+  }
+  // The unwrap must not widen what counts as a commit: a non-commit payload
+  // stays non-commit, `bash install.sh` (no `-c`) is untouched, and a `-c`-like
+  // string INSIDE a commit message is a quoted argument, not a payload.
+  const negatives = [
+    'bash -c "git log --oneline"',
+    'bash -c "npm test"',
+    'bash -c "git status"',
+    'bash install.sh',
+    'sh -c "gh pr create --fill"',
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, JSON.stringify(command));
+  }
+});
+
+it('AP-EXT-ITER12-01 the hooks segmenter has ONE home (no private tsc-gate copy)', async () => {
+  const hooksDir = path.resolve(__dirname, '../src/hooks');
+  const shellExec = fs.readFileSync(path.join(hooksDir, 'shell-exec.ts'), 'utf8');
+  const tscGate = fs.readFileSync(path.join(hooksDir, 'handlers', 'tsc-gate.ts'), 'utf8');
+  const configProtection = fs.readFileSync(path.join(hooksDir, 'handlers', 'config-protection.ts'), 'utf8');
+  // The drift this closes was structural, not a missing branch: each handler
+  // owned a private segmenter, so a fix landing in one silently skipped the
+  // other. Pin the single definition rather than the behavior alone — behavior
+  // tests pass again the moment someone re-forks the copy.
+  assert.match(shellExec, /export function splitShellSegments\(/);
+  for (const [name, source] of [['tsc-gate.ts', tscGate], ['config-protection.ts', configProtection]]) {
+    assert.equal(
+      /function splitShellSegments\(|function splitTopLevelSegments\(/.test(source),
+      false,
+      `${name} must consume shell-exec.ts:splitShellSegments, not define its own`,
+    );
+    assert.match(source, /splitShellSegments[\s\S]*from '\.\.\/shell-exec\.js'/);
+  }
+});
+
 it('isGitCommitCommand segments on unquoted newlines (newline-separated add+commit)', async () => {
   const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
   // A worker naturally emits sequential commands one per line. Before the fix the
