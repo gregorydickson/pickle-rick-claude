@@ -58,6 +58,18 @@ function messageOf(repoDir, sha) {
   return git(repoDir, ['log', '-1', '--format=%B', sha]);
 }
 
+/** The consumer's oracle: git's parsed trailer view, not a raw-message grep. */
+function parsedTicketTrailers(repoDir, sha) {
+  return git(repoDir, ['log', '-1', '--format=%(trailers:key=Pickle-Ticket,valueonly)', sha])
+    .split('\n')
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+function parsedTrailer(repoDir, sha, key) {
+  return git(repoDir, ['log', '-1', `--format=%(trailers:key=${key},valueonly)`, sha]).trim();
+}
+
 test('hallucinated claimed sha is discarded and replaced by the verified full in-window sha', () => {
   const { repoDir, baseSha } = initRepo();
   const c1 = commitFile(repoDir, 'a.txt', 'a\n', 'Add Reducto Redis circuit store');
@@ -113,14 +125,96 @@ test('untagged single-commit tip is amended with a Pickle-Ticket trailer (word-b
   assert.match(message, /Add Reducto Redis circuit store/, 'original message preserved');
 });
 
-test('tip already word-boundary-tagged with the ticket id is NOT amended', () => {
+/**
+ * AP-EXT-ITER4-01 (CRITICAL): the already-attributed guard must consult the
+ * CONSUMER's oracle — git's parsed trailer view — not the raw message. git
+ * parses trailers from the LAST paragraph only, so a ticket id in the subject
+ * or body prose is NOT attribution. This test previously asserted the opposite
+ * (`fix(<id>): already tagged` => "NOT amended"), which encoded the divergent
+ * oracle as the contract and let the bug ship: 7 consecutive commits on
+ * release/v2.1-beta carry `(ticket 6b7c3b82)` in prose with ZERO parsed
+ * Pickle-Ticket trailer, so `scanGitLogByTrailer` — the only git-log arm after
+ * B-GITATTR WS-3 — reads evidence `absent` and the Done-flip refuses
+ * `done_without_commit_evidence`.
+ */
+test('a PROSE-only ticket-id mention is not attribution — the tip IS amended', () => {
   const { repoDir, baseSha } = initRepo();
-  const c1 = commitFile(repoDir, 'a.txt', 'a\n', `fix(${TICKET_ID}): already tagged`);
+  const c1 = commitFile(repoDir, 'a.txt', 'a\n', `fix(${TICKET_ID}): mentioned only in the subject`);
+
+  assert.deepEqual(parsedTicketTrailers(repoDir, c1), [], 'precondition: prose mention parses as NO trailer');
+
+  const result = reconcileWorkerCommitAttribution(repoDir, TICKET_ID, baseSha, c1, {});
+
+  const head = git(repoDir, ['rev-parse', 'HEAD']);
+  assert.equal(result, head, 'returned sha tracks the amended tip');
+  assert.notEqual(result, c1, 'prose mention did NOT suppress the stamp');
+  assert.deepEqual(parsedTicketTrailers(repoDir, head), [TICKET_ID], 'the trailer scan can now attribute the commit');
+});
+
+test('a real parsed Pickle-Ticket trailer DOES suppress the amend (idempotent)', () => {
+  const { repoDir, baseSha } = initRepo();
+  const c1 = commitFile(repoDir, 'a.txt', 'a\n', `real work\n\nPickle-Ticket: ${TICKET_ID}`);
+
+  assert.deepEqual(parsedTicketTrailers(repoDir, c1), [TICKET_ID], 'precondition: trailer parses');
 
   const result = reconcileWorkerCommitAttribution(repoDir, TICKET_ID, baseSha, c1, {});
 
   assert.equal(result, c1);
   assert.equal(git(repoDir, ['rev-parse', 'HEAD']), c1, 'no amend — sha unchanged');
+  assert.deepEqual(parsedTicketTrailers(repoDir, c1), [TICKET_ID], 'trailer not duplicated');
+});
+
+/**
+ * AC-LAND-10: the guard is KEY-PRESENCE, not value-equality. A commit already
+ * carrying a `Pickle-Ticket` trailer for a DIFFERENT ticket id must be left
+ * alone — a value-match guard would fall through to the writer, and
+ * `--if-exists addIfDifferentNeighbor` would then ADD a second value instead
+ * of leaving the existing one alone, ending with two parsed values.
+ */
+test('a DIFFERENT-id Pickle-Ticket trailer is left alone — exactly ONE parsed value survives', () => {
+  const { repoDir, baseSha } = initRepo();
+  const OTHER_TICKET_ID = 'deadbeef';
+  const c1 = commitFile(repoDir, 'a.txt', 'a\n', `real work\n\nPickle-Ticket: ${OTHER_TICKET_ID}`);
+
+  assert.deepEqual(parsedTicketTrailers(repoDir, c1), [OTHER_TICKET_ID], 'precondition: foreign trailer parses');
+
+  const result = reconcileWorkerCommitAttribution(repoDir, TICKET_ID, baseSha, c1, {});
+
+  assert.equal(result, c1, 'foreign trailer presence suppressed the amend — sha unchanged');
+  assert.equal(git(repoDir, ['rev-parse', 'HEAD']), c1, 'no amend happened');
+  const trailersAfter = parsedTicketTrailers(repoDir, c1);
+  assert.equal(trailersAfter.length, 1, 'exactly one parsed Pickle-Ticket value survives');
+  assert.deepEqual(trailersAfter, [OTHER_TICKET_ID], 'the pre-existing foreign value is untouched, not duplicated');
+});
+
+/**
+ * AP-EXT-ITER4-02 (HIGH): the trailer must be written with git's own trailer
+ * WRITER so it joins the existing trailer block. A `-m message -m trailer`
+ * append opens a NEW paragraph, demoting every pre-existing trailer to body
+ * prose — `Co-Authored-By` parses before the amend and returns EMPTY after.
+ */
+test('pre-existing trailers survive the amend instead of being demoted to prose', () => {
+  const { repoDir, baseSha } = initRepo();
+  const c1 = commitFile(
+    repoDir,
+    'a.txt',
+    'a\n',
+    'untagged work\n\nCo-Authored-By: Somebody <s@b.com>\nSigned-off-by: Dev <d@b.com>',
+  );
+
+  assert.equal(parsedTrailer(repoDir, c1, 'Co-Authored-By'), 'Somebody <s@b.com>', 'precondition: parses pre-amend');
+
+  const result = reconcileWorkerCommitAttribution(repoDir, TICKET_ID, baseSha, null, { declaredFiles: ['a.txt'] });
+
+  const head = git(repoDir, ['rev-parse', 'HEAD']);
+  assert.equal(result, head, 'tip was amended');
+  assert.deepEqual(parsedTicketTrailers(repoDir, head), [TICKET_ID], 'Pickle-Ticket parses');
+  assert.equal(
+    parsedTrailer(repoDir, head, 'Co-Authored-By'),
+    'Somebody <s@b.com>',
+    'Co-Authored-By still parses — not demoted into body prose',
+  );
+  assert.equal(parsedTrailer(repoDir, head, 'Signed-off-by'), 'Dev <d@b.com>', 'Signed-off-by still parses');
 });
 
 test('amend is SKIPPED on a dirty index (staged foreign work must not be swept in)', () => {

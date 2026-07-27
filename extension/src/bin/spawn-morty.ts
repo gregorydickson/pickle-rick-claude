@@ -2019,19 +2019,72 @@ function pickAttributionCommit(workingDir: string, windowShas: string[], declare
 }
 
 /**
+ * The CONSUMER's oracle for "is this commit already attributed?" — git's own
+ * parsed trailer view, the same `%(trailers:key=Pickle-Ticket,valueonly)` read
+ * that `scanGitLogByTrailer` uses. git parses trailers from the LAST paragraph
+ * only, so a ticket id sitting in the subject or body prose is NOT attribution.
+ * Returns null when git cannot run.
+ */
+function readParsedTicketTrailers(workingDir: string, sha: string): string[] | null {
+  const raw = reconcileGitOrNull(workingDir, [
+    'log', '-1', '--format=%(trailers:key=Pickle-Ticket,valueonly)', sha,
+  ]);
+  if (raw === null) return null;
+  return raw.split('\n').map((v) => v.trim()).filter(Boolean);
+}
+
+/**
+ * Stamp the trailer with git's own trailer WRITER so it joins the existing
+ * trailer block. A `-m message -m trailer` append opens a NEW paragraph, which
+ * demotes every pre-existing trailer (`Co-Authored-By`, `Signed-off-by`,
+ * `Resolves`) to body prose — the exact hazard `git-trailer-hooks.ts` defends
+ * against on the hook side. Returns null when interpret-trailers cannot run so
+ * the caller can degrade rather than lose attribution.
+ */
+function buildTrailerAmendedMessage(workingDir: string, message: string, ticketId: string): string | null {
+  try {
+    return execFileSync('git', [
+      'interpret-trailers', '--if-exists', 'addIfDifferentNeighbor',
+      '--trailer', `Pickle-Ticket: ${ticketId}`,
+    ], {
+      cwd: workingDir,
+      encoding: 'utf8',
+      input: message,
+      timeout: RECONCILE_GIT_TIMEOUT_MS,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Amend the unpushed tip with a `Pickle-Ticket: <ticketId>` trailer so every
  * ref-token scanner (readEvidence git-log scan, done-guard, phantom watcher)
- * can attribute the commit. Preconditions (all three, else skip): message
- * lacks a word-boundary ticketId, the verified commit IS the single-commit
- * window tip, and the index is clean. Returns the post-amend sha.
+ * can attribute the commit. Preconditions (all three, else skip): the commit
+ * carries no PARSED `Pickle-Ticket` trailer for this ticket, the verified
+ * commit IS the single-commit window tip, and the index is clean. Returns the
+ * post-amend sha.
  */
 function maybeAmendTicketTrailer(workingDir: string, ticketId: string, verifiedSha: string, windowSize: number): string {
   try {
     if (windowSize !== 1) return verifiedSha;
     const message = reconcileGitOrNull(workingDir, ['log', '-1', '--format=%B', verifiedSha]);
     if (message === null) return verifiedSha;
-    const escaped = ticketId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (new RegExp(`\\b${escaped}\\b`, 'i').test(message)) return verifiedSha;
+    // Already attributed? Ask the consumer's oracle. A raw-message word-boundary
+    // test would read a prose mention as attribution and skip the stamp, leaving
+    // the trailer scan — the only git-log arm after B-GITATTR WS-3 — with nothing.
+    // Guard policy is KEY-PRESENCE (matching the prepare-commit-msg hook's own
+    // `grep -q '^Pickle-Ticket:'` idempotence check), not value-equality: ANY
+    // parsed Pickle-Ticket trailer means this tip is already attributed. This
+    // also keeps `buildTrailerAmendedMessage` from ever running against a commit
+    // that already carries the key — a value-match guard would let a
+    // DIFFERENT-id trailer fall through to the writer, and `addIfDifferentNeighbor`
+    // would then ADD a second value instead of leaving the existing one alone
+    // (AC-LAND-10: a different-id trailer must end with exactly one value).
+    const trailers = readParsedTicketTrailers(workingDir, verifiedSha);
+    if (trailers === null) return verifiedSha;
+    if (trailers.length > 0) return verifiedSha;
     if (reconcileGitOrNull(workingDir, ['rev-parse', 'HEAD']) !== verifiedSha) return verifiedSha;
     try {
       execFileSync('git', ['diff', '--cached', '--quiet'], { cwd: workingDir, timeout: RECONCILE_GIT_TIMEOUT_MS, stdio: 'ignore' });
@@ -2040,7 +2093,22 @@ function maybeAmendTicketTrailer(workingDir: string, ticketId: string, verifiedS
     }
     // Parallel-session race guard: re-verify the tip did not move since the checks above.
     if (reconcileGitOrNull(workingDir, ['rev-parse', 'HEAD']) !== verifiedSha) return verifiedSha;
-    reconcileGit(workingDir, ['commit', '--amend', '--no-gpg-sign', '-m', message, '-m', `Pickle-Ticket: ${ticketId}`]);
+    const amended = buildTrailerAmendedMessage(workingDir, message, ticketId);
+    if (amended === null) {
+      // Degraded: interpret-trailers unavailable. Keep attribution (the trailer
+      // still lands last, so Pickle-Ticket itself parses) at the cost of
+      // demoting any pre-existing trailers — same posture as the hook's
+      // printf fallback in git-trailer-hooks.ts.
+      reconcileGit(workingDir, ['commit', '--amend', '--no-gpg-sign', '-m', message, '-m', `Pickle-Ticket: ${ticketId}`]);
+    } else {
+      execFileSync('git', ['commit', '--amend', '--no-gpg-sign', '-F', '-'], {
+        cwd: workingDir,
+        encoding: 'utf8',
+        input: amended,
+        timeout: RECONCILE_GIT_TIMEOUT_MS,
+        stdio: ['pipe', 'ignore', 'ignore'],
+      });
+    }
     return reconcileGitOrNull(workingDir, ['rev-parse', 'HEAD']) ?? verifiedSha;
   } catch {
     return verifiedSha;
