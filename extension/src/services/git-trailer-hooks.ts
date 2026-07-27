@@ -165,7 +165,12 @@ function buildTrailerHookScript(originalPrepareCommitMsgAbsPath: string | null):
     : 'exit 0';
   return [
     '#!/bin/sh',
-    'if [ -z "$PICKLE_TICKET_ID" ]; then',
+    // Unset, empty, and whitespace-only must no-op IDENTICALLY. `[ -z ]` alone is false for
+    // "   ", which stamped a valueless `Pickle-Ticket:` line into history. The stripped form
+    // is a guard input only — the ORIGINAL value is what gets written, since the consumer
+    // trims the ends itself and silently rewriting an operator's id is not ours to do.
+    '_pickle_ticket_id_probe=$(printf \'%s\' "$PICKLE_TICKET_ID" | tr -d \'[:space:]\')',
+    'if [ -z "$_pickle_ticket_id_probe" ]; then',
     `  ${forward}`,
     'fi',
     'if grep -q \'^Pickle-Ticket:\' "$1" 2>/dev/null; then',
