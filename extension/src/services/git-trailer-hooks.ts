@@ -15,6 +15,14 @@
  * this materializes NOTHING and returns `{ok:false, reason}` — degrading to
  * read-side attribution is acceptable; silently disabling a target repo's
  * own hooks (e.g. husky pre-commit) is not.
+ *
+ * Self-reference: `managedDir` is NEVER a source of "originals". A spawn nested
+ * inside a process that already carries our own env fragment inherits it, and
+ * `git config --get core.hooksPath` HONORS `GIT_CONFIG_*` from the environment —
+ * so the naive resolution answers with `managedDir` itself, and every hook gets
+ * rewritten to `exec <itself>`: an infinite exec loop that hangs the commit
+ * forever. `resolvePreExistingHooksDir` therefore discards a self-matching
+ * candidate and falls through to the repo default.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -50,30 +58,61 @@ function resolveAgainstRepoRoot(repoRoot: string, value: string): string {
   return path.isAbsolute(value) ? value : path.resolve(repoRoot, value);
 }
 
-/** Runs `git <args>` and, on success with non-empty stdout, resolves it to an existing dir. */
-function resolveDirFromGitOutput(args: string[], repoRoot: string): string | null {
+/**
+ * Runs `git <args>` and, on success with non-empty stdout, resolves it (optionally
+ * joined with `suffix`) to an existing dir.
+ */
+function resolveDirFromGitOutput(args: string[], repoRoot: string, suffix?: string): string | null {
   try {
     const result = runGitBestEffort(args, repoRoot);
     if (result.status !== 0 || result.stdout.trim().length === 0) return null;
-    const resolved = resolveAgainstRepoRoot(repoRoot, result.stdout.trim());
+    const base = resolveAgainstRepoRoot(repoRoot, result.stdout.trim());
+    const resolved = suffix ? path.join(base, suffix) : base;
     return fs.statSync(resolved).isDirectory() ? resolved : null;
   } catch {
     return null;
   }
 }
 
+/** Same on-disk directory, tolerating a path that does not exist yet. */
+function samePath(a: string, b: string): boolean {
+  const canonical = (p: string): string => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  return canonical(a) === canonical(b);
+}
+
 /**
  * Resolves the target repo's PRE-EXISTING hooks directory: `core.hooksPath`
- * first (git-config(1) resolves a relative value against the repo root),
- * else `rev-parse --git-path hooks` (the default `.git/hooks`, honoring
- * separate-git-dir/worktree layouts). Returns null when neither resolves to
- * an existing directory, or on any error — never throws.
+ * first (git-config(1) resolves a relative value against the repo root), else
+ * `<git-dir>/hooks` (honoring separate-git-dir/worktree layouts). Returns null
+ * when neither resolves to an existing directory, or on any error — never throws.
+ *
+ * A candidate equal to `managedDir` is DISCARDED, not returned: that is us, seen
+ * through our own inherited `GIT_CONFIG_*` fragment (see the module header).
+ * Falling through to the repo default is what keeps a nested spawn forwarding
+ * the repo's REAL hooks instead of either self-exec'ing or silently dropping
+ * trailer attribution.
+ *
+ * The fallback derives from `rev-parse --git-dir`, NOT `rev-parse --git-path
+ * hooks`: the latter honors `core.hooksPath` too, so under an inherited fragment
+ * it re-derives the exact self-match the first arm just rejected. `--git-dir`
+ * ignores `core.hooksPath`, which also makes the two arms non-redundant.
  */
-function resolvePreExistingHooksDir(repoRoot: string): string | null {
-  return (
-    resolveDirFromGitOutput(['config', '--get', 'core.hooksPath'], repoRoot) ??
-    resolveDirFromGitOutput(['rev-parse', '--git-path', 'hooks'], repoRoot)
-  );
+function resolvePreExistingHooksDir(repoRoot: string, managedDir: string): string | null {
+  const candidates: Array<[string[], string?]> = [
+    [['config', '--get', 'core.hooksPath']],
+    [['rev-parse', '--git-dir'], 'hooks'],
+  ];
+  for (const [args, suffix] of candidates) {
+    const resolved = resolveDirFromGitOutput(args, repoRoot, suffix);
+    if (resolved && !samePath(resolved, managedDir)) return resolved;
+  }
+  return null;
 }
 
 function isExecutableFile(entryPath: string): boolean {
@@ -85,13 +124,17 @@ function isExecutableFile(entryPath: string): boolean {
   }
 }
 
-/** Every executable hook in `preExistingDir` other than `prepare-commit-msg`. */
+/**
+ * Every executable hook in `preExistingDir` other than `prepare-commit-msg`.
+ * `*.sample` is excluded: git ships those mode-755 but never invokes them, so
+ * forwarding them adds a dozen files that can only ever be dead weight.
+ */
 function listForwardableHooks(preExistingDir: string): string[] {
   try {
     return fs
       .readdirSync(preExistingDir, { withFileTypes: true })
       .map((entry) => entry.name)
-      .filter((name) => name !== 'prepare-commit-msg')
+      .filter((name) => name !== 'prepare-commit-msg' && !name.endsWith('.sample'))
       .filter((name) => isExecutableFile(path.join(preExistingDir, name)));
   } catch {
     return [];
@@ -137,7 +180,7 @@ function writeExecutableScript(filePath: string, contents: string): void {
 export function materializeTrailerHooks(
   opts: MaterializeTrailerHooksOpts,
 ): MaterializeTrailerHooksResult {
-  const preExistingDir = resolvePreExistingHooksDir(opts.repoRoot);
+  const preExistingDir = resolvePreExistingHooksDir(opts.repoRoot, opts.managedDir);
   if (!preExistingDir) {
     return { ok: false, reason: 'pre-existing hooks dir unresolvable' };
   }

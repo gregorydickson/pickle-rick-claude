@@ -137,3 +137,134 @@ test('gitattr trailer producer', async (t) => {
     });
   });
 });
+
+// --- Self-reference under a NESTED spawn (ticket 8f7e1cf2, P0) ---
+//
+// A spawn nested inside one that already carries the WS-1 env fragment inherits it, and
+// `git config --get core.hooksPath` HONORS `GIT_CONFIG_*` from the environment. So the second
+// materialization resolves the "pre-existing" hooks dir to the MANAGED dir itself and rewrites
+// every hook to `exec <itself>` — an infinite exec loop that hangs the commit forever. That is
+// the ordinary manager -> spawn-morty path (same sessionDir, hence same managedDir), not an
+// exotic one.
+
+/** Re-materialize the way a nested spawn does: our own fragment already in the ambient env. */
+function materializeNested(repoRoot, managedDir) {
+  const saved = {
+    GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
+    GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0,
+    GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0,
+  };
+  process.env.GIT_CONFIG_COUNT = '1';
+  process.env.GIT_CONFIG_KEY_0 = 'core.hooksPath';
+  process.env.GIT_CONFIG_VALUE_0 = managedDir;
+  try {
+    return materializeTrailerHooks({ repoRoot, managedDir });
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+function selfExecingHooks(managedDir) {
+  return fs
+    .readdirSync(managedDir)
+    .filter((name) =>
+      fs.readFileSync(path.join(managedDir, name), 'utf-8').includes(`exec '${managedDir}/${name}'`),
+    );
+}
+
+test('gitattr trailer producer — nested spawn self-reference', async (t) => {
+  await t.test('a nested materialization never rewrites a hook into exec-itself', () => {
+    const repoRoot = tmpRoot('gitattr-nested-');
+    const managedDir = path.join(tmpRoot('gitattr-nested-managed-'), 'hooks');
+    initGitRepo(repoRoot);
+    fs.writeFileSync(path.join(repoRoot, '.git/hooks/pre-commit'), '#!/bin/sh\nexit 0\n', {
+      mode: 0o755,
+    });
+
+    assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+    const pass1 = fs.readFileSync(path.join(managedDir, 'prepare-commit-msg'), 'utf-8');
+
+    assert.equal(materializeNested(repoRoot, managedDir).ok, true);
+
+    assert.deepEqual(selfExecingHooks(managedDir), []);
+    // Pass 2 is a no-op on content: the same repo yields the same hooks.
+    assert.equal(fs.readFileSync(path.join(managedDir, 'prepare-commit-msg'), 'utf-8'), pass1);
+  });
+
+  await t.test('a nested materialization still forwards the repo\'s real hook', () => {
+    const repoRoot = tmpRoot('gitattr-nested-fwd-');
+    const managedDir = path.join(tmpRoot('gitattr-nested-fwd-managed-'), 'hooks');
+    initGitRepo(repoRoot);
+    const realHook = path.join(repoRoot, '.git/hooks/pre-commit');
+    fs.writeFileSync(realHook, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+    assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+    assert.equal(materializeNested(repoRoot, managedDir).ok, true);
+
+    // Discarding the self-match must fall THROUGH to .git/hooks, not bail out — otherwise a
+    // nested spawn silently loses the repo's own hooks along with the self-exec loop.
+    const stub = fs.readFileSync(path.join(managedDir, 'pre-commit'), 'utf-8');
+    assert.equal(stub.includes(`exec '${realHook}'`), true);
+  });
+
+  await t.test('a commit after a nested materialization terminates and still stamps', () => {
+    const repoRoot = tmpRoot('gitattr-nested-commit-');
+    const managedDir = path.join(tmpRoot('gitattr-nested-commit-managed-'), 'hooks');
+    initGitRepo(repoRoot);
+    fs.writeFileSync(path.join(repoRoot, '.git/hooks/pre-commit'), '#!/bin/sh\nexit 0\n', {
+      mode: 0o755,
+    });
+
+    assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+    assert.equal(materializeNested(repoRoot, managedDir).ok, true);
+
+    fs.writeFileSync(path.join(repoRoot, 'two.txt'), 'two');
+    git(['add', '-A'], repoRoot);
+    // The outcome-level assertion: the pre-fix body hangs here until GIT_TIMEOUT_MS kills it.
+    git(
+      ['commit', '--no-gpg-sign', '-q', '-m', 'fix: nested spawn'],
+      repoRoot,
+      hooksPathEnv(managedDir, { PICKLE_TICKET_ID: 'nested01' }),
+    );
+
+    assert.equal(trailerValue(repoRoot), 'nested01');
+  });
+
+  await t.test('git *.sample hooks are not forwarded', () => {
+    const repoRoot = tmpRoot('gitattr-samples-');
+    const managedDir = path.join(tmpRoot('gitattr-samples-managed-'), 'hooks');
+    initGitRepo(repoRoot);
+
+    assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+
+    assert.deepEqual(fs.readdirSync(managedDir).filter((n) => n.endsWith('.sample')), []);
+  });
+});
+
+// --- Shell-injection guard (ticket 8f7e1cf2 Test Expectations) ---
+
+test('gitattr trailer producer — a ticket id cannot break out of the hook script', () => {
+  const repoRoot = tmpRoot('gitattr-inject-');
+  const managedDir = path.join(tmpRoot('gitattr-inject-managed-'), 'hooks');
+  const marker = path.join(tmpRoot('gitattr-inject-marker-'), `pwned-${process.pid}`);
+  initGitRepo(repoRoot);
+
+  assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+
+  // The id never reaches the script as source: it travels by env and is consumed by
+  // `printf '%s'`. Even a payload that would break out of any interpolated form stays inert.
+  const hostileId = `abc'; touch ${marker}; #`;
+  fs.writeFileSync(path.join(repoRoot, 'two.txt'), 'two');
+  git(['add', '-A'], repoRoot);
+  git(
+    ['commit', '--no-gpg-sign', '-q', '-m', 'chore: hostile ticket id'],
+    repoRoot,
+    hooksPathEnv(managedDir, { PICKLE_TICKET_ID: hostileId }),
+  );
+
+  assert.equal(fs.existsSync(marker), false, 'injected command must not execute');
+  assert.equal(trailerValue(repoRoot), hostileId, 'the id must land literally');
+});
