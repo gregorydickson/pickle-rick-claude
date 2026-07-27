@@ -28,6 +28,32 @@ function cleanDir(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+/**
+ * Runs `fn` with our OWN spawn fragment stripped from `process.env`.
+ *
+ * The cases below that exercise the real spawn seams pass no explicit `env`, so they read
+ * ambient `process.env` — and `buildWorkerSpawnEnv`/`createIterationSpawnEnv` additionally
+ * spread `...process.env` into their result. Once this bundle is deployed, every worker's
+ * ambient env carries `GIT_CONFIG_COUNT=1` + `PICKLE_TICKET_ID`, so those cases would assert
+ * `KEY_0`/`COUNT === '1'` and get `KEY_1`/`'2'`, and the null-ticket cases would see the
+ * inherited keys present. That is a `@tier: fast` file false-REDing the worker lint gate on
+ * unrelated tickets (recorded as BLOCKER 4 in docs/gitattr-live-run-evidence.md §9).
+ *
+ * Safe: `node --test` runs one process per FILE, so this mutation cannot reach a sibling file.
+ */
+function withCleanTrailerEnv(fn) {
+  const stripped = Object.keys(process.env).filter(
+    (k) => k === 'PICKLE_TICKET_ID' || /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(k),
+  );
+  const saved = new Map(stripped.map((k) => [k, process.env[k]]));
+  for (const k of stripped) delete process.env[k];
+  try {
+    return fn();
+  } finally {
+    for (const [k, v] of saved) process.env[k] = v;
+  }
+}
+
 // --- Both keys injected (worker invocation with a ticket) ---
 
 test('backendEnvOverrides: worker invocation with a ticket injects core.hooksPath + PICKLE_TICKET_ID', () => {
@@ -209,7 +235,9 @@ test('buildWorkerSpawnEnv (real worker spawn path): ticket in flight injects cor
       timeoutStatePath: null,
       workerStatePath: path.join(sessionDir, 'worker-state.json'),
     };
-    const env = buildWorkerSpawnEnv(ctx, { cmd: 'claude', args: [], backend: 'claude' });
+    const env = withCleanTrailerEnv(() =>
+      buildWorkerSpawnEnv(ctx, { cmd: 'claude', args: [], backend: 'claude' }),
+    );
 
     assert.equal(env.GIT_CONFIG_KEY_0, 'core.hooksPath');
     assert.equal(typeof env.GIT_CONFIG_VALUE_0, 'string');
@@ -235,7 +263,9 @@ test('buildWorkerSpawnEnv (real worker spawn path): no ticket in flight injects 
       timeoutStatePath: null,
       workerStatePath: path.join(sessionDir, 'worker-state.json'),
     };
-    const env = buildWorkerSpawnEnv(ctx, { cmd: 'claude', args: [], backend: 'claude' });
+    const env = withCleanTrailerEnv(() =>
+      buildWorkerSpawnEnv(ctx, { cmd: 'claude', args: [], backend: 'claude' }),
+    );
 
     assert.equal('PICKLE_TICKET_ID' in env, false);
     assert.equal('GIT_CONFIG_COUNT' in env, false);
@@ -255,7 +285,9 @@ test('createIterationSpawnEnv (real manager spawn path): ticket in flight inject
     const state = { working_dir: workingDir, current_ticket: 'realmanager1' };
     const invocation = { cmd: 'claude', args: [], backend: 'claude' };
     const statePath = path.join(sessionDir, 'state.json');
-    const env = createIterationSpawnEnv(state, 'claude', invocation, statePath, {}, sessionDir);
+    const env = withCleanTrailerEnv(() =>
+      createIterationSpawnEnv(state, 'claude', invocation, statePath, {}, sessionDir),
+    );
 
     assert.equal(env.GIT_CONFIG_KEY_0, 'core.hooksPath');
     assert.equal(typeof env.GIT_CONFIG_VALUE_0, 'string');
@@ -276,12 +308,64 @@ test('createIterationSpawnEnv (real manager spawn path): no ticket in flight inj
     const state = { working_dir: workingDir, current_ticket: null };
     const invocation = { cmd: 'claude', args: [], backend: 'claude' };
     const statePath = path.join(sessionDir, 'state.json');
-    const env = createIterationSpawnEnv(state, 'claude', invocation, statePath, {}, sessionDir);
+    const env = withCleanTrailerEnv(() =>
+      createIterationSpawnEnv(state, 'claude', invocation, statePath, {}, sessionDir),
+    );
 
     assert.equal('PICKLE_TICKET_ID' in env, false);
     assert.equal('GIT_CONFIG_COUNT' in env, false);
     assert.equal('GIT_CONFIG_KEY_0' in env, false);
   } finally {
+    cleanDir(workingDir);
+    cleanDir(sessionDir);
+  }
+});
+
+// --- The nested-spawn shape the four cases above deliberately strip ---
+//
+// Stripping the ambient fragment keeps those cases honest, but the stripped state is not the
+// state a deployed worker runs in. This case asserts the real nested shape instead of leaving
+// it untested: a worker spawned from a manager that already exported the fragment must compose
+// at the NEXT index and re-key PICKLE_TICKET_ID to the ticket actually in flight.
+
+test('buildWorkerSpawnEnv: a spawn nested under an inherited fragment composes at the next index', () => {
+  const workingDir = mkTmpDir('trailer-env-nested-');
+  const sessionDir = mkTmpDir('trailer-env-nested-session-');
+  const saved = {
+    GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
+    GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0,
+    GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0,
+    PICKLE_TICKET_ID: process.env.PICKLE_TICKET_ID,
+  };
+  try {
+    initGitRepo(workingDir);
+
+    // What the manager exported on the outer spawn.
+    process.env.GIT_CONFIG_COUNT = '1';
+    process.env.GIT_CONFIG_KEY_0 = 'core.hooksPath';
+    process.env.GIT_CONFIG_VALUE_0 = path.join(sessionDir, 'git-trailer-hooks');
+    process.env.PICKLE_TICKET_ID = 'outerticket';
+
+    const ctx = {
+      args: { backend: 'claude' },
+      sessionRoot: sessionDir,
+      sessionWorkingDir: workingDir,
+      ticketId: 'innerticket',
+      timeoutStatePath: null,
+      workerStatePath: path.join(sessionDir, 'worker-state.json'),
+    };
+    const env = buildWorkerSpawnEnv(ctx, { cmd: 'claude', args: [], backend: 'claude' });
+
+    assert.equal(env.GIT_CONFIG_COUNT, '2');
+    assert.equal(env.GIT_CONFIG_KEY_1, 'core.hooksPath');
+    assert.equal(env.GIT_CONFIG_KEY_0, 'core.hooksPath', 'inherited index 0 is left untouched');
+    // The ticket in flight wins over whatever the parent was working on.
+    assert.equal(env.PICKLE_TICKET_ID, 'innerticket');
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
     cleanDir(workingDir);
     cleanDir(sessionDir);
   }
