@@ -974,3 +974,88 @@ test('R-WSRC-GR quoted-verb: worker still approves quoted commit message contain
   });
   assert.equal(result.decision, 'approve');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER10-01 — `bash -c '<cmd>'` command-string unwrap
+//
+// The segment tokenizer preserves a quoted span as ONE token, so for
+// `bash -c "git reset --hard"` the only executable the leading-command
+// detectors ever saw was the `-c` FLAG: execTokenIndex skipped the `bash`
+// wrapper and landed on `-c`, `execName('-c') !== 'git'`, and the destructive
+// reset was APPROVED while the bare `git reset --hard` blocked. The sibling
+// state-write gate never had this gap — its tokenizer splits ON quotes, so
+// `bash -c "echo x > state.json"` always blocked. A one-sided parity gap.
+//
+// Each block case is paired with its bare-form twin (already covered above) and
+// with a benign `bash -c` case, so these cannot pass by blanket-blocking any
+// command containing `bash -c`.
+// ---------------------------------------------------------------------------
+
+for (const { label, command, expect: expected } of [
+  { label: 'git reset --hard (double-quoted)', command: 'bash -c "git reset --hard"', expect: /reset/ },
+  { label: 'git reset --hard (single-quoted)', command: "bash -c 'git reset --hard'", expect: /reset/ },
+  { label: 'sh -c git push', command: 'sh -c "git push origin main"', expect: /push/ },
+  { label: 'bash -lc git stash', command: 'bash -lc "git stash"', expect: /stash/ },
+  { label: 'absolute-path bash -c', command: '/bin/bash -c "git reset --hard"', expect: /reset/ },
+  { label: 'env-prefixed bash -c', command: 'PICKLE_ROLE=x bash -c "git rebase main"', expect: /rebase/ },
+  { label: 'chained inside the payload', command: 'bash -c "cd sub && git push origin main"', expect: /push/ },
+]) {
+  test(`AP-EXT-ITER10-01: worker blocks prohibited git verb via ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+}
+
+// The unwrap lands at the shared `splitShellSegments` seam, so the install.sh
+// detector inherits it too — pinned here so a future per-detector "fix" that
+// unwraps only the git chain is caught.
+test('AP-EXT-ITER10-01: worker blocks `bash -c "bash install.sh"`', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'bash -c "bash install.sh"' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC/);
+});
+
+// Non-tautology guards: the unwrap must not blanket-block `bash -c`, and must
+// stay scoped to worker-class roles.
+for (const { label, command } of [
+  { label: 'a benign build command', command: 'bash -c "npm run test:fast"' },
+  { label: 'a chained benign payload', command: 'bash -c "cd extension && npx tsc --noEmit"' },
+  { label: 'an allowed path-mode checkout', command: 'bash -c "git checkout -- src/foo.ts"' },
+  { label: 'a plain commit', command: 'bash -c "git commit -m fix"' },
+]) {
+  test(`AP-EXT-ITER10-01: worker still approves ${label} under bash -c`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve');
+  });
+}
+
+test('AP-EXT-ITER10-01: manager context is unaffected by the unwrap', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'bash -c "git reset --hard"' },
+    extraEnv: { PICKLE_ROLE: 'manager' },
+  });
+  assert.equal(result.decision, 'approve');
+});

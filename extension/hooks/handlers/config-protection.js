@@ -463,8 +463,15 @@ const SHELL_SEGMENT_SEPARATORS = new Set(['&&', '||', '|', '&', ';', '\n']);
  * evaluated independently so a prohibited verb in ANY position is caught.
  * Over-segmentation is fail-safe: only prohibited verbs/`install.sh` are
  * matched, so benign chained commands (`cd x && git add .`) still pass.
+ *
+ * Finally, a `bash -c '<cmd>'` / `sh -lc "<cmd>"` payload is itself expanded
+ * into segments (`expandShellCommandStrings`). The quote-preserving tokenizer
+ * keeps `<cmd>` as ONE token, so without the unwrap the only executable the
+ * detectors ever see is the `-c` FLAG — `bash -c "git reset --hard"` approved
+ * while the bare form blocked. Unwrapping here rather than in each detector is
+ * what keeps the three of them from drifting apart again.
  */
-function splitShellSegments(command) {
+function splitShellSegments(command, depth = 0) {
     // `\n` is matched as its own alternative BEFORE `\S+` so an unquoted newline
     // becomes a boundary token; `"[^"]*"`/`'[^']*'` span newlines (negated class
     // includes `\n`), so a newline inside a quoted commit message is preserved.
@@ -497,7 +504,54 @@ function splitShellSegments(command) {
     }
     if (current.length > 0)
         segments.push(current.join(' '));
-    return segments.length > 0 ? segments : [command];
+    return expandShellCommandStrings(segments.length > 0 ? segments : [command], depth);
+}
+/**
+ * Bounded so a pathological `bash -c "bash -c ..."` nest cannot spin the hook;
+ * three levels is far past any real worker command.
+ */
+const MAX_SHELL_COMMAND_STRING_DEPTH = 3;
+/** `-c`, and the combined forms a login/exec shell takes (`-lc`, `-ec`, `-xc`). */
+const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
+/**
+ * Returns the command-string payload of a `bash -c '<cmd>'` segment, or null
+ * when the segment is not a shell command-string invocation. Reuses the same
+ * env-assignment prelude and `isShellWrapper` fold as `execTokenIndex`, so
+ * `PICKLE_ROLE=x /bin/bash -lc '<cmd>'` resolves like every other exec token.
+ */
+function shellCommandStringPayload(segment) {
+    const tokens = tokenizeGitCommand(segment);
+    let idx = 0;
+    while (idx < tokens.length && ENV_ASSIGNMENT_RE.test(tokens[idx]))
+        idx++;
+    if (!isShellWrapper(tokens[idx]))
+        return null;
+    let sawCommandStringFlag = false;
+    for (idx++; idx < tokens.length; idx++) {
+        if (tokens[idx].startsWith('-')) {
+            sawCommandStringFlag ||= SHELL_COMMAND_STRING_FLAG_RE.test(tokens[idx]);
+            continue;
+        }
+        return sawCommandStringFlag ? tokens[idx] : null;
+    }
+    return null;
+}
+/**
+ * Appends each `-c` payload's own segments after the wrapper segment. The
+ * wrapper is KEPT (fail-safe: never removes a segment a detector already saw),
+ * so `bash install.sh` — which carries no `-c` — is untouched.
+ */
+function expandShellCommandStrings(segments, depth) {
+    if (depth >= MAX_SHELL_COMMAND_STRING_DEPTH)
+        return segments;
+    const expanded = [];
+    for (const segment of segments) {
+        expanded.push(segment);
+        const payload = shellCommandStringPayload(segment);
+        if (payload !== null)
+            expanded.push(...splitShellSegments(payload, depth + 1));
+    }
+    return expanded;
 }
 /** True when the token is a `bash`/`sh` wrapper to be skipped before the real exec. */
 function isShellWrapper(token) {
