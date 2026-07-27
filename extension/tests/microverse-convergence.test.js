@@ -38,6 +38,7 @@ import {
     emitJudgeParseDiagnostic,
     emitJudgeLedgerDiagnostic,
     emitJudgeLegacyShapeDiagnostic,
+    handleNoCommitStall,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
 
@@ -1004,5 +1005,95 @@ test('AC-JPCM-10: parseLlmJudgeOutput stays a pure query on the legacy path too'
         if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
         else process.env.PICKLE_DATA_ROOT = previousDataRoot;
         fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// AC-JPCM-8 — the no-commit stall exit must not mislabel a give-up as success
+//
+// `isConverged` is three-valued ('target' | 'stall' | null) precisely so its
+// consumers can tell "the metric arrived" from "the loop ran out of patience"
+// (ticket 25fa1aed). `evaluateIterationOutcome` honored that; the no-commit
+// stall path re-collapsed it to a boolean and returned 'converged' either way
+// — a phase that stopped committing at score 2 against target 0 reported
+// success, exit code 0. Both sites now route through one mapper.
+//
+// These drive the COMPILED bin/ mirror, which is the artifact the runner
+// actually executes, so no separate source-vs-mirror anchor is needed.
+// ---------------------------------------------------------------------------
+
+function makeLowerIsBetterState({ stallLimit, convergenceTarget, lastScore, stallCounter }) {
+    const state = createMicroverseState({
+        prdPath: 'prd.md',
+        metric: {
+            description: 'violations',
+            validation: 'count',
+            type: 'llm',
+            tolerance: 0,
+            timeout_seconds: 60,
+            direction: 'lower',
+        },
+        stallLimit,
+        convergenceTarget,
+    });
+    state.status = 'iterating';
+    state.baseline_score = 10;
+    state.convergence.stall_counter = stallCounter;
+    state.convergence.history = [makeEntry(1, lastScore, 'accept')];
+    return state;
+}
+
+// A missing iteration log classifies 'stall' (not clean_pass / amnesiac), which
+// is the branch that used to hard-code 'converged'. Leaving pre/postIterSha off
+// ctx keeps classifyStall null, so the stall path writes nothing to the
+// operator's real activity log.
+function runNoCommitStall(state, sessionDir) {
+    return handleNoCommitStall(
+        state,
+        { sessionDir, log: () => {} },
+        path.join(sessionDir, 'no-such-iteration.log'),
+    );
+}
+
+test('AC-JPCM-8: a no-commit exit that exhausts stall_limit below target reports stalled_below_target', async () => {
+    const sessionDir = makeTmpDir();
+    try {
+        const state = makeLowerIsBetterState({
+            stallLimit: 5,
+            convergenceTarget: 0,
+            lastScore: 2, // ABOVE the target of 0 — the metric never arrived
+            stallCounter: 4, // the recordStall inside takes it to 5 == stall_limit
+        });
+
+        const result = await runNoCommitStall(state, sessionDir);
+
+        assert.equal(state.convergence.stall_counter, 5, 'precondition: stall_limit reached');
+        assert.equal(isConverged(state), 'stall', 'precondition: the stall branch fired, not target');
+        assert.equal(
+            result,
+            'stalled_below_target',
+            'score 2 against target 0 is a give-up, not a convergence — `converged` here is the AC-JPCM-8 mislabel',
+        );
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+test('AC-JPCM-8: a no-commit exit that DID reach the target still reports converged', async () => {
+    const sessionDir = makeTmpDir();
+    try {
+        const state = makeLowerIsBetterState({
+            stallLimit: 5,
+            convergenceTarget: 0,
+            lastScore: 0, // AT the target
+            stallCounter: 0, // recordStall takes it to 1, well under the limit
+        });
+
+        const result = await runNoCommitStall(state, sessionDir);
+
+        assert.equal(isConverged(state), 'target', 'precondition: the target branch fired');
+        assert.equal(result, 'converged', 'a genuine target hit must not be demoted by the honesty fix');
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 });

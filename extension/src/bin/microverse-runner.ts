@@ -3716,6 +3716,17 @@ export function currentExitForFailureHistory(state: MicroverseState, ctx: RunCon
   return null;
 }
 
+/**
+ * The ONE mapping from `isConverged`'s three-valued verdict to an exit reason.
+ *
+ * `'stall'` means the loop ran out of patience, NOT that the metric reached its
+ * target — reporting it as `converged` is the mislabel AC-JPCM-8 forbids. Both
+ * convergence-exit sites route through here so the two cannot drift again.
+ */
+function convergenceExitReason(branch: 'target' | 'stall'): ExitReason {
+  return branch === 'target' ? 'converged' : 'stalled_below_target';
+}
+
 export async function handleNoCommitStall(
   state: MicroverseState,
   ctx: RunContext,
@@ -3751,8 +3762,9 @@ export async function handleNoCommitStall(
   writeMicroverseState(ctx.sessionDir, state);
   const convergedBranch = isConverged(state);
   if (convergedBranch) {
-    ctx.log('Converged (stall limit reached with no new commits)');
-    return 'converged';
+    const exitReason = convergenceExitReason(convergedBranch);
+    ctx.log(`${exitReason} (stall limit reached with no new commits)`);
+    return exitReason;
   }
   await _deps.sleep(1000);
   return null;
@@ -4287,8 +4299,9 @@ async function handleMetricMode(
   maybeEmitConsecutiveNoProgressWarning(state, ctx.sessionDir);
   const convergedBranch = isConverged(state);
   if (!convergedBranch) return null;
-  ctx.log(`Converged after ${ctx.iteration} iterations (${convergedBranch === 'target' ? `target=${state.convergence_target} reached` : `stall_counter=${state.convergence.stall_counter}`})`);
-  return convergedBranch === 'target' ? 'converged' : 'stalled_below_target';
+  const exitReason = convergenceExitReason(convergedBranch);
+  ctx.log(`${exitReason} after ${ctx.iteration} iterations (${convergedBranch === 'target' ? `target=${state.convergence_target} reached` : `stall_counter=${state.convergence.stall_counter}`})`);
+  return exitReason;
 }
 
 async function handleManagerErrorOutcome(ctx: RunContext): Promise<ExitReason | 'continue'> {
