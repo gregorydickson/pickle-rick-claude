@@ -22,7 +22,7 @@ const { shouldSyncCodegraph } = await import(
 const { runCodegraphIndexAtSetup } = await import(
   path.resolve(__dirname, '../bin/setup.js')
 );
-const { writeIndexedHeadSha } = await import(
+const { writeIndexedHeadSha, CodegraphService } = await import(
   path.resolve(__dirname, '../services/codegraph-service.js')
 );
 
@@ -210,4 +210,57 @@ test('AC-GTRUTH-B1-3: sha mismatch (different-branch db) + fresh mtime → full,
   );
 
   assert.equal(calls().indexAllCalled, true, 'a sha-mismatch must resolve full (never noop) even with a fresh mtime');
+});
+
+// AC-GTRUTH-B1-4: the sidecar describes the db AT `dbPath`, so it must not outlive a db that
+// corruption-quarantine renamed away. `CodeGraph.init()` indexes only when passed `options.index`
+// (data/codegraph-api-inventory.json) and `defaultLoadImpl` passes none — so the rebuilt db is
+// EMPTY. A surviving sidecar then makes `cgResolveIndexAction` read sha-match + fresh mtime and
+// resolve `noop`, and every worker queries an empty graph with no degrade signal.
+function corruptOnIndexImpl() {
+  return {
+    indexAll: async () => { throw new Error('database disk image is malformed'); },
+    sync: async () => ({}),
+    buildContext: async () => ({}),
+    close: () => {},
+  };
+}
+
+function rebuiltImpl() {
+  return { indexAll: async () => ({}), sync: async () => ({}), buildContext: async () => ({}), close: () => {} };
+}
+
+test('AC-GTRUTH-B1-4: corruption-quarantine must not orphan the sha sidecar → next setup resolves full, never noop', async () => {
+  const workDir = makeGtruthTmp();
+  const dbPath = createDb(workDir, 0);
+  writeIndexedHeadSha(dbPath, 'same-sha'); // the db really was indexed at this sha
+
+  // Drive a corrupt-classified op through the DEFAULT quarantine (real fs.renameSync) — every
+  // pre-existing quarantine fixture injects `deps.quarantine`, so this path had zero coverage.
+  const svc = CodegraphService.create(workDir, gtruthSettings(), {
+    impl: corruptOnIndexImpl(),
+    emit: () => {},
+    rebuild: async () => rebuiltImpl(),
+    withFileLock: async (fn) => fn(),
+    getHeadSha: () => 'same-sha',
+  });
+  await svc.indexAll();
+
+  assert.equal(fs.existsSync(dbPath), false, 'precondition: the corrupt db was renamed aside');
+  fs.writeFileSync(dbPath, ''); // the rebuild's init() re-creates an EMPTY db at the same path
+
+  const { impl, calls } = gtruthImpl();
+  await runCodegraphIndexAtSetup(
+    workDir,
+    gtruthSettings({ staleness_max_age_minutes: 30 }),
+    /* isResume */ true,
+    { impl, emit: () => {}, getHeadSha: () => 'same-sha' },
+    {},
+  );
+
+  assert.equal(
+    calls().indexAllCalled,
+    true,
+    'a rebuilt-empty index must resolve full; a surviving sidecar makes it noop over an EMPTY graph',
+  );
 });

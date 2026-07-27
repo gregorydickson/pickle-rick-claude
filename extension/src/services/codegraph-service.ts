@@ -160,6 +160,20 @@ export function writeIndexedHeadSha(dbPath: string, sha: string): void {
   }
 }
 
+/**
+ * Drop the indexed-HEAD sha. The sidecar describes the db AT `dbPath`, so it must not outlive a db
+ * that quarantine renamed away: the rebuild's `CodeGraph.init()` indexes only when passed
+ * `options.index` (it is not), so a surviving sidecar makes `cgResolveIndexAction` read sha-match +
+ * fresh mtime on an EMPTY index and resolve `noop`. Best-effort, like its writer.
+ */
+function discardIndexedHeadSha(dbPath: string): void {
+  try {
+    fs.rmSync(indexedHeadShaPath(dbPath), { force: true });
+  } catch {
+    // best-effort — quarantine succeeded regardless of sha bookkeeping
+  }
+}
+
 /** Lazy-load the upstream default bag (CJS dynamic re-export — must default-import). */
 async function loadCodegraphBag(): Promise<Record<string, unknown>> {
   const mod = (await import('@colbymchenry/codegraph')) as Record<string, unknown>;
@@ -478,9 +492,11 @@ export class CodegraphService {
   private quarantine(dbPath: string): void {
     if (this.deps.quarantine) {
       this.deps.quarantine(dbPath);
-      return;
+    } else {
+      fs.renameSync(dbPath, `${dbPath}.corrupt-${Date.now()}`);
     }
-    fs.renameSync(dbPath, `${dbPath}.corrupt-${Date.now()}`);
+    // Whichever implementation took the db away, its freshness sidecar goes with it.
+    discardIndexedHeadSha(dbPath);
   }
 
   private async rebuild(): Promise<CodegraphImpl | null> {
