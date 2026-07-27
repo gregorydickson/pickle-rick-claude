@@ -1775,41 +1775,74 @@ export function extractScore(output: string): number | null {
   return null;
 }
 
-function emitJudgeParseFailure(rawOutput: string, parseErrorMessage: string): void {
-  process.stderr.write(
-    `[microverse] judge_json_parse_failed ${JSON.stringify({ raw_output_truncated_512: rawOutput.slice(0, 512), parse_error_message: parseErrorMessage })}\n`,
-  );
-}
-
 function emptyJudgeResult(shape: JudgeResult['shape'], score: number | null = null): JudgeResult {
   return { score, violations: [], resolved: [], new: [], remaining: [], shape };
 }
 
 /**
+ * A parse that degraded: writes the live stderr diagnostic and carries the reason
+ * out on the result so the caller can log the durable activity event.
+ */
+function degradedJudgeResult(
+  shape: 'malformed' | 'partial',
+  rawOutput: string,
+  parseErrorMessage: string,
+): JudgeResult {
+  process.stderr.write(
+    `[microverse] judge_json_parse_failed ${JSON.stringify({ raw_output_truncated_512: rawOutput.slice(0, 512), parse_error_message: parseErrorMessage })}\n`,
+  );
+  return { ...emptyJudgeResult(shape), parse_error_message: parseErrorMessage };
+}
+
+/**
+ * Emit the registered `judge_json_parse_failed` activity event for a degraded parse.
+ *
+ * `parseLlmJudgeOutput` is a pure query and must stay that way — its unit tests call it
+ * directly, and an activity write there would append fabricated parse failures to the
+ * operator's real activity log on every test run, poisoning the one signal that says the
+ * violation ledger is dead. So the parser reports and the runtime seam records.
+ * No-op for a clean parse.
+ */
+export function emitJudgeParseDiagnostic(
+  judgeResult: JudgeResult,
+  rawOutput: string,
+  writeActivity: typeof logActivity = logActivity,
+): void {
+  if (judgeResult.parse_error_message === undefined) return;
+  writeActivity({
+    event: 'judge_json_parse_failed',
+    source: 'pickle',
+    ts: new Date().toISOString(),
+    gate_payload: {
+      raw_output_truncated_512: rawOutput.slice(0, 512),
+      parse_error_message: judgeResult.parse_error_message,
+    },
+  });
+}
+
+/**
  * Parse structured JSON from LLM judge output. Never throws.
  * Returns JudgeResult with shape discriminator: 'full' | 'legacy' | 'malformed' | 'partial'.
- * Activity events are emitted to stderr pending registration in R-SLLJ-6 (ticket 96402c0a).
+ * A degraded parse carries `parse_error_message`; `emitJudgeParseDiagnostic` turns that
+ * into the registered `judge_json_parse_failed` activity event at the runtime seam.
  */
 export function parseLlmJudgeOutput(rawOutput: string): JudgeResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawOutput);
   } catch (err) {
-    emitJudgeParseFailure(rawOutput, err instanceof Error ? err.message : String(err));
-    return emptyJudgeResult('malformed');
+    return degradedJudgeResult('malformed', rawOutput, err instanceof Error ? err.message : String(err));
   }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    emitJudgeParseFailure(rawOutput, 'parsed value is not an object');
-    return emptyJudgeResult('malformed');
+    return degradedJudgeResult('malformed', rawOutput, 'parsed value is not an object');
   }
 
   const obj = parsed as Record<string, unknown>;
 
   // Partial: violations key present but not an array
   if ('violations' in obj && !Array.isArray(obj.violations)) {
-    emitJudgeParseFailure(rawOutput, 'violations field is not an array');
-    return emptyJudgeResult('partial');
+    return degradedJudgeResult('partial', rawOutput, 'violations field is not an array');
   }
 
   const score = typeof obj.score === 'number' ? obj.score : null;
@@ -3440,6 +3473,7 @@ export async function measureAndClassifyIteration(
     if (llmOutcome.kind === 'failed') return { kind: 'failed', exitReason: llmOutcome.exitReason };
     metricResult = llmOutcome.metric;
     const judgeResult = parseLlmJudgeOutput(metricResult.raw);
+    emitJudgeParseDiagnostic(judgeResult, metricResult.raw);
     if (judgeResult.shape === 'full') {
       previousLedger = { resolved: [], new: [], remaining: state.violation_ledger?.map((entry) => entry.id) ?? [] };
       updateViolationLedger(state, judgeResult, ctx.iteration);

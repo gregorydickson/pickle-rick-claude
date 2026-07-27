@@ -1393,6 +1393,12 @@ export interface JudgeResult {
   new: string[];
   remaining: string[];
   shape: 'full' | 'legacy' | 'malformed' | 'partial';
+  /**
+   * Why the parse degraded, set on 'malformed'/'partial' only. Carried out of the
+   * parser so the runtime caller can emit `judge_json_parse_failed` without
+   * re-parsing; the parser itself stays free of activity-log I/O.
+   */
+  parse_error_message?: string;
 }
 
 export interface MicroverseSessionState {

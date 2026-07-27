@@ -30,7 +30,13 @@ import {
     writeMicroverseState,
     readMicroverseState,
 } from '../services/microverse-state.js';
-import { buildJudgePrompt, parseLlmJudgeOutput, extractScore } from '../bin/microverse-runner.js';
+import {
+    buildJudgePrompt,
+    parseLlmJudgeOutput,
+    extractScore,
+    emitJudgeParseDiagnostic,
+} from '../bin/microverse-runner.js';
+import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
 
 function makeTmpDir() {
     return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-conv-')));
@@ -544,4 +550,158 @@ test('AC-JPCM-5: a bare number is NOT mistaken for a structured result', () => {
     const result = parseLlmJudgeOutput('8');
     assert.notEqual(result.shape, 'full', 'a bare number must never classify as a structured judge result');
     assert.deepEqual(result.violations, []);
+});
+
+// ---------------------------------------------------------------------------
+// R-JPCM WS-2 — a dead ledger must be LOUD.
+//
+// `judge_json_parse_failed` was registered end-to-end months ago — union entry,
+// schema definition, top-level `oneOf` $ref, payload fixture — and had no
+// producer: the only emission was a bare `process.stderr.write`. So the one
+// signal that says "the violation ledger is dead" never reached the activity
+// log, /pickle-status, or metrics. Five emissions in one session were invisible
+// to an attentive operator, and the phase reported honest convergence.
+//
+// The parser stays a pure query: it reports the reason on its result, and the
+// runtime seam records the event. Putting the write in the parser would append
+// fabricated parse failures to the real activity log on every test run —
+// poisoning the exact signal this restores.
+// ---------------------------------------------------------------------------
+
+const ACTIVITY_SCHEMA = JSON.parse(
+    fs.readFileSync(new URL('../src/types/activity-events.schema.json', import.meta.url), 'utf8'),
+);
+
+function captureJudgeDiagnostics(rawOutput) {
+    const captured = [];
+    emitJudgeParseDiagnostic(parseLlmJudgeOutput(rawOutput), rawOutput, (event) => captured.push(event));
+    return captured;
+}
+
+function assertConformsToSchema(event) {
+    const definition = ACTIVITY_SCHEMA.definitions.judge_json_parse_failed;
+    for (const key of definition.required) {
+        assert.ok(key in event, `emitted event is missing schema-required key '${key}'`);
+    }
+    for (const key of definition.properties.gate_payload.required) {
+        assert.ok(key in event.gate_payload, `gate_payload is missing schema-required key '${key}'`);
+    }
+    assert.equal(event.event, definition.properties.event.const);
+}
+
+test('AC-JPCM-7: judge_json_parse_failed is registered AND reachable from the schema top-level oneOf', () => {
+    assert.ok(
+        VALID_ACTIVITY_EVENTS.includes('judge_json_parse_failed'),
+        'the event must be in VALID_ACTIVITY_EVENTS or the logger rejects it',
+    );
+    assert.ok(ACTIVITY_SCHEMA.definitions.judge_json_parse_failed, 'the schema must define the event');
+    // A definition without a top-level $ref is inert — it validates nothing.
+    assert.ok(
+        ACTIVITY_SCHEMA.oneOf.some((entry) => entry.$ref === '#/definitions/judge_json_parse_failed'),
+        'the definition must be referenced from the top-level oneOf',
+    );
+});
+
+test('AC-JPCM-7: a degraded parse emits exactly one schema-conformant judge_json_parse_failed', () => {
+    const captured = captureJudgeDiagnostics('not-json{garbage');
+
+    assert.equal(captured.length, 1, 'a malformed judge response must produce the registered event');
+    assertConformsToSchema(captured[0]);
+    assert.equal(captured[0].source, 'pickle');
+    assert.ok(
+        captured[0].gate_payload.parse_error_message.length > 0,
+        'the reason must travel from the parser, not be re-derived by the caller',
+    );
+});
+
+test('AC-JPCM-7: every degraded shape reaches the activity log, not just a failed JSON.parse', () => {
+    // Three distinct degrade paths, one event contract. The 'partial' and
+    // not-an-object arms parse cleanly as JSON — only the parser knows they
+    // starved the ledger.
+    const cases = [
+        ['not-json{garbage', 'malformed'],
+        ['8', 'malformed'],
+        [JSON.stringify({ score: 5, violations: 'oops' }), 'partial'],
+    ];
+    for (const [raw, expectedShape] of cases) {
+        assert.equal(parseLlmJudgeOutput(raw).shape, expectedShape, `${raw} must degrade as ${expectedShape}`);
+        const captured = captureJudgeDiagnostics(raw);
+        assert.equal(captured.length, 1, `${expectedShape} must emit the event`);
+        assertConformsToSchema(captured[0]);
+    }
+});
+
+test('AC-JPCM-7: a clean full-shape parse emits NOTHING', () => {
+    const raw = JSON.stringify({
+        score: 1,
+        violations: [{ id: 'a', severity: 'low', description: 'x' }],
+        resolved: [],
+        new: ['a'],
+        remaining: [],
+    });
+    assert.equal(parseLlmJudgeOutput(raw).shape, 'full');
+    assert.deepEqual(captureJudgeDiagnostics(raw), [], 'a healthy judge must not fire the dead-ledger alarm');
+});
+
+test('AC-JPCM-7: the event payload truncates raw judge output to 512 chars', () => {
+    const captured = captureJudgeDiagnostics('x'.repeat(1024));
+    assert.equal(captured.length, 1);
+    assert.equal(
+        captured[0].gate_payload.raw_output_truncated_512.length,
+        512,
+        'an unbounded raw judge response must not be copied into the activity log',
+    );
+});
+
+test('AC-JPCM-7: the diagnostic is WIRED at the runtime seam, in source and in the shipped mirror', () => {
+    // The bug being fixed is a producer that exists and is never called. A test
+    // that only exercises `emitJudgeParseDiagnostic` directly would stay green
+    // while the seam call is deleted — rebuilding the same defect one layer up.
+    // The compiled mirror is checked too: a source-only pin passes while the
+    // shipped runtime (which is what actually runs) has no emission.
+    const files = [
+        ['source', new URL('../src/bin/microverse-runner.ts', import.meta.url)],
+        ['compiled mirror', new URL('../bin/microverse-runner.js', import.meta.url)],
+    ];
+    for (const [label, fileUrl] of files) {
+        const body = fs.readFileSync(fileUrl, 'utf8');
+        const parseAt = body.indexOf('parseLlmJudgeOutput(metricResult.raw)');
+        assert.ok(parseAt !== -1, `${label}: the runtime judge-parse seam must exist`);
+        const emitAt = body.indexOf('emitJudgeParseDiagnostic(judgeResult, metricResult.raw)');
+        assert.ok(
+            emitAt > parseAt,
+            `${label}: the parse seam must emit judge_json_parse_failed — an unwired producer is the bug`,
+        );
+    }
+});
+
+test('AC-JPCM-7: parseLlmJudgeOutput stays a pure query — it writes no activity event', () => {
+    // The regression this guards: "simplifying" by calling logActivity inside
+    // the parser. Its unit tests call it directly, so every test run would
+    // append fabricated judge_json_parse_failed events to the operator's real
+    // activity log — making the restored signal untrustworthy.
+    const dataRoot = makeTmpDir();
+    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    process.stderr.write = () => true;
+    try {
+        const result = parseLlmJudgeOutput('not-json{garbage');
+        assert.equal(result.shape, 'malformed');
+        assert.equal(
+            typeof result.parse_error_message,
+            'string',
+            'the parser must REPORT the reason so the caller can log it',
+        );
+        assert.equal(
+            fs.existsSync(path.join(dataRoot, 'activity')),
+            false,
+            'parsing must not touch the activity log',
+        );
+    } finally {
+        process.stderr.write = originalWrite;
+        if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = previousDataRoot;
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
 });
