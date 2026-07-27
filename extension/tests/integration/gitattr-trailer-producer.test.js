@@ -257,6 +257,49 @@ test('gitattr trailer producer — nested spawn self-reference', async (t) => {
   });
 });
 
+// --- Idempotence across the `--trailer` FLAG, not just an in-message trailer (R-GTDT) ---
+//
+// The AC-GA-2 case above pre-stamps the trailer inside `-m`, so the hook sees it and no-ops. That
+// shape cannot catch the one observed live: commit `271587ae` in session 2026-07-26-013335ff landed
+// TWO Pickle-Ticket trailers because the worker used `git commit --trailer` while PICKLE_TICKET_ID
+// was also set. Git applies `--trailer` via interpret-trailers AFTER prepare-commit-msg runs, so the
+// hook's `^Pickle-Ticket:` guard would inspect a message not yet containing the flag's value and
+// append a second one. AC-GA-1 says exactly one trailer; only this ordering exercises that.
+//
+// The two values are deliberately DIFFERENT, reproducing 271587ae's exact signature
+// (`a026c5cc` + `ticket-model-recovered-off`). Same-value inputs cannot fail this: git's default
+// `trailer.ifExists = addIfDifferentNeighbor` silently swallows an identical adjacent trailer, so a
+// same-value case stays green even with the idempotence guard deleted — it proves nothing.
+test('gitattr trailer producer — a --trailer flag and a DIFFERENT PICKLE_TICKET_ID stamp only once', () => {
+  const repoRoot = tmpRoot('gitattr-flag-idem-');
+  const managedDir = path.join(tmpRoot('gitattr-flag-idem-managed-'), 'hooks');
+  initGitRepo(repoRoot);
+
+  assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+
+  fs.writeFileSync(path.join(repoRoot, 'two.txt'), 'two');
+  git(['add', '-A'], repoRoot);
+  git(
+    ['commit', '--no-gpg-sign', '-q', '-m', 'fix: worker used the flag', '--trailer', 'Pickle-Ticket: a026c5cc'],
+    repoRoot,
+    hooksPathEnv(managedDir, { PICKLE_TICKET_ID: 'ticket-model-recovered-off' }),
+  );
+
+  const body = git(['log', '-1', '--format=%B'], repoRoot);
+  const occurrences = (body.match(/^Pickle-Ticket:/gm) ?? []).length;
+  assert.equal(
+    occurrences,
+    1,
+    `exactly one Pickle-Ticket trailer must survive — live commit 271587ae carried two, the second ` +
+    `a non-ticket string. Found ${occurrences}:\n${body}`,
+  );
+  assert.equal(
+    trailerValue(repoRoot),
+    'a026c5cc',
+    'the message\'s own trailer wins; the hook must no-op rather than overwrite or duplicate',
+  );
+});
+
 // --- Pre-existing trailers survive the stamp (ticket b34ec6d7 Finding 1, CRITICAL) ---
 
 test('gitattr trailer producer — stamping does not orphan a pre-existing trailer', () => {
