@@ -78,7 +78,25 @@ Commits made by this worker for ticket `6f95cff3`, with **no hand-written `Pickl
 the hook stamped them:
 
 <!-- WS5-SELF-SHA-ANCHOR -->
-_(filled in by the follow-up commit — a doc cannot quote its own SHA)_
+
+```
+$ git log -1 --format='%H%n%s' d6aa89f1
+d6aa89f1a3b078cec2e2e2e9daaac670f4af0b0f
+docs(git-trailer-hooks): record WS-5 live-run trailer evidence (ticket 6f95cff3)
+
+$ git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)' d6aa89f1
+6f95cff3
+
+$ git log -1 --format='%B' d6aa89f1 | grep -c '^Pickle-Ticket:'
+1
+```
+
+Exactly one `Pickle-Ticket:` paragraph, and git's parser returns `6f95cff3` — this worker's ticket. The
+commit was made with `git commit` and no hand-written trailer; the hook in §2 stamped it. This is the
+positive case that the empty-trailer commits in §4 act as the control for.
+
+(This commit — the one carrying §11 and BLOCKER 4 — cannot quote its own SHA for the same reason; its
+trailer is verifiable post-hoc with the same three commands.)
 
 ---
 
@@ -424,6 +442,37 @@ Suggested scope for a follow-up ticket (not done here): make `maybeAmendTicketTr
 `^Pickle-Ticket:` rather than for its own id, and make the `spawn-morty.test.js` fixtures hermetic
 (explicit `cwd` + `working_dir` on every real-binary spawn). Both are subtractive.
 
+**BLOCKER 4 — the bundle's own trailer-env tests are not hermetic against the env fragment the bundle
+injects.** Newly discovered by the §11 fast-tier run. Recorded, **not fixed**.
+
+`extension/tests/services/backend-spawn-trailer-env.test.js` asserts on how `core.hooksPath` and
+`PICKLE_TICKET_ID` are constructed in the spawn env, but it builds its *expected* env from the ambient
+environment of the process running it. Under a real pickle worker — which, by WS-1/WS-2 design, now
+carries exactly those variables — 5 of its 10 tests fail. In a clean env all 10 pass. This is the same
+A/B shown in §11:
+
+```
+GIT_CONFIG_COUNT=1
+GIT_CONFIG_KEY_0=core.hooksPath
+GIT_CONFIG_VALUE_0=<session>/git-trailer-hooks
+PICKLE_TICKET_ID=6f95cff3
+```
+
+WITH those set → `ERR_ASSERTION`, `actual: true, expected: false` ×5. WITHOUT them (`env -u …`) →
+`tests 10 / pass 10 / fail 0`.
+
+**Why it matters.** The worker lint gate runs `npm run test:fast` *inside a worker*. Once this bundle is
+deployed to the real root, every future ticket in this repo runs its gate in an env carrying these
+variables — so these 5 tests will false-RED the worker gate on tickets that changed nothing related to
+them. The bundle is self-hosting, and this is the self-hosting hazard: the feature's own presence in the
+environment breaks the feature's own tests. A false-RED worker gate is not a cosmetic failure; it is a
+gate that blocks unrelated work.
+
+Suggested scope for a follow-up ticket (not done here): make the test hermetic by clearing
+`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`, and `PICKLE_TICKET_ID` in its own setup
+before building the expected env, rather than trusting process ambient. Subtractive — it removes a
+dependency, it does not add a guard.
+
 ---
 
 ## 10. Criterion-by-criterion outcome
@@ -440,4 +489,124 @@ Suggested scope for a follow-up ticket (not done here): make `maybeAmendTicketTr
 ## 11. Fast tier
 
 <!-- WS5-FASTTIER-ANCHOR -->
-_(recorded by the follow-up commit)_
+
+**Verdict: NOT green.** The AC "Full fast tier green" is a **MISS**, and 5 of the failures are caused by
+this bundle. Raw output is captured at `<session>/6f95cff3/fasttier_run.txt`.
+
+`cd extension && npm run test:fast`, quoted from the run's own summary block
+(`fasttier_run.txt:12805-12812`):
+
+```
+ℹ tests 7132
+ℹ suites 481
+ℹ pass 7117
+ℹ fail 12
+ℹ cancelled 0
+ℹ skipped 2
+ℹ todo 1
+ℹ duration_ms 375362.762792
+EXIT=1
+```
+
+> **Count correction.** An earlier triage pass recorded this run as "5495 tests, 20 failures". Both numbers
+> are wrong and neither reproduces from the captured file. The **20** came from `grep -c '^✖ '`, which
+> counts the end-of-run `✖ failing tests:` recap block (12 lines) *plus* the in-body markers (7) *plus* the
+> `✖ failing tests:` header itself — double-counting every failure and adding two parent-suite markers
+> (`✖ downgrade flow`, `✖ force vs allow-downgrade matrix`) that are roll-ups of leaf failures already
+> counted. The **5495** corresponds to nothing in the summary; the test total is 7132. The authoritative
+> figures are node's own: **7132 tests, 12 failures**. The 12 leaf failures below sum exactly to `fail 12`,
+> which is the cross-check that the corrected classification is complete.
+
+### BLOCKER 3 did NOT recur on this run
+
+BLOCKER 3 (§9) is a test suite amending the real repo's tip. That is a hazard of *running the fast tier*,
+so HEAD was captured immediately before and after this run:
+
+```
+$ git rev-parse HEAD                # PRE-RUN  2026-07-27T00:39:47Z
+d6aa89f1a3b078cec2e2e2e9daaac670f4af0b0f
+$ git rev-parse HEAD                # POST-RUN 2026-07-27T00:47:08Z
+d6aa89f1a3b078cec2e2e2e9daaac670f4af0b0f
+
+$ git log -1 --format='%(trailers)' # both PRE and POST
+Pickle-Ticket: 6f95cff3
+
+$ git status --porcelain            # both PRE and POST — empty
+```
+
+Same SHA, same single correct trailer, clean tree at both ends
+(`fasttier_pre_git.txt` / `fasttier_post_git.txt`). **BLOCKER 3 did not recur during this run.** It remains
+a real latent hazard — the fixture window is narrow and this run simply did not land a commit inside it —
+but it is not the cause of any of the 12 failures below.
+
+### A/B triage of the 12 failures
+
+The ambient environment of the worker that ran the tier (`fasttier_env`/`ambient_env.txt`) is itself the
+variable under test:
+
+```
+GIT_CONFIG_COUNT=1
+GIT_CONFIG_KEY_0=core.hooksPath
+GIT_CONFIG_VALUE_0=/Users/…/sessions/2026-07-26-013335ff/git-trailer-hooks
+PICKLE_TICKET_ID=6f95cff3
+PICKLE_BACKEND=claude
+```
+
+Each cluster was re-run in isolation, with and without that env, using
+`cd extension && PATH="$PWD/node_modules/.bin:$PATH" node --test <file>` (the `PATH` prefix is required —
+a bare `node --test` drops `node_modules/.bin` and fabricates failures):
+
+| Test file | WITH ambient env | WITHOUT ambient env (`env -u …`) |
+|---|---|---|
+| `tests/services/backend-spawn-trailer-env.test.js` | **FAILS** — `ERR_ASSERTION`, `actual: true, expected: false` | `tests 10 / pass 10 / fail 0` |
+| `tests/downgrade-flow.test.js` | `tests 7 / pass 7 / fail 0` | `tests 7 / pass 7 / fail 0` |
+| `tests/force-vs-allow-downgrade.test.js` | — | `tests 5 / pass 5 / fail 0` |
+
+### Two disjoint classes
+
+All 12 leaf failures are quoted from the run's own `✖ failing tests:` recap block
+(`fasttier_run.txt:12814+`). 5 + 7 = 12 = `ℹ fail 12`, so the classification is complete with no
+unaccounted failure.
+
+**Class A — 5 failures, CAUSED BY THIS BUNDLE.** All in
+`extension/tests/services/backend-spawn-trailer-env.test.js`:
+
+```
+✖ backendEnvOverrides: materialization failure emits neither key and logs once
+✖ buildWorkerSpawnEnv (real worker spawn path): ticket in flight injects core.hooksPath + PICKLE_TICKET_ID
+✖ buildWorkerSpawnEnv (real worker spawn path): no ticket in flight injects neither key
+✖ createIterationSpawnEnv (real manager spawn path): ticket in flight injects core.hooksPath + PICKLE_TICKET_ID
+✖ createIterationSpawnEnv (real manager spawn path): no ticket in flight injects neither key
+```
+
+These are the bundle's own tests, and they fail only because the bundle's own env fragment is present in
+the process running them. This is **BLOCKER 4** (§9).
+
+**Class B — 7 failures, PRE-EXISTING, not caused by this bundle.** The downgrade /
+force-vs-allow-downgrade / check-update / install.sh cluster, quoted from the same recap block:
+
+```
+✖ downgrade.confirm-yes succeeds and writes audit entry with mode 0600
+✖ downgrade.override succeeds with active session and audit override_active true
+✖ downgrade.no-confirm skips prompt and succeeds
+✖ downgrade.closer-context bypasses active-session refusal and audits flag
+✖ allow-downgrade-only: check-update and install.sh
+✖ force-and-allow: check-update and install.sh
+✖ check-update normalizes inspected release version before downgrade decision
+```
+
+(The in-body `✖ downgrade flow` and `✖ force vs allow-downgrade matrix` markers are parent-suite roll-ups
+of these same leaves, not additional failures.) This classification was determined by **isolation runs,
+not by assumption**:
+
+- `downgrade-flow.test.js` passes 7/7 in isolation **both with and without** the ambient env — so the env
+  fragment this bundle injects is not the variable.
+- `force-vs-allow-downgrade.test.js` passes 5/5 in isolation.
+- `install.sh` is **unmodified on this branch** (`fasttier_provenance.txt`: the branch-vs-main diff for
+  `install.sh` is empty), and this bundle touches none of these files.
+- They match the known main-repo-only install-test class (these tests pass in a worktree and fail in the
+  main repo, at every commit).
+
+Class B is therefore out of scope for this ticket and is not laundered into a pass — it is simply not this
+bundle's regression. Class A is this bundle's, is recorded as BLOCKER 4, and is deliberately **not fixed**
+here per the ticket's "NOT in Scope".
