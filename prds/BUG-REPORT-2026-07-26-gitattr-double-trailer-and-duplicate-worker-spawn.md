@@ -34,7 +34,65 @@ Two distinct problems in one commit:
    `extension/src/` (grep returns nothing), so it is not a code identifier that leaked. It is a
    flag/state-shaped string that reached `PICKLE_TICKET_ID`.
 
-### Suspected mechanism (NOT yet confirmed — do not build on this without verifying)
+### ⚠️ MECHANISM CORRECTED 2026-07-27 — the suspicion below was WRONG, and the truth is worse
+
+Anatomy-park iteration 4 found the real root cause independently (`71d75cc8`), and I verified it at HEAD.
+**Keep the symptom, discard the "suspected mechanism" paragraph that follows.**
+
+**The real defect: producer and consumer read two different oracles.**
+`maybeAmendTicketTrailer`'s already-attributed guard tests a **word-boundary regex over raw `%B`**. The
+consumer `scanGitLogByTrailer` reads **git's PARSED trailer view** — and git parses trailers from the
+**last paragraph only**. So a ticket id appearing anywhere as **prose** satisfies the producer's guard, the
+stamp is skipped, no parsed trailer exists, evidence reads `absent`, and the Done-flip refuses
+`done_without_commit_evidence` — **the exact failure this bundle exists to eliminate, reproduced by the
+bundle's own fix.**
+
+**Verified live at HEAD** — 7 consecutive commits on this branch, every one carrying prose
+`(ticket 6b7c3b82)` and an EMPTY parsed trailer:
+
+```
+316a84e0 1f6e9005 ad78ab07 9c549191 732aaf44 3c3499ac cea3c316
+   parsed_trailer=[EMPTY]   prose=[ticket 6b7c3b82]      (all 7)
+```
+
+This is the **common** case, not an edge case: worker commit conventions routinely put `(ticket <hash>)` or
+`fix(<hash>):` in the subject. On exactly those commits the producer stamps nothing.
+
+**Why 8/10 tickets still went Done anyway — and why that is the dangerous part.** After ticket 50 deleted
+message inference, the trailer was supposed to be the attribution channel. It was largely inert, and the
+**explicit `completion_commit` frontmatter field (R-RIC-EXPLICIT) silently covered for it.** An older
+mechanism masked the new one's failure, so every green signal in this run overstates how well the trailer
+works. Silence was not success.
+
+**Second half of the same theme:** the `-m message -m trailer` amend opens a new paragraph, **demoting
+pre-existing trailers** (`Co-Authored-By`, `Signed-off-by`) to body prose — reproduced end-to-end. That is
+also the true source of the `271587ae` double-trailer symptom below.
+
+### The fix exists, is mutation-verified, and CANNOT LAND — scope-fenced
+
+One uniform oracle (parsed-view guard + `git interpret-trailers`), each half independently
+mutation-verified RED. Preserved at:
+
+```
+<SESSION_ROOT>/extension/AP-EXT-ITER4-01-verified-fix.patch   (15 KB)
+```
+
+It was reverted per the Phase-2 scope-preflight protocol because
+`extension/tests/spawn-morty-commit-attribution.test.js:116` **asserts the bug as the contract** —
+
+```js
+test('tip already word-boundary-tagged with the ticket id is NOT amended', …)
+```
+
+— and that file is **absent from all 313 `allowed_paths`** in this session's `scope.json` (verified).
+The worker behaved correctly: it refused to edit out of scope and cataloged an honest OPEN GAP with
+`ENFORCE: none` rather than claiming a false one.
+
+**RELEASE BLOCKER.** This bundle's central deliverable does not work for the common commit shape. It must
+be resolved before B-GITATTR can be called done — the fix is written, so the remaining work is landing it,
+not designing it.
+
+### Superseded suspicion (retained to show the correction)
 
 `271587ae`'s own commit body says the worker used `git commit --trailer`. If git applies `--trailer` via
 `interpret-trailers` **after** `prepare-commit-msg` runs, the hook's `^Pickle-Ticket:` idempotence check
