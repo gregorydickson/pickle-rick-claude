@@ -124,6 +124,60 @@ test('anchor reconciliation: no DELETED_SYMBOLS member is named in src/services/
   }
 });
 
+// --- Serialization pin for the bundle's git-heavy integration tests (AC-GA-5 / §4c) ---
+//
+// AC-5's stated verify command cannot observe this: audit-subprocess-heavy-tests.sh matches only
+// `spawnSync('bash'|'sh', ...)` with a short timeout, so every `execFileSync('git', ...)` in this
+// bundle is invisible to it and the audit passes whether or not these files stay serialized. This
+// case is the actual observation.
+//
+// Scoped to THIS bundle's three git-heavy files, deliberately not repo-wide: measured 2026-07-26,
+// 192 test files under extension/tests/ spawn real git and 173 of them are not
+// (@tier: integration AND manifested) — including every sibling nostop-gates-*.test.js,
+// mux-runner.test.js and setup.test.js. A universal assertion would encode a convention the repo
+// does not follow. The repo's real rule is flake-driven (extension/CLAUDE.md, "Serial-manifest
+// hygiene principle"); these three do heavy real-commit work and are already serialized, and this
+// pin keeps them that way.
+const SERIALIZED_GIT_HEAVY_TESTS = [
+  'tests/integration/gitattr-trailer-producer.test.js',
+  'tests/integration/gitattr-hook-forwarding.test.js',
+  'tests/integration/gitattr-trailer-consumer.test.js',
+];
+
+const SERIAL_REASON_CLASSES = new Set([
+  'real-repo-isolation',
+  'subprocess-timeout-coupling',
+  'process-global-state',
+  'subprocess-spawn-timing',
+  'load-dependent-timeout',
+]);
+
+test('serialization pin: the bundle\'s git-heavy tests stay @tier: integration and serialized', () => {
+  const manifest = JSON.parse(readRepoFile('tests/integration/.serial-tests.json'));
+  const reasons = JSON.parse(readRepoFile('tests/integration/.serial-tests.reasons.json')).reasons;
+  const entries = new Set(manifest.entries);
+
+  for (const rel of SERIALIZED_GIT_HEAVY_TESTS) {
+    const header = readRepoFile(rel).split('\n', 1)[0];
+    assert.match(
+      header,
+      /^\/\/ @tier: integration$/,
+      `${rel} drives real git commits and must stay @tier: integration — the test-runner selects by ` +
+      `tier BEFORE applying the serial manifest, so a fast-tier entry never serializes. Found: ${header}`,
+    );
+    assert.ok(
+      entries.has(rel),
+      `${rel} is missing from tests/integration/.serial-tests.json — it would run at ` +
+      '--test-concurrency=8 and starve. audit-subprocess-heavy-tests.sh cannot catch this: it ' +
+      'matches only bash/sh spawns, never execFileSync(\'git\').',
+    );
+    assert.ok(
+      SERIAL_REASON_CLASSES.has(reasons[rel]),
+      `${rel} needs a .serial-tests.reasons.json entry in the five-class allowlist, found: ${reasons[rel]}`,
+    );
+  }
+});
+
 /**
  * Every trap-door catalog: the extension root's own, plus one per subsystem under `src/`.
  *
