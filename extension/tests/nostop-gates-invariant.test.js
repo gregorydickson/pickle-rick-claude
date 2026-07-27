@@ -120,8 +120,14 @@ function tmpDir(prefix) {
   return dir;
 }
 
+// Hang guard, NOT a perf assertion (extension/CLAUDE.md, serial-manifest hygiene principle): an
+// unbounded execFileSync here can wedge the whole tier forever. 30s rather than the 15s the
+// already-serialized gitattr integration files use, because this file stays @tier: fast and runs at
+// --test-concurrency=8 — never shrink it to make a load-starved run pass.
+const GIT_TIMEOUT_MS = 30_000;
+
 function git(args, cwd) {
-  return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: GIT_TIMEOUT_MS }).trim();
 }
 
 function makeRepo() {

@@ -15,28 +15,38 @@ import path from 'node:path';
 
 import { readEvidence } from '../../services/ticket-completion-evidence.js';
 
+// Hang guard, not a perf assertion (extension/CLAUDE.md serial-manifest hygiene) — this file is
+// already serialized via tests/integration/.serial-tests.json, so it matches the 15s its two
+// gitattr integration siblings use rather than the wider budget the c=8 fast-tier files need.
+// Never shrink it to make a loaded run pass.
+const GIT_TIMEOUT_MS = 15_000;
+
 function mkTmp(prefix = 'pickle-gitattr-') {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
+function git(args, dir, extra = {}) {
+  return execFileSync('git', args, { cwd: dir, timeout: GIT_TIMEOUT_MS, ...extra });
+}
+
 function initGitRepo(dir) {
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
+  git(['init', '-q'], dir, { stdio: 'ignore' });
+  git(['config', 'user.email', 'test@example.com'], dir);
+  git(['config', 'user.name', 'Test User'], dir);
   fs.writeFileSync(path.join(dir, 'README.md'), 'fixture\n');
-  execFileSync('git', ['add', 'README.md'], { cwd: dir });
-  execFileSync('git', ['commit', '-q', '-m', 'initial', '--no-gpg-sign'], { cwd: dir, stdio: 'ignore' });
+  git(['add', 'README.md'], dir);
+  git(['commit', '-q', '-m', 'initial', '--no-gpg-sign'], dir, { stdio: 'ignore' });
 }
 
 function makeCommit(dir, msg, trailerValue = null) {
   const file = path.join(dir, `${Date.now()}_${Math.random().toString(36).slice(2)}.txt`);
   fs.writeFileSync(file, 'work\n');
-  execFileSync('git', ['add', path.basename(file)], { cwd: dir });
+  git(['add', path.basename(file)], dir);
   const args = ['commit', '-q', '-m', msg];
   if (trailerValue !== null) args.push('--trailer', `Pickle-Ticket: ${trailerValue}`);
   args.push('--no-gpg-sign');
-  execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
-  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  git(args, dir, { stdio: 'ignore' });
+  return git(['rev-parse', 'HEAD'], dir, { encoding: 'utf8' }).trim();
 }
 
 function writeTicket(sessionDir, ticketId, { title = 'fixture ticket', completionCommit = null } = {}) {
