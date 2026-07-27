@@ -565,6 +565,32 @@ describe('discoverSubsystems', () => {
     assert.deepEqual(result.map(s => s.name), ['alpha', 'middle', 'zebra']);
     fs.rmSync(root, { recursive: true });
   });
+
+  // Repo-root bin/ sits at EXACTLY the 3-source-file floor, and dropping below it
+  // removes the whole subsystem from anatomy-park silently. Every sibling test above
+  // builds a synthetic fixture, so none of them reads the shipped tree; the per-file
+  // bin tests don't cover it either, because deleting a script TOGETHER with its test
+  // is green (980656c7 did exactly that, taking bin/ from 4 to 3). Mirror the real
+  // listing into a small root: the subject stays the shipped file set, while the walk
+  // stays milliseconds instead of the ~12s a full repo-root walk costs.
+  test('the real bin/ still clears the subsystem-enumeration floor', () => {
+    const root = tmpDir();
+    try {
+      const mirror = path.join(root, 'bin');
+      fs.cpSync(new URL('../../bin/', import.meta.url), mirror, { recursive: true });
+      const listing = fs.readdirSync(mirror);
+
+      assert.ok(
+        discoverSubsystems(root).some(s => s.name === 'bin'),
+        `repo-root bin/ fell out of anatomy-park scope — [${listing.join(', ')}] carries fewer `
+        + 'than the 3 source files discoverSubsystems requires (.sh does NOT count, so '
+        + 'release-gate.sh is invisible to it). Every release-critical script in bin/ is now '
+        + 'unreviewed by anatomy-park. Restore a source file, or lower the floor deliberately.',
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
