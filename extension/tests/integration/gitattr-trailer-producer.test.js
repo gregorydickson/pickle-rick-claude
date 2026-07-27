@@ -244,6 +244,39 @@ test('gitattr trailer producer — nested spawn self-reference', async (t) => {
   });
 });
 
+// --- Pre-existing trailers survive the stamp (ticket b34ec6d7 Finding 1, CRITICAL) ---
+
+test('gitattr trailer producer — stamping does not orphan a pre-existing trailer', () => {
+  const repoRoot = tmpRoot('gitattr-coexist-');
+  const managedDir = path.join(tmpRoot('gitattr-coexist-managed-'), 'hooks');
+  initGitRepo(repoRoot);
+
+  assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+
+  // git parses trailers out of the LAST paragraph only. A `printf '\nPickle-Ticket: …'`
+  // append opens a NEW paragraph, demoting this Co-Authored-By to body prose — it stays
+  // present in %B, so only %(trailers:…) can see the damage. Asserting on %B here would
+  // false-PASS against the very bug this pins.
+  fs.writeFileSync(path.join(repoRoot, 'two.txt'), 'two');
+  git(['add', '-A'], repoRoot);
+  git(
+    [
+      'commit', '--no-gpg-sign', '-q',
+      '-m', 'feat: work that already credits a co-author\n\nCo-Authored-By: Someone <someone@example.com>',
+    ],
+    repoRoot,
+    hooksPathEnv(managedDir, { PICKLE_TICKET_ID: 'b34ec6d7' }),
+  );
+
+  const coAuthor = git(
+    ['log', '-1', '--format=%(trailers:key=Co-Authored-By,valueonly)'],
+    repoRoot,
+  ).trim();
+
+  assert.equal(coAuthor, 'Someone <someone@example.com>', 'the pre-existing trailer must still parse');
+  assert.equal(trailerValue(repoRoot), 'b34ec6d7', 'and ours must parse alongside it');
+});
+
 // --- Shell-injection guard (ticket 8f7e1cf2 Test Expectations) ---
 
 test('gitattr trailer producer — a ticket id cannot break out of the hook script', () => {
@@ -254,8 +287,10 @@ test('gitattr trailer producer — a ticket id cannot break out of the hook scri
 
   assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
 
-  // The id never reaches the script as source: it travels by env and is consumed by
-  // `printf '%s'`. Even a payload that would break out of any interpolated form stays inert.
+  // The id never reaches the script as source: it travels by env and is consumed as a
+  // single argv token (`git interpret-trailers --trailer "Pickle-Ticket: $PICKLE_TICKET_ID"`,
+  // or `printf '%s'` on the fallback arm). Either way a payload that would break out of an
+  // interpolated form stays inert.
   const hostileId = `abc'; touch ${marker}; #`;
   fs.writeFileSync(path.join(repoRoot, 'two.txt'), 'two');
   git(['add', '-A'], repoRoot);

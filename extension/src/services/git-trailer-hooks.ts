@@ -145,6 +145,20 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * The trailer is written with `git interpret-trailers`, git's own trailer WRITER —
+ * symmetric with the `%(trailers:key=Pickle-Ticket,valueonly)` READER the consumer
+ * uses. A bare `printf '\nPickle-Ticket: …' >> "$1"` is NOT equivalent: git parses
+ * trailers out of the LAST paragraph only, so an unconditional leading newline opens
+ * a NEW paragraph and silently demotes every pre-existing trailer
+ * (`Co-Authored-By`, `Signed-off-by`, `Resolves`) to body prose. The line is still
+ * there in `%B`, so a substring grep cannot see the damage — only `%(trailers:…)` can.
+ *
+ * Re-deriving git's paragraph rules in `sh` would be a second, drifting copy of its
+ * parser; delegating keeps one implementation. The `printf` form survives ONLY as the
+ * fallback arm: if `interpret-trailers` cannot run, degrade to the old append rather
+ * than to no attribution at all.
+ */
 function buildTrailerHookScript(originalPrepareCommitMsgAbsPath: string | null): string {
   const forward = originalPrepareCommitMsgAbsPath
     ? `exec ${shellQuote(originalPrepareCommitMsgAbsPath)} "$@"`
@@ -157,7 +171,9 @@ function buildTrailerHookScript(originalPrepareCommitMsgAbsPath: string | null):
     'if grep -q \'^Pickle-Ticket:\' "$1" 2>/dev/null; then',
     `  ${forward}`,
     'fi',
-    'printf \'\\nPickle-Ticket: %s\\n\' "$PICKLE_TICKET_ID" >> "$1"',
+    'if ! git interpret-trailers --in-place --trailer "Pickle-Ticket: $PICKLE_TICKET_ID" "$1" 2>/dev/null; then',
+    '  printf \'\\nPickle-Ticket: %s\\n\' "$PICKLE_TICKET_ID" >> "$1"',
+    'fi',
     forward,
     '',
   ].join('\n');
