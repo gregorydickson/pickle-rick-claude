@@ -387,3 +387,90 @@ test('gitattr trailer producer — a ticket id cannot break out of the hook scri
   assert.equal(fs.existsSync(marker), false, 'injected command must not execute');
   assert.equal(trailerValue(repoRoot), hostileId, 'the id must land literally');
 });
+
+// --- AP-EXT-ITER2-01: the idempotence guard must read the CONSUMER's oracle ---
+
+// The guard used to be a whole-file `grep '^Pickle-Ticket:'`. git parses trailers out of the
+// LAST paragraph ONLY, so a `Pickle-Ticket:` line earlier in the body satisfied the grep, the
+// hook skipped, and `%(trailers:key=Pickle-Ticket)` — the exact reader `scanGitLogByTrailer`
+// uses — then reported NOTHING. Attribution silently lost with the id sitting in plain sight
+// in %B; since WS-3 deleted message inference, the trailer scan is the ONLY git-log arm, so
+// readEvidence returns `absent` and the Done-flip guard refuses `done_without_commit_evidence`.
+// Live shape: 271587ae on release/v2.1-beta.
+//
+// Asserting on %B cannot catch this — the pre-fix body ALSO contains `Pickle-Ticket: <id>`.
+// Only the git-parsed trailer view distinguishes them, which is the whole point.
+test('gitattr trailer producer — a mid-body Pickle-Ticket line does not suppress the real trailer', () => {
+  const repoRoot = tmpRoot('gitattr-midbody-');
+  const managedDir = path.join(tmpRoot('gitattr-midbody-managed-'), 'hooks');
+  initGitRepo(repoRoot);
+
+  assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+
+  // The ticket id appears in a NON-last paragraph, followed by a real trailer block — the
+  // shape a worker produces when it narrates the ticket id in its own commit body.
+  const message = [
+    'fix: something the worker narrated',
+    '',
+    'Pickle-Ticket: a026c5cc',
+    '',
+    'Co-Authored-By: Claude <noreply@anthropic.com>',
+    '',
+  ].join('\n');
+  fs.writeFileSync(path.join(repoRoot, 'two.txt'), 'two');
+  git(['add', '-A'], repoRoot);
+  git(
+    ['commit', '--no-gpg-sign', '-q', '-m', message],
+    repoRoot,
+    hooksPathEnv(managedDir, { PICKLE_TICKET_ID: 'a026c5cc' }),
+  );
+
+  assert.equal(
+    trailerValue(repoRoot),
+    'a026c5cc',
+    'the consumer oracle must see the ticket id, not an empty trailer set',
+  );
+
+  // Still exactly one — the fix must not trade a missed stamp for a double stamp.
+  const parsed = git(['log', '-1', '--format=%(trailers:key=Pickle-Ticket,valueonly)'], repoRoot)
+    .split('\n')
+    .filter((line) => line.trim().length > 0);
+  assert.equal(parsed.length, 1, 'exactly one parsed Pickle-Ticket trailer');
+
+  // The pre-existing trailer must survive: interpret-trailers appends into the same block
+  // rather than opening a new paragraph that would demote it to body prose.
+  assert.equal(
+    git(['log', '-1', '--format=%(trailers:key=Co-Authored-By,valueonly)'], repoRoot).trim(),
+    'Claude <noreply@anthropic.com>',
+  );
+});
+
+// The guard must still fire when the trailer is genuinely in the parsed block — otherwise the
+// fix above would just be a double-stamp machine.
+test('gitattr trailer producer — a real trailer in the parsed block still no-ops', () => {
+  const repoRoot = tmpRoot('gitattr-parsed-idem-');
+  const managedDir = path.join(tmpRoot('gitattr-parsed-idem-managed-'), 'hooks');
+  initGitRepo(repoRoot);
+
+  assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+
+  const message = [
+    'fix: worker stamped its own trailer',
+    '',
+    'Co-Authored-By: Claude <noreply@anthropic.com>',
+    'Pickle-Ticket: a026c5cc',
+    '',
+  ].join('\n');
+  fs.writeFileSync(path.join(repoRoot, 'two.txt'), 'two');
+  git(['add', '-A'], repoRoot);
+  git(
+    ['commit', '--no-gpg-sign', '-q', '-m', message],
+    repoRoot,
+    hooksPathEnv(managedDir, { PICKLE_TICKET_ID: 'a026c5cc' }),
+  );
+
+  const parsed = git(['log', '-1', '--format=%(trailers:key=Pickle-Ticket,valueonly)'], repoRoot)
+    .split('\n')
+    .filter((line) => line.trim().length > 0);
+  assert.deepEqual(parsed, ['a026c5cc'], 'exactly one trailer, not two');
+});

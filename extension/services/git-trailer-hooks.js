@@ -162,7 +162,16 @@ function buildTrailerHookScript(originalPrepareCommitMsgAbsPath) {
         'if [ -z "$_pickle_ticket_id_probe" ]; then',
         `  ${forward}`,
         'fi',
-        'if grep -q \'^Pickle-Ticket:\' "$1" 2>/dev/null; then',
+        // The idempotence guard must ask the SAME oracle the consumer reads. A whole-file
+        // `grep '^Pickle-Ticket:'` is a second, divergent parser: git parses trailers out of the
+        // LAST paragraph only, so a `Pickle-Ticket:` line anywhere earlier in the body satisfies
+        // the grep, the hook skips, and `%(trailers:key=Pickle-Ticket)` then reports NOTHING —
+        // attribution silently lost with the id sitting in plain sight in `%B` (live: 271587ae).
+        // `interpret-trailers --parse` yields exactly the parsed trailer block, so producer guard
+        // and consumer reader share one view. If it cannot run, the view degrades to the raw
+        // message: conservative (skip) rather than risking a double stamp.
+        '_pickle_trailer_view=$(git interpret-trailers --parse "$1" 2>/dev/null || cat "$1" 2>/dev/null)',
+        'if printf \'%s\\n\' "$_pickle_trailer_view" | grep -q \'^Pickle-Ticket:\'; then',
         `  ${forward}`,
         'fi',
         'if ! git interpret-trailers --in-place --trailer "Pickle-Ticket: $PICKLE_TICKET_ID" "$1" 2>/dev/null; then',
