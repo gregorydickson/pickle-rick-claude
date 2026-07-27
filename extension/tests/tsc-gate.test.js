@@ -592,6 +592,50 @@ it('AP-EXT-ITER14-01 isGitCommitCommand sees a commit inside an ESCAPED-quote ne
   }
 });
 
+it('AP-EXT-ITER18-01 isGitCommitCommand sees a commit behind a GLUED operator', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  // Whitespace around a control operator is not required — bash runs
+  // `git add -A&&git commit` exactly as its spaced twin (shim-verified). The
+  // tokenizer split glued `;` and nothing else, so `&&`/`||`/`|`/`&` stayed
+  // inside one `\S+` token, the segment's subcommand read `add`, and the R-WACT
+  // tsc gate was SKIPPED for a broken-TS commit while the spaced twin gated.
+  const positives = [
+    'git add -A&&git commit -m x',
+    'true&&git commit -m x',
+    'git add -A||git commit -m x',
+    'cd extension&&git commit -m x',
+    'git add -A;git commit -m x',
+    'git add -A&&git commit -m x&&npm test',
+  ];
+  for (const command of positives) {
+    assert.equal(isGitCommitCommand(command), true, JSON.stringify(command));
+  }
+  // Splitting must not widen what counts as a commit: an operator inside quotes
+  // is an argument, and `2>&1` is an fd-dup, not a background operator.
+  const negatives = [
+    'git add -A&&npm test',
+    'git log --format=%s&&echo done',
+    'echo "x&&git commit -m y"',
+    'git status 2>&1',
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, JSON.stringify(command));
+  }
+});
+
+it('AP-EXT-ITER18-01 the glued-operator split is DERIVED from the separator set', async () => {
+  const shellExec = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/shell-exec.ts'), 'utf8',
+  );
+  // The bug was a hardcoded `/(;)/` sitting beside a six-member separator set:
+  // declaring an operator a separator did not make the tokenizer yield it as a
+  // boundary. Pin the derivation, not just the behavior — a second hardcoded
+  // character passes every case above while re-opening the next operator.
+  assert.match(shellExec, /const GLUED_SEPARATOR_RE = new RegExp\(\s*`\(\$\{\[\.\.\.SHELL_SEGMENT_SEPARATORS\]/);
+  assert.equal(/raw\.split\(\/\(;\)\/\)/.test(shellExec), false,
+    'glued-operator split must not hardcode a single separator character');
+});
+
 it('AP-EXT-ITER12-01 the hooks segmenter has ONE home (no private tsc-gate copy)', async () => {
   const hooksDir = path.resolve(__dirname, '../src/hooks');
   const shellExec = fs.readFileSync(path.join(hooksDir, 'shell-exec.ts'), 'utf8');

@@ -93,6 +93,22 @@ export function isShellWrapper(token) {
 }
 const SHELL_SEGMENT_SEPARATORS = new Set(['&&', '||', '|', '&', ';', '\n']);
 /**
+ * A control operator glued to its neighbors (`git status&&git reset`) is one
+ * `\S+` token, so the scanner alone never yields it as a boundary. This splits
+ * it back out, DERIVED from `SHELL_SEGMENT_SEPARATORS` so an operator cannot be
+ * declared a separator without the tokenizer honoring it — hardcoding one
+ * character is what left `&&`/`||`/`|`/`&` glued-only-detectable-if-spaced.
+ *
+ * Alternation order is deliberately NOT curated: if `&` is tried before `&&`,
+ * the two-character operator degrades into two adjacent one-character ones —
+ * both already separators, so the boundary lands in the same place. `\n` is
+ * excluded because `\S` cannot match one; the scanner matches it directly.
+ */
+const GLUED_SEPARATOR_RE = new RegExp(`(${[...SHELL_SEGMENT_SEPARATORS]
+    .filter((op) => op !== '\n')
+    .map((op) => op.replace(/[|\\^$*+?.()[\]{}]/g, '\\$&'))
+    .join('|')})`);
+/**
  * Bounded so a pathological `bash -c "bash -c ..."` nest cannot spin the hook;
  * three levels is far past any real worker command.
  */
@@ -105,7 +121,9 @@ const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
  * newline (a top-level command terminator, semantically identical to `;`).
  * Quote-aware: a separator inside single or double quotes (a commit message
  * `-m 'fix && reset bug'`, or a multi-line `-m "line1\nline2"`) is preserved and
- * never a split point.
+ * never a split point. Whitespace around an operator is NOT required — bash
+ * runs `git status&&git reset --hard` exactly as its spaced twin (shim-verified)
+ * — so a glued operator is split back out via `GLUED_SEPARATOR_RE`.
  *
  * Every leading-command detector in the subsystem consumes it, because each one
  * inspects only the FIRST executable token of the string it receives. Without
@@ -142,9 +160,9 @@ export function splitShellSegments(command, depth = 0) {
             tokens.push(raw);
             continue;
         }
-        // Separate glued `;` (e.g. `git status;git reset`) into its own token so
-        // it acts as a boundary; quoted `;` was already preserved above.
-        for (const part of raw.split(/(;)/)) {
+        // Separate a glued control operator (e.g. `git status&&git reset`) into its
+        // own token so it acts as a boundary; quoted operators were preserved above.
+        for (const part of raw.split(GLUED_SEPARATOR_RE)) {
             if (part.length > 0)
                 tokens.push(part);
         }

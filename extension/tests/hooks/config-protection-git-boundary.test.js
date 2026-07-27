@@ -1147,3 +1147,76 @@ test('AP-EXT-ITER14-01: single-quoted span keeps backslashes literal', () => {
   });
   assert.equal(result.decision, 'approve');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER18-01 — a GLUED control operator is still a segment boundary
+//
+// Whitespace around a control operator is not required by bash: a `git` shim
+// confirms `git status&&git reset --hard` really executes the reset, exactly as
+// its spaced twin does. But the tokenizer split glued `;` and NOTHING else, so
+// `&&`, `||`, `|`, and `&` survived inside one `\S+` token. The segment's
+// leading command read `git status`, no detector ever saw the second command,
+// and every worker-forbidden-op guard APPROVED it while the spaced twin blocked
+// — a live `git reset --hard` bypass, the destruction class this repo's
+// recovery recipes exist for.
+//
+// Same shape as ITER12-01 one level down: the separator set declared six
+// operators, the tokenizer honored two. The fix derives the split FROM the set
+// so declaring an operator is what makes it a boundary.
+// ---------------------------------------------------------------------------
+
+for (const { label, command, expect: expected } of [
+  { label: 'glued &&', command: 'git status&&git reset --hard', expect: /reset/ },
+  { label: 'glued && behind a cd', command: 'cd extension&&git reset --hard', expect: /reset/ },
+  { label: 'glued ||', command: 'git status||git push origin main', expect: /push/ },
+  { label: 'glued |', command: 'echo hi|git stash', expect: /stash/ },
+  { label: 'glued &', command: 'git log&git rebase -i', expect: /rebase/ },
+  { label: 'glued && with --amend', command: 'git add -A&&git commit --amend', expect: /commit --amend/ },
+]) {
+  test(`AP-EXT-ITER18-01: worker blocks prohibited git verb via ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+}
+
+// Inherited at the shared seam, so install.sh detection gets it for free.
+test('AP-EXT-ITER18-01: worker blocks `cd extension&&bash install.sh`', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'cd extension&&bash install.sh' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC/);
+});
+
+// Non-tautology guards. Splitting on `&` must not reach an fd-dup (`2>&1` is a
+// redirection, not a background operator) and a quoted operator is an argument,
+// so a blanket "contains `git reset`" implementation fails both.
+for (const { label, command } of [
+  { label: 'a quoted glued operator in a commit message', command: 'git commit -m "fix&&reset bug"' },
+  { label: 'an fd-dup redirection', command: 'git status 2>&1' },
+  { label: 'an fd-dup after a glued chain', command: 'npm test&&git status 2>&1' },
+  { label: 'a benign glued chain', command: 'npm run lint&&npm run test:fast' },
+]) {
+  test(`AP-EXT-ITER18-01: worker still approves ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve');
+  });
+}
