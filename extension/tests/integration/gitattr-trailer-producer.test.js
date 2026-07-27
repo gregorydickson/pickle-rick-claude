@@ -7,7 +7,7 @@
 // git config. Drives real `git commit` against real temp repos — see
 // tests/integration/start-commit-pinned-sha.test.js for the established
 // tmpRoot/initGitRepo/execFileSync pattern this file follows.
-import { test } from 'node:test';
+import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -28,9 +28,22 @@ function git(args, dir, env) {
   });
 }
 
+// Every tmpRoot is registered and reclaimed, per the ticket's isolation expectation ("each test's
+// temp repo created AND removed"). Registration happens HERE rather than at the call sites because
+// the managed-hooks callers do `path.join(tmpRoot(...), 'hooks')` and discard the parent path — the
+// only place that still holds it is this function.
+const TMP_ROOTS = new Set();
+
 function tmpRoot(prefix) {
-  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  TMP_ROOTS.add(dir);
+  return dir;
 }
+
+afterEach(() => {
+  for (const dir of TMP_ROOTS) fs.rmSync(dir, { recursive: true, force: true });
+  TMP_ROOTS.clear();
+});
 
 function initGitRepo(dir) {
   git(['init', '-q', '-b', 'main'], dir);
