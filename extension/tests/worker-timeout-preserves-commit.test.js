@@ -85,20 +85,36 @@ function readField(body, key) {
   return body.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'))?.[1]?.trim()?.replace(/^["']|["']$/g, '');
 }
 
+/** The consumer's oracle: git's parsed trailer view, not a raw-message grep. */
+function parsedTicketTrailers(repoDir, sha) {
+  return git(repoDir, ['log', '-1', '--format=%(trailers:key=Pickle-Ticket,valueonly)', sha])
+    .split('\n')
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
 test('AC-WDTFTO-1-1: timed-out worker WITH a window commit preserves the sha (Failed, not null)', () => {
   const sessionWorkingDir = makeTmpGitRepo('wdtf-to-preserve-repo-');
   const ticketPath = makeTicketDir('wdtf-to-preserve-ticket-', ['research_x.md', 'plan_x.md']);
   try {
     const base = commitFile(sessionWorkingDir, 'base.txt', 'base\n', 'base commit');
-    const windowSha = commitFile(sessionWorkingDir, 'work.txt', 'worker output before timeout\n', `feat(${TICKET_ID}): partial work`);
+    commitFile(sessionWorkingDir, 'work.txt', 'worker output before timeout\n', `feat(${TICKET_ID}): partial work`);
 
     const ctx = makeCtx({ ticketPath, sessionWorkingDir, preWorkerHead: base });
     const { isSuccess } = evaluateWorkerOutcome({ ctx, logContent: 'x'.repeat(300), startTime: Date.now() - 5000 });
     assert.equal(isSuccess, false, 'a timed-out worker is never success, regardless of everything else');
 
     const sha = resolveFailurePathCommitSha(ctx);
-    assert.match(sha ?? '', FULL_SHA_RE, 'a verified window sha is returned');
-    assert.equal(sha, windowSha);
+    // The window tip carries the ticket id as PROSE only (`feat(<id>): partial work`),
+    // which is NOT attribution under the corrected parsed-trailer oracle — the tip is
+    // stamped with a real Pickle-Ticket trailer, amending it to a NEW sha. Asserting
+    // equality to the pre-amend windowSha would pin the old bug-as-contract.
+    assert.match(sha ?? '', FULL_SHA_RE, 'a verified, git-attributable sha is returned');
+    assert.deepEqual(
+      parsedTicketTrailers(sessionWorkingDir, sha),
+      [TICKET_ID],
+      'the resolved sha carries a real Pickle-Ticket trailer for this ticket',
+    );
 
     const ticketFile = writeTicketFile(ticketPath, TICKET_ID);
     persistWorkerOutcomeStatus({
@@ -112,7 +128,7 @@ test('AC-WDTFTO-1-1: timed-out worker WITH a window commit preserves the sha (Fa
 
     const body = fs.readFileSync(ticketFile, 'utf-8');
     assert.equal(readField(body, 'status'), 'Failed');
-    assert.equal(readField(body, 'completion_commit'), windowSha, 'completion_commit preserves the window sha — never null');
+    assert.equal(readField(body, 'completion_commit'), sha, 'completion_commit equals the RESOLVED sha — never null');
   } finally {
     fs.rmSync(sessionWorkingDir, { recursive: true, force: true });
     fs.rmSync(ticketPath, { recursive: true, force: true });
@@ -161,12 +177,19 @@ test('AC-WDTFTO-1-3: the Failed ticket stays selectable (frontmatter status is n
   const ticketPath = makeTicketDir('wdtf-to-selectable-ticket-', ['research_x.md']);
   try {
     const base = commitFile(sessionWorkingDir, 'base.txt', 'base\n', 'base commit');
-    const windowSha = commitFile(sessionWorkingDir, 'work.txt', 'worker output\n', `feat(${TICKET_ID}): partial`);
+    commitFile(sessionWorkingDir, 'work.txt', 'worker output\n', `feat(${TICKET_ID}): partial`);
 
     const ctx = makeCtx({ ticketPath, sessionWorkingDir, preWorkerHead: base });
     evaluateWorkerOutcome({ ctx, logContent: 'x'.repeat(300), startTime: Date.now() - 5000 });
     const sha = resolveFailurePathCommitSha(ctx);
-    assert.equal(sha, windowSha);
+    // Same reconciliation as AC-WDTFTO-1-1: the prose-only window tip gets stamped,
+    // producing a resolved sha that is git-attributable but not the pre-amend windowSha.
+    assert.match(sha ?? '', FULL_SHA_RE, 'a verified, git-attributable sha is returned');
+    assert.deepEqual(
+      parsedTicketTrailers(sessionWorkingDir, sha),
+      [TICKET_ID],
+      'the resolved sha carries a real Pickle-Ticket trailer for this ticket',
+    );
 
     const ticketFile = writeTicketFile(ticketPath, TICKET_ID);
     persistWorkerOutcomeStatus({
