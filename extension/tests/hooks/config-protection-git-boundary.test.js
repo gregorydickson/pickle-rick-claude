@@ -1059,3 +1059,91 @@ test('AP-EXT-ITER10-01: manager context is unaffected by the unwrap', () => {
   });
   assert.equal(result.decision, 'approve');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER14-01 — ESCAPED-quote nesting closes the ITER10/ITER12 residual
+//
+// Both prior passes cataloged this as an open RESIDUAL: `tokenizeShellCommand`
+// matched a double-quoted span with `"[^"]*"`, which STOPS at the first escaped
+// quote. So `bash -c "bash -c \"git reset --hard\""` desynchronized — the
+// payload token came back as `bash -c \`, the inner `git` never led a segment,
+// and the reset was APPROVED while both its bare twin and its alternate-quoted
+// twin (`bash -c 'bash -c "…"'`) blocked. Verified against a `git` shim that the
+// shell really does execute the reset, so this was a live bypass of every
+// worker-forbidden-op guard, not a parsing curiosity.
+//
+// The fix is escape-aware quoted spans plus unescaping of a double-quoted token,
+// shared by BOTH scanners in shell-exec.ts — not a third special case.
+//
+// Only the DOUBLE-quoted span is escape-aware: inside `'…'` bash treats a
+// backslash literally, so single-quote spans must stay as they were.
+// ---------------------------------------------------------------------------
+
+for (const { label, command, expect: expected } of [
+  { label: 'nested bash -c', command: 'bash -c "bash -c \\"git reset --hard\\""', expect: /reset/ },
+  { label: 'nested sh -lc outer', command: 'sh -lc "bash -c \\"git push origin main\\""', expect: /push/ },
+  { label: 'nested with --amend', command: 'bash -c "bash -c \\"git commit --amend\\""', expect: /commit --amend/ },
+  { label: 'nested behind a cd', command: 'bash -c "cd extension && bash -c \\"git stash\\""', expect: /stash/ },
+]) {
+  test(`AP-EXT-ITER14-01: worker blocks prohibited git verb via ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+}
+
+// Inherited at the shared seam, so install.sh detection gets it for free.
+test('AP-EXT-ITER14-01: worker blocks `bash -c "bash -c \\"bash install.sh\\""`', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'bash -c "bash -c \\"bash install.sh\\""' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC/);
+});
+
+// Non-tautology guards. The middle case is the one that matters: a prohibited
+// verb inside a QUOTED ARGUMENT is not a command, and the pre-fix desync used
+// to over-block it by accident. Unescaping correctly keeps it one token, so a
+// blanket "contains git reset" implementation fails here.
+for (const { label, command } of [
+  { label: 'a nested benign payload', command: 'bash -c "bash -c \\"npm run test:fast\\""' },
+  { label: 'a prohibited verb inside a quoted echo argument', command: 'bash -c "echo \\"x && git reset --hard\\""' },
+  { label: 'an escaped-quote commit message', command: 'bash -c "git commit -m \\"feat: x\\""' },
+  { label: 'a bare escaped-quote verb git itself rejects', command: 'git \\"reset\\" --hard' },
+]) {
+  test(`AP-EXT-ITER14-01: worker still approves ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve');
+  });
+}
+
+// Single-quoted spans must NOT become escape-aware: bash keeps a backslash
+// literal inside `'…'`, so this stays exactly one token and the payload the
+// wrapper runs is `git status`, not a reset.
+test('AP-EXT-ITER14-01: single-quoted span keeps backslashes literal', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: "bash -c 'git status'" },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'approve');
+});

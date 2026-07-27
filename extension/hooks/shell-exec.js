@@ -32,6 +32,30 @@ export function execName(token) {
 /** Leading `KEY=value` env assignment, written before the interpreter by the shell. */
 export const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /**
+ * THE quoted-span patterns for the subsystem's two token scanners.
+ *
+ * The double-quoted span honors backslash escapes (`\\.`), because bash does:
+ * `"a \" b"` is ONE word. A naive `"[^"]*"` stops at the escaped quote and
+ * desynchronizes every span after it. The single-quoted span deliberately does
+ * NOT — inside `'…'` bash treats a backslash as a literal character, so
+ * escape-awareness there would be wrong, not merely unnecessary.
+ *
+ * Both scanners consume these so a fix to one cannot skip the other; that
+ * private-copy drift is exactly what AP-EXT-ITER12-01 collapsed one level up.
+ */
+const DOUBLE_QUOTED_SPAN = '"(?:\\\\.|[^"\\\\])*"';
+const SINGLE_QUOTED_SPAN = '\'[^\']*\'';
+/** `String.match` with a `/g` regex resets `lastIndex`, so these are reusable. */
+const TOKEN_SCAN_RE = new RegExp(`${DOUBLE_QUOTED_SPAN}|${SINGLE_QUOTED_SPAN}|\\S+`, 'g');
+const SEGMENT_SCAN_RE = new RegExp(`${DOUBLE_QUOTED_SPAN}|${SINGLE_QUOTED_SPAN}|\\n|\\S+`, 'g');
+/**
+ * Inside a double-quoted bash span a backslash escapes ONLY `"`, `\`, `$`, and
+ * a backtick; before anything else it stays literal (`"a\nb"` really is `a\nb`).
+ * Unescaping exactly that set turns a `-c` payload back into the command the
+ * shell will run, so the recursive unwrap sees `git commit`, not `\"git`.
+ */
+const DOUBLE_QUOTE_ESCAPE_RE = /\\(["\\$`])/g;
+/**
  * Tokenize a single (already-segmented) shell command, quote-aware: a quoted
  * span stays one token and its surrounding matching quotes are stripped, so
  * `git "reset"` tokenizes to `['git', 'reset']`.
@@ -39,14 +63,23 @@ export const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * Without quote-stripping, a bare `split(/\s+/)` reads the token `"reset"` with
  * the quotes attached, so `git "reset" --hard` — which the shell runs as
  * `git reset --hard` — slipped the R-WSRC-GR guard.
+ *
+ * A double-quoted span is additionally UNESCAPED, so a nested payload survives
+ * the round trip. Only the quoted form is unescaped: bash turns a bare
+ * `git \"reset\"` into the word `"reset"` WITH the quotes, which git rejects as
+ * an unknown subcommand — unescaping there would invent a block for a command
+ * that never runs a reset.
  */
 export function tokenizeShellCommand(command) {
-    const raw = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+    const raw = command.match(TOKEN_SCAN_RE) ?? [];
     return raw.map((token) => {
         if (token.length >= 2) {
             const first = token[0];
             const last = token[token.length - 1];
-            if ((first === '"' && last === '"') || (first === '\'' && last === '\'')) {
+            if (first === '"' && last === '"') {
+                return token.slice(1, -1).replace(DOUBLE_QUOTE_ESCAPE_RE, '$1');
+            }
+            if (first === '\'' && last === '\'') {
                 return token.slice(1, -1);
             }
         }
@@ -98,9 +131,9 @@ const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
  */
 export function splitShellSegments(command, depth = 0) {
     // `\n` is matched as its own alternative BEFORE `\S+` so an unquoted newline
-    // becomes a boundary token; `"[^"]*"`/`'[^']*'` span newlines (negated class
-    // includes `\n`), so a newline inside a quoted commit message is preserved.
-    const rawTokens = command.match(/"[^"]*"|'[^']*'|\n|\S+/g) ?? [];
+    // becomes a boundary token; the quoted spans match newlines too (their negated
+    // classes include `\n`), so a newline inside a quoted commit message is kept.
+    const rawTokens = command.match(SEGMENT_SCAN_RE) ?? [];
     const tokens = [];
     for (const raw of rawTokens) {
         const quoted = (raw.startsWith('"') && raw.endsWith('"')) ||

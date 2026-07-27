@@ -559,6 +559,39 @@ it('AP-EXT-ITER12-01 isGitCommitCommand sees a commit inside a bash -c payload',
   }
 });
 
+it('AP-EXT-ITER14-01 isGitCommitCommand sees a commit inside an ESCAPED-quote nest', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  // The residual both ITER10-01 and ITER12-01 cataloged and deferred. The
+  // quoted-span pattern `"[^"]*"` stops at the first ESCAPED quote, so the
+  // payload token desynchronized and the inner `git commit` never led a
+  // segment: classified non-commit, R-WACT tsc gate SKIPPED, while the bare and
+  // alternate-quoted twins both gated. Closed by making the double-quoted span
+  // escape-aware and unescaping the token at the ONE shell-exec.ts seam.
+  const positives = [
+    'bash -c "bash -c \\"git commit -m x\\""',
+    'sh -lc "bash -c \\"git commit -m x\\""',
+    '/bin/bash -c "bash -c \\"git commit -m x\\""',
+    'bash -c "cd extension && bash -c \\"git commit -m x\\""',
+    // Deeper nesting proves the recursion, not a fixed two-level unwrap.
+    'bash -c "bash -c \\"bash -c \\\\\\"git commit -m x\\\\\\"\\""',
+  ];
+  for (const command of positives) {
+    assert.equal(isGitCommitCommand(command), true, JSON.stringify(command));
+  }
+  // The unwrap must not widen what counts as a commit. The second case is the
+  // sharp one: pre-fix, the desync split the quoted argument apart, so a naive
+  // implementation that merely looks for `git commit` anywhere still fails it.
+  const negatives = [
+    'bash -c "bash -c \\"git status\\""',
+    'bash -c "echo \\"git commit -m x\\""',
+    'bash -c "bash -c \\"npm test\\""',
+    'git \\"commit\\" -m x',
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, JSON.stringify(command));
+  }
+});
+
 it('AP-EXT-ITER12-01 the hooks segmenter has ONE home (no private tsc-gate copy)', async () => {
   const hooksDir = path.resolve(__dirname, '../src/hooks');
   const shellExec = fs.readFileSync(path.join(hooksDir, 'shell-exec.ts'), 'utf8');
