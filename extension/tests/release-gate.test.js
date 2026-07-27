@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -116,6 +117,26 @@ function makeSymlinkPayloadTarball(archiveName = 'symlink.tar.gz') {
   symlinkSync('../../../../../tmp/PWNED', path.join(root, 'extension', 'evil-link'));
   const tarball = path.join(dir, archiveName);
   run('tar', ['-czf', tarball, '-C', dir, 'pickle-rick-claude']);
+  return { dir, tarball };
+}
+
+// A REAL tarball (REAL tar, no shim) carrying a valid payload root PLUS a real HARDLINK member: tar
+// emits whichever of the two shared-inode paths it walks second as an `h`-type entry. The fake-tar
+// shim cannot stand in here — its `-tvzf` stub hardcodes `-rw-r--r--` for every member, so no shim
+// listing can ever carry a link type. Asserts the fixture really produced an `h` member so a tar
+// that stopped emitting hardlink headers surfaces as a fixture failure, not a silent tautology.
+function makeHardlinkPayloadTarball(archiveName = 'hardlink.tar.gz') {
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-hardlink-'));
+  const root = path.join(dir, 'pickle-rick-claude');
+  writePackage(root, '1.67.0');
+  writeFileSync(path.join(root, 'install.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+  const target = path.join(root, 'extension', 'linked-target.txt');
+  writeFileSync(target, 'shared inode\n');
+  linkSync(target, path.join(root, 'extension', 'linked-alias.txt'));
+  const tarball = path.join(dir, archiveName);
+  run('tar', ['-czf', tarball, '-C', dir, 'pickle-rick-claude']);
+  const verbose = run('tar', ['-tvzf', tarball]).stdout;
+  assert.match(verbose, /^h/m, `fixture tar emitted no hardlink member:\n${verbose}`);
   return { dir, tarball };
 }
 
@@ -585,6 +606,30 @@ esac
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
       rmSync(symlinkFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  test('exits 21 when a downloaded tarball has a safe payload plus a hardlink member', () => {
+    // Regression: `listing_has_link_entries` rejects BOTH link types (`l` and `h`), but only the
+    // symlink arm was ever pinned — deleting `|| type == "h"` left all 26 tests GREEN. A tar
+    // hardlink header carries its target in the member's link field, which the name-only `-tzf`
+    // scan never reads, so a hardlink whose NAME is safe but whose target escapes the payload root
+    // is extracted as a link to the outside file and members written after it land THROUGH it.
+    // The guard is a blanket rejection of every link member (the real installer payload has none),
+    // and a benign real hardlink is the honest way to pin that: real tar cannot author an escaping
+    // hardlink from a real filesystem, and the fake-tar shim cannot emit a link type at all.
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const hardlinkFixture = makeHardlinkPayloadTarball('pickle-release.tar.gz');
+    const ghDir = makeGhFixture({ tarball: hardlinkFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stdout || result.stderr);
+      assert.match(result.stderr, /symlink or hardlink member/);
+      assert.doesNotMatch(result.stdout, /^ok:/m);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(hardlinkFixture.dir, { recursive: true, force: true });
       rmSync(ghDir, { recursive: true, force: true });
     }
   });
