@@ -474,3 +474,29 @@ test('gitattr trailer producer — a real trailer in the parsed block still no-o
     .filter((line) => line.trim().length > 0);
   assert.deepEqual(parsed, ['a026c5cc'], 'exactly one trailer, not two');
 });
+
+test('gitattr trailer producer — a linked worktree still stamps the trailer', () => {
+  const repoRoot = tmpRoot('gitattr-trailer-wt-');
+  const managedDir = path.join(tmpRoot('gitattr-managed-wt-'), 'hooks');
+  initGitRepo(repoRoot);
+
+  // A linked worktree's `--git-dir` is `.git/worktrees/<name>`, which has NO `hooks`
+  // subdir — hooks live in the COMMON dir. Resolving the fallback against `--git-dir`
+  // finds nothing, materialization returns {ok:false}, and the whole attribution
+  // mechanism silently vanishes for every commit made in the worktree.
+  const worktree = path.join(tmpRoot('gitattr-wt-'), 'linked');
+  git(['worktree', 'add', '-q', '-b', 'wt-branch', worktree], repoRoot);
+
+  const result = materializeTrailerHooks({ repoRoot: worktree, managedDir });
+  assert.equal(result.ok, true, `materialization failed: ${result.ok ? '' : result.reason}`);
+
+  fs.writeFileSync(path.join(worktree, 'wt.txt'), 'wt');
+  git(['add', '-A'], worktree);
+  git(
+    ['commit', '--no-gpg-sign', '-q', '-m', 'worktree change'],
+    worktree,
+    hooksPathEnv(managedDir, { PICKLE_TICKET_ID: 'wt7c1a2b' }),
+  );
+
+  assert.equal(trailerValue(worktree), 'wt7c1a2b');
+});

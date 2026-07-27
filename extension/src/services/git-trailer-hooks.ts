@@ -89,8 +89,9 @@ function samePath(a: string, b: string): boolean {
 /**
  * Resolves the target repo's PRE-EXISTING hooks directory: `core.hooksPath`
  * first (git-config(1) resolves a relative value against the repo root), else
- * `<git-dir>/hooks` (honoring separate-git-dir/worktree layouts). Returns null
- * when neither resolves to an existing directory, or on any error — never throws.
+ * `<git-common-dir>/hooks` (honoring separate-git-dir and linked-worktree layouts).
+ * Returns null when neither resolves to an existing directory, or on any error —
+ * never throws.
  *
  * A candidate equal to `managedDir` is DISCARDED, not returned: that is us, seen
  * through our own inherited `GIT_CONFIG_*` fragment (see the module header).
@@ -98,15 +99,22 @@ function samePath(a: string, b: string): boolean {
  * the repo's REAL hooks instead of either self-exec'ing or silently dropping
  * trailer attribution.
  *
- * The fallback derives from `rev-parse --git-dir`, NOT `rev-parse --git-path
+ * The fallback derives from `rev-parse --git-common-dir`, NOT `rev-parse --git-path
  * hooks`: the latter honors `core.hooksPath` too, so under an inherited fragment
- * it re-derives the exact self-match the first arm just rejected. `--git-dir`
+ * it re-derives the exact self-match the first arm just rejected. `--git-common-dir`
  * ignores `core.hooksPath`, which also makes the two arms non-redundant.
+ *
+ * COMMON, not `--git-dir`: hooks are a per-repository resource, so they live in the
+ * COMMON dir. In a linked worktree `--git-dir` is `.git/worktrees/<name>`, which has
+ * no `hooks` child at all — the fallback resolves nothing, materialization returns
+ * `{ok:false}`, and trailer attribution silently vanishes for every commit made in
+ * the worktree. `--git-common-dir` is identical to `--git-dir` in the main-worktree
+ * and `--separate-git-dir` layouts, so this is strictly a widening.
  */
 function resolvePreExistingHooksDir(repoRoot: string, managedDir: string): string | null {
   const candidates: Array<[string[], string?]> = [
     [['config', '--get', 'core.hooksPath']],
-    [['rev-parse', '--git-dir'], 'hooks'],
+    [['rev-parse', '--git-common-dir'], 'hooks'],
   ];
   for (const [args, suffix] of candidates) {
     const resolved = resolveDirFromGitOutput(args, repoRoot, suffix);
