@@ -215,28 +215,24 @@ function parseTrailerLog(raw: string): TrailerLogEntry[] {
 }
 
 /**
- * WS-2 consumer (highest-precedence scan pass, ahead of Pass 1/Pass 2 message inference): reads the
- * `Pickle-Ticket` git trailer (stamped by the WS-1 producer hook) via git's own trailer parser — exact
- * ticket-id equality, no word-boundary regex needed since the trailer value IS the ticket id, not a
- * token embedded in free text.
+ * WS-2 consumer: reads the `Pickle-Ticket` git trailer (stamped by the WS-1 producer hook) via git's
+ * own trailer parser — exact ticket-id equality, no word-boundary regex needed since the trailer
+ * value IS the ticket id, not a token embedded in free text. A trailer naming a DIFFERENT ticket
+ * simply does not match, so there is nothing to launder: WS-3 deleted the message-inference passes
+ * that a foreign-attribution exclusion set used to have to defend against.
  *
- * Returns BOTH a same-ticket hit (if any, newest-first-wins since `git log` iterates newest-first) and
- * `foreignShas` — every commit in the scanned window whose trailer names a DIFFERENT ticket. The caller
- * excludes `foreignShas` from Pass 1/Pass 2: a trailer positively naming another ticket must never be
- * laundered into an attribution to THIS ticket via a coincidental ref-token/file-touch match on the
- * same commit (see the ticket's "do not fall back to message-matching... to launder it" requirement).
+ * Newest-first-wins, since `git log` iterates newest-first.
  *
- * Best-effort: any git failure returns the empty result (no hit, no exclusions), never throws.
+ * Best-effort: any git failure returns null, never throws.
  */
 function scanGitLogByTrailer(args: {
   workingDir: string;
   ticketId: string | null;
   startTimeEpoch?: number | null;
-}): { hit: { sha: string } | null; foreignShas: Set<string> } {
-  const empty = { hit: null, foreignShas: new Set<string>() };
-  if (!args.ticketId) return empty;
+}): { sha: string } | null {
+  if (!args.ticketId) return null;
   const wantedId = args.ticketId.trim().toLowerCase();
-  if (!wantedId) return empty;
+  if (!wantedId) return null;
 
   let raw: string;
   try {
@@ -251,24 +247,15 @@ function scanGitLogByTrailer(args: {
       { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
   } catch {
-    return empty;
+    return null;
   }
 
   const startEpoch = Number(args.startTimeEpoch);
-  const entries = parseTrailerLog(raw);
-  let hit: { sha: string } | null = null;
-  const foreignShas = new Set<string>();
-  for (const e of entries) {
+  for (const e of parseTrailerLog(raw)) {
     if (Number.isFinite(startEpoch) && startEpoch > 0 && e.epoch < startEpoch) continue;
-    const trailerId = e.trailerValue.trim().toLowerCase();
-    if (!trailerId) continue;
-    if (trailerId === wantedId) {
-      if (!hit) hit = { sha: e.sha };
-    } else {
-      foreignShas.add(e.sha.toLowerCase());
-    }
+    if (e.trailerValue.trim().toLowerCase() === wantedId) return { sha: e.sha };
   }
-  return { hit, foreignShas };
+  return null;
 }
 
 /**
@@ -371,7 +358,7 @@ function scanGitLog(args: {
     workingDir: args.workingDir,
     ticketId: args.ticketId,
     startTimeEpoch: args.startTimeEpoch,
-  }).hit;
+  });
 }
 
 // ---------------------------------------------------------------------------
