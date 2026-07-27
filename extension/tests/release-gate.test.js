@@ -553,6 +553,41 @@ esac
     }
   });
 
+  test('exits 21 when a downloaded tarball has a safe install payload plus an absolute-path archive entry', () => {
+    // Regression: `listing_has_unsafe_entries` is two independent arms —
+    // `entry ~ /^\//` (absolute) and `entry ~ /(^|\/)\.\.?($|\/)/` (dot-segment) — but every
+    // unsafe-entry fixture was dot-segment, so deleting the absolute arm left all 27 tests GREEN.
+    // The arms are DISJOINT: `/tmp/PWNED` has no `.`/`..` path segment, so the dot-segment arm
+    // never sees it and the absolute arm is its ONLY rejector. GNU tar strips a leading `/` on
+    // create, but nothing stops a hand-authored or non-GNU-authored header from carrying one, and
+    // `tar -P`/bsdtar honor it on extract — so an absolute member escapes the install prefix
+    // outright, no traversal needed. The valid payload root below is what lets the gate reach
+    // exit 0 ("ok") under the mutation, proving the absolute entry was never seen.
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const fakeTar = makeFakeTarFixture(
+      [
+        'pickle-rick-claude/extension/package.json',
+        'pickle-rick-claude/install.sh',
+        '/tmp/PWNED',
+      ],
+      {
+        'pickle-rick-claude/extension/package.json': JSON.stringify({ version: '1.67.0' }, null, 2),
+      },
+    );
+    const ghDir = makeGhFixture({ tarball: fakeTar.tarball });
+    writeFileSync(path.join(ghDir, 'tar'), readFileSync(fakeTar.tarPath, 'utf8'), { mode: 0o755 });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stdout || result.stderr);
+      assert.match(result.stderr, /unsafe archive entry \/tmp\/PWNED/);
+      assert.doesNotMatch(result.stdout, /^ok:/m);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(fakeTar.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
   test('exits 21 when an unsafe entry precedes a large listing that would SIGPIPE the tar producer', () => {
     // Regression: the unsafe-entry scan piped `tar -tzf | awk`, and the awk
     // exited on the first unsafe match. Under `set -o pipefail`, an early awk exit
