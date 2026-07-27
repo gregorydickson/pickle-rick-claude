@@ -30,7 +30,7 @@ import {
     writeMicroverseState,
     readMicroverseState,
 } from '../services/microverse-state.js';
-import { buildJudgePrompt } from '../bin/microverse-runner.js';
+import { buildJudgePrompt, parseLlmJudgeOutput, extractScore } from '../bin/microverse-runner.js';
 
 function makeTmpDir() {
     return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-conv-')));
@@ -449,4 +449,99 @@ test('R-SJWT-3: convergence-to-0 — scoped judge score of 0 classifies as impro
     const classification = compareMetric(0, 3, 0.5, 'lower');
     assert.equal(classification, 'improved', 'score 0 vs prior 3 (lower-is-better) must classify as improved');
     assert.notEqual(classification, 'held', 'score 0 must not classify as held — would cause false plateau');
+});
+
+// ---------------------------------------------------------------------------
+// R-JPCM — the judge's PROMPT and its PARSER must agree on one output contract.
+//
+// The prompt demanded a bare integer; `parseLlmJudgeOutput` demanded a JSON
+// object. Every measurement therefore landed in `emptyJudgeResult('malformed')`,
+// so `violation_ledger` rebuilt from empty forever and `compareMetric`'s set-ops
+// branch was unreachable — five real fixes read as `held: 4 vs 4` while the
+// score path kept working, because `extractScore` has its own fallback. The
+// failure is silent by construction: the number works, the payload is dropped.
+// ---------------------------------------------------------------------------
+
+test('AC-JPCM-1: buildJudgePrompt asks for the JSON object the parser accepts, not a bare integer', () => {
+    const prompt = buildJudgePrompt('Reduce violations', '/repo', [], '/repo/src');
+    assert.ok(
+        !prompt.includes('Output ONLY a single integer'),
+        'the bare-integer contract is what starved the parser — it must be gone',
+    );
+    // The four keys `parseLlmJudgeOutput` requires for shape 'full'. Asking for
+    // fewer re-opens the bug via the 'legacy' shape.
+    for (const key of ['"score"', '"violations"', '"resolved"', '"new"', '"remaining"']) {
+        assert.ok(prompt.includes(key), `prompt must request the ${key} key`);
+    }
+    assert.ok(
+        prompt.includes('score` MUST equal `violations.length'),
+        'count-type metrics must pin score to the evidence array, not a free-floating integer',
+    );
+});
+
+test("AC-JPCM-2: a well-formed judge object parses as shape 'full' with violations preserved", () => {
+    const raw = JSON.stringify({
+        score: 2,
+        violations: [
+            { id: 'dup-guard', path: 'src/a.ts', line: 12, severity: 'high', description: 'duplicated guard' },
+            { id: 'dead-arg', path: 'src/b.ts', line: 3, severity: 'low', description: 'unused parameter' },
+        ],
+        resolved: [],
+        new: ['dup-guard', 'dead-arg'],
+        remaining: [],
+    });
+
+    const result = parseLlmJudgeOutput(raw);
+
+    // 'full' was UNREACHABLE under the old prompt — this is the pin that it is
+    // reachable at all.
+    assert.equal(result.shape, 'full', "a compliant judge response must parse as shape 'full'");
+    assert.equal(result.score, 2);
+    assert.equal(result.violations.length, 2, 'violations must survive the parse');
+    assert.equal(result.violations.length, result.score, 'AC-JPCM-2: score must equal violations.length');
+    assert.deepEqual(result.violations.map((v) => v.id), ['dup-guard', 'dead-arg']);
+    assert.deepEqual(result.new, ['dup-guard', 'dead-arg']);
+});
+
+test('AC-JPCM-2: the ledger set-ops arrays survive the parse so compareMetric can use them', () => {
+    // The flat-score case the bug hid: same count, but one resolved and one new.
+    // Numerically `held`; via set-ops, real progress.
+    const raw = JSON.stringify({
+        score: 2,
+        violations: [
+            { id: 'kept', severity: 'med', description: 'still here' },
+            { id: 'fresh', severity: 'low', description: 'newly introduced' },
+        ],
+        resolved: ['gone'],
+        new: ['fresh'],
+        remaining: ['kept'],
+    });
+
+    const result = parseLlmJudgeOutput(raw);
+
+    assert.equal(result.shape, 'full');
+    assert.deepEqual(result.resolved, ['gone'], 'resolved ids feed the set-ops branch');
+    assert.deepEqual(result.new, ['fresh']);
+    assert.deepEqual(result.remaining, ['kept']);
+});
+
+test('AC-JPCM-5: a non-compliant bare-number judge still yields a score via the extractScore fallback', () => {
+    // The safety net the PRD requires us to keep: worst case is today's
+    // behaviour (working score, dead ledger), never a broken phase.
+    assert.equal(extractScore('8'), 8);
+    assert.equal(extractScore('Some prose about the tree.\n\n4'), 4);
+    assert.equal(extractScore('**7**'), 7);
+
+    // ...and it still reads a compliant JSON object, so ONE response satisfies
+    // both readers.
+    assert.equal(extractScore(JSON.stringify({ score: 5, violations: [], resolved: [], new: [], remaining: [] })), 5);
+});
+
+test('AC-JPCM-5: a bare number is NOT mistaken for a structured result', () => {
+    // `JSON.parse('8')` succeeds and yields a number, not an object. If that
+    // ever classified as 'full' it would rebuild the ledger from an empty
+    // violations array and re-create the bug with no visible parse failure.
+    const result = parseLlmJudgeOutput('8');
+    assert.notEqual(result.shape, 'full', 'a bare number must never classify as a structured judge result');
+    assert.deepEqual(result.violations, []);
 });
