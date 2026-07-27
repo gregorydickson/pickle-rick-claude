@@ -121,7 +121,7 @@ test('untagged single-commit tip is amended with a Pickle-Ticket trailer (word-b
   assert.notEqual(result, c1, 'tip was amended (new sha)');
   const message = messageOf(repoDir, head);
   assert.match(message, TICKET_WORD_RE, 'amended message word-boundary-matches the ticket id');
-  assert.match(message, new RegExp(`^Pickle-Ticket: ${TICKET_ID}$`, 'm'), 'trailer line present');
+  assert.deepEqual(parsedTicketTrailers(repoDir, head), [TICKET_ID], 'trailer parses via the consumer\'s oracle, not a raw-message grep');
   assert.match(message, /Add Reducto Redis circuit store/, 'original message preserved');
 });
 
