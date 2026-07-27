@@ -108,3 +108,86 @@ test('anchor reconciliation: no DELETED_SYMBOLS member is named in src/services/
     );
   }
 });
+
+/**
+ * Every trap-door catalog: the extension root's own, plus one per subsystem under `src/`.
+ *
+ * Enumerated from `src/`'s immediate children rather than by walking the whole extension tree —
+ * a full walk descends into `coverage/`, `bin/`, `services/` and friends and cost ~9.7s here,
+ * which is a starvation risk in the `@tier: fast` tier for no added reach.
+ */
+function listCatalogs() {
+  const out = [];
+  const rootDoc = path.join(REPO_ROOT, 'CLAUDE.md');
+  if (fs.existsSync(rootDoc)) out.push(rootDoc);
+  for (const entry of fs.readdirSync(SRC, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const doc = path.join(SRC, entry.name, 'CLAUDE.md');
+    if (fs.existsSync(doc)) out.push(doc);
+  }
+  return out;
+}
+
+// The case above covers ONE catalog, but DELETED_SYMBOLS spans two home files: the evidence module
+// (`src/services/`) and `extensionGreenGate`'s home `src/bin/mux-runner.ts`, whose anchors live in
+// `src/bin/CLAUDE.md` — which that case never reads. This widens the reach to every catalog
+// (including src/services/CLAUDE.md, so the two overlap rather than partition).
+//
+// Scoped to the `ENFORCE:` / `PATTERN_SHAPE:` SEGMENTS, which is AC-GA-8c's own wording and is
+// load-bearing rather than stylistic: `extension/CLAUDE.md` legitimately NAMES `extractRCodeTokens`
+// in reconciled INVARIANT prose ("...are deleted by B-GITATTR WS-3"). That is the correct reconciled
+// form — a check that reddened on it would pressure a future worker into deleting the very sentence
+// that records the deletion.
+//
+// Segment, not line: a trap-door entry is ONE long bullet carrying INVARIANT/BREAKS/ENFORCE/
+// PATTERN_SHAPE all on the same line, so line-level filtering cannot tell the anchor from the prose
+// beside it (measured — the entry above is a single line).
+const SEGMENT_MARKERS = /\b(?:INVARIANT|BREAKS|ENFORCE|PATTERN_SHAPE|Race-Class|OPEN GAP):/g;
+
+/** The `ENFORCE:` / `PATTERN_SHAPE:` segments of `text`, each truncated at the next segment marker. */
+function anchorSegments(text) {
+  const out = [];
+  const bounds = [...text.matchAll(SEGMENT_MARKERS)];
+  for (let i = 0; i < bounds.length; i++) {
+    const marker = bounds[i][0];
+    if (marker !== 'ENFORCE:' && marker !== 'PATTERN_SHAPE:') continue;
+    const start = bounds[i].index + marker.length;
+    const end = i + 1 < bounds.length ? bounds[i + 1].index : text.length;
+    out.push(text.slice(start, end));
+  }
+  return out;
+}
+
+test('anchor reconciliation: no ENFORCE/PATTERN_SHAPE anchor in ANY catalog names a deleted symbol', () => {
+  const catalogs = listCatalogs();
+  assert.ok(
+    catalogs.length >= 2,
+    `expected several CLAUDE.md catalogs under ${REPO_ROOT}, found ${catalogs.length} — if the walk ` +
+    'silently found nothing, every assertion below would pass vacuously',
+  );
+
+  let segmentsScanned = 0;
+  for (const abs of catalogs) {
+    const rel = path.relative(REPO_ROOT, abs);
+    const segments = anchorSegments(fs.readFileSync(abs, 'utf8'));
+    segmentsScanned += segments.length;
+
+    for (const { symbol } of DELETED_SYMBOLS) {
+      const offender = segments.find((seg) => seg.includes(symbol));
+      assert.equal(
+        offender,
+        undefined,
+        `${rel} carries an ENFORCE/PATTERN_SHAPE anchor naming deleted symbol "${symbol}" — a ` +
+        'dangling anchor points at code that no longer exists, which audit-trap-door-enforcement.sh ' +
+        `and citadel's trap-door analyzer both read as a finding. Offending segment:\n${offender}`,
+      );
+    }
+  }
+
+  // Same reason as the catalog-count guard: if the segment parser drifts and matches nothing, the
+  // loop above becomes a no-op that reports success.
+  assert.ok(
+    segmentsScanned > 0,
+    'the ENFORCE/PATTERN_SHAPE segment parser matched nothing across every catalog — it has drifted',
+  );
+});
