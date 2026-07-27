@@ -1314,6 +1314,33 @@ export function emitJudgeParseDiagnostic(judgeResult, rawOutput, writeActivity =
     });
 }
 /**
+ * Emit the registered `judge_violation_ledger_advanced` activity event after a full-shape
+ * pass advances the ledger.
+ *
+ * Sibling of `emitJudgeParseDiagnostic`, and separated from `updateViolationLedger` for the
+ * same reason: the mutator is called directly by its own unit tests, so an activity write
+ * inside it would append fabricated ledger events to the operator's real log on every test
+ * run. The mutator advances the ledger; the runtime seam records that it did.
+ *
+ * `judge_json_parse_failed` is the alarm for a DEAD ledger; this is the receipt for a LIVE
+ * one. It carries the terms `compareMetric`'s set-ops branch decides on, which a bare score
+ * cannot express — a pass that resolves one violation and finds one new reads `held: N vs N`,
+ * indistinguishable from a pass that did nothing.
+ */
+export function emitJudgeLedgerDiagnostic(judgeResult, ledger, writeActivity = logActivity) {
+    writeActivity({
+        event: 'judge_violation_ledger_advanced',
+        source: 'pickle',
+        ts: new Date().toISOString(),
+        gate_payload: {
+            resolved_count: judgeResult.resolved.length,
+            new_count: judgeResult.new.length,
+            remaining_count: judgeResult.remaining.length,
+            ledger_size: ledger?.length ?? 0,
+        },
+    });
+}
+/**
  * Parse structured JSON from LLM judge output. Never throws.
  * Returns JudgeResult with shape discriminator: 'full' | 'legacy' | 'malformed' | 'partial'.
  * A degraded parse carries `parse_error_message`; `emitJudgeParseDiagnostic` turns that
@@ -2640,6 +2667,7 @@ export async function measureAndClassifyIteration(state, baseline, ctx) {
         if (judgeResult.shape === 'full') {
             previousLedger = { resolved: [], new: [], remaining: state.violation_ledger?.map((entry) => entry.id) ?? [] };
             updateViolationLedger(state, judgeResult, ctx.iteration);
+            emitJudgeLedgerDiagnostic(judgeResult, state.violation_ledger);
             currentLedger = {
                 resolved: judgeResult.resolved,
                 new: judgeResult.new,

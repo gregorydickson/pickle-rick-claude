@@ -29,12 +29,14 @@ import {
     isConverged,
     writeMicroverseState,
     readMicroverseState,
+    updateViolationLedger,
 } from '../services/microverse-state.js';
 import {
     buildJudgePrompt,
     parseLlmJudgeOutput,
     extractScore,
     emitJudgeParseDiagnostic,
+    emitJudgeLedgerDiagnostic,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
 
@@ -700,6 +702,172 @@ test('AC-JPCM-7: parseLlmJudgeOutput stays a pure query — it writes no activit
         );
     } finally {
         process.stderr.write = originalWrite;
+        if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = previousDataRoot;
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// R-SLLJ-6 — the LIVE-ledger receipt.
+//
+// `judge_violation_ledger_advanced` is registered at all four touchpoints and
+// had ZERO producers anywhere in extension/src/. Its payload maps exactly onto
+// the `updateViolationLedger` callsite in `measureAndClassifyIteration`, which
+// — since the prompt/parser contract was repaired — finally receives non-empty
+// ledgers. This is the event that proves that repair works in the field: the
+// score alone cannot, because a pass that resolves one violation and finds one
+// new reads `held: N vs N`, identical to a pass that did nothing.
+//
+// Same producer/mutator split as its sibling: `updateViolationLedger` is called
+// directly by its own unit tests, so the write lives at the runtime seam.
+// ---------------------------------------------------------------------------
+
+const FULL_SHAPE_JUDGE_OUTPUT = JSON.stringify({
+    score: 2,
+    violations: [
+        { id: 'v1', path: 'a.ts', line: 10, rule: 'KISS', severity: 'P2', description: 'nested ternary' },
+        { id: 'v2', path: 'b.ts', line: 20, rule: 'DRY', severity: 'P1', description: 'copied gate' },
+    ],
+    resolved: ['old1', 'old2', 'old3'],
+    new: ['v2'],
+    remaining: ['v1'],
+});
+
+function captureLedgerDiagnostics(rawOutput, priorLedger = []) {
+    const judgeResult = parseLlmJudgeOutput(rawOutput);
+    const state = { violation_ledger: priorLedger };
+    updateViolationLedger(state, judgeResult, 4);
+    const captured = [];
+    emitJudgeLedgerDiagnostic(judgeResult, state.violation_ledger, (event) => captured.push(event));
+    return captured;
+}
+
+test('AC-JPCM-9: judge_violation_ledger_advanced is registered AND reachable from the schema top-level oneOf', () => {
+    assert.ok(
+        VALID_ACTIVITY_EVENTS.includes('judge_violation_ledger_advanced'),
+        'the event must be in VALID_ACTIVITY_EVENTS or the logger rejects it',
+    );
+    assert.ok(ACTIVITY_SCHEMA.definitions.judge_violation_ledger_advanced, 'the schema must define the event');
+    // A definition without a top-level $ref is inert — it validates nothing.
+    assert.ok(
+        ACTIVITY_SCHEMA.oneOf.some((entry) => entry.$ref === '#/definitions/judge_violation_ledger_advanced'),
+        'the definition must be referenced from the top-level oneOf',
+    );
+});
+
+test('AC-JPCM-9: an advanced ledger emits exactly one schema-conformant judge_violation_ledger_advanced', () => {
+    const captured = captureLedgerDiagnostics(FULL_SHAPE_JUDGE_OUTPUT);
+
+    assert.equal(captured.length, 1, 'a full-shape pass must produce the registered event');
+    const definition = ACTIVITY_SCHEMA.definitions.judge_violation_ledger_advanced;
+    for (const key of definition.required) {
+        assert.ok(key in captured[0], `emitted event is missing schema-required key '${key}'`);
+    }
+    for (const key of definition.properties.gate_payload.required) {
+        assert.ok(key in captured[0].gate_payload, `gate_payload is missing schema-required key '${key}'`);
+    }
+    assert.equal(captured[0].event, definition.properties.event.const);
+    assert.equal(captured[0].source, 'pickle');
+});
+
+test('AC-JPCM-9: the counts are the judge set-ops terms, not re-derived from the score', () => {
+    // The three counts are exactly what compareMetric's set-ops branch decides
+    // on. A payload that reported `score` three ways would be schema-conformant
+    // and useless — the whole point is that 3 resolved + 1 new is NOT a hold.
+    const captured = captureLedgerDiagnostics(FULL_SHAPE_JUDGE_OUTPUT);
+    assert.deepEqual(captured[0].gate_payload, {
+        resolved_count: 3,
+        new_count: 1,
+        remaining_count: 1,
+        ledger_size: 2,
+    });
+});
+
+test('AC-JPCM-9: the advance REPLACES the ledger, so a post-advance size differs from the prior one', () => {
+    // Why a post-advance read is the only honest one: `updateViolationLedger`
+    // replaces rather than appends, so prior and post sizes genuinely differ and
+    // reading the wrong one is an off-by-one-iteration lie. This drives the real
+    // mutator; production's read ORDER is pinned separately by the seam-anchor
+    // test below, which matches the exact post-advance expression — this test
+    // cannot see production and does not claim to.
+    const priorLedger = Array.from({ length: 5 }, (_, i) => ({
+        id: `stale${i}`,
+        path: `stale${i}.ts`,
+        line: 1,
+        rule: 'YAGNI',
+        first_seen_iter: 1,
+        last_seen_iter: 3,
+        severity: 'P3',
+        description: 'gone',
+    }));
+    const captured = captureLedgerDiagnostics(FULL_SHAPE_JUDGE_OUTPUT, priorLedger);
+    assert.equal(
+        captured[0].gate_payload.ledger_size,
+        2,
+        'ledger_size must describe the ledger the iteration produced, not the one it replaced',
+    );
+});
+
+test('AC-JPCM-9: a converged pass reports honest zeros rather than staying silent', () => {
+    // Zero violations is the convergence case. Suppressing the event there would
+    // make "the judge found nothing" indistinguishable from "the judge never ran"
+    // — which is the dead-ledger ambiguity this whole orbit exists to remove.
+    const captured = captureLedgerDiagnostics(
+        JSON.stringify({ score: 0, violations: [], resolved: ['v1'], new: [], remaining: [] }),
+    );
+    assert.equal(captured.length, 1, 'convergence must still be recorded');
+    assert.deepEqual(captured[0].gate_payload, {
+        resolved_count: 1,
+        new_count: 0,
+        remaining_count: 0,
+        ledger_size: 0,
+    });
+});
+
+test('AC-JPCM-9: the diagnostic is WIRED at the runtime seam, in source and in the shipped mirror', () => {
+    // The bug being fixed is a producer that does not exist. A test exercising
+    // `emitJudgeLedgerDiagnostic` directly would stay green with no seam call —
+    // rebuilding the same defect one layer up. The compiled mirror is checked
+    // too: a source-only pin passes while the runtime that actually executes
+    // emits nothing.
+    const files = [
+        ['source', new URL('../src/bin/microverse-runner.ts', import.meta.url)],
+        ['compiled mirror', new URL('../bin/microverse-runner.js', import.meta.url)],
+    ];
+    for (const [label, fileUrl] of files) {
+        const body = fs.readFileSync(fileUrl, 'utf8');
+        const advanceAt = body.indexOf('updateViolationLedger(state, judgeResult, ctx.iteration)');
+        assert.ok(advanceAt !== -1, `${label}: the runtime ledger-advance seam must exist`);
+        // Anchor on the CALL, not the name: the compiled mirror's one-line
+        // function signature also reads `emitJudgeLedgerDiagnostic(judgeResult,`
+        // and sits above the seam, so a looser anchor passes on a deleted call.
+        const emitAt = body.indexOf('emitJudgeLedgerDiagnostic(judgeResult, state.violation_ledger)');
+        assert.ok(
+            emitAt > advanceAt,
+            `${label}: the ledger advance must emit judge_violation_ledger_advanced AFTER it advances — an unwired producer is the bug`,
+        );
+    }
+});
+
+test('AC-JPCM-9: updateViolationLedger stays a pure mutator — it writes no activity event', () => {
+    // The regression this guards: "simplifying" by moving the emit inside the
+    // mutator. Its unit tests call it directly, so every test run would append
+    // fabricated ledger events to the operator's real activity log — making the
+    // restored signal untrustworthy, exactly as it would for the parse sibling.
+    const dataRoot = makeTmpDir();
+    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    try {
+        const state = { violation_ledger: [] };
+        updateViolationLedger(state, parseLlmJudgeOutput(FULL_SHAPE_JUDGE_OUTPUT), 4);
+        assert.equal(state.violation_ledger.length, 2, 'the mutator must still advance the ledger');
+        assert.equal(
+            fs.existsSync(path.join(dataRoot, 'activity')),
+            false,
+            'advancing the ledger must not touch the activity log',
+        );
+    } finally {
         if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
         else process.env.PICKLE_DATA_ROOT = previousDataRoot;
         fs.rmSync(dataRoot, { recursive: true, force: true });
