@@ -277,6 +277,34 @@ test('gitattr trailer producer — stamping does not orphan a pre-existing trail
   assert.equal(trailerValue(repoRoot), 'b34ec6d7', 'and ours must parse alongside it');
 });
 
+// --- unset / empty / whitespace all no-op identically (ticket b34ec6d7 Finding 2, HIGH) ---
+
+test('gitattr trailer producer — a whitespace-only ticket id no-ops like unset and empty', () => {
+  const subject = 'chore: blank-ish ticket env';
+
+  // `[ -z "$PICKLE_TICKET_ID" ]` is FALSE for "   ", so the whitespace case used to stamp a
+  // valueless `Pickle-Ticket:` line. %(trailers:…) reports '' for that line just as it does
+  // for a clean no-op, so it cannot tell the two apart — assert on %B, which can.
+  for (const [label, id] of [['unset', undefined], ['empty', ''], ['whitespace', '   '], ['tab/newline', '\t\n ']]) {
+    const repoRoot = tmpRoot('gitattr-blank-');
+    const managedDir = path.join(tmpRoot('gitattr-blank-managed-'), 'hooks');
+    initGitRepo(repoRoot);
+
+    assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+
+    fs.writeFileSync(path.join(repoRoot, 'two.txt'), 'two');
+    git(['add', '-A'], repoRoot);
+    const env = hooksPathEnv(managedDir);
+    if (id === undefined) delete env.PICKLE_TICKET_ID;
+    else env.PICKLE_TICKET_ID = id;
+    git(['commit', '--no-gpg-sign', '-q', '-m', subject], repoRoot, env);
+
+    const body = git(['log', '-1', '--format=%B'], repoRoot).replace(/\n+$/, '');
+    assert.equal(body, subject, `${label}: the message must be byte-identical`);
+    assert.equal(trailerValue(repoRoot), '', `${label}: no trailer value`);
+  }
+});
+
 // --- Shell-injection guard (ticket 8f7e1cf2 Test Expectations) ---
 
 test('gitattr trailer producer — a ticket id cannot break out of the hook script', () => {
