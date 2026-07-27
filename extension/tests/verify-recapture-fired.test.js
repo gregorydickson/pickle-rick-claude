@@ -375,6 +375,51 @@ test('verify-recapture.ignores timestamp-only history entries when closing the a
   }
 });
 
+// The phase-window arm is the ONLY thing separating "anatomy-park never recorded a phase
+// transition" from "the recapture event never fired": both are pass:false / exit 1, so the
+// failure_reason and its paired hint are the entire observable. Two trap doors (extension/CLAUDE.md
+// `history`, src/bin/CLAUDE.md `pipeline-runner.ts`) name `phase-window-missing` as THE diagnostic
+// for a regressed history append — and nothing pinned it: deleting the arm left the suite 75/75
+// GREEN while every such regression reported as a missing event instead.
+// A/B on ONE session — same name, same activity log, only the anatomy marker changes — so the
+// event is provably findable in both halves and the phase marker is the sole cause.
+test('verify-recapture.phase-window-missing is distinguished from a missing recapture event', () => {
+  const session = makeSession(baseState([
+    { step: 'pickle', timestamp: '2026-05-02T10:00:00.000Z' },
+    { step: 'szechuan-sauce', timestamp: '2026-05-02T12:00:00.000Z' },
+  ]));
+  const dataRoot = makeDataRoot();
+  const sessionName = path.basename(session);
+  try {
+    // Present, attributed to THIS session, and inside the window the anatomy entry would open.
+    writeActivityEvents(dataRoot, [recaptureEvent(sessionName)]);
+
+    const noWindow = runVerifier(session, dataRoot);
+    assert.equal(noWindow.status, 1);
+    assert.equal(noWindow.runtimeArtifact.pass, false);
+    assert.equal(noWindow.runtimeArtifact.failure_reason, 'phase-window-missing');
+    assert.match(
+      noWindow.runtimeArtifact.remediation_hint,
+      /anatomy-park phase transitions are appended to state\.history/,
+    );
+    assert.deepEqual(noWindow.runtimeArtifact.evidence.anatomy_windows, []);
+
+    // Same session, same event — only the anatomy-park marker is restored. This passes, which
+    // proves the event was findable all along and the missing marker was the sole cause above.
+    writeFileSync(
+      path.join(session, 'state.json'),
+      `${JSON.stringify(baseState(HISTORY_WINDOW_HIT), null, 2)}\n`,
+    );
+    const withWindow = runVerifier(session, dataRoot);
+    assert.equal(withWindow.status, 0, withWindow.stderr);
+    assert.equal(withWindow.runtimeArtifact.pass, true);
+    assert.equal(withWindow.runtimeArtifact.failure_reason, null);
+  } finally {
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
 test('verify-recapture.state-missing exits 2 and writes state-missing artifact', () => {
   const session = makeSession(null);
   const dataRoot = makeDataRoot();
