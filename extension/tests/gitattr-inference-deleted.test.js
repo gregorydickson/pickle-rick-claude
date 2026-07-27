@@ -72,15 +72,30 @@ test('survival pin: ticket-declared-files.ts exists, exports readDeclaredFiles, 
   const moduleSrc = fs.readFileSync(modulePath, 'utf8');
   assert.match(moduleSrc, /export function readDeclaredFiles\b/, 'readDeclaredFiles must remain exported');
 
-  const importRe = /from ['"](?:\.\.\/)*services\/ticket-declared-files\.js['"]/;
+  // Accepts the sibling `./ticket-declared-files.js` form too: the previous `services/`-anchored
+  // pattern could only see importers OUTSIDE src/services/, so a consumer moving in beside the
+  // module would silently drop out of the count and redden this pin for the wrong reason.
+  const importRe = /from ['"](?:\.\.\/)*(?:\.\/|services\/)ticket-declared-files\.js['"]/;
   const importers = listTsFiles(SRC).filter((abs) => {
     if (path.resolve(abs) === path.resolve(modulePath)) return false;
     return importRe.test(fs.readFileSync(abs, 'utf8'));
   });
+  const importerNames = importers.map((abs) => path.basename(abs));
   assert.ok(
     importers.length >= 3,
     `expected >=3 external importers of ticket-declared-files.ts, found ${importers.length}: ${importers.join(', ')}`,
   );
+
+  // A bare count survives all three AC-named consumers being rewired away and replaced by three
+  // unrelated ones — the exact "importers rewired away" direction AC-GA-8b exists to catch. Assert
+  // the named three as a superset check, so a legitimate fourth importer does not redden this.
+  for (const expected of ['pipeline-runner.ts', 'check-readiness.ts', 'mux-runner.ts']) {
+    assert.ok(
+      importerNames.includes(expected),
+      `AC-GA-8b names ${expected} as a live consumer of ticket-declared-files.ts, but it no longer ` +
+      `imports the module. Importers found: ${importerNames.join(', ') || '(none)'}`,
+    );
+  }
 });
 
 test('collision guard: commitMessage is still present in microverse-runner.ts and bundle-finalize.ts (home-file-scoped absence, not whole-tree)', () => {
