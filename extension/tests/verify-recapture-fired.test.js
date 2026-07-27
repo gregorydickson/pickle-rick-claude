@@ -76,6 +76,18 @@ function recaptureEvent(sessionName, overrides = {}) {
   };
 }
 
+// Returns the producer's logActivityFn({...}) call text for the recapture event, so the
+// assertion reads that call's own properties instead of grepping the whole file — a `session:`
+// belonging to some other emission must not satisfy this pin.
+function extractRecaptureEmission(source) {
+  const eventIdx = source.indexOf("event: 'baseline_recapture_attempted'");
+  if (eventIdx === -1) return null;
+  const callStart = source.lastIndexOf('logActivityFn({', eventIdx);
+  const callEnd = source.indexOf('});', eventIdx);
+  if (callStart === -1 || callEnd === -1) return null;
+  return source.slice(callStart, callEnd);
+}
+
 // Mirrors logActivity's sink exactly: getDataRoot()/activity/<local-day>.jsonl, keyed off the
 // event's own ts. Same day-key helper the producer uses, so this holds in any TZ.
 function writeActivityEvents(dataRoot, events) {
@@ -214,6 +226,46 @@ test('verify-recapture.foreign-session event does not satisfy this session AC', 
     assert.equal(result.status, 1);
     assert.equal(result.runtimeArtifact.pass, false);
     assert.equal(result.runtimeArtifact.failure_reason, 'recapture-event-missing');
+  } finally {
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+// The PRODUCER half of that same join. `attemptStrictBaselineRecapture` is unexported, the two
+// integration tests that drive it assert only event/ordering, and every consumer fixture here
+// hand-stamps `session` — so deleting the producer's stamp left AC-DR-02 a permanent false-RED
+// with the whole suite green. Pin both halves together: the stamp in the producer that actually
+// runs, and the verdict flip that proves the consumer joins on exactly that field.
+test('verify-recapture.producer stamps the session the consumer joins on (AC-DR-02 join)', () => {
+  for (const [label, producerPath] of [
+    ['source', path.join(REPO_ROOT, 'extension', 'src', 'bin', 'microverse-runner.ts')],
+    ['compiled', path.join(REPO_ROOT, 'extension', 'bin', 'microverse-runner.js')],
+  ]) {
+    const emission = extractRecaptureEmission(readFileSync(producerPath, 'utf8'));
+    assert.ok(emission, `${label} producer must emit baseline_recapture_attempted via logActivityFn`);
+    assert.match(
+      emission,
+      /session:\s*path\.basename\(opts\.sessionDir\)/,
+      `${label} producer must stamp session=basename(sessionDir) — the consumer requires session equality`,
+    );
+  }
+
+  const session = makeSession(baseState());
+  const dataRoot = makeDataRoot();
+  try {
+    const { session: _unstamped, ...withoutSession } = recaptureEvent(path.basename(session));
+    writeActivityEvents(dataRoot, [withoutSession]);
+    const unattributed = runVerifier(session, dataRoot);
+    assert.equal(unattributed.status, 1, 'an unstamped recapture event must not satisfy AC-DR-02');
+    assert.equal(unattributed.runtimeArtifact.pass, false);
+    assert.equal(unattributed.runtimeArtifact.failure_reason, 'recapture-event-missing');
+
+    writeActivityEvents(dataRoot, [recaptureEvent(path.basename(session))]);
+    const attributed = runVerifier(session, dataRoot);
+    assert.equal(attributed.status, 0, attributed.stderr);
+    assert.equal(attributed.runtimeArtifact.pass, true);
+    assert.equal(attributed.runtimeArtifact.failure_reason, null);
   } finally {
     rmSync(session, { recursive: true, force: true });
     rmSync(dataRoot, { recursive: true, force: true });
