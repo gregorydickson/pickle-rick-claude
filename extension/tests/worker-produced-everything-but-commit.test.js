@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,6 +25,7 @@ import {
   emitWorkerProductionBreadcrumb,
 } from '../bin/mux-runner.js';
 import { requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
+import { resetToSha } from '../services/git-utils.js';
 import { getTicketStatus } from '../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -244,6 +245,59 @@ test('AC-WMFF-2A: advanceOrExitOnLadderExhaustion archives BEFORE its Failed fro
     callSites >= 4,
     `expected >= 4 archiveDirtyTreeBeforeFlip call sites (3 Failed-flip sites + orphan-reattach), got ${callSites}`,
   );
+});
+
+// The sibling AC-WMFF-2A case above asserts the patch MENTIONS the work (`assert.match`).
+// That oracle cannot separate a recoverable archive from an unrecoverable one: git writes a
+// contentless `Binary files a/x and b/x differ` stub that still mentions the path. The archive's
+// whole contract is that an operator can get the work BACK, so assert the round trip.
+test('AP-EXT-ITER8-01: the pre-reset archive must APPLY — one dirty binary must not take the text down with it', () => {
+  const { repo } = makeRepo('wmff-bin-repo-');
+  const { sessionDir } = makeSession('wmff-bin-sess-');
+  try {
+    // Baseline a tracked binary so the worker's edit is a MODIFY, not an add.
+    const png = path.join(repo, 'asset.png');
+    writeFileSync(png, Buffer.from('89504e470d0a1a0a0001020304', 'hex'));
+    git(repo, ['add', 'asset.png']);
+    git(repo, ['commit', '-q', '-m', 'add binary asset']);
+    const preResetSha = git(repo, ['rev-parse', 'HEAD']);
+
+    // Uncommitted worker output on the floor: a tracked TEXT edit, a tracked BINARY edit,
+    // and an untracked BINARY file — all three destroyed by the reset below.
+    const text = path.join(repo, 'README.md');
+    const blob = path.join(repo, 'fixture.bin');
+    writeFileSync(text, 'base\nworker edit that must survive a round trip\n');
+    writeFileSync(png, Buffer.from('89504e470d0a1a0aaabbccdd4d5554415445', 'hex'));
+    writeFileSync(blob, Buffer.from('00014e45572d42494e415259ff', 'hex'));
+    const wantText = readFileSync(text);
+    const wantPng = readFileSync(png);
+    const wantBlob = readFileSync(blob);
+
+    resetToSha(preResetSha, repo, undefined, {
+      cwd: repo, sessionDir, ticketDir: null, reason: 'pre_reset',
+    });
+
+    // Precondition — the destructive op really did destroy all three. Without this the
+    // recovery assertions below could pass on a tree that was never reset (tautology guard).
+    assert.ok(!readFileSync(text).equals(wantText), 'reset reverted the text edit');
+    assert.ok(!readFileSync(png).equals(wantPng), 'reset reverted the binary edit');
+    assert.equal(existsSync(blob), false, 'clean -fd removed the untracked binary');
+
+    const patches = readdirSync(sessionDir).filter((f) => /^pre_reset_diff_\d+\.patch$/.test(f));
+    assert.equal(patches.length, 1, 'exactly one pre_reset archive was written');
+
+    // The contract: the archive IS the recovery artifact, so it must apply. `git apply` is
+    // all-or-nothing — a single unappliable binary stub rejects the whole patch, taking the
+    // co-archived text work with it.
+    git(repo, ['apply', path.join(sessionDir, patches[0])]);
+
+    assert.ok(readFileSync(text).equals(wantText), 'text work recovered byte-identically');
+    assert.ok(readFileSync(png).equals(wantPng), 'tracked binary recovered byte-identically');
+    assert.ok(readFileSync(blob).equals(wantBlob), 'untracked binary recovered byte-identically');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
 });
 
 // ═══════════ AC-WMFF-2B — the breadcrumb predicate ═══════════

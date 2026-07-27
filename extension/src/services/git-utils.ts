@@ -283,6 +283,15 @@ const ARCHIVE_GIT_TIMEOUT_MS = 30_000;
 const ARCHIVE_GIT_MAX_BUFFER = 64 * 1024 * 1024;
 const CODEGRAPH_PATHSPEC_EXCLUDES = ['--', '.', `:!${CODEGRAPH_DIR}`, `:!${CODEGRAPH_DIR}/**`];
 
+/**
+ * The one flag set every archive diff starts from — staged, unstaged, and per-file
+ * untracked alike. `--binary` is load-bearing, not cosmetic: without it git emits a
+ * contentless `Binary files a/x and b/x differ` stub, and `git apply` is ALL-OR-NOTHING,
+ * so ONE such stub rejects the WHOLE patch — a single dirty binary file makes every
+ * co-archived TEXT diff unrecoverable too, after `resetToSha` has already destroyed it.
+ */
+const ARCHIVE_DIFF_BASE = ['diff', '--binary'];
+
 export type ArchiveReason = PreResetPayload['reason'];
 
 export interface ArchiveContext {
@@ -337,7 +346,7 @@ function collectUntrackedDiffs(cwd: string, byteCap: number): { sections: string
   let bytes = 0;
   for (const file of listUntrackedPaths(cwd)) {
     // exit 1 = content differs (the normal case for --no-index against /dev/null)
-    const diff = runArchiveGit(['diff', '--no-index', '/dev/null', file], cwd, [0, 1]);
+    const diff = runArchiveGit([...ARCHIVE_DIFF_BASE, '--no-index', '/dev/null', file], cwd, [0, 1]);
     const size = Buffer.byteLength(diff, 'utf-8');
     if (bytes + size > byteCap) return { sections, truncated: true };
     bytes += size;
@@ -347,8 +356,8 @@ function collectUntrackedDiffs(cwd: string, byteCap: number): { sections: string
 }
 
 function buildArchivePatch(cwd: string, byteCap: number): { content: string; truncated: boolean } {
-  const staged = runArchiveGit(['diff', '--cached', ...CODEGRAPH_PATHSPEC_EXCLUDES], cwd);
-  const unstaged = runArchiveGit(['diff', ...CODEGRAPH_PATHSPEC_EXCLUDES], cwd);
+  const staged = runArchiveGit([...ARCHIVE_DIFF_BASE, '--cached', ...CODEGRAPH_PATHSPEC_EXCLUDES], cwd);
+  const unstaged = runArchiveGit([...ARCHIVE_DIFF_BASE, ...CODEGRAPH_PATHSPEC_EXCLUDES], cwd);
   const untracked = collectUntrackedDiffs(cwd, byteCap);
   const content = [staged, unstaged, ...untracked.sections].filter((s) => s.length > 0).join('');
   return { content, truncated: untracked.truncated };
