@@ -306,8 +306,10 @@ function isTicketDir(dir: string): boolean {
  *
  * REJECTION-BY-POSITIVE-FOREIGN-ATTRIBUTION ONLY: default is accept. Absence of a
  * matching message is NEVER grounds for rejection (R-RIC-EXPLICIT / explicit-SHA-wins);
- * a generic or own-ticket message returns false (accept). Word-boundary matcher
- * shape shared with the trailer's foreign-attribution exclusion (`scanGitLogByTrailer`).
+ * a generic or own-ticket message returns false (accept). Word-boundary matching is
+ * needed here because this arm searches a free-text commit message, where a ticket id
+ * appears as an embedded token; the trailer scan (`scanGitLogByTrailer`) instead compares
+ * a single git-parsed field for exact equality and needs no such matcher.
  */
 function isForeignAttributedExplicitSha(
   sha: string,
