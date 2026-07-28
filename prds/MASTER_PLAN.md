@@ -55,8 +55,48 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > an untagged worker commit`, and `commit-failed` rather than an attribution miss) look substantive, and
 > rewriting guards to match current behaviour is exactly how R-GTDT was born.
 >
-> **State on disk:** main tree CLEAN at `c457e943`, no worktrees, no live pipelines, nothing reverted, no
-> test rewritten. Gate log: `<scratchpad>/gate2.log`.
+> **State on disk:** main tree CLEAN at `0087afdc`, no worktrees, no live pipelines, nothing reverted, no
+> test rewritten, **50 commits unpushed**. Gate log: `<scratchpad>/gate2.log`.
+>
+> ### ⚠️ THE DEPLOYED RUNTIME IS THE R-GADEL STATE — read before launching anything
+>
+> `install.sh` ran **twice** on 2026-07-27 (R-GTDT-LAND ticket 20's manager-owned deploy, then again
+> inside the gate at 23:06Z). Deployed is in **full parity** with source HEAD (5/5 hot files MD5-match),
+> version string `2.1.0-beta.7`. So the code every pipeline now runs is **untagged, red-gate code**:
+>
+> | Component | Deployed state |
+> |---|---|
+> | Trailer fix (R-GTDT-LAND) | ✅ `readParsedTicketTrailers` ×2, `buildTrailerAmendedMessage` ×3 |
+> | `prepare-commit-msg` hook | ✅ **live for the first time** — stamps every worker commit |
+> | Message inference (the fallback) | ❌ **GONE** — `scanGitLogByRefToken` / `scanGitLogByFileTouch` / `extractRCodeTokens` all `0` |
+>
+> **Bounded, not alarming:** the hook stamps at commit time, the amend fallback is fixed and field-proven
+> (`c457e943` → `trailer=[ce0a4f46]`), and the explicit `completion_commit` path is untouched (it carried
+> 8/10 tickets in B-GITATTR). R-GTDT-LAND's rollback condition — absent/empty/multi-valued trailers
+> post-deploy — did **not** trigger. What is gone is the *safety net beneath* a working channel.
+>
+> **Recommendation: leave it deployed.** Rolling back to pre-B-GITATTR would also revert the amend-guard
+> fix, reintroducing R-GTDT — a defect we have proven bites. Net worse.
+>
+> ### 🧪 If you launch a test pipeline on this runtime, it IS the field test for the hook
+>
+> The hook has never run in a real multi-ticket pipeline. Collect this — it is the evidence R-GADEL's
+> fix decision needs, and it is cheap to gather while the run happens anyway:
+>
+> 1. **Per-commit trailer coverage** — `git log --format='%h %(trailers:key=Pickle-Ticket,valueonly) | %s'`
+>    over the run. **Every** worker commit should carry exactly one trailer naming its ticket.
+> 2. **Any `trailer=[]` on a worker commit is the finding** — it means the hook did not fire, and with
+>    message inference gone there is now no scan fallback. Note the commit shape that produced it.
+> 3. **Any multi-valued trailer** → that IS R-GTDT-LAND's rollback trigger; halt and re-deploy the prior
+>    tree rather than continuing on an unvalidated commit path.
+> 4. **Watch for `done_without_commit_evidence` / `ticket_phantom_done_corrected`** — treat these as
+>    signal, not noise, on this runtime.
+> 5. **Do NOT run the full release gate from the test chat** while another pipeline is live — contention
+>    produces timeout-shaped flakes that read as regressions.
+>
+> A clean run with 100% trailer coverage is real evidence that the trailer channel covers the common
+> paths, and it narrows R-GADEL's open question. A run with gaps names the exact uncovered case — which is
+> more valuable still.
 >
 > **Also open, none blocking the tag:** [[R-JPCM]] (P1, 2nd occurrence), [[R-MVPARK]] (P2), [[R-DSPW]] (P2),
 > and one UNFILED observation — `b4dbd528` edited outside the 4-path allowlist with **no**
