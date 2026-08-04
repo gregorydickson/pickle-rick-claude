@@ -684,6 +684,29 @@ inferred-completion accepts it, but it is a RECOVERY commit and the ACs are veri
 Workaround: the 2-line gate deletion is a trivial manual fix, tracked for hand-application after the
 pipeline's citadel/anatomy/szechuan phases complete.
 
+## 🚨 OPEN BUG — B-OFFREPO: the worker quality gate does not exist on any repo that is not pickle-rick (2026-08-04, P1)
+
+**`prds/p1-b-offrepo-gate-the-worker-gate-does-not-exist-off-repo.md`** — **five** sites key the quality
+gate on `<workingDir>/extension`, pickle-rick's OWN layout. On every other repo the gate does not run,
+and three of the five return **green**:
+`extension/src/bin/spawn-morty.ts:1786` `runWorkerGate` → `{ok:true, lintErrors:0, tscErrors:0, testFailures:[]}` ·
+`extension/src/bin/mux-runner.ts:4718` `resolveWorkerGateVerdict` → `{verdict:'green', computedVia:'worker_gate'}`
+(**false attribution — asserts a gate produced it**; the source comment admits the reasoning: *"NOT
+fail-closed: a non-pickle-rick target would otherwise have every Done-flip refused"*) ·
+`extension/src/bin/mux-runner.ts:5834` recovery `runArmedGate` → `{ok:true}` · plus a silent `null` skip
+(`:670`) and an honest refusal that strands work (`:5238`). `worker_gate_verdict` gates the Done flip at
+`extension/src/bin/mux-runner.ts:4861`. **Field:** session `2026-08-03-2d5b3820` — our ONE clean hands-off
+run on a real target repo (LOA-2190, 14/15 Done, `exit_reason: completed`) — ran in a worktree with **no
+`extension/` dir**, so **every worker skipped the whole lint/tsc/test gate and reported green.** That run
+proves the system COMPLETES; it proves nothing was CHECKED. Largest instance of [[R-WGVI]]; confirmed
+member of [[project_offrepo_fakegreen_is_a_family_not_one_site]]. **Fix is REUSE + subtraction:**
+`detectProjectType` (`extension/src/services/convergence-gate.ts:362`) and `canRunTestScript` (`:911`) are
+already exported and already repo-agnostic — the worker gate never asks. ⛔ Do NOT build a per-stack
+adapter matrix (repo-agnostic invariant). ⛔ Do NOT fail-closed on raw red (deadlocks every ticket on
+inherited debt). A gate that cannot run reports **`not_run`**, never `green`, and never halts (directive 2).
+⚠️ **The self-build cannot exercise this bug** — pickle-rick HAS `extension/` — so WS-4's off-repo field
+run is mandatory, not optional. Build **ATTENDED**.
+
 ## 🔺 OPEN BUG — B-LOGEV: 81% of worker session logs are EMPTY, and the classifier believes them (2026-08-04, P1)
 
 **`prds/p1-b-logev-session-log-emptiness-is-not-evidence.md`** — measured on session `2026-08-03-2d5b3820`
