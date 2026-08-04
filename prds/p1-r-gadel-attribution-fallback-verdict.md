@@ -54,16 +54,24 @@ CLAUDE.md catalogs. **Any restore reddens that pin** and must reconcile it in th
 
 ## 2. The 10 failures
 
+All ten enumerated as discrete `file:line` tokens — these exact strings are the keys AC-GADEL-A2
+matches on, so do not reformat them:
+
 ```
 tests/characterization/completion-commit-cluster/path-2-worker-autofill-belt-and-suspenders.test.js:52
 tests/characterization/completion-commit-cluster/path-3-manager-drift-auto-completion-validation.test.js:76
 tests/characterization/completion-commit-cluster/path-7-phantom-done-watcher-backfill.test.js:74
-tests/boundary-commit-at-iteration.test.js:69, :102, :176
+tests/boundary-commit-at-iteration.test.js:69
+tests/boundary-commit-at-iteration.test.js:102
+tests/boundary-commit-at-iteration.test.js:176
 tests/doneflip-gate-all-callsites.test.js:118
 tests/wuwc-reproducer.test.js:305
 tests/mux-exit-path-commit.test.js:79
 tests/exit-path-bystander-stash.test.js:67
 ```
+
+The 8 distinct files (the `F` set referenced by AC-GADEL-B3) are those paths with `extension/`
+prefixed and the `:line` suffix stripped.
 
 `extension/CLAUDE.md` describes the completion-commit-cluster suite as **"the primary regression guard
 for the 8 Done-stamping paths"** with the invariant *"These tests MUST pass on every release."*
@@ -105,14 +113,15 @@ test.
 ⛔ **Choosing "dead contract" without the enumeration is a fake green.** This is the whole deliverable.
 
 #### Acceptance criteria
-- **AC-GADEL-A1**: `prds/research/gadel-trailer-coverage-matrix.md` exists and contains one row per
-  deleted case C1, C2, C3, each with a `covered: yes|no|partial` verdict, the covering mechanism named
-  by symbol, and the hook-does-not-fire behaviour stated. — Verify: `test -f` and `grep -c '^| C[123] '`
-  returns 3 — Type: test
-- **AC-GADEL-A2**: the same artifact classifies **all 10** failures as `dead-contract` or
-  `live-contract`, each with a one-line justification citing a symbol or an evidence source. — Verify:
-  the artifact's verdict table has 10 data rows and `grep -c 'dead-contract\|live-contract'` ≥ 10 —
-  Type: test
+- **AC-GADEL-A1**: `prds/research/gadel-trailer-coverage-matrix.md` exists and contains the
+  **Coverage table** (shape pinned in §4.5) with exactly one row per deleted case C1, C2, C3. — Verify:
+  `for c in C1 C2 C3; do grep -qE "^\| $c \| (yes|no|partial) \|" prds/research/gadel-trailer-coverage-matrix.md || exit 1; done`
+  — Type: test
+- **AC-GADEL-A2**: the same artifact's **Verdict table** (§4.5) classifies **all 10** failures. Every
+  one of the 10 `file:line` tokens listed in §2 appears in a row whose verdict cell is exactly
+  `dead-contract` or `live-contract`. — Verify:
+  `for t in $(grep -oE '[a-z0-9./-]+\.test\.js:[0-9]+' prds/p1-r-gadel-attribution-fallback-verdict.md | sort -u); do grep -qE "^\| \`$t\` \| (dead|live)-contract \|" prds/research/gadel-trailer-coverage-matrix.md || exit 1; done`
+  — Type: test
 - **AC-GADEL-A3**: the two failures the bug report flags as substantive — `guard must ATTRIBUTE-to-Done
   an untagged worker commit` and `expected committed, got honest_failure/commit-failed` — each carry an
   explicit verdict paragraph that addresses the failure **message**, not just the file. — Type:
@@ -135,9 +144,14 @@ Apply WS-A's classification. Two permitted shapes, chosen **per test**, not glob
   naming the WS-A verdict that justified the change. — Verify: for each changed `tests/**` file,
   `git diff` context shows a comment adjacent to each changed assertion — Type: llm-conformance
 - **AC-GADEL-B3** *(anti-fake-green, load-bearing)*: **no assertion is deleted or weakened to reach
-  green.** The bundle's net change to the 8 failing files must not reduce the total count of
-  `assert.` calls. — Verify: `git diff <start_commit>..HEAD -- extension/tests/` — the sum of `assert.`
-  occurrences across the 8 files is ≥ its value at `start_commit` — Type: test
+  green.** The summed `assert.` count across the 8 §2 files must not fall below its value at
+  `start_commit`. — Verify, from the repo root with `S=<start_commit>` and `F` the 8 paths in §2:
+  ```
+  before=$(for f in $F; do git show "$S:$f" | grep -c 'assert\.'; done | paste -sd+ - | bc)
+  after=$(for f in $F; do grep -c 'assert\.' "$f"; done | paste -sd+ - | bc)
+  test "$after" -ge "$before"
+  ```
+  — Type: test
 - **AC-GADEL-B4**: if any symbol is restored, `gitattr-inference-deleted.test.js` is reconciled in the
   **same commit** (restored symbol removed from `DELETED_SYMBOLS`, anchors updated) and the commit
   message contains the phrase `partial revert of WS-3`. — Verify: `git log` — either zero restored
@@ -161,6 +175,66 @@ This bundle claims to unblock the beta.8 tag. A ticket must **run** that claim.
 
 > Run the gate **once, on a quiet box**. Overlapping runs self-inflict timeout-shaped flakes. If the
 > fast tier flakes at c=8, re-run at c=4 for the authoritative verdict.
+
+## 4.5 Interface Contracts — the two forward-created artifacts
+
+This bundle's boundaries are **documents**, not APIs. Their shapes are contracts because ACs grep them.
+
+### `prds/research/gadel-trailer-coverage-matrix.md` (WS-A output, WS-B input)
+
+Two tables, both markdown, in this order. Column order is load-bearing.
+
+**Coverage table** — exactly 3 data rows, keyed `C1`/`C2`/`C3`:
+
+```
+| Case | Covered | Covering mechanism | Behaviour when the hook does not fire |
+|---|---|---|---|
+| C1 | yes | `readParsedTicketTrailers` — … | … |
+```
+
+- `Case` ∈ {`C1`, `C2`, `C3`} — the §1 mechanisms, one row each, no others
+- `Covered` ∈ {`yes`, `no`, `partial`} — lowercase, exact
+- `Covering mechanism` names at least one **symbol in backticks**, or is the literal `none`
+- `Behaviour when the hook does not fire` — prose, non-empty
+
+**Verdict table** — exactly 10 data rows, one per §2 token:
+
+```
+| Failure | Verdict | Justification |
+|---|---|---|
+| `tests/boundary-commit-at-iteration.test.js:69` | live-contract | … |
+```
+
+- `Failure` — the §2 `file:line` token verbatim, in backticks
+- `Verdict` ∈ {`dead-contract`, `live-contract`} — lowercase, exact
+- `Justification` — one line citing a symbol in backticks or an evidence source (`§3`, a commit SHA)
+
+### `prds/research/gadel-gate-run.md` (WS-C output)
+
+Free-form prose, but MUST contain these keys, one per line, `KEY=value`:
+
+```
+GATE_RESULT=GREEN|RED
+GATE_COMMIT=<full 40-char sha>
+FAILED_STAGE=<stage name>      # required iff GATE_RESULT=RED, omitted otherwise
+NEXT_BLOCKER=<name or "none">  # always present; "none" iff GREEN
+```
+
+**Errors / invariants:** a missing artifact, a verdict value outside its enum, or a `Failure` token
+not matching §2 verbatim is a **hard AC failure**, not a warning. Neither artifact may be written by
+WS-B — WS-A owns the matrix, WS-C owns the gate run.
+
+## 4.6 Test Expectations
+
+| Criterion | Test file | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-GADEL-A1 | *(artifact grep, no test file)* | Coverage table well-formed | 3 rows, each `C[123]` with an enum verdict |
+| AC-GADEL-A2 | *(artifact grep, no test file)* | Verdict table complete | all 10 §2 tokens present with an enum verdict |
+| AC-GADEL-B1 | the 8 §2 files | integration tier green | `npm run test:integration` exits 0 |
+| AC-GADEL-B3 | the 8 §2 files | assertion floor holds | summed `assert.` count ≥ value at `start_commit` |
+| AC-GADEL-B4 | `extension/tests/gitattr-inference-deleted.test.js` | deletion pin reconciled | zero restored symbols, or pin updated in the same commit |
+| AC-GADEL-B5 | `extension/CLAUDE.md` | trap-door anchors resolve | `audit-trap-door-enforcement.sh` exits 0 |
+| AC-GADEL-C1 | *(artifact grep, no test file)* | gate verdict recorded | `GATE_RESULT=` and `NEXT_BLOCKER=` present |
 
 ## 5. Simplification Review
 
