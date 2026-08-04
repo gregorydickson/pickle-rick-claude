@@ -475,15 +475,18 @@ completion-evidence PROVEN, LOA-1363 run 4) are preserved in
 >   Non-Goal). Reshaped ACs **AC-WGVI-P1..P6** committed (`80b0c20a` + scope `d70be6c8`) supersede the rejected
 >   `not_run`/baseline AC-WGVI-1..4. `red`+`Done` via a Done-*flip* is unreachable on HEAD (Done callsites
 >   green-gated); `c4ee67ff` was a write-after-Done relabel → AC-WGVI-4 → temporal invariant AC-WGVI-P5. **Routing:
->   attended hand-build, NOT pipeline. North-star: self-build-only (inert on target repos) — real but not
->   autonomy-urgent, hence deferred.**
+>   ATTENDED `/pickle-pipeline`** *(updated 2026-08-04: was "attended hand-build, NOT pipeline"; the
+>   hand-build exception is deleted — see `CLAUDE.md` → "NEVER hand-build")*. **North-star: self-build-only
+>   (inert on target repos) — real but not autonomy-urgent, hence deferred.**
 
 
 > **Consolidating bundle authored (2026-06-26):** [[R-DPGT]] + [[R-DOTR]] + [[R-CRSR]] (Facets A+B) + the LOA-1588
 > foreign-hash sub-finding are one wound — the **pickle phase-exit / per-ticket-budget boundary does not read the
 > single `readEvidence` oracle.** PRD: `archive/bundles/p2-bug-fix-bundle-b-pxbo-phase-exit-boundary-oracle-2026-06-26.md`
-> (**B-PXBO**, reuse-first, no new oracle/state). ⚠️ **SELF-MODIFYING-RECOVERY (R-PSRB)** — hand-build the
-> mux-runner/completion-evidence tickets; cannot run a clean autonomous pipeline. **R-SIGF stays a separate
+> (**B-PXBO**, reuse-first, no new oracle/state). ⚠️ **SELF-MODIFYING-RECOVERY (R-PSRB)** — the
+> mux-runner/completion-evidence tickets run **ATTENDED**, watching the salvage seam; a wedge is recovered
+> and recorded, not dodged *(updated 2026-08-04: was "hand-build … cannot run a clean autonomous
+> pipeline")*. **R-SIGF stays a separate
 > parallel track** (scope-fence auto-extension — different subsystem, the other codex GA blocker).
 
 | # | Item | Pri | State | Source |
@@ -692,4 +695,7 @@ Escalation to P2 if ever observed on a ticket whose impl landed but whose Done-f
 ticket is stamped Skipped, and Skipped is terminal (`isTerminalTicketStatus:2412`), so
 `isPendingMuxTicket:1063` never re-selects it — real committed work permanently mislabelled. Not observed
 in this session (`c721f502`'s work genuinely was incomplete); filed as trigger, not occurrence.
-**Fix bundle is R-PSRB hand-build** (touches the Done-flip/completion path) — do NOT dogfood it.
+**Fix bundle runs ATTENDED** (touches the Done-flip/completion path) — launch it via `/pickle-pipeline`
+like everything else and watch the salvage seam. *(Superseded 2026-08-04: this row originally read "R-PSRB
+hand-build — do NOT dogfood it." The hand-build exception was deleted by operator decision; see
+`CLAUDE.md` → "NEVER hand-build" and `prds/CLAUDE.md` → "R-PSRB attended protocol".)*

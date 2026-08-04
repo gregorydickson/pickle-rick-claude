@@ -85,22 +85,35 @@ The reason is recorded as an audit-trail activity event.
 
 ---
 
-## Self-modifying-recovery bundles (R-PSRB build protocol)
+## Self-modifying-recovery bundles (R-PSRB attended protocol)
 
-**Dogfood by default (see `CLAUDE.md` → Dogfood).** Hand-build is the NARROW exception below, not the rule for any mux-runner edit.
+**NEVER hand-build. ALWAYS run a pipeline** (see `CLAUDE.md` → "NEVER hand-build"). The hand-build
+exception that used to live in this section was **deleted by operator decision 2026-08-04**. There is
+no bundle in this repo that is built by hand — the salvage path least of all, because it is the code
+we have the least evidence about.
 
-The catch-22 applies ONLY to the **salvage / completion-evidence / Done-flip path** — `mux-runner.ts`
-salvage/no-progress logic, `salvage-ticket.ts`, `reconcile-ticket-truth.ts`,
-`ticket-completion-evidence.ts`. The deployed (pre-fix) runtime applies that same logic to the worker
-building the fix and salvage-resets / fatals it (**R-PSRB**, B-PCOMP 2026-06-21:
-`prds/BUG-REPORT-2026-06-21-pipeline-self-referential-build-catch22-and-orphan-mux.md`). Spawn-gate /
-routing / phase-exit / scope-fence edits are pipeline-safe — the running pipeline executes deployed JS,
-not your source diff (lands only at `install.sh`).
+**The hazard is real.** For bundles editing the **salvage / completion-evidence / Done-flip path** —
+`mux-runner.ts` salvage/no-progress logic, `salvage-ticket.ts`, `reconcile-ticket-truth.ts`,
+`ticket-completion-evidence.ts` — the deployed (pre-fix) runtime applies that same logic to the worker
+building the fix and can salvage-reset / fatal it (**R-PSRB**, B-PCOMP 2026-06-21:
+`prds/BUG-REPORT-2026-06-21-pipeline-self-referential-build-catch22-and-orphan-mux.md`).
 
-**Protocol for a genuine salvage-path bundle:** flag it self-modifying-recovery; hand-build the
-load-bearing recovery-path tickets in-process (or build then `install.sh`-deploy incrementally so the
-rest runs on the fixed runtime). First try to dissolve it: tier the load-bearing ticket so it dodges the
-deployed bug (e.g. `large` → detached path). Non-salvage tickets build normally.
+**Protocol for a genuine salvage-path bundle — run it ATTENDED:**
+1. Flag the PRD `build_mode: attended` and name the seam the deployed bug lives on.
+2. Launch normally (`/pickle-pipeline`). Do not tier-dodge, do not split the build, do not hand-apply
+   the load-bearing ticket.
+3. Watch that seam. If the deployed bug bites the worker, **recover the wedge and record it** — that
+   wedge is a field-grade defect report on the exact code the bundle is fixing, and it is worth more
+   than the time it costs. Standing recovery recipes apply (commit verified work before any respawn;
+   never unscoped `git restore`).
+4. Optionally `install.sh`-deploy mid-bundle once the fix lands, so remaining tickets run on the
+   repaired runtime. That is a deploy choice, not a build path.
+
+**Precedent:** B-RASO (beta.43) shipped a salvage-path fix through an attended pipeline. B-GTRUTH's
+self-build hit the very WS-A2 wedge it shipped the fix for, was recovered clean, and the wedge became
+the bundle's strongest corroborating evidence. Non-salvage bundles (spawn-gate, routing, phase-exit,
+scope-fence, refinement, features) are pipeline-safe and run **unattended** — a running pipeline
+executes deployed JS, not your source diff, which lands only at `install.sh`.
 
 ---
 

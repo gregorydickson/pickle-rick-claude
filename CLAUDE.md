@@ -6,7 +6,17 @@ PRD → Breakdown → Research → Plan → Implement → Verify → Review → 
 
 The pipeline is the product: it fixes its own bugs. **Default: author a PRD/ticket → `/pickle-pipeline` (or `/pickle-tmux`).** Hand-decomposing a PRD into tickets is planning (fine); hand-*building* the fix code is not. A bug we won't dogfood is one we don't trust the tool to survive — fix that.
 
-**Hand-build is the NARROW R-PSRB exception, not a reflex.** It applies ONLY when a bundle edits the **salvage / completion-evidence / Done-flip path** (`mux-runner.ts` salvage/no-progress logic, `salvage-ticket.ts`, `reconcile-ticket-truth.ts`, `ticket-completion-evidence.ts`) — the deployed buggy runtime applies that logic to the worker building the fix and resets it. "Edits `mux-runner.ts`" is NOT the trigger; the *salvage path* is. Spawn-gate / routing / phase-exit / scope-fence / refinement / feature edits are pipeline-safe — the run executes DEPLOYED JS, not your source diff (lands only at `install.sh`). As of B-WSPU (beta.35) all tiers run the single synchronous re-spawn-resume lifecycle — the old `large → detached path` dodge is gone; a genuine salvage-path bundle is hand-built. Detail: `prds/CLAUDE.md` → "Self-modifying-recovery bundles".
+## 🚫 NEVER hand-build. ALWAYS run a pipeline. (operator-set 2026-08-04 — BINDING, no exceptions)
+
+**There is no hand-build exception. Not for the salvage path, not for the completion-evidence path, not for the Done-flip path, not for "just this once because it's load-bearing."** Every code fix in this repo is built by `/pickle-pipeline` (or `/pickle-tmux`). The prior "NARROW R-PSRB exception" is **DELETED** — it was a reflex dressed as a rule, and it kept the tool from being tested exactly where it was weakest.
+
+**The R-PSRB catch-22 is real, and it is not an escape hatch — it is the thing being tested.** When a bundle edits the salvage / completion-evidence / Done-flip path, the deployed pre-fix runtime applies that same buggy logic to the worker building the fix. That is a genuine hazard, so run those bundles **ATTENDED**: launch normally, watch the salvage seam, and recover the wedge if it bites (`B-RASO`, beta.43, shipped a salvage-path fix this way — the precedent exists and it worked). Attended is an *operator posture*, never a different build path.
+
+**Why the exception had to go:** a bundle we refuse to dogfood is a bundle whose fix we cannot claim the tool survives. Hand-building the recovery path means the recovery path is the one code in the system never exercised by the system. Every wedge that hand-build "avoided" was a defect report we chose not to collect.
+
+**What is still true (and is NOT a hand-build licence):** spawn-gate / routing / phase-exit / scope-fence / refinement / feature edits are pipeline-safe because a running pipeline executes **deployed JS**, not your source diff (which lands only at `install.sh`). Those run unattended. Salvage-path bundles run attended. Both run.
+
+Detail: `prds/CLAUDE.md` → "Self-modifying-recovery bundles".
 
 ## ⛔ Worker Forbidden Ops (R-WSRC)
 
