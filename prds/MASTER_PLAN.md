@@ -669,6 +669,26 @@ inferred-completion accepts it, but it is a RECOVERY commit and the ACs are veri
 Workaround: the 2-line gate deletion is a trivial manual fix, tracked for hand-application after the
 pipeline's citadel/anatomy/szechuan phases complete.
 
+## 🔺 OPEN BUG — B-LOGEV: 81% of worker session logs are EMPTY, and the classifier believes them (2026-08-04, P1)
+
+**`prds/p1-b-logev-session-log-emptiness-is-not-evidence.md`** — measured on session `2026-08-03-2d5b3820`
+(LOA-2190, 15 tickets, `exit_reason: completed` — **the run that WORKED**): **35 of 43**
+`worker_session_<pid>.log` files are **0 bytes** (81%), and **11 of 15 tickets** hold a full lifecycle
+artifact set alongside ≥1 empty log. `classifyWorkerSessionLogs` (`mux-runner.ts:8007`) maps 0-byte →
+`log_empty`, which feeds (a) the `worker_produced_nothing` breadcrumb and (b) `worker_silent_death` →
+`applySilentDeathRecoveryPolicy`, whose cap-exhaustion arm is **`recovery_exhausted` — the only
+non-crash-floor HALT in the runtime**. All **10/10** `worker_produced_nothing` emissions in that session
+fired on workers that had produced artifacts; proof by clock: ticket `1029cede`'s breadcrumb fired **48
+seconds after that same PID wrote a 9,535-byte plan**. Ticket `c721f502` double-emitted from one PID, the
+second emit landing in the same second its ticket file was stamped `Skipped
+(acceptance_criteria_not_checked)` — [[R-ACNP]] and this bug condemning one productive worker together.
+**Why the run survived:** `detectSilentDeathAttributableWork` runs first and returns `hold` on fresh
+artifacts — the ground-truth oracle already exists, already works, and is already load-bearing. **Fix is
+SUBTRACTIVE:** log-emptiness is a rendering artifact, not evidence; subordinate every `log_empty` consumer
+to attributable-work, and fix the capture failure. ⛔ **Do NOT bound the respawns** — that caps the waste
+and leaves the misdiagnosis, and routing the class into `silent_death_respawn_cap` would wire the one
+signal that has never stopped a pipeline straight to the halt. Build **ATTENDED** (recovery path).
+
 ## OPEN BUG — R-ACNP acceptance-criteria checkbox gate is a consumer with no producer (2026-08-04, capture-only)
 
 **`prds/BUG-REPORT-2026-08-04-r-acnp-acceptance-criteria-checkbox-no-producer.md`**
