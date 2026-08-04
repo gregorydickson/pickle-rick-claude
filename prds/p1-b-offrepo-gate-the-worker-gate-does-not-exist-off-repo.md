@@ -18,8 +18,9 @@ On every other repo, the worker quality gate does not run — and says `green`.
 
 ## 0. Pre-launch checks
 
-- **Green-tree precondition** — `cd extension && npm run test:fast` on the launch commit; result
-  recorded by the launcher. Prior run at `102872a0`: 7209 pass / 0 fail / exit 0.
+- **Green-tree precondition — GREEN at `3e8ba9ed`, 2026-08-04.** `cd extension && npm run test:fast`:
+  `tests 7212 / pass 7209 / fail 0 / skipped 2 / todo 1`, 481 suites, 438s, exit 0. Single run on a
+  quiet box, no concurrent pipeline.
 - **Stale-premise check — LIVE.** All five gate sites verified at HEAD with matching source content
   (see §1). Nothing has fixed this.
 - **Build mode: ATTENDED.** Edits the Done-flip / recovery path.
