@@ -665,3 +665,31 @@ AC should block Done). Adjacent to R-AICF/R-CECX but distinct — the commit exi
 inferred-completion accepts it, but it is a RECOVERY commit and the ACs are verifiably unmet.
 Workaround: the 2-line gate deletion is a trivial manual fix, tracked for hand-application after the
 pipeline's citadel/anatomy/szechuan phases complete.
+
+## OPEN BUG — R-ACNP acceptance-criteria checkbox gate is a consumer with no producer (2026-08-04, capture-only)
+
+**`prds/BUG-REPORT-2026-08-04-r-acnp-acceptance-criteria-checkbox-no-producer.md`**
+
+`hasCheckedAcceptanceCriteria` (`mux-runner.ts:2450`) requires every non-`[manager]` AC checkbox to be
+ticked, but **nothing ticks them**: the symbol has exactly 2 refs in `extension/src/` (its definition +
+its one call site at `:2840`), no runtime writes `[x]` into a ticket's `## Acceptance Criteria`, and no
+prompt instructs the worker to — `spawn-morty.ts:1114` covers AC *ownership* only, `send-to-morty.md:110`
+says criteria must **pass**, not be ticked. So `validateAutoTicketCompletion`'s `{action:'done'}` arm is
+unreachable in practice: it is a one-way valve that can only `leave` or `skip`. Perverse corollary —
+`[].every()` is true, so the ONE shape that auto-completes is a ticket whose ACs are *entirely*
+`[manager]`-tagged. Live proof, session `2026-08-03-2d5b3820` (LOA-2190, 15 tickets, ran to
+`exit_reason: completed`): **90 AC checkboxes, 0 ticked, 14/15 shipped Done anyway** via the explicit
+`completion_commit` path (`guardCompletionCommitBeforeDone`, which never consults this predicate). The
+single ticket nobody flipped Done (`c721f502` — its residual ACs needed a live paid Reducto run the worker
+is barred from executing) fell to the safety net and got
+`Marked ticket c721f502 as Skipped (acceptance_criteria_not_checked)` — a reason **true of all fifteen
+tickets** and therefore diagnostically worthless; the real disposition sat in that ticket's
+`conformance_*.md` `## Manager Handoff` block. NOT a halt (directive-2 compliant: parked, flagged,
+continued). Per directive 4 the candidate fix is a **subtraction** — delete the predicate + call site, not
+teach it new cases or add a skip flag; AC satisfaction is already owned by producers that exist
+(`worker_gate_verdict`, `completion_commit` attribution, `hasSubstantiveManagerHandoff` at `:4873`).
+Escalation to P2 if ever observed on a ticket whose impl landed but whose Done-flip was missed: that
+ticket is stamped Skipped, and Skipped is terminal (`isTerminalTicketStatus:2412`), so
+`isPendingMuxTicket:1063` never re-selects it — real committed work permanently mislabelled. Not observed
+in this session (`c721f502`'s work genuinely was incomplete); filed as trigger, not occurrence.
+**Fix bundle is R-PSRB hand-build** (touches the Done-flip/completion path) — do NOT dogfood it.
