@@ -58,20 +58,25 @@ All ten enumerated as discrete `file:line` tokens — these exact strings are th
 matches on, so do not reformat them:
 
 ```
-tests/characterization/completion-commit-cluster/path-2-worker-autofill-belt-and-suspenders.test.js:52
-tests/characterization/completion-commit-cluster/path-3-manager-drift-auto-completion-validation.test.js:76
-tests/characterization/completion-commit-cluster/path-7-phantom-done-watcher-backfill.test.js:74
-tests/boundary-commit-at-iteration.test.js:69
-tests/boundary-commit-at-iteration.test.js:102
-tests/boundary-commit-at-iteration.test.js:176
-tests/doneflip-gate-all-callsites.test.js:118
-tests/wuwc-reproducer.test.js:305
-tests/mux-exit-path-commit.test.js:79
-tests/exit-path-bystander-stash.test.js:67
+extension/tests/characterization/completion-commit-cluster/path-2-worker-autofill-belt-and-suspenders.test.js:52
+extension/tests/characterization/completion-commit-cluster/path-3-manager-drift-auto-completion-validation.test.js:76
+extension/tests/characterization/completion-commit-cluster/path-7-phantom-done-watcher-backfill.test.js:74
+extension/tests/boundary-commit-at-iteration.test.js:69
+extension/tests/boundary-commit-at-iteration.test.js:102
+extension/tests/boundary-commit-at-iteration.test.js:176
+extension/tests/doneflip-gate-all-callsites.test.js:118
+extension/tests/wuwc-reproducer.test.js:305
+extension/tests/mux-exit-path-commit.test.js:79
+extension/tests/exit-path-bystander-stash.test.js:67
 ```
 
-The 8 distinct files (the `F` set referenced by AC-GADEL-B3) are those paths with `extension/`
-prefixed and the `:line` suffix stripped.
+> **Paths are repo-root-relative and verified against `HEAD`.** The 2026-07-27 bug report listed them
+> relative to `extension/`; that form does not resolve from the repo root (`git cat-file -e
+> HEAD:tests/boundary-commit-at-iteration.test.js` → *does not exist*) and the refinement preflight
+> correctly flagged every one as a stale anchor. Do not strip the `extension/` prefix.
+
+The 8 distinct files (the `F` set referenced by AC-GADEL-B3) are those paths with the `:line` suffix
+stripped.
 
 `extension/CLAUDE.md` describes the completion-commit-cluster suite as **"the primary regression guard
 for the 8 Done-stamping paths"** with the invariant *"These tests MUST pass on every release."*
@@ -202,7 +207,7 @@ Two tables, both markdown, in this order. Column order is load-bearing.
 ```
 | Failure | Verdict | Justification |
 |---|---|---|
-| `tests/boundary-commit-at-iteration.test.js:69` | live-contract | … |
+| `extension/tests/boundary-commit-at-iteration.test.js:69` | live-contract | … |
 ```
 
 - `Failure` — the §2 `file:line` token verbatim, in backticks
