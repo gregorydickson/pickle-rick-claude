@@ -2,7 +2,10 @@
 title: "R-GADEL — answer whether the Pickle-Ticket trailer covers what message inference covered, then act on the answer"
 priority: P1
 finding: R-GADEL
-status: ready
+status: shelved
+shelved_reason: "Operator decision 2026-08-04: we do multiple runs before gating a release, so a red test-integration tier blocks a RELEASE, not a RUN — no pipeline phase runs that tier. WS-A/B/C is release-gate hygiene and waits for the release. The one reliability-bearing piece (wire trailerOpts into pipeline-runner.ts:3196 so runner-authored commits are attributable) was SPLIT OUT and prioritized on its own merits."
+refined_companion: prds/p1-r-gadel-attribution-fallback-verdict-refined.md
+c3_decision: "RESOLVED 2026-08-04 — option (b): hold the C3 carve-out, fix the producer, record (c) as the honest fallback for commits already in history."
 type: bug-fix-bundle
 schema_neutral: true
 target_version: v2.1.0
