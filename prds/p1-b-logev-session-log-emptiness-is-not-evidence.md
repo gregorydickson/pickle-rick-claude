@@ -18,7 +18,7 @@ source_assessment: "Authored 2026-08-04 from a diagnostic of session 2026-08-03-
 - **Green-tree precondition — GREEN at `5b4136a1`** (`test:fast`: 7212 tests / 0 fail / exit 0, 481
   suites, 421s, quiet box). Re-verify on the actual launch commit.
 - **Stale-premise check — LIVE.** `classifyWorkerSessionLogs` maps 0-byte → `log_empty` at
-  `mux-runner.ts:8007` and the `log_empty` sub-class is intact at `:7963-7964`. Nothing has fixed this.
+  `extension/src/bin/mux-runner.ts:8007` and the `log_empty` sub-class is intact at `:7963-7964`. Nothing has fixed this.
 - **Build mode: ATTENDED.** This edits the silent-death recovery path. Per `CLAUDE.md` → "NEVER
   hand-build", attended means *launch normally and watch the seam* — it is not a different build path.
 
@@ -64,10 +64,10 @@ unproductive, in the same second. (The skip half is [[R-ACNP]], filed separately
 
 ## 3. Root cause
 
-`spawn-morty.ts:423` writes `worker_session_${process.pid}.log`. Something on that path is failing to
+`extension/src/bin/spawn-morty.ts:423` writes `worker_session_${process.pid}.log`. Something on that path is failing to
 capture worker stdout for ~81% of spawns — **that is the defect to find**, and it is WS-1.
 
-`classifyWorkerSessionLogs` (`mux-runner.ts:7988`) then takes the latest log by mtime and maps
+`classifyWorkerSessionLogs` (`extension/src/bin/mux-runner.ts:7988`) then takes the latest log by mtime and maps
 **absent or 0-byte → `log_empty`** (`:8007`). That sub-class is consumed by two things:
 
 1. `emitWorkerProductionBreadcrumb` — fires `worker_produced_nothing` on
