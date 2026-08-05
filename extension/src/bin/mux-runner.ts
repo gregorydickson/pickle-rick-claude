@@ -4736,7 +4736,17 @@ export function resolveWorkerGateVerdict(
   workingDir: string,
 ): { verdict: 'green' | 'red' | 'absent' | 'not_run'; computedVia: 'worker_gate' | 'between_ticket_gate' | 'unavailable' | 'not_applicable' } {
   const persisted = readWorkerGateVerdict(sessionDir, ticketId);
-  if (persisted !== 'absent') { return { verdict: persisted, computedVia: 'worker_gate' }; }
+  // B-OFFREPO (AC-OFFREPO-1): a persisted `not_run` is the off-repo early return's OWN
+  // record — no gate ever issued a command to produce it — so it must not be attributed
+  // to one. Only `green`/`red` were authored by a real gate run. Without this, the same
+  // fact reports `not_applicable` when computed fresh but `worker_gate` when read back
+  // from the file the off-repo path itself wrote, re-asserting the exact authorship claim
+  // this bundle removes. Behaviour-neutral today (no consumer branches on `computedVia`
+  // except the `between_ticket_gate` refusal in `bin/setup.ts`), so this closes a latent
+  // trap rather than changing a decision.
+  if (persisted !== 'absent') {
+    return { verdict: persisted, computedVia: persisted === 'not_run' ? 'not_applicable' : 'worker_gate' };
+  }
   const ext = path.join(workingDir, 'extension');
   // No extension/ dir → JS worker gate not applicable to this target repo → not_run.
   // NOT green: nothing was measured, so nothing may be reported as passing.

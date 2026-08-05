@@ -362,6 +362,26 @@ test('AC-4: a persisted not_run round-trips as not_run, never coerced to absent'
   assert.equal(resolved.verdict, 'not_run', 'the persisted literal is preserved');
   assert.notEqual(resolved.verdict, 'absent', 'not_run must not be erased into the fail-closed value');
   assert.equal(readFrontmatterField(root, ticketId, 'worker_gate_verdict'), 'not_run', 'the field is left intact');
+  // AC-2 applies on the READ-BACK path too. The persisted-verdict arm hardcoded
+  // `computedVia: 'worker_gate'`, so a round-tripped not_run claimed a gate authored it —
+  // the same authorship claim the no-extension arm was fixed to stop making.
+  assert.equal(resolved.computedVia, 'not_applicable', 'a round-tripped not_run names no gate');
+  assert.notEqual(resolved.computedVia, 'worker_gate', 'no gate authored a verdict no gate produced');
+});
+
+test('round-trip: a persisted green is STILL attributed to the worker gate', () => {
+  const root = makeTmp();
+  const ticketId = 'ggg77778';
+  writeState(root, { working_dir: root });
+  fs.mkdirSync(path.join(root, 'extension'), { recursive: true });
+  writeTicket(root, ticketId, { worker_gate_verdict: 'green' });
+
+  // The not_run carve-out above must not widen into the green/red arm: those verdicts
+  // WERE authored by a real gate run, and `bin/setup.ts` distinguishes a persisted
+  // verdict from a recomputed one by exactly this field.
+  const resolved = resolveWorkerGateVerdict(root, ticketId, root);
+  assert.equal(resolved.verdict, 'green');
+  assert.equal(resolved.computedVia, 'worker_gate', 'a real gate run still owns its verdict');
 });
 
 // ---------------------------------------------------------------------------
