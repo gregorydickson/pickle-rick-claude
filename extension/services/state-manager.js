@@ -455,13 +455,24 @@ function readSessionsMapForState(statePath, workingDir) {
         return null;
     }
 }
-function hasPausedOrphanDemotion(activity) {
-    return Array.isArray(activity) &&
-        activity.some(a => typeof a === 'object' && a !== null && a.kind === 'paused_session_orphan_demoted');
-}
-function hasPhantomDemotion(activity) {
-    return Array.isArray(activity) &&
-        activity.some(a => typeof a === 'object' && a !== null && a.kind === 'orphan_phantom_demoted');
+/**
+ * True when the activity log already records `event` — the idempotence probe both
+ * demotion paths use to avoid re-pushing an entry they already wrote.
+ *
+ * Reads `ActivityLogEntry.event`, the DECLARED discriminator, not the redundant
+ * `kind` mirror the two demotion emitters also write. `kind` is undeclared (it
+ * rides the interface's index signature) and those two emitters are its only
+ * producers in the activity domain — every other activity probe in the codebase,
+ * including this module's own `warnUnknownActivityEvents` and `trimActivityRing`,
+ * keys on `event` via the same `isRecord` guard used here. A
+ * future emitter that follows the type would set `event` alone and be invisible
+ * to a `kind`-keyed probe. Both fields have been written together at every
+ * emission site since the paths were introduced, so this is behaviour-identical
+ * for every entry that can exist on disk; the `kind` mirror stays because
+ * AC-PSO-03 pins it.
+ */
+function hasActivityEvent(activity, event) {
+    return Array.isArray(activity) && activity.some(a => isRecord(a) && a.event === event);
 }
 /**
  * Evaluates whether a paused session qualifies for orphan demotion.
@@ -1136,7 +1147,7 @@ export class StateManager {
             state.history.length !== 0) {
             return false;
         }
-        if (hasPhantomDemotion(state.activity))
+        if (hasActivityEvent(state.activity, 'orphan_phantom_demoted'))
             return true;
         state.active = false;
         state.exit_reason = 'orphan_phantom_demoted';
@@ -1163,7 +1174,7 @@ export class StateManager {
             // Paused-orphan demotion: no process ever claimed this session (pid=null).
             // If the state file is stale (>5 min), or its mapped owner PID is dead,
             // it will never be claimed — demote.
-            if (hasPausedOrphanDemotion(state.activity))
+            if (hasActivityEvent(state.activity, 'paused_session_orphan_demoted'))
                 return;
             const demotion = getPausedOrphanDemotion(statePath, state, preMigrationMtimeMs);
             if (!demotion.shouldDemote)
