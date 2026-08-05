@@ -9168,6 +9168,97 @@ const emitRevertEvent = (
 };
 
 /**
+ * b1089e97: session-scoped codegraph lifecycle.
+ *
+ * Owns the `CodegraphService` handle, its resolved settings, the on-disk db path,
+ * and the Done-ticket count that rides in the session summary — so it is a module,
+ * not a phase of the run loop. Callers get four verbs: `init`, `syncIfStale`,
+ * `emitSummary`, `close`. Every one is fail-open: codegraph is an optimization, so
+ * a failure anywhere in here must never block the session it annotates.
+ *
+ * The handle is built BEFORE signal-handler registration so those handlers can close
+ * over it, but `init()` runs after — the service stays null until then, and settings
+ * are read at `init()` time, preserving the original inline sequencing exactly.
+ */
+function createCodegraphSession(opts: {
+  statePath: string;
+  sessionDir: string;
+  workingDir: string;
+  log: (msg: string) => void;
+}): {
+  init: () => Promise<void>;
+  syncIfStale: () => Promise<void>;
+  emitSummary: () => void;
+  close: () => void;
+} {
+  const { statePath, sessionDir, workingDir, log } = opts;
+  const dbPath = path.join(workingDir, '.codegraph', 'codegraph.db');
+  let settings: ReturnType<typeof resolveCodegraphSettings> | null = null;
+  let service: CodegraphService | null = null;
+  let ticketCount = 0;
+
+  return {
+    // Gated on settings.enabled: with codegraph disabled, a leftover
+    // .codegraph/codegraph.db (prior enabled run, or direct CLI use) must not
+    // keep the native library loading and re-syncing every staleness window.
+    init: async (): Promise<void> => {
+      settings = resolveCodegraphSettings(loadPickleSettingsBag());
+      if (!settings.enabled) return;
+      try {
+        service = await CodegraphService.create(
+          workingDir,
+          settings,
+          { emit: (ev) => writeActivityEntry(statePath, ev as unknown as ActivityLogEntry) },
+        );
+      } catch (err) {
+        log(`codegraph service init failed (ignored): ${safeErrorMessage(err)}`);
+      }
+    },
+
+    // Per-spawn staleness sync (bounded by sync_timeout_ms inside the service).
+    syncIfStale: async (): Promise<void> => {
+      if (service === null || settings === null) return;
+      if (shouldSyncCodegraph(dbPath, settings.staleness_max_age_minutes)) {
+        try { await service.sync(); } catch { /* degrade already emitted by the service */ }
+      }
+      ticketCount = collectTickets(sessionDir).filter((t) => t.status === 'Done').length;
+    },
+
+    emitSummary: (): void => {
+      try {
+        if (service === null) return;
+        const ctrs = service.getSessionCounters();
+        const index_status: 'healthy' | 'degraded' | 'latched' | 'disabled' =
+          ctrs.latched > 0 ? 'latched' : ctrs.degraded > 0 ? 'degraded' : 'healthy';
+        // injected/skipped/degraded_ops are produced/degraded in the per-spawn spawn-morty
+        // process, so mux-runner's in-memory counters never see them — count the persisted
+        // events from the shared state.json instead (b1089e97 cross-process aggregation gap).
+        // `ctrs.degraded` alone captured only mux-runner's own sync() degrades and missed every
+        // spawn-path query/buildContext degrade; index_status stays on the in-memory counter as
+        // the long-lived mux-service health enum.
+        const persisted = readRecoverableJsonObject(statePath) as State | null;
+        const { injected, skipped } = countCodegraphContextEvents(persisted?.activity);
+        const degraded_ops = countCodegraphDegradedEvents(persisted?.activity);
+        writeActivityEntry(statePath, {
+          event: 'codegraph_session_summary',
+          ts: new Date().toISOString(),
+          tickets: ticketCount,
+          degraded_ops,
+          index_status,
+          injected,
+          skipped,
+        });
+      } catch { /* best-effort */ }
+    },
+
+    close: (): void => {
+      if (service === null) return;
+      try { service.close(); } catch { /* best-effort */ }
+    },
+  };
+}
+
+/**
  * R-ICP-5: phantom-Done filesystem watcher. Catches Todo→Done flips that happen
  * mid-iteration (between the iteration-boundary backstop in
  * correctPhantomDoneTickets). One fs.watch per rick_ticket_*.md file.
@@ -9416,42 +9507,14 @@ async function runMuxRunnerMain() {
   const closePhantomDoneWatchers = (): void => { phantomDoneWatcher.close(); };
   process.on('exit', closePhantomDoneWatchers);
 
-  // Session-scoped CodegraphService. Declared before signal handlers so closures can reference it.
-  // Initialized (async) below, after signal-handler registration — null until create() resolves.
-  let cgService: CodegraphService | null = null;
-  let cgTicketCount = 0;
-
-  const emitCgSessionSummary = (): void => {
-    try {
-      if (cgService === null) return;
-      const ctrs = cgService.getSessionCounters();
-      const index_status: 'healthy' | 'degraded' | 'latched' | 'disabled' =
-        ctrs.latched > 0 ? 'latched' : ctrs.degraded > 0 ? 'degraded' : 'healthy';
-      // injected/skipped/degraded_ops are produced/degraded in the per-spawn spawn-morty
-      // process, so mux-runner's in-memory counters never see them — count the persisted
-      // events from the shared state.json instead (b1089e97 cross-process aggregation gap).
-      // `ctrs.degraded` alone captured only mux-runner's own sync() degrades and missed every
-      // spawn-path query/buildContext degrade; index_status stays on the in-memory counter as
-      // the long-lived mux-service health enum.
-      const persisted = readRecoverableJsonObject(statePath) as State | null;
-      const { injected, skipped } = countCodegraphContextEvents(persisted?.activity);
-      const degraded_ops = countCodegraphDegradedEvents(persisted?.activity);
-      writeActivityEntry(statePath, {
-        event: 'codegraph_session_summary',
-        ts: new Date().toISOString(),
-        tickets: cgTicketCount,
-        degraded_ops,
-        index_status,
-        injected,
-        skipped,
-      });
-    } catch { /* best-effort */ }
-  };
-
-  const closeCgService = (): void => {
-    if (cgService === null) return;
-    try { cgService.close(); } catch { /* best-effort */ }
-  };
+  // Session-scoped codegraph (see createCodegraphSession). Built before signal handlers
+  // so those closures can reference it; `init()` runs below, after registration.
+  const codegraph = createCodegraphSession({
+    statePath,
+    sessionDir,
+    workingDir: ownerState.working_dir || process.cwd(),
+    log,
+  });
 
   // Graceful shutdown: deactivate session on SIGTERM/SIGINT so it doesn't
   // remain orphaned with active: true when the tmux pane is closed.
@@ -9471,8 +9534,8 @@ async function runMuxRunnerMain() {
       currentChildProc.kill('SIGTERM');
     }
     closePhantomDoneWatchers();
-    emitCgSessionSummary();
-    closeCgService();
+    codegraph.emitSummary();
+    codegraph.close();
     logActivity({ event: 'session_end', source: 'pickle', session: path.basename(sessionDir), mode: 'tmux', backend });
     process.exit(0);
   };
@@ -9574,24 +9637,8 @@ async function runMuxRunnerMain() {
   // pass so the cheap missing-node_modules probe runs ONCE per run, not per-iteration.
   let toolchainPreflightChecked = false;
 
-  // Initialize session-scoped CodegraphService (fail-open — never blocks session start).
-  // Gated on settings.enabled: with codegraph disabled, a leftover
-  // .codegraph/codegraph.db (prior enabled run, or direct CLI use) must not
-  // keep the native library loading and re-syncing every staleness window.
-  const cgSettings = resolveCodegraphSettings(loadPickleSettingsBag());
-  const cgWorkingDir = ownerState.working_dir || process.cwd();
-  const cgDbPath = path.join(cgWorkingDir, '.codegraph', 'codegraph.db');
-  if (cgSettings.enabled) {
-    try {
-      cgService = await CodegraphService.create(
-        cgWorkingDir,
-        cgSettings,
-        { emit: (ev) => writeActivityEntry(statePath, ev as unknown as ActivityLogEntry) },
-      );
-    } catch (err) {
-      log(`codegraph service init failed (ignored): ${safeErrorMessage(err)}`);
-    }
-  }
+  // Initialize the session-scoped codegraph (fail-open — never blocks session start).
+  await codegraph.init();
 
   while (true) {
     let state: State;
@@ -10382,12 +10429,7 @@ async function runMuxRunnerMain() {
     }
 
     // Per-spawn codegraph staleness sync (fail-open — bounded by sync_timeout_ms in the service).
-    if (cgService !== null) {
-      if (shouldSyncCodegraph(cgDbPath, cgSettings.staleness_max_age_minutes)) {
-        try { await cgService.sync(); } catch { /* degrade already emitted by the service */ }
-      }
-      cgTicketCount = collectTickets(sessionDir).filter((t) => t.status === 'Done').length;
-    }
+    await codegraph.syncIfStale();
 
     const iterWorkingDir = state.working_dir || process.cwd();
     const preIterSha = readHeadCommit(iterWorkingDir);
@@ -11632,8 +11674,8 @@ async function runMuxRunnerMain() {
     await sleep(1000);
   }
 
-  emitCgSessionSummary();
-  closeCgService();
+  codegraph.emitSummary();
+  codegraph.close();
 
   const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
   const isFailedExit = isFailureExit(exitReason);
