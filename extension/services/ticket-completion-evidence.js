@@ -526,8 +526,9 @@ function isZeroDiffScanBorrowExcluded(ctx, evidence) {
  *   1. readEvidence (explicit-reachable-wins; baseline + foreign hard-absent;
  *      R-AICF unreachable-explicit falls to inferred/scan).
  *   2. Single backoff re-read on absent (R-CCGR flush race).
- *   3. Announcement recovery (R-CCEM): persist the worker-announced SHA as
- *      completion_commit_inferred + re-probe.
+ *   3. Announcement recovery (R-CCEM): judge the worker-announced SHA through the
+ *      shared `rejectsAccept` gate, then persist it as completion_commit_inferred
+ *      + re-probe (AP-EXT-ITER23-01: judged BEFORE the write, never after).
  *   3b. B-GTRUTH WS-A1 zero-diff arm: with every attribution path exhausted, a ticket
  *      that DECLARES a recognized `zero_diff_intent` and has its tier's lifecycle
  *      artifacts on disk is complete WITHOUT a SHA (verdict required on 'done-flip',

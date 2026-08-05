@@ -519,15 +519,70 @@ function listTrackedAndUntracked(repoRoot) {
         return [];
     return out.split('\0').filter((p) => p.length > 0);
 }
-function getBinaryPathSet(baseSha, headSha, repoRoot) {
-    const out = runGit(['diff', '--numstat', `${baseSha}...${headSha}`], repoRoot, false);
-    const binaries = new Set();
+/**
+ * Paths git reports as UNDIFFABLE (`-\t-\t`) across `base…head`, read through
+ * the SAME git contract as the `getDiffFiles` enumeration this is subtracted
+ * from (`-M100 -z`) so the two cannot disagree about how a path is spelled:
+ * without `-M100` a rename arrives as the combined `old => new`, and without
+ * `-z` an unusual path arrives quoted — neither matches the enumeration.
+ */
+function listUndiffablePaths(baseSha, headSha, repoRoot) {
+    const out = runGit(['diff', '--numstat', '-M100', '-z', `${baseSha}...${headSha}`], repoRoot, false);
     if (!out)
+        return [];
+    const tokens = out.split('\0');
+    const undiffable = [];
+    for (let i = 0; i < tokens.length; i++) {
+        const record = tokens[i];
+        const tab1 = record.indexOf('\t');
+        if (tab1 < 0)
+            continue;
+        const tab2 = record.indexOf('\t', tab1 + 1);
+        if (tab2 < 0)
+            continue;
+        // A rename leaves the path field empty and emits `<old>\0<new>` next. The
+        // enumeration yields the POST-rename path, so that is the one to match.
+        const inline = record.slice(tab2 + 1);
+        const p = inline.length > 0 ? inline : tokens[i + 2];
+        if (inline.length === 0)
+            i += 2;
+        const isUndiffable = record.slice(0, tab1) === '-' && record.slice(tab1 + 1, tab2) === '-';
+        if (isUndiffable && p)
+            undiffable.push(p);
+    }
+    return undiffable;
+}
+/**
+ * Paths whose `diff` attribute the repo explicitly DECLARES unset (`-diff` in
+ * `.gitattributes`) — a declaration, not a detection.
+ */
+function getDeclaredNoDiffPaths(paths, repoRoot) {
+    const out = runGit(['check-attr', '-z', 'diff', '--', ...paths], repoRoot, false);
+    const declared = new Set();
+    if (!out)
+        return declared;
+    const t = out.split('\0');
+    for (let i = 0; i + 2 < t.length; i += 3) {
+        if (t[i + 1] === 'diff' && t[i + 2] === 'unset')
+            declared.add(t[i]);
+    }
+    return declared;
+}
+/**
+ * `-\t-\t` means git will not TEXT-DIFF the path — a SUPERSET of "binary". A
+ * path the repo declares `-diff` (the routine lockfile / generated / snapshot
+ * shape) lands there while remaining reviewable text that IS in the branch
+ * diff, so it belongs in the fence. Only git's own binary DETECTION excludes.
+ */
+function getBinaryPathSet(baseSha, headSha, repoRoot) {
+    const binaries = new Set();
+    const undiffable = listUndiffablePaths(baseSha, headSha, repoRoot);
+    if (undiffable.length === 0)
         return binaries;
-    for (const line of out.split('\n')) {
-        const m = /^-\t-\t(.+)/.exec(line);
-        if (m)
-            binaries.add(toPosix(m[1]));
+    const declared = getDeclaredNoDiffPaths(undiffable, repoRoot);
+    for (const p of undiffable) {
+        if (!declared.has(p))
+            binaries.add(toPosix(p));
     }
     return binaries;
 }
