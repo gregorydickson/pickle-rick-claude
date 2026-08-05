@@ -152,20 +152,35 @@ function compareMetricNumeric(current, previous, tolerance, direction) {
         return 'regressed';
     return 'held';
 }
+/**
+ * A ledger snapshot is usable comparison context only when it actually holds ids.
+ *
+ * PRESENCE IS NOT POPULATION. `microverse-runner.ts` builds `previousLedger` from
+ * `state.violation_ledger`, which is empty until the first `updateViolationLedger` call — so on the
+ * first scored iteration it is `{resolved:[],new:[],remaining:[]}`: defined, and carrying nothing.
+ * The judge's own contract (`buildJudgePrompt`: "when there is no such list, `resolved` and
+ * `remaining` are `[]` and every id goes in `new`") then makes the set-ops branch read that first
+ * pass as `new > resolved` -> 'regressed' no matter how much the score improved.
+ *
+ * Total by construction (non-array fields answer false, never throw), which is what lets both
+ * callers below share it in place of the two try/catch fall-throughs they used to carry.
+ */
+function hasLedgerContext(ledger) {
+    if (ledger === undefined)
+        return false;
+    const { resolved, new: added, remaining } = ledger;
+    if (!Array.isArray(resolved) || !Array.isArray(added) || !Array.isArray(remaining))
+        return false;
+    return resolved.length + added.length + remaining.length > 0;
+}
 export function compareMetric(current, previous, tolerance, direction, currentLedger, previousLedger) {
-    if (currentLedger !== undefined && previousLedger !== undefined) {
-        try {
+    if (hasLedgerContext(currentLedger)) {
+        if (hasLedgerContext(previousLedger))
             return compareMetricSetOps(currentLedger);
-        }
-        catch { /* fall through to numeric */ }
-    }
-    if (currentLedger !== undefined && previousLedger === undefined) {
-        try {
-            const violationCount = currentLedger.remaining.length + currentLedger.new.length;
-            if (violationCount < previous)
-                return 'improved';
-        }
-        catch { /* fall through to numeric */ }
+        // No prior ledger to diff against: compare this pass's violation count to the numeric score.
+        const violationCount = currentLedger.remaining.length + currentLedger.new.length;
+        if (violationCount < previous)
+            return 'improved';
     }
     return compareMetricNumeric(current, previous, tolerance, direction);
 }

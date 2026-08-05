@@ -85,6 +85,96 @@ test('compareMetric: returns held for non-finite inputs', () => {
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER22-01 — an EMPTY prior ledger is not prior context.
+//
+// Reproduces the first-scored-iteration data flow exactly as microverse-runner
+// builds it: `previousLedger` is derived from `state.violation_ledger`, which is
+// empty until the first `updateViolationLedger` call, and the judge — per its own
+// prompt contract — puts every id in `new` when it is handed no prior list. The
+// pre-fix presence-only gate read that as `new > resolved` -> 'regressed' and fed
+// a false "score dropped" into failed_approaches + the stall counter.
+// ---------------------------------------------------------------------------
+
+/** Mirrors microverse-runner.ts `measureAndClassifyIteration` (the shape==='full' branch). */
+function runnerLedgerSnapshots(state, judgeResult) {
+    return {
+        previousLedger: { resolved: [], new: [], remaining: (state.violation_ledger ?? []).map(e => e.id) },
+        currentLedger: {
+            resolved: judgeResult.resolved,
+            new: judgeResult.new,
+            remaining: judgeResult.remaining,
+        },
+    };
+}
+
+const FIRST_PASS_METRIC = {
+    description: 'violations', validation: 'judge', type: 'llm',
+    timeout_seconds: 60, tolerance: 0, direction: 'lower',
+};
+
+test('AP-EXT-ITER22-01: the judge prompt still declares the no-prior-list contract this relies on', () => {
+    const prompt = buildJudgePrompt('Reduce violations', '/repo', [], '/repo/src', undefined, []);
+    assert.match(
+        prompt,
+        /when there is no such list, `resolved` and `remaining` are `\[\]` and every id goes in `new`/,
+        'first-pass ledger shape is a judge-contract dependency of compareMetric',
+    );
+});
+
+test('AP-EXT-ITER22-01: first scored iteration with an EMPTY prior ledger is not a regression', () => {
+    const state = createMicroverseState({
+        prdPath: '/repo/prd.md', metric: FIRST_PASS_METRIC, stallLimit: 3,
+        convergenceMode: 'metric',
+    });
+    assert.deepEqual(state.violation_ledger, [], 'baseline never populates the ledger');
+
+    // Judge's documented first-pass shape: every id in `new`, resolved/remaining empty.
+    // Score and id count agree, as an llm-judge pass always makes them: 8 violations, score 8.
+    const judgeResult = {
+        score: 8, violations: [],
+        resolved: [], new: ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8'], remaining: [],
+    };
+    const { previousLedger, currentLedger } = runnerLedgerSnapshots(state, judgeResult);
+
+    // baseline 12 violations -> 8: a real improvement. Pre-fix this returned 'regressed'.
+    assert.equal(
+        compareMetric(8, 12, 0, 'lower', currentLedger, previousLedger),
+        'improved',
+    );
+});
+
+test('AP-EXT-ITER22-01: first scored iteration that genuinely got worse still regresses', () => {
+    // baseline 2 violations -> 5.
+    const judgeResult = {
+        score: 5, violations: [],
+        resolved: [], new: ['v1', 'v2', 'v3', 'v4', 'v5'], remaining: [],
+    };
+    const { previousLedger, currentLedger } = runnerLedgerSnapshots({ violation_ledger: [] }, judgeResult);
+    assert.equal(
+        compareMetric(5, 2, 0, 'lower', currentLedger, previousLedger),
+        'regressed',
+    );
+});
+
+test('AP-EXT-ITER22-01: a POPULATED prior ledger still takes the set-ops branch', () => {
+    const state = { violation_ledger: [{ id: 'a' }, { id: 'b' }] };
+
+    // 2 carried + 2 net-new -> regressed by set-ops (numeric args are inert on this branch).
+    const worse = runnerLedgerSnapshots(state, { resolved: [], new: ['c', 'd'], remaining: ['a', 'b'] });
+    assert.equal(compareMetric(4, 2, 0, 'lower', worse.currentLedger, worse.previousLedger), 'regressed');
+
+    // both resolved, none re-reported -> improved by set-ops.
+    const better = runnerLedgerSnapshots(state, { resolved: ['a', 'b'], new: [], remaining: [] });
+    assert.equal(compareMetric(0, 2, 0, 'lower', better.currentLedger, better.previousLedger), 'improved');
+});
+
+test('AP-EXT-ITER22-01: a malformed ledger falls through to numeric (subsumes the deleted catch)', () => {
+    const malformed = { resolved: null, new: undefined, remaining: 'nope' };
+    assert.equal(compareMetric(3, 9, 0.5, 'lower', malformed, malformed), 'improved');
+    assert.equal(compareMetric(9, 3, 0.5, 'lower', malformed, malformed), 'regressed');
+});
+
+// ---------------------------------------------------------------------------
 // Full 5-event convergence scenario
 // ---------------------------------------------------------------------------
 
