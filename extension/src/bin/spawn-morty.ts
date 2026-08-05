@@ -28,6 +28,7 @@ import {
   type TicketComplexityTier,
 } from '../services/pickle-utils.js';
 import { spawn, execFileSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import { PromiseTokens, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type BackendResolutionSource, type CodegraphContextSkipReason, type CodegraphSettings, type LastToolErrorState, type PickleSettings, type State } from '../types/index.js';
 import { CodegraphService, type CodegraphEmitEvent } from '../services/codegraph-service.js';
 import { isRecord } from '../lib/is-record.js';
@@ -35,7 +36,7 @@ import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths,
 import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup } from '../services/backend-spawn.js';
 import { scrubForbiddenWorkerTokens } from '../services/promise-tokens.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
-import { isUnrunnableCheckResult } from '../services/convergence-gate.js';
+import { detectProjectType, isUnrunnableCheckResult } from '../services/convergence-gate.js';
 import { createResolverCache, type ResolverCache } from '../services/signature-caller-gap.js';
 import { computeOneHop } from '../services/scope-resolver.js';
 import { autoFillCompletionCommit } from './auto-fill-completion-commit.js';
@@ -1210,15 +1211,6 @@ type WorkerGateResult = {
   autofixApplied: boolean;
   completionCommitSha: string | null;
   /**
-   * B-OFFREPO (AC-OFFREPO-1): true when the gate did NOT RUN — it was not
-   * applicable to this target repo. Distinct from `ok: true`, which here means
-   * only "do not block the local action". A caller that needs to know whether
-   * anything was actually verified MUST read this field: an unrun gate and a
-   * clean gate are both `ok: true` and were, before this field existed,
-   * indistinguishable.
-   */
-  gateNotRun: boolean;
-  /**
    * 7eb9fa20: true when the gate failed but the Failed flip (and the gate-fail
    * reset) was suppressed because evidence of real work exists — fresh ticket
    * artifacts in the [spawn, exit] window OR a ticket-scoped commit. The
@@ -1496,8 +1488,15 @@ export async function runWorkerGateTestCommand(
   failures: WorkerGateTestFailure[];
   gatePhase: WorkerGatePhase;
 }> {
-  const commandName = `npm run ${scriptName}` as const;
-  const testResult = await runCommand('npm', ['run', scriptName], extensionDir, { timeoutMs: workerTestGateTimeoutMs });
+  // B-OFFREPO (AC-OFFREPO-2d): the package manager is RESOLVED from the detected
+  // project type instead of a hardcoded `'npm'`. `detectProjectType` returns `npm`
+  // for this repo's `extension/` (it carries `package-lock.json`), so the resolved
+  // binary is byte-identical to the literal it replaces — the hardcode is gone
+  // without changing what this repo's own gate executes. The `test:fast` /
+  // `test:integration` script names stay: this path IS pickle-rick.
+  const packageManager = resolvePackageManagerBin(extensionDir, 'npm');
+  const commandName = `${packageManager} run ${scriptName}`;
+  const testResult = await runCommand(packageManager, ['run', scriptName], extensionDir, { timeoutMs: workerTestGateTimeoutMs });
   const failures = testResult.ok
     ? []
     : testResult.timedOut
@@ -1804,6 +1803,272 @@ export function computeChangedLoc(preWorkerHead: string, workingDir: string): nu
   }
 }
 
+/**
+ * B-OFFREPO (AC-OFFREPO-2): the target repo's own gate commands, keyed by the
+ * project type `detectProjectType` returns.
+ *
+ * This is READ from `extension/data/gate-commands.json` — the map
+ * `convergence-gate.ts:loadGateCommands` already owns — resolved module-relative
+ * exactly as that loader resolves it, so `bin/` and `services/` agree in both the
+ * source-checkout and deployed trees. Deliberately NOT a literal in this file:
+ * a second package-manager table here is the per-stack adapter matrix the
+ * repo-agnostic invariant forbids, and it would drift from the one the
+ * convergence gate uses.
+ */
+type WorkerGateProjectCommands = { typecheck?: string; lint?: string; test?: string };
+
+const WORKER_GATE_COMMANDS_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../data/gate-commands.json',
+);
+
+let workerGateCommandsCache: Record<string, WorkerGateProjectCommands> | null = null;
+
+function loadWorkerGateCommands(): Record<string, WorkerGateProjectCommands> {
+  if (workerGateCommandsCache) return workerGateCommandsCache;
+  try {
+    workerGateCommandsCache = JSON.parse(
+      fs.readFileSync(WORKER_GATE_COMMANDS_PATH, 'utf-8'),
+    ) as Record<string, WorkerGateProjectCommands>;
+  } catch {
+    // Unreadable map -> no project resolves -> `not_run`. Never a synthesized green.
+    workerGateCommandsCache = {};
+  }
+  return workerGateCommandsCache;
+}
+
+type ResolvedWorkerGateProject = {
+  dir: string;
+  projectType: string;
+  commands: WorkerGateProjectCommands;
+};
+
+/** Directory names never worth probing for a package root (mirrors the gate's own skip set). */
+const WORKER_GATE_NON_CANDIDATE_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', 'vendor', 'target']);
+
+function toResolvedProject(dir: string): ResolvedWorkerGateProject | null {
+  const projectType = detectProjectType(dir);
+  if (!projectType) return null;
+  const commands = loadWorkerGateCommands()[projectType];
+  // A type with no command entry (today: `bun`) is NOT a green and NOT a guess.
+  // Adding an entry here would be a new per-stack branch; the honest answer is
+  // that this gate cannot run against that project.
+  if (!commands) return null;
+  return { dir, projectType, commands };
+}
+
+/**
+ * B-OFFREPO (AC-OFFREPO-2): resolve which directory the worker gate should run in
+ * and which toolchain it should use, for an ARBITRARY repo.
+ *
+ * Probe order is deliberate:
+ *  1. `<workingDir>/extension` — pickle-rick's own layout. Kept as the FIRST probe
+ *     so this repo's gate keeps running exactly where it runs today. The general
+ *     depth-1 resolver returns null on 2+ candidate children, so a resolution-only
+ *     design would silently take our OWN gate dark the day any second repo-root
+ *     child gained a `package.json` — disarming the harness every other ticket is
+ *     verified by.
+ *  2. `workingDir` itself — the common case for a target repo.
+ *  3. a lone unambiguous depth-1 child — the monorepo-ish case. Ambiguity (2+
+ *     candidates) resolves to null: callers must never guess which package is the
+ *     project.
+ */
+function resolveWorkerGateProject(workingDir: string): ResolvedWorkerGateProject | null {
+  const extensionProject = toResolvedProject(path.join(workingDir, 'extension'));
+  if (extensionProject) return extensionProject;
+
+  const selfProject = toResolvedProject(workingDir);
+  if (selfProject) return selfProject;
+
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(workingDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const candidates: ResolvedWorkerGateProject[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.') || WORKER_GATE_NON_CANDIDATE_DIRS.has(entry.name)) continue;
+    const child = toResolvedProject(path.join(workingDir, entry.name));
+    if (child) candidates.push(child);
+  }
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+/**
+ * B-OFFREPO: resolve the package-manager binary for a project type from the SAME
+ * command map, rather than a `'npm'` literal. `detectProjectType` returning `npm`
+ * for this repo's `extension/` is what keeps the existing behaviour byte-identical
+ * once the literal is gone.
+ */
+export function resolvePackageManagerBin(dir: string, fallback: string): string {
+  const project = toResolvedProject(dir);
+  const runCommandString = project?.commands.typecheck ?? project?.commands.test ?? '';
+  const bin = runCommandString.trim().split(/\s+/)[0];
+  return bin || fallback;
+}
+
+/** One settled dimension of an off-repo gate run. */
+type OffRepoDimension = {
+  phase: WorkerGatePhase;
+  outcome: 'pass' | 'fail' | 'not_run';
+  failures: WorkerGateTestFailure[];
+};
+
+/**
+ * Run one command from the resolved cmdMap. A command the project does not
+ * declare, or one whose binary/script is absent (`isCommandResultUnrunnable` —
+ * ENOENT / exit 127 / "Missing script"), is `not_run`, NOT a failure.
+ *
+ * This is the substitute for `canRunTestScript`, which the ticket named but which
+ * is NOT exported and whose file sits outside this session's scope fence. The
+ * classifier used here is the gate's own, already imported, and it answers the
+ * same question from the command's ACTUAL result rather than a static package.json
+ * probe — evidence of outcome rather than of mechanism.
+ */
+async function runOffRepoGateDimension(
+  phase: WorkerGatePhase,
+  commandString: string | undefined,
+  dir: string,
+  timeoutMs: number,
+): Promise<OffRepoDimension> {
+  const parts = (commandString ?? '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { phase, outcome: 'not_run', failures: [] };
+
+  const result = await runCommand(parts[0], parts.slice(1), dir, { timeoutMs });
+  if (result.ok) return { phase, outcome: 'pass', failures: [] };
+  if (isCommandResultUnrunnable(result)) return { phase, outcome: 'not_run', failures: [] };
+
+  const output = `${result.stdout}\n${result.stderr}`;
+  const message = result.timedOut
+    ? (result.timeoutMessage ?? `killed after ${timeoutMs}ms`)
+    : (output.split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? `${commandString} failed`);
+  return {
+    phase,
+    outcome: 'fail',
+    failures: [{ name: result.timedOut ? '__timeout__' : phase, file: commandString ?? '', message }],
+  };
+}
+
+/**
+ * B-OFFREPO (AC-OFFREPO-2a/2b): execute a target repo's OWN typecheck/lint/test
+ * and derive the verdict from the real result.
+ *
+ * The verdict floor mirrors `computeWorkerGateVerdict`: a dimension that genuinely
+ * failed makes it `red`; otherwise at least one dimension must have actually RUN
+ * and PASSED for `green`; an all-not-run gate is `not_run`. An unrunnable
+ * dimension is exempt but can never manufacture a pass.
+ */
+async function runOffRepoWorkerGateChecks(
+  project: ResolvedWorkerGateProject,
+  timeoutMs: number,
+): Promise<{ verdict: WorkerGateVerdict; testsVerdict: WorkerGateVerdict; dimensions: OffRepoDimension[] }> {
+  const dimensions = [
+    await runOffRepoGateDimension('tsc', project.commands.typecheck, project.dir, timeoutMs),
+    await runOffRepoGateDimension('lint', project.commands.lint, project.dir, timeoutMs),
+    await runOffRepoGateDimension('test:fast', project.commands.test, project.dir, timeoutMs),
+  ];
+  const testsDimension = dimensions[dimensions.length - 1];
+  const toVerdict = (outcome: OffRepoDimension['outcome']): WorkerGateVerdict =>
+    outcome === 'pass' ? 'green' : outcome === 'fail' ? 'red' : 'not_run';
+
+  const verdict: WorkerGateVerdict = dimensions.some(d => d.outcome === 'fail')
+    ? 'red'
+    : dimensions.some(d => d.outcome === 'pass') ? 'green' : 'not_run';
+
+  return { verdict, testsVerdict: toVerdict(testsDimension.outcome), dimensions };
+}
+
+/**
+ * B-OFFREPO (AC-OFFREPO-2): the branch taken when this repo has no `extension/`
+ * tree — i.e. every target repo, i.e. the entire autonomy use case.
+ *
+ * Ticket 10 made this exit stop claiming a pass. It still did not RUN, so on any
+ * non-pickle-rick repo the worker gate performed no lint, no typecheck and no
+ * tests. It now runs the target's own toolchain.
+ *
+ * `ok` stays TRUE even on a red target suite, deliberately. `ok` means "do not
+ * block the local action" (see the `not_run` exit below), NOT "the code is good":
+ * an `ok: false` here would trigger the gate-fail tree reset and flip the ticket
+ * Failed on a target repo whose suite was already red before this worker touched
+ * it — a gate STOPPING the pipeline rather than blocking a local action. The red
+ * is not swallowed: it is persisted honestly to `worker_gate_verdict` and flagged
+ * as `worker_gate_failed`. Fail-closing on a raw target-repo red is explicitly out
+ * of scope for this ticket.
+ */
+async function runOffRepoWorkerGate(fileList: string[], args: {
+  workingDir: string;
+  ticketId: string;
+  statePath: string;
+}): Promise<WorkerGateResult> {
+  const base = {
+    fileList,
+    lintErrors: 0,
+    tscErrors: 0,
+    testFailures: [] as WorkerGateTestFailure[],
+    retryCount: 0,
+    autofixApplied: false,
+    completionCommitSha: null,
+    failedFlipSuppressed: false,
+  };
+
+  const project = resolveWorkerGateProject(args.workingDir);
+  if (!project) {
+    // No project type resolves (no manifest, or a type with no command entry).
+    // Nothing was checked, so the honest answer is neither green nor red.
+    persistWorkerGateVerdict(
+      args.statePath,
+      args.ticketId,
+      // `applicable: false` short-circuits first, so the dimension flags below are never
+      // consulted. They are NOT arbitrary padding: `tscOk: false` is chosen so that if the
+      // `applicable` guard is ever deleted, this call degrades to `red` (fail-CLOSED) rather
+      // than to `green` — which would silently re-mint the not-run pass this bundle removes.
+      // Do not "tidy" these to `true`.
+      computeWorkerGateVerdict({ lintOk: true, tscOk: false, lintRan: false, lintUnrunnable: false, tscUnrunnable: false, applicable: false }),
+      'not_run',
+    );
+    writeActivityEntry(args.statePath, {
+      event: 'gate_skipped',
+      ts: new Date().toISOString(),
+      ticket_id: args.ticketId,
+      gate_payload: {
+        source: 'worker_gate',
+        reason: 'worker_gate_not_run',
+        verdict: 'not_run',
+        computed_via: 'not_applicable',
+        site: 'runWorkerGate',
+      },
+    });
+    return { ...base, gatePhase: null, ok: true };
+  }
+
+  const timeoutMs = resolveWorkerTestGateTimeoutMs(args.workingDir);
+  const { verdict, testsVerdict, dimensions } = await runOffRepoWorkerGateChecks(project, timeoutMs);
+  persistWorkerGateVerdict(args.statePath, args.ticketId, verdict, testsVerdict);
+
+  const failedDimension = dimensions.find(d => d.outcome === 'fail') ?? null;
+  if (failedDimension) {
+    writeActivityEntry(args.statePath, {
+      event: 'worker_gate_failed',
+      ticket_id: args.ticketId,
+      gate_phase: failedDimension.phase,
+      failures: failedDimension.failures,
+      retry_count: 0,
+      ts: new Date().toISOString(),
+    });
+    console.error(
+      `[spawn-morty] target-repo gate RED (${project.projectType} @ ${project.dir}, phase ${failedDimension.phase}) — flagged, not halting`,
+    );
+  }
+
+  return {
+    ...base,
+    testFailures: failedDimension?.failures ?? [],
+    gatePhase: failedDimension?.phase ?? null,
+    ok: true,
+  };
+}
+
 // TODO(R-LINT): refactor — pre-existing 123 lines / complexity 16 introduced
 // 2026-05-11 (c5e7f92a7); extract per-phase helpers in a focused PR.
 // eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: pre-existing length/complexity tracked by R-LINT; per-phase helper extraction deferred to a focused refactor PR.
@@ -1841,39 +2106,11 @@ export async function runWorkerGate(changedFiles: string[], args: {
   const extensionDir = path.join(args.workingDir, 'extension');
   // eslint-disable-next-line pickle/no-sync-in-async
   if (!fs.existsSync(extensionDir)) {
-    // B-OFFREPO (AC-OFFREPO-1): the JS worker gate is not applicable to this
-    // target repo. `ok: true` is retained deliberately — it means "do not block
-    // the local action", and an `ok: false` here would flip the ticket Failed on
-    // every non-pickle-rick repo, i.e. a gate stopping the pipeline. What changes
-    // is that the result no longer LOOKS like a pass: `gateNotRun` carries the
-    // fact, and the verdict is now PERSISTED as `not_run` instead of left absent.
-    // Leaving it absent was itself a defect — an absent verdict is fail-closed at
-    // the Done-flip guard, so "the gate could not run" and "the gate never
-    // reported" were the same record with opposite intended meanings.
-    persistWorkerGateVerdict(
-      args.statePath,
-      args.ticketId,
-      // `applicable: false` short-circuits first, so the dimension flags below are never
-      // consulted. They are NOT arbitrary padding: `tscOk: false` is chosen so that if the
-      // `applicable` guard is ever deleted, this call degrades to `red` (fail-CLOSED) rather
-      // than to `green` — which would silently re-mint the not-run pass this bundle removes.
-      // Do not "tidy" these to `true`.
-      computeWorkerGateVerdict({ lintOk: true, tscOk: false, lintRan: false, lintUnrunnable: false, tscUnrunnable: false, applicable: false }),
-      'not_run',
-    );
-    return {
-      ok: true,
-      fileList,
-      lintErrors: 0,
-      tscErrors: 0,
-      testFailures: [],
-      gatePhase: null,
-      retryCount: 0,
-      autofixApplied: false,
-      completionCommitSha: null,
-      gateNotRun: true,
-      failedFlipSuppressed: false,
-    };
+    // B-OFFREPO (AC-OFFREPO-2): no `extension/` tree — this is a TARGET repo, which
+    // is every repo that is not pickle-rick. Ticket 10 stopped this exit from
+    // claiming a pass; this branch makes it actually RUN, against the target's own
+    // toolchain resolved via `detectProjectType` + the shared gate command map.
+    return await runOffRepoWorkerGate(fileList, args);
   }
   const lintTargets = toExtensionLintTargets(args.workingDir, fileList);
   const reportedFileList = lintTargets.length > 0
@@ -2005,7 +2242,6 @@ export async function runWorkerGate(changedFiles: string[], args: {
       retryCount,
       autofixApplied,
       completionCommitSha: null,
-      gateNotRun: false,
       failedFlipSuppressed,
     };
   }
@@ -2029,7 +2265,6 @@ export async function runWorkerGate(changedFiles: string[], args: {
     retryCount,
     autofixApplied,
     completionCommitSha,
-    gateNotRun: false,
     failedFlipSuppressed: false,
   };
 }

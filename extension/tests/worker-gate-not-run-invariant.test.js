@@ -181,7 +181,17 @@ const SITES = [
         // non-pickle-rick repo — a gate STOPPING the pipeline.
         extra: () => {
           assert.equal(result.ok, true, 'an unrunnable gate must not block the local action');
-          assert.equal(result.gateNotRun, true, 'the result must carry the did-not-run fact');
+          // B-OFFREPO ticket 20: the did-not-run fact is pinned on the PERSISTED
+          // channel, not on an in-process `gateNotRun` boolean. That field was
+          // written by three sites and read by none — dead scaffolding ticket 10
+          // handed over for deletion. `worker_gate_verdict` is the durable record
+          // `resolveWorkerGateVerdict` actually consults on every Done-flip path,
+          // so pinning it here is strictly stronger than pinning the boolean was.
+          assert.equal(
+            readFrontmatterField(root, ticketId, 'worker_gate_verdict'),
+            'not_run',
+            'the persisted verdict must carry the did-not-run fact',
+          );
           assert.equal(readFrontmatterField(root, ticketId, 'worker_gate_tests_verdict'), 'not_run');
         },
       };
@@ -394,6 +404,20 @@ test('regression: an explicit red verdict is still fail-CLOSED', () => {
     const ticketId = 'hhh88888';
     const sessionDir = path.join(root, 'session');
     initRepo(root);
+    // B-OFFREPO ticket 20 — FIXTURE CORRECTED, assertion untouched.
+    //
+    // This pin means "a red from the gate that governs THIS repo is fail-closed"
+    // (R-CWGE). When it was written an off-repo gate could only ever produce
+    // `not_run` — `runWorkerGate`'s no-`extension/` exit returned before issuing any
+    // command — so a `red` on an extensionless repo was an UNREACHABLE state and the
+    // fixture's lack of an `extension/` tree carried no meaning.
+    //
+    // Ticket 20 makes that state reachable and gives it a distinct meaning: a red
+    // authored by a TARGET repo's own suite (see the sibling test below). So the
+    // fixture is given the pickle-rick shape its premise always assumed. The
+    // assertion is unchanged and still mutation-RED — deleting the `extension/`
+    // check in `isAdvisoryWorkerGateVerdict` makes this test fail.
+    fs.mkdirSync(path.join(root, 'extension'), { recursive: true });
     const baseline = commitFile(root, 'init.txt', 'init', 'baseline');
     const real = commitFile(root, 'work.txt', 'real work', 'feat: real ticket work');
     writeState(sessionDir, { start_commit: baseline, pinned_sha: null });
@@ -401,6 +425,28 @@ test('regression: an explicit red verdict is still fail-CLOSED', () => {
 
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId, workingDir: root, rereadBackoffMs: 0 });
     assert.equal(guard.ok, false, 'a recorded red verdict must NOT flip Done (R-CWGE fail-closed)');
+  });
+});
+
+test('B-OFFREPO: a TARGET-repo red flags and continues instead of refusing the Done flip', () => {
+  withoutTestMode(() => {
+    const root = makeTmp();
+    const ticketId = 'hhh88889';
+    const sessionDir = path.join(root, 'session');
+    initRepo(root);
+    // NO `extension/` tree: this red was authored by the target repo's OWN suite.
+    const baseline = commitFile(root, 'init.txt', 'init', 'baseline');
+    const real = commitFile(root, 'work.txt', 'real work', 'feat: real ticket work');
+    writeState(sessionDir, { start_commit: baseline, pinned_sha: null });
+    writeTicket(sessionDir, ticketId, { completion_commit: real, worker_gate_verdict: 'red' });
+
+    const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId, workingDir: root, rereadBackoffMs: 0 });
+    // Fail-closing here would refuse the Done flip on EVERY ticket in any target
+    // repo whose suite is red — including a repo that was red before this worker
+    // touched it. That is a gate stopping the pipeline, which is the failure mode
+    // this bundle exists to remove. The red is not swallowed: it stays in
+    // `worker_gate_verdict` and emits a `gate_skipped` residual naming the ticket.
+    assert.equal(guard.ok, true, 'a target-repo red must not halt the pipeline');
   });
 });
 

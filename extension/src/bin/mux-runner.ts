@@ -10,7 +10,7 @@ import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyCom
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
 import { buildManagerInvocation, resolveBackend, resolveBackendFromStateFileWithSource, backendEnvOverrides, sessionStampEnv } from '../services/backend-spawn.js';
-import { resolveCodexModel } from './spawn-morty.js';
+import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream, CODEX_DELIMITER_RE } from '../services/classifier-utils.js';
 import { updateTicketStatusInTransaction } from '../services/transaction-ticket-ops.js';
@@ -636,7 +636,13 @@ export function runBetweenTicketFastTests(
   extensionRoot = getExtensionRoot(),
 ): BetweenTicketGateResult {
   const timeoutMs = resolveWorkerTestGateTimeoutMs(extensionRoot);
-  const result = spawnSync('npm', ['run', 'test:fast'], {
+  // B-OFFREPO (AC-OFFREPO-2d): resolve the package manager from the detected
+  // project type rather than hardcoding `'npm'`. Shares spawn-morty's single
+  // resolver (which reads the same `gate-commands.json` map) instead of growing a
+  // second package-manager table here. Resolves to `npm` for this repo, so the
+  // between-ticket gate keeps executing exactly what it executes today.
+  const packageManager = resolvePackageManagerBin(extensionDir, 'npm');
+  const result = spawnSync(packageManager, ['run', 'test:fast'], {
     cwd: extensionDir,
     encoding: 'utf-8',
     timeout: timeoutMs,
@@ -4869,7 +4875,7 @@ export const WORKER_GATE_NOT_RUN_REASON = 'worker_gate_not_run';
 export function emitWorkerGateNotRunResidual(
   statePath: string,
   ticketId: string,
-  detail: { computedVia: string; site: string },
+  detail: { computedVia: string; site: string; verdict?: string; reason?: string },
 ): void {
   try {
     writeActivityEntry(statePath, {
@@ -4878,13 +4884,48 @@ export function emitWorkerGateNotRunResidual(
       ticket_id: ticketId,
       gate_payload: {
         source: 'worker_gate',
-        reason: WORKER_GATE_NOT_RUN_REASON,
-        verdict: 'not_run',
+        reason: detail.reason ?? WORKER_GATE_NOT_RUN_REASON,
+        verdict: detail.verdict ?? 'not_run',
         computed_via: detail.computedVia,
         site: detail.site,
       },
     });
   } catch { /* best-effort — a residual must never block the action it annotates */ }
+}
+
+/**
+ * B-OFFREPO (AC-OFFREPO-2c): the reason a target-repo gate result is ADVISORY at
+ * the Done-flip policy.
+ *
+ * `resolveWorkerGateVerdict` is persisted-wins, so once the worker gate actually
+ * RUNS off-repo (AC-OFFREPO-2a) a genuine `red` from the target's own suite is
+ * read back on every Done-flip path — and `red` is fail-closed. Left alone, that
+ * means one failing test in a target repo REFUSES the Done flip on every ticket
+ * and halts the pipeline: a gate stopping the system, which is exactly what this
+ * bundle exists to remove.
+ *
+ * So the verdict stays HONEST (`red` is persisted and returned as `red`; nothing is
+ * laundered into a pass) and the permissiveness lives here, in the Done-flip
+ * POLICY — the same split ticket 10 chose for `not_run`, and the same one
+ * `resolveWorkerGateVerdict`'s own comment names as the right home for it.
+ *
+ * Off-repo-ness is DERIVED from the existing `<workingDir>/extension` probe that
+ * this file already uses to answer the same question. No new frontmatter field, no
+ * fourth verdict value, no schema change.
+ *
+ * pickle-rick's OWN red keeps fail-closing: its `extension/` exists, so this
+ * returns false and the R-CWGE refusal path below is untouched.
+ */
+export function isAdvisoryWorkerGateVerdict(
+  verdict: 'green' | 'red' | 'absent' | 'not_run',
+  workingDir: string,
+): boolean {
+  if (verdict === 'not_run') return true;
+  if (verdict !== 'red') return false;
+  // A `red` authored by a target repo's own toolchain is a finding to FLAG, not a
+  // refusal to issue. `absent` is deliberately excluded — that is "the gate never
+  // reported", which stays fail-closed everywhere.
+  return !fs.existsSync(path.join(workingDir, 'extension'));
 }
 
 export function guardCompletionCommitBeforeDone(args: {
@@ -4921,18 +4962,27 @@ export function guardCompletionCommitBeforeDone(args: {
   // ladder, same promote-once, same sha), and the unverified state is recorded as a
   // residual event rather than laundered into a green. The red / absent
   // fail-closed path below is untouched.
-  const gateNotRun = resolveWorkerGateVerdict(args.sessionDir, args.ticketId, args.workingDir).verdict === 'not_run';
+  // B-OFFREPO (AC-OFFREPO-2c): the gate-exempt route now also covers a `red`
+  // authored by a TARGET repo's own toolchain. Once the gate actually runs
+  // off-repo, a raw target-repo red would otherwise fail-close this guard and halt
+  // the pipeline on every ticket — see `isAdvisoryWorkerGateVerdict`. pickle-rick's
+  // own red still takes the fail-closed path below.
+  const resolvedGate = resolveWorkerGateVerdict(args.sessionDir, args.ticketId, args.workingDir);
+  const gateAdvisory = isAdvisoryWorkerGateVerdict(resolvedGate.verdict, args.workingDir);
   const decision = evaluateCompletionEvidence(buildCompletionCtx({
     sessionDir: args.sessionDir,
     ticketId: args.ticketId,
     workingDir: args.workingDir,
     rereadBackoffMs: args.rereadBackoffMs,
     ownAttributionTokens: args.ownAttributionTokens,
-  }, gateNotRun ? 'phantom-watch' : 'done-flip'));
-  if (gateNotRun) {
+  }, gateAdvisory ? 'phantom-watch' : 'done-flip'));
+  if (gateAdvisory) {
+    const advisoryRed = resolvedGate.verdict === 'red';
     emitWorkerGateNotRunResidual(path.join(args.sessionDir, 'state.json'), args.ticketId, {
-      computedVia: 'not_applicable',
+      computedVia: advisoryRed ? 'target_repo_gate' : 'not_applicable',
       site: 'guardCompletionCommitBeforeDone',
+      // An advisory red RAN and FAILED — it must not be recorded as `not_run`.
+      ...(advisoryRed ? { verdict: 'red', reason: 'worker_gate_target_repo_red' } : {}),
     });
   }
   if (decision.ok) {
