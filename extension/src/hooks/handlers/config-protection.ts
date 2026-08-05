@@ -268,12 +268,46 @@ function isProtectedConfigToken(token: string): boolean {
  * non-null hit wins. Single source of BOTH the traversal and the write-command
  * class, so `detectBashStateWriteTarget` (state files) and
  * `bashWritesProtectedConfig` (config files) cannot drift apart.
+ *
+ * The walk runs over every scope bash could start a command in: the raw command
+ * PLUS each `splitShellSegments` segment. `tokenizeBashCommand` splits on
+ * whitespace and quotes only, so in a GROUPED write the destination stays glued
+ * to its delimiter — `(echo x > <session>/state.json)` tokenizes its last token
+ * as `state.json)`, whose basename matches no protected name, and the write was
+ * APPROVED while the bare twin blocked (10/12 forms, AP-EXT-ITER19-02). Feeding
+ * the segmenter's output through the same walker restores the boundary for the
+ * last two detectors that were still reading the raw command.
+ *
+ * Union rather than replacement: both scopes are fail-closed and the first hit
+ * wins, so scanning more can only find more — a destination that survives only
+ * in the raw token stream keeps its existing reach.
+ *
+ * Redirect operators are normalized ONCE, BEFORE segmenting. Two of them carry a
+ * character the segmenter reads as a control operator: `>|` (clobber-override)
+ * ends with a pipe and `>&<file>` with a background `&`. Segmenting first splits
+ * `(echo x >| f)` into `echo x >` and `f`, severing the redirect from its
+ * destination — the operator must already be ` > ` by the time the boundary is
+ * drawn. Normalizing here rather than inside `tokenizeBashCommand` also keeps
+ * the tokenizer to one job: splitting.
  */
 function findBashWriteTarget<T>(
   command: string,
   probe: (token: string) => T | null,
 ): T | null {
   if (!command) return null;
+  const normalized = normalizeRedirectOperators(command);
+  for (const scope of [normalized, ...splitShellSegments(normalized)]) {
+    const hit = findWriteTargetInScope(scope, probe);
+    if (hit !== null) return hit;
+  }
+  return null;
+}
+
+/** The two-pass token walk over ONE already-scoped command string. */
+function findWriteTargetInScope<T>(
+  command: string,
+  probe: (token: string) => T | null,
+): T | null {
   const tokens = tokenizeBashCommand(command);
 
   // Pass 1: `>` / `>>` redirects — the immediate next token is the destination.
@@ -322,13 +356,13 @@ function bashWritesProtectedConfig(command: string): string | null {
 }
 
 /**
- * Tokenize a bash command, splitting on whitespace and quotes. Preserves
- * shell redirect operators (`>`, `>>`) as their own tokens so the scanner
- * can locate destination paths.
+ * Isolate every output-redirect-to-file operator into a free-standing ` > ` so
+ * it can never glue to its destination filename, and so no redirect still
+ * carries a character (`|`, `&`) that the shell segmenter would read as a
+ * control operator. Run once by `findBashWriteTarget` before segmenting.
  */
-function tokenizeBashCommand(command: string): string[] {
-  const out: string[] = [];
-  // First, isolate redirect operators so they don't glue to filenames.
+function normalizeRedirectOperators(command: string): string {
+  // Isolate redirect operators so they don't glue to filenames.
   // `>|` is the noclobber-override redirect (`>|file` forces truncation even
   // under `set -o noclobber`); semantically it is a `>` redirect. It MUST be
   // normalized BEFORE the `>>`/`>` passes — otherwise the `|` glues to the
@@ -345,12 +379,21 @@ function tokenizeBashCommand(command: string): string[] {
   // tokens `['>', '&state.json']` pre-fix bypassed the guard) while the
   // ubiquitous fd-dup forms pass through untouched. Same R-WSRC-3 invariant as
   // `>`/`>>`/`>|`; runs BEFORE the general `>` pass so the `&` never glues.
-  const spaced = command
+  return command
     .replace(/>\|/g, ' > ')
     .replace(/>&(?![\d-])/g, ' > ')
     .replace(/>>/g, ' >> ')
     .replace(/(^|[^>])>/g, '$1 > ');
-  for (const raw of spaced.split(/[\s'"]+/)) {
+}
+
+/**
+ * Split an already-redirect-normalized command on whitespace and quotes, so a
+ * quoted destination (`> "state.json"`) yields the bare path and the isolated
+ * redirect operators stand as their own tokens for the scanner to anchor on.
+ */
+function tokenizeBashCommand(command: string): string[] {
+  const out: string[] = [];
+  for (const raw of command.split(/[\s'"]+/)) {
     if (raw.length > 0) out.push(raw);
   }
   return out;

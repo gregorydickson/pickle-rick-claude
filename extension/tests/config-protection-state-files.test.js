@@ -729,3 +729,93 @@ test('AP-EXT-EXECNAME: blocks case-variant in-place editor SED -i on state.json'
   });
   assert.equal(result.decision, 'block');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER19-02: a GROUPED write is still a write.
+//
+// `tokenizeBashCommand` splits on whitespace and quotes only, so in a grouped
+// form the destination stays glued to its delimiter — `(echo x > state.json)`
+// yields the token `state.json)`, whose basename matches no protected name.
+// The write/config scanners were the last two detectors still reading the raw
+// unsegmented command, so grouped writes APPROVED while their bare twins
+// blocked (10/12 forms proven against the shipped export). Routing the walker
+// through `splitShellSegments` — the same seam the git / install.sh / node
+// detectors already consume — restores the boundary.
+// ---------------------------------------------------------------------------
+
+function runWorkerBashInSession(buildCommand) {
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  return runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: buildCommand(path.join(sessionDir, 'state.json')) },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+}
+
+const GROUPED_STATE_WRITES = [
+  ['subshell redirect', (t) => `(echo x > ${t})`],
+  ['brace-group redirect', (t) => `{ echo x > ${t}; }`],
+  ['command substitution', (t) => `$(echo x > ${t})`],
+  ['backtick substitution', (t) => `\`echo x > ${t}\``],
+  ['subshell sed -i', (t) => `(sed -i '' s/a/b/ ${t})`],
+  ['subshell tee', (t) => `(echo x | tee ${t})`],
+  ['subshell clobber-override', (t) => `(echo x >| ${t})`],
+  ['brace-group cp', (t) => `{ cp /tmp/x ${t}; }`],
+];
+
+for (const [label, build] of GROUPED_STATE_WRITES) {
+  test(`AP-EXT-ITER19-02: blocks grouped state write — ${label}`, () => {
+    assert.equal(
+      runWorkerBashInSession(build).decision,
+      'block',
+      `grouped ${label} must not bypass the state-write gate`,
+    );
+  });
+}
+
+const RUNTIME_ROOT_WRITE = `(echo x > ${path.join('~', '.claude', 'pickle-rick', 'extension', 'bin', 'mux-runner.js')})`;
+
+const GROUPED_PROTECTED_WRITES = [
+  "(sed -i '' s/a/b/ tsconfig.json)",
+  "{ sed -i '' s/a/b/ tsconfig.json; }",
+  '(cp /tmp/x tsconfig.json)',
+  '(echo x > .eslintrc.json)',
+  '{ mv /tmp/x pickle_settings.json; }',
+  RUNTIME_ROOT_WRITE,
+];
+
+for (const cmd of GROUPED_PROTECTED_WRITES) {
+  test(`AP-EXT-ITER19-02: blocks grouped protected write \`${cmd}\``, () => {
+    assert.equal(
+      runWorkerBash(cmd).decision,
+      'block',
+      `${cmd} must not bypass the protected-config gate`,
+    );
+  });
+}
+
+// Segmentation must not make read-only or unrelated commands fail closed.
+for (const cmd of [
+  'diff <(sort a) <(sort b)',
+  'echo $(git rev-parse HEAD)',
+  'grep -l foo tsconfig.json',
+  'cat .eslintrc.json',
+  'npm test 2>&1 | tail -5',
+  '(cd extension && npx tsc --noEmit)',
+]) {
+  test(`AP-EXT-ITER19-02: still approves benign \`${cmd}\``, () => {
+    assert.equal(runWorkerBash(cmd).decision, 'approve', `${cmd} must not false-block`);
+  });
+}
+
+// The raw-command scope stays in the union: an fd-dup is not a write, and the
+// bare forms the walker already caught must keep blocking.
+test('AP-EXT-ITER19-02: bare redirect to state.json still blocks', () => {
+  assert.equal(runWorkerBashInSession((t) => `echo x > ${t}`).decision, 'block');
+});
+
+test('AP-EXT-ITER19-02: fd-dup 2>&1 is not treated as a write', () => {
+  assert.equal(runWorkerBash('npm run build 2>&1').decision, 'approve');
+});
