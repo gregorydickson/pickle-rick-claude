@@ -190,6 +190,22 @@ function hasLedgerContext(ledger?: LedgerSnapshot): ledger is LedgerSnapshot {
   return resolved.length + added.length + remaining.length > 0;
 }
 
+/**
+ * Did the judge have a prior-violations list to diff this pass against?
+ *
+ * `resolved` is the one field that PROVES it: the judge can only resolve an id it was previously
+ * shown, so a non-empty `resolved` means prior context existed even when the caller hands us an
+ * empty `previousLedger`. Deliberately NOT `remaining` — the half-ledger fallback is specified to
+ * run on a `remaining`-carrying snapshot with no previous snapshot at all
+ * (`microverse-state-iteration-regressions.test.js`), so widening this to `remaining` would route
+ * that case into set-ops. `previousLedger` stays the fallback for the honest case where the judge
+ * reports an all-new pass while the ledger still carries entries.
+ */
+function hasPriorLedgerContext(current: LedgerSnapshot, previous?: LedgerSnapshot): boolean {
+  if (current.resolved.length > 0) return true;
+  return hasLedgerContext(previous);
+}
+
 export function compareMetric(
   current: number,
   previous: number,
@@ -199,7 +215,7 @@ export function compareMetric(
   previousLedger?: LedgerSnapshot,
 ): 'improved' | 'held' | 'regressed' {
   if (hasLedgerContext(currentLedger)) {
-    if (hasLedgerContext(previousLedger)) return compareMetricSetOps(currentLedger);
+    if (hasPriorLedgerContext(currentLedger, previousLedger)) return compareMetricSetOps(currentLedger);
     // No prior ledger to diff against: compare this pass's violation count to the numeric score.
     const violationCount = currentLedger.remaining.length + currentLedger.new.length;
     if (violationCount < previous) return 'improved';
