@@ -946,12 +946,17 @@ export function normalizeCompletionCommitField(raw) {
     return /^[0-9a-f]{7,40}$/i.test(stripped) ? stripped : null;
 }
 /**
- * Marks a ticket's frontmatter status as "Done" by rewriting the status line.
- * No-op if ticket dir or file doesn't exist, or status is already Done.
+ * Rewrites a ticket's frontmatter `status:` line to `status`, transactionally.
+ * Returns false (never throws) if the ticket dir/file doesn't exist or the
+ * write fails — every caller treats the boolean as "did the status land?".
+ *
+ * This is the ONE ticket-status writer. `setup.ts` and `mux-runner.ts` import
+ * it as `writeTicketStatus`; the two terminal-status bindings below are the
+ * named completion-authority surface (AC-D4) and delegate here.
  */
-export function markTicketDone(sessionDir, ticketId) {
+export function markTicketWithStatus(sessionDir, ticketId, status) {
     try {
-        const planned = updateTicketStatusInTransaction(ticketId, 'Done', sessionDir);
+        const planned = updateTicketStatusInTransaction(ticketId, status, sessionDir);
         fs.writeFileSync(planned.path, planned.content);
         return true;
     }
@@ -959,15 +964,15 @@ export function markTicketDone(sessionDir, ticketId) {
         return false;
     }
 }
+/**
+ * Marks a ticket's frontmatter status as "Done" by rewriting the status line.
+ * No-op if ticket dir or file doesn't exist, or status is already Done.
+ */
+export function markTicketDone(sessionDir, ticketId) {
+    return markTicketWithStatus(sessionDir, ticketId, 'Done');
+}
 export function markTicketSkipped(sessionDir, ticketId) {
-    try {
-        const planned = updateTicketStatusInTransaction(ticketId, 'Skipped', sessionDir);
-        fs.writeFileSync(planned.path, planned.content);
-        return true;
-    }
-    catch {
-        return false;
-    }
+    return markTicketWithStatus(sessionDir, ticketId, 'Skipped');
 }
 /**
  * Build the dependency graph (indegree + reverse edges) for topoSortTickets.

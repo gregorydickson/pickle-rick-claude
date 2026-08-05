@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, type TicketInfo } from '../services/pickle-utils.js';
+import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, markTicketWithStatus as writeTicketStatus, type TicketInfo } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
 import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, WORKER_GATE_NOT_RUN_REASON } from './mux-runner.js';
@@ -14,7 +14,6 @@ import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaV
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
 import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts } from '../services/orphan-reaper.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
-import { updateTicketStatusInTransaction } from '../services/transaction-ticket-ops.js';
 import { CodegraphService, readIndexedHeadSha, defaultGetHeadSha } from '../services/codegraph-service.js';
 import type { CodegraphDeps, CodegraphEmitEvent } from '../services/codegraph-service.js';
 
@@ -930,16 +929,6 @@ function isInProgressTicket(sessionDir: string, ticket: TicketInfo): boolean {
   if (!ticket.id) return false;
   try {
     return normalizeTicketStatus(getTicketStatus(sessionDir, ticket.id)) === 'in progress';
-  } catch {
-    return false;
-  }
-}
-
-function writeTicketStatus(sessionDir: string, ticketId: string, status: string): boolean {
-  try {
-    const planned = updateTicketStatusInTransaction(ticketId, status, sessionDir);
-    fs.writeFileSync(planned.path, planned.content);
-    return true;
   } catch {
     return false;
   }
