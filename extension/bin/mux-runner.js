@@ -4211,7 +4211,7 @@ export const WORKER_GATE_NOT_RUN_REASON = 'worker_gate_not_run';
  * and it already carries heterogeneous payloads from `convergence-gate.ts` and
  * `pipeline-runner.ts`. Best-effort — telemetry never blocks a Done flip.
  */
-function emitWorkerGateNotRunResidual(statePath, ticketId, detail) {
+export function emitWorkerGateNotRunResidual(statePath, ticketId, detail) {
     try {
         writeActivityEntry(statePath, {
             event: 'gate_skipped',

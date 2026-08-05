@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, type TicketInfo } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
-import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict } from './mux-runner.js';
+import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual } from './mux-runner.js';
 import { State, LockError, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
 import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
@@ -1288,6 +1288,64 @@ function shaDescendsFromHead(workingDir: string, currentHead: string, sha: strin
   return !isAncestor(workingDir, sha, currentHead); // equal ⇒ nothing orphaned, nothing to recover
 }
 
+/**
+ * The three sequential guards on the resume-reattach Done flip (R-WDTF-TO WS-2, R-CWGE +
+ * B-OFFREPO, R-WDTF-TO WS-3), kept together so the policy reads as one decision.
+ * Returns the refusal message to log, or null when the flip is authorized.
+ */
+function resumeReattachDoneRefusal(
+  fullSessionPath: string,
+  statePath: string,
+  ticketId: string,
+  workingDir: string,
+  completionCommitSha: string,
+): string | null {
+  const gate = resolveWorkerGateVerdict(fullSessionPath, ticketId, workingDir);
+  const prefix = `[resume-reattach] ticket ${ticketId} reattached at ${completionCommitSha} but NOT flipped Done: ` +
+    `worker_gate_verdict='${gate.verdict}' (computed_via=${gate.computedVia}). `;
+
+  // R-WDTF-TO WS-2: a green verdict with computed_via='between_ticket_gate' was RECOMPUTED
+  // (eslint+tsc only — test:fast excluded per R-WGFR), not read from a real persisted
+  // worker-gate run. That recompute is not proof the tier's full gate ran, so it must not
+  // authorize a terminal Done flip — Done bypasses every later gate. Only a persisted verdict
+  // (or the no-extension/ N/A case, both computed_via='worker_gate') may flip Done.
+  if (gate.computedVia === 'between_ticket_gate') {
+    return `${prefix}A recomputed verdict (eslint+tsc only, test:fast excluded per R-WGFR) does not ` +
+      `authorize a terminal Done flip (R-WDTF-TO).\n`;
+  }
+
+  // R-CWGE: the ff-reattach already preserved the commit — that part is unconditional. Done is
+  // terminal and bypasses every later gate, so it requires the GREEN worker-gate verdict every
+  // Done-flip path in mux-runner consults. Fail closed: a red or unverifiable verdict leaves the
+  // ticket at its current status, where the runner can still re-select it.
+  //
+  // B-OFFREPO (AC-OFFREPO-1): `not_run` — the gate COULD NOT run, because the target repo has no
+  // `extension/` — is neither a pass nor a refusal, and this is the third Done-flip policy site
+  // that must say so. Refusing it would let a gate STOP the pipeline: the ticket keeps its
+  // non-terminal status with its commit already reattached, so the runner re-selects work that is
+  // already finished, forever. So `not_run` takes the same gate-exempt route
+  // `guardCompletionCommitBeforeDone` gives it — skip the verdict check and record the unverified
+  // flip as a residual rather than laundering it into a green. `red` and `absent` stay fail-closed.
+  if (gate.verdict === 'not_run') {
+    emitWorkerGateNotRunResidual(statePath, ticketId, {
+      computedVia: gate.computedVia,
+      site: 'tryResumeOrphanReattach',
+    });
+  } else if (gate.verdict !== 'green') {
+    return `${prefix}Done requires a GREEN worker-gate verdict (R-CWGE).\n`;
+  }
+
+  // R-WDTF-TO WS-3: a PERSISTED green verdict (computed_via='worker_gate') still only proves
+  // eslint+tsc — computeWorkerGateVerdict never sees testsOk (R-WGFR). Consult the sibling
+  // in-turn test marker: if THIS ticket's own worker turn observed a genuine test failure,
+  // a clean lint/tsc reading must not resurrect it to Done. Absent (older tickets) fails open.
+  if (readTicketWorkerGateTestsVerdict(fullSessionPath, ticketId) === 'red') {
+    return `${prefix}the worker's own test run failed this turn (worker_gate_tests_verdict='red') — ` +
+      `a clean eslint+tsc reading does not authorize a terminal Done flip (R-WDTF-TO WS-3).\n`;
+  }
+  return null;
+}
+
 function tryResumeOrphanReattach(
   fullSessionPath: string,
   statePath: string,
@@ -1326,39 +1384,9 @@ function tryResumeOrphanReattach(
 
     if (!result.recovered) return;
 
-    const gate = resolveWorkerGateVerdict(fullSessionPath, currentTicket, workingDir);
-    const notFlippedPrefix = `[resume-reattach] ticket ${currentTicket} reattached at ${completionCommitSha} but NOT flipped Done: ` +
-      `worker_gate_verdict='${gate.verdict}' (computed_via=${gate.computedVia}). `;
-
-    // R-WDTF-TO WS-2: a green verdict with computed_via='between_ticket_gate' was RECOMPUTED
-    // (eslint+tsc only — test:fast excluded per R-WGFR), not read from a real persisted
-    // worker-gate run. That recompute is not proof the tier's full gate ran, so it must not
-    // authorize a terminal Done flip — Done bypasses every later gate. Only a persisted verdict
-    // (or the no-extension/ N/A case, both computed_via='worker_gate') may flip Done.
-    if (gate.computedVia === 'between_ticket_gate') {
-      process.stderr.write(
-        `${notFlippedPrefix}A recomputed verdict (eslint+tsc only, test:fast excluded per R-WGFR) does not ` +
-        `authorize a terminal Done flip (R-WDTF-TO).\n`,
-      );
-      return;
-    }
-    // R-CWGE: the ff-reattach already preserved the commit — that part is unconditional. Done is
-    // terminal and bypasses every later gate, so it requires the GREEN worker-gate verdict every
-    // Done-flip path in mux-runner consults. Fail closed: a red or unverifiable verdict leaves the
-    // ticket at its current status, where the runner can still re-select it.
-    if (gate.verdict !== 'green') {
-      process.stderr.write(`${notFlippedPrefix}Done requires a GREEN worker-gate verdict (R-CWGE).\n`);
-      return;
-    }
-    // R-WDTF-TO WS-3: a PERSISTED green verdict (computed_via='worker_gate') still only proves
-    // eslint+tsc — computeWorkerGateVerdict never sees testsOk (R-WGFR). Consult the sibling
-    // in-turn test marker: if THIS ticket's own worker turn observed a genuine test failure,
-    // a clean lint/tsc reading must not resurrect it to Done. Absent (older tickets) fails open.
-    if (readTicketWorkerGateTestsVerdict(fullSessionPath, currentTicket) === 'red') {
-      process.stderr.write(
-        `${notFlippedPrefix}the worker's own test run failed this turn (worker_gate_tests_verdict='red') — ` +
-        `a clean eslint+tsc reading does not authorize a terminal Done flip (R-WDTF-TO WS-3).\n`,
-      );
+    const refusal = resumeReattachDoneRefusal(fullSessionPath, statePath, currentTicket, workingDir, completionCommitSha);
+    if (refusal) {
+      process.stderr.write(refusal);
       return;
     }
     updateTicketFrontmatter(currentTicket, fullSessionPath, { status: 'Done', completion_commit: completionCommitSha });
