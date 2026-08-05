@@ -684,6 +684,29 @@ inferred-completion accepts it, but it is a RECOVERY commit and the ACs are veri
 Workaround: the 2-line gate deletion is a trivial manual fix, tracked for hand-application after the
 pipeline's citadel/anatomy/szechuan phases complete.
 
+## 🔺 OPEN BUG — R-EROS: an In-Progress ticket is reported "all-Failed" and stamped `recovery_exhausted` (2026-08-05, P1)
+
+**`prds/BUG-REPORT-2026-08-05-empty-roster-overstamps-recovery-exhausted-on-a-3of4-done-roster.md`** —
+found BY the [[B-OFFREPO]] build (session `2026-08-04-183319b4`). The pickle phase ended **3/4 Done**
+with the fourth `In Progress`, and stamped `exit_reason: recovery_exhausted` — an `isFailureExit` member,
+so `auto-resume.sh` stops. **The roster contained ZERO Failed tickets**, and the runtime said so itself
+173 ms earlier (`Phantom-Done watcher kept ticket … Done — valid completion_commit evidence` ×3).
+`noRunnableTicketsRemain` (`extension/src/bin/mux-runner.ts:1245`) proves exactly one thing —
+`findNextPendingTicketId(...) === null`, i.e. **no PENDING ticket** — but the call site (`:9903`) infers
+*"all-Done exited earlier, therefore what remains is all-Failed"*. That disjunction is incomplete:
+**`In Progress` is neither Done nor pending.** Underneath it is the real defect — a ticket left
+`In Progress` with a `completion_commit` and fresh artifacts is **neither runnable nor terminal**: no
+selector re-enters it, no terminal path claims it. Same shape as [[R-ACNP]] (a status the selector cannot
+reach), inverted. **Second finding:** all three `worker_gate_failed` payloads carry
+`message: "> pickle-rick-scripts@2.1.0-beta.7 pretest:fast"` — **npm's banner line, not the failure** —
+so a `red` verdict is recorded with evidence that cannot identify what went red ([[R-WGVI]] recurring in
+the failure payload). **Fix is SUBTRACTIVE** (directive 4 — do not add an in-progress ladder branch):
+make the message and reason match what the predicate proves, and reconcile In-Progress-with-evidence via
+the existing `evaluateCompletionEvidence`/`reconcileTicketTruth` oracles before judging the roster.
+⛔ Do NOT make the roster check fail-closed or halt earlier. **NOT a halt:** the pipeline continued
+correctly through all 4 phases (`non-fatal pickle exit, commits present`; citadel `remediation cap
+exhausted … continuing pipeline (no halt)`), 489m, 23 commits, clean tree — [[B-NOSTOP-GATES]] worked.
+
 ## 🚨 OPEN BUG — B-OFFREPO: the worker quality gate does not exist on any repo that is not pickle-rick (2026-08-04, P1)
 
 **`prds/p1-b-offrepo-gate-the-worker-gate-does-not-exist-off-repo.md`** — **five** sites key the quality
