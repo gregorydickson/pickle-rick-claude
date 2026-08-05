@@ -36,7 +36,7 @@ import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths,
 import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup } from '../services/backend-spawn.js';
 import { scrubForbiddenWorkerTokens } from '../services/promise-tokens.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
-import { detectProjectType, isUnrunnableCheckResult } from '../services/convergence-gate.js';
+import { classifyTestScriptSafety, detectProjectType, isUnrunnableCheckResult } from '../services/convergence-gate.js';
 import { createResolverCache, type ResolverCache } from '../services/signature-caller-gap.js';
 import { computeOneHop } from '../services/scope-resolver.js';
 import { autoFillCompletionCommit } from './auto-fill-completion-commit.js';
@@ -1920,11 +1920,10 @@ type OffRepoDimension = {
  * declare, or one whose binary/script is absent (`isCommandResultUnrunnable` —
  * ENOENT / exit 127 / "Missing script"), is `not_run`, NOT a failure.
  *
- * This is the substitute for `canRunTestScript`, which the ticket named but which
- * is NOT exported and whose file sits outside this session's scope fence. The
- * classifier used here is the gate's own, already imported, and it answers the
- * same question from the command's ACTUAL result rather than a static package.json
- * probe — evidence of outcome rather than of mechanism.
+ * `isCommandResultUnrunnable` answers this from the command's ACTUAL result rather
+ * than a static probe — but only for a command it was safe to spawn in the first
+ * place. Whether it was is a DIFFERENT question, and it must be asked before this
+ * function is reached: see `runOffRepoTestDimension`.
  */
 async function runOffRepoGateDimension(
   phase: WorkerGatePhase,
@@ -1951,6 +1950,29 @@ async function runOffRepoGateDimension(
 }
 
 /**
+ * The target's own `test` script runs ONLY when the shared safety classifier says
+ * it may be spawned. `classifyTestScriptSafety` is the convergence gate's own
+ * predicate, imported — NOT a second copy: both callers resolve the command from
+ * the same `data/gate-commands.json`, so an `e2e`/`playwright`/`hardhat` leaf the
+ * convergence gate refuses must not be launched here either. An exit-code
+ * classifier cannot substitute: by the time it sees a result, the browsers are up.
+ *
+ * A refused script is `not_run` — an absent capability, never a red.
+ */
+async function runOffRepoTestDimension(
+  project: ResolvedWorkerGateProject,
+  timeoutMs: number,
+): Promise<OffRepoDimension> {
+  const safety = await classifyTestScriptSafety(project.projectType, project.dir);
+  if (!safety.runnable) {
+    const why = safety.unsafeLeaf ? `unsafe leaf "${safety.unsafeLeaf}"` : 'no recognized test runner';
+    console.warn(`[spawn-morty] target-repo test script NOT spawned (${why}) — dimension not_run`);
+    return { phase: 'test:fast', outcome: 'not_run', failures: [] };
+  }
+  return await runOffRepoGateDimension('test:fast', project.commands.test, project.dir, timeoutMs);
+}
+
+/**
  * B-OFFREPO (AC-OFFREPO-2a/2b): execute a target repo's OWN typecheck/lint/test
  * and derive the verdict from the real result.
  *
@@ -1965,7 +1987,7 @@ async function runOffRepoWorkerGateChecks(
 ): Promise<{ verdict: WorkerGateVerdict; testsVerdict: WorkerGateVerdict; failed: OffRepoDimension | null }> {
   const typecheck = await runOffRepoGateDimension('tsc', project.commands.typecheck, project.dir, timeoutMs);
   const lint = await runOffRepoGateDimension('lint', project.commands.lint, project.dir, timeoutMs);
-  const tests = await runOffRepoGateDimension('test:fast', project.commands.test, project.dir, timeoutMs);
+  const tests = await runOffRepoTestDimension(project, timeoutMs);
   const dimensions = [typecheck, lint, tests];
 
   const toVerdict = (outcome: OffRepoDimension['outcome']): WorkerGateVerdict =>

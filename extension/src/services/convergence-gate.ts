@@ -914,8 +914,26 @@ function buildWorkingDirDriftResult(
   };
 }
 
-async function canRunTestScript(check: GateCheck, projectType: ProjectType, dir: string, emit: GateEmit): Promise<boolean> {
-  if (check !== 'tests' || !['pnpm', 'npm', 'yarn'].includes(projectType)) return true;
+/**
+ * Is a project's `test` script safe for an automated gate to SPAWN at all?
+ *
+ * This is a different question from `isUnrunnableCheckResult`, which classifies a
+ * command that already ran and failed to launch (ENOENT / 127 / "Missing script").
+ * This one is asked BEFORE anything is spawned: an `e2e`/`playwright`/`hardhat`
+ * leaf launches browsers, chain nodes and real services, and no exit-code
+ * classifier can un-launch them.
+ *
+ * Exported so the off-repo worker gate (`bin/spawn-morty.ts`) asks the SAME
+ * question of the SAME script as the convergence gate does — both resolve the
+ * command from `data/gate-commands.json`, so a second predicate here would be a
+ * divergence, not a defence.
+ */
+export type TestScriptSafety =
+  | { runnable: true }
+  | { runnable: false; script: string; unsafeLeaf: string | null };
+
+export async function classifyTestScriptSafety(projectType: string, dir: string): Promise<TestScriptSafety> {
+  if (!['pnpm', 'npm', 'yarn'].includes(projectType)) return { runnable: true };
   const pkgJsonPath = path.join(dir, 'package.json');
   let scriptContent = '';
   let scripts: Record<string, string> = {};
@@ -930,11 +948,19 @@ async function canRunTestScript(check: GateCheck, projectType: ProjectType, dir:
   const leafCommands = resolveDelegatedScriptLeaves('test', scripts);
   const commandsToInspect = leafCommands.length > 0 ? leafCommands : [scriptContent].filter((value) => value.length > 0);
   const unsafeLeaf = commandsToInspect.find((command) => UNSAFE_TEST_SCRIPT_REGEX.test(command));
-  if (unsafeLeaf) {
-    emit('gate_unsafe_test_command_blocked', { script: scriptContent, leaf_script: unsafeLeaf });
-    return false;
+  if (unsafeLeaf) return { runnable: false, script: scriptContent, unsafeLeaf };
+  if (commandsToInspect.some((command) => SAFE_TEST_RUNNER_REGEX.test(command))) return { runnable: true };
+  return { runnable: false, script: scriptContent, unsafeLeaf: null };
+}
+
+async function canRunTestScript(check: GateCheck, projectType: ProjectType, dir: string, emit: GateEmit): Promise<boolean> {
+  if (check !== 'tests') return true;
+  const safety = await classifyTestScriptSafety(projectType, dir);
+  if (safety.runnable) return true;
+  if (safety.unsafeLeaf) {
+    emit('gate_unsafe_test_command_blocked', { script: safety.script, leaf_script: safety.unsafeLeaf });
   }
-  return commandsToInspect.some((command) => SAFE_TEST_RUNNER_REGEX.test(command));
+  return false;
 }
 
 function splitScriptSegments(script: string): string[] {

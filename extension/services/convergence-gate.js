@@ -766,9 +766,9 @@ function buildWorkingDirDriftResult(opts, currentHead, currentBranch, allowedPat
         new_failures_vs_baseline: 0,
     };
 }
-async function canRunTestScript(check, projectType, dir, emit) {
-    if (check !== 'tests' || !['pnpm', 'npm', 'yarn'].includes(projectType))
-        return true;
+export async function classifyTestScriptSafety(projectType, dir) {
+    if (!['pnpm', 'npm', 'yarn'].includes(projectType))
+        return { runnable: true };
     const pkgJsonPath = path.join(dir, 'package.json');
     let scriptContent = '';
     let scripts = {};
@@ -783,11 +783,22 @@ async function canRunTestScript(check, projectType, dir, emit) {
     const leafCommands = resolveDelegatedScriptLeaves('test', scripts);
     const commandsToInspect = leafCommands.length > 0 ? leafCommands : [scriptContent].filter((value) => value.length > 0);
     const unsafeLeaf = commandsToInspect.find((command) => UNSAFE_TEST_SCRIPT_REGEX.test(command));
-    if (unsafeLeaf) {
-        emit('gate_unsafe_test_command_blocked', { script: scriptContent, leaf_script: unsafeLeaf });
-        return false;
+    if (unsafeLeaf)
+        return { runnable: false, script: scriptContent, unsafeLeaf };
+    if (commandsToInspect.some((command) => SAFE_TEST_RUNNER_REGEX.test(command)))
+        return { runnable: true };
+    return { runnable: false, script: scriptContent, unsafeLeaf: null };
+}
+async function canRunTestScript(check, projectType, dir, emit) {
+    if (check !== 'tests')
+        return true;
+    const safety = await classifyTestScriptSafety(projectType, dir);
+    if (safety.runnable)
+        return true;
+    if (safety.unsafeLeaf) {
+        emit('gate_unsafe_test_command_blocked', { script: safety.script, leaf_script: safety.unsafeLeaf });
     }
-    return commandsToInspect.some((command) => SAFE_TEST_RUNNER_REGEX.test(command));
+    return false;
 }
 function splitScriptSegments(script) {
     return script

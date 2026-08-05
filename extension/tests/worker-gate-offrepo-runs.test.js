@@ -176,10 +176,10 @@ test('off-repo: a failing target suite is recorded red but does NOT halt the pip
 });
 
 test('off-repo: a missing script is not_run, not a failure', async () => {
-  // "Missing script" is an absent capability, not a code defect. This is the
-  // substitute for the (unexported, out-of-fence) `canRunTestScript` probe: the
-  // gate's own `isUnrunnableCheckResult` classifier reaches the same verdict from
-  // the command's ACTUAL result.
+  // "Missing script" is an absent capability, not a code defect — the gate's own
+  // `isUnrunnableCheckResult` classifier reaches that verdict from the command's
+  // ACTUAL result. (Whether the command was safe to spawn AT ALL is a different
+  // question, asked before this one — see the unsafe-test-script spec below.)
   const fixture = makeNpmFixture({
     scripts: { typecheck: `node -e "require('fs').writeFileSync('typecheck.ran','1')"` },
   });
@@ -197,6 +197,68 @@ test('off-repo: a missing script is not_run, not a failure', async () => {
     'an absent test script never reports as verified',
   );
   assert.equal(result.ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER14-01 — an unsafe target test script is never SPAWNED.
+//
+// The off-repo gate resolves the target's `test` command from the same
+// `data/gate-commands.json` the convergence gate uses, and the convergence gate
+// refuses to spawn an e2e/playwright/hardhat leaf. Running it here would launch
+// browsers / chain nodes / real services once per ticket on an arbitrary repo —
+// and no exit-code classifier can un-launch them.
+// ---------------------------------------------------------------------------
+
+test('off-repo: an unsafe (smoke/e2e-class) target test script is NOT spawned — not_run, never launched', async () => {
+  const fixture = makeNpmFixture({
+    scripts: {
+      typecheck: `node -e "require('fs').writeFileSync('typecheck.ran','1')"`,
+      // Spawnable and would succeed — the ONLY thing stopping it is the safety
+      // classifier. A non-existent binary (`playwright`) would prove nothing here:
+      // it reads not_run via ENOENT whether or not the guard exists.
+      test: 'node ./run-smoke.js',
+    },
+  });
+  fs.writeFileSync(
+    path.join(fixture.root, 'run-smoke.js'),
+    `require('fs').writeFileSync('test.ran','1');\n`,
+  );
+
+  const result = await runWorkerGate([], gateArgs(fixture));
+
+  assert.equal(ranProbe(fixture.root, 'typecheck'), true, 'the safe dimensions still execute');
+  assert.equal(
+    ranProbe(fixture.root, 'test'), false,
+    'the unsafe test script must never have been spawned — this file exists only if it ran',
+  );
+  assert.equal(
+    frontmatterField(fixture.root, fixture.ticketId, 'worker_gate_tests_verdict'),
+    'not_run',
+    'a script we declined to spawn is not_run — never green, never red',
+  );
+  assert.equal(
+    frontmatterField(fixture.root, fixture.ticketId, 'worker_gate_verdict'),
+    'green',
+    'typecheck genuinely ran and passed; the declined dimension is exempt, not a failure',
+  );
+  assert.equal(result.ok, true, 'declining to spawn must not block the local action');
+});
+
+test('off-repo: the spawn decision uses the convergence gate ONE classifier, not a second copy', () => {
+  const spawnMorty = fs.readFileSync(new URL('../src/bin/spawn-morty.ts', import.meta.url), 'utf8');
+
+  assert.match(
+    spawnMorty,
+    /classifyTestScriptSafety\(project\.projectType, project\.dir\)/,
+    'the off-repo test dimension must ask the shared classifier before spawning',
+  );
+  // A local unsafe-pattern list here is the divergence this fix removes: the two
+  // gates would then answer the same question about the same script differently.
+  assert.equal(
+    /playwright|cypress|hardhat/.test(spawnMorty.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')),
+    false,
+    'no second unsafe-test-script pattern may be declared on the gate path',
+  );
 });
 
 // ---------------------------------------------------------------------------
