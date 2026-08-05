@@ -261,6 +261,35 @@ test('off-repo: the spawn decision uses the convergence gate ONE classifier, not
   );
 });
 
+// AP-EXT-ITER15-01 — the anchor above must stay executable AS WRITTEN. The
+// catalog entry tells a replaying reviewer to grep for the unsafe-runner tokens
+// outside convergence-gate.ts; spawn-morty's own JSDoc names them in prose, so a
+// bare grep counts ITSELF and reports a guard that is fully intact as deleted.
+test('AP-EXT-ITER15-01: the ONE-classifier anchor is comment-scoped, not self-matching', () => {
+  const spawnMorty = fs.readFileSync(new URL('../src/bin/spawn-morty.ts', import.meta.url), 'utf8');
+  const stripComments = (src) => src.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // The self-match is real — this is WHY the anchor must say "non-comment lines".
+  assert.equal(
+    /playwright|cypress|hardhat/.test(spawnMorty), true,
+    'precondition: spawn-morty names the tokens in prose, so a bare grep self-matches',
+  );
+  assert.equal(
+    /playwright|cypress|hardhat/.test(stripComments(spawnMorty)), false,
+    'the real invariant: no unsafe-runner pattern is DECLARED outside convergence-gate.ts',
+  );
+
+  // Therefore the catalog anchor must carry the comment-stripping caveat, or the
+  // next replay burns a fix budget re-deriving intact code from a phantom hit.
+  const catalog = fs.readFileSync(new URL('../src/services/CLAUDE.md', import.meta.url), 'utf8');
+  const entry = catalog.split('\n').find((line) => line.includes('AP-EXT-ITER14-01'));
+  assert.ok(entry, 'the AP-EXT-ITER14-01 catalog entry must exist');
+  assert.match(
+    entry, /NON-comment lines/,
+    'the anchor must scope its count to non-comment lines — a bare grep returns 1, not 0',
+  );
+});
+
 // ---------------------------------------------------------------------------
 // AC-OFFREPO-2c — the Done-flip policy split. This is what keeps an honest red
 // from fail-closing the guard and halting the pipeline.
