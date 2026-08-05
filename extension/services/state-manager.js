@@ -13,7 +13,7 @@ import { threadId } from 'node:worker_threads';
 import * as path from 'node:path';
 import { isRecord } from '../lib/is-record.js';
 import { STATE_MANAGER_DEFAULTS, LATEST_SCHEMA_VERSION, StateError, LockError, TransactionError, SchemaVersionMismatchError, VALID_ACTIVITY_EVENTS, } from '../types/index.js';
-import { writeStateFile, safeErrorMessage, getDataRoot, formatLocalDateKey } from './pickle-utils.js';
+import { writeStateFile, safeErrorMessage, getDataRoot, formatLocalDateKey, sleepSync } from './pickle-utils.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 // ---------------------------------------------------------------------------
 // Deploy-parity self-check
@@ -128,12 +128,6 @@ function assertSchemaVersionWithinCeiling(statePath, state, opts) {
 // ---------------------------------------------------------------------------
 function lockPath(statePath) {
     return `${statePath}.lock`;
-}
-// Shared buffer for Atomics.wait()-based synchronous sleep (no CPU spin).
-const _sleepBuf = new Int32Array(new SharedArrayBuffer(4));
-/** Synchronous sleep that yields to the OS scheduler instead of busy-waiting. */
-function sleepSync(ms) {
-    Atomics.wait(_sleepBuf, 0, 0, ms);
 }
 /** Returns true if process with given pid is currently alive. */
 export function isProcessAlive(pid) {

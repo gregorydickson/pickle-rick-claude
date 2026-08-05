@@ -1143,8 +1143,12 @@ export function buildHandoffSummary(state, sessionDir, iterationNum) {
 }
 // Shared buffer for Atomics.wait()-based synchronous sleep (no CPU spin).
 const _sleepBuf = new Int32Array(new SharedArrayBuffer(4));
-/** Synchronous sleep that yields to the OS scheduler instead of busy-waiting. */
-function sleepMs(ms) {
+/**
+ * Synchronous sleep that yields to the OS scheduler instead of busy-waiting.
+ * Contrast the async `sleep()` below — the `Sync` suffix is what matters at a
+ * call site, not the unit.
+ */
+export function sleepSync(ms) {
     Atomics.wait(_sleepBuf, 0, 0, ms);
 }
 const RETRY_LOCK_DEFAULTS = {
@@ -1185,7 +1189,7 @@ function tryRunWithExclusiveLock(lockPath, fn) {
 function sleepBeforeRetry(attempt, baseLockDelayMs, lockJitter) {
     const backoff = baseLockDelayMs * Math.pow(2, attempt);
     const jitter = lockJitter ? Math.random() * baseLockDelayMs : 0;
-    sleepMs(Math.min(backoff + jitter, 5000));
+    sleepSync(Math.min(backoff + jitter, 5000));
 }
 /**
  * Acquires an exclusive file lock before executing fn, then releases it.

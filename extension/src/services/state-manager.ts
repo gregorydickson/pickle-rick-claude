@@ -25,7 +25,7 @@ import {
   SchemaVersionMismatchError,
   VALID_ACTIVITY_EVENTS,
 } from '../types/index.js';
-import { writeStateFile, safeErrorMessage, getDataRoot, formatLocalDateKey } from './pickle-utils.js';
+import { writeStateFile, safeErrorMessage, getDataRoot, formatLocalDateKey, sleepSync } from './pickle-utils.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 
 // ---------------------------------------------------------------------------
@@ -177,14 +177,6 @@ function assertSchemaVersionWithinCeiling(
 
 function lockPath(statePath: string): string {
   return `${statePath}.lock`;
-}
-
-// Shared buffer for Atomics.wait()-based synchronous sleep (no CPU spin).
-const _sleepBuf = new Int32Array(new SharedArrayBuffer(4));
-
-/** Synchronous sleep that yields to the OS scheduler instead of busy-waiting. */
-function sleepSync(ms: number): void {
-  Atomics.wait(_sleepBuf, 0, 0, ms);
 }
 
 /** Returns true if process with given pid is currently alive. */
