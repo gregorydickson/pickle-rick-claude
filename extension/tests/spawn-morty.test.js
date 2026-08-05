@@ -122,11 +122,27 @@ function writeCodexSpawnHarness(tmpDir, ticketId) {
     const sessionDir = path.join(tmpDir, 'session');
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
+    // B-OFFREPO ticket 20: the worker's repo is an EMPTY, isolated directory.
+    //
+    // Without `working_dir`, spawn-morty falls back to `process.cwd()` — the real
+    // `extension/` package when this suite runs. That was invisible while the
+    // off-repo gate issued no commands; now that it executes the resolved
+    // project's own toolchain, the fallback made this fixture run the repo's
+    // `npm test` against itself and time out at 45s.
+    //
+    // `tmpDir` itself is NOT the right target either: `writeExtensionSentinel`
+    // gives it an `extension/` tree, which routes the fixture onto the ON-repo
+    // gate path and runs eslint/tsc against a directory that has neither. A
+    // dedicated empty dir is what this harness always meant by "the worker's
+    // repo" — it just never had to say so out loud.
+    const workspaceDir = path.join(tmpDir, 'workspace');
+    fs.mkdirSync(workspaceDir, { recursive: true });
     fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
         active: true,
         backend: 'codex',
         iteration: 1,
         schema_version: 1,
+        working_dir: workspaceDir,
     }));
 
     const shimDir = path.join(tmpDir, 'bin');

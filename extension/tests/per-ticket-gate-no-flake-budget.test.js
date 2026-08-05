@@ -53,9 +53,18 @@ test('between-ticket gate (runBetweenTicketFastTests) runs a single deterministi
     src.includes('runBetweenTicketFastTests'),
     'runBetweenTicketFastTests must exist as the between-ticket gate seam in mux-runner.ts',
   );
+  // B-OFFREPO ticket 20 — ANCHOR CORRECTED, invariant unchanged.
+  //
+  // This guards that the between-ticket gate is a SINGLE deterministic
+  // `run test:fast` pass rather than the c=8 flake-budget rerun. It used to
+  // anchor on the literal `spawnSync('npm', ...)`, which also pinned the
+  // hardcoded package manager — the exact hardcode AC-OFFREPO-2d removes. The
+  // binary is now resolved from the detected project type (`npm` for this repo,
+  // so what runs is unchanged); the single-pass invariant is what matters and is
+  // what is pinned here. The flake-budget token checks below are untouched.
   assert.ok(
-    src.includes("spawnSync('npm', ['run', 'test:fast']"),
-    'between-ticket gate must spawn a SINGLE `npm run test:fast` pass, not the flake budget',
+    /spawnSync\(packageManager, \['run', 'test:fast'\]/.test(src),
+    'between-ticket gate must spawn a SINGLE `run test:fast` pass (package manager resolved, not hardcoded), not the flake budget',
   );
 });
 
