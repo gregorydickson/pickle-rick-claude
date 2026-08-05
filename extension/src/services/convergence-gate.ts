@@ -103,14 +103,32 @@ const PACKAGE_MANAGER_RUN_RE = /^(npm|pnpm|yarn)(?:\s+run)?\s+([A-Za-z0-9:_-]+)\
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
 const ENV_WRAPPER_PREFIXES = ['cross-env-shell', 'cross-env', 'env'] as const;
 
+/**
+ * The identity a failure is matched by across runs. `check` is part of it because the
+ * unparsed fallback in `buildFailures` keys every check the same way — `file: pkgDir`,
+ * `ruleOrCode: String(exitCode)`, `line: 0` — so a coarse `tests` failure and a coarse
+ * `typecheck` failure in the same package are otherwise the SAME failure to both the
+ * ordinal grouping and the baseline fingerprint. `tests` has no granular parser, so it
+ * ALWAYS produces that coarse shape when red: a repo whose suite is red at baseline
+ * would subtract a brand-new coarse typecheck/lint failure as if it were the baselined
+ * test failure, and the gate would report green over it.
+ *
+ * The ordinal grouping and the fingerprint MUST derive from this one key: an occurrence
+ * index is only meaningful within the identity space it is counted in, so a key here
+ * that the grouping does not share re-couples unrelated checks' ordinals.
+ */
+function failureIdentityKey(f: GateFailure): string {
+  return `${f.check}::${f.file}::${f.ruleOrCode}`;
+}
+
 function buildFingerprint(f: GateFailure): string {
-  return `${f.file}::${f.ruleOrCode}::${f.occurrence_index}`;
+  return `${failureIdentityKey(f)}::${f.occurrence_index}`;
 }
 
 export function assignOccurrenceIndices(failures: GateFailure[]): GateFailure[] {
   const groups = new Map<string, GateFailure[]>();
   for (const f of failures) {
-    const key = `${f.file}::${f.ruleOrCode}`;
+    const key = failureIdentityKey(f);
     const group = groups.get(key) ?? [];
     group.push(f);
     groups.set(key, group);
