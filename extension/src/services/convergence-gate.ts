@@ -826,6 +826,12 @@ function resolveGateTargetDirs(
     const changedFiles = getChangedSince(opts.workingDir, opts.since);
     if (changedFiles.length === 0) {
       emit('gate_diff_scope_fallback', { since: opts.since, reason: 'no_changed_files' });
+      // AC-OFFREPO-1: also emit the canonical gate_skipped event (the same
+      // reason the other two emptyGateResult() producers use) so this skip
+      // participates in SKIP_FLAG_EVENT_NAMES governance and so runGate can
+      // return it directly without routing through finalizeGateResult, which
+      // would otherwise report the skip as an executed gate_run_complete pass.
+      emit('gate_skipped', { reason: 'no_changed_files' });
       return { targetDirs: [], earlyResult: { ...emptyGateResult(), elapsed_ms: Date.now() - start } };
     }
   }
@@ -1338,7 +1344,11 @@ export async function runGate(rawOpts: RunGateOpts): Promise<GateResult> {
   const workspacePackages = getWorkspacePackages(opts.workingDir);
   const allowedPathsUsed = Boolean(opts.allowedPaths && opts.allowedPaths.length > 0);
   const resolved = resolveGateTargetDirs(opts, workspacePackages, allowedPathsUsed, start, emit);
-  if (resolved.earlyResult) return finalizeGateResult(opts, emit, resolved.earlyResult);
+  // AC-OFFREPO-1: return this skip directly rather than through
+  // finalizeGateResult, which would emit gate_run_complete (status green) and
+  // make the skip indistinguishable from an executed pass — matching the
+  // workerModeSkipResult / emitSkippedAndReturn skip producers below.
+  if (resolved.earlyResult) return resolved.earlyResult;
 
   const workerSkip = workerModeSkipResult(opts, start, emit);
   if (workerSkip) return workerSkip;
