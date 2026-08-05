@@ -575,3 +575,88 @@ test('AP-EXT-ITER16-02 control: an OWN-attributed inferred sha is still accepted
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ── AP-EXT-ITER23-01: the announcement arm judges BEFORE it persists ─────────
+//
+// The pre-fix predicate already REFUSED both cases below — it wrote the stamp,
+// then re-probed and classified `absent`. So the verdict alone cannot redden:
+// these assert on the DURABLE ON-DISK STAMP, which is what the ungated
+// mux-runner oracles (`resolveAttributableFrontmatterSha`,
+// `hasPresentCompletionCommitField`) actually read. A surviving stamp makes a
+// baseline/borrowed sha suppress both the silent-death respawn and the
+// Failed-flip, wedging a ticket that did no work.
+
+function announcedCtx(sessionDir, ticketId, workingDir, announced, extra = {}) {
+  return baseCtx(sessionDir, ticketId, workingDir, {
+    decision: 'done-flip',
+    workerGateVerdict: () => ({ verdict: 'green', computedVia: 'worker_gate' }),
+    announcedSha: () => announced,
+    ...extra,
+  });
+}
+
+test('AP-EXT-ITER23-01: an announced BASELINE sha is never persisted as inferred evidence', () => {
+  const root = mkTmp('pickle-iter23-baseline-');
+  try {
+    initGitRepo(root);
+    const baseline = head(root);
+    const sessionDir = path.join(root, 'session');
+    const fp = writeTicket(sessionDir, 'annb0001', {});
+
+    const d = evaluateCompletionEvidence(
+      announcedCtx(sessionDir, 'annb0001', root, baseline, { startCommit: baseline }),
+    );
+
+    assert.equal(d.ok, false);
+    assert.equal(d.reason, 'baseline_sha', 'the hard reason must survive, not degrade to no_evidence');
+    assert.doesNotMatch(
+      readTicket(fp),
+      /completion_commit_inferred:/,
+      'a baseline sha must never reach disk — the git-only oracles would read it back as attributable work (R-CXOR-2)',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER23-01: an announced FOREIGN-attributed sha is never persisted as inferred evidence', () => {
+  const root = mkTmp('pickle-iter23-foreign-');
+  try {
+    initGitRepo(root);
+    const foreignSha = commitFile(root, 'sib.txt', 'feat(annsib02): sibling ticket work');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'annsib02', {});
+    const fp = writeTicket(sessionDir, 'annf0001', { title: 'clean audit no-op' });
+
+    const d = evaluateCompletionEvidence(announcedCtx(sessionDir, 'annf0001', root, foreignSha));
+
+    assert.equal(d.ok, false);
+    assert.equal(d.reason, 'foreign_attribution');
+    assert.doesNotMatch(
+      readTicket(fp),
+      /completion_commit_inferred:/,
+      'a borrowed sibling sha must never reach disk — it is a real commit, so the git-only oracles accept it (R-OMA)',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER23-01 control: an announced OWN sha is still recovered and persisted', () => {
+  const root = mkTmp('pickle-iter23-control-');
+  try {
+    initGitRepo(root);
+    const ownSha = commitFile(root, 'own.txt', 'real untagged work');
+    const sessionDir = path.join(root, 'session');
+    const fp = writeTicket(sessionDir, 'anno0001', {});
+
+    const d = evaluateCompletionEvidence(announcedCtx(sessionDir, 'anno0001', root, ownSha));
+
+    assert.equal(d.ok, true, 'the gate must not blind R-CCEM recovery to a legitimate announcement');
+    assert.equal(d.sha, ownSha);
+    assert.equal(d.via, 'announcement');
+    assert.match(readTicket(fp), /completion_commit:/, 'promote-once must still persist the recovered sha');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

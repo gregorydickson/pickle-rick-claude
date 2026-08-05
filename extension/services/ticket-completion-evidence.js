@@ -445,9 +445,22 @@ function defaultRereadBackoffMs() {
 /**
  * R-CCEM: absent evidence + a worker-announced commit SHA → persist the worker's
  * OWN declared SHA as `completion_commit_inferred` and re-probe (absorbs
- * mux-runner's recoverInferredFromAnnouncement). `readEvidence` still gates on
- * commitExists + baseline rejection, so a non-existent or baseline SHA stays
- * absent. Best-effort; never overwrites an explicit `completion_commit`.
+ * mux-runner's recoverInferredFromAnnouncement). Best-effort; never overwrites
+ * an explicit `completion_commit`.
+ *
+ * AP-EXT-ITER23-01: the candidate is judged by `rejectsAccept` BEFORE it is
+ * written, like every other arm. Re-probing AFTER the write does not contain a
+ * bad SHA — it only classifies one: the durable `completion_commit_inferred:`
+ * stamp survives the refusal, and the mux-runner oracles that read that field
+ * (`resolveAttributableFrontmatterSha`, `hasPresentCompletionCommitField`) carry
+ * NO baseline or attribution check. A baseline SHA is git-reachable BY
+ * CONSTRUCTION and a borrowed one is a real commit, so both pass their git-only
+ * probe: silent-death recovery reads `hold` (respawn suppressed) and the
+ * Failed-flip is suppressed, wedging a ticket that did no work. The announced
+ * value is shape-validated only (`readAnnouncedCompletionSha`), so this is the
+ * one place the rule can apply. Reports the hard reason like its stamped-field
+ * sibling `readInferredArm`, which also keeps `zeroDiffAccept` from laundering
+ * the refusal into a declared zero-diff accept.
  */
 function recoverFromAnnouncement(ctx) {
     if (!ctx.announcedSha)
@@ -467,6 +480,9 @@ function recoverFromAnnouncement(ctx) {
     try {
         const raw = fs.readFileSync(tPath, 'utf8');
         if (!readFrontmatterField(raw, 'completion_commit')) {
+            const rejection = rejectsAccept(announced, ctx, raw);
+            if (rejection)
+                return { kind: 'absent', absentReason: rejection };
             const upd = upsertFrontmatterField(raw, 'completion_commit_inferred', announced);
             if (upd) {
                 fs.writeFileSync(tPath, upd);
