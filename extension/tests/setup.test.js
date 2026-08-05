@@ -1861,8 +1861,12 @@ test('setup --resume: a REAL orphan whose worker gate went RED is reattached but
         const orphan = git('rev-parse', 'HEAD');
         git('reset', '--hard', '-q', base); // strand the worker's commit off HEAD
 
-        // The worker gate ran and recorded RED (eslint/tsc failed), which is exactly why the
-        // ticket sits at Failed with its completion_commit still stamped.
+        // pickle-rick's OWN gate ran and recorded RED (eslint/tsc failed), which is exactly why
+        // the ticket sits at Failed with its completion_commit still stamped. The `extension/`
+        // tree is what makes this repo pickle-rick rather than a target repo — without it
+        // `isAdvisoryWorkerGateVerdict` reads the same red as a TARGET-repo red (advisory, see
+        // the sibling test below) and this pin would green over its own bug.
+        fs.mkdirSync(path.join(repo, 'extension'), { recursive: true });
         const { sessionPath, ticketDir } = seedResumableSession(
             dataRoot, repo, ticketId, orphan, 'worker_gate_verdict: red\n',
         );
@@ -1883,5 +1887,57 @@ test('setup --resume: a REAL orphan whose worker gate went RED is reattached but
             'the worker gate recorded RED for this very commit, so --resume must not resurrect the ticket to ' +
                 'terminal Done over code no gate ever passed — Done bypasses every later gate and lets the epic finalize on it (R-CWGE fail-closed)',
         );
+    });
+});
+
+test('setup --resume: a TARGET-repo RED is advisory — reattached, flipped Done, residual recorded', () => {
+    withResumeFixture('pickle-resume-offrepo-red', ({ dataRoot, repo, git, base }) => {
+        const ticketId = 'aa55tred';
+        fs.writeFileSync(path.join(repo, 'b.txt'), 'work a target repo suite disliked\n');
+        git('add', '-A');
+        git('commit', '-q', '-m', 'worker commit');
+        const orphan = git('rev-parse', 'HEAD');
+        git('reset', '--hard', '-q', base); // strand the worker's commit off HEAD
+
+        // No `extension/` — this repo is a TARGET repo, i.e. the entire autonomy use case.
+        // Since AC-OFFREPO-2a the off-repo worker gate actually RUNS and persists the target's
+        // own verdict, so a `red` here is reachable for the first time. `red` is ADVISORY off
+        // repo (AC-OFFREPO-2c): one pre-existing failing test in the target's suite must not
+        // refuse the Done flip, or the ticket keeps its non-terminal status with its commit
+        // already reattached and the runner re-selects finished work forever — a gate STOPPING
+        // the pipeline, which is the class B-OFFREPO exists to remove. `guardCompletionCommitBeforeDone`
+        // already routes this red to its gate-exempt path; this site must agree, or the same
+        // verdict accepts at one Done-flip authority and refuses at another (the R-AICF class).
+        const { sessionPath, ticketDir } = seedResumableSession(
+            dataRoot, repo, ticketId, orphan, 'worker_gate_verdict: red\nworker_gate_tests_verdict: red\n',
+        );
+
+        runSetupWithEnv(['--resume', sessionPath], {
+            PICKLE_DATA_ROOT: dataRoot,
+            PICKLE_ORPHAN_REAP: 'off',
+        });
+
+        assert.equal(git('rev-parse', 'HEAD'), orphan, 'the commit is preserved unconditionally');
+        assert.equal(
+            readTicketStatus(ticketDir, ticketId),
+            'Done',
+            'a TARGET-repo red is advisory at every Done-flip authority — refusing it here strands a ticket ' +
+                'whose work is already committed and reattached, and the epic never finishes',
+        );
+
+        // The red is NOT laundered into a pass: it is recorded, and recorded as a red that RAN
+        // rather than as `not_run`, which is a different fact.
+        const activity = JSON.parse(fs.readFileSync(path.join(sessionPath, 'state.json'), 'utf8')).activity || [];
+        const residual = activity.find(
+            (e) => e.event === 'gate_skipped' && e.gate_payload?.site === 'tryResumeOrphanReattach',
+        );
+        assert.ok(residual, 'an advisory Done flip must leave a residual');
+        assert.equal(residual.gate_payload.verdict, 'red', 'the residual reports the real verdict');
+        assert.equal(
+            residual.gate_payload.reason,
+            'worker_gate_target_repo_red',
+            'a red that RAN and FAILED must not be filed as worker_gate_not_run',
+        );
+        assert.equal(residual.gate_payload.computed_via, 'target_repo_gate', 'the residual names the authoring gate');
     });
 });
