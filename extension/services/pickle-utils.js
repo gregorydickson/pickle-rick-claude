@@ -1253,48 +1253,66 @@ export function pruneOrphanedMapEntries(dataRoot) {
     const survivors = {};
     let pruned = 0;
     for (const [cwd, entry] of entries) {
-        const sessionPath = resolveSessionPath(entry);
-        if (!sessionPath) {
-            writePhantomSessionDemotedActivity(cwd, '');
-            pruned++;
+        const verdict = classifyMapEntry(entry);
+        if (verdict.live) {
+            survivors[cwd] = entry;
             continue;
         }
-        let dirExists = false;
-        try {
-            dirExists = fs.statSync(sessionPath).isDirectory();
-        }
-        catch {
-            // dirExists already false
-        }
-        if (!dirExists) {
-            writePhantomSessionDemotedActivity(cwd, sessionPath);
-            pruned++;
-            continue;
-        }
-        const statePath = path.join(sessionPath, 'state.json');
-        const recoveredState = readRecoverableJsonObject(statePath);
-        if (!fs.existsSync(statePath) && !recoveredState) {
-            writePhantomSessionDemotedActivity(cwd, sessionPath);
-            pruned++;
-            continue;
-        }
-        survivors[cwd] = entry;
+        writePhantomSessionDemotedActivity(cwd, verdict.sessionPath);
+        pruned++;
     }
     if (pruned === 0)
         return { pruned: 0, total };
+    return commitPrunedSessionMap(sessionsMapPath, survivors) ? { pruned, total } : { pruned: 0, total };
+}
+/**
+ * Verdict for one `current_sessions.json` entry. `sessionPath` is the entry's
+ * resolved path (`''` when the entry shape yields none) and is reported as-is
+ * in the phantom-demotion activity event, live or not.
+ *
+ * The `state.json` read stays unconditional: `readRecoverableJsonObject` is the
+ * orphan-tmp promotion seam, so short-circuiting it when the base file exists
+ * would silently skip promoting a newer `.tmp.<pid>` sibling.
+ */
+function classifyMapEntry(entry) {
+    const sessionPath = resolveSessionPath(entry);
+    if (!sessionPath)
+        return { live: false, sessionPath: '' };
+    let dirExists = false;
+    try {
+        dirExists = fs.statSync(sessionPath).isDirectory();
+    }
+    catch {
+        // dirExists already false
+    }
+    if (!dirExists)
+        return { live: false, sessionPath };
+    const statePath = path.join(sessionPath, 'state.json');
+    const recoveredState = readRecoverableJsonObject(statePath);
+    if (!fs.existsSync(statePath) && !recoveredState)
+        return { live: false, sessionPath };
+    return { live: true, sessionPath };
+}
+/**
+ * Atomic `.tmp.<pid>`-then-rename publish of the surviving map, so concurrent
+ * readers never observe a truncated file. Returns false (and removes the tmp)
+ * when the write or rename fails — the caller then reports zero pruned, since
+ * the on-disk map is unchanged.
+ */
+function commitPrunedSessionMap(sessionsMapPath, survivors) {
     const tmpPath = `${sessionsMapPath}.tmp.${process.pid}`;
     try {
         fs.writeFileSync(tmpPath, JSON.stringify(survivors, null, 2));
         fs.renameSync(tmpPath, sessionsMapPath);
+        return true;
     }
     catch {
         try {
             fs.unlinkSync(tmpPath);
         }
         catch { /* ignore */ }
-        return { pruned: 0, total };
+        return false;
     }
-    return { pruned, total };
 }
 /**
  * Extracts the session path from a session map entry.
