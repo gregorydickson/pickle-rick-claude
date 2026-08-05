@@ -30,7 +30,12 @@ function resolveBackendFallback(value) {
 function isTypedFailure(failure) {
     return !!failure && isRecord(failure) && typeof failure.failureKind === 'string';
 }
-function getMicroverseSettingsWithDefaults(settings) {
+/**
+ * Reads the `microverse` block out of a settings bag, substituting
+ * `DEFAULT_MICROVERSE_SETTINGS` for every field that is absent, mistyped, or
+ * blank. A null/malformed bag yields the full defaults.
+ */
+export function getMicroverseSettings(settings) {
     const microverse = isRecord(settings) && isRecord(settings.microverse)
         ? settings.microverse
         : {};
@@ -749,9 +754,6 @@ export function resolveWorkerTestGateTimeoutMs(extensionRoot = getExtensionRoot(
         return timeoutMs;
     }
     return DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS;
-}
-export function getMicroverseSettings(settings) {
-    return getMicroverseSettingsWithDefaults(settings);
 }
 export function resolveJudgeBackend(state, settings, attempt = 0, lastFailure) {
     const microverseSettings = settings === undefined

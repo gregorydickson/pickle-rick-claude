@@ -47,7 +47,12 @@ function isTypedFailure(failure?: JudgeMeasurementError): boolean {
   return !!failure && isRecord(failure) && typeof failure.failureKind === 'string';
 }
 
-function getMicroverseSettingsWithDefaults(
+/**
+ * Reads the `microverse` block out of a settings bag, substituting
+ * `DEFAULT_MICROVERSE_SETTINGS` for every field that is absent, mistyped, or
+ * blank. A null/malformed bag yields the full defaults.
+ */
+export function getMicroverseSettings(
   settings: PickleSettings | null,
 ): {
   judge_backend: JudgeBackendChoice;
@@ -900,15 +905,6 @@ export function resolveWorkerTestGateTimeoutMs(
     return timeoutMs;
   }
   return DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS;
-}
-
-export function getMicroverseSettings(settings: PickleSettings | null): {
-  judge_backend: JudgeBackendChoice;
-  judge_backend_fallback: BackendFallback;
-  judge_model_claude: string;
-  judge_model_codex: string;
-} {
-  return getMicroverseSettingsWithDefaults(settings);
 }
 
 export function resolveJudgeBackend(
