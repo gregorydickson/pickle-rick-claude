@@ -1,0 +1,42 @@
+[
+  {
+    "label": "fully-green",
+    "working_dir": "/private/var/folders/2w/j4nf5k_17ys16yzvmhcx0brh0000gn/T/offrepo-field-C8Y7cX",
+    "project_type": "npm",
+    "gate_executed": true,
+    "checks_run": [
+      "typecheck",
+      "lint",
+      "test"
+    ],
+    "verdict": "green"
+  },
+  {
+    "label": "target-red",
+    "working_dir": "/private/var/folders/2w/j4nf5k_17ys16yzvmhcx0brh0000gn/T/offrepo-field-wL9bRa",
+    "project_type": "npm",
+    "gate_executed": true,
+    "checks_run": [
+      "typecheck",
+      "lint",
+      "test"
+    ],
+    "verdict": "red"
+  },
+  {
+    "label": "missing-scripts",
+    "working_dir": "/private/var/folders/2w/j4nf5k_17ys16yzvmhcx0brh0000gn/T/offrepo-field-kSgnW4",
+    "project_type": "npm",
+    "gate_executed": true,
+    "checks_run": [],
+    "verdict": "not_run"
+  },
+  {
+    "label": "no-manifest",
+    "working_dir": "/private/var/folders/2w/j4nf5k_17ys16yzvmhcx0brh0000gn/T/offrepo-field-CiXIuT",
+    "project_type": null,
+    "gate_executed": false,
+    "checks_run": [],
+    "verdict": "not_run"
+  }
+]
