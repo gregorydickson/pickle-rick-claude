@@ -66,10 +66,15 @@ function withoutTestMode(fn) {
   try { return fn(); } finally { if (prev !== undefined) process.env.PICKLE_TEST_MODE = prev; }
 }
 
-function setup({ failedReason, verdict } = {}) {
+// `onRepo` opts the fixture into the PICKLE-RICK shape by creating the `extension/` tree.
+// That directory is exactly what `isAdvisoryWorkerGateVerdict` (mux-runner.ts) probes to
+// tell "our own repo" from "a target repo", so it is load-bearing for any assertion about a
+// RED verdict. Default OFF: the off-repo shape is the one the not-applicable cases need.
+function setup({ failedReason, verdict, onRepo = false } = {}) {
   const root = makeTmp();
   const sessionDir = path.join(root, 'session');
   fs.mkdirSync(sessionDir, { recursive: true });
+  if (onRepo) { fs.mkdirSync(path.join(root, 'extension'), { recursive: true }); }
   initRepo(root);
   const baseline = commitFile(root, 'init.txt', 'init', 'baseline');
   const real = commitFile(root, 'work.txt', 'real work', 'feat: real ticket work');
@@ -80,18 +85,27 @@ function setup({ failedReason, verdict } = {}) {
 
 // AC-CWGE-3 (no regression): salvage / no_progress_timeout disposition + RED verdict
 // -> guard REFUSES (the original R-DOTR fail-closed case, now via the unified verdict).
-test('R-CWGE: no_progress_timeout disposition + RED verdict rejects the Done-flip', () => {
+//
+// B-OFFREPO: `onRepo: true` is load-bearing. `isAdvisoryWorkerGateVerdict` (mux-runner.ts)
+// reads a red as ADVISORY when `<workingDir>/extension` is absent, because a red authored by
+// a target repo's own toolchain is a finding to flag, not a refusal to issue. Left off-repo
+// (as this fixture was written), the guard would ACCEPT and this test would green over the
+// very fail-closed path it names. The off-repo disposition of a red is pinned separately in
+// tests/worker-gate-offrepo-runs.test.js.
+test('R-CWGE: no_progress_timeout disposition + RED verdict on pickle-rick itself rejects the Done-flip', () => {
   withoutTestMode(() => {
-    const { root, sessionDir } = setup({ failedReason: 'no_progress_timeout', verdict: 'red' });
+    const { root, sessionDir } = setup({ failedReason: 'no_progress_timeout', verdict: 'red', onRepo: true });
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
     assert.equal(guard.ok, false, 'a salvage commit over a RED verdict must NOT flip Done');
     assert.match(guard.reason, /worker_gate_verdict|R-CWGE/, 'rejection names the worker-gate verdict gate');
   });
 });
 
-test('R-CWGE: oversized_no_progress disposition + RED verdict also rejects', () => {
+// B-OFFREPO: same on-repo requirement as the sibling above — a red is only fail-closed on
+// pickle-rick's own repo, which the `extension/` tree is what makes this fixture.
+test('R-CWGE: oversized_no_progress disposition + RED verdict on pickle-rick itself also rejects', () => {
   withoutTestMode(() => {
-    const { root, sessionDir } = setup({ failedReason: 'oversized_no_progress', verdict: 'red' });
+    const { root, sessionDir } = setup({ failedReason: 'oversized_no_progress', verdict: 'red', onRepo: true });
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
     assert.equal(guard.ok, false);
   });
@@ -108,8 +122,11 @@ test('R-CWGE: no_progress_timeout disposition + GREEN verdict still flips Done',
 });
 
 // AC-CWGE-5/6: an ABSENT verdict on a salvage disposition computes one via the
-// between-ticket gate. The temp-repo harness has no `extension/` dir (a non-pickle-rick
-// target), so the JS worker gate is NOT applicable -> verdict green -> Done flips. This
+// between-ticket gate. This fixture stays OFF-repo (the default) — it has no `extension/`
+// dir, so it is a non-pickle-rick target and the JS worker gate is NOT applicable ->
+// verdict not_run -> Done flips. B-OFFREPO: the mechanism changed, the outcome did not —
+// the resolver returns `not_run` and never manufactures a green; the old "verdict green"
+// reading named a mechanism that no longer exists. This
 // preserves R-DOTR's AC-DOTR-3 (a salvage commit with no gate signal is not gated) and
 // proves fail-closed does not universally refuse salvage Done-flips on non-pickle-rick
 // repos. Fail-closed on a salvage disposition fires on a RED verdict (above) or a RED
@@ -118,16 +135,19 @@ test('R-CWGE: no_progress_timeout + ABSENT verdict on a non-pickle-rick target f
   withoutTestMode(() => {
     const { root, sessionDir, real } = setup({ failedReason: 'no_progress_timeout' });
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
-    assert.equal(guard.ok, true, 'no extension/ dir => worker gate not applicable => verdict green => Done flips');
+    assert.equal(guard.ok, true, 'no extension/ dir => worker gate not applicable => verdict not_run => Done flips');
     assert.equal(guard.sha, real);
   });
 });
 
 // AC-CWGE-4: the verdict gate fires on EVERY committed path now — a normally-completed
 // ticket (no failed_reason) carrying a RED verdict is also fail-closed.
-test('R-CWGE: normal ticket (no failed_reason) + RED verdict is fail-CLOSED', () => {
+//
+// B-OFFREPO: `onRepo: true` for the same reason as the two salvage-disposition siblings —
+// fail-closed is an ON-repo contract, and the `extension/` tree is what the classifier probes.
+test('R-CWGE: normal ticket (no failed_reason) + RED verdict on pickle-rick itself is fail-CLOSED', () => {
   withoutTestMode(() => {
-    const { root, sessionDir } = setup({ verdict: 'red' });
+    const { root, sessionDir } = setup({ verdict: 'red', onRepo: true });
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
     assert.equal(guard.ok, false, 'a RED verdict fails closed on every Done-flip path (AC-CWGE-4)');
   });
