@@ -4,11 +4,12 @@
 // red OR absent/unverifiable verdict.
 //
 // For a NORMAL committed ticket with NO recorded worker-gate verdict, WS-2 computes one
-// via the between-ticket fast gate. In this temp-repo harness there is no `extension/`
-// dir, so the JS worker gate is NOT APPLICABLE (a non-pickle-rick target, e.g.
-// loanlight-api) -> Done flips (NOT universally fail-closed). The core fail-closed
-// behavior is pinned by the explicit `worker_gate_verdict: red` case below;
-// `worker_gate_verdict: green` flips Done.
+// via the between-ticket fast gate. This temp-repo harness builds an off-repo fixture by
+// DEFAULT — no `extension/` dir — so the JS worker gate is NOT APPLICABLE (a non-pickle-rick
+// target, e.g. loanlight-api) -> Done flips (NOT universally fail-closed). The core
+// fail-closed behavior is pinned by the explicit `worker_gate_verdict: red` case below,
+// which opts INTO the on-repo shape via `setup({ onRepo: true })` because fail-closed is an
+// ON-repo contract (see that test's comment); `worker_gate_verdict: green` flips Done.
 //
 // B-OFFREPO (AC-OFFREPO-1) — THE MECHANISM CHANGED, THE OUTCOME DID NOT. This premise
 // used to read "=> verdict 'green'". That was the bug, written down as an expectation:
@@ -92,10 +93,15 @@ function withoutTestMode(fn) {
   try { return fn(); } finally { if (prev !== undefined) { process.env.PICKLE_TEST_MODE = prev; } }
 }
 
-function setup({ verdict } = {}) {
+// `onRepo` opts the fixture into the PICKLE-RICK shape by creating the `extension/` tree.
+// That directory is exactly what `isAdvisoryWorkerGateVerdict` (mux-runner.ts) probes to
+// tell "our own repo" from "a target repo", so it is load-bearing for any assertion about a
+// RED verdict. Default OFF: the off-repo shape is the one the not-applicable cases need.
+function setup({ verdict, onRepo = false } = {}) {
   const root = makeTmp();
   const sessionDir = path.join(root, 'session');
   fs.mkdirSync(sessionDir, { recursive: true });
+  if (onRepo) { fs.mkdirSync(path.join(root, 'extension'), { recursive: true }); }
   initRepo(root);
   const baseline = commitFile(root, 'init.txt', 'init', 'baseline');
   const real = commitFile(root, 'work.txt', 'real work', 'feat: real ticket work');
@@ -139,11 +145,22 @@ test('R-CWGE WS-2: explicit worker_gate_verdict=green flips Done (happy path pre
   });
 });
 
-// AC-CWGE-4: an explicit RED verdict is fail-closed.
-test('R-CWGE WS-2: explicit worker_gate_verdict=red is fail-CLOSED', () => {
+// AC-CWGE-4: an explicit RED verdict on PICKLE-RICK'S OWN repo is fail-closed.
+//
+// B-OFFREPO: this fixture must be ON-repo (`onRepo: true`). `isAdvisoryWorkerGateVerdict`
+// (mux-runner.ts) reads a red as ADVISORY when `<workingDir>/extension` is absent, because a
+// red authored by a target repo's own toolchain is a finding to flag, not a refusal to issue
+// — otherwise one failing test in a target repo would refuse the Done flip on every ticket
+// and halt the pipeline. The `extension/` tree is what makes this fixture pickle-rick rather
+// than a target, and pickle-rick's OWN red still fail-closes. Left off-repo (as it was
+// written), this assertion would be pinning the advisory path while claiming to pin
+// fail-closed — it would green over its own subject. The off-repo disposition of a red is
+// pinned separately in tests/worker-gate-offrepo-runs.test.js; the same distinction is drawn
+// at the sibling Done-flip authority in tests/setup.test.js.
+test('R-CWGE WS-2: explicit worker_gate_verdict=red on pickle-rick itself is fail-CLOSED', () => {
   withoutTestMode(() => {
-    const { root, sessionDir } = setup({ verdict: 'red' });
+    const { root, sessionDir } = setup({ verdict: 'red', onRepo: true });
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
-    assert.equal(guard.ok, false, 'a recorded red verdict must NOT flip Done (R-CWGE fail-closed)');
+    assert.equal(guard.ok, false, 'a recorded red verdict on our own repo must NOT flip Done (R-CWGE fail-closed)');
   });
 });
