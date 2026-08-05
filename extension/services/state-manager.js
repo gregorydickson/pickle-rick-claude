@@ -768,40 +768,8 @@ export class StateManager {
     // read — parse, migrate schema, run recovery protocol
     // -----------------------------------------------------------------------
     read(statePath) {
-        if (!fs.existsSync(statePath)) {
-            throw new StateError('MISSING', `State file not found: ${statePath}`);
-        }
-        let raw;
-        try {
-            raw = fs.readFileSync(statePath, 'utf-8');
-        }
-        catch (err) {
-            const msg = safeErrorMessage(err);
-            throw new StateError('MISSING', `Cannot read state file: ${msg}`);
-        }
-        let state;
-        try {
-            state = JSON.parse(raw);
-        }
-        catch (err) {
-            const recovered = this.recoverFromOrphanTmpWhenBaseCorrupt(statePath);
-            if (recovered) {
-                state = recovered;
-            }
-            else {
-                const msg = safeErrorMessage(err);
-                throw new StateError('CORRUPT', `Invalid JSON in state file: ${msg}`);
-            }
-        }
-        if (state === null || typeof state !== 'object' || Array.isArray(state)) {
-            const recovered = this.recoverFromOrphanTmpWhenBaseCorrupt(statePath);
-            if (recovered) {
-                state = recovered;
-            }
-            else {
-                throw new StateError('CORRUPT', 'State file does not contain a JSON object');
-            }
-        }
+        const raw = this.readRawStateFile(statePath);
+        const state = this.parseStateOrRecover(statePath, raw);
         // Future schema versions cannot be safely read by older code — throw.
         // Past schema versions (state < current) are tolerated: unknown fields are ignored.
         if (state.schema_version !== undefined && state.schema_version > this.opts.schemaVersion) {
@@ -809,19 +777,52 @@ export class StateManager {
         }
         this.assertReadableMissingSchemaShape(statePath, state);
         // Capture mtime before recovery/migration can rewrite the file.
-        let preMigrationMtimeMs;
-        try {
-            preMigrationMtimeMs = fs.statSync(statePath).mtimeMs;
-        }
-        catch {
-            preMigrationMtimeMs = 0;
-        }
+        const preMigrationMtimeMs = readMtimeMs(statePath);
         // --- Recovery protocol ---
         this.recoverOrphanTmpFiles(statePath, state);
         this.migrateSchema(statePath, state);
         this.recoverStaleActiveFlag(statePath, state, preMigrationMtimeMs);
         warnUnknownActivityEvents(state);
         return state;
+    }
+    /** Read `statePath`'s bytes, or throw `MISSING` — absent and unreadable are the same verdict. */
+    readRawStateFile(statePath) {
+        if (!fs.existsSync(statePath)) {
+            throw new StateError('MISSING', `State file not found: ${statePath}`);
+        }
+        try {
+            return fs.readFileSync(statePath, 'utf-8');
+        }
+        catch (err) {
+            const msg = safeErrorMessage(err);
+            throw new StateError('MISSING', `Cannot read state file: ${msg}`);
+        }
+    }
+    /** Parse the base file; on either corruption shape, fall back to orphan-tmp recovery. */
+    parseStateOrRecover(statePath, raw) {
+        let state;
+        try {
+            state = JSON.parse(raw);
+        }
+        catch (err) {
+            const msg = safeErrorMessage(err);
+            return this.recoverCorruptBaseOrThrow(statePath, `Invalid JSON in state file: ${msg}`);
+        }
+        if (state === null || typeof state !== 'object' || Array.isArray(state)) {
+            return this.recoverCorruptBaseOrThrow(statePath, 'State file does not contain a JSON object');
+        }
+        return state;
+    }
+    /**
+     * `recoverFromOrphanTmpWhenBaseCorrupt` is a PROMOTION seam, not a query — it `renameSync`s a
+     * newer dead-writer `.tmp.<pid>` over the corrupt base. Call it unconditionally on every
+     * corruption path; short-circuiting it silently strands the only readable copy of the state.
+     */
+    recoverCorruptBaseOrThrow(statePath, message) {
+        const recovered = this.recoverFromOrphanTmpWhenBaseCorrupt(statePath);
+        if (recovered)
+            return recovered;
+        throw new StateError('CORRUPT', message);
     }
     assertReadableMissingSchemaShape(statePath, state) {
         if (state.schema_version !== undefined || this.opts.schemaVersion >= 3)
