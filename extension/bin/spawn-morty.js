@@ -1556,22 +1556,19 @@ function toResolvedProject(dir) {
  * B-OFFREPO (AC-OFFREPO-2): resolve which directory the worker gate should run in
  * and which toolchain it should use, for an ARBITRARY repo.
  *
+ * This runs ONLY off-repo: the sole caller, `runOffRepoWorkerGate`, is reached from
+ * `runWorkerGate` only when `<workingDir>/extension` does NOT exist. pickle-rick's own
+ * gate never arrives here, so this function deliberately does NOT probe `extension/` —
+ * that path is proven absent before the call, and `detectProjectType` would return null
+ * for it every time.
+ *
  * Probe order is deliberate:
- *  1. `<workingDir>/extension` — pickle-rick's own layout. Kept as the FIRST probe
- *     so this repo's gate keeps running exactly where it runs today. The general
- *     depth-1 resolver returns null on 2+ candidate children, so a resolution-only
- *     design would silently take our OWN gate dark the day any second repo-root
- *     child gained a `package.json` — disarming the harness every other ticket is
- *     verified by.
- *  2. `workingDir` itself — the common case for a target repo.
- *  3. a lone unambiguous depth-1 child — the monorepo-ish case. Ambiguity (2+
+ *  1. `workingDir` itself — the common case for a target repo.
+ *  2. a lone unambiguous depth-1 child — the monorepo-ish case. Ambiguity (2+
  *     candidates) resolves to null: callers must never guess which package is the
  *     project.
  */
 function resolveWorkerGateProject(workingDir) {
-    const extensionProject = toResolvedProject(path.join(workingDir, 'extension'));
-    if (extensionProject)
-        return extensionProject;
     const selfProject = toResolvedProject(workingDir);
     if (selfProject)
         return selfProject;
