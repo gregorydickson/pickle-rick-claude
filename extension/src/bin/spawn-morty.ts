@@ -40,10 +40,12 @@ import { classifyTestScriptSafety, detectProjectType, isUnrunnableCheckResult } 
 import { createResolverCache, type ResolverCache } from '../services/signature-caller-gap.js';
 import { computeOneHop } from '../services/scope-resolver.js';
 import { autoFillCompletionCommit } from './auto-fill-completion-commit.js';
-// 7eb9fa20: shared Failed-flip suppression policy. Runtime-only usage — safe
+// 7eb9fa20: shared Failed-flip suppression policy, plus the ONE did-not-run
+// residual emitter (B-OFFREPO AC-OFFREPO-1) — it owns the `worker_gate_not_run`
+// reason string, so this module must never re-spell it. Runtime-only usage — safe
 // despite mux-runner's own import of `resolveCodexModel` from this module
 // (neither module touches the other's bindings during module evaluation).
-import { evaluateFailedFlipSuppression } from './mux-runner.js';
+import { evaluateFailedFlipSuppression, emitWorkerGateNotRunResidual } from './mux-runner.js';
 // AP-EXT-ITER2-01: the ONE content-line oracle (strips a single trailing newline,
 // CRLF-aware). Runtime-only usage, no cycle — spawn-refinement-team imports neither
 // this module nor mux-runner, and evaluates no top-level side effects.
@@ -2045,17 +2047,9 @@ async function runOffRepoWorkerGate(fileList: string[], args: {
       computeWorkerGateVerdict({ lintOk: true, tscOk: false, lintRan: false, lintUnrunnable: false, tscUnrunnable: false, applicable: false }),
       'not_run',
     );
-    writeActivityEntry(args.statePath, {
-      event: 'gate_skipped',
-      ts: new Date().toISOString(),
-      ticket_id: args.ticketId,
-      gate_payload: {
-        source: 'worker_gate',
-        reason: 'worker_gate_not_run',
-        verdict: 'not_run',
-        computed_via: 'not_applicable',
-        site: 'runWorkerGate',
-      },
+    emitWorkerGateNotRunResidual(args.statePath, args.ticketId, {
+      computedVia: 'not_applicable',
+      site: 'runWorkerGate',
     });
     return { ...base, gatePhase: null, ok: true };
   }
