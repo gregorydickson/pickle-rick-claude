@@ -1838,6 +1838,17 @@ test('setup --resume: a REAL orphaned commit is still ff-reattached and flipped 
             'Done',
             'the real recovery path must survive the strict-descent guard',
         );
+
+        // B-OFFREPO (AC-OFFREPO-1): this fixture repo has no `extension/`, so the worker gate
+        // reports `not_run`. The flip proceeds — a gate that could not run must never stop the
+        // pipeline — but the unverified state is recorded rather than laundered into a green.
+        const activity = JSON.parse(fs.readFileSync(path.join(sessionPath, 'state.json'), 'utf8')).activity || [];
+        const residual = activity.find(
+            (e) => e.event === 'gate_skipped' && e.gate_payload?.reason === 'worker_gate_not_run',
+        );
+        assert.ok(residual, 'a not_run Done flip must leave a residual naming the reason');
+        assert.equal(residual.ticket_id, ticketId, 'the residual names the ticket');
+        assert.equal(residual.gate_payload.site, 'tryResumeOrphanReattach', 'the residual names the site');
     });
 });
 
