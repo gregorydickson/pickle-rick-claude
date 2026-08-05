@@ -1644,17 +1644,15 @@ async function runOffRepoGateDimension(phase, commandString, dir, timeoutMs) {
  * dimension is exempt but can never manufacture a pass.
  */
 async function runOffRepoWorkerGateChecks(project, timeoutMs) {
-    const dimensions = [
-        await runOffRepoGateDimension('tsc', project.commands.typecheck, project.dir, timeoutMs),
-        await runOffRepoGateDimension('lint', project.commands.lint, project.dir, timeoutMs),
-        await runOffRepoGateDimension('test:fast', project.commands.test, project.dir, timeoutMs),
-    ];
-    const testsDimension = dimensions[dimensions.length - 1];
+    const typecheck = await runOffRepoGateDimension('tsc', project.commands.typecheck, project.dir, timeoutMs);
+    const lint = await runOffRepoGateDimension('lint', project.commands.lint, project.dir, timeoutMs);
+    const tests = await runOffRepoGateDimension('test:fast', project.commands.test, project.dir, timeoutMs);
+    const dimensions = [typecheck, lint, tests];
     const toVerdict = (outcome) => outcome === 'pass' ? 'green' : outcome === 'fail' ? 'red' : 'not_run';
     const verdict = dimensions.some(d => d.outcome === 'fail')
         ? 'red'
         : dimensions.some(d => d.outcome === 'pass') ? 'green' : 'not_run';
-    return { verdict, testsVerdict: toVerdict(testsDimension.outcome), dimensions };
+    return { verdict, testsVerdict: toVerdict(tests.outcome), failed: dimensions.find(d => d.outcome === 'fail') ?? null };
 }
 /**
  * B-OFFREPO (AC-OFFREPO-2): the branch taken when this repo has no `extension/`
@@ -1710,9 +1708,8 @@ async function runOffRepoWorkerGate(fileList, args) {
         return { ...base, gatePhase: null, ok: true };
     }
     const timeoutMs = resolveWorkerTestGateTimeoutMs(args.workingDir);
-    const { verdict, testsVerdict, dimensions } = await runOffRepoWorkerGateChecks(project, timeoutMs);
+    const { verdict, testsVerdict, failed: failedDimension } = await runOffRepoWorkerGateChecks(project, timeoutMs);
     persistWorkerGateVerdict(args.statePath, args.ticketId, verdict, testsVerdict);
-    const failedDimension = dimensions.find(d => d.outcome === 'fail') ?? null;
     if (failedDimension) {
         writeActivityEntry(args.statePath, {
             event: 'worker_gate_failed',

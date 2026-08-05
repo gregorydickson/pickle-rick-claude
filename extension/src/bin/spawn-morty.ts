@@ -1962,13 +1962,12 @@ async function runOffRepoGateDimension(
 async function runOffRepoWorkerGateChecks(
   project: ResolvedWorkerGateProject,
   timeoutMs: number,
-): Promise<{ verdict: WorkerGateVerdict; testsVerdict: WorkerGateVerdict; dimensions: OffRepoDimension[] }> {
-  const dimensions = [
-    await runOffRepoGateDimension('tsc', project.commands.typecheck, project.dir, timeoutMs),
-    await runOffRepoGateDimension('lint', project.commands.lint, project.dir, timeoutMs),
-    await runOffRepoGateDimension('test:fast', project.commands.test, project.dir, timeoutMs),
-  ];
-  const testsDimension = dimensions[dimensions.length - 1];
+): Promise<{ verdict: WorkerGateVerdict; testsVerdict: WorkerGateVerdict; failed: OffRepoDimension | null }> {
+  const typecheck = await runOffRepoGateDimension('tsc', project.commands.typecheck, project.dir, timeoutMs);
+  const lint = await runOffRepoGateDimension('lint', project.commands.lint, project.dir, timeoutMs);
+  const tests = await runOffRepoGateDimension('test:fast', project.commands.test, project.dir, timeoutMs);
+  const dimensions = [typecheck, lint, tests];
+
   const toVerdict = (outcome: OffRepoDimension['outcome']): WorkerGateVerdict =>
     outcome === 'pass' ? 'green' : outcome === 'fail' ? 'red' : 'not_run';
 
@@ -1976,7 +1975,7 @@ async function runOffRepoWorkerGateChecks(
     ? 'red'
     : dimensions.some(d => d.outcome === 'pass') ? 'green' : 'not_run';
 
-  return { verdict, testsVerdict: toVerdict(testsDimension.outcome), dimensions };
+  return { verdict, testsVerdict: toVerdict(tests.outcome), failed: dimensions.find(d => d.outcome === 'fail') ?? null };
 }
 
 /**
@@ -2043,10 +2042,9 @@ async function runOffRepoWorkerGate(fileList: string[], args: {
   }
 
   const timeoutMs = resolveWorkerTestGateTimeoutMs(args.workingDir);
-  const { verdict, testsVerdict, dimensions } = await runOffRepoWorkerGateChecks(project, timeoutMs);
+  const { verdict, testsVerdict, failed: failedDimension } = await runOffRepoWorkerGateChecks(project, timeoutMs);
   persistWorkerGateVerdict(args.statePath, args.ticketId, verdict, testsVerdict);
 
-  const failedDimension = dimensions.find(d => d.outcome === 'fail') ?? null;
   if (failedDimension) {
     writeActivityEntry(args.statePath, {
       event: 'worker_gate_failed',
