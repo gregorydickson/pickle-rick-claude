@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, markTicketWithStatus as writeTicketStatus } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
-import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, WORKER_GATE_NOT_RUN_REASON } from './mux-runner.js';
+import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail } from './mux-runner.js';
 import { LockError, BACKENDS, STATE_MANAGER_DEFAULTS } from '../types/index.js';
 import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
@@ -1186,21 +1186,6 @@ function shaDescendsFromHead(workingDir, currentHead, sha) {
     return !isAncestor(workingDir, sha, currentHead); // equal ⇒ nothing orphaned, nothing to recover
 }
 /**
- * B-OFFREPO (AC-OFFREPO-2c): record an advisory gate verdict that authorized a Done flip
- * without proving anything. An advisory `red` RAN and FAILED, so it must NOT be filed as
- * `not_run` — the two are different facts and the residual is the only place either one is
- * visible. Shaping lives here so `resumeReattachDoneRefusal` stays one decision per guard.
- */
-function emitAdvisoryWorkerGateResidual(statePath, ticketId, verdict) {
-    const targetRepoRed = verdict === 'red';
-    emitWorkerGateNotRunResidual(statePath, ticketId, {
-        computedVia: targetRepoRed ? 'target_repo_gate' : 'not_applicable',
-        site: 'tryResumeOrphanReattach',
-        verdict,
-        reason: targetRepoRed ? 'worker_gate_target_repo_red' : WORKER_GATE_NOT_RUN_REASON,
-    });
-}
-/**
  * The three sequential guards on the resume-reattach Done flip (R-WDTF-TO WS-2, R-CWGE +
  * B-OFFREPO, R-WDTF-TO WS-3), kept together so the policy reads as one decision.
  * Returns the refusal message to log, or null when the flip is authorized.
@@ -1238,7 +1223,11 @@ function resumeReattachDoneRefusal(fullSessionPath, statePath, ticketId, working
     // `not_run` — an off-repo gate that never ran persists `worker_gate_tests_verdict: not_run`,
     // which `readTicketWorkerGateTestsVerdict` already reads as `null`.
     if (isAdvisoryWorkerGateVerdict(gate.verdict, workingDir)) {
-        emitAdvisoryWorkerGateResidual(statePath, ticketId, gate.verdict);
+        // An advisory `red` RAN and FAILED, so it must NOT be filed as `not_run` — the two
+        // are different facts and the residual is the only place either one is visible. The
+        // shape is derived by the ONE emitter-side shaper, shared with the sibling authority
+        // in `mux-runner.ts`, so the two can never spell the same fact differently.
+        emitWorkerGateNotRunResidual(statePath, ticketId, advisoryWorkerGateResidualDetail(gate.verdict, 'tryResumeOrphanReattach'));
         return null;
     }
     if (gate.verdict !== 'green') {

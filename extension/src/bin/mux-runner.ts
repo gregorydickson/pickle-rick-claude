@@ -4851,6 +4851,18 @@ function readDeclaredZeroDiffIntent(sessionDir: string, ticketId: string): strin
 export const WORKER_GATE_NOT_RUN_REASON = 'worker_gate_not_run';
 
 /**
+ * B-OFFREPO (AC-OFFREPO-2c): the greppable discriminators on the residual an
+ * ADVISORY target-repo `red` emits.
+ *
+ * A `not_run` gate could not run at all; an advisory `red` RAN and FAILED. Those
+ * are different facts, so they file under different reasons — the residual is the
+ * only place either one is visible, and recording a red as `not_run` claims a gate
+ * never ran when it ran and rejected the code.
+ */
+export const WORKER_GATE_TARGET_REPO_RED_REASON = 'worker_gate_target_repo_red';
+export const WORKER_GATE_TARGET_REPO_COMPUTED_VIA = 'target_repo_gate';
+
+/**
  * B-OFFREPO (AC-OFFREPO-1): record that a gate did not run.
  *
  * A `not_run` gate neither blocks the Done flip nor halts the pipeline, so
@@ -4917,6 +4929,31 @@ export function isAdvisoryWorkerGateVerdict(
   return !fs.existsSync(path.join(workingDir, 'extension'));
 }
 
+/**
+ * B-OFFREPO (AC-OFFREPO-2c): the residual detail for a verdict the Done-flip
+ * policy treats as ADVISORY — the companion to `isAdvisoryWorkerGateVerdict`,
+ * which decides IF a verdict is advisory while this decides WHAT is recorded.
+ *
+ * Both advisory authorities — `guardCompletionCommitBeforeDone` here and
+ * `resumeReattachDoneRefusal` in `setup.ts` — derive the same reason /
+ * `computed_via` pair from the same single question, so they derive it ONCE,
+ * here. Hand-copying the pair is how the two facts drift: the `not_run` half
+ * already earned `WORKER_GATE_NOT_RUN_REASON` for exactly this reason, and its
+ * advisory-red sibling is the same contract with the same two consumers.
+ */
+export function advisoryWorkerGateResidualDetail(
+  verdict: string,
+  site: string,
+): { computedVia: string; site: string; verdict: string; reason: string } {
+  const targetRepoRed = verdict === 'red';
+  return {
+    computedVia: targetRepoRed ? WORKER_GATE_TARGET_REPO_COMPUTED_VIA : 'not_applicable',
+    site,
+    verdict,
+    reason: targetRepoRed ? WORKER_GATE_TARGET_REPO_RED_REASON : WORKER_GATE_NOT_RUN_REASON,
+  };
+}
+
 export function guardCompletionCommitBeforeDone(args: {
   sessionDir: string;
   ticketId: string;
@@ -4966,13 +5003,11 @@ export function guardCompletionCommitBeforeDone(args: {
     ownAttributionTokens: args.ownAttributionTokens,
   }, gateAdvisory ? 'phantom-watch' : 'done-flip'));
   if (gateAdvisory) {
-    const advisoryRed = resolvedGate.verdict === 'red';
-    emitWorkerGateNotRunResidual(path.join(args.sessionDir, 'state.json'), args.ticketId, {
-      computedVia: advisoryRed ? 'target_repo_gate' : 'not_applicable',
-      site: 'guardCompletionCommitBeforeDone',
-      // An advisory red RAN and FAILED — it must not be recorded as `not_run`.
-      ...(advisoryRed ? { verdict: 'red', reason: 'worker_gate_target_repo_red' } : {}),
-    });
+    emitWorkerGateNotRunResidual(
+      path.join(args.sessionDir, 'state.json'),
+      args.ticketId,
+      advisoryWorkerGateResidualDetail(resolvedGate.verdict, 'guardCompletionCommitBeforeDone'),
+    );
   }
   if (decision.ok) {
     // B-GTRUTH WS-A1 shape mapping ONLY: a declared zero-diff accept has no SHA, so
