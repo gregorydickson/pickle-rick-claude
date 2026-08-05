@@ -7057,45 +7057,6 @@ export function classifyCapCheckReadError(
   return 'exit_error';
 }
 
-export function shouldExitMainLoop(state: State, ctx: LoopContext): { exit: true; reason: ExitReason } | { exit: false } {
-  if (state.active !== true) {
-    ctx.log('Session inactive. Exiting.');
-    return { exit: true, reason: 'cancelled' };
-  }
-  const curIter = Number.isFinite(Number(state.iteration)) ? Number(state.iteration) : 0;
-  const limitAction = shouldExitForLimits(state, ctx, curIter);
-  if (limitAction.exit) return limitAction;
-  if (ctx.cbEnabled && ctx.cbState && !canExecute(ctx.cbState)) {
-    ctx.log(`Circuit breaker OPEN: ${ctx.cbState.reason}. Exiting.`);
-    ctxDeactivate(ctx);
-    return { exit: true, reason: 'circuit_open' };
-  }
-  if (!ctx.cbEnabled && curIter === ctx.lastStateIteration && (ctx.stallCount || 0) >= 1) {
-    ctx.log(`WARNING: state.iteration has not advanced in 2 outer-loop iterations (stuck at ${state.iteration}). Exiting to avoid wasted API calls.`);
-    ctxDeactivate(ctx);
-    return { exit: true, reason: 'stall' };
-  }
-  return { exit: false };
-}
-
-function shouldExitForLimits(state: State, ctx: LoopContext, curIter: number): { exit: true; reason: ExitReason } | { exit: false } {
-  const maxIter = Number.isFinite(Number(state.max_iterations)) ? Number(state.max_iterations) : 0;
-  if (maxIter > 0 && curIter >= maxIter) {
-    ctx.log(`Max iterations reached (${curIter}/${maxIter}). Exiting.`);
-    ctxDeactivate(ctx);
-    return { exit: true, reason: 'limit' };
-  }
-  const startEpoch = Number.isFinite(Number(state.start_time_epoch)) ? Number(state.start_time_epoch) : 0;
-  const maxTimeMins = Number.isFinite(Number(state.max_time_minutes)) ? Number(state.max_time_minutes) : 0;
-  const elapsed = startEpoch > 0 ? Math.max(0, Math.floor(ctxNow(ctx) / 1000) - startEpoch) : 0;
-  if (maxTimeMins > 0 && startEpoch > 0 && elapsed >= maxTimeMins * 60) {
-    ctx.log(`Time limit reached (${elapsed}s). Exiting.`);
-    ctxDeactivate(ctx);
-    return { exit: true, reason: 'limit' };
-  }
-  return { exit: false };
-}
-
 export async function processRateLimitCycle(state: State, ctx: LoopContext): Promise<LoopAction> {
   const exitResult = ctx.exitResult;
   if (exitResult?.type !== 'api_limit') return { kind: 'noop' };
