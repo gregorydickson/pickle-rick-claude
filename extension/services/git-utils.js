@@ -280,10 +280,21 @@ export function isCodegraphArtifact(p) {
     const normalized = p.replace(/\\/g, '/').replace(/^\.\/+/, '');
     return normalized === CODEGRAPH_DIR || normalized.startsWith(`${CODEGRAPH_DIR}/`);
 }
-function runArchiveGit(args, cwd, okStatuses = [0]) {
+/**
+ * Byte-exact git read — the one contract every patch section is built from.
+ *
+ * Decoding is NOT allowed on this path. Git classifies a file as TEXT when its
+ * first 8000 bytes hold no NUL, and for TEXT it emits the file's RAW bytes into
+ * the diff. A UTF-8 decode replaces every invalid sequence with U+FFFD, so a
+ * latin-1/CP1252/otherwise-non-UTF-8 source file is archived as DIFFERENT bytes
+ * than the ones `resetToSha` is about to destroy — and because the mangling is
+ * confined to added lines, `git apply` exits 0 and nothing signals the loss.
+ * `--binary` (ARCHIVE_DIFF_BASE) does not cover this: it only reaches files git
+ * already calls binary, which base85-encode to pure ASCII and survive a decode.
+ */
+function runArchiveGitBytes(args, cwd, okStatuses = [0]) {
     const result = spawnSync('git', args, {
         cwd,
-        encoding: 'utf-8',
         timeout: ARCHIVE_GIT_TIMEOUT_MS,
         maxBuffer: ARCHIVE_GIT_MAX_BUFFER,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -291,9 +302,13 @@ function runArchiveGit(args, cwd, okStatuses = [0]) {
     if (result.error)
         throw result.error;
     if (!okStatuses.includes(result.status ?? -1)) {
-        throw new Error(`Command failed: git ${args.join(' ')}\nError: ${result.stderr || ''}`);
+        throw new Error(`Command failed: git ${args.join(' ')}\nError: ${result.stderr?.toString('utf-8') ?? ''}`);
     }
-    return result.stdout || '';
+    return result.stdout ?? Buffer.alloc(0);
+}
+/** Text wrapper — for git output that is a PATH LIST, never patch content. */
+function runArchiveGit(args, cwd, okStatuses = [0]) {
+    return runArchiveGitBytes(args, cwd, okStatuses).toString('utf-8');
 }
 function listUntrackedPaths(cwd) {
     const out = runArchiveGit(['ls-files', '--others', '--exclude-standard', '-z'], cwd);
@@ -304,20 +319,19 @@ function collectUntrackedDiffs(cwd, byteCap) {
     let bytes = 0;
     for (const file of listUntrackedPaths(cwd)) {
         // exit 1 = content differs (the normal case for --no-index against /dev/null)
-        const diff = runArchiveGit([...ARCHIVE_DIFF_BASE, '--no-index', '/dev/null', file], cwd, [0, 1]);
-        const size = Buffer.byteLength(diff, 'utf-8');
-        if (bytes + size > byteCap)
+        const diff = runArchiveGitBytes([...ARCHIVE_DIFF_BASE, '--no-index', '/dev/null', file], cwd, [0, 1]);
+        if (bytes + diff.length > byteCap)
             return { sections, truncated: true };
-        bytes += size;
+        bytes += diff.length;
         sections.push(diff);
     }
     return { sections, truncated: false };
 }
 function buildArchivePatch(cwd, byteCap) {
-    const staged = runArchiveGit([...ARCHIVE_DIFF_BASE, '--cached', ...CODEGRAPH_PATHSPEC_EXCLUDES], cwd);
-    const unstaged = runArchiveGit([...ARCHIVE_DIFF_BASE, ...CODEGRAPH_PATHSPEC_EXCLUDES], cwd);
+    const staged = runArchiveGitBytes([...ARCHIVE_DIFF_BASE, '--cached', ...CODEGRAPH_PATHSPEC_EXCLUDES], cwd);
+    const unstaged = runArchiveGitBytes([...ARCHIVE_DIFF_BASE, ...CODEGRAPH_PATHSPEC_EXCLUDES], cwd);
     const untracked = collectUntrackedDiffs(cwd, byteCap);
-    const content = [staged, unstaged, ...untracked.sections].filter((s) => s.length > 0).join('');
+    const content = Buffer.concat([staged, unstaged, ...untracked.sections].filter((s) => s.length > 0));
     return { content, truncated: untracked.truncated };
 }
 /** Write + fsync the patch so it is durable BEFORE any destructive command runs. */

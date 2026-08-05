@@ -300,6 +300,64 @@ test('AP-EXT-ITER8-01: the pre-reset archive must APPLY — one dirty binary mus
   }
 });
 
+// The AP-EXT-ITER8-01 case above proves the BINARY class round-trips, and it can only prove
+// that class: git base85-encodes what it calls binary, so those sections are pure ASCII and a
+// decode cannot hurt them. The gap `--binary` never reached is a file git calls TEXT — no NUL
+// in the first 8000 bytes — whose bytes are not valid UTF-8. Git emits those raw, so any decode
+// on the archive pipe rewrites them. The mangling lands only in ADDED lines, so context still
+// matches and `git apply` exits 0: the archive reports success and hands back different bytes.
+test('AP-EXT-ITER25-01: a non-UTF-8 TEXT file survives the archive byte-identically', () => {
+  const { repo } = makeRepo('wmff-enc-repo-');
+  const { sessionDir } = makeSession('wmff-enc-sess-');
+  try {
+    // 0xE9 is latin-1 'é' and an invalid UTF-8 lead byte. No NUL anywhere, so git classifies
+    // both files as TEXT and diffs them as raw bytes — never as a base85 binary patch.
+    const tracked = path.join(repo, 'notes.txt');
+    writeFileSync(tracked, Buffer.from('seed\n', 'latin1'));
+    git(repo, ['add', 'notes.txt']);
+    git(repo, ['commit', '-q', '-m', 'seed latin-1 note']);
+    const preResetSha = git(repo, ['rev-parse', 'HEAD']);
+
+    const untracked = path.join(repo, 'new-note.txt');
+    writeFileSync(tracked, Buffer.from([...Buffer.from('seed\ncaf'), 0xe9, ...Buffer.from(' edit\n')]));
+    writeFileSync(untracked, Buffer.from([...Buffer.from('caf'), 0xe9, ...Buffer.from(' brand new\n')]));
+    const wantTracked = readFileSync(tracked);
+    const wantUntracked = readFileSync(untracked);
+
+    // Guard the fixture itself: if git ever called these binary the case would pass for the
+    // wrong reason (base85 survives a decode), proving nothing about the TEXT path.
+    assert.ok(wantTracked.includes(0xe9), 'fixture really holds the invalid UTF-8 byte');
+    assert.equal(wantTracked.includes(0x00), false, 'fixture has no NUL — git must call it TEXT');
+
+    resetToSha(preResetSha, repo, undefined, {
+      cwd: repo, sessionDir, ticketDir: null, reason: 'pre_reset',
+    });
+
+    // Tautology guard — prove the destructive op really destroyed both.
+    assert.ok(!readFileSync(tracked).equals(wantTracked), 'reset reverted the tracked edit');
+    assert.equal(existsSync(untracked), false, 'clean -fd removed the untracked note');
+
+    const patches = readdirSync(sessionDir).filter((f) => /^pre_reset_diff_\d+\.patch$/.test(f));
+    assert.equal(patches.length, 1, 'exactly one pre_reset archive was written');
+    git(repo, ['apply', path.join(sessionDir, patches[0])]);
+
+    // Byte equality is the whole oracle. A decoded pipe restores U+FFFD (ef bf bd) where the
+    // original held 0xe9, and `git apply` still exits 0 — so an rc check or a /caf/ match
+    // would both go green over the corruption.
+    assert.ok(
+      readFileSync(tracked).equals(wantTracked),
+      `tracked non-UTF-8 text recovered byte-identically (got ${readFileSync(tracked).toString('hex')})`,
+    );
+    assert.ok(
+      readFileSync(untracked).equals(wantUntracked),
+      `untracked non-UTF-8 text recovered byte-identically (got ${readFileSync(untracked).toString('hex')})`,
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 // ═══════════ AC-WMFF-2B — the breadcrumb predicate ═══════════
 
 test('AC-WMFF-2B: complete artifacts + Failed + dirty tree → fires with the full discriminator payload', () => {
