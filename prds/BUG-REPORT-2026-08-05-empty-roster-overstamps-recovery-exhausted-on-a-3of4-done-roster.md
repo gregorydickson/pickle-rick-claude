@@ -90,6 +90,27 @@ Note the interaction: `failed_flip_suppressed` correctly refused to flip these t
 `fresh_artifacts` evidence — so the honest-work protection worked. But the red it suppressed was itself
 uninterpretable.
 
+### CONFIRMED FALSE RED — measured 2026-08-05, post-run
+
+The verdict was not merely uninterpretable; it was **wrong**. Ticket `69cdb73b` carries
+`worker_gate_tests_verdict: "red"`. Running the same tier at the same HEAD, on a quiet box, with
+`env -u PICKLE_TICKET_ID -u GIT_CONFIG_COUNT`:
+
+```
+cd extension && npm run test:fast
+→ tests 7250 / pass 7247 / fail 0 / skipped 2 / todo 1 — EXIT=0, zero `not ok` lines
+```
+
+**The tier is green. The persisted verdict says red.** So the worker gate produced a red verdict, whose
+only evidence was npm's banner line, against a suite that passes — and that phantom red is what
+`failed_flip_suppressed` had to defend two tickets against. Had `fresh_artifacts` evidence been absent,
+a false Failed flip would have followed.
+
+This raises the second finding from "uninformative payload" to **"a gate that manufactures reds."** It
+also means any downstream consumer treating `worker_gate_tests_verdict` as ground truth is reading
+noise. Worth checking whether the red originates in the gate's exit-code capture (banner-on-stdout
+suggests the runner may be reading the wrong stream or a non-zero from a `pretest` step).
+
 ## What was NOT wrong
 
 - **The pipeline did not halt.** `Phase pickle exited with code 1 (non-fatal) — continuing to citadel`,

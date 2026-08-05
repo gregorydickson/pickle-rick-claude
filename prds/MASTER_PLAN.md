@@ -697,10 +697,14 @@ so `auto-resume.sh` stops. **The roster contained ZERO Failed tickets**, and the
 **`In Progress` is neither Done nor pending.** Underneath it is the real defect — a ticket left
 `In Progress` with a `completion_commit` and fresh artifacts is **neither runnable nor terminal**: no
 selector re-enters it, no terminal path claims it. Same shape as [[R-ACNP]] (a status the selector cannot
-reach), inverted. **Second finding:** all three `worker_gate_failed` payloads carry
-`message: "> pickle-rick-scripts@2.1.0-beta.7 pretest:fast"` — **npm's banner line, not the failure** —
-so a `red` verdict is recorded with evidence that cannot identify what went red ([[R-WGVI]] recurring in
-the failure payload). **Fix is SUBTRACTIVE** (directive 4 — do not add an in-progress ladder branch):
+reach), inverted. **Second finding — ESCALATED, the gate MANUFACTURES REDS (measured 2026-08-05):** all three
+`worker_gate_failed` payloads carry `message: "> pickle-rick-scripts@2.1.0-beta.7 pretest:fast"` —
+**npm's banner line, not the failure**. And the verdict is not merely uninformative, it is **WRONG**:
+ticket `69cdb73b` persisted `worker_gate_tests_verdict: "red"`, but the same tier at the same HEAD on a
+quiet box returns **`tests 7250 / pass 7247 / fail 0`, EXIT=0, zero `not ok`**. A phantom red is what
+`failed_flip_suppressed` had to defend two tickets against; absent `fresh_artifacts` evidence, a false
+Failed flip follows. Any consumer treating `worker_gate_tests_verdict` as ground truth is reading noise
+([[R-WGVI]] recurring in the failure payload, now with a false-positive verdict on top). **Fix is SUBTRACTIVE** (directive 4 — do not add an in-progress ladder branch):
 make the message and reason match what the predicate proves, and reconcile In-Progress-with-evidence via
 the existing `evaluateCompletionEvidence`/`reconcileTicketTruth` oracles before judging the roster.
 ⛔ Do NOT make the roster check fail-closed or halt earlier. **NOT a halt:** the pipeline continued
