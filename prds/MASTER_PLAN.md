@@ -684,6 +684,22 @@ inferred-completion accepts it, but it is a RECOVERY commit and the ACs are veri
 Workaround: the 2-line gate deletion is a trivial manual fix, tracked for hand-application after the
 pipeline's citadel/anatomy/szechuan phases complete.
 
+## 🚨 OPEN BUG — R-ISSC: `test:integration` short-circuits; the serial sub-tier is never measured when parallel fails (2026-08-05, P1)
+
+**`prds/BUG-REPORT-2026-08-05-test-integration-short-circuits-serial-subtier-never-measured.md`** —
+found BY ticket `a6af84ea` while measuring its own AC. `test:integration` is
+`npm run test:integration:parallel && npm run test:integration:serial` (`extension/package.json`), and
+`&&` short-circuits — so a parallel failure means **the serial half never runs**, while
+`npm run test:integration` is the release-gate command named twice in `CLAUDE.md`. **Consequence: every
+red-tier attribution we have made is a parallel-only partial measurement.** The serial sub-tier is
+measured *only* on runs where parallel is already green — i.e. never when it matters. `a6af84ea`
+measured the halves separately and found the serial sub-tier had **never been measured**, surfacing 4
+unseen failures. This retroactively qualifies the *"10 failures"* count in the [[R-GADEL]] report (a
+parallel-only figure). **Fix is SUBTRACTIVE:** run both halves unconditionally and aggregate exit codes —
+⛔ do NOT add a fourth `test:integration:all` script beside the broken composite; `bin/test-runner.js`
+already takes `--manifest-mode`/`--test-concurrency`, so one runner call owning both passes is the
+smaller change. Same family as the rest of 2026-08: **the instrument, not the thing measured.**
+
 ## 🔺 OPEN BUG — R-EROS: an In-Progress ticket is reported "all-Failed" and stamped `recovery_exhausted` (2026-08-05, P1)
 
 **`prds/BUG-REPORT-2026-08-05-empty-roster-overstamps-recovery-exhausted-on-a-3of4-done-roster.md`** —
@@ -703,7 +719,7 @@ reach), inverted. **Second finding — ESCALATED, the gate MANUFACTURES REDS (me
 ticket `69cdb73b` persisted `worker_gate_tests_verdict: "red"`, but the same tier at the same HEAD on a
 quiet box returns **`tests 7250 / pass 7247 / fail 0`, EXIT=0, zero `not ok`**. A phantom red is what
 `failed_flip_suppressed` had to defend two tickets against; absent `fresh_artifacts` evidence, a false
-Failed flip follows. Any consumer treating `worker_gate_tests_verdict` as ground truth is reading noise
+Failed flip follows. **4th occurrence 2026-08-05T17:53:33Z** — after the B-OFFREPO relaunch, ticket `69cdb73b` was re-stamped `red` with the identical banner-line evidence, 25 minutes after the fast tier was measured GREEN (7250/7247/0) at the same HEAD. The phantom red had been stripped by hand before the relaunch and the gate manufactured it again. Any consumer treating `worker_gate_tests_verdict` as ground truth is reading noise
 ([[R-WGVI]] recurring in the failure payload, now with a false-positive verdict on top). **Fix is SUBTRACTIVE** (directive 4 — do not add an in-progress ladder branch):
 make the message and reason match what the predicate proves, and reconcile In-Progress-with-evidence via
 the existing `evaluateCompletionEvidence`/`reconcileTicketTruth` oracles before judging the roster.
