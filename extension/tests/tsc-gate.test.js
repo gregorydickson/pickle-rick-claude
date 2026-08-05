@@ -858,3 +858,57 @@ it('keeps non-trigger Bash approvals fast at the handler boundary', async () => 
   // / subprocess / require() additions to the fast-rejection path.
   assert.ok(p95 <= 1, `expected predicate p95 <= 1ms, got ${p95.toFixed(3)}ms`);
 });
+
+it('AP-EXT-ITER19-01 isGitCommitCommand sees a commit inside a GROUPED command', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  // `(`, `)`, `{`, `}` and a backtick begin a command in bash just as `&&` does
+  // (shim-verified). They were absent from SHELL_SEGMENT_SEPARATORS, so the
+  // grouped form stayed one segment whose leading token was `(git` — folded by
+  // execName to `(git`, matching nothing — and the R-WACT tsc gate was SKIPPED
+  // for a broken-TS commit while the bare twin gated.
+  const positives = [
+    '(git commit -m x)',
+    '$(git commit -m x)',
+    '{ git commit -m x; }',
+    '`git commit -m x`',
+    '(git add -A; git commit -m x)',
+    'cd extension && (git commit -m x)',
+    'bash -c "(git commit -m x)"',
+  ];
+  for (const command of positives) {
+    assert.equal(isGitCommitCommand(command), true, JSON.stringify(command));
+  }
+  // Segmenting on grouping delimiters must not widen what counts as a commit:
+  // parens inside quotes are message text, and a format string is an argument.
+  const negatives = [
+    '(git add -A)',
+    'git log --format=%(refname)',
+    'echo "x (git commit -m y)"',
+    'echo $(git rev-parse HEAD)',
+    'cp {a,b} dst',
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, JSON.stringify(command));
+  }
+});
+
+it('AP-EXT-ITER19-01 grouping delimiters are declared in the ONE separator set', async () => {
+  const shellExec = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/shell-exec.ts'), 'utf8',
+  );
+  // Pin the declaration, not just the behavior. ITER18 made the split derive
+  // from SHELL_SEGMENT_SEPARATORS precisely so that declaring an operator is
+  // what makes it a boundary — a fix that instead bolted a second hardcoded
+  // regex onto splitShellSegments would pass every case above while re-opening
+  // the next delimiter, which is the pathology this seam exists to prevent.
+  const setBody = shellExec.match(
+    /const SHELL_SEGMENT_SEPARATORS = new Set\(\[([\s\S]*?)\]\)/,
+  );
+  assert.ok(setBody, 'SHELL_SEGMENT_SEPARATORS must remain a single declarative Set literal');
+  for (const delimiter of ['(', ')', '{', '}', '`']) {
+    assert.ok(
+      setBody[1].includes(`'${delimiter}'`),
+      `SHELL_SEGMENT_SEPARATORS must declare ${delimiter} — bash starts a command there`,
+    );
+  }
+});

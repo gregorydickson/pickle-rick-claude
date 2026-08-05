@@ -1220,3 +1220,80 @@ for (const { label, command } of [
     assert.equal(result.decision, 'approve');
   });
 }
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER19-01 — a GROUPED command is still a command
+//
+// `(`, `)`, `{`, `}` and a backtick begin a command in bash exactly as `&&` and
+// `;` do: a `git` shim confirms `(git reset --hard)`, `{ git reset --hard; }`,
+// `$(git reset --hard)` and a backtick substitution all really execute the
+// reset. But `SHELL_SEGMENT_SEPARATORS` declared only the six control
+// operators, so the grouped form stayed one segment whose leading token was
+// `(git` — which `execName` folds to `(git`, matching no detector. Every
+// prohibited verb slipped by being wrapped in parens while its bare twin
+// blocked, and `(git commit …)` skipped the R-WACT tsc gate.
+//
+// Third instance of the ITER12/ITER18 shape: the machinery derives boundaries
+// from one declarative set, and the set was missing members bash honors.
+// ---------------------------------------------------------------------------
+
+for (const { label, command, expect: expected } of [
+  { label: 'a subshell', command: '(git reset --hard)', expect: /reset/ },
+  { label: 'a subshell behind a cd', command: 'cd extension && (git reset --hard)', expect: /reset/ },
+  { label: 'a subshell after a benign verb', command: 'git status; (git push origin main)', expect: /push/ },
+  { label: 'a brace group', command: '{ git stash; }', expect: /stash/ },
+  { label: 'a command substitution', command: '$(git rebase -i)', expect: /rebase/ },
+  { label: 'a command substitution as an argument', command: 'echo $(git pull)', expect: /pull/ },
+  { label: 'a backtick substitution', command: '`git reset --hard`', expect: /reset/ },
+  { label: 'a subshell inside a bash -c payload', command: 'bash -c "(git reset --hard)"', expect: /reset/ },
+]) {
+  test(`AP-EXT-ITER19-01: worker blocks prohibited git verb via ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+}
+
+// Inherited at the shared seam, so install.sh detection gets it for free.
+test('AP-EXT-ITER19-01: worker blocks `(bash install.sh)`', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: '(cd extension && bash install.sh)' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC/);
+});
+
+// Non-tautology guards. Over-segmentation is only fail-safe while it does not
+// invent a leading `git <prohibited verb>` where none executes: parens inside
+// quotes are argument text, and an unquoted `%(refname)` is a format string
+// whose segments must not read as a command. A blanket "contains `git reset`"
+// or a naive strip-all-parens implementation fails these.
+for (const { label, command } of [
+  { label: 'parens inside a commit message', command: 'git commit -m "fix (reset bug) here"' },
+  { label: 'an unquoted git format string', command: 'git log --format=%(refname)' },
+  { label: 'a brace expansion argument', command: 'cp {a,b} dst' },
+  { label: 'a benign substitution', command: 'echo $(git rev-parse HEAD)' },
+  { label: 'a path-mode checkout in a subshell', command: '(git checkout -- src/foo.ts)' },
+]) {
+  test(`AP-EXT-ITER19-01: worker still approves ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve');
+  });
+}

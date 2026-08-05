@@ -97,7 +97,25 @@ export function isShellWrapper(token: string | undefined): boolean {
   return name === 'bash' || name === 'sh';
 }
 
-const SHELL_SEGMENT_SEPARATORS = new Set(['&&', '||', '|', '&', ';', '\n']);
+/**
+ * Every operator at which bash starts a new command.
+ *
+ * Beyond the control operators (`&&`, `||`, `|`, `&`, `;`, newline) this
+ * includes the GROUPING and COMMAND-SUBSTITUTION delimiters `(`, `)`, `{`, `}`
+ * and a backtick. Those four also begin a command: bash runs the `git reset`
+ * in `(git reset --hard)`, `{ git reset --hard; }`, `$(git reset --hard)` and
+ * `` `git reset --hard` `` exactly as it runs the bare twin (shim-verified).
+ * Leaving them out let the grouped form's leading token read as `(git` — which
+ * `execName` folds to `(git`, matching no detector — so every prohibited verb
+ * slipped simply by being wrapped in parens.
+ *
+ * `$` needs no entry: splitting on `(` already strips `$(` down to a lone `$`
+ * segment, which is not an executable token in any detector.
+ */
+const SHELL_SEGMENT_SEPARATORS = new Set([
+  '&&', '||', '|', '&', ';', '\n',
+  '(', ')', '{', '}', '`',
+]);
 
 /**
  * A control operator glued to its neighbors (`git status&&git reset`) is one
@@ -128,9 +146,13 @@ const MAX_SHELL_COMMAND_STRING_DEPTH = 3;
 const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
 
 /**
- * THE shell segmenter for the hooks subsystem. Splits a command into top-level
- * segments on the control operators `&&`, `||`, `|`, `&`, `;`, and an unquoted
- * newline (a top-level command terminator, semantically identical to `;`).
+ * THE shell segmenter for the hooks subsystem. Splits a command into segments
+ * at every operator where bash starts a new command — the control operators
+ * `&&`, `||`, `|`, `&`, `;`, an unquoted newline (a top-level command
+ * terminator, semantically identical to `;`), and the grouping /
+ * command-substitution delimiters `(`, `)`, `{`, `}`, and a backtick (see
+ * `SHELL_SEGMENT_SEPARATORS`), so a command nested in a subshell, brace group,
+ * or substitution is a segment of its own rather than part of its parent's.
  * Quote-aware: a separator inside single or double quotes (a commit message
  * `-m 'fix && reset bug'`, or a multi-line `-m "line1\nline2"`) is preserved and
  * never a split point. Whitespace around an operator is NOT required — bash
