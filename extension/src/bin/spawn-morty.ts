@@ -1853,6 +1853,11 @@ export async function runWorkerGate(changedFiles: string[], args: {
     persistWorkerGateVerdict(
       args.statePath,
       args.ticketId,
+      // `applicable: false` short-circuits first, so the dimension flags below are never
+      // consulted. They are NOT arbitrary padding: `tscOk: false` is chosen so that if the
+      // `applicable` guard is ever deleted, this call degrades to `red` (fail-CLOSED) rather
+      // than to `green` — which would silently re-mint the not-run pass this bundle removes.
+      // Do not "tidy" these to `true`.
       computeWorkerGateVerdict({ lintOk: true, tscOk: false, lintRan: false, lintUnrunnable: false, tscUnrunnable: false, applicable: false }),
       'not_run',
     );
