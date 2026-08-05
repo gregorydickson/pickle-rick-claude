@@ -4010,12 +4010,24 @@ export function isTicketOracleCommitted(args) {
  * `'absent'`, meaning the worker gate never ran for this commit. Best-effort: an
  * unreadable ticket reads as `'absent'` (fail-closed — the guard refuses a
  * Done-flip on a non-green verdict).
+ *
+ * B-OFFREPO (AC-OFFREPO-1) — PERSISTENCE ROUND-TRIP DECISION: `'not_run'` is
+ * PRESERVED, not coerced to `'absent'`. The alternative (do not persist it) was
+ * rejected for two reasons. First, an absent verdict routes
+ * `resolveWorkerGateVerdict` into `recomputeAbsentWorkerGateVerdict`, which runs
+ * eslint + tsc only — so a ticket whose TEST dimension never ran would be handed
+ * a freshly-synthesised `'green'`, re-minting the very claim this bundle removes,
+ * one site downstream. Second, `'absent'` is fail-closed and REFUSES the Done
+ * flip; erasing `not_run` into it would turn "we could not check" into "we
+ * refuse", which is a gate stopping the pipeline rather than blocking a local
+ * action. Preserving the literal is also idempotent: re-reading the ticket yields
+ * the same honest disposition without re-running any toolchain.
  */
 function readWorkerGateVerdict(sessionDir, ticketId) {
     try {
         const raw = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf8');
         const v = (readFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD) ?? '').trim();
-        return v === 'green' || v === 'red' ? v : 'absent';
+        return v === 'green' || v === 'red' || v === 'not_run' ? v : 'absent';
     }
     catch {
         return 'absent';
@@ -4064,9 +4076,19 @@ export function recomputeAbsentWorkerGateVerdict(extensionDir, runCheck = defaul
  * the green/red result back so the epic-completion
  * path doesn't recompute. A missing `extension/` dir means the JS worker gate is NOT
  * APPLICABLE to this target repo (non-pickle-rick targets, e.g. loanlight-api) — it yields
- * `verdict:'green'`, matching `runWorkerGate`'s own no-extension `ok:true` early return, so
+ * `verdict:'not_run'`, matching `runWorkerGate`'s own no-extension early return, so
  * Done-flips on those repos are not universally fail-closed. Only an EXISTING-but-errored
  * gate yields `'unavailable'` (→ fail-closed, AC-CWGE-6).
+ *
+ * B-OFFREPO (AC-OFFREPO-1): the no-extension arm used to return
+ * `{ verdict: 'green', computedVia: 'worker_gate' }`. The fear behind it was
+ * correct — fail-closing there WOULD refuse every Done flip on a non-pickle-rick
+ * target — but the conclusion was not: it asserted AUTHORSHIP, claiming a gate
+ * produced a passing verdict when no gate ran. A gate that cannot run reports
+ * `not_run`, and the `computedVia` says `not_applicable` rather than naming a
+ * gate. The permissiveness is preserved where it belongs — at the Done-flip
+ * policy in `guardCompletionCommitBeforeDone` — instead of being smuggled in as a
+ * fake measurement.
  */
 export function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
     const persisted = readWorkerGateVerdict(sessionDir, ticketId);
@@ -4074,11 +4096,10 @@ export function resolveWorkerGateVerdict(sessionDir, ticketId, workingDir) {
         return { verdict: persisted, computedVia: 'worker_gate' };
     }
     const ext = path.join(workingDir, 'extension');
-    // No extension/ dir → JS worker gate not applicable to this target repo → green
-    // (matches runWorkerGate's no-extension ok:true). NOT fail-closed: a non-pickle-rick
-    // target would otherwise have every Done-flip refused.
+    // No extension/ dir → JS worker gate not applicable to this target repo → not_run.
+    // NOT green: nothing was measured, so nothing may be reported as passing.
     if (!fs.existsSync(ext)) {
-        return { verdict: 'green', computedVia: 'worker_gate' };
+        return { verdict: 'not_run', computedVia: 'not_applicable' };
     }
     let verdict;
     try {
@@ -4124,7 +4145,20 @@ function buildCompletionCtx(args, decision) {
         startCommit,
         pinnedSha,
         decision,
-        workerGateVerdict: () => resolveWorkerGateVerdict(args.sessionDir, args.ticketId, args.workingDir),
+        // B-OFFREPO: the completion predicate's gate vocabulary is three-valued
+        // (`green | red | absent`) and lives in `services/ticket-completion-evidence.ts`.
+        // `not_run` is narrowed to `absent` HERE, which is fail-closed by construction —
+        // it is never narrowed to a pass shape. The permissive policy for an unrun gate
+        // is applied one level up, in `guardCompletionCommitBeforeDone`, which routes a
+        // `not_run` verdict to the gate-exempt decision kind before this ctx is ever
+        // consulted. Any OTHER consumer of this ctx therefore inherits fail-closed
+        // behaviour by default rather than a manufactured green.
+        workerGateVerdict: () => {
+            const resolved = resolveWorkerGateVerdict(args.sessionDir, args.ticketId, args.workingDir);
+            return resolved.verdict === 'not_run'
+                ? { verdict: 'absent', computedVia: resolved.computedVia }
+                : { verdict: resolved.verdict, computedVia: resolved.computedVia };
+        },
         announcedSha: () => readAnnouncedCompletionSha(args.sessionDir, args.ticketId),
         zeroDiffIntent: () => readDeclaredZeroDiffIntent(args.sessionDir, args.ticketId),
     };
@@ -4153,6 +4187,39 @@ function readDeclaredZeroDiffIntent(sessionDir, ticketId) {
         return null;
     }
 }
+/**
+ * B-OFFREPO (AC-OFFREPO-1): the greppable discriminator on the residual event a
+ * did-not-run gate emits instead of reporting a pass.
+ */
+export const WORKER_GATE_NOT_RUN_REASON = 'worker_gate_not_run';
+/**
+ * B-OFFREPO (AC-OFFREPO-1): record that a gate did not run.
+ *
+ * A `not_run` gate neither blocks the Done flip nor halts the pipeline, so
+ * without this the fact would be invisible — which is how a not-run green
+ * survived unnoticed in the first place. It reuses the already-registered
+ * `gate_skipped` event rather than inventing a name: `writeActivityEntry`
+ * rejects unregistered events, `gate_skipped` already means "a gate did not run",
+ * and it already carries heterogeneous payloads from `convergence-gate.ts` and
+ * `pipeline-runner.ts`. Best-effort — telemetry never blocks a Done flip.
+ */
+function emitWorkerGateNotRunResidual(statePath, ticketId, detail) {
+    try {
+        writeActivityEntry(statePath, {
+            event: 'gate_skipped',
+            ts: new Date().toISOString(),
+            ticket_id: ticketId,
+            gate_payload: {
+                source: 'worker_gate',
+                reason: WORKER_GATE_NOT_RUN_REASON,
+                verdict: 'not_run',
+                computed_via: detail.computedVia,
+                site: detail.site,
+            },
+        });
+    }
+    catch { /* best-effort — a residual must never block the action it annotates */ }
+}
 export function guardCompletionCommitBeforeDone(args) {
     // R-WSRC-4 parity: PICKLE_TEST_MODE=1 bypasses for sandboxed test fixtures
     // whose workingDir is a synthetic temp dir without a real git repo.
@@ -4165,13 +4232,29 @@ export function guardCompletionCommitBeforeDone(args) {
     // worker-gate verdict fail-closed) lives in evaluateCompletionEvidence; this
     // guard only wires the runtime ctx and maps the decision back to the legacy
     // {ok…}/{ok:false, reason, source} shape callers and tests pin.
+    // B-OFFREPO (AC-OFFREPO-1): a gate that COULD NOT RUN is neither a pass nor a
+    // refusal. The completion predicate only understands `green | red | absent`, and
+    // `absent` is fail-closed — so routing `not_run` through the normal 'done-flip'
+    // consult would REFUSE the flip, i.e. a gate stopping the pipeline. Instead the
+    // gate consult is skipped by evaluating under the EXISTING gate-exempt decision
+    // kind ('phantom-watch' is 'done-flip' minus the verdict check — same evidence
+    // ladder, same promote-once, same sha), and the unverified state is recorded as a
+    // residual event rather than laundered into a green. The red / absent
+    // fail-closed path below is untouched.
+    const gateNotRun = resolveWorkerGateVerdict(args.sessionDir, args.ticketId, args.workingDir).verdict === 'not_run';
     const decision = evaluateCompletionEvidence(buildCompletionCtx({
         sessionDir: args.sessionDir,
         ticketId: args.ticketId,
         workingDir: args.workingDir,
         rereadBackoffMs: args.rereadBackoffMs,
         ownAttributionTokens: args.ownAttributionTokens,
-    }, 'done-flip'));
+    }, gateNotRun ? 'phantom-watch' : 'done-flip'));
+    if (gateNotRun) {
+        emitWorkerGateNotRunResidual(path.join(args.sessionDir, 'state.json'), args.ticketId, {
+            computedVia: 'not_applicable',
+            site: 'guardCompletionCommitBeforeDone',
+        });
+    }
     if (decision.ok) {
         // B-GTRUTH WS-A1 shape mapping ONLY: a declared zero-diff accept has no SHA, so
         // it maps to `sha: null`. No decision is taken here — the arm and all three of
@@ -4980,8 +5063,23 @@ export function attemptRecoveryBeforeTerminal(input) {
         ticketId: input.ticketId,
         assessEvidence: () => assessRecoveryEvidence(input.sessionDir, input.workingDir, input.ticketId),
         runArmedGate: () => {
-            if (!fs.existsSync(extensionDir))
-                return { ok: true };
+            // B-OFFREPO (AC-OFFREPO-1): the armed gate's whole contract is to consume the
+            // REAL whole-repo result and never a manufactured green (R-ORSR-6). Its `ok`
+            // is what authorises rung 1's automatic commit-and-flip-Done — the
+            // highest-consequence action in the ladder — so reporting `ok: true` for a
+            // gate that issued no command was a Done flip over zero evidence. It now
+            // reports honestly and records a residual. This does NOT halt anything: the
+            // ladder simply falls through to its remaining rungs, and failing those it
+            // records the honest `recovery_exhausted` terminal that `pickle-recover` is
+            // built for. Making the gate actually RUN off-repo is ticket 20.
+            if (!fs.existsSync(extensionDir)) {
+                emitWorkerGateNotRunResidual(input.statePath, input.ticketId, {
+                    computedVia: 'not_applicable',
+                    site: 'attemptRecoveryBeforeTerminal.runArmedGate',
+                });
+                input.log(`recovery: armed gate not applicable for ${input.ticketId} (no extension/) — reported not_run, no auto-Done`);
+                return { ok: false };
+            }
             const r = runBetweenTicketFastTests(extensionDir, input.extensionRoot);
             lastGateFailures = r.failures;
             return { ok: r.ok };
@@ -7416,6 +7514,14 @@ const EVERYTHING_BUT_COMMIT_PATH_CAP = 20;
 /** Bounded git probe for the `preIterSha..HEAD` window walk. */
 const EVERYTHING_BUT_COMMIT_GIT_TIMEOUT_MS = 5000;
 /**
+ * B-OFFREPO: narrow a four-valued verdict down to the frozen
+ * `worker_produced_everything_but_commit` payload enum. `not_run` collapses to
+ * `absent` — the fail-closed direction. It is NEVER collapsed to `green`.
+ */
+function narrowVerdictForFrozenPayload(v) {
+    return v === 'not_run' ? 'absent' : v;
+}
+/**
  * In-process claim ledger keyed `${ticketId}:${iteration}` — the frozen payload carries no
  * iteration field, so `state.activity` cannot reconstruct the key. One mux-runner process
  * drives one loop, so this is the correct scope: a re-check for the SAME iteration (and a
@@ -7549,7 +7655,13 @@ export function claimWorkerProducedEverythingButCommit(input) {
             tier,
             prefixes_checked: prefixes,
             session_log_bytes: sessionLogBytes,
-            worker_gate_verdict: readWorkerGateVerdict(sessionDir, ticketId),
+            // B-OFFREPO: this payload is FROZEN (AC-WMFF-2C) and its schema enum
+            // (`activity-events.schema.json`) is `green|red|absent`, outside this
+            // ticket's scope — so `not_run` is narrowed to `absent` here rather than
+            // emitted non-conformantly. The narrowing is fail-closed and never reports
+            // a pass; it under-reports (the ticket frontmatter still carries the
+            // literal `not_run`). Widening the frozen enum is deferred.
+            worker_gate_verdict: narrowVerdictForFrozenPayload(readWorkerGateVerdict(sessionDir, ticketId)),
             dirty_in_scope_paths: dirty.slice(0, EVERYTHING_BUT_COMMIT_PATH_CAP),
             truncated: dirty.length > EVERYTHING_BUT_COMMIT_PATH_CAP,
             total_count: dirty.length,

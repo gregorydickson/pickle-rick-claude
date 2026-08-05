@@ -1210,6 +1210,15 @@ type WorkerGateResult = {
   autofixApplied: boolean;
   completionCommitSha: string | null;
   /**
+   * B-OFFREPO (AC-OFFREPO-1): true when the gate did NOT RUN — it was not
+   * applicable to this target repo. Distinct from `ok: true`, which here means
+   * only "do not block the local action". A caller that needs to know whether
+   * anything was actually verified MUST read this field: an unrun gate and a
+   * clean gate are both `ok: true` and were, before this field existed,
+   * indistinguishable.
+   */
+  gateNotRun: boolean;
+  /**
    * 7eb9fa20: true when the gate failed but the Failed flip (and the gate-fail
    * reset) was suppressed because evidence of real work exists — fresh ticket
    * artifacts in the [spawn, exit] window OR a ticket-scoped commit. The
@@ -1229,10 +1238,28 @@ type CommandResult = {
   timeoutMessage: string | null;
 };
 
+/**
+ * B-OFFREPO (AC-OFFREPO-1): the three dispositions a gate dimension can settle
+ * on. `green` means the checks RAN and passed; `red` means they ran and failed;
+ * `not_run` means they never executed. A two-value verdict has no way to say the
+ * third thing, so every skip exit had to borrow `green` — which is a claim of
+ * verification over a tree nothing verified.
+ */
+export type WorkerGateVerdict = 'green' | 'red' | 'not_run';
+
 type WorkerGateCheckResult = {
   lintOk: boolean;
   tscOk: boolean;
   testsOk: boolean;
+  /**
+   * B-OFFREPO: the test dimension's own three-valued disposition. `testsOk` is
+   * retained and unchanged for `didWorkerGateFail` (a not-run test phase must
+   * not fail the gate — that would flip every `small` ticket Failed), but it
+   * cannot carry the not-run fact: a skipped test phase and a passing one are
+   * both `testsOk: true`. This field is what `persistWorkerGateVerdict` records,
+   * so a skip is no longer written to frontmatter as `green`.
+   */
+  testsVerdict: WorkerGateVerdict;
   lintErrors: number;
   tscErrors: number;
   testFailures: WorkerGateTestFailure[];
@@ -1598,13 +1625,17 @@ async function runWorkerGateChecks(args: {
   if (!lint.ok) { gatePhase = 'lint'; gateFailures = lint.failures; }
   else if (!tsc.ok) { gatePhase = 'tsc'; gateFailures = tsc.failures; }
 
-  // Every exit reports the same shape; only the test dimension varies. `testsOk: true`
-  // with no failures is the pre-test reading (the test phases were not run). Reads the
-  // live gatePhase/gateFailures bindings, so each exit carries its own settled values.
-  const settle = (testsOk: boolean, testFailures: WorkerGateTestFailure[]): WorkerGateCheckResult => ({
+  // Every exit reports the same shape; only the test dimension varies. B-OFFREPO:
+  // each exit now names its own disposition instead of borrowing `testsOk: true` to
+  // mean two different things. `testsOk` is DERIVED (`!== 'red'`) so the gate-failure
+  // predicate keeps its exact prior semantics — a not-run test phase still does not
+  // fail the gate — while the persisted verdict records the truth. Reads the live
+  // gatePhase/gateFailures bindings, so each exit carries its own settled values.
+  const settle = (testsVerdict: WorkerGateVerdict, testFailures: WorkerGateTestFailure[]): WorkerGateCheckResult => ({
     lintOk: lint.ok,
     tscOk: tsc.ok,
-    testsOk,
+    testsOk: testsVerdict !== 'red',
+    testsVerdict,
     lintErrors: lint.errors,
     tscErrors: tsc.errors,
     testFailures,
@@ -1615,9 +1646,13 @@ async function runWorkerGateChecks(args: {
     lintRan: lint.ran,
   });
 
-  if (!lint.ok || !tsc.ok) return settle(true, []);
-  if (args.workerGateTier === 'narrow') return settle(true, []);
-  if (args.ticketTier === 'small') return settle(true, []);
+  // B-OFFREPO: the three skip exits. Each reaches this point with the test phases
+  // never executed — lint/tsc already failed, the gate tier is narrow, or the
+  // ticket's tier deliberately skips tests. All three used to report `true`, which
+  // `persistWorkerGateVerdict` then wrote as `worker_gate_tests_verdict: 'green'`.
+  if (!lint.ok || !tsc.ok) return settle('not_run', []);
+  if (args.workerGateTier === 'narrow') return settle('not_run', []);
+  if (args.ticketTier === 'small') return settle('not_run', []);
 
   const fastTierResult = await runWorkerGateTestCommand('test:fast', args.extensionDir, args.workerTestGateTimeoutMs);
   if (!fastTierResult.ok) {
@@ -1625,7 +1660,7 @@ async function runWorkerGateChecks(args: {
     gateFailures = fastTierResult.failures;
   }
   if (!fastTierResult.ok || args.workerGateTier !== 'full') {
-    return settle(fastTierResult.ok, fastTierResult.failures);
+    return settle(fastTierResult.ok ? 'green' : 'red', fastTierResult.failures);
   }
 
   const integrationTierResult = await runWorkerGateTestCommand('test:integration', args.extensionDir, args.workerTestGateTimeoutMs);
@@ -1633,7 +1668,7 @@ async function runWorkerGateChecks(args: {
     gatePhase = integrationTierResult.gatePhase;
     gateFailures = integrationTierResult.failures;
   }
-  return settle(integrationTierResult.ok, integrationTierResult.failures);
+  return settle(integrationTierResult.ok ? 'green' : 'red', integrationTierResult.failures);
 }
 
 function shouldRetryWorkerGate(lintOk: boolean, tscOk: boolean, lintTargetCount: number): boolean {
@@ -1685,7 +1720,22 @@ function computeWorkerGateVerdict(result: {
   lintRan: boolean;
   lintUnrunnable: boolean;
   tscUnrunnable: boolean;
-}): 'green' | 'red' {
+  /**
+   * B-OFFREPO (AC-OFFREPO-1): the THIRD return value. `false` means the gate was
+   * NOT APPLICABLE to this target repo — there was no `extension/` tree, so no
+   * command was ever issued and no dimension has anything to report.
+   *
+   * This is deliberately NOT the same case as the R-WGFR all-unrunnable floor
+   * below. There, the gate WAS applicable and the toolchain was broken; that
+   * stays `red` and stays fail-closed, because a broken toolchain on a repo the
+   * gate governs is a real defect. Here nothing was broken and nothing was
+   * checked, so the honest answer is neither `green` nor `red`.
+   *
+   * Defaults to applicable, so every existing caller keeps its behaviour.
+   */
+  applicable?: boolean;
+}): WorkerGateVerdict {
+  if (result.applicable === false) return 'not_run';
   const lintRed = !result.lintOk && !result.lintUnrunnable;
   const tscRed = !result.tscOk && !result.tscUnrunnable;
   if (lintRed || tscRed) return 'red';
@@ -1719,16 +1769,21 @@ const WORKER_GATE_TESTS_VERDICT_FIELD = 'worker_gate_tests_verdict';
  * field as fail-closed).
  *
  * R-WDTF-TO WS-3: also persists `WORKER_GATE_TESTS_VERDICT_FIELD` from this
- * turn's own `testsOk` (green when tests passed OR were legitimately skipped —
- * `testsOk` already defaults `true` for skip cases, per `runWorkerGateChecks` —
- * red only when tests actually ran and failed).
+ * turn's own test dimension. B-OFFREPO (AC-OFFREPO-1b): that field is now
+ * three-valued — `green` ONLY when the tests actually ran and passed, `red` when
+ * they ran and failed, `not_run` when they were skipped. It previously wrote
+ * `green` for a legitimately-skipped phase, which is a claim of verification
+ * over a phase that never executed. `readTicketWorkerGateTestsVerdict`
+ * (`bin/setup.ts`) already maps any non-`green`/`red` value to `null`, and its
+ * resume-reattach guard blocks only on the literal `'red'`, so `not_run` is
+ * carried honestly without turning a skip into a refusal.
  */
-function persistWorkerGateVerdict(statePath: string, ticketId: string, verdict: 'green' | 'red', testsOk: boolean): void {
+function persistWorkerGateVerdict(statePath: string, ticketId: string, verdict: WorkerGateVerdict, testsVerdict: WorkerGateVerdict): void {
   try {
     const fp = ticketFilePath(path.dirname(statePath), ticketId);
     const raw = fs.readFileSync(fp, 'utf8');
     let upd = upsertFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD, verdict);
-    upd = upsertFrontmatterField(upd ?? raw, WORKER_GATE_TESTS_VERDICT_FIELD, testsOk ? 'green' : 'red');
+    upd = upsertFrontmatterField(upd ?? raw, WORKER_GATE_TESTS_VERDICT_FIELD, testsVerdict);
     if (upd) fs.writeFileSync(fp, upd);
   } catch { /* best-effort — guard treats an absent field as fail-closed */ }
 }
@@ -1786,6 +1841,21 @@ export async function runWorkerGate(changedFiles: string[], args: {
   const extensionDir = path.join(args.workingDir, 'extension');
   // eslint-disable-next-line pickle/no-sync-in-async
   if (!fs.existsSync(extensionDir)) {
+    // B-OFFREPO (AC-OFFREPO-1): the JS worker gate is not applicable to this
+    // target repo. `ok: true` is retained deliberately — it means "do not block
+    // the local action", and an `ok: false` here would flip the ticket Failed on
+    // every non-pickle-rick repo, i.e. a gate stopping the pipeline. What changes
+    // is that the result no longer LOOKS like a pass: `gateNotRun` carries the
+    // fact, and the verdict is now PERSISTED as `not_run` instead of left absent.
+    // Leaving it absent was itself a defect — an absent verdict is fail-closed at
+    // the Done-flip guard, so "the gate could not run" and "the gate never
+    // reported" were the same record with opposite intended meanings.
+    persistWorkerGateVerdict(
+      args.statePath,
+      args.ticketId,
+      computeWorkerGateVerdict({ lintOk: true, tscOk: false, lintRan: false, lintUnrunnable: false, tscUnrunnable: false, applicable: false }),
+      'not_run',
+    );
     return {
       ok: true,
       fileList,
@@ -1796,6 +1866,7 @@ export async function runWorkerGate(changedFiles: string[], args: {
       retryCount: 0,
       autofixApplied: false,
       completionCommitSha: null,
+      gateNotRun: true,
       failedFlipSuppressed: false,
     };
   }
@@ -1853,7 +1924,7 @@ export async function runWorkerGate(changedFiles: string[], args: {
   // B-CWGE WS-2 (R-CWGE): persist the worker-gate verdict (eslint+tsc only —
   // R-WGFR drops test:fast) so the Done-flip guard can read it on EVERY path
   // without re-running the gate. Written on BOTH the pass and fail paths below.
-  persistWorkerGateVerdict(args.statePath, args.ticketId, computeWorkerGateVerdict(gateResult), testsOk);
+  persistWorkerGateVerdict(args.statePath, args.ticketId, computeWorkerGateVerdict(gateResult), gateResult.testsVerdict);
 
   if (didWorkerGateFail(lintOk, tscOk, testsOk)) {
     writeActivityEntry(args.statePath, {
@@ -1929,6 +2000,7 @@ export async function runWorkerGate(changedFiles: string[], args: {
       retryCount,
       autofixApplied,
       completionCommitSha: null,
+      gateNotRun: false,
       failedFlipSuppressed,
     };
   }
@@ -1952,6 +2024,7 @@ export async function runWorkerGate(changedFiles: string[], args: {
     retryCount,
     autofixApplied,
     completionCommitSha,
+    gateNotRun: false,
     failedFlipSuppressed: false,
   };
 }

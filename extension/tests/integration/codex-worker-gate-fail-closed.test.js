@@ -6,9 +6,20 @@
 // For a NORMAL committed ticket with NO recorded worker-gate verdict, WS-2 computes one
 // via the between-ticket fast gate. In this temp-repo harness there is no `extension/`
 // dir, so the JS worker gate is NOT APPLICABLE (a non-pickle-rick target, e.g.
-// loanlight-api) -> verdict 'green' -> Done flips (NOT universally fail-closed). The core
-// fail-closed behavior is pinned by the explicit `worker_gate_verdict: red` case below;
+// loanlight-api) -> Done flips (NOT universally fail-closed). The core fail-closed
+// behavior is pinned by the explicit `worker_gate_verdict: red` case below;
 // `worker_gate_verdict: green` flips Done.
+//
+// B-OFFREPO (AC-OFFREPO-1) — THE MECHANISM CHANGED, THE OUTCOME DID NOT. This premise
+// used to read "=> verdict 'green'". That was the bug, written down as an expectation:
+// the resolver returned `{verdict:'green', computedVia:'worker_gate'}` for a gate that
+// issued no command, asserting AUTHORSHIP over a verdict no gate produced. The Done flip
+// is still permitted — refusing it would fail-close every non-pickle-rick target, i.e. a
+// gate stopping the pipeline — but the permission now comes from the Done-flip POLICY
+// (`not_run` routes through the gate-exempt evaluation) rather than from a manufactured
+// pass. The two assertions below are UNCHANGED in subject: `guard.ok === true` and the
+// sha is still attributed. Only the message naming the mechanism was corrected, and the
+// new assertions pin the honest disposition the outcome now rests on.
 //
 // Harness mirrors guard-completion-commit-tsc-gate.test.js: real git repo + temp
 // session dir, explicit git-reachable completion_commit, PICKLE_TEST_MODE UNSET so the
@@ -24,7 +35,18 @@ import { execFileSync } from 'node:child_process';
 const DATA_ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwge-data-')));
 process.env.PICKLE_DATA_ROOT = DATA_ROOT;
 
-const { guardCompletionCommitBeforeDone } = await import('../../bin/mux-runner.js');
+const {
+  guardCompletionCommitBeforeDone,
+  resolveWorkerGateVerdict,
+  WORKER_GATE_NOT_RUN_REASON,
+} = await import('../../bin/mux-runner.js');
+
+/** B-OFFREPO: the `gate_skipped` residuals a did-not-run gate records into state.json. */
+function readNotRunResiduals(sessionDir) {
+  const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf8'));
+  return (Array.isArray(state.activity) ? state.activity : [])
+    .filter(entry => entry.event === 'gate_skipped' && entry.gate_payload?.reason === WORKER_GATE_NOT_RUN_REASON);
+}
 
 function makeTmp() {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwge-guard-')));
@@ -85,14 +107,25 @@ function setup({ verdict } = {}) {
 // AC-CWGE-6 (gate not applicable): a normally-committed ticket with NO recorded
 // worker-gate verdict computes one via the between-ticket fast gate. The temp-repo harness
 // has no `extension/` dir (a non-pickle-rick target), so the JS worker gate is NOT
-// applicable -> verdict 'green' -> Done flips. This pins that fail-closed does NOT
+// applicable -> verdict 'not_run' -> Done flips. This pins that fail-closed does NOT
 // universally refuse Done-flips on non-pickle-rick repos (regression guard).
 test('R-CWGE WS-2: absent verdict on a non-pickle-rick target (no extension/) flips Done (gate not applicable)', () => {
   withoutTestMode(() => {
     const { root, sessionDir, real } = setup();
     const guard = guardCompletionCommitBeforeDone({ sessionDir, ticketId: 'abc12345', workingDir: root, rereadBackoffMs: 0 });
-    assert.equal(guard.ok, true, 'no extension/ dir => worker gate not applicable => verdict green => Done flips');
+    assert.equal(guard.ok, true, 'no extension/ dir => worker gate not applicable => verdict not_run => Done flips');
     assert.equal(guard.sha, real, 'the committed sha is attributed');
+
+    // B-OFFREPO: the disposition the flip now rests on. `not_run` is the honest
+    // third verdict, and `computedVia` names no gate — nothing measured this tree.
+    const resolved = resolveWorkerGateVerdict(sessionDir, 'abc12345', root);
+    assert.equal(resolved.verdict, 'not_run', 'a gate that could not run reports not_run, never green');
+    assert.equal(resolved.computedVia, 'not_applicable', 'no gate may be named as the author of an unrun verdict');
+
+    // The permissiveness is no longer silent: the unverified state is recorded.
+    const residuals = readNotRunResiduals(sessionDir);
+    assert.equal(residuals.length, 1, 'the unrun gate leaves exactly one residual');
+    assert.equal(residuals[0].ticket_id, 'abc12345', 'the residual names the ticket');
   });
 });
 
