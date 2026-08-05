@@ -4,7 +4,6 @@ import * as path from 'path';
 import * as os from 'os';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, runCmd, safeErrorMessage, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, resolveWorkerTestGateTimeoutMs, classifyTicketTier, VALID_TICKET_COMPLEXITY_TIERS, extractFrontmatter, loadPickleSettingsBag, resolveCodegraphSettings, readFrontmatterField, upsertFrontmatterField, ticketFilePath, TIER_LIFECYCLE, TIER_DIFF_ENVELOPE, } from '../services/pickle-utils.js';
 import { spawn, execFileSync } from 'child_process';
-import { fileURLToPath } from 'url';
 import { PromiseTokens, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD } from '../types/index.js';
 import { CodegraphService } from '../services/codegraph-service.js';
 import { isRecord } from '../lib/is-record.js';
@@ -12,7 +11,7 @@ import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths,
 import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup } from '../services/backend-spawn.js';
 import { scrubForbiddenWorkerTokens } from '../services/promise-tokens.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
-import { classifyTestScriptSafety, detectProjectType, isUnrunnableCheckResult } from '../services/convergence-gate.js';
+import { classifyTestScriptSafety, detectProjectType, isUnrunnableCheckResult, loadGateCommands } from '../services/convergence-gate.js';
 import { createResolverCache } from '../services/signature-caller-gap.js';
 import { computeOneHop } from '../services/scope-resolver.js';
 import { autoFillCompletionCommit } from './auto-fill-completion-commit.js';
@@ -1526,16 +1525,27 @@ export function computeChangedLoc(preWorkerHead, workingDir) {
         return 0;
     }
 }
-const WORKER_GATE_COMMANDS_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../data/gate-commands.json');
+/**
+ * B-OFFREPO (AC-OFFREPO-2): the target repo's own gate commands, keyed by the
+ * project type `detectProjectType` returns.
+ *
+ * The map is read by `convergence-gate.ts:loadGateCommands`, which owns both the
+ * table and its module-relative path. Deliberately not re-derived here: a second
+ * package-manager table would be the per-stack adapter matrix the repo-agnostic
+ * invariant forbids, and a second loader would hand-copy that path resolution and
+ * drift from it the moment either file changes depth.
+ *
+ * What IS local is the failure POLICY: an unreadable map degrades to `{}`, so no
+ * project resolves and the gate reports `not_run`. Never a synthesized green.
+ */
 let workerGateCommandsCache = null;
 function loadWorkerGateCommands() {
     if (workerGateCommandsCache)
         return workerGateCommandsCache;
     try {
-        workerGateCommandsCache = JSON.parse(fs.readFileSync(WORKER_GATE_COMMANDS_PATH, 'utf-8'));
+        workerGateCommandsCache = loadGateCommands();
     }
     catch {
-        // Unreadable map -> no project resolves -> `not_run`. Never a synthesized green.
         workerGateCommandsCache = {};
     }
     return workerGateCommandsCache;

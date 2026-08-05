@@ -28,7 +28,6 @@ import {
   type TicketComplexityTier,
 } from '../services/pickle-utils.js';
 import { spawn, execFileSync } from 'child_process';
-import { fileURLToPath } from 'url';
 import { PromiseTokens, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type BackendResolutionSource, type CodegraphContextSkipReason, type CodegraphSettings, type LastToolErrorState, type PickleSettings, type State } from '../types/index.js';
 import { CodegraphService, type CodegraphEmitEvent } from '../services/codegraph-service.js';
 import { isRecord } from '../lib/is-record.js';
@@ -36,7 +35,7 @@ import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths,
 import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup } from '../services/backend-spawn.js';
 import { scrubForbiddenWorkerTokens } from '../services/promise-tokens.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
-import { classifyTestScriptSafety, detectProjectType, isUnrunnableCheckResult } from '../services/convergence-gate.js';
+import { classifyTestScriptSafety, detectProjectType, isUnrunnableCheckResult, loadGateCommands, type GateCommandMap } from '../services/convergence-gate.js';
 import { createResolverCache, type ResolverCache } from '../services/signature-caller-gap.js';
 import { computeOneHop } from '../services/scope-resolver.js';
 import { autoFillCompletionCommit } from './auto-fill-completion-commit.js';
@@ -1809,31 +1808,22 @@ export function computeChangedLoc(preWorkerHead: string, workingDir: string): nu
  * B-OFFREPO (AC-OFFREPO-2): the target repo's own gate commands, keyed by the
  * project type `detectProjectType` returns.
  *
- * This is READ from `extension/data/gate-commands.json` — the map
- * `convergence-gate.ts:loadGateCommands` already owns — resolved module-relative
- * exactly as that loader resolves it, so `bin/` and `services/` agree in both the
- * source-checkout and deployed trees. Deliberately NOT a literal in this file:
- * a second package-manager table here is the per-stack adapter matrix the
- * repo-agnostic invariant forbids, and it would drift from the one the
- * convergence gate uses.
+ * The map is read by `convergence-gate.ts:loadGateCommands`, which owns both the
+ * table and its module-relative path. Deliberately not re-derived here: a second
+ * package-manager table would be the per-stack adapter matrix the repo-agnostic
+ * invariant forbids, and a second loader would hand-copy that path resolution and
+ * drift from it the moment either file changes depth.
+ *
+ * What IS local is the failure POLICY: an unreadable map degrades to `{}`, so no
+ * project resolves and the gate reports `not_run`. Never a synthesized green.
  */
-type WorkerGateProjectCommands = { typecheck?: string; lint?: string; test?: string };
+let workerGateCommandsCache: Record<string, GateCommandMap> | null = null;
 
-const WORKER_GATE_COMMANDS_PATH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../data/gate-commands.json',
-);
-
-let workerGateCommandsCache: Record<string, WorkerGateProjectCommands> | null = null;
-
-function loadWorkerGateCommands(): Record<string, WorkerGateProjectCommands> {
+function loadWorkerGateCommands(): Record<string, GateCommandMap> {
   if (workerGateCommandsCache) return workerGateCommandsCache;
   try {
-    workerGateCommandsCache = JSON.parse(
-      fs.readFileSync(WORKER_GATE_COMMANDS_PATH, 'utf-8'),
-    ) as Record<string, WorkerGateProjectCommands>;
+    workerGateCommandsCache = loadGateCommands();
   } catch {
-    // Unreadable map -> no project resolves -> `not_run`. Never a synthesized green.
     workerGateCommandsCache = {};
   }
   return workerGateCommandsCache;
@@ -1842,7 +1832,7 @@ function loadWorkerGateCommands(): Record<string, WorkerGateProjectCommands> {
 type ResolvedWorkerGateProject = {
   dir: string;
   projectType: string;
-  commands: WorkerGateProjectCommands;
+  commands: GateCommandMap;
 };
 
 /** Directory names never worth probing for a package root (mirrors the gate's own skip set). */

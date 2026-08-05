@@ -340,10 +340,27 @@ test('no per-stack adapter matrix: the gate path declares no package-manager nam
     'no literal package-manager list may be introduced on the gate path',
   );
 
-  // The command map must be READ from the shared data file, not re-declared here.
+  // The command map must be READ through the ONE loader that owns it.
+  //
+  // Do NOT assert this by grepping the filename: both files name
+  // `gate-commands.json` in PROSE only, so that grep is satisfied by a comment and
+  // would stay green with every real reader deleted (the AP-EXT-ITER15-01
+  // self-matching-anchor mode). Pin the import — after the collapse the guarantee
+  // is compile-time, which is what the invariant actually is.
+  const spawnMorty = fs.readFileSync(new URL('../src/bin/spawn-morty.ts', import.meta.url), 'utf8');
+  const stripComments = (src) => src.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
   assert.match(
-    sources,
-    /gate-commands\.json/,
-    'the gate must consume the existing shared command map',
+    stripComments(spawnMorty),
+    /import \{[^}]*\bloadGateCommands\b[^}]*\} from '\.\.\/services\/convergence-gate\.js'/,
+    'the off-repo gate must consume the shared command map through its one loader',
+  );
+
+  // A second reader re-derives the module-relative path by hand, so the two
+  // silently disagree the moment either file changes depth.
+  assert.equal(
+    /readFileSync\([^)]*gate-commands\.json/.test(stripComments(sources)),
+    false,
+    'no second reader of the command map may be declared on the gate path',
   );
 });

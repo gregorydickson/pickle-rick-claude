@@ -12,11 +12,6 @@ import { detectMissingTools } from './verify-command-safety.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-function loadGateCommands(): Record<string, { typecheck?: string; lint?: string; test?: string }> {
-  const dataPath = path.resolve(__dirname, '../data/gate-commands.json');
-  return JSON.parse(fs.readFileSync(dataPath, 'utf-8')) as Record<string, { typecheck?: string; lint?: string; test?: string }>;
-}
-
 export class GateError extends Error {
   readonly kind: string;
   constructor(kind: string, message: string) {
@@ -71,6 +66,26 @@ function baselineWriteFailed(baselinePath: string, err: unknown): BaselineWriteF
     `Failed to persist baseline at ${baselinePath}: ${message}`,
     err,
   );
+}
+
+/**
+ * The ONE reader of `data/gate-commands.json` — the per-project-type toolchain table.
+ *
+ * Exported because the off-repo worker gate (`bin/spawn-morty.ts`) needs the same map.
+ * A second table there would be the per-stack adapter matrix the repo-agnostic
+ * invariant forbids; a second *loader* is subtler and just as wrong — it hand-copies
+ * this module-relative path resolution, so the two silently disagree the moment either
+ * file changes depth. Only the read is shared: each consumer keeps its own failure
+ * POLICY (this gate fails fast; the off-repo gate degrades to `not_run`).
+ */
+export function loadGateCommands(): Record<string, GateCommandMap> {
+  const dataPath = path.resolve(__dirname, '../data/gate-commands.json');
+  try {
+    return JSON.parse(fs.readFileSync(dataPath, 'utf-8')) as Record<string, GateCommandMap>;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new GateError('GATE_COMMANDS_UNREADABLE', `Cannot load gate commands from ${dataPath}: ${msg}`);
+  }
 }
 
 /** Event names emitted by the remediator layer after runGate. Exported for remediator callers. */
@@ -770,7 +785,7 @@ const CHECK_KEY_MAP: Record<'typecheck' | 'lint' | 'tests', keyof { typecheck?: 
 };
 
 type GateCheck = 'typecheck' | 'lint' | 'tests';
-type GateCommandMap = { typecheck?: string; lint?: string; test?: string };
+export type GateCommandMap = { typecheck?: string; lint?: string; test?: string };
 type GateEmit = (event: string, data: Record<string, unknown>) => void;
 type ProjectType = NonNullable<ReturnType<typeof detectProjectType>>;
 
