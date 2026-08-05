@@ -3276,6 +3276,44 @@ export function foldParkIntoEpisode(
   };
 }
 
+/** The park-entry verdict shared by the two rate-limit cycle callers. */
+type RateLimitCycleDecision =
+  | { kind: 'bail'; rlAction: RateLimitAction }
+  | { kind: 'park_exhausted'; rlAction: RateLimitAction; priorPark: RateLimitPark | null }
+  | { kind: 'park'; rlAction: RateLimitAction; priorPark: RateLimitPark | null };
+
+/**
+ * Pure: decide whether a rate-limited iteration bails, trips the cumulative park
+ * ceiling, or parks.
+ *
+ * `processRateLimitCycle` and the inline cycle in `runMuxRunnerMain` each
+ * re-derived this sequence, and a divergence in exactly this area is how the B5
+ * ceiling ended up fixed in one copy and broken in the other. The verdict now has
+ * one home; each caller keeps its own logging, exit-reason recording and
+ * deactivation policy.
+ *
+ * `readPriorPark` is a thunk, not a value: a bail never reached the persisted park
+ * record, so each caller passes its own state accessor and it stays unread on that
+ * path.
+ */
+function decideRateLimitCycle(
+  exitResult: IterationExitResult,
+  consecutiveRateLimits: number,
+  maxRetries: number,
+  configWaitMinutes: number,
+  maxParkMinutes: number,
+  readPriorPark: () => RateLimitPark | null,
+): RateLimitCycleDecision {
+  const rlAction = computeRateLimitAction(exitResult, consecutiveRateLimits, maxRetries, configWaitMinutes, maxParkMinutes);
+  if (rlAction.action === 'bail') return { kind: 'bail', rlAction };
+  const priorPark = readPriorPark();
+  const priorCumulativeMs = priorPark?.cumulative_parked_ms ?? 0;
+  if (isParkExhausted(priorCumulativeMs + rlAction.waitMs, maxParkMinutes)) {
+    return { kind: 'park_exhausted', rlAction, priorPark };
+  }
+  return { kind: 'park', rlAction, priorPark };
+}
+
 interface IterationPromptContext {
   handoffText?: string;
   iterationSummary?: string;
@@ -7065,25 +7103,24 @@ export async function processRateLimitCycle(state: State, ctx: LoopContext): Pro
   const waitMinutes = ctx.rateLimitWaitMinutes || 5;
   const maxParkMinutes = ctx.maxParkMinutes ?? DEFAULT_MAX_PARK_MINUTES;
   ctx.log(`API rate limit detected (consecutive: ${consecutiveRateLimits}/${maxRetries})`);
-  const rlAction = computeRateLimitAction(exitResult, consecutiveRateLimits, maxRetries, waitMinutes, maxParkMinutes);
-  if (rlAction.action === 'bail') {
+  const decision = decideRateLimitCycle(exitResult, consecutiveRateLimits, maxRetries, waitMinutes, maxParkMinutes,
+    () => ctxReadState(ctx).rate_limit_park ?? null);
+  if (decision.kind === 'bail') {
     logActivity({ event: 'rate_limit_exhausted', source: 'pickle', session: path.basename(ctx.sessionDir), error: `max retries (${maxRetries}) exceeded, no resetsAt available` });
     ctxDeactivate(ctx);
     return { kind: 'break', reason: 'rate_limit_exhausted', consecutiveRateLimits };
   }
   // B5: no reset_at → never spawn-burn; fall back to now + configured min wait.
-  if (!rlAction.hasResetsAt) {
+  if (!decision.rlAction.hasResetsAt) {
     logActivity({ event: 'rate_limited_without_reset_at', source: 'pickle', session: path.basename(ctx.sessionDir) });
   }
   // B5: cumulative park ceiling → clean exit via the EXISTING rate_limit_exhausted path.
-  const priorPark = ctxReadState(ctx).rate_limit_park ?? null;
-  const priorCumulativeMs = priorPark?.cumulative_parked_ms ?? 0;
-  if (isParkExhausted(priorCumulativeMs + rlAction.waitMs, maxParkMinutes)) {
+  if (decision.kind === 'park_exhausted') {
     logActivity({ event: 'rate_limit_park_exhausted', source: 'pickle', session: path.basename(ctx.sessionDir) });
     ctxDeactivate(ctx);
     return { kind: 'break', reason: 'rate_limit_exhausted', consecutiveRateLimits };
   }
-  return processRateLimitWait(state, ctx, exitResult, rlAction, consecutiveRateLimits, priorPark);
+  return processRateLimitWait(state, ctx, exitResult, decision.rlAction, consecutiveRateLimits, decision.priorPark);
 }
 
 async function processRateLimitWait(
@@ -10923,9 +10960,15 @@ async function runMuxRunnerMain() {
         log(`API reports reset at ${new Date(exitResult.rateLimitInfo.resetsAt * 1000).toISOString()} (type: ${exitResult.rateLimitInfo.rateLimitType || 'unknown'})`);
       }
 
-      const rlAction = computeRateLimitAction(exitResult, consecutiveRateLimits, maxRateLimitRetries, rateLimitWaitMinutes, maxParkMinutes);
+      // B5: cumulative park ceiling. Accumulate parked wall across this episode via
+      // the persisted park record; on exceed, emit (activity-only)
+      // rate_limit_park_exhausted and clean-exit via the EXISTING rate_limit_exhausted
+      // exit path (NEVER a new exit_reason).
+      const decision = decideRateLimitCycle(exitResult, consecutiveRateLimits, maxRateLimitRetries, rateLimitWaitMinutes, maxParkMinutes,
+        () => readRunnerState(statePath).rate_limit_park ?? null);
+      const rlAction = decision.rlAction;
 
-      if (rlAction.action === 'bail') {
+      if (decision.kind === 'bail') {
         exitReason = 'rate_limit_exhausted';
         logActivity({ event: 'rate_limit_exhausted', source: 'pickle',
           session: path.basename(sessionDir), error: `max retries (${maxRateLimitRetries}) exceeded, no resetsAt available` });
@@ -10944,14 +10987,7 @@ async function runMuxRunnerMain() {
         logActivity({ event: 'rate_limited_without_reset_at', source: 'pickle', session: path.basename(sessionDir) });
       }
 
-      // B5: cumulative park ceiling. Accumulate parked wall across this episode via
-      // the persisted park record; on exceed, emit (activity-only)
-      // rate_limit_park_exhausted and clean-exit via the EXISTING rate_limit_exhausted
-      // exit path (NEVER a new exit_reason).
-      const priorPark = readRunnerState(statePath).rate_limit_park ?? null;
-      const priorCumulativeMs = priorPark?.cumulative_parked_ms ?? 0;
-      const parkEpisodeStartMs = priorPark?.parked_started_epoch_ms ?? Date.now();
-      if (isParkExhausted(priorCumulativeMs + computedWaitMs, maxParkMinutes)) {
+      if (decision.kind === 'park_exhausted') {
         logActivity({ event: 'rate_limit_park_exhausted', source: 'pickle', session: path.basename(sessionDir) });
         log(`Cumulative rate-limit park exceeded ${maxParkMinutes}min ceiling — giving up cleanly for recovery.`);
         exitReason = 'rate_limit_exhausted';
@@ -10960,6 +10996,9 @@ async function runMuxRunnerMain() {
         break;
       }
 
+      const priorPark = decision.priorPark;
+      const priorCumulativeMs = priorPark?.cumulative_parked_ms ?? 0;
+      const parkEpisodeStartMs = priorPark?.parked_started_epoch_ms ?? Date.now();
       const resetAtSec = rlAction.resetAtEpochSec ?? null;
       const waitUntil = new Date(Date.now() + computedWaitMs).toISOString();
       logActivity({ event: 'rate_limit_wait', source: 'pickle',
