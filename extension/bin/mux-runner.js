@@ -5127,7 +5127,15 @@ export function attemptRecoveryBeforeTerminal(input) {
             // reports honestly and records a residual. This does NOT halt anything: the
             // ladder simply falls through to its remaining rungs, and failing those it
             // records the honest `recovery_exhausted` terminal that `pickle-recover` is
-            // built for. Making the gate actually RUN off-repo is ticket 20.
+            // built for.
+            //
+            // B-OFFREPO ticket 20 made `runWorkerGate` run off-repo; it deliberately did
+            // NOT change this site. Letting a target repo's own suite authorise rung 1's
+            // automatic commit-and-flip-Done is a POLICY change to the recovery ladder,
+            // not the measurement fix ticket 20 scoped. So the armed gate still declines
+            // off-repo rather than auto-Done'ing on evidence this ladder was never
+            // designed to weigh. Closing it needs its own ticket, run attended (R-PSRB:
+            // this is the salvage path).
             if (!fs.existsSync(extensionDir)) {
                 emitWorkerGateNotRunResidual(input.statePath, input.ticketId, {
                     computedVia: 'not_applicable',
