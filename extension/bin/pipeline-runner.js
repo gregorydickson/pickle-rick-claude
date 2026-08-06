@@ -17,7 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync } from 'child_process';
-import { BACKENDS, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, isMicroverseFailureExit } from '../types/index.js';
+import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, isMicroverseFailureExit } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, } from '../services/pickle-utils.js';
@@ -3242,13 +3242,17 @@ function finalizeNonSuccessTerminal(statePath, phaseIncomplete, phaseIncompleteR
 function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncomplete, phaseIncompleteReason) {
     const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
     const pipelineFailed = (counters.completed + counters.skipped) < runtime.config.phases.length;
+    // AC-OA-1c: ran-to-completion ≠ reported-success. `nonConvergent` is the term BOTH degradation
+    // paths raise, so a degraded phase withholds the success verdict just as a phase shortfall does.
+    // Named once so every downstream verdict reads the same term.
+    const unsuccessful = pipelineFailed || counters.nonConvergent > 0;
     const handoffStop = !!readHandoffExitReason(runtime.statePath);
     // A handoff stop is a deliberate pause, not a failure — fold it out once.
-    const effectiveFailed = pipelineFailed && !handoffStop;
+    const effectiveFailed = unsuccessful && !handoffStop;
     if (phaseIncomplete || handoffStop) {
         finalizeNonSuccessTerminal(runtime.statePath, phaseIncomplete, phaseIncompleteReason);
     }
-    else if (pipelineFailed) {
+    else if (unsuccessful) {
         finalizeFailedPipeline(runtime.statePath);
     }
     else {
@@ -3269,8 +3273,8 @@ function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncom
     const parkedCount = resolveParkedTicketCount(runtime);
     printMinimalPanel(banner.title, buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount), banner.color, '🧪');
     writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, effectiveFailed);
-    // handoff stops skip closer-release
-    if (!pipelineFailed && !handoffStop) {
+    // handoff stops skip closer-release; so does a degraded run (B-ONEABORT AC-OA-1c).
+    if (!unsuccessful && !handoffStop) {
         const closerPlan = buildCloserReleasePlan(sm.read(runtime.statePath));
         executeCloserReleasePlan(closerPlan, _closerReleaseActionsForTests ?? {
             install: () => { },
@@ -3427,10 +3431,19 @@ export async function runJudgeTimeoutFinalizeGate(runtime, counters, rawPhase, l
     return { action: 'break' };
 }
 /**
- * all_judge_backends_exhausted recovery: spawn finalize-gate; on pass continue the
+ * The `run-finalize-gate-incomplete` destination: spawn finalize-gate; on pass continue the
  * phase (matches `runJudgeTimeoutFinalizeGate`); on fail break the pipeline.
+ * B-ONEABORT AC-OA-1b: the reason is re-read at this one residual-emitting site and lands in
+ * `phaseDispositions[rawPhase]` → `pipeline-status.json`, so distinct reasons yield distinct
+ * residuals. AC-OA-1c: the phase DEGRADED — `completed++` stays (AC-OA-4 pin) and `nonConvergent++`
+ * rides alongside it, which is what `finalizePipeline` reads to withhold the success verdict.
  */
 export async function runAllBackendsExhaustedFinalizeGate(runtime, counters, rawPhase, log) {
+    let reason = 'all_judge_backends_exhausted';
+    try {
+        reason = classifyMicroverseHaltDecision(sm.read(runtime.statePath).exit_reason).recognizedExitReason ?? reason;
+    }
+    catch { /* label is telemetry */ }
     try {
         logActivity({
             event: 'pipeline_all_backends_exhausted_recovery_attempted',
@@ -3448,11 +3461,13 @@ export async function runAllBackendsExhaustedFinalizeGate(runtime, counters, raw
     ], runtime.phaseEnv);
     if (gateResult.exitCode === 0) {
         counters.completed++;
+        counters.nonConvergent++;
+        counters.phaseDispositions[rawPhase] = reason;
         writeRunningStatus(runtime, counters, null);
-        log(`Phase ${rawPhase} finalize-gate passed after all_judge_backends_exhausted`);
+        log(`Phase ${rawPhase} finalize-gate passed after ${reason} — phase degraded, run cannot report success`);
         return { action: 'continue' };
     }
-    log(`Phase ${rawPhase} finalize-gate failed after all_judge_backends_exhausted (exit ${gateResult.exitCode})`);
+    log(`Phase ${rawPhase} finalize-gate failed after ${reason} (exit ${gateResult.exitCode})`);
     return { action: 'break' };
 }
 async function dispatchHaltAction(runtime, counters, rawPhase, exitCode, log) {
@@ -3619,34 +3634,24 @@ async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, inde
     return finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, exitCode, log);
 }
 export function classifyMicroverseHaltDecision(exitReason) {
-    // A non-string exit_reason (absent/corrupted state.json field) is unrecognizable by
-    // construction — abort unattributed rather than let it reach a classifier.
+    // B-ONEABORT AC-OA-1a: a halted run has no output, and no output has no quality — the abort
+    // surface is the crash floor alone. NO member of `MICROVERSE_EXIT_REASONS` aborts; the union IS
+    // the subject list, so a new reason inherits that. The floor is named against the union it lives
+    // in: `session_state_corrupted` is in `MICROVERSE_FATAL_REASONS`, NOT the exit union.
     if (typeof exitReason !== 'string') {
         return { action: 'abort', recognizedExitReason: null };
     }
-    // `judge_timeout` and the two below share `reportAs: 'non-fatal-halt'` but take DIFFERENT
-    // actions, so the disposition map cannot disambiguate them — they stay literal, and must stay
-    // ABOVE the map-driven guard.
+    // R-PRJT-2: a transient measurement timeout over already-converged work — the phase completes.
     if (exitReason === 'judge_timeout') {
         return { action: 'run-finalize-gate', recognizedExitReason: exitReason };
     }
-    if (exitReason === 'all_judge_backends_exhausted' || exitReason === 'baseline_unmeasurable_transient') {
+    if (MICROVERSE_EXIT_REASONS.includes(exitReason)) {
         return { action: 'run-finalize-gate-incomplete', recognizedExitReason: exitReason };
     }
-    // B-NS / B-APNC WS-1 (AC-NS-4): every Template-A non-convergent disposition is a non-fatal
-    // phase end — run the finalize gate over the converged work and continue, never an
-    // unattributed abort. Classified by the single disposition map so this stays exhaustive as
-    // the union grows; the literal chain this replaced had silently desynchronized from the map
-    // and dropped `limit_reached`, `no_progress`, `stopped`, and `approach_exhaustion` into the
-    // unattributed abort below.
-    if (classifyMicroverseDisposition(exitReason).reportAs === 'non-convergent') {
-        return { action: 'run-finalize-gate-incomplete', recognizedExitReason: exitReason };
-    }
-    if (isMicroverseFatalReason(exitReason)
-        || isMicroverseFailureExit(exitReason)) {
-        return { action: 'abort', recognizedExitReason: exitReason };
-    }
-    return { action: 'abort', recognizedExitReason: null };
+    return {
+        action: 'abort',
+        recognizedExitReason: isMicroverseFatalReason(exitReason) ? exitReason : null,
+    };
 }
 /**
  * B-RRH C1: sentinel filename written by mux-runner's signal teardown
