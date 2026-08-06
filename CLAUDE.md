@@ -2,6 +2,35 @@
 
 PRD → Breakdown → Research → Plan → Implement → Verify → Review → Simplify.
 
+## 🛑 WHEN THE PIPELINE STOPS, RELIABILITY GOES TO ZERO — AND SO DOES QUALITY (operator-set, BINDING, governs everything below)
+
+**A halted run produces no output. No output has no quality.** So a "quality gate" that stops the
+pipeline does not trade reliability for quality — it takes **both** to zero. A stopping gate is
+**anti-quality**, not a careful one.
+
+**Ratchet order — they are sequential, not a dial:**
+1. **Reliability / autonomy first.** The bar is: the system COMPLETES hands-off runs. A correct-but-halted
+   run is a failure; an imperfect-but-completed run is a success.
+2. **Quality second**, ratcheted up on top of a system that already completes. You cannot ratchet quality
+   on a system that stops.
+
+**What a gate MAY do:** refuse a LOCAL action (don't flip THIS ticket Done, don't ship THIS commit),
+stamp an `exit_reason`, and log a residual for a human.
+**What a gate MAY NEVER do:** break the phase loop or terminate the pipeline.
+The run **parks the item, flags it, and CONTINUES.** Output-with-flags ≫ no-output.
+
+**But continuing is NOT claiming success.** *Ran to completion* and *reported success* are different
+facts, and conflating them is fake-green — this codebase's most frequent failure mode. A degraded run
+must execute every phase, report the degradation honestly, and **withhold the success verdict** (no
+auto-release). That is [[B-NOSTOP-GATES]]' rule stated as a priority: **honesty is a REPORTING property,
+halting is a DISPOSITION, and they are not the same wire.**
+
+**Halting is reserved for the genuine crash floor** — cannot-physically-continue only (unreadable/
+unwritable state, missing `start_commit`, `state_schema_version_ahead`, `state_working_dir_missing`,
+toolchain unavailable, budget/iteration cap, operator cancel, explicit `--strict-phases`). Anything
+that is a *measurement* or *quality* verdict is not a floor. **Do not add abort conditions** — every new
+one is a new way for reliability and quality to both reach zero.
+
 ## 🐶 Dogfood by default — fix Pickle Rick by RUNNING Pickle Rick
 
 The pipeline is the product: it fixes its own bugs. **Default: author a PRD/ticket → `/pickle-pipeline` (or `/pickle-tmux`).** Hand-decomposing a PRD into tickets is planning (fine); hand-*building* the fix code is not. A bug we won't dogfood is one we don't trust the tool to survive — fix that.
