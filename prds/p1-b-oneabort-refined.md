@@ -2,7 +2,7 @@
 title: "B-ONEABORT — one termination policy across ALL channels [REFINED]"
 priority: P1
 finding: B-ONEABORT
-status: needs-operator-decision
+status: ready
 type: bug-fix-bundle
 schema_neutral: true
 target_version: v2.1.0
@@ -61,7 +61,26 @@ measurement layer is exactly where we keep deceiving ourselves.
 | **(b) ⭐ Degraded runs the gate, finishes the pipeline, but does NOT count as completed** | All phases execute; the run reports honestly (`pipelineFailed` true, named residual per phase); no auto-release. **"Ran to completion" and "reported success" stay different facts.** |
 | **(c) Split the counter** | Add `counters.degraded` so the banner can say *4/4 ran, 2 degraded*. Strictly better reporting, but it is **new state** — weigh against directive 4. |
 
-**Recommendation: (b), with (c) as a stretch only if it costs no new mechanism.** Directive 2 says a
+### ✅ OPERATOR DECISION 2026-08-06 — option (b)
+
+> *"b seems like the best option because it keeps the system running. The first ratchet is always
+> reliability/autonomy, then we ratchet up quality."*
+
+**Binding.** A degraded phase **runs its finalize-gate and the pipeline continues to its next phase**,
+and it **does not contribute to a success verdict**. Stated as an outcome invariant so the
+implementation is free to choose the mechanism:
+
+> **If any phase degraded, the pipeline's success verdict is false.** All phases still execute; the run
+> reports honestly; `executeCloserReleasePlan` does not fire on a degraded run.
+
+⚠️ **Implementation caution (from R4):** `run-finalize-gate-incomplete` already carries
+`baseline_unmeasurable_transient`, `all_judge_backends_exhausted`, and the non-convergent Template-A
+reasons. Changing its counter behaviour wholesale changes those existing paths too — decide that
+deliberately in the plan artifact and pin whichever way it lands. Do NOT discover it at the closer.
+
+Option **(c)** (`counters.degraded`) remains a stretch only if it costs no new state; directive 4 governs.
+
+**Superseded recommendation retained for provenance:** (b), with (c) as a stretch only if it costs no new mechanism. Directive 2 says a
 gate may never stop the pipeline; it does **not** say a degraded run must claim success. This is the
 same distinction B-NOSTOP-GATES drew: *honesty is a REPORTING property, halting is a DISPOSITION.*
 
