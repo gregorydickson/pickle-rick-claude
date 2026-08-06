@@ -685,6 +685,44 @@ inferred-completion accepts it, but it is a RECOVERY commit and the ACs are veri
 Workaround: the 2-line gate deletion is a trivial manual fix, tracked for hand-application after the
 pipeline's citadel/anatomy/szechuan phases complete.
 
+## 🎯 TOP ITEM — [[B-ONEABORT]]: two termination channels, one subtraction (2026-08-06, P1)
+
+**`prds/p1-b-oneabort-one-termination-policy-across-both-channels.md`** — **operator directive
+2026-08-06:** *"our reliability goes to zero every time a pipeline stops… we really should have almost
+zero abort conditions."*
+
+**The diagnosis: a pipeline can terminate through TWO independent channels, and [[B-NOSTOP-GATES]]
+subtracted exactly one.** Channel 1 (pickle phase loop, `shouldHaltAfterPhase` →
+`dispatchHaltAction`, `extension/src/bin/pipeline-runner.ts:4131`) is subtracted and **demonstrably
+works** — the same run logged `non-fatal pickle exit, commits present` and `citadel: remediation cap
+exhausted … continuing pipeline (no halt)`. Channel 2 (microverse phases —
+anatomy-park, szechuan-sauce — `classifyMicroverseHaltDecision`, `:4315` → abort at `:4049`) was
+**never enumerated**, and it killed a 590-minute run at `2/4 phases`.
+
+**Why it drifted:** AC-NSG-5b (`extension/tests/nostop-gates-invariant.test.js:221`) pins only
+`shouldHaltAfterPhase('pickle', …)` — `grep -c "microverse"` on that file returns **0**. The invariant
+built to make the subtraction permanent covers only the channel that was already fixed. Precedent
+*inside* channel 2: `B-NS / B-APNC WS-1` already rescued `limit_reached`/`no_progress`/`stopped`/
+`approach_exhaustion` from this same abort, recording that the literal chain had *"silently
+desynchronized from the map."* Same defect, one layer up.
+
+**Channel 2 aborts on 8 triggers; exactly ONE is a genuine floor** (`session_state_corrupted`). Two
+abort **unattributed** (`:4319` non-string exit_reason, `:4345` fallthrough) — the run ends and nothing
+says why. `rate_limit_exhausted` aborts despite B-RRH having built a park for it; `judge_cli_missing`
+aborts although an inert review phase is not an unsafe run.
+
+**Target: exactly ONE abort condition — the pipeline may terminate only when it cannot safely read or
+write its own state.** Everything else ends the PHASE honestly and reaches the finalize-gate.
+**REUSE, not new machinery:** `run-finalize-gate-incomplete` already exists and already carries
+`baseline_unmeasurable_transient`, `all_judge_backends_exhausted`, and every non-convergent Template-A
+reason. ⛔ **Do NOT build a halt-classification table** (directive 4: *"a halt-classification table
+would BE the treadmill"*) — the shape is **one predicate + one invariant** consumed by both channels,
+i.e. two policies collapsing into one. Net-negative LOC is pinned by AC-OA-1c.
+
+**Absorbs [[R-JUNS]]** (it becomes one member of the set). Related but separate: [[R-EROS]]
+(mis-stamped roster reason), [[R-ISSC]] (gate hides half its surface — WS-4 must measure both
+integration sub-tiers separately).
+
 ## 🚨 OPEN BUG — R-JUNS: an unparseable judge answer is "unrecoverable" and aborts the pipeline (2026-08-06, P1)
 
 **`prds/BUG-REPORT-2026-08-06-judge-parse-failure-classified-unrecoverable-aborts-the-pipeline.md`** —
