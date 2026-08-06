@@ -4589,7 +4589,7 @@ test('AC-R-WPEXA-9: blank/whitespace env value falls back (does not parse to 0)'
 // `rate_limit_park_exhausted` dead code. Parked wall is also excluded from
 // `max_time_minutes` (B3), so nothing else bounded a 429 storm.
 // ---------------------------------------------------------------------------
-import { foldParkIntoEpisode as foldPark, isParkExhausted as parkExhausted } from '../bin/mux-runner.js';
+import { foldParkIntoEpisode as foldPark, isParkExhausted as parkExhausted, runMainLoopRateLimitPark } from '../bin/mux-runner.js';
 
 const MIN_MS = 60 * 1000;
 
@@ -4642,20 +4642,64 @@ test('B5: OUTCOME — repeated sub-ceiling parks eventually exhaust the ceiling'
     assert.ok(neverFires, 'with a pinned-at-0 ledger the ceiling is unreachable — the bug this test pins');
 });
 
-test('B5: the SHIPPED main-loop resume folds the ledger and does not null it', () => {
-    // Reaches the inline `runMuxRunnerMain` park path, which has no callable seam.
-    // Scoped tightly to the wake block so it cannot match the (dead, out-of-scope
-    // test-pinned) processRateLimitWait twin.
-    const srcPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'bin', 'mux-runner.ts');
-    const muxSrc = fs.readFileSync(srcPath, 'utf-8');
-    const wakeStart = muxSrc.indexOf('// Wake: B3 exclude parked wall from max_time_minutes');
-    assert.ok(wakeStart > 0, 'main-loop wake block anchor found');
-    const wakeBlock = muxSrc.slice(wakeStart, muxSrc.indexOf('continue;  // Skip CB recording', wakeStart));
+test('B5: the SHIPPED main-loop resume folds the ledger and does not null it', async () => {
+    // Was a regex over mux-runner.ts, because the park lived inline in
+    // `runMuxRunnerMain` and "has no callable seam" (the old comment said so).
+    // That pin greps the mechanism instead of running it: it stays GREEN if the
+    // fold is correct but unreachable, and goes RED on a reformat that changes
+    // nothing. The park is now `runMainLoopRateLimitPark`, so drive it and read
+    // the ledger it actually persists.
+    const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-b5-fold-')));
+    try {
+        const statePath = path.join(tmpDir, 'state.json');
+        const START_EPOCH = 1714080000;
+        const BURNED_MS = 30 * MIN_MS;  // this episode has already burned 30min
+        fs.writeFileSync(statePath, JSON.stringify({
+            active: true, iteration: 3, max_iterations: 10, min_iterations: 0,
+            worker_timeout_seconds: 30, max_time_minutes: 0, step: 'implement',
+            current_ticket: 't1', working_dir: tmpDir, start_time_epoch: START_EPOCH,
+            rate_limit_park: {
+                reset_at_epoch_sec: null,
+                parked_started_epoch_ms: 1_000,
+                cumulative_parked_ms: BURNED_MS,
+                consecutive_waits: 1,
+            },
+        }, null, 2));
 
-    assert.match(wakeBlock, /s\.rate_limit_park = foldParkIntoEpisode\(priorPark, parkedMs, consecutiveRateLimits/,
-        'the shipped resume must FOLD the park into the episode ledger');
-    assert.ok(!/s\.rate_limit_park = null/.test(wakeBlock),
-        'nulling the arm on resume pins cumulative_parked_ms at 0 and disarms the ceiling');
+        let now = START_EPOCH * 1000;
+        const outcome = await runMainLoopRateLimitPark({
+            exitResult: { type: 'api_limit', rateLimitInfo: { resetsAt: START_EPOCH + 600 } },
+            consecutiveRateLimits: 2,
+            maxRateLimitRetries: 3,
+            rateLimitWaitMinutes: 5,
+            maxParkMinutes: 360,
+            statePath,
+            sessionDir: tmpDir,
+            state: { current_ticket: 't1' },
+            iteration: 3,
+            log: () => {},
+            now: () => now,
+            // One poll jumps the clock past the (jitter-free) resume target.
+            sleep: async () => { now = (START_EPOCH + 601) * 1000; },
+            jitterMs: 0,
+        });
+
+        assert.equal(outcome.kind, 'resume', 'a sub-ceiling park resumes rather than exiting');
+
+        const persisted = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        assert.ok(persisted.rate_limit_park, 'the arm must survive the wake — nulling it disarms the ceiling');
+        // THE assertion: the ledger ACCUMULATED. `s.rate_limit_park = null` here is
+        // what pinned cumulative_parked_ms at 0 and made the ceiling unreachable.
+        assert.ok(persisted.rate_limit_park.cumulative_parked_ms > BURNED_MS,
+            `resume must FOLD the burned wall into the episode ledger (got ${persisted.rate_limit_park.cumulative_parked_ms}, prior was ${BURNED_MS})`);
+        assert.equal(persisted.rate_limit_park.parked_started_epoch_ms, 1_000,
+            'episode start is inherited across the fold, not reseeded');
+        // B3: the parked wall is excluded from max_time_minutes.
+        assert.ok(persisted.start_time_epoch > START_EPOCH,
+            'start_time_epoch must advance by the parked seconds');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
 });
 
 test('B5: a clean iteration ends the episode by clearing the park ledger', () => {
