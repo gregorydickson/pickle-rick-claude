@@ -8128,10 +8128,21 @@ const emitRevertEvent = (ctx, ticketId, result, ts) => {
  * The handle is built BEFORE signal-handler registration so those handlers can close
  * over it, but `init()` runs after — the service stays null until then, and settings
  * are read at `init()` time, preserving the original inline sequencing exactly.
+ *
+ * `deps` is the test seam. Production omits it and gets the two defaults below;
+ * a caller that substitutes them can drive the real `emitSummary` — which is the
+ * only way to prove the b1089e97 payload derives from PERSISTED activity rather
+ * than the always-zero in-memory counters. Without the seam that wiring was
+ * pinned by prose alone: the counter helpers are pure and stay green under a
+ * revert of the emit site.
  */
-function createCodegraphSession(opts) {
+export function createCodegraphSession(opts) {
     const { statePath, sessionDir, workingDir, log } = opts;
     const dbPath = path.join(workingDir, '.codegraph', 'codegraph.db');
+    const resolveSettings = opts.deps?.resolveSettings
+        ?? (() => resolveCodegraphSettings(loadPickleSettingsBag()));
+    const createService = opts.deps?.createService
+        ?? ((s) => CodegraphService.create(workingDir, s, { emit: (ev) => writeActivityEntry(statePath, ev) }));
     let settings = null;
     let service = null;
     let ticketCount = 0;
@@ -8140,11 +8151,11 @@ function createCodegraphSession(opts) {
         // .codegraph/codegraph.db (prior enabled run, or direct CLI use) must not
         // keep the native library loading and re-syncing every staleness window.
         init: async () => {
-            settings = resolveCodegraphSettings(loadPickleSettingsBag());
+            settings = resolveSettings();
             if (!settings.enabled)
                 return;
             try {
-                service = await CodegraphService.create(workingDir, settings, { emit: (ev) => writeActivityEntry(statePath, ev) });
+                service = await createService(settings);
             }
             catch (err) {
                 log(`codegraph service init failed (ignored): ${safeErrorMessage(err)}`);

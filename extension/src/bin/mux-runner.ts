@@ -9438,6 +9438,19 @@ const emitRevertEvent = (
   }
 };
 
+/** Resolved codegraph settings as `createCodegraphSession` consumes them. */
+export type CodegraphSessionSettings = ReturnType<typeof resolveCodegraphSettings>;
+
+/**
+ * Substitutable halves of `createCodegraphSession`'s environment. Both default to
+ * the production implementations; a caller supplies them to drive the session's
+ * verbs without a real settings file or a real native index.
+ */
+export interface CodegraphSessionDeps {
+  resolveSettings?: () => CodegraphSessionSettings;
+  createService?: (settings: CodegraphSessionSettings) => CodegraphService | Promise<CodegraphService>;
+}
+
 /**
  * b1089e97: session-scoped codegraph lifecycle.
  *
@@ -9450,12 +9463,20 @@ const emitRevertEvent = (
  * The handle is built BEFORE signal-handler registration so those handlers can close
  * over it, but `init()` runs after — the service stays null until then, and settings
  * are read at `init()` time, preserving the original inline sequencing exactly.
+ *
+ * `deps` is the test seam. Production omits it and gets the two defaults below;
+ * a caller that substitutes them can drive the real `emitSummary` — which is the
+ * only way to prove the b1089e97 payload derives from PERSISTED activity rather
+ * than the always-zero in-memory counters. Without the seam that wiring was
+ * pinned by prose alone: the counter helpers are pure and stay green under a
+ * revert of the emit site.
  */
-function createCodegraphSession(opts: {
+export function createCodegraphSession(opts: {
   statePath: string;
   sessionDir: string;
   workingDir: string;
   log: (msg: string) => void;
+  deps?: CodegraphSessionDeps;
 }): {
   init: () => Promise<void>;
   syncIfStale: () => Promise<void>;
@@ -9464,7 +9485,15 @@ function createCodegraphSession(opts: {
 } {
   const { statePath, sessionDir, workingDir, log } = opts;
   const dbPath = path.join(workingDir, '.codegraph', 'codegraph.db');
-  let settings: ReturnType<typeof resolveCodegraphSettings> | null = null;
+  const resolveSettings = opts.deps?.resolveSettings
+    ?? ((): CodegraphSessionSettings => resolveCodegraphSettings(loadPickleSettingsBag()));
+  const createService = opts.deps?.createService
+    ?? ((s: CodegraphSessionSettings): CodegraphService => CodegraphService.create(
+      workingDir,
+      s,
+      { emit: (ev) => writeActivityEntry(statePath, ev as unknown as ActivityLogEntry) },
+    ));
+  let settings: CodegraphSessionSettings | null = null;
   let service: CodegraphService | null = null;
   let ticketCount = 0;
 
@@ -9473,14 +9502,10 @@ function createCodegraphSession(opts: {
     // .codegraph/codegraph.db (prior enabled run, or direct CLI use) must not
     // keep the native library loading and re-syncing every staleness window.
     init: async (): Promise<void> => {
-      settings = resolveCodegraphSettings(loadPickleSettingsBag());
+      settings = resolveSettings();
       if (!settings.enabled) return;
       try {
-        service = await CodegraphService.create(
-          workingDir,
-          settings,
-          { emit: (ev) => writeActivityEntry(statePath, ev as unknown as ActivityLogEntry) },
-        );
+        service = await createService(settings);
       } catch (err) {
         log(`codegraph service init failed (ignored): ${safeErrorMessage(err)}`);
       }

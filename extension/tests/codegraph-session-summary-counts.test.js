@@ -21,7 +21,12 @@
 // shared across both processes) instead of the always-zero in-memory counters.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { countCodegraphContextEvents, countCodegraphDegradedEvents } from '../bin/mux-runner.js';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { countCodegraphContextEvents, countCodegraphDegradedEvents, createCodegraphSession } from '../bin/mux-runner.js';
+import { CodegraphService } from '../services/codegraph-service.js';
+import { resolveCodegraphSettings } from '../services/pickle-utils.js';
 
 describe('countCodegraphContextEvents (b1089e97 cross-process aggregation)', () => {
   it('counts persisted injected/skipped events from a realistic activity log', () => {
@@ -127,5 +132,127 @@ describe('countCodegraphDegradedEvents (a53a1db1 cross-process aggregation)', ()
     assert.equal(countCodegraphDegradedEvents([]), 0);
     assert.equal(countCodegraphDegradedEvents([{ event: 'iteration_start', ts: '2026-07-11T19:00:00.000Z' }]), 0);
     assert.equal(countCodegraphDegradedEvents([null, undefined, {}, { event: 'codegraph_degraded', ts: '2026-07-11T19:01:00.000Z' }]), 1);
+  });
+});
+
+// The two suites above prove the COUNTERS. They cannot prove the WIRING: both helpers
+// are pure, so reverting the emit site to `ctrs.injected`/`ctrs.skipped`/`ctrs.degraded`
+// — the exact b1089e97 + a53a1db1 bugs — leaves every assertion above GREEN. Until the
+// session got a callable seam the emit site sat inside runMuxRunnerMain with nothing but
+// a trap-door PATTERN_SHAPE grep over it, and a grep passes on unreachable code and fails
+// on a reformat. These cases drive the REAL `emitSummary` through `createCodegraphSession`
+// and read the payload back off the persisted state.json.
+describe('createCodegraphSession.emitSummary (b1089e97 wiring)', () => {
+  // A session whose PERSISTED activity and whose IN-MEMORY counters disagree on every
+  // field, so each assertion below can only pass by reading the correct source.
+  function makeDivergentSession() {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'cg-summary-'));
+    const statePath = path.join(dir, 'state.json');
+    writeFileSync(statePath, JSON.stringify({
+      active: true,
+      schema_version: 5,
+      session_dir: dir,
+      activity: [
+        { event: 'iteration_start', ts: '2026-08-05T19:00:00.000Z' },
+        { event: 'codegraph_context_injected', ts: '2026-08-05T19:01:00.000Z' },
+        { event: 'codegraph_context_injected', ts: '2026-08-05T19:02:00.000Z' },
+        { event: 'codegraph_context_skipped', ts: '2026-08-05T19:03:00.000Z', reason: 'zero_hits' },
+        { event: 'codegraph_degraded', ts: '2026-08-05T19:04:00.000Z', reason: 'timeout', gate_payload: { operation: 'query' } },
+        { event: 'codegraph_degraded', ts: '2026-08-05T19:05:00.000Z', reason: 'error', gate_payload: { operation: 'query' } },
+        { event: 'codegraph_degraded', ts: '2026-08-05T19:06:00.000Z', reason: 'error', gate_payload: { operation: 'buildContext' } },
+        // latch is surfaced via index_status, never as a degraded op.
+        { event: 'codegraph_degraded', ts: '2026-08-05T19:07:00.000Z', reason: 'error', gate_payload: { operation: 'latch' } },
+      ],
+    }));
+
+    // The mux-runner-side service: the real class, with the counters a real mux-runner
+    // instance CANNOT have (they are only ever bumped in the spawn-morty process). Pumped
+    // to wrong-but-plausible values so reading them is distinguishable from reading zero.
+    const settings = resolveCodegraphSettings({ codegraph: { enabled: true } });
+    const service = CodegraphService.create(dir, settings, {});
+    for (let i = 0; i < 9; i += 1) service.recordContextInjected();
+    for (let i = 0; i < 7; i += 1) service.recordContextSkipped();
+
+    const session = createCodegraphSession({
+      statePath,
+      sessionDir: dir,
+      workingDir: dir,
+      log: () => {},
+      deps: { resolveSettings: () => settings, createService: () => service },
+    });
+    return { dir, statePath, service, session };
+  }
+
+  function readSummary(statePath) {
+    const entries = JSON.parse(readFileSync(statePath, 'utf8')).activity
+      .filter((e) => e && e.event === 'codegraph_session_summary');
+    assert.equal(entries.length, 1, 'emitSummary must append exactly one summary entry');
+    return entries[0];
+  }
+
+  it('derives injected/skipped/degraded_ops from persisted activity, not the in-memory counters', async () => {
+    const { dir, statePath, service, session } = makeDivergentSession();
+    try {
+      await session.init();
+      session.emitSummary();
+
+      const summary = readSummary(statePath);
+      const ctrs = service.getSessionCounters();
+
+      assert.equal(summary.injected, 2, 'injected must come from the persisted activity log');
+      assert.equal(summary.skipped, 1, 'skipped must come from the persisted activity log');
+      assert.equal(summary.degraded_ops, 3, 'degraded_ops must count persisted non-latch degrades');
+
+      // The cross-process gap itself: mux-runner's own counters are a different
+      // process's view and must not reach the payload.
+      assert.notEqual(summary.injected, ctrs.injected, 'must NOT read the in-memory injected counter');
+      assert.notEqual(summary.skipped, ctrs.skipped, 'must NOT read the in-memory skipped counter');
+      assert.notEqual(summary.degraded_ops, ctrs.degraded, 'must NOT read the in-memory degraded counter');
+    } finally {
+      session.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps index_status on the in-memory counters — the split is deliberate', async () => {
+    const { dir, statePath, session } = makeDivergentSession();
+    try {
+      await session.init();
+      session.emitSummary();
+
+      // 3 persisted degrades, 0 in-memory: index_status is the long-lived health enum of
+      // THIS process's service, so it stays 'healthy'. If it ever tracked persisted
+      // degrades it would read 'degraded' here.
+      assert.equal(readSummary(statePath).index_status, 'healthy');
+    } finally {
+      session.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is fail-open: a session whose settings disable codegraph emits no summary', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'cg-summary-off-'));
+    const statePath = path.join(dir, 'state.json');
+    writeFileSync(statePath, JSON.stringify({ active: true, schema_version: 5, session_dir: dir, activity: [] }));
+    try {
+      const session = createCodegraphSession({
+        statePath,
+        sessionDir: dir,
+        workingDir: dir,
+        log: () => {},
+        deps: {
+          resolveSettings: () => resolveCodegraphSettings({ codegraph: { enabled: false } }),
+          createService: () => { throw new Error('createService must not run when codegraph is disabled'); },
+        },
+      });
+      await session.init();
+      session.emitSummary();
+      session.close();
+
+      const activity = JSON.parse(readFileSync(statePath, 'utf8')).activity;
+      assert.deepEqual(activity.filter((e) => e && e.event === 'codegraph_session_summary'), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
