@@ -117,7 +117,8 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
   - ⛳ **OPERATOR DECISIONS 2026-07-25:** (1) **R-WDTF-TO FOLDED in — ONE gate ships both as beta.7**; this bundle builds on top of its 6 commits, and its review phases get relaunched on the repaired runtime rather than skipped. (2) **Launch NOW, unattended, WS-1 FIRST** — WS-1/WS-3 are pipeline-safe (deployed JS runs, not the source diff), so a WS-2 wedge still leaves the core halt subtraction landed. Refinement MUST NOT reorder WS-2 ahead of WS-1.
   - ⚠️ **LEDGER CORRECTION 1 — F9's premise is TRUE, its inference "latent/inert/parked" is FALSE.** "Producer" = a **WRITER** of `zero_diff_intent`, and there genuinely is none in production — deliberately, pinned by `tests/zero-diff-completion-arm.test.js:397` ("READ-ONLY in production"), because a runtime writer would let a worker **self-certify a commit-less Done** (both corroborating conditions are worker-producible). **Keep that premise.** But the declaration arrives from a human/refinement author — which is what makes the arm safe — so the arm is **routinely reached**: ticket `7af891d4` declared `zero_diff_intent: audit`, the arm was reached, and its CORRECT refusal **stopped a 4-phase pipeline at 0/4.** Not latent, not inert. **Hard constraint on any fix: add no production writer of the field; both F9 pins stay green unmodified.**
   - ⚠️ **LEDGER CORRECTION 2 — the oracle was RIGHT; do not "fix" it.** `zeroDiffAccept` refusing on `foreign_attribution` is deliberate (`ticket-completion-evidence.ts:961-971`: *"a zero-diff ticket has no business carrying a stamp at all"*). The real defect is a **stamper**: `maybeAutoCloseSplitOriginal` (`extension/src/bin/mux-runner.ts:1504`) wrote ticket `ef394937`'s commit `0bde4711` (`audit(ef394937): …`) onto the declared-zero-diff ticket `7af891d4`, **manufacturing** the R-OMA hard-absent that stopped the run. Already filed: [[project_zero_diff_ticket_stamped_foreign_completion_commit]] — which predicted this exact refusal. **Laundering it via `ownAttributionTokens` is the wrong fix** (a second hatch around one guard).
-- ✅ **[[R-JPCM]] SHIPPED + DEPLOYED — LEDGER CORRECTION 2026-08-04.** WS-1 (`8a64bc5f`) and WS-2
+- 🔺 **[[R-JPCM]] REOPENED 2026-08-06 — the repaired judge STILL fails in the field.** The 2026-08-04 correction below is accurate about WS-1/WS-2/WS-4 being shipped and deployed, and its central point stands: every prior "the cleanup phases miss things" observation predated the repair. **But the measurement it called for has now been taken, and it failed.** The FIRST cleanup-phase run on the repaired judge (B-OFFREPO szechuan-sauce, session `2026-08-04-183319b4`, 2026-08-06) ended with *"judge output did not contain a numeric score"* after **4 attempts** → [[R-JUNS]], which aborted a 590-minute pipeline. So the prompt/parser contract is fixed and something downstream still cannot get a score out of the judge. **Do NOT treat R-JPCM as closed.** The review-integration verdict is unaffected — `prds/research/review-integration-value-analysis.md`'s recommendation was *fix the instrument, then measure*, and this is the instrument still being broken, not an argument for a new review engine. Original correction retained below for provenance:
+- ✅ **[[R-JPCM]] shipped-and-deployed correction 2026-08-04 (SUPERSEDED by the reopen above).** WS-1 (`8a64bc5f`) and WS-2
   (`495177d1`, `e4542828`, `3f3fd5d4`) are both landed and live; WS-4's honest-convergence split shipped at
   `9f83e2c1` + `66eb7a69`. Verified at HEAD (`buildJudgePrompt` now emits
   `{score, violations[], resolved, new, remaining}` — the shape `parseLlmJudgeOutput` always wanted;
@@ -683,6 +684,27 @@ AC should block Done). Adjacent to R-AICF/R-CECX but distinct — the commit exi
 inferred-completion accepts it, but it is a RECOVERY commit and the ACs are verifiably unmet.
 Workaround: the 2-line gate deletion is a trivial manual fix, tracked for hand-application after the
 pipeline's citadel/anatomy/szechuan phases complete.
+
+## 🚨 OPEN BUG — R-JUNS: an unparseable judge answer is "unrecoverable" and aborts the pipeline (2026-08-06, P1)
+
+**`prds/BUG-REPORT-2026-08-06-judge-parse-failure-classified-unrecoverable-aborts-the-pipeline.md`** —
+killed a **590-minute** B-OFFREPO run at the last phase: *"Metric measurement failed
+(`baseline_unmeasurable_unrecoverable`) after 4 attempt(s): judge output did not contain a numeric
+score"* → `pipeline aborting (no finalize-gate)` → `Pipeline finished: 2/4 phases`. Path:
+`extractScore` returns null → `failureKind: 'failed'` (`extension/src/bin/microverse-runner.ts:2303`) →
+matches no case and falls to **`default:` → `baseline_unmeasurable_unrecoverable`** (`:3005`, `:3025`) →
+∈ `MICROVERSE_FATAL_REASONS` (`extension/src/types/index.ts:1296`) → abort at
+`extension/src/bin/pipeline-runner.ts:4049`. **The asymmetry IS the defect:** timeouts and rate-limits
+are explicitly routed to recoverable classes, while a malformed-but-present LLM answer — the most
+obviously re-promptable failure there is — gets the harshest classification purely by landing on
+`default:`. **Directive-2 tension:** this reason is NOT in [[B-NOSTOP-GATES]]' sanctioned halt set; a
+measurement failure should park the PHASE and let the pipeline finish (`stalled_below_target` already
+exists as the honest non-convergent disposition). **Nothing announced it** — R-JPCM WS-2's
+`emitJudgeParseDiagnostic` ("a dead ledger must be loud") logged **0** entries for the judge-parse
+failure that killed the run. **Fix (subtractive, two halves):** route `'failed'` to
+`baseline_unmeasurable_transient` via an explicit case; and drop
+`baseline_unmeasurable_unrecoverable` from the fatal set. ⛔ Do NOT add retry budget — the 4 attempts
+are not the problem, the classification of their outcome is.
 
 ## 🚨 OPEN BUG — R-ISSC: `test:integration` short-circuits; the serial sub-tier is never measured when parallel fails (2026-08-05, P1)
 
