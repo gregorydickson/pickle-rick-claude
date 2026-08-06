@@ -3359,6 +3359,29 @@ function getFatalPickleHaltReason(runtime) {
         return 'fatal phase failure';
     }
 }
+/**
+ * B-ONEABORT WS-ONEABORT-2 (AC-OA-2a/AC-OA-2b): a termination that names no reason is the worst
+ * available shape — the operator learns a run stopped but not why. This is the SITE-level naming
+ * helper: given whatever value was actually found at a termination site (a raw `exit_reason` of
+ * any type, or nothing at all), it always returns a non-empty, human-readable string. Unclassified
+ * input is prefixed `unclassified:` rather than silently dropped.
+ */
+function describeUnclassifiedExitReason(value) {
+    if (value === undefined)
+        return 'unclassified:undefined';
+    if (value === null)
+        return 'unclassified:null';
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        return trimmed ? `unclassified:${trimmed}` : 'unclassified:empty-string';
+    }
+    try {
+        return `unclassified:${typeof value}:${JSON.stringify(value)}`;
+    }
+    catch {
+        return `unclassified:${typeof value}`;
+    }
+}
 export function logPhaseHaltReason(runtime, rawPhase, exitCode, log) {
     const haltMsg = `Phase ${rawPhase} failed (exit ${exitCode}) — stopping pipeline`;
     // R-PIWG-1: surface HEAD mismatch before phase-type gating so it fires for all phases.
@@ -3371,7 +3394,7 @@ export function logPhaseHaltReason(runtime, rawPhase, exitCode, log) {
             log(`${haltMsg} (${getFatalPickleHaltReason(runtime)})`);
         }
         else {
-            log(haltMsg);
+            log(`${haltMsg} (non-pickle-phase failure, exit code ${exitCode})`);
         }
         return 'abort';
     }
@@ -3390,11 +3413,12 @@ export function logPhaseHaltReason(runtime, rawPhase, exitCode, log) {
             log(`Phase ${rawPhase}: microverse exited with ${decision.recognizedExitReason} — pipeline aborting (no finalize-gate)`);
             return decision.action;
         }
-        log(haltMsg);
+        log(`${haltMsg} (${describeUnclassifiedExitReason(runnerState.exit_reason)})`);
         return 'abort';
     }
-    catch {
-        log(haltMsg);
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`${haltMsg} (state read failed: ${msg})`);
         return 'abort';
     }
 }
@@ -3433,10 +3457,9 @@ export async function runJudgeTimeoutFinalizeGate(runtime, counters, rawPhase, l
 /**
  * The `run-finalize-gate-incomplete` destination: spawn finalize-gate; on pass continue the
  * phase (matches `runJudgeTimeoutFinalizeGate`); on fail break the pipeline.
- * B-ONEABORT AC-OA-1b: the reason is re-read at this one residual-emitting site and lands in
- * `phaseDispositions[rawPhase]` → `pipeline-status.json`, so distinct reasons yield distinct
- * residuals. AC-OA-1c: the phase DEGRADED — `completed++` stays (AC-OA-4 pin) and `nonConvergent++`
- * rides alongside it, which is what `finalizePipeline` reads to withhold the success verdict.
+ * AC-OA-1b: the reason re-read here lands in `phaseDispositions[rawPhase]` → `pipeline-status.json`,
+ * so distinct reasons yield distinct residuals. AC-OA-1c: the phase DEGRADED — `completed++` stays
+ * (AC-OA-4 pin) and `nonConvergent++` rides alongside it, withholding the success verdict.
  */
 export async function runAllBackendsExhaustedFinalizeGate(runtime, counters, rawPhase, log) {
     let reason = 'all_judge_backends_exhausted';

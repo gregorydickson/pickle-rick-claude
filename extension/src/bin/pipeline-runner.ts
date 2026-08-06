@@ -4018,6 +4018,27 @@ function getFatalPickleHaltReason(runtime: PipelineRuntime): string {
   }
 }
 
+/**
+ * B-ONEABORT WS-ONEABORT-2 (AC-OA-2a/AC-OA-2b): a termination that names no reason is the worst
+ * available shape — the operator learns a run stopped but not why. This is the SITE-level naming
+ * helper: given whatever value was actually found at a termination site (a raw `exit_reason` of
+ * any type, or nothing at all), it always returns a non-empty, human-readable string. Unclassified
+ * input is prefixed `unclassified:` rather than silently dropped.
+ */
+function describeUnclassifiedExitReason(value: unknown): string {
+  if (value === undefined) return 'unclassified:undefined';
+  if (value === null) return 'unclassified:null';
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? `unclassified:${trimmed}` : 'unclassified:empty-string';
+  }
+  try {
+    return `unclassified:${typeof value}:${JSON.stringify(value)}`;
+  } catch {
+    return `unclassified:${typeof value}`;
+  }
+}
+
 export function logPhaseHaltReason(
   runtime: PipelineRuntime,
   rawPhase: PhaseName,
@@ -4034,7 +4055,7 @@ export function logPhaseHaltReason(
     if (rawPhase === 'pickle' && exitCode !== 0) {
       log(`${haltMsg} (${getFatalPickleHaltReason(runtime)})`);
     } else {
-      log(haltMsg);
+      log(`${haltMsg} (non-pickle-phase failure, exit code ${exitCode})`);
     }
     return 'abort';
   }
@@ -4053,10 +4074,11 @@ export function logPhaseHaltReason(
       log(`Phase ${rawPhase}: microverse exited with ${decision.recognizedExitReason} — pipeline aborting (no finalize-gate)`);
       return decision.action;
     }
-    log(haltMsg);
+    log(`${haltMsg} (${describeUnclassifiedExitReason(runnerState.exit_reason)})`);
     return 'abort';
-  } catch {
-    log(haltMsg);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`${haltMsg} (state read failed: ${msg})`);
     return 'abort';
   }
 }

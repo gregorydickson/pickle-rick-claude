@@ -26,6 +26,8 @@ import {
   __setCloserReleaseActionsForTests,
   classifyMicroverseHaltDecision,
   runAllBackendsExhaustedFinalizeGate,
+  logPhaseHaltReason,
+  shouldHaltAfterPhase,
   main,
 } from '../bin/pipeline-runner.js';
 import { MICROVERSE_EXIT_REASONS } from '../types/index.js';
@@ -292,6 +294,123 @@ describe('AC-OA-4: the incumbent reasons keep their existing counter behaviour',
     assert.equal(counters.completed, 0);
     assert.equal(counters.nonConvergent, 0);
     assert.deepEqual(counters.phaseDispositions, {});
+  });
+});
+
+/**
+ * B-ONEABORT WS-ONEABORT-2 (AC-OA-2a/AC-OA-2b), ticket 9e6608a8: "no unattributed termination" —
+ * quantified over the actual termination SITES inside `logPhaseHaltReason`, not over the
+ * `MicroverseHaltDecision` return type. Two of the surviving sites (the bare `else` in the
+ * non-pickle/citadel branch and the outer `catch`) never construct a decision object at all, so an
+ * assertion over `MicroverseHaltDecision.recognizedExitReason` would pass vacuously here.
+ */
+describe('AC-OA-2a/AC-OA-2b: every logPhaseHaltReason termination site names a reason', () => {
+  const haltMsgFor = (rawPhase, exitCode) => `Phase ${rawPhase} failed (exit ${exitCode}) — stopping pipeline`;
+
+  test('SITE 1 — the bare non-pickle/non-microverse branch (citadel) is not silent', () => {
+    const { repo, startCommit } = makeRepo();
+    const runtime = makeRuntime({ repo, startCommit });
+    const lines = [];
+
+    const action = logPhaseHaltReason(runtime, 'citadel', 1, (m) => lines.push(m));
+
+    assert.equal(action, 'abort');
+    assert.equal(lines.length, 1);
+    assert.notEqual(lines[0], haltMsgFor('citadel', 1), 'must not be the bare stopping-pipeline message');
+    assert.match(lines[0], /\(non-pickle-phase failure, exit code 1\)/);
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('SITE 2 — an unclassifiable exit_reason names itself, quantified over arbitrary input', () => {
+    const unclassifiableInputs = [undefined, null, 42, true, {}, [], 'some_unrecognized_reason'];
+    for (const exitReason of unclassifiableInputs) {
+      const { repo, startCommit } = makeRepo();
+      const runtime = makeRuntime({ repo, startCommit, exitReason });
+      const lines = [];
+
+      const action = logPhaseHaltReason(runtime, 'anatomy-park', 1, (m) => lines.push(m));
+
+      assert.equal(action, 'abort', `${JSON.stringify(exitReason)} must still abort`);
+      assert.equal(lines.length, 1);
+      assert.notEqual(
+        lines[0],
+        haltMsgFor('anatomy-park', 1),
+        `${JSON.stringify(exitReason)} must not resolve to the bare stopping-pipeline message`,
+      );
+      assert.match(
+        lines[0],
+        /\(unclassified:/,
+        `${JSON.stringify(exitReason)} must carry a named unclassified reason, never silence`,
+      );
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('SITE 3 — an unreadable state.json still names the halt reason', () => {
+    const { repo, startCommit } = makeRepo();
+    const runtime = makeRuntime({ repo, startCommit });
+    fs.writeFileSync(runtime.statePath, 'not json at all');
+    const lines = [];
+
+    const action = logPhaseHaltReason(runtime, 'anatomy-park', 1, (m) => lines.push(m));
+
+    assert.equal(action, 'abort');
+    assert.equal(lines.length, 1);
+    assert.notEqual(lines[0], haltMsgFor('anatomy-park', 1));
+    assert.match(lines[0], /\(state read failed:/);
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('the guarded arms (classifyMicroverseHaltDecision non-string + fallthrough) are reachable and named when pipeline_continue_on_phase_fail is false', () => {
+    for (const exitReason of [undefined, 'some_unrecognized_reason']) {
+      const { repo, startCommit } = makeRepo();
+      const sessionDir = tmpDir('oneabort-guarded-arm-session-');
+      const statePath = writeState(sessionDir, {
+        working_dir: repo,
+        start_commit: startCommit,
+        exit_reason: exitReason,
+        pipeline_continue_on_phase_fail: false,
+      });
+      const runtime = {
+        sessionDir,
+        extensionRoot: process.cwd(),
+        statePath,
+        config: {
+          phases: ['anatomy-park'],
+          target: repo,
+          anatomy_stall_limit: 3,
+          szechuan_stall_limit: 5,
+          anatomy_max_iterations: 100,
+          szechuan_max_iterations: 50,
+          citadel_strict: false,
+          dirty_exempt_segments: ['prds', 'docs'],
+        },
+        target: repo,
+        workingDir: repo,
+        repoRoot: repo,
+        backend: 'claude',
+        phaseEnv: {},
+        log: () => {},
+      };
+
+      // The classifier alone says this is non-fatal (it is not in MICROVERSE_FATAL_REASONS and
+      // is not a recognized member of the exit union), so isFatalPhaseFailure returns false.
+      // Only the strict-phase policy override reaches the guarded classifyMicroverseHaltDecision
+      // arms that return recognizedExitReason: null.
+      assert.equal(
+        shouldHaltAfterPhase('anatomy-park', 1, runtime),
+        true,
+        'pipeline_continue_on_phase_fail:false must force a halt even for a non-fatal reason',
+      );
+
+      const lines = [];
+      const action = logPhaseHaltReason(runtime, 'anatomy-park', 1, (m) => lines.push(m));
+
+      assert.equal(action, 'abort');
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /\(unclassified:/, `guarded arm for ${JSON.stringify(exitReason)} must name a reason`);
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 
