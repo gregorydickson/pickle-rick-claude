@@ -108,9 +108,12 @@ question is answered in **one place**.
 - **AC-OA-1a**: exactly one code path can terminate the pipeline for a microverse phase, and it fires
   only on the state floor. — Verify: `cd extension && npm run test:fast` with a `describe.each` over all
   `MICROVERSE_EXIT_REASONS`; every reason except the state floor yields a non-abort action — Type: test
-- **AC-OA-1b**: `baseline_unmeasurable_unrecoverable`, `judge_cli_missing`, `error`,
-  `rate_limit_exhausted`, and `judge_unreachable` each resolve to `run-finalize-gate-incomplete` and
-  emit a named residual. — Verify: `cd extension && npm run test:fast` — Type: test
+- **AC-OA-1b** *(invariant — universally quantified, NOT an enumeration)*: **for every** member of the
+  exported `MICROVERSE_EXIT_REASONS` union **except** the single state floor, the resolved action is
+  `run-finalize-gate-incomplete` **and** a named residual is emitted. The test derives its subject list
+  **from the exported union at runtime**, never from a hand-copied list — so adding a reason to the union
+  without giving it behaviour makes the suite red. — Verify: `cd extension && npm run test:fast` —
+  Type: test
 - **AC-OA-1c**: no new classification table is introduced; the diff adds no new literal array or map of
   exit reasons beyond the existing ones, and net LOC across `pipeline-runner.ts` + `types/index.ts` is
   **negative**. — Verify: `git diff --stat` + inspection — Type: llm-conformance
@@ -120,9 +123,11 @@ question is answered in **one place**.
 Both `:4319` (non-string `exit_reason`) and `:4345` (fallthrough) abort with
 `recognizedExitReason: null`. An absent field is not proof state is corrupt.
 
-- **AC-OA-2a**: neither the non-string arm nor the fallthrough aborts; both continue and flag with a
-  named reason. — Verify: `cd extension && npm run test:fast` feeding `undefined`, `null`, `42`, `{}`,
-  and an unknown string — Type: test
+- **AC-OA-2a** *(invariant — universally quantified)*: **for any** `exit_reason` value that is not a
+  recognized member of the exported union — of **any** type, including `undefined`, `null`, non-strings,
+  and unrecognized strings — the resolved action is **not** `abort` and carries a non-empty reason.
+  Expressed as one property over arbitrary input, not a list of sampled values. — Verify:
+  `cd extension && npm run test:fast` — Type: test
 - **AC-OA-2b**: **no pipeline termination is ever unattributed** — every terminating path logs a
   non-empty reason. — Verify: `cd extension && npm run test:fast` asserts no reachable abort carries
   `recognizedExitReason: null` — Type: test
@@ -143,14 +148,31 @@ instead of pinning `shouldHaltAfterPhase('pickle', …)`.
 
 ### WS-ONEABORT-4 — verification that runs the claim
 
-- **AC-OA-4a**: a run (or harness) drives a microverse phase to each non-floor terminal reason and
-  records, per reason, that the pipeline **reached its finalize-gate**, in
-  `prds/research/oneabort-termination-matrix.json` — `{reason, action, pipeline_reached_finalize: bool,
-  residual_logged: bool}`. A record with `action: "abort"` for any non-floor reason **fails** the
-  assertion test. — Verify: `cd extension && npm run test:fast` parses and asserts it — Type: test
+- **AC-OA-4a** *(invariant — universally quantified)*: a run or harness drives a microverse phase to
+  **every** non-floor member of the exported union and records, per reason, that the pipeline **reached
+  its finalize-gate** — `prds/research/oneabort-termination-matrix.json`, entries of
+  `{reason, action, pipeline_reached_finalize: bool, residual_logged: bool}`. The assertion derives its
+  **expected key set from the exported union at runtime**, so a union member missing from the matrix is
+  a FAILURE, not a silent gap; and **any** record with `action: "abort"` outside the state floor fails.
+  — Verify: `cd extension && npm run test:fast` parses and asserts it — Type: test
 - **AC-OA-4b**: `cd extension && npm run test:integration` is measured and its result recorded. ⚠️ Per
   [[R-ISSC]], `test:integration` is `parallel && serial` and short-circuits — **measure both sub-tiers
   separately** and record both, or the serial half is invisible. — Type: test
+
+## 4.5 Authoring retraction — the AC-shape gate caught the bug inside the fix
+
+The first draft of AC-OA-1b, AC-OA-2a and AC-OA-4a **enumerated** their subjects: five named exit
+reasons, two named arms, "each non-floor reason." `spawn-refinement-team.js` exited **2** with 7
+`ac_shape_smells` and refused to proceed.
+
+It was right, and the reason matters more than the fix: **an AC that hardcodes five members of a set
+goes stale the moment a sixth is added — which is precisely the drift this bundle exists to remove.**
+AC-NSG-5b failed exactly that way (a hand-copied list that never grew to cover channel 2), and the first
+draft would have reproduced it inside the acceptance criteria of the fix for it.
+
+All three are now universally quantified and **derive their subject list from the exported union at
+runtime**, so a newly added reason without behaviour reddens the suite instead of escaping it. That is
+the same property AC-OA-3b demands of the invariant; it now holds across the whole PRD.
 
 ## 5. Simplification Review
 
