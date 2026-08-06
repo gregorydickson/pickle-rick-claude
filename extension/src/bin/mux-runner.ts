@@ -6959,10 +6959,33 @@ export function writePickleIncompleteSentinelIfRemaining(
   }
 }
 
-export function setupSignalHandlers(statePath: string, log: (msg: string) => void): void {
-  const handleShutdownSignal = (signal: string) => {
+/**
+ * Graceful shutdown: deactivate the session on SIGTERM/SIGINT/SIGHUP so it does
+ * not remain orphaned with `active: true` when the tmux pane is closed.
+ *
+ * This is the ONE shutdown handler. It used to have an inline twin inside
+ * `runMuxRunnerMain`, and the twins diverged: only this copy stamped the B-RRH
+ * C2 sentinel, and only the inline copy was actually registered — so
+ * `pickle_incomplete.json` was never written and pipeline-runner's C1 robustness
+ * gate (`maybeStampPickleIncompleteRobust`) read a file no producer created.
+ *
+ * `releaseSessionResources` is the caller's own teardown (phantom-Done watchers,
+ * codegraph session) — session-scoped handles the signal path must close but
+ * this function must not know about.
+ *
+ * Returns the handler so a test can drive the real teardown; registration is a
+ * side effect.
+ */
+export function installShutdownSignalHandlers(opts: {
+  statePath: string;
+  sessionDir: string;
+  log: (msg: string) => void;
+  releaseSessionResources: () => void;
+}): (signal: string) => void {
+  const { statePath, sessionDir, log, releaseSessionResources } = opts;
+  const handleShutdownSignal = (signal: string): void => {
     const backend = readBackendForActivity(statePath);
-    const signalEvent = buildSignalReceivedEvent(statePath, path.dirname(statePath), signal);
+    const signalEvent = buildSignalReceivedEvent(statePath, sessionDir, signal);
     writeActivityEntry(statePath, signalEvent);
     try {
       logActivity(signalEvent);
@@ -6971,17 +6994,19 @@ export function setupSignalHandlers(statePath: string, log: (msg: string) => voi
     log(`signal_received ${JSON.stringify(signalEvent)}`);
     // B-RRH C2: stamp the pickle_incomplete sentinel BEFORE deactivation so a
     // SIGTERM-killed mux (which exits 0) cannot be read as a clean completion.
-    writePickleIncompleteSentinelIfRemaining(path.dirname(statePath), statePath, log);
+    writePickleIncompleteSentinelIfRemaining(sessionDir, statePath, log);
     recordExitReason(statePath, 'signal');
     safeDeactivate(statePath);
     removeRunnerSessionMapEntry(statePath, log);
     if (currentChildProc && !currentChildProc.killed) currentChildProc.kill('SIGTERM');
-    logActivity({ event: 'session_end', source: 'pickle', session: path.basename(path.dirname(statePath)), mode: 'tmux', backend });
+    releaseSessionResources();
+    logActivity({ event: 'session_end', source: 'pickle', session: path.basename(sessionDir), mode: 'tmux', backend });
     process.exit(0);
   };
   process.on('SIGTERM', () => handleShutdownSignal('SIGTERM'));
   process.on('SIGINT', () => handleShutdownSignal('SIGINT'));
   process.on('SIGHUP', () => handleShutdownSignal('SIGHUP'));
+  return handleShutdownSignal;
 }
 
 function readBackendForActivity(statePath: string): Backend {
@@ -9553,32 +9578,19 @@ async function runMuxRunnerMain() {
     log,
   });
 
-  // Graceful shutdown: deactivate session on SIGTERM/SIGINT so it doesn't
-  // remain orphaned with active: true when the tmux pane is closed.
-  const handleShutdownSignal = (signal: string) => {
-    const backend = readBackendForActivity(statePath);
-    const signalEvent = buildSignalReceivedEvent(statePath, sessionDir, signal);
-    writeActivityEntry(statePath, signalEvent);
-    try {
-      logActivity(signalEvent);
-    } catch { /* telemetry best effort */ }
-    log(`Received ${signal} — deactivating session`);
-    log(`signal_received ${JSON.stringify(signalEvent)}`);
-    recordExitReason(statePath, 'signal');
-    safeDeactivate(statePath);
-    removeRunnerSessionMapEntry(statePath, log);
-    if (currentChildProc && !currentChildProc.killed) {
-      currentChildProc.kill('SIGTERM');
-    }
-    closePhantomDoneWatchers();
-    codegraph.emitSummary();
-    codegraph.close();
-    logActivity({ event: 'session_end', source: 'pickle', session: path.basename(sessionDir), mode: 'tmux', backend });
-    process.exit(0);
-  };
-  process.on('SIGTERM', () => handleShutdownSignal('SIGTERM'));
-  process.on('SIGINT', () => handleShutdownSignal('SIGINT'));
-  process.on('SIGHUP', () => handleShutdownSignal('SIGHUP'));
+  // Graceful shutdown (see installShutdownSignalHandlers) — deactivates the
+  // session, stamps the B-RRH C2 sentinel, and closes the session-scoped handles
+  // built above.
+  installShutdownSignalHandlers({
+    statePath,
+    sessionDir,
+    log,
+    releaseSessionResources: () => {
+      closePhantomDoneWatchers();
+      codegraph.emitSummary();
+      codegraph.close();
+    },
+  });
 
   // B4 (ticket e9bdac75): park survives --resume. If a persisted park-arm exists
   // with a still-future reset_at, RE-ARM the park (re-write rate_limit_wait.json so

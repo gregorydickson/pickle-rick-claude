@@ -24,7 +24,10 @@ import {
   __setSpawnRunnerForTests,
   main,
 } from '../bin/pipeline-runner.js';
-import { writePickleIncompleteSentinelIfRemaining } from '../bin/mux-runner.js';
+import {
+  installShutdownSignalHandlers,
+  writePickleIncompleteSentinelIfRemaining,
+} from '../bin/mux-runner.js';
 import { PipelineRunnerExitCode } from '../types/index.js';
 
 const SENTINEL = 'pickle_incomplete.json';
@@ -317,5 +320,75 @@ test('writePickleIncompleteSentinelIfRemaining writes NO sentinel when all ticke
     );
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// ── C2 WIRING: the handler that is actually REGISTERED must stamp the sentinel ─
+// Every C1 test above hand-writes `pickle_incomplete.json`, so they stayed green
+// over a producer that never ran: the sole caller of
+// `writePickleIncompleteSentinelIfRemaining` lived in an exported
+// `setupSignalHandlers` that nothing invoked, while the handler `runMuxRunnerMain`
+// actually registered was an inline twin that omitted the stamp. C1's
+// `maybeStampPickleIncompleteRobust` therefore read a file no producer wrote.
+// This drives the real registered handler end-to-end.
+test('B-RRH C2: the REGISTERED shutdown handler stamps the sentinel when a ticket remains', () => {
+  const repo = tmpDir('rrh-c2-repo-');
+  const sessionDir = tmpDir('rrh-c2-session-');
+  const dataRoot = tmpDir('rrh-c2-data-');
+  const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'];
+  const preexisting = new Map(signals.map((sig) => [sig, process.listeners(sig)]));
+  const originalExit = process.exit;
+  const originalDataRoot = process.env.PICKLE_DATA_ROOT;
+  try {
+    initRepo(repo);
+    writeState(sessionDir, repo, { active: true });
+    writeTicket(sessionDir, 'ddd44444', 1, 'Todo');
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
+
+    let released = 0;
+    const handler = installShutdownSignalHandlers({
+      statePath: path.join(sessionDir, 'state.json'),
+      sessionDir,
+      log: () => {},
+      releaseSessionResources: () => { released += 1; },
+    });
+
+    // The returned handler is only meaningful if it is the one wired to signals.
+    for (const sig of signals) {
+      assert.equal(
+        process.listeners(sig).length,
+        preexisting.get(sig).length + 1,
+        `${sig} handler must be registered`,
+      );
+    }
+
+    assert.throws(
+      () => handler('SIGTERM'),
+      (err) => err instanceof ExitIntercept && err.code === 0,
+    );
+
+    const sentinelPath = path.join(sessionDir, SENTINEL);
+    assert.ok(fs.existsSync(sentinelPath), 'C2 sentinel must be written on signal teardown');
+    const sentinel = JSON.parse(fs.readFileSync(sentinelPath, 'utf-8'));
+    assert.equal(sentinel.reason, 'signal_teardown');
+    assert.equal(sentinel.remaining_count, 1);
+    assert.equal(sentinel.total, 1);
+    assert.equal(released, 1, 'session-scoped handles must be released on teardown');
+  } finally {
+    process.exit = originalExit;
+    if (originalDataRoot === undefined) {
+      delete process.env.PICKLE_DATA_ROOT;
+    } else {
+      process.env.PICKLE_DATA_ROOT = originalDataRoot;
+    }
+    for (const sig of signals) {
+      for (const listener of process.listeners(sig)) {
+        if (!preexisting.get(sig).includes(listener)) process.removeListener(sig, listener);
+      }
+    }
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
