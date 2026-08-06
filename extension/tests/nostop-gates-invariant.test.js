@@ -27,6 +27,26 @@
  * recovery (spawns finalize-gate.js, branches on `gateResult.exitCode === 0`):
  * a passing gate's branch must never contain `action: 'break'`. A future
  * producer with the same shape is caught automatically — no test edit needed.
+ *
+ * Widened again (ticket f7b9a302): the ONE RULE is now quantified over BOTH
+ * termination channels, and both subject lists are DERIVED at runtime rather
+ * than transcribed:
+ *
+ *   channel 1 — the pickle-phase halt decision (`shouldHaltAfterPhase` /
+ *     `isFatalPhaseFailure`). Terminates ⟺ `shouldHaltAfterPhase === true`.
+ *     Subjects come from `export type ExitReason` in `mux-runner.ts` plus the
+ *     pipeline-runner-internal `recordExitReason` stamps, read off the source.
+ *   channel 2 — the microverse termination decision
+ *     (`classifyMicroverseHaltDecision`). Terminates ⟺ `action === 'abort'`.
+ *     Subjects come from the exported `MICROVERSE_EXIT_REASONS` union.
+ *
+ * Why this ticket exists: AC-NSG-5b covered only channel 1, over a hand-copied
+ * three-element array. `grep -c microverse` on this file returned 0, so the
+ * microverse channel drifted freely and killed a 590-minute run. A hand-copied
+ * list is how that drift happened — and how the earlier B-NS / B-APNC WS-1 drift
+ * happened before it ("silently desynchronized from the map"). So neither list
+ * is written down here: adding a union member without giving it a defined
+ * behaviour reddens this suite with no test edit.
  */
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -38,12 +58,16 @@ import { fileURLToPath } from 'node:url';
 
 import {
   __setSpawnRunnerForTests,
+  classifyMicroverseHaltDecision,
   isFatalPhaseFailure,
   shouldHaltAfterPhase,
 } from '../bin/pipeline-runner.js';
+import { isFailureExit, isHaltExit, isIncompleteExit } from '../bin/mux-runner.js';
+import { MICROVERSE_EXIT_REASONS } from '../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE_RUNNER_SRC = path.resolve(__dirname, '../src/bin/pipeline-runner.ts');
+const MUX_RUNNER_SRC = path.resolve(__dirname, '../src/bin/mux-runner.ts');
 
 /**
  * Minimum set of `PhaseIterationOutcome` producers known at authoring time
@@ -105,6 +129,32 @@ function extractBraceBlock(sourceText, openBraceIdx) {
     }
   }
   throw new Error('unbalanced braces starting at ' + openBraceIdx);
+}
+
+/**
+ * The `ExitReason` members, read off the single `export type ExitReason = 'a' | 'b' | …;`
+ * declaration in `mux-runner.ts`. That union is type-only — there is no runtime array to import
+ * (unlike `MICROVERSE_EXIT_REASONS`) — so the membership is derived from the declaration itself
+ * rather than restated here. Throws rather than returning `[]` if the declaration is renamed or
+ * reshaped: a silent empty list would make every loop below pass vacuously.
+ */
+function readExitReasonUnionMembers(sourceText) {
+  const decl = /export\s+type\s+ExitReason\s*=([\s\S]*?);/.exec(sourceText);
+  if (!decl) {
+    throw new Error('`export type ExitReason` declaration not found in mux-runner.ts — did it move or get renamed?');
+  }
+  return [...decl[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+}
+
+/**
+ * The pipeline-runner-internal exit stamps: the quoted second argument of every
+ * `recordExitReason(<expr>, '<literal>')` call. These never appear in `ExitReason` (they are
+ * stamped by pipeline-runner, not mux-runner) but they land in the same `state.exit_reason` field
+ * that channel 1 reads, so they belong to the same vocabulary. Template-literal arguments
+ * (`signal:${signal}`) are excluded by construction — only quoted literals match.
+ */
+function readPipelineInternalExitStamps(sourceText) {
+  return [...sourceText.matchAll(/recordExitReason\([^,)]+,\s*'([^']+)'/g)].map((m) => m[1]);
 }
 
 /** True when a producer body spawns finalize-gate.js and branches on its exit code. */
@@ -205,24 +255,74 @@ afterEach(() => {
   TMP_DIRS.clear();
 });
 
-// The exit_reason vocabulary a quality-verdict pickle exit can carry. Sourced
-// from mux-runner.ts's INCOMPLETE_EXIT_REASONS ({'done_without_commit_evidence'})
-// plus the two pipeline-runner-internal incomplete stamps this ticket widens
-// ('pipeline_phase_incomplete', 'phase_no_progress'). Not re-exported from
-// mux-runner.ts, so the set is enumerated here rather than imported.
-const QUALITY_VERDICT_EXIT_REASONS = [
-  'done_without_commit_evidence',
-  'pipeline_phase_incomplete',
-  'phase_no_progress',
-];
+// Channel 1's exit_reason vocabulary, derived — never transcribed. Two sources feed the one
+// `state.exit_reason` field the pickle-phase halt decision is quantified over: mux-runner's
+// `ExitReason` union (the runner's own terminal labels) and pipeline-runner's internal
+// `recordExitReason` stamps ('pipeline_phase_incomplete', 'phase_no_progress', …).
+const MUX_RUNNER_SOURCE = fs.readFileSync(MUX_RUNNER_SRC, 'utf-8');
+const PIPELINE_RUNNER_SOURCE = fs.readFileSync(PIPELINE_RUNNER_SRC, 'utf-8');
+const EXIT_REASON_UNION_MEMBERS = readExitReasonUnionMembers(MUX_RUNNER_SOURCE);
+const PIPELINE_INTERNAL_EXIT_STAMPS = readPipelineInternalExitStamps(PIPELINE_RUNNER_SOURCE);
+const CHANNEL_ONE_EXIT_REASONS = [
+  ...new Set([...EXIT_REASON_UNION_MEMBERS, ...PIPELINE_INTERNAL_EXIT_STAMPS]),
+].sort();
+
+// The one `ExitReason` member that is deliberately classified by none of the three dispositions
+// below: it IS the success arm. Pinned as an exception, not assumed — see the classification test.
+const SUCCESS_EXIT_REASON = 'success';
 
 const MUX_NONZERO_EXIT_CODES = [1, 3];
 
-describe('AC-NSG-5b — ONE RULE: quality-verdict exit_reasons never halt pickle', () => {
-  for (const reason of QUALITY_VERDICT_EXIT_REASONS) {
-    for (const exitCode of MUX_NONZERO_EXIT_CODES) {
-      test(`exit_reason=${reason}, exitCode=${exitCode}: shouldHaltAfterPhase('pickle', ...) === false`, () => {
-        const { repo, startCommit } = makeRepo();
+describe('AC-OA-3a — the derived subject lists are non-empty and non-duplicated', () => {
+  test('both channel-1 sources yielded members', () => {
+    assert.ok(
+      EXIT_REASON_UNION_MEMBERS.length > 0,
+      'the ExitReason union derivation returned nothing — every channel-1 loop would pass vacuously',
+    );
+    assert.ok(
+      PIPELINE_INTERNAL_EXIT_STAMPS.length > 0,
+      'the recordExitReason stamp derivation returned nothing — the pipeline-internal reasons '
+      + '(pipeline_phase_incomplete, phase_no_progress) would silently drop out of the invariant',
+    );
+    assert.ok(
+      EXIT_REASON_UNION_MEMBERS.includes(SUCCESS_EXIT_REASON),
+      `the derived union must contain '${SUCCESS_EXIT_REASON}' — if it does not, the declaration `
+      + 'shape changed and the derivation is reading something else',
+    );
+  });
+
+  test('channel 2 union is non-empty', () => {
+    assert.ok(
+      MICROVERSE_EXIT_REASONS.length > 0,
+      'MICROVERSE_EXIT_REASONS is empty — the channel-2 loop would pass vacuously',
+    );
+  });
+
+  test('no member is enumerated twice', () => {
+    assert.equal(
+      CHANNEL_ONE_EXIT_REASONS.length,
+      new Set(CHANNEL_ONE_EXIT_REASONS).size,
+      'channel-1 subjects contain a duplicate',
+    );
+    assert.equal(
+      MICROVERSE_EXIT_REASONS.length,
+      new Set(MICROVERSE_EXIT_REASONS).size,
+      'channel-2 subjects contain a duplicate',
+    );
+  });
+});
+
+/**
+ * Channel 1. One repo per exit code rather than one per (reason × exit code): `makeRepo` spends six
+ * git subprocesses, and this file is `@tier: fast` at --test-concurrency=8. The reason is named in
+ * every assert message so a failure still identifies the member.
+ */
+describe('AC-OA-3a — ONE RULE, channel 1: no exit_reason halts pickle', () => {
+  for (const exitCode of MUX_NONZERO_EXIT_CODES) {
+    test(`exitCode=${exitCode}: shouldHaltAfterPhase('pickle', ...) === false for every channel-1 exit_reason`, () => {
+      const { repo, startCommit } = makeRepo();
+
+      for (const reason of CHANNEL_ONE_EXIT_REASONS) {
         const runtime = makeRuntime({
           repo,
           startCommit,
@@ -242,9 +342,131 @@ describe('AC-NSG-5b — ONE RULE: quality-verdict exit_reasons never halt pickle
           false,
           `shouldHaltAfterPhase must not halt pickle for exit_reason=${reason}, exitCode=${exitCode}`,
         );
-      });
-    }
+      }
+    });
   }
+});
+
+/**
+ * Channel 1, exhaustiveness by construction. The loop above is exit_reason-INDEPENDENT by design
+ * (`isFatalPhaseFailure`'s pickle branch reads only `start_commit`), so on its own a newly added
+ * union member would be exercised and pass — covered, but not pinned.
+ *
+ * This is the property that does redden. Every `ExitReason` member except `'success'` must be
+ * classified by one of mux-runner's three exported dispositions. An unclassified member is not
+ * merely uncovered: mux-runner.ts's own comment records that "a reason demoted out of
+ * FAILURE_EXIT_REASONS … otherwise lands in the success arm by default, which is how
+ * done_without_commit_evidence came to print a green 'mux-runner Complete' panel for a bundle that
+ * halted mid-flight." A union member with no defined behaviour is a FAILURE here, never a skip.
+ */
+describe('AC-OA-3b — channel 1: every union member has a defined disposition', () => {
+  const dispositionsFor = (reason) => [
+    isHaltExit(reason) && 'halt',
+    isFailureExit(reason) && 'failure',
+    isIncompleteExit(reason) && 'incomplete',
+  ].filter(Boolean);
+
+  for (const reason of EXIT_REASON_UNION_MEMBERS) {
+    if (reason === SUCCESS_EXIT_REASON) continue;
+    test(`${reason} is classified halt / failure / incomplete`, () => {
+      assert.ok(
+        dispositionsFor(reason).length > 0,
+        `${reason} is in the ExitReason union but is classified by none of isHaltExit / `
+        + 'isFailureExit / isIncompleteExit, so it lands in the success arm by default — the '
+        + 'done_without_commit_evidence fake-green class (mux-runner.ts, FAILURE_EXIT_REASONS doc)',
+      );
+    });
+  }
+
+  test(`'${SUCCESS_EXIT_REASON}' is the one deliberate exception, and it is pinned`, () => {
+    assert.deepEqual(
+      dispositionsFor(SUCCESS_EXIT_REASON),
+      [],
+      `'${SUCCESS_EXIT_REASON}' acquired a halt/failure/incomplete disposition — if that is `
+      + 'intended, the exception above is now wrong and the loop must cover it too',
+    );
+  });
+});
+
+/**
+ * Channel 2 — the channel AC-NSG-5b never reached. `shouldHaltAfterPhase` is NOT the terminate wire
+ * here: `isFatalPhaseFailure`'s microverse branch returns true for judge_timeout /
+ * all_judge_backends_exhausted / the failure set purely to route the halt PATH, which then consults
+ * the classifier and continues. The classifier's `action === 'abort'` is what actually terminates
+ * the pipeline, so that is what the ONE RULE is quantified over.
+ */
+describe('AC-OA-3a — ONE RULE, channel 2: no microverse exit_reason aborts', () => {
+  for (const reason of MICROVERSE_EXIT_REASONS) {
+    test(`${reason}: classifyMicroverseHaltDecision does not abort`, () => {
+      const decision = classifyMicroverseHaltDecision(reason);
+      assert.notEqual(
+        decision.action,
+        'abort',
+        `${reason} terminates the pipeline at the microverse classifier — a stopped pipeline `
+        + 'produces no output, and no output has no quality',
+      );
+      assert.equal(
+        decision.recognizedExitReason,
+        reason,
+        `${reason} must carry its own name into the decision, never an unattributed null`,
+      );
+    });
+  }
+});
+
+/**
+ * The invariant is bounded on channel 2 as well as channel 1. `session_state_corrupted` lives in
+ * MICROVERSE_FATAL_REASONS, deliberately NOT in the exit union, and is the genuine
+ * cannot-physically-continue floor. Channel 1's floor membership is out of scope for this ticket —
+ * it is pinned by the two crash-floor tests above, not renegotiated here.
+ */
+describe('AC-OA-3a — channel 2 crash floor (the invariant is bounded, not universal)', () => {
+  test('session_state_corrupted is outside the exit union and still aborts', () => {
+    assert.ok(
+      !MICROVERSE_EXIT_REASONS.includes('session_state_corrupted'),
+      'the floor must be excepted against the union it actually lives in (MICROVERSE_FATAL_REASONS)',
+    );
+    assert.equal(classifyMicroverseHaltDecision('session_state_corrupted').action, 'abort');
+  });
+});
+
+/**
+ * AC-OA-3b, observed rather than assumed. The ticket sketches the observation as "add a member to
+ * an exported union locally, watch the suite go red, revert" — but this ticket's scope fence admits
+ * only this test file, and its own AC requires `git diff -- extension/src/` to be empty, so that
+ * mutation cannot be performed here. The same property is observed executably instead, in the two
+ * halves it decomposes into: the subject lists FOLLOW the source, and an unrecognized member trips
+ * exactly the conditions the loops above assert against.
+ */
+describe('AC-OA-3b — exhaustive by construction: a new member reddens this suite with no test edit', () => {
+  const SYNTHETIC = 'synthetic_new_member';
+
+  test('the channel-1 subject list follows the declaration, so a new member is picked up unedited', () => {
+    const members = readExitReasonUnionMembers(
+      `export type ExitReason = 'alpha' | '${SYNTHETIC}';`,
+    );
+    assert.deepEqual(members, ['alpha', SYNTHETIC]);
+  });
+
+  test('the channel-1 stamp list follows the call sites, so a new stamp is picked up unedited', () => {
+    const stamps = readPipelineInternalExitStamps(
+      `recordExitReason(runtime.statePath, '${SYNTHETIC}');`,
+    );
+    assert.deepEqual(stamps, [SYNTHETIC]);
+  });
+
+  test('an unclassified channel-1 member trips the disposition assertion', () => {
+    assert.equal(isHaltExit(SYNTHETIC), false);
+    assert.equal(isFailureExit(SYNTHETIC), false);
+    assert.equal(isIncompleteExit(SYNTHETIC), false);
+  });
+
+  test('an unrecognized channel-2 member trips the no-abort assertion', () => {
+    assert.deepEqual(classifyMicroverseHaltDecision(SYNTHETIC), {
+      action: 'abort',
+      recognizedExitReason: null,
+    });
+  });
 });
 
 describe('AC-NSG-5b — crash-floor pins (the invariant is bounded, not universal)', () => {
