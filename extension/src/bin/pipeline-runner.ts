@@ -1313,6 +1313,14 @@ function spawnRunner(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Prom
       heartbeatMs: phaseRunnerContext.childMuxRunnerHeartbeatMs,
       stallSeconds: phaseRunnerContext.childMuxRunnerStallSeconds,
     }) : null;
+    // `setEncoding` before the first read, NOT a per-chunk `toString()`: an OS pipe boundary
+    // is a BYTE offset, so a multi-byte UTF-8 character straddles it and each half decodes to
+    // U+FFFD — mojibake in the echoed phase output AND in the accumulated stdout/stderr this
+    // returns. The runner's own log lines are full of non-ASCII (`—`, `◤`, `✓`), so this fires
+    // on any phase that emits more than a pipe buffer's worth. StringDecoder holds a partial
+    // sequence back until its continuation bytes arrive.
+    child.stdout?.setEncoding('utf-8');
+    child.stderr?.setEncoding('utf-8');
     child.stdout?.on('data', (chunk: Buffer | string) => {
       const text = chunk.toString();
       stdout += text;

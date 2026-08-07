@@ -131,6 +131,13 @@ export async function runCodegraphQueryBatch(
     }, opts.timeoutMs);
     if (typeof timer.unref === 'function') { timer.unref(); }
 
+    // `setEncoding` before the first read, NOT a per-chunk decode: an OS pipe boundary is a
+    // BYTE offset, so a multi-byte UTF-8 character straddles it and `String(chunk)` turns
+    // each half into U+FFFD. The result still parses (U+FFFD is legal inside a JSON string),
+    // so the corruption is silent. `setEncoding` runs the stream through a StringDecoder,
+    // which holds a partial sequence back until its continuation bytes arrive. Same shape the
+    // sibling readers in `spawn-morty.ts` and `microverse-runner.ts` already use.
+    child.stdout?.setEncoding('utf-8');
     child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
     // Drain stderr so a chatty child can't deadlock on a full pipe buffer; the content
     // itself is not surfaced (failures are classified by exit code / stdout parseability).

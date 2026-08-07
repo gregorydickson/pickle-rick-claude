@@ -416,6 +416,55 @@ test('R-CGST large-payload round-trip: >64KB batch reassembles intact (no exit-t
   assert.equal(last.node.blob.length, 4096, 'the final hit payload arrives whole');
 });
 
+// A multi-byte round-trip fixture: the payload's blob is a long run of 3-byte UTF-8
+// em-dashes, so a >64KB stdout is delivered in several chunks whose boundaries land
+// MID-CHARACTER (an OS pipe boundary is a byte offset, not a code-point offset; 65536 % 3
+// == 1, so among any three consecutive boundaries two straddle a character). Decoding each
+// Buffer chunk on its own turns every straddled character into U+FFFD.
+function writeMultibytePayloadFixture() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'cg-mb-'));
+  const file = path.join(dir, 'multibyte-child.cjs');
+  writeFileSync(
+    file,
+    [
+      "let raw = '';",
+      "process.stdin.on('data', (c) => { raw += c; });",
+      "process.stdin.on('end', () => {",
+      '  const input = JSON.parse(raw);',
+      '  const searches = {};',
+      // ~1MB of em-dashes: >16 pipe boundaries, so a mid-character split is guaranteed.
+      "  const blob = '\\u2014'.repeat(350000);",
+      '  for (const term of input.searches || []) {',
+      "    searches[term] = [{ node: { id: term, blob }, score: 1 }];",
+      '  }',
+      '  process.stdout.write(JSON.stringify({ searches, callers: {} }), () => process.exit(0));',
+      '});',
+      '',
+    ].join('\n'),
+  );
+  return file;
+}
+
+test('AP-EXT-ITER7-01 multi-byte round-trip: a UTF-8 character split across pipe chunks is not corrupted', async () => {
+  const fixture = writeMultibytePayloadFixture();
+  const result = await runCodegraphQueryBatch(
+    { workingDir: '/tmp/cg-mb-wd', searches: ['alpha'], callers: [] },
+    { timeoutMs: 10000, childScriptPath: fixture },
+  );
+
+  assert.equal(result.status, 'ok', 'a multi-byte batch must not degrade');
+  const blob = result.searches.alpha[0].node.blob;
+  // Assert BYTE-exactness, not merely parseability: a per-chunk decode still yields
+  // valid JSON (U+FFFD is legal inside a JSON string), so a status/parse check greens
+  // over the corruption. Only the round trip catches it.
+  assert.equal(
+    blob.indexOf('�'),
+    -1,
+    'no replacement character may appear — a chunk-boundary decode mangles the straddled character',
+  );
+  assert.equal(blob, '—'.repeat(350000), 'the payload round-trips byte-exactly');
+});
+
 test('R-CGST source guard: runChild flushes stdout via the write callback before exit', () => {
   const src = readFileSync(
     path.join(EXTENSION_ROOT, 'src/services/codegraph-query-runner.ts'),

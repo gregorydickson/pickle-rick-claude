@@ -2588,3 +2588,29 @@ describe('R-MDS-1 centralized phase-boundary monitor dispatcher', () => {
     );
   });
 });
+
+describe('AP-EXT-ITER7-01 replay: the phase-runner transport decodes on the STREAM, not per chunk', () => {
+  const PR_SRC = fs.readFileSync(new URL('../src/bin/pipeline-runner.ts', import.meta.url), 'utf-8');
+
+  test('spawnRunner sets the stdout/stderr encoding before attaching its data handlers', () => {
+    // An OS pipe boundary is a BYTE offset, so a multi-byte UTF-8 character straddles it and a
+    // per-chunk `toString()` yields U+FFFD for each half — mojibake in the echoed phase output
+    // and in the accumulated stdout/stderr. The behavioral proof of the shape lives in
+    // extension/tests/codegraph-degradation.test.js ('AP-EXT-ITER7-01 multi-byte round-trip'),
+    // which drives the identical transport end-to-end; this site's real `spawnRunner` needs a
+    // `phaseRunnerContext` only `main()` installs, so it is pinned structurally here.
+    const spawnBody = PR_SRC.slice(PR_SRC.indexOf('function spawnRunner('));
+    const stdoutHandler = spawnBody.indexOf("child.stdout?.on('data'");
+    const setEncoding = spawnBody.indexOf("child.stdout?.setEncoding(");
+    assert.ok(setEncoding >= 0, 'spawnRunner must call child.stdout.setEncoding');
+    assert.ok(
+      setEncoding < stdoutHandler,
+      'setEncoding must precede the data handler — a late call cannot un-mangle bytes already read',
+    );
+    assert.match(
+      spawnBody.slice(0, stdoutHandler),
+      /child\.stderr\?\.setEncoding\('utf-8'\)/,
+      'stderr carries the same non-ASCII log glyphs and needs the same decoder',
+    );
+  });
+});
