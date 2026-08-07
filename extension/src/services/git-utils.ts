@@ -281,7 +281,13 @@ const CODEGRAPH_DIR = '.codegraph';
 export const ARCHIVE_UNTRACKED_BYTE_CAP = 10 * 1024 * 1024;
 const ARCHIVE_GIT_TIMEOUT_MS = 30_000;
 const ARCHIVE_GIT_MAX_BUFFER = 64 * 1024 * 1024;
-const CODEGRAPH_PATHSPEC_EXCLUDES = ['--', '.', `:!${CODEGRAPH_DIR}`, `:!${CODEGRAPH_DIR}/**`];
+/**
+ * The ONE pathspec tail that excludes the runtime's own regenerable codegraph index
+ * from a whole-tree git operation. Exported so a staging site that legitimately needs
+ * a whole-tree `add -A` (the Done-flip committer) honours the SAME exclusion the
+ * archive and the dirty-path listers apply via `isCodegraphArtifact`.
+ */
+export const CODEGRAPH_PATHSPEC_EXCLUDES = ['--', '.', `:!${CODEGRAPH_DIR}`, `:!${CODEGRAPH_DIR}/**`];
 
 /**
  * The one flag set every archive diff starts from — staged, unstaged, and per-file

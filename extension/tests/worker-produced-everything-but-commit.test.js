@@ -21,7 +21,9 @@ import {
   advanceOrExitOnLadderExhaustion,
   checkPartialLifecycleExit,
   claimWorkerProducedEverythingButCommit,
+  commitAndContinueDoneFlip,
   countWorkerArtifacts,
+  executeConvergedPlanAdapter,
   emitWorkerProductionBreadcrumb,
 } from '../bin/mux-runner.js';
 import { requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
@@ -1067,4 +1069,103 @@ test('observability-only: claimWorkerProducedEverythingButCommit contains no mut
   ]) {
     assert.ok(!body.includes(forbidden), `emit path must not call ${forbidden} — it is observability ONLY`);
   }
+});
+
+// ─────────── AP-EXT-ITER6-01: the Done-flip committer stages the OWNED set ───────────
+//
+// B-PCOMP (#b736337f) built the ownership/salvage guard at the exit-path CALL SITE and
+// left `commitAndContinueDoneFlip`'s `stagePaths`-absent default a whole-tree
+// `git add -A`. The recovery-ladder rung-1 caller (`attemptRecoveryBeforeTerminal`)
+// passes no `stagePaths`, so it swept `.codegraph/` — the runtime's own regenerable
+// index, untracked dirt in any target repo — into a commit it then stamps as the
+// ticket's `completion_commit`.
+//
+// Assert the COMMIT CONTENT, never the return value: the guard/Done-flip runs AFTER
+// the commit lands, so a return-value pin greens over the pollution.
+
+test('AP-EXT-ITER6-01: a stagePaths-less Done-flip commit excludes .codegraph/ and keeps the worker edit', () => {
+  const { repo } = makeRepo('ap-iter6-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter6-session-');
+  const ticketId = 'abc12345';
+  makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+
+  // The worker's real deliverable …
+  writeFileSync(path.join(repo, 'src.ts'), 'export const x = 1;\n');
+  // … alongside the runtime's own codegraph index (untracked; ignored ONLY via the
+  // unversioned .git/info/exclude, which a fresh clone / target repo does not carry).
+  mkdirSync(path.join(repo, '.codegraph'), { recursive: true });
+  writeFileSync(path.join(repo, '.codegraph', 'graph.db'), 'BINARY-INDEX\n');
+
+  const prev = process.env.PICKLE_TEST_MODE;
+  process.env.PICKLE_TEST_MODE = '1';
+  try {
+    commitAndContinueDoneFlip({
+      sessionDir, ticketId, workingDir: repo, statePath, flags: {}, log: () => {},
+    });
+  } finally {
+    if (prev === undefined) delete process.env.PICKLE_TEST_MODE; else process.env.PICKLE_TEST_MODE = prev;
+  }
+
+  const committed = git(repo, ['show', '--pretty=format:', '--name-only', 'HEAD'])
+    .split('\n').map(s => s.trim()).filter(Boolean);
+
+  assert.ok(committed.includes('src.ts'), `the worker deliverable must be committed (got ${JSON.stringify(committed)})`);
+  assert.deepEqual(
+    committed.filter(p => p === '.codegraph' || p.startsWith('.codegraph/')),
+    [],
+    `the runtime's own codegraph index must never ride into a ticket completion commit (got ${JSON.stringify(committed)})`,
+  );
+  // And it is still on the floor, untracked — excluded, not destroyed.
+  assert.ok(existsSync(path.join(repo, '.codegraph', 'graph.db')), 'the codegraph index is left in place');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER6-01: the whole-tree add carries the shared codegraph pathspec excludes', () => {
+  const src = readFileSync(SRC_MUX, 'utf8');
+  const start = src.indexOf('export function commitAndContinueDoneFlip');
+  assert.ok(start > 0, 'the committer exists');
+  const body = src.slice(start, src.indexOf('\n}\n', start));
+  const wholeTreeAdd = body.match(/'add',\s*'-A'[^\]]*/);
+  assert.ok(wholeTreeAdd, 'the committer still has its whole-tree add branch');
+  assert.match(
+    wholeTreeAdd[0],
+    /\.\.\.CODEGRAPH_PATHSPEC_EXCLUDES/,
+    'the whole-tree add must spread the ONE shared exclusion constant, not a hand-copied pathspec',
+  );
+});
+
+// AP-EXT-ITER6-01 replay: the sibling whole-tree add — `executeConvergedPlanAdapter`'s
+// per-Phase `commitPhase`. Same shape, same target repo, same pollution.
+test('AP-EXT-ITER6-01 (replay): execute-converged-plan phase commits exclude .codegraph/', () => {
+  const { repo } = makeRepo('ap-iter6r-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter6r-session-');
+  const ticketId = 'def67890';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-08-07.md'),
+    '# plan\n\n## Phase 1 — do the thing\n\n**Verify:** `true`\n',
+  );
+
+  writeFileSync(path.join(repo, 'src.ts'), 'export const y = 2;\n');
+  mkdirSync(path.join(repo, '.codegraph'), { recursive: true });
+  writeFileSync(path.join(repo, '.codegraph', 'graph.db'), 'BINARY-INDEX\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+  assert.equal(out.ok, true, 'the single-phase plan executes and commits');
+
+  const committed = git(repo, ['show', '--pretty=format:', '--name-only', 'HEAD'])
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  assert.ok(committed.includes('src.ts'), `the phase deliverable must be committed (got ${JSON.stringify(committed)})`);
+  assert.deepEqual(
+    committed.filter(p => p === '.codegraph' || p.startsWith('.codegraph/')),
+    [],
+    `the codegraph index must never ride into a converged-plan phase commit (got ${JSON.stringify(committed)})`,
+  );
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
 });

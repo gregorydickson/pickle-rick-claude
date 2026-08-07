@@ -20,7 +20,7 @@ import {
   type ManagerRelaunchExitKind,
   type ManagerRelaunchDecision,
 } from '../services/manager-relaunch.js';
-import { getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
+import { getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible, type PlanPhase, type RecoveryDeps, type RecoveryEvidence, type RecoveryOutcome, type ReExecutionSeam } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds, type ArtifactProgressSnapshot } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence, type EvidenceCtx, type RevertDecision, type CompletionDecisionCtx, type CompletionDecisionKind } from '../services/ticket-completion-evidence.js';
@@ -5239,10 +5239,9 @@ export interface CommitAndContinueDoneFlipInput {
   log: (msg: string) => void;
   /**
    * Optional ownership-scoped staging (M1). When provided (non-empty), `git add`
-   * stages ONLY these repo-relative paths instead of the whole tree (`-A`), so a
-   * shared-dir exit-path commit cannot sweep a sibling ticket's dirty work into a
-   * commit attributed to `ticketId`. Absent → default whole-tree `git add -A`
-   * (the Done-flip path semantics are unchanged).
+   * stages exactly these repo-relative paths. Absent → the committer resolves the
+   * owned set ITSELF via `resolveDoneFlipStagePaths`; there is no whole-tree
+   * `git add -A` default (AP-EXT-ITER6-01).
    */
   stagePaths?: readonly string[];
 }
@@ -5292,10 +5291,21 @@ function persistRunnerAuthoredGreenVerdict(sessionDir: string, ticketId: string)
 export function commitAndContinueDoneFlip(input: CommitAndContinueDoneFlipInput): { ok: boolean; sha?: string } {
   assertWorkingDirUnderTmpdirIfTestMode(input.workingDir);
   // M1: ownership-scoped staging when stagePaths is provided (exit-path commit);
-  // otherwise the default whole-tree add (Done-flip path, unchanged).
+  // otherwise the whole-tree add (Done-flip path).
+  //
+  // AP-EXT-ITER6-01: that whole-tree add MUST carry `CODEGRAPH_PATHSPEC_EXCLUDES`.
+  // `.codegraph/` is the runtime's OWN regenerable index, written into
+  // `<workingDir>/.codegraph/` and git-ignored only through the local, unversioned
+  // `.git/info/exclude` — plain untracked dirt in any freshly-cloned target repo.
+  // Every sibling staging path already excludes it (`archiveBeforeDestructive`,
+  // `collectDirtyInScopePaths`, the exit-path committer) via `isCodegraphArtifact`;
+  // this one did not, and the recovery-ladder rung-1 caller
+  // (`attemptRecoveryBeforeTerminal`) passes no `stagePaths`, so it committed the
+  // index into the target repo and stamped THAT commit as the ticket's
+  // `completion_commit` on the Done flip. One shared exclusion, not a second guard.
   const addArgs = input.stagePaths && input.stagePaths.length > 0
     ? ['-C', input.workingDir, 'add', '--', ...input.stagePaths]
-    : ['-C', input.workingDir, 'add', '-A'];
+    : ['-C', input.workingDir, 'add', '-A', ...CODEGRAPH_PATHSPEC_EXCLUDES];
   const add = spawnSync('git', addArgs, { encoding: 'utf-8', timeout: 30000 });
   if (add.status !== 0) {
     input.log(`commit-and-continue: git add failed for ${input.ticketId} (status ${add.status ?? 'null'})`);
@@ -6015,7 +6025,10 @@ export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): {
       return { ok: r.status === 0 };
     },
     commitPhase: (phase) => {
-      const add = spawnSync('git', ['add', '-A'], {
+      // AP-EXT-ITER6-01 replay: the sibling whole-tree add. Same shared exclusion —
+      // a per-Phase recovery commit must not carry the runtime's own `.codegraph/`
+      // index into the target repo.
+      const add = spawnSync('git', ['add', '-A', ...CODEGRAPH_PATHSPEC_EXCLUDES], {
         cwd: input.workingDir, encoding: 'utf-8', timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
       });
       if (add.status !== 0) return { ok: false };
