@@ -1,0 +1,135 @@
+[
+  {
+    "reason": "converged",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "converged",
+    "is_floor": false
+  },
+  {
+    "reason": "limit_reached",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "limit_reached",
+    "is_floor": false
+  },
+  {
+    "reason": "stopped",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "stopped",
+    "is_floor": false
+  },
+  {
+    "reason": "error",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "error",
+    "is_floor": false
+  },
+  {
+    "reason": "rate_limit_exhausted",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "rate_limit_exhausted",
+    "is_floor": false
+  },
+  {
+    "reason": "approach_exhaustion",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "approach_exhaustion",
+    "is_floor": false
+  },
+  {
+    "reason": "no_progress",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "no_progress",
+    "is_floor": false
+  },
+  {
+    "reason": "judge_unreachable",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "judge_unreachable",
+    "is_floor": false
+  },
+  {
+    "reason": "judge_timeout",
+    "action": "run-finalize-gate",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "judge_timeout",
+    "is_floor": false
+  },
+  {
+    "reason": "baseline_unmeasurable",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "baseline_unmeasurable_unrecoverable",
+    "is_floor": false
+  },
+  {
+    "reason": "judge_cli_missing",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "judge_cli_missing",
+    "is_floor": false
+  },
+  {
+    "reason": "baseline_unmeasurable_transient",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "baseline_unmeasurable_transient",
+    "is_floor": false
+  },
+  {
+    "reason": "baseline_unmeasurable_unrecoverable",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "baseline_unmeasurable_unrecoverable",
+    "is_floor": false
+  },
+  {
+    "reason": "all_judge_backends_exhausted",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "all_judge_backends_exhausted",
+    "is_floor": false
+  },
+  {
+    "reason": "anatomy_non_convergent",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "anatomy_non_convergent",
+    "is_floor": false
+  },
+  {
+    "reason": "stalled_below_target",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "stalled_below_target",
+    "is_floor": false
+  },
+  {
+    "reason": "iteration_budget_exhausted",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "iteration_budget_exhausted",
+    "is_floor": false
+  },
+  {
+    "reason": "time_budget_exhausted",
+    "action": "run-finalize-gate-incomplete",
+    "pipeline_reached_finalize": true,
+    "residual_reason": "time_budget_exhausted",
+    "is_floor": false
+  },
+  {
+    "reason": "session_state_corrupted",
+    "action": "abort",
+    "pipeline_reached_finalize": false,
+    "residual_reason": "session_state_corrupted",
+    "is_floor": true
+  }
+]
