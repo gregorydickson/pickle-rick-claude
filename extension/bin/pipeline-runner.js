@@ -3367,10 +3367,12 @@ function getFatalPickleHaltReason(runtime) {
  * input is prefixed `unclassified:` rather than silently dropped.
  */
 function describeUnclassifiedExitReason(value) {
-    if (value === undefined)
+    if (value === undefined) {
         return 'unclassified:undefined';
-    if (value === null)
+    }
+    if (value === null) {
         return 'unclassified:null';
+    }
     if (typeof value === 'string') {
         const trimmed = value.trim();
         return trimmed ? `unclassified:${trimmed}` : 'unclassified:empty-string';

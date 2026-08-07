@@ -655,6 +655,20 @@ function parseIntegerFlag(args: string[], index: number, flag: string, validate:
   return value;
 }
 
+function requireFlagValue(args: string[], index: number, errorMessage: string): string {
+  const value = args[index + 1];
+  if (!value || value.startsWith('--')) die(errorMessage);
+  return value;
+}
+
+function parseBackendFlag(args: string[], index: number, flagName: string): Backend {
+  const value = requireFlagValue(args, index, `${flagName} requires a value (${BACKENDS.join('|')})`);
+  if (!(BACKENDS as readonly string[]).includes(value)) {
+    die(`${flagName} must be one of: ${BACKENDS.join(', ')}`);
+  }
+  return value as Backend;
+}
+
 const ARG_HANDLERS: Record<string, ArgHandler> = {
   '--max-iterations': (config, args, index) => {
     config.loopLimit = parseIntegerFlag(args, index, '--max-iterations', value => value >= 0, '--max-iterations requires a non-negative integer');
@@ -672,9 +686,7 @@ const ARG_HANDLERS: Record<string, ArgHandler> = {
     return index + 1;
   },
   '--completion-promise': (config, args, index) => {
-    const value = args[index + 1];
-    if (!value || value.startsWith('--')) die('--completion-promise requires a non-empty value');
-    config.promiseToken = value;
+    config.promiseToken = requireFlagValue(args, index, '--completion-promise requires a non-empty value');
     return index + 1;
   },
   '--resume': (config, args, index) => {
@@ -707,30 +719,19 @@ const ARG_HANDLERS: Record<string, ArgHandler> = {
     return index + 1;
   },
   '--command-template': (config, args, index) => {
-    const value = args[index + 1];
-    if (!value || value.startsWith('--')) die('--command-template requires a non-empty value');
+    const value = requireFlagValue(args, index, '--command-template requires a non-empty value');
     if (value.includes('/') || value.includes('\\') || value.includes('..')) die('--command-template must be a plain filename');
     config.commandTemplate = value;
     config.explicitFlags.add('command-template');
     return index + 1;
   },
   '--backend': (config, args, index) => {
-    const value = args[index + 1];
-    if (!value || value.startsWith('--')) die(`--backend requires a value (${BACKENDS.join('|')})`);
-    if (!(BACKENDS as readonly string[]).includes(value)) {
-      die(`--backend must be one of: ${BACKENDS.join(', ')}`);
-    }
-    config.backend = value as Backend;
+    config.backend = parseBackendFlag(args, index, '--backend');
     config.explicitFlags.add('backend');
     return index + 1;
   },
   '--worker-backend': (config, args, index) => {
-    const value = args[index + 1];
-    if (!value || value.startsWith('--')) die(`--worker-backend requires a value (${BACKENDS.join('|')})`);
-    if (!(BACKENDS as readonly string[]).includes(value)) {
-      die(`--worker-backend must be one of: ${BACKENDS.join(', ')}`);
-    }
-    config.workerBackend = value as Backend;
+    config.workerBackend = parseBackendFlag(args, index, '--worker-backend');
     config.explicitFlags.add('worker-backend');
     return index + 1;
   },
@@ -749,8 +750,7 @@ const ARG_HANDLERS: Record<string, ArgHandler> = {
     return index + 1;
   },
   '--effort': (config, args, index) => {
-    const value = args[index + 1];
-    if (!value || value.startsWith('--')) die(`--effort requires a value (${VALID_EFFORTS.join('|')})`);
+    const value = requireFlagValue(args, index, `--effort requires a value (${VALID_EFFORTS.join('|')})`);
     if (!(VALID_EFFORTS as readonly string[]).includes(value)) {
       die(`--effort must be one of: ${VALID_EFFORTS.join(', ')}`);
     }
