@@ -47,6 +47,9 @@ const ALLOWLIST_FILE_REL = 'extension/.readiness-allowlist.json';
 // context or workflow inputs) rather than in-repo contract references.
 const SNIPPET_HEAD_SEGMENTS = new Set(['t', 'inputs']);
 const GIT_LS_FILES_TIMEOUT_MS = 30_000;
+// AP-EXT-ITER8-01: a whole-repo `ls-files` is unbounded; a truncated list reads as
+// "file not tracked" and manufactures false-positive contract/file_path findings.
+const GIT_LS_FILES_MAX_BUFFER = 64 * 1024 * 1024;
 const DOC_EXTENSION_ALLOWLIST = new Set([
     'md',
     'sh',
@@ -257,6 +260,7 @@ function gitTrackedFiles(repoRoot) {
         cwd: repoRoot,
         encoding: 'utf-8',
         timeout: GIT_LS_FILES_TIMEOUT_MS,
+        maxBuffer: GIT_LS_FILES_MAX_BUFFER,
     });
     if (result.status !== 0)
         return [];

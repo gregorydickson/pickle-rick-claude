@@ -876,6 +876,10 @@ function captureCachedDiffPatch(workingDir) {
         cwd: workingDir,
         timeout: 30_000,
         encoding: 'utf-8',
+        // AP-EXT-ITER8-01: the operator's staged patch is unbounded. Truncated at
+        // Node's 1 MB default, `restoreCachedDiffPatch` re-applies a partial patch
+        // AFTER its `git reset` has already unstaged everything — silent index loss.
+        maxBuffer: 64 * 1024 * 1024,
         stdio: ['pipe', 'pipe', 'pipe'],
     });
 }

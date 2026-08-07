@@ -392,6 +392,10 @@ export function scanGitRepos(repoRoot, since, until) {
                 cwd: repoPath,
                 encoding: 'utf-8',
                 timeout: 30_000,
+                // AP-EXT-ITER8-01: an unbounded log window truncates past Node's 1 MB
+                // default, and the `status !== 0` guard below then drops the whole repo
+                // from the report silently — under-counted LOC that reads as real data.
+                maxBuffer: 64 * 1024 * 1024,
                 stdio: ['ignore', 'pipe', 'pipe'],
             });
             if ((proc.status ?? 1) !== 0)

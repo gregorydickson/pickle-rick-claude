@@ -179,15 +179,45 @@ const EXTENSION_ROOT_SENTINEL = path.join('extension', 'bin', 'log-watcher.js');
 const INSTALL_ROOT_SENTINEL = '.pickle-install-root';
 const EXTENSION_DIR_TEST = 'EXTENSION_DIR_TEST';
 let extensionDirFallbackEmitted = false;
+/**
+ * Output ceiling for every `runCmd` spawn. Node's default is 1 MB, and on
+ * overflow the child is SIGTERMed while the first megabyte is still returned as
+ * stdout — a truncated string a caller cannot distinguish from a complete one.
+ * Callers here read whole-repo enumerations (`ls-files -co -z`), branch-wide
+ * `check-attr`, and `blame --line-porcelain` (6.28 MB for this repo's own
+ * `mux-runner.ts`), so 1 MB is inside the operating envelope, not outside it.
+ * 64 MB matches the ceiling `git-utils.ts` and `audit-ticket-bundle.ts` already
+ * use for the same class of git output.
+ */
+const RUN_CMD_MAX_BUFFER = 64 * 1024 * 1024;
+/**
+ * A truncated read is a WRONG ANSWER, never a soft failure — so it throws for
+ * every caller, including `check: false` ones whose contract is otherwise
+ * "degrade to empty". Those callers degrade on a command that FAILED; ENOBUFS
+ * is the harness losing bytes from a command that SUCCEEDED, and returning its
+ * prefix silently hands a partial repo enumeration to the scope fence.
+ * Deliberately narrow: ETIMEDOUT still degrades as before, because its partial
+ * output is empty-or-tiny and the `check: false` probes are written to expect it.
+ */
+function assertNotTruncated(cmd, error) {
+    if (error?.code !== 'ENOBUFS')
+        return;
+    throw new Error(`Command output exceeded ${RUN_CMD_MAX_BUFFER} bytes and was truncated: ${cmd}`);
+}
 function runArgvCmd(cmd, options) {
     const result = spawnSync(cmd[0], cmd.slice(1), {
         cwd: options.cwd,
         encoding: 'utf-8',
         timeout: 30_000,
+        maxBuffer: RUN_CMD_MAX_BUFFER,
         stdio: options.capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
     });
+    assertNotTruncated(cmd.join(' '), result.error);
     if (options.check && (result.status ?? 1) !== 0) {
-        throw new Error(`Command failed: ${cmd.join(' ')}\nError: ${result.stderr || ''}`);
+        // `result.error` carries the harness-level cause (ETIMEDOUT, ENOENT); without
+        // it a spawn that produced no stderr throws a bare, unattributable `Error: `.
+        const cause = result.stderr || result.error?.message || '';
+        throw new Error(`Command failed: ${cmd.join(' ')}\nError: ${cause}`);
     }
     return (result.stdout || '').trim();
 }
@@ -202,11 +232,13 @@ function runShellCmd(cmd, options) {
             cwd: options.cwd,
             encoding: 'utf-8',
             timeout: 30_000,
+            maxBuffer: RUN_CMD_MAX_BUFFER,
             stdio: options.capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
         });
         return (stdout || '').trim();
     }
     catch (error) {
+        assertNotTruncated(cmd, error);
         if (options.check) {
             const msg = shellErrorOutput(error, 'stderr') || safeErrorMessage(error);
             throw new Error(`Command failed: ${cmd}\nError: ${msg}`);

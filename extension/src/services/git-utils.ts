@@ -32,6 +32,10 @@ export function getBranchName(taskId: string): string {
 
 const MAX_TICKET_SEARCH_DEPTH = 10;
 const GIT_CHECK_IGNORE_TIMEOUT_MS = 5_000;
+// AP-EXT-ITER8-01: a whole-tree `status --porcelain -z` is unbounded; Node's 1 MB
+// default truncates it and this reader THROWS on the resulting ENOBUFS, taking
+// the salvage paths that call it down with a misleading empty-stderr message.
+const GIT_STATUS_MAX_BUFFER = 64 * 1024 * 1024;
 
 function findTicketFile(sessionDir: string, ticketId: string): string | null {
   const fileName = `rick_ticket_${ticketId}.md`;
@@ -236,6 +240,7 @@ export function listWorkingTreeDirtyPaths(cwd: string, excludePrefixes?: string[
     cwd,
     encoding: 'utf-8',
     timeout: 30_000,
+    maxBuffer: GIT_STATUS_MAX_BUFFER,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   if ((result.status ?? 1) !== 0) {

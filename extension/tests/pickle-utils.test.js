@@ -28,6 +28,7 @@ import {
     pruneOrphanedMapEntries,
     clearTicketCacheFields,
     restartDeadWatcherPanes,
+    runCmd,
 } from '../services/pickle-utils.js';
 import { LockError } from '../types/index.js';
 
@@ -1689,4 +1690,50 @@ test('getMicroverseSettings: defaults apply when settings missing', () => {
     assert.equal(result.judge_backend_fallback, 'codex');
     assert.equal(result.judge_model_claude, 'claude-sonnet-4-6');
     assert.equal(result.judge_model_codex, 'gpt-5.4');
+});
+
+// --- AP-EXT-ITER8-01: runCmd output is complete or an error, never truncated ---
+//
+// Asserts the ROUND TRIP (byte count of what the child actually wrote), never
+// "did it throw" or "is it non-empty": before the fix, `check: false` returned a
+// 1,114,112-byte prefix of a 2 MB write with no signal at all, so any liveness
+// or parseability oracle greens over the bug it is meant to catch.
+
+const BIG_OUTPUT_BYTES = 3 * 1024 * 1024;
+const emitBytes = (n) => `process.stdout.write("x".repeat(${n}))`;
+
+test('AP-EXT-ITER8-01: runCmd argv-form returns a >1MB payload byte-complete (check: false)', () => {
+    const out = runCmd([process.execPath, '-e', emitBytes(BIG_OUTPUT_BYTES)], { check: false });
+    assert.equal(out.length, BIG_OUTPUT_BYTES);
+});
+
+test('AP-EXT-ITER8-01: runCmd argv-form returns a >1MB payload byte-complete (check: true)', () => {
+    const out = runCmd([process.execPath, '-e', emitBytes(BIG_OUTPUT_BYTES)], { check: true });
+    assert.equal(out.length, BIG_OUTPUT_BYTES);
+});
+
+test('AP-EXT-ITER8-01: runCmd shell-form returns a >1MB payload byte-complete', () => {
+    const out = runCmd(`${process.execPath} -e '${emitBytes(BIG_OUTPUT_BYTES)}'`, { check: false });
+    assert.equal(out.length, BIG_OUTPUT_BYTES);
+});
+
+test('AP-EXT-ITER8-01: past the ceiling runCmd THROWS rather than returning a prefix — check: false too', () => {
+    // 65 MB clears RUN_CMD_MAX_BUFFER (64 MB). `check: false` is the load-bearing
+    // half: those callers degrade to '' on a FAILED command, and pre-fix they
+    // silently accepted a truncated payload from a command that SUCCEEDED.
+    const over = 65 * 1024 * 1024;
+    for (const check of [false, true]) {
+        assert.throws(
+            () => runCmd([process.execPath, '-e', emitBytes(over)], { check }),
+            /exceeded .* bytes and was truncated/,
+            `check: ${check} must not return a truncated prefix`,
+        );
+    }
+});
+
+test('AP-EXT-ITER8-01: a stderr-less spawn failure names its cause instead of throwing a bare "Error: "', () => {
+    assert.throws(
+        () => runCmd(['definitely-not-a-real-binary-ap-ext-iter8'], { check: true }),
+        (err) => /Command failed:/.test(err.message) && !/\nError: $/.test(err.message),
+    );
 });

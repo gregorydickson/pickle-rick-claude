@@ -30,6 +30,9 @@ const ONE_HOP_FILE_CAP = 100;
  * {@link ONE_HOP_WALK_WALL_MS} cap fires.
  */
 const FIND_IMPORTERS_TIMEOUT_MS = 5_000;
+// AP-EXT-ITER8-01: a whole-repo match list is unbounded; a truncated one silently
+// drops importers from the one-hop set, under-including the scope fence.
+const IMPORT_WALK_MAX_BUFFER = 64 * 1024 * 1024;
 /**
  * R-SRGT-2: aggregate wall-clock cap for the whole {@link computeOneHop}
  * importer walk. A seed file with many exports in a large repo runs one grep
@@ -725,6 +728,7 @@ function _runRgImportWalk(pattern, root, timeoutMs) {
         cwd: root,
         encoding: 'utf-8',
         timeout: timeoutMs,
+        maxBuffer: IMPORT_WALK_MAX_BUFFER,
     });
     if (!rg.error && (rg.status === 0 || rg.status === 1)) {
         return (rg.stdout || '')
@@ -743,7 +747,7 @@ function _runGrepImportWalk(pattern, root, timeoutMs) {
     // set, under-including scope on exactly the hosts the fallback serves.
     const grep = spawnSync('grep', ['-rl', '-E', '--include=*.ts', '--include=*.tsx', '--include=*.js', '--include=*.jsx',
         '--include=*.mjs', '--include=*.cjs',
-        pattern, '.'], { cwd: root, encoding: 'utf-8', timeout: timeoutMs });
+        pattern, '.'], { cwd: root, encoding: 'utf-8', timeout: timeoutMs, maxBuffer: IMPORT_WALK_MAX_BUFFER });
     if (grep.status === 0 || grep.status === 1) {
         return (grep.stdout || '')
             .split('\n')
