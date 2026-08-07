@@ -10,7 +10,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { backendEnvOverrides, __resetBackendWarnings } from '../../services/backend-spawn.js';
+import {
+  backendEnvOverrides,
+  buildWorkerInvocation,
+  buildManagerInvocation,
+  AddDirOutsideSandboxError,
+  __resetBackendWarnings,
+} from '../../services/backend-spawn.js';
 import { buildWorkerSpawnEnv } from '../../bin/spawn-morty.js';
 import { createIterationSpawnEnv } from '../../bin/mux-runner.js';
 
@@ -376,4 +382,91 @@ test('buildWorkerSpawnEnv: a spawn nested under an inherited fragment composes a
 test('backendEnvOverrides: no trailerOpts arg preserves existing PICKLE_BACKEND-only behavior', () => {
   const env = backendEnvOverrides('codex');
   assert.deepEqual(env, { PICKLE_BACKEND: 'codex' });
+});
+
+// --- AP-EXT-ITER9-01: the R-WSRC-4 sandbox assertion covers EVERY worker arm ---
+//
+// It used to live inside `buildClaudeWorkerInvocation`, so the codex arm — which
+// appends the same `--add-dir` list to `codex exec
+// --dangerously-bypass-approvals-and-sandbox` — built an argv pointed at the
+// operator's real repo with no complaint. Assert the ARGV, not just "did it
+// throw": the pre-fix codex arm returned successfully AND carried the repo path,
+// so a throw-only oracle on the claude arm greens over the whole defect.
+//
+// These cases live in this file because it is the only in-fence backend-spawn
+// test file for this session's scope.json; move them beside the other R-WSRC-4
+// cases in `tests/backend-spawn-add-dir-sandbox.test.js` when a fence carries it.
+
+function withTestMode(fn) {
+  const prev = process.env.PICKLE_TEST_MODE;
+  process.env.PICKLE_TEST_MODE = '1';
+  try { return fn(); } finally {
+    if (prev === undefined) delete process.env.PICKLE_TEST_MODE;
+    else process.env.PICKLE_TEST_MODE = prev;
+  }
+}
+
+const ADD_DIR_ARMS = ['claude', 'codex', 'deepseek'];
+
+for (const backend of ADD_DIR_ARMS) {
+  test(`AP-EXT-ITER9-01: ${backend} worker arm refuses an out-of-tmpdir --add-dir under PICKLE_TEST_MODE`, () => {
+    const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
+    const saved = process.env.DEEPSEEK_API_KEY;
+    process.env.DEEPSEEK_API_KEY = 'test-key';
+    try {
+      withTestMode(() => {
+        let invocation = null;
+        assert.throws(
+          () => { invocation = buildWorkerInvocation(backend, { prompt: 'p', addDirs: [repoRoot] }); },
+          AddDirOutsideSandboxError,
+        );
+        assert.equal(invocation, null, 'no argv may be built for an out-of-sandbox addDir');
+      });
+    } finally {
+      if (saved === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = saved;
+    }
+  });
+}
+
+test('AP-EXT-ITER9-01: a tmpdir-rooted --add-dir still builds on the codex arm', () => {
+  const sandbox = mkTmpDir('ap-iter9-sandbox-');
+  try {
+    withTestMode(() => {
+      const invocation = buildWorkerInvocation('codex', { prompt: 'p', addDirs: [sandbox] });
+      assert.equal(invocation.backend, 'codex');
+      assert.ok(invocation.args.includes('--add-dir'));
+      assert.ok(invocation.args.includes(sandbox));
+    });
+  } finally {
+    cleanDir(sandbox);
+  }
+});
+
+// Phase 2.5 replay: `buildManagerInvocation` carries the same `--add-dir
+// <workingDir>` under the same bypass-permissions flags and is still UNGUARDED.
+// The guard was built and reverted this pass — it reddens a fence-blocked
+// fixture; this case pins the CURRENT (defective) behavior so the gap is visible
+// rather than silent, and flips to a refusal assertion when the fix lands.
+test('AP-EXT-ITER9-01 (replay, OPEN GAP): the manager dispatcher does NOT yet assert', () => {
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
+  withTestMode(() => {
+    const invocation = buildManagerInvocation('claude', { prompt: 'p', addDirs: [repoRoot] });
+    assert.ok(
+      invocation.args.includes(repoRoot),
+      'OPEN GAP: the manager argv still carries an out-of-sandbox --add-dir',
+    );
+  });
+});
+
+test('AP-EXT-ITER9-01: PICKLE_TEST_MODE unset is a production passthrough on the codex arm', () => {
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
+  const prev = process.env.PICKLE_TEST_MODE;
+  delete process.env.PICKLE_TEST_MODE;
+  try {
+    const invocation = buildWorkerInvocation('codex', { prompt: 'p', addDirs: [repoRoot] });
+    assert.ok(invocation.args.includes(repoRoot));
+  } finally {
+    if (prev !== undefined) process.env.PICKLE_TEST_MODE = prev;
+  }
 });

@@ -10,13 +10,15 @@ import { materializeTrailerHooks } from './git-trailer-hooks.js';
 /**
  * R-WSRC-4 — Test-harness sandbox assertion.
  *
- * Thrown by `buildClaudeWorkerInvocation` when `process.env.PICKLE_TEST_MODE === '1'`
- * AND any `addDirs[i]` resolves (via `fs.realpathSync`) outside the canonical
- * `os.tmpdir()`. Catches the leak class where a test fixture sets
- * `working_dir: REPO_ROOT` (or `EXTENSION_DIR: REPO_ROOT`), spawns a worker,
- * and the spawn timeout fires (R-MRWG-2) — the orphaned
- * `claude --dangerously-skip-permissions --add-dir <real-repo>` subprocess
- * then retains write access to the operator's real working tree.
+ * Thrown by `buildWorkerInvocation` — for EVERY backend arm — when
+ * `process.env.PICKLE_TEST_MODE === '1'` AND any `addDirs[i]` resolves (via
+ * `fs.realpathSync`) outside the canonical `os.tmpdir()`. Catches the leak class
+ * where a test fixture sets `working_dir: REPO_ROOT` (or
+ * `EXTENSION_DIR: REPO_ROOT`), spawns a worker, and the spawn timeout fires
+ * (R-MRWG-2) — the orphaned `claude --dangerously-skip-permissions --add-dir
+ * <real-repo>` (or `codex exec --dangerously-bypass-approvals-and-sandbox
+ * --add-dir <real-repo>`) subprocess then retains write access to the operator's
+ * real working tree.
  */
 export class AddDirOutsideSandboxError extends Error {
     offendingDirs;
@@ -379,6 +381,11 @@ export function buildWorkerMcpConfig(sessionDir, workingDir, settings, snapshotE
     }
 }
 export function buildWorkerInvocation(backend, opts) {
+    // R-WSRC-4: one sandbox assertion for EVERY worker arm, at the dispatcher.
+    // It used to sit inside `buildClaudeWorkerInvocation`, so the codex arm —
+    // which spawns `codex exec --dangerously-bypass-approvals-and-sandbox` and
+    // appends the same `--add-dir` list — was never checked.
+    assertAddDirsUnderTmpdirIfTestMode(opts.addDirs);
     if (backend === 'codex')
         return buildCodexInvocation(opts.prompt, opts.addDirs, opts.model, opts.effort);
     if (backend === 'hermes')
@@ -394,6 +401,14 @@ export function buildWorkerInvocation(backend, opts) {
     return buildClaudeWorkerInvocation(opts);
 }
 export function buildManagerInvocation(backend, opts) {
+    // AP-EXT-ITER9-01 OPEN GAP: this dispatcher carries the SAME `--add-dir
+    // <workingDir>` under the same bypass-permissions flags and takes NO R-WSRC-4
+    // assertion. Adding it here is correct and was built + reverted this pass: it
+    // reddens `tests/iteration-outcome.test.js` ("fractional mux max-turn settings
+    // fall back before spawning manager"), which runs under PICKLE_TEST_MODE=1 with
+    // an unsandboxed `PICKLE_DATA_ROOT` — a real fixture leak the guard correctly
+    // flags, but that test file is outside this session's scope.json. See the
+    // `backend-spawn.ts` trap door in src/services/CLAUDE.md.
     if (backend === 'codex')
         return buildCodexInvocation(opts.prompt, opts.addDirs, opts.model);
     if (backend === 'hermes')
@@ -409,8 +424,6 @@ export function buildManagerInvocation(backend, opts) {
     return buildClaudeManagerInvocation(opts);
 }
 function buildClaudeWorkerInvocation(opts) {
-    // R-WSRC-4: test-harness sandbox assertion. No-op unless PICKLE_TEST_MODE=1.
-    assertAddDirsUnderTmpdirIfTestMode(opts.addDirs);
     const { path: mcpCfg, layer } = resolveSpawnMcpConfig(opts);
     emitMcpConfigResolved(mcpCfg, layer);
     const args = ['--dangerously-skip-permissions'];
