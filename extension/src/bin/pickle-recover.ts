@@ -68,7 +68,7 @@ export interface RecoverTransition {
 export interface RecoverDeps {
   readState: (statePath: string) => { exit_reason?: string | null; working_dir?: string; start_commit?: string; current_ticket?: string | null; active?: boolean; step?: string };
   /** Mutate state.json through the sanctioned StateManager path only. */
-  updateState: (statePath: string, mutator: (s: { current_ticket: string | null; exit_reason?: string | null; active?: boolean; step?: string }) => void) => void;
+  updateState: (statePath: string, mutator: (s: { current_ticket: string | null; exit_reason?: string | null; active?: boolean; step?: string; pid?: number }) => void) => void;
   resolveSessionPath: (cwd: string) => string | null;
   collectTickets: typeof collectTickets;
   ticketStatus: typeof getTicketStatus;
@@ -348,11 +348,21 @@ function executeTransition(subcommand: RecoverSubcommand, ctx: TransitionCtx, de
       // Refuse on an all-Done session: no runnable Todo means nothing to un-terminalize for.
       if (!ticket) throw new RecoverArgError('reactivate refused: no runnable Todo ticket remains (all-Done session)');
       // Single sanctioned StateManager write: un-terminalize + point at the lowest runnable Todo.
+      // `pid` MUST be released with the same write. A terminal state keeps the DEAD pid of the
+      // runner that finalized it (finalizeTerminalState never clears it), and
+      // StateManager.recoverStaleActiveFlag demotes any `active:true` state whose finite pid is
+      // dead — so leaving it stamped makes the very next read flip `active` back to false and
+      // persist that, silently voiding the one field this transition exists to set. `null` is the
+      // truthful claim (no process owns this session yet); the next runner stamps its own pid, and
+      // the paused-orphan arm still demotes it if nobody ever does. `delete` rather than `= null`:
+      // `State.pid` is `pid?: number`, so absence — not null — is the schema's encoding of
+      // "unclaimed", and `recoverStaleActiveFlag` takes the same branch for both.
       deps.updateState(statePath, (s) => {
         s.active = true;
         s.step = 'research';
         s.exit_reason = null;
         s.current_ticket = ticket;
+        delete s.pid;
       });
       return 'reactivated';
     }

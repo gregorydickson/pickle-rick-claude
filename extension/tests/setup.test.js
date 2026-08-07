@@ -7,6 +7,8 @@ import * as os from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArguments, initializeNewSession, evaluateLaunchSizing, countManifestTickets } from '../bin/setup.js';
+import { runRecover } from '../bin/pickle-recover.js';
+import { StateManager } from '../services/state-manager.js';
 import { compatibleCodexVersion, codexVersionLine } from './__helpers__/codex-shim.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1940,4 +1942,123 @@ test('setup --resume: a TARGET-repo RED is advisory — reattached, flipped Done
         );
         assert.equal(residual.gate_payload.computed_via, 'target_repo_gate', 'the residual names the authoring gate');
     });
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER10-01 — `pickle-recover --reactivate` must SURVIVE the next read.
+//
+// NOTE ON THE HOST: these cases belong beside the other reactivate cases in
+// `tests/bin/pickle-recover-reactivate.test.js`, which is OUTSIDE this session's
+// `scope.json`. They live here because `setup.ts --resume` is the sibling sanctioned
+// un-terminalize writer, and this is the in-fence file that covers it. Do NOT read
+// their location as evidence they are about `setup.js`.
+//
+// The sibling file's cases inject a fake `updateState` that applies the mutator to a
+// plain object, so they are blind BY CONSTRUCTION to anything StateManager does with
+// the result. These drive the REAL StateManager and assert the state a later reader
+// actually sees.
+// ---------------------------------------------------------------------------
+
+/** A pid that is provably dead: spawn a node that exits immediately, then reuse its pid. */
+function deadPid() {
+    const r = spawnSync(process.execPath, ['-e', ''], { timeout: 30000 });
+    return r.pid;
+}
+
+function seedTerminalSession(pid) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-reactivate-'));
+    fs.writeFileSync(
+        path.join(dir, 'state.json'),
+        JSON.stringify({
+            active: false,
+            step: 'completed',
+            exit_reason: 'completed',
+            current_ticket: null,
+            working_dir: dir,
+            session_dir: dir,
+            start_commit: 'base1234',
+            pid,
+            // iteration/history non-empty: a session that really ran, so the phantom-demotion
+            // arm (iteration === 0 && history empty) is not what is under test here.
+            iteration: 3,
+            history: [{ step: 'research', timestamp: '2026-08-07T00:00:00.000Z' }],
+            max_iterations: 15,
+            worker_timeout_seconds: 3600,
+            start_time_epoch: 1,
+            started_at: '2026-08-07T00:00:00.000Z',
+            activity: [],
+            backend: 'claude',
+            schema_version: 5,
+        }, null, 2),
+    );
+    return dir;
+}
+
+/** RecoverDeps wired to the REAL StateManager; everything else is a stub. */
+function realStateRecoverDeps(sessionDir) {
+    return {
+        readState: (statePath) => new StateManager().read(statePath),
+        updateState: (statePath, mutator) => { new StateManager().update(statePath, mutator); },
+        resolveSessionPath: () => sessionDir,
+        collectTickets: () => [{ id: 't1', order: 10 }],
+        ticketStatus: () => 'Todo',
+        salvage: () => ({ disposition: 'no-op' }),
+        reattach: () => ({ detected: false, recovered: false, action: 'none' }),
+        setTicketTodo: () => {},
+        emit: () => {},
+        log: () => {},
+    };
+}
+
+test('AP-EXT-ITER10-01: --reactivate releases the dead pid, so active:true survives the next read', () => {
+    const pid = deadPid();
+    const sessionDir = seedTerminalSession(pid);
+    const statePath = path.join(sessionDir, 'state.json');
+    try {
+        const result = runRecover(
+            { subcommand: 'reactivate', ticketArg: null, plan: false },
+            sessionDir,
+            realStateRecoverDeps(sessionDir),
+        );
+        assert.equal(result.code, 0, 'reactivate succeeds');
+
+        // The oracle is what a LATER reader sees, not what the mutator wrote. A terminal state
+        // keeps the dead pid of the runner that finalized it, and recoverStaleActiveFlag demotes
+        // any active:true state whose finite pid is dead — so a reactivate that leaves the pid
+        // stamped is reverted by the very next read, and the revert is persisted.
+        const reread = new StateManager().read(statePath);
+        assert.equal(reread.active, true, 'the un-terminalize survives a StateManager read');
+        assert.equal(reread.step, 'research');
+        assert.equal(reread.exit_reason, null);
+        assert.equal(reread.current_ticket, 't1');
+        assert.equal(reread.pid, undefined, 'no process owns the session yet — the dead claim is released');
+
+        const onDisk = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        assert.equal(onDisk.active, true, 'and the read did not persist a demotion over it');
+        assert.ok(!('pid' in onDisk), 'the dead claim is absent on disk, not merely nulled');
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER10-01: a LIVE pid is still refused — releasing the claim never clobbers a running owner', () => {
+    const sessionDir = seedTerminalSession(process.pid);
+    const statePath = path.join(sessionDir, 'state.json');
+    try {
+        // active:true + our own (live) pid is the running-pipeline case the command must refuse.
+        new StateManager().update(statePath, (s) => { s.active = true; s.step = 'research'; });
+        const result = runRecover(
+            { subcommand: 'reactivate', ticketArg: null, plan: false },
+            sessionDir,
+            realStateRecoverDeps(sessionDir),
+        );
+        assert.notEqual(result.code, 0, 'a live session is refused');
+        assert.equal(
+            JSON.parse(fs.readFileSync(statePath, 'utf8')).pid,
+            process.pid,
+            'the live owner keeps its claim',
+        );
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
 });
