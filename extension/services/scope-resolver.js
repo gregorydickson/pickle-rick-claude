@@ -15,6 +15,7 @@ import { spawnSync } from 'child_process';
 import { runGit, getHeadSha, getDiffFiles, getMergeBase } from './git-utils.js';
 import { StateManager } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
+import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 /** Max number of seed files permitted for one-hop expansion. Above this, throw SCOPE_ONE_HOP_TOO_LARGE. */
 const ONE_HOP_FILE_CAP = 100;
 /**
@@ -30,9 +31,6 @@ const ONE_HOP_FILE_CAP = 100;
  * {@link ONE_HOP_WALK_WALL_MS} cap fires.
  */
 const FIND_IMPORTERS_TIMEOUT_MS = 5_000;
-// AP-EXT-ITER8-01: a whole-repo match list is unbounded; a truncated one silently
-// drops importers from the one-hop set, under-including the scope fence.
-const IMPORT_WALK_MAX_BUFFER = 64 * 1024 * 1024;
 /**
  * R-SRGT-2: aggregate wall-clock cap for the whole {@link computeOneHop}
  * importer walk. A seed file with many exports in a large repo runs one grep
@@ -728,7 +726,9 @@ function _runRgImportWalk(pattern, root, timeoutMs) {
         cwd: root,
         encoding: 'utf-8',
         timeout: timeoutMs,
-        maxBuffer: IMPORT_WALK_MAX_BUFFER,
+        // AP-EXT-ITER8-01: a whole-repo match list is unbounded; a truncated one silently
+        // drops importers from the one-hop set, under-including the scope fence.
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
     if (!rg.error && (rg.status === 0 || rg.status === 1)) {
         return (rg.stdout || '')
@@ -747,7 +747,7 @@ function _runGrepImportWalk(pattern, root, timeoutMs) {
     // set, under-including scope on exactly the hosts the fallback serves.
     const grep = spawnSync('grep', ['-rl', '-E', '--include=*.ts', '--include=*.tsx', '--include=*.js', '--include=*.jsx',
         '--include=*.mjs', '--include=*.cjs',
-        pattern, '.'], { cwd: root, encoding: 'utf-8', timeout: timeoutMs, maxBuffer: IMPORT_WALK_MAX_BUFFER });
+        pattern, '.'], { cwd: root, encoding: 'utf-8', timeout: timeoutMs, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
     if (grep.status === 0 || grep.status === 1) {
         return (grep.stdout || '')
             .split('\n')

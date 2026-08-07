@@ -4,7 +4,7 @@ import * as os from 'os';
 import { spawnSync } from 'child_process';
 import { formatLocalDateKey, safeErrorMessage } from './pickle-utils.js';
 import { readRecoverableJsonObject } from './microverse-state.js';
-import { BACKENDS } from '../types/index.js';
+import { BACKENDS, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 // ---------------------------------------------------------------------------
 // Skip-flag budget dashboard (W5c)
 //
@@ -395,7 +395,7 @@ export function scanGitRepos(repoRoot, since, until) {
                 // AP-EXT-ITER8-01: an unbounded log window truncates past Node's 1 MB
                 // default, and the `status !== 0` guard below then drops the whole repo
                 // from the report silently — under-counted LOC that reads as real data.
-                maxBuffer: 64 * 1024 * 1024,
+                maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
                 stdio: ['ignore', 'pipe', 'pipe'],
             });
             if ((proc.status ?? 1) !== 0)

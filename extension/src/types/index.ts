@@ -273,6 +273,20 @@ export interface CodegraphSettings {
  */
 export const FALSE_EPIC_THRESHOLD = 3;
 
+/**
+ * AP-EXT-ITER8-01: the single ceiling every unbounded read declares instead of
+ * inheriting Node's 1 MB `spawnSync`/`execFileSync` default. Applies to whole-repo
+ * enumerations (`ls-files`, `status --porcelain`, importer greps), branch-wide
+ * patches (`diff --cached --binary`, `diff <base>..HEAD`), and the shared `runCmd`
+ * primitive. On overflow Node SIGTERMs the child but still returns the first
+ * megabyte, so a truncated read is a WRONG ANSWER a caller cannot distinguish
+ * from a complete one — it reads as "file not tracked", "no changes", or a
+ * partial patch. The ceiling is deliberately far above the largest observed
+ * payload (6.28 MB for a `blame --line-porcelain` of this repo's own
+ * `mux-runner.ts`) and is declared ONCE so a future change edits one site.
+ */
+export const UNBOUNDED_READ_MAX_BUFFER = 64 * 1024 * 1024;
+
 export type Backend = 'claude' | 'codex' | 'hermes' | 'deepseek' | 'grok' | 'kimi' | 'gemini';
 export type BackendResolutionSource = 'state' | 'env' | 'settings' | 'default' | 'refinement-lock' | 'cli-flag-override';
 export type WorkerBackendResolutionSource = 'worker_backend' | 'backend' | 'env_lock';

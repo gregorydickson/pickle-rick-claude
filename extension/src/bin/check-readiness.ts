@@ -10,6 +10,7 @@ import { isRecord } from '../lib/is-record.js';
 import { formatLocalDateKey, safeErrorMessage, writeStateFile } from '../services/pickle-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { readRecoverableJsonObject } from '../services/recoverable-json.js';
+import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 import type { ReadinessCycleHistoryEntry } from '../types/index.js';
 import { resolveExtensionDir } from '../services/forward-ref-annotation.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
@@ -124,9 +125,6 @@ const ALLOWLIST_FILE_REL = 'extension/.readiness-allowlist.json';
 // context or workflow inputs) rather than in-repo contract references.
 const SNIPPET_HEAD_SEGMENTS = new Set(['t', 'inputs']);
 const GIT_LS_FILES_TIMEOUT_MS = 30_000;
-// AP-EXT-ITER8-01: a whole-repo `ls-files` is unbounded; a truncated list reads as
-// "file not tracked" and manufactures false-positive contract/file_path findings.
-const GIT_LS_FILES_MAX_BUFFER = 64 * 1024 * 1024;
 const DOC_EXTENSION_ALLOWLIST = new Set([
   'md',
   'sh',
@@ -331,7 +329,9 @@ function gitTrackedFiles(repoRoot: string): string[] {
     cwd: repoRoot,
     encoding: 'utf-8',
     timeout: GIT_LS_FILES_TIMEOUT_MS,
-    maxBuffer: GIT_LS_FILES_MAX_BUFFER,
+    // AP-EXT-ITER8-01: a whole-repo `ls-files` is unbounded; a truncated list reads as
+    // "file not tracked" and manufactures false-positive contract/file_path findings.
+    maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
   });
   if (result.status !== 0) return [];
   return result.stdout.split('\n').filter(Boolean);

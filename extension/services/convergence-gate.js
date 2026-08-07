@@ -3,7 +3,7 @@ import * as path from 'path';
 import { createHash } from 'node:crypto';
 import { execFile, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { LockError } from '../types/index.js';
+import { LockError, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 import { withLock } from './state-manager.js';
 import { readRecoverableJsonObject } from './microverse-state.js';
 import { writeStateFile } from './pickle-utils.js';
@@ -89,9 +89,6 @@ const PER_CHECK_TIMEOUT_MS = {
     tests: 300_000,
 };
 const GATE_TOTAL_TIMEOUT_MS = 600_000;
-// AP-EXT-ITER8-01: whole-tree status / branch-wide name-only are unbounded; a
-// truncated read silently narrows the changed set the gate scopes itself to.
-const GIT_ENUMERATION_MAX_BUFFER = 64 * 1024 * 1024;
 const GATE_LOCK_TIMEOUT_MS = 30_000;
 const WORKSPACE_ROOT_CONTROL_FILES = new Set([
     'package.json',
@@ -507,7 +504,9 @@ function getChangedSince(workingDir, since) {
         cwd: workingDir,
         encoding: 'utf-8',
         timeout: 30_000,
-        maxBuffer: GIT_ENUMERATION_MAX_BUFFER,
+        // AP-EXT-ITER8-01: whole-tree status / branch-wide name-only are unbounded; a
+        // truncated read silently narrows the changed set the gate scopes itself to.
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
     if ((result.status ?? 1) !== 0)
         return [];
@@ -746,7 +745,7 @@ function workerModeSkipResult(opts, start, emit) {
         return null;
     const porcelainR = spawnSync('git', ['status', '--porcelain'], {
         cwd: opts.workingDir, encoding: 'utf-8', timeout: 10_000,
-        maxBuffer: GIT_ENUMERATION_MAX_BUFFER,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
     const dirtyLines = (porcelainR.stdout ?? '').split('\n').filter(Boolean);
     if (dirtyLines.length === 0)

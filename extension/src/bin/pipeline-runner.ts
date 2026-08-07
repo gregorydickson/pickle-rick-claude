@@ -20,7 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'child_process';
 import type { Backend, State } from '../types/index.js';
-import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, isMicroverseFailureExit, type MicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
+import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, isMicroverseFailureExit, type MicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, type GraduationCounts } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import {
@@ -964,9 +964,6 @@ export function parseDiffForVisualStat(diffOutput: string): DiffVisualStat {
 }
 
 const GIT_DIFF_DESIGN_SAFE_TIMEOUT_MS = 30_000;
-// AP-EXT-ITER8-01: a bundle-wide patch is unbounded; a truncated one silently
-// under-counts the visual stat that decides `design_safe`.
-const GIT_UNBOUNDED_MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
  * R-PIAP-B2: resolve whether the current branch is design-safe.
@@ -991,7 +988,9 @@ export function resolveDesignSafe(
       cwd: repoRoot,
       encoding: 'utf-8',
       timeout: GIT_DIFF_DESIGN_SAFE_TIMEOUT_MS,
-      maxBuffer: GIT_UNBOUNDED_MAX_BUFFER,
+      // AP-EXT-ITER8-01: a bundle-wide patch is unbounded; a truncated one silently
+      // under-counts the visual stat that decides `design_safe`.
+      maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
   } catch {
     return false;
@@ -3646,7 +3645,7 @@ function collectPicklePhaseProgress(runtime: PipelineRuntime): {
         cwd: runtime.workingDir,
         encoding: 'utf8',
         timeout: 10_000,
-        maxBuffer: GIT_UNBOUNDED_MAX_BUFFER,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
       });
       if (typeof out === 'string') {
         commitCount = out.split('\n').filter(line => line.trim().length > 0).length;

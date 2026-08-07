@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { execFileSync, execFile, spawn, spawnSync } from 'child_process';
 import { pathToFileURL } from 'node:url';
-import { State, Defaults, MicroverseExitReason } from '../types/index.js';
+import { State, Defaults, MicroverseExitReason, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 import type { ActivityEventType, Backend, IterationExitType, MicroverseSessionState, MicroverseHistoryEntry, ViolationLedger, FailureClass, GateResult, GateFailure, GateBaselineFile, StallClassification, StallRecoveryAction, JudgeResult, Violation, PickleSettings } from '../types/index.js';
 import type { ErrorRecord } from '../types/index.js';
 import {
@@ -1278,7 +1278,7 @@ function captureCachedDiffPatch(workingDir: string): Buffer {
     // AP-EXT-ITER8-01: the operator's staged patch is unbounded. Truncated at
     // Node's 1 MB default, `restoreCachedDiffPatch` re-applies a partial patch
     // AFTER its `git reset` has already unstaged everything — silent index loss.
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 }

@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { StringDecoder } from 'string_decoder';
-import { VALID_STEPS, LockError } from '../types/index.js';
+import { VALID_STEPS, LockError, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 import { StateManager, isProcessAlive, inspectLockFile, stealLockFile, acquireLockFile, releaseLockFile, isDeadPidPayload, withStealRight } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 import { updateTicketStatusInTransaction } from './transaction-ticket-ops.js';
@@ -180,17 +180,6 @@ const INSTALL_ROOT_SENTINEL = '.pickle-install-root';
 const EXTENSION_DIR_TEST = 'EXTENSION_DIR_TEST';
 let extensionDirFallbackEmitted = false;
 /**
- * Output ceiling for every `runCmd` spawn. Node's default is 1 MB, and on
- * overflow the child is SIGTERMed while the first megabyte is still returned as
- * stdout — a truncated string a caller cannot distinguish from a complete one.
- * Callers here read whole-repo enumerations (`ls-files -co -z`), branch-wide
- * `check-attr`, and `blame --line-porcelain` (6.28 MB for this repo's own
- * `mux-runner.ts`), so 1 MB is inside the operating envelope, not outside it.
- * 64 MB matches the ceiling `git-utils.ts` and `audit-ticket-bundle.ts` already
- * use for the same class of git output.
- */
-const RUN_CMD_MAX_BUFFER = 64 * 1024 * 1024;
-/**
  * A truncated read is a WRONG ANSWER, never a soft failure — so it throws for
  * every caller, including `check: false` ones whose contract is otherwise
  * "degrade to empty". Those callers degrade on a command that FAILED; ENOBUFS
@@ -202,14 +191,14 @@ const RUN_CMD_MAX_BUFFER = 64 * 1024 * 1024;
 function assertNotTruncated(cmd, error) {
     if (error?.code !== 'ENOBUFS')
         return;
-    throw new Error(`Command output exceeded ${RUN_CMD_MAX_BUFFER} bytes and was truncated: ${cmd}`);
+    throw new Error(`Command output exceeded ${UNBOUNDED_READ_MAX_BUFFER} bytes and was truncated: ${cmd}`);
 }
 function runArgvCmd(cmd, options) {
     const result = spawnSync(cmd[0], cmd.slice(1), {
         cwd: options.cwd,
         encoding: 'utf-8',
         timeout: 30_000,
-        maxBuffer: RUN_CMD_MAX_BUFFER,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
         stdio: options.capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
     });
     assertNotTruncated(cmd.join(' '), result.error);
@@ -232,7 +221,7 @@ function runShellCmd(cmd, options) {
             cwd: options.cwd,
             encoding: 'utf-8',
             timeout: 30_000,
-            maxBuffer: RUN_CMD_MAX_BUFFER,
+            maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
             stdio: options.capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
         });
         return (stdout || '').trim();

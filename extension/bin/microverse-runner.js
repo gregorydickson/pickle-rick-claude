@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { execFileSync, execFile, spawn, spawnSync } from 'child_process';
 import { pathToFileURL } from 'node:url';
-import { Defaults } from '../types/index.js';
+import { Defaults, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 import { resolveBackend, resolveWorkerBackendFromState, buildJudgeInvocation, buildWorkerInvocation, backendEnvOverrides, } from '../services/backend-spawn.js';
 import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv } from '../services/judge-spawn-env.js'; // R-SJET-3
 import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
@@ -882,7 +882,7 @@ function captureCachedDiffPatch(workingDir) {
         // AP-EXT-ITER8-01: the operator's staged patch is unbounded. Truncated at
         // Node's 1 MB default, `restoreCachedDiffPatch` re-applies a partial patch
         // AFTER its `git reset` has already unstaged everything — silent index loss.
-        maxBuffer: 64 * 1024 * 1024,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
         stdio: ['pipe', 'pipe', 'pipe'],
     });
 }

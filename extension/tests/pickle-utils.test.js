@@ -1718,7 +1718,7 @@ test('AP-EXT-ITER8-01: runCmd shell-form returns a >1MB payload byte-complete', 
 });
 
 test('AP-EXT-ITER8-01: past the ceiling runCmd THROWS rather than returning a prefix — check: false too', () => {
-    // 65 MB clears RUN_CMD_MAX_BUFFER (64 MB). `check: false` is the load-bearing
+    // 65 MB clears UNBOUNDED_READ_MAX_BUFFER (64 MB). `check: false` is the load-bearing
     // half: those callers degrade to '' on a FAILED command, and pre-fix they
     // silently accepted a truncated payload from a command that SUCCEEDED.
     const over = 65 * 1024 * 1024;
