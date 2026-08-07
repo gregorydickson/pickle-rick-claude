@@ -514,7 +514,7 @@ describe('AC-NSG-5b — crash-floor pins (the invariant is bounded, not universa
 });
 
 describe('AC-NSG-5b — structural producer enumeration (widened reach)', () => {
-  const sourceText = fs.readFileSync(PIPELINE_RUNNER_SRC, 'utf-8');
+  const sourceText = PIPELINE_RUNNER_SOURCE;
   const producers = discoverPhaseIterationOutcomeProducers(sourceText);
 
   test('every PhaseIterationOutcome producer is discovered', () => {
