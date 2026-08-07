@@ -469,7 +469,7 @@ describe('AC-OA-1c: a degraded phase never claims success', () => {
       );
     } finally {
       process.exit = originalExit;
-      if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
+      if (originalTmux === undefined) { delete process.env.TMUX; } else { process.env.TMUX = originalTmux; }
     }
 
     // It did NOT abort: the finalize gate ran over the converged work.

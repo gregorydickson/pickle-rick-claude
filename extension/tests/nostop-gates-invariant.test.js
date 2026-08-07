@@ -367,7 +367,7 @@ describe('AC-OA-3b — channel 1: every union member has a defined disposition',
   ].filter(Boolean);
 
   for (const reason of EXIT_REASON_UNION_MEMBERS) {
-    if (reason === SUCCESS_EXIT_REASON) continue;
+    if (reason === SUCCESS_EXIT_REASON) { continue; }
     test(`${reason} is classified halt / failure / incomplete`, () => {
       assert.ok(
         dispositionsFor(reason).length > 0,
