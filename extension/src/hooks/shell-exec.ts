@@ -98,6 +98,38 @@ export function isShellWrapper(token: string | undefined): boolean {
 }
 
 /**
+ * Index of the first token past a run of `KEY=value` env assignments.
+ *
+ * The shell writes assignments BEFORE the interpreter, so every exec-token read
+ * begins here. Exported so no caller re-inlines the `ENV_ASSIGNMENT_RE` loop: a
+ * private copy is what let `tsc-gate.ts` carry its own regex LITERAL under a
+ * comment claiming it was "the identical regex".
+ */
+export function skipEnvAssignments(tokens: string[], start = 0): number {
+  let idx = start;
+  while (idx < tokens.length && ENV_ASSIGNMENT_RE.test(tokens[idx])) idx++;
+  return idx;
+}
+
+/**
+ * THE exec-token prelude for the hooks subsystem: env assignments → optional
+ * `bash`/`sh` wrapper → env assignments. Returns the index of the token the
+ * shell will actually exec.
+ *
+ * ONE home for the same reason `execName` and `splitShellSegments` have one
+ * (AP-EXT-EXECFOLD, AP-EXT-ITER12-01): the two handlers re-forked it and DRIFTED
+ * — config-protection routed all three of its detectors through this prelude
+ * while tsc-gate hand-rolled the env arm alone and never skipped the wrapper.
+ * The order is load-bearing: a wrapper-skip-then-env-skip prelude never
+ * recognizes `PICKLE_ROLE=x bash install.sh`.
+ */
+export function execTokenIndex(tokens: string[]): number {
+  const afterEnv = skipEnvAssignments(tokens);
+  const afterWrapper = isShellWrapper(tokens[afterEnv]) ? afterEnv + 1 : afterEnv;
+  return skipEnvAssignments(tokens, afterWrapper);
+}
+
+/**
  * Every operator at which bash starts a new command.
  *
  * Beyond the control operators (`&&`, `||`, `|`, `&`, `;`, newline) this
@@ -222,8 +254,7 @@ export function splitShellSegments(command: string, depth = 0): string[] {
  */
 function shellCommandStringPayload(segment: string): string | null {
   const tokens = tokenizeShellCommand(segment);
-  let idx = 0;
-  while (idx < tokens.length && ENV_ASSIGNMENT_RE.test(tokens[idx])) idx++;
+  let idx = skipEnvAssignments(tokens);
   if (!isShellWrapper(tokens[idx])) return null;
   let sawCommandStringFlag = false;
   for (idx++; idx < tokens.length; idx++) {

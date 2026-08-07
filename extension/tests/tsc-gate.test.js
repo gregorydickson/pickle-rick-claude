@@ -912,3 +912,58 @@ it('AP-EXT-ITER19-01 grouping delimiters are declared in the ONE separator set',
     );
   }
 });
+
+it('AP-EXT-ITER27-01 the exec-token prelude has ONE home (no private tsc-gate copy)', async () => {
+  const hooksDir = path.resolve(__dirname, '../src/hooks');
+  const shellExec = fs.readFileSync(path.join(hooksDir, 'shell-exec.ts'), 'utf8');
+  const tscGate = fs.readFileSync(path.join(hooksDir, 'handlers', 'tsc-gate.ts'), 'utf8');
+  const configProtection = fs.readFileSync(path.join(hooksDir, 'handlers', 'config-protection.ts'), 'utf8');
+  // Third fork of the same family AP-EXT-EXECFOLD (execName) and
+  // AP-EXT-ITER12-01 (splitShellSegments) each had to collapse: tsc-gate carried
+  // its own `ENV_ASSIGNMENT_RE` LITERAL under a comment claiming it was "the
+  // identical regex", and stopped after the env arm — no wrapper skip at all.
+  // Pin the single definition, not the behavior alone: a re-typed literal passes
+  // every behavior case above on the day it is written and drifts afterwards.
+  assert.match(shellExec, /export function execTokenIndex\(/);
+  assert.match(shellExec, /export function skipEnvAssignments\(/);
+  for (const [name, source] of [['tsc-gate.ts', tscGate], ['config-protection.ts', configProtection]]) {
+    assert.equal(
+      /function execTokenIndex\(/.test(source),
+      false,
+      `${name} must consume shell-exec.ts:execTokenIndex, not define its own`,
+    );
+    assert.equal(
+      /\[A-Za-z_\]\[A-Za-z0-9_\]\*=/.test(source),
+      false,
+      `${name} must consume shell-exec.ts:ENV_ASSIGNMENT_RE, not re-type the literal`,
+    );
+    assert.match(source, /execTokenIndex[\s\S]*from '\.\.\/shell-exec\.js'/);
+  }
+});
+
+it('AP-EXT-ITER27-01 isGitCommitCommand keeps env-prefix parity and gains the wrapper arm', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  // The env arm is the behavior the private copy already had — it must survive
+  // the collapse. The wrapper arm is what the copy was missing; both now come
+  // from the shared prelude, so neither can drift away alone.
+  const positives = [
+    'GIT_COMMITTER_DATE=2020 git commit -m "x"',
+    'GIT_AUTHOR_NAME=x GIT_COMMITTER_DATE=2020 git commit -m "x"',
+    'GIT_COMMITTER_DATE=2020 /usr/bin/git commit -m "x"',
+    'cd extension && GIT_DIR=.git git commit -m "x"',
+  ];
+  for (const command of positives) {
+    assert.equal(isGitCommitCommand(command), true, JSON.stringify(command));
+  }
+  // The prelude must not widen the classification: skipping a `bash`/`sh`
+  // wrapper lands on the wrapper's ARGUMENT, which is not git.
+  const negatives = [
+    'bash install.sh',
+    'PICKLE_ROLE=x bash install.sh',
+    'GIT_COMMITTER_DATE=2020 git status',
+    'GH_TOKEN=x gh pr create --fill',
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, JSON.stringify(command));
+  }
+});

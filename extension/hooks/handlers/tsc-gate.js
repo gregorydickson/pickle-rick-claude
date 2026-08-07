@@ -6,7 +6,7 @@ import { approve, loadActiveState, resolveStateFile } from '../resolve-state.js'
 import { logActivity } from '../../services/activity-logger.js';
 import { getDataRoot, safeErrorMessage } from '../../services/pickle-utils.js';
 import { StateManager } from '../../services/state-manager.js';
-import { execName, splitShellSegments, tokenizeShellCommand } from '../shell-exec.js';
+import { execName, execTokenIndex, splitShellSegments, tokenizeShellCommand } from '../shell-exec.js';
 /**
  * Git global options that consume the FOLLOWING token as their value in
  * space-separated form (`git -C <path> commit`). The commit-classification scan
@@ -79,16 +79,16 @@ function segmentIsGitCommit(segment) {
     const tokens = tokenizeShellCommand(stripped);
     if (tokens.length === 0)
         return false;
-    // Skip leading `NAME=value` env-var assignments before the executable token
-    // (`GIT_COMMITTER_DATE=… git commit`). config-protection.ts:findGitVerb and
-    // parseFirstShellWord both skip these via the identical regex; without the
-    // same skip here, an env-prefixed commit reads `GIT_COMMITTER_DATE=…` as
-    // tokens[0], fails the `=== 'git'` check, is classified non-commit, and SKIPS
-    // the R-WACT tsc gate for a real broken-TS commit — a one-sided parity gap
-    // vs the sibling detector (which catches `GIT_DIR=x git reset`).
-    let gitIdx = 0;
-    while (gitIdx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[gitIdx]))
-        gitIdx++;
+    // Locate the executable through the ONE shared prelude (env assignments →
+    // optional `bash`/`sh` wrapper → env assignments), the same helper
+    // config-protection's three detectors use. A private inline copy here — an
+    // `ENV_ASSIGNMENT_RE` literal re-typed under a comment claiming it was "the
+    // identical regex", and missing the wrapper arm entirely — is the third fork
+    // of the shell-token family that AP-EXT-EXECFOLD and AP-EXT-ITER12-01 each
+    // had to collapse after it drifted. Without the env skip, an env-prefixed
+    // commit reads `GIT_COMMITTER_DATE=…` as tokens[0], fails the `git` check, is
+    // classified non-commit, and SKIPS the R-WACT tsc gate for a broken-TS commit.
+    const gitIdx = execTokenIndex(tokens);
     // execName (not a raw compare): folds case and takes the basename, so
     // `GIT commit` and `/usr/bin/git commit` — which really do run git on a
     // case-insensitive filesystem — still classify as commits. A raw

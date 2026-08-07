@@ -5,7 +5,7 @@ import { resolveStateFile, loadActiveState, approve } from '../resolve-state.js'
 import { getExtensionRoot, getDataRoot } from '../../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../../services/microverse-state.js';
 import { logActivity } from '../../services/activity-logger.js';
-import { ENV_ASSIGNMENT_RE, execName, isShellWrapper, splitShellSegments, tokenizeShellCommand, } from '../shell-exec.js';
+import { execName, execTokenIndex, skipEnvAssignments, splitShellSegments, tokenizeShellCommand, } from '../shell-exec.js';
 // `/i` on every pattern for the same case-insensitive-filesystem reason as
 // `matchProtectedStateBasename`, and for parity with the sibling config regexes
 // in `tsc-gate.ts`, which already carry `/i`.
@@ -484,27 +484,6 @@ function detectTargetedStateFile(input) {
     return null;
 }
 /**
- * Advances past a shell command's prelude and returns the index of the real
- * executable token: leading `KEY=value` env assignments, then an optional
- * `bash`/`sh` wrapper, then any assignments between the wrapper and its target.
- *
- * Order matters and was previously wrong in two of the three detectors: the
- * shell writes assignments BEFORE the interpreter (`PICKLE_ROLE=x bash
- * install.sh`), so a wrapper-skip-then-env-skip prelude never recognized `bash`
- * and read the assignment as the executable. One helper for all three detectors
- * so the ordering cannot drift apart again.
- */
-function execTokenIndex(tokens) {
-    let idx = 0;
-    while (idx < tokens.length && ENV_ASSIGNMENT_RE.test(tokens[idx]))
-        idx++;
-    if (isShellWrapper(tokens[idx]))
-        idx++;
-    while (idx < tokens.length && ENV_ASSIGNMENT_RE.test(tokens[idx]))
-        idx++;
-    return idx;
-}
-/**
  * Returns true if a single (already-segmented) shell command invokes
  * `install.sh` as its executable token, skipping a leading `bash`/`sh` wrapper
  * and any `KEY=value` env prefixes. Does not match read-only references
@@ -658,9 +637,7 @@ function extractNodeTestPathFromSegment(segment) {
     if (!trimmed)
         return null;
     const tokens = trimmed.split(/\s+/);
-    let idx = 0;
-    while (idx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx]))
-        idx++;
+    let idx = skipEnvAssignments(tokens);
     // execName, not a raw compare: `NODE --test <expensive>` and
     // `/usr/bin/node --test <expensive>` both really run node, and a raw
     // `!== 'node'` let them slip the expensive-test guard. Same fold as every
