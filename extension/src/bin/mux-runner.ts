@@ -5239,9 +5239,13 @@ export interface CommitAndContinueDoneFlipInput {
   log: (msg: string) => void;
   /**
    * Optional ownership-scoped staging (M1). When provided (non-empty), `git add`
-   * stages exactly these repo-relative paths. Absent → the committer resolves the
-   * owned set ITSELF via `resolveDoneFlipStagePaths`; there is no whole-tree
-   * `git add -A` default (AP-EXT-ITER6-01).
+   * stages exactly these repo-relative paths. Absent → the committer falls back to
+   * a whole-tree `git add -A` carrying `CODEGRAPH_PATHSPEC_EXCLUDES`
+   * (AP-EXT-ITER6-01). That fallback performs NO ownership partition — the
+   * recovery-ladder rung-1 caller `attemptRecoveryBeforeTerminal` passes no
+   * `stagePaths`, so every non-codegraph dirty path lands under this ticket's
+   * `completion_commit`. Collapsing the exit-path `salvageDirtyTree` partition
+   * into this committer is the open fix (AP-EXT-ITER6-01 OPEN GAP).
    */
   stagePaths?: readonly string[];
 }
