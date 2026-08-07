@@ -158,7 +158,18 @@ export async function runCodegraphQueryBatch(
       }
     });
 
-    // Best-effort: hand the batch to the child. A dead child yields EPIPE — swallow.
+    // Best-effort: hand the batch to the child. A dead child yields EPIPE.
+    //
+    // The sync try/catch is NOT sufficient on its own. `child.stdin` is a stream: a write
+    // larger than the OS pipe buffer (a batch of search terms easily is) is buffered and
+    // flushed on a later tick, so a pipe that breaks after the call returns surfaces as an
+    // asynchronous 'error' event — and an unhandled stream 'error' is an uncaught exception
+    // that kills the PARENT (spawn-morty), not the child. Same two-arm shape as
+    // `writeChildInput` in hooks/dispatch.ts, which registers the listener for exactly this
+    // reason (pinned by the PC-1/PC-2 split in tests/integration/process-cleanup.test.js).
+    // No kill needed here: the timeout group-kills, and 'close'/'error' on the ChildProcess
+    // settles the promise.
+    child.stdin?.on('error', () => { /* child already gone — close/error handler settles */ });
     try {
       child.stdin?.write(JSON.stringify(input));
       child.stdin?.end();

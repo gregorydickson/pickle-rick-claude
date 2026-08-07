@@ -430,3 +430,41 @@ test('R-CGST source guard: runChild flushes stdout via the write callback before
     'runChild must pass an exit callback to process.stdout.write',
   );
 });
+
+// A fixture that destroys its own stdin and then lingers: the parent's buffered write
+// therefore breaks AFTER the synchronous `write()` call returns, which is the only shape
+// that reaches the asynchronous 'error' event on `child.stdin`. Without a listener on that
+// stream, node raises an uncaught exception in the PARENT process.
+function writeStdinSlammerFixture() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'cg-epipe-'));
+  const file = path.join(dir, 'stdin-slammer-child.cjs');
+  writeFileSync(
+    file,
+    [
+      // Close the read end without draining, then hold the process open briefly so the
+      // parent's pending flush lands on a broken pipe rather than on an exited child.
+      'process.stdin.destroy();',
+      'setTimeout(() => process.exit(3), 500);',
+      '',
+    ].join('\n'),
+  );
+  return file;
+}
+
+test('AP-EXT-ITER5-01 async EPIPE on child stdin degrades to a result, never an uncaught parent exception', async () => {
+  const fixture = writeStdinSlammerFixture();
+  // A payload far past the OS pipe buffer (~64KB) guarantees the write cannot complete
+  // synchronously, so the broken pipe can only surface as an async stream 'error'.
+  const searches = Array.from({ length: 400 }, (_, i) => `term-${i}-${'q'.repeat(512)}`);
+
+  const result = await runCodegraphQueryBatch(
+    { workingDir: '/tmp/cg-epipe-wd', searches, callers: [] },
+    { timeoutMs: 5000, childScriptPath: fixture },
+  );
+
+  assert.equal(result.status, 'failed', 'a child that never reads the batch must degrade, not resolve ok');
+  assert.equal(result.reason, 'shim-exit-3', 'the child exit code is what classifies the failure');
+  // Give any un-listened-for stream 'error' a tick to become an uncaught exception before
+  // the test completes — node:test attributes it to this test and fails it.
+  await new Promise((r) => setTimeout(r, 200));
+});
