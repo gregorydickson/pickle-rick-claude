@@ -871,11 +871,14 @@ function readSessionScopeAllowedPaths(sessionDir) {
         return null;
     }
 }
+// AP-EXT-ITER25-02: the snapshot is BYTES, never a string. Git emits the raw bytes of any
+// file it calls TEXT (no NUL in the first 8000), so a UTF-8 decode rewrites every invalid
+// sequence to U+FFFD and the restore re-stages DIFFERENT content than it captured. `--binary`
+// does not cover this — it reaches only files git already calls binary, which base85 to ASCII.
 function captureCachedDiffPatch(workingDir) {
     return execFileSync('git', ['diff', '--cached', '--binary', '--no-color'], {
         cwd: workingDir,
         timeout: 30_000,
-        encoding: 'utf-8',
         // AP-EXT-ITER8-01: the operator's staged patch is unbounded. Truncated at
         // Node's 1 MB default, `restoreCachedDiffPatch` re-applies a partial patch
         // AFTER its `git reset` has already unstaged everything — silent index loss.
@@ -889,13 +892,12 @@ function restoreCachedDiffPatch(workingDir, patch) {
         timeout: 10_000,
         stdio: ['pipe', 'pipe', 'pipe'],
     });
-    if (!patch.trim())
+    if (patch.length === 0)
         return;
     execFileSync('git', ['apply', '--cached', '--whitespace=nowarn', '-'], {
         cwd: workingDir,
         timeout: 30_000,
         input: patch,
-        encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
     });
 }

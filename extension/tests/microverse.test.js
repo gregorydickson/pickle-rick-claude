@@ -6,7 +6,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import { getHeadSha, isWorkingTreeDirty } from '../services/git-utils.js';
 import { runIteration } from '../bin/mux-runner.js';
 import {
@@ -2669,6 +2669,47 @@ test('preflightAutoCommit restores pre-existing staged changes when auto-commit 
             .split('\n')
             .filter(Boolean);
         assert.deepEqual(untrackedAfter, ['worker-output.txt'], 'auto-commit-added file should return to untracked state');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+// AP-EXT-ITER25-02: the rollback must restore the operator's staged index BYTE-exactly.
+// The sibling above asserts only the staged path NAMES, so it is blind by construction to a
+// snapshot pipe that decodes the patch as UTF-8 and re-stages U+FFFD in place of every invalid
+// sequence. Assert the round trip on the staged BLOB, never the name list and never "did it throw"
+// — the pre-fix restore succeeded and reported success while rewriting the content.
+test('AP-EXT-ITER25-02: rollback restores a non-UTF-8 TEXT staged file byte-exactly', () => {
+    const dir = createTempGitRepo();
+    try {
+        // latin-1 "café" — no NUL, so git classifies it TEXT and emits its raw bytes in the patch.
+        const original = Buffer.from('636166e9206e6f74650a', 'hex');
+        assert.equal(original.includes(0x00), false, 'fixture must be NUL-free or git takes the base85 binary path');
+
+        fs.writeFileSync(path.join(dir, 'note.txt'), Buffer.from('placeholder\n'));
+        execSync('git add note.txt', { cwd: dir, timeout: 30_000 });
+        execSync('git commit -m "track note"', { cwd: dir, timeout: 30_000 });
+
+        fs.writeFileSync(path.join(dir, 'note.txt'), original);
+        execSync('git add note.txt', { cwd: dir, timeout: 30_000 });
+        fs.writeFileSync(path.join(dir, 'worker-output.txt'), 'worker changes\n');
+
+        const stagedBefore = execFileSync('git', ['show', ':note.txt'], { cwd: dir, maxBuffer: 64 * 1024 * 1024 });
+        assert.ok(stagedBefore.equals(original), 'fixture precondition: staged blob starts as the raw bytes');
+
+        const hookPath = path.join(dir, '.git', 'hooks', 'pre-commit');
+        fs.writeFileSync(hookPath, '#!/usr/bin/env sh\nexit 1\n', { mode: 0o755 });
+
+        assert.throws(
+            () => preflightAutoCommit(dir, () => { }),
+            /Working tree is dirty and auto-commit failed:/,
+        );
+
+        const stagedAfter = execFileSync('git', ['show', ':note.txt'], { cwd: dir, maxBuffer: 64 * 1024 * 1024 });
+        assert.ok(
+            stagedAfter.equals(original),
+            `staged blob must round-trip byte-exactly: ${stagedAfter.toString('hex')} !== ${original.toString('hex')}`,
+        );
     } finally {
         fs.rmSync(dir, { recursive: true });
     }
