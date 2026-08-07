@@ -130,8 +130,10 @@ test('judge halt classification keeps judge_timeout recoverable and judge_unreac
     action: 'run-finalize-gate',
     recognizedExitReason: 'judge_timeout',
   });
+  // B-ONEABORT AC-OA-1a: judge_unreachable is a MICROVERSE_EXIT_REASONS union member, so it
+  // routes to the finalize-gate (degraded, not aborted) — no union member reaches the abort floor.
   assert.deepEqual(classifyMicroverseHaltDecision('judge_unreachable'), {
-    action: 'abort',
+    action: 'run-finalize-gate-incomplete',
     recognizedExitReason: 'judge_unreachable',
   });
   assert.deepEqual(classifyMicroverseHaltDecision('not-a-real-exit'), {
@@ -140,15 +142,18 @@ test('judge halt classification keeps judge_timeout recoverable and judge_unreac
   });
 });
 
-test('szechuan-sauce exits judge_unreachable — pipeline halts without spawning finalize-gate', async () => {
+test('szechuan-sauce exits judge_unreachable — pipeline runs finalize-gate and degrades, does not abort', async () => {
   const { repo, sessionDir } = makeSession(['szechuan-sauce']);
   const spawnCalls = [];
   __setSpawnRunnerForTests(makeJudgeSpawnAck(sessionDir, spawnCalls, 'judge_unreachable'));
   try {
+    // B-ONEABORT AC-OA-1a/AC-OA-1c: judge_unreachable is a union member, not the crash floor — the
+    // phase runs finalize-gate rather than aborting, but the run stays degraded (nonConvergent++),
+    // so the pipeline still exits 1 to withhold the success verdict (never a bare abort).
     await expectMainExit(sessionDir, 1);
     assert.ok(spawnCalls.length >= 1, 'microverse-runner must have been spawned (setup must not have skipped the phase)');
     const finalizeGateCalls = spawnCalls.filter(c => c.args.some(a => String(a).includes('finalize-gate.js')));
-    assert.equal(finalizeGateCalls.length, 0, 'finalize-gate.js must NOT be spawned when microverse exits with judge_unreachable');
+    assert.equal(finalizeGateCalls.length, 1, 'finalize-gate.js must be spawned exactly once when microverse exits with judge_unreachable');
     const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.match(runnerLog, /judge_unreachable/);
   } finally {
@@ -157,15 +162,18 @@ test('szechuan-sauce exits judge_unreachable — pipeline halts without spawning
   }
 });
 
-test('anatomy-park exits judge_unreachable — pipeline halts without spawning finalize-gate', async () => {
+test('anatomy-park exits judge_unreachable — pipeline runs finalize-gate and degrades, does not abort', async () => {
   const { repo, sessionDir } = makeSession(['anatomy-park']);
   const spawnCalls = [];
   __setSpawnRunnerForTests(makeJudgeSpawnAck(sessionDir, spawnCalls, 'judge_unreachable'));
   try {
+    // B-ONEABORT AC-OA-1a/AC-OA-1c: judge_unreachable is a union member, not the crash floor — the
+    // phase runs finalize-gate rather than aborting, but the run stays degraded (nonConvergent++),
+    // so the pipeline still exits 1 to withhold the success verdict (never a bare abort).
     await expectMainExit(sessionDir, 1);
     assert.ok(spawnCalls.length >= 1, 'microverse-runner must have been spawned (setup must not have skipped the phase)');
     const finalizeGateCalls = spawnCalls.filter(c => c.args.some(a => String(a).includes('finalize-gate.js')));
-    assert.equal(finalizeGateCalls.length, 0, 'finalize-gate.js must NOT be spawned when microverse exits with judge_unreachable');
+    assert.equal(finalizeGateCalls.length, 1, 'finalize-gate.js must be spawned exactly once when microverse exits with judge_unreachable');
     const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.match(runnerLog, /judge_unreachable/);
   } finally {
