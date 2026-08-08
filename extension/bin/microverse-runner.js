@@ -3863,8 +3863,10 @@ export async function main(sessionDir) {
 }
 export function markMicroverseFatalError(sessionDir) {
     const mvPath = path.join(sessionDir, 'microverse.json');
-    if (!fs.existsSync(mvPath))
-        return null;
+    // AP-EXT-ITER7-01: read straight through the recovery layer — an fs.existsSync
+    // pre-gate short-circuits before it and makes the promotion dead code, so a
+    // crash in the tmp-rename window (base gone, microverse.json.tmp.<pid> present)
+    // exits the fatal path silently instead of stamping stopped/error.
     const recovered = readRecoverableJsonObject(mvPath);
     if (!recovered)
         return null;

@@ -40,6 +40,7 @@ import {
     emitJudgeLegacyShapeDiagnostic,
     handleNoCommitStall,
     classifyAnatomyNonConvergence,
+    markMicroverseFatalError,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
 
@@ -1258,5 +1259,75 @@ test('AP-EXT-ITER4-01: an unrecognized findings_history shape leaves the ceiling
     ]) {
         const hit = classifyAnatomyNonConvergence({ ...base, findings_history: history }, 8);
         assert.ok(hit, `expected halt for findings_history=${JSON.stringify(history)}`);
+    }
+});
+
+/**
+ * AP-EXT-ITER7-01: `microverse.json` is written tmp-rename, so a crash in that window
+ * leaves ONLY `microverse.json.tmp.<pid>`. `markMicroverseFatalError` short-circuited on
+ * `fs.existsSync(mvPath)` immediately ABOVE its own `readRecoverableJsonObject(mvPath)`,
+ * making that recovery call dead code — the top-level fatal handler then exited silently
+ * without stamping `stopped`/`error`, and the "worker/fatal state" trap door's promotion
+ * claim was false. The pre-fix code returned `null` quietly, so assert the RETURN
+ * DISPOSITION, the promoted file on disk, and the written contents — never "no throw".
+ */
+function fatalDeadPidForTmp() {
+    for (const candidate of [999_999, 888_888, 777_777]) {
+        try { process.kill(candidate, 0); } catch { return candidate; }
+    }
+    throw new Error('no dead pid available for fixture');
+}
+
+test('AP-EXT-ITER7-01: a tmp-only microverse.json is still stamped stopped/error, and is promoted', () => {
+    const sessionDir = makeTmpDir();
+    try {
+        const mvPath = path.join(sessionDir, 'microverse.json');
+        const tmpPath = `${mvPath}.tmp.${fatalDeadPidForTmp()}`;
+        fs.writeFileSync(tmpPath, JSON.stringify({ status: 'iterating', exit_reason: 'no_progress' }, null, 2));
+        assert.equal(fs.existsSync(mvPath), false, 'fixture must start with NO base microverse.json');
+
+        assert.equal(markMicroverseFatalError(sessionDir), 'overwritten');
+
+        assert.equal(fs.existsSync(mvPath), true, 'the recoverable read must promote the tmp');
+        assert.equal(fs.existsSync(tmpPath), false);
+        const written = JSON.parse(fs.readFileSync(mvPath, 'utf-8'));
+        assert.equal(written.status, 'stopped');
+        assert.equal(written.exit_reason, 'error');
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER7-01: a tmp-only successful exit is preserved, not overwritten', () => {
+    const sessionDir = makeTmpDir();
+    try {
+        const mvPath = path.join(sessionDir, 'microverse.json');
+        const tmpPath = `${mvPath}.tmp.${fatalDeadPidForTmp()}`;
+        fs.writeFileSync(tmpPath, JSON.stringify({ status: 'iterating', exit_reason: 'converged' }, null, 2));
+
+        assert.equal(markMicroverseFatalError(sessionDir), 'preserved');
+
+        const sibling = JSON.parse(
+            fs.readFileSync(path.join(sessionDir, 'microverse-finalizer-error.json'), 'utf-8'),
+        );
+        assert.equal(sibling.preserved_exit_reason, 'converged');
+        assert.equal(
+            JSON.parse(fs.readFileSync(mvPath, 'utf-8')).exit_reason,
+            'converged',
+            'a successful exit reason must survive the fatal mark',
+        );
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER7-01: a genuinely absent microverse.json is still a no-op (null)', () => {
+    const sessionDir = makeTmpDir();
+    try {
+        assert.equal(markMicroverseFatalError(sessionDir), null);
+        assert.equal(fs.existsSync(path.join(sessionDir, 'microverse.json')), false);
+        assert.equal(fs.existsSync(path.join(sessionDir, 'microverse-finalizer-error.json')), false);
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 });
