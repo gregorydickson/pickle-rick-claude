@@ -744,6 +744,50 @@ failure that killed the run. **Fix (subtractive, two halves):** route `'failed'`
 `baseline_unmeasurable_unrecoverable` from the fatal set. ⛔ Do NOT add retry budget — the 4 attempts
 are not the problem, the classification of their outcome is.
 
+## 🔺 OPEN BUG — a deployed crash-floor halt verdict is discarded at the phase boundary; the amnesiac breaker zeroes its own bound, $13.21 burned (2026-08-07, P2)
+
+**`prds/BUG-REPORT-2026-08-07-toolchain-unavailable-not-treated-as-halt-stall-detection-blind-to-identical-verdicts.md`**
+— `/pickle-pipeline` session `2026-08-07-35088221` launched against a fresh worktree with no
+`node_modules`/`.env.local` (target `loa-2188-worktree/packages/api`). **Diagnosis revised 2026-08-07
+against source + session artifacts — both original root causes were wrong, and both corrections make
+the fix smaller and net-subtractive.**
+
+**V1 — the halt fired correctly; the phase boundary threw the verdict away.** `toolchain_unavailable`
+is NOT missing: it is an `ExitReason` (`mux-runner.ts:4434`), is in the terminal set (`:4464`), has a
+live predicate `targetToolchainMissing` (`:4505`) and the R-PFNT preflight (`:9967`), and ships in the
+deployed tree. It fired **268 ms into phase 1**, wrote a `session_end` activity record, called
+`recordExitReason` + `safeDeactivate`, and exited. `shouldHaltAfterPhase` then read only the exit
+**code** — `1` is non-fatal for a non-citadel phase under R-PHC-6 continue-by-default — discarded the
+crash-floor `exit_reason` persisted 200 ms earlier, and logged *"continuing to citadel"*. **This is a
+stated-but-unwired policy:** the root `CLAUDE.md` halt set names "toolchain unavailable" as a genuine
+crash floor, R-PHC-6 mandates continuing on non-fatal non-zero `pickle` exits, neither references the
+other, and no code reconciles them — so the crash floor is unreachable through the phase boundary no
+matter how well the detector works. **Fix = one wire, not a mechanism:** read `state.exit_reason`
+against the existing terminal set at the boundary. Precedent at that exact seam: R-CCR-3 and R-ICP-2
+already read `exit_reason` in `runPhaseIteration`. A prose-signature detector is explicitly NOT needed.
+
+**V2 — stall detection was bypassed, and the loop is unbounded by construction.**
+`classifyNoCommitExit` (`microverse-runner.ts:1518`) evaluates `if (turns !== null && turns < 5) return
+'amnesiac'` at `:1530` **ahead of every content check**. A correctly-blocked worker concludes fast
+(being right is fast), so a decisive correct verdict is labelled `amnesiac`; the handler at `:3749`
+logs *"not counting as stall"* and never touches `stall_counter` — confirmed by the session's final
+`microverse.json`: `stall_counter: 0`, `convergence.history: []` after 22 iterations. Stall detection
+was never blind to identical verdicts; it was handed nothing to count. Worse, at 2 strikes
+`resetGapAnalysisForAmnesiacBreaker` (`:3670`) returns `consecutive_amnesiac_exits: 0` — **the breaker
+zeroes the counter that is supposed to bound it** — and sets `status: 'gap_analysis'`, paying a fresh
+LLM baseline measurement each cycle. `consecutive_amnesiac_exits` can never exceed 2. **Cost
+attribution corrected:** ~11 gap-analysis + judge cycles, not 22 worker iterations. **Fix = two
+removals, no new state:** demote or delete the `num_turns < 5` proxy below the empty-diff /
+unchanged-`HEAD` truth checks, and stop the breaker zeroing its own counter (a one-line deletion).
+
+**Spun-off finding:** across those ~11 cycles against a provably unchanged **empty** diff the judge
+returned `3, 2, 4, 1, … 0`. An empty diff should score constant. Adjacent to reopened R-JPCM and the
+R-SLLJ ledger work; a non-deterministic baseline defeats amnesiac-threshold tuning by construction, so
+it must be understood before anyone tunes those thresholds.
+
+**Bundle is net-subtractive:** no new state field, no new detector, no new gate, no new skip flag.
+Verified root causes, corrected ACs, and the superseded original inference are all in the bug report.
+
 ## 🚨 OPEN BUG — R-ISSC: `test:integration` short-circuits; the serial sub-tier is never measured when parallel fails (2026-08-05, P1)
 
 **`prds/BUG-REPORT-2026-08-05-test-integration-short-circuits-serial-subtier-never-measured.md`** —
