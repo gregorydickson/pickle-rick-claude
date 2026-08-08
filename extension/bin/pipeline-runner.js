@@ -1724,8 +1724,47 @@ function resolveAnatomySubsystems(sessionDir, target, scope, log) {
     log(`anatomy-park: scope filtered ${discovered.length} → ${filtered.length} subsystems: ${filtered.map(s => s.name).join(', ')}`);
     return filtered;
 }
+// A subsystem converges at 2 consecutive clean passes (`.claude/commands/anatomy-park.md`).
+const ANATOMY_CONVERGED_CLEAN_PASSES = 2;
+/**
+ * AP-EXT-ITER5-01: a crash-resume re-enters the phase it died in (`readResumePhasePlan`
+ * returns `phases.indexOf(priorPhase)`), so phase setup runs a SECOND time over a session
+ * dir that already holds a live `anatomy-park.json`. Return the prior ledger when it
+ * describes the same subsystem list and has not already converged; the caller then keeps
+ * `pass_counts` / `consecutive_clean` / `findings_history` / `trap_doors_added` instead of
+ * zeroing them. A converged or mismatched prior ledger yields null (fresh start), and so
+ * does an unreadable/malformed one. Cross-run staleness is not a concern: a pipeline that
+ * re-enters pickle deletes this file in `enterPicklePhase`.
+ */
+function readResumableAnatomyProgress(configPath, subsystemNames) {
+    const prior = readRecoverableJsonObject(configPath);
+    if (!prior)
+        return null;
+    const priorNames = prior.subsystems;
+    if (!Array.isArray(priorNames) || priorNames.length !== subsystemNames.length)
+        return null;
+    if (priorNames.some((name, i) => name !== subsystemNames[i]))
+        return null;
+    // Every counter map must already carry a live entry per subsystem — a prior ledger
+    // missing one would be written back verbatim and the worker's `+= 1` would land NaN.
+    const maps = ['pass_counts', 'consecutive_clean', 'stall_counts', 'findings_history']
+        .map(key => prior[key]);
+    if (maps.some(m => !m || typeof m !== 'object' || Array.isArray(m)))
+        return null;
+    const [, cleanMap] = maps;
+    if (maps.some(m => subsystemNames.some(name => m[name] === undefined))) {
+        return null;
+    }
+    const allConverged = subsystemNames.every(name => Number(cleanMap[name]) >= ANATOMY_CONVERGED_CLEAN_PASSES);
+    return allConverged ? null : prior;
+}
 function writeAnatomyConfig(sessionDir, subsystems, stallLimit) {
     const subsystemNames = subsystems.map(s => s.name);
+    const resumable = readResumableAnatomyProgress(path.join(sessionDir, 'anatomy-park.json'), subsystemNames);
+    if (resumable) {
+        writeStateFile(path.join(sessionDir, 'anatomy-park.json'), { ...resumable, stall_limit: stallLimit });
+        return;
+    }
     const apState = {
         subsystems: subsystemNames,
         current_index: 0,

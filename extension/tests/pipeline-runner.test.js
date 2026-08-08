@@ -30,6 +30,7 @@ import {
   logPhaseHaltReason,
   __setCitadelRemediationDepsForTests,
   __setSpawnRunnerForTests,
+  setupAnatomyPark,
   main,
 } from '../bin/pipeline-runner.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
@@ -3222,6 +3223,166 @@ describe('B-CRASHFLOOR dispatchHaltAction gate skip', () => {
       fs.rmSync(repo, { recursive: true, force: true });
       fs.rmSync(sessionDir, { recursive: true, force: true });
       fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER5-01: setupAnatomyPark preserves an in-flight anatomy-park.json
+// ---------------------------------------------------------------------------
+
+const AP_REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
+
+function makeAnatomySubsystemTarget() {
+  const target = tmpDir();
+  const sub = path.join(target, 'services');
+  fs.mkdirSync(sub, { recursive: true });
+  for (let i = 0; i < 3; i++) {
+    fs.writeFileSync(path.join(sub, `s${i}.ts`), `export const s${i} = ${i};\n`);
+  }
+  return target;
+}
+
+function makeAnatomySessionDir(workingDir) {
+  const sessionDir = tmpDir();
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+    active: false,
+    working_dir: workingDir,
+    step: 'anatomy-park',
+    iteration: 0,
+    max_iterations: 10,
+    max_time_minutes: 60,
+    worker_timeout_seconds: 1200,
+    start_time_epoch: Math.floor(Date.now() / 1000),
+    completion_promise: null,
+    original_prompt: 'anatomy resume test',
+    current_ticket: null,
+    history: [],
+    started_at: new Date().toISOString(),
+    session_dir: sessionDir,
+  }, null, 2));
+  return sessionDir;
+}
+
+describe('AP-EXT-ITER5-01 setupAnatomyPark resume ledger', () => {
+  test('re-entering the phase preserves pass counts, findings history and pending trap doors', () => {
+    const repo = tmpDir();
+    initRepo(repo);
+    const target = makeAnatomySubsystemTarget();
+    const sessionDir = makeAnatomySessionDir(repo);
+    const configPath = path.join(sessionDir, 'anatomy-park.json');
+    try {
+      assert.equal(setupAnatomyPark(sessionDir, target, 3, AP_REPO_ROOT, () => {}), true);
+
+      // Simulate a phase that ran 9 passes (one of them clean) and recorded a
+      // trap door that has not been flushed to CLAUDE.md yet, then crashed.
+      const live = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      live.pass_counts.services = 9;
+      live.consecutive_clean.services = 0;
+      live.current_index = 0;
+      live.findings_history.services = [{ iteration: 4, findings: [] }, { iteration: 9, findings: [{ id: 'X' }] }];
+      live.trap_doors_added = [{ subsystem: 'services', file: 'services/CLAUDE.md', description: 'pending' }];
+      fs.writeFileSync(configPath, JSON.stringify(live, null, 2));
+
+      // Crash-resume re-enters anatomy-park, so phase setup runs again.
+      assert.equal(setupAnatomyPark(sessionDir, target, 3, AP_REPO_ROOT, () => {}), true);
+
+      const after = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      assert.equal(after.pass_counts.services, 9, 'pass_counts must survive re-entry (B-APNC ceiling input)');
+      assert.equal(after.findings_history.services.length, 2, 'findings_history must survive re-entry');
+      assert.equal(after.trap_doors_added.length, 1, 'un-flushed trap doors must survive re-entry');
+      assert.equal(after.stall_limit, 3);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  test('a converged prior ledger is replaced with a fresh one', () => {
+    const repo = tmpDir();
+    initRepo(repo);
+    const target = makeAnatomySubsystemTarget();
+    const sessionDir = makeAnatomySessionDir(repo);
+    const configPath = path.join(sessionDir, 'anatomy-park.json');
+    try {
+      assert.equal(setupAnatomyPark(sessionDir, target, 3, AP_REPO_ROOT, () => {}), true);
+      const live = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      live.pass_counts.services = 7;
+      live.consecutive_clean.services = 2;
+      fs.writeFileSync(configPath, JSON.stringify(live, null, 2));
+
+      assert.equal(setupAnatomyPark(sessionDir, target, 3, AP_REPO_ROOT, () => {}), true);
+
+      const after = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      assert.equal(after.pass_counts.services, 0, 'a converged ledger must not carry into a new run');
+      assert.equal(after.consecutive_clean.services, 0);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  test('a prior ledger missing a counter entry is not carried forward', () => {
+    const repo = tmpDir();
+    initRepo(repo);
+    const target = makeAnatomySubsystemTarget();
+    const sessionDir = makeAnatomySessionDir(repo);
+    const configPath = path.join(sessionDir, 'anatomy-park.json');
+    try {
+      fs.writeFileSync(configPath, JSON.stringify({
+        subsystems: ['services'],
+        current_index: 0,
+        pass_counts: { services: 4 },
+        consecutive_clean: {},
+        stall_counts: { services: 0 },
+        findings_history: { services: [] },
+        stall_limit: 3,
+        trap_doors_added: [],
+        trap_doors_committed: [],
+      }, null, 2));
+
+      assert.equal(setupAnatomyPark(sessionDir, target, 3, AP_REPO_ROOT, () => {}), true);
+
+      const after = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      assert.equal(after.consecutive_clean.services, 0, 'every subsystem key must be initialized, never left undefined');
+      assert.equal(after.pass_counts.services, 0);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  test('a different subsystem list is not carried forward', () => {
+    const repo = tmpDir();
+    initRepo(repo);
+    const target = makeAnatomySubsystemTarget();
+    const sessionDir = makeAnatomySessionDir(repo);
+    const configPath = path.join(sessionDir, 'anatomy-park.json');
+    try {
+      fs.writeFileSync(configPath, JSON.stringify({
+        subsystems: ['somethingelse'],
+        current_index: 0,
+        pass_counts: { somethingelse: 5 },
+        consecutive_clean: { somethingelse: 0 },
+        stall_counts: { somethingelse: 0 },
+        stall_limit: 3,
+        findings_history: { somethingelse: [] },
+        trap_doors_added: [],
+        trap_doors_committed: [],
+      }, null, 2));
+
+      assert.equal(setupAnatomyPark(sessionDir, target, 3, AP_REPO_ROOT, () => {}), true);
+
+      const after = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      assert.deepEqual(after.subsystems, ['services']);
+      assert.equal(after.pass_counts.services, 0);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
     }
   });
 });
