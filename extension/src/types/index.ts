@@ -1351,8 +1351,6 @@ export const EXIT_REASONS = [
   'idle_stall_unrecoverable', 'state_working_dir_missing', 'toolchain_unavailable',
 ] as const;
 
-export type ExitReason = typeof EXIT_REASONS[number];
-
 /**
  * B-CRASHFLOOR: the pickle-phase crash floor — exit reasons meaning the runner cannot physically
  * continue. Consulted by `isFatalPhaseFailure`'s pickle arm in pipeline-runner.ts, mirroring how the
@@ -1363,8 +1361,6 @@ export type ExitReason = typeof EXIT_REASONS[number];
 export const CRASH_FLOOR_EXIT_REASONS = [
   'toolchain_unavailable', 'state_working_dir_missing', 'state_schema_version_ahead',
 ] as const;
-
-export type CrashFloorExitReason = typeof CRASH_FLOOR_EXIT_REASONS[number];
 
 const MICROVERSE_FAILURE_REASONS = new Set<MicroverseExitReason>([
   'error', 'rate_limit_exhausted', 'judge_unreachable',
