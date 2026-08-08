@@ -1070,6 +1070,13 @@ function firstJsonResultLine(content) {
     }
     return null;
 }
+/**
+ * Turn count below which a no-commit iteration reads as `amnesiac`. This is a PROXY for effort and
+ * it is outranked by observable truth at the caller (`handleNoCommitStall`): a decisive correct
+ * verdict is fast, so a low turn count is not evidence of amnesia on its own. Named so a test can
+ * derive a sub-threshold value instead of hardcoding one.
+ */
+export const AMNESIAC_TURN_THRESHOLD = 5;
 export function classifyNoCommitExit(iterLogFile) {
     let content;
     try {
@@ -1081,7 +1088,7 @@ export function classifyNoCommitExit(iterLogFile) {
     const result = firstJsonResultLine(content);
     const output = String(result?.result ?? content).toLowerCase();
     const turns = typeof result?.num_turns === 'number' ? result.num_turns : null;
-    if (turns !== null && turns < 5)
+    if (turns !== null && turns < AMNESIAC_TURN_THRESHOLD)
         return 'amnesiac';
     if (output.includes('clean') ||
         output.includes('no violations') ||
@@ -2802,6 +2809,13 @@ export function appendGapAnalysisFixedBlock(opts) {
     ].join('\n');
     fs.appendFileSync(opts.gapAnalysisPath, block);
 }
+/**
+ * NO RUNTIME CALLER. Its call site in `handleNoCommitStall` was removed when the turn-count proxy
+ * was demoted below observable truth: a provably no-op iteration now routes into the stall arm,
+ * whose `recordStall` zeroes `consecutive_amnesiac_exits` itself, so the `>= 2` breaker predicate
+ * can no longer latch. The export survives only because the `bin/` Module Export Catalog that
+ * lists it lives outside this change's file scope.
+ */
 export function resetGapAnalysisForAmnesiacBreaker(state, sessionDir) {
     const gapAnalysisPath = state.gap_analysis_path || path.join(sessionDir, 'gap_analysis.md');
     fs.writeFileSync(gapAnalysisPath, [
@@ -2866,8 +2880,38 @@ export function currentExitForFailureHistory(state, ctx) {
 function convergenceExitReason(branch) {
     return branch === 'target' ? 'converged' : 'stalled_below_target';
 }
+/**
+ * "Provably no-op" is all three of: an unchanged HEAD, zero commits, and a clean working tree.
+ * Zero commits follows from the SHA equality — `preIterSha..postIterSha` is empty by construction
+ * — so no extra git spawn is needed to establish it.
+ *
+ * Unproven is NOT the same as false: callers that pass no `workingDir`/SHAs, and a probe that
+ * throws, both return false so the classifier's verdict stands unchanged. Truth demotes the proxy
+ * where truth is available; it never fails closed where it is not.
+ */
+function isProvablyNoOpIteration(ctx) {
+    const { preIterSha, postIterSha, workingDir } = ctx;
+    if (!preIterSha || !postIterSha || preIterSha !== postIterSha)
+        return false;
+    if (!workingDir)
+        return false;
+    try {
+        return !_deps.isWorkingTreeDirty(workingDir);
+    }
+    catch {
+        return false;
+    }
+}
 export async function handleNoCommitStall(state, ctx, iterLogFile) {
-    const noCommitClass = classifyNoCommitExit(iterLogFile);
+    // Observable truth outranks the log. `classifyNoCommitExit` sees only the iteration log, so its
+    // verdict rests on a turn-count proxy and a substring scan; the SHAs and the working tree live
+    // on `ctx`. When the iteration is PROVABLY a no-op, that fact precedes BOTH of the classifier's
+    // arms — which is what keeps a blocked worker's "clean / nothing to fix" prose from reporting
+    // `converged` over a repo that built nothing.
+    const reportedClass = classifyNoCommitExit(iterLogFile);
+    const noCommitClass = isProvablyNoOpIteration(ctx)
+        ? 'stall'
+        : reportedClass;
     if (noCommitClass === 'clean_pass') {
         ctx.log('No commits made — worker reported clean pass; treating as convergence');
         const clearedState = clearAmnesiacExits(state);
@@ -2878,11 +2922,7 @@ export async function handleNoCommitStall(state, ctx, iterLogFile) {
     }
     if (noCommitClass === 'amnesiac') {
         replaceMicroverseState(state, recordAmnesiacExit(state));
-        ctx.log(`No commits made — amnesiac exit (${state.consecutive_amnesiac_exits ?? 0}/2); not counting as stall`);
-        if ((state.consecutive_amnesiac_exits ?? 0) >= 2) {
-            ctx.log('2 consecutive amnesiac exits — resetting gap analysis for fresh survey');
-            replaceMicroverseState(state, resetGapAnalysisForAmnesiacBreaker(state, ctx.sessionDir));
-        }
+        ctx.log(`No commits made — amnesiac exit (${state.consecutive_amnesiac_exits ?? 0}); not counting as stall`);
         writeMicroverseState(ctx.sessionDir, state);
         await _deps.sleep(1000);
         return null;

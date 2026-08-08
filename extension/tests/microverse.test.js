@@ -529,7 +529,7 @@ test('runIteration is exported from mux-runner', () => {
 
 // --- microverse-runner tests ---
 
-import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, applyTestBackendOverrideFromEnv } from '../bin/microverse-runner.js';
+import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, applyTestBackendOverrideFromEnv, AMNESIAC_TURN_THRESHOLD } from '../bin/microverse-runner.js';
 import { resetToSha } from '../services/git-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { writeStateFile } from '../services/pickle-utils.js';
@@ -3234,6 +3234,50 @@ test('R-MVFM: non-plateau entry resets dedupe guard — next held appends fresh 
         assert.ok(state.failed_approaches[1].includes('score held at'), 'second entry should be the plateau entry');
     } finally {
         fs.rmSync(session.dir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('AC-CF-07: the turn-count proxy survives for a DIRTY tree — amnesiac stays reachable', async () => {
+    const workingDir = createTempGitRepo();
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-accf07-'));
+    try {
+        // `handleNoCommitStall` is reached only AFTER `autoRescueDirtyTree` has run, so a tree that
+        // is still dirty here is exactly one of the two live states the rescue leaves behind: it
+        // declined on un-attributable (foreign-only) dirt, or its commit threw and it unstaged.
+        // Truth is unavailable in that state — the iteration is NOT provably a no-op — so the
+        // proxy must still decide. This is the demotion, not a deletion.
+        fs.writeFileSync(path.join(workingDir, 'foreign-dirt.txt'), 'someone else was here\n');
+        assert.ok(isWorkingTreeDirty(workingDir), 'precondition: the tree is dirty');
+
+        const sha = getHeadSha(workingDir);
+        const logFile = path.join(sessionDir, 'tmux_iteration_1.log');
+        fs.writeFileSync(logFile, `${JSON.stringify({
+            type: 'result',
+            num_turns: AMNESIAC_TURN_THRESHOLD - 2,
+            result: 'I stopped early.',
+        })}\n`);
+
+        const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+        state.status = 'iterating';
+
+        const result = await withMicroverseLoopDeps(
+            { sleep: async () => {}, isWorkingTreeDirty },
+            () => handleNoCommitStall(state, {
+                sessionDir,
+                workingDir,
+                preIterSha: sha,
+                postIterSha: sha,
+                iteration: 1,
+                log: () => {},
+            }, logFile),
+        );
+
+        assert.equal(result, null, 'the amnesiac arm keeps iterating');
+        assert.equal(state.consecutive_amnesiac_exits, 1, 'the amnesiac arm ran');
+        assert.equal(state.convergence.stall_counter, 0, 'a dirty tree is not a provable no-op — no stall recorded');
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
 });

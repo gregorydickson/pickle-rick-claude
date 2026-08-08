@@ -1137,6 +1137,11 @@ function makeLowerIsBetterState({ stallLimit, convergenceTarget, lastScore, stal
 // is the branch that used to hard-code 'converged'. Leaving pre/postIterSha off
 // ctx keeps classifyStall null, so the stall path writes nothing to the
 // operator's real activity log.
+//
+// AC-CF-16: that SHA-less ctx also leaves the observable-truth check unproven, so these two cases
+// keep exercising the classifier path deliberately — they pin the terminal chain
+// (recordStall -> isConverged -> convergenceExitReason) that the demoted proxy is now routed into,
+// and they must stay green unchanged.
 function runNoCommitStall(state, sessionDir) {
     return handleNoCommitStall(
         state,
