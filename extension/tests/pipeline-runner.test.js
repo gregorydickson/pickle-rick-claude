@@ -35,7 +35,7 @@ import {
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
-import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS } from '../types/index.js';
+import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS } from '../types/index.js';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pipeline-'));
@@ -2919,6 +2919,51 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
       missingFromUnion,
       [],
       `EXIT_REASONS members absent from mux-runner's ExitReason union: ${missingFromUnion.join(', ')}`,
+    );
+  });
+
+  // Backend derives from BACKENDS. `Backend` and `BACKENDS` live in the SAME file, so unlike
+  // the ExitReason case above there is no import cycle forcing them apart — the type can and
+  // must derive from the const. The pre-fix shape (`export type Backend = 'claude' | … ;`
+  // plus `export const BACKENDS: readonly Backend[] = [...]`) made them parallel copies in
+  // ONE direction: a backend added to the union but not to the array still typechecks, and
+  // every runtime validator built on BACKENDS (setup.ts, backend-spawn.ts, spawn-morty.ts,
+  // metrics-utils.ts) then silently rejects the new backend and falls back to 'claude'.
+  // pipeline-runner.ts itself validates `--backend` through `(BACKENDS as readonly string[])
+  // .includes(rawBackend)`, so it is a direct consumer of the drift.
+  test('Backend derives from BACKENDS rather than being a parallel hand-maintained union', () => {
+    const typesSrc = fs.readFileSync(new URL('../src/types/index.ts', import.meta.url), 'utf-8');
+
+    const typeDecl = /^export type Backend =([^;]*);/m.exec(typesSrc);
+    assert.ok(typeDecl, 'types/index.ts must declare `export type Backend = …;`');
+    assert.equal(
+      typeDecl[1].trim(),
+      'typeof BACKENDS[number]',
+      'Backend must derive from BACKENDS, not restate its members as a literal union',
+    );
+
+    const constDecl = /^export const BACKENDS([^=]*)=/m.exec(typesSrc);
+    assert.ok(constDecl, 'types/index.ts must declare `export const BACKENDS = …`');
+    assert.equal(
+      constDecl[1].trim(),
+      '',
+      'BACKENDS must carry no `: readonly Backend[]` annotation — that annotation is what let '
+        + 'the union and the array drift (a union member missing from the array still typechecks)',
+    );
+
+    // The derivation only holds if the array literal is `as const`; without it the members
+    // widen to `string` and `Backend` silently becomes `string`.
+    assert.match(
+      typesSrc,
+      /^export const BACKENDS = \[[^\]]*\] as const;$/m,
+      'the BACKENDS array literal must be `as const` or Backend widens to string',
+    );
+
+    // The derived union must still carry the real members, so a caller cannot pass an
+    // arbitrary string where a Backend is expected.
+    assert.ok(
+      BACKENDS.includes('claude') && BACKENDS.includes('codex') && BACKENDS.length >= 2,
+      'sanity: BACKENDS must still hold the real backend members',
     );
   });
 

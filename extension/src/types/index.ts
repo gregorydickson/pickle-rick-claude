@@ -287,11 +287,22 @@ export const FALSE_EPIC_THRESHOLD = 3;
  */
 export const UNBOUNDED_READ_MAX_BUFFER = 64 * 1024 * 1024;
 
-export type Backend = 'claude' | 'codex' | 'hermes' | 'deepseek' | 'grok' | 'kimi' | 'gemini';
+/**
+ * Runtime-iterable membership list for `Backend`, and the SINGLE source of truth for it:
+ * `Backend` derives from this array (`typeof BACKENDS[number]`), mirroring the
+ * `VALID_STEPS`/`FAILURE_REASONS`/`EXIT_REASONS` shape used everywhere else in this file.
+ * It was previously the reverse (`BACKENDS: readonly Backend[]` alongside a hand-maintained
+ * literal union), which made the two parallel copies: a backend added to the union alone
+ * still typechecked, so every runtime validator built on `BACKENDS`
+ * (`setup.ts`, `backend-spawn.ts`, `spawn-morty.ts`, `metrics-utils.ts`) silently rejected it
+ * and fell back to 'claude'. Adding a backend here is now the single edit — the type follows
+ * by construction.
+ */
+export const BACKENDS = ['claude', 'codex', 'hermes', 'deepseek', 'grok', 'kimi', 'gemini'] as const;
+
+export type Backend = typeof BACKENDS[number];
 export type BackendResolutionSource = 'state' | 'env' | 'settings' | 'default' | 'refinement-lock' | 'cli-flag-override';
 export type WorkerBackendResolutionSource = 'worker_backend' | 'backend' | 'env_lock';
-
-export const BACKENDS: readonly Backend[] = ['claude', 'codex', 'hermes', 'deepseek', 'grok', 'kimi', 'gemini'] as const;
 
 export interface ProjectContext {
   project_context_path: string;
