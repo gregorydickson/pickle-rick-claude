@@ -1315,6 +1315,35 @@ export const MICROVERSE_FATAL_REASONS = [
 
 export type MicroverseFatalReason = typeof MICROVERSE_FATAL_REASONS[number];
 
+/**
+ * THE membership list for the pickle-phase `ExitReason` (mux-runner.ts). Declared as a runtime
+ * `as const` array — mirrors the `MICROVERSE_EXIT_REASONS` pattern above — so mux-runner's
+ * `ExitReason` type derives from this array instead of duplicating a hand-maintained literal union.
+ */
+export const EXIT_REASONS = [
+  'success', 'cancelled', 'error', 'limit', 'iteration_cap_exhausted', 'stall', 'circuit_open',
+  'rate_limit_exhausted', 'timeout_repeat', 'manager_persistent_hallucination',
+  'codex_unhealthy_consecutive_failures', 'working_tree_modified_externally',
+  'state_schema_version_ahead', 'closer_handoff_terminal', 'manager_handoff_pending',
+  'done_without_commit_evidence', 'codex_manager_no_progress', 'recovery_exhausted',
+  'idle_stall_unrecoverable', 'state_working_dir_missing', 'toolchain_unavailable',
+] as const;
+
+export type ExitReason = typeof EXIT_REASONS[number];
+
+/**
+ * B-CRASHFLOOR: the pickle-phase crash floor — exit reasons meaning the runner cannot physically
+ * continue. Consulted by `isFatalPhaseFailure`'s pickle arm in pipeline-runner.ts, mirroring how the
+ * microverse arm consults `MICROVERSE_FATAL_REASONS`. MUST NOT be `FAILURE_EXIT_REASONS`
+ * (mux-runner.ts) — that set includes quality/measurement verdicts (error, stall, circuit_open,
+ * rate_limit_exhausted, timeout_repeat, ...) which CLAUDE.md's park-and-flag rule forbids halting on.
+ */
+export const CRASH_FLOOR_EXIT_REASONS = [
+  'toolchain_unavailable', 'state_working_dir_missing', 'state_schema_version_ahead',
+] as const;
+
+export type CrashFloorExitReason = typeof CRASH_FLOOR_EXIT_REASONS[number];
+
 const MICROVERSE_FAILURE_REASONS = new Set<MicroverseExitReason>([
   'error', 'rate_limit_exhausted', 'judge_unreachable',
   'baseline_unmeasurable_unrecoverable', 'judge_cli_missing',

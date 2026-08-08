@@ -33,7 +33,7 @@ import {
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
-import { Defaults, VALID_ACTIVITY_EVENTS } from '../types/index.js';
+import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS } from '../types/index.js';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pipeline-'));
@@ -2612,5 +2612,282 @@ describe('AP-EXT-ITER7-01 replay: the phase-runner transport decodes on the STRE
       /child\.stderr\?\.setEncoding\('utf-8'\)/,
       'stderr carries the same non-ASCII log glyphs and needs the same decoder',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-CRASHFLOOR — the pickle branch of isFatalPhaseFailure reads exit_reason
+// against CRASH_FLOOR_EXIT_REASONS, mirroring the microverse arm's consult of
+// MICROVERSE_FATAL_REASONS. Covers AC-CF-01..04, AC-CF-09..13, AC-CF-17.
+// ---------------------------------------------------------------------------
+
+describe('B-CRASHFLOOR pickle-arm crash floor', () => {
+  function cfTmpDir() {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-crashfloor-'));
+  }
+
+  function seedGitRepoAndCommitCF(dir) {
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
+    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
+  }
+
+  function writeCfState(statePath, overrides = {}) {
+    const dir = path.dirname(statePath);
+    fs.writeFileSync(statePath, JSON.stringify({
+      active: true,
+      working_dir: dir,
+      step: 'pickle',
+      iteration: 1,
+      max_iterations: 50,
+      max_time_minutes: 720,
+      worker_timeout_seconds: 1200,
+      start_time_epoch: 1000,
+      completion_promise: null,
+      original_prompt: 'B-CRASHFLOOR test',
+      current_ticket: null,
+      history: [],
+      started_at: new Date().toISOString(),
+      session_dir: dir,
+      schema_version: 3,
+      exit_reason: null,
+      prd_path: 'prd.md',
+      backend: 'claude',
+      activity: [],
+      ...overrides,
+    }, null, 2));
+  }
+
+  function cfRuntime(dir, overrides = {}) {
+    return {
+      sessionDir: dir,
+      statePath: path.join(dir, 'state.json'),
+      repoRoot: dir,
+      workingDir: dir,
+      extensionRoot: dir,
+      backend: 'claude',
+      phaseEnv: { ...process.env },
+      designSafe: false,
+      log: () => {},
+      config: {
+        phases: ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'],
+        target: dir,
+        child_mux_runner_heartbeat_ms: 1000,
+        child_mux_runner_stall_seconds: 60,
+        anatomy_stall_limit: 3,
+        szechuan_stall_limit: 5,
+        anatomy_max_iterations: 100,
+        szechuan_max_iterations: 50,
+        citadel_strict: false,
+        dirty_exempt_segments: [],
+      },
+      ...overrides,
+    };
+  }
+
+  test('CRASH_FLOOR_EXIT_REASONS has exactly 3 members', () => {
+    assert.equal(CRASH_FLOOR_EXIT_REASONS.length, 3);
+    assert.deepEqual(
+      new Set(CRASH_FLOOR_EXIT_REASONS),
+      new Set(['toolchain_unavailable', 'state_working_dir_missing', 'state_schema_version_ahead']),
+    );
+  });
+
+  // AC-CF-01: every CRASH_FLOOR_EXIT_REASONS member halts a non-zero pickle exit —
+  // derived from the exported const at runtime, no hardcoded literals.
+  test('AC-CF-01: every CRASH_FLOOR_EXIT_REASONS member halts the pickle arm', () => {
+    for (const reason of CRASH_FLOOR_EXIT_REASONS) {
+      const dir = cfTmpDir();
+      try {
+        const startCommit = seedGitRepoAndCommitCF(dir);
+        writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
+        const runtime = cfRuntime(dir);
+        assert.equal(
+          isFatalPhaseFailure('pickle', runtime),
+          true,
+          `exit_reason=${reason} must halt the pickle arm`,
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  // AC-CF-02: every ExitReason NOT in the crash-floor set continues to citadel —
+  // derived from EXIT_REASONS' complement at runtime. Must fail if the predicate
+  // were isFailureExit (picks reasons that ARE in mux-runner's FAILURE_EXIT_REASONS
+  // but are NOT crash-floor members, e.g. 'error'/'stall'/'circuit_open').
+  test('AC-CF-02: every non-crash-floor ExitReason does not halt the pickle arm', () => {
+    const crashFloorSet = new Set(CRASH_FLOOR_EXIT_REASONS);
+    const nonCrashFloorReasons = EXIT_REASONS.filter((r) => !crashFloorSet.has(r));
+    assert.ok(nonCrashFloorReasons.length > 0, 'sanity: there must be non-crash-floor reasons');
+    for (const reason of nonCrashFloorReasons) {
+      const dir = cfTmpDir();
+      try {
+        const startCommit = seedGitRepoAndCommitCF(dir);
+        writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
+        const runtime = cfRuntime(dir);
+        assert.equal(
+          isFatalPhaseFailure('pickle', runtime),
+          false,
+          `exit_reason=${reason} must NOT halt the pickle arm (not a crash-floor reason)`,
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  // AC-CF-03: the pickle arm's halting-condition count goes 1 -> 3 and no further.
+  // Enumerated set of exit_reason values that halt (with a valid start_commit)
+  // equals exactly CRASH_FLOOR_EXIT_REASONS (3 members); the pre-existing
+  // !startCommit guard is the 4th, orthogonal condition (unchanged behavior).
+  test('AC-CF-03: exactly the 3 crash-floor reasons halt via exit_reason; no other reason does', () => {
+    const dir = cfTmpDir();
+    try {
+      const startCommit = seedGitRepoAndCommitCF(dir);
+      const haltingReasons = new Set();
+      for (const reason of EXIT_REASONS) {
+        writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
+        const runtime = cfRuntime(dir);
+        if (isFatalPhaseFailure('pickle', runtime)) haltingReasons.add(reason);
+      }
+      assert.deepEqual(haltingReasons, new Set(CRASH_FLOOR_EXIT_REASONS));
+
+      // The pre-existing !startCommit guard still halts, independent of exit_reason.
+      writeCfState(path.join(dir, 'state.json'));
+      const runtimeNoBaseline = cfRuntime(dir);
+      assert.equal(isFatalPhaseFailure('pickle', runtimeNoBaseline), true, '!startCommit is still fatal');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // AC-CF-04: a throwing sm.read fails OPEN (non-halt), removing the prior abort.
+  test('AC-CF-04: a throwing sm.read (missing state.json) fails open — non-halt', () => {
+    const dir = cfTmpDir();
+    try {
+      // No state.json written at all — StateManager.read throws StateError('MISSING', ...).
+      const runtime = cfRuntime(dir);
+      assert.equal(
+        isFatalPhaseFailure('pickle', runtime),
+        false,
+        'a read error must not halt the pipeline (park-and-flag, never abort)',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // AC-CF-10/11: both a default session (flag unset -> backfilled true) and a
+  // --strict-phases session (false) halt on a crash-floor reason.
+  test('AC-CF-10: default session (pipeline_continue_on_phase_fail unset) halts on a crash-floor reason', () => {
+    const dir = cfTmpDir();
+    try {
+      const startCommit = seedGitRepoAndCommitCF(dir);
+      writeCfState(path.join(dir, 'state.json'), {
+        start_commit: startCommit,
+        exit_reason: 'toolchain_unavailable',
+      });
+      const runtime = cfRuntime(dir);
+      assert.equal(shouldHaltAfterPhase('pickle', 1, runtime), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-CF-11: --strict-phases session (pipeline_continue_on_phase_fail=false) halts on a crash-floor reason', () => {
+    const dir = cfTmpDir();
+    try {
+      const startCommit = seedGitRepoAndCommitCF(dir);
+      writeCfState(path.join(dir, 'state.json'), {
+        start_commit: startCommit,
+        exit_reason: 'toolchain_unavailable',
+        pipeline_continue_on_phase_fail: false,
+      });
+      const runtime = cfRuntime(dir);
+      assert.equal(shouldHaltAfterPhase('pickle', 1, runtime), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // AC-CF-12: absent or unrecognised exit_reason on a non-zero pickle exit does NOT halt.
+  test('AC-CF-12: undefined exit_reason does not halt', () => {
+    const dir = cfTmpDir();
+    try {
+      const startCommit = seedGitRepoAndCommitCF(dir);
+      const statePath = path.join(dir, 'state.json');
+      writeCfState(statePath, { start_commit: startCommit });
+      const raw = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      delete raw.exit_reason;
+      fs.writeFileSync(statePath, JSON.stringify(raw, null, 2));
+      const runtime = cfRuntime(dir);
+      assert.equal(isFatalPhaseFailure('pickle', runtime), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-CF-12: unrecognised exit_reason string does not halt', () => {
+    const dir = cfTmpDir();
+    try {
+      const startCommit = seedGitRepoAndCommitCF(dir);
+      writeCfState(path.join(dir, 'state.json'), {
+        start_commit: startCommit,
+        exit_reason: 'some_unknown_reason_xyz',
+      });
+      const runtime = cfRuntime(dir);
+      assert.equal(isFatalPhaseFailure('pickle', runtime), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // AC-CF-13: a crash-floor reason still halts, independent of stale-handoff-clearing
+  // logic that lives in a different call site (runPhaseIteration). isFatalPhaseFailure
+  // only ever sees the single current exit_reason value.
+  test('AC-CF-13: a crash-floor reason halts even though it shares the field stale handoff reasons occupy', () => {
+    const dir = cfTmpDir();
+    try {
+      const startCommit = seedGitRepoAndCommitCF(dir);
+      writeCfState(path.join(dir, 'state.json'), {
+        start_commit: startCommit,
+        exit_reason: 'toolchain_unavailable',
+      });
+      const runtime = cfRuntime(dir);
+      assert.equal(
+        isFatalPhaseFailure('pickle', runtime),
+        true,
+        'a crash-floor reason halts regardless of surrounding handoff-clearing logic elsewhere',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // AC-CF-17: net-subtractive — the new exports exist, and the halt predicate used
+  // is not isFailureExit. (No new state field / exit reason / skip flag is asserted
+  // by code review + the AC-CF-01/02 exhaustive sweeps above, which would fail if a
+  // stray reason were added without updating both exported consts together.)
+  test('AC-CF-17: types/index.ts exports both new consts; halt predicate is not isFailureExit', () => {
+    const typesSrc = fs.readFileSync(
+      new URL('../src/types/index.ts', import.meta.url),
+      'utf-8',
+    );
+    assert.match(typesSrc, /export const CRASH_FLOOR_EXIT_REASONS = \[/);
+    assert.match(typesSrc, /export const EXIT_REASONS = \[/);
+
+    const prSrc = fs.readFileSync(new URL('../src/bin/pipeline-runner.ts', import.meta.url), 'utf-8');
+    const fnStart = prSrc.indexOf('export function isFatalPhaseFailure');
+    const pickleArmEnd = prSrc.indexOf("if (phase === 'anatomy-park'", fnStart);
+    const pickleArm = prSrc.slice(fnStart, pickleArmEnd);
+    assert.doesNotMatch(pickleArm, /isFailureExit/, 'the pickle arm must not consult isFailureExit');
+    assert.match(pickleArm, /isCrashFloorExitReason/, 'the pickle arm must consult the crash-floor predicate');
   });
 });

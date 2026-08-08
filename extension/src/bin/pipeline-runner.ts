@@ -20,7 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'child_process';
 import type { Backend, State } from '../types/index.js';
-import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, isMicroverseFailureExit, type MicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
+import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, isMicroverseFailureExit, type MicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, type GraduationCounts } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import {
@@ -2780,6 +2780,7 @@ function findingMeetsThreshold(finding: CitadelFinding, threshold: CitadelSeveri
 }
 
 const MICROVERSE_FATAL_REASON_SET = new Set<string>(MICROVERSE_FATAL_REASONS);
+const CRASH_FLOOR_EXIT_REASON_SET = new Set<string>(CRASH_FLOOR_EXIT_REASONS);
 const GIT_PHASE_COMMIT_COUNT_TIMEOUT_MS = 10_000;
 const GIT_REPO_ROOT_TIMEOUT_MS = 5_000;
 
@@ -2798,6 +2799,11 @@ function countCommitsSince(startCommit: string, workingDir: string): number {
 
 function isMicroverseFatalReason(reason: unknown): reason is MicroverseFatalReason {
   return typeof reason === 'string' && MICROVERSE_FATAL_REASON_SET.has(reason);
+}
+
+// B-CRASHFLOOR: the pickle-phase crash floor — mirrors isMicroverseFatalReason's shape exactly.
+function isCrashFloorExitReason(reason: unknown): boolean {
+  return typeof reason === 'string' && CRASH_FLOOR_EXIT_REASON_SET.has(reason);
 }
 
 export function isFatalPhaseFailure(phase: PhaseName, runtime: PipelineRuntime): boolean {
@@ -2820,6 +2826,12 @@ export function isFatalPhaseFailure(phase: PhaseName, runtime: PipelineRuntime):
       // literally unmeasurable, which no downstream honesty gate can report around.
       const startCommit = runnerState.start_commit?.trim();
       if (!startCommit) return true;
+      // B-CRASHFLOOR: cannot-physically-continue reasons (toolchain_unavailable,
+      // state_working_dir_missing, state_schema_version_ahead) halt the pickle phase, mirroring
+      // how the microverse arm below consults MICROVERSE_FATAL_REASONS. Deliberately NOT
+      // FAILURE_EXIT_REASONS (mux-runner.ts) — that set is quality/measurement verdicts CLAUDE.md
+      // binds to park-and-flag, not the crash floor.
+      if (isCrashFloorExitReason(runnerState.exit_reason)) return true;
       return false;
     }
     if (phase === 'anatomy-park' || phase === 'szechuan-sauce') {
@@ -2839,7 +2851,10 @@ export function isFatalPhaseFailure(phase: PhaseName, runtime: PipelineRuntime):
     }
     return true;
   } catch {
-    return true;
+    // B-CRASHFLOOR AC-CF-04: a throwing sm.read is not itself a cannot-continue verdict — fail
+    // OPEN (non-halt) rather than fail-closed, so a transient read error parks-and-flags instead
+    // of aborting the pipeline.
+    return false;
   }
 }
 

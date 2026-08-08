@@ -63,7 +63,7 @@ import {
   shouldHaltAfterPhase,
 } from '../bin/pipeline-runner.js';
 import { isFailureExit, isHaltExit, isIncompleteExit } from '../bin/mux-runner.js';
-import { MICROVERSE_EXIT_REASONS } from '../types/index.js';
+import { CRASH_FLOOR_EXIT_REASONS, MICROVERSE_EXIT_REASONS } from '../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE_RUNNER_SRC = path.resolve(__dirname, '../src/bin/pipeline-runner.ts');
@@ -263,9 +263,15 @@ const MUX_RUNNER_SOURCE = fs.readFileSync(MUX_RUNNER_SRC, 'utf-8');
 const PIPELINE_RUNNER_SOURCE = fs.readFileSync(PIPELINE_RUNNER_SRC, 'utf-8');
 const EXIT_REASON_UNION_MEMBERS = readExitReasonUnionMembers(MUX_RUNNER_SOURCE);
 const PIPELINE_INTERNAL_EXIT_STAMPS = readPipelineInternalExitStamps(PIPELINE_RUNNER_SOURCE);
+
+// Root CLAUDE.md's crash floor names exactly the cannot-physically-continue reasons (toolchain
+// unavailable, working dir missing, schema-ahead) as SANCTIONED halts of the pickle branch — this
+// is the ticket that wired that floor in. Channel 1 asserts "no exit_reason halts pickle" for
+// every OTHER reason; the crash floor is subtracted here, never hardcoded, so the two subject
+// lists cannot silently drift apart.
 const CHANNEL_ONE_EXIT_REASONS = [
   ...new Set([...EXIT_REASON_UNION_MEMBERS, ...PIPELINE_INTERNAL_EXIT_STAMPS]),
-].sort();
+].filter((reason) => !CRASH_FLOOR_EXIT_REASONS.includes(reason)).sort();
 
 // The one `ExitReason` member that is deliberately classified by none of the three dispositions
 // below: it IS the success arm. Pinned as an exception, not assumed — see the classification test.
@@ -288,6 +294,11 @@ describe('AC-OA-3a — the derived subject lists are non-empty and non-duplicate
       EXIT_REASON_UNION_MEMBERS.includes(SUCCESS_EXIT_REASON),
       `the derived union must contain '${SUCCESS_EXIT_REASON}' — if it does not, the declaration `
       + 'shape changed and the derivation is reading something else',
+    );
+    assert.ok(
+      CRASH_FLOOR_EXIT_REASONS.length > 0,
+      'CRASH_FLOOR_EXIT_REASONS is empty — the channel-1 subtraction would be a no-op and this '
+      + 'test would silently stop proving the crash floor is excluded',
     );
   });
 
