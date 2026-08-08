@@ -3675,29 +3675,6 @@ export function appendGapAnalysisFixedBlock(opts: {
   fs.appendFileSync(opts.gapAnalysisPath, block);
 }
 
-/**
- * NO RUNTIME CALLER. Its call site in `handleNoCommitStall` was removed when the turn-count proxy
- * was demoted below observable truth: a provably no-op iteration now routes into the stall arm,
- * whose `recordStall` zeroes `consecutive_amnesiac_exits` itself, so the `>= 2` breaker predicate
- * can no longer latch. The export survives only because the `bin/` Module Export Catalog that
- * lists it lives outside this change's file scope.
- */
-export function resetGapAnalysisForAmnesiacBreaker(state: MicroverseState, sessionDir: string): MicroverseState {
-  const gapAnalysisPath = state.gap_analysis_path || path.join(sessionDir, 'gap_analysis.md');
-  fs.writeFileSync(gapAnalysisPath, [
-    '# Gap Analysis',
-    '',
-    'Reset after 2 consecutive amnesiac no-commit exits. Re-survey the current codebase before choosing the next fix.',
-    '',
-  ].join('\n'));
-  return {
-    ...state,
-    status: 'gap_analysis',
-    gap_analysis_path: gapAnalysisPath,
-    consecutive_amnesiac_exits: 0,
-  };
-}
-
 /** @internal visible for testing */
 export function maybeEmitConsecutiveNoProgressWarning(state: MicroverseState, sessionDir: string): void {
   if (state.key_metric?.type === 'llm') return;

@@ -13,7 +13,6 @@ import {
   buildMicroverseHandoff,
   classifyNoCommitExit,
   handleNoCommitStall,
-  resetGapAnalysisForAmnesiacBreaker,
 } from '../bin/microverse-runner.js';
 import { createMicroverseState } from '../services/microverse-state.js';
 
@@ -154,33 +153,6 @@ test('appendGapAnalysisFixedBlock appends commit SHA, message, and files', () =>
     assert.match(content, /- Files: fixed\.txt/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
-});
-
-// RECONCILED, NOT DELETED: this pins the breaker helper's own behaviour, which is unchanged. What
-// changed is its reach — its single call site in `handleNoCommitStall` was removed, so it has no
-// runtime caller. The export (and therefore this test) survives because the `bin/` Module Export
-// Catalog that lists it is outside this change's file scope. The caller-level test below is what
-// proves the call site is gone.
-test('resetGapAnalysisForAmnesiacBreaker sets gap_analysis status and resets file', () => {
-  const sessionDir = tmpDir('pickle-mrs-session-');
-  try {
-    const gapPath = path.join(sessionDir, 'gap_analysis.md');
-    fs.writeFileSync(gapPath, '# Gap Analysis\n\nstale item\n');
-    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
-    state.status = 'iterating';
-    state.gap_analysis_path = gapPath;
-    state.consecutive_amnesiac_exits = 2;
-
-    const next = resetGapAnalysisForAmnesiacBreaker(state, sessionDir);
-
-    assert.equal(next.status, 'gap_analysis');
-    assert.equal(next.consecutive_amnesiac_exits, 0);
-    const content = fs.readFileSync(gapPath, 'utf-8');
-    assert.match(content, /Reset after 2 consecutive amnesiac/);
-    assert.doesNotMatch(content, /stale item/);
-  } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
