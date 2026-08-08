@@ -1760,17 +1760,30 @@ function readResumableAnatomyProgress(configPath, subsystemNames) {
         return null;
     if (priorNames.some((name, i) => name !== subsystemNames[i]))
         return null;
-    // Every counter map must already carry a live entry per subsystem — a prior ledger
-    // missing one would be written back verbatim and the worker's `+= 1` would land NaN.
-    const maps = ['pass_counts', 'consecutive_clean', 'stall_counts', 'findings_history']
-        .map(key => prior[key]);
-    if (maps.some(m => !m || typeof m !== 'object' || Array.isArray(m)))
+    // Every counter map must already carry a live entry of the RIGHT TYPE per subsystem —
+    // a present-but-non-numeric counter is written back verbatim and the worker's `+= 1`
+    // lands NaN just as surely as a missing one, so `!== undefined` is not the check.
+    const counterMap = (key) => {
+        const raw = prior[key];
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+            return null;
+        const map = raw;
+        if (subsystemNames.some(name => !Number.isFinite(map[name])))
+            return null;
+        return map;
+    };
+    const passMap = counterMap('pass_counts');
+    const cleanMap = counterMap('consecutive_clean');
+    const stallMap = counterMap('stall_counts');
+    if (!passMap || !cleanMap || !stallMap)
         return null;
-    const [, cleanMap] = maps;
-    if (maps.some(m => subsystemNames.some(name => m[name] === undefined))) {
+    const history = prior.findings_history;
+    if (!history || typeof history !== 'object' || Array.isArray(history))
         return null;
-    }
-    const allConverged = subsystemNames.every(name => Number(cleanMap[name]) >= ANATOMY_CONVERGED_CLEAN_PASSES);
+    const historyMap = history;
+    if (subsystemNames.some(name => !Array.isArray(historyMap[name])))
+        return null;
+    const allConverged = subsystemNames.every(name => cleanMap[name] >= ANATOMY_CONVERGED_CLEAN_PASSES);
     return allConverged ? null : prior;
 }
 function writeAnatomyConfig(sessionDir, subsystems, stallLimit) {

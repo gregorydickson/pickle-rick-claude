@@ -2101,17 +2101,26 @@ function readResumableAnatomyProgress(
   const priorNames = prior.subsystems;
   if (!Array.isArray(priorNames) || priorNames.length !== subsystemNames.length) return null;
   if (priorNames.some((name, i) => name !== subsystemNames[i])) return null;
-  // Every counter map must already carry a live entry per subsystem — a prior ledger
-  // missing one would be written back verbatim and the worker's `+= 1` would land NaN.
-  const maps = ['pass_counts', 'consecutive_clean', 'stall_counts', 'findings_history']
-    .map(key => prior[key]);
-  if (maps.some(m => !m || typeof m !== 'object' || Array.isArray(m))) return null;
-  const [, cleanMap] = maps as Array<Record<string, unknown>>;
-  if (maps.some(m => subsystemNames.some(name => (m as Record<string, unknown>)[name] === undefined))) {
-    return null;
-  }
+  // Every counter map must already carry a live entry of the RIGHT TYPE per subsystem —
+  // a present-but-non-numeric counter is written back verbatim and the worker's `+= 1`
+  // lands NaN just as surely as a missing one, so `!== undefined` is not the check.
+  const counterMap = (key: string): Record<string, number> | null => {
+    const raw = prior[key];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const map = raw as Record<string, unknown>;
+    if (subsystemNames.some(name => !Number.isFinite(map[name]))) return null;
+    return map as Record<string, number>;
+  };
+  const passMap = counterMap('pass_counts');
+  const cleanMap = counterMap('consecutive_clean');
+  const stallMap = counterMap('stall_counts');
+  if (!passMap || !cleanMap || !stallMap) return null;
+  const history = prior.findings_history;
+  if (!history || typeof history !== 'object' || Array.isArray(history)) return null;
+  const historyMap = history as Record<string, unknown>;
+  if (subsystemNames.some(name => !Array.isArray(historyMap[name]))) return null;
   const allConverged = subsystemNames.every(
-    name => Number(cleanMap[name]) >= ANATOMY_CONVERGED_CLEAN_PASSES,
+    name => cleanMap[name] >= ANATOMY_CONVERGED_CLEAN_PASSES,
   );
   return allConverged ? null : prior;
 }
