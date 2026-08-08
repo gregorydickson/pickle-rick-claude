@@ -29,6 +29,8 @@ import {
   isFatalPhaseFailure,
   logPhaseHaltReason,
   __setCitadelRemediationDepsForTests,
+  __setSpawnRunnerForTests,
+  main,
 } from '../bin/pipeline-runner.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
@@ -2889,5 +2891,232 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     const pickleArm = prSrc.slice(fnStart, pickleArmEnd);
     assert.doesNotMatch(pickleArm, /isFailureExit/, 'the pickle arm must not consult isFailureExit');
     assert.match(pickleArm, /isCrashFloorExitReason/, 'the pickle arm must consult the crash-floor predicate');
+  });
+
+  // AC-CF-05: getFatalPickleHaltReason (consulted via the exported logPhaseHaltReason)
+  // must name the crash-floor reason on a zero-commit + toolchain_unavailable state,
+  // never the stale "zero commits since baseline" string.
+  test('AC-CF-05: zero-commit toolchain_unavailable halt names the crash-floor reason', () => {
+    const dir = cfTmpDir();
+    try {
+      const startCommit = seedGitRepoAndCommitCF(dir);
+      // No commits landed since startCommit -> commitCount === 0.
+      writeCfState(path.join(dir, 'state.json'), {
+        start_commit: startCommit,
+        exit_reason: 'toolchain_unavailable',
+      });
+      const runtime = cfRuntime(dir);
+      const lines = [];
+      logPhaseHaltReason(runtime, 'pickle', 1, (msg) => lines.push(msg));
+      const joined = lines.join('\n');
+      assert.match(joined, /toolchain_unavailable/, 'operator string must name the crash-floor reason');
+      assert.doesNotMatch(
+        joined,
+        /zero commits since baseline/,
+        'must not report the misleading zero-commits story for a crash-floor halt',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-CRASHFLOOR ticket 8e3a5d62 — dispatchHaltAction skips the doomed abort-path
+// typecheck+lint gate on a crash-floor halt (AC-CF-15), and citadel /
+// anatomy-park / szechuan-sauce are never invoked after one (AC-CF-14). The
+// gate narrowing must be exactly that — a narrowing, not a deletion: a
+// NON-crash-floor strict-phases halt still runs the abort gate (AC-CF-15
+// narrowing case).
+// ---------------------------------------------------------------------------
+
+describe('B-CRASHFLOOR dispatchHaltAction gate skip', () => {
+  class ExitIntercept extends Error {
+    constructor(code) {
+      super(`process.exit(${code})`);
+      this.code = code;
+    }
+  }
+
+  function tmp(prefix) {
+    return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  }
+
+  function git(args, cwd) {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
+  }
+
+  // A repo whose typecheck/lint scripts always fail — if the abort-path gate
+  // runs against it, runGate reports status:'red' and dispatchHaltAction emits
+  // tsc_gate_failed. No real tsc/eslint spawn: node -e keeps this fast-tier safe.
+  function initRedGateRepo(dir) {
+    git(['init', '-q', '-b', 'main'], dir);
+    git(['config', 'user.email', 'test@test.local'], dir);
+    git(['config', 'user.name', 'Test'], dir);
+    git(['config', 'commit.gpgsign', 'false'], dir);
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'cf-gate-fixture',
+      version: '0.0.0',
+      private: true,
+      scripts: {
+        typecheck: 'node -e "process.exit(1)"',
+        lint: 'node -e "process.exit(1)"',
+      },
+    }, null, 2));
+    git(['add', '.'], dir);
+    git(['commit', '-q', '-m', 'seed'], dir);
+    return git(['rev-parse', 'HEAD'], dir);
+  }
+
+  function writeMainState(sessionDir, repo, startCommit, overrides = {}) {
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+      active: false,
+      working_dir: repo,
+      step: 'implement',
+      iteration: 0,
+      max_iterations: 100,
+      max_time_minutes: 720,
+      worker_timeout_seconds: 1200,
+      start_time_epoch: 1000,
+      completion_promise: null,
+      original_prompt: 'B-CRASHFLOOR gate-skip test',
+      current_ticket: null,
+      history: [],
+      started_at: new Date().toISOString(),
+      session_dir: sessionDir,
+      schema_version: 3,
+      tmux_mode: false,
+      chain_meeseeks: false,
+      backend: 'claude',
+      start_commit: startCommit,
+      exit_reason: null,
+      activity: [],
+      ...overrides,
+    }, null, 2));
+  }
+
+  function writeMainPipeline(sessionDir, repo, phases) {
+    fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+      phases,
+      target: repo,
+      anatomy_stall_limit: 3,
+      szechuan_stall_limit: 5,
+      anatomy_max_iterations: 100,
+      szechuan_max_iterations: 50,
+      dirty_exempt_segments: ['prds', 'docs'],
+    }, null, 2));
+  }
+
+  async function captureMainExit(sessionDir, expectedCode) {
+    const originalExit = process.exit;
+    const originalTmux = process.env.TMUX;
+    delete process.env.TMUX;
+    process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
+    try {
+      await assert.rejects(
+        () => main(sessionDir),
+        (err) => err instanceof ExitIntercept && err.code === expectedCode,
+      );
+    } finally {
+      process.exit = originalExit;
+      if (originalTmux === undefined) delete process.env.TMUX;
+      else process.env.TMUX = originalTmux;
+    }
+  }
+
+  function readActivityEvents(dataRoot) {
+    const activityDir = path.join(dataRoot, 'activity');
+    if (!fs.existsSync(activityDir)) return [];
+    return fs.readdirSync(activityDir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .flatMap((f) => fs.readFileSync(path.join(activityDir, f), 'utf-8').split(/\r?\n/).filter(Boolean))
+      .map((l) => JSON.parse(l));
+  }
+
+  // AC-CF-14 + AC-CF-15: a crash-floor pickle halt runs spawnRunner exactly once
+  // (for pickle), never reaches citadel/anatomy-park/szechuan-sauce, and never
+  // emits tsc_gate_failed even though the target repo's gate would report RED.
+  test('AC-CF-14/AC-CF-15: crash-floor halt skips the abort gate and downstream phases', async () => {
+    const repo = tmp('cf-gateskip-repo-');
+    const sessionDir = tmp('cf-gateskip-session-');
+    const dataRoot = tmp('cf-gateskip-dataroot-');
+    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    let spawnRunnerCalls = 0;
+    try {
+      const startCommit = initRedGateRepo(repo);
+      writeMainState(sessionDir, repo, startCommit);
+      writeMainPipeline(sessionDir, repo, ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce']);
+
+      __setSpawnRunnerForTests(async () => {
+        spawnRunnerCalls += 1;
+        const statePath = path.join(sessionDir, 'state.json');
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        state.exit_reason = 'toolchain_unavailable';
+        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+        return { exitCode: 1, stdout: '', stderr: '' };
+      });
+
+      await captureMainExit(sessionDir, 1);
+
+      assert.equal(spawnRunnerCalls, 1, 'downstream phases must never invoke spawnRunner after a crash-floor halt');
+
+      const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+      assert.doesNotMatch(
+        runnerLog,
+        /PHASE 2\/4: CITADEL/,
+        'citadel must never be reached after a crash-floor pickle halt',
+      );
+
+      const events = readActivityEvents(dataRoot);
+      const gateFailed = events.filter((e) => e.event === 'tsc_gate_failed');
+      assert.equal(gateFailed.length, 0, 'a crash-floor halt must not run the abort-path gate at all, RED or not');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+      else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  // AC-CF-15 narrowing case: a NON-crash-floor strict-phases halt (exit_reason
+  // not a member of CRASH_FLOOR_EXIT_REASONS, pipeline_continue_on_phase_fail:
+  // false) still runs the abort-path gate — the skip is a narrowing, not a
+  // deletion.
+  test('AC-CF-15 narrowing: a non-crash-floor strict-phases halt still runs the abort gate', async () => {
+    const repo = tmp('cf-gateskip-nonfloor-repo-');
+    const sessionDir = tmp('cf-gateskip-nonfloor-session-');
+    const dataRoot = tmp('cf-gateskip-nonfloor-dataroot-');
+    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    try {
+      const startCommit = initRedGateRepo(repo);
+      writeMainState(sessionDir, repo, startCommit, { pipeline_continue_on_phase_fail: false });
+      writeMainPipeline(sessionDir, repo, ['pickle', 'citadel']);
+
+      __setSpawnRunnerForTests(async () => {
+        const statePath = path.join(sessionDir, 'state.json');
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        // 'error' is a valid ExitReason but NOT a CRASH_FLOOR_EXIT_REASONS member.
+        state.exit_reason = 'error';
+        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+        return { exitCode: 1, stdout: '', stderr: '' };
+      });
+
+      await captureMainExit(sessionDir, 1);
+
+      const events = readActivityEvents(dataRoot);
+      const gateFailed = events.filter((e) => e.event === 'tsc_gate_failed');
+      assert.ok(gateFailed.length >= 1, 'a non-crash-floor strict-phases halt must still run the abort-path gate');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+      else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 });

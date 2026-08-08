@@ -3346,17 +3346,24 @@ function emitHeadMismatchStderr(statePath) {
     }
 }
 /**
- * AC-SCPIN-5: honest fatal-pickle-halt reason. `isFatalPhaseFailure`'s
- * `!startCommit` branch and its zero-commits-since-baseline branch both
- * return `true`, but they are NOT the same incident: a missing baseline is
- * unmeasurable (no commit-count check ever ran), while zero commits since a
- * captured baseline is genuine zero build progress. Reporting the former as
- * "zero commits" mis-triages the incident. This is telemetry-only — it does
- * not change the halt/no-halt decision made by `isFatalPhaseFailure`.
+ * AC-SCPIN-5 / AC-CF-05: honest fatal-pickle-halt reason. `isFatalPhaseFailure`'s
+ * `!startCommit` branch, its crash-floor `exit_reason` branch (B-CRASHFLOOR), and its
+ * zero-commits-since-baseline branch all return `true`, but they are NOT the same
+ * incident: a missing baseline is unmeasurable (no commit-count check ever ran), a
+ * crash-floor `exit_reason` (e.g. `toolchain_unavailable`) means the toolchain could
+ * not run at all regardless of commit count, and zero commits since a captured
+ * baseline is genuine zero build progress. Reporting a crash-floor halt as "zero
+ * commits" mis-triages the incident — the crash-floor check MUST run before the
+ * commit-count branches so a zero-commit crash-floor halt reports the real reason.
+ * This is telemetry-only — it does not change the halt/no-halt decision made by
+ * `isFatalPhaseFailure`.
  */
 function getFatalPickleHaltReason(runtime) {
     try {
         const runnerState = sm.read(runtime.statePath);
+        if (isCrashFloorExitReason(runnerState.exit_reason)) {
+            return `crash floor — ${String(runnerState.exit_reason)}`;
+        }
         const startCommit = runnerState.start_commit?.trim();
         if (!startCommit) {
             return 'baseline unmeasurable — start_commit was never recorded for this session';
@@ -3522,6 +3529,29 @@ export async function runAllBackendsExhaustedFinalizeGate(runtime, counters, raw
     log(`Phase ${rawPhase} finalize-gate failed after ${reason} (exit ${gateResult.exitCode})`);
     return { action: 'break' };
 }
+/**
+ * AC-CF-15: a crash-floor pickle halt (missing `start_commit`, or `exit_reason` a
+ * member of `CRASH_FLOOR_EXIT_REASONS` — e.g. `toolchain_unavailable`) means the
+ * toolchain cannot run at all; the abort-path typecheck+lint `runGate` below is
+ * guaranteed red in that state and burns ~60s emitting a misattributed
+ * `tsc_gate_failed` record (see `getFatalPickleHaltReason`). This mirrors the
+ * `isFatalPhaseFailure` crash-floor arm exactly — it is a narrowing of when the
+ * abort gate runs, never a change to whether the pipeline halts.
+ */
+function isCrashFloorPickleHalt(runtime, rawPhase) {
+    if (rawPhase !== 'pickle')
+        return false;
+    try {
+        const runnerState = sm.read(runtime.statePath);
+        const startCommit = runnerState.start_commit?.trim();
+        if (!startCommit)
+            return true;
+        return isCrashFloorExitReason(runnerState.exit_reason);
+    }
+    catch {
+        return false;
+    }
+}
 async function dispatchHaltAction(runtime, counters, rawPhase, exitCode, log) {
     const haltAction = logPhaseHaltReason(runtime, rawPhase, exitCode, log);
     if (haltAction === 'run-finalize-gate') {
@@ -3529,6 +3559,11 @@ async function dispatchHaltAction(runtime, counters, rawPhase, exitCode, log) {
     }
     if (haltAction === 'run-finalize-gate-incomplete') {
         return runAllBackendsExhaustedFinalizeGate(runtime, counters, rawPhase, log);
+    }
+    // AC-CF-15: crash-floor halts skip the abort-path gate entirely — the toolchain
+    // cannot run, so the gate is guaranteed red and its telemetry misattributes cause.
+    if (isCrashFloorPickleHalt(runtime, rawPhase)) {
+        return { action: 'break' };
     }
     // AC-RPGT-6: best-effort typecheck+lint gate on abort path — network-free, never masks
     // the original abort reason.
