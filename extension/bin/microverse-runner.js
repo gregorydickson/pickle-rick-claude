@@ -3129,10 +3129,35 @@ export function auditPostIterationScope(ctx, state) {
         // Best-effort observability — never block the runner on telemetry.
     }
 }
-// B-APNC WS-1 pure classifier: a subsystem with pass_counts[sub] >= maxPasses while
-// consecutive_clean[sub] is still 0 is non-convergent. Reads the EXISTING anatomy-park.json
-// counters (no new state field). Returns the offending subsystem + its pass count, or null
-// when nothing has hit the ceiling. Defensive: malformed/absent maps yield null.
+// AP-EXT-ITER4-01: `consecutive_clean` is a STREAK, not an ever-clean flag — it drops back to 0
+// the moment a later pass finds anything, so it cannot answer "has this subsystem EVER passed
+// clean?". `findings_history` is the existing per-pass ledger (one entry appended per pass), so an
+// entry carrying an empty `findings` array is durable evidence of a clean pass. An entry whose
+// `findings` is absent or non-array is NOT evidence — unknown shape leaves the ceiling armed.
+function hasRecordedCleanPass(anatomyConfig, subsystem) {
+    const history = anatomyConfig.findings_history;
+    if (!history || typeof history !== 'object' || Array.isArray(history)) {
+        return false;
+    }
+    const entries = history[subsystem];
+    if (!Array.isArray(entries)) {
+        return false;
+    }
+    return entries.some((entry) => {
+        if (!entry || typeof entry !== 'object') {
+            return false;
+        }
+        const findings = entry.findings;
+        return Array.isArray(findings) && findings.length === 0;
+    });
+}
+// B-APNC WS-1 pure classifier: a subsystem that reached pass_counts[sub] >= maxPasses having NEVER
+// passed clean is non-convergent. Reads the EXISTING anatomy-park.json counters (no new state
+// field): `consecutive_clean[sub] === 0` covers the current streak and `hasRecordedCleanPass`
+// covers earlier clean passes the streak already forgot (AP-EXT-ITER4-01 — a subsystem clean at
+// pass 8 and dirty at pass 9 was halted as "no clean pass", one pass short of the 2-consecutive
+// convergence target). Returns the offending subsystem + its pass count, or null when nothing has
+// hit the ceiling. Defensive: malformed/absent maps yield null.
 export function classifyAnatomyNonConvergence(anatomyConfig, maxPasses) {
     if (!anatomyConfig || typeof anatomyConfig !== 'object') {
         return null;
@@ -3151,7 +3176,7 @@ export function classifyAnatomyNonConvergence(anatomyConfig, maxPasses) {
         }
         const passes = passCounts[subsystem] ?? 0;
         const clean = consecutiveClean[subsystem] ?? 0;
-        if (passes >= maxPasses && clean === 0) {
+        if (passes >= maxPasses && clean === 0 && !hasRecordedCleanPass(anatomyConfig, subsystem)) {
             return { subsystem, passCount: passes };
         }
     }

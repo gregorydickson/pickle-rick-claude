@@ -39,6 +39,7 @@ import {
     emitJudgeLedgerDiagnostic,
     emitJudgeLegacyShapeDiagnostic,
     handleNoCommitStall,
+    classifyAnatomyNonConvergence,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
 
@@ -1190,5 +1191,72 @@ test('AC-JPCM-8: a no-commit exit that DID reach the target still reports conver
         assert.equal(result, 'converged', 'a genuine target hit must not be demoted by the honesty fix');
     } finally {
         fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER4-01: the B-APNC ceiling asks "has this subsystem EVER passed
+// clean?", not "is its clean STREAK currently zero?". `consecutive_clean` resets
+// to 0 on the next pass that finds anything, so a subsystem that went clean once
+// and then surfaced one more finding used to halt as "no clean pass" — one pass
+// short of the 2-consecutive-clean convergence target.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER4-01: a subsystem with an earlier clean pass is NOT halted after its streak resets', () => {
+    const config = {
+        subsystems: ['extension'],
+        current_index: 0,
+        pass_counts: { extension: 9 },
+        // streak reset by the pass-9 finding — the pass-8 clean survives only in findings_history
+        consecutive_clean: { extension: 0 },
+        findings_history: {
+            extension: [
+                { iteration: 8, subsystem: 'extension', findings: [] },
+                { iteration: 9, subsystem: 'extension', findings: [{ id: 'X-1', severity: 'HIGH' }] },
+            ],
+        },
+    };
+    assert.equal(
+        classifyAnatomyNonConvergence(config, 8),
+        null,
+        'a subsystem that passed clean at iteration 8 has not "run 9 passes with no clean pass"',
+    );
+});
+
+test('AP-EXT-ITER4-01: a subsystem that never passed clean still halts at the ceiling', () => {
+    const config = {
+        subsystems: ['extension'],
+        current_index: 0,
+        pass_counts: { extension: 9 },
+        consecutive_clean: { extension: 0 },
+        findings_history: {
+            extension: [
+                { iteration: 8, subsystem: 'extension', findings: [{ id: 'X-1', severity: 'HIGH' }] },
+                { iteration: 9, subsystem: 'extension', findings: [{ id: 'X-2', severity: 'HIGH' }] },
+            ],
+        },
+    };
+    const hit = classifyAnatomyNonConvergence(config, 8);
+    assert.ok(hit, 'the B-APNC ceiling must still fire when every recorded pass had findings');
+    assert.equal(hit.subsystem, 'extension');
+    assert.equal(hit.passCount, 9);
+});
+
+test('AP-EXT-ITER4-01: an unrecognized findings_history shape leaves the ceiling armed', () => {
+    const base = {
+        subsystems: ['extension'],
+        current_index: 0,
+        pass_counts: { extension: 8 },
+        consecutive_clean: { extension: 0 },
+    };
+    for (const history of [
+        undefined,
+        { extension: 'not-an-array' },
+        { extension: [{ iteration: 8 }] },            // findings absent — not evidence of clean
+        { extension: [{ iteration: 8, findings: null }] },
+        { other: [{ iteration: 8, findings: [] }] },  // a DIFFERENT subsystem's clean pass
+    ]) {
+        const hit = classifyAnatomyNonConvergence({ ...base, findings_history: history }, 8);
+        assert.ok(hit, `expected halt for findings_history=${JSON.stringify(history)}`);
     }
 });
