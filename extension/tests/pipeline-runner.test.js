@@ -2993,6 +2993,37 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // AC-CF-15 single-source: `isCrashFloorPickleHalt` (the abort-gate skip predicate) and the
+  // pickle arm of `isFatalPhaseFailure` were parallel copies of the SAME two conditions —
+  // `!start_commit` and a `CRASH_FLOOR_EXIT_REASONS` member. Two copies of one predicate means a
+  // future crash-floor condition added to the exported halt predicate does NOT reach the gate
+  // skip, so the abort path burns a ~60s guaranteed-red typecheck+lint gate and stamps a
+  // misattributed `tsc_gate_failed`. The predicate now derives; the collapse is enforced here.
+  test('AC-CF-15: isCrashFloorPickleHalt derives from isFatalPhaseFailure, not a parallel copy', () => {
+    const prSrc = fs.readFileSync(new URL('../src/bin/pipeline-runner.ts', import.meta.url), 'utf-8');
+    const fnStart = prSrc.indexOf('function isCrashFloorPickleHalt');
+    assert.ok(fnStart >= 0, 'pipeline-runner.ts must declare isCrashFloorPickleHalt');
+    const bodyEnd = prSrc.indexOf('\n}', fnStart);
+    assert.ok(bodyEnd > fnStart, 'sanity: the function body must terminate');
+    const body = prSrc.slice(fnStart, bodyEnd);
+
+    assert.match(
+      body,
+      /isFatalPhaseFailure\(/,
+      'the gate-skip predicate must consult the exported halt predicate, not re-derive it',
+    );
+    assert.doesNotMatch(
+      body,
+      /start_commit/,
+      're-checking start_commit forks the crash-floor predicate into two copies',
+    );
+    assert.doesNotMatch(
+      body,
+      /isCrashFloorExitReason/,
+      're-checking CRASH_FLOOR_EXIT_REASONS forks the crash-floor predicate into two copies',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

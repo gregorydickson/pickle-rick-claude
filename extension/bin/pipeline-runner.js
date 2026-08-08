@@ -3534,23 +3534,14 @@ export async function runAllBackendsExhaustedFinalizeGate(runtime, counters, raw
  * member of `CRASH_FLOOR_EXIT_REASONS` — e.g. `toolchain_unavailable`) means the
  * toolchain cannot run at all; the abort-path typecheck+lint `runGate` below is
  * guaranteed red in that state and burns ~60s emitting a misattributed
- * `tsc_gate_failed` record (see `getFatalPickleHaltReason`). This mirrors the
- * `isFatalPhaseFailure` crash-floor arm exactly — it is a narrowing of when the
- * abort gate runs, never a change to whether the pipeline halts.
+ * `tsc_gate_failed` record (see `getFatalPickleHaltReason`). The condition is DERIVED
+ * from `isFatalPhaseFailure`'s pickle arm rather than restated: a second copy of the
+ * same two checks lets a future crash-floor condition halt the pipeline without
+ * skipping the doomed gate. This is a narrowing of when the abort gate runs, never a
+ * change to whether the pipeline halts.
  */
 function isCrashFloorPickleHalt(runtime, rawPhase) {
-    if (rawPhase !== 'pickle')
-        return false;
-    try {
-        const runnerState = sm.read(runtime.statePath);
-        const startCommit = runnerState.start_commit?.trim();
-        if (!startCommit)
-            return true;
-        return isCrashFloorExitReason(runnerState.exit_reason);
-    }
-    catch {
-        return false;
-    }
+    return rawPhase === 'pickle' && isFatalPhaseFailure('pickle', runtime);
 }
 async function dispatchHaltAction(runtime, counters, rawPhase, exitCode, log) {
     const haltAction = logPhaseHaltReason(runtime, rawPhase, exitCode, log);
