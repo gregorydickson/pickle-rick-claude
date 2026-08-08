@@ -2893,6 +2893,35 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     assert.match(pickleArm, /isCrashFloorExitReason/, 'the pickle arm must consult the crash-floor predicate');
   });
 
+  // EXIT_REASONS parity: `types/index.ts` EXIT_REASONS and mux-runner's hand-maintained
+  // `export type ExitReason = 'a' | 'b' | …` union are parallel copies of the same
+  // membership list — types/index.ts cannot import mux-runner.ts without a cycle, so the
+  // type system cannot tie them together. The AC-CF-02/03 sweeps above iterate EXIT_REASONS,
+  // so a reason added to mux-runner's union alone is silently never swept: if it were a real
+  // crash-floor reason, nothing would prove it halts, and if it were not, nothing would prove
+  // it continues. Compare the two member sets from source text.
+  test('EXIT_REASONS parity: mux-runner ExitReason union has exactly the EXIT_REASONS members', () => {
+    const muxSrc = fs.readFileSync(new URL('../src/bin/mux-runner.ts', import.meta.url), 'utf-8');
+    const decl = /^export type ExitReason =([^;]*);/m.exec(muxSrc);
+    assert.ok(decl, 'mux-runner.ts must declare `export type ExitReason = …;`');
+    const unionMembers = new Set([...decl[1].matchAll(/'([^']+)'/g)].map((m) => m[1]));
+    assert.ok(unionMembers.size > 0, 'sanity: the union must have string-literal members');
+
+    const constMembers = new Set(EXIT_REASONS);
+    const missingFromConst = [...unionMembers].filter((r) => !constMembers.has(r));
+    const missingFromUnion = [...constMembers].filter((r) => !unionMembers.has(r));
+    assert.deepEqual(
+      missingFromConst,
+      [],
+      `mux-runner ExitReason members absent from EXIT_REASONS (never swept by AC-CF-02/03): ${missingFromConst.join(', ')}`,
+    );
+    assert.deepEqual(
+      missingFromUnion,
+      [],
+      `EXIT_REASONS members absent from mux-runner's ExitReason union: ${missingFromUnion.join(', ')}`,
+    );
+  });
+
   // AC-CF-05: getFatalPickleHaltReason (consulted via the exported logPhaseHaltReason)
   // must name the crash-floor reason on a zero-commit + toolchain_unavailable state,
   // never the stale "zero commits since baseline" string.

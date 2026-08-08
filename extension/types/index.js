@@ -457,9 +457,20 @@ export const MICROVERSE_FATAL_REASONS = [
     'baseline_unmeasurable_unrecoverable',
 ];
 /**
- * THE membership list for the pickle-phase `ExitReason` (mux-runner.ts). Declared as a runtime
- * `as const` array — mirrors the `MICROVERSE_EXIT_REASONS` pattern above — so mux-runner's
- * `ExitReason` type derives from this array instead of duplicating a hand-maintained literal union.
+ * Runtime-iterable membership list for the pickle-phase `ExitReason`, declared `as const` to mirror
+ * the `MICROVERSE_EXIT_REASONS` pattern above. It exists so `CRASH_FLOOR_EXIT_REASONS` can be swept
+ * against its complement at runtime (pipeline-runner's AC-CF-02/03 sweeps) instead of hardcoding
+ * literals.
+ *
+ * It is NOT yet the single source of truth: `mux-runner.ts` still declares its own hand-maintained
+ * `export type ExitReason = 'success' | …` literal union, and that union — not this array — is what
+ * the runtime's exit-reason plumbing (`FAILURE_EXIT_REASONS`, `isFailureExit`) is typed against.
+ * The two lists are therefore parallel copies that MUST stay member-for-member identical; a reason
+ * added to one and not the other silently drops out of the crash-floor sweeps. The parity is
+ * enforced by a source-text test (`pipeline-runner.test.js`, "EXIT_REASONS parity") rather than by
+ * the type system, because `types/index.ts` cannot import from `mux-runner.ts` without a cycle.
+ * Collapsing mux-runner's union to `typeof EXIT_REASONS[number]` retires the parity test and is the
+ * subtractive fix; it needs a scope covering `mux-runner.ts`.
  */
 export const EXIT_REASONS = [
     'success', 'cancelled', 'error', 'limit', 'iteration_cap_exhausted', 'stall', 'circuit_open',
