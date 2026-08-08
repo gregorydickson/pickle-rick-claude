@@ -4021,7 +4021,7 @@ function getFatalPickleHaltReason(runtime: PipelineRuntime): string {
   try {
     const runnerState = sm.read(runtime.statePath);
     if (isCrashFloorExitReason(runnerState.exit_reason)) {
-      return `crash floor — ${String(runnerState.exit_reason)}`;
+      return `crash floor — ${runnerState.exit_reason}`;
     }
     const startCommit = runnerState.start_commit?.trim();
     if (!startCommit) {
