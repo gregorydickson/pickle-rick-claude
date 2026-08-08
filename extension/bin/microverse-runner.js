@@ -108,12 +108,14 @@ function resolveRemediatorCodexModel(execBackend, sessionDir, remediatorState) {
         return resolveCodexModel(getExtensionRoot(), null);
     }
 }
-export async function runRemediatorForIteration(gateResult, sessionDir, workingDir, backend, remediatorTimeoutS, runtimeOverrides = {}) {
-    const iso = isoCompactStamp();
+// Write the gate result, drive spawn-gate-remediator to author a brief, and
+// return the brief's content. Null on any failure — the caller treats every
+// brief-preparation failure as an unsuccessful remediation.
+async function prepareRemediationBrief(gateResult, sessionDir) {
     const gateDir = path.join(sessionDir, 'gate');
     // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
     fs.mkdirSync(gateDir, { recursive: true });
-    const gateResultPath = path.join(gateDir, `gate_result_iter_${iso}.json`);
+    const gateResultPath = path.join(gateDir, `gate_result_iter_${isoCompactStamp()}.json`);
     writeStateFile(gateResultPath, gateResult);
     const briefLines = [];
     const briefCode = await spawnGateRemediatorMain({
@@ -122,36 +124,45 @@ export async function runRemediatorForIteration(gateResult, sessionDir, workingD
         stderr: (msg) => process.stderr.write(`[gate-remediator] ${msg}\n`),
     });
     if (briefCode !== 0)
-        return { success: false };
+        return null;
     const briefPathLine = briefLines.find(l => l.startsWith('BRIEF_PATH='));
     if (!briefPathLine)
-        return { success: false };
-    const briefPath = briefPathLine.slice('BRIEF_PATH='.length);
-    let briefContent;
+        return null;
     try {
         // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-        briefContent = fs.readFileSync(briefPath, 'utf-8');
+        return fs.readFileSync(briefPathLine.slice('BRIEF_PATH='.length), 'utf-8');
     }
     catch {
-        return { success: false };
+        return null;
     }
-    const startMs = Date.now();
-    const statePath = path.join(sessionDir, 'state.json');
+}
+// R-XBL-2: re-read state.backend immediately before exec via StateManager.read
+// so any mid-iteration backend flip is honored at the spawn site (single source
+// of truth). When the state read fails, fall back to the caller's explicit
+// backend instead of ambient env/default resolution.
+// PICKLE_REFINEMENT_LOCK=1 still wins via resolveWorkerBackendFromState.
+function resolveRemediatorSpawnTarget(sessionDir, backend) {
     let remediatorState = null;
     try {
-        remediatorState = sm.read(statePath);
+        remediatorState = sm.read(path.join(sessionDir, 'state.json'));
     }
     catch {
         // Keep the fallback state null when the file is unreadable.
     }
-    const workerBackendResolution = remediatorState
-        ? resolveWorkerBackendFromState(remediatorState)
-        : resolveWorkerBackendFromState({ backend });
-    // R-XBL-2: re-read state.backend immediately before exec via StateManager.read
-    // so any mid-iteration backend flip is honored at the spawn site (single
-    // source of truth). When the state read fails, fall back to the caller's
-    // explicit backend instead of ambient env/default resolution.
-    // PICKLE_REFINEMENT_LOCK=1 still wins via resolveWorkerBackendFromState.
+    return {
+        resolution: remediatorState
+            ? resolveWorkerBackendFromState(remediatorState)
+            : resolveWorkerBackendFromState({ backend }),
+        remediatorState,
+    };
+}
+export async function runRemediatorForIteration(gateResult, sessionDir, workingDir, backend, remediatorTimeoutS, runtimeOverrides = {}) {
+    const gateDir = path.join(sessionDir, 'gate');
+    const briefContent = await prepareRemediationBrief(gateResult, sessionDir);
+    if (briefContent === null)
+        return { success: false };
+    const startMs = Date.now();
+    const { resolution: workerBackendResolution, remediatorState } = resolveRemediatorSpawnTarget(sessionDir, backend);
     const execBackend = workerBackendResolution.backend;
     // Plumb codex model so remediator spawns honor `default_codex_model` /
     // `state.codex_model` instead of the codex CLI compiled-in default. Other
