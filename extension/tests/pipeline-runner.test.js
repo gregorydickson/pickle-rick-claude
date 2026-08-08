@@ -31,6 +31,7 @@ import {
   __setCitadelRemediationDepsForTests,
   __setSpawnRunnerForTests,
   setupAnatomyPark,
+  readPersistedAllowedPaths,
   main,
 } from '../bin/pipeline-runner.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
@@ -3382,6 +3383,72 @@ describe('AP-EXT-ITER5-01 setupAnatomyPark resume ledger', () => {
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
       fs.rmSync(target, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * AP-EXT-ITER6-02: `scope.json` is written tmp-rename, so a crash between the write and the
+ * rename leaves ONLY `scope.json.tmp.<pid>`. `readPersistedAllowedPaths` used to short-circuit
+ * on `fs.existsSync(scopePath)` BEFORE the `readRecoverableJsonObject` on the very next line,
+ * so a recoverable fence read as "unscoped" and the resumed anatomy/szechuan phase reviewed —
+ * and committed across — the whole repo with no scope fence.
+ *
+ * Assert the RECOVERED VALUE and the promotion on disk, never merely "no throw": the pre-fix
+ * code returned `undefined` quietly, which is exactly what a laxer pin would have blessed.
+ */
+function deadPidForTmp() {
+  // A pid that is provably not alive, so `shouldSkipLiveTmp` does not defer the tmp.
+  for (const candidate of [999_999, 888_888, 777_777]) {
+    try { process.kill(candidate, 0); } catch { return candidate; }
+  }
+  throw new Error('no dead pid available for fixture');
+}
+
+describe('AP-EXT-ITER6-02 persisted scope.json survives a crashed tmp-rename', () => {
+  test('a tmp-only scope.json still yields the fenced allowed_paths, and is promoted', () => {
+    const sessionDir = tmpDir();
+    try {
+      const scopePath = path.join(sessionDir, 'scope.json');
+      const tmpPath = `${scopePath}.tmp.${deadPidForTmp()}`;
+      fs.writeFileSync(tmpPath, JSON.stringify({
+        version: 1,
+        mode: 'paths',
+        allowed_paths: ['extension/src/bin/pipeline-runner.ts', 'extension/src/types/index.ts'],
+      }, null, 2));
+      assert.equal(fs.existsSync(scopePath), false, 'fixture must start with NO base scope.json');
+
+      assert.deepEqual(readPersistedAllowedPaths(sessionDir), [
+        'extension/src/bin/pipeline-runner.ts',
+        'extension/src/types/index.ts',
+      ]);
+      assert.equal(fs.existsSync(scopePath), true, 'the recoverable read must promote the tmp');
+      assert.equal(fs.existsSync(tmpPath), false);
+    } finally {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  test('a genuinely absent scope.json is still unscoped (undefined)', () => {
+    const sessionDir = tmpDir();
+    try {
+      assert.equal(readPersistedAllowedPaths(sessionDir), undefined);
+      assert.equal(fs.existsSync(path.join(sessionDir, 'scope.json')), false);
+    } finally {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  test('a readable base scope.json is unaffected', () => {
+    const sessionDir = tmpDir();
+    try {
+      fs.writeFileSync(
+        path.join(sessionDir, 'scope.json'),
+        JSON.stringify({ allowed_paths: ['extension/src/bin/microverse-runner.ts'] }, null, 2),
+      );
+      assert.deepEqual(readPersistedAllowedPaths(sessionDir), ['extension/src/bin/microverse-runner.ts']);
+    } finally {
       fs.rmSync(sessionDir, { recursive: true, force: true });
     }
   });

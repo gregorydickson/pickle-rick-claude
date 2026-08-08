@@ -1570,10 +1570,25 @@ export function writeSkippedByScope(sessionDir, scopePhase, scope, target, worki
         throw err;
     }
 }
-function readPersistedAllowedPaths(sessionDir) {
+/**
+ * AP-EXT-ITER6-02: `scope.json` is written tmp-rename, so a crash between the write and the
+ * rename leaves ONLY `scope.json.tmp.<pid>` — the recoverable state every OTHER scope reader
+ * promotes (`scope-resolver.ts:refreshScope`, `check-gate.ts` / `init-microverse.ts`
+ * `--allowed-paths-file`). The single recovery-aware existence predicate for this module: a
+ * readable base OR a promotable dead tmp. Purely additive over the bare `fs.existsSync` it
+ * replaces — it never withholds a scope the old check would have accepted.
+ */
+function hasRecoverableScopeJson(scopePath) {
+    return fs.existsSync(scopePath) || readRecoverableJsonObject(scopePath) !== null;
+}
+/**
+ * Read the fenced `allowed_paths` off the session's persisted `scope.json`. The read goes
+ * STRAIGHT to `readRecoverableJsonObject` (which reads AND promotes a dead tmp): an
+ * `fs.existsSync` pre-gate here would short-circuit before that recovery ever ran, and a
+ * crash-resumed phase would read a recoverable fence as "unscoped" and review the whole repo.
+ */
+export function readPersistedAllowedPaths(sessionDir) {
     const scopePath = path.join(sessionDir, 'scope.json');
-    if (!fs.existsSync(scopePath))
-        return undefined;
     try {
         const raw = readRecoverableJsonObject(scopePath);
         if (!raw)
@@ -1814,7 +1829,7 @@ export function setupAnatomyPark(sessionDir, target, stallLimit, extensionRoot, 
         '--metric-json', metricJson,
     ];
     const scopePath = path.join(sessionDir, 'scope.json');
-    if (effectiveScope && effectiveScope.allowedPaths.length > 0 && fs.existsSync(scopePath)) {
+    if (effectiveScope && effectiveScope.allowedPaths.length > 0 && hasRecoverableScopeJson(scopePath)) {
         initArgs.push('--allowed-paths-file', scopePath);
     }
     try {
@@ -1919,7 +1934,7 @@ export function setupSzechuanSauce(sessionDir, target, stallLimit, extensionRoot
     if (judgeContextArg)
         initArgs.push('--judge-context', judgeContextArg);
     const scopePath = path.join(sessionDir, 'scope.json');
-    if (effectiveAllowedPaths && effectiveAllowedPaths.length > 0 && fs.existsSync(scopePath)) {
+    if (effectiveAllowedPaths && effectiveAllowedPaths.length > 0 && hasRecoverableScopeJson(scopePath)) {
         initArgs.push('--allowed-paths-file', scopePath);
     }
     try {
