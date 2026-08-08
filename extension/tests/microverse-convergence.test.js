@@ -41,6 +41,8 @@ import {
     handleNoCommitStall,
     classifyAnatomyNonConvergence,
     markMicroverseFatalError,
+    auditPostIterationScope,
+    _deps,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
 
@@ -1330,4 +1332,73 @@ test('AP-EXT-ITER7-01: a genuinely absent microverse.json is still a no-op (null
     } finally {
         fs.rmSync(sessionDir, { recursive: true, force: true });
     }
+});
+
+// AP-EXT-ITER8-02: `scope.json` is written tmp-rename, so a crash in that window leaves
+// only `scope.json.tmp.<pid>`. The R-SSOC post-iteration scope audit used to pre-gate on
+// `fs.existsSync(scope.json)` and silently no-op there — committed paths outside the fence
+// went unreported (fail-OPEN, no `worker_edit_outside_scope` event). Reading through
+// `readRecoverableJsonObject` promotes the dead tmp onto the base path, which also re-arms
+// `checkScopeDiff` (that helper existsSync-gates its own read).
+function runTmpOnlyScopeAudit({ committedFiles, writeTmp = true }) {
+    const sessionDir = makeTmpDir();
+    const captured = [];
+    const origSpawn = _deps.spawnSync;
+    const origLog = _deps.logActivity;
+    try {
+        if (writeTmp) {
+            // pid 999999 is outside the default macOS/Linux pid range → provably dead writer.
+            fs.writeFileSync(
+                path.join(sessionDir, 'scope.json.tmp.999999'),
+                JSON.stringify({ allowed_paths: ['extension/src/bin'] }),
+            );
+        }
+        _deps.spawnSync = () => ({ status: 0, stdout: committedFiles.join('\n') + '\n' });
+        _deps.logActivity = (ev) => { captured.push(ev); };
+        const ctx = {
+            sessionDir,
+            workingDir: sessionDir,
+            preIterSha: 'a'.repeat(40),
+            postIterSha: 'b'.repeat(40),
+            log: () => {},
+        };
+        auditPostIterationScope(ctx, { current_subsystem: 'extension' });
+        return {
+            events: captured.filter((e) => e.event === 'worker_edit_outside_scope'),
+            promoted: fs.existsSync(path.join(sessionDir, 'scope.json')),
+        };
+    } finally {
+        _deps.spawnSync = origSpawn;
+        _deps.logActivity = origLog;
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+}
+
+test('AP-EXT-ITER8-02: a tmp-only scope.json still audits — drift is reported, not swallowed', () => {
+    const { events, promoted } = runTmpOnlyScopeAudit({
+        committedFiles: ['extension/src/services/pickle-utils.ts'],
+    });
+    assert.equal(promoted, true, 'the dead scope.json tmp must be promoted onto the base path');
+    assert.equal(events.length, 1, 'the out-of-scope commit must emit worker_edit_outside_scope');
+    assert.deepEqual(
+        events[0].gate_payload.staged_paths_outside_scope,
+        ['extension/src/services/pickle-utils.ts'],
+    );
+});
+
+test('AP-EXT-ITER8-02: a tmp-only scope.json does not fabricate drift for in-scope commits', () => {
+    const { events, promoted } = runTmpOnlyScopeAudit({
+        committedFiles: ['extension/src/bin/microverse-runner.ts'],
+    });
+    assert.equal(promoted, true);
+    assert.equal(events.length, 0, 'an in-scope commit must stay silent');
+});
+
+test('AP-EXT-ITER8-02: a genuinely absent scope.json remains a no-op', () => {
+    const { events, promoted } = runTmpOnlyScopeAudit({
+        committedFiles: ['anything/at/all.ts'],
+        writeTmp: false,
+    });
+    assert.equal(promoted, false, 'no scope.json may be conjured from nothing');
+    assert.equal(events.length, 0);
 });

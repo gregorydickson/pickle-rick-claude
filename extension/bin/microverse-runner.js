@@ -3084,7 +3084,12 @@ function listCommittedFilesInRange(workingDir, fromSha, toSha) {
 }
 function resolveScopeAuditInputs(ctx) {
     const scopeJsonPath = path.join(ctx.sessionDir, 'scope.json');
-    if (!fs.existsSync(scopeJsonPath))
+    // AP-EXT-ITER8-02: read through the recovery layer, which PROMOTES a dead
+    // `scope.json.tmp.<pid>` onto the base path. A bare `fs.existsSync` pre-gate
+    // short-circuits before that promotion, so a crash in scope.json's tmp-rename
+    // window silently no-ops this audit — and `checkScopeDiff` below existsSync-gates
+    // too, so the promotion (not a recoverable read there) is what keeps it armed.
+    if (readRecoverableJsonObject(scopeJsonPath) === null)
         return null;
     const preHead = ctx.preIterSha;
     const postHead = ctx.postIterSha;
