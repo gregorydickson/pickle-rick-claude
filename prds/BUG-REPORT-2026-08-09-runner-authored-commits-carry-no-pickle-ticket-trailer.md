@@ -232,23 +232,39 @@ Give the completion-commit fixtures one shared helper that authors a commit **wi
 - AC-B3: **Every** changed fixture carries an adjacent comment naming `a4e48c26` and stating why a
   subject-only commit is no longer a shape production emits.
 
-### WS-C — replace the two brittle source-text tests
+### WS-C — no source-text test asserts on a byte offset or an undefined symbol
 
-- AC-C1: `AC-SPAWN-SUMMARY-SOURCE` is deleted, with a comment in
-  `tests/integration/setup-codegraph-index.test.js` pointing at
-  `tests/codegraph-session-summary-counts.test.js` as the behavioral cover. (Deletion, not a symbol
-  rename: a symbol-name grep next to a behavioral test that already drives the real emitter is pure
-  duplication with a drift liability.)
-- AC-C2: `AC-DURA-3: the 7th path …` no longer uses a fixed byte window. It bounds the read by the
-  function's own extent (start of `commitAndContinueDoneFlip` to the start of the next top-level
-  `export`), or is replaced by a behavioral assertion.
-- AC-C3: Mutation check — removing the `guardCompletionCommitBeforeDone(` call from
-  `commitAndContinueDoneFlip` still reddens the rewritten AC-DURA-3 test.
+The two failures are one invariant, not two chores. Both tests read `mux-runner.ts` as *text* and both
+broke on refactors that changed no behavior — one greps a symbol that no longer exists, the other
+slices a fixed byte window that a grown comment block pushed the target out of. A source-text
+assertion is only sound when it is anchored to something the compiler also sees.
 
-### WS-D — reconcile the three B-ONEABORT twins
+**Invariant:** *for every* source-text assertion in the changed set, the anchor is (a) a symbol that
+is actually defined in `src/`, and (b) bounded by a syntactic extent — never a fixed character count.
+
+- AC-C1: **For any** source-text assertion in
+  `tests/integration/setup-codegraph-index.test.js` and `tests/doneflip-gate-all-callsites.test.js`,
+  every symbol it greps for resolves in `extension/src/`. Verify: for each backticked/quoted symbol
+  literal in those files, `grep -rq "<symbol>" extension/src/` exits 0.
+  `emitCgSessionSummary` fails this today and has no definition anywhere — delete that assertion (it
+  duplicates `tests/codegraph-session-summary-counts.test.js`, which drives the real emitter) rather
+  than renaming it to chase the symbol.
+- AC-C2: **No** assertion in those files bounds a source read by a fixed character count. Verify:
+  `grep -nE '\+ *[0-9]{3,}\s*,' tests/doneflip-gate-all-callsites.test.js
+  tests/integration/setup-codegraph-index.test.js` returns nothing. `AC-DURA-3: the 7th path …` is
+  rebounded by the function's own extent (its `export function` start to the next top-level `export`)
+  or replaced by a behavioral assertion.
+- AC-C3: Mutation check — **every** surviving assertion in the set still fails when the thing it
+  claims to protect is removed. Concretely: deleting the `guardCompletionCommitBeforeDone(` call from
+  `commitAndContinueDoneFlip` reddens the rebounded AC-DURA-3 test.
+
+### WS-D — every `MICROVERSE_EXIT_REASONS` member routes to the finalize gate
 
 Mirror `f378ffd1`. Reconcile each assertion **deliberately**, with the reasoning in an adjacent
 comment. Never delete or weaken an assertion to make it pass.
+
+The three failures are three instances of **one** classifier contract, so reconcile against the whole
+union rather than case-by-case — otherwise the next added exit reason reopens the same drift.
 
 - AC-D1: **For every** member of `MICROVERSE_EXIT_REASONS`, the reconciled tests assert the invariant
   the classifier actually implements — the reason routes to the finalize gate — and **only**
@@ -258,16 +274,6 @@ comment. Never delete or weaken an assertion to make it pass.
   the contract now is.
 - AC-D3: An assertion-count floor is pinned for
   `tests/integration/pipeline-runner-judge-reasons.test.js` so a later change cannot quietly shrink it.
-
-### WS-E — diagnose `INV-CODEX-RECOVERY-ADVANCED`
-
-Diagnose only. Produce a written root cause in the ticket's artifacts. Change code **only** if the
-root cause is a production defect; if the test is stale, say so with evidence and reconcile it the way
-WS-D does.
-
-- AC-E1: A root-cause statement citing the specific line where the ladder takes `recovery_exhausted`
-  instead of `advanced`.
-- AC-E2: Either the test passes, or the ticket records why it should not and what replaces it.
 
 ### WS-F — reconcile the two R-JPCM judge-prompt assertions
 
@@ -286,6 +292,13 @@ Same discipline as WS-D: reconcile deliberately against the shipped contract, ne
 
 ## Out of scope (tracked, not fixed here)
 
+- **`INV-CODEX-RECOVERY-ADVANCED`** (`tests/integration/codex-authority-recovery.test.js:304`) — expects
+  `kind: 'relaunch'`, gets `{"kind":"break","reason":"recovery_exhausted"}` after 18.5s. Its
+  `PICKLE_TEST_MODE === '1'` guard bypass (`mux-runner.ts:5012`) is still present, so the trailer gap
+  does **not** explain it and no hypothesis survives inspection yet. Deliberately **not** in this
+  bundle: the only honest ticket for it is diagnose-only, and a research-only ticket is exactly what
+  decomposition forbids (`/pickle-refine-prd` 7a). Diagnose it first; file a bundle once there is a
+  claim to build against.
 - **`install-script-prefix.prefix-writes-files`** — re-measure at rest before any action.
 - **No pipeline phase runs `test:integration`.** This is the structural reason the debt accumulated
   unseen — pickle / citadel / anatomy-park / szechuan-sauce all gate on the fast tier, so a bundle can
@@ -296,6 +309,17 @@ Same discipline as WS-D: reconcile deliberately against the shipped contract, ne
   window, dirty index) remain unattributable. Narrower than WS-A; note it, do not fix it here.
 
 ---
+
+## Note for whoever refines this
+
+The AC-shape gate's suggested remedy — `describe.each([...])` — **cannot be satisfied in this repo**.
+Tests run under `node --test` (`extension/tests/*.test.js`); `node:test` exports no `describe.each`
+(`typeof require('node:test').describe.each === 'undefined'`) and the literal appears **zero** times
+across the whole suite. The gate's *other* arm — a universal-quantifier title over a genuine set — is
+satisfiable and is what every workstream here uses. If a future ticket in this bundle trips the gate,
+reshape the AC into the invariant it actually is, or, when the work genuinely is a single indivisible
+item, use `--skip-ac-shape-gate "<reason>"` and name the `node:test` incompatibility in the reason.
+Do not fabricate a parametrized test to appease it.
 
 ## Bundle-wide gate
 
