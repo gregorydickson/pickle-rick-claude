@@ -5292,6 +5292,37 @@ function persistRunnerAuthoredGreenVerdict(sessionDir: string, ticketId: string)
   } catch { /* best-effort — guard treats an absent verdict as fail-closed */ }
 }
 
+/**
+ * Render `message` carrying a parsed `Pickle-Ticket: <ticketId>` trailer.
+ *
+ * The runner authors some commits IN-PROCESS, so they never see the `prepare-commit-msg`
+ * hook that `backend-spawn.ts` wires into worker subprocesses — and `readEvidence`'s only
+ * git-log arm is `scanGitLogByTrailer`, an exact match against git's PARSED trailer view.
+ * A ticket id in the subject is exactly the signal B-GITATTR WS-3 deleted, so an unstamped
+ * runner commit is unattributable.
+ *
+ * Written with `git interpret-trailers` — git's own trailer WRITER, symmetric with the
+ * `%(trailers:...)` READER the consumer uses. A bare appended `\nPickle-Ticket: …` is NOT
+ * equivalent: git parses trailers out of the LAST paragraph only, so an unconditional
+ * append opens a NEW paragraph and silently demotes every pre-existing trailer
+ * (`Co-Authored-By`, `Signed-off-by`) to body prose — still visible in `%B`, invisible to
+ * `%(trailers:…)`. That append survives only as the degraded arm: if `interpret-trailers`
+ * cannot run, keep attribution rather than dropping it (same posture as the hook's `printf`
+ * fallback in `git-trailer-hooks.ts` and spawn-morty's two-`-m` amend fallback).
+ *
+ * The spawn goes through `silentDeathGit` because that helper already carries the finite
+ * timeout bin/ subsystem invariant #3 requires; never throws, so the commit is never blocked.
+ */
+export function stampPickleTicketTrailer(workingDir: string, message: string, ticketId: string): string {
+  const trailer = `Pickle-Ticket: ${ticketId}`;
+  const rendered = silentDeathGit(
+    ['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', trailer],
+    workingDir,
+    message,
+  );
+  return rendered ?? `${message}\n\n${trailer}`;
+}
+
 export function commitAndContinueDoneFlip(input: CommitAndContinueDoneFlipInput): { ok: boolean; sha?: string } {
   assertWorkingDirUnderTmpdirIfTestMode(input.workingDir);
   // M1: ownership-scoped staging when stagePaths is provided (exit-path commit);
@@ -5315,7 +5346,11 @@ export function commitAndContinueDoneFlip(input: CommitAndContinueDoneFlipInput)
     input.log(`commit-and-continue: git add failed for ${input.ticketId} (status ${add.status ?? 'null'})`);
     return { ok: false };
   }
-  const commitMsg = `fix(${input.ticketId}): commit-and-continue recovery (R-ORSR-2)`;
+  const commitMsg = stampPickleTicketTrailer(
+    input.workingDir,
+    `fix(${input.ticketId}): commit-and-continue recovery (R-ORSR-2)`,
+    input.ticketId,
+  );
   const commit = spawnSync('git', ['-C', input.workingDir, 'commit', '-m', commitMsg], { encoding: 'utf-8', timeout: 30000 });
   if (commit.status !== 0) {
     input.log(`commit-and-continue: git commit blocked/failed for ${input.ticketId} (status ${commit.status ?? 'null'})`);
@@ -6037,7 +6072,12 @@ export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): {
       });
       if (add.status !== 0) return { ok: false };
       const title = phase.title ? ` — ${phase.title}` : '';
-      const commit = spawnSync('git', ['commit', '-m', `fix(${input.ticketId}): execute-converged-plan phase ${phase.index}${title}`], {
+      const phaseMsg = stampPickleTicketTrailer(
+        input.workingDir,
+        `fix(${input.ticketId}): execute-converged-plan phase ${phase.index}${title}`,
+        input.ticketId,
+      );
+      const commit = spawnSync('git', ['commit', '-m', phaseMsg], {
         cwd: input.workingDir, encoding: 'utf-8', timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
       });
       return { ok: commit.status === 0 };
@@ -8578,14 +8618,19 @@ export type SilentDeathRecoveryDecision =
   | { action: 'respawn'; subClass: SilentDeathSubClass; attempt: number; cap: number }
   | { action: 'halt'; subClass: SilentDeathSubClass; exitReason: 'recovery_exhausted'; cap: number };
 
-/** Best-effort git probe with a finite timeout (bin/ subsystem invariant #3). Returns null on any failure. */
-function silentDeathGit(args: string[], cwd: string): string | null {
+/**
+ * Best-effort git probe with a finite timeout (bin/ subsystem invariant #3). Returns null on
+ * any failure. `input`, when supplied, is fed on stdin (git commands that read a message);
+ * absent, stdin stays closed exactly as before.
+ */
+function silentDeathGit(args: string[], cwd: string, input?: string): string | null {
   try {
     const r = spawnSync('git', args, {
       cwd,
       encoding: 'utf-8',
+      input,
       timeout: SILENT_DEATH_GIT_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     if (r.error || r.status !== 0) return null;
     return (r.stdout || '').trim();
