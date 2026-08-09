@@ -3,6 +3,13 @@
 **Status:** Draft
 **Branch:** `release/v2.1-beta`
 **Baseline:** `f1e1ce1b` (v2.1.0-beta.8)
+**build_mode:** `attended` — **R-PSRB.** This bundle edits the completion-evidence / Done-flip seam
+(`ticket-completion-evidence.ts` consumers, `commitAndContinueDoneFlip`, the boundary and exit-path
+committers). The deployed pre-fix runtime applies that same unsatisfiable guard to the worker
+building the fix: a worker that commits its own ticket work will hit `commit-failed` on its Done flip
+for exactly the reason WS-A exists to fix. **Watch that seam.** If it bites, recover the wedge and
+record it — it is a field-grade defect report on the code this bundle repairs. Consider an
+`install.sh` deploy once WS-A lands so the remaining tickets run on the repaired runtime.
 **Priority:** P1 — a live reliability defect on the recovery/salvage path, plus the root cause of 13 of the 16 red `test:integration:parallel` tests.
 
 ---
@@ -207,10 +214,13 @@ do not change).
   id. Assert the **parsed trailer view**, never a `%B` substring.
 - AC-A3: A test asserts a commit with a pre-existing trailer (e.g. `Co-Authored-By:`) still exposes
   that trailer in the parsed view after the runner's stamp (no paragraph demotion).
-- AC-A4: `node bin/test-runner.js --tier integration --manifest tests/integration/.serial-tests.json
-  --manifest-mode exclude` shows the four Cause-A1 tests passing.
-- AC-A5: Mutation check — removing the trailer stamp reddens AC-A2 and the four Cause-A1 tests, and
-  nothing else.
+- AC-A4: **Every** commit this runtime authors under a ticket id carries a parsed `Pickle-Ticket`
+  trailer naming that ticket — that is one invariant over the whole set of runner-authored commit
+  sites, and satisfying it is what turns **all six** Cause-A1 tests green at once (they are six
+  witnesses to one missing stamp, not six defects). Verify: `npm run test:integration:parallel` and
+  `npm run test:integration:serial`, read separately, show every Cause-A1 test passing.
+- AC-A5: Mutation check — removing the trailer stamp reddens AC-A2 **and every** Cause-A1 test, and
+  nothing else. A mutation that reddens only a subset means a site was missed.
 
 ### WS-B — fixtures produce commits the way production does
 
