@@ -196,7 +196,12 @@ test('judge_timeout with failing finalize-gate exits pipeline with failure', asy
   }
 });
 
-test('judge_unreachable (structurally unrecoverable) — finalize-gate NOT spawned', async () => {
+// B-ONEABORT AC-OA-1a: judge_unreachable is a MICROVERSE_EXIT_REASONS union member, so it routes
+// to run-finalize-gate-incomplete, not a bare abort — mirrors the f378ffd1 reconciliation already
+// applied to the fast-tier twin pipeline-runner-judge-unreachable.test.js. The gate IS spawned;
+// here it fails (stub returns exitCode 1 for every call), so the phase breaks and the pipeline
+// still exits 1 — degraded, not a bare abort.
+test('judge_unreachable (union member) — finalize-gate IS spawned, gate fails, pipeline degrades to exit 1 (does not abort)', async () => {
   const { repo, sessionDir } = makeSession(['szechuan-sauce']);
   const spawnCalls = [];
   __setSpawnRunnerForTests(async (cmd, args) => {
@@ -210,9 +215,13 @@ test('judge_unreachable (structurally unrecoverable) — finalize-gate NOT spawn
   try {
     await expectMainExit(sessionDir, 1);
     const finalizeGateCalls = spawnCalls.filter(c => c.args.some(a => String(a).includes('finalize-gate.js')));
-    assert.equal(finalizeGateCalls.length, 0, 'finalize-gate.js must NOT be spawned for judge_unreachable');
+    assert.equal(
+      finalizeGateCalls.length,
+      1,
+      'finalize-gate.js MUST be spawned for judge_unreachable — union member, B-ONEABORT AC-OA-1a',
+    );
     const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
-    assert.doesNotMatch(runnerLog, /running finalize-gate anyway/);
+    assert.match(runnerLog, /finalize-gate failed after judge_unreachable/);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });

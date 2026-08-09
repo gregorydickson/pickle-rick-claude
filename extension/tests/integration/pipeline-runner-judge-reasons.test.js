@@ -5,10 +5,15 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   __setSpawnRunnerForTests,
+  classifyMicroverseHaltDecision,
   main,
 } from '../../bin/pipeline-runner.js';
+import { MICROVERSE_EXIT_REASONS } from '../../types/index.js';
+
+const __filename = fileURLToPath(import.meta.url);
 
 class ExitIntercept extends Error {
   constructor(code) {
@@ -184,7 +189,13 @@ test('all_judge_backends_exhausted + gate fail → exit code 1 (failed), auto-re
   }
 });
 
-test('judge_cli_missing → terminal disposition, finalize-gate NOT spawned, exit code 1, auto-resume=false', async () => {
+// B-ONEABORT AC-OA-1a: judge_cli_missing is a MICROVERSE_EXIT_REASONS union member (it is ALSO a
+// MICROVERSE_FATAL_REASONS member, but classifyMicroverseHaltDecision checks union membership
+// BEFORE the fatal-reason fallback, so union membership wins) — it routes to
+// run-finalize-gate-incomplete, never a bare abort. The gate IS spawned; here it fails (stub
+// returns exitCode 1 for every call), so the phase breaks and the pipeline still exits 1 — but for
+// the right reason (a failed recovery gate), not a phantom "terminal, no gate" disposition.
+test('judge_cli_missing (union member) — finalize-gate IS spawned, gate fails, pipeline exits 1 (degraded, not aborted)', async () => {
   const { repo, sessionDir } = makeSession(['szechuan-sauce']);
   const spawnCalls = [];
   __setSpawnRunnerForTests(async (cmd, args) => {
@@ -199,13 +210,54 @@ test('judge_cli_missing → terminal disposition, finalize-gate NOT spawned, exi
     await expectMainExit(sessionDir, 1);
 
     const finalizeGateCalls = spawnCalls.filter(c => c.args.some(a => String(a).includes('finalize-gate.js')));
-    assert.equal(finalizeGateCalls.length, 0, 'finalize-gate.js must NOT be spawned for judge_cli_missing (terminal)');
+    assert.equal(
+      finalizeGateCalls.length,
+      1,
+      'finalize-gate.js MUST be spawned for judge_cli_missing — it is a MICROVERSE_EXIT_REASONS union member (B-ONEABORT AC-OA-1a), not a bare abort',
+    );
 
     const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
-    assert.doesNotMatch(runnerLog, /running finalize-gate anyway/);
-    assert.doesNotMatch(runnerLog, /marking phase incomplete/);
+    assert.match(
+      runnerLog,
+      /finalize-gate failed after judge_cli_missing/,
+      'B-ONEABORT: judge_cli_missing routes through run-finalize-gate-incomplete; the gate ran and failed, so this is the expected log line',
+    );
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
+});
+
+// B-ONEABORT AC-OA-1a: NO member of MICROVERSE_EXIT_REASONS aborts; the union IS the subject list,
+// so a newly-added reason inherits this without a matching test edit.
+test('every MICROVERSE_EXIT_REASONS member routes to a non-abort action (B-ONEABORT three-armed contract)', () => {
+  assert.equal(MICROVERSE_EXIT_REASONS.length, 18, 'union membership count changed — update this test deliberately if a reason was added/removed');
+  for (const reason of MICROVERSE_EXIT_REASONS) {
+    const decision = classifyMicroverseHaltDecision(reason);
+    assert.notEqual(decision.action, 'abort', `${reason} must not abort — B-ONEABORT AC-OA-1a`);
+    assert.equal(decision.recognizedExitReason, reason, `${reason} must be recognized verbatim`);
+  }
+});
+
+// B-ONEABORT: the abort floor is narrow — non-string input, or a string outside the union. Per the
+// ticket's correction to an earlier PRD draft, session_state_corrupted lives in
+// MICROVERSE_FATAL_REASONS, NOT MICROVERSE_EXIT_REASONS — it is a non-member string that still
+// carries a recognized fatal reason through the classifier's fallback arm.
+test('abort floor stays narrow — only non-string or non-union-member strings abort', () => {
+  assert.deepEqual(classifyMicroverseHaltDecision(null), { action: 'abort', recognizedExitReason: null });
+  assert.deepEqual(classifyMicroverseHaltDecision(undefined), { action: 'abort', recognizedExitReason: null });
+  assert.deepEqual(classifyMicroverseHaltDecision(42), { action: 'abort', recognizedExitReason: null });
+  assert.deepEqual(classifyMicroverseHaltDecision('not-a-real-exit'), { action: 'abort', recognizedExitReason: null });
+  assert.deepEqual(classifyMicroverseHaltDecision('session_state_corrupted'), {
+    action: 'abort',
+    recognizedExitReason: 'session_state_corrupted',
+  });
+});
+
+// Assertion-count floor: guards against a future edit silently shrinking this file's coverage of
+// the B-ONEABORT contract (AC-D3). Counts assert. call sites in this file's own source.
+test('assertion-count floor — this file carries at least 13 assert. call sites', () => {
+  const src = fs.readFileSync(__filename, 'utf-8');
+  const count = (src.match(/assert\./g) || []).length;
+  assert.ok(count >= 13, `expected >= 13 assert. call sites, found ${count}`);
 });
