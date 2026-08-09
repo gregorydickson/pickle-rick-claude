@@ -2060,12 +2060,24 @@ test('buildJudgePrompt includes goal, cwd, and scoring format instructions', () 
     const prompt = buildJudgePrompt('fix bugs', '/tmp');
     assert.ok(prompt.includes('fix bugs'), 'should include goal');
     assert.ok(prompt.includes('/tmp'), 'should include cwd');
-    assert.ok(prompt.includes('single integer'), 'should include scoring instructions');
+    assert.ok(prompt.includes('Output a SINGLE JSON object'), 'should include single-JSON-object instruction');
+    assert.ok(prompt.includes('"score"'), 'should include score key');
+    assert.ok(prompt.includes('"violations"'), 'should include violations key');
+    assert.ok(prompt.includes('"resolved"'), 'should include resolved key');
+    assert.ok(prompt.includes('"new"'), 'should include new key');
+    assert.ok(prompt.includes('"remaining"'), 'should include remaining key');
 });
 
-test('buildJudgePrompt instructs no fractions', () => {
+// R-JPCM superseded the bare-integer contract (and with it the fractions hazard the old
+// 'Do NOT use fractions' assertion used to guard) with a single JSON object; the live
+// numeric-scoring constraint is now that `score` must equal `violations.length` for
+// count-type metrics.
+test('buildJudgePrompt instructs score must equal violations.length for count-type metrics', () => {
     const prompt = buildJudgePrompt('fix bugs', '/tmp');
-    assert.ok(prompt.includes('Do NOT use fractions'), 'should instruct no fractions');
+    assert.ok(
+        prompt.includes('score` MUST equal `violations.length`'),
+        'should instruct score equals violations.length for count-type metrics'
+    );
 });
 
 test('buildJudgePrompt does not include codebase evaluation preamble', () => {
