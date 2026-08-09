@@ -219,12 +219,18 @@ Give the completion-commit fixtures one shared helper that authors a commit **wi
 
 **Acceptance criteria**
 
-- AC-B1: One shared helper; no per-file copy of the trailer-stamping logic.
-- AC-B2: The six Cause-A2 tests pass, with their original assertions **unchanged** — only the fixture
-  commit shape changes. Each changed fixture carries an adjacent comment naming
-  `a4e48c26` and stating why a subject-only commit is no longer a production shape.
-- AC-B3: No assertion is deleted or weakened; the diff to those six test files touches fixture setup
-  only.
+- AC-B1: **Every** fixture that authors a stand-in worker commit does so through **one** shared
+  helper — for any file in the Cause-A2 set, the trailer-stamping logic appears zero times locally
+  and is imported instead. Verify: `grep -rc 'Pickle-Ticket' extension/tests/characterization
+  extension/tests/boundary-commit-at-iteration.test.js extension/tests/wuwc-reproducer.test.js
+  extension/tests/doneflip-gate-all-callsites.test.js` shows the literal only in the helper.
+- AC-B2: **For any** test in the Cause-A2 set, the test passes AND its diff touches fixture setup
+  only — no assertion line is added, removed, reordered, or weakened. This is one invariant over the
+  set, not six separate fixes: the whole set fails a single subject-only commit shape, and one helper
+  is what makes **all** of them model production. Verify: `git diff --unified=0 <base>..HEAD --
+  <the six files> | grep '^[-+]' | grep -c 'assert\.'` is 0.
+- AC-B3: **Every** changed fixture carries an adjacent comment naming `a4e48c26` and stating why a
+  subject-only commit is no longer a shape production emits.
 
 ### WS-C — replace the two brittle source-text tests
 
@@ -244,8 +250,12 @@ Give the completion-commit fixtures one shared helper that authors a commit **wi
 Mirror `f378ffd1`. Reconcile each assertion **deliberately**, with the reasoning in an adjacent
 comment. Never delete or weaken an assertion to make it pass.
 
-- AC-D1: The three tests pass against the current `classifyMicroverseHaltDecision` contract.
-- AC-D2: Each changed assertion carries a comment naming B-ONEABORT and what the contract now is.
+- AC-D1: **For every** member of `MICROVERSE_EXIT_REASONS`, the reconciled tests assert the invariant
+  the classifier actually implements — the reason routes to the finalize gate — and **only**
+  `session_state_corrupted` asserts the abort floor. The three failing tests are three instances of
+  that one invariant, so they are reconciled together against the union, never case-by-case.
+- AC-D2: **Each and every** changed assertion carries a comment naming B-ONEABORT and stating what
+  the contract now is.
 - AC-D3: An assertion-count floor is pinned for
   `tests/integration/pipeline-runner-judge-reasons.test.js` so a later change cannot quietly shrink it.
 
