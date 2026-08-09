@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 
 import { inspectPhantomDoneTicketFile } from '../../../bin/mux-runner.js';
 import { readFrontmatterField } from '../../../services/pickle-utils.js';
+import { commitWorkerFixture } from '../../__helpers__/worker-commit-fixture.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MATRIX = JSON.parse(fs.readFileSync(path.join(__dirname, 'decision-matrix.json'), 'utf8'));
@@ -85,11 +86,11 @@ test('path-7 backfill: Done ticket + no completion_commit + matching git commit 
     });
 
     // Create a git commit referencing the ticket id
+    // a4e48c26 deleted subject-line inference — production attributes via a git trailer
+    // that names the ticket, so this fixture stamps one instead of relying on the subject alone.
     fs.writeFileSync(path.join(root, 'work.txt'), 'work output\n');
     execFileSync('git', ['add', 'work.txt'], { cwd: root, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-q', '-m', `feat(${ticketId}): backfill candidate`, '--no-gpg-sign'],
-      { cwd: root, stdio: 'ignore' });
-    const sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    commitWorkerFixture({ cwd: root, ticketId, message: `feat(${ticketId}): backfill candidate` });
 
     const result = inspectPhantomDoneTicketFile(ticketPath, sessionDir, root, 'Todo');
 

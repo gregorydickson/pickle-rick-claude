@@ -15,6 +15,7 @@ import path from 'node:path';
 
 import { commitGatePassingDeliverableAtBoundary } from '../bin/mux-runner.js';
 import { readFrontmatterField } from '../services/pickle-utils.js';
+import { commitWorkerFixture } from './__helpers__/worker-commit-fixture.js';
 
 function makeTmp(prefix = 'dura-t10-') {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -112,11 +113,12 @@ test('AC-DURA-8 attribute branch: worker committed untagged (HEAD moved), clean 
 
     const preIterSha = head(workingDir);
     // Worker committed work itself but did NOT stamp completion_commit and the
-    // subject lacks a (hash) tag — the commit references the ticket id so the
-    // file-touch/ref scan can attribute it.
+    // subject lacks a (hash) tag — a4e48c26 deleted subject-line inference, so the
+    // commit carries a git trailer that names the ticket (the shape production emits) for the
+    // attribution scan to find.
     fs.writeFileSync(path.join(workingDir, 'extension', 'worker-output.txt'), 'worker shipped\n');
     execFileSync('git', ['add', '-A'], { cwd: workingDir, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-q', '-m', `feat: implement ${T}`, '--no-gpg-sign'], { cwd: workingDir, stdio: 'ignore' });
+    commitWorkerFixture({ cwd: workingDir, ticketId: T, message: `feat: implement ${T}` });
     const committedSha = head(workingDir);
     assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: workingDir, encoding: 'utf8' }).trim(), '', 'precondition: clean tree');
 

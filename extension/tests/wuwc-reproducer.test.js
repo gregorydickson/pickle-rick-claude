@@ -27,6 +27,7 @@ import {
 import { readEvidence } from '../services/ticket-completion-evidence.js';
 import { __setSpawnRunnerForTests, main as pipelineMain } from '../bin/pipeline-runner.js';
 import { PipelineRunnerExitCode } from '../types/index.js';
+import { commitWorkerFixture } from './__helpers__/worker-commit-fixture.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -275,9 +276,12 @@ describe('R-WUWC Case B — SOFT: worker commits with ticket-id, no completion_c
 
     // Worker writes a file, commits with ticket-id in the message (SOFT-variant
     // failure condition: commit references ticket but no completion_commit: field).
+    // a4e48c26 deleted subject-line inference — production attributes via a
+    // git trailer that names the ticket, so this fixture stamps one instead of relying on the
+    // subject text alone.
     fs.writeFileSync(path.join(repo, 'worker.ts'), `export const impl = 'soft-variant-test';\n`);
     git(['add', 'worker.ts'], repo);
-    git(['commit', '-q', '-m', `${ticketId} implement soft-variant reproducer`, '--no-gpg-sign'], repo);
+    commitWorkerFixture({ cwd: repo, ticketId, message: `${ticketId} implement soft-variant reproducer` });
     commitSha = git(['rev-parse', 'HEAD'], repo);
 
     const ticketDir = path.join(sessionDir, ticketId);

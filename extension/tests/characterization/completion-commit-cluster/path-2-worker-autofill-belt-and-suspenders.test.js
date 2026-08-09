@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 import { autoFillCompletionCommit } from '../../../bin/auto-fill-completion-commit.js';
 import { readFrontmatterField } from '../../../services/pickle-utils.js';
+import { commitWorkerFixture } from '../../__helpers__/worker-commit-fixture.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MATRIX = JSON.parse(fs.readFileSync(path.join(__dirname, 'decision-matrix.json'), 'utf8'));
@@ -62,11 +63,11 @@ test('path-2 autofill: absent completion_commit — fills from git-log, action=f
     fs.writeFileSync(statePath, JSON.stringify({ start_time_epoch: epoch, activity: [] }, null, 2));
 
     // Create a commit referencing the ticket id (post-start_time_epoch)
+    // a4e48c26 deleted subject-line inference — production attributes via a git trailer
+    // that names the ticket, so this fixture stamps one instead of relying on the subject alone.
     fs.writeFileSync(path.join(root, 'change.txt'), 'worker output\n');
     execFileSync('git', ['add', 'change.txt'], { cwd: root, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-q', '-m', `fix(${ticketId}): implement ticket`, '--no-gpg-sign'],
-      { cwd: root, stdio: 'ignore' });
-    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    const sha = commitWorkerFixture({ cwd: root, ticketId, message: `fix(${ticketId}): implement ticket` });
 
     const result = autoFillCompletionCommit({ sessionDir, workingDir: root, ticketId, statePath });
 

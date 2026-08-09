@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 import { applyAutoTicketCompletionValidation } from '../../../bin/mux-runner.js';
 import { readFrontmatterField } from '../../../services/pickle-utils.js';
+import { commitWorkerFixture } from '../../__helpers__/worker-commit-fixture.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MATRIX = JSON.parse(fs.readFileSync(path.join(__dirname, 'decision-matrix.json'), 'utf8'));
@@ -93,10 +94,11 @@ test('path-3 manager-drift: applyAutoTicketCompletionValidation marks In-Progres
     }, null, 2));
 
     // Commit referencing the ticketId so validateAutoTicketCompletion finds evidence
+    // a4e48c26 deleted subject-line inference — production attributes via a git trailer
+    // that names the ticket, so this fixture stamps one instead of relying on the subject alone.
     fs.writeFileSync(path.join(root, 'work.txt'), 'ticket work\n');
     execFileSync('git', ['add', 'work.txt'], { cwd: root, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-q', '-m', `feat(${ticketId}): implement drift ticket`, '--no-gpg-sign'],
-      { cwd: root, stdio: 'ignore' });
+    commitWorkerFixture({ cwd: root, ticketId, message: `feat(${ticketId}): implement drift ticket` });
 
     const logs = [];
     let result;

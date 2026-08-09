@@ -18,6 +18,7 @@ import path from 'node:path';
 
 import { guardCompletionCommitBeforeDone } from '../bin/mux-runner.js';
 import { readFrontmatterField } from '../services/pickle-utils.js';
+import { commitWorkerFixture } from './__helpers__/worker-commit-fixture.js';
 
 const MUX_SRC = fs.readFileSync(
   path.resolve(import.meta.dirname, '../src/bin/mux-runner.ts'),
@@ -123,10 +124,12 @@ test('AC-DURA-8 attribute: worker committed untagged (HEAD moved, ticket-id in s
     writeTicket(sessionDir, T, 'In Progress');
     fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({ schema_version: 5, activity: [] }));
     // Worker committed real work referencing the ticket id but did NOT stamp
-    // completion_commit (untagged subject).
+    // completion_commit (untagged subject). a4e48c26 deleted subject-line
+    // inference — production attributes via a git trailer that names the ticket, so this
+    // fixture stamps one instead of relying on the subject text alone.
     fs.writeFileSync(path.join(workingDir, 'impl.txt'), 'work\n');
     execFileSync('git', ['add', '-A'], { cwd: workingDir, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-q', '-m', `feat: implement ${T}`, '--no-gpg-sign'], { cwd: workingDir, stdio: 'ignore' });
+    commitWorkerFixture({ cwd: workingDir, ticketId: T, message: `feat: implement ${T}` });
     const committedSha = head(workingDir);
 
     const guard = guardCompletionCommitBeforeDone({
