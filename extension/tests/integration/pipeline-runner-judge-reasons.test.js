@@ -104,7 +104,14 @@ afterEach(() => {
   __setSpawnRunnerForTests(null);
 });
 
-test('all_judge_backends_exhausted + gate pass → exit code 0 (Success), phase continues (sibling parity with judge_timeout)', async () => {
+// B-ONEABORT AC-OA-1c: ran-to-completion is NOT reported-success. A passing recovery gate lets the
+// phase CONTINUE (completed++, no halt) but `runAllBackendsExhaustedFinalizeGate` also raises
+// `nonConvergent`, and `finalizePipeline` folds that into `unsuccessful` — so the run withholds the
+// success verdict and exits 1 with exit_reason 'failed'. This deliberately DIVERGES from
+// `judge_timeout` (R-PRJT-2), which is a transient measurement timeout over already-converged work
+// and finalizes as a clean success. Exhausting every judge backend means the work was never
+// measured at all; continuing is the reliability contract, reporting success would be fake-green.
+test('all_judge_backends_exhausted + gate pass → phase continues but the run withholds success (exit 1, degraded)', async () => {
   const { repo, sessionDir } = makeSession(['szechuan-sauce']);
   const spawnCalls = [];
   let callCount = 0;
@@ -123,20 +130,30 @@ test('all_judge_backends_exhausted + gate pass → exit code 0 (Success), phase 
     return { exitCode: 0, stdout: '', stderr: '' };
   });
   try {
-    // A PASSING recovery gate continues the phase (AC-GA-9 sibling parity with
-    // runJudgeTimeoutFinalizeGate), so main() reaches normal success: exit code 0.
-    await expectMainExit(sessionDir, 0);
+    // A PASSING recovery gate continues the phase, but the phase is DEGRADED: nonConvergent > 0
+    // makes finalizePipeline report unsuccessful, so main() exits 1.
+    await expectMainExit(sessionDir, 1);
 
     const finalizeGateCalls = spawnCalls.filter(c => c.args.some(a => String(a).includes('finalize-gate.js')));
     assert.equal(finalizeGateCalls.length, 1, 'finalize-gate.js must be spawned once for all_judge_backends_exhausted');
 
     const statePath = path.join(sessionDir, 'state.json');
     const finalState = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    assert.equal(finalState.exit_reason, 'completed', 'a passing recovery gate must finalize as completed, never phase-incomplete');
+    // R-MWMO d2: the failed finalize PRESERVES the specific reason rather than flattening it to
+    // 'failed', so the residual names what actually degraded.
+    assert.equal(
+      finalState.exit_reason,
+      'all_judge_backends_exhausted',
+      'a degraded phase must NOT stamp completed — that would be fake-green; the specific reason is preserved',
+    );
 
     const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.match(runnerLog, /all_judge_backends_exhausted/, 'log must mention the exit reason');
-    assert.match(runnerLog, /finalize-gate passed after all_judge_backends_exhausted/, 'log must record the passing recovery gate');
+    assert.match(
+      runnerLog,
+      /finalize-gate passed after all_judge_backends_exhausted — phase degraded, run cannot report success/,
+      'log must record BOTH halves: the gate passed AND the run is degraded (AC-OA-1c)',
+    );
     assert.doesNotMatch(runnerLog, /marking phase incomplete/, 'a PASSING gate must NOT mark the phase incomplete');
     assert.doesNotMatch(runnerLog, /aborting \(no finalize-gate\)/, 'log must NOT contain abort message');
   } finally {
