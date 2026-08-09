@@ -64,6 +64,17 @@ function parsedTrailer(dir, key) {
   return git(dir, ['log', '-1', `--format=%(trailers:key=${key},valueonly)`]).trim();
 }
 
+/**
+ * Land `message` as a commit VERBATIM. `-F -` is the only form that round-trips a rendered
+ * message byte-for-byte: `-m` would re-wrap and re-paragraph it, which is precisely the
+ * trailer-block structure these fixtures exist to observe.
+ */
+function commitMessage(dir, message) {
+  fs.writeFileSync(path.join(dir, 'edit.txt'), 'x\n');
+  git(dir, ['add', '-A']);
+  git(dir, ['commit', '-q', '--no-gpg-sign', '-F', '-'], message);
+}
+
 /** A session dir with one In Progress ticket plus the state.json the guard reads. */
 function makeSession(workingDir, startCommit) {
   const sessionDir = makeTmp('ratrail-session-');
@@ -147,9 +158,7 @@ test('a pre-existing Co-Authored-By trailer survives the stamp as a PARSED trail
     TICKET_ID,
   );
 
-  fs.writeFileSync(path.join(workingDir, 'edit.txt'), 'x\n');
-  git(workingDir, ['add', '-A']);
-  git(workingDir, ['commit', '-q', '--no-gpg-sign', '-F', '-'], stamped);
+  commitMessage(workingDir, stamped);
 
   assert.equal(parsedTrailer(workingDir, 'Pickle-Ticket'), TICKET_ID);
   assert.equal(
@@ -179,9 +188,7 @@ for (const [label, blankId] of [['an empty', ''], ['a whitespace-only', '   ']])
 
     assert.equal(stamped, body, 'the guard is a no-op on the message, not a rewrite of it');
 
-    fs.writeFileSync(path.join(workingDir, 'edit.txt'), 'x\n');
-    git(workingDir, ['add', '-A']);
-    git(workingDir, ['commit', '-q', '--no-gpg-sign', '-F', '-'], stamped);
+    commitMessage(workingDir, stamped);
 
     const raw = git(workingDir, ['log', '-1', '--format=%B']);
     assert.doesNotMatch(raw, /^Pickle-Ticket:/m, 'no valueless trailer line may reach history');
@@ -196,9 +203,7 @@ test('the blank-id guard is narrow — a real ticket id still stamps', () => {
 
   const stamped = stampPickleTicketTrailer(workingDir, 'fix: real work\n', TICKET_ID);
 
-  fs.writeFileSync(path.join(workingDir, 'edit.txt'), 'x\n');
-  git(workingDir, ['add', '-A']);
-  git(workingDir, ['commit', '-q', '--no-gpg-sign', '-F', '-'], stamped);
+  commitMessage(workingDir, stamped);
 
   assert.equal(parsedTrailer(workingDir, 'Pickle-Ticket'), TICKET_ID);
 });
