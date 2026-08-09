@@ -159,6 +159,50 @@ test('a pre-existing Co-Authored-By trailer survives the stamp as a PARSED trail
   );
 });
 
+// An empty or whitespace-only ticket id must write NO trailer line at all. Both arms of the
+// stamp would otherwise emit a valueless `Pickle-Ticket:` — `interpret-trailers` emits the bare
+// key for `--trailer 'Pickle-Ticket: '`, and the degraded append does the same by construction.
+// The hook producer already no-ops on this shape (`git-trailer-hooks.ts` `_pickle_ticket_id_probe`,
+// whose comment records the valueless line as a shipped defect); the runner-authored sites must
+// agree.
+//
+// The `%B` assertion is the load-bearing one. `%(trailers:key=…,valueonly)` reports an EMPTY
+// string for a valueless `Pickle-Ticket:` line, so a parsed-view check alone reads identically
+// before and after the guard — it cannot fail. The raw-body check is what goes RED on a revert.
+for (const [label, blankId] of [['an empty', ''], ['a whitespace-only', '   ']]) {
+  test(`${label} ticket id writes NO valueless Pickle-Ticket line`, () => {
+    const workingDir = makeTmp('ratrail-repo-');
+    initGitRepo(workingDir);
+    const body = 'fix: a message authored with no resolvable ticket id\n';
+
+    const stamped = stampPickleTicketTrailer(workingDir, body, blankId);
+
+    assert.equal(stamped, body, 'the guard is a no-op on the message, not a rewrite of it');
+
+    fs.writeFileSync(path.join(workingDir, 'edit.txt'), 'x\n');
+    git(workingDir, ['add', '-A']);
+    git(workingDir, ['commit', '-q', '--no-gpg-sign', '-F', '-'], stamped);
+
+    const raw = git(workingDir, ['log', '-1', '--format=%B']);
+    assert.doesNotMatch(raw, /^Pickle-Ticket:/m, 'no valueless trailer line may reach history');
+    assert.equal(parsedTrailer(workingDir, 'Pickle-Ticket'), '');
+    assert.match(raw, /a message authored with no resolvable ticket id/, 'the body survives');
+  });
+}
+
+test('the blank-id guard is narrow — a real ticket id still stamps', () => {
+  const workingDir = makeTmp('ratrail-repo-');
+  initGitRepo(workingDir);
+
+  const stamped = stampPickleTicketTrailer(workingDir, 'fix: real work\n', TICKET_ID);
+
+  fs.writeFileSync(path.join(workingDir, 'edit.txt'), 'x\n');
+  git(workingDir, ['add', '-A']);
+  git(workingDir, ['commit', '-q', '--no-gpg-sign', '-F', '-'], stamped);
+
+  assert.equal(parsedTrailer(workingDir, 'Pickle-Ticket'), TICKET_ID);
+});
+
 test('site 2: executeConvergedPlanAdapter phase commits stamp the trailer', () => {
   const workingDir = makeTmp('ratrail-repo-');
   const startCommit = initGitRepo(workingDir);

@@ -5312,8 +5312,18 @@ function persistRunnerAuthoredGreenVerdict(sessionDir: string, ticketId: string)
  *
  * The spawn goes through `silentDeathGit` because that helper already carries the finite
  * timeout bin/ subsystem invariant #3 requires; never throws, so the commit is never blocked.
+ *
+ * An empty or whitespace-only `ticketId` returns `message` UNCHANGED. Both arms would
+ * otherwise write a valueless `Pickle-Ticket:` line into history — `interpret-trailers`
+ * emits the bare key for `--trailer 'Pickle-Ticket: '`, and the degraded append does the
+ * same by construction. That is why the guard sits above the `trailer` literal rather than
+ * around the spawn. This is the sibling of the hook's `_pickle_ticket_id_probe` no-op
+ * (`git-trailer-hooks.ts`), which records the same valueless line as a shipped defect; like
+ * the hook, the probe is a guard INPUT only — a non-empty id is written verbatim, since the
+ * consumer trims its own ends and silently rewriting an operator's id is not ours to do.
  */
 export function stampPickleTicketTrailer(workingDir: string, message: string, ticketId: string): string {
+  if (ticketId.replace(/\s+/g, '') === '') return message;
   const trailer = `Pickle-Ticket: ${ticketId}`;
   const rendered = silentDeathGit(
     ['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', trailer],
