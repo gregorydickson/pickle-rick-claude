@@ -10,7 +10,11 @@ building the fix: a worker that commits its own ticket work will hit `commit-fai
 for exactly the reason WS-A exists to fix. **Watch that seam.** If it bites, recover the wedge and
 record it — it is a field-grade defect report on the code this bundle repairs. Consider an
 `install.sh` deploy once WS-A lands so the remaining tickets run on the repaired runtime.
-**Priority:** P1 — a live reliability defect on the recovery/salvage path, plus the root cause of 13 of the 16 red `test:integration:parallel` tests.
+**Priority:** P1 — a live reliability defect on the recovery/salvage path, and the root cause of
+**10 of the 16** red `test:integration:parallel` tests (Cause-A1's 4 parallel + Cause-A2's 6); a
+further **2** Cause-A1 failures sit in the serial tier, for 6 A1 + 6 A2 = 12 trailer-attributable
+failures across both. *(Do not confuse this with the separate "13 of 21" figure below, which counts
+superseded-contract tests — A2 + D + B + E — and excludes A1 entirely.)*
 
 ---
 
@@ -60,7 +64,7 @@ The only delta between A and B is a `Pickle-Ticket: aaaa1111` trailer on the sam
 (Measure the two sub-tiers separately — `test:integration` is `parallel && serial`, so a red parallel
 half means the serial half never runs.)
 
-The 16 split into four causes:
+The 16 split into five causes:
 
 ### Cause A1 — the production gap above (6 tests: 4 parallel, 2 serial)
 
@@ -190,6 +194,10 @@ That is the structural finding; it is tracked below, out of scope for this bundl
 
 ## Workstreams
 
+**Ordering constraint:** WS-C must run **after** WS-A commits. AC-A5 and AC-C3 both mutate
+`commitAndContinueDoneFlip`, and AC-C3's rebounded assertion is only meaningful against the
+post-WS-A function body. WS-B, WS-D and WS-E are order-independent of each other and of WS-A.
+
 ### WS-A — runner-authored commits stamp the trailer (production fix)
 
 Two ticket-attributable commits are authored by the runner in-process, neither under the trailer-hook
@@ -219,8 +227,21 @@ do not change).
   sites, and satisfying it is what turns **all six** Cause-A1 tests green at once (they are six
   witnesses to one missing stamp, not six defects). Verify: `npm run test:integration:parallel` and
   `npm run test:integration:serial`, read separately, show every Cause-A1 test passing.
-- AC-A5: Mutation check — removing the trailer stamp reddens AC-A2 **and every** Cause-A1 test, and
-  nothing else. A mutation that reddens only a subset means a site was missed.
+- AC-A5: Mutation check at **site 1** — removing its trailer stamp reddens AC-A2 **and every** Cause-A1
+  test. (Scoped to site 1 deliberately; see AC-A6 for why site 2 needs its own.)
+- AC-A6: **Site 2 needs its own witness — no Cause-A1 test reaches it.** `commitAndContinueDoneFlip`
+  calls `guardCompletionCommitBeforeDone` three lines after committing (`mux-runner.ts:5331`), so its
+  stamp has an immediate in-function consumer. `executeConvergedPlanAdapter`'s `commitPhase`
+  (`mux-runner.ts:6040-6042`) calls **no guard at all** — it returns `{ ok: commit.status === 0 }` —
+  so a trailer stamped there has no in-function effect and matters only to a later `readEvidence`
+  reader. Without a dedicated test, a **site-1-only** fix satisfies every other AC here and AC-A5's
+  mutation catches nothing at site 2. So: a test drives `commitPhase` on a temp repo and asserts the
+  phase commit's parsed `Pickle-Ticket` trailer equals the ticket id; removing site 2's stamp reddens
+  that test **and only** that test.
+- AC-A7: The stamp is the **only** change at both sites. Staging semantics, timeout constants, and
+  repo-targeting idiom are left byte-identical — site 2 uses `git add -A ...CODEGRAPH_PATHSPEC_EXCLUDES`
+  with `cwd`, site 1 uses `-C <workingDir>`; do **not** "normalize" them while adding the trailer.
+  Verify: the WS-A diff touches no line containing `add`, `timeout:`, or `CODEGRAPH_PATHSPEC_EXCLUDES`.
 
 ### WS-B — fixtures produce commits the way production does
 
@@ -230,10 +251,23 @@ Give the completion-commit fixtures one shared helper that authors a commit **wi
 **Acceptance criteria**
 
 - AC-B1: **Every** fixture that authors a stand-in worker commit does so through **one** shared
-  helper — for any file in the Cause-A2 set, the trailer-stamping logic appears zero times locally
-  and is imported instead. Verify: `grep -rc 'Pickle-Ticket' extension/tests/characterization
-  extension/tests/boundary-commit-at-iteration.test.js extension/tests/wuwc-reproducer.test.js
-  extension/tests/doneflip-gate-all-callsites.test.js` shows the literal only in the helper.
+  helper at `extension/tests/__helpers__/worker-commit-fixture.js`. Use `__helpers__/` — it already
+  exists (`codex-shim.js`, `dot-parse.js`); creating `tests/helpers/` would fork the convention. It is
+  not a `*.test.js` file, so it needs no `// @tier:` tag.
+
+  Verify as a **non-zero/zero pair** over exactly these six paths — the single-sided form is vacuous,
+  because `grep -rc 'Pickle-Ticket'` over all six returns **0 today**, before any work, so "the
+  literal appears only in the helper" is already true of a repo where nobody stamped anything:
+  1. `grep -c 'Pickle-Ticket' extension/tests/__helpers__/worker-commit-fixture.js` ≥ 1, **and**
+  2. for **each** of `tests/characterization/completion-commit-cluster/path-2-worker-autofill-belt-and-suspenders.test.js`,
+     `.../path-3-manager-drift-auto-completion-validation.test.js`,
+     `.../path-7-phantom-done-watcher-backfill.test.js`,
+     `tests/boundary-commit-at-iteration.test.js`, `tests/wuwc-reproducer.test.js`,
+     `tests/doneflip-gate-all-callsites.test.js` — `grep -c 'Pickle-Ticket' <file>` is **0** **and**
+     `grep -c 'worker-commit-fixture' <file>` is ≥ 1.
+
+  Name the six paths, not the `characterization` directory — it holds eight `path-*` files plus
+  `README.md` and `decision-matrix.json`.
 - AC-B2: **For any** test in the Cause-A2 set, the test passes AND its diff touches fixture setup
   only — no assertion line is added, removed, reordered, or weakened. This is one invariant over the
   set, not six separate fixes: the whole set fails a single subject-only commit shape, and one helper
@@ -268,6 +302,13 @@ is actually defined in `src/`, and (b) bounded by a syntactic extent — never a
   claims to protect is removed. Concretely: deleting the `guardCompletionCommitBeforeDone(` call from
   `commitAndContinueDoneFlip` reddens the rebounded AC-DURA-3 test.
 
+  **Ownership:** this mutation edits `src/bin/mux-runner.ts`, which is **outside** a test-only
+  ticket's file allowlist — the per-file scope fence will (correctly) block it and the ticket would
+  wedge with zero commits. So the mutation is verified by the **[manager]** during the attended run,
+  not by the worker: tag it `[manager]`, and note that after any mutation probe the compiled mirror
+  must be restored (`npx tsc`) — restoring the `.ts` alone leaves the mutation live in
+  `extension/bin/*.js`. The **[worker]** owns AC-C1 and AC-C2 only.
+
 ### WS-D — every `MICROVERSE_EXIT_REASONS` member routes to the finalize gate
 
 Mirror `f378ffd1`. Reconcile each assertion **deliberately**, with the reasoning in an adjacent
@@ -277,26 +318,50 @@ The three failures are three instances of **one** classifier contract, so reconc
 union rather than case-by-case — otherwise the next added exit reason reopens the same drift.
 
 - AC-D1: **For every** member of `MICROVERSE_EXIT_REASONS`, the reconciled tests assert the invariant
-  the classifier actually implements — the reason routes to the finalize gate — and **only**
-  `session_state_corrupted` asserts the abort floor. The three failing tests are three instances of
-  that one invariant, so they are reconciled together against the union, never case-by-case.
+  the classifier actually implements. Measured at HEAD (`src/types/index.ts:1310-1317`) the union has
+  **18** members — `converged, limit_reached, stopped, error, rate_limit_exhausted,
+  approach_exhaustion, no_progress, judge_unreachable, judge_timeout, baseline_unmeasurable,
+  judge_cli_missing, baseline_unmeasurable_transient, baseline_unmeasurable_unrecoverable,
+  all_judge_backends_exhausted, anatomy_non_convergent, stalled_below_target,
+  iteration_budget_exhausted, time_budget_exhausted` — and `session_state_corrupted` is **NOT** one of
+  them; it lives in `MICROVERSE_FATAL_REASONS` (`:1322-1325`). *(An earlier draft of this AC asserted
+  the opposite. It was wrong: it collapsed two separate sentences of the `pipeline-runner.ts`
+  B-ONEABORT trap door into one false claim. Verify against source, not against the trap-door prose.)*
+
+  `classifyMicroverseHaltDecision` is **three-armed**: a non-string or non-member string → `abort`;
+  `judge_timeout` → `run-finalize-gate`; **any other union member** → `run-finalize-gate-incomplete`.
+  The three failing tests are three instances of that one contract and are reconciled against the
+  union, never case-by-case.
+
+  **The three to reconcile** (naming them so the set is not a re-derivation task):
+  - `all_judge_backends_exhausted + gate pass → exit code 0 (Success), phase continues …` —
+    `pipeline-runner-judge-reasons.test.js:102`
+  - `judge_cli_missing → terminal disposition, finalize-gate NOT spawned, exit code 1, auto-resume=false` — `:187`
+  - `judge_unreachable (structurally unrecoverable) — finalize-gate NOT spawned` —
+    `pipeline-runner-judge-timeout-recovery.test.js:199`
+
+  **The four that already pass and MUST keep passing** — do not "reconcile" these:
+  `all_judge_backends_exhausted + gate fail → exit code 1 (failed), auto-resume=false` (`:143`), and
+  the `judge_timeout` trio in the twin file (`:102`, `:137`, `:170`).
 - AC-D2: **Each and every** changed assertion carries a comment naming B-ONEABORT and stating what
   the contract now is.
 - AC-D3: An assertion-count floor is pinned for
   `tests/integration/pipeline-runner-judge-reasons.test.js` so a later change cannot quietly shrink it.
 
-### WS-F — reconcile the two R-JPCM judge-prompt assertions
+### WS-E — reconcile the two R-JPCM judge-prompt assertions
 
 Same discipline as WS-D: reconcile deliberately against the shipped contract, never delete the test.
 
-- AC-F1: `buildJudgePrompt includes goal, cwd, and scoring format instructions` asserts the **current**
+- AC-E1: `buildJudgePrompt includes goal, cwd, and scoring format instructions` asserts the **current**
   contract — the single-JSON-object instruction and its five required keys — and keeps its existing
   goal/cwd assertions unchanged.
-- AC-F2: `buildJudgePrompt instructs no fractions` either asserts a scoring constraint the shipped
+- AC-E2: `buildJudgePrompt instructs no fractions` either asserts a scoring constraint the shipped
   prompt actually makes, or is deleted with an adjacent comment naming R-JPCM and stating that the
   bare-integer contract (and with it the fractions hazard) no longer exists.
-- AC-F3: Mutation check — deleting the `'Output a SINGLE JSON object and NOTHING else'` line from
-  `buildJudgePrompt` reddens AC-F1.
+- AC-E3: **[manager]** Mutation check — deleting the `'Output a SINGLE JSON object and NOTHING else'`
+  line from `buildJudgePrompt` reddens AC-E1. Same ownership split as AC-C3: this edits
+  `src/bin/microverse-runner.ts`, outside a test-only ticket's allowlist, so the worker cannot perform
+  it and must not try. Restore the compiled mirror (`npx tsc`) after the probe.
 
 ---
 
@@ -337,17 +402,36 @@ Green from `extension/` before this bundle is considered done:
 
 ```
 npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc \
+  && bash scripts/audit-test-tiers.sh \
+  && bash scripts/audit-test-isolation.sh \
+  && bash scripts/audit-subprocess-heavy-tests.sh \
   && bash scripts/audit-trap-door-enforcement.sh \
   && npm run test:fast \
   && npm run test:integration:parallel \
   && npm run test:integration:serial
 ```
 
+**The three audit scripts must be named explicitly — they cannot be inherited.** npm binds a `pre`
+hook to a literal script name: `package.json` defines `pretest:fast` and `pretest:integration`, but
+there is **no** `pretest:integration:parallel` and **no** `pretest:integration:serial`. Invoking the
+sub-tiers separately — which this PRD mandates for visibility — therefore runs them with **zero**
+audit preflight. That matters concretely here: WS-B lands a new file under `tests/`, and
+`audit-test-isolation.sh` is exactly the check that reacts to one. Splitting the tiers was right for
+visibility and silently wrong for coverage; naming the scripts restores both.
+
 Run the two integration sub-tiers **separately** and read each one's own
 `ℹ tests/pass/fail` summary — never the composite `test:integration`, whose `&&` hides the serial
 half behind a red parallel half. `test:integration:parallel` must show **0 failures** — not "no new
-failures". `test:integration:serial` must show at most the one environment-sensitive
-`install-script-prefix` failure, and only after a re-measure at rest confirms it is load-shaped.
+failures".
+
+`test:integration:serial` must show **0 failures**, with exactly one decidable exception:
+`install-script-prefix.prefix-writes-files` may fail **only** when its status is `null` (killed, not a
+non-zero exit) **and** its reported duration exceeds 600000 ms. That pair is the signature of the
+subprocess being killed mid-`tsc`, not of a defect. Any other failure — including a non-zero exit from
+that same test — blocks. If the `null`+over-600000 ms pair reproduces on a second run at rest, the
+**[manager]** records it as a named residual (`install-script-prefix load-shaped, <N> ms,
+re-measured`) and ships; it does not block, and it is not this bundle's bug. Do not shrink any timeout
+to make it pass — a subprocess timeout here is a hang-guard, not a perf assertion.
 
 ---
 
