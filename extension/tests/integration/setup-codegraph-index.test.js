@@ -279,17 +279,5 @@ test('AC-SPAWN-SOURCE: shouldSyncCodegraph is exported from mux-runner.ts source
   );
 });
 
-test('AC-SPAWN-SUMMARY-SOURCE: codegraph_session_summary emission present in mux-runner.ts source', () => {
-  const src = fs.readFileSync(
-    path.resolve(__dirname, '../../src/bin/mux-runner.ts'),
-    'utf-8'
-  );
-  assert.ok(
-    src.includes("event: 'codegraph_session_summary'"),
-    "mux-runner.ts must emit 'codegraph_session_summary'"
-  );
-  assert.ok(
-    src.includes('emitCgSessionSummary'),
-    'emitCgSessionSummary helper must be defined in mux-runner.ts'
-  );
-});
+// AC-SPAWN-SUMMARY-SOURCE removed — emitCgSessionSummary was renamed (b1089e97);
+// behavioral coverage lives in codegraph-session-summary-counts.test.js.

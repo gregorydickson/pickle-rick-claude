@@ -73,10 +73,10 @@ test('AC-DURA-3: guardCompletionCommitBeforeDone call-site count stays >= 5 (sin
 });
 
 test('AC-DURA-3: the 7th path commitAndContinueDoneFlip routes Done through the guard', () => {
-  const body = MUX_SRC.slice(
-    MUX_SRC.indexOf('export function commitAndContinueDoneFlip'),
-    MUX_SRC.indexOf('export function commitAndContinueDoneFlip') + 2000,
-  );
+  const fnStart = MUX_SRC.indexOf('export function commitAndContinueDoneFlip');
+  const nextExportIdx = MUX_SRC.indexOf('\nexport ', fnStart + 1);
+  const fnEnd = nextExportIdx === -1 ? MUX_SRC.length : nextExportIdx;
+  const body = MUX_SRC.slice(fnStart, fnEnd);
   assert.ok(/guardCompletionCommitBeforeDone\(/.test(body), 'commitAndContinueDoneFlip must call the guard before markTicketDone');
   assert.ok(body.indexOf('guardCompletionCommitBeforeDone(') < body.indexOf('markTicketDone('),
     'guard must precede markTicketDone');
