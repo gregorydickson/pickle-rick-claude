@@ -1428,7 +1428,7 @@ function runTmpOnlyScopeAudit({ committedFiles, writeTmp = true }) {
                 JSON.stringify({ allowed_paths: ['extension/src/bin'] }),
             );
         }
-        _deps.spawnSync = () => ({ status: 0, stdout: committedFiles.join('\n') + '\n' });
+        _deps.spawnSync = () => ({ status: 0, stdout: committedFiles.map((f) => f + '\0').join('') });
         _deps.logActivity = (ev) => { captured.push(ev); };
         const ctx = {
             sessionDir,

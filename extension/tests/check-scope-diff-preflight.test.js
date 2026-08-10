@@ -216,3 +216,67 @@ test('R-TDCS #128: an out-of-scope source file IS still flagged even when staged
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER31-01: `allowed_paths` is built from `--name-status -M100 -z`
+// (`scope-resolver.ts:computeAllowedFromDiff`). This reader must cross the SAME
+// contract. Without `-z`, `core.quotePath` (default ON) C-quotes non-ASCII paths
+// — `café.ts` reads back as the literal `"caf\303\251.ts"`, matches nothing in
+// the fence, and an EXPLICITLY-ALLOWED file is refused `outside_scope`.
+//
+// Assert the RESOLVED VERDICT, never the argv: an argv oracle greens the moment
+// someone re-tunes the flag list instead of the contract. The ASCII sibling cases
+// above are blind to this by construction — every one of their paths is ASCII.
+test('AP-EXT-ITER31-01: a non-ASCII staged path INSIDE the fence is not reported outside it', () => {
+  const tmp = makeTmp();
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmp });
+    // Leave core.quotePath at its default (ON) — that default IS the bug surface.
+
+    fs.mkdirSync(path.join(tmp, 'extension', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'extension', 'src', 'café.ts'), 'export {};');
+    fs.writeFileSync(path.join(tmp, 'extension', 'src', 'plain.ts'), 'export {};');
+    spawnSync('git', ['add', '--', 'extension/src/café.ts', 'extension/src/plain.ts'], { cwd: tmp });
+
+    const scopePath = writeScopeJson(tmp, ['extension/src']);
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stdout: ${result.stdout} stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.status, 'ok', `non-ASCII in-scope path must not read as drift: ${result.stdout}`);
+    assert.equal(output.staged_count, 2, 'both staged paths must be counted, undecorated');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// The fence must still FENCE — widening the contract must not blind the check.
+test('AP-EXT-ITER31-01: a non-ASCII staged path OUTSIDE the fence is still flagged, unquoted', () => {
+  const tmp = makeTmp();
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmp });
+
+    fs.mkdirSync(path.join(tmp, 'extension', 'src'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'unrelated'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'extension', 'src', 'in.ts'), 'export {};');
+    fs.writeFileSync(path.join(tmp, 'unrelated', 'café.ts'), 'export {};');
+    spawnSync('git', ['add', '--', 'extension/src/in.ts', 'unrelated/café.ts'], { cwd: tmp });
+
+    const scopePath = writeScopeJson(tmp, ['extension/src']);
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 1, `expected exit 1, got ${result.status}. stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.status, 'outside_scope');
+    assert.deepEqual(
+      output.staged_paths_outside_scope,
+      ['unrelated/café.ts'],
+      'the flagged path must be the real, undecorated path an operator can `git reset HEAD` — not a C-quoted form',
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

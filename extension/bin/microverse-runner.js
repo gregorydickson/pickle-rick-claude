@@ -3066,10 +3066,14 @@ async function handlePostConvergenceGateDeferral(workerResult, ctx, runGateFn = 
  * telemetry must never crash the runner or change exit behavior.
  */
 function listCommittedFilesInRange(workingDir, fromSha, toSha) {
-    const result = _deps.spawnSync('git', ['diff', '--name-only', '--no-renames', `${fromSha}..${toSha}`], { cwd: workingDir, encoding: 'utf-8', timeout: 15_000 });
+    const result = _deps.spawnSync('git', 
+    // AP-EXT-ITER31-01: same contract as `allowed_paths` (`-z`). Without it a
+    // non-ASCII in-scope commit is C-quoted, matches no allowed path, and this
+    // audit reports `worker_edit_outside_scope` over a file the fence allows.
+    ['diff', '--name-only', '--no-renames', '-z', `${fromSha}..${toSha}`], { cwd: workingDir, encoding: 'utf-8', timeout: 15_000 });
     if ((result.status ?? 1) !== 0)
         return [];
-    return (result.stdout || '').split('\n').filter(Boolean);
+    return (result.stdout || '').split('\0').filter(Boolean);
 }
 function resolveScopeAuditInputs(ctx) {
     const scopeJsonPath = path.join(ctx.sessionDir, 'scope.json');

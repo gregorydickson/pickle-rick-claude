@@ -592,7 +592,11 @@ export function filterByScope(
 }
 
 function getChangedSince(workingDir: string, since: string): string[] {
-  const result = spawnSync('git', ['diff', '--name-only', `${since}..HEAD`], {
+  // AP-EXT-ITER31-01: `-z` matches the contract `allowed_paths` is built from
+  // (`--name-status -M100 -z`). Without it `core.quotePath` C-quotes non-ASCII
+  // paths, `filterByScope` matches none of them, and the gate silently narrows
+  // its own failure set — fail-OPEN over a real regression.
+  const result = spawnSync('git', ['diff', '--name-only', '-z', `${since}..HEAD`], {
     cwd: workingDir,
     encoding: 'utf-8',
     timeout: 30_000,
@@ -601,7 +605,7 @@ function getChangedSince(workingDir: string, since: string): string[] {
     maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
   });
   if ((result.status ?? 1) !== 0) return [];
-  return (result.stdout || '').split('\n').filter(Boolean);
+  return (result.stdout || '').split('\0').filter(Boolean);
 }
 
 interface CheckResult {

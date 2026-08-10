@@ -83,13 +83,21 @@ function maybeEmitImpactWarning(
   }
 }
 
+/**
+ * AP-EXT-ITER31-01: `-z` is load-bearing, not cosmetic. `allowed_paths` is built
+ * from `--name-status -M100 -z` (`scope-resolver.ts:computeAllowedFromDiff`), so
+ * this reader must cross the SAME git contract. Without `-z`, `core.quotePath`
+ * (on by default) C-quotes every non-ASCII path — `café.ts` reads back as the
+ * literal `"caf\303\251.ts"`, matches nothing in the fence, and an explicitly
+ * ALLOWED file is reported `outside_scope`. Fix the contract, never un-quote in JS.
+ */
 function getStagedPaths(): string[] {
-  const result = spawnSync('git', ['diff', '--staged', '--name-only', '--no-renames'], {
+  const result = spawnSync('git', ['diff', '--staged', '--name-only', '--no-renames', '-z'], {
     encoding: 'utf-8',
     timeout: 15_000,
   });
   if ((result.status ?? 1) !== 0) return [];
-  return (result.stdout || '').split('\n').filter(Boolean);
+  return (result.stdout || '').split('\0').filter(Boolean);
 }
 
 export function checkScopeDiff(opts: CheckScopeDiffOpts = {}): ScopeDiffResult {

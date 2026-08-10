@@ -35,7 +35,7 @@ function runAudit({ allowedPaths, committedFiles, currentSubsystem, writeScope =
     _deps.spawnSync = (bin, args) => {
       assert.equal(bin, 'git');
       assert.ok(args.includes('--name-only'), 'audit must run git diff --name-only');
-      return { status: 0, stdout: (committedFiles ?? []).join('\n') + '\n' };
+      return { status: 0, stdout: (committedFiles ?? []).map((f) => f + '\0').join('') };
     };
     _deps.logActivity = (ev) => { captured.push(ev); };
     const ctx = {

@@ -500,7 +500,11 @@ export function filterByScope(files, opts) {
     return files.filter((file) => matchesAllowedPath(file, opts.allowedPaths ?? []));
 }
 function getChangedSince(workingDir, since) {
-    const result = spawnSync('git', ['diff', '--name-only', `${since}..HEAD`], {
+    // AP-EXT-ITER31-01: `-z` matches the contract `allowed_paths` is built from
+    // (`--name-status -M100 -z`). Without it `core.quotePath` C-quotes non-ASCII
+    // paths, `filterByScope` matches none of them, and the gate silently narrows
+    // its own failure set — fail-OPEN over a real regression.
+    const result = spawnSync('git', ['diff', '--name-only', '-z', `${since}..HEAD`], {
         cwd: workingDir,
         encoding: 'utf-8',
         timeout: 30_000,
@@ -510,7 +514,7 @@ function getChangedSince(workingDir, since) {
     });
     if ((result.status ?? 1) !== 0)
         return [];
-    return (result.stdout || '').split('\n').filter(Boolean);
+    return (result.stdout || '').split('\0').filter(Boolean);
 }
 async function runCheckCommand(check, cmd, cwd, timeout_ms) {
     const parts = cmd.split(' ').filter((p) => p.length > 0);
