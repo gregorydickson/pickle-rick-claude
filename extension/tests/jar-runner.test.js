@@ -181,6 +181,39 @@ test('discoverMarinatingTasks: recovers newer dead-writer meta tmp before filter
     }
 });
 
+// AP-EXT-ITER16-01: the sibling test above seeds a BASE meta.json plus a newer tmp,
+// so it stays GREEN with an `existsSync(metaPath)` pre-gate in place. The defect lives
+// on the tmp-ONLY path: addToJar writes meta.json tmp-rename, so a crash in that window
+// leaves no base at all and the queued task went silently undiscoverable.
+test('discoverMarinatingTasks: recovers a tmp-ONLY meta with no base file', () => {
+    const tmpRoot = makeTmpRoot();
+    try {
+        const taskDir = path.join(tmpRoot, 'jar', '2026-01-01', 'task-a');
+        fs.mkdirSync(taskDir, { recursive: true });
+        const metaPath = path.join(taskDir, 'meta.json');
+        const tmpMetaPath = `${metaPath}.tmp.999999`;
+
+        fs.writeFileSync(tmpMetaPath, JSON.stringify({
+            status: 'marinating',
+            repo_path: '/tmp/repo-a',
+        }));
+        assert.equal(fs.existsSync(metaPath), false);
+
+        const tasks = discoverMarinatingTasks(path.join(tmpRoot, 'jar'));
+
+        assert.deepEqual(tasks.map(task => task.taskId), ['task-a']);
+        assert.equal(tasks[0].meta.repo_path, '/tmp/repo-a');
+        // The recovering read PROMOTES the orphan tmp onto the base path.
+        assert.equal(fs.existsSync(tmpMetaPath), false);
+        assert.equal(
+            JSON.parse(fs.readFileSync(metaPath, 'utf-8')).status,
+            'marinating',
+        );
+    } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
 test('discoverMarinatingTasks: skips non-directories, missing meta, and corrupt meta files', () => {
     const tmpRoot = makeTmpRoot();
     const stderr = console.error;

@@ -213,13 +213,20 @@ export function discoverMarinatingTasks(jarRoot) {
             continue;
         for (const taskId of fs.readdirSync(dayPath).sort()) {
             const metaPath = path.join(dayPath, taskId, 'meta.json');
-            if (!fs.existsSync(metaPath))
-                continue;
             let meta;
             try {
+                // AP-EXT-ITER16-01: no `existsSync` pre-gate. meta.json is written
+                // tmp-rename (jar-utils.ts addToJar, writeTaskMeta), so a crash in that
+                // window leaves only `meta.json.tmp.<pid>` — the recovering read below is
+                // what promotes it. Absence is decided AFTER that read: a task dir that
+                // never had a meta.json stays a quiet skip, a present-but-unparseable one
+                // still reports.
                 const recoveredMeta = readRecoverableJsonObject(metaPath);
-                if (!recoveredMeta)
+                if (!recoveredMeta) {
+                    if (!fs.existsSync(metaPath))
+                        continue;
                     throw new Error('meta.json is corrupt or unreadable');
+                }
                 meta = recoveredMeta;
             }
             catch {
