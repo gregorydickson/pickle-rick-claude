@@ -849,13 +849,30 @@ test('pruneOldSessions: never removes active session regardless of age', () => {
     }
 });
 
-test('pruneOldSessions: skips entries without state.json', () => {
+test('pruneOldSessions: entries without state.json age off their own mtime', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sessions-'));
     try {
-        const orphanDir = path.join(root, 'orphan-no-state');
-        fs.mkdirSync(orphanDir);
+        // The in-tree scaffold (<cwd>/.pickle-rick/sessions/<id>/) holds only
+        // TASK_NOTES.md, so there is no state.json liveness signal to consult.
+        const oldOrphan = path.join(root, 'orphan-no-state-old');
+        const recentOrphan = path.join(root, 'orphan-no-state-recent');
+        fs.mkdirSync(oldOrphan);
+        fs.mkdirSync(recentOrphan);
+        const tenDaysAgo = Date.now() / 1000 - 10 * 24 * 60 * 60;
+        fs.utimesSync(oldOrphan, tenDaysAgo, tenDaysAgo);
+
         pruneOldSessions(root, 7);
-        assert.equal(fs.existsSync(orphanDir), true); // untouched
+
+        assert.equal(
+            fs.existsSync(oldOrphan),
+            false,
+            'a state.json-less dir past the cutoff must be pruned by its own mtime'
+        );
+        assert.equal(
+            fs.existsSync(recentOrphan),
+            true,
+            'a state.json-less dir inside the cutoff must survive'
+        );
     } finally {
         fs.rmSync(root, { recursive: true });
     }
