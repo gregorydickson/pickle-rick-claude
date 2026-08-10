@@ -660,3 +660,105 @@ test('AP-EXT-ITER23-01 control: an announced OWN sha is still recovered and pers
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ── AP-EXT-ITER27-01: the trailer scan's window is bounded on the epoch axis ──
+//
+// The scan was capped at `git log -n 50`. That is a DIFFERENT axis from the
+// `startTimeEpoch` filter the entries are then tested against, so an early
+// ticket's correctly-trailered commit falls out of the window as soon as the
+// bundle authors 50 more commits — evidence reads `absent` and the Done flip is
+// refused over work that shipped. Real bundles clear that bar easily (this repo
+// has logged 143 commits in a single day). Assert the ATTRIBUTION of a commit
+// pushed deep into history, never the scan's arg list.
+
+test('AP-EXT-ITER27-01: a trailered commit past the old 50-commit window is still attributed', () => {
+  const root = mkTmp('pickle-iter27-window-');
+  try {
+    initGitRepo(root);
+    const sessionDir = path.join(root, 'session');
+    const startEpoch = Math.floor(Date.now() / 1000) - 60;
+
+    const realSha = commitFileWithTrailer(root, 'src/early.ts', 'early ticket work', 'win00001');
+    // The rest of the bundle: 60 sibling commits authored after it, pushing the
+    // attributed commit past the former window.
+    for (let i = 0; i < 55; i += 1) {
+      commitEmpty(root, `sibling ticket work ${i}`);
+    }
+
+    writeTicket(sessionDir, 'win00001', {});
+    const ev = readEvidence({
+      sessionDir,
+      ticketId: 'win00001',
+      workingDir: root,
+      startCommit: null,
+      pinnedSha: null,
+      startTimeEpoch: startEpoch,
+    });
+
+    assert.equal(ev.kind, 'committed', 'a trailered in-session commit must stay attributable past 50 siblings');
+    assert.equal(ev.sha, realSha);
+    assert.equal(ev.via, 'scan');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER27-01: pre-session commits stay OUT of the window (the epoch bound still fences)', () => {
+  const root = mkTmp('pickle-iter27-fence-');
+  try {
+    initGitRepo(root);
+    const sessionDir = path.join(root, 'session');
+
+    commitFileWithTrailer(root, 'src/stale.ts', 'work from a PRIOR session', 'win00002');
+    // Session starts strictly after that commit's committer date.
+    const startEpoch = Math.floor(Date.now() / 1000) + 60;
+
+    writeTicket(sessionDir, 'win00002', {});
+    const ev = readEvidence({
+      sessionDir,
+      ticketId: 'win00002',
+      workingDir: root,
+      startCommit: null,
+      pinnedSha: null,
+      startTimeEpoch: startEpoch,
+    });
+
+    assert.equal(ev.kind, 'absent', 'widening the window must not admit a pre-session commit');
+    assert.equal(ev.absentReason, 'no_evidence');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER27-01: with no startTimeEpoch the count ceiling still admits deep history', () => {
+  const root = mkTmp('pickle-iter27-noepoch-');
+  try {
+    initGitRepo(root);
+    const sessionDir = path.join(root, 'session');
+
+    const realSha = commitFileWithTrailer(root, 'src/early.ts', 'early ticket work', 'win00003');
+    for (let i = 0; i < 55; i += 1) {
+      commitEmpty(root, `sibling ticket work ${i}`);
+    }
+
+    writeTicket(sessionDir, 'win00003', {});
+    const ev = readEvidence({
+      sessionDir,
+      ticketId: 'win00003',
+      workingDir: root,
+      startCommit: null,
+      pinnedSha: null,
+    });
+
+    assert.equal(ev.kind, 'committed', 'the no-epoch arm must not inherit the old 50-commit cap');
+    assert.equal(ev.sha, realSha);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/** AP-EXT-ITER27-01: a cheap sibling commit — the trailer scan counts commits, not trees. */
+function commitEmpty(dir, message) {
+  execFileSync('git', ['commit', '-q', '--allow-empty', '-m', message, '--no-gpg-sign'], { cwd: dir, stdio: 'ignore' });
+  return head(dir);
+}

@@ -22,6 +22,13 @@ import { execFileSync } from 'node:child_process';
 import { readFrontmatterField, upsertFrontmatterField, normalizeCompletionCommitField, ticketFilePath, } from './pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from './artifact-validation.js';
 import { VALID_TICKET_COMPLEXITY_TIERS } from './pickle-utils.js';
+import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+/**
+ * Count ceiling for the trailer scan, used ONLY when the session carries no
+ * usable `startTimeEpoch`. With an epoch, the window is bounded on the SAME
+ * axis the entry filter uses (`--since`), never by commit count.
+ */
+const TRAILER_SCAN_MAX_COMMITS = 2000;
 // ---------------------------------------------------------------------------
 // Private helpers (inlined from pickle-utils private scope)
 // ---------------------------------------------------------------------------
@@ -129,19 +136,35 @@ function scanGitLogByTrailer(args) {
     const wantedId = args.ticketId.trim().toLowerCase();
     if (!wantedId)
         return null;
+    const startEpoch = Number(args.startTimeEpoch);
+    // ONE window, one axis. The entry filter below rejects anything older than
+    // `startEpoch`, so when that bound exists git applies the SAME bound itself
+    // (`--since`) and the scan sees every in-session commit. A count cap is a
+    // DIFFERENT axis: a 46-ticket bundle authors well past 50 commits (this repo
+    // has logged 143 in a single day), so a fixed `-n 50` silently drops an
+    // early ticket's correctly-trailered commit out of the window — the scan
+    // returns null, evidence reads `absent`, and the Done flip is refused over
+    // work that shipped. The count ceiling survives only as the no-epoch arm.
+    const windowArgs = Number.isFinite(startEpoch) && startEpoch > 0
+        ? ['--since', `@${startEpoch}`]
+        : ['-n', String(TRAILER_SCAN_MAX_COMMITS)];
     let raw;
     try {
         raw = execFileSync('git', [
             '-C', args.workingDir,
-            'log', '-n', '50',
+            'log', ...windowArgs,
             '--format=%H%n%ct%n%(trailers:key=Pickle-Ticket,valueonly)%n---pickle-trailer-boundary---',
             'HEAD',
-        ], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+        ], {
+            timeout: 5000,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+        });
     }
     catch {
         return null;
     }
-    const startEpoch = Number(args.startTimeEpoch);
     for (const e of parseTrailerLog(raw)) {
         if (Number.isFinite(startEpoch) && startEpoch > 0 && e.epoch < startEpoch)
             continue;
