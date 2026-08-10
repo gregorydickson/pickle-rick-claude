@@ -3303,6 +3303,9 @@ async function handleWorkerMode(state, ctx) {
         log: ctx.log,
         iteration: ctx.iteration,
         minIterations: ctx.currentRunnerState.min_iterations,
+        // AP-EXT-ITER14-01: the R-ORSR-6 sweep arms ONLY when this field arrives. It is the
+        // sole production call site, so omitting it makes the whole no-disown guard dead code.
+        startCommit: ctx.currentRunnerState.start_commit,
     });
     replaceMicroverseState(state, workerResult.currentMv);
     syncCurrentWorkerSubsystem(state, ctx.sessionDir);
