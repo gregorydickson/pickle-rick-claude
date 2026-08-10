@@ -141,7 +141,49 @@ behind them, and both cost triage time that looked like debugging.
 
 ## 4. Recommendations, subtractive first
 
-### R1 — Run the integration tier once per bundle, at the closer, advisory (P1)
+### R1 — Can we reach a 5-minute per-worker integration run?
+
+**Plausibly yes, and R0 is what makes the question worth asking at all.** Arithmetic from measured
+parts, not aspiration:
+
+| Component | Today | After R0 |
+|---|---|---|
+| `test:integration:parallel` (`-c 8`) | 56 s | 56 s (already fine) |
+| 13 install-invoking serial tests | ~150-1190 s each | ~10-20 s each → **~3-4 min total** |
+| remaining ~576 serial tests (`-c 1`) | remainder of the ~31 min wall | unchanged |
+| **integration total** | **~31 min** | **~5-10 min** |
+
+So R0 alone plausibly lands the whole tier in the 5-10 minute band. That is the difference between an
+instrument you can run per bundle and one you can consider running per worker.
+
+**But per-worker still is not the right first move, for a reason independent of runtime.** The gate
+that would run it already exists — `worker_gate_tier: 'full'` (`spawn-morty.ts:1666`,
+`resolveWorkerGateTier:1276`) — and its per-phase cap is
+`DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS = 600_000` (10 min, `pickle-utils.ts:165`). A 5-10 minute tier
+against a 10-minute cap leaves almost no headroom on a loaded box, and this session showed exactly what
+happens then: nine tests died `exit null` under load 16-21 and read as failures when they were merely
+unmeasured. Sizing a gate to *just* fit is how you manufacture flake.
+
+**Recommended sequence, cheapest-first:**
+
+1. **R0** — the rsync excludes. One line, ~20-40× on `install.sh`, no data touched. Do this first and
+   re-measure the tier; every number below depends on it.
+2. **Then re-measure**, at rest, both sub-tiers separately. If the tier lands under ~6 min, the
+   per-worker option becomes real — but raise the per-phase cap to ≥3× the measured tier time before
+   flipping `worker_gate_tier`, or you re-create the `exit null` class on every ticket.
+3. **Meanwhile, run it once per bundle at the closer, advisory** (R1b below). That is affordable
+   *today*, before any of the above, and it is what would have caught all 21 of these failures at
+   introduction.
+4. **R0b** — stop the stray-root writer and make pruning follow the live root, so the pile cannot
+   regrow and silently undo R0.
+
+**On the fixture-sharing idea I floated earlier: R0 makes it unnecessary.** Building the deployed tree
+once and sharing it across install tests would be a real design change with real risk — install tests
+exist precisely to verify that a *fresh* install produces a correct tree, and sharing one artifact
+weakens exactly the property they assert. At ~10 s per install there is nothing left to amortise. Drop
+the idea; the cost was never the install, it was the 601 MB.
+
+### R1b — Run the integration tier once per bundle, at the closer, advisory (P1)
 
 Not per worker (§2.3 — cap math forbids it), not as a new phase (no new machinery needed). Once at the
 bundle boundary, where 32 minutes is affordable and the diff to attribute is the whole bundle.
@@ -158,7 +200,82 @@ Two lines in `package.json`. Restores audit preflight to the split invocation wi
 visibility the split exists for. Alternative — naming the three audits explicitly at every call site —
 works but must then be remembered forever; the pre-hook cannot be forgotten.
 
-### R3 — Raise the install-family caps: CONFIRMED below their work (P1, was P2)
+### R0 — SUPERSEDES R3. The install family is slow for one removable reason: rsync walks 601 MB of test detritus (P0, one line)
+
+**Measured 2026-08-10. This is the highest-leverage finding in the document and it makes R3 unnecessary.**
+
+`install.sh` spends effectively all of its wall-clock in ONE rsync:
+
+```
+rsync -a --delete --delete-excluded \
+  --exclude=node_modules --exclude=src --exclude=tests \
+  --exclude=tsconfig.json --exclude=package-lock.json \
+  extension/  $EXTENSION_ROOT/extension/
+```
+
+That exclude list omits two directories that dominate the tree:
+
+| Path | Size | Paths walked | In git? |
+|---|---|---|---|
+| `extension/.pickle-rick/sessions/` | **510 MB** | **130,596** | untracked, `.gitignore:32` |
+| `extension/.codegraph/` | **91 MB** | 3 | untracked, `.git/info/exclude:19` |
+| *actual deployable payload* | **4.9 MB** | ~1,200 | tracked |
+
+**A/B, same machine, data restored afterwards (nothing deleted):**
+
+```
+install.sh WITH  the stub pile in the rsync path   329 s   (147-329 s across runs)
+install.sh WITHOUT it                             7-11 s
+```
+
+**~20-40×.** Component costs for contrast: `npm install` warm **1 s**, `tsc` cold with `.tsbuildinfo`
+deleted **9 s**, codegraph deploy **0 s** (git mode symlinks) / 10 s (tarball mode). None of those was
+ever the problem.
+
+**Consequence for the tier:** 13 of the 15 tests that make up **89 % of serial test-time** are
+`install.sh` invocations. At ~10 s per install instead of ~150 s, every one of them lands far inside
+its existing `timeout: 120_000`. **The caps do not need raising — R3 is withdrawn.** A cap that looked
+"drifted below its work" was in fact adequate for the work, guarding a step bloated by 601 MB of files
+that have no business in a deploy tree.
+
+**Fix:** add `--exclude='.pickle-rick'` and `--exclude='.codegraph'` to that rsync. Both are untracked,
+git-ignored, regenerable-or-irrelevant runtime state; neither is deployable payload. This is
+subtractive — it deletes nothing and removes work rather than adding a guard. Note the precedent:
+AP-EXT-ITER6-01 already established that `.codegraph` is "the runtime's OWN regenerable index … plain
+untracked dirt in any freshly-cloned target repo" and made **every staging path** exclude it. The
+install rsync is the one seam that never got the same treatment.
+
+### R0b — Why session scaffolds are being written into the source tree at all (P1)
+
+The 130,596 entries under `extension/.pickle-rick/sessions/` are **not session data**. Sampled 3,000:
+**every one contains exactly one file, an empty `TASK_NOTES.md` template** — headers, no content, no
+`state.json`, no artifacts. 4 KB of block overhead each. They span 2026-04 → 2026-08:
+
+```
+2026-04: 1,917   2026-05: 31,552   2026-06: 35,749   2026-07: 46,503   2026-08: 14,875
+```
+
+Real session data lives at the XDG root and **is** managed — `~/.local/share/pickle-rick/sessions/`
+holds **22** sessions / 90 MB, because `pruneOldSessions(root, maxAgeDays = 7)`
+(`pickle-utils.ts:2842`) runs against it.
+
+So there are two defects behind one symptom:
+
+1. Something resolves a data root to `extension/.pickle-rick` instead of `getDataRoot()` and creates a
+   session scaffold there. This is the R-PTSB test-isolation class that
+   `audit-test-isolation.sh` exists to catch — that audit passes today, so current tests are
+   sandboxed and this is largely historical accumulation, but entries dated **today** mean at least
+   one live writer remains. Find it.
+2. **Pruning is per-root, so a stray root is never pruned.** `pruneOldSessions` protects the canonical
+   root only. Any root that isn't the canonical one grows without bound — five months, 130 k entries,
+   silently, until it made a deploy step 30× slower.
+
+**Retention view (the data-management question, answered):** the valuable data is already managed at
+7 days. The stub pile is not data and its removal loses nothing — but the *right* fix is not a one-off
+`rm`: it is (a) stop writing to the stray root, and (b) make pruning follow whatever root is actually
+in use rather than a hardcoded one. Otherwise the same pile regrows somewhere else.
+
+### R3 — WITHDRAWN. Raise the install-family caps (superseded by R0)
 
 **Re-measured at rest on a quiet box (load decaying 8.3, zero external contenders). The verdict
 splits, and the split is the whole point of insisting on an at-rest measurement:**
