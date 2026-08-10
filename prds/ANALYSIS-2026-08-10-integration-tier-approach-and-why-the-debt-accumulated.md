@@ -158,11 +158,44 @@ Two lines in `package.json`. Restores audit preflight to the split invocation wi
 visibility the split exists for. Alternative — naming the three audits explicitly at every call site —
 works but must then be remembered forever; the pre-hook cannot be forgotten.
 
-### R3 — Re-measure the install/deploy family at rest, then raise caps to fit (P2)
+### R3 — Raise the install-family caps: CONFIRMED below their work (P1, was P2)
 
-The nine `exit null` kills are unmeasured, not failing. Take one measurement on a quiet machine. Where
-a cap is genuinely below its work (`audit-test-isolation`'s 60 s vs ~116 s observed), raise the cap.
-Do **not** shrink the work, and do **not** treat a load-shaped kill as a regression.
+**Re-measured at rest on a quiet box (load decaying 8.3, zero external contenders). The verdict
+splits, and the split is the whole point of insisting on an at-rest measurement:**
+
+- `audit-test-isolation: real tests/ directory exits 0` — **PASSED.** Its earlier `60003ms` death was
+  genuinely load-shaped. The 60 s cap is adequate at rest. *No action.* Had this been "fixed" from the
+  loaded measurement, a healthy cap would have been raised for no reason.
+- The **install/deploy family — 8 failures, 7 of 8 explicitly `exit null` — is REAL, not contention.**
+
+The decisive datum, measured directly:
+
+```
+PICKLE_INSTALL_ROOT=/tmp/... bash install.sh   →  exit 0, 147 s
+```
+
+Against the shipped caps:
+
+| Test | Cap | `install.sh` needs | Verdict |
+|---|---|---|---|
+| `install-chmod-coverage` | `timeout: 120_000` | 147 s | **cannot pass** |
+| `install-ui-principles` | 120 s (died 120011 ms) | 147 s | **cannot pass** |
+| `install-typescript-package` | `timeout: 120_000` | 147 s | **cannot pass** |
+| `install-script-prefix.settings-untouched-at-home` | 120 s (died 120040 ms) | 147 s | **cannot pass** |
+
+`install.sh` runs `npm ci` plus a full `tsc`; 147 s is its honest cost, and it exits **0**. Four tests
+cap that work at 120 s, so they fail deterministically at rest on this machine — the
+`gate cap < suite runtime` class, where a hang-guard drifted under the work it guards and converts a
+healthy operation into a uniform red.
+
+**This is pre-existing, not introduced by B-RATRAIL** — `install-script-prefix` was already failing at
+the `f1e1ce1b` baseline. It surfaced more broadly only because this was the first time the serial
+sub-tier was measured at all (§2.1).
+
+**Fix: raise the caps to fit the work** (≥300 s gives headroom over a 147 s baseline on a slower box).
+Per the serial-manifest hygiene principle, a subprocess timeout is a hang-guard, not a perf assertion —
+so do **not** shrink `install.sh`, and do **not** quarantine the tests. Its own bundle; it is
+independent of everything else here.
 
 ### R4 — Ban byte-offset and unresolved-symbol anchors in source-text tests (P2, subtractive)
 
@@ -192,13 +225,29 @@ the static analysis that opened this investigation:
 
 The measured outcome, both sub-tiers read separately:
 
-| | Baseline `f1e1ce1b` | After |
-|---|---|---|
-| parallel | 590 / **16 fail** | 596 / **1 fail** (the one deliberately scoped out) |
-| serial, in-scope | **4 fail** | **0** |
-| serial, residue | 1 | 9 `exit null` kills under load — unmeasured |
+**Authoritative gate, at rest, HEAD `f9febbbd`** — `install.sh` first (the tier exercises the deployed
+binary), sub-tiers read separately, worker trailer-hook env stripped:
 
-Test count rose (590 → 596): nothing was deleted, skipped, or weakened to reach green.
+```
+INSTALL_EXIT=0   TSC_EXIT=0   LINT_EXIT=0
+FAST_EXIT=0      7468 tests, 7465 pass, 0 fail
+PAR_EXIT=1        607 tests,  606 pass, 1 fail
+SER_EXIT=1        589 tests,  581 pass, 8 fail
+```
+
+| | Baseline `f1e1ce1b` | After (at rest) |
+|---|---|---|
+| fast | 7453 / 0 fail | 7468 / **0 fail** |
+| parallel | 590 / **16 fail** | 607 / **1 fail** — `INV-CODEX-RECOVERY-ADVANCED`, deliberately scoped out |
+| serial, in-scope | **4 fail** | **0** |
+| serial, install/deploy family | 1 | 8 — **pre-existing, cap-below-work (R3)** |
+
+Test counts rose in both tiers (590 → 607, 7453 → 7468): nothing was deleted, skipped, quarantined, or
+weakened to reach green.
+
+**Every in-scope failure is resolved.** The two survivors are both out of scope by prior decision: one
+undiagnosed codex-recovery test excluded before the bundle was written, and one pre-existing
+install-family defect that this work merely made visible.
 
 ---
 
