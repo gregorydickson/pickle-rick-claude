@@ -63,8 +63,77 @@ its cause.
 
 ## Green-tree precondition
 
-`cd extension && npm run test:fast` must be green on `45cda0bd` before launch. Record the result; if
-red, name the introducing commit and record the failures as inherited before launching.
+Measured on `45cda0bd`, 2026-08-10, box at load 25-40 (a game and a VM running):
+
+```
+npm run test:fast   7481 tests, 7476 pass, 2 fail, 2 skipped, FAST_EXIT=1, 693 s
+```
+
+Both failures are timing-shaped, not logic:
+
+| Test | Observed | Budget |
+|---|---|---|
+| `readRecoverableJsonObject readdirSync bound: 10k decoys + 1 matching tmp under 50ms` | 10106 ms | 50 ms |
+| `spawn-morty: recovers orphan tmp backend state before routing worker CLI` | 45030 ms | timeout-shaped |
+
+Re-run alone at `--test-concurrency=1` with `node_modules/.bin` on `PATH`: **68/68 pass, 0 fail**, at
+load 40. They are c=8 contention flakes, not inherited breakage — no introducing commit to name.
+
+The precondition is therefore satisfied **with this caveat recorded**, not claimed clean. If a worker
+sees either test red, that is the known flake and not this bundle's doing.
+
+## Interface Contracts
+
+`install.sh` is a shell entry point, not a typed module. Its contract is stated in terms of
+filesystem effects, which is what this bundle changes.
+
+**Inputs**
+- `--prefix <dir>` — deploy destination. Absent → `$HOME/.claude/pickle-rick`.
+- `--no-confirm` — suppress interactive confirmation.
+- `PICKLE_INSTALL_ROOT` (env) — **not** an input to `install.sh`; `install.sh:33` overwrites it
+  unconditionally. It is an input to the deployed runtime hook path only. WS-C2 corrects the docs.
+
+**Outputs**
+- Deploy tree at the resolved prefix: `<prefix>/extension/**`, `<prefix>/../commands/*.md`,
+  `<prefix>/pickle_settings.json`, `<prefix>/persona.md`.
+- Exit 0 on success; non-zero with a diagnostic on failure.
+
+**Errors**
+- Compile failure → non-zero exit, source tree left in a loadable state (this is the property WS-B
+  establishes; today a mid-compile failure leaves ~130 modules absent).
+- Schema parity mismatch between `src/types/index.ts` and `types/index.js` → non-zero exit.
+
+**Invariants** — the load-bearing ones for this bundle:
+- **I1** — at every instant during and after `install.sh`, every compiled `.js` in the **source** tree
+  that exists at `HEAD` is present and loadable. Currently violated for the duration of the recompile.
+- **I2** — `install.sh` leaves the source tree byte-identical to `HEAD` for tracked files. `git status`
+  clean before implies clean after.
+- **I3** — `--prefix <dir>` confines all *destination* writes to `<dir>`. It does not, and after this
+  bundle still will not, confine the *build*; the build is simply no longer destructive.
+- **I4** — at every instant during and after `install.sh`, the deploy tree either fails the parity
+  probe or is loadable. It is never both parity-passing and unloadable. Currently violated in the
+  window between the rsync and the symlink recreation.
+
+## Test Expectations
+
+| Criterion | Test file | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-A1/A2 | `extension/tests/integration/.serial-tests.json` + `.reasons.json` | Manifest entry and its reason | Both contain `tests/integration/install-excludes-working-dir-state.test.js` |
+| AC-A3 | `extension/tests/serial-tests-reasons-coverage.test.js` (existing) | 1:1 manifest↔reasons invariant | Passes unmodified |
+| AC-A4/A5 | none — tier run | Parallel sub-tier alone at c=4 | 0 `ERR_MODULE_NOT_FOUND`, 0 `MODULE_NOT_FOUND`, only `INV-CODEX-RECOVERY-ADVANCED` fails |
+| AC-B1 | `install.sh` | rm-loop deleted, `.tsbuildinfo` removal kept | `install.sh` contains no `rm -f "$jsfile"`; retains `rm -f "$SCRIPT_DIR/extension/.tsbuildinfo"` |
+| AC-B2 | new, `extension/tests/integration/install-stale-cache-rebuild.test.js` | Stale compiled artifact + stale `.tsbuildinfo`, then `install.sh --prefix <tmp>` | Compiled JS matches current source; **fails if `.tsbuildinfo` removal is also dropped** |
+| AC-B3 | new, `extension/tests/integration/install-source-tree-stays-loadable.test.js` | Poll `extension/types/index.js` on a tight interval while `install.sh --prefix <tmp>` runs | File never observed missing (invariant I1). **Must fail against `45cda0bd`** |
+| AC-B4 | `extension/tests/integration/install-stale-cache-rebuild.test.js` | Clean and stale starting states | Exit 0; deploy-tree compiled JS byte-identical to source |
+| AC-B5 | `extension/tests/integration/install-source-tree-stays-loadable.test.js` | `git status --porcelain` before/after | Identical output (invariant I2) |
+| AC-C1 | `install.sh` | Interrupt-safe ordering or staging | Stated in the ticket with a reason for the choice |
+| AC-C2 | new, `extension/tests/integration/install-parity-requires-node-modules.test.js` | Deploy tree with `node_modules` symlinks removed | Parity probe does **not** pass (invariant I4) |
+| AC-C3/C4 | `extension/CLAUDE.md` | `PICKLE_INSTALL_ROOT` row corrected | `grep -rn 'PICKLE_INSTALL_ROOT' extension/CLAUDE.md CLAUDE.md README.md` yields no claim that the env var overrides the `install.sh` prefix |
+
+Note on AC-B3: a test that passes against the pre-fix `install.sh` is not testing the bug. The ticket
+must demonstrate it red on `45cda0bd` before it counts as satisfied.
+
+## Simplification Review
 
 ---
 
