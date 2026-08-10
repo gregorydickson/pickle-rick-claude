@@ -1466,13 +1466,18 @@ function createSession(config, paths, taskStr) {
     const fullSessionPath = path.join(paths.sessionsRoot, sessionId);
     if (!fs.existsSync(fullSessionPath))
         fs.mkdirSync(fullSessionPath, { recursive: true });
-    const inTreeSessionDir = path.join(process.cwd(), '.pickle-rick', 'sessions', sessionId);
-    if (!fs.existsSync(inTreeSessionDir))
-        fs.mkdirSync(inTreeSessionDir, { recursive: true });
-    const inTreeNotesPath = path.join(inTreeSessionDir, 'TASK_NOTES.md');
-    if (!fs.existsSync(inTreeNotesPath)) {
-        fs.writeFileSync(inTreeNotesPath, `# TASK_NOTES\n\nSession: ${sessionId}\n\n## Progress\n\n## Dead Ends\n\n## Key Discoveries\n\n## Next\n`);
+    const inTreeSessionsRoot = path.join(process.cwd(), '.pickle-rick', 'sessions');
+    const inTreeSessionDir = path.join(inTreeSessionsRoot, sessionId);
+    try {
+        pruneOldSessions(inTreeSessionsRoot);
+        if (!fs.existsSync(inTreeSessionDir))
+            fs.mkdirSync(inTreeSessionDir, { recursive: true });
+        const inTreeNotesPath = path.join(inTreeSessionDir, 'TASK_NOTES.md');
+        if (!fs.existsSync(inTreeNotesPath)) {
+            fs.writeFileSync(inTreeNotesPath, `# TASK_NOTES\n\nSession: ${sessionId}\n\n## Progress\n\n## Dead Ends\n\n## Key Discoveries\n\n## Next\n`);
+        }
     }
+    catch { /* must not block session start */ }
     const state = createInitialState(config, fullSessionPath, taskStr);
     // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing state to lock against
     sm.forceWrite(path.join(fullSessionPath, 'state.json'), state);

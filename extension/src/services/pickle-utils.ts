@@ -2838,7 +2838,12 @@ export function displayMacNotification(
   } catch { /* best-effort: ENOENT / timeout / non-zero exit are all non-fatal */ }
 }
 
-/** Removes inactive session directories older than maxAgeDays from sessionsRoot. */
+/**
+ * Removes inactive session directories older than maxAgeDays from sessionsRoot.
+ * A directory with no state.json (e.g. the in-tree scaffold, which holds only
+ * TASK_NOTES.md) has no liveness signal to check, so it ages off its own
+ * directory mtime instead of being skipped.
+ */
 export function pruneOldSessions(sessionsRoot: string, maxAgeDays = 7): void {
   if (!fs.existsSync(sessionsRoot)) return;
   const cutoffMs = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
@@ -2847,17 +2852,19 @@ export function pruneOldSessions(sessionsRoot: string, maxAgeDays = 7): void {
   for (const entry of fs.readdirSync(sessionsRoot)) {
     const sessionDir = path.join(sessionsRoot, entry);
     const statePath = path.join(sessionDir, 'state.json');
-    if (!fs.existsSync(statePath)) continue;
     try {
       const sessionDirMtimeMs = fs.statSync(sessionDir).mtimeMs;
-      const state = sm.read(statePath);
-      if (state.active === true) continue;
-      const rawMs = state.started_at
-        ? new Date(state.started_at).getTime()
-        : NaN;
-      const startedMs = Number.isFinite(rawMs) && rawMs <= maxTrustedFutureMs
-        ? rawMs
-        : sessionDirMtimeMs;
+      let startedMs = sessionDirMtimeMs;
+      if (fs.existsSync(statePath)) {
+        const state = sm.read(statePath);
+        if (state.active === true) continue;
+        const rawMs = state.started_at
+          ? new Date(state.started_at).getTime()
+          : NaN;
+        startedMs = Number.isFinite(rawMs) && rawMs <= maxTrustedFutureMs
+          ? rawMs
+          : sessionDirMtimeMs;
+      }
       if (startedMs < cutoffMs) {
         fs.rmSync(sessionDir, { recursive: true, force: true });
       }
