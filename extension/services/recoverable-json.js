@@ -1,15 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'node:child_process';
-function isProcessAlive(pid) {
-    try {
-        process.kill(pid, 0);
-        return true;
-    }
-    catch {
-        return false;
-    }
-}
+import { isProcessAlive } from '../lib/process-liveness.js';
 function readProcessStartTimeMs(pid) {
     try {
         const output = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], {

@@ -12,6 +12,7 @@ import * as os from 'node:os';
 import { threadId } from 'node:worker_threads';
 import * as path from 'node:path';
 import { isRecord } from '../lib/is-record.js';
+import { isProcessAlive } from '../lib/process-liveness.js';
 import { STATE_MANAGER_DEFAULTS, LATEST_SCHEMA_VERSION, StateError, LockError, TransactionError, SchemaVersionMismatchError, VALID_ACTIVITY_EVENTS, } from '../types/index.js';
 import { writeStateFile, safeErrorMessage, getDataRoot, formatLocalDateKey, sleepSync } from './pickle-utils.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
@@ -129,16 +130,8 @@ function assertSchemaVersionWithinCeiling(statePath, state, opts) {
 function lockPath(statePath) {
     return `${statePath}.lock`;
 }
-/** Returns true if process with given pid is currently alive. */
-export function isProcessAlive(pid) {
-    try {
-        process.kill(pid, 0);
-        return true;
-    }
-    catch {
-        return false;
-    }
-}
+/** Re-exported so every existing consumer keeps its import; the probe itself lives in `lib/`. */
+export { isProcessAlive };
 /** Lock payloads are a bare pid or a small `{pid,ts}` JSON object; 256B covers both with room. */
 const LOCK_PAYLOAD_MAX_BYTES = 256;
 /** One lock file's identity, age, and holder — all read from a single file descriptor. */
@@ -272,14 +265,16 @@ export function releaseLockFile(lockPath, handle) {
 }
 /**
  * True only for a payload naming a pid we can PROVE is dead. An empty payload (the holder created
- * the file but died before writing) or an unparseable one is NOT proof, and a recycled pid reads as
- * alive — both defer, so we never steal from a holder we cannot account for.
+ * the file but died before writing) or an unparseable one is NOT proof, a recycled pid reads as
+ * alive, and a pid we may not signal (EPERM — the holder exists under another euid) is not proof
+ * either: `isProcessAlive` answers positive-death-only. All defer, so we never steal from a holder
+ * we cannot account for.
  */
-export function isDeadPidPayload(payload) {
+export function isDeadPidPayload(payload, signal) {
     const pid = Number(payload.trim());
     if (!Number.isInteger(pid) || pid <= 0)
         return false;
-    return !isProcessAlive(pid);
+    return !isProcessAlive(pid, signal);
 }
 /**
  * Evicts a lock, refusing anything that is no longer the inode `snapshot` was judged against.

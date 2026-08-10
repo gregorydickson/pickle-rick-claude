@@ -3,6 +3,7 @@ import * as path from 'path';
 import { State } from '../types/index.js';
 import { resolveSessionPath, pruneOrphanedMapEntries } from '../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../services/recoverable-json.js';
+import { isProcessAlive } from '../lib/process-liveness.js';
 import { StateManager } from '../services/state-manager.js';
 
 const ALLOW = JSON.stringify({ decision: 'approve' });
@@ -50,15 +51,6 @@ function readLookupState(stateFile: string): LookupState | null {
     };
   } catch {
     return null;
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
   }
 }
 

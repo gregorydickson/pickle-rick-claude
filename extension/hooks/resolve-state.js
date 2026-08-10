@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { resolveSessionPath, pruneOrphanedMapEntries } from '../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../services/recoverable-json.js';
+import { isProcessAlive } from '../lib/process-liveness.js';
 import { StateManager } from '../services/state-manager.js';
 const ALLOW = JSON.stringify({ decision: 'approve' });
 const sm = new StateManager();
@@ -36,15 +37,6 @@ function readLookupState(stateFile) {
     }
     catch {
         return null;
-    }
-}
-function isProcessAlive(pid) {
-    try {
-        process.kill(pid, 0);
-        return true;
-    }
-    catch {
-        return false;
     }
 }
 function readMappedPid(entry) {

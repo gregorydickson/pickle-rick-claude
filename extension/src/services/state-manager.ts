@@ -13,6 +13,7 @@ import * as os from 'node:os';
 import { threadId } from 'node:worker_threads';
 import * as path from 'node:path';
 import { isRecord } from '../lib/is-record.js';
+import { isProcessAlive, type SignalProbe } from '../lib/process-liveness.js';
 import {
   type State,
   type StateManagerOptions,
@@ -179,15 +180,8 @@ function lockPath(statePath: string): string {
   return `${statePath}.lock`;
 }
 
-/** Returns true if process with given pid is currently alive. */
-export function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+/** Re-exported so every existing consumer keeps its import; the probe itself lives in `lib/`. */
+export { isProcessAlive };
 
 /** Lock payloads are a bare pid or a small `{pid,ts}` JSON object; 256B covers both with room. */
 const LOCK_PAYLOAD_MAX_BYTES = 256;
@@ -337,13 +331,15 @@ export function releaseLockFile(lockPath: string, handle: LockHandle): void {
 
 /**
  * True only for a payload naming a pid we can PROVE is dead. An empty payload (the holder created
- * the file but died before writing) or an unparseable one is NOT proof, and a recycled pid reads as
- * alive — both defer, so we never steal from a holder we cannot account for.
+ * the file but died before writing) or an unparseable one is NOT proof, a recycled pid reads as
+ * alive, and a pid we may not signal (EPERM — the holder exists under another euid) is not proof
+ * either: `isProcessAlive` answers positive-death-only. All defer, so we never steal from a holder
+ * we cannot account for.
  */
-export function isDeadPidPayload(payload: string): boolean {
+export function isDeadPidPayload(payload: string, signal?: SignalProbe): boolean {
   const pid = Number(payload.trim());
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  return !isProcessAlive(pid);
+  return !isProcessAlive(pid, signal);
 }
 
 /**

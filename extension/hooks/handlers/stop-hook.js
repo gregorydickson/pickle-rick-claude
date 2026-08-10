@@ -9,6 +9,7 @@ import { getExtensionRoot, getDataRoot, safeErrorMessage } from '../../services/
 import { StateManager, writeActivityEntry } from '../../services/state-manager.js';
 import { logActivity } from '../../services/activity-logger.js';
 import { readRecoverableJsonObject } from '../../services/microverse-state.js';
+import { isProcessAlive } from '../../lib/process-liveness.js';
 const sm = new StateManager();
 export const DEFAULT_MANAGER_IDLE_BACKOFF_FALLBACK_MS = 60_000;
 export const MANAGER_IDLE_BACKOFF_THRESHOLD = 3;
@@ -176,20 +177,6 @@ function getLatestWorkerPid(state) {
         return null;
     }
 }
-function isPidAlive(pid) {
-    if (!Number.isInteger(pid) || pid === null || pid === undefined || pid <= 0)
-        return true;
-    try {
-        process.kill(pid, 0);
-        return true;
-    }
-    catch (err) {
-        const code = err instanceof Error ? err.code : undefined;
-        if (code === 'EPERM')
-            return true;
-        return false;
-    }
-}
 const MANAGER_IDLE_BACKOFF_FALLBACK_MIN_MS = 1_000;
 const MANAGER_IDLE_BACKOFF_FALLBACK_MAX_MS = 600_000;
 /** Single source of truth for the accepted `manager_idle_backoff_fallback_ms` range. */
@@ -257,7 +244,7 @@ function idleBackoffReleaseReason(state, stateFile, snapshot, nowMs, fallbackMs)
         return 'state_mtime';
     if (snapshot.artifact_mtime_ms !== undefined && artifactMtimeMs > snapshot.artifact_mtime_ms)
         return 'artifact_landed';
-    if (!isPidAlive(workerPid))
+    if (!isProcessAlive(workerPid))
         return 'worker_exit';
     if (snapshot.engaged_at_ms !== undefined && nowMs - snapshot.engaged_at_ms >= fallbackMs)
         return 'fallback_timer';

@@ -76,6 +76,7 @@ import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-findi
 import type { CitadelFinding, CitadelJsonReport, CitadelSeverity } from '../services/citadel/reporter.js';
 import { citadelFindingsToGateResult } from '../services/citadel/citadel-findings-to-gate-result.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
+import { isProcessAlive } from '../lib/process-liveness.js';
 // B-PXBO WS-1: consume the SHARED oracle-recheck helper exported from mux-runner.ts
 // (an already-permitted completion-evidence oracle caller). pipeline-runner MUST NOT
 // import the oracle module directly — that becomes a 3rd caller and fails
@@ -1178,15 +1179,6 @@ function reapChildSubtree(child: Pick<ChildProcess, 'pid' | 'kill'>, leadsGroup:
     child.kill(signal);
   } catch {
     // best-effort termination
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
   }
 }
 

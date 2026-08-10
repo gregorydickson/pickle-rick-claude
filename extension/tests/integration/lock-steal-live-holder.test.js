@@ -32,7 +32,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
-import { acquireLockFile, inspectLockFile, isDeadPidPayload, stealLockFile, withLock } from '../../services/state-manager.js';
+import { acquireLockFile, inspectLockFile, isDeadPidPayload, isProcessAlive, stealLockFile, withLock } from '../../services/state-manager.js';
 import { applyCourseCorrectionRestructure } from '../../services/transaction-ticket-ops.js';
 import { spawnGateRemediatorMain } from '../../bin/spawn-gate-remediator.js';
 import { LockError } from '../../types/index.js';
@@ -652,4 +652,54 @@ test('a lock published without its payload is never reclaimed — the strand the
   } finally {
     removeGateLock(lp);
   }
+});
+
+/**
+ * AP-EXT-ITER33-01 — a pid we may not SIGNAL is not a pid we may PROVE dead.
+ *
+ * `process.kill(pid, 0)` fails two ways and they are opposite facts: ESRCH means the process is
+ * gone, EPERM means it is RIGHT THERE under another euid. The probe collapsed both into `false`,
+ * so `isDeadPidPayload` reported a LIVE holder dead and the steal evicted its lock — two writers
+ * in the critical section, which is the exact catastrophe this file exists to prevent.
+ *
+ * The assertion is the STEAL VERDICT plus the lockfile on disk, not the probe's return value: a
+ * boolean oracle greens the moment someone re-widens the errno and re-narrows the caller.
+ */
+test('a lock whose holder answers EPERM is never stolen — unsignalable is not dead', () => {
+  const dir = tmpDir();
+  const lp = path.join(dir, 'state.json.lock');
+  try {
+    const holderPid = 424242;
+    const throwErrno = (code) => () => {
+      const err = new Error(`kill ${code}`);
+      err.code = code;
+      throw err;
+    };
+
+    assert.ok(acquireLockFile(lp, String(holderPid)), 'fixture: the holder must publish its lock');
+
+    // Production shape at every steal site: judge the payload, then steal only on a dead verdict.
+    const epermSnapshot = inspectLockFile(lp);
+    assert.equal(isDeadPidPayload(epermSnapshot.payload, throwErrno('EPERM')), false,
+      'EPERM says the holder EXISTS and is not ours to signal — that is not proof of death');
+    if (isDeadPidPayload(epermSnapshot.payload, throwErrno('EPERM'))) stealLockFile(lp, epermSnapshot);
+    assert.equal(fs.existsSync(lp), true, 'the live holder’s lock must survive the reclaim sweep');
+
+    // Not vacuous: the same code path DOES evict a holder that is provably gone.
+    const esrchSnapshot = inspectLockFile(lp);
+    assert.equal(isDeadPidPayload(esrchSnapshot.payload, throwErrno('ESRCH')), true,
+      'ESRCH is positive proof of death — the steal must still fire on it');
+    assert.equal(stealLockFile(lp, esrchSnapshot), true, 'a dead holder’s lock is reclaimable');
+    assert.equal(fs.existsSync(lp), false, 'the dead holder’s lock must be gone');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('pid 1 is alive: the real kernel answer, whichever way this test runs as', () => {
+  // Non-root: kill(1, 0) throws EPERM. Root: it succeeds. Both mean ALIVE, so this arm cannot
+  // pass as root over a broken probe the way a uid-dependent fixture would.
+  assert.equal(isProcessAlive(1), true, 'init/launchd is running — an unsignalable pid is not a dead one');
+  assert.equal(isProcessAlive(0), true, 'pid 0 addresses our own process group — never proof of death');
+  assert.equal(isProcessAlive(-1), true, 'a negative pid addresses a group — never proof of death');
 });
