@@ -1000,6 +1000,21 @@ async function handleBaselineMode(opts, projectType, allowedPathsUsed, realFailu
         throw err;
     }
 }
+// AP-EXT-ITER15-01: arm `subtractBaseline`'s R-ORSR-6 `selfGuard` at its ONE production call site.
+// The per-iteration gate already carries the phase's own diff base as `opts.since` (the caller
+// passes `preIterSha`), which is exactly the axis the no-disown classifier needs. Absent `since`,
+// or a diff with neither changed files nor changed exported symbols, yields `undefined` — byte-for-
+// byte the pre-guard subtraction, so the guard can only ever KEEP a failure the iteration caused.
+function buildNoDisownContext(opts) {
+    const since = opts.since?.trim();
+    if (!since)
+        return undefined;
+    const changedFiles = new Set(getChangedSince(opts.workingDir, since).map(f => normalizeScopePath(f)));
+    const changedExportedSymbols = getChangedExportedSymbols(opts.workingDir, since);
+    if (changedFiles.size === 0 && changedExportedSymbols.size === 0)
+        return undefined;
+    return { changedFiles, changedExportedSymbols, workingDir: opts.workingDir };
+}
 async function resolveBaselineResult(baselinePath, opts, projectType, withIndices, allowedPathsUsed, start, emit, uncertifiable) {
     const preWriteStatus = await inspectBaselinePath(baselinePath);
     emit('gate_baseline_disk_check', { phase: 'pre_write', ...preWriteStatus });
@@ -1020,7 +1035,7 @@ async function resolveBaselineResult(baselinePath, opts, projectType, withIndice
             new_failures_vs_baseline: 0,
         };
     }
-    const newFailures = subtractBaseline(withIndices, loadBaselineFile(baselinePath));
+    const newFailures = subtractBaseline(withIndices, loadBaselineFile(baselinePath), buildNoDisownContext(opts));
     return {
         status: newFailures.length === 0 ? 'green' : 'red',
         failures: newFailures,
