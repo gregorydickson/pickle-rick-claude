@@ -245,6 +245,66 @@ AP-EXT-ITER6-01 already established that `.codegraph` is "the runtime's OWN rege
 untracked dirt in any freshly-cloned target repo" and made **every staging path** exclude it. The
 install rsync is the one seam that never got the same treatment.
 
+### R0 — CONFIRMED END TO END (2026-08-10, post-fix, quiet box)
+
+Measured at HEAD `c1bc530a`, load 4.90, Time Machine stopped, no runners:
+
+```
+install.sh --prefix <tmp>          5 s     rc=0        (baseline 147-329 s)   ~30-65x
+test:integration:serial            591 tests, 591 pass, 0 fail, SER_EXIT=0
+`exit null` occurrences            0                    (baseline 8)
+install-script-prefix              17.9 s               (baseline 1,190 s, killed at cap)
+deploy tree                        mux-runner.js present; state dirs 0
+hang-guard caps raised             ZERO
+```
+
+The full chain is proven: 601 MB of detritus in the rsync → ~150-330 s installs → tests killed at
+their hang-guards → 8 failures that read as defects but were **unmeasured**. Remove the detritus and
+all 8 pass inside their unchanged `timeout: 120_000`. **R3's cap-raise was never needed** and is
+correctly withdrawn.
+
+Live-data effect of the two fixes, independently sufficient:
+
+```
+in-tree sessions   130,596 -> 443       rsync payload   606 MB -> 5.0 MB
+in-tree size        510 MB -> 1.7 MB    rsync elapsed    231 s -> 1 s
+```
+
+### ⚠️ Measurement correction — `PICKLE_INSTALL_ROOT` is NOT a deploy prefix
+
+`install.sh:33` unconditionally clobbers the environment variable with the `--prefix` flag:
+
+```bash
+PICKLE_INSTALL_ROOT="${PREFIX:-$HOME/.claude/pickle-rick}"
+```
+
+So `PICKLE_INSTALL_ROOT=<tmp> bash install.sh` **silently deploys to `$HOME/.claude/pickle-rick`** —
+the operator's real tree — and exits 0. Only `--prefix <dir>` works.
+
+Consequences, recorded because they affected this document's own evidence:
+
+- An earlier `STATE_DIRS=0` assertion in this investigation was **vacuous**: it inspected an empty temp
+  dir that nothing had been written to. The re-run with `--prefix` is the real proof and it passes
+  (`mux-runner.js` present, 0 state dirs).
+- The A/B timings remain valid — same target on both sides, real work both times — but they were
+  measured against `$HOME`, not a sandbox.
+- This is what corrupted the deployed tree mid-session (empty `node_modules`, `typescript` missing,
+  citadel analyzers failing to load): killed installs were hitting the **live** install, not a sandbox.
+
+**Two follow-on defects, neither in B-RSYNCEX's scope:**
+
+1. **`extension/CLAUDE.md` documents `PICKLE_INSTALL_ROOT` as "Deploy-prefix override for `install.sh`
+   + deploy-lifecycle soak."** The first half is false — `install.sh` honors only `--prefix`. The env
+   var is a *gate* the soak reads to decide whether to run. The integration tests get this right
+   (5 uses of `--prefix`); the doc does not. This is exactly the doc-anchor-vs-code drift class the
+   ArchUnit spike targets.
+2. **`install.sh` is not atomic.** The rsync uses `--delete --delete-excluded` with
+   `--exclude='node_modules'`, deleting the deployed `node_modules`, and lines 465-468 recreate the
+   runtime symlinks afterwards. An interrupt in that window leaves a tree that *looks* installed (35
+   entries) but cannot load a single runtime dep — and the post-rsync MD5 parity probe passes happily
+   over an empty `node_modules`, because it only checks 8 compiled files. A plausible cause of
+   "mysteriously broken deploy" reports.
+
 ### R0b — Why session scaffolds are being written into the source tree at all (P1)
 
 The 130,596 entries under `extension/.pickle-rick/sessions/` are **not session data**. Sampled 3,000:
