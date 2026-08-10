@@ -390,6 +390,8 @@ rsync -a --delete --delete-excluded \
   --exclude='tests' \
   --exclude='tsconfig.json' \
   --exclude='package-lock.json' \
+  --exclude='.pickle-rick' \
+  --exclude='.codegraph' \
   "$SCRIPT_DIR/extension/" "$EXTENSION_ROOT/extension/"
 
 # Deploy real schema bytes to deployed extension root, overwriting the $ref stub (R-LASP-1-CC).
