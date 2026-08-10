@@ -16,10 +16,12 @@
  * TRAP DOOR (positive ownership): a proc is reaped ONLY when it is positively
  * attributed to an owning session (argv `--add-dir <path>` under the sessions
  * root — present on BOTH claude and codex worker invocations) AND that session
- * is provably not live (state.json missing, `active !== true`, or a finite pid
- * that is dead). An unattributable proc is NEVER killed; a live session's proc
- * is NEVER killed regardless of ppid. There is deliberately NO ppid==1-only
- * reap branch — false-reaping an active worker is worse than a leaked orphan.
+ * is provably not live (state.json ABSENT, `active !== true`, or a finite pid
+ * that is dead). A state.json that is present but UNREADABLE or unparseable is
+ * NOT proof of death — it accounts for nothing, so the proc is spared. An
+ * unattributable proc is NEVER killed; a live session's proc is NEVER killed
+ * regardless of ppid. There is deliberately NO ppid==1-only reap branch —
+ * false-reaping an active worker is worse than a leaked orphan.
  *
  * `killProcessGroup` is the SHARED negative-PID group-kill primitive
  * (AC-CXHANG-3): `bin/spawn-morty.ts:killProcessTree` and
@@ -30,6 +32,7 @@
  * win32: no process groups → safe no-op. No state-schema change.
  */
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isProcessAlive, writeActivityEntry } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
@@ -155,23 +158,50 @@ export function parseWorkerProcsFromPs(psOutput, sessionsRoot) {
     return results;
 }
 /**
- * A session is LIVE unless proven otherwise: missing/unreadable state.json or
- * `active !== true` → not live; `active: true` with a finite dead pid → not
- * live (dead-pid demotion, mirrors `isDeadPidState`); `active: true` with no
- * pid or a live pid → LIVE (conservative bias — spare).
+ * Classify the owning session's `state.json` into three states, NOT two.
+ * `readRecoverableJsonObject` collapses "no such file" and "the read threw"
+ * (EMFILE/ENFILE/EIO/EACCES/EISDIR) into the same `null`, and only the first
+ * of those is evidence the session is gone — the second accounts for nothing.
+ * A NUL/parse-failed base is unaccountable too: the bytes are there and we
+ * cannot judge them.
  */
 function readOwningSessionState(sessionDir) {
+    const statePath = path.join(sessionDir, 'state.json');
+    let state;
     try {
-        return readRecoverableJsonObject(path.join(sessionDir, 'state.json'));
+        state = readRecoverableJsonObject(statePath);
     }
     catch {
-        return null;
+        return { kind: 'unaccountable' };
+    }
+    if (state)
+        return { kind: 'state', state };
+    try {
+        fs.lstatSync(statePath);
+        return { kind: 'unaccountable' };
+    }
+    catch (err) {
+        const code = err?.code;
+        // Only a positive "it is not there" proves absence; every other errno
+        // (including a probe we could not perform) falls to the sparing side.
+        return code === 'ENOENT' || code === 'ENOTDIR' ? { kind: 'missing' } : { kind: 'unaccountable' };
     }
 }
+/**
+ * A session is LIVE unless proven otherwise: an ABSENT state.json or
+ * `active !== true` → not live; `active: true` with a finite dead pid → not
+ * live (dead-pid demotion, mirrors `isDeadPidState`); `active: true` with no
+ * pid or a live pid → LIVE. A state.json we could not read or parse is NOT
+ * proof of death — it is treated as LIVE (conservative bias — spare), because
+ * the alternative is group-SIGKILLing a live sibling pipeline's worker.
+ */
 function isOwningSessionLive(sessionDir, isAlive) {
-    const state = readOwningSessionState(sessionDir);
-    if (!state)
+    const read = readOwningSessionState(sessionDir);
+    if (read.kind === 'missing')
         return false;
+    if (read.kind === 'unaccountable')
+        return true;
+    const state = read.state;
     if (state.active !== true)
         return false;
     const pid = state.pid;

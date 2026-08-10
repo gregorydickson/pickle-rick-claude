@@ -188,6 +188,51 @@ test('AC-CXHANG-1: missing state.json (crashed/pruned session) classifies as orp
   assert.deepEqual(kills, [[2001, 'SIGTERM']]);
 });
 
+// AP-EXT-ITER30-01: an UNREADABLE state.json is not an absent one.
+// `readRecoverableJsonObject` returns null for BOTH "no such file" and "the
+// read threw" (EMFILE/ENFILE/EIO/EACCES/EISDIR — the c=8 fd-exhaustion class),
+// and the pre-fix predicate read that null as "session is dead" and group-
+// SIGKILLed a LIVE sibling pipeline's worker. Assert the KILLS, not the return
+// shape: the pre-fix call also returned {scanned:1} — with the proc dead.
+test('AP-EXT-ITER30-01: an UNREADABLE state.json spares the proc (not proof of death)', () => {
+  const sessionsRoot = makeTmp();
+  const sess = makeSession(sessionsRoot, 'sess-unreadable'); // no state.json file...
+  // ...a DIRECTORY at its path instead: readFileSync throws EISDIR for every
+  // uid, so the fixture does not silently pass when tests run as root.
+  fs.mkdirSync(path.join(sess, 'state.json'));
+
+  const kills = [];
+  const result = reapOrphanedWorkerProcs({
+    sessionsRoot,
+    psOutput: codexLine(3201, 3201, '20:00:00', path.join(sess, 'ticket1')),
+    kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
+    isAlive: () => false,
+    sleep: () => {},
+  });
+
+  assert.equal(result.scanned, 1, 'the proc is still scanned and attributed');
+  assert.equal(result.reaped, 0);
+  assert.deepEqual(kills, [], 'a session whose state we cannot read is NEVER reaped');
+});
+
+test('AP-EXT-ITER30-01: an unparseable state.json spares the proc', () => {
+  const sessionsRoot = makeTmp();
+  const sess = makeSession(sessionsRoot, 'sess-corrupt');
+  fs.writeFileSync(path.join(sess, 'state.json'), '{"active": tr');
+
+  const kills = [];
+  const result = reapOrphanedWorkerProcs({
+    sessionsRoot,
+    psOutput: claudeLine(3202, 3202, '20:00:00', path.join(sess, 'ticket1')),
+    kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
+    isAlive: () => false,
+    sleep: () => {},
+  });
+
+  assert.equal(result.reaped, 0);
+  assert.deepEqual(kills, []);
+});
+
 test('AC-CXHANG-1: active:true session with provably-dead pid classifies as orphan (dead-pid demotion)', () => {
   const sessionsRoot = makeTmp();
   const zombieSess = makeSession(sessionsRoot, 'sess-zombie', { active: true, pid: 4194001 });
