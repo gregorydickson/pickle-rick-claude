@@ -236,3 +236,53 @@ test('readRecoverableJsonObject ignores files outside the recoverable tmp patter
     assert.deepEqual(JSON.parse(fs.readFileSync(nonMatching, 'utf8')), { source: 'ignored' });
   });
 });
+
+// AP-EXT-ITER29-01: delete authority is "readable AND unparseable", never an
+// errno allowlist. A symlink loop makes readFileSync throw ELOOP — a read
+// failure outside the retired {EACCES,EPERM,EISDIR} list — so the pre-fix body
+// classified a perfectly valid snapshot as garbage and unlinked it.
+test('readRecoverableJsonObject preserves an orphan tmp whose read fails with a non-allowlisted errno', () => {
+  withTempDir((dir) => {
+    const target = path.join(dir, 'cache.json');
+    const tmp = `${target}.tmp.${DEAD_PID}`;
+    writeJson(target, { source: 'base' });
+    // ELOOP: tmp -> loop-a -> loop-b -> loop-a
+    const loopA = path.join(dir, 'loop-a');
+    const loopB = path.join(dir, 'loop-b');
+    fs.symlinkSync(loopB, loopA);
+    fs.symlinkSync(loopA, loopB);
+    fs.symlinkSync(loopA, tmp);
+
+    let readErrno = null;
+    try {
+      fs.readFileSync(tmp, 'utf-8');
+    } catch (err) {
+      readErrno = err.code;
+    }
+    assert.equal(readErrno, 'ELOOP', 'fixture must produce a non-allowlisted read failure');
+
+    const recovered = readRecoverableJsonObject(target);
+
+    // The unreadable tmp is NOT deleted, and the readable base still wins.
+    // lstat, not existsSync — existsSync follows the loop and reports false.
+    assert.ok(fs.lstatSync(tmp, { throwIfNoEntry: false }), 'unreadable orphan tmp must survive');
+    assert.deepEqual(recovered, { source: 'base' });
+    assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), { source: 'base' });
+  });
+});
+
+// The other half of the collapse: a READ that succeeds and yields unparseable
+// bytes is still positively proven garbage and is still unlinked.
+test('readRecoverableJsonObject still unlinks a readable-but-unparseable orphan tmp', () => {
+  withTempDir((dir) => {
+    const target = path.join(dir, 'cache.json');
+    const tmp = `${target}.tmp.${DEAD_PID}`;
+    writeJson(target, { source: 'base' });
+    fs.writeFileSync(tmp, '{ not json');
+
+    const recovered = readRecoverableJsonObject(target);
+
+    assert.equal(fs.existsSync(tmp), false, 'proven-garbage tmp must be unlinked');
+    assert.deepEqual(recovered, { source: 'base' });
+  });
+});

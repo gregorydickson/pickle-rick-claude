@@ -46,18 +46,24 @@ function parseJsonObjectFile(filePath: string): object | null {
 }
 
 function readJsonObjectFile(filePath: string): { kind: 'parsed'; parsed: object } | { kind: 'invalid' | 'unreadable' } {
+  // Delete authority is "positively proven garbage" = READ succeeded AND the
+  // content is unparseable. A read that THREW proves nothing about the content,
+  // whatever the errno — so the read and the parse are judged separately here
+  // rather than through an errno allowlist. Mirrors `state-manager.ts`
+  // `classifyOrphanTmp`, which has always had this shape.
+  let raw: string;
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as unknown;
+    raw = fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return { kind: 'unreadable' };
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
       ? { kind: 'parsed', parsed }
       : { kind: 'invalid' };
-  } catch (err) {
-    if (err instanceof Error && 'code' in err) {
-      const code = String(err.code);
-      if (code === 'EACCES' || code === 'EPERM' || code === 'EISDIR') {
-        return { kind: 'unreadable' };
-      }
-    }
+  } catch {
     return { kind: 'invalid' };
   }
 }
