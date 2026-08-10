@@ -86,11 +86,29 @@ export function autoFillCompletionCommit(input) {
             results.push({ ticketId: id, sha: null, action: 'unreadable' });
             continue;
         }
-        fs.writeFileSync(filePath, updated);
-        execFileSync('git', ['-C', input.workingDir, 'add', '--', filePath], {
-            timeout: 5000,
-            stdio: ['ignore', 'ignore', 'pipe'],
-        });
+        try {
+            fs.writeFileSync(filePath, updated);
+        }
+        catch {
+            results.push({ ticketId: id, sha: null, action: 'unreadable' });
+            continue;
+        }
+        // R-AFCC-STAGE: staging is BEST-EFFORT, exactly as in the sibling
+        // `persistEvidence`. The ticket file lives under the session root
+        // (`getDataRoot()/sessions/...`), which is normally OUTSIDE `workingDir`, so
+        // `git add` exits 128 ("is outside repository") on the ordinary production
+        // layout — and a concurrent runner holding `.git/index.lock` fails it too.
+        // Throwing here would abort the whole batch after the frontmatter write had
+        // already landed, discarding every remaining ticket's result.
+        try {
+            execFileSync('git', ['-C', input.workingDir, 'add', '--', filePath], {
+                timeout: 5000,
+                stdio: ['ignore', 'ignore', 'pipe'],
+            });
+        }
+        catch {
+            // best-effort: the field is written; staging it is not load-bearing.
+        }
         if (input.statePath) {
             writeActivityEntry(input.statePath, {
                 event: 'completion_commit_auto_filled',

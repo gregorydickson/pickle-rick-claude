@@ -95,6 +95,61 @@ test('autoFillCompletionCommit: fills missing completion_commit, stages the tick
   }
 });
 
+test('AP-EXT-ITER11-01: a session dir OUTSIDE the repo still fills every ticket in the batch', () => {
+  // Production layout: the session root lives under getDataRoot()/sessions/,
+  // NOT inside workingDir, so `git add -- <ticketPath>` exits 128 ("is outside
+  // repository"). Staging is best-effort (R-AFCC-STAGE); it must not abort the
+  // batch after the frontmatter write has already landed.
+  const root = makeTmpRoot();
+  try {
+    const repo = path.join(root, 'repo');
+    const sessionDir = path.join(root, 'sessions', '2026-08-09-outside');
+    fs.mkdirSync(repo, { recursive: true });
+    initGitRepo(repo);
+
+    const ticketIds = ['a1b2c3d4', 'e5f6a7b8'];
+    const ticketPaths = ticketIds.map((id) => writeTicket(sessionDir, id));
+    const statePath = path.join(sessionDir, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({
+      start_time_epoch: Math.floor(Date.now() / 1000) - 60,
+      activity: [],
+    }, null, 2));
+
+    const shas = ticketIds.map((id, i) => {
+      fs.writeFileSync(path.join(repo, `worker-${i}.txt`), 'worker changes\n');
+      execFileSync('git', ['add', `worker-${i}.txt`], { cwd: repo });
+      execFileSync(
+        'git',
+        ['commit', '-m', `close gap ${i}`, '--trailer', `Pickle-Ticket: ${id}`, '--no-gpg-sign'],
+        { cwd: repo, stdio: 'ignore' },
+      );
+      return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+    });
+
+    // Pre-fix this THREW out of the loop on the first ticket.
+    const result = autoFillCompletionCommit({ sessionDir, workingDir: repo, statePath });
+
+    assert.deepEqual(
+      [...result].sort((a, b) => a.ticketId.localeCompare(b.ticketId)),
+      ticketIds
+        .map((id, i) => ({ ticketId: id, sha: shas[i], action: 'filled' }))
+        .sort((a, b) => a.ticketId.localeCompare(b.ticketId)),
+    );
+    // The un-stageable write still landed on disk, for EVERY ticket.
+    ticketPaths.forEach((p, i) => {
+      assert.match(fs.readFileSync(p, 'utf8'), new RegExp(`completion_commit:\\s+"${shas[i]}"`));
+    });
+    // Nothing from the session dir was staged — staging genuinely failed.
+    const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: repo, encoding: 'utf8' });
+    assert.doesNotMatch(staged, /rick_ticket_/);
+
+    const events = readActivityEvents(statePath).filter((e) => e.event === 'completion_commit_auto_filled');
+    assert.equal(events.length, ticketIds.length);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('autoFillCompletionCommit: promotes recoverable state tmp before inferring completion evidence', () => {
   const root = makeTmpRoot();
   try {
