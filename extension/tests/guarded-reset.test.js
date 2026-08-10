@@ -246,6 +246,47 @@ test('byte cap exceeded: filesTruncated flag set on result and event, files list
   }
 });
 
+// --- AP-EXT-ITER32-01: a truncated archive REFUSES the destructive reset ---
+
+test('AP-EXT-ITER32-01: byte-cap truncation refuses the reset and the unarchivable work survives', () => {
+  const f = makeFixture();
+  try {
+    // resetToSha archives at the compiled ARCHIVE_UNTRACKED_BYTE_CAP (10 MiB), so the
+    // fixture has to actually cross it — a smaller cap is not reachable through this seam.
+    const rel = 'huge-untracked.txt';
+    const line = 'A'.repeat(79) + '\n';
+    const oversize = line.repeat(Math.ceil((10 * 1024 * 1024 + 4096) / line.length));
+    fs.writeFileSync(path.join(f.repo, rel), oversize);
+    fs.appendFileSync(path.join(f.repo, 'tracked.txt'), 'UNSTAGED-MARKER\n');
+
+    assert.throws(
+      () => resetToSha(f.baseline, f.repo, undefined, ctxFor(f)),
+      (err) => err instanceof ArchiveAbortError && /TRUNCATED/.test(err.message),
+    );
+
+    // The destructive half must not have run: `git clean -fd` would have deleted the
+    // untracked file the patch could not hold, and `reset --hard` the tracked edit.
+    assert.equal(fs.existsSync(path.join(f.repo, rel)), true, 'unarchivable untracked file survives');
+    assert.equal(fs.statSync(path.join(f.repo, rel)).size, Buffer.byteLength(oversize));
+    assert.match(fs.readFileSync(path.join(f.repo, 'tracked.txt'), 'utf-8'), /UNSTAGED-MARKER/);
+    assert.notEqual(gitStatusPorcelain(f.repo), '', 'tree left dirty for triage');
+    assert.equal(headSha(f.repo), f.baseline);
+
+    const failed = readActivity(f.statePath).filter((e) => e.event === 'pre_reset_archive_failed');
+    assert.equal(failed.length, 1);
+    assert.match(failed[0].error, /TRUNCATED/);
+    assert.equal(failed[0].reason, 'pre_reset');
+    assert.equal(failed[0].ticket, 'tkt0780b805');
+    // the partial patch is still written and still reports itself truncated — the
+    // refusal is what stops it being treated as a complete backup.
+    const archived = readActivity(f.statePath).filter((e) => e.event === 'pre_reset_diff_archived');
+    assert.equal(archived.length, 1);
+    assert.equal(archived[0].files_truncated, true);
+  } finally {
+    cleanupFixture(f.root);
+  }
+});
+
 // --- sessionDir fallback for non-ticket callers ---
 
 test('no ticketDir: patch falls back to sessionDir and event ticket is null', () => {

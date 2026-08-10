@@ -32,7 +32,7 @@ import {
   findLastAcceptedEntry,
   updateViolationLedger,
 } from '../services/microverse-state.js';
-import { getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
+import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import {
   writeStateFile,
@@ -3523,12 +3523,20 @@ function guardedMicroverseRollback(ctx: RunContext): void {
     return;
   }
   ctx.log(`Regression detected — rolling back to ${ctx.preIterSha}`);
-  _deps.resetToSha(target, ctx.workingDir, undefined, {
-    cwd: ctx.workingDir,
-    sessionDir: ctx.sessionDir,
-    ticketDir: null,
-    reason: 'microverse_rollback',
-  });
+  try {
+    _deps.resetToSha(target, ctx.workingDir, undefined, {
+      cwd: ctx.workingDir,
+      sessionDir: ctx.sessionDir,
+      ticketDir: null,
+      reason: 'microverse_rollback',
+    });
+  } catch (err) {
+    // AP-EXT-ITER32-01: a fail-closed archive (write failure OR truncated patch) refuses
+    // the reset rather than destroying unarchivable work. That refusal governs THIS
+    // rollback only — park the un-rolled-back tree, flag it, and let the loop continue.
+    if (!(err instanceof ArchiveAbortError)) throw err;
+    ctx.log(`Rollback to ${target} ABORTED (pre-reset archive incomplete): ${safeErrorMessage(err)} — tree left in place for triage`);
+  }
 }
 
 /**

@@ -9,7 +9,7 @@ import { resolveBackend, resolveWorkerBackendFromState, buildJudgeInvocation, bu
 import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv } from '../services/judge-spawn-env.js'; // R-SJET-3
 import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetric, classifyFailure, findLastAcceptedEntry, updateViolationLedger, } from '../services/microverse-state.js';
-import { getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
+import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import { writeStateFile, getExtensionRoot, getDataRoot, isoCompactStamp, sleep, Style, formatTime, formatLocalDateKey, printMinimalPanel, safeErrorMessage, displayMacNotification, ensureMonitorWindow, collectTickets, getMicroverseSettings, resolveJudgeBackend, } from '../services/pickle-utils.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError } from '../services/state-manager.js';
@@ -2684,12 +2684,22 @@ function guardedMicroverseRollback(ctx) {
         return;
     }
     ctx.log(`Regression detected — rolling back to ${ctx.preIterSha}`);
-    _deps.resetToSha(target, ctx.workingDir, undefined, {
-        cwd: ctx.workingDir,
-        sessionDir: ctx.sessionDir,
-        ticketDir: null,
-        reason: 'microverse_rollback',
-    });
+    try {
+        _deps.resetToSha(target, ctx.workingDir, undefined, {
+            cwd: ctx.workingDir,
+            sessionDir: ctx.sessionDir,
+            ticketDir: null,
+            reason: 'microverse_rollback',
+        });
+    }
+    catch (err) {
+        // AP-EXT-ITER32-01: a fail-closed archive (write failure OR truncated patch) refuses
+        // the reset rather than destroying unarchivable work. That refusal governs THIS
+        // rollback only — park the un-rolled-back tree, flag it, and let the loop continue.
+        if (!(err instanceof ArchiveAbortError))
+            throw err;
+        ctx.log(`Rollback to ${target} ABORTED (pre-reset archive incomplete): ${safeErrorMessage(err)} — tree left in place for triage`);
+    }
 }
 /**
  * R-MVFM: route a `held`/no_progress plateau into the failed_approaches denylist so the next

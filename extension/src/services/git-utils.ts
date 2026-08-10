@@ -208,7 +208,7 @@ function assertWorkingDirUnderTmpdirIfTestMode(cwd: string): void {
 
 export function resetToSha(sha: string, cwd: string, preservePrefixes?: string[], archive?: ArchiveContext): void {
   assertWorkingDirUnderTmpdirIfTestMode(cwd);
-  if (archive) archiveBeforeDestructive(archive);
+  if (archive) assertArchiveProtectsTree(archiveBeforeDestructive(archive), archive);
   runGit(['reset', '--hard', sha], cwd);
   runGit(buildCleanArgs(preservePrefixes), cwd);
 }
@@ -458,6 +458,34 @@ export function archiveBeforeDestructive(
   });
 
   return { patchPath, files, filesTruncated };
+}
+
+/**
+ * AP-EXT-ITER32-01: the ONE question `resetToSha` asks of the archive — "did it fully
+ * protect this tree?" A write failure already arrives as a thrown `ArchiveAbortError`;
+ * a truncated patch is the same answer reported as data, and it must reach the caller
+ * through the same wire. `collectUntrackedDiffs` stops at the first untracked file that
+ * crosses the byte cap and omits it AND every later one, so `git reset --hard` +
+ * `git clean -fd` would delete work no patch can restore. Same invariant the sibling
+ * caller states at `pipeline-runner.ts` ("never clean/reset a tree whose archive
+ * truncated") and enforces with a FATAL.
+ */
+function assertArchiveProtectsTree(result: ArchiveResult | null, ctx: ArchiveContext): void {
+  if (result?.filesTruncated !== true) return;
+  emitArchiveEvent(ctx.sessionDir, {
+    event: 'pre_reset_archive_failed',
+    ts: new Date().toISOString(),
+    ticket: ctx.ticketDir ? path.basename(ctx.ticketDir) : null,
+    patch_path: result.patchPath,
+    reason: ctx.reason,
+    error:
+      `archive TRUNCATED at the untracked byte cap over ${result.files.length} dirty path(s) — ` +
+      'the patch cannot restore the tree',
+  });
+  throw new ArchiveAbortError(
+    `pre-destructive archive TRUNCATED (${ctx.reason}): ${result.patchPath} is incomplete ` +
+    `over ${result.files.length} dirty path(s) — refusing the destructive reset`,
+  );
 }
 
 export type DiffStatus = 'A' | 'M' | 'D' | 'R' | 'B';
