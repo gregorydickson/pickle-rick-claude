@@ -208,6 +208,39 @@ test('the blank-id guard is narrow — a real ticket id still stamps', () => {
   assert.equal(parsedTrailer(workingDir, 'Pickle-Ticket'), TICKET_ID);
 });
 
+// The degraded arm. When `interpret-trailers` cannot run, the stamp falls back to appending the
+// trailer as its own paragraph rather than dropping attribution — the same posture as the hook's
+// `printf` fallback and spawn-morty's two-`-m` amend. Without a test the fallback could be reduced
+// to `rendered ?? message` and nothing would go red: every other case here reaches a real repo, so
+// the writer always succeeds and the arm is never taken.
+//
+// A non-existent `workingDir` makes `spawnSync` set `r.error`, so `silentDeathGit` returns null for
+// BOTH the `--parse` probe and the writer. Reading the appended line back through
+// `%(trailers:…)` — after landing it in a real repo — is the load-bearing assertion: a fallback
+// that emitted the text in a shape git does not parse as a trailer would satisfy a string check
+// and still leave the commit unattributable, which is the whole failure this function exists to
+// prevent.
+test('degraded arm: when interpret-trailers cannot run, the appended trailer is still PARSED', () => {
+  const missingDir = path.join(makeTmp('ratrail-missing-'), 'no-such-subdir');
+  assert.equal(fs.existsSync(missingDir), false, 'precondition: git cannot run here');
+  const body = 'fix: work authored while git trailer support is unavailable\n';
+
+  const stamped = stampPickleTicketTrailer(missingDir, body, TICKET_ID);
+
+  assert.notEqual(stamped, body, 'the degraded arm must still stamp, not drop attribution');
+
+  const workingDir = makeTmp('ratrail-repo-');
+  initGitRepo(workingDir);
+  commitMessage(workingDir, stamped);
+
+  assert.equal(parsedTrailer(workingDir, 'Pickle-Ticket'), TICKET_ID);
+  assert.match(
+    git(workingDir, ['log', '-1', '--format=%s']).trim(),
+    /work authored while git trailer support is unavailable/,
+    'the subject survives the append',
+  );
+});
+
 test('site 2: executeConvergedPlanAdapter phase commits stamp the trailer', () => {
   const workingDir = makeTmp('ratrail-repo-');
   const startCommit = initGitRepo(workingDir);
