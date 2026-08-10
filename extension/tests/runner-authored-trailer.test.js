@@ -358,3 +358,66 @@ test('negative control: a two-value trailer is unreadable to the consumer', asyn
 
   assert.equal(evidence.kind, 'absent', 'carrying the trailer twice reads as carrying it zero times');
 });
+
+// --- The catalog anchor is executable, and it agrees with the source --------------------------
+//
+// Every test above asserts BEHAVIOR, so none of them re-runs the count the B-RATRAIL trap door
+// states — which is exactly the shape `extension/CLAUDE.md`'s "catalog-anchor executability" entry
+// names as a falsification mode. The anchor shipped reading `== 2` while the bare grep returned 3
+// (the `export function` definition plus the two call sites), so a replay would read the intact
+// producer as an unaccounted third call site and burn a fix budget re-deriving working code.
+//
+// This pins BOTH directions off one measurement: a genuine third call site moves the source count
+// away from the anchor, and an anchor edited back to a definition-exclusive number moves the anchor
+// away from the source. Doc and code cannot silently disagree.
+
+const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
+const MUX_RUNNER_TS = path.join(REPO_ROOT, 'extension', 'src', 'bin', 'mux-runner.ts');
+const BIN_CATALOG_MD = path.join(REPO_ROOT, 'extension', 'src', 'bin', 'CLAUDE.md');
+
+function occurrences(haystack, needle) {
+  return haystack.split(needle).length - 1;
+}
+
+test('anchor: the B-RATRAIL call-site count is what a bare grep of mux-runner.ts returns', () => {
+  const source = fs.readFileSync(MUX_RUNNER_TS, 'utf8');
+
+  const total = occurrences(source, 'stampPickleTicketTrailer(');
+  const definitions = occurrences(source, 'export function stampPickleTicketTrailer(');
+
+  assert.equal(definitions, 1, 'exactly one definition');
+  assert.equal(total - definitions, 2, 'exactly two call sites');
+
+  const catalog = fs.readFileSync(BIN_CATALOG_MD, 'utf8');
+  const anchor = /grep -c "stampPickleTicketTrailer\(" extension\/src\/bin\/mux-runner\.ts` == \*\*(\d+)\*\*/.exec(catalog);
+  assert.ok(anchor, 'the B-RATRAIL PATTERN_SHAPE states its count as a runnable grep');
+  assert.equal(
+    Number(anchor[1]),
+    total,
+    'the catalog anchor must state the number the grep it names actually returns',
+  );
+});
+
+test('anchor: the two call sites are the ones the trap door names', () => {
+  const source = fs.readFileSync(MUX_RUNNER_TS, 'utf8');
+
+  // Slice each named function from its declaration to the start of the next top-level
+  // declaration, then look for the call inside that window.
+  const windowFrom = (declaration) => {
+    const start = source.indexOf(declaration);
+    assert.notEqual(start, -1, `${declaration} must exist`);
+    const next = source.indexOf('\nexport function ', start + declaration.length);
+    return source.slice(start, next === -1 ? source.length : next);
+  };
+
+  assert.equal(
+    occurrences(windowFrom('export function commitAndContinueDoneFlip('), 'stampPickleTicketTrailer('),
+    1,
+    'call site 1 lives in commitAndContinueDoneFlip',
+  );
+  assert.equal(
+    occurrences(windowFrom('export function executeConvergedPlanAdapter('), 'stampPickleTicketTrailer('),
+    1,
+    "call site 2 lives in executeConvergedPlanAdapter's commitPhase",
+  );
+});

@@ -5223,8 +5223,9 @@ export function executeConvergedPlanAdapter(input) {
             const add = spawnSync('git', ['add', '-A', ...CODEGRAPH_PATHSPEC_EXCLUDES], {
                 cwd: input.workingDir, encoding: 'utf-8', timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
             });
-            if (add.status !== 0)
+            if (add.status !== 0) {
                 return { ok: false };
+            }
             const title = phase.title ? ` — ${phase.title}` : '';
             const phaseMsg = stampPickleTicketTrailer(input.workingDir, `fix(${input.ticketId}): execute-converged-plan phase ${phase.index}${title}`, input.ticketId);
             const commit = spawnSync('git', ['commit', '-m', phaseMsg], {
