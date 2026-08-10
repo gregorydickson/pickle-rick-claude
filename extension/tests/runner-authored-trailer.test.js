@@ -208,10 +208,9 @@ test('the blank-id guard is narrow — a real ticket id still stamps', () => {
   assert.equal(parsedTrailer(workingDir, 'Pickle-Ticket'), TICKET_ID);
 });
 
-// The degraded arm. When `interpret-trailers` cannot run, the stamp falls back to appending the
-// trailer as its own paragraph rather than dropping attribution — the same posture as the hook's
-// `printf` fallback and spawn-morty's two-`-m` amend. Without a test the fallback could be reduced
-// to `rendered ?? message` and nothing would go red: every other case here reaches a real repo, so
+// The degraded arm: when `interpret-trailers` cannot run, the stamp appends the trailer as its own
+// paragraph rather than dropping attribution. Without a test the fallback could be reduced to
+// `rendered ?? message` and nothing would go red — every other case here reaches a real repo, so
 // the writer always succeeds and the arm is never taken.
 //
 // A non-existent `workingDir` makes `spawnSync` set `r.error`, so `silentDeathGit` returns null for
