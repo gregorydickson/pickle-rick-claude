@@ -3125,9 +3125,28 @@ export function auditPostIterationScope(ctx, state) {
 }
 // AP-EXT-ITER4-01: `consecutive_clean` is a STREAK, not an ever-clean flag — it drops back to 0
 // the moment a later pass finds anything, so it cannot answer "has this subsystem EVER passed
-// clean?". `findings_history` is the existing per-pass ledger (one entry appended per pass), so an
-// entry carrying an empty `findings` array is durable evidence of a clean pass. An entry whose
-// `findings` is absent or non-array is NOT evidence — unknown shape leaves the ceiling armed.
+// clean?". `findings_history` is the existing per-pass ledger (one entry appended per pass), so a
+// clean-pass entry there is durable evidence.
+//
+// AP-EXT-ITER13-01: the ledger's PRODUCER is the anatomy-park worker prompt, which mandates only
+// "append current findings summary" — it fixes no entry schema. Shipped runs record the pass as a
+// COUNT plus a verdict (`{ iteration, subsystem, findings: 0, verdict: 'clean' }`), never an empty
+// array, so an array-only reading is inert against every real ledger. Accept all three affirmative
+// shapes; absence, `null`, and a non-clean verdict stay non-evidence so an unknown shape still
+// leaves the ceiling armed.
+function isCleanPassEntry(entry) {
+    if (!entry || typeof entry !== 'object') {
+        return false;
+    }
+    const { findings, verdict } = entry;
+    if (Array.isArray(findings)) {
+        return findings.length === 0;
+    }
+    if (typeof findings === 'number') {
+        return findings === 0;
+    }
+    return typeof verdict === 'string' && verdict.trim().toLowerCase() === 'clean';
+}
 function hasRecordedCleanPass(anatomyConfig, subsystem) {
     const history = anatomyConfig.findings_history;
     if (!history || typeof history !== 'object' || Array.isArray(history)) {
@@ -3137,13 +3156,7 @@ function hasRecordedCleanPass(anatomyConfig, subsystem) {
     if (!Array.isArray(entries)) {
         return false;
     }
-    return entries.some((entry) => {
-        if (!entry || typeof entry !== 'object') {
-            return false;
-        }
-        const findings = entry.findings;
-        return Array.isArray(findings) && findings.length === 0;
-    });
+    return entries.some(isCleanPassEntry);
 }
 // B-APNC WS-1 pure classifier: a subsystem that reached pass_counts[sub] >= maxPasses having NEVER
 // passed clean is non-convergent. Reads the EXISTING anatomy-park.json counters (no new state

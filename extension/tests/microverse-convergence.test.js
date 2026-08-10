@@ -1264,6 +1264,81 @@ test('AP-EXT-ITER4-01: an unrecognized findings_history shape leaves the ceiling
     }
 });
 
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER13-01: the ever-clean term must recognize the shape the PRODUCER
+// actually writes. `findings_history` entries come from the anatomy-park worker
+// prompt, which mandates only "append current findings summary" — no schema. A
+// shipped session records a clean pass as a COUNT plus a verdict, never as an
+// empty array, so the array-only reading was inert against every real ledger
+// and the ceiling halted a subsystem that HAD passed clean.
+//
+// The fixtures below are verbatim entry shapes from a live
+// `anatomy-park.json` (session 2026-08-09-20c4107d, subsystem `bin`).
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER13-01: a count-shaped clean pass is evidence of a clean pass', () => {
+    const config = {
+        subsystems: ['bin'],
+        current_index: 0,
+        pass_counts: { bin: 9 },
+        // streak reset by the pass-9 finding; the pass-8 clean survives only in findings_history
+        consecutive_clean: { bin: 0 },
+        findings_history: {
+            bin: [
+                { iteration: 8, subsystem: 'bin', findings: 0, verdict: 'clean', note: 'all scripts re-verified' },
+                { iteration: 9, subsystem: 'bin', findings: 1, verdict: 'fixed', fix: 'deadbeef — HIGH something' },
+            ],
+        },
+    };
+    assert.equal(
+        classifyAnatomyNonConvergence(config, 8),
+        null,
+        'a `findings: 0` pass is a clean pass — the subsystem has not "run 9 passes with no clean pass"',
+    );
+});
+
+test('AP-EXT-ITER13-01: a verdict-only clean pass is evidence of a clean pass', () => {
+    const config = {
+        subsystems: ['bin'],
+        current_index: 0,
+        pass_counts: { bin: 9 },
+        consecutive_clean: { bin: 0 },
+        findings_history: {
+            bin: [
+                { iteration: 8, subsystem: 'bin', verdict: 'Clean' },
+                { iteration: 9, subsystem: 'bin', findings: 2, verdict: 'fixed' },
+            ],
+        },
+    };
+    assert.equal(
+        classifyAnatomyNonConvergence(config, 8),
+        null,
+        'a `verdict: clean` pass is a clean pass regardless of letter case',
+    );
+});
+
+test('AP-EXT-ITER13-01: count-shaped and verdict-shaped NON-clean passes leave the ceiling armed', () => {
+    const base = {
+        subsystems: ['bin'],
+        current_index: 0,
+        pass_counts: { bin: 8 },
+        consecutive_clean: { bin: 0 },
+    };
+    for (const history of [
+        // a non-zero count is a pass WITH findings — not evidence of clean
+        { bin: [{ iteration: 8, findings: 1, verdict: 'fixed' }] },
+        // a non-clean verdict with no count is not evidence either
+        { bin: [{ iteration: 8, verdict: 'fixed' }] },
+        // NaN/Infinity counts are not zero
+        { bin: [{ iteration: 8, findings: Number.NaN }] },
+        // a string '0' is an unrecognized shape, not a count
+        { bin: [{ iteration: 8, findings: '0' }] },
+    ]) {
+        const hit = classifyAnatomyNonConvergence({ ...base, findings_history: history }, 8);
+        assert.ok(hit, `expected halt for findings_history=${JSON.stringify(history)}`);
+    }
+});
+
 /**
  * AP-EXT-ITER7-01: `microverse.json` is written tmp-rename, so a crash in that window
  * leaves ONLY `microverse.json.tmp.<pid>`. `markMicroverseFatalError` short-circuited on
