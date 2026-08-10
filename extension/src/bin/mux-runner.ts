@@ -5293,6 +5293,46 @@ function persistRunnerAuthoredGreenVerdict(sessionDir: string, ticketId: string)
 }
 
 /**
+ * Idempotence oracle: does `message` ALREADY carry a parsed `Pickle-Ticket` trailer?
+ *
+ * KEY-PRESENCE, not value-equality — the same policy the other two producers hold
+ * (`git-trailer-hooks.ts`'s `grep -q '^Pickle-Ticket:'` over the parsed view, and
+ * spawn-morty's `trailers.length > 0` in `maybeAmendTicketTrailer`). A value-match
+ * guard would let a DIFFERENT-id trailer fall through to the writer, and
+ * `addIfDifferentNeighbor` ADDS a second value whenever the existing trailer is not
+ * the appended one's neighbor — adjacency is the whole test, so identical values
+ * duplicate too:
+ *
+ *   subject                          subject
+ *                          ->
+ *   Pickle-Ticket: a1           Pickle-Ticket: a1
+ *   Co-Authored-By: X           Co-Authored-By: X
+ *                               Pickle-Ticket: a1
+ *
+ * The consumer cannot read that shape as attribution at all: `parseTrailerLog`
+ * (`ticket-completion-evidence.ts`) joins every emitted value line into ONE
+ * `trailerValue`, and `scanGitLogByTrailer` compares it whole — `'a1\na1' !== 'a1'`.
+ * A commit carrying the ticket's trailer twice reads as carrying it zero times, and
+ * that scan is `readEvidence`'s only git-log arm.
+ *
+ * Asked via `interpret-trailers --parse` so producer guard and consumer reader share
+ * one view; a whole-message regex is a second, drifting parser (git takes trailers
+ * from the LAST paragraph only, so a `Pickle-Ticket:` line in body prose would look
+ * like attribution and suppress a stamp that is genuinely needed).
+ *
+ * When the parse cannot run, DEGRADE TOWARD STAMPING. The hook degrades the other
+ * way — it edits the commit-message file in place, where a double stamp is
+ * unrecoverable — while this function only renders a string its callers commit, and
+ * every caller passes a freshly built message. Opposite failure costs, opposite
+ * postures; the divergence is deliberate.
+ */
+function messageAlreadyCarriesTicketTrailer(workingDir: string, message: string): boolean {
+  const parsed = silentDeathGit(['interpret-trailers', '--parse'], workingDir, message);
+  if (parsed === null) return false;
+  return parsed.split('\n').some((line) => line.startsWith('Pickle-Ticket:'));
+}
+
+/**
  * Render `message` carrying a parsed `Pickle-Ticket: <ticketId>` trailer.
  *
  * The runner authors some commits IN-PROCESS, so they never see the `prepare-commit-msg`
@@ -5324,6 +5364,7 @@ function persistRunnerAuthoredGreenVerdict(sessionDir: string, ticketId: string)
  */
 export function stampPickleTicketTrailer(workingDir: string, message: string, ticketId: string): string {
   if (ticketId.replace(/\s+/g, '') === '') return message;
+  if (messageAlreadyCarriesTicketTrailer(workingDir, message)) return message;
   const trailer = `Pickle-Ticket: ${ticketId}`;
   const rendered = silentDeathGit(
     ['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', trailer],

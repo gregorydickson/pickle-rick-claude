@@ -231,3 +231,94 @@ test('site 2: executeConvergedPlanAdapter phase commits stamp the trailer', () =
   assert.match(git(workingDir, ['log', '-1', '--format=%s']).trim(), /execute-converged-plan phase 1/);
   assert.equal(parsedTrailer(workingDir, 'Pickle-Ticket'), TICKET_ID);
 });
+
+// --- Idempotence: the producer must never manufacture a multi-value trailer -------------------
+//
+// `--if-exists addIfDifferentNeighbor` tests ADJACENCY, not value. When a pre-existing
+// `Pickle-Ticket` trailer is separated from the appended one by another key, git adds a SECOND
+// value — even when the two values are identical. The consumer reads that shape as NO attribution
+// at all: `parseTrailerLog` joins every emitted value line into one `trailerValue`, and
+// `scanGitLogByTrailer` compares it whole. The producer's key-presence guard is what keeps the
+// shape from existing, matching the two sibling producers (`git-trailer-hooks.ts`'s parsed-view
+// grep and spawn-morty's `maybeAmendTicketTrailer`).
+
+/** A message whose trailer block already carries the key, NOT adjacent to the append point. */
+function nonNeighborTrailerMessage(ticketId) {
+  return [
+    'fix: work that already carries its own attribution',
+    '',
+    `Pickle-Ticket: ${ticketId}`,
+    'Co-Authored-By: Someone <someone@example.com>',
+    '',
+  ].join('\n');
+}
+
+/** Every parsed `Pickle-Ticket` value on HEAD, one per array entry. */
+function parsedTrailerValues(dir) {
+  return parsedTrailer(dir, 'Pickle-Ticket').split('\n').filter(Boolean);
+}
+
+test('idempotence: stamping a message that already carries the trailer leaves exactly one value', () => {
+  const workingDir = makeTmp('ratrail-repo-');
+  initGitRepo(workingDir);
+  const body = nonNeighborTrailerMessage(TICKET_ID);
+
+  const stamped = stampPickleTicketTrailer(workingDir, body, TICKET_ID);
+
+  assert.equal(stamped, body, 'an already-attributed message comes back untouched');
+
+  commitMessage(workingDir, stamped);
+
+  assert.deepEqual(parsedTrailerValues(workingDir), [TICKET_ID]);
+  assert.equal(
+    parsedTrailer(workingDir, 'Co-Authored-By'),
+    'Someone <someone@example.com>',
+    'the neighbouring trailer stays a PARSED trailer, not demoted to body prose',
+  );
+});
+
+test('idempotence: the consumer still attributes the re-stamped commit', async () => {
+  const { readEvidence } = await import('../services/ticket-completion-evidence.js');
+
+  const workingDir = makeTmp('ratrail-repo-');
+  const startCommit = initGitRepo(workingDir);
+  const { sessionDir } = makeSession(workingDir, startCommit);
+
+  commitMessage(workingDir, stampPickleTicketTrailer(workingDir, nonNeighborTrailerMessage(TICKET_ID), TICKET_ID));
+  const sha = git(workingDir, ['rev-parse', 'HEAD']).trim();
+
+  const evidence = readEvidence({ sessionDir, ticketId: TICKET_ID, workingDir, startCommit, pinnedSha: startCommit });
+
+  assert.equal(evidence.kind, 'committed');
+  assert.equal(evidence.sha, sha);
+});
+
+// Negative control. Without the guard the producer would have emitted THIS shape, and this is what
+// the consumer does with it. Pinning the failure keeps the guard load-bearing: if someone deletes it
+// AND independently teaches the consumer to read multi-value trailers, this test goes red and says so
+// — rather than the two changes silently cancelling out and leaving the seam untested.
+test('negative control: a two-value trailer is unreadable to the consumer', async () => {
+  const { readEvidence } = await import('../services/ticket-completion-evidence.js');
+
+  const workingDir = makeTmp('ratrail-repo-');
+  const startCommit = initGitRepo(workingDir);
+  const { sessionDir } = makeSession(workingDir, startCommit);
+
+  // The pre-guard producer, reproduced verbatim: the writer call with no key-presence check.
+  const duplicated = git(
+    workingDir,
+    ['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', `Pickle-Ticket: ${TICKET_ID}`],
+    nonNeighborTrailerMessage(TICKET_ID),
+  );
+  commitMessage(workingDir, duplicated);
+
+  assert.deepEqual(
+    parsedTrailerValues(workingDir),
+    [TICKET_ID, TICKET_ID],
+    'the unguarded writer duplicates the value it was asked to ensure',
+  );
+
+  const evidence = readEvidence({ sessionDir, ticketId: TICKET_ID, workingDir, startCommit, pinnedSha: startCommit });
+
+  assert.equal(evidence.kind, 'absent', 'carrying the trailer twice reads as carrying it zero times');
+});
