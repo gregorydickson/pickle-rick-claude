@@ -2,9 +2,8 @@ export interface BundleFinalizeTicket {
   id: string;
   status?: string | null;
   commitMessage?: string | null;
+  /** The ticket's tests already landed in a prior bundle, so its delta is not scheduled here. */
   preShipped?: boolean;
-  pre_shipped?: boolean;
-  shipped?: boolean;
 }
 
 export interface BundleTestFloorInput {
@@ -83,7 +82,7 @@ function isDropped(ticket: BundleFinalizeTicket): boolean {
 }
 
 function isPreShipped(ticket: BundleFinalizeTicket): boolean {
-  return ticket.preShipped === true || ticket.pre_shipped === true || ticket.shipped === true;
+  return ticket.preShipped === true;
 }
 
 function resolveBaseline(input: BundleTestFloorInput): number {

@@ -47,7 +47,7 @@ function isDropped(ticket) {
         || status === 'skipped';
 }
 function isPreShipped(ticket) {
-    return ticket.preShipped === true || ticket.pre_shipped === true || ticket.shipped === true;
+    return ticket.preShipped === true;
 }
 function resolveBaseline(input) {
     const direct = finiteInteger(input.baseline);

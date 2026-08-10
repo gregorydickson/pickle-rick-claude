@@ -80,14 +80,26 @@ test('computeBundleTestFloor excludes pre-shipped ticket additions', () => {
     tickets: [
       { id: 'new-work', commitMessage: 'new work tests:+3' },
       { id: 'already-shipped', preShipped: true, commitMessage: 'already shipped tests:+8' },
-      { id: 'legacy-shipped-key', shipped: true, commitMessage: 'also shipped tests:+13' },
     ],
   });
 
   assert.equal(result.delta, 3);
   assert.equal(result.floor, 3407);
   assert.equal(result.contributions.find((entry) => entry.id === 'already-shipped')?.delta, 0);
-  assert.equal(result.contributions.find((entry) => entry.id === 'legacy-shipped-key')?.delta, 0);
+});
+
+test('preShipped is the only pre-shipped source of truth — alias keys do not exclude a ticket', () => {
+  const result = computeBundleTestFloor({
+    baseline: 3404,
+    tickets: [
+      { id: 'snake-case-alias', pre_shipped: true, commitMessage: 'not excluded tests:+5' },
+      { id: 'bare-shipped-alias', shipped: true, commitMessage: 'not excluded tests:+7' },
+    ],
+  });
+
+  assert.equal(result.delta, 12);
+  assert.equal(result.contributions.every((entry) => entry.included), true);
+  assert.equal(result.contributions.every((entry) => entry.reason === 'scheduled'), true);
 });
 
 test('computeBundleTestFloor clamps negative net delta and emits a warning', () => {
