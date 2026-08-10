@@ -253,3 +253,44 @@ test('autoFillCompletionCommit: recovers tmp-only state before filtering complet
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('autoFillCompletionCommit: a persist failure reports unwritable, not unreadable', () => {
+  // The ticket file READS fine and the evidence resolves — only the write-back
+  // fails. Labelling that `unreadable` told the operator to go look at a read
+  // path that worked, so the output-side failure gets its own verdict.
+  const root = makeTmpRoot();
+  try {
+    const repo = path.join(root, 'repo');
+    const sessionDir = path.join(root, 'sessions', '2026-08-09-unwritable');
+    fs.mkdirSync(repo, { recursive: true });
+    initGitRepo(repo);
+
+    const ticketId = 'c0ffee01';
+    const ticketPath = writeTicket(sessionDir, ticketId);
+    const statePath = path.join(sessionDir, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({
+      start_time_epoch: Math.floor(Date.now() / 1000) - 60,
+      activity: [],
+    }, null, 2));
+
+    fs.writeFileSync(path.join(repo, 'worker.txt'), 'worker changes\n');
+    execFileSync('git', ['add', 'worker.txt'], { cwd: repo });
+    execFileSync(
+      'git',
+      ['commit', '-m', 'close gap', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'],
+      { cwd: repo, stdio: 'ignore' },
+    );
+
+    fs.chmodSync(ticketPath, 0o444);
+    try {
+      const result = autoFillCompletionCommit({ sessionDir, workingDir: repo, statePath });
+      assert.deepEqual(result, [{ ticketId, sha: null, action: 'unwritable' }]);
+    } finally {
+      fs.chmodSync(ticketPath, 0o644);
+    }
+    // The read-only file is unchanged: no completion_commit was persisted.
+    assert.doesNotMatch(fs.readFileSync(ticketPath, 'utf8'), /completion_commit/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

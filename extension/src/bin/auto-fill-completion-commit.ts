@@ -24,7 +24,11 @@ export interface AutoFillCompletionCommitInput {
 export interface AutoFillCompletionCommitResult {
   ticketId: string;
   sha: string | null;
-  action: 'filled' | 'already_present' | 'not_done' | 'no_evidence' | 'unreadable';
+  // `unreadable` is an INPUT-side verdict: the ticket file could not be read, or its
+  // frontmatter could not be parsed well enough to upsert into. `unwritable` is the
+  // OUTPUT-side verdict: the evidence was resolved and the updated file rendered, but
+  // persisting it failed. Collapsing the two hid a write failure behind a read label.
+  action: 'filled' | 'already_present' | 'not_done' | 'no_evidence' | 'unreadable' | 'unwritable';
 }
 
 interface SessionBaseline {
@@ -113,7 +117,7 @@ export function autoFillCompletionCommit(input: AutoFillCompletionCommitInput): 
     try {
       fs.writeFileSync(filePath, updated);
     } catch {
-      results.push({ ticketId: id, sha: null, action: 'unreadable' });
+      results.push({ ticketId: id, sha: null, action: 'unwritable' });
       continue;
     }
     // R-AFCC-STAGE: staging is BEST-EFFORT, exactly as in the sibling

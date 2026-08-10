@@ -90,7 +90,7 @@ export function autoFillCompletionCommit(input) {
             fs.writeFileSync(filePath, updated);
         }
         catch {
-            results.push({ ticketId: id, sha: null, action: 'unreadable' });
+            results.push({ ticketId: id, sha: null, action: 'unwritable' });
             continue;
         }
         // R-AFCC-STAGE: staging is BEST-EFFORT, exactly as in the sibling
