@@ -291,11 +291,44 @@ function resolveLedgerPath(sessionRoot: string, entryPath: string): string {
   return assertWithinRoot(targetPath, sessionRoot);
 }
 
-function restoreContent(entry: ReverseLedgerEntry): string | null | undefined {
+/** Minimal shape both ledger entry kinds satisfy at the reversal decision. */
+type ContentBearingLedgerEntry = {
+  action?: string;
+  beforeContent?: string | null;
+  previousContent?: string | null;
+  backupContent?: string | null;
+};
+
+function restoreContent(entry: ContentBearingLedgerEntry): string | null | undefined {
   if ('beforeContent' in entry) return entry.beforeContent;
   if ('previousContent' in entry) return entry.previousContent;
   if ('backupContent' in entry) return entry.backupContent;
   return undefined;
+}
+
+type LedgerReversal =
+  | { kind: 'delete' }
+  | { kind: 'restore'; content: string }
+  | { kind: 'unrestorable' };
+
+/**
+ * AP-EXT-ITER8-02: the reversal decision comes from the entry's `action`
+ * discriminant, NEVER from "prior content is null/absent". Only an entry that
+ * says the apply CREATED the file may delete it; everything else restores, and
+ * a non-create entry with no recorded content is unrestorable — leave it alone
+ * rather than destroying a file that pre-dated the transaction.
+ */
+function planReversal(entry: ContentBearingLedgerEntry): LedgerReversal {
+  if (entry.action === 'create' || entry.action === 'created') return { kind: 'delete' };
+  const priorContent = restoreContent(entry);
+  if (typeof priorContent === 'string') return { kind: 'restore', content: priorContent };
+  return { kind: 'unrestorable' };
+}
+
+function warnUnrestorable(targetPath: string): void {
+  process.stderr.write(
+    `[transaction-ticket-ops] ledger entry for ${targetPath} records no prior content under a non-create action; leaving the file in place\n`,
+  );
 }
 
 function removeEmptyParents(startDir: string, stopDir: string): void {
@@ -316,17 +349,22 @@ export function replayReverseLedger(ledgerPath: string, sessionRoot: string): Pl
 
   for (const entry of [...entries].reverse()) {
     const targetPath = resolveLedgerPath(sessionRoot, entry.path);
-    const priorContent = restoreContent(entry);
+    const reversal = planReversal(entry);
 
-    if (priorContent === undefined || priorContent === null) {
+    if (reversal.kind === 'delete') {
       if (fs.existsSync(targetPath)) fs.rmSync(targetPath, { force: true, recursive: true });
       removeEmptyParents(path.dirname(targetPath), sessionRoot);
       continue;
     }
 
+    if (reversal.kind === 'unrestorable') {
+      warnUnrestorable(targetPath);
+      continue;
+    }
+
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, priorContent);
-    restored.push({ path: targetPath, content: priorContent });
+    fs.writeFileSync(targetPath, reversal.content);
+    restored.push({ path: targetPath, content: reversal.content });
   }
 
   return restored;
@@ -435,11 +473,12 @@ function applyPlannedWrite(
   assertWithinRoot(file.path, path.dirname(ledgerPath));
   const existed = fs.existsSync(file.path);
   let beforeContent: string | null = null;
+  let beforeReadError: string | null = null;
   if (existed) {
     try {
       beforeContent = fs.readFileSync(file.path, 'utf-8');
-    } catch {
-      beforeContent = null;
+    } catch (error) {
+      beforeReadError = safeErrorMessage(error);
     }
   }
   const action = existed ? 'write' : 'create';
@@ -461,6 +500,15 @@ function applyPlannedWrite(
     ...(error !== undefined ? { error } : {}),
     createdAt: nowIso,
   });
+
+  // AP-EXT-ITER8-02: an existing file we could not read has no recoverable prior
+  // content, so overwriting it is unreversible. Refuse the write instead of
+  // recording a `beforeContent: null` the reversal cannot honor.
+  if (beforeReadError !== null) {
+    const message = `Refusing to overwrite ${file.path}: prior content is unreadable (${beforeReadError})`;
+    appendApplyLedger(ledgerPath, ledgerEntry('failed', message));
+    throw new Error(message);
+  }
 
   appendApplyLedger(ledgerPath, ledgerEntry('started'));
   try {
@@ -517,13 +565,16 @@ function reverseAppliedEntries(entries: CourseCorrectionApplyLedgerEntry[], sess
   const reversedSteps: number[] = [];
   for (const entry of [...selectForwardEntries(entries)].reverse()) {
     const targetPath = resolveLedgerPath(sessionRoot, entry.path);
-    const priorContent = restoreContent(entry);
-    if (priorContent === undefined || priorContent === null) {
+    const reversal = planReversal(entry);
+    if (reversal.kind === 'delete') {
       if (fs.existsSync(targetPath)) fs.rmSync(targetPath, { force: true, recursive: true });
       removeEmptyParents(path.dirname(targetPath), sessionRoot);
+    } else if (reversal.kind === 'unrestorable') {
+      warnUnrestorable(targetPath);
+      continue;
     } else {
       fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-      fs.writeFileSync(targetPath, priorContent, 'utf-8');
+      fs.writeFileSync(targetPath, reversal.content, 'utf-8');
     }
     reversedSteps.push(entry.step);
   }

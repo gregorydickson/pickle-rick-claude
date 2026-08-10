@@ -646,3 +646,105 @@ test('AP-EXT-ITER12-01: replayReverseLedger reverses a started-only crash-window
     );
   });
 });
+
+// AP-EXT-ITER8-02: `applyPlannedWrite` records `beforeContent: null` for a file
+// that EXISTED but whose read threw. Deciding the reversal from content-nullness
+// then reads that as "the apply created it" and DELETES a pre-existing file.
+// The reversal decision must come from the `action` discriminant instead.
+test('AP-EXT-ITER8-02: a write-action entry with no recorded prior content is never deleted', () => {
+  withDir((sessionDir) => {
+    const ticket = writeTicket(sessionDir, 'abc123', 'Todo');
+    writeState(sessionDir, { activity: [] });
+    fs.writeFileSync(ticket.ticketPath, 'OVERWRITTEN BY THE APPLY\n');
+
+    const ledgerPath = path.join(sessionDir, 'change_proposal_2026-08-10T00-00-00Z_apply.log');
+    fs.writeFileSync(ledgerPath, JSON.stringify({
+      step: 1,
+      action: 'write',
+      operation: 'kill_ticket',
+      ticket_id: 'abc123',
+      path: ticket.ticketPath,
+      status: 'applied',
+      recovery_class: 'restore-previous-content',
+      beforeContent: null,
+      previousContent: null,
+      afterContent: 'OVERWRITTEN BY THE APPLY\n',
+      createdAt: '2026-08-10T00:00:00.000Z',
+    }) + '\n');
+
+    recoverCourseCorrectionFromLedger({
+      sessionRoot: sessionDir,
+      ledgerPath,
+      mode: 'reverse',
+      now: '2026-08-10T00:05:00.000Z',
+    });
+
+    assert.equal(
+      fs.existsSync(ticket.ticketPath),
+      true,
+      'reverse recovery DELETED a file the ledger says pre-dated the transaction',
+    );
+    assert.equal(fs.readFileSync(ticket.ticketPath, 'utf-8'), 'OVERWRITTEN BY THE APPLY\n');
+  });
+});
+
+test('AP-EXT-ITER8-02: replayReverseLedger leaves a write-action entry with no prior content in place', () => {
+  withDir((sessionDir) => {
+    const ticket = writeTicket(sessionDir, 'def456', 'Todo');
+    const createdPath = path.join(sessionDir, 'def456', 'created.md');
+    fs.writeFileSync(createdPath, 'created by the apply\n');
+
+    const ledgerPath = path.join(sessionDir, 'reverse.ledger.json');
+    fs.writeFileSync(ledgerPath, JSON.stringify({
+      entries: [
+        { action: 'write', path: ticket.ticketPath, beforeContent: null },
+        { action: 'create', path: createdPath },
+      ],
+    }));
+
+    replayReverseLedger(ledgerPath, sessionDir);
+
+    assert.equal(fs.existsSync(ticket.ticketPath), true, 'a pre-existing file was destroyed by the replay');
+    assert.equal(fs.existsSync(createdPath), false, 'a create-action entry must still be deleted');
+  });
+});
+
+// The apply side must not manufacture that ambiguous record in the first place:
+// an existing file it cannot read has no recoverable prior content, so the write
+// is refused rather than made unreversible.
+test('AP-EXT-ITER8-02: applying over an unreadable existing file is refused, not silently unreversible', () => {
+  withDir((sessionDir) => {
+    writeState(sessionDir, { activity: [] });
+    // A file already sitting at the new ticket's target path, unreadable — so the
+    // apply's before-read throws and it has no prior content to reverse to.
+    const targetDir = path.join(sessionDir, 'ghi789');
+    fs.mkdirSync(targetDir, { recursive: true });
+    const targetPath = path.join(targetDir, 'rick_ticket_ghi789.md');
+    fs.writeFileSync(targetPath, 'PRE-EXISTING, UNREADABLE\n');
+    // Write-only: the before-read throws, but the overwrite would SUCCEED — so only
+    // the guard, not the OS, stands between the apply and an unreversible write.
+    fs.chmodSync(targetPath, 0o200);
+
+    let threw = null;
+    try {
+      applyCourseCorrectionRestructure({
+        sessionRoot: sessionDir,
+        proposalPath: path.join(sessionDir, 'change_proposal.md'),
+        restartTicketId: 'ghi789',
+        addedTickets: [{ ticketId: 'ghi789', frontmatter: { title: 'New' }, body: '# New\n' }],
+        now: '2026-08-10T00:00:00.000Z',
+      });
+    } catch (err) {
+      threw = err;
+    } finally {
+      fs.chmodSync(targetPath, 0o644);
+    }
+
+    assert.notEqual(threw, null, 'the apply overwrote a file whose prior content it could not read');
+    assert.equal(
+      fs.readFileSync(targetPath, 'utf-8'),
+      'PRE-EXISTING, UNREADABLE\n',
+      'the unreversible write must not have landed',
+    );
+  });
+});
