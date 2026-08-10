@@ -2446,8 +2446,9 @@ export function pruneOldSessions(sessionsRoot, maxAgeDays = 7) {
             let startedMs = sessionDirMtimeMs;
             if (fs.existsSync(statePath)) {
                 const state = sm.read(statePath);
-                if (state.active === true)
+                if (state.active === true) {
                     continue;
+                }
                 const rawMs = state.started_at
                     ? new Date(state.started_at).getTime()
                     : NaN;

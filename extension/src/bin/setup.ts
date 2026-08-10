@@ -1584,7 +1584,7 @@ function createSession(config: SetupArgs, paths: SetupPaths, taskStr: string): S
   const inTreeSessionDir = path.join(inTreeSessionsRoot, sessionId);
   try {
     pruneOldSessions(inTreeSessionsRoot);
-    if (!fs.existsSync(inTreeSessionDir)) fs.mkdirSync(inTreeSessionDir, { recursive: true });
+    if (!fs.existsSync(inTreeSessionDir)) { fs.mkdirSync(inTreeSessionDir, { recursive: true }); }
     const inTreeNotesPath = path.join(inTreeSessionDir, 'TASK_NOTES.md');
     if (!fs.existsSync(inTreeNotesPath)) {
       fs.writeFileSync(

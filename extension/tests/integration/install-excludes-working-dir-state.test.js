@@ -59,7 +59,7 @@ function findAll(root, name) {
         for (const entry of entries) {
             const full = path.join(dir, entry.name);
             if (entry.isDirectory()) {
-                if (entry.name === name) hits.push(full);
+                if (entry.name === name) { hits.push(full); }
                 stack.push(full);
             }
         }

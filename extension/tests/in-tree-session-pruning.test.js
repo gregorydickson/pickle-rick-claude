@@ -39,7 +39,7 @@ function makeTmpCwd() {
 
 function sessionIdFromOutput(output) {
     const match = output.match(/SESSION_ROOT=(.+)/);
-    if (!match) throw new Error(`SESSION_ROOT not found in output:\n${output}`);
+    if (!match) { throw new Error(`SESSION_ROOT not found in output:\n${output}`); }
     return path.basename(match[1].trim());
 }
 
