@@ -2431,6 +2431,13 @@ export function displayMacNotification(title, body, subtitle, opts = {}) {
  * A directory with no state.json (e.g. the in-tree scaffold, which holds only
  * TASK_NOTES.md) has no liveness signal to check, so it ages off its own
  * directory mtime instead of being skipped.
+ *
+ * "Has a state.json" is decided through the recovery layer, never a bare
+ * `existsSync`: `state.json` is written tmp-rename, so a crash in that window
+ * leaves the only copy in a sibling `state.json.tmp.<pid>`. An existsSync-only
+ * read of that session sees no liveness signal and `rmSync`s a recoverable
+ * snapshot — the orphan-tmp delete-authority invariant (a tmp may be unlinked
+ * only when positively proven garbage) inverted into a whole-directory delete.
  */
 export function pruneOldSessions(sessionsRoot, maxAgeDays = 7) {
     if (!fs.existsSync(sessionsRoot))
@@ -2444,7 +2451,11 @@ export function pruneOldSessions(sessionsRoot, maxAgeDays = 7) {
         try {
             const sessionDirMtimeMs = fs.statSync(sessionDir).mtimeMs;
             let startedMs = sessionDirMtimeMs;
-            if (fs.existsSync(statePath)) {
+            // Short-circuits on a present base (sm.read owns corrupt-base recovery);
+            // otherwise the recovering read promotes a dead-writer orphan tmp so the
+            // session is judged on its own state, not on the scaffold rule.
+            const carriesState = fs.existsSync(statePath) || readRecoverableJsonObject(statePath) !== null;
+            if (carriesState) {
                 const state = sm.read(statePath);
                 if (state.active === true) {
                     continue;

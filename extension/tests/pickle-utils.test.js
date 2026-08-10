@@ -878,6 +878,70 @@ test('pruneOldSessions: entries without state.json age off their own mtime', () 
     }
 });
 
+test('pruneOldSessions: a tmp-ONLY state.json is recovered, not aged off as a scaffold', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sessions-'));
+    try {
+        // state.json is written tmp-rename: a crash in that window leaves the only
+        // copy in state.json.tmp.<pid>. Such a dir is a real session, NOT the
+        // state.json-less in-tree scaffold, and must be judged on its own state.
+        const deadPid = 4194303; // above the default pid_max on darwin/linux — never alive
+        const tenDaysAgo = Date.now() / 1000 - 10 * 24 * 60 * 60;
+
+        const recentTmpOnly = path.join(root, 'crashed-recent');
+        fs.mkdirSync(recentTmpOnly);
+        fs.writeFileSync(
+            path.join(recentTmpOnly, `state.json.tmp.${deadPid}`),
+            JSON.stringify({
+                active: false,
+                started_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+            })
+        );
+        fs.utimesSync(recentTmpOnly, tenDaysAgo, tenDaysAgo);
+
+        const activeTmpOnly = path.join(root, 'crashed-active');
+        fs.mkdirSync(activeTmpOnly);
+        fs.writeFileSync(
+            path.join(activeTmpOnly, `state.json.tmp.${deadPid}`),
+            JSON.stringify({
+                active: true,
+                started_at: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+            })
+        );
+        fs.utimesSync(activeTmpOnly, tenDaysAgo, tenDaysAgo);
+
+        // Control: genuinely no state artifact at all — still ages off dir mtime.
+        const scaffold = path.join(root, 'scaffold-no-state');
+        fs.mkdirSync(scaffold);
+        fs.writeFileSync(path.join(scaffold, 'TASK_NOTES.md'), '# TASK_NOTES\n');
+        fs.utimesSync(scaffold, tenDaysAgo, tenDaysAgo);
+
+        pruneOldSessions(root, 7);
+
+        assert.equal(
+            fs.existsSync(recentTmpOnly),
+            true,
+            'a tmp-only recoverable session inside the cutoff must survive the dir-mtime rule'
+        );
+        assert.equal(
+            fs.existsSync(path.join(recentTmpOnly, 'state.json')),
+            true,
+            'the recovering read must promote the orphan tmp onto the base path'
+        );
+        assert.equal(
+            fs.existsSync(activeTmpOnly),
+            true,
+            'a tmp-only ACTIVE session must survive regardless of age'
+        );
+        assert.equal(
+            fs.existsSync(scaffold),
+            false,
+            'a dir carrying no state artifact at all still ages off its own mtime'
+        );
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 // ---------------------------------------------------------------------------
 // NaN from corrupt started_at — falls back to mtime (deep review pass 5)
 // ---------------------------------------------------------------------------
