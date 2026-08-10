@@ -4590,8 +4590,9 @@ function persistRunnerAuthoredGreenVerdict(sessionDir, ticketId) {
  */
 function messageAlreadyCarriesTicketTrailer(workingDir, message) {
     const parsed = silentDeathGit(['interpret-trailers', '--parse'], workingDir, message);
-    if (parsed === null)
+    if (parsed === null) {
         return false;
+    }
     return parsed.split('\n').some((line) => line.startsWith('Pickle-Ticket:'));
 }
 /**
@@ -4625,10 +4626,12 @@ function messageAlreadyCarriesTicketTrailer(workingDir, message) {
  * consumer trims its own ends and silently rewriting an operator's id is not ours to do.
  */
 export function stampPickleTicketTrailer(workingDir, message, ticketId) {
-    if (ticketId.replace(/\s+/g, '') === '')
+    if (ticketId.replace(/\s+/g, '') === '') {
         return message;
-    if (messageAlreadyCarriesTicketTrailer(workingDir, message))
+    }
+    if (messageAlreadyCarriesTicketTrailer(workingDir, message)) {
         return message;
+    }
     const trailer = `Pickle-Ticket: ${ticketId}`;
     const rendered = silentDeathGit(['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', trailer], workingDir, message);
     return rendered ?? `${message}\n\n${trailer}`;

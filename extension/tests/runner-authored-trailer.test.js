@@ -21,7 +21,11 @@ import path from 'node:path';
 // stamp ITS ticket id into these fixtures' commits. Drop the wiring so the fixtures observe
 // only what the code under test writes.
 delete process.env.PICKLE_TICKET_ID;
-for (const k of Object.keys(process.env)) if (k.startsWith('GIT_CONFIG')) delete process.env[k];
+for (const k of Object.keys(process.env)) {
+  if (k.startsWith('GIT_CONFIG')) {
+    delete process.env[k];
+  }
+}
 // PICKLE_TEST_MODE=1 is deliberately NOT set: it short-circuits
 // `guardCompletionCommitBeforeDone` to `{ok:true, sha:'pickle-test-mode-bypass'}`, which
 // would green these fixtures without ever consulting the trailer. The fixtures use real

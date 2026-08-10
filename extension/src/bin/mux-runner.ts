@@ -5328,7 +5328,9 @@ function persistRunnerAuthoredGreenVerdict(sessionDir: string, ticketId: string)
  */
 function messageAlreadyCarriesTicketTrailer(workingDir: string, message: string): boolean {
   const parsed = silentDeathGit(['interpret-trailers', '--parse'], workingDir, message);
-  if (parsed === null) return false;
+  if (parsed === null) {
+    return false;
+  }
   return parsed.split('\n').some((line) => line.startsWith('Pickle-Ticket:'));
 }
 
@@ -5363,8 +5365,12 @@ function messageAlreadyCarriesTicketTrailer(workingDir: string, message: string)
  * consumer trims its own ends and silently rewriting an operator's id is not ours to do.
  */
 export function stampPickleTicketTrailer(workingDir: string, message: string, ticketId: string): string {
-  if (ticketId.replace(/\s+/g, '') === '') return message;
-  if (messageAlreadyCarriesTicketTrailer(workingDir, message)) return message;
+  if (ticketId.replace(/\s+/g, '') === '') {
+    return message;
+  }
+  if (messageAlreadyCarriesTicketTrailer(workingDir, message)) {
+    return message;
+  }
   const trailer = `Pickle-Ticket: ${ticketId}`;
   const rendered = silentDeathGit(
     ['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', trailer],
@@ -6121,7 +6127,9 @@ export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): {
       const add = spawnSync('git', ['add', '-A', ...CODEGRAPH_PATHSPEC_EXCLUDES], {
         cwd: input.workingDir, encoding: 'utf-8', timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
       });
-      if (add.status !== 0) return { ok: false };
+      if (add.status !== 0) {
+        return { ok: false };
+      }
       const title = phase.title ? ` — ${phase.title}` : '';
       const phaseMsg = stampPickleTicketTrailer(
         input.workingDir,
