@@ -1468,8 +1468,15 @@ function createSession(config, paths, taskStr) {
         fs.mkdirSync(fullSessionPath, { recursive: true });
     const inTreeSessionsRoot = path.join(process.cwd(), '.pickle-rick', 'sessions');
     const inTreeSessionDir = path.join(inTreeSessionsRoot, sessionId);
+    // Housekeeping and scaffold creation are INDEPENDENT best-efforts. `pruneOldSessions`
+    // opens with an unguarded `fs.readdirSync(sessionsRoot)`, so an EACCES/EMFILE there
+    // throws; sharing one try/catch let that throw skip the scaffold entirely and the
+    // worker's TASK_NOTES.md — the cross-iteration knowledge transfer — silently vanished.
     try {
         pruneOldSessions(inTreeSessionsRoot);
+    }
+    catch { /* housekeeping only: never blocks the scaffold below */ }
+    try {
         if (!fs.existsSync(inTreeSessionDir)) {
             fs.mkdirSync(inTreeSessionDir, { recursive: true });
         }
