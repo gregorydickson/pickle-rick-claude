@@ -12,6 +12,11 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const DEFAULT_INSTALL_SH = path.join(REPO_ROOT, 'install.sh');
 const TARGET_FILE = path.join(REPO_ROOT, 'extension', 'types', 'index.js');
 const POLL_INTERVAL_MS = 10;
+// Minimum polls that must land strictly INSIDE the subprocess lifetime. At a 10ms interval this is
+// >=500ms of the compile window. A recorded real run observed 311 in-window samples, so this carries
+// ample headroom on a loaded box while still failing a run that only sampled at the edges — which is
+// the vacuous pass a bare `sampleCount > 0` cannot distinguish.
+const MIN_IN_WINDOW_SAMPLES = 50;
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -74,11 +79,17 @@ test('install-source-tree-stays-loadable: extension/types/index.js is never obse
             },
         });
 
+        const spawnedAt = Date.now();
+
         child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
         child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
 
+        let closedAt = 0;
         const exitCode = await new Promise((resolve) => {
-            child.on('close', (code) => resolve(code));
+            child.on('close', (code) => {
+                closedAt = Date.now();
+                resolve(code);
+            });
         });
 
         polling = false;
@@ -105,15 +116,20 @@ test('install-source-tree-stays-loadable: extension/types/index.js is never obse
             `extension/types/index.js was observed ABSENT during install.sh (samples: ${JSON.stringify(samples.filter((s) => !s.present))})`,
         );
 
-        // Non-vacuous sample-count assertion: the poll loop must have actually overlapped the
-        // subprocess lifetime, not sampled zero times inside the compile window.
+        // Non-vacuous sample-count assertion: the poll loop starts before spawn and stops after
+        // close, so a total-sample count cannot distinguish "sampled throughout the compile window"
+        // from "sampled once, before the child existed". Count only the polls whose timestamp falls
+        // inside the subprocess lifetime, and require a floor.
+        const inWindowSamples = samples.filter((s) => s.t >= spawnedAt && s.t <= closedAt);
         assert.ok(
-            sampleCount > 0,
-            'poll loop recorded zero samples — measurement never overlapped the install.sh subprocess lifetime',
+            inWindowSamples.length >= MIN_IN_WINDOW_SAMPLES,
+            `poll loop recorded only ${inWindowSamples.length} samples inside the install.sh subprocess lifetime `
+            + `(spawned ${spawnedAt}, closed ${closedAt}, ${samples.length} samples total); `
+            + `>= ${MIN_IN_WINDOW_SAMPLES} required — below that the absence check proves nothing`,
         );
 
         // Recorded as data only, per ticket: no assertion on minSize.
-        console.log(`[install-source-tree-stays-loadable] recorded min observed size: ${minSize === Infinity ? 'n/a' : minSize} bytes, sample count: ${sampleCount}`);
+        console.log(`[install-source-tree-stays-loadable] recorded min observed size: ${minSize === Infinity ? 'n/a' : minSize} bytes, sample count: ${sampleCount}, in-window samples: ${inWindowSamples.length}`);
 
         assert.equal(exitCode, 0, `install.sh exited non-zero (${exitCode}):\nstderr:\n${stderr}\nstdout:\n${stdout}`);
 
