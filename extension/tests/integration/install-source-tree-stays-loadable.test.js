@@ -12,10 +12,10 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const DEFAULT_INSTALL_SH = path.join(REPO_ROOT, 'install.sh');
 const TARGET_FILE = path.join(REPO_ROOT, 'extension', 'types', 'index.js');
 const POLL_INTERVAL_MS = 10;
-// Minimum polls that must land strictly INSIDE the subprocess lifetime. At a 10ms interval this is
-// >=500ms of the compile window. A recorded real run observed 311 in-window samples, so this carries
-// ample headroom on a loaded box while still failing a run that only sampled at the edges — which is
-// the vacuous pass a bare `sampleCount > 0` cannot distinguish.
+// Minimum polls that must land INSIDE the subprocess lifetime. At a 10ms interval this is >=500ms of
+// the compile window. Real runs observed 357-360 in-window samples, so this carries ~7x headroom on a
+// loaded box while still failing a run that only sampled at the edges — which is the vacuous pass a
+// bare `sampleCount > 0` cannot distinguish, since that counter also credits pre-spawn samples.
 const MIN_IN_WINDOW_SAMPLES = 50;
 
 function sleep(ms) {
