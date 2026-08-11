@@ -52,7 +52,7 @@ function plantStaleArtifacts() {
     assert.notEqual(staleTypesIndex, originalTypesIndex, 'precondition: schemaVersion literal must be replaceable');
     fs.writeFileSync(TYPES_INDEX_JS, staleTypesIndex);
     fs.writeFileSync(TSBUILDINFO_PATH, '{"stale":"fixture from install-stale-cache-rebuild.test.js"}\n');
-    return originalTypesIndex;
+    return { originalTypesIndex, staleTypesIndex };
 }
 
 function restoreArtifacts(originalTypesIndex) {
@@ -78,7 +78,7 @@ function runInstall(installSh, tmpHome) {
 }
 
 test('install-stale-cache-rebuild: stale .tsbuildinfo + stale compiled JS still yields current-source-matching output', () => {
-    const originalTypesIndex = plantStaleArtifacts();
+    const { originalTypesIndex, staleTypesIndex } = plantStaleArtifacts();
     let tmpHome = '';
     try {
         tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-stale-cache-'));
@@ -92,7 +92,7 @@ test('install-stale-cache-rebuild: stale .tsbuildinfo + stale compiled JS still 
         const recompiledTypesIndex = fs.readFileSync(TYPES_INDEX_JS, 'utf8');
         assert.notEqual(
             recompiledTypesIndex,
-            originalTypesIndex.replace(/schemaVersion:\s*\d+,/, 'schemaVersion: 1,'),
+            staleTypesIndex,
             'stale types/index.js must have been recompiled, not left as the stale fixture',
         );
 
