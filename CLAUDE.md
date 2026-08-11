@@ -146,7 +146,7 @@ Kill-switches are the literal lowercase `"off"` (any other value / absent = feat
 |---|---|---|
 | `PLUMBUS_GENERATIVE_AUDIT` | `off` | Bypasses Override 6 — no analyzer, no `## Generative Findings`; logs `generative_audit: skipped (kill-switch)` to `state.json.activity`. |
 | `PICKLE_CODEGRAPH` | `off` | Makes `CodegraphService` inert (returns null, never loads `@colbymchenry/codegraph`) + skips setup-time index (`runCodegraphIndexAtSetup`); else `codegraph.enabled` governs. Reads `services/codegraph-service.ts`, `bin/setup.ts`. |
-| `PICKLE_INSTALL_ROOT` | path (default `$HOME/.claude/pickle-rick`) | Deploy-prefix override for `install.sh` + deploy-lifecycle soak. |
+| `PICKLE_INSTALL_ROOT` | path (default `$HOME/.claude/pickle-rick`) | Does NOT override `install.sh`'s deploy prefix — only `--prefix` (`$PREFIX`) does that; `install.sh:33` unconditionally reassigns `PICKLE_INSTALL_ROOT="${PREFIX:-$HOME/.claude/pickle-rick}"`, discarding any inherited value. Governs the deployed runtime's own path resolution (e.g. deploy-lifecycle soak, hook commands) once set to match `--prefix`. |
 | `RUN_EXPENSIVE_TESTS` | `1` | Gates `test:expensive` (deploy-lifecycle soak, release-gate full run). Explicit only; not in default `npm test`. |
 | `SOAK_SECONDS` | int ≥1800 (default 1800) | deploy-lifecycle soak duration (`tests/integration/deploy-lifecycle-soak.test.js`). |
 | `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` | int ms ≥60000 (default 600000) | Per-gate-phase cap for `test:fast`/`test:integration` in the worker lint gate (R-WTFT). Below floor clamps up; invalid → default. |
