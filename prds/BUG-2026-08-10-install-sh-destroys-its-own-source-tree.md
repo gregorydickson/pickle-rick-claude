@@ -277,21 +277,22 @@ its own, and an upward mis-tier runs red-main gates that can wipe the edit.
 
 1. **AC-C2 / I4 — parity-probe fail-opens, DEFERRED by operator decision 2026-08-10.** "A deploy tree
    missing its `node_modules` symlinks fails the parity probe" is untestable as worded: the probe is
-   inline (`:409-460`) with no standalone entry point; running `install.sh` recreates the symlinks at
-   `:462-472` right after it; and `:503-507` already aborts on an unloadable tree, so "non-zero exit"
+   inline (`:447-491`) with no standalone entry point; `install.sh` recreates the symlinks at
+   `:397-432` BEFORE it (ticket `42a48aef` moved the RUNTIME DEPS block ahead of the probe — it no
+   longer runs "right after"); and `:438-445` already aborts on an unloadable tree, so "non-zero exit"
    cannot distinguish the parity probe from the codegraph self-probe. Three independent fail-opens, all
-   re-read at `HEAD`: the mode/skip guard (`:409`), the empty-MD5 condition (`:424` — a missing
+   re-read at `HEAD`: the mode/skip guard (`:451`), the empty-MD5 condition (`:467` — a missing
    destination yields an empty MD5, which is not a mismatch; the 8-file `_parity_files` list at
-   `:410-419` contains no `node_modules` path at all), and `2>/dev/null || true` on both emissions
-   (`:438,447`). Needs its own PRD that picks one head.
+   `:452-461` contains no `node_modules` path at all), and `2>/dev/null || true` on both emissions
+   (`:482,491`). Needs its own PRD that picks one head.
 2. **`tsc` emit truncation window** — per-file sub-millisecond zero-length outputs (`O_TRUNC`, no
    rename). Out of scope; AC-B3 records the observed minimum size as evidence that it is real and
    bounded.
 3. **`install.sh:34`** — `EXTENSION_ROOT="${PICKLE_INSTALL_ROOT:-...}"` is a dead `:-` default; `:33`
    guarantees non-empty. Free subtraction if WS-C1 lands in that region. **Do not touch** the
-   `${PICKLE_INSTALL_ROOT:-…}` literals at `:39,681,687,702,725` — deliberately-unexpanded hook strings.
+   `${PICKLE_INSTALL_ROOT:-…}` literals at `:39,676,682,697,720` — deliberately-unexpanded hook strings.
 4. **AC-C2 safety clause (carried forward to the follow-up PRD)** — deploy `node_modules` entries are
-   symlinks into the live repo (`:462-472`). Removal must be by link path only (`fs.rmSync`/`unlink`,
+   symlinks into the live repo (`:397-432`). Removal must be by link path only (`fs.rmSync`/`unlink`,
    after asserting `lstatSync(p).isSymbolicLink()`). `cp -rL`, `find -L … -delete`, and `rsync` without
    `--no-links` reach into the real `extension/node_modules/typescript` and wedge every subsequent
    `npx tsc` and every gate.
