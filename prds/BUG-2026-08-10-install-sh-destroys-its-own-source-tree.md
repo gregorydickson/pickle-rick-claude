@@ -1,300 +1,331 @@
-# BUG — install.sh destroys the source tree it builds from
+# BUG — install.sh destroys the source tree it builds from (REFINED)
 
-**Status:** ready to launch
+**Status:** ready to decompose
 **Branch:** `release/v2.1-beta`
-**Launch commit:** `45cda0bd`
-**Build mode:** unattended (does not touch the salvage / completion-evidence / Done-flip path)
+**Launch commit:** `7987e121` (PRD baseline `45cda0bd` for red-proofs)
+**Build mode:** unattended
+**Scope:** `paths:install.sh,extension/tests/**,CLAUDE.md`
+
+*(refined: requirements / codebase / risk-scope analysts, 3 cycles, 2026-08-10 — `REFINE_EXIT=0`)*
 
 ---
 
 ## Problem
 
-`install.sh` deletes every compiled `.js` under `extension/` that has a `.ts` twin, then recompiles —
-always in `$SCRIPT_DIR/extension`, which is the **real repository**, regardless of `--prefix`:
+`install.sh:345-350` deletes every compiled `.js` under `extension/` that has a `.ts` twin, then
+`:353` recompiles — always in `$SCRIPT_DIR/extension`, the real repository, regardless of `--prefix`.
+`--prefix` sandboxes the rsync *destination*, never the *build*. For the 10-30 s of that recompile
+**156** modules (`git ls-files`-verified count; the original PRD said "roughly 130") are absent.
 
-```sh
-# install.sh:343-353
-echo "🗑  Force-cleaning compiled JS (R-ITS-1: prevents stale-tsc-cache drift)..."
-while IFS= read -r tsfile; do
-  rel="${tsfile#"$SCRIPT_DIR/extension/src/"}"
-  jsfile="$SCRIPT_DIR/extension/${rel%.ts}.js"
-  rm -f "$jsfile" 2>/dev/null || true
-done < <(find "$SCRIPT_DIR/extension/src" -type f -name "*.ts" ! -name "*.d.ts" 2>/dev/null)
-rm -f "$SCRIPT_DIR/extension/.tsbuildinfo" 2>/dev/null || true
-echo "🔨 Compiling TypeScript..."
-(cd "$SCRIPT_DIR/extension" && npx tsc)
-```
+`tests/integration/install-excludes-working-dir-state.test.js` runs `install.sh` and is missing from
+`.serial-tests.json`, unlike its five sibling install tests. Measured on `45cda0bd` at effective
+`--test-concurrency=4`: parallel sub-tier 341 tests, 87 fail — **86 collateral**
+(`ERR_MODULE_NOT_FOUND` / `MODULE_NOT_FOUND`), **1 real** (`INV-CODEX-RECOVERY-ADVANCED`). Serial
+sub-tier on the same box: **591/591**. Concurrency, not load.
 
-`--prefix` sandboxes the rsync **destination**. It does not sandbox the **build**. For the 10-30 s of
-that recompile, roughly 130 modules do not exist on disk. Any process importing them in that window
-fails with `ERR_MODULE_NOT_FOUND` / `MODULE_NOT_FOUND`.
+---
 
-### Measured blast radius (2026-08-10, this branch, load ~40)
+## Bundle-wide preconditions (P0 — apply to EVERY test this bundle adds that invokes `install.sh`)
 
-`tests/integration/install-excludes-working-dir-state.test.js` runs `install.sh --prefix <tmp>` and is
-**not** listed in `extension/tests/integration/.serial-tests.json`, unlike all five other install
-tests. Running the integration parallel sub-tier at `--test-concurrency=4`:
+Three independent ways a test harness can forge this bundle's central evidence. All three must be
+closed **before any other assertion**, or a broken harness satisfies "must fail against `45cda0bd`"
+for the wrong reason.
 
-| | |
-|---|---|
-| tests | 341 |
-| fail | 87 |
-| of which collateral (`ERR_MODULE_NOT_FOUND` / `MODULE_NOT_FOUND`) | **86** |
-| of which real | 1 (`INV-CODEX-RECOVERY-ADVANCED`, known, out of scope here) |
+- **AC-P0 — git mode.** Assert observed stderr contains `[install.sh] Mode: git` (emitted
+  `install.sh:336`). `install.sh:331-335` selects `tarball` when `$SCRIPT_DIR/.git` is absent, and
+  `:339` puts the ENTIRE compile block — `npm install`, the force-clean loop, `.tsbuildinfo` removal,
+  `npx tsc`, the schemaVersion check — inside `if [ "$INSTALL_MODE" = "git" ]`. A harness that
+  `rsync --exclude .git` / `git archive` / `tar`s the tree exercises nothing and "fails" for free.
+  Note `-e` not `-d`: a plain `cp -r` keeps `.git` and stays in git mode; a `git worktree` also gets
+  git mode by design.
 
-The serial sub-tier, run immediately after on the same box, was **591/591 pass, `SER_EXIT=0`** — it is
-concurrency, not load, that produces the failures.
+- **AC-P1 — sandboxed data root.** Every invocation sets `PICKLE_DATA_ROOT=<tmp>`.
+  `install.sh:293-302` REFUSES to run while an active session is in flight, and `find_active_session`
+  (`:173-176`) scans the real sessions root. **During this bundle's own build a session is active by
+  construction**, so without this every install-invoking test exits non-zero before reaching the
+  compile block — indistinguishable from "the fix is broken", and it forges the red-proof.
+  Precedent: `install-excludes-working-dir-state.test.js:84`, `install-script-real.test.js:35`.
+  Use `PICKLE_DATA_ROOT`, **not** `--override-active` — sandbox the guard, don't suppress it.
 
-The three audit preflights were all green (`AUDIT_TIERS=0`, `AUDIT_ISO=0`, `AUDIT_SUBPROC=0`).
-`audit-test-isolation.sh` cannot catch this: the test itself writes nothing to the repo. `install.sh`
-does.
+- **AC-P2 — sandboxed telemetry.** Every invocation sets `EXTENSION_DIR=<prefix>` in the child env.
+  `install.sh` contains **zero** `export` statements, so `PICKLE_INSTALL_ROOT` (`:33`) is shell-local
+  and the child inherits nothing; the deployed `log-activity.js` resolves via `getExtensionRoot()` →
+  `CANONICAL_EXTENSION_ROOT = ~/.claude/pickle-rick` (`pickle-utils.ts:226,329-334`). Without this the
+  new tests append to the operator's real activity stream — reintroducing this bundle's own
+  contamination class. Precedent: `install-script-prefix.test.js:98,111`.
 
-This is the previously-catalogued "integration test deletes compiled tree" symptom, now attributed to
-its cause.
+- **AC-P3 — every invocation passes `--prefix <tmp> --no-confirm`.**
 
-## Pre-launch stale-premise check
+### Red-proof procedure (P0 — applies to AC-B3 and AC-C3)
 
-- `install.sh:343-353` — force-clean loop present at `HEAD` (`45cda0bd`), unguarded. **Open.**
-- `extension/tests/integration/.serial-tests.json` at `HEAD` — 62 entries,
-  `install-excludes-working-dir-state.test.js` **absent**. **Open.**
-- `CLAUDE.md:149` `PICKLE_INSTALL_ROOT` row — still documents an `install.sh` deploy-prefix override
-  that `install.sh:33` unconditionally clobbers. **Open.** (Corrected 2026-08-10 during refinement:
-  an earlier draft of this PRD cited `extension/CLAUDE.md`, which has **zero** occurrences of the
-  string. The claim lives in the repo-root `CLAUDE.md`.)
-- `install.sh` is not a deployed artifact, so there is no deployed-tree arm to this check.
+**No `git checkout`, `git stash`, or `git restore` anywhere in this bundle.** Extract read-only.
 
-## Green-tree precondition
+- **AC-B3** — the test MUST accept the script under test via `INSTALL_SH_PATH` (default: repo
+  `install.sh`). Red-proof: `git show 45cda0bd:install.sh > ./install.pre.sh && chmod +x ./install.pre.sh`.
+  The copy MUST live **inside the repository** — `SCRIPT_DIR` derives from the script's own path, so a
+  copy under `$TMP` has no `.git` beside it, runs in tarball mode, and proves nothing (AC-P0). Delete
+  it in a `finally` so I2 holds; add it to no tracked file.
+- **AC-C3** — the test MUST accept its enumeration source via `DOC_SCAN_REF` (default: working tree
+  via `git ls-files '*.md'`; when set, `git ls-tree -r --name-only <ref> -- '*.md'` + `git show <ref>:<path>`).
+  Red-proof: `DOC_SCAN_REF=7987e121`. A script-path swap cannot red-proof AC-C3.
 
-Measured on `45cda0bd`, 2026-08-10, box at load 25-40 (a game and a VM running):
+**A test not observed red against its pre-fix source does not satisfy its AC.**
 
-```
-npm run test:fast   7481 tests, 7476 pass, 2 fail, 2 skipped, FAST_EXIT=1, 693 s
-```
-
-Both failures are timing-shaped, not logic:
-
-| Test | Observed | Budget |
-|---|---|---|
-| `readRecoverableJsonObject readdirSync bound: 10k decoys + 1 matching tmp under 50ms` | 10106 ms | 50 ms |
-| `spawn-morty: recovers orphan tmp backend state before routing worker CLI` | 45030 ms | timeout-shaped |
-
-Re-run alone at `--test-concurrency=1` with `node_modules/.bin` on `PATH`: **68/68 pass, 0 fail**, at
-load 40. They are c=8 contention flakes, not inherited breakage — no introducing commit to name.
-
-The precondition is therefore satisfied **with this caveat recorded**, not claimed clean. If a worker
-sees either test red, that is the known flake and not this bundle's doing.
+---
 
 ## Interface Contracts
 
-`install.sh` is a shell entry point, not a typed module. Its contract is stated in terms of
-filesystem effects, which is what this bundle changes.
+**Inputs** — `--prefix <dir>` (deploy destination; absent → `$HOME/.claude/pickle-rick`),
+`--no-confirm`. `PICKLE_INSTALL_ROOT` is **not** an input: `install.sh:33` overwrites it
+unconditionally. It governs the deployed runtime's path resolution only.
 
-**Inputs**
-- `--prefix <dir>` — deploy destination. Absent → `$HOME/.claude/pickle-rick`.
-- `--no-confirm` — suppress interactive confirmation.
-- `PICKLE_INSTALL_ROOT` (env) — **not** an input to `install.sh`; `install.sh:33` overwrites it
-  unconditionally. It is an input to the deployed runtime hook path only. WS-C2 corrects the docs.
+**Outputs** — deploy tree at the resolved prefix; exit 0 on success, non-zero with a diagnostic
+otherwise.
 
-**Outputs**
-- Deploy tree at the resolved prefix: `<prefix>/extension/**`, `<prefix>/../commands/*.md`,
-  `<prefix>/pickle_settings.json`, `<prefix>/persona.md`.
-- Exit 0 on success; non-zero with a diagnostic on failure.
+**Errors** — (a) compile failure → non-zero exit, source tree left present (AC-B7); (b) schemaVersion
+parity mismatch → non-zero exit.
 
-**Errors**
-- Compile failure → non-zero exit, source tree left in a loadable state (this is the property WS-B
-  establishes; today a mid-compile failure leaves ~130 modules absent).
-- Schema parity mismatch between `src/types/index.ts` and `types/index.js` → non-zero exit.
+**Invariants**
 
-**Invariants** — the load-bearing ones for this bundle:
-- **I1** — at every instant during and after `install.sh`, every compiled `.js` in the **source** tree
-  that exists at `HEAD` is present and loadable. Currently violated for the duration of the recompile.
-- **I2** — `install.sh` leaves the source tree byte-identical to `HEAD` for tracked files. `git status`
-  clean before implies clean after.
-- **I3** — `--prefix <dir>` confines all *destination* writes to `<dir>`. It does not, and after this
-  bundle still will not, confine the *build*; the build is simply no longer destructive.
-- **I4** — at every instant during and after `install.sh`, the deploy tree either fails the parity
-  probe or is loadable. It is never both parity-passing and unloadable. Currently violated in the
-  window between the rsync and the symlink recreation.
-
-## Test Expectations
-
-| Criterion | Test file | Description | Assertion |
-|:---|:---|:---|:---|
-| AC-A1/A2 | `extension/tests/integration/.serial-tests.json` + `.reasons.json` | Manifest entry and its reason | Both contain `tests/integration/install-excludes-working-dir-state.test.js` |
-| AC-A3 | `extension/tests/serial-tests-reasons-coverage.test.js` (existing) | 1:1 manifest↔reasons invariant | Passes unmodified |
-| AC-A4/A5 | none — tier run | Parallel sub-tier alone at c=4 | 0 `ERR_MODULE_NOT_FOUND`, 0 `MODULE_NOT_FOUND`, only `INV-CODEX-RECOVERY-ADVANCED` fails |
-| AC-B1 | `install.sh` | rm-loop deleted, `.tsbuildinfo` removal kept | `install.sh` contains no `rm -f "$jsfile"`; retains `rm -f "$SCRIPT_DIR/extension/.tsbuildinfo"` |
-| AC-B2 | new, `extension/tests/integration/install-stale-cache-rebuild.test.js` | Stale compiled artifact + stale `.tsbuildinfo`, then `install.sh --prefix <tmp>` | Compiled JS matches current source; **fails if `.tsbuildinfo` removal is also dropped** |
-| AC-B3 | new, `extension/tests/integration/install-source-tree-stays-loadable.test.js` | Poll `extension/types/index.js` on a tight interval while `install.sh --prefix <tmp>` runs | File never observed missing (invariant I1). **Must fail against `45cda0bd`** |
-| AC-B4 | `extension/tests/integration/install-stale-cache-rebuild.test.js` | Clean and stale starting states | Exit 0; deploy-tree compiled JS byte-identical to source |
-| AC-B5 | `extension/tests/integration/install-source-tree-stays-loadable.test.js` | `git status --porcelain` before/after | Identical output (invariant I2) |
-| AC-C1 | `install.sh` | Interrupt-safe ordering or staging | Stated in the ticket with a reason for the choice |
-| AC-C2 | new, `extension/tests/integration/install-parity-requires-node-modules.test.js` | Deploy tree with `node_modules` symlinks removed | Parity probe does **not** pass (invariant I4) |
-| AC-C3 | new, `extension/tests/integration/install-root-doc-invariant.test.js` | Enumerate `git ls-files '*.md'` occurrences of `PICKLE_INSTALL_ROOT`, assert per-occurrence via `describe.each` | No occurrence claims the env var overrides the `install.sh` deploy prefix. **Must fail against `7987e121`** (`CLAUDE.md:149` violates it) and must pass over the five correct-usage sites untouched |
-
-Note on AC-B3: a test that passes against the pre-fix `install.sh` is not testing the bug. The ticket
-must demonstrate it red on `45cda0bd` before it counts as satisfied.
-
-## Simplification Review
+- **I1 (scoped)** — at every instant during and after `install.sh`, every compiled `.js` in the
+  **source** tree that exists at `HEAD` is **present on disk**. Byte-level emit atomicity is **out of
+  scope, recorded as a residual**: the vendored compiler writes via `openSync(path,"w")` + one
+  `writeSync` (`extension/node_modules/typescript/lib/typescript.js:8550-8563`) — `O_TRUNC`, no
+  temp-then-rename — so each output is briefly zero-length. Today's violation is 10-30 s of
+  **absence** across 156 modules; after WS-B it is a per-file sub-millisecond truncation.
+- **I2** — `install.sh` leaves tracked compiled JS byte-identical to `HEAD`.
+- **I3** — `--prefix` confines destination writes. It does not confine the build; after this bundle
+  the build is simply no longer destructive.
+- **I4** — *(deferred with WS-C2; see Residuals)*
 
 ---
 
-## WS-A — Serialize the install test that recompiles the repo (P0)
+## WS-A — Serialize the install test that recompiles the repo (P0, tier `small`)
 
-`install-excludes-working-dir-state.test.js` must run in the serial sub-tier, like every other test
-that invokes `install.sh`.
+**Scope is complete and closed.** Every `tests/**/*.test.js` mentioning `install.sh` was enumerated
+and cross-checked against the 62-entry manifest: of 8 unserialized hits, only
+`install-excludes-working-dir-state.test.js` actually executes it.
+`deploy-lifecycle-soak.test.js` is `// @tier: expensive` (never runs in the integration tier);
+`extension-wiring`, `lockdown-end-to-end`, `audit-closer-template-compliance`, `loa-618-replay`,
+`pkgjson-fix`, `config-protection-git-boundary` reference it as a path string or prose only.
+**Adding further manifest entries is out of scope.**
 
-`extension/tests/serial-tests-reasons-coverage.test.js` enforces a 1:1 correspondence between
-`.serial-tests.json` entries and `.serial-tests.reasons.json` keys, so both files change together.
-
-### Acceptance criteria
-
-- **AC-A1** — `extension/tests/integration/.serial-tests.json` `entries` contains
+- **AC-A1** — `.serial-tests.json` `entries` contains
   `tests/integration/install-excludes-working-dir-state.test.js`.
-- **AC-A2** — `extension/tests/integration/.serial-tests.reasons.json` `reasons` has a key for that
-  exact path, whose value names `install.sh`'s repo-wide recompile as the reason.
-- **AC-A3** — `node --test tests/serial-tests-reasons-coverage.test.js` passes (1:1 invariant holds).
-- **AC-A4** — the integration **parallel** sub-tier, run alone at `--test-concurrency=4`, reports
-  **zero** occurrences of `ERR_MODULE_NOT_FOUND` and **zero** of `MODULE_NOT_FOUND`. Command:
-  `node bin/test-runner.js --tier integration --manifest tests/integration/.serial-tests.json --manifest-mode exclude --test-concurrency=4`
-- **AC-A5** — that same run's only remaining failure is `INV-CODEX-RECOVERY-ADVANCED`. Any other
-  failure is in scope for diagnosis, not for suppression.
+- **AC-A2 (corrected)** — the `.serial-tests.reasons.json` value for that path is the literal
+  **`"real-repo-isolation"`**, a class string from the five-member `ALLOWED_CLASSES` enum at
+  `serial-tests-reasons-coverage.test.js:45-51`, matching all five sibling install entries. **Prose
+  fails AC-A3** — the original PRD's "value names install.sh's repo-wide recompile" made AC-A2 and
+  AC-A3 mutually exclusive and WS-A unsatisfiable. Rationale prose belongs in the ticket body.
+- **AC-A3** — evidence is the **explicit single-file run**, pasted into the ticket artifact:
+  `cd extension && PATH="$PWD/node_modules/.bin:$PATH" node --test tests/serial-tests-reasons-coverage.test.js`.
+  A bare `node --test` on one file drops `node_modules/.bin` from `PATH` and fabricates failures. A
+  green worker gate is **not** evidence: that oracle is `// @tier: integration`, which no worker phase
+  runs, and it sits in the very parallel set this bug destroys.
+- **AC-A4** — parallel sub-tier alone, `ERR_MODULE_NOT_FOUND` count == 0 and `MODULE_NOT_FOUND`
+  count == 0, reported for BOTH:
+  (a) effective `--test-concurrency=4` (the baseline's configuration), and
+  (b) the literal `npm run test:integration:parallel`, which passes **no** `--test-concurrency` and
+  therefore runs at `availableParallelism()` — **hotter than the AC measures**, and contention-shaped
+  collateral scales with concurrency. A green (a) alone is not evidence the release gate is green.
+- **AC-A5 — disposition (binding).** Any remaining failure other than `INV-CODEX-RECOVERY-ADVANCED`
+  is **diagnosed and named as a residual** in the ticket artifact. The ticket neither suppresses it
+  (fake-green) nor halts (takes reliability and quality to zero). If any such failure exists, the
+  verification ticket **withholds its success verdict while completing every step.**
 
 ---
 
-## WS-B — Delete the redundant force-clean loop (P1, pure subtraction)
+## WS-B — Delete the redundant force-clean loop (P1, tier `medium`, pure subtraction)
 
-The `rm -f "$jsfile"` loop deletes only `.js` files that **have** a corresponding `.ts` source. It
-therefore removes no orphaned `.js` — a `.js` whose `.ts` was deleted is not matched by the `find` that
-drives the loop, so it survives. The loop's only remaining effect is to force a full recompile.
+The `rm -f "$jsfile"` loop deletes only `.js` files that **have** a `.ts` twin, so it removes no
+orphans. Its only effect is forcing a full recompile — which `rm -f .tsbuildinfo` on the next line
+already does.
 
-`rm -f "$SCRIPT_DIR/extension/.tsbuildinfo"` on the next line already forces a full recompile. The loop
-is redundant with the line immediately following it, and it is the sole cause of the destructive
-window: `tsc` overwrites its outputs in place, so without the loop no compiled module is ever absent
-for a measurable interval.
+**Strengthened by the codebase analyst:** `tsconfig.json` excludes `src/**/*.test.ts`; all 156
+non-`.d.ts` `.ts` files under `src/` have a `.js` twin, so deleting the loop strands nothing today.
+But the loop's `find` filters only `! -name "*.d.ts"` and does **not** honour that exclusion — a
+future `src/foo.test.ts` makes the loop `rm -f extension/foo.js`, a file `tsc` is configured never to
+emit. The six lines are **redundant today and destructive the moment a `src/**/*.test.ts` lands.**
+State the enumeration command and result in the ticket so a worker does not re-add the loop as a
+safety net.
 
-The stated purpose (`R-ITS-1: prevents stale-tsc-cache drift`) is satisfied by the `.tsbuildinfo`
-removal alone.
-
-### Acceptance criteria
-
-- **AC-B1** — the `while IFS= read -r tsfile; do … done < <(find …)` loop at `install.sh:345-350` is
-  deleted. `rm -f "$SCRIPT_DIR/extension/.tsbuildinfo"` is retained.
-- **AC-B2** — a test asserts the stale-cache property the loop existed for: with a deliberately stale
-  compiled artifact and a stale `.tsbuildinfo` in place, `install.sh --prefix <tmp>` produces compiled
-  JS matching current source. This must fail if `.tsbuildinfo` removal is also dropped.
-- **AC-B3** — a test asserts the absence property directly: while `install.sh --prefix <tmp>` runs, a
-  concurrent poll of `extension/types/index.js` never observes the file missing. This is the test that
-  would have caught the bug, so it must fail against `install.sh` as of `45cda0bd`.
-- **AC-B4** — `bash install.sh --prefix <tmp> --no-confirm` exits 0 and the deployed tree's compiled JS
-  is byte-identical to the source tree's, on both a clean and a stale starting state.
-- **AC-B5** — `git status` is clean after `install.sh` runs, i.e. the install does not modify tracked
-  compiled JS relative to `HEAD`.
+- **AC-B1 — MANDATORY CO-SCOPE.** Delete the loop at `install.sh:345-350`; retain
+  `rm -f "$SCRIPT_DIR/extension/.tsbuildinfo"`. **`extension/tests/install-script.test.js` MUST be in
+  this ticket's allowlist.** `AC-ITS-01` at `:1420-1455` (`// @tier: fast`) asserts the loop *exists* —
+  `src.includes('Force-cleaning compiled JS')` (`:1424`), the `find` regex (`:1433`),
+  `/rm -f "\$jsfile"/` (`:1438`), and ordering `forceClean < tsbuildinfoRm < tsc` (`:1452-1454`).
+  Omit the file and the per-file fence blocks the required edit → **zero-commit deadlock**. Tier
+  `small` would skip `test:fast` and ship Done over a red tier. Rewriting `AC-ITS-01` trips no
+  trap-door audit (`audit-trap-door-enforcement.sh` pins only `R-CNAR-7` / `R-PDT-4`).
+- **AC-B2** — with a stale compiled artifact AND a stale `.tsbuildinfo`, `install.sh` produces
+  compiled JS matching current source. **Must fail if `.tsbuildinfo` removal is also dropped.**
+  File: `extension/tests/integration/install-stale-cache-rebuild.test.js`.
+- **AC-B3 (load-bearing discriminator)** — while `install.sh` runs, a concurrent poll of
+  `extension/types/index.js` at ≤10 ms intervals never observes `fs.existsSync() === false`. The test
+  **additionally records** the observed minimum file size and sample count in the ticket artifact **as
+  data, with no assertion on either** — a recorded number cannot flake and cannot be fake-green, and it
+  evidences the truncation residual. The test asserts a **minimum sample count overlapping the
+  subprocess lifetime**, so a run sampling zero times inside the compile window cannot pass vacuously.
+  Assertion is **presence-only**; a size assertion goes intermittently red for a cause WS-B cannot fix,
+  and a false red on the discriminator is worse than a named residual.
+  File: `extension/tests/integration/install-source-tree-stays-loadable.test.js`.
+- **AC-B4** — deploy-tree compiled JS byte-identical to source, on clean and stale starting states.
+  **Domain must be one of two named sets, do not invent a third:** the probe's 8-file list
+  (`install.sh:410-419`) or the 156-file `.js`-with-a-`.ts`-twin set. A whole-tree diff fails for
+  unrelated reasons (`--delete-excluded`, the separate `activity-events.schema.json` `cp` at `:400-403`,
+  the `mux-runner.js → tmux-runner.js` symlink at `:562`, the deliberate `.tsbuildinfo` removal).
+- **AC-B5** — `git status --porcelain` identical before/after, **scoped to `extension/**/*.js`**.
+  `install.sh:342` runs `npm install`, which can rewrite tracked `extension/package-lock.json`.
+  Unscoped, the likely worker response is a `git restore` — the catalogued work-destroying move.
+- **AC-B6 — new-test hygiene, four parts, in the same ticket that creates each file.** For each of
+  `install-stale-cache-rebuild.test.js` and `install-source-tree-stays-loadable.test.js`:
+  (1) an entry in `.serial-tests.json`; (2) a `.serial-tests.reasons.json` value of
+  `"real-repo-isolation"` (enum, not prose); (3) `// @tier: integration` as **line 1** — an entry whose
+  file declares another tier is **silently ignored and keeps running at full concurrency**
+  (`serial-tests-reasons-coverage.test.js:26-42`), this codebase's named fix-looks-applied-and-is-not
+  failure mode; (4) AC-P0..P3 satisfied. Manifest paths are extension-root-relative and **not**
+  directory-derived (`tests/install-script-real.test.js` is a `tests/`-resident entry in the
+  `tests/integration/` manifest); `bin/test-runner.js:112-114,207-211` matches by exact normalized
+  path — **a typo'd entry is silently a no-op with no error.**
+- **AC-B7 — failure interface (I1 under failure).** With a deliberate TypeScript error injected into a
+  scratch copy of one source file, `install.sh` exits non-zero and every tracked compiled `.js` whose
+  `.ts` twin exists under `src/` is still present afterwards. Record the diagnostic verbatim. Today it
+  surfaces as `❌ Could not extract schemaVersion from source or compiled types/index. Refusing to
+  deploy.` (`:358`) — the check at `:353-360` greps `extension/types/index.js`, which the force-clean
+  loop just deleted, so a *compile* failure is reported as a *schema-extraction* failure. **Whether the
+  diagnostic is improved is out of scope**; the AC asserts non-zero exit + post-failure presence and
+  records the message as evidence. This is the one documented output with zero coverage, on the exact
+  failure path this bundle exists to fix.
 
 ### Deliberately NOT in scope
-
-Removing any existing entry from `.serial-tests.json`. The five other install tests are serialized for
-overlapping reasons — `install.sh` also runs `npm install` in `extension/` (`install.sh:342`) and
-writes a `tsc` symlink into the repo-root `node_modules/.bin` (`install.sh:565`), both shared mutable
-state. WS-B removes one hazard, not all of them; de-serializing anything requires separately proving
-the others are gone.
+De-serializing any existing manifest entry. `install.sh` also runs `npm install` in `extension/`
+(`:342`) and writes a `tsc` symlink into repo-root `node_modules/.bin` (`:565`) — both shared mutable
+state. WS-B removes one hazard, not all three.
 
 ---
 
-## WS-C — Deploy atomicity and one false doc claim (P2)
+## WS-C1 — Symlink recreation before the parity probe (P2, tier `medium`)
 
-**C1 — non-atomic deploy.** `install.sh` rsyncs with `--delete --delete-excluded` (which removes
-`node_modules` from the destination) and only afterwards recreates the runtime-dep symlinks
-(`install.sh:462-472`). An interrupt between the two leaves a deploy tree that looks installed but
-cannot load, and the MD5 parity probe passes over the empty `node_modules`.
+`install.sh` rsyncs with `--delete --delete-excluded` (removing `node_modules` from the destination)
+and only afterwards recreates the runtime-dep symlinks (`:462-472`), whose own comment says it exists
+*because* `--delete-excluded` blew them away. The parity probe (`:405-460`) runs in between and
+**executes the deploy tree** (`node "${EXTENSION_ROOT}/extension/bin/log-activity.js"`, `:438,447`),
+so it depends on symlinks that do not yet exist.
 
-**C2 — false documentation.** `CLAUDE.md:149` documents `PICKLE_INSTALL_ROOT` as a
-"Deploy-prefix override for `install.sh`". `install.sh:33` is
-`PICKLE_INSTALL_ROOT="${PREFIX:-$HOME/.claude/pickle-rick}"` — an unconditional assignment that
-discards any inherited value. Only `--prefix` sandboxes `install.sh`. The variable is real for the
-runtime hook path, which is what the row should say. This has cost real debugging time: a run believed
-to be sandboxed deployed to `$HOME` and exited 0, leaving the live tree with an empty `node_modules`.
+- **AC-C1** — move the `# --- RUNTIME DEPS ---` block so the order is
+  **rsync → RUNTIME DEPS → codegraph dep → parity probe**. Verified legal:
+  `install-script.test.js:1329-1330` pins `rsyncIdx < codegraphIdx < jqMergeIdx`. **Do not hoist above
+  the rsync.** The ticket states this ordering and why.
+- **AC-C1 (co-scope, MANDATORY)** — `extension/tests/install-sh-parity-event-gate-payload.test.js`
+  (`// @tier: fast`) pins "exactly 2 `install_sh_parity_check` emission sites" plus both `jq -nc`
+  payload constructions by regex. Any reorder touching an emission breaks it. Omitting it from the
+  allowlist is a zero-commit fence deadlock; `small` tiering hides the failure.
 
-### Acceptance criteria
+---
 
-- **AC-C1** — the symlink recreation happens such that no interrupt point leaves a deploy tree that is
-  both parity-passing and unloadable. Staging-then-rename, or ordering the symlink creation before the
-  parity probe, both satisfy this; the ticket picks one and states why.
-- **AC-C2** — a test asserts that a deploy tree missing its `node_modules` symlinks does **not** pass
-  the parity probe.
-- **AC-C3** — **for every** tracked `*.md` file in the repository, no statement claims that
-  `PICKLE_INSTALL_ROOT` overrides the `install.sh` deploy prefix. Verified by a test that enumerates
-  occurrences from `git ls-files '*.md'` at runtime and asserts the invariant over each via
-  `describe.each` — not against a hardcoded file list, so a future doc reintroducing the claim is
-  caught without editing the test.
+## WS-C3 — Documentation invariant (P2, folded into the WS-C ticket)
 
-  The one violating occurrence today is `CLAUDE.md:149`:
-  `| `PICKLE_INSTALL_ROOT` | path … | Deploy-prefix override for `install.sh` + deploy-lifecycle soak. |`
-  It must state that `install.sh` honours `--prefix` only and that the environment variable governs
-  the deployed runtime's path resolution.
+Keep this edit **inside the WS-C ticket**: a standalone doc-only ticket reddens doc-coupled tests on
+its own, and an upward mis-tier runs red-main gates that can wipe the edit.
 
-  The other five occurrences are **correct usage and must not be "fixed"**:
-  `README.md:531`, `docs/closer-ticket-manager-handoff.md:31`, `docs/FABLE_OPERATING_MANUAL.md:336`
-  (all: set the env var off-`$HOME` when running the expensive soak) and
-  `extension/docs/gitattr-live-run-evidence.md:31,35` (captured terminal output). A ticket that edits
-  these has misread the invariant.
+- **AC-C3** — **for every** tracked `*.md` file **excluding `prds/**`**, no statement claims that
+  `PICKLE_INSTALL_ROOT` overrides the `install.sh` deploy prefix. Enumerated from
+  `git ls-files '*.md'` at runtime — not a hardcoded list — so a future doc reintroducing the claim is
+  caught without editing the test. **The `prds/**` exclusion is load-bearing: without it the invariant
+  fails on the PRD that defines it.** Census at `HEAD`: 26 occurrences across 14 tracked `*.md`; 6
+  outside `prds/**`; exactly **one** violates.
+  File: `extension/tests/integration/install-root-doc-invariant.test.js`.
+  **`describe.each` is `undefined` in `node:test`** — the literal belongs in the ticket manifest's
+  `acceptance_test` field (where `spawn-refinement-team.ts:1383,1706-1713` requires it for a single
+  parametrized ticket to survive the AC-shape gate) and **must not** appear in the test file.
+- The one violating occurrence is `CLAUDE.md:149`. It must state that `install.sh` honours `--prefix`
+  only and that the env var governs the deployed runtime's path resolution.
+- **Must-not-touch (correct usage):** `README.md:531`,
+  `docs/closer-ticket-manager-handoff.md:31`, `docs/FABLE_OPERATING_MANUAL.md:336` (all correctly
+  instruct setting the env var off-`$HOME` for the expensive soak) and
+  `extension/docs/gitattr-live-run-evidence.md:31,35` (captured terminal output). **A ticket that edits
+  these has misread the invariant.**
+
+---
+
+## Verification ticket (tier `medium`)
+
+- **AC-V0** — record `require('node:os').availableParallelism()` and the **effective**
+  `--test-concurrency`. `bin/test-runner.js:11-28` clamps a requested value down to the core count and
+  never raises it (`R-TCC-1`); the 341/87 baseline was measured at effective c=4 on a 24-core box. A
+  run whose effective concurrency is < 4 does **not** satisfy AC-A4/AC-V1 and its numbers are not
+  comparable to the baseline.
+- **AC-V1** — parallel sub-tier alone at effective c=4: `ERR_MODULE_NOT_FOUND` == 0, `MODULE_NOT_FOUND` == 0.
+- **AC-V2** — parallel total fail ≤ 1; any single failure is `INV-CODEX-RECOVERY-ADVANCED`. Anything
+  else follows the AC-A5 disposition.
+- **AC-V3** — serial sub-tier alone at c=1: 591/591, exit 0.
+- **AC-V4 — WS-B discriminator (LOAD-BEARING).** AC-V1 proves **WS-A only**: after WS-A the offending
+  test no longer runs in the parallel set, so a green tier is consistent with **WS-B never landing**.
+  Report separately: `install-source-tree-stays-loadable.test.js` with
+  `INSTALL_SH_PATH=./install.pre.sh` (extracted from `45cda0bd`) → **red**, with the observed absence
+  window in ms; and against the fixed `install.sh` → **green**, with the observed minimum file size.
+  **A green AC-V1 without both halves of AC-V4 is WS-A masking, not WS-B fixing, and must be reported
+  as such.**
+- **AC-V5** — both sub-tiers reported separately from their own `ℹ` summary lines, plus `uptime`,
+  `tmutil status`, and the core count. A chained `npm run test:integration` does **not** satisfy
+  AC-V1–V3 (a red parallel half means the serial half never ran). Name the three audits explicitly —
+  npm binds `pre` hooks to literal script names and there is no `pretest:integration:parallel`.
+
+---
+
+## Residuals (recorded, not fixed)
+
+1. **AC-C2 / I4 — parity-probe fail-opens, DEFERRED by operator decision 2026-08-10.** "A deploy tree
+   missing its `node_modules` symlinks fails the parity probe" is untestable as worded: the probe is
+   inline (`:409-460`) with no standalone entry point; running `install.sh` recreates the symlinks at
+   `:462-472` right after it; and `:503-507` already aborts on an unloadable tree, so "non-zero exit"
+   cannot distinguish the parity probe from the codegraph self-probe. Three independent fail-opens, all
+   re-read at `HEAD`: the mode/skip guard (`:409`), the empty-MD5 condition (`:424` — a missing
+   destination yields an empty MD5, which is not a mismatch; the 8-file `_parity_files` list at
+   `:410-419` contains no `node_modules` path at all), and `2>/dev/null || true` on both emissions
+   (`:438,447`). Needs its own PRD that picks one head.
+2. **`tsc` emit truncation window** — per-file sub-millisecond zero-length outputs (`O_TRUNC`, no
+   rename). Out of scope; AC-B3 records the observed minimum size as evidence that it is real and
+   bounded.
+3. **`install.sh:34`** — `EXTENSION_ROOT="${PICKLE_INSTALL_ROOT:-...}"` is a dead `:-` default; `:33`
+   guarantees non-empty. Free subtraction if WS-C1 lands in that region. **Do not touch** the
+   `${PICKLE_INSTALL_ROOT:-…}` literals at `:39,681,687,702,725` — deliberately-unexpanded hook strings.
+4. **AC-C2 safety clause (carried forward to the follow-up PRD)** — deploy `node_modules` entries are
+   symlinks into the live repo (`:462-472`). Removal must be by link path only (`fs.rmSync`/`unlink`,
+   after asserting `lstatSync(p).isSymbolicLink()`). `cp -rL`, `find -L … -delete`, and `rsync` without
+   `--no-links` reach into the real `extension/node_modules/typescript` and wedge every subsequent
+   `npx tsc` and every gate.
 
 ---
 
 ## Simplification Review
 
-### WS-A
+**WS-A** — (1) two JSON entries, no code/flag/state. (2) Reuses `.serial-tests.json` exactly as five
+siblings do. (3) Corrects an omission, guards nothing. (4) No subtraction; it lives in WS-B.
 
-1. **Necessary?** Adds two JSON entries. No code, no flag, no state field. Necessary only until WS-B
-   lands; it is the cheap unblock that makes the tier measurable today.
-2. **Reuse instead of add?** Reuses the existing `.serial-tests.json` mechanism exactly as the five
-   sibling install tests already do. No parallel mechanism introduced.
-3. **Guards existing brittle complexity?** No. It corrects an omission in an existing manifest — the
-   test was added without the manifest entry its five siblings all carry.
-4. **Subtract?** No subtraction available. WS-A is a one-line-per-file correction; the subtraction
-   lives in WS-B.
+**WS-B** — (1) adds nothing; removes six lines. (2) The reuse *is* the point: `.tsbuildinfo` removal on
+the following line does the whole job. (3) **Removes** the brittle thing rather than guarding it — the
+tempting wrong fix is a lockfile or mutex around `install.sh` so concurrent tests self-serialize, i.e.
+new machinery wrapped around a redundant loop. (4) Six lines that are redundant today **and destructive
+the moment a `src/**/*.test.ts` lands**. Not claimed: the manifest does not shrink; other shared-state
+hazards remain.
 
-### WS-B
+**WS-C** — (1) C1 reorders existing steps, adding nothing; C3 deletes a false sentence. (2) C1 is a
+reorder, not a staging directory — reuse over addition, and the verified legal order is already pinned
+by an existing test. (3) Neither guards brittle complexity; C1 closes a real interrupt window, C3
+removes actively misleading documentation. (4) C3 subtracts a false claim that has already cost
+debugging time — it sent this very PRD to the wrong file for three drafts. **Deferring C2 is itself the
+subtraction**: it removes an unbounded three-headed design choice from a worker's plate.
 
-1. **Necessary?** Adds nothing. Pure removal of six lines.
-2. **Reuse instead of add?** Not applicable — the reuse *is* the point: `.tsbuildinfo` removal, already
-   present on the following line, does the whole job.
-3. **Guards existing brittle complexity?** It **removes** the brittle thing rather than guarding it.
-   The tempting wrong fix here is to add a lockfile or a mutex around `install.sh` so concurrent tests
-   serialize themselves — that would be new machinery wrapped around a redundant loop. Delete the loop
-   instead.
-4. **Subtract?** Six lines of `install.sh`, and with them an entire class of cross-test contamination.
-   Note what is *not* claimed: the serial manifest does not shrink, because other shared-state hazards
-   in `install.sh` remain (see WS-B "Deliberately NOT in scope").
+## Implementation Task Breakdown
 
-### WS-C
-
-1. **Necessary?** C1 changes ordering or introduces a staging step — that is the one genuine addition
-   in this bundle, and it is small. C2 adds nothing; it deletes a false sentence.
-2. **Reuse instead of add?** C1 should prefer reordering the existing steps over introducing a staging
-   directory. A staging dir is only justified if reordering cannot close the window; the ticket must
-   say which and why.
-3. **Guards existing brittle complexity?** No. C1 closes a real interrupt window; C2 removes
-   documentation that actively misleads.
-4. **Subtract?** C2 subtracts a false claim that has already cost debugging time. C1's subtraction is a
-   failure mode, not a line count.
-
----
-
-## Verification ticket
-
-A final ticket must **run the claim**, not merely assert the diff:
-
-1. Run the integration parallel sub-tier alone at `--test-concurrency=4`. Record tests / pass / fail
-   from its own `ℹ` summary lines, plus the count of `ERR_MODULE_NOT_FOUND` and `MODULE_NOT_FOUND`.
-2. Run the integration serial sub-tier alone at `--test-concurrency=1`. Record the same.
-3. Report both sub-tiers separately. `npm run test:integration` chains parallel `&&` serial, so a red
-   parallel half means the serial half never runs — do not use the chained script for this evidence.
-4. Name the three audit preflights explicitly (`audit-test-tiers.sh`, `audit-test-isolation.sh`,
-   `audit-subprocess-heavy-tests.sh`); npm binds `pre` hooks to literal script names and there is no
-   `pretest:integration:parallel`.
-5. Record the box's `uptime` and `tmutil status` alongside the numbers. A tier result without its load
-   context is not evidence.
-
-Baseline to beat, measured on `45cda0bd`: parallel 341 tests / 87 fail (86 collateral, 1 real);
-serial 591/591 pass.
+| Order | Title | Tier | Priority | Files |
+|---|---|---|---|---|
+| 10 | Serialize `install-excludes-working-dir-state.test.js` | small | High | `.serial-tests.json`, `.serial-tests.reasons.json` |
+| 20 | Delete force-clean loop + rewrite `AC-ITS-01` | medium | High | `install.sh`, `extension/tests/install-script.test.js` |
+| 30 | `install-source-tree-stays-loadable.test.js` (AC-B3, red-proofed) | medium | High | new test, both manifests |
+| 40 | `install-stale-cache-rebuild.test.js` (AC-B2, AC-B4, AC-B5) | medium | High | new test, both manifests |
+| 50 | `AC-B7` failure-interface test | medium | Medium | new test, both manifests |
+| 60 | Reorder RUNTIME DEPS before parity probe + `CLAUDE.md:149` | medium | Medium | `install.sh`, `CLAUDE.md`, `install-sh-parity-event-gate-payload.test.js` |
+| 70 | `install-root-doc-invariant.test.js` (AC-C3, red-proofed) | medium | Medium | new test, both manifests |
+| 80 | Verification: AC-V0–V5 incl. WS-B discriminator | medium | High | none (measurement + artifact) |
