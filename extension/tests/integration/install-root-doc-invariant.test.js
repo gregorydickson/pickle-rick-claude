@@ -10,7 +10,7 @@
 // as evidence, so including them would make the invariant fail against its own defining documents.
 //
 // Enumeration source is overridable via DOC_SCAN_REF (a git ref) for red-proofing against a
-// pre-fix tree, without ever mutating the working tree (no git checkout/stash/restore):
+// pre-fix tree, without ever mutating the working tree (no git-level undo of any kind):
 //   - unset (default): `git ls-files '*.md'` + fs.readFileSync (working tree)
 //   - set: `git ls-tree -r --name-only <ref> -- '*.md'` + `git show <ref>:<path>` (git-object reads)
 import { test } from 'node:test';
