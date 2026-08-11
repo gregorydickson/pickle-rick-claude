@@ -57,8 +57,10 @@ its cause.
 - `install.sh:343-353` — force-clean loop present at `HEAD` (`45cda0bd`), unguarded. **Open.**
 - `extension/tests/integration/.serial-tests.json` at `HEAD` — 62 entries,
   `install-excludes-working-dir-state.test.js` **absent**. **Open.**
-- `extension/CLAUDE.md` `PICKLE_INSTALL_ROOT` row — still documents an `install.sh` deploy-prefix
-  override that `install.sh:33` unconditionally clobbers. **Open.**
+- `CLAUDE.md:149` `PICKLE_INSTALL_ROOT` row — still documents an `install.sh` deploy-prefix override
+  that `install.sh:33` unconditionally clobbers. **Open.** (Corrected 2026-08-10 during refinement:
+  an earlier draft of this PRD cited `extension/CLAUDE.md`, which has **zero** occurrences of the
+  string. The claim lives in the repo-root `CLAUDE.md`.)
 - `install.sh` is not a deployed artifact, so there is no deployed-tree arm to this check.
 
 ## Green-tree precondition
@@ -128,7 +130,7 @@ filesystem effects, which is what this bundle changes.
 | AC-B5 | `extension/tests/integration/install-source-tree-stays-loadable.test.js` | `git status --porcelain` before/after | Identical output (invariant I2) |
 | AC-C1 | `install.sh` | Interrupt-safe ordering or staging | Stated in the ticket with a reason for the choice |
 | AC-C2 | new, `extension/tests/integration/install-parity-requires-node-modules.test.js` | Deploy tree with `node_modules` symlinks removed | Parity probe does **not** pass (invariant I4) |
-| AC-C3/C4 | `extension/CLAUDE.md` | `PICKLE_INSTALL_ROOT` row corrected | `grep -rn 'PICKLE_INSTALL_ROOT' extension/CLAUDE.md CLAUDE.md README.md` yields no claim that the env var overrides the `install.sh` prefix |
+| AC-C3 | new, `extension/tests/integration/install-root-doc-invariant.test.js` | Enumerate `git ls-files '*.md'` occurrences of `PICKLE_INSTALL_ROOT`, assert per-occurrence via `describe.each` | No occurrence claims the env var overrides the `install.sh` deploy prefix. **Must fail against `7987e121`** (`CLAUDE.md:149` violates it) and must pass over the five correct-usage sites untouched |
 
 Note on AC-B3: a test that passes against the pre-fix `install.sh` is not testing the bug. The ticket
 must demonstrate it red on `45cda0bd` before it counts as satisfied.
@@ -206,7 +208,7 @@ the others are gone.
 (`install.sh:462-472`). An interrupt between the two leaves a deploy tree that looks installed but
 cannot load, and the MD5 parity probe passes over the empty `node_modules`.
 
-**C2 — false documentation.** `extension/CLAUDE.md` documents `PICKLE_INSTALL_ROOT` as a
+**C2 — false documentation.** `CLAUDE.md:149` documents `PICKLE_INSTALL_ROOT` as a
 "Deploy-prefix override for `install.sh`". `install.sh:33` is
 `PICKLE_INSTALL_ROOT="${PREFIX:-$HOME/.claude/pickle-rick}"` — an unconditional assignment that
 discards any inherited value. Only `--prefix` sandboxes `install.sh`. The variable is real for the
@@ -220,11 +222,22 @@ to be sandboxed deployed to `$HOME` and exited 0, leaving the live tree with an 
   parity probe, both satisfy this; the ticket picks one and states why.
 - **AC-C2** — a test asserts that a deploy tree missing its `node_modules` symlinks does **not** pass
   the parity probe.
-- **AC-C3** — the `extension/CLAUDE.md` `PICKLE_INSTALL_ROOT` row states that `install.sh` honours
-  `--prefix` only, and that the environment variable governs the runtime hook path. No claim that the
-  env var overrides the `install.sh` prefix survives in any doc.
-- **AC-C4** — `grep -rn 'PICKLE_INSTALL_ROOT' extension/CLAUDE.md CLAUDE.md README.md` shows no
-  surviving statement contradicting `install.sh:33`.
+- **AC-C3** — **for every** tracked `*.md` file in the repository, no statement claims that
+  `PICKLE_INSTALL_ROOT` overrides the `install.sh` deploy prefix. Verified by a test that enumerates
+  occurrences from `git ls-files '*.md'` at runtime and asserts the invariant over each via
+  `describe.each` — not against a hardcoded file list, so a future doc reintroducing the claim is
+  caught without editing the test.
+
+  The one violating occurrence today is `CLAUDE.md:149`:
+  `| `PICKLE_INSTALL_ROOT` | path … | Deploy-prefix override for `install.sh` + deploy-lifecycle soak. |`
+  It must state that `install.sh` honours `--prefix` only and that the environment variable governs
+  the deployed runtime's path resolution.
+
+  The other five occurrences are **correct usage and must not be "fixed"**:
+  `README.md:531`, `docs/closer-ticket-manager-handoff.md:31`, `docs/FABLE_OPERATING_MANUAL.md:336`
+  (all: set the env var off-`$HOME` when running the expensive soak) and
+  `extension/docs/gitattr-live-run-evidence.md:31,35` (captured terminal output). A ticket that edits
+  these has misread the invariant.
 
 ---
 
