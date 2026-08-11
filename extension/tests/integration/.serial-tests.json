@@ -65,6 +65,7 @@
     "tests/integration/install-excludes-working-dir-state.test.js",
     "tests/integration/install-source-tree-stays-loadable.test.js",
     "tests/integration/install-stale-cache-rebuild.test.js",
-    "tests/integration/install-compile-failure-preserves-source.test.js"
+    "tests/integration/install-compile-failure-preserves-source.test.js",
+    "tests/integration/install-root-doc-invariant.test.js"
   ]
 }
