@@ -62,6 +62,7 @@
     "tests/integration/start-commit-pinned-sha.test.js",
     "tests/integration/gitattr-trailer-producer.test.js",
     "tests/integration/gitattr-hook-forwarding.test.js",
-    "tests/integration/install-excludes-working-dir-state.test.js"
+    "tests/integration/install-excludes-working-dir-state.test.js",
+    "tests/integration/install-source-tree-stays-loadable.test.js"
   ]
 }

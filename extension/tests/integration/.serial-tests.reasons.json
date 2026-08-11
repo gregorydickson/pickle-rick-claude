@@ -62,6 +62,7 @@
     "tests/integration/start-commit-pinned-sha.test.js": "real-repo-isolation",
     "tests/integration/gitattr-trailer-producer.test.js": "subprocess-spawn-timing",
     "tests/integration/gitattr-hook-forwarding.test.js": "subprocess-spawn-timing",
-    "tests/integration/install-excludes-working-dir-state.test.js": "real-repo-isolation"
+    "tests/integration/install-excludes-working-dir-state.test.js": "real-repo-isolation",
+    "tests/integration/install-source-tree-stays-loadable.test.js": "real-repo-isolation"
   }
 }
