@@ -135,7 +135,33 @@ test('install-compile-failure-preserves-source: I1 holds when tsc fails', async 
         `precondition failed: install.sh did not report git mode (stderr:\n${stderr}\nstdout:\n${stdout})`,
     );
 
-    // AC-B7 clause 1: non-zero exit on a compile failure.
+    // Precondition: the active-session guard (install.sh:293-306) must not have refused — a
+    // sandboxed empty PICKLE_DATA_ROOT should let the script reach the compile block. The REFUSE
+    // fires before mode detection so the check above already excludes it, but assert it by name so a
+    // sandbox leak reports as a leak rather than as a missing banner.
+    assert.ok(
+        !stderr.includes('REFUSE: install.sh blocked'),
+        `precondition failed: install.sh refused due to an active session leaking into the sandbox (stderr:\n${stderr})`,
+    );
+
+    // AC-B7 clause 1: non-zero exit ON THE INJECTED COMPILE FAILURE. install.sh exits non-zero from
+    // several points reachable after the git-mode banner — missing node/jq/rsync (install.sh:310-312),
+    // unparseable settings.json (:322), the `npm install` preceding tsc (:341), the post-rsync MD5
+    // parity probe (:410-419). A bare exit-code check is satisfied by any of them with the injected
+    // error never compiled, so pin the cause first.
+    //
+    // The matcher is tsc's own diagnostic for the planted declaration, taken from observed output.
+    // tsc's non-pretty form (no TTY on a piped child) is
+    //   src/types/index.ts(<line>,<col>): error TS2322: Type 'number' is not assignable to type 'string'.
+    // and omits the identifier, so the anchor is the injection target's path plus the exact error —
+    // not a substring of the injected symbol, which never reaches the output.
+    const combinedOutput = `${stderr}\n${stdout}`;
+    assert.match(
+        combinedOutput,
+        /src\/types\/index\.ts\(\d+,\d+\): error TS2322: Type 'number' is not assignable to type 'string'\./,
+        'install.sh failed for a reason other than the injected compile error — tsc never reported the '
+        + `planted TS2322 in src/types/index.ts (stderr:\n${stderr}\nstdout:\n${stdout})`,
+    );
     assert.notEqual(
         exitCode,
         0,
@@ -159,7 +185,7 @@ test('install-compile-failure-preserves-source: I1 holds when tsc fails', async 
     // Diagnostic recorded (not asserted) for the ticket's evidence requirement.
     console.log(`[install-compile-failure-preserves-source] captured diagnostic:\n${stderr}\n${stdout}`);
 
-    // AC: the injected error was reverted without git checkout/stash/restore, and the compiled tree
+    // AC: the injected error was reverted by writing back held bytes — no git-level undo — and the tree
     // is byte-identical to before the injection (tsc recompiles deterministically from unchanged
     // source).
     const afterStatus = compiledTreeStatusPorcelain();
