@@ -64,6 +64,7 @@
     "tests/integration/gitattr-hook-forwarding.test.js": "subprocess-spawn-timing",
     "tests/integration/install-excludes-working-dir-state.test.js": "real-repo-isolation",
     "tests/integration/install-source-tree-stays-loadable.test.js": "real-repo-isolation",
-    "tests/integration/install-stale-cache-rebuild.test.js": "real-repo-isolation"
+    "tests/integration/install-stale-cache-rebuild.test.js": "real-repo-isolation",
+    "tests/integration/install-compile-failure-preserves-source.test.js": "real-repo-isolation"
   }
 }
