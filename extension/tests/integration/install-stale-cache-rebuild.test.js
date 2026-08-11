@@ -26,7 +26,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const EXTENSION_ROOT_SRC = path.join(REPO_ROOT, 'extension');
 const DEFAULT_INSTALL_SH = path.join(REPO_ROOT, 'install.sh');
-const INSTALL_SH = process.env.INSTALL_SH_PATH ?? DEFAULT_INSTALL_SH;
+// Resolved against the repo root, not cwd: the AC-B3 red-proof procedure places the pre-fix copy
+// INSIDE the repository (so SCRIPT_DIR still finds a .git beside it and git mode is exercised), and
+// these tiers run with cwd = extension/. Matches install-source-tree-stays-loadable.test.js.
+const INSTALL_SH = process.env.INSTALL_SH_PATH
+    ? path.resolve(REPO_ROOT, process.env.INSTALL_SH_PATH)
+    : DEFAULT_INSTALL_SH;
 
 const TSBUILDINFO_PATH = path.join(EXTENSION_ROOT_SRC, '.tsbuildinfo');
 const TYPES_INDEX_JS = path.join(EXTENSION_ROOT_SRC, 'types', 'index.js');
@@ -72,6 +77,12 @@ function runInstall(installSh, tmpHome) {
             HOME: tmpHome,
             PICKLE_INSTALL_ROOT: prefix,
             PICKLE_DATA_ROOT: path.join(tmpHome, '.local', 'share', 'pickle-rick'),
+            // install.sh has zero `export` statements, so PICKLE_INSTALL_ROOT is shell-local and the
+            // child inherits nothing; the deployed log-activity.js resolves through
+            // getExtensionRoot() -> process.env.EXTENSION_DIR (pickle-utils.ts:330), falling back to
+            // ~/.claude/pickle-rick (:226,:334) when unset. Without this the run appends to the
+            // operator's real activity stream.
+            EXTENSION_DIR: prefix,
         },
     });
     return { result, prefix };
@@ -84,6 +95,13 @@ test('install-stale-cache-rebuild: stale .tsbuildinfo + stale compiled JS still 
         tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-stale-cache-'));
         const { result, prefix } = runInstall(INSTALL_SH, tmpHome);
 
+        // Precondition: the active-session guard (install.sh:293-306) must not have refused. Its
+        // `exit 2` is already excluded by the status check below, but name it so a sandbox leak
+        // reports as a leak instead of as a generic non-zero exit.
+        assert.ok(
+            !result.stderr.includes('REFUSE: install.sh blocked'),
+            `precondition failed: install.sh refused due to an active session leaking into the sandbox (stderr:\n${result.stderr})`,
+        );
         assert.equal(result.status, 0, `install.sh failed (exit ${result.status}):\n${result.stderr}`);
         assert.match(result.stderr, /Mode: git/, 'expected git-mode install (compile block only runs in git mode)');
 
