@@ -4,6 +4,9 @@ status: not-recommended
 priority: P2
 finding: B-DPRI
 date: 2026-08-04
+last_verified: 2026-08-11
+verified_head: f0992812
+verdict_after_reverification: "unchanged — not-recommended, on stronger evidence. §0.1's 'no cleanup phase has run since' is SUPERSEDED: 46 anatomy-park + 31 szechuan-sauce commits have since run with a live ledger (25 CRITICAL, 20 HIGH, 45 trap-doored). The deferred experiment was run and the existing phases work."
 branch: release/v2.1-beta
 head: 3f0b7749
 build_mode: n/a — not recommended for build
@@ -43,9 +46,44 @@ All three workstreams are **shipped and deployed** (`~/.claude/pickle-rick/exten
 `495177d1`/`e4542828`/`3f3fd5d4` (2026-07-27). Source: `microverse-runner.ts:1670-1680`, `:1798-1813`,
 `:3727`, `:4729`.
 
-**And no cleanup phase has run since.** `git rev-list --count 8a64bc5f..HEAD` = 23 commits: one
-szechuan commit from the same blind run (`a7d6d9ec`), zero anatomy-park commits, the rest docs and
-hand-fix work. We have **no** evidence about how these phases behave with a live ledger.
+**~~And no cleanup phase has run since.~~ SUPERSEDED 2026-08-11 — the experiment was run, and it
+answers the question this PRD deferred.**
+
+*As written 2026-08-04:* `git rev-list --count 8a64bc5f..HEAD` = 23 commits: one szechuan commit from
+the same blind run (`a7d6d9ec`), zero anatomy-park commits, the rest docs and hand-fix work. We have
+**no** evidence about how these phases behave with a live ledger.
+
+*Re-measured 2026-08-11 at `f0992812`:*
+
+```
+git rev-list --count 8a64bc5f..HEAD                                   189
+git log --format=%s 8a64bc5f..HEAD | grep -c '^anatomy-park:'          46
+git log --format=%s 8a64bc5f..HEAD | grep -c '^szechuan-sauce:'        31
+  … of the 46 anatomy-park commits: 25 CRITICAL, 20 HIGH, 45 with a trap door
+```
+
+Span 2026-07-27 → 2026-08-11. The evidence gap is **closed**, and it closed in the direction that
+*strengthens* this PRD's recommendation rather than weakening it: with a live ledger, the existing
+phases produce a sustained stream of CRITICAL and HIGH findings, each carrying a trap-door entry.
+Representative:
+
+| Commit | Finding |
+|---|---|
+| `86ba58f4` | CRITICAL — a grouped command bypassed every worker-forbidden-op guard |
+| `20043683` | CRITICAL — scope fence drops `-diff` text files from `allowed_paths` |
+| `7509128c` | HIGH — an empty prior ledger classified every first LLM iteration as regressed |
+| `b0ae7560` | szechuan — split `StateManager.read` along its read/parse/recover seams |
+| `a34dc39d` | szechuan — collapse the twin demotion predicates onto one canonical-field probe |
+
+§0.1's argument was: *the premise was formed on a blind instrument; fix the instrument and measure
+before building a second engine.* The instrument was fixed, 77 cleanup-phase commits have since been
+measured through it, and the phases work. **The `not-recommended` verdict stands on stronger evidence
+than when it was written.**
+
+The remaining honest caveat is unchanged: none of this compares the phases against
+`/ll:deep-pr-review` on the *same* diff. It establishes that the existing phases find real defects, not
+that they find everything the deep-review skill would. A head-to-head on one shared diff is still the
+cheap next measurement, and is still cheaper than building the integration.
 
 ### 0.2 The method is demonstrably strong — it fixed the bug in its own scoring loop
 
@@ -279,7 +317,7 @@ integration.** Which is why this PRD's own recommendation is not to build it.
 | R-JPCM WS-2 shipped | `495177d1`, `e4542828`, `3f3fd5d4`; `microverse-runner.ts:1798-1813` |
 | WS-4 (`converged` on stall) shipped | `9f83e2c1`, `66eb7a69` (2026-07-19); `microverse-runner.ts:3727`, `:4729` |
 | All three deployed | `~/.claude/pickle-rick/extension/bin/microverse-runner.js`, `2.1.0-beta.7` |
-| No cleanup phase since the fix | `git rev-list --count 8a64bc5f..HEAD` = 23; 1 szechuan (same blind run), 0 anatomy |
+| ~~No cleanup phase since the fix~~ **SUPERSEDED 2026-08-11** | *Was:* `git rev-list --count 8a64bc5f..HEAD` = 23; 1 szechuan (same blind run), 0 anatomy. *Now, at `f0992812`:* 189 commits — 46 anatomy-park (25 CRITICAL, 20 HIGH, 45 trap-doored) + 31 szechuan-sauce, spanning 2026-07-27→08-11. Gap closed; see §0.1 |
 | szechuan fixed its own judge | 6 commits, session `2026-07-26-013335ff` |
 | Ledger says otherwise (stale) | `prds/MASTER_PLAN.md:120`, `:530`; `prds/BUG-INDEX.md:137` |
 | Judge scores all `allowed_paths` | `microverse-runner.ts:1644-1650` |
