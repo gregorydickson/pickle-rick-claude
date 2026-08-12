@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import * as os from 'node:os';
 import path, { basename } from 'node:path';
 const DEFAULT_RUNS = 5;
 const DEFAULT_FAIL_BUDGET = 2;
@@ -66,22 +67,96 @@ function isBudgetableTestFailure(stdout, stderr) {
     const combined = `${stdout}\n${stderr}`;
     return /(^✖\s)|(^not ok\s)|(^ℹ tests\s+\d+)/m.test(combined);
 }
-// R-FBTN: node --test names each failure as `✖ <name> (…ms)` or TAP `not ok N - <name>`.
-// Surface WHICH tests flaked, not just how many — a bare count is unactionable.
-function extractFailingTestNames(stdout, stderr) {
-    const names = [];
+// R-FBTN/WS-D: node --test names each failure as `✖ <name> (…ms)` or TAP `not ok N - <name>`.
+// Surface WHICH tests flaked and HOW LONG they took, not just how many — a bare count is
+// unactionable and duration is the operator's discriminator between a timeout-adjacent
+// flake and a genuine regression.
+function extractFailingTestDetails(stdout, stderr) {
+    const details = [];
     for (const line of `${stdout}\n${stderr}`.split(/\r?\n/)) {
         const trimmed = line.trim();
-        const crossed = /^✖\s+(.+?)(?:\s+\(\d[\d.]*ms\))?$/.exec(trimmed);
+        const crossed = /^✖\s+(.+?)(?:\s+\((\d[\d.]*)ms\))?$/.exec(trimmed);
         if (crossed) {
-            names.push(crossed[1].trim());
+            details.push({ name: crossed[1].trim(), durationMs: crossed[2] ? Number.parseFloat(crossed[2]) : null });
             continue;
         }
         const tap = /^not ok\s+\d+\s+-\s+(.+?)(?:\s+#.*)?$/.exec(trimmed);
         if (tap)
-            names.push(tap[1].trim());
+            details.push({ name: tap[1].trim(), durationMs: null });
     }
-    return names;
+    return details;
+}
+// A single failure can match both the spec-reporter `✖` line and a TAP `not ok` line for
+// the same test name (reporter-dependent); collapse to one entry per name, preferring
+// whichever match captured a duration.
+function dedupeFailureDetails(details) {
+    const byName = new Map();
+    for (const detail of details) {
+        const existing = byName.get(detail.name);
+        if (!existing || (existing.durationMs === null && detail.durationMs !== null)) {
+            byName.set(detail.name, detail);
+        }
+    }
+    return [...byName.values()];
+}
+function formatStatus(status) {
+    return status === null ? 'null' : String(status);
+}
+function formatFailureDetail(detail) {
+    const duration = detail.durationMs === null ? 'unknown' : `${detail.durationMs}ms`;
+    return `  - ${detail.name} duration=${duration}`;
+}
+function formatRunLogContents(runIndex, status, details, stdout, stderr) {
+    return [
+        `RUN ${runIndex} status=${formatStatus(status)}`,
+        ...details.map(formatFailureDetail),
+        '',
+        '--- stdout ---',
+        stdout,
+        '--- stderr ---',
+        stderr,
+    ].join('\n');
+}
+// R-FBTN/WS-D: a test failing in exactly one run is contention noise; a test failing
+// across two or more runs is a deterministic regression. Per-run dedupe (a Set per run)
+// before counting so a test that flakes twice WITHIN one run doesn't inflate its count.
+function findRepeatedFailures(runRecords) {
+    const counts = new Map();
+    for (const record of runRecords) {
+        for (const name of new Set(record.failing.map((detail) => detail.name))) {
+            counts.set(name, (counts.get(name) ?? 0) + 1);
+        }
+    }
+    return [...counts.entries()]
+        .filter(([, count]) => count >= 2)
+        .map(([name]) => name)
+        .sort();
+}
+function printExceededReport(summary, parsed, stderr) {
+    stderr(`FAIL_BUDGET_EXCEEDED failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs}`);
+    // WS-D: attribute failures per run — same test failing repeatedly is a regression,
+    // distinct single-run failures are contention. Both read differently from a union count.
+    for (const record of summary.runRecords) {
+        stderr(`RUN ${record.runIndex} FAILED: status=${formatStatus(record.status)}`);
+        if (record.failing.length > 0) {
+            for (const detail of record.failing) {
+                stderr(formatFailureDetail(detail));
+            }
+        }
+        else {
+            stderr('  (no ✖/not-ok test names captured)');
+        }
+    }
+    const repeated = findRepeatedFailures(summary.runRecords);
+    if (repeated.length > 0) {
+        stderr('REPEATED ACROSS RUNS:');
+        for (const name of repeated) {
+            stderr(`  - ${name}`);
+        }
+    }
+    for (const record of summary.runRecords) {
+        stderr(`RUN ${record.runIndex} LOG: ${record.logPath}`);
+    }
 }
 function summarizeHarnessFailure(stdout, stderr) {
     const firstLine = `${stderr}\n${stdout}`
@@ -92,7 +167,8 @@ function summarizeHarnessFailure(stdout, stderr) {
 }
 function runIterations(parsed, opts) {
     let failures = 0;
-    const failingTests = new Set();
+    const runRecords = [];
+    let logDir = null;
     const childEnv = { ...opts.env };
     const invocation = buildRunInvocation(opts.env);
     delete childEnv.NODE_TEST_CONTEXT;
@@ -109,19 +185,29 @@ function runIterations(parsed, opts) {
             throw result.error;
         }
         if ((result.status ?? 1) !== 0) {
-            if (!isBudgetableTestFailure(result.stdout ?? '', result.stderr ?? '')) {
-                throw new Error(`Flake-budget child failed before reporting test results: ${summarizeHarnessFailure(result.stdout ?? '', result.stderr ?? '')}`);
+            const stdout = result.stdout ?? '';
+            const stderr = result.stderr ?? '';
+            if (!isBudgetableTestFailure(stdout, stderr)) {
+                throw new Error(`Flake-budget child failed before reporting test results: ${summarizeHarnessFailure(stdout, stderr)}`);
             }
             failures += 1;
-            for (const name of extractFailingTestNames(result.stdout ?? '', result.stderr ?? '')) {
-                failingTests.add(name);
+            const runNumber = runIndex + 1;
+            const status = result.status ?? null;
+            const failing = dedupeFailureDetails(extractFailingTestDetails(stdout, stderr));
+            // Retain only names+durations in memory across runs; the full stdout/stderr for a
+            // ~5000-test tier is written straight to disk and never held past this iteration.
+            if (!logDir) {
+                logDir = mkdtempSync(path.join(os.tmpdir(), 'flake-budget-logs-'));
             }
+            const logPath = path.join(logDir, `run-${runNumber}.log`);
+            writeFileSync(logPath, formatRunLogContents(runNumber, status, failing, stdout, stderr), 'utf8');
+            runRecords.push({ runIndex: runNumber, status, failing, logPath });
             if (failures > parsed.failBudget) {
-                return { failures, runsCompleted: runIndex + 1, failingTests: [...failingTests] };
+                return { failures, runsCompleted: runNumber, runRecords };
             }
         }
     }
-    return { failures, runsCompleted: parsed.runs, failingTests: [...failingTests] };
+    return { failures, runsCompleted: parsed.runs, runRecords };
 }
 export async function checkFlakeBudgetMain(opts) {
     const stdout = opts.stdout ?? ((msg) => process.stdout.write(`${msg}\n`));
@@ -135,11 +221,7 @@ export async function checkFlakeBudgetMain(opts) {
             spawnSyncFn: opts.spawnSyncFn ?? spawnSync,
         });
         if (summary.failures > parsed.failBudget) {
-            stderr(`FAIL_BUDGET_EXCEEDED failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs}`);
-            // R-FBTN: name the flaky tests so the failure is actionable, not a bare count.
-            stderr(summary.failingTests.length > 0
-                ? `FLAKY_TESTS ${summary.failingTests.map((n) => `\n  - ${n}`).join('')}`
-                : 'FLAKY_TESTS (none captured — child emitted no ✖/not-ok test names)');
+            printExceededReport(summary, parsed, stderr);
             return 1;
         }
         stdout(`flake-budget OK failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs}`);

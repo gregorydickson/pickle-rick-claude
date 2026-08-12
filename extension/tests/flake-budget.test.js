@@ -97,15 +97,158 @@ test('flake-budget fails when failures exceed the budget', () => {
   }
 });
 
-// R-FBTN: the exceeded report must NAME the flaky test(s), not just count them.
-test('flake-budget names the flaky test when the budget is exceeded', () => {
+// WS-D/AC-D1: the exceeded report must attribute failures per run, not as a bare union.
+test('flake-budget names the flaky test per run when the budget is exceeded', () => {
   const run = runBudgetCheck({ runs: 4, failBudget: 1, failRuns: 2 });
   try {
     assert.equal(run.result.status, 1, `stdout: ${run.result.stdout}\nstderr: ${run.result.stderr}`);
-    assert.match(run.result.stderr, /FLAKY_TESTS/);
+    assert.match(run.result.stderr, /RUN \d+ FAILED:/);
     assert.match(run.result.stderr, /synthetic flake budget probe/);
+    assert.match(run.result.stderr, /RUN \d+ LOG: /);
   } finally {
     run.cleanup();
+  }
+});
+
+// AC-D1: loop over the three report blocks with a stubbed spawnSyncFn — per-run names
+// are that run's own, not the union, and each block is present.
+test('flake-budget report emits per-run blocks, not a cross-run union', async () => {
+  const runOutputs = [
+    { status: 1, stdout: '✖ test alpha (10ms)\nnot ok 1 - test alpha\n', stderr: '' },
+    { status: 1, stdout: '✖ test beta (20ms)\nnot ok 1 - test beta\n', stderr: '' },
+  ];
+  let call = 0;
+  const fakeSpawnSyncFn = () => runOutputs[call++];
+  const lines = [];
+
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=2', '--fail-budget=1', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...process.env, PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: () => {},
+    stderr: (msg) => lines.push(msg),
+    spawnSyncFn: fakeSpawnSyncFn,
+  });
+
+  assert.equal(code, 1);
+  const text = lines.join('\n');
+  assert.match(text, /RUN 1 FAILED:/);
+  assert.match(text, /test alpha/);
+  assert.match(text, /RUN 2 FAILED:/);
+  assert.match(text, /test beta/);
+
+  const run1Block = lines.slice(
+    lines.findIndex((l) => l.startsWith('RUN 1 FAILED:')),
+    lines.findIndex((l) => l.startsWith('RUN 2 FAILED:')),
+  ).join('\n');
+  assert.doesNotMatch(run1Block, /test beta/, 'run 1 block must not carry run 2\'s failing test');
+
+  assert.match(text, /RUN 1 LOG: /);
+  assert.match(text, /RUN 2 LOG: /);
+});
+
+// AC-D2: a stub failing the SAME test in runs 1-3 marks it REPEATED ACROSS RUNS.
+test('flake-budget marks a test that fails in three consecutive runs as repeated', async () => {
+  const fakeSpawnSyncFn = () => ({
+    status: 1,
+    stdout: '✖ persistent flake (5ms)\nnot ok 1 - persistent flake\n',
+    stderr: '',
+  });
+  const lines = [];
+
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=3', '--fail-budget=2', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...process.env, PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: () => {},
+    stderr: (msg) => lines.push(msg),
+    spawnSyncFn: fakeSpawnSyncFn,
+  });
+
+  assert.equal(code, 1);
+  const text = lines.join('\n');
+  assert.match(text, /REPEATED ACROSS RUNS:/);
+  assert.match(text, /persistent flake/);
+});
+
+// AC-D2: three DISTINCT single-run failures must produce NO REPEATED ACROSS RUNS block.
+test('flake-budget omits REPEATED ACROSS RUNS when every failure is distinct', async () => {
+  const runOutputs = [
+    { status: 1, stdout: '✖ test one (1ms)\nnot ok 1 - test one\n', stderr: '' },
+    { status: 1, stdout: '✖ test two (2ms)\nnot ok 1 - test two\n', stderr: '' },
+    { status: 1, stdout: '✖ test three (3ms)\nnot ok 1 - test three\n', stderr: '' },
+  ];
+  let call = 0;
+  const fakeSpawnSyncFn = () => runOutputs[call++];
+  const lines = [];
+
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=3', '--fail-budget=2', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...process.env, PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: () => {},
+    stderr: (msg) => lines.push(msg),
+    spawnSyncFn: fakeSpawnSyncFn,
+  });
+
+  assert.equal(code, 1);
+  const text = lines.join('\n');
+  assert.doesNotMatch(text, /REPEATED ACROSS RUNS:/);
+});
+
+// AC-D3/AC-D5: each per-run log records durations and result.status; null is distinguishable
+// from a numeric exit code; every printed RUN <i> LOG: path exists on disk.
+test('flake-budget per-run log records durations, status, and exists on disk; null status is distinct from numeric', async () => {
+  const runOutputs = [
+    { status: 1, stdout: '✖ timed test (43829.123ms)\nnot ok 1 - timed test\n', stderr: '' },
+    { status: null, stdout: '✖ timed test (45044.5ms)\nnot ok 1 - timed test\n', stderr: '' },
+  ];
+  let call = 0;
+  const fakeSpawnSyncFn = () => runOutputs[call++];
+  const lines = [];
+
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=2', '--fail-budget=1', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...process.env, PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: () => {},
+    stderr: (msg) => lines.push(msg),
+    spawnSyncFn: fakeSpawnSyncFn,
+  });
+
+  assert.equal(code, 1);
+  const logLines = lines.filter((l) => l.startsWith('RUN ') && l.includes(' LOG: '));
+  assert.equal(logLines.length, 2);
+
+  const logPaths = logLines.map((l) => l.split(' LOG: ')[1]);
+  for (const logPath of logPaths) {
+    assert.doesNotThrow(() => fs.statSync(logPath), `log path must exist on disk: ${logPath}`);
+  }
+
+  const run1Contents = fs.readFileSync(logPaths[0], 'utf8');
+  assert.match(run1Contents, /status=1/);
+  assert.match(run1Contents, /43829\.123ms/);
+
+  const run2Contents = fs.readFileSync(logPaths[1], 'utf8');
+  assert.match(run2Contents, /status=null/);
+  assert.doesNotMatch(run2Contents, /status=1\b/);
+  assert.match(run2Contents, /45044\.5ms/);
+});
+
+// AC-D4: exit-code semantics are unchanged by this restructuring.
+test('flake-budget exit codes stay 0 within budget and 1 over budget', () => {
+  const withinBudget = runBudgetCheck({ runs: 3, failBudget: 2, failRuns: 0 });
+  try {
+    assert.equal(withinBudget.result.status, 0);
+  } finally {
+    withinBudget.cleanup();
+  }
+
+  const overBudget = runBudgetCheck({ runs: 4, failBudget: 1, failRuns: 2 });
+  try {
+    assert.equal(overBudget.result.status, 1);
+  } finally {
+    overBudget.cleanup();
   }
 });
 
