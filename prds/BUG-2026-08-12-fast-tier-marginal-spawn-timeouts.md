@@ -61,7 +61,7 @@ The original census scanned for a numeric literal near a `spawnSync` callsite: 1
 - Not a revert of the install.sh bundle. Nothing here implicates it; all pre-test steps including the install audits are green.
 - Not raising `--fail-budget`. Widening flake tolerance deletes the signal instead of the defect, and would mask a future real regression.
 - No retry or auto-rerun wrapper. Retries convert an attributable failure into an unattributable one.
-- **Not extending `audit-subprocess-heavy-tests.sh`.** See Deferred.
+- **Not extending `extension/scripts/audit-subprocess-heavy-tests.sh`.** See Deferred.
 
 ## Deferred, with reasons
 
@@ -99,7 +99,7 @@ Measure both at rest and under load comparable to Evidence (load average ≥ 10)
 
 The 119-plus magic numbers are the defect, not their values. A cap of `45000` beside a subject invoked with `--timeout 30` encodes a margin nobody chose and nothing re-checks when either number moves — and, per Evidence, encodes it *below* the subject's own defined worst case.
 
-Replace the per-callsite literals in `extension/tests/spawn-morty.test.js` and `extension/tests/spawn-morty-worker-gate.test.js` with one shared resolver in `extension/tests/__helpers__/` (that directory exists — `codex-shim.js`, `dot-parse.js`, `worker-commit-fixture.js`; `tests/helpers/` does **not** exist).
+Replace the per-callsite literals in `extension/tests/spawn-morty.test.js` and `extension/tests/spawn-morty-worker-gate.test.js` with one shared resolver in `extension/tests/__helpers__/`. That directory exists and is tracked at HEAD — `extension/tests/__helpers__/codex-shim.js`, `extension/tests/__helpers__/dot-parse.js`, `extension/tests/__helpers__/worker-commit-fixture.js`. The path `extension/tests/helpers/` (no underscores) does **not** exist; an earlier draft of this PRD named it and was wrong.
 
 The resolver's input is the subject's **effective** budget, not its CLI argument, and the floor accounts for the hang guard:
 
