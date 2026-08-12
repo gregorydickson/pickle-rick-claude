@@ -272,7 +272,7 @@ for (const c of NON_INTEGER_FLAG_CASES) {
     assert.equal(code, 1, `expected rejection for ${c.argv[0]}, stderr: ${lines.join('\n')}`);
     assert.equal(spawnCalls, 0, `${c.argv[0]} must be rejected before any run is spawned`);
     const text = lines.join('\n');
-    assert.match(text, new RegExp(c.flag.replace(/[-]/g, '\\-')));
+    assert.ok(text.includes(c.flag), `error must name ${c.flag}, got: ${text}`);
     assert.match(text, /must be an integer/);
   });
 }
