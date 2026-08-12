@@ -57,6 +57,20 @@ Across `extension/tests/*.test.js`, excluding `@tier: expensive`, there are **11
 
 `extension/tests/spawn-morty.test.js` carries every observed failure in this episode and is **not** listed in `extension/tests/integration/.serial-tests.json`, so all 24 of its heavy spawns run inside the `c=8` parallel surface.
 
+**This census is an undercount, and the undercount is itself part of the defect.** It was produced by scanning for a numeric literal near a `spawnSync` callsite, so it sees only caps written inline. Caps bound to a named constant are invisible to it. Verified examples:
+
+```
+extension/tests/spawn-morty-worker-gate.test.js:13   const WORKER_TIMEOUT_MS = 90_000;
+extension/tests/node-modules-reuse.test.js:12        const WORKER_TIMEOUT_MS = 90_000;
+extension/tests/spawn-refinement-team.test.js:33     const REFINEMENT_SPAWN_TIMEOUT_MS = 120000;
+extension/tests/auto-resume-stop-conditions.test.js:157  const WARN_BANNER_TIMEOUT_MS = 45000;
+extension/tests/session-map-lock-release.test.js:24  const SPAWN_TIMEOUT_MS = 60_000;
+```
+
+`grep -rnE "^const [A-Z_]+_MS\s*=\s*[0-9_]{5,}" extension/tests/*.test.js` returns 19 such constants. The 90187 ms failure in this PRD's Evidence table is bounded by one of them — `WORKER_TIMEOUT_MS` in `extension/tests/spawn-morty-worker-gate.test.js` — which the literal census never reported.
+
+Consequence for WS-A: an acceptance criterion phrased as "no five-digit literals remain" is satisfiable by moving a literal into a constant, which changes nothing about the margin. The criterion must be phrased over the derivation, not over the syntax. This is why AC-A1 below is an invariant rather than a grep count.
+
 ### Blind spot 1 — the audit cannot match these callsites
 
 `extension/scripts/audit-subprocess-heavy-tests.sh:88` matches only:
@@ -105,7 +119,7 @@ This is a subtraction: 119 unrelated literals collapse to one resolver plus its 
 
 **Acceptance criteria**
 
-- `AC-A1` — A single exported helper computes fast-tier subprocess caps; `grep -c "timeout: [0-9]\{5,\}" extension/tests/spawn-morty.test.js` returns `0`.
+- `AC-A1` — **Every** heavy subprocess spawn in the converted files derives its cap through `resolveSubprocessCap`, with no cap — literal or named-constant — reaching `spawnSync` by any other route. Verified by a `describe.each` acceptance test parametrized over the converted file set, asserting per file that no `spawnSync` call receives a `timeout` that is not a resolver call result. The criterion is deliberately phrased over derivation rather than over syntax: a grep for numeric literals is satisfiable by hoisting a literal into a constant, which leaves the margin exactly as marginal as before (see Evidence → census undercount).
 - `AC-A2` — For every callsite converted, the resulting cap is at least 3× the maximum duration observed for that test across the two runs recorded in this PRD's Evidence table.
 - `AC-A3` — A test asserts the helper's derivation: given a subject budget of 30 s it returns a cap of at least 90000 ms, and the assertion names the ratio rather than the literal.
 - `AC-A4` — `npx tsc --noEmit` and `npx eslint src/ --max-warnings=-1` are green.
@@ -145,10 +159,8 @@ Retaining full stdout for five runs of a ~5000-test tier is not acceptable in me
 
 **Acceptance criteria**
 
-- `AC-D1` — On `FAIL_BUDGET_EXCEEDED`, output includes a per-run breakdown listing run index and that run's failing test names.
-- `AC-D2` — Output distinguishes a test failing in more than one run (mark it as such explicitly) from one failing in exactly one run.
-- `AC-D3` — On failure, output includes filesystem paths to the retained per-run logs.
-- `AC-D4` — A test drives the runner with a stubbed `spawnSyncFn` producing a repeated failure across runs and asserts the repeat is labelled; a second test produces distinct single-run failures and asserts they are not.
+- `AC-D1` — **For every** failing run, the report emits that run's own failing-test names, that run's log path, and — across runs — an explicit repeated-failure marking. All three blocks are emitted from the single exceedance branch and cannot land independently, so they are one criterion, not three. Verified by a `describe.each` acceptance test parametrized over the report-shape cases `[['RUN <i> FAILED'], ['REPEATED ACROSS RUNS'], ['RUN <i> LOG']]`, each driven through a stubbed `spawnSyncFn`.
+- `AC-D2` — A test drives the runner with a stubbed `spawnSyncFn` producing the same failing test in three runs and asserts it appears under `REPEATED ACROSS RUNS`; a second drives three distinct single-run failures and asserts the block is absent entirely.
 
 ### WS-E — Verification: run the claim
 
@@ -202,14 +214,13 @@ The audit gains one band expressed as a ratio, alongside the existing absolute b
 |:---|:---|:---|:---|
 | AC-A3 | `extension/tests/subprocess-cap-resolver.test.js` | Resolver derives a cap from a subject budget | 30 s subject yields a cap ≥ 90000 ms; assertion references the multiplier constant, not the literal |
 | AC-A3 | `extension/tests/subprocess-cap-resolver.test.js` | Resolver rejects ambiguous input | Neither / both / non-positive inputs each throw `TypeError` naming the field |
-| AC-A1 | `extension/tests/subprocess-cap-resolver.test.js` | No five-digit timeout literals survive in the converted file | `spawn-morty.test.js` contains zero `timeout: <5+ digits>` matches |
+| AC-A1 | `extension/tests/subprocess-cap-resolver.test.js` | `describe.each` over the converted file set: every heavy spawn derives its cap | For each file, no `spawnSync` receives a `timeout` that is not a `resolveSubprocessCap` result — catches named constants, not only inline literals |
 | AC-B1 | `extension/tests/bin/test-runner-tier-discovery.test.js` | Runner excludes the serialized file from the parallel surface | `spawn-morty.test.js` is absent from the parallel file set the runner builds |
 | AC-C1 | `extension/tests/audit-subprocess-heavy-tests.test.js` | Ratio band flags a Node spawn with a marginal cap | Fixture with 45000 ms cap over a `--timeout 30` subject exits 1, stderr matches `RATIO-FAIL` |
 | AC-C2 | `extension/tests/audit-subprocess-heavy-tests.test.js` | Ratio band does not flag a generous cap | Same 45000 ms cap over a `--timeout 5` subject exits 0 |
 | AC-C4 | `extension/tests/audit-subprocess-heavy-tests.test.js` | Existing bands unchanged | A 4000 ms `spawnSync('bash', [script])` fixture still exits 1 with the pre-existing message |
-| AC-D1, AC-D2 | `extension/tests/flake-budget.test.js` | Repeated failure is labelled as repeated | Stubbed `spawnSyncFn` fails the same named test in runs 1–3; output contains that name under `REPEATED ACROSS RUNS` |
-| AC-D2 | `extension/tests/flake-budget.test.js` | Distinct failures are not labelled as repeated | Stubbed runs fail three different tests once each; output has no `REPEATED ACROSS RUNS` block |
-| AC-D3 | `extension/tests/flake-budget.test.js` | Per-run log paths are reported | Output contains one `RUN <i> LOG:` line per failing run, each path existing on disk |
+| AC-D1 | `extension/tests/flake-budget.test.js` | `describe.each` over the three report blocks | For each of `RUN <i> FAILED`, `REPEATED ACROSS RUNS`, `RUN <i> LOG`, the exceedance branch emits the block; per-run names are that run's own, and each log path exists on disk |
+| AC-D2 | `extension/tests/flake-budget.test.js` | Repeated vs distinct failures are distinguished | Same test failing runs 1–3 appears under `REPEATED ACROSS RUNS`; three distinct single-run failures produce no such block |
 
 ## Simplification Review
 
