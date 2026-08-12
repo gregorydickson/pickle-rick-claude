@@ -8,6 +8,15 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tierToModel, resolveCodexModel, buildTierLifecycleSections } from '../bin/spawn-morty.js';
 import { TIER_LIFECYCLE } from '../services/pickle-utils.js';
+import {
+    resolveAssertionCap,
+    CAP_SPAWN_MORTY_DEFAULT_BUDGET,
+    CAP_SPAWN_MORTY_CLAMPED_BUDGET,
+    CAP_SPAWN_MORTY_INDETERMINATE,
+    CAP_MEASURED_ORPHAN_TMP_BACKEND,
+    CAP_MEASURED_ORPHAN_TMP_SESSION_TIMEOUT,
+    CAP_MEASURED_HERMES_COMPLETES,
+} from './__helpers__/subprocess-cap.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SPAWN_MORTY_BIN = path.resolve(__dirname, '../bin/spawn-morty.js');
@@ -19,12 +28,12 @@ const DEAD_TMP_PID = 99_999_999;
  * @param {Record<string, string>} env - extra env vars to merge
  */
 function run(args, env = {}) {
-    // 15s → 45s: budget for system load when run alongside concurrent
-    // codex/tmux work. Tests are validating CLI behavior, not wall-clock.
+    // Callers pass arbitrary (often absent) --timeout values, so no subject budget can be
+    // read off this callsite; the cap derives from the worst measured completion instead.
     return spawnSync(process.execPath, [SPAWN_MORTY_BIN, ...args], {
         env: { ...process.env, ...env },
         encoding: 'utf-8',
-        timeout: 45000,
+        timeout: CAP_SPAWN_MORTY_INDETERMINATE,
     });
 }
 
@@ -200,7 +209,7 @@ function runCodexHarness(tmpDir, harness, ticketId) {
             PICKLE_BACKEND: '',
         },
         encoding: 'utf-8',
-        timeout: 45000,
+        timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
     });
 }
 
@@ -308,9 +317,8 @@ test('spawn-morty: valid args but no claude binary → exit 1 (spawn failure, no
             ], {
             env: { ...process.env, PATH: '/nonexistent' },
             encoding: 'utf-8',
-            // 15s → 45s: budget for system load when run alongside concurrent
-            // codex/tmux work. Validates panel content, not wall-clock.
-            timeout: 45000,
+            // No --timeout is passed, so the subject budget is indeterminate here.
+            timeout: CAP_SPAWN_MORTY_INDETERMINATE,
         });
         assert.equal(result.status, 1, 'should exit with code 1');
         // It should NOT be a validation error — it got past validation
@@ -344,7 +352,8 @@ test('spawn-morty: invalid --ticket-path exits non-zero within 5s and emits spaw
         ], {
             env: { ...process.env, PICKLE_DATA_ROOT: dataRootDir },
             encoding: 'utf-8',
-            timeout: 5000,
+            // The cap IS the assertion: the test below proves the subject exits within 5s.
+            timeout: resolveAssertionCap(5000),
         });
         assert.ok(
             result.status !== null && result.status !== 0,
@@ -607,9 +616,9 @@ test('spawn-morty F15: 5s remaining is clamped to 30s minimum', () => {
         ], {
             env: { ...process.env, PATH: '/nonexistent', PICKLE_DATA_ROOT: tmpDir },
             encoding: 'utf-8',
-            // 15s → 45s: budget for system load when run alongside concurrent
-            // codex/tmux work. Validates panel content, not wall-clock.
-            timeout: 45000,
+            // 600 is a clamp fixture, not a budget: PATH has no claude, so the subject
+            // prints its panel and exits. Deriving from 600 would give a 30-minute cap.
+            timeout: CAP_SPAWN_MORTY_INDETERMINATE,
         });
 
         const combined = result.stdout + result.stderr;
@@ -663,9 +672,9 @@ test('spawn-morty F15: negative remaining with short --timeout yields >=30s', ()
         ], {
             env: { ...process.env, PATH: '/nonexistent', PICKLE_DATA_ROOT: tmpDir },
             encoding: 'utf-8',
-            // 15s → 45s: budget for system load when run alongside concurrent
-            // codex/tmux work. Validates panel content, not wall-clock.
-            timeout: 45000,
+            // --timeout 5 runs a 30s subject (spawn-morty clamps up to MIN_TIMEOUT_SECONDS),
+            // so the cap derives from 30s, not 5s.
+            timeout: CAP_SPAWN_MORTY_CLAMPED_BUDGET,
         });
 
         const combined = result.stdout + result.stderr;
@@ -728,7 +737,7 @@ test('spawn-morty: recovers orphan tmp backend state before routing worker CLI',
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_MEASURED_ORPHAN_TMP_BACKEND,
         });
 
         const combined = result.stdout + result.stderr;
@@ -769,7 +778,7 @@ test('spawn-morty.hermes: spawns hermes chat with toolsets and completes', () =>
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_MEASURED_HERMES_COMPLETES,
         });
 
         assert.equal(result.status, 0, `expected successful hermes shim worker, got: ${result.stdout + result.stderr}`);
@@ -821,7 +830,7 @@ test('spawn-morty.hermes-missing: missing binary exits 127 and logs event', () =
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         assert.equal(result.status, 127, `expected missing hermes binary exit 127, got: ${result.stdout + result.stderr}`);
@@ -902,7 +911,7 @@ test('spawn-morty.deepseek: env overlay reaches child and PICKLE_BACKEND stays d
                 DEEPSEEK_API_KEY: 'test-deepseek-key-12345',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         assert.equal(result.status, 0, `expected successful deepseek shim worker, got: ${result.stdout + result.stderr}`);
@@ -969,7 +978,7 @@ test('spawn-morty: recovers orphan tmp session timeout before printing worker bu
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_MEASURED_ORPHAN_TMP_SESSION_TIMEOUT,
         });
 
         const combined = result.stdout + result.stderr;
@@ -1026,7 +1035,7 @@ test('spawn-morty: session working_dir controls child cwd and repo access', () =
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         const combined = result.stdout + result.stderr;
@@ -1087,7 +1096,7 @@ test('spawn-morty: state.effort=high reaches codex invocation as -c reasoning.ef
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         // shim exits 0 with no real artifact -> validation failure (status 1) is expected
@@ -1139,7 +1148,7 @@ test('spawn-morty: state.effort=xhigh reaches codex invocation as -c reasoning.e
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         assert.equal(result.status, 1);
@@ -1191,7 +1200,7 @@ test('spawn-morty P0: codex backend prompt contains "Codex-specific contract add
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         assert.equal(result.status, 1, `expected validation failure after shim exit, got: ${result.stdout + result.stderr}`);
@@ -1252,7 +1261,7 @@ process.exit(0);
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         assert.equal(result.status, 1, `expected validation failure after shim exit, got: ${result.stdout + result.stderr}`);
@@ -1446,7 +1455,7 @@ test('spawn-morty P2: heuristic OFF (default) — large tier on codex stays code
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         const combined = result.stdout + result.stderr;
@@ -1509,7 +1518,7 @@ test('spawn-morty P2: recovers disabled routing heuristic from newer dead settin
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         const combined = result.stdout + result.stderr;
@@ -1555,7 +1564,7 @@ test('spawn-morty P2: env backend overrides missing state backend and records en
                 PICKLE_BACKEND: 'codex',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         assert.equal(result.status, 1);
@@ -1624,7 +1633,7 @@ process.exit(0);
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         assert.equal(result.status, 1);
@@ -1689,7 +1698,7 @@ process.exit(0);
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         const combined = result.stdout + result.stderr;
@@ -1753,7 +1762,7 @@ process.exit(0);
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         const combined = result.stdout + result.stderr;
@@ -1806,7 +1815,7 @@ test('spawn-morty P2: heuristic ON — small tier + neutral title stays codex', 
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         const combined = result.stdout + result.stderr;
@@ -1901,7 +1910,7 @@ test('spawn-morty P2 post-flush: token + artifact + git edits + log<200B → suc
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         const combined = result.stdout + result.stderr;
@@ -1959,7 +1968,7 @@ test('spawn-morty P2 post-flush: token + artifact + zero git edits + log<200B �
                 PICKLE_BACKEND: '',
             },
             encoding: 'utf-8',
-            timeout: 45000,
+            timeout: CAP_SPAWN_MORTY_DEFAULT_BUDGET,
         });
 
         const combined = result.stdout + result.stderr;

@@ -36,7 +36,9 @@ const TIER_MODEL_MAP = {
     large: 'opus',
 };
 const sm = new StateManager();
-const MIN_TIMEOUT_SECONDS = 30;
+export const MIN_TIMEOUT_SECONDS = 30;
+/** Grace added to the worker's effective timeout before the hang guard force-exits. */
+export const HANG_GUARD_GRACE_MS = 30_000;
 const VALID_AGENT_MODELS = new Set(['sonnet', 'opus', 'haiku']);
 const LAST_TOOL_ERROR_FILE = 'last-tool-error.json';
 const HANDOFF_NOTES_FILE = 'handoff_notes.md';
@@ -2722,7 +2724,7 @@ export async function runWorkerProcess(ctx) {
         }
         catch { /* best-effort */ }
         await flushAndExit(sessionLog, 1);
-    }, ctx.effectiveTimeoutMs + 30_000);
+    }, ctx.effectiveTimeoutMs + HANG_GUARD_GRACE_MS);
     hangGuard.unref();
     return new Promise(resolve => {
         let spawnErrorHandled = false;

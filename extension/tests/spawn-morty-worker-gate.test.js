@@ -7,10 +7,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runWorkerGate } from '../bin/spawn-morty.js';
+import { CAP_WORKER_GATE } from './__helpers__/subprocess-cap.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SPAWN_MORTY_BIN = path.resolve(__dirname, '../bin/spawn-morty.js');
-const WORKER_TIMEOUT_MS = 90_000;
 
 function makeTmpRoot(prefix = 'pickle-spawn-morty-worker-gate-') {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -610,7 +610,7 @@ test('spawn-morty: test:fast failure with work evidence suppresses the Failed fl
         FAKE_TICKET_DIR: ticketDir,
         FAKE_TICKET_ID: ticketId,
       },
-      timeout: WORKER_TIMEOUT_MS,
+      timeout: CAP_WORKER_GATE,
     });
 
     assert.equal(result.status, 1, `stderr: ${result.stderr}`);
@@ -695,7 +695,7 @@ test('spawn-morty: evidence-absent test:fast failure still marks ticket Failed a
         FAKE_TICKET_DIR: ticketDir,
         FAKE_TICKET_ID: ticketId,
       },
-      timeout: WORKER_TIMEOUT_MS,
+      timeout: CAP_WORKER_GATE,
     });
 
     assert.equal(result.status, 1, `stderr: ${result.stderr}`);
@@ -742,7 +742,7 @@ test('spawn-morty: small-tier success skips npm test gate and records tier_phase
         FAKE_TICKET_DIR: ticketDir,
         FAKE_TICKET_ID: ticketId,
       },
-      timeout: WORKER_TIMEOUT_MS,
+      timeout: CAP_WORKER_GATE,
     });
 
     assert.equal(result.status, 0, `stderr: ${result.stderr}`);
