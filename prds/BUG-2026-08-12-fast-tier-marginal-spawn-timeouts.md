@@ -162,6 +162,55 @@ Re-run `npm run test:fast:budget` on this host under a synthetic load comparable
 - `AC-E2` — The captured output of that run is committed to the ticket's artifact directory, including the observed maximum duration for each test named in this PRD's Evidence table.
 - `AC-E3` — For each such test, the recorded duration is at most one third of its post-WS-A cap.
 
+## Interface Contracts
+
+### WS-A — the cap resolver
+
+Exported from the test-support layer (`extension/tests/helpers/` or the existing equivalent; the implementing ticket picks the file by reading what is already there, and states which).
+
+```
+resolveSubprocessCap(opts: {
+  subjectTimeoutSeconds?: number;   // the subject's own --timeout, in seconds
+  measuredMaxMs?: number;           // observed worst-case duration, when no subject budget exists
+}): number                          // milliseconds, for spawnSync's `timeout`
+```
+
+- **Inputs**: exactly one of `subjectTimeoutSeconds` or `measuredMaxMs` must be supplied.
+- **Outputs**: an integer millisecond cap. For `subjectTimeoutSeconds`, the result is `subjectTimeoutSeconds * 1000 * MULTIPLIER` with `MULTIPLIER >= 3`. For `measuredMaxMs`, the result is `measuredMaxMs * MULTIPLIER`.
+- **Errors**: supplying neither, both, or a non-positive value throws a `TypeError` naming the offending field. A silent fallback to a default cap is forbidden — that would reintroduce the invisible-margin defect in a new form.
+- **Invariants**: the returned cap is strictly greater than the input budget in every case; `MULTIPLIER` is defined once and is the only tunable.
+
+### WS-C — audit ratio band
+
+The audit gains one band expressed as a ratio, alongside the existing absolute bands.
+
+- **Inputs**: a test file path.
+- **Outputs**: on stderr, `RATIO-FAIL: <file>: cap <N>ms is <R>x subject budget <S>s (minimum 3x)` and process exit 1; or silence and the file's existing pass path.
+- **Errors**: a callsite whose subject budget cannot be determined is not flagged by the ratio band (it remains the absolute bands' business); the audit must not guess a budget.
+- **Invariants**: the existing 5000 ms FAIL and 15000 ms WARN behaviour is byte-identical for every file that does not trip the new band.
+
+### WS-D — budget runner report
+
+- **Inputs**: unchanged (`--runs`, `--fail-budget`, `--timeout`).
+- **Outputs**: on budget exceedance, the existing `FAIL_BUDGET_EXCEEDED` line, then one `RUN <i> FAILED:` block per failing run listing that run's failing test names, then a `REPEATED ACROSS RUNS:` block naming every test that failed in two or more runs (omitted entirely when none did), then one `RUN <i> LOG: <path>` line per failing run.
+- **Errors**: unchanged — a child that fails before producing test output still throws with its first output line.
+- **Invariants**: exit code semantics are unchanged (0 within budget, 1 over). A test failing in exactly one run never appears in the `REPEATED ACROSS RUNS` block.
+
+## Test Expectations
+
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-A3 | `extension/tests/subprocess-cap-resolver.test.js` | Resolver derives a cap from a subject budget | 30 s subject yields a cap ≥ 90000 ms; assertion references the multiplier constant, not the literal |
+| AC-A3 | `extension/tests/subprocess-cap-resolver.test.js` | Resolver rejects ambiguous input | Neither / both / non-positive inputs each throw `TypeError` naming the field |
+| AC-A1 | `extension/tests/subprocess-cap-resolver.test.js` | No five-digit timeout literals survive in the converted file | `spawn-morty.test.js` contains zero `timeout: <5+ digits>` matches |
+| AC-B1 | `extension/tests/bin/test-runner-tier-discovery.test.js` | Runner excludes the serialized file from the parallel surface | `spawn-morty.test.js` is absent from the parallel file set the runner builds |
+| AC-C1 | `extension/tests/audit-subprocess-heavy-tests.test.js` | Ratio band flags a Node spawn with a marginal cap | Fixture with 45000 ms cap over a `--timeout 30` subject exits 1, stderr matches `RATIO-FAIL` |
+| AC-C2 | `extension/tests/audit-subprocess-heavy-tests.test.js` | Ratio band does not flag a generous cap | Same 45000 ms cap over a `--timeout 5` subject exits 0 |
+| AC-C4 | `extension/tests/audit-subprocess-heavy-tests.test.js` | Existing bands unchanged | A 4000 ms `spawnSync('bash', [script])` fixture still exits 1 with the pre-existing message |
+| AC-D1, AC-D2 | `extension/tests/flake-budget.test.js` | Repeated failure is labelled as repeated | Stubbed `spawnSyncFn` fails the same named test in runs 1–3; output contains that name under `REPEATED ACROSS RUNS` |
+| AC-D2 | `extension/tests/flake-budget.test.js` | Distinct failures are not labelled as repeated | Stubbed runs fail three different tests once each; output has no `REPEATED ACROSS RUNS` block |
+| AC-D3 | `extension/tests/flake-budget.test.js` | Per-run log paths are reported | Output contains one `RUN <i> LOG:` line per failing run, each path existing on disk |
+
 ## Simplification Review
 
 **What is being removed rather than added?** 119 hardcoded timeout literals collapse into one derivation helper (WS-A). The net line count of the test tree is expected to fall.
