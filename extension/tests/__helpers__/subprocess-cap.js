@@ -57,7 +57,7 @@ function describeCallsite() {
     return frame.trim().replace(/^at\s+/, '') || 'unknown callsite';
 }
 
-function assertPositiveInteger(value, field) {
+function assertPositiveFinite(value, field) {
     if (!Number.isFinite(value) || value <= 0) {
         throw new TypeError(
             `subprocess-cap: ${field} must be a positive finite number, got ${String(value)}`,
@@ -90,10 +90,10 @@ export function resolveSubprocessCap(opts = {}) {
 
     let observedMs;
     if (hasTimeout) {
-        assertPositiveInteger(subjectTimeoutSeconds, 'subjectTimeoutSeconds');
+        assertPositiveFinite(subjectTimeoutSeconds, 'subjectTimeoutSeconds');
         observedMs = subjectTimeoutSeconds * 1000;
     } else {
-        assertPositiveInteger(measuredMaxMs, 'measuredMaxMs');
+        assertPositiveFinite(measuredMaxMs, 'measuredMaxMs');
         observedMs = measuredMaxMs;
     }
 
@@ -124,7 +124,7 @@ export function resolveSubprocessCap(opts = {}) {
  * @returns {number}
  */
 export function resolveAssertionCap(ms) {
-    assertPositiveInteger(ms, 'ms');
+    assertPositiveFinite(ms, 'ms');
     return ms;
 }
 
