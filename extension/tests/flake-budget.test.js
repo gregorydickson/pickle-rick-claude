@@ -235,6 +235,86 @@ test('flake-budget per-run log records durations, status, and exists on disk; nu
   assert.match(run2Contents, /45044\.5ms/);
 });
 
+// 94833eaf: `Number.parseInt` truncates at the first non-digit, so an unguarded
+// parse read `--runs=1e3` as 1 — a thousand requested runs silently became one and
+// the gate reported OK. The load-bearing assertion is that NO child is spawned:
+// pre-fix the value parsed and the loop ran, so a message-only assertion would
+// have passed over the defect.
+const NON_INTEGER_FLAG_CASES = [
+  { argv: ['--runs=1e3'], flag: '--runs' },
+  { argv: ['--runs=5x'], flag: '--runs' },
+  { argv: ['--runs=2.9'], flag: '--runs' },
+  // Already rejected pre-fix, but only by accident: parseInt('0x10', 10) is 0 and
+  // 0 < the --runs minimum of 1, so the range arm caught it. Kept as a control —
+  // it stays green under a reverted shape guard, unlike the five above.
+  { argv: ['--runs=0x10'], flag: '--runs' },
+  { argv: ['--fail-budget=0abc'], flag: '--fail-budget' },
+  { argv: ['--timeout=30000ms'], flag: '--timeout' },
+];
+
+for (const c of NON_INTEGER_FLAG_CASES) {
+  test(`flake-budget rejects a non-integer flag value instead of truncating it — ${c.argv[0]}`, async () => {
+    let spawnCalls = 0;
+    const lines = [];
+
+    const code = await checkFlakeBudgetMain({
+      argv: c.argv,
+      cwd: path.resolve(__dirname, '..'),
+      env: { ...process.env, PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+      stdout: () => {},
+      stderr: (msg) => lines.push(msg),
+      spawnSyncFn: () => {
+        spawnCalls += 1;
+        return { status: 0, stdout: 'ℹ tests 1\nok 1 - synthetic\n', stderr: '' };
+      },
+    });
+
+    assert.equal(code, 1, `expected rejection for ${c.argv[0]}, stderr: ${lines.join('\n')}`);
+    assert.equal(spawnCalls, 0, `${c.argv[0]} must be rejected before any run is spawned`);
+    const text = lines.join('\n');
+    assert.match(text, new RegExp(c.flag.replace(/[-]/g, '\\-')));
+    assert.match(text, /must be an integer/);
+  });
+}
+
+// Negative control: a guard that rejected everything would pass the cases above.
+test('flake-budget still accepts a clean integer flag value', async () => {
+  let spawnCalls = 0;
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=2', '--fail-budget=0', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...process.env, PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: () => {},
+    stderr: () => {},
+    spawnSyncFn: () => {
+      spawnCalls += 1;
+      return { status: 0, stdout: 'ℹ tests 1\nok 1 - synthetic\n', stderr: '' };
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(spawnCalls, 2, 'both requested runs must execute');
+});
+
+// The range arm keeps reporting through the same message, so the shape guard did
+// not fork the operator-facing contract.
+test('flake-budget reports an out-of-range integer through the same message', async () => {
+  const lines = [];
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=0'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...process.env, PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: () => {},
+    stderr: (msg) => lines.push(msg),
+    spawnSyncFn: () => {
+      throw new Error('no run may be spawned for an out-of-range --runs');
+    },
+  });
+
+  assert.equal(code, 1);
+  assert.match(lines.join('\n'), /--runs must be an integer >= 1, got: 0/);
+});
+
 // AC-D4: exit-code semantics are unchanged by this restructuring.
 test('flake-budget exit codes stay 0 within budget and 1 over budget', () => {
   const withinBudget = runBudgetCheck({ runs: 3, failBudget: 2, failRuns: 0 });

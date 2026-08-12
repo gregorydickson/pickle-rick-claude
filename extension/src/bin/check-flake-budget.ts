@@ -53,8 +53,16 @@ interface RunInvocation {
   targetPath: string;
 }
 
+// `Number.parseInt` stops at the first non-digit and returns the prefix, so an
+// unguarded parse accepts `--runs=1e3` as 1 — a gate asked for a thousand runs
+// silently performs one and reports OK. The shape check is what makes the
+// function's own "must be an integer" contract true; the range check below stays
+// the arm a signed or out-of-bounds value falls through to, so a negative value
+// still reports the more useful range message.
+const DECIMAL_INTEGER_RE = /^[+-]?\d+$/;
+
 function parseIntegerFlag(name: string, value: string, min: number): number {
-  const parsed = Number.parseInt(value, 10);
+  const parsed = DECIMAL_INTEGER_RE.test(value) ? Number.parseInt(value, 10) : NaN;
   if (!Number.isFinite(parsed) || parsed < min) {
     throw new Error(`${name} must be an integer >= ${min}, got: ${value}`);
   }
