@@ -1,0 +1,47 @@
+PRE-RUN 2026-08-12T22:19:03Z
+17:19  up 14 days, 20:37, 2 users, load averages: 33.95 53.26 44.27
+--- in-scope pipeline check ---
+---
+
+> pickle-rick-scripts@2.1.0-beta.9 test:fast:budget
+> node bin/check-flake-budget.js
+
+
+--- ATTEMPT 2 RESULT (manager-run, 2026-08-12T22:19:03Z - 23:17Z) ---
+Outcome: NO RESULT. The runner process (PID 62955) exited after ~58 minutes
+having written zero output beyond the npm banner; run.log mtime never advanced
+past 17:19:04. check-flake-budget buffers each run's stdout via spawnSync and
+emits only at completion, so an external kill leaves no partial record.
+Exit disposition: unobserved (process absent from the table at 18:17 local).
+runs_completed: unknown, NOT 5. This is NOT a pass.
+
+Entry-condition violation observed during the attempt: another repository's
+pipeline was active on this host throughout
+(cwd /Users/gregorydickson/loanlight/pickle-rick/pickle-rick-codex-development-main,
+npm debug logs 2026-08-12T23_18_*). The ticket forbids running concurrently
+with another repo's pipeline.
+
+Load during the attempt (see load-samples.log): 1-min average ranged 11.16-40.00,
+satisfying the >= 10 requirement. Load was never the blocker; the missing result is.
+
+Per this ticket's Errors contract, a failing/aborted observation is recorded and
+NOT retried into a green. This ticket is PARKED, not Done.
+
+--- ATTEMPT 2 (worker-run, launched 2026-08-13T01:03:56Z) ---
+PRE-RUN: 20:03  up 14 days, 23:22, 2 users, load averages: 12.66 18.26 25.43
+
+> pickle-rick-scripts@2.1.0-beta.9 test:fast:budget
+> node bin/check-flake-budget.js
+
+
+--- ATTEMPT 3 (manager-run, 2026-08-13T01:33:10Z) ---
+PRE-RUN: 20:33  up 14 days, 23:51, 2 users, load averages: 11.34 13.01 17.79
+PRE-RUN other-repo pipeline check: 3
+ foreign pipeline procs
+
+> pickle-rick-scripts@2.1.0-beta.9 test:fast:budget
+> node bin/check-flake-budget.js
+
+flake-budget OK failures=1 budget=2 runs_completed=5 runs_requested=5
+EXIT=0
+POST-RUN: 21:38  up 15 days, 57 mins, 2 users, load averages: 16.42 18.50 20.16
