@@ -41,7 +41,7 @@ d3654991   status: "Done"   completion_commit: 90b81564
 
 > R-WDTF-TO WS-3 — `readTicketWorkerGateTestsVerdict(...) !== 'red'` … a clean lint/tsc reading must not resurrect a real test failure to Done
 
-That same invariant insists the two Done-flip authorities must branch on one shared predicate rather than bespoke checks. On the advisory dimension they do. On the test dimension they do not: `guardCompletionCommitBeforeDone` (`extension/src/bin/mux-runner.ts:4995`) never reads the field.
+That same invariant insists the two Done-flip authorities must branch on one shared predicate rather than bespoke checks. On the advisory dimension they do. On the test dimension they do not: `guardCompletionCommitBeforeDone` (`extension/src/bin/mux-runner.ts:5075`) never reads the field.
 
 So the system already knows that a persisted lint/tsc green must not overrule a real test failure. It enforces that at the rarely-taken resume path and not at the path every normal flip takes.
 
