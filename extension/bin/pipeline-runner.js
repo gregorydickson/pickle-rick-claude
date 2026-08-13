@@ -28,7 +28,7 @@ import { classifyMicroverseDisposition } from './microverse-runner.js';
 // Re-export the single cap literal so existing importers (tests, Module Export Catalog)
 // keep resolving it from pipeline-runner without a second definition.
 export { SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
-import { isGitIgnoredPath, listWorkingTreeDirtyPaths, archiveBeforeDestructive, updateTicketStatus, ARCHIVE_UNTRACKED_BYTE_CAP, } from '../services/git-utils.js';
+import { isGitIgnoredPath, listWorkingTreeDirtyPaths, getDiffFiles, archiveBeforeDestructive, updateTicketStatus, ARCHIVE_UNTRACKED_BYTE_CAP, } from '../services/git-utils.js';
 import { logActivity } from '../services/activity-logger.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
@@ -1664,6 +1664,73 @@ function isCodePath(p) {
 function isCodeFreeScope(paths) {
     return Array.isArray(paths) && paths.length > 0 && !paths.some(isCodePath);
 }
+/** WS-B: the session's own baseline commit, or null when it is unreadable. */
+function readStartCommitFromState(sessionDir) {
+    try {
+        const startCommit = sm.read(path.join(sessionDir, 'state.json')).start_commit;
+        return typeof startCommit === 'string' && startCommit.length > 0 ? startCommit : null;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * WS-B: is the branch diff empty — did this run author nothing to review?
+ *
+ * The base is the session's own `start_commit`, and ONLY that. It is the one
+ * base that knows what THIS run produced: a branch ref cannot answer the
+ * question, because a repo whose whole history sits on `main` has an empty
+ * `main...HEAD` diff while the session may have authored commits on top of its
+ * baseline — reading that as "nothing to review" skips a phase with a real
+ * review surface. (`computeReviewBase` is unusable for the same reason from the
+ * other side: its degenerate floor returns HEAD, so "no base ref resolves" is
+ * indistinguishable from "HEAD is the base".)
+ *
+ * Returns `null` when the fact cannot be established — no readable
+ * `start_commit`, an unresolvable one, or a git/dirty-scan failure. Callers
+ * MUST fail toward RUNNING the phase on `null`: preserving today's behaviour
+ * cannot introduce a silent skip.
+ *
+ * Uncommitted work is review surface too, so a dirty tree is not an empty diff.
+ */
+function isBranchDiffEmpty(repoRoot, startCommit) {
+    if (!startCommit)
+        return null;
+    try {
+        // `getDiffFiles` throws on an unreachable `start_commit`, which the catch
+        // below turns into "undeterminable" — no separate reachability probe.
+        if (getDiffFiles(startCommit, 'HEAD', repoRoot).length > 0)
+            return false;
+        return listWorkingTreeDirtyPaths(repoRoot).length === 0;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * WS-B: an UNSCOPED run (empty `effectiveAllowedPaths`) whose branch diff is
+ * empty has no review surface at all — a narrower, earlier fact than the
+ * code-free scope {@link shouldSkipSzechuanForEmptyScope} covers. Emits the same
+ * operator WARN + phase empty-scope event (with a cause naming the empty diff)
+ * and returns true so the caller skips with `empty_branch_diff`.
+ *
+ * Returns false for a resolved scope, for a non-empty branch diff, and whenever
+ * emptiness cannot be determined.
+ */
+function shouldSkipPhaseForEmptyBranchDiff(args) {
+    if (args.effectiveAllowedPaths && args.effectiveAllowedPaths.length > 0)
+        return false;
+    if (isBranchDiffEmpty(args.repoRoot, readStartCommitFromState(args.sessionDir)) !== true)
+        return false;
+    args.log(formatEmptyScopeWarn(args.phase, 'the branch diff is empty — no branch-authored change to review', [], `  Hint: ${args.phase} reviews what this branch changed; an empty branch diff`));
+    logActivity({
+        event: args.event,
+        source: 'pickle',
+        session: path.basename(args.sessionDir),
+        gate_payload: { in_scope_paths: [], branch_diff_empty: true, ...args.extraPayload },
+    });
+    return true;
+}
 /**
  * R-PSSS-2: when szechuan-sauce's effective scope contains zero code files,
  * emit the operator WARN + `szechuan_sauce_empty_scope_skip` event and return
@@ -1684,11 +1751,34 @@ function shouldSkipSzechuanForEmptyScope(sessionDir, effectiveAllowedPaths, log)
     return true;
 }
 /**
+ * R-PSSS-2 + WS-B: the two ways szechuan-sauce can have no review surface
+ * BEFORE the `init-microverse.js` spawn — a resolved-but-code-free scope
+ * (`empty_scope`), and an unscoped run whose branch diff is empty
+ * (`empty_branch_diff`). Returns the reason to skip with, or null to run.
+ */
+function resolveSzechuanEmptySkipReason(sessionDir, target, effectiveAllowedPaths, log) {
+    if (shouldSkipSzechuanForEmptyScope(sessionDir, effectiveAllowedPaths, log))
+        return 'empty_scope';
+    // An unscoped run is the whole-repo case ONLY when the branch actually
+    // authored something. An empty branch diff leaves nothing to deslop, so the
+    // phase ends here instead of spinning the microverse loop over a review
+    // surface that does not exist.
+    const emptyDiff = shouldSkipPhaseForEmptyBranchDiff({
+        phase: 'szechuan-sauce',
+        event: 'szechuan_sauce_empty_scope_skip',
+        sessionDir,
+        effectiveAllowedPaths,
+        repoRoot: gitRepoRoot(target),
+        log,
+    });
+    return emptyDiff ? 'empty_branch_diff' : null;
+}
+/**
  * R-PSSS-1/2: operator-visible WARN for an empty/code-free-scope phase skip.
  * The original silent `Phase X skipped (setup returned false)` log forced
  * operators to read raw logs to discover why a phase did nothing.
  */
-function formatEmptyScopeWarn(phase, cause, inScopePaths) {
+function formatEmptyScopeWarn(phase, cause, inScopePaths, hint) {
     const shown = inScopePaths.slice(0, 20);
     const more = inScopePaths.length > shown.length
         ? `, …(+${inScopePaths.length - shown.length} more)`
@@ -1696,7 +1786,7 @@ function formatEmptyScopeWarn(phase, cause, inScopePaths) {
     return [
         `⚠ ${phase} did not run: ${cause}.`,
         `  In-scope diff (${inScopePaths.length} path(s)): ${shown.join(', ') || '(none)'}${more}`,
-        `  Hint: ${phase} reviews code subsystems; a doc-only or test-fixture-only`,
+        hint ?? `  Hint: ${phase} reviews code subsystems; a doc-only or test-fixture-only`,
         `  diff has no review surface. Widen with --scope paths:<glob>.`,
     ].join('\n');
 }
@@ -1707,6 +1797,19 @@ function resolveAnatomySubsystems(sessionDir, target, scope, log) {
         return { skipReason: 'no_subsystems' };
     }
     if (!scope || scope.allowedPaths.length === 0) {
+        // WS-B: unscoped-with-a-real-branch-diff still reviews every subsystem; an
+        // empty branch diff has no review surface at all and ends the phase.
+        if (shouldSkipPhaseForEmptyBranchDiff({
+            phase: 'anatomy-park',
+            event: 'anatomy_park_empty_scope_skip',
+            sessionDir,
+            effectiveAllowedPaths: scope?.allowedPaths,
+            repoRoot: scope?.repoRoot ?? gitRepoRoot(target),
+            extraPayload: { discovered_subsystems: discovered.map((s) => s.name) },
+            log,
+        })) {
+            return { skipReason: 'empty_branch_diff' };
+        }
         log(`Discovered ${discovered.length} subsystems: ${discovered.map(s => s.name).join(', ')}`);
         return discovered;
     }
@@ -1920,15 +2023,16 @@ export function setupSzechuanSauce(sessionDir, target, stallLimit, extensionRoot
     if ((!scope || scope.allowedPaths.length === 0) && effectiveAllowedPaths && effectiveAllowedPaths.length > 0) {
         log(`szechuan-sauce: reusing persisted scope.json with ${effectiveAllowedPaths.length} allowed path(s)`);
     }
-    // R-PSSS-2: a scoped pipeline whose effective scope contains zero code files
-    // (a doc-only / fixture-only branch diff) makes szechuan-sauce a no-op —
-    // unlike anatomy-park it does not skip on its own. Skip with an
-    // operator-visible WARN + `szechuan_sauce_empty_scope_skip` event instead of
-    // silently grinding the worker over docs. An UNSCOPED run (empty
-    // effectiveAllowedPaths) is the whole-repo case and is left to run.
-    if (shouldSkipSzechuanForEmptyScope(sessionDir, effectiveAllowedPaths, log)) {
-        return { skipReason: 'empty_scope' };
-    }
+    // R-PSSS-2 + WS-B: a scoped pipeline whose effective scope contains zero code
+    // files (a doc-only / fixture-only diff), and an unscoped run whose branch
+    // diff is empty, both make szechuan-sauce a no-op — unlike anatomy-park it
+    // does not skip on its own. Skip with an operator-visible WARN +
+    // `szechuan_sauce_empty_scope_skip` event instead of silently grinding the
+    // worker. An UNSCOPED run with a real branch diff is the whole-repo case and
+    // is left to run.
+    const emptySkip = resolveSzechuanEmptySkipReason(sessionDir, target, effectiveAllowedPaths, log);
+    if (emptySkip)
+        return { skipReason: emptySkip };
     archiveFile(sessionDir, 'microverse.json', 'pre-szechuan');
     const initArgs = [
         path.join(extensionRoot, 'extension', 'bin', 'init-microverse.js'),

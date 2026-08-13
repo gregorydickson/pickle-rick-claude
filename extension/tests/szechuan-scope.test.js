@@ -314,3 +314,129 @@ test('AC-BUNDLE-APWS-02: check-scope-diff rejects out-of-scope staged paths in w
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// WS-B (AC-B1 / AC-B2): an empty BRANCH DIFF ends the phase with its own reason;
+// an unscoped run with a real branch diff still runs.
+// ---------------------------------------------------------------------------
+
+function initEmptyDiffRepo() {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'szechuan-emptydiff-')));
+  const git = (args) => spawnSync('git', args, { cwd: repo, timeout: 10_000 });
+  git(['init', '-q', '-b', 'main']);
+  git(['config', 'user.email', 'test@test.local']);
+  git(['config', 'user.name', 'Test']);
+  git(['config', 'commit.gpgsign', 'false']);
+  fs.writeFileSync(path.join(repo, 'seed.ts'), 'export const seed = 1;\n');
+  git(['add', '.']);
+  git(['commit', '-q', '-m', 'seed']);
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8', timeout: 10_000 })
+    .stdout.trim();
+  return { repo, git, head };
+}
+
+/**
+ * The emptiness fact is measured against the SESSION baseline (`start_commit`),
+ * so the phase setup needs a state.json to read it from.
+ */
+function writeSessionState(sessionDir, repo, startCommit) {
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+    active: false,
+    working_dir: repo,
+    step: 'implement',
+    iteration: 0,
+    max_iterations: 100,
+    max_time_minutes: 720,
+    worker_timeout_seconds: 1200,
+    start_time_epoch: 1000,
+    completion_promise: null,
+    original_prompt: 'ws-b szechuan scope test',
+    current_ticket: null,
+    history: [],
+    started_at: new Date().toISOString(),
+    session_dir: sessionDir,
+    schema_version: 3,
+    tmux_mode: false,
+    chain_meeseeks: false,
+    backend: 'claude',
+    start_commit: startCommit,
+  }, null, 2));
+}
+
+function readSkipEvents(dataRoot) {
+  const activityDir = path.join(dataRoot, 'activity');
+  if (!fs.existsSync(activityDir)) return [];
+  const events = [];
+  for (const f of fs.readdirSync(activityDir).filter((n) => n.endsWith('.jsonl'))) {
+    for (const line of fs.readFileSync(path.join(activityDir, f), 'utf-8').split('\n').filter(Boolean)) {
+      try { events.push(JSON.parse(line)); } catch { /* skip malformed */ }
+    }
+  }
+  return events.filter((e) => e.event === 'szechuan_sauce_empty_scope_skip');
+}
+
+function withDataRoot(dataRoot, fn) {
+  const prior = process.env.PICKLE_DATA_ROOT;
+  process.env.PICKLE_DATA_ROOT = dataRoot;
+  try {
+    return fn();
+  } finally {
+    if (prior === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = prior;
+  }
+}
+
+test('AC-B1: an empty branch diff skips szechuan-sauce with empty_branch_diff + a WARN naming the diff', () => {
+  const { repo, head } = initEmptyDiffRepo();
+  const dir = makeTempDir();
+  const dataRoot = path.join(dir, 'data');
+  try {
+    writeSessionState(dir, repo, head); // nothing authored since the session baseline
+    const logs = [];
+    const result = withDataRoot(dataRoot, () =>
+      setupSzechuanSauce(dir, repo, 5, EXTENSION_ROOT, undefined, undefined, (m) => logs.push(m)));
+
+    assert.deepStrictEqual(
+      result, { skipReason: 'empty_branch_diff' },
+      'an empty branch diff must skip with its OWN reason, not empty_scope',
+    );
+    const warn = logs.join('\n');
+    assert.match(warn, /⚠ szechuan-sauce did not run/);
+    assert.match(warn, /branch diff is empty/);
+    assert.equal(
+      fs.existsSync(path.join(dir, 'microverse.json')), false,
+      'init-microverse must NOT be spawned on an empty-branch-diff skip',
+    );
+
+    const events = readSkipEvents(dataRoot);
+    assert.equal(events.length, 1, `expected 1 skip event; got ${events.length}`);
+    assert.equal(events[0].gate_payload.branch_diff_empty, true);
+    assert.deepStrictEqual(events[0].gate_payload.in_scope_paths, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AC-B2: an unscoped run with a NON-empty branch diff still runs szechuan-sauce', () => {
+  const { repo, git, head } = initEmptyDiffRepo();
+  const dir = makeTempDir();
+  const dataRoot = path.join(dir, 'data');
+  try {
+    writeSessionState(dir, repo, head);
+    git(['checkout', '-q', '-b', 'feature']);
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'real.ts'), 'export const real = 2;\n');
+    git(['add', '.']);
+    git(['commit', '-q', '-m', 'branch work']);
+
+    const result = withDataRoot(dataRoot, () =>
+      setupSzechuanSauce(dir, repo, 5, EXTENSION_ROOT, undefined, undefined, () => {}));
+
+    assert.equal(result, true, 'an unscoped run with a real branch diff must NOT skip');
+    assert.deepStrictEqual(readSkipEvents(dataRoot), [], 'no skip event may be emitted when the phase runs');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});

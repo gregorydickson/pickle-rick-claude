@@ -1283,7 +1283,8 @@
           "required": ["in_scope_paths", "discovered_subsystems"],
           "properties": {
             "in_scope_paths": { "type": "array", "items": { "type": "string" } },
-            "discovered_subsystems": { "type": "array", "items": { "type": "string" } }
+            "discovered_subsystems": { "type": "array", "items": { "type": "string" } },
+            "branch_diff_empty": { "type": "boolean" }
           }
         }
       }
@@ -1300,7 +1301,8 @@
           "type": "object",
           "required": ["in_scope_paths"],
           "properties": {
-            "in_scope_paths": { "type": "array", "items": { "type": "string" } }
+            "in_scope_paths": { "type": "array", "items": { "type": "string" } },
+            "branch_diff_empty": { "type": "boolean" }
           }
         }
       }
