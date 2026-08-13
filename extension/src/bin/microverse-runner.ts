@@ -3396,12 +3396,35 @@ function recordMetricMeasurementFailure(state: MicroverseState, ctx: RunContext)
   return { kind: 'unchanged' };
 }
 
+/**
+ * Ticket 6625e3ed: the microverse half of the `wasted_iter` predicate. It used to carry
+ * its own inline rule (`revert || (action !== 'worker' && post === pre)`) — a second
+ * formula for the quantity ticket 7addedbf exists to unify, deciding 95.9% of the corpus
+ * without ever crossing the classifier. It now delegates.
+ *
+ * The one translation: microverse observes the designed worker handoff through its
+ * pre-existing `'worker'` action label, while mux observes the same disposition through
+ * the artifact delta. Two observations of one disposition, so the label is projected onto
+ * a positive delta — the same projection `wasted-iter-replay.ts:classifyUnderNewPredicate`
+ * publishes for the recount. It is restated rather than shared because that module is a
+ * corpus tool, not a runtime dependency of this one; a third occurrence should be extracted.
+ *
+ * The delegation is verdict-preserving on every arm but one: an iteration with exactly one
+ * readable SHA. The old rule compared `post === pre`, so a failed HEAD read scored `false`
+ * and an unreadable HEAD was credited as a commit; the classifier requires both SHAs to
+ * claim `committed` (`mux-runner.ts:2793`) and falls through to `no_progress`. Measured
+ * over the on-disk corpus that is 137 events, all in test-fixture sessions and none in a
+ * real one — a latent silent default, closed before it scored a real run.
+ */
 function emitMicroverseWastedIter(ctx: RunContext, action: WastedIterAction): void {
   const preIterSha = ctx.preIterSha ?? null;
   const postIterSha = ctx.postIterSha ?? null;
-  // Consume the existing 'worker' label: the designed worker-handoff iteration is never
-  // wasted, regardless of whether HEAD moved this turn.
-  const wasted = action === 'revert' || (action !== 'worker' && postIterSha === preIterSha);
+  const { wasted, reason } = classifyMuxIteration({
+    action,
+    preIterSha,
+    postIterSha,
+    artifactDelta: action === 'worker' ? 1 : null,
+  });
   logActivity({
     event: 'wasted_iter',
     source: 'pickle',
@@ -3410,6 +3433,7 @@ function emitMicroverseWastedIter(ctx: RunContext, action: WastedIterAction): vo
     runner: 'microverse',
     action,
     wasted,
+    reason,
     pre_iter_sha: preIterSha,
     post_iter_sha: postIterSha,
   });

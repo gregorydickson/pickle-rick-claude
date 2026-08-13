@@ -308,6 +308,68 @@ test('AC-A5: a non-success iteration exit emits exactly one wasted_iter event', 
   assert.equal(events[0].wasted, true);
 });
 
+// --- Ticket 6625e3ed: the microverse emitter fails conservative and speaks the vocabulary. ---
+//
+// The mux-path sibling of the first case is `AC-A3: an unreadable HEAD is not evidence of a
+// commit` below. Until 6625e3ed the microverse emitter carried its own inline predicate, so it
+// had no such arm: `postIterSha === preIterSha` with one side null is `false`, and a failed HEAD
+// read scored NOT wasted. Both cases drive the real emitter and read the emitted JSONL — a test
+// that restated the predicate would be blind to exactly the defect this pins.
+
+async function runNonSuccessExitHarness({ preSha }) {
+  return withSandbox(async ({ sessionDir, workingDir, dataRoot }) => {
+    const runnerState = makeRunnerState(sessionDir, workingDir);
+    const statePath = path.join(sessionDir, 'state.json');
+    const microverseState = makeMetricMicroverseState('echo 50');
+    // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing state to lock against
+    stateManager.forceWrite(statePath, runnerState);
+    fs.writeFileSync(path.join(sessionDir, 'microverse.json'), JSON.stringify(microverseState, null, 2));
+
+    const original = { getHeadSha: _deps.getHeadSha };
+    try {
+      _deps.getHeadSha = () => 'a'.repeat(40);
+      await handleIterationOutcome(
+        microverseState,
+        { raw: '40', score: 40 },
+        makeContext(sessionDir, statePath, workingDir, runnerState, preSha),
+        { completion: 'error', timedOut: false, exitCode: 1, wallSeconds: 30 },
+      );
+      return readWastedIterEvents(dataRoot);
+    } finally {
+      _deps.getHeadSha = original.getHeadSha;
+    }
+  });
+}
+
+test('6625e3ed: an unreadable pre-iteration HEAD is not evidence of a commit (microverse path)', async () => {
+  const events = await runNonSuccessExitHarness({ preSha: null });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].action, 'error');
+  assert.equal(events[0].pre_iter_sha, null, 'the fixture must actually exercise the one-null-SHA case');
+  assert.equal(
+    events[0].wasted,
+    true,
+    'one readable SHA is not a commit — the conservative arm must fire, not the equality shortcut',
+  );
+  assert.equal(events[0].reason, 'no_progress');
+});
+
+test('6625e3ed: every microverse emission carries a reason from the closed vocabulary', async () => {
+  const cases = [
+    await runWorkerModeHarness({ preSha: 'a'.repeat(40), postSha: 'a'.repeat(40) }),
+    await runWorkerModeHarness({ preSha: 'a'.repeat(40), postSha: 'b'.repeat(40) }),
+    await runMetricModeHarness({ validation: 'echo 20', sameSha: true }),
+    await runNonSuccessExitHarness({ preSha: 'a'.repeat(40) }),
+  ];
+  for (const events of cases) {
+    assert.equal(events.length, 1);
+    assert.ok(
+      MUX_ITERATION_REASONS.includes(events[0].reason),
+      `microverse emitted reason ${JSON.stringify(events[0].reason)}, outside the closed vocabulary`,
+    );
+  }
+});
+
 // --- Mux mode (ticket 7addedbf): AC-A1-mux / AC-A2 / AC-A3 / AC-A4. ---
 //
 // Mux has no 'worker' label — its action IS `outcome.completion`. The observable that
