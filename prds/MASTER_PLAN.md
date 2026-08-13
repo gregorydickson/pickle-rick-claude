@@ -58,6 +58,25 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > **2400s**), (b) 25% legitimately-clean passes with nothing to fix, (c) real defects. **Fix the metric
 > before shipping anything else — an unmeasurable baseline is how the last two months happened.**
 >
+> **⚠ CORRECTION 06:40 — the `514bd4a7` Failed flag was CORRECT, and the tree is RED because of my**
+> **preservation commit.** Bisected in an isolated worktree, identical `--grep` both sides:
+> `08a14a55~1` = **648 pass / 0 fail**; HEAD = **647 pass / 2 fail**. The empty-diff work regresses
+> `AC-OA-1c: a degraded phase never claims success` (sibling: *every phase degraded ⇒ non-zero exit,
+> failed status, and NO closer release plan*) and `anatomy-park judge_timeout runs finalize-gate instead
+> of halting pipeline`. Both concern phase DISPOSITION — a phase skipping for `empty_branch_diff` is
+> apparently counted as a non-degraded outcome, so a run that should withhold the closer release plan no
+> longer does. **That is the same degraded-vs-success distinction the parent PRD exists to protect.**
+>
+> Preserving the work was still right — it was uncommitted and one restore from destruction, and it is
+> 90%% correct with valuable notes. But **Done must not be claimed and the tree is not green.** Bisect
+> evidence written to the ticket's `handoff_notes.md` so the worker sees it on re-spawn, with an explicit
+> instruction NOT to fix it by relaxing either test and NOT to re-simplify the `start_commit`-only base.
+>
+> **The lesson generalises:** the worker's `ALL_PASS` was against its own acceptance criteria, which do
+> pass. The full tier caught what those criteria structurally cannot see — and the worker's own notes had
+> already recorded that exact lesson from an earlier iteration (*"found by the full fast tier, not by the
+> acceptance tests"*). A per-ticket conformance verdict is not a tree verdict.
+>
 > **🚨 FALSE FAILED RECOVERED 2026-08-13 06:12 — `514bd4a7`, 391 lines of completed work were sitting**
 > **UNCOMMITTED under a `Failed` flag.** The worker's own `conformance_2026-08-13.md` reads
 > `## 6. Verdict — ALL_PASS` and its `handoff_notes.md` records `Failed: none`; its stated next step was
