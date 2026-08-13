@@ -58,6 +58,21 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > **2400s**), (b) 25% legitimately-clean passes with nothing to fix, (c) real defects. **Fix the metric
 > before shipping anything else — an unmeasurable baseline is how the last two months happened.**
 >
+> **🟡 GATE RESULT 2026-08-13 — 14/15 steps GREEN, one PRE-EXISTING red. `GATE_EXIT=1`.**
+> `<scratchpad>/relgate2.sh`, log `/tmp/relgate2.log`, per-step wall-clock recorded.
+> **`test:fast:budget` rc=0 in 3739s — the gate ITSELF confirms the fast-tier cap fix**, independent of
+> `e7c9ada3`'s own measurement. tsc / eslint / tsc-build / all 9 audits / test:expensive all rc=0.
+>
+> Sole failure: **`INV-CODEX-RECOVERY-ADVANCED`** (`extension/tests/integration/codex-authority-recovery.test.js`),
+> 610 pass / 1 fail. **NOT a regression from this bundle** — none of the bundle's 17 commits touch that
+> file (`git log --since` on it = 0); last touched by `4317939c` (R-CHTS-CODEX) and `2028aeb0`. This is the
+> same undiagnosed red carried across three prior bundles. It belongs in the beta.10 notes as a named
+> residual, NOT shipped quietly.
+>
+> **⚠ It failed in the PARALLEL sub-tier, so `test:integration:serial` NEVER RAN** (`test:integration` is
+> `parallel && serial`). The serial tier is being measured separately; until it reports, the integration
+> tier is only PARTLY known. Do not read 14/15 as "one known failure" until that lands.
+>
 > **✅ BUNDLE COMPLETE 2026-08-12 — 7 Done + 1 Parked, 17 commits, tree clean.** Fast-tier cap fix
 > validated under load (see below). PRD for the next chunk written: `85a8df61`
 > `prds/BUG-2026-08-12-iteration-accounting-and-empty-diff-spin.md` (WS-A metric honesty, WS-B empty-diff
