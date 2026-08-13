@@ -1722,7 +1722,12 @@ function shouldSkipPhaseForEmptyBranchDiff(args) {
         return false;
     if (isBranchDiffEmpty(args.repoRoot, readStartCommitFromState(args.sessionDir)) !== true)
         return false;
-    args.log(formatEmptyScopeWarn(args.phase, 'the branch diff is empty — no branch-authored change to review', [], `  Hint: ${args.phase} reviews what this branch changed; an empty branch diff`));
+    args.log(formatEmptyScopeWarn(args.phase, 'the branch diff is empty — no branch-authored change to review', [], [
+        `  Hint: ${args.phase} reviews what this run authored, measured from the session`,
+        `  baseline (state.start_commit). This run committed nothing and its tree is clean,`,
+        `  so there is no review surface and the phase ends here. Widening --scope cannot`,
+        `  help — the recourse is to run the phase against a run that authored a change.`,
+    ]));
     logActivity({
         event: args.event,
         source: 'pickle',
@@ -1777,17 +1782,33 @@ function resolveSzechuanEmptySkipReason(sessionDir, target, effectiveAllowedPath
  * R-PSSS-1/2: operator-visible WARN for an empty/code-free-scope phase skip.
  * The original silent `Phase X skipped (setup returned false)` log forced
  * operators to read raw logs to discover why a phase did nothing.
+ *
+ * Ticket 6625e3ed: `hint` overrode the explanation line but NOT the remediation line
+ * beneath it, so the empty-branch-diff caller rendered "…an empty branch diff / diff has
+ * no review surface. Widen with --scope paths:<glob>." — a duplicated word, and advice
+ * that cannot apply (widening scope conjures no diff). A caller that owns the explanation
+ * owns the remediation with it, so the override is now the whole `explain` tail.
+ *
+ * The path enumeration is likewise dropped when there are no paths: it belongs to a cause
+ * that IS a filtered path set, and `(0 path(s)): (none)` is noise on a cause that is not.
+ * Both `empty_scope` callers pass a non-empty set (`isCodeFreeScope` guarantees it), so
+ * their rendering is unchanged.
  */
-function formatEmptyScopeWarn(phase, cause, inScopePaths, hint) {
+function formatEmptyScopeWarn(phase, cause, inScopePaths, explain) {
     const shown = inScopePaths.slice(0, 20);
     const more = inScopePaths.length > shown.length
         ? `, …(+${inScopePaths.length - shown.length} more)`
         : '';
+    const enumeration = inScopePaths.length > 0
+        ? [`  In-scope diff (${inScopePaths.length} path(s)): ${shown.join(', ') || '(none)'}${more}`]
+        : [];
     return [
         `⚠ ${phase} did not run: ${cause}.`,
-        `  In-scope diff (${inScopePaths.length} path(s)): ${shown.join(', ') || '(none)'}${more}`,
-        hint ?? `  Hint: ${phase} reviews code subsystems; a doc-only or test-fixture-only`,
-        `  diff has no review surface. Widen with --scope paths:<glob>.`,
+        ...enumeration,
+        ...(explain ?? [
+            `  Hint: ${phase} reviews code subsystems; a doc-only or test-fixture-only`,
+            `  diff has no review surface. Widen with --scope paths:<glob>.`,
+        ]),
     ].join('\n');
 }
 function resolveAnatomySubsystems(sessionDir, target, scope, log) {

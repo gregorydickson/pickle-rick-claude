@@ -211,6 +211,11 @@ describe('szechuan scope injection', () => {
       const warn = logs.join('\n');
       assert.match(warn, /⚠ szechuan-sauce did not run/);
       assert.match(warn, /no code files/);
+      // Ticket 6625e3ed: the default tail belongs to THIS cause — a filtered path set that
+      // excluded every code file is exactly the case --scope can widen. The empty-branch-diff
+      // caller overrides it; this one must keep it, enumeration included.
+      assert.match(warn, /In-scope diff \(2 path\(s\)\): docs\/guide\.md, CHANGELOG\.md/);
+      assert.match(warn, /Widen with --scope paths:<glob>\./);
       assert.equal(
         fs.existsSync(path.join(dir, 'microverse.json')), false,
         'init-microverse must NOT be spawned on an empty-scope skip',
@@ -407,6 +412,21 @@ test('AC-B1: an empty branch diff skips szechuan-sauce with empty_branch_diff + 
       fs.existsSync(path.join(dir, 'microverse.json')), false,
       'init-microverse must NOT be spawned on an empty-branch-diff skip',
     );
+
+    // Ticket 6625e3ed: the WARN must read as English and point somewhere real. The `hint`
+    // override replaced the explanation line but not the remediation line beneath it, so
+    // this rendered "…an empty branch diff / diff has no review surface. Widen with
+    // --scope paths:<glob>." — a duplicated word, and a recourse that cannot apply.
+    assert.doesNotMatch(warn, /diff\n\s*diff /, 'the explanation and its tail must not collide mid-sentence');
+    assert.doesNotMatch(
+      warn, /Widen with --scope/,
+      'widening scope cannot conjure a branch diff — this cause must not advertise that recourse',
+    );
+    assert.doesNotMatch(
+      warn, /In-scope diff \(0 path\(s\)\)/,
+      'an empty path enumeration is noise on a cause that is not a filtered path set',
+    );
+    assert.match(warn, /state\.start_commit/, 'the WARN must name the baseline the emptiness was measured against');
 
     const events = readSkipEvents(dataRoot);
     assert.equal(events.length, 1, `expected 1 skip event; got ${events.length}`);
