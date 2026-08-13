@@ -495,6 +495,54 @@ test('F1: no censored duration feeds a cap', () => {
     }
 });
 
+// ---------------------------------------------------------------------------
+// F3 — the caps must clear what was actually observed UNDER LOAD.
+//
+// Every other would-it-notice assertion in this file compares a cap either to an at-rest
+// measurement or to a second derivation of its own inputs, so all of them stay green under
+// a cap that is self-consistently too small — which is what shipped, and what killed two
+// tests at --test-concurrency=4. The row below is the one uncensored loaded completion the
+// bundle recorded: it ran to completion in 105_321.575166ms and failed on
+// `expected recovered timeout near 90s, got 78s` (an assertion, since fixed by 7ca5c54c),
+// NOT on its cap. Contrast the CENSORED_OVERRUNS_MS rows above, whose exit status is
+// `null` — those are kills, and a kill time is a lower bound, not a measurement.
+// Provenance: 94833eaf/fast_c4_tier_run.log:13478-13479.
+const OBSERVED_LOADED_COMPLETIONS = [
+    {
+        test: 'spawn-morty: recovers orphan tmp session timeout before printing worker budget',
+        ms: 105_321.575166,
+        cap: CAP_MEASURED_ORPHAN_TMP_SESSION_TIMEOUT,
+        capName: 'CAP_MEASURED_ORPHAN_TMP_SESSION_TIMEOUT',
+        preBundleCap: 90_000,
+    },
+];
+
+for (const c of OBSERVED_LOADED_COMPLETIONS) {
+    test(`F3: ${c.capName} clears the loaded completion of "${c.test}"`, () => {
+        assert.ok(
+            c.cap > c.ms,
+            `${c.capName} = ${c.cap}ms does not clear the ${c.ms}ms this test took under load`,
+        );
+        // Without this arm the assertion above would be satisfied by a cap that has never
+        // been at risk, and would say nothing about the regression it exists to catch.
+        assert.ok(
+            c.preBundleCap < c.ms,
+            `the pre-bundle ${c.preBundleCap}ms cap would have cleared ${c.ms}ms, so this ` +
+            'assertion cannot distinguish the fix from the defect',
+        );
+    });
+
+    test(`F3: the loaded completion of "${c.test}" exceeds its own at-rest measurement`, () => {
+        const atRest = FBC15455_MEASURED_MAX_MS[c.test];
+        assert.ok(Number.isFinite(atRest), `no at-rest measurement recorded for ${c.test}`);
+        assert.ok(
+            c.ms > atRest,
+            `${c.ms}ms is not above the ${atRest}ms at-rest row — a loaded observation that ` +
+            'does not exceed its at-rest twin is an at-rest duplicate, and pins nothing',
+        );
+    });
+}
+
 const PRE_CONVERSION_CAPS = [
     { name: 'CAP_SPAWN_MORTY_DEFAULT_BUDGET', cap: CAP_SPAWN_MORTY_DEFAULT_BUDGET, previous: 45_000 },
     { name: 'CAP_SPAWN_MORTY_CLAMPED_BUDGET', cap: CAP_SPAWN_MORTY_CLAMPED_BUDGET, previous: 45_000 },
