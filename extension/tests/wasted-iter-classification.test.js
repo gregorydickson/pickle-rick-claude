@@ -430,27 +430,25 @@ test('AC-A4: the completion union was parsed, not silently empty', () => {
   }
 });
 
+// Every (artifactDelta, postIterSha) shape an iteration can end in, against a fixed preIterSha.
+const TOTALITY_SHAPES = [null, 0, 2].flatMap(
+  (artifactDelta) => [SHA_A, SHA_B, null].map((postIterSha) => ({ artifactDelta, postIterSha })),
+);
+
 for (const action of COMPLETION_MEMBERS) {
   test(`AC-A4: '${action}' maps to exactly one reason from the closed vocabulary`, () => {
-    for (const artifactDelta of [null, 0, 2]) {
-      for (const postIterSha of [SHA_A, SHA_B, null]) {
-        const verdict = classifyMuxIteration({
-          action, preIterSha: SHA_A, postIterSha, artifactDelta,
-        });
-        assert.ok(
-          MUX_ITERATION_REASONS.includes(verdict.reason),
-          `${action} produced an out-of-vocabulary reason: ${verdict.reason}`,
-        );
-        assert.equal(typeof verdict.wasted, 'boolean');
-        // The ticket's invariant: `wasted: true` implies the iteration produced no commit.
-        if (verdict.wasted) {
-          assert.notEqual(verdict.reason, 'committed');
-          assert.ok(
-            postIterSha === null || postIterSha === SHA_A,
-            `${action} reported wasted over a moved HEAD`,
-          );
-        }
-      }
+    for (const { artifactDelta, postIterSha } of TOTALITY_SHAPES) {
+      const verdict = classifyMuxIteration({ action, preIterSha: SHA_A, postIterSha, artifactDelta });
+      const shape = `${action}/delta=${artifactDelta}/post=${postIterSha}`;
+      assert.ok(
+        MUX_ITERATION_REASONS.includes(verdict.reason),
+        `${shape} produced an out-of-vocabulary reason: ${verdict.reason}`,
+      );
+      assert.equal(typeof verdict.wasted, 'boolean');
+      // The ticket's invariant: `wasted: true` implies the iteration produced no commit.
+      const movedHead = postIterSha !== null && postIterSha !== SHA_A;
+      assert.ok(!(verdict.wasted && movedHead), `${shape} reported wasted over a moved HEAD`);
+      assert.ok(!(verdict.wasted && verdict.reason === 'committed'), `${shape} is wasted AND committed`);
     }
   });
 }
