@@ -51,6 +51,7 @@ const MARKED_ASSERTION_CAP = 'resolveAssertionCap(5000)';
  * @returns {string[]}
  */
 function extractSubprocessCallArgs(src) {
+    /** @type {string[]} */
     const found = [];
     const callRe = /\b(?:spawnSync|execFileSync)\s*\(/g;
     let match;
@@ -91,15 +92,90 @@ function extractSubprocessCallArgs(src) {
     return found;
 }
 
-/** Every `timeout:` value expression appearing inside a subprocess argument object. */
-function extractSubprocessTimeoutValues(src) {
-    const values = [];
-    for (const args of extractSubprocessCallArgs(src)) {
+/**
+ * The command expression of a subprocess call — the text up to the first comma that is
+ * not nested inside brackets, braces, parens, or a string. Skips comments and string
+ * bodies for the same reason the caller does: their contents must not steer the scan.
+ * @param {string} args
+ * @returns {string}
+ */
+function firstArgumentOf(args) {
+    let depth = 0;
+    for (let i = 0; i < args.length; i += 1) {
+        const ch = args[i];
+        const next = args[i + 1];
+        if (ch === '/' && next === '/') {
+            const nl = args.indexOf('\n', i);
+            if (nl === -1) break;
+            i = nl;
+            continue;
+        }
+        if (ch === '/' && next === '*') {
+            const end = args.indexOf('*/', i + 2);
+            if (end === -1) break;
+            i = end + 1;
+            continue;
+        }
+        if (ch === "'" || ch === '"' || ch === '`') {
+            const quote = ch;
+            i += 1;
+            while (i < args.length && args[i] !== quote) {
+                if (args[i] === '\\') i += 1;
+                i += 1;
+            }
+            continue;
+        }
+        if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+        else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
+        else if (ch === ',' && depth === 0) return args.slice(0, i).trim();
+    }
+    return args.trim();
+}
+
+/**
+ * Every subprocess call in `src` as `{ command, args, timeoutValues }`. `timeoutValues` is
+ * EMPTY when the call passes no `timeout:` key at all — the case a values-only scan cannot
+ * represent, and therefore the case a cap guard built on one cannot police.
+ * @param {string} src
+ * @returns {{command: string, args: string, timeoutValues: string[]}[]}
+ */
+function extractSubprocessCalls(src) {
+    return extractSubprocessCallArgs(src).map(args => {
+        const values = [];
         const re = /\btimeout\s*:\s*([^,\n}]+)/g;
         let m;
         while ((m = re.exec(args)) !== null) values.push(m[1].trim());
-    }
-    return values;
+        return { command: firstArgumentOf(args), args, timeoutValues: values };
+    });
+}
+
+/** A command expression written as a single-quoted or double-quoted string literal. */
+function literalCommand(command) {
+    const m = /^'([^']+)'$|^"([^"]+)"$/.exec(command);
+    return m ? (m[1] ?? m[2]) : null;
+}
+
+/**
+ * Spawns of the subject under test: every one runs a node runtime, which is what makes it
+ * a spawn of THIS repo's code rather than of a tool. Matching the runtime rather than
+ * `process.execPath` alone closes the disguise — rewriting a subject spawn as
+ * `spawnSync('node', [BIN, …])` must not reclassify it into the unchecked fixture lane.
+ */
+function isSubjectSpawn(call) {
+    const literal = literalCommand(call.command);
+    if (literal !== null) return /^node(\.exe)?$/.test(literal);
+    return /(^|\.)execPath$/.test(call.command);
+}
+
+/** Fixture/setup spawns: `git`, `bash`, and friends — a tool, named by a string literal. */
+function isFixtureSpawn(call) {
+    const literal = literalCommand(call.command);
+    return literal !== null && !/^node(\.exe)?$/.test(literal);
+}
+
+/** Every `timeout:` value expression appearing inside a subprocess argument object. */
+function extractSubprocessTimeoutValues(src) {
+    return extractSubprocessCalls(src).flatMap(call => call.timeoutValues);
 }
 
 function readConverted(file) {
@@ -137,6 +213,53 @@ for (const file of CONVERTED_FILES) {
             assert.ok(
                 isDirectCall || isImportedCap,
                 `${file}: cap "${value}" is neither a resolver call nor a cap imported from the helper`,
+            );
+        }
+    });
+}
+
+// A values-only scan can only judge caps that EXIST. Dropping the `timeout:` key from a
+// spawn deletes the cap and every assertion about it in the same stroke, which is the one
+// regression a cap guard must not sleep through. Subject spawns are separated from fixture
+// spawns by the command they name, so the ~22 `execFileSync('git', …)` setup calls stay
+// legal without an allowlist that would need maintaining.
+for (const file of CONVERTED_FILES) {
+    test(`AC-A1: every subject spawn in ${file} carries a cap`, () => {
+        const src = readConverted(file);
+        const imported = importedCapNames(src);
+        const subject = extractSubprocessCalls(src).filter(isSubjectSpawn);
+        assert.ok(subject.length > 0, `expected subject spawns in ${file}`);
+
+        for (const call of subject) {
+            assert.ok(
+                call.timeoutValues.length > 0,
+                `${file}: subject spawn "${call.command}" passes no timeout — an un-capped ` +
+                'subprocess can hang the tier forever, and no cap assertion can see it',
+            );
+            for (const value of call.timeoutValues) {
+                if (value === MARKED_ASSERTION_CAP) continue;
+                assert.ok(
+                    value.startsWith('resolveSubprocessCap(') || imported.has(value),
+                    `${file}: subject cap "${value}" is not resolver-derived`,
+                );
+            }
+        }
+    });
+
+    test(`AC-A1: every subprocess call in ${file} classifies as subject or fixture`, () => {
+        const calls = extractSubprocessCalls(readConverted(file));
+        assert.ok(calls.length > 0, `expected subprocess calls in ${file}`);
+        assert.ok(
+            calls.some(isFixtureSpawn),
+            `${file}: no fixture spawn found — if the fixture population emptied, the ` +
+            'subject/fixture split is no longer carrying anything',
+        );
+        for (const call of calls) {
+            assert.equal(
+                Number(isSubjectSpawn(call)) + Number(isFixtureSpawn(call)), 1,
+                `${file}: subprocess command "${call.command}" is neither process.execPath ` +
+                'nor a string literal. Name the binary directly, or teach the classifier ' +
+                'the new shape — an unclassified spawn is an uncapped spawn nothing checks',
             );
         }
     });
