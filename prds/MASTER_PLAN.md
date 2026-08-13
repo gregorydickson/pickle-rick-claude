@@ -58,6 +58,26 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > **2400s**), (b) 25% legitimately-clean passes with nothing to fix, (c) real defects. **Fix the metric
 > before shipping anything else — an unmeasurable baseline is how the last two months happened.**
 >
+> **🔬 ROOT-CAUSED 08:15 — the 2 red tests are UNREACHED FIXTURES, not wrong assertions. Fix PRD `dd72c588`.**
+> `makeRepo()` in `extension/tests/oneabort-termination-invariant.test.js` returns `startCommit` = HEAD
+> right after its seed commit, so `start_commit..HEAD` is empty, the new skip correctly fires, the phase
+> never runs, and the assertion never executes. That fixture's own comment shows its author had already
+> defended against the PREVIOUS skip (*"seed one so the microverse phases find a real subsystem instead of
+> skipping for empty scope"*) — `empty_branch_diff` is a SECOND skip that postdates it.
+>
+> **The fix idiom already exists in the repo**: `extension/tests/pipeline-runner-phase-fail-continue.test.js:40`
+> is `makeRepo({ createFollowupCommit = false })`, with a test at `:190` named *"shouldHaltAfterPhase pickle
+> continue when commits exist after start_commit"*. The failing case just does not pass it. So the fix is
+> restoring reachability via an established idiom, NOT relaxing a guard — and `AC-OA-1c` pins *"continuing
+> is NOT claiming success"*, so weakening it to go green would delete the guard against the very fake-green
+> this project is eliminating.
+>
+> **🚨 FAKE-GREEN IS LIVE IN THIS BUNDLE — 5 of 6 Done tickets are `gate=green tests=red`** (`0aff6be2`,
+> `7addedbf`, `129c61c4`, `2ed9a852`, `6625e3ed`), and `514bd4a7` is Done with **NO gate verdict at all**,
+> stamped with `880f6baa` — the MANAGER's preservation commit — over the regression it introduced. The
+> 28/28 census is now 33. **`c916b3da` must be re-sequenced AHEAD of the remaining queue**: this bundle is
+> its proof case, not a hypothesis.
+>
 > **⚠ CORRECTION 06:40 — the `514bd4a7` Failed flag was CORRECT, and the tree is RED because of my**
 > **preservation commit.** Bisected in an isolated worktree, identical `--grep` both sides:
 > `08a14a55~1` = **648 pass / 0 fail**; HEAD = **647 pass / 2 fail**. The empty-diff work regresses
