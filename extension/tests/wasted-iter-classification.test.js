@@ -506,6 +506,22 @@ test("AC-A3: the legacy 'revert' term is preserved", () => {
 // in source rather than hand-copied, so a member added to that union without a mapping
 // reddens this loop instead of being silently skipped. `node:test` has no `test.each`.
 
+// Ticket 14ebb20d: every assertion below that reads `MUX_ITERATION_REASONS.includes(reason)`
+// is only as strong as that set is small. Widening the tuple by one member would leave all of
+// them green while silently admitting the reason they exist to exclude — an out-of-vocabulary
+// verdict. AC-A4 requires the vocabulary be CLOSED, and "closed" was an unasserted property of
+// the source declaration until this test. Membership, in declaration order.
+test('AC-A4: the reason vocabulary is exactly five members, and closed', () => {
+  assert.deepEqual(
+    [...MUX_ITERATION_REASONS],
+    ['committed', 'worker_handoff', 'clean_pass', 'revert', 'no_progress'],
+  );
+  // The value the unlisted-exit-type case below feeds in must NOT be a reason. If a future
+  // change made it one, that test would pass by admitting its own input instead of by mapping
+  // it onto the conservative arm.
+  assert.equal(MUX_ITERATION_REASONS.includes('output_stall'), false);
+});
+
 function readCompletionUnionMembers() {
   const typesPath = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
