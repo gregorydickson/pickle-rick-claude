@@ -58,6 +58,19 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > **2400s**), (b) 25% legitimately-clean passes with nothing to fix, (c) real defects. **Fix the metric
 > before shipping anything else — an unmeasurable baseline is how the last two months happened.**
 >
+> **▶ ORDERING PIN LANDED (in-tree, uncommitted) — the P0 that would have silently NOT fixed.**
+> `makeRepo` now captures `startCommit` BEFORE authoring the follow-up commit, and carries the assertion
+> refinement demanded (`assert.notEqual(startCommit, head)` with the flag set) plus a comment naming
+> `empty_branch_diff` for the next fixture author. Had the contract only constrained output *shape* — as
+> my first draft did — a worker could have authored the commit first, rev-parsed after, and shipped a
+> fixture that looks fixed while the diff stays empty and the test stays red.
+>
+> **`c916b3da` is launch-ready and BLOCKED only on the green-tree precondition.** Census re-measured at
+> **32/32** (`tests=red` + `gate=green`, zero counterexamples, four bundles later). Stale-premise check run
+> against HEAD *and* the deployed tree per `prds/CLAUDE.md`: the predicate is live in both, and deployed
+> `mux-runner.js` has **zero** occurrences of `worker_gate_tests_verdict`. Its prerequisite (fast-tier caps)
+> is satisfied — validated under load. Launch the moment the tier reads 0 fail / 0 cancelled.
+>
 > **▶ FIX BUNDLE LAUNCHED 10:13 — session `2026-08-13-e4ab0833`, tmux `pickle-e4ab0833`, 4 tickets.**
 > PRD `730effe1`. `c5b81af7` restore reachability in the 2 fixtures · `4f860deb` survey all 45
 > `start_commit` fixtures · `b68b273b` test-quality harden · `3dc65ea1` cross-ref. Two hardening tickets
