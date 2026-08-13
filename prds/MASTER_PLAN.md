@@ -58,6 +58,19 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > **2400s**), (b) 25% legitimately-clean passes with nothing to fix, (c) real defects. **Fix the metric
 > before shipping anything else — an unmeasurable baseline is how the last two months happened.**
 >
+> **▶ BUNDLE PROGRESS 2026-08-13 04:11 — 2/8 Done, both metric predicates landed and VERIFIED in source.**
+> `microverse-runner.ts:3404` is now `action === 'revert' || (action !== 'worker' && postIterSha === preIterSha)`
+> — the one-token fix exactly as specified, no liveness probe. `mux-runner.ts:2814` returns
+> `{ wasted: false, reason: 'worker_handoff' }` against a closed vocabulary with ONE definition site
+> (`extension/src/types/index.ts:948`). **`AC-A7`'s split-brain risk is closed**:
+> `buildEfficiencySection` (`extension/src/bin/microverse-runner.ts:2931`) now calls the shared
+> `classifyMuxIteration`, so the printed percentage and the replay cannot diverge.
+>
+> Simplify-phase check: `8c500806` "drop the unread reason field" was inspected — it removed
+> `CorpusEvent.reason` from the REPLAY's local type (never read) and added a comment explaining why the
+> replay ignores it. The emitted reason from `7addedbf` is untouched, so `AC-A4` survives. Recorded
+> because a simplify pass deleting a deliverable is a real class and this one looked like it at first read.
+>
 > **▶ NEXT BUNDLE LAUNCHED 2026-08-13 — session `2026-08-13-71ecebb6`, 8 tickets, tmux `pickle-71ecebb6`.**
 > PRD `1f3935c2` `prds/BUG-2026-08-12-iteration-accounting-and-empty-diff-spin.md`. Drain items #1 and #2.
 > `0aff6be2` microverse handoff label · `7addedbf` mux disposition + closed reason vocabulary ·
