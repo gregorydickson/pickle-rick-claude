@@ -58,6 +58,26 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > **2400s**), (b) 25% legitimately-clean passes with nothing to fix, (c) real defects. **Fix the metric
 > before shipping anything else — an unmeasurable baseline is how the last two months happened.**
 >
+> **▶ NEXT BUNDLE LAUNCHED 2026-08-13 — session `2026-08-13-71ecebb6`, 8 tickets, tmux `pickle-71ecebb6`.**
+> PRD `1f3935c2` `prds/BUG-2026-08-12-iteration-accounting-and-empty-diff-spin.md`. Drain items #1 and #2.
+> `0aff6be2` microverse handoff label · `7addedbf` mux disposition + closed reason vocabulary ·
+> `129c61c4` corpus recount + efficiency-report reconciliation · `514bd4a7` empty-diff phase exit ·
+> 4 hardening.
+>
+> **Refinement found FIVE P0s in the PRD, all verified in source before adoption.** Two would have caused
+> real damage: (a) `AC-B4` was satisfiable by doing NOTHING — `PhaseSkipReason`'s docstring
+> (`extension/src/bin/pipeline-runner.ts:127-129`) already claims `empty_scope` covers *"the scope filter /
+> branch diff"*, so reusing it passes the letter and fails the purpose; the AC now mandates a distinct
+> value AND co-scopes the docstring + `extension/src/types/CLAUDE.md:22` edits. (b) `AC-A1` prescribed ONE
+> mechanism for two runners, but microverse already emits `action: 'worker'` for exactly the handoff
+> iteration (`extension/src/bin/microverse-runner.ts:4224`) — a one-token fix — while mux has no such
+> label. The old wording would have forced a liveness probe onto the runner that needs none.
+>
+> **⚠ The prior bundle's `exit_reason` is `recovery_exhausted` despite delivering 7 Done + a green gate.**
+> A failure-shaped terminal state over a successful bundle — a live instance of exactly the accounting
+> dishonesty this bundle fixes, and a reminder that the 10%% completion figure counts runs like this one
+> as failures.
+>
 > **🟡 GATE RESULT 2026-08-13 — 14/15 steps GREEN, one PRE-EXISTING red. `GATE_EXIT=1`.**
 > `<scratchpad>/relgate2.sh`, log `/tmp/relgate2.log`, per-step wall-clock recorded.
 > **`test:fast:budget` rc=0 in 3739s — the gate ITSELF confirms the fast-tier cap fix**, independent of
