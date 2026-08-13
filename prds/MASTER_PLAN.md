@@ -69,6 +69,12 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > same undiagnosed red carried across three prior bundles. It belongs in the beta.10 notes as a named
 > residual, NOT shipped quietly.
 >
+> **✅ SERIAL TIER MEASURED SEPARATELY 2026-08-13: 602 tests, 602 pass, 0 fail.** So the FULL gate
+> picture is **exactly one failing test** across every tier — `INV-CODEX-RECOVERY-ADVANCED`, pre-existing
+> and untouched by this bundle. Tree is green but for that one named red.
+>
+> Original caveat, kept because the reasoning matters:
+>
 > **⚠ It failed in the PARALLEL sub-tier, so `test:integration:serial` NEVER RAN** (`test:integration` is
 > `parallel && serial`). The serial tier is being measured separately; until it reports, the integration
 > tier is only PARTLY known. Do not read 14/15 as "one known failure" until that lands.
