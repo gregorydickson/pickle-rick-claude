@@ -30,6 +30,76 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+> ### ▶▶ RESUME HERE — 2026-08-12 (supersedes the 2026-07-27 block below)
+>
+> **Reliability-only session, operator-directed.** Four read-only audits ran against the corpus + HEAD.
+> The headline: **two of the three things we "knew" were wrong**, and the measurement that made this look
+> catastrophic is itself broken.
+>
+> **The operator's claim is MEASURED AND TRUE.** Mux completion by week: `2026-06-01` **72%** → every week
+> since `2026-06-15` **≤20%** (n=116 runs, reconstructed from `~/.local/share/pickle-rick/activity/*.jsonl`;
+> the `state.json` corpus was pruned and only **8** session dirs survive, all ≥ 2026-08-06). 8.5 weeks =
+> "over two months". Runs also got LONGER while completing LESS: median 1.1h → 5.4h → 17.8h.
+>
+> **🚨 NEW P1 — the success verdict is BLIND to tests. 28/28 confirmed.** Every ticket in the corpus with
+> `worker_gate_tests_verdict: red` also carries `worker_gate_verdict: green` — zero counterexamples.
+> `computeWorkerGateVerdict` (`extension/src/bin/spawn-morty.ts:1719-1746`) takes six inputs and none is a
+> test result; it returns green on `lintVerified || tscOk`. `guardCompletionCommitBeforeDone`
+> (`extension/src/bin/mux-runner.ts:4995`) reads only that aggregate. The honest field IS authoritative — at
+> exactly one site (`extension/src/bin/setup.ts:1227`, documented `extension/src/bin/CLAUDE.md:102` guard 3).
+> **PRD `c916b3da`.** The naive fix (refuse Done on red) is WRONG — R-WGFR dropped `test:fast` because a c=8
+> flake false-redded a bundle. Done keeps flipping; the RUN withholds success. Sequenced AFTER the fast-tier
+> cap bundle, which is what makes the signal trustworthy.
+>
+> **🚨 NEW P1 — `wasted_iter` measures the DESIGN as failure, so improvement is invisible.** The 92%
+> "wasted" figure conflates three things: (a) the DESIGNED re-spawn-resume turn — the manager prompt
+> documents the 600s Bash ceiling and states re-spawn resumes from on-disk artifacts (`600000` appears
+> NOWHERE in `extension/src`; it is the agent harness's cap, while `pickle_settings.json:33` budgets workers
+> **2400s**), (b) 25% legitimately-clean passes with nothing to fix, (c) real defects. **Fix the metric
+> before shipping anything else — an unmeasurable baseline is how the last two months happened.**
+>
+> **🚨 NEW P2 — empty-scope spin: a run with nothing to do can only die by EXTERNAL KILL.** Session
+> `2026-08-07-35088221` spun 9 consecutive ~15s turns on an empty diff (`same wall as 21 prior iterations`,
+> HEAD == tip of main, worker correctly emitting `TASK_COMPLETED` each time; the real blocker was an unset
+> `GITHUB_PACKAGES_TOKEN`). No empty-scope phase exit exists, so the run ended `exit_reason: signal:SIGHUP`.
+> Cheap, subtractive, converts kill-halts into clean completions.
+>
+> **P2 — 15 halts on MEASUREMENT verdicts, each with a subtractive fix.** `extension/src/types/index.ts:1358-1360`
+> already says so in its own comment; `CRASH_FLOOR_EXIT_REASONS` has exactly 3 members. Worst offenders:
+> `extension/src/bin/mux-runner.ts:11215` (`done_without_commit_evidence`), `extension/src/bin/pipeline-runner.ts:4445`
+> (per-phase AC gate), `extension/src/bin/pipeline-runner.ts:1826` (`SCOPE_BASE_AHEAD_OF_HEAD` rethrow),
+> `extension/src/bin/spawn-refinement-team.ts:2447-2457` (4 exits before any ticket exists).
+> Doctrine-correct, but will NOT move completion rate — sequence it accordingly.
+>
+> **P2 — inert machinery, all VERIFIED.** The `tsc-gate` handler has **zero** registrations (0 hits across
+> `.claude/settings.json` + the installer; `config-protection` has 1) — CLAUDE.md's Worker Forbidden Ops
+> table promises tsc enforcement that cannot fire. `launch_shell_pid` (`extension/src/types/index.ts:30`):
+> 5 writers, **zero readers**. `extension/src/bin/subsystem-watcher.ts`: no spawn site. 5 audit scripts with
+> no invoker. 13 distinct no-progress mechanisms, 7 added in a 10-day burst 2026-06-05 → 06-14; collapse to 2.
+>
+> **❌ FALSIFIED — do not rebuild these.** The 2026-06-17 detached-worker/dual-spawn conversion is NOT the
+> regression: `37c8e648` (2026-07-01) already subtracted the detached-spawn class, and July and August both
+> sat at **10%**. Removing the suspected cause did not move the number. Also falsified: `signal:SIGHUP` as
+> "terminal hangup" — it is the empty-scope spin above.
+>
+> **In flight:** session `2026-08-12-a6d319ba`, fast-tier cap bundle,
+> `prds/BUG-2026-08-12-fast-tier-marginal-spawn-timeouts.md`. 4/8 Done with verified completion commits
+> (`fbc15455` → `8874a5c5`; `d3654991` → `56fb4da2` + `90b81564`; `5f110c7d` → `d01657ca`; `94833eaf`).
+> `e7c9ada3` (load verification) PARKED itself honestly rather than fake a pass — *"NO RESULT … This is NOT
+> a pass"* — and is being retried. **The gate stays RED until `e7c9ada3` produces a clean 5-run pass under
+> load ≥10.** Note `d3654991` is Done under exactly the 28/28 fake-green above: its commits are real, its
+> green never covered tests.
+>
+> **Drain order from here:** (1) `wasted_iter` metric honesty → (2) empty-scope exit → (3) finish the
+> fast-tier cap bundle + verify → (4) test-verdict fake-green (`c916b3da`) → (5) the 15 halts →
+> (6) inert machinery. **Re-measure after (1); nothing before it is provably an improvement.**
+>
+> **Corpus caveats that bound every number above:** no June/July `state.json`, and **no June/July
+> `tmux_iteration_*.log` at all** — the composition question across the decline is unanswerable, not merely
+> unanswered. Raw activity counts are dominated by test fixtures (`ticket_auto_skip_no_evidence`: 24,166 raw
+> → **36** real); any ranking built on raw counts measured the test suite, not the product.
+
+
 > ### ▶▶ RESUME HERE — 2026-07-27 end of day
 >
 > **Nothing is shippable. beta.8 is NOT taggable: the release gate is RED.**
