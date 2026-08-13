@@ -82,6 +82,20 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > sat at **10%**. Removing the suspected cause did not move the number. Also falsified: `signal:SIGHUP` as
 > "terminal hangup" — it is the empty-scope spin above.
 >
+> **✅ THESIS VALIDATED 2026-08-12 21:43 — the fast-tier fix WORKS.** `e7c9ada3` attempt 3, manager-run
+> under load (PRE 11.34 / POST 16.42, 1-min avg 9.53-52.60 across the run):
+> `flake-budget OK failures=1 budget=2 runs_completed=5 runs_requested=5`, `EXIT=0`. Baseline this
+> morning was `FAIL_BUDGET_EXCEEDED failures=3 budget=2 runs_completed=4`. Commit `6d277249`.
+> The ticket is `Parked` not Done: `AC-E4` (no concurrent other-repo pipeline) was violated — 3 foreign
+> pipeline procs — so the worker refused to claim the win. **The violation runs in the HARDER direction**
+> (more contention than specified), so the pass is stronger evidence than the AC required, not weaker.
+> AC-E4 as written has no arm for "passed under MORE adversity than specified"; fix the AC, not the run.
+>
+> **Data-flow audit `38ee7e86` is finding real defects in the delivered work** — `82b69384` CRITICAL
+> (budget-derived caps must clear the measured arm), `7ca5c54c` CRITICAL (recovered-timeout band must
+> allow subject startup drift), `158c5413` HIGH (flake-budget emitted no attribution on within-budget
+> runs — the pass-path blindness, fixed by the pipeline itself).
+>
 > **In flight:** session `2026-08-12-a6d319ba`, fast-tier cap bundle,
 > `prds/BUG-2026-08-12-fast-tier-marginal-spawn-timeouts.md`. 4/8 Done with verified completion commits
 > (`fbc15455` → `8874a5c5`; `d3654991` → `56fb4da2` + `90b81564`; `5f110c7d` → `d01657ca`; `94833eaf`).
