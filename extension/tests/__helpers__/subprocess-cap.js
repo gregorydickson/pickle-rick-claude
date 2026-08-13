@@ -117,6 +117,33 @@ export function resolveSubprocessCap(opts = {}) {
 }
 
 /**
+ * A cap must clear BOTH derivations: the subject's own budget-plus-hang-guard floor AND
+ * its observed worst elapsed wall-clock.
+ *
+ * `--timeout` bounds only the inner child spawn (`ctx.effectiveTimeoutMs`,
+ * src/bin/spawn-morty.ts:3089); the subprocess's total elapsed time additionally contains
+ * node startup, state-manager schema migration, git fixture work and teardown, none of
+ * which that budget bounds. So the budget is a floor input, never a measurement of how
+ * long the subprocess runs — treating it as one is the same category error as reading the
+ * raw CLI argument, one layer down. The file's own uncensored measurements settle it:
+ * a spawn-morty subprocess reaches 41_753ms at rest, 1.39x its 30_000ms nominal budget.
+ *
+ * Two independent single-input calls rather than one relaxed call: `resolveSubprocessCap`
+ * rejects both-inputs on purpose, and keeping that rejection means the budget arm still
+ * runs the MIN_TIMEOUT_SECONDS clamp on its own instead of having it masked by a larger
+ * measured value. Each arm enforces MAX_SUBPROCESS_CAP_MS separately.
+ *
+ * @param {{ subjectTimeoutSeconds: number, measuredMaxMs: number }} opts
+ * @returns {number} integer millisecond cap
+ */
+export function resolveSubprocessCapFromBudgetAndMeasurement({ subjectTimeoutSeconds, measuredMaxMs }) {
+    return Math.max(
+        resolveSubprocessCap({ subjectTimeoutSeconds }),
+        resolveSubprocessCap({ measuredMaxMs }),
+    );
+}
+
+/**
  * Marks a cap that IS the assertion — a test proving the subject exits within N ms needs
  * that N, and deriving it would delete the test's meaning. Returns its input unchanged so
  * a deliberate cap and a stray literal are distinguishable by reading the callsite.
@@ -132,11 +159,28 @@ export function resolveAssertionCap(ms) {
 // Each measured cap cites its fbc15455 row; budget-derived caps cite the subject's
 // `--timeout` argument.
 
-/** `--timeout 30` callsites. */
-export const CAP_SPAWN_MORTY_DEFAULT_BUDGET = resolveSubprocessCap({ subjectTimeoutSeconds: 30 });
+/**
+ * `--timeout 30` callsites. Capped above `3 x 30_000` on purpose: the budget bounds the
+ * inner child spawn, not the subprocess, and this file's own uncensored worst completion
+ * is 41_753ms. Deriving from the budget alone yielded 90_000ms, which is what killed
+ * `session working_dir controls child cwd and repo access` (90_035.7ms) and
+ * `P2 post-flush: token + artifact + git edits + log<200B -> success` (90_128.7ms) under
+ * `--test-concurrency=4` — both exit status `null`, i.e. harness kills, not subject bugs.
+ */
+export const CAP_SPAWN_MORTY_DEFAULT_BUDGET = resolveSubprocessCapFromBudgetAndMeasurement({
+    subjectTimeoutSeconds: 30,
+    measuredMaxMs: SPAWN_MORTY_WORST_MEASURED_MS,
+});
 
-/** `--timeout 5` callsites — the subject clamps up to 30s, so the cap must not be cut. */
-export const CAP_SPAWN_MORTY_CLAMPED_BUDGET = resolveSubprocessCap({ subjectTimeoutSeconds: 5 });
+/**
+ * `--timeout 5` callsites — the subject clamps up to 30s, so the cap must not be cut. The
+ * budget arm still proves that clamp on its own; the measured arm then raises the result
+ * for the same reason as the default-budget cap above.
+ */
+export const CAP_SPAWN_MORTY_CLAMPED_BUDGET = resolveSubprocessCapFromBudgetAndMeasurement({
+    subjectTimeoutSeconds: 5,
+    measuredMaxMs: SPAWN_MORTY_WORST_MEASURED_MS,
+});
 
 /**
  * Callsites whose subject budget cannot be read off the CLI argument: the shared `run()`

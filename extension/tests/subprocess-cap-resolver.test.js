@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { MIN_TIMEOUT_SECONDS, HANG_GUARD_GRACE_MS } from '../bin/spawn-morty.js';
 import {
     resolveSubprocessCap,
+    resolveSubprocessCapFromBudgetAndMeasurement,
     resolveAssertionCap,
     MULTIPLIER,
     STARTUP_ALLOWANCE_MS,
@@ -248,14 +249,103 @@ test('AC-A2: the indeterminate cap clears 3x the worst spawn-morty completion', 
 // ---------------------------------------------------------------------------
 
 test('AC-A3: a clamped 5s subject yields >= 60000ms, never 15000ms', () => {
-    const cap = resolveSubprocessCap({ subjectTimeoutSeconds: 5 });
-    assert.notEqual(cap, 15_000, 'derived from the CLI argument instead of the effective budget');
-    assert.ok(cap >= 60_000, `expected >= 60000ms for a clamped subject, got ${cap}`);
-    assert.equal(cap, CAP_SPAWN_MORTY_CLAMPED_BUDGET);
+    // The clamp proof lives on the BUDGET arm. The shipped constant is the max of the
+    // budget and measured arms, so asserting the clamp against the constant would pass
+    // even if the clamp were deleted — the measured arm would carry it.
+    const budgetArm = resolveSubprocessCap({ subjectTimeoutSeconds: 5 });
+    assert.notEqual(budgetArm, 15_000, 'derived from the CLI argument instead of the effective budget');
+    assert.ok(budgetArm >= 60_000, `expected >= 60000ms for a clamped subject, got ${budgetArm}`);
     assert.equal(
-        cap, resolveSubprocessCap({ subjectTimeoutSeconds: MIN_TIMEOUT_SECONDS }),
+        budgetArm, resolveSubprocessCap({ subjectTimeoutSeconds: MIN_TIMEOUT_SECONDS }),
         'a sub-minimum --timeout must derive the same cap as the minimum it clamps to',
     );
+    assert.ok(
+        CAP_SPAWN_MORTY_CLAMPED_BUDGET >= budgetArm,
+        `shipped clamped cap ${CAP_SPAWN_MORTY_CLAMPED_BUDGET}ms is below its own budget arm ${budgetArm}ms`,
+    );
+    assert.notEqual(CAP_SPAWN_MORTY_CLAMPED_BUDGET, 15_000);
+    assert.ok(CAP_SPAWN_MORTY_CLAMPED_BUDGET >= 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// F1 — a budget-derived cap must also clear the subject's observed wall-clock.
+// `--timeout` bounds only the inner child spawn, so it is a floor input and never
+// a measurement of how long the subprocess runs.
+// ---------------------------------------------------------------------------
+
+const BUDGET_DERIVED_CAPS = [
+    { name: 'CAP_SPAWN_MORTY_DEFAULT_BUDGET', cap: CAP_SPAWN_MORTY_DEFAULT_BUDGET, seconds: 30 },
+    { name: 'CAP_SPAWN_MORTY_CLAMPED_BUDGET', cap: CAP_SPAWN_MORTY_CLAMPED_BUDGET, seconds: 5 },
+];
+
+test('F1: every budget-derived cap is the max of its budget and measured arms', () => {
+    for (const { name, cap, seconds } of BUDGET_DERIVED_CAPS) {
+        assert.equal(
+            cap,
+            resolveSubprocessCapFromBudgetAndMeasurement({
+                subjectTimeoutSeconds: seconds,
+                measuredMaxMs: SPAWN_MORTY_WORST_MEASURED_MS,
+            }),
+            `${name} does not follow the two-arm derivation`,
+        );
+        assert.ok(
+            cap >= resolveSubprocessCap({ subjectTimeoutSeconds: seconds }),
+            `${name} is below its own budget arm`,
+        );
+        assert.ok(
+            cap >= resolveSubprocessCap({ measuredMaxMs: SPAWN_MORTY_WORST_MEASURED_MS }),
+            `${name} is below its own measured arm`,
+        );
+    }
+});
+
+test('F1: a budget-derived cap clears 3x the file\'s worst uncensored completion', () => {
+    for (const { name, cap } of BUDGET_DERIVED_CAPS) {
+        assert.ok(
+            cap >= SPAWN_MORTY_WORST_MEASURED_MS * MULTIPLIER,
+            `${name} = ${cap}ms is below ${MULTIPLIER}x the ${SPAWN_MORTY_WORST_MEASURED_MS}ms ` +
+            'worst completion recorded for this file',
+        );
+    }
+});
+
+// The two durations below are CENSORED — exit status `null`, i.e. the harness killed the
+// subject at the cap, so they are lower bounds on the real duration, not measurements.
+// They are admissible as evidence that a cap is too small and inadmissible as cap inputs.
+const CENSORED_OVERRUNS_MS = [
+    { test: 'spawn-morty: session working_dir controls child cwd and repo access', ms: 90_035.7 },
+    { test: 'spawn-morty P2 post-flush: token + artifact + git edits + log<200B → success', ms: 90_128.7 },
+];
+
+test('F1: budget-derived caps exceed the observed 90000ms overruns', () => {
+    for (const { name, cap } of BUDGET_DERIVED_CAPS) {
+        for (const overrun of CENSORED_OVERRUNS_MS) {
+            assert.ok(
+                cap > overrun.ms,
+                `${name} = ${cap}ms does not clear the ${overrun.ms}ms overrun of "${overrun.test}"`,
+            );
+        }
+    }
+});
+
+test('F1: no censored duration feeds a cap', () => {
+    for (const overrun of CENSORED_OVERRUNS_MS) {
+        for (const [row, value] of Object.entries(FBC15455_MEASURED_MAX_MS)) {
+            assert.notEqual(
+                Math.round(value), Math.round(overrun.ms),
+                `cap-input row "${row}" carries a censored (harness-killed) duration`,
+            );
+        }
+    }
+    // Every cap input must appear in the committed table as a passing row. `parseMeasurements`
+    // filters to `pass` rows, so a value absent from it was never an uncensored completion.
+    const uncensored = parseMeasurements();
+    for (const [row, value] of Object.entries(FBC15455_MEASURED_MAX_MS)) {
+        assert.equal(
+            value, uncensored[row],
+            `cap-input row "${row}" has no uncensored measurement backing it`,
+        );
+    }
 });
 
 const PRE_CONVERSION_CAPS = [
