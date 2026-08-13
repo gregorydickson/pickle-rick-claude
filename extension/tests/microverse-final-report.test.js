@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   buildFailureDistribution,
   buildEfficiencySection,
@@ -112,8 +113,23 @@ test('buildEfficiencySection: all reverts', () => {
 });
 
 test('buildEfficiencySection: stall iterations (no commits = missing from history)', () => {
-  // 5 total iterations, only 3 in history, 1 revert among those
-  // wasted = 1 revert + 2 missing = 3
+  // AC-A7 (ticket 14ebb20d): this case's comment used to read `wasted = 1 revert + 2 missing
+  // = 3`, which is the DELETED formula — the second, private computation of waste that
+  // `buildEfficiencySection` used to carry. The expectation below is unchanged, but its
+  // reasoning is not, and the criterion requires the reasoning be recorded rather than
+  // inferred from a number that happens to match.
+  //
+  // Under the shared classifier: 5 iterations, 3 with a history entry. Each present entry
+  // projects to a moved HEAD, so the two `accept`s score `committed`. The `revert` scores
+  // `revert`. The 2 iterations absent from history committed nothing and carry no handoff or
+  // clean-pass label, so they score `no_progress`. Waste = 1 revert + 2 no_progress = 3.
+  //
+  // The number matching the old formula is not a coincidence of this input — the two agree on
+  // EVERY input, by construction. `buildEfficiencySection` projects each present history entry
+  // to a moved HEAD (so it scores `committed` unless its action is `revert`) and each absent
+  // one to `no_commit` with null SHAs (so it scores `no_progress`). That reproduces
+  // `reverts + missing` exactly. No input separates the two numerically, which is why the
+  // AC-A7 delegation test below is STRUCTURAL: the printed figure cannot witness it.
   const history = [
     { action: 'accept' },
     { action: 'revert' },
@@ -172,6 +188,38 @@ test('AC-A7: the efficiency line and the replay agree on the same input', () => 
   assert.ok(
     printed.includes(`**Wasted iterations**: ${replayed.new.wasted} / 5 (60%)`),
     `efficiency line "${printed.trim()}" must report the replay's figure, not its own`,
+  );
+});
+
+// Ticket 14ebb20d. The two AC-A7 tests either side of this one asserted a printed NUMBER, and
+// a number cannot witness this criterion: the deleted expression (`reverts + missing`) and the
+// classifier agree on every possible input, because `buildEfficiencySection` projects present
+// history entries to a moved HEAD and absent ones to null SHAs. Both AC-A7 tests would stay
+// green with the private formula restored verbatim — decoration, by the ticket's own
+// definition. AC-A7 is about WHICH computation produced the figure, so the oracle has to be
+// structural.
+test('AC-A7: buildEfficiencySection computes waste ONLY by delegating to the classifier', () => {
+  const source = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'bin', 'microverse-runner.ts'),
+    'utf-8',
+  );
+  const fnIdx = source.indexOf('export function buildEfficiencySection(');
+  assert.ok(fnIdx >= 0, 'anchor lost: the buildEfficiencySection declaration');
+  const endIdx = source.indexOf('\n}', fnIdx);
+  assert.ok(endIdx > fnIdx, 'anchor lost: the end of buildEfficiencySection');
+  const body = source.slice(fnIdx, endIdx);
+
+  assert.match(
+    body, /classifyMuxIteration\(/,
+    'the efficiency line must read its verdict from the shared classifier',
+  );
+  // The deleted formula's signature: counting the `revert` action directly. Any comparison
+  // against that literal inside this function is a second, private waste computation — the
+  // exact drift AC-A7 forbids, where the operator reads two authoritative-looking numbers for
+  // one quantity.
+  assert.doesNotMatch(
+    body, /===\s*'revert'|includes\('revert'\)|action\s*!==\s*'revert'/,
+    'buildEfficiencySection tests the `revert` action itself — a second waste formula is back',
   );
 });
 
