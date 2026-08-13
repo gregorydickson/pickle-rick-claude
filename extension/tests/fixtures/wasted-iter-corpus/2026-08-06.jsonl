@@ -1,0 +1,12 @@
+{"event":"wasted_iter","source":"pickle","session":"2026-08-06-cc33dd44","iteration":1,"runner":"mux","action":"continue","wasted":false,"reason":"worker_handoff","pre_iter_sha":"c000001","post_iter_sha":"c000001","artifact_delta":2}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-06-cc33dd44","iteration":2,"runner":"mux","action":"task_completed","wasted":false,"reason":"clean_pass","pre_iter_sha":"c000001","post_iter_sha":"c000001","artifact_delta":0}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-06-cc33dd44","iteration":3,"runner":"mux","action":"review_clean","wasted":false,"reason":"clean_pass","pre_iter_sha":"c000001","post_iter_sha":"c000001","artifact_delta":0}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-06-cc33dd44","iteration":4,"runner":"microverse","action":"no_commit","wasted":true,"pre_iter_sha":"c000001","post_iter_sha":"c000001"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-06-cc33dd44","iteration":5,"runner":"microverse","action":"no_commit","wasted":true,"pre_iter_sha":"c000001","post_iter_sha":"c000001"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-06-cc33dd44","iteration":6,"runner":"mux","action":"continue","wasted":true,"reason":"no_progress","pre_iter_sha":"c000001","post_iter_sha":"c000001","artifact_delta":0}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-06-cc33dd44","iteration":7,"runner":"mux","action":"inactive","wasted":true,"reason":"no_progress","pre_iter_sha":"c000001","post_iter_sha":"c000001","artifact_delta":null}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-06-cc33dd44","iteration":8,"runner":"microverse","action":"timeout","wasted":true,"pre_iter_sha":"c000001","post_iter_sha":"c000001"}
+{"event":"wasted_iter","source":"pickle","session":"pickle-apxg3-3-gyQUnD","iteration":1,"runner":"microverse","action":"accept","wasted":false,"pre_iter_sha":"f000001","post_iter_sha":"f000002"}
+{"event":"wasted_iter","source":"pickle","session":"pickle-apxg3-3-gyQUnD","iteration":2,"runner":"microverse","action":"accept","wasted":false,"pre_iter_sha":"f000002","post_iter_sha":"f000003"}
+{"event":"wasted_iter","source":"pickle","session":"pickle-apxg3-3-gyQUnD","iteration":3,"runner":"microverse","action":"accept","wasted":false,"pre_iter_sha":"f000003","post_iter_sha":"f000004"}
+{"event":"wasted_iter","source":"pickle","session":"pickle-apxg3-3-gyQUnD","iteration":4,"runner":"microverse","action":"accept","wasted":false,"pre_iter_sha":"f000004","post_iter_sha":"f000005"}

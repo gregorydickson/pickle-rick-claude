@@ -62,6 +62,7 @@ import {
   killCurrentChild,
   wouldResetOrphanCommit,
   resolveApncMaxPassesWithoutClean,
+  classifyMuxIteration,
 } from './mux-runner.js';
 import { resolveCodexModel } from './spawn-morty.js';
 import { checkScopeDiff } from './check-scope-diff.js';
@@ -2882,6 +2883,28 @@ export function buildFailureDistribution(failureHistory: { failure_class: string
   ].join('\n');
 }
 
+/**
+ * Ticket 129c61c4 (AC-A7): the convergence history records `pre_iteration_sha` but no
+ * post-sha, and `classifyMuxIteration` reads the two sha fields only to compute `moved`
+ * (`mux-runner.ts:2808`-`2810`). A history entry exists only for an iteration that
+ * produced a convergence record, so `moved` is projected true with these two sentinels
+ * standing in for the unrecorded pair. `revert` returns ahead of the `moved` arm
+ * (`mux-runner.ts:2806`), so the projection cannot launder a rollback into a commit.
+ */
+const HISTORY_ENTRY_PRE_SHA = 'history-entry:pre';
+const HISTORY_ENTRY_POST_SHA = 'history-entry:post';
+
+/**
+ * Ticket 129c61c4 (AC-A7): the operator-facing waste figure. It used to carry its own
+ * formula (`reverts + iterations-missing-from-history`), a second computation of the same
+ * quantity the `wasted_iter` predicate reports — two authoritative-looking numbers for one
+ * thing. It now delegates to `classifyMuxIteration`, the single classifier, so the
+ * printed percentage cannot drift from the replay.
+ *
+ * An iteration absent from the history committed nothing, which is exactly what the
+ * runtime emits as `no_commit` (`:4379`, `:4564`) and the classifier scores
+ * `no_progress`.
+ */
 export function buildEfficiencySection(
   history: Array<{ action: string } | null | undefined>,
   totalIterations: number,
@@ -2890,9 +2913,22 @@ export function buildEfficiencySection(
     return '\n## Efficiency\n\n- **Wasted iterations**: 0 / 0 (0%)\n';
   }
   const normalizedHistory = history.filter((entry): entry is { action: string } => Boolean(entry));
-  const reverted = normalizedHistory.filter(h => h.action === 'revert').length;
-  const noCommitIterations = totalIterations - normalizedHistory.length;
-  const wasted = reverted + Math.max(0, noCommitIterations);
+  const missingFromHistory = Math.max(0, totalIterations - normalizedHistory.length);
+  const classifierInputs = [
+    ...normalizedHistory.map(entry => ({
+      action: entry.action,
+      preIterSha: HISTORY_ENTRY_PRE_SHA,
+      postIterSha: HISTORY_ENTRY_POST_SHA,
+      artifactDelta: null,
+    })),
+    ...Array.from({ length: missingFromHistory }, () => ({
+      action: 'no_commit',
+      preIterSha: null,
+      postIterSha: null,
+      artifactDelta: null,
+    })),
+  ];
+  const wasted = classifierInputs.filter(input => classifyMuxIteration(input).wasted).length;
   const pct = Math.round((wasted / totalIterations) * 100);
   return `\n## Efficiency\n\n- **Wasted iterations**: ${wasted} / ${totalIterations} (${pct}%)\n`;
 }

@@ -1,0 +1,12 @@
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":1,"runner":"microverse","action":"accept","wasted":false,"pre_iter_sha":"a000001","post_iter_sha":"b000001"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":2,"runner":"microverse","action":"accept","wasted":false,"pre_iter_sha":"b000001","post_iter_sha":"b000002"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":3,"runner":"microverse","action":"accept","wasted":false,"pre_iter_sha":"b000002","post_iter_sha":"b000003"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":4,"runner":"microverse","action":"accept","wasted":false,"pre_iter_sha":"b000003","post_iter_sha":"b000004"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":5,"runner":"microverse","action":"accept","wasted":false,"pre_iter_sha":"b000004","post_iter_sha":"b000005"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":6,"runner":"microverse","action":"accept","wasted":false,"pre_iter_sha":"b000005","post_iter_sha":"b000006"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":7,"runner":"microverse","action":"revert","wasted":true,"pre_iter_sha":"b000006","post_iter_sha":"b000006"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":8,"runner":"microverse","action":"revert","wasted":true,"pre_iter_sha":"b000006","post_iter_sha":"b000006"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":9,"runner":"microverse","action":"worker","wasted":false,"pre_iter_sha":"b000006","post_iter_sha":"b000006"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":10,"runner":"microverse","action":"worker","wasted":false,"pre_iter_sha":"b000006","post_iter_sha":"b000006"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":11,"runner":"microverse","action":"worker","wasted":false,"pre_iter_sha":"b000006","post_iter_sha":"b000006"}
+{"event":"wasted_iter","source":"pickle","session":"2026-08-05-aa11bb22","iteration":12,"runner":"microverse","action":"worker","wasted":false,"pre_iter_sha":"b000006","post_iter_sha":"b000006"}

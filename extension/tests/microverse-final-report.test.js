@@ -9,6 +9,7 @@ import {
   buildEfficiencySection,
   writeFinalReport,
 } from '../bin/microverse-runner.js';
+import { replayCorpus } from '../bin/wasted-iter-replay.js';
 
 // ── buildFailureDistribution ──
 
@@ -136,6 +137,55 @@ test('buildEfficiencySection: percentage rounds correctly', () => {
   ];
   const result = buildEfficiencySection(history, 3);
   assert.ok(result.includes('**Wasted iterations**: 1 / 3 (33%)'));
+});
+
+// ── AC-A7: one quantity, one number ──
+//
+// `buildEfficiencySection` used to carry its own waste formula, a second computation of
+// the quantity the `wasted_iter` predicate reports. These two tests pin that it now
+// delegates to the shared classifier, so the operator-facing percentage and the replay
+// cannot drift into two authoritative-looking numbers for one thing.
+
+test('AC-A7: the efficiency line and the replay agree on the same input', () => {
+  // 5 iterations: 2 accepts (committed), 1 revert, 2 with no history entry (no commit).
+  const history = [
+    { action: 'accept' },
+    { action: 'revert' },
+    { action: 'accept' },
+  ];
+  const printed = buildEfficiencySection(history, 5);
+
+  // The same five iterations as the events the runtime would have emitted for them.
+  const session = '2026-08-05-aa11bb22';
+  const events = [
+    { session, action: 'accept', pre_iter_sha: 'a', post_iter_sha: 'b' },
+    { session, action: 'revert', pre_iter_sha: 'b', post_iter_sha: 'b' },
+    { session, action: 'accept', pre_iter_sha: 'b', post_iter_sha: 'c' },
+    { session, action: 'no_commit', pre_iter_sha: 'c', post_iter_sha: 'c' },
+    { session, action: 'no_commit', pre_iter_sha: 'c', post_iter_sha: 'c' },
+  ];
+  const replayed = replayCorpus(events);
+
+  assert.equal(replayed.iterations, 5);
+  assert.equal(replayed.new.wasted, 3, 'replay: 1 revert + 2 no-commit');
+  assert.equal(Math.round(replayed.new.rate * 100), 60);
+  assert.ok(
+    printed.includes(`**Wasted iterations**: ${replayed.new.wasted} / 5 (60%)`),
+    `efficiency line "${printed.trim()}" must report the replay's figure, not its own`,
+  );
+});
+
+test('AC-A7: the efficiency line retains no second formula', () => {
+  // The classifier is total over `action`, so an action outside 'accept' | 'revert' still
+  // lands in a class instead of falling through a formula that only knew how to count
+  // reverts. A present history entry projects to a moved HEAD, so `worker` scores
+  // `committed` here (not `worker_handoff` — that arm needs an unmoved HEAD); either way
+  // it is not waste, and only the revert is.
+  const printed = buildEfficiencySection([{ action: 'worker' }, { action: 'revert' }], 2);
+  assert.ok(
+    printed.includes('**Wasted iterations**: 1 / 2 (50%)'),
+    `only the revert is waste: got "${printed.trim()}"`,
+  );
 });
 
 test('writeFinalReport uses local-day filename at UTC boundary', () => {
