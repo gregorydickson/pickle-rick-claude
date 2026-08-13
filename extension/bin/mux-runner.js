@@ -2442,6 +2442,36 @@ export function emitMuxWastedIter(input) {
         post_iter_sha: input.postIterSha,
     });
 }
+/**
+ * Ticket 2ed9a852 (C1): the main loop's `wasted_iter` emit sits ~460 lines below the
+ * `runIteration` call, and six post-iteration `continue` statements exit ahead of it —
+ * the done-guard, the recovery-ladder advance, the two ladder-exhaustion advances, the
+ * suppressed Failed flip, and the terminal no-progress flip. Every one of them is reached
+ * only through the zero-artifact-delta bookkeeping, so the iterations that went unemitted
+ * were exactly the ones the classifier scores `no_progress`. The population the rate is
+ * read over excluded the cases it exists to measure, and the reported waste rate was
+ * biased low.
+ *
+ * The emit predates all six early exits by five to eight weeks (`ff7ebdbc` 2026-05-03 vs
+ * `33a9c08a` 2026-06-12 / `f2e795e6` 2026-06-30): the recovery work inserted exits above a
+ * call site it had no reason to look at. So the fix is not "remember to emit" — it is a
+ * thunk each exit calls, which emits at most once per binding. A seventh early exit that
+ * forgets the call is caught by the source-parity assertion in
+ * `tests/wasted-iter-classification.test.js`; a seventh that calls it twice is caught here.
+ *
+ * `buildInput` is a thunk, not a value: `postIterSha` must be read at emit time. The
+ * fall-through path emits after the ticket-boundary block, where a salvage commit may have
+ * landed, and that commit belongs to the iteration that produced it.
+ */
+export function createWastedIterEmitter(buildInput) {
+    let emitted = false;
+    return () => {
+        if (emitted)
+            return;
+        emitted = true;
+        emitMuxWastedIter(buildInput());
+    };
+}
 function gitCommitEpoch(workingDir, sha) {
     if (!sha)
         return null;
@@ -9569,12 +9599,26 @@ async function runMuxRunnerMain() {
         // progress — reset the consecutive idle-stall recovery streak.
         if (apProgressResult && apProgressResult.zeroProgressCount === 0)
             idleStallRecoveryCount = 0;
+        // 2ed9a852 (C1): bound above the first post-iteration `continue` so every early exit
+        // below can record its verdict. Emits at most once per iteration; HEAD is read inside
+        // the thunk, at emit time.
+        const emitWastedIterOnce = createWastedIterEmitter(() => ({
+            sessionDir,
+            iteration,
+            action: result,
+            preIterSha,
+            postIterSha: readHeadCommit(iterWorkingDir),
+            // 7addedbf: the worker-handoff observable — same before/after difference the
+            // production breadcrumb consumes above. null when no ticket was in flight.
+            artifactDelta: apProgressResult ? apProgressResult.lastArtifactCount - apBeforeCount : null,
+        }));
         // AC-A1 (B-RRH): a Done ticket with completion evidence that produced no new
         // artifacts is NOT stuck — reset (handled in recordWorkerArtifactProgress), clear
         // current_ticket, advance, no increment (B-LERD: run-exit on a Done ticket).
         if (apTicketId && apProgressResult?.doneGuard) {
             log(`[done-guard] ticket ${apTicketId} is Done with completion evidence — counter reset, advancing without charge`);
             updateMuxLifecycleState(statePath, { currentTicket: null });
+            emitWastedIterOnce();
             continue;
         }
         // R-WSWA-3: at PICKLE_WMW_SKIP_K (default 5) consecutive zero-progress spawns, flip the
@@ -9620,6 +9664,7 @@ async function runMuxRunnerMain() {
                     catch { /* best-effort */ }
                     lastStateIteration = -1;
                     stallCount = 0;
+                    emitWastedIterOnce();
                     continue;
                 }
                 if (wmwRecovery.kind === 'exhausted') {
@@ -9638,6 +9683,7 @@ async function runMuxRunnerMain() {
                         log(`ticket_ladder_exhausted: ${apTicketId} (${wmwRecovery.reason}) — advancing to next runnable ticket at iteration ${iteration}.`);
                         lastStateIteration = -1;
                         stallCount = 0;
+                        emitWastedIterOnce();
                         continue;
                     }
                     log(`recovery_exhausted: ladder exhausted for ${apTicketId} (${wmwRecovery.reason}) and no runnable ticket remains — exiting at iteration ${iteration}.`);
@@ -9676,6 +9722,7 @@ async function runMuxRunnerMain() {
                     // Clear current_ticket so the next iteration selects past the held
                     // ticket (resolvePreTicket also refuses to re-engage a held ticket).
                     updateMuxLifecycleState(statePath, { currentTicket: null });
+                    emitWastedIterOnce();
                     continue;
                 }
                 if (ffDecision.action === 'escalate') {
@@ -9696,6 +9743,7 @@ async function runMuxRunnerMain() {
                         log(`ticket_ladder_exhausted: ${apTicketId} (suppression cap ${ffDecision.cap}) — advancing to next runnable ticket at iteration ${iteration}.`);
                         lastStateIteration = -1;
                         stallCount = 0;
+                        emitWastedIterOnce();
                         continue;
                     }
                     log(`recovery_exhausted: suppression cap reached for ${apTicketId} and no runnable ticket remains — halting.`);
@@ -9745,6 +9793,7 @@ async function runMuxRunnerMain() {
             // next iteration's resolvePreTicket selects the next pending ticket rather
             // than re-engaging the just-flipped Failed ticket (order-deadlock).
             updateMuxLifecycleState(statePath, { currentTicket: null });
+            emitWastedIterOnce();
             continue;
         }
         // R-WSE-2: detect partial lifecycle exit (research-review APPROVED, downstream artifacts missing)
@@ -9957,16 +10006,7 @@ async function runMuxRunnerMain() {
         });
         const exitType = exitResult.type;
         logActivity({ event: 'iteration_end', source: 'pickle', session: path.basename(sessionDir), iteration, exit_type: exitType, backend: resolveBackend(state) });
-        emitMuxWastedIter({
-            sessionDir,
-            iteration,
-            action: result,
-            preIterSha,
-            postIterSha: readHeadCommit(iterWorkingDir),
-            // 7addedbf: the worker-handoff observable — same before/after difference the
-            // production breadcrumb consumes above. null when no ticket was in flight.
-            artifactDelta: apProgressResult ? apProgressResult.lastArtifactCount - apBeforeCount : null,
-        });
+        emitWastedIterOnce();
         if (exitType === 'api_limit') {
             consecutiveRateLimits++;
             const park = await runMainLoopRateLimitPark({

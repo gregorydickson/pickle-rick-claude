@@ -12,7 +12,7 @@ import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { StateManager } from '../services/state-manager.js';
 import { _deps, handleIterationOutcome } from '../bin/microverse-runner.js';
-import { classifyMuxIteration, emitMuxWastedIter } from '../bin/mux-runner.js';
+import { classifyMuxIteration, createWastedIterEmitter, emitMuxWastedIter } from '../bin/mux-runner.js';
 import { MUX_ITERATION_REASONS } from '../types/index.js';
 
 const stateManager = new StateManager();
@@ -514,3 +514,95 @@ for (const action of COMPLETION_MEMBERS) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// Ticket 2ed9a852 (C1): the mux loop's `wasted_iter` emit sits ~460 lines below the
+// `runIteration` call, and six post-iteration `continue` statements exited ahead of it.
+// Every one of those exits is reached only through the zero-artifact-delta bookkeeping,
+// so the unemitted iterations were exactly the ones the classifier scores `no_progress`
+// — the reported waste rate was read over a population biased away from waste.
+//
+// The defect is REACHABILITY inside a ~1300-line `while` body in `runMuxRunnerMain`,
+// which no test can drive without a live session, tmux, and a worker spawn. So the
+// mechanism is pinned behaviorally (the two tests below) and the reachability is pinned
+// structurally against the source (the third). A test that re-derived the branch
+// conditions would certify itself and see nothing.
+// ---------------------------------------------------------------------------
+
+test('2ed9a852 C1: the per-iteration emitter fires exactly once however often it is called', async () => {
+  const events = await withSandbox(async ({ sessionDir, dataRoot }) => {
+    const emitOnce = createWastedIterEmitter(() => ({
+      sessionDir,
+      iteration: 11,
+      action: 'continue',
+      preIterSha: SHA_A,
+      postIterSha: SHA_A,
+      artifactDelta: 0,
+    }));
+    emitOnce();
+    emitOnce();
+    emitOnce();
+    return readWastedIterEvents(dataRoot);
+  });
+  assert.equal(events.length, 1, 'an iteration must be recorded exactly once, never re-charged');
+  assert.equal(events[0].runner, 'mux');
+  assert.equal(events[0].iteration, 11);
+  assert.equal(events[0].action, 'continue');
+  // A zero-progress spawn: no commit, no artifacts. This is the verdict the six early
+  // exits were dropping on the floor.
+  assert.equal(events[0].wasted, true);
+  assert.equal(events[0].reason, 'no_progress');
+});
+
+test('2ed9a852 C1: the emitter reads its input at emit time, not at bind time', async () => {
+  const events = await withSandbox(async ({ sessionDir, dataRoot }) => {
+    // Stands in for `readHeadCommit(iterWorkingDir)`: on the fall-through path the emit
+    // runs after the ticket-boundary block, where a salvage commit may have landed. That
+    // commit belongs to the iteration that produced it, so a value captured at bind time
+    // would mis-score the iteration as `no_progress`.
+    let head = SHA_A;
+    const emitOnce = createWastedIterEmitter(() => ({
+      sessionDir,
+      iteration: 12,
+      action: 'continue',
+      preIterSha: SHA_A,
+      postIterSha: head,
+      artifactDelta: 0,
+    }));
+    head = SHA_B;
+    emitOnce();
+    return readWastedIterEvents(dataRoot);
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].post_iter_sha, SHA_B, 'the thunk was evaluated at bind time, not emit time');
+  assert.equal(events[0].reason, 'committed');
+  assert.equal(events[0].wasted, false);
+});
+
+test('2ed9a852 C1: every post-runIteration early exit in the mux loop records its iteration', () => {
+  const source = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'bin', 'mux-runner.ts'),
+    'utf-8',
+  );
+  const lines = source.split('\n');
+
+  // Anchor the span. A rename must fail loudly here rather than green a zero-length slice.
+  const startIndex = lines.findIndex((line) => line.includes('await runIteration(sessionDir, iteration, extensionRoot)'));
+  assert.ok(startIndex >= 0, 'anchor lost: the runIteration call site in runMuxRunnerMain');
+  const endIndex = lines.findIndex((line, i) => i > startIndex && line.trim() === 'emitWastedIterOnce();' && line.startsWith('    emitWastedIterOnce'));
+  assert.ok(endIndex > startIndex, 'anchor lost: the fall-through emitWastedIterOnce() call site');
+
+  const span = lines.slice(startIndex, endIndex + 1);
+  const earlyExits = span.filter((line) => /(^|\s)continue;\s*$/.test(line)).length;
+  const emits = span.filter((line) => line.includes('emitWastedIterOnce();')).length;
+
+  assert.ok(earlyExits > 0, 'the span found no early exits — the slice is wrong, not the code');
+  // Every `continue` in the span carries its own emit; the `+ 1` is the fall-through call
+  // that closes the span. Both sides are counted from the file, so a seventh early exit
+  // added later without an emit turns this RED instead of silently under-reporting waste.
+  assert.equal(
+    emits,
+    earlyExits + 1,
+    `${earlyExits} post-runIteration early exit(s) but ${emits} emit call(s): an iteration exits the mux loop without recording its wasted_iter verdict`,
+  );
+});
