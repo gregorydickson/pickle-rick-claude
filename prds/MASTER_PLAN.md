@@ -58,6 +58,23 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > **2400s**), (b) 25% legitimately-clean passes with nothing to fix, (c) real defects. **Fix the metric
 > before shipping anything else — an unmeasurable baseline is how the last two months happened.**
 >
+> **🚨 FALSE FAILED RECOVERED 2026-08-13 06:12 — `514bd4a7`, 391 lines of completed work were sitting**
+> **UNCOMMITTED under a `Failed` flag.** The worker's own `conformance_2026-08-13.md` reads
+> `## 6. Verdict — ALL_PASS` and its `handoff_notes.md` records `Failed: none`; its stated next step was
+> the full fast tier (backgrounded as `bn660zna1`) then commit. The ticket was flipped Failed while it
+> waited on that backgrounded run — the documented worker-idles-on-its-own-bg-run class — leaving the
+> work one `git restore` from destruction (R-WUWC).
+>
+> Manager preserved it: `08a14a55` (6 files) + `880f6baa` (the untracked AC-B3 test the path-scoped add
+> missed). **Done was NOT claimed** — the full-tier verdict was still pending and is running now.
+>
+> **The work itself is good, and its own notes carry a warning worth keeping.** Base resolution went
+> through three iterations, recorded in `TASK_NOTES.md` as *"do NOT re-simplify this back"*: branch refs
+> alone reddened the citadel smoke (fixture repo has all history on `main`, so `merge-base(main, HEAD)`
+> IS HEAD and a session with a real diff read empty); `start_commit` with branch fallback reddened 17
+> fast cases; FINAL is `start_commit` and only `start_commit`, with undeterminable → RUN. Mutation-verified:
+> forcing `isBranchDiffEmpty` to null reddens AC-B1 and AC-B3 and nothing else.
+>
 > **▶ BUNDLE PROGRESS 2026-08-13 04:11 — 2/8 Done, both metric predicates landed and VERIFIED in source.**
 > `microverse-runner.ts:3404` is now `action === 'revert' || (action !== 'worker' && postIterSha === preIterSha)`
 > — the one-token fix exactly as specified, no liveness probe. `mux-runner.ts:2814` returns
