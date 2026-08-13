@@ -84,14 +84,29 @@ Both facts are already available at the emit site or one call away: the handoff 
 
 Emit an explicit `wasted_reason` (or equivalent) alongside `wasted`, so a future reader can recount without re-deriving from transcripts — the analysis that produced this PRD had to classify 82 manager transcripts by hand because the telemetry could not answer it.
 
+**The two runners need different fixes. Do not share one mechanism.**
+
+- **microverse** already names the handoff class. `extension/src/bin/microverse-runner.ts:4224` emits
+  `emitMicroverseWastedIter(ctx, lastAction === 'revert' ? 'revert' : 'worker')` — `'worker'` is an existing
+  label for exactly the designed-handoff iteration, marked wasted today *only* because the SHA did not move.
+  The fix here is a one-token predicate change over a label that already exists. **A liveness probe is neither
+  needed nor appropriate.**
+- **mux** has no such label. `action` is `outcome.completion` ∈ `{task_completed, review_clean, continue, inactive, error}`,
+  none of which names the handoff. The ticket must derive the class from the strongest available observable and
+  **state in the ticket which observable it chose and why** — a liveness probe is permitted here but is not
+  assumed, and a weaker proxy must be justified against the alternatives.
+
 **Acceptance criteria**
 
-- `AC-A1` — An iteration that ends with a live worker still running is recorded `wasted: false`.
+- `AC-A1-mv` — In microverse, an iteration emitted with `action: 'worker'` is recorded `wasted: false`. No new probe, no new field; the predicate consumes the existing label.
+- `AC-A1-mux` — In mux, an iteration that ended with the designed worker handoff is recorded `wasted: false`, and the ticket records which observable identifies it and why that one.
 - `AC-A2` — An iteration whose phase completed with nothing to do is recorded `wasted: false`.
 - `AC-A3` — An iteration that produced no commit for any other reason is recorded `wasted: true`.
-- `AC-A4` — Every `wasted_iter` event carries a reason field distinguishing at least: `worker_handoff`, `clean_pass`, `revert`, `no_progress`.
-- `AC-A5` — Recounting the surviving August corpus with the new predicate yields a wasted rate **materially below** the current 92%, and the ticket records both figures. This criterion exists to prove the change altered the measurement; a new predicate that reproduces 92% has not fixed anything.
-- `AC-A6` — `npx tsc --noEmit` and `npx eslint src/ --max-warnings=-1` green.
+- `AC-A4` — Every `wasted_iter` event carries a reason field. The reason vocabulary is a **closed** set defined in one place. Note `WastedIterAction` (`extension/src/bin/microverse-runner.ts:124`) is `'accept' | 'revert' | 'no_commit' | 'worker' | IterationExitType` — an **open** set, because `IterationExitType` is an independent union. The reason field must NOT inherit that openness: either close it, or map the open input onto a closed reason vocabulary and assert the mapping is total.
+- `AC-A5` — **Exactly one `wasted_iter` event is emitted per iteration per runner.** Microverse has four emit sites (`:4224`, `:4377`, `:4385`, `:4562`); if any iteration can reach two of them, the "rate" in `AC-A6` moves without any classification changing. Assert the invariant directly; if it does not hold today, the ticket states so and fixes it before `AC-A6` is measurable.
+- `AC-A6` — Machine-checkable recount, **unit stated**: over a committed fixture corpus, report per-class **counts** (`worker_handoff`, `clean_pass`, `revert`, `no_progress`) and the wasted **rate per iteration** (not per event — see `AC-A5`), under both the old and new predicates. The bundle passes when the new rate is below the old one AND the per-class counts sum to the iteration count. A predicate reproducing the old rate has fixed nothing. The corpus is August-only (Residual 4); label it as such in the artifact.
+- `AC-A7` — **Tests pinning the old formula are updated with recorded reasoning, never silently rewritten.** `buildEfficiencySection` (`extension/src/bin/microverse-runner.ts:2885`) is asserted by `extension/tests/microverse-final-report.test.js`, including a case whose own comment states the contract being changed (*"wasted = 1 revert + 2 missing = 3"*). If the efficiency line adopts the shared classifier, that test changes — and the ticket must record, per changed assertion, why the new expectation is correct. Leaving the printed percentage on the old formula while `AC-A6` reports the new one is also forbidden: the operator would read two different numbers for one quantity.
+- `AC-A8` — `npx tsc --noEmit` and `npx eslint src/ --max-warnings=-1` green.
 
 ### WS-B — An empty branch diff ends the phase instead of spinning
 
@@ -106,7 +121,15 @@ The distinction the predicate must make:
 - `AC-B1` — With an empty branch diff, the phase skips and emits the existing WARN + empty-scope activity event with a cause naming the empty diff.
 - `AC-B2` — With an empty `effectiveAllowedPaths` but a **non-empty** branch diff, the phase still runs unscoped. A test asserts this directly — it is the invariant WS-B must not break.
 - `AC-B3` — A run whose every phase skips for an empty diff reaches its own terminal state rather than requiring an external signal. Asserted by driving the loop, not by inspecting a flag.
-- `AC-B4` — The skip records a `skipReason` reaching `pipeline-status.json:phase_skips`, so an operator sees why the run did nothing.
+- `AC-B4` — The skip records a skip reason reaching `phase_skips` in the pipeline status artifact, and **that reason distinguishes an empty-diff run from a doc-only / code-free run.**
+
+  **This requires a new reason value, and the choice is not neutral — silence ships the weaker option.** `PhaseSkipReason` (`extension/src/bin/pipeline-runner.ts:130`) is `'empty_scope' | 'no_subsystems' | 'setup_error'`, and its docstring at `:127-129` already claims this case:
+
+  > `empty_scope` = the scope filter **/ branch diff** left no review surface
+
+  So a worker satisfies this criterion literally by reusing `empty_scope` and adding nothing — the cheapest implementation, and the source comment currently *documents it as correct*. That passes the letter and fails the purpose.
+
+  The ticket MUST add a distinct value (e.g. `empty_branch_diff`) **and co-scope the docstring edit at `extension/src/bin/pipeline-runner.ts:127-129` plus `extension/src/types/CLAUDE.md:22`** — otherwise the tree ships two contradictory definitions of `empty_scope`. Both files go in the same ticket allowlist as the predicate; a per-file scope fence that omits either makes the ticket unsatisfiable.
 - `AC-B5` — `extension/tests/szechuan-scope.test.js` and `extension/tests/anatomy-park-scope.test.js` stay green; the R-PSSS invariant tests are not rewritten to accommodate this change.
 
 ## Interface Contracts
