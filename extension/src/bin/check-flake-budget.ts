@@ -194,31 +194,35 @@ function findRepeatedFailures(runRecords: RunRecord[]): string[] {
     .sort();
 }
 
+// WS-D: attribute failures per run — same test failing repeatedly is a regression,
+// distinct single-run failures are contention. Both read differently from a union count.
+// ONE shape for both reports: the within-budget and over-budget paths differ only in their
+// sink and in the FAIL_BUDGET_EXCEEDED header, so building the body once is what keeps them
+// from drifting into two dialects of the same attribution.
+function formatRunAttributionLines(runRecords: RunRecord[]): string[] {
+  const lines: string[] = [];
+  for (const record of runRecords) {
+    lines.push(`RUN ${record.runIndex} FAILED: status=${formatStatus(record.status)}`);
+    if (record.failing.length > 0) {
+      lines.push(...record.failing.map(formatFailureDetail));
+    } else {
+      lines.push('  (no ✖/not-ok test names captured)');
+    }
+  }
+  const repeated = findRepeatedFailures(runRecords);
+  if (repeated.length > 0) {
+    lines.push('REPEATED ACROSS RUNS:', ...repeated.map((name) => `  - ${name}`));
+  }
+  lines.push(...runRecords.map((record) => `RUN ${record.runIndex} LOG: ${record.logPath}`));
+  return lines;
+}
+
 function printExceededReport(summary: RunSummary, parsed: ParsedArgs, stderr: (msg: string) => void): void {
   stderr(
     `FAIL_BUDGET_EXCEEDED failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs}`,
   );
-  // WS-D: attribute failures per run — same test failing repeatedly is a regression,
-  // distinct single-run failures are contention. Both read differently from a union count.
-  for (const record of summary.runRecords) {
-    stderr(`RUN ${record.runIndex} FAILED: status=${formatStatus(record.status)}`);
-    if (record.failing.length > 0) {
-      for (const detail of record.failing) {
-        stderr(formatFailureDetail(detail));
-      }
-    } else {
-      stderr('  (no ✖/not-ok test names captured)');
-    }
-  }
-  const repeated = findRepeatedFailures(summary.runRecords);
-  if (repeated.length > 0) {
-    stderr('REPEATED ACROSS RUNS:');
-    for (const name of repeated) {
-      stderr(`  - ${name}`);
-    }
-  }
-  for (const record of summary.runRecords) {
-    stderr(`RUN ${record.runIndex} LOG: ${record.logPath}`);
+  for (const line of formatRunAttributionLines(summary.runRecords)) {
+    stderr(line);
   }
 }
 
@@ -229,25 +233,8 @@ function printExceededReport(summary: RunSummary, parsed: ParsedArgs, stderr: (m
 // Routed to stdout, not stderr: within budget is not a failure, and `FAIL_BUDGET_EXCEEDED`
 // on stderr must stay an unambiguous signal.
 function printWithinBudgetReport(summary: RunSummary, stdout: (msg: string) => void): void {
-  for (const record of summary.runRecords) {
-    stdout(`RUN ${record.runIndex} FAILED: status=${formatStatus(record.status)}`);
-    if (record.failing.length > 0) {
-      for (const detail of record.failing) {
-        stdout(formatFailureDetail(detail));
-      }
-    } else {
-      stdout('  (no ✖/not-ok test names captured)');
-    }
-  }
-  const repeated = findRepeatedFailures(summary.runRecords);
-  if (repeated.length > 0) {
-    stdout('REPEATED ACROSS RUNS:');
-    for (const name of repeated) {
-      stdout(`  - ${name}`);
-    }
-  }
-  for (const record of summary.runRecords) {
-    stdout(`RUN ${record.runIndex} LOG: ${record.logPath}`);
+  for (const line of formatRunAttributionLines(summary.runRecords)) {
+    stdout(line);
   }
 }
 
