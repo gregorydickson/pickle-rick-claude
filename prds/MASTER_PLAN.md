@@ -58,6 +58,21 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > **2400s**), (b) 25% legitimately-clean passes with nothing to fix, (c) real defects. **Fix the metric
 > before shipping anything else — an unmeasurable baseline is how the last two months happened.**
 >
+> **✅ BUNDLE COMPLETE 2026-08-12 — 7 Done + 1 Parked, 17 commits, tree clean.** Fast-tier cap fix
+> validated under load (see below). PRD for the next chunk written: `85a8df61`
+> `prds/BUG-2026-08-12-iteration-accounting-and-empty-diff-spin.md` (WS-A metric honesty, WS-B empty-diff
+> phase exit). Full release gate running to verify — 2 of the 7 Done tickets carry `tests=red`, so the
+> Done flags do NOT prove their tests (the 28/28 class below).
+>
+> **⚠ CORRECTED 2026-08-12 22:55 — the empty-scope claim below was WRONG in an important way.** The
+> empty-scope skip DOES exist and is well-built (R-PSSS Finding #49): `shouldSkipSzechuanForEmptyScope`
+> (`extension/src/bin/pipeline-runner.ts:2001-2016`) emits the WARN + activity event + `skipReason`. The
+> real gap is one uncovered case: it returns false for an UNSCOPED run **by design** (docstring + the
+> invariant at `extension/src/bin/CLAUDE.md:85`: *"An UNSCOPED szechuan run … MUST still run"*), and an
+> empty branch diff produces exactly an unscoped run. So the fix is ONE new condition in an existing
+> predicate — empty scope BECAUSE the diff is empty skips; empty scope with a real diff still runs
+> unscoped — NOT a new empty-scope exit. Do not build a second mechanism.
+>
 > **🚨 NEW P2 — empty-scope spin: a run with nothing to do can only die by EXTERNAL KILL.** Session
 > `2026-08-07-35088221` spun 9 consecutive ~15s turns on an empty diff (`same wall as 21 prior iterations`,
 > HEAD == tip of main, worker correctly emitting `TASK_COMPLETED` each time; the real blocker was an unset
