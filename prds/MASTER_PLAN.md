@@ -58,6 +58,29 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > **2400s**), (b) 25% legitimately-clean passes with nothing to fix, (c) real defects. **Fix the metric
 > before shipping anything else — an unmeasurable baseline is how the last two months happened.**
 >
+> **▶ FIX BUNDLE LAUNCHED 10:13 — session `2026-08-13-e4ab0833`, tmux `pickle-e4ab0833`, 4 tickets.**
+> PRD `730effe1`. `c5b81af7` restore reachability in the 2 fixtures · `4f860deb` survey all 45
+> `start_commit` fixtures · `b68b273b` test-quality harden · `3dc65ea1` cross-ref. Two hardening tickets
+> not four — the bundle writes only test fixtures and one report, so code-quality and data-flow have no
+> surface; stated rather than silently dropped.
+>
+> **Authoritative tier verdict before launch: 7598 tests, 7593 pass, 2 fail, 0 CANCELLED.** The two known
+> regressions are the only red in the entire tier. An earlier run reported `fail 0 / cancelled 304` — a
+> runner timeout aborting mid-run, which reads like green at a glance. `PICKLE_TEST_RUNNER_TIMEOUT_MS=7200000`
+> is now required by AC, and "0 cancelled" is part of the pass condition.
+>
+> **Refinement found 5 P0s; the worst would have let the fix silently NOT fix.** The `makeRepo` contract
+> said outputs were "unchanged in shape" — but shape does not constrain ORDERING, and the ordering IS the
+> fix: the sibling captures `startCommit` at `:54` and authors the follow-up commit at `:55-59`, in that
+> order. Author first and rev-parse after and `start_commit == HEAD` again — fixture looks fixed, diff
+> still empty, test still red. Now pinned by an asserted invariant.
+>
+> **Prior session's `exit_reason` was `done_without_commit_evidence`** — the guard DID detect that
+> `514bd4a7`'s Done was unsupported. It halted the run and left the ticket Done anyway. Detection works;
+> the disposition and the flag are both wrong. That is one of the 15 accretion halts observed FIRING in
+> the field, and a sharper argument for `c916b3da` than source reading alone: the information needed to
+> withhold the success verdict was already computed, and sent to the wrong wire.
+>
 > **🔬 ROOT-CAUSED 08:15 — the 2 red tests are UNREACHED FIXTURES, not wrong assertions. Fix PRD `dd72c588`.**
 > `makeRepo()` in `extension/tests/oneabort-termination-invariant.test.js` returns `startCommit` = HEAD
 > right after its seed commit, so `start_commit..HEAD` is empty, the new skip correctly fires, the phase
