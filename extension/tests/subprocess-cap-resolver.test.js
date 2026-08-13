@@ -33,6 +33,7 @@ const SPAWN_MORTY_TS = path.join(REPO_ROOT, 'extension/src/bin/spawn-morty.ts');
 const CONVERTED_FILES = [
     'spawn-morty.test.js',
     'spawn-morty-worker-gate.test.js',
+    'flake-budget.test.js',
 ];
 
 /** The single cap in the converted set that is deliberately an assertion, not a budget. */
@@ -191,6 +192,26 @@ function importedCapNames(src) {
     return new Set(m[1].split(',').map(s => s.trim()).filter(Boolean));
 }
 
+/**
+ * Names a converted file binds to a resolver call of its own. A file whose cap has no
+ * shared constant (its subject is not spawn-morty) still derives rather than guesses; the
+ * binding must be to a resolver call, so an identifier holding a literal stays illegal.
+ */
+function locallyDerivedCapNames(src) {
+    const re = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*resolveSubprocessCap(?:FromBudgetAndMeasurement)?\s*\(/g;
+    const names = new Set();
+    let m;
+    while ((m = re.exec(src)) !== null) names.add(m[1]);
+    return names;
+}
+
+/** Every form in which a cap may legally reach a subprocess: derived here, or derived there. */
+function isDerivedCap(value, src) {
+    return value.startsWith('resolveSubprocessCap(')
+        || importedCapNames(src).has(value)
+        || locallyDerivedCapNames(src).has(value);
+}
+
 // ---------------------------------------------------------------------------
 // AC-A1 — every heavy subprocess cap derives through the resolver
 // ---------------------------------------------------------------------------
@@ -198,7 +219,6 @@ function importedCapNames(src) {
 for (const file of CONVERTED_FILES) {
     test(`AC-A1: every subprocess cap in ${file} comes from the resolver`, () => {
         const src = readConverted(file);
-        const imported = importedCapNames(src);
         const values = extractSubprocessTimeoutValues(src);
         assert.ok(values.length > 0, `expected subprocess caps in ${file}`);
 
@@ -208,11 +228,10 @@ for (const file of CONVERTED_FILES) {
                 !/^\d/.test(value),
                 `${file}: bare numeric subprocess cap "${value}" reaches spawnSync without the resolver`,
             );
-            const isDirectCall = value.startsWith('resolveSubprocessCap(');
-            const isImportedCap = imported.has(value);
             assert.ok(
-                isDirectCall || isImportedCap,
-                `${file}: cap "${value}" is neither a resolver call nor a cap imported from the helper`,
+                isDerivedCap(value, src),
+                `${file}: cap "${value}" is neither a resolver call, a cap imported from the ` +
+                'helper, nor a local constant bound to a resolver call',
             );
         }
     });
@@ -226,7 +245,6 @@ for (const file of CONVERTED_FILES) {
 for (const file of CONVERTED_FILES) {
     test(`AC-A1: every subject spawn in ${file} carries a cap`, () => {
         const src = readConverted(file);
-        const imported = importedCapNames(src);
         const subject = extractSubprocessCalls(src).filter(isSubjectSpawn);
         assert.ok(subject.length > 0, `expected subject spawns in ${file}`);
 
@@ -239,7 +257,7 @@ for (const file of CONVERTED_FILES) {
             for (const value of call.timeoutValues) {
                 if (value === MARKED_ASSERTION_CAP) continue;
                 assert.ok(
-                    value.startsWith('resolveSubprocessCap(') || imported.has(value),
+                    isDerivedCap(value, src),
                     `${file}: subject cap "${value}" is not resolver-derived`,
                 );
             }
@@ -249,21 +267,27 @@ for (const file of CONVERTED_FILES) {
     test(`AC-A1: every subprocess call in ${file} classifies as subject or fixture`, () => {
         const calls = extractSubprocessCalls(readConverted(file));
         assert.ok(calls.length > 0, `expected subprocess calls in ${file}`);
-        assert.ok(
-            calls.some(isFixtureSpawn),
-            `${file}: no fixture spawn found — if the fixture population emptied, the ` +
-            'subject/fixture split is no longer carrying anything',
-        );
         for (const call of calls) {
             assert.equal(
                 Number(isSubjectSpawn(call)) + Number(isFixtureSpawn(call)), 1,
-                `${file}: subprocess command "${call.command}" is neither process.execPath ` +
-                'nor a string literal. Name the binary directly, or teach the classifier ' +
-                'the new shape — an unclassified spawn is an uncapped spawn nothing checks',
+                `${file}: subprocess command "${call.command}" is neither a node runtime ` +
+                'nor a string-literal tool. Name the binary directly, or teach the ' +
+                'classifier the new shape — an unclassified spawn is an uncapped spawn ' +
+                'nothing checks',
             );
         }
     });
 }
+
+// Anti-vacuity for the split above: the per-file assertions can only bite while both
+// populations are inhabited somewhere in the converted set. A refactor that emptied the
+// fixture lane would leave the subject/fixture distinction carrying nothing, and the
+// exactly-one-classification check would pass over a single degenerate population.
+test('AC-A1: the converted set holds both subject and fixture spawns', () => {
+    const calls = CONVERTED_FILES.flatMap(file => extractSubprocessCalls(readConverted(file)));
+    assert.ok(calls.filter(isSubjectSpawn).length > 0, 'no subject spawn in the converted set');
+    assert.ok(calls.filter(isFixtureSpawn).length > 0, 'no fixture spawn in the converted set');
+});
 
 test('AC-A1: exactly one marked assertion-cap survives across the converted files', () => {
     const occurrences = CONVERTED_FILES.flatMap(

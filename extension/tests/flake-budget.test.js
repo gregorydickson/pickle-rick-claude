@@ -7,9 +7,27 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkFlakeBudgetMain } from '../bin/check-flake-budget.js';
+import { resolveSubprocessCap } from './__helpers__/subprocess-cap.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.resolve(__dirname, '../bin/check-flake-budget.js');
+
+/** The per-run budget every call site below passes to the subject as `--timeout=`. */
+const CHILD_RUN_TIMEOUT_SECONDS = 30;
+
+/**
+ * Hang guard for spawns of check-flake-budget.js, derived from the subject's own declared
+ * per-run budget rather than the hand-picked 45_000ms literal it replaces (a margin nobody
+ * chose and nothing re-checked when either number moved).
+ *
+ * The per-run budget, not the multi-run product, is the input: `--runs=4` would derive
+ * 4 x 30s -> 360_000ms, above MAX_SUBPROCESS_CAP_MS, and would throw. Each run of the
+ * synthetic probe finishes in well under a second; the inner `--timeout` only binds if a
+ * run hangs, and one hung run is what this cap is here to bound.
+ */
+const CAP_FLAKE_BUDGET_CHILD = resolveSubprocessCap({
+    subjectTimeoutSeconds: CHILD_RUN_TIMEOUT_SECONDS,
+});
 
 function makeTmpDir() {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'flake-budget-')));
@@ -50,11 +68,11 @@ function runBudgetCheck({ runs, failBudget, failRuns }) {
     },
     result: spawnSync(
       process.execPath,
-      [BIN, `--runs=${runs}`, `--fail-budget=${failBudget}`, '--timeout=30000'],
+      [BIN, `--runs=${runs}`, `--fail-budget=${failBudget}`, `--timeout=${CHILD_RUN_TIMEOUT_SECONDS * 1000}`],
       {
         cwd: path.resolve(__dirname, '..'),
         encoding: 'utf8',
-        timeout: 45000,
+        timeout: CAP_FLAKE_BUDGET_CHILD,
         env: {
           ...process.env,
           PICKLE_FLAKE_BUDGET_TEST_FILE: testFile,
@@ -432,7 +450,7 @@ test('flake-budget fails closed when the child test target is missing', () => {
       {
         cwd: path.resolve(__dirname, '..'),
         encoding: 'utf8',
-        timeout: 45000,
+        timeout: CAP_FLAKE_BUDGET_CHILD,
         env: {
           ...process.env,
           PICKLE_FLAKE_BUDGET_TEST_FILE: missingTestFile,
