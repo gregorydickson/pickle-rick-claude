@@ -222,6 +222,35 @@ function printExceededReport(summary: RunSummary, parsed: ParsedArgs, stderr: (m
   }
 }
 
+// A run that fails WITHIN budget still has to say which test failed, how long it took, and
+// where its log is. The records already carry all three; only the reporting seam dropped
+// them, so a passing run reported a bare count nobody could attribute (e7c9ada3:
+// `flake-budget OK failures=1 budget=2` with no way to name the marginal test).
+// Routed to stdout, not stderr: within budget is not a failure, and `FAIL_BUDGET_EXCEEDED`
+// on stderr must stay an unambiguous signal.
+function printWithinBudgetReport(summary: RunSummary, stdout: (msg: string) => void): void {
+  for (const record of summary.runRecords) {
+    stdout(`RUN ${record.runIndex} FAILED: status=${formatStatus(record.status)}`);
+    if (record.failing.length > 0) {
+      for (const detail of record.failing) {
+        stdout(formatFailureDetail(detail));
+      }
+    } else {
+      stdout('  (no ✖/not-ok test names captured)');
+    }
+  }
+  const repeated = findRepeatedFailures(summary.runRecords);
+  if (repeated.length > 0) {
+    stdout('REPEATED ACROSS RUNS:');
+    for (const name of repeated) {
+      stdout(`  - ${name}`);
+    }
+  }
+  for (const record of summary.runRecords) {
+    stdout(`RUN ${record.runIndex} LOG: ${record.logPath}`);
+  }
+}
+
 function summarizeHarnessFailure(stdout: string, stderr: string): string {
   const firstLine = `${stderr}\n${stdout}`
     .split(/\r?\n/)
@@ -303,6 +332,10 @@ export async function checkFlakeBudgetMain(opts: CheckFlakeBudgetMainOpts): Prom
     stdout(
       `flake-budget OK failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs}`,
     );
+    // A fully clean run stays a one-liner; a run that failed within budget gets attribution.
+    if (summary.runRecords.length > 0) {
+      printWithinBudgetReport(summary, stdout);
+    }
     return 0;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

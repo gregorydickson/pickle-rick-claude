@@ -235,6 +235,67 @@ test('flake-budget per-run log records durations, status, and exists on disk; nu
   assert.match(run2Contents, /45044\.5ms/);
 });
 
+// 38ee7e86/F3: a run that fails WITHIN budget must still name the failing test, its
+// duration, and its log path. Pre-fix the success path printed only the OK count line,
+// so `flake-budget OK failures=1 budget=2` discarded every attribution it had already
+// built — the exact state e7c9ada3 was left in, passing its budget with no way to say
+// which test was marginal. Assert on STDOUT: within budget is not a failure, and
+// FAIL_BUDGET_EXCEEDED on stderr must stay unambiguous.
+test('flake-budget attributes a within-budget failure on stdout without failing the gate', async () => {
+  const runOutputs = [
+    { status: 1, stdout: '✖ marginal probe (88123.5ms)\nnot ok 1 - marginal probe\n', stderr: '' },
+    { status: 0, stdout: 'ℹ tests 1\nok 1 - marginal probe\n', stderr: '' },
+    { status: 0, stdout: 'ℹ tests 1\nok 1 - marginal probe\n', stderr: '' },
+  ];
+  let call = 0;
+  const out = [];
+  const err = [];
+
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=3', '--fail-budget=2', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...process.env, PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: (msg) => out.push(msg),
+    stderr: (msg) => err.push(msg),
+    spawnSyncFn: () => runOutputs[call++],
+  });
+
+  const stdout = out.join('\n');
+  assert.equal(code, 0, `within budget must still exit 0, stderr: ${err.join('\n')}`);
+  assert.match(stdout, /flake-budget OK failures=1 budget=2/);
+  assert.match(stdout, /RUN 1 FAILED: status=1/, 'must attribute the failing run');
+  assert.match(stdout, /marginal probe/, 'must name the failing test');
+  assert.match(stdout, /duration=88123\.5ms/, 'must carry the duration that makes it marginal');
+
+  const logLines = out.filter((l) => l.startsWith('RUN ') && l.includes(' LOG: '));
+  assert.equal(logLines.length, 1, 'must print the log path for the failing run');
+  const logPath = logLines[0].split(' LOG: ')[1];
+  assert.doesNotThrow(() => fs.statSync(logPath), `log path must exist on disk: ${logPath}`);
+
+  assert.doesNotMatch(err.join('\n'), /FAIL_BUDGET_EXCEEDED/, 'within budget is not a failure');
+});
+
+// Negative control: a report that printed unconditionally would pass the case above.
+test('flake-budget stays a one-liner when every run passes', async () => {
+  const out = [];
+
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=3', '--fail-budget=2', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...process.env, PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: (msg) => out.push(msg),
+    stderr: () => {},
+    spawnSyncFn: () => ({ status: 0, stdout: 'ℹ tests 1\nok 1 - clean\n', stderr: '' }),
+  });
+
+  assert.equal(code, 0);
+  assert.match(out.join('\n'), /flake-budget OK failures=0 budget=2/);
+  assert.deepEqual(
+    out.filter((l) => l.startsWith('RUN ')), [],
+    'a clean run must emit no per-run attribution',
+  );
+});
+
 // 94833eaf: `Number.parseInt` truncates at the first non-digit, so an unguarded
 // parse read `--runs=1e3` as 1 — a thousand requested runs silently became one and
 // the gate reported OK. The load-bearing assertion is that NO child is spawned:
