@@ -4442,6 +4442,17 @@ async function handleMetricMode(
 
   const classification = await measureAndClassifyIteration(state, baseline, ctx);
   if (classification.kind === 'failed') {
+    // Ticket 2ed9a852 (H1): this arm used to return ahead of the emit, so the last
+    // iteration of every measurement-failed run went unrecorded. The iteration is real —
+    // it reached here only because HEAD moved (`:4437`) — and an unrecorded iteration is
+    // a hole in the population the rate is read over.
+    //
+    // The action names why the iteration ended; the verdict stays the classifier's. HEAD
+    // moved, so rule order scores it `committed` (`mux-runner.ts:2811`): the iteration
+    // produced a commit and only the MEASUREMENT failed, which is the truthful reading.
+    // Hand-picking `wasted` here would be a second formula for the quantity this ticket
+    // exists to keep single-source.
+    emitMicroverseWastedIter(ctx, classification.exitReason);
     return classification.exitReason;
   }
   emitMicroverseWastedIter(ctx, classification.kind === 'regressed' ? 'revert' : 'accept');

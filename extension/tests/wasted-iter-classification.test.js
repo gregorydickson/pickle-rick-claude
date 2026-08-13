@@ -236,9 +236,12 @@ async function runMetricModeHarness({ validation, sameSha }) {
       realPostSha = execSync('git rev-parse HEAD', { cwd: workingDir }).toString().trim();
     }
 
-    const original = { getHeadSha: _deps.getHeadSha };
+    const original = { getHeadSha: _deps.getHeadSha, sleep: _deps.sleep };
     let calls = 0;
     try {
+      // A measurement that cannot be parsed retries once behind `_deps.sleep`
+      // (measureMetricWithRetry). Stub it so the failure path costs no wall-clock.
+      _deps.sleep = async () => {};
       _deps.getHeadSha = () => {
         calls++;
         return calls === 1 ? realPreSha : realPostSha;
@@ -253,6 +256,7 @@ async function runMetricModeHarness({ validation, sameSha }) {
       return readWastedIterEvents(dataRoot);
     } finally {
       _deps.getHeadSha = original.getHeadSha;
+      _deps.sleep = original.sleep;
     }
   });
 }
@@ -276,6 +280,25 @@ test("AC-A1-mv: metric-mode 'no_commit' (HEAD unchanged) stays wasted", async ()
   assert.equal(events.length, 1);
   assert.equal(events[0].action, 'no_commit');
   assert.equal(events[0].wasted, true);
+});
+
+// Ticket 2ed9a852 (H1): `handleMetricMode`'s measurement-failure arm returned ahead of its
+// emit, so the last iteration of every measurement-failed run went unrecorded. The
+// iteration is real — it reaches that arm only because HEAD moved — and an unrecorded
+// iteration is a hole in the population the rate is read over.
+test('2ed9a852 H1: a metric-mode iteration whose MEASUREMENT failed is still recorded', async () => {
+  const events = await runMetricModeHarness({ validation: 'echo not-a-number', sameSha: false });
+  assert.equal(events.length, 1, 'the measurement-failure exit recorded no wasted_iter event');
+  assert.equal(events[0].runner, 'microverse');
+  assert.ok(
+    MUX_ITERATION_REASONS.includes(events[0].reason),
+    `out-of-vocabulary reason: ${events[0].reason}`,
+  );
+  // The commit landed; only the measurement failed. Rule order scores the moved HEAD
+  // `committed`, and the action names why the iteration ended rather than pre-judging it.
+  assert.equal(events[0].reason, 'committed');
+  assert.equal(events[0].wasted, false);
+  assert.ok(events[0].action, 'the emitted action must name the exit reason, not be empty');
 });
 
 // --- AC-A5: exactly one wasted_iter event per iteration, across every reachable emit site. ---
