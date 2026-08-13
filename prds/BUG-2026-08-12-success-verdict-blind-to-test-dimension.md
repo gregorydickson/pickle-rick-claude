@@ -24,8 +24,10 @@ Census over `~/.local/share/pickle-rick/sessions/*/*/rick_ticket_*.md`:
 
 | `worker_gate_tests_verdict` | `worker_gate_verdict` | Tickets |
 |---|---|---|
-| `red` | `green` | **28** |
+| `red` | `green` | **32** |
 | `red` | anything else | **0** |
+
+**Re-measured 2026-08-13** across the surviving corpus: 32 tickets carry `worker_gate_tests_verdict: red` and **all 32** carry `worker_gate_verdict: green`. Still zero counterexamples, four bundles later.
 
 A live instance from the run in flight at discovery time:
 
@@ -57,6 +59,14 @@ The operator's rule resolves this without a trade. From `CLAUDE.md`:
 
 Done may still flip. What must change is that the **run stops calling itself successful** when a ticket's tests went red.
 
+## Field evidence 2026-08-13 — the fact is already computed, and sent to the wrong wire
+
+Session `2026-08-13-71ecebb6` ended with `exit_reason: done_without_commit_evidence`. The guard **did** detect that ticket `514bd4a7`'s Done was unsupported by attributable evidence. It responded by **halting the run** — and left the ticket Done regardless.
+
+So detection is not the gap. The run had, at finalize time, the information needed to withhold its success verdict; it routed that information into a stop instead of into the verdict. That is this PRD's thesis observed in the field rather than inferred from source, and it is why WS-B raises the existing `nonConvergent` term rather than adding a new signal: the signal exists.
+
+It also makes `done_without_commit_evidence` the first of the 15 measurement-halts to fix — it should park-and-flag, not stop the pipeline.
+
 ## Non-goals
 
 - **Not** blocking the Done flip on a red test verdict. That is the trap above.
@@ -65,6 +75,13 @@ Done may still flip. What must change is that the **run stops calling itself suc
 - **Not** halting anything. No new abort condition, no new terminal state.
 
 ## Prerequisite
+
+**Status 2026-08-13.** The fast-tier cap bundle has LANDED and been validated under load: `flake-budget OK failures=1 budget=2 runs_completed=5 runs_requested=5`, `EXIT=0`, at host load 11.34 → 16.42. So the noise argument below is satisfied — the signal is now trustworthy enough to drive a report.
+
+The remaining blocker is the **green-tree precondition** (`prds/CLAUDE.md`): the fast tier is currently 7593 pass / 2 fail, both failures being fixture-reachability regressions under repair in `prds/BUG-2026-08-13-empty-diff-skip-unreaches-two-fixtures.md`. A bundle launched onto a red tree cannot tell its own breakage from inherited debt. **Launch only once that tier is 0 fail / 0 cancelled.**
+
+**Stale-premise check (2026-08-13, HEAD and deployed).** The finding is open in both trees: `lintVerified || result.tscOk` is present in HEAD and in the deployed `~/.claude/pickle-rick/extension/bin/spawn-morty.js`, and the deployed `mux-runner.js` contains **zero** occurrences of `worker_gate_tests_verdict` — so the Done-flip authority does not read the honest field at runtime either.
+
 
 `prds/BUG-2026-08-12-fast-tier-marginal-spawn-timeouts.md` must land first. Until the fast tier's caps are derived rather than guessed, `worker_gate_tests_verdict: red` carries too much noise to drive a release decision, even a non-blocking one. This PRD makes the signal *visible*; that one makes it *trustworthy*. In the wrong order, the visibility is just alarm fatigue.
 
