@@ -122,7 +122,20 @@ export interface ExitOutcome {
   elapsedSeconds: number;
 }
 
-type WastedIterAction = 'accept' | 'revert' | 'no_commit' | 'worker' | IterationExitType;
+/**
+ * The action label a microverse iteration is recorded under. Ticket 2ed9a852 (H1) added the
+ * measurement-failure exit reasons: that arm records the iteration under the reason it ended
+ * on, so the label names why rather than being flattened into one of the four dispositions.
+ * The union stays explicit — `classifyMuxIteration` takes a bare `string`, so widening this
+ * to `string` would let a typo through silently.
+ */
+type WastedIterAction =
+  | 'accept'
+  | 'revert'
+  | 'no_commit'
+  | 'worker'
+  | IterationExitType
+  | JudgeMeasurementFailureExitReason;
 
 export interface RunContext {
   sessionDir: string;
@@ -150,6 +163,14 @@ export interface RunContext {
   // red is NEVER eligible for the trust-the-worker force-exit. Cleared on any non-deferred
   // iteration.
   postConvergenceSelfRedOpen?: boolean;
+  /**
+   * Ticket 2ed9a852 (H2): the iteration `emitMicroverseWastedIter` last recorded for.
+   * Four call sites across three functions emit into one iteration, and until this field
+   * existed nothing structural stopped two of them from firing for the same one — the
+   * separation rested on a four-case exhaustion over `IterationExitType` that no test
+   * re-checks. Absent means nothing has been emitted yet.
+   */
+  wastedIterEmittedForIteration?: number;
 }
 
 interface RunStartup {
@@ -3417,6 +3438,25 @@ function recordMetricMeasurementFailure(state: MicroverseState, ctx: RunContext)
  * real one — a latent silent default, closed before it scored a real run.
  */
 function emitMicroverseWastedIter(ctx: RunContext, action: WastedIterAction): void {
+  // Ticket 2ed9a852 (H2): exactly-one-per-iteration by construction. `handleIterationOutcome`
+  // emits for every non-success exit and may then fall through to the mode handlers, which
+  // emit again; today nothing reaches both, but that separation is a four-case exhaustion
+  // over `IterationExitType` (`types/index.ts`) against `classifyIterationExit` and
+  // `handleIterationErrorOrStop` — four accidents, none of them local to this function. A
+  // sixth union member, or a `return null` added to that dispatcher, would double-charge an
+  // iteration with no test able to see it.
+  //
+  // Suppression is logged, never silent: a double-emit path is a defect, and swallowing it
+  // here would trade one invisible accounting bug for another.
+  if (ctx.wastedIterEmittedForIteration === ctx.iteration) {
+    ctx.log(
+      `wasted_iter already recorded for iteration ${ctx.iteration} — suppressed a second `
+      + `emission (action: ${action}). Exactly one verdict per iteration; a second emit site `
+      + 'reached the same iteration and should be traced.',
+    );
+    return;
+  }
+  ctx.wastedIterEmittedForIteration = ctx.iteration;
   const preIterSha = ctx.preIterSha ?? null;
   const postIterSha = ctx.postIterSha ?? null;
   const { wasted, reason } = classifyMuxIteration({

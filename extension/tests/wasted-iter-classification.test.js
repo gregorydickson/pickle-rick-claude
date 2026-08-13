@@ -629,3 +629,107 @@ test('2ed9a852 C1: every post-runIteration early exit in the mux loop records it
     `${earlyExits} post-runIteration early exit(s) but ${emits} emit call(s): an iteration exits the mux loop without recording its wasted_iter verdict`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Ticket 2ed9a852 (H2): `handleIterationOutcome` emits for every non-success exit and may
+// then fall through to the mode handlers, which emit again. Nothing reaches both today,
+// but that separation is a four-case exhaustion over `IterationExitType` against
+// `classifyIterationExit` and `handleIterationErrorOrStop` — four accidents, none of them
+// local to the emitter. A sixth union member, or a `return null` added to that dispatcher,
+// would double-charge an iteration. Emit-once is now a property of the emitter.
+// ---------------------------------------------------------------------------
+
+/** Parse the `IterationExitType` union members straight from the type declaration. */
+function readIterationExitTypeMembers() {
+  const source = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'types', 'index.ts'),
+    'utf-8',
+  );
+  const declaration = source.match(/export type IterationExitType =([^;]*);/);
+  assert.ok(declaration, 'anchor lost: the IterationExitType declaration in src/types/index.ts');
+  return [...declaration[1].matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
+}
+
+const EXIT_TYPE_MEMBERS = readIterationExitTypeMembers();
+
+async function runDoubleEmitHarness({ secondIteration }) {
+  return withSandbox(async ({ sessionDir, workingDir, dataRoot }) => {
+    const runnerState = makeRunnerState(sessionDir, workingDir);
+    const statePath = path.join(sessionDir, 'state.json');
+    const microverseState = makeMetricMicroverseState('echo 50');
+    // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing state to lock against
+    stateManager.forceWrite(statePath, runnerState);
+    fs.writeFileSync(path.join(sessionDir, 'microverse.json'), JSON.stringify(microverseState, null, 2));
+
+    const logLines = [];
+    const ctx = makeContext(sessionDir, statePath, workingDir, runnerState, 'a'.repeat(40));
+    ctx.log = (msg) => logLines.push(msg);
+
+    const original = { getHeadSha: _deps.getHeadSha };
+    try {
+      _deps.getHeadSha = () => 'a'.repeat(40);
+      const outcome = { completion: 'error', timedOut: false, exitCode: 1, wallSeconds: 30 };
+      // Two emissions reaching ONE RunContext — the shape a fifth emit site, or a widened
+      // `IterationExitType`, would produce.
+      await handleIterationOutcome(microverseState, { raw: '40', score: 40 }, ctx, outcome);
+      if (secondIteration) ctx.iteration += 1;
+      await handleIterationOutcome(microverseState, { raw: '40', score: 40 }, ctx, outcome);
+      return { events: readWastedIterEvents(dataRoot), logLines };
+    } finally {
+      _deps.getHeadSha = original.getHeadSha;
+    }
+  });
+}
+
+test('2ed9a852 H2: a second emission for the same iteration is suppressed, and said so', async () => {
+  const { events, logLines } = await runDoubleEmitHarness({ secondIteration: false });
+  assert.equal(events.length, 1, 'the same iteration was charged twice');
+  assert.equal(events[0].iteration, 7);
+  assert.ok(
+    logLines.some((line) => line.includes('wasted_iter already recorded for iteration 7')),
+    `suppression must be logged, never silent. Log lines: ${JSON.stringify(logLines)}`,
+  );
+});
+
+test('2ed9a852 H2: the guard is per-iteration, not per-run — the next iteration records', async () => {
+  const { events } = await runDoubleEmitHarness({ secondIteration: true });
+  assert.equal(events.length, 2, 'the guard wedged the emitter for the rest of the run');
+  assert.deepEqual(events.map((event) => event.iteration).sort(), [7, 8]);
+});
+
+// The ticket's AC: the mapping is total over the OPEN input set. `WastedIterAction` ends in
+// `IterationExitType`, and `handleIterationOutcome` forwards `exitResult.type` verbatim, so a
+// value the union does not carry today must still map to the closed reason vocabulary — and
+// must land on the conservative side. The value is checked absent from the parsed union, so
+// this stays a test of an UNLISTED input even if the union grows.
+test('2ed9a852: an IterationExitType value not in the known list still maps to a closed reason', async () => {
+  const unlisted = 'output_stall';
+  assert.ok(
+    !EXIT_TYPE_MEMBERS.includes(unlisted),
+    `'${unlisted}' joined IterationExitType (${EXIT_TYPE_MEMBERS.join(', ')}) — pick a value the union still lacks`,
+  );
+  assert.ok(EXIT_TYPE_MEMBERS.length >= 5, `parsed only ${EXIT_TYPE_MEMBERS.length} members — the parse is broken`);
+
+  const events = await withSandbox(async ({ sessionDir, dataRoot }) => {
+    emitMuxWastedIter({
+      sessionDir,
+      iteration: 9,
+      action: unlisted,
+      preIterSha: SHA_A,
+      postIterSha: SHA_A,
+      artifactDelta: null,
+    });
+    return readWastedIterEvents(dataRoot);
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].action, unlisted, 'the action must round-trip verbatim, not be normalized away');
+  assert.ok(
+    MUX_ITERATION_REASONS.includes(events[0].reason),
+    `an unlisted exit type produced an out-of-vocabulary reason: ${events[0].reason}`,
+  );
+  // Conservative, and explicitly so: an unrecognized disposition over-reports waste rather
+  // than quietly crediting an iteration that may have produced nothing.
+  assert.equal(events[0].reason, 'no_progress');
+  assert.equal(events[0].wasted, true);
+});
