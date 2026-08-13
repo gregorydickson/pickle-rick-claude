@@ -76,6 +76,9 @@ export function classifyUnderOldPredicate(event) {
  * The post-fix predicate. Delegates to `classifyMuxIteration` — the runtime's own
  * classifier — rather than restating its rules.
  *
+ * The recorded `reason` field (mux path, post-`7addedbf`) is deliberately not read: a
+ * recount that trusted the label it is auditing would not be a recount.
+ *
  * The one translation: microverse observes the designed worker handoff through its
  * pre-existing `'worker'` action label, while mux observes the same disposition through
  * the artifact delta. They are two observations of one disposition, so the label is fed
@@ -146,31 +149,33 @@ export function replayCorpus(events, window = null) {
     };
 }
 /**
- * Read every `*.jsonl` day-file in `dir`, keeping only `wasted_iter` records.
- * Malformed lines are skipped: the corpus is an append-only log that can be truncated
- * mid-write, and one torn line must not sink the recount.
+ * One NDJSON line to a `wasted_iter` event, or `null` for anything else. A torn line
+ * yields `null` rather than throwing: the corpus is an append-only log that can be
+ * truncated mid-write, and one bad line must not sink the recount. The cheap substring
+ * test skips the `JSON.parse` on the ~99% of activity records that are not ours; the
+ * parsed `event` field is the authority.
  */
+function parseWastedIterLine(line) {
+    if (!line.includes('wasted_iter'))
+        return null;
+    try {
+        const parsed = JSON.parse(line);
+        return parsed.event === 'wasted_iter' ? parsed : null;
+    }
+    catch {
+        return null;
+    }
+}
+/** Read every `*.jsonl` day-file in `dir`, keeping only `wasted_iter` records. */
 export function loadCorpusDir(dir, dayPrefix = '') {
     const files = fs.readdirSync(dir)
         .filter(name => name.endsWith('.jsonl') && name.startsWith(dayPrefix))
         .sort();
-    const events = [];
-    for (const name of files) {
-        const raw = fs.readFileSync(path.join(dir, name), 'utf8');
-        for (const line of raw.split('\n')) {
-            if (!line.includes('wasted_iter'))
-                continue;
-            let parsed;
-            try {
-                parsed = JSON.parse(line);
-            }
-            catch {
-                continue;
-            }
-            if (parsed.event === 'wasted_iter')
-                events.push(parsed);
-        }
-    }
+    const events = files.flatMap(name => fs
+        .readFileSync(path.join(dir, name), 'utf8')
+        .split('\n')
+        .map(parseWastedIterLine)
+        .filter((event) => event !== null));
     const days = files.map(name => name.replace(/\.jsonl$/, ''));
     return {
         events,
