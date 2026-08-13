@@ -10,6 +10,7 @@ import { tierToModel, resolveCodexModel, buildTierLifecycleSections } from '../b
 import { TIER_LIFECYCLE } from '../services/pickle-utils.js';
 import {
     resolveAssertionCap,
+    STARTUP_ALLOWANCE_MS,
     CAP_SPAWN_MORTY_DEFAULT_BUDGET,
     CAP_SPAWN_MORTY_CLAMPED_BUDGET,
     CAP_SPAWN_MORTY_INDETERMINATE,
@@ -989,9 +990,23 @@ test('spawn-morty: recovers orphan tmp session timeout before printing worker bu
         const match = plain.match(/Timeout:\s*(\d+)s \(Req: 600s\)/);
         assert.ok(match, `expected timeout panel line, got: ${plain}`);
         const effective = Number(match[1]);
+        // `resolveEffectiveTimeout` computes `remaining` against the SUBJECT's clock, not the
+        // fixture's: the tmp state above sets max_time_minutes=3 and start_time_epoch=nowEpoch-90,
+        // so the budget is 90s at fixture-write time and decays by however long it takes to
+        // finish writing the fixture and start the subprocess. Asserting a fixed floor near 90
+        // reads the value at the wrong instant -- it went RED at 78s under --test-concurrency=4.
+        // STARTUP_ALLOWANCE_MS is already the owned name for exactly that drift ("Node startup
+        // + state-manager schema migration + teardown"), so bound the floor with it rather than
+        // inventing a second slack number.
+        const recoveredBudgetUpperS = 90;
+        const recoveredBudgetLowerS = recoveredBudgetUpperS - Math.ceil(STARTUP_ALLOWANCE_MS / 1000);
         assert.ok(
-            Number.isFinite(effective) && effective >= 80 && effective <= 95,
-            `expected recovered timeout near 90s, got ${effective}s`,
+            Number.isFinite(effective)
+                && effective >= recoveredBudgetLowerS
+                && effective <= recoveredBudgetUpperS + 5,
+            `expected the recovered ${recoveredBudgetUpperS}s budget minus at most ` +
+            `${Math.ceil(STARTUP_ALLOWANCE_MS / 1000)}s of subject startup drift, got ${effective}s ` +
+            '(600s would mean the orphan tmp state was never recovered)',
         );
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
