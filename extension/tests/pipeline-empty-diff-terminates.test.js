@@ -135,12 +135,17 @@ test('AC-B3/AC-B5: every phase skipping for an empty branch diff reaches a termi
     });
 
     // Terminating IS the assertion: main() returns or exits on its own.
-    await runMainToExit(sessionDir);
+    // Ticket 14ebb20d: and it must terminate CLEANLY. The return value used to be discarded,
+    // so a run that ended in failure — or crashed its way out — satisfied "reaches its own
+    // terminal state" just as well as the designed exit. A run with nothing to review is not
+    // an error; measured disposition is exit code 0.
+    const exitCode = await runMainToExit(sessionDir);
+    assert.equal(exitCode, 0, 'a run whose every phase skipped for an empty diff must exit clean');
 
     assert.equal(spawns, 0, 'no phase runner may be spawned when every phase skips');
 
     const status = JSON.parse(readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf8'));
-    assert.notEqual(status.status, 'running', 'the pipeline must reach a terminal status, not stay running');
+    assert.equal(status.status, 'completed', 'the pipeline must reach its terminal status');
     assert.equal(status.skipped_phases, 2, 'both configured phases must be recorded as skipped');
 
     // AC-B5: the reason reaches phase_skips in the status artifact.
@@ -159,6 +164,14 @@ test('AC-B3/AC-B5: every phase skipping for an empty branch diff reaches a termi
       !(state.exit_reason ?? '').startsWith('signal:'),
       `the run must not end on an external signal; exit_reason=${state.exit_reason}`,
     );
+    // Ticket 14ebb20d: the check above passes on `exit_reason === null` via the `?? ''`
+    // fallback, so "no external signal" was also satisfied by a run that recorded no
+    // disposition at all — which is what an unattributable death looks like. The session
+    // 2026-08-07-35088221 this test descends from ended on `signal:SIGHUP`; the point is that
+    // the run now stamps its OWN reason, not merely that it failed to stamp SIGHUP.
+    assert.equal(state.exit_reason, 'completed', 'the run must record its own terminal reason');
+    assert.equal(state.step, 'completed', 'the session must be left in its terminal step');
+    assert.equal(state.active, false, 'the session must not be left claiming liveness');
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
