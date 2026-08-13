@@ -119,17 +119,15 @@ test('buildEfficiencySection: stall iterations (no commits = missing from histor
   // reasoning is not, and the criterion requires the reasoning be recorded rather than
   // inferred from a number that happens to match.
   //
-  // Under the shared classifier: 5 iterations, 3 with a history entry. Each present entry
-  // projects to a moved HEAD, so the two `accept`s score `committed`. The `revert` scores
-  // `revert`. The 2 iterations absent from history committed nothing and carry no handoff or
-  // clean-pass label, so they score `no_progress`. Waste = 1 revert + 2 no_progress = 3.
+  // Under the shared classifier: 5 iterations, 3 with a history entry. `buildEfficiencySection`
+  // projects each present entry to a moved HEAD, so the two `accept`s score `committed` and the
+  // `revert` scores `revert`; it projects each absent one to `no_commit` with null SHAs, so both
+  // score `no_progress`. Waste = 1 revert + 2 no_progress = 3.
   //
-  // The number matching the old formula is not a coincidence of this input — the two agree on
-  // EVERY input, by construction. `buildEfficiencySection` projects each present history entry
-  // to a moved HEAD (so it scores `committed` unless its action is `revert`) and each absent
-  // one to `no_commit` with null SHAs (so it scores `no_progress`). That reproduces
-  // `reverts + missing` exactly. No input separates the two numerically, which is why the
-  // AC-A7 delegation test below is STRUCTURAL: the printed figure cannot witness it.
+  // That the number matches the old formula is not a coincidence of this input: those two
+  // projections reproduce `reverts + missing` exactly, so the two agree on EVERY input. No input
+  // separates them numerically, which is why the AC-A7 delegation test below is STRUCTURAL —
+  // the printed figure cannot witness it.
   const history = [
     { action: 'accept' },
     { action: 'revert' },
