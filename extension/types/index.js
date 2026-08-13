@@ -445,6 +445,28 @@ export var PipelineRunnerExitCode;
     PipelineRunnerExitCode[PipelineRunnerExitCode["AuditFailure"] = 2] = "AuditFailure";
     PipelineRunnerExitCode[PipelineRunnerExitCode["PhaseIncomplete"] = 3] = "PhaseIncomplete";
 })(PipelineRunnerExitCode || (PipelineRunnerExitCode = {}));
+/**
+ * Ticket 7addedbf: the CLOSED disposition vocabulary for a mux iteration's
+ * `wasted_iter` event. Declared here, once — `mux-runner.ts:classifyMuxIteration`
+ * is the only producer and a second declaration is the defect this list exists to
+ * prevent. Const-list first, union derived: a list annotated as its own union
+ * would let a member typecheck while missing from the runtime array.
+ *
+ * - `committed`      — HEAD moved; the iteration shipped work.
+ * - `worker_handoff` — no commit, but the worker wrote lifecycle artifacts the next
+ *                      spawn resumes from. The designed handoff, not a defect.
+ * - `clean_pass`     — the manager turn completed with nothing to do.
+ * - `revert`         — the iteration's work was rolled back.
+ * - `no_progress`    — genuinely unproductive; also the conservative verdict for an
+ *                      action outside the mapped set.
+ */
+export const MUX_ITERATION_REASONS = [
+    'committed',
+    'worker_handoff',
+    'clean_pass',
+    'revert',
+    'no_progress',
+];
 // ---------------------------------------------------------------------------
 // Microverse Types
 // ---------------------------------------------------------------------------

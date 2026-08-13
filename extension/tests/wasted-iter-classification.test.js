@@ -9,8 +9,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { StateManager } from '../services/state-manager.js';
 import { _deps, handleIterationOutcome } from '../bin/microverse-runner.js';
+import { classifyMuxIteration, emitMuxWastedIter } from '../bin/mux-runner.js';
+import { MUX_ITERATION_REASONS } from '../types/index.js';
 
 const stateManager = new StateManager();
 
@@ -304,3 +307,150 @@ test('AC-A5: a non-success iteration exit emits exactly one wasted_iter event', 
   assert.equal(events[0].action, 'error');
   assert.equal(events[0].wasted, true);
 });
+
+// --- Mux mode (ticket 7addedbf): AC-A1-mux / AC-A2 / AC-A3 / AC-A4. ---
+//
+// Mux has no 'worker' label — its action IS `outcome.completion`. The observable that
+// identifies the designed worker handoff is the lifecycle-artifact delta: the handoff is
+// defined by the next spawn resuming from the worker's on-disk artifacts, so the artifacts
+// appearing IS the disposition. Rationale + rejected alternatives: plan_2026-08-13.md.
+
+const SHA_A = 'a'.repeat(40);
+const SHA_B = 'b'.repeat(40);
+
+function classifyMux({ action, preIterSha = SHA_A, postIterSha = SHA_A, artifactDelta = 0 }) {
+  return classifyMuxIteration({ action, preIterSha, postIterSha, artifactDelta });
+}
+
+test('AC-A1-mux: an iteration ending in the designed worker handoff is NOT wasted', () => {
+  assert.deepEqual(
+    classifyMux({ action: 'continue', artifactDelta: 2 }),
+    { wasted: false, reason: 'worker_handoff' },
+  );
+});
+
+test('AC-A1-mux: the handoff verdict survives the real emitter', async () => {
+  const events = await withSandbox(async ({ sessionDir, dataRoot }) => {
+    emitMuxWastedIter({
+      sessionDir,
+      iteration: 7,
+      action: 'continue',
+      preIterSha: SHA_A,
+      postIterSha: SHA_A,
+      artifactDelta: 1,
+    });
+    return readWastedIterEvents(dataRoot);
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].runner, 'mux');
+  assert.equal(events[0].wasted, false);
+  assert.equal(events[0].reason, 'worker_handoff');
+});
+
+test('AC-A1-mux: a handoff whose commit also landed reports the commit, not the handoff', () => {
+  assert.deepEqual(
+    classifyMux({ action: 'continue', postIterSha: SHA_B, artifactDelta: 3 }),
+    { wasted: false, reason: 'committed' },
+  );
+});
+
+for (const action of ['task_completed', 'review_clean']) {
+  test(`AC-A2: '${action}' with nothing to do is NOT wasted`, () => {
+    assert.deepEqual(
+      classifyMux({ action }),
+      { wasted: false, reason: 'clean_pass' },
+    );
+  });
+}
+
+for (const action of ['continue', 'error', 'inactive']) {
+  test(`AC-A3: '${action}' with no commit and no artifacts IS wasted`, () => {
+    assert.deepEqual(
+      classifyMux({ action }),
+      { wasted: true, reason: 'no_progress' },
+    );
+  });
+}
+
+test('AC-A3: an unmappable action records the conservative verdict', () => {
+  assert.deepEqual(
+    classifyMux({ action: 'not_a_real_completion' }),
+    { wasted: true, reason: 'no_progress' },
+  );
+});
+
+test('AC-A3: a commit is never wasted, whatever the action', () => {
+  assert.deepEqual(
+    classifyMux({ action: 'error', postIterSha: SHA_B }),
+    { wasted: false, reason: 'committed' },
+  );
+});
+
+test('AC-A3: an unreadable HEAD is not evidence of a commit', () => {
+  assert.deepEqual(
+    classifyMux({ action: 'continue', postIterSha: null }),
+    { wasted: true, reason: 'no_progress' },
+  );
+});
+
+test("AC-A3: the legacy 'revert' term is preserved", () => {
+  assert.deepEqual(
+    classifyMux({ action: 'revert', postIterSha: SHA_B }),
+    { wasted: true, reason: 'revert' },
+  );
+});
+
+// AC-A4: the mapping from `outcome.completion` to the reason vocabulary is TOTAL, and the
+// vocabulary is closed. The action list is derived from the `IterationOutcome` declaration
+// in source rather than hand-copied, so a member added to that union without a mapping
+// reddens this loop instead of being silently skipped. `node:test` has no `test.each`.
+
+function readCompletionUnionMembers() {
+  const typesPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'src',
+    'types',
+    'index.ts',
+  );
+  const source = fs.readFileSync(typesPath, 'utf-8');
+  const iface = /export interface IterationOutcome \{([\s\S]*?)\n\}/.exec(source);
+  assert.ok(iface, 'IterationOutcome interface not found in src/types/index.ts');
+  const completion = /completion:\s*([^;]+);/.exec(iface[1]);
+  assert.ok(completion, 'completion member not found on IterationOutcome');
+  return completion[1].split('|').map((part) => part.trim().replace(/^'|'$/g, ''));
+}
+
+const COMPLETION_MEMBERS = readCompletionUnionMembers();
+
+test('AC-A4: the completion union was parsed, not silently empty', () => {
+  assert.ok(COMPLETION_MEMBERS.length >= 5, `parsed only ${COMPLETION_MEMBERS.length} members`);
+  for (const member of COMPLETION_MEMBERS) {
+    assert.match(member, /^[a-z_]+$/, `unparsed union member: ${member}`);
+  }
+});
+
+for (const action of COMPLETION_MEMBERS) {
+  test(`AC-A4: '${action}' maps to exactly one reason from the closed vocabulary`, () => {
+    for (const artifactDelta of [null, 0, 2]) {
+      for (const postIterSha of [SHA_A, SHA_B, null]) {
+        const verdict = classifyMuxIteration({
+          action, preIterSha: SHA_A, postIterSha, artifactDelta,
+        });
+        assert.ok(
+          MUX_ITERATION_REASONS.includes(verdict.reason),
+          `${action} produced an out-of-vocabulary reason: ${verdict.reason}`,
+        );
+        assert.equal(typeof verdict.wasted, 'boolean');
+        // The ticket's invariant: `wasted: true` implies the iteration produced no commit.
+        if (verdict.wasted) {
+          assert.notEqual(verdict.reason, 'committed');
+          assert.ok(
+            postIterSha === null || postIterSha === SHA_A,
+            `${action} reported wasted over a moved HEAD`,
+          );
+        }
+      }
+    }
+  });
+}

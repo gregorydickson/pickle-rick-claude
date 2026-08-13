@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason } from '../types/index.js';
+import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
@@ -2776,14 +2776,61 @@ export function detectAndRecoverHeadRegression(input: {
   return { detected: true, recovered, action };
 }
 
-function emitMuxWastedIter(input: {
+/**
+ * Ticket 7addedbf: classify one mux iteration into the closed `MUX_ITERATION_REASONS`
+ * vocabulary. `action` is `outcome.completion`, a five-member union
+ * (`task_completed | review_clean | continue | error | inactive`); the mapping is TOTAL
+ * over it and over anything else, so the vocabulary cannot leak.
+ *
+ * `artifactDelta` is the worker's lifecycle-artifact count gained across the iteration
+ * (the same before/after difference the production breadcrumb consumes). It is the
+ * observable that identifies the DESIGNED worker handoff: the handoff is defined by the
+ * next spawn resuming from the worker's on-disk artifacts, so the artifacts appearing IS
+ * the disposition — not a proxy for it. `null` means no ticket was in flight (nothing to
+ * hand off).
+ *
+ * Rule order matters. A commit is checked before the unproductive arms, so every
+ * reachable `wasted: true` verdict has an unmoved (or unreadable) HEAD — the ticket's
+ * invariant. Both SHAs must be non-null to claim `committed`: a failed HEAD read is not
+ * evidence of a commit, so it falls through to the conservative arms.
+ */
+export function classifyMuxIteration(input: {
+  action: string;
+  preIterSha: string | null;
+  postIterSha: string | null;
+  artifactDelta: number | null;
+}): { wasted: boolean; reason: MuxIterationReason } {
+  // Legacy term, retained verbatim. Unreachable on the mux path (`outcome.completion`
+  // has no 'revert' member) — kept so the vocabulary is complete and the prior
+  // predicate is not silently dropped.
+  if (input.action === 'revert') return { wasted: true, reason: 'revert' };
+
+  const moved = input.preIterSha !== null
+    && input.postIterSha !== null
+    && input.preIterSha !== input.postIterSha;
+  if (moved) return { wasted: false, reason: 'committed' };
+
+  if (input.artifactDelta !== null && input.artifactDelta > 0) {
+    return { wasted: false, reason: 'worker_handoff' };
+  }
+
+  if (input.action === 'task_completed' || input.action === 'review_clean') {
+    return { wasted: false, reason: 'clean_pass' };
+  }
+
+  // 'continue' | 'error' | 'inactive', and any unmapped action — the conservative direction.
+  return { wasted: true, reason: 'no_progress' };
+}
+
+export function emitMuxWastedIter(input: {
   sessionDir: string;
   iteration: number;
   action: string;
   preIterSha: string | null;
   postIterSha: string | null;
+  artifactDelta: number | null;
 }): void {
-  const wasted = input.action === 'revert' || input.postIterSha === input.preIterSha;
+  const { wasted, reason } = classifyMuxIteration(input);
   logActivity({
     event: 'wasted_iter',
     source: 'pickle',
@@ -2792,6 +2839,7 @@ function emitMuxWastedIter(input: {
     runner: 'mux',
     action: input.action,
     wasted,
+    reason,
     pre_iter_sha: input.preIterSha,
     post_iter_sha: input.postIterSha,
   });
@@ -11318,6 +11366,9 @@ async function runMuxRunnerMain() {
       action: result,
       preIterSha,
       postIterSha: readHeadCommit(iterWorkingDir),
+      // 7addedbf: the worker-handoff observable — same before/after difference the
+      // production breadcrumb consumes above. null when no ticket was in flight.
+      artifactDelta: apProgressResult ? apProgressResult.lastArtifactCount - apBeforeCount : null,
     });
 
     if (exitType === 'api_limit') {

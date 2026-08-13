@@ -2389,8 +2389,46 @@ export function detectAndRecoverHeadRegression(input) {
     catch { /* best-effort */ }
     return { detected: true, recovered, action };
 }
-function emitMuxWastedIter(input) {
-    const wasted = input.action === 'revert' || input.postIterSha === input.preIterSha;
+/**
+ * Ticket 7addedbf: classify one mux iteration into the closed `MUX_ITERATION_REASONS`
+ * vocabulary. `action` is `outcome.completion`, a five-member union
+ * (`task_completed | review_clean | continue | error | inactive`); the mapping is TOTAL
+ * over it and over anything else, so the vocabulary cannot leak.
+ *
+ * `artifactDelta` is the worker's lifecycle-artifact count gained across the iteration
+ * (the same before/after difference the production breadcrumb consumes). It is the
+ * observable that identifies the DESIGNED worker handoff: the handoff is defined by the
+ * next spawn resuming from the worker's on-disk artifacts, so the artifacts appearing IS
+ * the disposition — not a proxy for it. `null` means no ticket was in flight (nothing to
+ * hand off).
+ *
+ * Rule order matters. A commit is checked before the unproductive arms, so every
+ * reachable `wasted: true` verdict has an unmoved (or unreadable) HEAD — the ticket's
+ * invariant. Both SHAs must be non-null to claim `committed`: a failed HEAD read is not
+ * evidence of a commit, so it falls through to the conservative arms.
+ */
+export function classifyMuxIteration(input) {
+    // Legacy term, retained verbatim. Unreachable on the mux path (`outcome.completion`
+    // has no 'revert' member) — kept so the vocabulary is complete and the prior
+    // predicate is not silently dropped.
+    if (input.action === 'revert')
+        return { wasted: true, reason: 'revert' };
+    const moved = input.preIterSha !== null
+        && input.postIterSha !== null
+        && input.preIterSha !== input.postIterSha;
+    if (moved)
+        return { wasted: false, reason: 'committed' };
+    if (input.artifactDelta !== null && input.artifactDelta > 0) {
+        return { wasted: false, reason: 'worker_handoff' };
+    }
+    if (input.action === 'task_completed' || input.action === 'review_clean') {
+        return { wasted: false, reason: 'clean_pass' };
+    }
+    // 'continue' | 'error' | 'inactive', and any unmapped action — the conservative direction.
+    return { wasted: true, reason: 'no_progress' };
+}
+export function emitMuxWastedIter(input) {
+    const { wasted, reason } = classifyMuxIteration(input);
     logActivity({
         event: 'wasted_iter',
         source: 'pickle',
@@ -2399,6 +2437,7 @@ function emitMuxWastedIter(input) {
         runner: 'mux',
         action: input.action,
         wasted,
+        reason,
         pre_iter_sha: input.preIterSha,
         post_iter_sha: input.postIterSha,
     });
@@ -9924,6 +9963,9 @@ async function runMuxRunnerMain() {
             action: result,
             preIterSha,
             postIterSha: readHeadCommit(iterWorkingDir),
+            // 7addedbf: the worker-handoff observable — same before/after difference the
+            // production breadcrumb consumes above. null when no ticket was in flight.
+            artifactDelta: apProgressResult ? apProgressResult.lastArtifactCount - apBeforeCount : null,
         });
         if (exitType === 'api_limit') {
             consecutiveRateLimits++;
