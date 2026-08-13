@@ -303,8 +303,17 @@ test('2ed9a852 H1: a metric-mode iteration whose MEASUREMENT failed is still rec
 
 // --- AC-A5: exactly one wasted_iter event per iteration, across every reachable emit site. ---
 
-test('AC-A5: a non-success iteration exit emits exactly one wasted_iter event', async () => {
-  const events = await withSandbox(async ({ sessionDir, workingDir, dataRoot }) => {
+/**
+ * Drive `handleIterationOutcome` down the non-success exit path against ONE RunContext.
+ *
+ * `emissions` is how many times that context is driven: 1 is the single non-success exit
+ * (AC-A5), 2 is the shape a fifth emit site — or a widened `IterationExitType` — would
+ * produce, which ticket 2ed9a852 (H2) makes the emitter refuse. `advanceIteration` bumps
+ * `ctx.iteration` between the two so the per-iteration guard can be told apart from a guard
+ * that wedges the emitter for the rest of the run.
+ */
+async function runNonSuccessHarness({ emissions = 1, advanceIteration = false } = {}) {
+  return withSandbox(async ({ sessionDir, workingDir, dataRoot }) => {
     const runnerState = makeRunnerState(sessionDir, workingDir);
     const statePath = path.join(sessionDir, 'state.json');
     const microverseState = makeMetricMicroverseState('echo 50');
@@ -312,20 +321,27 @@ test('AC-A5: a non-success iteration exit emits exactly one wasted_iter event', 
     stateManager.forceWrite(statePath, runnerState);
     fs.writeFileSync(path.join(sessionDir, 'microverse.json'), JSON.stringify(microverseState, null, 2));
 
+    const logLines = [];
+    const ctx = makeContext(sessionDir, statePath, workingDir, runnerState, 'a'.repeat(40));
+    ctx.log = (msg) => logLines.push(msg);
+
     const original = { getHeadSha: _deps.getHeadSha };
     try {
       _deps.getHeadSha = () => 'a'.repeat(40);
-      await handleIterationOutcome(
-        microverseState,
-        { raw: '40', score: 40 },
-        makeContext(sessionDir, statePath, workingDir, runnerState, 'a'.repeat(40)),
-        { completion: 'error', timedOut: false, exitCode: 1, wallSeconds: 30 },
-      );
-      return readWastedIterEvents(dataRoot);
+      const outcome = { completion: 'error', timedOut: false, exitCode: 1, wallSeconds: 30 };
+      for (let call = 0; call < emissions; call++) {
+        if (call > 0 && advanceIteration) ctx.iteration += 1;
+        await handleIterationOutcome(microverseState, { raw: '40', score: 40 }, ctx, outcome);
+      }
+      return { events: readWastedIterEvents(dataRoot), logLines };
     } finally {
       _deps.getHeadSha = original.getHeadSha;
     }
   });
+}
+
+test('AC-A5: a non-success iteration exit emits exactly one wasted_iter event', async () => {
+  const { events } = await runNonSuccessHarness();
   assert.equal(events.length, 1, 'a non-success exit must not also reach a metric/worker emit site');
   assert.equal(events[0].action, 'error');
   assert.equal(events[0].wasted, true);
@@ -652,37 +668,8 @@ function readIterationExitTypeMembers() {
 
 const EXIT_TYPE_MEMBERS = readIterationExitTypeMembers();
 
-async function runDoubleEmitHarness({ secondIteration }) {
-  return withSandbox(async ({ sessionDir, workingDir, dataRoot }) => {
-    const runnerState = makeRunnerState(sessionDir, workingDir);
-    const statePath = path.join(sessionDir, 'state.json');
-    const microverseState = makeMetricMicroverseState('echo 50');
-    // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing state to lock against
-    stateManager.forceWrite(statePath, runnerState);
-    fs.writeFileSync(path.join(sessionDir, 'microverse.json'), JSON.stringify(microverseState, null, 2));
-
-    const logLines = [];
-    const ctx = makeContext(sessionDir, statePath, workingDir, runnerState, 'a'.repeat(40));
-    ctx.log = (msg) => logLines.push(msg);
-
-    const original = { getHeadSha: _deps.getHeadSha };
-    try {
-      _deps.getHeadSha = () => 'a'.repeat(40);
-      const outcome = { completion: 'error', timedOut: false, exitCode: 1, wallSeconds: 30 };
-      // Two emissions reaching ONE RunContext — the shape a fifth emit site, or a widened
-      // `IterationExitType`, would produce.
-      await handleIterationOutcome(microverseState, { raw: '40', score: 40 }, ctx, outcome);
-      if (secondIteration) ctx.iteration += 1;
-      await handleIterationOutcome(microverseState, { raw: '40', score: 40 }, ctx, outcome);
-      return { events: readWastedIterEvents(dataRoot), logLines };
-    } finally {
-      _deps.getHeadSha = original.getHeadSha;
-    }
-  });
-}
-
 test('2ed9a852 H2: a second emission for the same iteration is suppressed, and said so', async () => {
-  const { events, logLines } = await runDoubleEmitHarness({ secondIteration: false });
+  const { events, logLines } = await runNonSuccessHarness({ emissions: 2 });
   assert.equal(events.length, 1, 'the same iteration was charged twice');
   assert.equal(events[0].iteration, 7);
   assert.ok(
@@ -692,7 +679,7 @@ test('2ed9a852 H2: a second emission for the same iteration is suppressed, and s
 });
 
 test('2ed9a852 H2: the guard is per-iteration, not per-run — the next iteration records', async () => {
-  const { events } = await runDoubleEmitHarness({ secondIteration: true });
+  const { events } = await runNonSuccessHarness({ emissions: 2, advanceIteration: true });
   assert.equal(events.length, 2, 'the guard wedged the emitter for the rest of the run');
   assert.deepEqual(events.map((event) => event.iteration).sort(), [7, 8]);
 });
