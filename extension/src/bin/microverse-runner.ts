@@ -3363,7 +3363,9 @@ function recordMetricMeasurementFailure(state: MicroverseState, ctx: RunContext)
 function emitMicroverseWastedIter(ctx: RunContext, action: WastedIterAction): void {
   const preIterSha = ctx.preIterSha ?? null;
   const postIterSha = ctx.postIterSha ?? null;
-  const wasted = action === 'revert' || postIterSha === preIterSha;
+  // Consume the existing 'worker' label: the designed worker-handoff iteration is never
+  // wasted, regardless of whether HEAD moved this turn.
+  const wasted = action === 'revert' || (action !== 'worker' && postIterSha === preIterSha);
   logActivity({
     event: 'wasted_iter',
     source: 'pickle',
