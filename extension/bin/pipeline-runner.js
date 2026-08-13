@@ -1795,13 +1795,14 @@ function resolveSzechuanEmptySkipReason(sessionDir, target, effectiveAllowedPath
  * their rendering is unchanged.
  */
 function formatEmptyScopeWarn(phase, cause, inScopePaths, explain) {
-    const shown = inScopePaths.slice(0, 20);
-    const more = inScopePaths.length > shown.length
-        ? `, …(+${inScopePaths.length - shown.length} more)`
-        : '';
-    const enumeration = inScopePaths.length > 0
-        ? [`  In-scope diff (${inScopePaths.length} path(s)): ${shown.join(', ') || '(none)'}${more}`]
-        : [];
+    const enumeration = [];
+    if (inScopePaths.length > 0) {
+        const shown = inScopePaths.slice(0, 20);
+        const more = inScopePaths.length > shown.length
+            ? `, …(+${inScopePaths.length - shown.length} more)`
+            : '';
+        enumeration.push(`  In-scope diff (${inScopePaths.length} path(s)): ${shown.join(', ')}${more}`);
+    }
     return [
         `⚠ ${phase} did not run: ${cause}.`,
         ...enumeration,
