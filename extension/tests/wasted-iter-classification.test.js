@@ -618,7 +618,13 @@ test('2ed9a852 C1: the emitter reads its input at emit time, not at bind time', 
   assert.equal(events[0].wasted, false);
 });
 
-test('2ed9a852 C1: every post-runIteration early exit in the mux loop records its iteration', () => {
+/**
+ * The post-`runIteration` span of `runMuxRunnerMain`, sliced from source.
+ *
+ * Both reachability tests below read the SAME span, so they cannot drift onto different
+ * regions of the loop and disagree about what "post-iteration" means.
+ */
+function sliceMuxPostIterationSpan() {
   const source = fs.readFileSync(
     path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'bin', 'mux-runner.ts'),
     'utf-8',
@@ -631,7 +637,11 @@ test('2ed9a852 C1: every post-runIteration early exit in the mux loop records it
   const endIndex = lines.findIndex((line, i) => i > startIndex && line.trim() === 'emitWastedIterOnce();' && line.startsWith('    emitWastedIterOnce'));
   assert.ok(endIndex > startIndex, 'anchor lost: the fall-through emitWastedIterOnce() call site');
 
-  const span = lines.slice(startIndex, endIndex + 1);
+  return lines.slice(startIndex, endIndex + 1);
+}
+
+test('2ed9a852 C1: every post-runIteration early exit in the mux loop records its iteration', () => {
+  const span = sliceMuxPostIterationSpan();
   const earlyExits = span.filter((line) => /(^|\s)continue;\s*$/.test(line)).length;
   const emits = span.filter((line) => line.includes('emitWastedIterOnce();')).length;
 
@@ -643,6 +653,101 @@ test('2ed9a852 C1: every post-runIteration early exit in the mux loop records it
     emits,
     earlyExits + 1,
     `${earlyExits} post-runIteration early exit(s) but ${emits} emit call(s): an iteration exits the mux loop without recording its wasted_iter verdict`,
+  );
+});
+
+/**
+ * The maximal run of contiguous preceding lines sharing this line's EXACT indentation.
+ *
+ * This is the mechanical stand-in for "the exit block this statement belongs to". It has to
+ * be mechanical to be reproducible, and it has to stop at an indentation change to be
+ * correct: the ladder arms at `mux-runner.ts` pair an `emitWastedIterOnce(); continue;` at
+ * one depth with a sibling `break;` one depth out. A rule that merely scanned backwards N
+ * lines would credit the sibling's emit to the `break` and report the hole as closed.
+ */
+function precedingStatementRun(span, index) {
+  const indentOf = (line) => /^(\s*)/.exec(line)[1];
+  const indent = indentOf(span[index]);
+  const run = [];
+  for (let i = index - 1; i >= 0; i--) {
+    if (span[i].trim() === '' || indentOf(span[i]) !== indent) break;
+    run.push(span[i]);
+  }
+  return run;
+}
+
+// Ticket 14ebb20d: the C1 assertion above pins the `continue` form of a post-iteration exit
+// and is blind to the `break` form. Both leave the mux loop after a worker ran; a `break`
+// leaves it for good, so the iteration it drops is the LAST one of that run. Those exits are
+// not a random sample either — every one of them terminates on a failure or halt disposition,
+// which is precisely the population the classifier scores `no_progress`. Dropping them biases
+// the reported waste rate AWAY from waste, which is the original defect, third costume.
+//
+// Seven such exits ship today, none of them emitting (each `exitReason` named for legibility;
+// see conformance_2026-08-13.md for the enumeration with line numbers):
+//
+//   state_working_dir_missing ×2 · recovery_exhausted ×2
+//   silent-death respawn cap ×1 · done_without_commit_evidence ×2
+//
+// The implementation is read-only in this ticket, so this is a RATCHET CEILING, not a pin: an
+// eighth unemitted `break` turns it RED, and it stays green as the count falls to zero when
+// the residual is fixed. An equality pin would go red ON the fix — a test that punishes the
+// repair is worse than no test.
+const UNEMITTED_BREAK_CEILING = 7;
+
+test('14ebb20d: no NEW post-runIteration `break` exits the mux loop without recording its iteration', () => {
+  const span = sliceMuxPostIterationSpan();
+
+  const breakIndexes = span
+    .map((line, i) => (/(^|\s)break;\s*$/.test(line) ? i : -1))
+    .filter((i) => i >= 0);
+  assert.ok(
+    breakIndexes.length > 0,
+    'the span found no `break` exits — the slice is wrong, not the code',
+  );
+
+  const unemitted = breakIndexes.filter(
+    (i) => !precedingStatementRun(span, i).some((line) => line.includes('emitWastedIterOnce();')),
+  );
+
+  assert.ok(
+    unemitted.length <= UNEMITTED_BREAK_CEILING,
+    `${unemitted.length} post-runIteration \`break\` exit(s) record no wasted_iter verdict, above the `
+    + `${UNEMITTED_BREAK_CEILING} known residuals. A new terminal exit was added without an `
+    + `emitWastedIterOnce() — its iteration ran a worker and will be missing from the population `
+    + 'the waste rate is read over. Exits without an emit:\n'
+    + unemitted.map((i) => `  ${span[i].trim()}  <- ${precedingStatementRun(span, i)[0]?.trim() ?? '(block start)'}`).join('\n'),
+  );
+
+});
+
+// Guards the guard, on a synthetic span rather than on shipped source. A rule that credited a
+// sibling arm's emit to the terminal `break` would report zero unemitted exits, and the
+// ceiling above would then certify a hole it never looked at. Asserting the RULE here instead
+// of asserting `unemitted.length > 0` keeps the check alive after the residual is fixed —
+// pinning a non-zero residual count would be another test that punishes its own repair.
+test('14ebb20d: the exit-block rule does not credit a sibling arm\'s emit to a terminal break', () => {
+  // The shape at the ladder arms: an emitting `continue` nested one level inside, and the
+  // exhausted `break` one indent out. Only the `continue` is covered by that emit.
+  const span = [
+    '          if (ladderAction === \'advance\') {',
+    '            emitWastedIterOnce();',
+    '            continue;',
+    '          }',
+    '          recordExitReason(statePath, \'recovery_exhausted\');',
+    '          break;',
+  ];
+  const runAtBreak = precedingStatementRun(span, 5);
+  assert.ok(
+    !runAtBreak.some((line) => line.includes('emitWastedIterOnce();')),
+    'the nested arm\'s emit was credited to the terminal break — the rule over-matches',
+  );
+
+  // ...and it does still credit an emit that genuinely precedes the exit at the same depth.
+  const emitting = ['          emitWastedIterOnce();', '          break;'];
+  assert.ok(
+    precedingStatementRun(emitting, 1).some((line) => line.includes('emitWastedIterOnce();')),
+    'an emit at the exit\'s own depth must count — the rule under-matches',
   );
 });
 
