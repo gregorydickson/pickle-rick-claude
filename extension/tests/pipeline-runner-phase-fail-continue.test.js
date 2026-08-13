@@ -63,6 +63,13 @@ function makeRepo({ createFollowupCommit = false } = {}) {
   return { repo, startCommit };
 }
 
+test('makeRepo createFollowupCommit: startCommit precedes the follow-up commit', () => {
+  const { repo, startCommit } = makeRepo({ createFollowupCommit: true });
+  const head = git(['rev-parse', 'HEAD'], repo);
+  assert.notEqual(startCommit, head);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
 function writeState(sessionDir, repo, overrides = {}) {
   const statePath = path.join(sessionDir, 'state.json');
   fs.writeFileSync(statePath, JSON.stringify({
