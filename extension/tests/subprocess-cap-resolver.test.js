@@ -134,11 +134,11 @@ function firstArgumentOf(args) {
 }
 
 /**
- * Every subprocess call in `src` as `{ command, args, timeoutValues }`. `timeoutValues` is
- * EMPTY when the call passes no `timeout:` key at all — the case a values-only scan cannot
+ * Every subprocess call in `src` as `{ command, timeoutValues }`. `timeoutValues` is EMPTY
+ * when the call passes no `timeout:` key at all — the case a values-only scan cannot
  * represent, and therefore the case a cap guard built on one cannot police.
  * @param {string} src
- * @returns {{command: string, args: string, timeoutValues: string[]}[]}
+ * @returns {{command: string, timeoutValues: string[]}[]}
  */
 function extractSubprocessCalls(src) {
     return extractSubprocessCallArgs(src).map(args => {
@@ -146,7 +146,7 @@ function extractSubprocessCalls(src) {
         const re = /\btimeout\s*:\s*([^,\n}]+)/g;
         let m;
         while ((m = re.exec(args)) !== null) values.push(m[1].trim());
-        return { command: firstArgumentOf(args), args, timeoutValues: values };
+        return { command: firstArgumentOf(args), timeoutValues: values };
     });
 }
 
