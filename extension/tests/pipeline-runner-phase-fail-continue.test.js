@@ -45,6 +45,9 @@ function makeRepo({ createFollowupCommit = false } = {}) {
   git(['config', 'commit.gpgsign', 'false'], repo);
   // discoverSubsystems enumerates directories with source files; seed under services/
   // so anatomy-park / szechuan-sauce phases find a real subsystem rather than skipping.
+  // createFollowupCommit defends against a second, later skip: empty_branch_diff
+  // (shouldSkipPhaseForEmptyBranchDiff) — a caller that forgets the flag gets
+  // startCommit === HEAD, the phase's branch diff reads empty, and it never runs.
   fs.mkdirSync(path.join(repo, 'services'), { recursive: true });
   fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 1;\n');
   fs.writeFileSync(path.join(repo, 'services', 'b.ts'), 'export const b = 2;\n');
@@ -253,6 +256,7 @@ test('strict-phases cli override is a no-op when strict mode is not requested', 
 
 test('anatomy-park judge_timeout runs finalize-gate instead of halting pipeline', async () => {
   const { repo, sessionDir } = makePipelineSession({
+    createFollowupCommit: true,
     pipelineOverrides: { phases: ['anatomy-park'] },
   });
   const spawnCalls = [];

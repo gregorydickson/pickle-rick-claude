@@ -55,7 +55,7 @@ function git(args, cwd) {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: GIT_TIMEOUT_MS }).trim();
 }
 
-function makeRepo() {
+function makeRepo({ createFollowupCommit = false } = {}) {
   const repo = tmpDir('oneabort-repo-');
   git(['init', '-q', '-b', 'main'], repo);
   git(['config', 'user.email', 'test@example.com'], repo);
@@ -63,14 +63,30 @@ function makeRepo() {
   git(['config', 'commit.gpgsign', 'false'], repo);
   // discoverSubsystems enumerates directories holding source files; seed one so the microverse
   // phases find a real subsystem instead of skipping for empty scope.
+  // createFollowupCommit defends against a second, later skip: empty_branch_diff
+  // (shouldSkipPhaseForEmptyBranchDiff) — a caller that forgets the flag gets
+  // startCommit === HEAD, the phase's branch diff reads empty, and it never runs.
   fs.mkdirSync(path.join(repo, 'services'), { recursive: true });
   for (const name of ['a.ts', 'b.ts', 'c.ts']) {
     fs.writeFileSync(path.join(repo, 'services', name), `export const ${name[0]} = 1;\n`);
   }
   git(['add', '.'], repo);
   git(['commit', '-q', '-m', 'seed'], repo);
-  return { repo, startCommit: git(['rev-parse', 'HEAD'], repo) };
+  const startCommit = git(['rev-parse', 'HEAD'], repo);
+  if (createFollowupCommit) {
+    fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 11;\n');
+    git(['add', '.'], repo);
+    git(['commit', '-q', '-m', 'followup'], repo);
+  }
+  return { repo, startCommit };
 }
+
+test('makeRepo createFollowupCommit: startCommit precedes the follow-up commit', () => {
+  const { repo, startCommit } = makeRepo({ createFollowupCommit: true });
+  const head = git(['rev-parse', 'HEAD'], repo);
+  assert.notEqual(startCommit, head);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
 
 function writeState(sessionDir, overrides = {}) {
   const statePath = path.join(sessionDir, 'state.json');
@@ -416,7 +432,7 @@ describe('AC-OA-2a/AC-OA-2b: every logPhaseHaltReason termination site names a r
 
 describe('AC-OA-1c: a degraded phase never claims success', () => {
   test('every phase degraded ⇒ non-zero exit, failed status, and NO closer release plan', async () => {
-    const { repo, startCommit } = makeRepo();
+    const { repo, startCommit } = makeRepo({ createFollowupCommit: true });
     const sessionDir = tmpDir('oneabort-main-session-');
     const statePath = writeState(sessionDir, {
       working_dir: repo,
