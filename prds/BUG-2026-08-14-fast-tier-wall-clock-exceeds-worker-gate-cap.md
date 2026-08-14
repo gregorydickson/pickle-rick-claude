@@ -1,6 +1,16 @@
 # BUG-2026-08-14 — the fast tier's wall clock has outgrown every cap that measures it
 
-**Status:** ready to launch
+**Status:** SUPERSEDED — do not launch. See `prds/BUG-2026-08-14-concurrent-workers-per-session.md`.
+
+> **Why this PRD was wrong.** Its premise was that a 712s tier against a 600s cap is arithmetic. The
+> cap was then raised to 1800000 ms and the gate still timed out on all three tickets. Measurement
+> found the real cause: workers outlive the manager's 600s Bash ceiling, so two `spawn-morty`
+> processes run concurrently and each runs its own full tier. Cost-class partitioning tunes
+> concurrency *within* one tier run and does nothing about N tiers at once — and a heavy+light split
+> running concurrently would make overlapping workers strictly worse. The measured profile below is
+> still accurate and reusable; the thesis is not. Retire rather than implement.
+
+**Status (original):** ready to launch
 **Priority:** P1 (reliability)
 **Branch:** release/v2.1-beta
 **Launch commit:** must be re-measured at launch; the tier was green at `d0099e58` (7600 tests, 7597 pass, fail 0, cancelled 0)
