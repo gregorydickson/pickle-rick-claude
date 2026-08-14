@@ -25,6 +25,10 @@ import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX }
 // B-NONSTOP WS-2 (AC-NS-6): reuse the T3 disposition map to classify a non-pickle
 // phase's `state.exit_reason` (no re-mapping — single source of truth in microverse-runner).
 import { classifyMicroverseDisposition } from './microverse-runner.js';
+// WS-B (f8559470): consume WS-A's single test-dimension reader to detect a ticket
+// flipped Done over a red worker_gate_tests_verdict, so the residual can raise
+// counters.nonConvergent (see collectDoneTicketsWithRedTestVerdict below).
+import { readTicketWorkerGateTestsVerdict } from './setup.js';
 // Re-export the single cap literal so existing importers (tests, Module Export Catalog)
 // keep resolving it from pipeline-runner without a second definition.
 export { SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
@@ -3799,13 +3803,26 @@ async function dispatchHaltAction(runtime, counters, rawPhase, exitCode, log) {
 function resolvePhaseIncompleteOutcome(runtime, rawPhase, exitCode, log) {
     if (exitCode !== PipelineRunnerExitCode.PhaseIncomplete)
         return null;
+    // WS-B (f8559470): `done_without_commit_evidence` is a per-ticket measurement
+    // verdict ("this ticket's Done has no attributable evidence"), not a
+    // cannot-continue budget exhaustion — its fact belongs on the verdict wire
+    // (phaseIncomplete, already withholding success via `pipelineFailed`), never
+    // the disposition wire that halts the phase loop. Read BEFORE
+    // `reportPhaseIncomplete` mutates/re-reads exit_reason.
+    const priorExitReasonForIncomplete = readExistingExitReason(runtime.statePath);
     // Branch A: `reportPhaseIncomplete` still found genuinely-unfinished,
     // non-oracle-excludable tickets (real Todo/In-Progress work the oracle cannot
     // vouch for). This IS the resumability contract this function's docstring
     // protects — mux-runner ran out of iteration budget mid-ticket with real work
     // outstanding, and auto-resume.sh needs exactly this exit-3 +
-    // `pipeline_phase_incomplete` signal to relaunch and finish it. Stays `break`.
+    // `pipeline_phase_incomplete` signal to relaunch and finish it. Stays `break`
+    // for every reason EXCEPT `done_without_commit_evidence` (park-and-flag,
+    // advances to the remaining phases instead of stopping the pipeline).
     if (reportPhaseIncomplete(runtime, rawPhase)) {
+        if (priorExitReasonForIncomplete === 'done_without_commit_evidence') {
+            log(`Phase ${rawPhase}: done_without_commit_evidence is a per-ticket verdict, not a cannot-continue halt — advancing, reporting incomplete for reconciliation`);
+            return { action: 'continue', phaseIncomplete: true };
+        }
         return { action: 'break', phaseIncomplete: true };
     }
     // Branch B: every ticket is oracle-accounted-for (Done or oracle-confirmed
@@ -3960,6 +3977,24 @@ function maybeStampPickleIncompleteRobust(runtime, rawPhase, log) {
     return { action: 'continue', phaseIncomplete: true };
 }
 /**
+ * WS-B (f8559470): tickets that flipped Done while WS-A's shared reader
+ * (`readTicketWorkerGateTestsVerdict`) recorded `worker_gate_tests_verdict: red`
+ * for them. Done is never blocked on a red test verdict (out of scope) — this
+ * only names the offenders so the pipeline can withhold the success verdict
+ * (AC-B1/AC-B3), never a new gate.
+ */
+function collectDoneTicketsWithRedTestVerdict(runtime) {
+    const offenders = [];
+    for (const t of collectTickets(runtime.sessionDir)) {
+        if (!t.id || (t.status || '').toLowerCase() !== 'done')
+            continue;
+        if (readTicketWorkerGateTestsVerdict(runtime.sessionDir, t.id) === 'red') {
+            offenders.push({ id: t.id, title: t.title || '' });
+        }
+    }
+    return offenders;
+}
+/**
  * R-PIPE-2: post-AC-gate success path extracted from `runPhaseIteration` so
  * the no-progress gate, counter increment, cancel-marker check, and success
  * log do not push `runPhaseIteration` past the cyclomatic-complexity ceiling.
@@ -3978,6 +4013,26 @@ export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, 
     const graduationBreak = maybeStampPhaseGraduation(runtime, rawPhase, exitCode, log);
     if (graduationBreak) {
         return graduationBreak;
+    }
+    // WS-B (f8559470): the pickle phase graduated, but ≥1 ticket flipped Done over a
+    // red worker_gate_tests_verdict. The run STILL executes every remaining phase
+    // (AC-B2 — completed++ below is unaffected) and closer-release still needs the
+    // caller to see a name; raise the existing `nonConvergent` term so
+    // `finalizePipeline`'s `unsuccessful = pipelineFailed || counters.nonConvergent > 0`
+    // withholds the success verdict (AC-B1) and skips closer-release, without adding a
+    // new gate, field, or halt.
+    if (rawPhase === 'pickle') {
+        const redOffenders = collectDoneTicketsWithRedTestVerdict(runtime);
+        if (redOffenders.length > 0) {
+            counters.nonConvergent += redOffenders.length;
+            const names = redOffenders.map((o) => `${o.id}${o.title ? ` (${o.title})` : ''}`).join(', ');
+            counters.phaseDispositions[rawPhase] = `done_over_red_worker_gate_tests:${redOffenders.map((o) => o.id).join(',')}`;
+            log(`Phase ${rawPhase}: ${redOffenders.length} ticket(s) flipped Done over a red worker_gate_tests_verdict — withholding success verdict: ${names}`);
+            try {
+                writeRunningStatus(runtime, counters, null);
+            }
+            catch { /* non-blocking */ }
+        }
     }
     // B-NONSTOP WS-2 (AC-NS-6): non-pickle honesty gate. `maybeStampPhaseGraduation`
     // is pickle-only (`:3592`), so a non-convergent anatomy-park / szechuan-sauce phase
