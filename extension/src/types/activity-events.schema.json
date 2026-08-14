@@ -49,6 +49,17 @@
         "backend": { "$ref": "#/definitions/backendEnum" }
       }
     },
+    "worker_spawn_lock_contended": {
+      "type": "object",
+      "required": ["event", "ts", "ticket_id", "incumbent_pid", "waited_ms"],
+      "properties": {
+        "event": { "type": "string", "const": "worker_spawn_lock_contended" },
+        "ts": { "type": "string" },
+        "ticket_id": { "type": "string" },
+        "incumbent_pid": { "type": ["string", "null"] },
+        "waited_ms": { "type": "integer" }
+      }
+    },
     "subtool_backend_override": {
       "type": "object",
       "required": ["event", "ts", "backend"],
@@ -1883,6 +1894,7 @@
     { "$ref": "#/definitions/worker_spawn_backend_resolved" },
     { "$ref": "#/definitions/worker_spawn_backend_mismatch" },
     { "$ref": "#/definitions/worker_spawn_backend_override" },
+    { "$ref": "#/definitions/worker_spawn_lock_contended" },
     { "$ref": "#/definitions/subtool_backend_override" },
     { "$ref": "#/definitions/signal_received" },
     { "$ref": "#/definitions/worker_partial_lifecycle_exit" },

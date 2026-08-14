@@ -1402,6 +1402,8 @@ test('activity-event-payload: schema defines all registered event type definitio
     'gate_parity_divergence',
     // 0b9b2319 (WS-3): bounded opt-in build-phase scope auto-extension.
     'scope_auto_extended',
+    // 70a67ccb: per-session worker-spawn lock contention.
+    'worker_spawn_lock_contended',
   ];
   // Structural drift check — assert set-equality between registered events
   // and asserted EVENT_NAMES rather than a hardcoded count literal.

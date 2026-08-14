@@ -10,7 +10,7 @@ import { isRecord } from '../lib/is-record.js';
 import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths, resetToSha, updateTicketFrontmatter, updateTicketStatus } from '../services/git-utils.js';
 import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup } from '../services/backend-spawn.js';
 import { scrubForbiddenWorkerTokens } from '../services/promise-tokens.js';
-import { StateManager, writeActivityEntry } from '../services/state-manager.js';
+import { StateManager, writeActivityEntry, acquireLockFile, releaseLockFile, withStealRight, isDeadPidPayload, stealLockFile, inspectLockFile, } from '../services/state-manager.js';
 import { classifyTestScriptSafety, detectProjectType, isUnrunnableCheckResult, loadGateCommands } from '../services/convergence-gate.js';
 import { createResolverCache } from '../services/signature-caller-gap.js';
 import { computeOneHop } from '../services/scope-resolver.js';
@@ -2802,6 +2802,74 @@ export async function runWorkerProcess(ctx) {
         });
     });
 }
+// R-WORKER-SPAWN-LOCK: serializes the worker subprocess spawn per session so a manager
+// re-spawn after its Bash-tool ceiling cannot run two workers' test:fast gates concurrently
+// (measured: gate wall clock > 1800s, __timeout__ on every ticket). Session-scoped — the lock
+// file lives inside sessionRoot itself, never os.tmpdir(), so it never serializes two unrelated
+// sessions sharing one repo checkout.
+const WORKER_SPAWN_LOCK_FILENAME = 'worker-spawn.lock';
+const WORKER_SPAWN_LOCK_TIMEOUT_MS = 30_000;
+const WORKER_SPAWN_LOCK_RETRY_INTERVAL_MS = 100;
+export function workerSpawnLockPath(sessionRoot) {
+    return path.join(sessionRoot, WORKER_SPAWN_LOCK_FILENAME);
+}
+/**
+ * Mirrors state-manager.ts's own `reclaimDeadGateLock` shape exactly: reclaim rights are
+ * serialized via `withStealRight` so two concurrent reclaimers cannot both judge a dead holder
+ * and evict a live one, and only a provably dead pid (`isDeadPidPayload`) is ever stolen — a
+ * large-tier worker legitimately holds this lock for up to 4800s, so no age-based arm exists.
+ */
+export function reclaimDeadWorkerSpawnLock(lockPath) {
+    withStealRight(lockPath, () => {
+        const snapshot = inspectLockFile(lockPath);
+        if (!snapshot || !isDeadPidPayload(snapshot.payload))
+            return false;
+        return stealLockFile(lockPath, snapshot);
+    });
+}
+export class WorkerSpawnLockContendedError extends Error {
+    incumbentPid;
+    waitedMs;
+    constructor(waitedMs, incumbentPid) {
+        super(`worker spawn lock contended after ${waitedMs}ms`);
+        this.name = 'WorkerSpawnLockContendedError';
+        this.waitedMs = waitedMs;
+        this.incumbentPid = incumbentPid;
+    }
+}
+/**
+ * Acquires the per-session worker-spawn lock, reclaiming a strand left by a SIGKILLed holder.
+ * `PICKLE_WORKER_LOCK=off` (literal lowercase) makes the lock inert: no lock file is ever
+ * touched and every acquisition "succeeds" immediately — the house kill-switch pattern.
+ * `timeoutMs` defaults to `WORKER_SPAWN_LOCK_TIMEOUT_MS` (30s, matching `withLock`'s own default);
+ * it is an explicit parameter — not a hidden env override — solely so fast-tier tests can drive a
+ * genuine contention timeout without waiting out the real production budget.
+ */
+export async function acquireWorkerSpawnLock(sessionRoot, timeoutMs = WORKER_SPAWN_LOCK_TIMEOUT_MS) {
+    if (process.env.PICKLE_WORKER_LOCK === 'off') {
+        return { inert: true };
+    }
+    const lockPath = workerSpawnLockPath(sessionRoot);
+    const start = Date.now();
+    for (;;) {
+        const held = acquireLockFile(lockPath, String(process.pid));
+        if (held !== null) {
+            return { inert: false, lockPath, handle: held };
+        }
+        reclaimDeadWorkerSpawnLock(lockPath);
+        const waited = Date.now() - start;
+        if (waited >= timeoutMs) {
+            const incumbentPid = inspectLockFile(lockPath)?.payload ?? null;
+            throw new WorkerSpawnLockContendedError(waited, incumbentPid);
+        }
+        await new Promise(resolve => setTimeout(resolve, WORKER_SPAWN_LOCK_RETRY_INTERVAL_MS));
+    }
+}
+export function releaseWorkerSpawnLock(acquisition) {
+    if (acquisition.inert)
+        return;
+    releaseLockFile(acquisition.lockPath, acquisition.handle);
+}
 // eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: R-SMTEST-1 (ticket 1b57ef57) diagnostic breadcrumb instrumentation env-gated by PICKLE_DEBUG_SPAWN_MORTY; R-SMTEST-2 (ticket 910ae36c) early-exit invariant guard appended.
 async function main() {
     // R-SMTEST early-exit invariant — see ticket 1b57ef57
@@ -3003,22 +3071,50 @@ async function main() {
         codegraphSection,
     });
     _smCrumb('buildWorkerPrompt done — before runWorkerProcess');
-    const sessionLog = fs.createWriteStream(args.sessionLogPath, { flags: 'w' });
-    await runWorkerProcess({
-        args, prompt, ticketPath: args.ticketPath, ticketId: args.ticketId, sessionRoot: args.sessionRoot, sessionLog,
-        sessionLogPath: args.sessionLogPath, sessionWorkingDir: runtime.sessionWorkingDir,
-        timeoutStatePath: runtime.timeoutStatePath, workerStatePath: runtime.workerStatePath,
-        effectiveTimeoutMs: effectiveTimeout * 1000, mutableState: { finalized: false, timedOut: false },
-        model, effort: runtime.sessionEffort, hermesOptions: readHermesWorkerOptions(runtime.state),
-        preWorkerHead: (() => {
+    let workerSpawnLockAcquisition;
+    try {
+        workerSpawnLockAcquisition = await acquireWorkerSpawnLock(args.sessionRoot);
+    }
+    catch (err) {
+        if (err instanceof WorkerSpawnLockContendedError) {
             try {
-                return getHeadSha(runtime.sessionWorkingDir);
+                writeActivityEntry(statePath, {
+                    event: 'worker_spawn_lock_contended',
+                    ts: new Date().toISOString(),
+                    ticket_id: args.ticketId,
+                    incumbent_pid: err.incumbentPid,
+                    waited_ms: err.waitedMs,
+                });
             }
             catch {
-                return null;
+                /* best-effort telemetry */
             }
-        })(),
-    });
+            console.log(`WORKER_SPAWN_CONTENDED: ${err.incumbentPid ?? 'unknown'} ${args.ticketId}`);
+            process.exit(2);
+        }
+        throw err;
+    }
+    const sessionLog = fs.createWriteStream(args.sessionLogPath, { flags: 'w' });
+    try {
+        await runWorkerProcess({
+            args, prompt, ticketPath: args.ticketPath, ticketId: args.ticketId, sessionRoot: args.sessionRoot, sessionLog,
+            sessionLogPath: args.sessionLogPath, sessionWorkingDir: runtime.sessionWorkingDir,
+            timeoutStatePath: runtime.timeoutStatePath, workerStatePath: runtime.workerStatePath,
+            effectiveTimeoutMs: effectiveTimeout * 1000, mutableState: { finalized: false, timedOut: false },
+            model, effort: runtime.sessionEffort, hermesOptions: readHermesWorkerOptions(runtime.state),
+            preWorkerHead: (() => {
+                try {
+                    return getHeadSha(runtime.sessionWorkingDir);
+                }
+                catch {
+                    return null;
+                }
+            })(),
+        });
+    }
+    finally {
+        releaseWorkerSpawnLock(workerSpawnLockAcquisition);
+    }
 }
 if (process.argv[1] && path.basename(process.argv[1]) === 'spawn-morty.js') {
     main().catch((err) => {

@@ -240,6 +240,7 @@ export const VALID_ACTIVITY_EVENTS = [
     'worker_spawn_backend_resolved',
     'worker_spawn_backend_override',
     'worker_spawn_backend_mismatch',
+    'worker_spawn_lock_contended',
     'subtool_backend_override',
     'pipeline_auto_resumed',
     'smoke_gate_bypassed',
