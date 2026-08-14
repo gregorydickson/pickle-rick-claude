@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
-import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
+import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
 import { PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive } from '../services/state-manager.js';
@@ -4314,9 +4314,12 @@ export const WORKER_GATE_TARGET_REPO_COMPUTED_VIA = 'target_repo_gate';
  */
 export function emitWorkerGateNotRunResidual(statePath, ticketId, detail) {
     try {
-        writeActivityEntry(statePath, {
+        const ts = new Date();
+        const activityDir = path.join(getDataRoot(), 'activity');
+        fs.mkdirSync(activityDir, { recursive: true });
+        const event = {
             event: 'gate_skipped',
-            ts: new Date().toISOString(),
+            ts: ts.toISOString(),
             ticket_id: ticketId,
             gate_payload: {
                 source: 'worker_gate',
@@ -4325,7 +4328,8 @@ export function emitWorkerGateNotRunResidual(statePath, ticketId, detail) {
                 computed_via: detail.computedVia,
                 site: detail.site,
             },
-        });
+        };
+        fs.appendFileSync(path.join(activityDir, `${formatLocalDateKey(ts)}.jsonl`), `${JSON.stringify(event)}\n`, { mode: 0o600 });
     }
     catch { /* best-effort — a residual must never block the action it annotates */ }
 }
