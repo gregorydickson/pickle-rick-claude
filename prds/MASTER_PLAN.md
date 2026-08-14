@@ -83,10 +83,25 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > PRD `e179db37`, tests-only, with a mutation AC (assertions must go RED when the producer's emission is
 > removed) so a migration cannot become a rubber stamp.
 >
-> **▶ IN FLIGHT — session `2026-08-14-d9f472a4`, tmux `pickle-d9f472a4`, 1 ticket `4f831a16`.** Diff is
-> the 3 test files, **zero under `extension/src/`** (AC-6 holding). AC-1 is verified by an OPERATOR-RUN
-> clean-tier measurement after it lands, never by the bundle's own gate verdict — that is the `c916b3da`
-> lesson.
+> **✅ HEAD IS GREEN AGAIN — `390049c8`, recovered by operator measurement out of a FAILED run.** Session
+> `2026-08-14-d9f472a4` terminated `recovery_exhausted` after 101m/3 iterations with HEAD unmoved, yet the
+> worker's diff on disk was complete and correct: four files, all `extension/tests/`, one shared helper
+> `extension/tests/__helpers__/activity-sink.js` with 3 callers, all 5 residual reads migrated,
+> `readActivity` deleted, the `state.activity`-emptiness assertion kept. Its gate reported `__timeout__`
+> at 1800000 ms — the concurrency symptom, not a test failure. **Operator-run clean-tier measurement of
+> the same tree: 7616 tests, 504 suites, fail 0, cancelled 0, skipped 2, todo 1, 736520 ms.** Count and
+> wall clock both on baseline, no shrink. That is the `c916b3da` lesson paying for itself: the bundle's
+> own verdict said red, the tree was green, and only the operator measurement could tell them apart.
+>
+> **🐞 NEW P1 from that run's terminal path — `BUG-2026-08-14-salvage-reset-desync-empty-roster-terminal.md`.**
+> `mux-runner.log` logged `[salvage] 4f831a16: failing -> archived diff + reset Todo`, but the ticket's
+> frontmatter still reads `status: "In Progress"` — the announced write never landed. Iteration 3 then
+> declared `empty roster (all-Failed, no runnable ticket)` while holding one runnable ticket with 28 of 30
+> per-ticket iterations unspent, and terminated. Two independent root causes: the salvage reset is
+> announced rather than confirmed, and the roster-emptiness predicate mis-classifies `In Progress`. A
+> local gate refusal escalated into a terminal disposition — the exact shape the no-stop-gates rule
+> forbids. Queue this AFTER the worker lock; it is terminal-reducing only (AC-3 forbids a new
+> `exit_reason`).
 >
 > **Sequence: green tier → worker lock (`9a7cbdaf`) onto ground that is actually solid.** The ordering
 > matters more than usual: the worker-lock bundle is what makes every SUBSEQUENT bundle's gate mean
