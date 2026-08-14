@@ -3,9 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 
-const __filename = fileURLToPath(import.meta.url);
 const GIT_TIMEOUT_MS = 5000;
 
 export function resolveDataRoot() {
