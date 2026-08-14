@@ -11,6 +11,7 @@ import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
 import { buildManagerInvocation, resolveBackend, resolveBackendFromStateFileWithSource, backendEnvOverrides, sessionStampEnv } from '../services/backend-spawn.js';
 import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
+import { readTicketWorkerGateTestsVerdict } from './setup.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream, CODEX_DELIMITER_RE } from '../services/classifier-utils.js';
 import { emitCrossTicketRegressionLinearComment } from '../lib/linear-comment.js';
@@ -4383,11 +4384,16 @@ export function advisoryWorkerGateResidualDetail(verdict, site) {
     };
 }
 export function guardCompletionCommitBeforeDone(args) {
+    // WS-A (2e77f26e): one predicate for the test dimension, consumed by BOTH
+    // Done-flip authorities (this guard and setup.ts's resumeReattachDoneRefusal).
+    // Recorded on the result for callers; a red verdict never flips `ok` to
+    // false here — see the root CLAUDE.md no-stopping-gates rule.
+    const testsVerdict = readTicketWorkerGateTestsVerdict(args.sessionDir, args.ticketId);
     // R-WSRC-4 parity: PICKLE_TEST_MODE=1 bypasses for sandboxed test fixtures
     // whose workingDir is a synthetic temp dir without a real git repo.
     // Production sessions never set this env var; production guard is intact.
     if (process.env.PICKLE_TEST_MODE === '1') {
-        return { ok: true, sha: 'pickle-test-mode-bypass' };
+        return { ok: true, sha: 'pickle-test-mode-bypass', testsVerdict };
     }
     // B-1SEAM WS-1: the ladder (readEvidence → R-CCGR backoff re-read → R-CCEM
     // announcement recovery → R-WUWC persistEvidence promote-once → R-CWGE
@@ -4424,7 +4430,7 @@ export function guardCompletionCommitBeforeDone(args) {
         // B-GTRUTH WS-A1 shape mapping ONLY: a declared zero-diff accept has no SHA, so
         // it maps to `sha: null`. No decision is taken here — the arm and all three of
         // its conditions live in evaluateCompletionEvidence (AC-GTRUTH-A1-5).
-        return { ok: true, sha: decision.sha ?? null };
+        return { ok: true, sha: decision.sha ?? null, testsVerdict };
     }
     if (decision.reason === 'worker_gate_red' || decision.reason === 'worker_gate_unavailable') {
         const gate = decision.gate ?? { verdict: 'absent', computedVia: 'unavailable' };
@@ -4444,6 +4450,7 @@ export function guardCompletionCommitBeforeDone(args) {
             source: 'explicit-reachable',
             reason: `ticket ${args.ticketId} cannot flip Done: worker_gate_verdict='${gate.verdict}' (computed_via=${gate.computedVia}). ` +
                 `Done requires a GREEN worker-gate verdict (eslint+tsc); a red or absent/unverifiable verdict is fail-closed (R-CWGE).`,
+            testsVerdict,
         };
     }
     return {
@@ -4451,6 +4458,7 @@ export function guardCompletionCommitBeforeDone(args) {
         source: 'absent',
         reason: `ticket ${args.ticketId} cannot flip Done: readEvidence().kind === 'absent' (expected 'committed'); ` +
             `worker did not produce an attributable git commit. Edit ticket frontmatter to include completion_commit: <sha>.`,
+        testsVerdict,
     };
 }
 export function hasSubstantiveManagerHandoff(content) {

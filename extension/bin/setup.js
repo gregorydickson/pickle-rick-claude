@@ -1119,13 +1119,18 @@ function emitResumeEpochReset(fullSessionPath, originalEpoch, state) {
  * real (non-recomputed) run, so a green persisted verdict alone does not
  * prove the tier's tests passed. Absent (older tickets / field never
  * written) reads as `null` — fail-open on this dimension only, unchanged
- * from pre-WS-3 behavior.
+ * from pre-WS-3 behavior. `not_run` (the gate never executed the test tier
+ * — narrow tickets, small ticket tier, or a failed lint/tsc pre-check) is a
+ * distinct value from both `red` and `null`; it must never be treated as a
+ * failure. WS-A (2e77f26e): exported so `mux-runner.ts`'s
+ * `guardCompletionCommitBeforeDone` can consult the same field through this
+ * one reader instead of carrying no test-dimension awareness at all.
  */
-function readTicketWorkerGateTestsVerdict(sessionRoot, ticketId) {
+export function readTicketWorkerGateTestsVerdict(sessionRoot, ticketId) {
     try {
         const raw = fs.readFileSync(path.join(sessionRoot, ticketId, `rick_ticket_${ticketId}.md`), 'utf-8');
         const v = (readFrontmatterField(raw, 'worker_gate_tests_verdict') ?? '').trim();
-        return v === 'green' || v === 'red' ? v : null;
+        return v === 'green' || v === 'red' || v === 'not_run' ? v : null;
     }
     catch {
         return null;
