@@ -71,6 +71,31 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > `mux-runner.js` has **zero** occurrences of `worker_gate_tests_verdict`. Its prerequisite (fast-tier caps)
 > is satisfied — validated under load. Launch the moment the tier reads 0 fail / 0 cancelled.
 >
+> **✅ BUNDLE COMPLETE 2026-08-13 17:32 — `2026-08-13-e4ab0833`, 4/4 Done, `EPIC_COMPLETED/all-tickets-done`,
+> `exit_reason: null`, iteration 5.** Every ticket carries a real commit: `c5b81af7`→`14d0f54e`,
+> `4f860deb`→`980d125f`, `b68b273b`→`398d0e86`, `3dc65ea1`→`d0099e58`. No wedge, no salvage, clean tree.
+>
+> **✅ GREEN-TREE PRECONDITION MET 2026-08-14 — 7600 tests, 7597 pass, fail 0, CANCELLED 0, 2 skipped,
+> 1 todo, `EXIT=0`.** Full tier, no `--grep`, `PICKLE_TEST_RUNNER_TIMEOUT_MS=7200000`, `env -u
+> PICKLE_TICKET_ID -u GIT_CONFIG_*`. This is the launch ground for `c916b3da`.
+>
+> **🚨 THE 600s WORKER GATE CAP IS ARITHMETIC, NOT FLAKE — the tier takes 712s.** All three
+> `worker_gate_failed __timeout__` events in `e4ab0833` (`c5b81af7` ×2, `4f860deb` ×1) were the gate cap
+> sitting *below* the suite's real runtime; `failed_flip_suppressed` absorbed them and the run continued
+> (B-NOSTOP-GATES working), but ~36 min was burned and `c5b81af7` consumed its full 2/2 suppression budget.
+> The gate could never have passed. `c916b3da` launches with `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS=1800000`
+> (env-only per B-SSAT — do NOT re-add the settings key).
+>
+> **▶ NEXT: SHARD THE FAST TIER (wall-clock only).** Profile at c=8 on a 24-core box: 712s wall, cost is a
+> heavy tail of subprocess suites — `W4a choke-point matrix` 128.7s, `relational oracle` 104.8s,
+> `command_template forward slash` 96.3s, `node-modules-reuse` 94.0s, `computeOneHop` 82.3s. **128.7s is the
+> hard floor** — no shard goes below the slowest unit. Raising `--test-concurrency` is the WRONG lever: c=8
+> already yields timeout-shaped flakes and c=4 is what reads authoritative, so more concurrency buys
+> wall-clock by degrading the signal. Reuse, do not add: `test-runner.js` already partitions via
+> `--manifest <path> --manifest-mode include|exclude` (how `test:integration` splits parallel from serial),
+> so N shards = N generated manifests + N processes, not a new runner subsystem. Scope is wall clock only —
+> the worker gate keeps running the FULL tier, no scope-selected shard, no missed-breakage risk.
+>
 > **▶ FIX BUNDLE LAUNCHED 10:13 — session `2026-08-13-e4ab0833`, tmux `pickle-e4ab0833`, 4 tickets.**
 > PRD `730effe1`. `c5b81af7` restore reachability in the 2 fixtures · `4f860deb` survey all 45
 > `start_commit` fixtures · `b68b273b` test-quality harden · `3dc65ea1` cross-ref. Two hardening tickets
