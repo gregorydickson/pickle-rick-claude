@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { findResiduals } from './__helpers__/activity-sink.js';
 
 const DATA_ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'offrepo-data-')));
 process.env.PICKLE_DATA_ROOT = DATA_ROOT;
@@ -87,16 +88,6 @@ function readTicketStatus(sessionDir, ticketId) {
   const raw = fs.readFileSync(path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`), 'utf8');
   const match = raw.match(/^status:\s*"?([^"\n]+?)"?\s*$/m);
   return match ? match[1] : null;
-}
-
-function readActivity(statePath) {
-  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-  return Array.isArray(state.activity) ? state.activity : [];
-}
-
-function notRunResiduals(statePath) {
-  return readActivity(statePath).filter(entry =>
-    entry.event === 'gate_skipped' && entry.gate_payload?.reason === WORKER_GATE_NOT_RUN_REASON);
 }
 
 /** A shim that answers every `npx`/`npm` invocation with the given exit code, instantly. */
@@ -275,7 +266,11 @@ const SITES = [
         disposition: authorisedRungOne ? 'armed-gate-authorised-commit-and-flip-done' : 'armed-gate-declined',
         passDisposition: 'armed-gate-authorised-commit-and-flip-done',
         extra: () => {
-          assert.equal(notRunResiduals(statePath).length, 1, 'the unrun armed gate records a residual');
+          assert.equal(
+            findResiduals({ dataRoot: DATA_ROOT, ticketId, reason: WORKER_GATE_NOT_RUN_REASON }).length,
+            1,
+            'the unrun armed gate records a residual',
+          );
           assert.notEqual(outcome.kind, 'advanced', 'an unrun gate must not advance the ladder');
           assert.equal(
             readTicketStatus(sessionDir, ticketId),
@@ -346,7 +341,7 @@ test('AC-3: a not_run verdict flips Done and emits a residual naming the ticket 
     assert.equal(guard.ok, true, 'a not_run verdict must not refuse the Done flip');
     assert.equal(guard.sha, real, 'the committed sha is still attributed');
 
-    const residuals = notRunResiduals(statePath);
+    const residuals = findResiduals({ dataRoot: DATA_ROOT, ticketId, reason: WORKER_GATE_NOT_RUN_REASON });
     assert.equal(residuals.length, 1, 'exactly one residual records the unverified state');
     assert.equal(residuals[0].ticket_id, ticketId, 'the residual names the ticket');
     assert.equal(residuals[0].gate_payload.verdict, 'not_run');

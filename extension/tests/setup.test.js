@@ -10,6 +10,7 @@ import { parseArguments, initializeNewSession, evaluateLaunchSizing, countManife
 import { runRecover } from '../bin/pickle-recover.js';
 import { StateManager } from '../services/state-manager.js';
 import { compatibleCodexVersion, codexVersionLine } from './__helpers__/codex-shim.js';
+import { findResiduals } from './__helpers__/activity-sink.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SETUP = path.resolve(__dirname, '../bin/setup.js');
@@ -1844,13 +1845,9 @@ test('setup --resume: a REAL orphaned commit is still ff-reattached and flipped 
         // B-OFFREPO (AC-OFFREPO-1): this fixture repo has no `extension/`, so the worker gate
         // reports `not_run`. The flip proceeds — a gate that could not run must never stop the
         // pipeline — but the unverified state is recorded rather than laundered into a green.
-        const activity = JSON.parse(fs.readFileSync(path.join(sessionPath, 'state.json'), 'utf8')).activity || [];
-        const residual = activity.find(
-            (e) => e.event === 'gate_skipped' && e.gate_payload?.reason === 'worker_gate_not_run',
-        );
-        assert.ok(residual, 'a not_run Done flip must leave a residual naming the reason');
-        assert.equal(residual.ticket_id, ticketId, 'the residual names the ticket');
-        assert.equal(residual.gate_payload.site, 'tryResumeOrphanReattach', 'the residual names the site');
+        const residuals = findResiduals({ dataRoot, ticketId, reason: 'worker_gate_not_run' });
+        assert.equal(residuals.length, 1, 'a not_run Done flip must leave exactly one residual naming the reason');
+        assert.equal(residuals[0].gate_payload.site, 'tryResumeOrphanReattach', 'the residual names the site');
     });
 });
 
@@ -1929,18 +1926,15 @@ test('setup --resume: a TARGET-repo RED is advisory — reattached, flipped Done
 
         // The red is NOT laundered into a pass: it is recorded, and recorded as a red that RAN
         // rather than as `not_run`, which is a different fact.
-        const activity = JSON.parse(fs.readFileSync(path.join(sessionPath, 'state.json'), 'utf8')).activity || [];
-        const residual = activity.find(
-            (e) => e.event === 'gate_skipped' && e.gate_payload?.site === 'tryResumeOrphanReattach',
-        );
-        assert.ok(residual, 'an advisory Done flip must leave a residual');
-        assert.equal(residual.gate_payload.verdict, 'red', 'the residual reports the real verdict');
+        const residuals = findResiduals({ dataRoot, ticketId, site: 'tryResumeOrphanReattach' });
+        assert.equal(residuals.length, 1, 'an advisory Done flip must leave exactly one residual');
+        assert.equal(residuals[0].gate_payload.verdict, 'red', 'the residual reports the real verdict');
         assert.equal(
-            residual.gate_payload.reason,
+            residuals[0].gate_payload.reason,
             'worker_gate_target_repo_red',
             'a red that RAN and FAILED must not be filed as worker_gate_not_run',
         );
-        assert.equal(residual.gate_payload.computed_via, 'target_repo_gate', 'the residual names the authoring gate');
+        assert.equal(residuals[0].gate_payload.computed_via, 'target_repo_gate', 'the residual names the authoring gate');
     });
 });
 

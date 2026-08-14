@@ -12,7 +12,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { emitWorkerGateNotRunResidual } from '../bin/mux-runner.js';
-import { formatLocalDateKey } from '../services/pickle-utils.js';
+import { findResiduals } from './__helpers__/activity-sink.js';
 
 function tmpDataRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-advisory-residual-'));
@@ -34,17 +34,10 @@ test('emitWorkerGateNotRunResidual writes to activity/*.jsonl, not state.json.ac
       reason: 'worker_gate_not_run',
     });
 
-    const todayKey = formatLocalDateKey(new Date());
-    const jsonlPath = path.join(dataRoot, 'activity', `${todayKey}.jsonl`);
-    assert.ok(fs.existsSync(jsonlPath), `expected ${jsonlPath} to exist`);
-
-    const lines = fs.readFileSync(jsonlPath, 'utf-8').split('\n').filter(Boolean);
-    const events = lines.map((l) => JSON.parse(l));
-    const match = events.find((e) => e.event === 'gate_skipped' && e.ticket_id === 'ticket-abc123');
-    assert.ok(match, 'expected a gate_skipped event for ticket-abc123 in the jsonl sink');
-    assert.equal(match.gate_payload.reason, 'worker_gate_not_run');
-    assert.equal(match.gate_payload.source, 'worker_gate');
-    assert.equal(match.gate_payload.computed_via, 'guardCompletionCommitBeforeDone');
+    const residuals = findResiduals({ dataRoot, ticketId: 'ticket-abc123', reason: 'worker_gate_not_run' });
+    assert.equal(residuals.length, 1, 'expected exactly one gate_skipped event for ticket-abc123 in the jsonl sink');
+    assert.equal(residuals[0].gate_payload.source, 'worker_gate');
+    assert.equal(residuals[0].gate_payload.computed_via, 'guardCompletionCommitBeforeDone');
 
     const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
     assert.deepEqual(state.activity, [], 'state.json.activity must NOT receive the residual');
