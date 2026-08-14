@@ -30,6 +30,80 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+> ### ▶▶ RESUME HERE — 2026-08-14 (supersedes the 2026-08-12 block below)
+>
+> **The loop closed on itself. `c916b3da` — the bundle that makes the success verdict stop being blind
+> to tests — was itself shipped under a verdict that did not exist.** All three of its worker gates
+> reported `__timeout__` and all three were absorbed by `failed_flip_suppressed`, so the tier never
+> reached a verdict on any of its tickets. An incomplete consumer migration walked straight through and
+> HEAD went red. This is the strongest available argument for the worker-lock bundle: **until one
+> worker runs at a time, no bundle's gate result means anything.**
+>
+> **✅ `c916b3da` SHIPPED — session `2026-08-13-1a29993f`, 4/4 Done, `EPIC_COMPLETED/all-tickets-done`
+> 02:36:47Z, iteration 6, `exit_reason: completed`.** Commits: `2cbc11b0` unify the test-dimension
+> reader for both Done-flip authorities · `5b43f4f1` withhold the success verdict on Done-over-red-tests
+> and park `done_without_commit_evidence` · `40e07bde` route the advisory worker-gate residual to the
+> jsonl sink · `c4f71b8d`+`4d865402` corpus census script. `5b43f4f1` also absorbed queue item 2
+> (`done_without_commit_evidence`) as a side effect of touching the same seam.
+>
+> **🚨 ROOT CAUSE FOUND — concurrent workers per session. This is the gate-timeout root, and it
+> subsumes four previously-separate incident classes.** A worker whose Bash call is cut at the manager's
+> 600s ceiling **keeps running**; the manager follows its documented instruction and advances; two
+> `spawn-morty` processes are now live in one session, each running a full `test:fast` at c=8. Nothing
+> prevents it — `grep "withRetryLock\|acquireLockFile\|withLock\|lockfile" extension/src/bin/spawn-morty.ts`
+> returns **0**. One-worker-per-session is prose in `_pickle-manager-prompt.md:155`, not an invariant.
+> Timeline from `1a29993f`: `2e77f26e` spawned 01:16:04, `f8559470` spawned 01:26:39 (the 600s ceiling,
+> to the second), `2e77f26e`'s gate failed 01:52:45 — 26 minutes AFTER its successor started. Subsumes:
+> worker-gate timeouts, suppression budget spent on arithmetic, contention silent death, and the
+> dual-spawn brittleness the B-WSPU collapse could not reach (it lives in process LIFETIME, not the
+> spawn path). PRD `9a7cbdaf`: session-scoped lock reusing `acquireLockFile`/`withStealRight`/
+> `isDeadPidPayload`, contention NON-FATAL (never kill the incumbent — it may hold uncommitted verified
+> work), proof-of-death-only reclaim (a worker legitimately holds up to `worker_timeout_seconds: 3600`).
+>
+> **📏 Four measurements, and they rule out the two obvious explanations.**
+>
+> | condition | wall clock | verdict |
+> |---|---|---|
+> | quiet box, clean env, `d0099e58` | 712 s | fail 0, cancelled 0 |
+> | quiet box, worker-contaminated env | 747 s | fail 8 |
+> | quiet box, clean env, `9a7cbdaf` | 760 s | **fail 4** |
+> | under the worker gate, overlapping workers | > 1800 s | `__timeout__` |
+>
+> Rows 1-2 are within 5%, so **env contamination is NOT the slowdown**. Raising the cap 600000 →
+> 1800000 ms did NOT help — a bigger bucket under a tap that scales with worker count. The override
+> DID take effect (`timed out after 1800000ms` on all three tickets); it simply cannot win.
+>
+> **🚨 HEAD IS RED — 4 clean-env failures, and they are `40e07bde`'s stranded consumers.** `119acf6a`
+> moved the advisory residual to the jsonl sink and shipped `advisory-residual-sink.test.js` proving the
+> new behavior, but never updated the four pre-existing tests reading the OLD sink
+> (`setup.test.js:1932`, `worker-gate-not-run-invariant.test.js:94`). Repro: `an advisory Done flip must
+> leave a residual — actual: undefined, expected: true`. **The re-route is CORRECT** — `/pickle-metrics`
+> reads `getDataRoot()/activity/*.jsonl` and the W5c scanner ignores the state.json sink, already pinned
+> by the `pipeline-runner.ts` `gate_skipped` trap door. So this is consumer migration, NOT a revert.
+> PRD `e179db37`, tests-only, with a mutation AC (assertions must go RED when the producer's emission is
+> removed) so a migration cannot become a rubber stamp.
+>
+> **▶ IN FLIGHT — session `2026-08-14-d9f472a4`, tmux `pickle-d9f472a4`, 1 ticket `4f831a16`.** Diff is
+> the 3 test files, **zero under `extension/src/`** (AC-6 holding). AC-1 is verified by an OPERATOR-RUN
+> clean-tier measurement after it lands, never by the bundle's own gate verdict — that is the `c916b3da`
+> lesson.
+>
+> **Sequence: green tier → worker lock (`9a7cbdaf`) onto ground that is actually solid.** The ordering
+> matters more than usual: the worker-lock bundle is what makes every SUBSEQUENT bundle's gate mean
+> something.
+>
+> **Separate ticket, do NOT bundle:** the worker gate inherits the worker's env (`runCommand`,
+> `spawn-morty.ts:1315`, spawns with no `env` option), including the `core.hooksPath` trailer stamp and
+> `PICKLE_TICKET_ID`. Under it, 8 tests fail that are green clean — all read `GIT_CONFIG_*` from the
+> ambient env and `backendEnvOverrides` composes `n+1` off the inherited count. Real, but it produces
+> FAILURES not timeouts, so it is not this root cause.
+>
+> **🗑️ RETIRED — the fast-tier sharding PRD.** Its premise (712s vs a 600s cap is arithmetic) was a
+> symptom of the concurrency root. Marked SUPERSEDED in place; the measured profile is still good data,
+> the thesis is not. Recorded there: on a single box, sharding IS a concurrency increase (N shards × c=8
+> = 8N processes), and a heavy+light split running concurrently would make overlapping workers strictly
+> worse.
+>
 > ### ▶▶ RESUME HERE — 2026-08-12 (supersedes the 2026-07-27 block below)
 >
 > **Reliability-only session, operator-directed.** Four read-only audits ran against the corpus + HEAD.
