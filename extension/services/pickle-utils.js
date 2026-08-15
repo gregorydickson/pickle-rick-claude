@@ -133,6 +133,36 @@ export function wrapText(text, width) {
 export const DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS = 600_000;
 export const WORKER_TEST_GATE_TIMEOUT_FLOOR_MS = 60_000;
 export const WORKER_TEST_GATE_TIMEOUT_ENV_VAR = 'PICKLE_WORKER_TEST_FAST_TIMEOUT_MS';
+// R-WGTORPH: the fixed keys a test-gate spawn must never inherit from the launching
+// process — they make the gate measure the environment instead of the tree. Indexed
+// `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` pairs (for whatever `n` the parent has
+// composed) are scrubbed separately in `scrubGateEnv` since their count is dynamic.
+// The only literal enumerating these keys — the trailer compose site
+// (`backend-spawn.ts`) derives its key names from this same array so the compose list
+// and the scrub list cannot drift apart.
+export const PICKLE_GATE_SCRUBBED_ENV_KEYS = [
+    WORKER_TEST_GATE_TIMEOUT_ENV_VAR,
+    'PICKLE_TICKET_ID',
+    'GIT_CONFIG_GLOBAL',
+    'GIT_CONFIG_SYSTEM',
+    'GIT_CONFIG_NOSYSTEM',
+    'GIT_CONFIG_COUNT',
+];
+/**
+ * Returns a shallow copy of `env` with every `PICKLE_GATE_SCRUBBED_ENV_KEYS` entry
+ * (plus every indexed `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` present) deleted —
+ * absent, not present-with-`undefined`. Never throws.
+ */
+export function scrubGateEnv(env = process.env) {
+    const result = { ...env };
+    for (const key of PICKLE_GATE_SCRUBBED_ENV_KEYS)
+        delete result[key];
+    for (const key of Object.keys(result)) {
+        if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key))
+            delete result[key];
+    }
+    return result;
+}
 export function printMinimalPanel(title, fields, colorName = 'GREEN', icon = '🥒') {
     const width = getWidth();
     const c = Style[colorName] || Style.GREEN;

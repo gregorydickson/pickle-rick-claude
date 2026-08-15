@@ -7,6 +7,10 @@ import { Backend, BACKENDS, State, type BackendResolutionSource, type WorkerBack
 import { StateManager } from './state-manager.js';
 import { logActivity } from './activity-logger.js';
 import { materializeTrailerHooks } from './git-trailer-hooks.js';
+import { PICKLE_GATE_SCRUBBED_ENV_KEYS } from './pickle-utils.js';
+
+const GIT_CONFIG_COUNT_KEY = PICKLE_GATE_SCRUBBED_ENV_KEYS.find(k => k === 'GIT_CONFIG_COUNT')!;
+const PICKLE_TICKET_ID_KEY = PICKLE_GATE_SCRUBBED_ENV_KEYS.find(k => k === 'PICKLE_TICKET_ID')!;
 
 /**
  * R-WSRC-4 — Test-harness sandbox assertion.
@@ -820,12 +824,12 @@ function buildTrailerHooksEnvFragment(opts: TrailerHooksSpawnOpts): Record<strin
   }
 
   const inheritedEnv = opts.env ?? process.env;
-  const n = parseNonNegativeInt(inheritedEnv.GIT_CONFIG_COUNT) ?? 0;
+  const n = parseNonNegativeInt(inheritedEnv[GIT_CONFIG_COUNT_KEY]) ?? 0;
   return {
-    GIT_CONFIG_COUNT: String(n + 1),
+    [GIT_CONFIG_COUNT_KEY]: String(n + 1),
     [`GIT_CONFIG_KEY_${n}`]: 'core.hooksPath',
     [`GIT_CONFIG_VALUE_${n}`]: result.managedDir,
-    PICKLE_TICKET_ID: opts.ticketId,
+    [PICKLE_TICKET_ID_KEY]: opts.ticketId,
   };
 }
 

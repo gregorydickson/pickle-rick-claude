@@ -13,6 +13,7 @@ import {
   parseTicketFrontmatter,
   getTicketTierBudgetWithOverrides,
   resolveWorkerTestGateTimeoutMs,
+  scrubGateEnv,
   classifyTicketTier,
   VALID_TICKET_COMPLEXITY_TIERS,
   extractFrontmatter,
@@ -1326,6 +1327,7 @@ async function runCommand(cmd: string, args: string[], cwd: string, opts: { time
       cwd,
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: scrubGateEnv(),
     });
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
