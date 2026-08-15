@@ -119,7 +119,7 @@ function drive(runTestFast, opts = {}) {
   makeTicket(sessionDir, 'bbb', opts.secondStatus ?? 'Done');
   const logs = [];
   const fired = applyAllTicketsDoneCompletion(
-    statePath, sessionDir, 1, m => logs.push(m), repo, { runTestFast },
+    statePath, sessionDir, 1, m => logs.push(m), repo, { runTestFast, ...opts.deps },
   );
   return { sessionDir, repo, statePath, logs, fired, cleanup };
 }
@@ -161,22 +161,16 @@ test('recorded verdict timestamp is not older than the final commit (AC-1)', () 
 });
 
 test('a verdict stamped BEFORE the final commit is classified absent, never green', () => {
-  const sessionDir = makeTmp();
   const repo = makeWorkingRepo();
+  const staleTs = finalCommitTsMs(repo) - 60000;
+  const ctx = drive(stubRunner(GREEN), { workingDir: repo, deps: { now: () => staleTs } });
   try {
-    const statePath = makeSession(sessionDir, repo);
-    makeTicket(sessionDir, 'aaa', 'Done');
-    const commitTs = finalCommitTsMs(repo);
-    const fired = applyAllTicketsDoneCompletion(
-      statePath, sessionDir, 1, () => {}, repo,
-      { runTestFast: stubRunner(GREEN), now: () => commitTs - 60000 },
-    );
-    assert.equal(fired, true);
-    const state = readState(statePath);
+    assert.equal(ctx.fired, true);
+    const state = readState(ctx.statePath);
     assert.equal(state.post_final_verdict.state, 'absent', 'stale measurement must not read green');
     assert.equal(state.post_final_verdict.degraded, true);
   } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
+    ctx.cleanup();
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
@@ -224,28 +218,21 @@ test('a throwing measurement is classified absent and does NOT abort the run (AC
 test('a throw OUTSIDE the measurement\'s own try still cannot break the completion synthesis', () => {
   // `now` is read before the inner try/catch, so a throwing clock exercises the seam-level wrap
   // in applyAllTicketsDoneCompletion rather than the one inside runPostFinalMeasurement.
-  const sessionDir = makeTmp('post-final-seam-');
-  const repo = makeWorkingRepo();
+  const ctx = drive(stubRunner(GREEN), {
+    deps: { now: () => { throw new Error('clock exploded'); } },
+  });
   try {
-    const statePath = makeSession(sessionDir, repo);
-    makeTicket(sessionDir, 'aaa', 'Done');
-    const logs = [];
-    const fired = applyAllTicketsDoneCompletion(
-      statePath, sessionDir, 1, m => logs.push(m), repo,
-      { runTestFast: stubRunner(GREEN), now: () => { throw new Error('clock exploded'); } },
-    );
-    assert.equal(fired, true, 'the completion synthesis must survive any measurement throw');
-    const state = readState(statePath);
+    assert.equal(ctx.fired, true, 'the completion synthesis must survive any measurement throw');
+    const state = readState(ctx.statePath);
     assert.equal(state.exit_reason, 'completed');
     assert.equal(state.step, 'completed');
     assert.ok(state.completion_promise, 'the promise is still synthesized');
     assert.ok(
-      logs.some(l => l.includes('post-final tier measurement failed at the completion seam')),
+      ctx.logs.some(l => l.includes('post-final tier measurement failed at the completion seam')),
       'the seam-level catch must log the swallowed failure',
     );
   } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-    fs.rmSync(repo, { recursive: true, force: true });
+    ctx.cleanup();
   }
 });
 
