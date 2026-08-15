@@ -858,7 +858,9 @@ export function runPostFinalMeasurement(
   // `pipeline-runner.ts:readDegradedPostFinalVerdict` reads a non-degraded verdict as fine — so a
   // red tier under an unreadable working dir reported success. `runManagerTokenPostFinalMeasurement`
   // is called with an explicit `|| ''` fallback, so this is a live input, not a phantom.
-  let workingDirKnown = false;
+  // No initializers: both the try and the catch assign, so an initializer here would be dead
+  // (`no-useless-assignment`) AND would quietly become the value a future early-return reads.
+  let workingDirKnown: boolean;
   let applicable = false;
   let gate: BetweenTicketGateResult | null = null;
   let verdictTs: number | null = null;
@@ -903,6 +905,13 @@ export function runPostFinalMeasurement(
     }
   } catch (err) {
     gate = null;
+    // Clearing this is what makes "any throw lands on `absent`" STRUCTURAL rather than a property
+    // of which statement happened to throw. A throw between `workingDirKnown = true` and the
+    // `applicable` assignment would otherwise leave `true`/`false` — and `applicable ||
+    // !workingDirKnown` reads that pair as `not_applicable`, the non-degraded arm, which is the
+    // exact laundering this ticket closed one line above. A throw means we never established the
+    // facts, so the honest state is the unknown one.
+    workingDirKnown = false;
     input.log(`post-final tier measurement threw (classified absent): ${safeErrorMessage(err)}`);
   }
 

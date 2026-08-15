@@ -364,6 +364,41 @@ test('CONTROL: a real dir with no extension/ stays not_applicable, non-degraded 
   }
 });
 
+test('a throw BETWEEN the two applicability facts still lands on absent (f7f188f4)', () => {
+  // The catch must guarantee `absent` structurally, not as a side effect of WHICH statement threw.
+  // `workingDirKnown` is assigned before `applicable`, so a throw in the window between them used
+  // to leave the pair `true`/`false` — and `applicable || !workingDirKnown` reads that exact pair
+  // as `not_applicable`, the non-degraded arm. Same laundering as the blank-dir case, one
+  // statement later.
+  //
+  // Driven with a workingDir whose `trim()` succeeds but which `path.join` then rejects. Contrived
+  // by construction — the point is that the invariant holds for ANY throw, which is not something
+  // a well-typed input can demonstrate.
+  const sessionDir = makeTmp('post-final-midthrow-');
+  const statePath = makeSession(sessionDir, 'x');
+  const runner = stubRunner(GREEN);
+  const logs = [];
+  try {
+    const verdict = runPostFinalMeasurement({
+      statePath,
+      workingDir: { trim: () => 'not-a-string-path' },
+      completedTicketId: 'aaa',
+      log: m => logs.push(m),
+      runTestFast: runner,
+    });
+    assert.equal(runner.calls.length, 0, 'no tier run when applicability never resolved');
+    const expected = { state: 'absent', degraded: true, dimensions: [] };
+    assert.deepEqual(verdict, expected, 'returned verdict');
+    assert.deepEqual(readState(statePath).post_final_verdict, expected, 'persisted verdict');
+    assert.ok(
+      logs.some(l => l.includes('post-final tier measurement threw (classified absent)')),
+      'the throw must be logged, not silently swallowed',
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('a blocked completion pays no tier run and records no verdict', () => {
   const runner = stubRunner(GREEN);
   const ctx = drive(runner, { secondStatus: 'Todo' });
