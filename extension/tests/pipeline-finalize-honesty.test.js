@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  POST_FINAL_DEGRADED_MARKER,
   __setSpawnRunnerForTests,
   buildPipelineCompletePanel,
   finalizePhaseSuccess,
@@ -24,7 +25,9 @@ function tmpDir() {
 }
 
 // A state.json shape StateManager.read() accepts (mirrors tests/pipeline-runner.test.js).
-function writeState(statePath, exitReason) {
+// `postFinalVerdict` is optional: omitted, the key is absent, which is what every session
+// predating ticket 4dd2d658 looks like on disk.
+function writeState(statePath, exitReason, postFinalVerdict) {
   fs.writeFileSync(statePath, JSON.stringify({
     active: false,
     working_dir: '/tmp',
@@ -42,6 +45,7 @@ function writeState(statePath, exitReason) {
     session_dir: path.dirname(statePath),
     tmux_mode: true,
     exit_reason: exitReason,
+    ...(postFinalVerdict === undefined ? {} : { post_final_verdict: postFinalVerdict }),
   }));
 }
 
@@ -355,5 +359,170 @@ describe('AC-NSG-12: completion panel honesty with parked tickets', () => {
       fs.rmSync(repo, { recursive: true, force: true });
       fs.rmSync(sessionDir, { recursive: true, force: true });
     }
+  });
+});
+
+// R-NOPOSTTIER (ticket fa3d0f5a): a degraded post-final-commit fast-tier verdict must withhold
+// the success verdict through the SAME `counters.nonConvergent` term the WS-B red-offender
+// branch already raises — no new gate, field, halt, or exit reason. Session
+// 2026-08-15-b88a6603 finished with `last_between_ticket_gate.ok: false` on disk AND an
+// unqualified success; ticket 4dd2d658 now produces a FRESH verdict, which would be ignored
+// exactly the same way without this.
+describe('R-NOPOSTTIER: a degraded post-final verdict withholds the success verdict', () => {
+  function runPickle(dir, postFinalVerdict) {
+    const { runtime, statePath, cancelMarker } = makeRuntime(dir);
+    writeState(statePath, 'completed', postFinalVerdict);
+    const logs = [];
+    runtime.log = (m) => logs.push(m);
+    const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, runtime.log);
+    return { outcome, counters, logs };
+  }
+
+  test('AC-2: a red verdict raises nonConvergent and names the degraded marker', () => {
+    const dir = tmpDir();
+    const { outcome, counters } = runPickle(dir, { state: 'red', degraded: true, dimensions: ['widget explodes'] });
+
+    assert.equal(counters.nonConvergent, 1, 'the existing withholding term must be raised');
+    assert.ok(
+      counters.phaseDispositions.pickle.startsWith(`${POST_FINAL_DEGRADED_MARKER}:`),
+      'the disposition must carry the degraded marker',
+    );
+    // AC-3: withholding the verdict is NOT failing the phase. The run still completes.
+    assert.equal(outcome.action, 'continue', 'the phase loop must not break');
+    assert.equal(counters.completed, 1, 'the phase still executed — this is a verdict, not a shortfall');
+    assert.equal(readStatus(dir).phase_dispositions.pickle, counters.phaseDispositions.pickle);
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  /**
+   * The AC-2 oracle. `classifyPostFinalVerdict` returns `dimensions: []` for a red gate whose
+   * `failures` array is empty, and the names it WOULD carry come from
+   * `parseBetweenTicketFastGateFailures`, whose fallback is a bare first-non-blank-line pick
+   * (R-GBANNER, out of scope). So nothing here may assert a specific failing-test string — the
+   * assertion is on the MARKER plus a non-empty attribution, and it must hold with `failures: []`.
+   */
+  test('AC-2 parser independence: degraded with dimensions: [] still withholds, and no test NAME is asserted', () => {
+    const dir = tmpDir();
+    const { counters } = runPickle(dir, { state: 'red', degraded: true, dimensions: [] });
+
+    assert.equal(counters.nonConvergent, 1, 'an empty dimension list must not launder a red verdict');
+    const disposition = counters.phaseDispositions.pickle;
+    assert.ok(disposition.startsWith(`${POST_FINAL_DEGRADED_MARKER}:`), 'marker must be present');
+    assert.ok(
+      disposition.slice(POST_FINAL_DEGRADED_MARKER.length + 1).length > 0,
+      'the marker must carry a non-empty attribution (the verdict state), not an empty suffix',
+    );
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  // The two remaining degraded states. `absent` is the one that matters most: an unmeasurable
+  // tier is not evidence of health, and classifying it green is the fake-green this closes.
+  for (const state of ['inconclusive', 'absent']) {
+    test(`AC-2: a ${state} verdict also withholds the success verdict`, () => {
+      const dir = tmpDir();
+      const { counters, outcome } = runPickle(dir, { state, degraded: true, dimensions: [] });
+      assert.equal(counters.nonConvergent, 1);
+      assert.equal(counters.phaseDispositions.pickle, `${POST_FINAL_DEGRADED_MARKER}:${state}`);
+      assert.equal(outcome.action, 'continue');
+      fs.rmSync(dir, { recursive: true });
+    });
+  }
+
+  // AC-3: off-repo bundles stay green. `not_applicable` is what `runPostFinalMeasurement`
+  // records when the working dir has no `extension/` — there was no tier to measure.
+  test('AC-3: a not_applicable verdict does NOT withhold success', () => {
+    const dir = tmpDir();
+    const { counters, logs } = runPickle(dir, { state: 'not_applicable', degraded: false, dimensions: [] });
+
+    assert.equal(counters.nonConvergent, 0, 'an off-repo bundle must stay green');
+    assert.equal(counters.phaseDispositions.pickle, undefined, 'no disposition on a non-degraded verdict');
+    assert.ok(logs.some((l) => l.includes('completed successfully')), 'the success log still fires');
+    assert.equal(readStatus(dir).phase_dispositions, undefined);
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test('AC-3: a green verdict changes nothing about today\'s behavior', () => {
+    const dir = tmpDir();
+    const { counters, logs } = runPickle(dir, { state: 'green', degraded: false, dimensions: [] });
+    assert.equal(counters.nonConvergent, 0);
+    assert.equal(counters.phaseDispositions.pickle, undefined);
+    assert.ok(logs.some((l) => l.includes('completed successfully')));
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  // Every session predating ticket 4dd2d658 has no such key. A missing verdict must not be
+  // read as degraded — that would withhold the verdict on every historical resume.
+  test('an absent post_final_verdict field does NOT withhold success', () => {
+    const dir = tmpDir();
+    const { counters, logs } = runPickle(dir, undefined);
+    assert.equal(counters.nonConvergent, 0);
+    assert.equal(counters.phaseDispositions.pickle, undefined);
+    assert.ok(logs.some((l) => l.includes('completed successfully')));
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  // A malformed record cannot fabricate a withholding either — the reader demands an explicit
+  // `degraded: true` plus a non-empty string state, and returns null for anything else.
+  test('a malformed post_final_verdict does NOT withhold success', () => {
+    const dir = tmpDir();
+    for (const malformed of [null, 'red', { degraded: true }, { state: 'red' }, { state: '', degraded: true }]) {
+      const { counters } = runPickle(dir, malformed);
+      assert.equal(counters.nonConvergent, 0, `malformed verdict ${JSON.stringify(malformed)} must be inert`);
+    }
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  // The withholding must not clobber the sibling WS-B attribution — both facts are true.
+  test('the degraded marker APPENDS to a disposition the red-offender branch already wrote', () => {
+    const dir = tmpDir();
+    const { runtime, statePath, cancelMarker } = makeRuntime(dir);
+    writeState(statePath, 'completed', { state: 'red', degraded: true, dimensions: [] });
+    const counters = {
+      completed: 0,
+      skipped: 0,
+      phaseSkips: {},
+      nonConvergent: 1,
+      phaseDispositions: { pickle: 'done_over_red_worker_gate_tests:aaa11111' },
+    };
+
+    finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, () => {});
+
+    assert.equal(
+      counters.phaseDispositions.pickle,
+      `done_over_red_worker_gate_tests:aaa11111; ${POST_FINAL_DEGRADED_MARKER}:red`,
+      'both attributions must survive',
+    );
+    assert.equal(counters.nonConvergent, 2, 'both withholding sources count');
+    fs.rmSync(dir, { recursive: true });
+  });
+});
+
+// AC-12: a conforming-looking implementation could write the marker to state.json and display
+// NOTHING. `phase_dispositions` already reached `pipeline-status.json` — a file read after the
+// process is gone. The operator watching the run saw a bare `Non-convergent: 1` with no cause.
+describe('AC-12: the degraded marker reaches the operator-visible completion output', () => {
+  test('buildPipelineCompletePanel renders the disposition string, not just the count', () => {
+    const counters = {
+      completed: 4,
+      skipped: 0,
+      phaseSkips: {},
+      nonConvergent: 1,
+      phaseDispositions: { pickle: `${POST_FINAL_DEGRADED_MARKER}:red` },
+    };
+    const panel = buildPipelineCompletePanel(counters, '4/4', 90, 0);
+
+    assert.ok(
+      Object.values(panel).some((v) => v.includes(POST_FINAL_DEGRADED_MARKER)),
+      'the rendered panel must state the degraded marker somewhere an operator can read it',
+    );
+    assert.equal(panel['Non-convergent'], '1', 'the existing count row is unchanged');
+  });
+
+  test('a clean run renders no Dispositions row (additive, byte-identical happy path)', () => {
+    const counters = { completed: 4, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    const panel = buildPipelineCompletePanel(counters, '4/4', 90, 0);
+    assert.equal(panel.Dispositions, undefined);
+    assert.deepEqual(Object.keys(panel), ['Phases', 'Elapsed']);
   });
 });

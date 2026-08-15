@@ -172,6 +172,11 @@ async function runRow({ tickets, muxExit, expectedCode, stateOverrides = {} }) {
 
   __setSpawnRunnerForTests(async () => ({ exitCode: muxExit, stdout: '', stderr: '' }));
 
+  // R-NOPOSTTIER: captured BEFORE main() so a row can prove the run discarded no work and
+  // demoted no ticket, rather than only that it exited with the expected code.
+  const commitsBefore = Number(git(['rev-list', '--count', 'HEAD'], repo));
+  const statusesBefore = Object.fromEntries(tickets.map((t) => [t.id, t.status]));
+
   await captureMainExit(sessionDir, expectedCode);
 
   const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
@@ -181,6 +186,11 @@ async function runRow({ tickets, muxExit, expectedCode, stateOverrides = {} }) {
   const bannerTitle = pipelineStatus.status === 'completed' ? 'Pipeline Complete' : 'Pipeline Failed';
   const citadelReached = /PHASE 2\/2: CITADEL/.test(log) && /citadel completed successfully/.test(log);
 
+  const statusesAfter = Object.fromEntries(tickets.map((t) => {
+    const raw = fs.readFileSync(path.join(sessionDir, t.id, `rick_ticket_${t.id}.md`), 'utf-8');
+    return [t.id, (/^status:\s*(.+)$/m.exec(raw)?.[1] ?? '').trim()];
+  }));
+
   return {
     processExit: expectedCode,
     terminalReason: state.exit_reason ?? null,
@@ -189,6 +199,10 @@ async function runRow({ tickets, muxExit, expectedCode, stateOverrides = {} }) {
     bannerTitle,
     citadelReached,
     log,
+    statusesBefore,
+    statusesAfter,
+    commitsBefore,
+    commitsAfter: Number(git(['rev-list', '--count', 'HEAD'], repo)),
   };
 }
 
@@ -453,5 +467,77 @@ describe('Terminal exit_reason survives a later phase\'s own clean finalize', ()
       fs.rmSync(repo, { recursive: true, force: true });
       fs.rmSync(sessionDir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * R-NOPOSTTIER (ticket fa3d0f5a) — AC-3/AC-4.
+ *
+ * The PRD's load-bearing constraint: reaching completion and reporting success are separate
+ * wires. A red post-final-commit fast-tier verdict withholds the SUCCESS VERDICT and nothing
+ * else. This row drives the full `main()` loop with that verdict seeded and pins the whole
+ * disposition together — every phase executed (citadel's own log lines prove it structurally),
+ * `exit_reason` stays `completed`, no ticket was demoted, and no commit was discarded — while
+ * the banner/status side withholds.
+ *
+ * `exit_reason === 'completed'` needs no routing change: `finalizeFailedPipeline` preserves an
+ * already-stamped reason and only writes the generic `failed` when none exists. That is the
+ * property this row exists to verify empirically rather than by source reading.
+ *
+ * The process exit code is `Failure` (1), NOT the `{0, 3}` this file's AC-NSG-1 matrix confines
+ * itself to — and that is correct, not a regression of the ONE RULE. AC-NSG-1 governs roster-shape
+ * x mux-exit rows, where a non-zero code means the LOOP stopped early. Here the loop did not stop:
+ * both phases ran, `exit_reason` is `completed`, and 1 is the exact code the sibling WS-B
+ * red-offender withholding already produces from the same `pipelineFailed === false,
+ * nonConvergent > 0` shape. It is the success verdict being withheld, which is this ticket's
+ * entire point — no abort site was added.
+ */
+describe('R-NOPOSTTIER — a degraded post-final verdict withholds the verdict, not the run', () => {
+  test('6/6 Done (evidenced) + red post_final_verdict: every phase runs, exit_reason stays completed', async () => {
+    const tickets = Array.from({ length: 6 }, (_, i) => ({
+      id: `p${i}f${i}v${i}n`, order: i + 1, status: 'Done', commit: true,
+    }));
+    const r = await runRow({
+      tickets,
+      muxExit: 0,
+      expectedCode: PipelineRunnerExitCode.Failure,
+      stateOverrides: {
+        exit_reason: 'completed',
+        post_final_verdict: { state: 'red', degraded: true, dimensions: [] },
+      },
+    });
+
+    // The run COMPLETED: citadel is phase 2 of 2 and it ran.
+    assert.ok(r.citadelReached, 'the phase loop must not break — every phase still executes');
+    assert.equal(r.pipelineStatus.completed_phases, 2, 'both phases counted as executed');
+
+    // AC-4: no new exit reason, and the terminal stamp is not overwritten with a generic failure.
+    assert.equal(r.terminalReason, 'completed', 'exit_reason must remain "completed"');
+
+    // AC-2: the success verdict IS withheld, and the disposition names why.
+    assert.equal(r.pipelineStatus.status, 'failed', 'the success verdict is withheld');
+    assert.equal(r.bannerTitle, 'Pipeline Failed');
+    assert.ok(
+      r.pipelineStatus.phase_dispositions.pickle.includes('post_final_tier_degraded'),
+      'the withholding must be attributed to the post-final tier',
+    );
+
+    // Nothing was destroyed to achieve that.
+    assert.deepEqual(r.statusesAfter, r.statusesBefore, 'no ticket demoted');
+    assert.equal(r.commitsAfter, r.commitsBefore, 'no commit discarded');
+  });
+
+  // The control: same roster, same mux exit, no degraded verdict. Without it, the row above
+  // cannot show that the VERDICT is what changed the disposition.
+  test('the same row without a degraded verdict still reports an unqualified success', async () => {
+    const tickets = Array.from({ length: 6 }, (_, i) => ({
+      id: `q${i}f${i}v${i}n`, order: i + 1, status: 'Done', commit: true,
+    }));
+    const r = await runRow({ tickets, muxExit: 0, expectedCode: PipelineRunnerExitCode.Success });
+
+    assert.equal(r.pipelineStatus.status, 'completed');
+    assert.equal(r.bannerTitle, 'Pipeline Complete');
+    assert.equal(r.pipelineStatus.phase_dispositions, undefined);
+    assert.ok(r.citadelReached);
   });
 });

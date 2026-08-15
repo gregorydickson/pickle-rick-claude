@@ -3394,6 +3394,16 @@ export function buildPipelineCompletePanel(counters, phasesSummary, totalElapsed
     const panel = { Phases: phasesSummary };
     if (counters.nonConvergent > 0)
         panel['Non-convergent'] = String(counters.nonConvergent);
+    // R-NOPOSTTIER (AC-12): the count alone names no cause. `phase_dispositions` was already
+    // written to `pipeline-status.json`, a file read after the process is gone — an operator
+    // watching the run saw a bare `Non-convergent: 1`. Render the disposition STRINGS here so
+    // every withholding, including the post-final tier's, states its reason on the screen the
+    // operator actually reads. Additive: a clean run has no dispositions and renders unchanged.
+    const dispositions = Object.entries(counters.phaseDispositions)
+        .map(([phase, disposition]) => `${phase}: ${disposition}`)
+        .join('; ');
+    if (dispositions)
+        panel.Dispositions = dispositions;
     if (parkedCount > 0)
         panel.Parked = String(parkedCount);
     panel.Elapsed = formatTime(totalElapsed);
@@ -3468,10 +3478,20 @@ function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncom
     if (phaseIncomplete || handoffStop) {
         finalizeNonSuccessTerminal(runtime.statePath, phaseIncomplete, phaseIncompleteReason);
     }
-    else if (unsuccessful) {
+    else if (pipelineFailed) {
         finalizeFailedPipeline(runtime.statePath);
     }
     else {
+        // R-NOPOSTTIER (AC-4/AC-5): the TERMINAL STAMP keys on `pipelineFailed`, not `unsuccessful`.
+        // A withheld verdict with every phase executed is not a phase shortfall: the run reached
+        // completion, so `exit_reason` stays `completed` and no member is added to `EXIT_REASONS`.
+        // Stamping the generic `failed` here would say the run did not finish, which is false, and
+        // would be the only place a degraded verdict masqueraded as a crash.
+        //
+        // The VERDICT still keys on `unsuccessful` — the banner, `pipeline-status.json`, the exit
+        // code, and the closer-release skip below are all unchanged. Reaching completion and
+        // reporting success stay separate wires.
+        //
         // B-GROUND2 WS1: the success finalize is the one transition that asserts the
         // ticket bundle is truly complete — route it through the single authority so
         // a residual pending ticket refuses the `completed` stamp (fail-closed).
@@ -3995,6 +4015,68 @@ function collectDoneTicketsWithRedTestVerdict(runtime) {
     return offenders;
 }
 /**
+ * R-NOPOSTTIER: the marker naming a withheld success verdict whose cause is the post-final
+ * fast-tier measurement (ticket `4dd2d658`). It is a DISPOSITION string, never an exit reason —
+ * `EXIT_REASONS` and `CRASH_FLOOR_EXIT_REASONS` gain no member and `exit_reason` stays `completed`.
+ *
+ * The disposition carries `verdict.state` (`red` / `inconclusive` / `absent`), never a failing
+ * test's NAME: `classifyPostFinalVerdict` returns `dimensions: []` for a red gate whose
+ * `failures` array is empty, and those names come from `parseBetweenTicketFastGateFailures`
+ * (R-GBANNER, out of scope). The state is always present on a degraded verdict, so it is the one
+ * parser-independent attribution available.
+ */
+export const POST_FINAL_DEGRADED_MARKER = 'post_final_tier_degraded';
+/**
+ * R-NOPOSTTIER: total read of the post-final verdict recorded by `runPostFinalMeasurement`
+ * (`mux-runner.ts`). Returns null for anything that is not an explicitly degraded verdict —
+ * absent field, unreadable state, malformed shape — so no read failure can fabricate a
+ * withholding, and a `green` / `not_applicable` verdict changes nothing.
+ */
+function readDegradedPostFinalVerdict(statePath) {
+    let raw;
+    try {
+        raw = sm.read(statePath).post_final_verdict;
+    }
+    catch {
+        return null;
+    }
+    if (!raw || typeof raw !== 'object')
+        return null;
+    const v = raw;
+    if (v.degraded !== true || typeof v.state !== 'string' || !v.state)
+        return null;
+    const dimensions = Array.isArray(v.dimensions) ? v.dimensions.filter((d) => typeof d === 'string') : [];
+    return { state: v.state, dimensions };
+}
+/**
+ * R-NOPOSTTIER (AC-2): a degraded post-final verdict raises the SAME `counters.nonConvergent`
+ * term the WS-B red-offender branch above raises, so `finalizePipeline`'s
+ * `unsuccessful = pipelineFailed || counters.nonConvergent > 0` withholds the success verdict
+ * and skips closer-release. No new gate, field, halt, or exit reason.
+ *
+ * Reaching completion and reporting success are separate wires: this never returns an outcome,
+ * so control falls through to `counters.completed++` — every phase still executes, no ticket is
+ * demoted, and no work is discarded.
+ *
+ * The disposition APPENDS rather than assigns: the red-offender branch may already have named
+ * itself for this phase, and both attributions are true.
+ */
+function withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log) {
+    const verdict = readDegradedPostFinalVerdict(runtime.statePath);
+    if (!verdict)
+        return;
+    counters.nonConvergent += 1;
+    const marker = `${POST_FINAL_DEGRADED_MARKER}:${verdict.state}`;
+    const prior = counters.phaseDispositions[rawPhase];
+    counters.phaseDispositions[rawPhase] = prior ? `${prior}; ${marker}` : marker;
+    const detail = verdict.dimensions.length > 0 ? ` — ${verdict.dimensions.join(', ')}` : '';
+    log(`Phase ${rawPhase}: post-final tier verdict is ${verdict.state} — withholding success verdict (${marker})${detail}`);
+    try {
+        writeRunningStatus(runtime, counters, null);
+    }
+    catch { /* non-blocking */ }
+}
+/**
  * R-PIPE-2: post-AC-gate success path extracted from `runPhaseIteration` so
  * the no-progress gate, counter increment, cancel-marker check, and success
  * log do not push `runPhaseIteration` past the cyclomatic-complexity ceiling.
@@ -4033,6 +4115,7 @@ export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, 
             }
             catch { /* non-blocking */ }
         }
+        withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log);
     }
     // B-NONSTOP WS-2 (AC-NS-6): non-pickle honesty gate. `maybeStampPhaseGraduation`
     // is pickle-only (`:3592`), so a non-convergent anatomy-park / szechuan-sauce phase

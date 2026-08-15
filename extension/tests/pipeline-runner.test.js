@@ -2895,6 +2895,29 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     assert.match(pickleArm, /isCrashFloorExitReason/, 'the pickle arm must consult the crash-floor predicate');
   });
 
+  /**
+   * R-NOPOSTTIER (ticket fa3d0f5a) — AC-5.
+   *
+   * The parity test below proves the const and mux-runner's union AGREE; it cannot prove
+   * nothing was ADDED, because a member added to BOTH sides passes it. This pin closes that:
+   * the withholding R-NOPOSTTIER introduces must reuse `counters.nonConvergent` and a
+   * disposition string, never a new exit reason. `exit_reason` stays `completed` on a degraded
+   * post-final verdict — see `finalizePipeline`'s `pipelineFailed`-keyed terminal stamp.
+   *
+   * Adding a genuinely new exit reason is a deliberate act: edit this list in the same commit
+   * and say why. It is not a list to regenerate from source when the assertion goes red.
+   */
+  test('AC-5: EXIT_REASONS membership is byte-identical to the pre-R-NOPOSTTIER set', () => {
+    assert.deepEqual([...EXIT_REASONS], [
+      'success', 'cancelled', 'error', 'limit', 'iteration_cap_exhausted', 'stall', 'circuit_open',
+      'rate_limit_exhausted', 'timeout_repeat', 'manager_persistent_hallucination',
+      'codex_unhealthy_consecutive_failures', 'working_tree_modified_externally',
+      'state_schema_version_ahead', 'closer_handoff_terminal', 'manager_handoff_pending',
+      'done_without_commit_evidence', 'codex_manager_no_progress', 'recovery_exhausted',
+      'idle_stall_unrecoverable', 'state_working_dir_missing', 'toolchain_unavailable',
+    ], 'R-NOPOSTTIER must add no member — the withholding is a disposition, not an exit reason');
+  });
+
   // EXIT_REASONS parity: `types/index.ts` EXIT_REASONS and mux-runner's hand-maintained
   // `export type ExitReason = 'a' | 'b' | …` union are parallel copies of the same
   // membership list — types/index.ts cannot import mux-runner.ts without a cycle, so the
