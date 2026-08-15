@@ -13,6 +13,9 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   PICKLE_GATE_SCRUBBED_ENV_KEYS,
+  GIT_CONFIG_INDEXED_ENV_KEY_RE,
+  GIT_CONFIG_COUNT_ENV_VAR,
+  PICKLE_TICKET_ID_ENV_VAR,
   scrubGateEnv,
   resolveWorkerTestGateTimeoutMs,
 } from '../services/pickle-utils.js';
@@ -67,7 +70,7 @@ function makeGitRepoFixture(prefix) {
 function withScrubbedAmbientEnv(fn) {
   const keys = [
     ...PICKLE_GATE_SCRUBBED_ENV_KEYS,
-    ...Object.keys(process.env).filter(k => /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)),
+    ...Object.keys(process.env).filter(k => GIT_CONFIG_INDEXED_ENV_KEY_RE.test(k)),
   ];
   const prior = {};
   for (const k of keys) {
@@ -171,8 +174,48 @@ test('AC-4: every key composed by the trailer fragment is a member of PICKLE_GAT
     assert.equal(env.PICKLE_TICKET_ID, 'ticket-id');
     for (const key of Object.keys(env)) {
       if (key === 'PICKLE_BACKEND') continue;
-      if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) continue;
+      if (GIT_CONFIG_INDEXED_ENV_KEY_RE.test(key)) continue;
       assert.ok(PICKLE_GATE_SCRUBBED_ENV_KEYS.includes(key), `${key} must be a member of PICKLE_GATE_SCRUBBED_ENV_KEYS`);
+    }
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// The trailer fragment composes two of its keys from names that must also be scrubbed. When those
+// names were derived by a runtime `PICKLE_GATE_SCRUBBED_ENV_KEYS.find(...)!` lookup, dropping either
+// key from the array left the derived name `undefined` — still compiling, but composing a computed
+// env key that stringifies to the literal "undefined". They are imported bindings now, so that
+// removal is a tsc error; these assertions pin the property the import is there to guarantee.
+test('the trailer-compose env key names are scrub-list members and never undefined', () => {
+  for (const [label, value] of [
+    ['PICKLE_TICKET_ID_ENV_VAR', PICKLE_TICKET_ID_ENV_VAR],
+    ['GIT_CONFIG_COUNT_ENV_VAR', GIT_CONFIG_COUNT_ENV_VAR],
+  ]) {
+    assert.equal(typeof value, 'string', `${label} must be a string, got ${typeof value}`);
+    assert.ok(value.length > 0, `${label} must be non-empty`);
+    assert.ok(
+      PICKLE_GATE_SCRUBBED_ENV_KEYS.includes(value),
+      `${label} (${value}) must be a member of PICKLE_GATE_SCRUBBED_ENV_KEYS`
+    );
+  }
+
+  const repoRoot = makeGitRepoFixture('gate-env-scrub-keynames-');
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-env-scrub-session3-'));
+  try {
+    const env = withScrubbedAmbientEnv(() =>
+      backendEnvOverrides('claude', {
+        workingDir: repoRoot,
+        ticketId: 'keyname-ticket-id',
+        sessionDir,
+        env: {},
+      })
+    );
+    // Guards the loop below against a `{}` fragment, which would make it vacuous.
+    assert.equal(env[PICKLE_TICKET_ID_ENV_VAR], 'keyname-ticket-id');
+    for (const key of Object.keys(env)) {
+      assert.notEqual(key, 'undefined', 'composed fragment must not carry a key named "undefined"');
     }
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true });

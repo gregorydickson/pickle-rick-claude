@@ -133,21 +133,28 @@ export function wrapText(text, width) {
 export const DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS = 600_000;
 export const WORKER_TEST_GATE_TIMEOUT_FLOOR_MS = 60_000;
 export const WORKER_TEST_GATE_TIMEOUT_ENV_VAR = 'PICKLE_WORKER_TEST_FAST_TIMEOUT_MS';
+// The two scrubbed keys the trailer compose site (`backend-spawn.ts`) also WRITES.
+// Named here so that file can import the binding instead of restating the literal:
+// dropping either from the array below is then a compile error at the compose site,
+// not a silently-`undefined` key name at runtime.
+export const PICKLE_TICKET_ID_ENV_VAR = 'PICKLE_TICKET_ID';
+export const GIT_CONFIG_COUNT_ENV_VAR = 'GIT_CONFIG_COUNT';
 // R-WGTORPH: the fixed keys a test-gate spawn must never inherit from the launching
 // process — they make the gate measure the environment instead of the tree. Indexed
 // `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` pairs (for whatever `n` the parent has
 // composed) are scrubbed separately in `scrubGateEnv` since their count is dynamic.
-// The only literal enumerating these keys — the trailer compose site
-// (`backend-spawn.ts`) derives its key names from this same array so the compose list
-// and the scrub list cannot drift apart.
+// This is the only enumeration of these keys; the trailer compose site imports the two
+// it writes, so the compose list and the scrub list cannot drift apart.
 export const PICKLE_GATE_SCRUBBED_ENV_KEYS = [
     WORKER_TEST_GATE_TIMEOUT_ENV_VAR,
-    'PICKLE_TICKET_ID',
+    PICKLE_TICKET_ID_ENV_VAR,
     'GIT_CONFIG_GLOBAL',
     'GIT_CONFIG_SYSTEM',
     'GIT_CONFIG_NOSYSTEM',
-    'GIT_CONFIG_COUNT',
+    GIT_CONFIG_COUNT_ENV_VAR,
 ];
+/** The dynamic half of the scrub set: `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`. */
+export const GIT_CONFIG_INDEXED_ENV_KEY_RE = /^GIT_CONFIG_(KEY|VALUE)_\d+$/;
 /**
  * Returns a shallow copy of `env` with every `PICKLE_GATE_SCRUBBED_ENV_KEYS` entry
  * (plus every indexed `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` present) deleted —
@@ -158,7 +165,7 @@ export function scrubGateEnv(env = process.env) {
     for (const key of PICKLE_GATE_SCRUBBED_ENV_KEYS)
         delete result[key];
     for (const key of Object.keys(result)) {
-        if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key))
+        if (GIT_CONFIG_INDEXED_ENV_KEY_RE.test(key))
             delete result[key];
     }
     return result;
