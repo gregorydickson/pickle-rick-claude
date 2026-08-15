@@ -58,7 +58,8 @@ function makeGateFixture() {
  */
 function makeGitRepoFixture(prefix) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  spawnSync('git', ['init', '-q', dir], { timeout: 30_000 });
+  const init = spawnSync('git', ['init', '-q', dir], { timeout: 30_000, encoding: 'utf-8' });
+  assert.equal(init.status, 0, `git init fixture failed: ${init.stderr ?? init.error?.message ?? ''}`);
   return dir;
 }
 
