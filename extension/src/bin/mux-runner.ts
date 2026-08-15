@@ -858,27 +858,37 @@ export function runPostFinalMeasurement(
   // `pipeline-runner.ts:readDegradedPostFinalVerdict` reads a non-degraded verdict as fine — so a
   // red tier under an unreadable working dir reported success. `runManagerTokenPostFinalMeasurement`
   // is called with an explicit `|| ''` fallback, so this is a live input, not a phantom.
-  const workingDirKnown = input.workingDir.trim() !== '';
-  const applicable = workingDirKnown
-    && fs.existsSync(path.join(input.workingDir, 'extension'));
-
+  let workingDirKnown = false;
+  let applicable = false;
   let gate: BetweenTicketGateResult | null = null;
   let verdictTs: number | null = null;
   let finalCommitTs: number | null = null;
 
-  if (applicable) {
-    // Stamped once and injected into the gate so `last_between_ticket_gate.ts` and the
-    // classifier's `verdictTs` are the same number — `post_final_verdict` carries no `ts` of its
-    // own, so the gate's stamp IS the verdict's timestamp.
-    const ts = (input.now ?? Date.now)();
-    verdictTs = ts;
-    if (input.finalCommitTs !== undefined) {
-      finalCommitTs = input.finalCommitTs;
-    } else {
-      const epochSeconds = gitCommitEpoch(input.workingDir, readHeadCommit(input.workingDir));
-      finalCommitTs = epochSeconds === null ? null : epochSeconds * 1000;
-    }
-    try {
+  // ONE try over the WHOLE measurement, not just the gate call. The applicability probe, the clock
+  // read and the git probe used to sit above a narrower try, so a throw in any of them escaped the
+  // function entirely and `state.post_final_verdict` was never written at all — which
+  // `pipeline-runner.ts:readDegradedPostFinalVerdict` reads as null, i.e. non-degraded, i.e.
+  // success. An unwritten verdict is the same fake-green as a green one. Every throw now lands
+  // here, and every landing yields `absent`/degraded: if the probe threw, `workingDirKnown` is
+  // still false so the classifier arm below claims applicability; if it did not, `gate` is null.
+  // Either way the classifier's existing `gate === null` arm answers.
+  try {
+    workingDirKnown = input.workingDir.trim() !== '';
+    applicable = workingDirKnown
+      && fs.existsSync(path.join(input.workingDir, 'extension'));
+
+    if (applicable) {
+      // Stamped once and injected into the gate so `last_between_ticket_gate.ts` and the
+      // classifier's `verdictTs` are the same number — `post_final_verdict` carries no `ts` of its
+      // own, so the gate's stamp IS the verdict's timestamp.
+      const ts = (input.now ?? Date.now)();
+      verdictTs = ts;
+      if (input.finalCommitTs !== undefined) {
+        finalCommitTs = input.finalCommitTs;
+      } else {
+        const epochSeconds = gitCommitEpoch(input.workingDir, readHeadCommit(input.workingDir));
+        finalCommitTs = epochSeconds === null ? null : epochSeconds * 1000;
+      }
       gate = runBetweenTicketFastGate({
         statePath: input.statePath,
         workingDir: input.workingDir,
@@ -890,10 +900,10 @@ export function runPostFinalMeasurement(
         timeoutMs: POST_FINAL_FAST_GATE_TIMEOUT_MS,
         runTestFast: input.runTestFast,
       });
-    } catch (err) {
-      gate = null;
-      input.log(`post-final tier measurement threw (classified absent): ${safeErrorMessage(err)}`);
     }
+  } catch (err) {
+    gate = null;
+    input.log(`post-final tier measurement threw (classified absent): ${safeErrorMessage(err)}`);
   }
 
   const verdict = classifyPostFinalVerdict({

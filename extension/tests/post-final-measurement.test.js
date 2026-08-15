@@ -216,21 +216,33 @@ test('a throwing measurement is classified absent and does NOT abort the run (AC
   }
 });
 
-test('a throw OUTSIDE the measurement\'s own try still cannot break the completion synthesis', () => {
-  // `now` is read before the inner try/catch, so a throwing clock exercises the seam-level wrap
-  // in applyAllTicketsDoneCompletion rather than the one inside runPostFinalMeasurement.
+test('a throwing clock still RECORDS a verdict — surviving is not enough (f7f188f4)', () => {
+  // Ticket f7f188f4 (audit, HIGH). The clock read used to sit ABOVE the measurement's own try, so
+  // a throwing clock escaped `runPostFinalMeasurement` entirely: the seam-level wrap in
+  // `applyAllTicketsDoneCompletion` kept the run alive, but `state.post_final_verdict` was never
+  // written. An UNWRITTEN verdict is not neutral — `pipeline-runner.ts:readDegradedPostFinalVerdict`
+  // reads an absent field as null, i.e. non-degraded, i.e. report success. So "the run survived"
+  // and "the tier was honestly reported" are different facts, and this case used to assert only
+  // the first. It now asserts both.
   const ctx = drive(stubRunner(GREEN), {
     deps: { now: () => { throw new Error('clock exploded'); } },
   });
   try {
     assert.equal(ctx.fired, true, 'the completion synthesis must survive any measurement throw');
     const state = readState(ctx.statePath);
-    assert.equal(state.exit_reason, 'completed');
+    assert.equal(state.exit_reason, 'completed', 'measuring is not acting — disposition untouched');
     assert.equal(state.step, 'completed');
     assert.ok(state.completion_promise, 'the promise is still synthesized');
+    assert.deepEqual(
+      state.post_final_verdict,
+      { state: 'absent', degraded: true, dimensions: [] },
+      'a throw must be recorded as absent/degraded, never left unwritten',
+    );
+    // The throw is now caught by the measurement's own catch, so it is that log that fires — the
+    // seam-level wrap in applyAllTicketsDoneCompletion is no longer reached on this path.
     assert.ok(
-      ctx.logs.some(l => l.includes('post-final tier measurement failed at the completion seam')),
-      'the seam-level catch must log the swallowed failure',
+      ctx.logs.some(l => l.includes('post-final tier measurement threw (classified absent)')),
+      'the measurement catch must log the swallowed failure',
     );
   } finally {
     ctx.cleanup();
