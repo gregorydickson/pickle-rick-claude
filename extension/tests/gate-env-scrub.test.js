@@ -47,16 +47,26 @@ const CONTAMINATION_INDEXED_KEYS = Object.keys(CONTAMINATION).filter(k =>
 );
 
 /**
- * Asserts `env` carries no scrubbed key — the fixed set plus every indexed pair the fixture
- * contaminates with. The length check is a non-vacuity guard: without it, a fixture edit that
- * dropped the indexed pairs would make the loop iterate nothing and pass.
+ * Asserts `env` carries no scrubbed key.
+ *
+ * The authority for "which keys must be gone" is the FIXTURE (`CONTAMINATION`), not
+ * `PICKLE_GATE_SCRUBBED_ENV_KEYS`. AC-5's mutation oracle empties that constant, so a loop driven by
+ * it iterates nothing and passes vacuously for exactly the keys the bundle exists to remove — the
+ * indexed half was mutation-sensitive only because it already read the fixture. The constant is still
+ * asserted afterwards, which is a strictly additional claim: the child must also be free of any
+ * production-listed key the fixture happens not to carry.
+ *
+ * Both length checks are non-vacuity guards: without them a fixture edit that dropped keys would make
+ * the loops iterate nothing and pass.
  */
 function assertScrubbedKeysAbsent(env, label) {
-  for (const key of PICKLE_GATE_SCRUBBED_ENV_KEYS) {
+  const contaminatedKeys = Object.keys(CONTAMINATION);
+  assert.equal(contaminatedKeys.length, 12, 'fixture must carry the full contamination set');
+  assert.equal(CONTAMINATION_INDEXED_KEYS.length, 6, 'fixture must carry three indexed pairs');
+  for (const key of contaminatedKeys) {
     assert.ok(!(key in env), `${key} must be absent from ${label}`);
   }
-  assert.equal(CONTAMINATION_INDEXED_KEYS.length, 6, 'fixture must carry three indexed pairs');
-  for (const key of CONTAMINATION_INDEXED_KEYS) {
+  for (const key of PICKLE_GATE_SCRUBBED_ENV_KEYS) {
     assert.ok(!(key in env), `${key} must be absent from ${label}`);
   }
 }
