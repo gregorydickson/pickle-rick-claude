@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   PICKLE_GATE_SCRUBBED_ENV_KEYS,
   scrubGateEnv,
@@ -47,6 +48,39 @@ function makeGateFixture() {
   );
   fs.writeFileSync(path.join(dir, 'package-lock.json'), JSON.stringify({}));
   return dir;
+}
+
+/**
+ * A real git repo. `materializeTrailerHooks` resolves the pre-existing hooks dir from the repo
+ * itself; a bare mkdtemp dir resolves only when the launching process happens to export
+ * GIT_CONFIG_KEY_0=core.hooksPath, so the AC-3/AC-4 fixtures were green under a contaminated
+ * parent and red under a clean one (ticket 5ceb9399, AC-6 clean-env measurement).
+ */
+function makeGitRepoFixture(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  spawnSync('git', ['init', '-q', dir], { timeout: 30_000 });
+  return dir;
+}
+
+/** Runs `fn` with every gate-scrubbed key deleted from the ambient env, then restores it. */
+function withScrubbedAmbientEnv(fn) {
+  const keys = [
+    ...PICKLE_GATE_SCRUBBED_ENV_KEYS,
+    ...Object.keys(process.env).filter(k => /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)),
+  ];
+  const prior = {};
+  for (const k of keys) {
+    prior[k] = process.env[k];
+    delete process.env[k];
+  }
+  try {
+    return fn();
+  } finally {
+    for (const k of keys) {
+      if (prior[k] === undefined) delete process.env[k];
+      else process.env[k] = prior[k];
+    }
+  }
 }
 
 function withContaminatedEnv(extra, fn) {
@@ -101,15 +135,17 @@ test('AC-1: runBetweenTicketFastTests (mux-runner test-gate spawn) scrubs the ga
 });
 
 test('AC-3: the WORKER spawn is NOT scrubbed — backendEnvOverrides still composes GIT_CONFIG_COUNT at n+1 and stamps PICKLE_TICKET_ID', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-env-scrub-worker-'));
+  const repoRoot = makeGitRepoFixture('gate-env-scrub-worker-');
   const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-env-scrub-session-'));
   try {
-    const env = backendEnvOverrides('claude', {
-      workingDir: repoRoot,
-      ticketId: 'worker-ticket-id',
-      sessionDir,
-      env: { GIT_CONFIG_COUNT: '1' },
-    });
+    const env = withScrubbedAmbientEnv(() =>
+      backendEnvOverrides('claude', {
+        workingDir: repoRoot,
+        ticketId: 'worker-ticket-id',
+        sessionDir,
+        env: { GIT_CONFIG_COUNT: '1' },
+      })
+    );
     assert.equal(env.GIT_CONFIG_COUNT, '2');
     assert.equal(env.PICKLE_TICKET_ID, 'worker-ticket-id');
   } finally {
@@ -119,15 +155,19 @@ test('AC-3: the WORKER spawn is NOT scrubbed — backendEnvOverrides still compo
 });
 
 test('AC-4: every key composed by the trailer fragment is a member of PICKLE_GATE_SCRUBBED_ENV_KEYS', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-env-scrub-worker2-'));
+  const repoRoot = makeGitRepoFixture('gate-env-scrub-worker2-');
   const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-env-scrub-session2-'));
   try {
-    const env = backendEnvOverrides('claude', {
-      workingDir: repoRoot,
-      ticketId: 'ticket-id',
-      sessionDir,
-      env: {},
-    });
+    const env = withScrubbedAmbientEnv(() =>
+      backendEnvOverrides('claude', {
+        workingDir: repoRoot,
+        ticketId: 'ticket-id',
+        sessionDir,
+        env: {},
+      })
+    );
+    // The fragment must actually be composed — an empty env would make the loop below vacuous.
+    assert.equal(env.PICKLE_TICKET_ID, 'ticket-id');
     for (const key of Object.keys(env)) {
       if (key === 'PICKLE_BACKEND') continue;
       if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) continue;
