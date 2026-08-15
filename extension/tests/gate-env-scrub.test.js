@@ -181,11 +181,52 @@ test('AC-3: the WORKER spawn is NOT scrubbed — backendEnvOverrides still compo
     );
     assert.equal(env.GIT_CONFIG_COUNT, '2');
     assert.equal(env.PICKLE_TICKET_ID, 'worker-ticket-id');
+    // Index n, not a hardcoded 0: appending at 0 here would silently overwrite the inherited
+    // config's own first entry, and COUNT alone cannot see that.
+    assert.equal(env.GIT_CONFIG_KEY_1, 'core.hooksPath');
+    assert.ok(!('GIT_CONFIG_KEY_0' in env), 'the pair must be appended at index n, not 0');
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+// The n=1 case above pins the increment but not the BASE: `String(n + 2)` with an inherited count of
+// 1 and `String(n + 1)` with an inherited count of 2 are indistinguishable from a single row. These
+// two rows pin the absent-count default (`?? 0` at backend-spawn.ts) and the explicit '0' spelling of
+// the same value, and assert the appended pair sits at index n — not n+1, which would collide with
+// the inherited config's own last entry.
+for (const [label, inherited] of [
+  ['GIT_CONFIG_COUNT absent', {}],
+  ['GIT_CONFIG_COUNT explicitly "0"', { GIT_CONFIG_COUNT: '0' }],
+]) {
+  test(`AC-3: the trailer fragment composes n+1 = 1 and appends at index 0 when ${label}`, () => {
+    const repoRoot = makeGitRepoFixture('gate-env-scrub-compose0-');
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-env-scrub-session0-'));
+    try {
+      const env = withScrubbedAmbientEnv(() =>
+        backendEnvOverrides('claude', {
+          workingDir: repoRoot,
+          ticketId: 'compose-zero-ticket-id',
+          sessionDir,
+          env: inherited,
+        })
+      );
+      // Guards every assertion below: an all-or-nothing `{}` fragment would satisfy the absence
+      // checks vacuously.
+      assert.equal(env.PICKLE_TICKET_ID, 'compose-zero-ticket-id');
+      assert.equal(env.GIT_CONFIG_COUNT, '1');
+      assert.equal(env.GIT_CONFIG_KEY_0, 'core.hooksPath');
+      assert.equal(typeof env.GIT_CONFIG_VALUE_0, 'string');
+      assert.ok(env.GIT_CONFIG_VALUE_0.length > 0, 'GIT_CONFIG_VALUE_0 must name the managed hooks dir');
+      assert.ok(!('GIT_CONFIG_KEY_1' in env), 'the pair must be appended at index n, not n+1');
+      assert.ok(!('GIT_CONFIG_VALUE_1' in env), 'the pair must be appended at index n, not n+1');
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+}
 
 test('AC-4: every key composed by the trailer fragment is a member of PICKLE_GATE_SCRUBBED_ENV_KEYS', () => {
   const repoRoot = makeGitRepoFixture('gate-env-scrub-worker2-');
