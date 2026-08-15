@@ -23,18 +23,28 @@ import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { runWorkerGateTestCommand } from '../bin/spawn-morty.js';
 import { runBetweenTicketFastTests } from '../bin/mux-runner.js';
 
+// Three indexed pairs, not two: a scrub that hardcodes a `_0`/`_1` list instead of matching
+// `GIT_CONFIG_INDEXED_ENV_KEY_RE` over every present key leaks the third pair, and a two-pair
+// fixture cannot see that.
 const CONTAMINATION = {
   PICKLE_WORKER_TEST_FAST_TIMEOUT_MS: '1800000',
   PICKLE_TICKET_ID: 'contaminated-ticket-id',
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
   GIT_CONFIG_NOSYSTEM: '1',
-  GIT_CONFIG_COUNT: '2',
+  GIT_CONFIG_COUNT: '3',
   GIT_CONFIG_KEY_0: 'core.hooksPath',
   GIT_CONFIG_VALUE_0: '/tmp/whatever',
   GIT_CONFIG_KEY_1: 'user.name',
   GIT_CONFIG_VALUE_1: 'contaminated',
+  GIT_CONFIG_KEY_2: 'user.email',
+  GIT_CONFIG_VALUE_2: 'contaminated@example.invalid',
 };
+
+/** Every indexed `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` the fixture carries. */
+const CONTAMINATION_INDEXED_KEYS = Object.keys(CONTAMINATION).filter(k =>
+  GIT_CONFIG_INDEXED_ENV_KEY_RE.test(k)
+);
 
 const KEEP_SET = ['PATH', 'HOME', 'PICKLE_BACKEND', 'PICKLE_TEST_MODE'];
 
@@ -114,10 +124,8 @@ test('AC-1/AC-2: runWorkerGateTestCommand (spawn-morty test-gate spawn) scrubs t
     assert.equal(result.ok, true);
     const childEnv = readDumpedEnv(dumpOut);
     for (const key of PICKLE_GATE_SCRUBBED_ENV_KEYS) assert.ok(!(key in childEnv), `${key} must be absent`);
-    assert.ok(!('GIT_CONFIG_KEY_0' in childEnv));
-    assert.ok(!('GIT_CONFIG_VALUE_0' in childEnv));
-    assert.ok(!('GIT_CONFIG_KEY_1' in childEnv));
-    assert.ok(!('GIT_CONFIG_VALUE_1' in childEnv));
+    assert.equal(CONTAMINATION_INDEXED_KEYS.length, 6, 'fixture must carry three indexed pairs');
+    for (const key of CONTAMINATION_INDEXED_KEYS) assert.ok(!(key in childEnv), `${key} must be absent`);
     for (const key of KEEP_SET) assert.ok(key in childEnv, `${key} must survive`);
 
     const resolvedTimeout = resolveWorkerTestGateTimeoutMs(undefined, null, childEnv);
@@ -132,8 +140,8 @@ test('AC-1: runBetweenTicketFastTests (mux-runner test-gate spawn) scrubs the ga
     assert.equal(result.ok, true);
     const childEnv = readDumpedEnv(dumpOut);
     for (const key of PICKLE_GATE_SCRUBBED_ENV_KEYS) assert.ok(!(key in childEnv), `${key} must be absent`);
-    assert.ok(!('GIT_CONFIG_KEY_0' in childEnv));
-    assert.ok(!('GIT_CONFIG_VALUE_0' in childEnv));
+    assert.equal(CONTAMINATION_INDEXED_KEYS.length, 6, 'fixture must carry three indexed pairs');
+    for (const key of CONTAMINATION_INDEXED_KEYS) assert.ok(!(key in childEnv), `${key} must be absent`);
     for (const key of KEEP_SET) assert.ok(key in childEnv, `${key} must survive`);
   });
 });
@@ -226,7 +234,26 @@ test('the trailer-compose env key names are scrub-list members and never undefin
 test('scrubGateEnv deletes keys rather than setting them undefined', () => {
   const result = scrubGateEnv({ ...CONTAMINATION, PATH: '/usr/bin' });
   for (const key of PICKLE_GATE_SCRUBBED_ENV_KEYS) assert.ok(!(key in result));
-  assert.ok(!('GIT_CONFIG_KEY_0' in result));
-  assert.ok(!('GIT_CONFIG_VALUE_1' in result));
+  for (const key of CONTAMINATION_INDEXED_KEYS) assert.ok(!(key in result), `${key} must be absent`);
   assert.equal(result.PATH, '/usr/bin');
+});
+
+// The caller's env object is shared — `mux-runner.ts:649` and `spawn-morty.ts:1330` both call
+// `scrubGateEnv()` with the default `process.env`, so a `delete env[k]` implementation would strip
+// the launching process's OWN trailer fragment and silently un-attribute every later worker commit.
+// The oracle must therefore read the INPUT after the call; asserting on the returned object cannot
+// distinguish copy-then-delete from delete-in-place.
+test('scrubGateEnv does not mutate its input', () => {
+  const fixture = { ...CONTAMINATION, PATH: '/usr/bin' };
+  const before = Object.entries(fixture);
+  assert.ok(before.length > 0, 'fixture must be non-empty');
+
+  const result = scrubGateEnv(fixture);
+
+  assert.notEqual(result, fixture, 'scrubGateEnv must return a copy, not the caller\'s object');
+  for (const [key, value] of before) {
+    assert.ok(key in fixture, `${key} must still be present on the input`);
+    assert.equal(fixture[key], value, `${key} must keep its original value on the input`);
+  }
+  assert.equal(Object.keys(fixture).length, before.length, 'input must gain no keys either');
 });
