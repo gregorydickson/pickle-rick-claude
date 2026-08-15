@@ -33,7 +33,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-import { applyAllTicketsDoneCompletion } from '../bin/mux-runner.js';
+import { applyAllTicketsDoneCompletion, runManagerTokenPostFinalMeasurement } from '../bin/mux-runner.js';
 import { POST_FINAL_DEGRADED_MARKER, finalizePhaseSuccess } from '../bin/pipeline-runner.js';
 
 function tmpDir(prefix) {
@@ -173,4 +173,72 @@ test('b88a6603 shape: 8/8 Done, final commit reddens, run completes without repo
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(repo, { recursive: true, force: true });
   }
+});
+
+// R-NOPOSTTIER ticket 6f0e349f: the wiring-proof ticket. `applyAllTicketsDoneCompletion` above is
+// the PROACTIVE all-tickets-done seam; it is not the only completion-promise path — a manager that
+// itself emits EPIC_COMPLETED/TASK_COMPLETED and is verified genuine by `evaluateEpicCompletion`
+// reaches a SECOND, independent promise-synthesis seam inside `runMuxRunnerMain`'s `task_completed`
+// branch. Prior to this ticket that seam finalized without ever measuring: the exported
+// `processTaskCompleted`/`processCompletionBranch` functions the seam's OWN research seeds pointed
+// at do call `runBetweenTicketFastGate`, but they are unreachable in production (zero callers —
+// see the "loop helpers extracted, never wired" trap door in extension/CLAUDE.md); the live inline
+// handler called neither them nor `runPostFinalMeasurement`. `runManagerTokenPostFinalMeasurement`
+// is the extraction that makes the live seam both reachable AND directly testable.
+test('manager-token completion seam: runManagerTokenPostFinalMeasurement records a fresh verdict', () => {
+  const sessionDir = tmpDir('b88a6603-mgrtoken-session-');
+  const repo = makeWorkingRepo();
+  try {
+    const statePath = makeSession(sessionDir, repo);
+    const ticketId = 'ccc33333';
+    makeTicket(sessionDir, ticketId);
+
+    const gateLogs = [];
+    const redRunner = () => ({ ok: false, failures: [], timed_out: false, timeout_ms: 1_800_000 });
+
+    runManagerTokenPostFinalMeasurement(statePath, repo, ticketId, (m) => gateLogs.push(m), { runTestFast: redRunner });
+
+    const stateAfter = readState(statePath);
+    assert.ok(stateAfter.post_final_verdict, 'a post_final_verdict must be recorded by the manager-token seam');
+    assert.equal(stateAfter.post_final_verdict.state, 'red');
+    assert.equal(stateAfter.post_final_verdict.degraded, true);
+    assert.ok(
+      stateAfter.last_between_ticket_gate.ts >= finalCommitTsMs(repo),
+      'the verdict must post-date the final commit, not predate it',
+    );
+
+    // Drive the same real finalize honesty gate the first test proves against the synthesis
+    // seam — proving this SECOND seam's verdict is consumed identically (one withholding wire,
+    // fed from either promise-synthesis path).
+    const runtime = makeRuntime(sessionDir, statePath);
+    const finalizeLogs = [];
+    runtime.log = (m) => finalizeLogs.push(m);
+    const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    const outcome = finalizePhaseSuccess(runtime, counters, path.join(sessionDir, 'pipeline-cancel'), 'pickle', 0, runtime.log);
+
+    assert.equal(outcome.action, 'continue', 'a degraded post-final verdict must never break the phase loop');
+    assert.equal(counters.nonConvergent, 1, 'a red post-final verdict reached via the manager-token seam must withhold success too');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// Reachability pin (the wiring-proof itself, not just behavior): a function existing and passing
+// its own unit test is not evidence it runs. `processTaskCompleted`'s call into
+// `runBetweenTicketFastGate` looked exactly this correct and was dead for its whole life. This
+// asserts the LIVE `runMuxRunnerMain` genuine-completion branch — identified by its adjacent,
+// unique 'Task completed. Exiting loop.' log line — actually calls the extracted seam, so a future
+// edit that reintroduces an inline duplicate (bypassing the exported, tested function) goes red.
+test('manager-token completion seam is called from the live runMuxRunnerMain branch, not a dead sibling', () => {
+  const src = fs.readFileSync(new URL('../src/bin/mux-runner.ts', import.meta.url), 'utf8');
+  const marker = "log('Task completed. Exiting loop.');";
+  const markerIndex = src.indexOf(marker);
+  assert.ok(markerIndex > 0, 'the genuine-completion log line must exist exactly where expected');
+  // Only one call site total: the live branch. (The unreachable processTaskCompleted's direct
+  // runBetweenTicketFastGate call is a different function entirely and is not this symbol.)
+  const callCount = (src.match(/runManagerTokenPostFinalMeasurement\(/g) || []).length;
+  assert.equal(callCount, 2, 'exactly one export + one call site: the definition, and the live call before "Task completed."');
+  const callIndex = src.indexOf('runManagerTokenPostFinalMeasurement(\n', src.indexOf('export function runManagerTokenPostFinalMeasurement') + 1);
+  assert.ok(callIndex > 0 && callIndex < markerIndex, 'the call must precede the genuine-completion log line, not follow it');
 });

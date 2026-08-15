@@ -911,6 +911,38 @@ export function runPostFinalMeasurement(
   return verdict;
 }
 
+/**
+ * R-NOPOSTTIER (AC-13): the manager-token completion seam's call into `runPostFinalMeasurement`.
+ * The model itself emitted EPIC_COMPLETED/TASK_COMPLETED and `evaluateEpicCompletion` verified it
+ * genuine — a second promise-synthesis path distinct from the proactive all-tickets-done scan in
+ * `applyAllTicketsDoneCompletion`, which owes the same verdict for the same reason. Extracted to
+ * its own exported function (rather than left inline in `runMuxRunnerMain`) so a test can drive
+ * this exact seam directly — the ticket 6f0e349f wiring-proof requirement — without needing to run
+ * the whole manager loop. `runPostFinalMeasurement` is itself total (never throws); the wrap here
+ * is belt-and-braces for the same reason `applyAllTicketsDoneCompletion` wraps its own call.
+ */
+export function runManagerTokenPostFinalMeasurement(
+  statePath: string,
+  workingDir: string,
+  completedTicketId: string,
+  log: (msg: string) => void,
+  deps: Pick<RunPostFinalMeasurementInput, 'now' | 'runTestFast' | 'finalCommitTs'> = {},
+): void {
+  try {
+    runPostFinalMeasurement({
+      statePath,
+      workingDir,
+      completedTicketId,
+      log,
+      now: deps.now,
+      runTestFast: deps.runTestFast,
+      finalCommitTs: deps.finalCommitTs,
+    });
+  } catch (err) {
+    log(`post-final tier measurement failed at the completion seam (ignored): ${safeErrorMessage(err)}`);
+  }
+}
+
 function formatWorkerGateFailureLine(failure: { name?: string; file?: string; message?: string }): string {
   const label = failure.file || failure.name || 'unknown';
   const message = failure.message || failure.name || 'unknown failure';
@@ -12032,6 +12064,19 @@ async function runMuxRunnerMain() {
         exitReason = exitForCloserTerminalState(statePath, sessionDir, iteration, closerDecision, log);
         break;
       }
+      // R-NOPOSTTIER (AC-13): this is the manager-token completion seam (the model
+      // itself emitted EPIC_COMPLETED/TASK_COMPLETED and evaluateEpicCompletion
+      // verified it genuine) — a second promise-synthesis path distinct from the
+      // proactive all-tickets-done scan in applyAllTicketsDoneCompletion. It owes
+      // the same verdict for the same reason: the bundle's final commit has
+      // landed and this is the last moment before finalizeIfTrulyComplete can
+      // turn it into a promise.
+      runManagerTokenPostFinalMeasurement(
+        statePath,
+        curState.working_dir || state.working_dir || '',
+        curState.current_ticket || 'all-tickets-done',
+        log,
+      );
       log('Task completed. Exiting loop.');
       // B-GROUND2 WS1: the EPIC-success finalize routes through the single
       // ground-truth authority — a residual pending ticket refuses the
