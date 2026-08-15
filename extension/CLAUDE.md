@@ -406,6 +406,7 @@ The system reliably adds guards and reliably fails to subtract them. This rule f
 - INVARIANT: `last_error` is the optional `ErrorRecord` snapshot of the most recent iteration error; runners write it before forensic deactivation. ENFORCE: extension/tests/state-field-invariants.test.js.
 - INVARIANT: `last_subprocess_error` is the optional `ErrorRecord` snapshot for the most recent worker subprocess error feeding worker-mode cap logic. ENFORCE: extension/tests/state-field-invariants.test.js.
 - INVARIANT: `last_between_ticket_gate` is the optional between-ticket gate evidence record (`{ts, ok, failures}`) used to short-circuit duplicate gate runs across consecutive tickets. ENFORCE: extension/tests/state-field-invariants.test.js.
+- INVARIANT: `post_final_verdict` is the optional post-final-commit classification record (`{state, degraded, dimensions}`) produced by `classifyPostFinalVerdict`; written by ticket 4dd2d658, not this ticket. ENFORCE: extension/tests/state-field-invariants.test.js.
 - INVARIANT: `consecutive_short_responses` counts degenerate manager replies and resets on substantive output. ENFORCE: extension/tests/state-field-invariants.test.js.
 - INVARIANT: `phases_entered` is a monotonically extending phase-refresh ledger. ENFORCE: extension/tests/state-field-invariants.test.js.
 - INVARIANT: `activity` stores append-only per-session activity records. ENFORCE: extension/tests/state-field-invariants.test.js.

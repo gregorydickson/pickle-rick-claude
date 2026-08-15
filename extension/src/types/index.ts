@@ -1,3 +1,14 @@
+/**
+ * R-NOPOSTTIER: classification of the fast-tier gate verdict AFTER the bundle's final commit.
+ * See classifyPostFinalVerdict (bin/mux-runner.ts) for the precedence rules that produce it.
+ */
+export type PostFinalVerdictState =
+  | 'green'
+  | 'red'
+  | 'inconclusive'
+  | 'absent'
+  | 'not_applicable';
+
 export interface State {
   active: boolean;
   working_dir: string;
@@ -138,6 +149,15 @@ export interface State {
       name: string;
       file: string;
     }>;
+  };
+  /**
+   * R-NOPOSTTIER: classification of the fast-tier gate verdict AFTER the bundle's final commit.
+   * Written by ticket 4dd2d658 (not this ticket) via classifyPostFinalVerdict.
+   */
+  post_final_verdict?: {
+    state: PostFinalVerdictState;
+    degraded: boolean;
+    dimensions: string[];
   };
   /** Forward-created by R-CCPM-3: orphan session paths detected at session-map read time. */
   orphans_detected?: string[];

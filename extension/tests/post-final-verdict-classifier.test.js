@@ -1,0 +1,145 @@
+// @tier: fast
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { classifyPostFinalVerdict } from '../bin/mux-runner.js';
+
+function gate({ ok = true, failures = [], timed_out = false, timeout_ms = null } = {}) {
+  return { ok, failures, timed_out, timeout_ms };
+}
+
+test('not_applicable when the working dir has no extension/, and it is NOT degraded', () => {
+  const result = classifyPostFinalVerdict({
+    gate: null,
+    applicable: false,
+    verdictTs: null,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'not_applicable');
+  assert.strictEqual(result.degraded, false);
+});
+
+test('timed_out: true classifies inconclusive with an EMPTY dimension list', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: false, timed_out: true, failures: [{ name: '__timeout__', file: 'npm run test:fast' }] }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'inconclusive');
+  assert.strictEqual(result.degraded, true);
+  assert.deepStrictEqual(result.dimensions, []);
+});
+
+test('a verdict whose ts pre-dates the final commit classifies absent, not red and not green', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: false, failures: [{ name: 'some_test', file: 'a.test.js' }] }),
+    applicable: true,
+    verdictTs: 50,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'absent');
+  assert.strictEqual(result.degraded, true);
+});
+
+test('verdictTs === finalCommitTs counts as fresh, not absent', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: true }),
+    applicable: true,
+    verdictTs: 100,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'green');
+});
+
+test('a red gate whose failures all appear in baselineFailures classifies green; adding any failure outside the baseline classifies red', () => {
+  const baselineOnly = classifyPostFinalVerdict({
+    gate: gate({ ok: false, failures: [{ name: 'flaky_a', file: 'a.test.js' }] }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: ['flaky_a'],
+  });
+  assert.strictEqual(baselineOnly.state, 'green');
+  assert.strictEqual(baselineOnly.degraded, false);
+
+  const withNewFailure = classifyPostFinalVerdict({
+    gate: gate({
+      ok: false,
+      failures: [
+        { name: 'flaky_a', file: 'a.test.js' },
+        { name: 'new_regression', file: 'b.test.js' },
+      ],
+    }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: ['flaky_a'],
+  });
+  assert.strictEqual(withNewFailure.state, 'red');
+  assert.strictEqual(withNewFailure.degraded, true);
+  assert.deepStrictEqual(withNewFailure.dimensions, ['flaky_a', 'new_regression']);
+});
+
+test('a bundle with zero commits classifies green and is NOT degraded', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: false, failures: [{ name: 'whatever', file: 'x.test.js' }] }),
+    applicable: true,
+    verdictTs: 50,
+    finalCommitTs: null,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'green');
+  assert.strictEqual(result.degraded, false);
+});
+
+test('garbage input classifies absent, never green', () => {
+  const result = classifyPostFinalVerdict({
+    gate: { garbage: true },
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'absent');
+  assert.strictEqual(result.degraded, true);
+});
+
+test('gate === null with applicable true classifies absent', () => {
+  const result = classifyPostFinalVerdict({
+    gate: null,
+    applicable: true,
+    verdictTs: null,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'absent');
+});
+
+test('a clean gate classifies green and is NOT degraded', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: true }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'green');
+  assert.strictEqual(result.degraded, false);
+});
+
+test('a red gate with failures outside an empty baseline classifies red with dimensions populated', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: false, failures: [{ name: 'real_regression', file: 'c.test.js' }] }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'red');
+  assert.strictEqual(result.degraded, true);
+  assert.deepStrictEqual(result.dimensions, ['real_regression']);
+});

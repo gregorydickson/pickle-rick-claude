@@ -646,6 +646,53 @@ export function runBetweenTicketFastGate(input) {
     input.log(`between-ticket fast gate for ${input.completedTicketId}: ${result.ok ? 'passed' : `failed (${result.failures.length} failure(s))`}`);
     return result;
 }
+function isMalformedGate(gate) {
+    if (gate === null)
+        return false;
+    return typeof gate !== 'object' || typeof gate.ok !== 'boolean' || !Array.isArray(gate.failures);
+}
+function isStaleVerdict(input) {
+    return (input.finalCommitTs !== null &&
+        input.verdictTs !== null &&
+        input.verdictTs < input.finalCommitTs);
+}
+function isBaselineOnlyFailureSet(failureNames, baselineFailures) {
+    const baselineSet = new Set(baselineFailures);
+    return failureNames.length > 0 && failureNames.every(name => baselineSet.has(name));
+}
+/**
+ * R-NOPOSTTIER: pure classification of the fast-tier gate verdict AFTER the bundle's final
+ * commit. Total function — never throws; unknown/garbage input classifies 'absent', never
+ * 'green'. No call site wires this yet (see ticket 4dd2d658).
+ */
+export function classifyPostFinalVerdict(input) {
+    const finalize = (state, dimensions) => ({
+        state,
+        degraded: state === 'red' || state === 'inconclusive' || state === 'absent',
+        dimensions,
+    });
+    if (!input.applicable)
+        return finalize('not_applicable', []);
+    const gate = input.gate;
+    if (isMalformedGate(gate))
+        return finalize('absent', []);
+    if (gate !== null && gate.timed_out === true)
+        return finalize('inconclusive', []);
+    if (gate === null)
+        return finalize('absent', []);
+    if (isStaleVerdict(input))
+        return finalize('absent', []);
+    if (input.verdictTs === null)
+        return finalize('absent', []);
+    if (input.finalCommitTs === null)
+        return finalize('green', []);
+    if (gate.ok)
+        return finalize('green', []);
+    const failureNames = gate.failures.map(f => f.name);
+    if (isBaselineOnlyFailureSet(failureNames, input.baselineFailures))
+        return finalize('green', []);
+    return finalize('red', failureNames);
+}
 function formatWorkerGateFailureLine(failure) {
     const label = failure.file || failure.name || 'unknown';
     const message = failure.message || failure.name || 'unknown failure';

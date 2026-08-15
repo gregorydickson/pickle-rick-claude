@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason } from '../types/index.js';
+import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
@@ -734,6 +734,73 @@ export function runBetweenTicketFastGate(input: RunBetweenTicketFastGateInput): 
     `between-ticket fast gate for ${input.completedTicketId}: ${result.ok ? 'passed' : `failed (${result.failures.length} failure(s))`}`,
   );
   return result;
+}
+
+export type ClassifyPostFinalVerdictInput = {
+  gate: BetweenTicketGateResult | null;
+  applicable: boolean;
+  verdictTs: number | null;
+  finalCommitTs: number | null;
+  baselineFailures: string[];
+};
+
+export type ClassifyPostFinalVerdictOutput = {
+  state: PostFinalVerdictState;
+  degraded: boolean;
+  dimensions: string[];
+};
+
+function isMalformedGate(gate: BetweenTicketGateResult | null): boolean {
+  if (gate === null) return false;
+  return typeof gate !== 'object' || typeof gate.ok !== 'boolean' || !Array.isArray(gate.failures);
+}
+
+function isStaleVerdict(input: ClassifyPostFinalVerdictInput): boolean {
+  return (
+    input.finalCommitTs !== null &&
+    input.verdictTs !== null &&
+    input.verdictTs < input.finalCommitTs
+  );
+}
+
+function isBaselineOnlyFailureSet(failureNames: string[], baselineFailures: string[]): boolean {
+  const baselineSet = new Set(baselineFailures);
+  return failureNames.length > 0 && failureNames.every(name => baselineSet.has(name));
+}
+
+/**
+ * R-NOPOSTTIER: pure classification of the fast-tier gate verdict AFTER the bundle's final
+ * commit. Total function — never throws; unknown/garbage input classifies 'absent', never
+ * 'green'. No call site wires this yet (see ticket 4dd2d658).
+ */
+export function classifyPostFinalVerdict(
+  input: ClassifyPostFinalVerdictInput,
+): ClassifyPostFinalVerdictOutput {
+  const finalize = (
+    state: PostFinalVerdictState,
+    dimensions: string[],
+  ): ClassifyPostFinalVerdictOutput => ({
+    state,
+    degraded: state === 'red' || state === 'inconclusive' || state === 'absent',
+    dimensions,
+  });
+
+  if (!input.applicable) return finalize('not_applicable', []);
+
+  const gate = input.gate;
+  if (isMalformedGate(gate)) return finalize('absent', []);
+  if (gate !== null && gate.timed_out === true) return finalize('inconclusive', []);
+  if (gate === null) return finalize('absent', []);
+  if (isStaleVerdict(input)) return finalize('absent', []);
+  if (input.verdictTs === null) return finalize('absent', []);
+
+  if (input.finalCommitTs === null) return finalize('green', []);
+  if (gate.ok) return finalize('green', []);
+
+  const failureNames = gate.failures.map(f => f.name);
+  if (isBaselineOnlyFailureSet(failureNames, input.baselineFailures)) return finalize('green', []);
+
+  return finalize('red', failureNames);
 }
 
 function formatWorkerGateFailureLine(failure: { name?: string; file?: string; message?: string }): string {
