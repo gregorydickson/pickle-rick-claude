@@ -91,12 +91,24 @@ function withContaminatedEnv(fn) {
 // process exit regardless of the flag, and spawning `node --test <file>` here would recurse into
 // this file's OWN outer `node --test` invocation, which node:test detects and silently no-ops
 // (warns "run() is being called recursively" and skips running the child's files entirely).
+//
+// Returns one `{ suite, result }` pair PER file. Collapsing them to a single result (the first
+// failure, else the first row) made every row's assertion read the same object, so a failure was
+// reported under whichever suite the assertion loop happened to be on rather than the one that
+// actually failed — already live for the two-row integration list.
 function spawnFiles(relativeFiles, env) {
-  const results = relativeFiles.map((file) =>
-    spawnSync('node', [file], { cwd: EXTENSION_ROOT, encoding: 'utf-8', timeout: SPAWN_TIMEOUT_MS, env }),
-  );
-  const failed = results.find((result) => result.status !== 0);
-  return failed ?? results[0];
+  return relativeFiles.map((suite) => ({
+    suite,
+    result: spawnSync('node', [suite], { cwd: EXTENSION_ROOT, encoding: 'utf-8', timeout: SPAWN_TIMEOUT_MS, env }),
+  }));
+}
+
+/** Asserts every spawned row exited 0, each against its OWN result. */
+function assertEveryRowExitedZero(rows, spawned) {
+  assert.equal(spawned.length, rows.length, 'every row must be spawned — a dropped file under-asserts');
+  for (const { suite, result } of spawned) {
+    assert.equal(result.status, 0, `${suite}: contaminated-parent spawn must exit 0 (stderr: ${(result.stderr ?? '').slice(-2000)})`);
+  }
 }
 
 // gitattr-hook-forwarding/gitattr-trailer-producer exercise real `git` behavior directly — the
@@ -128,10 +140,7 @@ test('AC-5: contaminated-parent fast-tier rows exit 0 through the real scrubGate
   const rows = CASES.filter((row) => row.tier === 'fast' && !row.pre_defended);
   assert.ok(rows.length > 0, 'expected at least one non-pre-defended fast row');
   withContaminatedEnv(() => {
-    const result = spawnPlainGate(rows.map((row) => row.suite));
-    for (const row of rows) {
-      assert.equal(result.status, 0, `${row.suite}: contaminated-parent fast spawn must exit 0 (stderr: ${result.stderr.slice(-2000)})`);
-    }
+    assertEveryRowExitedZero(rows, spawnPlainGate(rows.map((row) => row.suite)));
   });
 });
 
@@ -139,9 +148,6 @@ test('AC-5: contaminated-parent integration-tier rows exit 0 through the real sc
   const rows = CASES.filter((row) => row.tier === 'integration' && !row.pre_defended);
   assert.ok(rows.length > 0, 'expected at least one non-pre-defended integration row');
   withContaminatedEnv(() => {
-    const result = spawnScrubbedGate(rows.map((row) => row.suite));
-    for (const row of rows) {
-      assert.equal(result.status, 0, `${row.suite}: contaminated-parent integration spawn must exit 0 (stderr: ${result.stderr.slice(-2000)})`);
-    }
+    assertEveryRowExitedZero(rows, spawnScrubbedGate(rows.map((row) => row.suite)));
   });
 });
