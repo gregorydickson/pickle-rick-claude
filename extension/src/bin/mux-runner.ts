@@ -851,7 +851,15 @@ export type RunPostFinalMeasurementInput = {
 export function runPostFinalMeasurement(
   input: RunPostFinalMeasurementInput,
 ): ClassifyPostFinalVerdictOutput {
-  const applicable = input.workingDir !== ''
+  // Two facts, not one. `not_applicable` is POSITIVE — we looked at the working dir and it ships
+  // no `extension/` tier, so no verdict is owed and the bundle stays green (the repo-agnostic
+  // invariant). A blank working dir is the UNKNOWN: we could not look. Collapsing the unknown into
+  // the same boolean laundered it into `not_applicable`, the one non-degraded unknown state, and
+  // `pipeline-runner.ts:readDegradedPostFinalVerdict` reads a non-degraded verdict as fine — so a
+  // red tier under an unreadable working dir reported success. `runManagerTokenPostFinalMeasurement`
+  // is called with an explicit `|| ''` fallback, so this is a live input, not a phantom.
+  const workingDirKnown = input.workingDir.trim() !== '';
+  const applicable = workingDirKnown
     && fs.existsSync(path.join(input.workingDir, 'extension'));
 
   let gate: BetweenTicketGateResult | null = null;
@@ -890,7 +898,11 @@ export function runPostFinalMeasurement(
 
   const verdict = classifyPostFinalVerdict({
     gate,
-    applicable,
+    // An unknown working dir claims applicability so it does NOT take the `not_applicable` arm.
+    // The `if (applicable)` block above did not run, so `gate` is still null and the classifier's
+    // existing `gate === null` arm returns `absent`/degraded. No new arm, no new state, no widened
+    // interface — the unknown just stops borrowing the positive fact's exit.
+    applicable: applicable || !workingDirKnown,
     verdictTs,
     finalCommitTs,
     // No baseline failure set exists in state, so nothing can launder a real failure into green.

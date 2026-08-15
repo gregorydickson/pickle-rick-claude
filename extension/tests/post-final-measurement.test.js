@@ -26,6 +26,7 @@ import { execFileSync } from 'node:child_process';
 import {
   applyAllTicketsDoneCompletion,
   runBetweenTicketFastGate,
+  runPostFinalMeasurement,
   POST_FINAL_FAST_GATE_TIMEOUT_MS,
 } from '../bin/mux-runner.js';
 
@@ -290,6 +291,63 @@ test('a working dir with no extension/ is not_applicable and runs no tier', () =
     });
   } finally {
     ctx.cleanup();
+    fs.rmSync(bare, { recursive: true, force: true });
+  }
+});
+
+// Ticket f7f188f4 (audit, CRITICAL): `not_applicable` is a POSITIVE fact — we looked and the repo
+// ships no `extension/` tier. A BLANK working dir is the UNKNOWN. Before the fix both took the
+// same `applicable: false` arm, so "we could not look" classified `not_applicable`,
+// `degraded: false` — and `pipeline-runner.ts:readDegradedPostFinalVerdict` reads a non-degraded
+// verdict as fine, so a red tier under an unreadable working dir reported SUCCESS. That is the
+// fake-GREEN direction of the exact collapse this bundle exists to prevent.
+//
+// The two cases below are a matched pair and must stay that way: the blank-dir case alone would
+// also pass under a regression that collapsed BOTH inputs to `absent`, which would fake-RED every
+// off-repo bundle and break the repo-agnostic invariant. The `not_applicable` control is what
+// proves the fix DISTINGUISHES them rather than merging them the other way.
+test('a BLANK working dir is absent/degraded, never not_applicable (f7f188f4)', () => {
+  const sessionDir = makeTmp('post-final-blankwd-');
+  const statePath = makeSession(sessionDir, '');
+  const runner = stubRunner(GREEN);
+  try {
+    const verdict = runPostFinalMeasurement({
+      statePath,
+      workingDir: '',
+      completedTicketId: 'aaa',
+      log: () => {},
+      runTestFast: runner,
+    });
+    assert.equal(runner.calls.length, 0, 'an unknown working dir must not spawn a tier run');
+    // The returned verdict and the persisted one must agree — a divergence here is the same
+    // write-vs-read defect class the audit is tracing.
+    const expected = { state: 'absent', degraded: true, dimensions: [] };
+    assert.deepEqual(verdict, expected, 'returned verdict');
+    assert.deepEqual(readState(statePath).post_final_verdict, expected, 'persisted verdict');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('CONTROL: a real dir with no extension/ stays not_applicable, non-degraded (f7f188f4)', () => {
+  const sessionDir = makeTmp('post-final-baredir-');
+  const bare = makeTmp('post-final-bare-repo-');
+  const statePath = makeSession(sessionDir, bare);
+  const runner = stubRunner(GREEN);
+  try {
+    const verdict = runPostFinalMeasurement({
+      statePath,
+      workingDir: bare,
+      completedTicketId: 'aaa',
+      log: () => {},
+      runTestFast: runner,
+    });
+    assert.equal(runner.calls.length, 0);
+    const expected = { state: 'not_applicable', degraded: false, dimensions: [] };
+    assert.deepEqual(verdict, expected, 'off-repo bundles must NOT be marked degraded');
+    assert.deepEqual(readState(statePath).post_final_verdict, expected);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(bare, { recursive: true, force: true });
   }
 });
