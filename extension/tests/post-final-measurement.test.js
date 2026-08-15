@@ -221,6 +221,34 @@ test('a throwing measurement is classified absent and does NOT abort the run (AC
   }
 });
 
+test('a throw OUTSIDE the measurement\'s own try still cannot break the completion synthesis', () => {
+  // `now` is read before the inner try/catch, so a throwing clock exercises the seam-level wrap
+  // in applyAllTicketsDoneCompletion rather than the one inside runPostFinalMeasurement.
+  const sessionDir = makeTmp('post-final-seam-');
+  const repo = makeWorkingRepo();
+  try {
+    const statePath = makeSession(sessionDir, repo);
+    makeTicket(sessionDir, 'aaa', 'Done');
+    const logs = [];
+    const fired = applyAllTicketsDoneCompletion(
+      statePath, sessionDir, 1, m => logs.push(m), repo,
+      { runTestFast: stubRunner(GREEN), now: () => { throw new Error('clock exploded'); } },
+    );
+    assert.equal(fired, true, 'the completion synthesis must survive any measurement throw');
+    const state = readState(statePath);
+    assert.equal(state.exit_reason, 'completed');
+    assert.equal(state.step, 'completed');
+    assert.ok(state.completion_promise, 'the promise is still synthesized');
+    assert.ok(
+      logs.some(l => l.includes('post-final tier measurement failed at the completion seam')),
+      'the seam-level catch must log the swallowed failure',
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test('a red tier is recorded as red with its failing dimensions, and the run still completes', () => {
   const runner = stubRunner({
     ok: false,

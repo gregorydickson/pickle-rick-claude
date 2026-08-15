@@ -2366,15 +2366,22 @@ export function applyAllTicketsDoneCompletion(
   // verdict. Deliberately placed after the guards above: their `return false` branches synthesize
   // no promise, so they owe no verdict and must not pay for a tier run. The measurement is total —
   // it cannot abort the run — and it does not change the disposition (see `fa3d0f5a`).
-  runPostFinalMeasurement({
-    statePath,
-    workingDir,
-    completedTicketId: idStatuses[idStatuses.length - 1]?.id ?? 'all-tickets-done',
-    log,
-    now: deps.now,
-    runTestFast: deps.runTestFast,
-    finalCommitTs: deps.finalCommitTs,
-  });
+  // The wrap is belt-and-braces, not redundancy: `runPostFinalMeasurement` is written as a total
+  // function, and this keeps that true at the SEAM even if a future edit inside it grows a throwing
+  // path. A measurement must never be able to break the completion synthesis.
+  try {
+    runPostFinalMeasurement({
+      statePath,
+      workingDir,
+      completedTicketId: idStatuses[idStatuses.length - 1]?.id ?? 'all-tickets-done',
+      log,
+      now: deps.now,
+      runTestFast: deps.runTestFast,
+      finalCommitTs: deps.finalCommitTs,
+    });
+  } catch (err) {
+    log(`post-final tier measurement failed at the completion seam (ignored): ${safeErrorMessage(err)}`);
+  }
 
   const ts = new Date().toISOString();
   sm.update(statePath, s => {
