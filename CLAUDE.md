@@ -2,7 +2,17 @@
 
 PRD → Breakdown → Research → Plan → Implement → Verify → Review → Simplify.
 
-## 🛑 WHEN THE PIPELINE STOPS, RELIABILITY GOES TO ZERO — AND SO DOES QUALITY (operator-set, BINDING, governs everything below)
+## 🧭 PRIME DIRECTIVE (operator-set, BINDING, governs everything below)
+
+**If a pipeline exits, it takes reliability AND quality and all other metrics to zero.**
+
+**Autonomous execution must never be sacrificed.**
+
+**We achieve reliability first, then slowly work quality up on top of it.**
+
+Everything below elaborates this. Nothing below overrides it.
+
+## 🛑 WHEN THE PIPELINE STOPS, RELIABILITY GOES TO ZERO — AND SO DOES QUALITY (operator-set, BINDING, elaborates the PRIME DIRECTIVE)
 
 **A halted run produces no output. No output has no quality.** So a "quality gate" that stops the
 pipeline does not trade reliability for quality — it takes **both** to zero. A stopping gate is
