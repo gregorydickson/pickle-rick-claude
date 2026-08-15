@@ -289,6 +289,9 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'completion_finalize_refused',
         'phase_graduation_refused',
         'gate_parity_divergence',
+        // BUG-2026-08-14 ticket 70a67ccb (e4df9cce): per-session spawn-morty lock
+        // contention — a second worker spawn waited on the state-manager lock.
+        'worker_spawn_lock_contended',
     ];
     assert.equal(VALID_ACTIVITY_EVENTS.length, expected.length);
     for (const e of expected) {
