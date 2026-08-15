@@ -553,8 +553,8 @@ export function parseBetweenTicketFastGateFailures(output, workingDir) {
     const fallback = lines.map(line => line.trim()).find(Boolean) ?? 'npm run test:fast failed';
     return [{ name: fallback, file: '' }];
 }
-export function runBetweenTicketFastTests(extensionDir, extensionRoot = getExtensionRoot()) {
-    const timeoutMs = resolveWorkerTestGateTimeoutMs(extensionRoot);
+export function runBetweenTicketFastTests(extensionDir, extensionRoot = getExtensionRoot(), timeoutOverrideMs) {
+    const timeoutMs = timeoutOverrideMs ?? resolveWorkerTestGateTimeoutMs(extensionRoot);
     // B-OFFREPO (AC-OFFREPO-2d): resolve the package manager from the detected
     // project type rather than hardcoding `'npm'`. Shares spawn-morty's single
     // resolver (which reads the same `gate-commands.json` map) instead of growing a
@@ -594,9 +594,13 @@ export function runBetweenTicketFastGate(input) {
     const extensionDir = path.join(input.workingDir, 'extension');
     if (!fs.existsSync(extensionDir))
         return null;
-    const runTestFast = input.runTestFast ?? runBetweenTicketFastTests;
+    // Arity-2 adapter, NOT a bare `runBetweenTicketFastTests` reference: the seam's second
+    // parameter is a timeout, the function's second parameter is `extensionRoot`. Binding them
+    // directly would hand a number to a string parameter.
+    const runTestFast = input.runTestFast
+        ?? ((dir, timeoutMs) => runBetweenTicketFastTests(dir, getExtensionRoot(), timeoutMs));
     const ts = (input.now ?? Date.now)();
-    const result = runTestFast(extensionDir);
+    const result = runTestFast(extensionDir, input.timeoutMs);
     sm.update(input.statePath, state => {
         state.last_between_ticket_gate = {
             ts,
@@ -692,6 +696,84 @@ export function classifyPostFinalVerdict(input) {
     if (isBaselineOnlyFailureSet(failureNames, input.baselineFailures))
         return finalize('green', []);
     return finalize('red', failureNames);
+}
+/**
+ * R-NOPOSTTIER: the post-final fast tier measured 835042 ms in this repo, well above
+ * `DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS` (600_000, `services/pickle-utils.ts`). Inheriting that
+ * default would time the measurement out on every pickle-rick bundle and make `inconclusive` the
+ * steady state. This is a CALL-SITE argument, not a settings key — no new operator surface.
+ */
+export const POST_FINAL_FAST_GATE_TIMEOUT_MS = 1_800_000;
+/**
+ * R-NOPOSTTIER: measures the fast tier AFTER the bundle's final commit and BEFORE the completion
+ * promise is synthesized, classifies it with `classifyPostFinalVerdict`, and records the result on
+ * `state.post_final_verdict`.
+ *
+ * Total function — it never throws. A measurement that explodes (or a state file that will not
+ * take the write) is caught and classified `absent`/degraded, never `green`. It measures and
+ * reports only: no ticket is demoted, no work discarded, `exit_reason` is untouched. Acting on the
+ * verdict belongs to ticket `fa3d0f5a`.
+ */
+export function runPostFinalMeasurement(input) {
+    const applicable = input.workingDir !== ''
+        && fs.existsSync(path.join(input.workingDir, 'extension'));
+    let gate = null;
+    let verdictTs = null;
+    let finalCommitTs = null;
+    if (applicable) {
+        // Stamped once and injected into the gate so `last_between_ticket_gate.ts` and the
+        // classifier's `verdictTs` are the same number — `post_final_verdict` carries no `ts` of its
+        // own, so the gate's stamp IS the verdict's timestamp.
+        const ts = (input.now ?? Date.now)();
+        verdictTs = ts;
+        if (input.finalCommitTs !== undefined) {
+            finalCommitTs = input.finalCommitTs;
+        }
+        else {
+            const epochSeconds = gitCommitEpoch(input.workingDir, readHeadCommit(input.workingDir));
+            finalCommitTs = epochSeconds === null ? null : epochSeconds * 1000;
+        }
+        try {
+            gate = runBetweenTicketFastGate({
+                statePath: input.statePath,
+                workingDir: input.workingDir,
+                completedTicketId: input.completedTicketId,
+                nextTicketId: null,
+                landedStatus: 'done',
+                log: input.log,
+                now: () => ts,
+                timeoutMs: POST_FINAL_FAST_GATE_TIMEOUT_MS,
+                runTestFast: input.runTestFast,
+            });
+        }
+        catch (err) {
+            gate = null;
+            input.log(`post-final tier measurement threw (classified absent): ${safeErrorMessage(err)}`);
+        }
+    }
+    const verdict = classifyPostFinalVerdict({
+        gate,
+        applicable,
+        verdictTs,
+        finalCommitTs,
+        // No baseline failure set exists in state, so nothing can launder a real failure into green.
+        baselineFailures: [],
+    });
+    try {
+        sm.update(input.statePath, state => {
+            state.post_final_verdict = {
+                state: verdict.state,
+                degraded: verdict.degraded,
+                dimensions: verdict.dimensions,
+            };
+        });
+    }
+    catch (err) {
+        input.log(`post-final verdict not persisted (ignored): ${safeErrorMessage(err)}`);
+    }
+    const dimensionSuffix = verdict.dimensions.length > 0 ? ` — ${verdict.dimensions.join(', ')}` : '';
+    input.log(`post-final tier measurement: ${verdict.state}${verdict.degraded ? ' (degraded)' : ''}${dimensionSuffix}`);
+    return verdict;
 }
 function formatWorkerGateFailureLine(failure) {
     const label = failure.file || failure.name || 'unknown';
@@ -1915,7 +1997,7 @@ function collectRickTicketPaths(sessionDir) {
     }
     return ticketPaths;
 }
-export function applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, log, workingDir = '') {
+export function applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, log, workingDir = '', deps = {}) {
     const ticketPaths = collectRickTicketPaths(sessionDir);
     if (ticketPaths === null)
         return false;
@@ -1946,6 +2028,20 @@ export function applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, 
         log(`false-completion guard: ${nonTerminal.length} non-terminal ticket(s) detected — refusing all-done finalize`);
         return false;
     }
+    // R-NOPOSTTIER: the bundle's final commit has landed and every ticket is terminal, so THIS is
+    // the last moment before the promise exists. Measure the fast tier here and record a classified
+    // verdict. Deliberately placed after the guards above: their `return false` branches synthesize
+    // no promise, so they owe no verdict and must not pay for a tier run. The measurement is total —
+    // it cannot abort the run — and it does not change the disposition (see `fa3d0f5a`).
+    runPostFinalMeasurement({
+        statePath,
+        workingDir,
+        completedTicketId: idStatuses[idStatuses.length - 1]?.id ?? 'all-tickets-done',
+        log,
+        now: deps.now,
+        runTestFast: deps.runTestFast,
+        finalCommitTs: deps.finalCommitTs,
+    });
     const ts = new Date().toISOString();
     sm.update(statePath, s => {
         s.completion_promise = JSON.stringify({ kind: PromiseTokens.EPIC_COMPLETED, reason: 'all-tickets-done', ts });
