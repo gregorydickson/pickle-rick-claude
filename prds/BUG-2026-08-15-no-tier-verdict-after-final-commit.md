@@ -274,3 +274,35 @@ one.
 5. **Is a fix at this seam load-bearing for anything else?** Yes, decisively. Every bundle's green
    currently requires an operator-run measurement to be believed — that is a human in the loop on every
    single run. This is the fix that makes an unattended green mean something.
+
+---
+
+## Implementation Task Breakdown
+
+*(refined: requirements / codebase / risk-scope analyst team, 2026-08-15, 1 cycle, all_success)*
+
+| Order | ID | Title | Tier | Priority | Entry | Exit | Files |
+|:---|:---|:---|:---|:---|:---|:---|:---|
+| 10 | `00e44626` | Add the post-final verdict classifier and its state field | medium | High | HEAD green | Pure classifier exported + tested; no behavior change | `mux-runner.ts`, `types/index.ts`, `activity-events.schema.json`, `tests/post-final-verdict-classifier.test.js` |
+| 20 | `4dd2d658` | Run the post-final tier measurement at the completion-synthesis seam | large | High | `00e44626` Done | Every `all-tickets-done` promise is preceded by a fresh classified verdict | `mux-runner.ts`, `tests/post-final-measurement.test.js` |
+| 30 | `fa3d0f5a` | Withhold success through the existing `nonConvergent` wire, and surface it | large | High | `4dd2d658` Done | Degraded verdict withholds success and is operator-visible; run still completes | `pipeline-runner.ts`, `mux-runner.ts`, `tests/pipeline-finalize-honesty.test.js`, `tests/nostop-gates-phase-loop.test.js` |
+| 40 | `9aa67006` | Pin the `completion_promise` string so the stop hook still terminates the loop | medium | High | `fa3d0f5a` Done | Promise string proven byte-identical; degraded completion still terminates | `tests/stop-hook-promise-invariance.test.js` (source change only if a defect is found) |
+| 50 | `34930a4e` | Add the `b88a6603` regression oracle | medium | High | 10–40 Done | One test reproduces the original failure and goes red if either defect returns | `tests/post-final-verdict-oracle.test.js` |
+| 60 | `6f0e349f` | Wire: prove the verdict is reached on every completion seam | medium | High | 10–50 Done | No dead scaffolding; all three seams enumerated and dispositioned | `mux-runner.ts`, `pipeline-runner.ts`, `tests/post-final-verdict-oracle.test.js` |
+| 70 | `00993821` | Harden: code quality review | large | High | All impl Done | Zero P0-P1 violations across the union diff | union of MODIFIED_FILES |
+| 80 | `f7f188f4` | Audit: data flow integrity | large | High | `00993821` Done | `not_applicable` proven distinct from `absent` end-to-end | union of MODIFIED_FILES |
+| 90 | `98975761` | Harden: test quality review | large | High | `f7f188f4` Done | Every AC mapped; every critical assertion proven able to go red | this bundle's test files |
+| 100 | `f2196b0c` | Audit: cross-reference consistency | medium | High | `98975761` Done | Symbol enumerations updated; no doc claims a new setting/env surface | `CLAUDE.md`, `src/bin/CLAUDE.md`, `src/services/CLAUDE.md`, `README.md` |
+
+### Decomposition notes
+
+- **Order is the dependency graph.** 10 is pure logic with no call-site change; 20 wires it into the
+  defect seam; 30 acts on it; 40 pins the contract 30 could have broken; 50 proves the whole thing; 60
+  proves nothing is dead.
+- **`ac_shape_smells` was empty** — no AC in this PRD exhibits endpoint-enumeration shape, so no ticket
+  needed a `justification` block or a `describe.each` collapse.
+- **Tiering**: every ticket touches the orchestrator or completion machinery, so none is `small` per the
+  tiering rule. `4dd2d658` and `fa3d0f5a` are `large` (cross-cutting orchestrator edits with end-to-end
+  verification).
+- **`9aa67006` may land tests-only.** That is a success, not an under-delivery: it proves the other
+  tickets kept the promise-string contract.
