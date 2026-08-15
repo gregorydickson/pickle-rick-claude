@@ -667,7 +667,7 @@ function isBaselineOnlyFailureSet(failureNames, baselineFailures) {
 /**
  * R-NOPOSTTIER: pure classification of the fast-tier gate verdict AFTER the bundle's final
  * commit. Total function — never throws; unknown/garbage input classifies 'absent', never
- * 'green'. No call site wires this yet (see ticket 4dd2d658).
+ * 'green'. Wired by `runPostFinalMeasurement` below, at both promise-synthesis seams.
  */
 export function classifyPostFinalVerdict(input) {
     const finalize = (state, dimensions) => ({
@@ -688,8 +688,12 @@ export function classifyPostFinalVerdict(input) {
         return finalize('absent', []);
     if (input.verdictTs === null)
         return finalize('absent', []);
-    if (input.finalCommitTs === null)
-        return finalize('green', []);
+    // The GATE RESULT is read before anything derived from `finalCommitTs`. That timestamp is a
+    // staleness-check input only (`isStaleVerdict` above) and it must never decide the tier verdict:
+    // `gitCommitEpoch`/`readHeadCommit` collapse EVERY git-probe failure to null — unreadable HEAD,
+    // `git show` timeout, a non-repo working dir — so a `finalCommitTs === null` arm placed here
+    // would classify a genuinely RED tier as 'green' whenever the probe failed. A red gate stays red
+    // no matter how little we know about the commit it followed.
     if (gate.ok)
         return finalize('green', []);
     const failureNames = gate.failures.map(f => f.name);

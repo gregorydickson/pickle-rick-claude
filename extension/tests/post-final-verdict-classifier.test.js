@@ -84,13 +84,55 @@ test('a red gate whose failures all appear in baselineFailures classifies green;
   assert.deepStrictEqual(withNewFailure.dimensions, ['flaky_a', 'new_regression']);
 });
 
-test('a bundle with zero commits classifies green and is NOT degraded', () => {
+// `finalCommitTs === null` is NOT a synonym for "the bundle committed nothing": `gitCommitEpoch` /
+// `readHeadCommit` (mux-runner.ts) collapse every git-probe failure to null — unreadable HEAD,
+// a `git show` timeout, a non-repo working dir. The four cases below pin that an unknown commit
+// time only ever suppresses the STALENESS check; it never decides the tier verdict.
+test('a CLEAN gate with an unknown final-commit time classifies green and is NOT degraded', () => {
   const result = classifyPostFinalVerdict({
-    gate: gate({ ok: false, failures: [{ name: 'whatever', file: 'x.test.js' }] }),
+    gate: gate({ ok: true }),
     applicable: true,
     verdictTs: 50,
     finalCommitTs: null,
     baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'green');
+  assert.strictEqual(result.degraded, false);
+});
+
+test('an unknown final-commit time must NOT launder a RED gate into green', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: false, failures: [{ name: 'real_regression', file: 'x.test.js' }] }),
+    applicable: true,
+    verdictTs: 50,
+    finalCommitTs: null,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'red');
+  assert.strictEqual(result.degraded, true);
+  assert.deepStrictEqual(result.dimensions, ['real_regression']);
+});
+
+test('an unknown final-commit time does not outrank the timeout branch: still inconclusive', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: false, timed_out: true, failures: [{ name: '__timeout__', file: 'npm run test:fast' }] }),
+    applicable: true,
+    verdictTs: 50,
+    finalCommitTs: null,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'inconclusive');
+  assert.strictEqual(result.degraded, true);
+  assert.deepStrictEqual(result.dimensions, []);
+});
+
+test('an unknown final-commit time does not bypass baseline subtraction: baseline-only stays green', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: false, failures: [{ name: 'flaky_a', file: 'a.test.js' }] }),
+    applicable: true,
+    verdictTs: 50,
+    finalCommitTs: null,
+    baselineFailures: ['flaky_a'],
   });
   assert.strictEqual(result.state, 'green');
   assert.strictEqual(result.degraded, false);
