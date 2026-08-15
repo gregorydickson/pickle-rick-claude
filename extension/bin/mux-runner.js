@@ -719,28 +719,23 @@ export const POST_FINAL_FAST_GATE_TIMEOUT_MS = 1_800_000;
  * verdict belongs to ticket `fa3d0f5a`.
  */
 export function runPostFinalMeasurement(input) {
-    // Two facts, not one. `not_applicable` is POSITIVE — we looked at the working dir and it ships
-    // no `extension/` tier, so no verdict is owed and the bundle stays green (the repo-agnostic
-    // invariant). A blank working dir is the UNKNOWN: we could not look. Collapsing the unknown into
-    // the same boolean laundered it into `not_applicable`, the one non-degraded unknown state, and
-    // `pipeline-runner.ts:readDegradedPostFinalVerdict` reads a non-degraded verdict as fine — so a
-    // red tier under an unreadable working dir reported success. `runManagerTokenPostFinalMeasurement`
-    // is called with an explicit `|| ''` fallback, so this is a live input, not a phantom.
-    // No initializers: both the try and the catch assign, so an initializer here would be dead
-    // (`no-useless-assignment`) AND would quietly become the value a future early-return reads.
+    // Two facts, not one, because `not_applicable` and `absent` are not the same claim.
+    // `not_applicable` is POSITIVE — we looked at the working dir and it ships no `extension/` tier,
+    // so no verdict is owed and the off-repo bundle stays green (the repo-agnostic invariant).
+    // `absent` is the UNKNOWN — we could not look. `pipeline-runner.ts:readDegradedPostFinalVerdict`
+    // keys only on `degraded`, so the non-degraded state is reported as success; anything we failed
+    // to establish must therefore land on `absent`, never borrow the positive fact's exit.
+    // `workingDirKnown` carries no initializer: the try and the catch both assign it, so one would
+    // be dead (`no-useless-assignment`).
     let workingDirKnown;
     let applicable = false;
     let gate = null;
     let verdictTs = null;
     let finalCommitTs = null;
     // ONE try over the WHOLE measurement, not just the gate call. The applicability probe, the clock
-    // read and the git probe used to sit above a narrower try, so a throw in any of them escaped the
-    // function entirely and `state.post_final_verdict` was never written at all — which
-    // `pipeline-runner.ts:readDegradedPostFinalVerdict` reads as null, i.e. non-degraded, i.e.
-    // success. An unwritten verdict is the same fake-green as a green one. Every throw now lands
-    // here, and every landing yields `absent`/degraded: if the probe threw, `workingDirKnown` is
-    // still false so the classifier arm below claims applicability; if it did not, `gate` is null.
-    // Either way the classifier's existing `gate === null` arm answers.
+    // read and the git probe used to sit above a narrower try, so a throw in any of them escaped this
+    // function and left `state.post_final_verdict` unwritten — which the consumer reads as null, i.e.
+    // non-degraded, i.e. success. An unwritten verdict is the same fake-green as a green one.
     try {
         workingDirKnown = input.workingDir.trim() !== '';
         applicable = workingDirKnown
@@ -773,21 +768,17 @@ export function runPostFinalMeasurement(input) {
     }
     catch (err) {
         gate = null;
-        // Clearing this is what makes "any throw lands on `absent`" STRUCTURAL rather than a property
-        // of which statement happened to throw. A throw between `workingDirKnown = true` and the
-        // `applicable` assignment would otherwise leave `true`/`false` — and `applicable ||
-        // !workingDirKnown` reads that pair as `not_applicable`, the non-degraded arm, which is the
-        // exact laundering this ticket closed one line above. A throw means we never established the
-        // facts, so the honest state is the unknown one.
+        // Clearing this makes "any throw lands on `absent`" structural rather than a property of WHICH
+        // statement threw: a throw between the two assignments below would otherwise leave the pair
+        // `true`/`false`, which the classifier arm reads as `not_applicable` — the non-degraded state.
         workingDirKnown = false;
         input.log(`post-final tier measurement threw (classified absent): ${safeErrorMessage(err)}`);
     }
     const verdict = classifyPostFinalVerdict({
         gate,
-        // An unknown working dir claims applicability so it does NOT take the `not_applicable` arm.
-        // The `if (applicable)` block above did not run, so `gate` is still null and the classifier's
-        // existing `gate === null` arm returns `absent`/degraded. No new arm, no new state, no widened
-        // interface — the unknown just stops borrowing the positive fact's exit.
+        // An unknown working dir CLAIMS applicability so it skips the `not_applicable` arm. The
+        // `if (applicable)` block did not run, so `gate` is null and the classifier's existing
+        // `gate === null` arm answers `absent`/degraded — no new arm, state, or interface field.
         applicable: applicable || !workingDirKnown,
         verdictTs,
         finalCommitTs,
