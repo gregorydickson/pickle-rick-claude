@@ -4788,7 +4788,7 @@ function withholdForDegradedPostFinalVerdict(
   const prior = counters.phaseDispositions[rawPhase];
   counters.phaseDispositions[rawPhase] = prior ? `${prior}; ${marker}` : marker;
   const detail = verdict.dimensions.length > 0 ? ` — ${verdict.dimensions.join(', ')}` : '';
-  log(`Phase ${rawPhase}: post-final tier verdict is ${verdict.state} — withholding success verdict (${marker})${detail}`);
+  log(`Phase ${rawPhase}: ${marker} — withholding success verdict${detail}`);
   try { writeRunningStatus(runtime, counters, null); } catch { /* non-blocking */ }
 }
 
