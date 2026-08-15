@@ -299,6 +299,64 @@ test('scrubGateEnv deletes keys rather than setting them undefined', () => {
   assert.equal(result.PATH, '/usr/bin');
 });
 
+// GIT_CONFIG_COUNT governs how many indexed pairs the compose site wrote, so it is the field most
+// likely to drive a scrub implementation that reads the count instead of matching every present key.
+// Three shapes, each built from its own literal (no shared mutable fixture): the count absent
+// entirely, the count at '0' with no pairs, and the count at '3' with all three pairs.
+for (const [label, input] of [
+  [
+    'GIT_CONFIG_COUNT absent',
+    {
+      PICKLE_WORKER_TEST_FAST_TIMEOUT_MS: '1800000',
+      PICKLE_TICKET_ID: 'edge-absent',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      PATH: '/usr/bin',
+    },
+  ],
+  [
+    'GIT_CONFIG_COUNT "0" with no indexed pairs',
+    {
+      PICKLE_WORKER_TEST_FAST_TIMEOUT_MS: '1800000',
+      PICKLE_TICKET_ID: 'edge-zero',
+      GIT_CONFIG_COUNT: '0',
+      PATH: '/usr/bin',
+    },
+  ],
+  [
+    'GIT_CONFIG_COUNT "3" with three indexed pairs',
+    {
+      PICKLE_TICKET_ID: 'edge-three',
+      GIT_CONFIG_COUNT: '3',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: '/tmp/whatever',
+      GIT_CONFIG_KEY_1: 'user.name',
+      GIT_CONFIG_VALUE_1: 'contaminated',
+      GIT_CONFIG_KEY_2: 'user.email',
+      GIT_CONFIG_VALUE_2: 'contaminated@example.invalid',
+      PATH: '/usr/bin',
+    },
+  ],
+]) {
+  test(`scrubGateEnv removes the right key set and never throws: ${label}`, () => {
+    const inputKeys = Object.keys(input);
+    const doomed = inputKeys.filter(
+      k => PICKLE_GATE_SCRUBBED_ENV_KEYS.includes(k) || GIT_CONFIG_INDEXED_ENV_KEY_RE.test(k)
+    );
+    const survivors = inputKeys.filter(k => !doomed.includes(k));
+    // Non-vacuity: both halves of the claim must have something to say.
+    assert.ok(doomed.length > 0, 'case must contaminate with at least one scrubbed key');
+    assert.deepEqual(survivors, ['PATH'], 'case must carry exactly one surviving key');
+
+    const result = scrubGateEnv(input);
+
+    for (const key of doomed) assert.ok(!(key in result), `${key} must be absent from the scrubbed copy`);
+    assert.equal(result.PATH, '/usr/bin', 'a non-pickle key must survive with its exact value');
+    // The scrub is a copy: the caller's object is untouched whatever the count says.
+    for (const key of inputKeys) assert.ok(key in input, `${key} must still be present on the input`);
+    assert.equal(Object.keys(input).length, inputKeys.length, 'input must gain no keys either');
+  });
+}
+
 // The caller's env object is shared — `mux-runner.ts:649` and `spawn-morty.ts:1330` both call
 // `scrubGateEnv()` with the default `process.env`, so a `delete env[k]` implementation would strip
 // the launching process's OWN trailer fragment and silently un-attribute every later worker commit.
