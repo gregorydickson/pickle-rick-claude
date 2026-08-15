@@ -46,6 +46,21 @@ const CONTAMINATION_INDEXED_KEYS = Object.keys(CONTAMINATION).filter(k =>
   GIT_CONFIG_INDEXED_ENV_KEY_RE.test(k)
 );
 
+/**
+ * Asserts `env` carries no scrubbed key — the fixed set plus every indexed pair the fixture
+ * contaminates with. The length check is a non-vacuity guard: without it, a fixture edit that
+ * dropped the indexed pairs would make the loop iterate nothing and pass.
+ */
+function assertScrubbedKeysAbsent(env, label) {
+  for (const key of PICKLE_GATE_SCRUBBED_ENV_KEYS) {
+    assert.ok(!(key in env), `${key} must be absent from ${label}`);
+  }
+  assert.equal(CONTAMINATION_INDEXED_KEYS.length, 6, 'fixture must carry three indexed pairs');
+  for (const key of CONTAMINATION_INDEXED_KEYS) {
+    assert.ok(!(key in env), `${key} must be absent from ${label}`);
+  }
+}
+
 const KEEP_SET = ['PATH', 'HOME', 'PICKLE_BACKEND', 'PICKLE_TEST_MODE'];
 
 function makeGateFixture() {
@@ -123,9 +138,7 @@ test('AC-1/AC-2: runWorkerGateTestCommand (spawn-morty test-gate spawn) scrubs t
     const result = await runWorkerGateTestCommand('test:fast', fixtureDir, 600_000);
     assert.equal(result.ok, true);
     const childEnv = readDumpedEnv(dumpOut);
-    for (const key of PICKLE_GATE_SCRUBBED_ENV_KEYS) assert.ok(!(key in childEnv), `${key} must be absent`);
-    assert.equal(CONTAMINATION_INDEXED_KEYS.length, 6, 'fixture must carry three indexed pairs');
-    for (const key of CONTAMINATION_INDEXED_KEYS) assert.ok(!(key in childEnv), `${key} must be absent`);
+    assertScrubbedKeysAbsent(childEnv, 'the gate child env');
     for (const key of KEEP_SET) assert.ok(key in childEnv, `${key} must survive`);
 
     const resolvedTimeout = resolveWorkerTestGateTimeoutMs(undefined, null, childEnv);
@@ -139,9 +152,7 @@ test('AC-1: runBetweenTicketFastTests (mux-runner test-gate spawn) scrubs the ga
     const result = runBetweenTicketFastTests(fixtureDir, fixtureDir);
     assert.equal(result.ok, true);
     const childEnv = readDumpedEnv(dumpOut);
-    for (const key of PICKLE_GATE_SCRUBBED_ENV_KEYS) assert.ok(!(key in childEnv), `${key} must be absent`);
-    assert.equal(CONTAMINATION_INDEXED_KEYS.length, 6, 'fixture must carry three indexed pairs');
-    for (const key of CONTAMINATION_INDEXED_KEYS) assert.ok(!(key in childEnv), `${key} must be absent`);
+    assertScrubbedKeysAbsent(childEnv, 'the gate child env');
     for (const key of KEEP_SET) assert.ok(key in childEnv, `${key} must survive`);
   });
 });
@@ -233,8 +244,7 @@ test('the trailer-compose env key names are scrub-list members and never undefin
 
 test('scrubGateEnv deletes keys rather than setting them undefined', () => {
   const result = scrubGateEnv({ ...CONTAMINATION, PATH: '/usr/bin' });
-  for (const key of PICKLE_GATE_SCRUBBED_ENV_KEYS) assert.ok(!(key in result));
-  for (const key of CONTAMINATION_INDEXED_KEYS) assert.ok(!(key in result), `${key} must be absent`);
+  assertScrubbedKeysAbsent(result, 'the scrubbed copy');
   assert.equal(result.PATH, '/usr/bin');
 });
 
