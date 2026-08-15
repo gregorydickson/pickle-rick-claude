@@ -23,7 +23,7 @@ test('settings-loader: default worker_test_gate_timeout_ms applies when key is a
       default_worker_timeout_seconds: 1200,
     }, null, 2));
 
-    assert.equal(resolveWorkerTestGateTimeoutMs(extensionRoot), 600_000);
+    assert.equal(resolveWorkerTestGateTimeoutMs(extensionRoot, undefined, {}), 600_000);
   });
 });
 
@@ -33,7 +33,7 @@ test('settings-loader: override worker_test_gate_timeout_ms is honored', () => {
       worker_test_gate_timeout_ms: 12_345,
     }, null, 2));
 
-    assert.equal(resolveWorkerTestGateTimeoutMs(extensionRoot), 12_345);
+    assert.equal(resolveWorkerTestGateTimeoutMs(extensionRoot, undefined, {}), 12_345);
   });
 });
 

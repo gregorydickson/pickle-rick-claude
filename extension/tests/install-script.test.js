@@ -829,7 +829,7 @@ describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
       const result = runKillSwitchForceFixture(fixture);
       assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
       const producedRoot = path.dirname(fixture.deployedSettingsPath);
-      assert.equal(resolveWorkerTestGateTimeoutMs(producedRoot), 600_000);
+      assert.equal(resolveWorkerTestGateTimeoutMs(producedRoot, undefined, {}), 600_000);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }

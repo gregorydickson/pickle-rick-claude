@@ -67,6 +67,21 @@ function withPathPrefix(prefix, fn) {
   }
 }
 
+// runBetweenTicketFastTests resolves its gate timeout via resolveWorkerTestGateTimeoutMs's
+// default `env = process.env` param, so a launching shell that already exports
+// PICKLE_WORKER_TEST_FAST_TIMEOUT_MS overrides the pickle_settings.json fixture value these
+// tests pin against. Strip it for the duration of the call, same shape as withPathPrefix.
+function withCleanGateTimeoutEnv(fn) {
+  const original = process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS;
+  delete process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS;
+  try {
+    return fn();
+  } finally {
+    if (original === undefined) delete process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS;
+    else process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS = original;
+  }
+}
+
 test('mux-runner-between-ticket-gate: Done prior ticket emits cross_ticket_regression_detected and persists state', () => {
   const root = makeRoot('pickle-mux-between-done-');
   try {
@@ -202,7 +217,7 @@ test('mux-runner-between-ticket-gate: timeout emits dedicated timeout event and 
     chmodSync(npmShim, 0o755);
 
     process.env.EXTENSION_DIR = root;
-    const result = withPathPrefix(shimDir, () => runBetweenTicketFastGate({
+    const result = withCleanGateTimeoutEnv(() => withPathPrefix(shimDir, () => runBetweenTicketFastGate({
       statePath,
       workingDir: root,
       completedTicketId: 'aaaa1111',
@@ -211,7 +226,7 @@ test('mux-runner-between-ticket-gate: timeout emits dedicated timeout event and 
       log: () => {},
       now: () => 7777,
       runTestFast: undefined,
-    }));
+    })));
 
     assert.deepEqual(result, {
       ok: false,
@@ -276,7 +291,7 @@ test('mux-runner-between-ticket-gate: runBetweenTicketFastTests returns timeout 
     chmodSync(npmShim, 0o755);
 
     process.env.EXTENSION_DIR = root;
-    const result = withPathPrefix(shimDir, () => runBetweenTicketFastTests(extensionDir));
+    const result = withCleanGateTimeoutEnv(() => withPathPrefix(shimDir, () => runBetweenTicketFastTests(extensionDir)));
 
     assert.deepEqual(result, {
       ok: false,
