@@ -33,6 +33,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { isProcessAlive, writeActivityEntry } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
@@ -75,6 +76,14 @@ export type WorkerProcCandidate = {
   command: string;
   /** Session dir under the sessions root resolved from argv `--add-dir`, or null when unattributable. */
   owningSessionDir: string | null;
+  /**
+   * `'worker'` — a codex/claude worker-shaped command (owning session resolved
+   * via `--add-dir`, subject to the R-CXHANG positive-ownership reject).
+   * `'tmp_fixture'` (WS-1) — a process whose argv resolves to a path anchored
+   * under `os.tmpdir()` in a `pickle-*` first segment; has no owning session
+   * by construction (`owningSessionDir` stays null) and is gated by age alone.
+   */
+  kind: 'worker' | 'tmp_fixture';
 };
 
 /** Parse `ps` etime (`[[dd-]hh:]mm:ss`) into seconds; null on malformed input. */
@@ -134,6 +143,26 @@ function resolveOwningSessionDir(command: string, sessionsRoot: string): string 
   return null;
 }
 
+/**
+ * WS-1 positive-path match for tmp-prefix fixture orphans: an argv token that
+ * resolves to an ABSOLUTE path whose first path segment beneath
+ * `os.tmpdir()` begins with `pickle-`. Never a substring match against argv
+ * text — a token merely containing the string "pickle-" (e.g. prompt prose)
+ * does not match unless it is itself a path anchored under tmpdir.
+ */
+function resolveTmpPrefixFixturePath(command: string): string | null {
+  const tmpRoot = path.resolve(os.tmpdir());
+  const tmpRootPrefix = tmpRoot + path.sep;
+  for (const token of command.split(/\s+/)) {
+    if (!token.startsWith('/')) continue;
+    const resolved = path.resolve(token);
+    if (!resolved.startsWith(tmpRootPrefix)) continue;
+    const firstSegment = resolved.slice(tmpRootPrefix.length).split(path.sep)[0];
+    if (firstSegment && firstSegment.startsWith('pickle-')) return resolved;
+  }
+  return null;
+}
+
 /** Parse a base-10 ps column into a finite integer; -1 on malformed input. */
 function parsePsInt(raw: string): number {
   const value = Number(raw);
@@ -154,15 +183,29 @@ export function parseWorkerProcsFromPs(psOutput: string, sessionsRoot: string): 
     const etimeSeconds = parsePsElapsedSeconds(match[4]);
     const command = match[5].trim();
     if (pid <= 0 || pgid <= 0 || ppid < 0 || etimeSeconds === null) continue;
-    if (!isWorkerShapedCommand(command)) continue;
-    results.push({
-      pid,
-      pgid,
-      ppid,
-      etime_seconds: etimeSeconds,
-      command,
-      owningSessionDir: resolveOwningSessionDir(command, sessionsRoot),
-    });
+    if (isWorkerShapedCommand(command)) {
+      results.push({
+        pid,
+        pgid,
+        ppid,
+        etime_seconds: etimeSeconds,
+        command,
+        owningSessionDir: resolveOwningSessionDir(command, sessionsRoot),
+        kind: 'worker',
+      });
+      continue;
+    }
+    if (resolveTmpPrefixFixturePath(command) !== null) {
+      results.push({
+        pid,
+        pgid,
+        ppid,
+        etime_seconds: etimeSeconds,
+        command,
+        owningSessionDir: null,
+        kind: 'tmp_fixture',
+      });
+    }
   }
   return results;
 }
@@ -267,9 +310,15 @@ function isReapableOrphan(cand: WorkerProcCandidate, rt: ReapRuntime, reapedPgid
   if (cand.pid === process.pid || cand.pid === process.ppid) return false;
   if (cand.pgid === process.pid || cand.pgid === process.ppid) return false;
   if (reapedPgids.has(cand.pgid)) return false;
-  if (cand.owningSessionDir === null) return false;
+  // The tmp-prefix fixture class (WS-1) has no owning session by construction
+  // (see WorkerProcCandidate.kind) — the null reject below applies only to
+  // the codex/claude worker class, which keeps the R-CXHANG positive-
+  // ownership invariant fully intact.
+  const { owningSessionDir } = cand;
+  if (cand.kind !== 'tmp_fixture' && owningSessionDir === null) return false;
   if (cand.etime_seconds < rt.minAgeSeconds) return false;
-  return !isOwningSessionLive(cand.owningSessionDir, rt.isAlive);
+  if (cand.kind === 'tmp_fixture' || owningSessionDir === null) return true;
+  return !isOwningSessionLive(owningSessionDir, rt.isAlive);
 }
 
 /** Reuse the spawn-morty escalation shape: group SIGTERM → grace → group SIGKILL. */

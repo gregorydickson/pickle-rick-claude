@@ -33,6 +33,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { isProcessAlive, writeActivityEntry } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
@@ -122,6 +123,28 @@ function resolveOwningSessionDir(command, sessionsRoot) {
     }
     return null;
 }
+/**
+ * WS-1 positive-path match for tmp-prefix fixture orphans: an argv token that
+ * resolves to an ABSOLUTE path whose first path segment beneath
+ * `os.tmpdir()` begins with `pickle-`. Never a substring match against argv
+ * text — a token merely containing the string "pickle-" (e.g. prompt prose)
+ * does not match unless it is itself a path anchored under tmpdir.
+ */
+function resolveTmpPrefixFixturePath(command) {
+    const tmpRoot = path.resolve(os.tmpdir());
+    const tmpRootPrefix = tmpRoot + path.sep;
+    for (const token of command.split(/\s+/)) {
+        if (!token.startsWith('/'))
+            continue;
+        const resolved = path.resolve(token);
+        if (!resolved.startsWith(tmpRootPrefix))
+            continue;
+        const firstSegment = resolved.slice(tmpRootPrefix.length).split(path.sep)[0];
+        if (firstSegment && firstSegment.startsWith('pickle-'))
+            return resolved;
+    }
+    return null;
+}
 /** Parse a base-10 ps column into a finite integer; -1 on malformed input. */
 function parsePsInt(raw) {
     const value = Number(raw);
@@ -144,16 +167,29 @@ export function parseWorkerProcsFromPs(psOutput, sessionsRoot) {
         const command = match[5].trim();
         if (pid <= 0 || pgid <= 0 || ppid < 0 || etimeSeconds === null)
             continue;
-        if (!isWorkerShapedCommand(command))
+        if (isWorkerShapedCommand(command)) {
+            results.push({
+                pid,
+                pgid,
+                ppid,
+                etime_seconds: etimeSeconds,
+                command,
+                owningSessionDir: resolveOwningSessionDir(command, sessionsRoot),
+                kind: 'worker',
+            });
             continue;
-        results.push({
-            pid,
-            pgid,
-            ppid,
-            etime_seconds: etimeSeconds,
-            command,
-            owningSessionDir: resolveOwningSessionDir(command, sessionsRoot),
-        });
+        }
+        if (resolveTmpPrefixFixturePath(command) !== null) {
+            results.push({
+                pid,
+                pgid,
+                ppid,
+                etime_seconds: etimeSeconds,
+                command,
+                owningSessionDir: null,
+                kind: 'tmp_fixture',
+            });
+        }
     }
     return results;
 }
@@ -226,11 +262,18 @@ function isReapableOrphan(cand, rt, reapedPgids) {
         return false;
     if (reapedPgids.has(cand.pgid))
         return false;
-    if (cand.owningSessionDir === null)
+    // The tmp-prefix fixture class (WS-1) has no owning session by construction
+    // (see WorkerProcCandidate.kind) — the null reject below applies only to
+    // the codex/claude worker class, which keeps the R-CXHANG positive-
+    // ownership invariant fully intact.
+    const { owningSessionDir } = cand;
+    if (cand.kind !== 'tmp_fixture' && owningSessionDir === null)
         return false;
     if (cand.etime_seconds < rt.minAgeSeconds)
         return false;
-    return !isOwningSessionLive(cand.owningSessionDir, rt.isAlive);
+    if (cand.kind === 'tmp_fixture' || owningSessionDir === null)
+        return true;
+    return !isOwningSessionLive(owningSessionDir, rt.isAlive);
 }
 /** Reuse the spawn-morty escalation shape: group SIGTERM → grace → group SIGKILL. */
 function reapCandidateGroup(cand, rt) {

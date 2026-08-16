@@ -55,6 +55,11 @@ function claudeLine(pid, pgid, etime, ticketPath) {
   return `${pid} ${pgid} 1 ${etime} /usr/local/bin/claude --dangerously-skip-permissions --add-dir /Users/x/repo --add-dir ${ticketPath} -p worker prompt here`;
 }
 
+/** WS-1 tmp-prefix fixture orphan: a plain `node` descendant under a `pickle-*` tmpdir path. */
+function nodeFixtureLine(pid, pgid, etime, fixtureDir) {
+  return `${pid} ${pgid} 1 ${etime} node ${fixtureDir}/descendant.js`;
+}
+
 // ---------------------------------------------------------------------------
 // killProcessGroup — the shared negative-PID primitive (AC-CXHANG-3)
 // ---------------------------------------------------------------------------
@@ -128,6 +133,162 @@ test('parseWorkerProcsFromPs: matcher matches the REAL spawn invocation shapes (
     assert.equal(result.length, 1, `${backend} invocation must be worker-shaped: ${command}`);
     assert.equal(result[0].owningSessionDir, path.join(sessionsRoot, 'sess-drift'),
       `${backend} invocation must attribute via --add-dir`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// WS-1: tmp-prefix fixture orphans — admit, own, report across all 3 seams
+// ---------------------------------------------------------------------------
+
+test('AC-1: a tmp-prefix fixture orphan is admitted, accepted, and reported (all 3 seams)', () => {
+  const sessionsRoot = makeTmp();
+  const fixtureDir = path.join(os.tmpdir(), 'pickle-broker-bounded-process-snapshot-2fHS16');
+  const statePath = path.join(makeSession(sessionsRoot, 'sess-reaper', { active: true, pid: process.pid }), 'state.json');
+
+  // Parser seam: classified tmp_fixture, no owning session resolved.
+  const parsed = parseWorkerProcsFromPs(nodeFixtureLine(6001, 6001, '16:00:00', fixtureDir), sessionsRoot);
+  assert.equal(parsed.length, 1, 'the fixture line must be admitted by the parser');
+  assert.equal(parsed[0].kind, 'tmp_fixture');
+  assert.equal(parsed[0].owningSessionDir, null);
+
+  // Ownership + telemetry seams, end-to-end.
+  const kills = [];
+  const result = reapOrphanedWorkerProcs({
+    sessionsRoot,
+    statePath,
+    psOutput: nodeFixtureLine(6001, 6001, '16:00:00', fixtureDir),
+    kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
+    isAlive: () => false,
+    sleep: () => {},
+  });
+  assert.equal(result.reaped, 1, 'ownership seam must accept the tmp_fixture class');
+  assert.deepEqual(kills, [[6001, 'SIGTERM']]);
+
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+  const events = (state.activity ?? []).filter(e => e.event === 'worker_orphan_reaped');
+  assert.equal(events.length, 1, 'telemetry seam must report the reap');
+  assert.equal(events[0].pid, 6001);
+});
+
+test('AC-1b: owning_session is exactly "" for the tmp_fixture class, and the event is schema-conformant', () => {
+  const sessionsRoot = makeTmp();
+  const fixtureDir = path.join(os.tmpdir(), 'pickle-broker-bounded-process-snapshot-2fHS16');
+  const statePath = path.join(makeSession(sessionsRoot, 'sess-reaper', { active: true, pid: process.pid }), 'state.json');
+
+  reapOrphanedWorkerProcs({
+    sessionsRoot,
+    statePath,
+    psOutput: nodeFixtureLine(6002, 6002, '16:00:00', fixtureDir),
+    kill: () => true,
+    isAlive: () => false,
+    sleep: () => {},
+  });
+
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+  const event = (state.activity ?? []).find(e => e.event === 'worker_orphan_reaped');
+  assert.ok(event, 'event must be present');
+  assert.equal(event.owning_session, '', 'owning_session must be exactly the empty string');
+
+  const schema = JSON.parse(fs.readFileSync(new URL('../src/types/activity-events.schema.json', import.meta.url), 'utf-8'));
+  const def = schema.definitions.worker_orphan_reaped;
+  for (const field of def.required) {
+    assert.ok(field in event, `schema-required field "${field}" must be present`);
+  }
+  assert.equal(typeof event.owning_session, 'string', 'owning_session must be a string per schema');
+});
+
+test('AC-2a: same-family tmp fixture younger than the min-age floor is spared', () => {
+  const sessionsRoot = makeTmp();
+  const fixtureDir = path.join(os.tmpdir(), 'pickle-omtd-younger-fixture');
+  const kills = [];
+  const result = reapOrphanedWorkerProcs({
+    sessionsRoot,
+    psOutput: nodeFixtureLine(6003, 6003, '05:00', fixtureDir), // 5 minutes
+    kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
+    isAlive: () => false,
+    sleep: () => {},
+  });
+  assert.equal(result.scanned, 1, 'still admitted by the parser');
+  assert.equal(result.reaped, 0, 'but spared by the age floor');
+  assert.deepEqual(kills, []);
+});
+
+test('AC-2b: a same-family process at exactly the current 600s floor is NOT reaped', () => {
+  const sessionsRoot = makeTmp();
+  const fixtureDir = path.join(os.tmpdir(), 'pickle-broker-at-floor');
+  const kills = [];
+  const result = reapOrphanedWorkerProcs({
+    sessionsRoot,
+    psOutput: nodeFixtureLine(6004, 6004, '09:59', fixtureDir), // 599s < 600s floor
+    kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
+    isAlive: () => false,
+    sleep: () => {},
+  });
+  assert.equal(result.reaped, 0, 'the floor is HELD at 600s (== PICKLE_WORKER_TEST_FAST_TIMEOUT_MS default)');
+  assert.deepEqual(kills, []);
+});
+
+test('AC-2(b-negative): a pickle- prefix in a NON-path argv position (worker prompt text) does not match tmp_fixture', () => {
+  const sessionsRoot = makeTmp();
+  const sess = makeSession(sessionsRoot, 'sess-drift-2');
+  const command = `/usr/local/bin/claude --dangerously-skip-permissions --add-dir /Users/x/repo --add-dir ${path.join(sess, 'ticket1')} -p "reap pickle-spawn-morty-worker-gate- orphans"`;
+  const result = parseWorkerProcsFromPs(`7001 7001 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].kind, 'worker', 'a worker-shaped command classifies as worker, never tmp_fixture');
+  assert.equal(result[0].owningSessionDir, sess);
+});
+
+test('AC-2(c-negative): a pickle-*-prefixed path that does NOT resolve under os.tmpdir() is never matched', () => {
+  const sessionsRoot = makeTmp();
+  const command = `node /Users/x/pickle-not-under-tmpdir/descendant.js`;
+  const result = parseWorkerProcsFromPs(`7002 7002 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 0, 'a pickle- path outside os.tmpdir() must never be admitted');
+});
+
+test('AC-4: a codex worker owned by a LIVE session is still spared under the new matching (R-CXHANG intact)', () => {
+  const sessionsRoot = makeTmp();
+  const liveSess = makeSession(sessionsRoot, 'sess-live-ws1', { active: true, pid: process.pid });
+  const kills = [];
+  const result = reapOrphanedWorkerProcs({
+    sessionsRoot,
+    psOutput: codexLine(7101, 7101, '16:00:00', path.join(liveSess, 'ticket1')),
+    kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
+    isAlive: (pid) => pid === process.pid,
+    sleep: () => {},
+  });
+  assert.equal(result.reaped, 0, 'a live-owned worker must never be reaped by the WS-1 change');
+  assert.deepEqual(kills, []);
+});
+
+test('AC-7: PICKLE_ORPHAN_REAP=off disables the new tmp_fixture matching too (existing kill-switch, no second check)', () => {
+  const sessionsRoot = makeTmp();
+  const fixtureDir = path.join(os.tmpdir(), 'pickle-broker-off-switch');
+  let scanCalls = 0;
+  const kills = [];
+  const result = reapOrphanedWorkerProcs({
+    sessionsRoot,
+    env: { [ORPHAN_REAP_ENV_VAR]: 'off' },
+    scan: () => { scanCalls += 1; return nodeFixtureLine(6005, 6005, '16:00:00', fixtureDir); },
+    kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
+  });
+  assert.deepEqual(result, { scanned: 0, reaped: 0 });
+  assert.equal(scanCalls, 0, 'the kill-switch must short-circuit before any ps scan');
+  assert.deepEqual(kills, []);
+});
+
+test('TMPDIR drift: the match is relative to the reaping process\'s own os.tmpdir(), not a hardcoded path', () => {
+  const sandboxTmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ws1-tmpdir-drift-')));
+  const priorTmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = sandboxTmp;
+  try {
+    const sessionsRoot = makeTmp();
+    const fixtureDir = path.join(sandboxTmp, 'pickle-broker-custom-tmpdir-fixture');
+    const result = parseWorkerProcsFromPs(nodeFixtureLine(6006, 6006, '16:00:00', fixtureDir), sessionsRoot);
+    assert.equal(result.length, 1, 'a fixture under a non-default TMPDIR still matches when TMPDIR is set at reap time');
+    assert.equal(result[0].kind, 'tmp_fixture');
+  } finally {
+    if (priorTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = priorTmpdir;
   }
 });
 
