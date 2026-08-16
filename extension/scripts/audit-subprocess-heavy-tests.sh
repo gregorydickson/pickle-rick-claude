@@ -7,6 +7,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTENSION_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_ROOT="$EXTENSION_ROOT/tests"
 SERIAL_MANIFEST_PATH="$EXTENSION_ROOT/tests/integration/.serial-tests.json"
+MISSING_TIMEOUT_SCANNER="$SCRIPT_DIR/audit-subprocess-heavy-tests-missing-timeout.mjs"
+MISSING_TIMEOUT_BASELINE="$SCRIPT_DIR/subprocess-heavy-missing-timeout-baseline.json"
+
+# --scan-root <dir>: run against an alternate directory instead of the default
+# $EXTENSION_ROOT/tests (e.g. an fs.mkdtemp fixture dir in a test, kept OUT of
+# extension/tests so AC-4 stays satisfiable). Consumed before positional args.
+SCAN_ROOT_OVERRIDE=""
+ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --scan-root)
+      SCAN_ROOT_OVERRIDE="$2"
+      shift 2
+      ;;
+    *)
+      ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- ${ARGS[@]+"${ARGS[@]}"}
+if [ -n "$SCAN_ROOT_OVERRIDE" ]; then
+  TEST_ROOT="$SCAN_ROOT_OVERRIDE"
+fi
 
 # SUBPROCESS_HEAVY_PATTERN (source of truth):
 #   spawnSync('bash'|'sh', [firstArg, ...], { ..., timeout: N, ... })
@@ -108,6 +132,8 @@ process.exit(1); // not a candidate
 NODE
 }
 
+AUDITED_FILES=()
+
 audit_file() {
   local file="$1"
 
@@ -116,6 +142,8 @@ audit_file() {
     status=1
     return
   fi
+
+  AUDITED_FILES+=("$file")
 
   # Derive relative path from EXTENSION_ROOT (e.g. tests/foo.test.js)
   file_rel="${file#"$EXTENSION_ROOT/"}"
@@ -157,6 +185,21 @@ else
     audit_file "$file"
   done < <(find "$TEST_ROOT" -type f -name '*.test.js' \
     ! -path "$TEST_ROOT/fixtures/*" | sort)
+fi
+
+# Missing-timeout predicate (R-TFP-C2 extension): the whole child_process
+# family, grandfathered against a committed baseline so pre-existing debt
+# does not redden this gate. Only callsites absent from the baseline fail.
+if [ "${#AUDITED_FILES[@]}" -gt 0 ] && command -v node >/dev/null 2>&1; then
+  missing_timeout_out="$(node "$MISSING_TIMEOUT_SCANNER" --baseline "$MISSING_TIMEOUT_BASELINE" --base "$EXTENSION_ROOT" "${AUDITED_FILES[@]}" 2>/dev/null)"
+  missing_timeout_exit=$?
+  if [ "$missing_timeout_exit" -ne 0 ]; then
+    while IFS=$'\t' read -r mt_file mt_fn mt_key; do
+      [ -z "$mt_file" ] && continue
+      echo "$mt_file: new missing-timeout $mt_fn(...) callsite not in baseline ($mt_key)" >&2
+    done <<< "$missing_timeout_out"
+    status=1
+  fi
 fi
 
 if [ "$status" -eq 0 ]; then

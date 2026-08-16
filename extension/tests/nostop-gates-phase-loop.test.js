@@ -51,7 +51,7 @@ function tmpDir(prefix) {
 }
 
 function git(args, cwd) {
-  return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 15000 }).trim();
 }
 
 function initRepo(dir) {
