@@ -343,6 +343,10 @@ test('a timed-out tier is classified inconclusive, not green', () => {
     const state = readState(ctx.statePath);
     assert.equal(state.post_final_verdict.state, 'inconclusive');
     assert.equal(state.post_final_verdict.degraded, true);
+    // AC-4b at the SEAM, not just the classifier: `__timeout__` is the gate's own sentinel, not a
+    // test that failed, so it must not reach the persisted dimension list where an operator would
+    // read it as a failing test name.
+    assert.deepEqual(state.post_final_verdict.dimensions, []);
     assert.equal(state.exit_reason, 'completed');
   } finally {
     ctx.cleanup();
