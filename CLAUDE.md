@@ -83,29 +83,13 @@ Adding/removing/modifying commands (`.claude/commands/*.md`) → update `README.
 
 Internal ticket artifacts use `rick_ticket_<hash>.md` and `rick_ticket_parent.md`; reserve "Linear ticket" prose for real external tracker issues, not the on-disk worker artifacts.
 
-### Banned word: "wedge" (operator-set, BINDING)
+### Banned word: "wedge"
 
-**Never write "wedge", "wedged", or "wedges"** in PRDs, tickets, commit messages, ledger rows, code
-comments, or chat. It is imprecise: it has been used for a hung test runner, a stalled pipeline, a ticket
-stuck In Progress, a salvage loop, and an auto-skip — five unrelated failures behind one word, so a
-reader cannot tell which is meant, and neither can a future bundle sent to fix it.
-
-**Say what actually happened, with the observable that distinguishes it:**
-
-| Instead of "wedge" | Write | Distinguishing observable |
-|---|---|---|
-| a process that stops progressing but stays resident | **hang** — say `zero-CPU hang` when CPU time is flat | CPU time unchanged across ≥2 samples; no new output |
-| a run that ends early | **halt** / **terminated** — name the `exit_reason` | `exit_reason` in `state.json` |
-| a ticket that never leaves In Progress | **stalled ticket** — give iteration count and `spawn_count` | `worker_artifact_progress` counters |
-| a loop repeating without progress | **no-progress loop** — say what repeats | iteration number advancing, artifacts not |
-| a run needing manual rescue | **manual recovery required** — name the step | the command that unblocked it |
-
-Always attach the measurement that makes the claim checkable — CPU-time delta, elapsed, log-line count,
-pid, `exit_reason`. "The tier hung at 6141 log lines, zero CPU across a 20 s sample" is a finding;
-"the tier wedged" is a feeling.
-
-Existing occurrences in `prds/` history are not to be mass-rewritten; fix them opportunistically when
-touching a file for another reason. The ban applies to everything written from now on.
+Imprecise — it has meant a hung runner, a halted pipeline, a stalled ticket, a salvage loop, and an
+auto-skip. Name the failure and cite the observable that proves it: **hang** (CPU flat across ≥2 samples)
+· **halt** (name the `exit_reason`) · **stalled ticket** (iteration + `spawn_count`) · **no-progress
+loop** (iteration advances, artifacts do not) · **manual recovery** (the command that unblocked it).
+Applies to new writing; fix old occurrences only when already touching the file.
 
 ## Source of Truth
 
