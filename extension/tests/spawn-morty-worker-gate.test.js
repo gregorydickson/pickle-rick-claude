@@ -208,7 +208,7 @@ async function killGroupWithEscalation(pid) {
 }
 
 async function spawnHarness(argv, opts) {
-  const result = spawnSync(process.execPath, [SPAWN_MORTY_BIN, ...argv], { ...opts, detached: true });
+  const result = spawnSync(process.execPath, [SPAWN_MORTY_BIN, ...argv], { ...opts, timeout: CAP_WORKER_GATE, detached: true });
   if (result.signal && Number.isInteger(result.pid) && result.pid > 0) {
     await killGroupWithEscalation(result.pid);
   }
