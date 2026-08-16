@@ -30,6 +30,7 @@ import {
   runManagerTokenPostFinalMeasurement,
   resolvePostFinalRunTestFastAdapter,
   defaultRunBetweenTicketFastTestsAdapter,
+  parseBetweenTicketFastGateFailures,
   POST_FINAL_FAST_GATE_TIMEOUT_MS,
 } from '../bin/mux-runner.js';
 
@@ -250,6 +251,56 @@ test('AC-11: a bundle with no commit at all reports green, and a red tier still 
     assert.equal(redVerdict.degraded, true);
   } finally {
     for (const d of [repo, greenSession, redSession]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
+// AC-5: session `2026-08-16-791e6dd0` — the FIRST run judged by this seam — recorded
+// `dimensions: ["> pickle-rick-scripts@2.1.0-beta.9 pretest:fast"]`, an npm lifecycle banner
+// laundered into a failure name by the pre-fix scrape-first-line fallback. This drives the SAME
+// banner-only shape through the REAL `parseBetweenTicketFastGateFailures` and confirms the
+// resulting `BetweenTicketGateResult` still reads honest once it reaches `post_final_verdict`.
+test('AC-5: a script-only gate failure (no TAP output) names the script, never the npm banner', () => {
+  const bannerOnlyOutput = [
+    '> pickle-rick-scripts@2.1.0-beta.9 pretest:fast',
+    '> bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh',
+    '',
+    'audit-test-tiers.sh: FAIL — tests/foo.test.js missing @tier header',
+  ].join('\n');
+
+  const parsedFailures = parseBetweenTicketFastGateFailures(bannerOnlyOutput, '/repo');
+  // Sanity: the parser itself must not have handed us a TAP-shaped failure (AC-1/AC-3 already
+  // pin the parser in isolation; this pins the SEAM it feeds).
+  assert.equal(parsedFailures.length, 1);
+  assert.equal(parsedFailures[0].script_failure, true);
+
+  const gateResult = {
+    ok: false,
+    failures: parsedFailures,
+    timed_out: false,
+    timeout_ms: POST_FINAL_FAST_GATE_TIMEOUT_MS,
+  };
+  const runner = stubRunner(gateResult);
+  const ctx = drive(runner);
+  try {
+    assert.equal(ctx.fired, true);
+    const state = readState(ctx.statePath);
+    const dimensions = state.post_final_verdict.dimensions;
+
+    assert.equal(state.post_final_verdict.state, 'red');
+    assert.ok(dimensions.length > 0, 'a script-only failure must still be attributed, not silently dropped');
+    assert.ok(
+      dimensions.some(d => /script failure|pretest:fast/.test(d)),
+      `expected a dimension naming the script failure, got: ${JSON.stringify(dimensions)}`,
+    );
+    for (const d of dimensions) {
+      assert.equal(
+        /^> \S+@\S+ \S+$/.test(d),
+        false,
+        `dimension must never be shaped like npm's own lifecycle banner: ${d}`,
+      );
+    }
+  } finally {
+    ctx.cleanup();
   }
 });
 
