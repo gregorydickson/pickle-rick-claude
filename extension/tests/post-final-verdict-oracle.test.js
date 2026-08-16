@@ -227,18 +227,49 @@ test('manager-token completion seam: runManagerTokenPostFinalMeasurement records
 // Reachability pin (the wiring-proof itself, not just behavior): a function existing and passing
 // its own unit test is not evidence it runs. `processTaskCompleted`'s call into
 // `runBetweenTicketFastGate` looked exactly this correct and was dead for its whole life. This
-// asserts the LIVE `runMuxRunnerMain` genuine-completion branch — identified by its adjacent,
-// unique 'Task completed. Exiting loop.' log line — actually calls the extracted seam, so a future
-// edit that reintroduces an inline duplicate (bypassing the exported, tested function) goes red.
+// asserts the LIVE `runMuxRunnerMain` genuine-completion branch — identified by its adjacent
+// 'Task completed. Exiting loop.' log line — actually calls the extracted seam, so a future edit
+// that reintroduces an inline duplicate (bypassing the exported, tested function) goes red.
+//
+// That log line is NOT unique: the dead `processTaskCompleted` sibling carries `ctx.log(...)` with
+// the same text, EARLIER in the file. A bare `indexOf` therefore anchored this pin on the dead
+// sibling — and paired with a call lookup that resolved to the definition's own multi-line
+// signature, the position assertion compared the DEFINITION against the DEAD branch and passed for
+// entirely the wrong reason. Both halves are resolved explicitly below: the marker by excluding any
+// `.`-qualified receiver, the call by excluding the definition's identifier offset.
 test('manager-token completion seam is called from the live runMuxRunnerMain branch, not a dead sibling', () => {
   const src = fs.readFileSync(new URL('../src/bin/mux-runner.ts', import.meta.url), 'utf8');
-  const marker = "log('Task completed. Exiting loop.');";
-  const markerIndex = src.indexOf(marker);
-  assert.ok(markerIndex > 0, 'the genuine-completion log line must exist exactly where expected');
-  // Only one call site total: the live branch. (The unreachable processTaskCompleted's direct
-  // runBetweenTicketFastGate call is a different function entirely and is not this symbol.)
-  const callCount = (src.match(/runManagerTokenPostFinalMeasurement\(/g) || []).length;
-  assert.equal(callCount, 2, 'exactly one export + one call site: the definition, and the live call before "Task completed."');
-  const callIndex = src.indexOf('runManagerTokenPostFinalMeasurement(\n', src.indexOf('export function runManagerTokenPostFinalMeasurement') + 1);
-  assert.ok(callIndex > 0 && callIndex < markerIndex, 'the call must precede the genuine-completion log line, not follow it');
+
+  const markerIndices = [];
+  for (const m of src.matchAll(/(?<![.\w])log\('Task completed\. Exiting loop\.'\);/g)) {
+    markerIndices.push(m.index);
+  }
+  assert.deepEqual(
+    markerIndices.length,
+    1,
+    'exactly one UNQUALIFIED genuine-completion log line — the `ctx.log` twin belongs to the dead sibling',
+  );
+  const markerIndex = markerIndices[0];
+
+  // Collect every occurrence, then drop the one that belongs to the `export function` definition.
+  // Locating the call by `'…(\n'` — an open paren followed immediately by a newline — matched the
+  // definition's own multi-line signature first, and coupled the pin to argument formatting besides.
+  // Position is what matters, not layout.
+  const occurrences = [];
+  for (const m of src.matchAll(/runManagerTokenPostFinalMeasurement\(/g)) occurrences.push(m.index);
+  const exportIndex = src.indexOf('export function runManagerTokenPostFinalMeasurement(');
+  assert.ok(exportIndex > 0, 'the extracted seam must still be exported');
+  // The occurrence indices point at the identifier; the export index points at `export`.
+  const definitionIndex = exportIndex + 'export function '.length;
+
+  const callIndices = occurrences.filter((i) => i !== definitionIndex);
+  assert.deepEqual(
+    callIndices.length,
+    1,
+    'exactly one call site: an inline duplicate bypassing the exported, tested function is the regression',
+  );
+  assert.ok(
+    callIndices[0] < markerIndex,
+    'the call must precede the genuine-completion log line, not follow it',
+  );
 });
