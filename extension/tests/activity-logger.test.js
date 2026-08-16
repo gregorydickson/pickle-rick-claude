@@ -220,6 +220,9 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         // R-CXHANG: setup-time orphan-worker reaper (session-GC of detached
         // codex/claude worker procs whose owning session is provably not live).
         'worker_orphan_reaped',
+        // WS-2: verified-kill escalation reports a pid unreachable after bounded
+        // SIGTERM->SIGKILL escalation, distinct from a confirmed reap.
+        'worker_orphan_reap_unverified',
         'manager_turn_progress',
         'closer_expensive_node_test_blocked',
         'ticket_timeout_progress_extension',
