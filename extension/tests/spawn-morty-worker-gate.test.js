@@ -1,13 +1,14 @@
 // @tier: fast
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runWorkerGate } from '../bin/spawn-morty.js';
 import { CAP_WORKER_GATE } from './__helpers__/subprocess-cap.js';
+import { killProcessGroup } from '../services/orphan-reaper.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SPAWN_MORTY_BIN = path.resolve(__dirname, '../bin/spawn-morty.js');
@@ -191,6 +192,27 @@ function isPidAlive(pid) {
   } catch (error) {
     return error?.code === 'EPERM';
   }
+}
+
+// WS-3: Node's spawnSync `timeout` kills only the direct child pid, never its
+// process group — a killed harness's own descendants (npm, npm's grandchild)
+// re-parent to pid 1 and outlive the run. `detached: true` makes the harness
+// child the leader of its own process group, so a group-kill on timeout
+// reaches every descendant instead of leaking them.
+const GROUP_KILL_GRACE_MS = 2000;
+
+async function killGroupWithEscalation(pid) {
+  killProcessGroup(pid, 'SIGTERM');
+  await new Promise((resolve) => setTimeout(resolve, GROUP_KILL_GRACE_MS));
+  killProcessGroup(pid, 'SIGKILL');
+}
+
+async function spawnHarness(argv, opts) {
+  const result = spawnSync(process.execPath, [SPAWN_MORTY_BIN, ...argv], { ...opts, detached: true });
+  if (result.signal && Number.isInteger(result.pid) && result.pid > 0) {
+    await killGroupWithEscalation(result.pid);
+  }
+  return result;
 }
 
 async function waitFor(fn, timeoutMs, label) {
@@ -576,7 +598,7 @@ exit 0
 // 7eb9fa20: a gate-fail whose worker produced fresh ticket artifacts AND a
 // ticket-scoped commit is evidence-backed — the Failed flip AND the gate-fail
 // reset are suppressed (work preserved; manager-side hold parks the ticket).
-test('spawn-morty: test:fast failure with work evidence suppresses the Failed flip and preserves the commit', () => {
+test('spawn-morty: test:fast failure with work evidence suppresses the Failed flip and preserves the commit', async () => {
   const root = makeTmpRoot();
   try {
     initWorkerFixtureRepo(root);
@@ -593,8 +615,7 @@ test('spawn-morty: test:fast failure with work evidence suppresses the Failed fl
     );
     const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 
-    const result = spawnSync(process.execPath, [
-      SPAWN_MORTY_BIN,
+    const result = await spawnHarness([
       'integration replay',
       '--ticket-id', ticketId,
       '--ticket-path', ticketDir,
@@ -653,7 +674,7 @@ test('spawn-morty: test:fast failure with work evidence suppresses the Failed fl
 // 7eb9fa20 evidence-absent path: stale resume artifact (outside the spawn
 // window) + commit outside scope allowed_paths → flip + reset proceed exactly
 // as before (legitimate failures still flip, after resetToSha's archival).
-test('spawn-morty: evidence-absent test:fast failure still marks ticket Failed and resets HEAD', () => {
+test('spawn-morty: evidence-absent test:fast failure still marks ticket Failed and resets HEAD', async () => {
   const root = makeTmpRoot();
   try {
     initWorkerFixtureRepo(root);
@@ -678,8 +699,7 @@ test('spawn-morty: evidence-absent test:fast failure still marks ticket Failed a
     );
     const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 
-    const result = spawnSync(process.execPath, [
-      SPAWN_MORTY_BIN,
+    const result = await spawnHarness([
       'integration replay',
       '--ticket-id', ticketId,
       '--ticket-path', ticketDir,
@@ -714,7 +734,7 @@ test('spawn-morty: evidence-absent test:fast failure still marks ticket Failed a
   }
 });
 
-test('spawn-morty: small-tier success skips npm test gate and records tier_phase_skipped', () => {
+test('spawn-morty: small-tier success skips npm test gate and records tier_phase_skipped', async () => {
   const root = makeTmpRoot();
   try {
     initWorkerFixtureRepo(root);
@@ -725,8 +745,7 @@ test('spawn-morty: small-tier success skips npm test gate and records tier_phase
     writeNpxPassShim(binDir, path.join(root, 'npx-calls.json'));
     writeCommandShim(binDir, 'npm', path.join(sessionRoot, 'npm-calls.json'));
 
-    const result = spawnSync(process.execPath, [
-      SPAWN_MORTY_BIN,
+    const result = await spawnHarness([
       'integration replay',
       '--ticket-id', ticketId,
       '--ticket-path', ticketDir,
@@ -759,6 +778,65 @@ test('spawn-morty: small-tier success skips npm test gate and records tier_phase
     assert.deepEqual(skippedEvent.skipped_phases, ['test:fast']);
     const npmCallsPath = path.join(sessionRoot, 'npm-calls.json');
     assert.equal(fs.existsSync(npmCallsPath), false, 'npm test gate should not run for small-tier tickets');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// AC-5 (WS-3): the OUTER harness spawn's own timeout — not the gate's internal
+// worker_test_gate_timeout_ms path (already covered + green below) — must not
+// leak a ppid==1 descendant. npm hangs forever via writeNpmTimeoutTreeShim.
+// spawnSync's `timeout` blocks the whole test process, so racing a fixed
+// budget against spawn-morty's variable startup-to-gate latency is inherently
+// flaky (observed: 20s fired before the npm shim ever started). Instead this
+// spawns the harness async, waits (unbounded by a race) for the npm shim's
+// grandchild to actually report ready — proving a real, live descendant
+// exists — then fires the identical group-kill escalation spawnHarness runs
+// on its own timeout, and asserts that descendant is gone.
+test('spawn-morty: harness spawn group-kills on its own outer timeout, leaving no ppid==1 descendant (AC-5)', { timeout: 60_000 }, async () => {
+  const root = makeTmpRoot();
+  try {
+    initWorkerFixtureRepo(root);
+    const ticketId = '3646c20d';
+    const { sessionRoot, ticketDir } = writeSession(root, ticketId);
+    const binDir = path.join(root, 'bin');
+    writeCodexShim(binDir, 'ac5-fixture.ts');
+    writeNpxPassShim(binDir, path.join(root, 'npx-calls.json'));
+    const npmLogPath = path.join(sessionRoot, 'npm-calls.json');
+    const pidPath = path.join(root, 'npm-descendant.pid');
+    const signalPath = path.join(root, 'npm-descendant.signals');
+    const readyPath = path.join(root, 'npm-descendant.ready');
+    writeNpmTimeoutTreeShim(binDir, npmLogPath, { pidPath, signalPath, readyPath });
+
+    const child = spawn(process.execPath, [
+      SPAWN_MORTY_BIN,
+      'integration replay',
+      '--ticket-id', ticketId,
+      '--ticket-path', ticketDir,
+      '--timeout', '30',
+    ], {
+      cwd: root,
+      detached: true,
+      stdio: 'ignore',
+      env: {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH || ''}`,
+        EXTENSION_DIR: root,
+        PICKLE_DATA_DIR: root,
+        FAKE_TICKET_DIR: ticketDir,
+        FAKE_TICKET_ID: ticketId,
+      },
+    });
+    child.on('error', () => {});
+
+    await waitFor(() => fs.existsSync(readyPath), 45_000, 'npm descendant readiness');
+    assert.ok(fs.existsSync(pidPath), 'npm descendant must have started before simulating the harness timeout (real leak scenario, not vacuous)');
+    const descendantPid = Number(fs.readFileSync(pidPath, 'utf8').trim());
+    assert.ok(Number.isInteger(descendantPid) && descendantPid > 0, `pidPath did not contain a valid pid: ${fs.readFileSync(pidPath, 'utf8')}`);
+
+    await killGroupWithEscalation(child.pid);
+
+    assert.equal(isPidAlive(descendantPid), false, 'npm descendant must not survive the harness timeout as a ppid==1 orphan');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
