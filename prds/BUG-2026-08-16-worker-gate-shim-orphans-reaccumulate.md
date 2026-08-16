@@ -41,6 +41,31 @@ therefore match the **tmp-prefix family** (`pickle-*` fixture roots under `os.tm
 string. The original 13→14 re-accumulation counts are retained as evidence that the class refills,
 but they are **unattributed to a prefix** and must not be cited as gate-shim counts.
 
+**Operator counter-correction (2026-08-16, from the pre-reap census the regrounding could not see).**
+The `pickle-spawn-morty-worker-gate-*` prefix is NOT empty — it was emptied ~2 minutes before that census
+was taken. All 14 processes reaped at 04:1x were exactly this prefix; three sample lines from the
+operator census file, `ppid == 1`:
+
+```
+16434  1  17:15:28  node /…/T/pickle-spawn-morty-worker-gate-8uYtWz/bin/npm run test:fast
+20410  1  13:53:26  node /…/T/pickle-spawn-morty-worker-gate-it4bUH/bin/npm run test:fast
+20992  1  12:22:07  node /…/T/pickle-spawn-morty-worker-gate-K5hoFk/bin/npm run test:fast
+```
+
+Ages to 22:46:11. So the 13→14 counts ARE attributable to this prefix, and "a reaper pinned to that
+string would reap zero" holds only for a box that was just cleaned. **This does not change the fix** —
+the tmp-prefix FAMILY match is still the right target and already subsumes this prefix. It changes the
+record: do not conclude the prefix is inert.
+
+**What the regrounding got right, and my draft got wrong — both struck claims confirmed against source:**
+the command line is `node <fixture>/bin/npm run test:fast`, i.e. the test's OWN shim, so no real npm and
+no real fast tier ever ran (my "spawns a REAL npm run test:fast" was false); and
+`extension/tests/spawn-morty-worker-gate.test.js:831` already asserts
+`isPidAlive(childPid) === false` after a SIGTERM-tree → SIGKILL escalation, so that timeout path is
+already fixed and pinned (my AC-5 premise was false). The leak survives despite that assertion, which is
+itself the interesting residue: the pinned path covers the direct child's descendant, not every
+descendant the shim can strand.
+
 **They ignore SIGTERM.** A plain `kill` on all 13 (each `ppid==1`-verified) returned success and changed
 nothing — a re-census 25 s later showed the same pids with ages advanced. `kill -9` took all 13
 immediately, and again all 14 the next day. Any reaper that sends SIGTERM and trusts the return value
