@@ -26,10 +26,13 @@ Measured, three runs, stall detector at 8 minutes of zero log growth:
 | `e57bac7a` (post-bundle) | WEDGED | 6126 lines, byte-identical tail |
 | `c688f9ab` (post-fix, ticket `4a25e6ca`) | **completed** — 7707 tests, 507 suites, pass 7704, fail 0, cancelled 0, skipped 2, todo 1, 1442185 ms, `EXIT=0` | none — walked through the old wedge point; `mux-runner: exits with code 1 and prints Usage when no args provided` PASSES at line 6132 and the run reaches 14089 lines |
 
-**AC-1's `7647` floor is RETRACTED in favour of the measured `5899`** at `5dba30c5` — that is the
-number this Evidence section itself records for the completed run, and a floor must be a measurement,
-not a recollection. The `c688f9ab` run clears both numbers anyway (7707), so the tier did not shrink
-under either reading.
+**The `5899` retraction is itself RETRACTED (operator, 2026-08-16). The floor stands at `7647`.**
+`5899` was never a tier count — it is the number of top-level `✔` lines a throwaway operator diff script
+scraped while locating the wedge, an artifact of that regex, not a measurement. The authoritative summary
+block at `5dba30c5` reads `tests 7647 / suites 504 / pass 7644`, and `c56e1cfb` reads `tests 7647` as
+well. Adopting `5899` would have lowered the floor by ~1750 tests and let a genuine shrink pass unnoticed.
+The `c688f9ab` run (7707) clears the real floor, so nothing shipped wrong — but the lesson is the sharper
+one: **a floor must come from the runner's own summary block, never from a number quoted in prose.**
 
 ### Residuals at `c688f9ab` (AC-1b)
 
