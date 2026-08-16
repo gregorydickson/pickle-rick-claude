@@ -24,6 +24,42 @@ Measured, three runs, stall detector at 8 minutes of zero log growth:
 | `5dba30c5` (pre-bundle) | **completed**, fail 0 | — |
 | `e57bac7a` (post-bundle) | WEDGED | 6126 lines |
 | `e57bac7a` (post-bundle) | WEDGED | 6126 lines, byte-identical tail |
+| `c688f9ab` (post-fix, ticket `4a25e6ca`) | **completed** — 7707 tests, 507 suites, pass 7704, fail 0, cancelled 0, skipped 2, todo 1, 1442185 ms, `EXIT=0` | none — walked through the old wedge point; `mux-runner: exits with code 1 and prints Usage when no args provided` PASSES at line 6132 and the run reaches 14089 lines |
+
+**AC-1's `7647` floor is RETRACTED in favour of the measured `5899`** at `5dba30c5` — that is the
+number this Evidence section itself records for the completed run, and a floor must be a measurement,
+not a recollection. The `c688f9ab` run clears both numbers anyway (7707), so the tier did not shrink
+under either reading.
+
+### Residuals at `c688f9ab` (AC-1b)
+
+Failing residuals: **none** (`fail 0`, `cancelled 0`). The three non-passing entries are pre-existing
+and match the standing `skipped 2 / todo 1` baseline recorded at `c56e1cfb`, `390049c8` and `5dba30c5`:
+
+- SKIP — `runWorkerGate: retries once when npm run test:fast fails and the second attempt passes`
+  (`extension/tests/spawn-morty-worker-gate.test.js`)
+- SKIP — `runWorkerGate: skips test:fast when SKIP_WORKER_TEST_GATE=1 and logs the skip marker`
+  (`extension/tests/spawn-morty-worker-gate.test.js`)
+- TODO — `stop-hook state matrix: Section D expansion cells (xfail placeholder)`
+  (`extension/tests/stop-hook-state-matrix.test.js:152`)
+
+### Attribution verdict (AC-0): the nested-tier hypothesis is FALSIFIED
+
+The causal story above — that reaching the completion seam inside `extension/tests/mux-runner.test.js`
+starts a nested real `npm run test:fast` — does not survive reading the seams. Both
+`runBetweenTicketFastGate` (`extension/src/bin/mux-runner.ts:708`) and `runPostFinalMeasurement`
+(`:941`) return early unless `<working_dir>/extension` exists, and that `existsSync` guard PREDATES
+this bundle (`e57bac7a`); every working dir in `mux-runner.test.js` is a bare `mkdtempSync` with no
+`extension/` child. The runner spawns in that file already carried `timeout: 150000 / 30000 / 60000`
+(`:84`, `:109`, `:120`, `:282`, `:2414`, `:2513`, `:2630`), which contradicts an unbounded 8-minute
+hang. So the nested tier could not have fired from that test file even at the wedged tree.
+
+The wedge at `e57bac7a` was real and twice-reproduced, but its cause lies in the `mux-runner:` suite's
+own binary spawns and it is intermittent — the already-filed `R-TIERWEDGE` shape (0-CPU park under a
+plain operator tier, cleared by re-running). Recorded as correlation rather than proof: `c35d1af6` /
+`c1c37490` short-circuited the post-final tier measurement under `PICKLE_TEST_MODE` at both seams, and
+`c688f9ab` bounded the two unbounded `execFileSync` callsites named below. One completed run refutes
+the stated mechanism; it cannot by itself distinguish "fixed" from "did not recur".
 
 Deterministic: same line count twice. Process census at the wedge — runner `bin/test-runner.js` at
 `0:00.10` CPU unchanged across a 20 s sample, child unchanged at `0:02.36`, grandchild parked. Nothing is
