@@ -27,6 +27,9 @@ import {
   applyAllTicketsDoneCompletion,
   runBetweenTicketFastGate,
   runPostFinalMeasurement,
+  runManagerTokenPostFinalMeasurement,
+  resolvePostFinalRunTestFastAdapter,
+  defaultRunBetweenTicketFastTestsAdapter,
   POST_FINAL_FAST_GATE_TIMEOUT_MS,
 } from '../bin/mux-runner.js';
 
@@ -574,6 +577,118 @@ test('AC-2a: PICKLE_TEST_MODE with no injected runTestFast spawns zero test:fast
     process.env.PATH = prevPath;
     fs.rmSync(binDir, { recursive: true, force: true });
   }
+});
+
+// Ticket 15db9049 (P0, R-NOPOSTTIER): AC-3b/AC-3c. Both prior tests in this file drive the seams
+// with `runTestFast` INJECTED, or under `PICKLE_TEST_MODE=1` (a documented short-circuit — see
+// AC-2a above). Neither exercises the actual PRODUCTION DEFAULT: with no deps AND test-mode unset,
+// both seams must resolve — by identity/binding, not merely by absence-of-crash — to the real
+// `defaultRunBetweenTicketFastTestsAdapter` (which wraps `runBetweenTicketFastTests`). Nothing
+// today forbids satisfying the un-wedge (ticket fb18e1fa) by quietly defaulting the measurement to
+// a no-op at both seams: the wedge would disappear, the AC-2a test would stay green (it only checks
+// TEST-MODE behavior), and R-NOPOSTTIER would be silently reverted.
+//
+// Two independent pins, because a reference-identity check alone cannot catch a same-named default
+// whose BODY was mutated to a no-op:
+//   (a) identity/binding — `resolvePostFinalRunTestFastAdapter(undefined)` must be the exact same
+//       function object as `defaultRunBetweenTicketFastTestsAdapter`, not a different override.
+//   (b) behavioral — invoking the resolved default via each production seam must actually reach a
+//       real `npm run test:fast` spawn attempt (observed via a PATH-shimmed `npm`, never by waiting
+//       out the real ~14-minute tier) and must record a real (non-`absent`) verdict.
+test('AC-3b: resolvePostFinalRunTestFastAdapter(undefined) is the exact production default, by identity', () => {
+  assert.strictEqual(
+    resolvePostFinalRunTestFastAdapter(undefined),
+    defaultRunBetweenTicketFastTestsAdapter,
+    'omitting runTestFast must resolve to the named production default, not a different function',
+  );
+  // An injected dep always wins over the default — the resolver must not ignore it.
+  const injected = () => ({ ok: true, failures: [], timed_out: false, timeout_ms: 1 });
+  assert.strictEqual(resolvePostFinalRunTestFastAdapter(injected), injected);
+});
+
+/**
+ * Drives a real (PICKLE_TEST_MODE unset, no runTestFast dep) production-shaped seam call with a
+ * PATH-shimmed `npm` that records invocation and exits 0 immediately — proving the resolved default
+ * is wired to a REAL spawn (AC-3b) and that a production-shaped run records a real verdict, never
+ * `absent` (AC-3c), without ever running the actual ~14-minute fast tier.
+ */
+function withFastNpmShimAndNoTestMode(fn) {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'post-final-realdefault-'));
+  const recorderFile = path.join(binDir, 'npm.calls');
+  const npmShim = path.join(binDir, 'npm');
+  fs.writeFileSync(npmShim, `#!/bin/sh\necho "$@" >> "${recorderFile}"\nexit 0\n`);
+  fs.chmodSync(npmShim, 0o755);
+  const prevPath = process.env.PATH;
+  const prevTestMode = process.env.PICKLE_TEST_MODE;
+  process.env.PATH = `${binDir}${path.delimiter}${prevPath}`;
+  delete process.env.PICKLE_TEST_MODE;
+  try {
+    return fn(recorderFile);
+  } finally {
+    process.env.PATH = prevPath;
+    if (prevTestMode === undefined) delete process.env.PICKLE_TEST_MODE;
+    else process.env.PICKLE_TEST_MODE = prevTestMode;
+    fs.rmSync(binDir, { recursive: true, force: true });
+  }
+}
+
+test('AC-3b/AC-3c: seam 1 (applyAllTicketsDoneCompletion) — production default is real, verdict is not absent', () => {
+  withFastNpmShimAndNoTestMode((recorderFile) => {
+    const sessionDir = makeTmp('post-final-realdefault-seam1-');
+    const repo = makeWorkingRepo();
+    try {
+      const statePath = makeSession(sessionDir, repo);
+      makeTicket(sessionDir, 'aaa', 'Done');
+      makeTicket(sessionDir, 'bbb', 'Done');
+      const fired = applyAllTicketsDoneCompletion(statePath, sessionDir, 1, () => {}, repo);
+      assert.equal(fired, true, 'all-Done bundle must still synthesize completion');
+      assert.equal(
+        fs.existsSync(recorderFile),
+        true,
+        'the resolved default must reach a real npm invocation — a no-op/stub default never touches npm',
+      );
+      const invocation = fs.readFileSync(recorderFile, 'utf8');
+      assert.match(invocation, /run test:fast/, 'the real adapter must invoke `npm run test:fast`');
+      const state = readState(statePath);
+      assert.equal(
+        state.post_final_verdict.state,
+        'green',
+        'a production-shaped run must record a REAL verdict, never absent (AC-3c)',
+      );
+      assert.equal(state.post_final_verdict.degraded, false);
+    } finally {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+test('AC-3b/AC-3c: seam 2 (runManagerTokenPostFinalMeasurement) — production default is real, verdict is not absent', () => {
+  withFastNpmShimAndNoTestMode((recorderFile) => {
+    const sessionDir = makeTmp('post-final-realdefault-seam2-');
+    const repo = makeWorkingRepo();
+    try {
+      const statePath = makeSession(sessionDir, repo);
+      runManagerTokenPostFinalMeasurement(statePath, repo, 'aaa', () => {});
+      assert.equal(
+        fs.existsSync(recorderFile),
+        true,
+        'the resolved default must reach a real npm invocation — a no-op/stub default never touches npm',
+      );
+      const invocation = fs.readFileSync(recorderFile, 'utf8');
+      assert.match(invocation, /run test:fast/, 'the real adapter must invoke `npm run test:fast`');
+      const state = readState(statePath);
+      assert.equal(
+        state.post_final_verdict.state,
+        'green',
+        'a production-shaped run must record a REAL verdict, never absent (AC-3c)',
+      );
+      assert.equal(state.post_final_verdict.degraded, false);
+    } finally {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 test('between-ticket callers still inherit the resolver default (no timeout argument)', () => {

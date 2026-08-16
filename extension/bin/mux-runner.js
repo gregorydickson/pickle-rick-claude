@@ -590,15 +590,27 @@ export function runBetweenTicketFastTests(extensionDir, extensionRoot = getExten
         timeout_ms: timeoutMs,
     };
 }
+/**
+ * R-NOPOSTTIER (ticket 15db9049): the production default both post-final seams
+ * (`runManagerTokenPostFinalMeasurement`, `applyAllTicketsDoneCompletion`) resolve to when no
+ * `runTestFast` dep is injected. Named and exported (rather than left as an inline arrow) so a test
+ * can assert its identity/binding directly instead of only observing it indirectly through a spawn.
+ * Arity-2 adapter, NOT a bare `runBetweenTicketFastTests` reference: the seam's second parameter is
+ * a timeout, the function's second parameter is `extensionRoot`. Binding them directly would hand a
+ * number to a string parameter.
+ */
+export function defaultRunBetweenTicketFastTestsAdapter(extensionDir, timeoutMs) {
+    return runBetweenTicketFastTests(extensionDir, getExtensionRoot(), timeoutMs);
+}
+/** R-NOPOSTTIER (ticket 15db9049): the single resolver both post-final seams route through. */
+export function resolvePostFinalRunTestFastAdapter(runTestFast) {
+    return runTestFast ?? defaultRunBetweenTicketFastTestsAdapter;
+}
 export function runBetweenTicketFastGate(input) {
     const extensionDir = path.join(input.workingDir, 'extension');
     if (!fs.existsSync(extensionDir))
         return null;
-    // Arity-2 adapter, NOT a bare `runBetweenTicketFastTests` reference: the seam's second
-    // parameter is a timeout, the function's second parameter is `extensionRoot`. Binding them
-    // directly would hand a number to a string parameter.
-    const runTestFast = input.runTestFast
-        ?? ((dir, timeoutMs) => runBetweenTicketFastTests(dir, getExtensionRoot(), timeoutMs));
+    const runTestFast = resolvePostFinalRunTestFastAdapter(input.runTestFast);
     const ts = (input.now ?? Date.now)();
     const result = runTestFast(extensionDir, input.timeoutMs);
     sm.update(input.statePath, state => {
