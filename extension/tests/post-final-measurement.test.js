@@ -399,6 +399,50 @@ test('a throw BETWEEN the two applicability facts still lands on absent (f7f188f
   }
 });
 
+// The measurement has TWO independent try blocks and only the first was covered. The second
+// (`runPostFinalMeasurement`'s `sm.update` wrap) catches a state file that will not take the write
+// and logs `post-final verdict not persisted (ignored)`. That branch is the one place where the
+// RETURNED verdict and the PERSISTED verdict legitimately diverge — and
+// `pipeline-runner.ts:readDegradedPostFinalVerdict` reads only the persisted one, so a degraded
+// verdict that fails to persist is reported as success. The log line is the operator's only trail,
+// which is exactly why it is asserted rather than assumed.
+//
+// A blank working dir is what isolates the branch: `applicable` is false, so the gate is never
+// called and `runBetweenTicketFastGate`'s own unguarded `sm.update` never runs — the corrupt state
+// file is therefore reached by the persist wrap ALONE, not by the measurement wrap upstream of it.
+test('an unpersistable verdict is logged and returned, never thrown (the persist wrap)', () => {
+  const sessionDir = makeTmp('post-final-nopersist-');
+  const statePath = path.join(sessionDir, 'state.json');
+  fs.writeFileSync(statePath, 'this is not json{');
+  const runner = stubRunner(GREEN);
+  const logs = [];
+  try {
+    const verdict = runPostFinalMeasurement({
+      statePath,
+      workingDir: '',
+      completedTicketId: 'aaa',
+      log: m => logs.push(m),
+      runTestFast: runner,
+    });
+
+    assert.equal(runner.calls.length, 0, 'a blank working dir must not spawn a tier run');
+    assert.deepEqual(
+      verdict,
+      { state: 'absent', degraded: true, dimensions: [] },
+      'the classification is still correct — only the write failed',
+    );
+    assert.ok(
+      logs.some(l => l.includes('post-final verdict not persisted (ignored)')),
+      'the persist failure must be logged, not silently swallowed',
+    );
+    // The divergence this branch creates, pinned so it cannot widen unnoticed: the file is left
+    // exactly as found, so nothing downstream can read a half-written verdict.
+    assert.equal(fs.readFileSync(statePath, 'utf8'), 'this is not json{');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('a blocked completion pays no tier run and records no verdict', () => {
   const runner = stubRunner(GREEN);
   const ctx = drive(runner, { secondStatus: 'Todo' });
