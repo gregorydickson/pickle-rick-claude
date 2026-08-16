@@ -161,6 +161,32 @@ test('gate === null with applicable true classifies absent', () => {
   assert.strictEqual(result.state, 'absent');
 });
 
+// The two states above are covered individually, which is not the same claim as covering the
+// DIFFERENCE between them — and the difference is the whole point. `not_applicable` is the positive
+// fact "this repo ships no tier to measure" (off-repo bundles stay green, the repo-agnostic
+// invariant); `absent` is "we could not measure", which must read degraded. A regression collapsing
+// them EITHER way passes both individual tests: merging onto `not_applicable` fake-GREENs an
+// unmeasurable tier, merging onto `absent` fake-REDs every off-repo bundle. Only varying the single
+// discriminating input catches both directions, so this case holds every other field constant.
+test('not_applicable and absent are DIFFERENT verdicts, not two labels for one outcome', () => {
+  const shared = { gate: null, verdictTs: null, finalCommitTs: 100, baselineFailures: [] };
+  const notApplicable = classifyPostFinalVerdict({ ...shared, applicable: false });
+  const absent = classifyPostFinalVerdict({ ...shared, applicable: true });
+
+  assert.notStrictEqual(notApplicable.state, absent.state, 'the two states must not collapse');
+  assert.notStrictEqual(
+    notApplicable.degraded,
+    absent.degraded,
+    'the difference must reach `degraded` — that is the only field the withholding wire reads',
+  );
+
+  // Pinned concretely so the assertions above cannot be satisfied by the pair swapping places.
+  assert.strictEqual(notApplicable.state, 'not_applicable');
+  assert.strictEqual(notApplicable.degraded, false);
+  assert.strictEqual(absent.state, 'absent');
+  assert.strictEqual(absent.degraded, true);
+});
+
 test('a clean gate classifies green and is NOT degraded', () => {
   const result = classifyPostFinalVerdict({
     gate: gate({ ok: true }),
