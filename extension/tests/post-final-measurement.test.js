@@ -516,6 +516,66 @@ test('a blocked completion pays no tier run and records no verdict', () => {
   }
 });
 
+// R-NOPOSTTIER (AC-2a/AC-2b): under PICKLE_TEST_MODE with NO injected `runTestFast`, neither
+// promise-synthesis seam may spawn a real fast-tier measurement. A tier run nested inside a
+// running tier (the shape `extension/tests/mux-runner.test.js` drives — the compiled binary
+// spawned as a subprocess, building its own deps) never returns. Assert on a spawn recorder
+// (a PATH-shimmed package-manager binary that would be invoked as `npm run test:fast`), never on
+// wall time — the whole point is that the real ~14-minute spawn must NEVER happen.
+test('AC-2a: PICKLE_TEST_MODE with no injected runTestFast spawns zero test:fast processes (both seams)', () => {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'post-final-spawnrec-'));
+  const recorderFile = path.join(binDir, 'npm.calls');
+  const npmShim = path.join(binDir, 'npm');
+  fs.writeFileSync(npmShim, `#!/bin/sh\necho "$@" >> "${recorderFile}"\nexit 0\n`);
+  fs.chmodSync(npmShim, 0o755);
+  const prevPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${prevPath}`;
+  try {
+    // Seam 1: applyAllTicketsDoneCompletion (the all-tickets-done promise synthesis path),
+    // with NO deps.runTestFast override — the production shape.
+    const sessionDir = makeTmp('post-final-seam1-');
+    const repo = makeWorkingRepo();
+    try {
+      const statePath = makeSession(sessionDir, repo);
+      makeTicket(sessionDir, 'aaa', 'Done');
+      makeTicket(sessionDir, 'bbb', 'Done');
+      const fired = applyAllTicketsDoneCompletion(statePath, sessionDir, 1, () => {}, repo);
+      assert.equal(fired, true, 'all-Done bundle must still synthesize completion');
+      assert.equal(fs.existsSync(recorderFile), false, 'seam 1 (applyAllTicketsDoneCompletion) must not spawn a real tier under PICKLE_TEST_MODE');
+      const state = readState(statePath);
+      assert.equal(state.post_final_verdict.state, 'absent');
+      assert.equal(state.post_final_verdict.degraded, true);
+    } finally {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+
+    // Seam 2: runManagerTokenPostFinalMeasurement's underlying seam (runPostFinalMeasurement
+    // itself), also with NO runTestFast override.
+    const sessionDir2 = makeTmp('post-final-seam2-');
+    const repo2 = makeWorkingRepo();
+    try {
+      const statePath2 = makeSession(sessionDir2, repo2);
+      const verdict = runPostFinalMeasurement({
+        statePath: statePath2,
+        workingDir: repo2,
+        completedTicketId: 'aaa',
+        log: () => {},
+      });
+      assert.equal(fs.existsSync(recorderFile), false, 'seam 2 (runManagerTokenPostFinalMeasurement) must not spawn a real tier under PICKLE_TEST_MODE');
+      assert.equal(verdict.state, 'absent');
+      assert.equal(verdict.degraded, true);
+      assert.deepEqual(readState(statePath2).post_final_verdict, verdict);
+    } finally {
+      fs.rmSync(sessionDir2, { recursive: true, force: true });
+      fs.rmSync(repo2, { recursive: true, force: true });
+    }
+  } finally {
+    process.env.PATH = prevPath;
+    fs.rmSync(binDir, { recursive: true, force: true });
+  }
+});
+
 test('between-ticket callers still inherit the resolver default (no timeout argument)', () => {
   const sessionDir = makeTmp('post-final-arity-');
   const repo = makeWorkingRepo();

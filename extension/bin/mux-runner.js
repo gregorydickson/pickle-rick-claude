@@ -718,7 +718,46 @@ export const POST_FINAL_FAST_GATE_TIMEOUT_MS = 1_800_000;
  * reports only: no ticket is demoted, no work discarded, `exit_reason` is untouched. Acting on the
  * verdict belongs to ticket `fa3d0f5a`.
  */
+function persistAndLogPostFinalVerdict(input, verdict, suffix) {
+    try {
+        sm.update(input.statePath, state => {
+            state.post_final_verdict = {
+                state: verdict.state,
+                degraded: verdict.degraded,
+                dimensions: verdict.dimensions,
+            };
+        });
+    }
+    catch (err) {
+        input.log(`post-final verdict not persisted (ignored): ${safeErrorMessage(err)}`);
+    }
+    const dimensionSuffix = verdict.dimensions.length > 0 ? ` — ${verdict.dimensions.join(', ')}` : '';
+    input.log(`post-final tier measurement: ${verdict.state}${verdict.degraded ? ' (degraded)' : ''}${dimensionSuffix}${suffix}`);
+    return verdict;
+}
 export function runPostFinalMeasurement(input) {
+    // R-NOPOSTTIER (AC-2): under PICKLE_TEST_MODE with NO injected `runTestFast`, this seam MUST
+    // NOT spawn a real fast-tier measurement — `extension/tests/mux-runner.test.js` spawns the
+    // compiled binary as a subprocess and builds its own deps in-process, so a tier run nested
+    // inside a running tier never returns. Gating on `!input.runTestFast` (rather than a bare
+    // `PICKLE_TEST_MODE` check) keeps `extension/tests/post-final-measurement.test.js` — which sets
+    // `PICKLE_TEST_MODE=1` for an unrelated reason (bypassing `guardCompletionCommitBeforeDone`) but
+    // injects its own stub `runTestFast` to drive this exact function in-process — reaching its
+    // injected stub instead of being silently short-circuited. Both promise-synthesis callers
+    // (`runManagerTokenPostFinalMeasurement`, `applyAllTicketsDoneCompletion`) route through this
+    // one function, so the short-circuit here covers both seams. `gate: null` with
+    // `applicable: true` classifies 'absent' (the classifier's "could not look" claim) — never
+    // `not_applicable` (a positive "no tier owed" claim this is not) and never `green`.
+    if (process.env.PICKLE_TEST_MODE === '1' && !input.runTestFast) {
+        const verdict = classifyPostFinalVerdict({
+            gate: null,
+            applicable: true,
+            verdictTs: (input.now ?? Date.now)(),
+            finalCommitTs: null,
+            baselineFailures: [],
+        });
+        return persistAndLogPostFinalVerdict(input, verdict, ' — test-mode short-circuit, no tier spawned');
+    }
     // Two facts, not one, because `not_applicable` and `absent` are not the same claim.
     // `not_applicable` is POSITIVE — we looked at the working dir and it ships no `extension/` tier,
     // so no verdict is owed and the off-repo bundle stays green (the repo-agnostic invariant).
@@ -785,21 +824,7 @@ export function runPostFinalMeasurement(input) {
         // No baseline failure set exists in state, so nothing can launder a real failure into green.
         baselineFailures: [],
     });
-    try {
-        sm.update(input.statePath, state => {
-            state.post_final_verdict = {
-                state: verdict.state,
-                degraded: verdict.degraded,
-                dimensions: verdict.dimensions,
-            };
-        });
-    }
-    catch (err) {
-        input.log(`post-final verdict not persisted (ignored): ${safeErrorMessage(err)}`);
-    }
-    const dimensionSuffix = verdict.dimensions.length > 0 ? ` — ${verdict.dimensions.join(', ')}` : '';
-    input.log(`post-final tier measurement: ${verdict.state}${verdict.degraded ? ' (degraded)' : ''}${dimensionSuffix}`);
-    return verdict;
+    return persistAndLogPostFinalVerdict(input, verdict, '');
 }
 /**
  * R-NOPOSTTIER (AC-13): the manager-token completion seam's call into `runPostFinalMeasurement`.
