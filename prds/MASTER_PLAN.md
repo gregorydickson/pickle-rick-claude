@@ -144,6 +144,40 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > needs an operator-run tier measurement to be believed** — that is not a posture, it is now a measured
 > fact with a commit behind it.
 >
+> **✅ R-NOPOSTTIER SHIPPED + ITS P0 REGRESSION FIXED + BOTH DEPLOYED — 2026-08-16.** Two sessions:
+> `2026-08-15-29b48a40` (10/10 Done, `EPIC_COMPLETED`, `exit_reason: completed`, 13 iterations / 525m, 25
+> commits) built the fix at BOTH promise-synthesis seams — `runPostFinalMeasurement`
+> (`mux-runner.ts:851`, wired at `:959` and `:2432`), the classifier + state field, and `4514ebb0`'s
+> withholding change shipped alongside `nostop-gates-phase-loop.test.js` (+86) and
+> `pipeline-finalize-honesty.test.js` (+171) so AC-3 is pinned by the same commit that created the risk.
+> Then `2026-08-15-6ecbeaad` (4/4 Done, 11 iterations / 176m) fixed the P0 that bundle introduced.
+> **Operator-run clean-env tier at `3216370c`: 7707 tests, 507 suites, pass 7704, fail 0, cancelled 0,
+> 982717 ms, EXIT=0** — count grew 7647 → 7707, and the run walked straight through the old wedge point.
+> `bash install.sh` deployed; `runPostFinalMeasurement` ×7 and `POST_FINAL_DEGRADED_MARKER` ×2 confirmed
+> present in the deployed runtime. **The NEXT bundle is the first whose completion promise will carry a
+> measured verdict — that observation is still owed.**
+>
+> **🔬 Mutation-verified, and the first probe was misleading.** Removing `counters.nonConvergent > 0` from
+> `finalizePipeline`'s `unsuccessful` term, recompiling, and CONFIRMING the mutation live in
+> `extension/bin/pipeline-runner.js:3474` leaves `post-final-verdict-oracle.test.js` GREEN — that file
+> targets the mux-runner promise seam, not `finalizePipeline`. `nostop-gates-phase-loop.test.js` is the
+> one with teeth: it goes red on *"a degraded post-final verdict withholds the verdict, not the run"* plus
+> the 6/6-Done-with-red-verdict case. Lesson for the next mutation check: **an oracle named for the bug is
+> not necessarily the oracle covering the line** — mutate, then find which file screams.
+>
+> **❌ TWO OPERATOR ERRORS CORRECTED, recorded because the ledger is worth more than the ego.** (1) The
+> nested-tier wedge attribution was **FALSE**: I claimed the wedge came from a real tier firing at the
+> completion seam inside `mux-runner.test.js`; the bundle refuted it and source confirms the refutation —
+> `runBetweenTicketFastGate` opened with `if (!fs.existsSync(extensionDir)) return null;` at `41575226`,
+> BEFORE the bundle, and that test file's working dirs are bare `mkdtempSync` with no `extension/` child.
+> (2) The bundle then retracted AC-1's `7647` floor in favour of `5899` — **also wrong**, and re-retracted
+> in `3216370c`: `5899` was the `✔`-line count from a throwaway operator scrape, not a tier count. A floor
+> comes from the runner's own summary block, never from a number quoted in prose.
+>
+> **⚠️ R-TIERWEDGE IS NOT CLOSED.** It was twice-reproduced at exactly 6126 lines and has now not recurred
+> across two full runs. One clean run cannot distinguish *fixed* from *did not recur*, and the bundle said
+> so itself rather than claiming the kill. Treat it as live until several consecutive tiers complete.
+>
 > **▶ NEXT: queue C, the env-contamination PRD — and R-GENVL WIDENS it.** The original scope was the
 > trailer-hook family (`PICKLE_TICKET_ID`, `GIT_CONFIG_*`, 8 tests). R-GENVL adds a SECOND leaked
 > variable in the same seam: `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS`, read by `resolveWorkerTestFastTimeoutMs`
