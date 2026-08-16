@@ -71,17 +71,23 @@ function makeTicket(sessionDir, id, status) {
 const git = (repo, args) =>
   execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', timeout: 15000 }).trim();
 
-/**
- * A real git repo with a real commit, so `gitCommitEpoch` resolves the genuine production path
- * rather than a stub. Contains `extension/` so the measurement is `applicable`.
- */
-function makeWorkingRepo() {
-  const repo = makeTmp('post-final-repo-');
+/** An initialized repo containing `extension/`, so the measurement is `applicable`. No commit yet. */
+function initRepo(prefix) {
+  const repo = makeTmp(prefix);
   fs.mkdirSync(path.join(repo, 'extension'), { recursive: true });
-  fs.writeFileSync(path.join(repo, 'extension', 'marker.txt'), 'final commit\n');
   git(repo, ['init', '--quiet']);
   git(repo, ['config', 'user.email', 'test@example.com']);
   git(repo, ['config', 'user.name', 'Test']);
+  return repo;
+}
+
+/**
+ * A real git repo with a real commit, so `gitCommitEpoch` resolves the genuine production path
+ * rather than a stub.
+ */
+function makeWorkingRepo() {
+  const repo = initRepo('post-final-repo-');
+  fs.writeFileSync(path.join(repo, 'extension', 'marker.txt'), 'final commit\n');
   git(repo, ['add', '-A']);
   git(repo, ['commit', '--quiet', '-m', 'final commit of the bundle']);
   return repo;
@@ -195,16 +201,6 @@ test('exported POST_FINAL_FAST_GATE_TIMEOUT_MS clears the measured tier', () => 
   assert.notEqual(POST_FINAL_FAST_GATE_TIMEOUT_MS, RESOLVER_DEFAULT_TIMEOUT_MS);
 });
 
-/** A repo with `extension/` but NO commit — the AC-11 zero-commit bundle. */
-function makeEmptyRepo() {
-  const repo = makeTmp('post-final-emptyrepo-');
-  fs.mkdirSync(path.join(repo, 'extension'), { recursive: true });
-  git(repo, ['init', '--quiet']);
-  git(repo, ['config', 'user.email', 'test@example.com']);
-  git(repo, ['config', 'user.name', 'Test']);
-  return repo;
-}
-
 // AC-11: a bundle that committed nothing reports green and is NOT degraded. The classifier's
 // `finalCommitTs: null` cases pin the logic; this pins the SEAM, where that null is produced by the
 // production `readHeadCommit`/`gitCommitEpoch` probes against a real commit-less repo rather than
@@ -212,7 +208,7 @@ function makeEmptyRepo() {
 // pass under a regression that laundered an unknown commit time straight to green, and the red half
 // is what forbids it.
 test('AC-11: a bundle with no commit at all reports green, and a red tier still reports red', () => {
-  const repo = makeEmptyRepo();
+  const repo = initRepo('post-final-emptyrepo-');
   const greenSession = makeTmp('post-final-empty-green-');
   const redSession = makeTmp('post-final-empty-red-');
   try {
