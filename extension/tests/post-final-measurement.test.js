@@ -195,6 +195,65 @@ test('exported POST_FINAL_FAST_GATE_TIMEOUT_MS clears the measured tier', () => 
   assert.notEqual(POST_FINAL_FAST_GATE_TIMEOUT_MS, RESOLVER_DEFAULT_TIMEOUT_MS);
 });
 
+/** A repo with `extension/` but NO commit — the AC-11 zero-commit bundle. */
+function makeEmptyRepo() {
+  const repo = makeTmp('post-final-emptyrepo-');
+  fs.mkdirSync(path.join(repo, 'extension'), { recursive: true });
+  git(repo, ['init', '--quiet']);
+  git(repo, ['config', 'user.email', 'test@example.com']);
+  git(repo, ['config', 'user.name', 'Test']);
+  return repo;
+}
+
+// AC-11: a bundle that committed nothing reports green and is NOT degraded. The classifier's
+// `finalCommitTs: null` cases pin the logic; this pins the SEAM, where that null is produced by the
+// production `readHeadCommit`/`gitCommitEpoch` probes against a real commit-less repo rather than
+// injected. Both directions are asserted in one place on purpose: the green half alone would also
+// pass under a regression that laundered an unknown commit time straight to green, and the red half
+// is what forbids it.
+test('AC-11: a bundle with no commit at all reports green, and a red tier still reports red', () => {
+  const repo = makeEmptyRepo();
+  const greenSession = makeTmp('post-final-empty-green-');
+  const redSession = makeTmp('post-final-empty-red-');
+  try {
+    const greenRunner = stubRunner(GREEN);
+    const greenVerdict = runPostFinalMeasurement({
+      statePath: makeSession(greenSession, repo),
+      workingDir: repo,
+      completedTicketId: 'aaa',
+      log: () => {},
+      runTestFast: greenRunner,
+    });
+    // Without this the case could pass as `not_applicable` — a different non-degraded state
+    // reached for the wrong reason, since that arm never runs the tier at all.
+    assert.equal(greenRunner.calls.length, 1, 'the tier must actually have been measured');
+    assert.deepEqual(greenVerdict, { state: 'green', degraded: false, dimensions: [] });
+    assert.deepEqual(
+      readState(path.join(greenSession, 'state.json')).post_final_verdict,
+      { state: 'green', degraded: false, dimensions: [] },
+    );
+
+    const redRunner = stubRunner({
+      ok: false,
+      failures: [{ name: 'real_regression', file: 'tests/x.test.js' }],
+      timed_out: false,
+      timeout_ms: POST_FINAL_FAST_GATE_TIMEOUT_MS,
+    });
+    const redVerdict = runPostFinalMeasurement({
+      statePath: makeSession(redSession, repo),
+      workingDir: repo,
+      completedTicketId: 'aaa',
+      log: () => {},
+      runTestFast: redRunner,
+    });
+    assert.equal(redRunner.calls.length, 1);
+    assert.equal(redVerdict.state, 'red', 'an unknown commit time must not launder a red tier green');
+    assert.equal(redVerdict.degraded, true);
+  } finally {
+    for (const d of [repo, greenSession, redSession]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
 test('a throwing measurement is classified absent and does NOT abort the run (AC-4)', () => {
   const runner = stubRunner(() => { throw new Error('gate exploded'); });
   const ctx = drive(runner);
