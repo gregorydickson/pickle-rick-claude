@@ -1,4 +1,4 @@
-# BUG (P0): `test:fast` wedges at zero CPU entering the `mux-runner` suite — four occurrences, contention falsified
+# BUG (P0): `test:fast` hangs at zero CPU entering the `mux-runner` suite — four occurrences, contention falsified
 
 - **Date**: 2026-08-16
 - **Priority**: P0 — the fast tier is the instrument every verdict on this branch depends on; it hangs
@@ -11,26 +11,26 @@
 Six operator-run clean-env tiers, all `PICKLE_TEST_RUNNER_TIMEOUT_MS=7200000`, all with an 8-minute
 no-log-growth stall detector:
 
-| tree | outcome | wedge line |
+| tree | outcome | hang line |
 |---|---|---|
 | `5dba30c5` | completed — 7647 tests, fail 0 | — |
 | `a5edb12f` | completed — 7647 tests, fail 1 | — |
-| `a5edb12f` | **WEDGED** | 6138 |
-| `e57bac7a` | **WEDGED** | 6126 |
-| `e57bac7a` | **WEDGED** | 6126 |
+| `a5edb12f` | **HUNG** | 6138 |
+| `e57bac7a` | **HUNG** | 6126 |
+| `e57bac7a` | **HUNG** | 6126 |
 | `3216370c` | completed — 7707 tests, fail 0 | — |
-| `4cdd0133` (quiet box, post-deploy) | **WEDGED** | 6141 |
+| `4cdd0133` (quiet box, post-deploy) | **HUNG** | 6141 |
 
-**Every wedge ends on the identical tail** — the last four lines are always the `WS-2d` /
+**Every hang ends on the identical tail** — the last four lines are always the `WS-2d` /
 `AC-R-WMNP-4` block ending `attemptRecoveryBeforeTerminal seam runs and returns a RecoveryOutcome on
-no-evidence ticket`. A suite-coverage diff of a wedged run against a completed one showed **2886 tests
+no-evidence ticket`. A suite-coverage diff of a hung run against a completed one showed **2886 tests
 logged vs 5899**, with the **3011 missing tests beginning exactly at the `mux-runner:` suite**
 (`mux-runner: exits with code 1 and prints Usage when no args provided`, …). That suite spawns the real
 mux-runner binary.
 
-**Everything is parked, not working.** Process census at a wedge: runner `bin/test-runner.js` at
+**Everything is parked, not working.** Process census at a hang: runner `bin/test-runner.js` at
 `0:00.10` CPU unchanged across a 20 s sample; its child `0:02.36` unchanged across 25 s; grandchild
-`0:00.47` over 10:47. No summary block is ever emitted, so a wedged run cannot produce a false green —
+`0:00.47` over 10:47. No summary block is ever emitted, so a hung run cannot produce a false green —
 but it never returns either, and the 2 h runner timeout means a naive waiter blocks for 2 h.
 
 **Two hypotheses are already FALSIFIED — do not re-propose them.**
@@ -38,11 +38,11 @@ but it never returns either, and the 2 h runner timeout means a naive waiter blo
 1. **Nested tier run.** Claimed the completion seam inside `extension/tests/mux-runner.test.js` starts a
    real `npm run test:fast`. False: both `runBetweenTicketFastGate`
    (`extension/src/bin/mux-runner.ts:708`) and `runPostFinalMeasurement` (`:941`) return early unless
-   `<working_dir>/extension` exists, that guard predates the wedge (present at `41575226`), and every
+   `<working_dir>/extension` exists, that guard predates the hang (present at `41575226`), and every
    working dir in that test file is a bare `mkdtempSync` with no `extension/` child.
-2. **Orphan contention.** The `4cdd0133` wedge happened on a box where all 32 `ppid == 1` tmp-prefix
+2. **Orphan contention.** The `4cdd0133` hang happened on a box where all 32 `ppid == 1` tmp-prefix
    orphans had been reaped minutes earlier and the R-WGTORPH reaper fixes were deployed. A quiet box
-   still wedges.
+   still hangs.
 
 ## What the ticket must do
 
@@ -54,7 +54,7 @@ Find the actual blocking call. Suggested starting points, none of them conclusio
   pipe open keeps the parent's read blocked even after the child is signalled. That shape matches a
   0-CPU park exactly and is worth testing first.
 - Determine why it is ~50% rather than deterministic: ordering under `--test-concurrency=8` is the
-  obvious candidate, so record whether the wedge correlates with which suites are co-scheduled.
+  obvious candidate, so record whether the hang correlates with which suites are co-scheduled.
 
 ## Acceptance criteria
 

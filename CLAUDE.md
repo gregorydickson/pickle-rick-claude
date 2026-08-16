@@ -49,9 +49,9 @@ The pipeline is the product: it fixes its own bugs. **Default: author a PRD/tick
 
 **There is no hand-build exception. Not for the salvage path, not for the completion-evidence path, not for the Done-flip path, not for "just this once because it's load-bearing."** Every code fix in this repo is built by `/pickle-pipeline` (or `/pickle-tmux`). The prior "NARROW R-PSRB exception" is **DELETED** — it was a reflex dressed as a rule, and it kept the tool from being tested exactly where it was weakest.
 
-**The R-PSRB catch-22 is real, and it is not an escape hatch — it is the thing being tested.** When a bundle edits the salvage / completion-evidence / Done-flip path, the deployed pre-fix runtime applies that same buggy logic to the worker building the fix. That is a genuine hazard, so run those bundles **ATTENDED**: launch normally, watch the salvage seam, and recover the wedge if it bites (`B-RASO`, beta.43, shipped a salvage-path fix this way — the precedent exists and it worked). Attended is an *operator posture*, never a different build path.
+**The R-PSRB catch-22 is real, and it is not an escape hatch — it is the thing being tested.** When a bundle edits the salvage / completion-evidence / Done-flip path, the deployed pre-fix runtime applies that same buggy logic to the worker building the fix. That is a genuine hazard, so run those bundles **ATTENDED**: launch normally, watch the salvage seam, and recover the stall if it bites (`B-RASO`, beta.43, shipped a salvage-path fix this way — the precedent exists and it worked). Attended is an *operator posture*, never a different build path.
 
-**Why the exception had to go:** a bundle we refuse to dogfood is a bundle whose fix we cannot claim the tool survives. Hand-building the recovery path means the recovery path is the one code in the system never exercised by the system. Every wedge that hand-build "avoided" was a defect report we chose not to collect.
+**Why the exception had to go:** a bundle we refuse to dogfood is a bundle whose fix we cannot claim the tool survives. Hand-building the recovery path means the recovery path is the one code in the system never exercised by the system. Every stalled run that hand-build "avoided" was a defect report we chose not to collect.
 
 **What is still true (and is NOT a hand-build licence):** spawn-gate / routing / phase-exit / scope-fence / refinement / feature edits are pipeline-safe because a running pipeline executes **deployed JS**, not your source diff (which lands only at `install.sh`). Those run unattended. Salvage-path bundles run attended. Both run.
 
@@ -82,6 +82,30 @@ PRD: `prds/archive/bundles/p1-worker-source-state-recursion-contamination.md`. C
 Adding/removing/modifying commands (`.claude/commands/*.md`) → update `README.md`. Docs drift = bugs.
 
 Internal ticket artifacts use `rick_ticket_<hash>.md` and `rick_ticket_parent.md`; reserve "Linear ticket" prose for real external tracker issues, not the on-disk worker artifacts.
+
+### Banned word: "wedge" (operator-set, BINDING)
+
+**Never write "wedge", "wedged", or "wedges"** in PRDs, tickets, commit messages, ledger rows, code
+comments, or chat. It is imprecise: it has been used for a hung test runner, a stalled pipeline, a ticket
+stuck In Progress, a salvage loop, and an auto-skip — five unrelated failures behind one word, so a
+reader cannot tell which is meant, and neither can a future bundle sent to fix it.
+
+**Say what actually happened, with the observable that distinguishes it:**
+
+| Instead of "wedge" | Write | Distinguishing observable |
+|---|---|---|
+| a process that stops progressing but stays resident | **hang** — say `zero-CPU hang` when CPU time is flat | CPU time unchanged across ≥2 samples; no new output |
+| a run that ends early | **halt** / **terminated** — name the `exit_reason` | `exit_reason` in `state.json` |
+| a ticket that never leaves In Progress | **stalled ticket** — give iteration count and `spawn_count` | `worker_artifact_progress` counters |
+| a loop repeating without progress | **no-progress loop** — say what repeats | iteration number advancing, artifacts not |
+| a run needing manual rescue | **manual recovery required** — name the step | the command that unblocked it |
+
+Always attach the measurement that makes the claim checkable — CPU-time delta, elapsed, log-line count,
+pid, `exit_reason`. "The tier hung at 6141 log lines, zero CPU across a 20 s sample" is a finding;
+"the tier wedged" is a feeling.
+
+Existing occurrences in `prds/` history are not to be mass-rewritten; fix them opportunistically when
+touching a file for another reason. The ban applies to everything written from now on.
 
 ## Source of Truth
 
