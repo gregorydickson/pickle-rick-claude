@@ -43,6 +43,7 @@ export const ORPHAN_REAP_ENV_VAR = 'PICKLE_ORPHAN_REAP';
 const DEFAULT_MIN_AGE_SECONDS = 600;
 const DEFAULT_GRACE_MS = 2000;
 const DEFAULT_WALL_BUDGET_MS = 15_000;
+const DEFAULT_KILL_VERIFY_MS = 1000;
 const GRACE_POLL_MS = 100;
 const PS_TIMEOUT_MS = 5000;
 const PS_MAX_BUFFER = 1024 * 1024 * 8;
@@ -286,6 +287,8 @@ export type ReapOrphanedWorkerProcsOpts = {
   minAgeSeconds?: number;
   graceMs?: number;
   wallBudgetMs?: number;
+  /** Bounded post-SIGKILL verification poll window (ms); default `DEFAULT_KILL_VERIFY_MS`. */
+  killVerifyMs?: number;
   log?: (msg: string) => void;
 };
 
@@ -295,6 +298,7 @@ type ReapRuntime = {
   sleep: (ms: number) => void;
   minAgeSeconds: number;
   graceMs: number;
+  killVerifyMs: number;
   statePath?: string;
   log?: (msg: string) => void;
 };
@@ -321,17 +325,34 @@ function isReapableOrphan(cand: WorkerProcCandidate, rt: ReapRuntime, reapedPgid
   return !isOwningSessionLive(owningSessionDir, rt.isAlive);
 }
 
-/** Reuse the spawn-morty escalation shape: group SIGTERM → grace → group SIGKILL. */
-function reapCandidateGroup(cand: WorkerProcCandidate, rt: ReapRuntime): void {
+/**
+ * Reuse the spawn-morty escalation shape: group SIGTERM → grace → group SIGKILL
+ * → bounded verify. Returns whether the group is CONFIRMED dead — callers must
+ * count `reaped` ONLY on `true`; an unverified survivor is reported but never
+ * silently counted as gone.
+ */
+function reapCandidateGroup(cand: WorkerProcCandidate, rt: ReapRuntime): boolean {
   rt.kill(cand.pgid, 'SIGTERM');
   const graceDeadline = Date.now() + rt.graceMs;
-  let polls = Math.max(1, Math.ceil(rt.graceMs / GRACE_POLL_MS));
-  while (rt.isAlive(cand.pid) && Date.now() < graceDeadline && polls > 0) {
+  let gracePolls = Math.max(1, Math.ceil(rt.graceMs / GRACE_POLL_MS));
+  while (rt.isAlive(cand.pid) && Date.now() < graceDeadline && gracePolls > 0) {
     rt.sleep(GRACE_POLL_MS);
-    polls -= 1;
+    gracePolls -= 1;
   }
   if (rt.isAlive(cand.pid)) rt.kill(cand.pgid, 'SIGKILL');
-  emitReapedTelemetry(cand, rt);
+  const verifyDeadline = Date.now() + rt.killVerifyMs;
+  let verifyPolls = Math.max(1, Math.ceil(rt.killVerifyMs / GRACE_POLL_MS));
+  while (rt.isAlive(cand.pid) && Date.now() < verifyDeadline && verifyPolls > 0) {
+    rt.sleep(GRACE_POLL_MS);
+    verifyPolls -= 1;
+  }
+  const verified = !rt.isAlive(cand.pid);
+  if (verified) {
+    emitReapedTelemetry(cand, rt);
+  } else {
+    emitUnverifiedTelemetry(cand, rt, 'survived_sigkill');
+  }
+  return verified;
 }
 
 function emitReapedTelemetry(cand: WorkerProcCandidate, rt: ReapRuntime): void {
@@ -352,7 +373,42 @@ function emitReapedTelemetry(cand: WorkerProcCandidate, rt: ReapRuntime): void {
   rt.log?.(`reaped orphan worker pid=${cand.pid} pgid=${cand.pgid} etime_seconds=${cand.etime_seconds} session=${owningSession}`);
 }
 
-function runReapPass(opts: ReapOrphanedWorkerProcsOpts, platform: NodeJS.Platform): { scanned: number; reaped: number } {
+/** Reports a candidate that could NOT be verified dead — never counted as `reaped`. */
+function emitUnverifiedTelemetry(cand: WorkerProcCandidate, rt: ReapRuntime, reason: string): void {
+  const owningSession = path.basename(cand.owningSessionDir ?? '');
+  if (rt.statePath) {
+    try {
+      writeActivityEntry(rt.statePath, {
+        event: 'worker_orphan_reap_unverified',
+        ts: new Date().toISOString(),
+        pid: cand.pid,
+        pgid: cand.pgid,
+        etime_seconds: cand.etime_seconds,
+        owning_session: owningSession,
+        argv_summary: cand.command,
+        reason,
+      });
+    } catch { /* event emission is best-effort */ }
+  }
+  rt.log?.(`unverified orphan worker pid=${cand.pid} pgid=${cand.pgid} reason=${reason} session=${owningSession}`);
+}
+
+/**
+ * Handles one reapable candidate: budget-skip (report, don't attempt) or full
+ * escalation-and-verify. Returns `'reaped'` / `'unverified'` for the caller's
+ * tally; the caller has already confirmed `isReapableOrphan`.
+ */
+function processReapableCandidate(cand: WorkerProcCandidate, rt: ReapRuntime, reapedPgids: Set<number>, deadline: number): 'reaped' | 'unverified' {
+  if (Date.now() > deadline) {
+    emitUnverifiedTelemetry(cand, rt, 'budget_exceeded');
+    return 'unverified';
+  }
+  const verified = reapCandidateGroup(cand, rt);
+  reapedPgids.add(cand.pgid);
+  return verified ? 'reaped' : 'unverified';
+}
+
+function runReapPass(opts: ReapOrphanedWorkerProcsOpts, platform: NodeJS.Platform): { scanned: number; reaped: number; unverified: number } {
   const scan = opts.scan ?? (() => execFileSync('ps', ['-axo', 'pid=,pgid=,ppid=,etime=,command='], {
     encoding: 'utf-8',
     timeout: PS_TIMEOUT_MS,
@@ -366,35 +422,38 @@ function runReapPass(opts: ReapOrphanedWorkerProcsOpts, platform: NodeJS.Platfor
     sleep: opts.sleep ?? sleepSync,
     minAgeSeconds: opts.minAgeSeconds ?? DEFAULT_MIN_AGE_SECONDS,
     graceMs: opts.graceMs ?? DEFAULT_GRACE_MS,
+    killVerifyMs: opts.killVerifyMs ?? DEFAULT_KILL_VERIFY_MS,
     ...(opts.statePath !== undefined ? { statePath: opts.statePath } : {}),
     ...(opts.log !== undefined ? { log: opts.log } : {}),
   };
   const deadline = Date.now() + (opts.wallBudgetMs ?? DEFAULT_WALL_BUDGET_MS);
   const reapedPgids = new Set<number>();
   let reaped = 0;
+  let unverified = 0;
   for (const cand of candidates) {
-    if (Date.now() > deadline) break;
     if (!isReapableOrphan(cand, rt, reapedPgids)) continue;
-    reapCandidateGroup(cand, rt);
-    reapedPgids.add(cand.pgid);
-    reaped += 1;
+    if (processReapableCandidate(cand, rt, reapedPgids, deadline) === 'reaped') {
+      reaped += 1;
+    } else {
+      unverified += 1;
+    }
   }
-  return { scanned: candidates.length, reaped };
+  return { scanned: candidates.length, reaped, unverified };
 }
 
 /**
  * Reap detached worker procs (codex/claude) that no live pickle session owns.
  * Never throws (best-effort); never kills an unattributable or live-owned proc.
  */
-export function reapOrphanedWorkerProcs(opts: ReapOrphanedWorkerProcsOpts): { scanned: number; reaped: number } {
+export function reapOrphanedWorkerProcs(opts: ReapOrphanedWorkerProcsOpts): { scanned: number; reaped: number; unverified: number } {
   const env = opts.env ?? process.env;
-  if (env[ORPHAN_REAP_ENV_VAR] === 'off') return { scanned: 0, reaped: 0 };
+  if (env[ORPHAN_REAP_ENV_VAR] === 'off') return { scanned: 0, reaped: 0, unverified: 0 };
   const platform = opts.platform ?? process.platform;
-  if (platform === 'win32') return { scanned: 0, reaped: 0 };
+  if (platform === 'win32') return { scanned: 0, reaped: 0, unverified: 0 };
   try {
     return runReapPass(opts, platform);
   } catch {
     // Best-effort collector — a reaper failure must never block a launch.
-    return { scanned: 0, reaped: 0 };
+    return { scanned: 0, reaped: 0, unverified: 0 };
   }
 }

@@ -271,7 +271,7 @@ test('AC-7: PICKLE_ORPHAN_REAP=off disables the new tmp_fixture matching too (ex
     scan: () => { scanCalls += 1; return nodeFixtureLine(6005, 6005, '16:00:00', fixtureDir); },
     kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0 });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0 });
   assert.equal(scanCalls, 0, 'the kill-switch must short-circuit before any ps scan');
   assert.deepEqual(kills, []);
 });
@@ -462,11 +462,13 @@ test('escalation: a proc that survives SIGTERM past the grace window gets SIGKIL
   const sessionsRoot = makeTmp();
   const deadSess = makeSession(sessionsRoot, 'sess-stuck', { active: false });
   const kills = [];
+  let sigkillSent = false;
   const result = reapOrphanedWorkerProcs({
     sessionsRoot,
     psOutput: codexLine(5001, 5001, '20:00:00', path.join(deadSess, 'ticket1')),
-    kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
-    isAlive: (pid) => pid === 5001, // network-blocked codex ignores SIGTERM forever
+    kill: (pgid, sig) => { kills.push([pgid, sig]); if (sig === 'SIGKILL') sigkillSent = true; return true; },
+    // network-blocked codex ignores SIGTERM forever, but SIGKILL is unblockable.
+    isAlive: () => !sigkillSent,
     sleep: () => {},
     graceMs: 50,
   });
@@ -487,7 +489,7 @@ test('AC-CXHANG-4: PICKLE_ORPHAN_REAP=off is inert — no scan, no kill, {0,0}',
     scan: () => { scanCalls += 1; return ''; },
     kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0 });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0 });
   assert.equal(scanCalls, 0, 'scan must not run under the kill-switch');
   assert.deepEqual(kills, []);
 });
@@ -501,7 +503,7 @@ test('AC-CXHANG-4: only the literal lowercase "off" disables', () => {
     kill: () => true,
   });
   assert.equal(scanCalls, 1, 'non-lowercase value keeps the reaper active');
-  assert.deepEqual(result, { scanned: 0, reaped: 0 });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0 });
 });
 
 test('win32: safe no-op — no scan, {0,0}', () => {
@@ -511,7 +513,7 @@ test('win32: safe no-op — no scan, {0,0}', () => {
     platform: 'win32',
     scan: () => { scanCalls += 1; return ''; },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0 });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0 });
   assert.equal(scanCalls, 0);
 });
 
@@ -520,7 +522,7 @@ test('never throws: a throwing scan is swallowed (best-effort)', () => {
     sessionsRoot: makeTmp(),
     scan: () => { throw new Error('ps exploded'); },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0 });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0 });
 });
 
 // ---------------------------------------------------------------------------

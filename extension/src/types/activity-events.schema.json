@@ -1205,6 +1205,20 @@
         "argv_summary": { "type": "string" }
       }
     },
+    "worker_orphan_reap_unverified": {
+      "type": "object",
+      "required": ["event", "ts", "pid", "pgid", "etime_seconds", "owning_session", "argv_summary", "reason"],
+      "properties": {
+        "event": { "type": "string", "const": "worker_orphan_reap_unverified" },
+        "ts": { "type": "string" },
+        "pid": { "type": "integer" },
+        "pgid": { "type": "integer" },
+        "etime_seconds": { "type": "integer", "minimum": 0 },
+        "owning_session": { "type": "string" },
+        "argv_summary": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
     "orphan_session_detected": {
       "type": "object",
       "required": ["event", "ts", "orphan_session_path", "orphan_started_at", "parent_session_hash", "orphan_pid"],
@@ -1961,6 +1975,7 @@
     { "$ref": "#/definitions/orphan_test_runner_reaped" },
     { "$ref": "#/definitions/orphan_manager_reaped" },
     { "$ref": "#/definitions/worker_orphan_reaped" },
+    { "$ref": "#/definitions/worker_orphan_reap_unverified" },
     { "$ref": "#/definitions/orphan_session_detected" },
     { "$ref": "#/definitions/session_map_collision_blocked" },
     { "$ref": "#/definitions/state_write_override_used" },

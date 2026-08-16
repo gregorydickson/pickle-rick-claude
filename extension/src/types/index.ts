@@ -777,6 +777,10 @@ export const VALID_ACTIVITY_EVENTS = [
   // R-CXHANG: setup-time orphan-worker reaper collected a detached codex/claude
   // worker proc whose owning session is provably not live (session-GC).
   'worker_orphan_reaped',
+  // WS-2: setup-time orphan-worker reaper could NOT verify a candidate is
+  // dead (SIGKILL-survivor or budget-exceeded) — informational, never counted
+  // as reaped.
+  'worker_orphan_reap_unverified',
   'orphan_session_detected',
   'session_map_collision_blocked',
   'state_write_override_used',
