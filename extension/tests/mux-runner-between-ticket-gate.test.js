@@ -5,7 +5,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { runBetweenTicketFastGate, runBetweenTicketFastTests } from '../bin/mux-runner.js';
+import { runBetweenTicketFastGate, runBetweenTicketFastTests, parseBetweenTicketFastGateFailures } from '../bin/mux-runner.js';
 
 function makeRoot(prefix) {
   return mkdtempSync(path.join(tmpdir(), prefix));
@@ -307,4 +307,42 @@ test('mux-runner-between-ticket-gate: runBetweenTicketFastTests returns timeout 
     else process.env.EXTENSION_DIR = originalExtensionDir;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// AC-1/AC-2/AC-3: gate output whose only content is an npm lifecycle banner plus a failing
+// audit, drawn from the exact observed shape (sessions 2026-08-14/15/16).
+test('mux-runner-between-ticket-gate: parseBetweenTicketFastGateFailures attributes a pretest script failure, not the npm banner', () => {
+  const output = [
+    '> pickle-rick-scripts@2.1.0-beta.9 pretest:fast',
+    '> bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh',
+    '',
+    'audit-test-tiers.sh: FAIL — tests/foo.test.js missing @tier header',
+  ].join('\n');
+
+  const failures = parseBetweenTicketFastGateFailures(output, '/repo');
+
+  assert.equal(failures.length, 1);
+  assert.equal(/^> \S+@\S+ \S+$/.test(failures[0].name), false, `name matched npm banner shape: ${failures[0].name}`);
+  assert.match(failures[0].name, /pretest:fast/);
+  assert.equal(failures[0].file, '');
+  assert.equal(failures[0].script_failure, true);
+  assert.match(failures[0].message, /audit-test-tiers\.sh: FAIL/);
+});
+
+// AC-4: real `not ok` TAP output is parsed byte-for-byte identically — no script_failure marker,
+// same location normalization as before.
+test('mux-runner-between-ticket-gate: parseBetweenTicketFastGateFailures leaves real TAP failures unchanged', () => {
+  const output = [
+    'not ok 1 - some real test',
+    "  location: '/repo/extension/tests/foo.test.js'",
+    '  ...',
+  ].join('\n');
+
+  const failures = parseBetweenTicketFastGateFailures(output, '/repo');
+
+  assert.deepEqual(failures, [{
+    name: 'some real test',
+    file: 'extension/tests/foo.test.js',
+  }]);
+  assert.equal(failures[0].script_failure, undefined);
 });

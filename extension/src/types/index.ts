@@ -148,6 +148,9 @@ export interface State {
     failures: Array<{
       name: string;
       file: string;
+      /** AC-3: explicit script-vs-TAP-failure discriminator — see BetweenTicketGateFailure. */
+      script_failure?: boolean;
+      message?: string;
     }>;
   };
   /**

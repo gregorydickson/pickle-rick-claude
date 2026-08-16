@@ -506,6 +506,30 @@ export function reapOrphanedManagersAtIterationStart(statePath, sessionDir, log,
     }
     return reaped;
 }
+/** npm's own lifecycle banner shape (e.g. `> pickle-rick-scripts@2.1.0-beta.9 pretest:fast`). */
+const NPM_LIFECYCLE_BANNER_RE = /^> \S+@\S+ \S+$/;
+const NPM_LIFECYCLE_BANNER_PHASE_RE = /^>\s+\S+@\S+\s+(\S+)$/;
+const SCRIPT_FAILURE_FALLBACK_NAME = 'script failure: npm run test:fast';
+/**
+ * AC-1/AC-3: when the gate dies before any TAP output (e.g. in `pretest:fast`), the npm
+ * lifecycle banner is always the first non-empty line — never a real test name. This parses the
+ * banner to name the actual npm script phase that failed instead of scraping that banner line.
+ */
+function extractFailingNpmScriptPhase(lines) {
+    let phase = null;
+    for (const line of lines) {
+        const match = line.trim().match(NPM_LIFECYCLE_BANNER_PHASE_RE);
+        if (match)
+            phase = match[1];
+    }
+    return phase;
+}
+/** AC-2: the tail of the gate's output, carrying the failing audit script's own error text. */
+function buildScriptFailureMessage(lines) {
+    const nonEmpty = lines.map(line => line.trim()).filter(Boolean);
+    const tail = nonEmpty.slice(-20).join('\n');
+    return tail || 'npm run test:fast failed';
+}
 function normalizeBetweenTicketFailureFile(rawFile, workingDir) {
     const trimmed = rawFile.trim();
     if (!trimmed)
@@ -550,8 +574,20 @@ export function parseBetweenTicketFastGateFailures(output, workingDir) {
     flushFailure();
     if (failures.length > 0)
         return failures;
-    const fallback = lines.map(line => line.trim()).find(Boolean) ?? 'npm run test:fast failed';
-    return [{ name: fallback, file: '' }];
+    // No TAP failures parsed: the gate died before emitting any TAP output (e.g. in
+    // `pretest:fast`). Never scrape the first non-empty line — it is always npm's own lifecycle
+    // banner, never a real test name. Attribute the script phase instead.
+    const phase = extractFailingNpmScriptPhase(lines);
+    let name = phase ? `script failure: ${phase}` : SCRIPT_FAILURE_FALLBACK_NAME;
+    // Defensive assertion (not just a test pin): never emit a name shaped like npm's own banner.
+    if (NPM_LIFECYCLE_BANNER_RE.test(name))
+        name = SCRIPT_FAILURE_FALLBACK_NAME;
+    return [{
+            name,
+            file: '',
+            script_failure: true,
+            message: buildScriptFailureMessage(lines),
+        }];
 }
 export function runBetweenTicketFastTests(extensionDir, extensionRoot = getExtensionRoot(), timeoutOverrideMs) {
     const timeoutMs = timeoutOverrideMs ?? resolveWorkerTestGateTimeoutMs(extensionRoot);
@@ -620,6 +656,8 @@ export function runBetweenTicketFastGate(input) {
             failures: result.failures.map(failure => ({
                 name: failure.name,
                 file: failure.file,
+                ...(failure.script_failure ? { script_failure: failure.script_failure } : {}),
+                ...(failure.message ? { message: failure.message } : {}),
             })),
             timed_out: result.timed_out,
             timeout_ms: result.timeout_ms,
