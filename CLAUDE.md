@@ -83,6 +83,14 @@ Adding/removing/modifying commands (`.claude/commands/*.md`) → update `README.
 
 Internal ticket artifacts use `rick_ticket_<hash>.md` and `rick_ticket_parent.md`; reserve "Linear ticket" prose for real external tracker issues, not the on-disk worker artifacts.
 
+### Filing findings (operator-set)
+
+The backlog is what the OPERATOR logs from real runs. An agent's mid-session observations are not
+findings. Open a PRD / MASTER_PLAN row / `R-*` ID only when: the operator asks, OR it blocks the run in
+progress, OR this bundle just caused it. Everything else — flakes, slow tests, cosmetic misparses,
+"worth watching" — goes in the chat report and dies there. An ID grants permanence the observation has
+not earned, and a P-number on a 30 ms timing flake buys attention it does not deserve.
+
 ### Banned word: "wedge"
 
 Imprecise — it has meant a hung runner, a halted pipeline, a stalled ticket, a salvage loop, and an
