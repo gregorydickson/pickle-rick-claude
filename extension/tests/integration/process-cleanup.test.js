@@ -161,36 +161,52 @@ function sleep(ms) {
 }
 
 /**
- * Resolve once the runtime has executed at least one worker binary. Each fake `claude` records its
- * own pid as its FIRST statement, so the first pid file is proof that every pre-spawn step — node
- * bootstrap, the ESM import graph, arg and settings resolution, the stale-anchor git scan, the AC
- * and symbol machinery — has already finished. That is where the sibling-kill window opens.
+ * Watch the recorded grandchild pids and time the SIBLING KILL, and only that.
+ *
+ * Each fake `claude` records its own pid as its FIRST statement, so a worker that is still hanging
+ * always has a live recorded pid. Two instants are therefore observable from the test alone, with no
+ * runtime marker:
+ *
+ *   - the CRASH — the first registered worker seen dead. The crashing worker exits immediately after
+ *     registering, and a hanging sibling only dies when something kills it, so the first death is
+ *     the crash. This is where the kill window opens.
+ *   - the KILL COMPLETING — no registered worker alive, with the registered set stable for
+ *     `quietMs`. Stability matters because the runtime brings workers up staggered (measured ~10s
+ *     apart), and because a sibling SIGTERM'd during its own bootstrap never registers at all
+ *     (measured: 2 of 3). The settled set is whatever actually started, and nothing in it is alive.
+ *
+ * Returns the interval between those two instants, measured to the FIRST moment the settled
+ * condition held so the quiet confirmation is not charged. Everything before the crash (node
+ * bootstrap, imports, arg/settings resolution, the git scan, the staggered worker spawn) and
+ * everything after the kill (manifest write, readiness gate, teardown) is excluded by construction.
  */
-async function waitForFirstRecordedPid(pidDir, deadlineMs) {
+async function observeSiblingKillWindow(pidDir, deadlineMs, quietMs = 1_000) {
   const until = Date.now() + deadlineMs;
-  while (Date.now() < until) {
-    if (readRecordedPids(pidDir).length > 0) return true;
-    await sleep(25);
-  }
-  return false;
-}
-
-/**
- * Resolve once no recorded worker pid is alive — i.e. the crash has been observed and every sibling
- * has been killed. A worker records its pid before it crashes or hangs, so a worker still hanging
- * always has a live recorded pid; "no recorded pid alive" is therefore exactly "the sibling kill
- * completed". Returns the interval measured from `startedAt`, so post-kill work (manifest write,
- * readiness gate, interpreter teardown) is never charged to it.
- */
-async function waitForAllRecordedPidsDead(pidDir, startedAt, deadlineMs) {
-  const until = startedAt + deadlineMs;
+  let crashAt = null;
+  let settledAt = null;
+  let settledCount = 0;
   for (;;) {
     const pids = readRecordedPids(pidDir);
-    if (pids.length > 0 && !pids.some(isPidAlive)) {
-      return { allDead: true, elapsedMs: Date.now() - startedAt };
+    const live = pids.filter(isPidAlive);
+    if (crashAt === null && live.length < pids.length) crashAt = Date.now();
+    const allDead = pids.length > 0 && live.length === 0;
+    if (allDead && pids.length === settledCount && settledAt !== null) {
+      if (Date.now() - settledAt >= quietMs) {
+        return { killed: true, elapsedMs: settledAt - crashAt, recorded: pids.length };
+      }
+    } else if (allDead) {
+      settledAt = Date.now();
+      settledCount = pids.length;
+    } else {
+      settledAt = null;
+      settledCount = 0;
     }
     if (Date.now() >= until) {
-      return { allDead: false, elapsedMs: Date.now() - startedAt };
+      return {
+        killed: false,
+        elapsedMs: crashAt === null ? -1 : Date.now() - crashAt,
+        recorded: pids.length,
+      };
     }
     await sleep(25);
   }
@@ -366,19 +382,23 @@ test('PC-3: dispatch EPIPE produces exactly one valid approve JSON on stdout', (
 // Expected: codebase crash triggers sibling kill (SIGTERM → requirements + risk-scope).
 // The onComplete callback drains activeWorkerProcs Set, so Promise.all resolves quickly.
 //
-// THE CLOCK COVERS THE SIBLING KILL ONLY. It opens when the first worker binary has executed
-// (first recorded grandchild pid) and closes when no recorded worker pid is alive. Excluded on the
-// near side: node bootstrap, the ESM import graph of the refinement bin and its service imports,
-// arg and settings resolution, the stale-anchor git scan, the AC and symbol machinery. Excluded on
-// the far side: manifest write, the readiness gate, and interpreter teardown. Only the crash
-// observation, the SIGTERM fan-out and the workers' deaths are charged.
+// THE CLOCK COVERS THE SIBLING KILL ONLY. It opens at the crash (the first registered worker seen
+// dead) and closes when no registered worker is alive and the registered set has stopped growing.
+// Excluded on the near side: node bootstrap, the ESM import graph of the refinement bin and its
+// service imports, arg and settings resolution, the stale-anchor git scan, the AC and symbol
+// machinery, and the staggered worker spawn (measured ~10s between workers). Excluded on the far
+// side: manifest write, the readiness gate, and interpreter teardown. Only the SIGTERM fan-out and
+// the workers' deaths are charged.
 // ---------------------------------------------------------------------------
 
-// Budget UNCHANGED at 30s — narrowing the window widens nothing. The degenerate ladder INSIDE the
-// narrowed window is 20000ms (worker timeout) + 2000ms (SIGTERM → SIGKILL escalation) = 22000ms;
-// the 5000ms flush and the readiness gate now fall outside it. A regression where siblings are not
-// killed leaves them hanging for their full 60s budget, so it fails this assertion rather than
-// passing silently.
+// Budget UNCHANGED at 30s — narrowing the window widens nothing. Measured on this branch: the crash
+// lands at ~41.5s of process time and every sibling is dead 4ms later, so the intended kill path has
+// enormous headroom. The degenerate ladder inside this window is the 2000ms SIGTERM → SIGKILL
+// escalation. A regression where siblings are not killed leaves them hanging for their full 60s
+// budget, so it fails this assertion rather than passing silently.
+// The refinement team spawns one worker per role: requirements, codebase, risk-scope.
+const WORKER_COUNT = 3;
+
 test('PC-4: refinement worker 2-of-3 crash kills siblings — siblings dead in < 30s', { timeout: 90_000 }, async () => {
   const dir = makeTmpRoot('pickle-pc4-');
   let pidDir = null;
@@ -439,25 +459,24 @@ if (prompt.includes('analysis_codebase.md')) {
           NODE_ENV: 'test',
           EXTENSION_DIR_TEST: '1',
         },
-        stdio: 'pipe',
+        // Nothing here reads the child's output, and its cycle spinner writes continuously — an
+        // undrained pipe would fill and block the very process this test is timing.
+        stdio: 'ignore',
         // Hang-guard, not a perf assertion — same 60s budget the previous spawnSync carried.
         timeout: 60_000,
         cwd: dir,
       },
     );
 
-    // Setup runs before any worker executes, and it is not what this test measures. Wait it out
-    // without clocking it; 60s is a hang-guard on reaching worker spawn at all.
-    const workersUp = await waitForFirstRecordedPid(pidDir, 60_000);
-    assert.ok(workersUp, 'no worker binary executed — refinement team never reached worker spawn');
-
-    // Clock opens here: every pre-spawn step is already done.
-    const start = Date.now();
-    const { allDead, elapsedMs: elapsed } = await waitForAllRecordedPidsDead(pidDir, start, 45_000);
+    // The clock inside this watcher spans crash → siblings dead. The 75s deadline is a hang-guard on
+    // observing that window at all — the runtime brings the three workers up staggered ~10s apart,
+    // and none of that setup is charged to the measured interval.
+    const { killed, elapsedMs: elapsed, recorded } = await observeSiblingKillWindow(pidDir, 75_000);
 
     assert.ok(
-      allDead && elapsed < 30_000,
-      `sibling kill should complete in < 30s, took ${elapsed}ms (all dead: ${allDead}) — siblings not killed?`,
+      killed && elapsed < 30_000,
+      `sibling kill should complete in < 30s, took ${elapsed}ms `
+      + `(killed: ${killed}, workers registered: ${recorded}/${WORKER_COUNT}) — siblings not killed?`,
     );
 
     // Manifest must be written (even on failure — partial results recorded). It is written when the
@@ -469,7 +488,7 @@ if (prompt.includes('analysis_codebase.md')) {
     assert.ok(manifestWritten, 'refinement_manifest.json must be written');
 
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-    assert.equal(manifest.workers.length, 3, 'manifest must record all 3 workers');
+    assert.equal(manifest.workers.length, WORKER_COUNT, 'manifest must record all 3 workers');
     assert.equal(manifest.all_success, false, 'all_success must be false (codebase crashed)');
 
     // Codebase worker must be recorded as failed
