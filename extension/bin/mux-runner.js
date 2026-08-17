@@ -11067,6 +11067,18 @@ if (process.argv[1] && path.basename(process.argv[1]) === 'mux-runner.js') {
     main().catch((err) => {
         const msg = safeErrorMessage(err);
         console.error(`${Style.RED}[FATAL] ${msg}${Style.RESET}`);
+        const sessionDir = process.argv[2];
+        if (sessionDir && !sessionDir.startsWith('--')) {
+            const statePath = path.join(sessionDir, 'state.json');
+            try {
+                recordExitReason(statePath, 'error');
+            }
+            catch { /* best-effort forensic stamp */ }
+            try {
+                safeDeactivate(statePath);
+            }
+            catch { /* never throw on deactivate */ }
+        }
         process.exit(1);
     });
 }
