@@ -32,6 +32,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { findResiduals } from '../__helpers__/activity-sink.js';
 
 const DATA_ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwge-data-')));
 process.env.PICKLE_DATA_ROOT = DATA_ROOT;
@@ -41,13 +42,6 @@ const {
   resolveWorkerGateVerdict,
   WORKER_GATE_NOT_RUN_REASON,
 } = await import('../../bin/mux-runner.js');
-
-/** B-OFFREPO: the `gate_skipped` residuals a did-not-run gate records into state.json. */
-function readNotRunResiduals(sessionDir) {
-  const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf8'));
-  return (Array.isArray(state.activity) ? state.activity : [])
-    .filter(entry => entry.event === 'gate_skipped' && entry.gate_payload?.reason === WORKER_GATE_NOT_RUN_REASON);
-}
 
 function makeTmp() {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cwge-guard-')));
@@ -128,8 +122,14 @@ test('R-CWGE WS-2: absent verdict on a non-pickle-rick target (no extension/) fl
     assert.equal(resolved.verdict, 'not_run', 'a gate that could not run reports not_run, never green');
     assert.equal(resolved.computedVia, 'not_applicable', 'no gate may be named as the author of an unrun verdict');
 
-    // The permissiveness is no longer silent: the unverified state is recorded.
-    const residuals = readNotRunResiduals(sessionDir);
+    // The permissiveness is no longer silent: the unverified state is recorded. The residual
+    // lands in the jsonl activity sink under PICKLE_DATA_ROOT — commit 40e07bde moved the
+    // producer off state.json.activity, so read it through the one shared sink helper.
+    const residuals = findResiduals({
+      dataRoot: DATA_ROOT,
+      ticketId: 'abc12345',
+      reason: WORKER_GATE_NOT_RUN_REASON,
+    });
     assert.equal(residuals.length, 1, 'the unrun gate leaves exactly one residual');
     assert.equal(residuals[0].ticket_id, 'abc12345', 'the residual names the ticket');
   });
