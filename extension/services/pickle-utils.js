@@ -152,6 +152,9 @@ export const PICKLE_GATE_SCRUBBED_ENV_KEYS = [
     'GIT_CONFIG_SYSTEM',
     'GIT_CONFIG_NOSYSTEM',
     GIT_CONFIG_COUNT_ENV_VAR,
+    'PICKLE_DATA_ROOT',
+    'PICKLE_DATA_DIR',
+    'TMUX',
 ];
 /** The dynamic half of the scrub set: `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`. */
 export const GIT_CONFIG_INDEXED_ENV_KEY_RE = /^GIT_CONFIG_(KEY|VALUE)_\d+$/;

@@ -11,6 +11,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import {
   PICKLE_GATE_SCRUBBED_ENV_KEYS,
   GIT_CONFIG_INDEXED_ENV_KEY_RE,
@@ -39,6 +42,9 @@ const CONTAMINATION = {
   GIT_CONFIG_VALUE_1: 'contaminated',
   GIT_CONFIG_KEY_2: 'user.email',
   GIT_CONFIG_VALUE_2: 'contaminated@example.invalid',
+  PICKLE_DATA_ROOT: '/tmp/contaminated-data-root',
+  PICKLE_DATA_DIR: '/tmp/contaminated-data-dir',
+  TMUX: '/private/tmp/tmux-0/contaminated,12345,0',
 };
 
 /** Every indexed `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` the fixture carries. */
@@ -61,7 +67,7 @@ const CONTAMINATION_INDEXED_KEYS = Object.keys(CONTAMINATION).filter(k =>
  */
 function assertScrubbedKeysAbsent(env, label) {
   const contaminatedKeys = Object.keys(CONTAMINATION);
-  assert.equal(contaminatedKeys.length, 12, 'fixture must carry the full contamination set');
+  assert.equal(contaminatedKeys.length, 15, 'fixture must carry the full contamination set');
   assert.equal(CONTAMINATION_INDEXED_KEYS.length, 6, 'fixture must carry three indexed pairs');
   for (const key of contaminatedKeys) {
     assert.ok(!(key in env), `${key} must be absent from ${label}`);
@@ -76,9 +82,13 @@ const KEEP_SET = ['PATH', 'HOME', 'PICKLE_BACKEND', 'PICKLE_TEST_MODE'];
 function makeGateFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-env-scrub-'));
   const dumpScript = path.join(dir, 'dump-env.js');
+  const pickleUtilsPath = path.join(__dirname, '..', 'services', 'pickle-utils.js');
   fs.writeFileSync(
     dumpScript,
-    "const fs = require('fs');\nfs.writeFileSync(process.env.DUMP_OUT, JSON.stringify(process.env));\n"
+    `const fs = require('fs');\n` +
+    `const { getDataRoot } = require(${JSON.stringify(pickleUtilsPath)});\n` +
+    `const dump = Object.assign({}, process.env, { __RESOLVED_DATA_ROOT: getDataRoot() });\n` +
+    `fs.writeFileSync(process.env.DUMP_OUT, JSON.stringify(dump));\n`
   );
   fs.writeFileSync(
     path.join(dir, 'package.json'),
@@ -164,6 +174,20 @@ test('AC-1: runBetweenTicketFastTests (mux-runner test-gate spawn) scrubs the ga
     const childEnv = readDumpedEnv(dumpOut);
     assertScrubbedKeysAbsent(childEnv, 'the gate child env');
     for (const key of KEEP_SET) assert.ok(key in childEnv, `${key} must survive`);
+  });
+});
+
+test('AC-6: a gate spawn exporting PICKLE_DATA_ROOT/PICKLE_DATA_DIR/TMUX still resolves an isolated data root and sees no TMUX', async () => {
+  const fixtureDir = makeGateFixture();
+  await withContaminatedEnv({}, async (dumpOut) => {
+    const result = await runWorkerGateTestCommand('test:fast', fixtureDir, 600_000);
+    assert.equal(result.ok, true);
+    const childEnv = readDumpedEnv(dumpOut);
+    assert.ok(!('PICKLE_DATA_ROOT' in childEnv), 'PICKLE_DATA_ROOT must be absent from the gate child env');
+    assert.ok(!('PICKLE_DATA_DIR' in childEnv), 'PICKLE_DATA_DIR must be absent from the gate child env');
+    assert.ok(!('TMUX' in childEnv), 'TMUX must be absent from the gate child env');
+    assert.notEqual(childEnv.__RESOLVED_DATA_ROOT, CONTAMINATION.PICKLE_DATA_ROOT);
+    assert.notEqual(childEnv.__RESOLVED_DATA_ROOT, CONTAMINATION.PICKLE_DATA_DIR);
   });
 });
 
