@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scrubGateEnv } from '../../services/pickle-utils.js';
 
@@ -74,6 +74,69 @@ function isPidAlive(pid) {
   } catch {
     return false; // ESRCH = no such process
   }
+}
+
+/**
+ * PC-4 and PC-5 hand a fake `claude` binary to spawn-refinement-team.js, so the processes it
+ * starts are this test's GRANDCHILDREN — outside the reach of both spawnSync's cap kill (which
+ * signals the direct child only) and the runtime's own activeWorkerProcs set. Each test therefore
+ * records what it started and reaps it in its own teardown; the fake bodies idle for 60s, so an
+ * unreaped one stays resident well past the test and loads whatever runs next.
+ */
+function makePidDir(dir) {
+  const pidDir = path.join(dir, 'grandchild-pids');
+  fs.mkdirSync(pidDir, { recursive: true });
+  return pidDir;
+}
+
+/**
+ * The source line a fake `claude` body embeds to register its own pid. Best-effort: a failed
+ * recording must never change what the test observes.
+ */
+function pidRecordSnippet(pidDir) {
+  return `try { require('fs').writeFileSync(require('path').join(${JSON.stringify(pidDir)}, String(process.pid)), ''); } catch {}`;
+}
+
+/** Live command line of `pid`, or '' if the process is gone or `ps` is unavailable. */
+function processCommandLine(pid) {
+  try {
+    return execFileSync('ps', ['-ww', '-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf-8',
+      timeout: 5_000,
+    });
+  } catch {
+    return ''; // ESRCH, or no ps on this host
+  }
+}
+
+/**
+ * SIGKILL every recorded pid that is still alive AND whose CURRENT command line still contains
+ * `ownerMarker` (the test's own mkdtemp path). Re-proving ownership against the live process is
+ * what makes a recycled pid safe — a recorded pid alone is not evidence. Never a bare
+ * binary-name kill. Returns the pids actually signalled; never throws, so a `finally` caller
+ * cannot mask a real assertion failure.
+ */
+function reapRecordedGrandchildren(pidDir, ownerMarker) {
+  let entries;
+  try {
+    entries = fs.readdirSync(pidDir);
+  } catch {
+    return [];
+  }
+  const reaped = [];
+  for (const entry of entries) {
+    const pid = Number.parseInt(entry, 10);
+    if (!Number.isInteger(pid) || pid <= 1) continue;
+    if (!isPidAlive(pid)) continue;
+    if (!processCommandLine(pid).includes(ownerMarker)) continue;
+    try {
+      process.kill(pid, 'SIGKILL');
+      reaped.push(pid);
+    } catch {
+      /* exited between the probe and the signal */
+    }
+  }
+  return reaped;
 }
 
 /** Write a minimal state.json to sessionDir. */
@@ -245,6 +308,7 @@ test('PC-3: dispatch EPIPE produces exactly one valid approve JSON on stdout', (
 // where siblings aren't killed would fail this assertion, not silently pass.
 test('PC-4: refinement worker 2-of-3 crash kills siblings — process completes in < 30s', { timeout: 90_000 }, async () => {
   const dir = makeTmpRoot('pickle-pc4-');
+  let pidDir = null;
   try {
     // Session directory
     const sessionDir = path.join(dir, 'session');
@@ -259,12 +323,15 @@ test('PC-4: refinement worker 2-of-3 crash kills siblings — process completes 
     const extRoot = path.join(dir, 'ext');
     fs.mkdirSync(extRoot, { recursive: true });
 
-    // Fake claude binary — detects which worker is calling and crashes or hangs
+    // Fake claude binary — detects which worker is calling and crashes or hangs.
+    // It registers its own pid so this test can reap whatever the runtime leaves behind.
+    pidDir = makePidDir(dir);
     const fakeBinDir = path.join(dir, 'fakebin');
     fs.mkdirSync(fakeBinDir, { recursive: true });
     const fakeClaude = path.join(fakeBinDir, 'claude');
     fs.writeFileSync(fakeClaude, `#!/usr/bin/env node
 'use strict';
+${pidRecordSnippet(pidDir)}
 const args = process.argv.slice(2);
 const pIdx = args.indexOf('-p');
 const prompt = pIdx !== -1 ? (args[pIdx + 1] || '') : '';
@@ -331,6 +398,8 @@ if (prompt.includes('analysis_codebase.md')) {
     assert.ok(codebaseWorker, 'codebase worker must appear in manifest');
     assert.equal(codebaseWorker.success, false, 'codebase worker must be marked failed');
   } finally {
+    // Reap before rmSync — removing the tmp tree deletes the pid records, not the processes.
+    if (pidDir) reapRecordedGrandchildren(pidDir, dir);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -349,6 +418,7 @@ if (prompt.includes('analysis_codebase.md')) {
 // at the 60s hang budget.
 test('PC-5: refinement team SIGTERM graceful shutdown — all workers killed, process exits', { timeout: 60_000 }, async () => {
   const dir = makeTmpRoot('pickle-pc5-');
+  let pidDir = null;
   try {
     const sessionDir = path.join(dir, 'session');
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -360,11 +430,14 @@ test('PC-5: refinement team SIGTERM graceful shutdown — all workers killed, pr
     const extRoot = path.join(dir, 'ext');
     fs.mkdirSync(extRoot, { recursive: true });
 
-    // Fake claude that always hangs
+    // Fake claude that always hangs. It registers its own pid so this test can reap whatever
+    // the SIGTERM path leaves behind.
+    pidDir = makePidDir(dir);
     const fakeBinDir = path.join(dir, 'fakebin');
     fs.mkdirSync(fakeBinDir, { recursive: true });
     const fakeClaude = path.join(fakeBinDir, 'claude');
     fs.writeFileSync(fakeClaude, `#!/usr/bin/env node
+${pidRecordSnippet(pidDir)}
 setTimeout(() => {}, 60_000);
 `);
     fs.chmodSync(fakeClaude, 0o755);
@@ -388,6 +461,10 @@ setTimeout(() => {}, 60_000);
         },
         cwd: dir,
         stdio: 'pipe',
+        // Hang-guard, not a perf assertion: it sits above the 15s settle deadline below, so it
+        // can only fire when the child genuinely never exits. Without it a wedged refinement
+        // team outlives the test.
+        timeout: 30_000,
       },
     );
 
@@ -402,14 +479,26 @@ setTimeout(() => {}, 60_000);
     // while still detecting a regression where SIGTERM doesn't kill workers
     // (which would wait the full 60s hang budget).
     await new Promise((resolve, reject) => {
-      child.on('exit', resolve);
-      child.on('error', reject);
-      setTimeout(() => reject(new Error('SIGTERM did not kill process within 15s')), 15_000);
+      // Cleared on settle and unref'd: a bare timer here keeps the event loop alive for the full
+      // 15s after the child has already exited, holding the whole serial tier behind it.
+      const deadline = setTimeout(
+        () => reject(new Error('SIGTERM did not kill process within 15s')),
+        15_000,
+      );
+      deadline.unref();
+      const settle = (fn) => (arg) => {
+        clearTimeout(deadline);
+        fn(arg);
+      };
+      child.once('exit', settle(resolve));
+      child.once('error', settle(reject));
     });
 
     const elapsed = Date.now() - start;
     assert.ok(elapsed < 15_000, `process should exit quickly after SIGTERM, took ${elapsed}ms`);
   } finally {
+    // Reap before rmSync — removing the tmp tree deletes the pid records, not the processes.
+    if (pidDir) reapRecordedGrandchildren(pidDir, dir);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
