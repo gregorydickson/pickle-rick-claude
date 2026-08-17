@@ -178,6 +178,33 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > across two full runs. One clean run cannot distinguish *fixed* from *did not recur*, and the bundle said
 > so itself rather than claiming the kill. Treat it as live until several consecutive tiers complete.
 >
+> **📦 RELEASE GATE MEASURED 2026-08-16 (reduced — expensive tier deliberately skipped).** Operator ran it
+> in STAGES so no failure could hide behind one exit code. `tsc --noEmit` OK · `eslint --max-warnings=-1`
+> OK · `tsc` OK · 9 audits OK (after `53d4ca74`) · `test:fast` **7723 tests / 507 suites / fail 0 /
+> cancelled 0 / 923019 ms** · `test:fast:budget` **OK failures=1 budget=2 runs 5/5**.
+>
+> **The gate blocker was self-inflicted and instructive.** `audit-subprocess-heavy-tests` — taught to
+> catch missing-timeout spawns BY the R-WGTORPH bundle — failed on three callsites from that same bundle:
+> two in `orphan-worker-reaper-tmp-prefix-drain.test.js`, one in `spawn-morty-worker-gate.test.js`. All
+> three are `spawn(..., { detached: true, stdio: 'ignore' })` orphan FIXTURES whose whole purpose is to
+> outlive the parent; a timeout would defeat the test. Registered in the audit's own missing-timeout
+> baseline (`53d4ca74`, 4 insertions, baseline file only).
+> **`pretest:integration` runs that audit, so `test:integration` had been exiting 1 without executing a
+> single test** — `pretest:fast` runs a different pair, which is why the fast tier read green throughout.
+>
+> **Flake cluster characterised, not mysterious.** `test:fast:budget` ran the tier 5× and the one failing
+> run named the SAME trio seen in an earlier red tier: `node-modules-reuse`, `withLock: different-key
+> calls run in parallel` (a literal wall-clock budget: `< 110ms`, got 139/183ms), and `AC-3/AC-9/AC-10: a
+> real spawn contends on a pre-held lock`. ~1-in-5, all on the lock/spawn seam, all timing-sensitive. The
+> repetition budget absorbs it by design — this is what that mechanism is for.
+>
+> **Operator method correction (cost a false alarm, worth recording).** "Parent CPU flat + log not
+> growing = hung" is only valid for a command that STREAMS output. `test:fast` streams `✔` lines, so an
+> 8-minute frozen log there is a genuine hang (4 occurrences, all at the `mux-runner` suite boundary —
+> `BUG-2026-08-16-tier-hangs-at-mux-runner-suite.md`). `test:fast:budget` buffers everything until the
+> end, so silence there means nothing; its true signal is descendant churn. A stall detector was nearly
+> used to kill a healthy 13-minute run.
+>
 > **▶ NEXT: queue C, the env-contamination PRD — and R-GENVL WIDENS it.** The original scope was the
 > trailer-hook family (`PICKLE_TICKET_ID`, `GIT_CONFIG_*`, 8 tests). R-GENVL adds a SECOND leaked
 > variable in the same seam: `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS`, read by `resolveWorkerTestFastTimeoutMs`
