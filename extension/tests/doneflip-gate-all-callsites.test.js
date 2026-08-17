@@ -77,9 +77,12 @@ test('AC-DURA-3: the 7th path commitAndContinueDoneFlip routes Done through the 
   const nextExportIdx = MUX_SRC.indexOf('\nexport ', fnStart + 1);
   const fnEnd = nextExportIdx === -1 ? MUX_SRC.length : nextExportIdx;
   const body = MUX_SRC.slice(fnStart, fnEnd);
-  assert.ok(/guardCompletionCommitBeforeDone\(/.test(body), 'commitAndContinueDoneFlip must call the guard before markTicketDone');
-  assert.ok(body.indexOf('guardCompletionCommitBeforeDone(') < body.indexOf('markTicketDone('),
-    'guard must precede markTicketDone');
+  // AC-R2-3 (92e33eb3): the Done-flip half (markTicketDone) was split out into
+  // the sibling finalizeDoneFlipAfterCommit; commitAndContinueDoneFlip now
+  // routes to it, so the invariant is "guard precedes the delegating call".
+  assert.ok(/guardCompletionCommitBeforeDone\(/.test(body), 'commitAndContinueDoneFlip must call the guard before delegating the Done flip');
+  assert.ok(body.indexOf('guardCompletionCommitBeforeDone(') < body.indexOf('finalizeDoneFlipAfterCommit('),
+    'guard must precede the finalizeDoneFlipAfterCommit delegation');
 });
 
 for (const site of SEVEN_SITES) {
