@@ -4903,8 +4903,18 @@ function assertWorkingDirUnderTmpdirIfTestMode(workingDir) {
  * the ticket frontmatter lives under the session root (untouched by the
  * gate-fail tree reset); the Done-flip guard treats an absent verdict as
  * fail-closed, so a write hiccup degrades safely.
+ *
+ * B-OFFREPO (AC-OFFREPO-1): `gateWorkingDir`, when provided, is checked for an
+ * `extension/` tree — the armed gate's actual precondition for having run at
+ * all. Absent it, no verdict was earned, so this is a no-op (the caller may
+ * still commit and let `guardCompletionCommitBeforeDone`'s honest `not_run`
+ * route judge the flip on real evidence). Omitting `gateWorkingDir` preserves
+ * the unconditional stamp for callers that already gate on `extension/`
+ * existing before ever reaching this committer (`commitGatePassingDeliverableOnExitPath`).
  */
-function persistRunnerAuthoredGreenVerdict(sessionDir, ticketId) {
+function persistRunnerAuthoredGreenVerdict(sessionDir, ticketId, gateWorkingDir) {
+    if (gateWorkingDir !== undefined && !fs.existsSync(path.join(gateWorkingDir, 'extension')))
+        return;
     try {
         const fp = ticketFilePath(sessionDir, ticketId);
         const raw = fs.readFileSync(fp, 'utf8');
@@ -5025,12 +5035,21 @@ export function commitAndContinueDoneFlip(input) {
         input.log(`commit-and-continue: git commit blocked/failed for ${input.ticketId} (status ${commit.status ?? 'null'})`);
         return { ok: false };
     }
-    // B-CWGE: runner-authored commit — the caller already proved GREEN via its own
-    // armed #99 gate, so record that verdict and let the guard honor it instead of
-    // re-running the full recompute (which over-reaches on a toolchain-less salvage
-    // tree). Genuine worker self-commits don't route here, so their fail-closed
-    // absent-verdict recompute stays intact. See CLAUDE.md R-CWGE trap door.
-    persistRunnerAuthoredGreenVerdict(input.sessionDir, input.ticketId);
+    // B-CWGE: runner-authored commit — when the caller's armed #99 gate actually ran
+    // (extension/ present under workingDir) it already proved GREEN, so record that
+    // verdict and let the guard honor it instead of re-running the full recompute
+    // (which over-reaches on a toolchain-less salvage tree). Genuine worker
+    // self-commits don't route here, so their fail-closed absent-verdict recompute
+    // stays intact. See CLAUDE.md R-CWGE trap door.
+    //
+    // B-OFFREPO (AC-OFFREPO-1): a recovery-ladder caller may reach this committer
+    // with the gate reported `not_run` (no extension/ — the target repo has no JS
+    // worker gate to run at all). Stamping green there would be exactly the
+    // fabricated-verdict bug B-OFFREPO fixed. `persistRunnerAuthoredGreenVerdict`
+    // itself skips the stamp in that case; `guardCompletionCommitBeforeDone` below
+    // already reads the absent verdict, resolves `not_run`, and honors it
+    // permissively via its own gate-exempt decision kind — no fabrication needed.
+    persistRunnerAuthoredGreenVerdict(input.sessionDir, input.ticketId, input.workingDir);
     const guard = guardCompletionCommitBeforeDone({
         sessionDir: input.sessionDir,
         ticketId: input.ticketId,
@@ -5617,30 +5636,28 @@ export function attemptRecoveryBeforeTerminal(input) {
         ticketId: input.ticketId,
         assessEvidence: () => assessRecoveryEvidence(input.sessionDir, input.workingDir, input.ticketId),
         runArmedGate: () => {
-            // B-OFFREPO (AC-OFFREPO-1): the armed gate's whole contract is to consume the
-            // REAL whole-repo result and never a manufactured green (R-ORSR-6). Its `ok`
-            // is what authorises rung 1's automatic commit-and-flip-Done — the
-            // highest-consequence action in the ladder — so reporting `ok: true` for a
-            // gate that issued no command was a Done flip over zero evidence. It now
-            // reports honestly and records a residual. This does NOT halt anything: the
-            // ladder simply falls through to its remaining rungs, and failing those it
-            // records the honest `recovery_exhausted` terminal that `pickle-recover` is
-            // built for.
-            //
-            // B-OFFREPO ticket 20 made `runWorkerGate` run off-repo; it deliberately did
-            // NOT change this site. Letting a target repo's own suite authorise rung 1's
-            // automatic commit-and-flip-Done is a POLICY change to the recovery ladder,
-            // not the measurement fix ticket 20 scoped. So the armed gate still declines
-            // off-repo rather than auto-Done'ing on evidence this ladder was never
-            // designed to weigh. Closing it needs its own ticket, run attended (R-PSRB:
-            // this is the salvage path).
+            // B-OFFREPO (AC-OFFREPO-1) narrowed this to `ok:false` on a missing
+            // `extension/` so rung 1 could never mint a fabricated green worker-gate
+            // verdict for a target repo whose suite never ran. That fix over-reached: it
+            // also stopped rung 1 from even ATTEMPTING the commit-and-flip on a
+            // genuinely-dirty, genuinely-advancing tree, collapsing every off-repo
+            // recovery pass straight to the honest terminal `recovery_exhausted` — a
+            // Prime Directive halt on a ladder that made real progress
+            // (INV-CODEX-RECOVERY-ADVANCED, R-CHTS-CODEX). The fear behind B-OFFREPO was
+            // correct (never assert a gate ran when it didn't); the fix belongs at the
+            // VERDICT, not at whether the commit is attempted — exactly the split
+            // B-OFFREPO's own `guardCompletionCommitBeforeDone` change already applies
+            // one level up (`not_run` routes to the gate-exempt decision kind rather than
+            // fail-closed). So this reports `ok: true` (the ladder may proceed) while
+            // recording the same not-run residual for observability; the committer below
+            // is the one that must not lie about a verdict it didn't earn.
             if (!fs.existsSync(extensionDir)) {
                 emitWorkerGateNotRunResidual(input.statePath, input.ticketId, {
                     computedVia: 'not_applicable',
                     site: 'attemptRecoveryBeforeTerminal.runArmedGate',
                 });
-                input.log(`recovery: armed gate not applicable for ${input.ticketId} (no extension/) — reported not_run, no auto-Done`);
-                return { ok: false };
+                input.log(`recovery: armed gate not applicable for ${input.ticketId} (no extension/) — proceeding without a fabricated green verdict`);
+                return { ok: true };
             }
             const r = runBetweenTicketFastTests(extensionDir, input.extensionRoot);
             lastGateFailures = r.failures;
