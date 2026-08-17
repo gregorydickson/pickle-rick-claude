@@ -72,3 +72,47 @@ short-circuits it. Only one summary block was emitted. Expect further failures b
 
 The 11 other integration files that reference `state.activity` for event types which still live there —
 only residual readers are stale. Do not mass-migrate them.
+
+## Measured outcome — ticket 47c254f3 (2026-08-17, HEAD `6df18b29`)
+
+All runs manager-owned, on a quiet box, with a scrubbed env
+(`env -u PICKLE_WORKER_TEST_FAST_TIMEOUT_MS -u PICKLE_TICKET_ID -u PICKLE_STATE_FILE -u PICKLE_SESSION -u PICKLE_WORKING_DIR -u GIT_CONFIG_*`).
+
+| AC | verdict | evidence (runner's own summary block) |
+|:---|:---|:---|
+| AC-5 parallel green | **SATISFIED** | `tests 622 / suites 21 / pass 622 / fail 0 / cancelled 0 / EXIT=0` |
+| AC-6 both blocks emitted | **SATISFIED** | chained `npm run test:integration` emitted 2 summary blocks: parallel `622 / fail 0`, serial `tests 602 / suites 24 / pass 598 / fail 4 / cancelled 0 / EXIT=1` |
+| AC-7 fast tier holds | **SATISFIED** | `tests 7723 / pass 7720 / fail 0 / cancelled 0 / skipped 2 / EXIT=0` |
+| AC-3 no retuning | **SATISFIED** | no assertion changed, nothing skipped/quarantined/`.only`-narrowed |
+| AC-8 no new surface | **SATISFIED** | no `exit_reason`, abort site, setting key, or flag added |
+
+### The serial tier's four failures — all INHERITED
+
+| # | test | file:line | shortest decisive line |
+|:--|:--|:--|:--|
+| 1 | PC-4: refinement worker 2-of-3 crash kills siblings | `extension/tests/integration/process-cleanup.test.js:245` | `spawn-refinement-team should complete in < 30s, took 47212ms (siblings not killed?)` |
+| 2 | timeout-e2e: manager sleeps 95% of budget … no SIGTERM | `extension/tests/integration/timeout-e2e.test.js:28` | `artifact not written — subprocess was killed before completing (exit: 1, signal: null)` |
+| 3 | timeout-e2e: session deactivated by subprocess → mux-runner exits cleanly | `extension/tests/integration/timeout-e2e.test.js:112` | `session deactivated` (`true !== false`) |
+| 4 | FR-B10: fixture manager sleeps 95% of worker_timeout budget … no SIGTERM | `extension/tests/timeout-happy-path.test.js:31` | `Artifact not written — subprocess was killed before completing (exit: 1, signal: null)` |
+
+**Attribution: inherited, none caused by this bundle's four subjects** (`2ba5c3e4`, `e39d9dcd`,
+`7893ed3e`, `92e33eb3`). A detached worktree at `c87c3a3f` — the bundle's PRD commit, parent of every
+code fix in it — reproduces all four with byte-identical assertion messages and matching timings. Each
+arm ran its own `extension/bin/mux-runner.js` (the test resolves `MUX_RUNNER_BIN` relative to itself),
+so the comparison is source-vs-source. The failures also reproduce under a fully scrubbed `PICKLE_*`
+env, ruling out the known contamination families.
+
+**These are B-CIINT (MASTER_PLAN row 119), and that row's "pass locally (macOS)" claim is now
+falsified** — #2 and #4 are listed verbatim in the B-CIINT bundle as CI-only. They were never
+"passing locally"; the serial tier was simply never reached, because `test:integration` is
+`parallel && serial` and a red parallel short-circuits it. Row 119 reclassified P3 → P2.
+
+**Residual left for a human (deliberately not fixed here):** the introducing commit is not pinned. The
+`WARN: ticket_state_desync check found no ticket directories` line that precedes mux-runner's `exit 1`
+predates the bundle by a wide margin, and bisecting it needs a per-commit rebuild of the compiled
+mirror. Bounding that is its own ticket, not an assertion retune.
+
+**Measurement hazard worth keeping:** a first `test:fast` run scored `fail 0 → fail 12` purely because
+an incumbent `spawn-morty` worker was alive during it (6 of the 12 were `spawn-morty` subprocess tests
+at 100–157s, i.e. spawn-lock contention). Re-run alone on the now-quiet box: `fail 0`. A tier
+measurement taken while a worker is live is not evidence.
