@@ -16,6 +16,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scrubGateEnv } from '../../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DISPATCH_BIN = path.resolve(__dirname, '../../hooks/dispatch.js');
@@ -292,9 +293,11 @@ if (prompt.includes('analysis_codebase.md')) {
       ],
       {
         env: {
-          ...process.env,
+          ...scrubGateEnv(),
           PATH: `${fakeBinDir}:${process.env.PATH}`,
           EXTENSION_DIR: extRoot,
+          NODE_ENV: 'test',
+          EXTENSION_DIR_TEST: '1',
         },
         timeout: 60_000,
         encoding: 'utf-8',
