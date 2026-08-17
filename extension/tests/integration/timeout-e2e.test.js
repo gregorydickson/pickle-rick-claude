@@ -81,6 +81,8 @@ process.exit(0);
             env: {
                 ...process.env,
                 EXTENSION_DIR: base,
+                NODE_ENV: 'test',
+                EXTENSION_DIR_TEST: '1',
                 PATH: `${fakeBinDir}:${process.env.PATH}`,
                 PICKLE_BACKEND: 'claude',
             },
@@ -91,7 +93,7 @@ process.exit(0);
         // Artifact must exist — subprocess ran to completion unsigterm'd
         assert.ok(
             fs.existsSync(artifactPath),
-            `artifact not written — subprocess was killed before completing (exit: ${result.status}, signal: ${result.signal})`,
+            `artifact not written — subprocess was killed before completing (exit: ${result.status}, signal: ${result.signal}), stderr tail: ${String(result.stderr).slice(-500)}`,
         );
         assert.equal(fs.readFileSync(artifactPath, 'utf-8'), 'completed', 'artifact content correct');
 
@@ -152,6 +154,8 @@ process.exit(0);
             env: {
                 ...process.env,
                 EXTENSION_DIR: base,
+                NODE_ENV: 'test',
+                EXTENSION_DIR_TEST: '1',
                 PATH: `${fakeBinDir}:${process.env.PATH}`,
                 PICKLE_BACKEND: 'claude',
             },
@@ -159,7 +163,10 @@ process.exit(0);
             timeout: 30_000,
         });
 
-        assert.ok(result.signal !== 'SIGKILL', 'mux-runner must exit before spawnSync timeout');
+        assert.ok(
+            result.signal !== 'SIGKILL',
+            `mux-runner must exit before spawnSync timeout (exit: ${result.status}, signal: ${result.signal}), stderr tail: ${String(result.stderr).slice(-500)}`,
+        );
         const finalState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
         assert.equal(finalState.active, false, 'session deactivated');
     } finally {

@@ -90,6 +90,8 @@ process.exit(0);
             env: {
                 ...process.env,
                 EXTENSION_DIR: dir,
+                NODE_ENV: 'test',
+                EXTENSION_DIR_TEST: '1',
                 PATH: `${fakeBinDir}:${process.env.PATH}`,
                 PICKLE_BACKEND: 'claude',
             },
@@ -100,7 +102,7 @@ process.exit(0);
         // Artifact must exist — proves the subprocess ran to completion unsigterm'd
         assert.ok(
             fs.existsSync(artifactPath),
-            `Artifact not written — subprocess was killed before completing (exit: ${result.status}, signal: ${result.signal})`,
+            `Artifact not written — subprocess was killed before completing (exit: ${result.status}, signal: ${result.signal}), stderr tail: ${String(result.stderr).slice(-500)}`,
         );
         assert.equal(
             fs.readFileSync(artifactPath, 'utf8'),
