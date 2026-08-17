@@ -122,14 +122,11 @@ test('R-CWGE WS-2: absent verdict on a non-pickle-rick target (no extension/) fl
     assert.equal(resolved.verdict, 'not_run', 'a gate that could not run reports not_run, never green');
     assert.equal(resolved.computedVia, 'not_applicable', 'no gate may be named as the author of an unrun verdict');
 
-    // The permissiveness is no longer silent: the unverified state is recorded. The residual
-    // lands in the jsonl activity sink under PICKLE_DATA_ROOT — commit 40e07bde moved the
-    // producer off state.json.activity, so read it through the one shared sink helper.
-    const residuals = findResiduals({
-      dataRoot: DATA_ROOT,
-      ticketId: 'abc12345',
-      reason: WORKER_GATE_NOT_RUN_REASON,
-    });
+    // The permissiveness is no longer silent: the unverified state is recorded. `40e07bde`
+    // moved the producer off state.json.activity, so the residual lands in the jsonl sink
+    // under PICKLE_DATA_ROOT. `ticketId` is deliberately NOT filtered — it is what the
+    // assertion below discriminates on, and filtering it would make that assertion unfailable.
+    const residuals = findResiduals({ dataRoot: DATA_ROOT, reason: WORKER_GATE_NOT_RUN_REASON });
     assert.equal(residuals.length, 1, 'the unrun gate leaves exactly one residual');
     assert.equal(residuals[0].ticket_id, 'abc12345', 'the residual names the ticket');
   });
