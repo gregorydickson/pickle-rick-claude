@@ -1,4 +1,4 @@
-// @tier: trivial
+// @tier: fast
 import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
@@ -141,7 +141,7 @@ function extractTerminalAbortSites(extensionDir) {
     // Use git grep to find all ): never declarations
     const output = execSync(
       `git grep -n "): never" -- "${srcDir}"`,
-      { encoding: 'utf8', cwd: path.dirname(extensionDir) }
+      { encoding: 'utf8', cwd: path.dirname(extensionDir), timeout: 30000 }
     );
 
     output.split('\n').forEach(line => {
