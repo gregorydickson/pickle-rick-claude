@@ -1,5 +1,5 @@
 {
-  "description": "R-TFP-C2 baseline of pre-existing child_process callsites missing an explicit timeout, grandfathered by the missing-timeout audit predicate. Only callsites NOT in this list fail the gate. The three orphan-fixture spawns in tests/integration/orphan-worker-reaper-tmp-prefix-drain.test.js and tests/spawn-morty-worker-gate.test.js are correct as written and registered deliberately: each is a spawn(..., { detached: true, stdio: 'ignore' }) fixture whose child must outlive its parent so the orphan reaper has something to reap, and Node's timeout option would signal that child and defeat the test.",
+  "description": "R-TFP-C2 baseline of pre-existing child_process callsites missing an explicit timeout, grandfathered by the missing-timeout audit predicate. Only callsites NOT in this list fail the gate. The orphan-fixture spawns in tests/integration/orphan-worker-reaper-tmp-prefix-drain.test.js, tests/integration/orphan-worker-reaper-real-proc.test.js (including the double-fork launcher's own inner spawn, whose parent exits immediately so a Node timeout would never fire anyway), and tests/spawn-morty-worker-gate.test.js are correct as written and registered deliberately: each is a spawn(..., { detached: true, stdio: 'ignore' }) fixture whose child must outlive its parent so the orphan reaper has something to reap, and Node's timeout option would signal that child and defeat the test.",
   "generated_from": "extension/tests (excluding fixtures/), audit-subprocess-heavy-tests-missing-timeout.mjs",
   "entries": [
     "tests/activity-instrumentation.test.js::execFileSync::bd8b9e05cc",
@@ -482,7 +482,7 @@
     "tests/integration/microverse-runner.worker-subprocess-error.test.js::spawnSync::757e1494f1",
     "tests/integration/nonstop-continuation.test.js::execFileSync::e3f155362a",
     "tests/integration/orphan-worker-reaper-real-proc.test.js::spawn::185f910bb1",
-    "tests/integration/orphan-worker-reaper-real-proc.test.js::spawn::8699a1d543",
+    "tests/integration/orphan-worker-reaper-real-proc.test.js::spawn::69ba71845c",
     "tests/integration/orphan-worker-reaper-tmp-prefix-drain.test.js::spawn::03c435f0bf",
     "tests/integration/orphan-worker-reaper-tmp-prefix-drain.test.js::spawn::817b87f84a",
     "tests/integration/parallel-tier-isolation-audit.test.js::spawnSync::5b99276a09",

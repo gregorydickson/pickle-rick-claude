@@ -27,10 +27,24 @@
  * never happens in-window. `process.kill(pid, 0)` reports a zombie as ALIVE, so
  * a real, landed kill was tallied `unverified` instead of `reaped`. A grandchild
  * is reaped by init, independent of this process's event loop.
+ *
+ * PARALLEL-SAFETY (AC-R2-3): the scan is a REAL `ps` invocation, but its output
+ * is filtered to the pids this test itself planted before the reaper sees it.
+ * An unfiltered machine-wide scan combined with `minAgeSeconds: 0` makes EVERY
+ * process on the box a candidate, and the `tmp_fixture` class needs no owning
+ * session at all — so a sibling test's non-detached subprocess carrying a
+ * `pickle-*` tmpdir path in its argv becomes reapable, and the group SIGKILL
+ * then lands on the test runner's OWN process group (siblings share the
+ * runner's pgid), killing the whole tier. Filtering the candidate set to
+ * planted pids keeps everything real — real ps columns, real etime/pgid/ppid,
+ * real ownership attribution, real escalation, real liveness verify — while
+ * making it structurally impossible for a kill to reach a pid this test did
+ * not create. Same containment the AC-8 sibling gets from its `psOutput`
+ * injection, without fabricating any ps column.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -110,6 +124,35 @@ async function resolvePid(pidFile) {
   return Number(fs.readFileSync(pidFile, 'utf-8').trim());
 }
 
+const PS_ARGS = ['-axo', 'pid=,pgid=,ppid=,etime=,command='];
+
+/** Real `ps` output, no fabricated columns. */
+function realPsOutput() {
+  return execFileSync('ps', PS_ARGS, { encoding: 'utf-8', timeout: 5_000, maxBuffer: 8 * 1024 * 1024 });
+}
+
+/**
+ * Injectable scanner that runs the REAL `ps` and then keeps only the lines
+ * whose pid is one this test planted. Every candidate the reaper can reach —
+ * and therefore every group it can signal — is one of `allowedPids`.
+ */
+function scanPlantedPidsOnly(allowedPids) {
+  const allowed = new Set(allowedPids);
+  return () => realPsOutput()
+    .split(/\r?\n/)
+    .filter(line => allowed.has(Number(line.trim().split(/\s+/)[0])))
+    .join('\n');
+}
+
+/** Real pgid of a live pid, from `ps`; null when the pid is already gone. */
+function pgidOf(pid) {
+  for (const line of realPsOutput().split(/\r?\n/)) {
+    const cols = line.trim().split(/\s+/);
+    if (Number(cols[0]) === pid) return Number(cols[1]);
+  }
+  return null;
+}
+
 test('AC-CXHANG-6: abandoned detached worker is collected by the next reap; live-session control proc is spared', async () => {
   const sessionsRoot = makeTmp('cxhang-int-sess-');
   const binDir = makeTmp('cxhang-int-bin-');
@@ -149,17 +192,26 @@ test('AC-CXHANG-6: abandoned detached worker is collected by the next reap; live
     assert.ok(isAlive(orphanPid), `planted orphan pid=${orphanPid} running before the reap`);
     assert.ok(isAlive(controlPid), `planted control pid=${controlPid} running before the reap`);
 
+    // Every group the reaper can signal here is a group this test leads
+    // (double-fork gives each fake `pgid === pid`), so no kill can reach the
+    // test runner's own process group — the AC-R2-3 containment, asserted.
+    assert.equal(pgidOf(orphanPid), orphanPid, 'planted orphan leads its own process group');
+    assert.equal(pgidOf(controlPid), controlPid, 'planted control leads its own process group');
+
     // Abandon: no teardown ran for the orphan's session. Run the setup-time
-    // reaper with REAL ps scan and REAL kill, min-age disabled for the test.
+    // reaper with REAL ps scan and REAL kill, min-age disabled for the test —
+    // the scan is scoped to the two pids planted above (see PARALLEL-SAFETY).
     const result = reapOrphanedWorkerProcs({
       sessionsRoot,
       statePath,
       minAgeSeconds: 0,
       graceMs: 500,
+      scan: scanPlantedPidsOnly([orphanPid, controlPid]),
     });
 
-    assert.ok(result.scanned >= 2, `expected both fake workers scanned, got ${result.scanned}`);
-    assert.ok(result.reaped >= 1, `expected the orphan reaped, got ${result.reaped}`);
+    assert.equal(result.scanned, 2, 'exactly the two planted fake workers were candidates');
+    assert.equal(result.reaped, 1, 'exactly the dead-session orphan was reaped');
+    assert.equal(result.unverified, 0, 'no reap attempt went unverified');
 
     // The SIGTERM-ignoring orphan died → the SIGKILL escalation fired (AC-5 in vivo).
     await waitFor(() => !isAlive(orphanPid), 10_000, 'orphan collected');
