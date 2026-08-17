@@ -134,13 +134,20 @@ test('all_judge_backends_exhausted + gate pass → phase continues but the run w
     // makes finalizePipeline report unsuccessful, so main() exits 1.
     await expectMainExit(sessionDir, 1);
 
+    // (i) Phase CONTINUED: the recovery gate ran exactly once (no abort short-circuit) and the
+    // pipeline-status.json disposition records the phase as completed, never as a shortfall.
     const finalizeGateCalls = spawnCalls.filter(c => c.args.some(a => String(a).includes('finalize-gate.js')));
     assert.equal(finalizeGateCalls.length, 1, 'finalize-gate.js must be spawned once for all_judge_backends_exhausted');
 
+    const statusPath = path.join(sessionDir, 'pipeline-status.json');
+    const finalStatus = JSON.parse(fs.readFileSync(statusPath, 'utf-8'));
+    assert.equal(finalStatus.completed_phases, 1, 'the phase counted as completed — it was not skipped or halted');
+
+    // (ii) The final VERDICT is degraded, not a halt and not a masqueraded success: exit code 1
+    // (asserted above via expectMainExit) plus the specific exit_reason PRESERVED (R-MWMO d2) —
+    // never flattened to 'failed' and never overwritten to 'completed' (which would be fake-green).
     const statePath = path.join(sessionDir, 'state.json');
     const finalState = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    // R-MWMO d2: the failed finalize PRESERVES the specific reason rather than flattening it to
-    // 'failed', so the residual names what actually degraded.
     assert.equal(
       finalState.exit_reason,
       'all_judge_backends_exhausted',

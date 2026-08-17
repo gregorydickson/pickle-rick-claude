@@ -21,7 +21,7 @@ import * as path from 'path';
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'child_process';
 import type { Backend, State } from '../types/index.js';
 import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, isMicroverseFailureExit, type MicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
-import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, type GraduationCounts } from '../services/state-manager.js';
+import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, type GraduationCounts, type FinalizeOpts } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import {
   getExtensionRoot,
@@ -4037,6 +4037,15 @@ function finalizeFailedPipeline(statePath: string): void {
   );
 }
 
+// Same precedent as `finalizeFailedPipeline`: a specific reason already stamped on a degraded
+// (but not phase-shortfall) run is preserved rather than overwritten with the generic 'completed'
+// stamp. Extracted so the branch does not push `finalizePipeline` past the complexity ceiling.
+function finalizeDegradedCompleteOpts(statePath: string, unsuccessful: boolean): FinalizeOpts {
+  return unsuccessful && readExistingExitReason(statePath)
+    ? { step: 'completed' }
+    : { step: 'completed', exitReason: 'completed' };
+}
+
 /**
  * B-NONSTOP WS-2 (AC-NS-6): the end-of-pipeline panel fields. Extracted from
  * `finalizePipeline` so the non-convergent conditional does not push that
@@ -4167,13 +4176,18 @@ function finalizePipeline(
     // code, and the closer-release skip below are all unchanged. Reaching completion and
     // reporting success stay separate wires.
     //
+    // Same precedent as `finalizeFailedPipeline`: a specific reason already stamped on this
+    // degraded phase (e.g. `all_judge_backends_exhausted`) is preserved rather than overwritten
+    // — 'completed' is stamped ONLY when no reason was recorded (e.g. the post-final-verdict
+    // path, whose degraded classification lives in `state.post_final_verdict`, not `exit_reason`).
+    //
     // B-GROUND2 WS1: the success finalize is the one transition that asserts the
     // ticket bundle is truly complete — route it through the single authority so
     // a residual pending ticket refuses the `completed` stamp (fail-closed).
     finalizeIfTrulyComplete(
       runtime.statePath,
       () => pipelineBundleScan(runtime),
-      { step: 'completed', exitReason: 'completed' },
+      finalizeDegradedCompleteOpts(runtime.statePath, unsuccessful),
     );
   }
 

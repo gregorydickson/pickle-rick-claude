@@ -3381,6 +3381,14 @@ function readExistingExitReason(statePath) {
 function finalizeFailedPipeline(statePath) {
     finalizeTerminalState(statePath, readExistingExitReason(statePath) ? { step: 'completed' } : { step: 'completed', exitReason: 'failed' });
 }
+// Same precedent as `finalizeFailedPipeline`: a specific reason already stamped on a degraded
+// (but not phase-shortfall) run is preserved rather than overwritten with the generic 'completed'
+// stamp. Extracted so the branch does not push `finalizePipeline` past the complexity ceiling.
+function finalizeDegradedCompleteOpts(statePath, unsuccessful) {
+    return unsuccessful && readExistingExitReason(statePath)
+        ? { step: 'completed' }
+        : { step: 'completed', exitReason: 'completed' };
+}
 /**
  * B-NONSTOP WS-2 (AC-NS-6): the end-of-pipeline panel fields. Extracted from
  * `finalizePipeline` so the non-convergent conditional does not push that
@@ -3492,10 +3500,15 @@ function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncom
         // code, and the closer-release skip below are all unchanged. Reaching completion and
         // reporting success stay separate wires.
         //
+        // Same precedent as `finalizeFailedPipeline`: a specific reason already stamped on this
+        // degraded phase (e.g. `all_judge_backends_exhausted`) is preserved rather than overwritten
+        // — 'completed' is stamped ONLY when no reason was recorded (e.g. the post-final-verdict
+        // path, whose degraded classification lives in `state.post_final_verdict`, not `exit_reason`).
+        //
         // B-GROUND2 WS1: the success finalize is the one transition that asserts the
         // ticket bundle is truly complete — route it through the single authority so
         // a residual pending ticket refuses the `completed` stamp (fail-closed).
-        finalizeIfTrulyComplete(runtime.statePath, () => pipelineBundleScan(runtime), { step: 'completed', exitReason: 'completed' });
+        finalizeIfTrulyComplete(runtime.statePath, () => pipelineBundleScan(runtime), finalizeDegradedCompleteOpts(runtime.statePath, unsuccessful));
     }
     // R-PSSS-3: name each skip disposition (`anatomy-park: empty_scope`) so the
     // final summary distinguishes an empty-scope skip from a setup error.
