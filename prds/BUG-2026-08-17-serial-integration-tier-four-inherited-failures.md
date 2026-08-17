@@ -61,6 +61,36 @@ the defects are independent of them.
 - **AC-7 — update the ledger row.** MASTER_PLAN row 119 (B-CIINT) records the outcome, and its
   "pass locally" claim stays corrected.
 
+## Attempt 1 outcome — session `2026-08-17-8de06e9e`: RAN TO COMPLETION, DID NOT SUCCEED
+
+3/3 tickets Done, `EPIC_COMPLETED`, 6 iterations / 144m, 5 commits (`73a34239`, `c32408b1`, `18a77e44`,
+`99d95392`, `54784d41`). Operator-run `npm run test:integration` on a quiet box at that HEAD:
+
+| sub-tier | result | AC |
+|:---|:---|:---|
+| parallel | `tests 622 / suites 21 / pass 622 / fail 0 / cancelled 0` | AC-4 half satisfied |
+| serial | `tests 602 / suites 24 / pass 598 / fail 4 / cancelled 0` | **AC-3 NOT MET** |
+
+Both summary blocks emitted, so the reporting half of AC-4 holds. The same four tests still fail.
+
+**What the attempt DID establish (keep, do not re-derive):**
+- **The failures are partly contamination, and my PRD's "not env contamination" line was WRONG.** It was
+  true of the operator's shell and false of the FIXTURES: they spawned children passing ambient env down.
+  `c32408b1` scrubs `GIT_CONFIG_*` / `PICKLE_TICKET_ID` from mux-runner fixture spawns; `73a34239` /
+  `18a77e44` make fixtures resolve their OWN `EXTENSION_DIR` / extension root, which is why they were
+  dying `exit: 1, signal: null` instead of finishing.
+- **The fixes moved the numbers without clearing the bar.** PC-4: **47212ms → 38200ms** against a 30s
+  assertion. The timeout trio now run 49441ms / 52960ms / 89047ms.
+- Assertions were NOT retuned, nothing skipped or quarantined (AC-2 held).
+
+**Open question attempt 2 must answer first:** are these wall-clock BUDGET assertions that this machine
+cannot meet, or is there still real teardown latency? PC-4 asserting `< 30s` while taking 38s after two
+root-cause fixes has the same shape as the fast tier's `withLock … expected parallel elapsed < 110ms, got
+139ms` — a literal wall-clock budget failing on machine speed rather than on broken behaviour. AC-2 still
+forbids widening a budget without justifying the new number against a measurement — but MEASURING whether
+the budget is achievable on any box is exactly that justification, and it has not been done. Do that
+before touching teardown code again.
+
 ## Out of scope
 
 Pinning the introducing commit by bisect (its own ticket). The expensive tier and its deploy soak.
