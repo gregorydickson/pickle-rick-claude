@@ -125,8 +125,9 @@ function reapRecordedGrandchildren(pidDir, ownerMarker) {
   }
   const reaped = [];
   for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue; // only names our fake binaries wrote
     const pid = Number.parseInt(entry, 10);
-    if (!Number.isInteger(pid) || pid <= 1) continue;
+    if (pid <= 1) continue;
     if (!isPidAlive(pid)) continue;
     if (!processCommandLine(pid).includes(ownerMarker)) continue;
     try {
