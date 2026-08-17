@@ -5710,6 +5710,21 @@ export interface CommitAndContinueDoneFlipInput {
    * into this committer is the open fix (AP-EXT-ITER6-01 OPEN GAP).
    */
   stagePaths?: readonly string[];
+  /**
+   * Round 2 (92e33eb3, AC-R2-3): separates the COMMIT action from the DONE-FLIP
+   * action for the recovery-ladder rung-1 caller. `guardCompletionCommitBeforeDone`
+   * legitimately flips Done on a `not_run` verdict for a WORKER's own commit (a
+   * target repo with no JS gate to run — AC-3 in
+   * worker-gate-not-run-invariant.test.js). But rung 1's commit is a runner-driven
+   * recovery action over whatever the tree happens to hold, not a worker's
+   * declaration of completion; nobody has verified the diff is done. Defaulting to
+   * `true` preserves every other caller's existing behavior. `false` (set only by
+   * `attemptRecoveryBeforeTerminal`) withholds `markTicketDone` — and the
+   * `completion_commit` stamp that follows it — when the resolved gate verdict is
+   * `not_run`, while still returning `ok: true` so the ladder records `advanced`
+   * (SITE 4, worker-gate-not-run-invariant.test.js).
+   */
+  allowDoneWhenGateNotRun?: boolean;
 }
 
 /**
@@ -5851,6 +5866,47 @@ export function stampPickleTicketTrailer(workingDir: string, message: string, ti
   return rendered ?? `${message}\n\n${trailer}`;
 }
 
+/**
+ * AC-R2-3: true when the caller opted out of Done-on-not_run
+ * (`allowDoneWhenGateNotRun: false`) AND the gate that would authorize the flip
+ * never ran at all. Extracted out of `commitAndContinueDoneFlip` to keep that
+ * function under the complexity budget.
+ */
+function shouldWithholdDoneFlipOnUnrunGate(input: CommitAndContinueDoneFlipInput): boolean {
+  if (input.allowDoneWhenGateNotRun !== false) return false;
+  return resolveWorkerGateVerdict(input.sessionDir, input.ticketId, input.workingDir).verdict === 'not_run';
+}
+
+/**
+ * AC-R2-3: the DONE-FLIP half of `commitAndContinueDoneFlip`, split out so the
+ * commit action (above) and the flip action (here) are visibly separate — and so
+ * neither function trips the complexity budget. `guard.ok` is already true by the
+ * time this runs; the only remaining decision is whether to withhold the flip.
+ */
+function finalizeDoneFlipAfterCommit(
+  input: CommitAndContinueDoneFlipInput,
+  guard: { sha: string | null },
+): { ok: boolean; sha?: string } {
+  if (shouldWithholdDoneFlipOnUnrunGate(input)) {
+    input.log(`commit-and-continue: committed for ${input.ticketId} but withheld the Done flip — armed gate never ran (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
+    return { ok: true, sha: guard.sha ?? undefined };
+  }
+  clearStaleDoneWithoutCommitEvidence(input.statePath);
+  if (markTicketDone(input.sessionDir, input.ticketId)) {
+    input.log(`commit-and-continue: marked ${input.ticketId} Done (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
+  }
+  // Persist completion_commit now that status is Done (mirrors applyAutoTicketCompletionValidation).
+  try {
+    const fp = ticketFilePath(input.sessionDir, input.ticketId);
+    const raw = fs.readFileSync(fp, 'utf8');
+    if (!readFrontmatterField(raw, 'completion_commit') && guard.sha) {
+      const upd = upsertFrontmatterField(raw, 'completion_commit', guard.sha);
+      if (upd) fs.writeFileSync(fp, upd);
+    }
+  } catch { /* best-effort — guard already proved evidence */ }
+  return { ok: true, sha: guard.sha ?? undefined };
+}
+
 export function commitAndContinueDoneFlip(input: CommitAndContinueDoneFlipInput): { ok: boolean; sha?: string } {
   assertWorkingDirUnderTmpdirIfTestMode(input.workingDir);
   // M1: ownership-scoped staging when stagePaths is provided (exit-path commit);
@@ -5908,20 +5964,9 @@ export function commitAndContinueDoneFlip(input: CommitAndContinueDoneFlipInput)
   if (!guard.ok) {
     return { ok: false };
   }
-  clearStaleDoneWithoutCommitEvidence(input.statePath);
-  if (markTicketDone(input.sessionDir, input.ticketId)) {
-    input.log(`commit-and-continue: marked ${input.ticketId} Done (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
-  }
-  // Persist completion_commit now that status is Done (mirrors applyAutoTicketCompletionValidation).
-  try {
-    const fp = ticketFilePath(input.sessionDir, input.ticketId);
-    const raw = fs.readFileSync(fp, 'utf8');
-    if (!readFrontmatterField(raw, 'completion_commit') && guard.sha) {
-      const upd = upsertFrontmatterField(raw, 'completion_commit', guard.sha);
-      if (upd) fs.writeFileSync(fp, upd);
-    }
-  } catch { /* best-effort — guard already proved evidence */ }
-  return { ok: true, sha: guard.sha ?? undefined };
+  // AC-R2-3: commit action (above) and Done-flip action (here) are separate
+  // functions — see `finalizeDoneFlipAfterCommit`.
+  return finalizeDoneFlipAfterCommit(input, guard);
 }
 
 // ---------------------------------------------------------------------------
@@ -6681,6 +6726,9 @@ export function attemptRecoveryBeforeTerminal(input: AttemptRecoveryBeforeTermin
       statePath: input.statePath,
       flags: input.flags,
       log: input.log,
+      // AC-R2-3: rung 1 is a runner-driven recovery commit, not a worker's
+      // declaration of completion. Never auto-flip Done over a gate that never ran.
+      allowDoneWhenGateNotRun: false,
     }),
     spawnRemediator: () => spawnRecoveryRemediator(input, lastGateFailures),
     executeConvergedPlan: () => executeConvergedPlanAdapter({

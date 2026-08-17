@@ -83,6 +83,13 @@ function readFrontmatterField(sessionDir, ticketId, field) {
   return match ? match[1] : null;
 }
 
+/** `status:` is the one frontmatter value that is quoted AND contains a space. */
+function readTicketStatus(sessionDir, ticketId) {
+  const raw = fs.readFileSync(path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`), 'utf8');
+  const match = raw.match(/^status:\s*"?([^"\n]+?)"?\s*$/m);
+  return match ? match[1] : null;
+}
+
 /** A shim that answers every `npx`/`npm` invocation with the given exit code, instantly. */
 function writeShim(binDir, name, exitCode = 0) {
   fs.mkdirSync(binDir, { recursive: true });
@@ -227,9 +234,11 @@ const SITES = [
     // still attempt a commit-and-flip on a dirty tree — a genuinely-progressing
     // ladder must be allowed to advance (Prime Directive: a halt on real progress is
     // itself a defect, R-CHTS-CODEX INV-CODEX-RECOVERY-ADVANCED) — but the committer
-    // must not stamp `worker_gate_verdict: green` for a gate that issued no command.
-    // Any Done flip that follows is judged honestly by `guardCompletionCommitBeforeDone`
-    // via genuine git evidence (the trailer-stamped commit), never a fabricated pass.
+    // must not stamp `worker_gate_verdict: green` for a gate that issued no command,
+    // AND it must not auto-flip the ticket Done over a gate that never ran (round-2
+    // rejection of a3a62183: reconciled in the RUNTIME by
+    // `commitAndContinueDoneFlip`'s `allowDoneWhenGateNotRun: false`, passed only by
+    // this call site — commit and Done-flip are now separate actions).
     probe: async () => {
       const root = makeTmp();
       const ticketId = 'ddd44444';
@@ -239,7 +248,7 @@ const SITES = [
       fs.writeFileSync(path.join(root, 'work.txt'), 'dirty tree — rung 1 is reachable');
       const statePath = writeState(sessionDir, { working_dir: root });
       writeTicket(sessionDir, ticketId);
-      attemptRecoveryBeforeTerminal({
+      const outcome = attemptRecoveryBeforeTerminal({
         sessionDir,
         statePath,
         // No remediator binary under this root, so rung 2 fails fast instead of
@@ -256,14 +265,33 @@ const SITES = [
         disposition: fabricatedGreen ? 'worker-gate-verdict-fabricated-green' : 'worker-gate-verdict-not-fabricated',
         passDisposition: 'worker-gate-verdict-fabricated-green',
         extra: () => {
-          // Rung 1's own armed-gate check AND the Done-flip guard it goes on to call
-          // (`guardCompletionCommitBeforeDone`, routed to the gate-exempt decision kind
-          // for the SAME not-run fact) each honestly report the not-run condition — an
-          // exact count would pin the number of independent honest reporters, not the
-          // invariant that the fact is recorded at all.
-          assert.ok(
-            findResiduals({ dataRoot: DATA_ROOT, ticketId, reason: WORKER_GATE_NOT_RUN_REASON }).length >= 1,
-            'the unrun armed gate records a residual',
+          // AC-R2-1: rung 1 remains reachable on a dirty tree for an off-repo
+          // target — the ladder still advances (INV-CODEX-RECOVERY-ADVANCED), it
+          // just does not fabricate a green verdict or an unearned Done flip.
+          assert.equal(
+            outcome.kind,
+            'advanced',
+            'a genuinely-progressing dirty tree must still advance the ladder (INV-CODEX-RECOVERY-ADVANCED)',
+          );
+          // AC-R2-2: the commit is real (see `outcome.kind === 'advanced'` above),
+          // but the ticket must NOT auto-flip Done — nobody verified the gate ran.
+          assert.equal(
+            readTicketStatus(sessionDir, ticketId),
+            'In Progress',
+            'an unrun armed gate must not auto-flip the ticket Done',
+          );
+          // AC-R2-4: TWO independent honest reporters emit this residual for the
+          // SAME not-run fact, so the exact count is 2, not an unpinned `>= 1`:
+          // (1) `attemptRecoveryBeforeTerminal`'s own `runArmedGate` arm
+          // (mux-runner.ts, site `attemptRecoveryBeforeTerminal.runArmedGate`), and
+          // (2) `guardCompletionCommitBeforeDone`, which this same recovery pass
+          // calls via `commitAndContinueDoneFlip` and which independently resolves
+          // the same `not_run` verdict and reports it (site
+          // `guardCompletionCommitBeforeDone`) via its own `gateAdvisory` branch.
+          assert.equal(
+            findResiduals({ dataRoot: DATA_ROOT, ticketId, reason: WORKER_GATE_NOT_RUN_REASON }).length,
+            2,
+            'exactly two independent reporters record the unrun armed gate',
           );
         },
       };

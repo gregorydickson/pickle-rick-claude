@@ -5006,6 +5006,45 @@ export function stampPickleTicketTrailer(workingDir, message, ticketId) {
     const rendered = silentDeathGit(['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', trailer], workingDir, message);
     return rendered ?? `${message}\n\n${trailer}`;
 }
+/**
+ * AC-R2-3: true when the caller opted out of Done-on-not_run
+ * (`allowDoneWhenGateNotRun: false`) AND the gate that would authorize the flip
+ * never ran at all. Extracted out of `commitAndContinueDoneFlip` to keep that
+ * function under the complexity budget.
+ */
+function shouldWithholdDoneFlipOnUnrunGate(input) {
+    if (input.allowDoneWhenGateNotRun !== false)
+        return false;
+    return resolveWorkerGateVerdict(input.sessionDir, input.ticketId, input.workingDir).verdict === 'not_run';
+}
+/**
+ * AC-R2-3: the DONE-FLIP half of `commitAndContinueDoneFlip`, split out so the
+ * commit action (above) and the flip action (here) are visibly separate — and so
+ * neither function trips the complexity budget. `guard.ok` is already true by the
+ * time this runs; the only remaining decision is whether to withhold the flip.
+ */
+function finalizeDoneFlipAfterCommit(input, guard) {
+    if (shouldWithholdDoneFlipOnUnrunGate(input)) {
+        input.log(`commit-and-continue: committed for ${input.ticketId} but withheld the Done flip — armed gate never ran (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
+        return { ok: true, sha: guard.sha ?? undefined };
+    }
+    clearStaleDoneWithoutCommitEvidence(input.statePath);
+    if (markTicketDone(input.sessionDir, input.ticketId)) {
+        input.log(`commit-and-continue: marked ${input.ticketId} Done (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
+    }
+    // Persist completion_commit now that status is Done (mirrors applyAutoTicketCompletionValidation).
+    try {
+        const fp = ticketFilePath(input.sessionDir, input.ticketId);
+        const raw = fs.readFileSync(fp, 'utf8');
+        if (!readFrontmatterField(raw, 'completion_commit') && guard.sha) {
+            const upd = upsertFrontmatterField(raw, 'completion_commit', guard.sha);
+            if (upd)
+                fs.writeFileSync(fp, upd);
+        }
+    }
+    catch { /* best-effort — guard already proved evidence */ }
+    return { ok: true, sha: guard.sha ?? undefined };
+}
 export function commitAndContinueDoneFlip(input) {
     assertWorkingDirUnderTmpdirIfTestMode(input.workingDir);
     // M1: ownership-scoped staging when stagePaths is provided (exit-path commit);
@@ -5059,22 +5098,9 @@ export function commitAndContinueDoneFlip(input) {
     if (!guard.ok) {
         return { ok: false };
     }
-    clearStaleDoneWithoutCommitEvidence(input.statePath);
-    if (markTicketDone(input.sessionDir, input.ticketId)) {
-        input.log(`commit-and-continue: marked ${input.ticketId} Done (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
-    }
-    // Persist completion_commit now that status is Done (mirrors applyAutoTicketCompletionValidation).
-    try {
-        const fp = ticketFilePath(input.sessionDir, input.ticketId);
-        const raw = fs.readFileSync(fp, 'utf8');
-        if (!readFrontmatterField(raw, 'completion_commit') && guard.sha) {
-            const upd = upsertFrontmatterField(raw, 'completion_commit', guard.sha);
-            if (upd)
-                fs.writeFileSync(fp, upd);
-        }
-    }
-    catch { /* best-effort — guard already proved evidence */ }
-    return { ok: true, sha: guard.sha ?? undefined };
+    // AC-R2-3: commit action (above) and Done-flip action (here) are separate
+    // functions — see `finalizeDoneFlipAfterCommit`.
+    return finalizeDoneFlipAfterCommit(input, guard);
 }
 /**
  * M1 (R-MWIS-3 / R-WCUC ownership pre-check): partition the working-tree dirty
@@ -5670,6 +5696,9 @@ export function attemptRecoveryBeforeTerminal(input) {
             statePath: input.statePath,
             flags: input.flags,
             log: input.log,
+            // AC-R2-3: rung 1 is a runner-driven recovery commit, not a worker's
+            // declaration of completion. Never auto-flip Done over a gate that never ran.
+            allowDoneWhenGateNotRun: false,
         }),
         spawnRemediator: () => spawnRecoveryRemediator(input, lastGateFailures),
         executeConvergedPlan: () => executeConvergedPlanAdapter({
