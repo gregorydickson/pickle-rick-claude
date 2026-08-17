@@ -98,8 +98,14 @@ process.exit(0);
         );
         assert.equal(fs.readFileSync(artifactPath, 'utf-8'), 'completed', 'artifact content correct');
 
-        // mux-runner must not have been SIGKILL'd by spawnSync timeout
-        assert.ok(result.signal !== 'SIGKILL', 'mux-runner must not be SIGKILL\'d by test timeout');
+        // mux-runner must not have been killed by the spawnSync cap. spawnSync kills a timed-out
+        // child with killSignal, which defaults to SIGTERM — so a SIGKILL-only check passes
+        // silently on a capped child. A clean exit carries no signal at all.
+        assert.equal(
+            result.signal,
+            null,
+            `mux-runner must exit before the spawnSync timeout (exit: ${result.status}, signal: ${result.signal})`,
+        );
 
         // Session must be deactivated (subprocess wrote active=false)
         const finalState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
@@ -164,8 +170,11 @@ process.exit(0);
             timeout: 30_000,
         });
 
-        assert.ok(
-            result.signal !== 'SIGKILL',
+        // spawnSync's cap kill uses killSignal (default SIGTERM), so asserting only on SIGKILL lets
+        // a capped child pass. Any signal at all means the cap fired; a clean exit reports null.
+        assert.equal(
+            result.signal,
+            null,
             `mux-runner must exit before spawnSync timeout (exit: ${result.status}, signal: ${result.signal}), stderr tail: ${String(result.stderr).slice(-500)}`,
         );
         const finalState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));

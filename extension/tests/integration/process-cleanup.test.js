@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scrubGateEnv } from '../../services/pickle-utils.js';
 
@@ -138,6 +138,72 @@ function reapRecordedGrandchildren(pidDir, ownerMarker) {
     }
   }
   return reaped;
+}
+
+/** Recorded grandchild pids, newest read of the directory. Missing dir reads as none recorded. */
+function readRecordedPids(pidDir) {
+  try {
+    return fs.readdirSync(pidDir)
+      .filter(entry => /^\d+$/.test(entry))
+      .map(entry => Number.parseInt(entry, 10))
+      .filter(pid => pid > 1);
+  } catch {
+    return [];
+  }
+}
+
+/** Sleep that never holds the event loop open on its own. */
+function sleep(ms) {
+  return new Promise(resolve => {
+    const t = setTimeout(resolve, ms);
+    t.unref();
+  });
+}
+
+/**
+ * Resolve once the runtime has executed at least one worker binary. Each fake `claude` records its
+ * own pid as its FIRST statement, so the first pid file is proof that every pre-spawn step — node
+ * bootstrap, the ESM import graph, arg and settings resolution, the stale-anchor git scan, the AC
+ * and symbol machinery — has already finished. That is where the sibling-kill window opens.
+ */
+async function waitForFirstRecordedPid(pidDir, deadlineMs) {
+  const until = Date.now() + deadlineMs;
+  while (Date.now() < until) {
+    if (readRecordedPids(pidDir).length > 0) return true;
+    await sleep(25);
+  }
+  return false;
+}
+
+/**
+ * Resolve once no recorded worker pid is alive — i.e. the crash has been observed and every sibling
+ * has been killed. A worker records its pid before it crashes or hangs, so a worker still hanging
+ * always has a live recorded pid; "no recorded pid alive" is therefore exactly "the sibling kill
+ * completed". Returns the interval measured from `startedAt`, so post-kill work (manifest write,
+ * readiness gate, interpreter teardown) is never charged to it.
+ */
+async function waitForAllRecordedPidsDead(pidDir, startedAt, deadlineMs) {
+  const until = startedAt + deadlineMs;
+  for (;;) {
+    const pids = readRecordedPids(pidDir);
+    if (pids.length > 0 && !pids.some(isPidAlive)) {
+      return { allDead: true, elapsedMs: Date.now() - startedAt };
+    }
+    if (Date.now() >= until) {
+      return { allDead: false, elapsedMs: Date.now() - startedAt };
+    }
+    await sleep(25);
+  }
+}
+
+/** Resolve once `target` exists, or false at the deadline. */
+async function waitForPath(target, deadlineMs) {
+  const until = Date.now() + deadlineMs;
+  for (;;) {
+    if (fs.existsSync(target)) return true;
+    if (Date.now() >= until) return false;
+    await sleep(25);
+  }
 }
 
 /** Write a minimal state.json to sessionDir. */
@@ -299,17 +365,24 @@ test('PC-3: dispatch EPIPE produces exactly one valid approve JSON on stdout', (
 //
 // Expected: codebase crash triggers sibling kill (SIGTERM → requirements + risk-scope).
 // The onComplete callback drains activeWorkerProcs Set, so Promise.all resolves quickly.
-// Total wall time must be << 60s (hanged workers do NOT run to completion).
+//
+// THE CLOCK COVERS THE SIBLING KILL ONLY. It opens when the first worker binary has executed
+// (first recorded grandchild pid) and closes when no recorded worker pid is alive. Excluded on the
+// near side: node bootstrap, the ESM import graph of the refinement bin and its service imports,
+// arg and settings resolution, the stale-anchor git scan, the AC and symbol machinery. Excluded on
+// the far side: manifest write, the readiness gate, and interpreter teardown. Only the crash
+// observation, the SIGTERM fan-out and the workers' deaths are charged.
 // ---------------------------------------------------------------------------
 
-// 30s → 90s outer / 25s → 60s inner / 15s → 30s elapsed bound: budget for
-// system load when run alongside concurrent codex/tmux work. The substantive
-// assertion remains "siblings DO get killed — process does NOT wait 60s for
-// hangs to complete". 30s is still half of the 60s hang budget, so a regression
-// where siblings aren't killed would fail this assertion, not silently pass.
-test('PC-4: refinement worker 2-of-3 crash kills siblings — process completes in < 30s', { timeout: 90_000 }, async () => {
+// Budget UNCHANGED at 30s — narrowing the window widens nothing. The degenerate ladder INSIDE the
+// narrowed window is 20000ms (worker timeout) + 2000ms (SIGTERM → SIGKILL escalation) = 22000ms;
+// the 5000ms flush and the readiness gate now fall outside it. A regression where siblings are not
+// killed leaves them hanging for their full 60s budget, so it fails this assertion rather than
+// passing silently.
+test('PC-4: refinement worker 2-of-3 crash kills siblings — siblings dead in < 30s', { timeout: 90_000 }, async () => {
   const dir = makeTmpRoot('pickle-pc4-');
   let pidDir = null;
+  let child = null;
   try {
     // Session directory
     const sessionDir = path.join(dir, 'session');
@@ -347,9 +420,8 @@ if (prompt.includes('analysis_codebase.md')) {
 `);
     fs.chmodSync(fakeClaude, 0o755);
 
-    const start = Date.now();
-
-    const result = spawnSync(
+    // Async spawn (PC-5's shape) so the kill window is observable between fork and exit.
+    child = spawn(
       process.execPath,
       [
         SPAWN_REFINEMENT_BIN,
@@ -367,28 +439,34 @@ if (prompt.includes('analysis_codebase.md')) {
           NODE_ENV: 'test',
           EXTENSION_DIR_TEST: '1',
         },
+        stdio: 'pipe',
+        // Hang-guard, not a perf assertion — same 60s budget the previous spawnSync carried.
         timeout: 60_000,
-        encoding: 'utf-8',
         cwd: dir,
       },
     );
 
-    const elapsed = Date.now() - start;
+    // Setup runs before any worker executes, and it is not what this test measures. Wait it out
+    // without clocking it; 60s is a hang-guard on reaching worker spawn at all.
+    const workersUp = await waitForFirstRecordedPid(pidDir, 60_000);
+    assert.ok(workersUp, 'no worker binary executed — refinement team never reached worker spawn');
 
-    // Must complete in << 60s — codebase crash must trigger sibling kill, not
-    // let the workers run to their full 60s hang. 30s assertion (half the hang
-    // budget) still detects the regression class while tolerating system load.
+    // Clock opens here: every pre-spawn step is already done.
+    const start = Date.now();
+    const { allDead, elapsedMs: elapsed } = await waitForAllRecordedPidsDead(pidDir, start, 45_000);
+
     assert.ok(
-      elapsed < 30_000,
-      `spawn-refinement-team should complete in < 30s, took ${elapsed}ms (siblings not killed?)`,
+      allDead && elapsed < 30_000,
+      `sibling kill should complete in < 30s, took ${elapsed}ms (all dead: ${allDead}) — siblings not killed?`,
     );
 
-    // Process must exit (not timed out by spawnSync)
-    assert.ok(result.status !== null, 'spawn-refinement-team must exit, not time out');
-
-    // Manifest must be written (even on failure — partial results recorded)
+    // Manifest must be written (even on failure — partial results recorded). It is written when the
+    // cycles resolve, BEFORE the readiness gate and interpreter teardown, so this test waits for the
+    // file rather than for full process exit — waiting for exit would drag exactly the post-kill work
+    // this test no longer charges back into its wall clock.
     const manifestPath = path.join(sessionDir, 'refinement_manifest.json');
-    assert.ok(fs.existsSync(manifestPath), 'refinement_manifest.json must be written');
+    const manifestWritten = await waitForPath(manifestPath, 30_000);
+    assert.ok(manifestWritten, 'refinement_manifest.json must be written');
 
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
     assert.equal(manifest.workers.length, 3, 'manifest must record all 3 workers');
@@ -399,6 +477,11 @@ if (prompt.includes('analysis_codebase.md')) {
     assert.ok(codebaseWorker, 'codebase worker must appear in manifest');
     assert.equal(codebaseWorker.success, false, 'codebase worker must be marked failed');
   } finally {
+    // This test no longer waits for the child's own teardown, so it reaps it here rather than
+    // leaving it resident for the rest of the tier.
+    if (child && child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
     // Reap before rmSync — removing the tmp tree deletes the pid records, not the processes.
     if (pidDir) reapRecordedGrandchildren(pidDir, dir);
     fs.rmSync(dir, { recursive: true, force: true });
