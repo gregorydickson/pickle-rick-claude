@@ -16,6 +16,17 @@
  * The worker shape is faked with a tmpdir symlink `claude` → the real node
  * binary running the SIGTERM-ignoring sleeper fixture, with worker-shaped argv
  * (--dangerously-skip-permissions + --add-dir <sessionsRoot>/<sess>/<ticket> + -p).
+ *
+ * Both fakes are DOUBLE-FORKED via a throwaway node launcher (same shape as the
+ * AC-8 sibling `orphan-worker-reaper-tmp-prefix-drain.test.js`), so each one is
+ * a grandchild that reparents to init while still leading its own process group
+ * (`pgid === pid`, granted by the launcher's own `detached: true` spawn). A
+ * DIRECT child of this test process would, once group-SIGKILLed, sit as a
+ * ZOMBIE until this process's event loop reaped SIGCHLD — and the reap's verify
+ * window is a blocking `Atomics.wait` (`orphan-reaper.ts` `sleepSync`), so that
+ * never happens in-window. `process.kill(pid, 0)` reports a zombie as ALIVE, so
+ * a real, landed kill was tallied `unverified` instead of `reaped`. A grandchild
+ * is reaped by init, independent of this process's event loop.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -62,15 +73,41 @@ function makeSession(sessionsRoot, name, state) {
   return dir;
 }
 
-/** Spawn a detached SIGTERM-ignoring sleeper disguised as a claude worker. */
-function spawnFakeWorker(claudeLink, ticketPath, readyFile) {
-  const child = spawn(
-    claudeLink,
-    [FIXTURE, '--dangerously-skip-permissions', '--add-dir', ticketPath, '-p', 'x'],
-    { detached: true, stdio: 'ignore', env: { ...process.env, CXHANG_READY_FILE: readyFile } },
+/**
+ * Throwaway launcher: spawns the real fixture detached (own session, so
+ * `pgid === pid`), records its pid, then exits immediately — leaving the
+ * fixture a grandchild of the test process, reparented to init.
+ * argv: [claudeLink, fixture, pidFile, ticketPath]
+ */
+const LAUNCHER_SCRIPT = [
+  "const { spawn } = require('node:child_process');",
+  "const fs = require('node:fs');",
+  'const argv = [process.argv[2], "--dangerously-skip-permissions", "--add-dir", process.argv[4], "-p", "x"];',
+  'const child = spawn(process.argv[1], argv, { detached: true, stdio: "ignore", env: process.env });',
+  'fs.writeFileSync(process.argv[3], String(child.pid));',
+  'child.unref();',
+  'process.exit(0);',
+].join('\n');
+
+/** Double-fork a detached SIGTERM-ignoring sleeper disguised as a claude worker. */
+function spawnFakeWorker(claudeLink, ticketPath, readyFile, pidFile) {
+  const launcher = spawn(
+    process.execPath,
+    ['-e', LAUNCHER_SCRIPT, claudeLink, FIXTURE, pidFile, ticketPath],
+    {
+      detached: true,
+      stdio: 'ignore',
+      timeout: 10_000,
+      env: { ...process.env, CXHANG_READY_FILE: readyFile },
+    },
   );
-  child.unref();
-  return child;
+  launcher.unref();
+  return { readyFile, pidFile };
+}
+
+async function resolvePid(pidFile) {
+  await waitFor(() => fs.existsSync(pidFile), 10_000, `pidfile ${pidFile} written`);
+  return Number(fs.readFileSync(pidFile, 'utf-8').trim());
 }
 
 test('AC-CXHANG-6: abandoned detached worker is collected by the next reap; live-session control proc is spared', async () => {
@@ -84,17 +121,33 @@ test('AC-CXHANG-6: abandoned detached worker is collected by the next reap; live
   const reaperSess = makeSession(sessionsRoot, 'sess-reaper', { active: true, pid: process.pid });
   const statePath = path.join(reaperSess, 'state.json');
 
-  const orphanReady = path.join(binDir, 'orphan.ready');
-  const controlReady = path.join(binDir, 'control.ready');
-  const orphan = spawnFakeWorker(claudeLink, path.join(deadSess, 'ticket1'), orphanReady);
-  const control = spawnFakeWorker(claudeLink, path.join(liveSess, 'ticket1'), controlReady);
+  const orphanHandle = spawnFakeWorker(
+    claudeLink,
+    path.join(deadSess, 'ticket1'),
+    path.join(binDir, 'orphan.ready'),
+    path.join(binDir, 'orphan.pid'),
+  );
+  const controlHandle = spawnFakeWorker(
+    claudeLink,
+    path.join(liveSess, 'ticket1'),
+    path.join(binDir, 'control.ready'),
+    path.join(binDir, 'control.pid'),
+  );
+
+  let orphanPid;
+  let controlPid;
 
   try {
+    orphanPid = await resolvePid(orphanHandle.pidFile);
+    controlPid = await resolvePid(controlHandle.pidFile);
     await waitFor(
-      () => fs.existsSync(orphanReady) && fs.existsSync(controlReady),
+      () => fs.existsSync(orphanHandle.readyFile) && fs.existsSync(controlHandle.readyFile),
       10_000,
       'both fake workers ready (SIGTERM handlers installed)',
     );
+    // A fixture that never launched must not masquerade as a successful reap.
+    assert.ok(isAlive(orphanPid), `planted orphan pid=${orphanPid} running before the reap`);
+    assert.ok(isAlive(controlPid), `planted control pid=${controlPid} running before the reap`);
 
     // Abandon: no teardown ran for the orphan's session. Run the setup-time
     // reaper with REAL ps scan and REAL kill, min-age disabled for the test.
@@ -109,10 +162,10 @@ test('AC-CXHANG-6: abandoned detached worker is collected by the next reap; live
     assert.ok(result.reaped >= 1, `expected the orphan reaped, got ${result.reaped}`);
 
     // The SIGTERM-ignoring orphan died → the SIGKILL escalation fired (AC-5 in vivo).
-    await waitFor(() => !isAlive(orphan.pid), 10_000, 'orphan collected');
+    await waitFor(() => !isAlive(orphanPid), 10_000, 'orphan collected');
 
     // Positive-ownership trap door: the live session's worker is untouched.
-    assert.ok(isAlive(control.pid), 'live-session control proc MUST NOT be killed');
+    assert.ok(isAlive(controlPid), 'live-session control proc MUST NOT be killed');
 
     // worker_orphan_reaped event landed on the invoking session's state.
     const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
@@ -120,11 +173,11 @@ test('AC-CXHANG-6: abandoned detached worker is collected by the next reap; live
     assert.ok(events.length >= 1, 'worker_orphan_reaped event emitted');
     assert.equal(events[0].owning_session, 'sess-dead');
   } finally {
-    for (const child of [orphan, control]) {
-      if (typeof child.pid === 'number') {
-        try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ }
-        try { child.kill('SIGKILL'); } catch { /* already gone */ }
-      }
+    // Scoped to this test's own recorded pids — never a bare binary name.
+    for (const pid of [orphanPid, controlPid]) {
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      try { process.kill(-pid, 'SIGKILL'); } catch { /* already gone */ }
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
     }
   }
 });
