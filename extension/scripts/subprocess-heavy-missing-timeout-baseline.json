@@ -1,5 +1,5 @@
 {
-  "description": "R-TFP-C2 baseline of pre-existing child_process callsites missing an explicit timeout, grandfathered by the missing-timeout audit predicate. Only callsites NOT in this list fail the gate.",
+  "description": "R-TFP-C2 baseline of pre-existing child_process callsites missing an explicit timeout, grandfathered by the missing-timeout audit predicate. Only callsites NOT in this list fail the gate. The three orphan-fixture spawns in tests/integration/orphan-worker-reaper-tmp-prefix-drain.test.js and tests/spawn-morty-worker-gate.test.js are correct as written and registered deliberately: each is a spawn(..., { detached: true, stdio: 'ignore' }) fixture whose child must outlive its parent so the orphan reaper has something to reap, and Node's timeout option would signal that child and defeat the test.",
   "generated_from": "extension/tests (excluding fixtures/), audit-subprocess-heavy-tests-missing-timeout.mjs",
   "entries": [
     "tests/activity-instrumentation.test.js::execFileSync::bd8b9e05cc",
@@ -483,6 +483,8 @@
     "tests/integration/nonstop-continuation.test.js::execFileSync::e3f155362a",
     "tests/integration/orphan-worker-reaper-real-proc.test.js::spawn::185f910bb1",
     "tests/integration/orphan-worker-reaper-real-proc.test.js::spawn::8699a1d543",
+    "tests/integration/orphan-worker-reaper-tmp-prefix-drain.test.js::spawn::03c435f0bf",
+    "tests/integration/orphan-worker-reaper-tmp-prefix-drain.test.js::spawn::817b87f84a",
     "tests/integration/parallel-tier-isolation-audit.test.js::spawnSync::5b99276a09",
     "tests/integration/pipeline-completion-handsoff-e2e.test.js::execFileSync::5f7125811c",
     "tests/integration/pipeline-e2e.test.js::spawnSync::321b18eff3",
@@ -1002,6 +1004,7 @@
     "tests/spawn-morty-worker-gate.test.js::execFileSync::d1dce4d630",
     "tests/spawn-morty-worker-gate.test.js::execFileSync::d3e0d793d3",
     "tests/spawn-morty-worker-gate.test.js::execFileSync::d601db92b3",
+    "tests/spawn-morty-worker-gate.test.js::spawn::2c6db3799b",
     "tests/spawn-morty-worker-gate.test.js::spawn::ac7d3b6693",
     "tests/spawn-morty.test.js::execSync::7b3e7b4515",
     "tests/spawn-morty.test.js::spawnSync::2f1f22041b",
