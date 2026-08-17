@@ -2,13 +2,27 @@
 /**
  * timeout-e2e — E2E timeout happy path integration test.
  *
- * Incident fixture: manager sleeps 95% of worker_timeout_seconds, writes an
- * artifact, then deactivates the session and exits 0. The mux-runner must NOT
- * send SIGTERM and must advance the iteration counter.
+ * Incident fixture: the manager subprocess runs past worker_timeout_seconds,
+ * writes an artifact, then deactivates the session and exits 0.
  *
- * Regression guard for incident 2026-04-22-35fb01bc:
+ * Regression provenance, incident 2026-04-22-35fb01bc:
  *   Before fix: timeoutHandle fired at worker_timeout_seconds → SIGTERM
- *   After fix: hangGuard is sole kill authority (MAX_ITERATION_SECONDS)
+ *   After fix: that handle was removed
+ *
+ * RE-SCOPED (AC-5 of prds/BUG-2026-08-17-serial-tier-attempt-2-measure-the-right-window.md).
+ * The removed timeoutHandle is the last manager-path timer that ever derived from
+ * worker_timeout_seconds. The kill authorities today are hangGuardMs (14400s) and
+ * outputStallGuardMs (1800s) — src/bin/mux-runner.ts:3956-3959 — and neither reads
+ * that field; it survives on the manager path only as startup validation (:7531),
+ * per-ticket tier caching (:2125), and post-hoc timeout telemetry (:8101). Its one
+ * timer lives on the spawn-morty worker path, which these ticket-less fixtures never
+ * reach. Shrinking either live guard from a spawned bin is not possible — the only
+ * override is runIteration's in-process runtimeOverrides parameter (:4249), and the
+ * sole production call site passes none (:11382).
+ *
+ * So these fixtures assert the observable NEGATIVE instead: a manager subprocess that
+ * outlives worker_timeout_seconds is not killed. That is a live property, and it is
+ * evidence only while the sleep genuinely exceeds the configured budget.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,10 +37,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MUX_RUNNER_BIN = path.resolve(__dirname, '../../bin/mux-runner.js');
 
 // 15s → 60s outer / 12s → 45s inner: budget for system load when run alongside
-// concurrent codex/tmux work. The test verifies "subprocess completes without
-// SIGTERM"; fake claude sleeps 950ms. The artifact-existence check is the
-// real assertion, not the wall-clock budget.
-test('timeout-e2e: manager sleeps 95% of budget, writes artifact, iteration advances, no SIGTERM', { timeout: 60_000 }, () => {
+// concurrent codex/tmux work. The fake claude sleeps 1500ms — 150% of the 1s
+// worker_timeout_seconds below — and the artifact-existence check is the real
+// assertion, not the wall-clock budget. The sleep was 950ms until AC-5: at 95% of
+// the budget it finished before the nominal deadline either way, so it could not
+// distinguish "no timer derives from worker_timeout_seconds" from "one does, and we
+// beat it". Both test budgets are unchanged; only the fixture's own work grew.
+test('timeout-e2e: manager runs 150% of worker_timeout_seconds unkilled, writes artifact', { timeout: 60_000 }, () => {
     const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-timeout-e2e-')));
     try {
         const sessionDir = path.join(base, 'session');
@@ -38,8 +55,9 @@ test('timeout-e2e: manager sleeps 95% of budget, writes artifact, iteration adva
 
         const artifactPath = path.join(base, 'artifact.txt');
 
-        // worker_timeout_seconds=1. Fake claude sleeps 950ms (95%), writes artifact,
-        // deactivates, exits 0. Under old code: SIGTERM at 1s. Under fixed code: completes.
+        // worker_timeout_seconds=1. Fake claude sleeps 1500ms (150%), writes artifact,
+        // deactivates, exits 0. Under the removed timeoutHandle: SIGTERM at 1s. Today no
+        // manager-path timer reads this field, so the subprocess runs to completion.
         fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
             active: true,
             step: 'implement',
@@ -58,8 +76,8 @@ test('timeout-e2e: manager sleeps 95% of budget, writes artifact, iteration adva
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as fs from 'node:fs';
 
-// Sleep 95% of worker_timeout_seconds (1s) — old timeoutHandle would fire at 1s
-await sleep(950);
+// Sleep 150% of worker_timeout_seconds (1s) — the removed timeoutHandle fired at 1s
+await sleep(1500);
 
 // Write artifact — proves we were NOT SIGTERM'd
 fs.writeFileSync(${JSON.stringify(artifactPath)}, 'completed');
@@ -118,6 +136,12 @@ process.exit(0);
 // 15s → 45s outer / 10s → 30s inner: budget for system load when run alongside
 // concurrent codex/tmux work. Fake claude exits immediately; budget covers
 // node spawn + module load + state-file deactivation under contention.
+//
+// NOT re-scoped by AC-5, deliberately. Unlike its sibling above, this test makes no
+// claim about worker_timeout_seconds: nothing sleeps, so no timer of any duration is
+// exercised and the 60 below is inert — present only to satisfy validateStartupState's
+// "must be > 0" check (src/bin/mux-runner.ts:7544-7545). The title claims deactivation
+// and a clean exit, and both are asserted, so there is no dead premise here to reconcile.
 test('timeout-e2e: session deactivated by subprocess → mux-runner exits cleanly', { timeout: 45_000 }, () => {
     const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-timeout-e2e2-')));
     try {

@@ -1,5 +1,5 @@
 // @tier: integration
-// B-CITAIL T6 (R-TFP): the FR-B10 fixture spawns a fake-claude that sleeps ~95% of
+// B-CITAIL T6 (R-TFP): the FR-B10 fixture spawns a fake-claude that sleeps 120% of
 // its worker_timeout budget; under c=8 fast-tier load the subprocess is starved and
 // killed before writing its artifact (Linux CI flake). Promoted to integration +
 // serialized (tests/integration/.serial-tests.json) so it runs at
@@ -9,9 +9,22 @@
  * writes an artifact, and completes without SIGTERM.
  *
  * Before the fix, timeoutHandle fired at worker_timeout_seconds and sent
- * SIGTERM — the artifact was never written. After the fix (timeoutHandle
- * removed), hangGuard is the only kill authority (at MAX_ITERATION_SECONDS),
- * so a subprocess that finishes before MAX_ITERATION_SECONDS completes cleanly.
+ * SIGTERM — the artifact was never written. After the fix that handle was
+ * removed, and it was the last manager-path timer deriving from that field.
+ *
+ * RE-SCOPED (AC-5 of prds/BUG-2026-08-17-serial-tier-attempt-2-measure-the-right-window.md).
+ * The kill authorities today are hangGuardMs (14400s) and outputStallGuardMs (1800s)
+ * — src/bin/mux-runner.ts:3956-3959 — and neither reads worker_timeout_seconds, which
+ * survives on the manager path only as startup validation, per-ticket tier caching and
+ * post-hoc timeout telemetry. Asserting against either live guard from a spawned bin is
+ * not possible: the only override is runIteration's in-process runtimeOverrides
+ * parameter (:4249), and the sole production call site passes none (:11382).
+ *
+ * So this fixture asserts the observable NEGATIVE: a manager subprocess that outlives
+ * worker_timeout_seconds is not killed. The 1200ms sleep against a 1s budget is 120%,
+ * which is what makes that evidence rather than a coincidence — the title said 95%
+ * until AC-5, contradicting the fixture's own arithmetic. The sleep is the sound half
+ * of the pair, so the title moved and the number did not.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,7 +42,7 @@ const TMUX_RUNNER_BIN = path.resolve(__dirname, '../bin/mux-runner.js');
 // concurrent codex/tmux work. The test verifies "subprocess completes without
 // SIGTERM at worker_timeout_seconds=1s"; the fake claude sleeps 1200ms. The
 // wall-clock budget is not the assertion — the artifact-existence check is.
-test('FR-B10: fixture manager sleeps 95% of worker_timeout budget, writes artifact, no SIGTERM', { timeout: 60_000 }, () => {
+test('FR-B10: fixture manager sleeps 120% of its worker_timeout budget, writes artifact, no SIGTERM', { timeout: 60_000 }, () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-happy-path-')));
     try {
         const sessionDir = path.join(dir, 'session');
@@ -43,10 +56,10 @@ test('FR-B10: fixture manager sleeps 95% of worker_timeout budget, writes artifa
         // Artifact file the fake claude will write after its sleep
         const artifactPath = path.join(dir, 'artifact.txt');
 
-        // worker_timeout_seconds = 1. Old timeoutHandle would fire at 1s.
-        // Fake claude sleeps 1200ms (> 1s) then writes artifact and exits — would
-        // have been SIGTERM'd under old code. hangGuard fires at MAX_ITERATION_SECONDS
-        // (14400s) so the fake claude completes safely.
+        // worker_timeout_seconds = 1. The removed timeoutHandle fired at 1s.
+        // Fake claude sleeps 1200ms — 120% of that budget — then writes artifact and
+        // exits; it would have been SIGTERM'd under the old code. Today the nearest
+        // kill authority is hangGuard at MAX_ITERATION_SECONDS (14400s), so it completes.
         fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
             active: true,
             step: 'implement',
@@ -67,7 +80,7 @@ test('FR-B10: fixture manager sleeps 95% of worker_timeout budget, writes artifa
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as fs from 'node:fs';
 
-// Sleep beyond worker_timeout_seconds (1s) but well within MAX_ITERATION_SECONDS
+// Sleep 120% of worker_timeout_seconds (1s), well within MAX_ITERATION_SECONDS
 await sleep(1200);
 
 // Write the artifact — proves we were not SIGTERM'd at 1s
