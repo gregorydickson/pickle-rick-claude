@@ -17,6 +17,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scrubGateEnv } from '../../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MUX_RUNNER_BIN = path.resolve(__dirname, '../../bin/mux-runner.js');
@@ -79,7 +80,7 @@ process.exit(0);
 
         const result = spawnSync(process.execPath, [MUX_RUNNER_BIN, sessionDir], {
             env: {
-                ...process.env,
+                ...scrubGateEnv(),
                 EXTENSION_DIR: base,
                 NODE_ENV: 'test',
                 EXTENSION_DIR_TEST: '1',
@@ -152,7 +153,7 @@ process.exit(0);
 
         const result = spawnSync(process.execPath, [MUX_RUNNER_BIN, sessionDir], {
             env: {
-                ...process.env,
+                ...scrubGateEnv(),
                 EXTENSION_DIR: base,
                 NODE_ENV: 'test',
                 EXTENSION_DIR_TEST: '1',
