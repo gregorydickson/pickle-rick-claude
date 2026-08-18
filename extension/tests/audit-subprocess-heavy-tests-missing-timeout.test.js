@@ -105,3 +105,85 @@ test('audit-subprocess-heavy-tests --scan-root: clean scan root (no candidates) 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Receiver qualification. `RegExp.prototype.exec` shares its name with
+// `child_process.exec`, so the candidate matcher classifies by receiver. These
+// fixtures pin BOTH directions in one test, which is what stops the fix from
+// degenerating into a blanket `exec` exclusion that would blind the audit to
+// the real un-timed `child_process.exec` class.
+//
+// The child_process fixture is assembled from split tokens (`EXEC + '('`) so
+// THIS file — part of the scanned extension/tests/ corpus — never becomes a
+// candidate to its own audit. The regex fixture needs no such care: a regex
+// receiver is precisely what must NOT be a candidate, so writing it literally
+// pins the behaviour in the real corpus too.
+const EXEC = 'exec';
+
+function regexExecFixtureSource() {
+  return [
+    '// @tier: fast',
+    'export function countMatches(text) {',
+    '  const re = /a(b)c/g;',
+    '  let n = 0;',
+    '  while (re.exec(text) !== null) n++;',
+    '  const someRegex = /x/g;',
+    '  someRegex.exec(text);',
+    '  return n;',
+    '}',
+    '',
+  ].join('\n');
+}
+
+function childProcessExecFixtureSource() {
+  return [
+    '// @tier: fast',
+    "import * as child_process from 'node:child_process';",
+    `import { ${EXEC} } from 'node:child_process';`,
+    'export function runQualified(cb) {',
+    `  return child_process.${EXEC}('git status', { encoding: 'utf-8' }, cb);`,
+    '}',
+    'export function runBare(cb) {',
+    `  return ${EXEC}('git log -1', { encoding: 'utf-8' }, cb);`,
+    '}',
+    '',
+  ].join('\n');
+}
+
+test('audit-subprocess-heavy-tests --scan-root: regex .exec is not a candidate, child_process exec still is', () => {
+  const dir = tmpScanRoot();
+  try {
+    const fixturePath = path.join(dir, 'receiver-qualified.test.js');
+
+    // Direction 1: `re.exec(text)` / `someRegex.exec(text)` spawn nothing.
+    fs.writeFileSync(fixturePath, regexExecFixtureSource());
+    const regexRun = runAudit(dir);
+    assert.equal(
+      regexRun.status,
+      0,
+      `expected exit 0 for regex .exec callsites; stderr=${regexRun.stderr}`,
+    );
+    assert.doesNotMatch(regexRun.stderr, /missing-timeout exec\(\.\.\.\)/);
+
+    // Direction 2: an un-timed `child_process` exec call and a bare destructured
+    // one still fail. (Written without literal call syntax so this comment is not
+    // itself scanned as a callsite.)
+    fs.writeFileSync(fixturePath, childProcessExecFixtureSource());
+    const cpRun = runAudit(dir);
+    assert.equal(
+      cpRun.status,
+      1,
+      `expected exit 1 for un-timed child_process exec callsites; stderr=${cpRun.stderr}`,
+    );
+    assert.match(cpRun.stderr, /new missing-timeout exec\(\.\.\.\) callsite not in baseline/);
+    const execFindings = cpRun.stderr
+      .split('\n')
+      .filter((line) => /missing-timeout exec\(\.\.\.\)/.test(line));
+    assert.equal(
+      execFindings.length,
+      2,
+      `expected both the qualified and the bare exec callsite; got ${execFindings.length}: ${cpRun.stderr}`,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

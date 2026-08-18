@@ -21,7 +21,35 @@ import * as crypto from 'node:crypto';
 const FN_NAMES = ['execFileSync', 'execSync', 'execFile', 'exec', 'spawnSync', 'spawn', 'fork'];
 // Longest-first so the alternation doesn't stop at a shorter prefix match
 // (e.g. matching `exec` inside `execFileSync`).
-const CALL_RE = new RegExp(`\\b(${FN_NAMES.join('|')})\\s*\\(`, 'g');
+//
+// The optional leading group captures a property-access receiver, so a call is
+// classified by WHAT it is called on, not just by its name:
+//   m[1] = receiver ('child_process' in `child_process.exec(...)`), or undefined
+//          for a bare call (`exec(...)` — the destructured-import form)
+//   m[2] = function name
+// The leading `(?<![\w$.])` also stops a bare match from being claimed off the
+// tail of a property access whose receiver isn't a plain identifier
+// (`arr[0].exec(` is no longer a match at all).
+const CALL_RE = new RegExp(
+  `(?<![\\w$.])(?:([\\w$]+)\\s*\\.\\s*)?(${FN_NAMES.join('|')})\\s*\\(`,
+  'g',
+);
+
+// Receivers that plausibly hold a child_process binding, for the one function
+// name that collides with a builtin prototype method.
+const CP_RECEIVER_RE = /^(?:cp|child_?process|_?deps)$/i;
+
+// `exec` is the only name in FN_NAMES that collides with a widely-used builtin
+// prototype method (`RegExp.prototype.exec`), so it is the only one that needs
+// its receiver qualified: `re.exec(text)` spawns nothing and "missing timeout"
+// is meaningless on it. The other six have no builtin collision and DO appear
+// behind opaque receivers that are genuine child_process bindings (e.g.
+// `_deps.execFileSync(...)`), so qualifying them would delete real coverage.
+function isChildProcessCandidate(receiver, fn) {
+  if (receiver === undefined) return true; // bare `exec(...)`: destructured import
+  if (fn !== 'exec') return true;
+  return CP_RECEIVER_RE.test(receiver);
+}
 
 function findMatchingClose(content, openIdx) {
   let depth = 0;
@@ -61,7 +89,8 @@ function scanFileForMissingTimeout(absPath, fileRel) {
   let m;
   CALL_RE.lastIndex = 0;
   while ((m = CALL_RE.exec(content)) !== null) {
-    const fn = m[1];
+    const fn = m[2];
+    if (!isChildProcessCandidate(m[1], fn)) continue;
     const openIdx = m.index + m[0].length - 1;
     const closeIdx = findMatchingClose(content, openIdx);
     if (closeIdx === -1) continue;
