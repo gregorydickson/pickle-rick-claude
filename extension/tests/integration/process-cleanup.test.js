@@ -386,7 +386,7 @@ test('PC-3: dispatch EPIPE produces exactly one valid approve JSON on stdout', (
 // dead) and closes when no registered worker is alive and the registered set has stopped growing.
 // Excluded on the near side: node bootstrap, the ESM import graph of the refinement bin and its
 // service imports, arg and settings resolution, the stale-anchor git scan, the AC and symbol
-// machinery, and the staggered worker spawn (measured ~10s between workers). Excluded on the far
+// machinery, and the staggered worker spawn cadence (measured ~10s between workers). Excluded on the far
 // side: manifest write, the readiness gate, and interpreter teardown. Only the SIGTERM fan-out and
 // the workers' deaths are charged.
 // ---------------------------------------------------------------------------
