@@ -88,6 +88,40 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > `1554ed3d`, `c56e1cfb` — and is DEPLOYED. Do not relaunch it. The same prompt's queue C (worker gate
 > inherits the worker's env) also shipped: `684ddbc9`+9, widened by `87b02416` this session.
 >
+> **✅ ATTEMPT 3 SHIPPED, THESIS HALF-MET — session `2026-08-18-e8c96961`, 2/2 Done,
+> `EPIC_COMPLETED/all-tickets-done` 19:49:18Z, `exit_reason: completed`, 10 iterations / 266m44s.**
+> Commits: `5a141716`+`8102d3ae` re-budget both `timeout-e2e.test.js` fixtures from measured wall-clock
+> (inner `spawnSync` 45s → 95s and 30s → 145s, outer 60s → 110s and 45s → 160s, each justified by 3
+> uncapped runs plus one in-tier observation of 90615ms), and the misleading "was killed" assertion now
+> branches on `result.signal !== null`. `e39b9bca` replaced AC-7 — which `git diff --stat` satisfied
+> vacuously — with a durable fast-tier oracle, `extension/tests/timeout-e2e-oracle-invariant.test.js`.
+> **The two `timeout-e2e` tests now PASS.** Same caveats as attempt 2: `between-ticket fast gate` red,
+> `post-final tier measurement: red (degraded)`, parked not halted.
+>
+> **🚨 SERIAL IS STILL RED — 2 DIFFERENT failures, both reproduced on a quiet box.** Operator ran the
+> serial tier twice at `e39b9bca` (once after two other tiers at 1557.6s, once alone at 1476.7s):
+> identical `603 tests / 24 suites / fail 2 / cancelled 0 / EXIT=1`. Neither failure is contention.
+> Filed as `BUG-2026-08-18-audit-regex-exec-false-positive-and-frb10-cap.md`:
+>
+> - **P0, self-caused.** `audit-subprocess-heavy-tests.sh` exits 1 on
+>   `timeout-e2e-oracle-invariant.test.js:40` — `while ((m = re.exec(sourceText)))`. That is
+>   `RegExp.prototype.exec`, not `child_process.exec`. The matcher cannot tell them apart and fabricates
+>   a missing-timeout violation. Same family as `R-GBANNER`. The PRD REJECTS the baseline-registration
+>   escape: silencing it there asserts the false thing is intentional and the next regex `.exec()` in any
+>   test re-breaks the gate. `pretest:integration` runs this audit, so the release gate is blocked too.
+> - **P1, pre-existing.** `FR-B10` (`extension/tests/timeout-happy-path.test.js:45`) fails with the exact
+>   signature just fixed in its two siblings — `exit: 1, signal: null` — at caps of 60s outer / 45s inner
+>   against measured runs of 53.0s and 57.7s. The fixture-cap class has a THIRD instance that attempt 3
+>   never scoped.
+>
+> **⚠️ FAST TIER READ 4 FAILURES AT `e39b9bca` AND THAT NUMBER IS NOT EVIDENCE.** 7736 tests / 508 suites
+> / fail 4, but the tier took **2023.8s against 946.3s** for the same tier earlier the same day, measured
+> back-to-back behind two other tiers at load average 18. All four are known load-sensitive suites (three
+> `mux-runner.test.js` "iteration events", one `node-modules-reuse` — a documented member of the ~1-in-5
+> flake cluster). Operator-induced load invalidates the measurement exactly as a worker's own gate does.
+> Re-measure quietly before treating any of the four as a defect; the follow-up PRD's AC-8 will surface
+> them if they are real.
+>
 > ## 🔢 SEQUENCE (binding until the operator changes it)
 >
 > Reliability ratchet first, then the FIRST capability item — codegraph — immediately after it. Codegraph
