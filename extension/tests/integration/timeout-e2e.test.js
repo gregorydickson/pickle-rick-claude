@@ -143,19 +143,23 @@ process.exit(0);
 });
 
 // Budgets measured directly, not guessed. Per BUG-2026-08-18-timeout-e2e-measured-budgets
-// AC-4: 3 uncapped runs of this exact fixture measured 50.90s / 51.34s / 50.83s elapsed,
-// exit 0, signal null every time — same fixture-cap-defect class as the sibling test above;
-// the prior "for system load" comment was never measured and the old 30s inner / 45s outer
-// caps sat BELOW the slowest observed run too. New caps: inner spawnSync timeout =
-// ceil(51.34 * 1.5) rounded to the nearest 5s = 80s (80_000ms, ~56% margin over the slowest
-// run); outer node-test timeout = inner + 15s = 95s (95_000ms).
+// AC-4: 3 uncapped isolated runs of this exact fixture measured 50.90s / 51.34s / 50.83s
+// elapsed, exit 0, signal null every time — same fixture-cap-defect class as the sibling
+// test above. Isolated measurement does NOT predict in-tier wall-clock: a manager-run full
+// `npm run test:integration:serial` pass observed this test taking 90615ms under real
+// serial-tier load (7 files ahead of it at --test-concurrency=1) — 77% higher than the
+// isolated 51.34s. Re-budgeted from the in-tier floor: inner spawnSync timeout =
+// ceil(90.615 * 1.56) rounded to the nearest 5s = 145s (145_000ms, ~60% margin over the
+// in-tier measurement); outer node-test timeout = inner + 15s = 160s (160_000ms). The prior
+// "for system load" comment was never measured, and both the old 30s inner / 45s outer caps
+// and the first re-budget (80s / 95s, isolated-only) sat BELOW the true in-tier wall-clock.
 //
 // NOT re-scoped by AC-5, deliberately. Unlike its sibling above, this test makes no
 // claim about worker_timeout_seconds: nothing sleeps, so no timer of any duration is
 // exercised and the 60 below is inert — present only to satisfy validateStartupState's
 // "must be > 0" check (src/bin/mux-runner.ts:7544-7545). The title claims deactivation
 // and a clean exit, and both are asserted, so there is no dead premise here to reconcile.
-test('timeout-e2e: session deactivated by subprocess → mux-runner exits cleanly', { timeout: 95_000 }, () => {
+test('timeout-e2e: session deactivated by subprocess → mux-runner exits cleanly', { timeout: 160_000 }, () => {
     const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-timeout-e2e2-')));
     try {
         const sessionDir = path.join(base, 'session');
@@ -204,7 +208,7 @@ process.exit(0);
                 PICKLE_BACKEND: 'claude',
             },
             encoding: 'utf-8',
-            timeout: 80_000,
+            timeout: 145_000,
         });
 
         // spawnSync's cap kill uses killSignal (default SIGTERM), so asserting only on SIGKILL lets
