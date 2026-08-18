@@ -30,7 +30,141 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
-> ### ▶▶ RESUME HERE — 2026-08-14 (supersedes the 2026-08-12 block below)
+> ### ▶▶ RESUME HERE — 2026-08-18 (supersedes the 2026-08-14 block below)
+>
+> **One red tier left on the branch, and it is not what the last three bundles thought it was.**
+> Operator-run measurement at `98759471`, canonical env scrub, `PICKLE_TEST_RUNNER_TIMEOUT_MS=7200000`,
+> each verdict read from the run's own `EXIT=` sentinel:
+>
+> | tier | tests | suites | fail | cancelled | EXIT |
+> |---|---|---|---|---|---|
+> | `test:fast` | 7728 | 508 | 0 | 0 | 0 |
+> | `test:integration:parallel` | 622 | 21 | 0 | 0 | 0 |
+> | `test:integration:serial` | 603 | 24 | **2** | 0 | **1** |
+>
+> Fast-tier count grew 7723 → 7728 and suites 507 → 508, so nothing was traded for the pass.
+>
+> **✅ SERIAL-TIER ATTEMPT 2 SHIPPED — session `2026-08-17-09bc8b7b`, 6/6 Done,
+> `EPIC_COMPLETED/all-tickets-done` 03:27:54Z, `exit_reason: completed`, 11 iterations / 535m24s.**
+> Commits: `c92fa410` deactivate the session on the mux-runner FATAL path · `48e4d322`+`9fa95d97` reap the
+> PC-4/PC-5 fake-claude grandchildren · `c3c9b8cd`+`ec82a681` open PC-4's clock at the crash, not at first
+> worker spawn · `87b02416` scrub `PICKLE_DATA_ROOT`/`PICKLE_DATA_DIR`/`TMUX` from the gate-env scrub list ·
+> `1ddf0077` reconcile the unpinnable `worker_timeout_seconds` premise · `98759471` reword PC-4's comment so
+> it stops tripping the missing-timeout scanner. **Ran to completion; did NOT succeed at its thesis** — the
+> serial tier is still red.
+>
+> **The bundle's own honesty machinery worked, and that is the reusable result.** The run stamped
+> `post-final tier measurement: red (degraded) — script failure: test:fast` at the final sha and still
+> completed all 11 iterations — R-NOPOSTTIER doing exactly its job. `between-ticket fast gate` went red
+> twice (`0b0c7424`, `df5c4035`) and parked instead of halting. Five `failed_flip_suppressed` entries
+> (`4b09d57e`, `6ce563ae`, `0209a7db`, `76843dcd`, `df5c4035`, all `1/2`, evidence `both`) mean **every
+> ticket but one had a red worker gate absorbed by suppression** — read the 6/6 as suppression-assisted,
+> not gate-clean. The post-final `red` on `test:fast` was itself a FALSE red: measured clean at the same
+> sha, the fast tier passes 7728/508.
+>
+> **🐞 THE REMAINING RED IS PRE-EXISTING — `BUG-2026-08-18-timeout-e2e-serial-tier-red.md` (`9990169c`).**
+> Both failures are in `extension/tests/integration/timeout-e2e.test.js`:
+>
+> - `manager runs 150% of worker_timeout_seconds unkilled` — fails deterministically with `exit: 1,
+>   signal: null`. `signal: null` means the subprocess was **not** signalled; it self-exited ~19s into
+>   startup, right after `WARN: ticket_state_desync check found no ticket directories`
+>   (`extension/src/bin/mux-runner.ts:1354`), with no `[FATAL]` line in the captured stderr tail. The fake
+>   `claude` never ran, so the artifact never existed. The assertion message claims "was killed" and
+>   misreports its own failure mode.
+> - `session deactivated by subprocess → mux-runner exits cleanly` — **passes standalone in 24.6s**, fails
+>   in-tier at 48.7s against an inner `spawnSync` cap of 30_000ms. Contention-sensitive fixture, not a
+>   runtime defect. It is unrelated to `c92fa410`: it wants deactivation and gets it when given time.
+>
+> Same single-file run in a detached worktree at `b91025d5` (attempt 2's own `start_commit`): 0 pass,
+> **2 fail**. Attempt 2 neither caused nor fixed these — they predate it. Root cause is deliberately left
+> OPEN in the PRD for the research phase rather than asserted.
+>
+> **▶ IN FLIGHT: `2026-08-18-e8c96961`** (tmux `pickle-e8c96961`) — attempt 3, tests-only, unattended.
+>
+> **❌ LEDGER CORRECTION — the worker-lock bundle is NOT queued, it SHIPPED.** The operator loop prompt
+> still carries "when the tier is green, launch the worker lock
+> (`BUG-2026-08-14-concurrent-workers-per-session.md`, `9a7cbdaf`)". That bundle shipped as B-CWPS —
+> `e4df9cce` serialize per-session worker spawn via the state-manager lock, plus `113f8405`, `f0fb36cf`,
+> `1554ed3d`, `c56e1cfb` — and is DEPLOYED. Do not relaunch it. The same prompt's queue C (worker gate
+> inherits the worker's env) also shipped: `684ddbc9`+9, widened by `87b02416` this session.
+>
+> ## 🔢 SEQUENCE (binding until the operator changes it)
+>
+> Reliability ratchet first, then the FIRST capability item — codegraph — immediately after it. Codegraph
+> is sequenced ahead of the remaining P2/P3 reliability backlog on purpose: it is the only capability work
+> with a measured, already-live substrate, so it is the cheapest quality ratchet available once the tier is
+> green.
+>
+> 1. **Serial tier green** — attempt 3, in flight. Gate: `fail 0` AND `cancelled 0` from the runner's own
+>    summary block, operator-measured.
+> 2. **`R-ORCG`** — `p2-orphan-reaper-coverage-gaps-test-fixture-leak.md`. The shipped reaper cannot see
+>    the dominant leaker. An empty census is NOT evidence: it reads 0 only because 46 procs were killed by
+>    hand. Requires a real population, never planted fixtures. May shrink now that attempt 2 landed the
+>    PC-4/PC-5 grandchild reaping.
+> 3. **`FEAT-2026-08-16-expose-codegraph-mcp-to-workers.md`** — first capability work. See the codegraph
+>    status block below for what is already live and what the flag actually costs.
+> 4. Then the remaining reliability P1s, unchanged in priority order:
+>    `BUG-2026-08-14-salvage-reset-desync-empty-roster-terminal.md` (terminal-reducing only, AC-3 forbids a
+>    new `exit_reason`) · `BUG-2026-08-16-gate-parser-fabricates-a-test-name.md` (R-GBANNER, 2 sessions) ·
+>    `BUG-2026-08-16-tier-hangs-at-mux-runner-suite.md` (R-TIERWEDGE — still NOT closed; twice-reproduced at
+>    exactly 6126 lines, then non-recurrence across several runs, which cannot distinguish *fixed* from
+>    *did not recur*).
+>
+> ## 🧠 CODEGRAPH STATUS 2026-08-18 — injection is LIVE; only MCP exposure is off
+>
+> Deployed settings read `enabled: true`, `index_at_setup: true`, `expose_mcp_to_workers: false`, with
+> `staleness_max_age_minutes: 30`, `context_max_bytes: 8192` and the three timeouts at documented defaults.
+> WS-B3 put `enabled`/`index_at_setup` into the deploy script's MANAGED_KEYS, so an upgrade can no longer
+> drift them off, and that retired the old manual enable-then-soak dance (CUJ #2). `PICKLE_CODEGRAPH=off`
+> remains the per-session escape hatch.
+>
+> **It is not merely configured — it ran on every worker spawn of the last bundle.** From
+> `2026-08-17-09bc8b7b`: `codegraph_sync_completed` at setup, then `codegraph_context_injected` for four
+> tickets — `tier medium` 258 hits / 8175 bytes / 3170ms build · `tier large` 445 hits / 8184 bytes ·
+> `tier large` 521 hits / 8151 bytes — `dropped_stale: 0` throughout. Indexing, staleness and per-tier
+> injection all work under load, and the injections sit just under the 8192-byte cap.
+>
+> So the remaining work is exactly one flag, and it is NOT a flag flip. Two hazards, both already
+> characterised: the deploy script's settings merge is deployed-wins (`jq -s '.[0] * .[1]'`, line 507), so a
+> source-only default change is INERT unless the key joins MANAGED_KEYS; and an unresolvable codegraph bin
+> degrades **SILENTLY** to operator passthrough — on this box the bin resolves only via a symlink into the
+> source repo, which a release install does not have. A silent degrade is the fake-green shape this
+> codebase keeps paying for, so the PRD must pin the unresolvable-bin path with an assertion, not a log
+> line.
+>
+> **Superseded by WS-B3, archived this session:** `p2-codegraph-default-on-capability-v2.1.md`,
+> `p2-codegraph-harden-then-soak-v2.1.md`. The live codegraph item is the FEAT above; the enablement
+> narrative in `p1-b-gtruth-ground-truth-over-proxies-and-codegraph-enablement.md` is history, not a queue
+> item.
+>
+> ## 🗂️ PRD CLEANUP 2026-08-18 — 15 dead PRDs archived
+>
+> Moved out of `prds/` (shipped, superseded, or retired). Each disposition has a commit or an explicit
+> in-file status behind it; nothing was archived on a guess.
+>
+> | PRD | disposition |
+> |---|---|
+> | `BUG-2026-08-14-advisory-residual-sink-consumers-stale.md` | SHIPPED `390049c8` |
+> | `BUG-2026-08-14-concurrent-workers-per-session.md` | SHIPPED B-CWPS `e4df9cce`+4, deployed |
+> | `BUG-2026-08-14-fast-tier-wall-clock-exceeds-worker-gate-cap.md` | SUPERSEDED by the concurrency root |
+> | `BUG-2026-08-15-no-tier-verdict-after-final-commit.md` | SHIPPED R-NOPOSTTIER, P0 regression fixed |
+> | `BUG-2026-08-15-worker-gate-inherits-pickle-env.md` | SHIPPED `684ddbc9`+9, widened by `87b02416` |
+> | `BUG-2026-08-15-trapdoor-entry-over-length-red-head.md` | SHIPPED `a5edb12f` (1831 → 1448 chars) |
+> | `BUG-2026-08-16-baseline-orphan-fixture-spawns.md` | SHIPPED `53d4ca74` |
+> | `BUG-2026-08-16-post-final-measurement-wedges-the-tier.md` | CLOSED — `c688f9ab` cleared the real floor |
+> | `BUG-2026-08-16-worker-gate-shim-orphans-reaccumulate.md` | SUPERSEDED by `R-ORCG` |
+> | `BUG-2026-08-17-integration-tier-four-failures.md` | CLOSED — parallel tier green, 622 / fail 0 |
+> | `BUG-2026-08-17-serial-integration-tier-four-inherited-failures.md` | SHIPPED attempt 1 (5 fixes), superseded |
+> | `BUG-2026-08-17-serial-tier-attempt-2-measure-the-right-window.md` | SHIPPED 6/6, superseded by the 08-18 PRD |
+> | `p2-codegraph-default-on-capability-v2.1.md` | RETIRED by WS-B3 (on by default, deployed) |
+> | `p2-codegraph-harden-then-soak-v2.1.md` | RETIRED by WS-B3 (MANAGED_KEYS forces the flags) |
+> | `p1-bug-fix-bundle-b-trgp-target-repo-gate-parity.md` | SUPERSEDED-DO-NOT-BUILD (own status) |
+>
+> Deliberately KEPT despite looking stale: `p2-pipeline-resume-start-commit-selfheal.md` and
+> `p1-r-gadel-attribution-fallback-verdict.md` (superseded/shelved but their successors are unbuilt), and
+> every `BUG-REPORT-*` capture-only file — those are the corpus the audits mine, not queue items.
+>
+> ### 2026-08-14 (SUPERSEDED by the 2026-08-18 block above — kept for the B-CWPS / R-NOPOSTTIER forensics)
 >
 > **The loop closed on itself. `c916b3da` — the bundle that makes the success verdict stop being blind
 > to tests — was itself shipped under a verdict that did not exist.** All three of its worker gates
