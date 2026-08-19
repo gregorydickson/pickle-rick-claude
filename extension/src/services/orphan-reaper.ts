@@ -134,6 +134,10 @@ function parsePsElapsedSeconds(raw: string): number | null {
  * Worker-shaped commands mirror the spawn builders in `backend-spawn.ts`:
  *  - codex:  `codex exec --dangerously-bypass-approvals-and-sandbox …` (buildCodexInvocation)
  *  - claude: `claude --dangerously-skip-permissions … -p <prompt>` (buildClaudeWorkerInvocation)
+ *  - node: the worker-gate npm shim (a tmpdir, pickle- prefixed dir's bin npm script), spawned
+ *    by the fast-tier test harness under a pickle-prefixed os.tmpdir() fixture dir. Scoped to
+ *    that exact shape (tmpdir-anchored, pickle- prefixed first segment, bin npm path) so an
+ *    unrelated node script invocation never matches.
  * Drift pin: the unit test builds REAL `buildWorkerInvocation` argv and asserts a match.
  */
 function isWorkerShapedCommand(command: string): boolean {
@@ -145,7 +149,25 @@ function isWorkerShapedCommand(command: string): boolean {
   if (base === 'claude') {
     return tokens.includes('--dangerously-skip-permissions') && tokens.includes('-p');
   }
+  if (base === 'node') {
+    return tokens.some(token => isPickleTmpBinNpmPath(token));
+  }
   return false;
+}
+
+/**
+ * True when `token` is an absolute path resolving under `os.tmpdir()`, whose first path
+ * segment beneath tmpdir starts with `pickle-`, and whose final two segments are `bin/npm`.
+ */
+function isPickleTmpBinNpmPath(token: string): boolean {
+  if (!token.startsWith('/')) return false;
+  const resolved = path.resolve(token);
+  const tmpRootPrefix = path.resolve(os.tmpdir()) + path.sep;
+  if (!resolved.startsWith(tmpRootPrefix)) return false;
+  const relSegments = resolved.slice(tmpRootPrefix.length).split(path.sep);
+  const firstSegment = relSegments[0];
+  if (!firstSegment || !firstSegment.startsWith('pickle-')) return false;
+  return path.basename(resolved) === 'npm' && path.basename(path.dirname(resolved)) === 'bin';
 }
 
 /**
