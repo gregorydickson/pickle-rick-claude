@@ -122,6 +122,44 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > Re-measure quietly before treating any of the four as a defect; the follow-up PRD's AC-8 will surface
 > them if they are real.
 >
+> **✅ ALL THREE TIERS GREEN AT `f45812e1` — the first fully green measurement on this branch.**
+> Each tier measured ALONE on a verified-idle box (load average captured before and after; no tier
+> stacked behind another), verdict from the runner's own summary block and `EXIT=` sentinel:
+>
+> | tier | tests | suites | pass | fail | cancelled | duration | EXIT |
+> |---|---|---|---|---|---|---|---|
+> | `test:integration:serial` | 603 | 24 | 603 | 0 | 0 | 1309.5s | 0 |
+> | `test:integration:parallel` | 622 | 21 | 622 | 0 | 0 | 128.0s | 0 |
+> | `test:fast` | 7737 | 508 | 7734 | 0 | 0 | 925.0s | 0 |
+>
+> Fast-tier count grew 7723 → 7728 → 7736 → 7737 and suites 507 → 508 across the three bundles, so no
+> tier was greened by shrinking it.
+>
+> **❌ OPERATOR ERROR CORRECTED — three "red serial tier" reads were contention, not defects.** The
+> serial tier was measured red four times in a row, twice with the claim "reproduced on a quiet box".
+> The box was not quiet: a full `ps` census found the `loa-2261` worktree running a jest/drizzle suite
+> at 39.9% and 34.7% CPU, 35 foreign processes, load average **14.15**. When that workload ended
+> (load average **1.61**), the same sha went green with no code change. The tell was in the data the
+> whole time — the same tests got monotonically slower run over run, and whichever two crossed their
+> caps that run were the two that "failed":
+>
+> | test | contaminated | idle |
+> |---|---|---|
+> | `audit-subprocess-heavy-tests` | 44.8s | 22.5s |
+> | `audit-test-isolation` | 60.0s (cap-killed) | 33.0s |
+> | `FR-B10` | 65.4s | 54.4s |
+>
+> Two of the four bundles in this chain were therefore partly chasing contention. What they DID fix is
+> real and independently verified: `cdbbb3a2` receiver-qualified the missing-timeout matcher so a
+> `RegExp.prototype.exec` no longer fabricates a violation (`AUDIT_EXIT=0`, confirmed by running the
+> audit directly), and the `timeout-e2e` pair now passes. What they bought rather than earned is the
+> raised caps (`5a141716`, `8102d3ae`, `dfa8cf10`) — on an idle box every one of those tests clears
+> its OLD cap too, so the raises are headroom, not the reason the tier is green.
+>
+> **Method rule this cost us, now binding:** a tier measurement requires a process census AND a load
+> average before the run, recorded alongside the result. "Quiet box" is a measurement, not an
+> assumption — the same standard already applied to a worker's own gate verdict.
+>
 > ## 🔢 SEQUENCE (binding until the operator changes it)
 >
 > Reliability ratchet first, then the FIRST capability item — codegraph — immediately after it. Codegraph

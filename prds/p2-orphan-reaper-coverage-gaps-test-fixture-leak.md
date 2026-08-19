@@ -100,3 +100,29 @@ plugin, not to pickle-rick. Track separately.
 Manual remediation applied on 2026-08-17 killed all 42 orphans plus the `git status` poll
 loop. The host's underlying memory pressure — 89% swap after a 19-day uptime, with a 12.9 GB
 `droid` process holding 19% of RAM — is a separate host-hygiene matter and was left alone.
+
+## Re-measured population — 2026-08-19 (operator, unplanted)
+
+The 2026-08-17 census read 0 only because all 42 had been killed by hand. This is a fresh,
+naturally-accumulated population on the same host, captured from a full `ps -Ao pid,ppid,etime,pcpu`
+dump (never a `ps | grep` pipe, which this box filters to empty):
+
+| pid | ppid | age | cpu |
+|---|---|---|---|
+| 64349 | 1 | 11:40:22 | 0.0 |
+| 29361 | 1 | 10:33:01 | 0.0 |
+| 64756 | 1 | 07:59:29 | 0.0 |
+| 17517 | 1 | 06:42:58 | 0.0 |
+| 30055 | 1 | 04:58:21 | 0.0 |
+| 5356 | 1 | 04:00:54 | 0.0 |
+| 73217 | 1 | 06:27 | 0.0 |
+
+All seven are `node /private/var/folders/.../T/pickle-spawn-morty-worker-gate-*`, all re-parented to
+PPID 1, all at 0.0% CPU. **Pid 73217 was created during the `test:fast` run that produced this
+census** — the leak is live and reproduces once per tier run, so the population is self-replenishing
+and does not need planting. The count has been observed at 6, then 7, then 7-with-one-replaced across
+three checks in a single evening.
+
+Note the family: `pickle-spawn-morty-worker-gate-*`, NOT the
+`orphan-worker-reaper-*` fixtures named in the original evidence section. The dominant leaker today is
+the worker-gate fixture family, which is what the shipped reaper still does not match.
