@@ -295,6 +295,8 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         // BUG-2026-08-14 ticket 70a67ccb (e4df9cce): per-session spawn-morty lock
         // contention — a second worker spawn waited on the state-manager lock.
         'worker_spawn_lock_contended',
+        // b6b7ddc5: reaper reports collected counts by match class, quiet on zero.
+        'worker_orphan_reap_summary',
     ];
     assert.equal(VALID_ACTIVITY_EVENTS.length, expected.length);
     for (const e of expected) {

@@ -8,8 +8,8 @@
  * accumulate. This script gives `posttest` (and any other local invocation)
  * a way to reap the same population without a pipeline session.
  *
- * Best-effort by design (mirrors `runSetupOrphanReap`): never throws, always
- * exits 0, so a reaper failure can never redden a green test run.
+ * Best-effort by design, mirroring `runSetupOrphanReap` — this script does not throw and
+ * always exits 0, so a reaper failure can never redden a green test run.
  */
 import * as path from 'node:path';
 import { getDataRoot } from '../services/pickle-utils.js';
