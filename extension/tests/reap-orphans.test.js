@@ -5,8 +5,10 @@
  * hermetic and fast per R-TFP/subprocess-heavy-test discipline. Real-process
  * sweep coverage lives in tests/integration/reap-orphans-sweep.test.js.
  *
- * AC5 (b6b7ddc5): a non-zero sweep prints what it collected (incl. the
- * per-match-class breakdown); a zero-reap sweep stays quiet — no stdout line.
+ * AC6 (4b942487, updates AC5/b6b7ddc5's pin): a non-zero sweep prints what it
+ * collected (incl. the per-match-class breakdown); a zero-reap sweep now also
+ * prints, reporting its scanned count so "nothing matched" is distinguishable
+ * from "nothing to do".
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -43,7 +45,7 @@ test('runStandaloneOrphanReap returns the injected reap result', () => {
   assert.match(lines[0], /session_owned=1 tmp_prefix_fixture=0 repo_fixture_path=0/);
 });
 
-test('runStandaloneOrphanReap stays quiet on a zero-reap sweep', () => {
+test('runStandaloneOrphanReap reports the scanned count on a zero-reap sweep', () => {
   let result;
   const lines = withCapturedStdout(() => {
     result = runStandaloneOrphanReap('/fake/sessions/root', {
@@ -51,7 +53,8 @@ test('runStandaloneOrphanReap stays quiet on a zero-reap sweep', () => {
     });
   });
   assert.deepEqual(result, { scanned: 5, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 } });
-  assert.deepEqual(lines, [], 'a zero-reap sweep must print nothing');
+  assert.equal(lines.length, 1, 'a zero-reap sweep must print exactly one line');
+  assert.match(lines[0], /scanned=5 reaped=0/);
 });
 
 test('runStandaloneOrphanReap swallows a throwing reap implementation and returns null', () => {

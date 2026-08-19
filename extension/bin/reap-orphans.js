@@ -18,11 +18,15 @@ export function runStandaloneOrphanReap(sessionsRoot, deps = {}) {
     try {
         const reap = deps.reap ?? reapOrphanedWorkerProcs;
         const result = reap({ sessionsRoot });
-        // AC5: a zero-reap sweep stays quiet; a non-zero sweep prints what it collected.
+        // AC6: every sweep reports, including zero-reap — a zero-reap sweep prints its
+        // scanned count so "nothing matched" is distinguishable from "nothing to do".
         if (result.reaped > 0) {
             const c = result.by_match_class;
             console.log(`[reap-orphans] scanned=${result.scanned} reaped=${result.reaped} unverified=${result.unverified} `
                 + `session_owned=${c.session_owned} tmp_prefix_fixture=${c.tmp_prefix_fixture} repo_fixture_path=${c.repo_fixture_path}`);
+        }
+        else {
+            console.log(`[reap-orphans] scanned=${result.scanned} reaped=0 (nothing to reap)`);
         }
         return result;
     }
