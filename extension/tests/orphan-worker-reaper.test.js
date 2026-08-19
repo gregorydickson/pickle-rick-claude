@@ -245,6 +245,63 @@ test('AC-2(c-negative): a pickle-*-prefixed path that does NOT resolve under os.
   assert.equal(result.length, 0, 'a pickle- path outside os.tmpdir() must never be admitted');
 });
 
+// ---------------------------------------------------------------------------
+// AC3 (baa2eb42): test-owned tmpdir prefixes beyond `pickle-` + repo fixtures
+// ---------------------------------------------------------------------------
+
+test('AC3: bare sigterm-ignoring-sleeper.js invocation (no tmpdir path) matches tmp_fixture via the repo fixtures dir', () => {
+  const sessionsRoot = makeTmp();
+  const fixturePath = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'fixtures/sigterm-ignoring-sleeper.js');
+  const command = `${process.execPath} ${fixturePath}`;
+  const result = parseWorkerProcsFromPs(`8001 8001 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 1, 'a bare fixture invocation with no tmpdir path must be admitted');
+  assert.equal(result[0].kind, 'tmp_fixture');
+  assert.equal(result[0].owningSessionDir, null);
+});
+
+test('AC3: $TMPDIR/pickle-spawn-morty-worker-gate-*/bin/npm run test:fast still matches (regression guard)', () => {
+  const sessionsRoot = makeTmp();
+  const gateDir = path.join(os.tmpdir(), 'pickle-spawn-morty-worker-gate-abc123');
+  const command = `${gateDir}/bin/npm run test:fast`;
+  const result = parseWorkerProcsFromPs(`8002 8002 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].kind, 'tmp_fixture');
+});
+
+test('AC3: $TMPDIR/cxhang-int-bin-*/claude with a foreign --add-dir reclassifies worker -> tmp_fixture', () => {
+  const sessionsRoot = makeTmp();
+  const binDir = path.join(os.tmpdir(), 'cxhang-int-bin-xyz789');
+  const foreignSessionsRoot = path.join(os.tmpdir(), 'cxhang-int-sess-xyz789');
+  const command = `${binDir}/claude --dangerously-skip-permissions --add-dir ${path.join(foreignSessionsRoot, 'sess', 'ticket1')} -p x`;
+  const result = parseWorkerProcsFromPs(`8003 8003 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].kind, 'tmp_fixture', 'worker-shaped but unattributable + fixture-shaped must reclassify');
+  assert.equal(result[0].owningSessionDir, null);
+});
+
+test('AC3-negative: a decoy tmp prefix that is a substring, not a first-segment prefix, does not match', () => {
+  const sessionsRoot = makeTmp();
+  const command = `node ${path.join(os.tmpdir(), 'not-cxhang-int-bin-123', 'x.js')}`;
+  const result = parseWorkerProcsFromPs(`8004 8004 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 0, 'a decoy prefix must never be admitted');
+});
+
+test('AC3-negative: fixtures-dir path referenced only as prose (not an absolute argv token) does not match', () => {
+  const sessionsRoot = makeTmp();
+  const command = `node -e "console.log('see extension/tests/fixtures/sigterm-ignoring-sleeper.js')"`;
+  const result = parseWorkerProcsFromPs(`8005 8005 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 0, 'a relative/prose mention of the fixtures dir must never be admitted');
+});
+
+test('AC3-negative: an unattributable worker with no tmp-prefix and no fixtures-dir path stays worker/unreapable', () => {
+  const sessionsRoot = makeTmp();
+  const command = `/usr/local/bin/claude --dangerously-skip-permissions --add-dir /Users/x/some/other/repo/ticket -p x`;
+  const result = parseWorkerProcsFromPs(`8006 8006 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].kind, 'worker', 'a genuinely unrelated unattributable worker must not be widened into tmp_fixture');
+  assert.equal(result[0].owningSessionDir, null);
+});
+
 test('AC-4: a codex worker owned by a LIVE session is still spared under the new matching (R-CXHANG intact)', () => {
   const sessionsRoot = makeTmp();
   const liveSess = makeSession(sessionsRoot, 'sess-live-ws1', { active: true, pid: process.pid });

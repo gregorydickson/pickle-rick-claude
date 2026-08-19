@@ -35,8 +35,11 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isProcessAlive, writeActivityEntry } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
+/** This repo's fixture dir, sibling of the compiled `services/` dir at runtime. */
+const FIXTURES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../tests/fixtures');
 export const ORPHAN_REAP_ENV_VAR = 'PICKLE_ORPHAN_REAP';
 const DEFAULT_MIN_AGE_SECONDS = 600;
 const DEFAULT_GRACE_MS = 2000;
@@ -125,11 +128,17 @@ function resolveOwningSessionDir(command, sessionsRoot) {
     return null;
 }
 /**
+ * Test-owned tmpdir prefixes admitted by the WS-1 positive-path matcher. A
+ * new fixture prefix is a one-line addition here — never a new code path.
+ */
+const TEST_OWNED_TMP_PREFIXES = ['pickle-', 'cxhang-int-bin-', 'cxhang-int-sess-'];
+/**
  * WS-1 positive-path match for tmp-prefix fixture orphans: an argv token that
  * resolves to an ABSOLUTE path whose first path segment beneath
- * `os.tmpdir()` begins with `pickle-`. Never a substring match against argv
- * text — a token merely containing the string "pickle-" (e.g. prompt prose)
- * does not match unless it is itself a path anchored under tmpdir.
+ * `os.tmpdir()` begins with one of `TEST_OWNED_TMP_PREFIXES`. Never a
+ * substring match against argv text — a token merely containing the string
+ * "pickle-" (e.g. prompt prose) does not match unless it is itself a path
+ * anchored under tmpdir.
  */
 function resolveTmpPrefixFixturePath(command) {
     const tmpRoot = path.resolve(os.tmpdir());
@@ -141,10 +150,35 @@ function resolveTmpPrefixFixturePath(command) {
         if (!resolved.startsWith(tmpRootPrefix))
             continue;
         const firstSegment = resolved.slice(tmpRootPrefix.length).split(path.sep)[0];
-        if (firstSegment && firstSegment.startsWith('pickle-'))
+        if (firstSegment && TEST_OWNED_TMP_PREFIXES.some(prefix => firstSegment.startsWith(prefix))) {
+            return resolved;
+        }
+    }
+    return null;
+}
+/**
+ * Positive-path match for a repo fixture script: an argv token that resolves
+ * to an ABSOLUTE path anchored under this repo's `extension/tests/fixtures/`
+ * directory, regardless of any tmpdir involvement. Same anti-substring-scan
+ * discipline as `resolveTmpPrefixFixturePath`.
+ */
+function resolveRepoFixtureScriptPath(command) {
+    const fixturesPrefix = FIXTURES_DIR + path.sep;
+    for (const token of command.split(/\s+/)) {
+        if (!token.startsWith('/'))
+            continue;
+        const resolved = path.resolve(token);
+        if (resolved === FIXTURES_DIR || resolved.startsWith(fixturesPrefix))
             return resolved;
     }
     return null;
+}
+/**
+ * The ONE positive-path check for the `tmp_fixture` class: a test-owned
+ * tmpdir prefix OR a script anchored under this repo's fixtures dir.
+ */
+function resolveTestOwnedFixturePath(command) {
+    return resolveTmpPrefixFixturePath(command) ?? resolveRepoFixtureScriptPath(command);
 }
 /** Parse a base-10 ps column into a finite integer; -1 on malformed input. */
 function parsePsInt(raw) {
@@ -169,18 +203,35 @@ export function parseWorkerProcsFromPs(psOutput, sessionsRoot) {
         if (pid <= 0 || pgid <= 0 || ppid < 0 || etimeSeconds === null)
             continue;
         if (isWorkerShapedCommand(command)) {
+            const owningSessionDir = resolveOwningSessionDir(command, sessionsRoot);
+            // An unattributable worker-shaped command (e.g. a claude-symlinked test
+            // fixture whose --add-dir points at a foreign/stale tmp sessions root)
+            // still reaps via the tmp_fixture age-only gate when its argv is itself
+            // a test-owned fixture path — never by relaxing worker ownership.
+            if (owningSessionDir === null && resolveTestOwnedFixturePath(command) !== null) {
+                results.push({
+                    pid,
+                    pgid,
+                    ppid,
+                    etime_seconds: etimeSeconds,
+                    command,
+                    owningSessionDir: null,
+                    kind: 'tmp_fixture',
+                });
+                continue;
+            }
             results.push({
                 pid,
                 pgid,
                 ppid,
                 etime_seconds: etimeSeconds,
                 command,
-                owningSessionDir: resolveOwningSessionDir(command, sessionsRoot),
+                owningSessionDir,
                 kind: 'worker',
             });
             continue;
         }
-        if (resolveTmpPrefixFixturePath(command) !== null) {
+        if (resolveTestOwnedFixturePath(command) !== null) {
             results.push({
                 pid,
                 pgid,
