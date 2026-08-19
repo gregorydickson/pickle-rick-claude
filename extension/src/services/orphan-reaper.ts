@@ -457,3 +457,163 @@ export function reapOrphanedWorkerProcs(opts: ReapOrphanedWorkerProcsOpts): { sc
     return { scanned: 0, reaped: 0, unverified: 0 };
   }
 }
+
+// ============================================================================
+// Suite-level registry teardown: survives abnormal runner death
+// ============================================================================
+
+/**
+ * Path for the run-scoped PID registry. A test run records fixture PIDs here;
+ * `afterAll` / `process.on('exit')` / startup sweep all read from it.
+ */
+function getPidRegistryPath(registryDir: string): string {
+  return path.join(registryDir, 'fixture_pid_registry.json');
+}
+
+export type FixturePidRegistry = {
+  /** Run start epoch ms, used to age off stale registries. */
+  started_at_epoch_ms: number;
+  /** Array of PIDs spawned during this run. */
+  pids: number[];
+};
+
+/**
+ * Initialize or append to the fixture PID registry for this test run.
+ * Call this once at suite startup (before first fixture spawn).
+ * Returns the registry path so afterAll/process.on('exit') can find it.
+ */
+export function initFixturePidRegistry(registryDir: string): string {
+  try {
+    fs.mkdirSync(registryDir, { recursive: true });
+  } catch { /* race on mkdir, ignore */ }
+  const registryPath = getPidRegistryPath(registryDir);
+  const registry: FixturePidRegistry = {
+    started_at_epoch_ms: Date.now(),
+    pids: [],
+  };
+  try {
+    fs.writeFileSync(registryPath, JSON.stringify(registry), 'utf-8');
+  } catch { /* best-effort init */ }
+  return registryPath;
+}
+
+/**
+ * Record a fixture PID in the suite-level registry.
+ * Call after each fixture spawn so cleanup survives abnormal runner death.
+ */
+export function recordFixturePid(registryPath: string, pid: number): void {
+  try {
+    const existing = fs.readFileSync(registryPath, 'utf-8');
+    const registry = JSON.parse(existing) as FixturePidRegistry;
+    if (!registry.pids.includes(pid)) {
+      registry.pids.push(pid);
+      fs.writeFileSync(registryPath, JSON.stringify(registry), 'utf-8');
+    }
+  } catch { /* best-effort recording */ }
+}
+
+/**
+ * Synchronously reap all fixtures recorded in the registry.
+ * Called from process.on('exit') so it runs even on SIGKILL of the test runner.
+ */
+export function reapFixturesSync(registryPath: string, platform: NodeJS.Platform = process.platform): number {
+  if (platform === 'win32') return 0;
+  let reaped = 0;
+  try {
+    const data = fs.readFileSync(registryPath, 'utf-8');
+    const registry = JSON.parse(data) as FixturePidRegistry;
+    for (const pid of registry.pids) {
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      // Verify the PID is still alive and is our fixture (not recycled)
+      try {
+        // Use ps -p <pid> to verify the PID is still the fixture (never ps | grep)
+        execFileSync('ps', ['-p', String(pid)], { encoding: 'utf-8', stdio: 'pipe' });
+      } catch {
+        // PID is not alive or not running, skip
+        continue;
+      }
+      // PID is alive. Escalate: SIGTERM → grace → SIGKILL
+      try {
+        process.kill(-pid, 'SIGTERM');
+      } catch { /* process may already be terminating */ }
+      // Brief grace for SIGTERM
+      for (let i = 0; i < 20; i++) {
+        try {
+          execFileSync('ps', ['-p', String(pid)], { encoding: 'utf-8', stdio: 'pipe' });
+        } catch {
+          reaped++;
+          break;
+        }
+        if (i < 19) sleepSync(100);
+      }
+      // If still alive, escalate to SIGKILL
+      try {
+        process.kill(-pid, 'SIGKILL');
+        reaped++;
+      } catch { /* process may already be gone */ }
+    }
+  } catch { /* best-effort cleanup */ }
+  try {
+    fs.unlinkSync(registryPath);
+  } catch { /* already removed or never existed */ }
+  return reaped;
+}
+
+/**
+ * Asynchronously reap all fixtures from the registry.
+ * Called from afterAll hook so normal cleanup happens even if test times out.
+ */
+export async function reapFixtures(registryPath: string, platform: NodeJS.Platform = process.platform): Promise<number> {
+  if (platform === 'win32') return 0;
+  let reaped = 0;
+  try {
+    const data = fs.readFileSync(registryPath, 'utf-8');
+    const registry = JSON.parse(data) as FixturePidRegistry;
+    for (const pid of registry.pids) {
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      // Verify PID is alive using ps -p <pid>
+      try {
+        execFileSync('ps', ['-p', String(pid)], { encoding: 'utf-8', stdio: 'pipe' });
+      } catch {
+        continue;
+      }
+      // PID is alive. Escalate: SIGTERM → grace → SIGKILL
+      try {
+        process.kill(-pid, 'SIGTERM');
+      } catch { /* process may already be terminating */ }
+      // Grace period
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      try {
+        execFileSync('ps', ['-p', String(pid)], { encoding: 'utf-8', stdio: 'pipe' });
+        // Still alive, escalate to SIGKILL
+        process.kill(-pid, 'SIGKILL');
+        reaped++;
+      } catch {
+        reaped++;
+      }
+    }
+  } catch { /* best-effort cleanup */ }
+  try {
+    fs.unlinkSync(registryPath);
+  } catch { /* already removed or never existed */ }
+  return reaped;
+}
+
+/**
+ * Startup sweep: if a registry from a previous run exists, reap those PIDs.
+ * This makes fixture cleanup observable after a runner crash/SIGKILL.
+ * Call once at suite startup, before initFixturePidRegistry.
+ */
+export function reapPreviousRunFixtures(registryDir: string, platform: NodeJS.Platform = process.platform): number {
+  if (platform === 'win32') return 0;
+  const registryPath = getPidRegistryPath(registryDir);
+  let reaped = 0;
+  try {
+    const stat = fs.statSync(registryPath);
+    const ageMs = Date.now() - stat.mtimeMs;
+    // Only reap registries from the last 24 hours (stale ones are abandoned)
+    if (ageMs > 24 * 3600 * 1000) return 0;
+    reaped = reapFixturesSync(registryPath, platform);
+  } catch { /* no previous registry or cleanup error */ }
+  return reaped;
+}

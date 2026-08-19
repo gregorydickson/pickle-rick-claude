@@ -26,18 +26,33 @@
  * live/under-age negative control of the identical argv shape, so the drain
  * is proven discriminating, not just destructive.
  */
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { reapOrphanedWorkerProcs } from '../../services/orphan-reaper.js';
+import {
+  reapOrphanedWorkerProcs,
+  initFixturePidRegistry,
+  recordFixturePid,
+  reapFixtures,
+  reapFixturesSync,
+  reapPreviousRunFixtures,
+} from '../../services/orphan-reaper.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.resolve(__dirname, '../fixtures/sigterm-ignoring-sleeper.js');
 const ORPHAN_COUNT = 3;
+
+// Suite-level net (survives a SIGKILLed test runner): see the identical block
+// in orphan-worker-reaper-real-proc.test.js for the rationale.
+const FIXTURE_REGISTRY_DIR = path.join(os.tmpdir(), 'pickle-orphan-reaper-registry-tmp-prefix-drain');
+reapPreviousRunFixtures(FIXTURE_REGISTRY_DIR);
+const FIXTURE_REGISTRY_PATH = initFixturePidRegistry(FIXTURE_REGISTRY_DIR);
+process.on('exit', () => reapFixturesSync(FIXTURE_REGISTRY_PATH));
+after(async () => { await reapFixtures(FIXTURE_REGISTRY_PATH); });
 
 function makeTmp(prefix) {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -84,7 +99,9 @@ function spawnFixture(binDir, name) {
 
 async function resolvePid(pidFile) {
   await waitFor(() => fs.existsSync(pidFile), 10_000, `pidfile ${pidFile} written`);
-  return Number(fs.readFileSync(pidFile, 'utf-8').trim());
+  const pid = Number(fs.readFileSync(pidFile, 'utf-8').trim());
+  recordFixturePid(FIXTURE_REGISTRY_PATH, pid);
+  return pid;
 }
 
 /** Fabricated `ps -axo pid=,pgid=,ppid=,etime=,command=` line for a real (grandchild, ppid=1) pid. */

@@ -42,20 +42,40 @@
  * not create. Same containment the AC-8 sibling gets from its `psOutput`
  * injection, without fabricating any ps column.
  */
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { killProcessGroup, reapOrphanedWorkerProcs } from '../../services/orphan-reaper.js';
+import {
+  killProcessGroup,
+  reapOrphanedWorkerProcs,
+  initFixturePidRegistry,
+  recordFixturePid,
+  reapFixtures,
+  reapFixturesSync,
+  reapPreviousRunFixtures,
+} from '../../services/orphan-reaper.js';
 import { LATEST_SCHEMA_VERSION } from '../../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.resolve(__dirname, '../fixtures/sigterm-ignoring-sleeper.js');
 
 process.env.PICKLE_DATA_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'cxhang-int-data-'));
+
+// Suite-level net (survives a SIGKILLed test runner): a prior crashed run of
+// THIS file leaves its registry on disk at a stable path, so the sweep below
+// collects it before any fixture in this run is planted. `process.on('exit')`
+// covers a hard abort of this process; `after()` covers a normal/timed-out
+// finish. Both fire in addition to each test's own `finally` SIGKILL, which
+// only runs if this process survives to reach it.
+const FIXTURE_REGISTRY_DIR = path.join(os.tmpdir(), 'pickle-orphan-reaper-registry-real-proc');
+reapPreviousRunFixtures(FIXTURE_REGISTRY_DIR);
+const FIXTURE_REGISTRY_PATH = initFixturePidRegistry(FIXTURE_REGISTRY_DIR);
+process.on('exit', () => reapFixturesSync(FIXTURE_REGISTRY_PATH));
+after(async () => { await reapFixtures(FIXTURE_REGISTRY_PATH); });
 
 function makeTmp(prefix) {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -121,7 +141,9 @@ function spawnFakeWorker(claudeLink, ticketPath, readyFile, pidFile) {
 
 async function resolvePid(pidFile) {
   await waitFor(() => fs.existsSync(pidFile), 10_000, `pidfile ${pidFile} written`);
-  return Number(fs.readFileSync(pidFile, 'utf-8').trim());
+  const pid = Number(fs.readFileSync(pidFile, 'utf-8').trim());
+  recordFixturePid(FIXTURE_REGISTRY_PATH, pid);
+  return pid;
 }
 
 const PS_ARGS = ['-axo', 'pid=,pgid=,ppid=,etime=,command='];
@@ -242,6 +264,7 @@ test('AC-CXHANG-5 characterization: killProcessGroup escalation collects a real 
     env: { ...process.env, CXHANG_READY_FILE: readyFile },
   });
   child.unref();
+  recordFixturePid(FIXTURE_REGISTRY_PATH, child.pid);
   try {
     await waitFor(() => fs.existsSync(readyFile), 10_000, 'sleeper ready (SIGTERM handler installed)');
 
