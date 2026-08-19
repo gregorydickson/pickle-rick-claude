@@ -32,6 +32,7 @@ async function waitFor(predicate, timeoutMs, label) {
 test('fixture self-exits unaided once its env-set lifetime bound elapses', async () => {
   const child = spawn(process.execPath, [FIXTURE], {
     stdio: 'ignore',
+    timeout: 30_000,
     env: { ...process.env, PICKLE_FIXTURE_MAX_LIFETIME_MS: '300' },
   });
   try {
@@ -43,9 +44,10 @@ test('fixture self-exits unaided once its env-set lifetime bound elapses', async
 
 test('fixture falls back to the compiled default when the lifetime env is absent or garbage', async () => {
   const children = [
-    spawn(process.execPath, [FIXTURE], { stdio: 'ignore', env: { ...process.env } }),
+    spawn(process.execPath, [FIXTURE], { stdio: 'ignore', timeout: 30_000, env: { ...process.env } }),
     spawn(process.execPath, [FIXTURE], {
       stdio: 'ignore',
+      timeout: 30_000,
       env: { ...process.env, PICKLE_FIXTURE_MAX_LIFETIME_MS: 'not-a-number' },
     }),
   ];
@@ -66,6 +68,7 @@ test('fixture appends its PID to the run-scoped registry when the env var is set
   const registryPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fixture-registry-')), 'pids.txt');
   const child = spawn(process.execPath, [FIXTURE], {
     stdio: 'ignore',
+    timeout: 30_000,
     env: { ...process.env, PICKLE_FIXTURE_MAX_LIFETIME_MS: '300', PICKLE_FIXTURE_PID_REGISTRY: registryPath },
   });
   try {

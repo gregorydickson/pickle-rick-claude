@@ -1,5 +1,5 @@
 {
-  "description": "R-TFP-C2 baseline of pre-existing child_process callsites missing an explicit timeout, grandfathered by the missing-timeout audit predicate. Only callsites NOT in this list fail the gate. The orphan-fixture spawns in tests/integration/orphan-worker-reaper-tmp-prefix-drain.test.js, tests/integration/orphan-worker-reaper-real-proc.test.js (including the double-fork launcher's own inner spawn, whose parent exits immediately so a Node timeout would never fire anyway), and tests/spawn-morty-worker-gate.test.js are correct as written and registered deliberately: each is a spawn(..., { detached: true, stdio: 'ignore' }) fixture whose child must outlive its parent so the orphan reaper has something to reap, and Node's timeout option would signal that child and defeat the test.",
+  "description": "R-TFP-C2 baseline of pre-existing child_process callsites missing an explicit timeout, grandfathered by the missing-timeout audit predicate. Only callsites NOT in this list fail the gate. The orphan-fixture spawns in tests/integration/orphan-worker-reaper-tmp-prefix-drain.test.js, tests/integration/orphan-worker-reaper-real-proc.test.js (including the double-fork launcher's own inner spawn, whose parent exits immediately so a Node timeout would never fire anyway), tests/spawn-morty-worker-gate.test.js, and tests/suite-level-fixture-registry.test.js (same double-fork launcher-inner-spawn shape as orphan-worker-reaper-real-proc.test.js) are correct as written and registered deliberately: each is a spawn(..., { detached: true, stdio: 'ignore' }) fixture whose child must outlive its parent so the orphan reaper has something to reap, and Node's timeout option would signal that child and defeat the test.",
   "generated_from": "extension/tests (excluding fixtures/), audit-subprocess-heavy-tests-missing-timeout.mjs",
   "entries": [
     "tests/activity-instrumentation.test.js::execFileSync::bd8b9e05cc",
@@ -1040,6 +1040,7 @@
     "tests/subprocess-cap-resolver.test.js::execFileSync::39b1f473dd",
     "tests/subprocess-cap-resolver.test.js::spawnSync::d2ee321a64",
     "tests/subsystem-watcher.test.js::spawnSync::37ac6dad52",
+    "tests/suite-level-fixture-registry.test.js::spawn::2070c37e9c",
     "tests/symbol-audit-fail-open.test.js::exec::9c7e05e586",
     "tests/szechuan-sauce.test.js::execSync::4180c92238",
     "tests/szechuan-sauce.test.js::execSync::557b17dd6a",
