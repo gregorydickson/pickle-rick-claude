@@ -13,16 +13,25 @@
  */
 import * as path from 'node:path';
 import { getDataRoot } from '../services/pickle-utils.js';
-import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts } from '../services/orphan-reaper.js';
+import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapMatchClassCounts } from '../services/orphan-reaper.js';
+
+type ReapResult = { scanned: number; reaped: number; unverified: number; by_match_class: ReapMatchClassCounts };
 
 export function runStandaloneOrphanReap(
   sessionsRoot: string,
-  deps: { reap?: (opts: ReapOrphanedWorkerProcsOpts) => { scanned: number; reaped: number; unverified: number } } = {},
-): { scanned: number; reaped: number; unverified: number } | null {
+  deps: { reap?: (opts: ReapOrphanedWorkerProcsOpts) => ReapResult } = {},
+): ReapResult | null {
   try {
     const reap = deps.reap ?? reapOrphanedWorkerProcs;
     const result = reap({ sessionsRoot });
-    console.log(`[reap-orphans] scanned=${result.scanned} reaped=${result.reaped} unverified=${result.unverified}`);
+    // AC5: a zero-reap sweep stays quiet; a non-zero sweep prints what it collected.
+    if (result.reaped > 0) {
+      const c = result.by_match_class;
+      console.log(
+        `[reap-orphans] scanned=${result.scanned} reaped=${result.reaped} unverified=${result.unverified} `
+        + `session_owned=${c.session_owned} tmp_prefix_fixture=${c.tmp_prefix_fixture} repo_fixture_path=${c.repo_fixture_path}`,
+      );
+    }
     return result;
   } catch {
     // Best-effort session-GC — never block a test run.

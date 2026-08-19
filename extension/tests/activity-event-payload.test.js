@@ -1351,6 +1351,7 @@ test('activity-event-payload: schema defines all registered event type definitio
     'orphan_manager_reaped',
     'worker_orphan_reaped',
     'worker_orphan_reap_unverified',
+    'worker_orphan_reap_summary',
     'orphan_session_detected',
     'session_map_collision_blocked',
     'state_write_override_used',

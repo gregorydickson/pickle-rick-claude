@@ -10,9 +10,11 @@ import { resolveMcpConfigPath, buildWorkerMcpConfig } from '../services/backend-
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
 import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail } from './mux-runner.js';
 import { State, LockError, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
-import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid } from '../services/state-manager.js';
+import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid, writeActivityEntry } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
-import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts } from '../services/orphan-reaper.js';
+import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapMatchClassCounts } from '../services/orphan-reaper.js';
+
+type OrphanWorkerReapResult = { scanned: number; reaped: number; unverified: number; by_match_class: ReapMatchClassCounts };
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { CodegraphService, readIndexedHeadSha, defaultGetHeadSha } from '../services/codegraph-service.js';
 import type { CodegraphDeps, CodegraphEmitEvent } from '../services/codegraph-service.js';
@@ -1841,20 +1843,42 @@ function materializeWorkerMcpConfig(sessionRoot: string): void {
 export function runSetupOrphanReap(
   sessionRoot: string,
   sessionsRoot: string,
-  deps: { reap?: (opts: ReapOrphanedWorkerProcsOpts) => { scanned: number; reaped: number } } = {},
-): { scanned: number; reaped: number } | null {
+  deps: { reap?: (opts: ReapOrphanedWorkerProcsOpts) => OrphanWorkerReapResult } = {},
+): OrphanWorkerReapResult | null {
+  const statePath = path.join(sessionRoot, 'state.json');
   try {
     const reap = deps.reap ?? reapOrphanedWorkerProcs;
-    const result = reap({
-      sessionsRoot,
-      statePath: path.join(sessionRoot, 'state.json'),
-    });
+    const result = reap({ sessionsRoot, statePath });
     console.log(`[setup] orphan-worker reap: scanned=${result.scanned} reaped=${result.reaped}`);
+    emitOrphanReapSummaryIfNonZero(statePath, result);
     return result;
   } catch {
     // Best-effort session-GC — never block launch.
     return null;
   }
+}
+
+/**
+ * AC5: record a non-zero sweep as an activity event so a pipeline run's reap
+ * is auditable after the fact; a zero-reap sweep stays quiet (no event).
+ */
+function emitOrphanReapSummaryIfNonZero(
+  statePath: string,
+  result: OrphanWorkerReapResult,
+): void {
+  if (result.reaped <= 0) return;
+  try {
+    writeActivityEntry(statePath, {
+      event: 'worker_orphan_reap_summary',
+      ts: new Date().toISOString(),
+      scanned: result.scanned,
+      reaped: result.reaped,
+      unverified: result.unverified,
+      session_owned: result.by_match_class.session_owned,
+      tmp_prefix_fixture: result.by_match_class.tmp_prefix_fixture,
+      repo_fixture_path: result.by_match_class.repo_fixture_path,
+    });
+  } catch { /* best-effort telemetry — never block launch */ }
 }
 
 async function main() {

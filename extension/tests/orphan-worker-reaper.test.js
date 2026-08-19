@@ -328,7 +328,7 @@ test('AC-7: PICKLE_ORPHAN_REAP=off disables the new tmp_fixture matching too (ex
     scan: () => { scanCalls += 1; return nodeFixtureLine(6005, 6005, '16:00:00', fixtureDir); },
     kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0 });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 } });
   assert.equal(scanCalls, 0, 'the kill-switch must short-circuit before any ps scan');
   assert.deepEqual(kills, []);
 });
@@ -389,6 +389,35 @@ test('AC-CXHANG-1: reaps orphan (active:false session), spares live session, spa
   assert.ok(typeof events[0].ts === 'string' && events[0].ts.length > 0, 'explicit ts stamped');
   assert.equal(events[0].owning_session, 'sess-dead');
   assert.ok(events[0].argv_summary.includes('codex'));
+});
+
+test('AC5: by_match_class counts a mixed population of session-owned, tmp-prefix fixture, and repo fixture reaps', () => {
+  const sessionsRoot = makeTmp();
+  const deadSess = makeSession(sessionsRoot, 'sess-dead-mc', { active: false });
+  const tmpFixtureDir = path.join(os.tmpdir(), 'pickle-broker-mc-tmp-prefix');
+  const repoFixturePath = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'fixtures/sigterm-ignoring-sleeper.js');
+
+  const psOutput = [
+    codexLine(9001, 9001, '16:00:00', path.join(deadSess, 'ticket1')), // session_owned → reap
+    nodeFixtureLine(9002, 9002, '16:00:00', tmpFixtureDir),            // tmp_prefix_fixture → reap
+    `9003 9003 1 16:00:00 ${process.execPath} ${repoFixturePath}`,     // repo_fixture_path → reap
+  ].join('\n');
+
+  const result = reapOrphanedWorkerProcs({
+    sessionsRoot,
+    psOutput,
+    kill: () => true,
+    isAlive: () => false,
+    sleep: () => {},
+  });
+
+  assert.equal(result.scanned, 3);
+  assert.equal(result.reaped, 3, 'each candidate in the mixed population is reaped exactly once');
+  assert.deepEqual(result.by_match_class, {
+    session_owned: 1,
+    tmp_prefix_fixture: 1,
+    repo_fixture_path: 1,
+  });
 });
 
 test('AC-CXHANG-1: missing state.json (crashed/pruned session) classifies as orphan', () => {
@@ -546,7 +575,7 @@ test('AC-CXHANG-4: PICKLE_ORPHAN_REAP=off is inert — no scan, no kill, {0,0}',
     scan: () => { scanCalls += 1; return ''; },
     kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0 });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 } });
   assert.equal(scanCalls, 0, 'scan must not run under the kill-switch');
   assert.deepEqual(kills, []);
 });
@@ -560,7 +589,7 @@ test('AC-CXHANG-4: only the literal lowercase "off" disables', () => {
     kill: () => true,
   });
   assert.equal(scanCalls, 1, 'non-lowercase value keeps the reaper active');
-  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0 });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 } });
 });
 
 test('win32: safe no-op — no scan, {0,0}', () => {
@@ -570,7 +599,7 @@ test('win32: safe no-op — no scan, {0,0}', () => {
     platform: 'win32',
     scan: () => { scanCalls += 1; return ''; },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0 });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 } });
   assert.equal(scanCalls, 0);
 });
 
@@ -579,7 +608,7 @@ test('never throws: a throwing scan is swallowed (best-effort)', () => {
     sessionsRoot: makeTmp(),
     scan: () => { throw new Error('ps exploded'); },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0 });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 } });
 });
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ import { resolveMcpConfigPath, buildWorkerMcpConfig } from '../services/backend-
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
 import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail } from './mux-runner.js';
 import { LockError, BACKENDS, STATE_MANAGER_DEFAULTS } from '../types/index.js';
-import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid } from '../services/state-manager.js';
+import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid, writeActivityEntry } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
 import { reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
@@ -1743,19 +1743,39 @@ function materializeWorkerMcpConfig(sessionRoot) {
  * PICKLE_ORPHAN_REAP=off and win32 no-op live inside the reaper itself.
  */
 export function runSetupOrphanReap(sessionRoot, sessionsRoot, deps = {}) {
+    const statePath = path.join(sessionRoot, 'state.json');
     try {
         const reap = deps.reap ?? reapOrphanedWorkerProcs;
-        const result = reap({
-            sessionsRoot,
-            statePath: path.join(sessionRoot, 'state.json'),
-        });
+        const result = reap({ sessionsRoot, statePath });
         console.log(`[setup] orphan-worker reap: scanned=${result.scanned} reaped=${result.reaped}`);
+        emitOrphanReapSummaryIfNonZero(statePath, result);
         return result;
     }
     catch {
         // Best-effort session-GC — never block launch.
         return null;
     }
+}
+/**
+ * AC5: record a non-zero sweep as an activity event so a pipeline run's reap
+ * is auditable after the fact; a zero-reap sweep stays quiet (no event).
+ */
+function emitOrphanReapSummaryIfNonZero(statePath, result) {
+    if (result.reaped <= 0)
+        return;
+    try {
+        writeActivityEntry(statePath, {
+            event: 'worker_orphan_reap_summary',
+            ts: new Date().toISOString(),
+            scanned: result.scanned,
+            reaped: result.reaped,
+            unverified: result.unverified,
+            session_owned: result.by_match_class.session_owned,
+            tmp_prefix_fixture: result.by_match_class.tmp_prefix_fixture,
+            repo_fixture_path: result.by_match_class.repo_fixture_path,
+        });
+    }
+    catch { /* best-effort telemetry — never block launch */ }
 }
 async function main() {
     try {

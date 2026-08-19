@@ -784,6 +784,11 @@ export const VALID_ACTIVITY_EVENTS = [
   // dead (SIGKILL-survivor or budget-exceeded) — informational, never counted
   // as reaped.
   'worker_orphan_reap_unverified',
+  // AC5: emitted at a pipeline-scoped reap call site (setup, mux-runner
+  // startup/iteration-start) ONLY when the sweep collected something —
+  // makes a non-zero reap auditable on state.json without logging noise
+  // on a zero-reap sweep.
+  'worker_orphan_reap_summary',
   'orphan_session_detected',
   'session_map_collision_blocked',
   'state_write_override_used',

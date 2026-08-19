@@ -89,7 +89,26 @@ export type WorkerProcCandidate = {
    * by construction (`owningSessionDir` stays null) and is gated by age alone.
    */
   kind: 'worker' | 'tmp_fixture';
+  /**
+   * Reap-report match class (AC5 non-zero-sweep visibility): `'session_owned'`
+   * for a worker attributed to a sessions-root `--add-dir`, `'tmp_prefix_fixture'`
+   * for a test-owned `os.tmpdir()` path, `'repo_fixture_path'` for a script
+   * anchored under this repo's `extension/tests/fixtures/`. `null` for an
+   * unattributable worker-shaped command that matched neither (never reaped).
+   */
+  matchClass: 'session_owned' | 'tmp_prefix_fixture' | 'repo_fixture_path' | null;
 };
+
+/** Reap-report counts broken out by `WorkerProcCandidate.matchClass`. */
+export type ReapMatchClassCounts = {
+  session_owned: number;
+  tmp_prefix_fixture: number;
+  repo_fixture_path: number;
+};
+
+function emptyMatchClassCounts(): ReapMatchClassCounts {
+  return { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 };
+}
 
 /** Parse `ps` etime (`[[dd-]hh:]mm:ss`) into seconds; null on malformed input. */
 function parsePsElapsedSeconds(raw: string): number | null {
@@ -201,6 +220,17 @@ function resolveTestOwnedFixturePath(command: string): string | null {
   return resolveTmpPrefixFixturePath(command) ?? resolveRepoFixtureScriptPath(command);
 }
 
+/**
+ * Which fixture submatch fired, for reap-report match-class breakdown
+ * (AC5). Mirrors `resolveTestOwnedFixturePath`'s precedence exactly — never
+ * re-derive independently.
+ */
+function classifyFixtureMatch(command: string): 'tmp_prefix_fixture' | 'repo_fixture_path' | null {
+  if (resolveTmpPrefixFixturePath(command) !== null) return 'tmp_prefix_fixture';
+  if (resolveRepoFixtureScriptPath(command) !== null) return 'repo_fixture_path';
+  return null;
+}
+
 /** Parse a base-10 ps column into a finite integer; -1 on malformed input. */
 function parsePsInt(raw: string): number {
   const value = Number(raw);
@@ -236,6 +266,7 @@ export function parseWorkerProcsFromPs(psOutput: string, sessionsRoot: string): 
           command,
           owningSessionDir: null,
           kind: 'tmp_fixture',
+          matchClass: classifyFixtureMatch(command),
         });
         continue;
       }
@@ -247,6 +278,7 @@ export function parseWorkerProcsFromPs(psOutput: string, sessionsRoot: string): 
         command,
         owningSessionDir,
         kind: 'worker',
+        matchClass: owningSessionDir !== null ? 'session_owned' : null,
       });
       continue;
     }
@@ -259,6 +291,7 @@ export function parseWorkerProcsFromPs(psOutput: string, sessionsRoot: string): 
         command,
         owningSessionDir: null,
         kind: 'tmp_fixture',
+        matchClass: classifyFixtureMatch(command),
       });
     }
   }
@@ -462,7 +495,7 @@ function processReapableCandidate(cand: WorkerProcCandidate, rt: ReapRuntime, re
   return verified ? 'reaped' : 'unverified';
 }
 
-function runReapPass(opts: ReapOrphanedWorkerProcsOpts, platform: NodeJS.Platform): { scanned: number; reaped: number; unverified: number } {
+function runReapPass(opts: ReapOrphanedWorkerProcsOpts, platform: NodeJS.Platform): { scanned: number; reaped: number; unverified: number; by_match_class: ReapMatchClassCounts } {
   const scan = opts.scan ?? (() => execFileSync('ps', ['-axo', 'pid=,pgid=,ppid=,etime=,command='], {
     encoding: 'utf-8',
     timeout: PS_TIMEOUT_MS,
@@ -482,33 +515,45 @@ function runReapPass(opts: ReapOrphanedWorkerProcsOpts, platform: NodeJS.Platfor
   };
   const deadline = Date.now() + (opts.wallBudgetMs ?? DEFAULT_WALL_BUDGET_MS);
   const reapedPgids = new Set<number>();
-  let reaped = 0;
-  let unverified = 0;
+  const tally = { reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts() };
   for (const cand of candidates) {
     if (!isReapableOrphan(cand, rt, reapedPgids)) continue;
-    if (processReapableCandidate(cand, rt, reapedPgids, deadline) === 'reaped') {
-      reaped += 1;
-    } else {
-      unverified += 1;
-    }
+    tallyReapOutcome(tally, cand, processReapableCandidate(cand, rt, reapedPgids, deadline));
   }
-  return { scanned: candidates.length, reaped, unverified };
+  return { scanned: candidates.length, ...tally };
+}
+
+/** Accumulates one candidate's disposition into the running sweep tally. */
+function tallyReapOutcome(
+  tally: { reaped: number; unverified: number; by_match_class: ReapMatchClassCounts },
+  cand: WorkerProcCandidate,
+  outcome: 'reaped' | 'unverified',
+): void {
+  if (outcome !== 'reaped') {
+    tally.unverified += 1;
+    return;
+  }
+  tally.reaped += 1;
+  if (cand.matchClass) tally.by_match_class[cand.matchClass] += 1;
 }
 
 /**
  * Reap detached worker procs (codex/claude) that no live pickle session owns.
  * Never throws (best-effort); never kills an unattributable or live-owned proc.
+ * The returned per-match-class breakdown (`by_match_class`) is what lets a
+ * caller report a non-zero sweep without logging noise on a zero-reap sweep
+ * (AC5): session-owned, tmp-prefix fixture, repo fixture path.
  */
-export function reapOrphanedWorkerProcs(opts: ReapOrphanedWorkerProcsOpts): { scanned: number; reaped: number; unverified: number } {
+export function reapOrphanedWorkerProcs(opts: ReapOrphanedWorkerProcsOpts): { scanned: number; reaped: number; unverified: number; by_match_class: ReapMatchClassCounts } {
   const env = opts.env ?? process.env;
-  if (env[ORPHAN_REAP_ENV_VAR] === 'off') return { scanned: 0, reaped: 0, unverified: 0 };
+  if (env[ORPHAN_REAP_ENV_VAR] === 'off') return { scanned: 0, reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts() };
   const platform = opts.platform ?? process.platform;
-  if (platform === 'win32') return { scanned: 0, reaped: 0, unverified: 0 };
+  if (platform === 'win32') return { scanned: 0, reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts() };
   try {
     return runReapPass(opts, platform);
   } catch {
     // Best-effort collector — a reaper failure must never block a launch.
-    return { scanned: 0, reaped: 0, unverified: 0 };
+    return { scanned: 0, reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts() };
   }
 }
 

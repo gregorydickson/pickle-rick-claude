@@ -1219,6 +1219,20 @@
         "reason": { "type": "string" }
       }
     },
+    "worker_orphan_reap_summary": {
+      "type": "object",
+      "required": ["event", "ts", "scanned", "reaped", "unverified", "session_owned", "tmp_prefix_fixture", "repo_fixture_path"],
+      "properties": {
+        "event": { "type": "string", "const": "worker_orphan_reap_summary" },
+        "ts": { "type": "string" },
+        "scanned": { "type": "integer", "minimum": 0 },
+        "reaped": { "type": "integer", "minimum": 0 },
+        "unverified": { "type": "integer", "minimum": 0 },
+        "session_owned": { "type": "integer", "minimum": 0 },
+        "tmp_prefix_fixture": { "type": "integer", "minimum": 0 },
+        "repo_fixture_path": { "type": "integer", "minimum": 0 }
+      }
+    },
     "orphan_session_detected": {
       "type": "object",
       "required": ["event", "ts", "orphan_session_path", "orphan_started_at", "parent_session_hash", "orphan_pid"],
@@ -1976,6 +1990,7 @@
     { "$ref": "#/definitions/orphan_manager_reaped" },
     { "$ref": "#/definitions/worker_orphan_reaped" },
     { "$ref": "#/definitions/worker_orphan_reap_unverified" },
+    { "$ref": "#/definitions/worker_orphan_reap_summary" },
     { "$ref": "#/definitions/orphan_session_detected" },
     { "$ref": "#/definitions/session_map_collision_blocked" },
     { "$ref": "#/definitions/state_write_override_used" },

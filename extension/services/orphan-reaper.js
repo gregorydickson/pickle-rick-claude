@@ -67,6 +67,9 @@ export function killProcessGroup(pid, signal, platform = process.platform) {
         return false;
     }
 }
+function emptyMatchClassCounts() {
+    return { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 };
+}
 /** Parse `ps` etime (`[[dd-]hh:]mm:ss`) into seconds; null on malformed input. */
 function parsePsElapsedSeconds(raw) {
     const value = raw.trim();
@@ -180,6 +183,18 @@ function resolveRepoFixtureScriptPath(command) {
 function resolveTestOwnedFixturePath(command) {
     return resolveTmpPrefixFixturePath(command) ?? resolveRepoFixtureScriptPath(command);
 }
+/**
+ * Which fixture submatch fired, for reap-report match-class breakdown
+ * (AC5). Mirrors `resolveTestOwnedFixturePath`'s precedence exactly — never
+ * re-derive independently.
+ */
+function classifyFixtureMatch(command) {
+    if (resolveTmpPrefixFixturePath(command) !== null)
+        return 'tmp_prefix_fixture';
+    if (resolveRepoFixtureScriptPath(command) !== null)
+        return 'repo_fixture_path';
+    return null;
+}
 /** Parse a base-10 ps column into a finite integer; -1 on malformed input. */
 function parsePsInt(raw) {
     const value = Number(raw);
@@ -217,6 +232,7 @@ export function parseWorkerProcsFromPs(psOutput, sessionsRoot) {
                     command,
                     owningSessionDir: null,
                     kind: 'tmp_fixture',
+                    matchClass: classifyFixtureMatch(command),
                 });
                 continue;
             }
@@ -228,6 +244,7 @@ export function parseWorkerProcsFromPs(psOutput, sessionsRoot) {
                 command,
                 owningSessionDir,
                 kind: 'worker',
+                matchClass: owningSessionDir !== null ? 'session_owned' : null,
             });
             continue;
         }
@@ -240,6 +257,7 @@ export function parseWorkerProcsFromPs(psOutput, sessionsRoot) {
                 command,
                 owningSessionDir: null,
                 kind: 'tmp_fixture',
+                matchClass: classifyFixtureMatch(command),
             });
         }
     }
@@ -430,37 +448,44 @@ function runReapPass(opts, platform) {
     };
     const deadline = Date.now() + (opts.wallBudgetMs ?? DEFAULT_WALL_BUDGET_MS);
     const reapedPgids = new Set();
-    let reaped = 0;
-    let unverified = 0;
+    const tally = { reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts() };
     for (const cand of candidates) {
         if (!isReapableOrphan(cand, rt, reapedPgids))
             continue;
-        if (processReapableCandidate(cand, rt, reapedPgids, deadline) === 'reaped') {
-            reaped += 1;
-        }
-        else {
-            unverified += 1;
-        }
+        tallyReapOutcome(tally, cand, processReapableCandidate(cand, rt, reapedPgids, deadline));
     }
-    return { scanned: candidates.length, reaped, unverified };
+    return { scanned: candidates.length, ...tally };
+}
+/** Accumulates one candidate's disposition into the running sweep tally. */
+function tallyReapOutcome(tally, cand, outcome) {
+    if (outcome !== 'reaped') {
+        tally.unverified += 1;
+        return;
+    }
+    tally.reaped += 1;
+    if (cand.matchClass)
+        tally.by_match_class[cand.matchClass] += 1;
 }
 /**
  * Reap detached worker procs (codex/claude) that no live pickle session owns.
  * Never throws (best-effort); never kills an unattributable or live-owned proc.
+ * The returned per-match-class breakdown (`by_match_class`) is what lets a
+ * caller report a non-zero sweep without logging noise on a zero-reap sweep
+ * (AC5): session-owned, tmp-prefix fixture, repo fixture path.
  */
 export function reapOrphanedWorkerProcs(opts) {
     const env = opts.env ?? process.env;
     if (env[ORPHAN_REAP_ENV_VAR] === 'off')
-        return { scanned: 0, reaped: 0, unverified: 0 };
+        return { scanned: 0, reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts() };
     const platform = opts.platform ?? process.platform;
     if (platform === 'win32')
-        return { scanned: 0, reaped: 0, unverified: 0 };
+        return { scanned: 0, reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts() };
     try {
         return runReapPass(opts, platform);
     }
     catch {
         // Best-effort collector — a reaper failure must never block a launch.
-        return { scanned: 0, reaped: 0, unverified: 0 };
+        return { scanned: 0, reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts() };
     }
 }
 // ============================================================================

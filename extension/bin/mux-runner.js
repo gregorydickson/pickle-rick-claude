@@ -13,6 +13,7 @@ import { buildManagerInvocation, resolveBackend, resolveBackendFromStateFileWith
 import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
 import { readTicketWorkerGateTestsVerdict } from './setup.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
+import { reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
 import { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream, CODEX_DELIMITER_RE } from '../services/classifier-utils.js';
 import { emitCrossTicketRegressionLinearComment } from '../lib/linear-comment.js';
 import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
@@ -416,6 +417,30 @@ export function reapOrphanedFastTestRunnersOnStartup(statePath, extensionDir, lo
         log(`reaped orphan fast-test runner pid=${orphan.pid} etime_seconds=${orphan.etime_seconds}`);
     }
     return orphans;
+}
+/**
+ * AC5: record a non-zero R-CXHANG worker-proc reap sweep as an activity
+ * event so a pipeline run's reap is auditable after the fact; a zero-reap
+ * sweep stays quiet (no event, no log line).
+ */
+function runPipelineOrphanWorkerReap(statePath, sessionsRoot, log) {
+    const result = reapOrphanedWorkerProcs({ sessionsRoot, statePath });
+    if (result.reaped <= 0)
+        return;
+    log(`orphan-worker reap: scanned=${result.scanned} reaped=${result.reaped} unverified=${result.unverified}`);
+    try {
+        writeActivityEntry(statePath, {
+            event: 'worker_orphan_reap_summary',
+            ts: new Date().toISOString(),
+            scanned: result.scanned,
+            reaped: result.reaped,
+            unverified: result.unverified,
+            session_owned: result.by_match_class.session_owned,
+            tmp_prefix_fixture: result.by_match_class.tmp_prefix_fixture,
+            repo_fixture_path: result.by_match_class.repo_fixture_path,
+        });
+    }
+    catch { /* best-effort telemetry — never block the runner */ }
 }
 // ---------------------------------------------------------------------------
 // R-OMS: orphan manager reaping at iteration boundaries
@@ -8914,6 +8939,12 @@ async function runMuxRunnerMain() {
     catch (err) {
         log(`startup orphan fast-test reaper failed (ignored): ${safeErrorMessage(err)}`);
     }
+    try {
+        runPipelineOrphanWorkerReap(statePath, path.join(getDataRoot(), 'sessions'), log);
+    }
+    catch (err) {
+        log(`startup orphan worker-proc reaper failed (ignored): ${safeErrorMessage(err)}`);
+    }
     if (ownerState.tmux_mode === true &&
         (ownerState.active !== true || ownerState.pid !== process.pid)) {
         sm.update(statePath, s => {
@@ -9411,6 +9442,12 @@ async function runMuxRunnerMain() {
         }
         catch (err) {
             log(`orphan manager reaper failed (ignored): ${safeErrorMessage(err)}`);
+        }
+        try {
+            runPipelineOrphanWorkerReap(statePath, path.join(getDataRoot(), 'sessions'), log);
+        }
+        catch (err) {
+            log(`iteration-start orphan worker-proc reaper failed (ignored): ${safeErrorMessage(err)}`);
         }
         if (applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, log, state.working_dir || '')) {
             exitReason = 'success';
