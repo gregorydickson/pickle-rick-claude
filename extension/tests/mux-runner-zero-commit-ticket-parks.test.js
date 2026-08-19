@@ -128,7 +128,6 @@ function makeFixture({
   gateVerdict = 'green',
   commitForTicket = false,
   pickleRickShaped = false,
-  ticketStatus = 'Done',
   ticketId = 'a1b2c3d4',
 } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-zcp-')));
@@ -167,7 +166,7 @@ function makeFixture({
     '---',
     `id: ${ticketId}`,
     'title: "Verification: run the tiers and fix what they surface"',
-    `status: "${ticketStatus}"`,
+    'status: "Done"',
     'priority: High',
     'order: 10',
     'complexity_tier: small',
@@ -204,7 +203,7 @@ function makeFixture({
     activity: [],
   }, null, 2)}\n`);
 
-  return { root, workingDir, sessionDir, statePath, ticketId, ticketPath, startCommit, completionSha };
+  return { root, workingDir, sessionDir, statePath, ticketId, ticketPath, completionSha };
 }
 
 function readState(statePath) {
