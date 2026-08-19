@@ -38,11 +38,16 @@ import { scrubGateEnv } from '../services/pickle-utils.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TMUX_RUNNER_BIN = path.resolve(__dirname, '../bin/mux-runner.js');
 
-// 15s → 60s outer / 12s → 45s inner: budget for system load when run alongside
-// concurrent codex/tmux work. The test verifies "subprocess completes without
-// SIGTERM at worker_timeout_seconds=1s"; the fake claude sleeps 1200ms. The
+// Caps are budgeted from measured wall-clock, not guessed. Isolated runs of this
+// file recorded 62621ms / 71653ms / 82387ms; the same test measured in-tier under
+// `test:integration:serial` (HEAD cdbbb3a2) recorded 84062ms. Inner spawnSync cap =
+// round5s(84062 * 1.6) = 135000ms (60% margin over the slowest measured run, which
+// covers contention when the serial tier runs alongside codex/tmux work); outer
+// node-test timeout = inner + 15000ms = 150000ms, strictly above the inner cap so the
+// inner cap is always the one that fires. The test verifies "subprocess completes
+// without SIGTERM at worker_timeout_seconds=1s"; the fake claude sleeps 1200ms. The
 // wall-clock budget is not the assertion — the artifact-existence check is.
-test('FR-B10: fixture manager sleeps 120% of its worker_timeout budget, writes artifact, no SIGTERM', { timeout: 60_000 }, () => {
+test('FR-B10: fixture manager sleeps 120% of its worker_timeout budget, writes artifact, no SIGTERM', { timeout: 150_000 }, () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-happy-path-')));
     try {
         const sessionDir = path.join(dir, 'session');
@@ -110,7 +115,7 @@ process.exit(0);
                 PICKLE_BACKEND: 'claude',
             },
             encoding: 'utf-8',
-            timeout: 45_000,
+            timeout: 135_000,
         });
 
         // Artifact must exist — proves the subprocess ran to completion unsigterm'd
