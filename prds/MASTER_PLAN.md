@@ -160,6 +160,48 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > average before the run, recorded alongside the result. "Quiet box" is a measurement, not an
 > assumption — the same standard already applied to a worker's own gate verdict.
 >
+> ### ⏸️ PAUSED FOR REBOOT — 2026-08-19. READ `RESUME.md` AT THE REPO ROOT FIRST.
+>
+> The live P0 bundle was paused mid-run by the operator to reboot the machine. **`RESUME.md` (repo
+> root) holds the full resume procedure** — process census, `exit_reason` clear, `--resume` relaunch,
+> and what to watch. This block is the ledger summary; that file is the runbook.
+>
+> Session `2026-08-19-f048dbc4`, PRD `BUG-2026-08-19-mux-runner-halts-on-done-without-commit-evidence.md`,
+> HEAD at pause `021201f0`, iteration 4, `current_ticket: 96444430`. Roster: `96444430` In Progress
+> (re-opened for a 2-line correction, UNCOMMITTED in the tree — leave it for the resumed worker),
+> `573a1daa` Done (`fa88b4e1`, `021201f0`), `29077ab4` Todo. `exit_reason: "signal:SIGINT"` is the
+> operator's pause kill, NOT a halt — clear it before resuming.
+>
+> **🚨 THE P0 THIS BUNDLE FIXES — a quality verdict was stopping the pipeline.** Session
+> `2026-08-19-541c0275` ran 8 iterations / 256m, landed 3 of 4 tickets with real commits, then
+> TERMINATED: `[fatal] ticket 400fcac0 cannot flip Done: readEvidence().kind === 'absent'`,
+> `exit_reason: done_without_commit_evidence`, `completion_promise: null`. The ticket was a
+> **verification** ticket that correctly produced zero diff — it completed all 8 lifecycle phases with
+> `worker_gate_verdict: green` and no commit to attribute, because there was nothing to fix.
+>
+> **Root cause is an asymmetry, and the fix is a subtraction.** `pipeline-runner.ts:4556-4560` (WS-B,
+> `f8559470`) ALREADY classifies `done_without_commit_evidence` as park-and-flag — *"a per-ticket
+> verdict, not a cannot-continue halt"*. `mux-runner.ts:5561-5567` still returned `{ok: false,
+> source: 'absent'}` into the `[fatal]` path. `/pickle-tmux` launches mux-runner DIRECTLY, so
+> pipeline-runner's park never executed for a tmux-mode run: **every tmux bundle has been carrying a
+> halt we believed was removed.** Landed so far: `0383103d` (mux-runner parks, shares one
+> classification with pipeline-runner) and `fa88b4e1` (pins park-not-halt AND that the sibling
+> `worker_gate_red`/`worker_gate_unavailable` refusal stays fail-closed — this must NOT widen into the
+> gate-verdict class).
+>
+> **The tail is the evidence.** `29077ab4` is itself a verification ticket, and the DEPLOYED runtime is
+> still pre-fix, so it may hit the same fatal (R-PSRB catch-22). Parks-and-continues validates the fix
+> against its own bug; fatals means recover the run — never hand-build — and deploy before the bundle
+> can finish itself. Posture: ATTENDED.
+>
+> **Also standing at pause:** ~14 `pickle-spawn-morty-worker-gate-*` orphans plus one
+> `pickle-mux-runner-*` fixture at PPID 1; the reboot is the reap, and the post-boot census is the
+> cleanest baseline available. Worker side-finding worth a look, not yet filed: `StateManager.read`
+> costs **~6s per call** on a busy developer `TMPDIR` vs ~0ms on a private one (one file went 50s → 3s
+> after repointing it) — a candidate second cause behind the tier slowdowns previously attributed to
+> CPU load alone. Testing uses NO Docker; every tier runs directly on the host, which is why foreign
+> load and `TMPDIR` contention hit measurements at all.
+>
 > ## 🔢 SEQUENCE (binding until the operator changes it)
 >
 > Reliability ratchet first, then the FIRST capability item — codegraph — immediately after it. Codegraph
