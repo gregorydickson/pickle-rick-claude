@@ -82,89 +82,54 @@ function findDoneWithoutCommitEvidenceSites(sourceText) {
   return sites;
 }
 
-test('mux-runner: every live done_without_commit_evidence guard routes to exitReason+break, not bare return', () => {
+// Ticket 96444430: done_without_commit_evidence is a per-ticket verdict, not a
+// cannot-continue halt. Every recordExitReason(..., 'done_without_commit_evidence')
+// site must record the residual and PARK the ticket (never break the phase loop,
+// never assign the loop-terminating `exitReason` variable, never safeDeactivate).
+// This REPLACES the pre-96444430 invariant (exitReason+break) which this ticket
+// deliberately reverses — see extension/CLAUDE.md's B-NOSTOP-GATES thesis.
+test('mux-runner: every live done_without_commit_evidence residual is recorded then parked (never halts the loop)', () => {
   const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
   const sites = findDoneWithoutCommitEvidenceSites(source);
 
   // The authoritative sweep: exactly 5 recordExitReason(..., 'done_without_commit_evidence')
-  // call sites exist in mux-runner.ts today (grep -n "done_without_commit_evidence" also
-  // matches non-recordExitReason lines like the ExitReason union and FAILURE_EXIT_REASONS
-  // set — this scan is scoped to recordExitReason( callsites only).
+  // call sites exist in mux-runner.ts today.
   assert.equal(sites.length, 5, `expected exactly 5 recordExitReason(..., 'done_without_commit_evidence') sites, found ${sites.length} at lines ${sites.map(s => s.lineNo).join(', ')}`);
 
-  const bareReturnRe = /^\s*return;\s*$/m;
-  const objectLiteralReturnRe = /return\s*\{/;
-  const liveShapeRe = /exitReason\s*=\s*'done_without_commit_evidence';[\s\S]*?break;/;
+  const haltShapeRe = /\bbreak;|kind:\s*'break'|exitReason\s*=\s*'done_without_commit_evidence';|safeDeactivate\(/;
+  const delegateLeaveRe = /return\s*\{\s*action:\s*'leave'/;
+  const parkedShapeRe = /(?:^|[^.\w])continue;|kind:\s*'continue'/m;
 
-  const liveSites = [];
-  const excludedSites = [];
-  const unclassified = [];
+  const parkedSites = [];
+  const delegateSites = [];
+  const haltingSites = [];
 
   for (const site of sites) {
-    if (objectLiteralReturnRe.test(site.window)) {
-      excludedSites.push(site);
-    } else if (liveShapeRe.test(site.window) && !bareReturnRe.test(site.window)) {
-      liveSites.push(site);
+    if (haltShapeRe.test(site.window)) {
+      haltingSites.push(site);
+    } else if (delegateLeaveRe.test(site.window)) {
+      delegateSites.push(site);
+    } else if (parkedShapeRe.test(site.window)) {
+      parkedSites.push(site);
     } else {
-      unclassified.push(site);
+      haltingSites.push(site);
     }
   }
 
   assert.deepEqual(
-    unclassified,
+    haltingSites,
     [],
-    `every recordExitReason(..., 'done_without_commit_evidence') site must classify as either the canonical exitReason+break shape or a known object-literal-return exclusion; unclassified sites (likely a NEW bare-return regression): ${JSON.stringify(unclassified.map(s => s.lineNo))}`,
+    `every recordExitReason(..., 'done_without_commit_evidence') site must park (continue), never halt the loop; halting sites found: ${JSON.stringify(haltingSites.map(s => s.lineNo))}`,
   );
 
-  // Exactly the three LIVE sites (~:10460, ~:10951/10952, ~:11026/11028) must have flipped.
-  assert.equal(liveSites.length, 3, `expected exactly 3 live exitReason+break sites, found ${liveSites.length} at lines ${liveSites.map(s => s.lineNo).join(', ')}`);
-  for (const site of liveSites) {
-    assert.ok(
-      !bareReturnRe.test(site.window),
-      `live site at line ${site.lineNo} must NOT contain a bare "return;" — it must exit via exitReason + break`,
-    );
-    assert.match(
-      site.window,
-      /exitReason\s*=\s*'done_without_commit_evidence';/,
-      `live site at line ${site.lineNo} must assign exitReason = 'done_without_commit_evidence'`,
-    );
-    assert.match(
-      site.window,
-      /break;/,
-      `live site at line ${site.lineNo} must break out of the while(true) loop`,
-    );
-  }
+  // Exactly ONE delegate site: applyAutoTicketCompletionValidation returns the
+  // fatal verdict as an object (`{ action: 'leave', reason: 'guard_failed_no_commit_evidence' }`)
+  // to its single caller, which is responsible for parking (see the sibling test below).
+  assert.equal(delegateSites.length, 1, `expected exactly 1 delegate-return site (applyAutoTicketCompletionValidation), found ${delegateSites.length} at lines ${delegateSites.map(s => s.lineNo).join(', ')}`);
 
-  // Exactly the two KNOWN non-bare-return exclusions: ticket a3812edd's discarded-verdict
-  // return (an `{ action: 'leave', ... }` object) and the dead processIterationOutcome
-  // site (a `{ kind: 'break', ... }` object with zero production callers).
-  assert.equal(excludedSites.length, 2, `expected exactly 2 known object-literal-return exclusions, found ${excludedSites.length} at lines ${excludedSites.map(s => s.lineNo).join(', ')}`);
-
-  const a3812eddSite = excludedSites.find(s => /action:\s*'leave'/.test(s.window));
-  assert.ok(a3812eddSite, 'ticket a3812edd\'s exclusion site (return { action: \'leave\', ... }) must be present — this ticket must NOT touch it');
-
-  const deadSite = excludedSites.find(s => /kind:\s*'break'/.test(s.window));
-  assert.ok(deadSite, 'the dead processIterationOutcome exclusion site (return { kind: \'break\', ... }) must be present — this ticket must NOT patch it');
-
-  // Confirm the dead site is transitively unreachable: it sits inside processTaskCompleted,
-  // whose only caller is processIterationOutcome, which itself has zero production callers
-  // (its only other hit in src/ is the symbol-inventory string in bin/CLAUDE.md).
-  const lines = source.split('\n');
-  let enclosingFn = null;
-  for (let i = deadSite.lineNo - 1; i >= 0; i--) {
-    const m = lines[i].match(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)/);
-    if (m) { enclosingFn = m[1]; break; }
-  }
-  assert.equal(enclosingFn, 'processTaskCompleted', `dead exclusion site at line ${deadSite.lineNo} must be enclosed by processTaskCompleted, found ${enclosingFn}`);
-
-  const taskCompletedCallers = [...source.matchAll(/processTaskCompleted\(/g)];
-  // Exactly 2: its own declaration, plus the single call site inside processIterationOutcome.
-  assert.equal(taskCompletedCallers.length, 2, `processTaskCompleted must have exactly one call site (inside processIterationOutcome) plus its own declaration; found ${taskCompletedCallers.length} occurrences`);
-
-  const iterationOutcomeCallers = [...source.matchAll(/processIterationOutcome\(/g)];
-  // Only the function's own declaration is expected — no other bin/service file imports and
-  // invokes it, so processTaskCompleted (and its :7324 guard) is transitively dead code.
-  assert.equal(iterationOutcomeCallers.length, 1, `processIterationOutcome must have zero production callers (declaration only); found ${iterationOutcomeCallers.length} occurrences`);
+  // The remaining 4 sites park in-place via a bare `continue;` or a
+  // `{ kind: 'continue', ... }` LoopAction return.
+  assert.equal(parkedSites.length, 4, `expected exactly 4 in-place park sites, found ${parkedSites.length} at lines ${parkedSites.map(s => s.lineNo).join(', ')}`);
 });
 
 // The executable half of the REPORTED GAP in this file's header. It asserts the
@@ -343,14 +308,14 @@ test('AC-GTRUTH-A2-4: the source exit map routes done_without_commit_evidence to
   }
 });
 
-// WS-1b (ticket a3812edd) — the FOURTH masking mechanism, distinct from the three
-// bare-return sites de25ce90 fixed above. applyAutoTicketCompletionValidation (the
-// :2892 excluded site) never bare-returns — it returns a verdict object. The bug is
-// that its ONE production call site discarded that verdict entirely (a bare
-// statement call), so a fatal `{action:'leave', reason:'guard_failed_no_commit_evidence'}`
-// never reached the loop's exitReason+break exit path; the NEXT iteration's
-// `state.active !== true` check then laundered it into 'cancelled' (exit 0).
-test('mux-runner: applyAutoTicketCompletionValidation call site honors the fatal leave verdict', () => {
+// WS-1b (ticket a3812edd) established that applyAutoTicketCompletionValidation's
+// ONE production call site must not discard its fatal `{action:'leave',
+// reason:'guard_failed_no_commit_evidence'}` verdict. Ticket 96444430 changes
+// WHAT the call site does with that verdict: it must PARK (continue the phase
+// loop) instead of halting — the callee no longer safeDeactivates, so a
+// `break` here would leave the session active but the loop exited, and the
+// old exitReason+break shape is exactly the halt this ticket removes.
+test('mux-runner: applyAutoTicketCompletionValidation call site parks on the fatal leave verdict, never halts', () => {
   const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
 
   const callSiteRe = /applyAutoTicketCompletionValidation\(\{/g;
@@ -381,8 +346,27 @@ test('mux-runner: applyAutoTicketCompletionValidation call site honors the fatal
 
   assert.match(
     window,
+    /reason\s*===\s*'guard_failed_no_commit_evidence'\)\s*\{\s*[\s\S]{0,40}?continue;/,
+    "on the fatal guard-failure verdict, the call site must `continue;` the phase loop — never break, never (re)assign exitReason to 'done_without_commit_evidence' (ticket 96444430)",
+  );
+
+  assert.doesNotMatch(
+    window,
     /exitReason\s*=\s*'done_without_commit_evidence';[\s\S]{0,80}?break;/,
-    "on the fatal guard-failure verdict, the call site must set exitReason = 'done_without_commit_evidence' and break out of the while(true) loop — matching the sibling precedent at the 'ticket already marked Done' branch",
+    'the call site must NOT halt via the pre-96444430 exitReason+break shape',
+  );
+
+  // The callee itself must no longer deactivate the session on guard failure —
+  // deactivating there would still halt the run even though this call site parks.
+  const fnStart = source.indexOf('export function applyAutoTicketCompletionValidation');
+  assert.ok(fnStart >= 0, 'applyAutoTicketCompletionValidation definition must be present');
+  const fnWindow = source.slice(fnStart, fnStart + 2000);
+  const guardFailBlock = /if \(!guard\.ok\) \{[\s\S]*?\}/.exec(fnWindow);
+  assert.ok(guardFailBlock, 'applyAutoTicketCompletionValidation must still guard on !guard.ok');
+  assert.doesNotMatch(
+    guardFailBlock[0],
+    /safeDeactivate\(/,
+    'applyAutoTicketCompletionValidation must not safeDeactivate on guard failure — its single caller now parks and continues the loop instead of halting',
   );
 });
 

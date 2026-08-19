@@ -49,7 +49,7 @@ import { isProcessAlive } from '../lib/process-liveness.js';
 // (an already-permitted completion-evidence oracle caller). pipeline-runner MUST NOT
 // import the oracle module directly — that becomes a 3rd caller and fails
 // audit-trap-door-enforcement.sh R-AFCC-CALLER-ENUMERATION.
-import { isTicketOracleCommitted } from './mux-runner.js';
+import { isTicketOracleCommitted, isPerTicketVerdictReason } from './mux-runner.js';
 import { loadFinalizeGateSettings, resolveFinalizeSettingsRoot } from './finalize-gate.js';
 import { runGate } from '../services/convergence-gate.js';
 const sm = new StateManager();
@@ -3852,7 +3852,7 @@ function resolvePhaseIncompleteOutcome(runtime, rawPhase, exitCode, log) {
     // for every reason EXCEPT `done_without_commit_evidence` (park-and-flag,
     // advances to the remaining phases instead of stopping the pipeline).
     if (reportPhaseIncomplete(runtime, rawPhase)) {
-        if (priorExitReasonForIncomplete === 'done_without_commit_evidence') {
+        if (isPerTicketVerdictReason(priorExitReasonForIncomplete)) {
             log(`Phase ${rawPhase}: done_without_commit_evidence is a per-ticket verdict, not a cannot-continue halt — advancing, reporting incomplete for reconciliation`);
             return { action: 'continue', phaseIncomplete: true };
         }

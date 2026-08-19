@@ -3352,8 +3352,11 @@ export function applyAutoTicketCompletionValidation(input: ApplyAutoTicketComple
       const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
       input.log?.(msg);
       process.stderr.write(`${msg}\n`);
+      // B-GTRUTH WS-A2 / ticket 96444430: done_without_commit_evidence is a
+      // per-ticket verdict, not a session halt — record the residual and let
+      // the caller park this ticket and continue the phase loop. Do NOT
+      // safeDeactivate here (single caller — see mux-runner.ts main loop).
       recordExitReason(input.statePath, 'done_without_commit_evidence');
-      safeDeactivate(input.statePath);
       return { action: 'leave', reason: 'guard_failed_no_commit_evidence' };
     }
     // R-PEDC: clear any stale done_without_commit_evidence before marking Done.
@@ -4952,7 +4955,18 @@ export const isFailureExit = (r: ExitReason): boolean => FAILURE_EXIT_REASONS.ha
 const INCOMPLETE_EXIT_REASONS: ReadonlySet<ExitReason> = new Set<ExitReason>([
   'done_without_commit_evidence',
 ]);
-export const isIncompleteExit = (r: ExitReason): boolean => INCOMPLETE_EXIT_REASONS.has(r);
+/**
+ * Shared classification: a reason that is a per-ticket verdict ("this ticket
+ * produced no attributable commit"), not a session-scoped halt. mux-runner's
+ * own park-and-continue sites and pipeline-runner.ts's phase-incomplete
+ * routing both consume this ONE predicate so the two runtimes cannot
+ * disagree (ticket 96444430). Loose input type so callers holding a raw
+ * `state.exit_reason: string | null` read (e.g. pipeline-runner.ts) don't
+ * need to narrow first.
+ */
+export const isPerTicketVerdictReason = (r: string | null | undefined): boolean =>
+  typeof r === 'string' && INCOMPLETE_EXIT_REASONS.has(r as ExitReason);
+export const isIncompleteExit = (r: ExitReason): boolean => isPerTicketVerdictReason(r);
 
 /**
  * WS-2c (R-PFNT): cheap, best-effort target-toolchain pre-flight. When the TARGET
@@ -8500,9 +8514,11 @@ function processTaskCompleted(state: State, ctx: LoopContext): LoopAction {
       const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
       ctx.log(msg);
       process.stderr.write(`${msg}\n`);
+      // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict, not a
+      // cannot-continue halt — record the residual, park this ticket
+      // (leave it un-Done), and let the phase loop continue.
       recordExitReason(ctx.statePath, 'done_without_commit_evidence');
-      safeDeactivate(ctx.statePath);
-      return { kind: 'break', reason: 'done_without_commit_evidence' };
+      return { kind: 'continue', resetStall: true };
     }
     // R-PEDC: guard recovered — clear any stale `done_without_commit_evidence`
     // exit_reason stamped by a prior iteration so finalize doesn't mislabel a
@@ -11794,10 +11810,11 @@ async function runMuxRunnerMain() {
             const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
             log(msg);
             process.stderr.write(`${msg}\n`);
+            // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — record
+            // the residual, park this ticket (leave it un-Done), and
+            // continue the phase loop instead of halting the session.
             recordExitReason(statePath, 'done_without_commit_evidence');
-            safeDeactivate(statePath);
-            exitReason = 'done_without_commit_evidence';
-            break;
+            continue;
           }
           // R-PEDC: clear stale prior-iteration stamp on recovery.
           clearStaleDoneWithoutCommitEvidence(statePath);
@@ -11842,14 +11859,12 @@ async function runMuxRunnerMain() {
             statePath,
             flags: (state.flags as Record<string, unknown> | undefined) ?? null,
           });
-          // WS-1b: honor the fatal guard-failure verdict — mirrors the sibling
-          // "already marked Done" branch above, which sets exitReason + breaks
-          // inline. Without this, safeDeactivate's active=false is picked up by
-          // the NEXT loop iteration's inactive-session check, which overwrites
-          // exitReason with 'cancelled' (exit 0) instead of this guard's reason.
+          // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — the callee
+          // already recorded the residual exit_reason and no longer
+          // deactivates the session, so park this ticket (leave it un-Done)
+          // and continue the phase loop.
           if (autoValidation.action === 'leave' && autoValidation.reason === 'guard_failed_no_commit_evidence') {
-            exitReason = 'done_without_commit_evidence';
-            break;
+            continue;
           }
         }
         completedBoundary = {
@@ -12191,10 +12206,11 @@ async function runMuxRunnerMain() {
             const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
             log(msg);
             process.stderr.write(`${msg}\n`);
+            // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — record
+            // the residual, park this ticket (leave it un-Done), and
+            // continue the phase loop instead of halting the session.
             recordExitReason(statePath, 'done_without_commit_evidence');
-            safeDeactivate(statePath);
-            exitReason = 'done_without_commit_evidence';
-            break;
+            continue;
           }
           // R-PEDC: clear stale prior-iteration stamp on recovery.
           clearStaleDoneWithoutCommitEvidence(statePath);
@@ -12267,10 +12283,11 @@ async function runMuxRunnerMain() {
           const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
           log(msg);
           process.stderr.write(`${msg}\n`);
+          // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — record
+          // the residual, park this ticket (leave it un-Done), and continue
+          // the phase loop instead of halting on the EPIC_COMPLETED claim.
           recordExitReason(statePath, 'done_without_commit_evidence');
-          safeDeactivate(statePath);
-          exitReason = 'done_without_commit_evidence';
-          break;
+          continue;
         }
         // R-PEDC: clear stale prior-iteration stamp on recovery so a
         // fully-shipped bundle finalizes as 'completed', not 'failed'.
