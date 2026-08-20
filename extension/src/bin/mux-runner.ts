@@ -11814,6 +11814,7 @@ async function runMuxRunnerMain() {
             // the residual, park this ticket (leave it un-Done), and
             // continue the phase loop instead of halting the session.
             recordExitReason(statePath, 'done_without_commit_evidence');
+            emitWastedIterOnce();
             continue;
           }
           // R-PEDC: clear stale prior-iteration stamp on recovery.
@@ -11864,6 +11865,7 @@ async function runMuxRunnerMain() {
           // deactivates the session, so park this ticket (leave it un-Done)
           // and continue the phase loop.
           if (autoValidation.action === 'leave' && autoValidation.reason === 'guard_failed_no_commit_evidence') {
+            emitWastedIterOnce();
             continue;
           }
         }
