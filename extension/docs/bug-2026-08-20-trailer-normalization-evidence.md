@@ -215,6 +215,30 @@ tier-level reds observed are both attributed to causes outside this bundle's dif
 honestly rather than omitted, per this repo's PRIME DIRECTIVE (report degradation, do not halt, do
 not silently convert a red into a pass).
 
+## 8. Data flow integrity audit (ticket `f168caeb`)
+
+An independent third-angle audit traced the trailer message value end-to-end through both fixed
+functions, looking for any remaining path where an unterminated or multi-trailing-newline message
+reaches `interpret-trailers`, and whether CRLF or whitespace-only trailing lines are handled.
+
+**Both `mux-runner.ts` call sites** (`commitAndContinueDoneFlip`, `executeConvergedPlanAdapter`'s
+`commitPhase`) pass hardcoded single-line literals with zero trailing newlines — trivially safe,
+no CRLF possible. **`spawn-morty.ts`'s `buildTrailerAmendedMessage`** has exactly one producer of
+its `message` argument (`reconcileGit`'s unconditional `.trim()` in `maybeAmendTicketTrailer`), so
+its internal `message.replace(/\n+$/, '') + '\n'` normalization is a no-op-strip-then-append in
+every production call — correct, not dead code.
+
+Empirically confirmed in a scratch repo (not committed): an unterminated message fed to
+`interpret-trailers` glues the trailer onto the previous line and `--parse` reads it back as
+EMPTY, reproducing the bundle's claimed root cause. A whitespace-only trailing line and a
+CRLF-terminated message (git canonicalizes CRLF to LF at commit-object-creation time, verified via
+`%B` readback) are BOTH already handled correctly by git's own trailer/commit machinery and do not
+reach the consumer's `%(trailers:...)` read path malformed — neither is a defect.
+
+**Verdict: zero P0/CRITICAL and zero P1/HIGH data-flow-integrity findings.** No code change
+required. Full detail: `research_2026-08-21.md`, `conformance_2026-08-21.md`,
+`code_review_2026-08-21.md` under ticket `f168caeb`.
+
 ## 7. Code review (ticket `294c6ed6`)
 
 A code-quality review pass over the same 5 scoped files (`mux-runner.ts`, `spawn-morty.ts`,
