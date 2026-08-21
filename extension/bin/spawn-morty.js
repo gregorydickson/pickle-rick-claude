@@ -2027,13 +2027,19 @@ function readParsedTicketTrailers(workingDir, sha) {
  */
 function buildTrailerAmendedMessage(workingDir, message, ticketId) {
     try {
+        // `message` arrives via reconcileGit, whose .trim() strips the trailing
+        // newline %B normally supplies. Without it, interpret-trailers glues the
+        // trailer onto the subject line instead of opening a new paragraph,
+        // producing a value %(trailers:...) cannot parse back out. Normalize the
+        // INPUT only — the returned stdout is passed straight through unmodified.
+        const normalizedMessage = message.replace(/\n+$/, '') + '\n';
         return execFileSync('git', [
             'interpret-trailers', '--if-exists', 'addIfDifferentNeighbor',
             '--trailer', `Pickle-Ticket: ${ticketId}`,
         ], {
             cwd: workingDir,
             encoding: 'utf8',
-            input: message,
+            input: normalizedMessage,
             timeout: RECONCILE_GIT_TIMEOUT_MS,
             stdio: ['pipe', 'pipe', 'ignore'],
         });
