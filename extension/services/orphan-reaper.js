@@ -116,21 +116,69 @@ function isWorkerShapedCommand(command) {
     }
     return false;
 }
+let tmpRootPrefixCache = null;
 /**
- * True when `token` is an absolute path resolving under `os.tmpdir()`, whose first path
- * segment beneath tmpdir starts with `pickle-`, and whose final two segments are `bin/npm`.
+ * Every prefix a tmpdir-anchored argv path may legitimately begin with.
+ *
+ * `os.tmpdir()` yields the LEXICAL path — on macOS `/var/folders/…/T`, where `/var` is a
+ * symlink to `/private/var` — while a spawned process's argv carries the REALPATH form
+ * (`/private/var/folders/…/T`). `path.resolve` does NOT follow symlinks, so a lexical-only
+ * prefix compare rejects every real orphan. Measured live before this fix: 10 alive
+ * `pickle-spawn-morty-worker-gate-*` procs, reaper `scanned=0` — a permanent false-green
+ * over an unbounded leak.
+ *
+ * Memoized on the tmpdir value (not unconditionally) so a caller that reassigns `TMPDIR`
+ * is never served a stale root, and so `realpathSync` runs once per root rather than once
+ * per argv token of every `ps` line.
+ */
+function tmpRootPrefixes() {
+    const lexical = path.resolve(os.tmpdir());
+    if (tmpRootPrefixCache?.key === lexical)
+        return tmpRootPrefixCache.prefixes;
+    const roots = new Set([lexical]);
+    try {
+        roots.add(path.resolve(fs.realpathSync(lexical)));
+    }
+    catch {
+        // tmpdir unreadable/absent — the lexical root is all we can honestly claim.
+    }
+    const prefixes = [...roots].map((root) => root + path.sep);
+    tmpRootPrefixCache = { key: lexical, prefixes };
+    return prefixes;
+}
+/**
+ * The ONE tmpdir-anchoring check. Returns the resolved absolute path and its first path
+ * segment beneath whichever tmpdir root matched, or null when `token` is not an absolute
+ * path under tmpdir at all.
+ *
+ * Both tmpdir matchers (`isPickleTmpBinNpmPath` and `resolveTmpPrefixFixturePath`) read it
+ * rather than each re-deriving "resolve, compare against tmpdir, take the first segment".
+ * Two copies is how the symlink rule came to hold in neither: the argv/`os.tmpdir()` form
+ * mismatch defeated both matchers at once, so the fallback could not cover for the primary.
+ */
+function resolveUnderTmpRoot(token) {
+    if (!token.startsWith('/'))
+        return null;
+    const resolved = path.resolve(token);
+    for (const prefix of tmpRootPrefixes()) {
+        if (!resolved.startsWith(prefix))
+            continue;
+        const firstSegment = resolved.slice(prefix.length).split(path.sep)[0];
+        if (firstSegment)
+            return { resolved, firstSegment };
+    }
+    return null;
+}
+/**
+ * True when `token` is an absolute path resolving under `os.tmpdir()` (by either the
+ * lexical or the realpath root), whose first path segment beneath tmpdir starts with
+ * `pickle-`, and whose final two segments are `bin/npm`.
  */
 function isPickleTmpBinNpmPath(token) {
-    if (!token.startsWith('/'))
+    const anchored = resolveUnderTmpRoot(token);
+    if (!anchored || !anchored.firstSegment.startsWith('pickle-'))
         return false;
-    const resolved = path.resolve(token);
-    const tmpRootPrefix = path.resolve(os.tmpdir()) + path.sep;
-    if (!resolved.startsWith(tmpRootPrefix))
-        return false;
-    const relSegments = resolved.slice(tmpRootPrefix.length).split(path.sep);
-    const firstSegment = relSegments[0];
-    if (!firstSegment || !firstSegment.startsWith('pickle-'))
-        return false;
+    const { resolved } = anchored;
     return path.basename(resolved) === 'npm' && path.basename(path.dirname(resolved)) === 'bin';
 }
 /**
@@ -168,17 +216,10 @@ const TEST_OWNED_TMP_PREFIXES = ['pickle-', 'cxhang-int-bin-', 'cxhang-int-sess-
  * anchored under tmpdir.
  */
 function resolveTmpPrefixFixturePath(command) {
-    const tmpRoot = path.resolve(os.tmpdir());
-    const tmpRootPrefix = tmpRoot + path.sep;
     for (const token of command.split(/\s+/)) {
-        if (!token.startsWith('/'))
-            continue;
-        const resolved = path.resolve(token);
-        if (!resolved.startsWith(tmpRootPrefix))
-            continue;
-        const firstSegment = resolved.slice(tmpRootPrefix.length).split(path.sep)[0];
-        if (firstSegment && TEST_OWNED_TMP_PREFIXES.some(prefix => firstSegment.startsWith(prefix))) {
-            return resolved;
+        const anchored = resolveUnderTmpRoot(token);
+        if (anchored && TEST_OWNED_TMP_PREFIXES.some(prefix => anchored.firstSegment.startsWith(prefix))) {
+            return anchored.resolved;
         }
     }
     return null;
