@@ -1558,18 +1558,35 @@ export function matrixSeparator(width) {
     }
     return `${MatrixStyle.DIM}${line.join('')}${MatrixStyle.R}`;
 }
+/**
+ * Ranks one `tmux_iteration_N.log` as `[mtimeMs, iterationNumber]`.
+ *
+ * mtime is PRIMARY because the iteration-number namespace RESETS at every
+ * pipeline phase boundary: `mux-runner.ts` (pickle) and `microverse-runner.ts`
+ * (anatomy-park, szechuan-sauce) both write `tmux_iteration_<n>.log` into the
+ * SAME session dir, each numbering from 1. A max-by-number pick therefore
+ * returns the highest-numbered log of whichever phase ran LONGEST, not the live
+ * one. The number stays as a deterministic tiebreak for same-millisecond writes.
+ * An unstattable entry ranks last so it is picked only when nothing else exists.
+ */
+function iterationLogRank(sessionDir, name) {
+    const num = parseInt(name.replace('tmux_iteration_', '').replace('.log', ''), 10) || 0;
+    try {
+        return [fs.statSync(path.join(sessionDir, name)).mtimeMs, num];
+    }
+    catch {
+        return [-Infinity, num];
+    }
+}
 /** Finds the most recent tmux_iteration_N.log in a session directory. */
 export function latestIterationLog(sessionDir) {
     try {
         const logs = fs
             .readdirSync(sessionDir)
             .filter((f) => f.startsWith('tmux_iteration_') && f.endsWith('.log'))
-            .sort((a, b) => {
-            const numA = parseInt(a.replace('tmux_iteration_', '').replace('.log', ''), 10);
-            const numB = parseInt(b.replace('tmux_iteration_', '').replace('.log', ''), 10);
-            return (numA || 0) - (numB || 0);
-        });
-        return logs.length > 0 ? path.join(sessionDir, logs[logs.length - 1]) : null;
+            .map((name) => ({ name, rank: iterationLogRank(sessionDir, name) }))
+            .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
+        return logs.length > 0 ? path.join(sessionDir, logs[logs.length - 1].name) : null;
     }
     catch {
         return null;

@@ -29,6 +29,7 @@ import {
     clearTicketCacheFields,
     restartDeadWatcherPanes,
     runCmd,
+    latestIterationLog,
 } from '../services/pickle-utils.js';
 import { LockError } from '../types/index.js';
 
@@ -1817,4 +1818,67 @@ test('AP-EXT-ITER8-01: a stderr-less spawn failure names its cause instead of th
         () => runCmd(['definitely-not-a-real-binary-ap-ext-iter8'], { check: true }),
         (err) => /Command failed:/.test(err.message) && !/\nError: $/.test(err.message),
     );
+});
+
+// --- AP-EXT-ITER7-01: latestIterationLog picks the LIVE log, not the highest-numbered one ---
+//
+// The `tmux_iteration_<n>.log` namespace RESETS at every pipeline phase boundary —
+// mux-runner.ts (pickle) and microverse-runner.ts (anatomy-park, szechuan-sauce) both
+// write into the SAME session dir, each numbering from 1. Assert the SELECTED FILE
+// against a real on-disk mtime layout; a "returns some path" oracle greens over this.
+
+function writeIterationLog(dir, n, mtimeSeconds) {
+    const p = path.join(dir, `tmux_iteration_${n}.log`);
+    fs.writeFileSync(p, `iteration ${n}\n`);
+    fs.utimesSync(p, mtimeSeconds, mtimeSeconds);
+    return p;
+}
+
+test('AP-EXT-ITER7-01: a later phase\'s live log wins over a dead earlier phase\'s higher number', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-iter7-phase-'));
+    try {
+        // Pickle phase ran iterations 1..8 and finished; anatomy-park then restarted at 1
+        // and is live on iteration 7 — the real shape of session 2026-08-20-54c74299.
+        for (let n = 1; n <= 8; n++) writeIterationLog(dir, n, 1_000_000 + n);
+        for (let n = 1; n <= 7; n++) writeIterationLog(dir, n, 2_000_000 + n);
+
+        assert.equal(
+            latestIterationLog(dir),
+            path.join(dir, 'tmux_iteration_7.log'),
+            'must tail the live phase\'s iteration 7, not the dead phase\'s iteration 8',
+        );
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER7-01: within one ascending phase the newest iteration still wins', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-iter7-single-'));
+    try {
+        for (let n = 1; n <= 3; n++) writeIterationLog(dir, n, 1_000_000 + n);
+        assert.equal(latestIterationLog(dir), path.join(dir, 'tmux_iteration_3.log'));
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER7-01: identical mtimes fall back to the higher iteration number', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-iter7-tie-'));
+    try {
+        for (const n of [1, 2, 3]) writeIterationLog(dir, n, 1_500_000);
+        assert.equal(latestIterationLog(dir), path.join(dir, 'tmux_iteration_3.log'));
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER7-01: no logs and an unreadable dir both yield null', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-iter7-empty-'));
+    try {
+        fs.writeFileSync(path.join(dir, 'state.json'), '{}');
+        assert.equal(latestIterationLog(dir), null);
+        assert.equal(latestIterationLog(path.join(dir, 'does-not-exist')), null);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 });
