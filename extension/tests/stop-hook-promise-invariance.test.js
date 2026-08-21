@@ -175,3 +175,52 @@ test('AC-8: every post_final_verdict state still terminates the loop', () => {
     );
   }
 });
+
+// AP-EXT-ITER4-01 (subsystem contract #1): the stop hook's CLI entry guard must survive a
+// symlinked install root. `dispatch.ts` builds the handler argv from
+// `EXTENSION_DIR || join(os.homedir(), '.claude/pickle-rick')` and never realpaths it, while Node
+// DOES realpath `import.meta.url`. The pre-fix realpath-exact compare therefore disagreed with
+// itself through `install.sh --prefix <symlinked path>` (any macOS `/tmp`/`/var` prefix, or a
+// relocated `$HOME`): `main()` never ran, the hook emitted nothing, and dispatch's "no valid
+// decision JSON" arm fell back to approve — the Stop hook approved the stop and the pipeline loop
+// ended with no exit_reason and no error.
+//
+// Drives the SHIPPED handler as a real subprocess through a real symlink and asserts the EMITTED
+// DECISION. An argv/source oracle (grepping for the guard shape) is deliberately avoided: it greens
+// the moment someone swaps one realpath-exact form for another, which is exactly how the sibling
+// `auto-fill-completion-commit.ts` carried the same defect under a different spelling.
+const SHIPPED_STOP_HOOK = path.join(import.meta.dirname, '..', 'hooks', 'handlers', 'stop-hook.js');
+
+/** Runs the shipped stop-hook with empty stdin under a hermetic data/extension root. */
+function runShippedStopHook(scriptPath, tmp) {
+  return execFileSync(process.execPath, [scriptPath], {
+    input: '',
+    encoding: 'utf8',
+    timeout: 30000,
+    env: { ...process.env, PICKLE_DATA_ROOT: path.join(tmp, 'data'), EXTENSION_DIR: path.join(tmp, 'ext') },
+  }).trim();
+}
+
+test('AP-EXT-ITER4-01: the stop hook still emits a decision through a symlinked install root', () => {
+  const tmp = tmpDir('stop-hook-symlink-root-');
+  fs.mkdirSync(path.join(tmp, 'data'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, 'ext'), { recursive: true });
+
+  // A symlinked handlers dir reproduces the `--prefix`/relocated-$HOME relationship on ANY
+  // platform: argv[1] carries the link, `import.meta.url` resolves to the target.
+  const linkedHandlers = path.join(tmp, 'handlers-link');
+  fs.symlinkSync(path.dirname(SHIPPED_STOP_HOOK), linkedHandlers);
+
+  const throughSymlink = runShippedStopHook(path.join(linkedHandlers, 'stop-hook.js'), tmp);
+  assert.notEqual(
+    throughSymlink,
+    '',
+    'stop hook produced NO output through a symlinked install root — dispatch falls back to approve and the loop ends silently',
+  );
+  assert.equal(JSON.parse(throughSymlink).decision, 'approve');
+
+  // Control: the same invocation through the real path must behave identically, so a future
+  // regression is attributable to the symlink axis and not to the hermetic env.
+  const throughRealPath = runShippedStopHook(SHIPPED_STOP_HOOK, tmp);
+  assert.deepEqual(JSON.parse(throughSymlink), JSON.parse(throughRealPath));
+});

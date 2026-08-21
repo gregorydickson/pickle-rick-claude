@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
-import { fileURLToPath } from 'url';
 import { PromiseTokens, hasToken } from '../../types/index.js';
 import { PROMISE_TOKENS } from '../../services/promise-tokens.js';
 import { resolveStateFile, approve, sameWorkingDir } from '../resolve-state.js';
@@ -722,6 +721,14 @@ function handleFatalStopHookError(err) {
     }
     approve();
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Basename compare, NEVER a realpath-exact one (subsystem contract #1): Node
+// realpaths `import.meta.url` but leaves `process.argv[1]` as written, and
+// dispatch.ts builds argv[1] from `EXTENSION_DIR || join(os.homedir(), ...)`
+// without realpathing it. Through a symlinked install root (`install.sh
+// --prefix` + `PICKLE_INSTALL_ROOT` at a tmp/relocated path) the two sides
+// disagree, `main()` never runs, the hook emits no decision, and dispatch's
+// "no valid decision JSON" arm falls back to approve — the Stop hook approves
+// the stop and the pipeline loop ends with no exit_reason and no error.
+if (process.argv[1] && path.basename(process.argv[1]) === 'stop-hook.js') {
     main().catch(handleFatalStopHookError);
 }
