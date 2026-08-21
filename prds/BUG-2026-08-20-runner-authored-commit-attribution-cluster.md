@@ -66,21 +66,108 @@ That last point is the uncomfortable one and should be treated as a finding in i
 ledger's green baseline does not reproduce.** Either that measurement was environment-dependent in a
 way not captured, or it did not hold as recorded. The research phase should say which, from evidence.
 
-## Root cause — deliberately OPEN
+## Root cause — IDENTIFIED AND REPRODUCED
 
-Not asserted here, per this repo's convention (the `BUG-2026-08-18` serial-tier PRD left its root
-cause open for the same reason). One observation for the research phase, offered as a lead and NOT as
-a conclusion:
+`mux-runner.ts:5971` builds a **single-line** commit message and stamps the trailer into it:
 
-`mux-runner.ts:3884-3885` builds the `core.hooksPath` + `PICKLE_TICKET_ID` trailer-hooks fragment into
-the **manager iteration subprocess env** (B-GITATTR WS-1, ticket `cb36a189`). `commitAndContinueDoneFlip`
-is ALSO reached in-process on the exit-commit path (`mux-runner.ts:6160`), where that env fragment may
-not apply. Whether the in-process arm is genuinely missing the hook, or installs it and fails for
-another reason, is exactly what research must establish.
+```ts
+const commitMsg = stampPickleTicketTrailer(
+  input.workingDir,
+  `fix(${input.ticketId}): commit-and-continue recovery (R-ORSR-2)`,  // single line, NO body
+  input.ticketId,
+);
+const commit = spawnSync('git', ['-C', input.workingDir, 'commit', '-m', commitMsg], ...);
+```
 
-Note the degraded arm PASSES: *"when interpret-trailers cannot run, the appended trailer is still
-PARSED"* is green. So the fallback works and the PRIMARY path is what fails — which argues against a
-missing-binary explanation.
+`stampPickleTicketTrailer` (`mux-runner.ts:5891`) delegates to `git interpret-trailers`. On a message
+with **no body**, git appends the trailer directly after the subject with NO blank line — so the
+trailer lands inside the SUBJECT paragraph. Git parses trailers out of the LAST paragraph only, so
+`%(trailers:key=Pickle-Ticket,valueonly)` — the reader the completion guard uses — returns EMPTY.
+
+Standalone reproduction (git 2.39.5, this repo's box):
+
+```
+$ printf 'chore(a1b2c3d4): worker deliverable\nPickle-Ticket: a1b2c3d4\n' > m.txt && git commit -F m.txt
+$ git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)'
+                                     <-- EMPTY
+
+$ printf 'chore(a1b2c3d4): worker deliverable\n\nPickle-Ticket: a1b2c3d4\n' > m2.txt && git commit -F m2.txt
+$ git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)'
+a1b2c3d4                             <-- parses
+```
+
+The ONLY difference is the blank line. The trailer is present in `%B` either way — which is why a raw
+grep cannot see the damage and why `spawn-morty-commit-attribution.test.js` asserts *"trailer parses
+via the consumer's oracle, not a raw-message grep"*. `git-trailer-hooks.ts:157-163` documents this
+exact hazard for the hook path; the in-process committer reproduces it via a different route.
+
+Chain: single-line message → subject-glued trailer → consumer reader returns empty → completion guard
+sees `kind === 'absent'` → `commitAndContinueDoneFlip` returns `{ok:false}` → callers report
+`reason=commit-failed`.
+
+**Left to the research phase:** whether the correct fix is at the message-construction site (give the
+message a body), inside `stampPickleTicketTrailer` (guarantee a trailer paragraph for body-less
+messages), or both. AC-3 constrains it to ONE seam. Note `stampPickleTicketTrailer`'s fallback
+`rendered ?? \`${message}\n\n${trailer}\`` already produces the CORRECT blank-line form — so the
+degraded arm is right and the primary arm is wrong, which matches the observed test results exactly.
+
+## Interface Contracts
+
+**`stampPickleTicketTrailer(workingDir: string, message: string, ticketId: string): string`**
+- **Inputs**: repo path; a commit message that MAY be a single line with no body; an 8-char ticket id.
+- **Output**: a message whose `Pickle-Ticket` trailer is readable by
+  `git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)'` — for ALL inputs, body or no body.
+- **Invariants**: empty/whitespace ticket id → message returned unchanged (no valueless trailer);
+  already-carrying messages are not double-stamped; pre-existing trailers
+  (`Co-Authored-By`, `Signed-off-by`) remain PARSED, not demoted to body prose.
+
+**`commitAndContinueDoneFlip(input: CommitAndContinueDoneFlipInput): { ok: boolean; sha?: string }`**
+- **Inputs**: `{ sessionDir, ticketId, workingDir, statePath, flags, log, stagePaths?, allowDoneWhenGateNotRun? }`
+- **Outputs**: `{ ok: true, sha }` when the commit is attributable; `{ ok: false }` otherwise.
+- **Errors**: `git add` / `git commit` non-zero → `{ok:false}` with a logged reason.
+- **Invariants**: `ok:true` REQUIRES a commit whose trailer the consumer's reader can parse. The
+  refusal on a genuinely unattributable commit is preserved unchanged.
+
+## Verification Strategy
+
+Every command below is runnable from `extension/`. **All measurements require Node 24 and pnpm on
+PATH** (Node 22 cancels 38 fast-tier tests; pnpm is required by the convergence-gate fixtures):
+
+```bash
+# the eight cluster suites
+node --test tests/runner-authored-trailer.test.js
+node --test tests/spawn-morty-commit-attribution.test.js
+node --test tests/boundary-commit-at-iteration.test.js
+node --test tests/mux-runner-fix-b.test.js
+node --test tests/mux-exit-path-commit.test.js
+node --test tests/exit-path-bystander-stash.test.js
+node --test tests/integration/pipeline-completion-handsoff-e2e.test.js
+node --test tests/integration/extension-wiring.test.js
+
+# tiers (censused idle box; record process census + load average alongside)
+node bin/test-runner.js --tier fast --test-concurrency=8
+npm run test:integration:parallel
+npm run test:integration:serial
+npx tsc --noEmit && npx eslint src/ --max-warnings=-1
+```
+
+Oracle for AC-1, runnable against any candidate commit:
+
+```bash
+git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)'   # MUST print the ticket id
+```
+
+## Test Expectations
+
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-1 | `tests/runner-authored-trailer.test.js` | body-less runner message stamps a PARSED trailer | `parsedTrailer(dir,'Pickle-Ticket') === TICKET_ID` |
+| AC-1 | `tests/runner-authored-trailer.test.js` | new regression: single-line message with NO body | trailer parses via `%(trailers:...)`, not just `%B` |
+| AC-2 | `tests/runner-authored-trailer.test.js` | guard is satisfiable — evidence committed, not absent | `result.ok === true` and `result.sha` matches HEAD |
+| AC-2 | `tests/mux-runner-fix-b.test.js` | M1 ticket-owned dirty work is still committed | outcome is `committed`, not `commit-failed` |
+| AC-2 | `tests/boundary-commit-at-iteration.test.js` | boundary commit reports committed | not `honest_failure/commit-failed` |
+| AC-4 | `tests/spawn-morty-commit-attribution.test.js` | prose-only id mention is NOT attribution | tip IS amended; trailer scan attributes the commit |
+| AC-6 | `tests/runner-authored-trailer.test.js` | degraded arm + idempotence unchanged | one trailer value; fallback still PARSED |
 
 ## Acceptance criteria
 
