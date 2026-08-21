@@ -254,3 +254,51 @@ reverted. One non-blocking suggestion was recorded (the two newline-normalizatio
 functionally identical but not shared as one helper across the two files) and left unactioned as
 out of scope for a 2-line fix. Re-ran both in-scope suites live: 29/29 pass. Full detail:
 `code_review_2026-08-21.md` and `conformance_2026-08-21.md` under ticket `294c6ed6`.
+
+## 9. Test quality review (ticket `01be73ae`)
+
+An independent review of the two in-scope test files (`runner-authored-trailer.test.js`,
+`spawn-morty-commit-attribution.test.js`) against four criteria: real-oracle assertions, failure
+against unfixed code, meaningful edge-case coverage, and freedom from assertion-free/tautological
+tests or shared mutable fixture state.
+
+**Real oracle**: every positive claim about trailer presence/value in both files reads
+`%(trailers:key=Pickle-Ticket,valueonly)` (via `parsedTrailer`/`parsedTicketTrailers` helpers), never
+a raw `%B` regex. Raw `%B` checks appear only for legitimate orthogonal purposes: proving a trailer
+was demoted to prose (present in `%B`, absent from the parsed view — the AC-6 test's whole point),
+confirming message-body survival, and one deliberate word-boundary check in spawn-morty's "untagged
+tip amended" test that is immediately contrasted by the next test's explicit parsed-oracle assertion
+(documented in that test's own comment as the fix for the original prose-mention bug).
+
+**Failure against unfixed code**: already demonstrated by Section 4's negative control (not re-run
+here) — reverting both fixes while keeping the current tests reproduces exactly the 4 AC-1b/AC-6
+failures in `runner-authored-trailer.test.js` and 2 in `spawn-morty-commit-attribution.test.js`.
+
+**Edge cases pinned**: already-carries-trailer idempotence (both files, via real `readEvidence` calls
+in two tests — the strongest possible assertion, exercising the actual production consumer rather
+than a simulation), blank/whitespace-only ticket id (`runner-authored-trailer.test.js`, 3 tests),
+degraded interpret-trailers-unavailable fallback for `stampPickleTicketTrailer` (2 tests, incl. the
+harder pre-existing-trailer-demotion case).
+
+**The `buildTrailerAmendedMessage` "no dedicated test" claim (Section 7) was independently
+re-traced, not merely re-cited**: `maybeAmendTicketTrailer` is the sole production call site, and it
+builds `message` via `reconcileGitOrNull` → `reconcileGit`, whose `.trim()` unconditionally strips
+every trailing newline — so production input is ALWAYS in the exact unterminated state the fix
+repairs; there is no reachable production path where the function receives an already-terminated
+message. Existing tests already exercise this precondition via real `git commit -m` (git always
+stores `%B` ending in one `\n`, per Section 8's empirical probe), across both a single-paragraph
+shape and a multi-paragraph shape with pre-existing trailers. Combined with Section 4's negative
+control reproducing exactly 2 failures in that suite on revert, the argument holds — **not a gap**.
+
+**Zero assertion-free/tautological tests; zero shared mutable fixture state** — every test uses its
+own `mkdtempSync` temp dir.
+
+**One non-blocking observation, not P0/P1**: `spawn-morty-commit-attribution.test.js` has no test
+for `maybeAmendTicketTrailer`'s degraded fallback arm (the pre-existing `-m message -m trailer`
+two-arg amend at spawn-morty.ts:2436, taken when `buildTrailerAmendedMessage` returns `null`). This
+code predates this bundle's normalization fix and is explicitly excluded by this ticket's "NOT in
+Scope: Promoting the degraded arm" — recorded for a future ticket, not actioned here.
+
+**Verdict: zero P0/CRITICAL and zero P1/HIGH test-quality findings.** No test or source change
+required. Full detail: `research_2026-08-21.md`, `conformance_2026-08-21.md`,
+`code_review_2026-08-21.md` under ticket `01be73ae`.
