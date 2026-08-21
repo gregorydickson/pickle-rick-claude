@@ -735,13 +735,22 @@ function finalizeGateResult(opts, emit, result) {
     });
     return result;
 }
+/**
+ * AP-EXT-ITER34-01: both inputs this narrows against — `getChangedSince`'s output and
+ * `opts.allowedPaths` (`scope.json:allowed_paths`) — are spelled REPO-ROOT-relative, while
+ * `opts.workingDir` may already have been rewritten to a package dir one level down by
+ * R-SZGB-A `detectProjectTypeWithRootResolution`. Resolve every repo-root-relative path
+ * against ONE base derived from the repo root, never against `opts.workingDir` — the target
+ * dirs themselves stay absolute, so package-dir spelling is irrelevant to what gets run.
+ */
 function selectWorkspaceTargetDirs(opts, workspacePackages, allowedPathsUsed) {
+    const repoRoot = resolveLexicalRepoRoot(opts.workingDir);
     let candidates = workspacePackages;
     if (opts.scope === 'changed' && opts.since) {
         const changedFiles = getChangedSince(opts.workingDir, opts.since);
         if (!affectsAllWorkspacePackages(changedFiles)) {
             candidates = workspacePackages.filter(pkgDir => changedFiles.some(f => {
-                const absFile = path.resolve(opts.workingDir, f);
+                const absFile = path.resolve(repoRoot, f);
                 return absFile.startsWith(pkgDir + path.sep) || absFile === pkgDir;
             }));
         }
@@ -749,9 +758,9 @@ function selectWorkspaceTargetDirs(opts, workspacePackages, allowedPathsUsed) {
     if (!allowedPathsUsed || affectsAllWorkspacePackages(opts.allowedPaths ?? [])) {
         return candidates;
     }
-    const relCandidates = candidates.map(p => path.relative(opts.workingDir, p));
+    const relCandidates = candidates.map(p => path.relative(repoRoot, p));
     const filtered = filterByScope(relCandidates, { scope: opts.scope, allowedPaths: opts.allowedPaths });
-    return filtered.map(rel => path.resolve(opts.workingDir, rel));
+    return filtered.map(rel => path.resolve(repoRoot, rel));
 }
 function resolveGateTargetDirs(opts, workspacePackages, allowedPathsUsed, start, emit) {
     if (workspacePackages.length > 0) {

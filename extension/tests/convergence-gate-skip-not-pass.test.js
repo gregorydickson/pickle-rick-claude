@@ -197,3 +197,135 @@ test('assignOccurrenceIndices: ordinals are counted within one check, not across
     'three different checks are three separate identities, each its own occurrence 0'
   );
 });
+
+// AP-EXT-ITER34-01 — the fourth, worse variant of this file's thesis: not a skip
+// mis-reported as a pass, but a gate that RUNS NOTHING and reports an executed
+// `gate_run_complete` green, with no `gate_skipped` to give it away.
+// `selectWorkspaceTargetDirs` narrows the workspace packages using two
+// REPO-ROOT-relative inputs (`getChangedSince`'s output and `opts.allowedPaths`,
+// i.e. `scope.json:allowed_paths`) but resolved them against `opts.workingDir` —
+// which R-SZGB-A `detectProjectTypeWithRootResolution` may already have rewritten
+// to a package dir one level down. Every candidate then filtered out.
+// Every other workspace fixture in this repo puts the workspace root AT the git
+// root, so the two path spaces coincide by accident and the narrowing matches for
+// the wrong reason. These cases put it ONE LEVEL BELOW and assert the gate STATUS.
+function buildNestedWorkspaceRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-nested-ws-root-'));
+  execSync('git init', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+  execSync('git config user.email "t@t.com"', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+  execSync('git config user.name "T"', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+
+  // No project marker at the git root: `app/` is the lone depth-1 candidate, so
+  // R-SZGB-A rewrites `workingDir` to it.
+  const appDir = path.join(dir, 'app');
+  const passingDir = path.join(appDir, 'packages', 'passing');
+  const failingDir = path.join(appDir, 'packages', 'failing');
+  fs.mkdirSync(passingDir, { recursive: true });
+  fs.mkdirSync(failingDir, { recursive: true });
+
+  fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({
+    name: 'workspace-root', private: true, workspaces: ['packages/*'],
+  }, null, 2));
+  fs.writeFileSync(path.join(passingDir, 'package.json'), JSON.stringify({
+    name: 'passing', version: '1.0.0', scripts: { test: 'node -e "process.exit(0)"' },
+  }, null, 2));
+  fs.writeFileSync(path.join(failingDir, 'package.json'), JSON.stringify({
+    name: 'failing', version: '1.0.0', scripts: { test: 'node -e "process.exit(1)"' },
+  }, null, 2));
+  fs.writeFileSync(path.join(passingDir, 'src.js'), 'v1\n');
+  fs.writeFileSync(path.join(failingDir, 'src.js'), 'v1\n');
+
+  execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+  execSync('git commit -m "init nested workspace"', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+  return { dir, passingDir, failingDir };
+}
+
+function commitTouch(dir, fileDir) {
+  fs.writeFileSync(path.join(fileDir, 'src.js'), 'v2\n');
+  execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+  execSync('git commit -m "touch package"', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+}
+
+test('AP-EXT-ITER34-01: nested workspace root — scope=changed runs the changed workspace package', async () => {
+  const { dir, failingDir } = buildNestedWorkspaceRepo();
+  try {
+    commitTouch(dir, failingDir);
+    const { events, onEvent } = captureEvents();
+
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'changed', since: 'HEAD~1', checks: ['tests'], onEvent,
+    });
+
+    assert.equal(result.status, 'red', 'a workspace root below the git root must still run the changed package');
+    assert.equal(result.total_raw_failure_count, 1);
+    assert.deepEqual(
+      result.failures.map(f => path.relative(dir, f.file).replace(/\\/g, '/')),
+      ['app/packages/failing'],
+    );
+    assert.ok(
+      !events.some(e => e.event === 'gate_skipped'),
+      'the pre-fix green was silent — running zero checks did not even announce itself as a skip',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER34-01: nested workspace root — narrowing still excludes untouched packages', async () => {
+  const { dir, passingDir } = buildNestedWorkspaceRepo();
+  try {
+    commitTouch(dir, passingDir);
+
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'changed', since: 'HEAD~1', checks: ['tests'],
+    });
+
+    assert.equal(result.status, 'green', 'the repo-root base must narrow, not disable narrowing');
+    assert.equal(result.total_raw_failure_count, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER34-01: nested workspace root — repo-root-relative allowedPaths keep the owning package in scope', async () => {
+  const { dir } = buildNestedWorkspaceRepo();
+  try {
+    // `scope.json:allowed_paths` is spelled from the REPO ROOT, like git's diff output.
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'full', checks: ['tests'],
+      allowedPaths: ['app/packages/failing/**'],
+    });
+
+    assert.equal(result.status, 'red', 'repo-root-relative allowedPaths must resolve against the repo root');
+    assert.equal(result.total_raw_failure_count, 1);
+    assert.deepEqual(
+      result.failures.map(f => path.relative(dir, f.file).replace(/\\/g, '/')),
+      ['app/packages/failing'],
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER34-01: nested workspace root — changed-file narrowing composes with allowedPaths', async () => {
+  const { dir, failingDir } = buildNestedWorkspaceRepo();
+  try {
+    commitTouch(dir, failingDir);
+
+    // Both narrowing arms active at once — the production per-iteration gate shape
+    // (`since` from the iteration SHA, `allowedPaths` from scope.json).
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'changed', since: 'HEAD~1', checks: ['tests'],
+      allowedPaths: ['app/packages/failing/**'],
+    });
+
+    assert.equal(result.status, 'red');
+    assert.equal(result.total_raw_failure_count, 1);
+    assert.deepEqual(
+      result.failures.map(f => path.relative(dir, f.file).replace(/\\/g, '/')),
+      ['app/packages/failing'],
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
