@@ -30,6 +30,286 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+
+> ### ▶▶ RESUME HERE — 2026-08-21 (supersedes the 2026-08-19 PAUSED block below)
+>
+> **The 2026-08-19 bundle is CLOSED; `RESUME.md` is stale and should be deleted.** Its session
+> `2026-08-19-f048dbc4` ran on a different machine and its `SESSION_ROOT` does not exist here, so there
+> was nothing to `--resume`. Ticket `96444430`'s "uncommitted" correction was not lost — it landed as
+> `8c4c5b8a`. Only the verification ticket `29077ab4` remained; it is now done and its evidence is
+> `extension/docs/bug-2026-08-19-tier-evidence.md` (`82a2266a`). **AC-1..AC-8 pass; AC-9/AC-10 meet
+> their count thresholds but not `fail 0`/`cancelled 0`, and every failure reproduces at the pre-bundle
+> sha `08415a3e` — so none is attributable to that bundle. Success verdict WITHHELD per its own AC-2.**
+>
+> **🖥️ THE MACHINE WAS THE PROBLEM, AND THAT INVALIDATES A LEDGER ENTRY.** A full environmental sweep
+> on this checkout moved the fast tier from **15 fail / 38 cancelled → 5 fail / 0 cancelled** at the
+> same sha, with no code change:
+>
+> | tool | was | now | cleared |
+> |---|---|---|---|
+> | Node | 22.12.0 | **24.19.0** | **all 51 cancellations** across three tiers |
+> | pnpm | absent | 11.22.0 | **8 `runGate` failures** |
+> | ripgrep | absent (shell function only) | 15.2.0 | hundreds of `scope-resolver … ENOENT` |
+> | tmux | absent | 3.7c | pipeline hard-blocker |
+> | codex | absent | still absent | nothing — opt-in only (`setup.ts:620`) |
+>
+> **The whole Node 22 line cancels 38 fast-tier tests — 22.12.0 AND 22.23.2, the newest 22.x.** The
+> release gate is pinned to `22.x`; `ci.yml` and `stability-gate.yml` use `24`. Filed as
+> `BUG-2026-08-21-release-gate-pinned-to-node-22.md` (P1).
+>
+> **❌ LEDGER CORRECTION — "all three tiers green at `f45812e1`" does NOT reproduce.** Re-run at that
+> exact sha under the fully corrected environment (Node 24 + pnpm + rg + tmux), the same suites fail
+> identically: `runner-authored-trailer` 3, `mux-runner-fix-b` 1, `worker-timeout-preserves-commit` 2.
+> Only 17 commits separate it from HEAD and they are not the cause. Either that measurement was
+> environment-dependent in a way not captured, or it did not hold as recorded. **Treat `f45812e1` as an
+> unverified baseline until re-measured with its census recorded.**
+>
+> **✅ THE BUNDLE PROVED ITSELF WHILE BUILDING ITSELF.** Both implementation tickets landed, and their
+> own runner-authored commits carry trailers that PARSE — the exact property that was broken:
+>
+> ```
+> dfa6e239  fix(7c91858f): normalize interpret-trailers input newline in stampPickleTicketTrailer
+>           git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)'  ->  7c91858f
+> 291812e5  fix(87b562c2): normalize interpret-trailers input newline in buildTrailerAmendedMessage
+>           git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)'  ->  87b562c2
+> ```
+>
+> The fix is one helper applied at each producer — no third mechanism, call sites preserved (AC-3):
+> `normalizeTrailerInputNewline(m) => m.replace(/\n*$/, '\n')`, collapsing any run of trailing
+> newlines to exactly one and never leaving the input unterminated.
+>
+> **⚠️ `87b562c2` IS SUPPRESSION-ASSISTED, NOT GATE-CLEAN.** `recovery_attempts` carries one
+> `failed_flip_suppressed` entry — *"worker_gate_fail flip suppressed 1/2 (both) for 87b562c2"* at
+> iteration 4. The ticket flipped Done with a RED worker gate, absorbed by the suppression budget. That
+> is the no-stop design behaving correctly (park, flag, continue), and it is exactly the distinction the
+> 2026-08-17 entry insists on: **do not read the Done as gate-clean.** Re-verify that ticket's suites
+> from the evidence ticket's measurement, not from its Done status.
+>
+> **✅ PICKLE PHASE COMPLETE — `EPIC_COMPLETED/all-tickets-done` 2026-08-21T17:25:28Z, 7/7 tickets, 12
+> iterations. Citadel complete. Now in anatomy-park (phase 3 of 4).** Commits: `dfa6e239` (mux-runner
+> producer) · `291812e5` (spawn-morty producer) · `9aaeab72` (tier evidence) · `bb010fbb` `72f6c1b5`
+> `cda524e6` `8829b15d` (the four hardening passes). Tree clean, `exit_reason: null`.
+>
+> **The bundle's own measurement, from `extension/docs/bug-2026-08-20-trailer-normalization-evidence.md`:**
+> all **nine in-scope suites 0 fail / 0 cancelled** (scrubbed); fast `pass 7759 / fail 1 / cancelled 0`;
+> integration:parallel `pass 631 / fail 1 / cancelled 0`; integration:serial `pass 606 / fail 0 /
+> cancelled 0`. **Negative control reproduces the pre-fix failures exactly** — revert the normalization
+> and `runner-authored-trailer` goes `fail 4`, `spawn-morty-commit-attribution` `fail 2`, including the
+> `AC-1b: subject + body paragraph` row that the authored PRD would never have written.
+>
+> **🚨 `done_over_red_worker_gate_tests` ON 6 OF 7 TICKETS — AND THE REDS WERE CONTAMINATION.**
+> `phase_dispositions.pickle` reads
+> `done_over_red_worker_gate_tests:87b562c2,9b3c4549,294c6ed6,f168caeb,01be73ae,91f5ff2b;
+> post_final_tier_degraded:red`, with seven `failed_flip_suppressed` entries (`91f5ff2b` exhausted its
+> budget 2/2). **The gates were falsely red.** Every worker runs with `GIT_CONFIG_COUNT`/
+> `GIT_CONFIG_KEY_0=core.hooksPath`/`GIT_CONFIG_VALUE_0=<session>/git-trailer-hooks` and
+> `PICKLE_TICKET_ID=<ticket>` exported, so the hook stamps `Pickle-Ticket: <live ticket id>` into ANY
+> commit made in that env — **including test-fixture commits** — and suites asserting a fixture's own
+> trailer fail with `actual:['<live ticket>']` / `expected:['<fixture id>']`. Scrubbed, the same suites
+> pass. Filed as `BUG-2026-08-21-worker-env-stamps-test-fixture-commits.md` (P1).
+>
+> **Read this the right way round: suppression SAVED the bundle from a contaminated gate.** Without the
+> no-stop design, six tickets of sound work would have been failed by a phantom. The cost is that a
+> genuine red is now indistinguishable from contamination, and one ticket burned its whole recovery
+> budget on it. **The diagnostic tell is a WRONG TICKET ID in the assertion diff — no code change can
+> produce that; only the ambient hook can.**
+>
+> **🔁 R-ORCG IS NOW COMPLETE — the producer is identified.** `orphan-reaper-blind-to-own-leak` recorded
+> the population; `worker-backgrounded-test-run-stalls-ticket` (written by a worker this session)
+> records what MAKES it: a worker that launches a tier run with `run_in_background` ends its turn
+> expecting a notification that never comes, the child is killed at turn boundary, the worker exits
+> `exit:0` with zero artifacts and a clean tree, the gate reds, and one `npm run test:fast` is left at
+> `PPID 1`. **One orphan per failed spawn.** Ticket `9b3c4549` burned FIVE consecutive spawns this way
+> before an explicit foreground directive unblocked it in one. R-MWBG is in the manager prompt but is
+> NOT enforced on the worker's own test invocations — exactly the commands long enough to tempt
+> backgrounding.
+>
+> **■ RAN TO TERMINAL: `2026-08-20-54c74299`** (tmux `pipeline-54c74299`, now finished) — full pipeline
+> (pickle → citadel → anatomy-park → szechuan-sauce), scope `branch` (492 files), UNATTENDED.
+> PRD `BUG-2026-08-20-runner-authored-commit-attribution-cluster.md`, `start_commit` `5ca07b7d`.
+> 7 tickets: `7c91858f` ✅ Done (`dfa6e239`) → `87b562c2` ✅ Done (`291812e5`, suppression-assisted)
+> → `9b3c4549` ✅ Done (`9aaeab72`, evidence) → 4 hardening ✅ Done (`bb010fbb` `72f6c1b5`
+> `cda524e6` `8829b15d`). Wiring ticket skipped by the 7d gate.
+> Finished 2026-08-21 22:11 CDT. Tree clean at terminal; all 7 tickets Done.
+>
+> **🐞 THE BUNDLE — and refinement REFUTED the authored PRD on five points, by measurement.** One
+> signature behind **15 failures across 10 suites**: `git interpret-trailers` opens a trailer paragraph
+> only when its input ends in a newline; given unterminated input it glues the trailer onto the last
+> line, and git parses trailers from the LAST paragraph only — so
+> `%(trailers:key=Pickle-Ticket,valueonly)` returns EMPTY, the completion guard correctly refuses, and
+> callers report `reason=commit-failed`. **A body is not required; a terminating newline is**, and the
+> damage is conditional on paragraph shape (it fires iff unterminated AND the last paragraph is not
+> already a trailer block — which is why `spawn-morty-commit-attribution` fails 2 of 14, not 14).
+>
+> What the authored PRD got wrong and refinement corrected: (1) root cause stated as "single-line / no
+> body" — the real discriminator is the newline, and the authored regression row would have missed
+> **subject+body**, the common real shape, covered by NO test today; (2) **two** producers, not one —
+> `buildTrailerAmendedMessage` (`spawn-morty.ts:2372`) never calls the stamper and its `%B` feed is
+> `.trim()`-ed by `reconcileGit` (`:2304`), proven LIVE by isolation run; (3) AC-3's "one seam" was
+> actively harmful — an anchor test asserts the two `mux-runner` call sites stay separate, so AC-3 means
+> "no THIRD mechanism"; (4) the authored NON-GOALS were wrong — `worker-timeout-preserves-commit` and
+> `worker-gate-not-run-invariant` go green under the same fix; (5) the authored "the degraded arm is
+> right" claim is false — that arm silently demotes pre-existing trailers.
+>
+> **A glued commit is a PERMANENT FIXPOINT.** `--if-exists addIfDifferentNeighbor` cannot dedupe a line
+> git does not parse as a trailer, so re-stamping appends a SECOND glued line and still reads 0 values.
+> The amend path cannot repair an already-glued commit, ever — which is what makes producer 2 a scope
+> REQUIREMENT, not a nice-to-have. Backfill of existing history becomes possible only after this fix.
+>
+> **🚨 NEW P0 ABOVE THIS BUNDLE — `BUG-2026-08-21-mcp-fallback-passes-non-mcp-claude-json.md`.**
+> `resolveMcpConfigWithLayer` passes `~/.claude.json` to `claude --mcp-config` whenever the file exists,
+> without checking it contains `mcpServers`. Claude Code always creates that file; the key appears only
+> once a user-scoped MCP server is configured. **On a fresh machine every worker and analyst spawn dies
+> in ~5 seconds** with `Invalid MCP configuration`, which reads as a spawn storm rather than a config
+> error. Killed refinement cycle 1 outright. Worked around on this box by adding an empty `mcpServers`
+> key (backup `~/.claude.json.bak.pickle-2026-08-20`) — that is NOT the fix.
+>
+> **Also filed:** `BUG-2026-08-21-extension-wiring-asserts-a-deleted-path.md` (P2 — `install.sh:646`
+> `rm -f`s the very path `extension-wiring.test.js:47` asserts; re-running the installer is the
+> operation that guarantees the failure) and `BUG-2026-08-21-bun-probe-path-filter-misses-homebrew.md`
+> (P3 — the absence simulation strips `PATH` entries containing `"bun"`, missing `/opt/homebrew/bin`).
+>
+> **R-ORCG now has the un-plantable evidence it was blocked on.** Ordinary `test:fast` runs leaked six
+> `pickle-spawn-morty-worker-gate-*` orphans at `PPID 1` (elapsed 47m–2h23m); `reap-orphans.js` reported
+> `scanned=0 reaped=0` against all six. Two more accumulated from the next run. The reaper is blind to
+> its own dominant leaker, on a real population nobody planted. Note the first `kill -9` returned rc=0
+> and killed nothing (sandbox signal-swallowing) — a trap for any reaper that trusts `kill`'s exit code.
+>
+> **Method note:** a tier measurement needs a process census AND a load average recorded alongside the
+> result — AND the toolchain excluded. The census rule alone was not sufficient here; four separate
+> environmental causes hid behind it.
+
+> **🔬 ANATOMY-PARK FOUND A SYSTEMIC CLASS: ENTRY-GUARD SYMLINK BLINDNESS (2 CRITICAL, 2 HIGH).**
+> `04df0897` extension (orphan-reaper) · `cb1a3ee9` hooks (stop-hook) · `0df05c84` bin
+> (auto-fill-completion-commit) · `97cea731` services (overlap predicate). The same defect in four
+> subsystems: a guard compares a `ps`/argv path against `path.resolve(os.tmpdir())`, which is a
+> **LEXICAL** compare — `path.resolve` does not follow symlinks. On macOS `os.tmpdir()` yields
+> `/var/folders/…/T` (where `/var` is a symlink to `/private/var`) while a spawned process's argv
+> carries the realpath `/private/var/folders/…/T`, so `startsWith` rejects every real match.
+>
+> Verified independently on this box using the argv of a real leaked orphan:
+> `startsWith(lexical + sep)` → **false** (the bug) · `startsWith(realpath + sep)` → **true** (the fix).
+>
+> **✅ R-ORCG (SEQUENCE item 2) IS NOW FULLY EXPLAINED — three pieces, from three separate sources:**
+>
+> 1. **The population** — memory `orphan-reaper-blind-to-own-leak`: ordinary `test:fast` runs leak
+>    `pickle-spawn-morty-worker-gate-*` processes at `PPID 1`; six alive at once, reaper reported
+>    `scanned=0 reaped=0` against all of them.
+> 2. **The producer** — memory `worker-backgrounded-test-run-stalls-ticket`: a worker that launches a
+>    tier run in the background ends its turn expecting a notification that never arrives; the child is
+>    killed at the turn boundary, the worker exits `exit:0` with zero artifacts and a clean tree, the
+>    gate reds, and one `npm run test:fast` is orphaned per failed spawn. Ticket `9b3c4549` burned five
+>    consecutive spawns this way before an explicit foreground directive unblocked it in one.
+> 3. **Why the reaper never saw them** — `04df0897`: tmpdir symlink blindness. That commit records
+>    *"10 alive `pickle-spawn-morty-worker-gate-*` procs, reaper `scanned=0` — a permanent false-green
+>    over an unbounded leak."*
+>
+> The third piece is the one no amount of PRD authoring would have guessed: **the reaper was not
+> under-scoped, it was scanning nothing while reporting success.** R-ORCG's insistence that "an empty
+> census is NOT evidence" was right for a reason nobody had identified — the empty census *was* the
+> bug. The reaper half of R-ORCG is now addressed by this fix; the remaining work is the producer half
+> (enforce R-MWBG on the worker's OWN test invocations, not just on `spawn-morty.js`).
+>
+> **Method note, second occurrence:** this is the same shape as the `RegExp.exec` false positive and
+> the `install.sh` doc-text false positive — a *lexical* matcher standing in for a *semantic* question.
+> The bash-scanner also blocked an operator command whose PRD prose merely contained the string
+> `bash install.sh`, and config-protection blocks any command whose text contains `state.json`.
+> Three matchers, one failure mode: matching text where the intent was to match an action.
+
+> **⚠️ FOREIGN-LOAD CONTAMINATION WINDOW — 2026-08-21 ~16:30 CDT, load average 34.75.** Any tier or
+> gate verdict produced by anatomy-park in this window is SUSPECT and must be re-measured before it is
+> treated as a defect. Census taken at the time (383 processes total):
+>
+> | process | %CPU | note |
+> |---|---:|---|
+> | `siriknowledged` | **127.2** | Spotlight/Siri reindex |
+> | `CascadeSets` XPC | 11.8 | |
+> | `tccd` | 10.4 | |
+> | `contactsd` | 8.0 | 9m36s elapsed — active sync |
+> | `cloudd` / `trustd` / `logd` | 5.6 / 4.8 / 4.4 | |
+>
+> **The load was NOT the pipeline.** Its entire footprint at that moment was 1 `node --test`, 1
+> `test-runner.js`, 1 `claude`, and one legitimate `audit-test-isolation.sh` gate run. This is the same
+> class as the `loa-2261` jest workload that produced load 14.15 and cost four bundles of wrong
+> conclusions — except more than twice as loud, and from macOS system daemons rather than another repo.
+>
+> **This strengthens the binding method rule rather than repeating it.** A process census alone would
+> have read CLEAN here: zero foreign *pickle* processes, no other repo's test suite, nothing the
+> existing census greps look for. The contamination was entirely first-party OS daemons. **The census
+> must therefore record the load average AND the top CPU consumers by name — not merely the absence of
+> known-foreign process patterns.** "No pickle orphans" is not "quiet box".
+>
+> Also observed in the same census: one `pickle-spawn-morty-worker-gate-*` process at `PPID 1`. The
+> leak continues to reproduce on ordinary runs, exactly as [[orphan-reaper-blind-to-own-leak]] and
+> [[worker-backgrounded-test-run-stalls-ticket]] describe, and as `04df0897` explains.
+>
+> **Honest-reporting credit where it is due:** `8738cfe0` catalogs `AP-EXT-ITER34-02` as an **OPEN GAP**
+> — a finalize-gate scope split that anatomy-park could not fix because the scope fence blocked it. The
+> phase recorded what it could not do instead of silently skipping it or loosening the fence. That is
+> the disposition the PRIME DIRECTIVE asks for: continue, flag, do not claim success you did not earn.
+> **🏁 TERMINAL — `Pipeline Failed`, 3/4 phases, 8 non-convergent, 476m 14s. IT DID NOT HALT.**
+> That distinction is the whole point. From `pipeline-runner.log`:
+>
+> ```
+> Phase anatomy-park exited with code 1
+> Phase anatomy-park exited with code 1 (non-fatal) — continuing to szechuan-sauce for automated remediation
+> Phase anatomy-park did NOT converge (anatomy_non_convergent) — reported non-convergent, not counted as completed
+> PHASE 4/4: SZECHUAN-SAUCE
+> Phase szechuan-sauce exited with code 0 — completed successfully
+> Pipeline finished: 3/4 phases, 476m 14s
+> ```
+>
+> pickle ✅ · citadel ✅ (10 findings) · anatomy-park ❌ non-convergent after 4h25m · szechuan-sauce ✅
+> clean in 21m. A phase failed, the run continued, the verdict was withheld, and the report names the
+> degradation instead of averaging it away. **Ran to completion ≠ reported success**, and the runner
+> kept those two facts on separate wires exactly as [[B-NOSTOP-GATES]] requires.
+>
+> **✅ THE REAPER FIX IS VERIFIED ON A REAL ORPHAN.** After `04df0897` landed, the same command that
+> previously read `scanned=0 reaped=0` against six live orphans now reports:
+>
+> ```
+> [reap-orphans] scanned=1 reaped=1 unverified=0 session_owned=0 tmp_prefix_fixture=1 repo_fixture_path=0
+> ```
+>
+> Real population, not a planted fixture — the exact evidence standard R-ORCG demanded. **The reaper
+> half of R-ORCG is DONE.** The producer half (enforce R-MWBG on the worker's own test invocations, so
+> workers stop backgrounding tier runs) remains open.
+>
+> **What this bundle actually bought, beyond its own thesis:** 9 anatomy-park commits — 2 CRITICAL, 6
+> HIGH, 1 catalogued OPEN GAP. Six of them are one root pattern: **a lexical matcher standing in for a
+> semantic question.** `04df0897`/`cb1a3ee9`/`0df05c84` compare argv paths against
+> `path.resolve(os.tmpdir())` without following symlinks (`/var` vs `/private/var`); `94cbf02f`
+> compares two path spaces; `26f7db9b` resolves repo-root paths against a package dir; `3a60fb94` has
+> the scope fence **reporting a failed staged enumeration as a green pass**. Two of these — the reaper
+> and the fence — were *false greens*: machinery reporting success while doing nothing.
+>
+> That family now has four more members outside the diff, all found the same day: the missing-timeout
+> matcher firing on `RegExp.prototype.exec`; the bash-scanner blocking an operator command because PRD
+> **prose** contained the string `bash install.sh`; config-protection blocking any command whose text
+> contains `state.json`; and the bun probe stripping `PATH` entries whose *path string* contains
+> `"bun"`, which misses `/opt/homebrew/bin`. **Ten instances. This is the codebase's dominant defect
+> class, and it is worth a named trap door rather than ten separate fixes.**
+>
+> **📋 FILED THIS SESSION (5 new PRDs, all split out with proof they are distinct):**
+>
+> | PRD | Pri | One line |
+> |---|---|---|
+> | `BUG-2026-08-21-mcp-fallback-passes-non-mcp-claude-json.md` | **P0** | `~/.claude.json` passed to `--mcp-config` unchecked → every worker spawn dies on a fresh machine |
+> | `BUG-2026-08-21-worker-env-stamps-test-fixture-commits.md` | P1 | worker `PICKLE_TICKET_ID`/`GIT_CONFIG_*` stamps fixture commits → false gate reds (drove 6 of 7 suppressions here) |
+> | `BUG-2026-08-21-release-gate-pinned-to-node-22.md` | P1 | release gate pinned to the Node line where 38 tests cancel; CI pinned to the one where they pass |
+> | `BUG-2026-08-21-extension-wiring-asserts-a-deleted-path.md` | P2 | test asserts the path the installer deletes; re-running the installer guarantees the failure |
+> | `BUG-2026-08-21-bun-probe-path-filter-misses-homebrew.md` | P3 | absence simulation misses `/opt/homebrew/bin` |
+>
+> **🖥️ AND A HOST-LEVEL CAUSE THE CENSUS RULE CANNOT SEE.** Spotlight indexes `TMPDIR` in real time
+> (probe file indexed within 2s; `mdutil -s /` = enabled). Every fixture repo and `bin/npm` tree the
+> suite creates is indexed as it appears — 1.2 GB accumulated in `TMPDIR`. That is the mechanism behind
+> the load-34.75 spike AND behind the previously-recorded *"`StateManager.read` costs ~6s on a busy
+> developer `TMPDIR` vs ~0ms on a private one."* Tested and **rejected** as fixes: `.metadata_never_index`
+> (file still indexed 3s later), relocating to `/private/tmp` or `/private/var/tmp` (both indexed), and
+> `mdutil -i off` (volume-scoped — would disable Spotlight entirely). The only real lever is the
+> **Spotlight Privacy list**, which is an operator UI action. Reducing the orphan leak reduces the
+> source.
+
 > ### ▶▶ RESUME HERE — 2026-08-18 (supersedes the 2026-08-14 block below)
 >
 > **One red tier left on the branch, and it is not what the last three bundles thought it was.**
