@@ -280,3 +280,75 @@ test('AP-EXT-ITER31-01: a non-ASCII staged path OUTSIDE the fence is still flagg
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER38-01: a staged-path enumeration that did not COMPLETE must never
+// be reported as a fence that PASSED.
+//
+// Both cases drive the SHIPPED CLI against a REAL git repo and assert the
+// EMITTED VERDICT — never the argv. An argv oracle would green the moment
+// someone re-tunes the flag list instead of the axis, and every pre-existing
+// case in this file stages a handful of short ASCII paths, which is blind to
+// the truncation ceiling by construction.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER38-01: a staged enumeration git cannot run reports enumeration_failed, never ok', () => {
+  const tmp = makeTmp();
+  try {
+    // No `git init` — the scope fence has a scope.json but no repo to enumerate,
+    // so git exits non-zero. Pre-fix this returned [] and the empty set walked
+    // straight through the allowlist filter into `{status:'ok',staged_count:0}`
+    // at exit 0: a green fence over an enumeration that never happened.
+    const scopePath = writeScopeJson(tmp, ['extension/src']);
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 2, `expected exit 2, got ${result.status}. stdout: ${result.stdout}`);
+    const output = JSON.parse(result.stderr.trim());
+    assert.equal(output.status, 'enumeration_failed');
+    assert.match(output.error, /scope fence was not evaluated/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER38-01: a staged name list past Node\'s 1 MB default is still fenced, not silently emptied', () => {
+  const tmp = makeTmp();
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmp, timeout: 30_000 });
+
+    // > 1 MB of NUL-separated path bytes, reached with deep paths rather than a
+    // huge file count so the fixture stays cheap. Past Node's default maxBuffer
+    // the child is SIGTERMed and `status` comes back null — indistinguishable,
+    // to the guard, from a git that failed.
+    const seg = 'd'.repeat(120);
+    const deepRel = path.join('outside', ...Array(6).fill(seg));
+    fs.mkdirSync(path.join(tmp, deepRel), { recursive: true });
+    for (let i = 1; i <= 1500; i += 1) {
+      fs.writeFileSync(path.join(tmp, deepRel, `f${i}-${'n'.repeat(120)}.txt`), '');
+    }
+    spawnSync('git', ['add', '-A'], { cwd: tmp, timeout: 60_000 });
+
+    const bytes = spawnSync('git', ['diff', '--staged', '--name-only', '--no-renames', '-z'], {
+      cwd: tmp, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: 30_000,
+    }).stdout.length;
+    assert.ok(bytes > 1024 * 1024, `fixture must exceed the 1 MB default; got ${bytes} bytes`);
+
+    // Every staged path is outside the fence. Pre-fix: `{status:'ok'}` exit 0.
+    const scopePath = writeScopeJson(tmp, ['extension/src']);
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp, maxBuffer: 64 * 1024 * 1024 });
+
+    // The EXIT CODE is the verdict the worker acts on, so that is what this pins.
+    // A >1 MB `outside_scope` payload is itself truncated at the 64 KB pipe buffer
+    // by the CLI's `process.exit` — a separate, severity-independent defect that
+    // does not change the code — so the stdout assertion stays a prefix check.
+    assert.equal(result.status, 1, `expected exit 1, got ${result.status}. stderr: ${result.stderr}`);
+    assert.ok(
+      result.stdout.startsWith('{"status":"outside_scope"'),
+      `expected an outside_scope verdict, got: ${result.stdout.slice(0, 120)}`,
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

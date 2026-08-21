@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { logActivity } from '../services/activity-logger.js';
+import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 function normalizePath(p) {
     return p.replace(/\/$/, '');
 }
@@ -68,9 +69,21 @@ function getStagedPaths() {
     const result = spawnSync('git', ['diff', '--staged', '--name-only', '--no-renames', '-z'], {
         encoding: 'utf-8',
         timeout: 15_000,
+        // AP-EXT-ITER38-01: the staged name list is an unbounded enumeration, so it
+        // declares the ONE ceiling (AP-EXT-ITER8-01) instead of inheriting Node's 1 MB
+        // default. Past it Node SIGTERMs git and hands back the first megabyte with
+        // `status === null`, which the guard below can only read as "could not enumerate".
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
+    // An enumeration that did not complete is NOT an empty enumeration. `[]` is a
+    // POSITIVE finding ("nothing is staged") that `checkScopeDiff` turns into a green
+    // fence; a failed/truncated/timed-out read has found nothing of the sort. Same
+    // predicate as before — only the verdict it reports changed, from a fabricated
+    // answer to no answer. Sibling readers already draw this line: `git-utils.ts:
+    // listWorkingTreeDirtyPaths` throws, `mux-runner.ts:computeSourceTreeSignature`
+    // returns null.
     if ((result.status ?? 1) !== 0)
-        return [];
+        return null;
     return (result.stdout || '').split('\0').filter(Boolean);
 }
 export function checkScopeDiff(opts = {}) {
@@ -96,6 +109,14 @@ export function checkScopeDiff(opts = {}) {
     }
     const allowedPaths = scopeData.allowed_paths;
     const staged = getStagedFn();
+    if (staged === null) {
+        return {
+            status: 'enumeration_failed',
+            scope_json_path: scopeJsonPath,
+            head_ref: headRef,
+            error: 'git diff --staged could not be enumerated; scope fence was not evaluated',
+        };
+    }
     const outside = staged.filter((p) => !isPathInScope(p, allowedPaths) && !isTrapDoorCatalogPath(p));
     if (outside.length === 0) {
         maybeEmitImpactWarning(opts.impactService, staged, allowedPaths);
@@ -144,7 +165,10 @@ if (process.argv[1] && path.basename(process.argv[1]) === 'check-scope-diff.js')
         process.stdout.write(JSON.stringify(result) + '\n');
         process.exit(0);
     }
-    if (result.status === 'malformed_scope') {
+    // Both statuses mean the same thing to the caller — the fence could not render a
+    // verdict — so they share ONE disposition and one exit code. Exiting 0 on either
+    // would report a fence that never ran as a fence that passed.
+    if (result.status === 'malformed_scope' || result.status === 'enumeration_failed') {
         process.stderr.write(JSON.stringify({ error: result.error, status: result.status }) + '\n');
         process.exit(2);
     }
