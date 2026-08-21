@@ -1,140 +1,135 @@
-# BUG-2026-08-20 (P0) — runner-authored commits are unattributable: empty `Pickle-Ticket` trailer → `commit-failed`
+# BUG-2026-08-20 (P0) — in-process trailer producers send UNTERMINATED input to `interpret-trailers`
+
+*(refined: requirements / codebase / risk-scope analysts, 3 cycles, session `2026-08-20-54c74299`)*
 
 ## Status
 
-Open. Branch `release/v2.1-beta`, HEAD `8c4c5b8a`. Twelve failures across eight suites, one shared
-signature. **This is the last thing standing between this branch and a green tier**, and it is a
-reliability defect, not a quality one: a runner that cannot attribute its own commit cannot flip a
-ticket Done, so the work is stranded.
+Open. Branch `release/v2.1-beta`, HEAD `5ca07b7d`. **15 failures across 10 suites**, one shared
+signature *(refined: codebase — measured blast radius, up from the authored 12/8)*. A runner that
+cannot attribute its own commit cannot flip a ticket Done, so the work is stranded. Reliability
+defect; first under the PRIME DIRECTIVE.
 
-## What happens
+## Root cause — MEASURED, and NOT what the authored PRD claimed
 
-`commitAndContinueDoneFlip` lands a commit whose `Pickle-Ticket` trailer reads back **empty**. The
-completion guard then correctly refuses the Done flip, and every downstream caller reports
-`reason=commit-failed`:
+*(refined: all three analysts, cycle 3, by measurement — this REFUTES the authored "single-line
+message / no body" statement, which was an incomplete generalization from one example.)*
 
-```
-runner-authored-trailer.test.js:132   '' !== 'a1b2c3d4'
-runner-authored-trailer.test.js:144   false !== true
-mux-runner-fix-b.test.js:149          expected commit, got reason=commit-failed
-mux-exit-path-commit.test.js:90       expected committed, got reason=commit-failed
-exit-path-bystander-stash.test.js:94  expected N committed, got reason=commit-failed
-boundary-commit-at-iteration.test.js:87,201  expected committed, got honest_failure/commit-failed
-spawn-morty-commit-attribution.test.js:124   trailer parses via the consumer's oracle, not a raw-message grep
-spawn-morty-commit-attribution.test.js:151   the trailer scan can now attribute the commit
-```
+`git interpret-trailers` opens a new trailer paragraph **only when the input message ends in a
+newline**. Given unterminated input it appends the trailer to the final line, and git parses trailers
+from the LAST paragraph only — so `%(trailers:key=Pickle-Ticket,valueonly)` returns EMPTY.
+**A body is not required; a terminating newline is — and the damage is conditional on paragraph shape.**
 
-The refusal is CORRECT behaviour on an unattributable commit (`mux-runner.ts:6164`). The defect is
-upstream: the trailer never gets stamped, so a commit that *should* be attributable isn't.
+Measured (git 2.39.5), all inputs unterminated:
 
-## Scope — one signature, eight suites
+| input shape | `Pickle-Ticket` | pre-existing `Co-Authored-By` |
+|---|---|---|
+| single paragraph (subject only) | **EMPTY** | — |
+| subject + BODY paragraph | **EMPTY** | — |
+| subject + EXISTING trailer paragraph | `a1b2c3d4` | preserved |
 
-| Suite | fails |
-|---|---|
-| `tests/runner-authored-trailer.test.js` | 3 |
-| `tests/spawn-morty-commit-attribution.test.js` | 2 |
-| `tests/boundary-commit-at-iteration.test.js` | 2 |
-| `tests/mux-runner-fix-b.test.js` | 1 |
-| `tests/mux-exit-path-commit.test.js` | 1 |
-| `tests/exit-path-bystander-stash.test.js` | 1 |
-| `tests/integration/pipeline-completion-handsoff-e2e.test.js` (`AC-PCOMP-4`) | 1 |
-| `tests/integration/extension-wiring.test.js` (`deploy smoke`) | 1 |
+The defect fires **iff** the input is unterminated **AND** its last paragraph is not already a trailer
+block. That single fact explains the observed distribution — it is why
+`spawn-morty-commit-attribution.test.js` fails 2 of 14 rather than all 14.
 
-`extension-wiring`'s `deploy smoke: gate bins and data exist after bash install.sh` may be a distinct
-cause; the research phase should confirm or split it out rather than assume it joins the cluster.
+**TWO in-process producers send unterminated input, both confirmed live by controlled experiment:**
 
-## What is ALREADY excluded — do not re-litigate these
+1. **`stampPickleTicketTrailer`** (`mux-runner.ts:5891`), reached from `commitAndContinueDoneFlip`
+   (`:5971`) and `executeConvergedPlanAdapter`'s `commitPhase` (`:6697`). Both callers pass single-line
+   template literals. Fixing the shared producer fixes both call sites.
+2. **`buildTrailerAmendedMessage`** (`spawn-morty.ts:2372`), whose input is
+   `reconcileGitOrNull(['log','-1','--format=%B',sha])` — and **`reconcileGit` ends in `.trim()`**
+   (`spawn-morty.ts:2304`), stripping the newline `%B` supplies. This producer never calls
+   `stampPickleTicketTrailer`. An isolation run patching only `mux-runner` leaves this suite at
+   `fail 2` while every other cluster suite goes green — **so it is LIVE, not latent.**
 
-This bundle exists because a full environmental sweep was completed first (2026-08-20). Re-deriving
-any of it is wasted iteration:
+**Normalize the INPUT only.** Both helpers `.trim()` their **output** (`silentDeathGit`,
+`mux-runner.ts:9261`; `reconcileGit`, `spawn-morty.ts:2304`), so a newline appended to the *result* is
+silently erased.
 
-- **NOT the Node version.** Provisioning Node 24.19.0 removed all 51 cancellations across the three
-  tiers. These 12 survive it. The whole Node 22 line (22.12.0 AND 22.23.2) cancels 38 fast-tier tests;
-  see `engines.node`/`release.yml` pinning `22.x` below.
-- **NOT pnpm.** Installing pnpm 11.22.0 fixed 8 separate `runGate` failures. These 12 survive it.
-- **NOT ripgrep, NOT tmux.** Both installed; these 12 survive both.
-- **NOT the git version.** `git 2.39.5 (Apple Git-154)` round-trips a `Pickle-Ticket` trailer
-  correctly, including the exact `%(trailers:key=Pickle-Ticket,valueonly)` reader the consumer uses.
-- **NOT git config.** No `trailer.*`, `hooks`, `gpg`, or `template` keys are set, global or local.
-- **NOT the hook mechanism itself.** A hand-built `prepare-commit-msg` hook wired through
-  `core.hooksPath` with `PICKLE_TICKET_ID` set stamps and reads back `a1b2c3d4` on this exact box.
-- **NOT a regression from the last 17 commits.** All eight suites fail IDENTICALLY at `f45812e1` —
-  the sha `prds/MASTER_PLAN.md` records as *"the first fully green measurement on this branch"* —
-  when re-run under the corrected environment.
+**A glued commit is a PERMANENT FIXPOINT** *(refined: risk-scope, cycle 3 — this analyst withdrew the
+same risk in cycle 2 on a reasoned claim and re-established it by measurement)*. `--if-exists
+addIfDifferentNeighbor` cannot dedupe a line git does not parse as a trailer: re-stamping an
+unterminated glued message appends a SECOND glued `Pickle-Ticket:` line and still reads **0 values**.
+The worker-side amend path therefore **cannot repair an already-glued commit, ever** — which is why
+producer 2 is a scope REQUIREMENT, not a nice-to-have: the amend path is the only backfill mechanism
+that exists. Backfill of existing history stays out of scope, but becomes *possible* only after this fix.
 
-That last point is the uncomfortable one and should be treated as a finding in its own right: **the
-ledger's green baseline does not reproduce.** Either that measurement was environment-dependent in a
-way not captured, or it did not hold as recorded. The research phase should say which, from evidence.
+## Scope — 15 failures, 10 suites
 
-## Root cause — IDENTIFIED AND REPRODUCED
+| Suite | fails | tier |
+|---|---|---|
+| `tests/runner-authored-trailer.test.js` | 3 | integration |
+| `tests/spawn-morty-commit-attribution.test.js` | 2 | integration |
+| `tests/boundary-commit-at-iteration.test.js` | 2 | integration |
+| `tests/mux-runner-fix-b.test.js` | 1 | integration |
+| `tests/mux-exit-path-commit.test.js` | 1 | integration |
+| `tests/exit-path-bystander-stash.test.js` | 1 | integration |
+| `tests/integration/pipeline-completion-handsoff-e2e.test.js` (`AC-PCOMP-4`) | 1 | integration |
+| `tests/worker-timeout-preserves-commit.test.js` (AC-WDTFTO-1-1, 1-3) | 2 | **fast** |
+| `tests/worker-gate-not-run-invariant.test.js` (AC-1) | 1 | **fast** |
+| **`tests/integration/extension-wiring.test.js`** | 1 | **OUT OF SCOPE — distinct cause, proven** |
 
-`mux-runner.ts:5971` builds a **single-line** commit message and stamps the trailer into it:
+*(refined: codebase — the last two fast-tier suites were authored as NON-GOALS; both go green under the
+same 2-line normalization with no additional code, so the authored PRD would have sent a worker to file
+a separate bundle for defects this bundle already repairs.)*
 
-```ts
-const commitMsg = stampPickleTicketTrailer(
-  input.workingDir,
-  `fix(${input.ticketId}): commit-and-continue recovery (R-ORSR-2)`,  // single line, NO body
-  input.ticketId,
-);
-const commit = spawnSync('git', ['-C', input.workingDir, 'commit', '-m', commitMsg], ...);
-```
+## What is ALREADY excluded — do not re-litigate
 
-`stampPickleTicketTrailer` (`mux-runner.ts:5891`) delegates to `git interpret-trailers`. On a message
-with **no body**, git appends the trailer directly after the subject with NO blank line — so the
-trailer lands inside the SUBJECT paragraph. Git parses trailers out of the LAST paragraph only, so
-`%(trailers:key=Pickle-Ticket,valueonly)` — the reader the completion guard uses — returns EMPTY.
+A full environmental sweep was completed 2026-08-20 before this bundle was authored. Re-deriving any of
+it is wasted iteration:
 
-Standalone reproduction (git 2.39.5, this repo's box):
-
-```
-$ printf 'chore(a1b2c3d4): worker deliverable\nPickle-Ticket: a1b2c3d4\n' > m.txt && git commit -F m.txt
-$ git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)'
-                                     <-- EMPTY
-
-$ printf 'chore(a1b2c3d4): worker deliverable\n\nPickle-Ticket: a1b2c3d4\n' > m2.txt && git commit -F m2.txt
-$ git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)'
-a1b2c3d4                             <-- parses
-```
-
-The ONLY difference is the blank line. The trailer is present in `%B` either way — which is why a raw
-grep cannot see the damage and why `spawn-morty-commit-attribution.test.js` asserts *"trailer parses
-via the consumer's oracle, not a raw-message grep"*. `git-trailer-hooks.ts:157-163` documents this
-exact hazard for the hook path; the in-process committer reproduces it via a different route.
-
-Chain: single-line message → subject-glued trailer → consumer reader returns empty → completion guard
-sees `kind === 'absent'` → `commitAndContinueDoneFlip` returns `{ok:false}` → callers report
-`reason=commit-failed`.
-
-**Left to the research phase:** whether the correct fix is at the message-construction site (give the
-message a body), inside `stampPickleTicketTrailer` (guarantee a trailer paragraph for body-less
-messages), or both. AC-3 constrains it to ONE seam. Note `stampPickleTicketTrailer`'s fallback
-`rendered ?? \`${message}\n\n${trailer}\`` already produces the CORRECT blank-line form — so the
-degraded arm is right and the primary arm is wrong, which matches the observed test results exactly.
+- **NOT Node** — Node 24.19.0 removed all 51 cancellations across the three tiers; these survive it. The
+  whole Node 22 line (22.12.0 AND 22.23.2) cancels 38 fast-tier tests.
+- **NOT pnpm** — pnpm 11.22.0 fixed 8 separate `runGate` failures; these survive it.
+- **NOT ripgrep, NOT tmux** — both installed; these survive both.
+- **NOT the git version** — git 2.39.5 round-trips a `Pickle-Ticket` trailer correctly.
+- **NOT git config** — no `trailer.*`, `hooks`, `gpg`, or `template` keys, global or local.
+- **NOT the hook mechanism** — a hand-built `prepare-commit-msg` hook via `core.hooksPath` stamps and
+  reads back correctly on this box. The hook path uses `--in-place` over an already-normalized
+  `COMMIT_EDITMSG` and is **OUT of scope**; a regression test asserts it is unaffected.
+- **NOT a regression from recent commits** — all suites fail identically at `f45812e1`, the sha
+  `MASTER_PLAN.md` records as the first fully green measurement on this branch. Treat the
+  non-reproducibility of that baseline as a separate finding; do not chase it here.
 
 ## Interface Contracts
 
 **`stampPickleTicketTrailer(workingDir: string, message: string, ticketId: string): string`**
-- **Inputs**: repo path; a commit message that MAY be a single line with no body; an 8-char ticket id.
+- **Inputs**: repo path; a commit message that MAY lack a trailing newline and MAY be single-paragraph;
+  an 8-char ticket id.
 - **Output**: a message whose `Pickle-Ticket` trailer is readable by
-  `git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)'` — for ALL inputs, body or no body.
-- **Invariants**: empty/whitespace ticket id → message returned unchanged (no valueless trailer);
-  already-carrying messages are not double-stamped; pre-existing trailers
-  (`Co-Authored-By`, `Signed-off-by`) remain PARSED, not demoted to body prose.
+  `git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)'` for ALL input shapes.
+- **Invariants**: empty/whitespace ticket id → message unchanged (no valueless trailer); no double
+  stamping; **on the PRIMARY arm**, pre-existing trailers (`Co-Authored-By`, `Signed-off-by`) remain
+  PARSED, not demoted.
+- **Degraded arm is OUT of scope** *(refined: requirements P0 #4)*. Neither arm is currently "right":
+  the degraded `\n\n`-append arm is newline-INSENSITIVE but **demotes every pre-existing trailer**; the
+  primary arm preserves trailers but is newline-SENSITIVE. `src/bin/CLAUDE.md:111` records that
+  reverting to the two-`-m` append was **mutation-verified RED**. **Do NOT promote the degraded arm.**
 
-**`commitAndContinueDoneFlip(input: CommitAndContinueDoneFlipInput): { ok: boolean; sha?: string }`**
-- **Inputs**: `{ sessionDir, ticketId, workingDir, statePath, flags, log, stagePaths?, allowDoneWhenGateNotRun? }`
-- **Outputs**: `{ ok: true, sha }` when the commit is attributable; `{ ok: false }` otherwise.
-- **Errors**: `git add` / `git commit` non-zero → `{ok:false}` with a logged reason.
+**`buildTrailerAmendedMessage`** (`spawn-morty.ts:2372`)
+- **Inputs**: `reconcileGitOrNull(['log','-1','--format=%B',sha])` — already `.trim()`-ed at
+  `spawn-morty.ts:2304`, hence unterminated.
+- **Output/Invariants**: as above. **REQUIRED here: newline normalization. STILL FORBIDDEN here: a
+  blank-id guard** — `src/bin/CLAUDE.md:206` (ticket `7ec1c96c`) rules it dead code over an unreachable
+  input (`spawn-morty.ts:411` already rejects a blank `--ticket-id`). These are DIFFERENT edits to the
+  same function; do not let the prohibition on one suppress the other.
+
+**`commitAndContinueDoneFlip(input): { ok: boolean; sha?: string }`**
 - **Invariants**: `ok:true` REQUIRES a commit whose trailer the consumer's reader can parse. The
-  refusal on a genuinely unattributable commit is preserved unchanged.
+  fail-closed refusal on a genuinely unattributable commit is UNCHANGED — anchored to
+  **`guardCompletionCommitBeforeDone` (`mux-runner.ts:5485`, called at `:5996`)**, NOT to `:6164`, which
+  is merely the exit-commit wrapper's *report* of the refusal *(refined: requirements P0 #7)*.
 
 ## Verification Strategy
 
-Every command below is runnable from `extension/`. **All measurements require Node 24 and pnpm on
-PATH** (Node 22 cancels 38 fast-tier tests; pnpm is required by the convergence-gate fixtures):
+**Measurement preconditions, not gates** *(refined: requirements P0 #6 — PRIME DIRECTIVE)*: take
+measurements under `export PATH="/opt/homebrew/opt/node@24/bin:$PATH"` (v24.19.0 + pnpm 11.22.0) on a
+censused idle box (process census + load average recorded alongside the result). If the box cannot meet
+these conditions, the run **records the reason, flags a residual, and proceeds on AC-1..AC-6**. No
+measurement verdict halts the run or fails the bundle.
 
 ```bash
-# the eight cluster suites
+# the seven in-scope integration suites + the two fast-tier suites
 node --test tests/runner-authored-trailer.test.js
 node --test tests/spawn-morty-commit-attribution.test.js
 node --test tests/boundary-commit-at-iteration.test.js
@@ -142,86 +137,121 @@ node --test tests/mux-runner-fix-b.test.js
 node --test tests/mux-exit-path-commit.test.js
 node --test tests/exit-path-bystander-stash.test.js
 node --test tests/integration/pipeline-completion-handsoff-e2e.test.js
-node --test tests/integration/extension-wiring.test.js
+node --test tests/worker-timeout-preserves-commit.test.js
+node --test tests/worker-gate-not-run-invariant.test.js
 
-# tiers (censused idle box; record process census + load average alongside)
+npm run test:integration:parallel && npm run test:integration:serial
 node bin/test-runner.js --tier fast --test-concurrency=8
-npm run test:integration:parallel
-npm run test:integration:serial
 npx tsc --noEmit && npx eslint src/ --max-warnings=-1
 ```
 
 Oracle for AC-1, runnable against any candidate commit:
-
 ```bash
 git log -1 --format='%(trailers:key=Pickle-Ticket,valueonly)'   # MUST print the ticket id
 ```
+
+Negative control for AC-4: revert the `\n` normalization in a scratch worktree, `npx tsc`, re-run.
 
 ## Test Expectations
 
 | Criterion | Test File | Description | Assertion |
 |:---|:---|:---|:---|
-| AC-1 | `tests/runner-authored-trailer.test.js` | body-less runner message stamps a PARSED trailer | `parsedTrailer(dir,'Pickle-Ticket') === TICKET_ID` |
-| AC-1 | `tests/runner-authored-trailer.test.js` | new regression: single-line message with NO body | trailer parses via `%(trailers:...)`, not just `%B` |
-| AC-2 | `tests/runner-authored-trailer.test.js` | guard is satisfiable — evidence committed, not absent | `result.ok === true` and `result.sha` matches HEAD |
-| AC-2 | `tests/mux-runner-fix-b.test.js` | M1 ticket-owned dirty work is still committed | outcome is `committed`, not `commit-failed` |
-| AC-2 | `tests/boundary-commit-at-iteration.test.js` | boundary commit reports committed | not `honest_failure/commit-failed` |
-| AC-4 | `tests/spawn-morty-commit-attribution.test.js` | prose-only id mention is NOT attribution | tip IS amended; trailer scan attributes the commit |
-| AC-6 | `tests/runner-authored-trailer.test.js` | degraded arm + idempotence unchanged | one trailer value; fallback still PARSED |
+| AC-1a | `tests/runner-authored-trailer.test.js` | single paragraph / subject only, unterminated | trailer PARSES via `%(trailers:...)` |
+| AC-1b | `tests/runner-authored-trailer.test.js` | **subject + BODY paragraph, unterminated** — covered by NO test today, and the common shape of a real worker commit | trailer PARSES |
+| AC-1c | `tests/runner-authored-trailer.test.js` | subject + EXISTING trailer paragraph | `Pickle-Ticket` parses AND `Co-Authored-By` stays PARSED |
+| AC-1d | `tests/spawn-morty-commit-attribution.test.js` | `buildTrailerAmendedMessage` over a `.trim()`-ed `%B` feed | trailer PARSES; prose-only id is NOT attribution |
+| AC-2 | `tests/runner-authored-trailer.test.js` | guard satisfiable — evidence committed | `result.ok === true`, `sha` matches HEAD, `completion_commit` in ticket frontmatter |
+| AC-4 | `tests/integration/pipeline-completion-handsoff-e2e.test.js` | `AC-PCOMP-4` 4/4 hands-off completion | every ticket has `completion_commit`, no `Todo` reset, `state.json` byte-identical |
+| AC-6 | `tests/runner-authored-trailer.test.js` | degraded arm with a pre-existing trailer | `Pickle-Ticket` PARSES; `Co-Authored-By` demotion asserted as the DOCUMENTED trade, not silently unobserved |
+| AC-5 | `tests/nostop-gates-*.test.js` | no new halt path | no new `exit_reason` member |
 
 ## Acceptance criteria
 
-- **AC-1** `commitAndContinueDoneFlip` produces a commit whose `Pickle-Ticket` trailer reads back via
-  `%(trailers:key=Pickle-Ticket,valueonly)` as the ticket id, on BOTH the manager-subprocess arm and
-  the in-process exit-commit arm.
-- **AC-2** `result.ok === true` and a `completion_commit` is stamped when the work is gate-passing and
-  ticket-owned. The guard's REFUSAL on a genuinely unattributable commit is UNCHANGED — this bundle
-  must not weaken `mux-runner.ts:6164`, only make the attributable case actually attributable.
-- **AC-3** One trailer-stamping seam, not two. If the in-process arm needs the hook, it REUSES the
-  existing `git-trailer-hooks.ts` installer rather than adding a parallel stamping path. No third
-  policy site.
-- **AC-4** All eight suites listed above pass. Each must FAIL if the defect is reintroduced.
+- **AC-1** For **every** in-process trailer producer — `stampPickleTicketTrailer` (`mux-runner.ts:5891`,
+  covering both call sites `:5971` and `:6697`) and `buildTrailerAmendedMessage` (`spawn-morty.ts:2372`)
+  — the resulting commit's `Pickle-Ticket` trailer reads back via
+  `%(trailers:key=Pickle-Ticket,valueonly)` as the ticket id, for **each** message shape — (a) single
+  paragraph, (b) **subject + body**, (c) subject + existing trailer paragraph — **with and without** a
+  trailing newline. The `prepare-commit-msg` hook path is already correct and OUT of scope; a regression
+  test asserts it is unaffected.
+- **AC-2** `result.ok === true` and `completion_commit` is stamped into the **ticket frontmatter** (via
+  `updateTicketFrontmatter`, `services/git-utils.ts` — **not** a `state.json` write, so no Forbidden-Op
+  override is required). The fail-closed refusal at `guardCompletionCommitBeforeDone`
+  (`mux-runner.ts:5485`) is UNCHANGED.
+- **AC-3** One trailer-stamping **policy** applied at every producer: normalize the message to end in
+  exactly one `\n` on the **input** to `interpret-trailers`. **The two `mux-runner` call sites are
+  PRESERVED, not merged** — `runner-authored-trailer.test.js` asserts `total - definitions === 2` and
+  cross-checks the `src/bin/CLAUDE.md` PATTERN_SHAPE count of 3. AC-3 means "no **THIRD** stamping
+  mechanism", NOT "merge the existing two". The in-process arm MUST NOT be routed through
+  `git-trailer-hooks.ts` (it exports only `materializeTrailerHooks`, a subprocess hook fragment).
+  Extracting a shared helper is PERMITTED but NOT REQUIRED.
+- **AC-4** The **nine** in-scope suites pass, and each fails when the normalization is reverted
+  (negative control above). Primary evidence is `AC-PCOMP-4`. `extension-wiring.test.js` is OUT of scope
+  — its split is a **PASS** for this bundle, not a failure.
 - **AC-5** No new `exit_reason`, no new abort condition, no new halt path (PRIME DIRECTIVE).
-- **AC-6** `tests/runner-authored-trailer.test.js`'s degraded arm and idempotence tests still pass —
-  the fix must not make double-stamping possible or break the `printf` fallback.
-- **AC-7** Fast tier: `cancelled 0`, `fail` reduced by at least the 5 cluster members it contains,
-  tests >= 7766, suites >= 508. **Measured under Node 24 with pnpm present, on a censused idle box**
-  (process census + load average recorded alongside the result, per the binding method rule).
-- **AC-8** `test:integration:parallel` and `test:integration:serial` both `cancelled 0`, with the
-  cluster's integration members passing. Same measurement conditions as AC-7.
+- **AC-6** The degraded arm and idempotence tests still pass; the degraded arm's trailer demotion is
+  asserted as the documented trade. No double-stamping becomes possible.
+- **AC-7 (report-only, non-gating)** Fast tier: `cancelled 0` and no regression; the only expected
+  movement is `worker-timeout-preserves-commit` `fail 2 → 0` and `worker-gate-not-run-invariant`
+  `fail 1 → 0`. All eight original cluster suites are `@tier: integration`, so the fast tier contains
+  zero of them.
+- **AC-8 (report-only, non-gating)** `test:integration:parallel` and `test:integration:serial` both
+  `cancelled 0`, with the seven in-scope integration suites passing.
 
 ## Non-goals
 
-- **The bun probe.** `tests/install-bun-probe.test.js` fails for an unrelated reason: it simulates
-  bun's absence by dropping `PATH` entries whose path string contains `"bun"`, which does not match
-  Homebrew's `/opt/homebrew/bin`, so the filter removes zero entries and the probe still finds bun.
-  That is a test-isolation defect. File separately; do NOT fold it in.
-- **`worker-timeout-preserves-commit` (AC-WDTFTO-1-1/1-3) and `worker-gate-not-run-invariant` AC-1.**
-  Real, but a different signature. Separate bundle.
-- **The Node pin inconsistency.** `engines.node` and `release.yml` pin `22.x` — a line on which 38
-  tests cancel — while `ci.yml` and `stability-gate.yml` use `24`. Real release-gate defect, filed
-  separately; do NOT fix it here.
-- Re-running the environmental sweep. See "already excluded" above.
+- **`tests/integration/extension-wiring.test.js` `deploy smoke`** — OUT, **distinct cause proven by
+  experiment** (the only suite that does not move under the fix). `:47` asserts the top-level
+  `~/.claude/agents/morty-gate-remediator.md`, but `install.sh:619-621` deploys managed agents to
+  `$AGENTS_DIR/.pickle-managed` and **`install.sh:646` `rm -f`s the top-level copy**. `bash install.sh`
+  cannot fix it — it is the operation that guarantees the absence. File separately.
+- **The bun probe** (`tests/install-bun-probe.test.js`) — test-isolation defect: it strips `PATH`
+  entries containing `"bun"`, which misses Homebrew's `/opt/homebrew/bin`. File separately.
+- **The Node pin inconsistency** — `engines.node`/`release.yml` pin `22.x` (38 tests cancel) while
+  `ci.yml`/`stability-gate.yml` use `24`. Real release-gate defect. File separately.
+- **The MCP fallback defect** — `resolveMcpConfigWithLayer` passes `~/.claude.json` to
+  `claude --mcp-config` without checking it contains `mcpServers`, killing every worker spawn on a
+  machine with no user-scoped MCP. File separately (higher severity than this bundle).
+- **Backfilling already-glued commits in history.** Possible only after this fix; not attempted here.
+- **Promoting the degraded arm to primary** — mutation-verified RED (`src/bin/CLAUDE.md:111`).
+- Re-running the environmental sweep.
 
 ## Execution posture
 
-**UNATTENDED.** This bundle edits the commit-attribution / Done-flip path, which is adjacent to the
-salvage seam — but per the operator directive of 2026-08-04 there is no hand-build exception, and the
-running pipeline executes DEPLOYED JS (`2.1.0-beta.10`, which already carries the `done_without_commit_evidence`
-park fix), not the source diff. Watch the Done-flip seam; recover rather than hand-build if it bites.
+**UNATTENDED.** The deployed runtime is `2.1.0-beta.10`, which already carries the
+`done_without_commit_evidence` park fix, so the R-PSRB catch-22 that forced ATTENDED on the prior bundle
+no longer applies. The pipeline executes DEPLOYED JS, not the source diff.
 
 ## Simplification Review
 
-1. **Is the addition necessary at all?** Ideally NO new code. If the in-process arm is simply missing
-   the env fragment the subprocess arm already builds, the fix is to route both through one existing
-   installer — a reconcile, not an addition.
-2. **Can it REUSE instead of ADD?** Yes, and AC-3 requires it: `git-trailer-hooks.ts` already owns
-   hook materialization and already handles the idempotence guard and the degraded arm. A second
-   stamping mechanism beside it is the smell this section exists to catch.
-3. **Does it guard EXISTING brittle complexity that should be SUBTRACTED?** The completion guard is
-   NOT brittle here — it refuses correctly on an unattributable commit, and the honest fix is upstream.
-   Do not add an escape hatch around the guard; that would be a second hatch for one guard.
-4. **What can this SUBTRACT?** Candidate: the divergence between the subprocess arm and the in-process
-   arm — two ways to reach one committer, only one of which stamps. Collapsing that to one path leaves
-   the system flatter. If research shows the arms cannot merge, record "no subtraction available" with
-   the reason.
+1. **Is the addition necessary?** Minimal: normalize the input to end in exactly one `\n` at two
+   producers. Measured as a **2-line diff across 2 source files**. No new guard, flag, or state field.
+2. **Can it REUSE instead of ADD?** The policy is one line at each producer. A `services/git-utils.ts`
+   shared helper is PERMITTED but grows the ticket allowlist from 4 files to 6 — the codebase analyst
+   **retracted** its own cycle-2 recommendation for that seam after measuring. Inline is the smaller change.
+3. **Does it guard EXISTING brittle complexity that should be SUBTRACTED?** No. The completion guard is
+   correct — it refuses an unattributable commit accurately. The honest fix is upstream at the producer.
+   Do NOT add an escape hatch around the guard.
+4. **What can this SUBTRACT?** No structural subtraction available: the two `mux-runner` call sites are
+   pinned by an anchor test and must NOT be merged. Recorded as "no subtraction available" with reason.
+   The bundle instead removes a **silent** failure mode — attribution that looks present in `%B` but is
+   invisible to the parser.
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Tier | Entry | Exit | Files |
+|---|---|---|---|---|---|---|---|
+| 10 | `7c91858f` | Normalize interpret-trailers input newline in `stampPickleTicketTrailer` | High | medium | clean tree at start_commit | `runner-authored-trailer` 13/13 | `mux-runner.ts`, `runner-authored-trailer.test.js` |
+| 20 | `87b562c2` | Normalize interpret-trailers input newline in `buildTrailerAmendedMessage` | High | medium | `7c91858f` Done | `spawn-morty-commit-attribution` 14/14 | `spawn-morty.ts`, `spawn-morty-commit-attribution.test.js` |
+| 30 | `9b3c4549` | Record tier evidence for the bundle | Medium | small | `7c91858f`,`87b562c2` Done | evidence doc committed | `docs/bug-2026-08-20-trailer-normalization-evidence.md` |
+| 40 | `294c6ed6` | Harden: code quality review | High | medium | all prior Done | zero P0-P1 in MODIFIED_FILES | bundle diff |
+| 50 | `f168caeb` | Audit: data flow integrity | High | medium | all prior Done | zero CRITICAL/HIGH | bundle diff |
+| 60 | `01be73ae` | Harden: test quality review | High | medium | all prior Done | every AC mapped to a test | test files |
+| 70 | `91f5ff2b` | Audit: cross-reference consistency | High | medium | all prior Done | zero CRITICAL/HIGH cross-ref | doc files |
+
+**Wiring ticket: SKIPPED** — the 7d skip gate fires at ≤2 implementation tickets (this bundle has 2),
+and the scope is a single policy applied at two producers, not cross-module integration.
+
+**Hardening tiers stamped `medium`, not the template's `large`** — an upward mis-tier runs red-main
+gates that can wipe edits, and this branch carries known-red suites outside the bundle. The real diff
+is ~2 source lines plus tests across 5 files.
