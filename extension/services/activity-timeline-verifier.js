@@ -20,6 +20,19 @@ function getEventTicketId(e) {
 function parseTs(e) {
     return Date.parse(e.ts);
 }
+/**
+ * Manager-side events that PROVE the prior ticket's worker is no longer running.
+ * Both arms are written after the worker process exits: `worker_gate_failed` on the
+ * gate-red branch and `boundary_commit_resolved` on the clean branch
+ * (`mux-runner.ts:commitGatePassingDeliverableAtBoundary`, emitted exactly once per
+ * boundary). A ticket that finishes cleanly emits ONLY the latter, so a
+ * gate-failure-only set reads every healthy hand-off as an unresolved overlap.
+ *
+ * Deliberately EXCLUDES `worker_completion_commit_announced`: `spawn-morty.ts`
+ * writes it from the LIVE worker's stdout stream, so it lands while that worker is
+ * still running and would mask a genuine overlap.
+ */
+const WORKER_TERMINAL_EVENTS = new Set(['worker_gate_failed', 'boundary_commit_resolved']);
 export function findOverlapViolations(activity) {
     const spawns = activity
         .map((e, index) => ({ e, index, ts: parseTs(e) }))
@@ -27,7 +40,7 @@ export function findOverlapViolations(activity) {
         .sort((a, b) => (a.ts !== b.ts ? a.ts - b.ts : a.index - b.index));
     const terminalEvents = activity
         .map((e) => ({ e, ts: parseTs(e) }))
-        .filter((entry) => entry.e.event === 'worker_gate_failed' && getEventTicketId(entry.e) !== null && !Number.isNaN(entry.ts));
+        .filter((entry) => WORKER_TERMINAL_EVENTS.has(entry.e.event) && getEventTicketId(entry.e) !== null && !Number.isNaN(entry.ts));
     const violations = [];
     let lastTicket = null;
     let lastSpawnTs = '';

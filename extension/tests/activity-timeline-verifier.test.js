@@ -55,6 +55,45 @@ test('findOverlapViolations: serialized timeline passes', () => {
   assert.deepEqual(violations, []);
 });
 
+// AP-EXT-ITER6-01: every fixture above hands EVERY ticket a `worker_gate_failed`, so the
+// gate-red branch was the only hand-off the predicate had ever been driven through. A ticket
+// that finishes CLEANLY never emits one — its manager-side terminal event is
+// `boundary_commit_resolved` (mux-runner:commitGatePassingDeliverableAtBoundary). Shapes below
+// are copied from real session 2026-08-20-54c74299, where Done ticket 7c91858f was reported as
+// an overlap violation 11 minutes after it had already resolved its boundary commit.
+function boundaryCommitEvt(ts, ticket, outcome = 'committed') {
+  return {
+    event: 'boundary_commit_resolved', ts, ticket,
+    gate_payload: { outcome, pre_iter_sha: 'cda524e6', post_iter_sha: '8829b15d' },
+  };
+}
+
+test('findOverlapViolations: a cleanly-completed prior ticket is not an overlap', () => {
+  const activity = [
+    spawnEvt('2026-08-21T14:15:55.262Z', '7c91858f'),
+    boundaryCommitEvt('2026-08-21T14:33:02.445Z', '7c91858f'),
+    spawnEvt('2026-08-21T14:44:50.519Z', '87b562c2'),
+  ];
+  assert.deepEqual(findOverlapViolations(activity), []);
+});
+
+test('findOverlapViolations: worker_completion_commit_announced is NOT terminal', () => {
+  // spawn-morty writes this from the LIVE worker's stdout, so it proves the worker is
+  // running, not that it stopped. Counting it would mask a genuine overlap.
+  const activity = [
+    spawnEvt('2026-08-21T14:15:55.262Z', '7c91858f'),
+    {
+      event: 'worker_completion_commit_announced', ts: '2026-08-21T14:33:02.445Z',
+      ticket_id: '7c91858f', source: 'pickle', sha: '0df05c84',
+    },
+    spawnEvt('2026-08-21T14:44:50.519Z', '87b562c2'),
+  ];
+  const violations = findOverlapViolations(activity);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].priorTicket, '7c91858f');
+  assert.equal(violations[0].nextTicket, '87b562c2');
+});
+
 test('buildGateCompletionReport: tier_phase_skipped ticket is not_run, distinct from a timeout', () => {
   const activity = [
     spawnEvt('2026-08-14T00:00:00.000Z', 'aaaa1111'),
