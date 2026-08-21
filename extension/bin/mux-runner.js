@@ -5004,6 +5004,16 @@ function messageAlreadyCarriesTicketTrailer(workingDir, message) {
     return parsed.split('\n').some((line) => line.startsWith('Pickle-Ticket:'));
 }
 /**
+ * `git interpret-trailers` only reliably recognizes a trailing trailer block when its input
+ * ends in a newline; both the `--parse` probe and the `--if-exists` writer in
+ * `stampPickleTicketTrailer` need this, so normalize once, here, rather than at each call site.
+ * Collapses any run of trailing newlines to exactly one — never adds more than one, never
+ * leaves the input unterminated.
+ */
+function normalizeTrailerInputNewline(message) {
+    return message.replace(/\n*$/, '\n');
+}
+/**
  * Render `message` carrying a parsed `Pickle-Ticket: <ticketId>` trailer.
  *
  * The runner authors some commits IN-PROCESS, so they never see the `prepare-commit-msg`
@@ -5037,11 +5047,12 @@ export function stampPickleTicketTrailer(workingDir, message, ticketId) {
     if (ticketId.replace(/\s+/g, '') === '') {
         return message;
     }
-    if (messageAlreadyCarriesTicketTrailer(workingDir, message)) {
+    const normalized = normalizeTrailerInputNewline(message);
+    if (messageAlreadyCarriesTicketTrailer(workingDir, normalized)) {
         return message;
     }
     const trailer = `Pickle-Ticket: ${ticketId}`;
-    const rendered = silentDeathGit(['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', trailer], workingDir, message);
+    const rendered = silentDeathGit(['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', trailer], workingDir, normalized);
     return rendered ?? `${message}\n\n${trailer}`;
 }
 /**

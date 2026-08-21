@@ -212,6 +212,26 @@ test('the blank-id guard is narrow — a real ticket id still stamps', () => {
   assert.equal(parsedTrailer(workingDir, 'Pickle-Ticket'), TICKET_ID);
 });
 
+// AC-1b: neither prior test shape covers a subject + BODY paragraph with no trailing newline.
+// The existing Co-Authored-By fixture is terminated and its last paragraph is already a trailer
+// block; this one is a plain multi-paragraph commit message with no trailer at all, unterminated.
+test('AC-1b: subject + body paragraph, unterminated, still parses', () => {
+  const workingDir = makeTmp('ratrail-repo-');
+  initGitRepo(workingDir);
+  const body = 'fix: subject line\n\nAn explanatory body paragraph with no trailing newline.';
+
+  const stamped = stampPickleTicketTrailer(workingDir, body, TICKET_ID);
+
+  commitMessage(workingDir, stamped);
+
+  assert.equal(parsedTrailer(workingDir, 'Pickle-Ticket'), TICKET_ID);
+  assert.match(
+    git(workingDir, ['log', '-1', '--format=%B']),
+    /An explanatory body paragraph with no trailing newline\./,
+    'the body paragraph survives',
+  );
+});
+
 // The degraded arm: when `interpret-trailers` cannot run, the stamp appends the trailer as its own
 // paragraph rather than dropping attribution. Without a test the fallback could be reduced to
 // `rendered ?? message` and nothing would go red — every other case here reaches a real repo, so
@@ -241,6 +261,40 @@ test('degraded arm: when interpret-trailers cannot run, the appended trailer is 
     git(workingDir, ['log', '-1', '--format=%s']).trim(),
     /work authored while git trailer support is unavailable/,
     'the subject survives the append',
+  );
+});
+
+// AC-6: the degraded arm's unconditional `\n\n` append opens a NEW paragraph, so when the
+// message already carries a different trailer, that pre-existing trailer is demoted to body
+// prose — still visible in `%B`, invisible to `%(trailers:...)`. This is the documented trade
+// for this fallback (see the `stampPickleTicketTrailer` docstring): keep attribution for the
+// newly-appended trailer rather than drop it, at the cost of demoting whatever trailer already
+// existed. No prior test exercised the degraded arm against a message with a pre-existing
+// trailer.
+test('AC-6: degraded arm with a pre-existing trailer — Pickle-Ticket parses, the pre-existing trailer is demoted (documented trade)', () => {
+  const missingDir = path.join(makeTmp('ratrail-missing-'), 'no-such-subdir');
+  assert.equal(fs.existsSync(missingDir), false, 'precondition: git cannot run here');
+  const coAuthor = 'Co-Authored-By: Someone Else <someone@example.com>';
+  const body = `fix: work with an existing trailer\n\n${coAuthor}\n`;
+
+  const stamped = stampPickleTicketTrailer(missingDir, body, TICKET_ID);
+
+  assert.notEqual(stamped, body, 'the degraded arm must still stamp, not drop attribution');
+
+  const workingDir = makeTmp('ratrail-repo-');
+  initGitRepo(workingDir);
+  commitMessage(workingDir, stamped);
+
+  assert.equal(parsedTrailer(workingDir, 'Pickle-Ticket'), TICKET_ID);
+  assert.equal(
+    parsedTrailer(workingDir, 'Co-Authored-By'),
+    '',
+    'the degraded arm opens a new paragraph — the pre-existing trailer is demoted to body prose, the documented trade for this fallback',
+  );
+  assert.match(
+    git(workingDir, ['log', '-1', '--format=%B']),
+    /Co-Authored-By: Someone Else <someone@example\.com>/,
+    'the demoted trailer text is still visible in %B, just not parseable',
   );
 });
 
