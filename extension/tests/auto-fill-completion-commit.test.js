@@ -294,3 +294,82 @@ test('autoFillCompletionCommit: a persist failure reports unwritable, not unread
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER4-02 (subsystem contract #1, replay of AP-EXT-ITER4-01): the CLI entry guard must
+// survive a symlinked install root. Node realpaths `import.meta.url` but leaves `process.argv[1]`
+// exactly as written, so the pre-fix `import.meta.url === new URL('file://' + argv[1]).href` compare
+// disagreed with itself whenever argv[1] carried a link — a `--prefix`-relocated install root, or a
+// relocated `$HOME`. The CLI then printed nothing and exited 0, so an operator running it to back-fill
+// a missing `completion_commit` got a silent no-op that reads as success.
+//
+// Every other test in this file imports `autoFillCompletionCommit` directly and therefore never
+// evaluates the guard at all. This one SPAWNS the shipped entry and asserts on its EMITTED output;
+// a source-shape oracle is deliberately avoided, since grepping for the guard text greens the
+// moment someone swaps one realpath-exact spelling for another.
+const SHIPPED_AUTO_FILL_CLI = path.join(import.meta.dirname, '..', 'bin', 'auto-fill-completion-commit.js');
+
+/** Runs the shipped CLI entry and returns its trimmed stdout ('' when the entry never fired). */
+function runShippedAutoFillCli(scriptPath, sessionDir, workingDir) {
+  return execFileSync(
+    process.execPath,
+    [scriptPath, '--session-dir', sessionDir, '--working-dir', workingDir],
+    { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] },
+  ).trim();
+}
+
+test('AP-EXT-ITER4-02: the CLI entry still emits its result through a symlinked install root', () => {
+  const root = makeTmpRoot('auto-fill-symlink-root-');
+  try {
+    const sessionDir = path.join(root, 'session');
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.mkdirSync(repo, { recursive: true });
+    initGitRepo(repo);
+
+    // A symlinked bin dir reproduces the relocated-root relationship on ANY platform:
+    // argv[1] carries the link, `import.meta.url` resolves to the target.
+    const linkedBin = path.join(root, 'bin-link');
+    fs.symlinkSync(path.dirname(SHIPPED_AUTO_FILL_CLI), linkedBin);
+
+    const throughSymlink = runShippedAutoFillCli(
+      path.join(linkedBin, 'auto-fill-completion-commit.js'),
+      sessionDir,
+      repo,
+    );
+    assert.notEqual(
+      throughSymlink,
+      '',
+      'CLI produced NO output through a symlinked install root — the entry guard never fired and the run is a silent exit-0 no-op',
+    );
+
+    // Control: the real path must produce the identical result, so a future regression is
+    // attributable to the symlink axis rather than to the fixture.
+    const throughRealPath = runShippedAutoFillCli(SHIPPED_AUTO_FILL_CLI, sessionDir, repo);
+    assert.deepEqual(JSON.parse(throughSymlink), JSON.parse(throughRealPath));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The guard fires on argv[1]'s BASENAME, so it must not fire for a sibling module that merely
+// imports this one — `spawn-morty.js` does exactly that, and a false fire there would run the
+// deprecated upsert (and print the banner) on every worker spawn.
+test('AP-EXT-ITER4-02: importing the module does not fire the CLI entry', () => {
+  const root = makeTmpRoot('auto-fill-import-no-fire-');
+  try {
+    const importer = path.join(root, 'importer.mjs');
+    fs.writeFileSync(
+      importer,
+      `import { autoFillCompletionCommit } from ${JSON.stringify(SHIPPED_AUTO_FILL_CLI)};\n`
+      + 'process.stdout.write(typeof autoFillCompletionCommit);\n',
+    );
+    const out = execFileSync(process.execPath, [importer], {
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    assert.equal(out, 'function', 'import must resolve the export without running the CLI entry');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

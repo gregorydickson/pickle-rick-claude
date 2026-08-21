@@ -173,7 +173,12 @@ function parseCliArgs(argv: string[]): AutoFillCompletionCommitInput {
   };
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+// AP-EXT-ITER4-02: basename compare, never an `import.meta.url`-derived one. Node
+// realpaths `import.meta.url` but leaves `process.argv[1]` as written, so the
+// realpath-exact form stopped firing through a symlinked install root (and through
+// any argv[1] the URL constructor would percent-encode) — the CLI exited 0 having
+// done nothing. Same shape as AP-EXT-ITER4-01 in hooks/handlers/stop-hook.ts.
+if (process.argv[1] && path.basename(process.argv[1]) === 'auto-fill-completion-commit.js') {
   process.stderr.write('[auto-fill-completion-commit] DEPRECATED: runtime callsites now inline the upsert. See R-AFCC-DEEP-3A.\n');
   const result = autoFillCompletionCommit(parseCliArgs(process.argv.slice(2)));
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
