@@ -54,7 +54,7 @@ process racing the concurrent gate check, not a code or environment defect.
 | `tests/exit-path-bystander-stash.test.js` | 3 | 3 | 0 | 0 | 505.976708 |
 | `tests/mux-exit-path-commit.test.js` | 5 | 5 | 0 | 0 | 474.319291 |
 | `tests/mux-runner-fix-b.test.js` | 14 | 14 | 0 | 0 | 312.493667 |
-| `tests/pipeline-completion-handsoff-e2e.test.js` | 1 | 1 | 0 | 0 | 582.283709 |
+| `tests/integration/pipeline-completion-handsoff-e2e.test.js` | 1 | 1 | 0 | 0 | 582.283709 |
 | `tests/runner-authored-trailer.test.js` | 15 | 15 | 0 | 0 | 1457.709333 |
 | `tests/spawn-morty-commit-attribution.test.js` | 14 | 14 | 0 | 0 | 1997.260625 |
 | `tests/worker-gate-not-run-invariant.test.js` | 12 | 12 | 0 | 0 | 1452.381667 |
@@ -215,6 +215,22 @@ tier-level reds observed are both attributed to causes outside this bundle's dif
 honestly rather than omitted, per this repo's PRIME DIRECTIVE (report degradation, do not halt, do
 not silently convert a red into a pass).
 
+## 7. Code review (ticket `294c6ed6`)
+
+A code-quality review pass over the same 5 scoped files (`mux-runner.ts`, `spawn-morty.ts`,
+`runner-authored-trailer.test.js`, `spawn-morty-commit-attribution.test.js`, this doc) found **zero
+P0/CRITICAL and zero P1/HIGH findings**. Both call sites in `mux-runner.ts` remain unmerged, no
+blank-id guard was added at `buildTrailerAmendedMessage`, and no behavioral change shipped without
+regression coverage — the apparent gap (no new test alongside the `spawn-morty.ts` fix) is not a gap:
+`reconcileGit` unconditionally `.trim()`s its output, so every production message reaching
+`buildTrailerAmendedMessage` was already newline-stripped pre-fix, and the pre-existing tests in
+`spawn-morty-commit-attribution.test.js` already exercise that precondition — confirmed by the
+Section 4 negative control above, which reproduces exactly 2 failures in that suite when the fix is
+reverted. One non-blocking suggestion was recorded (the two newline-normalization implementations are
+functionally identical but not shared as one helper across the two files) and left unactioned as
+out of scope for a 2-line fix. Re-ran both in-scope suites live: 29/29 pass. Full detail:
+`code_review_2026-08-21.md` and `conformance_2026-08-21.md` under ticket `294c6ed6`.
+
 ## 8. Data flow integrity audit (ticket `f168caeb`)
 
 An independent third-angle audit traced the trailer message value end-to-end through both fixed
@@ -238,22 +254,6 @@ reach the consumer's `%(trailers:...)` read path malformed — neither is a defe
 **Verdict: zero P0/CRITICAL and zero P1/HIGH data-flow-integrity findings.** No code change
 required. Full detail: `research_2026-08-21.md`, `conformance_2026-08-21.md`,
 `code_review_2026-08-21.md` under ticket `f168caeb`.
-
-## 7. Code review (ticket `294c6ed6`)
-
-A code-quality review pass over the same 5 scoped files (`mux-runner.ts`, `spawn-morty.ts`,
-`runner-authored-trailer.test.js`, `spawn-morty-commit-attribution.test.js`, this doc) found **zero
-P0/CRITICAL and zero P1/HIGH findings**. Both call sites in `mux-runner.ts` remain unmerged, no
-blank-id guard was added at `buildTrailerAmendedMessage`, and no behavioral change shipped without
-regression coverage — the apparent gap (no new test alongside the `spawn-morty.ts` fix) is not a gap:
-`reconcileGit` unconditionally `.trim()`s its output, so every production message reaching
-`buildTrailerAmendedMessage` was already newline-stripped pre-fix, and the pre-existing tests in
-`spawn-morty-commit-attribution.test.js` already exercise that precondition — confirmed by the
-Section 4 negative control above, which reproduces exactly 2 failures in that suite when the fix is
-reverted. One non-blocking suggestion was recorded (the two newline-normalization implementations are
-functionally identical but not shared as one helper across the two files) and left unactioned as
-out of scope for a 2-line fix. Re-ran both in-scope suites live: 29/29 pass. Full detail:
-`code_review_2026-08-21.md` and `conformance_2026-08-21.md` under ticket `294c6ed6`.
 
 ## 9. Test quality review (ticket `01be73ae`)
 
