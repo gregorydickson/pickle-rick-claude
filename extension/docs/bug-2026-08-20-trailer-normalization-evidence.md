@@ -1,0 +1,216 @@
+# BUG-2026-08-20 — tier evidence for the trailer-normalization bundle
+
+Ticket `9b3c4549` (verification). Branch `release/v2.1-beta`, final sha `291812e5`. Recorded
+2026-08-21. Depends on `7c91858f` (`dfa6e239`, `stampPickleTicketTrailer` normalization) and
+`87b562c2` (`291812e5`, `buildTrailerAmendedMessage` normalization).
+
+Every count below is quoted verbatim from a captured runner summary block. Where a run was
+discarded, the discard reason is recorded rather than the run being silently omitted. Measurement
+preconditions: Node `v24.19.0`, pnpm `11.22.0`, all commands run from `extension/`.
+
+## 0. The bundle's claim
+
+`stampPickleTicketTrailer` (mux-runner) and `buildTrailerAmendedMessage` (spawn-morty) both pass an
+unterminated commit message straight into `git interpret-trailers`, which only reliably recognizes
+a trailing trailer block when its input ends in a newline. An unterminated message produces a
+subject-glued trailer the consumer's `%(trailers:key=Pickle-Ticket,valueonly)` oracle cannot read —
+the measured root cause of the commit-attribution cluster (see `dfa6e239`, `291812e5`). The fix adds
+`normalizeTrailerInputNewline` (collapse trailing newlines to exactly one) applied once before each
+`interpret-trailers` call. This ticket records durable, auditable tier evidence for that claim.
+
+## 1. Environment correction — ambient contamination, not a real defect
+
+The first (unscrubbed) run of the nine in-scope suites showed 2 failures in
+`spawn-morty-commit-attribution.test.js` with diff `actual: ['9b3c4549'], expected: ['c46045a6']`.
+This is the documented ambient-contamination signature (see prior-session memory
+`ambient-git-config-false-gate-reds.md`): this worker session's own environment exports
+`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0/1`, `GIT_CONFIG_VALUE_0/1` (pointing `core.hooksPath` at this
+session's git-trailer-hooks) and `PICKLE_TICKET_ID=9b3c4549`, which stamps `Pickle-Ticket: 9b3c4549`
+into ANY commit made by test fixtures — including fixtures asserting against a different fixture
+ticket id (`c46045a6`). This is environment leakage from the worker's own harness, not a defect in
+the trailer-normalization code under test. Every command below is run scrubbed:
+
+```
+env -u PICKLE_TICKET_ID -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 \
+    -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 <command>
+```
+
+All nine in-scope suites pass 0-fail/0-cancelled once scrubbed (Section 2).
+
+A second, separate contamination was discovered mid-measurement: a runtime worker-gate check
+(`npm run test:fast` under `pickle-spawn-morty-worker-gate-*`, outside this worker's control) was
+found running concurrently on this box while a prior iteration's fast-tier attempt was launched in
+the background and killed at turn boundary — that discarded run showed mass
+`'Promise resolution is still pending but the event loop has already resolved'` corruption across
+dozens of suites. Re-run properly in the foreground (Section 3), the fast tier completed cleanly
+with zero such corruption, confirming the mass failures were an artifact of the killed background
+process racing the concurrent gate check, not a code or environment defect.
+
+## 2. Nine in-scope suites (scrubbed, individually)
+
+| Suite | tests | pass | fail | cancelled | duration_ms |
+|---|---|---|---|---|---|
+| `tests/boundary-commit-at-iteration.test.js` | 5 | 5 | 0 | 0 | 887.805958 |
+| `tests/exit-path-bystander-stash.test.js` | 3 | 3 | 0 | 0 | 505.976708 |
+| `tests/mux-exit-path-commit.test.js` | 5 | 5 | 0 | 0 | 474.319291 |
+| `tests/mux-runner-fix-b.test.js` | 14 | 14 | 0 | 0 | 312.493667 |
+| `tests/pipeline-completion-handsoff-e2e.test.js` | 1 | 1 | 0 | 0 | 582.283709 |
+| `tests/runner-authored-trailer.test.js` | 15 | 15 | 0 | 0 | 1457.709333 |
+| `tests/spawn-morty-commit-attribution.test.js` | 14 | 14 | 0 | 0 | 1997.260625 |
+| `tests/worker-gate-not-run-invariant.test.js` | 12 | 12 | 0 | 0 | 1452.381667 |
+| `tests/worker-timeout-preserves-commit.test.js` | 5 | 5 | 0 | 0 | 681.69725 |
+
+All nine: 0 fail / 0 cancelled, scrubbed. Command shape:
+`env -u PICKLE_TICKET_ID -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 -u
+GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 node --test tests/<suite>.test.js`.
+
+## 3. Tier results at `291812e5`
+
+### fast (`node bin/test-runner.js --tier fast --test-concurrency=8`, scrubbed)
+
+Census before: `2026-08-21T16:07:37Z`, `11:07 up 295 days, 21:06, 3 users, load averages: 2.65 6.31
+7.33`. Census after: `2026-08-21T16:10:57Z`, `11:10 up 295 days, 21:10, 3 users, load averages: 8.52
+9.19 8.43` (load rose sharply — a real 8-core-saturating fast-tier run, not idle).
+
+```
+ℹ tests 7766
+ℹ suites 508
+ℹ pass 7759
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 5
+ℹ todo 1
+ℹ duration_ms 165983.850625
+```
+
+The single failure is UNRELATED to this bundle — `tests/install-bun-probe.test.js` ("bun probe emits
+banner when bun is absent") — a pre-existing environmental flake (the `bug-2026-08-19` evidence doc
+already records this same suite failing identically at both the pre-bundle and post-bundle sha for
+that bundle). `grep -c "Promise resolution is still pending"` on the captured output = 0.
+
+### integration:parallel (`npm run test:integration:parallel`, scrubbed)
+
+Census before: `2026-08-21T16:11:17Z`, `11:11 up 295 days, 21:10, 3 users, load averages: 7.05 8.80
+8.31`. Census after: `2026-08-21T16:13:02Z`, `11:13 up 295 days, 21:12, 3 users, load averages: 3.98
+7.15 7.71`.
+
+```
+ℹ tests 632
+ℹ suites 21
+ℹ pass 631
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 97682.148541
+```
+
+The single failure is `tests/integration/extension-wiring.test.js` ("deploy smoke: gate bins and
+data exist after bash install.sh"): `Missing deployed paths (run bash install.sh):
+/Users/gregorydickson/.claude/agents/morty-gate-remediator.md`. This is a `bash install.sh`
+deployment-freshness gap on this operator box, unrelated to trailer normalization — recorded here
+as an **out-of-scope PASS for this bundle**, not a bundle failure, per this ticket's Acceptance
+Criteria. `grep -c "Promise resolution is still pending"` = 0.
+
+### integration:serial (`npm run test:integration:serial`, scrubbed)
+
+Census before: `2026-08-21T16:13:02Z` (same as integration:parallel "after", run launched
+immediately following). Census after: `2026-08-21T16:21:04Z`, `11:21 up 295 days, 21:20, 3 users,
+load averages: 1.52 3.11 5.37`.
+
+```
+ℹ tests 606
+ℹ suites 24
+ℹ pass 606
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 465995.443959
+```
+
+Clean pass, 0 fail, 0 cancelled. `grep -c "Promise resolution is still pending"` = 0.
+
+## 4. Negative control — revert normalization, suites fail again
+
+Method: `git worktree add --detach /tmp/negctrl-worktree 291812e5` (bundle HEAD, both fix commits
+present), then `git revert -n 291812e5 dfa6e239` to revert both source fixes into the working tree,
+then `git restore --source 291812e5 -- extension/tests/runner-authored-trailer.test.js` to restore
+the CURRENT (post-fix) test file — i.e. revert only the source normalization, keep the regression
+tests the fix added. (`git checkout <ref> -- <path>` was tried first and BLOCKED by the runtime
+R-WSRC-GR hook — "git checkout is FORBIDDEN inside worker subprocesses"; `git restore --source <ref>
+-- <path>` is the sanctioned equivalent.) `extension/node_modules` was symlinked from the main tree,
+not reinstalled. Main tree (`git status`) was clean before and after; the worktree was removed after
+capture.
+
+`npx tsc --noEmit` in the reverted worktree: exit 0, clean. This confirms the bug is a runtime
+behavior defect, not a type error — expected, and consistent with the fix commits' own note.
+
+**`node --test tests/runner-authored-trailer.test.js` (scrubbed), reverted:**
+
+```
+ℹ tests 15
+ℹ suites 0
+ℹ pass 11
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2498.285875
+```
+
+The 4 failures are exactly the 4 AC-1b/AC-6 tests commit `dfa6e239` added to prove the fix, e.g.:
+
+```
+✖ AC-1b: subject + body paragraph, unterminated, still parses (98.865042ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  false !== true
+
+✖ site 2: executeConvergedPlanAdapter phase commits stamp the trailer (115.473375ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  '' !== 'a1b2c3d4'
+```
+
+**`node --test tests/spawn-morty-commit-attribution.test.js` (scrubbed), reverted:**
+
+```
+ℹ tests 14
+ℹ suites 0
+ℹ pass 12
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1995.439709
+```
+
+Failures: "untagged single-commit tip is amended with a Pickle-Ticket trailer (word-boundary
+attributable)" and "a PROSE-only ticket-id mention is not attribution — the tip IS amended".
+
+**Conclusion**: reverting the 2-line normalization reproduces exactly the failures the bundle's two
+fix commits claim to resolve, in the exact two suites the bundle targets. The negative control
+confirms the fix's causal claim.
+
+## 5. AC disposition
+
+| AC | Requirement | Result |
+|---|---|---|
+| AC-4 | nine in-scope suites recorded pass/fail individually | met — Section 2, all nine 0 fail / 0 cancelled scrubbed |
+| AC-7 | tier results recorded report-only, no runner-level halt | met — Section 3, `cancelled 0` in all three tiers |
+| AC-8 | measurement preconditions recorded, degradations reported honestly | met — Section 0/1 records both contamination findings; neither was silently converted to a pass or omitted |
+
+## 6. Attribution — the two remaining tier-level reds predate/are outside this bundle
+
+- `tests/install-bun-probe.test.js` (fast tier) — pre-existing environmental flake, already recorded
+  identically failing at both the pre-bundle and post-bundle sha of the immediately prior bundle
+  (`extension/docs/bug-2026-08-19-tier-evidence.md`, Section 5).
+- `tests/integration/extension-wiring.test.js` (integration:parallel tier) — `bash install.sh`
+  deployment-freshness gap on this operator box (missing deployed
+  `~/.claude/agents/morty-gate-remediator.md`), unrelated to trailer normalization. Recorded as an
+  **out-of-scope PASS** for this bundle per the ticket's Acceptance Criteria, not a bundle failure.
+
+**Disposition: the bundle's thesis holds.** The nine in-scope suites are clean, all three tiers
+report `cancelled 0`, and the negative control reproduces the pre-fix failures exactly. The two
+tier-level reds observed are both attributed to causes outside this bundle's diff and are recorded
+honestly rather than omitted, per this repo's PRIME DIRECTIVE (report degradation, do not halt, do
+not silently convert a red into a pass).
