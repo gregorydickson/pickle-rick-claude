@@ -206,18 +206,23 @@ export function extractTscFailureIdentifiers(failure) {
         ids.add(stem);
     return Array.from(ids);
 }
+/** The ONE key a failure is looked up by in `changedFiles`. `changedFiles` always holds
+ * git's own repo-relative spelling, so an ABSOLUTE `failure.file` is relativized against
+ * `ctx.workingDir` (which must therefore be the REPO ROOT, not a resolved package dir) and
+ * an already-relative one is taken as-is. Two membership tests over two path spaces is the
+ * bug, not the defence: one of them silently never matches. */
+function changedFileKey(failure, ctx) {
+    return ctx.workingDir && path.isAbsolute(failure.file)
+        ? normalizeScopePath(path.relative(ctx.workingDir, failure.file))
+        : normalizeScopePath(failure.file);
+}
 /** True when a failure intersects the phase's own diff (by changed file OR changed exported
  * symbol). Returns false when no context is supplied (the no-guard default). */
 export function isSelfIntroducedFailure(failure, ctx) {
     if (!ctx)
         return false;
-    if (ctx.changedFiles.size > 0) {
-        const rel = ctx.workingDir
-            ? normalizeScopePath(path.relative(ctx.workingDir, failure.file))
-            : normalizeScopePath(failure.file);
-        if (ctx.changedFiles.has(rel) || ctx.changedFiles.has(normalizeScopePath(failure.file))) {
-            return true;
-        }
+    if (ctx.changedFiles.size > 0 && ctx.changedFiles.has(changedFileKey(failure, ctx))) {
+        return true;
     }
     if (ctx.changedExportedSymbols.size > 0) {
         for (const id of extractTscFailureIdentifiers(failure)) {
@@ -498,6 +503,29 @@ export function filterByScope(files, opts) {
     if (!opts.allowedPaths || opts.allowedPaths.length === 0)
         return files;
     return files.filter((file) => matchesAllowedPath(file, opts.allowedPaths ?? []));
+}
+/**
+ * The root `getChangedSince`'s paths are spelled relative to. `git diff --name-only` emits
+ * REPO-ROOT-relative paths whatever the cwd, but the gate's own `workingDir` may be a package
+ * dir one level down (R-SZGB-A `detectProjectTypeWithRootResolution`) — so the two only share a
+ * path space through this call. Derived by walking `workingDir` up by `--show-prefix`'s depth,
+ * NOT by reading `--show-toplevel`: toplevel is realpath-resolved, so under a symlinked root
+ * (macOS `/var` → `/private/var`) it names the same directory in a different spelling and
+ * `path.relative` against a lexical `failure.file` escapes into `../../..`. Falls back to
+ * `workingDir` when git cannot answer — the pre-existing behaviour, and exact for a flat repo.
+ *
+ * `Lexical` is in the name on purpose: the two other private `resolveRepoRoot` helpers in this
+ * subsystem (`bin/resolve-scope.ts`, `bin/mux-runner.ts`) hand back a REALPATH, which is the one
+ * thing this caller cannot use. Do not "unify" the three — that reintroduces AP-EXT-ITER8-02.
+ */
+function resolveLexicalRepoRoot(workingDir) {
+    const result = spawnSync('git', ['rev-parse', '--show-prefix'], {
+        cwd: workingDir, encoding: 'utf-8', timeout: 10_000,
+    });
+    if ((result.status ?? 1) !== 0)
+        return workingDir;
+    const depth = (result.stdout ?? '').trim().split('/').filter(Boolean).length;
+    return depth === 0 ? workingDir : path.resolve(workingDir, ...Array(depth).fill('..'));
 }
 function getChangedSince(workingDir, since) {
     // AP-EXT-ITER31-01: `-z` matches the contract `allowed_paths` is built from
@@ -1017,7 +1045,7 @@ function buildNoDisownContext(opts) {
     const changedExportedSymbols = getChangedExportedSymbols(opts.workingDir, since);
     if (changedFiles.size === 0 && changedExportedSymbols.size === 0)
         return undefined;
-    return { changedFiles, changedExportedSymbols, workingDir: opts.workingDir };
+    return { changedFiles, changedExportedSymbols, workingDir: resolveLexicalRepoRoot(opts.workingDir) };
 }
 async function resolveBaselineResult(baselinePath, opts, projectType, withIndices, allowedPathsUsed, start, emit, uncertifiable) {
     const preWriteStatus = await inspectBaselinePath(baselinePath);

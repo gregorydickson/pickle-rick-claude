@@ -138,3 +138,112 @@ test('AP-EXT-ITER15-01: a genuinely pre-existing failure is still subtracted (no
     fs.rmSync(workingDir, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER8-02: both cases above put `package.json` AT the git root, so `runGate`'s
+// `workingDir` and git's own path space coincide and the FILE axis of the classifier matches by
+// accident. This repo is not shaped that way: the git root carries no project marker and the
+// package lives one level down (`extension/`), so R-SZGB-A `detectProjectTypeWithRootResolution`
+// rewrites `workingDir` to the package dir while `git diff --name-only` keeps emitting
+// REPO-ROOT-relative paths. The fixture below reproduces that shape exactly.
+function writeNestedFixture(root) {
+  const pkg = path.join(root, 'extension');
+  fs.mkdirSync(path.join(pkg, 'src'), { recursive: true });
+  fs.writeFileSync(
+    path.join(pkg, 'package.json'),
+    JSON.stringify({
+      name: 'nested-no-disown-fixture',
+      private: true,
+      scripts: { typecheck: 'node typecheck.cjs' },
+    }, null, 2),
+  );
+  // Same file + same rule every run, so the fingerprint always matches the baseline; only the
+  // LINE moves. Whether the failure survives therefore depends ONLY on the no-disown classifier.
+  fs.writeFileSync(
+    path.join(pkg, 'typecheck.cjs'),
+    [
+      "const line = require('fs').readFileSync(__dirname + '/line.txt', 'utf8').trim();",
+      'console.log(`src/audit.ts(${line},11): error TS2554: Expected 1 arguments, but got 2.`);',
+      'process.exit(1);',
+      '',
+    ].join('\n'),
+  );
+  fs.writeFileSync(path.join(pkg, 'line.txt'), '3\n');
+  fs.writeFileSync(path.join(pkg, 'src', 'audit.ts'), 'export const sum = 1;\n');
+  fs.writeFileSync(path.join(root, 'README.md'), 'fixture\n');
+  return pkg;
+}
+
+function makeNestedRepo(prefix) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  git(root, ['init']);
+  git(root, ['config', 'user.name', 'Test User']);
+  git(root, ['config', 'user.email', 'test@example.com']);
+  const pkg = writeNestedFixture(root);
+  git(root, ['add', '.']);
+  git(root, ['commit', '-m', 'base']);
+  return { root, pkg };
+}
+
+test('AP-EXT-ITER8-02: with the package one level below the git root, a failure in a file the iteration changed is NOT disowned', async () => {
+  const { root, pkg } = makeNestedRepo('cg-no-disown-nested-self-');
+  try {
+    const baselinePath = path.join(root, 'session', 'gate', 'baseline.json');
+    await captureBaseline(root, baselinePath);
+    const base = headSha(root);
+
+    // The iteration edits the very file the failure is reported in — no exported symbol is
+    // involved, so ONLY the changed-FILE axis can keep this failure.
+    fs.writeFileSync(path.join(pkg, 'src', 'audit.ts'), 'export const sum = 1;\nconst added = 2;\n');
+    fs.writeFileSync(path.join(pkg, 'line.txt'), '9\n');
+    git(root, ['add', '.']);
+    git(root, ['commit', '-m', 'iteration edit']);
+
+    const result = await runGate({
+      workingDir: root,
+      mode: 'baseline',
+      scope: 'changed',
+      since: base,
+      baselinePath,
+      checks: ['typecheck'],
+    });
+
+    assert.equal(result.baseline_used, true, 'second run must compare against the baseline');
+    assert.equal(
+      result.status,
+      'red',
+      'a failure in a file THIS iteration changed cannot be disowned as a coincidental baseline match',
+    );
+    assert.equal(result.new_failures_vs_baseline, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER8-02: a nested-root failure the iteration did not touch is still subtracted (no false red)', async () => {
+  const { root } = makeNestedRepo('cg-no-disown-nested-preexisting-');
+  try {
+    const baselinePath = path.join(root, 'session', 'gate', 'baseline.json');
+    await captureBaseline(root, baselinePath);
+    const base = headSha(root);
+
+    // A changed file outside the package, unrelated to the failing file.
+    fs.writeFileSync(path.join(root, 'README.md'), 'fixture\nunrelated edit\n');
+    git(root, ['add', '.']);
+    git(root, ['commit', '-m', 'unrelated edit']);
+
+    const result = await runGate({
+      workingDir: root,
+      mode: 'baseline',
+      scope: 'changed',
+      since: base,
+      baselinePath,
+      checks: ['typecheck'],
+    });
+
+    assert.equal(result.baseline_used, true, 'second run must compare against the baseline');
+    assert.equal(result.status, 'green', 'a failure the iteration did not touch stays pre-existing');
+    assert.equal(result.new_failures_vs_baseline, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
