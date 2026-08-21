@@ -743,17 +743,14 @@ function finalizeGateResult(opts, emit, result) {
  * against ONE base derived from the repo root, never against `opts.workingDir` — the target
  * dirs themselves stay absolute, so package-dir spelling is irrelevant to what gets run.
  */
-function selectWorkspaceTargetDirs(opts, workspacePackages, allowedPathsUsed) {
+function selectWorkspaceTargetDirs(opts, workspacePackages, allowedPathsUsed, changedFiles) {
     const repoRoot = resolveLexicalRepoRoot(opts.workingDir);
     let candidates = workspacePackages;
-    if (opts.scope === 'changed' && opts.since) {
-        const changedFiles = getChangedSince(opts.workingDir, opts.since);
-        if (!affectsAllWorkspacePackages(changedFiles)) {
-            candidates = workspacePackages.filter(pkgDir => changedFiles.some(f => {
-                const absFile = path.resolve(repoRoot, f);
-                return absFile.startsWith(pkgDir + path.sep) || absFile === pkgDir;
-            }));
-        }
+    if (changedFiles && !affectsAllWorkspacePackages(changedFiles)) {
+        candidates = workspacePackages.filter(pkgDir => changedFiles.some(f => {
+            const absFile = path.resolve(repoRoot, f);
+            return absFile.startsWith(pkgDir + path.sep) || absFile === pkgDir;
+        }));
     }
     if (!allowedPathsUsed || affectsAllWorkspacePackages(opts.allowedPaths ?? [])) {
         return candidates;
@@ -763,21 +760,29 @@ function selectWorkspaceTargetDirs(opts, workspacePackages, allowedPathsUsed) {
     return filtered.map(rel => path.resolve(repoRoot, rel));
 }
 function resolveGateTargetDirs(opts, workspacePackages, allowedPathsUsed, start, emit) {
-    if (workspacePackages.length > 0) {
-        return { targetDirs: selectWorkspaceTargetDirs(opts, workspacePackages, allowedPathsUsed) };
+    // AP-EXT-ITER38-02: resolve the changed set ONCE, ahead of the arm split, and
+    // gate BOTH arms on the same empty-set skip. `getChangedSince` maps ANY git
+    // failure (unreachable `since` SHA, timeout) to `[]`, so an empty result is
+    // never distinguishable from "nothing changed" — it must be declared, never
+    // narrowed against. The workspace arm used to narrow: `affectsAllWorkspacePackages([])`
+    // is false, so it filtered every package out and returned `[]` with no event,
+    // and finalizeGateResult reported an executed `gate_run_complete` green over a
+    // gate that ran zero checks.
+    const changedFiles = opts.scope === 'changed' && opts.since
+        ? getChangedSince(opts.workingDir, opts.since)
+        : null;
+    if (changedFiles && changedFiles.length === 0) {
+        emit('gate_diff_scope_fallback', { since: opts.since, reason: 'no_changed_files' });
+        // AC-OFFREPO-1: also emit the canonical gate_skipped event (the same
+        // reason the other two emptyGateResult() producers use) so this skip
+        // participates in SKIP_FLAG_EVENT_NAMES governance and so runGate can
+        // return it directly without routing through finalizeGateResult, which
+        // would otherwise report the skip as an executed gate_run_complete pass.
+        emit('gate_skipped', { reason: 'no_changed_files' });
+        return { targetDirs: [], earlyResult: { ...emptyGateResult(), elapsed_ms: Date.now() - start } };
     }
-    if (opts.scope === 'changed' && opts.since) {
-        const changedFiles = getChangedSince(opts.workingDir, opts.since);
-        if (changedFiles.length === 0) {
-            emit('gate_diff_scope_fallback', { since: opts.since, reason: 'no_changed_files' });
-            // AC-OFFREPO-1: also emit the canonical gate_skipped event (the same
-            // reason the other two emptyGateResult() producers use) so this skip
-            // participates in SKIP_FLAG_EVENT_NAMES governance and so runGate can
-            // return it directly without routing through finalizeGateResult, which
-            // would otherwise report the skip as an executed gate_run_complete pass.
-            emit('gate_skipped', { reason: 'no_changed_files' });
-            return { targetDirs: [], earlyResult: { ...emptyGateResult(), elapsed_ms: Date.now() - start } };
-        }
+    if (workspacePackages.length > 0) {
+        return { targetDirs: selectWorkspaceTargetDirs(opts, workspacePackages, allowedPathsUsed, changedFiles) };
     }
     return { targetDirs: [opts.workingDir] };
 }

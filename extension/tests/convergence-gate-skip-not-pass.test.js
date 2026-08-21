@@ -329,3 +329,85 @@ test('AP-EXT-ITER34-01: nested workspace root — changed-file narrowing compose
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER38-02 — the fifth variant of this file's thesis, reached by the
+// ENUMERATION-FAILURE axis rather than AP-EXT-ITER34-01's path-space axis.
+// `getChangedSince` maps ANY git failure (unreachable/rebased-away `since` SHA,
+// timeout) to `[]`, so an empty changed set is never distinguishable from
+// "nothing changed" — it must be DECLARED as a skip, never narrowed against.
+// `resolveGateTargetDirs`'s flat arm always declared it; `selectWorkspaceTargetDirs`
+// narrowed instead (`affectsAllWorkspacePackages([])` is false, so the package
+// filter excluded every candidate), returning `[]` with NO event and letting
+// `finalizeGateResult` report an executed `gate_run_complete` green over a gate
+// that ran ZERO checks. Assert the EVENTS, not the status: the pre-fix return
+// value was already `green`, so a status-only oracle greens over its own bug.
+test('AP-EXT-ITER38-02: nested workspace root — an unresolvable `since` is a declared skip, not a silent green', async () => {
+  const { dir } = buildNestedWorkspaceRepo();
+  try {
+    const { events, onEvent } = captureEvents();
+
+    // A SHA that does not resolve → `git diff` exits non-zero → getChangedSince
+    // returns []. `failing`'s test script exits 1, so a gate that actually ran
+    // would be RED; the pre-fix workspace arm reported green having run nothing.
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'changed', since: '0'.repeat(40), checks: ['tests'],
+      onEvent,
+    });
+
+    const skipped = events.find(e => e.event === 'gate_skipped');
+    assert.ok(skipped, 'the workspace arm must declare the empty changed set as a skip');
+    assert.equal(skipped.data.reason, 'no_changed_files');
+    assert.ok(events.find(e => e.event === 'gate_diff_scope_fallback'));
+    assert.equal(
+      events.find(e => e.event === 'gate_run_complete'),
+      undefined,
+      'gate_run_complete must NOT be emitted — this gate executed zero checks',
+    );
+    assert.equal(result.status, 'green', 'the skip result shape matches the other skip producers');
+    assert.equal(result.total_raw_failure_count, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER38-02: nested workspace root — a resolvable `since` still runs the changed package', async () => {
+  const { dir, failingDir } = buildNestedWorkspaceRepo();
+  try {
+    commitTouch(dir, failingDir);
+    const { events, onEvent } = captureEvents();
+
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'changed', since: 'HEAD~1', checks: ['tests'], onEvent,
+    });
+
+    // The skip arm must not swallow a real changed set — narrowing still happens.
+    assert.equal(result.status, 'red', 'a non-empty changed set must still reach the package filter');
+    assert.equal(result.total_raw_failure_count, 1);
+    assert.ok(
+      !events.some(e => e.event === 'gate_skipped'),
+      'a gate that ran checks must not report itself as skipped',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER38-02: nested workspace root — scope=full never consults the changed set', async () => {
+  const { dir } = buildNestedWorkspaceRepo();
+  try {
+    const { events, onEvent } = captureEvents();
+
+    // No `since` at all: the skip arm is unreachable and every package runs.
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'full', checks: ['tests'], onEvent,
+    });
+
+    assert.equal(result.status, 'red', 'scope=full runs every workspace package');
+    assert.ok(
+      !events.some(e => e.event === 'gate_skipped'),
+      'the empty-changed-set skip must not fire when scope is not `changed`',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
