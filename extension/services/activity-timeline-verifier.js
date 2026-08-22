@@ -44,11 +44,15 @@ export function findOverlapViolations(activity) {
     const violations = [];
     let lastTicket = null;
     let lastSpawnTs = '';
+    let lastSpawnMs = 0;
     for (const spawn of spawns) {
         const ticket = getEventTicketId(spawn.e);
         if (lastTicket !== null && ticket !== lastTicket) {
+            // The window is bounded at BOTH ends. A relaunched ticket spawns more than once, and
+            // only a terminal at or after ITS LAST spawn proves THAT run exited — a terminal from
+            // an earlier run of the same ticket would otherwise vouch for every later run forever.
             const priorTerminal = terminalEvents
-                .filter((t) => getEventTicketId(t.e) === lastTicket && t.ts <= spawn.ts)
+                .filter((t) => getEventTicketId(t.e) === lastTicket && t.ts >= lastSpawnMs && t.ts <= spawn.ts)
                 .sort((a, b) => a.ts - b.ts)[0];
             if (!priorTerminal) {
                 violations.push({
@@ -62,6 +66,7 @@ export function findOverlapViolations(activity) {
         }
         lastTicket = ticket;
         lastSpawnTs = spawn.e.ts;
+        lastSpawnMs = spawn.ts;
     }
     return violations;
 }

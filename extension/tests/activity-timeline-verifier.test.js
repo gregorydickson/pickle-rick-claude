@@ -1,10 +1,14 @@
 // @tier: fast
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   findOverlapViolations,
   buildGateCompletionReport,
 } from '../services/activity-timeline-verifier.js';
+import { runVerifyActivityTimeline } from '../bin/verify-activity-timeline.js';
 
 function spawnEvt(ts, ticket) {
   return { event: 'worker_spawn_backend_resolved', ts, backend: 'claude', source: 'default', pid: 1, ticket };
@@ -148,4 +152,99 @@ test('buildGateCompletionReport: a zero-fast-tier-phase timeline reports zero ob
   assert.equal(report.tickets.length, 0);
   assert.equal(report.summary.observedCompletions, 0);
   assert.equal(report.summary.verdict, '0 observed completions, 0 timeouts');
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER39-01: a terminal event from a PRIOR run of the same ticket must
+// not vouch for its CURRENT run. Relaunch is routine (silent_death_respawn_cap,
+// bounded_terminal_escape_cap), and measured live: 6 of 8 tickets in session
+// 2026-08-22-a1e33756 were re-spawned. Assert the CLI VERDICT ("OVERLAP: none",
+// exit 0) — the pre-fix predicate returned a well-formed empty array, so a
+// "does it throw" or shape oracle greens over the whole defect.
+// ---------------------------------------------------------------------------
+
+function boundaryEvt(ts, ticket) {
+  return { event: 'boundary_commit_resolved', ts, ticket_id: ticket };
+}
+
+function withSessionDir(activity, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-atv-'));
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'state.json'),
+      JSON.stringify({ session_dir: dir, working_dir: dir, activity }),
+    );
+    return fn(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER39-01: a relaunched ticket with no terminal for its LAST run is an overlap', () => {
+  // A run 1 ends (gate_failed). A relaunches — run 2 never terminates. B spawns.
+  const activity = [
+    spawnEvt('2026-08-22T10:00:00.000Z', 'aaaa1111'),
+    gateFailedEvt('2026-08-22T10:05:00.000Z', 'aaaa1111', 'test:fast', []),
+    spawnEvt('2026-08-22T10:06:00.000Z', 'aaaa1111'),
+    spawnEvt('2026-08-22T10:10:00.000Z', 'bbbb2222'),
+  ];
+
+  const violations = findOverlapViolations(activity);
+  assert.equal(violations.length, 1, 'run-2 of aaaa1111 had no terminal before bbbb2222 spawned');
+  assert.equal(violations[0].priorTicket, 'aaaa1111');
+  assert.equal(violations[0].nextTicket, 'bbbb2222');
+  // The reported prior spawn must be run 2's, not run 1's — otherwise the
+  // operator is pointed at a run that DID terminate.
+  assert.equal(violations[0].priorSpawnTs, '2026-08-22T10:06:00.000Z');
+
+  const { exitCode, output } = withSessionDir(activity, runVerifyActivityTimeline);
+  assert.equal(exitCode, 1, 'the CLI must not exit 0 over a live overlap');
+  assert.match(output, /OVERLAP: 1 violation/);
+  assert.doesNotMatch(output, /OVERLAP: none/);
+});
+
+test('AP-EXT-ITER39-01: a stale terminal cannot vouch across an interleaved re-spawn', () => {
+  // A ends, B ends, A is RETRIED and never terminates, C spawns.
+  const activity = [
+    spawnEvt('2026-08-22T10:00:00.000Z', 'aaaa1111'),
+    boundaryEvt('2026-08-22T10:01:00.000Z', 'aaaa1111'),
+    spawnEvt('2026-08-22T10:02:00.000Z', 'bbbb2222'),
+    boundaryEvt('2026-08-22T10:03:00.000Z', 'bbbb2222'),
+    spawnEvt('2026-08-22T10:04:00.000Z', 'aaaa1111'),
+    spawnEvt('2026-08-22T10:05:00.000Z', 'cccc3333'),
+  ];
+
+  const violations = findOverlapViolations(activity);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].priorTicket, 'aaaa1111');
+  assert.equal(violations[0].nextTicket, 'cccc3333');
+});
+
+test('AP-EXT-ITER39-01 control: a relaunched ticket that DOES terminate is not an overlap', () => {
+  // Same relaunch shape, but run 2 resolves its boundary before B spawns.
+  // Narrowing the window must not manufacture a violation here.
+  const activity = [
+    spawnEvt('2026-08-22T10:00:00.000Z', 'aaaa1111'),
+    gateFailedEvt('2026-08-22T10:05:00.000Z', 'aaaa1111', 'test:fast', []),
+    spawnEvt('2026-08-22T10:06:00.000Z', 'aaaa1111'),
+    boundaryEvt('2026-08-22T10:09:00.000Z', 'aaaa1111'),
+    spawnEvt('2026-08-22T10:10:00.000Z', 'bbbb2222'),
+  ];
+
+  assert.deepEqual(findOverlapViolations(activity), []);
+
+  const { exitCode, output } = withSessionDir(activity, runVerifyActivityTimeline);
+  assert.equal(exitCode, 0);
+  assert.match(output, /OVERLAP: none/);
+});
+
+test('AP-EXT-ITER39-01 control: a terminal exactly AT the spawn instant still counts', () => {
+  // The window is inclusive at both ends: a terminal landing on the same
+  // millisecond as its own run's spawn is that run's terminal, not a stale one.
+  const activity = [
+    spawnEvt('2026-08-22T10:00:00.000Z', 'aaaa1111'),
+    boundaryEvt('2026-08-22T10:00:00.000Z', 'aaaa1111'),
+    spawnEvt('2026-08-22T10:00:00.000Z', 'bbbb2222'),
+  ];
+  assert.deepEqual(findOverlapViolations(activity), []);
 });
