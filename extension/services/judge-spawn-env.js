@@ -99,10 +99,12 @@ const JUDGE_TMPDIR_PREFIX = 'pickle-judge-';
  */
 export function cleanupJudgeRuntimeDir(env) {
     const dir = env['XDG_RUNTIME_DIR'];
-    if (!dir)
+    if (!dir) {
         return;
-    if (path.dirname(dir) !== os.tmpdir() || !path.basename(dir).startsWith(JUDGE_TMPDIR_PREFIX))
+    }
+    if (path.dirname(dir) !== os.tmpdir() || !path.basename(dir).startsWith(JUDGE_TMPDIR_PREFIX)) {
         return;
+    }
     try {
         fs.rmSync(dir, { recursive: true, force: true });
     }

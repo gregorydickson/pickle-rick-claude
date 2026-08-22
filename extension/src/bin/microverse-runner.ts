@@ -4082,22 +4082,35 @@ async function handlePostConvergenceGateDeferral(
  * is risky machinery, rejected per the Simplification Review). Best-effort:
  * telemetry must never crash the runner or change exit behavior.
  */
-function listCommittedFilesInRange(workingDir: string, fromSha: string, toSha: string): string[] {
+function listCommittedFilesInRange(workingDir: string, fromSha: string, toSha: string): string[] | null {
   const result = _deps.spawnSync(
     'git',
     // AP-EXT-ITER31-01: same contract as `allowed_paths` (`-z`). Without it a
     // non-ASCII in-scope commit is C-quoted, matches no allowed path, and this
     // audit reports `worker_edit_outside_scope` over a file the fence allows.
     ['diff', '--name-only', '--no-renames', '-z', `${fromSha}..${toSha}`],
-    { cwd: workingDir, encoding: 'utf-8', timeout: 15_000 },
+    {
+      cwd: workingDir,
+      encoding: 'utf-8',
+      timeout: 15_000,
+      // AP-EXT-ITER38-01: an unbounded enumeration declares the ONE ceiling
+      // (AP-EXT-ITER8-01) rather than inheriting Node's 1 MB default, past which
+      // Node SIGTERMs git and hands back a truncated first megabyte.
+      maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+    },
   );
-  if ((result.status ?? 1) !== 0) return [];
+  // AP-EXT-ITER38-03 (the OPEN-GAP sibling of `check-scope-diff.ts:getStagedPaths`):
+  // an enumeration that did not COMPLETE is not an EMPTY one. `[]` is a POSITIVE
+  // finding ("this iteration committed nothing") that `resolveScopeAuditInputs`
+  // reads as "nothing to audit", silently disarming the one scope check a codex
+  // worker cannot bypass. Report no answer rather than a fabricated clean one.
+  if ((result.status ?? 1) !== 0) return null;
   return (result.stdout || '').split('\0').filter(Boolean);
 }
 
 function resolveScopeAuditInputs(
   ctx: RunContext,
-): { scopeJsonPath: string; postHead: string; committedFiles: string[] } | null {
+): { scopeJsonPath: string; postHead: string; committedFiles: string[] | null } | null {
   const scopeJsonPath = path.join(ctx.sessionDir, 'scope.json');
   // AP-EXT-ITER8-02: read through the recovery layer, which PROMOTES a dead
   // `scope.json.tmp.<pid>` onto the base path. A bare `fs.existsSync` pre-gate
@@ -4109,7 +4122,9 @@ function resolveScopeAuditInputs(
   const postHead = ctx.postIterSha;
   if (!preHead || !postHead || preHead === postHead) return null;
   const committedFiles = listCommittedFilesInRange(ctx.workingDir, preHead, postHead);
-  if (committedFiles.length === 0) return null;
+  // `null` is "git could not enumerate" and MUST reach `checkScopeDiff`, which renders
+  // it as `enumeration_failed`; only a COMPLETED-and-empty list is a genuine no-op.
+  if (committedFiles !== null && committedFiles.length === 0) return null;
   return { scopeJsonPath, postHead, committedFiles };
 }
 
@@ -4124,6 +4139,13 @@ export function auditPostIterationScope(ctx: RunContext, state: MicroverseState)
       headRef: postHead,
       _getStagedPaths: () => committedFiles,
     });
+    if (result.status === 'enumeration_failed') {
+      ctx.log(
+        `[R-SSOC] post-iteration scope audit NOT evaluated for ${postHead}: git could not ` +
+        'enumerate the iteration\'s committed files — scope drift is UNKNOWN, not absent',
+      );
+      return;
+    }
     if (result.status !== 'outside_scope') return;
 
     const ticketId = typeof state.current_subsystem === 'string' && state.current_subsystem.trim()
