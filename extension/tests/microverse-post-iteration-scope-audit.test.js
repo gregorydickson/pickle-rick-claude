@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { auditPostIterationScope, _deps } from '../bin/microverse-runner.js';
+import { isUnevaluableScopeStatus } from '../bin/check-scope-diff.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 
 function makeTmp() {
@@ -23,17 +24,22 @@ function writeScopeJson(sessionDir, allowedPaths) {
   fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({ allowed_paths: allowedPaths }));
 }
 
+function writeRawScopeJson(sessionDir, body) {
+  fs.writeFileSync(path.join(sessionDir, 'scope.json'), body);
+}
+
 // Drive auditPostIterationScope with injected committed files + captured events.
 // committedFiles === null simulates "no scope.json written" callers; otherwise the
 // fake git-diff returns the given file list for the preIterSha..postIterSha range.
-function runAudit({ allowedPaths, committedFiles, currentSubsystem, writeScope = true, preSha = 'a'.repeat(40), postSha = 'b'.repeat(40), spawnResult, spawnOptsSink }) {
+function runAudit({ allowedPaths, committedFiles, currentSubsystem, writeScope = true, preSha = 'a'.repeat(40), postSha = 'b'.repeat(40), spawnResult, spawnOptsSink, rawScope }) {
   const tmp = makeTmp();
   const captured = [];
   const logLines = [];
   const origSpawn = _deps.spawnSync;
   const origLog = _deps.logActivity;
   try {
-    if (writeScope) writeScopeJson(tmp, allowedPaths);
+    if (rawScope !== undefined) writeRawScopeJson(tmp, rawScope);
+    else if (writeScope) writeScopeJson(tmp, allowedPaths);
     _deps.spawnSync = (bin, args, opts) => {
       assert.equal(bin, 'git');
       assert.ok(args.includes('--name-only'), 'audit must run git diff --name-only');
@@ -201,4 +207,67 @@ test('AP-EXT-ITER38-03: a COMPLETED-but-empty enumeration is still a plain no-op
     0,
     'a completed empty enumeration is NOT an enumeration failure',
   );
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER41-01: the sibling status AP-EXT-ITER38-03 left behind. `checkScopeDiff`
+// has TWO cannot-render-a-verdict statuses and the CLI exits 2 on both, sharing one
+// disposition ("exiting 0 on either would report a fence that never ran as a fence
+// that passed"). This audit handled only `enumeration_failed`, so `malformed_scope`
+// fell through the `!== 'outside_scope'` return: a scope.json that parses as an
+// object but carries no string `allowed_paths` array disarmed the ONE scope check a
+// codex worker cannot bypass, with the byte-identical observable to a clean pass.
+// Drive the REAL audit through the REAL checkScopeDiff (no injected status) over a
+// garbage fence and an off-scope commit.
+// ---------------------------------------------------------------------------
+
+const MALFORMED_FENCES = [
+  ['allowed_paths missing entirely', JSON.stringify({ version: 1, mode: 'diff' })],
+  ['allowed_paths a bare string', JSON.stringify({ allowed_paths: 'packages/api' })],
+  ['allowed_paths an array of non-strings', JSON.stringify({ allowed_paths: [1, 2] })],
+];
+
+for (const [label, body] of MALFORMED_FENCES) {
+  test(`AP-EXT-ITER41-01: a malformed fence (${label}) is reported unknown, not silently clean`, () => {
+    const events = runAudit({
+      rawScope: body,
+      committedFiles: ['totally/outside/scope.ts'],
+      currentSubsystem: 'extension',
+    });
+    assert.equal(events.length, 0, 'an unreadable fence cannot produce a drift verdict either way');
+    const notEvaluated = events.logLines.filter((l) => l.includes('[R-SSOC]') && l.includes('NOT evaluated'));
+    assert.equal(notEvaluated.length, 1, 'a garbage fence must be logged, not swallowed');
+    assert.ok(
+      /UNKNOWN, not absent/.test(notEvaluated[0]),
+      `log must distinguish unknown from clean, got: ${notEvaluated[0]}`,
+    );
+    assert.ok(
+      notEvaluated[0].includes('malformed_scope'),
+      `log must name WHY the fence was unreadable, got: ${notEvaluated[0]}`,
+    );
+  });
+}
+
+test('AP-EXT-ITER41-01: a well-formed fence over an in-scope commit still logs nothing (no over-trigger)', () => {
+  const events = runAudit({
+    allowedPaths: ['packages/api/src/bank-statement'],
+    committedFiles: ['packages/api/src/bank-statement/parser.ts'],
+    currentSubsystem: 'extension',
+  });
+  assert.equal(events.length, 0, 'in-scope commit → no drift event');
+  assert.equal(
+    events.logLines.filter((l) => l.includes('NOT evaluated')).length,
+    0,
+    'a readable fence rendering a real verdict is NOT an unevaluable one',
+  );
+});
+
+test('AP-EXT-ITER41-01: both unevaluable statuses share ONE disposition at the predicate', () => {
+  assert.equal(isUnevaluableScopeStatus('malformed_scope'), true);
+  assert.equal(isUnevaluableScopeStatus('enumeration_failed'), true);
+  // `no_scope` is a genuine answer ("this session has no fence"), not an unreadable
+  // one — folding it in would silence every legitimately unscoped anatomy run.
+  for (const status of ['ok', 'outside_scope', 'no_scope']) {
+    assert.equal(isUnevaluableScopeStatus(status), false, `${status} renders a verdict`);
+  }
 });

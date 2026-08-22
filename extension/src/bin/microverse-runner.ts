@@ -65,7 +65,7 @@ import {
   classifyMuxIteration,
 } from './mux-runner.js';
 import { resolveCodexModel } from './spawn-morty.js';
-import { checkScopeDiff } from './check-scope-diff.js';
+import { checkScopeDiff, isUnevaluableScopeStatus } from './check-scope-diff.js';
 import {
   evaluateManagerRelaunch,
   recordManagerRelaunch,
@@ -4139,10 +4139,17 @@ export function auditPostIterationScope(ctx: RunContext, state: MicroverseState)
       headRef: postHead,
       _getStagedPaths: () => committedFiles,
     });
-    if (result.status === 'enumeration_failed') {
+    // AP-EXT-ITER41-01: BOTH cannot-render-a-verdict statuses share ONE disposition
+    // here, the same way the CLI exits 2 on either. `enumeration_failed` alone left
+    // `malformed_scope` — a `scope.json` that parses but carries no string
+    // `allowed_paths` array — falling through the `!== 'outside_scope'` return, so a
+    // garbage fence produced the byte-identical observable to a clean iteration:
+    // zero events, zero log lines. That is a disarmed R-SSOC audit, not a quiet pass.
+    if (isUnevaluableScopeStatus(result.status)) {
       ctx.log(
-        `[R-SSOC] post-iteration scope audit NOT evaluated for ${postHead}: git could not ` +
-        'enumerate the iteration\'s committed files — scope drift is UNKNOWN, not absent',
+        `[R-SSOC] post-iteration scope audit NOT evaluated for ${postHead} ` +
+        `(${result.status}): ${result.error ?? 'the fence could not render a verdict'} ` +
+        '— scope drift is UNKNOWN, not absent',
       );
       return;
     }

@@ -29,6 +29,20 @@ export interface ScopeDiffResult {
   error?: string;
 }
 
+/**
+ * AP-EXT-ITER41-01: the ONE predicate for "the fence could not render a verdict".
+ *
+ * `malformed_scope` and `enumeration_failed` differ only in WHY the fence is
+ * unreadable — a garbage `allowed_paths` versus a git enumeration that never
+ * completed. Neither is a finding about the tree, so every consumer owes them a
+ * single shared disposition (the CLI exits 2 on both). Splitting them lets a
+ * consumer handle one and let the other fall through its "not outside_scope"
+ * return, which reports a fence that never ran as a fence that passed.
+ */
+export function isUnevaluableScopeStatus(status: ScopeDiffResult['status']): boolean {
+  return status === 'malformed_scope' || status === 'enumeration_failed';
+}
+
 function normalizePath(p: string): string {
   return p.replace(/\/$/, '');
 }
@@ -237,7 +251,7 @@ if (process.argv[1] && path.basename(process.argv[1]) === 'check-scope-diff.js')
   // Both statuses mean the same thing to the caller — the fence could not render a
   // verdict — so they share ONE disposition and one exit code. Exiting 0 on either
   // would report a fence that never ran as a fence that passed.
-  if (result.status === 'malformed_scope' || result.status === 'enumeration_failed') {
+  if (isUnevaluableScopeStatus(result.status)) {
     process.stderr.write(JSON.stringify({ error: result.error, status: result.status }) + '\n');
     process.exit(2);
   }
