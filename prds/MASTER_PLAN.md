@@ -30,6 +30,43 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+> ### 🚀 2026-08-22 — DEPLOYED THE BUNDLE. THE RUNTIME HAD BEEN RUNNING THE PRE-FIX CODE THE WHOLE TIME.
+>
+> **The version string was identical before and after the bundle — `2.1.0-beta.10` on both sides — so
+> every version check said "up to date" while the deployed runtime still contained every bug the
+> session had just fixed.** The drift was invisible to the one check an operator would naturally run.
+> Measured before deploy:
+>
+> | probe | source | deployed |
+> |---|---|---|
+> | `normalizeTrailerInputNewline` in `bin/mux-runner.js` | 2 | **0** |
+> | `normalizedMessage` in `bin/spawn-morty.js` | 2 | **0** |
+> | `realpathSync` in `services/orphan-reaper.js` | 2 | **0** |
+> | differing files in `extension/bin` | — | **4** |
+> | differing files in `extension/services` | — | **4** |
+>
+> So a pipeline launched at any point after the bundle "completed" would have reproduced **the
+> unattributable-commit bug it was written to fix**, plus the false-green reaper, plus the CRITICAL
+> stop-hook and scope-fence symlink blindness. The bundle's own thesis would have been silently undone
+> by the deploy gap.
+>
+> **Deployed 2026-08-22** (no active session; installer preflight clean). Post-deploy verification:
+> `bin/` differing **0** · `services/` differing **0** · trailer fix live in both producers · reaper
+> `realpathSync` live · deployed `dispatch.js stop-hook` returns `{"decision":"approve"}` · deployed
+> `reap-orphans.js` reports `scanned=0 reaped=0` against a genuinely empty census.
+>
+> **Method rule, now binding: a version-string match is NOT a deploy check.** `install.sh` does not bump
+> the version, and bundles routinely land dozens of commits under one prerelease tag. Verify deployment
+> by **content** — `diff -rq extension/bin ~/.claude/pickle-rick/extension/bin` and the same for
+> `services/` — or by grepping for a symbol the fix introduced. Both must read zero/present before a
+> run is trusted to be exercising the fixed code.
+>
+> **Note on AC-3 (one policy, two producers):** the two fixes are functionally equivalent but not
+> textually shared — `mux-runner` grew a named helper `normalizeTrailerInputNewline(m) =>
+> m.replace(/\n*$/, '\n')` while `spawn-morty` inlines `message.replace(/\n+$/, '') + '\n'`. AC-3
+> permitted but did not require a shared helper, so this is within spec; recorded because a future
+> reader will otherwise see it as drift. If a third producer ever appears, collapse to the helper.
+
 > ### ✅ 2026-08-21 22:42 — ALL THREE TIERS MEASURED POST-BUNDLE. SERIAL IS GREEN; ONLY 2 FAILURES REMAIN, BOTH ALREADY FILED.
 >
 > Measured at `8a8c29eb` on a **censused quiet box** under **Node 24.19.0 + pnpm 11.22.0**, each tier's
