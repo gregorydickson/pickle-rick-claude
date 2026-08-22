@@ -376,7 +376,7 @@ describe('R-ORCG: judge XDG_RUNTIME_DIR cleanup', () => {
     assert.deepEqual([...after].filter(d => !before.has(d)), [], 'no new pickle-judge-* dir should survive a spawn failure');
   });
 
-  test('AC-3 + AC-3a: a full nested-claude measureLlmMetricWithBackoff success run leaves no pickle-judge-* dir (covers the probe, the attempt, and the :2593 telemetry-only key-names probe)', async () => {
+  test('AC-3 + AC-3a: a full nested-claude measureLlmMetricWithBackoff success run leaves no pickle-judge-* dir (covers the probe, the attempt, and the telemetry-only key-names probe)', async () => {
     const previousClaudeCode = process.env['CLAUDECODE'];
     process.env['CLAUDECODE'] = 'outer-session';
     const orig = { spawn: _deps.spawn, logActivity: _deps.logActivity };
