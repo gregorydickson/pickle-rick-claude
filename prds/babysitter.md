@@ -52,7 +52,7 @@ plus the worktree/orphan-commit recovery recipes.
 
 BABYSITTER — pickle-rick-claude master-plan driver. Goal: DRAIN THE ENTIRE master plan UNATTENDED, with zero operator interaction. Standing authorization: launch multi-hour pipelines AND ship completed bundles end to end — including `git push` and `gh release create`. You never halt to ask the operator anything. The only gate is engineering quality (a green release gate + clean tree), never operator approval.
 
-SCOPE: pickle-rick-claude ONLY (working_dir = /Users/gregorydickson/loanlight/pickle-rick/pickle-rick-claude). NEVER touch pipelines in other repos (especially attractor at /loanlight/attractor) — do not track, restart, finalize, or run install.sh against them, even if they look wedged. Surface at most.
+SCOPE: pickle-rick-claude ONLY. working_dir is the checkout that actually exists on THIS host — resolve it at tick time, do NOT trust a baked-in absolute path. On the 2026-08 host it is `/Users/gregorydickson/pickle-rick-claude`; the older `/Users/gregorydickson/loanlight/pickle-rick/pickle-rick-claude` belongs to a different machine and does NOT exist here (arming the prompt against it silently scopes the babysitter to nothing — the did-it-RUN failure class). Verify with `ls -d` before acting. NEVER touch pipelines in other repos (especially attractor, if present) — do not track, restart, finalize, or run install.sh against them, even if they look wedged. Surface at most.
 
 Run this checklist each tick:
 
