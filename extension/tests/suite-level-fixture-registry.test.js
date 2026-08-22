@@ -84,6 +84,34 @@ function spawnFixture(binDir, name, duration) {
   return pidFile;
 }
 
+/**
+ * Group-leader fixture whose child OUTLIVES it: the leader exits on SIGTERM, the
+ * child ignores SIGTERM and stays in the leader's process group. After the grace
+ * period the leader PID is gone but `kill(-pid, ...)` still succeeds, which is the
+ * exact shape that made the pre-fix escalation count one reap twice.
+ */
+const SURVIVING_GROUP_SCRIPT = [
+  "const { spawn } = require('node:child_process');",
+  // The child self-terminates after 30s so a leaked group member cannot outlive
+  // the run even if the leader (and its spawn timeout) is already gone.
+  "const childSrc = \"process.on('SIGTERM', () => {}); setTimeout(() => process.exit(0), 30000);\";",
+  "spawn(process.execPath, ['-e', childSrc], { stdio: 'ignore', timeout: 30000 });",
+  "process.on('SIGTERM', () => process.exit(0));",
+  'setInterval(() => {}, 1000);',
+].join('\n');
+
+/** Double-fork a detached group leader whose child survives the leader's own exit. */
+function spawnSurvivingGroupFixture(binDir, name) {
+  const pidFile = path.join(binDir, `${name}.pid`);
+  const launcher = spawn(
+    process.execPath,
+    ['-e', LAUNCHER_SCRIPT, process.execPath, SURVIVING_GROUP_SCRIPT, pidFile],
+    { detached: true, stdio: 'ignore', timeout: 10_000 },
+  );
+  launcher.unref();
+  return pidFile;
+}
+
 async function resolvePid(pidFile) {
   await waitFor(() => fs.existsSync(pidFile), 10_000, `pidfile ${pidFile} written`);
   return Number(fs.readFileSync(pidFile, 'utf-8').trim());
@@ -123,6 +151,27 @@ test('AC2: reapFixturesSync (the process.on(exit) primitive) reaps a live fixtur
   const reaped = reapFixturesSync(registryPath);
   assert.ok(reaped > 0, 'sync reap cleaned up fixtures');
   await waitFor(() => !isAlive(fixturePid), 10_000, 'fixture was synchronously reaped');
+});
+
+test('AC2: reapFixturesSync counts one reap per PID when the group outlives its leader', async () => {
+  const registryDir = makeTmp('suite-fixture-registry-ac2-group-');
+  const binDir = makeTmp('suite-fixture-registry-ac2-group-bin-');
+  const registryPath = initFixturePidRegistry(registryDir);
+
+  const pidFile = spawnSurvivingGroupFixture(binDir, 'orphan');
+  const leaderPid = await resolvePid(pidFile);
+  recordFixturePid(registryPath, leaderPid);
+  await waitFor(() => isAlive(leaderPid), 10_000, 'group leader alive after spawn');
+
+  // The leader dies during the SIGTERM grace window, but its SIGTERM-ignoring
+  // child keeps the process group alive, so the SIGKILL escalation still
+  // succeeds. `reaped` must count the PID once — a delivered group signal is
+  // not a confirmed death.
+  const reaped = reapFixturesSync(registryPath);
+  assert.equal(reaped, 1, 'one registered PID reaped exactly once');
+  assert.ok(!isAlive(leaderPid), 'group leader is gone');
+
+  try { process.kill(-leaderPid, 'SIGKILL'); } catch { /* group already gone */ }
 });
 
 test('afterAll hook (reapFixtures) reaps fixtures asynchronously', async () => {

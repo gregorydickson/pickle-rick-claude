@@ -707,6 +707,27 @@ export function recordFixturePid(registryPath: string, pid: number): void {
 }
 
 /**
+ * Liveness probe for a registered fixture PID.
+ * Uses `ps -p <pid>` to verify the PID is still the fixture (never `ps | grep`).
+ */
+function isFixturePidAlive(pid: number): boolean {
+  try {
+    execFileSync('ps', ['-p', String(pid)], { encoding: 'utf-8', stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Poll `isFixturePidAlive` up to `polls` times, sleeping `GRACE_POLL_MS` between probes. */
+function waitForFixtureDeath(pid: number, polls: number): void {
+  for (let i = 0; i < polls; i++) {
+    if (!isFixturePidAlive(pid)) return;
+    if (i < polls - 1) sleepSync(GRACE_POLL_MS);
+  }
+}
+
+/**
  * Synchronously reap all fixtures recorded in the registry.
  * Called from process.on('exit') so it runs even on SIGKILL of the test runner.
  */
@@ -719,32 +740,23 @@ export function reapFixturesSync(registryPath: string, platform: NodeJS.Platform
     for (const pid of registry.pids) {
       if (!Number.isInteger(pid) || pid <= 0) continue;
       // Verify the PID is still alive and is our fixture (not recycled)
-      try {
-        // Use ps -p <pid> to verify the PID is still the fixture (never ps | grep)
-        execFileSync('ps', ['-p', String(pid)], { encoding: 'utf-8', stdio: 'pipe' });
-      } catch {
-        // PID is not alive or not running, skip
-        continue;
-      }
-      // PID is alive. Escalate: SIGTERM → grace → SIGKILL
+      if (!isFixturePidAlive(pid)) continue;
+      // PID is alive. Escalate: SIGTERM → grace → SIGKILL → bounded verify.
+      // Mirrors `reapCandidateGroup`: `reaped` counts CONFIRMED deaths only, never
+      // a delivered signal. A group whose leader died but whose grandchildren
+      // survive still accepts `kill(-pid, …)`, so counting on the signal both
+      // double-counts and overstates the cleanup.
       try {
         process.kill(-pid, 'SIGTERM');
       } catch { /* process may already be terminating */ }
-      // Brief grace for SIGTERM
-      for (let i = 0; i < 20; i++) {
+      waitForFixtureDeath(pid, Math.ceil(DEFAULT_GRACE_MS / GRACE_POLL_MS));
+      if (isFixturePidAlive(pid)) {
         try {
-          execFileSync('ps', ['-p', String(pid)], { encoding: 'utf-8', stdio: 'pipe' });
-        } catch {
-          reaped++;
-          break;
-        }
-        if (i < 19) sleepSync(100);
+          process.kill(-pid, 'SIGKILL');
+        } catch { /* process may already be gone */ }
+        waitForFixtureDeath(pid, Math.ceil(DEFAULT_KILL_VERIFY_MS / GRACE_POLL_MS));
       }
-      // If still alive, escalate to SIGKILL
-      try {
-        process.kill(-pid, 'SIGKILL');
-        reaped++;
-      } catch { /* process may already be gone */ }
+      if (!isFixturePidAlive(pid)) reaped++;
     }
   } catch { /* best-effort cleanup */ }
   try {
