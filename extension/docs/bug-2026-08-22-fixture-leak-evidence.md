@@ -215,3 +215,34 @@ pgrep -P <pid>; echo exit=$?                                                # ex
 find "$(node -e 'console.log(require("os").tmpdir())')" -maxdepth 1 -mindepth 1 -name 'pickle-*' | wc -l
 node --test tests/orphan-reaper-verified-kill.test.js
 ```
+
+## 7. Crossref audit residuals (ticket 4801536f)
+
+Two low-severity cross-reference findings from the final crossref-consistency audit over this
+bundle's combined diff (`55114d94..HEAD`). Neither affects any enforcement mechanism or shipped
+behavior; both are recorded here rather than fixed, per the scope constraints below.
+
+**A. Stale `:2593`/`:2657` line-number citation in `extension/src/bin/CLAUDE.md`'s R-ORCG trap door.**
+The trap-door entry for `microverse-runner.ts` (R-SJET-3 judge env hygiene, rewritten by commit
+`34c8a89a`) cites the telemetry-only `preSpawnEnvKeyNames` probe at `:2593` (feeding
+`pre_spawn_env_key_names` at `:2657`). The probe has lived at lines 2618/2683 since the commit that
+introduced the trap-door text — the citation was miscounted from the source PRD's planning-time draft
+(`prds/BUG-2026-08-22-fixture-leak-producers-processes-and-directories.md`, AC-3a) and never matched
+shipped code. The trap door's `PATTERN_SHAPE`/`ENFORCE` fields are grep-pattern anchors, not line
+numbers, so enforcement is unaffected — this is a human-navigation aid only. `extension/src/bin/CLAUDE.md`
+is outside this audit ticket's Files-to-modify scope; a future ticket touching that file should correct
+the citation to `:2618`/`:2683` in the same pass.
+
+**B. npm CLI's own compile-cache directory confounds the AC-3 leak-budget verify command.** Running
+this ticket's own leak-budget acceptance check verbatim —
+`PRIV=$(mktemp -d); TMPDIR="$PRIV" CLAUDECODE=1 npm run test:fast; find "$PRIV" -maxdepth 1 -mindepth 1 | wc -l`
+— leaves exactly one entry, `$PRIV/node-compile-cache/`, not zero. Isolated with three minimal repros:
+`TMPDIR=$T node -e "..."` (no dir), `TMPDIR=$T node --test <file>` (no dir), `TMPDIR=$T npm --version`
+(creates `$T/node-compile-cache/...`) — pinning the producer to the `npm` CLI binary itself (npm
+`11.17.0` on Node `v24.19.0`), which enables its own compile cache under `os.tmpdir()` on every
+invocation, independent of any script it runs or any code in this repo. Not `pickle-*` prefixed, so
+invisible to `orphan-reaper.ts`'s matcher; not attributable to this bundle (reproduces on a bare
+`npm --version` with zero pickle-rick code involved, and predates `55114d94`). Does not affect
+`extension/tests/bin/test-runner-tmp-leak-budget.test.js`'s own leak-budget suite, which spawns
+`bin/test-runner.js` via `process.execPath` directly rather than through `npm run`, so it never
+observes this confound.
