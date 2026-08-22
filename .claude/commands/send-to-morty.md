@@ -109,6 +109,10 @@ completion_commit: <full-or-short-sha-of-the-commit-that-closes-this-ticket>
 
 as a flat top-level YAML key in the frontmatter (not nested). The runtime watcher reverts any `status: Done` flip that lacks a `completion_commit` field — reverted tickets count as Todo on the next iteration, and your work is wasted. The `completion_commit` SHA must point to a commit on the current branch whose message references the ticket id (`${TICKET_ID}`). Do not flip status to Done before the commit exists. This requirement is in addition to the existing rule that work must pass acceptance criteria before you mark the ticket Done.
 
+## ⛔ Command Discipline (mandatory — R-MWBG)
+
+Run your OWN long-running commands (test tiers, gates, builds) in the FOREGROUND. NEVER background them — no Bash `run_in_background`, no trailing `&`, no `nohup`/`setsid`/`disown`. You are a `claude -p` subprocess: a backgrounded child does NOT survive your turn ending — it is KILLED at turn-end, leaving ZERO output and an unverified diff, exactly the R-MWBG stall class (B-SIGF 2026-06-29) that otherwise strands a manager spawning you. Do NOT preemptively background a test/gate/build because you fear a Bash-tool time ceiling: pass an explicit LARGE `timeout` on the Bash call instead — most commands finish well within a generous budget, and a command that is genuinely slow needs to run to completion in the foreground where you can see its real exit code, not race a background PID that your turn-end kills before it reports anything. FOREGROUND + explicit large timeout, never background.
+
 ## Lifecycle — ONE TICKET, all phases in the tier's lifecycle set
 
 {{TIER_LIFECYCLE_SECTIONS}}
