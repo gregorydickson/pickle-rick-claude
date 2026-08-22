@@ -30,6 +30,59 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+> ### ✅ 2026-08-21 22:42 — ALL THREE TIERS MEASURED POST-BUNDLE. SERIAL IS GREEN; ONLY 2 FAILURES REMAIN, BOTH ALREADY FILED.
+>
+> Measured at `8a8c29eb` on a **censused quiet box** under **Node 24.19.0 + pnpm 11.22.0**, each tier's
+> verdict read from the runner's own summary block. Census recorded per the sharpened rule (top CPU
+> consumers BY NAME, not merely absence of pickle processes): 0 pickle orphans, 0 mux/pipeline procs,
+> top consumers `claude` 16.7% · `Terminal` 6.9% · `SkyLight` 5.4%, nothing else above 1%. Load 1.48
+> before, 2.68 after. No `siriknowledged` storm.
+>
+> | tier | tests | suites | pass | fail | cancelled | RC |
+> |---|---|---|---|---|---|---|
+> | `test:fast` | **7792** | **508** | 7785 | **1** | **0** | 1 |
+> | `test:integration:parallel` | **634** | **21** | 633 | **1** | **0** | 1 |
+> | `test:integration:serial` | **606** | **24** | 606 | **0** | **0** | **0** |
+>
+> **Counts GREW; nothing was greened by shrinking a tier.** Against the (now unverified) `f45812e1`
+> baseline of 7737/508, 622/21, 603/24: fast +55 tests, parallel +12, serial +3, suites stable or up.
+>
+> **The trajectory across this session, same sha family, same box:**
+>
+> | measurement | fast | integration:parallel | integration:serial |
+> |---|---|---|---|
+> | as found (Node 22.12, no pnpm/rg/tmux) | 15 fail / 38 cancelled | 14 / 7 | 3 / 6 |
+> | + Node 24 | 12 / 0 | — | — |
+> | + Node 24 & pnpm | 5 / 0 | 10 / 0 | 2 / 0 |
+> | **+ the bundle's 21 commits** | **1 / 0** | **1 / 0** | **0 / 0** |
+>
+> **Both remaining failures are already-filed PRDs, and neither is a defect in the branch's code:**
+> - `tests/install-bun-probe.test.js` — `BUG-2026-08-21-bun-probe-path-filter-misses-homebrew.md` (P3).
+>   Host-dependent: it fails *because* bun IS installed, at a path its `"bun"`-substring `PATH` filter
+>   cannot see.
+> - `tests/integration/extension-wiring.test.js` `deploy smoke` —
+>   `BUG-2026-08-21-extension-wiring-asserts-a-deleted-path.md` (P2). The installer deletes the very
+>   path the test asserts, so re-running it guarantees the failure.
+>
+> **Static gate green at the same sha:** `tsc --noEmit` clean · `eslint src/` 0 errors (2 pre-existing
+> `no-sync-in-async` warnings in `orphan-reaper.ts`) · compiled JS in sync (clean tree after `npx tsc`)
+> · **all 9 audit scripts PASS**, including `audit-trap-door-enforcement`, `audit-guarded-reset` and
+> `audit-un-terminalize-single-path` *after* anatomy-park rewrote entry guards in four subsystems.
+>
+> **➡️ SEQUENCE item 1 ("serial tier green — `fail 0` AND `cancelled 0`, operator-measured") is MET.**
+> Item 2 (`R-ORCG`) is now half-done: the reaper is fixed and verified on a real orphan (`scanned=1
+> reaped=1` where it read `scanned=0` against six live ones). **The next bundle is R-ORCG's producer
+> half** — enforce R-MWBG on the worker's OWN test invocations so workers stop backgrounding tier runs
+> and stranding a `PPID 1` npm tree per failed spawn.
+>
+> **⚠️ Measurement trap worth remembering:** a persistent `PATH` fix does NOT retroactively reach an
+> already-snapshotted tool shell. `~/.zprofile` gives every *new* login shell Node 24, and the
+> pipeline's workers got it, but this session's Bash tool still resolves `node` → **22.12.0** from a
+> shell snapshot taken before the edit. Measuring with plain `node` would have reproduced all 38
+> cancellations and read as "the branch regressed". Every tier above was pinned explicitly to
+> `/opt/homebrew/opt/node@24/bin`. **Pin the interpreter in the measurement command; do not trust the
+> ambient one.**
+
 
 > ### ▶▶ RESUME HERE — 2026-08-21 (supersedes the 2026-08-19 PAUSED block below)
 >
