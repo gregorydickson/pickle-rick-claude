@@ -195,11 +195,62 @@ tempt backgrounding.
 8. **The reaper's realpath handling is pinned.** A unit test builds an argv in the `/private/var/...`
    realpath form and asserts a match, so D3 cannot regress. (Add alongside the `04df0897` trap door.)
 
+### D5 — the same fixtures leak DIRECTORIES, ~15k per run, and `pickle-judge` is 72% of them
+
+D1–D4 concern leaked *processes*. Measured 2026-08-22, the same fixture layer leaks *directories* at a
+far larger scale, and the reaper has no mandate over them at all.
+
+`TMPDIR` census before cleanup: **57,896 entries / 1355 MB**, of which **17,825 were `pickle-*`** and
+**48 were `cxhang-int-*`** (24 `-bin`, 24 `-sess` — the exact prefixes D2 names as unmatched).
+**15,067 were modified within the previous 24 hours**, i.e. produced by a single pipeline run.
+**Zero were older than 7 days**, so this is not historical sediment — it is per-run output.
+
+Breakdown of the `pickle-*` population:
+
+| prefix | count |
+|---|---|
+| `pickle-judge-*` | **12,768** |
+| `pickle-crsr-seed-*` | 975 |
+| `pickle-ws3a-*` | 900 |
+| `pickle-bsi-*` | 450 |
+| `pickle-ccem-*` | 420 |
+| `pickle-rrh-d3-cwd-*` | 280 |
+| `pickle-piwg4-repo-*` / `pickle-piwg4-*` | 225 / 225 |
+| `pickle-pipeline-*` | 210 |
+| long tail | ~1,400 |
+
+Each directory is small (4 KB, ~3 files), which is exactly why this went unnoticed — the disk cost is
+trivial and the **inode** cost is not. ~18,000 directories is tens of thousands of files for Spotlight
+to index, and `TMPDIR` is indexed in real time (verified: a probe file is indexed within 2 s;
+`mdutil -s /` reports indexing enabled). This is a measured contributor to the load-34.75 window
+recorded in the 2026-08-21 block, and to the previously-noted *"`StateManager.read` costs ~6s on a busy
+developer `TMPDIR` vs ~0ms on a private one."*
+
+Cleanup applied 2026-08-22 (no live pickle process; nothing older than 7 days): removed **17,921
+entries, 331 MB**, `TMPDIR` 57,896 → 39,975 entries. The remainder is browser `BlobRegistryFiles-*`
+and app-bundle temp — not ours.
+
+**`pickle-judge-*` is the single highest-value fix in this PRD by count.** Nothing else is within an
+order of magnitude.
+
+### Additional acceptance criteria
+
+9.  **Fixtures that `mkdtemp` clean up on exit.** Every fixture creating a `pickle-*` tmpdir removes it
+    in a `finally`/`afterEach`, plus a `process.on('exit')` guard for abnormal death. Assert that a full
+    `test:fast` run leaves **zero net new** `pickle-*` entries in `TMPDIR`.
+10. **`pickle-judge-*` specifically.** It accounts for 12,768 of 17,825. Fix it first and re-measure
+    before touching the tail.
+11. **A leak budget is enforced, not just documented.** A test counts `pickle-*` entries before and
+    after a tier run and fails if the delta exceeds a small bound. Without this the leak returns
+    silently — its disk cost is too small to notice and its inode cost is invisible until the host
+    slows down.
+
 ### Status change
 
 - **Reaper half: DONE** (`04df0897`, verified twice on real orphans).
 - **Producer half: OPEN** — AC-6/AC-7 above are the next bundle.
 - AC-1, AC-2 (fixture registry + self-termination) and the `cxhang-int-*` arm of AC-3: still open.
+- **AC-9/AC-10/AC-11 (directory leak, D5): OPEN — `pickle-judge-*` first, 12,768 of 17,825.**
 
 Related memories: `orphan-reaper-blind-to-own-leak` (population),
 `worker-backgrounded-test-run-stalls-ticket` (producer).
