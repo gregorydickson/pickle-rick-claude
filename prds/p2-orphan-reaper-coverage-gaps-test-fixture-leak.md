@@ -1,6 +1,6 @@
 # P2 — Orphan reaper coverage gaps: test-fixture process leak
 
-**Status:** Draft
+**Status:** Draft — reaper half RESOLVED 2026-08-21 (`04df0897`); producer half OPEN (see Update 2026-08-21)
 **Repo:** `pickle-rick-claude`
 **Discovered:** 2026-08-17, during a host-level "system pausing / slow" investigation on the dev Mac.
 
@@ -126,3 +126,80 @@ three checks in a single evening.
 Note the family: `pickle-spawn-morty-worker-gate-*`, NOT the
 `orphan-worker-reaper-*` fixtures named in the original evidence section. The dominant leaker today is
 the worker-gate fixture family, which is what the shipped reaper still does not match.
+
+---
+
+## Update 2026-08-21 — D3 found, reaper half RESOLVED, producer half identified
+
+Two findings from session `2026-08-20-54c74299` change this PRD materially. **D2 above is incomplete
+and one of its conclusions is wrong.**
+
+### D3 — the reaper matched NOTHING, including the family D2 calls "matchable in principle"
+
+D2 concludes: *"Only the `pickle-spawn-morty-worker-gate-*` family is matchable in principle."*
+Measured, it was not matched in practice either. `isPickleTmpBinNpmPath` and
+`resolveTmpPrefixFixturePath` each compared a `ps` argv token against `path.resolve(os.tmpdir())`.
+That compare is **LEXICAL** — `path.resolve` does not follow symlinks. On macOS `os.tmpdir()` yields
+`/var/folders/…/T` (where `/var` is a symlink to `/private/var`) while a spawned process's argv carries
+the realpath form `/private/var/folders/…/T`, so `startsWith` rejected **every** real orphan.
+
+Verified independently with a real leaked orphan's argv:
+
+```
+startsWith(path.resolve(os.tmpdir()) + sep)          -> false   <-- the bug
+startsWith(realpathSync(os.tmpdir())  + sep)         -> true    <-- the fix
+```
+
+Observed live before the fix: **six** alive `pickle-spawn-morty-worker-gate-*` processes, reaper
+reporting `scanned=0 reaped=0`. The commit that fixed it records ten alive against `scanned=0`.
+
+**This reframes the whole PRD.** The reaper was not under-scoped — it was **scanning nothing while
+reporting success**. A permanent false-green over an unbounded leak. That is why "an empty census is
+NOT evidence" was the right instinct for a reason nobody had identified: the empty census *was* the bug.
+
+**RESOLVED by `04df0897`** (anatomy-park, 2026-08-21) — memoized realpath prefixes, both lexical and
+resolved roots accepted. **Verified twice on naturally-occurring orphans**, not planted fixtures:
+
+```
+[reap-orphans] scanned=1 reaped=1 unverified=0 session_owned=0 tmp_prefix_fixture=1 repo_fixture_path=0
+```
+
+This satisfies the PRD's standing demand for a real population. AC-3's tmpdir-prefix arm and AC-5's
+count emission are effectively met for the `pickle-` family; the `cxhang-int-*` prefixes and the
+repo-fixture-path arm of AC-3 remain open.
+
+### D4 — the PRODUCER: workers background their own tier runs
+
+D1 explains how a fixture survives an abnormal death. It does not explain what kills the parent so
+often. Measured this session: **a worker that launches a tier run with `run_in_background` ends its
+turn expecting a completion notification that never arrives.** The backgrounded child is killed at the
+turn boundary, the worker exits `exit:0` with **zero artifacts and a clean tree**, its gate reds, and
+one `npm run test:fast` is left at `PPID 1`.
+
+**One orphan per failed spawn.** Ticket `9b3c4549` burned **five consecutive worker spawns** this way
+before an explicit foreground directive unblocked it in a single spawn.
+
+`R-MWBG` already forbids this for `spawn-morty.js` in the manager prompt, but the same rule is **not
+enforced on the worker's OWN test invocations** — which are precisely the commands long enough to
+tempt backgrounding.
+
+### Additional acceptance criteria
+
+6. **The worker prompt forbids backgrounding its own long commands.** No `run_in_background`, `&`,
+   `nohup`, `setsid`, or `disown` for test/tier invocations; every test runs in the FOREGROUND with a
+   large explicit timeout. A test asserts the directive is present in the worker template, in the same
+   shape `R-MWBG` is pinned for the manager path.
+7. **A stalled ticket is diagnosable in one read.** When a ticket produces repeated `exit:0` +
+   `validation: failed` + clean tree, the newest `worker_session_*.log` names the cause. Assert that a
+   backgrounded-then-cut test run leaves an attributable line rather than silence.
+8. **The reaper's realpath handling is pinned.** A unit test builds an argv in the `/private/var/...`
+   realpath form and asserts a match, so D3 cannot regress. (Add alongside the `04df0897` trap door.)
+
+### Status change
+
+- **Reaper half: DONE** (`04df0897`, verified twice on real orphans).
+- **Producer half: OPEN** — AC-6/AC-7 above are the next bundle.
+- AC-1, AC-2 (fixture registry + self-termination) and the `cxhang-int-*` arm of AC-3: still open.
+
+Related memories: `orphan-reaper-blind-to-own-leak` (population),
+`worker-backgrounded-test-run-stalls-ticket` (producer).

@@ -544,9 +544,18 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 >
 > 1. **Serial tier green** — attempt 3, in flight. Gate: `fail 0` AND `cancelled 0` from the runner's own
 >    summary block, operator-measured.
-> 2. **`R-ORCG`** — `p2-orphan-reaper-coverage-gaps-test-fixture-leak.md`. The shipped reaper cannot see
->    the dominant leaker. An empty census is NOT evidence: it reads 0 only because 46 procs were killed by
->    hand. Requires a real population, never planted fixtures. May shrink now that attempt 2 landed the
+> 2. **`R-ORCG`** — `p2-orphan-reaper-coverage-gaps-test-fixture-leak.md`. **SPLIT 2026-08-21: reaper
+>    half DONE, producer half is the next bundle.** The "empty census is NOT evidence" instinct was
+>    right for a reason nobody had identified — the reaper was **scanning nothing while reporting
+>    success**, because it compared argv paths against the LEXICAL `os.tmpdir()` and macOS hands
+>    spawned processes the `/private/var` realpath (D3 in that PRD). Fixed by `04df0897` and verified
+>    TWICE on naturally-occurring orphans (`scanned=1 reaped=1` where it read `scanned=0` against six
+>    live ones) — the real-population standard is met. **What remains is the PRODUCER (new AC-6/AC-7):**
+>    a worker that launches a tier run with `run_in_background` ends its turn awaiting a notification
+>    that never comes; the child dies at the turn boundary, the worker exits `exit:0` with zero
+>    artifacts and a clean tree, and one `npm run test:fast` is stranded at `PPID 1` — one orphan per
+>    failed spawn. `R-MWBG` forbids this for `spawn-morty.js` in the manager prompt but is NOT enforced
+>    on the worker's own test invocations. May shrink now that attempt 2 landed the
 >    PC-4/PC-5 grandchild reaping.
 > 3. **`FEAT-2026-08-16-expose-codegraph-mcp-to-workers.md`** — first capability work. See the codegraph
 >    status block below for what is already live and what the flag actually costs.
