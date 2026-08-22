@@ -13,7 +13,7 @@ import { buildManagerInvocation, resolveBackend, resolveBackendFromStateFileWith
 import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
 import { readTicketWorkerGateTestsVerdict } from './setup.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
-import { reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
+import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
 import { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream, CODEX_DELIMITER_RE } from '../services/classifier-utils.js';
 import { emitCrossTicketRegressionLinearComment } from '../lib/linear-comment.js';
 import {
@@ -508,9 +508,32 @@ export function reapOrphanedFastTestRunnersOnStartup(
  * AC5: record a non-zero R-CXHANG worker-proc reap sweep as an activity
  * event so a pipeline run's reap is auditable after the fact; a zero-reap
  * sweep stays quiet (no event, no log line).
+ *
+ * The third consumer of `reapOrphanedWorkerProcs` (AP-EXT-ITER45-01), and the only one
+ * that fires per-iteration rather than once per run. That cadence is why it does NOT
+ * report every `skipped` reason the way `setup.ts:runSetupOrphanReap` and
+ * `reap-orphans.ts:runStandaloneOrphanReap` do: `kill_switch` and `unsupported_platform`
+ * are operator/platform constants for the whole run, so restating them each iteration is
+ * pure noise. A `sweep_failed` is the one reason that is NEWS — it says this iteration
+ * has no census at all, so leaked worker procs are not ruled out. Its two sibling reapers
+ * in the same call-site `try` blocks get this for free by throwing; this one cannot,
+ * because `reapOrphanedWorkerProcs` is contractually best-effort and never throws, which
+ * leaves the callers' `catch` unreachable for every real scan failure.
  */
-function runPipelineOrphanWorkerReap(statePath: string, sessionsRoot: string, log: (msg: string) => void): void {
-  const result = reapOrphanedWorkerProcs({ sessionsRoot, statePath });
+export function runPipelineOrphanWorkerReap(
+  statePath: string,
+  sessionsRoot: string,
+  log: (msg: string) => void,
+  deps: { reap?: (opts: ReapOrphanedWorkerProcsOpts) => ReapSweepResult } = {},
+): void {
+  const reap = deps.reap ?? reapOrphanedWorkerProcs;
+  const result = reap({ sessionsRoot, statePath });
+  // Did the sweep RUN? Only then are its zero counts a reading.
+  if (result.skipped === 'sweep_failed') {
+    log('orphan-worker reap: sweep FAILED — no census this iteration; leaked worker procs are NOT ruled out');
+    return;
+  }
+  // Did it FIND anything? A genuinely empty census stays quiet.
   if (result.reaped <= 0) return;
   log(`orphan-worker reap: scanned=${result.scanned} reaped=${result.reaped} unverified=${result.unverified}`);
   try {

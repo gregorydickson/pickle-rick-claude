@@ -13,7 +13,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runStandaloneOrphanReap } from '../bin/reap-orphans.js';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
+import { runPipelineOrphanWorkerReap } from '../bin/mux-runner.js';
+
+process.env.PICKLE_DATA_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-iter45-root-'));
 
 function withCapturedStdout(fn) {
   const lines = [];
@@ -153,4 +159,98 @@ test('AP-EXT-ITER44-01: the operator census line says so when the sweep did not 
   assert.match(failedLines[0], /sweep did not run \(sweep_failed\)/);
   assert.doesNotMatch(failedLines[0], /nothing to reap/);
   assert.match(quietLines[0], /scanned=0 reaped=0 \(nothing to reap\)/);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER45-01 — the THIRD consumer: mux-runner's per-iteration sweep
+// ---------------------------------------------------------------------------
+//
+// `runPipelineOrphanWorkerReap` is the third consumer of `reapOrphanedWorkerProcs`
+// (with `runStandaloneOrphanReap` above and `setup.ts:runSetupOrphanReap`) and the
+// only one that fires every iteration rather than once per run. AP-EXT-ITER44-01
+// wired the `skipped` axis into the other two and left this one discarding it.
+//
+// Every not-run path of the producer returns `reaped: 0`, so before the fix all of
+// them fell into the `reaped <= 0` early return: a `ps` that was absent, timed out
+// or overflowed its buffer emitted byte-identically to a healthy quiet box —
+// nothing at all. The two sibling reapers at the same call sites get this signal
+// for free by throwing into the caller's catch; this one cannot, because
+// `reapOrphanedWorkerProcs` is contractually best-effort and never throws, leaving
+// that catch unreachable for real scan failures.
+//
+// The per-iteration cadence is why only `sweep_failed` reports: `kill_switch` and
+// `unsupported_platform` are constants for the whole run, so restating them each
+// iteration would be noise for an operator who deliberately disabled the reaper.
+
+const EMPTY_CLASSES = { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 };
+
+/** Exactly the tuple every not-run path of `reapOrphanedWorkerProcs` returns. */
+function notRun(reason) {
+  return { scanned: 0, reaped: 0, unverified: 0, by_match_class: { ...EMPTY_CLASSES }, skipped: reason };
+}
+
+function runPipelineReapWith(result) {
+  const sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-iter45-'));
+  const statePath = path.join(sessionRoot, 'state.json');
+  fs.writeFileSync(statePath, JSON.stringify({ activity: [] }));
+  const lines = [];
+  runPipelineOrphanWorkerReap(statePath, path.join(sessionRoot, 'sessions'), msg => lines.push(msg), {
+    reap: () => result,
+  });
+  let activity = [];
+  try {
+    activity = JSON.parse(fs.readFileSync(statePath, 'utf-8')).activity ?? [];
+  } catch { /* state unreadable — leave activity empty */ }
+  return { lines, activity };
+}
+
+test('AP-EXT-ITER45-01: a FAILED sweep logs that it has no census instead of going silent', () => {
+  const { lines, activity } = runPipelineReapWith(notRun('sweep_failed'));
+
+  assert.equal(lines.length, 1, 'a sweep_failed must produce exactly one operator line');
+  assert.match(lines[0], /no census/i, 'the line must say no census exists, not report counts');
+  assert.doesNotMatch(
+    lines[0],
+    /scanned=/,
+    'a sweep with no census must never render a scanned count — that is the false-green wire',
+  );
+  assert.equal(activity.length, 0, 'a not-run sweep must not emit a reap summary event');
+});
+
+test('AP-EXT-ITER45-01: a failed sweep is distinguishable from a genuinely empty census', () => {
+  const failed = runPipelineReapWith(notRun('sweep_failed'));
+  const quiet = runPipelineReapWith({
+    scanned: 41, reaped: 0, unverified: 0, by_match_class: { ...EMPTY_CLASSES }, skipped: null,
+  });
+
+  assert.equal(quiet.lines.length, 0, 'a real zero-reap census stays quiet (AC5 no-noise contract)');
+  assert.notDeepEqual(
+    failed.lines,
+    quiet.lines,
+    'sweep_failed and a real empty census must not render identically — that collapse IS the bug',
+  );
+});
+
+test('AP-EXT-ITER45-01: kill-switch and win32 stay quiet — run constants, not per-iteration news', () => {
+  for (const reason of ['kill_switch', 'unsupported_platform']) {
+    const { lines, activity } = runPipelineReapWith(notRun(reason));
+    assert.deepEqual(lines, [], `${reason} must not log every iteration`);
+    assert.equal(activity.length, 0, `${reason} must not emit an event`);
+  }
+});
+
+test('AP-EXT-ITER45-01: a real non-zero sweep still logs its counts and emits its summary', () => {
+  const { lines, activity } = runPipelineReapWith({
+    scanned: 7,
+    reaped: 2,
+    unverified: 1,
+    by_match_class: { session_owned: 2, tmp_prefix_fixture: 0, repo_fixture_path: 0 },
+    skipped: null,
+  });
+
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /scanned=7 reaped=2 unverified=1/);
+  assert.equal(activity.length, 1, 'a non-zero sweep must still emit worker_orphan_reap_summary');
+  assert.equal(activity[0].event, 'worker_orphan_reap_summary');
+  assert.equal(activity[0].reaped, 2);
 });
