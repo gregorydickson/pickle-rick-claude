@@ -137,3 +137,33 @@ test('AC-3b: a 20-candidate population never silently drops a candidate at the w
   const unverifiedBudgetEvents = (state.activity ?? []).filter(e => e.event === 'worker_orphan_reap_unverified' && e.reason === 'budget_exceeded');
   assert.equal(unverifiedBudgetEvents.length, result.unverified, 'budget-skipped candidates must be reported via the unverified telemetry event');
 });
+
+/**
+ * AC-6 (ticket b2252ef3): pins the AP-EXT-ITER2-01 realpath fix in
+ * `orphan-reaper.ts:tmpRootPrefixes` against regression. `os.tmpdir()` on
+ * macOS is the LEXICAL `/var/folders/...` form (`/var` -> `/private/var`),
+ * while a spawned process's argv carries the REALPATH `/private/var/...`
+ * form `path.resolve` does not follow. This builds the argv directly from
+ * `fs.realpathSync(os.tmpdir())` (no symlink simulation) so the fixture is
+ * exactly the realpath form a live orphan's argv carries.
+ */
+test('AC-6: an argv token in the REALPATH tmpdir form (/private/var/... on macOS) is matched and reaped, not dropped at the prefix compare', () => {
+  const sessionsRoot = makeTmp();
+  const realTmpRoot = fs.realpathSync(os.tmpdir());
+  const gateDir = path.join(realTmpRoot, 'pickle-ac6-realpath-pin');
+  const command = `node ${gateDir}/bin/npm run test:fast`;
+
+  const kills = [];
+  const result = reapOrphanedWorkerProcs({
+    sessionsRoot,
+    psOutput: `31337 31337 1 20:00:00 ${command}`, // 20h old, well past the 600s min-age floor
+    kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
+    isAlive: () => false,
+    sleep: () => {},
+  });
+
+  assert.equal(result.scanned, 1, 'a realpath-form argv must be scanned — scanned=0 here is the AP-EXT-ITER2-01 false-green regression signature');
+  assert.equal(result.reaped, 1, 'the realpath-form orphan must reach the actual reap path, not just the parser');
+  assert.deepEqual(kills, [[31337, 'SIGTERM']]);
+  assert.equal(result.by_match_class.tmp_prefix_fixture, 1);
+});
