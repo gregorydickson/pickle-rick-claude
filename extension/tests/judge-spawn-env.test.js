@@ -8,6 +8,7 @@ import {
   isNestedClaude,
   buildJudgeEnv,
   getJudgeEnvForAttempt,
+  cleanupJudgeRuntimeDir,
 } from '../services/judge-spawn-env.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 
@@ -143,4 +144,42 @@ test('getJudgeEnvForAttempt: auto backend falls back to claude', () => {
 test('getJudgeEnvForAttempt: claude backend returns object', () => {
   const env = getJudgeEnvForAttempt('claude', '/tmp');
   assert.ok(typeof env === 'object' && env !== null, 'should return object');
+});
+
+// ---------------------------------------------------------------------------
+// cleanupJudgeRuntimeDir
+// ---------------------------------------------------------------------------
+
+test('cleanupJudgeRuntimeDir: removes a directory buildJudgeEnv created', () => {
+  const env = buildJudgeEnv('claude', true, { PATH: '/bin' });
+  const dir = env['XDG_RUNTIME_DIR'];
+  assert.ok(dir && fs.existsSync(dir), 'precondition: directory exists');
+  cleanupJudgeRuntimeDir(env);
+  assert.strictEqual(fs.existsSync(dir), false, 'directory should be removed');
+});
+
+test('cleanupJudgeRuntimeDir: does not remove a real ambient XDG_RUNTIME_DIR (non-nested passthrough)', () => {
+  const realDir = fs.mkdtempSync(path.join(os.tmpdir(), 'not-pickle-judge-'));
+  try {
+    const env = buildJudgeEnv('claude', false, { XDG_RUNTIME_DIR: realDir, PATH: '/bin' });
+    assert.strictEqual(env['XDG_RUNTIME_DIR'], realDir);
+    cleanupJudgeRuntimeDir(env);
+    assert.ok(fs.existsSync(realDir), 'ambient XDG_RUNTIME_DIR must survive cleanup');
+  } finally {
+    try { fs.rmdirSync(realDir); } catch { /* best-effort */ }
+  }
+});
+
+test('cleanupJudgeRuntimeDir: no-ops when XDG_RUNTIME_DIR is absent', () => {
+  assert.doesNotThrow(() => cleanupJudgeRuntimeDir({ PATH: '/bin' }));
+});
+
+test('cleanupJudgeRuntimeDir: never throws when the directory was already removed', () => {
+  const env = buildJudgeEnv('claude', true, { PATH: '/bin' });
+  fs.rmSync(env['XDG_RUNTIME_DIR'], { recursive: true, force: true });
+  assert.doesNotThrow(() => cleanupJudgeRuntimeDir(env));
+});
+
+test('cleanupJudgeRuntimeDir: never throws for a non-existent path outside tmpdir', () => {
+  assert.doesNotThrow(() => cleanupJudgeRuntimeDir({ XDG_RUNTIME_DIR: '/run/user/1000' }));
 });

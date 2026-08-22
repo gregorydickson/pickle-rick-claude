@@ -6,7 +6,7 @@ import { execFileSync, execFile, spawn, spawnSync } from 'child_process';
 import { pathToFileURL } from 'node:url';
 import { Defaults, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 import { resolveBackend, resolveWorkerBackendFromState, buildJudgeInvocation, buildWorkerInvocation, backendEnvOverrides, } from '../services/backend-spawn.js';
-import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv } from '../services/judge-spawn-env.js'; // R-SJET-3
+import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js'; // R-SJET-3
 import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetric, classifyFailure, findLastAcceptedEntry, updateViolationLedger, } from '../services/microverse-state.js';
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
@@ -1669,22 +1669,34 @@ async function measureLlmMetricAttempt(goal, timeoutSeconds, cwd, judgeModel, hi
     try {
         if (process.env['PICKLE_JUDGE_LEGACY_SPAWN'] === '1') {
             const timeout = Math.max(timeoutSeconds, DEFAULT_JUDGE_TIMEOUT);
-            output = _deps.execFileSync(cmd, args, {
-                cwd,
-                timeout: timeout * 1000,
-                encoding: 'utf-8',
-                stdio: ['pipe', 'pipe', 'pipe'],
-                env: getJudgeEnvForAttempt('claude', cwd), // R-SJET-3: pruned for nested claude safety
-            }).trim();
+            const spawnEnv = getJudgeEnvForAttempt('claude', cwd); // R-SJET-3: pruned for nested claude safety
+            try {
+                output = _deps.execFileSync(cmd, args, {
+                    cwd,
+                    timeout: timeout * 1000,
+                    encoding: 'utf-8',
+                    stdio: ['pipe', 'pipe', 'pipe'],
+                    env: spawnEnv,
+                }).trim();
+            }
+            finally {
+                cleanupJudgeRuntimeDir(spawnEnv);
+            }
         }
         else {
             const timeout = Math.max(timeoutSeconds, 1);
-            output = await spawnWithClosedStdin(cmd, args, {
-                cwd,
-                env: getJudgeEnvForAttempt('claude', cwd), // R-SJET-3: pruned for nested claude safety
-                timeoutMs: timeout * 1000,
-                timeoutMessage: `judge timed out after ${timeout}s`,
-            });
+            const spawnEnv = getJudgeEnvForAttempt('claude', cwd); // R-SJET-3: pruned for nested claude safety
+            try {
+                output = await spawnWithClosedStdin(cmd, args, {
+                    cwd,
+                    env: spawnEnv,
+                    timeoutMs: timeout * 1000,
+                    timeoutMessage: `judge timed out after ${timeout}s`,
+                });
+            }
+            finally {
+                cleanupJudgeRuntimeDir(spawnEnv);
+            }
         }
     }
     catch (err) {
@@ -1818,21 +1830,33 @@ export async function probeJudgeBackendAvailability(backend, cwd) {
     };
     try {
         if (process.env['PICKLE_JUDGE_LEGACY_SPAWN'] === '1') {
-            _deps.execFileSync(backend, ['--version'], {
-                cwd,
-                timeout: timeoutMs,
-                encoding: 'utf-8',
-                stdio: ['pipe', 'pipe', 'pipe'],
-                env: { ...getJudgeEnvForAttempt(backend, cwd), ...backendEnvOverrides(backend) },
-            });
+            const spawnEnv = { ...getJudgeEnvForAttempt(backend, cwd), ...backendEnvOverrides(backend) };
+            try {
+                _deps.execFileSync(backend, ['--version'], {
+                    cwd,
+                    timeout: timeoutMs,
+                    encoding: 'utf-8',
+                    stdio: ['pipe', 'pipe', 'pipe'],
+                    env: spawnEnv,
+                });
+            }
+            finally {
+                cleanupJudgeRuntimeDir(spawnEnv);
+            }
         }
         else {
-            await spawnWithClosedStdin(backend, ['--version'], {
-                cwd,
-                env: { ...getJudgeEnvForAttempt(backend, cwd), ...backendEnvOverrides(backend) },
-                timeoutMs,
-                timeoutMessage: `probe timed out after ${timeoutMs}ms`,
-            });
+            const spawnEnv = { ...getJudgeEnvForAttempt(backend, cwd), ...backendEnvOverrides(backend) };
+            try {
+                await spawnWithClosedStdin(backend, ['--version'], {
+                    cwd,
+                    env: spawnEnv,
+                    timeoutMs,
+                    timeoutMessage: `probe timed out after ${timeoutMs}ms`,
+                });
+            }
+            finally {
+                cleanupJudgeRuntimeDir(spawnEnv);
+            }
         }
         return { kind: 'ok' };
     }
@@ -1899,7 +1923,13 @@ export async function measureLlmMetricWithBackoff(goal, timeoutSeconds, cwd, jud
     // R-SJET-3: compute nested-claude detection and redacted env key names once per
     // call (stable for the lifetime of this backoff loop). Values are never emitted.
     const isNested = isNestedClaude();
-    const preSpawnEnvKeyNames = Object.keys(buildJudgeEnv('claude', isNested));
+    // R-SJET-3 + R-ORCG: this probe never spawns anything — it exists solely to compute the
+    // pre_spawn_env_key_names telemetry below, so the XDG_RUNTIME_DIR buildJudgeEnv creates for
+    // it is removed immediately rather than left leaking (do NOT change `isNested` or skip this
+    // call — the key NAMES it produces are the R-SJET-3 observable and must stay identical).
+    const preSpawnEnvProbe = buildJudgeEnv('claude', isNested);
+    const preSpawnEnvKeyNames = Object.keys(preSpawnEnvProbe);
+    cleanupJudgeRuntimeDir(preSpawnEnvProbe);
     const probe = await probeJudgeBackendAvailability('claude', cwd);
     if (probe.kind === 'missing') {
         return {

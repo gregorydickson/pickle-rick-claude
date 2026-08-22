@@ -87,4 +87,27 @@ export function getJudgeEnvForAttempt(backend, cwd) {
     const narrowed = (backend === 'claude' || backend === 'codex') ? backend : 'claude';
     return buildJudgeEnv(narrowed, isNestedClaude());
 }
-export default { getJudgeEnvForAttempt, buildJudgeEnv, isNestedClaude };
+const JUDGE_TMPDIR_PREFIX = 'pickle-judge-';
+/**
+ * Removes the `XDG_RUNTIME_DIR` directory created by buildJudgeEnv, if any.
+ *
+ * Only removes directories buildJudgeEnv itself created (a `pickle-judge-`-prefixed
+ * child of os.tmpdir()) — never a real ambient XDG_RUNTIME_DIR that could be passed
+ * through unmodified in the non-nested branch. Best-effort: cleanup failure never
+ * throws into the judge spawn path (R-ORCG — pickle-judge-* was 72% of leaked tmpdirs
+ * in a measured production census).
+ */
+export function cleanupJudgeRuntimeDir(env) {
+    const dir = env['XDG_RUNTIME_DIR'];
+    if (!dir)
+        return;
+    if (path.dirname(dir) !== os.tmpdir() || !path.basename(dir).startsWith(JUDGE_TMPDIR_PREFIX))
+        return;
+    try {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+    catch {
+        // Best-effort; cleanup failure must never propagate into the judge spawn path.
+    }
+}
+export default { getJudgeEnvForAttempt, buildJudgeEnv, isNestedClaude, cleanupJudgeRuntimeDir };

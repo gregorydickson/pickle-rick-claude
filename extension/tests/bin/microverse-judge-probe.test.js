@@ -3,6 +3,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import * as os from 'node:os';
+import * as fs from 'node:fs';
 import {
   _deps,
   probeJudgeBackendAvailability,
@@ -11,6 +13,7 @@ import {
   JudgeMeasurementTimeout,
   JudgeMeasurementSpawnFailed,
 } from '../../bin/microverse-runner.js';
+import { buildJudgeEnv } from '../../services/judge-spawn-env.js';
 
 function makeEnoentError() {
   const err = new Error('spawn claude ENOENT');
@@ -325,5 +328,136 @@ describe('measureLlmMetricWithBackoff — probe classification behavior', () => 
       if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
       else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R-ORCG (b1bb51ca): no pickle-judge-* XDG_RUNTIME_DIR survives a judge spawn
+// ---------------------------------------------------------------------------
+
+function listPickleJudgeTmpDirs() {
+  return new Set(fs.readdirSync(os.tmpdir()).filter(f => f.startsWith('pickle-judge-')));
+}
+
+describe('R-ORCG: judge XDG_RUNTIME_DIR cleanup', () => {
+  test('AC-3: probeJudgeBackendAvailability success (nested) leaves no pickle-judge-* dir', async () => {
+    const previousClaudeCode = process.env['CLAUDECODE'];
+    process.env['CLAUDECODE'] = 'outer-session';
+    const orig = _deps.spawn;
+    _deps.spawn = makeSpawnMock([{ type: 'success', stdout: 'claude/2.1.0' }]);
+    const before = listPickleJudgeTmpDirs();
+    try {
+      const result = await probeJudgeBackendAvailability('claude', '/tmp');
+      assert.equal(result.kind, 'ok');
+    } finally {
+      _deps.spawn = orig;
+      if (previousClaudeCode === undefined) delete process.env['CLAUDECODE'];
+      else process.env['CLAUDECODE'] = previousClaudeCode;
+    }
+    const after = listPickleJudgeTmpDirs();
+    assert.deepEqual([...after].filter(d => !before.has(d)), [], 'no new pickle-judge-* dir should survive');
+  });
+
+  test('AC-3: probeJudgeBackendAvailability failure (nested, abnormal exit) still leaves no pickle-judge-* dir', async () => {
+    const previousClaudeCode = process.env['CLAUDECODE'];
+    process.env['CLAUDECODE'] = 'outer-session';
+    const orig = _deps.spawn;
+    _deps.spawn = makeSpawnMock([{ type: 'error', error: makeEnoentError() }]);
+    const before = listPickleJudgeTmpDirs();
+    try {
+      const result = await probeJudgeBackendAvailability('claude', '/tmp');
+      assert.equal(result.kind, 'missing');
+    } finally {
+      _deps.spawn = orig;
+      if (previousClaudeCode === undefined) delete process.env['CLAUDECODE'];
+      else process.env['CLAUDECODE'] = previousClaudeCode;
+    }
+    const after = listPickleJudgeTmpDirs();
+    assert.deepEqual([...after].filter(d => !before.has(d)), [], 'no new pickle-judge-* dir should survive a spawn failure');
+  });
+
+  test('AC-3 + AC-3a: a full nested-claude measureLlmMetricWithBackoff success run leaves no pickle-judge-* dir (covers the probe, the attempt, and the :2593 telemetry-only key-names probe)', async () => {
+    const previousClaudeCode = process.env['CLAUDECODE'];
+    process.env['CLAUDECODE'] = 'outer-session';
+    const orig = { spawn: _deps.spawn, logActivity: _deps.logActivity };
+    _deps.spawn = makeSpawnMock([
+      { type: 'success', stdout: 'claude/2.1.0' }, // probeJudgeBackendAvailability
+      { type: 'success', stdout: '9' }, // measureLlmMetricAttempt
+    ]);
+    _deps.logActivity = () => {};
+    const before = listPickleJudgeTmpDirs();
+    try {
+      const result = await measureLlmMetricWithBackoff('fix bugs', 30, '/tmp');
+      assert.deepEqual(result.metric, { raw: '9', score: 9 });
+    } finally {
+      _deps.spawn = orig.spawn;
+      _deps.logActivity = orig.logActivity;
+      if (previousClaudeCode === undefined) delete process.env['CLAUDECODE'];
+      else process.env['CLAUDECODE'] = previousClaudeCode;
+    }
+    const after = listPickleJudgeTmpDirs();
+    assert.deepEqual([...after].filter(d => !before.has(d)), [], 'no new pickle-judge-* dir should survive a full measurement run');
+  });
+
+  test('AC-3a: nested pre_spawn_env_key_names — CONTENTS assertion (41 keys incl XDG_RUNTIME_DIR), not Array.isArray', () => {
+    const filler = {};
+    for (let i = 1; i <= 40; i++) filler[`FILLER_${i}`] = `v${i}`;
+    const baseEnv = {
+      ...filler,
+      CLAUDECODE: 'outer-session',
+      PICKLE_FOO_1: 'x',
+      PICKLE_FOO_2: 'y',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+    };
+    assert.equal(Object.keys(baseEnv).length, 44, 'fixture precondition: 44-key baseEnv');
+    const env = buildJudgeEnv('claude', true, baseEnv);
+    try {
+      const keys = Object.keys(env);
+      assert.equal(keys.length, 41, 'nested env must have exactly 41 keys');
+      assert.ok(keys.includes('XDG_RUNTIME_DIR'), 'nested env must include XDG_RUNTIME_DIR');
+      assert.ok(!keys.includes('CLAUDECODE'), 'nested env must strip CLAUDECODE');
+      assert.ok(!keys.includes('PICKLE_FOO_1'), 'nested env must strip PICKLE_* prefixed keys');
+      assert.ok(!keys.includes('PICKLE_FOO_2'), 'nested env must strip PICKLE_* prefixed keys');
+    } finally {
+      try { fs.rmSync(env['XDG_RUNTIME_DIR'], { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+  });
+
+  test('AC-3a: unnested (passthrough) pre_spawn_env_key_names — CONTENTS assertion (44 keys incl the 4 contamination markers), not Array.isArray', () => {
+    const filler = {};
+    for (let i = 1; i <= 40; i++) filler[`FILLER_${i}`] = `v${i}`;
+    const baseEnv = {
+      ...filler,
+      PICKLE_BACKEND: 'placeholder',
+      PICKLE_ROLE: 'manager',
+      PICKLE_REFINEMENT_LOCK: '0',
+      CLAUDECODE: 'outer-session',
+    };
+    assert.equal(Object.keys(baseEnv).length, 44, 'fixture precondition: 44-key baseEnv');
+    const env = buildJudgeEnv('codex', false, baseEnv);
+    const keys = Object.keys(env);
+    assert.equal(keys.length, 44, 'unnested env must have exactly 44 keys');
+    for (const marker of ['PICKLE_BACKEND', 'PICKLE_ROLE', 'PICKLE_REFINEMENT_LOCK', 'CLAUDECODE']) {
+      assert.ok(keys.includes(marker), `unnested env must include contamination marker ${marker}`);
+    }
+  });
+
+  test('AC-3a: the telemetry-only preSpawnEnvKeyNames probe (measureLlmMetricWithBackoff) creates no surviving pickle-judge-* dir even on immediate probe failure', async () => {
+    const previousClaudeCode = process.env['CLAUDECODE'];
+    process.env['CLAUDECODE'] = 'outer-session';
+    const orig = { spawn: _deps.spawn, sleep: _deps.sleep };
+    _deps.spawn = makeSpawnMock([{ type: 'error', error: makeEnoentError() }]);
+    const before = listPickleJudgeTmpDirs();
+    try {
+      const result = await measureLlmMetricWithBackoff('fix bugs', 30, '/tmp');
+      assert.equal(result.exitReason, 'judge_cli_missing');
+    } finally {
+      _deps.spawn = orig.spawn;
+      _deps.sleep = orig.sleep;
+      if (previousClaudeCode === undefined) delete process.env['CLAUDECODE'];
+      else process.env['CLAUDECODE'] = previousClaudeCode;
+    }
+    const after = listPickleJudgeTmpDirs();
+    assert.deepEqual([...after].filter(d => !before.has(d)), [], 'the cli_missing short-circuit must not leak the probe env dir');
   });
 });
