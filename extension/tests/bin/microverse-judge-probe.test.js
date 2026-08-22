@@ -351,7 +351,7 @@ describe('R-ORCG: judge XDG_RUNTIME_DIR cleanup', () => {
       assert.equal(result.kind, 'ok');
     } finally {
       _deps.spawn = orig;
-      if (previousClaudeCode === undefined) delete process.env['CLAUDECODE'];
+      if (previousClaudeCode === undefined) { delete process.env['CLAUDECODE']; }
       else process.env['CLAUDECODE'] = previousClaudeCode;
     }
     const after = listPickleJudgeTmpDirs();
@@ -369,7 +369,7 @@ describe('R-ORCG: judge XDG_RUNTIME_DIR cleanup', () => {
       assert.equal(result.kind, 'missing');
     } finally {
       _deps.spawn = orig;
-      if (previousClaudeCode === undefined) delete process.env['CLAUDECODE'];
+      if (previousClaudeCode === undefined) { delete process.env['CLAUDECODE']; }
       else process.env['CLAUDECODE'] = previousClaudeCode;
     }
     const after = listPickleJudgeTmpDirs();
@@ -392,7 +392,7 @@ describe('R-ORCG: judge XDG_RUNTIME_DIR cleanup', () => {
     } finally {
       _deps.spawn = orig.spawn;
       _deps.logActivity = orig.logActivity;
-      if (previousClaudeCode === undefined) delete process.env['CLAUDECODE'];
+      if (previousClaudeCode === undefined) { delete process.env['CLAUDECODE']; }
       else process.env['CLAUDECODE'] = previousClaudeCode;
     }
     const after = listPickleJudgeTmpDirs();
@@ -454,7 +454,7 @@ describe('R-ORCG: judge XDG_RUNTIME_DIR cleanup', () => {
     } finally {
       _deps.spawn = orig.spawn;
       _deps.sleep = orig.sleep;
-      if (previousClaudeCode === undefined) delete process.env['CLAUDECODE'];
+      if (previousClaudeCode === undefined) { delete process.env['CLAUDECODE']; }
       else process.env['CLAUDECODE'] = previousClaudeCode;
     }
     const after = listPickleJudgeTmpDirs();
