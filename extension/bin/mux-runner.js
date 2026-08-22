@@ -4448,6 +4448,20 @@ function defaultRecomputeCheck(bin, cmdArgs, dir) {
         encoding: 'utf-8',
         timeout: WORKER_GATE_RECOMPUTE_CHECK_TIMEOUT_MS,
     });
+    // AP-EXT-ITER43-01: `status === null` is "the toolchain produced NO exit code" —
+    // spawnSync does NOT throw for ENOENT (npx absent), ETIMEDOUT (the 5-min
+    // hang-guard fired), ENOBUFS (>1MB of eslint output on a warning-heavy but
+    // EXIT-0 tree), or an external signal kill. Reading that as `false` authors a
+    // RED verdict for a gate that never ran, and `resolveWorkerGateVerdict`
+    // PERSISTS it into the ticket frontmatter — sticky forever, since the next
+    // read is no longer `absent`. Throw instead: the caller's existing catch is
+    // the declared home for an errored gate (`absent`/`unavailable`, AC-CWGE-6),
+    // it skips the persist, and it stays fail-closed either way. ONE uniform
+    // "did we get an exit code?" check, not a second `r.error` guard beside it.
+    if (r.status === null) {
+        const detail = r.error instanceof Error ? r.error.message : `signal ${r.signal ?? 'unknown'}`;
+        throw new Error(`worker-gate recompute could not run '${bin} ${cmdArgs[0] ?? ''}': ${detail}`);
+    }
     return r.status === 0;
 }
 /**

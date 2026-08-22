@@ -63,3 +63,103 @@ test('R-CWGE recompute: tsc-RED tree => red (tsc ran after eslint passed)', () =
   assert.equal(verdict, 'red', 'tsc failure must recompute red');
   assert.deepEqual(check.calls, ['eslint', 'tsc'], 'tsc ran after eslint passed');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER43-01: a gate that produced NO exit code did not measure RED.
+//
+// The three cases above inject `runCheck`, so `defaultRecomputeCheck` — the real
+// spawn wrapper — was never exercised. `spawnSync` does NOT throw for ENOENT /
+// ETIMEDOUT / ENOBUFS / signal-kill; it returns `{status: null, error}`, which
+// `r.status === 0` reads as a measured RED. `resolveWorkerGateVerdict` then
+// PERSISTS that red into the ticket frontmatter, so every later read short-circuits
+// on it (`computedVia: 'worker_gate'` — a gate authored it) and the Done-flip is
+// refused forever over green work.
+//
+// Assert the ON-DISK STAMP alongside the verdict: `absent` and `red` are both
+// fail-closed in-session, so a verdict-only oracle understates the bug — the
+// durable frontmatter write is what makes it unrecoverable.
+// ---------------------------------------------------------------------------
+
+const { resolveWorkerGateVerdict } = await import('../bin/mux-runner.js');
+
+const TICKET_FRONTMATTER = (id) =>
+  `---\nid: "${id}"\nstatus: "In Progress"\ncomplexity_tier: "medium"\n---\n\nbody\n`;
+
+/**
+ * A workingDir whose `extension` entry EXISTS (so `resolveWorkerGateVerdict`
+ * reaches the recompute rather than the off-repo `not_run` early return) but is a
+ * FILE, so the sync spawn fails on `cwd` before exec with no exit code. Offline,
+ * deterministic, and the same `status === null` shape as npx-missing / timeout /
+ * ENOBUFS.
+ */
+function makeUnrunnableGateFixture(label) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `cwge-${label}-`)));
+  const sessionDir = path.join(root, 'session');
+  const ticketId = 'ab12cd34';
+  fs.mkdirSync(path.join(sessionDir, ticketId), { recursive: true });
+  const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
+  fs.writeFileSync(ticketPath, TICKET_FRONTMATTER(ticketId));
+  const workingDir = path.join(root, 'repo');
+  fs.mkdirSync(workingDir, { recursive: true });
+  fs.writeFileSync(path.join(workingDir, 'extension'), 'not a directory');
+  return { root, sessionDir, ticketId, ticketPath, workingDir };
+}
+
+test('AP-EXT-ITER43-01: a gate that cannot run reads absent/unavailable, never a measured red', () => {
+  const fx = makeUnrunnableGateFixture('unrunnable');
+  try {
+    const resolved = resolveWorkerGateVerdict(fx.sessionDir, fx.ticketId, fx.workingDir);
+    assert.notEqual(
+      resolved.verdict,
+      'red',
+      'a spawn that produced no exit code measured nothing; it must not author a red',
+    );
+    assert.equal(resolved.verdict, 'absent', 'an errored gate is absent (AC-CWGE-6 fail-closed)');
+    assert.equal(
+      resolved.computedVia,
+      'unavailable',
+      'computedVia must not claim a gate authored this verdict (B-OFFREPO authorship rule)',
+    );
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER43-01: an unrunnable gate writes NO worker_gate_verdict stamp', () => {
+  const fx = makeUnrunnableGateFixture('nostamp');
+  try {
+    resolveWorkerGateVerdict(fx.sessionDir, fx.ticketId, fx.workingDir);
+    const raw = fs.readFileSync(fx.ticketPath, 'utf8');
+    assert.ok(
+      !/^worker_gate_verdict:/m.test(raw),
+      'persisting a red the toolchain never measured makes the refusal sticky forever',
+    );
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER43-01: the failure stays transient — a later runnable gate still resolves', () => {
+  const fx = makeUnrunnableGateFixture('transient');
+  try {
+    resolveWorkerGateVerdict(fx.sessionDir, fx.ticketId, fx.workingDir);
+    // No stamp was written, so the field is still `absent` and the recompute is
+    // re-attempted rather than short-circuiting on a poisoned frontmatter value.
+    const second = resolveWorkerGateVerdict(fx.sessionDir, fx.ticketId, fx.workingDir);
+    assert.notEqual(
+      second.computedVia,
+      'worker_gate',
+      'a persisted stamp would make the second read claim a real gate authored it',
+    );
+    assert.equal(second.verdict, 'absent');
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER43-01 control: a real non-zero exit is still a measured red', () => {
+  // The distinction must not over-trigger — an exit code of 1 is a genuine
+  // measurement and must keep authoring (and persisting) a red.
+  const check = fakeCheck({ eslint: false });
+  assert.equal(recomputeAbsentWorkerGateVerdict('/ext', check), 'red');
+});
