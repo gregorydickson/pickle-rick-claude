@@ -30,6 +30,250 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+> ### 🏁 2026-08-22 22:41 — BUNDLE TERMINAL, DEPLOYED, AND THE THESIS IS PROVEN
+>
+> `exit_reason: converged`, 3/4 phases, **493m 45s**. anatomy-park non-convergent (2 runs of 2);
+> szechuan-sauce completed clean. Ran to completion, reported the degradation, withheld the verdict.
+>
+> **Deployed and verified BY CONTENT** (the version string does not move — see
+> `deploy-drift-invisible-to-version-check`): `extension/bin` 0 differing, `extension/services` 0
+> differing, `disposableTmpRoot` 4 hits live, `cleanupJudgeRuntimeDir` 2 hits live.
+>
+> **✅ AC-4 ORACLE: `LEAK_CREATED_ENTRIES=0`.** A full `test:fast` under a private root created
+> **zero** surviving entries. This is the oracle refinement REBUILT after proving the authored one
+> vacuous three ways — it counts entries **created**, not `^pickle-` visible, so a relocation cannot
+> score as a fix. The bundle's thesis is proven against an oracle designed to be unfoolable.
+>
+> **Reaper trajectory, all on real orphans, never planted:**
+> `scanned=0 reaped=0` (broken) → `scanned=1 reaped=1` (realpath fixed) → `scanned=8 reaped=5`
+> (containment landing) → **`scanned=10 reaped=10`**.
+>
+> | tier | tests | suites | fail | cancelled |
+> |---|---|---|---|---|
+> | fast | **7841** | **514** | 2 | **0** |
+> | integration:parallel | **639** | 21 | 1 | **0** |
+> | integration:serial | **608** | 24 | **0** | **0** |
+>
+> Counts grew again (fast 7792 → 7841, suites 508 → 514), so nothing was greened by shrinking a tier.
+>
+> **The green-tree precondition paid for itself.** The baseline was recorded before launch as `fail 1`
+> (bun probe only), which made a NEW fast-tier failure immediately attributable rather than arguable:
+> `AC-6: Operator/terminal surface guard` → *"TERMINAL_ABORT_SITES: added 1 new member(s) …
+> bin/test-runner.ts:312"*.
+>
+> **That finding is FALSE, and the bundle violated nothing.** Measured: `main(): never` sat at
+> `test-runner.ts:298` at base sha `0d7e58dc` and at `:312` after `313baa68`, which added a helper and
+> an import above it. The file's `: never` inventory is unchanged — `exitWithError` at `:57` and `main`,
+> before and after. The guard keys members by **`file:line`** and does plain string membership, so **any
+> edit above a tracked function reads as a newly-added abort site.** Filed as
+> `BUG-2026-08-22-ac6-guard-identifies-abort-sites-by-line-number.md` (P2).
+>
+> This matters beyond a flaky test: that guard enforces the PRIME DIRECTIVE's *"do not add abort
+> conditions."* A guard that cries wolf on every unrelated edit trains the habit of overriding it, and
+> the one time a real abort site lands it gets waved through. **A brittle guard on a load-bearing
+> invariant is worse than no guard.** It is also the same family again — a POSITIONAL token standing in
+> for a SEMANTIC identity, exactly like the lexical-vs-realpath compares and the `RegExp.exec` matcher.
+>
+> Remaining failures are the two long-filed known ones: `install-bun-probe` (fails BECAUSE bun is
+> installed where its substring `PATH` filter cannot see it) and `extension-wiring` deploy smoke (the
+> installer deletes the very path the test asserts).
+
+> ### ▶ 2026-08-22 — FIXTURE-LEAK PRODUCER BUNDLE (R-ORCG D4+D5), session `2026-08-22-a1e33756`
+>
+> Full pipeline, scope `branch`, UNATTENDED, `start_commit` `55114d94`. 8 tickets (4 implementation,
+> 4 hardening). At iteration 9: **5 Done, all four implementation commits landed**, now in hardening.
+>
+> | commit | ticket | what |
+> |---|---|---|
+> | `50b8043f` | `470170dd` | worker prompt forbids backgrounding + **deployed** |
+> | `34c8a89a` | `b1bb51ca` | judge `XDG_RUNTIME_DIR` removed without mutating R-SJET-3 telemetry |
+> | `313baa68` | `ac1a2c2d` | disposable `pickle-` TMPDIR root at the test-runner `spawnSync` |
+> | `d596fe1c` | `b2252ef3` | reaper realpath pinned + evidence doc |
+>
+> All three of AC-5's binding invariants are honored in the landed diff: root is
+> `mkdtempSync(path.join(tmpdir(), 'pickle-'))` (a); `env: { ...process.env, TMPDIR: disposableTmpRoot }`
+> is scoped to the child, not the npm script (b); `rmSync` on exit with the correct rationale — *"a
+> leftover `pickle-*` root is still reapable by the orphan reaper"* (c). AC-1's deploy step — the one
+> the authored PRD omitted and refinement caught — was performed: repo and `~/.claude/commands/` copies
+> are identical.
+>
+> **✅ THE PRIOR BUNDLE'S FIX IS WORKING IN PRODUCTION, OBSERVED LIVE.** `state.json` carries
+> `exit_reason: done_without_commit_evidence` **while `active: true`** and the loop advanced to
+> iteration 9. That is exactly BUG-2026-08-19's AC-1/AC-2: refuse the local Done-flip, stamp the
+> residual, and CONTINUE. The halt that killed session `2026-08-19-541c0275` at 8 iterations is gone,
+> demonstrated by the runtime rather than by a test.
+>
+> **🔬 LIVE FIELD EVIDENCE FOR AC-5(a), CAPTURED BY THE MANAGER MID-RUN.** Three orphaned worker-gate
+> processes, `PPID 1`, no children (`pgrep -P` empty), flat 0.0% CPU across three samples ~20 s apart.
+> Their argv tmp roots:
+>
+> ```
+> /var/folders/…/T/tmp.4Ey1DyWP3r/pickle-6slLbb/pickle-spawn-morty-worker-gate-MSnRIT
+> /var/folders/…/T/tmp.H6kAusbHWP/pickle-9eQGcZ/pickle-spawn-morty-worker-gate-SNHwKg
+> /var/folders/…/T/tmp.nHz2HnO6mR/pickle-G8TVYX/pickle-spawn-morty-worker-gate-RNv4Vi
+> ```
+>
+> The first segment beneath `os.tmpdir()` is **`tmp.XXXXXX`, not `pickle-`**, so
+> `resolveTmpPrefixFixturePath` (`orphan-reaper.ts:254`) could not admit any of them — the exact
+> silent-revert-of-`04df0897` mode invariant (a) forbids, **observed in the wild rather than argued
+> from source**. All three roots were already removed from disk while the process survived, which
+> empirically confirms invariant (c)'s safety rationale: `resolveUnderTmpRoot` (`:198`) is a pure prefix
+> compare with no `existsSync`, so a removed root does not blind argv matching.
+>
+> **⚠️ Tension to record, not to "fix":** that `tmp.XXXXXX` outer segment comes from AC-4's own
+> verification procedure (`PRIV=$(mktemp -d)`). So **the oracle's private root makes the orphans it
+> produces unreapable**, while AC-5(a) requires production roots to stay `pickle-`-prefixed. Both are
+> correct in their own scope. Do NOT "reconcile" them by teaching the reaper to match `tmp.` — that
+> would admit every unrelated `mktemp -d` on the box. If the measurement orphans need reaping, name the
+> private root with a `pickle-` prefix (`mktemp -d -t pickle-leakbudget`) instead of widening the
+> matcher.
+>
+> **Gate reds are present and are NOT yet trustworthy:** `b1bb51ca`, `ac1a2c2d` and `8c89594e` all
+> carry `worker_gate_tests_verdict: red` with `worker_gate_verdict: green`, and three
+> `failed_flip_suppressed` entries. Per `BUG-2026-08-21-worker-env-stamps-test-fixture-commits.md`
+> (filed 2026-08-21), a worker-gate test red must be re-run **scrubbed** before it is believed —
+> `env -u PICKLE_TICKET_ID -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0`. The
+> diagnostic tell is a wrong ticket id in the assertion diff. Verify from the evidence ticket's
+> measurement, not from Done status.
+>
+> ### ✅ 2026-08-22 — FIXTURE-LEAK BUNDLE: 8/8 TICKETS DONE, AND THE FIX IS VERIFIED WORKING **LIVE**
+>
+> `EPIC_COMPLETED/all-tickets-done` 14:35:17Z. Pickle ✅ · citadel ✅ · anatomy-park ▶ (phase 3/4,
+> iteration 5) · szechuan-sauce queued.
+>
+> **The bundle's thesis is confirmed by measurement mid-run, not by its own tests.** Sampling the live
+> box while anatomy-park ran:
+>
+> ```
+> orphan root shapes (first segment beneath os.tmpdir()):   7 x  pickle-<rand>     <- AC-5(a) containment
+> [reap-orphans] scanned=8 reaped=5 unverified=0 session_owned=0 tmp_prefix_fixture=5
+> ```
+>
+> Before this bundle the same command read **`scanned=0 reaped=0` against six live orphans**. It now
+> scans and collects. Orphan argv roots have changed shape from
+> `T/tmp.XXXXXX/pickle-…/pickle-spawn-morty-worker-gate-…` (unmatchable) to
+> `T/pickle-XXXXXX/pickle-spawn-morty-worker-gate-…/bin/npm` (**matchable**) — invariant (a) doing
+> exactly the job it was written for, observed in production rather than asserted in a test.
+>
+> `TMPDIR` `pickle-*` count during an ACTIVE run: **707**, against **17,825** measured before the
+> bundle. Not zero — the run is mid-flight and the deployed runtime is still unfixed (below) — but the
+> direction and magnitude are unambiguous.
+>
+> **⚠️ THE FIX IS NOT DEPLOYED. Do not read the live result as "the runtime is fixed."**
+>
+> | probe | repo `extension/bin` | deployed `~/.claude/pickle-rick/extension/bin` |
+> |---|---:|---:|
+> | `disposableTmpRoot` in `test-runner.js` | **4** | **0** |
+> | `run_in_background` in `send-to-morty.md` | 1 | **1** (deployed by the bundle, AC-1b) |
+>
+> The worker gates run `npm run test:fast` from the **repo**, which is why the containment is visible
+> live; the orchestrator runs **deployed** JS, which still leaks. `install.sh` must run once the
+> pipeline reaches terminal. Per `deploy-drift-invisible-to-version-check`, verify by CONTENT after —
+> the version string will not move.
+>
+> **🔬 ANATOMY-PARK: THE FALSE-GREEN FAMILY REACHES ELEVEN.** `92f9646e` — *"R-SSOC scope audit reading
+> a FAILED git enumeration as 'nothing committed'"* — is the same shape as `3a60fb94` (scope fence
+> reporting a failed staged enumeration as a green pass), `04df0897` (reaper scanning zero, reporting
+> success), the authored AC-4 leak budget, and an operator `test-runner.js --tier fast` run from the
+> wrong cwd that printed `[no files for tier fast]` and **exited 0**. Also landed: `7b0d7b04` — overlap
+> predicate vouching from a **prior run of the same ticket**.
+>
+> **A failed operation read as an empty result is this codebase's dominant defect class.** Eleven
+> instances now, across the reaper, the scope fence, the scope audit, the overlap predicate, three
+> lexical matchers, and two operator-authored oracles. It is worth ONE named trap door — *"distinguish
+> `failed` from `empty` at every enumeration boundary"* — rather than eleven independent fixes.
+>
+> **Gate reds present, NOT yet trusted:** six tickets flipped
+> `done_over_red_worker_gate_tests:b1bb51ca,ac1a2c2d,8c89594e,c06f960d,b382cbcb,4801536f` plus
+> `post_final_tier_degraded:red`. Per `BUG-2026-08-21-worker-env-stamps-test-fixture-commits.md`, a
+> worker-gate test red must be re-run **scrubbed** before it is believed; the tell is a wrong ticket id
+> in the assertion diff. Verify from a clean post-terminal measurement, never from Done status.
+>
+> ### 🎯 2026-08-22 — THE DOMINANT DEFECT CLASS, NAMED CORRECTLY: **"did it RUN?" is not "what did it SAY?"**
+>
+> I had been filing these as *false greens*. Anatomy-park's `5fa74999` proves the framing was too narrow
+> — the same root cause also produces false **REDS**, and the red variant is worse.
+>
+> **`5fa74999` (CRITICAL) — an unrunnable worker gate authoring a durable RED verdict.**
+> `defaultRecomputeCheck` classified `spawnSync` purely by `r.status === 0`. `spawnSync` does **not
+> throw** for ENOENT (`npx` absent), ETIMEDOUT (the 300 s hang-guard), ENOBUFS (>1 MB from an exit-0
+> warning-heavy `eslint --max-warnings=-1`), or an external signal kill — **all four return
+> `{status: null}`**, which `status === 0` reads as a *measured* red.
+>
+> `resolveWorkerGateVerdict` then **PERSISTS** that red into the ticket frontmatter, and
+> `readWorkerGateVerdict` short-circuits on any non-`absent` value, so every later read reports
+> `computedVia: 'worker_gate'` — **asserting a gate authored a verdict no gate produced.** It is
+> STICKY: the recompute never re-runs, `isAdvisoryWorkerGateVerdict` refuses to treat pickle-rick's own
+> red as advisory, and **the ticket can never flip Done — it loops to ladder exhaustion and reports
+> Failed over green work.** Measured against the shipped `bin/mux-runner.js`, not argued from source.
+>
+> **This is the likely cause of the `done_over_red_worker_gate_tests` on six tickets in this bundle**,
+> and plausibly of the six in `2026-08-20-54c74299` before it. It is the inverse-polarity twin of the
+> B-OFFREPO fake-green this repo already removed.
+>
+> **The correct name for the family is the `did-it-RUN` axis** — an operation that never ran being read
+> as one that ran and produced a result. Polarity is incidental:
+>
+> | instance | failed operation | misread as |
+> |---|---|---|
+> | `04df0897` reaper | lexical-vs-realpath prefix compare matched nothing | "nothing to reap" (green) |
+> | `3a60fb94` scope fence | staged enumeration FAILED | "green pass" |
+> | `92f9646e` scope audit | git enumeration FAILED | "nothing committed" |
+> | `08a8a4ef` scope audit | fence malformed | "clean" |
+> | `3d414e57` pre-commit fence | raw-read its own `scope.json` | (silent) |
+> | `7b0d7b04` overlap predicate | vouched from a PRIOR run of the same ticket | "verified" |
+> | **`5fa74999` worker gate** | **`spawnSync` returned `status:null`** | **"measured RED"** |
+> | authored AC-4 leak budget | counted `^pickle-` visible, not created | "leak fixed" |
+> | operator tier check | wrong cwd → `[no files for tier fast]`, **exit 0** | "green tree" |
+> | missing-timeout matcher | `RegExp.prototype.exec` | "`child_process.exec` without timeout" |
+> | bash-scanner | PRD **prose** contained `bash install.sh` | "worker ran the installer" |
+>
+> **Eleven-plus instances, one rule: distinguish `failed` from `empty`/`measured` at every enumeration
+> and every subprocess boundary.** `5fa74999`'s trap door already states the shape correctly — *ONE
+> uniform "did we get an exit code?" check* — and its family sweep confirms the sibling verdict
+> producers (`spawn-morty.ts:1358` via `isCommandResultUnrunnable`; `runBetweenTicketFastTests` via its
+> `__timeout__` sentinel) already carry that axis. **This deserves ONE named trap door, not eleven
+> fixes.**
+>
+> Also landed this phase: `54a1ed27` (CRITICAL — unblock the integration tier by bounding two untimed
+> test spawns).
+>
+> **Host note:** load 12.20 during anatomy-park, top consumer **`XprotectFramework` 59.8%** — macOS's
+> malware scanner, not the pipeline (whose node processes were 11.1/10.2/5.5%). Same root cause as the
+> Spotlight storm: an OS scanner chewing through tmpdir churn. Reinforces that the census must name top
+> CPU consumers; a pickle-process count reads clean here.
+>
+> ### 🔁 2026-08-22 — THE PIPELINE INDEPENDENTLY CONVERGED ON THE `did-it-RUN` AXIS
+>
+> Anatomy-park's last three commits arrived at the same generalization from the code side that the
+> ledger reached from the incident side, without either being told about the other:
+>
+> | commit | title |
+> |---|---|
+> | `49796c58` | HIGH — **stop a sweep that never ran from printing an empty census** |
+> | `a57f32ff` | HIGH — **give the pipeline's per-iteration reaper the `did-we-count` axis** |
+> | `baae5096` | szechuan: Honest Reporting — **count only confirmed fixture deaths** in `reapFixturesSync` |
+>
+> `49796c58` is R-ORCG's *"an empty census is NOT evidence"* fixed **at its source** — that sentence has
+> been in the PRD since 2026-08-17 as a warning to human readers; it is now an invariant in the code.
+> `a57f32ff` names the axis in its own title. `baae5096` applies the same rule to a count: only
+> **confirmed** deaths are counted, so an unverified kill can no longer inflate a success number.
+>
+> Two independent routes to one rule — **distinguish `failed` from `empty`/`measured` at every
+> enumeration and subprocess boundary** — is the strongest evidence yet that this is the codebase's
+> dominant defect class rather than a run of coincidences. The trap door should be written once, at the
+> level of the rule, and the existing per-site entries cross-referenced to it.
+>
+> **⚠️ ANATOMY-PARK IS NON-CONVERGENT AGAIN — 2 runs out of 2.** `phase_dispositions.anatomy-park:
+> anatomy_non_convergent` here, and identically in `2026-08-20-54c74299`. Both times it landed a large
+> volume of genuine CRITICAL/HIGH fixes and still hit its limit. That is a signal about the phase's
+> configuration, not obviously a defect: `anatomy_stall_limit: 3` against a subsystem that keeps
+> yielding new true findings will always terminate non-convergent. Worth an explicit operator decision
+> — raise the limit, accept non-convergence as the normal disposition for a debt-rich subsystem, or
+> scope the phase more tightly — rather than being re-discovered as a surprise each run. **Do NOT
+> "fix" it by making the phase stop reporting.**
+>
+
 > ### 🚀 2026-08-22 — DEPLOYED THE BUNDLE. THE RUNTIME HAD BEEN RUNNING THE PRE-FIX CODE THE WHOLE TIME.
 >
 > **The version string was identical before and after the bundle — `2.1.0-beta.10` on both sides — so
