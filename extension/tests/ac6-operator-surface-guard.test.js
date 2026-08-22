@@ -1,9 +1,11 @@
 // @tier: fast
 import assert from 'assert';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { execSync } from 'child_process';
 import { test, describe } from 'node:test';
+import * as ts from 'typescript';
 
 /**
  * AC-6: Operator/terminal surface guard test.
@@ -34,19 +36,19 @@ const BASE_INVENTORIES = {
     'idle_stall_unrecoverable', 'state_working_dir_missing', 'toolchain_unavailable',
   ],
   TERMINAL_ABORT_SITES: [
-    'bin/archaeology.ts:76',
-    'bin/calibrate.ts:18',
-    'bin/check-readiness.ts:148',
-    'bin/correct-course.ts:63',
-    'bin/debate.ts:122',
-    'bin/init-microverse.ts:38',
-    'bin/mux-runner.ts:136',
-    'bin/setup.ts:257',
-    'bin/spawn-morty.ts:364',
-    'bin/spawn-refinement-team.ts:994',
-    'bin/test-runner.ts:57',
-    'bin/test-runner.ts:298',
-    'services/council-schema.ts:93',
+    'bin/archaeology.ts::usage',
+    'bin/calibrate.ts::usage',
+    'bin/check-readiness.ts::usage',
+    'bin/correct-course.ts::usage',
+    'bin/debate.ts::usage',
+    'bin/init-microverse.ts::fail',
+    'bin/mux-runner.ts::handleSchemaVersionAhead',
+    'bin/setup.ts::die',
+    'bin/spawn-morty.ts::die',
+    'bin/spawn-refinement-team.ts::usageAndExit',
+    'bin/test-runner.ts::exitWithError',
+    'bin/test-runner.ts::main',
+    'services/council-schema.ts::fail',
   ],
   PICKLE_SETTINGS_KEYS: [
     '_hardening_doc',
@@ -131,39 +133,109 @@ function extractExitReasons(content) {
 }
 
 /**
- * Extract terminal/abort call sites by searching for functions returning :never
+ * Enumerate .ts files under <extensionDir>/src the way git owns them: tracked files
+ * (git ls-files) plus untracked-but-not-ignored files (git ls-files --others --exclude-standard).
+ * Gitignored files never appear in either list, so they are excluded without a separate check.
  */
-function extractTerminalAbortSites(extensionDir) {
-  const sites = [];
+function enumerateGitOwnedTsFiles(extensionDir) {
+  const repoRoot = path.dirname(extensionDir);
   const srcDir = path.join(extensionDir, 'src');
+  const srcRelToRepo = path.relative(repoRoot, srcDir);
 
-  try {
-    // Use git grep to find all ): never declarations
-    const output = execSync(
-      `git grep -n "): never" -- "${srcDir}"`,
-      { encoding: 'utf8', cwd: path.dirname(extensionDir), timeout: 30000 }
-    );
+  const tracked = execSync(`git ls-files -- "${srcRelToRepo}"`, {
+    encoding: 'utf8', cwd: repoRoot, timeout: 30000,
+  });
+  const untracked = execSync(`git ls-files --others --exclude-standard -- "${srcRelToRepo}"`, {
+    encoding: 'utf8', cwd: repoRoot, timeout: 30000,
+  });
 
-    output.split('\n').forEach(line => {
-      if (!line.trim()) return;
-      // Parse lines like: extension/src/bin/setup.ts:255:function die(message: string): never {
-      // Format: extension/src/FILEPATH:LINENUM:CONTENT
-      const match = line.match(/^extension\/src\/(.+):(\d+):(.*)$/);
-      if (match) {
-        const filePath = match[1];
-        const lineNum = match[2];
-        const lineContent = match[3];
-        // Exclude comments (lines starting with //)
-        if (!lineContent.trim().startsWith('//')) {
-          sites.push(`${filePath}:${lineNum}`);
-        }
+  const relPaths = [...tracked.split('\n'), ...untracked.split('\n')]
+    .map(l => l.trim())
+    .filter(Boolean)
+    .filter(p => p.endsWith('.ts'));
+
+  return [...new Set(relPaths)].map(p => path.join(repoRoot, p)).sort();
+}
+
+/**
+ * Resolve the symbol name for a function-like node whose return type is `never`.
+ * Returns null when the node has no recoverable name (caller must fail loud on null).
+ */
+function resolveAbortSiteSymbolName(node) {
+  if (ts.isFunctionDeclaration(node)) {
+    return node.name && ts.isIdentifier(node.name) ? node.name.text : null;
+  }
+  if (ts.isMethodDeclaration(node)) {
+    return (ts.isIdentifier(node.name) || ts.isStringLiteralLike(node.name)) ? node.name.text : null;
+  }
+  if (ts.isFunctionExpression(node) && node.name && ts.isIdentifier(node.name)) {
+    return node.name.text;
+  }
+  // ArrowFunction, or an unnamed FunctionExpression: resolve identity via the parent.
+  const parent = node.parent;
+  if (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
+    return parent.name.text;
+  }
+  if (parent && ts.isPropertyAssignment(parent)
+      && (ts.isIdentifier(parent.name) || ts.isStringLiteralLike(parent.name))) {
+    return parent.name.text;
+  }
+  return null;
+}
+
+/**
+ * Walk one .ts file's AST and return `<file>::<symbolName>` identities for every function-like
+ * node (FunctionDeclaration, MethodDeclaration, ArrowFunction, FunctionExpression) whose return
+ * type is the bare `never` keyword. The function-like check MUST precede the `.type` check: a
+ * bare `.type.kind === NeverKeyword` test also matches `as never` AsExpression casts, which are
+ * not function-like and must never appear in the abort-site surface.
+ */
+function extractAbortSitesFromFile(absPath, srcDir) {
+  const content = fs.readFileSync(absPath, 'utf8');
+  const sourceFile = ts.createSourceFile(absPath, content, ts.ScriptTarget.Latest, true);
+  const relFile = path.relative(srcDir, absPath).split(path.sep).join('/');
+  const sites = [];
+
+  function visit(node) {
+    const isFunctionLike = ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)
+      || ts.isArrowFunction(node) || ts.isFunctionExpression(node);
+    if (isFunctionLike && node.type && node.type.kind === ts.SyntaxKind.NeverKeyword) {
+      const symbolName = resolveAbortSiteSymbolName(node);
+      if (!symbolName) {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+        throw new Error(`unrecoverable symbol at ${relFile}:${line + 1}`);
       }
-    });
-  } catch {
-    // git grep not available or no matches
+      sites.push(`${relFile}::${symbolName}`);
+    }
+    ts.forEachChild(node, visit);
   }
 
-  return sites.sort();
+  visit(sourceFile);
+  return sites;
+}
+
+/**
+ * Extract terminal/abort call sites by identity: git owns which .ts files exist
+ * (ignore-aware enumeration), the TypeScript AST owns which symbols are abort sites
+ * (`<file>::<symbolName>`). No dedupe, no drop: every occurrence is kept, and a collision
+ * (two sites resolving to the same identity) or an unrecoverable symbol fails loud.
+ */
+function extractTerminalAbortSites(extensionDir) {
+  const srcDir = path.join(extensionDir, 'src');
+  const files = enumerateGitOwnedTsFiles(extensionDir);
+  const allSites = files.flatMap(f => extractAbortSitesFromFile(f, srcDir));
+
+  const counts = new Map();
+  for (const site of allSites) {
+    counts.set(site, (counts.get(site) || 0) + 1);
+  }
+  for (const [site, count] of counts) {
+    if (count > 1) {
+      throw new Error(`collision: ${site} appears ${count} times`);
+    }
+  }
+
+  return allSites.sort();
 }
 
 /**
@@ -262,5 +334,129 @@ describe('AC-6: Operator/terminal surface guard', () => {
         `${check.surface}: member count mismatch (expected ${baseline.length}, got ${current.length})`
       );
     });
+  });
+});
+
+/**
+ * Build a throwaway git repo shaped like `<tmp>/extension/src/...` so
+ * `enumerateGitOwnedTsFiles(path.join(tmp, 'extension'))` matches production's directory shape.
+ */
+function makeFixtureRepo() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ac6-abort-site-fixture-'));
+  const extensionDir = path.join(tmp, 'extension');
+  const srcDir = path.join(extensionDir, 'src');
+  fs.mkdirSync(srcDir, { recursive: true });
+  execSync('git init', { cwd: tmp, stdio: 'pipe', timeout: 30000 });
+  execSync('git config user.email "test@test.com"', { cwd: tmp, stdio: 'pipe', timeout: 30000 });
+  execSync('git config user.name "Test"', { cwd: tmp, stdio: 'pipe', timeout: 30000 });
+  return { tmp, extensionDir, srcDir };
+}
+
+describe('AST abort-site extractor: enumeration and identity', () => {
+  test('ignore-aware enumeration: untracked included, gitignored excluded', () => {
+    const { tmp, extensionDir, srcDir } = makeFixtureRepo();
+    try {
+      fs.writeFileSync(
+        path.join(srcDir, 'tracked.ts'),
+        'function trackedAbort(): never { throw new Error("x"); }\n'
+      );
+      fs.writeFileSync(
+        path.join(srcDir, 'untracked.ts'),
+        'function untrackedAbort(): never { throw new Error("x"); }\n'
+      );
+      fs.writeFileSync(path.join(tmp, '.gitignore'), 'extension/src/generated.ts\n');
+      fs.writeFileSync(
+        path.join(srcDir, 'generated.ts'),
+        'function generatedAbort(): never { throw new Error("x"); }\n'
+      );
+      execSync('git add extension/src/tracked.ts .gitignore', { cwd: tmp, stdio: 'pipe', timeout: 30000 });
+      execSync('git commit -m "init"', { cwd: tmp, stdio: 'pipe', timeout: 30000 });
+
+      const files = enumerateGitOwnedTsFiles(extensionDir).map(f => path.basename(f));
+
+      assert.ok(files.includes('tracked.ts'), 'tracked file must be enumerated');
+      assert.ok(files.includes('untracked.ts'), 'untracked-but-not-ignored file must be enumerated');
+      assert.ok(!files.includes('generated.ts'), 'gitignored file must be excluded');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('collision fails loud: two same-named never-returning functions in one file', () => {
+    const { tmp, srcDir } = makeFixtureRepo();
+    try {
+      const filePath = path.join(srcDir, 'dupe.ts');
+      fs.writeFileSync(
+        filePath,
+        'function abort(): never { throw new Error("x"); }\n'
+        + 'function abort(): never { throw new Error("y"); }\n'
+      );
+
+      assert.throws(
+        () => {
+          const sites = extractAbortSitesFromFile(filePath, srcDir);
+          const counts = new Map();
+          for (const site of sites) counts.set(site, (counts.get(site) || 0) + 1);
+          for (const [site, count] of counts) {
+            if (count > 1) throw new Error(`collision: ${site} appears ${count} times`);
+          }
+        },
+        /collision: dupe\.ts::abort appears 2 times/
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('unrecoverable symbol fails loud: unparented never-returning function expression', () => {
+    const { tmp, srcDir } = makeFixtureRepo();
+    try {
+      const filePath = path.join(srcDir, 'anon.ts');
+      fs.writeFileSync(
+        filePath,
+        '[(function(): never { throw new Error("x"); })].forEach(f => f());\n'
+      );
+
+      assert.throws(
+        () => extractAbortSitesFromFile(filePath, srcDir),
+        /unrecoverable symbol at anon\.ts:\d+/
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('function-like gate precedes the .type check: as-never casts are excluded', () => {
+    const { tmp, srcDir } = makeFixtureRepo();
+    try {
+      const filePath = path.join(srcDir, 'cast.ts');
+      fs.writeFileSync(
+        filePath,
+        'function realAbort(): never { throw new Error("x"); }\n'
+        + 'const x = { event: "boom" as never };\n'
+        + 'function useCast() { doThing({ payload: 1 } as never); }\n'
+      );
+
+      const sites = extractAbortSitesFromFile(filePath, srcDir);
+
+      assert.deepStrictEqual(sites, ['cast.ts::realAbort']);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('7 known as-never casts at HEAD produce zero abort-site entries', () => {
+    const castFiles = [
+      'bin/microverse-runner.ts',
+      'bin/pipeline-runner.ts',
+      'hooks/handlers/tsc-gate.ts',
+    ];
+    const sites = extractTerminalAbortSites(EXTENSION_DIR);
+    for (const relFile of castFiles) {
+      assert.ok(
+        !sites.some(site => site.startsWith(`${relFile}::`)),
+        `${relFile} must contribute no abort-site entries (its only ": never" surface is an "as never" cast)`
+      );
+    }
   });
 });
