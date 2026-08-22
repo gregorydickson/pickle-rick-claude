@@ -383,7 +383,7 @@ describe('AST abort-site extractor: enumeration and identity', () => {
   });
 
   test('collision fails loud: two same-named never-returning functions in one file', () => {
-    const { tmp, srcDir } = makeFixtureRepo();
+    const { tmp, extensionDir, srcDir } = makeFixtureRepo();
     try {
       const filePath = path.join(srcDir, 'dupe.ts');
       fs.writeFileSync(
@@ -393,14 +393,7 @@ describe('AST abort-site extractor: enumeration and identity', () => {
       );
 
       assert.throws(
-        () => {
-          const sites = extractAbortSitesFromFile(filePath, srcDir);
-          const counts = new Map();
-          for (const site of sites) counts.set(site, (counts.get(site) || 0) + 1);
-          for (const [site, count] of counts) {
-            if (count > 1) throw new Error(`collision: ${site} appears ${count} times`);
-          }
-        },
+        () => extractTerminalAbortSites(extensionDir),
         /collision: dupe\.ts::abort appears 2 times/
       );
     } finally {
