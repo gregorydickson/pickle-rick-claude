@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { logActivity } from '../services/activity-logger.js';
+import { readRecoverableJsonObject } from '../services/recoverable-json.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 function normalizePath(p) {
     return p.replace(/\/$/, '');
@@ -86,28 +87,57 @@ function getStagedPaths() {
         return null;
     return (result.stdout || '').split('\0').filter(Boolean);
 }
+/**
+ * AP-EXT-ITER40-01: `scope.json` is written tmp-rename (`scope-resolver.ts:writeScopeJson`
+ * — `writeFileSync(<p>.tmp.<pid>)` then `renameSync`), so a killed writer leaves the ONLY
+ * valid fence in a sibling `.tmp.<pid>`. Every other scope reader crosses that window
+ * through the one recovery primitive, which PROMOTES the orphan onto the base path
+ * (`scope-resolver.ts:refreshScope`, `check-gate.ts:readAllowedPaths`,
+ * `pipeline-runner.ts:readPersistedAllowedPaths`, `microverse-runner.ts:
+ * resolveScopeAuditInputs`). This reader raw-read `existsSync` + `JSON.parse` instead, so
+ * the fence read as ABSENT — and `no_scope` exits 0.
+ *
+ * Absence is therefore decided AFTER the recovering read, never as a pre-gate above it
+ * (the AP-EXT-ITER16-01 / AP-EXT-ITER6-02 shape): a pre-gate short-circuits the very
+ * promotion on the next line, making the recovery dead code.
+ */
+function resolveAllowedPaths(scopeJsonPath) {
+    let recovered;
+    try {
+        recovered = readRecoverableJsonObject(scopeJsonPath);
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, result: { status: 'malformed_scope', error: `Failed to parse scope.json: ${msg}` } };
+    }
+    if (!recovered) {
+        // Below the recovery, not above it. A null here is "no base AND no promotable
+        // orphan"; only then is the session genuinely unscoped.
+        return fs.existsSync(scopeJsonPath)
+            ? { ok: false, result: { status: 'malformed_scope', error: 'Failed to parse scope.json: not a JSON object' } }
+            : { ok: false, result: { status: 'no_scope' } };
+    }
+    const field = recovered.allowed_paths;
+    if (!Array.isArray(field) || !field.every((p) => typeof p === 'string')) {
+        return {
+            ok: false,
+            result: { status: 'malformed_scope', error: 'scope.json missing or invalid allowed_paths array' },
+        };
+    }
+    return { ok: true, allowedPaths: field };
+}
 export function checkScopeDiff(opts = {}) {
     const scopeJsonPath = opts.scopeJsonPath;
     const headRef = opts.headRef ?? 'HEAD';
     const getStagedFn = opts._getStagedPaths ?? getStagedPaths;
-    if (!scopeJsonPath || !fs.existsSync(scopeJsonPath)) {
+    if (!scopeJsonPath) {
         return { status: 'no_scope' };
     }
-    let scopeData;
-    try {
-        scopeData = JSON.parse(fs.readFileSync(scopeJsonPath, 'utf-8'));
+    const resolved = resolveAllowedPaths(scopeJsonPath);
+    if (!resolved.ok) {
+        return resolved.result;
     }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { status: 'malformed_scope', error: `Failed to parse scope.json: ${msg}` };
-    }
-    if (!scopeData ||
-        typeof scopeData !== 'object' ||
-        !Array.isArray(scopeData.allowed_paths) ||
-        !scopeData.allowed_paths.every((p) => typeof p === 'string')) {
-        return { status: 'malformed_scope', error: 'scope.json missing or invalid allowed_paths array' };
-    }
-    const allowedPaths = scopeData.allowed_paths;
+    const allowedPaths = resolved.allowedPaths;
     const staged = getStagedFn();
     if (staged === null) {
         return {

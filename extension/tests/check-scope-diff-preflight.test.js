@@ -352,3 +352,75 @@ test('AP-EXT-ITER38-01: a staged name list past Node\'s 1 MB default is still fe
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// A pid that is provably not alive, so `shouldSkipLiveTmp` does not defer the orphan tmp.
+function deadPidForTmp() {
+  for (const candidate of [999_999, 888_888, 777_777]) {
+    try { process.kill(candidate, 0); } catch { return candidate; }
+  }
+  throw new Error('no dead pid available for fixture');
+}
+
+// AP-EXT-ITER40-01. `scope.json` is written tmp-rename by `scope-resolver.ts:writeScopeJson`,
+// so a killed writer leaves the ONLY fence in a sibling `.tmp.<pid>`. This reader used to
+// `existsSync`-gate + raw `JSON.parse`, which short-circuits the promotion the recovery
+// primitive performs — the session's fence read as ABSENT, and `no_scope` exits 0.
+//
+// Assert the RESOLVED VERDICT (exit code + status) against a REAL git repo with a REAL
+// out-of-scope staged path, plus the on-disk promotion. Asserting "does not throw" or
+// stubbing the read would green over the pre-fix code, which returned `no_scope` quietly.
+test('AP-EXT-ITER40-01: a crash-orphaned tmp-only scope.json still fences the commit, and is promoted', () => {
+  const tmp = makeTmp();
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmp });
+
+    fs.mkdirSync(path.join(tmp, 'extension', 'src'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'unrelated'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'extension', 'src', 'in-fence.ts'), 'export {};');
+    fs.writeFileSync(path.join(tmp, 'unrelated', 'leaked.ts'), 'export {};');
+    spawnSync('git', ['add', 'extension/src/in-fence.ts', 'unrelated/leaked.ts'], { cwd: tmp });
+
+    const scopePath = path.join(tmp, 'scope.json');
+    const tmpScopePath = `${scopePath}.tmp.${deadPidForTmp()}`;
+    fs.writeFileSync(tmpScopePath, JSON.stringify({ version: 1, mode: 'paths', allowed_paths: ['extension/src'] }));
+    assert.equal(fs.existsSync(scopePath), false, 'fixture must start with NO base scope.json');
+
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 1, `expected exit 1 (fence evaluated), got ${result.status}. stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.status, 'outside_scope');
+    assert.deepEqual(output.staged_paths_outside_scope, ['unrelated/leaked.ts']);
+    assert.equal(fs.existsSync(scopePath), true, 'the recovering read must promote the orphan tmp');
+    assert.equal(fs.existsSync(tmpScopePath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// Control for the arm above: absence is decided AFTER the recovering read, so a session with
+// neither a base nor a promotable orphan must STILL report `no_scope` at exit 0. Without this
+// the fix could over-trigger and turn every genuinely-unscoped run into a hard error.
+test('AP-EXT-ITER40-01: a genuinely absent scope.json (no base, no orphan tmp) is still no_scope at exit 0', () => {
+  const tmp = makeTmp();
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmp });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmp });
+
+    fs.mkdirSync(path.join(tmp, 'unrelated'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'unrelated', 'leaked.ts'), 'export {};');
+    spawnSync('git', ['add', 'unrelated/leaked.ts'], { cwd: tmp });
+
+    const scopePath = path.join(tmp, 'scope.json');
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stderr: ${result.stderr}`);
+    assert.equal(JSON.parse(result.stdout.trim()).status, 'no_scope');
+    assert.equal(fs.existsSync(scopePath), false, 'nothing to promote must leave the dir untouched');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
