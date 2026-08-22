@@ -328,7 +328,7 @@ test('AC-7: PICKLE_ORPHAN_REAP=off disables the new tmp_fixture matching too (ex
     scan: () => { scanCalls += 1; return nodeFixtureLine(6005, 6005, '16:00:00', fixtureDir); },
     kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 } });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 }, skipped: 'kill_switch' });
   assert.equal(scanCalls, 0, 'the kill-switch must short-circuit before any ps scan');
   assert.deepEqual(kills, []);
 });
@@ -575,7 +575,7 @@ test('AC-CXHANG-4: PICKLE_ORPHAN_REAP=off is inert — no scan, no kill, {0,0}',
     scan: () => { scanCalls += 1; return ''; },
     kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 } });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 }, skipped: 'kill_switch' });
   assert.equal(scanCalls, 0, 'scan must not run under the kill-switch');
   assert.deepEqual(kills, []);
 });
@@ -589,7 +589,7 @@ test('AC-CXHANG-4: only the literal lowercase "off" disables', () => {
     kill: () => true,
   });
   assert.equal(scanCalls, 1, 'non-lowercase value keeps the reaper active');
-  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 } });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 }, skipped: null });
 });
 
 test('win32: safe no-op — no scan, {0,0}', () => {
@@ -599,7 +599,7 @@ test('win32: safe no-op — no scan, {0,0}', () => {
     platform: 'win32',
     scan: () => { scanCalls += 1; return ''; },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 } });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 }, skipped: 'unsupported_platform' });
   assert.equal(scanCalls, 0);
 });
 
@@ -608,7 +608,7 @@ test('never throws: a throwing scan is swallowed (best-effort)', () => {
     sessionsRoot: makeTmp(),
     scan: () => { throw new Error('ps exploded'); },
   });
-  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 } });
+  assert.deepEqual(result, { scanned: 0, reaped: 0, unverified: 0, by_match_class: { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 }, skipped: 'sweep_failed' });
 });
 
 // ---------------------------------------------------------------------------

@@ -13,9 +13,9 @@
  */
 import * as path from 'node:path';
 import { getDataRoot } from '../services/pickle-utils.js';
-import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapMatchClassCounts } from '../services/orphan-reaper.js';
+import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
 
-type ReapResult = { scanned: number; reaped: number; unverified: number; by_match_class: ReapMatchClassCounts };
+type ReapResult = ReapSweepResult;
 
 export function runStandaloneOrphanReap(
   sessionsRoot: string,
@@ -26,7 +26,11 @@ export function runStandaloneOrphanReap(
     const result = reap({ sessionsRoot });
     // AC6: every sweep reports, including zero-reap — a zero-reap sweep prints its
     // scanned count so "nothing matched" is distinguishable from "nothing to do".
-    if (result.reaped > 0) {
+    // A sweep that never RAN has no census at all: its zero counts are not a reading,
+    // so it says so rather than borrowing the quiet-box line.
+    if (result.skipped) {
+      console.log(`[reap-orphans] sweep did not run (${result.skipped}) — no census`);
+    } else if (result.reaped > 0) {
       const c = result.by_match_class;
       console.log(
         `[reap-orphans] scanned=${result.scanned} reaped=${result.reaped} unverified=${result.unverified} `

@@ -12,9 +12,9 @@ import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGat
 import { State, LockError, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
 import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid, writeActivityEntry } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
-import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapMatchClassCounts } from '../services/orphan-reaper.js';
+import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
 
-type OrphanWorkerReapResult = { scanned: number; reaped: number; unverified: number; by_match_class: ReapMatchClassCounts };
+type OrphanWorkerReapResult = ReapSweepResult;
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { CodegraphService, readIndexedHeadSha, defaultGetHeadSha } from '../services/codegraph-service.js';
 import type { CodegraphDeps, CodegraphEmitEvent } from '../services/codegraph-service.js';
@@ -1849,7 +1849,10 @@ export function runSetupOrphanReap(
   try {
     const reap = deps.reap ?? reapOrphanedWorkerProcs;
     const result = reap({ sessionsRoot, statePath });
-    console.log(`[setup] orphan-worker reap: scanned=${result.scanned} reaped=${result.reaped}`);
+    // A sweep that never ran produced no census — its zero counts are not a reading.
+    console.log(result.skipped
+      ? `[setup] orphan-worker reap: sweep did not run (${result.skipped}) — no census`
+      : `[setup] orphan-worker reap: scanned=${result.scanned} reaped=${result.reaped}`);
     emitOrphanReapSummaryIfNonZero(statePath, result);
     return result;
   } catch {

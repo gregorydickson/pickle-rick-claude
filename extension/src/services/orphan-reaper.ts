@@ -110,6 +110,31 @@ function emptyMatchClassCounts(): ReapMatchClassCounts {
   return { session_owned: 0, tmp_prefix_fixture: 0, repo_fixture_path: 0 };
 }
 
+/** Why no census exists. `null` on a sweep that actually ran — only then is `scanned: 0` evidence. */
+export type ReapSweepSkipReason = 'kill_switch' | 'unsupported_platform' | 'sweep_failed';
+
+export type ReapSweepResult = {
+  scanned: number;
+  reaped: number;
+  unverified: number;
+  by_match_class: ReapMatchClassCounts;
+  /** `null` iff the sweep ran to completion; otherwise the reason it never produced a census. */
+  skipped: ReapSweepSkipReason | null;
+};
+
+/**
+ * The ONE not-run result. Every path that returns without scanning renders through it, so
+ * "we counted nothing" and "we never counted" cannot collapse into the same zero tuple again.
+ *
+ * They did: the kill-switch, the win32 no-op and the best-effort catch each returned their own
+ * `scanned: 0` literal, so a `ps` that was absent, timed out, or overflowed its buffer reported
+ * byte-identically to a genuinely quiet box — and both `bin/reap-orphans.ts` and
+ * `setup.ts:runSetupOrphanReap` print that count as the operator's census.
+ */
+function sweepNotRun(reason: ReapSweepSkipReason): ReapSweepResult {
+  return { scanned: 0, reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts(), skipped: reason };
+}
+
 /** Parse `ps` etime (`[[dd-]hh:]mm:ss`) into seconds; null on malformed input. */
 function parsePsElapsedSeconds(raw: string): number | null {
   const value = raw.trim();
@@ -560,7 +585,7 @@ function processReapableCandidate(cand: WorkerProcCandidate, rt: ReapRuntime, re
   return verified ? 'reaped' : 'unverified';
 }
 
-function runReapPass(opts: ReapOrphanedWorkerProcsOpts, platform: NodeJS.Platform): { scanned: number; reaped: number; unverified: number; by_match_class: ReapMatchClassCounts } {
+function runReapPass(opts: ReapOrphanedWorkerProcsOpts, platform: NodeJS.Platform): ReapSweepResult {
   const scan = opts.scan ?? (() => execFileSync('ps', ['-axo', 'pid=,pgid=,ppid=,etime=,command='], {
     encoding: 'utf-8',
     timeout: PS_TIMEOUT_MS,
@@ -585,7 +610,7 @@ function runReapPass(opts: ReapOrphanedWorkerProcsOpts, platform: NodeJS.Platfor
     if (!isReapableOrphan(cand, rt, reapedPgids)) continue;
     tallyReapOutcome(tally, cand, processReapableCandidate(cand, rt, reapedPgids, deadline));
   }
-  return { scanned: candidates.length, ...tally };
+  return { scanned: candidates.length, ...tally, skipped: null };
 }
 
 /** Accumulates one candidate's disposition into the running sweep tally. */
@@ -608,17 +633,22 @@ function tallyReapOutcome(
  * The returned per-match-class breakdown (`by_match_class`) is what lets a
  * caller report a non-zero sweep without logging noise on a zero-reap sweep
  * (AC5): session-owned, tmp-prefix fixture, repo fixture path.
+ *
+ * `skipped` is the did-we-actually-count axis: `null` means the census is real, so `scanned: 0`
+ * is evidence of a quiet box. Any other value means no census exists — the caller must NOT
+ * render its zero counts as "nothing to reap". Still best-effort: a failure returns, never throws.
  */
-export function reapOrphanedWorkerProcs(opts: ReapOrphanedWorkerProcsOpts): { scanned: number; reaped: number; unverified: number; by_match_class: ReapMatchClassCounts } {
+export function reapOrphanedWorkerProcs(opts: ReapOrphanedWorkerProcsOpts): ReapSweepResult {
   const env = opts.env ?? process.env;
-  if (env[ORPHAN_REAP_ENV_VAR] === 'off') return { scanned: 0, reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts() };
+  if (env[ORPHAN_REAP_ENV_VAR] === 'off') return sweepNotRun('kill_switch');
   const platform = opts.platform ?? process.platform;
-  if (platform === 'win32') return { scanned: 0, reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts() };
+  if (platform === 'win32') return sweepNotRun('unsupported_platform');
   try {
     return runReapPass(opts, platform);
   } catch {
-    // Best-effort collector — a reaper failure must never block a launch.
-    return { scanned: 0, reaped: 0, unverified: 0, by_match_class: emptyMatchClassCounts() };
+    // Best-effort collector — a reaper failure must never block a launch, but it must not
+    // masquerade as a completed sweep either (`ps` absent / timed out / output over maxBuffer).
+    return sweepNotRun('sweep_failed');
   }
 }
 

@@ -1747,7 +1747,10 @@ export function runSetupOrphanReap(sessionRoot, sessionsRoot, deps = {}) {
     try {
         const reap = deps.reap ?? reapOrphanedWorkerProcs;
         const result = reap({ sessionsRoot, statePath });
-        console.log(`[setup] orphan-worker reap: scanned=${result.scanned} reaped=${result.reaped}`);
+        // A sweep that never ran produced no census — its zero counts are not a reading.
+        console.log(result.skipped
+            ? `[setup] orphan-worker reap: sweep did not run (${result.skipped}) — no census`
+            : `[setup] orphan-worker reap: scanned=${result.scanned} reaped=${result.reaped}`);
         emitOrphanReapSummaryIfNonZero(statePath, result);
         return result;
     }
