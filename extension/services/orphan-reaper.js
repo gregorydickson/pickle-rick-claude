@@ -616,27 +616,78 @@ export function recordFixturePid(registryPath, pid) {
     }
     catch { /* best-effort recording */ }
 }
+/** Poll budgets for the fixture escalation, in `GRACE_POLL_MS` steps. */
+const FIXTURE_GRACE_POLLS = Math.max(1, Math.ceil(DEFAULT_GRACE_MS / GRACE_POLL_MS));
+const FIXTURE_VERIFY_POLLS = Math.max(1, Math.ceil(DEFAULT_KILL_VERIFY_MS / GRACE_POLL_MS));
+/** Yield one `GRACE_POLL_MS` wait per remaining poll, stopping as soon as `pid` is provably gone. */
+function* pollUntilDead(pid, polls) {
+    for (let i = 0; i < polls && isProcessAlive(pid); i++)
+        yield GRACE_POLL_MS;
+}
 /**
- * Liveness probe for a registered fixture PID.
- * Uses `ps -p <pid>` to verify the PID is still the fixture (never `ps | grep`).
+ * The ONE fixture escalation: probe → group SIGTERM → grace → group SIGKILL → bounded
+ * verify → confirm. Mirrors `reapCandidateGroup` (`:511`) and, like it, resolves `true`
+ * ONLY on a confirmed death: `kill(-pid, …)` keeps succeeding while ANY group member is
+ * left, so a delivered signal is never evidence the fixture is gone.
+ *
+ * It yields the ms the caller must WAIT rather than sleeping itself, because the two
+ * reapers can only wait one way each — `Atomics.wait` is the only option left at
+ * `process.on('exit')` time, and blocking it is the one thing an `afterAll` hook must not
+ * do. That is their whole difference; every kill, probe and count decision lives here once.
  */
-function isFixturePidAlive(pid) {
+function* escalateFixtureGroup(pid, platform) {
+    if (!isProcessAlive(pid))
+        return false; // already gone — this reaper killed nothing
+    killProcessGroup(pid, 'SIGTERM', platform);
+    yield* pollUntilDead(pid, FIXTURE_GRACE_POLLS);
+    if (isProcessAlive(pid)) {
+        killProcessGroup(pid, 'SIGKILL', platform);
+        yield* pollUntilDead(pid, FIXTURE_VERIFY_POLLS);
+    }
+    return !isProcessAlive(pid);
+}
+/** Drive `escalateFixtureGroup` with blocking sleeps — the `process.on('exit')` path. */
+function reapFixtureGroupSync(pid, platform) {
+    const escalation = escalateFixtureGroup(pid, platform);
+    let step = escalation.next();
+    while (!step.done) {
+        sleepSync(step.value);
+        step = escalation.next();
+    }
+    return step.value;
+}
+/** Drive `escalateFixtureGroup` with timer waits — the `afterAll` path, event loop intact. */
+async function reapFixtureGroupAsync(pid, platform) {
+    const escalation = escalateFixtureGroup(pid, platform);
+    let step = escalation.next();
+    while (!step.done) {
+        const waitMs = step.value;
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+        step = escalation.next();
+    }
+    return step.value;
+}
+/**
+ * Registered PIDs worth signalling. A missing, unreadable or malformed registry yields
+ * `[]` — cleanup is best-effort and must never throw out of an exit handler — and
+ * non-integer / non-positive entries are dropped before any probe, since `kill(0, …)` and
+ * `kill(-n, …)` address the caller's OWN process group.
+ */
+function readRegistryPids(registryPath) {
     try {
-        execFileSync('ps', ['-p', String(pid)], { encoding: 'utf-8', stdio: 'pipe' });
-        return true;
+        const registry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        return registry.pids.filter(pid => Number.isInteger(pid) && pid > 0);
     }
     catch {
-        return false;
+        return [];
     }
 }
-/** Poll `isFixturePidAlive` up to `polls` times, sleeping `GRACE_POLL_MS` between probes. */
-function waitForFixtureDeath(pid, polls) {
-    for (let i = 0; i < polls; i++) {
-        if (!isFixturePidAlive(pid))
-            return;
-        if (i < polls - 1)
-            sleepSync(GRACE_POLL_MS);
+/** Drop the registry once a reap pass has walked it; a leftover file re-reaps recycled PIDs. */
+function discardRegistry(registryPath) {
+    try {
+        fs.unlinkSync(registryPath);
     }
+    catch { /* already removed or never existed */ }
 }
 /**
  * Synchronously reap all fixtures recorded in the registry.
@@ -646,41 +697,11 @@ export function reapFixturesSync(registryPath, platform = process.platform) {
     if (platform === 'win32')
         return 0;
     let reaped = 0;
-    try {
-        const data = fs.readFileSync(registryPath, 'utf-8');
-        const registry = JSON.parse(data);
-        for (const pid of registry.pids) {
-            if (!Number.isInteger(pid) || pid <= 0)
-                continue;
-            // Verify the PID is still alive and is our fixture (not recycled)
-            if (!isFixturePidAlive(pid))
-                continue;
-            // PID is alive. Escalate: SIGTERM → grace → SIGKILL → bounded verify.
-            // Mirrors `reapCandidateGroup`: `reaped` counts CONFIRMED deaths only, never
-            // a delivered signal. A group whose leader died but whose grandchildren
-            // survive still accepts `kill(-pid, …)`, so counting on the signal both
-            // double-counts and overstates the cleanup.
-            try {
-                process.kill(-pid, 'SIGTERM');
-            }
-            catch { /* process may already be terminating */ }
-            waitForFixtureDeath(pid, Math.ceil(DEFAULT_GRACE_MS / GRACE_POLL_MS));
-            if (isFixturePidAlive(pid)) {
-                try {
-                    process.kill(-pid, 'SIGKILL');
-                }
-                catch { /* process may already be gone */ }
-                waitForFixtureDeath(pid, Math.ceil(DEFAULT_KILL_VERIFY_MS / GRACE_POLL_MS));
-            }
-            if (!isFixturePidAlive(pid))
-                reaped++;
-        }
+    for (const pid of readRegistryPids(registryPath)) {
+        if (reapFixtureGroupSync(pid, platform))
+            reaped++;
     }
-    catch { /* best-effort cleanup */ }
-    try {
-        fs.unlinkSync(registryPath);
-    }
-    catch { /* already removed or never existed */ }
+    discardRegistry(registryPath);
     return reaped;
 }
 /**
@@ -691,42 +712,11 @@ export async function reapFixtures(registryPath, platform = process.platform) {
     if (platform === 'win32')
         return 0;
     let reaped = 0;
-    try {
-        const data = fs.readFileSync(registryPath, 'utf-8');
-        const registry = JSON.parse(data);
-        for (const pid of registry.pids) {
-            if (!Number.isInteger(pid) || pid <= 0)
-                continue;
-            // Verify PID is alive using ps -p <pid>
-            try {
-                execFileSync('ps', ['-p', String(pid)], { encoding: 'utf-8', stdio: 'pipe' });
-            }
-            catch {
-                continue;
-            }
-            // PID is alive. Escalate: SIGTERM → grace → SIGKILL
-            try {
-                process.kill(-pid, 'SIGTERM');
-            }
-            catch { /* process may already be terminating */ }
-            // Grace period
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            try {
-                execFileSync('ps', ['-p', String(pid)], { encoding: 'utf-8', stdio: 'pipe' });
-                // Still alive, escalate to SIGKILL
-                process.kill(-pid, 'SIGKILL');
-                reaped++;
-            }
-            catch {
-                reaped++;
-            }
-        }
+    for (const pid of readRegistryPids(registryPath)) {
+        if (await reapFixtureGroupAsync(pid, platform))
+            reaped++;
     }
-    catch { /* best-effort cleanup */ }
-    try {
-        fs.unlinkSync(registryPath);
-    }
-    catch { /* already removed or never existed */ }
+    discardRegistry(registryPath);
     return reaped;
 }
 /**

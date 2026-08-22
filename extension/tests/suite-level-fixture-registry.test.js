@@ -72,16 +72,21 @@ if (duration) {
 `;
 }
 
-/** Double-fork a detached sleeper fixture; returns its real pid via a pidfile handoff. */
-function spawnFixture(binDir, name, duration) {
+/** Double-fork `script` detached; returns the pidfile the launcher hands its real pid back through. */
+function spawnDetachedFixture(binDir, name, script) {
   const pidFile = path.join(binDir, `${name}.pid`);
-  const launcher = spawn(process.execPath, ['-e', LAUNCHER_SCRIPT, process.execPath, fixtureScript(null, duration), pidFile], {
-    detached: true,
-    stdio: 'ignore',
-    timeout: 10_000,
-  });
+  const launcher = spawn(
+    process.execPath,
+    ['-e', LAUNCHER_SCRIPT, process.execPath, script, pidFile],
+    { detached: true, stdio: 'ignore', timeout: 10_000 },
+  );
   launcher.unref();
   return pidFile;
+}
+
+/** Double-fork a detached sleeper fixture; returns its real pid via a pidfile handoff. */
+function spawnFixture(binDir, name, duration) {
+  return spawnDetachedFixture(binDir, name, fixtureScript(null, duration));
 }
 
 /**
@@ -102,14 +107,24 @@ const SURVIVING_GROUP_SCRIPT = [
 
 /** Double-fork a detached group leader whose child survives the leader's own exit. */
 function spawnSurvivingGroupFixture(binDir, name) {
-  const pidFile = path.join(binDir, `${name}.pid`);
-  const launcher = spawn(
-    process.execPath,
-    ['-e', LAUNCHER_SCRIPT, process.execPath, SURVIVING_GROUP_SCRIPT, pidFile],
-    { detached: true, stdio: 'ignore', timeout: 10_000 },
-  );
-  launcher.unref();
-  return pidFile;
+  return spawnDetachedFixture(binDir, name, SURVIVING_GROUP_SCRIPT);
+}
+
+/**
+ * Leader that IGNORES SIGTERM, so the grace window expires and the reaper must
+ * escalate to a group SIGKILL — the one escalation arm the SIGTERM-obedient
+ * fixtures above never reach. Self-terminates after 30s so a leaked leader
+ * cannot outlive the run.
+ */
+const SIGTERM_DEAF_SCRIPT = [
+  "process.on('SIGTERM', () => {});",
+  'setTimeout(() => process.exit(0), 30000);',
+  'setInterval(() => {}, 1000);',
+].join('\n');
+
+/** Double-fork a detached leader that only a SIGKILL can stop. */
+function spawnSigtermDeafFixture(binDir, name) {
+  return spawnDetachedFixture(binDir, name, SIGTERM_DEAF_SCRIPT);
 }
 
 async function resolvePid(pidFile) {
@@ -187,6 +202,23 @@ test('afterAll hook (reapFixtures) reaps fixtures asynchronously', async () => {
   const reaped = await reapFixtures(registryPath);
   assert.equal(reaped, 1, 'one fixture was reaped');
   await waitFor(() => !isAlive(fixturePid), 10_000, 'fixture is gone');
+});
+
+test('afterAll hook (reapFixtures) escalates to SIGKILL when the leader ignores SIGTERM', async () => {
+  const registryDir = makeTmp('suite-fixture-registry-async-deaf-');
+  const binDir = makeTmp('suite-fixture-registry-async-deaf-bin-');
+  const registryPath = initFixturePidRegistry(registryDir);
+
+  const pidFile = spawnSigtermDeafFixture(binDir, 'orphan');
+  const fixturePid = await resolvePid(pidFile);
+  recordFixturePid(registryPath, fixturePid);
+  await waitFor(() => isAlive(fixturePid), 10_000, 'SIGTERM-deaf fixture alive after spawn');
+
+  // SIGTERM is swallowed, so the grace window expires and only the group SIGKILL
+  // ends it. The count still reflects a CONFIRMED death, not a delivered signal.
+  const reaped = await reapFixtures(registryPath);
+  assert.equal(reaped, 1, 'one registered PID reaped exactly once after the SIGKILL escalation');
+  assert.ok(!isAlive(fixturePid), 'SIGTERM-deaf fixture is gone');
 });
 
 test('startup sweep ignores stale registries (older than 24 hours)', async () => {
