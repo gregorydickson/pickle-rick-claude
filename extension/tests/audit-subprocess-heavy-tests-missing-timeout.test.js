@@ -187,3 +187,43 @@ test('audit-subprocess-heavy-tests --scan-root: regex .exec is not a candidate, 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER42-01. Every case above scans a SYNTHETIC scan-root, so they pin the
+// predicate but never its self-application to the committed corpus. That arm only ran
+// as `pretest:integration` — so commit 3d414e57 landed two untimed `spawnSync` callsites,
+// reddened the pretest, and left the ENTIRE integration tier unrunnable for a full
+// iteration while the affected fast-tier suites reported green.
+//
+// Scan the REAL `extension/tests` corpus against the REAL committed baseline, with the
+// same file set and `--base` the shell wrapper computes. Asserting on the scanner alone
+// (not `audit-subprocess-heavy-tests.sh`) keeps this case decoupled from the
+// heavy-candidate arm, and skips that arm's ~21s per-file node spawns.
+test('AP-EXT-ITER42-01: the committed extension/tests corpus has zero un-baselined missing-timeout callsites', () => {
+  const extensionRoot = path.resolve(__dirname, '..');
+  const testRoot = path.join(extensionRoot, 'tests');
+  const scanner = path.resolve(extensionRoot, 'scripts/audit-subprocess-heavy-tests-missing-timeout.mjs');
+  const baseline = path.resolve(extensionRoot, 'scripts/subprocess-heavy-missing-timeout-baseline.json');
+
+  // Mirrors the wrapper's `find "$TEST_ROOT" -type f -name '*.test.js' ! -path "$TEST_ROOT/fixtures/*"`.
+  const files = fs
+    .readdirSync(testRoot, { recursive: true })
+    .map((entry) => String(entry).split(path.sep).join('/'))
+    .filter((rel) => rel.endsWith('.test.js') && !rel.startsWith('fixtures/'))
+    .sort()
+    .map((rel) => path.join(testRoot, rel));
+
+  assert.ok(files.length > 0, 'fixture guard: the real test corpus must be non-empty');
+
+  const run = spawnSync(
+    process.execPath,
+    [scanner, '--baseline', baseline, '--base', extensionRoot, ...files],
+    { encoding: 'utf-8', timeout: 60000 },
+  );
+
+  assert.equal(
+    run.status,
+    0,
+    `new missing-timeout callsite(s) in the committed corpus — add an explicit \`timeout:\` (a hang-guard, >=30s) at the callsite, or baseline it only if the unbounded spawn is intentional:\n${run.stdout}`,
+  );
+  assert.equal(run.stdout.trim(), '', `expected no findings, got:\n${run.stdout}`);
+});

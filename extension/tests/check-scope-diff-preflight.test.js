@@ -380,7 +380,7 @@ test('AP-EXT-ITER40-01: a crash-orphaned tmp-only scope.json still fences the co
     fs.mkdirSync(path.join(tmp, 'unrelated'), { recursive: true });
     fs.writeFileSync(path.join(tmp, 'extension', 'src', 'in-fence.ts'), 'export {};');
     fs.writeFileSync(path.join(tmp, 'unrelated', 'leaked.ts'), 'export {};');
-    spawnSync('git', ['add', 'extension/src/in-fence.ts', 'unrelated/leaked.ts'], { cwd: tmp });
+    spawnSync('git', ['add', 'extension/src/in-fence.ts', 'unrelated/leaked.ts'], { cwd: tmp, timeout: 30_000 });
 
     const scopePath = path.join(tmp, 'scope.json');
     const tmpScopePath = `${scopePath}.tmp.${deadPidForTmp()}`;
@@ -412,7 +412,7 @@ test('AP-EXT-ITER40-01: a genuinely absent scope.json (no base, no orphan tmp) i
 
     fs.mkdirSync(path.join(tmp, 'unrelated'), { recursive: true });
     fs.writeFileSync(path.join(tmp, 'unrelated', 'leaked.ts'), 'export {};');
-    spawnSync('git', ['add', 'unrelated/leaked.ts'], { cwd: tmp });
+    spawnSync('git', ['add', 'unrelated/leaked.ts'], { cwd: tmp, timeout: 30_000 });
 
     const scopePath = path.join(tmp, 'scope.json');
     const result = runScript(['--scope-json', scopePath], { cwd: tmp });
