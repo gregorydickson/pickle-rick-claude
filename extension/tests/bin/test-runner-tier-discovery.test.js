@@ -6,7 +6,7 @@
 // Serialized via tests/integration/.serial-tests.json (runs at --test-concurrency=1).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -255,6 +255,86 @@ test('positional argv behavior still runs the selected file', () => {
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
   } finally {
+    cleanupFixtureRoot(root);
+  }
+});
+
+test('runner scopes a disposable pickle-prefixed TMPDIR to the spawned child only, removed on exit', () => {
+  const root = makeFixtureRoot();
+  const realTmpdir = os.tmpdir();
+  const markerPath = path.join(realTmpdir, `test-runner-tmpdir-marker-${process.pid}-${Date.now()}.txt`);
+  try {
+    writeFixtureTest(
+      root,
+      'tests/capture-tmpdir.test.js',
+      'fast',
+      [
+        "import fs from 'node:fs';",
+        "test('capture child TMPDIR', () => {",
+        `  fs.writeFileSync(${JSON.stringify(markerPath)}, process.env.TMPDIR || '');`,
+        '  assert.equal(1, 1);',
+        '});',
+      ].join('\n'),
+    );
+
+    const envBefore = process.env.TMPDIR;
+    const result = runRunner(root, ['tests/capture-tmpdir.test.js']);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    // (b) the redirect is scoped to the spawnSync child's env option only — never exported at
+    // npm-script / this-process level. If it were `process.env.TMPDIR = ...` in the parent, THIS
+    // process's own env would carry the mutation after the call returns.
+    assert.equal(process.env.TMPDIR, envBefore, 'the runner must never mutate its own process.env.TMPDIR');
+
+    const childTmpdir = readFileSync(markerPath, 'utf8');
+    assert.ok(childTmpdir, 'the spawned child must have observed a TMPDIR override');
+    assert.notEqual(childTmpdir, realTmpdir, 'the child TMPDIR must differ from the parent test process TMPDIR');
+
+    // (a) root basename MUST start with 'pickle-' so orphan-reaper's TEST_OWNED_TMP_PREFIXES admits it.
+    assert.match(path.basename(childTmpdir), /^pickle-/);
+
+    // (c) the root is removed on exit — no leftover directory after the run completes.
+    assert.equal(existsSync(childTmpdir), false, 'the disposable TMPDIR root must be removed after the run');
+
+    // Two independent runs must each get their own disposable root (no reuse/leak of prior state).
+    writeFileSync(markerPath, '');
+    const result2 = runRunner(root, ['tests/capture-tmpdir.test.js']);
+    assert.equal(result2.status, 0, result2.stderr || result2.stdout);
+    const childTmpdir2 = readFileSync(markerPath, 'utf8');
+    assert.notEqual(childTmpdir2, childTmpdir, 'each run must get a fresh disposable TMPDIR root');
+    assert.equal(existsSync(childTmpdir2), false);
+  } finally {
+    rmSync(markerPath, { force: true });
+    cleanupFixtureRoot(root);
+  }
+});
+
+test('runner still removes the disposable TMPDIR root when the spawned child fails', () => {
+  const root = makeFixtureRoot();
+  const realTmpdir = os.tmpdir();
+  const markerPath = path.join(realTmpdir, `test-runner-tmpdir-marker-fail-${process.pid}-${Date.now()}.txt`);
+  try {
+    writeFixtureTest(
+      root,
+      'tests/capture-tmpdir-fail.test.js',
+      'fast',
+      [
+        "import fs from 'node:fs';",
+        "test('capture then fail', () => {",
+        `  fs.writeFileSync(${JSON.stringify(markerPath)}, process.env.TMPDIR || '');`,
+        "  assert.fail('deliberate failure to exercise non-zero exit cleanup');",
+        '});',
+      ].join('\n'),
+    );
+
+    const result = runRunner(root, ['tests/capture-tmpdir-fail.test.js']);
+    assert.notEqual(result.status, 0);
+
+    const childTmpdir = readFileSync(markerPath, 'utf8');
+    assert.match(path.basename(childTmpdir), /^pickle-/);
+    assert.equal(existsSync(childTmpdir), false, 'cleanup must run even when the child exits non-zero');
+  } finally {
+    rmSync(markerPath, { force: true });
     cleanupFixtureRoot(root);
   }
 });

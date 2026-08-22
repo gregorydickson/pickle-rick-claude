@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { availableParallelism } from 'node:os';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { availableParallelism, tmpdir } from 'node:os';
 import path from 'node:path';
 
 // Cap any requested --test-concurrency to the available cores. node:test does NOT
@@ -253,6 +253,20 @@ function shouldSkipTier(tier: Tier | null): boolean {
   return tier === 'expensive' && process.env.RUN_EXPENSIVE_TESTS !== '1';
 }
 
+/**
+ * A per-run disposable tmpdir root for the spawned test child, prefixed `pickle-` so it is
+ * admitted by `TEST_OWNED_TMP_PREFIXES` (orphan-reaper.ts) if cleanup is ever skipped. Creation
+ * failure (ENOSPC, EACCES, etc.) degrades to `null` — the caller falls back to the child
+ * inheriting the parent's own `TMPDIR`, never failing the run over a tmpdir-scoping nicety.
+ */
+function createDisposableTmpRoot(): string | null {
+  try {
+    return mkdtempSync(path.join(tmpdir(), 'pickle-'));
+  } catch {
+    return null;
+  }
+}
+
 function getRunnerTimeoutMs(): number {
   const raw = process.env.PICKLE_TEST_RUNNER_TIMEOUT_MS;
   if (raw === undefined || raw.trim() === '') return DEFAULT_TEST_RUNNER_TIMEOUT_MS;
@@ -322,10 +336,22 @@ function main(): never {
   }
 
   const nodeArgs = ['--test', ...clampTestConcurrency(runnerArgs), ...selectedFiles];
+  const disposableTmpRoot = createDisposableTmpRoot();
   const result = spawnSync(process.execPath, nodeArgs, {
     stdio: 'inherit',
     timeout: getRunnerTimeoutMs(),
+    env: disposableTmpRoot ? { ...process.env, TMPDIR: disposableTmpRoot } : process.env,
   });
+
+  // Cleanup runs BEFORE process.exit(): a synchronous process.exit() does not run pending
+  // `finally` blocks, so cleanup must happen on the normal control-flow path, not deferred to one.
+  if (disposableTmpRoot) {
+    try {
+      rmSync(disposableTmpRoot, { recursive: true, force: true });
+    } catch {
+      // Best-effort: a leftover pickle-* root is still reapable by the orphan reaper.
+    }
+  }
 
   if (result.error) {
     exitWithError(result.error.message, 1);
