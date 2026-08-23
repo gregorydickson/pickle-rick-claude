@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const { runGate, getChangedExportedSymbols } = await import(
+const { runGate, getChangedExportedSymbols, getChangedFilesSince } = await import(
   path.resolve(__dirname, '../services/convergence-gate.js'),
 );
 const { runInterfaceChangeSweep, handleWorkerManagedIteration } = await import(
@@ -455,4 +455,180 @@ test('AP-EXT-ITER47-01: a measured zero-symbol sweep renders NOTHING (no false a
     'a real measurement of zero must stay silent; warning on it would train the operator to ignore the line',
   );
   assert.equal(result.converged, true);
+});
+
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER48-01: the sweep's OTHER classifier axis could not say "I could not measure".
+//
+// AP-EXT-ITER47-01 taught `getChangedExportedSymbols` to report a failed measurement. Its
+// sibling `getChangedSince` — read by the sweep through the `getChangedFilesSince` wrapper —
+// still mapped every git failure to `[]`. `isSelfIntroducedFailure` short-circuits on
+// `changedFiles.size > 0`, so a fabricated empty list silently disarms the FILE axis of
+// INV-NO-SELF-DISOWN while the sweep still returns `ran: true` — a verdict
+// `applyInterfaceChangeSweepGuard` reads as evidence that the phase did not break the repo.
+// That is strictly worse than the symbol arm was: the symbol arm went quiet, this arm asserts.
+//
+// An empty file list is not even a coherent reading at that call site: the sweep only reaches
+// it once `changedExportedSymbols.size > 0`, and no exported declaration changes without its
+// file changing. So `[]` there is PROVABLY an enumeration failure being read as data.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER48-01: getChangedFilesSince returns null (not []) when git cannot answer', () => {
+  const { dir, base } = makeExportChangeRepo('cg-apiter48-producer-');
+  try {
+    // Control: a reachable base still MEASURES, so the null arm is not just a broken reader.
+    const measured = getChangedFilesSince(dir, base);
+    assert.ok(Array.isArray(measured), 'a reachable base must yield a real array');
+    assert.deepEqual(measured, ['src/audit.ts'], 'the changed file must be seen');
+
+    // The defect: an unreachable base is a FAILED enumeration, not an enumeration of zero.
+    assert.equal(
+      getChangedFilesSince(dir, UNREACHABLE_SHA),
+      null,
+      'git exit 128 must report "could not measure"; [] is a POSITIVE finding ("this phase ' +
+      'changed no file") that disarms the file axis of the R-ORSR-6 no-disown classifier',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER48-01: an unmeasurable changed-file list reaches the sweep as skipped, not as ran', async () => {
+  const { dir, base } = makeExportChangeRepo('cg-apiter48-chain-');
+  let gateCalls = 0;
+  // A whole-repo break inside the phase's OWN diff whose message names no changed symbol, so
+  // only the FILE axis can catch it. Pre-fix this was disowned and the sweep reported `ran`.
+  const runGateFn = async () => {
+    gateCalls++;
+    return { failures: [{ check: 'typecheck', file: 'src/audit.ts', line: 3, ruleOrCode: 'TS2322', message: 'Type mismatch', severity: 'error' }] };
+  };
+  try {
+    const skipped = await runInterfaceChangeSweep({
+      workingDir: dir,
+      sessionDir: dir,
+      startCommit: UNREACHABLE_SHA,
+      runGateFn,
+      logActivityFn: () => {},
+      // getChangedFilesSinceFn is deliberately NOT injected: this crosses the real
+      // convergence-gate producer, which is the seam every pre-existing sweep case skips.
+      getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+    });
+    assert.equal(
+      skipped.skipped,
+      'changed_files_unmeasurable',
+      'the failing AXIS must survive to the caller — the rendered line names which git ' +
+      'enumeration did not complete',
+    );
+    assert.equal(
+      skipped.ran,
+      false,
+      'a sweep missing one of its two classifier axes has NOT run; reporting `ran: true` with ' +
+      'an empty selfIntroduced is a green verdict over a disarmed guard',
+    );
+    assert.equal(gateCalls, 0, 'no whole-repo tsc when an input could not be enumerated');
+
+    // Control: the same chain over a REACHABLE base runs and keeps the file-only break.
+    const ran = await runInterfaceChangeSweep({
+      workingDir: dir,
+      sessionDir: dir,
+      startCommit: base,
+      runGateFn,
+      logActivityFn: () => {},
+      getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+    });
+    assert.equal(ran.ran, true, 'a reachable base must sweep');
+    assert.equal(ran.skipped, null, 'a sweep that RAN was never skipped');
+    assert.equal(
+      ran.selfIntroduced.length,
+      1,
+      'the file axis must still catch a break the phase introduced in its own changed file',
+    );
+    assert.equal(gateCalls, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER48-01: a measured EMPTY file list still sweeps (the skip cannot over-trigger)', async () => {
+  const common = {
+    workingDir: '/repo',
+    sessionDir: '/sessions/apiter48',
+    startCommit: 'base000',
+    logActivityFn: () => {},
+    getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+  };
+  let gateCalls = 0;
+  const measuredEmpty = await runInterfaceChangeSweep({
+    ...common,
+    runGateFn: async () => { gateCalls++; return { failures: [] }; },
+    getChangedFilesSinceFn: () => [],
+  });
+  const unmeasurable = await runInterfaceChangeSweep({
+    ...common,
+    runGateFn: async () => { gateCalls++; return { failures: [] }; },
+    getChangedFilesSinceFn: () => null,
+  });
+
+  assert.equal(measuredEmpty.ran, true, 'a completed enumeration is a verdict — the sweep must run on it');
+  assert.equal(measuredEmpty.skipped, null, 'a real measurement must not be tagged a measurement failure');
+  assert.equal(unmeasurable.ran, false);
+  assert.equal(unmeasurable.skipped, 'changed_files_unmeasurable');
+  assert.notEqual(
+    measuredEmpty.skipped,
+    unmeasurable.skipped,
+    'the two must not collapse to one shape — that collapse IS the defect',
+  );
+  assert.equal(gateCalls, 1, 'exactly the measured run reached tsc');
+});
+
+test('AP-EXT-ITER48-01: an unmeasurable file enumeration is RENDERED once and stays non-fatal', async () => {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-apiter48-render-'));
+  const logs = [];
+  try {
+    fs.writeFileSync(
+      path.join(sessionDir, 'anatomy-park.json'),
+      JSON.stringify({ converged: true, reason: 'all subsystems clean' }, null, 2),
+    );
+    const result = await handleWorkerManagedIteration({
+      currentMv: {
+        convergence_file: 'anatomy-park.json',
+        key_metric: { type: 'none' },
+        iteration_regressions: 0,
+      },
+      preIterSha: 'aaaa1111',
+      workingDir: sessionDir,
+      sessionDir,
+      enabledFiles: ['anatomy-park.json'],
+      regressionWarningThreshold: 5,
+      backend: 'claude',
+      remediatorTimeoutS: 600,
+      log: (msg) => logs.push(msg),
+      iteration: 13,
+      startCommit: UNREACHABLE_SHA,
+      _deps: {
+        getHeadShaFn: () => 'aaaa1111',
+        logActivityFn: () => {},
+        writeMicroverseStateFn: () => {},
+        runGateFn: async () => ({ failures: [] }),
+        getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+        getChangedFilesSinceFn: () => null,
+      },
+    });
+
+    const rendered = logs.filter((line) => line.includes('changed_files_unmeasurable'));
+    assert.equal(
+      rendered.length,
+      1,
+      `the not-run reason must be surfaced exactly once; got logs: ${JSON.stringify(logs)}`,
+    );
+    assert.match(rendered[0], /NOT RUN/, 'the line must say the sweep did not run');
+
+    // PRIME DIRECTIVE: an ABSENT measurement is not a measured regression. Rendering it must
+    // never become a halt — a stopping gate takes reliability and quality to zero together.
+    assert.equal(result.converged, true, 'an unmeasurable sweep must not block convergence');
+    assert.equal(result.selfRedOpen, undefined, 'no self-red is open — nothing was measured');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
 });

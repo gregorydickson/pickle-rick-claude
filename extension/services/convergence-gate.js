@@ -252,7 +252,8 @@ export function subtractBaseline(current, baseline, selfGuard) {
         return isSelfIntroducedFailure(f, selfGuard);
     });
 }
-/** Repo-relative changed files in `sinceCommit..HEAD` (R-ORSR-6 exported wrapper). */
+/** Repo-relative changed files in `sinceCommit..HEAD`, or `null` when the enumeration did not
+ * complete (R-ORSR-6 exported wrapper — it PROPAGATES the failure; see `getChangedSince`). */
 export function getChangedFilesSince(workingDir, sinceCommit) {
     return getChangedSince(workingDir, sinceCommit);
 }
@@ -549,6 +550,23 @@ function resolveLexicalRepoRoot(workingDir) {
     const depth = (result.stdout ?? '').trim().split('/').filter(Boolean).length;
     return depth === 0 ? workingDir : path.resolve(workingDir, ...Array(depth).fill('..'));
 }
+/**
+ * Repo-relative changed files in `since..HEAD`, or `null` when the enumeration did NOT COMPLETE.
+ *
+ * `null` is the AP-EXT-ITER38-01 shape and it exists for the SAME reason its
+ * `getChangedExportedSymbols` sibling carries it: an empty array is a POSITIVE finding ("this
+ * phase changed no file"), and the R-ORSR-6 no-disown classifier reads that finding as data.
+ * `isSelfIntroducedFailure` short-circuits on `changedFiles.size > 0`, so a fabricated empty set
+ * disarms the file axis of INV-NO-SELF-DISOWN and every whole-repo break the phase caused is
+ * disowned as pre-existing. A measurement that did not run is not a measurement of zero.
+ *
+ * ONE completion predicate, shared with `getChangedExportedSymbols` — the two enumerate the same
+ * commit range and must not disagree about what "failed" means. A non-zero/`null` `status` covers
+ * an unreachable `since` SHA (128, measured), ENOENT and the 30s timeout; `result.error` covers
+ * `maxBuffer` overflow, which Node reports as `status: 0` with `error.code === 'ENOBUFS'` when the
+ * child exits before the kill lands (measured on node v24) — the status-only guard passed that
+ * straight through, so an unverifiable read parsed as a COMPLETE path list.
+ */
 function getChangedSince(workingDir, since) {
     // AP-EXT-ITER31-01: `-z` matches the contract `allowed_paths` is built from
     // (`--name-status -M100 -z`). Without it `core.quotePath` C-quotes non-ASCII
@@ -562,8 +580,8 @@ function getChangedSince(workingDir, since) {
         // truncated read silently narrows the changed set the gate scopes itself to.
         maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
-    if ((result.status ?? 1) !== 0)
-        return [];
+    if ((result.status ?? 1) !== 0 || result.error)
+        return null;
     return (result.stdout || '').split('\0').filter(Boolean);
 }
 async function runCheckCommand(check, cmd, cwd, timeout_ms) {
@@ -790,8 +808,12 @@ function resolveGateTargetDirs(opts, workspacePackages, allowedPathsUsed, start,
     // is false, so it filtered every package out and returned `[]` with no event,
     // and finalizeGateResult reported an executed `gate_run_complete` green over a
     // gate that ran zero checks.
+    // `?? []` keeps this site's disposition byte-identical: an enumeration that FAILED lands in
+    // the same `length === 0` skip below that a genuinely empty diff does, which is exactly what
+    // AP-EXT-ITER38-02 asked for here (declare the empty set, never narrow against it). `null` on
+    // this local keeps its OTHER meaning — "the narrowing arm is unreachable" — un-overloaded.
     const changedFiles = opts.scope === 'changed' && opts.since
-        ? getChangedSince(opts.workingDir, opts.since)
+        ? (getChangedSince(opts.workingDir, opts.since) ?? [])
         : null;
     if (changedFiles && changedFiles.length === 0) {
         emit('gate_diff_scope_fallback', { since: opts.since, reason: 'no_changed_files' });
@@ -1077,11 +1099,12 @@ function buildNoDisownContext(opts) {
     const since = opts.since?.trim();
     if (!since)
         return undefined;
-    const changedFiles = new Set(getChangedSince(opts.workingDir, since).map(f => normalizeScopePath(f)));
-    // `null` (enumeration did not complete) degrades to the empty set here, which is
+    // `null` (enumeration did not complete) degrades to the empty set on BOTH axes here, which is
     // byte-identical to the pre-fix behaviour: this context can only ever KEEP a failure the
-    // iteration caused, so a narrower symbol set never invents one. The RENDERED arm of the
-    // same measurement failure is the interface-change sweep — see `runInterfaceChangeSweep`.
+    // iteration caused, so a narrower set never invents one. The RENDERED arm of the same
+    // measurement failure is the interface-change sweep — see `runInterfaceChangeSweep`, which
+    // must NOT degrade because it reports `ran: true` and its verdict is read as evidence.
+    const changedFiles = new Set((getChangedSince(opts.workingDir, since) ?? []).map(f => normalizeScopePath(f)));
     const changedExportedSymbols = getChangedExportedSymbols(opts.workingDir, since) ?? new Set();
     if (changedFiles.size === 0 && changedExportedSymbols.size === 0)
         return undefined;

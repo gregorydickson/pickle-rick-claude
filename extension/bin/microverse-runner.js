@@ -670,12 +670,20 @@ function resolveMetricType(currentMv) {
 export async function runInterfaceChangeSweep(opts) {
     const getSymbols = opts.getChangedExportedSymbolsFn ?? getChangedExportedSymbols;
     const getFiles = opts.getChangedFilesSinceFn ?? getChangedFilesSince;
+    // BOTH classifier axes are enumerated up front, from the same instant, behind ONE unmeasurable
+    // disposition. `null` is "git could not answer", NOT "nothing changed": an empty result on
+    // either axis is a POSITIVE finding that `isSelfIntroducedFailure` short-circuits on, so a
+    // fabricated empty set disarms that axis and the sweep still reports `ran: true` — a verdict
+    // the caller reads as INV-NO-SELF-DISOWN evidence. An empty FILE list is not even a coherent
+    // reading once a symbol changed: no exported declaration changes without its file changing.
+    // Enumerating before the gate also means an unmeasurable sweep costs no whole-repo tsc.
     const changedExportedSymbols = getSymbols(opts.workingDir, opts.startCommit);
-    // `null` is "git could not answer", NOT "no exported symbol changed". Both used to leave by
-    // the same `size === 0` door and both then read as `ran: false`, which the caller drops
-    // silently — a sweep that never ran was indistinguishable from a sweep that found nothing.
-    if (changedExportedSymbols === null) {
-        return { ran: false, skipped: 'symbols_unmeasurable', selfIntroduced: [] };
+    const changedFilesList = getFiles(opts.workingDir, opts.startCommit);
+    if (changedExportedSymbols === null || changedFilesList === null) {
+        const skipped = changedExportedSymbols === null
+            ? 'symbols_unmeasurable'
+            : 'changed_files_unmeasurable';
+        return { ran: false, skipped, selfIntroduced: [] };
     }
     if (changedExportedSymbols.size === 0) {
         return { ran: false, skipped: null, selfIntroduced: [] };
@@ -692,7 +700,7 @@ export async function runInterfaceChangeSweep(opts) {
             gate_payload: { ...data, interface_change_sweep: true },
         }),
     });
-    const changedFiles = new Set(getFiles(opts.workingDir, opts.startCommit).map((f) => f.replace(/\\/g, '/')));
+    const changedFiles = new Set(changedFilesList.map((f) => f.replace(/\\/g, '/')));
     const { selfIntroduced } = classifyNoDisown(result.failures, {
         changedFiles,
         changedExportedSymbols,
@@ -767,8 +775,8 @@ async function applyInterfaceChangeSweepGuard(opts) {
     // reading. But it must not be silent: convergence proceeds carrying no INV-NO-SELF-DISOWN
     // evidence either way, and that is a materially different fact from "the sweep cleared it".
     if (sweep.skipped !== null) {
-        log(`Iteration ${iteration} — interface-change sweep NOT RUN (${sweep.skipped}): the ` +
-            `changed-exported-symbol enumeration did not complete, so this iteration carries no ` +
+        log(`Iteration ${iteration} — interface-change sweep NOT RUN (${sweep.skipped}): a git ` +
+            `enumeration the no-disown classifier needs did not complete, so this iteration carries no ` +
             `INV-NO-SELF-DISOWN evidence in either direction — continuing (non-fatal)`);
     }
     if (!(sweep.ran && sweep.selfIntroduced.length > 0))
