@@ -140,7 +140,7 @@ for (const row of CLAUDE_JSON_FALLBACK_MATRIX) {
     test(`AC-4 matrix (claude_json_fallback layer): ${row.name}`, () => {
         const tmpHome = mkTmpHome('matrix-fb');
         const claudeJson = path.join(tmpHome, '.claude.json');
-        if (row.write !== null) fs.writeFileSync(claudeJson, row.write);
+        if (row.write !== null) { fs.writeFileSync(claudeJson, row.write); }
         __resetBackendWarnings();
         try {
             const result = captureStderrQuiet(() => resolveMcpConfigPath({}, tmpHome));
@@ -178,7 +178,7 @@ for (const row of SETTINGS_OVERRIDE_MATRIX) {
     test(`AC-4 matrix (settings_override layer): ${row.name}`, () => {
         const tmpHome = mkTmpHome('matrix-ov');
         const overridePath = path.join(tmpHome, 'ops-mcp.json');
-        if (row.write !== null) fs.writeFileSync(overridePath, row.write);
+        if (row.write !== null) { fs.writeFileSync(overridePath, row.write); }
         __resetBackendWarnings();
         try {
             const result = captureStderrQuiet(() => resolveMcpConfigPath({ worker_mcp_config_path: overridePath }, tmpHome));

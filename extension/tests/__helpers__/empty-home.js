@@ -19,7 +19,7 @@ export function withEmptyHome(fn) {
     try {
         return fn();
     } finally {
-        if (prevHome === undefined) delete process.env.HOME;
+        if (prevHome === undefined) { delete process.env.HOME; }
         else process.env.HOME = prevHome;
         rmDir(emptyHome);
     }
