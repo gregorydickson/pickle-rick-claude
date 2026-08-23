@@ -302,22 +302,28 @@ function resolveRepoFixtureScriptPath(command: string): string | null {
   return null;
 }
 
+/** A `tmp_fixture` admission: the path that matched, and WHICH submatch matched it. */
+type TestOwnedFixtureMatch = {
+  path: string;
+  matchClass: 'tmp_prefix_fixture' | 'repo_fixture_path';
+};
+
 /**
  * The ONE positive-path check for the `tmp_fixture` class: a test-owned
  * tmpdir prefix OR a script anchored under this repo's fixtures dir.
+ *
+ * Admission and match class come out of the SAME evaluation. They used to be
+ * two functions — `resolveTestOwnedFixturePath` returning the path and
+ * `classifyFixtureMatch` re-running both submatchers to name the class — under
+ * a comment instructing the second to mirror the first's precedence and "never
+ * re-derive independently", which is exactly what it did. A submatcher added
+ * to one and not the other admits a candidate the report then labels `null`.
  */
-function resolveTestOwnedFixturePath(command: string): string | null {
-  return resolveTmpPrefixFixturePath(command) ?? resolveRepoFixtureScriptPath(command);
-}
-
-/**
- * Which fixture submatch fired, for reap-report match-class breakdown
- * (AC5). Mirrors `resolveTestOwnedFixturePath`'s precedence exactly — never
- * re-derive independently.
- */
-function classifyFixtureMatch(command: string): 'tmp_prefix_fixture' | 'repo_fixture_path' | null {
-  if (resolveTmpPrefixFixturePath(command) !== null) return 'tmp_prefix_fixture';
-  if (resolveRepoFixtureScriptPath(command) !== null) return 'repo_fixture_path';
+function matchTestOwnedFixture(command: string): TestOwnedFixtureMatch | null {
+  const tmpPrefixPath = resolveTmpPrefixFixturePath(command);
+  if (tmpPrefixPath !== null) return { path: tmpPrefixPath, matchClass: 'tmp_prefix_fixture' };
+  const repoFixturePath = resolveRepoFixtureScriptPath(command);
+  if (repoFixturePath !== null) return { path: repoFixturePath, matchClass: 'repo_fixture_path' };
   return null;
 }
 
@@ -341,13 +347,14 @@ export function parseWorkerProcsFromPs(psOutput: string, sessionsRoot: string): 
     const etimeSeconds = parsePsElapsedSeconds(match[4]);
     const command = match[5].trim();
     if (pid <= 0 || pgid <= 0 || ppid < 0 || etimeSeconds === null) continue;
+    const fixtureMatch = matchTestOwnedFixture(command);
     if (isWorkerShapedCommand(command)) {
       const owningSessionDir = resolveOwningSessionDir(command, sessionsRoot);
       // An unattributable worker-shaped command (e.g. a claude-symlinked test
       // fixture whose --add-dir points at a foreign/stale tmp sessions root)
       // still reaps via the tmp_fixture age-only gate when its argv is itself
       // a test-owned fixture path — never by relaxing worker ownership.
-      if (owningSessionDir === null && resolveTestOwnedFixturePath(command) !== null) {
+      if (owningSessionDir === null && fixtureMatch !== null) {
         results.push({
           pid,
           pgid,
@@ -356,7 +363,7 @@ export function parseWorkerProcsFromPs(psOutput: string, sessionsRoot: string): 
           command,
           owningSessionDir: null,
           kind: 'tmp_fixture',
-          matchClass: classifyFixtureMatch(command),
+          matchClass: fixtureMatch.matchClass,
         });
         continue;
       }
@@ -372,7 +379,7 @@ export function parseWorkerProcsFromPs(psOutput: string, sessionsRoot: string): 
       });
       continue;
     }
-    if (resolveTestOwnedFixturePath(command) !== null) {
+    if (fixtureMatch !== null) {
       results.push({
         pid,
         pgid,
@@ -381,7 +388,7 @@ export function parseWorkerProcsFromPs(psOutput: string, sessionsRoot: string): 
         command,
         owningSessionDir: null,
         kind: 'tmp_fixture',
-        matchClass: classifyFixtureMatch(command),
+        matchClass: fixtureMatch.matchClass,
       });
     }
   }
