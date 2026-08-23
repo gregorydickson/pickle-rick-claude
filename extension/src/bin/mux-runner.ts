@@ -10472,6 +10472,86 @@ function startPhantomDoneWatchers(opts: {
   return { close };
 }
 
+/** What `runTerminalReport` needs to render a finished run's operator-facing report. */
+export interface RunTerminalReportInput {
+  /** Only the teardown half of the session; the reporter never re-initialises codegraph. */
+  codegraph: Pick<ReturnType<typeof createCodegraphSession>, 'emitSummary' | 'close'>;
+  sessionDir: string;
+  statePath: string;
+  exitReason: ExitReason;
+  iteration: number;
+  /** Whole seconds, supplied by the caller so this seam stays clock-free and testable. */
+  totalElapsed: number;
+  log: (msg: string) => void;
+}
+
+/**
+ * The terminal report: codegraph teardown, `session_end`, the completion panel and
+ * the tmux notification. Extracted from `runMuxRunnerMain`'s epilogue — the sanctioned
+ * one-seam-at-a-time direction for that function, alongside `runMainLoopRateLimitPark`
+ * and `runPostFinalMeasurement`.
+ *
+ * RETURNS the `CompletionVerdict` rather than deriving it and discarding it, because the
+ * exit-code map below needs the same failure fact. Inline, the epilogue derived it TWICE —
+ * once as a local `isFailureExit(exitReason)` for the `session_end` `error` field and the
+ * exit code, and again inside `deriveCompletionVerdict` for the two renderers. Returning
+ * the verdict makes WS-1c's "never re-derive `isFailureExit(exitReason)` independently"
+ * structural instead of prose-enforced: there is now exactly one derivation feeding the
+ * activity record, both renderers, AND the process exit code.
+ *
+ * Deliberately STOPS before the exit-code map. That map stays inline in
+ * `runMuxRunnerMain` because `mux-runner-iteration-cap-exit.test.js` locates its three
+ * branches by `indexOf` over the compiled file, and `printMinimalPanel` moves WITH this
+ * seam so its exactly-one-call-site pin
+ * (`mux-runner-done-without-commit-evidence-exit.test.js`) still sees one site passing
+ * `completionVerdict.colorName`.
+ */
+export function runTerminalReport(input: RunTerminalReportInput): CompletionVerdict {
+  const { codegraph, sessionDir, statePath, exitReason, iteration, totalElapsed, log } = input;
+
+  codegraph.emitSummary();
+  codegraph.close();
+
+  const completionVerdict = deriveCompletionVerdict(exitReason);
+
+  logActivity({
+    event: 'session_end',
+    source: 'pickle',
+    session: path.basename(sessionDir),
+    duration_min: Math.round(totalElapsed / 60),
+    mode: 'tmux',
+    backend: readBackendForActivity(statePath),
+    ...(completionVerdict.isFailure ? { error: exitReason } : {}),
+  });
+
+  let finalStep = 'unknown';
+  let finalActive = 'unknown';
+  let finalMinIter = 0;
+  try {
+    const finalState = readRunnerState(statePath);
+    const rawStep = finalState.step || 'unknown';
+    finalStep = (VALID_STEPS as readonly string[]).includes(rawStep) ? rawStep : 'unknown';
+    finalActive = String(finalState.active);
+    const rawFinalMinIter = Number(finalState.min_iterations);
+    finalMinIter = Number.isFinite(rawFinalMinIter) ? rawFinalMinIter : 0;
+  } catch { /* use fallback values */ }
+
+  printMinimalPanel(completionVerdict.panelTitle, {
+    Iterations: iteration,
+    Elapsed: formatTime(totalElapsed),
+    FinalPhase: finalStep,
+    Active: finalActive,
+    ...(finalMinIter > 0 ? { 'Min Passes': finalMinIter } : {}),
+  }, completionVerdict.colorName, '🥒');
+
+  log(`mux-runner finished. ${iteration} iterations, ${formatTime(totalElapsed)}`);
+
+  const notif = buildTmuxNotification(exitReason, finalStep, iteration, totalElapsed);
+  displayMacNotification(notif.title, notif.body, notif.subtitle);
+
+  return completionVerdict;
+}
+
 // eslint-disable-next-line -- legacy mux runner loop retained behavior-preserving for global bin acceptance
 async function runMuxRunnerMain() {
   const sessionDir = process.argv[2];
@@ -12671,45 +12751,21 @@ async function runMuxRunnerMain() {
     await sleep(1000);
   }
 
-  codegraph.emitSummary();
-  codegraph.close();
-
-  const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
-  const isFailedExit = isFailureExit(exitReason);
-  logActivity({
-    event: 'session_end',
-    source: 'pickle',
-    session: path.basename(sessionDir),
-    duration_min: Math.round(totalElapsed / 60),
-    mode: 'tmux',
-    backend: readBackendForActivity(statePath),
-    ...(isFailedExit ? { error: exitReason } : {}),
+  const completionVerdict = runTerminalReport({
+    codegraph,
+    sessionDir,
+    statePath,
+    exitReason,
+    iteration,
+    totalElapsed: Math.floor((Date.now() - startTime) / 1000),
+    log,
   });
-  let finalStep = 'unknown';
-  let finalActive = 'unknown';
-  let finalMinIter = 0;
-  try {
-    const finalState = readRunnerState(statePath);
-    const rawStep = finalState.step || 'unknown';
-    finalStep = (VALID_STEPS as readonly string[]).includes(rawStep) ? rawStep : 'unknown';
-    finalActive = String(finalState.active);
-    const rawFinalMinIter = Number(finalState.min_iterations);
-    finalMinIter = Number.isFinite(rawFinalMinIter) ? rawFinalMinIter : 0;
-  } catch { /* use fallback values */ }
-
-  const completionVerdict = deriveCompletionVerdict(exitReason);
-  printMinimalPanel(completionVerdict.panelTitle, {
-    Iterations: iteration,
-    Elapsed: formatTime(totalElapsed),
-    FinalPhase: finalStep,
-    Active: finalActive,
-    ...(finalMinIter > 0 ? { 'Min Passes': finalMinIter } : {}),
-  }, completionVerdict.colorName, '🥒');
-
-  log(`mux-runner finished. ${iteration} iterations, ${formatTime(totalElapsed)}`);
-
-  const notif = buildTmuxNotification(exitReason, finalStep, iteration, totalElapsed);
-  displayMacNotification(notif.title, notif.body, notif.subtitle);
+  // Bound to the verdict `runTerminalReport` already derived — NOT a second
+  // `isFailureExit(exitReason)` call. The NAME is load-bearing: the exit map is parsed
+  // out of this source by `deriveExitCodeMapFromSource`
+  // (`mux-runner-done-without-commit-evidence-exit.test.js`), which anchors the failure
+  // branch on the literal identifier `isFailedExit`.
+  const isFailedExit = completionVerdict.isFailure;
 
   // Explicit exit code so parent processes (pipeline-runner) can detect failure.
   // Matches microverse-runner.ts pattern.
