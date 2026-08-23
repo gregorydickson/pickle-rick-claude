@@ -6,7 +6,7 @@ import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, markTicketWithStatus as writeTicketStatus } from '../services/pickle-utils.js';
-import { resolveMcpConfigPath, buildWorkerMcpConfig } from '../services/backend-spawn.js';
+import { resolveMcpConfigPath, buildWorkerMcpConfig, hasMcpServersRecord } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
 import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail } from './mux-runner.js';
 import { LockError, BACKENDS, STATE_MANAGER_DEFAULTS } from '../types/index.js';
@@ -1723,7 +1723,7 @@ function materializeWorkerMcpConfig(sessionRoot) {
         if (operatorPath) {
             try {
                 const parsed = JSON.parse(fs.readFileSync(operatorPath, 'utf8'));
-                if (parsed.mcpServers && typeof parsed.mcpServers === 'object' && !Array.isArray(parsed.mcpServers)) {
+                if (hasMcpServersRecord(parsed.mcpServers)) {
                     operatorEntries = parsed.mcpServers;
                 }
             }

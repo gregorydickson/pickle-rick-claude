@@ -349,10 +349,51 @@ export function resolveBackendFromStateFile(statePath: string): Backend {
 export type McpPrecedenceLayer = 'session_merged' | 'settings_override' | 'claude_json_fallback' | 'omitted';
 
 /**
+ * Shared predicate: does a parsed `mcpServers` value satisfy the claude CLI's
+ * `--mcp-config` schema? An empty record `{}` passes; an array, `null`, or a
+ * missing key fails. Consumed by both `resolveMcpConfigWithLayer` (below) and
+ * `setup.ts`'s `materializeWorkerMcpConfig` — the predicate exists exactly once.
+ */
+export function hasMcpServersRecord(mcpServers: unknown): boolean {
+  return !!mcpServers && typeof mcpServers === 'object' && !Array.isArray(mcpServers);
+}
+
+/**
+ * Per-process memoized validity check for a resolved MCP-config path, keyed on
+ * the resolved path. The file is read + parsed once per process (measured
+ * 82,650 bytes / 60 keys on a live host, and this fires per worker/analyst
+ * spawn) — no cache invalidation, per the PRD's "Parse cost" ruling.
+ */
+const mcpConfigValidityCache = new Map<string, boolean>();
+
+function isValidMcpConfigFile(filePath: string): boolean {
+  const cached = mcpConfigValidityCache.get(filePath);
+  if (cached !== undefined) return cached;
+  let valid: boolean;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { mcpServers?: unknown };
+    valid = hasMcpServersRecord(parsed.mcpServers);
+  } catch {
+    valid = false;
+  }
+  mcpConfigValidityCache.set(filePath, valid);
+  return valid;
+}
+
+/**
  * Single source of truth for MCP-config precedence. Returns both the resolved
  * path (null when omitted) and which layer matched, so the public
  * `resolveMcpConfigPath` and the activity-logging `emitMcpConfigResolved` share
  * one decision tree instead of reimplementing it.
+ *
+ * A candidate layer resolves to a path only when that file EXISTS and its
+ * `mcpServers` value is a record (AC-1/AC-2) — a missing file is a distinct
+ * failure from a malformed one; a settings_override that simply doesn't exist
+ * yet is the explicit operator config named for this session's `--add-dir`
+ * sandbox layout (materialized by session setup) and is passed through
+ * verbatim so the CLI's own "file not found" reports the real cause. A file
+ * that DOES exist but fails the predicate falls through to the next layer,
+ * ultimately `omitted` — it never resolves to a path.
  */
 function resolveMcpConfigWithLayer(
   settingsBag?: { worker_mcp_config_path?: string | null },
@@ -360,10 +401,13 @@ function resolveMcpConfigWithLayer(
 ): { path: string | null; layer: McpPrecedenceLayer } {
   const override = settingsBag?.worker_mcp_config_path;
   if (typeof override === 'string' && override.trim()) {
-    return { path: override.trim(), layer: 'settings_override' };
+    const overridePath = override.trim();
+    if (!existsSilently(overridePath) || isValidMcpConfigFile(overridePath)) {
+      return { path: overridePath, layer: 'settings_override' };
+    }
   }
   const claudeJson = path.join(homeDir ?? os.homedir(), '.claude.json');
-  if (existsSilently(claudeJson)) {
+  if (existsSilently(claudeJson) && isValidMcpConfigFile(claudeJson)) {
     return { path: claudeJson, layer: 'claude_json_fallback' };
   }
   return { path: null, layer: 'omitted' };

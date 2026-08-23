@@ -56,7 +56,7 @@ test('resolveMcpConfigPath: override path wins over ~/.claude.json (precedence 1
 test('resolveMcpConfigPath: null override falls through to ~/.claude.json (AC-2 default precedence)', () => {
     const tmpHome = mkTmpHome('fallback');
     const claudeJson = path.join(tmpHome, '.claude.json');
-    fs.writeFileSync(claudeJson, '{}');
+    fs.writeFileSync(claudeJson, '{"mcpServers":{}}');
     try {
         const result = resolveMcpConfigPath({ worker_mcp_config_path: null }, tmpHome);
         assert.equal(result, claudeJson);
@@ -68,7 +68,7 @@ test('resolveMcpConfigPath: null override falls through to ~/.claude.json (AC-2 
 test('resolveMcpConfigPath: undefined settingsBag falls through to ~/.claude.json (AC-2)', () => {
     const tmpHome = mkTmpHome('undef');
     const claudeJson = path.join(tmpHome, '.claude.json');
-    fs.writeFileSync(claudeJson, '{}');
+    fs.writeFileSync(claudeJson, '{"mcpServers":{}}');
     try {
         const result = resolveMcpConfigPath(undefined, tmpHome);
         assert.equal(result, claudeJson);
@@ -91,7 +91,7 @@ test('resolveMcpConfigPath: returns undefined when neither override nor ~/.claud
 test('resolveMcpConfigPath: empty-string override falls through to ~/.claude.json', () => {
     const tmpHome = mkTmpHome('emptystr');
     const claudeJson = path.join(tmpHome, '.claude.json');
-    fs.writeFileSync(claudeJson, '{}');
+    fs.writeFileSync(claudeJson, '{"mcpServers":{}}');
     try {
         const result = resolveMcpConfigPath({ worker_mcp_config_path: '' }, tmpHome);
         assert.equal(result, claudeJson);
