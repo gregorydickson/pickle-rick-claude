@@ -10,11 +10,39 @@ import { Defaults } from '../types/index.js';
 import { logActivity } from '../services/activity-logger.js';
 import { buildManagerInvocation, resolveBackend, backendEnvOverrides } from '../services/backend-spawn.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
+import { killProcessGroup } from '../services/orphan-reaper.js';
 const sm = new StateManager();
 // Tracks the currently-running task's session dir and subprocess so signal
 // handlers can deactivate it and kill the child on shutdown.
 let activeTaskSessionDir = null;
 let activeTaskProc = null;
+// R-OMTD (jar arm): whether the live manager child LEADS its own process group,
+// so both teardown paths know a negative-PID group signal is available.
+let activeTaskLeadsGroup = false;
+/**
+ * R-OMTD (jar arm): terminate the manager child AND everything it spawned.
+ *
+ * The jar manager (`claude`/`codex`) is the ROOT of a subtree — it spawns
+ * mux-runner, which spawns per-ticket workers. A bare `proc.kill()` signals the
+ * manager pid alone, so that subtree re-parents to PID 1 and outlives the batch:
+ * an unattended Night Shift run keeps burning backend budget and keeps mutating
+ * the task's repo after the runner has declared the task failed and moved on to
+ * the NEXT task. The group signal is what severs the orphan; `detached:true` on
+ * the spawn is what makes the group OURS to signal (without it the child shares
+ * jar-runner's own group and a negative-PID kill would take down the runner).
+ * Falls back to a direct kill for non-detached children or when the group signal
+ * fails (group already gone).
+ */
+function reapTaskSubtree(proc, leadsGroup, signal) {
+    // AC-CXHANG-3: the negative-PID group kill is the SHARED primitive
+    // (services/orphan-reaper.ts killProcessGroup) — never re-inlined here.
+    if (leadsGroup && typeof proc.pid === 'number' && killProcessGroup(proc.pid, signal))
+        return;
+    try {
+        proc.kill(signal);
+    }
+    catch { /* already dead */ }
+}
 function positiveIntegerOrNull(value) {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -130,21 +158,20 @@ async function runTask(sessionDir, repoCwd, extensionRoot) {
     delete env['PICKLE_ROLE'];
     return new Promise((resolve) => {
         let settled = false;
-        const proc = spawn(invocation.cmd, invocation.args, { cwd: repoCwd, env, stdio: 'inherit' });
+        // R-OMTD (jar arm): spawn the manager in its OWN process group so both the
+        // per-task timeout and the shutdown handler can reap the whole subtree.
+        const leadsGroup = process.platform !== 'win32';
+        const proc = spawn(invocation.cmd, invocation.args, { cwd: repoCwd, env, stdio: 'inherit', detached: leadsGroup });
         activeTaskProc = proc;
-        // Per-task timeout: SIGTERM first, escalate to SIGKILL after 2s
+        activeTaskLeadsGroup = leadsGroup;
+        // Per-task timeout: SIGTERM first, escalate to SIGKILL after 2s — both to the
+        // whole group, or the manager's workers survive the batch.
         let killEscalation = null;
         const timeoutHandle = setTimeout(() => {
             console.error(`\n${Style.YELLOW}⚠️  Jar task timed out after ${taskTimeout}s — killing${Style.RESET}`);
-            try {
-                proc.kill('SIGTERM');
-            }
-            catch { /* already dead */ }
+            reapTaskSubtree(proc, leadsGroup, 'SIGTERM');
             killEscalation = setTimeout(() => {
-                try {
-                    proc.kill('SIGKILL');
-                }
-                catch { /* already dead */ }
+                reapTaskSubtree(proc, leadsGroup, 'SIGKILL');
             }, 2000);
         }, taskTimeout * 1000);
         // Hang guard: force-resolve if process doesn't exit within timeout + 30s
@@ -154,6 +181,7 @@ async function runTask(sessionDir, repoCwd, extensionRoot) {
             settled = true;
             activeTaskSessionDir = null;
             activeTaskProc = null;
+            activeTaskLeadsGroup = false;
             console.error(`${Style.RED}❌ Jar task hang detected — forcing failure${Style.RESET}`);
             resolve({ ok: false, backend });
         }, (taskTimeout + 30) * 1000);
@@ -168,6 +196,7 @@ async function runTask(sessionDir, repoCwd, extensionRoot) {
             clearTimeout(hangGuard);
             activeTaskSessionDir = null;
             activeTaskProc = null;
+            activeTaskLeadsGroup = false;
             resolve({ ok: code === 0, backend });
         });
         proc.on('error', (err) => {
@@ -180,6 +209,7 @@ async function runTask(sessionDir, repoCwd, extensionRoot) {
             clearTimeout(hangGuard);
             activeTaskSessionDir = null;
             activeTaskProc = null;
+            activeTaskLeadsGroup = false;
             const errCode = err?.code;
             if (errCode === 'ENOENT') {
                 // Infrastructure error — the backend CLI is not installed. Do NOT
@@ -371,7 +401,9 @@ function installShutdownHandlers() {
             safeDeactivate(sp);
         }
         if (activeTaskProc && !activeTaskProc.killed) {
-            activeTaskProc.kill('SIGTERM');
+            // R-OMTD (jar arm): reap the manager's WHOLE subtree, not just its pid —
+            // an operator Ctrl-C must not leave the batch's workers running.
+            reapTaskSubtree(activeTaskProc, activeTaskLeadsGroup, 'SIGTERM');
         }
         process.exit(0);
     };

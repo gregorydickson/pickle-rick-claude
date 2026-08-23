@@ -1018,3 +1018,98 @@ test('loadJarTaskTimeout: ignores negative state timeout', () => {
         fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
 });
+
+// --- AP-EXT-ITER53-01: the per-task timeout reaps the manager's WHOLE subtree ---
+//
+// The jar manager is the ROOT of a subtree (manager -> mux-runner -> workers).
+// Pre-fix, `runTask`'s timeout did a bare `proc.kill('SIGTERM')` on the manager
+// pid alone and the manager was spawned NON-detached, so everything it had
+// spawned re-parented to PID 1 and outlived the batch — an unattended Night
+// Shift run kept burning backend budget and kept mutating the task's repo after
+// jar-runner had declared the task failed and advanced to the NEXT task.
+//
+// Assert the GRANDCHILD is dead after jar-runner exits, never the exit code or
+// the task status: the pre-fix run reported `Task ... failed` / `Jar complete`
+// and exited 0 with the orphan still running, so a status oracle greens over
+// exactly this bug. Reproduced live against the shipped bin/jar-runner.js.
+test('jar-runner: AP-EXT-ITER53-01 task timeout reaps the manager subtree, not just its pid', async () => {
+    const tmpRoot = makeTmpRoot();
+    let grandchildPid = null;
+    try {
+        const taskId = 'task-subtree-reap';
+        const taskDir = path.join(tmpRoot, 'jar', '2026-01-01', taskId);
+        fs.mkdirSync(taskDir, { recursive: true });
+        fs.writeFileSync(path.join(taskDir, 'meta.json'), JSON.stringify({
+            status: 'marinating',
+            repo_path: tmpRoot,
+        }, null, 2));
+
+        const sessionDir = path.join(tmpRoot, 'sessions', taskId);
+        fs.mkdirSync(sessionDir, { recursive: true });
+        // worker_timeout_seconds drives runTask's per-task timeout directly.
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+            schema_version: 1,
+            backend: 'claude',
+            active: false,
+            working_dir: tmpRoot,
+            session_dir: sessionDir,
+            step: 'implement',
+            iteration: 0,
+            max_iterations: 10,
+            max_time_minutes: 60,
+            worker_timeout_seconds: 2,
+            start_time_epoch: Math.floor(Date.now() / 1000),
+            started_at: '2026-01-01T00:00:00Z',
+            history: [],
+            current_ticket: null,
+            completion_promise: null,
+            original_prompt: 'subtree reap fixture',
+        }, null, 2));
+
+        // The fake manager forks a grandchild (the mux-runner/worker stand-in),
+        // records its pid, then blocks past the task timeout.
+        const pidFile = path.join(tmpRoot, 'grandchild.pid');
+        const fakeBin = path.join(tmpRoot, 'fake-bin');
+        fs.mkdirSync(fakeBin, { recursive: true });
+        const fakeClaude = path.join(fakeBin, 'claude');
+        fs.writeFileSync(fakeClaude, `#!/bin/sh\n/bin/sleep 45 &\necho $! > ${JSON.stringify(pidFile)}\n/bin/sleep 45\n`);
+        fs.chmodSync(fakeClaude, 0o755);
+
+        const child = spawn(process.execPath, [JAR_RUNNER_BIN], {
+            env: buildRunnerEnv(tmpRoot, { PATH: fakeBin }),
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        child.stdout.on('data', () => {});
+        child.stderr.on('data', () => {});
+
+        await waitFor(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf-8').trim() !== '', 15000);
+        grandchildPid = Number(fs.readFileSync(pidFile, 'utf-8').trim());
+        assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0, `bad grandchild pid: ${grandchildPid}`);
+
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                child.kill('SIGKILL');
+                reject(new Error('jar-runner did not exit after the task timeout'));
+            }, 30000);
+            child.on('exit', () => { clearTimeout(timer); resolve(undefined); });
+            child.on('error', (err) => { clearTimeout(timer); reject(err); });
+        });
+
+        const isAlive = (pid) => {
+            try { process.kill(pid, 0); return true; } catch { return false; }
+        };
+        // Signal delivery to the group can trail the parent's exit by a few ms.
+        await waitFor(() => !isAlive(grandchildPid), 8000).catch(() => {});
+        assert.equal(
+            isAlive(grandchildPid),
+            false,
+            `manager grandchild ${grandchildPid} survived the task timeout — the subtree was orphaned`,
+        );
+        grandchildPid = null;
+    } finally {
+        if (grandchildPid !== null) {
+            try { process.kill(grandchildPid, 'SIGKILL'); } catch { /* already gone */ }
+        }
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
