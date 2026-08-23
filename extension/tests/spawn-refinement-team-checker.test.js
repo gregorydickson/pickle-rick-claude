@@ -386,9 +386,15 @@ test('AC-FOMC-14: repeating the same token spawns git ls-files exactly once', ()
 // went red. A per-callsite pin can only defend the callsites someone
 // remembered. This scans them all, so a NEW spawn is red by default.
 //
-// `spawn()` (the analyst worker) is exempt by construction: it is async, takes
-// no `timeout` option, and is bounded by an explicit SIGTERM/SIGKILL
-// escalation plus a hangGuard. The exemption is asserted, not assumed.
+// `spawn()` (the analyst worker) takes no `timeout` option, so it is bounded by
+// a SIGTERM/SIGKILL escalation instead. That escalation is NOT self-evidently
+// sufficient — pre-AP-EXT-ITER43-01 it was a bare `proc.kill`, which signalled
+// the `claude` CLI alone while its own tool subprocesses survived holding the
+// inherited pipes, so 'close' never fired and the runner hung after emitting all
+// its output. The bound is real only when the escalation routes through
+// `terminateWorkerProcess` (group kill) on a `detached` child; that composition
+// is what this asserts, and it is pinned behaviourally in
+// tests/refinement-worker-evidence.test.js.
 const SYNC_SPAWN_RE = /\b(execFileSync|execSync|spawnSync)\s*\(/g;
 
 function readRefinementSource() {
@@ -434,11 +440,35 @@ test('AP-RMS-9: EVERY synchronous subprocess spawn carries a finite timeout', ()
     assert.deepEqual(unbounded, [], `unbounded subprocess spawn(s): ${unbounded.join(', ')}`);
 });
 
-test('AP-RMS-9: the async analyst spawn is bounded by explicit kill escalation', () => {
+test('AP-RMS-9: the async analyst spawn is bounded by a group-killing escalation on a detached child', () => {
     const source = readRefinementSource();
     // Not a `timeout:` option — prove the escalation that stands in for one.
-    assert.match(source, /\.kill\('SIGTERM'\)/, 'expected a SIGTERM escalation for the async worker spawn');
-    assert.match(source, /\.kill\('SIGKILL'\)/, 'expected a SIGKILL escalation for the async worker spawn');
+    assert.match(
+        source,
+        /terminateWorkerProcess\(proc, 'SIGTERM'\)/,
+        'expected a SIGTERM escalation for the async worker spawn',
+    );
+    assert.match(
+        source,
+        /terminateWorkerProcess\(proc, 'SIGKILL'\)/,
+        'expected a SIGKILL escalation for the async worker spawn',
+    );
+    // The escalation only bounds anything if the child leads its own group.
+    assert.match(
+        source,
+        /detached: process\.platform !== 'win32'/,
+        'the analyst spawn must be detached or the group kill has no group to signal',
+    );
+    // Every worker-signalling site routes through the one terminator. A bare
+    // `.kill('SIG…')` reaching a worker proc is the shape that shipped the hang.
+    const bareKills = [...source.matchAll(/\.kill\('SIG[A-Z]+'\)/g)].map(
+        (m) => `${m[0]} at spawn-refinement-team.ts:${source.slice(0, m.index).split('\n').length}`,
+    );
+    assert.deepEqual(
+        bareKills,
+        [],
+        `worker signalling must route through terminateWorkerProcess: ${bareKills.join(', ')}`,
+    );
 });
 
 // --- Regression corpus: replay the preserved 44-warning baseline ------------

@@ -19,6 +19,7 @@ import { StateManager, writeActivityEntry } from '../services/state-manager.js';
 import { buildWorkerInvocation, isBackend, SpawnInvocation } from '../services/backend-spawn.js';
 import { Backend, PromiseTokens, Defaults, VALID_ACTIVITY_EVENTS } from '../types/index.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
+import { killProcessGroup } from '../services/orphan-reaper.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { FOM_EVIDENCE_RULES, FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 
@@ -106,6 +107,46 @@ export function buildRefinementEnv(base: NodeJS.ProcessEnv = process.env): NodeJ
 
 // Tracks all active worker subprocesses so the signal handler can kill them.
 const activeWorkerProcs = new Set<import('child_process').ChildProcess>();
+
+/**
+ * THE terminator for an analyst subprocess — the group first, the bare child only
+ * as the win32/no-group fallback. Every site that signals a worker routes through
+ * here; a bare `proc.kill` reaches the `claude` CLI alone, and an analyst's own tool
+ * subprocesses then survive holding the inherited stdout/stderr write ends, so
+ * `'close'` never fires and the ref'd pipe handles keep THIS process alive forever
+ * (`spawn-refinement-team.js` is invoked with no outer timeout). Pairs with
+ * `spawnAnalystProcess`' `detached`, which is what makes the group exist at all.
+ */
+export function terminateWorkerProcess(
+  proc: import('child_process').ChildProcess,
+  signal: NodeJS.Signals,
+): boolean {
+  const pid = proc.pid;
+  if (typeof pid === 'number' && killProcessGroup(pid, signal)) return true;
+  try {
+    return proc.kill(signal);
+  } catch {
+    return false; // already dead
+  }
+}
+
+/**
+ * Spawns an analyst with the stdio and process-group shape `terminateWorkerProcess`
+ * depends on. `detached` is skipped on win32, where it means "new console" and
+ * `killProcessGroup` is a no-op anyway.
+ */
+export function spawnAnalystProcess(
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; env: NodeJS.ProcessEnv },
+): import('child_process').ChildProcess {
+  return spawn(cmd, args, {
+    cwd: opts.cwd,
+    env: opts.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
+  });
+}
 
 const AC_SHAPE_PROMPT_SECTION = `## AC-Shape Smell Pass
 
@@ -913,11 +954,7 @@ function spawnWorker(
 
   const env = buildRefinementEnv(process.env);
 
-  const proc = spawn(invocation.cmd, invocation.args, {
-    cwd: workingDir,
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const proc = spawnAnalystProcess(invocation.cmd, invocation.args, { cwd: workingDir, env });
   activeWorkerProcs.add(proc);
 
   // Use { end: false } so that when stdout ends first it doesn't call
@@ -931,9 +968,9 @@ function spawnWorker(
   let killEscalation: ReturnType<typeof setTimeout> | null = null;
   const timeoutHandle = setTimeout(() => {
     workerTimedOut = true;
-    try { proc.kill('SIGTERM'); } catch { /* already dead */ }
+    terminateWorkerProcess(proc, 'SIGTERM');
     killEscalation = setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+      terminateWorkerProcess(proc, 'SIGKILL');
     }, 2000);
   }, timeout * 1000);
 
@@ -1149,12 +1186,17 @@ function registerShutdownHandlers(): void {
   const handleShutdownSignal = (signal: string) => {
     console.error(`\n${Style.YELLOW}⚠️  Received ${signal} — killing ${activeWorkerProcs.size} active worker(s)${Style.RESET}`);
     for (const wp of activeWorkerProcs) {
-      try { wp.kill('SIGTERM'); } catch { /* already dead */ }
+      terminateWorkerProcess(wp, 'SIGTERM');
     }
     process.exit(0);
   };
   process.on('SIGTERM', () => handleShutdownSignal('SIGTERM'));
   process.on('SIGINT', () => handleShutdownSignal('SIGINT'));
+  // SIGHUP matters here specifically because analysts are `detached`: they lead
+  // their own groups, so a closed terminal no longer hangs them up for free the
+  // way it did when they shared this process's group. Matches jar-runner,
+  // mux-runner, microverse-runner and pipeline-runner, which all register it.
+  process.on('SIGHUP', () => handleShutdownSignal('SIGHUP'));
 }
 
 function ensureRefinementDir(refinementDir: string): void {
@@ -1263,7 +1305,7 @@ function killSiblingWorkers(result: WorkerResult): void {
   if (siblings.length === 0) return;
   console.error(`\n${Style.RED}⚠️  Worker ${result.roleId} crashed (exit ${result.exitCode}) — killing ${siblings.length} sibling(s)${Style.RESET}`);
   for (const sibling of siblings) {
-    try { sibling.kill('SIGTERM'); } catch { /* already dead */ }
+    terminateWorkerProcess(sibling, 'SIGTERM');
   }
 }
 

@@ -7,6 +7,7 @@ import { StateManager, writeActivityEntry } from '../services/state-manager.js';
 import { buildWorkerInvocation, isBackend } from '../services/backend-spawn.js';
 import { PromiseTokens, Defaults, VALID_ACTIVITY_EVENTS } from '../types/index.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
+import { killProcessGroup } from '../services/orphan-reaper.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { FOM_EVIDENCE_RULES, FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 // PRD refinement is planning, not implementation. Codex is reserved for
@@ -81,6 +82,39 @@ export function buildRefinementEnv(base = process.env) {
 }
 // Tracks all active worker subprocesses so the signal handler can kill them.
 const activeWorkerProcs = new Set();
+/**
+ * THE terminator for an analyst subprocess — the group first, the bare child only
+ * as the win32/no-group fallback. Every site that signals a worker routes through
+ * here; a bare `proc.kill` reaches the `claude` CLI alone, and an analyst's own tool
+ * subprocesses then survive holding the inherited stdout/stderr write ends, so
+ * `'close'` never fires and the ref'd pipe handles keep THIS process alive forever
+ * (`spawn-refinement-team.js` is invoked with no outer timeout). Pairs with
+ * `spawnAnalystProcess`' `detached`, which is what makes the group exist at all.
+ */
+export function terminateWorkerProcess(proc, signal) {
+    const pid = proc.pid;
+    if (typeof pid === 'number' && killProcessGroup(pid, signal))
+        return true;
+    try {
+        return proc.kill(signal);
+    }
+    catch {
+        return false; // already dead
+    }
+}
+/**
+ * Spawns an analyst with the stdio and process-group shape `terminateWorkerProcess`
+ * depends on. `detached` is skipped on win32, where it means "new console" and
+ * `killProcessGroup` is a no-op anyway.
+ */
+export function spawnAnalystProcess(cmd, args, opts) {
+    return spawn(cmd, args, {
+        cwd: opts.cwd,
+        env: opts.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
+    });
+}
 const AC_SHAPE_PROMPT_SECTION = `## AC-Shape Smell Pass
 
 Before finalizing your analysis, inspect every acceptance criterion for endpoint-enumeration shape:
@@ -661,11 +695,7 @@ function spawnWorker(roleId, prompt, refinementDir, extensionRoot, timeout, work
         settingsBag: loadPickleSettingsBag() ?? undefined,
     });
     const env = buildRefinementEnv(process.env);
-    const proc = spawn(invocation.cmd, invocation.args, {
-        cwd: workingDir,
-        env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const proc = spawnAnalystProcess(invocation.cmd, invocation.args, { cwd: workingDir, env });
     activeWorkerProcs.add(proc);
     // Use { end: false } so that when stdout ends first it doesn't call
     // logStream.end(), which would discard any stderr data still in-flight.
@@ -677,15 +707,9 @@ function spawnWorker(roleId, prompt, refinementDir, extensionRoot, timeout, work
     let killEscalation = null;
     const timeoutHandle = setTimeout(() => {
         workerTimedOut = true;
-        try {
-            proc.kill('SIGTERM');
-        }
-        catch { /* already dead */ }
+        terminateWorkerProcess(proc, 'SIGTERM');
         killEscalation = setTimeout(() => {
-            try {
-                proc.kill('SIGKILL');
-            }
-            catch { /* already dead */ }
+            terminateWorkerProcess(proc, 'SIGKILL');
         }, 2000);
     }, timeout * 1000);
     return new Promise((resolve) => {
@@ -884,15 +908,17 @@ function registerShutdownHandlers() {
     const handleShutdownSignal = (signal) => {
         console.error(`\n${Style.YELLOW}⚠️  Received ${signal} — killing ${activeWorkerProcs.size} active worker(s)${Style.RESET}`);
         for (const wp of activeWorkerProcs) {
-            try {
-                wp.kill('SIGTERM');
-            }
-            catch { /* already dead */ }
+            terminateWorkerProcess(wp, 'SIGTERM');
         }
         process.exit(0);
     };
     process.on('SIGTERM', () => handleShutdownSignal('SIGTERM'));
     process.on('SIGINT', () => handleShutdownSignal('SIGINT'));
+    // SIGHUP matters here specifically because analysts are `detached`: they lead
+    // their own groups, so a closed terminal no longer hangs them up for free the
+    // way it did when they shared this process's group. Matches jar-runner,
+    // mux-runner, microverse-runner and pipeline-runner, which all register it.
+    process.on('SIGHUP', () => handleShutdownSignal('SIGHUP'));
 }
 function ensureRefinementDir(refinementDir) {
     try {
@@ -976,10 +1002,7 @@ function killSiblingWorkers(result) {
         return;
     console.error(`\n${Style.RED}⚠️  Worker ${result.roleId} crashed (exit ${result.exitCode}) — killing ${siblings.length} sibling(s)${Style.RESET}`);
     for (const sibling of siblings) {
-        try {
-            sibling.kill('SIGTERM');
-        }
-        catch { /* already dead */ }
+        terminateWorkerProcess(sibling, 'SIGTERM');
     }
 }
 function archiveCycleResults(refinementDir, cycles, cycle) {
