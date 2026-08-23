@@ -7,6 +7,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync, execFileSync, spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { getHeadSha, isWorkingTreeDirty } from '../services/git-utils.js';
 import { runIteration } from '../bin/mux-runner.js';
 import {
@@ -1186,6 +1188,91 @@ test('measureMetric returns null on timeout', async () => {
         assert.equal(result, null);
     } finally {
         fs.rmSync(dir, { recursive: true });
+    }
+});
+
+// AP-EXT-ITER42-01 — the timeout VERDICT must be authored on the deadline, not by `'close'`.
+//
+// `result === null` alone is the boolean-return oracle the trap doors warn about: the test
+// above greened at 10015ms for a 1000ms timeout, because the kill never reached the real
+// work and the assertion was satisfied by `sleep 10` finishing on its own. Both tests below
+// assert the observable that was actually broken — WALL CLOCK, and whether the tree died.
+
+test('AP-EXT-ITER42-01: measureMetric settles on its own deadline when the shell tree holds the stdio pipes open', async () => {
+    // `'close'` fires only after the process exits AND its stdio pipes close, and a
+    // grandchild that inherited them holds them open for as long as it runs. This fake
+    // child models exactly that: it exits nothing and NEVER emits 'close'. Pre-fix the
+    // await here never resolves at all.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-metric-'));
+    const originalSpawn = _deps.spawn;
+    const originalKillGroup = _deps.killProcessGroup;
+    const groupSignals = [];
+    let spawnOpts = null;
+    try {
+        _deps.spawn = (cmd, args, opts) => {
+            spawnOpts = opts;
+            const child = new EventEmitter();
+            child.pid = 424242;
+            child.stdout = new PassThrough();
+            child.stderr = new PassThrough();
+            child.kill = () => {
+                throw new Error('the bare-child kill is the FALLBACK — it must not run when the group kill succeeds');
+            };
+            setImmediate(() => child.emit('spawn'));
+            return child;
+        };
+        _deps.killProcessGroup = (pid, signal) => { groupSignals.push([pid, signal]); return true; };
+
+        const started = Date.now();
+        const result = await measureMetric('sleep 3600 | tail -1', 1, dir);
+        const elapsed = Date.now() - started;
+
+        assert.equal(result, null, 'a timed-out measurement yields no metric');
+        assert.ok(elapsed < 5000, `settled on the 1s deadline, not on 'close' (took ${elapsed}ms)`);
+        assert.equal(
+            spawnOpts?.detached,
+            process.platform !== 'win32',
+            'the child must lead its OWN process group or the group kill cannot reach a grandchild',
+        );
+        assert.deepEqual(
+            groupSignals[0],
+            [424242, 'SIGTERM'],
+            'the terminator signals the GROUP (negative pid), not the bare shell',
+        );
+    } finally {
+        _deps.spawn = originalSpawn;
+        _deps.killProcessGroup = originalKillGroup;
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER42-01: measureMetric reaps the whole shell tree on timeout — no grandchild outlives the deadline', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-metric-tree-'));
+    try {
+        // The metric contract parses the score off the LAST line of stdout, so `<cmd> | tail -1`
+        // is the natural validation shape — and a pipeline makes `/bin/sh -c` FORK instead of
+        // exec, which is precisely why signalling the shell alone left the real work running.
+        // The unique tmpdir in the probe's argv is what makes the survivor scan find OUR tree.
+        const probe = path.join(dir, 'probe.sh');
+        fs.writeFileSync(probe, '#!/bin/sh\nsleep 120\n');
+
+        const started = Date.now();
+        const result = await measureMetric(`/bin/sh ${probe} | tail -1`, 1, dir);
+        const elapsed = Date.now() - started;
+
+        assert.equal(result, null, 'a timed-out measurement yields no metric');
+        assert.ok(elapsed < 10000, `settled on the 1s deadline, not after the 120s command (took ${elapsed}ms)`);
+
+        // Past the SIGTERM -> SIGKILL grace window before probing for survivors.
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        const scan = spawnSync('pgrep', ['-f', probe], { encoding: 'utf-8', timeout: 10_000 });
+        // A missing/unrunnable pgrep must RED this test, never silently satisfy it — that is
+        // the same fake-green shape this whole block exists to close.
+        assert.equal(scan.error, undefined, `pgrep must run for the survivor scan to mean anything: ${scan.error}`);
+        const survivors = (scan.stdout || '').trim().split('\n').filter(Boolean);
+        assert.deepEqual(survivors, [], `the shell tree must not outlive the deadline; survivor pids: ${survivors.join(',')}`);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
     }
 });
 

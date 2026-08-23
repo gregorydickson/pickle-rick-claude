@@ -11,6 +11,7 @@ import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetric, classifyFailure, findLastAcceptedEntry, updateViolationLedger, } from '../services/microverse-state.js';
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
+import { killProcessGroup } from '../services/orphan-reaper.js';
 import { writeStateFile, getExtensionRoot, getDataRoot, isoCompactStamp, sleep, Style, formatTime, formatLocalDateKey, printMinimalPanel, safeErrorMessage, displayMacNotification, ensureMonitorWindow, collectTickets, getMicroverseSettings, resolveJudgeBackend, } from '../services/pickle-utils.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError } from '../services/state-manager.js';
 const sm = new StateManager();
@@ -929,6 +930,10 @@ export const _deps = {
     execFile: execFile,
     spawn: spawn,
     spawnSync: spawnSync,
+    // Injected so `measureMetricAttempt`'s timeout terminator is reachable by a test:
+    // asserting it fires means asserting a NEGATIVE pid was signalled, which a test
+    // must never actually deliver. Same rationale as `finalizeTerminalState` below.
+    killProcessGroup: killProcessGroup,
     displayMacNotification: displayMacNotification,
     runIteration: runIteration,
     runWorkerManagedIteration: handleWorkerManagedIteration,
@@ -1521,41 +1526,62 @@ async function measureMetricAttempt(validation, timeoutSeconds, cwd) {
     const timeoutMs = Math.max(1, timeoutSeconds) * 1000;
     return await new Promise((resolve) => {
         let settled = false;
-        let timedOut = false;
         let stdout = '';
         let stderr = '';
         let killTimer;
+        // The measurement child leads its OWN process group so the timeout can signal the
+        // whole tree. `/bin/sh -c '<validation>'` FORKS rather than execs for every shape
+        // the metric contract invites — the score is read off the LAST line of stdout, so
+        // `<cmd> | tail -1` and `<cmd> && echo <n>` are the natural validation commands —
+        // and a signal to the shell alone leaves the real work alive holding the inherited
+        // stdout pipe. `detached` is skipped on win32, where it means "new console" and
+        // `killProcessGroup` is a no-op anyway.
         const child = _deps.spawn('/bin/sh', ['-c', validation], {
             cwd,
             stdio: ['pipe', 'pipe', 'pipe'],
+            detached: process.platform !== 'win32',
         });
         const finish = (result) => {
             if (settled)
                 return;
             settled = true;
-            if (killTimer)
-                clearTimeout(killTimer);
+            // Timer cancellation lives in `clearTimers` ALONE. Every non-timeout settle path
+            // calls it first, so a second copy here was redundant — and actively wrong once
+            // the timeout path settles: it would cancel the SIGKILL escalation that same
+            // path just armed, leaving a SIGTERM-ignoring command running forever.
             if (result.metric === null && result.message) {
                 process.stderr.write(`[microverse] measureMetric failed: ${result.message}\n`);
             }
             resolve(result);
         };
-        const timeoutHandle = setTimeout(() => {
-            timedOut = true;
+        /** THE terminator for both signals: the group first, the bare child as the fallback. */
+        const killMeasurement = (signal) => {
+            const pid = child.pid;
+            if (typeof pid === 'number' && _deps.killProcessGroup(pid, signal))
+                return;
             try {
-                child.kill('SIGTERM');
+                child.kill(signal);
             }
             catch {
                 // Best-effort cleanup.
             }
-            killTimer = setTimeout(() => {
-                try {
-                    child.kill('SIGKILL');
-                }
-                catch {
-                    // Best-effort cleanup.
-                }
-            }, COMMAND_METRIC_KILL_GRACE_MS);
+        };
+        const timeoutHandle = setTimeout(() => {
+            killMeasurement('SIGTERM');
+            killTimer = setTimeout(() => { killMeasurement('SIGKILL'); }, COMMAND_METRIC_KILL_GRACE_MS);
+            if (typeof killTimer.unref === 'function')
+                killTimer.unref();
+            // Settle HERE, not from `'close'`. `'close'` waits for the process to exit AND for
+            // its stdio pipes to close, and a grandchild that inherited them holds them open
+            // for as long as it runs — so an await that depends on `'close'` outlives the
+            // timeout by the command's own duration, or forever. Measured: the 1s-timeout case
+            // took 10s (the full `sleep 10`), so the kill was decorative and the guard green
+            // for the wrong reason. `settled` makes the eventual `'close'` a no-op.
+            finish({
+                metric: null,
+                failureKind: 'timeout',
+                message: summarizeCommandFailure(`command timed out after ${timeoutMs}ms`, stdout, stderr),
+            });
         }, timeoutMs);
         const clearTimers = () => {
             clearTimeout(timeoutHandle);
@@ -1582,16 +1608,14 @@ async function measureMetricAttempt(validation, timeoutSeconds, cwd) {
                 message,
             });
         });
+        // `'close'` no longer authors a `timeout` verdict: the timeout handler settles on its
+        // own deadline, so by the time this fires the promise is already resolved and every
+        // `finish` below is a `settled` no-op. Re-adding a `timedOut` branch here would put
+        // the verdict back on an edge that a surviving grandchild can defer indefinitely.
+        // `clearTimers` still runs, cancelling a pending SIGKILL for a child that closed on
+        // its own — the ONE cancellation site (see `finish`).
         child.on('close', (code, signal) => {
             clearTimers();
-            if (timedOut) {
-                finish({
-                    metric: null,
-                    failureKind: 'timeout',
-                    message: summarizeCommandFailure(`command timed out after ${timeoutMs}ms`, stdout, stderr),
-                });
-                return;
-            }
             if (code !== 0) {
                 const failureKind = isMissingCommandExit(code, stdout, stderr)
                     ? 'cli_missing'
