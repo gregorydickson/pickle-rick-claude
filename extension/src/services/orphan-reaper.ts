@@ -395,6 +395,55 @@ export function parseWorkerProcsFromPs(psOutput: string, sessionsRoot: string): 
   return results;
 }
 
+/**
+ * Our OWN process group, read out of the same census the candidates came from —
+ * the row whose pid is `selfPid` carries it. `null` when that row is absent, which
+ * in production cannot happen (`ps -axo` lists every process, including us) and in
+ * tests means an injected census that never claimed to contain us.
+ *
+ * Read from the census rather than a second `ps -o pgid= -p $$`: no extra subprocess,
+ * no second timeout to get wrong, and the pgid is guaranteed consistent with the
+ * candidate rows it is compared against. Node exposes no `getpgrp()` binding, so the
+ * census is the only pgid source already on hand.
+ */
+export function parseSelfPgidFromPs(psOutput: string, selfPid: number): number | null {
+  for (const rawLine of psOutput.split(/\r?\n/)) {
+    const match = rawLine.trim().match(/^(\d+)\s+(\d+)\s+/);
+    if (!match) continue;
+    if (parsePsInt(match[1]) !== selfPid) continue;
+    const pgid = parsePsInt(match[2]);
+    return pgid > 0 ? pgid : null;
+  }
+  return null;
+}
+
+/**
+ * The ONE set of process identifiers a reap must never address, checked against a
+ * candidate's pid AND its pgid.
+ *
+ * It is ONE set rather than a stack of comparisons because every entry defends the
+ * same thing — "this signal would land on us" — and the pre-fix shape had already
+ * forked into two same-theme guards (`cand.pid` vs self/parent, `cand.pgid` vs
+ * self/parent) that between them still missed the case that matters most: our own
+ * process GROUP, whose leader is routinely neither us nor our parent. `npm run
+ * test:fast` → `posttest:fast` → `sh -c` → `node bin/reap-orphans.js` leaves the
+ * group led by the npm job leader, two levels above the reaper; `kill(-thatPgid)`
+ * SIGTERMs then SIGKILLs the entire test run, the reaper included. Adding a third
+ * comparison would have re-forked the family — a new identity to spare is a `.add`,
+ * never a new branch.
+ *
+ * Load-bearing only since the WS-1 `tmp_fixture` class: before it, `owningSessionDir
+ * === null` rejected every unattributed candidate, so nothing reached the kill on age
+ * alone and a same-group proc could not be selected. That reject no longer covers the
+ * fixture class, which is gated by age ALONE.
+ */
+function resolveSelfIds(psOutput: string): Set<number> {
+  const ids = new Set<number>([process.pid, process.ppid]);
+  const selfPgid = parseSelfPgidFromPs(psOutput, process.pid);
+  if (selfPgid !== null) ids.add(selfPgid);
+  return ids;
+}
+
 type OwningSessionRead =
   | { kind: 'missing' }
   | { kind: 'unaccountable' }
@@ -483,6 +532,8 @@ type ReapRuntime = {
   minAgeSeconds: number;
   graceMs: number;
   killVerifyMs: number;
+  /** Pids and pgids a kill must never address — see `resolveSelfIds`. */
+  selfIds: Set<number>;
   statePath?: string;
   log?: (msg: string) => void;
 };
@@ -493,10 +544,10 @@ type ReapRuntime = {
  * whose owning session is live. No ppid==1-only branch by design.
  */
 function isReapableOrphan(cand: WorkerProcCandidate, rt: ReapRuntime, reapedPgids: Set<number>): boolean {
-  // Never signal our own process/group or our parent's (the reaper runs
-  // inside a claude-shaped process tree at setup time).
-  if (cand.pid === process.pid || cand.pid === process.ppid) return false;
-  if (cand.pgid === process.pid || cand.pgid === process.ppid) return false;
+  // Never signal anything that would land on US — see `selfIds`. One membership
+  // test over both axes, because `kill(-pgid)` reaches the caller whenever the
+  // caller shares that group, whatever the leader's relationship to us is.
+  if (rt.selfIds.has(cand.pid) || rt.selfIds.has(cand.pgid)) return false;
   if (reapedPgids.has(cand.pgid)) return false;
   // The tmp-prefix fixture class (WS-1) has no owning session by construction
   // (see WorkerProcCandidate.kind) — the null reject below applies only to
@@ -607,6 +658,7 @@ function runReapPass(opts: ReapOrphanedWorkerProcsOpts, platform: NodeJS.Platfor
     minAgeSeconds: opts.minAgeSeconds ?? DEFAULT_MIN_AGE_SECONDS,
     graceMs: opts.graceMs ?? DEFAULT_GRACE_MS,
     killVerifyMs: opts.killVerifyMs ?? DEFAULT_KILL_VERIFY_MS,
+    selfIds: resolveSelfIds(psOutput),
     ...(opts.statePath !== undefined ? { statePath: opts.statePath } : {}),
     ...(opts.log !== undefined ? { log: opts.log } : {}),
   };

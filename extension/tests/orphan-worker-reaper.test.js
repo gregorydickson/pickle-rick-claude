@@ -20,6 +20,7 @@ import * as path from 'node:path';
 import {
   killProcessGroup,
   parseWorkerProcsFromPs,
+  parseSelfPgidFromPs,
   reapOrphanedWorkerProcs,
   ORPHAN_REAP_ENV_VAR,
 } from '../services/orphan-reaper.js';
@@ -624,4 +625,108 @@ test('worker_orphan_reaped is registered in VALID_ACTIVITY_EVENTS', () => {
 
 test('no schema bump: LATEST_SCHEMA_VERSION stays 5', () => {
   assert.equal(LATEST_SCHEMA_VERSION, 5, 'R-CXHANG is schema-neutral');
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER47-01: a kill must never address the reaper's OWN process group.
+//
+// The pre-fix self-protection compared a candidate's pid and pgid against
+// `process.pid` / `process.ppid` only. That was sufficient while
+// `owningSessionDir === null` rejected every unattributed candidate — nothing
+// could be selected on age alone. The WS-1 `tmp_fixture` class removed that
+// cover for fixtures, and the reaper's own process group leader is routinely
+// NEITHER the reaper nor its parent: `npm run test:fast` -> `posttest:fast` ->
+// `sh -c` -> `node bin/reap-orphans.js` leaves the group led by the npm job
+// leader, two levels up. `kill(-thatPgid)` then SIGTERM/SIGKILLs the whole test
+// run, reaper included.
+//
+// Drive the REAL census path (`psOutput` -> parse -> classify -> kill), and
+// assert on the KILLS, not the return shape: the pre-fix call also returned
+// `{reaped: 1}` — with the caller's own job dead.
+// ---------------------------------------------------------------------------
+
+/** A `ps` row for the reaping process itself, carrying the pgid it actually runs under. */
+function selfLine(pgid) {
+  return `${process.pid} ${pgid} ${process.ppid} 00:03 node /repo/extension/bin/reap-orphans.js`;
+}
+
+/** Run a sweep over `psOutput` with a kill spy; returns every (pgid, signal) signalled. */
+function killsFor(psOutput, sessionsRoot) {
+  const kills = [];
+  const result = reapOrphanedWorkerProcs({
+    sessionsRoot,
+    psOutput,
+    kill: (pgid, signal) => { kills.push([pgid, signal]); return true; },
+    isAlive: () => false,
+    sleep: () => {},
+  });
+  return { kills, result };
+}
+
+test('AP-EXT-ITER47-01: a tmp_fixture sharing the reaper\'s OWN process group is never signalled', () => {
+  const sessionsRoot = makeTmp();
+  const fixtureDir = path.join(fs.realpathSync(os.tmpdir()), 'pickle-spawn-morty-worker-gate-selfgrp');
+  // The npm job leader: our process group, but neither our pid nor our ppid.
+  const ownPgid = process.pid + 5000;
+  assert.notEqual(ownPgid, process.pid);
+  assert.notEqual(ownPgid, process.ppid);
+
+  const psOutput = [
+    selfLine(ownPgid),
+    // Aged well past the 600s floor, so ONLY the self-group check can spare it.
+    nodeFixtureLine(ownPgid + 1, ownPgid, '25:00', fixtureDir),
+  ].join('\n');
+
+  const { kills, result } = killsFor(psOutput, sessionsRoot);
+  assert.deepEqual(kills, [], 'the reaper must never signal a group it is a member of');
+  assert.equal(result.reaped, 0);
+  assert.equal(result.by_match_class.tmp_prefix_fixture, 0);
+});
+
+test('AP-EXT-ITER47-01: the same fixture in a FOREIGN group is still reaped (spare is not a blanket)', () => {
+  const sessionsRoot = makeTmp();
+  const fixtureDir = path.join(fs.realpathSync(os.tmpdir()), 'pickle-spawn-morty-worker-gate-foreign');
+  const ownPgid = process.pid + 5000;
+  const foreignPgid = ownPgid + 100;
+
+  const psOutput = [
+    selfLine(ownPgid),
+    nodeFixtureLine(foreignPgid + 1, foreignPgid, '25:00', fixtureDir),
+  ].join('\n');
+
+  const { kills, result } = killsFor(psOutput, sessionsRoot);
+  assert.deepEqual(kills, [[foreignPgid, 'SIGTERM']]);
+  assert.equal(result.reaped, 1);
+  assert.equal(result.by_match_class.tmp_prefix_fixture, 1);
+});
+
+test('AP-EXT-ITER47-01: the collapsed check still spares our own pid and our parent (pre-fix behaviour kept)', () => {
+  const sessionsRoot = makeTmp();
+  const fixtureDir = path.join(fs.realpathSync(os.tmpdir()), 'pickle-spawn-morty-worker-gate-kin');
+  const ownPgid = process.pid + 5000;
+
+  // Candidates addressed by pid==self, pid==parent, pgid==self and pgid==parent:
+  // every axis the two pre-fix guards covered, now one membership test.
+  const psOutput = [
+    selfLine(ownPgid),
+    nodeFixtureLine(process.pid, process.pid + 9001, '25:00', fixtureDir),
+    nodeFixtureLine(process.ppid, process.ppid + 9002, '25:00', fixtureDir),
+    nodeFixtureLine(process.pid + 9003, process.pid, '25:00', fixtureDir),
+    nodeFixtureLine(process.pid + 9004, process.ppid, '25:00', fixtureDir),
+  ].join('\n');
+
+  const { kills, result } = killsFor(psOutput, sessionsRoot);
+  assert.deepEqual(kills, []);
+  assert.equal(result.reaped, 0);
+});
+
+test('AP-EXT-ITER47-01: parseSelfPgidFromPs reads our pgid off the census row, null when absent', () => {
+  const psOutput = [
+    '101 202 1 10:00 node /some/other.js',
+    `${process.pid} 4242 ${process.ppid} 00:03 node /repo/extension/bin/reap-orphans.js`,
+    '303 404 1 10:00 node /another.js',
+  ].join('\n');
+  assert.equal(parseSelfPgidFromPs(psOutput, process.pid), 4242);
+  assert.equal(parseSelfPgidFromPs(psOutput, 999999), null, 'a census without our row yields no pgid');
+  assert.equal(parseSelfPgidFromPs('', process.pid), null);
 });
