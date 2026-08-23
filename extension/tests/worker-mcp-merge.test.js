@@ -19,21 +19,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { buildWorkerMcpConfig, buildWorkerInvocation } from '../services/backend-spawn.js';
+import { mkTmpDir, rmDir, withEmptyHome } from './__helpers__/empty-home.js';
 
 const require = createRequire(import.meta.url);
-
-function mkTmpDir(prefix) {
-    return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-}
-
-function rmDir(dir) {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
-}
 
 // Resolve the real absolute codegraph bin the SAME way the implementation does,
 // or return null when the per-platform bundle / package is genuinely absent.
@@ -54,21 +46,6 @@ function readMcpFile(sessionDir) {
 }
 
 // --- AC1: disabled (expose_mcp_to_workers not true) → passthrough, no file ---
-
-function withEmptyHome(fn) {
-    // Point HOME at an empty dir so the resolver's ~/.claude.json fallback misses
-    // deterministically (the dev/CI host may have a real ~/.claude.json).
-    const prevHome = process.env.HOME;
-    const emptyHome = mkTmpDir('wmm-home-');
-    process.env.HOME = emptyHome;
-    try {
-        return fn();
-    } finally {
-        if (prevHome === undefined) delete process.env.HOME;
-        else process.env.HOME = prevHome;
-        rmDir(emptyHome);
-    }
-}
 
 test('buildWorkerMcpConfig: disabled (flag absent, no operator override) returns null and writes NO worker-mcp.json', () => {
     const sessionDir = mkTmpDir('wmm-disabled-');
