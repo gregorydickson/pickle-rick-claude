@@ -74,10 +74,16 @@ export function isBackend(value) {
 // class as the spawnSync-no-timeout cluster: a downgrade to 'claude' that should
 // have been 'codex' wastes a whole Morty spawn with no signal.
 const _warnedBackends = new Set();
+// AC-6 warn-once: ONE MCP-degradation line for the whole process, regardless of how
+// many worker/analyst spawns resolve the config. Kept apart from `_warnedBackends`
+// (which dedupes per message key) because AC-6 caps the total, not the distinct set.
+let _mcpDegradationWarned = false;
 const _sm = new StateManager();
 const BACKEND_FLIP_REASON_TTL_MS = 60_000;
+/** Test-only: clears every warn-once latch in this module (backends + MCP degradation). */
 export function __resetBackendWarnings() {
     _warnedBackends.clear();
+    _mcpDegradationWarned = false;
 }
 function parseBackendFlipTs(value) {
     if (typeof value !== 'string' || !value.trim())
@@ -261,26 +267,72 @@ export function hasMcpServersRecord(mcpServers) {
     return !!mcpServers && typeof mcpServers === 'object' && !Array.isArray(mcpServers);
 }
 /**
- * Per-process memoized validity check for a resolved MCP-config path, keyed on
- * the resolved path. The file is read + parsed once per process (measured
- * 82,650 bytes / 60 keys on a live host, and this fires per worker/analyst
- * spawn) — no cache invalidation, per the PRD's "Parse cost" ruling.
+ * Per-process memoized verdict for a resolved MCP-config path, keyed on the
+ * resolved path. The file is read + parsed once per process (measured 82,650
+ * bytes / 60 keys on a live host, and this fires per worker/analyst spawn) — no
+ * cache invalidation, per the PRD's "Parse cost" ruling.
  */
-const mcpConfigValidityCache = new Map();
-function isValidMcpConfigFile(filePath) {
-    const cached = mcpConfigValidityCache.get(filePath);
-    if (cached !== undefined)
-        return cached;
-    let valid;
+const mcpConfigVerdictCache = new Map();
+function computeMcpConfigVerdict(filePath) {
+    if (!existsSilently(filePath))
+        return 'missing';
+    let root;
     try {
-        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        valid = hasMcpServersRecord(parsed.mcpServers);
+        root = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     }
     catch {
-        valid = false;
+        return 'unparseable';
     }
-    mcpConfigValidityCache.set(filePath, valid);
-    return valid;
+    // A primitive root has no `mcpServers` to read — treat it as the absent-key case
+    // rather than letting the property access throw.
+    const mcpServers = root && typeof root === 'object'
+        ? root.mcpServers
+        : undefined;
+    if (mcpServers === undefined)
+        return 'no_mcpServers_key';
+    return hasMcpServersRecord(mcpServers) ? 'valid' : 'mcpServers_not_a_record';
+}
+function classifyMcpConfigFile(filePath) {
+    const cached = mcpConfigVerdictCache.get(filePath);
+    if (cached !== undefined)
+        return cached;
+    const verdict = computeMcpConfigVerdict(filePath);
+    mcpConfigVerdictCache.set(filePath, verdict);
+    return verdict;
+}
+/** Human-readable rendering of each refusal reason, for the AC-6 warning line. */
+const MCP_VERDICT_LABEL = {
+    missing: 'file missing',
+    unparseable: 'unparseable JSON',
+    no_mcpServers_key: 'no mcpServers record',
+    mcpServers_not_a_record: 'mcpServers is not a record',
+};
+/**
+ * AC-6 — one stderr line, at most once per process, naming the rejected path, the
+ * failing condition, and the consequence. Reuses the degradation idiom already in
+ * this file (`[backend-spawn] … degraded: …; …`, see `buildWorkerMcpConfig`).
+ *
+ * Two prominence levels: `settings_override` is an EXPLICIT operator instruction, so
+ * it warns as `WARNING:`; `claude_json_fallback` was never deliberately chosen by
+ * anyone, so it warns as the quieter `note:`.
+ *
+ * AC-3: this is a warning, NOT a gate. No throw, no `exit_reason`, no halt, no delay —
+ * it runs after the resolution is already decided and cannot change it. stderr only;
+ * stdout carries orchestrator protocol.
+ */
+function warnMcpLayerDegraded(rejection, winningLayer) {
+    if (_mcpDegradationWarned)
+        return;
+    _mcpDegradationWarned = true;
+    const prominence = rejection.layer === 'settings_override' ? 'WARNING' : 'note';
+    const consequence = winningLayer === rejection.layer
+        // Layer 1 `missing` is passed through verbatim by design (see resolver doc below).
+        ? 'path passed through unvalidated; claude CLI will report the failure'
+        : winningLayer === 'omitted'
+            ? '--mcp-config omitted'
+            : `falling back to ${winningLayer}`;
+    process.stderr.write(`[backend-spawn] ${prominence}: MCP config degraded: ${rejection.layer} ${rejection.filePath} `
+        + `(${MCP_VERDICT_LABEL[rejection.verdict]}); ${consequence}\n`);
 }
 /**
  * Single source of truth for MCP-config precedence. Returns both the resolved
@@ -296,20 +348,44 @@ function isValidMcpConfigFile(filePath) {
  * verbatim so the CLI's own "file not found" reports the real cause. A file
  * that DOES exist but fails the predicate falls through to the next layer,
  * ultimately `omitted` — it never resolves to a path.
+ *
+ * Every refusal of a config that was NAMED (layer 1) or FOUND (layer 2) emits one
+ * `warnMcpLayerDegraded` line, at most once per process (AC-6). An ABSENT
+ * `~/.claude.json` is deliberately NOT a refusal — no layer was chosen and none was
+ * skipped, so the ordinary no-config host stays silent. An absent layer-1 override
+ * IS warned (an explicit operator instruction pointing at nothing) while still being
+ * passed through verbatim, so resolution is unchanged.
  */
 function resolveMcpConfigWithLayer(settingsBag, homeDir) {
-    const override = settingsBag?.worker_mcp_config_path;
-    if (typeof override === 'string' && override.trim()) {
-        const overridePath = override.trim();
-        if (!existsSilently(overridePath) || isValidMcpConfigFile(overridePath)) {
-            return { path: overridePath, layer: 'settings_override' };
+    // Layer 1 is pushed before layer 2, so the higher-prominence rejection always wins
+    // the single warn slot. The warning is emitted only once the winner is known — the
+    // consequence clause names it (AC-6).
+    const rejections = [];
+    const decide = () => {
+        const override = settingsBag?.worker_mcp_config_path;
+        if (typeof override === 'string' && override.trim()) {
+            const overridePath = override.trim();
+            const verdict = classifyMcpConfigFile(overridePath);
+            if (verdict !== 'valid')
+                rejections.push({ layer: 'settings_override', filePath: overridePath, verdict });
+            if (verdict === 'missing' || verdict === 'valid') {
+                return { path: overridePath, layer: 'settings_override' };
+            }
         }
-    }
-    const claudeJson = path.join(homeDir ?? os.homedir(), '.claude.json');
-    if (existsSilently(claudeJson) && isValidMcpConfigFile(claudeJson)) {
-        return { path: claudeJson, layer: 'claude_json_fallback' };
-    }
-    return { path: null, layer: 'omitted' };
+        const claudeJson = path.join(homeDir ?? os.homedir(), '.claude.json');
+        const verdict = classifyMcpConfigFile(claudeJson);
+        if (verdict === 'valid')
+            return { path: claudeJson, layer: 'claude_json_fallback' };
+        // An ABSENT `~/.claude.json` is the ordinary no-config default, not a rejection:
+        // nothing was chosen and nothing was refused, so it stays silent.
+        if (verdict !== 'missing')
+            rejections.push({ layer: 'claude_json_fallback', filePath: claudeJson, verdict });
+        return { path: null, layer: 'omitted' };
+    };
+    const resolved = decide();
+    if (rejections.length > 0)
+        warnMcpLayerDegraded(rejections[0], resolved.layer);
+    return resolved;
 }
 export function resolveMcpConfigPath(settingsBag, homeDir) {
     return resolveMcpConfigWithLayer(settingsBag, homeDir).path ?? undefined;

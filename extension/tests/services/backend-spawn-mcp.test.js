@@ -8,6 +8,7 @@ import {
     resolveMcpConfigPath,
     buildWorkerInvocation,
     buildManagerInvocation,
+    __resetBackendWarnings,
 } from '../../services/backend-spawn.js';
 
 // Shared fixture helpers
@@ -311,5 +312,174 @@ test('AC-MFW-6: buildManagerInvocation(claude) emits worker_mcp_config_resolved 
         process.env.PICKLE_DATA_ROOT = origDataRoot;
         if (origDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
         fs.rmSync(tmpDataRoot, { recursive: true, force: true });
+    }
+});
+
+// --- AC-6: once-per-process MCP degradation warning ---
+// Every test here resets the module warn-once latch via the existing
+// __resetBackendWarnings seam and uses a UNIQUE mkTmpHome label, so the
+// per-process verdict memo (keyed on absolute path) never collides across tests.
+
+function captureStderr(fn) {
+    const orig = process.stderr.write;
+    const lines = [];
+    process.stderr.write = (chunk) => {
+        lines.push(String(chunk));
+        return true;
+    };
+    try {
+        fn();
+    } finally {
+        process.stderr.write = orig;
+    }
+    return lines;
+}
+
+test('AC-6: settings_override rejection warns at HIGH prominence with path, condition and consequence', () => {
+    const tmpHome = mkTmpHome('ac6-hi');
+    const override = path.join(tmpHome, 'ops-mcp.json');
+    fs.writeFileSync(override, '{"mcpServers":[]}');
+    fs.writeFileSync(path.join(tmpHome, '.claude.json'), '{"mcpServers":{"linear":{}}}');
+    __resetBackendWarnings();
+    try {
+        let resolved;
+        const lines = captureStderr(() => {
+            resolved = resolveMcpConfigPath({ worker_mcp_config_path: override }, tmpHome);
+        });
+        assert.equal(lines.length, 1, 'exactly one degradation line');
+        const line = lines[0];
+        assert.match(line, /^\[backend-spawn\] WARNING: MCP config degraded: settings_override /);
+        assert.ok(line.includes(override), 'names the rejected path');
+        assert.ok(line.includes('mcpServers is not a record'), 'names the failing condition');
+        assert.ok(line.includes('falling back to claude_json_fallback'), 'names the winning layer');
+        assert.ok(line.endsWith('\n'), 'terminated');
+        // AC-2/AC-3: it degraded to the next layer, it did not fail the resolution.
+        assert.equal(resolved, path.join(tmpHome, '.claude.json'));
+    } finally {
+        __resetBackendWarnings();
+        cleanDir(tmpHome);
+    }
+});
+
+test('AC-6: claude_json_fallback rejection warns at LOW prominence (never deliberately chosen)', () => {
+    const tmpHome = mkTmpHome('ac6-lo');
+    fs.writeFileSync(path.join(tmpHome, '.claude.json'), 'not json at all');
+    __resetBackendWarnings();
+    try {
+        let resolved;
+        const lines = captureStderr(() => {
+            resolved = resolveMcpConfigPath({}, tmpHome);
+        });
+        assert.equal(lines.length, 1, 'exactly one degradation line');
+        const line = lines[0];
+        assert.match(line, /^\[backend-spawn\] note: MCP config degraded: claude_json_fallback /);
+        assert.ok(!line.includes('WARNING:'), 'layer 2 is the quieter prominence level');
+        assert.ok(line.includes(path.join(tmpHome, '.claude.json')), 'names the rejected path');
+        assert.ok(line.includes('unparseable JSON'), 'names the failing condition');
+        assert.ok(line.includes('--mcp-config omitted'), 'names the consequence');
+        assert.equal(resolved, undefined);
+    } finally {
+        __resetBackendWarnings();
+        cleanDir(tmpHome);
+    }
+});
+
+test('AC-6: at most ONE warning per process across repeated resolutions and memo cache hits', () => {
+    const tmpHome = mkTmpHome('ac6-once');
+    const badOverride = path.join(tmpHome, 'bad-override.json');
+    fs.writeFileSync(badOverride, '{"mcpServers":null}');
+    const otherHome = mkTmpHome('ac6-once-other');
+    fs.writeFileSync(path.join(otherHome, '.claude.json'), '{"no":"servers"}');
+    __resetBackendWarnings();
+    try {
+        const lines = captureStderr(() => {
+            // Calls 2..5 are verdict-memo cache hits on the same path.
+            for (let i = 0; i < 5; i++) {
+                resolveMcpConfigPath({ worker_mcp_config_path: badOverride }, tmpHome);
+            }
+            // A second, differently-broken layer must not get its own line either.
+            resolveMcpConfigPath({}, otherHome);
+        });
+        assert.equal(lines.length, 1, `expected exactly 1 line for the whole process, got ${lines.length}: ${JSON.stringify(lines)}`);
+        assert.ok(lines[0].includes('WARNING:'), 'the first (higher-prominence) rejection wins the single slot');
+    } finally {
+        __resetBackendWarnings();
+        cleanDir(tmpHome);
+        cleanDir(otherHome);
+    }
+});
+
+test('AC-6: the warning survives the verdict memo — a cache-hit resolution still names the condition', () => {
+    const tmpHome = mkTmpHome('ac6-memo');
+    fs.writeFileSync(path.join(tmpHome, '.claude.json'), '{"mcpServers":[]}');
+    __resetBackendWarnings();
+    try {
+        const first = captureStderr(() => resolveMcpConfigPath({}, tmpHome));
+        assert.equal(first.length, 1, 'first (cache-miss) resolution warns');
+        // Latch released; the NEXT resolution reads the verdict from the memo, never
+        // re-parsing the file. The reason must still be recoverable from the cache.
+        __resetBackendWarnings();
+        const second = captureStderr(() => resolveMcpConfigPath({}, tmpHome));
+        assert.equal(second.length, 1, 'cache-hit resolution still warns');
+        assert.ok(second[0].includes('mcpServers is not a record'), 'condition survives memoization');
+        assert.equal(second[0], first[0], 'cache hit produces the identical diagnostic');
+    } finally {
+        __resetBackendWarnings();
+        cleanDir(tmpHome);
+    }
+});
+
+test('AC-6/AC-3: a missing ~/.claude.json with no override is SILENT (clean omission is not a degradation)', () => {
+    const tmpHome = mkTmpHome('ac6-clean');
+    __resetBackendWarnings();
+    try {
+        let resolved;
+        const lines = captureStderr(() => {
+            resolved = resolveMcpConfigPath({}, tmpHome);
+        });
+        assert.deepEqual(lines, [], 'no config was ever chosen, so nothing was degraded');
+        assert.equal(resolved, undefined);
+    } finally {
+        __resetBackendWarnings();
+        cleanDir(tmpHome);
+    }
+});
+
+test('AC-6/AC-7: a MISSING settings_override warns at HIGH prominence and still passes the path through', () => {
+    const tmpHome = mkTmpHome('ac6-gone');
+    const override = path.join(tmpHome, 'never-materialized.json');
+    __resetBackendWarnings();
+    try {
+        let resolved;
+        const lines = captureStderr(() => {
+            resolved = resolveMcpConfigPath({ worker_mcp_config_path: override }, tmpHome);
+        });
+        assert.equal(lines.length, 1);
+        assert.ok(lines[0].includes('WARNING:'), 'an explicit operator instruction pointing at nothing is high prominence');
+        assert.ok(lines[0].includes('file missing'), 'names the failing condition');
+        assert.ok(lines[0].includes('passed through unvalidated'), 'names the consequence');
+        // AC-7: resolution behaviour is unchanged — the path is still handed to the CLI.
+        assert.equal(resolved, override);
+    } finally {
+        __resetBackendWarnings();
+        cleanDir(tmpHome);
+    }
+});
+
+test('AC-3: a valid config on either layer emits no warning at all', () => {
+    const tmpHome = mkTmpHome('ac6-happy');
+    const override = path.join(tmpHome, 'good.json');
+    fs.writeFileSync(override, '{"mcpServers":{"linear":{}}}');
+    fs.writeFileSync(path.join(tmpHome, '.claude.json'), '{"mcpServers":{}}');
+    __resetBackendWarnings();
+    try {
+        const lines = captureStderr(() => {
+            assert.equal(resolveMcpConfigPath({ worker_mcp_config_path: override }, tmpHome), override);
+            assert.equal(resolveMcpConfigPath({}, tmpHome), path.join(tmpHome, '.claude.json'));
+        });
+        assert.deepEqual(lines, []);
+    } finally {
+        __resetBackendWarnings();
+        cleanDir(tmpHome);
     }
 });
