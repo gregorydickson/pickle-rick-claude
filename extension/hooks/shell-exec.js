@@ -55,6 +55,14 @@ const SEGMENT_SCAN_RE = new RegExp(`${DOUBLE_QUOTED_SPAN}|${SINGLE_QUOTED_SPAN}|
  * shell will run, so the recursive unwrap sees `git commit`, not `\"git`.
  */
 const DOUBLE_QUOTE_ESCAPE_RE = /\\(["\\$`])/g;
+/** True when the span is a complete `'…'` / `"…"` — both delimiters, not a lone quote. */
+function isQuotedSpan(span) {
+    if (span.length < 2)
+        return false;
+    const first = span[0];
+    const last = span[span.length - 1];
+    return (first === '"' && last === '"') || (first === '\'' && last === '\'');
+}
 /**
  * Tokenize a single (already-segmented) shell command, quote-aware: a quoted
  * span stays one token and its surrounding matching quotes are stripped, so
@@ -71,19 +79,26 @@ const DOUBLE_QUOTE_ESCAPE_RE = /\\(["\\$`])/g;
  * that never runs a reset.
  */
 export function tokenizeShellCommand(command) {
+    return tokenizeShellTokens(command).map(token => token.value);
+}
+/**
+ * `tokenizeShellCommand` carrying each word's quoted-ness, for the scanners that
+ * must tell an OPERATOR from a character that merely looks like one. A `>` bash
+ * read out of `"…"` is data, never a redirect; a `sed` inside quotes is an
+ * argument, never an exec. `tokenizeShellCommand` is defined in terms of this so
+ * the value half cannot drift from the quoting half — the same one-home rule the
+ * rest of this module carries.
+ */
+export function tokenizeShellTokens(command) {
     const raw = command.match(TOKEN_SCAN_RE) ?? [];
     return raw.map((token) => {
-        if (token.length >= 2) {
-            const first = token[0];
-            const last = token[token.length - 1];
-            if (first === '"' && last === '"') {
-                return token.slice(1, -1).replace(DOUBLE_QUOTE_ESCAPE_RE, '$1');
-            }
-            if (first === '\'' && last === '\'') {
-                return token.slice(1, -1);
-            }
-        }
-        return token;
+        if (!isQuotedSpan(token))
+            return { value: token, quoted: false };
+        const inner = token.slice(1, -1);
+        return {
+            value: token[0] === '"' ? inner.replace(DOUBLE_QUOTE_ESCAPE_RE, '$1') : inner,
+            quoted: true,
+        };
     });
 }
 /** True when the token is a `bash`/`sh` wrapper to be skipped before the real exec. */

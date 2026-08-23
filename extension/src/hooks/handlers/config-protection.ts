@@ -12,6 +12,7 @@ import {
   skipEnvAssignments,
   splitShellSegments,
   tokenizeShellCommand,
+  tokenizeShellTokens,
 } from '../shell-exec.js';
 
 interface PreToolUseInput {
@@ -295,6 +296,14 @@ function findBashWriteTarget<T>(
   probe: (token: string) => T | null,
 ): T | null {
   if (!command) return null;
+  // Normalized BEFORE segmenting so `>|` / `>&<file>` no longer carry a `|` / `&`
+  // the segmenter would read as a control operator (see normalizeRedirectOperators).
+  // Normalized AGAIN per scope because a `bash -c '<payload>'` scope arrives from
+  // `splitShellSegments` with its quotes ALREADY STRIPPED by the unwrap: at the
+  // first pass those redirects were still inside the payload's quotes, so a
+  // quote-aware normalizer correctly left them alone. Re-running per scope is what
+  // keeps `bash -c "echo x >state.json"` blocked without the normalizer having to
+  // rewrite quoted data.
   const normalized = normalizeRedirectOperators(command);
   for (const scope of [normalized, ...splitShellSegments(normalized)]) {
     const hit = findWriteTargetInScope(scope, probe);
@@ -303,19 +312,28 @@ function findBashWriteTarget<T>(
   return null;
 }
 
-/** The two-pass token walk over ONE already-scoped command string. */
+/**
+ * The two-pass token walk over ONE already-scoped command string.
+ *
+ * Both passes require their ANCHOR token — the redirect operator, the write
+ * command — to have come from OUTSIDE quotes. bash redirects only on an unquoted
+ * `>` and execs only an unquoted word, so a quoted one is data the worker typed,
+ * not syntax the shell will act on. Only the anchor is gated: a DESTINATION is
+ * legitimately quoted (`> "state.json"`), so `tokens[i + 1]` and the positional
+ * args are probed whatever their quoting.
+ */
 function findWriteTargetInScope<T>(
   command: string,
   probe: (token: string) => T | null,
 ): T | null {
-  const tokens = tokenizeBashCommand(command);
+  const tokens = tokenizeShellTokens(command);
 
   // Pass 1: `>` / `>>` redirects — the immediate next token is the destination.
   for (let i = 0; i < tokens.length - 1; i++) {
-    if (tokens[i] === '>' || tokens[i] === '>>') {
-      const hit = probe(tokens[i + 1]);
-      if (hit !== null) return hit;
-    }
+    const isRedirect = !tokens[i].quoted && (tokens[i].value === '>' || tokens[i].value === '>>');
+    if (!isRedirect) continue;
+    const hit = probe(tokens[i + 1].value);
+    if (hit !== null) return hit;
   }
 
   // Pass 2: write/editor commands that mutate a positional FILE arg
@@ -323,9 +341,9 @@ function findWriteTargetInScope<T>(
   for (let i = 0; i < tokens.length; i++) {
     // execName (not path.basename): folds case and strips a trailing `;`, so
     // `SED -i`, `/usr/bin/sed -i`, and `TEE` all match the lowercase set.
-    if (!WRITE_COMMANDS.has(execName(tokens[i]))) continue;
+    if (tokens[i].quoted || !WRITE_COMMANDS.has(execName(tokens[i].value))) continue;
     for (let j = i + 1; j < tokens.length; j++) {
-      const arg = tokens[j];
+      const arg = tokens[j].value;
       if (arg.startsWith('-')) continue;
       const hit = probe(arg);
       if (hit !== null) return hit;
@@ -379,24 +397,19 @@ function normalizeRedirectOperators(command: string): string {
   // tokens `['>', '&state.json']` pre-fix bypassed the guard) while the
   // ubiquitous fd-dup forms pass through untouched. Same R-WSRC-3 invariant as
   // `>`/`>>`/`>|`; runs BEFORE the general `>` pass so the `&` never glues.
+  // Deliberately NOT quote-aware. Isolating `>` inside a quoted span only inserts
+  // spaces into a word the scanner already treats as ONE token, so it cannot
+  // manufacture an operator — `findWriteTargetInScope` decides operator-hood from
+  // the token's QUOTING, not from its spacing. Making this quote-aware instead
+  // NARROWS it: a `bash -c '<payload>'` payload is code whose redirects must be
+  // isolated BEFORE `splitShellSegments` splits `>|` on its trailing `|`, and the
+  // quotes are still on at that point (measured: `sh -lc 'echo x >| state.json'`
+  // regressed from block to approve under a quote-aware normalizer).
   return command
     .replace(/>\|/g, ' > ')
     .replace(/>&(?![\d-])/g, ' > ')
     .replace(/>>/g, ' >> ')
     .replace(/(^|[^>])>/g, '$1 > ');
-}
-
-/**
- * Split an already-redirect-normalized command on whitespace and quotes, so a
- * quoted destination (`> "state.json"`) yields the bare path and the isolated
- * redirect operators stand as their own tokens for the scanner to anchor on.
- */
-function tokenizeBashCommand(command: string): string[] {
-  const out: string[] = [];
-  for (const raw of command.split(/[\s'"]+/)) {
-    if (raw.length > 0) out.push(raw);
-  }
-  return out;
 }
 
 /**

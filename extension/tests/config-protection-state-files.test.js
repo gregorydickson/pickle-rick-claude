@@ -819,3 +819,75 @@ test('AP-EXT-ITER19-02: bare redirect to state.json still blocks', () => {
 test('AP-EXT-ITER19-02: fd-dup 2>&1 is not treated as a write', () => {
   assert.equal(runWorkerBash('npm run build 2>&1').decision, 'approve');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER51-01: a `>` inside quotes is DATA, not a redirect operator.
+//
+// `normalizeRedirectOperators` isolated `>` over the whole raw command, so an
+// ordinary `->` in a commit message became an operator and its next word became
+// a destination. Reproduced against the shipped hook, and 4 lines in this repo's
+// own git history trip it.
+// ---------------------------------------------------------------------------
+
+for (const message of [
+  'anatomy-park: extension — worker -> state.json write ordering',
+  'docs: producer -> state.json join',
+  'fix: preserve external lock (mtime > state.json mtime + 5min)',
+  'note: settings -> pickle_settings.json',
+  'refactor: runner -> circuit_breaker.json handoff',
+  'chore: monitor -> pipeline-status.json render',
+]) {
+  test(`AP-EXT-ITER51-01: quoted \`>\` in a commit message is not a redirect (${message.slice(0, 28)}…)`, () => {
+    assert.equal(
+      runWorkerBash(`git commit -m "${message}"`).decision,
+      'approve',
+      'a protected basename after a quoted `>` must not read as a write target',
+    );
+  });
+}
+
+// A quoted `>` must not be an operator; an UNQUOTED one still must be. Both
+// directions, so the fix cannot be "stop scanning".
+test('AP-EXT-ITER51-01: an unquoted redirect still blocks alongside a quoted one', () => {
+  const result = runWorkerBashInSession(
+    (t) => `git commit -m "worker -> state.json" && echo x > ${t}`,
+  );
+  assert.equal(result.decision, 'block');
+});
+
+// A quoted DESTINATION is still a destination — only the OPERATOR must be unquoted.
+test('AP-EXT-ITER51-01: quoted redirect destination still blocks', () => {
+  assert.equal(runWorkerBashInSession((t) => `echo x > "${t}"`).decision, 'block');
+});
+
+// The `-c` payload is CODE: its quotes are shell syntax, so redirects inside it
+// are real. `>|` ends in a `|` the segmenter splits on, so the payload must be
+// re-normalized BEFORE it is segmented, not after.
+for (const build of [
+  (t) => `bash -c "echo x >${t}"`,
+  (t) => `bash -c "echo x > ${t}"`,
+  (t) => `sh -lc 'echo x >| ${t}'`,
+  (t) => `sh -c 'echo x >&${t}'`,
+]) {
+  test(`AP-EXT-ITER51-01: redirect inside a -c payload still blocks (${build('T')})`, () => {
+    assert.equal(runWorkerBashInSession(build).decision, 'block');
+  });
+}
+
+// fd-dup forms are not writes and must stay approved after the quote rework.
+for (const cmd of ['npm run build 2>&1', 'echo state.json >&2', 'cat state.json 2>&1']) {
+  test(`AP-EXT-ITER51-01: fd-dup \`${cmd}\` is not a write`, () => {
+    assert.equal(runWorkerBash(cmd).decision, 'approve');
+  });
+}
+
+// The quoted-ness gate is separate from the tokenizer: a quoted token whose
+// whole VALUE is `>` (or a write command) would otherwise re-manufacture the
+// operator the tokenizer just protected.
+test('AP-EXT-ITER51-01: a quoted token whose value is `>` is not an operator', () => {
+  assert.equal(runWorkerBashInSession((t) => `git commit -m ">" ${t}`).decision, 'approve');
+});
+
+test('AP-EXT-ITER51-01: a quoted write-command token is not an exec', () => {
+  assert.equal(runWorkerBashInSession((t) => `git commit -m "sed" -i ${t}`).decision, 'approve');
+});
