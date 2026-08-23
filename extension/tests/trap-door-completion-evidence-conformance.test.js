@@ -16,6 +16,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -203,14 +204,32 @@ test('mux-runner.ts implements completion-evidence auto-promotion via persistEvi
 // slug both sides and require SEGMENT-BOUNDARY containment.
 // ---------------------------------------------------------------------------
 
-const CATALOGS = [
-  'extension/CLAUDE.md',
-  'extension/src/bin/CLAUDE.md',
-  'extension/src/services/CLAUDE.md',
-  'extension/src/hooks/CLAUDE.md',
-  'extension/src/lib/CLAUDE.md',
-  'extension/src/types/CLAUDE.md',
-];
+/**
+ * Every subsystem catalog on disk, by the SAME two-root rule the release-gate
+ * audit uses: `extension/src/*​/CLAUDE.md` for the compiled-source subsystems and
+ * `<repoRoot>/*​/CLAUDE.md` for the ones anatomy-park reviews outside them (repo-root
+ * `bin/`). Derived, never hand-listed — a hand list is what let `bin/CLAUDE.md` sit
+ * outside both readers while the audit's own comment claimed it could not drift.
+ */
+function discoverCatalogsOnDisk() {
+  const found = ['extension/CLAUDE.md'];
+  for (const [rootRel, skipDir] of [['extension/src', null], ['', 'extension']]) {
+    let entries;
+    try {
+      entries = fs.readdirSync(path.join(repoRoot, rootRel), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory() || entry.name === skipDir) continue;
+      const rel = path.posix.join(rootRel, entry.name, 'CLAUDE.md');
+      if (fs.existsSync(path.join(repoRoot, rel)) && !found.includes(rel)) found.push(rel);
+    }
+  }
+  return found;
+}
+
+const CATALOGS = discoverCatalogsOnDisk();
 
 const slugify = (value) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 const TEST_NAME_RE = /\b(?:it|test)\s*\(\s*(['"\`])((?:\\.|(?!\1)[^\\])*)\1/g;
@@ -230,7 +249,11 @@ function collectAnchoredEnforceRefs() {
     const catalogPath = path.join(repoRoot, catalog);
     if (!fs.existsSync(catalogPath)) continue;
     const text = fs.readFileSync(catalogPath, 'utf8');
-    const section = text.slice(text.indexOf('## Trap Doors'));
+    // A discovered catalog need not have a trap-door section at all (`prds/CLAUDE.md`
+    // is prose). `slice(-1)` on a miss would scan its last character instead.
+    const sectionStart = text.indexOf('## Trap Doors');
+    if (sectionStart === -1) continue;
+    const section = text.slice(sectionStart);
     const re = /\b((?:extension\/)?tests\/[A-Za-z0-9_./-]+\.test\.js)\b#([A-Za-z0-9_.:-]+)/g;
     for (const m of section.matchAll(re)) {
       const rel = m[1].startsWith('extension/') ? m[1] : `extension/${m[1]}`;
@@ -306,5 +329,60 @@ test('AP-EXT-ITER2-01: the release-gate audit verifies anchors, not just files',
     audit,
     /function anchorResolves\(/,
     'audit-trap-door-enforcement.sh lost the anchorResolves rule',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// AP-BIN-ITER15-01. `discoverCatalogs` walked `extension/src/*​/` only, so repo-root
+// `bin/CLAUDE.md` — the catalog anatomy-park writes for the ONE subsystem it reviews
+// outside `extension/src/` (`discoverSubsystems` enumerates repo-root `bin/`, per the
+// R-APBS-1..3 trap door) — was invisible to the release gate. Its 8 ENFORCE refs were
+// never checked for a missing file, a bad `@tier`, or a phantom anchor, while the gate
+// printed "430 ENFORCE reference(s) verified" and exited 0. Deleting a spec together
+// with the source it covers is the NORMAL shape here (980656c7 dropped
+// `bin/section-c-still-needed.js` and `tests/section-c-gate.test.js` in one commit),
+// and that is exactly what turns an unswept catalog's ENFORCE into a phantom.
+//
+// The pin is BEHAVIORAL — it runs the shipped audit and reads that audit's OWN
+// per-catalog census. A source grep asserting the walk exists would stay green over a
+// walk that is present but unreachable, which is the shape this repo keeps getting
+// burned by. Counting is load-bearing too: a catalog admitted with zero collected refs
+// is byte-indistinguishable from one the sweep skipped.
+// ---------------------------------------------------------------------------
+test('AP-BIN-ITER15-01: the release-gate sweep reads every subsystem catalog on disk, including repo-root bin/', () => {
+  const catalogsWithRefs = discoverCatalogsOnDisk().filter((rel) =>
+    fs.readFileSync(path.join(repoRoot, rel), 'utf8').includes('ENFORCE:'),
+  );
+  assert.ok(
+    catalogsWithRefs.includes('bin/CLAUDE.md'),
+    'discovery drifted: bin/CLAUDE.md carries ENFORCE refs but was not discovered — this test would pass vacuously',
+  );
+
+  const result = spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+    cwd: path.join(repoRoot, 'extension'),
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  assert.equal(result.status, 0, `audit-trap-door-enforcement.sh failed:\n${result.stderr}`);
+
+  const census = /ENFORCE reference\(s\) verified across \d+ catalog\(s\) \(([^)]*)\)/.exec(
+    result.stdout,
+  );
+  assert.ok(census, `audit printed no per-catalog census:\n${result.stdout}`);
+
+  const counted = new Map(
+    census[1].split(', ').map((pair) => {
+      const at = pair.lastIndexOf('=');
+      return [pair.slice(0, at), Number(pair.slice(at + 1))];
+    }),
+  );
+
+  const unswept = catalogsWithRefs.filter((rel) => !(counted.get(rel) > 0));
+  assert.deepEqual(
+    unswept,
+    [],
+    `catalogs carrying ENFORCE refs that the release gate collected nothing from `
+      + `(their trap doors' enforcement is unverified):\n  ${unswept.join('\n  ')}\n`
+      + `census: ${census[1]}`,
   );
 });

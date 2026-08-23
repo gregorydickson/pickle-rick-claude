@@ -123,20 +123,29 @@ const VALID_TIERS = new Set(['fast', 'integration', 'expensive', 'contract']);
 
 // Discovered, never hand-listed: a new subsystem catalog enters the sweep the
 // moment it lands, so the sweep cannot drift behind the catalogs it verifies.
+// TWO roots, ONE rule. `extension/src/*/` holds the compiled-source subsystems;
+// `<repoRoot>/*/` holds every subsystem anatomy-park reviews outside it — repo-root
+// `bin/` is enumerated by `discoverSubsystems` exactly like they are and writes its
+// trap doors to `bin/CLAUDE.md`, which a src-only walk never sees. `extension` is
+// skipped in the repo-root pass: that catalog is the primary, which
+// CLAUDE_PATH_OVERRIDE may replace.
 function discoverCatalogs() {
   const catalogs = [primaryClaudePath];
-  let entries;
-  try {
-    entries = fs.readdirSync(subsystemCatalogRoot, { withFileTypes: true });
-  } catch {
-    return catalogs;
-  }
 
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (!entry.isDirectory()) continue;
-    const candidate = path.join(subsystemCatalogRoot, entry.name, 'CLAUDE.md');
-    if (fs.existsSync(candidate) && !catalogs.includes(candidate)) {
-      catalogs.push(candidate);
+  for (const [root, skipDir] of [[subsystemCatalogRoot, null], [repoRoot, 'extension']]) {
+    let entries;
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory() || entry.name === skipDir) continue;
+      const candidate = path.join(root, entry.name, 'CLAUDE.md');
+      if (fs.existsSync(candidate) && !catalogs.includes(candidate)) {
+        catalogs.push(candidate);
+      }
     }
   }
 
