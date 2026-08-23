@@ -326,14 +326,36 @@ export function parseChangedExportedSymbolsFromDiff(diffText: string): Set<strin
   return symbols;
 }
 
-/** Exported identifiers whose declaration changed in `sinceCommit..HEAD` (TS/TSX only). */
-export function getChangedExportedSymbols(workingDir: string, sinceCommit: string): Set<string> {
+/**
+ * Exported identifiers whose declaration changed in `sinceCommit..HEAD` (TS/TSX only), or
+ * `null` when the enumeration did NOT COMPLETE.
+ *
+ * The `null` is the AP-EXT-ITER38-01 shape, and it is the whole point: an empty `Set` is a
+ * POSITIVE finding ("this phase changed no exported symbol") that `runInterfaceChangeSweep`
+ * reads as "nothing to sweep" and returns `ran: false` on, so a git failure that fabricates
+ * one silently disarms the R-ORSR-6 INV-NO-SELF-DISOWN sweep — the guard whose entire job is
+ * that a phase cannot disown its own whole-repo interface break — and converges reporting
+ * success. A measurement that did not run is not a measurement of zero.
+ *
+ * ONE completion predicate, never a stack: a whole-branch `git diff` fails in two shapes that
+ * must share a verdict. A non-zero `status` covers an unreachable `sinceCommit` (128, measured),
+ * ENOENT, and the 30s timeout. `result.error` covers `maxBuffer` overflow, which Node reports as
+ * `status: 0` with `error.code === 'ENOBUFS'` and TRUNCATED stdout (measured) — the status-only
+ * guard passed it straight through, so a diff cut mid-stream parsed as a COMPLETE symbol set and
+ * every declaration past the cut was invisible to the sweep.
+ *
+ * `UNBOUNDED_READ_MAX_BUFFER` is the ONE 64 MB ceiling (AP-EXT-ITER8-01) every unbounded reader
+ * shares; the former local `32 * 1024 * 1024` was half of it and exactly the per-file fork that
+ * trap door forbids. This spawn is a whole-branch PATCH — strictly larger than the `--name-only`
+ * list its `getChangedSince` sibling already declares the ceiling on.
+ */
+export function getChangedExportedSymbols(workingDir: string, sinceCommit: string): Set<string> | null {
   const result = spawnSync(
     'git',
     ['diff', `${sinceCommit}..HEAD`, '--', '*.ts', '*.tsx'],
-    { cwd: workingDir, encoding: 'utf-8', timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
+    { cwd: workingDir, encoding: 'utf-8', timeout: 30_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER },
   );
-  if ((result.status ?? 1) !== 0) return new Set<string>();
+  if ((result.status ?? 1) !== 0 || result.error) return null;
   return parseChangedExportedSymbolsFromDiff(result.stdout || '');
 }
 
@@ -1279,7 +1301,11 @@ function buildNoDisownContext(opts: RunGateOpts): NoDisownContext | undefined {
   const changedFiles = new Set(
     getChangedSince(opts.workingDir, since).map(f => normalizeScopePath(f)),
   );
-  const changedExportedSymbols = getChangedExportedSymbols(opts.workingDir, since);
+  // `null` (enumeration did not complete) degrades to the empty set here, which is
+  // byte-identical to the pre-fix behaviour: this context can only ever KEEP a failure the
+  // iteration caused, so a narrower symbol set never invents one. The RENDERED arm of the
+  // same measurement failure is the interface-change sweep — see `runInterfaceChangeSweep`.
+  const changedExportedSymbols = getChangedExportedSymbols(opts.workingDir, since) ?? new Set<string>();
   if (changedFiles.size === 0 && changedExportedSymbols.size === 0) return undefined;
   return { changedFiles, changedExportedSymbols, workingDir: resolveLexicalRepoRoot(opts.workingDir) };
 }

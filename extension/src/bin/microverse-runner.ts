@@ -1024,6 +1024,15 @@ function resolveMetricType(currentMv: MicroverseSessionState): string {
 // cumulative diff (state.start_commit..HEAD) changed an exported symbol, run a WHOLE-REPO tsc
 // (un-fenced) and keep only self-introduced failures via the no-disown classifier. A non-empty
 // result blocks convergence — the phase cannot disown its own break.
+/**
+ * Why the R-ORSR-6 sweep did not run, when the reason is a MEASUREMENT failure rather than a
+ * finding. `null` means the sweep reached a verdict (it either ran, or correctly found no
+ * exported-symbol change). Mirrors `orphan-reaper.ts:ReapSweepSkipReason`, which exists for
+ * the same reason: a best-effort collector's swallowed value must not share a shape with a
+ * real reading, and something must render it.
+ */
+export type InterfaceSweepSkipReason = 'symbols_unmeasurable';
+
 export async function runInterfaceChangeSweep(opts: {
   workingDir: string;
   sessionDir: string;
@@ -1032,12 +1041,18 @@ export async function runInterfaceChangeSweep(opts: {
   logActivityFn: typeof logActivity;
   getChangedExportedSymbolsFn?: typeof getChangedExportedSymbols;
   getChangedFilesSinceFn?: typeof getChangedFilesSince;
-}): Promise<{ ran: boolean; selfIntroduced: GateFailure[] }> {
+}): Promise<{ ran: boolean; skipped: InterfaceSweepSkipReason | null; selfIntroduced: GateFailure[] }> {
   const getSymbols = opts.getChangedExportedSymbolsFn ?? getChangedExportedSymbols;
   const getFiles = opts.getChangedFilesSinceFn ?? getChangedFilesSince;
   const changedExportedSymbols = getSymbols(opts.workingDir, opts.startCommit);
+  // `null` is "git could not answer", NOT "no exported symbol changed". Both used to leave by
+  // the same `size === 0` door and both then read as `ran: false`, which the caller drops
+  // silently — a sweep that never ran was indistinguishable from a sweep that found nothing.
+  if (changedExportedSymbols === null) {
+    return { ran: false, skipped: 'symbols_unmeasurable', selfIntroduced: [] };
+  }
   if (changedExportedSymbols.size === 0) {
-    return { ran: false, selfIntroduced: [] };
+    return { ran: false, skipped: null, selfIntroduced: [] };
   }
   const result = await opts.runGateFn({
     workingDir: opts.workingDir,
@@ -1057,7 +1072,7 @@ export async function runInterfaceChangeSweep(opts: {
     changedExportedSymbols,
     workingDir: opts.workingDir,
   });
-  return { ran: true, selfIntroduced };
+  return { ran: true, skipped: null, selfIntroduced };
 }
 
 function recordInterfaceSweepRegression(opts: {
@@ -1141,6 +1156,17 @@ async function applyInterfaceChangeSweepGuard(opts: {
     getChangedExportedSymbolsFn: _deps?.getChangedExportedSymbolsFn,
     getChangedFilesSinceFn: _deps?.getChangedFilesSinceFn,
   });
+  // RENDER the not-run case. It stays NON-fatal — an unmeasurable sweep is not a measured
+  // regression, and halting here would take reliability and quality to zero over an absent
+  // reading. But it must not be silent: convergence proceeds carrying no INV-NO-SELF-DISOWN
+  // evidence either way, and that is a materially different fact from "the sweep cleared it".
+  if (sweep.skipped !== null) {
+    log(
+      `Iteration ${iteration} — interface-change sweep NOT RUN (${sweep.skipped}): the ` +
+      `changed-exported-symbol enumeration did not complete, so this iteration carries no ` +
+      `INV-NO-SELF-DISOWN evidence in either direction — continuing (non-fatal)`,
+    );
+  }
   if (!(sweep.ran && sweep.selfIntroduced.length > 0)) return null;
   log(
     `Iteration ${iteration} — convergence blocked: interface-change sweep found ` +
