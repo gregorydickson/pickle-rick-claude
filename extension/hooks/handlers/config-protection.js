@@ -267,14 +267,11 @@ function isProtectedConfigToken(token) {
 function findBashWriteTarget(command, probe) {
     if (!command)
         return null;
-    // Normalized BEFORE segmenting so `>|` / `>&<file>` no longer carry a `|` / `&`
-    // the segmenter would read as a control operator (see normalizeRedirectOperators).
-    // Normalized AGAIN per scope because a `bash -c '<payload>'` scope arrives from
-    // `splitShellSegments` with its quotes ALREADY STRIPPED by the unwrap: at the
-    // first pass those redirects were still inside the payload's quotes, so a
-    // quote-aware normalizer correctly left them alone. Re-running per scope is what
-    // keeps `bash -c "echo x >state.json"` blocked without the normalizer having to
-    // rewrite quoted data.
+    // Normalized ONCE, BEFORE segmenting, so `>|` / `>&<file>` no longer carry a
+    // `|` / `&` the segmenter would read as a control operator — including inside a
+    // `bash -c '<payload>'` payload, whose quotes are still on at this point. That
+    // is why the normalizer is quote-blind (see `normalizeRedirectOperators`); the
+    // quoted/unquoted decision belongs to `findWriteTargetInScope`, not here.
     const normalized = normalizeRedirectOperators(command);
     for (const scope of [normalized, ...splitShellSegments(normalized)]) {
         const hit = findWriteTargetInScope(scope, probe);
