@@ -254,7 +254,7 @@ function withHeldTicketFixture(ticketId, fn) {
     fn({ sessionDir, route });
   } finally {
     rmSync(repo, { recursive: true, force: true });
-    if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
+    if (sessionTmp) { rmSync(sessionTmp, { recursive: true, force: true }); }
   }
 }
 
