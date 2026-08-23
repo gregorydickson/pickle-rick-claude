@@ -1317,6 +1317,74 @@ test('AP-EXT-ITER13-01: a verdict-only clean pass is evidence of a clean pass', 
     );
 });
 
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER44-01: the ever-clean term reads a SECOND live spelling of the same
+// two concepts. The prompt (Override 5) fixes no entry schema, so a shipped run
+// records the count as `confident_findings` and the outcome as `result` — the
+// `findings`/`verdict` pair AP-EXT-ITER13-01 taught the reader is only one of the
+// dialects in the wild. Against the `result`/`confident_findings` dialect the
+// ever-clean term went inert again and the ceiling halted `bin` as "no clean
+// pass" one pass after it recorded one.
+//
+// The entries below are VERBATIM from a live `anatomy-park.json`
+// (session 2026-08-22-5c53a293, subsystem `bin`) — not hand-authored. A
+// hand-authored fixture is exactly what let the previous inert reading pass.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER44-01: a result/confident_findings clean pass is evidence of a clean pass', () => {
+    const config = {
+        subsystems: ['bin', 'extension'],
+        current_index: 0,
+        pass_counts: { bin: 8, extension: 2 },
+        // the streak was reset by the pass-2 finding; the pass-1 clean survives only in the ledger
+        consecutive_clean: { bin: 0, extension: 0 },
+        stall_counts: { bin: 2, extension: 0 },
+        findings_history: {
+            bin: [
+                { pass: 1, date: '2026-08-23', result: 'clean', confident_findings: 0, dropped_candidates: 5 },
+                { pass: 2, date: '2026-08-23', result: 'stalled_scope_fence', confident_findings: 1, dropped_candidates: 5 },
+            ],
+            extension: [
+                { pass: 1, date: '2026-08-23', result: 'fixed', confident_findings: 1, dropped_candidates: 3 },
+            ],
+        },
+    };
+    assert.equal(
+        classifyAnatomyNonConvergence(config, 8),
+        null,
+        'a `confident_findings: 0` / `result: clean` pass is a clean pass — `bin` has not "run 8 passes with no clean pass"',
+    );
+});
+
+test('AP-EXT-ITER44-01: a result-only clean verdict counts, and non-clean dialect passes stay armed', () => {
+    const base = {
+        subsystems: ['bin'],
+        current_index: 0,
+        pass_counts: { bin: 8 },
+        consecutive_clean: { bin: 0 },
+    };
+    assert.equal(
+        classifyAnatomyNonConvergence(
+            { ...base, findings_history: { bin: [{ pass: 8, result: 'Clean' }] } },
+            8,
+        ),
+        null,
+        'a `result: clean` pass with no count is a clean pass, regardless of letter case',
+    );
+    for (const history of [
+        // every recorded pass in this dialect had findings
+        { bin: [{ pass: 8, result: 'stalled_scope_fence', confident_findings: 1 }] },
+        { bin: [{ pass: 8, result: 'fixed', confident_findings: 2 }] },
+        // a non-clean outcome with no count is not evidence either
+        { bin: [{ pass: 8, result: 'stalled_scope_fence' }] },
+        // a string count is an unrecognized shape, not a zero
+        { bin: [{ pass: 8, confident_findings: '0' }] },
+    ]) {
+        const hit = classifyAnatomyNonConvergence({ ...base, findings_history: history }, 8);
+        assert.ok(hit, `expected halt for findings_history=${JSON.stringify(history)}`);
+    }
+});
+
 test('AP-EXT-ITER13-01: count-shaped and verdict-shaped NON-clean passes leave the ceiling armed', () => {
     const base = {
         subsystems: ['bin'],

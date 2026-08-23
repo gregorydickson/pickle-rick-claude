@@ -4210,16 +4210,37 @@ export function auditPostIterationScope(ctx: RunContext, state: MicroverseState)
 //
 // AP-EXT-ITER13-01: the ledger's PRODUCER is the anatomy-park worker prompt, which mandates only
 // "append current findings summary" — it fixes no entry schema. Shipped runs record the pass as a
-// COUNT plus a verdict (`{ iteration, subsystem, findings: 0, verdict: 'clean' }`), never an empty
-// array, so an array-only reading is inert against every real ledger. Accept all three affirmative
-// shapes; absence, `null`, and a non-clean verdict stay non-evidence so an unknown shape still
+// COUNT plus a verdict, never an empty array, so an array-only reading is inert against every real
+// ledger. Absence, `null`, and a non-clean verdict stay non-evidence so an unknown shape still
 // leaves the ceiling armed.
+//
+// AP-EXT-ITER44-01 (W5b collapse): the shape-tolerance is a KEY-SPELLING table, not a stack of
+// per-shape guards. Two live spellings of the same two concepts ship in the wild — the count is
+// `findings` OR `confident_findings`, the outcome is `verdict` OR `result` — and the third
+// spelling would have been a fourth guard arm. Widening is now a one-line table edit, so the
+// reader can never re-fork into one branch per producer dialect.
+const CLEAN_PASS_COUNT_KEYS = ['findings', 'confident_findings'] as const;
+const CLEAN_PASS_VERDICT_KEYS = ['verdict', 'result'] as const;
+
+// A count arm is present when at least one count key carries a list or a finite number. Returns
+// null when the entry carries no count at all, so the verdict arm can answer instead. Bias WIDE:
+// ANY zero count reads clean — a false halt is anti-quality, an unarmed ceiling merely runs on.
+function readCleanPassCount(record: Record<string, unknown>): boolean | null {
+  const counts = CLEAN_PASS_COUNT_KEYS
+    .map((key) => record[key])
+    .filter((value) => Array.isArray(value) || Number.isFinite(value));
+  if (counts.length === 0) { return null; }
+  return counts.some((value) => (Array.isArray(value) ? value.length === 0 : value === 0));
+}
+
 function isCleanPassEntry(entry: unknown): boolean {
   if (!entry || typeof entry !== 'object') { return false; }
-  const { findings, verdict } = entry as { findings?: unknown; verdict?: unknown };
-  if (Array.isArray(findings)) { return findings.length === 0; }
-  if (typeof findings === 'number') { return findings === 0; }
-  return typeof verdict === 'string' && verdict.trim().toLowerCase() === 'clean';
+  const record = entry as Record<string, unknown>;
+  const byCount = readCleanPassCount(record);
+  if (byCount !== null) { return byCount; }
+  return CLEAN_PASS_VERDICT_KEYS.some(
+    (key) => typeof record[key] === 'string' && (record[key] as string).trim().toLowerCase() === 'clean',
+  );
 }
 
 function hasRecordedCleanPass(anatomyConfig: Record<string, unknown>, subsystem: string): boolean {
