@@ -52,6 +52,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EXIT_REASONS } from '../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MUX_RUNNER_TS = path.resolve(__dirname, '..', 'src', 'bin', 'mux-runner.ts');
@@ -181,16 +182,20 @@ test('mux-runner: the PICKLE_TEST_MODE=1 bypass disarms the completion guard —
 });
 
 /**
- * Derive the ExitReason members from the union declaration itself, so a NEW
- * member is picked up automatically and never hand-added to a list here.
- * Fails CLOSED: an absent or empty union throws rather than yielding [], which
- * would make every "for every reason" loop below pass by iterating nothing.
+ * The ExitReason members, read from the ONE list that defines them. `ExitReason`
+ * (mux-runner.ts) is `typeof EXIT_REASONS[number]`, so importing the array IS
+ * enumerating the union — no source-text parse, and a NEW member is picked up
+ * automatically rather than hand-added to a list here.
+ *
+ * This used to regex the members out of a hand-maintained literal union in
+ * mux-runner.ts. That parse went silently empty the moment the union was collapsed
+ * to a derivation, which is why the sanity floor below is retained: it fails CLOSED,
+ * so a degenerate list throws rather than making every "for every reason" loop pass
+ * by iterating nothing.
  */
-function deriveExitReasonsFromSource(sourceText) {
-  const unionMatch = sourceText.match(/export type ExitReason = ([^;]+);/);
-  assert.ok(unionMatch, 'ExitReason union declaration must be present in source');
-  const reasons = [...unionMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
-  assert.ok(reasons.length > 10, `expected the ExitReason union to yield a substantial member list, found ${reasons.length}`);
+function exitReasons() {
+  const reasons = [...EXIT_REASONS];
+  assert.ok(reasons.length > 10, `expected EXIT_REASONS to yield a substantial member list, found ${reasons.length}`);
   return reasons;
 }
 
@@ -263,8 +268,7 @@ const EXPECTED_HALT_EXITS = [
 ];
 
 test('AC-GTRUTH-A2-3: isHaltExit is true for EXACTLY the five session-scoped pause reasons', () => {
-  const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
-  const actual = deriveExitReasonsFromSource(source).filter((r) => isHaltExit(r)).sort();
+  const actual = exitReasons().filter((r) => isHaltExit(r)).sort();
   assert.deepEqual(
     actual,
     EXPECTED_HALT_EXITS,
@@ -296,7 +300,7 @@ test('AC-GTRUTH-A2-4: the source exit map routes done_without_commit_evidence to
 
   // A NEW failure reason is covered automatically instead of hand-added here.
   const phaseIncompleteReasons = new Set(['iteration_cap_exhausted', 'done_without_commit_evidence']);
-  for (const reason of deriveExitReasonsFromSource(source)) {
+  for (const reason of exitReasons()) {
     const code = exitCodeFor(reason);
     if (phaseIncompleteReasons.has(reason)) {
       assert.equal(code, 3, `'${reason}' must keep its distinct exit code 3 (R-ICP-1 / WS-A2)`);
@@ -417,10 +421,9 @@ test('AC-GTRUTH-A2-4: a done_without_commit_evidence exit renders neither a RED 
 });
 
 test('mux-runner: the completion panel verdict matches buildTmuxNotification for every member of the ExitReason union', () => {
-  const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
 
   // A NEW ExitReason member is picked up automatically, never hand-added.
-  for (const reason of deriveExitReasonsFromSource(source)) {
+  for (const reason of exitReasons()) {
     const groundTruth = isFailureExit(reason);
     // Failure wins on overlap, mirroring deriveCompletionVerdict's own precedence.
     const incomplete = !groundTruth && isIncompleteExit(reason);

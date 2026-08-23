@@ -505,15 +505,14 @@ export const MICROVERSE_FATAL_REASONS = [
  * against its complement at runtime (pipeline-runner's AC-CF-02/03 sweeps) instead of hardcoding
  * literals.
  *
- * It is NOT yet the single source of truth: `mux-runner.ts` still declares its own hand-maintained
- * `export type ExitReason = 'success' | …` literal union, and that union — not this array — is what
- * the runtime's exit-reason plumbing (`FAILURE_EXIT_REASONS`, `isFailureExit`) is typed against.
- * The two lists are therefore parallel copies that MUST stay member-for-member identical; a reason
- * added to one and not the other silently drops out of the crash-floor sweeps. The parity is
- * enforced by a source-text test (`pipeline-runner.test.js`, "EXIT_REASONS parity") rather than by
- * the type system, because `types/index.ts` cannot import from `mux-runner.ts` without a cycle.
- * Collapsing mux-runner's union to `typeof EXIT_REASONS[number]` retires the parity test and is the
- * subtractive fix; it needs a scope covering `mux-runner.ts`.
+ * It IS the single source of truth: `mux-runner.ts` derives `export type ExitReason =
+ * typeof EXIT_REASONS[number]` from this array, so the runtime's exit-reason plumbing
+ * (`FAILURE_EXIT_REASONS`, `isFailureExit`) is typed against these members and cannot drift from
+ * them. Adding a reason here is the ONE edit; the union follows. The dependency is one-way by
+ * necessity — `types/index.ts` cannot import from `mux-runner.ts` without a cycle — so the array
+ * must stay here and the type must stay derived there. Restating the members as a literal union in
+ * mux-runner re-opens the drift this collapse closed (a reason present only in the union is never
+ * swept by pipeline-runner's AC-CF-02/03 crash-floor sweeps, which iterate this array).
  */
 export const EXIT_REASONS = [
     'success', 'cancelled', 'error', 'limit', 'iteration_cap_exhausted', 'stall', 'circuit_open',

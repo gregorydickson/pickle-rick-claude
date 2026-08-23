@@ -63,11 +63,10 @@ import {
   shouldHaltAfterPhase,
 } from '../bin/pipeline-runner.js';
 import { isFailureExit, isHaltExit, isIncompleteExit } from '../bin/mux-runner.js';
-import { CRASH_FLOOR_EXIT_REASONS, MICROVERSE_EXIT_REASONS } from '../types/index.js';
+import { CRASH_FLOOR_EXIT_REASONS, EXIT_REASONS, MICROVERSE_EXIT_REASONS } from '../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE_RUNNER_SRC = path.resolve(__dirname, '../src/bin/pipeline-runner.ts');
-const MUX_RUNNER_SRC = path.resolve(__dirname, '../src/bin/mux-runner.ts');
 
 /**
  * Minimum set of `PhaseIterationOutcome` producers known at authoring time
@@ -129,21 +128,6 @@ function extractBraceBlock(sourceText, openBraceIdx) {
     }
   }
   throw new Error('unbalanced braces starting at ' + openBraceIdx);
-}
-
-/**
- * The `ExitReason` members, read off the single `export type ExitReason = 'a' | 'b' | …;`
- * declaration in `mux-runner.ts`. That union is type-only — there is no runtime array to import
- * (unlike `MICROVERSE_EXIT_REASONS`) — so the membership is derived from the declaration itself
- * rather than restated here. Throws rather than returning `[]` if the declaration is renamed or
- * reshaped: a silent empty list would make every loop below pass vacuously.
- */
-function readExitReasonUnionMembers(sourceText) {
-  const decl = /export\s+type\s+ExitReason\s*=([\s\S]*?);/.exec(sourceText);
-  if (!decl) {
-    throw new Error('`export type ExitReason` declaration not found in mux-runner.ts — did it move or get renamed?');
-  }
-  return [...decl[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
 }
 
 /**
@@ -259,9 +243,12 @@ afterEach(() => {
 // `state.exit_reason` field the pickle-phase halt decision is quantified over: mux-runner's
 // `ExitReason` union (the runner's own terminal labels) and pipeline-runner's internal
 // `recordExitReason` stamps ('pipeline_phase_incomplete', 'phase_no_progress', …).
-const MUX_RUNNER_SOURCE = fs.readFileSync(MUX_RUNNER_SRC, 'utf-8');
 const PIPELINE_RUNNER_SOURCE = fs.readFileSync(PIPELINE_RUNNER_SRC, 'utf-8');
-const EXIT_REASON_UNION_MEMBERS = readExitReasonUnionMembers(MUX_RUNNER_SOURCE);
+// `ExitReason` (mux-runner.ts) is `typeof EXIT_REASONS[number]`, so importing the array IS
+// enumerating the union — the membership is read off the one list that defines it rather than
+// re-parsed out of the type declaration. The non-empty assertion below keeps the fail-closed
+// property the old source-text parse had: a degenerate list would make every loop pass vacuously.
+const EXIT_REASON_UNION_MEMBERS = [...EXIT_REASONS];
 const PIPELINE_INTERNAL_EXIT_STAMPS = readPipelineInternalExitStamps(PIPELINE_RUNNER_SOURCE);
 
 // Root CLAUDE.md's crash floor names exactly the cannot-physically-continue reasons (toolchain
@@ -452,11 +439,31 @@ describe('AC-OA-3a — channel 2 crash floor (the invariant is bounded, not univ
 describe('AC-OA-3b — exhaustive by construction: a new member reddens this suite with no test edit', () => {
   const SYNTHETIC = 'synthetic_new_member';
 
-  test('the channel-1 subject list follows the declaration, so a new member is picked up unedited', () => {
-    const members = readExitReasonUnionMembers(
-      `export type ExitReason = 'alpha' | '${SYNTHETIC}';`,
+  // This used to feed a synthetic `export type ExitReason = 'alpha' | 'synthetic';` string
+  // through a source-text parser. The union is now `typeof EXIT_REASONS[number]`, so the
+  // "follows the declaration" property is no longer about parsing — it is about the subject
+  // list BEING the declaring array rather than a transcription of it. Asserted in the two
+  // halves it decomposes into, both of which must hold for a new member to flow in unedited.
+  test('the channel-1 subject list IS the EXIT_REASONS array, so a new member is picked up unedited', () => {
+    assert.deepEqual(
+      EXIT_REASON_UNION_MEMBERS,
+      [...EXIT_REASONS],
+      'the channel-1 subjects must be the EXIT_REASONS array itself — a transcribed copy would '
+      + 'need a test edit for every new member, which is the drift this AC exists to prevent',
     );
-    assert.deepEqual(members, ['alpha', SYNTHETIC]);
+  });
+
+  test('mux-runner ExitReason derives from EXIT_REASONS, so array and union cannot diverge', () => {
+    const muxSrc = fs.readFileSync(path.resolve(__dirname, '../src/bin/mux-runner.ts'), 'utf-8');
+    const decl = /^export type ExitReason =([^;]*);/m.exec(muxSrc);
+    assert.ok(decl, '`export type ExitReason` declaration not found in mux-runner.ts');
+    assert.equal(
+      decl[1].trim(),
+      'typeof EXIT_REASONS[number]',
+      'ExitReason must derive from EXIT_REASONS. Restating it as a literal union re-opens the '
+      + 'drift where a reason exists in the union but not the array this suite quantifies over — '
+      + 'it would then have no disposition pinned by the loops above.',
+    );
   });
 
   test('the channel-1 stamp list follows the call sites, so a new stamp is picked up unedited', () => {

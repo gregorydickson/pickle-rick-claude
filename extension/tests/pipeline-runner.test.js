@@ -2918,32 +2918,39 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     ], 'R-NOPOSTTIER must add no member — the withholding is a disposition, not an exit reason');
   });
 
-  // EXIT_REASONS parity: `types/index.ts` EXIT_REASONS and mux-runner's hand-maintained
-  // `export type ExitReason = 'a' | 'b' | …` union are parallel copies of the same
-  // membership list — types/index.ts cannot import mux-runner.ts without a cycle, so the
-  // type system cannot tie them together. The AC-CF-02/03 sweeps above iterate EXIT_REASONS,
-  // so a reason added to mux-runner's union alone is silently never swept: if it were a real
-  // crash-floor reason, nothing would prove it halts, and if it were not, nothing would prove
-  // it continues. Compare the two member sets from source text.
-  test('EXIT_REASONS parity: mux-runner ExitReason union has exactly the EXIT_REASONS members', () => {
+  // EXIT_REASONS is now the single source of truth: mux-runner's `ExitReason` DERIVES from it
+  // (`typeof EXIT_REASONS[number]`) rather than restating the members as a hand-maintained
+  // literal union. That collapse retired the source-text parity test this replaces — parity is
+  // no longer something to check, because there is only one list. What still needs a pin is the
+  // derivation itself: `types/index.ts` cannot import `mux-runner.ts` without a cycle, so the
+  // type system cannot stop someone from re-expanding the union into literals. If that happens,
+  // a reason added to the union alone is once again never swept by the AC-CF-02/03 sweeps above,
+  // which iterate EXIT_REASONS. Same shape as the `Backend derives from BACKENDS` pin below.
+  test('mux-runner ExitReason derives from EXIT_REASONS rather than restating its members', () => {
     const muxSrc = fs.readFileSync(new URL('../src/bin/mux-runner.ts', import.meta.url), 'utf-8');
     const decl = /^export type ExitReason =([^;]*);/m.exec(muxSrc);
     assert.ok(decl, 'mux-runner.ts must declare `export type ExitReason = …;`');
-    const unionMembers = new Set([...decl[1].matchAll(/'([^']+)'/g)].map((m) => m[1]));
-    assert.ok(unionMembers.size > 0, 'sanity: the union must have string-literal members');
-
-    const constMembers = new Set(EXIT_REASONS);
-    const missingFromConst = [...unionMembers].filter((r) => !constMembers.has(r));
-    const missingFromUnion = [...constMembers].filter((r) => !unionMembers.has(r));
-    assert.deepEqual(
-      missingFromConst,
-      [],
-      `mux-runner ExitReason members absent from EXIT_REASONS (never swept by AC-CF-02/03): ${missingFromConst.join(', ')}`,
+    assert.equal(
+      decl[1].trim(),
+      'typeof EXIT_REASONS[number]',
+      'ExitReason must derive from EXIT_REASONS (types/index.ts), not restate its members as a '
+        + 'literal union — a union member absent from the array is never swept by AC-CF-02/03',
     );
-    assert.deepEqual(
-      missingFromUnion,
-      [],
-      `EXIT_REASONS members absent from mux-runner's ExitReason union: ${missingFromUnion.join(', ')}`,
+
+    // The derivation only holds if the array literal is `as const`; without it the members
+    // widen to `string` and `ExitReason` silently becomes `string`.
+    const typesSrc = fs.readFileSync(new URL('../src/types/index.ts', import.meta.url), 'utf-8');
+    assert.match(
+      typesSrc,
+      /^export const EXIT_REASONS = \[[\s\S]*?\] as const;$/m,
+      'the EXIT_REASONS array literal must be `as const` or ExitReason widens to string',
+    );
+
+    // ...and only if mux-runner actually imports the array it derives from.
+    assert.match(
+      muxSrc,
+      /^import \{[^}]*\bEXIT_REASONS\b[^}]*\} from '\.\.\/types\/index\.js';$/m,
+      'mux-runner.ts must import EXIT_REASONS from ../types/index.js for the derivation to resolve',
     );
   });
 
