@@ -1,5 +1,44 @@
 # BUG-2026-08-21 (P0) — the MCP fallback hands `claude` a file that is not an MCP config, killing every worker spawn
 
+> **✅ STALE-PREMISE CHECK PASSED — re-measured 2026-08-23 at HEAD `d75bd524`, both trees.** The
+> mechanism named by this PRD (not merely its R-code) is live and identical in source and deployed:
+>
+> | tree | site | code |
+> |---|---|---|
+> | source | `extension/src/services/backend-spawn.ts:366` | `if (existsSilently(claudeJson)) return { path: claudeJson, layer: 'claude_json_fallback' };` |
+> | deployed | `~/.claude/pickle-rick/extension/services/backend-spawn.js:266` | identical |
+>
+> Existence-only, no `mcpServers` inspection, in both. Reproduced live against synthetic configs:
+> a file WITHOUT `mcpServers` yields `Invalid MCP configuration: mcpServers: Invalid input: expected
+> record, received undefined`; `{"mcpServers":{}}` yields `ok`.
+>
+> **One authored sentence is measurably wrong and refinement should not be misled by it.** The PRD says
+> *"the `mcpServers` key only appears once a user-scoped MCP server is configured."* Measured on this
+> host: `~/.claude.json` has `mcpServers` **present as an object with ZERO servers**. So key-presence is
+> NOT equivalent to a-server-was-configured, and this host therefore does **not** reproduce the bug —
+> its fallback passes a valid-but-empty config. That is consistent with the PRD's fresh-machine framing
+> and does not weaken it; it sharpens the discriminator. The ACs already encode the right one
+> (**AC-1** tests `mcpServers` is a *record*, and **AC-4** requires present-with-empty to be covered) —
+> note that present-with-empty must resolve to the **path**, since `claude` accepts it; only
+> absent/malformed resolve to `omitted`.
+>
+> **✅ GREEN-TREE CHECK PASSED — baseline recorded before launch.** `npm run test:fast` from
+> `extension/`, interpreter pinned to node 24.19.0 (the 22.x line cancels ~38 tests on this host and
+> would have manufactured a false red):
+>
+> ```
+> tests 7872 · suites 518 · pass 7865 · fail 1 · cancelled 0 · skipped 5 · todo 1 · 172.8s
+> ```
+>
+> The single failure is `install.sh bun probe > bun probe emits banner when bun is absent` — the
+> long-filed inherited P3 (`BUG-2026-08-21-bun-probe-path-filter-misses-homebrew.md`), which fails
+> BECAUSE bun is installed at `/opt/homebrew/bin` where its substring `PATH` filter cannot see it.
+> **Recorded as inherited.** `cancelled 0` and the count matches the last recorded baseline exactly, so
+> any OTHER fast-tier failure appearing during this bundle is caused by this bundle.
+
+> **Everything else here is authored, not measured** — treat the layer-precedence narrative and the
+> `worker_mcp_config_path: null` claim in AC-5 as leads for refinement to establish, not as findings.
+
 ## Status
 Open. Found 2026-08-21 while launching `BUG-2026-08-20`. **Severity above that bundle**: on a machine
 where the operator has never configured a user-scoped MCP server, EVERY worker and analyst spawn dies
