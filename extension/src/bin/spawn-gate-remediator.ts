@@ -7,11 +7,8 @@ import { isBackend } from '../services/backend-spawn.js';
 import type { Backend, GateResult, GateFailure } from '../types/index.js';
 import {
   acquireLockFile,
-  inspectLockFile,
-  isDeadPidPayload,
+  reclaimDeadLock,
   releaseLockFile,
-  stealLockFile,
-  withStealRight,
   writeActivityEntry,
   type LockHandle,
 } from '../services/state-manager.js';
@@ -233,16 +230,12 @@ function ensureGateDir(gateDir: string, deps: Pick<SpawnGateRemediatorDeps, 'mkd
 
 /**
  * Reclaim a remediator lock stranded by an abrupt death (SIGKILL/SIGTERM/OOM), which skips the
- * `process.on('exit')` release. Positive proof of death is the ONLY licence to evict: a remediator
- * legitimately holds for minutes (it drives a full worker turn), so the age-based arm `withRetryLock`
- * carries would evict a LIVE holder here. Empty, unparseable and live payloads defer.
+ * `process.on('exit')` release. Reclaims through the shared `reclaimDeadLock` composition, which
+ * owns the proof-of-death rule and the no-age-arm rule — both load-bearing here, since a remediator
+ * legitimately holds for minutes while it drives a full worker turn.
  */
 function reclaimDeadRemediatorLock(lockfilePath: string): void {
-  withStealRight(lockfilePath, () => {
-    const snapshot = inspectLockFile(lockfilePath);
-    if (!snapshot || !isDeadPidPayload(snapshot.payload)) return false;
-    return stealLockFile(lockfilePath, snapshot);
-  });
+  reclaimDeadLock(lockfilePath);
 }
 
 function acquireLockfile(

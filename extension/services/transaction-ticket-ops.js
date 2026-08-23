@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { StateManager, acquireLockFile, inspectLockFile, isDeadPidPayload, releaseLockFile, stealLockFile, withStealRight, } from './state-manager.js';
+import { StateManager, acquireLockFile, reclaimDeadLock, releaseLockFile, } from './state-manager.js';
 function isWithinRoot(targetPath, rootPath) {
     const relative = path.relative(path.resolve(rootPath), path.resolve(targetPath));
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
@@ -241,15 +241,11 @@ function latestApplyLedgerPath(sessionRoot) {
 /**
  * Reclaims the restructure lock from a holder we can PROVE is dead — never an age verdict: a
  * restructure legitimately holds while it rewrites every ticket in the session, so an age arm
- * (the one `withRetryLock` carries) would evict a LIVE holder mid-transaction.
+ * (the one `withRetryLock` carries) would evict a LIVE holder mid-transaction. Both rules live in
+ * the shared `reclaimDeadLock` composition this delegates to.
  */
 function reclaimDeadRestructureLock(lockFile) {
-    withStealRight(lockFile, () => {
-        const snapshot = inspectLockFile(lockFile);
-        if (!snapshot || !isDeadPidPayload(snapshot.payload))
-            return false;
-        return stealLockFile(lockFile, snapshot);
-    });
+    reclaimDeadLock(lockFile);
 }
 function acquireFileLock(lockFile) {
     // Payload is the BARE holder pid — the one encoding `isDeadPidPayload` reads. The prior

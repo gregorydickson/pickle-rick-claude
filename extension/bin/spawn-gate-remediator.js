@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { isoCompactStamp, safeErrorMessage } from '../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { isBackend } from '../services/backend-spawn.js';
-import { acquireLockFile, inspectLockFile, isDeadPidPayload, releaseLockFile, stealLockFile, withStealRight, writeActivityEntry, } from '../services/state-manager.js';
+import { acquireLockFile, reclaimDeadLock, releaseLockFile, writeActivityEntry, } from '../services/state-manager.js';
 import { FOM_EVIDENCE_RULES, FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 const USAGE = 'Usage: spawn-gate-remediator --gate-result <path> --session-root <path> --reason strict|per-iteration';
 const LOCKFILE_NAME = 'remediator.lockfile';
@@ -171,17 +171,12 @@ function ensureGateDir(gateDir, deps) {
 }
 /**
  * Reclaim a remediator lock stranded by an abrupt death (SIGKILL/SIGTERM/OOM), which skips the
- * `process.on('exit')` release. Positive proof of death is the ONLY licence to evict: a remediator
- * legitimately holds for minutes (it drives a full worker turn), so the age-based arm `withRetryLock`
- * carries would evict a LIVE holder here. Empty, unparseable and live payloads defer.
+ * `process.on('exit')` release. Reclaims through the shared `reclaimDeadLock` composition, which
+ * owns the proof-of-death rule and the no-age-arm rule — both load-bearing here, since a remediator
+ * legitimately holds for minutes while it drives a full worker turn.
  */
 function reclaimDeadRemediatorLock(lockfilePath) {
-    withStealRight(lockfilePath, () => {
-        const snapshot = inspectLockFile(lockfilePath);
-        if (!snapshot || !isDeadPidPayload(snapshot.payload))
-            return false;
-        return stealLockFile(lockfilePath, snapshot);
-    });
+    reclaimDeadLock(lockfilePath);
 }
 function acquireLockfile(lockfilePath, flags, iso, deps, stdout) {
     try {

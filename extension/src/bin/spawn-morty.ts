@@ -40,9 +40,7 @@ import {
   writeActivityEntry,
   acquireLockFile,
   releaseLockFile,
-  withStealRight,
-  isDeadPidPayload,
-  stealLockFile,
+  reclaimDeadLock,
   inspectLockFile,
   type LockHandle,
 } from '../services/state-manager.js';
@@ -3204,17 +3202,13 @@ export function workerSpawnLockPath(sessionRoot: string): string {
 }
 
 /**
- * Mirrors state-manager.ts's own `reclaimDeadGateLock` shape exactly: reclaim rights are
- * serialized via `withStealRight` so two concurrent reclaimers cannot both judge a dead holder
- * and evict a live one, and only a provably dead pid (`isDeadPidPayload`) is ever stolen — a
- * large-tier worker legitimately holds this lock for up to 4800s, so no age-based arm exists.
+ * Shares state-manager.ts's `reclaimDeadLock` composition rather than restating it: reclaim rights
+ * are serialized so two concurrent reclaimers cannot both judge a dead holder and evict a live one,
+ * and only a provably dead pid is ever stolen — load-bearing here, since a large-tier worker
+ * legitimately holds this lock for up to 4800s, so no age-based arm exists.
  */
 export function reclaimDeadWorkerSpawnLock(lockPath: string): void {
-  withStealRight(lockPath, () => {
-    const snapshot = inspectLockFile(lockPath);
-    if (!snapshot || !isDeadPidPayload(snapshot.payload)) return false;
-    return stealLockFile(lockPath, snapshot);
-  });
+  reclaimDeadLock(lockPath);
 }
 
 export class WorkerSpawnLockContendedError extends Error {

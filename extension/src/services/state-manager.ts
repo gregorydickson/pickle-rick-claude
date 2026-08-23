@@ -413,6 +413,29 @@ export function withStealRight(lockPath: string, steal: () => boolean): boolean 
   }
 }
 
+/**
+ * Reclaim a lock whose holder is PROVABLY dead — the one composition every lock in the system
+ * reclaims through, and the only sanctioned one.
+ *
+ * Three things have to hold together, and each was previously re-derived per lock. Reclaim rights
+ * are serialized via `withStealRight`: two concurrent reclaimers must not both judge a dead holder
+ * and have the second's removal land on the live successor the first just published. The verdict is
+ * positive proof of death via `isDeadPidPayload` and NEVER an age arm — `withRetryLock` carries one,
+ * but every caller here (gate, restructure, remediator, worker spawn) legitimately holds for minutes
+ * to hours, so an age verdict would evict a LIVE holder. Empty, unparseable and live payloads defer.
+ *
+ * Callers keep their own named wrapper: the per-lock trap doors in `extension/CLAUDE.md`,
+ * `src/bin/CLAUDE.md` and `src/services/CLAUDE.md` pin those names as the call-site anchor of each
+ * lock's PATTERN_SHAPE. The names stay; the knowledge lives here once.
+ */
+export function reclaimDeadLock(lockPath: string): boolean {
+  return withStealRight(lockPath, () => {
+    const snapshot = inspectLockFile(lockPath);
+    if (!snapshot || !isDeadPidPayload(snapshot.payload)) return false;
+    return stealLockFile(lockPath, snapshot);
+  });
+}
+
 function readProcessStartTimeMs(pid: number): number | null {
   try {
     const output = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], {
@@ -1698,16 +1721,11 @@ function gateLockPath(key: string): string {
  * and this lock is keyed by workingDir under `os.tmpdir()` — it is not session-scoped, so the strand
  * outlives the pipeline and wedges every later gate for that repo.
  *
- * Positive proof of death is the ONLY licence to evict: unlike the session-map lock, a gate
- * legitimately holds for minutes (it wraps a full typecheck/lint/test run), so the age-based arm that
- * `withRetryLock` carries would evict a live holder here. Empty, unparseable and live payloads defer.
+ * Reclaims through the shared `reclaimDeadLock` composition, which owns the proof-of-death rule and
+ * the no-age-arm rule for every lock in the system.
  */
 function reclaimDeadGateLock(lp: string): void {
-  withStealRight(lp, () => {
-    const snapshot = inspectLockFile(lp);
-    if (!snapshot || !isDeadPidPayload(snapshot.payload)) return false;
-    return stealLockFile(lp, snapshot);
-  });
+  reclaimDeadLock(lp);
 }
 
 export async function withLock<T>(

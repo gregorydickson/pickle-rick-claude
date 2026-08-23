@@ -10,7 +10,7 @@ import { isRecord } from '../lib/is-record.js';
 import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths, resetToSha, updateTicketFrontmatter, updateTicketStatus } from '../services/git-utils.js';
 import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup } from '../services/backend-spawn.js';
 import { scrubForbiddenWorkerTokens } from '../services/promise-tokens.js';
-import { StateManager, writeActivityEntry, acquireLockFile, releaseLockFile, withStealRight, isDeadPidPayload, stealLockFile, inspectLockFile, } from '../services/state-manager.js';
+import { StateManager, writeActivityEntry, acquireLockFile, releaseLockFile, reclaimDeadLock, inspectLockFile, } from '../services/state-manager.js';
 import { classifyTestScriptSafety, detectProjectType, isUnrunnableCheckResult, loadGateCommands } from '../services/convergence-gate.js';
 import { createResolverCache } from '../services/signature-caller-gap.js';
 import { computeOneHop } from '../services/scope-resolver.js';
@@ -2821,18 +2821,13 @@ export function workerSpawnLockPath(sessionRoot) {
     return path.join(sessionRoot, WORKER_SPAWN_LOCK_FILENAME);
 }
 /**
- * Mirrors state-manager.ts's own `reclaimDeadGateLock` shape exactly: reclaim rights are
- * serialized via `withStealRight` so two concurrent reclaimers cannot both judge a dead holder
- * and evict a live one, and only a provably dead pid (`isDeadPidPayload`) is ever stolen — a
- * large-tier worker legitimately holds this lock for up to 4800s, so no age-based arm exists.
+ * Shares state-manager.ts's `reclaimDeadLock` composition rather than restating it: reclaim rights
+ * are serialized so two concurrent reclaimers cannot both judge a dead holder and evict a live one,
+ * and only a provably dead pid is ever stolen — load-bearing here, since a large-tier worker
+ * legitimately holds this lock for up to 4800s, so no age-based arm exists.
  */
 export function reclaimDeadWorkerSpawnLock(lockPath) {
-    withStealRight(lockPath, () => {
-        const snapshot = inspectLockFile(lockPath);
-        if (!snapshot || !isDeadPidPayload(snapshot.payload))
-            return false;
-        return stealLockFile(lockPath, snapshot);
-    });
+    reclaimDeadLock(lockPath);
 }
 export class WorkerSpawnLockContendedError extends Error {
     incumbentPid;

@@ -3,11 +3,8 @@ import * as path from 'node:path';
 import {
   StateManager,
   acquireLockFile,
-  inspectLockFile,
-  isDeadPidPayload,
+  reclaimDeadLock,
   releaseLockFile,
-  stealLockFile,
-  withStealRight,
 } from './state-manager.js';
 import type { ActivityLogEntry, State } from '../types/index.js';
 
@@ -397,14 +394,11 @@ function latestApplyLedgerPath(sessionRoot: string): string {
 /**
  * Reclaims the restructure lock from a holder we can PROVE is dead — never an age verdict: a
  * restructure legitimately holds while it rewrites every ticket in the session, so an age arm
- * (the one `withRetryLock` carries) would evict a LIVE holder mid-transaction.
+ * (the one `withRetryLock` carries) would evict a LIVE holder mid-transaction. Both rules live in
+ * the shared `reclaimDeadLock` composition this delegates to.
  */
 function reclaimDeadRestructureLock(lockFile: string): void {
-  withStealRight(lockFile, () => {
-    const snapshot = inspectLockFile(lockFile);
-    if (!snapshot || !isDeadPidPayload(snapshot.payload)) return false;
-    return stealLockFile(lockFile, snapshot);
-  });
+  reclaimDeadLock(lockFile);
 }
 
 function acquireFileLock(lockFile: string): () => void {
