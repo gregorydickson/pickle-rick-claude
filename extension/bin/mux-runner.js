@@ -5476,9 +5476,17 @@ export function routeExitPathSalvage(input) {
         },
         commitScoped: () => ({ committed: legacy.committed, sha: legacy.sha }),
         // The per-seam fn already left gate-failing work in place for the failure
-        // path; salvage must not re-archive/reset it here (behavior parity).
+        // path; salvage must not re-archive it here (behavior parity — never
+        // discard the dirty tree at this seam). It MUST still release status to
+        // Todo: this is the ONLY automatic Todo writer reachable from a
+        // failed_flip_suppressed hold set at the other flip sites (head
+        // regression / wmw-auto-skip / worker-gate-fail), whose release requires
+        // the literal frontmatter status `todo` (readActiveFailedFlipHolds).
+        // Stubbing this out strands a held-but-runnable ticket forever.
         archive: () => null,
-        resetTodo: () => { },
+        resetTodo: (i) => {
+            updateTicketFrontmatter(i.ticketId, i.sessionDir, { status: 'Todo', completion_commit: null });
+        },
         ffReattach: () => ({ recovered: false }),
     };
     const outcome = salvageTicket({ sessionDir: input.sessionDir, workingDir: input.workingDir, ticketId: input.ticketId, log: input.log }, deps);

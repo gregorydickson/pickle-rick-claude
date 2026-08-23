@@ -17,9 +17,19 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import { salvageTicket } from '../lib/salvage-ticket.js';
-import { partitionExitPathDirtyByOwnership } from '../bin/mux-runner.js';
+import {
+  partitionExitPathDirtyByOwnership,
+  routeExitPathSalvage,
+  readActiveFailedFlipHolds,
+  noRunnableTicketsRemain,
+} from '../bin/mux-runner.js';
+import { getTicketStatus } from '../services/pickle-utils.js';
 
 // The 5 interruption seams (AC-W3-1 seam axis).
 const SEAMS = [
@@ -165,5 +175,117 @@ describe('salvageTicket cross-cutting invariants', () => {
     assert.ok(owned.includes('extension/src/a.ts'), 'source deliverable owned');
     assert.ok(owned.includes('sessions/sess/MINE/plan.md'), 'own ticket artifact owned');
     assert.ok(foreign.includes('sessions/sess/OTHER/research_x.md'), 'sibling ticket artifact foreign');
+  });
+});
+
+// aafc633a: routeExitPathSalvage is the ONE shared dep-set builder consumed by
+// all three exit-commit call sites (mux-runner.ts :11351 / :11444 / :11520),
+// so driving the exported function once against the REAL salvage-ticket.js +
+// git-utils.js wiring covers all three by construction (AC-1/AC-2/AC-3). Uses
+// a real git repo (matches the start-commit-salvage-guards.test.js pattern) —
+// none of the functions under test read PICKLE_DATA_ROOT (all take an
+// explicit sessionDir), so no data-root sandbox is required.
+function git(args, cwd) {
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 15000 }).trim();
+}
+
+function initRepoWithExtensionDir() {
+  const repo = mkdtempSync(path.join(tmpdir(), 'pickle-restwiring-repo-'));
+  git(['init', '-q'], repo);
+  git(['config', 'user.email', 'restwiring@test.local'], repo);
+  git(['config', 'user.name', 'restwiring'], repo);
+  mkdirSync(path.join(repo, 'extension'), { recursive: true });
+  writeFileSync(path.join(repo, 'tracked.txt'), 'base\n');
+  git(['add', '.'], repo);
+  git(['commit', '-q', '-m', 'base', '--no-gpg-sign'], repo);
+  return repo;
+}
+
+function makeHeldSessionDir(workingDir, ticketId) {
+  const tmp = mkdtempSync(path.join(tmpdir(), 'pickle-restwiring-session-'));
+  const sessionDir = path.join(tmp, 'session');
+  const ticketDir = path.join(sessionDir, ticketId);
+  mkdirSync(ticketDir, { recursive: true });
+  writeFileSync(
+    path.join(ticketDir, `rick_ticket_${ticketId}.md`),
+    `---\nid: ${ticketId}\ntitle: Held ticket ${ticketId}\nstatus: In Progress\norder: 1\n---\n\n# Test\n`,
+  );
+  const statePath = path.join(sessionDir, 'state.json');
+  writeFileSync(
+    statePath,
+    JSON.stringify({
+      active: true, schema_version: 5, working_dir: workingDir, step: 'implement',
+      iteration: 1, max_iterations: 50, worker_timeout_seconds: 600,
+      start_time_epoch: Math.floor(Date.now() / 1000), original_prompt: 'restwiring test',
+      session_dir: sessionDir, started_at: new Date().toISOString(), history: [],
+      tmux_mode: false, backend: 'claude', activity: [],
+      recovery_attempts: [
+        { strategy: 'failed_flip_suppressed', outcome: 'success', ticket: ticketId, iteration: 1, reason: 'held for test' },
+      ],
+    }),
+  );
+  return { tmp, sessionDir, statePath };
+}
+
+const failingRunGate = () => ({ ok: false, failures: [], timed_out: false, timeout_ms: null });
+const passingRunGate = () => ({ ok: true, failures: [], timed_out: false, timeout_ms: null });
+
+/** Normalizes a raw frontmatter status the same way readActiveFailedFlipHolds does. */
+function normalizedStatus(sessionDir, ticketId) {
+  return (getTicketStatus(sessionDir, ticketId) || '').toLowerCase().replace(/["']/g, '').trim();
+}
+
+/**
+ * Builds a real repo + a session dir holding one ticket under an active
+ * failed_flip_suppressed hold, dirties the tree, runs `fn`, then cleans up
+ * both temp roots regardless of outcome.
+ */
+function withHeldTicketFixture(ticketId, fn) {
+  const repo = initRepoWithExtensionDir();
+  let sessionTmp;
+  try {
+    const { tmp, sessionDir, statePath } = makeHeldSessionDir(repo, ticketId);
+    sessionTmp = tmp;
+    writeFileSync(path.join(repo, 'tracked.txt'), 'dirty\n'); // isWorkingTreeDirty(repo) === true
+    const route = (runGate) => routeExitPathSalvage({
+      sessionDir, statePath, workingDir: repo, ticketId,
+      extensionRoot: path.join(repo, 'extension'), flags: null, log: () => {}, runGate,
+    });
+    fn({ sessionDir, route });
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
+  }
+}
+
+describe('routeExitPathSalvage: shared dep-set release wiring (aafc633a)', () => {
+  it('AC-1: a gate-failing dirty tree resets frontmatter status to the literal "todo"', () => {
+    withHeldTicketFixture('restw001', ({ sessionDir, route }) => {
+      const result = route(failingRunGate);
+      assert.equal(result.committed, false, 'gate-failing dirty tree never commits');
+      assert.equal(normalizedStatus(sessionDir, 'restw001'), 'todo', 'resetTodo must write the literal frontmatter status "todo"');
+    });
+  });
+
+  it('AC-2: releasing the hold clears readActiveFailedFlipHolds and noRunnableTicketsRemain for the lone-ticket roster', () => {
+    withHeldTicketFixture('restw002', ({ sessionDir, route }) => {
+      // Before release: the hold is active and the lone-ticket roster is
+      // (incorrectly) unrunnable — this is the incident this ticket fixes.
+      assert.ok(readActiveFailedFlipHolds(sessionDir).has('restw002'), 'hold is active before release');
+      assert.equal(noRunnableTicketsRemain(sessionDir), true, 'held ticket makes the lone roster look unrunnable');
+
+      route(failingRunGate);
+
+      assert.equal(readActiveFailedFlipHolds(sessionDir).has('restw002'), false, 'hold released after resetTodo');
+      assert.equal(noRunnableTicketsRemain(sessionDir), false, 'roster is runnable again — L5 terminal must not fire');
+    });
+  });
+
+  it('a gate-passing dirty tree still commits + Done (archive/resetTodo path not taken)', () => {
+    withHeldTicketFixture('restw003', ({ sessionDir, route }) => {
+      const result = route(passingRunGate);
+      assert.equal(result.committed, true, 'gate-passing dirty tree commits');
+      assert.equal(normalizedStatus(sessionDir, 'restw003'), 'done', 'gate-passing path flips Done, not Todo');
+    });
   });
 });
