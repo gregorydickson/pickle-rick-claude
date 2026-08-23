@@ -17,7 +17,7 @@ import { reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
 import { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream, CODEX_DELIMITER_RE } from '../services/classifier-utils.js';
 import { emitCrossTicketRegressionLinearComment } from '../lib/linear-comment.js';
 import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
-import { getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, CODEGRAPH_PATHSPEC_EXCLUDES } from '../services/git-utils.js';
+import { runGit, getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, CODEGRAPH_PATHSPEC_EXCLUDES } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence } from '../services/ticket-completion-evidence.js';
@@ -5510,13 +5510,35 @@ export function routeFailedFlipSuppression(input) {
     }
     return evaluateFailedFlipSuppression(input);
 }
-/** Probe the recovery evidence the runner already holds: tree state, plan artifacts, output. */
-function assessRecoveryEvidence(sessionDir, workingDir, ticketId) {
-    let treeDirty = false;
+/**
+ * Measure the working tree, distinguishing a MEASURED clean tree from an ABSENT
+ * measurement. `listWorkingTreeDirtyPaths` THROWS on every git failure on purpose
+ * (AP-EXT-ITER8-01), so a bare `catch → false` republishes that failure as a
+ * measured-clean verdict — the AP-EXT-ITER47-01/48-01 shape. Returns:
+ *   `true`  — measured dirty
+ *   `false` — measured clean, OR `workingDir` is provably not a git repository
+ *             (no tree that could be dirty — a real answer, not a fabricated one)
+ *   `null`  — the probe failed inside a real repo (index.lock contention, timeout,
+ *             ENOBUFS): unmeasurable, and never to be read as "clean"
+ */
+function probeTreeDirty(workingDir) {
     try {
-        treeDirty = isWorkingTreeDirty(workingDir);
+        return isWorkingTreeDirty(workingDir);
     }
-    catch { /* non-repo / git error → treat as clean */ }
+    catch { /* fall through to the repo probe */ }
+    // Same predicate the two existing non-repo probes use (setup.ts `isInsideGitRepo`,
+    // scope-resolver.ts `assertIsRepo`): `rev-parse --git-dir` answers repo-or-not even
+    // when `status` cannot run. If it fails too, the answer stays unmeasurable.
+    try {
+        return runGit(['rev-parse', '--git-dir'], workingDir, false).trim().length > 0 ? null : false;
+    }
+    catch {
+        return null;
+    }
+}
+/** Probe the recovery evidence the runner already holds: tree state, plan artifacts, output. */
+export function assessRecoveryEvidence(sessionDir, workingDir, ticketId) {
+    const dirty = probeTreeDirty(workingDir);
     let planArtifactExists = false;
     let planApproved = false;
     try {
@@ -5529,9 +5551,17 @@ function assessRecoveryEvidence(sessionDir, workingDir, ticketId) {
     }
     catch { /* ticket dir unreadable → no plan evidence */ }
     return {
-        treeDirty,
-        planConvergedUncommitted: !treeDirty && isConvergedPlanEligible({ planArtifactExists, planReviewApproved: planApproved }),
-        noWorkProduced: !treeDirty && !planArtifactExists,
+        // An ABSENT tree measurement must not SKIP the salvage rungs: `null` reads as
+        // possibly-dirty so rungs 1–2 still ATTEMPT the commit-and-flip on a tree that may
+        // hold the whole ticket. Both rungs contain their own adapter throws, so a still-
+        // broken probe simply records a failed attempt and falls through.
+        treeDirty: dirty !== false,
+        // The two DISPOSITION-bearing fields keep the exact readings the fabricated-clean
+        // catch produced (`!treeDirty` was `dirty !== true` for every measurable case and
+        // for the unmeasurable one). Honesty is a reporting property, halting is a
+        // disposition: this fix widens what the ladder ATTEMPTS, never where it lands.
+        planConvergedUncommitted: dirty !== true && isConvergedPlanEligible({ planArtifactExists, planReviewApproved: planApproved }),
+        noWorkProduced: dirty !== true && !planArtifactExists,
     };
 }
 /**

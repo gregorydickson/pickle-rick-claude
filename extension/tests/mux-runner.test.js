@@ -4751,3 +4751,130 @@ test('R-WSRC-2: the only raw sm.read(statePath) in mux-runner.ts is inside readR
     `(lines ${wrapperStart + 1}-${wrapperEnd + 1})`,
   );
 });
+
+// AP-EXT-ITER49-01 — assessRecoveryEvidence: an ABSENT working-tree measurement
+// must not be published as a MEASURED clean tree.
+//
+// `listWorkingTreeDirtyPaths` THROWS on every git failure on purpose
+// (AP-EXT-ITER8-01). The assessor used to map that throw to `treeDirty = false`,
+// which skipped the ladder's two salvage rungs entirely — the ticket's whole
+// uncommitted implementation was never offered to commit-and-continue — while
+// the ladder still reported the `no_work_produced` fall_through, its own
+// "genuinely zero output" verdict.
+//
+// The fix widens what the ladder ATTEMPTS and leaves every disposition alone:
+// the two disposition-bearing flags read exactly as they did before, so a
+// still-broken probe records a failed rung and lands on the same fall_through.
+//
+// A corrupt `.git/index` is the deterministic unmeasurable shape: `git status`
+// exits 128 while `git rev-parse --git-dir` still exits 0, so the dir is
+// provably a repo whose tree could not be read.
+function seedRecoveryEvidenceRepo(root, { corruptIndex = false } = {}) {
+  const repoDir = path.join(root, 'repo');
+  fs.mkdirSync(repoDir, { recursive: true });
+  assert.equal(spawnSync('git', ['init'], { cwd: repoDir, encoding: 'utf-8', timeout: 30_000 }).status, 0);
+  spawnSync('git', ['config', 'user.email', 'tests@example.com'], { cwd: repoDir, encoding: 'utf-8', timeout: 30_000 });
+  spawnSync('git', ['config', 'user.name', 'Pickle Tests'], { cwd: repoDir, encoding: 'utf-8', timeout: 30_000 });
+  fs.writeFileSync(path.join(repoDir, 'seed.txt'), 'seed\n');
+  spawnSync('git', ['add', 'seed.txt'], { cwd: repoDir, encoding: 'utf-8', timeout: 30_000 });
+  assert.equal(
+    spawnSync('git', ['commit', '-m', 'seed', '--no-gpg-sign'], { cwd: repoDir, encoding: 'utf-8', timeout: 30_000 }).status,
+    0,
+  );
+  if (corruptIndex) {
+    // Truncated index: `git status` fatals (128), `rev-parse --git-dir` still succeeds.
+    fs.writeFileSync(path.join(repoDir, '.git', 'index'), 'GARBAGE-NOT-AN-INDEX');
+    assert.notEqual(
+      spawnSync('git', ['status', '--porcelain'], { cwd: repoDir, encoding: 'utf-8', timeout: 30_000 }).status,
+      0,
+      'fixture precondition: git status must FAIL on the corrupt index',
+    );
+    assert.equal(
+      spawnSync('git', ['rev-parse', '--git-dir'], { cwd: repoDir, encoding: 'utf-8', timeout: 30_000 }).status,
+      0,
+      'fixture precondition: the dir must still be a provable git repo',
+    );
+  }
+  return repoDir;
+}
+
+test('AP-EXT-ITER49-01: an UNMEASURABLE tree still attempts the salvage rungs, and keeps the same disposition', async () => {
+  const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  const repoDir = seedRecoveryEvidenceRepo(root, { corruptIndex: true });
+  const sessionDir = path.join(root, 'session');
+  fs.mkdirSync(path.join(sessionDir, 'tkt1'), { recursive: true });
+
+  const evidence = assessRecoveryEvidence(sessionDir, repoDir, 'tkt1');
+
+  // The fix: an absent measurement reads as possibly-dirty, so runRecoveryLadder
+  // enters the treeDirty arm and rungs 1-2 get to try to commit the work.
+  assert.equal(
+    evidence.treeDirty, true,
+    'a failed git-status probe must NOT be published as a measured clean tree — ' +
+    'it skips commit-and-continue over a tree that may hold the whole ticket',
+  );
+  // Disposition unchanged: still the exact fall_through the fabricated-clean read produced.
+  assert.equal(evidence.noWorkProduced, true, 'the fall_through disposition must be preserved');
+  assert.equal(evidence.planConvergedUncommitted, false);
+});
+
+test('AP-EXT-ITER49-01: a MEASURED clean tree is unchanged (no salvage rungs, no gate cost)', async () => {
+  const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  const repoDir = seedRecoveryEvidenceRepo(root);
+  const sessionDir = path.join(root, 'session');
+  fs.mkdirSync(path.join(sessionDir, 'tkt1'), { recursive: true });
+
+  assert.deepEqual(assessRecoveryEvidence(sessionDir, repoDir, 'tkt1'), {
+    treeDirty: false,
+    planConvergedUncommitted: false,
+    noWorkProduced: true,
+  });
+});
+
+test('AP-EXT-ITER49-01: a MEASURED dirty tree is unchanged', async () => {
+  const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  const repoDir = seedRecoveryEvidenceRepo(root);
+  fs.writeFileSync(path.join(repoDir, 'work.txt'), 'the ticket implementation\n');
+  const sessionDir = path.join(root, 'session');
+  fs.mkdirSync(path.join(sessionDir, 'tkt1'), { recursive: true });
+
+  assert.deepEqual(assessRecoveryEvidence(sessionDir, repoDir, 'tkt1'), {
+    treeDirty: true,
+    planConvergedUncommitted: false,
+    noWorkProduced: false,
+  });
+});
+
+test('AP-EXT-ITER49-01: a provable NON-repo is a measured answer, not an absent one', async () => {
+  const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  const plainDir = path.join(root, 'not-a-repo');
+  fs.mkdirSync(plainDir, { recursive: true });
+  const sessionDir = path.join(root, 'session');
+  fs.mkdirSync(path.join(sessionDir, 'tkt1'), { recursive: true });
+
+  // There is no tree that could be dirty, so rung 1 must NOT be attempted —
+  // otherwise every off-repo recovery pass buys a doomed gate + remediator spawn.
+  assert.equal(assessRecoveryEvidence(sessionDir, plainDir, 'tkt1').treeDirty, false);
+});
+
+test('AP-EXT-ITER49-01: an unmeasurable tree with an APPROVED plan still reaches the converged-plan rung', async () => {
+  const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  const repoDir = seedRecoveryEvidenceRepo(root, { corruptIndex: true });
+  const ticketDir = path.join(root, 'session', 'tkt1');
+  fs.mkdirSync(ticketDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketDir, 'plan_tkt1.md'), '## Phase 1 — do it\n');
+  fs.writeFileSync(path.join(ticketDir, 'plan_review.md'), 'APPROVED\n');
+
+  const evidence = assessRecoveryEvidence(path.join(root, 'session'), repoDir, 'tkt1');
+  assert.equal(evidence.treeDirty, true);
+  assert.equal(
+    evidence.planConvergedUncommitted, true,
+    'rung 3 must stay reachable — widening what the ladder attempts must not remove a rung',
+  );
+  assert.equal(evidence.noWorkProduced, false);
+});
