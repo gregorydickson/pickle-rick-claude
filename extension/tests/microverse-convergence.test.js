@@ -1356,6 +1356,32 @@ test('AP-EXT-ITER44-01: a result/confident_findings clean pass is evidence of a 
     );
 });
 
+test('AP-EXT-ITER44-01: the two arms are OR-ed, so widening the key table can never NARROW the reader', () => {
+    const base = {
+        subsystems: ['bin'],
+        current_index: 0,
+        pass_counts: { bin: 8 },
+        consecutive_clean: { bin: 0 },
+    };
+    // A contradictory entry — a non-empty count beside a `clean` outcome. Ranking the count arm
+    // above the verdict arm reads these non-clean and ARMS the ceiling, which is strictly worse
+    // than the pre-table reader (it had no `confident_findings` key and honoured the verdict).
+    // Bias WIDE: uncertain evidence must never halt. Both orderings of the contradiction are
+    // pinned so neither key table can acquire precedence over the other.
+    for (const history of [
+        { bin: [{ pass: 8, confident_findings: [{ id: 'X-1' }], verdict: 'clean' }] },
+        { bin: [{ pass: 8, confident_findings: 3, result: 'clean' }] },
+        { bin: [{ pass: 8, findings: 3, verdict: 'clean' }] },
+        { bin: [{ pass: 8, findings: [{ id: 'X-1' }], confident_findings: 0 }] },
+    ]) {
+        assert.equal(
+            classifyAnatomyNonConvergence({ ...base, findings_history: history }, 8),
+            null,
+            `a contradictory entry must not arm the ceiling: ${JSON.stringify(history)}`,
+        );
+    }
+});
+
 test('AP-EXT-ITER44-01: a result-only clean verdict counts, and non-clean dialect passes stay armed', () => {
     const base = {
         subsystems: ['bin'],

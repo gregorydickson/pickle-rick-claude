@@ -3313,28 +3313,23 @@ export function auditPostIterationScope(ctx, state) {
 // reader can never re-fork into one branch per producer dialect.
 const CLEAN_PASS_COUNT_KEYS = ['findings', 'confident_findings'];
 const CLEAN_PASS_VERDICT_KEYS = ['verdict', 'result'];
-// A count arm is present when at least one count key carries a list or a finite number. Returns
-// null when the entry carries no count at all, so the verdict arm can answer instead. Bias WIDE:
-// ANY zero count reads clean — a false halt is anti-quality, an unarmed ceiling merely runs on.
-function readCleanPassCount(record) {
-    const counts = CLEAN_PASS_COUNT_KEYS
-        .map((key) => record[key])
-        .filter((value) => Array.isArray(value) || Number.isFinite(value));
-    if (counts.length === 0) {
-        return null;
-    }
-    return counts.some((value) => (Array.isArray(value) ? value.length === 0 : value === 0));
-}
+// The two arms are OR'd, never ranked: a count key does NOT suppress the verdict key. Ranking them
+// NARROWS — a contradictory entry (a non-empty `confident_findings` beside `result: clean`) would
+// read non-clean where the pre-table reader read clean, arming the ceiling on uncertain evidence.
+// Bias WIDE, unconditionally: a false halt takes reliability AND quality to zero, an unarmed
+// ceiling merely runs the loop on. OR is also MONOTONE — adding a key can only ever widen — so a
+// future dialect can never narrow this reader the way ranking silently did.
 function isCleanPassEntry(entry) {
     if (!entry || typeof entry !== 'object') {
         return false;
     }
     const record = entry;
-    const byCount = readCleanPassCount(record);
-    if (byCount !== null) {
-        return byCount;
-    }
-    return CLEAN_PASS_VERDICT_KEYS.some((key) => typeof record[key] === 'string' && record[key].trim().toLowerCase() === 'clean');
+    const zeroCount = CLEAN_PASS_COUNT_KEYS.some((key) => {
+        const value = record[key];
+        return Array.isArray(value) ? value.length === 0 : value === 0;
+    });
+    const cleanVerdict = CLEAN_PASS_VERDICT_KEYS.some((key) => typeof record[key] === 'string' && record[key].trim().toLowerCase() === 'clean');
+    return zeroCount || cleanVerdict;
 }
 function hasRecordedCleanPass(anatomyConfig, subsystem) {
     const history = anatomyConfig.findings_history;
