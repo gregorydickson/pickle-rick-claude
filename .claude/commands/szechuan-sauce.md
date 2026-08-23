@@ -370,7 +370,7 @@ Include these hygiene checks in every review pass alongside the standard princip
 
 4. **Binary leak risk (P2)**: Any new file larger than `LARGE_FILE_BYTES` that is not gitignored is a P2 hygiene finding.
 
-All diff-hygiene findings MUST include `category: 'hygiene'` in `szechuan-sauce.json` so Citadel's T10.9 diff-shape gate can dedupe the same-diff finding instead of double-counting it. A diff that adds root `notes.md` produces a P1 finding with `category: 'hygiene'`.
+All diff-hygiene findings MUST include `category: 'hygiene'` in `szechuan-sauce.json` so Citadel's T10.9 diff-shape gate can dedupe the same-diff finding instead of double-counting it. A diff that adds root `notes.md` produces a P1 finding with `category: 'hygiene'`. Override 8 defines how that file is written — the mandate is unreachable without it.
 
 ### Override 5: Trap-Door-as-Test Enforcement
 
@@ -427,6 +427,54 @@ Do NOT pass `--ticket-id`: a microverse worker has no ticket. `# EXECUTION CONTE
 - **Exit 0**: proceed with commit.
 - **Exit 1**: DO NOT commit. Surface the outside-scope paths as a P1 principle violation (`Scope boundary crossed — files outside allowed_paths staged`), unstage the outside-scope paths with `git reset HEAD <paths>`, and treat it as the iteration's violation — record it in `gap_analysis.md` and move on.
 - **Exit 2** (malformed scope.json): log the error to stderr and proceed without the scope check.
+
+### Override 8: Citadel Findings Hand-off (`szechuan-sauce.json`)
+
+`gap_analysis.md` is this loop's own ledger and its shape is yours to choose.
+`${SESSION_ROOT}/szechuan-sauce.json` is a CONTRACT with a different reader: Citadel's cross-phase
+safety net (`readPhaseFindings`, `services/citadel/audit-runner.ts`) harvests it by reading a
+TOP-LEVEL `findings` array and nothing else, and `auditDiffHygiene` builds its suppression index
+from that same array. **Nothing else in the pipeline writes this file** — if the worker does not,
+citadel harvests ZERO szechuan findings and `suppressed_by_szechuan` stays 0, so neither the T10.9
+diff-shape dedupe promised in Override 4 nor the T6 `(claude_md_file, bullet_text)` dedupe promised
+in Override 5 can ever fire. And unlike `anatomy-park.json` there is no `missing` breadcrumb for
+this artifact (`readPhaseFindings` sets `missing` for anatomy only), so its absence is
+indistinguishable from "szechuan-sauce found nothing."
+
+Rewrite it whole after every scoring pass:
+
+```json
+{
+  "findings": [
+    {
+      "id": "szechuan-diff-hygiene-root-markdown-orphan-notes-md",
+      "severity": "High",
+      "priority": "P1",
+      "category": "hygiene",
+      "rule": "root-markdown-orphan",
+      "file": "notes.md",
+      "message": "orphan planning doc — move to docs/ or prds/ or delete"
+    }
+  ]
+}
+```
+
+- **`severity` uses CITADEL's spelling, not szechuan's P-scale.** Map `P0` → `"Critical"`, `P1` →
+  `"High"`, `P2` → `"Medium"`, `P3`/`P4` → `"Low"`. `isSeverity` accepts exactly
+  `Critical`/`High`/`Medium`/`Low`; a `"P0"` is dropped ENTRY AND ALL, not downgraded. The shared
+  rule source stamps the P-scale into `severity` itself (`makeSzechuanFinding`,
+  `services/citadel/diff-hygiene.ts`), so a finding copied from it verbatim harvests as zero — map
+  before you write, and keep the P-scale in a sibling `priority` key.
+- **`id` and `severity` are mandatory per entry** — citadel skips any record missing either.
+- **Hygiene findings additionally need `category: 'hygiene'`, a repo-relative `file`, and `rule`** —
+  the suppression index keys on `id`, then `file:rule`, then `file`. Without one of those citadel
+  re-reports the same added file that Override 4 already reported.
+- **Trap-door findings carry `claude_md_file` and `bullet_text` verbatim** (Override 5) — that tuple
+  is citadel's only dedupe key for T6.
+- **Rewrite, do not append**: the array is the projection of every violation still OPEN, including
+  ones tagged `[report-only: intentional design choice]` and ones the scope fence blocked from being
+  fixed. A violation this iteration fixed and verified leaves the array; its `gap_analysis.md` record
+  stays.
 
 ### Standard Protocol
 

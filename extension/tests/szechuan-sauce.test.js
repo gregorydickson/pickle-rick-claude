@@ -620,3 +620,106 @@ test('init-microverse accepts --metric-json for custom metrics', () => {
         fs.rmSync(dir, { recursive: true });
     }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER46-01 ENFORCE — the citadel cross-phase reader vs. the shape the
+// szechuan PRODUCER writes (replay of AP-EXT-ITER45-01 on the sibling artifact).
+//
+// `readPhaseFindings` (`src/services/citadel/audit-runner.ts`) harvests a TOP-LEVEL
+// `findings` array out of `szechuan-sauce.json`, and `auditDiffHygiene` builds its
+// suppression index from the same array. Since 650bd933 the prompt has MANDATED
+// content for that file ("MUST include `category: 'hygiene'` in `szechuan-sauce.json`")
+// without ever instructing the worker to write it — no producer exists anywhere in the
+// repo — so the harvest is structurally zero and, unlike anatomy-park.json, no `missing`
+// breadcrumb fires (`missing` is set for anatomy only). Override 8 is the producer half.
+//
+// The second case is the load-bearing one and it is NOT hand-authored: it derives the
+// findings from the shared rule source `auditSzechuanDiffHygiene`, which is what the
+// worker is pointed at in Override 4. That canonical shape stamps `severity: 'P0'` —
+// which `isSeverity` rejects entry-and-all — so copying it verbatim harvests zero. Only
+// the Override 8 severity mapping makes it through the shipped reader.
+// ---------------------------------------------------------------------------
+
+test('szechuan-sauce.md defines the citadel findings hand-off contract', () => {
+    const content = readCommand();
+    assert.ok(
+        content.includes('### Override 8: Citadel Findings Hand-off (`szechuan-sauce.json`)'),
+        'missing citadel hand-off override — citadel harvests zero szechuan findings without it'
+    );
+    assert.ok(content.includes('TOP-LEVEL `findings` array'), 'must name the top-level findings array as the harvested key');
+    assert.ok(content.includes('Nothing else in the pipeline writes this file'), 'must state that the worker is the only producer');
+    assert.ok(
+        content.includes('`P0` → `"Critical"`') && content.includes('`P1` →') && content.includes('`P3`/`P4` → `"Low"`'),
+        'must define the P-scale to citadel-severity mapping'
+    );
+    assert.ok(content.includes('dropped ENTRY AND ALL'), 'must warn that an unmapped severity drops the whole record');
+    assert.ok(content.includes('Rewrite, do not append'), 'must define the array as an open-violation projection');
+});
+
+test('canonical szechuan hygiene findings reach citadel only through the Override 8 severity mapping', async () => {
+    const { auditSzechuanDiffHygiene } = await import('../services/citadel/diff-hygiene.js');
+    const { runCitadelAudit } = await import('../services/citadel/audit-runner.js');
+
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'szechuan-crossphase-repo-'));
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'szechuan-crossphase-session-'));
+    const git = (args) => execSync(`git ${args}`, { cwd: repoRoot, stdio: 'pipe', timeout: 15000 });
+    try {
+        fs.writeFileSync(path.join(repoRoot, 'prd.md'), '# PRD\n\n## Acceptance Criteria\n\n**AC-TEST-01**: Stable.\n');
+        git('init -q');
+        git('config user.email test@example.com');
+        git('config user.name "Test User"');
+        git('add .');
+        git('commit -qm base');
+        const base = execSync('git rev-parse HEAD', { cwd: repoRoot, encoding: 'utf-8', timeout: 15000 }).trim();
+        // `notes.md` is the exact Override 4 example: an orphan root markdown, P1.
+        fs.writeFileSync(path.join(repoRoot, 'notes.md'), 'scratch\n');
+        git('add .');
+        git('commit -qm head');
+
+        const diffRange = `${base}..HEAD`;
+        const audit = async () => (await runCitadelAudit({
+            prdPath: 'prd.md', diffRange, repoRoot, sessionDir,
+        })).sections.cross_phase;
+
+        // The shared rule source the worker is told to mirror — not a fixture.
+        const canonical = auditSzechuanDiffHygiene({
+            repoRoot,
+            changedFiles: [{ path: 'notes.md', status: 'A' }],
+        }).findings;
+        assert.ok(canonical.length > 0, 'shared rule source should flag the orphan root markdown');
+        assert.equal(canonical[0].severity, canonical[0].priority, 'canonical shape stamps the P-scale into severity itself');
+
+        const artifactPath = path.join(sessionDir, 'szechuan-sauce.json');
+
+        // Unmapped: every entry is dropped entry-and-all, and nothing announces it.
+        fs.writeFileSync(artifactPath, JSON.stringify({ findings: canonical }, null, 2));
+        const unmapped = await audit();
+        assert.equal(unmapped.summary.szechuan_sauce, 0, 'P-spelled severities harvest as zero');
+
+        // Mapped per Override 8: same findings, citadel severity spelling.
+        const P_TO_CITADEL = { P0: 'Critical', P1: 'High', P2: 'Medium', P3: 'Low', P4: 'Low' };
+        const mapped = canonical.map((f) => ({ ...f, severity: P_TO_CITADEL[f.priority] }));
+        fs.writeFileSync(artifactPath, JSON.stringify({ findings: mapped }, null, 2));
+        const harvested = await audit();
+        assert.equal(harvested.summary.szechuan_sauce, mapped.length, 'mapped severities harvest through the shipped reader');
+        assert.ok(
+            harvested.findings.some((f) => f.source === 'szechuan-sauce' && f.original_id === canonical[0].id),
+            'harvested finding keeps its producer id'
+        );
+
+        // The same array is the diff-hygiene suppression index: without it citadel
+        // re-reports the added file that szechuan already reported.
+        fs.rmSync(artifactPath);
+        const unsuppressed = await runCitadelAudit({ prdPath: 'prd.md', diffRange, repoRoot, sessionDir });
+        assert.equal(unsuppressed.sections.diff_hygiene.summary.suppressed_by_szechuan, 0, 'no artifact means no suppression');
+        fs.writeFileSync(artifactPath, JSON.stringify({ findings: mapped }, null, 2));
+        const suppressed = await runCitadelAudit({ prdPath: 'prd.md', diffRange, repoRoot, sessionDir });
+        assert.ok(
+            suppressed.sections.diff_hygiene.summary.suppressed_by_szechuan > 0,
+            'the Override 8 artifact must feed the T10.9 dedupe'
+        );
+    } finally {
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
