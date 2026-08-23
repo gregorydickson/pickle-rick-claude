@@ -1,3 +1,33 @@
+> **⚠️ CORRECTED 2026-08-23 — the divergence is real, but this PRD named the wrong target and the
+> authored table was partly unverified.** Measured at HEAD:
+>
+> | pin | value |
+> |---|---|
+> | `extension/package.json` `engines.node` | `22.x` |
+> | `.github/workflows/release.yml` | `'22.x'` |
+> | `.github/workflows/ci.yml` | `'24'` |
+> | `.github/workflows/stability-gate.yml` | `'24'` |
+>
+> The release-gate-vs-CI divergence stands. Three corrections to the authored text:
+>
+> 1. **The authored `ci.yml` row was asserted before it was read.** It is `'24'`, but the value quoted
+>    originally came from a grep that returned empty — right answer, unverified derivation.
+> 2. **`ci.yml` carries an R-CIFB comment claiming the project target is Node 25** — *"align CI to the
+>    project's actual target (CLAUDE.md = Node 25; dev runs 25.x)"* — yet it pins `'24'`. Grepping BOTH
+>    `CLAUDE.md` and `extension/CLAUDE.md` for any Node version returns **nothing**. The comment cites a
+>    target that is not documented anywhere. **The codebase disagrees with itself about what the target
+>    is**, which is a larger defect than the pin mismatch this PRD describes, and it must be resolved
+>    first — otherwise "align on one major" has no authority to align to.
+> 3. **Node 25 is unusable on this host**: brew's 25.2.1 fails at launch with
+>    `dyld: Library not loaded: /opt/homebrew/opt/simdjson/lib/libsimdjson.29.dylib`. So "align on 25"
+>    is not merely undocumented, it is unavailable here.
+>
+> **AC-1 must therefore name a major, and that choice is NOT settled by this PRD.** The measured
+> evidence favours **24** — both CI workflows use it, and it is the only line where the 38 fast-tier
+> cancellations disappear (22.12.0 AND 22.23.2 both cancel; 24.19.0 does not). That is a **lead, not a
+> conclusion**: an undocumented target plus a comment asserting a third version means the research phase
+> must establish the intent, not infer it.
+
 # BUG-2026-08-21 (P1) — the release gate is pinned to a Node line on which 38 tests cancel
 
 ## Status

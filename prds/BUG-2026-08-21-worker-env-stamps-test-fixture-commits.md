@@ -1,3 +1,20 @@
+> **✅ ALREADY SHIPPED — verified 2026-08-23 by the mandatory stale-premise check, NOT drainable.**
+> The scrub this PRD asks for exists AND is applied. `PICKLE_GATE_SCRUBBED_ENV_KEYS`
+> (`services/pickle-utils.ts:182`) covers every variable named here — `PICKLE_TICKET_ID_ENV_VAR`,
+> `GIT_CONFIG_COUNT_ENV_VAR`, `GIT_CONFIG_GLOBAL/SYSTEM/NOSYSTEM` — plus the indexed pairs via
+> `GIT_CONFIG_INDEXED_ENV_KEY_RE = /^GIT_CONFIG_(KEY|VALUE)_\d+$/`.
+>
+> Crucially it is USED, not merely defined: `env: scrubGateEnv()` at **`spawn-morty.ts:1328`** and
+> **`mux-runner.ts:750`** — both worker-gate spawn sites. A list that existed but was never referenced
+> would have looked identical to a fix under a naive grep; checking the call site is what settles it.
+>
+> This also satisfies the PRD's own AC-3 ("reuse the existing gate-env scrub list; do not add a second
+> mechanism") — it was already satisfied when the PRD was authored.
+>
+> **Corroborating field evidence:** session `2026-08-22-5c53a293` recorded only
+> `post_final_tier_degraded:red` with NO `done_over_red_worker_gate_tests`, against six such entries in
+> `2026-08-20-54c74299`. Consistent with the false-red mechanism being closed.
+
 # BUG-2026-08-21 (P1) — worker env stamps test-fixture commits, producing FALSE worker-gate reds
 
 ## Status

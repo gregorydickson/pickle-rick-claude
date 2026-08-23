@@ -1,3 +1,23 @@
+> **✅ ALREADY SHIPPED — verified 2026-08-23 by the mandatory stale-premise check, NOT drainable.**
+> The bug report's mechanism no longer exists in HEAD or the deployed tree. Both defects are fixed:
+> the fabricated test name and the lost diagnostic.
+>
+> | | PRD (2026-08-16) | HEAD 2026-08-23 |
+> |---|---|---|
+> | `parseBetweenTicketFastGateFailures` | `mux-runner.ts:601` | `:683` |
+> | fallback | `lines.map(...).find(Boolean)` — scrapes npm's banner as a test name | `buildScriptFailureMessage`: last 20 non-empty lines, carrying the audit script's own error text |
+> | banner | scraped | **parsed** by `extractFailingNpmScriptPhase` to name the failing npm phase |
+>
+> The shipped code carries the PRD's own insight as a comment — *"lifecycle banner is always the first
+> non-empty line — never a real test name. This parses the banner to name the actual npm script phase
+> that failed instead of scraping that banner line"* — and `buildScriptFailureMessage` is annotated
+> **AC-2**, so this PRD's acceptance criteria were implemented directly.
+>
+> **Note for future stale-premise checks:** grepping the R-code alone was MISLEADING here. `R-GBANNER`
+> is present in both HEAD and the deployed tree, which the rule reads as "not open" — but that hit is a
+> comment marking it out of scope in `pipeline-runner.ts:4758`, unrelated to the fix. The finding is
+> closed for a different reason entirely. **Check the mechanism the PRD names, not just its R-code.**
+
 # BUG: the gate failure parser fabricates a test name from the npm banner — and it now falsely degrades runs
 
 - **Date**: 2026-08-16
