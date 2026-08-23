@@ -143,11 +143,31 @@ function discoverCatalogs() {
   return catalogs;
 }
 
+// A trap-door ENFORCE ref may name one test case (`…/foo.test.js#AC-CF-15`). The
+// catalogs author that anchor three ways — an ID prefix (`AP-RMS-12` for
+// `test('AP-RMS-12: …')`), a bare leading word (`Backend`), and a kebab slug of a
+// test-name SUFFIX (`a-linked-worktree-still-stamps-the-trailer`). ONE uniform rule
+// admits all three: slug both sides, then require segment-boundary containment, so
+// `AP-RMS-1` does NOT falsely resolve against `AP-RMS-12`.
+const slugify = (value) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+const TEST_NAME_RE = /\b(?:it|test)\s*\(\s*(['"`])((?:\\.|(?!\1)[^\\])*)\1/g;
+
+function anchorResolves(fileContent, anchor) {
+  const needle = `-${slugify(anchor)}-`;
+  for (const m of fileContent.matchAll(TEST_NAME_RE)) {
+    if (`-${slugify(m[2])}-`.includes(needle)) return true;
+  }
+  return false;
+}
+
 // Collect all ENFORCE: test file references using the same regex as
-// extractEnforceTestFiles() in trap-door-conformance.test.js.
+// extractEnforceTestFiles() in trap-door-conformance.test.js, plus the optional
+// `#anchor` that the file-only regex used to drop on the floor.
 function collectEnforceRefs(claudePath) {
   const lines = fs.readFileSync(claudePath, 'utf8').split('\n');
-  const enforceFiles = new Map(); // relative path -> line number
+  // Keyed on `rel#anchor` so each anchored ref is verified on its own, while every
+  // bare ref to one file still collapses to a single `rel#` entry as before.
+  const enforceFiles = new Map(); // 'rel#anchor' -> { rel, anchor, lineNum }
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -161,10 +181,13 @@ function collectEnforceRefs(claudePath) {
       j++;
     }
 
-    const matches = entryText.matchAll(/\b((?:extension\/)?tests\/[A-Za-z0-9_./-]+\.test\.js)\b/g);
+    const matches = entryText.matchAll(
+      /\b((?:extension\/)?tests\/[A-Za-z0-9_./-]+\.test\.js)\b(?:#([A-Za-z0-9_.:-]+))?/g
+    );
     for (const m of matches) {
-      if (!enforceFiles.has(m[1])) {
-        enforceFiles.set(m[1], i + 1);
+      const key = `${m[1]}#${m[2] ?? ''}`;
+      if (!enforceFiles.has(key)) {
+        enforceFiles.set(key, { rel: m[1], anchor: m[2] ?? null, lineNum: i + 1 });
       }
     }
   }
@@ -183,7 +206,7 @@ for (const claudePath of discoverCatalogs()) {
   const enforceFiles = collectEnforceRefs(claudePath);
   perCatalog.push(`${label}=${enforceFiles.size}`);
 
-  for (const [rel, lineNum] of enforceFiles) {
+  for (const { rel, anchor, lineNum } of enforceFiles.values()) {
     // Resolve: 'extension/tests/...' → repo root; 'tests/...' → extension root
     const absPath = rel.startsWith('extension/')
       ? path.join(repoRoot, rel)
@@ -205,6 +228,17 @@ for (const claudePath of discoverCatalogs()) {
     if (!tierMatch || !VALID_TIERS.has(tierMatch[1])) {
       process.stderr.write(
         `ENFORCE: ${label}:${lineNum}: no valid @tier annotation in ${rel} (first line: ${firstMeaningful.substring(0, 80)})\n`
+      );
+      failures++;
+      continue;
+    }
+
+    // The @tier check above proves only that the FILE is reachable. Without this the
+    // anchor was parsed and discarded, so a phantom `#anchor` still counted as
+    // "verified" — the exact recurrence the catalog-widening fix above set out to close.
+    if (anchor && !anchorResolves(fileContent, anchor)) {
+      process.stderr.write(
+        `ENFORCE: ${label}:${lineNum}: anchor #${anchor} matches no test case in ${rel}\n`
       );
       failures++;
       continue;

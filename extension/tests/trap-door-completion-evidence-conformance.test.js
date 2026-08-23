@@ -185,3 +185,126 @@ test('mux-runner.ts implements completion-evidence auto-promotion via persistEvi
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER2-01: the same "an anchor that can never match" failure mode, one
+// level up. The PATTERN_SHAPE arms above pin replay anchors against SOURCE
+// symbols; this arm pins ENFORCE anchors against TEST-CASE names.
+//
+// `scripts/audit-trap-door-enforcement.sh` sweeps every catalog's ENFORCE refs
+// and prints "N ENFORCE reference(s) verified", but until this bundle its regex
+// stopped at `.test.js` — the `#anchor` was parsed and dropped, so a trap door
+// could name a test case that never existed and the release gate still called it
+// verified. Citadel's independent reader (`trap-door-coverage-audit.ts`) demands
+// an EXACT full test-name literal, which no anchor in this repo is authored as,
+// so it reported all 13 as orphans — noise that buries a genuine orphan.
+//
+// The catalogs author anchors three ways, so one uniform rule admits all three:
+// slug both sides and require SEGMENT-BOUNDARY containment.
+// ---------------------------------------------------------------------------
+
+const CATALOGS = [
+  'extension/CLAUDE.md',
+  'extension/src/bin/CLAUDE.md',
+  'extension/src/services/CLAUDE.md',
+  'extension/src/hooks/CLAUDE.md',
+  'extension/src/lib/CLAUDE.md',
+  'extension/src/types/CLAUDE.md',
+];
+
+const slugify = (value) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+const TEST_NAME_RE = /\b(?:it|test)\s*\(\s*(['"\`])((?:\\.|(?!\1)[^\\])*)\1/g;
+
+function anchorResolves(fileContent, anchor) {
+  const needle = `-${slugify(anchor)}-`;
+  for (const m of fileContent.matchAll(TEST_NAME_RE)) {
+    if (`-${slugify(m[2])}-`.includes(needle)) return true;
+  }
+  return false;
+}
+
+/** Every `(?:extension/)?tests/….test.js#anchor` ref across all six catalogs. */
+function collectAnchoredEnforceRefs() {
+  const refs = [];
+  for (const catalog of CATALOGS) {
+    const catalogPath = path.join(repoRoot, catalog);
+    if (!fs.existsSync(catalogPath)) continue;
+    const text = fs.readFileSync(catalogPath, 'utf8');
+    const section = text.slice(text.indexOf('## Trap Doors'));
+    const re = /\b((?:extension\/)?tests\/[A-Za-z0-9_./-]+\.test\.js)\b#([A-Za-z0-9_.:-]+)/g;
+    for (const m of section.matchAll(re)) {
+      const rel = m[1].startsWith('extension/') ? m[1] : `extension/${m[1]}`;
+      refs.push({ catalog, rel, anchor: m[2] });
+    }
+  }
+  return refs;
+}
+
+test('AP-EXT-ITER2-01: every anchored ENFORCE ref resolves to a real test case', () => {
+  const refs = collectAnchoredEnforceRefs();
+  assert.ok(
+    refs.length > 0,
+    'no anchored ENFORCE refs found — the extraction regex drifted from the catalogs',
+  );
+
+  const unresolved = [];
+  for (const ref of refs) {
+    const absPath = path.join(repoRoot, ref.rel);
+    if (!fs.existsSync(absPath)) {
+      unresolved.push(`${ref.catalog} -> ${ref.rel} (file missing)`);
+      continue;
+    }
+    if (!anchorResolves(fs.readFileSync(absPath, 'utf8'), ref.anchor)) {
+      unresolved.push(`${ref.catalog} -> ${ref.rel}#${ref.anchor}`);
+    }
+  }
+
+  assert.deepEqual(
+    unresolved,
+    [],
+    `ENFORCE anchors naming no test case (the trap door's enforcement is dead):\n  ${unresolved.join('\n  ')}`,
+  );
+});
+
+test('AP-EXT-ITER2-01: the anchor rule rejects a phantom and honors segment boundaries', () => {
+  // Negative controls — without these the arm above is satisfied by any rule that
+  // always returns true, which is exactly the fake-green it exists to prevent.
+  const refinement = fs.readFileSync(
+    path.join(repoRoot, 'extension/tests/spawn-refinement-team-checker.test.js'),
+    'utf8',
+  );
+
+  assert.equal(anchorResolves(refinement, 'AP-RMS-12'), true, 'a real anchor must resolve');
+  assert.equal(
+    anchorResolves(refinement, 'zzz-no-such-anchor'),
+    false,
+    'a phantom anchor must NOT resolve',
+  );
+  // Segment boundary: `AP-RMS-1` is a prefix of the real `AP-RMS-12` but names no
+  // test case of its own, so a bare substring rule would green over a phantom.
+  assert.equal(
+    anchorResolves(refinement, 'AP-RMS-1'),
+    false,
+    'a prefix of a real anchor must NOT resolve — the rule is segment-boundary, not substring',
+  );
+});
+
+test('AP-EXT-ITER2-01: the release-gate audit verifies anchors, not just files', () => {
+  // The rule above is a second reader; the GATE is the shell audit. If the audit
+  // loses the anchor arm, the mirrored rule here keeps passing while the gate that
+  // actually blocks a release goes blind again.
+  const audit = fs.readFileSync(
+    path.join(repoRoot, 'extension/scripts/audit-trap-door-enforcement.sh'),
+    'utf8',
+  );
+  assert.match(
+    audit,
+    /anchor #\$\{anchor\} matches no test case in/,
+    'audit-trap-door-enforcement.sh lost its ENFORCE-anchor verification arm',
+  );
+  assert.match(
+    audit,
+    /function anchorResolves\(/,
+    'audit-trap-door-enforcement.sh lost the anchorResolves rule',
+  );
+});
