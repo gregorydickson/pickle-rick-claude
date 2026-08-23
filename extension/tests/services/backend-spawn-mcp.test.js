@@ -101,6 +101,133 @@ test('resolveMcpConfigPath: empty-string override falls through to ~/.claude.jso
     }
 });
 
+// --- AC-4/AC-7: parametrized resolver matrix over an injected homeDir (ticket 9c647682) ---
+//
+// `resolveMcpConfigWithLayer` (backend-spawn.ts:481) is NOT exported — only the path-only
+// `resolveMcpConfigPath` is public. Its decision tree makes the returned path itself prove
+// which layer won: 'omitted' is the only layer returning undefined, 'settings_override'
+// always returns the (distinct, fixture-unique) override path, and 'claude_json_fallback'
+// always returns the (distinct) `<homeDir>/.claude.json` path — the two candidate paths
+// never collide in these fixtures. Asserting the returned path therefore asserts the layer
+// too, with no source change required (a source change is out of scope for this ticket).
+//
+// Every row gets its OWN tmp home directory (mkTmpHome) so the per-process
+// `mcpConfigVerdictCache` (keyed on resolved absolute path) never serves a stale verdict
+// from an earlier row onto a later one.
+
+function captureStderrQuiet(fn) {
+    const orig = process.stderr.write;
+    process.stderr.write = () => true;
+    try {
+        return fn();
+    } finally {
+        process.stderr.write = orig;
+    }
+}
+
+const CLAUDE_JSON_FALLBACK_MATRIX = [
+    { name: 'absent ~/.claude.json', write: null, omitted: true },
+    { name: 'unparseable JSON', write: 'not json at all', omitted: true },
+    { name: 'valid JSON, no mcpServers key', write: '{"foo":"bar"}', omitted: true },
+    { name: 'mcpServers: [] (array is NOT a record)', write: '{"mcpServers":[]}', omitted: true },
+    { name: 'mcpServers: null', write: '{"mcpServers":null}', omitted: true },
+    { name: 'mcpServers: {} (empty record IS valid)', write: '{"mcpServers":{}}', omitted: false },
+    { name: 'mcpServers: {linear:{}} (populated)', write: '{"mcpServers":{"linear":{}}}', omitted: false },
+];
+
+for (const row of CLAUDE_JSON_FALLBACK_MATRIX) {
+    test(`AC-4 matrix (claude_json_fallback layer): ${row.name}`, () => {
+        const tmpHome = mkTmpHome('matrix-fb');
+        const claudeJson = path.join(tmpHome, '.claude.json');
+        if (row.write !== null) fs.writeFileSync(claudeJson, row.write);
+        __resetBackendWarnings();
+        try {
+            const result = captureStderrQuiet(() => resolveMcpConfigPath({}, tmpHome));
+            if (row.omitted) {
+                assert.equal(result, undefined, `${row.name}: must resolve to layer 'omitted' (path undefined)`);
+            } else {
+                assert.equal(result, claudeJson, `${row.name}: must resolve to layer 'claude_json_fallback' (path === ~/.claude.json)`);
+            }
+        } finally {
+            __resetBackendWarnings();
+            cleanDir(tmpHome);
+        }
+    });
+}
+
+// settings_override matrix, mirroring the fallback rows above but through the override arm.
+// ~/.claude.json is intentionally left ABSENT in every row so a fall-through resolves
+// cleanly to 'omitted', isolating the override arm's own verdict from layer-2 behavior
+// (fall-through-to-claude_json_fallback is already covered by the AC-6 tests above).
+const SETTINGS_OVERRIDE_MATRIX = [
+    // KNOWN AC-2 RESIDUAL (inherited from ticket 50cd4039, tracked for later closure): a
+    // NON-EXISTENT settings_override path is passed through verbatim rather than falling
+    // through to the next layer — only an existing-but-invalid override falls through. This
+    // row pins the CURRENT behavior; it is not an endorsement of it.
+    { name: 'missing override file (AC-2 residual: passed through verbatim)', write: null, resolvesToOverride: true },
+    { name: 'unparseable override JSON', write: 'not json at all', resolvesToOverride: false },
+    { name: 'override valid JSON, no mcpServers key', write: '{"foo":"bar"}', resolvesToOverride: false },
+    { name: 'override mcpServers: [] (array is NOT a record)', write: '{"mcpServers":[]}', resolvesToOverride: false },
+    { name: 'override mcpServers: null', write: '{"mcpServers":null}', resolvesToOverride: false },
+    { name: 'override mcpServers: {} (empty record PASSES)', write: '{"mcpServers":{}}', resolvesToOverride: true },
+    { name: 'override mcpServers: {linear:{}} (populated)', write: '{"mcpServers":{"linear":{}}}', resolvesToOverride: true },
+];
+
+for (const row of SETTINGS_OVERRIDE_MATRIX) {
+    test(`AC-4 matrix (settings_override layer): ${row.name}`, () => {
+        const tmpHome = mkTmpHome('matrix-ov');
+        const overridePath = path.join(tmpHome, 'ops-mcp.json');
+        if (row.write !== null) fs.writeFileSync(overridePath, row.write);
+        __resetBackendWarnings();
+        try {
+            const result = captureStderrQuiet(() => resolveMcpConfigPath({ worker_mcp_config_path: overridePath }, tmpHome));
+            if (row.resolvesToOverride) {
+                assert.equal(result, overridePath, `${row.name}: must resolve to layer 'settings_override'`);
+            } else {
+                assert.equal(result, undefined, `${row.name}: must fall through to layer 'omitted' (no ~/.claude.json present)`);
+            }
+        } finally {
+            __resetBackendWarnings();
+            cleanDir(tmpHome);
+        }
+    });
+}
+
+test('AC-4 matrix: precedence row — a valid worker_mcp_config_path beats a malformed ~/.claude.json (resolves to settings_override)', () => {
+    const tmpHome = mkTmpHome('matrix-precedence');
+    const overridePath = path.join(tmpHome, 'ops-mcp.json');
+    fs.writeFileSync(overridePath, '{"mcpServers":{"linear":{}}}');
+    fs.writeFileSync(path.join(tmpHome, '.claude.json'), 'not json at all');
+    __resetBackendWarnings();
+    try {
+        const result = captureStderrQuiet(() => resolveMcpConfigPath({ worker_mcp_config_path: overridePath }, tmpHome));
+        assert.equal(result, overridePath, 'settings_override must win over a malformed claude_json_fallback layer');
+    } finally {
+        __resetBackendWarnings();
+        cleanDir(tmpHome);
+    }
+});
+
+test('AC-7 happy-path regression: a populated ~/.claude.json AND a valid worker_mcp_config_path both keep resolving to their existing paths/layers (no behavior change, precedence order unchanged) — guards against an over-strict validator (R1)', () => {
+    const tmpHome = mkTmpHome('matrix-ac7');
+    const overridePath = path.join(tmpHome, 'ops-mcp.json');
+    const claudeJson = path.join(tmpHome, '.claude.json');
+    fs.writeFileSync(overridePath, '{"mcpServers":{"linear":{}}}');
+    fs.writeFileSync(claudeJson, '{"mcpServers":{"github":{},"linear":{}}}');
+    __resetBackendWarnings();
+    try {
+        // With an override present, settings_override still wins the precedence order.
+        const withOverride = captureStderrQuiet(() => resolveMcpConfigPath({ worker_mcp_config_path: overridePath }, tmpHome));
+        assert.equal(withOverride, overridePath, 'settings_override must still win when both layers are valid');
+        // Without an override, the populated ~/.claude.json still resolves via claude_json_fallback.
+        const withoutOverride = captureStderrQuiet(() => resolveMcpConfigPath({}, tmpHome));
+        assert.equal(withoutOverride, claudeJson, 'a populated ~/.claude.json must still resolve via claude_json_fallback');
+    } finally {
+        __resetBackendWarnings();
+        cleanDir(tmpHome);
+    }
+});
+
 // --- buildWorkerInvocation: --mcp-config wiring ---
 // These tests use explicit opts.mcpConfig to avoid ~/.claude.json side-effects from
 // the real home directory — the resolver unit tests above cover the fallback path.
