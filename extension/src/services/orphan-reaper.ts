@@ -723,12 +723,53 @@ function getPidRegistryPath(registryDir: string): string {
   return path.join(registryDir, 'fixture_pid_registry.json');
 }
 
+/**
+ * A fixture pinned to its POSIX identity: the (pid, start-time) pair. A bare pid is
+ * NOT an identity — it is a slot the kernel re-issues — and every consumer here
+ * signals a whole process GROUP, so a stale pid is a licence to kill a stranger.
+ */
+export type FixtureIdentity = {
+  /** The pid as spawned. */
+  pid: number;
+  /** Opaque `ps -o lstart=` token captured at record time — see `readProcessStartToken`. */
+  start: string;
+};
+
 export type FixturePidRegistry = {
   /** Run start epoch ms, used to age off stale registries. */
   started_at_epoch_ms: number;
-  /** Array of PIDs spawned during this run. */
-  pids: number[];
+  /** Fixtures spawned during this run, each pinned to its POSIX identity. */
+  fixtures: FixtureIdentity[];
 };
+
+/**
+ * The process's start time as an OPAQUE token — never parsed, only compared for
+ * equality, so there is no date parsing and no timezone to get wrong. `null` means
+ * "no such process, or it cannot be identified"; both must read as NOT-a-match, since
+ * the only thing a caller does with a match is signal a process group.
+ */
+function readProcessStartToken(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const raw = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      encoding: 'utf-8',
+      timeout: PS_TIMEOUT_MS,
+      maxBuffer: PS_MAX_BUFFER,
+    });
+    return raw.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The ONE question every step of the fixture escalation asks: is the pid I recorded
+ * still the SAME process I recorded it for? Liveness and identity are not two checks —
+ * a recycled pid is alive and is not the fixture, and only the pair distinguishes them.
+ */
+function isRecordedFixtureStillItself(fixture: FixtureIdentity): boolean {
+  return readProcessStartToken(fixture.pid) === fixture.start;
+}
 
 /**
  * Initialize or append to the fixture PID registry for this test run.
@@ -742,7 +783,7 @@ export function initFixturePidRegistry(registryDir: string): string {
   const registryPath = getPidRegistryPath(registryDir);
   const registry: FixturePidRegistry = {
     started_at_epoch_ms: Date.now(),
-    pids: [],
+    fixtures: [],
   };
   try {
     fs.writeFileSync(registryPath, JSON.stringify(registry), 'utf-8');
@@ -751,17 +792,22 @@ export function initFixturePidRegistry(registryDir: string): string {
 }
 
 /**
- * Record a fixture PID in the suite-level registry.
+ * Record a fixture in the suite-level registry, pinned to the identity it has RIGHT
+ * NOW — the caller has just spawned it, so this is the only moment the pair is
+ * knowable. A pid whose identity cannot be read is not recorded at all: an
+ * unidentifiable entry could only ever be signalled blind.
  * Call after each fixture spawn so cleanup survives abnormal runner death.
  */
 export function recordFixturePid(registryPath: string, pid: number): void {
+  const start = readProcessStartToken(pid);
+  if (start === null) return;
   try {
     const existing = fs.readFileSync(registryPath, 'utf-8');
     const registry = JSON.parse(existing) as FixturePidRegistry;
-    if (!registry.pids.includes(pid)) {
-      registry.pids.push(pid);
-      fs.writeFileSync(registryPath, JSON.stringify(registry), 'utf-8');
-    }
+    if (!Array.isArray(registry.fixtures)) return;
+    if (registry.fixtures.some(entry => entry?.pid === pid)) return;
+    registry.fixtures.push({ pid, start });
+    fs.writeFileSync(registryPath, JSON.stringify(registry), 'utf-8');
   } catch { /* best-effort recording */ }
 }
 
@@ -769,9 +815,9 @@ export function recordFixturePid(registryPath: string, pid: number): void {
 const FIXTURE_GRACE_POLLS = Math.max(1, Math.ceil(DEFAULT_GRACE_MS / GRACE_POLL_MS));
 const FIXTURE_VERIFY_POLLS = Math.max(1, Math.ceil(DEFAULT_KILL_VERIFY_MS / GRACE_POLL_MS));
 
-/** Yield one `GRACE_POLL_MS` wait per remaining poll, stopping as soon as `pid` is provably gone. */
-function* pollUntilDead(pid: number, polls: number): Generator<number, void, void> {
-  for (let i = 0; i < polls && isProcessAlive(pid); i++) yield GRACE_POLL_MS;
+/** Yield one `GRACE_POLL_MS` wait per remaining poll, stopping as soon as `stillThere` goes false. */
+function* pollWhile(stillThere: () => boolean, polls: number): Generator<number, void, void> {
+  for (let i = 0; i < polls && stillThere(); i++) yield GRACE_POLL_MS;
 }
 
 /**
@@ -780,25 +826,30 @@ function* pollUntilDead(pid: number, polls: number): Generator<number, void, voi
  * ONLY on a confirmed death: `kill(-pid, …)` keeps succeeding while ANY group member is
  * left, so a delivered signal is never evidence the fixture is gone.
  *
+ * Every probe here asks `isRecordedFixtureStillItself`, not "is this pid alive" — the
+ * registry is read from disk and may name a pid a PREVIOUS run spawned, and the same
+ * substitution can happen mid-escalation, between the SIGTERM and the SIGKILL.
+ *
  * It yields the ms the caller must WAIT rather than sleeping itself, because the two
  * reapers can only wait one way each — `Atomics.wait` is the only option left at
  * `process.on('exit')` time, and blocking it is the one thing an `afterAll` hook must not
  * do. That is their whole difference; every kill, probe and count decision lives here once.
  */
-function* escalateFixtureGroup(pid: number, platform: NodeJS.Platform): Generator<number, boolean, void> {
-  if (!isProcessAlive(pid)) return false; // already gone — this reaper killed nothing
-  killProcessGroup(pid, 'SIGTERM', platform);
-  yield* pollUntilDead(pid, FIXTURE_GRACE_POLLS);
-  if (isProcessAlive(pid)) {
-    killProcessGroup(pid, 'SIGKILL', platform);
-    yield* pollUntilDead(pid, FIXTURE_VERIFY_POLLS);
+function* escalateFixtureGroup(fixture: FixtureIdentity, platform: NodeJS.Platform): Generator<number, boolean, void> {
+  const stillItself = () => isRecordedFixtureStillItself(fixture);
+  if (!stillItself()) return false; // already gone, or never ours — this reaper killed nothing
+  killProcessGroup(fixture.pid, 'SIGTERM', platform);
+  yield* pollWhile(stillItself, FIXTURE_GRACE_POLLS);
+  if (stillItself()) {
+    killProcessGroup(fixture.pid, 'SIGKILL', platform);
+    yield* pollWhile(stillItself, FIXTURE_VERIFY_POLLS);
   }
-  return !isProcessAlive(pid);
+  return !stillItself();
 }
 
 /** Drive `escalateFixtureGroup` with blocking sleeps — the `process.on('exit')` path. */
-function reapFixtureGroupSync(pid: number, platform: NodeJS.Platform): boolean {
-  const escalation = escalateFixtureGroup(pid, platform);
+function reapFixtureGroupSync(fixture: FixtureIdentity, platform: NodeJS.Platform): boolean {
+  const escalation = escalateFixtureGroup(fixture, platform);
   let step = escalation.next();
   while (!step.done) {
     sleepSync(step.value);
@@ -808,8 +859,8 @@ function reapFixtureGroupSync(pid: number, platform: NodeJS.Platform): boolean {
 }
 
 /** Drive `escalateFixtureGroup` with timer waits — the `afterAll` path, event loop intact. */
-async function reapFixtureGroupAsync(pid: number, platform: NodeJS.Platform): Promise<boolean> {
-  const escalation = escalateFixtureGroup(pid, platform);
+async function reapFixtureGroupAsync(fixture: FixtureIdentity, platform: NodeJS.Platform): Promise<boolean> {
+  const escalation = escalateFixtureGroup(fixture, platform);
   let step = escalation.next();
   while (!step.done) {
     const waitMs = step.value;
@@ -820,15 +871,18 @@ async function reapFixtureGroupAsync(pid: number, platform: NodeJS.Platform): Pr
 }
 
 /**
- * Registered PIDs worth signalling. A missing, unreadable or malformed registry yields
- * `[]` — cleanup is best-effort and must never throw out of an exit handler — and
- * non-integer / non-positive entries are dropped before any probe, since `kill(0, …)` and
- * `kill(-n, …)` address the caller's OWN process group.
+ * Registry entries carrying an identity to re-verify against. A missing, unreadable or
+ * malformed registry yields `[]` — cleanup is best-effort and must never throw out of an
+ * exit handler — and so does a registry written in the pre-identity shape (`pids: number[]`),
+ * whose bare pids could only ever be signalled blind. Dropping an unidentifiable entry
+ * leaks a fixture, which the age-gated `ps` sweep still collects; signalling it kills a
+ * stranger, which nothing undoes.
  */
-function readRegistryPids(registryPath: string): number[] {
+function readRecordedFixtures(registryPath: string): FixtureIdentity[] {
   try {
     const registry = JSON.parse(fs.readFileSync(registryPath, 'utf-8')) as FixturePidRegistry;
-    return registry.pids.filter(pid => Number.isInteger(pid) && pid > 0);
+    if (!Array.isArray(registry.fixtures)) return [];
+    return registry.fixtures.filter(entry => typeof entry?.start === 'string' && entry.start !== '');
   } catch {
     return [];
   }
@@ -848,8 +902,8 @@ function discardRegistry(registryPath: string): void {
 export function reapFixturesSync(registryPath: string, platform: NodeJS.Platform = process.platform): number {
   if (platform === 'win32') return 0;
   let reaped = 0;
-  for (const pid of readRegistryPids(registryPath)) {
-    if (reapFixtureGroupSync(pid, platform)) reaped++;
+  for (const fixture of readRecordedFixtures(registryPath)) {
+    if (reapFixtureGroupSync(fixture, platform)) reaped++;
   }
   discardRegistry(registryPath);
   return reaped;
@@ -862,8 +916,8 @@ export function reapFixturesSync(registryPath: string, platform: NodeJS.Platform
 export async function reapFixtures(registryPath: string, platform: NodeJS.Platform = process.platform): Promise<number> {
   if (platform === 'win32') return 0;
   let reaped = 0;
-  for (const pid of readRegistryPids(registryPath)) {
-    if (await reapFixtureGroupAsync(pid, platform)) reaped++;
+  for (const fixture of readRecordedFixtures(registryPath)) {
+    if (await reapFixtureGroupAsync(fixture, platform)) reaped++;
   }
   discardRegistry(registryPath);
   return reaped;

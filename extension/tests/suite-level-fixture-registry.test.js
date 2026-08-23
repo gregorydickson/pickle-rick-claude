@@ -31,6 +31,11 @@ import {
   reapPreviousRunFixtures,
 } from '../services/orphan-reaper.js';
 
+/** The registry filename `orphan-reaper.ts` owns; tests that forge a registry need it. */
+function getRegistryPath(registryDir) {
+  return path.join(registryDir, 'fixture_pid_registry.json');
+}
+
 function makeTmp(prefix) {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
@@ -144,7 +149,7 @@ test('AC1: spawn fixture cohort, verify startup sweep reaps them from a registry
 
   // Verify the fixture PID is in the registry.
   const registry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
-  assert.ok(registry.pids.includes(fixturePid), 'fixture PID recorded in registry');
+  assert.ok(registry.fixtures.some(f => f.pid === fixturePid), 'fixture PID recorded in registry');
 
   // Simulate a runner crash: the registry is left on disk with a live PID.
   // The NEXT suite's startup sweep collects it.
@@ -264,7 +269,7 @@ test('recordFixturePid prevents duplicate PID entries', () => {
   recordFixturePid(registryPath, testPid);
 
   const registry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
-  const pidCount = registry.pids.filter(p => p === testPid).length;
+  const pidCount = registry.fixtures.filter(f => f.pid === testPid).length;
   assert.equal(pidCount, 1, 'PID recorded only once despite multiple calls');
 });
 
@@ -282,4 +287,75 @@ test('reapFixtures skips invalid PID entries', async () => {
 
   const reaped = await reapFixtures(registryPath);
   assert.equal(reaped, 0, 'no valid live pid to reap, handled without error');
+});
+
+/**
+ * AP-EXT-ITER47-02 regression. The registry is read from DISK, and
+ * `reapPreviousRunFixtures` admits any registry under 24h — a window in which the
+ * kernel re-issues pids many times over. Before the fix the only filter was
+ * `Number.isInteger(pid) && pid > 0`, so a pid a previous run recorded was group-
+ * SIGTERMed and SIGKILLed on the strength of the NUMBER alone, and the sweep counted
+ * the stranger's death as a successful reap. Both integration reaper suites call
+ * `reapPreviousRunFixtures` at module load against a STABLE shared tmp dir, so this
+ * is on the `npm run test:integration` path, not a hypothetical.
+ *
+ * The recorded fixture is the control: a fix cannot pass by sparing everything.
+ */
+test('AP-EXT-ITER47-02: a registry pid whose identity no longer matches is never signalled', async () => {
+  const registryDir = makeTmp('suite-fixture-registry-recycled-');
+  const binDir = makeTmp('suite-fixture-registry-recycled-bin-');
+
+  const recordedPid = await resolvePid(spawnFixture(binDir, 'recorded', null));
+  const strangerPid = await resolvePid(spawnFixture(binDir, 'stranger', null));
+  await waitFor(() => isAlive(recordedPid) && isAlive(strangerPid), 10_000, 'both fixtures alive');
+
+  try {
+    const registryPath = initFixturePidRegistry(registryDir);
+    recordFixturePid(registryPath, recordedPid);
+
+    // The stranger that inherited a recycled pid: present by pid, absent by identity.
+    const forged = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+    forged.fixtures.push({ pid: strangerPid, start: 'Thu Jan  1 00:00:00 1970' });
+    fs.writeFileSync(registryPath, JSON.stringify(forged), 'utf-8');
+
+    const reaped = reapPreviousRunFixtures(registryDir);
+
+    await waitFor(() => !isAlive(recordedPid), 10_000, 'the identity-matched fixture is still collected');
+    assert.equal(reaped, 1, 'only the identity-matched fixture counts as reaped');
+    assert.ok(isAlive(strangerPid), `pid=${strangerPid} was signalled on a pid match alone`);
+  } finally {
+    for (const pid of [recordedPid, strangerPid]) {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+  }
+});
+
+/**
+ * AP-EXT-ITER47-02, upgrade arm: a registry written by a PRE-FIX run holds bare
+ * numbers under `pids`. Those entries carry no identity to re-verify, so they are
+ * dropped rather than signalled — leaking a fixture is recoverable (the age-gated
+ * `ps` sweep still collects it); killing a stranger is not.
+ */
+test('AP-EXT-ITER47-02: a pre-identity registry shape is dropped, not signalled', async () => {
+  const registryDir = makeTmp('suite-fixture-registry-legacy-');
+  const binDir = makeTmp('suite-fixture-registry-legacy-bin-');
+
+  const legacyPid = await resolvePid(spawnFixture(binDir, 'legacy', null));
+  await waitFor(() => isAlive(legacyPid), 10_000, 'legacy-shape fixture alive');
+
+  try {
+    const registryPath = getRegistryPath(registryDir);
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({ started_at_epoch_ms: Date.now(), pids: [legacyPid] }),
+      'utf-8',
+    );
+
+    const reaped = reapPreviousRunFixtures(registryDir);
+
+    assert.equal(reaped, 0, 'a bare-pid registry yields nothing to signal');
+    assert.ok(isAlive(legacyPid), `pid=${legacyPid} was signalled from a pre-identity registry`);
+  } finally {
+    try { process.kill(legacyPid, 'SIGKILL'); } catch { /* already gone */ }
+  }
 });
