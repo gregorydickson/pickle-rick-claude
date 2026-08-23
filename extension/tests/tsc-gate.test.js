@@ -39,41 +39,6 @@ function writeExtensionSentinel(extensionDir) {
   fs.writeFileSync(path.join(sentinelDir, 'log-watcher.js'), '');
 }
 
-function resolveGitBinary() {
-  const result = spawnSync('bash', ['-lc', 'command -v git'], {
-    encoding: 'utf-8',
-    timeout: 5_000,
-  });
-  if (result.status !== 0) {
-    throw new Error(`failed to resolve git binary: ${result.stderr}`);
-  }
-  return result.stdout.trim();
-}
-
-function createGitShim(shimDir) {
-  const shimPath = path.join(shimDir, 'git');
-  const realGit = resolveGitBinary();
-  const script = `#!/usr/bin/env bash
-set -e
-
-if [ "$1" = "checkout-index" ]; then
-  shift
-  args=()
-  for arg in "$@"; do
-    if [ "$arg" = "--stage=0" ]; then
-      continue
-    fi
-    args+=("$arg")
-  done
-  exec "${realGit}" checkout-index "\${args[@]}"
-fi
-
-exec "${realGit}" "$@"
-`;
-  fs.writeFileSync(shimPath, script);
-  fs.chmodSync(shimPath, 0o755);
-}
-
 function createNpxShim(shimDir) {
   const shimPath = path.join(shimDir, 'npx');
   const script = `#!/usr/bin/env node
@@ -137,7 +102,6 @@ function makeHarness() {
   fs.mkdirSync(dataRoot, { recursive: true });
   fs.mkdirSync(shimDir, { recursive: true });
   writeExtensionSentinel(extensionDir);
-  createGitShim(shimDir);
   createNpxShim(shimDir);
   return {
     root,
@@ -263,6 +227,22 @@ function stageAddedBrokenFile(repoRoot) {
 function stageTimeoutConfig(repoRoot) {
   writeFixture(repoRoot, 'hang-tsconfig.json', path.join(repoRoot, 'tsconfig.json'));
   git(['add', 'tsconfig.json'], repoRoot);
+}
+
+// Read the checkout-index argv the gate actually ships, with the runtime-computed
+// prefix replaced by a placeholder the caller substitutes. Reading the source
+// keeps the assertion pinned to the shipped command rather than to a copy of it.
+function readCheckoutIndexArgs() {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts'), 'utf8',
+  );
+  const match = source.match(/\[('checkout-index'[^\]]*)\]/);
+  assert.ok(match, 'tsc-gate.ts must build a checkout-index argv array');
+  return match[1]
+    .split(',')
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .map((token) => (token === 'checkoutPrefix' ? '__PREFIX__' : token.replace(/^'|'$/g, '')));
 }
 
 function latestEvent(events, name) {
@@ -720,6 +700,68 @@ it('approves clean staged TypeScript', () => {
     assert.equal(result.status, 0);
     assert.deepStrictEqual(result.decision, { decision: 'approve' });
     assert.equal(result.events.length, 0);
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    harness.cleanup();
+  }
+});
+
+it('AP-EXT-ITER52-01 the staged-tree materialization runs a git-VALID checkout-index', () => {
+  // The gate materialized the staged tree with `git checkout-index --stage=0`.
+  // git's checkout-index parses --stage as 1|2|3|all and hard-errors
+  // `fatal: stage should be between 1 and 3 or all` on anything else, so the
+  // materialization exited 128 on EVERY invocation and the gate answered
+  // setup_error for every TypeScript commit. Omitting the flag IS stage 0.
+  //
+  // This ran green for a year because the suite shimmed `git` to DELETE
+  // --stage=0 from argv before exec — the test harness issued a command the
+  // production code never issued. The shim is gone; every case in this file
+  // now crosses real git, and this one names the invariant.
+  const repoRoot = makeRepo();
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), 'tsc-gate-materialize-'));
+  try {
+    const args = readCheckoutIndexArgs();
+    assert.ok(
+      !args.some((arg) => arg.startsWith('--stage')),
+      `checkout-index must carry no --stage flag (default IS stage 0); got: ${args.join(' ')}`,
+    );
+
+    // Drive the shipped argv against real git: it must succeed AND write the
+    // staged content. An argv-shape assertion alone would green over a
+    // different invalid flag.
+    const prefix = `${destination}${path.sep}`;
+    const materialized = spawnSync(
+      'git',
+      args.map((arg) => (arg === '__PREFIX__' ? prefix : arg)),
+      { cwd: repoRoot, encoding: 'utf-8', timeout: 5_000 },
+    );
+    assert.equal(
+      materialized.status,
+      0,
+      `git ${args.join(' ')} must be accepted by real git; stderr: ${materialized.stderr}`,
+    );
+    assert.equal(
+      fs.readFileSync(path.join(destination, 'src', 'entry.ts'), 'utf8'),
+      'export const seedValue = 0;\n',
+    );
+  } finally {
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+it('AP-EXT-ITER52-01 a clean staged TypeScript commit is approved through REAL git', () => {
+  // End-to-end oracle for the same defect: with --stage=0 restored (and no
+  // shim), materializeStagedTree returns a status-128 result and this
+  // approve becomes a `setup_error` block.
+  const harness = makeHarness();
+  const repoRoot = makeRepo();
+  try {
+    writeSession(harness, repoRoot);
+    stageTrackedCleanFile(repoRoot);
+    const result = runHandler({ harness, repoRoot, command: 'git commit -m "clean"' });
+    assert.deepStrictEqual(result.decision, { decision: 'approve' });
+    assert.equal(latestEvent(result.events, 'tsc_gate_failed'), null);
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true });
     harness.cleanup();

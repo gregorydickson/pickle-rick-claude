@@ -178,7 +178,13 @@ function shouldRunTsc(paths) {
 function materializeStagedTree(repoRoot, destinationRoot, addedPaths) {
     const checkoutPrefix = destinationRoot.endsWith(path.sep) ? destinationRoot : `${destinationRoot}${path.sep}`;
     // Stage isolation uses `git checkout-index --prefix` against the staged tree.
-    const checkoutResult = runTextCommand('git', ['checkout-index', '--prefix', checkoutPrefix, '--stage=0', '-a'], repoRoot, COMMAND_TIMEOUT_MS);
+    // NO `--stage` flag: git's checkout-index parses `--stage=<n>` as 1|2|3|all and
+    // hard-errors `fatal: stage should be between 1 and 3 or all` on anything else, so
+    // the `--stage=0` this call used to carry made EVERY materialization exit 128 —
+    // the gate blocked every TypeScript commit with `setup_error` instead of gating it.
+    // Omitting the flag IS stage 0: checkout-index writes the merged index entry, which
+    // is exactly the staged content this gate must type-check.
+    const checkoutResult = runTextCommand('git', ['checkout-index', '--prefix', checkoutPrefix, '-a'], repoRoot, COMMAND_TIMEOUT_MS);
     if (checkoutResult.status !== 0 || checkoutResult.timedOut || checkoutResult.error) {
         return checkoutResult;
     }
