@@ -448,8 +448,10 @@ function warnMcpLayerDegraded(rejection: McpLayerRejection, winningLayer: McpPre
     : winningLayer === 'omitted'
       ? '--mcp-config omitted'
       : `falling back to ${winningLayer}`;
+  // Path is operator-supplied: quote it (as `warnBadBackend` does) so a value
+  // containing a newline cannot forge a second log line.
   process.stderr.write(
-    `[backend-spawn] ${prominence}: MCP config degraded: ${rejection.layer} ${rejection.filePath} `
+    `[backend-spawn] ${prominence}: MCP config degraded: ${rejection.layer} ${JSON.stringify(rejection.filePath)} `
     + `(${MCP_VERDICT_LABEL[rejection.verdict]}); ${consequence}\n`,
   );
 }
@@ -480,17 +482,17 @@ function resolveMcpConfigWithLayer(
   settingsBag?: { worker_mcp_config_path?: string | null },
   homeDir?: string,
 ): { path: string | null; layer: McpPrecedenceLayer } {
-  // Layer 1 is pushed before layer 2, so the higher-prominence rejection always wins
-  // the single warn slot. The warning is emitted only once the winner is known — the
-  // consequence clause names it (AC-6).
-  const rejections: McpLayerRejection[] = [];
+  // Layer 1 is recorded before layer 2 can be and is never overwritten, so the
+  // higher-prominence rejection always wins the single warn slot. The warning is
+  // emitted only once the winner is known — the consequence clause names it (AC-6).
+  let rejection: McpLayerRejection | null = null;
 
   const decide = (): { path: string | null; layer: McpPrecedenceLayer } => {
     const override = settingsBag?.worker_mcp_config_path;
     if (typeof override === 'string' && override.trim()) {
       const overridePath = override.trim();
       const verdict = classifyMcpConfigFile(overridePath);
-      if (verdict !== 'valid') rejections.push({ layer: 'settings_override', filePath: overridePath, verdict });
+      if (verdict !== 'valid') rejection = { layer: 'settings_override', filePath: overridePath, verdict };
       if (verdict === 'missing' || verdict === 'valid') {
         return { path: overridePath, layer: 'settings_override' };
       }
@@ -500,12 +502,14 @@ function resolveMcpConfigWithLayer(
     if (verdict === 'valid') return { path: claudeJson, layer: 'claude_json_fallback' };
     // An ABSENT `~/.claude.json` is the ordinary no-config default, not a rejection:
     // nothing was chosen and nothing was refused, so it stays silent.
-    if (verdict !== 'missing') rejections.push({ layer: 'claude_json_fallback', filePath: claudeJson, verdict });
+    if (verdict !== 'missing' && !rejection) {
+      rejection = { layer: 'claude_json_fallback', filePath: claudeJson, verdict };
+    }
     return { path: null, layer: 'omitted' };
   };
 
   const resolved = decide();
-  if (rejections.length > 0) warnMcpLayerDegraded(rejections[0], resolved.layer);
+  if (rejection) warnMcpLayerDegraded(rejection, resolved.layer);
   return resolved;
 }
 

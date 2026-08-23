@@ -350,6 +350,8 @@ test('AC-6: settings_override rejection warns at HIGH prominence with path, cond
         const line = lines[0];
         assert.match(line, /^\[backend-spawn\] WARNING: MCP config degraded: settings_override /);
         assert.ok(line.includes(override), 'names the rejected path');
+        assert.ok(line.includes(JSON.stringify(override)), 'operator-supplied path is quoted');
+        assert.equal((line.match(/\n/g) || []).length, 1, 'exactly one log line, un-forgeable');
         assert.ok(line.includes('mcpServers is not a record'), 'names the failing condition');
         assert.ok(line.includes('falling back to claude_json_fallback'), 'names the winning layer');
         assert.ok(line.endsWith('\n'), 'terminated');
