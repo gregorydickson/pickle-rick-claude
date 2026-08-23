@@ -524,6 +524,33 @@ After each iteration, update `${SESSION_ROOT}/anatomy-park.json`:
 - `trap_doors_added` = append any new trap doors identified in Phase 1 or replayed in Phase 2.5, including `pattern_shape`
 - `trap_doors_committed` = append any trap doors written to CLAUDE.md in this iteration (after Phase 2.5 replay)
 - Advance `current_index` to next non-converged subsystem (wrapping around)
+- `findings` (TOP-LEVEL, alongside `findings_history` — never instead of it) = rewrite the full
+  open-finding projection, described below
+
+**Top-level `findings` — the citadel hand-off (AP-EXT-ITER45-01).** `findings_history` is this
+loop's ledger and its shape is yours to choose; the top-level `findings` array is a CONTRACT with a
+different reader. Citadel's cross-phase safety net (`readPhaseFindings`,
+`services/citadel/audit-runner.ts`) harvests `anatomy-park.json` by reading a top-level `findings`
+array and nothing else, so a run that omits the key hands citadel ZERO findings — and because the
+file EXISTS, no `anatomy-park:missing` breadcrumb fires either. The silence is indistinguishable
+from "anatomy-park found nothing." Emit it every iteration:
+
+```json
+"findings": [
+  { "id": "AP-EXT-ITER45-01", "severity": "Critical", "subsystem": "extension", "message": "<title>" }
+]
+```
+
+- **`severity` uses CITADEL's spelling, not anatomy's.** Map `CRITICAL` → `"Critical"`, `HIGH` →
+  `"High"`. Citadel's `isSeverity` accepts exactly `Critical` / `High` / `Medium` / `Low`; the
+  uppercase forms are dropped silently, entry and all.
+- **`id` and `severity` are mandatory per entry** — citadel skips any record missing either.
+- **Rewrite, do not append**: the array is a PROJECTION of every finding still OPEN across all
+  subsystems, deduped by `id`. A finding that this iteration fixed and verified leaves the array;
+  its `findings_history` record stays forever. Fence-blocked and stall-sealed findings REMAIN open
+  and MUST stay in the array — those are precisely the ones a downstream reader must still see.
+
+
 
 ### Standard Protocol
 

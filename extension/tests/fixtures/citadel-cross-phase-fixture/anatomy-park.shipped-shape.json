@@ -1,38 +1,85 @@
 {
   "subsystems": ["bin", "extension"],
   "current_index": 1,
-  "pass_counts": { "bin": 2, "extension": 8 },
-  "consecutive_clean": { "bin": 2, "extension": 0 },
-  "stall_counts": { "bin": 0, "extension": 0 },
-  "stall_limit": 5,
+  "pass_counts": { "bin": 4, "extension": 4 },
+  "consecutive_clean": { "bin": 0, "extension": 0 },
+  "stall_counts": { "bin": 3, "extension": 0 },
+  "stall_limit": 3,
   "findings_history": {
     "bin": [
       {
-        "iteration": 1,
-        "subsystem": "bin",
-        "findings": 0,
-        "verdict": "clean",
-        "note": "all 4 scripts + 8 trap-door ENFORCE targets re-verified"
+        "pass": 1,
+        "result": "clean",
+        "confident_findings": 0,
+        "notes": "full data-flow trace of bin/; all 7 trap-door ENFORCE guards present"
+      },
+      {
+        "pass": 2,
+        "result": "stalled_scope_fence",
+        "confident_findings": 1,
+        "findings": [
+          {
+            "id": "AP-BIN-ITER14-01",
+            "severity": "CRITICAL",
+            "confidence": 100,
+            "category": "pattern",
+            "phase": "discovery",
+            "title": "purge-update-cache.js creates deploy-audit.log at 0644; install.sh post-install mode verification hard-exits 1 on any mode but 600",
+            "actioned": false
+          },
+          {
+            "id": "AP-BIN-ITER14-02",
+            "severity": "CRITICAL",
+            "confidence": 100,
+            "category": "scope",
+            "phase": "discovery",
+            "title": "anatomy-park scope fence excludes bin/purge-update-cache.js, so a verified CRITICAL bin/ fix cannot be committed by this loop",
+            "actioned": false
+          }
+        ]
       }
     ],
     "extension": [
       {
-        "iteration": 3,
-        "subsystem": "extension",
-        "findings": 1,
-        "verdict": "fixed",
-        "fix": "78ca39e0 — B-RATRAIL PATTERN_SHAPE stated call-site count == 2 while the grep it names returns 3"
+        "pass": 3,
+        "result": "fixed",
+        "confident_findings": 1,
+        "commit": "09a17f20 + f841dd73",
+        "findings": [
+          {
+            "id": "AP-EXT-ITER44-01",
+            "severity": "CRITICAL",
+            "confidence": 100,
+            "category": "pattern",
+            "phase": "discovery",
+            "title": "isCleanPassEntry pins one key spelling of the prompt-authored findings_history entry",
+            "actioned": true
+          }
+        ]
       },
       {
-        "iteration": 8,
-        "subsystem": "extension",
-        "findings": 0,
-        "verdict": "clean",
-        "note": "CLEAN PASS — zero confident findings after the conf<80 drop"
+        "pass": 4,
+        "result": "clean",
+        "confident_findings": 0,
+        "notes": "CLEAN PASS - zero confident findings after the conf<80 drop"
       }
     ]
   },
-  "trap_doors_added": { "bin": [], "extension": [] },
-  "trap_doors_committed": { "bin": [], "extension": [] },
+  "findings": [
+    {
+      "id": "AP-BIN-ITER14-01",
+      "severity": "Critical",
+      "subsystem": "bin",
+      "message": "purge-update-cache.js creates deploy-audit.log at 0644; install.sh post-install mode verification hard-exits 1 on any mode but 600"
+    },
+    {
+      "id": "AP-BIN-ITER14-02",
+      "severity": "Critical",
+      "subsystem": "bin",
+      "message": "anatomy-park scope fence excludes bin/purge-update-cache.js, so a verified CRITICAL bin/ fix cannot be committed by this loop"
+    }
+  ],
+  "trap_doors_added": [],
+  "trap_doors_committed": [],
   "current_subsystem": "extension"
 }
