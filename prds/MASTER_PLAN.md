@@ -30,6 +30,55 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+> ### 🚢 2026-08-23 — SHIPPED v2.1.0-beta.11 (two bundles, both dogfooded end to end)
+>
+> Full release gate run in STAGES so no failure could hide behind one exit code: `tsc --noEmit`,
+> `eslint --max-warnings=-1`, `tsc`, and all 9 audit scripts **RC=0**; `test:integration:serial`
+> **608/608**; `test:expensive` clean; `test:fast` **7855 tests / 517 suites / cancelled 0 / fail 1**.
+> The only failures are the two long-filed inherited ones (`install-bun-probe`, `extension-wiring`
+> deploy smoke), neither a defect in this branch. Counts grew 7792 → 7855 and 508 → 517 across the two
+> bundles, so nothing was greened by shrinking a tier.
+>
+> Deployed and verified BY CONTENT (`diff -rq` = 0 differing in both `extension/bin` and
+> `extension/services`); pushed `34b167c3..347f3976`; release
+> [v2.1.0-beta.11](https://github.com/gregorydickson/pickle-rick-claude/releases/tag/v2.1.0-beta.11).
+>
+> **Bundle 1 — fixture-leak producers (R-ORCG D4+D5).** Verified against a non-vacuous oracle:
+> `LEAK_CREATED_ENTRIES=0` for a full `test:fast` under a private root. The reaper went
+> `scanned=0 reaped=0` against six live orphans → **`scanned=10 reaped=10`**, on real orphans.
+> `pickle-judge-*` turned out to be **production** code (`judge-spawn-env.ts`), not a fixture — 12,768
+> of 17,825 leaked dirs.
+>
+> **Bundle 2 — AC-6 operator-surface guard.** Abort sites now identified by AST symbol rather than
+> `file:line`, with git-owned ignore-aware enumeration kept separate from AST-owned identity, and a
+> two-sha **set equality** proof instead of a cardinality check.
+>
+> ## 🔢 SEQUENCE — items 1 and 2 are COMPLETE
+>
+> 1. ~~**Serial tier green**~~ ✅ **MET.** `test:integration:serial` **608 tests / 24 suites / fail 0 /
+>    cancelled 0**, operator-measured on a censused quiet box, reproduced across several runs.
+> 2. ~~**`R-ORCG`**~~ ✅ **BOTH HALVES DONE.** Reaper half `04df0897` (v2.1.0-beta.10 line); producer
+>    half shipped in **v2.1.0-beta.11**. Remaining R-ORCG ACs (the `cxhang-int-*` prefix arm, fixture
+>    self-termination) are P3 residue, not a bundle.
+> 3. **`FEAT-2026-08-16-expose-codegraph-mcp-to-workers.md`** — first capability work. Sequenced ahead
+>    of the remaining **P2/P3** reliability backlog, NOT ahead of the P1 bugs in item 4.
+> 4. The remaining reliability P1s — **this is the live head of the queue**:
+>    `BUG-2026-08-14-salvage-reset-desync-empty-roster-terminal.md` ◀ **NEXT** ·
+>    `BUG-2026-08-16-gate-parser-fabricates-a-test-name.md` (R-GBANNER, 2 sessions)
+>
+> **⚠️ `BUG-2026-08-16-tier-hangs-at-mux-runner-suite.md` (R-TIERWEDGE) is P0 but NOT DRAINABLE — treat
+> as repro-gated / watch-only.** Its own text reads *"Class: intermittent hang, reproducible boundary,
+> **cause unknown**"* and demands *"a repro, a stack, an strace/sample, or a targeted test that hangs
+> without the fix."* A bundle cannot fix a hang that will not reproduce; launching one would produce
+> speculation, not a fix. It outranks the P1s on priority and is skipped on drainability — record the
+> reason each time rather than silently passing over a P0.
+>
+> **Evidence toward its closure criterion** (*"treat it as live until several consecutive tiers
+> complete"*): **eight consecutive `test:fast` runs completed on 2026-08-22/23** — under Node 22 and
+> Node 24, at loads from 1.03 to 12.79, with zero 0-CPU wedges. That is not a close: one operator's
+> clean runs still cannot distinguish *fixed* from *did not recur*, exactly as the PRD warns. It is
+> the strongest non-recurrence record the finding has, and the next tier run should extend it.
+
 > ### 🏁 2026-08-22 22:41 — BUNDLE TERMINAL, DEPLOYED, AND THE THESIS IS PROVEN
 >
 > `exit_reason: converged`, 3/4 phases, **493m 45s**. anatomy-park non-convergent (2 runs of 2);
