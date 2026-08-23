@@ -99,6 +99,9 @@ const BASE_INVENTORIES = {
     'worker_mcp_snapshot_servers',
   ],
   CLI_FLAGS: [
+    // Short-flag alias for --session-id. Present in ARG_HANDLERS at base sha 0d7e58dc; it was
+    // absent from this literal only because the former extractor could not see single-dash keys.
+    '-s',
     '--acknowledge-undersized',
     '--backend',
     '--command-template',
@@ -281,16 +284,37 @@ function extractPickleSettingsKeys(content) {
 }
 
 /**
- * Extract CLI flags from setup.ts by looking for --flagname patterns
+ * Extract CLI parser flags from setup.ts by reading the `ARG_HANDLERS` object literal's own
+ * property names via the TypeScript AST. A `--`-anchored regex MUST NOT be the source here: the
+ * parser table is keyed by the literal argv token, which includes single-dash short flags (`-s`),
+ * so a dash-prefix pattern silently under-enumerates the very surface this guard pins — and it
+ * also matched `'--x':` keys in unrelated object literals elsewhere in the file. Reading the one
+ * table by name removes both failure modes at once instead of adding a second pattern beside the
+ * first. No dedupe: a duplicated key in the table is a defect, and `findDuplicateMembers` names
+ * it. Returns [] when the table is absent or renamed, which fails the guard loud via `removed`.
  */
 function extractCliFlags(content) {
+  const sourceFile = ts.createSourceFile('setup.ts', content, ts.ScriptTarget.Latest, true);
   const flags = [];
-  // Match patterns like: '--flag-name': (config, args, index) => {
-  const matches = content.matchAll(/'(--[a-z0-9-]+)':/g);
-  for (const match of matches) {
-    flags.push(match[1]);
+
+  function visit(node) {
+    if (ts.isVariableDeclaration(node)
+        && ts.isIdentifier(node.name)
+        && node.name.text === 'ARG_HANDLERS'
+        && node.initializer
+        && ts.isObjectLiteralExpression(node.initializer)) {
+      for (const prop of node.initializer.properties) {
+        const propName = prop.name;
+        if (propName && (ts.isIdentifier(propName) || ts.isStringLiteralLike(propName))) {
+          flags.push(propName.text);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
   }
-  return [...new Set(flags)].sort();
+
+  visit(sourceFile);
+  return flags.sort();
 }
 
 /**
@@ -578,6 +602,46 @@ function materializeShaFixtureRepo(sha) {
 
   return { tmp, extensionDir };
 }
+
+describe('CLI flag extractor: parser-table identity', () => {
+  test('single-dash short flags in ARG_HANDLERS are extracted, not silently dropped', () => {
+    const setupPath = path.join(EXTENSION_DIR, 'src', 'bin', 'setup.ts');
+    const content = fs.readFileSync(setupPath, 'utf8');
+
+    const flags = extractCliFlags(content);
+
+    assert.ok(
+      flags.includes('-s'),
+      "'-s' is a live ARG_HANDLERS key and must appear in the CLI_FLAGS surface"
+    );
+  });
+
+  test('extraction equals the ARG_HANDLERS key set exactly — no drop, no over-reach', () => {
+    const fixture = [
+      "const UNRELATED = { '--not-a-parser-flag': 1 };",
+      'const ARG_HANDLERS: Record<string, ArgHandler> = {',
+      "  '--long-flag': (config, _args, index) => index,",
+      "  '-x': (_config, args, index) => index,",
+      '};',
+      "const ALSO_UNRELATED = { '--decoy': 2 };",
+    ].join('\n');
+
+    const flags = extractCliFlags(fixture);
+
+    assert.deepStrictEqual(flags, ['--long-flag', '-x']);
+  });
+
+  test('a renamed or absent ARG_HANDLERS table fails the guard loud rather than reading empty-clean', () => {
+    const flags = extractCliFlags('const RENAMED_HANDLERS = { \'--flag\': (c, a, i) => i };');
+
+    assert.deepStrictEqual(flags, []);
+
+    // [] is not a silent pass: every baseline member reads as `removed`, which the
+    // parametrized guard turns into an explicit failure.
+    const { removed } = diffAbortSiteInventory(BASE_INVENTORIES.CLI_FLAGS, flags);
+    assert.deepStrictEqual(removed.sort(), [...BASE_INVENTORIES.CLI_FLAGS].sort());
+  });
+});
 
 describe('AC-5: two-sha baseline equality proof', () => {
   test('extractor output at HEAD and at BASE_SHA is byte-identical (set equality)', () => {
