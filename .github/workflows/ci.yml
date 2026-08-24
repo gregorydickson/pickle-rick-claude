@@ -1,12 +1,17 @@
 name: CI
 
 on:
+  # 2724f7d0 (AC-4): release/** is listed alongside main because the v2.x beta
+  # line is developed on release/v2.1-beta, which no CI run had ever observed --
+  # every run on record carried headBranch: main. main stays first and unchanged.
   pull_request:
     branches:
       - main
+      - 'release/**'
   push:
     branches:
       - main
+      - 'release/**'
 
 jobs:
   test:
@@ -18,11 +23,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # R-CIFB: align CI to the project's actual target (CLAUDE.md = Node 25;
-          # dev runs 25.x). node 22's test runner is stricter about unsettled
-          # file-level promises, failing whole files ('Promise resolution is still
-          # pending') that pass on 24/25. node 24 is the current LTS-track.
-          node-version: '24'
+          # e9fa6331: must equal extension/package.json engines.node verbatim --
+          # enforced across every workflow by tests/engines-node-pin.test.js.
+          # Supersedes the prior '24' pin, whose stated grounds no longer hold:
+          # no Node 25 target is documented in either CLAUDE.md, and the
+          # 'Promise resolution is still pending' symptom it cited measures 0
+          # occurrences on ubuntu-latest at v22.23.2 (release run 32689967189).
+          node-version: '22.x'
 
       - name: Enable corepack (pnpm/yarn on PATH)
         # R-CIFB residual: convergence-gate fixtures carrying a pnpm-workspace

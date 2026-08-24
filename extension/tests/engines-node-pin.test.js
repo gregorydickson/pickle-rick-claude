@@ -1,7 +1,7 @@
 // @tier: fast
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -9,24 +9,46 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(EXTENSION_ROOT, '..');
 const PACKAGE_JSON_PATH = path.join(EXTENSION_ROOT, 'package.json');
-const RELEASE_WORKFLOW_PATH = path.join(REPO_ROOT, '.github', 'workflows', 'release.yml');
+const WORKFLOWS_DIR = path.join(REPO_ROOT, '.github', 'workflows');
+const NODE_VERSION_RE = /^\s*node-version:\s*['"]?([^'"\n]+?)['"]?\s*$/gm;
 
 function readPackageJson() {
   return JSON.parse(readFileSync(PACKAGE_JSON_PATH, 'utf8'));
 }
 
-function readReleaseNodeVersion() {
-  const workflow = readFileSync(RELEASE_WORKFLOW_PATH, 'utf8');
-  const match = workflow.match(/^\s*node-version:\s*['"]?([^'"\n]+)['"]?\s*$/m);
-  assert.ok(match, 'release workflow must define setup-node node-version');
-  return match[1];
+// 2724f7d0: glob every workflow rather than naming release.yml. ci.yml and
+// stability-gate.yml drifted to a different major precisely because no test
+// read them; hardcoding three paths would just move that hole to the fourth
+// workflow. Collects EVERY match per file, so a second setup-node step in one
+// workflow is covered too.
+function readWorkflowNodeVersions() {
+  return readdirSync(WORKFLOWS_DIR)
+    .filter((name) => name.endsWith('.yml') || name.endsWith('.yaml'))
+    .sort()
+    .flatMap((workflow) => {
+      const contents = readFileSync(path.join(WORKFLOWS_DIR, workflow), 'utf8');
+      return [...contents.matchAll(NODE_VERSION_RE)].map((match) => ({
+        workflow,
+        version: match[1],
+      }));
+    });
 }
 
-test('package node engine matches release workflow setup-node version', () => {
+test('package node engine matches every workflow setup-node version', () => {
   const packageJson = readPackageJson();
-  const releaseNodeVersion = readReleaseNodeVersion();
+  const pins = readWorkflowNodeVersions();
 
-  assert.equal(packageJson.engines.node, releaseNodeVersion);
+  // Without this guard the loop below iterates zero times and passes green
+  // while asserting nothing -- the same silent hole this test exists to close.
+  assert.ok(pins.length > 0, `no workflow under ${WORKFLOWS_DIR} declares a setup-node node-version`);
+
+  for (const { workflow, version } of pins) {
+    assert.equal(
+      version,
+      packageJson.engines.node,
+      `${workflow} pins node-version '${version}' but engines.node is '${packageJson.engines.node}'`,
+    );
+  }
 });
 
 test('codex engine is a >= floor (not an exact pin)', () => {

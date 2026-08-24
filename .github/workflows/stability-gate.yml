@@ -39,8 +39,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # R-CIFB: align to the project's Node 25 target (see ci.yml note).
-          node-version: '24'
+          # e9fa6331: must equal extension/package.json engines.node verbatim
+          # (see ci.yml note). Enforced by tests/engines-node-pin.test.js.
+          node-version: '22.x'
 
       - name: Enable corepack (pnpm/yarn on PATH)
         # R-CIFB residual: pnpm-workspace fixtures make detectProjectType=pnpm;
