@@ -1,3 +1,24 @@
+> **✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — 2026-08-24 at HEAD `fedac997`.**
+>
+> **Stale premise: PASSED.** All four regressions reproduce at HEAD. Measured by exit code:
+> `trap-door-conformance.test.js` RC=1 / fail 2 standalone; the other two files RC=0 standalone but
+> their tests fail in full-suite context (see the isolation correction above).
+>
+> **Green tree: RED — and recorded as the launch baseline, which is what makes attribution work.**
+> `npm run test:fast`, node 24.19.0 pinned: **523 suites / pass 7973 / fail 5 / cancelled 0 / 176.4s**.
+> The five, named exhaustively:
+> 1. `bun probe emits banner when bun is absent` — **INHERITED** (filed P3)
+> 2. `install.sh bun probe` — **INHERITED** (same root cause, same P3)
+> 3. `baseline write: emitted JSON keys match GateBaselineFile type exactly` — **this bundle's target**
+> 4. `AC-BUNDLE-17: trap-door entries stay under 1500 chars` — **target**
+> 5. `extension/CLAUDE.md touched trap-door entries` + `line 378 conforms` +
+>    `clean or unavailable diff has no false failure` — **targets** (trap-door-conformance)
+>
+> A red tier is normally a hard stop. It is admissible here **only because every failure is named and
+> classified before launch**: two inherited, the rest are precisely what this bundle exists to fix.
+> **Any failure outside this list during the bundle is caused by the bundle.** AC-1's success condition
+> is a return to `fail 1 / cancelled 0` on the FULL tier with counts not shrinking.
+
 # BUG-2026-08-24 (P1) — the did-we-count bundle regressed 4 tests; its own verdict was withheld
 
 - **Priority**: P1 — blocks shipping session `2026-08-24-218474cb`.
