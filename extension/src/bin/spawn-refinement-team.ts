@@ -17,7 +17,7 @@ import {
 } from '../services/pickle-utils.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
 import { buildWorkerInvocation, isBackend, SpawnInvocation } from '../services/backend-spawn.js';
-import { Backend, PromiseTokens, Defaults, VALID_ACTIVITY_EVENTS } from '../types/index.js';
+import { Backend, PromiseTokens, Defaults, UNBOUNDED_READ_MAX_BUFFER, VALID_ACTIVITY_EVENTS } from '../types/index.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
@@ -612,6 +612,11 @@ function resolveTrackedSuffixMatches(workingDir: string, token: string): string[
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: GIT_LS_FILES_SUFFIX_TIMEOUT_MS,
+      // AP-EXT-ITER56-01: the captured listing IS the resolution verdict, so it
+      // carries the shared 64MB ceiling. Past spawnSync's 1MB default the child
+      // is SIGTERMed with `status === null`, the `status === 0` gate below reads
+      // false, and a citation of a REAL tracked file is reported path_not_found.
+      maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
     if (result.status === 0 && typeof result.stdout === 'string') {
       matches = result.stdout

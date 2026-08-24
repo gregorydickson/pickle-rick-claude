@@ -822,3 +822,67 @@ test('AP-RMS-10: neither staleness site hand-rolls its own line count', () => {
     const oracleUses = src.match(/countContentLines\(/g) ?? [];
     assert.ok(oracleUses.length >= 3, `expected 1 definition + 2 call sites, saw ${oracleUses.length}`);
 });
+
+// --- AP-EXT-ITER56-01: the suffix listing is a VERDICT input, so cap it ------
+
+// A `git` shim whose `ls-files` listing is 1,320,030 bytes (past the 1,048,576
+// default, MEASURED not estimated — a 30k-line build of the same emitter lands at
+// 990,030 and passes AGAINST the defect): 40k paths the `*<token>`
+// wildmatch prefilter admits but the path-boundary rule rejects, plus one
+// genuinely tracked match. No real repo is initialized because the shim
+// intercepts every git invocation the checker makes. The emitter is a blocking
+// awk write that ends naturally — a `write(big); exit(0)` emitter truncates at
+// the 64KB pipe buffer, never overflows the cap, and passes against the defect.
+function writeBigListingGitShim(shimDir) {
+    const shim = path.join(shimDir, 'git');
+    fs.writeFileSync(
+        shim,
+        '#!/bin/sh\n'
+        + "awk 'BEGIN{for(i=0;i<40000;i++) printf \"vendor/p%06d/xstate-manager.ts\\n\", i; print \"src/services/state-manager.ts\"}'\n"
+    );
+    fs.chmodSync(shim, 0o755);
+    return shim;
+}
+
+test('AP-EXT-ITER56-01: a tracked citation still resolves when the ls-files listing streams past spawnSync 1MB default', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    const shimDir = tmpDir('pickle-apv-shim-');
+    const workingDir = tmpDir('pickle-apv-work-');
+    const originalPath = process.env.PATH;
+    try {
+        writeBigListingGitShim(shimDir);
+        process.env.PATH = `${shimDir}${path.delimiter}${originalPath}`;
+
+        const warnings = checkAnalystOutputPaths('Cited: `state-manager.ts` here.\n', workingDir);
+        assert.deepEqual(
+            warnings,
+            [],
+            'a REAL tracked file must not be reported unresolved because the listing outgrew the capture buffer'
+        );
+    } finally {
+        process.env.PATH = originalPath;
+        __resetGitLsFilesSuffixCacheForTests();
+        fs.rmSync(shimDir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER56-01 (control): the cap does not suppress a genuinely unresolved citation', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    const shimDir = tmpDir('pickle-apv-shim-');
+    const workingDir = tmpDir('pickle-apv-work-');
+    const originalPath = process.env.PATH;
+    try {
+        writeBigListingGitShim(shimDir);
+        process.env.PATH = `${shimDir}${path.delimiter}${originalPath}`;
+
+        const warnings = checkAnalystOutputPaths('Cited: `never-tracked-anywhere.ts` here.\n', workingDir);
+        assert.equal(warnings.length, 1);
+        assert.equal(warnings[0].defect_class, 'path_not_found');
+    } finally {
+        process.env.PATH = originalPath;
+        __resetGitLsFilesSuffixCacheForTests();
+        fs.rmSync(shimDir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
