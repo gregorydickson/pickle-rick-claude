@@ -337,9 +337,10 @@ test('AP-EXT-ITER2-01: the anchor rule rejects a phantom and honors segment boun
 });
 
 test('AP-EXT-ITER2-01: the release-gate audit verifies anchors, not just files', () => {
-  // The rule above is a second reader; the GATE is the shell audit. If the audit
-  // loses the anchor arm, the mirrored rule here keeps passing while the gate that
-  // actually blocks a release goes blind again.
+  // The loader above proves the RULE is intact; this proves the audit still CONSULTS it.
+  // A rule that exists but is never called on the anchor leaves the gate blind while
+  // `compileAnchorRule` extracts and every behavioral arm above passes — so the wiring
+  // needs its own pin, and it is the only source-text pin this arm carries.
   const audit = fs.readFileSync(AUDIT_PATH, 'utf8');
   assert.match(
     audit,
