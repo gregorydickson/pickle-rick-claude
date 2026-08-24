@@ -605,3 +605,90 @@ setTimeout(() => {}, 60_000);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER54-01: a gate check is a subtree ROOT — its timeout reaps the GROUP
+// ---------------------------------------------------------------------------
+
+/**
+ * Every command in `data/gate-commands.json` is a package-manager or toolchain root
+ * (`npm run lint`, `pnpm test`, `cargo test`) whose real work runs in GRANDchildren.
+ * The pre-fix teardown was `execFile`'s AbortSignal, which kills the direct child pid
+ * only — and `execFile` silently drops `detached`, so no group ever existed to reap.
+ *
+ * The oracle is the SURVIVING PROCESS, never the verdict: the pre-fix gate already
+ * returned the correct `red` / `GATE_CHECK_TIMEOUT` at the right wall-clock, so a
+ * verdict-only assertion greens over the whole defect. Both are asserted here — the
+ * fix must reap the subtree WITHOUT changing what the gate reports.
+ */
+function writeTimingOutGateProject(dir, pidDir) {
+  // `npm` (package-lock.json → detectProjectType 'npm') is already a hard dependency of
+  // this repo's own gate, so this adds no new host requirement.
+  fs.writeFileSync(path.join(dir, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3 }));
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({ name: 'apk-iter54', version: '1.0.0', scripts: { lint: 'sh ./leaker.sh "$npm_node_execpath"' } }, null, 2),
+  );
+  // The leaf is started by the SHELL, not by a child_process call in this file: the
+  // subprocess-heavy audit scans source text, so a `spawn(`/`execFile(` token inside a
+  // fixture string reads as an untimed callsite in THIS test (the known JSDoc-prose
+  // false-positive class). It also models the real chain more faithfully —
+  // npm -> sh -> tool -> worker. The leaf idles far past the per-check timeout, so if it
+  // is still alive after the gate returns it is a genuine orphan, not a race with its
+  // own exit.
+  fs.writeFileSync(
+    path.join(dir, 'leaker.sh'),
+    [
+      '#!/bin/sh',
+      `"$1" -e 'setTimeout(()=>{},600000)' &`,
+      `echo "" > ${JSON.stringify(pidDir)}/"$!"`,
+      'wait',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+}
+
+test('AP-EXT-ITER54-01: a timed-out gate check leaves no orphaned subtree behind', async () => {
+  const { runGate } = await import('../../services/convergence-gate.js');
+  const dir = makeTmpRoot('pickle-pc-gate-');
+  let pidDir = null;
+  try {
+    pidDir = makePidDir(dir);
+    writeTimingOutGateProject(dir, pidDir);
+
+    const result = await runGate({
+      workingDir: dir,
+      mode: 'strict',
+      scope: 'full',
+      checks: ['lint'],
+      _timeouts: { perCheck: { lint: 6_000 }, total: 30_000 },
+    });
+
+    // The pre-fix verdict was already correct — assert it so the reap cannot be bought
+    // by breaking the timeout classification.
+    assert.equal(result.status, 'red', `expected red, got ${result.status}`);
+    assert.ok(
+      result.failures.some((f) => f.ruleOrCode === 'GATE_CHECK_TIMEOUT'),
+      `expected GATE_CHECK_TIMEOUT, got ${JSON.stringify(result.failures)}`,
+    );
+
+    const recorded = readRecordedPids(pidDir);
+    assert.equal(recorded.length, 1, `expected exactly one recorded grandchild, got ${recorded.length}`);
+
+    // The group kill is asynchronous at the OS level; poll rather than sample once.
+    const deadline = Date.now() + 5_000;
+    let survivor = recorded[0];
+    while (Date.now() < deadline && isPidAlive(survivor)) {
+      await new Promise((r) => { setTimeout(r, 100).unref?.(); });
+    }
+    assert.equal(
+      isPidAlive(survivor),
+      false,
+      `gate-check grandchild ${survivor} survived the timeout as an orphan: ${processCommandLine(survivor).trim()}`,
+    );
+  } finally {
+    if (pidDir) reapRecordedGrandchildren(pidDir, dir);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

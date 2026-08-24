@@ -1,10 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'node:crypto';
-import { execFile, spawnSync } from 'child_process';
+import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import { fileURLToPath } from 'url';
 import { LockError, UNBOUNDED_READ_MAX_BUFFER, type ActivityEventType, type GateResult, type GateMode, type GateFailure, type GateBaselineFile } from '../types/index.js';
 import { withLock } from './state-manager.js';
+import { killProcessGroup } from './orphan-reaper.js';
 import { readRecoverableJsonObject } from './microverse-state.js';
 import { writeStateFile } from './pickle-utils.js';
 import { detectMissingTools } from './verify-command-safety.js';
@@ -683,6 +684,46 @@ interface CheckResult {
   exitCode: number;
 }
 
+/** The ceiling `execFile`'s `maxBuffer` used to enforce on a check's captured output. */
+const CHECK_OUTPUT_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * THE terminator for a gate check: the subtree's process GROUP first, the bare child
+ * as the fallback — the shape `bin/spawn-morty.ts:killProcessTree` already uses for the
+ * SAME commands, delegating to the one shared negative-PID primitive.
+ *
+ * The parent-side pipes are destroyed first, mirroring what `execFile`'s internal
+ * `kill()` did: a survivor holding the write end must not strand this event loop when
+ * the group signal cannot land (win32, or a group already gone).
+ */
+function killCheckSubtree(child: ChildProcess, signal: NodeJS.Signals): void {
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  const pid = child.pid;
+  if (typeof pid === 'number' && killProcessGroup(pid, signal)) return;
+  try {
+    child.kill(signal);
+  } catch {
+    // Best-effort cleanup.
+  }
+}
+
+/**
+ * AP-EXT-ITER54-01: every command in `data/gate-commands.json` is a package-manager or
+ * toolchain ROOT (`pnpm test`, `npm run typecheck`, `cargo test`) whose real work runs in
+ * GRANDchildren, so the timeout teardown must reap the process GROUP, not the child pid.
+ *
+ * `execFile` cannot do that, and the reason is not a missing option — it hand-picks which
+ * spawn options it forwards and SILENTLY DROPS `detached`, so its child shares THIS
+ * process's group and a negative-PID kill on the child pid would name a group that does
+ * not exist (or, worse, invite the AP-EXT-ITER47-01 self-group hazard). `spawn` with
+ * `detached` is the only shape in which the child LEADS a group there is something to
+ * reap; the two are driven off one platform predicate so they cannot drift.
+ *
+ * `error` RESOLVES rather than rejects, byte-for-byte the pre-fix disposition: only a
+ * `GateTimeoutError` is caught by `runGateCheck`, so rejecting here would throw out of
+ * `runGate` instead of producing a red result.
+ */
 async function runCheckCommand(
   check: GateCheck,
   cmd: string,
@@ -700,37 +741,54 @@ async function runCheckCommand(
     return { stdout: '', stderr: `tool not installed: ${bin}`, exitCode: 1 };
   }
   return await new Promise<CheckResult>((resolve, reject) => {
-    const controller = new AbortController();
-    const timeoutHandle = setTimeout(() => {
-      controller.abort();
-      reject(new GateTimeoutError(check, timeout_ms));
-    }, timeout_ms);
+    const child = spawn(bin, args, {
+      cwd,
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
 
-    execFile(
-      bin,
-      args,
-      {
-        cwd,
-        encoding: 'utf8',
-        killSignal: 'SIGKILL',
-        maxBuffer: 10 * 1024 * 1024,
-        signal: controller.signal,
-      },
-      (err, stdout, stderr) => {
-        clearTimeout(timeoutHandle);
-        if (!err) {
-          resolve({ stdout: stdout ?? '', stderr: stderr ?? '', exitCode: 0 });
-          return;
-        }
-        if (controller.signal.aborted) return;
-        const e = err as { stdout?: string; stderr?: string; code?: number };
-        resolve({
-          stdout: e.stdout ?? stdout ?? '',
-          stderr: e.stderr ?? stderr ?? '',
-          exitCode: typeof e.code === 'number' ? e.code : 1,
-        });
-      },
-    );
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    const capture = (append: (chunk: string) => void) => (chunk: string): void => {
+      append(chunk);
+      if (stdout.length + stderr.length <= CHECK_OUTPUT_MAX_BYTES) return;
+      // Same disposition `execFile`'s maxBuffer overflow produced — exit 1 over the
+      // truncated output — except the whole subtree is reaped with it.
+      settle(() => {
+        killCheckSubtree(child, 'SIGKILL');
+        resolve({ stdout, stderr, exitCode: 1 });
+      });
+    };
+
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', capture((c) => { stdout += c; }));
+    child.stderr?.on('data', capture((c) => { stderr += c; }));
+
+    child.on('error', () => {
+      settle(() => { resolve({ stdout, stderr, exitCode: 1 }); });
+    });
+    child.on('close', (code) => {
+      settle(() => {
+        resolve({ stdout, stderr, exitCode: typeof code === 'number' ? code : 1 });
+      });
+    });
+
+    const timer = setTimeout(() => {
+      settle(() => {
+        killCheckSubtree(child, 'SIGKILL');
+        reject(new GateTimeoutError(check, timeout_ms));
+      });
+    }, timeout_ms);
+    timer.unref();
   });
 }
 
