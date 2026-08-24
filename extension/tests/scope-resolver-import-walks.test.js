@@ -145,7 +145,7 @@ function cleanup(dir) {
 function resolveRealBinary(name) {
     const candidates = [`/usr/bin/${name}`, `/bin/${name}`, `/usr/local/bin/${name}`, `/opt/homebrew/bin/${name}`];
     for (const candidate of candidates) {
-        if (fs.existsSync(candidate)) return candidate;
+        if (fs.existsSync(candidate)) { return candidate; }
     }
     throw new Error(`scope-resolver-import-walks test: cannot resolve real ${name} binary for ENOENT fixture`);
 }

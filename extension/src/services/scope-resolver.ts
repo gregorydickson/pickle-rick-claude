@@ -884,7 +884,7 @@ function _runRgImportWalk(pattern: string, root: string, timeoutMs: number): str
   if (errorCode === 'ENOENT') {
     console.warn('scope-resolver import walk: rg missing (ENOENT) — degrading to git grep, then grep');
     const gitGrepMatches = _runGitGrepImportWalk(pattern, root, timeoutMs);
-    if (gitGrepMatches !== null) return gitGrepMatches;
+    if (gitGrepMatches !== null) { return gitGrepMatches; }
     return _runGrepImportWalk(pattern, root, timeoutMs);
   }
   console.warn(`scope-resolver import walk: rg ${errorCode === 'ETIMEDOUT' ? 'timeout' : 'fail'} status=${rg.status ?? 'null'} signal=${rg.signal ?? 'null'} error=${errorCode ?? 'none'}`);
