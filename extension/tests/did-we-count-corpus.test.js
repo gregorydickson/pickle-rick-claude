@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CORPUS, DETECTABLE_CEILING } from '../services/did-we-count-corpus.js';
+import { replayCorpus, buildAstCheckRegistry } from '../bin/did-we-count-replay.js';
 
 const VALID_BUCKETS = new Set(['detectable', 'semantic', 'out-of-reach']);
 const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -77,4 +78,33 @@ test("2c857117 positive control FIRES: mux-runner.ts process-identity arm is liv
       'did-we-count-corpus.ts entry for 2c857117 — do not flip expect_fire_on_fix to false ' +
       'without also verifying the pickle-utils.ts arm above.',
   );
+});
+
+// Ticket 7b4f5d60 (d7c017ff's 4 landed rules, wired into the replay): the honest partition
+// after wiring. Exactly the 7 detectable shas the 4 rules actually cover replay `pass`; the
+// other 2 detectable shas (process-identity membership/identity defects no landed rule
+// reaches) stay `no-check-yet`, and NO semantic or out-of-reach sha is ever given a check —
+// widening either would be the "stretch a matcher" move this ticket is forbidden from making.
+test('replay wiring: exactly the 7 rule-covered detectable shas pass, everything else stays no-check-yet', () => {
+  const results = replayCorpus(CORPUS, buildAstCheckRegistry());
+  const bySha = new Map(results.map((r) => [r.sha, r]));
+
+  const expectedPass = new Set(['7e06e8b2', 'e2804228', 'd24cec5e', 'c7c85ef3', '0cf3b8e3', 'ff8d4739', '41b9b255']);
+
+  for (const sha of expectedPass) {
+    assert.equal(bySha.get(sha)?.status, 'pass', `${sha} must replay as pass (fires on parent, not on fix)`);
+  }
+  for (const entry of CORPUS) {
+    if (expectedPass.has(entry.sha)) continue;
+    assert.equal(
+      bySha.get(entry.sha)?.status,
+      'no-check-yet',
+      `${entry.sha} (${entry.bucket}) must never replay as pass or fail without a real registered check`,
+    );
+  }
+
+  const passCount = results.filter((r) => r.status === 'pass').length;
+  const failCount = results.filter((r) => r.status === 'fail').length;
+  assert.equal(passCount, 7, 'exactly 7 of 18 shas are replayed today — never stretch this number');
+  assert.equal(failCount, 0);
 });
