@@ -52,6 +52,27 @@ but an unbacked assertion of having measured.
 The same shape appears in `29c81991`, which added a trap door "with resolved ENFORCE anchor" while
 breaking three separate trap-door conformance rules.
 
+## ⚠️ MEASURED CORRECTION — 2 of the 4 are ISOLATION-DEPENDENT, and that changes the fix
+
+Re-measured per-file **by exit code** (not by grep — my first attempt used the Node-22 `^# fail`
+summary form, which never matches under Node 24 and silently reported two failing files as passing;
+the very trap this bundle's parent exists to prevent):
+
+| test file | standalone RC | standalone fail count |
+|---|---|---|
+| `unrunnable-check-uncertifiable-baseline.test.js` | **0** | **0 — passes alone** |
+| `doc-cross-reference.test.js` | **0** | **0 — passes alone** |
+| `trap-door-conformance.test.js` | **1** | **2 — fails alone** |
+
+So the `GateBaselineFile` and `AC-BUNDLE-17` failures **reproduce only in full-suite context** — they are
+isolation- or ordering-dependent, not standalone defects. Only the two `trap-door-conformance` failures
+reproduce in isolation.
+
+**Consequence for the fix, binding:** a worker that verifies per-file will see
+`unrunnable-check-uncertifiable-baseline` and `doc-cross-reference` pass and conclude it is done. It
+will be wrong. **AC-1 must be measured on the FULL `npm run test:fast`, never per-file**, and the
+repo's `scripts/audit-test-isolation.sh` is the relevant existing mechanism to consult.
+
 ## Acceptance criteria
 
 - **AC-1** `npm run test:fast` returns to **fail 1 / cancelled 0** — the inherited bun probe only —
