@@ -61,7 +61,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * thing that can settle the promise — so with an otherwise-empty loop, Node 22 drains,
  * the await stays pending, and node:test reports "Promise resolution is still pending
  * but the event loop has already resolved", cancelling this test and every test after
- * it (measured on v22.23.2: pass 1, cancelled 18; on v24 the file passes 19/19).
+ * it (host-local measurement, darwin: on v22.23.2 pass 1 / cancelled 18; on v24.19.0
+ * the file passes 19/19 — the Node major is causal, not the host OS).
  *
  * This restores the loop liveness production always has, so the timeout path under test
  * actually runs. No assertion is relaxed and no product behaviour is changed. Scoped to
