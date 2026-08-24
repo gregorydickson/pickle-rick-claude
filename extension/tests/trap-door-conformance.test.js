@@ -291,13 +291,18 @@ describe('extension/CLAUDE.md touched trap-door entries', () => {
     );
   });
 
+  // Per-entry, deliberately with no aggregate arm alongside it. `assertEntriesConform` is a
+  // flatMap over `validateTrapDoorEntry` with no cross-entry rule, so a whole-set call re-runs
+  // exactly these assertions on exactly these inputs and localizes the failure worse. The arm
+  // that used to sit here ('clean or unavailable diff has no false failure') covered the two
+  // shapes this block no longer reaches: `unavailable` was deleted when runClaudeDiff started
+  // returning a discriminated result, and `clean` is now asserted IMPOSSIBLE by the
+  // entries.length > 0 check above. A green line named for an unreachable scenario is the
+  // fake-green shape, not coverage. The real clean-diff case is exercised on a synthetic empty
+  // diff in the fixture-parser block: 'clean diff returns no touched entries and passes'.
   for (const entry of entries) {
     test(`line ${entry.lineNumber} conforms`, () => {
       assertEntriesConform([entry]);
     });
   }
-
-  test('clean diff has no false failure', () => {
-    assertEntriesConform(entries);
-  });
 });
