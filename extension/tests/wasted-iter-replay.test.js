@@ -162,6 +162,79 @@ test('the old predicate is the deleted expression, reconstructed', () => {
   }
 });
 
+test('AP-EXT-ITER59-01: a half-null HEAD pair reads NOT wasted under the old predicate', () => {
+  // The deleted expression is `action === 'revert' || postIterSha === preIterSha`, with no
+  // null arm at all: one unreadable HEAD makes `post === pre` false, so the old rule scored
+  // the iteration committed. `classifyMuxIteration`'s null-safe `moved` is the NEW rule's
+  // handling and must never leak into this column.
+  const oldExpression = (event) =>
+    event.action === 'revert' || (event.post_iter_sha ?? null) === (event.pre_iter_sha ?? null);
+
+  const halfNull = [
+    { action: 'accept', pre_iter_sha: null, post_iter_sha: 'abc' },
+    { action: 'accept', pre_iter_sha: 'abc', post_iter_sha: null },
+    { action: 'worker', post_iter_sha: 'abc' },            // pre absent entirely
+    { action: 'accept', pre_iter_sha: 'abc' },             // post absent entirely
+    // Controls: the shapes that already agreed must keep agreeing.
+    { action: 'accept', pre_iter_sha: 'abc', post_iter_sha: 'def' },
+    { action: 'accept', pre_iter_sha: 'abc', post_iter_sha: 'abc' },
+    { action: 'accept', pre_iter_sha: null, post_iter_sha: null },
+    { action: 'revert', pre_iter_sha: 'abc', post_iter_sha: 'def' },
+  ];
+
+  for (const event of halfNull) {
+    const verdict = classifyUnderOldPredicate({ session: '2026-08-05-aa11bb22', ...event });
+    assert.equal(
+      verdict.wasted,
+      oldExpression(event),
+      `old predicate diverged from the deleted expression on ${JSON.stringify(event)}`,
+    );
+    assert.equal(
+      verdict.reason,
+      verdict.wasted ? (event.action === 'revert' ? 'revert' : 'no_progress') : 'committed',
+      `old-predicate reason must follow its own verdict on ${JSON.stringify(event)}`,
+    );
+  }
+});
+
+test('AP-EXT-ITER59-01: a half-null corpus does not inflate the OLD wasted rate', () => {
+  // The whole flow, not the predicate alone: replayCorpus -> tally -> rate. Two real-session
+  // iterations whose HEAD read failed at exactly one boundary — the live shape, since both
+  // SHAs come from a failable `readHeadCommit` read an iteration apart.
+  const corpus = [
+    { session: '2026-08-05-aa11bb22', iteration: 1, action: 'accept', pre_iter_sha: null, post_iter_sha: 'abc' },
+    { session: '2026-08-05-aa11bb22', iteration: 2, action: 'accept', pre_iter_sha: 'def', post_iter_sha: null },
+  ];
+  const result = replayCorpus(corpus);
+
+  assert.equal(result.iterations, 2);
+  assert.equal(result.old.wasted, 0, 'the old rule scored a half-null pair NOT wasted');
+  assert.equal(result.old.rate, 0, 'so the OLD column must not be inflated to 100%');
+  assert.deepEqual(result.old.classes, {
+    committed: 2,
+    worker_handoff: 0,
+    clean_pass: 0,
+    revert: 0,
+    no_progress: 0,
+  });
+
+  // The NEW rule genuinely differs here — an unreadable HEAD is not evidence of a commit —
+  // and that difference must survive, so the fix cannot pass by flattening both columns.
+  assert.equal(result.new.wasted, 2);
+  assert.deepEqual(result.new.classes, {
+    committed: 0,
+    worker_handoff: 0,
+    clean_pass: 0,
+    revert: 0,
+    no_progress: 2,
+  });
+  assert.ok(
+    result.new.rate > result.old.rate,
+    'on this population the OLD rule is the more forgiving one — a replay that reports the '
+    + 'reverse has imported the new rule into the old column and overstated the drop',
+  );
+});
+
 test('the report records the window, both rates, and the excluded population', () => {
   const { result } = replayFixtureCorpus();
   const report = formatReplayReport(result);

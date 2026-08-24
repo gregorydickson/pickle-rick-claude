@@ -51,14 +51,18 @@ function emptyClasses() {
         classes[reason] = 0;
     return classes;
 }
-function movedHead(event) {
-    const pre = event.pre_iter_sha ?? null;
-    const post = event.post_iter_sha ?? null;
-    return pre !== null && post !== null && pre !== post;
-}
 /**
  * The pre-`0aff6be2` predicate, reconstructed exactly:
  * `action === 'revert' || postIterSha === preIterSha`.
+ *
+ * The comparison is the bare `===`, deliberately NOT `classifyMuxIteration`'s null-safe
+ * `moved` (`pre !== null && post !== null && pre !== post`). The old rule had no null
+ * arm: one unreadable HEAD made `post === pre` FALSE, so it scored the iteration
+ * committed. Borrowing the new rule's null handling makes this a THIRD predicate — the
+ * one thing this module refuses to write — and it biases in the worst direction, charging
+ * every half-null iteration to the OLD column as wasted and overstating the very drop the
+ * replay exists to check. Both SHAs come from a failable `readHeadCommit`, read an
+ * iteration apart, so a half-null is a live shape at both emitters, not a hypothetical.
  *
  * Reported in the shared vocabulary so the two columns are comparable, but the old rule
  * had no handoff or clean-pass arm — so `worker_handoff` and `clean_pass` are always 0
@@ -68,9 +72,11 @@ function movedHead(event) {
 export function classifyUnderOldPredicate(event) {
     if (event.action === 'revert')
         return { wasted: true, reason: 'revert' };
-    if (movedHead(event))
-        return { wasted: false, reason: 'committed' };
-    return { wasted: true, reason: 'no_progress' };
+    const pre = event.pre_iter_sha ?? null;
+    const post = event.post_iter_sha ?? null;
+    return post === pre
+        ? { wasted: true, reason: 'no_progress' }
+        : { wasted: false, reason: 'committed' };
 }
 /**
  * The post-fix predicate. Delegates to `classifyMuxIteration` — the runtime's own
