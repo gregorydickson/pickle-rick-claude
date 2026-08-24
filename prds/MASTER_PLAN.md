@@ -32,6 +32,22 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 > ### 🚢 2026-08-24 — v2.1.0-beta.14, the Node-pin bundle — AND A MONTH-LONG RELEASE OUTAGE FOUND
 >
+> **⚠️ CORRECTION, same day: the bundle did NOT meet its own AC-2.** `release.yml` run
+> [32738408865](https://github.com/gregorydickson/pickle-rick-claude/actions/runs/32738408865) is the
+> **13th consecutive failure** — still dying at `Install and compile`, `Create release` skipped.
+> **The frontier moved and that is measured:** the new `Enable corepack` step SUCCEEDS, and all three
+> previously-named Linux failures (`rebuild failure latches immediately`, `every phase degraded…`,
+> `runGate: flake-listed failure…`) are **gone**. The run now reaches a different wall:
+> **`monitor.test.js`** (`R-MDS-3`, `R-MDS-4`, `monitor CLI`, `renderDashboard`, `writeWithWatchdog`)
+> plus `R-MWBG` deploy-parity.
+> **The refuted premise was mine.** The refined PRD ruled that `monitor.test.js` "does not fail on
+> Linux" — but that observation came from runs that **died before reaching those tests**. Absent-from-
+> the-failure-list was read as passes when it meant never ran: the dominant defect class, committed in
+> a ruling *about* the dominant defect class. Filed
+> `BUG-2026-08-24-release-workflow-still-red-monitor-suite-on-linux.md` (P1), which **recomposes** the
+> darwin cancellations PRD into itself — they are the same bug, and the separation rested on that
+> premise. **The release outage is NOT resolved.**
+>
 > `exit_reason: converged`, **4/4 phases, 394m 16s**, session `2026-08-24-04b1a11e`, 16 commits.
 > szechuan-sauce converged to **metric 0** (from 3, zero violations). Gate green in stages: static +
 > 9 audits RC=0; `test:fast` **7962 / 518 / fail 1 / cancelled 0**; `test:integration` **650 / 21 /
