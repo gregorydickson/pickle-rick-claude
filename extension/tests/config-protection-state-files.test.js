@@ -934,3 +934,77 @@ test('AP-EXT-ITER51-02: a quoted write command inside a commit message still app
     'approve',
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER47-01: `sed` without an in-place flag is a READER, not a writer.
+//
+// Pass 2 anchored on the bare command name, so every read-only `sed` form
+// targeting a protected path was blocked — the exact over-block the read-only
+// exclusions on WRITE_COMMANDS exist to prevent (`grep`/`cat`/`awk` are absent
+// for that reason). Measured against the shipped handler before the fix: 6/6
+// read-only `sed` forms blocked across the state, settings and config gates
+// while `cat`/`grep`/`head` on the same paths approved. It fires on the
+// anatomy-park worker protocol's own mandated `sed -n` read of the protected
+// runtime root.
+//
+// Both directions are pinned: narrowing the anchor must not re-open `sed -i`.
+// ---------------------------------------------------------------------------
+
+for (const [label, build] of [
+  ['sed -n range', (t) => `sed -n '1,200p' ${t}`],
+  ['sed -e script to stdout', (t) => `sed -e 's/a/b/' ${t}`],
+  ['sed -f script file', (t) => `sed -f prog.sed ${t}`],
+  ['sed -E -n extended regex', (t) => `sed -E -n '/x/p' ${t}`],
+  ['sed -n piped onward', (t) => `sed -n '1,200p' ${t} | grep foo`],
+  ['sed --expression carrying an i in the script', (t) => `sed --expression='s/a/i/' ${t}`],
+]) {
+  test(`AP-EXT-ITER47-01: read-only ${label} approves`, () => {
+    assert.equal(
+      runWorkerBashInSession(build).decision,
+      'approve',
+      'sed writes a FILE argument only in in-place mode; a read must not block',
+    );
+  });
+}
+
+for (const [label, build] of [
+  ['sed -i GNU form', (t) => `sed -i 's/a/b/' ${t}`],
+  ['sed -i BSD empty suffix', (t) => `sed -i '' 's/a/b/' ${t}`],
+  ['sed -i.bak glued suffix', (t) => `sed -i.bak 's/a/b/' ${t}`],
+  ['sed -i glued empty quotes', (t) => `sed -i'' 's/a/b/' ${t}`],
+  ['sed -ni bundled cluster', (t) => `sed -ni 's/a/b/' ${t}`],
+  ['sed -n -i separated flags', (t) => `sed -n -i 's/a/b/' ${t}`],
+  ['sed --in-place long option', (t) => `sed --in-place 's/a/b/' ${t}`],
+  ['sed --in-place=.bak long option', (t) => `sed --in-place=.bak 's/a/b/' ${t}`],
+  ['sed -i with permuted GNU flag order', (t) => `sed 's/a/b/' -i ${t}`],
+]) {
+  test(`AP-EXT-ITER47-01: in-place ${label} still blocks`, () => {
+    assert.equal(
+      runWorkerBashInSession(build).decision,
+      'block',
+      'narrowing the Pass 2 anchor must not re-open the in-place write',
+    );
+  });
+}
+
+// The narrowing is `sed`-only. `perl` has no total "no flag => no write"
+// implication (`perl -e` opens its own argument), and the editors always write.
+for (const [label, build] of [
+  ['perl without -i', (t) => `perl -ne 'print' ${t}`],
+  ['vim', (t) => `vim ${t}`],
+  ['ed', (t) => `ed ${t}`],
+  ['tee', (t) => `echo x | tee ${t}`],
+]) {
+  test(`AP-EXT-ITER47-01: ${label} is unaffected by the sed narrowing`, () => {
+    assert.equal(runWorkerBashInSession(build).decision, 'block');
+  });
+}
+
+// The other two protected domains share the one walker, so they move together.
+test('AP-EXT-ITER47-01: read-only sed on a config file approves', () => {
+  assert.equal(runWorkerBash("sed -n '1,20p' tsconfig.json").decision, 'approve');
+});
+
+test('AP-EXT-ITER47-01: in-place sed on a config file still blocks', () => {
+  assert.equal(runWorkerBash("sed -i '' 's/a/b/' tsconfig.json").decision, 'block');
+});

@@ -353,9 +353,11 @@ function findWriteTargetInScope<T>(
     // execName (not path.basename): folds case and strips a trailing `;`, so
     // `SED -i`, `/usr/bin/sed -i`, and `TEE` all match the lowercase set.
     if (tokens[i].quoted && i !== execIndex) continue;
-    if (!WRITE_COMMANDS.has(execName(tokens[i].value))) continue;
-    for (let j = i + 1; j < tokens.length; j++) {
-      const arg = tokens[j].value;
+    const name = execName(tokens[i].value);
+    if (!WRITE_COMMANDS.has(name)) continue;
+    const argsInScope = tokens.slice(i + 1).map((token) => token.value);
+    if (!anchorWritesPositionalArg(name, argsInScope)) continue;
+    for (const arg of argsInScope) {
       if (arg.startsWith('-')) continue;
       const hit = probe(arg);
       if (hit !== null) return hit;
@@ -440,6 +442,53 @@ const WRITE_COMMANDS = new Set([
   'tee', 'cp', 'mv', 'rsync',
   'sed', 'perl', 'vim', 'vi', 'nano', 'emacs', 'ed', 'ex',
 ]);
+
+/**
+ * `WRITE_COMMANDS` members whose FILE argument is a write target only in
+ * in-place mode. Membership requires a TOTAL implication: "no in-place flag" =>
+ * "no positional-arg write". `sed` qualifies — its only file-mutating mode is
+ * `-i`, and the redirect form (`sed … > FILE`) is Pass 1's, not Pass 2's.
+ *
+ * `perl` looks like a sibling and is deliberately absent: `perl -e` runs
+ * arbitrary code that can open its own argument for writing with no flag to key
+ * on, so the implication is false and narrowing it would be fencing a shell by
+ * verb enumeration (see the WRITE_COMMANDS speed-bump trap door). The editors
+ * (`vim`/`ed`/…) write whenever a worker runs them at all.
+ */
+const IN_PLACE_ONLY_WRITERS = new Set(['sed']);
+
+/**
+ * True for `--in-place`, `--in-place=.bak`, and any single-dash cluster carrying
+ * an `i` (`-i`, `-i.bak`, `-i''`, `-ni`). Long options other than `--in-place`
+ * are excluded so a script passed as `--expression='s/a/i/'` is not read as one.
+ */
+function isInPlaceFlag(arg: string): boolean {
+  if (arg.startsWith('--')) return /^--in-place(=|$)/.test(arg);
+  return arg.startsWith('-') && arg.slice(1).includes('i');
+}
+
+/**
+ * Pass 2 anchor validity: given the exec name and every token that follows it in
+ * scope, does this invocation write a positional FILE argument at all?
+ *
+ * Without this, anchoring on the bare command name blocked a pure READ —
+ * `sed -n '1,200p' <protected>`, `sed -e … <protected>`, `sed -f prog.sed
+ * <protected>` — which is the same over-block the read-only exclusions on
+ * `WRITE_COMMANDS` exist to prevent (`grep`/`cat`/`awk` are absent for exactly
+ * that reason). Measured against the shipped handler: 6/6 read-only `sed` forms
+ * blocked across the state, settings, and config gates while `cat`/`grep`/`head`
+ * on the same paths approved.
+ *
+ * The flag scan spans the whole remaining scope rather than the leading flag run
+ * (`sed 's/a/b/' -i FILE` permutes on GNU and must stay blocked). In the raw
+ * un-segmented scope that lets a LATER segment's `-i` re-arm an earlier read —
+ * fail-closed, the same direction the raw+segment union already fails, and each
+ * segment is scanned on its own where the args are correctly bounded.
+ */
+function anchorWritesPositionalArg(name: string, argsInScope: string[]): boolean {
+  if (!IN_PLACE_ONLY_WRITERS.has(name)) return true;
+  return argsInScope.some(isInPlaceFlag);
+}
 
 /**
  * Detects whether `command` writes to a protected state file (redirect,
