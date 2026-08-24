@@ -836,6 +836,345 @@ const noHardcodedTimeout = {
   },
 };
 
+// ─── Rule: require-max-buffer-on-capture ─────────────────────────────────────
+//
+// did-we-count AC-1'/AC-4' (ticket d7c017ff), covers 7e06e8b2 / e2804228 / d24cec5e:
+// a spawnSync/execSync/execFileSync call that captures string output (an `encoding`
+// option) but has no `maxBuffer` falls back to Node's 1MB default. Node SIGTERMs the
+// child past that ceiling and returns a truncated/absent result the caller cannot
+// distinguish from a legitimate failure — see the AP-EXT-ITER8-01 trap door in
+// extension/src/services/CLAUDE.md.
+
+const CAPTURE_METHODS = new Set(['spawnSync', 'execSync', 'execFileSync']);
+
+function isCaptureCall(callee) {
+  if (callee.type === 'Identifier') return CAPTURE_METHODS.has(callee.name);
+  if (callee.type === 'MemberExpression' && callee.property.type === 'Identifier') {
+    return CAPTURE_METHODS.has(callee.property.name);
+  }
+  return false;
+}
+
+/**
+ * Bounded single-fact probes (`git rev-parse`, `ps -p <pid>`, `--version`, ...) are
+ * legitimately unbounded-maxBuffer by construction — the codebase's own trap-door
+ * catalog names this class repeatedly ("NOT matches: single-line rev-parse/cat-file
+ * -e/show -s/--version probes, ps -p <pid>/lsof -t/pgrep reads"). A blanket
+ * encoding-without-maxBuffer check fires on ~80 such call sites tree-wide and is
+ * exactly the noise AC-4' forbids shipping. This narrows to the shapes the
+ * did-we-count corpus's own detectable shas actually are: an arbitrary/templated
+ * command (`shell:true`, or execSync's inherently-shelled single-string form) or a
+ * known whole-tree/whole-output git enumeration subcommand, or an npm/pnpm/yarn
+ * `run <script>` invocation (arbitrary build/test output).
+ */
+const UNBOUNDED_GIT_SUBCOMMANDS = ['ls-files', 'status', 'diff', 'log', 'blame', 'grep'];
+const UNBOUNDED_GIT_SUBCOMMAND_RE = new RegExp(`\\bgit\\s+(${UNBOUNDED_GIT_SUBCOMMANDS.join('|')})\\b`);
+
+/** Best-effort literal text of a string Literal or a no-substitution TemplateLiteral. */
+function staticStringValue(node) {
+  if (!node) return null;
+  if (node.type === 'Literal' && typeof node.value === 'string') return node.value;
+  if (node.type === 'TemplateLiteral') return node.quasis.map((q) => q.value.raw).join(' ');
+  return null;
+}
+
+function hasUnboundedShape(node, optionsArg) {
+  const calleeName = node.callee.type === 'Identifier' ? node.callee.name : node.callee.property.name;
+  if (calleeName === 'execSync') {
+    // Single templated/string command, always shell-executed — apply the same
+    // enumeration/run-script text shape check rather than treating every execSync
+    // call as unbounded (a bounded probe like `execSync('git config user.email')`
+    // must not fire).
+    const cmdText = staticStringValue(node.arguments[0]) ?? '';
+    return UNBOUNDED_GIT_SUBCOMMAND_RE.test(cmdText) || /\brun\b/.test(cmdText);
+  }
+  if (optionsArg) {
+    const shellProp = optionsArg.properties.find(
+      (p) => p.type === 'Property' && p.key.type === 'Identifier' && p.key.name === 'shell',
+    );
+    if (shellProp && shellProp.value.type === 'Literal' && shellProp.value.value === true) return true;
+  }
+  const firstArg = node.arguments[0];
+  const argvArg = node.arguments[1];
+  const isGit = firstArg && firstArg.type === 'Literal' && firstArg.value === 'git';
+  if (isGit && argvArg && argvArg.type === 'ArrayExpression') {
+    const hasUnboundedSubcommand = argvArg.elements.some(
+      (el) => el && el.type === 'Literal' && typeof el.value === 'string' && UNBOUNDED_GIT_SUBCOMMANDS.includes(el.value),
+    );
+    if (hasUnboundedSubcommand) return true;
+  }
+  if (argvArg && argvArg.type === 'ArrayExpression') {
+    const hasRunLiteral = argvArg.elements.some((el) => el && el.type === 'Literal' && el.value === 'run');
+    if (hasRunLiteral) return true;
+  }
+  return false;
+}
+
+const requireMaxBufferOnCapture = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description: 'spawnSync/execSync/execFileSync calls that capture unbounded output must set maxBuffer',
+    },
+    messages: {
+      requireMaxBuffer:
+        '{{method}}() captures potentially unbounded output (encoding set, shell/enumeration/run-script shape) but has no maxBuffer — Node\'s 1MB default silently truncates large output past the ceiling. Set maxBuffer explicitly (e.g. a shared UNBOUNDED_READ_MAX_BUFFER constant).',
+    },
+    schema: [],
+  },
+  create(context) {
+    return {
+      CallExpression(node) {
+        if (!isCaptureCall(node.callee)) return;
+        const optionsArg = node.arguments[node.arguments.length - 1];
+        const hasOptionsObject = optionsArg && optionsArg.type === 'ObjectExpression';
+        const props = hasOptionsObject
+          ? optionsArg.properties.filter((p) => p.type === 'Property' && p.key.type === 'Identifier')
+          : [];
+        const hasEncoding = hasOptionsObject && props.some((p) => p.key.name === 'encoding');
+        const hasMaxBuffer = hasOptionsObject && props.some((p) => p.key.name === 'maxBuffer');
+        const calleeName = node.callee.type === 'Identifier' ? node.callee.name : node.callee.property.name;
+        // execSync captures by default (return value is the output) even without an
+        // explicit `encoding` option surviving to a Buffer-vs-string distinction —
+        // but scope this rule to the string-capture form to keep the same "how do we
+        // know this call reads output at all" signal the other two methods use.
+        const capturesOutput = calleeName === 'execSync' ? true : hasEncoding;
+        if (!capturesOutput || hasMaxBuffer) return;
+        if (!hasUnboundedShape(node, hasOptionsObject ? optionsArg : null)) return;
+        context.report({ node, messageId: 'requireMaxBuffer', data: { method: calleeName } });
+      },
+    };
+  },
+};
+
+// ─── Rule: require-spawn-result-error-check ──────────────────────────────────
+//
+// did-we-count AC-1'/AC-4' (ticket d7c017ff), covers c7c85ef3: a spawnSync() result
+// completion check that tests only `.status` misses the shape where the child EXITS
+// before Node's maxBuffer-overflow SIGTERM lands — `status: 0, signal: null,
+// error.code: 'ENOBUFS'` — so a truncated read is reported as a complete, successful
+// enumeration. The fix ORs in a `.error` check on the same result object.
+
+const requireSpawnResultErrorCheck = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description: 'a spawnSync() result completion check must also test .error, not just .status',
+    },
+    messages: {
+      requireErrorCheck:
+        'This check tests {{varName}}.status but never {{varName}}.error — a spawnSync() child that exits before a maxBuffer-overflow SIGTERM lands returns status:0 with error.code:\'ENOBUFS\', which this check would read as a complete, successful result.',
+    },
+    schema: [],
+  },
+  create(context) {
+    const spawnSyncVars = new Set();
+
+    function referencesProperty(node, varName, propName) {
+      let found = false;
+      function walk(n) {
+        if (!n || typeof n !== 'object' || found) return;
+        if (
+          n.type === 'MemberExpression' &&
+          n.object.type === 'Identifier' &&
+          n.object.name === varName &&
+          n.property.type === 'Identifier' &&
+          n.property.name === propName
+        ) {
+          found = true;
+          return;
+        }
+        for (const key of Object.keys(n)) {
+          if (key === 'parent') continue;
+          const value = n[key];
+          if (Array.isArray(value)) {
+            for (const item of value) {
+              if (item && typeof item.type === 'string') walk(item);
+            }
+          } else if (value && typeof value.type === 'string') {
+            walk(value);
+          }
+        }
+      }
+      walk(node);
+      return found;
+    }
+
+    return {
+      VariableDeclarator(node) {
+        if (
+          node.init &&
+          node.init.type === 'CallExpression' &&
+          isSpawnSyncCallee(node.init.callee) &&
+          node.id.type === 'Identifier' &&
+          callCapturesTextOutput(node.init)
+        ) {
+          spawnSyncVars.add(node.id.name);
+        }
+      },
+      IfStatement(node) {
+        for (const varName of spawnSyncVars) {
+          if (!referencesProperty(node.test, varName, 'status')) continue;
+          if (referencesProperty(node.test, varName, 'error')) continue;
+          context.report({ node: node.test, messageId: 'requireErrorCheck', data: { varName } });
+        }
+      },
+    };
+  },
+};
+
+function isSpawnSyncCallee(callee) {
+  if (callee.type === 'Identifier') return callee.name === 'spawnSync';
+  if (callee.type === 'MemberExpression' && callee.property.type === 'Identifier') {
+    return callee.property.name === 'spawnSync';
+  }
+  return false;
+}
+
+/**
+ * AC-4' narrowing: a bare `.status`-only completion check is only the c7c85ef3 defect
+ * shape when the call both captures text output (`encoding` option) AND reads an
+ * unbounded enumeration — the same `hasUnboundedShape` signal `require-max-buffer-
+ * on-capture` uses, matching c7c85ef3's own `git diff --staged --name-only` shape.
+ * `encoding` alone is not enough: bounded single-fact probes (`lsof -t`, `pgrep -f`)
+ * also set `encoding` and were 41 of the 43 whole-tree hits measured before this
+ * check was added — the exact "fires on more than it can justify" noise AC-4' forbids.
+ */
+function callCapturesTextOutput(node) {
+  const optionsArg = node.arguments[node.arguments.length - 1];
+  if (!optionsArg || optionsArg.type !== 'ObjectExpression') return false;
+  const hasEncoding = optionsArg.properties.some(
+    (p) => p.type === 'Property' && p.key.type === 'Identifier' && p.key.name === 'encoding',
+  );
+  if (!hasEncoding) return false;
+  return hasUnboundedShape(node, optionsArg);
+}
+
+// ─── Rule: no-invalid-checkout-index-stage ────────────────────────────────────
+//
+// did-we-count AC-1'/AC-4' (ticket d7c017ff), covers 0cf3b8e3: git's `checkout-index
+// --stage` flag only accepts 1|2|3|all; `--stage=0` is always a hard error (exit 128,
+// "fatal: stage should be between 1 and 3 or all"). Omitting the flag entirely IS
+// stage 0 (the merged index entry) — there is no legitimate reason to ever write the
+// literal `--stage=0`.
+
+const noInvalidCheckoutIndexStage = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description: "git checkout-index's --stage flag only accepts 1|2|3|all; '--stage=0' always hard-errors",
+    },
+    messages: {
+      invalidStage:
+        "'--stage=0' is invalid git argv — checkout-index accepts --stage=1|2|3|all only, and always exits 128 on 0. Omit the flag entirely for stage 0 (the merged index entry).",
+    },
+    schema: [],
+  },
+  create(context) {
+    return {
+      Literal(node) {
+        if (node.value === '--stage=0') {
+          context.report({ node, messageId: 'invalidStage' });
+        }
+      },
+    };
+  },
+};
+
+// ─── Rule: require-group-kill-for-spawned-child ───────────────────────────────
+//
+// did-we-count AC-1'/AC-4' (ticket d7c017ff), covers ff8d4739 / 41b9b255: a subprocess
+// spawned via spawn()/<ns>.spawn() that is later reaped via a bare `.kill(signal)`
+// call, with no killProcessGroup() call anywhere in the enclosing function. If the
+// spawned process is a subtree root (spawns its own children — a shell, an npm
+// script, a CLI that shells out), a bare pid kill leaves the grandchildren orphaned
+// to re-parent to PID 1 and outlive the caller. Scoped per-function (not per-module)
+// because killProcessGroup is legitimately called elsewhere in the same file for
+// unrelated pids.
+
+const requireGroupKillForSpawnedChild = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description: 'a spawned child later .kill()-ed directly should be reaped via killProcessGroup if it may be a subtree root',
+    },
+    messages: {
+      requireGroupKill:
+        '{{varName}} was spawned via spawn() and is later .kill()-ed directly, but the enclosing function never calls killProcessGroup(). If this process is a subtree root (spawns its own children), a bare kill orphans them. Route through killProcessGroup() first, falling back to a direct kill.',
+    },
+    schema: [],
+  },
+  create(context) {
+    const sourceCode = context.sourceCode ?? context.getSourceCode();
+    const functionStack = [];
+
+    function isFunctionNode(node) {
+      return (
+        node.type === 'FunctionDeclaration' ||
+        node.type === 'FunctionExpression' ||
+        node.type === 'ArrowFunctionExpression'
+      );
+    }
+
+    function isSpawnCallee(callee) {
+      if (callee.type === 'Identifier') return callee.name === 'spawn';
+      if (callee.type === 'MemberExpression' && callee.property.type === 'Identifier') {
+        return callee.property.name === 'spawn';
+      }
+      return false;
+    }
+
+    function findOwnerFrame(varName) {
+      for (let i = functionStack.length - 1; i >= 0; i--) {
+        if (functionStack[i].spawnVars.has(varName)) return functionStack[i];
+      }
+      return null;
+    }
+
+    return {
+      ':function'(node) {
+        if (isFunctionNode(node)) functionStack.push({ node, spawnVars: new Set(), killCalls: [] });
+      },
+      VariableDeclarator(node) {
+        if (functionStack.length === 0) return;
+        if (
+          node.init &&
+          node.init.type === 'CallExpression' &&
+          isSpawnCallee(node.init.callee) &&
+          node.id.type === 'Identifier'
+        ) {
+          functionStack[functionStack.length - 1].spawnVars.add(node.id.name);
+        }
+      },
+      'CallExpression:exit'(node) {
+        if (
+          node.callee.type === 'MemberExpression' &&
+          node.callee.property.type === 'Identifier' &&
+          node.callee.property.name === 'kill' &&
+          node.callee.object.type === 'Identifier'
+        ) {
+          const owner = findOwnerFrame(node.callee.object.name);
+          if (owner) owner.killCalls.push({ node, varName: node.callee.object.name });
+        }
+      },
+      ':function:exit'(node) {
+        if (!isFunctionNode(node)) return;
+        const frame = functionStack.pop();
+        if (frame.killCalls.length === 0) return;
+        const fnText = sourceCode.getText(frame.node);
+        // Accept the documented delegates too (src/bin/CLAUDE.md R-OMTD /
+        // R-CXHANG AC-CXHANG-3): killProcessTree (spawn-morty.ts) and
+        // reapChildSubtree (pipeline-runner.ts) both internally route through
+        // killProcessGroup — a caller of either already gets group-kill safety.
+        if (/killProcessGroup\s*\(|killProcessTree\s*\(|reapChildSubtree\s*\(|reapTaskSubtree\s*\(/.test(fnText)) return;
+        for (const { node: killNode, varName } of frame.killCalls) {
+          context.report({ node: killNode, messageId: 'requireGroupKill', data: { varName } });
+        }
+      },
+    };
+  },
+};
+
 // ─── Plugin Export ───────────────────────────────────────────────────────────
 
 const plugin = {
@@ -858,6 +1197,10 @@ const plugin = {
     'no-sync-in-async': noSyncInAsync,
     'spawn-error-handler': spawnErrorHandler,
     'no-hardcoded-timeout': noHardcodedTimeout,
+    'require-max-buffer-on-capture': requireMaxBufferOnCapture,
+    'require-spawn-result-error-check': requireSpawnResultErrorCheck,
+    'no-invalid-checkout-index-stage': noInvalidCheckoutIndexStage,
+    'require-group-kill-for-spawned-child': requireGroupKillForSpawnedChild,
   },
 };
 

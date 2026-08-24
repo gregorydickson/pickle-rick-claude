@@ -335,6 +335,113 @@ setTimeout(retry, settings.worker_timeout_seconds * 1000);
 
 ---
 
+## 13. `pickle/require-max-buffer-on-capture`
+
+**Type**: `problem`
+
+### What it catches
+`spawnSync`/`execSync`/`execFileSync` calls that capture text output (an `encoding` option, or any `execSync` call) but have no `maxBuffer`, where the call is also shaped like an unbounded read: `shell: true`, a `git ls-files`/`status`/`diff`/`log`/`blame`/`grep` enumeration, or an npm/pnpm/yarn `run <script>` invocation.
+
+### Why
+Without `maxBuffer`, `spawnSync`/`execSync`/`execFileSync` fall back to Node's 1MB default. Past that ceiling, Node SIGTERMs the child and the caller gets a truncated or absent result it cannot distinguish from a legitimate failure — a fake-RED gate verdict, not a log truncation (did-we-count corpus shas `7e06e8b2`, `e2804228`, `d24cec5e`). Scoped to the unbounded-shape subset deliberately: a blanket "encoding without maxBuffer" check fires on ~80 bounded single-fact probes tree-wide (`git rev-parse`, `lsof -p`, `pgrep`, `--version` checks) that can never approach the ceiling — noise the false-positive budget (AC-4') forbids shipping.
+
+### Violation
+```js
+const result = spawnSync(packageManager, ['run', 'test:fast'], {
+  cwd: extensionDir,
+  encoding: 'utf-8',
+  timeout: timeoutMs,
+});
+```
+
+### Fix
+```js
+const result = spawnSync(packageManager, ['run', 'test:fast'], {
+  cwd: extensionDir,
+  encoding: 'utf-8',
+  timeout: timeoutMs,
+  maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+});
+```
+
+---
+
+## 14. `pickle/require-spawn-result-error-check`
+
+**Type**: `problem`
+
+### What it catches
+An `if` test that references `<spawnSyncResult>.status` but never `<spawnSyncResult>.error`, where the `spawnSync()` call it comes from both captures text output (`encoding` option) and reads an unbounded enumeration (the same shape `require-max-buffer-on-capture` targets).
+
+### Why
+A `spawnSync` child that EXITS before Node's `maxBuffer`-overflow `SIGTERM` lands returns `status: 0, signal: null, error.code: 'ENOBUFS'` — a status-only completion check reads this as a complete, successful result even though the read stopped early (did-we-count corpus sha `c7c85ef3`). Scoped to the encoding-plus-unbounded-shape subset for the same AC-4' reason as rule 13: an unscoped `.status`-without-`.error` check fires on 43 whole-tree call sites (mostly bounded probes like `lsof -t`/`pgrep -f` that also happen to set `encoding`); narrowing to the shapes that can actually hit the ENOBUFS-exit-0 truncation drops that to 15 justified hits.
+
+### Violation
+```js
+const result = spawnSync('git', ['diff', '--staged', '--name-only', '-z'], { encoding: 'utf-8' });
+if ((result.status ?? 1) !== 0) return null;
+```
+
+### Fix
+```js
+const result = spawnSync('git', ['diff', '--staged', '--name-only', '-z'], { encoding: 'utf-8' });
+if ((result.status ?? 1) !== 0 || result.error) return null;
+```
+
+---
+
+## 15. `pickle/no-invalid-checkout-index-stage`
+
+**Type**: `problem`
+
+### What it catches
+The literal string `'--stage=0'` anywhere in an array literal (git argv construction).
+
+### Why
+`git checkout-index --stage` only accepts `1`, `2`, `3`, or `all`; `--stage=0` always hard-errors (`fatal: stage should be between 1 and 3 or all`, exit 128). Omitting the flag entirely IS stage 0 — the merged index entry (did-we-count corpus sha `0cf3b8e3`). There is no legitimate use of the literal.
+
+### Violation
+```js
+runTextCommand('git', ['checkout-index', '--prefix', checkoutPrefix, '--stage=0', '-a'], repoRoot, timeout);
+```
+
+### Fix
+```js
+runTextCommand('git', ['checkout-index', '--prefix', checkoutPrefix, '-a'], repoRoot, timeout);
+```
+
+---
+
+## 16. `pickle/require-group-kill-for-spawned-child`
+
+**Type**: `problem`
+
+### What it catches
+A variable assigned from `spawn(...)` / `<ns>.spawn(...)`, later `.kill(...)`-ed directly, where the enclosing function's source text contains no `killProcessGroup(` call — nor a call to one of the documented delegates that themselves route through it (`killProcessTree(` in `spawn-morty.ts`, `reapChildSubtree(` in `pipeline-runner.ts`, `reapTaskSubtree(` in `jar-runner.ts`).
+
+### Why
+If the spawned process is a subtree root (a shell, an npm script, a CLI that shells out — spawns its own children), a bare pid `.kill()` leaves the grandchildren orphaned to re-parent to PID 1 and outlive the caller (did-we-count corpus shas `ff8d4739`, `41b9b255`). Scoped per-function, not per-module, because `killProcessGroup`/its delegates are legitimately called elsewhere in the same file for unrelated pids.
+
+### Violation
+```js
+function runTask() {
+  const proc = spawn(cmd, args, { cwd, env, stdio: 'inherit' });
+  setTimeout(() => { proc.kill('SIGTERM'); }, ms);
+}
+```
+
+### Fix
+```js
+function runTask() {
+  const proc = spawn(cmd, args, { cwd, env, stdio: 'inherit' });
+  setTimeout(() => {
+    if (!killProcessGroup(proc.pid, 'SIGTERM')) proc.kill('SIGTERM');
+  }, ms);
+}
+```
+
+---
+
 ## Rule Summary Table
 
 | Rule | Type | Scope |
@@ -351,3 +458,7 @@ setTimeout(retry, settings.worker_timeout_seconds * 1000);
 | `no-sync-in-async` | suggestion | all |
 | `spawn-error-handler` | problem | all |
 | `no-hardcoded-timeout` | suggestion | all |
+| `require-max-buffer-on-capture` | problem | all |
+| `require-spawn-result-error-check` | problem | all |
+| `no-invalid-checkout-index-stage` | problem | all |
+| `require-group-kill-for-spawned-child` | problem | all |

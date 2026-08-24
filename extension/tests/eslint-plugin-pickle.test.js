@@ -493,6 +493,145 @@ describe('pickle/no-hardcoded-timeout', () => {
   });
 });
 
+// ─── require-max-buffer-on-capture (ticket d7c017ff, did-we-count AC-1'/AC-4') ──
+// Covers 7e06e8b2 / e2804228 / d24cec5e — 0 live call sites at HEAD (all three
+// already carry maxBuffer). 10 OTHER whole-tree call sites still miss it (see
+// conformance_2026-08-24.md AC-4' hit count).
+
+describe('pickle/require-max-buffer-on-capture', () => {
+  it('flags encoding-capturing calls with an unbounded shape and no maxBuffer', () => {
+    ruleTester.run('require-max-buffer-on-capture', pickle.rules['require-max-buffer-on-capture'], {
+      valid: [
+        // Fixed shape (7e06e8b2 post-fix): maxBuffer present alongside encoding.
+        { code: `spawnSync(pm, ['run', 'test:fast'], { cwd, encoding: 'utf-8', timeout, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });` },
+        // Bounded single-fact probe (lsof -t <path>) — encoding set, but not an
+        // unbounded enumeration shape; the trap-door catalog names this class
+        // explicitly as NOT matching (extension/src/services/CLAUDE.md AP-EXT-ITER8-01).
+        { code: `spawnSync('lsof', ['-t', lockPath], { encoding: 'utf-8', timeout: 5000 });` },
+        // No encoding option at all — result is a Buffer, not a capture-and-parse read.
+        { code: `spawnSync('git', ['rev-parse', 'HEAD']);` },
+        // execFileSync with a bounded single-fact probe.
+        { code: `execFileSync('git', ['cat-file', '-e', sha], { cwd, timeout });` },
+      ],
+      invalid: [
+        // 7e06e8b2 shape: npm/pnpm/yarn `run <script>` capture, no maxBuffer.
+        {
+          code: `spawnSync(packageManager, ['run', 'test:fast'], { cwd: extensionDir, encoding: 'utf-8', timeout: timeoutMs, env: scrubGateEnv() });`,
+          errors: [{ messageId: 'requireMaxBuffer' }],
+        },
+        // e2804228 / d24cec5e shape: whole-repo git enumeration capture, no maxBuffer.
+        {
+          code: `const result = spawnSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf-8', timeout: 30000 });`,
+          errors: [{ messageId: 'requireMaxBuffer' }],
+        },
+        // execSync form of the same unbounded-enumeration shape (template literal,
+        // matching the actual standup.ts callsite this pattern is drawn from).
+        {
+          code: 'const output = execSync(`git log --after="${since}"`, { encoding: \'utf-8\', timeout: 10000 });',
+          errors: [{ messageId: 'requireMaxBuffer' }],
+        },
+      ],
+    });
+  });
+});
+
+// ─── require-spawn-result-error-check (ticket d7c017ff, did-we-count AC-1'/AC-4') ──
+// Covers c7c85ef3 — 0 live call sites at HEAD (both `check-scope-diff.ts` and
+// `microverse-runner.ts` already OR in `.error`). 15 OTHER whole-tree call sites
+// still test `.status` alone on an unbounded git-enumeration capture (see
+// conformance_2026-08-24.md AC-4' hit count).
+
+describe('pickle/require-spawn-result-error-check', () => {
+  it('flags a .status-only completion check on an unbounded-capture spawnSync result', () => {
+    ruleTester.run('require-spawn-result-error-check', pickle.rules['require-spawn-result-error-check'], {
+      valid: [
+        // Fixed shape (c7c85ef3 post-fix): predicate ORs in .error.
+        { code: `function f() { const result = spawnSync('git', ['diff', '--staged', '--name-only', '-z'], { encoding: 'utf-8' }); if ((result.status ?? 1) !== 0 || result.error) return null; }` },
+        // .status-only check is fine when the call does not capture unbounded text
+        // (no encoding option — matches AC-4' narrowing, avoids the 43-hit noise
+        // surface measured on bounded probes like lsof/pgrep before this filter).
+        { code: `function f() { const lsof = spawnSync('lsof', ['-t', lockPath], { encoding: 'utf-8', timeout: 5000 }); if (lsof.status === 0) { return true; } }` },
+        // .status-only check on a non-enumeration capturing call (bounded single-fact probe).
+        { code: `function f() { const res = spawnSync('git', ['cat-file', '-e', sha], { encoding: 'utf-8' }); if (res.status !== 0) return false; }` },
+      ],
+      invalid: [
+        // c7c85ef3 pre-fix shape: unbounded git enumeration capture, status-only check.
+        {
+          code: `function f() { const result = spawnSync('git', ['diff', '--staged', '--name-only', '--no-renames', '-z'], { encoding: 'utf-8', timeout: 15000 }); if ((result.status ?? 1) !== 0) return null; }`,
+          errors: [{ messageId: 'requireErrorCheck' }],
+        },
+        // git ls-files enumeration, status-only check (15-hit sibling shape).
+        {
+          code: `function f() { const result = spawnSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf-8', timeout: 30000, maxBuffer: 64 * 1024 * 1024 }); if (result.status !== 0) return []; }`,
+          errors: [{ messageId: 'requireErrorCheck' }],
+        },
+      ],
+    });
+  });
+});
+
+// ─── no-invalid-checkout-index-stage (ticket d7c017ff, did-we-count AC-1'/AC-4') ──
+// Covers 0cf3b8e3 — 0 live call sites at HEAD (materializeStagedTree omits the
+// flag entirely). 0 OTHER whole-tree hits — no live sites for this sub-pattern
+// anywhere in the tree (see conformance_2026-08-24.md AC-4' hit count).
+
+describe('pickle/no-invalid-checkout-index-stage', () => {
+  it('flags the literal --stage=0 argv element to git checkout-index', () => {
+    ruleTester.run('no-invalid-checkout-index-stage', pickle.rules['no-invalid-checkout-index-stage'], {
+      valid: [
+        // Fixed shape (0cf3b8e3 post-fix): flag omitted entirely (IS stage 0).
+        { code: `runTextCommand('git', ['checkout-index', '--prefix', checkoutPrefix, '-a'], repoRoot, timeout);` },
+        // Any valid --stage value is fine.
+        { code: `runTextCommand('git', ['checkout-index', '--stage=1', '-a'], repoRoot, timeout);` },
+        { code: `runTextCommand('git', ['checkout-index', '--stage=all', '-a'], repoRoot, timeout);` },
+      ],
+      invalid: [
+        // 0cf3b8e3 pre-fix shape: the literal always hard-errors (git accepts 1|2|3|all only).
+        {
+          code: `runTextCommand('git', ['checkout-index', '--prefix', checkoutPrefix, '--stage=0', '-a'], repoRoot, timeout);`,
+          errors: [{ messageId: 'invalidStage' }],
+        },
+      ],
+    });
+  });
+});
+
+// ─── require-group-kill-for-spawned-child (ticket d7c017ff, did-we-count AC-1'/AC-4') ──
+// Covers ff8d4739 / 41b9b255 — 0 live call sites at HEAD (both route through
+// killProcessGroup via reapTaskSubtree/killJudgeSubtree). 0 OTHER whole-tree hits
+// — no live sites for this sub-pattern anywhere in the tree (see
+// conformance_2026-08-24.md AC-4' hit count; the rule also recognizes the
+// documented killProcessTree/reapChildSubtree/reapTaskSubtree delegates that
+// themselves route through killProcessGroup, per src/bin/CLAUDE.md R-OMTD).
+
+describe('pickle/require-group-kill-for-spawned-child', () => {
+  it('flags a bare .kill() on a spawn()-ed child with no group-kill routing in the enclosing function', () => {
+    ruleTester.run('require-group-kill-for-spawned-child', pickle.rules['require-group-kill-for-spawned-child'], {
+      valid: [
+        // Fixed shape (ff8d4739 post-fix): routes through killProcessGroup first.
+        { code: `function runTask() { const proc = spawn(cmd, args, { cwd, env, stdio: 'inherit' }); function reapTaskSubtree(signal) { if (!killProcessGroup(proc.pid, signal)) proc.kill(signal); } reapTaskSubtree('SIGTERM'); }` },
+        // Delegate wrapper (spawn-morty.ts killProcessTree) internally routes through
+        // killProcessGroup — a caller of the wrapper already gets group-kill safety.
+        { code: `function spawnWorker() { const proc = spawn(cmd, args, { cwd, env, detached: true }); const timeoutHandle = setTimeout(() => { if (!killProcessTree(proc, 'SIGTERM')) { try { proc.kill('SIGTERM'); } catch {} } }, ms); }` },
+        // A spawn() with no later .kill() at all is fine.
+        { code: `function fireAndForget() { const proc = spawn(cmd, args); proc.on('exit', () => {}); }` },
+      ],
+      invalid: [
+        // ff8d4739 pre-fix shape: bare .kill() in the timeout handler, no group-kill anywhere.
+        {
+          code: `function runTask() { const proc = spawn(cmd, args, { cwd, env, stdio: 'inherit' }); const timeoutHandle = setTimeout(() => { proc.kill('SIGTERM'); }, ms); }`,
+          errors: [{ messageId: 'requireGroupKill' }],
+        },
+        // 41b9b255 pre-fix shape: _deps.spawn(...) later .kill()-ed directly, no killProcessGroup.
+        {
+          code: `function spawnWithClosedStdin() { const child = _deps.spawn(cmd, args, { cwd, env }); function killJudgeSubtree(signal) { child.kill(signal); } killJudgeSubtree('SIGTERM'); }`,
+          errors: [{ messageId: 'requireGroupKill' }],
+        },
+      ],
+    });
+  });
+});
+
 // ─── AC-6': every exported rule must be wired in eslint.config.js ───────────
 
 /** Collect the `pickle/<name>` rule keys wired across every flat-config entry's `rules` block. */
