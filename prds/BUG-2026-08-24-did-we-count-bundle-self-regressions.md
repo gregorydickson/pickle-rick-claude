@@ -1,3 +1,25 @@
+> **⛔ RETRACTION — this PRD's sharpest claim was FALSE. Superseded by
+> `BUG-2026-08-24-self-regressions-REFINED.md`.**
+>
+> **Withdrawn without reservation:** the accusation that commit `7798ea69` *"asserted a reconciliation
+> it had not performed"*. Measured — `AC-SZGBD-05` is a DIFFERENT test from the failing
+> `baseline write: emitted JSON keys match GateBaselineFile type exactly`, and it **passes**:
+> `✔ AC-SZGBD-05: no new activity event literal was added; GateBaselineFile gains exactly the AC-5'
+> check_status field`. That is exactly what the commit claimed. **It did what it said.**
+>
+> The author matched on the string `GateBaselineFile` appearing in a failing test name and concluded it
+> was the same assertion — **a lexical match standing in for a semantic identity**, the exact defect
+> family this bundle's parent exists to catalogue, committed while accusing a commit of the adjacent
+> sin. The `baseline write:` failure is real; the framing was not.
+>
+> **Also corrected: "2 inherited" → 1.** `ℹ fail N` counts leaf cases; the `✖` list also prints suite
+> markers. The `failing tests:` block holds exactly 5 leaves and `install.sh bun probe` is the SUITE
+> MARKER for the bun leaf. Split is **1 inherited + 4 targets**, and AC-1's `fail 1` IS achievable.
+>
+> **Left open, not settled:** the isolation-dependence claim. Three analysts refute it; the author
+> re-measured at the same HEAD and got 0/0/2, not 1/1/2. Likely a cwd difference. Neither side may
+> write it up as settled — see the refined PRD §1.
+
 > **✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — 2026-08-24 at HEAD `fedac997`.**
 >
 > **Stale premise: PASSED.** All four regressions reproduce at HEAD. Measured by exit code:
