@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkScopeDiff, isUnevaluableScopeStatus } from '../bin/check-scope-diff.js';
+import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const extensionRoot = path.resolve(__dirname, '..');
@@ -420,6 +422,72 @@ test('AP-EXT-ITER40-01: a genuinely absent scope.json (no base, no orphan tmp) i
     assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stderr: ${result.stderr}`);
     assert.equal(JSON.parse(result.stdout.trim()).status, 'no_scope');
     assert.equal(fs.existsSync(scopePath), false, 'nothing to promote must leave the dir untouched');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER38-01 (second failure shape): `maxBuffer` overflow does not always
+// present as the SIGTERM the ceiling case above drives. When the child EXITS before
+// Node's kill lands, `spawnSync` returns `status: 0`, `signal: null` and
+// `error.code === 'ENOBUFS'` — measured on node v24.19.0, 25/25 runs, with
+// `git diff --name-only -z` against this repo. A status-only guard reads that
+// ceiling-exceeded read as a COMPLETE enumeration, so the fence greens over the
+// staged tail it never saw.
+//
+// These cases cross the `_spawnSync` seam, NOT `_getStagedPaths`: the latter
+// REPLACES the reader, which would leave its ceiling and its completion predicate
+// — the code under test — unexercised. Driving the shipped CLI is not an option
+// here; the real ceiling is 64 MiB.
+// ---------------------------------------------------------------------------
+
+function fakeSpawn(result, optsSink) {
+  return (bin, args, opts) => {
+    assert.equal(bin, 'git');
+    assert.ok(args.includes('--name-only') && args.includes('-z'), 'the reader keeps its git contract');
+    if (optsSink) optsSink.push(opts);
+    return result;
+  };
+}
+
+test('AP-EXT-ITER38-01: a maxBuffer-exceeded enumeration that still EXITS 0 reports enumeration_failed', () => {
+  const tmp = makeTmp();
+  try {
+    const scopeJsonPath = writeScopeJson(tmp, ['extension/src']);
+    const enobufs = Object.assign(new Error('spawnSync git ENOBUFS'), { code: 'ENOBUFS' });
+    // The visible head is in scope; the tail the ceiling cut off is unknown. Pre-fix
+    // this returned `{status:'ok', staged_count:1}` at exit 0 — a green fence over a
+    // read Node had already reported as truncated.
+    const result = checkScopeDiff({
+      scopeJsonPath,
+      _spawnSync: fakeSpawn({ status: 0, signal: null, stdout: 'extension/src/a.ts\0', error: enobufs }),
+    });
+
+    assert.equal(result.status, 'enumeration_failed', 'an ENOBUFS read is not a fence verdict');
+    assert.ok(isUnevaluableScopeStatus(result.status), 'it shares the cannot-render-a-verdict disposition');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER38-01: a COMPLETED enumeration through the same seam still renders a verdict', () => {
+  const tmp = makeTmp();
+  try {
+    const scopeJsonPath = writeScopeJson(tmp, ['extension/src']);
+    const optsSink = [];
+    // No `error`: a real `status: 0` read. The distinction must not over-trigger.
+    const result = checkScopeDiff({
+      scopeJsonPath,
+      _spawnSync: fakeSpawn({ status: 0, signal: null, stdout: 'extension/src/a.ts\0outside/b.ts\0' }, optsSink),
+    });
+
+    assert.equal(result.status, 'outside_scope');
+    assert.deepEqual(result.staged_paths_outside_scope, ['outside/b.ts']);
+    // The seam runs the REAL reader, so its ceiling is observable here — proof these
+    // cases exercise the guard rather than a test-local stand-in for it.
+    assert.equal(optsSink.length, 1, 'exactly one git enumeration');
+    assert.equal(optsSink[0].maxBuffer, UNBOUNDED_READ_MAX_BUFFER, 'the reader declares the ONE ceiling');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

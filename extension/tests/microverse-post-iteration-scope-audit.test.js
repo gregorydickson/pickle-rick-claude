@@ -177,6 +177,33 @@ test('AP-EXT-ITER38-03: a maxBuffer-truncated enumeration (status null + SIGTERM
   );
 });
 
+test('AP-EXT-ITER38-03: a maxBuffer-exceeded enumeration that still EXITS 0 is reported unknown', () => {
+  // The OTHER `maxBuffer` shape, and the one a status-only guard cannot see. When the
+  // child exits before Node's kill lands, `spawnSync` returns `status: 0`, `signal:
+  // null` and `error.code === 'ENOBUFS'` — measured on node v24.19.0, 25/25 runs, with
+  // `git diff --name-only -z` against this repo. The visible head of the read is in
+  // scope and the omitted tail is not, so pre-fix this parsed as a COMPLETE, CLEAN
+  // enumeration: no event, no log, and the R-SSOC fence silently disarmed over an
+  // off-scope commit it never saw.
+  const enobufs = Object.assign(new Error('spawnSync git ENOBUFS'), { code: 'ENOBUFS' });
+  const events = runAudit({
+    allowedPaths: ['packages/api/src/bank-statement'],
+    currentSubsystem: 'packages',
+    spawnResult: {
+      status: 0,
+      signal: null,
+      stdout: 'packages/api/src/bank-statement/parser.ts\0',
+      error: enobufs,
+    },
+  });
+  assert.equal(events.length, 0, 'a ceiling-exceeded read is not a verdict in either direction');
+  assert.equal(
+    events.logLines.filter((l) => l.includes('NOT evaluated')).length,
+    1,
+    'an ENOBUFS read that exited 0 must surface as an un-evaluated fence, not a clean one',
+  );
+});
+
 test('AP-EXT-ITER38-03: the enumeration declares the ONE unbounded-read ceiling', () => {
   const opts = [];
   runAudit({

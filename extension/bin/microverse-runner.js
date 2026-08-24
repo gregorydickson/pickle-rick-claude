@@ -3261,7 +3261,16 @@ function listCommittedFilesInRange(workingDir, fromSha, toSha) {
     // finding ("this iteration committed nothing") that `resolveScopeAuditInputs`
     // reads as "nothing to audit", silently disarming the one scope check a codex
     // worker cannot bypass. Report no answer rather than a fabricated clean one.
-    if ((result.status ?? 1) !== 0)
+    //
+    // TWO failure shapes, ONE predicate — the same pair the `convergence-gate.ts`
+    // members of this family carry (AP-EXT-ITER47-01/-48-01) and the same one
+    // `getStagedPaths` carries. `status` covers a git that could not run, the 15s
+    // timeout, and the SIGTERM Node sends when it out-reads `maxBuffer` on a child
+    // still writing; `result.error` covers the shape a child that EXITS first returns
+    // instead — `status: 0`, `signal: null`, `error.code === 'ENOBUFS'`, a read that
+    // stopped at the ceiling (measured on node v24.19.0 against this repo, 25/25).
+    // Without it a ceiling-exceeded read reaches `resolveScopeAuditInputs` as data.
+    if ((result.status ?? 1) !== 0 || result.error)
         return null;
     return (result.stdout || '').split('\0').filter(Boolean);
 }

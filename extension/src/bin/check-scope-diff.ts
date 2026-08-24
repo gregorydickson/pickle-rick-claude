@@ -17,6 +17,12 @@ export interface CheckScopeDiffOpts {
   impactService?: ImpactRadiusService;
   /** @internal Test seam — overrides internal git staged-paths lookup. */
   _getStagedPaths?: () => string[] | null;
+  /**
+   * @internal Test seam — overrides the `spawnSync` the staged-path enumeration runs.
+   * Distinct from `_getStagedPaths`, which REPLACES that enumeration: only this seam
+   * leaves the real reader (its ceiling and its completion predicate) under test.
+   */
+  _spawnSync?: typeof spawnSync;
 }
 
 export interface ScopeDiffResult {
@@ -107,8 +113,11 @@ function maybeEmitImpactWarning(
  * literal `"caf\303\251.ts"`, matches nothing in the fence, and an explicitly
  * ALLOWED file is reported `outside_scope`. Fix the contract, never un-quote in JS.
  */
-function getStagedPaths(): string[] | null {
-  const result = spawnSync('git', ['diff', '--staged', '--name-only', '--no-renames', '-z'], {
+// `spawnSyncFn`, never `spawn`: the `pickle/spawn-error-handler` rule keys on the
+// IDENTIFIER, so a parameter named `spawn` reads as the async API and demands an
+// `.on('error')` handler a synchronous call can never have.
+function getStagedPaths(spawnSyncFn: typeof spawnSync = spawnSync): string[] | null {
+  const result = spawnSyncFn('git', ['diff', '--staged', '--name-only', '--no-renames', '-z'], {
     encoding: 'utf-8',
     timeout: 15_000,
     // AP-EXT-ITER38-01: the staged name list is an unbounded enumeration, so it
@@ -124,7 +133,16 @@ function getStagedPaths(): string[] | null {
   // answer to no answer. Sibling readers already draw this line: `git-utils.ts:
   // listWorkingTreeDirtyPaths` throws, `mux-runner.ts:computeSourceTreeSignature`
   // returns null.
-  if ((result.status ?? 1) !== 0) return null;
+  //
+  // TWO failure shapes, ONE predicate — the pair `convergence-gate.ts:getChangedSince`
+  // and `:getChangedExportedSymbols` already carry (AP-EXT-ITER47-01/-48-01). A
+  // non-zero/`null` `status` covers a git that could not run, the 15s timeout, and the
+  // SIGTERM Node sends when it out-reads `maxBuffer` on a child still writing.
+  // `result.error` covers the OTHER `maxBuffer` shape: a child that EXITS before that
+  // kill lands returns `status: 0`, `signal: null`, `error.code === 'ENOBUFS'` — the
+  // ceiling was exceeded and the read stopped early, yet a status-only guard reads it
+  // as a COMPLETE enumeration (measured on node v24.19.0 against this repo, 25/25).
+  if ((result.status ?? 1) !== 0 || result.error) return null;
   return (result.stdout || '').split('\0').filter(Boolean);
 }
 
@@ -174,7 +192,7 @@ function resolveAllowedPaths(
 export function checkScopeDiff(opts: CheckScopeDiffOpts = {}): ScopeDiffResult {
   const scopeJsonPath = opts.scopeJsonPath;
   const headRef = opts.headRef ?? 'HEAD';
-  const getStagedFn = opts._getStagedPaths ?? getStagedPaths;
+  const getStagedFn = opts._getStagedPaths ?? (() => getStagedPaths(opts._spawnSync));
 
   if (!scopeJsonPath) {
     return { status: 'no_scope' };
