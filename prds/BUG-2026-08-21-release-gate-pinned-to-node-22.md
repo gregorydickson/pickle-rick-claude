@@ -1,3 +1,30 @@
+> **✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — re-measured 2026-08-24 at HEAD `bc6e687b`.**
+>
+> **Stale premise: PASSED.** All four pins are live and unchanged, measured (not asserted):
+>
+> | file | value |
+> |---|---|
+> | `extension/package.json` `engines.node` | `22.x` |
+> | `.github/workflows/release.yml` | `'22.x'` |
+> | `.github/workflows/ci.yml` | `'24'` |
+> | `.github/workflows/stability-gate.yml` | `'24'` |
+>
+> The contradiction this PRD's correction block describes is ALSO still live: `ci.yml:21` carries
+> `# R-CIFB: align CI to the project's actual target (CLAUDE.md = Node 25; ...)` while pinning `'24'`,
+> and grepping BOTH `CLAUDE.md` and `extension/CLAUDE.md` for any Node version still returns nothing.
+>
+> **Green tree: PASSED, baseline recorded.** `npm run test:fast` from `extension/`, interpreter pinned
+> to node 24.19.0: **7938 tests / 518 suites / pass 7931 / fail 1 / cancelled 0 / 175.2s**. The single
+> failure is the inherited `install-bun-probe` P3. Recorded as inherited; any OTHER fast-tier failure
+> during this bundle is caused by this bundle.
+>
+> **⚠️ THIS PRD'S OWN BASELINE CLAIM IS STALE AND MUST NOT BE REUSED.** The header says *"Measured at
+> `770dfe8a` (fast tier green: 7720 tests, 507 suites, fail 0, cancelled 0)"*. **`fail 0` will not
+> reproduce.** Measured 2026-08-23: the bun blast radius is ~9 tests, not the 2 filed, because bun IS
+> installed and the hang-guard tests spawn the real binary (60s–1035s instead of milliseconds). See the
+> amended `BUG-2026-08-21-bun-probe-path-filter-misses-homebrew.md`. Any AC that asserts `fail 0` on
+> this host is unsatisfiable; AC-2's `cancelled 0` IS satisfiable and is the meaningful half.
+
 > **⚠️ CORRECTED 2026-08-23 — the divergence is real, but this PRD named the wrong target and the
 > authored table was partly unverified.** Measured at HEAD:
 >
