@@ -130,15 +130,24 @@ test('AP-EXT-ITER58-01: a ps-derived pgid of 1 never reaches process.kill as a b
 test('AP-EXT-ITER58-01: killProcessGroup refuses pid 1 (the broadcast floor) on every platform', () => {
   const realKill = process.kill;
   const groupSends = [];
+  let acceptedTwo;
   try {
     process.kill = (pid, signal) => { if (pid < 0) groupSends.push([pid, signal]); };
     assert.equal(killProcessGroup(1, 'SIGTERM', 'darwin'), false);
     assert.equal(killProcessGroup(1, 'SIGKILL', 'linux'), false);
+    assert.deepEqual(groupSends, [], 'pid 1 must be refused before any process.kill');
+    // The floor moved by exactly ONE, and only an accepting-side case can say so: every
+    // assertion above reddens on an UNDER-wide floor, none of them on an OVER-wide one.
+    // A guard widened to `pid <= 2` (or any N > 1) refuses real orphan groups and re-opens
+    // the B-SIGFH accumulation class this trap door exists to hold shut.
+    acceptedTwo = killProcessGroup(2, 'SIGTERM', 'darwin');
   } finally {
     process.kill = realKill;
   }
-  assert.deepEqual(groupSends, [], 'pid 1 must be refused before any process.kill');
-  // The floor moved by exactly one: 2 is still a legal group target.
+  assert.equal(acceptedTwo, true, 'pgid 2 is still a legal group target');
+  assert.deepEqual(groupSends, [[-2, 'SIGTERM']], 'and it reaches process.kill as a group send');
+  // Platform short-circuits BEFORE the floor, so this arm proves nothing about the pid —
+  // it is the win32 control, and must not be mistaken for the boundary case above.
   assert.equal(killProcessGroup(2, 'SIGTERM', 'win32'), false, 'win32 stays unsupported');
 });
 
