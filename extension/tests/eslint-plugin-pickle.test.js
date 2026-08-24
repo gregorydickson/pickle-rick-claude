@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { RuleTester } from 'eslint';
 import pickle from '../eslint-plugin-pickle/index.js';
+import eslintConfig from '../eslint.config.js';
 
 const ruleTester = new RuleTester({
   languageOptions: { ecmaVersion: 2025, sourceType: 'module' },
@@ -489,5 +490,49 @@ describe('pickle/no-hardcoded-timeout', () => {
         },
       ],
     });
+  });
+});
+
+// ─── AC-6': every exported rule must be wired in eslint.config.js ───────────
+
+/** Collect the `pickle/<name>` rule keys wired across every flat-config entry's `rules` block. */
+function collectWiredPickleRuleNames(flatConfig) {
+  const wired = new Set();
+  for (const entry of flatConfig) {
+    if (!entry || typeof entry.rules !== 'object' || entry.rules === null) continue;
+    for (const key of Object.keys(entry.rules)) {
+      if (key.startsWith('pickle/')) wired.add(key.slice('pickle/'.length));
+    }
+  }
+  return wired;
+}
+
+describe('AC-6’: eslint-plugin-pickle exports are wired in eslint.config.js', () => {
+  it('every rule exported from eslint-plugin-pickle/index.js appears in eslint.config.js', () => {
+    const exported = new Set(Object.keys(pickle.rules));
+    const wired = collectWiredPickleRuleNames(eslintConfig);
+
+    // Real set comparison (exported minus wired), never a count equality —
+    // two matching counts can resolve a different question than "is every
+    // exported rule wired" (see AC-6' / the 14-vs-15 grep discrepancy).
+    const unwired = [...exported].filter((name) => !wired.has(name));
+
+    assert.deepEqual(
+      unwired,
+      [],
+      `rule(s) exported from eslint-plugin-pickle but not wired in eslint.config.js: ${unwired.join(', ')}`,
+    );
+  });
+
+  it('the set comparison catches a rule that is exported but not wired', () => {
+    const wired = collectWiredPickleRuleNames(eslintConfig);
+    // Simulate a newly-exported rule that has not been wired yet — the
+    // assertion above must be able to catch this, not just pass on today's
+    // already-wired 14.
+    const exportedWithUnwiredAddition = new Set([...Object.keys(pickle.rules), 'no-future-unwired-rule']);
+
+    const unwired = [...exportedWithUnwiredAddition].filter((name) => !wired.has(name));
+
+    assert.deepEqual(unwired, ['no-future-unwired-rule']);
   });
 });
