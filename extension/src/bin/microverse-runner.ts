@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { execFileSync, execFile, spawn, spawnSync } from 'child_process';
 import { pathToFileURL } from 'node:url';
-import { State, Defaults, MicroverseExitReason, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+import { State, Defaults, MicroverseExitReason, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
 import type { ActivityEventType, Backend, IterationExitType, MicroverseSessionState, MicroverseHistoryEntry, ViolationLedger, FailureClass, GateResult, GateFailure, GateBaselineFile, StallClassification, StallRecoveryAction, JudgeResult, Violation, PickleSettings } from '../types/index.js';
 import type { ErrorRecord } from '../types/index.js';
 import {
@@ -4185,15 +4185,10 @@ function listCommittedFilesInRange(workingDir: string, fromSha: string, toSha: s
   // reads as "nothing to audit", silently disarming the one scope check a codex
   // worker cannot bypass. Report no answer rather than a fabricated clean one.
   //
-  // TWO failure shapes, ONE predicate — the same pair the `convergence-gate.ts`
-  // members of this family carry (AP-EXT-ITER47-01/-48-01) and the same one
-  // `getStagedPaths` carries. `status` covers a git that could not run, the 15s
-  // timeout, and the SIGTERM Node sends when it out-reads `maxBuffer` on a child
-  // still writing; `result.error` covers the shape a child that EXITS first returns
-  // instead — `status: 0`, `signal: null`, `error.code === 'ENOBUFS'`, a read that
-  // stopped at the ceiling (measured on node v24.19.0 against this repo, 25/25).
-  // Without it a ceiling-exceeded read reaches `resolveScopeAuditInputs` as data.
-  if ((result.status ?? 1) !== 0 || result.error) return null;
+  // Completion is decided by the ONE shared `enumerationCompleted` predicate
+  // (`types/index.ts`), which every member of this family calls; a ceiling-exceeded
+  // read that reached `resolveScopeAuditInputs` as data is what it exists to stop.
+  if (!enumerationCompleted(result)) return null;
   return (result.stdout || '').split('\0').filter(Boolean);
 }
 

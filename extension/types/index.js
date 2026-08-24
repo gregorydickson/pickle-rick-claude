@@ -19,6 +19,31 @@ export const FALSE_EPIC_THRESHOLD = 3;
  */
 export const UNBOUNDED_READ_MAX_BUFFER = 64 * 1024 * 1024;
 /**
+ * The completion predicate for a `UNBOUNDED_READ_MAX_BUFFER` enumeration — the sibling
+ * of the ceiling above, and declared beside it because the two are ONE piece of
+ * knowledge: the ceiling bounds the read, this reads its overflow.
+ *
+ * TWO failure shapes, ONE check. A non-zero/`null` `status` covers a git that could not
+ * run, a timeout, and the SIGTERM Node sends when it out-reads `maxBuffer` on a child
+ * still writing. `result.error` covers the OTHER `maxBuffer` shape: a child that EXITS
+ * before that kill lands returns `status: 0`, `signal: null`, `error.code === 'ENOBUFS'`
+ * and TRUNCATED stdout (measured on node v24.19.0 against this repo, 25/25) — a
+ * status-ONLY guard reads that as a COMPLETE enumeration.
+ *
+ * That status-only half is not hypothetical: it is how all four members of this family
+ * regressed (AP-EXT-ITER47-01, -48-01, -38-01, -38-03), each closed one site at a time
+ * while the copies at the other sites stayed blind. Callers now share this one predicate
+ * so the shapes cannot drift apart again — a member of the family that hand-writes its
+ * own guard instead of calling this is the regression.
+ *
+ * Returns `true` only when the enumeration COMPLETED. Callers map `false` to `null`
+ * (or a throw) — never to `[]`/empty `Set`, which is a POSITIVE finding a consumer reads
+ * as a clean verdict over a read that never ran.
+ */
+export function enumerationCompleted(result) {
+    return (result.status ?? 1) === 0 && !result.error;
+}
+/**
  * Runtime-iterable membership list for `Backend`, and the SINGLE source of truth for it:
  * `Backend` derives from this array (`typeof BACKENDS[number]`), mirroring the
  * `VALID_STEPS`/`FAILURE_REASONS`/`EXIT_REASONS` shape used everywhere else in this file.

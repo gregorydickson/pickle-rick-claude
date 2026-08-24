@@ -3,7 +3,7 @@ import * as path from 'path';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { LockError, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+import { LockError, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
 import { withLock } from './state-manager.js';
 import { killProcessGroup } from './orphan-reaper.js';
 import { readRecoverableJsonObject } from './microverse-state.js';
@@ -300,11 +300,9 @@ export function parseChangedExportedSymbolsFromDiff(diffText) {
  * that a phase cannot disown its own whole-repo interface break — and converges reporting
  * success. A measurement that did not run is not a measurement of zero.
  *
- * ONE completion predicate, never a stack: a whole-branch `git diff` fails in two shapes that
- * must share a verdict. A non-zero `status` covers an unreachable `sinceCommit` (128, measured),
- * ENOENT, and the 30s timeout. `result.error` covers `maxBuffer` overflow, which Node reports as
- * `status: 0` with `error.code === 'ENOBUFS'` and TRUNCATED stdout (measured) — the status-only
- * guard passed it straight through, so a diff cut mid-stream parsed as a COMPLETE symbol set and
+ * ONE completion predicate, never a stack — the shared `enumerationCompleted`
+ * (`types/index.ts`), which covers both shapes a whole-branch `git diff` fails in. Before it was
+ * shared, the status-only copy here let a diff cut mid-stream parse as a COMPLETE symbol set and
  * every declaration past the cut was invisible to the sweep.
  *
  * `UNBOUNDED_READ_MAX_BUFFER` is the ONE 64 MB ceiling (AP-EXT-ITER8-01) every unbounded reader
@@ -314,7 +312,7 @@ export function parseChangedExportedSymbolsFromDiff(diffText) {
  */
 export function getChangedExportedSymbols(workingDir, sinceCommit) {
     const result = spawnSync('git', ['diff', `${sinceCommit}..HEAD`, '--', '*.ts', '*.tsx'], { cwd: workingDir, encoding: 'utf-8', timeout: 30_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
-    if ((result.status ?? 1) !== 0 || result.error)
+    if (!enumerationCompleted(result))
         return null;
     return parseChangedExportedSymbolsFromDiff(result.stdout || '');
 }
@@ -561,12 +559,10 @@ function resolveLexicalRepoRoot(workingDir) {
  * disarms the file axis of INV-NO-SELF-DISOWN and every whole-repo break the phase caused is
  * disowned as pre-existing. A measurement that did not run is not a measurement of zero.
  *
- * ONE completion predicate, shared with `getChangedExportedSymbols` — the two enumerate the same
- * commit range and must not disagree about what "failed" means. A non-zero/`null` `status` covers
- * an unreachable `since` SHA (128, measured), ENOENT and the 30s timeout; `result.error` covers
- * `maxBuffer` overflow, which Node reports as `status: 0` with `error.code === 'ENOBUFS'` when the
- * child exits before the kill lands (measured on node v24) — the status-only guard passed that
- * straight through, so an unverifiable read parsed as a COMPLETE path list.
+ * Completion is decided by the ONE shared `enumerationCompleted` predicate (`types/index.ts`),
+ * which `getChangedExportedSymbols` and both `bin/` members of this family also call — they
+ * enumerate the same commit range and must not disagree about what "failed" means. Before it was
+ * shared, a status-only copy here parsed an unverifiable read as a COMPLETE path list.
  */
 function getChangedSince(workingDir, since) {
     // AP-EXT-ITER31-01: `-z` matches the contract `allowed_paths` is built from
@@ -581,7 +577,7 @@ function getChangedSince(workingDir, since) {
         // truncated read silently narrows the changed set the gate scopes itself to.
         maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
-    if ((result.status ?? 1) !== 0 || result.error)
+    if (!enumerationCompleted(result))
         return null;
     return (result.stdout || '').split('\0').filter(Boolean);
 }

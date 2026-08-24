@@ -4,7 +4,7 @@ import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { logActivity } from '../services/activity-logger.js';
 import { readRecoverableJsonObject } from '../services/recoverable-json.js';
-import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+import { UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
 
 /** Minimal seam for impact-radius analysis. Tests inject a fake; CLI passes nothing (fail-open). */
 export interface ImpactRadiusService {
@@ -128,21 +128,15 @@ function getStagedPaths(spawnSyncFn: typeof spawnSync = spawnSync): string[] | n
   });
   // An enumeration that did not complete is NOT an empty enumeration. `[]` is a
   // POSITIVE finding ("nothing is staged") that `checkScopeDiff` turns into a green
-  // fence; a failed/truncated/timed-out read has found nothing of the sort. Same
-  // predicate as before — only the verdict it reports changed, from a fabricated
-  // answer to no answer. Sibling readers already draw this line: `git-utils.ts:
-  // listWorkingTreeDirtyPaths` throws, `mux-runner.ts:computeSourceTreeSignature`
-  // returns null.
+  // fence; a failed/truncated/timed-out read has found nothing of the sort. Sibling
+  // readers already draw this line: `git-utils.ts:listWorkingTreeDirtyPaths` throws,
+  // `mux-runner.ts:computeSourceTreeSignature` returns null.
   //
-  // TWO failure shapes, ONE predicate — the pair `convergence-gate.ts:getChangedSince`
-  // and `:getChangedExportedSymbols` already carry (AP-EXT-ITER47-01/-48-01). A
-  // non-zero/`null` `status` covers a git that could not run, the 15s timeout, and the
-  // SIGTERM Node sends when it out-reads `maxBuffer` on a child still writing.
-  // `result.error` covers the OTHER `maxBuffer` shape: a child that EXITS before that
-  // kill lands returns `status: 0`, `signal: null`, `error.code === 'ENOBUFS'` — the
-  // ceiling was exceeded and the read stopped early, yet a status-only guard reads it
-  // as a COMPLETE enumeration (measured on node v24.19.0 against this repo, 25/25).
-  if ((result.status ?? 1) !== 0 || result.error) return null;
+  // The two failure shapes and why `status` alone is blind to one of them live with
+  // the shared `enumerationCompleted` predicate (`types/index.ts`), beside the ceiling
+  // it reads — this family regressed once per site while each copy of that knowledge
+  // was maintained separately (AP-EXT-ITER38-01/-03, -47-01, -48-01).
+  if (!enumerationCompleted(result)) return null;
   return (result.stdout || '').split('\0').filter(Boolean);
 }
 
