@@ -65,9 +65,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * the file passes 19/19 — the Node major is causal, not the host OS).
  *
  * This restores the loop liveness production always has, so the timeout path under test
- * actually runs. No assertion is relaxed and no product behaviour is changed. Scoped to
- * the single await that needs it rather than the whole file: a file-wide keep-alive would
- * turn a genuine future hang into an indefinite one instead of a fast cancellation.
+ * actually runs. No assertion is relaxed and no product behaviour is changed. Applied only
+ * to the two awaits that race `never` (here and in `counters exact across a forced-degrade
+ * sequence`) rather than file-wide: a file-wide keep-alive would turn a genuine future hang
+ * into an indefinite one instead of a fast cancellation. The other hanging tests race
+ * `sleep(40)`, whose timer is ref'd and already holds the loop open.
  */
 async function withEventLoopAlive(fn) {
   const keepAlive = setInterval(() => {}, 1);
