@@ -159,6 +159,18 @@ export function assignOccurrenceIndices(failures: GateFailure[]): GateFailure[] 
   return result;
 }
 
+// A baseline written before AC-5' has no `check_status` key at all (undefined = valid,
+// backward compatible); when present, every entry must name a real check with a real status.
+function validateCheckStatus(checkStatus: unknown): boolean {
+  if (checkStatus === undefined) return true;
+  if (typeof checkStatus !== 'object' || checkStatus === null || Array.isArray(checkStatus)) return false;
+  return Object.entries(checkStatus as Record<string, unknown>).every(
+    ([key, value]) =>
+      ['typecheck', 'lint', 'tests'].includes(key) &&
+      ['ran', 'skipped', 'failed'].includes(value as string),
+  );
+}
+
 function validateBaselineStructure(data: unknown): data is GateBaselineFile {
   if (!data || typeof data !== 'object') return false;
   const d = data as Record<string, unknown>;
@@ -180,7 +192,8 @@ function validateBaselineStructure(data: unknown): data is GateBaselineFile {
     typeof d['working_dir'] === 'string' &&
     projectTypeValid &&
     Array.isArray(d['checks']) &&
-    Array.isArray(d['failures'])
+    Array.isArray(d['failures']) &&
+    validateCheckStatus(d['check_status'])
   );
 }
 
@@ -915,6 +928,22 @@ const CHECK_KEY_MAP: Record<'typecheck' | 'lint' | 'tests', keyof { typecheck?: 
 };
 
 type GateCheck = 'typecheck' | 'lint' | 'tests';
+
+// Per-check status for GateBaselineFile.check_status (AC-5'): 'ran' means the check was
+// spawned and produced a real measurement (pass or with failures); 'failed' means it was
+// spawned but could not produce a trustworthy result (classifyUnrunnableCheck flagged it,
+// it timed out, or the cumulative gate deadline forced a cutoff mid-check); 'skipped' means
+// it was never attempted at all. Populated from what actually ran, never from opts.checks.
+type GateCheckStatus = 'ran' | 'skipped' | 'failed';
+
+const GATE_CHECK_STATUS_RANK: Record<GateCheckStatus, number> = { skipped: 0, ran: 1, failed: 2 };
+
+// A check can be attempted across multiple target dirs (workspace mode); escalate-only so a
+// clean run in one dir never downgrades a failure/timeout observed in another.
+function escalateCheckStatus(prev: GateCheckStatus | undefined, next: GateCheckStatus): GateCheckStatus {
+  if (prev === undefined) return next;
+  return GATE_CHECK_STATUS_RANK[next] > GATE_CHECK_STATUS_RANK[prev] ? next : prev;
+}
 export type GateCommandMap = { typecheck?: string; lint?: string; test?: string };
 type GateEmit = (event: string, data: Record<string, unknown>) => void;
 type ProjectType = NonNullable<ReturnType<typeof detectProjectType>>;
@@ -1214,6 +1243,7 @@ interface UnrunnableCheck {
 interface GateCheckOutcome {
   failures: GateFailure[];
   unrunnable: UnrunnableCheck | null;
+  timedOut: boolean;
 }
 
 async function runGateCheck(
@@ -1227,7 +1257,7 @@ async function runGateCheck(
     const failures = buildFailures(result, check, dir);
     const unrunnableReason = classifyUnrunnableCheck(result);
     const unrunnable = unrunnableReason !== null ? { check, reason: unrunnableReason } : null;
-    return { failures, unrunnable };
+    return { failures, unrunnable, timedOut: false };
   } catch (err) {
     if (!(err instanceof GateTimeoutError)) throw err;
     return {
@@ -1241,6 +1271,7 @@ async function runGateCheck(
         occurrence_index: 0,
       }],
       unrunnable: null,
+      timedOut: true,
     };
   }
 }
@@ -1248,6 +1279,7 @@ async function runGateCheck(
 interface GateFailuresCollection {
   failures: GateFailure[];
   unrunnableCheck: UnrunnableCheck | null;
+  checkStatus: Partial<Record<GateCheck, GateCheckStatus>>;
 }
 
 async function collectGateFailures(
@@ -1260,6 +1292,7 @@ async function collectGateFailures(
 ): Promise<GateFailuresCollection> {
   const allFailures: GateFailure[] = [];
   let unrunnableCheck: UnrunnableCheck | null = null;
+  const checkStatus: Partial<Record<GateCheck, GateCheckStatus>> = {};
 
   outerLoop:
   for (const dir of targetDirs) {
@@ -1267,18 +1300,30 @@ async function collectGateFailures(
       const remaining = totalDeadline - Date.now();
       if (remaining <= 0) {
         allFailures.push(timeoutFailure(check));
+        checkStatus[check] = escalateCheckStatus(checkStatus[check], 'failed');
         break outerLoop;
       }
       const cmd = cmdMap[CHECK_KEY_MAP[check]];
-      if (!cmd) continue;
-      if (!(await canRunTestScript(check, projectType, dir, emit))) continue;
+      if (!cmd) {
+        checkStatus[check] = escalateCheckStatus(checkStatus[check], 'skipped');
+        continue;
+      }
+      if (!(await canRunTestScript(check, projectType, dir, emit))) {
+        checkStatus[check] = escalateCheckStatus(checkStatus[check], 'skipped');
+        continue;
+      }
       const perCheckMs = opts._timeouts?.perCheck?.[check] ?? PER_CHECK_TIMEOUT_MS[check];
       const outcome = await runGateCheck(check, cmd, dir, Math.min(perCheckMs, remaining));
       allFailures.push(...outcome.failures);
       if (outcome.unrunnable && !unrunnableCheck) unrunnableCheck = outcome.unrunnable;
+      const nextStatus: GateCheckStatus = outcome.timedOut || outcome.unrunnable ? 'failed' : 'ran';
+      checkStatus[check] = escalateCheckStatus(checkStatus[check], nextStatus);
     }
   }
-  return { failures: allFailures, unrunnableCheck };
+  for (const check of opts.checks) {
+    if (checkStatus[check] === undefined) checkStatus[check] = 'skipped';
+  }
+  return { failures: allFailures, unrunnableCheck, checkStatus };
 }
 
 function timeoutFailure(check: GateCheck): GateFailure {
@@ -1309,6 +1354,7 @@ async function persistGateBaseline(
   projectType: ProjectType | null,
   checks: GateCheck[],
   failures: GateFailure[],
+  checkStatus: Partial<Record<GateCheck, GateCheckStatus>>,
   emit: GateEmit,
 ): Promise<void> {
   try {
@@ -1320,6 +1366,7 @@ async function persistGateBaseline(
       project_type: projectType as GateBaselineFile['project_type'],
       checks,
       failures,
+      check_status: checkStatus,
     };
     await fs.promises.mkdir(path.dirname(baselinePath), { recursive: true });
     writeStateFile(baselinePath, baseline);
@@ -1345,6 +1392,7 @@ async function handleBaselineMode(
   start: number,
   emit: GateEmit,
   uncertifiable: boolean,
+  checkStatus: Partial<Record<GateCheck, GateCheckStatus>>,
 ): Promise<GateResult | null> {
   if (opts.mode !== 'baseline' || !opts.baselinePath) return null;
   const baselinePath = opts.baselinePath;
@@ -1355,7 +1403,7 @@ async function handleBaselineMode(
   try {
     return await withLock(lockKey, { timeout_ms: lockMs }, async () => {
       emit('gate_lock_acquired', { lock_key: lockKey });
-      return await resolveBaselineResult(baselinePath, opts, projectType, withIndices, allowedPathsUsed, start, emit, uncertifiable);
+      return await resolveBaselineResult(baselinePath, opts, projectType, withIndices, allowedPathsUsed, start, emit, uncertifiable, checkStatus);
     });
   } catch (err) {
     if (err instanceof LockError) {
@@ -1396,6 +1444,7 @@ async function resolveBaselineResult(
   start: number,
   emit: GateEmit,
   uncertifiable: boolean,
+  checkStatus: Partial<Record<GateCheck, GateCheckStatus>>,
 ): Promise<GateResult> {
   const preWriteStatus = await inspectBaselinePath(baselinePath);
   emit('gate_baseline_disk_check', { phase: 'pre_write', ...preWriteStatus });
@@ -1403,7 +1452,7 @@ async function resolveBaselineResult(
     // R-SZGB-D: an unrunnable check means the gate inspected NOTHING for that check — reuse the
     // R-SZGB-B `project_type: null` uncertifiable-baseline signal so the existing
     // `isBaselineUncertifiable` consumer in microverse-runner.ts fails closed with no new field.
-    await persistGateBaseline(baselinePath, opts, uncertifiable ? null : projectType, opts.checks, withIndices, emit);
+    await persistGateBaseline(baselinePath, opts, uncertifiable ? null : projectType, opts.checks, withIndices, checkStatus, emit);
     emit('gate_baseline_captured', { path: baselinePath, failure_count: withIndices.length });
     emit('gate_preexisting_tests_baselined', { failure_count: withIndices.length });
     return {
@@ -1496,7 +1545,10 @@ async function emitSkippedAndReturn(
   extra: Record<string, unknown> = {},
 ): Promise<GateResult> {
   if (opts.mode === 'baseline' && opts.baselinePath) {
-    await persistGateBaseline(opts.baselinePath, opts, projectType, [], [], emit);
+    // Nothing ran before this early skip — every requested check is 'skipped', never 'ran'.
+    const checkStatus: Partial<Record<GateCheck, GateCheckStatus>> = {};
+    for (const check of opts.checks) checkStatus[check] = 'skipped';
+    await persistGateBaseline(opts.baselinePath, opts, projectType, [], [], checkStatus, emit);
   }
   emit('gate_skipped', { reason, ...extra });
   return { ...emptyGateResult(), elapsed_ms: Date.now() - start };
@@ -1587,14 +1639,14 @@ export async function runGate(rawOpts: RunGateOpts): Promise<GateResult> {
   if (drift) return finalizeGateResult(opts, emit, drift);
 
   const totalDeadline = Date.now() + (opts._timeouts?.total ?? GATE_TOTAL_TIMEOUT_MS);
-  const { failures: allFailures, unrunnableCheck } = await collectGateFailures(opts, resolved.targetDirs, cmdMap, projectType, totalDeadline, emit);
+  const { failures: allFailures, unrunnableCheck, checkStatus } = await collectGateFailures(opts, resolved.targetDirs, cmdMap, projectType, totalDeadline, emit);
 
   logUnrunnableCheckIfBaseline(unrunnableCheck, opts.mode);
 
   const flakeGlobs = opts.settings?.convergence_gate?.known_flake_files ?? [];
   const { real: realFailures, flake: flakeFailures } = applyFlakeFilter(allFailures, opts.workingDir, flakeGlobs);
 
-  const baseline = await handleBaselineMode(opts, projectType, allowedPathsUsed, realFailures, start, emit, unrunnableCheck !== null);
+  const baseline = await handleBaselineMode(opts, projectType, allowedPathsUsed, realFailures, start, emit, unrunnableCheck !== null, checkStatus);
   if (baseline) return finalizeGateResult(opts, emit, baseline);
 
   const flake = await knownFlakeResult(opts, allFailures, realFailures, flakeFailures, allowedPathsUsed, start, emit);

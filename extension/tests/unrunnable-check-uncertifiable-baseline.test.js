@@ -20,6 +20,8 @@ const {
   handleIterationOutcome,
 } = await import(path.resolve(__dirname, '../bin/microverse-runner.js'));
 
+const { runGate } = await import(path.resolve(__dirname, '../services/convergence-gate.js'));
+
 // ---------------------------------------------------------------------------
 // Env isolation: keep real activity-logger writes off the operator's data dir.
 // ---------------------------------------------------------------------------
@@ -141,6 +143,12 @@ test('AC-SZGBD-01: a missing npm typecheck script marks the baseline uncertifiab
 
     const baseline = JSON.parse(fs.readFileSync(path.join(sessionDir, 'gate', 'baseline.json'), 'utf-8'));
     assert.equal(baseline.project_type, null, 'fixture precondition: baseline must be uncertifiable');
+    assert.deepEqual(
+      baseline.check_status,
+      { typecheck: 'failed', lint: 'ran', tests: 'ran' },
+      'check_status must be populated from what ACTUALLY ran (typecheck spawned but classified unrunnable => failed; ' +
+        'lint/tests spawned and completed => ran), never copied wholesale from the requested opts.checks set',
+    );
 
     const preIterSha = headSha(workingDir);
     fs.writeFileSync(
@@ -249,12 +257,14 @@ test('AC-SZGBD-02: a tsc-RED change under an unrunnable typecheck check never fo
 });
 
 // ===========================================================================
-// AC-SZGBD-05 (no new surface): the fail-closed decision routes through the EXISTING
-// R-SZGB-B uncertifiable-baseline consumer via a bare log line — no new activity event,
-// no new GateBaselineFile field.
+// AC-SZGBD-05 (no new ACTIVITY EVENT surface, but AC-5' adds the per-check status field):
+// the fail-closed decision still routes through the EXISTING R-SZGB-B uncertifiable-baseline
+// consumer via a bare log line — no new activity event. GateBaselineFile DOES gain the
+// `check_status` field (AC-5' — ticket a38de7dc): a skipped run must be distinguishable from
+// a clean measurement, which the pre-existing `failures: []`-only shape could not express.
 // ===========================================================================
 
-test('AC-SZGBD-05: no new activity event literal and no new GateBaselineFile field were added', () => {
+test('AC-SZGBD-05: no new activity event literal was added; GateBaselineFile gains exactly the AC-5\' check_status field', () => {
   const compiledGate = fs.readFileSync(path.join(repoRoot, 'extension', 'services', 'convergence-gate.js'), 'utf-8');
   const typesSrc = fs.readFileSync(path.join(repoRoot, 'extension', 'src', 'types', 'index.ts'), 'utf-8');
 
@@ -285,8 +295,64 @@ test('AC-SZGBD-05: no new activity event literal and no new GateBaselineFile fie
       "  project_type: 'pnpm' | 'npm' | 'yarn' | 'cargo' | 'go' | 'bun' | null;",
       "  checks: ('typecheck' | 'lint' | 'tests')[];",
       '  failures: GateFailure[];',
+      "  check_status?: Partial<Record<'typecheck' | 'lint' | 'tests', 'ran' | 'skipped' | 'failed'>>;",
       '}',
     ].join('\n'),
-    'GateBaselineFile must retain exactly its pre-existing field set — no new field added',
+    'GateBaselineFile must retain its pre-existing field set plus exactly the AC-5\' check_status field (schema_version stays the literal 1)',
   );
+});
+
+// ===========================================================================
+// AC-5' backward compatibility: a baseline written before this field existed must still
+// load without throwing BASELINE_CORRUPT.
+// ===========================================================================
+
+test("AC-5': a baseline file written without check_status still loads (backward compat, no BASELINE_CORRUPT)", async () => {
+  const workingDir = makeGitRepo('szgbd-legacy-baseline-');
+  try {
+    fs.writeFileSync(
+      path.join(workingDir, 'package.json'),
+      JSON.stringify({
+        name: 'legacy-baseline-fixture',
+        private: true,
+        scripts: { lint: 'node -e "process.exit(0)"' },
+      }, null, 2),
+    );
+    commitAll(workingDir, 'initial clean state');
+
+    const baselinePath = path.join(workingDir, 'gate', 'baseline.json');
+    fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
+    // A baseline written before AC-5' (ticket a38de7dc) carries no `check_status` key at all.
+    const legacyBaseline = {
+      schema_version: 1,
+      captured_at: new Date().toISOString(),
+      working_dir: workingDir,
+      project_type: 'npm',
+      checks: ['lint'],
+      failures: [],
+    };
+    assert.equal('check_status' in legacyBaseline, false, 'fixture precondition: no check_status key');
+    fs.writeFileSync(baselinePath, JSON.stringify(legacyBaseline));
+
+    const result = await runGate({
+      workingDir,
+      mode: 'baseline',
+      scope: 'full',
+      checks: ['lint'],
+      baselinePath,
+    });
+
+    assert.equal(
+      result.status,
+      'green',
+      'a legacy baseline missing check_status must load and subtract cleanly, not throw BASELINE_CORRUPT',
+    );
+    assert.equal(
+      result.baseline_used,
+      true,
+      'the legacy baseline on disk must be the one consulted, proving loadBaselineFile succeeded on the field-less shape',
+    );
+  } finally {
+    rm(workingDir);
+  }
 });

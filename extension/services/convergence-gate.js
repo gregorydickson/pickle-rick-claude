@@ -142,6 +142,16 @@ export function assignOccurrenceIndices(failures) {
     }
     return result;
 }
+// A baseline written before AC-5' has no `check_status` key at all (undefined = valid,
+// backward compatible); when present, every entry must name a real check with a real status.
+function validateCheckStatus(checkStatus) {
+    if (checkStatus === undefined)
+        return true;
+    if (typeof checkStatus !== 'object' || checkStatus === null || Array.isArray(checkStatus))
+        return false;
+    return Object.entries(checkStatus).every(([key, value]) => ['typecheck', 'lint', 'tests'].includes(key) &&
+        ['ran', 'skipped', 'failed'].includes(value));
+}
 function validateBaselineStructure(data) {
     if (!data || typeof data !== 'object')
         return false;
@@ -161,7 +171,8 @@ function validateBaselineStructure(data) {
         typeof d['working_dir'] === 'string' &&
         projectTypeValid &&
         Array.isArray(d['checks']) &&
-        Array.isArray(d['failures']));
+        Array.isArray(d['failures']) &&
+        validateCheckStatus(d['check_status']));
 }
 function loadBaselineFile(baselinePath) {
     const raw = readRecoverableJsonObject(baselinePath);
@@ -803,6 +814,14 @@ const CHECK_KEY_MAP = {
     lint: 'lint',
     tests: 'test',
 };
+const GATE_CHECK_STATUS_RANK = { skipped: 0, ran: 1, failed: 2 };
+// A check can be attempted across multiple target dirs (workspace mode); escalate-only so a
+// clean run in one dir never downgrades a failure/timeout observed in another.
+function escalateCheckStatus(prev, next) {
+    if (prev === undefined)
+        return next;
+    return GATE_CHECK_STATUS_RANK[next] > GATE_CHECK_STATUS_RANK[prev] ? next : prev;
+}
 function emptyGateResult(allowedPathsUsed = false) {
     return {
         status: 'green',
@@ -1037,7 +1056,7 @@ async function runGateCheck(check, cmd, dir, effectiveMs) {
         const failures = buildFailures(result, check, dir);
         const unrunnableReason = classifyUnrunnableCheck(result);
         const unrunnable = unrunnableReason !== null ? { check, reason: unrunnableReason } : null;
-        return { failures, unrunnable };
+        return { failures, unrunnable, timedOut: false };
     }
     catch (err) {
         if (!(err instanceof GateTimeoutError))
@@ -1053,32 +1072,45 @@ async function runGateCheck(check, cmd, dir, effectiveMs) {
                     occurrence_index: 0,
                 }],
             unrunnable: null,
+            timedOut: true,
         };
     }
 }
 async function collectGateFailures(opts, targetDirs, cmdMap, projectType, totalDeadline, emit) {
     const allFailures = [];
     let unrunnableCheck = null;
+    const checkStatus = {};
     outerLoop: for (const dir of targetDirs) {
         for (const check of opts.checks) {
             const remaining = totalDeadline - Date.now();
             if (remaining <= 0) {
                 allFailures.push(timeoutFailure(check));
+                checkStatus[check] = escalateCheckStatus(checkStatus[check], 'failed');
                 break outerLoop;
             }
             const cmd = cmdMap[CHECK_KEY_MAP[check]];
-            if (!cmd)
+            if (!cmd) {
+                checkStatus[check] = escalateCheckStatus(checkStatus[check], 'skipped');
                 continue;
-            if (!(await canRunTestScript(check, projectType, dir, emit)))
+            }
+            if (!(await canRunTestScript(check, projectType, dir, emit))) {
+                checkStatus[check] = escalateCheckStatus(checkStatus[check], 'skipped');
                 continue;
+            }
             const perCheckMs = opts._timeouts?.perCheck?.[check] ?? PER_CHECK_TIMEOUT_MS[check];
             const outcome = await runGateCheck(check, cmd, dir, Math.min(perCheckMs, remaining));
             allFailures.push(...outcome.failures);
             if (outcome.unrunnable && !unrunnableCheck)
                 unrunnableCheck = outcome.unrunnable;
+            const nextStatus = outcome.timedOut || outcome.unrunnable ? 'failed' : 'ran';
+            checkStatus[check] = escalateCheckStatus(checkStatus[check], nextStatus);
         }
     }
-    return { failures: allFailures, unrunnableCheck };
+    for (const check of opts.checks) {
+        if (checkStatus[check] === undefined)
+            checkStatus[check] = 'skipped';
+    }
+    return { failures: allFailures, unrunnableCheck, checkStatus };
 }
 function timeoutFailure(check) {
     return {
@@ -1101,7 +1133,7 @@ function timeoutFailure(check) {
  * result never reports success while `gate/baseline.json` is absent. Throws
  * `BaselineWriteFailedError` on any disk failure.
  */
-async function persistGateBaseline(baselinePath, opts, projectType, checks, failures, emit) {
+async function persistGateBaseline(baselinePath, opts, projectType, checks, failures, checkStatus, emit) {
     try {
         const baseline = {
             schema_version: 1,
@@ -1111,6 +1143,7 @@ async function persistGateBaseline(baselinePath, opts, projectType, checks, fail
             project_type: projectType,
             checks,
             failures,
+            check_status: checkStatus,
         };
         await fs.promises.mkdir(path.dirname(baselinePath), { recursive: true });
         writeStateFile(baselinePath, baseline);
@@ -1125,7 +1158,7 @@ async function persistGateBaseline(baselinePath, opts, projectType, checks, fail
         throw baselineWriteFailed(baselinePath, err);
     }
 }
-async function handleBaselineMode(opts, projectType, allowedPathsUsed, realFailures, start, emit, uncertifiable) {
+async function handleBaselineMode(opts, projectType, allowedPathsUsed, realFailures, start, emit, uncertifiable, checkStatus) {
     if (opts.mode !== 'baseline' || !opts.baselinePath)
         return null;
     const baselinePath = opts.baselinePath;
@@ -1135,7 +1168,7 @@ async function handleBaselineMode(opts, projectType, allowedPathsUsed, realFailu
     try {
         return await withLock(lockKey, { timeout_ms: lockMs }, async () => {
             emit('gate_lock_acquired', { lock_key: lockKey });
-            return await resolveBaselineResult(baselinePath, opts, projectType, withIndices, allowedPathsUsed, start, emit, uncertifiable);
+            return await resolveBaselineResult(baselinePath, opts, projectType, withIndices, allowedPathsUsed, start, emit, uncertifiable, checkStatus);
         });
     }
     catch (err) {
@@ -1166,14 +1199,14 @@ function buildNoDisownContext(opts) {
         return undefined;
     return { changedFiles, changedExportedSymbols, workingDir: resolveLexicalRepoRoot(opts.workingDir) };
 }
-async function resolveBaselineResult(baselinePath, opts, projectType, withIndices, allowedPathsUsed, start, emit, uncertifiable) {
+async function resolveBaselineResult(baselinePath, opts, projectType, withIndices, allowedPathsUsed, start, emit, uncertifiable, checkStatus) {
     const preWriteStatus = await inspectBaselinePath(baselinePath);
     emit('gate_baseline_disk_check', { phase: 'pre_write', ...preWriteStatus });
     if (preWriteStatus.exists !== true) {
         // R-SZGB-D: an unrunnable check means the gate inspected NOTHING for that check — reuse the
         // R-SZGB-B `project_type: null` uncertifiable-baseline signal so the existing
         // `isBaselineUncertifiable` consumer in microverse-runner.ts fails closed with no new field.
-        await persistGateBaseline(baselinePath, opts, uncertifiable ? null : projectType, opts.checks, withIndices, emit);
+        await persistGateBaseline(baselinePath, opts, uncertifiable ? null : projectType, opts.checks, withIndices, checkStatus, emit);
         emit('gate_baseline_captured', { path: baselinePath, failure_count: withIndices.length });
         emit('gate_preexisting_tests_baselined', { failure_count: withIndices.length });
         return {
@@ -1240,7 +1273,11 @@ function finalGateResult(realFailures, allFailures, allowedPathsUsed, start, emi
  */
 async function emitSkippedAndReturn(opts, projectType, reason, start, emit, extra = {}) {
     if (opts.mode === 'baseline' && opts.baselinePath) {
-        await persistGateBaseline(opts.baselinePath, opts, projectType, [], [], emit);
+        // Nothing ran before this early skip — every requested check is 'skipped', never 'ran'.
+        const checkStatus = {};
+        for (const check of opts.checks)
+            checkStatus[check] = 'skipped';
+        await persistGateBaseline(opts.baselinePath, opts, projectType, [], [], checkStatus, emit);
     }
     emit('gate_skipped', { reason, ...extra });
     return { ...emptyGateResult(), elapsed_ms: Date.now() - start };
@@ -1324,11 +1361,11 @@ export async function runGate(rawOpts) {
     if (drift)
         return finalizeGateResult(opts, emit, drift);
     const totalDeadline = Date.now() + (opts._timeouts?.total ?? GATE_TOTAL_TIMEOUT_MS);
-    const { failures: allFailures, unrunnableCheck } = await collectGateFailures(opts, resolved.targetDirs, cmdMap, projectType, totalDeadline, emit);
+    const { failures: allFailures, unrunnableCheck, checkStatus } = await collectGateFailures(opts, resolved.targetDirs, cmdMap, projectType, totalDeadline, emit);
     logUnrunnableCheckIfBaseline(unrunnableCheck, opts.mode);
     const flakeGlobs = opts.settings?.convergence_gate?.known_flake_files ?? [];
     const { real: realFailures, flake: flakeFailures } = applyFlakeFilter(allFailures, opts.workingDir, flakeGlobs);
-    const baseline = await handleBaselineMode(opts, projectType, allowedPathsUsed, realFailures, start, emit, unrunnableCheck !== null);
+    const baseline = await handleBaselineMode(opts, projectType, allowedPathsUsed, realFailures, start, emit, unrunnableCheck !== null, checkStatus);
     if (baseline)
         return finalizeGateResult(opts, emit, baseline);
     const flake = await knownFlakeResult(opts, allFailures, realFailures, flakeFailures, allowedPathsUsed, start, emit);

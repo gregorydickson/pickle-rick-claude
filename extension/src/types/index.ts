@@ -1615,6 +1615,7 @@ export interface GateBaselineFile {
   project_type: 'pnpm' | 'npm' | 'yarn' | 'cargo' | 'go' | 'bun' | null;
   checks: ('typecheck' | 'lint' | 'tests')[];
   failures: GateFailure[];
+  check_status?: Partial<Record<'typecheck' | 'lint' | 'tests', 'ran' | 'skipped' | 'failed'>>;
 }
 
 export interface RemediationResult {
