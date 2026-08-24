@@ -23,9 +23,9 @@ function deriveGateBaselineFileKeys() {
   const optional = new Set();
   for (const rawLine of match[1].split('\n')) {
     const line = rawLine.trim();
-    if (!line || line.startsWith('//')) continue;
+    if (!line || line.startsWith('//')) { continue; }
     const member = line.match(/^(\w+)(\?)?:/);
-    if (!member) continue;
+    if (!member) { continue; }
     (member[2] ? optional : required).add(member[1]);
   }
   return { required, optional };
