@@ -686,11 +686,21 @@ export function detectProhibitedGitVerb(command: string): { verb: string } | nul
 /**
  * R-CSIS-B1: Extract the file path argument from `node --test <path>` commands.
  * Returns the first non-flag token after `--test`, or null if the pattern doesn't match.
+ *
+ * Tokenizes quote-aware via `tokenizeShellCommand` for the same reason the git
+ * chain and `segmentInvokesInstallSh` do (the "quoted-token parity" trap door):
+ * a bare `split(/\s+/)` reads `"node"`, `"--test"` and `"soak.test.js"` with the
+ * quotes attached, so `node --test "<expensive>"` — which the shell runs as the
+ * bare twin — read a destination that no longer exists on disk,
+ * `isExpensiveTestFile` failed its read, and the guard APPROVED the soak while
+ * the unquoted form blocked (measured: 4 of 7 forms). This was the last detector
+ * in the file still on the bare split, and the residual the AP-EXT-EXECFOLD trap
+ * door left open.
  */
 function extractNodeTestPathFromSegment(segment: string): string | null {
   const trimmed = segment.trim();
   if (!trimmed) return null;
-  const tokens = trimmed.split(/\s+/);
+  const tokens = tokenizeShellCommand(trimmed);
   let idx = skipEnvAssignments(tokens);
   // execName, not a raw compare: `NODE --test <expensive>` and
   // `/usr/bin/node --test <expensive>` both really run node, and a raw

@@ -725,6 +725,56 @@ test('AP-EXT-EXECFOLD replay: worker blocks case/path-varied `node --test <expen
   }
 });
 
+// AP-EXT-ITER46-01: the expensive-test guard was the LAST detector in the file
+// still tokenizing with a bare `split(/\s+/)`, the residual the AP-EXT-EXECFOLD
+// trap door left open. A quoted token keeps its quotes under a bare split, so the
+// extracted destination (`"soak.test.js"`) does not exist on disk,
+// `isExpensiveTestFile` fails its read, and the guard APPROVES the soak — while
+// the byte-identical unquoted twin BLOCKS. Measured pre-fix: 4 of 7 forms
+// approved. Each form below is one the shell runs exactly as `node --test
+// soak.test.js`, so every one must block.
+test('AP-EXT-ITER46-01: worker blocks quoted `node --test <expensive>` in every shell-equivalent form', () => {
+  for (const command of [
+    'node --test "soak.test.js"',
+    "node --test 'soak.test.js'",
+    'node "--test" soak.test.js',
+    '"node" --test soak.test.js',
+    "'node' --test 'soak.test.js'",
+    'cd extension && node --test "soak.test.js"',
+    'PICKLE_ROLE=worker "/usr/bin/node" --test "soak.test.js"',
+  ]) {
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'soak.test.js'), '// @tier: expensive\n');
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-CSIS-B1/);
+  }
+});
+
+// The quote-aware tokenizer must not invent a block: a quoted string that merely
+// CONTAINS the invocation is data, never an exec, so it stays approved.
+test('AP-EXT-ITER46-01: a quoted `node --test <expensive>` that is an ARGUMENT stays approved', () => {
+  for (const command of [
+    'echo "node --test soak.test.js"',
+    "git commit -m 'node --test soak.test.js'",
+  ]) {
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'soak.test.js'), '// @tier: expensive\n');
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', JSON.stringify(command));
+  }
+});
+
 test('R-CSIS-B1: recommended `RUN_EXPENSIVE_TESTS=1 npm run test:expensive` is NOT blocked', () => {
   const { tmpDir, stateFile } = bootstrapSession();
   const result = runHandler({
