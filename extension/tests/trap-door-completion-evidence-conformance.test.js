@@ -231,16 +231,40 @@ function discoverCatalogsOnDisk() {
 
 const CATALOGS = discoverCatalogsOnDisk();
 
-const slugify = (value) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-const TEST_NAME_RE = /\b(?:it|test)\s*\(\s*(['"\`])((?:\\.|(?!\1)[^\\])*)\1/g;
+const AUDIT_PATH = path.join(repoRoot, 'extension/scripts/audit-trap-door-enforcement.sh');
 
-function anchorResolves(fileContent, anchor) {
-  const needle = `-${slugify(anchor)}-`;
-  for (const m of fileContent.matchAll(TEST_NAME_RE)) {
-    if (`-${slugify(m[2])}-`.includes(needle)) return true;
-  }
-  return false;
+/**
+ * THE anchor rule, LOADED from the release-gate audit rather than mirrored here.
+ *
+ * A hand-copied twin is what this whole arm exists to prevent one level up: the audit
+ * is the gate that blocks a release, and a second copy living in the test means the
+ * audit's rule can be weakened while every assertion below keeps passing against the
+ * copy. Same derive-don't-mirror move as `deriveGateBaselineFileKeys` in
+ * tests/services/convergence-gate-baseline-schema-parity.test.js — there the
+ * authoritative source is an interface body, here it is a function body.
+ *
+ * Extraction failure IS the "the audit lost its rule" assertion, so no separate
+ * source-text pin for `function anchorResolves(` is needed.
+ */
+function readAuditAnchorRuleSource() {
+  const audit = fs.readFileSync(AUDIT_PATH, 'utf8');
+  const start = audit.indexOf('const slugify =');
+  const fnStart = audit.indexOf('function anchorResolves(', start);
+  const end = fnStart === -1 ? -1 : audit.indexOf('\n}', fnStart);
+  assert.ok(
+    start !== -1 && fnStart !== -1 && end !== -1,
+    `audit-trap-door-enforcement.sh lost the anchorResolves rule ` +
+      `(slugify@${start}, anchorResolves@${fnStart}, close@${end}) — the release gate's ` +
+      `anchor verification is gone and every assertion below would have been checking a local twin`,
+  );
+  return audit.slice(start, end + 2);
 }
+
+function compileAnchorRule(source) {
+  return new Function(`${source}\nreturn anchorResolves;`)();
+}
+
+const anchorResolves = compileAnchorRule(readAuditAnchorRuleSource());
 
 /** Every `(?:extension/)?tests/….test.js#anchor` ref across all six catalogs. */
 function collectAnchoredEnforceRefs() {
@@ -316,19 +340,40 @@ test('AP-EXT-ITER2-01: the release-gate audit verifies anchors, not just files',
   // The rule above is a second reader; the GATE is the shell audit. If the audit
   // loses the anchor arm, the mirrored rule here keeps passing while the gate that
   // actually blocks a release goes blind again.
-  const audit = fs.readFileSync(
-    path.join(repoRoot, 'extension/scripts/audit-trap-door-enforcement.sh'),
-    'utf8',
-  );
+  const audit = fs.readFileSync(AUDIT_PATH, 'utf8');
   assert.match(
     audit,
     /anchor #\$\{anchor\} matches no test case in/,
     'audit-trap-door-enforcement.sh lost its ENFORCE-anchor verification arm',
   );
-  assert.match(
-    audit,
-    /function anchorResolves\(/,
-    'audit-trap-door-enforcement.sh lost the anchorResolves rule',
+});
+
+test('AP-EXT-ITER2-01: weakening the AUDIT rule reaches this test — the rule is loaded, not mirrored', () => {
+  // Mutation control for the loader above. The historic weakening is dropping the
+  // `-…-` segment wrapping, collapsing the rule to bare substring containment. Against a
+  // hand-copied twin that mutation was invisible here: the audit greened a phantom while
+  // these assertions kept passing on the local copy. This arm proves the mutation now lands.
+  const shipped = readAuditAnchorRuleSource();
+  const weakened = shipped.replace(/`-\$\{(slugify\([^)]*\))\}-`/g, '$1');
+  assert.notEqual(
+    weakened,
+    shipped,
+    'mutation precondition: the segment-boundary wrapping was not found in the audit rule',
+  );
+
+  const refinement = fs.readFileSync(
+    path.join(repoRoot, 'extension/tests/spawn-refinement-team-checker.test.js'),
+    'utf8',
+  );
+  assert.equal(
+    compileAnchorRule(weakened)(refinement, 'AP-RMS-1'),
+    true,
+    'mutation precondition: the weakened rule must green the phantom prefix',
+  );
+  assert.equal(
+    anchorResolves(refinement, 'AP-RMS-1'),
+    false,
+    'the SHIPPED audit rule must still reject the phantom prefix',
   );
 });
 
