@@ -1,3 +1,25 @@
+> **✅ SHIPPED 2026-08-24 as v2.1.0-beta.14 — CLOSED.** Full pipeline 4/4, `exit_reason: converged`,
+> 394m 16s, session `2026-08-24-04b1a11e`, 16 commits. Refined PRD: `BUG-2026-08-21-node-pin-REFINED.md`.
+>
+> **Refinement REFUTED this PRD's central premise.** Measured, not argued: `release.yml` was **12/12
+> red since 2026-07-18** (a month-long release outage, not a comparability nitpick); `ci.yml` was
+> **8/8 red on Node 24** and `main`-only so it never ran on this branch, which destroyed the
+> evidentiary basis for "align on 24"; and the 38 cancellations are a **darwin × Node-22 interaction**,
+> not a Node-22-line property — on `ubuntu-latest` at v22.23.2 the tier gives 3 named failures in a
+> DIFFERENT suite set, and `monitor.test.js` (this PRD's headline suite) does not fail on Linux at all.
+>
+> **The decision went the opposite way from this PRD's lead: aligned DOWN to `22.x`**, with node's
+> `engines` grammar declared as a major-line spec and pinned by a test covering all three workflows
+> (the old test read `release.yml` alone, which is how the majors diverged with nothing going red).
+>
+> **The real blockers were two things this PRD never mentioned:** `spawnSync rg ENOENT` (fixed by
+> degrading rg → git grep → grep -rl) and a **provisioning gap** — `release.yml` and `ci.yml` run the
+> IDENTICAL command string but only `ci.yml` provisioned the environment it needs, accounting for 31
+> of the 69 ubuntu failures. Aligning the pins alone would have shipped green and changed nothing.
+>
+> Darwin cancellations re-filed as `BUG-2026-08-24-darwin-node22-monitor-cancellations.md`, correctly
+> scoped to `monitor.ts` **product code** (an `.unref()`'d watchdog), not the test file.
+
 > **✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — re-measured 2026-08-24 at HEAD `bc6e687b`.**
 >
 > **Stale premise: PASSED.** All four pins are live and unchanged, measured (not asserted):

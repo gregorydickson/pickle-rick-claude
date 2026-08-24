@@ -30,6 +30,42 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+> ### 🚢 2026-08-24 — v2.1.0-beta.14, the Node-pin bundle — AND A MONTH-LONG RELEASE OUTAGE FOUND
+>
+> `exit_reason: converged`, **4/4 phases, 394m 16s**, session `2026-08-24-04b1a11e`, 16 commits.
+> szechuan-sauce converged to **metric 0** (from 3, zero violations). Gate green in stages: static +
+> 9 audits RC=0; `test:fast` **7962 / 518 / fail 1 / cancelled 0**; `test:integration` **650 / 21 /
+> fail 1 / cancelled 0**; `test:expensive` RC=0. Both failures are the two filed inherited ones.
+>
+> **⚠️ THE HEADLINE IS NOT THE PIN — IT IS THAT `release.yml` HAD PRODUCED NO ARTIFACT IN A MONTH.**
+> Operator-verified with `gh run list`: **12 of 12 runs `failure`**, unbroken 2026-07-18 → 2026-08-24,
+> including `v2.1.0-beta.13`. Every one died at `Install and compile` with `Build tarball` and
+> `Create release` **skipped**. Releases existed only because `gh release create` cuts them by hand
+> per `CLAUDE.md`'s own procedure — and that hand-cut tag fires the workflow nobody reads. `ci.yml`:
+> **8/8 red**, last run 2026-07-16, and `main`-only so it never ran against this branch at all.
+>
+> **Refinement refuted the authored premise (6 of 6 bundles).** "This is a Node MAJOR-line behaviour"
+> is FALSE: on `ubuntu-latest` at v22.23.2 the tier gives **3 named failures, not 38 cancellations**,
+> in a different suite set, and the strings `cancelled` / `Promise resolution is still pending` appear
+> **zero times** in an 88KB log. Every number in the authored PRD was taken on darwin; all three
+> workflows run ubuntu. So the bundle aligned **DOWN to 22.x**, not up to 24.
+>
+> **The two real blockers, neither in the authored PRD:** `spawnSync rg ENOENT` (fixed by degrading
+> rg → git grep → grep -rl), and a **provisioning gap** — `release.yml` and `ci.yml` run the identical
+> command string but only `ci.yml` provisioned what it needs (`corepack enable`, …), accounting for 31
+> of 69 ubuntu failures. **AC-1+AC-2 were satisfiable while the workflow stayed red** — the authored
+> scope was textbook fake-green on the one artifact that must never be faked.
+>
+> **anatomy-park (exit 0, 1h29m, 6 iterations):** a quoted-token **bypass** of the expensive-test guard
+> (CRITICAL) and a read-only `sed` **over-block** of the write guard (HIGH) — the same matcher failing
+> in both directions; plus a stale compiled mirror and 2 trap doors catalogued from clean passes.
+> **szechuan-sauce:** *an ENOBUFS git enumeration is not a complete one* — the failed-vs-measured
+> family again. The **guarded reset fired live**: iteration 2 regressed, and the rollback was refused
+> because it would have orphaned the ticket commit; HEAD preserved, no work lost.
+>
+> Also: `engines-node-pin.test.js` asserted equality against `release.yml` ALONE — which is exactly how
+> two workflows drifted to a different major without a single red test.
+
 > ### 🚢 2026-08-24 — v2.1.0-beta.13, the P0 MCP-fallback bundle, FULL PIPELINE 4/4
 >
 > `exit_reason: converged`, **4/4 phases, 769m 58s**, session `2026-08-23-6fa67c68`, scope `branch`,
