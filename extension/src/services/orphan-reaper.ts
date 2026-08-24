@@ -57,6 +57,15 @@ const PS_MAX_BUFFER = 1024 * 1024 * 8;
  * Returns `true` when the group signal was delivered; `false` on win32 (no
  * process groups), invalid pid, or a group that is already gone — callers fall
  * back to a direct leader kill.
+ *
+ * The validity floor is 1, not 0. `kill(-1, sig)` is not "group 1" — POSIX
+ * defines it as a BROADCAST to every process the caller may signal, so a single
+ * `pgid` of 1 read off `ps` turns this primitive into a machine-wide SIGTERM
+ * then SIGKILL, taking the running pipeline down with it. The value reaches here
+ * unvalidated on that axis: `parseWorkerProcsFromPs` only rejects `pgid <= 0`,
+ * and `isReapableOrphan` gates on ownership/age/self-ids, never on the number.
+ * This bound is the one place that can refuse it for every caller — widen the
+ * predicate here rather than adding a per-callsite check.
  */
 export function killProcessGroup(
   pid: number,
@@ -64,7 +73,7 @@ export function killProcessGroup(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   if (platform === 'win32') return false;
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (!Number.isInteger(pid) || pid <= 1) return false;
   try {
     process.kill(-pid, signal);
     return true;

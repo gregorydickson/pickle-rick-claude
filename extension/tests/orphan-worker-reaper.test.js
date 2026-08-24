@@ -80,6 +80,68 @@ test('killProcessGroup: returns false when the group is already gone', () => {
   assert.equal(killProcessGroup(4194000, 'SIGTERM', process.platform), false);
 });
 
+test('AP-EXT-ITER58-01: a ps-derived pgid of 1 never reaches process.kill as a broadcast', () => {
+  // `kill(-1, sig)` is POSIX BROADCAST, not "group 1": every process this user may
+  // signal, including the running pipeline. The value arrives unvalidated on that
+  // axis — the parser only rejects `pgid <= 0` and the ownership gate never looks at
+  // the number — so this drives the REAL data flow (ps line -> parser -> ownership
+  // gate -> the shared primitive) and asserts the broadcast is refused at the floor.
+  const sessionsRoot = makeTmp();
+  const fixtureDir = path.join(os.tmpdir(), 'pickle-broker-bounded-process-snapshot-9kZq04');
+  const statePath = path.join(makeSession(sessionsRoot, 'sess-reaper', { active: true, pid: process.pid }), 'state.json');
+  const psLine = nodeFixtureLine(6100, 1, '16:00:00', fixtureDir);
+
+  // Parser seam: pgid 1 is admitted today, which is precisely why the floor matters.
+  const parsed = parseWorkerProcsFromPs(psLine, sessionsRoot);
+  assert.equal(parsed.length, 1, 'the pgid=1 fixture line must be admitted by the parser');
+  assert.equal(parsed[0].pgid, 1);
+
+  const realKill = process.kill;
+  // Only NEGATIVE pids are group/broadcast sends — the positive `process.kill(pid, 0)`
+  // liveness probes the state-manager lock path issues are a different call entirely.
+  const groupSends = [];
+  const primitiveCalls = [];
+  let result;
+  try {
+    process.kill = (pid, signal) => { if (pid < 0) groupSends.push([pid, signal]); };
+    result = reapOrphanedWorkerProcs({
+      sessionsRoot,
+      statePath,
+      psOutput: psLine,
+      // The REAL primitive behind the seam — the point of the test is what it refuses.
+      kill: (pgid, sig) => { primitiveCalls.push([pgid, sig]); return killProcessGroup(pgid, sig, 'darwin'); },
+      isAlive: () => true,
+      sleep: () => {},
+    });
+  } finally {
+    process.kill = realKill;
+  }
+
+  // Non-vacuity: the candidate must actually have reached the kill seam. Without this
+  // the test would pass for the wrong reason if the ownership gate ever rejected first.
+  assert.ok(
+    primitiveCalls.some(([pgid]) => pgid === 1),
+    'the pgid=1 candidate must reach the kill seam, else this test proves nothing',
+  );
+  assert.deepEqual(groupSends, [], 'process.kill must never issue a negative-pid send for a pgid of 1');
+  assert.equal(result.reaped, 0, 'a refused broadcast must not be counted as a reap');
+});
+
+test('AP-EXT-ITER58-01: killProcessGroup refuses pid 1 (the broadcast floor) on every platform', () => {
+  const realKill = process.kill;
+  const groupSends = [];
+  try {
+    process.kill = (pid, signal) => { if (pid < 0) groupSends.push([pid, signal]); };
+    assert.equal(killProcessGroup(1, 'SIGTERM', 'darwin'), false);
+    assert.equal(killProcessGroup(1, 'SIGKILL', 'linux'), false);
+  } finally {
+    process.kill = realKill;
+  }
+  assert.deepEqual(groupSends, [], 'pid 1 must be refused before any process.kill');
+  // The floor moved by exactly one: 2 is still a legal group target.
+  assert.equal(killProcessGroup(2, 'SIGTERM', 'win32'), false, 'win32 stays unsupported');
+});
+
 // ---------------------------------------------------------------------------
 // parseWorkerProcsFromPs
 // ---------------------------------------------------------------------------
