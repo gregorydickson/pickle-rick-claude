@@ -14,16 +14,22 @@ const claudePath = path.join(extensionRoot, 'CLAUDE.md');
 const diffRange = 'v1.62.2..HEAD';
 const maxEntryChars = 1500;
 
+/**
+ * A not-run diff is not a clean diff. Mirrors the sweepNotRun discriminated-result shape in
+ * extension/src/services/orphan-reaper.ts — "an empty census is NOT evidence" unless the sweep
+ * actually ran.
+ */
 function runClaudeDiff(cwd = repoRoot) {
   try {
-    return execFileSync('git', ['diff', '--unified=0', diffRange, '--', 'extension/CLAUDE.md'], {
+    const diff = execFileSync('git', ['diff', '--unified=0', diffRange, '--', 'extension/CLAUDE.md'], {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    return { ok: true, diff };
   } catch (error) {
     if (error?.stderr?.includes('bad revision')) {
-      return '';
+      return { ok: false, reason: `bad revision: ${diffRange} unreachable` };
     }
     throw error;
   }
@@ -269,7 +275,21 @@ describe('trap-door conformance fixture parser', () => {
 
 describe('extension/CLAUDE.md touched trap-door entries', () => {
   const claude = fs.readFileSync(claudePath, 'utf8');
-  const entries = collectTouchedTrapDoorEntries(claude, runClaudeDiff());
+  const diffResult = runClaudeDiff();
+  const entries = diffResult.ok ? collectTouchedTrapDoorEntries(claude, diffResult.diff) : [];
+
+  test(`diff range ${diffRange} resolves and checks trap-door entries (${entries.length} checked)`, () => {
+    assert.ok(
+      diffResult.ok,
+      `trap-door conformance verified NOTHING: diff range '${diffRange}' is unreachable (${
+        diffResult.ok ? '' : diffResult.reason
+      }) — an unresolvable range must FAIL, not silently read as a clean pass`,
+    );
+    assert.ok(
+      entries.length > 0,
+      `diff range ${diffRange} resolved but touched ZERO trap-door entries — confirm extension/CLAUDE.md genuinely has no changes since the base tag before trusting this run as evidence`,
+    );
+  });
 
   for (const entry of entries) {
     test(`line ${entry.lineNumber} conforms`, () => {
@@ -277,7 +297,7 @@ describe('extension/CLAUDE.md touched trap-door entries', () => {
     });
   }
 
-  test('clean or unavailable diff has no false failure', () => {
+  test('clean diff has no false failure', () => {
     assertEntriesConform(entries);
   });
 });
