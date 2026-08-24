@@ -283,15 +283,29 @@ function findBashWriteTarget(command, probe) {
 /**
  * The two-pass token walk over ONE already-scoped command string.
  *
- * Both passes require their ANCHOR token — the redirect operator, the write
- * command — to have come from OUTSIDE quotes. bash redirects only on an unquoted
- * `>` and execs only an unquoted word, so a quoted one is data the worker typed,
- * not syntax the shell will act on. Only the anchor is gated: a DESTINATION is
- * legitimately quoted (`> "state.json"`), so `tokens[i + 1]` and the positional
- * args are probed whatever their quoting.
+ * Quoting demotes an anchor differently in each pass, because bash treats the two
+ * kinds of anchor differently:
+ *   - a REDIRECT operator is syntax, and quoting is exactly how you turn it back
+ *     into data: `echo '>' x` writes nothing. Pass 1 requires an unquoted `>`.
+ *   - a COMMAND is a WORD, and quoting a word does not stop it being execed:
+ *     `'tee' state.json` and `"sed" -i '' s/a/b/ state.json` run tee and sed
+ *     (shim-verified). Pass 2 therefore demotes a quoted write command only when
+ *     it is NOT in command position — that is the case the quoting really does
+ *     make inert (`git commit -m "sed" -i <file>` passes `sed` to git as a commit
+ *     message, and nothing execs it). A quoted word AT the exec index is an exec
+ *     like any other, and gating it on quoting alone re-opened every write guard
+ *     in this file to one pair of quotes.
+ *
+ * Only the anchor is gated: a DESTINATION is legitimately quoted
+ * (`> "state.json"`), so `tokens[i + 1]` and the positional args are probed
+ * whatever their quoting.
  */
 function findWriteTargetInScope(command, probe) {
     const tokens = tokenizeShellTokens(command);
+    // The one token bash will exec in this scope, read through the SHARED prelude
+    // (env assignments → optional `bash`/`sh` wrapper → env assignments) so a
+    // quoted exec is recognized in every form the rest of the subsystem accepts.
+    const execIndex = execTokenIndex(tokens.map((token) => token.value));
     // Pass 1: `>` / `>>` redirects — the immediate next token is the destination.
     for (let i = 0; i < tokens.length - 1; i++) {
         const isRedirect = !tokens[i].quoted && (tokens[i].value === '>' || tokens[i].value === '>>');
@@ -306,7 +320,9 @@ function findWriteTargetInScope(command, probe) {
     for (let i = 0; i < tokens.length; i++) {
         // execName (not path.basename): folds case and strips a trailing `;`, so
         // `SED -i`, `/usr/bin/sed -i`, and `TEE` all match the lowercase set.
-        if (tokens[i].quoted || !WRITE_COMMANDS.has(execName(tokens[i].value)))
+        if (tokens[i].quoted && i !== execIndex)
+            continue;
+        if (!WRITE_COMMANDS.has(execName(tokens[i].value)))
             continue;
         for (let j = i + 1; j < tokens.length; j++) {
             const arg = tokens[j].value;

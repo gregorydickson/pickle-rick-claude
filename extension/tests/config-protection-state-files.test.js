@@ -891,3 +891,46 @@ test('AP-EXT-ITER51-01: a quoted token whose value is `>` is not an operator', (
 test('AP-EXT-ITER51-01: a quoted write-command token is not an exec', () => {
   assert.equal(runWorkerBashInSession((t) => `git commit -m "sed" -i ${t}`).decision, 'approve');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER51-02: quoting a COMMAND does not stop bash execing it.
+//
+// The AP-EXT-ITER51-01 quoted-anchor gate demoted a quoted `>` (correct — that
+// really is data) and a quoted write COMMAND (wrong — `'tee' state.json` runs
+// tee, shim-verified), so one pair of quotes re-opened every R-WSRC-3 write
+// guard in the handler. Both directions are pinned below: quoted-in-command-
+// position blocks, quoted-elsewhere still approves.
+// ---------------------------------------------------------------------------
+
+for (const build of [
+  (t) => `'sed' -i '' s/a/b/ ${t}`,
+  (t) => `"sed" -i '' s/a/b/ ${t}`,
+  (t) => `'tee' ${t}`,
+  (t) => `"tee" ${t}`,
+  (t) => `'cp' /tmp/x ${t}`,
+  (t) => `"mv" /tmp/x ${t}`,
+  (t) => `'/usr/bin/tee' ${t}`,
+  (t) => `PICKLE_ROLE=x 'tee' ${t}`,
+  (t) => `echo x | "tee" ${t}`,
+]) {
+  test(`AP-EXT-ITER51-02: quoted write command in exec position still blocks (${build('T')})`, () => {
+    assert.equal(
+      runWorkerBashInSession(build).decision,
+      'block',
+      'quoting an executable word does not stop the shell running it',
+    );
+  });
+}
+
+// The false positive AP-EXT-ITER51-01 removed must STAY removed: a quoted
+// write-command word that is an ARGUMENT (not the exec) is inert.
+test('AP-EXT-ITER51-02: a quoted write command outside exec position still approves', () => {
+  assert.equal(runWorkerBashInSession((t) => `git commit -m "sed" -i ${t}`).decision, 'approve');
+});
+
+test('AP-EXT-ITER51-02: a quoted write command inside a commit message still approves', () => {
+  assert.equal(
+    runWorkerBashInSession((t) => `git commit -m "tee ${t} from the worker"`).decision,
+    'approve',
+  );
+});
