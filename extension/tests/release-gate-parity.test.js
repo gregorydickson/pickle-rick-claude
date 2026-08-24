@@ -7,9 +7,14 @@ import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const EXTENSION_ROOT = path.resolve(__dirname, '..');
 const CLAUDE_PATH = path.join(REPO_ROOT, 'CLAUDE.md');
+const PACKAGE_JSON_PATH = path.join(EXTENSION_ROOT, 'package.json');
 const CI_WORKFLOW = path.join(REPO_ROOT, '.github', 'workflows', 'ci.yml');
 const RELEASE_WORKFLOW = path.join(REPO_ROOT, '.github', 'workflows', 'release.yml');
+// Same capture semantics as engines-node-pin.test.js:13 -- strips the optional
+// YAML quoting so the value compares verbatim against the JSON engines string.
+const NODE_VERSION_RE = /^\s*node-version:\s*['"]?([^'"\n]+?)['"]?\s*$/gm;
 const AUDIT_SCRIPTS = [
   'bash scripts/audit-test-tiers.sh',
   'bash scripts/audit-test-isolation.sh',
@@ -47,6 +52,10 @@ function runCommands(workflowText) {
     .filter(Boolean);
 }
 
+function nodeVersions(workflowText) {
+  return [...workflowText.matchAll(NODE_VERSION_RE)].map(match => match[1]);
+}
+
 test('release workflow gate matches outer CLAUDE.md Versioning gate', () => {
   const workflow = readFileSync(RELEASE_WORKFLOW, 'utf8');
   const gate = proseGateCommand();
@@ -55,6 +64,41 @@ test('release workflow gate matches outer CLAUDE.md Versioning gate', () => {
     runCommands(workflow).some(command => command.includes(gate)),
     'release.yml must contain the exact release gate command from outer CLAUDE.md',
   );
+});
+
+// c0f184d2: parity covered WHICH COMMANDS run but never WHICH RUNTIME they run
+// on -- the exact seam this bundle came through (three workflows had drifted to a
+// different Node major than engines.node while every test stayed green).
+//
+// The existence half is NOT redundant with engines-node-pin.test.js. That test
+// globs every workflow and guards `pins.length > 0` across the WHOLE glob
+// (engines-node-pin.test.js:43), so it iterates zero release.yml entries and
+// still passes if release.yml drops its setup-node step entirely. Verified by
+// mutation: deleting release.yml's setup-node step leaves both that suite and
+// this file's command-parity tests green (7/7), with the release gate silently
+// running on the runner's default Node. This test is what goes red there.
+test('each gate-carrying workflow pins the release gate runtime', () => {
+  const engineNode = JSON.parse(readFileSync(PACKAGE_JSON_PATH, 'utf8')).engines.node;
+
+  for (const [name, workflowPath] of [
+    ['release.yml', RELEASE_WORKFLOW],
+    ['ci.yml', CI_WORKFLOW],
+  ]) {
+    const pins = nodeVersions(readFileSync(workflowPath, 'utf8'));
+
+    assert.ok(
+      pins.length > 0,
+      `${name} carries the release gate but declares no setup-node node-version, so the gate would run on the runner default`,
+    );
+
+    for (const version of pins) {
+      assert.equal(
+        version,
+        engineNode,
+        `${name} runs the release gate on node-version '${version}' but engines.node is '${engineNode}'`,
+      );
+    }
+  }
 });
 
 test('ci workflow runs full gate on push and PR to main', () => {
