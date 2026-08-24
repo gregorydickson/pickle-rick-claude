@@ -1,3 +1,23 @@
+> **✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — 2026-08-24 at HEAD `ec5c5272`.**
+>
+> **Stale premise: PASSED**, four spot-checks against the MECHANISMS, not R-codes:
+> 1. `extension/scripts/audit-trap-door-enforcement.sh` exists, 19 `ENFORCE` references — the mechanism
+>    AC-3 extends is live.
+> 2. `gate/baseline.json` keys measured: `captured_at, captured_iteration, checks, failures,
+>    project_type, schema_version, working_dir` — **no per-check ran/skipped/status field**. AC-5's
+>    premise holds exactly.
+> 3. Reuse hosts confirmed: `eslint-plugin-pickle/` + `eslint.config.js` + `ESLINT_RULES.md`, and 16
+>    `audit-*.sh` scripts (9 gate-wired).
+> 4. **18 of 18 corpus shas are reachable** — so AC-1 is executable, not aspirational.
+>
+> **Green tree: PASSED, baseline recorded.** `npm run test:fast`, node 24.19.0 pinned:
+> **pass 7961 / fail 1 / cancelled 0 / 177.8s**. The one failure is the inherited `install-bun-probe`
+> P3. Recorded as inherited; any OTHER fast-tier failure during this bundle is caused by this bundle.
+>
+> **Note on this bundle specifically:** AC-4 requires reporting a raw whole-tree hit count. Expect the
+> first honest number to be uncomfortable. Narrowing to the corpus is the correct response; shipping a
+> noisy rule is not.
+
 # BUG-2026-08-24 (P1) — stop DISCOVERING the did-we-count defect class; start PREVENTING it
 
 - **Priority**: P1 — operator-set 2026-08-24, sequenced **AHEAD of the remaining P1 bug queue**.
