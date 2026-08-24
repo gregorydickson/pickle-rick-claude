@@ -52,3 +52,14 @@ test('engines.claude and engines.gh exist as exact pins', () => {
   assert.match(packageJson.engines.claude, /^\d+\.\d+\.\d+$/);
   assert.match(packageJson.engines.gh, /^\d+\.\d+\.\d+$/);
 });
+
+test('node engine is a major-line pin (not a floor or an exact triple)', () => {
+  const packageJson = readPackageJson();
+
+  // e9fa6331: node's engines grammar is a major-line spec `<major>.x` — alone among the
+  // candidate grammars it pins the major while letting the patch float, so runner image
+  // bumps don't churn this file. (`codex` is a `>=` floor; `claude`/`gh` are exact
+  // reproducibility triples.) setup-node accepts the same literal, so the equality
+  // assertion above can compare it to `node-version` verbatim.
+  assert.match(packageJson.engines.node, /^\d+\.x$/);
+});
