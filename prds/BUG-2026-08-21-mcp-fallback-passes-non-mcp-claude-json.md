@@ -1,3 +1,13 @@
+> **✅ SHIPPED 2026-08-24 as v2.1.0-beta.13 — CLOSED, not drainable.** Full pipeline 4/4,
+> `exit_reason: converged`, 769m 58s, session `2026-08-23-6fa67c68`, 21 commits, release gate green
+> modulo the two filed inherited failures. The refined PRD (10 ACs, explicit rulings, risk register,
+> 6-ticket decomposition) is `BUG-2026-08-21-mcp-fallback-REFINED.md`; the SHIP STATE entry at the top
+> of `MASTER_PLAN.md` carries the gate evidence and the anatomy-park harvest.
+>
+> Landed: `e040828a` hoist `hasMcpServersRecord` into BOTH layers (memoized) · `56542ad8` +
+> `ef5bdb91` once-per-process degradation warning · `bb158251` parametrized resolver matrix over an
+> injected `homeDir` · `921aa083` un-fake the builder seam with `withEmptyHome`.
+
 # BUG-2026-08-21 (P0) — the MCP fallback hands `claude` a file that is not an MCP config, killing every worker spawn
 
 > **✅ STALE-PREMISE CHECK PASSED — re-measured 2026-08-23 at HEAD `d75bd524`, both trees.** The

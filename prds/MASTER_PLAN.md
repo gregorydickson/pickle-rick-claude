@@ -30,6 +30,63 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+> ### 🚢 2026-08-24 — v2.1.0-beta.13, the P0 MCP-fallback bundle, FULL PIPELINE 4/4
+>
+> `exit_reason: converged`, **4/4 phases, 769m 58s**, session `2026-08-23-6fa67c68`, scope `branch`,
+> UNATTENDED. 21 commits. All 4 tickets + parent Done.
+>
+> | phase | outcome |
+> |---|---|
+> | pickle | 4/4 tickets Done, 5 commits |
+> | citadel | complete, 22 findings, remediation auto-committed (`73e1f160`) |
+> | anatomy-park | **exit 0**, 8h05m, 18 iterations, **14 commits (7 CRITICAL)** |
+> | szechuan-sauce | **exit 0**, converged, 24m, 1 commit |
+>
+> **Release gate, run in STAGES so no failure hid behind one exit code:** `tsc --noEmit` / `eslint
+> --max-warnings=-1` / `tsc` **RC=0**; all **9** audit scripts **RC=0**; `test:fast` **7938 tests /
+> 518 suites / fail 1 / cancelled 0**; `test:integration` **650 / 21 / fail 1 / cancelled 0**;
+> `test:expensive` **RC=0, fail 0** (1 documented soak skip). Both failures are the two long-filed
+> inherited ones — `install-bun-probe` and `extension-wiring` deploy smoke — and each is the SAME
+> single test recorded in the pre-launch baseline, so no new failure appeared during the bundle.
+> Fast-tier count grew **7872 → 7938**, so nothing was greened by shrinking a tier.
+>
+> **The P0 itself:** `resolveMcpConfigWithLayer` resolved BOTH `settings_override` and
+> `claude_json_fallback` to a path without proving the file was a valid MCP config, so a
+> present-but-`mcpServers`-less `~/.claude.json` killed every worker, analyst AND manager spawn on a
+> fresh machine. Refinement reframed it from "add a validator" to **"hoist the predicate that already
+> ships at `setup.ts:1820`"**, and caught four things that would have sunk the run: layer 1 had *no*
+> file check at all and was never scoped; three fast-tier fixtures asserted the INVERSE of AC-1; one
+> builder-level test was **fake-green by construction on this host**; and AC-5 as authored targeted
+> `pickle_settings.json`, a Worker Forbidden Op that would have deadlocked a ticket at zero commits.
+>
+> **What anatomy-park bought, beyond the bundle's own thesis — 14 commits in ONE family:** an identity
+> or verification that does not identify or verify. Six process-identity/reaping defects (never
+> group-kill your own group; a registry pid is a slot not an identity; a pidfile pid likewise; a jar
+> manager, an LLM judge and a gate check are each a subtree ROOT so reap the GROUP; `execFile`
+> silently drops `detached`), three uncapped capture buffers (**an uncapped buffer is a fake-RED gate
+> verdict, not a truncated log** — the `spawnSync status:null` family this plan already names), plus
+> the trap-door sweep that parsed the `ENFORCE` anchor and threw it away, the repo-root subsystem
+> catalog the gate never read, the R-WACT tsc gate's own git-invalid argv, and a quoted `>` treated as
+> a redirect **which was actively blocking worker commits**. Three of these sit inside the release
+> gate's own machinery.
+>
+> Deployed and verified BY CONTENT; pushed; released.
+>
+> **Filed this session:** `BUG-2026-08-23-mac-notifications-never-arrive.md` (P2, operator-raised,
+> operator-sequenced AFTER codegraph) — `osascript` exits 0 while displaying nothing, the code
+> swallows every failure by design, and notifications post under `com.apple.scripteditor2`, not an
+> identity the operator can grant. Five prior passes polished content on a channel nobody verified
+> carries anything; the binding AC is **prove DELIVERY, not exit code**.
+> `BUG-2026-08-21-bun-probe-path-filter-misses-homebrew.md` **amended** with the measured blast radius
+> (~9 tests, not 2; hang-guards spawn real bun at 60s–1035s and blow the flake budget under load).
+>
+> **Open lead, not filed:** the anatomy-park per-iteration gate baseline
+> (`<session>/gate/baseline.json`) records `checks: [typecheck, lint, tests]` and `failures: []` with
+> **no per-check ran/skipped field**, so "ran clean" and "never ran" are byte-identical — on a tree
+> known to carry inherited failures. Counter-evidence: across 18 iterations anatomy-park never chased
+> a bun or extension-wiring test. Cheapest next step: read the capture path in `convergence-gate.ts`
+> and check whether a non-zero exit can reach `failures: []`.
+
 > ### 🚢 2026-08-23 — SHIPPED v2.1.0-beta.11 (two bundles, both dogfooded end to end)
 >
 > Full release gate run in STAGES so no failure could hide behind one exit code: `tsc --noEmit`,
