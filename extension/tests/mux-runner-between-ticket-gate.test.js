@@ -346,3 +346,68 @@ test('mux-runner-between-ticket-gate: parseBetweenTicketFastGateFailures leaves 
   }]);
   assert.equal(failures[0].script_failure, undefined);
 });
+
+// AP-EXT-ITER55-01 regression. Measured ground truth on this repo: `npm run test:fast`
+// emits 1,338,798 bytes, and a `spawnSync` of that exact command with the default
+// `maxBuffer` returns `error.code === 'ENOBUFS'`, `status === null`, `signal === 'SIGTERM'`
+// with stdout truncated to 1,004,953 bytes. `status === null` is not `0`, so the gate
+// reported RED on a tier where every test PASSED, and named the phantom
+// `script failure: test:fast` scraped off the truncated buffer.
+//
+// The shim reproduces the data flow, not the function in isolation: a real `npm` on PATH
+// that streams >1MB of passing TAP and exits 0. Exercising the true 14-minute tier here
+// is not an option, and a source grep for `maxBuffer` could not be reddened by a
+// regression that re-forked its own smaller constant.
+test('mux-runner-between-ticket-gate: runBetweenTicketFastTests stays GREEN when the tier streams past spawnSync\'s 1MB default maxBuffer', () => {
+  const root = makeRoot('pickle-mux-between-fast-maxbuffer-');
+  const originalExtensionDir = process.env.EXTENSION_DIR;
+  try {
+    const extensionDir = path.join(root, 'extension');
+    mkdirSync(path.join(extensionDir, 'bin'), { recursive: true });
+    writeFileSync(path.join(extensionDir, 'bin', 'log-watcher.js'), '');
+    writeFileSync(path.join(root, 'pickle_settings.json'), JSON.stringify({
+      worker_test_gate_timeout_ms: 120000,
+    }, null, 2));
+
+    const shimDir = path.join(root, 'bin');
+    mkdirSync(shimDir, { recursive: true });
+    // ~1.4MB of passing TAP — over the 1MB default, under the shared 64MB cap. The emitter
+    // lives in its own file rather than a `node -e` string: the payload contains quotes, and
+    // an inline form is one shell-quoting slip away from a shim that fails for the WRONG
+    // reason and greens/reds this case on a ReferenceError instead of on buffer size.
+    const emitterPath = path.join(shimDir, 'emit-tap.js');
+    writeFileSync(emitterPath, [
+      "const line = 'ok %I% - a passing fast-tier case with a realistically long name\\n';",
+      "let out = '';",
+      "for (let i = 0; i < 20000; i++) out += line.replace('%I%', String(i + 1));",
+      "process.stdout.write('TAP version 13\\n1..20000\\n' + out + '# pass 20000\\n# fail 0\\n');",
+      // NO `process.exit(0)` here. stdout is a PIPE, so writes are async and a bare
+      // `write(...); process.exit(0)` truncates at the 64KB pipe buffer — the emitter would
+      // deliver 65536 bytes, never overflow the cap, and this case would pass against the
+      // defect. (Caught by mutation-verifying it; same trap as the `codegraph-query-runner.ts`
+      // R-CGST flush invariant.) Let the process end naturally once the stream drains.
+      '',
+    ].join('\n'));
+    const npmShim = path.join(shimDir, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+    writeFileSync(
+      npmShim,
+      process.platform === 'win32'
+        ? `@echo off\r\nnode "${emitterPath}"\r\n`
+        : `#!/bin/sh\nexec node "${emitterPath}"\n`,
+    );
+    chmodSync(npmShim, 0o755);
+
+    process.env.EXTENSION_DIR = root;
+    const result = withCleanGateTimeoutEnv(() => withPathPrefix(shimDir, () => runBetweenTicketFastTests(extensionDir)));
+
+    // The whole defect in one assertion pair: a passing tier must be GREEN with an EMPTY
+    // failure list. Pre-fix this was `ok: false` + a synthetic `script_failure` entry.
+    assert.equal(result.ok, true, `gate must be green for a passing tier; got failures: ${JSON.stringify(result.failures)}`);
+    assert.deepEqual(result.failures, []);
+    assert.equal(result.timed_out, false);
+  } finally {
+    if (originalExtensionDir === undefined) delete process.env.EXTENSION_DIR;
+    else process.env.EXTENSION_DIR = originalExtensionDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});

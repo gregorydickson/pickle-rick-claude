@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
+import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
@@ -743,10 +743,25 @@ export function runBetweenTicketFastTests(
   // second package-manager table here. Resolves to `npm` for this repo, so the
   // between-ticket gate keeps executing exactly what it executes today.
   const packageManager = resolvePackageManagerBin(extensionDir, 'npm');
+  // AP-EXT-ITER55-01: the fast tier's TAP stream is MEASURED at 1,338,798 bytes on this repo,
+  // over `spawnSync`'s 1MB default `maxBuffer`. Past the cap Node SIGTERMs the child and
+  // reports `error.code === 'ENOBUFS'` with `status === null` — neither `ETIMEDOUT` (so the
+  // arm below misses it) nor `0` — so the gate returns `ok: false` on a fully GREEN tier,
+  // every run, and `parseBetweenTicketFastGateFailures` names a phantom script failure off
+  // the truncated buffer. The captured bytes are not a log here; they ARE the verdict.
+  // The sibling budget runner under `bin/` already had to take this same cap for the very
+  // same tier (CI run 27578083942); this is the second site that needed it. Use the SHARED
+  // `UNBOUNDED_READ_MAX_BUFFER` rather than forking a third private byte constant.
+  //
+  // Do NOT name that sibling bin, nor the tier's parallelism flag, in this file:
+  // `tests/per-ticket-gate-no-flake-budget.test.js` pins mux-runner.ts source text against
+  // both literals to prove the per-ticket path never wires up the budget rerun. That pin is
+  // correct — reword the prose, never the test.
   const result = spawnSync(packageManager, ['run', 'test:fast'], {
     cwd: extensionDir,
     encoding: 'utf-8',
     timeout: timeoutMs,
+    maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     env: scrubGateEnv(),
   });
   const timedOut =
