@@ -1,3 +1,38 @@
+> **✅ ALREADY SHIPPED — verified 2026-08-24 by the mandatory stale-premise check, NOT drainable.**
+> Fixed by **`cf040295`** *"fix(aafc633a): release failed_flip_suppressed hold at the shared
+> exit-commit salvage seam"* (2026-08-23), which is an ancestor of HEAD. It landed AFTER this PRD's
+> 3-cycle refinement (session `2026-08-22-5c53a293`, measured at HEAD `6a14d389`) and before the P0
+> MCP bundle, so the PRD went stale between refinement and dispatch.
+>
+> **The mechanism is gone, checked in BOTH trees — not merely the R-code.** This PRD's root cause is
+> the inert `resetTodo` stub at the exit-commit seam. It is no longer a stub:
+>
+> ```ts
+> resetTodo: (i) => {
+>   updateTicketFrontmatter(i.ticketId, i.sessionDir, { status: 'Todo', completion_commit: null });
+> },
+> ```
+> (`extension/src/bin/mux-runner.ts:6481`; deployed `~/.claude/pickle-rick/extension/bin/mux-runner.js:5502`)
+>
+> The surrounding comment states this PRD's own refined finding back verbatim — *"this is the ONLY
+> automatic Todo writer reachable from a `failed_flip_suppressed` hold … Stubbing this out strands a
+> held-but-runnable ticket forever."* `archive: () => null` is deliberately RETAINED for behavior
+> parity (never discard the dirty tree at this seam), which this PRD also identified as correct.
+>
+> **The latch chain is broken end to end:** `resetTodo` writes `Todo` → `readActiveFailedFlipHolds`
+> (`:9774`) releases any hold whose status normalizes to `todo` → `resolvePreTicket` returns the
+> ticket → `noRunnableTicketsRemain` is false → the L5 `empty_roster_all_failed_no_runnable` terminal
+> does not fire. That is exactly the roster experiment this PRD's refinement ran, now passing.
+>
+> **The plural-surface concern still holds structurally and is satisfied:** `routeExitPathSalvage`
+> still has 3 call sites (`:11491`, `:11584`, `:11660`) and `noRunnableTicketsRemain` still has 2
+> consumers (`:9063`, `:11180`) — but all three call sites now share the ONE fixed dep set built
+> inside `routeExitPathSalvage` itself, so there is no per-call-site stub left to latch.
+>
+> Note for future checks: the line numbers in this PRD are all stale (the P0 MCP bundle's
+> anatomy-park phase made 14 commits touching `mux-runner.ts`). Checking the MECHANISM rather than the
+> cited `file:line` is what settled this.
+
 # BUG-2026-08-14 (P1) — salvage reports `reset Todo`, leaves the ticket `In Progress`, then terminates on `empty_roster_all_failed_no_runnable`
 
 *(refined: requirements / codebase / risk-scope analysts, 3 cycles, session `2026-08-22-5c53a293`)*

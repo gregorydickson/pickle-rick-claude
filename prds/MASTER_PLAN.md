@@ -120,8 +120,17 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 > 3. **`FEAT-2026-08-16-expose-codegraph-mcp-to-workers.md`** — first capability work. Sequenced ahead
 >    of the remaining **P2/P3** reliability backlog, NOT ahead of the P1 bugs in item 4.
 > 4. The remaining reliability P1s — **this is the live head of the queue**:
->    `BUG-2026-08-14-salvage-reset-desync-empty-roster-terminal.md` ◀ **NEXT** ·
->    `BUG-2026-08-16-gate-parser-fabricates-a-test-name.md` (R-GBANNER, 2 sessions)
+>    ~~`BUG-2026-08-14-salvage-reset-desync-empty-roster-terminal.md`~~ ✅ **ALREADY SHIPPED**
+>    (`cf040295`, verified 2026-08-24 by stale-premise check — the `resetTodo` stub is gone in both
+>    trees; see that PRD's header) ·
+>    ~~`BUG-2026-08-16-gate-parser-fabricates-a-test-name.md`~~ ✅ **ALREADY SHIPPED** (`de6a5139`)
+>
+>    **▶ Live head is now `BUG-2026-08-21-release-gate-pinned-to-node-22.md` (P1)** — filed after this
+>    SEQUENCE text was written, so it was never listed here. Bug bundles precede feature epics, so it
+>    precedes item 3 (codegraph). Its own central question is deliberately OPEN: `ci.yml` pins `'24'`
+>    while its comment claims *"CLAUDE.md = Node 25"*, and neither CLAUDE.md documents any Node
+>    version. **Its authored baseline (`fast tier green: fail 0` at `770dfe8a`) will NOT reproduce** —
+>    see the amended bun P3 for the measured ~9-test blast radius.
 >
 > **⚠️ `BUG-2026-08-16-tier-hangs-at-mux-runner-suite.md` (R-TIERWEDGE) is P0 but NOT DRAINABLE — treat
 > as repro-gated / watch-only.** Its own text reads *"Class: intermittent hang, reproducible boundary,
