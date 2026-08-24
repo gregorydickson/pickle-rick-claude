@@ -1,3 +1,19 @@
+> **✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — 2026-08-24 at HEAD `f0c95353`.**
+>
+> **Stale premise: PASSED (mechanism, not R-code).** The `.unref()`'d watchdog timer this PRD targets
+> is live: `extension/src/bin/monitor.ts:101-103` (`(timer as { unref: () => void }).unref()`), and the
+> deployed `~/.claude/pickle-rick/extension/bin/monitor.js` carries 4 `unref()` occurrences. The CI
+> failure is CURRENT, not historical: run `32738408865` is the **latest** `release.yml` run and its
+> conclusion is `failure`.
+>
+> **Green tree: PASSED, baseline recorded.** `npm run test:fast`, node 24.19.0 pinned:
+> **518 suites / pass 7961 / fail 1 / cancelled 0 / 175.1s**. The one failure is the inherited
+> `install-bun-probe` P3. Recorded as inherited.
+>
+> **⚠️ The darwin baseline above is NOT evidence about this bug.** Every failure this PRD targets is
+> Linux-only; the local tier passes them. That asymmetry is the whole point — and reading a local pass
+> as evidence is the exact error that produced this PRD. See AC-4.
+
 # BUG-2026-08-24 (P1) — `release.yml` still red: `monitor.test.js` DOES fail on Linux
 
 - **Priority**: P1 — the release workflow has now failed **13 consecutive times** (2026-07-18 → 2026-08-24).
