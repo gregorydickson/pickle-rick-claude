@@ -180,7 +180,18 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 >    ~~`BUG-2026-08-21-release-gate-pinned-to-node-22.md`~~ ✅ **SHIPPED v2.1.0-beta.14** — but it did
 >    NOT meet its own AC-2; see the beta.14 SHIP STATE correction.
 >
->    **▶ Live head is now `BUG-2026-08-24-release-workflow-still-red-monitor-suite-on-linux.md` (P1).**
+>    **▶▶ OPERATOR OVERRIDE 2026-08-24: `BUG-2026-08-24-did-we-count-prevent-the-dominant-defect-class.md`
+>    (P1) IS THE HEAD**, sequenced AHEAD of the remaining P1 bug queue. Operator directive: *"we have to
+>    get quality up."* Rationale, measured: across `v2.1.0-beta.13` + `v2.1.0-beta.14`, **18 of ~25
+>    review-phase commits are ONE pattern** — a failed/skipped/truncated operation read as a measured
+>    result — and three of them sit inside the release gate's own machinery. Discovery is not
+>    converging, so the bundle converts a recurring discovery into a single prevention. Note for the
+>    scorecard: **0 of the 3 PRDs filed on 2026-08-23/24 were caused by our own bundles** (5 were
+>    closed in the same window, and the fast tier held at `fail 1` before and after both bundles while
+>    counts grew 7872 → 7962), so the queue is not a regression treadmill — but it IS regenerating, and
+>    that is what this bundle attacks.
+>
+>    **▶ THEN: `BUG-2026-08-24-release-workflow-still-red-monitor-suite-on-linux.md` (P1).**
 >    `release.yml` has now failed **13 consecutive times**. beta.14 moved the frontier measurably
 >    (corepack provisioning succeeds; all three previously-named Linux failures gone) but the run now
 >    dies on **`monitor.test.js`** + `R-MWBG` deploy-parity. It **recomposes**
