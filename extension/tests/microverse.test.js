@@ -6,7 +6,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync, execFileSync, spawnSync } from 'node:child_process';
+import { execSync, execFileSync, spawnSync, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { getHeadSha, isWorkingTreeDirty } from '../services/git-utils.js';
@@ -1272,6 +1272,99 @@ test('AP-EXT-ITER42-01: measureMetric reaps the whole shell tree on timeout — 
         const survivors = (scan.stdout || '').trim().split('\n').filter(Boolean);
         assert.deepEqual(survivors, [], `the shell tree must not outlive the deadline; survivor pids: ${survivors.join(',')}`);
     } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+// AP-EXT-ITER53-02 — the LLM judge is a subtree ROOT too: reap the GROUP, not the pid.
+//
+// REPLAY of AP-EXT-ITER53-01 (jar-runner) into `spawnWithClosedStdin`, the judge/probe
+// transport. The `claude` judge spawns its own tool subprocesses; pre-fix the timeout did a
+// bare `child.kill('SIGTERM')` on a NON-detached child, so those grandchildren re-parented
+// to PID 1 and outlived the run. Asserting the RETURN VALUE greens over exactly this bug —
+// the pre-fix path returned `null` (a correct timeout verdict) with the subtree still alive.
+
+test('AP-EXT-ITER53-02: the judge child leads its own group and the timeout signals the GROUP', async () => {
+    // The bare-child kill is the FALLBACK only. Making it throw proves the group kill is the
+    // path taken, and the `detached` assertion proves the negative-PID signal can even reach
+    // a grandchild — without it the group is the RUNNER's own (the AP-EXT-ITER47-01 hazard).
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-judge-group-'));
+    const originalSpawn = _deps.spawn;
+    const originalKillGroup = _deps.killProcessGroup;
+    const groupSignals = [];
+    let spawnOpts = null;
+    try {
+        _deps.spawn = (cmd, args, opts) => {
+            spawnOpts = opts;
+            const child = new EventEmitter();
+            child.pid = 515151;
+            child.stdout = new PassThrough();
+            child.stderr = new PassThrough();
+            child.kill = () => {
+                throw new Error('the bare-child kill is the FALLBACK — it must not run when the group kill succeeds');
+            };
+            return child;
+        };
+        _deps.killProcessGroup = (pid, signal) => { groupSignals.push([pid, signal]); return true; };
+
+        const started = Date.now();
+        const result = await measureLlmMetric('score the thing', 1, dir);
+        const elapsed = Date.now() - started;
+
+        assert.equal(result, null, 'a timed-out judge measurement yields no metric');
+        assert.ok(elapsed < 5000, `settled on the 1s deadline (took ${elapsed}ms)`);
+        assert.equal(
+            spawnOpts?.detached,
+            process.platform !== 'win32',
+            'the judge must lead its OWN process group or the group kill cannot reach a grandchild',
+        );
+        assert.deepEqual(
+            groupSignals[0],
+            [515151, 'SIGTERM'],
+            'the terminator signals the GROUP (negative pid), not the bare judge process',
+        );
+    } finally {
+        _deps.spawn = originalSpawn;
+        _deps.killProcessGroup = originalKillGroup;
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER53-02: a wedged judge’s grandchild does not outlive the measurement deadline', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-judge-tree-'));
+    const originalSpawn = _deps.spawn;
+    try {
+        // Stand in for the `claude` binary with a script that FORKS — that is the shape the
+        // judge really has (the CLI spawns tool/MCP subprocesses). Production still chooses
+        // the spawn options and still runs the real `killProcessGroup`; only the executable
+        // is swapped, so `detached` and the group reap are exercised end to end. The
+        // grandchild redirects its own stdio so a survivor cannot hold the parent's pipe and
+        // stall the test process — the pgrep scan, not a hang, is the oracle.
+        const probe = path.join(dir, 'probe.sh');
+        fs.writeFileSync(probe, `#!/bin/sh\n/bin/sh "${probe}.child" >/dev/null 2>&1 &\nwhile true; do sleep 1; done\n`);
+        fs.writeFileSync(`${probe}.child`, '#!/bin/sh\nsleep 120\n');
+
+        // `timeout` here is a TEST hang-guard only (the production deadline is 1s and the
+        // grace window 2.5s, so it can never fire in either the fixed or the pre-fix case);
+        // it satisfies the R-TFP-C2 missing-timeout audit without touching the oracle.
+        _deps.spawn = (_cmd, _args, opts) => spawn('/bin/sh', [probe], { ...opts, timeout: 30_000 });
+
+        const started = Date.now();
+        const result = await measureLlmMetric('score the thing', 1, dir);
+        const elapsed = Date.now() - started;
+
+        assert.equal(result, null, 'a timed-out judge measurement yields no metric');
+        assert.ok(elapsed < 10000, `settled on the 1s deadline, not after the 120s child (took ${elapsed}ms)`);
+
+        // Past the SIGTERM -> SIGKILL grace window before probing for survivors.
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        const scan = spawnSync('pgrep', ['-f', probe], { encoding: 'utf-8', timeout: 10_000 });
+        // A missing/unrunnable pgrep must RED this test, never silently satisfy it.
+        assert.equal(scan.error, undefined, `pgrep must run for the survivor scan to mean anything: ${scan.error}`);
+        const survivors = (scan.stdout || '').trim().split('\n').filter(Boolean);
+        assert.deepEqual(survivors, [], `the judge subtree must not outlive the deadline; survivor pids: ${survivors.join(',')}`);
+    } finally {
+        _deps.spawn = originalSpawn;
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });

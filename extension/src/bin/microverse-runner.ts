@@ -2458,11 +2458,30 @@ function spawnWithClosedStdin(
     let settled = false;
     let stdout = '';
     let stderr = '';
+    // AP-EXT-ITER53-02: the judge is the ROOT of a subtree (the `claude` CLI spawns
+    // its own tool/MCP subprocesses), so it leads its OWN process group and the
+    // timeout signals the GROUP. `detached` is the load-bearing half — without it
+    // the child shares this runner's group and the negative-PID kill in
+    // `killJudgeSubtree` would take down the runner itself (the AP-EXT-ITER47-01
+    // self-group hazard). Skipped on win32, where `detached` means "new console"
+    // and `killProcessGroup` is a no-op anyway. Same shape as `measureMetricAttempt`.
     const child = _deps.spawn(cmd, args, {
       cwd: options.cwd,
       env: options.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
     });
+
+    /** THE terminator for both signals: the group first, the bare child as the fallback. */
+    const killJudgeSubtree = (signal: NodeJS.Signals): void => {
+      const pid = child.pid;
+      if (typeof pid === 'number' && _deps.killProcessGroup(pid, signal)) return;
+      try {
+        child.kill(signal);
+      } catch {
+        // Best-effort cleanup.
+      }
+    };
 
     const settle = (fn: () => void) => {
       if (settled) return;
@@ -2495,8 +2514,9 @@ function spawnWithClosedStdin(
 
     const timer = setTimeout(() => {
       settle(() => {
-        child.kill('SIGTERM');
-        setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 2000);
+        killJudgeSubtree('SIGTERM');
+        const killTimer = setTimeout(() => { killJudgeSubtree('SIGKILL'); }, 2000);
+        if (typeof killTimer.unref === 'function') killTimer.unref();
         reject(new JudgeMeasurementTimeout(options.timeoutMessage, options.timeoutMs));
       });
     }, options.timeoutMs);
