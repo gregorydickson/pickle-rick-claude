@@ -52,6 +52,31 @@ function harness(settings, deps = {}) {
 const never = () => new Promise(() => {});
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Hold ONE ref'd timer on the event loop for the duration of `fn`.
+ *
+ * `runWithTimeout` unrefs its timeout timer (codegraph-service.ts:413) so a pending
+ * codegraph op never delays process exit in production, where the process always has
+ * other active handles. When the raced op is `never`, that unref'd timer is the ONLY
+ * thing that can settle the promise — so with an otherwise-empty loop, Node 22 drains,
+ * the await stays pending, and node:test reports "Promise resolution is still pending
+ * but the event loop has already resolved", cancelling this test and every test after
+ * it (measured on v22.23.2: pass 1, cancelled 18; on v24 the file passes 19/19).
+ *
+ * This restores the loop liveness production always has, so the timeout path under test
+ * actually runs. No assertion is relaxed and no product behaviour is changed. Scoped to
+ * the single await that needs it rather than the whole file: a file-wide keep-alive would
+ * turn a genuine future hang into an indefinite one instead of a fast cancellation.
+ */
+async function withEventLoopAlive(fn) {
+  const keepAlive = setInterval(() => {}, 1);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(keepAlive);
+  }
+}
+
 // --- matrix ----------------------------------------------------------------
 
 test('throwing fake: returns null + one classified error degrade', async () => {
@@ -74,7 +99,7 @@ test('throwing fake: returns null + one classified error degrade', async () => {
 test('async-hanging fake: times out to null with one timeout degrade', async () => {
   const impl = fakeImpl({ indexAll: never });
   const { svc, events } = harness(baseSettings({ index_timeout_ms: 10 }), { impl });
-  const res = await svc.indexAll();
+  const res = await withEventLoopAlive(() => svc.indexAll());
   assert.equal(res, null);
   assert.equal(events.length, 1);
   assert.equal(events[0].event, 'codegraph_degraded');
@@ -209,7 +234,8 @@ test('counters exact across a forced-degrade sequence', async () => {
     runQueryBatch: async () => ({ status: 'ok', searches: { q: [{ node: { id: 'n1' }, score: 1 }] }, callers: {} }),
   });
   await svc.searchNodes('q'); // ops=1, degraded=0 (success)
-  await svc.indexAll();        // ops=2, degraded=1 (timeout)
+  // Same unref'd-timer race as the `async-hanging fake` test above — see withEventLoopAlive.
+  await withEventLoopAlive(() => svc.indexAll()); // ops=2, degraded=1 (timeout)
   await svc.sync();            // ops=3, degraded=2 (locked)
   assert.deepEqual(svc.getSessionCounters(), { ops: 3, degraded: 2, latched: 0, injected: 0, skipped: 0 });
 });
