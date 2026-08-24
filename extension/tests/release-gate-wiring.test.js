@@ -50,7 +50,7 @@ describe('canonical FULL_CMD mirrors invoke the flake-tolerant release gate', ()
       // the gate-position lines only (lines that wire the gate command), not arbitrary prose.
       const gateLines = text
         .split(/\r?\n/)
-        .filter((line) => line.includes('audit-guarded-reset.sh') || line.includes(BUDGET_TOKEN));
+        .filter((line) => line.includes('audit-guarded-reset.sh') || line.includes('audit-did-we-count.sh') || line.includes(BUDGET_TOKEN));
       for (const line of gateLines) {
         assert.ok(
           !SINGLE_PASS_RE.test(line),
