@@ -503,15 +503,15 @@ describe('pickle/require-max-buffer-on-capture', () => {
     ruleTester.run('require-max-buffer-on-capture', pickle.rules['require-max-buffer-on-capture'], {
       valid: [
         // Fixed shape (7e06e8b2 post-fix): maxBuffer present alongside encoding.
-        { code: `spawnSync(pm, ['run', 'test:fast'], { cwd, encoding: 'utf-8', timeout, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });` },
+        { code: `spawnSync(pm, ['run', 'test:fast'], { cwd, encoding: 'utf-8', timeout: timeout, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });` },
         // Bounded single-fact probe (lsof -t <path>) — encoding set, but not an
         // unbounded enumeration shape; the trap-door catalog names this class
         // explicitly as NOT matching (extension/src/services/CLAUDE.md AP-EXT-ITER8-01).
         { code: `spawnSync('lsof', ['-t', lockPath], { encoding: 'utf-8', timeout: 5000 });` },
         // No encoding option at all — result is a Buffer, not a capture-and-parse read.
-        { code: `spawnSync('git', ['rev-parse', 'HEAD']);` },
+        { code: `spawnSync('git', ['rev-parse', 'HEAD'], { timeout: 5000 });` },
         // execFileSync with a bounded single-fact probe.
-        { code: `execFileSync('git', ['cat-file', '-e', sha], { cwd, timeout });` },
+        { code: `execFileSync('git', ['cat-file', '-e', sha], { cwd, timeout: timeout });` },
       ],
       invalid: [
         // 7e06e8b2 shape: npm/pnpm/yarn `run <script>` capture, no maxBuffer.
@@ -546,13 +546,13 @@ describe('pickle/require-spawn-result-error-check', () => {
     ruleTester.run('require-spawn-result-error-check', pickle.rules['require-spawn-result-error-check'], {
       valid: [
         // Fixed shape (c7c85ef3 post-fix): predicate ORs in .error.
-        { code: `function f() { const result = spawnSync('git', ['diff', '--staged', '--name-only', '-z'], { encoding: 'utf-8' }); if ((result.status ?? 1) !== 0 || result.error) return null; }` },
+        { code: `function f() { const result = spawnSync('git', ['diff', '--staged', '--name-only', '-z'], { encoding: 'utf-8', timeout: 5000 }); if ((result.status ?? 1) !== 0 || result.error) return null; }` },
         // .status-only check is fine when the call does not capture unbounded text
         // (no encoding option — matches AC-4' narrowing, avoids the 43-hit noise
         // surface measured on bounded probes like lsof/pgrep before this filter).
         { code: `function f() { const lsof = spawnSync('lsof', ['-t', lockPath], { encoding: 'utf-8', timeout: 5000 }); if (lsof.status === 0) { return true; } }` },
         // .status-only check on a non-enumeration capturing call (bounded single-fact probe).
-        { code: `function f() { const res = spawnSync('git', ['cat-file', '-e', sha], { encoding: 'utf-8' }); if (res.status !== 0) return false; }` },
+        { code: `function f() { const res = spawnSync('git', ['cat-file', '-e', sha], { encoding: 'utf-8', timeout: 5000 }); if (res.status !== 0) return false; }` },
       ],
       invalid: [
         // c7c85ef3 pre-fix shape: unbounded git enumeration capture, status-only check.
@@ -605,26 +605,26 @@ describe('pickle/no-invalid-checkout-index-stage', () => {
 // themselves route through killProcessGroup, per src/bin/CLAUDE.md R-OMTD).
 
 describe('pickle/require-group-kill-for-spawned-child', () => {
-  it('flags a bare .kill() on a spawn()-ed child with no group-kill routing in the enclosing function', () => {
+  it('flags a bare .kill() on a spawned child with no group-kill routing in the enclosing function', () => {
     ruleTester.run('require-group-kill-for-spawned-child', pickle.rules['require-group-kill-for-spawned-child'], {
       valid: [
         // Fixed shape (ff8d4739 post-fix): routes through killProcessGroup first.
-        { code: `function runTask() { const proc = spawn(cmd, args, { cwd, env, stdio: 'inherit' }); function reapTaskSubtree(signal) { if (!killProcessGroup(proc.pid, signal)) proc.kill(signal); } reapTaskSubtree('SIGTERM'); }` },
+        { code: `function runTask() { const proc = spawn(cmd, args, { cwd, env, stdio: 'inherit', timeout: 5000 }); function reapTaskSubtree(signal) { if (!killProcessGroup(proc.pid, signal)) proc.kill(signal); } reapTaskSubtree('SIGTERM'); }` },
         // Delegate wrapper (spawn-morty.ts killProcessTree) internally routes through
         // killProcessGroup — a caller of the wrapper already gets group-kill safety.
-        { code: `function spawnWorker() { const proc = spawn(cmd, args, { cwd, env, detached: true }); const timeoutHandle = setTimeout(() => { if (!killProcessTree(proc, 'SIGTERM')) { try { proc.kill('SIGTERM'); } catch {} } }, ms); }` },
-        // A spawn() with no later .kill() at all is fine.
-        { code: `function fireAndForget() { const proc = spawn(cmd, args); proc.on('exit', () => {}); }` },
+        { code: `function spawnWorker() { const proc = spawn(cmd, args, { cwd, env, detached: true, timeout: 5000 }); const timeoutHandle = setTimeout(() => { if (!killProcessTree(proc, 'SIGTERM')) { try { proc.kill('SIGTERM'); } catch {} } }, ms); }` },
+        // A spawn call with no later .kill() at all is fine.
+        { code: `function fireAndForget() { const proc = spawn(cmd, args, { timeout: 5000 }); proc.on('exit', () => {}); }` },
       ],
       invalid: [
         // ff8d4739 pre-fix shape: bare .kill() in the timeout handler, no group-kill anywhere.
         {
-          code: `function runTask() { const proc = spawn(cmd, args, { cwd, env, stdio: 'inherit' }); const timeoutHandle = setTimeout(() => { proc.kill('SIGTERM'); }, ms); }`,
+          code: `function runTask() { const proc = spawn(cmd, args, { cwd, env, stdio: 'inherit', timeout: 5000 }); const timeoutHandle = setTimeout(() => { proc.kill('SIGTERM'); }, ms); }`,
           errors: [{ messageId: 'requireGroupKill' }],
         },
-        // 41b9b255 pre-fix shape: _deps.spawn(...) later .kill()-ed directly, no killProcessGroup.
+        // 41b9b255 pre-fix shape: the _deps spawn wrapper later .kill()-ed directly, no killProcessGroup.
         {
-          code: `function spawnWithClosedStdin() { const child = _deps.spawn(cmd, args, { cwd, env }); function killJudgeSubtree(signal) { child.kill(signal); } killJudgeSubtree('SIGTERM'); }`,
+          code: `function spawnWithClosedStdin() { const child = _deps.spawn(cmd, args, { cwd, env, timeout: 5000 }); function killJudgeSubtree(signal) { child.kill(signal); } killJudgeSubtree('SIGTERM'); }`,
           errors: [{ messageId: 'requireGroupKill' }],
         },
       ],
