@@ -138,6 +138,71 @@ function cleanup(dir) {
     fs.rmSync(dir, { recursive: true, force: true });
 }
 
+// Resolves a REAL binary's absolute path without depending on any inherited
+// PATH or shell alias (spawnSync bypasses shell functions/aliases already,
+// but `which`/`command -v` still need a shell and a PATH to search — this
+// avoids both by checking known install locations directly).
+function resolveRealBinary(name) {
+    const candidates = [`/usr/bin/${name}`, `/bin/${name}`, `/usr/local/bin/${name}`, `/opt/homebrew/bin/${name}`];
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    throw new Error(`scope-resolver-import-walks test: cannot resolve real ${name} binary for ENOENT fixture`);
+}
+
+// Builds a PATH-only directory containing symlinks to REAL binaries for only
+// the named tools, then invokes fn(shimDir). Any tool NOT named is genuinely
+// absent (ENOENT) when this directory is used as an exclusive PATH override
+// (`env: { ...process.env, PATH: shimDir }` — full override, not a prepend),
+// regardless of what is actually installed on the host. This is required
+// because `rg` is genuinely present on some dev hosts, so a prepend-style
+// PATH (used by the .mjs/.cjs parity test above) cannot guarantee ENOENT.
+function withRealBinariesOnPath(names, fn) {
+    const shimDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'scope-real-bin-')));
+    try {
+        for (const name of names) {
+            fs.symlinkSync(resolveRealBinary(name), path.join(shimDir, name));
+        }
+        return fn(shimDir);
+    } finally {
+        fs.rmSync(shimDir, { recursive: true, force: true });
+    }
+}
+
+// A real (not shimmed) git repo fixture, staged (not committed — `git grep`
+// reads tracked/staged content) with a seed export file and one importer.
+function makeGitRepo() {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'scope-import-walk-git-')));
+    const git = resolveRealBinary('git');
+    const run = (args) => {
+        const result = spawnSync(git, args, { cwd: repo, encoding: 'utf-8', timeout: 15_000 });
+        assert.equal(result.status, 0, `git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+    };
+    fs.writeFileSync(path.join(repo, 'a.ts'), 'export function foo() {}\n');
+    fs.writeFileSync(path.join(repo, 'b.ts'), "import { foo } from './a';\n");
+    run(['init', '-q']);
+    run(['add', '-A']);
+    return repo;
+}
+
+function runComputeOneHopWithPathOverride(repo, shimDir) {
+    const script = `
+import { computeOneHop } from './services/scope-resolver.js';
+const warnings = [];
+console.warn = (message) => warnings.push(String(message));
+const result = computeOneHop(['a.ts'], ${JSON.stringify(repo)}, { findImportersTimeoutMs: ${HANG_TIMEOUT_MS} });
+process.stdout.write(JSON.stringify({ result, warnings }));
+`;
+    const out = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+        cwd: path.resolve(import.meta.dirname, '..'),
+        encoding: 'utf-8',
+        env: { ...process.env, PATH: shimDir },
+        timeout: RUNNER_SPAWN_TIMEOUT_MS,
+    });
+    assert.equal(out.status, 0, out.stderr || out.stdout);
+    return JSON.parse(out.stdout);
+}
+
 test('computeOneHop import walks', async (t) => {
     await t.test('rg fails and grep recovers', () => {
         const output = runInRepo({ rg: FAIL_SCRIPT(2), grep: SUCCESS_SCRIPT });
@@ -230,6 +295,44 @@ process.stdout.write(JSON.stringify({ result }));
             } finally {
                 fs.rmSync(shimDir, { recursive: true, force: true });
             }
+        } finally {
+            cleanup(repo);
+        }
+    });
+
+    await t.test('rg ENOENT (true missing binary) degrades to git grep, not just grep -rl', () => {
+        // Real git repo + real git/grep binaries via symlink, PATH fully
+        // overridden so `rg` is genuinely absent — no shim script, no
+        // inherited real PATH. Proves the ENOENT branch reaches git grep
+        // (which honors .gitignore) rather than jumping straight to the
+        // gitignore-blind grep -rl last resort.
+        const repo = makeGitRepo();
+        try {
+            const output = withRealBinariesOnPath(['git', 'grep'], (shimDir) =>
+                runComputeOneHopWithPathOverride(repo, shimDir));
+            assert.deepStrictEqual(output.result, ['a.ts', 'b.ts']);
+            assert.equal(hasWarning(output.warnings, 'rg', 'missing'), true);
+            // grep -rl (the last resort) must NOT have been invoked — git
+            // grep already satisfied the walk, so no "grep fail"/"grep
+            // timeout" warning should appear.
+            assert.equal(hasFailureWarning(output.warnings, 'grep'), false);
+        } finally {
+            cleanup(repo);
+        }
+    });
+
+    await t.test('rg, git, and grep all ENOENT returns the empty-but-successful shape without throwing', () => {
+        // No binaries at all on the exclusive PATH — every tier is genuinely
+        // absent. AC-6: this must never throw, never propagate a non-zero
+        // exit, and must return the SAME shape as an authoritative
+        // no-importers-found result (['a.ts'] — the seed file only), not
+        // null or a crash.
+        const repo = makeRepo();
+        try {
+            const output = withRealBinariesOnPath([], (shimDir) =>
+                runComputeOneHopWithPathOverride(repo, shimDir));
+            assert.deepStrictEqual(output.result, ['a.ts']);
+            assert.equal(hasWarning(output.warnings, 'rg', 'missing'), true);
         } finally {
             cleanup(repo);
         }

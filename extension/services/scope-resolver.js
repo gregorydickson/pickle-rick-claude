@@ -719,9 +719,13 @@ function findImporters(name, repoRoot, timeoutMs) {
     return _runGrepImportWalk(pattern, repoRoot, timeoutMs);
 }
 function _runRgImportWalk(pattern, root, timeoutMs) {
-    // `timeout` guards against a wedged rg/grep (FIFO under repoRoot, stuck
-    // FUSE mount, catastrophic backtracking) that would otherwise block the
-    // entire scope-resolution phase indefinitely with no log output.
+    // `timeout` guards against a wedged rg/git-grep/grep (FIFO under repoRoot,
+    // stuck FUSE mount, catastrophic backtracking) that would otherwise block
+    // the entire scope-resolution phase indefinitely with no log output. Every
+    // tier in this rg -> git grep -> grep degrade chain threads the SAME
+    // timeoutMs for that reason — a runner image missing rg (a runner-image
+    // property, not a Node-version property; ripgrep is not guaranteed on
+    // GitHub-hosted `ubuntu-latest`) must degrade, not hang or crash.
     const rg = spawnSync('rg', ['-l', '--glob', '*.{ts,tsx,js,jsx,mjs,cjs}', '-e', pattern, '.'], {
         cwd: root,
         encoding: 'utf-8',
@@ -736,8 +740,43 @@ function _runRgImportWalk(pattern, root, timeoutMs) {
             .filter((f) => f.length > 0)
             .map((f) => toPosix(f.replace(/^\.\//, '')));
     }
+    // rg.error is checked (via errorCode below) BEFORE rg.status/rg.stdout are
+    // consumed any further — a missing rg binary (ENOENT) is a runner-image gap,
+    // not a scope-resolution failure, so it degrades through git grep (which
+    // still honors .gitignore) before falling to the gitignore-blind grep -rl
+    // last resort. This is report-only (AC-6): never throw, never a non-zero
+    // exit, never an exit_reason — the worst case still returns the same
+    // empty-but-successful shape used for "no matches" (see HS-8 above).
     const errorCode = rg.error?.code;
+    if (errorCode === 'ENOENT') {
+        console.warn('scope-resolver import walk: rg missing (ENOENT) — degrading to git grep, then grep');
+        const gitGrepMatches = _runGitGrepImportWalk(pattern, root, timeoutMs);
+        if (gitGrepMatches !== null)
+            return gitGrepMatches;
+        return _runGrepImportWalk(pattern, root, timeoutMs);
+    }
     console.warn(`scope-resolver import walk: rg ${errorCode === 'ETIMEDOUT' ? 'timeout' : 'fail'} status=${rg.status ?? 'null'} signal=${rg.signal ?? 'null'} error=${errorCode ?? 'none'}`);
+    return null;
+}
+function _runGitGrepImportWalk(pattern, root, timeoutMs) {
+    // Extension pathspec set MUST match the rg `--glob` set in _runRgImportWalk
+    // and the grep `--include` set in _runGrepImportWalk (ts,tsx,js,jsx,mjs,cjs)
+    // — divergence under/over-includes importers relative to the other tiers.
+    // `git grep` already honors .gitignore (unlike the grep -rl last resort),
+    // so it is the preferred degrade tier when rg itself is absent. `-P`
+    // (PCRE), not `-E` (POSIX ERE): the caller-built pattern relies on `\s`/
+    // `\b`, which rg -e and GNU-compatible `grep -E` both support but POSIX
+    // ERE does not — `git grep -E` silently fails to match (measured: exit 1,
+    // zero results) against the exact same pattern `-P`/`grep -E` match.
+    const gitGrep = spawnSync('git', ['grep', '-l', '-P', pattern, '--', '*.ts', '*.tsx', '*.js', '*.jsx', '*.mjs', '*.cjs'], { cwd: root, encoding: 'utf-8', timeout: timeoutMs, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
+    if (!gitGrep.error && (gitGrep.status === 0 || gitGrep.status === 1)) {
+        return (gitGrep.stdout || '')
+            .split('\n')
+            .filter((f) => f.length > 0)
+            .map((f) => toPosix(f.replace(/^\.\//, '')));
+    }
+    const errorCode = gitGrep.error?.code;
+    console.warn(`scope-resolver import walk: git grep ${errorCode === 'ETIMEDOUT' ? 'timeout' : 'fail'} status=${gitGrep.status ?? 'null'} signal=${gitGrep.signal ?? 'null'} error=${errorCode ?? 'none'}`);
     return null;
 }
 function _runGrepImportWalk(pattern, root, timeoutMs) {
