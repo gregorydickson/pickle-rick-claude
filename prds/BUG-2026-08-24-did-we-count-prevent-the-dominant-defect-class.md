@@ -76,10 +76,20 @@ contains a protected filename; the bun probe stripping `PATH` entries whose *pat
 - **AC-2 (no new halt path).** The check is an **audit script in the existing release-gate list** and/or
   an eslint rule. It may refuse a LOCAL action (fail the gate for this commit); it MUST NOT introduce a
   new `exit_reason` or break any phase loop (PRIME DIRECTIVE).
-- **AC-3 (reuse, do not invent).** Extend the existing trap-door mechanism
-  (`scripts/audit-trap-door-enforcement.sh`, the `INVARIANT`/`PATTERN_SHAPE`/`BREAKS`/`ENFORCE` labels)
-  rather than adding a parallel system. Note `ab8fe436` proved that sweep was parsing `ENFORCE` and
-  discarding it — **verify the mechanism you are extending actually works before extending it.**
+- **AC-3 (reuse, do not invent — measured hosts already exist).** Do NOT add a parallel system. Three
+  hosts are present and verified at HEAD:
+  - **`extension/eslint-plugin-pickle/`** — a bespoke ESLint plugin, wired via `extension/eslint.config.js`
+    and documented in `extension/ESLINT_RULES.md`. This is the natural home for the AST-detectable
+    sub-patterns (uncapped capture, `spawnSync`/`execFile` result read without a status/`error` check,
+    `detached` passed to `execFile`).
+  - **`extension/scripts/audit-*.sh`** — 16 scripts, 9 already wired into the release gate. The natural
+    home for repo-shaped checks that ESLint cannot see.
+  - **the trap-door convention** (`INVARIANT`/`PATTERN_SHAPE`/`BREAKS`/`ENFORCE`,
+    `scripts/audit-trap-door-enforcement.sh`, 19 `ENFORCE` references) for what is not mechanical at all.
+
+  **Verify the mechanism you extend actually works before extending it** — `ab8fe436` proved that very
+  sweep was parsing the `ENFORCE` anchor and throwing it away, i.e. the trap-door enforcement was itself
+  an instance of this defect class.
 - **AC-4 (false-positive budget, binding).** Run the check over the whole tree and report the raw hit
   count. **A check that fires on more than it can justify will be disabled by the next engineer**, which
   is worse than no check. If the count is large, narrow to the corpus rather than shipping noise.
