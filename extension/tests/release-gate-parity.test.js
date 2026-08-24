@@ -7,9 +7,8 @@ import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const EXTENSION_ROOT = path.resolve(__dirname, '..');
 const CLAUDE_PATH = path.join(REPO_ROOT, 'CLAUDE.md');
-const PACKAGE_JSON_PATH = path.join(EXTENSION_ROOT, 'package.json');
+const PACKAGE_JSON_PATH = path.resolve(__dirname, '..', 'package.json');
 const CI_WORKFLOW = path.join(REPO_ROOT, '.github', 'workflows', 'ci.yml');
 const RELEASE_WORKFLOW = path.join(REPO_ROOT, '.github', 'workflows', 'release.yml');
 // Same capture semantics as engines-node-pin.test.js:13 -- strips the optional
