@@ -177,12 +177,21 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 >    trees; see that PRD's header) ·
 >    ~~`BUG-2026-08-16-gate-parser-fabricates-a-test-name.md`~~ ✅ **ALREADY SHIPPED** (`de6a5139`)
 >
->    **▶ Live head is now `BUG-2026-08-21-release-gate-pinned-to-node-22.md` (P1)** — filed after this
->    SEQUENCE text was written, so it was never listed here. Bug bundles precede feature epics, so it
->    precedes item 3 (codegraph). Its own central question is deliberately OPEN: `ci.yml` pins `'24'`
->    while its comment claims *"CLAUDE.md = Node 25"*, and neither CLAUDE.md documents any Node
->    version. **Its authored baseline (`fast tier green: fail 0` at `770dfe8a`) will NOT reproduce** —
->    see the amended bun P3 for the measured ~9-test blast radius.
+>    ~~`BUG-2026-08-21-release-gate-pinned-to-node-22.md`~~ ✅ **SHIPPED v2.1.0-beta.14** — but it did
+>    NOT meet its own AC-2; see the beta.14 SHIP STATE correction.
+>
+>    **▶ Live head is now `BUG-2026-08-24-release-workflow-still-red-monitor-suite-on-linux.md` (P1).**
+>    `release.yml` has now failed **13 consecutive times**. beta.14 moved the frontier measurably
+>    (corepack provisioning succeeds; all three previously-named Linux failures gone) but the run now
+>    dies on **`monitor.test.js`** + `R-MWBG` deploy-parity. It **recomposes**
+>    `BUG-2026-08-24-darwin-node22-monitor-cancellations.md` into itself — same bug; the separation
+>    rested on a premise ("monitor.test.js does not fail on Linux") that came from runs which died
+>    before reaching those tests. Bug bundles precede feature epics, so this still precedes item 3
+>    (codegraph).
+>
+>    **Constraint for whoever builds it:** the failures are Linux-only and this host is darwin, so the
+>    verification loop is CI itself — a green local tier proves nothing here. Budget for tag-push
+>    round-trips, and do not accept a local pass as evidence for AC-1.
 >
 > **⚠️ `BUG-2026-08-16-tier-hangs-at-mux-runner-suite.md` (R-TIERWEDGE) is P0 but NOT DRAINABLE — treat
 > as repro-gated / watch-only.** Its own text reads *"Class: intermittent hang, reproducible boundary,
