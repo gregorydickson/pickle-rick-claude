@@ -1169,3 +1169,95 @@ test('AP-EXT-ITER6-01 (replay): execute-converged-plan phase commits exclude .co
   rmSync(repo, { recursive: true, force: true });
   rmSync(sessionDir, { recursive: true, force: true });
 });
+
+// --- AP-EXT-ITER55-02: the plan-phase verify's capture buffer IS the verdict ---------------
+//
+// `executeConvergedPlanAdapter` runs each approved Phase's `**Verify:**` through a
+// capture-mode shell spawn and reads `ok` off `r.status === 0` and NOTHING else. That
+// command is arbitrary operator plan text — routinely a whole test suite — so its stdout is
+// unbounded. Past Node's 1MB DEFAULT `maxBuffer` the child is SIGTERMed and reported as
+// `status === null` / `ENOBUFS`: neither `0` nor `ETIMEDOUT`, so a PASSING phase reads
+// not-ok, `executePhaseLoop` stops there, and the R-ORSR-3 partial-failure contract leaves
+// phase k's work uncommitted while the rung reports failure over green work.
+//
+// Assert the RUNG'S DISPOSITION and the landed commit, never the captured text.
+
+/**
+ * An emitter that streams `bytes` to stdout and exits on its own.
+ *
+ * `.mjs` because the tmpdir has no package.json — a `.js` emitter would be parsed as
+ * CommonJS and die on the ESM import, reddening this case on a syntax error instead of on
+ * buffer size. `writeSync(1, ...)` is BLOCKING and the process ends naturally: stdout is a
+ * pipe, so `process.stdout.write(big); process.exit(0)` delivers only 65536 bytes, never
+ * overflows the cap, and the case would then pass AGAINST the defect (the AP-EXT-ITER55-01
+ * flush trap — that fixture documents the same trap, and both were mutation-verified).
+ */
+function writeBigVerifyEmitter(dir, bytes) {
+  const emitterPath = path.join(dir, 'emit-verify-output.mjs');
+  writeFileSync(emitterPath, [
+    "import fs from 'node:fs';",
+    "const chunk = 'verify: a realistically long passing line from an operator plan phase\\n';",
+    "let out = '';",
+    `while (out.length < ${bytes}) out += chunk;`,
+    'fs.writeSync(1, out);',
+    '',
+  ].join('\n'));
+  return emitterPath;
+}
+
+function writeSinglePhasePlan(ticketDir, verifyCommand) {
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-08-23.md'),
+    `# plan\n\n## Phase 1 — verbose but passing\n\n**Verify:** \`${verifyCommand}\`\n`,
+  );
+}
+
+test('AP-EXT-ITER55-02: a plan-phase verify streaming past the 1MB default is still OK and commits', () => {
+  const { repo, baseSha } = makeRepo('ap-iter55b-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter55b-session-');
+  const ticketId = 'c7d8e9fa';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+
+  // 1.5MB — over Node's 1MB default, well under the shared 64MB UNBOUNDED_READ_MAX_BUFFER.
+  const emitterPath = writeBigVerifyEmitter(sessionDir, 1_500_000);
+  writeSinglePhasePlan(ticketDir, `node ${JSON.stringify(emitterPath)}`);
+  writeFileSync(path.join(repo, 'src.ts'), 'export const y = 2;\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  // The whole defect in one pair: a verify that EXITS 0 must be ok, and the phase's work
+  // must land. Pre-fix the capture returned status=null/ENOBUFS, `executePhase` returned
+  // not-ok, the loop stopped at phase 1, and this commit never happened.
+  assert.equal(out.ok, true, 'a verify command that exits 0 must not be read as a failed phase');
+  assert.notEqual(git(repo, ['rev-parse', 'HEAD']), baseSha, 'the phase commit must have landed');
+  assert.match(git(repo, ['log', '-1', '--format=%s']), /execute-converged-plan phase 1/);
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER55-02 control: a verbose verify that genuinely FAILS is still not-ok and commits nothing', () => {
+  const { repo, baseSha } = makeRepo('ap-iter55b-fail-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter55b-fail-session-');
+  const ticketId = 'c7d8e9fb';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+
+  // Same byte volume, non-zero exit. Without this control the cap could over-trigger — turn
+  // a real phase failure green — and nothing would notice.
+  const emitterPath = writeBigVerifyEmitter(sessionDir, 1_500_000);
+  writeFileSync(emitterPath, `${readFileSync(emitterPath, 'utf-8')}process.exitCode = 1;\n`);
+  writeSinglePhasePlan(ticketDir, `node ${JSON.stringify(emitterPath)}`);
+  writeFileSync(path.join(repo, 'src.ts'), 'export const y = 3;\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  assert.equal(out.ok, false, 'a verify command that exits non-zero is a real phase failure');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']), baseSha, 'a failed phase commits nothing');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});

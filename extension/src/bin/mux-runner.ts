@@ -6785,11 +6785,21 @@ export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): {
     phases,
     executePhase: (phase) => {
       if (!phase.verify) return { ok: false };
+      // AP-EXT-ITER55-02, replay of the sibling gate above: `phase.verify` is an ARBITRARY
+      // operator-authored command (routinely a whole test suite), captured with `encoding`
+      // so these bytes ARE the verdict — `ok` is `r.status === 0` and nothing else. Past
+      // `spawnSync`'s 1MB DEFAULT Node SIGTERMs the child and reports `status === null`
+      // with `error.code === 'ENOBUFS'`, so a PASSING phase reads not-ok, `executePhaseLoop`
+      // stops there, phases 0..k-1 stay committed with phase k's work uncommitted, and the
+      // converged-plan recovery rung reports partial failure over green work.
+      // Reproduced live at this exact call shape: 1.5MB on stdout + `exit 0` returns
+      // status=null/SIGTERM/ENOBUFS uncapped, and status=0 with the cap.
       const r = spawnSync(phase.verify, {
         cwd: input.workingDir,
         shell: true,
         encoding: 'utf-8',
         timeout: CONVERGED_PLAN_VERIFY_TIMEOUT_MS,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
       });
       return { ok: r.status === 0 };
     },

@@ -274,8 +274,9 @@ export function hasMcpServersRecord(mcpServers) {
  */
 const mcpConfigVerdictCache = new Map();
 function computeMcpConfigVerdict(filePath) {
-    if (!existsSilently(filePath))
+    if (!existsSilently(filePath)) {
         return 'missing';
+    }
     let root;
     try {
         root = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -288,14 +289,16 @@ function computeMcpConfigVerdict(filePath) {
     const mcpServers = root && typeof root === 'object'
         ? root.mcpServers
         : undefined;
-    if (mcpServers === undefined)
+    if (mcpServers === undefined) {
         return 'no_mcpServers_key';
+    }
     return hasMcpServersRecord(mcpServers) ? 'valid' : 'mcpServers_not_a_record';
 }
 function classifyMcpConfigFile(filePath) {
     const cached = mcpConfigVerdictCache.get(filePath);
-    if (cached !== undefined)
+    if (cached !== undefined) {
         return cached;
+    }
     const verdict = computeMcpConfigVerdict(filePath);
     mcpConfigVerdictCache.set(filePath, verdict);
     return verdict;
@@ -321,8 +324,9 @@ const MCP_VERDICT_LABEL = {
  * stdout carries orchestrator protocol.
  */
 function warnMcpLayerDegraded(rejection, winningLayer) {
-    if (_mcpDegradationWarned)
+    if (_mcpDegradationWarned) {
         return;
+    }
     _mcpDegradationWarned = true;
     const prominence = rejection.layer === 'settings_override' ? 'WARNING' : 'note';
     const consequence = winningLayer === rejection.layer
@@ -368,16 +372,18 @@ function resolveMcpConfigWithLayer(settingsBag, homeDir) {
         if (typeof override === 'string' && override.trim()) {
             const overridePath = override.trim();
             const verdict = classifyMcpConfigFile(overridePath);
-            if (verdict !== 'valid')
+            if (verdict !== 'valid') {
                 rejection = { layer: 'settings_override', filePath: overridePath, verdict };
+            }
             if (verdict === 'missing' || verdict === 'valid') {
                 return { path: overridePath, layer: 'settings_override' };
             }
         }
         const claudeJson = path.join(homeDir ?? os.homedir(), '.claude.json');
         const verdict = classifyMcpConfigFile(claudeJson);
-        if (verdict === 'valid')
+        if (verdict === 'valid') {
             return { path: claudeJson, layer: 'claude_json_fallback' };
+        }
         // An ABSENT `~/.claude.json` is the ordinary no-config default, not a rejection:
         // nothing was chosen and nothing was refused, so it stays silent.
         if (verdict !== 'missing' && !rejection) {
@@ -386,8 +392,9 @@ function resolveMcpConfigWithLayer(settingsBag, homeDir) {
         return { path: null, layer: 'omitted' };
     };
     const resolved = decide();
-    if (rejection)
+    if (rejection) {
         warnMcpLayerDegraded(rejection, resolved.layer);
+    }
     return resolved;
 }
 export function resolveMcpConfigPath(settingsBag, homeDir) {
