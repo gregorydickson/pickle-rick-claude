@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
+import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
@@ -5451,10 +5451,17 @@ export const WORKER_GATE_TARGET_REPO_COMPUTED_VIA = 'target_repo_gate';
  * A `not_run` gate neither blocks the Done flip nor halts the pipeline, so
  * without this the fact would be invisible — which is how a not-run green
  * survived unnoticed in the first place. It reuses the already-registered
- * `gate_skipped` event rather than inventing a name: `writeActivityEntry`
- * rejects unregistered events, `gate_skipped` already means "a gate did not run",
- * and it already carries heterogeneous payloads from `convergence-gate.ts` and
- * `pipeline-runner.ts`. Best-effort — telemetry never blocks a Done flip.
+ * `gate_skipped` event rather than inventing a name: `gate_skipped` already means
+ * "a gate did not run", and it already carries heterogeneous payloads from
+ * `convergence-gate.ts` and `pipeline-runner.ts`. Best-effort — telemetry never
+ * blocks a Done flip.
+ *
+ * The owning gate is named by the TOP-LEVEL `source`, never by a `gate_payload`
+ * field: `extractSkipFlagUse` (`metrics-utils.ts`) reads `obj.source` and DEFAULTS
+ * an absent one to `'pickle'`, so a nested spelling does not merely go unread — it
+ * silently re-files every use of this gate under a source that does not own it.
+ * `ActivityEvent` types the field, so the value cannot drift back to a string the
+ * union never declared.
  */
 export function emitWorkerGateNotRunResidual(
   statePath: string,
@@ -5465,12 +5472,12 @@ export function emitWorkerGateNotRunResidual(
     const ts = new Date();
     const activityDir = path.join(getDataRoot(), 'activity');
     fs.mkdirSync(activityDir, { recursive: true });
-    const event = {
-      event: 'gate_skipped' as const,
+    const event: ActivityEvent = {
+      event: 'gate_skipped',
       ts: ts.toISOString(),
+      source: 'worker_gate',
       ticket_id: ticketId,
       gate_payload: {
-        source: 'worker_gate',
         reason: detail.reason ?? WORKER_GATE_NOT_RUN_REASON,
         verdict: detail.verdict ?? 'not_run',
         computed_via: detail.computedVia,

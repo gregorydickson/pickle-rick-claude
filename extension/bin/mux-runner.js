@@ -4671,10 +4671,17 @@ export const WORKER_GATE_TARGET_REPO_COMPUTED_VIA = 'target_repo_gate';
  * A `not_run` gate neither blocks the Done flip nor halts the pipeline, so
  * without this the fact would be invisible — which is how a not-run green
  * survived unnoticed in the first place. It reuses the already-registered
- * `gate_skipped` event rather than inventing a name: `writeActivityEntry`
- * rejects unregistered events, `gate_skipped` already means "a gate did not run",
- * and it already carries heterogeneous payloads from `convergence-gate.ts` and
- * `pipeline-runner.ts`. Best-effort — telemetry never blocks a Done flip.
+ * `gate_skipped` event rather than inventing a name: `gate_skipped` already means
+ * "a gate did not run", and it already carries heterogeneous payloads from
+ * `convergence-gate.ts` and `pipeline-runner.ts`. Best-effort — telemetry never
+ * blocks a Done flip.
+ *
+ * The owning gate is named by the TOP-LEVEL `source`, never by a `gate_payload`
+ * field: `extractSkipFlagUse` (`metrics-utils.ts`) reads `obj.source` and DEFAULTS
+ * an absent one to `'pickle'`, so a nested spelling does not merely go unread — it
+ * silently re-files every use of this gate under a source that does not own it.
+ * `ActivityEvent` types the field, so the value cannot drift back to a string the
+ * union never declared.
  */
 export function emitWorkerGateNotRunResidual(statePath, ticketId, detail) {
     try {
@@ -4684,9 +4691,9 @@ export function emitWorkerGateNotRunResidual(statePath, ticketId, detail) {
         const event = {
             event: 'gate_skipped',
             ts: ts.toISOString(),
+            source: 'worker_gate',
             ticket_id: ticketId,
             gate_payload: {
-                source: 'worker_gate',
                 reason: detail.reason ?? WORKER_GATE_NOT_RUN_REASON,
                 verdict: detail.verdict ?? 'not_run',
                 computed_via: detail.computedVia,
