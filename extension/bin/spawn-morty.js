@@ -2654,19 +2654,151 @@ export function buildWorkerSpawnEnv(ctx, invocation) {
     delete env['CLAUDECODE'];
     return env;
 }
-export async function runWorkerProcess(ctx) {
-    const { args, ticketPath, ticketId, sessionRoot, sessionLog, sessionLogPath, sessionWorkingDir } = ctx;
-    // C7: resolve session-merged worker MCP config (expose_mcp_to_workers).
-    // The file is materialized by setup.ts:materializeWorkerMcpConfig at session
-    // init.  Only forwarded for the claude backend — other backends don't accept
-    // --mcp-config and buildWorkerInvocation routes them away from the clause
-    // that reads this field.
+/**
+ * Session-merged worker MCP config (C7, `expose_mcp_to_workers`). The file is
+ * materialized by setup.ts:materializeWorkerMcpConfig at session init. Only forwarded
+ * for the claude backend — other backends don't accept --mcp-config and
+ * buildWorkerInvocation routes them away from the clause that reads this field.
+ */
+function resolveSessionWorkerMcpConfig(args, sessionRoot) {
     const sessionMcpPath = path.join(sessionRoot, 'mcp', 'worker-mcp.json');
-    const resolvedMcpConfig = 
-    // eslint-disable-next-line pickle/no-sync-in-async
-    args.backend === 'claude' && fs.existsSync(sessionMcpPath)
+    return args.backend === 'claude' && fs.existsSync(sessionMcpPath)
         ? sessionMcpPath
         : undefined;
+}
+const WORKER_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+/** TTY progress spinner. Returns the interval handle so the lifecycle teardown can clear it. */
+function startWorkerSpinner(startTime) {
+    let idx = 0;
+    return setInterval(() => {
+        if (!process.stdout.isTTY)
+            return;
+        const spinChar = WORKER_SPINNER_FRAMES[idx % WORKER_SPINNER_FRAMES.length];
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        process.stdout.write(`\r   ${Style.CYAN}${spinChar}${Style.RESET} Worker Active... ${Style.DIM}[${formatTime(elapsed)}]${Style.RESET}\x1b[K`);
+        idx++;
+    }, 100);
+}
+/**
+ * Budget timer: SIGTERM the worker at `effectiveTimeoutMs`, escalating to SIGKILL 2 s later.
+ * The escalation handle is created INSIDE the budget callback, so `cancel()` is the only
+ * way to clear both — a caller holding just the budget handle would leak the escalation.
+ */
+function armWorkerTimeoutKill(ctx, proc) {
+    let killEscalation = null;
+    const timeoutHandle = setTimeout(() => {
+        ctx.mutableState.timedOut = true;
+        console.log(`\n${Style.RED}❌ Worker timed out after ${Math.floor(ctx.effectiveTimeoutMs / 1000)}s${Style.RESET}`);
+        // R-CSI / W2.R1: reap the whole session-scoped worker group (detached →
+        // `process.kill(-pid)`); fall back to the leader-only kill when the group is
+        // gone (win32 workers are never detached).
+        if (!killProcessTree(proc, 'SIGTERM')) {
+            try {
+                proc.kill('SIGTERM');
+            }
+            catch { /* already dead */ }
+        }
+        killEscalation = setTimeout(() => {
+            if (!killProcessTree(proc, 'SIGKILL')) {
+                try {
+                    proc.kill('SIGKILL');
+                }
+                catch { /* already dead */ }
+            }
+        }, 2000);
+    }, ctx.effectiveTimeoutMs);
+    return {
+        cancel: () => {
+            clearTimeout(timeoutHandle);
+            if (killEscalation)
+                clearTimeout(killEscalation);
+        },
+    };
+}
+/**
+ * Last-resort exit for a worker that outlives its budget plus the hang grace — the budget
+ * timer's SIGTERM/SIGKILL has already failed by then. `unref()`'d so it never holds the loop open.
+ */
+function armWorkerHangGuard(ctx) {
+    const { ticketId, sessionRoot, sessionLog, sessionLogPath } = ctx;
+    const hangGuard = setTimeout(async () => {
+        console.error(`${Style.RED}❌ Worker hang detected — forcing exit${Style.RESET}`);
+        bestEffortFdatasync(sessionLogPath);
+        try {
+            updateTicketStatus(ticketId, 'Failed', sessionRoot);
+        }
+        catch { /* best-effort */ }
+        await flushAndExit(sessionLog, 1);
+    }, ctx.effectiveTimeoutMs + HANG_GUARD_GRACE_MS);
+    hangGuard.unref();
+    return hangGuard;
+}
+/**
+ * Terminal spawn-failure path. Node emits BOTH 'error' and 'close' for an ENOENT spawn;
+ * this owns the exit semantics (127 for a missing native CLI binary, 1 otherwise) and never returns.
+ */
+async function handleWorkerSpawnError(params) {
+    const { ctx, err, invocation, crumb } = params;
+    const { args, ticketId, sessionRoot, sessionLog } = ctx;
+    const errorCode = err.code;
+    const isNativeCliEnoent = NATIVE_CLI_BINARY_MISSING_BACKENDS.includes(args.backend) && errorCode === 'ENOENT';
+    const exitCode = isNativeCliEnoent ? 127 : 1;
+    if (isNativeCliEnoent) {
+        sessionLog.write(JSON.stringify({
+            event: `${args.backend}_binary_missing`,
+            ts: new Date().toISOString(),
+            ticket: ticketId,
+            backend: args.backend,
+            command: invocation.cmd,
+        }) + '\n');
+    }
+    console.error(`${Style.RED}[pickle-rick] Failed to spawn '${invocation.cmd}' (backend=${args.backend}): ${safeErrorMessage(err)}${Style.RESET}`);
+    crumb('before updateTicketStatus');
+    try {
+        updateTicketStatus(ticketId, 'Failed', sessionRoot);
+    }
+    catch { /* best-effort */ }
+    crumb('after updateTicketStatus — before printMinimalPanel');
+    printMinimalPanel('Worker Report', { status: 'spawn-error', validation: 'failed' }, 'RED', '🥒');
+    crumb('before flushAndExit');
+    await flushAndExit(sessionLog, exitCode);
+    crumb('after flushAndExit — should never reach here');
+}
+/**
+ * Success/close path: drain the worker's log stream, then finalize the turn exactly once —
+ * whichever of the 'finish' event or the 5 s flush timeout wins.
+ */
+function drainWorkerLogThenFinalize(params) {
+    const { ctx, code, startTime, resolve } = params;
+    const { sessionLog, sessionLogPath } = ctx;
+    const flushTimeout = setTimeout(() => {
+        console.error(`${Style.YELLOW}⚠️  Log flush timed out — reading partial log${Style.RESET}`);
+        // Durability on the degraded path too: persist whatever reached disk
+        // before finalizing (the detached worker still owns the only log copy).
+        bestEffortFdatasync(sessionLogPath);
+        finalize(code);
+    }, 5000);
+    sessionLog.once('finish', () => {
+        clearTimeout(flushTimeout);
+        // R-WPEX: the detached, unref'd large-tier worker SOLELY owns this log
+        // (mux-runner spawns spawn-morty `detached:true` + `unref()` +
+        // stdio:'ignore'). `'finish'` only proves the writable buffer reached the
+        // OS page cache, not durable storage — so the process can exit before the
+        // log is persisted and the poll-reattach side reads a 0-byte/truncated
+        // log while artifacts are intact (B-APNC 2026-06-28 idle-system signature).
+        // Reuse the hangGuard's durability primitive so the success/close drain is
+        // fsync-safe like the hang path already is.
+        bestEffortFdatasync(sessionLogPath);
+        finalize(code);
+    });
+    sessionLog.end();
+    async function finalize(exitCode) {
+        await finalizeWorkerTurn({ ctx, exitCode, flushTimeout, startTime, resolve });
+    }
+}
+export async function runWorkerProcess(ctx) {
+    const { args, ticketPath, ticketId, sessionRoot, sessionLog, sessionWorkingDir } = ctx;
+    const resolvedMcpConfig = resolveSessionWorkerMcpConfig(args, sessionRoot);
     const invocation = buildWorkerInvocation(args.backend, {
         prompt: ctx.prompt,
         addDirs: [getExtensionRoot(), getDataRoot(), sessionWorkingDir, ticketPath],
@@ -2690,122 +2822,36 @@ export async function runWorkerProcess(ctx) {
     proc.stdout?.pipe(sessionLog, { end: false });
     proc.stderr?.pipe(sessionLog, { end: false });
     attachCompletionCommitAckListener(proc, ticketId, path.join(sessionRoot, 'state.json'));
-    const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let idx = 0;
     const startTime = Date.now();
-    const interval = setInterval(() => {
-        if (!process.stdout.isTTY)
-            return;
-        const spinChar = spinner[idx % spinner.length];
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        process.stdout.write(`\r   ${Style.CYAN}${spinChar}${Style.RESET} Worker Active... ${Style.DIM}[${formatTime(elapsed)}]${Style.RESET}\x1b[K`);
-        idx++;
-    }, 100);
-    let killEscalation = null;
-    const timeoutHandle = setTimeout(() => {
-        ctx.mutableState.timedOut = true;
-        console.log(`\n${Style.RED}❌ Worker timed out after ${Math.floor(ctx.effectiveTimeoutMs / 1000)}s${Style.RESET}`);
-        // R-CSI / W2.R1: reap the whole session-scoped worker group (detached →
-        // `process.kill(-pid)`); fall back to the leader-only kill when the group is
-        // gone (win32 workers are never detached).
-        if (!killProcessTree(proc, 'SIGTERM')) {
-            try {
-                proc.kill('SIGTERM');
-            }
-            catch { /* already dead */ }
-        }
-        killEscalation = setTimeout(() => {
-            if (!killProcessTree(proc, 'SIGKILL')) {
-                try {
-                    proc.kill('SIGKILL');
-                }
-                catch { /* already dead */ }
-            }
-        }, 2000);
-    }, ctx.effectiveTimeoutMs);
-    const hangGuard = setTimeout(async () => {
-        console.error(`${Style.RED}❌ Worker hang detected — forcing exit${Style.RESET}`);
-        bestEffortFdatasync(sessionLogPath);
-        try {
-            updateTicketStatus(ticketId, 'Failed', sessionRoot);
-        }
-        catch { /* best-effort */ }
-        await flushAndExit(sessionLog, 1);
-    }, ctx.effectiveTimeoutMs + HANG_GUARD_GRACE_MS);
-    hangGuard.unref();
+    const interval = startWorkerSpinner(startTime);
+    const budgetTimer = armWorkerTimeoutKill(ctx, proc);
+    const hangGuard = armWorkerHangGuard(ctx);
     return new Promise(resolve => {
         let spawnErrorHandled = false;
         const clearLifecycleTimers = () => {
             clearInterval(interval);
-            clearTimeout(timeoutHandle);
-            if (killEscalation)
-                clearTimeout(killEscalation);
+            budgetTimer.cancel();
             clearTimeout(hangGuard);
             if (process.stdout.isTTY)
                 process.stdout.write('\r\x1b[K');
         };
-        const _spawnCrumb = (label) => { if (process.env.PICKLE_DEBUG_SPAWN_MORTY === '1')
+        const crumb = (label) => { if (process.env.PICKLE_DEBUG_SPAWN_MORTY === '1')
             process.stderr.write(`[SMTEST-1:SPAWN] ${label}\n`); };
         proc.on('error', async (err) => {
-            _spawnCrumb(`proc.error fired — code=${err.code}`);
+            crumb(`proc.error fired — code=${err.code}`);
             spawnErrorHandled = true;
             clearLifecycleTimers();
-            const errorCode = err.code;
-            const isNativeCliEnoent = NATIVE_CLI_BINARY_MISSING_BACKENDS.includes(args.backend) && errorCode === 'ENOENT';
-            const exitCode = isNativeCliEnoent ? 127 : 1;
-            if (isNativeCliEnoent) {
-                sessionLog.write(JSON.stringify({
-                    event: `${args.backend}_binary_missing`,
-                    ts: new Date().toISOString(),
-                    ticket: ticketId,
-                    backend: args.backend,
-                    command: invocation.cmd,
-                }) + '\n');
-            }
-            console.error(`${Style.RED}[pickle-rick] Failed to spawn '${invocation.cmd}' (backend=${args.backend}): ${safeErrorMessage(err)}${Style.RESET}`);
-            _spawnCrumb('before updateTicketStatus');
-            try {
-                updateTicketStatus(ticketId, 'Failed', sessionRoot);
-            }
-            catch { /* best-effort */ }
-            _spawnCrumb('after updateTicketStatus — before printMinimalPanel');
-            printMinimalPanel('Worker Report', { status: 'spawn-error', validation: 'failed' }, 'RED', '🥒');
-            _spawnCrumb('before flushAndExit');
-            await flushAndExit(sessionLog, exitCode);
-            _spawnCrumb('after flushAndExit — should never reach here');
+            await handleWorkerSpawnError({ ctx, err, invocation, crumb });
         });
         proc.on('close', code => {
-            _spawnCrumb(`proc.close fired — code=${code} spawnErrorHandled=${spawnErrorHandled}`);
+            crumb(`proc.close fired — code=${code} spawnErrorHandled=${spawnErrorHandled}`);
             // When spawn fails with ENOENT, node emits both 'error' and 'close' events.
             // The 'error' handler owns the exit semantics (e.g. 127 for hermes missing);
             // skip the normal close flow so it cannot race ahead with `process.exit(1)`.
             if (spawnErrorHandled)
                 return;
             clearLifecycleTimers();
-            const flushTimeout = setTimeout(() => {
-                console.error(`${Style.YELLOW}⚠️  Log flush timed out — reading partial log${Style.RESET}`);
-                // Durability on the degraded path too: persist whatever reached disk
-                // before finalizing (the detached worker still owns the only log copy).
-                bestEffortFdatasync(sessionLogPath);
-                finalize(code);
-            }, 5000);
-            sessionLog.once('finish', () => {
-                clearTimeout(flushTimeout);
-                // R-WPEX: the detached, unref'd large-tier worker SOLELY owns this log
-                // (mux-runner spawns spawn-morty `detached:true` + `unref()` +
-                // stdio:'ignore'). `'finish'` only proves the writable buffer reached the
-                // OS page cache, not durable storage — so the process can exit before the
-                // log is persisted and the poll-reattach side reads a 0-byte/truncated
-                // log while artifacts are intact (B-APNC 2026-06-28 idle-system signature).
-                // Reuse the hangGuard's durability primitive so the success/close drain is
-                // fsync-safe like the hang path already is.
-                bestEffortFdatasync(sessionLogPath);
-                finalize(code);
-            });
-            sessionLog.end();
-            async function finalize(exitCode) {
-                await finalizeWorkerTurn({ ctx, exitCode, flushTimeout, startTime, resolve });
-            }
+            drainWorkerLogThenFinalize({ ctx, code, startTime, resolve });
         });
     });
 }
