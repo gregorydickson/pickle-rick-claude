@@ -663,15 +663,29 @@ function parseFirstShellWord(command: string): string | null {
 const PROHIBITED_GIT_VERBS_SIMPLE = new Set(['reset', 'switch', 'stash', 'rebase', 'pull', 'push']);
 
 /**
- * Git global options that consume the FOLLOWING token as their value when given
- * in space-separated form (`git -C <path> reset`). The verb scan must skip both
- * the option AND its value, otherwise the value token (`<path>`) is mistaken for
- * the verb and a prohibited operation slips the guard. The `=`-glued form
- * (`--git-dir=<path>`) is self-contained — it is already skipped as a flag.
- * Mirrors the option-arg handling in tsc-gate.ts:segmentIsGitCommit.
+ * The verbs `detectProhibitedGitVerb` reacts to at all. `findGitVerb` returns the
+ * FIRST bare word matching one of these, wherever it sits in the argument list —
+ * which is what lets the verb be read WITHOUT knowing which git global options
+ * consume a following operand.
+ *
+ * That enumeration (`ARG_CONSUMING_GIT_GLOBAL_OPTIONS`: `-C`, `-c`, `--git-dir`,
+ * `--work-tree`, `--namespace`, `--super-prefix`, `--exec-path`) was the bug, not
+ * the fix: it omitted `--config-env`, whose separate-operand form git really does
+ * accept, so `git --config-env core.bare=MYVAL reset --hard` read `core.bare=MYVAL`
+ * as the verb and APPROVED a destructive reset for a worker (measured 2026-08-25:
+ * 12/12 forms bypassed the shipped handler, all six prohibited verbs plus chained
+ * forms). Any table of "options that take an operand" is a set git can extend and
+ * we cannot; missing a member fails OPEN. Matching on the verb instead inverts the
+ * failure direction — an unrecognised global option is stepped over harmlessly, and
+ * an option OPERAND that happens to spell a gated verb (`git -C reset status`) at
+ * worst BLOCKS, which is the safe direction.
+ *
+ * This set is closed by the Git Boundary Rules, not by git's option surface: it is
+ * exactly the verbs the checks below can return non-null for. Adding a git global
+ * option must never require touching it.
  */
-const ARG_CONSUMING_GIT_GLOBAL_OPTIONS = new Set([
-  '-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--exec-path',
+const GATED_GIT_VERBS = new Set([
+  ...PROHIBITED_GIT_VERBS_SIMPLE, 'checkout', 'commit', 'fetch',
 ]);
 
 /**
@@ -703,15 +717,25 @@ function findGitVerb(command: string): { verb: string; afterVerb: string[] } | n
   let idx = execTokenIndex(tokens);
   idx++; // skip 'git' itself
   const rest = tokens.slice(idx).filter(t => t.length > 0);
-  let verbIdx = -1;
+  // ONE uniform read: the verb is the first bare word that IS a gated verb.
+  // Deliberately no option table and no "stop at the first bare word" — both
+  // made the verb position depend on knowing git's operand-taking options, and
+  // a global option we had not enumerated silently shifted the read onto its
+  // operand (see GATED_GIT_VERBS). Scanning the whole argument list for the verb
+  // itself needs no such knowledge.
+  let firstBare = -1;
   for (let i = 0; i < rest.length; i++) {
-    // Skip a space-separated arg-consuming global option AND its value token
-    // (`-C <path>`), so the value is never mistaken for the verb.
-    if (ARG_CONSUMING_GIT_GLOBAL_OPTIONS.has(rest[i])) { i++; continue; }
-    if (!rest[i].startsWith('-')) { verbIdx = i; break; }
+    if (rest[i].startsWith('-')) continue;
+    if (firstBare === -1) firstBare = i;
+    if (GATED_GIT_VERBS.has(rest[i].toLowerCase())) {
+      return { verb: rest[i].toLowerCase(), afterVerb: rest.slice(i + 1) };
+    }
   }
-  if (verbIdx === -1) return null;
-  return { verb: rest[verbIdx].toLowerCase(), afterVerb: rest.slice(verbIdx + 1) };
+  // No gated verb anywhere: fall back to the first bare word so the returned verb
+  // still names the real subcommand for non-prohibited commands. Nothing in
+  // detectProhibitedGitVerb can fire on it, so this arm cannot under-block.
+  if (firstBare === -1) return null;
+  return { verb: rest[firstBare].toLowerCase(), afterVerb: rest.slice(firstBare + 1) };
 }
 
 export function detectProhibitedGitVerb(command: string): { verb: string } | null {

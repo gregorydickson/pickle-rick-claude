@@ -1075,3 +1075,33 @@ it('AP-EXT-ITER54-01 the payload is read FORWARD from the flag, not from the fir
     'no enumerated operand-taking-option table — that is the incomplete-set shape',
   );
 });
+
+it('AP-EXT-ITER55-01: isGitCommitCommand classifies commit without an operand-option table', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  // The former ARG_CONSUMING_GIT_GLOBAL_OPTIONS table omitted `--config-env`,
+  // whose separate-operand form git accepts, so `git --config-env core.bare=MYVAL
+  // commit -m x` read the OPERAND as the subcommand, classified non-commit, and
+  // SKIPPED the R-WACT tsc gate for a broken-TS commit (measured 2026-08-25
+  // against the shipped handler: `false` pre-fix). The classification now keys on
+  // the subcommand word, so no table of operand-taking options exists to be
+  // incomplete — including for options nobody has enumerated.
+  const positives = [
+    'git --config-env core.bare=MYVAL commit -m "x"',
+    'git --config-env core.bare=MYVAL --no-pager commit -m "x"',
+    'cd extension && git --config-env core.bare=MYVAL commit -m "x"',
+    'git --some-future-option some-operand commit -m "x"',
+  ];
+  for (const command of positives) {
+    assert.equal(isGitCommitCommand(command), true, command);
+  }
+  // Read-only subcommands still decide the segment, so an operand that merely
+  // sits behind an unknown option cannot flip a `log` into a commit.
+  const negatives = [
+    'git --config-env core.bare=MYVAL log --oneline',
+    'git --config-env core.bare=MYVAL status',
+    'git --some-future-option some-operand diff HEAD',
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, command);
+  }
+});

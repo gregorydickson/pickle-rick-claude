@@ -7,19 +7,6 @@ import { logActivity } from '../../services/activity-logger.js';
 import { getDataRoot, safeErrorMessage } from '../../services/pickle-utils.js';
 import { StateManager } from '../../services/state-manager.js';
 import { execName, execTokenIndex, splitShellSegments, tokenizeShellCommand } from '../shell-exec.js';
-/**
- * Git global options that consume the FOLLOWING token as their value in
- * space-separated form (`git -C <path> commit`). The commit-classification scan
- * must skip both the option AND its value, otherwise the value token is read as
- * the subcommand and a real `git commit` is mis-classified as non-commit — the
- * R-WACT tsc gate is then SKIPPED for that commit. Mirrors the 7-option coverage
- * of `config-protection.ts:ARG_CONSUMING_GIT_GLOBAL_OPTIONS` (findGitVerb) so the
- * two sibling git-command detectors stay in parity. The `=`-glued forms
- * (`--git-dir=<path>`) are self-contained and skipped as single flag tokens.
- */
-const ARG_CONSUMING_GIT_GLOBAL_OPTIONS = new Set([
-    '-c', '-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--exec-path',
-]);
 const TSC_TRIGGER_RE = /\.(?:[cm]?ts|tsx)$/i;
 const TSC_CONFIG_RE = /^tsconfig(?:\..+)?\.json$/i;
 const PACKAGE_JSON_RE = /^package.*\.json$/i;
@@ -101,30 +88,28 @@ function segmentIsGitCommit(segment) {
         return false;
     if (execToken !== 'git')
         return false;
-    let index = gitIdx + 1;
-    while (index < tokens.length) {
+    // ONE uniform read, in parity with config-protection.ts:findGitVerb: skip every
+    // `-`-prefixed token (boolean global option, `=`-glued arg-option) and classify
+    // on the first bare word that is DECISIVE — `commit`, or a read-only subcommand.
+    //
+    // Deliberately no arg-consuming-option table. The former
+    // `ARG_CONSUMING_GIT_GLOBAL_OPTIONS` skip-with-value omitted `--config-env`,
+    // whose separate-operand form git accepts, so `git --config-env core.bare=MYVAL
+    // commit -m x` read the operand as the subcommand, classified NON-COMMIT, and
+    // SKIPPED the R-WACT tsc gate for a broken-TS commit (measured 2026-08-25 against
+    // the shipped handler). Any such table fails OPEN on the option it lacks; keying
+    // on the subcommand word instead means an unrecognised global option is stepped
+    // over, and an option OPERAND spelling `commit` at worst RUNS the gate — safe.
+    for (let index = gitIdx + 1; index < tokens.length; index++) {
         const token = tokens[index];
-        // Skip a space-separated arg-consuming global option AND its value token
-        // (`-C <path>`), so the value is never mistaken for the subcommand.
-        if (ARG_CONSUMING_GIT_GLOBAL_OPTIONS.has(token)) {
-            index += 2;
+        if (token.startsWith('-'))
             continue;
-        }
-        // Skip ANY other leading flag before the subcommand: a non-arg-consuming
-        // boolean global option (`--no-pager`, `-p`, `--paginate`,
-        // `--no-optional-locks`, `--bare`, …) OR an `=`-glued arg-option
-        // (`--git-dir=…`, `-cuser.name=x`). Mirrors findGitVerb, which skips every
-        // `-`-prefixed token before reading the verb; without this, a boolean flag
-        // falls through to the `=== 'commit'` read, is mistaken for the subcommand,
-        // mis-classifies `git --no-pager commit` as non-commit, and SKIPS the
-        // R-WACT tsc gate for a broken-TS commit.
-        if (token.startsWith('-')) {
-            index += 1;
-            continue;
-        }
+        if (token === 'commit')
+            return true;
+        // A read-only subcommand decides the segment: without this, `git log <ref>`
+        // would scan past `log` and could match a ref literally named `commit`.
         if (NEGATIVE_GIT_SUBCOMMANDS.has(token))
             return false;
-        return token === 'commit';
     }
     return false;
 }

@@ -1635,3 +1635,106 @@ for (const { label, command } of [
     assert.equal(result.decision, 'approve');
   });
 }
+
+// AP-EXT-ITER55-01: reading the verb PAST an enumerated table of git global
+// options that take an operand fails OPEN on any option the table lacks.
+// `--config-env` was absent, and git really does accept its separate-operand
+// form (verified on git 2.39.5: `MYVAL=false git --config-env core.bare=MYVAL
+// reset --hard` resets the working tree). Pre-fix, findGitVerb read the operand
+// `core.bare=MYVAL` as the verb and APPROVED all six prohibited verbs, chained
+// forms included — measured 12/12 bypass against the shipped compiled handler.
+// The fix reads the verb by MATCHING it (GATED_GIT_VERBS), which needs no
+// knowledge of git's operand-taking options at all.
+for (const [verb, command] of [
+  ['reset', 'git --config-env core.bare=MYVAL reset --hard'],
+  ['push', 'git --config-env core.bare=MYVAL push origin main'],
+  ['rebase', 'git --config-env core.bare=MYVAL rebase -i main'],
+  ['stash', 'git --config-env core.bare=MYVAL stash push'],
+  ['pull', 'git --config-env core.bare=MYVAL pull'],
+  ['switch', 'git --config-env core.bare=MYVAL switch main'],
+  ['checkout', 'git --config-env core.bare=MYVAL checkout main'],
+  ['commit --amend', 'git --config-env core.bare=MYVAL commit --amend'],
+  ['fetch --prune', 'git --config-env core.bare=MYVAL fetch --prune'],
+]) {
+  test(`AP-EXT-ITER55-01: worker blocks \`${command}\``, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.ok(
+      result.reason.includes(verb),
+      `expected block reason to name \`${verb}\`, got: ${result.reason}`,
+    );
+  });
+}
+
+test('AP-EXT-ITER55-01 chained: worker blocks `cd extension && git --config-env x=V reset --hard`', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'cd extension && git --config-env core.bare=MYVAL reset --hard' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /reset/);
+});
+
+test('AP-EXT-ITER55-01 chained after benign: worker blocks `git status && git --config-env x=V reset --hard`', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'git status && git --config-env core.bare=MYVAL reset --hard' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /reset/);
+});
+
+// The invariant is that the verb read never depends on knowing which options
+// take an operand — so an option NOBODY has enumerated must be caught too.
+// This is the case a table-shaped fix ("just add --config-env") would still miss.
+test('AP-EXT-ITER55-01: worker blocks a prohibited verb behind an UNKNOWN operand-taking option', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'git --some-future-option some-operand reset --hard' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /reset/);
+});
+
+// Guard the other direction: the allowed forms must still be allowed after the
+// scan widened from "first bare word" to "first gated verb".
+for (const command of [
+  'git status --short',
+  'git add -u',
+  "git commit -m 'wip'",
+  'git checkout -- src/foo.ts',
+  'git checkout .',
+  'git fetch',
+  'git log --oneline --all -- src/foo.ts',
+  'git -C extension status',
+  'git diff HEAD',
+  'git restore src/foo.ts',
+  'git show HEAD:src/foo.ts',
+]) {
+  test(`AP-EXT-ITER55-01 no over-block: worker approves \`${command}\``, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve');
+  });
+}
