@@ -75,24 +75,24 @@ function withTmpActivityRoot(fn) {
     try {
         return fn(root);
     } finally {
-        if (prevRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        if (prevRoot === undefined) { delete process.env.PICKLE_DATA_ROOT; }
         else process.env.PICKLE_DATA_ROOT = prevRoot;
-        if (prevDir !== undefined) process.env.PICKLE_DATA_DIR = prevDir;
+        if (prevDir !== undefined) { process.env.PICKLE_DATA_DIR = prevDir; }
         rmDir(root);
     }
 }
 
 function readEvents(activityRoot, eventName) {
     const dir = path.join(activityRoot, 'activity');
-    if (!fs.existsSync(dir)) return [];
+    if (!fs.existsSync(dir)) { return []; }
     const out = [];
     for (const file of fs.readdirSync(dir)) {
-        if (!file.endsWith('.jsonl')) continue;
+        if (!file.endsWith('.jsonl')) { continue; }
         for (const line of fs.readFileSync(path.join(dir, file), 'utf8').split('\n')) {
-            if (!line.trim()) continue;
+            if (!line.trim()) { continue; }
             let ev;
             try { ev = JSON.parse(line); } catch { continue; }
-            if (ev.event === eventName) out.push(ev);
+            if (ev.event === eventName) { out.push(ev); }
         }
     }
     return out;

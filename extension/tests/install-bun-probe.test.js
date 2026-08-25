@@ -22,13 +22,13 @@ function simulateBunAbsent(pathEnv) {
       env: { ...process.env, PATH: currentPath },
       timeout: 30_000,
     });
-    if (which.status !== 0 || !which.stdout.trim()) break;
+    if (which.status !== 0 || !which.stdout.trim()) { break; }
     const bunDir = path.dirname(which.stdout.trim());
     const next = currentPath
       .split(':')
       .filter(p => p !== bunDir)
       .join(':');
-    if (next === currentPath) break;
+    if (next === currentPath) { break; }
     currentPath = next;
   }
   return currentPath;

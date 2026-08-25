@@ -3136,7 +3136,7 @@ export function resolveSessionWorkerMcpConfig(
   sessionRoot: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  if (env['PICKLE_CODEGRAPH'] === 'off') return undefined;
+  if (env['PICKLE_CODEGRAPH'] === 'off') { return undefined; }
   const sessionMcpPath = path.join(sessionRoot, 'mcp', 'worker-mcp.json');
   return args.backend === 'claude' && fs.existsSync(sessionMcpPath)
     ? sessionMcpPath

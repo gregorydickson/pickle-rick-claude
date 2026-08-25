@@ -694,7 +694,7 @@ export function buildWorkerMcpConfig(
   // operator passthrough, nothing written, no throw. Not a degradation — the operator
   // asked for this — so it is deliberately silent rather than emitting a degrade event.
   const env = deps.env ?? process.env;
-  if (env['PICKLE_CODEGRAPH'] === 'off') return passthrough();
+  if (env['PICKLE_CODEGRAPH'] === 'off') { return passthrough(); }
 
   if (settings?.expose_mcp_to_workers !== true) return passthrough();
 

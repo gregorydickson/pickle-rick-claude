@@ -125,7 +125,7 @@ function mcpToolCall(entry, toolName, toolArgs) {
       while ((nl = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
-        if (!line) continue;
+        if (!line) { continue; }
         let msg;
         try { msg = JSON.parse(line); } catch { continue; }
         if (msg.id === 1 && stage === 0) {
@@ -155,7 +155,7 @@ function mcpToolCall(entry, toolName, toolArgs) {
 
 test('AC-3: a worker codegraph MCP tools/call returns a real result', { timeout: TEST_TIMEOUT_MS }, async (t) => {
   const { mod, skip } = loadCodeGraphOrSkipReason();
-  if (skip) return t.skip(skip);
+  if (skip) { return t.skip(skip); }
   const { CodeGraph } = mod;
 
   const workingDir = makeFixture('cg-ac3-indexed-');
@@ -209,13 +209,13 @@ test('AC-3: a worker codegraph MCP tools/call returns a real result', { timeout:
     );
   } finally {
     rmDir(workingDir);
-    if (sessionDir) rmDir(sessionDir);
+    if (sessionDir) { rmDir(sessionDir); }
   }
 });
 
 test('AC-3 control: the same call on an UNINDEXED working dir comes back isError', { timeout: TEST_TIMEOUT_MS }, async (t) => {
   const { skip } = loadCodeGraphOrSkipReason();
-  if (skip) return t.skip(skip);
+  if (skip) { return t.skip(skip); }
 
   // Non-vacuity control. If this call also came back clean, the success test above
   // would prove nothing — it would be passing on a call that cannot distinguish a
@@ -245,6 +245,6 @@ test('AC-3 control: the same call on an UNINDEXED working dir comes back isError
     assert.equal(reply.result.isError, true, 'control call is flagged as an MCP tool error');
   } finally {
     rmDir(workingDir);
-    if (sessionDir) rmDir(sessionDir);
+    if (sessionDir) { rmDir(sessionDir); }
   }
 });

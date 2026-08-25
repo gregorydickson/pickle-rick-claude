@@ -2711,8 +2711,9 @@ export function buildWorkerSpawnEnv(ctx, invocation) {
  * AC-2 requires asserting on the SPAWNED ARGV and the FILE, never on the settings value.
  */
 export function resolveSessionWorkerMcpConfig(args, sessionRoot, env = process.env) {
-    if (env['PICKLE_CODEGRAPH'] === 'off')
+    if (env['PICKLE_CODEGRAPH'] === 'off') {
         return undefined;
+    }
     const sessionMcpPath = path.join(sessionRoot, 'mcp', 'worker-mcp.json');
     return args.backend === 'claude' && fs.existsSync(sessionMcpPath)
         ? sessionMcpPath

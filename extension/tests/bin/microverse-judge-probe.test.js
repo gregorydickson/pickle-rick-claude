@@ -370,7 +370,7 @@ describe('measureLlmMetricWithBackoff — probe classification behavior', () => 
       // Restore by captured value, including the absent case — a bare delete
       // would clobber a marker the host legitimately exported.
       for (const k of Object.keys(plantedEnv)) {
-        if (previousPlanted[k] === undefined) delete process.env[k];
+        if (previousPlanted[k] === undefined) { delete process.env[k]; }
         else process.env[k] = previousPlanted[k];
       }
     }
