@@ -631,18 +631,12 @@ function killCheckSubtree(child, signal) {
  * `error` RESOLVES rather than rejects, byte-for-byte the pre-fix disposition: only a
  * `GateTimeoutError` is caught by `runGateCheck`, so rejecting here would throw out of
  * `runGate` instead of producing a red result.
+ *
+ * This function is the whole of that contract: the `detached` spawn and BOTH teardowns
+ * (timeout, output cap) live here together, which is what the invariant requires — they
+ * are only correct as a set. `runCheckCommand` below resolves the argv and delegates.
  */
-async function runCheckCommand(check, cmd, cwd, timeout_ms) {
-    const parts = cmd.split(' ').filter((p) => p.length > 0);
-    if (parts.length === 0) {
-        throw new Error(`runCheckCommand: empty command — refusing to spawn`);
-    }
-    const bin = parts[0];
-    const args = parts.slice(1);
-    const missingBin = detectMissingTools([bin]);
-    if (missingBin.length > 0) {
-        return { stdout: '', stderr: `tool not installed: ${bin}`, exitCode: 1 };
-    }
+async function runCheckSubtree(check, bin, args, cwd, timeout_ms) {
     return await new Promise((resolve, reject) => {
         const child = spawn(bin, args, {
             cwd,
@@ -674,14 +668,13 @@ async function runCheckCommand(check, cmd, cwd, timeout_ms) {
         child.stderr?.setEncoding('utf8');
         child.stdout?.on('data', capture((c) => { stdout += c; }));
         child.stderr?.on('data', capture((c) => { stderr += c; }));
-        child.on('error', () => {
-            settle(() => { resolve({ stdout, stderr, exitCode: 1 }); });
-        });
-        child.on('close', (code) => {
-            settle(() => {
-                resolve({ stdout, stderr, exitCode: typeof code === 'number' ? code : 1 });
-            });
-        });
+        // `error` and `close` differ only in the exit code they carry out — one settle path,
+        // not two.
+        const settleWith = (exitCode) => {
+            settle(() => { resolve({ stdout, stderr, exitCode }); });
+        };
+        child.on('error', () => { settleWith(1); });
+        child.on('close', (code) => { settleWith(typeof code === 'number' ? code : 1); });
         const timer = setTimeout(() => {
             settle(() => {
                 killCheckSubtree(child, 'SIGKILL');
@@ -690,6 +683,26 @@ async function runCheckCommand(check, cmd, cwd, timeout_ms) {
         }, timeout_ms);
         timer.unref();
     });
+}
+/**
+ * Resolve a gate-command string to an argv and refuse it up front when the host lacks the
+ * binary — the half of the check contract that has nothing to do with the teardown above.
+ * `detectMissingTools` is the shared predicate (`verify-command-safety.ts`), and it runs
+ * BEFORE any spawn so an absent toolchain reads as `tool not installed` rather than as a
+ * check failure.
+ */
+async function runCheckCommand(check, cmd, cwd, timeout_ms) {
+    const parts = cmd.split(' ').filter((p) => p.length > 0);
+    if (parts.length === 0) {
+        throw new Error(`runCheckCommand: empty command — refusing to spawn`);
+    }
+    const bin = parts[0];
+    const args = parts.slice(1);
+    const missingBin = detectMissingTools([bin]);
+    if (missingBin.length > 0) {
+        return { stdout: '', stderr: `tool not installed: ${bin}`, exitCode: 1 };
+    }
+    return await runCheckSubtree(check, bin, args, cwd, timeout_ms);
 }
 function parseTscOutput(output, pkgDir) {
     const failures = [];
