@@ -762,3 +762,177 @@ function commitEmpty(dir, message) {
   execFileSync('git', ['commit', '-q', '--allow-empty', '-m', message, '--no-gpg-sign'], { cwd: dir, stdio: 'ignore' });
   return head(dir);
 }
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER5-01 — the R-CXOR-2 baseline join compared SPELLING, not identity.
+//
+// Every prior fix in this area (487e7855, AP-EXT-ITER16-01/-02) asked WHICH ARMS
+// call the baseline rule, and the answer is now correctly "all three, via
+// `rejectsAccept`". Nobody asked whether the rule's own COMPARISON is right.
+//
+// The two sides of the join arrive in different widths by construction: a stamped
+// field is normalized by `normalizeCompletionCommitField`, which accepts
+// `[0-9a-f]{7,40}` and returns it verbatim, while `start_commit`/`pinned_sha` are
+// read RAW from state.json where setup always writes a full 40-char OID. The
+// `sha === ctx.startCommit` therefore answered "same spelling". An 8-char stamp of
+// the session baseline — the `git log --oneline` shape, and 5 of 39 real stamps on
+// the box this was found on — missed the rejection, resolved fine under
+// `git cat-file -e <sha>^{commit}` (git abbreviates by prefix), and classified
+// `committed`/`explicit`. A ticket that did NO WORK BEYOND SESSION START got its
+// Done flip: exactly the fake-green R-CXOR-2 exists to prevent, reached by
+// retyping the same commit shorter.
+// ---------------------------------------------------------------------------
+
+/** The `git log --oneline` shape a worker copies into a stamp. */
+function shortSha(dir, sha) {
+  return execFileSync('git', ['rev-parse', `--short=8`, sha], { cwd: dir, encoding: 'utf8' }).trim();
+}
+
+test('AP-EXT-ITER5-01: an ABBREVIATED baseline sha is absent — identity, not spelling (R-CXOR-2)', () => {
+  const root = mkTmp('pickle-iter5-abbrev-base-');
+  try {
+    initGitRepo(root);
+    const baseline = head(root);
+    // The baseline stays reachable as the session moves on — which is why
+    // `commitExists` can never catch this and only the baseline rule can.
+    commitFile(root, 'later.txt', 'chore: unrelated later work');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'abrv0001', { completionCommit: shortSha(root, baseline) });
+
+    const ev = readEvidence({
+      sessionDir, ticketId: 'abrv0001', workingDir: root, startCommit: baseline,
+    });
+    assert.equal(ev.kind, 'absent', 'an 8-char stamp of the baseline is the SAME COMMIT — it must be rejected');
+    assert.equal(ev.absentReason, 'baseline_sha');
+    assert.equal(ev.sha, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER5-01: an abbreviated PINNED_SHA is rejected too — both baselines share the comparison', () => {
+  const root = mkTmp('pickle-iter5-abbrev-pinned-');
+  try {
+    initGitRepo(root);
+    const pinned = head(root);
+    commitFile(root, 'later.txt', 'chore: unrelated later work');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'abrv0002', { completionCommit: shortSha(root, pinned) });
+
+    const ev = readEvidence({
+      sessionDir, ticketId: 'abrv0002', workingDir: root, startCommit: null, pinnedSha: pinned,
+    });
+    assert.equal(ev.kind, 'absent');
+    assert.equal(ev.absentReason, 'baseline_sha');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER5-01: an abbreviated baseline is rejected on the INFERRED arm as well (shared rejectsAccept gate)', () => {
+  const root = mkTmp('pickle-iter5-abbrev-inferred-');
+  try {
+    initGitRepo(root);
+    const baseline = head(root);
+    commitFile(root, 'later.txt', 'chore: unrelated later work');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'abrv0003', { completionCommitInferred: shortSha(root, baseline) });
+
+    const ev = readEvidence({
+      sessionDir, ticketId: 'abrv0003', workingDir: root, startCommit: baseline,
+    });
+    assert.equal(ev.kind, 'absent', 'the fix lives in the shared gate, so every arm inherits it');
+    assert.equal(ev.absentReason, 'baseline_sha');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER5-01: an UPPERCASE baseline stamp is rejected — normalize preserves case, the join must fold it', () => {
+  const root = mkTmp('pickle-iter5-upper-base-');
+  try {
+    initGitRepo(root);
+    const baseline = head(root);
+    commitFile(root, 'later.txt', 'chore: unrelated later work');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'abrv0004', { completionCommit: baseline.toUpperCase() });
+
+    const ev = readEvidence({
+      sessionDir, ticketId: 'abrv0004', workingDir: root, startCommit: baseline,
+    });
+    assert.equal(ev.kind, 'absent');
+    assert.equal(ev.absentReason, 'baseline_sha');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER5-01: the predicate never PERSISTS an abbreviated baseline into completion_commit', () => {
+  const root = mkTmp('pickle-iter5-nopersist-');
+  try {
+    initGitRepo(root);
+    const baseline = head(root);
+    commitFile(root, 'later.txt', 'chore: unrelated later work');
+    const sessionDir = path.join(root, 'session');
+    const fp = writeTicket(sessionDir, 'abrv0005', { completionCommitInferred: shortSha(root, baseline) });
+
+    const decision = evaluateCompletionEvidence({
+      sessionDir,
+      ticketId: 'abrv0005',
+      workingDir: root,
+      startCommit: baseline,
+      pinnedSha: null,
+      decision: 'phantom-watch',
+      rereadBackoffMs: 0,
+    });
+    assert.equal(decision.ok, false, 'a no-work ticket must not complete on an abbreviated baseline');
+    assert.equal(decision.reason, 'baseline_sha');
+    assert.ok(
+      !/^completion_commit:/m.test(readTicket(fp)),
+      'promote-once must never write a durable baseline stamp the R-RASO/B-RRH readers trust blindly',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// --- Controls: the fix must reject baselines WITHOUT over-rejecting ----------
+
+test('AP-EXT-ITER5-01 control: an abbreviated NON-baseline sha is still ACCEPTED (13% of real stamps are abbreviated)', () => {
+  const root = mkTmp('pickle-iter5-ctl-abbrev-ok-');
+  try {
+    initGitRepo(root);
+    const baseline = head(root);
+    const real = commitFile(root, 'work.txt', 'feat: real work this ticket did');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'abrv0006', { completionCommit: shortSha(root, real) });
+
+    const ev = readEvidence({
+      sessionDir, ticketId: 'abrv0006', workingDir: root, startCommit: baseline, pinnedSha: baseline,
+    });
+    assert.equal(ev.kind, 'committed', 'prefix-identity must not swallow legitimate abbreviated stamps');
+    assert.equal(ev.via, 'explicit');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER5-01 control: a truncated/garbage baseline never becomes a prefix that rejects every sha', () => {
+  const root = mkTmp('pickle-iter5-ctl-floor-');
+  try {
+    initGitRepo(root);
+    const real = commitFile(root, 'work.txt', 'feat: real work this ticket did');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'abrv0007', { completionCommit: real });
+
+    // state.json holds a sub-minimum start_commit; below MIN_ABBREV_SHA_LEN it
+    // must match NOTHING rather than every sha sharing its leading nibble.
+    const ev = readEvidence({
+      sessionDir, ticketId: 'abrv0007', workingDir: root, startCommit: real.slice(0, 4),
+    });
+    assert.equal(ev.kind, 'committed', 'a too-short baseline must not reject real evidence');
+    assert.equal(ev.sha, real);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

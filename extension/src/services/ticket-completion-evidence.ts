@@ -183,10 +183,36 @@ function commitExists(workingDir: string, sha: string): boolean {
   return probeCatFile(workingDir, sha) === 'exists';
 }
 
+/** Shortest abbreviation `normalizeCompletionCommitField` accepts; also the floor here. */
+const MIN_ABBREV_SHA_LEN = 7;
+
+/**
+ * AP-EXT-ITER5-01: SHA-IDENTITY comparison for the R-CXOR-2 baseline join —
+ * "is this the same commit?", never "is this the same spelling?".
+ *
+ * The two sides of this join arrive in DIFFERENT widths by construction. A
+ * stamped field is normalized by `normalizeCompletionCommitField`, which accepts
+ * `[0-9a-f]{7,40}` and returns it verbatim; the session baselines are read RAW
+ * out of `state.json`, where setup always writes a full 40-char OID. A `===`
+ * between them therefore answers the spelling question, and an abbreviated stamp
+ * of the baseline sails through the gate that exists to reject it.
+ *
+ * Git's own abbreviation rule is prefix-identity, so that is what is compared,
+ * case-folded (the normalizer's `/i` preserves an uppercase stamp). Both sides
+ * must reach `MIN_ABBREV_SHA_LEN` — a truncated/garbage baseline must not become
+ * a prefix that rejects every SHA in the session.
+ */
+function isSameCommitSha(a: string, b: string): boolean {
+  const x = a.trim().toLowerCase();
+  const y = b.trim().toLowerCase();
+  if (x.length < MIN_ABBREV_SHA_LEN || y.length < MIN_ABBREV_SHA_LEN) return false;
+  return x.startsWith(y) || y.startsWith(x);
+}
+
 /** R-CXOR-2: true when sha is a session baseline (start_commit or pinned_sha). */
 function isBaselineSha(sha: string, ctx: Pick<EvidenceCtx, 'startCommit' | 'pinnedSha'>): boolean {
-  return (ctx.startCommit != null && sha === ctx.startCommit) ||
-    (ctx.pinnedSha != null && sha === ctx.pinnedSha);
+  return (ctx.startCommit != null && isSameCommitSha(sha, ctx.startCommit)) ||
+    (ctx.pinnedSha != null && isSameCommitSha(sha, ctx.pinnedSha));
 }
 
 /**
