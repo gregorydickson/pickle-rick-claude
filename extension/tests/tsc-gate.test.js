@@ -1009,3 +1009,69 @@ it('AP-EXT-ITER27-01 isGitCommitCommand keeps env-prefix parity and gains the wr
     assert.equal(isGitCommitCommand(command), false, JSON.stringify(command));
   }
 });
+
+it('AP-EXT-ITER54-01 isGitCommitCommand sees a commit past an option OPERAND', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  // The `-c` payload extractor walked the wrapper's options looking for the
+  // first word that did NOT start with `-`, and returned it only if a
+  // command-string flag had been seen. But bash options take OPERANDS, and an
+  // operand is a bare word: the scan quit at `pipefail` before ever reaching
+  // `-c`, so the payload was never unwrapped, `segmentIsGitCommit` read the
+  // wrapper, and the R-WACT tsc gate was SKIPPED for the commit — the exact
+  // AP-EXT-ITER12-01 outcome through a different door.
+  const positives = [
+    'bash -o pipefail -c "git commit -m x"',
+    'bash -o errexit -o pipefail -c "git commit -m x"',
+    'sh -o pipefail -c "git commit -m x"',
+    'bash -O extglob -c "git commit -m x"',
+    'bash +o histexpand -c "git commit -m x"',
+    'bash --rcfile /dev/null -c "git commit -m x"',
+    'bash --init-file /dev/null -c "git commit -m x"',
+    'PICKLE_ROLE=x bash -o pipefail -c "git commit -m x"',
+    '/bin/bash -o pipefail -c "cd extension && git commit -m x"',
+  ];
+  for (const command of positives) {
+    assert.equal(isGitCommitCommand(command), true, JSON.stringify(command));
+  }
+  // Reading forward from the flag must not turn every wrapper into a commit:
+  // a payload with no commit stays non-commit, and a bare `-c`-less wrapper is
+  // untouched (`bash install.sh` must never grow a phantom payload).
+  const negatives = [
+    'bash -o pipefail -c "npm run test:fast"',
+    'bash -o pipefail -c "git add -A"',
+    'bash install.sh',
+    'bash -o pipefail install.sh',
+    'bash -o pipefail -c',
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, JSON.stringify(command));
+  }
+});
+
+it('AP-EXT-ITER54-01 the payload is read FORWARD from the flag, not from the first bare word', async () => {
+  const shellExec = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/shell-exec.ts'), 'utf8',
+  );
+  const body = shellExec.match(
+    /function shellCommandStringPayload\(segment: string\): string \| null \{([\s\S]*?)\n\}/,
+  );
+  assert.ok(body, 'shellCommandStringPayload must remain a single named function');
+  // Pin the SHAPE, not just the behavior. Two regressions are one edit away and
+  // both pass a behavior-only spec that lists today's option set: re-introducing
+  // a "stop at the first non-`-` word" scan (the bug), or bolting on an
+  // enumerated operand-taking-option table (the AP-EXT-ITER18-01/ITER19-01
+  // incomplete-declaration shape, one option away from the next bypass).
+  assert.match(
+    body[1],
+    /if \(SHELL_COMMAND_STRING_FLAG_RE\.test\(tokens\[idx\]\)\) return tokens\[idx \+ 1\] \?\? null;/,
+    'the payload must be the word immediately after the command-string flag',
+  );
+  assert.ok(
+    !/startsWith\('-'\)/.test(body[1]),
+    'no first-bare-word scan: an option OPERAND is a bare word standing before -c',
+  );
+  assert.ok(
+    !/pipefail|rcfile|init-file|extglob/.test(body[1]),
+    'no enumerated operand-taking-option table — that is the incomplete-set shape',
+  );
+});

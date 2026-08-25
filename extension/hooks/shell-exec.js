@@ -329,19 +329,31 @@ export function splitShellSegments(command, depth = 0) {
  * when the segment is not a shell command-string invocation. Uses the same
  * env-assignment prelude and `isShellWrapper` fold as every other exec-token
  * read, so `PICKLE_ROLE=x /bin/bash -lc '<cmd>'` resolves like the rest.
+ *
+ * The payload is the word immediately AFTER the command-string flag, found
+ * wherever that flag sits in the wrapper's option run — never "the first word
+ * that does not start with `-`". Bash options take OPERANDS (`-o pipefail`,
+ * `+o histexpand`, `-O extglob`, `--rcfile FILE`, `--init-file FILE`), and each
+ * operand is a bare word standing before the `-c`. A scan that stopped at the
+ * first bare word therefore quit at `pipefail` and never reached the flag, so
+ * `bash -o pipefail -c "git reset --hard"` was never unwrapped and every
+ * detector saw only the wrapper (AP-EXT-ITER54-01).
+ *
+ * Reading forward from the flag needs no operand table, which is the point: an
+ * enumerated list of operand-taking options is the same incomplete-declaration
+ * shape as AP-EXT-ITER18-01/ITER19-01, one more member away from a bypass.
+ * Over-reach is fail-safe in the module's existing direction — an unusual
+ * `bash script.sh -c arg` yields one extra segment to scan, and the wrapper
+ * segment is kept regardless.
  */
 function shellCommandStringPayload(segment) {
     const tokens = tokenizeShellCommand(segment);
-    let idx = skipEnvAssignments(tokens);
-    if (!isShellWrapper(tokens[idx]))
+    const start = skipEnvAssignments(tokens);
+    if (!isShellWrapper(tokens[start]))
         return null;
-    let sawCommandStringFlag = false;
-    for (idx++; idx < tokens.length; idx++) {
-        if (tokens[idx].startsWith('-')) {
-            sawCommandStringFlag ||= SHELL_COMMAND_STRING_FLAG_RE.test(tokens[idx]);
-            continue;
-        }
-        return sawCommandStringFlag ? tokens[idx] : null;
+    for (let idx = start + 1; idx < tokens.length; idx++) {
+        if (SHELL_COMMAND_STRING_FLAG_RE.test(tokens[idx]))
+            return tokens[idx + 1] ?? null;
     }
     return null;
 }

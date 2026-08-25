@@ -1449,3 +1449,78 @@ for (const { label, command } of [
     assert.equal(result.decision, 'approve');
   });
 }
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER54-01 — an option OPERAND stood between the wrapper and `-c`
+//
+// `shellCommandStringPayload` walked the wrapper's options for the first word
+// that did not start with `-`. Bash options take OPERANDS, and an operand is a
+// bare word: `bash -o pipefail -c "git reset --hard"` stopped the scan at
+// `pipefail`, so the `-c` flag was never reached, the payload was never
+// unwrapped, and the destructive reset was APPROVED for a worker while its
+// bare twin blocked. Fifth instance of the AP-EXT-ITER10-01/12-01/18-01/19-01
+// shape: the machinery reads one declarative thing and the reading was partial.
+//
+// Every block case is paired below with a benign twin under the same wrapper,
+// so these cannot pass by blanket-blocking any command containing `-o`.
+// ---------------------------------------------------------------------------
+
+for (const { label, command, expect: expected } of [
+  { label: '-o pipefail before -c', command: 'bash -o pipefail -c "git reset --hard"', expect: /reset/ },
+  { label: 'two -o operands before -c', command: 'bash -o errexit -o pipefail -c "git reset --hard"', expect: /reset/ },
+  { label: 'sh -o pipefail', command: 'sh -o pipefail -c "git stash"', expect: /stash/ },
+  { label: '+o operand form', command: 'bash +o histexpand -c "git push origin main"', expect: /push/ },
+  { label: '-O shopt operand', command: 'bash -O extglob -c "git rebase main"', expect: /rebase/ },
+  { label: '--rcfile operand', command: 'bash --rcfile /dev/null -c "git reset --hard"', expect: /reset/ },
+  { label: '--init-file operand', command: 'bash --init-file /dev/null -c "git checkout main"', expect: /checkout/ },
+  { label: 'env-prefixed with operand', command: 'PICKLE_ROLE=x bash -o pipefail -c "git reset --hard"', expect: /reset/ },
+  { label: 'absolute-path with operand', command: '/bin/bash -o pipefail -c "cd sub && git push origin main"', expect: /push/ },
+]) {
+  test(`AP-EXT-ITER54-01: worker blocks prohibited git verb via ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+}
+
+// The unwrap lands at the shared seam, so the install.sh detector inherits the
+// widened read too.
+test('AP-EXT-ITER54-01: worker blocks `bash -o pipefail -c "bash install.sh"`', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'bash -o pipefail -c "bash install.sh"' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC/);
+});
+
+// Non-tautology guards: reading forward from the flag must not blanket-block a
+// wrapper that carries options, and a `-c`-less wrapper must gain no payload.
+for (const { label, command } of [
+  { label: 'a benign build command under -o pipefail', command: 'bash -o pipefail -c "npm run test:fast"' },
+  { label: 'a benign chained payload under -o pipefail', command: 'bash -o pipefail -c "cd extension && npx tsc --noEmit"' },
+  { label: 'an allowed path-mode checkout under -o pipefail', command: 'bash -o pipefail -c "git checkout -- src/foo.ts"' },
+  { label: 'a plain commit under -o pipefail', command: 'bash -o pipefail -c "git commit -m fix"' },
+  { label: 'a wrapper with options and no -c', command: 'bash -o pipefail scripts/run-tests.sh' },
+]) {
+  test(`AP-EXT-ITER54-01: worker still approves ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve');
+  });
+}
