@@ -113,6 +113,16 @@ as a flat top-level YAML key in the frontmatter (not nested). The runtime watche
 
 Run your OWN long-running commands (test tiers, gates, builds) in the FOREGROUND. NEVER background them — no Bash `run_in_background`, no trailing `&`, no `nohup`/`setsid`/`disown`. You are a `claude -p` subprocess: a backgrounded child does NOT survive your turn ending — it is KILLED at turn-end, leaving ZERO output and an unverified diff, exactly the R-MWBG stall class (B-SIGF 2026-06-29) that otherwise strands a manager spawning you. Do NOT preemptively background a test/gate/build because you fear a Bash-tool time ceiling: pass an explicit LARGE `timeout` on the Bash call instead — most commands finish well within a generous budget, and a command that is genuinely slow needs to run to completion in the foreground where you can see its real exit code, not race a background PID that your turn-end kills before it reports anything. FOREGROUND + explicit large timeout, never background.
 
+**Leave an attributable trace when a long command is cut (R-MWBG-LONGCMD).** A foreground command can still be cut mid-flight — the Bash tool hits its ceiling, or your turn ends. When that happens the diff looks identical to "the worker did nothing", and the manager sees only `exit:0` + `validation: failed` + a clean tree with no way to tell which one it was. So bracket every long command with a marker line naming the command and the timeout you passed:
+
+```bash
+echo "R-MWBG-LONGCMD start: npm run test:fast (timeout 600000ms)"
+npm run test:fast
+echo "R-MWBG-LONGCMD done: npm run test:fast exit=$?"
+```
+
+Both lines land in `worker_session_<pid>.log`. A `start` marker with NO matching `done` marker is the signature of a command that was cut — so `grep R-MWBG-LONGCMD worker_session_*.log` diagnoses a repeated `exit:0` + `validation: failed` + clean-tree stall in ONE read, instead of leaving it to be inferred from an empty diff. Emit the markers even when you are confident the command is fast; the cut you did not expect is the one that costs a spawn.
+
 ## Lifecycle — ONE TICKET, all phases in the tier's lifecycle set
 
 {{TIER_LIFECYCLE_SECTIONS}}

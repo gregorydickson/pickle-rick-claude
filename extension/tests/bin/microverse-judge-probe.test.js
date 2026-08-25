@@ -258,6 +258,20 @@ describe('measureLlmMetricWithBackoff — probe classification behavior', () => 
   test('codex session emits fallback telemetry when claude judge measurement succeeds', async () => {
     const previousLegacy = process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
     delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    // AC-3a: plant the contamination markers ourselves rather than reading
+    // whatever the host happens to export. That is what makes the CONTENTS
+    // assertions below deterministic — the pre-fix comment called this payload
+    // "environment-dependent" and settled for Array.isArray, which cannot fail.
+    const plantedEnv = {
+      CLAUDECODE: '1',
+      PICKLE_ROLE: 'probe-fixture',
+      PICKLE_BACKEND: 'probe-fixture',
+    };
+    const previousPlanted = {};
+    for (const [k, v] of Object.entries(plantedEnv)) {
+      previousPlanted[k] = process.env[k];
+      process.env[k] = v;
+    }
     const orig = {
       spawn: _deps.spawn,
       logActivity: _deps.logActivity,
@@ -291,11 +305,37 @@ describe('measureLlmMetricWithBackoff — probe classification behavior', () => 
       assert.deepEqual(seenOptions[0]?.stdio, ['ignore', 'pipe', 'pipe']);
       assert.deepEqual(seenOptions[1]?.stdio, ['ignore', 'pipe', 'pipe']);
       assert.equal(events.length, 1);
-      // R-SJET-3: nested_claude_detected and pre_spawn_env_key_names are
-      // environment-dependent (depend on CLAUDE_CODE/CLAUDECODE and inherited
-      // PATH-class keys). Extract them from the deepEqual and assert shape only.
-      assert.equal(typeof events[0].gate_payload.nested_claude_detected, 'boolean');
-      assert.ok(Array.isArray(events[0].gate_payload.pre_spawn_env_key_names));
+      // AC-3a: `pre_spawn_env_key_names` is the SHIPPED observable proving the
+      // R-SJET-3 DANGEROUS_PREFIXES strip happened at the runner's own probe
+      // call site. Assert CONTENTS, not shape: passing `isNested=false` there
+      // (or skipping the call) reports the outer session's contamination
+      // markers as present — the exact condition R-SJET-3 detects — while a
+      // tmpdir count still goes green. Pins are membership-based because the
+      // key COUNT is host-dependent; the 41/44 counts stay pinned against the
+      // synthetic fixture below. Include-assertions keep the exclude-assertions
+      // from passing vacuously over an empty list.
+      const keyNames = events[0].gate_payload.pre_spawn_env_key_names;
+      assert.ok(Array.isArray(keyNames), 'pre_spawn_env_key_names must be an array');
+      // We planted CLAUDECODE above, so the runner must have detected nesting.
+      assert.equal(
+        events[0].gate_payload.nested_claude_detected,
+        true,
+        'nested_claude_detected must be true when CLAUDECODE is set (mutating isNested to false fails here)',
+      );
+      for (const stripped of ['CLAUDECODE', 'PICKLE_ROLE', 'PICKLE_BACKEND']) {
+        assert.ok(
+          !keyNames.includes(stripped),
+          `pre_spawn_env_key_names must NOT include the stripped marker ${stripped} — its presence means the nested branch did not run`,
+        );
+      }
+      assert.ok(
+        keyNames.includes('XDG_RUNTIME_DIR'),
+        'pre_spawn_env_key_names must include XDG_RUNTIME_DIR — the nested branch substitutes an isolated runtime dir',
+      );
+      assert.ok(
+        keyNames.includes('PATH'),
+        'pre_spawn_env_key_names must include PATH — guards the exclude-assertions against a vacuously empty list',
+      );
       const {
         nested_claude_detected: _ncd,
         pre_spawn_env_key_names: _psekn,
@@ -327,6 +367,12 @@ describe('measureLlmMetricWithBackoff — probe classification behavior', () => 
       _deps.logActivity = orig.logActivity;
       if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
       else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
+      // Restore by captured value, including the absent case — a bare delete
+      // would clobber a marker the host legitimately exported.
+      for (const k of Object.keys(plantedEnv)) {
+        if (previousPlanted[k] === undefined) delete process.env[k];
+        else process.env[k] = previousPlanted[k];
+      }
     }
   });
 });

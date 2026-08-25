@@ -86,6 +86,58 @@ test('R-MWBG: send-to-morty.md requires FOREGROUND execution with an explicit la
   );
 });
 
+/**
+ * AC-2 (R-MWBG-LONGCMD) — a worker whose long command is cut must leave an
+ * attributable line in `worker_session_*.log`, so the repeated
+ * `exit:0` + `validation: failed` + clean-tree signature is diagnosable in ONE
+ * read instead of being inferred from an empty diff.
+ *
+ * spawn-morty pipes the worker's own stdout into
+ * `worker_session_<pid>.log` (`src/bin/spawn-morty.ts` — `sessionLogPath` at
+ * :436, `fs.createWriteStream` at :3628), so a directive telling the worker to
+ * echo a marker is what puts the line in that file.
+ */
+test('AC-2: send-to-morty.md names the R-MWBG-LONGCMD marker', () => {
+  const content = fs.readFileSync(SEND_TO_MORTY, 'utf-8');
+  assert.ok(
+    content.includes('R-MWBG-LONGCMD'),
+    'expected send-to-morty.md to name the R-MWBG-LONGCMD attributable marker',
+  );
+});
+
+test('AC-2: the marker is emitted BEFORE the long command, so a cut leaves start-without-done', () => {
+  const content = fs.readFileSync(SEND_TO_MORTY, 'utf-8');
+  // The start/done asymmetry IS the diagnostic: a `done` marker alone would be
+  // emitted only on the paths that already completed, which are exactly the
+  // ones that never needed diagnosing. Assert both halves are specified.
+  assert.ok(
+    /R-MWBG-LONGCMD start:/.test(content),
+    'expected a "R-MWBG-LONGCMD start:" marker emitted before the command runs',
+  );
+  assert.ok(
+    /R-MWBG-LONGCMD done:/.test(content),
+    'expected a "R-MWBG-LONGCMD done:" marker emitted after the command returns',
+  );
+  const startIdx = content.indexOf('R-MWBG-LONGCMD start:');
+  const doneIdx = content.indexOf('R-MWBG-LONGCMD done:');
+  assert.ok(
+    startIdx < doneIdx,
+    'the start marker must be documented before the done marker (a cut leaves start with no done)',
+  );
+});
+
+test('AC-2: the directive ties the marker to worker_session logs and the stall signature', () => {
+  const content = fs.readFileSync(SEND_TO_MORTY, 'utf-8');
+  assert.ok(
+    /worker_session/.test(content),
+    'expected the directive to name worker_session_<pid>.log as where the markers land',
+  );
+  assert.ok(
+    /exit:0/.test(content) && /validation: failed/.test(content),
+    'expected the directive to name the exit:0 + validation: failed signature it makes diagnosable',
+  );
+});
+
 test('R-MWBG: send-to-morty.md deployed copy matches the repo copy', (t) => {
   // CI checks out the repo but never runs `bash install.sh`, so no deploy root
   // exists at ~/.claude/commands/ there — this assertion is structurally
