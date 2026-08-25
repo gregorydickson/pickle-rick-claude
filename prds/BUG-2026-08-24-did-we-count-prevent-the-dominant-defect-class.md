@@ -1,3 +1,15 @@
+> **✅ SHIPPED 2026-08-25 as v2.1.0-beta.15 — CLOSED** (together with its self-regression fix).
+> The prevention machinery is live: the 18-sha corpus as committed data with the ceiling **stated, not
+> derived** (9 detectable / 5 semantic / 4 out-of-reach), the replay reporting **7 rule-covered of 9**
+> with the rest explicitly `no-check-yet` rather than counted as passes, `audit-did-we-count.sh`
+> registered at **all 8** canonical gate sites, a set-based exported-⊆-wired assertion with a negative
+> control, per-check `status` in `baseline.json` so a skip is no longer byte-identical to a clean
+> measurement, and `2c857117` encoded as a **firing positive control** that fails loudly if anyone
+> fixes the live defect — not the exemption the authored PRD would have created.
+>
+> **Its four self-regressions were caught by the runtime's withheld verdict, filed, and fixed** before
+> anything shipped. See `BUG-2026-08-24-did-we-count-bundle-self-regressions.md`.
+
 > **✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — 2026-08-24 at HEAD `ec5c5272`.**
 >
 > **Stale premise: PASSED**, four spot-checks against the MECHANISMS, not R-codes:

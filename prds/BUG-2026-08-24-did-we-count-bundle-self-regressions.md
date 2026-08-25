@@ -1,3 +1,15 @@
+> **✅ SHIPPED 2026-08-25 as v2.1.0-beta.15 — CLOSED.** Pipeline terminal
+> (`stalled_below_target`, 250m 43s, session `2026-08-24-ee7d91b9`, 11 commits). **AC-1 met and
+> operator-verified:** `test:fast` **pass 7984 / fail 1 / cancelled 0** — the lone failing leaf is the
+> inherited `bun probe emits banner when bun is absent`. Counts grew 7973 → 7984 and suites held, so
+> nothing was greened by shrinking.
+>
+> **Both anti-cheat criteria held, checked against diffs rather than commit messages:**
+> `ebef999c` **condensed** the trap-door entry (`CLAUDE.md`, 1 insertion / 7 deletions) with **no
+> `1500` change anywhere in the diff** — AC-4.1's one-token-constant cheat refused. `a90085a6` closed
+> AC-4.2's vacuous-green path on an unresolvable diff range. `857c71f5` fixed the parity assertion by
+> **deriving** the key set from `GateBaselineFile` rather than hardcoding a list that would drift.
+
 > **⛔ RETRACTION — this PRD's sharpest claim was FALSE. Superseded by
 > `BUG-2026-08-24-self-regressions-REFINED.md`.**
 >

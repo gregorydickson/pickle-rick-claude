@@ -30,6 +30,51 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+> ### 🚢 2026-08-25 — v2.1.0-beta.15, the did-we-count PREVENTION bundle + its own regression fix
+>
+> **Two sessions, one release.** Operator-directed ("we have to get quality up"): convert the
+> recurring did-we-count discovery into a single prevention. `2026-08-24-218474cb` built it;
+> `2026-08-24-ee7d91b9` fixed the four regressions it introduced.
+>
+> **Gate, staged:** static + 9 audits RC=0 · `test:fast` **pass 7984 / fail 1 / cancelled 0** ·
+> `test:integration` **650 / fail 1 / cancelled 0** · `test:expensive` RC=0. Both failures are the two
+> long-filed inherited ones. Fast-tier counts grew **7872 → 7984** across the day; nothing greened by
+> shrinking.
+>
+> **What shipped:** the 18-sha corpus as committed data with the ceiling **stated, not derived**
+> (9 detectable / 5 semantic / 4 out-of-reach); the replay reporting **7 rule-covered of 9**, the rest
+> explicitly `no-check-yet` rather than counted as passes; `audit-did-we-count.sh` at **all 8**
+> canonical gate sites (the task `c57a8e08` proves this repo botched once before); a **set-based**
+> exported-⊆-wired assertion with a negative control proving it catches a newly-unwired rule; per-check
+> `status` in `baseline.json` so a skip is no longer byte-identical to a clean measurement; and
+> `2c857117` as a **firing positive control** rather than an exemption that would have blinded the rule
+> to a live bug.
+>
+> **⚠️ THE BUNDLE REGRESSED ITSELF AND THE RUNTIME CAUGHT IT.** The pickle phase exited 0 with all 8
+> tickets Done and **withheld the success verdict** (`post_final_tier_degraded:red`), stopping at 1/4
+> phases. Measured `fail 5` against a recorded baseline of `fail 1`. Four regressions, filed, fixed by
+> the follow-up bundle, verified back to `fail 1`. **B-NOSTOP-GATES worked exactly as designed.**
+>
+> **FINDING — the withheld-verdict signal cannot discriminate on this host.**
+> `post_final_tier_degraded:red` fires on ANY non-zero `test:fast`, including one caused solely by the
+> filed inherited bun probe. It fired on the *clean* follow-up run too. So it will fire on **every**
+> bundle here until the bun P3 lands, and it was right the first time by coincidence, not by
+> discrimination. Treat it as a prompt to measure, never as a verdict.
+>
+> **Three author errors, all the same family, all retracted in-tree:** (1) accused `7798ea69` of
+> claiming a reconciliation it hadn't performed — **false**, `AC-SZGBD-05` passes and the commit did
+> exactly what it said; the accusation came from matching the string `GateBaselineFile` in a different
+> failing test. (2) Recorded "2 inherited" — **wrong**, `ℹ fail N` counts leaves while the `✖` list
+> also prints suite markers, so it is 1. (3) Reported two anatomy HIGHs as being in machinery this
+> session built — **wrong**, `wasted-iter-replay` is from 2026-08-13 and unrelated to the corpus
+> replay; matched on the word "replay".
+>
+> **Review phases:** anatomy-park exit 0 (2h06m, 7 iterations) — the group-kill floor is 1 not 0
+> (CRITICAL), the ENFORCE-anchor rule loaded from the audit instead of mirrored, the replay's
+> old-predicate column showing the NEW rule (a comparison of the new rule against itself), the
+> skip-flag scanner reading the wrong nesting level. szechuan-sauce `stalled_below_target` (non-fatal)
+> — asserted the **accepting** side of the group-kill floor, which anatomy had left unpinned.
+
 > ### 🚢 2026-08-24 — v2.1.0-beta.14, the Node-pin bundle — AND A MONTH-LONG RELEASE OUTAGE FOUND
 >
 > **⚠️ CORRECTION, same day: the bundle did NOT meet its own AC-2.** `release.yml` run
