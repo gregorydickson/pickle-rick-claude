@@ -306,3 +306,234 @@ describe('extension/CLAUDE.md touched trap-door entries', () => {
     });
   }
 });
+
+// --- AP-EXT-ITER56-02: catalog ANCHOR LIVENESS ---
+//
+// The conformance checks above are SHAPE checks: length, the INVARIANT/BREAKS/ENFORCE triple,
+// and whether each ENFORCE test file exists on disk. None of them reads the PROSE, so an anchor
+// may name a symbol that no longer exists anywhere and still pass every gate — the catalog reads
+// authoritative while describing code that was deleted. That is the falsification mode behind
+// AP-EXT-ITER8-01 (`isDesignSafeBranch`, false at birth) and AP-EXT-ITER56-02
+// (`emitAdvisoryWorkerGateResidual`, deleted by 1889d5bf); `audit-trap-door-enforcement.sh`
+// resolves ENFORCE refs only and is blind to it by construction.
+const anchorCatalogs = [
+  'extension/CLAUDE.md',
+  'extension/src/bin/CLAUDE.md',
+  'extension/src/hooks/CLAUDE.md',
+  'extension/src/lib/CLAUDE.md',
+  'extension/src/services/CLAUDE.md',
+  'extension/src/types/CLAUDE.md',
+];
+
+/** camelCase (>= 2 chars before the hump) or SCREAMING_SNAKE with >= 1 underscore. */
+const anchorTokenPattern = /\b([a-z][a-zA-Z0-9]{1,}[A-Z][a-zA-Z0-9]*|[A-Z][A-Z0-9]{2,}(?:_[A-Z0-9]+)+)\b/g;
+
+/**
+ * Absences that are CORRECT and must NOT be "fixed" — the trap inside this sweep. Only a
+ * PRESENT-TENSE clause naming a dead symbol is a violation; a catalog also legitimately names
+ * symbols that must NOT exist (negative assertions), the pre-fix shape a trap door was written
+ * against (historical), and placeholders inside a shape description (meta).
+ *
+ * Keyed `<catalog>::<token>` — never bare token — so allowlisting a name in one catalog cannot
+ * blind the sweep to the same name going dead in another. Each entry carries its reason; the
+ * `no stale allowlist entries` arm below deletes-by-failing any entry whose token comes back.
+ */
+const anchorAbsenceAllowlist = new Map([
+  ['extension/CLAUDE.md::scriptArg', 'meta: placeholder inside a PATTERN_SHAPE description, not a symbol'],
+  ['extension/CLAUDE.md::shouldExitForLimits', 'negative: DELETED — the entry says do not re-add'],
+  ['extension/src/bin/CLAUDE.md::readRegistryPids', 'historical: named as the pre-fix VIOLATING shape'],
+  ['extension/src/hooks/CLAUDE.md::extraWriteCommands', 'negative: entry asserts zero occurrences'],
+  ['extension/src/hooks/CLAUDE.md::CONFIG_INPLACE_WRITE_COMMANDS', 'negative: entry asserts zero occurrences'],
+  ['extension/src/services/CLAUDE.md::throughStep', 'negative: entry asserts the param does not exist'],
+  ['extension/src/services/CLAUDE.md::findPatternShapeViolations', 'negative: entry asserts MUST NOT grep for it'],
+  ['extension/src/services/CLAUDE.md::extractPatternShapes', 'negative: entry asserts MUST NOT grep for it'],
+  ['extension/src/services/CLAUDE.md::readRegistryPids', 'historical: named as the pre-fix VIOLATING shape'],
+  ['extension/src/services/CLAUDE.md::bexecFile', 'artifact: regex tail of the literal \\bexecFile('],
+  ['extension/src/services/CLAUDE.md::RUN_CMD_MAX_BUFFER', 'negative: former per-file fork, collapsed into UNBOUNDED_READ_MAX_BUFFER'],
+  ['extension/src/services/CLAUDE.md::GIT_STATUS_MAX_BUFFER', 'negative: former per-file fork, collapsed into UNBOUNDED_READ_MAX_BUFFER'],
+  ['extension/src/services/CLAUDE.md::GIT_ENUMERATION_MAX_BUFFER', 'negative: former per-file fork, collapsed into UNBOUNDED_READ_MAX_BUFFER'],
+  ['extension/src/services/CLAUDE.md::IMPORT_WALK_MAX_BUFFER', 'negative: former per-file fork, collapsed into UNBOUNDED_READ_MAX_BUFFER'],
+  ['extension/src/services/CLAUDE.md::GIT_LS_FILES_MAX_BUFFER', 'negative: former per-file fork, collapsed into UNBOUNDED_READ_MAX_BUFFER'],
+  ['extension/src/services/CLAUDE.md::GIT_UNBOUNDED_MAX_BUFFER', 'negative: former per-file fork, collapsed into UNBOUNDED_READ_MAX_BUFFER'],
+  ['extension/src/services/CLAUDE.md::ARCHIVE_GIT_MAX_BUFFER', 'negative: former per-file fork, collapsed into UNBOUNDED_READ_MAX_BUFFER'],
+]);
+
+/**
+ * Two self-reference traps, and the sweep reads a permanent clean pass through either one.
+ *
+ * 1. The CATALOGS: include them and they resolve each other — every anchor token trivially
+ *    "exists" because the anchor itself is in the corpus.
+ * 2. THIS FILE: `anchorAbsenceAllowlist` spells out every legitimately-absent token as a string
+ *    literal, so a corpus containing this file resolves all of them — and, worse, would resolve
+ *    any dead symbol the moment someone allowlisted it, making the whole sweep vacuous.
+ *
+ * Both are excluded by path. Nothing else in the tree may enumerate absent tokens.
+ */
+const anchorCorpusExclusions = new Set(['extension/tests/trap-door-conformance.test.js']);
+
+/** Finite ceiling on every git spawn this sweep makes — an unbounded spawn can hang the tier. */
+const ANCHOR_GIT_TIMEOUT_MS = 30000;
+
+/**
+ * Discriminated result for the same reason `runClaudeDiff` has one: a corpus that failed to
+ * build is a sweep that did not run, and a not-run sweep must FAIL rather than report zero.
+ */
+function buildAnchorCorpus(cwd = repoRoot) {
+  let listing;
+  try {
+    listing = execFileSync(
+      'git',
+      ['ls-files', '-z', '--', '*.ts', '*.js', '*.sh', '*.json', '*.yml', '*.md'],
+      {
+        cwd,
+        encoding: 'utf8',
+        maxBuffer: 256 * 1024 * 1024,
+        timeout: ANCHOR_GIT_TIMEOUT_MS,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+  } catch (error) {
+    return { ok: false, reason: `git ls-files failed: ${error?.message ?? error}` };
+  }
+
+  const files = listing
+    .split('\0')
+    .filter(Boolean)
+    .filter(file => path.basename(file) !== 'CLAUDE.md')
+    .filter(file => !anchorCorpusExclusions.has(file));
+  if (files.length === 0) {
+    return { ok: false, reason: 'git ls-files returned zero files — corpus would match nothing' };
+  }
+
+  const parts = [];
+  for (const file of files) {
+    try {
+      parts.push(fs.readFileSync(path.join(cwd, file), 'utf8'));
+    } catch {
+      // A tracked-but-unreadable path (submodule gitlink, deleted worktree entry) is not a
+      // corpus failure; the file-count assertion below still proves the sweep ran.
+    }
+  }
+
+  return { ok: true, corpus: parts.join('\n'), fileCount: files.length };
+}
+
+/** Backticked identifiers on INVARIANT:/PATTERN_SHAPE lines — the anchors that make claims. */
+function collectAnchorTokens(catalog, content) {
+  const found = [];
+  content.split('\n').forEach((line, index) => {
+    if (!/INVARIANT:|PATTERN_SHAPE/.test(line)) {
+      return;
+    }
+    const seen = new Set();
+    for (const span of line.matchAll(/`([^`]+)`/g)) {
+      for (const match of span[1].matchAll(anchorTokenPattern)) {
+        const token = match[1];
+        if (seen.has(token)) continue;
+        seen.add(token);
+        found.push({ catalog, line: index + 1, token });
+      }
+    }
+  });
+  return found;
+}
+
+function findDeadAnchors(tokens, corpus) {
+  return tokens.filter(entry => !corpus.includes(entry.token));
+}
+
+describe('trap-door catalog anchor liveness (fixture parser)', () => {
+  const catalog = 'extension/CLAUDE.md';
+
+  test('a dead symbol on an INVARIANT line is reported', () => {
+    const content = '- `src/a.ts` — INVARIANT: `liveHelper` delegates to `deletedHelper`. BREAKS: x. ENFORCE: y.';
+    const dead = findDeadAnchors(collectAnchorTokens(catalog, content), 'export function liveHelper() {}');
+
+    assert.deepEqual(dead.map(entry => entry.token), ['deletedHelper']);
+  });
+
+  test('prose outside backticks and lines without an anchor keyword are not scanned', () => {
+    const content = [
+      '- `src/a.ts` — some deletedHelper prose with no anchor keyword and no backticks',
+      'PATTERN_SHAPE: bareDeletedHelper mentioned outside backticks',
+    ].join('\n');
+
+    assert.deepEqual(findDeadAnchors(collectAnchorTokens(catalog, content), ''), []);
+  });
+
+  test('a token repeated on one line is reported once', () => {
+    const content = '- `src/a.ts` — PATTERN_SHAPE: `deletedHelper` then `deletedHelper` again.';
+
+    assert.equal(findDeadAnchors(collectAnchorTokens(catalog, content), '').length, 1);
+  });
+
+  test('the corpus builder rejects an empty listing rather than reporting a clean sweep', () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'anchor-liveness-empty-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: empty, stdio: 'ignore', timeout: ANCHOR_GIT_TIMEOUT_MS });
+      const result = buildAnchorCorpus(empty);
+
+      assert.equal(result.ok, false);
+      assert.match(result.reason, /zero files/);
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('trap-door catalog anchor liveness (repo)', () => {
+  const corpusResult = buildAnchorCorpus();
+  const tokens = anchorCatalogs.flatMap(catalog => {
+    const absolute = path.join(repoRoot, catalog);
+    if (!fs.existsSync(absolute)) return [];
+    return collectAnchorTokens(catalog, fs.readFileSync(absolute, 'utf8'));
+  });
+
+  test(`corpus and catalogs both resolve (${tokens.length} anchor tokens)`, () => {
+    assert.ok(
+      corpusResult.ok,
+      `anchor liveness verified NOTHING: ${corpusResult.ok ? '' : corpusResult.reason}`,
+    );
+    assert.ok(
+      corpusResult.fileCount > 100,
+      `corpus is only ${corpusResult.fileCount} files — too small to be the real tree; a thin corpus reports every anchor dead or the sweep did not run`,
+    );
+    assert.ok(
+      tokens.length > 100,
+      `only ${tokens.length} anchor tokens scanned across ${anchorCatalogs.length} catalogs — the extractor matched almost nothing, which reads clean for the wrong reason`,
+    );
+  });
+
+  test('no INVARIANT/PATTERN_SHAPE anchor names a symbol absent from the tree', () => {
+    if (!corpusResult.ok) {
+      assert.fail(corpusResult.reason);
+    }
+
+    const violations = findDeadAnchors(tokens, corpusResult.corpus)
+      .filter(entry => !anchorAbsenceAllowlist.has(`${entry.catalog}::${entry.token}`))
+      .map(entry => `${entry.catalog}:${entry.line} \`${entry.token}\``);
+
+    assert.deepEqual(
+      [...new Set(violations)],
+      [],
+      'a trap-door anchor names an identifier that exists nowhere in the tree — correct the anchor to the live symbol, or add it to anchorAbsenceAllowlist with its reason if the absence is deliberate (negative assertion / historical shape / meta-placeholder)',
+    );
+  });
+
+  test('no stale allowlist entries', () => {
+    if (!corpusResult.ok) {
+      assert.fail(corpusResult.reason);
+    }
+
+    const stale = [...anchorAbsenceAllowlist.keys()].filter(key => {
+      const token = key.slice(key.indexOf('::') + 2);
+      return corpusResult.corpus.includes(token);
+    });
+
+    assert.deepEqual(
+      stale,
+      [],
+      'an allowlisted absence is no longer absent — the symbol came back. Delete the entry; if it names something a catalog asserts must NOT exist (e.g. shouldExitForLimits), the re-appearance is the regression the entry exists to catch',
+    );
+  });
+});
