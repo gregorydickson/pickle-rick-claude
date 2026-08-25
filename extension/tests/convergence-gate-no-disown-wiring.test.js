@@ -823,3 +823,148 @@ test('AP-EXT-ITER7-01: an unmeasurable typecheck is RENDERED once and stays non-
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER7-02: the SKIP half of the same hole. AP-EXT-ITER7-01 closed the
+// FAILED arm (a check that ran and could not be measured); a gate that DECLINED to
+// attempt the check still returned green with zero failures, and the sweep read that
+// empty failure list as positive INV-NO-SELF-DISOWN evidence.
+//
+// These cases cross the REAL `runGate` and vary only whether it can classify the
+// project — no stub, because a stub is exactly what cannot reach the skip exits.
+// ---------------------------------------------------------------------------
+
+/**
+ * A repo the gate CANNOT classify: no marker at the root, and TWO child markers, so
+ * `resolveProjectRootOneLevelDown` refuses to guess and `runGate` takes the
+ * `no_project_type_detected` early exit. This is the shape every repo-agnostic target
+ * hits — pickle-rick itself is one added `package.json` away from it.
+ */
+function makeUnclassifiableRepo(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  git(dir, ['init']);
+  git(dir, ['config', 'user.name', 'Test User']);
+  git(dir, ['config', 'user.email', 'test@example.com']);
+  for (const child of ['frontend', 'backend']) {
+    fs.mkdirSync(path.join(dir, child), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, child, 'package.json'),
+      JSON.stringify({ name: child, private: true }, null, 2),
+    );
+  }
+  fs.writeFileSync(path.join(dir, 'frontend', 'audit.ts'), 'export interface AuditResult { sum: number }\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'base']);
+  const base = headSha(dir);
+  fs.writeFileSync(path.join(dir, 'frontend', 'audit.ts'), 'export interface AuditResult { total: number }\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'change the exported shape']);
+  return { dir, base };
+}
+
+const UNCLASSIFIABLE_SWEEP_ENUMERATORS = {
+  getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+  getChangedFilesSinceFn: () => ['frontend/audit.ts'],
+};
+
+test('AP-EXT-ITER7-02: a gate that SKIPPED the typecheck declares it, instead of returning green with no record', async () => {
+  const { dir } = makeUnclassifiableRepo('cg-apiter7b-producer-');
+  try {
+    const skipped = await runGate({
+      workingDir: dir,
+      mode: 'strict',
+      scope: 'full',
+      checks: ['typecheck'],
+    });
+    // The verdict was ALWAYS green here and still is — that is precisely why a
+    // status/failure-count oracle greens over this bug. Assert the MEASUREMENT RECORD.
+    assert.equal(skipped.status, 'green', 'a skip is not a red — the disposition is unchanged');
+    assert.equal(skipped.failures.length, 0, 'nothing ran, so nothing failed');
+    assert.equal(
+      skipped.check_status?.typecheck,
+      'skipped',
+      'an early skip attempts no check, so it must SAY so; returning green with `check_status` ' +
+      'absent entirely is indistinguishable from a gate that measured everything',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER7-02: a typecheck the gate never attempted reaches the sweep as skipped, not as a clean no-disown verdict', async () => {
+  const { dir, base } = makeUnclassifiableRepo('cg-apiter7b-chain-');
+  try {
+    const unmeasured = await runInterfaceChangeSweep({
+      workingDir: dir,
+      sessionDir: dir,
+      startCommit: base,
+      runGateFn: runGate,
+      logActivityFn: () => {},
+      ...UNCLASSIFIABLE_SWEEP_ENUMERATORS,
+    });
+    assert.equal(
+      unmeasured.ran,
+      false,
+      'a whole-repo typecheck the gate DECLINED to attempt is not a typecheck that found nothing; ' +
+      'reporting `ran: true` hands applyInterfaceChangeSweepGuard positive INV-NO-SELF-DISOWN ' +
+      'evidence for a measurement that never happened',
+    );
+    assert.equal(
+      unmeasured.skipped,
+      'typecheck_unmeasurable',
+      'the skip must leave by the SAME unmeasurable door as the two git axes and the timeout arm',
+    );
+    assert.equal(unmeasured.selfIntroduced.length, 0, 'nothing was measured, so nothing is self-introduced');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER7-02 control: a typecheck that genuinely RAN still yields a real sweep', async () => {
+  // Over-rejection control. Without it a fix could pass by calling every gate unmeasurable.
+  const { dir, base } = makeSlowTypecheckRepo('cg-apiter7b-control-');
+  try {
+    const swept = await runInterfaceChangeSweep({
+      workingDir: dir,
+      sessionDir: dir,
+      startCommit: base,
+      runGateFn: (opts) => runGate({ ...opts, _timeouts: { perCheck: { typecheck: 30_000 } } }),
+      logActivityFn: () => {},
+      ...SWEEP_ENUMERATORS,
+    });
+    assert.equal(swept.ran, true, 'a completed typecheck is a real measurement — the sweep must run on it');
+    assert.equal(swept.skipped, null, 'a sweep that RAN was never skipped');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER7-02 fence control: a runGateFn stub carrying NO check_status is still read as measured', async () => {
+  // This pins the RESIDUAL the fix deliberately leaves, and the reason it is safe.
+  // `isCheckUnmeasured` keys on the PRESENCE of a `check_status` record, so the five
+  // `runGateFn` stubs in `tests/microverse-interface-change-sweep.test.js` — bare
+  // `{ failures: [...] }`, no `check_status` — are unaffected. That file sits outside this
+  // loop's scope fence, so this behaviour is load-bearing, not incidental. If a future pass
+  // tightens the predicate to demand `check_status?.typecheck === 'ran'` outright, this case
+  // goes RED first and names the fixtures that must be updated in the same bundle.
+  const { dir, base } = makeUnclassifiableRepo('cg-apiter7b-fence-');
+  try {
+    const stubbed = await runInterfaceChangeSweep({
+      workingDir: dir,
+      sessionDir: dir,
+      startCommit: base,
+      runGateFn: async () => ({ failures: [] }),
+      logActivityFn: () => {},
+      ...UNCLASSIFIABLE_SWEEP_ENUMERATORS,
+    });
+    assert.equal(
+      stubbed.ran,
+      true,
+      'absent `check_status` means "not produced by runGate" — post-fix only a test double can ' +
+      'produce that shape, and narrowing it is a separate, fixture-owning change',
+    );
+    assert.equal(stubbed.skipped, null, 'a stub that reported no failures reports no skip either');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

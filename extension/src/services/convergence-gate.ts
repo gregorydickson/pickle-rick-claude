@@ -975,11 +975,53 @@ export function hasUnmeasuredCheck(checkStatus: Partial<Record<GateCheck, GateCh
   return Object.values(checkStatus).some((status) => status === 'failed');
 }
 
+/**
+ * AP-EXT-ITER7-02: the SECOND question about the same map — "do I hold positive evidence that
+ * THIS check produced a measurement?" — kept here, in the owner module, at the SAME polarity as
+ * `hasUnmeasuredCheck` (true means "no measurement"). It is not a second locally-derived
+ * predicate in a consumer, which is how AP-EXT-ITER6-01's three arms drifted apart; it is a
+ * different question the sweep genuinely asks, and the two must not be merged:
+ *
+ * - `hasUnmeasuredCheck` asks "did a check FAIL to measure?" and excludes `'skipped'` ON PURPOSE
+ *   — a refused/absent command is a decision, and folding it in would defer every iteration of
+ *   any repo whose `test` script the gate declines (a new abort condition, not a closed hole).
+ * - This asks for POSITIVE evidence about ONE named check, so `'skipped'` IS a miss: a whole-repo
+ *   typecheck the gate declined to attempt is not a typecheck that found nothing.
+ *
+ * `undefined` reads as measured — see the AP-EXT-ITER7-02 trap door in `CLAUDE.md`. Post-fix the
+ * only producer of a `check_status`-less `GateResult` is a TEST DOUBLE; every real `runGate` exit
+ * now carries one.
+ */
+export function isCheckUnmeasured(
+  checkStatus: Partial<Record<GateCheck, GateCheckStatus>> | undefined,
+  check: GateCheck,
+): boolean {
+  if (checkStatus === undefined) return false;
+  return checkStatus[check] !== 'ran';
+}
+
 export type GateCommandMap = { typecheck?: string; lint?: string; test?: string };
 type GateEmit = (event: string, data: Record<string, unknown>) => void;
 type ProjectType = NonNullable<ReturnType<typeof detectProjectType>>;
 
-function emptyGateResult(allowedPathsUsed = false): GateResult {
+/**
+ * AP-EXT-ITER7-02: every requested check recorded as `'skipped'` — the check_status a gate exit
+ * that ran NOTHING owes. Shared by all four early-skip producers and the drift result so
+ * `check_status` is TOTAL over `runGate`'s exits: absent now means "not produced by runGate",
+ * never "this gate measured everything".
+ */
+function skippedCheckStatus(checks: GateCheck[]): Partial<Record<GateCheck, GateCheckStatus>> {
+  const checkStatus: Partial<Record<GateCheck, GateCheckStatus>> = {};
+  for (const check of checks) checkStatus[check] = 'skipped';
+  return checkStatus;
+}
+
+/**
+ * AP-EXT-ITER7-02: `checks` is REQUIRED, not defaulted. A skip result cannot be constructed
+ * without declaring which checks it declined, so no present or future skip producer can hand a
+ * caller a green, zero-failure result carrying no record that it measured nothing.
+ */
+function emptyGateResult(checks: GateCheck[], allowedPathsUsed = false): GateResult {
   return {
     status: 'green',
     failures: [],
@@ -988,6 +1030,7 @@ function emptyGateResult(allowedPathsUsed = false): GateResult {
     elapsed_ms: 0,
     total_raw_failure_count: 0,
     new_failures_vs_baseline: 0,
+    check_status: skippedCheckStatus(checks),
   };
 }
 
@@ -1072,7 +1115,7 @@ function resolveGateTargetDirs(
     // return it directly without routing through finalizeGateResult, which
     // would otherwise report the skip as an executed gate_run_complete pass.
     emit('gate_skipped', { reason: 'no_changed_files' });
-    return { targetDirs: [], earlyResult: { ...emptyGateResult(), elapsed_ms: Date.now() - start } };
+    return { targetDirs: [], earlyResult: { ...emptyGateResult(opts.checks), elapsed_ms: Date.now() - start } };
   }
   if (workspacePackages.length > 0) {
     return { targetDirs: selectWorkspaceTargetDirs(opts, workspacePackages, allowedPathsUsed, changedFiles) };
@@ -1089,7 +1132,7 @@ function workerModeSkipResult(opts: RunGateOpts, start: number, emit: GateEmit):
   const dirtyLines = ((porcelainR.stdout as string | null) ?? '').split('\n').filter(Boolean);
   if (dirtyLines.length === 0) return null;
   emit('gate_skipped', { reason: 'dirty_worktree_no_rescue' });
-  return { ...emptyGateResult(), elapsed_ms: Date.now() - start };
+  return { ...emptyGateResult(opts.checks), elapsed_ms: Date.now() - start };
 }
 
 async function gitDriftResult(
@@ -1154,6 +1197,13 @@ function buildWorkingDirDriftResult(
     elapsed_ms: Date.now() - start,
     total_raw_failure_count: 1,
     new_failures_vs_baseline: 0,
+    // AP-EXT-ITER7-02: drift aborts BEFORE `collectGateFailures`, so this red carries no
+    // measurement either. Red is fail-closed for a `status`-keying consumer, but the no-disown
+    // sweep partitions failures instead: `<workingdir-drift>` matches no changed file and yields
+    // no identifier, so `classifyNoDisown` files it under `other` and an empty `selfIntroduced`
+    // would read as clean. Declare the skip here too and the totality invariant holds with no
+    // exceptions to remember.
+    check_status: skippedCheckStatus(opts.checks),
   };
 }
 
@@ -1577,12 +1627,12 @@ async function emitSkippedAndReturn(
 ): Promise<GateResult> {
   if (opts.mode === 'baseline' && opts.baselinePath) {
     // Nothing ran before this early skip — every requested check is 'skipped', never 'ran'.
-    const checkStatus: Partial<Record<GateCheck, GateCheckStatus>> = {};
-    for (const check of opts.checks) checkStatus[check] = 'skipped';
-    await persistGateBaseline(opts.baselinePath, opts, projectType, [], [], checkStatus, emit);
+    // Same map the returned result now carries, from the one `skippedCheckStatus` builder, so the
+    // persisted baseline and the in-memory result can never disagree about what was measured.
+    await persistGateBaseline(opts.baselinePath, opts, projectType, [], [], skippedCheckStatus(opts.checks), emit);
   }
   emit('gate_skipped', { reason, ...extra });
-  return { ...emptyGateResult(), elapsed_ms: Date.now() - start };
+  return { ...emptyGateResult(opts.checks), elapsed_ms: Date.now() - start };
 }
 
 const NON_CANDIDATE_CHILD_DIRS = new Set(['node_modules']);

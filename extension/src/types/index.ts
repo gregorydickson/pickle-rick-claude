@@ -1609,13 +1609,17 @@ export interface GateResult {
    * AP-EXT-ITER7-01: per-check `ran`/`skipped`/`failed`, the SAME map
    * `GateBaselineFile.check_status` persists — surfaced in-memory so a caller can ask whether a
    * check produced a real measurement instead of inferring it from the ABSENCE of failures, which
-   * a `<timeout>` pseudo-failure makes a lie. Read it through the one shared
-   * `convergence-gate.ts:hasUnmeasuredCheck`, never a locally-derived second predicate.
+   * a `<timeout>` pseudo-failure makes a lie. Read it through a shared predicate owned by
+   * `convergence-gate.ts` — `hasUnmeasuredCheck` (did a check FAIL to measure?) or
+   * `isCheckUnmeasured` (do I hold positive evidence THIS check ran?) — never a locally-derived
+   * second one in a consumer.
    *
-   * OPTIONAL because every gate SKIP path (off-repo `earlyResult`, `no_project_type_detected`,
-   * `project_type_low_confidence`, `workerModeSkipResult`, `gitDriftResult`) returns before any
-   * check is attempted, so it is absent there. Absent is therefore "this gate measured nothing",
-   * never "everything ran" — but `hasUnmeasuredCheck` cannot say so yet; see AP-EXT-ITER7-02.
+   * AP-EXT-ITER7-02: it is now TOTAL over `runGate`'s exits. The skip family (off-repo
+   * `earlyResult`, `no_project_type_detected`, `project_type_low_confidence`,
+   * `workerModeSkipResult`, `gitDriftResult`) attempts no check, so it declares every requested
+   * check `'skipped'` rather than returning green with no record at all. OPTIONAL only because a
+   * TEST DOUBLE standing in for `runGate` may omit it; absent therefore means "not produced by
+   * runGate", and no real gate result can read as "everything ran" without saying so.
    */
   check_status?: Partial<Record<'typecheck' | 'lint' | 'tests', 'ran' | 'skipped' | 'failed'>>;
 }

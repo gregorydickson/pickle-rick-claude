@@ -79,7 +79,7 @@ import {
   runGate,
   filterByScope,
   classifyNoDisown,
-  hasUnmeasuredCheck,
+  isCheckUnmeasured,
   getChangedExportedSymbols,
   getChangedFilesSince,
 } from '../services/convergence-gate.js';
@@ -1087,13 +1087,19 @@ export async function runInterfaceChangeSweep(opts: {
   // `ran: true` with an EMPTY `selfIntroduced` over a typecheck that never once ran — the exact
   // "absence of failures read as evidence" shape AP-EXT-ITER6-01 closed one layer down.
   //
-  // The question is asked with `hasUnmeasuredCheck`, the predicate that fix already made the ONE
-  // meeting point of all three no-measurement arms — not a second, locally-derived one. KNOWN
-  // BOUND (AP-EXT-ITER7-02, open): the SKIP family still reads as measured — an early skip
-  // carries no `check_status` at all, and a per-check `'skipped'` is excluded from the predicate
-  // on purpose for its baseline reader. Closing it needs positive evidence plus a TOTAL
-  // `check_status`, which reddens sweep fixtures outside this loop's scope fence.
-  if (hasUnmeasuredCheck(result.check_status ?? {})) {
+  // AP-EXT-ITER7-02 closes the SKIP half of that hole. The question is asked with ONE predicate
+  // owned by `convergence-gate.ts` — never a second, locally-derived one, which is how
+  // AP-EXT-ITER6-01's three arms drifted apart — but it is `isCheckUnmeasured`, not
+  // `hasUnmeasuredCheck`. The two ask different questions about the same map and must stay
+  // distinct: the baseline reader asks "did a check FAIL to measure?" and excludes `'skipped'` on
+  // purpose (folding it in there would defer every iteration of any repo whose test script the
+  // gate declines), while the sweep needs POSITIVE evidence that the whole-repo typecheck ran at
+  // all. A gate that SKIPPED it — off-repo `earlyResult`, `no_project_type_detected`,
+  // `project_type_low_confidence`, `workerModeSkipResult` — returns green with zero failures, and
+  // reading that as a clean typecheck is the same fake-green one door over. Narrowing from "any
+  // check" to `'typecheck'` loses nothing: this call requests only that check, and `'failed'` is
+  // still not `'ran'`, so the AP-EXT-ITER7-01 timeout case stays covered.
+  if (isCheckUnmeasured(result.check_status, 'typecheck')) {
     return { ran: false, skipped: 'typecheck_unmeasurable', selfIntroduced: [] };
   }
   const changedFiles = new Set(changedFilesList.map((f) => f.replace(/\\/g, '/')));
