@@ -21,7 +21,7 @@ import * as path from 'path';
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'child_process';
 import type { Backend, State } from '../types/index.js';
 import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, isMicroverseFailureExit, type MicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
-import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, type GraduationCounts, type FinalizeOpts } from '../services/state-manager.js';
+import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage, type GraduationCounts, type FinalizeOpts } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import {
   getExtensionRoot,
@@ -4913,15 +4913,8 @@ async function handlePhaseBoundaryRespawn(
 }
 
 export async function main(sessionDir: string, opts: MainOpts = {}): Promise<void> {
-  try {
-    assertSchemaVersionDeployParity();
-  } catch (err) {
-    if (err instanceof SchemaVersionDeployDriftError) {
-      process.stderr.write(`${safeErrorMessage(err)}\n`);
-      process.exit(1);
-    }
-    throw err;
-  }
+  const schemaDrift = schemaVersionDeployDriftMessage();
+  if (schemaDrift !== null) { process.stderr.write(`${schemaDrift}\n`); process.exit(1); }
   const log = createPipelineLog(sessionDir);
   log('pipeline-runner started');
   const runtime = loadPipelineRuntime(sessionDir, opts, log);

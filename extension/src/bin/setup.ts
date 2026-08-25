@@ -10,7 +10,7 @@ import { resolveMcpConfigPath, buildWorkerMcpConfig, hasMcpServersRecord } from 
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
 import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail } from './mux-runner.js';
 import { State, LockError, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
-import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid, writeActivityEntry } from '../services/state-manager.js';
+import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid, writeActivityEntry } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
 import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
 
@@ -1885,15 +1885,8 @@ function emitOrphanReapSummaryIfNonZero(
 }
 
 async function main() {
-  try {
-    assertSchemaVersionDeployParity();
-  } catch (err) {
-    if (err instanceof SchemaVersionDeployDriftError) {
-      process.stderr.write(`${safeErrorMessage(err)}\n`);
-      process.exit(1);
-    }
-    throw err;
-  }
+  const schemaDrift = schemaVersionDeployDriftMessage();
+  if (schemaDrift !== null) { process.stderr.write(`${schemaDrift}\n`); process.exit(1); }
   const paths = buildSetupPaths();
   ensureCoreDirectories(paths);
   pruneOldSessions(paths.sessionsRoot);

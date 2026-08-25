@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync } from 'child_process';
 import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, isMicroverseFailureExit } from '../types/index.js';
-import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError } from '../services/state-manager.js';
+import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, } from '../services/pickle-utils.js';
 import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
@@ -4197,15 +4197,10 @@ async function handlePhaseBoundaryRespawn(runtime, rawPhase, nextRawPhase) {
     setProducerDone(runtime, false);
 }
 export async function main(sessionDir, opts = {}) {
-    try {
-        assertSchemaVersionDeployParity();
-    }
-    catch (err) {
-        if (err instanceof SchemaVersionDeployDriftError) {
-            process.stderr.write(`${safeErrorMessage(err)}\n`);
-            process.exit(1);
-        }
-        throw err;
+    const schemaDrift = schemaVersionDeployDriftMessage();
+    if (schemaDrift !== null) {
+        process.stderr.write(`${schemaDrift}\n`);
+        process.exit(1);
     }
     const log = createPipelineLog(sessionDir);
     log('pipeline-runner started');

@@ -69,6 +69,31 @@ export function assertSchemaVersionDeployParity(): void {
   }
 }
 
+/**
+ * Query form of `assertSchemaVersionDeployParity` for CLI entry points: the operator-facing
+ * fatal message when the deployed runtime and the source schema version have drifted, or
+ * `null` when they agree.
+ *
+ * A stale deploy is a crash floor, and every `bin/` runner reacts to it identically — print
+ * the one-liner, exit 1 — so the four of them (`setup`, `mux-runner`, `pipeline-runner`,
+ * `microverse-runner`) each carried a byte-identical try/catch/instanceof/rethrow block at
+ * the head of `main()`. The exception plumbing is what was duplicated, not the decision:
+ * the `throw` here is caught one line later and never escapes. Collapsing it to a
+ * `string | null` leaves the callers with the exit DISPOSITION (which the
+ * `pickle/no-process-exit-in-library` layering rule keeps in `bin/`, not here) and nothing
+ * to re-derive about what counts as drift or what to say about it. A fifth entry point
+ * joins by calling this, not by copying nine lines.
+ */
+export function schemaVersionDeployDriftMessage(): string | null {
+  try {
+    assertSchemaVersionDeployParity();
+    return null;
+  } catch (err) {
+    if (err instanceof SchemaVersionDeployDriftError) return safeErrorMessage(err);
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // R-WSRC-1: Schema-version ceiling at write sites
 // ---------------------------------------------------------------------------

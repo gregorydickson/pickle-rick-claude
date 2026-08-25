@@ -6,7 +6,7 @@ import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
 import { PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
-import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive } from '../services/state-manager.js';
+import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
 import { buildManagerInvocation, resolveBackend, resolveBackendFromStateFileWithSource, backendEnvOverrides, sessionStampEnv } from '../services/backend-spawn.js';
@@ -8753,15 +8753,10 @@ export function detectPkgJsonVersionDrift(srcPath, depPath, statePath) {
     });
 }
 async function main() {
-    try {
-        assertSchemaVersionDeployParity();
-    }
-    catch (err) {
-        if (err instanceof SchemaVersionDeployDriftError) {
-            process.stderr.write(`${safeErrorMessage(err)}\n`);
-            process.exit(1);
-        }
-        throw err;
+    const schemaDrift = schemaVersionDeployDriftMessage();
+    if (schemaDrift !== null) {
+        process.stderr.write(`${schemaDrift}\n`);
+        process.exit(1);
     }
     await runMuxRunnerMain();
 }

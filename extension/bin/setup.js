@@ -10,7 +10,7 @@ import { resolveMcpConfigPath, buildWorkerMcpConfig, hasMcpServersRecord } from 
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
 import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail } from './mux-runner.js';
 import { LockError, BACKENDS, STATE_MANAGER_DEFAULTS } from '../types/index.js';
-import { StateManager, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, isProcessAlive, readMappedPid, writeActivityEntry } from '../services/state-manager.js';
+import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid, writeActivityEntry } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
 import { reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
@@ -1781,15 +1781,10 @@ function emitOrphanReapSummaryIfNonZero(statePath, result) {
     catch { /* best-effort telemetry — never block launch */ }
 }
 async function main() {
-    try {
-        assertSchemaVersionDeployParity();
-    }
-    catch (err) {
-        if (err instanceof SchemaVersionDeployDriftError) {
-            process.stderr.write(`${safeErrorMessage(err)}\n`);
-            process.exit(1);
-        }
-        throw err;
+    const schemaDrift = schemaVersionDeployDriftMessage();
+    if (schemaDrift !== null) {
+        process.stderr.write(`${schemaDrift}\n`);
+        process.exit(1);
     }
     const paths = buildSetupPaths();
     ensureCoreDirectories(paths);
