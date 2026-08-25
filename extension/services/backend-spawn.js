@@ -419,6 +419,40 @@ function emitMcpConfigResolved(mcpConfigPath, layer) {
     }
 }
 /**
+ * AC-4 — make the worker-MCP merge degradation LOUD.
+ *
+ * Both failure branches of `buildWorkerMcpConfig` used to write one bare stderr line
+ * and return operator passthrough with NO activity event, so a session in which the
+ * codegraph MCP server was never delivered was indistinguishable, downstream, from one
+ * in which it was. That is this codebase's dominant defect class: a failed operation
+ * read as a measured result. On a release/tarball install the codegraph bin does not
+ * resolve at all, so that silent branch is the DEFAULT path for real users, not an edge
+ * case — the symlink into the source repo that makes it resolve is a dev-box artifact.
+ *
+ * Reuses the already-registered `codegraph_degraded` event (see `ActivityEventType` and
+ * `activity-events.schema.json`) rather than minting a new type — no new event, no new
+ * setting key, no new exit_reason. Best-effort and non-throwing, exactly like its
+ * neighbour `emitMcpConfigResolved`: reporting can never be the thing that stops a run.
+ */
+function emitWorkerMcpMergeDegraded(reason, passthroughPath, detail) {
+    try {
+        logActivity({
+            event: 'codegraph_degraded',
+            source: 'pickle',
+            reason,
+            ...(detail ? { error: detail } : {}),
+            gate_payload: {
+                operation: 'worker_mcp_merge',
+                fallback: 'operator_passthrough',
+                passthrough_path: passthroughPath,
+            },
+        });
+    }
+    catch {
+        // best-effort: never block spawn on activity log failure
+    }
+}
+/**
  * Resolve the effective `--mcp-config` path + winning precedence layer for a spawn.
  * A per-spawn `opts.mcpConfig` override (the session-merged `worker-mcp.json` path
  * materialized at setup) wins as `session_merged`; otherwise fall back to the shared
@@ -476,8 +510,10 @@ function resolveCodegraphServeEntry(workingDir) {
  * Resolution:
  *   - `expose_mcp_to_workers !== true` (disabled) → operator passthrough: return
  *     `resolveMcpConfigPath(settings)` (or null); write nothing.
+ *   - `PICKLE_CODEGRAPH=off` (kill switch) → operator passthrough; write nothing (AC-8).
  *   - codegraph bin unresolvable OR write failure (merge-fail) → one degraded-style
- *     log line + operator passthrough.
+ *     log line, ONE `codegraph_degraded` activity event naming the reason (AC-4), and
+ *     operator passthrough. Never throws — a degraded merge is not a reason to stop.
  *   - otherwise → write `{ mcpServers: { codegraph, ...operatorEntries } }` and return
  *     the session path. Operator entries are spread LAST so an operator-supplied
  *     `codegraph` key WINS the name collision (intentional override). No operator
@@ -486,14 +522,25 @@ function resolveCodegraphServeEntry(workingDir) {
  * Invariants: the operator config file is never mutated; exactly one writer authority
  * (serve watcher OFF, see `resolveCodegraphServeEntry`).
  */
-export function buildWorkerMcpConfig(sessionDir, workingDir, settings, snapshotEntries) {
+export function buildWorkerMcpConfig(sessionDir, workingDir, settings, snapshotEntries, deps = {}) {
     const passthrough = () => resolveMcpConfigPath(settings) ?? null;
+    // AC-8 — `PICKLE_CODEGRAPH=off` disables EVERYTHING codegraph, including worker MCP
+    // delivery. Gated here (the single writer) rather than at the setup.ts call site so
+    // every present and future caller inherits it. Same shape as the disabled arm below:
+    // operator passthrough, nothing written, no throw. Not a degradation — the operator
+    // asked for this — so it is deliberately silent rather than emitting a degrade event.
+    const env = deps.env ?? process.env;
+    if (env['PICKLE_CODEGRAPH'] === 'off')
+        return passthrough();
     if (settings?.expose_mcp_to_workers !== true)
         return passthrough();
-    const codegraph = resolveCodegraphServeEntry(workingDir);
+    const resolveServeEntry = deps.resolveServeEntry ?? resolveCodegraphServeEntry;
+    const codegraph = resolveServeEntry(workingDir);
     if (!codegraph) {
         process.stderr.write('[backend-spawn] worker MCP merge degraded: codegraph bin unresolved; passthrough operator config\n');
-        return passthrough();
+        const fallback = passthrough();
+        emitWorkerMcpMergeDegraded('worker_mcp_bin_unresolved', fallback);
+        return fallback;
     }
     // Operator entries spread LAST → operator `codegraph` (if any) wins the collision.
     const mcpServers = { codegraph, ...(snapshotEntries ?? {}) };
@@ -507,7 +554,9 @@ export function buildWorkerMcpConfig(sessionDir, workingDir, settings, snapshotE
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[backend-spawn] worker MCP merge degraded: write failed (${msg}); passthrough operator config\n`);
-        return passthrough();
+        const fallback = passthrough();
+        emitWorkerMcpMergeDegraded('worker_mcp_merge_write_failed', fallback, msg);
+        return fallback;
     }
 }
 export function buildWorkerInvocation(backend, opts) {

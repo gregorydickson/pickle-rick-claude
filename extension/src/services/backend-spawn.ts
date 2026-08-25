@@ -539,6 +539,51 @@ function emitMcpConfigResolved(mcpConfigPath: string | null, layer: McpPrecedenc
 }
 
 /**
+ * Why the session-merged worker MCP config could not be materialized. Both members
+ * are DEGRADATIONS, never aborts: the run continues on the operator passthrough
+ * config in either case (PRIME DIRECTIVE).
+ */
+export type WorkerMcpDegradeReason = 'worker_mcp_bin_unresolved' | 'worker_mcp_merge_write_failed';
+
+/**
+ * AC-4 — make the worker-MCP merge degradation LOUD.
+ *
+ * Both failure branches of `buildWorkerMcpConfig` used to write one bare stderr line
+ * and return operator passthrough with NO activity event, so a session in which the
+ * codegraph MCP server was never delivered was indistinguishable, downstream, from one
+ * in which it was. That is this codebase's dominant defect class: a failed operation
+ * read as a measured result. On a release/tarball install the codegraph bin does not
+ * resolve at all, so that silent branch is the DEFAULT path for real users, not an edge
+ * case — the symlink into the source repo that makes it resolve is a dev-box artifact.
+ *
+ * Reuses the already-registered `codegraph_degraded` event (see `ActivityEventType` and
+ * `activity-events.schema.json`) rather than minting a new type — no new event, no new
+ * setting key, no new exit_reason. Best-effort and non-throwing, exactly like its
+ * neighbour `emitMcpConfigResolved`: reporting can never be the thing that stops a run.
+ */
+function emitWorkerMcpMergeDegraded(
+  reason: WorkerMcpDegradeReason,
+  passthroughPath: string | null,
+  detail?: string,
+): void {
+  try {
+    logActivity({
+      event: 'codegraph_degraded',
+      source: 'pickle',
+      reason,
+      ...(detail ? { error: detail } : {}),
+      gate_payload: {
+        operation: 'worker_mcp_merge',
+        fallback: 'operator_passthrough',
+        passthrough_path: passthroughPath,
+      },
+    });
+  } catch {
+    // best-effort: never block spawn on activity log failure
+  }
+}
+
+/**
  * Resolve the effective `--mcp-config` path + winning precedence layer for a spawn.
  * A per-spawn `opts.mcpConfig` override (the session-merged `worker-mcp.json` path
  * materialized at setup) wins as `session_merged`; otherwise fall back to the shared
@@ -596,6 +641,22 @@ function resolveCodegraphServeEntry(workingDir: string): McpServerEntry | null {
 }
 
 /**
+ * Optional injected dependencies for `buildWorkerMcpConfig`. Both fields are test
+ * seams and both default to the production behaviour, so every existing call site is
+ * unaffected.
+ *
+ * `resolveServeEntry` exists because the real `resolveCodegraphServeEntry` returns
+ * `null` only when `@colbymchenry/codegraph` genuinely fails to resolve — which a
+ * hermetic test cannot arrange without uninstalling the package from the developer's
+ * tree. Without this seam the degraded branch is untestable, which is how it stayed
+ * silent (AC-4).
+ */
+export interface BuildWorkerMcpConfigDeps {
+  resolveServeEntry?: (workingDir: string) => McpServerEntry | null;
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
  * C7 — Claude-family-ONLY session-merged worker MCP config.
  *
  * Materializes `<sessionDir>/mcp/worker-mcp.json` merging the operator's snapshotted
@@ -606,8 +667,10 @@ function resolveCodegraphServeEntry(workingDir: string): McpServerEntry | null {
  * Resolution:
  *   - `expose_mcp_to_workers !== true` (disabled) → operator passthrough: return
  *     `resolveMcpConfigPath(settings)` (or null); write nothing.
+ *   - `PICKLE_CODEGRAPH=off` (kill switch) → operator passthrough; write nothing (AC-8).
  *   - codegraph bin unresolvable OR write failure (merge-fail) → one degraded-style
- *     log line + operator passthrough.
+ *     log line, ONE `codegraph_degraded` activity event naming the reason (AC-4), and
+ *     operator passthrough. Never throws — a degraded merge is not a reason to stop.
  *   - otherwise → write `{ mcpServers: { codegraph, ...operatorEntries } }` and return
  *     the session path. Operator entries are spread LAST so an operator-supplied
  *     `codegraph` key WINS the name collision (intentional override). No operator
@@ -621,17 +684,29 @@ export function buildWorkerMcpConfig(
   workingDir: string,
   settings: { worker_mcp_config_path?: string | null; expose_mcp_to_workers?: boolean } | undefined,
   snapshotEntries: Record<string, unknown> | null,
+  deps: BuildWorkerMcpConfigDeps = {},
 ): string | null {
   const passthrough = (): string | null => resolveMcpConfigPath(settings) ?? null;
 
+  // AC-8 — `PICKLE_CODEGRAPH=off` disables EVERYTHING codegraph, including worker MCP
+  // delivery. Gated here (the single writer) rather than at the setup.ts call site so
+  // every present and future caller inherits it. Same shape as the disabled arm below:
+  // operator passthrough, nothing written, no throw. Not a degradation — the operator
+  // asked for this — so it is deliberately silent rather than emitting a degrade event.
+  const env = deps.env ?? process.env;
+  if (env['PICKLE_CODEGRAPH'] === 'off') return passthrough();
+
   if (settings?.expose_mcp_to_workers !== true) return passthrough();
 
-  const codegraph = resolveCodegraphServeEntry(workingDir);
+  const resolveServeEntry = deps.resolveServeEntry ?? resolveCodegraphServeEntry;
+  const codegraph = resolveServeEntry(workingDir);
   if (!codegraph) {
     process.stderr.write(
       '[backend-spawn] worker MCP merge degraded: codegraph bin unresolved; passthrough operator config\n',
     );
-    return passthrough();
+    const fallback = passthrough();
+    emitWorkerMcpMergeDegraded('worker_mcp_bin_unresolved', fallback);
+    return fallback;
   }
 
   // Operator entries spread LAST → operator `codegraph` (if any) wins the collision.
@@ -648,7 +723,9 @@ export function buildWorkerMcpConfig(
     process.stderr.write(
       `[backend-spawn] worker MCP merge degraded: write failed (${msg}); passthrough operator config\n`,
     );
-    return passthrough();
+    const fallback = passthrough();
+    emitWorkerMcpMergeDegraded('worker_mcp_merge_write_failed', fallback, msg);
+    return fallback;
   }
 }
 

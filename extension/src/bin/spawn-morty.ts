@@ -3121,8 +3121,22 @@ export function buildWorkerSpawnEnv(ctx: WorkerProcessContext, invocation: Retur
  * materialized by setup.ts:materializeWorkerMcpConfig at session init. Only forwarded
  * for the claude backend — other backends don't accept --mcp-config and
  * buildWorkerInvocation routes them away from the clause that reads this field.
+ *
+ * AC-8: `PICKLE_CODEGRAPH=off` gates the READER as well as the writer. Gating only the
+ * writer would leave a `worker-mcp.json` materialized by an earlier kill-switch-OFF
+ * session still reaching the spawned argv on resume — i.e. "disables everything" would
+ * be false in exactly the case a kill switch gets reached for.
+ *
+ * Exported so tests can assert the real delivery chain (session dir -> resolved path ->
+ * spawned argv) without spawning a process — the same idiom as `buildWorkerSpawnEnv`.
+ * AC-2 requires asserting on the SPAWNED ARGV and the FILE, never on the settings value.
  */
-function resolveSessionWorkerMcpConfig(args: ParsedArgs, sessionRoot: string): string | undefined {
+export function resolveSessionWorkerMcpConfig(
+  args: ParsedArgs,
+  sessionRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (env['PICKLE_CODEGRAPH'] === 'off') return undefined;
   const sessionMcpPath = path.join(sessionRoot, 'mcp', 'worker-mcp.json');
   return args.backend === 'claude' && fs.existsSync(sessionMcpPath)
     ? sessionMcpPath
