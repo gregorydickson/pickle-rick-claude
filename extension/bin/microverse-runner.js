@@ -1705,29 +1705,61 @@ async function measureMetricWithRetry(validation, timeoutSeconds, cwd) {
         lastError: second.message ?? first.message ?? null,
     };
 }
-async function measureLlmMetricAttempt(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, backend = 'claude', priorViolations = [], allowedPaths = []) {
-    // The judge always runs via the claude binary, even when state.backend=codex.
-    // codex on ChatGPT accounts rejects claude-sonnet-4-6 as unsupported, causing
-    // silent false-convergence (BestScore: 0). Worker iteration spawns continue
-    // to honor state.backend; only the judge is pinned to claude.
+/**
+ * Builds the judge argv for one attempt.
+ *
+ * The judge always runs via the claude binary, even when state.backend=codex:
+ * codex on ChatGPT accounts rejects claude-sonnet-4-6 as unsupported, causing
+ * silent false-convergence (BestScore: 0). Worker iteration spawns continue to
+ * honor state.backend; only the judge is pinned to claude (R-SCJM-5).
+ *
+ * buildJudgeInvocation gives the read-only judge path: --allowedTools
+ * Read,Glob,Grep + --no-session-persistence + --system-prompt. The judge MUST
+ * NOT write, edit, or execute — do NOT swap in buildWorkerInvocation here, it
+ * grants full FS write access.
+ */
+function buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, judgeContextPath, priorViolations, allowedPaths) {
     const model = judgeModel || DEFAULT_JUDGE_MODEL;
     const userPrompt = buildJudgePrompt(goal, cwd, history, prdPath, judgeContextPath, priorViolations, allowedPaths);
-    // Always use the claude judge path: --allowedTools Read,Glob,Grep +
-    // --no-session-persistence + --system-prompt. The judge MUST NOT write,
-    // edit, or execute. Do NOT pass buildWorkerInvocation here — that grants
-    // full FS write access.
-    const invocation = buildJudgeInvocation('claude', {
+    const { cmd, args } = buildJudgeInvocation('claude', {
         prompt: userPrompt,
         addDirs: [cwd],
         model,
         systemPrompt: JUDGE_SYSTEM_PROMPT,
     });
-    const { cmd, args } = invocation;
-    const toAttemptFailureKind = (c) => {
-        if (c.failureKind === 'spawn_failed' || c.failureKind === 'unknown')
-            return 'failed';
-        return c.failureKind;
+    return { cmd, args, model };
+}
+function toAttemptFailureKind(c) {
+    if (c.failureKind === 'spawn_failed' || c.failureKind === 'unknown')
+        return 'failed';
+    return c.failureKind;
+}
+/** Maps a judge spawn throw onto a typed attempt failure. Never rethrows. */
+function judgeAttemptFromSpawnError(err, backend, model) {
+    const msg = safeErrorMessage(err);
+    process.stderr.write(`[microverse] measureLlmMetric failed (judge_backend=claude, session_backend=${backend}, model=${model}): ${msg}\n`);
+    const classified = classifyJudgeError(err);
+    return {
+        metric: null,
+        failureKind: toAttemptFailureKind(classified),
+        message: msg,
+        typedFailure: classified.failureKind === 'unknown' ? undefined : classified,
     };
+}
+/** Maps judge stdout onto an attempt; non-numeric output is a 'failed' attempt. */
+function judgeAttemptFromOutput(output) {
+    const score = extractScore(output);
+    if (score === null) {
+        return {
+            metric: null,
+            failureKind: 'failed',
+            message: 'judge output did not contain a numeric score',
+        };
+    }
+    return { metric: { raw: output, score } };
+}
+async function measureLlmMetricAttempt(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, backend = 'claude', priorViolations = [], allowedPaths = []) {
+    const { cmd, args, model } = buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, judgeContextPath, priorViolations, allowedPaths);
     let output;
     try {
         if (process.env['PICKLE_JUDGE_LEGACY_SPAWN'] === '1') {
@@ -1763,25 +1795,9 @@ async function measureLlmMetricAttempt(goal, timeoutSeconds, cwd, judgeModel, hi
         }
     }
     catch (err) {
-        const msg = safeErrorMessage(err);
-        process.stderr.write(`[microverse] measureLlmMetric failed (judge_backend=claude, session_backend=${backend}, model=${model}): ${msg}\n`);
-        const classified = classifyJudgeError(err);
-        return {
-            metric: null,
-            failureKind: toAttemptFailureKind(classified),
-            message: msg,
-            typedFailure: classified.failureKind === 'unknown' ? undefined : classified,
-        };
+        return judgeAttemptFromSpawnError(err, backend, model);
     }
-    const score = extractScore(output);
-    if (score === null) {
-        return {
-            metric: null,
-            failureKind: 'failed',
-            message: 'judge output did not contain a numeric score',
-        };
-    }
-    return { metric: { raw: output, score } };
+    return judgeAttemptFromOutput(output);
 }
 const DEFAULT_PROBE_TIMEOUT_MS = 5000;
 const MAX_PROBE_TIMEOUT_MS = 60000;
