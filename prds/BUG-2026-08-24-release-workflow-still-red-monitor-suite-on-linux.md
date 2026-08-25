@@ -1,3 +1,56 @@
+> **⛔ THIS PRD'S BANNER IS FALSIFIED. Refined 2026-08-25; the corrections are binding.**
+>
+> **RETRACTED: "the failures are Linux-only and this host is darwin, so the verification loop is CI
+> itself — a green local tier proves nothing."** All three analysts refuted it by running the
+> measurement, and the operator re-verified at HEAD:
+>
+> ```
+> /opt/homebrew/opt/node@22/bin/node --test tests/monitor.test.js
+> # tests 74 · pass 54 · fail 0 · cancelled 20        ← 9.6 seconds, on THIS darwin host
+> ```
+>
+> **Node 22 is already installed here** — `v22.23.2` (`/opt/homebrew/opt/node@22/bin/node`) and
+> `v22.12.0` (`/usr/local/bin/node`). **The axis is the Node version, not the platform.** The author
+> only ever ran node 24 (per the standing "pin node 24" precondition) and concluded from its absence
+> that the failures were platform-specific. They reproduce locally in **ten seconds**.
+>
+> **Cost of the error:** the PRD instructed the bundle to budget for ~20-minute tag-push CI round trips
+> as its verification loop. The real loop is a 9.6-second local command. Verify locally under Node 22;
+> use CI only for the final AC-1 proof.
+>
+> **⚠️ NEW — the defect class is baked into the REPORTER.** node:test prints **`# fail 0`** on the same
+> summary as **`# cancelled 20`**. A gate, a script, or a human reading `fail` as the health signal sees
+> zero failures while twenty tests never ran. **No AC in this bundle may use `fail` alone as evidence;
+> `cancelled` must be read and reported alongside it.**
+>
+> **⚠️ NEW — `tests/QUARANTINE.md` is a sanctioned dodge that beats every proposed guard.** It is wired
+> (`scripts/audit-quarantine.sh` + 3 tests), currently empty, and permits audit-green entries. Quarantining
+> the 20 cancelled tests would clear AC-1 with **zero product change** and pass every anti-fake-green
+> check. **Forbidden by AC-5 below.**
+>
+> **Still current (re-verified):** `release.yml` run `32795387967` for v2.1.0-beta.15 is the **14th
+> consecutive failure**, dying at `Install and compile` with `Create release` skipped, and the failing
+> set is **identical** to beta.14's — `R-MDS-3`, `R-MDS-4`, `monitor CLI`, `renderDashboard`,
+> `writeWithWatchdog`, `R-MWBG`.
+>
+> ## Binding ACs (supersede those below)
+>
+> - **AC-1′** `monitor.test.js` under **Node 22** reports **`cancelled 0`** with pass-count not reduced.
+>   Verified by the 10-second local command; report the full `tests/pass/fail/cancelled` line. Then, and
+>   only then, prove it in CI.
+> - **AC-2′** The fix targets `extension/src/bin/monitor.ts` — **product code**, the deliberately
+>   `.unref()`'d watchdog timer — not the test file. The cascade origin is `monitor.test.js:746`,
+>   `failureType: 'cancelledByParent'`.
+> - **AC-3′** `R-MWBG: send-to-morty.md deployed copy matches the repo copy` is a **deploy-parity**
+>   assertion CI structurally cannot satisfy. Skip it in CI with a stated reason, or give it a
+>   CI-satisfiable form. **Do not delete the assertion.**
+> - **AC-4′ (no `fail`-only evidence).** Every measurement in this bundle reports `cancelled` alongside
+>   `fail`. Any claim resting on `fail 0` while `cancelled > 0` is void.
+> - **AC-5′ (quarantine forbidden).** No entry may be added to `tests/QUARANTINE.md` to satisfy any AC
+>   here. If the fix is genuinely impossible, say so and stop — do not quarantine.
+> - **AC-6′** A `release.yml` run reaches **`Create release`**. Evidence is a run URL and conclusion.
+> - **AC-7′ (PRIME DIRECTIVE)** No new halt path, no new `exit_reason`.
+
 > **✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — 2026-08-24 at HEAD `f0c95353`.**
 >
 > **Stale premise: PASSED (mechanism, not R-code).** The `.unref()`'d watchdog timer this PRD targets
