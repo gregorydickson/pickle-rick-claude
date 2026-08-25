@@ -7,7 +7,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CORPUS, DETECTABLE_CEILING } from '../services/did-we-count-corpus.js';
-import { replayCorpus, buildAstCheckRegistry } from '../bin/did-we-count-replay.js';
+import {
+  replayCorpus,
+  buildAstCheckRegistry,
+  extractEnclosingFunctionSnippet,
+  ruleFiresOnSnippet,
+} from '../bin/did-we-count-replay.js';
 
 const VALID_BUCKETS = new Set(['detectable', 'semantic', 'out-of-reach']);
 const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -107,4 +112,98 @@ test('replay wiring: exactly the 7 rule-covered detectable shas pass, everything
   const failCount = results.filter((r) => r.status === 'fail').length;
   assert.equal(passCount, 7, 'exactly 7 of 18 shas are replayed today — never stretch this number');
   assert.equal(failCount, 0);
+});
+
+// ===========================================================================
+// AP-EXT-ITER61-01 regression: the replay harness must never report an UNMEASURED
+// rule as "did not fire". `Linter.verify()` answers a parse failure with a single
+// `fatal` message carrying `ruleId: null`, which a bare
+// `.some(m => m.ruleId === ruleId)` reads as `false` — and because every AST check
+// expects `expect_fire_on_fix: false`, that silent `false` satisfies the fix-side
+// arm of the oracle having linted nothing. This is the did-we-count defect class
+// inside the did-we-count harness itself.
+//
+// The flow traced end to end below is the real one:
+//   historical file content
+//     -> extractEnclosingFunctionSnippet()   (can emit an unparseable snippet:
+//        a ts.isMethodDeclaration hit is returned bare, and `foo() { ... }` is
+//        not a standalone statement)
+//     -> ruleFiresOnSnippet()                (must refuse to answer, not say false)
+// ===========================================================================
+
+// `audit-subprocess-heavy-tests-missing-timeout.mjs` scans this file's SOURCE TEXT
+// for `spawnSync(`, so spelling the call inline inside these fixture strings would
+// register four phantom un-baselined callsites. The snippets below are lint fixture
+// INPUT, never executed here — building the callee from this constant keeps the
+// linted snippet byte-identical while leaving the audit nothing to match.
+const CAPTURE = 'spawnSync';
+
+test('AP-EXT-ITER61-01: extractEnclosingFunctionSnippet emits an unparseable snippet for a class method', () => {
+  const source = [
+    'class Runner {',
+    '  runIt(args) {',
+    `    return ${CAPTURE}('git', args, { encoding: 'utf-8' });`,
+    '  }',
+    '}',
+  ].join('\n');
+
+  const snippet = extractEnclosingFunctionSnippet(source, "spawnSync('git', args");
+
+  assert.equal(
+    snippet.startsWith('runIt(args)'),
+    true,
+    'a method declaration is returned bare — the arrow/function-expression wrap does not cover it',
+  );
+  assert.equal(
+    snippet.includes('class '),
+    false,
+    'the bare method body is NOT wrapped in a class, which is what makes it unparseable as a module',
+  );
+});
+
+test('AP-EXT-ITER61-01: ruleFiresOnSnippet throws on an unparseable snippet instead of answering false', () => {
+  const source = [
+    'class Runner {',
+    '  runIt(args) {',
+    `    return ${CAPTURE}('git', args, { encoding: 'utf-8' });`,
+    '  }',
+    '}',
+  ].join('\n');
+
+  const unparseable = extractEnclosingFunctionSnippet(source, "spawnSync('git', args");
+
+  assert.throws(
+    () => ruleFiresOnSnippet('pickle/require-max-buffer-on-capture', unparseable),
+    (err) => {
+      assert.match(err.message, /did not parse/);
+      assert.match(err.message, /never measured/);
+      return true;
+    },
+    'an unparsed snippet must surface as a thrown cannot-measure, never as a quiet "did not fire" that ' +
+      'vacuously satisfies expect_fire_on_fix: false',
+  );
+});
+
+test('AP-EXT-ITER61-01: a parseable snippet still reports both arms of the rule honestly', () => {
+  const firing = [
+    'function runIt() {',
+    `  return ${CAPTURE}('git', ['ls-files'], { encoding: 'utf-8' });`,
+    '}',
+  ].join('\n');
+  const fixed = [
+    'function runIt() {',
+    `  return ${CAPTURE}('git', ['ls-files'], { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });`,
+    '}',
+  ].join('\n');
+
+  assert.equal(
+    ruleFiresOnSnippet('pickle/require-max-buffer-on-capture', firing),
+    true,
+    'the defective shape must still fire — the throw must not have swallowed the firing path',
+  );
+  assert.equal(
+    ruleFiresOnSnippet('pickle/require-max-buffer-on-capture', fixed),
+    false,
+    'the fixed shape must still report a genuine, measured false',
+  );
 });

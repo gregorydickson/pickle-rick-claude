@@ -103,7 +103,7 @@ function readFileAtRef(repoRoot: string, ref: string, relPath: string): string {
  * enclosing `anchorIndex` and returns its source text, wrapped as a standalone
  * statement when the node itself is only an expression (arrow/function expression).
  */
-function extractEnclosingFunctionSnippet(content: string, anchor: string): string {
+export function extractEnclosingFunctionSnippet(content: string, anchor: string): string {
   const anchorIndex = content.indexOf(anchor);
   if (anchorIndex === -1) {
     throw new Error(`did-we-count-replay: anchor not found in source: ${JSON.stringify(anchor)}`);
@@ -132,12 +132,31 @@ function extractEnclosingFunctionSnippet(content: string, anchor: string): strin
 
 const replayLinter = new Linter();
 
-function ruleFiresOnSnippet(ruleId: string, snippet: string): boolean {
+/**
+ * A `Linter.verify()` parse failure comes back as a single `fatal` message with
+ * `ruleId: null` — indistinguishable, under a bare `.some(m => m.ruleId === ruleId)`,
+ * from "the rule ran and found nothing". Every AST check expects `fire_on_fix: false`,
+ * so that silent `false` would satisfy the fix-side arm of the oracle having linted
+ * NOTHING: the exact did-we-count defect class this corpus exists to prevent, inside
+ * its own replay harness. `extractEnclosingFunctionSnippet` can emit an unparseable
+ * snippet today — a `ts.isMethodDeclaration` hit is returned bare, and `foo() { ... }`
+ * is not a standalone statement — so this is a live path, not a hypothetical one.
+ * Throwing matches how the rest of this measurement path already reports
+ * cannot-measure (anchor not found / no enclosing function).
+ */
+export function ruleFiresOnSnippet(ruleId: string, snippet: string): boolean {
   const messages = replayLinter.verify(snippet, {
     languageOptions: { parser: tseslint.parser, ecmaVersion: 2022, sourceType: 'module' },
     plugins: { pickle },
     rules: { [ruleId]: 'error' },
   });
+  const fatal = messages.find((m) => m.fatal);
+  if (fatal) {
+    throw new Error(
+      `did-we-count-replay: snippet did not parse (${fatal.message}) — ${ruleId} was never measured, ` +
+      'and an unmeasured rule must not be reported as "did not fire"',
+    );
+  }
   return messages.some((m) => m.ruleId === ruleId);
 }
 
