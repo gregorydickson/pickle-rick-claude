@@ -8074,50 +8074,17 @@ export async function runMainLoopRateLimitPark(
   input: MainLoopRateLimitParkInput,
 ): Promise<MainLoopRateLimitParkOutcome> {
   const {
-    exitResult, consecutiveRateLimits, maxRateLimitRetries, rateLimitWaitMinutes,
-    maxParkMinutes, statePath, sessionDir, state, iteration, log,
+    exitResult, consecutiveRateLimits, rateLimitWaitMinutes,
+    statePath, sessionDir, state, iteration,
   } = input;
   const now = input.now ?? Date.now;
   const sleepFn = input.sleep ?? sleep;
   const session = path.basename(sessionDir);
 
-  logRateLimitDetected(log, exitResult, consecutiveRateLimits, maxRateLimitRetries);
+  const plan = planRateLimitPark(input, session);
+  if (plan.kind === 'exit') return plan;
 
-  // B5: cumulative park ceiling. Accumulate parked wall across this episode via
-  // the persisted park record; on exceed, emit (activity-only)
-  // rate_limit_park_exhausted and clean-exit via the EXISTING rate_limit_exhausted
-  // exit path (NEVER a new exit_reason).
-  const decision = decideRateLimitCycle(exitResult, consecutiveRateLimits, maxRateLimitRetries, rateLimitWaitMinutes, maxParkMinutes,
-    () => readRunnerState(statePath).rate_limit_park ?? null);
-  const rlAction = decision.rlAction;
-
-  if (decision.kind === 'bail') {
-    logActivity({ event: 'rate_limit_exhausted', source: 'pickle',
-      session, error: `max retries (${maxRateLimitRetries}) exceeded, no resetsAt available` });
-    recordExitReason(statePath, 'rate_limit_exhausted');
-    safeDeactivate(statePath);
-    return { kind: 'exit', exitReason: 'rate_limit_exhausted' };
-  }
-
-  const { waitMs: computedWaitMs, waitSource } = rlAction;
-  if (waitSource === 'api') {
-    log(`Parking on API reset: ${Math.ceil(computedWaitMs / 60_000)}min until reset (vs ${rateLimitWaitMinutes}min config default, clamped to ${maxParkMinutes}min ceiling).`);
-  }
-
-  // B5: no reset_at → never spawn-burn; fall back to now + configured min wait.
-  if (!rlAction.hasResetsAt) {
-    logActivity({ event: 'rate_limited_without_reset_at', source: 'pickle', session });
-  }
-
-  if (decision.kind === 'park_exhausted') {
-    logActivity({ event: 'rate_limit_park_exhausted', source: 'pickle', session });
-    log(`Cumulative rate-limit park exceeded ${maxParkMinutes}min ceiling — giving up cleanly for recovery.`);
-    recordExitReason(statePath, 'rate_limit_exhausted');
-    safeDeactivate(statePath);
-    return { kind: 'exit', exitReason: 'rate_limit_exhausted' };
-  }
-
-  const priorPark = decision.priorPark;
+  const { rlAction, priorPark } = plan;
   const resetAtSec = rlAction.resetAtEpochSec ?? null;
   const parkStartMs = now();
   armRateLimitPark({
@@ -8136,11 +8103,7 @@ export async function runMainLoopRateLimitPark(
   while (now() < resumeTargetMs) {
     await sleepFn(Defaults.RATE_LIMIT_POLL_MS);
     try {
-      if (readRunnerState(statePath).active !== true) {
-        recordExitReason(statePath, 'cancelled');
-        safeDeactivate(statePath);
-        return { kind: 'exit', exitReason: 'cancelled' };
-      }
+      if (readRunnerState(statePath).active !== true) return exitRateLimitPark(statePath, 'cancelled');
     } catch { /* proceed */ }
   }
 
@@ -8153,10 +8116,89 @@ export async function runMainLoopRateLimitPark(
     consecutiveRateLimits: rlAction.resetCounter ? 0 : consecutiveRateLimits,
     handoffContent: [
       buildIterationHandoffSummary(state, sessionDir, iteration + 1), '',
-      `NOTE: Resumed after ${parkedMinutes}-minute API rate limit park (source: ${waitSource}).`,
+      `NOTE: Resumed after ${parkedMinutes}-minute API rate limit park (source: ${rlAction.waitSource}).`,
       'Resume from current phase — do not repeat the rate-limited iteration.',
     ].join('\n'),
   };
+}
+
+/**
+ * The ONE construction site for this park's clean exit: stamp the forensic reason,
+ * flip `active` false, and hand the outcome back — inseparably.
+ *
+ * The three sites that used to spell this out (retry bail, B5 ceiling, operator
+ * cancel) each named their reason TWICE — once for `recordExitReason`, once for the
+ * returned `exitReason` — with nothing tying the two together. Stamping one reason
+ * and returning another is a silent divergence: `/pickle-status` reads the persisted
+ * stamp while `runMuxRunnerMain` branches on the return.
+ *
+ * B5: `rate_limit_exhausted` is the EXISTING exit path this park reuses.
+ * `rate_limit_park_exhausted` stays activity-only and is NEVER an `ExitReason`.
+ */
+function exitRateLimitPark(
+  statePath: string,
+  exitReason: ExitReason,
+): Extract<MainLoopRateLimitParkOutcome, { kind: 'exit' }> {
+  recordExitReason(statePath, exitReason);
+  safeDeactivate(statePath);
+  return { kind: 'exit', exitReason };
+}
+
+/**
+ * Everything the park decides BEFORE it burns any wall: the operator breadcrumbs,
+ * the B5 cycle verdict, and the two outcomes that never reach a sleep.
+ *
+ * Split out so the parent reads as the four wall-clock steps that actually happen —
+ * plan, arm, sleep, fold — and so the two non-parking exits (retry bail, cumulative
+ * ceiling) sit next to the verdict that produced them instead of being interleaved
+ * with the arm they skip.
+ *
+ * Returns the `park` arm of `RateLimitCycleDecision` verbatim rather than a fresh
+ * shape: the caller needs exactly the `rlAction`/`priorPark` pair `decideRateLimitCycle`
+ * already computed, and re-wrapping it would be a second place for those two facts to
+ * drift apart.
+ */
+function planRateLimitPark(
+  input: MainLoopRateLimitParkInput,
+  session: string,
+): Extract<MainLoopRateLimitParkOutcome, { kind: 'exit' }> | Extract<RateLimitCycleDecision, { kind: 'park' }> {
+  const {
+    exitResult, consecutiveRateLimits, maxRateLimitRetries,
+    rateLimitWaitMinutes, maxParkMinutes, statePath, log,
+  } = input;
+
+  logRateLimitDetected(log, exitResult, consecutiveRateLimits, maxRateLimitRetries);
+
+  // B5: cumulative park ceiling. Accumulate parked wall across this episode via
+  // the persisted park record; on exceed, emit (activity-only)
+  // rate_limit_park_exhausted and clean-exit via the EXISTING rate_limit_exhausted
+  // exit path (NEVER a new exit_reason).
+  const decision = decideRateLimitCycle(exitResult, consecutiveRateLimits, maxRateLimitRetries, rateLimitWaitMinutes, maxParkMinutes,
+    () => readRunnerState(statePath).rate_limit_park ?? null);
+  const rlAction = decision.rlAction;
+
+  if (decision.kind === 'bail') {
+    logActivity({ event: 'rate_limit_exhausted', source: 'pickle',
+      session, error: `max retries (${maxRateLimitRetries}) exceeded, no resetsAt available` });
+    return exitRateLimitPark(statePath, 'rate_limit_exhausted');
+  }
+
+  if (rlAction.waitSource === 'api') {
+    log(`Parking on API reset: ${Math.ceil(rlAction.waitMs / 60_000)}min until reset (vs ${rateLimitWaitMinutes}min config default, clamped to ${maxParkMinutes}min ceiling).`);
+  }
+
+  // B5: no reset_at → never spawn-burn; fall back to now + configured min wait.
+  if (!rlAction.hasResetsAt) {
+    logActivity({ event: 'rate_limited_without_reset_at', source: 'pickle', session });
+  }
+
+  if (decision.kind === 'park_exhausted') {
+    logActivity({ event: 'rate_limit_park_exhausted', source: 'pickle', session });
+    log(`Cumulative rate-limit park exceeded ${maxParkMinutes}min ceiling — giving up cleanly for recovery.`);
+    return exitRateLimitPark(statePath, 'rate_limit_exhausted');
+  }
+
+  return decision;
 }
 
 /** Operator breadcrumb for a detected rate limit, plus the API's own reset report. */
