@@ -28,6 +28,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEPLOYED_ROOT = path.join(os.homedir(), '.claude', 'pickle-rick');
 const TARBALL = path.resolve(__dirname, '../fixtures/loa-618-replay/loa-618-replay.tar.gz');
 
+// The managed-agents subdirectory name is sourced from install.sh's own MANAGED_AGENTS_DIR
+// assignment rather than duplicated as a second literal — see install.sh:625.
+const INSTALL_SH = path.resolve(__dirname, '../../../install.sh');
+const installShSrc = fs.readFileSync(INSTALL_SH, 'utf-8');
+const managedAgentsDirMatch = installShSrc.match(/MANAGED_AGENTS_DIR="\$AGENTS_DIR\/(\.[\w-]+)"/);
+if (!managedAgentsDirMatch) {
+  throw new Error(
+    'extension-wiring.test.js: could not find MANAGED_AGENTS_DIR in install.sh — installer agent-overlay layout may have changed'
+  );
+}
+const MANAGED_AGENTS_SUBDIR = managedAgentsDirMatch[1];
+
 async function extractLoa618() {
   const tmp = path.join(os.tmpdir(), 'ew-loa618-' + crypto.randomUUID());
   await fsPromises.mkdir(tmp, { recursive: true });
@@ -44,8 +56,19 @@ const DEPLOYED_PATHS = [
   path.join(DEPLOYED_ROOT, 'extension/bin/finalize-gate.js'),
   path.join(DEPLOYED_ROOT, 'extension/bin/spawn-gate-remediator.js'),
   path.join(DEPLOYED_ROOT, 'extension/data/gate-commands.json'),
-  path.join(os.homedir(), '.claude/agents/morty-gate-remediator.md'),
 ];
+
+// install.sh's agent overlay (install.sh:620-662) migrates or deletes the top-level agent copy
+// once the canonical .pickle-managed/ copy exists (install.sh:646-654) — the top-level path is
+// not a path the installer reliably produces, so check both locations.
+const GATE_REMEDIATOR_AGENT_FILENAME = 'morty-gate-remediator.md';
+const GATE_REMEDIATOR_LEGACY_PATH = path.join(os.homedir(), '.claude/agents', GATE_REMEDIATOR_AGENT_FILENAME);
+const GATE_REMEDIATOR_MANAGED_PATH = path.join(
+  os.homedir(),
+  '.claude/agents',
+  MANAGED_AGENTS_SUBDIR,
+  GATE_REMEDIATOR_AGENT_FILENAME
+);
 
 // B-CITAIL follow-up: these deploy-smoke tests validate an AMBIENT real deploy
 // (~/.claude/pickle-rick from `bash install.sh`). Their precondition is "install.sh
@@ -63,6 +86,14 @@ test('deploy smoke: gate bins and data exist after bash install.sh', { skip: DEP
     missing,
     [],
     `Missing deployed paths (run bash install.sh): ${missing.join(', ')}`
+  );
+  assert.ok(
+    fs.existsSync(GATE_REMEDIATOR_MANAGED_PATH) || fs.existsSync(GATE_REMEDIATOR_LEGACY_PATH),
+    `Gate-remediator agent not found at the managed install path (${GATE_REMEDIATOR_MANAGED_PATH}) ` +
+      `or a legacy override (${GATE_REMEDIATOR_LEGACY_PATH}). install.sh's agent overlay populates ` +
+      `the managed path via rsync (install.sh:660) — if both are absent, that rsync step did not run ` +
+      `or did not complete; re-running install.sh will NOT recreate a legacy top-level copy once the ` +
+      `managed copy exists, since install.sh removes it by design (install.sh:649).`
   );
 });
 
