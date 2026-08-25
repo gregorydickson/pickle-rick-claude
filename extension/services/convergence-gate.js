@@ -822,6 +822,30 @@ function escalateCheckStatus(prev, next) {
         return next;
     return GATE_CHECK_STATUS_RANK[next] > GATE_CHECK_STATUS_RANK[prev] ? next : prev;
 }
+/**
+ * AP-EXT-ITER6-01: the ONE predicate for "this gate inspected NOTHING for some check".
+ *
+ * Three distinct events mean that fact, and `collectGateFailures` already makes all three meet
+ * in exactly one place — `checkStatus[check] = 'failed'`: `classifyUnrunnableCheck` flagged the
+ * result, the per-check timeout fired (`outcome.timedOut`), or the cumulative gate deadline cut
+ * the loop off (`remaining <= 0`). Only the FIRST was ever exported to `runGate`, as
+ * `unrunnableCheck !== null` — so a check that timed out was persisted as a CERTIFIABLE baseline
+ * carrying `<check>::<timeout>::GATE_CHECK_TIMEOUT` as an ordinary pre-existing failure, and
+ * every later iteration that timed out the same way had that fingerprint subtracted and reported
+ * green over a check it never once ran.
+ *
+ * Reading the unified field is a strict WIDENING, never a new arm: `outcome.unrunnable` non-null
+ * always sets `nextStatus = 'failed'`, and 'failed' is rank-max so `escalateCheckStatus` can
+ * never downgrade it — the old signal is a subset of this one by construction.
+ *
+ * `'skipped'` is excluded ON PURPOSE. It means the check was never applicable (no command in the
+ * project-type map, or a test script `canRunTestScript` refuses to spawn), which is a decision,
+ * not a failed measurement. Folding it in here would defer every iteration of any repo whose
+ * `test` script the gate declines — a new abort condition, not a closed hole.
+ */
+function hasUnmeasuredCheck(checkStatus) {
+    return Object.values(checkStatus).some((status) => status === 'failed');
+}
 function emptyGateResult(allowedPathsUsed = false) {
     return {
         status: 'green',
@@ -1365,7 +1389,7 @@ export async function runGate(rawOpts) {
     logUnrunnableCheckIfBaseline(unrunnableCheck, opts.mode);
     const flakeGlobs = opts.settings?.convergence_gate?.known_flake_files ?? [];
     const { real: realFailures, flake: flakeFailures } = applyFlakeFilter(allFailures, opts.workingDir, flakeGlobs);
-    const baseline = await handleBaselineMode(opts, projectType, allowedPathsUsed, realFailures, start, emit, unrunnableCheck !== null, checkStatus);
+    const baseline = await handleBaselineMode(opts, projectType, allowedPathsUsed, realFailures, start, emit, hasUnmeasuredCheck(checkStatus), checkStatus);
     if (baseline)
         return finalizeGateResult(opts, emit, baseline);
     const flake = await knownFlakeResult(opts, allFailures, realFailures, flakeFailures, allowedPathsUsed, start, emit);

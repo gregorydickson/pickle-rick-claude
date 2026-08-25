@@ -356,3 +356,188 @@ test("AC-5': a baseline file written without check_status still loads (backward 
     rm(workingDir);
   }
 });
+
+// ===========================================================================
+// AP-EXT-ITER6-01: the TIMEOUT arm of the same fact R-SZGB-D closed for the unrunnable arm.
+//
+// A check that timed out inspected NOTHING, exactly like a check whose command was missing.
+// Pre-fix, `runGate` derived the uncertifiable flag from `unrunnableCheck !== null`, which
+// `runGateCheck`'s GateTimeoutError branch never sets — so the baseline persisted CERTIFIABLE
+// with `<check>::<timeout>::GATE_CHECK_TIMEOUT` recorded as an ordinary pre-existing failure,
+// and every later iteration that timed out the same way had that fingerprint subtracted and
+// reported green over a check that never once ran.
+//
+// Drives the REAL data flow end-to-end: a real npm project, the real `runGate` spawn, the real
+// persisted `gate/baseline.json`, and the real `isBaselineUncertifiable` consumer reached
+// through `handleWorkerManagedIteration` — never the predicate in isolation.
+// ===========================================================================
+
+// A real npm project whose `typecheck` script outlives the per-check timeout the gate is given,
+// while `lint`/`test` complete immediately — so the classification is driven by the timed-out
+// check specifically, not by a wholesale unrunnable project. The sleep is comfortably longer
+// than the injected timeout and comfortably shorter than the 120s production default, so the
+// SAME fixture times out under the small budget and runs clean under the real one.
+const TIMEOUT_FIXTURE_SLEEP_MS = 2000;
+const TIMEOUT_FIXTURE_BUDGET_MS = 250;
+
+function writeSlowTypecheckFixtureRepo(dir) {
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({
+      name: 'apext6-gate-fixture',
+      private: true,
+      scripts: {
+        typecheck: `node -e "setTimeout(() => process.exit(0), ${TIMEOUT_FIXTURE_SLEEP_MS})"`,
+        lint: 'node -e "process.exit(0)"',
+        test: 'node -e "process.exit(0)"',
+      },
+    }, null, 2),
+  );
+}
+
+async function captureBaselineWithTypecheckBudget(workingDir, sessionDir, perCheckTypecheckMs) {
+  return runGate({
+    workingDir,
+    mode: 'baseline',
+    scope: 'full',
+    checks: ['typecheck', 'lint', 'tests'],
+    baselinePath: path.join(sessionDir, 'gate', 'baseline.json'),
+    baselineIteration: 1,
+    _timeouts: { perCheck: { typecheck: perCheckTypecheckMs }, total: 120_000 },
+  });
+}
+
+function readBaseline(sessionDir) {
+  return JSON.parse(fs.readFileSync(path.join(sessionDir, 'gate', 'baseline.json'), 'utf-8'));
+}
+
+test('AP-EXT-ITER6-01: a TIMED-OUT check marks the baseline uncertifiable and refuses to certify a clean iteration', async () => {
+  const workingDir = makeGitRepo('apext6-timeout-repo-');
+  const sessionDir = mkTmp('apext6-timeout-session-');
+
+  try {
+    writeSlowTypecheckFixtureRepo(workingDir);
+    commitAll(workingDir, 'initial clean state');
+
+    await captureBaselineWithTypecheckBudget(workingDir, sessionDir, TIMEOUT_FIXTURE_BUDGET_MS);
+
+    const baseline = readBaseline(sessionDir);
+    assert.equal(
+      baseline.check_status.typecheck,
+      'failed',
+      'fixture precondition: the injected per-check budget must actually fire the typecheck timeout',
+    );
+    assert.ok(
+      baseline.failures.some((f) => f.check === 'typecheck' && f.ruleOrCode === 'GATE_CHECK_TIMEOUT'),
+      `fixture precondition: the timeout must be recorded as a failure, got ${JSON.stringify(baseline.failures)}`,
+    );
+    assert.equal(
+      baseline.project_type,
+      null,
+      'a timed-out check inspected NOTHING, so the baseline must carry the uncertifiable signal — ' +
+        'the same project_type: null the unrunnable arm already sets',
+    );
+
+    const preIterSha = headSha(workingDir);
+    fs.writeFileSync(
+      path.join(sessionDir, 'anatomy-park.json'),
+      JSON.stringify({ converged: true, reason: 'clean passes done' }),
+    );
+    fs.writeFileSync(path.join(workingDir, 'harmless.txt'), 'no regression here\n');
+    commitAll(workingDir, 'harmless clean commit under a timed-out typecheck check');
+
+    const result = await handleWorkerManagedIteration({
+      ...BASE_OPTS,
+      currentMv: makeMv({ key_metric: undefined }),
+      preIterSha,
+      workingDir,
+      sessionDir,
+      iteration: 1,
+      enabledFiles: ['anatomy-park.json'],
+      _deps: { writeMicroverseStateFn: () => {}, logActivityFn: () => {} },
+    });
+
+    assert.equal(
+      result.converged,
+      false,
+      'a baseline whose typecheck never ran must never certify convergence, even on a net-zero replay',
+    );
+    assert.equal(
+      result.selfRedOpen,
+      true,
+      'the uncertifiable-baseline defer must arm the existing R-ORSR-6 no-attrition latch (selfRedOpen)',
+    );
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+});
+
+// Over-rejection control: the SAME fixture under a realistic per-check budget completes, so the
+// widened predicate must leave an ordinary measured run fully certifiable. Without this, a fix
+// that marked every baseline uncertifiable would pass the headline case above.
+test('AP-EXT-ITER6-01 control: the same fixture under a realistic budget stays CERTIFIABLE', async () => {
+  const workingDir = makeGitRepo('apext6-control-repo-');
+  const sessionDir = mkTmp('apext6-control-session-');
+
+  try {
+    writeSlowTypecheckFixtureRepo(workingDir);
+    commitAll(workingDir, 'initial clean state');
+
+    await captureBaselineWithTypecheckBudget(workingDir, sessionDir, 60_000);
+
+    const baseline = readBaseline(sessionDir);
+    assert.equal(baseline.check_status.typecheck, 'ran', 'control precondition: typecheck must complete under a realistic budget');
+    assert.equal(
+      baseline.project_type,
+      'npm',
+      'a check that RAN is a measurement — widening the uncertifiable signal must not deem an ordinary run uncertifiable',
+    );
+    assert.deepEqual(
+      baseline.failures,
+      [],
+      'the control fixture is clean, so no failure (least of all a phantom timeout) may be baselined',
+    );
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+});
+
+// `'skipped'` must stay OUT of the predicate. This repo's own `test` script is refused by
+// canRunTestScript, so folding 'skipped' in would defer every anatomy-park iteration — a new
+// abort condition rather than a closed hole.
+test('AP-EXT-ITER6-01: a SKIPPED check is not an unmeasured one — a refused test script stays certifiable', async () => {
+  const workingDir = makeGitRepo('apext6-skipped-repo-');
+  const sessionDir = mkTmp('apext6-skipped-session-');
+
+  try {
+    fs.writeFileSync(
+      path.join(workingDir, 'package.json'),
+      JSON.stringify({
+        name: 'apext6-skipped-fixture',
+        private: true,
+        scripts: {
+          typecheck: 'node -e "process.exit(0)"',
+          lint: 'node -e "process.exit(0)"',
+          // `integration` is in UNSAFE_TEST_SCRIPT_REGEX, so canRunTestScript refuses to spawn it.
+          test: 'node -e "process.exit(0)" --integration',
+        },
+      }, null, 2),
+    );
+    commitAll(workingDir, 'initial clean state');
+
+    await captureBaselineWithTypecheckBudget(workingDir, sessionDir, 60_000);
+
+    const baseline = readBaseline(sessionDir);
+    assert.equal(baseline.check_status.tests, 'skipped', 'fixture precondition: the unsafe test script must be refused, not run');
+    assert.equal(
+      baseline.project_type,
+      'npm',
+      'a refused test script is a DECISION, not a failed measurement — it must not make the baseline uncertifiable',
+    );
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+});
