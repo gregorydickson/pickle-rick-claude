@@ -1685,6 +1685,41 @@ async function runOffRepoWorkerGateChecks(project, timeoutMs) {
     return { verdict, testsVerdict: toVerdict(tests.outcome), failed: dimensions.find(d => d.outcome === 'fail') ?? null };
 }
 /**
+ * The `not_run` record for an off-repo gate that resolved no project (no manifest,
+ * or a type with no command entry). Nothing was checked, so the honest answer is
+ * neither green nor red: persist the verdict and file the residual that names no
+ * gate as its author.
+ */
+function recordOffRepoGateNotRun(statePath, ticketId) {
+    persistWorkerGateVerdict(statePath, ticketId, 
+    // `applicable: false` short-circuits first, so the dimension flags below are never
+    // consulted. They are NOT arbitrary padding: `tscOk: false` is chosen so that if the
+    // `applicable` guard is ever deleted, this call degrades to `red` (fail-CLOSED) rather
+    // than to `green` — which would silently re-mint the not-run pass this bundle removes.
+    // Do not "tidy" these to `true`.
+    computeWorkerGateVerdict({ lintOk: true, tscOk: false, lintRan: false, lintUnrunnable: false, tscUnrunnable: false, applicable: false }), 'not_run');
+    emitWorkerGateNotRunResidual(statePath, ticketId, {
+        computedVia: 'not_applicable',
+        site: 'runWorkerGate',
+    });
+}
+/**
+ * Record a RED authored by the TARGET repo's own toolchain. Flagging is the whole
+ * disposition: the activity entry and the log line are the honest report, and
+ * neither halts the run (see `runOffRepoWorkerGate`'s `ok: true` contract).
+ */
+function flagOffRepoGateRed(statePath, ticketId, project, failed) {
+    writeActivityEntry(statePath, {
+        event: 'worker_gate_failed',
+        ticket_id: ticketId,
+        gate_phase: failed.phase,
+        failures: failed.failures,
+        retry_count: 0,
+        ts: new Date().toISOString(),
+    });
+    console.error(`[spawn-morty] target-repo gate RED (${project.projectType} @ ${project.dir}, phase ${failed.phase}) — flagged, not halting`);
+}
+/**
  * B-OFFREPO (AC-OFFREPO-2): the branch taken when this repo has no `extension/`
  * tree — i.e. every target repo, i.e. the entire autonomy use case.
  *
@@ -1714,34 +1749,14 @@ async function runOffRepoWorkerGate(fileList, args) {
     };
     const project = resolveWorkerGateProject(args.workingDir);
     if (!project) {
-        // No project type resolves (no manifest, or a type with no command entry).
-        // Nothing was checked, so the honest answer is neither green nor red.
-        persistWorkerGateVerdict(args.statePath, args.ticketId, 
-        // `applicable: false` short-circuits first, so the dimension flags below are never
-        // consulted. They are NOT arbitrary padding: `tscOk: false` is chosen so that if the
-        // `applicable` guard is ever deleted, this call degrades to `red` (fail-CLOSED) rather
-        // than to `green` — which would silently re-mint the not-run pass this bundle removes.
-        // Do not "tidy" these to `true`.
-        computeWorkerGateVerdict({ lintOk: true, tscOk: false, lintRan: false, lintUnrunnable: false, tscUnrunnable: false, applicable: false }), 'not_run');
-        emitWorkerGateNotRunResidual(args.statePath, args.ticketId, {
-            computedVia: 'not_applicable',
-            site: 'runWorkerGate',
-        });
+        recordOffRepoGateNotRun(args.statePath, args.ticketId);
         return { ...base, gatePhase: null, ok: true };
     }
     const timeoutMs = resolveWorkerTestGateTimeoutMs(args.workingDir);
     const { verdict, testsVerdict, failed: failedDimension } = await runOffRepoWorkerGateChecks(project, timeoutMs);
     persistWorkerGateVerdict(args.statePath, args.ticketId, verdict, testsVerdict);
     if (failedDimension) {
-        writeActivityEntry(args.statePath, {
-            event: 'worker_gate_failed',
-            ticket_id: args.ticketId,
-            gate_phase: failedDimension.phase,
-            failures: failedDimension.failures,
-            retry_count: 0,
-            ts: new Date().toISOString(),
-        });
-        console.error(`[spawn-morty] target-repo gate RED (${project.projectType} @ ${project.dir}, phase ${failedDimension.phase}) — flagged, not halting`);
+        flagOffRepoGateRed(args.statePath, args.ticketId, project, failedDimension);
     }
     return {
         ...base,
