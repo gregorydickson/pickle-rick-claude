@@ -980,6 +980,42 @@ function buildCodegraphEntries(
 }
 
 /**
+ * Run the two query batches one section build needs — term search, then caller lookup
+ * for the top hits — and return the ranked hits with their callers. Returns `null` when
+ * the graph yields nothing productive (`zero_hits`) or a batch times out / fails; the
+ * matching `codegraph_context_skipped` is already emitted in that case, so the caller
+ * carries ONE guard instead of the four status checks the two batches raise.
+ *
+ * Kept out of `buildCodegraphContextSection` so that function builds a section and does
+ * not also drive the query transport: the batched killable-subprocess boundary
+ * (AC-CGH-A1) — and the `timeout`/`failed` -> skip-reason mapping it forces — lives here.
+ */
+async function collectCodegraphHits(
+  service: CodegraphService,
+  terms: string[],
+  emitSkipped: (reason: CodegraphContextSkipReason) => void,
+): Promise<{ ranked: { node: CodegraphNodeLike }[]; callersMap: Record<string, unknown[]> } | null> {
+  // Batch #1: search terms. Group-killed on timeout in the child — never hangs the spawn.
+  const searchRes = await service.runQueryBatch(terms, []);
+  if (searchRes.status === 'timeout') { emitSkipped('query_timeout'); return null; }
+  if (searchRes.status === 'failed') { emitSkipped('query_failed'); return null; }
+  const ranked = rankCodegraphHits(searchRes.searches);
+  if (ranked.length === 0) { emitSkipped('zero_hits'); return null; }
+
+  // Batch #2: caller lookups for the top hits (only when there are ids to look up).
+  const callerIds = ranked
+    .slice(0, CODEGRAPH_CALLER_HITS)
+    .map((h) => h.node)
+    .filter((n): n is CodegraphNodeLike & { id: string } => typeof n.id === 'string')
+    .map((n) => n.id);
+  if (callerIds.length === 0) { return { ranked, callersMap: {} }; }
+  const cRes = await service.runQueryBatch([], callerIds);
+  if (cRes.status === 'timeout') { emitSkipped('query_timeout'); return null; }
+  if (cRes.status === 'failed') { emitSkipped('query_failed'); return null; }
+  return { ranked, callersMap: cRes.callers };
+}
+
+/**
  * Build the `## Code Graph Context` section, or `''` when absent. Absent on:
  * disabled settings, null service, non-graph tier (trivial), no derived terms,
  * or zero search hits. The service itself returns null on kill-switch / degraded /
@@ -1026,35 +1062,17 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
   const terms = deriveCodegraphTerms(title, ticketContent, CODEGRAPH_MAX_TERMS, { repoRoot: workingDir });
   if (terms.length === 0) { emitSkipped('no_terms'); return ''; }
 
-  // Batch #1: search terms. Group-killed on timeout in the child — never hangs the spawn.
-  const searchRes = await service.runQueryBatch(terms, []);
-  if (searchRes.status === 'timeout') { emitSkipped('query_timeout'); return ''; }
-  if (searchRes.status === 'failed') { emitSkipped('query_failed'); return ''; }
-  const ranked = rankCodegraphHits(searchRes.searches);
-  if (ranked.length === 0) { emitSkipped('zero_hits'); return ''; }
-
-  // Batch #2: caller lookups for the top hits (only when there are ids to look up).
-  const callerIds = ranked
-    .slice(0, CODEGRAPH_CALLER_HITS)
-    .map((h) => h.node)
-    .filter((n): n is CodegraphNodeLike & { id: string } => typeof n.id === 'string')
-    .map((n) => n.id);
-  let callersMap: Record<string, unknown[]> = {};
-  if (callerIds.length > 0) {
-    const cRes = await service.runQueryBatch([], callerIds);
-    if (cRes.status === 'timeout') { emitSkipped('query_timeout'); return ''; }
-    if (cRes.status === 'failed') { emitSkipped('query_failed'); return ''; }
-    callersMap = cRes.callers;
-  }
+  const hits = await collectCodegraphHits(service, terms, emitSkipped);
+  if (hits === null) return '';
 
   const summary = await service.buildContext({ title, description: ticketContent.slice(0, 500) });
   // 2e632f9a: node-level staleness verification runs here, upstream of `nodeLocation`
   // rendering and upstream of the frozen b1089e97 render-empty PATTERN_SHAPE below.
-  // `ranked.length > 0` is already guaranteed (checked above) — zero surviving located
+  // `hits.ranked.length > 0` is already guaranteed by `collectCodegraphHits` — zero located
   // nodes at this point is a productive `stale_refs` skip, never `zero_hits` (that
   // reason stays reserved for genuinely empty `ranked`, checked above, and the
   // render-empty PATTERN_SHAPE, unchanged below).
-  const built = buildCodegraphEntries(ranked, callersMap, summary, workingDir);
+  const built = buildCodegraphEntries(hits.ranked, hits.callersMap, summary, workingDir);
   if (built.locatedSurvivors === 0) { emitSkipped('stale_refs', built.droppedStale); return ''; }
   const entries = built.entries;
 
@@ -1072,7 +1090,7 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
     ticket: ticketId,
     tier,
     terms_count: terms.length,
-    hits_count: ranked.length,
+    hits_count: hits.ranked.length,
     bytes: Buffer.byteLength(section, 'utf-8'),
     build_ms: Math.max(0, Date.now() - start),
     dropped_stale: built.droppedStale,
