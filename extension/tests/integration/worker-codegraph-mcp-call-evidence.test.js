@@ -50,13 +50,19 @@ function loadCodeGraphOrSkipReason() {
   }
 }
 
-function makeFixture(prefix, files) {
+// Deliberately odd name: the semantic assertion greps the tool's answer for it, so it
+// must not collide with any real symbol in a repo the server might resolve instead.
+const FIXTURE_SYMBOL = 'pickleAc3Helper';
+const FIXTURE_SOURCE =
+  `export function ${FIXTURE_SYMBOL}(x: number): number { return x + 1; }\n`
+  + `export function pickleAc3Main(): number { return ${FIXTURE_SYMBOL}(41); }\n`;
+
+// Both tests need the SAME tree — the only difference between them is whether it gets
+// indexed, so the fixture must not vary or the control stops being a control.
+function makeFixture(prefix) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  for (const [rel, content] of Object.entries(files)) {
-    const abs = path.join(dir, rel);
-    fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, content);
-  }
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'src', 'a.ts'), FIXTURE_SOURCE);
   return dir;
 }
 
@@ -152,11 +158,7 @@ test('AC-3: a worker codegraph MCP tools/call returns a real result', { timeout:
   if (skip) return t.skip(skip);
   const { CodeGraph } = mod;
 
-  const workingDir = makeFixture('cg-ac3-indexed-', {
-    'src/a.ts':
-      'export function pickleAc3Helper(x: number): number { return x + 1; }\n'
-      + 'export function pickleAc3Main(): number { return pickleAc3Helper(41); }\n',
-  });
+  const workingDir = makeFixture('cg-ac3-indexed-');
   let sessionDir = null;
   try {
     // Index first. Without this assertion a silently-empty index would make the
@@ -172,7 +174,7 @@ test('AC-3: a worker codegraph MCP tools/call returns a real result', { timeout:
     const { initResult, reply } = await mcpToolCall(
       materialized.entry,
       'codegraph_search',
-      { query: 'pickleAc3Helper', limit: 5 },
+      { query: FIXTURE_SYMBOL, limit: 5 },
     );
 
     assert.ok(initResult && initResult.serverInfo, 'initialize returned serverInfo');
@@ -193,7 +195,7 @@ test('AC-3: a worker codegraph MCP tools/call returns a real result', { timeout:
     assert.ok(reply.result.content.length > 0, 'result.content is non-empty');
     const text = reply.result.content.map((c) => c.text || '').join('\n');
     assert.ok(
-      text.includes('pickleAc3Helper'),
+      text.includes(FIXTURE_SYMBOL),
       `result names the indexed fixture symbol; got: ${text.slice(0, 300)}`,
     );
 
@@ -203,7 +205,7 @@ test('AC-3: a worker codegraph MCP tools/call returns a real result', { timeout:
     process.stdout.write(
       `[AC-3 evidence] codegraph MCP tools/call server=${initResult.serverInfo.name}@${initResult.serverInfo.version} `
       + `tool=codegraph_search isError=${reply.result.isError === true} content_chars=${text.length} `
-      + `matched_symbol=pickleAc3Helper\n`,
+      + `matched_symbol=${FIXTURE_SYMBOL}\n`,
     );
   } finally {
     rmDir(workingDir);
@@ -219,9 +221,7 @@ test('AC-3 control: the same call on an UNINDEXED working dir comes back isError
   // would prove nothing — it would be passing on a call that cannot distinguish a
   // working index from a missing one. Asserting the BROKEN shape here is what gives
   // the success assertions their discriminating power.
-  const workingDir = makeFixture('cg-ac3-unindexed-', {
-    'src/a.ts': 'export function pickleAc3Helper(x: number): number { return x + 1; }\n',
-  });
+  const workingDir = makeFixture('cg-ac3-unindexed-');
   let sessionDir = null;
   try {
     assert.ok(
@@ -233,7 +233,7 @@ test('AC-3 control: the same call on an UNINDEXED working dir comes back isError
     const { reply } = await mcpToolCall(
       materialized.entry,
       'codegraph_search',
-      { query: 'pickleAc3Helper', limit: 5 },
+      { query: FIXTURE_SYMBOL, limit: 5 },
     );
 
     // The transport layer still succeeds here — that is the whole point.
