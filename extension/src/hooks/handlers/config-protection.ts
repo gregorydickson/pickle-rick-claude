@@ -733,8 +733,27 @@ export function detectProhibitedGitVerb(command: string): { verb: string } | nul
 }
 
 /**
- * R-CSIS-B1: Extract the file path argument from `node --test <path>` commands.
- * Returns the first non-flag token after `--test`, or null if the pattern doesn't match.
+ * R-CSIS-B1: Extract the candidate file path arguments from a `node --test`
+ * command. Returns EVERY bare word after `--test`, in order, or `[]` when the
+ * segment is not a `node --test` invocation.
+ *
+ * Every bare word, not "the first one": node options take OPERANDS and an
+ * operand is a bare word standing before the positional paths, so a scan that
+ * stopped at the first bare word stopped on the operand —
+ * `node --test --test-reporter spec <expensive>` yielded `spec`,
+ * `--test-name-pattern smoke` yielded `smoke`, `--test-concurrency 4` yielded
+ * `4`. `isExpensiveTestFile` then failed its read on that non-path and the
+ * guard APPROVED the soak (AP-EXT-ITER54-02; measured 8 of 12 forms, including
+ * the second axis `node --test benign.test.js <expensive>` where the first
+ * bare word IS a path but the wrong one). Same shape as AP-EXT-ITER54-01 one
+ * module over.
+ *
+ * Handing the caller the whole candidate list needs no operand table, which is
+ * the point: an enumerated list of operand-taking node options is the
+ * AP-EXT-ITER18-01/ITER19-01 incomplete-declaration shape, one release of node
+ * away from the next bypass. Over-reach is fail-safe in this guard's direction
+ * — an operand only reaches `block()` if it names a real file whose first line
+ * is `// @tier: expensive`, and blocking that is the conservative call.
  *
  * Tokenizes quote-aware via `tokenizeShellCommand` for the same reason the git
  * chain and `segmentInvokesInstallSh` do (the "quoted-token parity" trap door):
@@ -746,36 +765,31 @@ export function detectProhibitedGitVerb(command: string): { verb: string } | nul
  * in the file still on the bare split, and the residual the AP-EXT-EXECFOLD trap
  * door left open.
  */
-function extractNodeTestPathFromSegment(segment: string): string | null {
+function extractNodeTestPathsFromSegment(segment: string): string[] {
   const trimmed = segment.trim();
-  if (!trimmed) return null;
+  if (!trimmed) return [];
   const tokens = tokenizeShellCommand(trimmed);
   let idx = skipEnvAssignments(tokens);
   // execName, not a raw compare: `NODE --test <expensive>` and
   // `/usr/bin/node --test <expensive>` both really run node, and a raw
   // `!== 'node'` let them slip the expensive-test guard. Same fold as every
   // other exec-token compare in this file.
-  if (execName(tokens[idx]) !== 'node') return null;
-  idx++;
+  if (execName(tokens[idx]) !== 'node') return [];
+  const candidates: string[] = [];
   let foundTestFlag = false;
-  while (idx < tokens.length) {
+  for (idx++; idx < tokens.length; idx++) {
     const t = tokens[idx];
-    if (t === '--test') { foundTestFlag = true; idx++; continue; }
-    if (foundTestFlag && !t.startsWith('-')) return t;
-    idx++;
+    if (t === '--test') { foundTestFlag = true; continue; }
+    if (foundTestFlag && !t.startsWith('-')) candidates.push(t);
   }
-  return null;
+  return candidates;
 }
 
-function extractNodeTestPath(command: string): string | null {
-  if (!command) return null;
+function extractNodeTestPaths(command: string): string[] {
+  if (!command) return [];
   // Check every chained segment so `cd x && node --test <expensive>` cannot
   // smuggle the expensive-test invocation past the leading-command check.
-  for (const segment of splitShellSegments(command)) {
-    const hit = extractNodeTestPathFromSegment(segment);
-    if (hit) return hit;
-  }
-  return null;
+  return splitShellSegments(command).flatMap((segment) => extractNodeTestPathsFromSegment(segment));
 }
 
 /**
@@ -801,10 +815,14 @@ function isExpensiveTestFile(testPath: string, cwd: string): boolean {
 function isExpensiveNodeTestBlockedByRCSIS(input: PreToolUseInput, _state: State): boolean {
   if (input.tool_name !== 'Bash' || !input.tool_input?.command) return false;
   const command = input.tool_input.command;
-  const testPath = extractNodeTestPath(command);
-  if (!testPath) return false;
+  const candidates = extractNodeTestPaths(command);
+  if (candidates.length === 0) return false;
   const extensionDir = getExtensionRoot();
-  if (!isExpensiveTestFile(testPath, extensionDir)) return false;
+  // The FIRST candidate that is genuinely expensive-tier, not the first
+  // candidate: which token is the path and which is an option operand is not
+  // knowable without an operand table, so let the on-disk tier marker decide.
+  const testPath = candidates.find((candidate) => isExpensiveTestFile(candidate, extensionDir));
+  if (!testPath) return false;
 
   try {
     logActivity({

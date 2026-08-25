@@ -775,6 +775,117 @@ test('AP-EXT-ITER46-01: a quoted `node --test <expensive>` that is an ARGUMENT s
   }
 });
 
+// AP-EXT-ITER54-02: the replay of AP-EXT-ITER54-01 into this file's expensive-test
+// guard. `extractNodeTestPathFromSegment` returned the FIRST bare word after
+// `--test`, but node options take OPERANDS and an operand is a bare word standing
+// before the positional paths — so the scan stopped on `spec`/`smoke`/`4`,
+// `isExpensiveTestFile` failed its read on that non-path, and the guard APPROVED
+// the soak while the operand-free twin blocked. Measured pre-fix: 8 of 12 forms
+// approved. Every form below runs the expensive soak, so every one must block.
+test('AP-EXT-ITER54-02: worker blocks `node --test <expensive>` when an option OPERAND precedes the path', () => {
+  for (const command of [
+    'node --test --test-reporter spec soak.test.js',
+    'node --test --test-name-pattern smoke soak.test.js',
+    'node --test --test-concurrency 4 soak.test.js',
+    'node --test --test-shard 1/2 soak.test.js',
+    'node --test --test-timeout 60000 soak.test.js',
+    'node --test --test-reporter tap --test-concurrency 2 soak.test.js',
+    'cd extension && node --test --test-reporter spec soak.test.js',
+    'PICKLE_ROLE=worker /usr/bin/node --test --test-reporter spec "soak.test.js"',
+  ]) {
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'soak.test.js'), '// @tier: expensive\n');
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-CSIS-B1/);
+  }
+});
+
+// AP-EXT-ITER54-02, second axis: returning the FIRST bare word also lost the
+// expensive path when an earlier POSITIONAL was benign. `node --test <ok> <soak>`
+// runs both files, so the soak must still block.
+test('AP-EXT-ITER54-02: worker blocks a multi-path `node --test` where only a LATER path is expensive', () => {
+  for (const command of [
+    'node --test benign.test.js soak.test.js',
+    'node --test --test-reporter spec benign.test.js soak.test.js',
+  ]) {
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'benign.test.js'), '// @tier: fast\n');
+    fs.writeFileSync(path.join(tmpDir, 'soak.test.js'), '// @tier: expensive\n');
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-CSIS-B1/);
+  }
+});
+
+// The widened candidate scan must not invent a block: an option operand is only
+// a candidate, and a candidate only blocks when it names a real expensive-tier
+// file. Non-expensive test runs stay approved in every operand form.
+test('AP-EXT-ITER54-02: `node --test` over non-expensive files stays approved with operands present', () => {
+  for (const command of [
+    'node --test benign.test.js',
+    'node --test --test-reporter spec benign.test.js',
+    'node --test --test-concurrency 4 benign.test.js',
+    'node --test --test-name-pattern soak benign.test.js',
+  ]) {
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'benign.test.js'), '// @tier: fast\n');
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', JSON.stringify(command));
+  }
+});
+
+// Shape pin: the extractor must collect EVERY bare word after `--test` and hand
+// the whole list to the caller. A `return t` inside that scan — or an enumerated
+// operand-taking-option table, the AP-EXT-ITER18-01/ITER19-01 incomplete-set
+// shape — reintroduces AP-EXT-ITER54-02 one option name at a time.
+test('AP-EXT-ITER54-02: extractNodeTestPathsFromSegment collects all candidates, no operand table', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'),
+    'utf-8',
+  );
+  const body = source.slice(
+    source.indexOf('function extractNodeTestPathsFromSegment'),
+    source.indexOf('function extractNodeTestPaths('),
+  );
+  assert.ok(body.length > 0, 'extractNodeTestPathsFromSegment must exist');
+  assert.ok(
+    body.includes('candidates.push(t)'),
+    'extractor must accumulate every bare word after --test, not return the first',
+  );
+  assert.ok(
+    !/\breturn t\b/.test(body) && !/\bbreak\b/.test(body),
+    'extractor must not return or break out of the scan on the first bare word',
+  );
+  assert.match(
+    body,
+    /'--test'/,
+    'extractor keys on the --test flag itself',
+  );
+  // File-wide, not body-scoped: an operand table hoisted to module scope is the
+  // same incomplete-set shape, just parked one indent out of the extractor.
+  assert.equal(
+    (source.match(/'--test[a-z-]+'/g) || []).length,
+    0,
+    'config-protection.ts must not enumerate operand-taking node options (incomplete-set shape)',
+  );
+});
+
 test('R-CSIS-B1: recommended `RUN_EXPENSIVE_TESTS=1 npm run test:expensive` is NOT blocked', () => {
   const { tmpDir, stateFile } = bootstrapSession();
   const result = runHandler({
