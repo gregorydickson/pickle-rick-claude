@@ -8,7 +8,7 @@
     "query_timeout_ms": 5000,
     "staleness_max_age_minutes": 30,
     "context_max_bytes": 8192,
-    "expose_mcp_to_workers": false
+    "expose_mcp_to_workers": true
   },
   "microverse": {
     "judge_backend": "claude",

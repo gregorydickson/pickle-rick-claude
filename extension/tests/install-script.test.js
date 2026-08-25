@@ -317,7 +317,7 @@ function runCacheHygieneFixture(fixture) {
 
 // The MANAGED_KEYS jq transform, extracted verbatim so it can be asserted
 // byte-identical against the real install.sh jq expression (R2 lockstep).
-const MANAGED_KEYS_JQ_EXPR = 'del(.worker_test_gate_timeout_ms) | .codegraph.enabled = true | .codegraph.index_at_setup = true | .auto_update_enabled = false';
+const MANAGED_KEYS_JQ_EXPR = 'del(.worker_test_gate_timeout_ms) | .codegraph.enabled = true | .codegraph.index_at_setup = true | .codegraph.expose_mcp_to_workers = true | .auto_update_enabled = false';
 
 function buildKillSwitchForceFixtureScript(scriptDir) {
   return `#!/bin/bash
@@ -338,6 +338,7 @@ fi
 _managed_before_timeout="$(jq -r 'if .worker_test_gate_timeout_ms == null then "null" else (.worker_test_gate_timeout_ms | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
 _managed_before_cg_enabled="$(jq -r 'if .codegraph.enabled == null then "null" else (.codegraph.enabled | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
 _managed_before_cg_setup="$(jq -r 'if .codegraph.index_at_setup == null then "null" else (.codegraph.index_at_setup | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
+_managed_before_cg_expose="$(jq -r 'if .codegraph.expose_mcp_to_workers == null then "null" else (.codegraph.expose_mcp_to_workers | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
 _managed_before_auto_update="$(jq -r 'if .auto_update_enabled == null then "null" else (.auto_update_enabled | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
 
 TMPFILE="$(mktemp)"
@@ -353,6 +354,9 @@ if [ "$_managed_before_cg_enabled" != "true" ]; then
 fi
 if [ "$_managed_before_cg_setup" != "true" ]; then
   echo "[install.sh] MANAGED_KEYS forced codegraph.index_at_setup: \${_managed_before_cg_setup} -> true" >&2
+fi
+if [ "$_managed_before_cg_expose" != "true" ]; then
+  echo "[install.sh] MANAGED_KEYS forced codegraph.expose_mcp_to_workers: \${_managed_before_cg_expose} -> true" >&2
 fi
 if [ "$_managed_before_auto_update" != "false" ]; then
   echo "[install.sh] MANAGED_KEYS forced auto_update_enabled: \${_managed_before_auto_update} -> false" >&2
@@ -723,17 +727,17 @@ function extractManagedKeysJqFromInstallSh() {
 describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
   // AC-GTRUTH-B3-1 (upgrade path: deployed enabled=false -> true) and AC-GTRUTH-B3-2
   // (every sibling tunable survives) are asserted here together, because they are two
-  // halves of one claim about the SAME MANAGED_KEYS pass: it forces exactly two keys and
-  // touches nothing else in the codegraph block.
+  // halves of one claim about the SAME MANAGED_KEYS pass: it forces exactly the three
+  // codegraph booleans and touches nothing else in the codegraph block.
   //
   // Every sibling below is seeded with a value DIFFERENT from the source default
   // (index_timeout_ms 120000 / sync 30000 / query 5000 / staleness 30 / context 8192), so a
   // regression that overwrote the whole codegraph block with source values would be caught.
   // Seeding them at the defaults would let that regression pass by coincidence.
   //
-  // `expose_mcp_to_workers` is the one sibling seeded AT its default, and deliberately: it
-  // is a Non-Goal of this bundle ("stays false — separate C0-gated flip"), so what needs
-  // pinning is that MANAGED_KEYS neither flips it true nor drops the key.
+  // `expose_mcp_to_workers` is seeded false and forced true: as of e99b172b it is the FIFTH
+  // managed key, so the C7 worker-MCP lane is source-authoritative rather than inheriting a
+  // stale deployed false. The survivor set below is what MANAGED_KEYS must NOT touch.
   test('AC-GTRUTH-B3-1/B3-2 (AC-SSAT-3/6): strips timeout, forces codegraph on, preserves EVERY sibling tunable', () => {
     const deployedCodegraph = {
       enabled: false,
@@ -759,15 +763,17 @@ describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
       // AC-GTRUTH-B3-1 — the upgrade path, not just a fresh install.
       assert.equal(deployedSettings.codegraph.enabled, true);
       assert.equal(deployedSettings.codegraph.index_at_setup, true);
+      assert.equal(deployedSettings.codegraph.expose_mcp_to_workers, true);
 
       // AC-GTRUTH-B3-2 — the exhaustive survivor set, asserted as a whole object so a key
       // ADDED to the forced set is caught too. A per-key sweep would miss that.
       assert.deepEqual(
         deployedSettings.codegraph,
-        { ...deployedCodegraph, enabled: true, index_at_setup: true },
-        'MANAGED_KEYS must force exactly codegraph.enabled and codegraph.index_at_setup. Any '
-        + 'other difference means it now overwrites an operator tunable — and if that key is '
-        + 'expose_mcp_to_workers, the C0-gated MCP flip has shipped by accident.',
+        { ...deployedCodegraph, enabled: true, index_at_setup: true, expose_mcp_to_workers: true },
+        'MANAGED_KEYS must force exactly codegraph.enabled, codegraph.index_at_setup and '
+        + 'codegraph.expose_mcp_to_workers. Any other difference means it now overwrites an '
+        + 'operator tunable — the per-field jq has regressed to a whole-block `.codegraph = {...}` '
+        + 'assignment, which silently destroys staleness/context/timeout settings.',
       );
 
       assert.equal(deployedSettings.auto_update_enabled, false);
@@ -805,10 +811,15 @@ describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
     }
   });
 
+  // Every forced codegraph boolean must be seeded on the DEPLOYED side here. The fixture's
+  // source settings are a synthetic literal with no `codegraph` block at all (see
+  // makeKillSwitchForceFixture), so the repo's own pickle_settings.json defaults never reach
+  // this merge — an unseeded key reads back `null`, trips its `!= "true"` guard, and emits the
+  // very line this test asserts is absent.
   test('AC-SSAT-9: already-matching deployed values emit no observability line', () => {
     const fixture = makeKillSwitchForceFixture({
       deployedAutoUpdateEnabled: false,
-      deployedCodegraph: { enabled: true, index_at_setup: true },
+      deployedCodegraph: { enabled: true, index_at_setup: true, expose_mcp_to_workers: true },
     });
     try {
       const result = runKillSwitchForceFixture(fixture);
@@ -846,6 +857,63 @@ describe('install.sh MANAGED_KEYS force (source-authoritative)', () => {
       const producedRoot = path.dirname(fixture.deployedSettingsPath);
       assert.equal(resolveWorkerTestGateTimeoutMs(producedRoot, null, { PICKLE_WORKER_TEST_FAST_TIMEOUT_MS: '30000' }), 60_000);
       assert.equal(resolveWorkerTestGateTimeoutMs(producedRoot, null, { PICKLE_WORKER_TEST_FAST_TIMEOUT_MS: '600000' }), 600_000);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  // AC-1 (e99b172b) — the UPGRADE path is the whole defect, so it is tested on its own rather
+  // than folded into the fresh-install case. install.sh merges settings with
+  // `jq -s '.[0] * .[1]' <source> <deployed>`: the DEPLOYED file is the right operand, and jq's
+  // `*` gives the right operand per-key priority. So a deployed `expose_mcp_to_workers: false`
+  // beats a flipped source default, and flipping source alone is inert after a deploy. Only the
+  // MANAGED_KEYS force overrides it. A fresh-install-only test (no deployed file) never exercises
+  // that merge and would pass even with the force deleted.
+  test('AC-1: deployed expose_mcp_to_workers=false is forced true on upgrade, siblings survive', () => {
+    // Siblings seeded AWAY from the source defaults (120000/30000/5000/30/8192) so a regression
+    // to a whole-block `.codegraph = {...}` assignment — which would reinstate source values —
+    // is caught. Seeding them at their defaults would let that regression pass by coincidence.
+    const deployedCodegraph = {
+      enabled: true,
+      index_at_setup: true,
+      index_timeout_ms: 111000,
+      sync_timeout_ms: 22000,
+      query_timeout_ms: 3300,
+      staleness_max_age_minutes: 15,
+      context_max_bytes: 4444,
+      expose_mcp_to_workers: false,
+    };
+    const fixture = makeKillSwitchForceFixture({
+      deployedAutoUpdateEnabled: false,
+      deployedCodegraph,
+    });
+    try {
+      const result = runKillSwitchForceFixture(fixture);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      const deployedSettings = readJson(fixture.deployedSettingsPath);
+
+      // The AC-1 core: deployed said false, deploy must read true.
+      assert.equal(
+        deployedSettings.codegraph.expose_mcp_to_workers,
+        true,
+        'a pre-existing deployed `false` must not survive the deploy — if it does, the C7 '
+        + 'worker-MCP flip is inert and buildWorkerMcpConfig stays on the passthrough branch.',
+      );
+
+      // Sibling-survival pin: the documented hazard of this force is a whole-block assignment.
+      // Compared as a whole object rather than key-by-key so a DROPPED or ADDED sibling fails too.
+      assert.deepEqual(
+        deployedSettings.codegraph,
+        { ...deployedCodegraph, expose_mcp_to_workers: true },
+        'expose_mcp_to_workers must be the ONLY key this force changes; every sibling tunable '
+        + 'must survive at its deployed value.',
+      );
+
+      assert.match(
+        result.stderr,
+        /MANAGED_KEYS forced codegraph\.expose_mcp_to_workers: false -> true/,
+        'the forced transition must be observable in the deploy log, same shape as its siblings',
+      );
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }

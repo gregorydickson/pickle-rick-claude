@@ -30,5 +30,7 @@ test('AC-GA-CG-1: other codegraph fields remain present and unchanged', () => {
   assert.equal(codegraph.query_timeout_ms, 5000);
   assert.equal(codegraph.staleness_max_age_minutes, 30);
   assert.equal(codegraph.context_max_bytes, 8192);
-  assert.equal(codegraph.expose_mcp_to_workers, false);
+  // Forced true by install.sh MANAGED_KEYS as of e99b172b — the C7 worker-MCP lane is
+  // source-authoritative, so a stale deployed `false` can no longer survive a deploy.
+  assert.equal(codegraph.expose_mcp_to_workers, true);
 });

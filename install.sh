@@ -513,17 +513,20 @@ fi
 # --- MANAGED_KEYS: force code-owned settings source-authoritative ---
 # The merge above lets a stale deployed value survive when source omits the
 # key (object merge: right/deployed operand always wins per-key; absence
-# can't unset). These 3 keys are compiled defaults with no operator-tuning
-# story, so force them post-merge on BOTH paths above — per-path jq only
-# (never `.codegraph = {...}`, which would destroy sibling tunables like
-# staleness_max_age_minutes/context_max_bytes/*_timeout_ms).
+# can't unset). These 5 keys are compiled defaults with no operator-tuning
+# story, so force them post-merge on BOTH paths above:
+#   worker_test_gate_timeout_ms (deleted), codegraph.enabled,
+#   codegraph.index_at_setup, codegraph.expose_mcp_to_workers, auto_update_enabled
+# — per-path jq only (never `.codegraph = {...}`, which would destroy sibling
+# tunables like staleness_max_age_minutes/context_max_bytes/*_timeout_ms).
 _managed_before_timeout="$(jq -r 'if .worker_test_gate_timeout_ms == null then "null" else (.worker_test_gate_timeout_ms | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
 _managed_before_cg_enabled="$(jq -r 'if .codegraph.enabled == null then "null" else (.codegraph.enabled | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
 _managed_before_cg_setup="$(jq -r 'if .codegraph.index_at_setup == null then "null" else (.codegraph.index_at_setup | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
+_managed_before_cg_expose="$(jq -r 'if .codegraph.expose_mcp_to_workers == null then "null" else (.codegraph.expose_mcp_to_workers | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
 _managed_before_auto_update="$(jq -r 'if .auto_update_enabled == null then "null" else (.auto_update_enabled | tostring) end' "$EXTENSION_ROOT/pickle_settings.json")"
 
 TMPFILE="$(mktemp)"
-jq 'del(.worker_test_gate_timeout_ms) | .codegraph.enabled = true | .codegraph.index_at_setup = true | .auto_update_enabled = false' \
+jq 'del(.worker_test_gate_timeout_ms) | .codegraph.enabled = true | .codegraph.index_at_setup = true | .codegraph.expose_mcp_to_workers = true | .auto_update_enabled = false' \
   "$EXTENSION_ROOT/pickle_settings.json" > "$TMPFILE" \
   && mv "$TMPFILE" "$EXTENSION_ROOT/pickle_settings.json"
 
@@ -535,6 +538,9 @@ if [ "$_managed_before_cg_enabled" != "true" ]; then
 fi
 if [ "$_managed_before_cg_setup" != "true" ]; then
   echo "[install.sh] MANAGED_KEYS forced codegraph.index_at_setup: ${_managed_before_cg_setup} -> true" >&2
+fi
+if [ "$_managed_before_cg_expose" != "true" ]; then
+  echo "[install.sh] MANAGED_KEYS forced codegraph.expose_mcp_to_workers: ${_managed_before_cg_expose} -> true" >&2
 fi
 if [ "$_managed_before_auto_update" != "false" ]; then
   echo "[install.sh] MANAGED_KEYS forced auto_update_enabled: ${_managed_before_auto_update} -> false" >&2
