@@ -13,10 +13,13 @@
 #     was never enumerated by the release-gate sweep, so its trap doors were
 #     silently uncounted.
 #
-# Two checks, both fail-closed on zero files scanned (a scan that reached
-# nothing must never report clean):
+# Two checks, each fail-closed on zero COMPARISONS MADE — not on files opened.
+# Opening a file that yields no comparison is not coverage, and an aggregate
+# "some file somewhere was read" count lets one check report clean having
+# verified nothing (a scan that reached nothing must never report clean):
 #   1. Every .github/workflows/*.yml `node-version:` pin matches
-#      extension/package.json engines.node, byte-for-byte.
+#      extension/package.json engines.node, byte-for-byte. Counted in PINS
+#      compared, so a workflow set that carries no pin at all fails closed.
 #   2. Every CLAUDE.md file under the repo (excluding node_modules) is
 #      non-empty and reachable from the repo root — a missing/empty catalog
 #      is exactly the 9e89e360/2c857117 defect shape.
@@ -71,6 +74,7 @@ try {
 }
 
 let workflowsScanned = 0;
+let pinsCompared = 0;
 const NODE_VERSION_RE = /^\s*node-version:\s*['"]?([^'"\n]+?)['"]?\s*$/gm;
 
 for (const wf of workflowFiles) {
@@ -79,6 +83,7 @@ for (const wf of workflowFiles) {
   workflowsScanned++;
   if (engineNode) {
     for (const pin of pins) {
+      pinsCompared++;
       if (pin !== engineNode) {
         fail(`${path.relative(repoRoot, wf)}: node-version '${pin}' does not match engines.node '${engineNode}'`);
       }
@@ -122,19 +127,24 @@ for (const abs of claudeMdFiles) {
   }
 }
 
-const filesScanned = workflowsScanned + claudeMdFiles.length;
-
-// A scan that reached nothing must never report clean — the class this audit
-// exists to catch (a gate that reports green having never run the check).
-if (filesScanned === 0) {
-  fail('files-scanned count is zero — the scan reached nothing (did-we-count honesty requirement)');
+// A check that reached nothing must never report clean — the class this audit
+// exists to catch (a gate that reports green having never run the check). The
+// unit is comparisons MADE, per check: an aggregate file count is satisfied by
+// any one check finding work, which is what lets the other one go dark.
+function requireCounted(label, comparisons) {
+  if (comparisons === 0) {
+    fail(`${label}: zero comparisons made — the check reached nothing (did-we-count honesty requirement)`);
+  }
 }
+
+requireCounted('check 1 (workflow node-version parity)', pinsCompared);
+requireCounted('check 2 (CLAUDE.md catalog reachability)', claudeMdFiles.length);
 
 if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log(`audit-did-we-count: ${workflowsScanned} workflow file(s) + ${claudeMdFiles.length} CLAUDE.md catalog(s) scanned, no drift found`);
+console.log(`audit-did-we-count: ${pinsCompared} node-version pin(s) across ${workflowsScanned} workflow file(s) + ${claudeMdFiles.length} CLAUDE.md catalog(s) compared, no drift found`);
 NODE
 then
   exit 1

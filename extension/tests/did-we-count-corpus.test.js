@@ -4,7 +4,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { CORPUS, DETECTABLE_CEILING } from '../services/did-we-count-corpus.js';
 import {
@@ -206,4 +208,121 @@ test('AP-EXT-ITER61-01: a parseable snippet still reports both arms of the rule 
     false,
     'the fixed shape must still report a genuine, measured false',
   );
+});
+
+
+// ===========================================================================
+// AP-EXT-ITER57-01: audit-did-we-count.sh must count COMPARISONS MADE, not
+// files opened. The script had no behavioural test at all — only its
+// registration in the gate string was pinned (release-gate-parity,
+// release-gate-wiring) — so an oracle reporting green having compared nothing
+// was invisible to the release gate. All three RED arms below were measured
+// exit 0 on the pre-fix script; the aggregate files-scanned guard could not
+// tell "check reached nothing" from "check found no drift".
+// ===========================================================================
+
+const DID_WE_COUNT_SCRIPT = path.join(EXTENSION_ROOT, 'scripts', 'audit-did-we-count.sh');
+// Well clear of the audit-subprocess-heavy-tests FAIL (<=5000ms) and WARN
+// (<=15000ms) bands: a ceiling on a millisecond-scale script, not a wait.
+const DID_WE_COUNT_TIMEOUT_MS = 30000;
+const DID_WE_COUNT_ENGINE_NODE = '22.x';
+
+function pinnedWorkflow(version) {
+  return `name: ci\njobs:\n  a:\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: '${version}'\n`;
+}
+
+// Real drift shape: the pin moves to node-version-file, so the regex matches nothing.
+const UNPINNED_WORKFLOW =
+  'name: ci\njobs:\n  a:\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version-file: .nvmrc\n';
+
+/**
+ * Build a throwaway repo root and run the shipped script against it via
+ * DID_WE_COUNT_REPO_ROOT_OVERRIDE. `workflow` null omits ci.yml entirely;
+ * `catalog` false omits the CLAUDE.md that check 2 counts.
+ */
+function runDidWeCount({ workflow, catalog = true }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'did-we-count-'));
+  try {
+    fs.mkdirSync(path.join(root, 'extension'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.github', 'workflows'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'extension', 'package.json'),
+      JSON.stringify({ engines: { node: DID_WE_COUNT_ENGINE_NODE } }, null, 2),
+    );
+    if (workflow !== null) {
+      fs.writeFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), workflow);
+    }
+    if (catalog) {
+      fs.writeFileSync(path.join(root, 'CLAUDE.md'), '# fixture catalog\n');
+    }
+    return spawnSync('bash', [DID_WE_COUNT_SCRIPT], {
+      encoding: 'utf8',
+      timeout: DID_WE_COUNT_TIMEOUT_MS,
+      env: { ...process.env, DID_WE_COUNT_REPO_ROOT_OVERRIDE: root },
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER57-01 control: a matching pin passes and the summary reports pins COMPARED', () => {
+  const res = runDidWeCount({ workflow: pinnedWorkflow(DID_WE_COUNT_ENGINE_NODE) });
+  assert.equal(res.status, 0, `expected pass; stderr: ${res.stderr}`);
+  assert.match(
+    res.stdout,
+    /1 node-version pin\(s\) across 1 workflow file\(s\)/,
+    'the summary must report comparisons made, not merely files opened',
+  );
+});
+
+test('AP-EXT-ITER57-01 control: a drifted pin still fails loud (the audit is not neutered)', () => {
+  const res = runDidWeCount({ workflow: pinnedWorkflow('20.x') });
+  assert.equal(res.status, 1, 'a pin disagreeing with engines.node must fail');
+  assert.match(res.stderr, /node-version '20\.x' does not match engines\.node '22\.x'/);
+});
+
+test('AP-EXT-ITER57-01 arm A: workflows carrying ZERO node-version pins fail closed', () => {
+  const res = runDidWeCount({ workflow: UNPINNED_WORKFLOW });
+  assert.equal(res.status, 1, `check 1 compared zero pins and must not report clean; stdout: ${res.stdout}`);
+  assert.match(res.stderr, /check 1 \(workflow node-version parity\): zero comparisons made/);
+});
+
+test('AP-EXT-ITER57-01 arm B: a workflows dir with ZERO .yml files fails closed', () => {
+  // The dir exists (readdirSync does not throw) but yields no workflow file.
+  // Pre-fix, check 2's healthy CLAUDE.md count carried the aggregate over zero.
+  const res = runDidWeCount({ workflow: null });
+  assert.equal(res.status, 1, `check 1 reached no workflow file and must not report clean; stdout: ${res.stdout}`);
+  assert.match(res.stderr, /check 1 \(workflow node-version parity\): zero comparisons made/);
+});
+
+test('AP-EXT-ITER57-01 arm C: check 2 fails closed on zero catalogs even when check 1 is healthy', () => {
+  const res = runDidWeCount({ workflow: pinnedWorkflow(DID_WE_COUNT_ENGINE_NODE), catalog: false });
+  assert.equal(res.status, 1, `check 2 reached no catalog and must not report clean; stdout: ${res.stdout}`);
+  assert.match(res.stderr, /check 2 \(CLAUDE\.md catalog reachability\): zero comparisons made/);
+});
+
+test('AP-EXT-ITER57-01: the empty-catalog (2c857117) arm still fires — the guard did not replace it', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'did-we-count-empty-'));
+  try {
+    fs.mkdirSync(path.join(root, 'extension'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.github', 'workflows'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'extension', 'package.json'),
+      JSON.stringify({ engines: { node: DID_WE_COUNT_ENGINE_NODE } }, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(root, '.github', 'workflows', 'ci.yml'),
+      pinnedWorkflow(DID_WE_COUNT_ENGINE_NODE),
+    );
+    fs.writeFileSync(path.join(root, 'CLAUDE.md'), '   \n\n');
+    const res = spawnSync('bash', [DID_WE_COUNT_SCRIPT], {
+      encoding: 'utf8',
+      timeout: DID_WE_COUNT_TIMEOUT_MS,
+      env: { ...process.env, DID_WE_COUNT_REPO_ROOT_OVERRIDE: root },
+    });
+    assert.equal(res.status, 1, 'an empty catalog must still fail');
+    assert.match(res.stderr, /empty catalog file/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
