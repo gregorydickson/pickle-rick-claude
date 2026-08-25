@@ -45,9 +45,28 @@ export const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
  */
 const DOUBLE_QUOTED_SPAN = '"(?:\\\\.|[^"\\\\])*"';
 const SINGLE_QUOTED_SPAN = '\'[^\']*\'';
-/** `String.match` with a `/g` regex resets `lastIndex`, so these are reusable. */
-const TOKEN_SCAN_RE = new RegExp(`${DOUBLE_QUOTED_SPAN}|${SINGLE_QUOTED_SPAN}|\\S+`, 'g');
-const SEGMENT_SCAN_RE = new RegExp(`${DOUBLE_QUOTED_SPAN}|${SINGLE_QUOTED_SPAN}|\\n|\\S+`, 'g');
+/**
+ * One PART of a bash word: a complete quoted span, a run of ordinary
+ * characters, or a lone unmatched quote.
+ *
+ * The lone-quote alternative is last so a complete span always wins, and it
+ * exists so an unterminated quote (`git commit -m "oops`) still yields its
+ * characters rather than being skipped — the pre-adjacency scanner kept those
+ * bytes via `\S+` and detectors compare against them.
+ */
+const WORD_PART_SOURCE = `${DOUBLE_QUOTED_SPAN}|${SINGLE_QUOTED_SPAN}|[^\\s'"]+|['"]`;
+/**
+ * `String.match` with a `/g` regex resets `lastIndex`, so these are reusable.
+ *
+ * `TOKEN_SCAN_RE` matches a whole bash WORD — one or more ADJACENT parts with
+ * no whitespace between them — because bash concatenates them into a single
+ * word: `ba"sh"` is the word `bash`. A scanner that instead offered a quoted
+ * span OR a bare `\S+` run read `ba"sh"` as one un-unquoted token and every
+ * `execName`/verb/write-anchor compare missed it (AP-EXT-ITER53-01).
+ */
+const TOKEN_SCAN_RE = new RegExp(`(?:${WORD_PART_SOURCE})+`, 'g');
+const WORD_PART_RE = new RegExp(WORD_PART_SOURCE, 'g');
+const SEGMENT_SCAN_RE = new RegExp(`\\n|(?:${WORD_PART_SOURCE})+`, 'g');
 /**
  * Inside a double-quoted bash span a backslash escapes ONLY `"`, `\`, `$`, and
  * a backtick; before anything else it stays literal (`"a\nb"` really is `a\nb`).
@@ -90,16 +109,36 @@ export function tokenizeShellCommand(command) {
  * rest of this module carries.
  */
 export function tokenizeShellTokens(command) {
-    const raw = command.match(TOKEN_SCAN_RE) ?? [];
-    return raw.map((token) => {
-        if (!isQuotedSpan(token))
-            return { value: token, quoted: false };
-        const inner = token.slice(1, -1);
-        return {
-            value: token[0] === '"' ? inner.replace(DOUBLE_QUOTE_ESCAPE_RE, '$1') : inner,
-            quoted: true,
-        };
-    });
+    return (command.match(TOKEN_SCAN_RE) ?? []).map(foldShellWord);
+}
+/**
+ * Concatenate one word's parts the way bash does, unquoting each quoted span.
+ *
+ * `quoted` stays true only when EVERY part came from inside quotes. That is the
+ * reading the redirect pass needs: a word whose value is exactly `>` is data
+ * only if the `>` character itself was quoted, and a partially-quoted word's
+ * lone unquoted part IS that character (quoted parts contribute the rest). The
+ * looser "any part quoted" reading would demote the operator in `''>state.json`
+ * — which bash really does run as a redirect — and re-open the write guard.
+ *
+ * For the exec-anchor pass the same rule errs fail-closed: a mixed-quoting word
+ * in argument position (`git commit -m s"ed" -i x`) is treated as unquoted and
+ * may over-block, never under-block.
+ */
+function foldShellWord(word) {
+    const parts = word.match(WORD_PART_RE) ?? [];
+    let value = '';
+    let sawUnquoted = false;
+    for (const part of parts) {
+        if (!isQuotedSpan(part)) {
+            value += part;
+            sawUnquoted = true;
+            continue;
+        }
+        const inner = part.slice(1, -1);
+        value += part[0] === '"' ? inner.replace(DOUBLE_QUOTE_ESCAPE_RE, '$1') : inner;
+    }
+    return { value, quoted: parts.length > 0 && !sawUnquoted };
 }
 /** True when the token is a `bash`/`sh` wrapper to be skipped before the real exec. */
 export function isShellWrapper(token) {
@@ -215,25 +254,60 @@ const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
  * R-WACT tsc gate was skipped for it (AP-EXT-ITER12-01). Same failure shape, and
  * same fix, as the `execName` fold above.
  */
+/**
+ * Split ONE bash word into boundary tokens, keeping its parts glued.
+ *
+ * A quoted part is appended verbatim (quotes included, for the tokenizer that
+ * reads the segment later) and can never be a boundary — that is how `-m "a &&
+ * b"` keeps its operator as data. An unquoted part is split on
+ * `GLUED_SEPARATOR_RE`, so an operator glued to its neighbors still ends the
+ * accumulating word and stands alone.
+ *
+ * Deciding quoted-ness per PART, not per whole raw token, is load-bearing in
+ * both directions: `ba"sh"` must stay ONE token (a `"`-delimited-ends test
+ * would split the word and lose the adjacency the tokenizer needs), and
+ * `"a"&&"git" reset` must still break at the unquoted `&&` (a whole-token test
+ * sees a word that starts and ends with `"` and would swallow the boundary,
+ * hiding the reset).
+ */
+function pushWordBoundaryTokens(word, tokens) {
+    let buffer = '';
+    const flush = () => {
+        if (buffer.length > 0)
+            tokens.push(buffer);
+        buffer = '';
+    };
+    for (const part of word.match(WORD_PART_RE) ?? []) {
+        if (isQuotedSpan(part)) {
+            buffer += part;
+            continue;
+        }
+        for (const piece of part.split(GLUED_SEPARATOR_RE)) {
+            if (piece.length === 0)
+                continue;
+            if (SHELL_SEGMENT_SEPARATORS.has(piece)) {
+                flush();
+                tokens.push(piece);
+                continue;
+            }
+            buffer += piece;
+        }
+    }
+    flush();
+}
 export function splitShellSegments(command, depth = 0) {
-    // `\n` is matched as its own alternative BEFORE `\S+` so an unquoted newline
-    // becomes a boundary token; the quoted spans match newlines too (their negated
-    // classes include `\n`), so a newline inside a quoted commit message is kept.
+    // `\n` is matched as its own alternative BEFORE the word pattern so an
+    // unquoted newline becomes a boundary token; the quoted spans match newlines
+    // too (their negated classes include `\n`), so a newline inside a quoted
+    // commit message is kept.
     const rawTokens = command.match(SEGMENT_SCAN_RE) ?? [];
     const tokens = [];
     for (const raw of rawTokens) {
-        const quoted = (raw.startsWith('"') && raw.endsWith('"')) ||
-            (raw.startsWith('\'') && raw.endsWith('\''));
-        if (quoted) {
+        if (raw === '\n') {
             tokens.push(raw);
             continue;
         }
-        // Separate a glued control operator (e.g. `git status&&git reset`) into its
-        // own token so it acts as a boundary; quoted operators were preserved above.
-        for (const part of raw.split(GLUED_SEPARATOR_RE)) {
-            if (part.length > 0)
-                tokens.push(part);
-        }
+        pushWordBoundaryTokens(raw, tokens);
     }
     const segments = [];
     let current = [];

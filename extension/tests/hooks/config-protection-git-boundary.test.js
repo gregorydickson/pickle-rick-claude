@@ -1347,3 +1347,105 @@ for (const { label, command } of [
     assert.equal(result.decision, 'approve');
   });
 }
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER53-01 — ADJACENT quoting inside one word is still one word
+//
+// Bash concatenates the parts of a word that carry no whitespace between them:
+// `ba"sh" install.sh` really executes bash on install.sh, `git rese"t" --hard`
+// really resets, and `t"ee" f` really writes f (all shim-verified). But the
+// tokenizer unquoted a word only when the ENTIRE `\S+` run was a single quoted
+// span, so any PARTIALLY quoted word kept its quote characters in the token and
+// every `execName` / verb / write-anchor comparison downstream missed.
+//
+// Same failure shape as the AP-EXT-ITER51-01/02 pair one level down — the
+// scanner's model of a bash word disagreed with bash — and it re-opened three
+// guards at once: the R-WSRC `install.sh` ban, R-WSRC-GR, and the R-WSRC-3
+// state-write gate. Fixed at the ONE seam (`tokenizeShellTokens` folds a word's
+// parts), so all three detectors inherit it.
+// ---------------------------------------------------------------------------
+
+for (const { label, command, expect: expected } of [
+  { label: 'a split exec token', command: 'git rese"t" --hard', expect: /reset/ },
+  { label: 'a single-quoted exec fragment', command: "git re'set' --hard", expect: /reset/ },
+  { label: 'two adjacent quoted fragments', command: 'git "res""et" --hard', expect: /reset/ },
+  { label: 'a leading quoted fragment', command: 'git "re"set --hard', expect: /reset/ },
+  { label: 'a quoted exec beyond a glued operator', command: 'echo x&&"git" reset --hard', expect: /reset/ },
+  { label: 'a glued operator between two quoted words', command: '"echo x"&&"git" reset --hard', expect: /reset/ },
+  { label: 'a split verb behind a cd', command: 'cd extension && git pu"sh" origin main', expect: /push/ },
+  { label: 'a split flag on commit', command: 'git commit --am"end"', expect: /commit --amend/ },
+  { label: 'a split git executable', command: 'gi"t" stash', expect: /stash/ },
+]) {
+  test(`AP-EXT-ITER53-01: worker blocks prohibited git verb via ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+}
+
+// The same seam feeds the install.sh ban and the state-write gate, so both
+// inherit the fold. Pinning all three is what proves the fix is at the seam and
+// not a per-detector patch.
+for (const { label, command } of [
+  { label: 'a split interpreter', command: 'ba"sh" install.sh' },
+  { label: 'a split script name', command: 'bash insta"ll".sh' },
+  { label: 'an empty quoted span inside the script name', command: 'bash install"".sh' },
+]) {
+  test(`AP-EXT-ITER53-01: worker blocks bash install.sh via ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC/);
+  });
+}
+
+for (const { label, command } of [
+  { label: 'a split tee', command: 't"ee" SESSION_STATE' },
+  { label: 'a split in-place sed', command: 's"ed" -i "" s/a/b/ SESSION_STATE' },
+]) {
+  test(`AP-EXT-ITER53-01: worker blocks a state write via ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: command.replace('SESSION_STATE', stateFile) },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /Runtime state file protected/);
+  });
+}
+
+// Non-tautology guards. Folding the parts must reproduce the word bash builds,
+// not merely delete quote characters wherever they appear: an adjacency-quoted
+// BENIGN verb stays benign, a prohibited verb sitting in an argument is still
+// an argument, and the escaped form is a word git rejects, so nothing resets.
+for (const { label, command } of [
+  { label: 'a split benign verb', command: 'git rev-p"arse" --short HEAD' },
+  { label: 'a split verb name inside a flag value', command: 'git log --format=re"set"' },
+  { label: 'a split verb name inside a commit message', command: 'git commit -m "rese""t the parser"' },
+  { label: 'a bare escaped-quote verb git itself rejects', command: 'git \\"reset\\" --hard' },
+]) {
+  test(`AP-EXT-ITER53-01: worker still approves ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve');
+  });
+}
