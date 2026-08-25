@@ -73,14 +73,16 @@ export function writeWithWatchdog(sink, chunk, watchdogMs = MONITOR_STDOUT_WATCH
             else
                 resolve();
         };
+        // Stays REF'D for the duration of the in-flight write: `finish()`
+        // above already clears this timer on every settle path (write
+        // callback success/error, drain, or the watchdog itself), so a
+        // healthy write releases the handle within microseconds. Ref'd is
+        // what lets AC-SSV-07 hold — a wedged sink's watchdog must fire and
+        // reject rather than let the event loop resolve out from under a
+        // still-pending write.
         const timer = setTimeout(() => {
             finish(new Error(`monitor stdout watchdog: no drain within ${watchdogMs}ms (pane wedged?)`));
         }, watchdogMs);
-        // Allow the process to exit if the watchdog timer is the only
-        // remaining handle (e.g., during shutdown).
-        if (typeof timer.unref === 'function') {
-            timer.unref();
-        }
         let okSync;
         try {
             // The write callback fires once data has been flushed (or errored).
