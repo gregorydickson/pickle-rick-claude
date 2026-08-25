@@ -248,3 +248,91 @@ test('AP-EXT-ITER39-01 control: a terminal exactly AT the spawn instant still co
   ];
   assert.deepEqual(findOverlapViolations(activity), []);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER4-01: the AP-EXT-ITER39-01 staleness rule — an event from one run
+// must never be paired with another run of the same ticket — was fixed in
+// `findOverlapViolations` only. `collectSpawnTsByTicket` kept the FIRST spawn and
+// `computeWallClockMs` subtracted it from a terminal that may belong to a much
+// later run, charging the ticket every idle second between its runs.
+//
+// Measured on real sessions before the fix: `a38de7dc` (2026-08-24-218474cb)
+// reported 46m for a run that took 8m; `b94d8693` (2026-08-22-b2ecaea6) 43m for 7m.
+// Relaunch is not an edge case — 24 of 42 ticket entries across the 7 real
+// sessions on this box were re-spawned.
+//
+// Asserts the operator-visible `wall_clock_ms` COLUMN, not just the pure
+// function: the pre-fix code returned a well-formed positive number, so a
+// "is it a number" oracle greens over the whole defect.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER4-01: a relaunched ticket is measured from the spawn its terminal belongs to', () => {
+  // Run 1 resolves cleanly at +20m. Run 2 relaunches 2h after run 1 and times out 30m in.
+  const activity = [
+    spawnEvt('2026-08-22T10:00:00.000Z', 'aaaa1111'),
+    boundaryEvt('2026-08-22T10:20:00.000Z', 'aaaa1111'),
+    spawnEvt('2026-08-22T12:00:00.000Z', 'aaaa1111'),
+    gateFailedEvt('2026-08-22T12:30:00.000Z', 'aaaa1111', 'test:fast', [{ name: '__timeout__', file: '', message: 'timed out' }]),
+  ];
+
+  const report = buildGateCompletionReport(activity);
+  const t = report.tickets.find((x) => x.ticket === 'aaaa1111');
+  assert.equal(t.timedOut, true);
+  assert.equal(
+    t.wallClockMs,
+    30 * 60 * 1000,
+    'the timing-out run took 30m; anchoring on run 1 reports the 150m since its spawn',
+  );
+
+  const { output } = withSessionDir(activity, runVerifyActivityTimeline);
+  assert.match(output, /aaaa1111 \| false \| 1800000 \|/);
+  assert.doesNotMatch(output, /\| 9000000 \|/);
+});
+
+test('AP-EXT-ITER4-01: three runs anchor on the third, not the first', () => {
+  const activity = [
+    spawnEvt('2026-08-22T10:00:00.000Z', 'bbbb2222'),
+    boundaryEvt('2026-08-22T10:05:00.000Z', 'bbbb2222'),
+    spawnEvt('2026-08-22T11:00:00.000Z', 'bbbb2222'),
+    boundaryEvt('2026-08-22T11:05:00.000Z', 'bbbb2222'),
+    spawnEvt('2026-08-22T12:00:00.000Z', 'bbbb2222'),
+    gateFailedEvt('2026-08-22T12:10:00.000Z', 'bbbb2222', 'test:fast', []),
+  ];
+  const t = buildGateCompletionReport(activity).tickets.find((x) => x.ticket === 'bbbb2222');
+  assert.equal(t.wallClockMs, 10 * 60 * 1000);
+});
+
+test('AP-EXT-ITER4-01 control: a single-run ticket measures exactly as before', () => {
+  const activity = [
+    spawnEvt('2026-08-14T00:00:00.000Z', 'cccc3333'),
+    gateFailedEvt('2026-08-14T00:30:00.000Z', 'cccc3333', 'test:fast', [{ name: '__timeout__', file: '', message: 'timed out' }]),
+  ];
+  const t = buildGateCompletionReport(activity).tickets.find((x) => x.ticket === 'cccc3333');
+  assert.equal(t.wallClockMs, 30 * 60 * 1000);
+});
+
+test('AP-EXT-ITER4-01: a terminal preceding every spawn reports no measurement, not a negative one', () => {
+  // Truncated day-file / clock skew: the terminal has no owning run in the window.
+  const activity = [
+    gateFailedEvt('2026-08-22T09:00:00.000Z', 'dddd4444', 'test:fast', []),
+    spawnEvt('2026-08-22T10:00:00.000Z', 'dddd4444'),
+  ];
+  const t = buildGateCompletionReport(activity).tickets.find((x) => x.ticket === 'dddd4444');
+  assert.equal(t.wallClockMs, null, 'a negative duration is not a measurement');
+
+  const { output } = withSessionDir(activity, runVerifyActivityTimeline);
+  assert.match(output, /dddd4444 \| false \| n\/a \|/);
+});
+
+test('AP-EXT-ITER4-01: a spawned ticket with unparseable spawn timestamps is still reported', () => {
+  // Dropping the ticket to avoid an unanchored measurement would delete a spawned
+  // ticket from the operator's table — the reverse of the honesty this file exists for.
+  const activity = [
+    { event: 'worker_spawn_backend_resolved', ts: 'not-a-timestamp', ticket: 'eeee5555' },
+  ];
+  const report = buildGateCompletionReport(activity);
+  const t = report.tickets.find((x) => x.ticket === 'eeee5555');
+  assert.ok(t, 'the ticket was spawned; it must appear in the report');
+  assert.equal(t.spawned, true);
+  assert.equal(t.wallClockMs, null);
+});

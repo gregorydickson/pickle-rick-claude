@@ -70,29 +70,62 @@ export function findOverlapViolations(activity) {
     }
     return violations;
 }
-function collectSpawnTsByTicket(activity) {
-    const spawnTsByTicket = new Map();
+/**
+ * Every parseable spawn instant per ticket, ascending — NOT just the first.
+ * Relaunch is routine (24 of 42 ticket entries across the 7 real sessions on this box
+ * were re-spawned), and a ticket's later runs are separated from its first by arbitrary
+ * idle time, so a single first-spawn anchor cannot measure any run but run 1.
+ *
+ * A ticket whose spawns all carry unparseable timestamps keeps its key with an EMPTY
+ * list: it was still spawned, and dropping it would delete a ticket from the report.
+ */
+function collectSpawnMsByTicket(activity) {
+    const spawnMsByTicket = new Map();
     for (const e of activity) {
         if (e.event !== 'worker_spawn_backend_resolved')
             continue;
         const ticket = getEventTicketId(e);
-        if (ticket === null || spawnTsByTicket.has(ticket))
+        if (ticket === null)
             continue;
-        spawnTsByTicket.set(ticket, e.ts);
+        const spawnMsList = spawnMsByTicket.get(ticket) ?? [];
+        const spawnMs = parseTs(e);
+        if (!Number.isNaN(spawnMs))
+            spawnMsList.push(spawnMs);
+        spawnMsByTicket.set(ticket, spawnMsList);
     }
-    return spawnTsByTicket;
+    for (const spawnMsList of spawnMsByTicket.values())
+        spawnMsList.sort((a, b) => a - b);
+    return spawnMsByTicket;
 }
-function computeWallClockMs(spawnTs, terminalTimestamps) {
+/**
+ * Wall clock of the run the terminal BELONGS to: the earliest terminal, measured from the
+ * latest spawn at or before it.
+ *
+ * The same staleness rule `findOverlapViolations` already enforces (AP-EXT-ITER39-01) —
+ * an event from one run must never be paired with another run of the same ticket. Anchoring
+ * on the FIRST spawn charges every re-spawned ticket the idle gap between its runs:
+ * measured on real sessions, `a38de7dc` (2026-08-24-218474cb) reported 46m for a run that
+ * took 8m and `b94d8693` (2026-08-22-b2ecaea6) reported 43m for one that took 7m.
+ *
+ * A terminal that precedes EVERY spawn (truncated log, clock skew) has no owning run, so the
+ * answer is `null` — a negative duration is not a measurement.
+ */
+function computeWallClockMs(spawnMsList, terminalTimestamps) {
     const candidates = terminalTimestamps
         .filter((ts) => typeof ts === 'string')
         .map((ts) => Date.parse(ts))
         .filter((n) => !Number.isNaN(n));
-    const spawnMs = Date.parse(spawnTs);
-    if (candidates.length === 0 || Number.isNaN(spawnMs))
+    if (candidates.length === 0)
         return null;
-    return Math.min(...candidates) - spawnMs;
+    const terminalMs = Math.min(...candidates);
+    let owningSpawnMs = null;
+    for (const spawnMs of spawnMsList) {
+        if (spawnMs <= terminalMs)
+            owningSpawnMs = spawnMs;
+    }
+    return owningSpawnMs === null ? null : terminalMs - owningSpawnMs;
 }
-function classifyTicketGate(ticket, spawnTs, activity, narrowTierVacuity) {
+function classifyTicketGate(ticket, spawnMsList, activity, narrowTierVacuity) {
     const skipped = activity.some((e) => e.event === 'tier_phase_skipped' && getEventTicketId(e) === ticket
         && Array.isArray(e.skipped_phases) && e.skipped_phases.includes('test:fast'));
     const gateFailedEvents = activity.filter((e) => e.event === 'worker_gate_failed' && getEventTicketId(e) === ticket && e.gate_phase === 'test:fast');
@@ -100,7 +133,7 @@ function classifyTicketGate(ticket, spawnTs, activity, narrowTierVacuity) {
     const completionEvent = activity.find((e) => e.event === 'worker_completion_commit_announced' && getEventTicketId(e) === ticket);
     const timedOut = Boolean(timeoutEvent);
     const failedNonTimeout = gateFailedEvents.length > 0 && !timedOut;
-    const wallClockMs = computeWallClockMs(spawnTs, [timeoutEvent?.ts, gateFailedEvents[0]?.ts, completionEvent?.ts]);
+    const wallClockMs = computeWallClockMs(spawnMsList, [timeoutEvent?.ts, gateFailedEvents[0]?.ts, completionEvent?.ts]);
     const observedCompletion = !narrowTierVacuity && !skipped && !timedOut && !failedNonTimeout;
     const reason = narrowTierVacuity
         ? 'narrow_tier_shortcircuit'
@@ -111,10 +144,10 @@ function classifyTicketGate(ticket, spawnTs, activity, narrowTierVacuity) {
 }
 export function buildGateCompletionReport(activity, opts) {
     const narrowTierVacuity = opts?.workerGateTier === 'narrow';
-    const spawnTsByTicket = collectSpawnTsByTicket(activity);
+    const spawnMsByTicket = collectSpawnMsByTicket(activity);
     const tickets = [];
-    for (const [ticket, spawnTs] of spawnTsByTicket) {
-        tickets.push(classifyTicketGate(ticket, spawnTs, activity, narrowTierVacuity));
+    for (const [ticket, spawnMsList] of spawnMsByTicket) {
+        tickets.push(classifyTicketGate(ticket, spawnMsList, activity, narrowTierVacuity));
     }
     const observedCompletions = tickets.filter((t) => t.observedCompletion).length;
     const timeouts = tickets.filter((t) => t.timedOut).length;
