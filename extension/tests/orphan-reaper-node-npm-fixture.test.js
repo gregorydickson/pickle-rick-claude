@@ -216,7 +216,6 @@ test('AP-EXT-ITER2-01: the tmp-root memo is keyed on the tmpdir value, so a reas
  */
 test('4329498d AC-6: a NESTED fixture under a pickle- disposable root, in realpath form, is admitted', () => {
   withSymlinkedTmpdir(({ realTmp, link }) => {
-    // The seam's shape: disposable root `pickle-<rand>`, leaking fixture `cp-git-<n>` inside it.
     // `cp-git-` is deliberately NOT in TEST_OWNED_TMP_PREFIXES — admission must come from the
     // FIRST segment beneath tmpdir (the pickle- root), which is precisely what constraint (a)
     // buys and what a `tmp.XXXXXX` root would have destroyed.
