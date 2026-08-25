@@ -1,3 +1,47 @@
+> **⛔ CORRECTION 2: THE STREAK IS ~147, NOT 13/14 — off by ~11x and four months.**
+>
+> Operator-measured over 200 runs: **151 failures, 48 successes, last success `2026-04-22`**
+> (`v1.44.4`, *"fix(runners): auto-create 4-pane tmux monitor window"*). Every prior figure in this
+> PRD and in the session log — "12 of 12", "13th consecutive", "14th consecutive" — came from
+> `gh run list --limit 12`. **One page read as the whole history: a truncated enumeration reported as
+> a complete one.** Same defect class as the bundle shipped hours earlier to prevent it.
+>
+> **This reframes the work.** It is not "fix a five-week regression". It is **end a four-month,
+> unknown-depth stack of independent causes**, which matches the observed peel: beta.14 fixed the
+> corepack provisioning gap and the run advanced to a *different* wall. Expect more layers. AC-6′ is a
+> milestone, not a completion promise.
+>
+> ## Refinement findings that change the fix (all measured)
+>
+> - **The `.unref()` is the isolated cause, experimentally proven.** A `/tmp` copy of
+>   `writeWithWatchdog` with the unref behind a flag: **Node 22 → `cancelled 2` with it, `pass 2`
+>   without it; Node 24 passes either way.** Cause isolated *and* fix pre-verified.
+> - **THE DEFECT IS MIS-CLASSIFIED — this is a live PRODUCTION bug, not CI hygiene.**
+>   `monitor.ts:1063-1074` states a production contract: a wedged pane must surface as a rejected
+>   promise and `process.exit(2)` — *"kill -9 should never be required"*. The `.unref()` at
+>   `monitor.ts:101-103` **actively defeats that contract**. `monitor.test.js:746` is faithfully
+>   reproducing a real wedge-escape defect. **No AC below states or verifies that production
+>   requirement**, so a fix satisfying every AC can leave the actual bug in place. **AC-8′ added.**
+> - **AC-2′ hides a genuine requirements conflict the worker must not be left to invent.** The unref
+>   exists so the process can exit; the test requires the timer to fire. When the watchdog is the only
+>   handle, both cannot hold. **The PRD must rule, not the worker.**
+> - **AC-5′ cited a path that does not exist** — it is `extension/tests/QUARANTINE.md`, not
+>   `tests/QUARANTINE.md`. And it guards only ONE dodge: **`convergence_gate.known_flake_files` is a
+>   second, equally empty-and-wired escape** and is now equally forbidden.
+> - **The anti-fake-green AC contained a fake-green trap.** Node 22 (TAP) prints `# cancelled`; Node 24
+>   (spec) prints `ℹ cancelled`. A grep written for `^#` **goes vacuously green on Node 24**. Every
+>   summary grep in this bundle must match `^[ℹ#]`.
+> - **AC-6′ is far cheaper than assumed — no tag burning needed.** `ci.yml` runs a **byte-identical**
+>   gate command (md5 match) and triggers on `push:` to `release/**`, the branch we are on; 8 such runs
+>   already exist. Use it as the CI proof loop.
+> - **CI dies inside `npm run test:fast:budget`** with `FAIL_BUDGET_EXCEEDED failures=3 budget=2`.
+>   That budget counts *failing runs*, so **no single ticket can turn CI green** — the monitor fix and
+>   the R-MWBG fix are **conjunctive** for AC-6′.
+>
+> - **AC-8′ (NEW, binding).** State and verify the production contract: a wedged pane surfaces as a
+>   rejected promise and `process.exit(2)`, with `kill -9` never required. A green `cancelled 0` that
+>   leaves this unverified does **not** satisfy this bundle.
+
 > **✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — 2026-08-25 at HEAD `be12e4fb`.**
 >
 > **Stale premise: PASSED, with fresh evidence rather than the filing's own.** `release.yml` run
