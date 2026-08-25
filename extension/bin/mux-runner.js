@@ -8795,6 +8795,56 @@ const emitRevertEvent = (ctx, ticketId, result, ts) => {
     }
 };
 /**
+ * The two production halves of a codegraph session's environment, or the caller's
+ * substitutes. Split out so `createCodegraphSession` holds only the lifecycle: this
+ * decides WHERE settings and the service come from, the factory decides WHEN.
+ */
+const resolveCodegraphSessionDeps = (opts) => ({
+    resolveSettings: opts.deps?.resolveSettings
+        ?? (() => resolveCodegraphSettings(loadPickleSettingsBag())),
+    createService: opts.deps?.createService
+        ?? ((s) => CodegraphService.create(opts.workingDir, s, { emit: (ev) => writeActivityEntry(opts.statePath, ev) })),
+});
+/**
+ * `index_status` is the DELIBERATE exception to the b1089e97 "derive from persisted
+ * activity" rule (see the trap door in `src/bin/CLAUDE.md`): it is the long-lived
+ * health enum of THIS process's service, so it reads the in-memory counters on
+ * purpose. Named here so that intent is legible at the emit site instead of being
+ * a bare nested ternary sitting next to three fields that must NOT read `ctrs`.
+ */
+const resolveCodegraphIndexStatus = (ctrs) => (ctrs.latched > 0 ? 'latched' : ctrs.degraded > 0 ? 'degraded' : 'healthy');
+/**
+ * The b1089e97 summary payload — the emit site the `src/bin/CLAUDE.md` trap door
+ * governs. A different abstraction level from the session handle that calls it:
+ * this derives ONE activity entry from persisted state, the factory owns the
+ * service's lifetime. Fail-open like every other codegraph verb.
+ */
+const emitCodegraphSessionSummary = (args) => {
+    try {
+        const ctrs = args.service.getSessionCounters();
+        const index_status = resolveCodegraphIndexStatus(ctrs);
+        // injected/skipped/degraded_ops are produced/degraded in the per-spawn spawn-morty
+        // process, so mux-runner's in-memory counters never see them — count the persisted
+        // events from the shared state.json instead (b1089e97 cross-process aggregation gap).
+        // `ctrs.degraded` alone captured only mux-runner's own sync() degrades and missed every
+        // spawn-path query/buildContext degrade; index_status stays on the in-memory counter as
+        // the long-lived mux-service health enum.
+        const persisted = readRecoverableJsonObject(args.statePath);
+        const { injected, skipped } = countCodegraphContextEvents(persisted?.activity);
+        const degraded_ops = countCodegraphDegradedEvents(persisted?.activity);
+        writeActivityEntry(args.statePath, {
+            event: 'codegraph_session_summary',
+            ts: new Date().toISOString(),
+            tickets: args.ticketCount,
+            degraded_ops,
+            index_status,
+            injected,
+            skipped,
+        });
+    }
+    catch { /* best-effort */ }
+};
+/**
  * b1089e97: session-scoped codegraph lifecycle.
  *
  * Owns the `CodegraphService` handle, its resolved settings, the on-disk db path,
@@ -8817,10 +8867,7 @@ const emitRevertEvent = (ctx, ticketId, result, ts) => {
 export function createCodegraphSession(opts) {
     const { statePath, sessionDir, workingDir, log } = opts;
     const dbPath = path.join(workingDir, '.codegraph', 'codegraph.db');
-    const resolveSettings = opts.deps?.resolveSettings
-        ?? (() => resolveCodegraphSettings(loadPickleSettingsBag()));
-    const createService = opts.deps?.createService
-        ?? ((s) => CodegraphService.create(workingDir, s, { emit: (ev) => writeActivityEntry(statePath, ev) }));
+    const { resolveSettings, createService } = resolveCodegraphSessionDeps(opts);
     let settings = null;
     let service = null;
     let ticketCount = 0;
@@ -8852,31 +8899,9 @@ export function createCodegraphSession(opts) {
             ticketCount = collectTickets(sessionDir).filter((t) => t.status === 'Done').length;
         },
         emitSummary: () => {
-            try {
-                if (service === null)
-                    return;
-                const ctrs = service.getSessionCounters();
-                const index_status = ctrs.latched > 0 ? 'latched' : ctrs.degraded > 0 ? 'degraded' : 'healthy';
-                // injected/skipped/degraded_ops are produced/degraded in the per-spawn spawn-morty
-                // process, so mux-runner's in-memory counters never see them — count the persisted
-                // events from the shared state.json instead (b1089e97 cross-process aggregation gap).
-                // `ctrs.degraded` alone captured only mux-runner's own sync() degrades and missed every
-                // spawn-path query/buildContext degrade; index_status stays on the in-memory counter as
-                // the long-lived mux-service health enum.
-                const persisted = readRecoverableJsonObject(statePath);
-                const { injected, skipped } = countCodegraphContextEvents(persisted?.activity);
-                const degraded_ops = countCodegraphDegradedEvents(persisted?.activity);
-                writeActivityEntry(statePath, {
-                    event: 'codegraph_session_summary',
-                    ts: new Date().toISOString(),
-                    tickets: ticketCount,
-                    degraded_ops,
-                    index_status,
-                    injected,
-                    skipped,
-                });
-            }
-            catch { /* best-effort */ }
+            if (service === null)
+                return;
+            emitCodegraphSessionSummary({ statePath, service, ticketCount });
         },
         close: () => {
             if (service === null)
