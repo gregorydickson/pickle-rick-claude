@@ -2562,6 +2562,84 @@ function workerValidationLabel(isSuccess: boolean, flipSuppressed: boolean): str
   return flipSuppressed ? 'failed (flip suppressed — work preserved)' : 'failed';
 }
 
+/**
+ * The three facts a finalized worker turn persists: whether it succeeded, the
+ * commit its Done/Failed stamp points at, and whether a gate-fail had its
+ * Failed flip suppressed (7eb9fa20).
+ */
+interface WorkerTurnOutcome {
+  isSuccess: boolean;
+  completionCommitSha: string | null;
+  flipSuppressed: boolean;
+}
+
+/**
+ * B-1SEAM WS1b / R-AICF: run the per-ticket worker gate over an evidence-passing
+ * turn and reconcile the completion-commit claim it yields against git ground
+ * truth. `reconcileWorkerCommitAttribution` runs HERE, and the sha it verifies is
+ * exactly the value `finalizeWorkerTurn` hands to `persistWorkerOutcomeStatus` —
+ * so "reconcile BEFORE persist" is a data dependency rather than a line ordering
+ * inside one body that a later edit can silently transpose.
+ *
+ * Only reachable when `evaluateWorkerOutcome` already found worker evidence; a
+ * turn that failed that check never runs a gate (the WDSUB baseline pins
+ * `runWorkerGate: did not execute` on that path), which is why the no-evidence
+ * outcome is constructed by the caller instead of short-circuiting in here.
+ */
+async function applyWorkerGateToOutcome(
+  ctx: WorkerProcessContext,
+  startTime: number,
+): Promise<WorkerTurnOutcome> {
+  const { ticketId, sessionRoot, sessionWorkingDir } = ctx;
+  const changedFiles = collectChangedFilesForLintGate(sessionWorkingDir, ctx.preWorkerHead);
+  const workerGate = await runWorkerGate(changedFiles, {
+    workingDir: sessionWorkingDir,
+    ticketId,
+    statePath: path.join(sessionRoot, 'state.json'),
+    preWorkerHead: ctx.preWorkerHead,
+    preservePaths: [sessionRoot],
+    ticketTier: readTicketInfo(ctx.args.ticketFilePath)?.complexity_tier,
+    spawnTsMs: startTime,
+  });
+  // 7eb9fa20: suppressed gate-fail — preserve the ticket's frontmatter status
+  // (no Failed flip); the worker still exits non-zero and the manager-side
+  // non-runnable hold parks the ticket for triage.
+  const gated: WorkerTurnOutcome = {
+    isSuccess: workerGate.ok,
+    completionCommitSha: workerGate.completionCommitSha,
+    flipSuppressed: !workerGate.ok && workerGate.failedFlipSuppressed,
+  };
+  if (!gated.isSuccess) return gated;
+
+  // R-AICF: verify the completion-commit claim (runner autofix sha, frontmatter
+  // stamp, or ACK) against git ground truth and reconcile the ticket-id trailer
+  // BEFORE the Done stamp persists — a hallucinated worker-written sha dies here
+  // instead of at the manager's oracle.
+  const claimedSha = gated.completionCommitSha ?? readWorkerClaimedCompletionSha(ctx);
+  const verifiedSha = reconcileWorkerCommitAttribution(sessionWorkingDir, ticketId, ctx.preWorkerHead, claimedSha, { declaredFiles: changedFiles });
+  return verifiedSha ? { ...gated, completionCommitSha: verifiedSha } : gated;
+}
+
+/**
+ * R-CCC-2: Auto-fill completion_commit: for Done tickets that missed the ACK.
+ * Kept as autoFillCompletionCommit (preserved CLI shim) — its git-log scan
+ * handles the no-ACK case where the gate reported no sha but the worker
+ * committed with the ticket-id in the message. R-AFCC-DEEP-3A inlined the
+ * explicit-SHA-known callsites in mux-runner.ts. Best-effort: never throws.
+ */
+function autoFillWorkerCompletionCommit(ctx: WorkerProcessContext): void {
+  try {
+    autoFillCompletionCommit({
+      sessionDir: ctx.sessionRoot,
+      workingDir: ctx.sessionWorkingDir,
+      ticketId: ctx.ticketId,
+      statePath: ctx.workerStatePath,
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
 async function finalizeWorkerTurn(params: WorkerFinalizeArgs): Promise<void> {
   const { ctx, exitCode, flushTimeout, startTime, resolve } = params;
   if (ctx.mutableState.finalized) return;
@@ -2570,59 +2648,22 @@ async function finalizeWorkerTurn(params: WorkerFinalizeArgs): Promise<void> {
 
   const { ticketId, sessionRoot, sessionLogPath, sessionWorkingDir } = ctx;
   const logContent = scrubWorkerLog(sessionLogPath, readWorkerLog(sessionLogPath));
-  let { isSuccess } = evaluateWorkerOutcome({ ctx, logContent, startTime });
-  let completionCommitSha: string | null = null;
+  const producedEvidence = evaluateWorkerOutcome({ ctx, logContent, startTime }).isSuccess;
 
-  let flipSuppressed = false;
-  if (isSuccess) {
-    const changedFiles = collectChangedFilesForLintGate(sessionWorkingDir, ctx.preWorkerHead);
-    const workerGate = await runWorkerGate(changedFiles, {
-      workingDir: sessionWorkingDir,
-      ticketId,
-      statePath: path.join(sessionRoot, 'state.json'),
-      preWorkerHead: ctx.preWorkerHead,
-      preservePaths: [sessionRoot],
-      ticketTier: readTicketInfo(ctx.args.ticketFilePath)?.complexity_tier,
-      spawnTsMs: startTime,
-    });
-    isSuccess = workerGate.ok;
-    completionCommitSha = workerGate.completionCommitSha;
-    // 7eb9fa20: suppressed gate-fail — preserve the ticket's frontmatter
-    // status (no Failed flip); the worker still exits non-zero below and the
-    // manager-side non-runnable hold parks the ticket for triage.
-    flipSuppressed = !workerGate.ok && workerGate.failedFlipSuppressed;
-    if (isSuccess) {
-      // R-AICF: verify the completion-commit claim (runner autofix sha,
-      // frontmatter stamp, or ACK) against git ground truth and reconcile the
-      // ticket-id trailer BEFORE the Done stamp persists — a hallucinated
-      // worker-written sha dies here instead of at the manager's oracle.
-      const claimedSha = completionCommitSha ?? readWorkerClaimedCompletionSha(ctx);
-      const verifiedSha = reconcileWorkerCommitAttribution(sessionWorkingDir, ticketId, ctx.preWorkerHead, claimedSha, { declaredFiles: changedFiles });
-      if (verifiedSha) completionCommitSha = verifiedSha;
-    }
-  }
+  const { isSuccess, flipSuppressed, completionCommitSha } = producedEvidence
+    ? await applyWorkerGateToOutcome(ctx, startTime)
+    : { isSuccess: false, flipSuppressed: false, completionCommitSha: null };
 
-  completionCommitSha = resolveFinalCompletionCommitSha(ctx, isSuccess, completionCommitSha);
+  persistWorkerOutcomeStatus({
+    ticketId,
+    sessionRoot,
+    sessionWorkingDir,
+    isSuccess,
+    flipSuppressed,
+    completionCommitSha: resolveFinalCompletionCommitSha(ctx, isSuccess, completionCommitSha),
+  });
 
-  persistWorkerOutcomeStatus({ ticketId, sessionRoot, sessionWorkingDir, isSuccess, flipSuppressed, completionCommitSha });
-
-  if (isSuccess) {
-    // R-CCC-2: Auto-fill completion_commit: for Done tickets that missed the ACK.
-    // Kept as autoFillCompletionCommit (preserved CLI shim) — its git-log scan
-    // handles the no-ACK case where completionCommitSha is null but the worker
-    // committed with the ticket-id in the message. R-AFCC-DEEP-3A inlined the
-    // explicit-SHA-known callsites in mux-runner.ts.
-    try {
-      autoFillCompletionCommit({
-        sessionDir: sessionRoot,
-        workingDir: sessionWorkingDir,
-        ticketId,
-        statePath: ctx.workerStatePath,
-      });
-    } catch {
-      /* best-effort */
-    }
-  }
+  if (isSuccess) autoFillWorkerCompletionCommit(ctx);
 
   printMinimalPanel('Worker Report', { status: ctx.mutableState.timedOut ? 'timeout' : `exit:${exitCode}`, validation: workerValidationLabel(isSuccess, flipSuppressed) }, isSuccess ? 'GREEN' : 'RED', '🥒');
   if (!isSuccess) {
