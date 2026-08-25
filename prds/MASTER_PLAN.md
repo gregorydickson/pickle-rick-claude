@@ -28,6 +28,47 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
    a completion/disposition/quality-gate verdict and make it **continue-and-flag**. Reserve halting for the
    genuine crash floor only (`fatal`, `state_schema_version_ahead`, budget cap). See [[B-NOSTOP-GATES]] below.
 
+## 🐝 AGENT SWARMS — the destination, and why it is SEQUENCED BEHIND simplification (operator-set 2026-08-25)
+
+**Operator direction: agent swarms eventually. Simplify and stabilize FIRST.** This records the concrete
+reason the ordering is not merely cautious — it is forced by what the runtime currently assumes.
+
+### The runtime is SINGLE-WRITER by construction, in at least four places
+
+| assumption | where | what a swarm does to it |
+|---|---|---|
+| one spawn at a time | `WORKER_SPAWN_LOCK_TIMEOUT_MS = 30_000` (`spawn-morty.ts`) serializes worker spawns per session | N agents contend on a 30s lock; `WorkerSpawnLockContendedError` becomes the common path, not the rare one |
+| one state writer | worker `state.json` writes are a Forbidden Op (`state-manager.ts` ceiling + `config-protection.ts` hook) | the ceiling is what makes state coherent; it has no multi-writer story |
+| attribution is sequential | `failed_flip_suppression_cap` and `bounded_terminal_escape_cap` draw down a PERSISTENT per-ticket ledger | budgets assume you can tell whose event it was |
+| the scope fence is per-ticket | R-SSOC diffs an iteration's committed files against `scope.json` | concurrent committers make "which agent committed this" unanswerable from the diff alone |
+
+### The one item this plan CANNOT drain is the swarm hazard itself
+
+**#25 `R-CSI` — concurrent-session destructive-command interference, DATA-LOSS class** — is
+external-event-gated: it needs a real concurrent-session incident to analyze. A swarm converts that
+incident from rare to routine. **We would be scaling up the exact interaction whose failure mode we have
+never once been able to study.**
+
+### Measured, not theorized: ONE extra writer already broke attribution
+
+2026-08-25, session `2026-08-24-3df8dfe4`. The babysitter committed **two doc files** during an active
+run. R-SSOC fired `worker_edit_outside_scope` and attributed it to the `extension` subsystem **worker**.
+Decisive check: the babysitter's commit added exactly one NEW file; the anatomy commit in the same
+iteration window added none. Nothing was corrupted — R-SSOC is observability-only — but **one additional
+concurrent writer produced one false forensic record.** That is the swarm failure mode in miniature, at
+N=1.
+
+### What "simplified enough" concretely MEANS here
+
+Not a vibe. Swarm-readiness is: **attribution survives N writers.** Every event that today names a ticket
+or a worker must still name the right one when several are live. Until then, adding agents multiplies
+throughput and multiplies unattributable events at the same rate — and unattributable events are what
+[[B-NOSTOP-GATES]] and the inherited-failure carve-out have repeatedly shown to be the expensive kind.
+
+This sequencing also follows directly from **complexity is the source of brittleness** (root
+`CLAUDE.md`): a swarm is a large multiplier on state count, and every enumerated-set and
+single-writer assumption becomes a concurrency bug at scale.
+
 ## 📐 BUNDLE SIZING — compose LARGER pipelines; the review phases are a fixed toll (operator-set 2026-08-24, measured)
 
 **Directive: stop dispatching 2–3 ticket bundles. Compose 6–8 tickets, mixing bug fixes and new
