@@ -342,6 +342,47 @@ function parsePsInt(raw: string): number {
   return Number.isFinite(value) && Number.isInteger(value) ? value : -1;
 }
 
+/** A command's admission verdict: the class it belongs to and how the report labels it. */
+type WorkerProcClass = Pick<WorkerProcCandidate, 'owningSessionDir' | 'kind' | 'matchClass'>;
+
+/**
+ * The ONE admission decision for a `ps` row: WHETHER a command is a candidate
+ * at all, and — inseparably — the `kind`/`matchClass`/ownership triple the reap
+ * report labels it with. `null` means the command is neither worker-shaped nor
+ * a test-owned fixture path, and is not a candidate.
+ *
+ * Class and label come out of the SAME evaluation for the reason
+ * `matchTestOwnedFixture` fused its own two halves one level down: the pre-fix
+ * shape built a candidate at THREE `results.push` sites, two of them
+ * byte-identical `tmp_fixture` literals reached from different arms. A field
+ * added to `WorkerProcCandidate`, or any change to how a fixture candidate is
+ * labelled, had to land in both or the two arms disagreed about the same
+ * command — the exact drift the `matchClass` doc-comment warns about
+ * ("admits a candidate the report then labels `null`"), re-created at the
+ * construction site.
+ *
+ * Precedence is unchanged: a worker-shaped command with a resolvable owning
+ * session is `session_owned` even when its argv also looks like a fixture path;
+ * only an UNATTRIBUTABLE worker falls through to the fixture class.
+ */
+function classifyWorkerProc(command: string, sessionsRoot: string): WorkerProcClass | null {
+  const workerShaped = isWorkerShapedCommand(command);
+  const owningSessionDir = workerShaped ? resolveOwningSessionDir(command, sessionsRoot) : null;
+  if (owningSessionDir !== null) return { owningSessionDir, kind: 'worker', matchClass: 'session_owned' };
+  // An unattributable worker-shaped command (e.g. a claude-symlinked test
+  // fixture whose --add-dir points at a foreign/stale tmp sessions root)
+  // still reaps via the tmp_fixture age-only gate when its argv is itself
+  // a test-owned fixture path — never by relaxing worker ownership.
+  const fixtureMatch = matchTestOwnedFixture(command);
+  if (fixtureMatch !== null) {
+    return { owningSessionDir: null, kind: 'tmp_fixture', matchClass: fixtureMatch.matchClass };
+  }
+  // Worker-shaped but unattributable and not a fixture: still CENSUSED (it is a
+  // real worker proc and `scanned` must say so), never reapable — `isReapableOrphan`
+  // refuses the null owner for every non-`tmp_fixture` kind.
+  return workerShaped ? { owningSessionDir: null, kind: 'worker', matchClass: null } : null;
+}
+
 /** Pure parser over `ps -axo pid=,pgid=,ppid=,etime=,command=` output. */
 export function parseWorkerProcsFromPs(psOutput: string, sessionsRoot: string): WorkerProcCandidate[] {
   const results: WorkerProcCandidate[] = [];
@@ -356,50 +397,9 @@ export function parseWorkerProcsFromPs(psOutput: string, sessionsRoot: string): 
     const etimeSeconds = parsePsElapsedSeconds(match[4]);
     const command = match[5].trim();
     if (pid <= 0 || pgid <= 0 || ppid < 0 || etimeSeconds === null) continue;
-    const fixtureMatch = matchTestOwnedFixture(command);
-    if (isWorkerShapedCommand(command)) {
-      const owningSessionDir = resolveOwningSessionDir(command, sessionsRoot);
-      // An unattributable worker-shaped command (e.g. a claude-symlinked test
-      // fixture whose --add-dir points at a foreign/stale tmp sessions root)
-      // still reaps via the tmp_fixture age-only gate when its argv is itself
-      // a test-owned fixture path — never by relaxing worker ownership.
-      if (owningSessionDir === null && fixtureMatch !== null) {
-        results.push({
-          pid,
-          pgid,
-          ppid,
-          etime_seconds: etimeSeconds,
-          command,
-          owningSessionDir: null,
-          kind: 'tmp_fixture',
-          matchClass: fixtureMatch.matchClass,
-        });
-        continue;
-      }
-      results.push({
-        pid,
-        pgid,
-        ppid,
-        etime_seconds: etimeSeconds,
-        command,
-        owningSessionDir,
-        kind: 'worker',
-        matchClass: owningSessionDir !== null ? 'session_owned' : null,
-      });
-      continue;
-    }
-    if (fixtureMatch !== null) {
-      results.push({
-        pid,
-        pgid,
-        ppid,
-        etime_seconds: etimeSeconds,
-        command,
-        owningSessionDir: null,
-        kind: 'tmp_fixture',
-        matchClass: fixtureMatch.matchClass,
-      });
-    }
+    const classified = classifyWorkerProc(command, sessionsRoot);
+    if (classified === null) continue;
+    results.push({ pid, pgid, ppid, etime_seconds: etimeSeconds, command, ...classified });
   }
   return results;
 }
