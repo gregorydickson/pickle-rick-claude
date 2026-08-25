@@ -1002,38 +1002,27 @@ function persistAndLogPostFinalVerdict(
   return verdict;
 }
 
-export function runPostFinalMeasurement(
+/**
+ * R-NOPOSTTIER: the MEASUREMENT half of `runPostFinalMeasurement` — every statement that touches
+ * the world (the working-dir probe, the clock, the git probe, the tier spawn itself) reduced to
+ * the classifier's own input record. Split out so its caller reads as the three-step sequence it
+ * is: probe, classify, persist.
+ *
+ * The return type is `ClassifyPostFinalVerdictInput` itself rather than a restated shape, so this
+ * seam and `classifyPostFinalVerdict` cannot drift apart.
+ *
+ * Total — like its caller it never throws; every failure lands on the classifier’s `absent` arm.
+ *
+ * Two facts, not one, because `not_applicable` and `absent` are not the same claim.
+ * `not_applicable` is POSITIVE — we looked at the working dir and it ships no `extension/` tier,
+ * so no verdict is owed and the off-repo bundle stays green (the repo-agnostic invariant).
+ * `absent` is the UNKNOWN — we could not look. `pipeline-runner.ts:readDegradedPostFinalVerdict`
+ * keys only on `degraded`, so the non-degraded state is reported as success; anything we failed
+ * to establish must therefore land on `absent`, never borrow the positive fact's exit.
+ */
+function probePostFinalMeasurement(
   input: RunPostFinalMeasurementInput,
-): ClassifyPostFinalVerdictOutput {
-  // R-NOPOSTTIER (AC-2): under PICKLE_TEST_MODE with NO injected `runTestFast`, this seam MUST
-  // NOT spawn a real fast-tier measurement — `extension/tests/mux-runner.test.js` spawns the
-  // compiled binary as a subprocess and builds its own deps in-process, so a tier run nested
-  // inside a running tier never returns. Gating on `!input.runTestFast` (rather than a bare
-  // `PICKLE_TEST_MODE` check) keeps `extension/tests/post-final-measurement.test.js` — which sets
-  // `PICKLE_TEST_MODE=1` for an unrelated reason (bypassing `guardCompletionCommitBeforeDone`) but
-  // injects its own stub `runTestFast` to drive this exact function in-process — reaching its
-  // injected stub instead of being silently short-circuited. Both promise-synthesis callers
-  // (`runManagerTokenPostFinalMeasurement`, `applyAllTicketsDoneCompletion`) route through this
-  // one function, so the short-circuit here covers both seams. `gate: null` with
-  // `applicable: true` classifies 'absent' (the classifier's "could not look" claim) — never
-  // `not_applicable` (a positive "no tier owed" claim this is not) and never `green`.
-  if (process.env.PICKLE_TEST_MODE === '1' && !input.runTestFast) {
-    const verdict = classifyPostFinalVerdict({
-      gate: null,
-      applicable: true,
-      verdictTs: (input.now ?? Date.now)(),
-      finalCommitTs: null,
-      baselineFailures: [],
-    });
-    return persistAndLogPostFinalVerdict(input, verdict, ' — test-mode short-circuit, no tier spawned');
-  }
-
-  // Two facts, not one, because `not_applicable` and `absent` are not the same claim.
-  // `not_applicable` is POSITIVE — we looked at the working dir and it ships no `extension/` tier,
-  // so no verdict is owed and the off-repo bundle stays green (the repo-agnostic invariant).
-  // `absent` is the UNKNOWN — we could not look. `pipeline-runner.ts:readDegradedPostFinalVerdict`
-  // keys only on `degraded`, so the non-degraded state is reported as success; anything we failed
-  // to establish must therefore land on `absent`, never borrow the positive fact's exit.
+): ClassifyPostFinalVerdictInput {
   // `workingDirKnown` carries no initializer: the try and the catch both assign it, so one would
   // be dead (`no-useless-assignment`).
   let workingDirKnown: boolean;
@@ -1084,7 +1073,7 @@ export function runPostFinalMeasurement(
     input.log(`post-final tier measurement threw (classified absent): ${safeErrorMessage(err)}`);
   }
 
-  const verdict = classifyPostFinalVerdict({
+  return {
     gate,
     // An unknown working dir CLAIMS applicability so it skips the `not_applicable` arm. The
     // `if (applicable)` block did not run, so `gate` is null and the classifier's existing
@@ -1094,9 +1083,39 @@ export function runPostFinalMeasurement(
     finalCommitTs,
     // No baseline failure set exists in state, so nothing can launder a real failure into green.
     baselineFailures: [],
-  });
+  };
+}
 
-  return persistAndLogPostFinalVerdict(input, verdict, '');
+export function runPostFinalMeasurement(
+  input: RunPostFinalMeasurementInput,
+): ClassifyPostFinalVerdictOutput {
+  // R-NOPOSTTIER (AC-2): under PICKLE_TEST_MODE with NO injected `runTestFast`, this seam MUST
+  // NOT spawn a real fast-tier measurement — `extension/tests/mux-runner.test.js` spawns the
+  // compiled binary as a subprocess and builds its own deps in-process, so a tier run nested
+  // inside a running tier never returns. Gating on `!input.runTestFast` (rather than a bare
+  // `PICKLE_TEST_MODE` check) keeps `extension/tests/post-final-measurement.test.js` — which sets
+  // `PICKLE_TEST_MODE=1` for an unrelated reason (bypassing `guardCompletionCommitBeforeDone`) but
+  // injects its own stub `runTestFast` to drive this exact function in-process — reaching its
+  // injected stub instead of being silently short-circuited. Both promise-synthesis callers
+  // (`runManagerTokenPostFinalMeasurement`, `applyAllTicketsDoneCompletion`) route through this
+  // one function, so the short-circuit here covers both seams. `gate: null` with
+  // `applicable: true` classifies 'absent' (the classifier's "could not look" claim) — never
+  // `not_applicable` (a positive "no tier owed" claim this is not) and never `green`.
+  if (process.env.PICKLE_TEST_MODE === '1' && !input.runTestFast) {
+    const verdict = classifyPostFinalVerdict({
+      gate: null,
+      applicable: true,
+      verdictTs: (input.now ?? Date.now)(),
+      finalCommitTs: null,
+      baselineFailures: [],
+    });
+    return persistAndLogPostFinalVerdict(input, verdict, ' — test-mode short-circuit, no tier spawned');
+  }
+  return persistAndLogPostFinalVerdict(
+    input,
+    classifyPostFinalVerdict(probePostFinalMeasurement(input)),
+    '',
+  );
 }
 
 /**
