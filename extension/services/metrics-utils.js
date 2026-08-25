@@ -4,7 +4,7 @@ import * as os from 'os';
 import { spawnSync } from 'child_process';
 import { formatLocalDateKey, safeErrorMessage } from './pickle-utils.js';
 import { readRecoverableJsonObject } from './microverse-state.js';
-import { BACKENDS, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+import { BACKENDS, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
 // ---------------------------------------------------------------------------
 // Skip-flag budget dashboard (W5c)
 //
@@ -393,12 +393,20 @@ export function scanGitRepos(repoRoot, since, until) {
                 encoding: 'utf-8',
                 timeout: 30_000,
                 // AP-EXT-ITER8-01: an unbounded log window truncates past Node's 1 MB
-                // default, and the `status !== 0` guard below then drops the whole repo
-                // from the report silently — under-counted LOC that reads as real data.
+                // default, and the guard below then drops the whole repo from the report
+                // silently — under-counted LOC that reads as real data.
                 maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
                 stdio: ['ignore', 'pipe', 'pipe'],
             });
-            if ((proc.status ?? 1) !== 0)
+            // Completion is the family's ONE shared predicate (`types/index.ts`), not a
+            // local status test: the ceiling above has TWO overflow shapes and the
+            // status-only half is blind to one of them. A child that EXITS before Node's
+            // kill lands returns `status: 0` with `error.code === 'ENOBUFS'` and a
+            // TRUNCATED log, which a status-only guard reads as a COMPLETE window — the
+            // repo then lands in the report with silently under-counted LOC, which is a
+            // WRONG number, not a missing one. Dropping the repo (as every other failure
+            // here does) at least leaves the absence visible.
+            if (!enumerationCompleted(proc))
                 continue;
             const locMap = parseGitLogOutput(proc.stdout || '');
             const boundedLocMap = new Map();

@@ -17,7 +17,7 @@ import {
 } from '../services/pickle-utils.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
 import { buildWorkerInvocation, isBackend, SpawnInvocation } from '../services/backend-spawn.js';
-import { Backend, PromiseTokens, Defaults, UNBOUNDED_READ_MAX_BUFFER, VALID_ACTIVITY_EVENTS } from '../types/index.js';
+import { Backend, PromiseTokens, Defaults, UNBOUNDED_READ_MAX_BUFFER, VALID_ACTIVITY_EVENTS, enumerationCompleted } from '../types/index.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
@@ -601,24 +601,43 @@ function matchesOnPathBoundary(trackedPath: string, token: string): boolean {
   return trackedPath === token || trackedPath.endsWith(`/${token}`);
 }
 
-function resolveTrackedSuffixMatches(workingDir: string, token: string): string[] {
+// `spawnSyncFn`, never `spawn`: the `pickle/spawn-error-handler` rule keys on the
+// IDENTIFIER, so a parameter named `spawn` reads as the async API and demands an
+// `.on('error')` handler a synchronous call can never have. The seam exists because
+// the ceiling's ENOBUFS overflow shape cannot be produced from a real git without
+// writing 64 MB of paths — the same reason `check-scope-diff.ts:getStagedPaths`
+// carries one.
+export function resolveTrackedSuffixMatches(
+  workingDir: string,
+  token: string,
+  spawnSyncFn: typeof spawnSync = spawnSync,
+): string[] {
   const cacheKey = `${workingDir}\0${token}`;
   const cached = gitLsFilesSuffixCache.get(cacheKey);
   if (cached !== undefined) return cached;
   let matches: string[] = [];
   try {
-    const result = spawnSync('git', ['ls-files', '--', `*${token}`], {
+    const result = spawnSyncFn('git', ['ls-files', '--', `*${token}`], {
       cwd: workingDir,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: GIT_LS_FILES_SUFFIX_TIMEOUT_MS,
       // AP-EXT-ITER56-01: the captured listing IS the resolution verdict, so it
       // carries the shared 64MB ceiling. Past spawnSync's 1MB default the child
-      // is SIGTERMed with `status === null`, the `status === 0` gate below reads
+      // is SIGTERMed with `status === null`, the completion gate below reads
       // false, and a citation of a REAL tracked file is reported path_not_found.
       maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
-    if (result.status === 0 && typeof result.stdout === 'string') {
+    // Completion is the family's ONE shared `enumerationCompleted` predicate
+    // (`types/index.ts`), called and not re-implemented. The comment above names
+    // only the SIGTERM half of the ceiling's overflow; the other half is a child
+    // that EXITS before that kill lands, returning `status: 0`, `signal: null`,
+    // `error.code === 'ENOBUFS'` and a TRUNCATED listing. A `status === 0` test
+    // reads that truncated listing as the COMPLETE tracked set, so whichever
+    // citations fell past the cut resolve to zero matches and are reported
+    // path_not_found with the same confidence as a genuine phantom — a fabricated
+    // verdict rather than a visible failure to reach one.
+    if (enumerationCompleted(result) && typeof result.stdout === 'string') {
       matches = result.stdout
         .split('\n')
         .map((line) => line.trim())

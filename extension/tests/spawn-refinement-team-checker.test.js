@@ -14,11 +14,13 @@ import { fileURLToPath } from 'node:url';
 import {
     checkAnalystOutputPaths,
     scanAnalystOutputsForUnverifiedPaths,
+    resolveTrackedSuffixMatches,
     UNATTRIBUTED_TICKET_ID,
     __resetGitLsFilesSuffixCacheForTests,
     countContentLines,
     findStaleAnchorWarnings,
 } from '../bin/spawn-refinement-team.js';
+import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -395,7 +397,13 @@ test('AC-FOMC-14: repeating the same token spawns git ls-files exactly once', ()
 // `terminateWorkerProcess` (group kill) on a `detached` child; that composition
 // is what this asserts, and it is pinned behaviourally in
 // tests/refinement-worker-evidence.test.js.
-const SYNC_SPAWN_RE = /\b(execFileSync|execSync|spawnSync)\s*\(/g;
+// `spawnSyncFn` is listed FIRST and matters: a spawn reached through an injected
+// seam parameter (`spawnSyncFn: typeof spawnSync = spawnSync`) is still a real
+// synchronous subprocess, but the bare `spawnSync\s*\(` shape cannot see it — the
+// call site reads `spawnSyncFn(`. Without this alternative, adding a test seam to a
+// spawn site silently REMOVES it from this sweep, and the floor below is the only
+// thing that notices. Alternation is leftmost-first, so the longer name leads.
+const SYNC_SPAWN_RE = /\b(execFileSync|execSync|spawnSyncFn|spawnSync)\s*\(/g;
 
 function readRefinementSource() {
     return fs.readFileSync(path.resolve(__dirname, '..', 'src', 'bin', 'spawn-refinement-team.ts'), 'utf-8');
@@ -884,5 +892,106 @@ test('AP-EXT-ITER56-01 (control): the cap does not suppress a genuinely unresolv
         __resetGitLsFilesSuffixCacheForTests();
         fs.rmSync(shimDir, { recursive: true, force: true });
         fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+// --- AP-EXT-ITER56-01: the ceiling's OTHER overflow shape ---------------------
+// The big-listing shim above covers only the half Node resolves by SIGTERMing the
+// child (`status === null`). The other half is a child that EXITS before that kill
+// lands: `spawnSync` then returns `status: 0`, `signal: null`,
+// `error.code === 'ENOBUFS'` and a TRUNCATED stdout. A `status === 0` gate reads
+// that truncated listing as the COMPLETE tracked set, so the resolver hands back a
+// suffix verdict computed over an arbitrary prefix of the repo — a citation that
+// happens to sit in the visible head resolves CLEAN, and one past the cut is
+// reported path_not_found with the same confidence as a genuine phantom.
+//
+// These cases drive the resolver through its injected `spawnSyncFn` seam because
+// the ENOBUFS shape cannot be produced from a real git without emitting more than
+// `UNBOUNDED_READ_MAX_BUFFER` (64 MB) of paths, and which of the two overflow
+// shapes Node lands on is a race.
+
+const ENOBUFS_LISTING = 'services/state-manager.ts\n';
+
+function enobufsResult(stdout) {
+    return {
+        status: 0,
+        signal: null,
+        stdout,
+        stderr: '',
+        pid: 4242,
+        output: [null, stdout, ''],
+        error: Object.assign(new Error('spawnSync git ENOBUFS'), { code: 'ENOBUFS' }),
+    };
+}
+
+test('AP-EXT-ITER56-01: a ceiling-exceeded listing that still EXITS 0 is not a resolution verdict', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    try {
+        // The truncated head DOES contain a suffix match. Status-only, that is a
+        // clean resolve over a listing the resolver never finished reading.
+        const matches = resolveTrackedSuffixMatches(
+            '/tmp/does-not-need-to-exist',
+            'state-manager.ts',
+            () => enobufsResult(ENOBUFS_LISTING),
+        );
+        assert.deepEqual(
+            matches,
+            [],
+            'a match found inside a TRUNCATED listing is not evidence the citation resolved',
+        );
+    } finally {
+        __resetGitLsFilesSuffixCacheForTests();
+    }
+});
+
+test('AP-EXT-ITER56-01 (control): the same listing that COMPLETED still resolves', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    try {
+        // Byte-identical stdout, no `error` — the distinction must come from the
+        // completion predicate alone and must not over-trigger on a real read.
+        const matches = resolveTrackedSuffixMatches(
+            '/tmp/does-not-need-to-exist',
+            'state-manager.ts',
+            () => ({ status: 0, signal: null, stdout: ENOBUFS_LISTING, stderr: '', pid: 4242, output: [null, ENOBUFS_LISTING, ''] }),
+        );
+        assert.deepEqual(matches, ['services/state-manager.ts']);
+    } finally {
+        __resetGitLsFilesSuffixCacheForTests();
+    }
+});
+
+test('AP-EXT-ITER56-01: the ambiguity verdict is withheld over a truncated listing too', () => {
+    // `matches.length > 1` is a POSITIVE finding (ambiguous_citation) in exactly the
+    // same way `length === 0` is: over a prefix of the repo, both are fabricated.
+    __resetGitLsFilesSuffixCacheForTests();
+    const listing = 'a/dup.ts\nb/dup.ts\n';
+    try {
+        assert.deepEqual(
+            resolveTrackedSuffixMatches('/tmp/does-not-need-to-exist', 'dup.ts', () => enobufsResult(listing)),
+            [],
+        );
+    } finally {
+        __resetGitLsFilesSuffixCacheForTests();
+    }
+});
+
+test('AP-EXT-ITER56-01: the suffix enumeration declares the ONE unbounded-read ceiling', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    const opts = [];
+    try {
+        resolveTrackedSuffixMatches('/tmp/does-not-need-to-exist', 'state-manager.ts', (bin, args, o) => {
+            assert.equal(bin, 'git');
+            assert.ok(args.includes('ls-files'), 'the resolver enumerates via git ls-files');
+            opts.push(o);
+            return { status: 0, signal: null, stdout: '', stderr: '', pid: 4242, output: [null, '', ''] };
+        });
+        assert.equal(opts.length, 1, 'the resolver runs exactly one git enumeration per token');
+        assert.equal(
+            opts[0].maxBuffer,
+            UNBOUNDED_READ_MAX_BUFFER,
+            "inheriting Node's 1 MB default is what puts this reader in the truncation race at all",
+        );
+    } finally {
+        __resetGitLsFilesSuffixCacheForTests();
     }
 });

@@ -718,6 +718,23 @@ function findImporters(name, repoRoot, timeoutMs) {
         return rgMatches;
     return _runGrepImportWalk(pattern, repoRoot, timeoutMs);
 }
+// The ONE completion predicate for the rg -> git grep -> grep degrade chain, homed
+// once because all THREE tiers decide it identically and the copies drifted: the
+// last-resort `grep` arm carried the `status`-only half and was blind to the
+// `maxBuffer` overflow shape its two siblings already caught.
+//
+// This family cannot call `types/index.ts:enumerationCompleted` — that predicate
+// requires `status === 0`, while a match tool exits **1** for "ran fine, found zero
+// matches", which is an AUTHORITATIVE empty answer and must NOT degrade to the next
+// tier. The TWO-shape rule is the same one though: `status` alone misses the
+// `UNBOUNDED_READ_MAX_BUFFER` overflow in which the child EXITS before Node's kill
+// lands, returning `status: 0`, `signal: null`, `error.code === 'ENOBUFS'` and a
+// TRUNCATED match list. Status-only, that truncated list is read as the complete set
+// of importers and the scope fence silently under-includes — the exact harm the
+// ceiling on each spawn below is declared to prevent.
+export function _matchListCompleted(result) {
+    return !result.error && (result.status === 0 || result.status === 1);
+}
 function _runRgImportWalk(pattern, root, timeoutMs) {
     // `timeout` guards against a wedged rg/git-grep/grep (FIFO under repoRoot,
     // stuck FUSE mount, catastrophic backtracking) that would otherwise block
@@ -734,7 +751,7 @@ function _runRgImportWalk(pattern, root, timeoutMs) {
         // drops importers from the one-hop set, under-including the scope fence.
         maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
-    if (!rg.error && (rg.status === 0 || rg.status === 1)) {
+    if (_matchListCompleted(rg)) {
         return (rg.stdout || '')
             .split('\n')
             .filter((f) => f.length > 0)
@@ -770,7 +787,7 @@ function _runGitGrepImportWalk(pattern, root, timeoutMs) {
     // ERE does not — `git grep -E` silently fails to match (measured: exit 1,
     // zero results) against the exact same pattern `-P`/`grep -E` match.
     const gitGrep = spawnSync('git', ['grep', '-l', '-P', pattern, '--', '*.ts', '*.tsx', '*.js', '*.jsx', '*.mjs', '*.cjs'], { cwd: root, encoding: 'utf-8', timeout: timeoutMs, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
-    if (!gitGrep.error && (gitGrep.status === 0 || gitGrep.status === 1)) {
+    if (_matchListCompleted(gitGrep)) {
         return (gitGrep.stdout || '')
             .split('\n')
             .filter((f) => f.length > 0)
@@ -788,7 +805,7 @@ function _runGrepImportWalk(pattern, root, timeoutMs) {
     const grep = spawnSync('grep', ['-rl', '-E', '--include=*.ts', '--include=*.tsx', '--include=*.js', '--include=*.jsx',
         '--include=*.mjs', '--include=*.cjs',
         pattern, '.'], { cwd: root, encoding: 'utf-8', timeout: timeoutMs, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
-    if (grep.status === 0 || grep.status === 1) {
+    if (_matchListCompleted(grep)) {
         return (grep.stdout || '')
             .split('\n')
             .filter((f) => f.length > 0)

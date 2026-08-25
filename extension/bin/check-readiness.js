@@ -10,7 +10,7 @@ import { isRecord } from '../lib/is-record.js';
 import { formatLocalDateKey, safeErrorMessage, writeStateFile } from '../services/pickle-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { readRecoverableJsonObject } from '../services/recoverable-json.js';
-import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+import { UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
 import { resolveExtensionDir } from '../services/forward-ref-annotation.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { SCOPE_AUTO_EXTEND_MAX, createResolverCache, detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
@@ -262,7 +262,15 @@ function gitTrackedFiles(repoRoot) {
         // "file not tracked" and manufactures false-positive contract/file_path findings.
         maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
-    if (result.status !== 0)
+    // The ceiling above has TWO overflow shapes and a `status`-only test sees only one.
+    // The other — a child that EXITS before Node's kill lands, so `status: 0`,
+    // `signal: null`, `error.code === 'ENOBUFS'` and TRUNCATED stdout — is exactly the
+    // truncation the comment above says the ceiling exists to stop, and status-only it
+    // reads as a COMPLETE listing. Completion is decided by the family's ONE shared
+    // `enumerationCompleted` predicate (`types/index.ts`), called and not
+    // re-implemented; four members of this family each regressed to the status-only
+    // half while the copies were maintained separately.
+    if (!enumerationCompleted(result))
         return [];
     return result.stdout.split('\n').filter(Boolean);
 }

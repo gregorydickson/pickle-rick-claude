@@ -338,3 +338,39 @@ process.stdout.write(JSON.stringify({ result }));
         }
     });
 });
+
+
+// --- the ONE completion predicate the three degrade tiers share ---------------
+// rg / git grep / grep all decide "this match list is an answer" identically, and
+// the copies drifted: the last-resort `grep` arm tested `status` alone while its two
+// siblings already ORed in `.error`. Homing the decision once removes the drift by
+// construction; these cases pin the decision itself, including the row that was
+// missing from the arm that regressed.
+//
+// Note this family deliberately CANNOT use `types/index.ts:enumerationCompleted` —
+// that predicate demands `status === 0`, and a match tool exits **1** for "ran fine,
+// found zero matches", which is an authoritative empty answer that must NOT degrade
+// to the next tier.
+test('_matchListCompleted: exit 0 (matches) and exit 1 (no matches) are BOTH authoritative answers', async () => {
+    const { _matchListCompleted } = await import('../services/scope-resolver.js');
+    assert.equal(_matchListCompleted({ status: 0 }), true);
+    assert.equal(_matchListCompleted({ status: 1 }), true, 'exit 1 is "ran fine, zero matches", not a failure');
+});
+
+test('_matchListCompleted: a tool failure or a kill is not an answer', async () => {
+    const { _matchListCompleted } = await import('../services/scope-resolver.js');
+    assert.equal(_matchListCompleted({ status: 2 }), false, 'rg exit 2 is a real tool error');
+    assert.equal(_matchListCompleted({ status: null }), false, 'SIGTERM/SIGKILL leaves status null');
+});
+
+test('_matchListCompleted: a maxBuffer overflow that still EXITS 0 or 1 is not an answer either', async () => {
+    // The shape a status-only guard cannot see: the child exits before Node's
+    // overflow kill lands, so `spawnSync` returns a normal-looking status with
+    // `error.code === 'ENOBUFS'` and a TRUNCATED match list. Read as complete, that
+    // list silently drops importers from the one-hop set and under-includes the
+    // scope fence — the exact harm UNBOUNDED_READ_MAX_BUFFER is declared to prevent.
+    const { _matchListCompleted } = await import('../services/scope-resolver.js');
+    const enobufs = Object.assign(new Error('spawnSync grep ENOBUFS'), { code: 'ENOBUFS' });
+    assert.equal(_matchListCompleted({ status: 0, error: enobufs }), false);
+    assert.equal(_matchListCompleted({ status: 1, error: enobufs }), false);
+});
