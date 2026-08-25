@@ -79,6 +79,7 @@ import {
   runGate,
   filterByScope,
   classifyNoDisown,
+  hasUnmeasuredCheck,
   getChangedExportedSymbols,
   getChangedFilesSince,
 } from '../services/convergence-gate.js';
@@ -1025,14 +1026,18 @@ function resolveMetricType(currentMv: MicroverseSessionState): string {
 // (un-fenced) and keep only self-introduced failures via the no-disown classifier. A non-empty
 // result blocks convergence — the phase cannot disown its own break.
 /**
- * Which of the sweep's two classifier axes could not be MEASURED, when the reason is a
- * measurement failure rather than a finding. `null` means the sweep reached a verdict (it either
+ * Which of the sweep's three inputs could not be MEASURED, when the reason is a
+ * measurement failure rather than a finding — the two git enumerations the no-disown classifier
+ * reads, plus the whole-repo typecheck it classifies. `null` means the sweep reached a verdict (it either
  * ran, or correctly found no exported-symbol change). Mirrors `orphan-reaper.ts:ReapSweepSkipReason`,
  * which exists for the same reason: a best-effort collector's swallowed value must not share a
  * shape with a real reading, and something must render it. Both axes are named rather than folded
  * into one reason so the rendered line says WHICH git enumeration failed.
  */
-export type InterfaceSweepSkipReason = 'symbols_unmeasurable' | 'changed_files_unmeasurable';
+export type InterfaceSweepSkipReason =
+  | 'symbols_unmeasurable'
+  | 'changed_files_unmeasurable'
+  | 'typecheck_unmeasurable';
 
 export async function runInterfaceChangeSweep(opts: {
   workingDir: string;
@@ -1075,6 +1080,22 @@ export async function runInterfaceChangeSweep(opts: {
       gate_payload: { ...data, interface_change_sweep: true },
     }),
   });
+  // THIRD axis of the same one unmeasurable disposition: the whole-repo tsc itself. A check that
+  // timed out, or that the cumulative gate deadline cut off, yields a `<timeout>` /
+  // GATE_CHECK_TIMEOUT pseudo-failure whose file matches no changed file and whose message yields
+  // no identifier, so `classifyNoDisown` always lands it in `other` and the sweep would return
+  // `ran: true` with an EMPTY `selfIntroduced` over a typecheck that never once ran — the exact
+  // "absence of failures read as evidence" shape AP-EXT-ITER6-01 closed one layer down.
+  //
+  // The question is asked with `hasUnmeasuredCheck`, the predicate that fix already made the ONE
+  // meeting point of all three no-measurement arms — not a second, locally-derived one. KNOWN
+  // BOUND (AP-EXT-ITER7-02, open): the SKIP family still reads as measured — an early skip
+  // carries no `check_status` at all, and a per-check `'skipped'` is excluded from the predicate
+  // on purpose for its baseline reader. Closing it needs positive evidence plus a TOTAL
+  // `check_status`, which reddens sweep fixtures outside this loop's scope fence.
+  if (hasUnmeasuredCheck(result.check_status ?? {})) {
+    return { ran: false, skipped: 'typecheck_unmeasurable', selfIntroduced: [] };
+  }
   const changedFiles = new Set(changedFilesList.map((f) => f.replace(/\\/g, '/')));
   const { selfIntroduced } = classifyNoDisown(result.failures, {
     changedFiles,
@@ -1171,8 +1192,8 @@ async function applyInterfaceChangeSweepGuard(opts: {
   // evidence either way, and that is a materially different fact from "the sweep cleared it".
   if (sweep.skipped !== null) {
     log(
-      `Iteration ${iteration} — interface-change sweep NOT RUN (${sweep.skipped}): a git ` +
-      `enumeration the no-disown classifier needs did not complete, so this iteration carries no ` +
+      `Iteration ${iteration} — interface-change sweep NOT RUN (${sweep.skipped}): a measurement ` +
+      `the no-disown classifier needs did not complete, so this iteration carries no ` +
       `INV-NO-SELF-DISOWN evidence in either direction — continuing (non-fatal)`,
     );
   }

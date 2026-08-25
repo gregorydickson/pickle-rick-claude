@@ -965,10 +965,16 @@ function escalateCheckStatus(prev: GateCheckStatus | undefined, next: GateCheckS
  * project-type map, or a test script `canRunTestScript` refuses to spawn), which is a decision,
  * not a failed measurement. Folding it in here would defer every iteration of any repo whose
  * `test` script the gate declines — a new abort condition, not a closed hole.
+ *
+ * AP-EXT-ITER7-01 exports it: `runInterfaceChangeSweep` needs the SAME fact about the in-memory
+ * result it just got back, and a second predicate with its own polarity is how the three arms
+ * drifted apart in the first place. It reads `GateResult.check_status`, which is why that field
+ * now rides out on every result produced after the checks were attempted.
  */
-function hasUnmeasuredCheck(checkStatus: Partial<Record<GateCheck, GateCheckStatus>>): boolean {
+export function hasUnmeasuredCheck(checkStatus: Partial<Record<GateCheck, GateCheckStatus>>): boolean {
   return Object.values(checkStatus).some((status) => status === 'failed');
 }
+
 export type GateCommandMap = { typecheck?: string; lint?: string; test?: string };
 type GateEmit = (event: string, data: Record<string, unknown>) => void;
 type ProjectType = NonNullable<ReturnType<typeof detectProjectType>>;
@@ -1671,11 +1677,18 @@ export async function runGate(rawOpts: RunGateOpts): Promise<GateResult> {
   const flakeGlobs = opts.settings?.convergence_gate?.known_flake_files ?? [];
   const { real: realFailures, flake: flakeFailures } = applyFlakeFilter(allFailures, opts.workingDir, flakeGlobs);
 
+  // AP-EXT-ITER7-01: `check_status` rides out on EVERY result produced after the checks were
+  // attempted, so an in-memory consumer reads the same per-check measurement fact the baseline
+  // file has persisted since AC-5'. Attached here rather than inside the three producers so no
+  // future fourth branch can forget it.
+  const withCheckStatus = (result: GateResult): GateResult =>
+    finalizeGateResult(opts, emit, { ...result, check_status: checkStatus });
+
   const baseline = await handleBaselineMode(opts, projectType, allowedPathsUsed, realFailures, start, emit, hasUnmeasuredCheck(checkStatus), checkStatus);
-  if (baseline) return finalizeGateResult(opts, emit, baseline);
+  if (baseline) return withCheckStatus(baseline);
 
   const flake = await knownFlakeResult(opts, allFailures, realFailures, flakeFailures, allowedPathsUsed, start, emit);
-  if (flake) return finalizeGateResult(opts, emit, flake);
+  if (flake) return withCheckStatus(flake);
 
-  return finalizeGateResult(opts, emit, finalGateResult(realFailures, allFailures, allowedPathsUsed, start, emit));
+  return withCheckStatus(finalGateResult(realFailures, allFailures, allowedPathsUsed, start, emit));
 }

@@ -1605,6 +1605,19 @@ export interface GateResult {
   elapsed_ms: number;
   total_raw_failure_count: number;
   new_failures_vs_baseline: number;
+  /**
+   * AP-EXT-ITER7-01: per-check `ran`/`skipped`/`failed`, the SAME map
+   * `GateBaselineFile.check_status` persists — surfaced in-memory so a caller can ask whether a
+   * check produced a real measurement instead of inferring it from the ABSENCE of failures, which
+   * a `<timeout>` pseudo-failure makes a lie. Read it through the one shared
+   * `convergence-gate.ts:hasUnmeasuredCheck`, never a locally-derived second predicate.
+   *
+   * OPTIONAL because every gate SKIP path (off-repo `earlyResult`, `no_project_type_detected`,
+   * `project_type_low_confidence`, `workerModeSkipResult`, `gitDriftResult`) returns before any
+   * check is attempted, so it is absent there. Absent is therefore "this gate measured nothing",
+   * never "everything ran" — but `hasUnmeasuredCheck` cannot say so yet; see AP-EXT-ITER7-02.
+   */
+  check_status?: Partial<Record<'typecheck' | 'lint' | 'tests', 'ran' | 'skipped' | 'failed'>>;
 }
 
 export interface GateBaselineFile {

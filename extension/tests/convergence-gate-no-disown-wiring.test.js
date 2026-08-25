@@ -632,3 +632,194 @@ test('AP-EXT-ITER48-01: an unmeasurable file enumeration is RENDERED once and st
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER7-01 — the sweep's THIRD unmeasurable axis: the whole-repo tsc itself.
+//
+// AP-EXT-ITER47-01/48-01 taught `runInterfaceChangeSweep` to say "I could not measure" about its
+// two git INPUTS. The gate it runs on them kept no such door. A per-check timeout (or the
+// cumulative gate deadline) yields a `<timeout>` / GATE_CHECK_TIMEOUT pseudo-failure whose file
+// matches no changed file and whose message yields no identifier, so `classifyNoDisown` always
+// files it under `other` — the sweep returned `{ ran: true, selfIntroduced: [] }` over a typecheck
+// that never once ran, and `applyInterfaceChangeSweepGuard` read that empty list as positive
+// INV-NO-SELF-DISOWN evidence and let convergence proceed. Same shape AP-EXT-ITER6-01 closed one
+// layer down in `runGate`: the ABSENCE of failures read as evidence of a clean measurement.
+//
+// Every pre-existing sweep case injects a `runGateFn` stub, so all of them stayed GREEN against
+// the pre-fix runtime — the AP-EXT-ITER13-01 hand-authored-fixture failure again. These cases
+// cross the REAL `runGate` producer and only vary its per-check budget.
+// ---------------------------------------------------------------------------
+
+// One repo, one typecheck script that always sleeps then passes. The timeout arm and its control
+// differ ONLY in the budget handed to the gate, so a green control cannot come from a different
+// script.
+function makeSlowTypecheckRepo(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  git(dir, ['init']);
+  git(dir, ['config', 'user.name', 'Test User']);
+  git(dir, ['config', 'user.email', 'test@example.com']);
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({
+      name: 'slow-typecheck-fixture',
+      private: true,
+      scripts: { typecheck: 'node typecheck.cjs' },
+    }, null, 2),
+  );
+  fs.writeFileSync(
+    path.join(dir, 'typecheck.cjs'),
+    'setTimeout(() => process.exit(0), 1500);\n',
+  );
+  fs.writeFileSync(path.join(dir, 'src', 'audit.ts'), 'export interface AuditResult { sum: number }\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'base']);
+  const base = headSha(dir);
+  fs.writeFileSync(path.join(dir, 'src', 'audit.ts'), 'export interface AuditResult { total: number }\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'change the exported shape']);
+  return { dir, base };
+}
+
+const SWEEP_ENUMERATORS = {
+  getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+  getChangedFilesSinceFn: () => ['src/audit.ts'],
+};
+
+test('AP-EXT-ITER7-01: runGate surfaces check_status in-memory, so a timed-out check is legible to its caller', async () => {
+  const { dir } = makeSlowTypecheckRepo('cg-apiter7-producer-');
+  try {
+    const timedOut = await runGate({
+      workingDir: dir,
+      mode: 'strict',
+      scope: 'full',
+      checks: ['typecheck'],
+      _timeouts: { perCheck: { typecheck: 300 } },
+    });
+    assert.equal(
+      timedOut.check_status?.typecheck,
+      'failed',
+      'the per-check timeout must reach the CALLER, not just the persisted baseline file; ' +
+      'without it an in-memory consumer can only infer measurement from the failure list',
+    );
+    assert.ok(
+      timedOut.failures.some((f) => f.ruleOrCode === 'GATE_CHECK_TIMEOUT'),
+      'the timeout pseudo-failure is what a consumer would otherwise have to sniff for',
+    );
+
+    // Control: same repo, same script, generous budget — the field must be able to say `ran`,
+    // or "failed" would just be a constant.
+    const measured = await runGate({
+      workingDir: dir,
+      mode: 'strict',
+      scope: 'full',
+      checks: ['typecheck'],
+      _timeouts: { perCheck: { typecheck: 30_000 } },
+    });
+    assert.equal(measured.check_status?.typecheck, 'ran', 'a completed check must report `ran`');
+    assert.equal(measured.status, 'green', 'the control script exits 0 — this is a real measurement');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER7-01: a timed-out whole-repo tsc reaches the sweep as skipped, not as a clean no-disown verdict', async () => {
+  const { dir, base } = makeSlowTypecheckRepo('cg-apiter7-chain-');
+  try {
+    const starved = await runInterfaceChangeSweep({
+      workingDir: dir,
+      sessionDir: dir,
+      startCommit: base,
+      runGateFn: (opts) => runGate({ ...opts, _timeouts: { perCheck: { typecheck: 300 } } }),
+      logActivityFn: () => {},
+      ...SWEEP_ENUMERATORS,
+    });
+    assert.equal(
+      starved.ran,
+      false,
+      'a sweep whose typecheck never completed has NOT run; reporting `ran: true` with an empty ' +
+      'selfIntroduced is a green INV-NO-SELF-DISOWN verdict over a guard that measured nothing',
+    );
+    assert.equal(
+      starved.skipped,
+      'typecheck_unmeasurable',
+      'the failing AXIS must survive to the caller so the rendered line names what did not run',
+    );
+    assert.equal(starved.selfIntroduced.length, 0, 'nothing was measured, so nothing is self-introduced');
+
+    // Control: identical chain, generous budget — the skip must not swallow a real sweep.
+    const swept = await runInterfaceChangeSweep({
+      workingDir: dir,
+      sessionDir: dir,
+      startCommit: base,
+      runGateFn: (opts) => runGate({ ...opts, _timeouts: { perCheck: { typecheck: 30_000 } } }),
+      logActivityFn: () => {},
+      ...SWEEP_ENUMERATORS,
+    });
+    assert.equal(swept.ran, true, 'a completed typecheck is a real measurement — the sweep must run on it');
+    assert.equal(swept.skipped, null, 'a sweep that RAN was never skipped');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER7-01: an unmeasurable typecheck is RENDERED once and stays non-fatal', async () => {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-apiter7-render-'));
+  const logs = [];
+  try {
+    fs.writeFileSync(
+      path.join(sessionDir, 'anatomy-park.json'),
+      JSON.stringify({ converged: true, reason: 'all subsystems clean' }, null, 2),
+    );
+    const result = await handleWorkerManagedIteration({
+      currentMv: {
+        convergence_file: 'anatomy-park.json',
+        key_metric: { type: 'none' },
+        iteration_regressions: 0,
+      },
+      preIterSha: 'aaaa1111',
+      workingDir: sessionDir,
+      sessionDir,
+      enabledFiles: ['anatomy-park.json'],
+      regressionWarningThreshold: 5,
+      backend: 'claude',
+      remediatorTimeoutS: 600,
+      log: (msg) => logs.push(msg),
+      iteration: 7,
+      startCommit: 'bbbb2222',
+      _deps: {
+        getHeadShaFn: () => 'aaaa1111',
+        logActivityFn: () => {},
+        writeMicroverseStateFn: () => {},
+        runGateFn: async () => ({
+          failures: [{
+            check: 'typecheck',
+            file: '<timeout>',
+            line: 0,
+            ruleOrCode: 'GATE_CHECK_TIMEOUT',
+            message: 'typecheck timed out after 300ms',
+            severity: 'error',
+            occurrence_index: 0,
+          }],
+          check_status: { typecheck: 'failed' },
+        }),
+        ...SWEEP_ENUMERATORS,
+      },
+    });
+
+    const rendered = logs.filter((line) => line.includes('typecheck_unmeasurable'));
+    assert.equal(
+      rendered.length,
+      1,
+      `the not-run reason must be surfaced exactly once; got logs: ${JSON.stringify(logs)}`,
+    );
+    assert.match(rendered[0], /NOT RUN/, 'the line must say the sweep did not run');
+
+    // PRIME DIRECTIVE: an ABSENT measurement is not a measured regression. Rendering it must
+    // never become a halt — a stopping gate takes reliability and quality to zero together.
+    assert.equal(result.converged, true, 'an unmeasurable sweep must not block convergence');
+    assert.equal(result.selfRedOpen, undefined, 'no self-red is open — nothing was measured');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
