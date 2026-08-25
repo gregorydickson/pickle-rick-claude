@@ -34,6 +34,14 @@ function simulateBunAbsent(pathEnv) {
   return currentPath;
 }
 
+function getProbeLines() {
+  const src = readFileSync(INSTALL_SH, 'utf8');
+  return src
+    .split('\n')
+    .filter(l => l.includes('bun --version'))
+    .join('\n');
+}
+
 describe('install.sh bun probe', () => {
   test('install.sh contains bun probe with correct banner text', () => {
     const src = readFileSync(INSTALL_SH, 'utf8');
@@ -42,12 +50,7 @@ describe('install.sh bun probe', () => {
   });
 
   test('bun probe emits banner when bun is absent', () => {
-    const src = readFileSync(INSTALL_SH, 'utf8');
-    const probeLines = src
-      .split('\n')
-      .filter(l => l.includes('bun --version'))
-      .join('\n');
-
+    const probeLines = getProbeLines();
     const filteredPath = simulateBunAbsent(process.env.PATH || '');
 
     const stdout = execSync(`bash -c ${JSON.stringify(probeLines)}`, {
@@ -59,11 +62,7 @@ describe('install.sh bun probe', () => {
   });
 
   test('bun probe emits banner when bun lives in a directory without "bun" in its name (pins deterministic resolution over substring matching)', () => {
-    const src = readFileSync(INSTALL_SH, 'utf8');
-    const probeLines = src
-      .split('\n')
-      .filter(l => l.includes('bun --version'))
-      .join('\n');
+    const probeLines = getProbeLines();
 
     // Homebrew installs bun at /opt/homebrew/bin — a directory whose name contains no "bun"
     // substring. Reproduce that class here with a throwaway fake binary so the pin does not
