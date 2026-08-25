@@ -77,6 +77,83 @@ function selfPath(): string {
 }
 
 /**
+ * Group-kill the child's process group on a timeout: SIGTERM at once, then an escalating
+ * SIGKILL after `GROUP_KILL_GRACE_MS` so a native call that ignores SIGTERM cannot linger.
+ * No-op when the child never got a pid (spawn failed before assignment).
+ */
+function killChildGroupOnTimeout(
+  child: ChildProcess,
+  kill: (pid: number, signal: NodeJS.Signals) => boolean,
+): void {
+  const pid = child.pid;
+  if (typeof pid !== 'number') { return; }
+  kill(pid, 'SIGTERM');
+  const escalate = setTimeout(() => {
+    // `child.killed` reflects only whether `child.kill()` was called — this module
+    // group-kills via `kill(pid, ...)` and never touches it, so `!child.killed` was
+    // always true (dead sub-term). The live guard is `exitCode === null`: skip the
+    // escalation only if the child already exited with a real code.
+    if (child.exitCode === null) { kill(pid, 'SIGKILL'); }
+  }, GROUP_KILL_GRACE_MS);
+  if (typeof escalate.unref === 'function') { escalate.unref(); }
+}
+
+/**
+ * Wire both child output streams and return a reader for the accumulated stdout.
+ *
+ * `setEncoding` before the first read, NOT a per-chunk decode: an OS pipe boundary is a
+ * BYTE offset, so a multi-byte UTF-8 character straddles it and `String(chunk)` turns
+ * each half into U+FFFD. The result still parses (U+FFFD is legal inside a JSON string),
+ * so the corruption is silent. `setEncoding` runs the stream through a StringDecoder,
+ * which holds a partial sequence back until its continuation bytes arrive. Same shape the
+ * sibling readers in `spawn-morty.ts` and `microverse-runner.ts` already use.
+ */
+function attachChildOutputDrain(child: ChildProcess): () => string {
+  let stdout = '';
+  child.stdout?.setEncoding('utf-8');
+  child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
+  // Drain stderr so a chatty child can't deadlock on a full pipe buffer; the content
+  // itself is not surfaced (failures are classified by exit code / stdout parseability).
+  child.stderr?.on('data', () => {});
+  return () => stdout;
+}
+
+/**
+ * Classify a child that closed without a timeout. A non-zero exit is a shim failure; a
+ * clean exit whose stdout will not parse is `unparseable-stdout`, never a partial `ok`.
+ */
+function classifyChildClose(code: number | null, stdout: string): CodegraphQueryBatchResult {
+  if (code !== 0) { return { status: 'failed', reason: `shim-exit-${code ?? 'null'}` }; }
+  try {
+    const parsed = JSON.parse(stdout) as Partial<CodegraphQueryBatchOk>;
+    return { status: 'ok', searches: parsed.searches ?? {}, callers: parsed.callers ?? {} };
+  } catch {
+    return { status: 'failed', reason: 'unparseable-stdout' };
+  }
+}
+
+/**
+ * Best-effort: hand the batch to the child. A dead child yields EPIPE.
+ *
+ * The sync try/catch is NOT sufficient on its own. `child.stdin` is a stream: a write
+ * larger than the OS pipe buffer (a batch of search terms easily is) is buffered and
+ * flushed on a later tick, so a pipe that breaks after the call returns surfaces as an
+ * asynchronous 'error' event — and an unhandled stream 'error' is an uncaught exception
+ * that kills the PARENT (spawn-morty), not the child. Same two-arm shape as
+ * `writeChildInput` in hooks/dispatch.ts, which registers the listener for exactly this
+ * reason (pinned by the PC-1/PC-2 split in tests/integration/process-cleanup.test.js).
+ * No kill needed here: the timeout group-kills, and 'close'/'error' on the ChildProcess
+ * settles the promise.
+ */
+function writeBatchToChild(child: ChildProcess, input: CodegraphQueryBatchInput): void {
+  child.stdin?.on('error', () => { /* child already gone — close/error handler settles */ });
+  try {
+    child.stdin?.write(JSON.stringify(input));
+    child.stdin?.end();
+  } catch { /* child already gone — close/error handler settles */ }
+}
+
+/**
  * Run a batch of codegraph queries in a killable `detached` child. Never throws;
  * returns a discriminated result. On timeout the child's whole process group is
  * signalled (SIGTERM → grace → SIGKILL) so a wedged native grandchild cannot leak.
@@ -102,7 +179,6 @@ export async function runCodegraphQueryBatch(
 
   return new Promise<CodegraphQueryBatchResult>((resolve) => {
     let settled = false;
-    let stdout = '';
 
     const settle = (result: CodegraphQueryBatchResult): void => {
       if (settled) { return; }
@@ -113,35 +189,12 @@ export async function runCodegraphQueryBatch(
 
     const timer = setTimeout(() => {
       if (settled) { return; }
-      const pid = child.pid;
-      if (typeof pid === 'number') {
-        // Group-kill the leader: SIGTERM, then escalate to SIGKILL after a grace
-        // window so a native call that ignores SIGTERM cannot linger.
-        kill(pid, 'SIGTERM');
-        const escalate = setTimeout(() => {
-          // `child.killed` reflects only whether `child.kill()` was called — this module
-          // group-kills via `kill(pid, ...)` and never touches it, so `!child.killed` was
-          // always true (dead sub-term). The live guard is `exitCode === null`: skip the
-          // escalation only if the child already exited with a real code.
-          if (child.exitCode === null) { kill(pid, 'SIGKILL'); }
-        }, GROUP_KILL_GRACE_MS);
-        if (typeof escalate.unref === 'function') { escalate.unref(); }
-      }
+      killChildGroupOnTimeout(child, kill);
       settle({ status: 'timeout', reason: 'grandchild-kill' });
     }, opts.timeoutMs);
     if (typeof timer.unref === 'function') { timer.unref(); }
 
-    // `setEncoding` before the first read, NOT a per-chunk decode: an OS pipe boundary is a
-    // BYTE offset, so a multi-byte UTF-8 character straddles it and `String(chunk)` turns
-    // each half into U+FFFD. The result still parses (U+FFFD is legal inside a JSON string),
-    // so the corruption is silent. `setEncoding` runs the stream through a StringDecoder,
-    // which holds a partial sequence back until its continuation bytes arrive. Same shape the
-    // sibling readers in `spawn-morty.ts` and `microverse-runner.ts` already use.
-    child.stdout?.setEncoding('utf-8');
-    child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
-    // Drain stderr so a chatty child can't deadlock on a full pipe buffer; the content
-    // itself is not surfaced (failures are classified by exit code / stdout parseability).
-    child.stderr?.on('data', () => {});
+    const readStdout = attachChildOutputDrain(child);
 
     child.on('error', (err: NodeJS.ErrnoException) => {
       settle({ status: 'failed', reason: err.code === 'ENOENT' ? 'enoent' : 'spawn-error' });
@@ -149,38 +202,10 @@ export async function runCodegraphQueryBatch(
 
     child.on('close', (code) => {
       if (settled) { return; } // timeout already fired — swallow the late close
-      if (code !== 0) {
-        settle({ status: 'failed', reason: `shim-exit-${code ?? 'null'}` });
-        return;
-      }
-      try {
-        const parsed = JSON.parse(stdout) as Partial<CodegraphQueryBatchOk>;
-        settle({
-          status: 'ok',
-          searches: parsed.searches ?? {},
-          callers: parsed.callers ?? {},
-        });
-      } catch {
-        settle({ status: 'failed', reason: 'unparseable-stdout' });
-      }
+      settle(classifyChildClose(code, readStdout()));
     });
 
-    // Best-effort: hand the batch to the child. A dead child yields EPIPE.
-    //
-    // The sync try/catch is NOT sufficient on its own. `child.stdin` is a stream: a write
-    // larger than the OS pipe buffer (a batch of search terms easily is) is buffered and
-    // flushed on a later tick, so a pipe that breaks after the call returns surfaces as an
-    // asynchronous 'error' event — and an unhandled stream 'error' is an uncaught exception
-    // that kills the PARENT (spawn-morty), not the child. Same two-arm shape as
-    // `writeChildInput` in hooks/dispatch.ts, which registers the listener for exactly this
-    // reason (pinned by the PC-1/PC-2 split in tests/integration/process-cleanup.test.js).
-    // No kill needed here: the timeout group-kills, and 'close'/'error' on the ChildProcess
-    // settles the promise.
-    child.stdin?.on('error', () => { /* child already gone — close/error handler settles */ });
-    try {
-      child.stdin?.write(JSON.stringify(input));
-      child.stdin?.end();
-    } catch { /* child already gone — close/error handler settles */ }
+    writeBatchToChild(child, input);
   });
 }
 
