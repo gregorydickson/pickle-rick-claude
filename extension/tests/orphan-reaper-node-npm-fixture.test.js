@@ -201,3 +201,69 @@ test('AP-EXT-ITER2-01: the tmp-root memo is keyed on the tmpdir value, so a reas
     assert.equal(result.length, 1, 'a stale memo would reject the orphan under the new tmpdir');
   });
 });
+
+/**
+ * Ticket 4329498d (AC-6): pin the realpath handling on the shape the test-runner seam
+ * ACTUALLY produces, which every case above misses.
+ *
+ * `test-runner.ts` mkdtemps a `pickle-`-prefixed disposable root and hands it to the spawned
+ * test child as `TMPDIR`. Fixtures created inside that child therefore live one level DEEPER
+ * than anything pinned above: the argv path is `<tmp>/pickle-<root>/cp-git-<n>`, where the
+ * `pickle-` segment is the disposable ROOT and the leaking fixture is its CHILD. Every
+ * `AP-EXT-ITER2-01` case above pins a path whose `pickle-` segment is the argv path's own
+ * basename — a first-segment match that happens to also be the last. Nesting is the untested
+ * axis, and it is the only one the seam produces in production.
+ */
+test('4329498d AC-6: a NESTED fixture under a pickle- disposable root, in realpath form, is admitted', () => {
+  withSymlinkedTmpdir(({ realTmp, link }) => {
+    // The seam's shape: disposable root `pickle-<rand>`, leaking fixture `cp-git-<n>` inside it.
+    // `cp-git-` is deliberately NOT in TEST_OWNED_TMP_PREFIXES — admission must come from the
+    // FIRST segment beneath tmpdir (the pickle- root), which is precisely what constraint (a)
+    // buys and what a `tmp.XXXXXX` root would have destroyed.
+    const nested = path.join(realTmp, 'pickle-Xk4mZq', 'cp-git-17');
+    const result = parseWorkerProcsFromPs(
+      `61001 61001 1 12:04 node ${nested}/run.js`,
+      path.join(link, 'sessions'),
+    );
+    assert.equal(result.length, 1, 'a fixture nested under the disposable pickle- root must still match');
+    assert.equal(result[0].kind, 'tmp_fixture');
+    assert.equal(result[0].matchClass, 'tmp_prefix_fixture');
+  });
+});
+
+/**
+ * Constraint (c)'s safety corollary. The seam removes its disposable root on exit, while a
+ * leaked child proc may still be alive holding the removed path in its argv. `resolveUnderTmpRoot`
+ * is a pure `startsWith` compare with no `existsSync`, so removal does not blind argv matching —
+ * an `existsSync` guard added there would make cleanup-on-exit and reapability mutually exclusive.
+ */
+test('4329498d AC-6: an ALREADY-REMOVED pickle- root still matches — the compare is lexical, not stat-based', () => {
+  withSymlinkedTmpdir(({ realTmp, link }) => {
+    const removedRoot = path.join(realTmp, 'pickle-neverExisted4329498d');
+    assert.equal(fs.existsSync(removedRoot), false, 'precondition: the root must not exist on disk');
+    const result = parseWorkerProcsFromPs(
+      `61002 61002 1 12:05 node ${removedRoot}/cp-state-3/run.js`,
+      path.join(link, 'sessions'),
+    );
+    assert.equal(result.length, 1, 'a stat-based guard here would silently un-reap every cleaned-up root');
+    assert.equal(result[0].matchClass, 'tmp_prefix_fixture');
+  });
+});
+
+/**
+ * The control for both cases above. Without it, they would pass unchanged in a world where the
+ * `TEST_OWNED_TMP_PREFIXES` gate had been deleted — i.e. in exactly the world where `04df0897`
+ * has been silently reverted and a `tmp.XXXXXX` root makes every fixture orphan unmatchable.
+ * Nesting support must not widen admission to ANY deep path under tmpdir.
+ */
+test('4329498d AC-6 (negative): the same nested fixture under a NON-test-owned root is still rejected', () => {
+  withSymlinkedTmpdir(({ realTmp, link }) => {
+    // `tmp.XXXXXX` is the literal shape a bare `mktemp -d` would have produced at the seam.
+    const nested = path.join(realTmp, 'tmp.8Fj2Kd', 'cp-git-17');
+    const result = parseWorkerProcsFromPs(
+      `61003 61003 1 12:06 node ${nested}/run.js`,
+      path.join(link, 'sessions'),
+    );
+    assert.equal(result.length, 0, 'admission must key on the FIRST segment prefix, not on depth under tmpdir');
+  });
+});
