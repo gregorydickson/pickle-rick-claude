@@ -28,6 +28,100 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
    a completion/disposition/quality-gate verdict and make it **continue-and-flag**. Reserve halting for the
    genuine crash floor only (`fatal`, `state_schema_version_ahead`, budget cap). See [[B-NOSTOP-GATES]] below.
 
+## 📐 BUNDLE SIZING — compose LARGER pipelines; the review phases are a fixed toll (operator-set 2026-08-24, measured)
+
+**Directive: stop dispatching 2–3 ticket bundles. Compose 6–8 tickets, mixing bug fixes and new
+functionality in the same run.** This is a dispatch-composition rule; it does not alter the PRIME
+DIRECTIVE or the ratchet order above.
+
+### Why — measured across 9 recorded sessions, not argued
+
+Phase-level durations, derived from the `pipeline-runner.log` timestamps of completed runs:
+
+| session | tickets | PICKLE (per-ticket work) | CITADEL | ANATOMY-PARK + SZECHUAN (review toll) |
+|---|---|---|---|---|
+| `2026-08-22-a1e33756` | 8 | 177m | 3m | **313m** |
+| `2026-08-20-54c74299` | 7 | 190m | 0m | **286m** |
+| `2026-08-24-3df8dfe4` | 2 | 49m | 0m | (in flight) |
+
+**PICKLE is roughly linear at 22–25 min/ticket. ANATOMY-PARK + SZECHUAN-SAUCE are a near-fixed
+~300-minute toll** — they review the accumulated diff by SUBSYSTEM, not per ticket (`anatomy-park: scope
+filtered N -> M subsystems`). Citadel is noise.
+
+Consequence: a 2-ticket bundle spends **~85%** of its wall clock on review overhead; an 8-ticket bundle
+spends **~60%**. Draining 8 tickets as four small bundles costs ≈1400 minutes of pipeline time; as one
+bundle, ≈480. **We have been paying the expensive phase four times to review work that could be reviewed
+once.**
+
+### Reliability does NOT degrade with size — size is not the risk predictor
+
+8 of 9 recorded sessions converged. **Both 8-ticket bundles converged; the only `stalled_below_target`
+was a 3-ticket bundle.** Do not justify a small bundle on safety grounds; the evidence does not support it.
+
+### The real risk is ITERATION COUNT, not ticket count
+
+`2026-08-24-218474cb` (8 tickets) took **12 iterations** and exited `completed`, not `converged`, with two
+`PHASE 1/4: PICKLE` marks in its log (a resume). More tickets => more iterations => more exposure to
+iteration/budget caps. Watch `iteration`, not roster size.
+
+### Composition rules (in priority order)
+
+1. **Compose by SHARED FILE / SUBSYSTEM SURFACE, not by priority tier.** The review toll scales with
+   subsystem count, so tickets touching the same files ride the same review for free. A bundle that
+   sprawls across new subsystems pays more. Priority orders the queue; surface composes the bundle.
+2. **Cap at 8 until 8 is routine.** 8 is the largest size with converged evidence behind it. Extend the
+   envelope one step at a time — do NOT reach for 12 on a bundle that carries a feature.
+3. **Mixing fixes with new functionality is SOUND.** Each ticket gets its own commit, so the
+   structural-vs-behavioral separation is preserved at commit granularity, which is where it belongs. A
+   feature ticket and a fix ticket in one bundle do not contaminate each other.
+4. **Prefer bundles that RETIRE a standing gate exception.** See below.
+
+### 🎯 Retire the inherited-failure carve-out — it is a permanent fake-green surface
+
+Every release currently ships under a standing exception: *"2 inherited failures, ignore them."* That
+carve-out is exactly the blind spot this codebase's dominant defect class lives in — a **standing
+permission to read red as green**, renewed every release, which no gate can distinguish from a real
+regression. `post_final_tier_degraded:red` already cannot discriminate inherited-red from bundle-red on
+the darwin host for this reason.
+
+Both are installer defects, and both were re-verified failing on 2026-08-24:
+
+| inherited failure | suite | measured |
+|---|---|---|
+| `install-bun-probe` (P3) | `extension/tests/install-bun-probe.test.js` | `fail 1` — leaf `bun probe emits banner when bun is absent` |
+| `extension-wiring` deploy smoke (P2) | `extension/tests/integration/extension-wiring.test.js` | `fail 1` — missing deployed path `~/.claude/agents/morty-gate-remediator.md` |
+
+**Killing both makes the next gate read unambiguous: any failure is real.** That is worth more than the
+two P2/P3 tiers suggest, and it is why they belong in the next bundle rather than at the bottom of the
+queue.
+
+*(Note: `extension-wiring.test.js` lives in `tests/integration/`, NOT `tests/`. A run against
+`tests/extension-wiring.test.js` returns `exit=1` with a 48-byte `Could not find` log — which reads as a
+failure and is not one. Distinguish `failed` from `not-found`.)*
+
+### ▶ NEXT DISPATCH under this directive — [[B-CGSHIP]] (composed 2026-08-24)
+
+`prds/p2-b-cgship-codegraph-workers-and-retire-inherited-failures.md` — **7 tickets**, the first bundle
+composed by shared surface rather than priority tier. Folds the codegraph worker-MCP flip together with
+BOTH inherited failures, the tmpdir-leak producers, and the mac-notification bug.
+
+**The load-bearing reason it is composed this way:** `FEAT-2026-08-16` **AC-7 demands `fail 0` on the fast
+tier, which is UNSATISFIABLE on the darwin host while the bun probe fails.** The feature literally cannot
+verify itself until the inherited failure it rides beside is fixed. Fixing them together is a hard
+dependency, not an efficiency play.
+
+Composes: `FEAT-2026-08-16-expose-codegraph-mcp-to-workers`, `BUG-2026-08-21-bun-probe-path-filter-misses-homebrew`,
+`BUG-2026-08-21-extension-wiring-asserts-a-deleted-path`, `BUG-2026-08-22-fixture-leak-producers-processes-and-directories`,
+`BUG-2026-08-23-mac-notifications-never-arrive`.
+
+**Held back deliberately:** `BUG-2026-08-10-install-sh-destroys-its-own-source-tree` is also
+installer-surfaced but large (33 references) and destructive — it does NOT belong in a bundle carrying a
+feature. Queue it as its own bundle.
+
+**True open-bug count (2026-08-24):** 29 `BUG-2026-08-*` PRDs = 7 shipped-bannered + 3 `-REFINED`
+artifacts of already-shipped work + 2 in-flight + **17 genuinely open**. A naive "no shipped banner" scan
+reports 22 and overcounts by 5.
+
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
 > ### 🚢 2026-08-25 — v2.1.0-beta.15, the did-we-count PREVENTION bundle + its own regression fix
