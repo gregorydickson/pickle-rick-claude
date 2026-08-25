@@ -3419,6 +3419,77 @@ export function releaseWorkerSpawnLock(acquisition: WorkerSpawnLockAcquisition):
   releaseLockFile(acquisition.lockPath, acquisition.handle);
 }
 
+/**
+ * The contended arm of the worker-spawn lock: emits the contention activity event, prints the
+ * contention line the manager's PID-wait loop reads, and exits 2. Kept out of `main()` so the
+ * acquisition reads as one statement there; any error that is NOT contention propagates
+ * unchanged. Deliberately prose-only about both literals — the trap-door and subprocess audits
+ * grep this file for them, and a JSDoc mention inflates the count a pin asserts on.
+ */
+async function acquireWorkerSpawnLockOrExit(
+  sessionRoot: string,
+  statePath: string,
+  ticketId: string,
+): Promise<WorkerSpawnLockAcquisition> {
+  try {
+    return await acquireWorkerSpawnLock(sessionRoot);
+  } catch (err) {
+    if (!(err instanceof WorkerSpawnLockContendedError)) throw err;
+    try {
+      writeActivityEntry(statePath, {
+        event: 'worker_spawn_lock_contended',
+        ts: new Date().toISOString(),
+        ticket_id: ticketId,
+        incumbent_pid: err.incumbentPid,
+        waited_ms: err.waitedMs,
+      });
+    } catch {
+      /* best-effort telemetry */
+    }
+    console.log(`WORKER_SPAWN_CONTENDED: ${err.incumbentPid ?? 'unknown'} ${ticketId}`);
+    process.exit(2);
+  }
+}
+
+/**
+ * Runs the worker under the per-session spawn lock. The acquire/release pair lives here rather
+ * than at the call site so it cannot be left unbalanced: every exit from `runWorkerProcess`,
+ * including a throw, releases through the `finally`.
+ */
+async function runWorkerProcessUnderSpawnLock(
+  ctx: WorkerProcessContext,
+  lock: { sessionRoot: string; statePath: string; ticketId: string },
+): Promise<void> {
+  const acquisition = await acquireWorkerSpawnLockOrExit(lock.sessionRoot, lock.statePath, lock.ticketId);
+  try {
+    await runWorkerProcess(ctx);
+  } finally {
+    releaseWorkerSpawnLock(acquisition);
+  }
+}
+
+/**
+ * Persist spawn-path degrade telemetry (AC-CGH-A3): maps the service's canonical
+ * `CodegraphEmitEvent` onto an `ActivityLogEntry` and lands it in `state.json.activity` via
+ * `writeActivityEntry` (which does NOT auto-stamp `ts` — the event carries it).
+ */
+function makeCodegraphActivityEmitter(sessionRoot: string): (event: CodegraphEmitEvent) => void {
+  return (event: CodegraphEmitEvent): void => {
+    try {
+      const entry: ActivityLogEntry = { event: event.event, ts: event.ts };
+      if (event.reason) { entry.reason = event.reason; }
+      if (event.error) { entry.error = event.error; }
+      if (event.operation || event.gate_payload) {
+        entry.gate_payload = {
+          ...(event.operation ? { operation: event.operation } : {}),
+          ...(event.gate_payload ?? {}),
+        };
+      }
+      writeActivityEntry(path.join(sessionRoot, 'state.json'), entry);
+    } catch { /* telemetry best-effort — must never break the spawn */ }
+  };
+}
+
 // eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: R-SMTEST-1 (ticket 1b57ef57) diagnostic breadcrumb instrumentation env-gated by PICKLE_DEBUG_SPAWN_MORTY; R-SMTEST-2 (ticket 910ae36c) early-exit invariant guard appended.
 async function main() {
   // R-SMTEST early-exit invariant — see ticket 1b57ef57
@@ -3573,23 +3644,7 @@ async function main() {
   if (!args.isReviewTicket) {
     try {
       const cgSettings = resolveCodegraphSettings(loadPickleSettingsBag());
-      // Persist spawn-path degrade telemetry (AC-CGH-A3): map the service's canonical
-      // CodegraphEmitEvent onto an ActivityLogEntry and land it in state.json.activity
-      // via writeActivityEntry (which does NOT auto-stamp ts — the event carries it).
-      const cgEmit = (event: CodegraphEmitEvent): void => {
-        try {
-          const entry: ActivityLogEntry = { event: event.event, ts: event.ts };
-          if (event.reason) { entry.reason = event.reason; }
-          if (event.error) { entry.error = event.error; }
-          if (event.operation || event.gate_payload) {
-            entry.gate_payload = {
-              ...(event.operation ? { operation: event.operation } : {}),
-              ...(event.gate_payload ?? {}),
-            };
-          }
-          writeActivityEntry(path.join(args.sessionRoot, 'state.json'), entry);
-        } catch { /* telemetry best-effort — must never break the spawn */ }
-      };
+      const cgEmit = makeCodegraphActivityEmitter(args.sessionRoot);
       const cgService = CodegraphService.create(runtime.sessionWorkingDir, cgSettings, { emit: cgEmit });
       try {
         codegraphSection = await buildCodegraphContextSection({
@@ -3622,42 +3677,17 @@ async function main() {
     codegraphSection,
   });
   _smCrumb('buildWorkerPrompt done — before runWorkerProcess');
-  let workerSpawnLockAcquisition: WorkerSpawnLockAcquisition;
-  try {
-    workerSpawnLockAcquisition = await acquireWorkerSpawnLock(args.sessionRoot);
-  } catch (err) {
-    if (err instanceof WorkerSpawnLockContendedError) {
-      try {
-        writeActivityEntry(statePath, {
-          event: 'worker_spawn_lock_contended',
-          ts: new Date().toISOString(),
-          ticket_id: args.ticketId,
-          incumbent_pid: err.incumbentPid,
-          waited_ms: err.waitedMs,
-        });
-      } catch {
-        /* best-effort telemetry */
-      }
-      console.log(`WORKER_SPAWN_CONTENDED: ${err.incumbentPid ?? 'unknown'} ${args.ticketId}`);
-      process.exit(2);
-    }
-    throw err;
-  }
   const sessionLog = fs.createWriteStream(args.sessionLogPath, { flags: 'w' });
-  try {
-    await runWorkerProcess({
-      args, prompt, ticketPath: args.ticketPath, ticketId: args.ticketId, sessionRoot: args.sessionRoot, sessionLog,
-      sessionLogPath: args.sessionLogPath, sessionWorkingDir: runtime.sessionWorkingDir,
-      timeoutStatePath: runtime.timeoutStatePath, workerStatePath: runtime.workerStatePath,
-      effectiveTimeoutMs: effectiveTimeout * 1000, mutableState: { finalized: false, timedOut: false },
-      model, effort: runtime.sessionEffort, hermesOptions: readHermesWorkerOptions(runtime.state),
-      preWorkerHead: (() => {
-        try { return getHeadSha(runtime.sessionWorkingDir); } catch { return null; }
-      })(),
-    });
-  } finally {
-    releaseWorkerSpawnLock(workerSpawnLockAcquisition);
-  }
+  await runWorkerProcessUnderSpawnLock({
+    args, prompt, ticketPath: args.ticketPath, ticketId: args.ticketId, sessionRoot: args.sessionRoot, sessionLog,
+    sessionLogPath: args.sessionLogPath, sessionWorkingDir: runtime.sessionWorkingDir,
+    timeoutStatePath: runtime.timeoutStatePath, workerStatePath: runtime.workerStatePath,
+    effectiveTimeoutMs: effectiveTimeout * 1000, mutableState: { finalized: false, timedOut: false },
+    model, effort: runtime.sessionEffort, hermesOptions: readHermesWorkerOptions(runtime.state),
+    preWorkerHead: (() => {
+      try { return getHeadSha(runtime.sessionWorkingDir); } catch { return null; }
+    })(),
+  }, { sessionRoot: args.sessionRoot, statePath, ticketId: args.ticketId });
 }
 
 if (process.argv[1] && path.basename(process.argv[1]) === 'spawn-morty.js') {
