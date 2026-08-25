@@ -20,6 +20,7 @@ function simulateBunAbsent(pathEnv) {
     const which = spawnSync('bash', ['-c', 'command -v bun'], {
       encoding: 'utf8',
       env: { ...process.env, PATH: currentPath },
+      timeout: 30_000,
     });
     if (which.status !== 0 || !which.stdout.trim()) break;
     const bunDir = path.dirname(which.stdout.trim());
