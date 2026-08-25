@@ -1,3 +1,20 @@
+> **✅ SHIPPED 2026-08-25 as v2.1.0-beta.16 — CLOSED.** Pipeline ran 4/4 phases in 541m53s,
+> both tickets Done, 25 commits, session `2026-08-24-3df8dfe4`.
+>
+> **The fix went in at the production contract, not the test.** `monitor.ts` `writeWithWatchdog` now
+> keeps its timer ref'd during in-flight writes (`3b2c0205`), satisfying AC-8′ — the contract at
+> `monitor.ts:1063-1074` that a wedged pane surfaces as a rejected promise and `exit 2`.
+>
+> **NOT a clean run, and the release notes say so.** Three phases withheld their success verdict:
+> pickle `done_over_red_worker_gate_tests` + `post_final_tier_degraded:red`, anatomy-park
+> `anatomy_non_convergent` (8 passes, no clean pass), szechuan `stalled_below_target` (1 vs target 0).
+> Each is the no-stop-gate refusing a LOCAL claim and continuing — the PRIME DIRECTIVE working.
+>
+> **Anatomy-park closed seven trap doors**, four of them one class walked to its edges (absence of
+> measurement read as clean measurement). One was self-inflicted by this bundle: iteration 5's own fix
+> added an untimed `execFileSync`, reddening `pretest:integration` and leaving **1272 integration
+> assertions unmeasured for three iterations**. The loop caught and fixed it.
+
 > **⛔ CORRECTION 2: THE STREAK IS ~147, NOT 13/14 — off by ~11x and four months.**
 >
 > Operator-measured over 200 runs: **151 failures, 48 successes, last success `2026-04-22`**

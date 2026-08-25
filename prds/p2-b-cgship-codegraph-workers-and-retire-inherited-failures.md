@@ -75,6 +75,50 @@ Both re-verified failing 2026-08-24:
   `spawnSyncFn('osascript', ...)` at `:2896` — the mechanism the notification PRD names is present, so
   that PRD's premise holds.
 
+## ✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — measured 2026-08-25 at HEAD `0641a311`
+
+**(a) STALE PREMISE: PASSED.** Every composed mechanism verified live in BOTH source and deployed:
+
+| mechanism | measured |
+|---|---|
+| `codegraph.expose_mcp_to_workers` | **`false`** in source AND deployed `pickle_settings.json` |
+| `buildWorkerMcpConfig` | present: 3 refs in `src/services/backend-spawn.ts`, 2 in deployed `services/backend-spawn.js` |
+| the inert-flip mechanism | `expose_mcp_to_workers` appears **0 times** in the installer — not in MANAGED_KEYS, so a source-only flip stays inert |
+| `displayMacNotification` | present in `src/services/pickle-utils.ts` |
+| tmpdir leak | **1130** `pickle-*` dirs in TMPDIR (was 1090 on 2026-08-24 — still growing) |
+| `install-bun-probe` | `fail 1` in the v2.1.0-beta.16 release gate, leaf `bun probe emits banner when bun is absent` |
+| `extension-wiring` deploy smoke | `fail 1` in the same gate, leaf `deploy smoke: gate bins and data exist after install` |
+
+**(b) GREEN TREE: PASSED, baseline recorded.** From the beta.16 release gate, interpreter pinned to
+node 24.19.0:
+
+| tier | tests | pass | fail | cancelled |
+|---|---|---|---|---|
+| fast | 8032 | 8025 | **1** (inherited P3) | 0 |
+| integration parallel | 662 | 661 | **1** (inherited P2) | 0 |
+| integration serial | 615 | 615 | 0 | 0 |
+| expensive parallel | 14 | 13 | 0 | 0 |
+| deploy-lifecycle soak | 1 | 1 | 0 | 0 (measured 1803s) |
+
+**Exactly two failures, both inherited, both matched BY LEAF NAME.** Any OTHER failure during this
+bundle is caused by this bundle.
+
+### ⚠️ New evidence strengthening AC-B5: the carve-out now poisons a SECOND gate
+
+`npm run test:fast:budget` returned **`FAIL_BUDGET_EXCEEDED failures=3 budget=2`** — not from flakiness
+but because the inherited bun probe fails **deterministically**: three runs, byte-identical
+`8032/8025/fail 1`, same named leaf, zero variance. A flake budget cannot render a verdict while a
+100%-reproducible inherited failure sits on the tree. So the standing exemption is not merely a place
+where a regression could hide — it has **disarmed the flake-detection gate outright**.
+
+### Reporting note carried from beta.16
+
+Two fake-greens were caught in the babysitter's own gate read, both of which would have shipped a false
+verdict: the chained `test:integration` short-circuits, so a parallel red leaves the **615 serial tests
+unmeasured**; and `test:expensive:serial` returns `rc=0 fail 0` in 18 seconds when the deploy-lifecycle
+soak **skips itself** (it refuses to mutate `$HOME`). Run the integration halves separately, and run the
+soak with `PICKLE_INSTALL_ROOT` set to a non-`$HOME` path.
+
 ## Acceptance criteria
 
 Lift AC-1 … AC-8 from `FEAT-2026-08-16` **as corrected above**, plus:
