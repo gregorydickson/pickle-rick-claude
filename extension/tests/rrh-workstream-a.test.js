@@ -12,7 +12,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 function makeV5RawState(dir) {
   return {
@@ -245,6 +245,66 @@ test('A3: scoped signature over scope.json:allowed_paths excludes a peer-dirty p
     );
     // Non-repo dir → null (same fail-open contract as computeSourceTreeSignature).
     assert.equal(computeScopedSourceTreeSignature(path.join(repo, 'missing')), null);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// AP-EXT-ITER62-01: `writeScopeJson` is tmp-rename and `refreshScope` rewrites scope.json at
+// every phase boundary, so a killed writer leaves the phase-refreshed (WIDER) allowed_paths in a
+// dead-owner `scope.json.tmp.<pid>` while the base still holds the previous phase's narrower set.
+// The AC-A3 signature must cross that window through the shared recovery primitive: reading the
+// stale base raw computes the signature over pathspecs that exclude the paths the worker is
+// actually editing, so real in-scope work reads as no source progress and
+// `recordWorkerArtifactProgress` charges a zero-progress spawn against a ticket that progressed.
+test('A3: scoped signature promotes a dead-owner scope.json.tmp so refreshed paths are in the signature', async () => {
+  const { computeScopedSourceTreeSignature } = await import('../bin/mux-runner.js');
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'rrh-a3-tmp-'));
+  process.env.PICKLE_DATA_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'rrh-a3-tmp-dataroot-'));
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf-8' });
+  try {
+    git('init', '-q');
+    git('config', 'user.email', 't@t.t');
+    git('config', 'user.name', 't');
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(repo, 'docs', 'd.md'), 'baseline\n');
+    git('add', '-A');
+    git('commit', '-qm', 'base');
+
+    const scopePath = path.join(repo, 'scope.json');
+    // Base = the PREVIOUS phase's narrow scope (src/ only).
+    fs.writeFileSync(scopePath, JSON.stringify({ allowed_paths: ['src/'] }));
+
+    // A provably-dead pid: spawn a process and reuse its pid after it has exited, so the
+    // primitive's live-writer skip cannot defer on it.
+    const deadPid = spawnSync(process.execPath, ['-e', ''], { timeout: 10_000 }).pid;
+    assert.ok(Number.isInteger(deadPid) && deadPid > 0, 'need a real exited pid for the orphan tmp');
+    // Orphan tmp = the phase-refreshed WIDER scope the killed writer never renamed into place.
+    fs.writeFileSync(
+      `${scopePath}.tmp.${deadPid}`,
+      JSON.stringify({ allowed_paths: ['src/', 'docs/'] }),
+    );
+
+    const clean = computeScopedSourceTreeSignature(repo, scopePath);
+    assert.ok(clean !== null, 'scoped signature is readable on a clean tree');
+
+    // The worker edits a path present ONLY in the refreshed (orphaned) scope.
+    fs.writeFileSync(path.join(repo, 'docs', 'd.md'), 'worker edited me\n');
+    assert.notEqual(
+      computeScopedSourceTreeSignature(repo, scopePath),
+      clean,
+      'an edit inside the promoted scope.json.tmp allowed_paths moves the scoped signature',
+    );
+
+    // The promotion is the shared primitive's, so the orphan is renamed onto the base path.
+    assert.equal(fs.existsSync(`${scopePath}.tmp.${deadPid}`), false, 'orphan tmp was promoted, not left behind');
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(scopePath, 'utf-8')).allowed_paths,
+      ['src/', 'docs/'],
+      'base scope.json now holds the refreshed allowed_paths',
+    );
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }

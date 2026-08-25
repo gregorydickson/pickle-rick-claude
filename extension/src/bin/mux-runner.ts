@@ -8911,12 +8911,28 @@ export function computeSourceTreeSignature(workingDir: string): string | null {
  * absent / malformed / has no `allowed_paths`, it delegates to the whole-tree
  * `computeSourceTreeSignature` (unscoped fallback, never crashes the runner).
  */
-/** Read `allowed_paths` git-pathspecs from a scope.json FILE path; absent/malformed → []. Fail-open. */
+/**
+ * Read `allowed_paths` git-pathspecs from a scope.json FILE path; absent/malformed → []. Fail-open.
+ *
+ * AP-EXT-ITER62-01: the read crosses the tmp-rename window through the SAME shared
+ * primitive every other scope reader uses (`scope-resolver.ts:refreshScope`,
+ * `check-gate.ts:readAllowedPaths`, `pipeline-runner.ts:readPersistedAllowedPaths`,
+ * `microverse-runner.ts:resolveScopeAuditInputs`, `check-scope-diff.ts:resolveAllowedPaths`
+ * — AP-EXT-ITER40-01). `writeScopeJson` is `writeFileSync(<p>.tmp.<pid>)` + `renameSync`, and
+ * `refreshScope` rewrites scope.json at EVERY phase boundary, so a writer killed in that
+ * window leaves the phase-refreshed paths in a dead-owner sibling while the base still holds
+ * the PREVIOUS phase's narrower set. A raw `JSON.parse(readFileSync)` reads that stale base as
+ * authoritative, the AC-A3 signature is then computed over pathspecs that exclude the paths the
+ * worker is actually editing, `sourceProgressed` reads false over real work, and
+ * `recordWorkerArtifactProgress` charges a zero-progress spawn against a ticket that progressed.
+ * Absence stays the unscoped-fallback case — decided AFTER the recovering read, never as a
+ * pre-gate above it (an `existsSync` pre-gate makes the promotion dead code).
+ */
 function readScopeAllowedPathSpecsFromFile(scopeJsonPath?: string): string[] {
   const pathSpecs: string[] = [];
   if (!scopeJsonPath) return pathSpecs;
   try {
-    const raw = JSON.parse(fs.readFileSync(scopeJsonPath, 'utf-8'));
+    const raw = readRecoverableJsonObject(scopeJsonPath) as { allowed_paths?: unknown } | null;
     if (Array.isArray(raw?.allowed_paths)) {
       for (const p of raw.allowed_paths) {
         if (typeof p === 'string') pathSpecs.push(p);
