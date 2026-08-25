@@ -1,3 +1,21 @@
+> **✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — 2026-08-25 at HEAD `be12e4fb`.**
+>
+> **Stale premise: PASSED, with fresh evidence rather than the filing's own.** `release.yml` run
+> `32795387967` (v2.1.0-beta.15) is the **14th consecutive failure**, same step, `Create release`
+> skipped, and its failing set is **identical** to beta.14's. The mechanism is reproducible locally in
+> **9.6 s**: `node@22 --test tests/monitor.test.js` → `tests 74 / pass 54 / fail 0 / cancelled 20`.
+>
+> **Green tree: PASSED, baseline recorded.** `npm run test:fast` under node **24** (the gate's own
+> interpreter), from `extension/`: **pass 7984 / fail 1 / cancelled 0**. The one failure is the
+> inherited `install-bun-probe` P3. Recorded as inherited; any OTHER fast-tier failure during this
+> bundle is caused by this bundle.
+>
+> **⚠️ Note the two-interpreter split, and do not conflate them.** The gate baseline above is node 24
+> and shows `cancelled 0`. The bundle's target — the 20 cancellations — is only visible under node 22.
+> **Both numbers are real; they answer different questions.** AC-1′ is measured under node 22; the
+> ship gate is measured under node 24. Reporting one as the other is the defect this bundle exists in
+> the shadow of.
+
 > **⛔ THIS PRD'S BANNER IS FALSIFIED. Refined 2026-08-25; the corrections are binding.**
 >
 > **RETRACTED: "the failures are Linux-only and this host is darwin, so the verification loop is CI
