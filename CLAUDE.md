@@ -10,7 +10,56 @@ PRD → Breakdown → Research → Plan → Implement → Verify → Review → 
 
 **We achieve reliability first, then slowly work quality up on top of it.**
 
+**Complexity is the source of brittleness.**
+
 Everything below elaborates this. Nothing below overrides it.
+
+## 🧱 COMPLEXITY IS THE SOURCE OF BRITTLENESS (operator-set 2026-08-25, BINDING, elaborates the PRIME DIRECTIVE)
+
+Every halt, every fake-green, every silent bypass this codebase has shipped traces back to a structure
+that had **more cases than it needed**. Reliability is not bought by adding a guard; it is bought by
+removing the distinction the guard was compensating for. **This does NOT reorder the ratchet** —
+reliability still comes first. It says how you GET reliability: by subtraction.
+
+### The recurring shape: an ENUMERATED SET is a liability with a maintenance schedule
+
+A hand-maintained list of cases is correct only until the world adds a case, and it fails **silently**
+because a missing member looks exactly like a member that does not apply. Measured in one bundle
+(2026-08-25, three CRITICALs in one phase):
+
+| finding | the enumeration | how it failed |
+|---|---|---|
+| `9452a550` | "first bare word ends the options" | bash options take OPERANDS, so the scan stopped at `pipefail` and `bash -o pipefail -c 'git reset --hard'` reached NO guard |
+| `e7502abf` | same shape, sibling detector | hid the expensive test path from the soak guard |
+| `258e0d05` | `ARG_CONSUMING_GIT_GLOBAL_OPTIONS`, **7 members** | omitted `--config-env`; every prohibited git verb became invisible to R-WSRC-GR |
+
+The fix that held needed **no table at all** — read the payload FORWARD from the command-string flag.
+`9452a550` states the rule outright and refused the tempting alternative: *"an enumerated option list is
+the incomplete-set shape, one option away from the next bypass."* `258e0d05` then found that exact
+prediction already true in a sibling.
+
+### Rules
+
+1. **Prefer the formulation that needs no list.** If a fix adds a member to an enumeration, ask what
+   formulation would need no enumeration. Adding the 8th member schedules the 9th bypass.
+2. **Collapse cases; do not add them.** `collectGateFailures` recorded THREE distinct no-measurement
+   causes and exported ONE — the extra cases created the blindness. Fewer states, fewer ways to be wrong.
+3. **A hand-maintained catalog rots, and rots green.** Three dead trap-door anchors in one phase, three
+   distinct causes (renamed away, deleted by a refactor, **false at birth and never existed**). The audit
+   checked that ENFORCE refs resolve, never that the INVARIANT named a live symbol.
+4. **Subtraction is the preferred fix, and "Necessary?" is the first Simplification Review question.**
+   A fix that removes a divergence beats a fix that guards it.
+5. **Complexity has a measurable price and it must be paid back in-bundle.** Correctness fixes in this
+   same run pushed `runWorkerProcess` to 133 lines, `finalizeWorkerTurn` to 71 and `runCheckCommand` to
+   67 against a 50-line limit. Szechuan repaid all three inside the same run. Growth is acceptable;
+   **unrepaid growth is not.**
+
+### The honest tension
+
+Some of this run's best work ADDED code — a 250-line evidence test, a negative control, a typed degrade
+reason. That is not a contradiction: those additions **removed ambiguity**, which is the complexity that
+matters. The metric is not lines. It is **how many distinct states a reader must hold to know the system
+is correct.** Fewer states, fewer silent failures.
 
 ## 🛑 WHEN THE PIPELINE STOPS, RELIABILITY GOES TO ZERO — AND SO DOES QUALITY (operator-set, BINDING, elaborates the PRIME DIRECTIVE)
 
