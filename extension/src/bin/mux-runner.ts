@@ -10394,6 +10394,245 @@ export function createCodegraphSession(opts: {
  * verbs: install (this call) and `close()` on the returned handle, which the
  * loop wires to the exit and signal paths so we don't leak file descriptors.
  */
+/**
+ * Debounce window: coalesce the rapid-fire `change` events a single ticket write
+ * produces (editors and atomic-rename writers both emit several) into one read.
+ */
+const PHANTOM_DONE_DEBOUNCE_MS = 150;
+/** Delay before a revert is re-inspected, giving a racing writer time to land. */
+const PHANTOM_DONE_RECHECK_MS = 300;
+/** Sliding window over which `PHANTOM_DONE_RECHECK_CAP` is counted. */
+const PHANTOM_DONE_RECHECK_WINDOW_MS = 60_000;
+/** Re-checks allowed per ticket per window, bounding pathological re-flip loops. */
+const PHANTOM_DONE_RECHECK_CAP = 2;
+
+/**
+ * The re-check rate limiter, as ONE predicate over the per-ticket stamp log.
+ *
+ * Prune-stale → compare-to-cap → record-now is the whole budget invariant, and it is
+ * only sound as a unit: pruning without recording lets a ticket re-check forever,
+ * recording without pruning wedges it after the first burst. Inline these three steps
+ * sat interleaved with the log line and the `setTimeout` reschedule, so the invariant
+ * was readable only by mentally deleting the scheduling around it.
+ *
+ * Mutates `recheckTimestamps` in place (the caller owns the map, exactly as
+ * `refreshPriorStatusAfterInspect` owns `priorStatusMap`). Returns whether this
+ * re-check is within budget; a `false` return has already re-seated the pruned list,
+ * so a later call in the same window is compared against the same pruned set.
+ */
+const consumeRecheckBudget = (
+  recheckTimestamps: Map<string, number[]>,
+  ticketId: string,
+  nowMs: number,
+): boolean => {
+  const stamps = (recheckTimestamps.get(ticketId) ?? []).filter(
+    (t) => nowMs - t < PHANTOM_DONE_RECHECK_WINDOW_MS,
+  );
+  if (stamps.length >= PHANTOM_DONE_RECHECK_CAP) {
+    recheckTimestamps.set(ticketId, stamps);
+    return false;
+  }
+  stamps.push(nowMs);
+  recheckTimestamps.set(ticketId, stamps);
+  return true;
+};
+
+/**
+ * Seeds the prior-status map from disk at install time so the FIRST revert restores
+ * the value the ticket actually held (`In Progress`) rather than the `'Todo'` default
+ * `handlePhantomDoneEvent` falls back to. A ticket already sitting at Done is not
+ * seeded: Done is the value a revert exists to undo, never one to restore to.
+ *
+ * The install-time twin of `refreshPriorStatusAfterInspect`, which re-seeds the same
+ * map after each inspect. Best-effort by construction — an unreadable ticket file
+ * leaves the map untouched and the `'Todo'` default stands.
+ */
+const seedPriorTicketStatus = (
+  priorStatusMap: Map<string, string>,
+  ticketId: string,
+  ticketFile: string,
+): void => {
+  try {
+    const seed = readFrontmatterField(fs.readFileSync(ticketFile, 'utf8'), 'status');
+    if (seed && seed.toLowerCase() !== 'done') {
+      priorStatusMap.set(ticketId, seed);
+    }
+  } catch { /* best-effort */ }
+};
+
+/**
+ * Installs the debounced `fs.watch` for ONE ticket file, returning the watcher or
+ * `null` when the watch could not be established (the caller counts that as skipped).
+ *
+ * The debounce timer is registered in the caller's `debounceTimers` map rather than
+ * captured locally, which is what makes `close()` able to clear it: a timer held only
+ * in this closure would survive teardown and fire an inspect against a torn-down
+ * session. The `isClosed` accessor — not a captured boolean — is required for the same
+ * reason, since the flag flips after this function has returned.
+ *
+ * `onDebounced` is a nullary thunk, so this knows nothing about the event pipeline's
+ * signature: it owns the `fs.watch` handle and the debounce window, and the caller
+ * owns what a settled change means.
+ */
+const installPhantomDoneTicketWatcher = (opts: {
+  ticketId: string;
+  ticketFile: string;
+  debounceTimers: Map<string, NodeJS.Timeout>;
+  isClosed: () => boolean;
+  /** Run once the change events for this ticket have settled. */
+  onDebounced: () => void;
+  log: (msg: string) => void;
+}): fs.FSWatcher | null => {
+  const { ticketId, ticketFile, debounceTimers, isClosed, onDebounced, log } = opts;
+  try {
+    return fs.watch(ticketFile, { persistent: false }, (event) => {
+      if (event !== 'change') return;
+      // Debounce: coalesce rapid-fire change events into a single read.
+      const existing = debounceTimers.get(ticketId);
+      if (existing) clearTimeout(existing);
+      const timer = setTimeout(() => {
+        debounceTimers.delete(ticketId);
+        if (isClosed()) return;
+        onDebounced();
+      }, PHANTOM_DONE_DEBOUNCE_MS);
+      debounceTimers.set(ticketId, timer);
+    });
+  } catch (err) {
+    log(`phantom-Done watcher: fs.watch threw for ${ticketId} (ignored): ${safeErrorMessage(err)}`);
+    return null;
+  }
+};
+
+/**
+ * Everything the phantom-Done event pipeline reads that is not the event itself.
+ * Bundled because all five travel together to every inspect, and a 9-parameter
+ * `handlePhantomDoneEvent` is the long-parameter-list smell this replaces.
+ */
+interface PhantomDoneEventCtx {
+  sessionDir: string;
+  emitCtx: PhantomDoneEmitCtx;
+  priorStatusMap: Map<string, string>;
+  log: (msg: string) => void;
+  /** Re-inspect after a revert, subject to the per-ticket budget. */
+  scheduleRecheck: (ticketId: string, ticketFile: string, workingDir: string) => void;
+}
+
+/**
+ * The phantom-Done event PIPELINE: inspect one ticket file, re-seat its prior status,
+ * and emit the backfill/revert event the inspect classified.
+ *
+ * A different abstraction level from the watcher REGISTRY that invokes it —
+ * `startPhantomDoneWatchers` decides WHICH files are watched and when the handles are
+ * released; this decides what a change to one of them MEANS. Fusing the two put a
+ * five-branch classification cascade inside the same body as `fs.watch` bookkeeping.
+ *
+ * Fail-soft at every step: a throwing inspect is logged and dropped rather than
+ * propagated, because this runs on an `fs.watch` callback where a throw would escape
+ * into the event loop as an uncaught exception and take the runner down.
+ *
+ * The recheck is scheduled ONLY off a first-pass revert (`!isRecheck`), which is what
+ * stops a revert→recheck→revert cycle from feeding itself; the budget in
+ * `consumeRecheckBudget` is the second, independent bound.
+ */
+const handlePhantomDoneTicketEvent = (
+  ctx: PhantomDoneEventCtx,
+  ticketId: string,
+  ticketFile: string,
+  workingDir: string,
+  isRecheck: boolean,
+): void => {
+  const { sessionDir, emitCtx, priorStatusMap, log } = ctx;
+  const prior = priorStatusMap.get(ticketId) ?? 'Todo';
+  let result: PhantomDoneInspectResult;
+  try {
+    result = inspectPhantomDoneTicketFile(ticketFile, sessionDir, workingDir, prior);
+  } catch (err) {
+    log(`phantom-Done watcher: inspect threw for ${ticketId} (ignored): ${safeErrorMessage(err)}`);
+    return;
+  }
+
+  refreshPriorStatusAfterInspect(priorStatusMap, ticketId, ticketFile, result);
+  if (!result.changed) return;
+
+  const ts = new Date().toISOString();
+  if (result.reason === 'backfilled' && result.commit) {
+    emitBackfillEvent(emitCtx, ticketId, result.commit, ts);
+    return;
+  }
+  if (result.reason !== 'reverted') return;
+
+  emitRevertEvent(emitCtx, ticketId, result, ts);
+  if (!isRecheck) ctx.scheduleRecheck(ticketId, ticketFile, workingDir);
+};
+
+/**
+ * Releases every handle the registry owns: the `fs.watch` descriptors and the pending
+ * debounce timers. Both collections are emptied, so a second call is a no-op even
+ * without the caller's `closed` latch.
+ *
+ * Each release is individually try-wrapped: this runs from the exit and signal paths,
+ * where one already-closed watcher must not abort the teardown of the rest and leak
+ * the remaining descriptors.
+ */
+const releasePhantomDoneHandles = (
+  watchers: fs.FSWatcher[],
+  debounceTimers: Map<string, NodeJS.Timeout>,
+): void => {
+  for (const watcher of watchers) {
+    try { watcher.close(); } catch { /* best-effort */ }
+  }
+  watchers.length = 0;
+  for (const timer of debounceTimers.values()) {
+    try { clearTimeout(timer); } catch { /* best-effort */ }
+  }
+  debounceTimers.clear();
+};
+
+/**
+ * Sweeps the session's tickets and installs one debounced watcher per readable
+ * `rick_ticket_*.md`, seeding each ticket's prior status from disk as it goes.
+ * Returns the install tally the caller logs.
+ *
+ * Separated from `startPhantomDoneWatchers` because it answers a different question:
+ * this decides WHICH tickets get a watcher, the caller assembles the module's state
+ * and hands back its two verbs. Appends to `watchers` rather than returning a list so
+ * the caller's `close()` can release a handle the moment it exists — a sweep that
+ * threw halfway through would otherwise leak every descriptor opened before it.
+ */
+const installPhantomDoneWatchersForSession = (opts: {
+  sessionDir: string;
+  defaultWorkingDir: string;
+  eventCtx: PhantomDoneEventCtx;
+  watchers: fs.FSWatcher[];
+  debounceTimers: Map<string, NodeJS.Timeout>;
+  isClosed: () => boolean;
+  log: (msg: string) => void;
+}): { installed: number; skipped: number } => {
+  const { sessionDir, defaultWorkingDir, eventCtx, watchers, debounceTimers, isClosed, log } = opts;
+  let installed = 0;
+  let skipped = 0;
+  for (const ticket of collectTickets(sessionDir)) {
+    const ticketId = ticket.id;
+    if (!ticketId) { skipped++; continue; }
+    const ticketFile = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
+    if (!fs.existsSync(ticketFile)) { skipped++; continue; }
+    const workingDir = ticket.working_dir || defaultWorkingDir;
+    seedPriorTicketStatus(eventCtx.priorStatusMap, ticketId, ticketFile);
+    const watcher = installPhantomDoneTicketWatcher({
+      ticketId,
+      ticketFile,
+      debounceTimers,
+      isClosed,
+      onDebounced: () => handlePhantomDoneTicketEvent(eventCtx, ticketId, ticketFile, workingDir, false),
+      log,
+    });
+    if (!watcher) { skipped++; continue; }
+    watchers.push(watcher);
+    installed++;
+  }
+  return { installed, skipped };
+};
+
 function startPhantomDoneWatchers(opts: {
   sessionDir: string;
   statePath: string;
@@ -10401,120 +10640,40 @@ function startPhantomDoneWatchers(opts: {
   log: (msg: string) => void;
 }): { close: () => void } {
   const { sessionDir, statePath, defaultWorkingDir, log } = opts;
-  const emitCtx: PhantomDoneEmitCtx = { sessionDir, statePath, log };
   const watchers: fs.FSWatcher[] = [];
-  let closed = false;
-  // Per-ticket debounce timers, last-known prior status (the value before a
-  // possible Done flip), and re-check counters. Re-checks are capped at 2 per
-  // ticket per minute to bound the cost of pathological re-flip loops.
-  const phantomDoneDebounceMs = 150;
-  const phantomDoneRecheckMs = 300;
-  const phantomDoneRecheckWindowMs = 60_000;
-  const phantomDoneRecheckCap = 2;
   const debounceTimers = new Map<string, NodeJS.Timeout>();
-  const priorStatusMap = new Map<string, string>();
   const recheckTimestamps = new Map<string, number[]>();
+  let closed = false;
+  const isClosed = (): boolean => closed;
 
   const close = (): void => {
     if (closed) return;
     closed = true;
-    for (const watcher of watchers) {
-      try { watcher.close(); } catch { /* best-effort */ }
-    }
-    watchers.length = 0;
-    for (const timer of debounceTimers.values()) {
-      try { clearTimeout(timer); } catch { /* best-effort */ }
-    }
-    debounceTimers.clear();
+    releasePhantomDoneHandles(watchers, debounceTimers);
   };
 
-  const scheduleRecheckIfBudget = (
-    ticketId: string,
-    ticketFile: string,
-    workingDir: string,
-  ): void => {
-    const now = Date.now();
-    const stamps = (recheckTimestamps.get(ticketId) ?? []).filter(
-      (t) => now - t < phantomDoneRecheckWindowMs,
-    );
-    if (stamps.length >= phantomDoneRecheckCap) {
-      recheckTimestamps.set(ticketId, stamps);
+  const scheduleRecheck = (ticketId: string, ticketFile: string, workingDir: string): void => {
+    if (!consumeRecheckBudget(recheckTimestamps, ticketId, Date.now())) {
       log(`phantom-Done watcher: re-check cap reached for ${ticketId} — skipping further re-checks this minute`);
       return;
     }
-    stamps.push(now);
-    recheckTimestamps.set(ticketId, stamps);
     setTimeout(() => {
       if (closed) return;
-      handlePhantomDoneEvent(ticketId, ticketFile, workingDir, true);
-    }, phantomDoneRecheckMs);
+      handlePhantomDoneTicketEvent(eventCtx, ticketId, ticketFile, workingDir, true);
+    }, PHANTOM_DONE_RECHECK_MS);
   };
 
-  const handlePhantomDoneEvent = (
-    ticketId: string,
-    ticketFile: string,
-    workingDir: string,
-    isRecheck: boolean,
-  ): void => {
-    const prior = priorStatusMap.get(ticketId) ?? 'Todo';
-    let result: PhantomDoneInspectResult;
-    try {
-      result = inspectPhantomDoneTicketFile(ticketFile, sessionDir, workingDir, prior);
-    } catch (err) {
-      log(`phantom-Done watcher: inspect threw for ${ticketId} (ignored): ${safeErrorMessage(err)}`);
-      return;
-    }
-
-    refreshPriorStatusAfterInspect(priorStatusMap, ticketId, ticketFile, result);
-    if (!result.changed) return;
-
-    const ts = new Date().toISOString();
-    if (result.reason === 'backfilled' && result.commit) {
-      emitBackfillEvent(emitCtx, ticketId, result.commit, ts);
-      return;
-    }
-    if (result.reason !== 'reverted') return;
-
-    emitRevertEvent(emitCtx, ticketId, result, ts);
-    if (!isRecheck) scheduleRecheckIfBudget(ticketId, ticketFile, workingDir);
+  const eventCtx: PhantomDoneEventCtx = {
+    sessionDir,
+    emitCtx: { sessionDir, statePath, log },
+    priorStatusMap: new Map<string, string>(),
+    log,
+    scheduleRecheck,
   };
 
-  let installed = 0;
-  let skipped = 0;
-  for (const ticket of collectTickets(sessionDir)) {
-    if (!ticket.id) { skipped++; continue; }
-    const ticketFile = path.join(sessionDir, ticket.id, `rick_ticket_${ticket.id}.md`);
-    if (!fs.existsSync(ticketFile)) { skipped++; continue; }
-    const ticketId = ticket.id;
-    const ticketWorkingDir = ticket.working_dir || defaultWorkingDir;
-    // Seed prior status from disk so the first revert restores the right
-    // value (Todo vs. In Progress) instead of defaulting to Todo.
-    try {
-      const seed = readFrontmatterField(fs.readFileSync(ticketFile, 'utf8'), 'status');
-      if (seed && seed.toLowerCase() !== 'done') {
-        priorStatusMap.set(ticketId, seed);
-      }
-    } catch { /* best-effort */ }
-    try {
-      const watcher = fs.watch(ticketFile, { persistent: false }, (event) => {
-        if (event !== 'change') return;
-        // Debounce: coalesce rapid-fire change events into a single read.
-        const existing = debounceTimers.get(ticketId);
-        if (existing) clearTimeout(existing);
-        const timer = setTimeout(() => {
-          debounceTimers.delete(ticketId);
-          if (closed) return;
-          handlePhantomDoneEvent(ticketId, ticketFile, ticketWorkingDir, false);
-        }, phantomDoneDebounceMs);
-        debounceTimers.set(ticketId, timer);
-      });
-      watchers.push(watcher);
-      installed++;
-    } catch (err) {
-      log(`phantom-Done watcher: fs.watch threw for ${ticket.id} (ignored): ${safeErrorMessage(err)}`);
-      skipped++;
-    }
-  }
+  const { installed, skipped } = installPhantomDoneWatchersForSession({
+    sessionDir, defaultWorkingDir, eventCtx, watchers, debounceTimers, isClosed, log,
+  });
   log(`phantom-Done watcher: installed=${installed} skipped=${skipped}`);
 
   return { close };
