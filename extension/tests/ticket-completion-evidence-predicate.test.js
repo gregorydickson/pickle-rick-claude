@@ -785,7 +785,7 @@ function commitEmpty(dir, message) {
 
 /** The `git log --oneline` shape a worker copies into a stamp. */
 function shortSha(dir, sha) {
-  return execFileSync('git', ['rev-parse', `--short=8`, sha], { cwd: dir, encoding: 'utf8' }).trim();
+  return execFileSync('git', ['rev-parse', `--short=8`, sha], { cwd: dir, encoding: 'utf8', timeout: 30_000 }).trim();
 }
 
 test('AP-EXT-ITER5-01: an ABBREVIATED baseline sha is absent — identity, not spelling (R-CXOR-2)', () => {
