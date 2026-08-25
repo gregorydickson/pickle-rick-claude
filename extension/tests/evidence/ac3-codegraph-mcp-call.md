@@ -187,11 +187,20 @@ parallel result**:
 | Half | tests | pass | fail | cancelled | rc | elapsed |
 |---|---|---|---|---|---|---|
 | `test:integration:parallel` | 662 | 662 | 0 | 0 | 0 | 79s |
-| `test:integration:serial` | **617** | 617 | 0 | 0 | 0 | 477s |
+| `test:integration:serial` (at `212ee432`) | 617 | 617 | 0 | 0 | 0 | 477s |
+| `test:integration:serial` (**final tree, `74e9d614`**) | **618** | 618 | 0 | 0 | 0 | 471s |
 
-The serial half — the one `&&` can silently skip — was measured and is green. 617 = the
-ticket's stated 615 plus this ticket's 2 new tests, which confirms they ran there; the
-`[AC-3 evidence]` line above was emitted by this very run.
+The serial half — the one `&&` can silently skip — was measured and is green. It was
+re-measured after the simplify commit rather than letting the earlier number stand for code
+that had since changed.
+
+617 = the ticket's stated 615 plus this ticket's 2 new tests, confirming they ran there. The
+final tree's 618 is one MORE, and the extra test is not a new file: `install-root-doc-invariant`
+generates one assertion per documentation file mentioning `PICKLE_INSTALL_ROOT`, so committing
+this artifact produced `ac3-codegraph-mcp-call.md:201 does not claim PICKLE_INSTALL_ROOT
+overrides the install.sh prefix` — and it passes. Diffed the two runs' test-name lists to
+establish that, rather than assuming the delta was noise. The `[AC-3 evidence]` line above was
+emitted by both runs.
 
 ---
 
