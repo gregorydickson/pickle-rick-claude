@@ -14,6 +14,7 @@
     "tests/integration/install-typescript-package.test.js",
     "tests/integration/install-chmod-coverage.test.js",
     "tests/integration/install-ui-principles.test.js",
+    "tests/integration/install-agent-provenance.test.js",
     "tests/integration/timeout-e2e.test.js",
     "tests/integration/worker-backend-split.test.js",
     "tests/integration/concurrent-state.test.js",

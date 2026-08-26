@@ -68,6 +68,7 @@
     "tests/integration/install-compile-failure-preserves-source.test.js": "real-repo-isolation",
     "tests/integration/install-root-doc-invariant.test.js": "subprocess-spawn-timing",
     "tests/integration/mux-runner-fatal-deactivate.test.js": "subprocess-timeout-coupling",
-    "tests/integration/worker-codegraph-mcp-call-evidence.test.js": "subprocess-spawn-timing"
+    "tests/integration/worker-codegraph-mcp-call-evidence.test.js": "subprocess-spawn-timing",
+    "tests/integration/install-agent-provenance.test.js": "real-repo-isolation"
   }
 }

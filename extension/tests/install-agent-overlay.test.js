@@ -34,6 +34,25 @@ file_mtime() {
 same_size_and_mtime() {
   [ "$(file_size "$1")" = "$(file_size "$2")" ] && [ "$(file_mtime "$1")" = "$(file_mtime "$2")" ]
 }
+KNOWN_AGENT_HASHES="$SCRIPT_DIR/.claude/agents/.known-hashes"
+file_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  fi
+}
+is_installer_output() {
+  local legacy_hash
+  legacy_hash="$(file_sha256 "$1")"
+  if [ -z "$legacy_hash" ]; then
+    same_size_and_mtime "$1" "$2"
+    return $?
+  fi
+  [ "$legacy_hash" = "$(file_sha256 "$2")" ] && return 0
+  [ -f "$KNOWN_AGENT_HASHES" ] || return 1
+  grep -q "^$3 $legacy_hash\$" "$KNOWN_AGENT_HASHES"
+}
 if [ -d "$SCRIPT_DIR/.claude/agents" ]; then
   mkdir -p "$AGENTS_DIR" "$MANAGED_AGENTS_DIR"
   for src_agent in "$SCRIPT_DIR"/.claude/agents/*.md; do
@@ -42,7 +61,7 @@ if [ -d "$SCRIPT_DIR/.claude/agents" ]; then
     legacy_agent="$AGENTS_DIR/$agent_file"
     managed_agent="$MANAGED_AGENTS_DIR/$agent_file"
     if [ -f "$legacy_agent" ]; then
-      if same_size_and_mtime "$legacy_agent" "$src_agent"; then
+      if is_installer_output "$legacy_agent" "$src_agent" "$agent_file"; then
         if [ -e "$managed_agent" ]; then
           rm -f "$legacy_agent"
           echo "removed duplicate $agent_file"
