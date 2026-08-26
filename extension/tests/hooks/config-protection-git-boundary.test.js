@@ -3059,14 +3059,20 @@ test('AP-EXT-ITER70-01: splitShellSegments surfaces the eval payload as its own 
 // ANCHOR and its payload is EVERY following token joined — never a positional
 // read and never "the first quoted token". `eval` concatenates its arguments
 // before re-parsing, so anything narrower splits `eval git reset --hard`.
-test('AP-EXT-ITER70-01: evalBuiltinPayload anchors and joins, with no positional read', () => {
+//
+// Retargeted by AP-EXT-ITER71-01 from `evalBuiltinPayload` onto the generalized
+// `wordToCodeBuiltinPayload`: `trap` shares both halves of this shape, so it was
+// absorbed by widening the DECLARATION, not by forking a second extractor. The
+// no-positional-read assertions are unchanged — they are what the ITER70-01
+// invariant actually said.
+test('AP-EXT-ITER70-01: wordToCodeBuiltinPayload anchors and joins, with no positional read', () => {
   const source = fs.readFileSync(
     path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
     'utf-8',
   );
-  const body = source.match(/function evalBuiltinPayload\(segment: string\): string \| null \{([\s\S]*?)\n\}/)?.[1];
-  assert.ok(body, 'evalBuiltinPayload must remain a single named function');
-  assert.match(body, /execAnchorIndex\(tokens, 'eval'\)/);
+  const body = source.match(/function wordToCodeBuiltinPayload\(segment: string\): string \| null \{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(body, 'wordToCodeBuiltinPayload must remain a single named function');
+  assert.match(body, /execAnchorIndex\(tokens, builtin\)/);
   assert.match(body, /tokens\.slice\(anchor \+ 1\)[\s\S]*\.join\(' '\)/);
   assert.doesNotMatch(body, /execTokenIndex|skipEnvAssignments|\.quoted/);
 });
@@ -3251,4 +3257,174 @@ test('AP-EXT-ITER70-02: hereStringPayload matches the operator by shape, not by 
   assert.match(body, /token\.quoted/);
   assert.doesNotMatch(body, /isShellWrapper|execTokenIndex|=== '<<<'/);
   assert.match(source, /const HERE_STRING_OPERATOR_RE = \/\^\\d\*<<</);
+});
+
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER71-01 — `trap` is bash's OTHER word-to-code builtin
+//
+// AP-EXT-ITER70-01 named `eval` "the shell's other one" and stopped there. It is
+// not the only one: `trap '<cmd>' EXIT` hands bash a WORD that the shell
+// re-parses and runs when the signal fires, and a builtin has no binary to name,
+// so `isShellWrapper` cannot reach it and `shellCommandStringPayload` returns
+// null for every form. The payload stayed ONE opaque token — the AP-EXT-ITER63-06
+// failure mode, where a single missed unwrap hides the whole command from every
+// detector at once.
+//
+// Measured against the pre-fix compiled tree: all 8 forms below APPROVED for a
+// worker while their byte-identical bare twins blocked, across all three gates
+// (git verbs, the install.sh ban, the R-WSRC-3 write gates). Shim-verified on
+// this box: `bash -c "trap 'git reset --hard' EXIT; true"` really runs git.
+//
+// The fix GENERALIZED `evalBuiltinPayload` into `wordToCodeBuiltinPayload` over a
+// two-member declaration rather than adding a fourth extractor: the two builtins
+// share the same anchor and the same take, so a second function would have been
+// the same check written twice — the guard-family fork AP-EXT-ITER12-01 already
+// paid for.
+//
+// Over-block cost, measured over 7011 unique real worker Bash commands from 13
+// sessions' tmux_iteration logs: 92 change segment sets, of which the real A/B
+// showed +2 new blocks and 0 lost blocks — both new blocks reviewer probe
+// scripts whose text really does exec `git reset` from a trap handler, i.e. true
+// positives. 0 of 7011 lost a segment, so the unwrap stayed monotone.
+// ---------------------------------------------------------------------------
+
+const ITER71_01_TRAP_GIT = [
+  ['a single-quoted trap handler', `trap 'git reset --hard' EXIT`],
+  ['a double-quoted trap handler', `trap "git push origin main" EXIT`],
+  ['a non-EXIT signal', `trap 'git stash' DEBUG`],
+  ['an ERR trap', `trap 'git rebase -i HEAD~2' ERR`],
+  ['a \`--\`-separated handler', `trap -- 'git checkout main' EXIT`],
+  ['a command prefix before the builtin', `env trap 'git switch main' EXIT`],
+  ['a multi-word amend handler', `trap 'git commit --amend -m x' EXIT`],
+  ['a trap in a chained segment', `cd extension && trap 'git pull' EXIT`],
+  ['a trap in a grouped segment', `(trap 'git fetch --prune' EXIT)`],
+  ['a trap inside a -c payload', `bash -c "trap 'git reset --hard' EXIT"`],
+  ['a trap inside eval', `eval "trap 'git reset --hard' EXIT"`],
+  ['eval inside a trap', `trap 'eval "git switch main"' EXIT`],
+  ['a chained handler whose verb is not the first word', `trap 'cd sub && git reset --hard' EXIT`],
+];
+
+for (const [label, command] of ITER71_01_TRAP_GIT) {
+  test(`AP-EXT-ITER71-01: worker blocks a prohibited git verb behind ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-WSRC-GR/);
+  });
+}
+
+test('AP-EXT-ITER71-01: worker blocks the deploy script behind a trap handler', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `trap 'bash install.sh' EXIT` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC/);
+});
+
+// Both R-WSRC-3 write gates, through both write constructs the walker knows.
+for (const [label, build] of [
+  ['a tee destination', (dir) => `trap 'tee ${path.join(dir, 'state.json')}' EXIT`],
+  ['a > redirect', (dir) => `trap 'echo x > ${path.join(dir, 'state.json')}' EXIT`],
+]) {
+  test(`AP-EXT-ITER71-01: worker blocks a state-file write behind a trap handler via ${label}`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: build(sessionDir) },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', build(sessionDir));
+    assert.match(result.reason, /state file protected/i);
+  });
+}
+
+test('AP-EXT-ITER71-01: worker blocks a settings write behind a trap handler', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `trap "tee ${path.join(tmpDir, 'pickle_settings.json')}" EXIT` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+});
+
+// Non-tautology twins. Without these the block cases above would pass under a
+// guard that blocks any command containing the four characters `trap`. The
+// prose cases are the ones that matter here: this repo's own commit messages and
+// CLAUDE.md catalogs are full of the words "trap door", and the +2 over-block
+// measurement says those must stay approved.
+const ITER71_01_APPROVED = [
+  ['a non-gated verb in a trap handler', `trap 'git status' EXIT`],
+  ['a read-only git log in a trap handler', `trap 'git log --oneline' EXIT`],
+  ['a benign cleanup trap', `trap 'rm -f "$tmp"' EXIT`],
+  ['a trap reset', 'trap - EXIT'],
+  ['a trap listing', 'trap -p'],
+  ['a bare trap with no operand', 'trap'],
+  ['the word trap as a grep pattern', 'grep -rn trap extension/src'],
+  ['the phrase trap door in a commit message', `git commit -m "anatomy-park: catalog 3 trap doors"`],
+  ['the phrase trap door in an echo', `echo 'this trap door claims to hold shut'`],
+  ['a filename containing trap', 'cat docs/trap-doors.md'],
+];
+
+for (const [label, command] of ITER71_01_APPROVED) {
+  test(`AP-EXT-ITER71-01: ${label} stays approved`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', JSON.stringify(command));
+  });
+}
+
+// The seam itself, so a detector-level regression cannot be mistaken for a
+// segmentation one.
+test('AP-EXT-ITER71-01: splitShellSegments surfaces a trap handler as its own segment', () => {
+  for (const command of [
+    `trap 'git reset --hard' EXIT`,
+    `trap "git reset --hard" EXIT`,
+    `trap -- 'git reset --hard' EXIT`,
+    `env trap 'git reset --hard' EXIT`,
+  ]) {
+    const segments = splitShellSegments(command);
+    assert.ok(
+      segments.some((segment) => segment.includes('git reset --hard')),
+      `${command} -> ${JSON.stringify(segments)}`,
+    );
+  }
+  // Monotone: the carrying segment is kept, never replaced.
+  assert.ok(splitShellSegments(`trap 'git reset --hard' EXIT`).includes(`trap 'git reset --hard' EXIT`));
+});
+
+// Declaration pin: the family is a two-member GRAMMAR set consumed by one
+// extractor. If a future pass adds a third word-to-code builtin it belongs in
+// this array — not in a fourth function beside it, which is the fork this fix
+// exists to prevent.
+test('AP-EXT-ITER71-01: the word-to-code builtins are one declared set, not two extractors', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
+    'utf-8',
+  );
+  assert.match(source, /const WORD_TO_CODE_BUILTINS = \['eval', 'trap'\] as const;/);
+  assert.doesNotMatch(source, /function evalBuiltinPayload|function trapBuiltinPayload/);
+  // expandShellCommandStrings declares exactly the three word-to-code CONSTRUCTS.
+  const body = source.match(/function expandShellCommandStrings\([\s\S]*?\n\}/)?.[0];
+  assert.ok(body, 'expandShellCommandStrings must remain a single named function');
+  for (const extractor of ['wordToCodeBuiltinPayload', 'shellCommandStringPayload', 'hereStringPayload']) {
+    assert.ok(body.includes(`${extractor}(segment)`), `${extractor} must stay in the payload array`);
+  }
 });

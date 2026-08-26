@@ -530,44 +530,74 @@ function shellCommandStringPayload(segment) {
     return null;
 }
 /**
- * The command string bash's `eval` builtin will re-parse and run, or null when
- * the segment carries no `eval`.
+ * The bash BUILTINS that take a WORD and re-parse it as CODE: `eval` and
+ * `trap`. Two members, ONE extractor — `trap` arrived as AP-EXT-ITER71-01 and
+ * was absorbed by generalizing this function rather than adding a fourth
+ * payload extractor beside it, because the two builtins share BOTH halves of
+ * the shape: the same anchor (a builtin has no binary to name, so
+ * `isShellWrapper` cannot reach either) and the same take (every following
+ * token, joined). A second function would have been the same check written
+ * twice — the guard-family fork this module has already paid for once
+ * (AP-EXT-ITER12-01).
  *
- * `-c` is not the only place a bash WORD becomes CODE. `eval` is the shell's
- * other one, and it is a BUILTIN — no binary, no PATH lookup, nothing to
- * install — so `isShellWrapper`'s naming shape can never reach it and
- * `shellCommandStringPayload` returns null for every `eval` form. The payload is
- * then ONE quoted token, which is exactly the AP-EXT-ITER63-06 failure mode: a
- * single missed unwrap hides the WHOLE command from every detector at once.
- * Measured 2026-08-26 against the shipped mirror — `eval "git reset --hard"` and
- * all 9 gated verbs, `eval "bash install.sh"`, `eval "tee <session>/state.json"`,
- * `eval 'echo x > <session>/state.json'` and `eval "tee <root>/pickle_settings.json"`
- * ALL APPROVED for a worker while their byte-identical bare twins blocked
- * (shim-verified: the eval forms really exec git / tee).
+ * This is a GRAMMAR declaration, not a carrier catalog: bash's word-to-code
+ * builtins are fixed by the language. `source`/`.` take a FILE, `alias` needs
+ * an interactive / `expand_aliases` path a hook-fronted `Bash` call never
+ * takes, and a pipeline's upstream hands the shell a program's OUTPUT
+ * (`… | sh`) — none of those leaves a word to unwrap.
+ */
+const WORD_TO_CODE_BUILTINS = ['eval', 'trap'];
+/**
+ * The command string a word-to-code builtin will re-parse and run, or null when
+ * the segment carries none.
+ *
+ * `-c` is not the only place a bash WORD becomes CODE. These builtins are the
+ * shell's other one — no binary, no PATH lookup, nothing to install — so
+ * `isShellWrapper`'s naming shape can never reach them and
+ * `shellCommandStringPayload` returns null for every `eval` / `trap` form. The
+ * payload is then ONE quoted token, which is exactly the AP-EXT-ITER63-06
+ * failure mode: a single missed unwrap hides the WHOLE command from every
+ * detector at once. Measured 2026-08-26 against the shipped mirror — the
+ * `eval` family of AP-EXT-ITER70-01 (all 9 gated verbs, the `install.sh` ban,
+ * both R-WSRC-3 write gates) and `trap '<cmd>' EXIT` in its single-quoted,
+ * double-quoted, `--`-separated, `env`-prefixed and non-EXIT-signal forms
+ * (AP-EXT-ITER71-01, 8/8) ALL APPROVED for a worker while their byte-identical
+ * bare twins blocked — shim-verified: the trap handler really execs git when
+ * the shell exits.
  *
  * Bash's word-to-code constructs are a CLOSED set fixed by the language — the
- * `-c` operand of a shell, the arguments of `eval`, and the operand of a
- * here-string (`hereStringPayload`) — which is why declaring them is a grammar
- * declaration (the AP-EXT-ITER66-01 move) and NOT the open-ended carrier catalog
- * the module keeps refusing. `source`/`.` and `< file` take a FILE, and a
- * pipeline's upstream hands the shell the OUTPUT of a program (`… | sh`), so
- * neither leaves a word to unwrap; that fd-data family is a different class and
- * stays open — see the AP-EXT-ITER70-01 trap door's RESIDUAL.
+ * `-c` operand of a shell, the arguments of a word-to-code builtin, and the
+ * operand of a here-string (`hereStringPayload`) — which is why declaring them
+ * is a grammar declaration (the AP-EXT-ITER66-01 move) and NOT the open-ended
+ * carrier catalog the module keeps refusing. A pipeline's upstream hands the
+ * shell the OUTPUT of a program (`… | sh`), which leaves no word to unwrap;
+ * that fd-data family is a different class and stays open — see the
+ * AP-EXT-ITER70-01 trap door's RESIDUAL.
  *
- * The anchor is the shared `execAnchorIndex`, so `eval` is located wherever it
- * sits (`env eval "git reset --hard"` blocks) and quoting cannot demote it —
- * the same one uniform test AP-EXT-ITER64-01 collapsed the git chain onto.
- * ALL following tokens join with a space because that IS `eval`'s contract: it
- * concatenates its arguments and re-parses the result, so `eval git reset` and
+ * The anchor is the shared `execAnchorIndex`, so the builtin is located wherever
+ * it sits (`env eval "git reset --hard"` and `env trap 'git stash' EXIT` both
+ * block) and quoting cannot demote it — the same one uniform test
+ * AP-EXT-ITER64-01 collapsed the git chain onto. The EARLIEST anchor wins so a
+ * segment carrying both folds from its first word-to-code word. ALL following
+ * tokens join with a space because that IS the builtins' contract: `eval`
+ * concatenates its arguments before re-parsing, so `eval git reset` and
  * `eval "git reset"` are the same command and must fold to the same payload.
- * Over-reach is fail-safe in this module's established direction: an `eval`
+ * For `trap` the join also sweeps up the signal spec (`… EXIT`) and a leading
+ * `--`, which is harmless: the detectors locate their verb wherever it sits, so
+ * the extra words cost one scanned token, not a lost block.
+ *
+ * Over-reach is fail-safe in this module's established direction: a builtin name
  * standing in argument position (`grep eval file`) yields one extra benign
- * segment to scan, never a lost block (measured: 0 new blocks over 6216 real
- * worker commands from 11 prior sessions).
+ * segment to scan, never a lost block.
  */
-function evalBuiltinPayload(segment) {
+function wordToCodeBuiltinPayload(segment) {
     const tokens = tokenizeShellTokens(segment);
-    const anchor = execAnchorIndex(tokens, 'eval');
+    let anchor = -1;
+    for (const builtin of WORD_TO_CODE_BUILTINS) {
+        const idx = execAnchorIndex(tokens, builtin);
+        if (idx >= 0 && (anchor < 0 || idx < anchor))
+            anchor = idx;
+    }
     if (anchor < 0 || anchor === tokens.length - 1)
         return null;
     return tokens.slice(anchor + 1).map((token) => token.value).join(' ');
@@ -642,7 +672,7 @@ function expandShellCommandStrings(segments, depth) {
     for (const segment of segments) {
         expanded.push(segment);
         for (const payload of [
-            evalBuiltinPayload(segment),
+            wordToCodeBuiltinPayload(segment),
             shellCommandStringPayload(segment),
             hereStringPayload(segment),
         ]) {
