@@ -182,6 +182,9 @@ nobody shipped — `v2.1.0-beta.16` and `v2.1.0-beta.17` BOTH resolve to `e0c91e
 Always: `gh release create vX.Y.Z --target "$(git rev-parse HEAD)"`, then **compare** the pushed tag's
 sha to that value. `git ls-remote --tags origin <tag>` alone confirms EXISTENCE, not correctness — it
 printed the same wrong sha for two consecutive releases and neither was caught. See [[B-RELTAG]].
+Run `extension/scripts/verify-release-tag.sh vX.Y.Z "$(git rev-parse HEAD)"` to perform that
+comparison mechanically instead of eyeballing `git ls-remote` output — it exits non-zero on mismatch
+or absence and prints both the expected and actual sha.
 
 **Before tagging**, the full release gate must be green from `extension/` (test failures block release, no exceptions) — this is the release-gate source of truth, mirrored by `.github/workflows/release.yml` (enforced by `release-gate-parity.test.js`):
 
