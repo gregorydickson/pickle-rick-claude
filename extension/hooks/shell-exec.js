@@ -220,23 +220,40 @@ export function execTokenIndex(tokens) {
  * table, exactly as `findGitVerb` needs no git-global-option table since it
  * stopped reading the verb POSITIONALLY (see `GATED_GIT_VERBS`).
  *
- * Quoting demotes an anchor by the AP-EXT-ITER51-02 rule, which this shares with
- * `findWriteTargetInScope`'s Pass 2 rather than restating: a quoted word in
- * ARGUMENT position is data (`echo 'git' reset` execs nothing), but a quoted
- * word AT the exec index is an exec like any other (`'git' reset --hard` really
- * does reset). Gating on quoting alone re-opened every write guard in
- * config-protection once already.
+ * ONE uniform test — `execName(value) === name` — and deliberately NO quoting
+ * exception (AP-EXT-ITER64-01). The exception this had said a quoted word only
+ * anchors AT `execTokenIndex`, which re-admitted the positional read this
+ * function exists to retire: a command prefix stands at that index, so the real
+ * quoted exec one token later was demoted to "data" and vanished. `env 'git'
+ * reset --hard`, `nohup "git" push`, `command 'git' stash`, `nice 'git' rebase`,
+ * `exec`/`sudo`/env-prefixed forms — 8 of 8 measured APPROVE for a worker while
+ * their unquoted twins block, every one shim-verified to really run git.
  *
- * Over-reach is fail-safe in this module's established direction: a bare
- * unquoted `git` argument to some other program (`echo git reset`) now anchors
- * and may over-block, while every prefixed form under-blocked before. Over-block,
+ * The exception also bought nothing it claimed to: it existed to spare an
+ * argument-position `echo 'git' reset`, but the byte-identical `echo git reset`
+ * over-blocks anyway (measured). It suppressed no false positive — it only
+ * taught the bypass to add quotes.
+ *
+ * This is NOT the AP-EXT-ITER51-02 rule and never shared code with it. That rule
+ * governs `findWriteTargetInScope`'s Pass 2 over `WRITE_COMMANDS`, still reads
+ * `tokens[i].quoted && i !== execIndex` there, and is left untouched HERE only
+ * because one fix ships per pass — NOT because it is safe. The replay measured
+ * it defeated identically: `env 'tee' <session>/state.json`, `nohup 'cp' …`,
+ * `command "mv" …` and `env 'sed' -i '' … ` all APPROVE for a worker while both
+ * their bare and their merely-quoted twins block, re-opening every R-WSRC-3
+ * protected-state-file write guard (shim-verified to really exec). Tracked as
+ * AP-EXT-ITER64-02; the same collapse applies there, but Pass 2 must keep its
+ * UNQUOTED test on the `>`/`>>` REDIRECT anchor, which quoting really does turn
+ * back into data (AP-EXT-ITER51-01). The two anchors are asymmetric; only the
+ * exec one is safe to make quoting-blind.
+ *
+ * Over-reach is fail-safe in this module's established direction: a bare `git`
+ * argument to some other program (`echo git reset`, quoted or not) anchors and
+ * may over-block, while every prefixed form under-blocked before. Over-block,
  * never under-block.
  */
 export function execAnchorIndex(tokens, name) {
-    const execIndex = execTokenIndex(tokens.map((token) => token.value));
     for (let i = 0; i < tokens.length; i++) {
-        if (tokens[i].quoted && i !== execIndex)
-            continue;
         if (execName(tokens[i].value) === name)
             return i;
     }

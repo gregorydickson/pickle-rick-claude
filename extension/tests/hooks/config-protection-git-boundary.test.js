@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { isShellWrapper, splitShellSegments } from '../../hooks/shell-exec.js';
+import { execAnchorIndex, isShellWrapper, splitShellSegments, tokenizeShellTokens } from '../../hooks/shell-exec.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HANDLER = path.resolve(__dirname, '../../hooks/handlers/config-protection.js');
@@ -1952,11 +1952,11 @@ test('AP-EXT-ITER63-02: manager context is unaffected by the anchor read', () =>
   assert.equal(result.decision, 'approve');
 });
 
-// The anchor is quoting-aware by the AP-EXT-ITER51-02 rule it SHARES with
-// findWriteTargetInScope's Pass 2, not a second copy of it: a quoted word in
-// ARGUMENT position is data and never anchors, but a quoted word AT the exec
-// index is an exec like any other. Pinned in both directions so a future
-// narrowing to "quoted never anchors" cannot re-open `'git' reset --hard`.
+// A quoted `git` in EXEC position is an exec like any other and must anchor.
+// AP-EXT-ITER64-01 removed the CONVERSE half of this pin (a quoted word in
+// ARGUMENT position used to be spared): that exception was gated on
+// `execTokenIndex`, so a command prefix standing at the exec index demoted the
+// real exec behind it to "data". See the ITER64-01 block below.
 test('AP-EXT-ITER63-02: a quoted git in EXEC position still anchors', () => {
   const { tmpDir, stateFile } = bootstrapSession();
   const result = runHandler({
@@ -1967,17 +1967,6 @@ test('AP-EXT-ITER63-02: a quoted git in EXEC position still anchors', () => {
   });
   assert.equal(result.decision, 'block');
   assert.match(result.reason, /R-WSRC-GR/);
-});
-
-test('AP-EXT-ITER63-02: a quoted git in ARGUMENT position does not anchor', () => {
-  const { tmpDir, stateFile } = bootstrapSession();
-  const result = runHandler({
-    tmpDir, stateFile,
-    toolName: 'Bash',
-    toolInput: { command: "echo 'git' reset" },
-    extraEnv: { PICKLE_ROLE: 'worker' },
-  });
-  assert.equal(result.decision, 'approve');
 });
 
 // The prefix set is deliberately UNENUMERATED. This is the guard against a
@@ -2106,4 +2095,119 @@ test('AP-EXT-ITER63-06: the -c payload resolves at, before and after the post-en
       `${label} form must expand its -c payload into its own segment, got ${JSON.stringify(segments)}`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER64-01 — a QUOTED exec behind a command prefix vanished entirely
+//
+// `execAnchorIndex` exists to retire the positional exec read, but it re-admitted
+// it through the back door: its quoting exception spared a quoted token unless
+// that token sat AT `execTokenIndex`. A POSIX command PREFIX stands at exactly
+// that index, so the real exec one token later was demoted to "data" and the
+// scan returned -1 — `findGitVerb` saw no git at all and the whole R-WSRC-GR
+// chain skipped the segment.
+//
+// Measured against the shipped handler before the fix: 8 of 8 quoted-behind-
+// prefix forms APPROVED for a worker while their byte-identical unquoted twins
+// blocked, and a `git` shim confirmed every one really executes git (quote
+// removal happens in the shell, before `env`/`nohup`/`command` ever see argv).
+//
+// The exception suppressed no false positive, which is why removing it is a
+// subtraction rather than a widening: the case it existed for — an argument-
+// position `echo 'git' reset` — has an unquoted twin `echo git reset` that
+// over-blocks anyway (both measured). It only taught the bypass to add quotes.
+//
+// Each case is PAIRED with the unquoted twin that already blocked, so no case
+// can pass by blanket-blocking anything containing the word `git`.
+// ---------------------------------------------------------------------------
+
+for (const { label, quoted, twin, expect: expected } of [
+  { label: "env 'git'", quoted: "env 'git' reset --hard", twin: 'env git reset --hard', expect: /reset/ },
+  { label: 'env "git"', quoted: 'env "git" reset --hard', twin: 'env git reset --hard', expect: /reset/ },
+  { label: "nohup 'git'", quoted: "nohup 'git' push origin main", twin: 'nohup git push origin main', expect: /push/ },
+  { label: "command 'git'", quoted: "command 'git' stash", twin: 'command git stash', expect: /stash/ },
+  { label: "nice 'git'", quoted: "nice 'git' rebase main", twin: 'nice git rebase main', expect: /rebase/ },
+  { label: "exec 'git'", quoted: "exec 'git' reset --hard", twin: 'exec git reset --hard', expect: /reset/ },
+  { label: 'sudo "git"', quoted: 'sudo "git" push', twin: 'sudo git push', expect: /push/ },
+  { label: "env-assignment + prefix + 'git'", quoted: "PICKLE_ROLE=x env 'git' push origin main", twin: 'PICKLE_ROLE=x env git push origin main', expect: /push/ },
+  // An INVENTED prefix no table would ever carry, to pin that the fix stayed
+  // list-free rather than growing a prefix set with a quoting arm bolted on.
+  { label: "invented prefix + 'git'", quoted: "zzz-unknown-prefix-9f2a 'git' reset --hard", twin: 'zzz-unknown-prefix-9f2a git reset --hard', expect: /reset/ },
+]) {
+  test(`AP-EXT-ITER64-01: worker blocks ${label} (quoted exec behind a prefix)`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: quoted },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', quoted);
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+
+  test(`AP-EXT-ITER64-01: ${label} matches its unquoted twin (non-tautology)`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: twin },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', twin);
+    assert.match(result.reason, expected);
+  });
+}
+
+// The quoted and unquoted forms must now be INDISTINGUISHABLE to the anchor.
+// This is the invariant the removed exception violated, stated directly: quoting
+// is not a signal the guard may key on, because the shell strips it before the
+// program ever runs.
+test('AP-EXT-ITER64-01: quoting a token never changes the anchor decision', () => {
+  for (const [bare, ...quotedForms] of [
+    ['git reset --hard', "'git' reset --hard", '"git" reset --hard'],
+    ['env git reset --hard', "env 'git' reset --hard", 'env "git" reset --hard'],
+    ['echo git reset', "echo 'git' reset", 'echo "git" reset'],
+    ['echo hello', "echo 'hello'", 'echo "hello"'],
+  ]) {
+    const expectedIndex = execAnchorIndex(tokenizeShellTokens(bare), 'git');
+    for (const form of quotedForms) {
+      assert.equal(
+        execAnchorIndex(tokenizeShellTokens(form), 'git'),
+        expectedIndex,
+        `${JSON.stringify(form)} must anchor exactly like ${JSON.stringify(bare)}`,
+      );
+    }
+  }
+});
+
+// Structural pin: the exec-position exception must not come back. Reading
+// `execTokenIndex` inside execAnchorIndex is what made a command prefix able to
+// demote the real exec, so its ABSENCE from that function body is the invariant
+// — not the behavior alone, which a re-typed variant would satisfy on the day it
+// is written and drift from afterwards.
+test('AP-EXT-ITER64-01: execAnchorIndex reads no positional exec index', () => {
+  const shellExec = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
+    'utf8',
+  );
+  const body = shellExec.match(
+    /export function execAnchorIndex\([\s\S]*?\n\}/,
+  );
+  assert.ok(body, 'execAnchorIndex must remain a single top-level function');
+  assert.equal(
+    /execTokenIndex|skipEnvAssignments|\.quoted/.test(body[0]),
+    false,
+    'execAnchorIndex must not gate on a positional exec index or on quoting — ' +
+      `a command prefix defeats both. Body was:\n${body[0]}`,
+  );
+  // The AP-EXT-ITER51-02 rule is a DIFFERENT guard and must survive untouched:
+  // findWriteTargetInScope's Pass 2 still demotes a quoted WRITE_COMMANDS token
+  // outside exec position. Removing it there re-opens every R-WSRC-3 write guard.
+  const configProtection = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'),
+    'utf8',
+  );
+  assert.match(configProtection, /tokens\[i\]\.quoted && i !== execIndex/);
 });
