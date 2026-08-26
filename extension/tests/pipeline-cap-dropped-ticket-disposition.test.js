@@ -50,7 +50,7 @@ before(() => {
 });
 
 after(() => {
-  if (priorDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+  if (priorDataRoot === undefined) { delete process.env.PICKLE_DATA_ROOT; }
   else process.env.PICKLE_DATA_ROOT = priorDataRoot;
   fs.rmSync(dataRoot, { recursive: true, force: true });
 });
@@ -58,7 +58,7 @@ after(() => {
 /** Every activity event emitted so far, newest-inclusive, across all daily files. */
 function readActivityEvents() {
   const activityDir = path.join(dataRoot, 'activity');
-  if (!fs.existsSync(activityDir)) return [];
+  if (!fs.existsSync(activityDir)) { return []; }
   return fs.readdirSync(activityDir)
     .filter((f) => f.endsWith('.jsonl'))
     .flatMap((f) => fs.readFileSync(path.join(activityDir, f), 'utf8')

@@ -155,8 +155,8 @@ export type LedgerSnapshot = { resolved: string[]; new: string[]; remaining: str
 function compareMetricSetOps(ledger: LedgerSnapshot): 'improved' | 'held' | 'regressed' {
   const resolvedCount = new Set(ledger.resolved).size;
   const newCount = new Set(ledger.new).size;
-  if (newCount > resolvedCount) return 'regressed';
-  if (newCount < resolvedCount) return 'improved';
+  if (newCount > resolvedCount) { return 'regressed'; }
+  if (newCount < resolvedCount) { return 'improved'; }
   return 'held';
 }
 

@@ -119,7 +119,7 @@ test('AC-V2: 36*36*36*33*33 resets the stall counter on the genuine improvement 
     const entry = historyEntry(i + 1, step.score, classification);
     state = recordIteration(state, entry, classification);
     stallCounterAfterStep.push(state.convergence.stall_counter);
-    if (classification !== 'regressed') previousScore = step.score;
+    if (classification !== 'regressed') { previousScore = step.score; }
   }
 
   // Steps 1-3 (36/36/36): held, held, held -> counter climbs to 3.

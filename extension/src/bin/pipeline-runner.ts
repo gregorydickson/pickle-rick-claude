@@ -3967,13 +3967,13 @@ function capDroppedTicketsReported(
   log: (msg: string) => void,
 ): boolean {
   try {
-    if (sm.read(runtime.statePath).exit_reason !== 'iteration_cap_exhausted') return false;
+    if (sm.read(runtime.statePath).exit_reason !== 'iteration_cap_exhausted') { return false; }
   } catch { return false; }
   // Only pay the oracle/git cost of resolveUnfinishedTickets on the cap path.
   const ids = resolveUnfinishedTickets(runtime, collectTickets(runtime.sessionDir))
     .map(t => t.id)
     .filter((id): id is string => Boolean(id));
-  if (ids.length === 0) return false;
+  if (ids.length === 0) { return false; }
   appendPhaseDisposition(counters, rawPhase, `${CAP_DROPPED_DISPOSITION}:${ids.join(',')}`);
   log(`Phase ${rawPhase} hit its iteration cap with ${ids.length}/${progress.ticketCount} ticket(s) never built (${progress.doneCount} Done) — dropped at cap: ${ids.join(', ')} — reporting phase incomplete, advancing`);
   // `logActivity` is best-effort and never throws (see emitParkedTicketResidualEvents),
