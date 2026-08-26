@@ -1,3 +1,28 @@
+> **✅ SHIPPED 2026-08-25 as v2.1.0-beta.17 — CLOSED (7 of 8 ACs; AC-B4 operator-deferred).**
+> Pipeline ran 4/4 phases in 672m32s, 30 commits, session `2026-08-25-c8595785`.
+>
+> **AC-B5 SATISFIED — the inherited-failure carve-out is RETIRED, measured.** For the first time the
+> release gate is green with **zero waived failures**: fast 8109 `fail 0`, integration parallel 662 +
+> serial 623 `fail 0`, expensive 22 `fail 0`, deploy-lifecycle soak measured 1803s `pass 1 skipped 0`.
+>
+> **Retiring the carve-out RESTORED A GATE THAT HAD SILENTLY STOPPED WORKING.** `test:fast:budget` now
+> reads `OK failures=0 runs_completed=5 runs_requested=5`, against beta.16's `FAIL_BUDGET_EXCEEDED
+> failures=3 runs_completed=3` — it could not finish its own five-run plan because the inherited bun
+> probe failed deterministically every run. A flake budget cannot detect flakiness while a
+> 100%-reproducible failure sits on the tree.
+>
+> **AC-1 verified END TO END on a real deploy**, not only in tests: the installer logged
+> `MANAGED_KEYS forced codegraph.expose_mcp_to_workers: false -> true` and the deployed settings now
+> read `true`. The FEAT's whole premise was that a source-only flip stays inert; that is now closed.
+>
+> **AC-B4 (macOS notification delivery) was NOT built** — pickle hit its iteration cap with 1/8 tickets
+> pending and the runtime correctly reported the phase incomplete and advanced rather than halting.
+> Operator ruled it deferred, not high priority. It is a known accepted gap, not a silent drop.
+>
+> **Phase profile, reported rather than smoothed:** pickle incomplete (7/8), citadel exhausted its
+> 3-cycle remediation cap with 2 findings open, anatomy-park **CONVERGED**, szechuan
+> `stalled_below_target`.
+
 # B-CGSHIP — turn on codegraph for workers, and retire the inherited-failure carve-out that would hide it
 
 **Priority:** P2 (capability) + P1/P2/P3 fixes riding the same surface

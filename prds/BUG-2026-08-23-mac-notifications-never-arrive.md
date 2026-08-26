@@ -1,3 +1,12 @@
+> **⏸️ operator-deferred 2026-08-25.** Composed into [[B-CGSHIP]] as ticket `f2b3cf76` / AC-B4, but
+> pickle hit its iteration cap with this ticket still pending and it was **never built** — zero commits,
+> no code in the tree. Operator ruled it explicitly not high priority and deferred it.
+>
+> **Not drainable** by the mechanical selection rules while this banner stands. Re-queue only on operator
+> request. The mechanism is unchanged and still live: `displayMacNotification`
+> (`services/pickle-utils.ts:2877`) shells out via `spawnSyncFn('osascript', ...)` at `:2896`, and the
+> open question remains that `spawnSync` returning without throwing is NOT evidence of delivery.
+
 # BUG-2026-08-23 — macOS notifications never arrive
 
 - **Priority**: P2 (operator-facing; the pipeline runs unattended and cannot tell the operator anything)

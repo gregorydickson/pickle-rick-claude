@@ -110,8 +110,17 @@ iteration/budget caps. Watch `iteration`, not roster size.
 1. **Compose by SHARED FILE / SUBSYSTEM SURFACE, not by priority tier.** The review toll scales with
    subsystem count, so tickets touching the same files ride the same review for free. A bundle that
    sprawls across new subsystems pays more. Priority orders the queue; surface composes the bundle.
-2. **Cap at 8 until 8 is routine.** 8 is the largest size with converged evidence behind it. Extend the
-   envelope one step at a time — do NOT reach for 12 on a bundle that carries a feature.
+2. **Cap at 6–7, OR raise the pickle iteration cap first. AMENDED 2026-08-25 — the original "cap at 8"
+   was WRONG and cost a ticket.** [[B-CGSHIP]] composed 8 tickets and pickle **hit its iteration cap with
+   1/8 still pending**: `Phase pickle exited but 1/8 tickets remain pending (7 Done) — not
+   all-tickets-terminal, reporting phase incomplete, advancing`. Ticket `f2b3cf76` was **never built** —
+   zero commits, no code. The runtime behaved correctly (reported incomplete, advanced, did not halt),
+   but **the phase reports `incomplete` and continues, so a careless reader sees a finished pipeline and
+   never learns a ticket vanished.**
+   This is the ITERATION-COUNT risk the section below already predicted, arriving on the FIRST bundle
+   composed under this policy. Ordering luck decided which ticket was lost: the dropped one was
+   `order: 80`, the lowest-priority in the bundle. Two tickets earlier and it would have taken AC-3.
+   **So: 8 tickets requires raising the pickle iteration cap in the same breath, or compose 6–7.**
 3. **Mixing fixes with new functionality is SOUND.** Each ticket gets its own commit, so the
    structural-vs-behavioral separation is preserved at commit granularity, which is where it belongs. A
    feature ticket and a fix ticket in one bundle do not contaminate each other.
