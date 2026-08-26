@@ -3314,8 +3314,9 @@ function pipelineBundleScan(runtime) {
  */
 function capDroppedTicketsReported(runtime, rawPhase, counters, progress, log) {
     try {
-        if (sm.read(runtime.statePath).exit_reason !== 'iteration_cap_exhausted')
+        if (sm.read(runtime.statePath).exit_reason !== 'iteration_cap_exhausted') {
             return false;
+        }
     }
     catch {
         return false;
@@ -3324,8 +3325,9 @@ function capDroppedTicketsReported(runtime, rawPhase, counters, progress, log) {
     const ids = resolveUnfinishedTickets(runtime, collectTickets(runtime.sessionDir))
         .map(t => t.id)
         .filter((id) => Boolean(id));
-    if (ids.length === 0)
+    if (ids.length === 0) {
         return false;
+    }
     appendPhaseDisposition(counters, rawPhase, `${CAP_DROPPED_DISPOSITION}:${ids.join(',')}`);
     log(`Phase ${rawPhase} hit its iteration cap with ${ids.length}/${progress.ticketCount} ticket(s) never built (${progress.doneCount} Done) — dropped at cap: ${ids.join(', ')} — reporting phase incomplete, advancing`);
     // `logActivity` is best-effort and never throws (see emitParkedTicketResidualEvents),

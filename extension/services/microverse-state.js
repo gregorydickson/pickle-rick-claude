@@ -135,10 +135,12 @@ export function assertMicroverseStateShape(parsed, commandTemplate) {
 function compareMetricSetOps(ledger) {
     const resolvedCount = new Set(ledger.resolved).size;
     const newCount = new Set(ledger.new).size;
-    if (newCount > resolvedCount)
+    if (newCount > resolvedCount) {
         return 'regressed';
-    if (newCount < resolvedCount)
+    }
+    if (newCount < resolvedCount) {
         return 'improved';
+    }
     return 'held';
 }
 function compareMetricNumeric(current, previous, tolerance, direction) {
