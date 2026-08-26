@@ -144,13 +144,19 @@ export function assertMicroverseStateShape(
 
 export type LedgerSnapshot = { resolved: string[]; new: string[]; remaining: string[] };
 
+/**
+ * AC-V1/AC-V2: decide from the net resolved-vs-new size delta alone. A per-id overlap between `new`
+ * and `remaining` (the same violation content reappearing under an unstable judge-assigned id) is
+ * identity noise, not evidence against a real net reduction — treating it as a decision input made a
+ * genuine net-reduction pass ('improved') read as 'held' (B-CGSHIP: 36→33), and separately let a
+ * lateral wash (equal resolved/new counts) read as 'improved' (beta.16: 1→1) because the old predicate
+ * never compared the two counts for equality.
+ */
 function compareMetricSetOps(ledger: LedgerSnapshot): 'improved' | 'held' | 'regressed' {
-  const resolvedSet = new Set(ledger.resolved);
-  const remainingSet = new Set(ledger.remaining);
-  const newSet = new Set(ledger.new);
-  const intersectionSize = ledger.new.filter(id => remainingSet.has(id)).length;
-  if (newSet.size > resolvedSet.size) return 'regressed';
-  if (resolvedSet.size > 0 && intersectionSize === 0) return 'improved';
+  const resolvedCount = new Set(ledger.resolved).size;
+  const newCount = new Set(ledger.new).size;
+  if (newCount > resolvedCount) return 'regressed';
+  if (newCount < resolvedCount) return 'improved';
   return 'held';
 }
 
@@ -206,6 +212,62 @@ function hasPriorLedgerContext(current: LedgerSnapshot, previous?: LedgerSnapsho
   return hasLedgerContext(previous);
 }
 
+/**
+ * Figures reported alongside a classification, scoped to whichever comparator decided it — set-ops
+ * figures for a ledger-based verdict, ledger-count figures for the no-prior-context fallback, numeric
+ * figures otherwise. AC-V1: the printed classification and the printed figures must never disagree
+ * about which comparator decided.
+ */
+export type MetricComparisonFigures =
+  | { basis: 'set_ops'; resolved: number; new: number; remaining: number }
+  | { basis: 'ledger_count'; violationCount: number; previous: number }
+  | { basis: 'numeric'; current: number; previous: number; tolerance: number };
+
+export interface MetricComparisonResult {
+  classification: 'improved' | 'held' | 'regressed';
+  figures: MetricComparisonFigures;
+}
+
+/**
+ * Same dispatch as `compareMetric`, but also reports which basis decided and that basis's own
+ * figures — never a figure set from a different basis (AC-V1).
+ */
+export function compareMetricWithBasis(
+  current: number,
+  previous: number,
+  tolerance: number,
+  direction?: 'higher' | 'lower',
+  currentLedger?: LedgerSnapshot,
+  previousLedger?: LedgerSnapshot,
+): MetricComparisonResult {
+  if (hasLedgerContext(currentLedger)) {
+    if (hasPriorLedgerContext(currentLedger, previousLedger)) {
+      return {
+        classification: compareMetricSetOps(currentLedger),
+        figures: {
+          basis: 'set_ops',
+          resolved: currentLedger.resolved.length,
+          new: currentLedger.new.length,
+          remaining: currentLedger.remaining.length,
+        },
+      };
+    }
+    // No prior ledger to diff against: compare this pass's violation count to the numeric score.
+    // This is a third basis in its own right — report it as such, never as 'numeric'.
+    const violationCount = currentLedger.remaining.length + currentLedger.new.length;
+    if (violationCount < previous) {
+      return {
+        classification: 'improved',
+        figures: { basis: 'ledger_count', violationCount, previous },
+      };
+    }
+  }
+  return {
+    classification: compareMetricNumeric(current, previous, tolerance, direction),
+    figures: { basis: 'numeric', current, previous, tolerance },
+  };
+}
+
 export function compareMetric(
   current: number,
   previous: number,
@@ -214,13 +276,7 @@ export function compareMetric(
   currentLedger?: LedgerSnapshot,
   previousLedger?: LedgerSnapshot,
 ): 'improved' | 'held' | 'regressed' {
-  if (hasLedgerContext(currentLedger)) {
-    if (hasPriorLedgerContext(currentLedger, previousLedger)) return compareMetricSetOps(currentLedger);
-    // No prior ledger to diff against: compare this pass's violation count to the numeric score.
-    const violationCount = currentLedger.remaining.length + currentLedger.new.length;
-    if (violationCount < previous) return 'improved';
-  }
-  return compareMetricNumeric(current, previous, tolerance, direction);
+  return compareMetricWithBasis(current, previous, tolerance, direction, currentLedger, previousLedger).classification;
 }
 
 function assertCreateMicroverseOpts(opts: CreateMicroverseOpts): void {

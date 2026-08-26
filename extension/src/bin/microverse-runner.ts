@@ -28,10 +28,12 @@ import {
   recordFailedApproach,
   isConverged,
   compareMetric,
+  compareMetricWithBasis,
   classifyFailure,
   findLastAcceptedEntry,
   updateViolationLedger,
 } from '../services/microverse-state.js';
+import type { MetricComparisonFigures } from '../services/microverse-state.js';
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
@@ -3827,6 +3829,17 @@ function maybeRecordPlateauFailedApproach(
   );
 }
 
+export function formatMetricComparisonFigures(figures: MetricComparisonFigures): string {
+  switch (figures.basis) {
+    case 'set_ops':
+      return `basis=set_ops, resolved=${figures.resolved}, new=${figures.new}, remaining=${figures.remaining}`;
+    case 'ledger_count':
+      return `basis=ledger_count, violations=${figures.violationCount}, previous=${figures.previous}`;
+    case 'numeric':
+      return `previous=${figures.previous}, tolerance=${figures.tolerance}`;
+  }
+}
+
 export async function measureAndClassifyIteration(
   state: MicroverseState,
   baseline: MetricSnapshot,
@@ -3869,7 +3882,7 @@ export async function measureAndClassifyIteration(
   adoptLateBaseline(state, baseline, metricResult, metricConv, ctx);
 
   const previousScore = lastAccepted ? lastAccepted.score : state.baseline_score;
-  const classification = compareMetric(
+  const comparison = compareMetricWithBasis(
     metricResult.score,
     previousScore,
     state.key_metric.tolerance,
@@ -3877,7 +3890,8 @@ export async function measureAndClassifyIteration(
     currentLedger,
     previousLedger,
   );
-  ctx.log(`Classification: ${classification} (previous=${previousScore}, tolerance=${state.key_metric.tolerance})`);
+  const classification = comparison.classification;
+  ctx.log(`Classification: ${classification} (${formatMetricComparisonFigures(comparison.figures)})`);
 
   const entry = buildMetricHistoryEntry(state, metricResult, previousScore, classification, ctx);
 

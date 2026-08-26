@@ -124,14 +124,20 @@ export function assertMicroverseStateShape(parsed, commandTemplate) {
     }
     return parsed;
 }
+/**
+ * AC-V1/AC-V2: decide from the net resolved-vs-new size delta alone. A per-id overlap between `new`
+ * and `remaining` (the same violation content reappearing under an unstable judge-assigned id) is
+ * identity noise, not evidence against a real net reduction — treating it as a decision input made a
+ * genuine net-reduction pass ('improved') read as 'held' (B-CGSHIP: 36→33), and separately let a
+ * lateral wash (equal resolved/new counts) read as 'improved' (beta.16: 1→1) because the old predicate
+ * never compared the two counts for equality.
+ */
 function compareMetricSetOps(ledger) {
-    const resolvedSet = new Set(ledger.resolved);
-    const remainingSet = new Set(ledger.remaining);
-    const newSet = new Set(ledger.new);
-    const intersectionSize = ledger.new.filter(id => remainingSet.has(id)).length;
-    if (newSet.size > resolvedSet.size)
+    const resolvedCount = new Set(ledger.resolved).size;
+    const newCount = new Set(ledger.new).size;
+    if (newCount > resolvedCount)
         return 'regressed';
-    if (resolvedSet.size > 0 && intersectionSize === 0)
+    if (newCount < resolvedCount)
         return 'improved';
     return 'held';
 }
@@ -189,16 +195,40 @@ function hasPriorLedgerContext(current, previous) {
         return true;
     return hasLedgerContext(previous);
 }
-export function compareMetric(current, previous, tolerance, direction, currentLedger, previousLedger) {
+/**
+ * Same dispatch as `compareMetric`, but also reports which basis decided and that basis's own
+ * figures — never a figure set from a different basis (AC-V1).
+ */
+export function compareMetricWithBasis(current, previous, tolerance, direction, currentLedger, previousLedger) {
     if (hasLedgerContext(currentLedger)) {
-        if (hasPriorLedgerContext(currentLedger, previousLedger))
-            return compareMetricSetOps(currentLedger);
+        if (hasPriorLedgerContext(currentLedger, previousLedger)) {
+            return {
+                classification: compareMetricSetOps(currentLedger),
+                figures: {
+                    basis: 'set_ops',
+                    resolved: currentLedger.resolved.length,
+                    new: currentLedger.new.length,
+                    remaining: currentLedger.remaining.length,
+                },
+            };
+        }
         // No prior ledger to diff against: compare this pass's violation count to the numeric score.
+        // This is a third basis in its own right — report it as such, never as 'numeric'.
         const violationCount = currentLedger.remaining.length + currentLedger.new.length;
-        if (violationCount < previous)
-            return 'improved';
+        if (violationCount < previous) {
+            return {
+                classification: 'improved',
+                figures: { basis: 'ledger_count', violationCount, previous },
+            };
+        }
     }
-    return compareMetricNumeric(current, previous, tolerance, direction);
+    return {
+        classification: compareMetricNumeric(current, previous, tolerance, direction),
+        figures: { basis: 'numeric', current, previous, tolerance },
+    };
+}
+export function compareMetric(current, previous, tolerance, direction, currentLedger, previousLedger) {
+    return compareMetricWithBasis(current, previous, tolerance, direction, currentLedger, previousLedger).classification;
 }
 function assertCreateMicroverseOpts(opts) {
     const { metric, stallLimit, convergenceTarget } = opts;

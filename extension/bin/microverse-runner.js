@@ -8,7 +8,7 @@ import { Defaults, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../ty
 import { resolveBackend, resolveWorkerBackendFromState, buildJudgeInvocation, buildWorkerInvocation, backendEnvOverrides, } from '../services/backend-spawn.js';
 import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js'; // R-SJET-3
 import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
-import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetric, classifyFailure, findLastAcceptedEntry, updateViolationLedger, } from '../services/microverse-state.js';
+import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetricWithBasis, classifyFailure, findLastAcceptedEntry, updateViolationLedger, } from '../services/microverse-state.js';
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
@@ -2921,6 +2921,16 @@ function maybeRecordPlateauFailedApproach(state, classification, iteration, scor
     }
     replaceMicroverseState(state, recordFailedApproach(state, `Iteration ${iteration}: score held at ${score} (no improvement from ${previousScore})`));
 }
+export function formatMetricComparisonFigures(figures) {
+    switch (figures.basis) {
+        case 'set_ops':
+            return `basis=set_ops, resolved=${figures.resolved}, new=${figures.new}, remaining=${figures.remaining}`;
+        case 'ledger_count':
+            return `basis=ledger_count, violations=${figures.violationCount}, previous=${figures.previous}`;
+        case 'numeric':
+            return `previous=${figures.previous}, tolerance=${figures.tolerance}`;
+    }
+}
 export async function measureAndClassifyIteration(state, baseline, ctx) {
     const backend = resolveWorkerBackendFromState(ctx.currentRunnerState).backend;
     let metricResult;
@@ -2962,8 +2972,9 @@ export async function measureAndClassifyIteration(state, baseline, ctx) {
     const lastAccepted = findLastAcceptedEntry(metricConv.history);
     adoptLateBaseline(state, baseline, metricResult, metricConv, ctx);
     const previousScore = lastAccepted ? lastAccepted.score : state.baseline_score;
-    const classification = compareMetric(metricResult.score, previousScore, state.key_metric.tolerance, state.key_metric.direction, currentLedger, previousLedger);
-    ctx.log(`Classification: ${classification} (previous=${previousScore}, tolerance=${state.key_metric.tolerance})`);
+    const comparison = compareMetricWithBasis(metricResult.score, previousScore, state.key_metric.tolerance, state.key_metric.direction, currentLedger, previousLedger);
+    const classification = comparison.classification;
+    ctx.log(`Classification: ${classification} (${formatMetricComparisonFigures(comparison.figures)})`);
     const entry = buildMetricHistoryEntry(state, metricResult, previousScore, classification, ctx);
     if (classification === 'regressed') {
         emitStallClassification(ctx, classifyStall({

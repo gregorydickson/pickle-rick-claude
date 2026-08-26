@@ -243,8 +243,11 @@ test('measureAndClassifyIteration consumes structured LLM judge ledger before nu
       postIterSha: 'b'.repeat(40),
     });
     const result = await measureAndClassifyIteration(mv, { raw: '40', score: 40 }, ctx);
-    assert.deepEqual(result, { kind: 'improved', metric: { raw: JSON.stringify(judgeOutput), score: 40 } });
-    assert.equal(mv.convergence.history[0].classification, 'improved');
+    // AC-V1 case 2 (ticket 76f7fa90): resolved=['old-violation'], new=['new-violation'] is a violation-count
+    // lateral wash (equal resolved/new counts) — compareMetricSetOps now classifies this 'held', not 'improved',
+    // matching the beta.16 field observation (1 -> 1 misread as 'improved') that this ticket corrects.
+    assert.deepEqual(result, { kind: 'unchanged' });
+    assert.equal(mv.convergence.history[0].classification, 'held');
     assert.deepEqual(
       mv.violation_ledger?.map(({ path: filePath, line, rule, first_seen_iter, last_seen_iter }) => ({
         path: filePath,
