@@ -16,6 +16,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify tag matches package version
+        # Runs before setup-node: ubuntu-latest ships a system Node.js in the
+        # base image tooling, so `node -p` works here without waiting for
+        # setup-node, letting this guard fail BEFORE the ~20-minute
+        # install/compile step runs on a tree that is already provably wrong.
+        run: |
+          EXPECTED="${GITHUB_REF_NAME#v}"
+          ACTUAL="$(node -p "require('./extension/package.json').version")"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::Tag version '${EXPECTED}' does not match extension/package.json version '${ACTUAL}'" >&2
+            exit 1
+          fi
+          echo "Tag version '${EXPECTED}' matches extension/package.json version '${ACTUAL}'"
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22.x'
