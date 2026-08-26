@@ -3330,13 +3330,19 @@ function listCommittedFilesInRange(workingDir, fromSha, toSha) {
 }
 function resolveScopeAuditInputs(ctx) {
     const scopeJsonPath = path.join(ctx.sessionDir, 'scope.json');
-    // AP-EXT-ITER8-02: read through the recovery layer, which PROMOTES a dead
-    // `scope.json.tmp.<pid>` onto the base path. A bare `fs.existsSync` pre-gate
-    // short-circuits before that promotion, so a crash in scope.json's tmp-rename
-    // window silently no-ops this audit — and `checkScopeDiff` below existsSync-gates
-    // too, so the promotion (not a recoverable read there) is what keeps it armed.
-    if (readRecoverableJsonObject(scopeJsonPath) === null)
-        return null;
+    // AP-EXT-ITER68-01: this function reads the fence NOT AT ALL. `checkScopeDiff`
+    // owns the whole three-way answer — `no_scope`, `malformed_scope`, or a real
+    // verdict — and since AP-EXT-ITER40-01 its own `resolveAllowedPaths` crosses the
+    // tmp-rename window through `readRecoverableJsonObject`, so the promotion
+    // AP-EXT-ITER8-02 added a pre-gate here to perform now happens there.
+    //
+    // A pre-gate that answers "is there a fence?" with a BOOLEAN is lossy: a
+    // `scope.json` that exists but is not a JSON object (truncated, empty,
+    // top-level array) reads null exactly like an absent one, so it returned here
+    // and AP-EXT-ITER41-01's `malformed_scope` arm never saw it. Only the ONE
+    // malformed shape that still parses as an object reached the loud log; the
+    // other three produced the byte-identical observable to an unscoped run.
+    // Ask the classifier, never a boolean stand-in for it.
     const preHead = ctx.preIterSha;
     const postHead = ctx.postIterSha;
     if (!preHead || !postHead || preHead === postHead)

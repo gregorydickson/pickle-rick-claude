@@ -298,3 +298,69 @@ test('AP-EXT-ITER41-01: both unevaluable statuses share ONE disposition at the p
     assert.equal(isUnevaluableScopeStatus(status), false, `${status} renders a verdict`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER68-01: the producers AP-EXT-ITER41-01 could not reach. That fix routed
+// `malformed_scope` to the loud "UNKNOWN, not absent" log, but `resolveScopeAuditInputs`
+// still pre-gated on `readRecoverableJsonObject(scope.json) === null` — a BOOLEAN stand-in
+// for the classifier. `readRecoverableJsonObject` returns null for an absent file AND for
+// a present file that is not a JSON object, so every non-object fence returned there and
+// never reached `checkScopeDiff`. Note the MALFORMED_FENCES table above: all three members
+// parse as objects. That is the whole enumerated-set failure — the table could only hold
+// the shapes the pre-gate let through, so the pre-gate looked covered.
+//
+// Measured against the shipped `bin/microverse-runner.js` before the fix: a truncated
+// fence plus an off-scope commit produced zero events and zero log lines — byte-identical
+// to the absent-fence no-op below, on the one scope check a codex worker cannot bypass.
+// The pre-gate is now deleted outright (not widened): `checkScopeDiff:resolveAllowedPaths`
+// already owns the three-way answer and, since AP-EXT-ITER40-01, already crosses the
+// tmp-rename window itself — so the promotion AP-EXT-ITER8-02 put here is redundant, which
+// `microverse-convergence.test.js`'s tmp-only cases pin end-to-end.
+// ---------------------------------------------------------------------------
+
+const NON_OBJECT_FENCES = [
+  ['truncated mid-write', '{'],
+  ['empty file', ''],
+  ['top-level array', JSON.stringify(['packages/api'])],
+  ['top-level string', JSON.stringify('packages/api')],
+  ['literal null', 'null'],
+];
+
+for (const [label, body] of NON_OBJECT_FENCES) {
+  test(`AP-EXT-ITER68-01: a non-object fence (${label}) is reported unknown, not silently clean`, () => {
+    const events = runAudit({
+      rawScope: body,
+      committedFiles: ['totally/outside/scope.ts'],
+      currentSubsystem: 'extension',
+    });
+    assert.equal(events.length, 0, 'an unreadable fence cannot produce a drift verdict either way');
+    const notEvaluated = events.logLines.filter((l) => l.includes('[R-SSOC]') && l.includes('NOT evaluated'));
+    assert.equal(notEvaluated.length, 1, 'a present-but-unreadable fence must be logged, not swallowed');
+    assert.ok(
+      /UNKNOWN, not absent/.test(notEvaluated[0]),
+      `log must distinguish unknown from clean, got: ${notEvaluated[0]}`,
+    );
+    assert.ok(
+      notEvaluated[0].includes('malformed_scope'),
+      `log must name WHY the fence was unreadable, got: ${notEvaluated[0]}`,
+    );
+  });
+}
+
+// PLACEMENT pin, not a presence pin. Deleting the pre-gate is only correct because
+// `checkScopeDiff` answers `no_scope` for a genuinely absent fence; if the distinction
+// were drawn anywhere coarser, every unscoped anatomy/microverse run would log this line
+// once per committing iteration. The sibling above is green either way without this.
+test('AP-EXT-ITER68-01: an ABSENT fence stays fully silent — no NOT-evaluated line', () => {
+  const events = runAudit({
+    allowedPaths: [],
+    committedFiles: ['anything/at/all.ts'],
+    writeScope: false,
+  });
+  assert.equal(events.length, 0, 'no scope.json → no drift event');
+  assert.deepEqual(
+    events.logLines.filter((l) => l.includes('[R-SSOC]')),
+    [],
+    'an unscoped session is a genuine answer, not an unreadable fence — it must log nothing',
+  );
+});
