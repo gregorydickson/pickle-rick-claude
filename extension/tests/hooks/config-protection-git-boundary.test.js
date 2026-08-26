@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { isShellWrapper } from '../../hooks/shell-exec.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HANDLER = path.resolve(__dirname, '../../hooks/handlers/config-protection.js');
@@ -1222,6 +1223,115 @@ test('AP-EXT-ITER10-01: manager context is unaffected by the unwrap', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER63-01 — a NON-bash POSIX shell is still a shell wrapper
+//
+// `isShellWrapper` tested `name === 'bash' || name === 'sh'` — a two-member
+// enumeration, which is the same incomplete-declaration shape AP-EXT-ITER54-01
+// removed one level down when it stopped enumerating operand-taking bash
+// options. It reached the predicted bypass. `shellCommandStringPayload` returns
+// null for a token the predicate rejects, and the `-c` payload is ONE quoted
+// token, so for `zsh -c 'git reset --hard'` the ONLY executable any detector
+// ever saw was `zsh` — approved, while the byte-identical `bash`/`sh` twins
+// blocked. `/bin/zsh`, `/bin/dash` and `/bin/ksh` are all present on a stock
+// macOS box and `zsh -c 'git …'` really does execute git, so this was a live
+// bypass of every worker-forbidden-op guard, not a parsing curiosity.
+//
+// The fix is the naming SHAPE (`/^[a-z]*sh$/`) rather than a third member, so
+// the whole shell family closes at once and no list is left to maintain.
+// Each block case is paired below with its benign twin, so none of these can
+// pass by blanket-blocking any command that merely mentions a shell.
+// ---------------------------------------------------------------------------
+
+for (const { label, command, expect: expected } of [
+  { label: 'zsh -c (single-quoted)', command: "zsh -c 'git reset --hard'", expect: /reset/ },
+  { label: 'zsh -c (double-quoted)', command: 'zsh -c "git reset --hard"', expect: /reset/ },
+  { label: 'absolute-path zsh -c', command: '/bin/zsh -c "git reset --hard"', expect: /reset/ },
+  { label: 'zsh -lc combined flag', command: 'zsh -lc "git stash"', expect: /stash/ },
+  { label: 'dash -c', command: 'dash -c "git push origin main"', expect: /push/ },
+  { label: 'ksh -c', command: 'ksh -c "git rebase main"', expect: /rebase/ },
+  { label: 'env-prefixed zsh -c', command: 'PICKLE_ROLE=x zsh -c "git pull"', expect: /pull/ },
+  { label: 'zsh -c wrapping a bash -c', command: 'zsh -c "bash -c \'git reset --hard\'"', expect: /reset/ },
+]) {
+  test(`AP-EXT-ITER63-01: worker blocks prohibited git verb via ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+}
+
+// The wrapper fold is shared, so the install.sh detector inherits the fix at
+// both of its arms: the `-c` unwrap AND the bare `execTokenIndex` skip. Pinned
+// so a future per-detector narrowing is caught.
+for (const { label, command } of [
+  { label: 'zsh -c "bash install.sh"', command: 'zsh -c "bash install.sh"' },
+  { label: 'zsh install.sh', command: 'zsh install.sh' },
+]) {
+  test(`AP-EXT-ITER63-01: worker blocks ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC/);
+  });
+}
+
+// `install.sh` carries a DOT, so the shape can never fold it to a wrapper —
+// it must stay the EXEC token of `bash install.sh` rather than a skipped
+// prefix, or the detector reads past it onto its argument.
+test('AP-EXT-ITER63-01: a dot-bearing script name is never a wrapper', () => {
+  assert.equal(isShellWrapper('install.sh'), false);
+  assert.equal(isShellWrapper('/repo/install.sh'), false);
+  assert.equal(isShellWrapper('pre-install.sh'), false);
+  assert.equal(isShellWrapper('bash'), true);
+  assert.equal(isShellWrapper('zsh'), true);
+  assert.equal(isShellWrapper('/bin/ZSH'), true);
+  assert.equal(isShellWrapper(undefined), false);
+  assert.equal(isShellWrapper(''), false);
+});
+
+// Non-tautology guards: widening the wrapper fold must not blanket-block a
+// non-bash shell, and must stay scoped to worker-class roles.
+for (const { label, command } of [
+  { label: 'a benign build command', command: 'zsh -c "npm run test:fast"' },
+  { label: 'a chained benign payload', command: 'zsh -c "cd extension && npx tsc --noEmit"' },
+  { label: 'an allowed path-mode checkout', command: 'dash -c "git checkout -- src/foo.ts"' },
+  { label: 'a plain commit', command: 'ksh -c "git commit -m fix"' },
+]) {
+  test(`AP-EXT-ITER63-01: worker still approves ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve');
+  });
+}
+
+test('AP-EXT-ITER63-01: manager context is unaffected by the wider wrapper fold', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: "zsh -c 'git reset --hard'" },
+    extraEnv: { PICKLE_ROLE: 'manager' },
+  });
+  assert.equal(result.decision, 'approve');
+});
+
 // AP-EXT-ITER14-01 — ESCAPED-quote nesting closes the ITER10/ITER12 residual
 //
 // Both prior passes cataloged this as an open RESIDUAL: `tokenizeShellCommand`

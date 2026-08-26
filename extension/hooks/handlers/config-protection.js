@@ -303,7 +303,7 @@ function findBashWriteTarget(command, probe) {
 function findWriteTargetInScope(command, probe) {
     const tokens = tokenizeShellTokens(command);
     // The one token bash will exec in this scope, read through the SHARED prelude
-    // (env assignments → optional `bash`/`sh` wrapper → env assignments) so a
+    // (env assignments → optional shell wrapper → env assignments) so a
     // quoted exec is recognized in every form the rest of the subsystem accepts.
     const execIndex = execTokenIndex(tokens.map((token) => token.value));
     // Pass 1: `>` / `>>` redirects — the immediate next token is the destination.

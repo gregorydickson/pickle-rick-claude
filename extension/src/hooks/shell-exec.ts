@@ -154,10 +154,37 @@ function foldShellWord(word: string): ShellToken {
   return { value, quoted: parts.length > 0 && !sawUnquoted };
 }
 
-/** True when the token is a `bash`/`sh` wrapper to be skipped before the real exec. */
+/**
+ * A POSIX shell binary is NAMED `…sh` — `sh`, `bash`, `zsh`, `dash`, `ksh`,
+ * `csh`, `tcsh`, `ash`, `fish`. That naming shape IS the test, so there is no
+ * wrapper list to keep current.
+ *
+ * `name === 'bash' || name === 'sh'` was the same incomplete-declaration shape
+ * AP-EXT-ITER54-01 removed one level down when it stopped enumerating
+ * operand-taking bash options: a two-member set, one member away from a bypass.
+ * It reached that bypass. Every non-bash shell on this box (`/bin/zsh`,
+ * `/bin/dash`, `/bin/ksh` all present) hid its whole `-c` payload from every
+ * detector, because `shellCommandStringPayload` returns null for a token this
+ * predicate rejects and the payload is ONE quoted token — so
+ * `zsh -c 'git reset --hard'` was APPROVED while its `bash`/`sh` twins blocked,
+ * and `zsh install.sh` read its exec token as `zsh`. Collapsing to the shape
+ * closes the whole family at once instead of adding a third member.
+ *
+ * Dot-bearing names are excluded by construction, which is load-bearing in the
+ * `execTokenIndex` arm: `install.sh` must stay the EXEC token of
+ * `bash install.sh`, never a wrapper skipped on the way to its argument.
+ *
+ * Over-reach is fail-safe in this module's established direction. `ssh` matches
+ * the shape; treating it as a wrapper only moves the exec-token read one token
+ * to the right (onto the host), which no detector fires on, and an `ssh -c
+ * <cipher>` yields one extra benign segment to scan. Over-block, never
+ * under-block.
+ */
+const SHELL_INTERPRETER_NAME_RE = /^[a-z]*sh$/;
+
+/** True when the token is a shell wrapper to be skipped before the real exec. */
 export function isShellWrapper(token: string | undefined): boolean {
-  const name = execName(token);
-  return name === 'bash' || name === 'sh';
+  return SHELL_INTERPRETER_NAME_RE.test(execName(token));
 }
 
 /**
@@ -176,8 +203,8 @@ export function skipEnvAssignments(tokens: string[], start = 0): number {
 
 /**
  * THE exec-token prelude for the hooks subsystem: env assignments → optional
- * `bash`/`sh` wrapper → env assignments. Returns the index of the token the
- * shell will actually exec.
+ * shell wrapper (`isShellWrapper`) → env assignments. Returns the index of the
+ * token the shell will actually exec.
  *
  * ONE home for the same reason `execName` and `splitShellSegments` have one
  * (AP-EXT-EXECFOLD, AP-EXT-ITER12-01): the two handlers re-forked it and DRIFTED
