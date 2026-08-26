@@ -2202,12 +2202,35 @@ test('AP-EXT-ITER64-01: execAnchorIndex reads no positional exec index', () => {
     'execAnchorIndex must not gate on a positional exec index or on quoting — ' +
       `a command prefix defeats both. Body was:\n${body[0]}`,
   );
-  // The AP-EXT-ITER51-02 rule is a DIFFERENT guard and must survive untouched:
-  // findWriteTargetInScope's Pass 2 still demotes a quoted WRITE_COMMANDS token
-  // outside exec position. Removing it there re-opens every R-WSRC-3 write guard.
+  // AP-EXT-ITER64-02 CORRECTED the claim this pin used to make. It asserted the
+  // sibling `tokens[i].quoted && i !== execIndex` arm in findWriteTargetInScope's
+  // Pass 2 "must survive untouched", on the theory that removing it re-opens the
+  // R-WSRC-3 write guards. The replay measured the exact opposite: KEEPING it was
+  // the bypass, because `i !== execIndex` is true OF THE REAL EXEC whenever a
+  // POSIX command prefix stands at the positional exec index. The pin now runs in
+  // the direction the measurement supports — Pass 2 carries NO quoting arm and
+  // reads NO exec index, exactly like execAnchorIndex above.
   const configProtection = fs.readFileSync(
     path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'),
     'utf8',
   );
-  assert.match(configProtection, /tokens\[i\]\.quoted && i !== execIndex/);
+  const pass2 = configProtection.match(
+    /function findWriteTargetInScope<T>\([\s\S]*?\n\}/,
+  );
+  assert.ok(pass2, 'findWriteTargetInScope must remain a single top-level function');
+  assert.equal(
+    /execTokenIndex|execIndex/.test(pass2[0]),
+    false,
+    'findWriteTargetInScope must not read a positional exec index — a command ' +
+      `prefix stands at it. Body was:\n${pass2[0]}`,
+  );
+  // Pass 1's REDIRECT anchor keeps its unquoted test (AP-EXT-ITER51-01: quoting a
+  // `>` really does turn it back into data). Only the EXEC anchor is quote-blind.
+  assert.match(pass2[0], /!tokens\[i\]\.quoted && \(tokens\[i\]\.value === '>'/);
+  assert.equal(
+    (pass2[0].match(/\.quoted/g) || []).length,
+    1,
+    'exactly one `.quoted` read may remain in findWriteTargetInScope: Pass 1 ' +
+      "redirect anchor. Pass 2's exec anchor must be quoting-blind.",
+  );
 });

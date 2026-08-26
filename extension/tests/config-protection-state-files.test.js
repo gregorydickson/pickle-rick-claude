@@ -888,8 +888,22 @@ test('AP-EXT-ITER51-01: a quoted token whose value is `>` is not an operator', (
   assert.equal(runWorkerBashInSession((t) => `git commit -m ">" ${t}`).decision, 'approve');
 });
 
-test('AP-EXT-ITER51-01: a quoted write-command token is not an exec', () => {
-  assert.equal(runWorkerBashInSession((t) => `git commit -m "sed" -i ${t}`).decision, 'approve');
+// AP-EXT-ITER64-02 RETIRED the `git commit -m "sed" -i <file>` approve pin that
+// stood here. It asserted quoting demotes an argument-position write command —
+// but its byte-identical UNQUOTED twin `git commit -m sed -i <file>` blocks and
+// always did (measured both directions), so the exception spared no real false
+// positive. It only taught the bypass to add quotes. The false positive that IS
+// real — a write command inside a commit MESSAGE — is one quoted span, never
+// execName-matches a WRITE_COMMANDS member, and is pinned below.
+test('AP-EXT-ITER51-01: a quoted write-command word matches its unquoted twin', () => {
+  const quoted = runWorkerBashInSession((t) => `git commit -m "sed" -i ${t}`).decision;
+  const bare = runWorkerBashInSession((t) => `git commit -m sed -i ${t}`).decision;
+  assert.equal(
+    quoted,
+    bare,
+    'quoting a word must not change the verdict — that asymmetry WAS the bypass',
+  );
+  assert.equal(bare, 'block');
 });
 
 // ---------------------------------------------------------------------------
@@ -922,18 +936,115 @@ for (const build of [
   });
 }
 
-// The false positive AP-EXT-ITER51-01 removed must STAY removed: a quoted
-// write-command word that is an ARGUMENT (not the exec) is inert.
-test('AP-EXT-ITER51-02: a quoted write command outside exec position still approves', () => {
-  assert.equal(runWorkerBashInSession((t) => `git commit -m "sed" -i ${t}`).decision, 'approve');
-});
-
+// The false positive that stays suppressed is the commit MESSAGE form: the whole
+// message is a single quoted span, so `execName` never folds it to a
+// WRITE_COMMANDS member and no quoting arm is needed to spare it. (The
+// argument-position pin that used to sit here was retired by AP-EXT-ITER64-02 —
+// see the ITER51-01 parity test above.)
 test('AP-EXT-ITER51-02: a quoted write command inside a commit message still approves', () => {
   assert.equal(
     runWorkerBashInSession((t) => `git commit -m "tee ${t} from the worker"`).decision,
     'approve',
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER64-02: a command PREFIX plus one pair of quotes re-opened every
+// R-WSRC-3 state-write guard.
+//
+// findWriteTargetInScope's Pass 2 demoted a quoted WRITE_COMMANDS token whenever
+// `i !== execTokenIndex(...)`. That prelude answers "which token does the shell
+// exec" POSITIONALLY — and a POSIX command PREFIX (`env`/`command`/`nohup`/
+// `nice`/`sudo`/`timeout`/...) is an ordinary program that stands at that index
+// with the real executable BEHIND it. So the test was true of the REAL EXEC and
+// demoted it to "data". Measured against the shipped hook: 7 of 7 prefixed+quoted
+// forms APPROVED for a worker while every bare twin BLOCKED; shim-verified that
+// bash really execs the write command in each. Same shape and same collapse as
+// AP-EXT-ITER64-01 one module over: the exec anchor is quoting-blind, needs no
+// prefix table, and asks only "may the shell exec this token as a write command".
+//
+// The three axes each case must hold: the PREFIX (open-ended, no table), the
+// QUOTING (must not change the verdict), and the ANCHOR (found wherever it sits).
+// ---------------------------------------------------------------------------
+
+const PREFIXED_QUOTED_STATE_WRITES = [
+  ['env + quoted tee', (t) => `env 'tee' ${t}`],
+  ['env + double-quoted tee', (t) => `env "tee" ${t}`],
+  ['nohup + quoted cp', (t) => `nohup 'cp' /tmp/x ${t}`],
+  ['command + quoted mv', (t) => `command "mv" /tmp/x ${t}`],
+  ['nice + quoted tee', (t) => `nice 'tee' ${t}`],
+  ['sudo + quoted tee', (t) => `sudo 'tee' ${t}`],
+  ['timeout + quoted tee', (t) => `timeout 5 'tee' ${t}`],
+  ['setsid + quoted tee', (t) => `setsid 'tee' ${t}`],
+  ['stdbuf + quoted tee', (t) => `stdbuf -o0 'tee' ${t}`],
+  ['env + quoted sed -i', (t) => `env 'sed' -i '' s/a/b/ ${t}`],
+  ['env + quoted absolute tee', (t) => `env '/usr/bin/tee' ${t}`],
+  ['env assignment + prefix + quoted tee', (t) => `PICKLE_ROLE=x env 'tee' ${t}`],
+  ['stacked prefixes + quoted tee', (t) => `env nohup 'tee' ${t}`],
+  ['prefixed quoted tee in a pipeline', (t) => `echo x | env 'tee' ${t}`],
+  ['prefixed quoted tee in a subshell', (t) => `(env 'tee' ${t})`],
+  ['prefixed quoted tee behind &&', (t) => `cd /tmp && env 'tee' ${t}`],
+  // An INVENTED prefix no enumeration could carry: the fix must not depend on
+  // knowing the prefix set, only on finding the write anchor wherever it sits.
+  ['invented prefix + quoted tee', (t) => `frobnicate --wrap 'tee' ${t}`],
+];
+
+for (const [label, build] of PREFIXED_QUOTED_STATE_WRITES) {
+  test(`AP-EXT-ITER64-02: blocks prefixed quoted state write — ${label}`, () => {
+    assert.equal(
+      runWorkerBashInSession(build).decision,
+      'block',
+      'a command prefix plus quotes must not hide the write anchor',
+    );
+  });
+}
+
+// Non-tautology twins: each bare form ALREADY blocked before the fix, so the
+// cases above are only meaningful if quoting is what used to flip them. Pinning
+// both directions is what makes this a parity test rather than a restatement.
+for (const [label, build] of [
+  ['env + bare tee', (t) => `env tee ${t}`],
+  ['nohup + bare cp', (t) => `nohup cp /tmp/x ${t}`],
+  ['command + bare mv', (t) => `command mv /tmp/x ${t}`],
+  ['env + bare sed -i', (t) => `env sed -i '' s/a/b/ ${t}`],
+  ['bare quoted tee, no prefix', (t) => `'tee' ${t}`],
+]) {
+  test(`AP-EXT-ITER64-02: unquoted/unprefixed twin also blocks — ${label}`, () => {
+    assert.equal(runWorkerBashInSession(build).decision, 'block');
+  });
+}
+
+test('AP-EXT-ITER64-02: quoting a prefixed write command does not change the verdict', () => {
+  for (const [quoted, bare] of [
+    [(t) => `env 'tee' ${t}`, (t) => `env tee ${t}`],
+    [(t) => `nohup 'cp' /tmp/x ${t}`, (t) => `nohup cp /tmp/x ${t}`],
+    [(t) => `command "mv" /tmp/x ${t}`, (t) => `command mv /tmp/x ${t}`],
+  ]) {
+    assert.equal(
+      runWorkerBashInSession(quoted).decision,
+      runWorkerBashInSession(bare).decision,
+      'the quoted and bare forms must agree — the asymmetry WAS the bypass',
+    );
+  }
+});
+
+// The fix must not over-reach into READS. `cat`/`grep` are not WRITE_COMMANDS,
+// so a prefixed quoted read still approves and the R-CPRO read path is intact.
+for (const [label, build] of [
+  ['prefixed quoted cat', (t) => `env 'cat' ${t}`],
+  ['prefixed quoted grep', (t) => `nohup 'grep' -l x ${t}`],
+  // `sed` with no in-place flag is a READER (AP-EXT-ITER47-01) even when the
+  // quoting arm no longer demotes it.
+  ['prefixed quoted sed without -i', (t) => `env 'sed' s/a/b/ ${t}`],
+]) {
+  test(`AP-EXT-ITER64-02: prefixed quoted READ still approves — ${label}`, () => {
+    assert.equal(
+      runWorkerBashInSession(build).decision,
+      'approve',
+      'removing the quoting arm must not turn reads into writes',
+    );
+  });
+}
 
 // ---------------------------------------------------------------------------
 // AP-EXT-ITER47-01: `sed` without an in-place flag is a READER, not a writer.

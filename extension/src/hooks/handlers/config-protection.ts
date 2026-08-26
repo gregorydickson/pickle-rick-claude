@@ -314,19 +314,36 @@ function findBashWriteTarget<T>(
  * The two-pass token walk over ONE already-scoped command string.
  *
  * Quoting demotes an anchor differently in each pass, because bash treats the two
- * kinds of anchor differently:
+ * kinds of anchor asymmetrically — and ONLY the redirect arm is quote-sensitive:
  *   - a REDIRECT operator is syntax, and quoting is exactly how you turn it back
  *     into data: `echo '>' x` writes nothing. Pass 1 requires an unquoted `>`.
- *   - a COMMAND is a WORD, and quoting a word does not stop it being execed:
+ *   - a COMMAND is a WORD, and quoting a word changes NOTHING about execing it:
  *     `'tee' state.json` and `"sed" -i '' s/a/b/ state.json` run tee and sed
- *     (shim-verified). Pass 2 therefore demotes a quoted write command only when
- *     it is NOT in command position — that is the case the quoting really does
- *     make inert (`git commit -m "sed" -i <file>` passes `sed` to git as a commit
- *     message, and nothing execs it). A quoted word AT the exec index is an exec
- *     like any other, and gating it on quoting alone re-opened every write guard
- *     in this file to one pair of quotes.
+ *     (shim-verified). Pass 2 therefore has NO quoting arm at all: every token is
+ *     tested with the one uniform `WRITE_COMMANDS.has(execName(value))`, wherever
+ *     it sits and however it is quoted.
  *
- * Only the anchor is gated: a DESTINATION is legitimately quoted
+ * Pass 2 asks the ANSWERABLE question — does this scope contain a token the shell
+ * may exec as a write command — exactly as `execAnchorIndex` does for `git`
+ * (AP-EXT-ITER64-01). It deliberately no longer reads `execTokenIndex`. That
+ * prelude answers "which token does the shell exec" POSITIONALLY, and a POSIX
+ * command PREFIX (`env` / `command` / `nohup` / `nice` / `sudo` / `timeout` / …)
+ * is an ordinary program that stands at that index with the real executable
+ * behind it. So `i !== execIndex` was true OF THE REAL EXEC, demoting it to
+ * "data": `env 'tee' <session>/state.json`, `nohup 'cp' …`, `command "mv" …`,
+ * `env 'sed' -i …`, `nice`/`timeout`/`sudo` forms — 7 of 7 measured APPROVE for a
+ * worker while every bare twin blocks, re-opening every R-WSRC-3 write guard to a
+ * prefix plus one pair of quotes (shim-verified to really exec). Teaching the
+ * prelude the prefixes would need a TABLE — the incomplete-enumeration shape that
+ * has failed seven times in this module. The collapse needs none.
+ *
+ * The exception also bought nothing it claimed to. It existed to spare
+ * `git commit -m "sed" -i <file>`, but the byte-identical unquoted twin
+ * `git commit -m sed -i <file>` over-blocks anyway (measured, both directions).
+ * It suppressed no false positive — it only taught the bypass to add quotes.
+ * Over-block, never under-block: this module's established direction.
+ *
+ * Only the REDIRECT anchor is gated: a DESTINATION is legitimately quoted
  * (`> "state.json"`), so `tokens[i + 1]` and the positional args are probed
  * whatever their quoting.
  */
@@ -335,10 +352,6 @@ function findWriteTargetInScope<T>(
   probe: (token: string) => T | null,
 ): T | null {
   const tokens = tokenizeShellTokens(command);
-  // The one token bash will exec in this scope, read through the SHARED prelude
-  // (env assignments → optional shell wrapper → env assignments) so a
-  // quoted exec is recognized in every form the rest of the subsystem accepts.
-  const execIndex = execTokenIndex(tokens.map((token) => token.value));
 
   // Pass 1: `>` / `>>` redirects — the immediate next token is the destination.
   for (let i = 0; i < tokens.length - 1; i++) {
@@ -353,7 +366,6 @@ function findWriteTargetInScope<T>(
   for (let i = 0; i < tokens.length; i++) {
     // execName (not path.basename): folds case and strips a trailing `;`, so
     // `SED -i`, `/usr/bin/sed -i`, and `TEE` all match the lowercase set.
-    if (tokens[i].quoted && i !== execIndex) continue;
     const name = execName(tokens[i].value);
     if (!WRITE_COMMANDS.has(name)) continue;
     const argsInScope = tokens.slice(i + 1).map((token) => token.value);
