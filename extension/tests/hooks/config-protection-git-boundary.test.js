@@ -2756,3 +2756,76 @@ test('AP-EXT-ITER66-01: the word grammar declares all four bash quoting forms', 
     'UNQUOTED_RUN must stop before a $ that introduces a quoted span',
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER66-02 — a THROW in the scanner is a blanket approve, not a crash
+//
+// The AP-EXT-ITER66-01 decoder resolved every numeric ANSI-C escape through
+// `String.fromCodePoint`, which raises RangeError past U+10FFFF. `dispatch.ts`
+// fails OPEN, so the throw did not surface as a crash — the handler answered
+// `approve` for the WHOLE command. `$'\UFFFFFFFF' ; git reset --hard` therefore
+// disarmed every guard in config-protection at once, and a `git` shim confirmed
+// the reset really runs. That is strictly worse than the bypass ITER66-01 closed:
+// one token, any forbidden op.
+//
+// The fix needs no per-escape table — an escape that names NO character stands
+// as written, which is both non-throwing and what bash 3.2 actually does
+// (`printf '%q' $'\UFFFFFFFF'` prints the literal text back).
+// ---------------------------------------------------------------------------
+
+for (const { label, command, expected } of [
+  { label: 'out-of-range \\U in an argument', command: String.raw`git $'\UFFFFFFFF' reset --hard`, expected: /reset/ },
+  { label: 'out-of-range \\U as its own segment', command: String.raw`$'\UFFFFFFFF' ; git reset --hard`, expected: /reset/ },
+  { label: 'just-past-max \\U', command: String.raw`$'\U00110000' ; git push origin main`, expected: /push/ },
+]) {
+  test(`AP-EXT-ITER66-02: worker still blocks with ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+}
+
+// The general invariant, stated where it can be checked: this scanner runs inside
+// a fail-open hook, so ANY input it throws on is an approve. Behavior cases pin
+// the forms already measured; this pins the property they are instances of.
+test('AP-EXT-ITER66-02: the tokenizer never throws, whatever the escape names', () => {
+  const hostile = [
+    String.raw`$'\UFFFFFFFF'`,
+    String.raw`$'\U00110000'`,
+    String.raw`$'\Uffffffff'`,
+    String.raw`$'￿'`,
+    String.raw`$'\xFF'`,
+    String.raw`$'\777'`,
+    String.raw`$'\0'`,
+    String.raw`$'\'`,
+    String.raw`$'\\'`,
+    String.raw`$'`,
+    '$"',
+    '$',
+    "$'\\UFFFFFFFF' && bash install.sh",
+  ];
+  for (const form of hostile) {
+    assert.doesNotThrow(() => tokenizeShellTokens(form), `tokenizeShellTokens(${JSON.stringify(form)})`);
+    assert.doesNotThrow(() => splitShellSegments(form), `splitShellSegments(${JSON.stringify(form)})`);
+  }
+});
+
+// bash leaves an unresolvable escape as literal text; so must the fold, or the
+// two disagree about the word and the disagreement is a bypass in one direction
+// or a false block in the other.
+test('AP-EXT-ITER66-02: an escape naming no character stands as written', () => {
+  for (const [form, value] of [
+    [String.raw`$'\UFFFFFFFF'`, String.raw`\UFFFFFFFF`],
+    [String.raw`$'\U00110000'`, String.raw`\U00110000`],
+    [String.raw`$'\U0010FFFF'`, String.fromCodePoint(0x10FFFF)],
+  ]) {
+    assert.equal(tokenizeShellTokens(form)[0].value, value, form);
+  }
+});

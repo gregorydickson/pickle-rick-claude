@@ -110,13 +110,20 @@ const DOUBLE_QUOTE_ESCAPE_RE = /\\(["\\$`])/g;
  */
 const ANSI_C_ESCAPE_RE = /\\(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|([0-7]{1,3})|([\s\S]))/g;
 function decodeAnsiCEscapes(body) {
-    return body.replace(ANSI_C_ESCAPE_RE, (_match, hex, u, bigU, octal, literal) => {
-        const code = hex ?? u ?? bigU;
-        if (code !== undefined)
-            return String.fromCodePoint(Number.parseInt(code, 16));
-        if (octal !== undefined)
-            return String.fromCodePoint(Number.parseInt(octal, 8));
-        return literal;
+    return body.replace(ANSI_C_ESCAPE_RE, (match, hex, u, bigU, octal, literal) => {
+        if (literal !== undefined)
+            return literal;
+        const digits = hex ?? u ?? bigU ?? octal;
+        const code = Number.parseInt(digits, octal === undefined ? 16 : 8);
+        // An escape that names NO character stands as written — which is both what
+        // bash does (3.2 leaves `$'\UFFFFFFFF'` as literal text) and the only
+        // non-throwing answer. `String.fromCodePoint` raises RangeError past
+        // U+10FFFF, and a throw inside this scanner is not a crash: `dispatch.ts`
+        // fails OPEN, so the handler answers `approve` for the WHOLE command.
+        // `$'\UFFFFFFFF' ; git reset --hard` disarmed every guard in the file at
+        // once (measured, shim-verified to really run the reset). The resolvable
+        // range is the guard; no per-escape table is involved.
+        return code <= 0x10FFFF ? String.fromCodePoint(code) : match;
     });
 }
 /**
