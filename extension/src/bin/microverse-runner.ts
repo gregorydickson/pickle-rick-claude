@@ -2577,7 +2577,7 @@ function spawnWithClosedStdin(
     // clears this timer on every settle path, so a healthy spawn releases the handle
     // within microseconds of `'close'`/`'error'` and a ref'd timer costs nothing.
     // Same ruling as `writeWithWatchdog` (bin/monitor.ts) and the sibling
-    // `measureMetricAttempt` below, whose primary `timeoutHandle` is likewise ref'd.
+    // `measureMetricAttempt` above, whose primary `timeoutHandle` is likewise ref'd.
     // The SIGKILL escalation below is a different case: it is best-effort cleanup with
     // no promise awaiting it, so it is correctly unref'd.
     const timer = setTimeout(() => {
