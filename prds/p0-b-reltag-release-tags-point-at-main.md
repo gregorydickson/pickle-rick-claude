@@ -5,6 +5,21 @@
 **Branch:** `release/v2.1-beta`
 **build_mode:** unattended.
 
+## ✅ BOTH MANDATORY PRE-LAUNCH CHECKS PASSED — measured 2026-08-26 at HEAD `a328f650`
+
+**(a) STALE PREMISE: PASSED.** Every mechanism verified, not asserted:
+
+| mechanism | measured |
+|---|---|
+| mis-pointed tags persist | `v2.1.0-beta.16` and `v2.1.0-beta.17` → `e0c91e17` = `origin/main`; `v2.1.0-beta.18` → `62e51b6b` = our HEAD (the `--target` fix) |
+| no version-vs-tag guard | the only `VERSION=` line in `release.yml` builds the **tarball filename** (`VERSION="${GITHUB_REF_NAME#v}"`) and is never compared to `package.json` |
+| CI Node pin | `release.yml` → `node-version: '22.x'` |
+| the 7 cancellations | reproduce locally: `node@22` → `cancelled 7`, `node@24` → `cancelled 0`, same suite |
+
+**(b) GREEN TREE: PASSED — nothing to record as inherited.** `npm run test:fast`, node 24.19.0:
+**8293 tests / pass 8287 / fail 0 / cancelled 0.** beta.17 retired both standing exemptions, so **any
+failure during this bundle is caused by this bundle.**
+
 ## Measured root cause (2026-08-26, decisive)
 
 ```
