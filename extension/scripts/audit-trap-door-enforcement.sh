@@ -270,6 +270,220 @@ then
   audit_exit_code=1
 fi
 
+# INVARIANT symbol liveness (AC-V3).
+#
+# The ENFORCE arm above proves a REFERENCE resolves. Nothing proved that the
+# INVARIANT clause names a symbol that still EXISTS. Anatomy-park found three dead
+# anchors in one phase with three distinct causes — a rename deleted the symbol
+# (`ea40a7e2`), a refactor deleted it as a pure pass-through (`c0b6c2e5`), and one
+# was FALSE AT BIRTH and never existed in any commit (`15866fa6`). In all three the
+# guard was intact; only the naming was wrong, which is worse than a missing entry:
+# a reviewer greps the name, finds nothing, and concludes the guard was deleted.
+#
+# THE CONVENTION THIS ARM ENFORCES: a backticked bare identifier inside an
+# INVARIANT: clause is a CLAIM THAT THE SYMBOL IS LIVE. A clause that deliberately
+# names an ABSENT symbol must not backtick it (see the R-POD clause in
+# src/services/CLAUDE.md, which asserts a constant name that never existed).
+#
+# THIS COMMENT IS PART OF THE CORPUS. Every tracked non-.md file is, including this
+# script and the tests. Writing a dead identifier here as a literal REVIVES it and
+# silently defuses the anchor that names it — this arm's first run proved it, by
+# quoting the R-POD name above and dropping its own two true positives from four to
+# two. Name such symbols indirectly, never as a bare token.
+#
+# CANDIDATE RULE — one predicate, NO list. A backticked span is a candidate iff the
+# WHOLE span is a single bare identifier. Deliberately NOT "identifier-ish shapes
+# minus a skip list of paths/event-names/settings-keys": a skip list is the
+# incomplete-set shape CLAUDE.md forbids, one omission from the next silent bypass.
+# The widest rule is also the greenest — applying no shape filter at all leaves only
+# the handful of genuinely dead anchors, so nothing is bought by narrowing it.
+# NOTHING IS DROPPED SILENTLY: the non-identifier spans are COUNTED and printed in
+# the success line, so the unchecked population is a visible number that moves when
+# the catalogs change.
+#
+# CORPUS — a word set over every tracked non-.md file, comments INCLUDED.
+#   * An AST walk was rejected: it structurally cannot see shell/env identifiers,
+#     JSON keys, string-literal values, or node code inside shell heredocs
+#     (`discoverCatalogs` itself is declared in a heredoc in THIS file), which
+#     reports live symbols as dead.
+#   * Stripping comments first was rejected ON MEASUREMENT: it turns the live
+#     `referencedFiles` (services/citadel/trap-door-coverage-audit.js) into a
+#     failure, because that file has `/*` inside a REGEX LITERAL and a
+#     block-comment regex swallows live code from there on. Regex cannot lex, and a
+#     FALSE POSITIVE reddens a green release gate — strictly worse than a missed one.
+#   * FALSE-NEGATIVE COST, stated: a dead symbol still named in a COMMENT resolves
+#     as live (e.g. the retired `SCOPE_ARCHIVE_EXISTS`). This does not defeat the
+#     three motivating cases — for all three, the surviving comment mention was
+#     introduced by the FIX commit, so while each anchor was dead-but-uncorrected
+#     the name had zero non-.md hits and this arm would have caught it.
+#
+# BREAKS: is OUT OF SCOPE by design — it describes historical breakage and
+# legitimately names dead symbols; sweeping it would red correct entries.
+if ! node - "$CLAUDE_PATH" "$EXTENSION_ROOT" "$REPO_ROOT" "$SUBSYSTEM_CATALOG_ROOT" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const { execFileSync } = require('child_process');
+
+const [, , primaryClaudePath, extensionRoot, repoRoot, subsystemCatalogRoot] = process.argv;
+
+// Same two-roots-one-rule discovery as the ENFORCE arm: a new subsystem catalog
+// enters the sweep the moment it lands, so this cannot drift behind the catalogs.
+function discoverCatalogs() {
+  const catalogs = [primaryClaudePath];
+
+  for (const [root, skipDir] of [[subsystemCatalogRoot, null], [repoRoot, 'extension']]) {
+    let entries;
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory() || entry.name === skipDir) continue;
+      const candidate = path.join(root, entry.name, 'CLAUDE.md');
+      if (fs.existsSync(candidate) && !catalogs.includes(candidate)) {
+        catalogs.push(candidate);
+      }
+    }
+  }
+
+  return catalogs;
+}
+
+// Clause terminators. This IS the catalog's authored grammar, not a guess about an
+// open world, and it FAILS LOUD: an unlisted label makes the INVARIANT clause
+// over-read into the next clause, which reds the gate where a human looks — the
+// opposite of the silent-miss failure an option enumeration produces.
+// TICKET_TRACEABILITY is listed because its body is backticked commit SHAs, which
+// are deliberately not symbols.
+const CLAUSE_TERMINATORS = ['INVARIANT', 'PATTERN_SHAPE', 'BREAKS', 'ENFORCE', 'TICKET_TRACEABILITY'];
+const CLAUSE_RE = new RegExp(
+  `INVARIANT:([\\s\\S]*?)(?=\\s(?:${CLAUSE_TERMINATORS.map((l) => `${l}:`).join('|')})|$)`,
+  'g'
+);
+const BACKTICKED_RE = /`([^`\n]+)`/g;
+const BARE_IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const WORD_RE = /[A-Za-z_$][A-Za-z0-9_$]*/g;
+
+// Entry grammar is the ENFORCE arm's: the line, plus every following line until one
+// starts a new entry ('- ') or a new section ('## ').
+function collectInvariantClauses(claudePath) {
+  const lines = fs.readFileSync(claudePath, 'utf8').split('\n');
+  const clauses = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes('INVARIANT:')) continue;
+
+    let entryText = lines[i];
+    let j = i + 1;
+    while (j < lines.length && !lines[j].startsWith('- ') && !lines[j].startsWith('## ')) {
+      entryText += '\n' + lines[j];
+      j++;
+    }
+
+    for (const match of entryText.matchAll(CLAUSE_RE)) {
+      clauses.push({ lineNum: i + 1, text: match[1] });
+    }
+  }
+
+  return clauses;
+}
+
+// maxBuffer is mandatory, not decorative: the 1 MB default was breached at 96b08eba
+// and turned a sibling whole-repo enumeration into `spawnSync git ENOBUFS`
+// (the 64 MB ceiling is the named trap door in src/services/CLAUDE.md).
+function buildSymbolCorpus() {
+  let tracked;
+  try {
+    tracked = execFileSync('git', ['ls-files', '-z'], {
+      encoding: 'utf8',
+      cwd: repoRoot,
+      timeout: 15000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (err) {
+    process.stderr.write(`INVARIANT: cannot enumerate tracked files: ${err.message}\n`);
+    process.exit(1);
+  }
+
+  const words = new Set();
+  let fileCount = 0;
+
+  for (const rel of tracked.split('\0')) {
+    if (!rel || rel.endsWith('.md')) continue;
+    let text;
+    try {
+      text = fs.readFileSync(path.join(repoRoot, rel), 'utf8');
+    } catch {
+      continue;
+    }
+    fileCount++;
+    for (const word of text.matchAll(WORD_RE)) words.add(word[0]);
+  }
+
+  return { words, fileCount };
+}
+
+const { words, fileCount } = buildSymbolCorpus();
+
+let failures = 0;
+let verified = 0;
+let nonIdentifierSpans = 0;
+const perCatalog = [];
+
+for (const claudePath of discoverCatalogs()) {
+  const label = path.relative(repoRoot, claudePath) || claudePath;
+  const clauses = collectInvariantClauses(claudePath);
+  let catalogCandidates = 0;
+
+  for (const { lineNum, text } of clauses) {
+    for (const span of text.matchAll(BACKTICKED_RE)) {
+      const candidate = span[1].trim();
+
+      if (!BARE_IDENTIFIER_RE.test(candidate)) {
+        nonIdentifierSpans++;
+        continue;
+      }
+
+      catalogCandidates++;
+
+      if (!words.has(candidate)) {
+        process.stderr.write(
+          `INVARIANT: ${label}:${lineNum}: names a symbol absent from the tree: ${candidate}\n`
+        );
+        failures++;
+        continue;
+      }
+
+      verified++;
+    }
+  }
+
+  perCatalog.push(`${label}=${catalogCandidates}`);
+}
+
+if (failures > 0) {
+  process.stderr.write(
+    `\n${failures} INVARIANT symbol reference(s) name a symbol absent from the tree.\n` +
+      'Fix the NAME to the live symbol, or — if the clause deliberately names an ABSENT ' +
+      'symbol — drop its backticks, which is what marks it as a liveness claim. ' +
+      'Do not weaken this arm to accommodate a bad anchor.\n'
+  );
+  process.exit(1);
+}
+
+console.log(
+  `audit-trap-door-enforcement: ${verified} INVARIANT symbol(s) verified across ` +
+    `${perCatalog.length} catalog(s) (${perCatalog.join(', ')}) ` +
+    `against ${words.size} symbols in ${fileCount} tracked file(s); ` +
+    `${nonIdentifierSpans} non-identifier span(s) not checked`
+);
+NODE
+then
+  audit_exit_code=1
+fi
+
 if ! node - "$SOURCE_CLAUDE_PATH" "$REPO_ROOT" <<'NODE'
 const fs = require('fs');
 const path = require('path');
