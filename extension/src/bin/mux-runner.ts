@@ -4015,6 +4015,7 @@ function prepareIterationRun(
 class IterationProcessController {
   private currentChild: import('child_process').ChildProcess | null = null;
   private didTimeout = false;
+  private exitDrainTimer: NodeJS.Timeout | null = null;
   private heartbeat: NodeJS.Timeout | null = null;
   private lastDataAt: number;
   private logFd = -1;
@@ -4044,7 +4045,13 @@ class IterationProcessController {
     }, (runtimeOverrides.maxIterationSeconds ?? Defaults.MAX_ITERATION_SECONDS) * 1000),
   ) {
     this.lastDataAt = this.start;
-    this.hangGuard.unref();
+    // Stays REF'D for the life of the iteration: this is the SOLE settle path when the
+    // manager subprocess wall-clock hangs (never exits, never errors) — nothing else calls
+    // `resolveTimeout`/`resolveOutcome` in that case. An `.unref()` here would make the
+    // guard's firing conditional on some UNRELATED handle happening to hold the loop open,
+    // exactly the failure class fixed in `5cce7f5d` (microverse-runner.ts) and `3b2c0205`
+    // (monitor.ts). `clearIterationGuards()` clears this on every settle path, so a healthy
+    // iteration releases the handle as soon as it settles and a ref'd timer costs nothing.
   }
 
   run(): Promise<IterationOutcome> {
@@ -4087,6 +4094,9 @@ class IterationProcessController {
         });
       } catch { /* best effort — never crash the manager turn */ }
     }, MANAGER_TURN_HEARTBEAT_POLL_MS);
+    // Pure telemetry: this interval never resolves/rejects the iteration promise, it only
+    // bumps the state-file mtime for staleness detection. Unref'd on purpose — a heartbeat
+    // that holds the loop open forever is itself a new hang, not a fix.
     this.heartbeat.unref();
   }
 
@@ -4113,11 +4123,17 @@ class IterationProcessController {
     proc.on('close', (code) => this.finalizeOnChildEnd(code));
     proc.on('exit', (code) => {
       if (this.settled) return;
-      const drainTimer = setTimeout(() => {
+      // SOLE settle path when `'close'` never follows `'exit'`: `'close'` requires both the
+      // process to have exited AND its stdio streams to have closed, and a grandchild that
+      // inherited the piped stdio can hold those streams open indefinitely after this child
+      // has already exited. Ref'd (not unref'd) so the fallback fires reliably rather than
+      // conditionally on some unrelated handle keeping the loop open. Stored as a field so
+      // `clearIterationGuards()` can clear it on every other settle path.
+      this.exitDrainTimer = setTimeout(() => {
+        this.exitDrainTimer = null;
         if (this.settled) return;
         this.finalizeOnChildEnd(code ?? null);
       }, this.prepared.exitDrainFallbackMs);
-      drainTimer.unref();
     });
     proc.on('error', (err) => {
       if (this.settled) return;
@@ -4145,12 +4161,21 @@ class IterationProcessController {
       clearInterval(this.heartbeat);
       this.heartbeat = null;
     }
+    if (this.exitDrainTimer) {
+      clearTimeout(this.exitDrainTimer);
+      this.exitDrainTimer = null;
+    }
   }
 
   private armOutputStallGuard(): void {
     if (this.settled) return;
     if (this.outputStallGuard) clearTimeout(this.outputStallGuard);
     const remainingMs = Math.max(1, (this.lastDataAt + this.outputStallGuardMs) - Date.now());
+    // Stays REF'D: this is the SOLE settle path for an output-stall hang (child alive, not
+    // exited, but silent past `outputStallGuardMs`) — nothing else calls `resolveTimeout` in
+    // that case. Cleared via `clearIterationGuards()` on every settle path and re-armed (which
+    // clears the prior timer first, see above) on every data chunk, so a healthy iteration
+    // never lets this timer accumulate.
     this.outputStallGuard = setTimeout(() => {
       if (this.settled) return;
       if ((Date.now() - this.lastDataAt) < this.outputStallGuardMs) {
@@ -4159,7 +4184,6 @@ class IterationProcessController {
       }
       this.resolveTimeout('output_stall');
     }, remainingMs);
-    this.outputStallGuard.unref();
   }
 
   private resolveTimeout(reason: NonNullable<IterationOutcome['stallReason']>): void {
@@ -4179,10 +4203,15 @@ class IterationProcessController {
       this.timeoutChildClosed = true;
       this.scheduleTimeoutResolutionFinish();
     });
+    // Stays REF'D: this is the drain phase's own backstop settle path. `resolveTimeout` has
+    // already fired (hangGuard/outputStallGuard), but finishing still needs the child to
+    // close AND both stdio streams to close — if SIGTERM below doesn't actually kill the
+    // child, or a grandchild holds stdio open, THIS timer is the sole remaining way to reach
+    // `finishTimeoutResolution` (`resolveOutcome`). Cleared unconditionally in
+    // `finishTimeoutResolution`.
     this.timeoutResolveTimer = setTimeout(() => {
       this.scheduleTimeoutResolutionFinish(true);
     }, 1500);
-    this.timeoutResolveTimer.unref();
     try { this.currentChild?.kill('SIGTERM'); } catch { /* already dead */ }
   }
 
@@ -4200,6 +4229,11 @@ class IterationProcessController {
     }
     const remainingMs = this.timeoutEarliestFinishAt - Date.now();
     if (remainingMs > 0) {
+      // Drain-after-settle: `this.settled` is already true by the time this timer exists
+      // (set in `resolveTimeout`), so the promise's OUTCOME is already decided — this is
+      // only an early-exit nicety inside a bounded ~150ms window. The hard backstop is the
+      // now-ref'd `timeoutResolveTimer` (1500ms), so if this timer fails to fire, resolution
+      // simply waits for that backstop instead of finishing early. Safe to leave unref'd.
       this.timeoutDrainTimer = setTimeout(() => {
         this.timeoutDrainTimer = null;
         this.scheduleTimeoutResolutionFinish(force);

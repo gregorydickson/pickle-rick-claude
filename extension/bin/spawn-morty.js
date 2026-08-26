@@ -1158,15 +1158,23 @@ async function runCommand(cmd, args, cwd, opts = {}) {
         child.stderr?.setEncoding('utf8');
         child.stdout?.on('data', chunk => stdoutChunks.push(chunk));
         child.stderr?.on('data', chunk => stderrChunks.push(chunk));
+        // Stays REF'D: this is the SOLE trigger that makes the eventual settle possible for a
+        // hung child. It does not resolve directly — settlement happens via `child.on('close')`
+        // below — but if this never fires, SIGTERM is never sent, and a genuinely hung child
+        // never produces `'close'` either. An `.unref()` here would make the whole settle chain
+        // conditional on some UNRELATED handle happening to hold the loop open. Cleared
+        // unconditionally in `finalize` on every settle path.
         const timeoutHandle = setTimeout(() => {
             timedOut = true;
             sigtermSent = killProcessTree(child, 'SIGTERM');
+            // Kill-grace: SIGKILL follow-up after the SIGTERM grace. Nothing awaits it directly —
+            // the promise resolves via `child.on('close')` regardless of whether SIGKILL is needed
+            // or whether this timer fires — so it is correctly left unref'd.
             killEscalation = setTimeout(() => {
                 sigkillSent = killProcessTree(child, 'SIGKILL');
             }, 2000);
             killEscalation.unref();
         }, timeoutMs);
-        timeoutHandle.unref();
         child.on('error', (error) => {
             const message = safeErrorMessage(error);
             finalize(null, null, message ? `${message}\n` : '');
@@ -2786,7 +2794,12 @@ function armWorkerTimeoutKill(ctx, proc) {
 }
 /**
  * Last-resort exit for a worker that outlives its budget plus the hang grace — the budget
- * timer's SIGTERM/SIGKILL has already failed by then. `unref()`'d so it never holds the loop open.
+ * timer's SIGTERM/SIGKILL has already failed by then. Stays REF'D: once that escalation has
+ * failed, neither `proc.on('error')` nor `proc.on('close')` will ever fire, so this is the
+ * SOLE remaining path to end `runWorkerProcess`'s returned promise — the worker-level twin of
+ * `mux-runner.ts`'s whole-iteration wall-clock hang guard. An `.unref()` here would make the
+ * forced exit conditional on some UNRELATED handle happening to hold the loop open. Cleared
+ * on both settle paths via `clearLifecycleTimers()`.
  */
 function armWorkerHangGuard(ctx) {
     const { ticketId, sessionRoot, sessionLog, sessionLogPath } = ctx;
@@ -2799,7 +2812,6 @@ function armWorkerHangGuard(ctx) {
         catch { /* best-effort */ }
         await flushAndExit(sessionLog, 1);
     }, ctx.effectiveTimeoutMs + HANG_GUARD_GRACE_MS);
-    hangGuard.unref();
     return hangGuard;
 }
 /**

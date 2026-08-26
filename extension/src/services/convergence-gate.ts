@@ -785,13 +785,18 @@ async function runCheckSubtree(
     child.on('error', () => { settleWith(1); });
     child.on('close', (code) => { settleWith(typeof code === 'number' ? code : 1); });
 
+    // Stays REF'D for the duration of the in-flight check: this is the SOLE settle path
+    // when the check's child hangs — it neither closes nor errors — so an `.unref()` here
+    // would make the timeout conditional on some UNRELATED handle happening to hold the
+    // loop open. `settle()` clears this timer on every settle path, so a healthy check
+    // releases the handle within microseconds of `'close'`/`'error'` and a ref'd timer
+    // costs nothing. Same ruling as `spawnWithClosedStdin` (microverse-runner.ts).
     const timer = setTimeout(() => {
       settle(() => {
         killCheckSubtree(child, 'SIGKILL');
         reject(new GateTimeoutError(check, timeout_ms));
       });
     }, timeout_ms);
-    timer.unref();
   });
 }
 

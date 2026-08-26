@@ -2262,6 +2262,9 @@ async function measureMetricAttempt(
 
     const timeoutHandle = setTimeout(() => {
       killMeasurement('SIGTERM');
+      // Kill-grace: SIGKILL follow-up after the SIGTERM grace. `finish()` below settles the
+      // promise SYNCHRONOUSLY in this same callback, before this timer even fires, so nothing
+      // awaits it — it is correctly left unref'd.
       killTimer = setTimeout(() => { killMeasurement('SIGKILL'); }, COMMAND_METRIC_KILL_GRACE_MS);
       if (typeof killTimer.unref === 'function') killTimer.unref();
       // Settle HERE, not from `'close'`. `'close'` waits for the process to exit AND for
