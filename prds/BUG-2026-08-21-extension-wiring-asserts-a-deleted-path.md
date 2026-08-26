@@ -1,3 +1,9 @@
+> **✅ SHIPPED 2026-08-25 in v2.1.0-beta.17 ([[B-CGSHIP]] ticket `4ddd677a`) — CLOSED.**
+> Re-verified at HEAD: `tests/integration/extension-wiring.test.js` → **rc=0, pass 8, fail 0**.
+> It now asserts the deployed `.pickle-managed` agent path rather than the deleted legacy copy, so it
+> passes AFTER running the installer — the test it was always meant to be, rather than one the
+> installer guaranteed to break. Second of the two inherited exemptions; both retired.
+
 # BUG-2026-08-21 (P2) — `extension-wiring` deploy smoke asserts the path the installer deletes
 
 ## Status

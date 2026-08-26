@@ -1,3 +1,20 @@
+> **⚠️ PARTIALLY VERIFIED 2026-08-25 — do NOT close yet.** [[B-CGSHIP]] landed both producer tickets
+> (`4329498d` disposable TMPDIR root at the test-runner seam, `bf1707fd` worker-backgrounding forbid +
+> judge `XDG_RUNTIME_DIR`).
+>
+> **Test-runner producer: VERIFIED FIXED.** `createDisposableTmpRoot()` is live at
+> `src/bin/test-runner.ts:339`, and a fresh post-deploy test run measured **delta = 0** new `pickle-*`
+> TMPDIR directories (1182 → 1182).
+>
+> **Microverse producer: NOT verified.** The newest leaked dirs are `pickle-mv-session-*` stamped
+> **17:54**, created while the pipeline was still running — and the fix reached the DEPLOYED runtime only
+> at **20:20** (source 11:37, deploy at install time). So those leaks are explained by the pre-fix
+> deployed runtime (R-PSRB), NOT by the fix failing. But the microverse path has not been exercised
+> post-deploy, because that requires a full pipeline run.
+>
+> **Close this only after the next pipeline run supplies post-deploy evidence.** Cumulative TMPDIR count
+> is NOT the oracle — old directories persist; the delta across a run is.
+
 # BUG-2026-08-22 (P1) — stop the tmpdir/process leak at its producers
 
 *(refined: requirements / codebase / risk-scope analysts, 3 cycles, session `2026-08-22-a1e33756`)*

@@ -1,3 +1,9 @@
+> **✅ SHIPPED 2026-08-25 in v2.1.0-beta.17 ([[B-CGSHIP]] ticket `942ab116`) — CLOSED.**
+> Re-verified at HEAD: `tests/install-bun-probe.test.js` → **rc=0, pass 5, fail 0** (was `fail 1`).
+> The probe now resolves bun via `command -v` instead of substring-matching PATH, plus a hang-guard
+> timeout on the `spawnSync`. This was one of the two standing inherited-failure exemptions; both are
+> now retired and the release gate is green with ZERO waived failures.
+
 > **⚠️ BLAST RADIUS IS WIDER THAN THIS PRD DESCRIBES — measured 2026-08-23 by the closer ticket of the
 > P0 MCP bundle (session `2026-08-23-6fa67c68`, ticket `ff010489`).** This PRD names 2 failing tests.
 > The measured count on this host is **~9**, and the extra ones fail for a second reason that matters

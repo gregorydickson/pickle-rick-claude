@@ -1,3 +1,10 @@
+> **✅ SHIPPED 2026-08-24 in v2.1.0-beta.16 (`3b2c0205`) — CLOSED.**
+> Re-verified at HEAD by MECHANISM, not by R-code: the `setTimeout` in `writeWithWatchdog`
+> (`src/bin/monitor.ts`) carries **no `.unref()`**, and the in-source comment states the contract —
+> *"Ref'd is what lets AC-SSV-07 hold — a wedged sink's watchdog must fire and reject rather than let
+> the event loop resolve out from under a still-pending write."* Refinement reclassified this from a
+> test-harness quirk to a live production bug in the monitor's wedge-escape path.
+
 # BUG 2026-08-24 — `monitor.test.js` cancellations under Node 22
 
 **Status:** Open
