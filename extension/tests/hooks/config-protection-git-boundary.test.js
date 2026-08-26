@@ -2895,3 +2895,178 @@ test('AP-EXT-ITER69-01 control: the entry guard still fires for dispatch argv, s
   assert.equal(result.decision, 'block');
   assert.match(result.reason, /R-WSRC-GR/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER70-01 — `eval` is bash's OTHER word-to-code construct
+//
+// `expandShellCommandStrings` unwrapped exactly one thing: the `-c` operand of a
+// shell wrapper. `eval` is the shell's other way of turning a WORD back into
+// CODE, and it is a BUILTIN — no binary, no PATH entry — so `isShellWrapper`'s
+// naming shape can never reach it and `shellCommandStringPayload` returns null
+// for every `eval` form. The payload is then ONE quoted token, which is the
+// AP-EXT-ITER63-06 failure mode exactly: a single missed unwrap hides the WHOLE
+// command from every detector at once.
+//
+// Measured 2026-08-26 against the shipped compiled hook: all 9 gated git verbs,
+// the `bash install.sh` ban, and BOTH R-WSRC-3 write gates (state.json and
+// pickle_settings.json, via `tee` and via a `>` redirect) APPROVED for a worker
+// behind `eval` while every byte-identical bare twin BLOCKED. Shim-verified on
+// this box: `eval "git reset --hard"`, `eval 'git stash'` and `eval "tee <f>"`
+// really do exec git / tee.
+//
+// The fix DECLARES the grammar rather than cataloguing carriers, which is the
+// AP-EXT-ITER66-01 move and not the AP-EXT-ITER10-01/12-01/18-01/19-01/54-01/
+// 63-01 incomplete-set shape: bash's word-to-code constructs are CLOSED by the
+// language — the `-c` operand and `eval`'s arguments. `source`/`.` take a FILE,
+// not a command string, and nothing can add a builtin to bash.
+//
+// RESIDUAL OPEN, deliberately NOT pinned as a test (the AP-EXT-ITER63-04
+// precedent — asserting a known hole `approve` would turn it into a contract):
+// a shell that reads its code from a FILE DESCRIPTOR rather than from a word —
+// `bash <<< '<cmd>'`, `echo '<cmd>' | sh`, `bash -s <<< '<cmd>'` — is a
+// different class and still approves. Reported in the catalog instead.
+//
+// Over-block cost, measured before shipping: 0 new blocks across 6216 unique
+// real worker Bash commands drawn from 11 prior sessions. The universal
+// alternative (expand EVERY quoted word) was measured at +111 of those 6216 —
+// mostly workers writing their own TASK_NOTES prose — and rejected for it.
+// ---------------------------------------------------------------------------
+
+const ITER70_01_EVAL_GIT = [
+  ['a double-quoted reset', 'eval "git reset --hard HEAD~1"'],
+  ['a single-quoted reset', "eval 'git reset --hard'"],
+  ['a push', 'eval "git push origin main"'],
+  ['a stash', 'eval "git stash"'],
+  ['a rebase', 'eval "git rebase main"'],
+  ['a checkout with a ref', 'eval "git checkout main"'],
+  ['a switch', 'eval "git switch main"'],
+  ['a commit --amend', 'eval "git commit --amend"'],
+  ['a pull', 'eval "git pull"'],
+  ['a fetch --prune', 'eval "git fetch --prune"'],
+  ['unquoted eval arguments joined by the builtin', 'eval git reset --hard'],
+  ['a command prefix before eval', 'env eval "git reset --hard"'],
+  ['a case-variant builtin name', 'EVAL "git reset --hard"'],
+  ['a quoted builtin name', '"eval" "git reset --hard"'],
+  ['eval in a chained segment', 'cd extension && eval "git reset --hard"'],
+  ['eval in a grouped segment', '(eval "git reset --hard")'],
+  ['eval inside a -c payload', 'bash -c \'eval "git reset --hard"\''],
+  ['a -c payload inside eval', 'eval "bash -c \'git reset --hard\'"'],
+  ['a chained payload whose reset is not the first word', 'eval "cd sub && git reset --hard"'],
+];
+
+for (const [label, command] of ITER70_01_EVAL_GIT) {
+  test(`AP-EXT-ITER70-01: worker blocks a prohibited git verb behind ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-WSRC-GR/);
+  });
+}
+
+test('AP-EXT-ITER70-01: worker blocks the deploy script behind eval', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'eval "bash install.sh"' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC/);
+});
+
+// Both R-WSRC-3 write gates, through both write constructs the walker knows:
+// the Pass 2 command anchor (`tee`) and the Pass 1 `>` redirect.
+for (const [label, build] of [
+  ['a tee destination', (dir) => `eval "tee ${path.join(dir, 'state.json')}"`],
+  ['a > redirect', (dir) => `eval 'echo x > ${path.join(dir, 'state.json')}'`],
+]) {
+  test(`AP-EXT-ITER70-01: worker blocks a state-file write behind eval via ${label}`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: build(sessionDir) },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', build(sessionDir));
+    assert.match(result.reason, /state file protected/i);
+  });
+}
+
+test('AP-EXT-ITER70-01: worker blocks a settings write behind eval', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `eval "tee ${path.join(tmpDir, 'pickle_settings.json')}"` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+});
+
+// Non-tautology twins. Without these the block cases above would pass under a
+// guard that blocks any command containing the four letters `eval`.
+const ITER70_01_APPROVED = [
+  ['a non-gated verb behind eval', 'eval "git status"'],
+  ['a read-only reference behind eval', 'eval "cat install.sh"'],
+  ['a read-only git log behind eval', 'eval "git log --oneline"'],
+  ['a benign payload behind eval', 'eval "echo hi"'],
+  ['eval standing in argument position', 'grep -rn eval src/'],
+  ['eval named inside a commit message', 'git commit -m "eval the reset later"'],
+  ['a bare eval with no arguments', 'eval'],
+  // The anchor is the WORD `eval`, folded through `execName` — not a substring
+  // scan. A JS `eval(...)` call inside a `-e` payload is a different word.
+  ['a javascript eval call in a -e payload', 'node -e "eval(\'1+1\')"'],
+];
+
+for (const [label, command] of ITER70_01_APPROVED) {
+  test(`AP-EXT-ITER70-01: ${label} stays approved`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', JSON.stringify(command));
+  });
+}
+
+// The seam itself, so a detector-level regression cannot be mistaken for a
+// segmentation one: `splitShellSegments` must surface the eval payload as its
+// own segment, wherever the builtin sits and however the payload is quoted.
+test('AP-EXT-ITER70-01: splitShellSegments surfaces the eval payload as its own segment', () => {
+  for (const command of [
+    'eval "git reset --hard"',
+    "eval 'git reset --hard'",
+    'eval git reset --hard',
+    'env eval "git reset --hard"',
+  ]) {
+    assert.ok(
+      splitShellSegments(command).includes('git reset --hard'),
+      `${command} -> ${JSON.stringify(splitShellSegments(command))}`,
+    );
+  }
+});
+
+// Shape pin (the catalog PATTERN_SHAPE): the builtin is located by the shared
+// ANCHOR and its payload is EVERY following token joined — never a positional
+// read and never "the first quoted token". `eval` concatenates its arguments
+// before re-parsing, so anything narrower splits `eval git reset --hard`.
+test('AP-EXT-ITER70-01: evalBuiltinPayload anchors and joins, with no positional read', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
+    'utf-8',
+  );
+  const body = source.match(/function evalBuiltinPayload\(segment: string\): string \| null \{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(body, 'evalBuiltinPayload must remain a single named function');
+  assert.match(body, /execAnchorIndex\(tokens, 'eval'\)/);
+  assert.match(body, /tokens\.slice\(anchor \+ 1\)[\s\S]*\.join\(' '\)/);
+  assert.doesNotMatch(body, /execTokenIndex|skipEnvAssignments|\.quoted/);
+});

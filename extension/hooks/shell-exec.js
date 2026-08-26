@@ -391,10 +391,12 @@ const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
  * Over-segmentation is fail-safe: detectors match only prohibited verbs /
  * `install.sh` / the `commit` subcommand, so benign chained commands still pass.
  *
- * Finally, a `bash -c '<cmd>'` / `sh -lc "<cmd>"` payload is itself expanded
- * into segments (`expandShellCommandStrings`). The quote-preserving tokenizer
- * keeps `<cmd>` as ONE token, so without the unwrap the only executable a
- * detector ever sees is the `-c` FLAG.
+ * Finally, every command string bash will re-parse as CODE is itself expanded
+ * into segments (`expandShellCommandStrings`): a `bash -c '<cmd>'` / `sh -lc
+ * "<cmd>"` payload, and the arguments of the `eval` builtin (`eval "<cmd>"`).
+ * The quote-preserving tokenizer keeps `<cmd>` as ONE token, so without the
+ * unwrap the only executable a detector ever sees is the `-c` FLAG — or, for
+ * `eval`, the builtin's own name (AP-EXT-ITER70-01).
  *
  * ONE home for the split so the handlers cannot re-fork: config-protection and
  * tsc-gate each carried a private near-identical copy and DID drift —
@@ -526,9 +528,53 @@ function shellCommandStringPayload(segment) {
     return null;
 }
 /**
- * Appends each `-c` payload's own segments after the wrapper segment. The
- * wrapper is KEPT (fail-safe: never removes a segment a detector already saw),
- * so `bash install.sh` — which carries no `-c` — is untouched.
+ * The command string bash's `eval` builtin will re-parse and run, or null when
+ * the segment carries no `eval`.
+ *
+ * `-c` is not the only place a bash WORD becomes CODE. `eval` is the shell's
+ * other one, and it is a BUILTIN — no binary, no PATH lookup, nothing to
+ * install — so `isShellWrapper`'s naming shape can never reach it and
+ * `shellCommandStringPayload` returns null for every `eval` form. The payload is
+ * then ONE quoted token, which is exactly the AP-EXT-ITER63-06 failure mode: a
+ * single missed unwrap hides the WHOLE command from every detector at once.
+ * Measured 2026-08-26 against the shipped mirror — `eval "git reset --hard"` and
+ * all 9 gated verbs, `eval "bash install.sh"`, `eval "tee <session>/state.json"`,
+ * `eval 'echo x > <session>/state.json'` and `eval "tee <root>/pickle_settings.json"`
+ * ALL APPROVED for a worker while their byte-identical bare twins blocked
+ * (shim-verified: the eval forms really exec git / tee).
+ *
+ * Bash's word-to-code constructs are a CLOSED set fixed by the language — the
+ * `-c` operand of a shell and the arguments of `eval` — which is why declaring
+ * them is a grammar declaration (the AP-EXT-ITER66-01 move) and NOT the
+ * open-ended carrier catalog the module keeps refusing: `source`/`.` take a
+ * FILE, and a shell reading code from a fd (`bash <<< '<cmd>'`, `… | sh`) takes
+ * it as DATA on stdin, never as a word. That fd family is a DIFFERENT class and
+ * stays open — see the AP-EXT-ITER70-01 trap door's RESIDUAL.
+ *
+ * The anchor is the shared `execAnchorIndex`, so `eval` is located wherever it
+ * sits (`env eval "git reset --hard"` blocks) and quoting cannot demote it —
+ * the same one uniform test AP-EXT-ITER64-01 collapsed the git chain onto.
+ * ALL following tokens join with a space because that IS `eval`'s contract: it
+ * concatenates its arguments and re-parses the result, so `eval git reset` and
+ * `eval "git reset"` are the same command and must fold to the same payload.
+ * Over-reach is fail-safe in this module's established direction: an `eval`
+ * standing in argument position (`grep eval file`) yields one extra benign
+ * segment to scan, never a lost block (measured: 0 new blocks over 6216 real
+ * worker commands from 11 prior sessions).
+ */
+function evalBuiltinPayload(segment) {
+    const tokens = tokenizeShellTokens(segment);
+    const anchor = execAnchorIndex(tokens, 'eval');
+    if (anchor < 0 || anchor === tokens.length - 1)
+        return null;
+    return tokens.slice(anchor + 1).map((token) => token.value).join(' ');
+}
+/**
+ * Appends each command-string payload's own segments after the segment that
+ * carries it — the `-c` operand of a shell wrapper, and the arguments of the
+ * `eval` builtin. The carrying segment is KEPT (fail-safe: never removes a
+ * segment a detector already saw), so `bash install.sh` — which carries
+ * neither — is untouched.
  */
 function expandShellCommandStrings(segments, depth) {
     if (depth >= MAX_SHELL_COMMAND_STRING_DEPTH)
@@ -536,9 +582,10 @@ function expandShellCommandStrings(segments, depth) {
     const expanded = [];
     for (const segment of segments) {
         expanded.push(segment);
-        const payload = shellCommandStringPayload(segment);
-        if (payload !== null)
-            expanded.push(...splitShellSegments(payload, depth + 1));
+        for (const payload of [evalBuiltinPayload(segment), shellCommandStringPayload(segment)]) {
+            if (payload !== null)
+                expanded.push(...splitShellSegments(payload, depth + 1));
+        }
     }
     return expanded;
 }
