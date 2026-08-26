@@ -192,6 +192,7 @@ When writing acceptance criteria or analyzing PRD sections that reference activi
 | \`manager_max_turns_relaunch\` | \`backend\`, \`relaunch_count\`, \`cap\`, \`pending_count\`, \`last_ticket_seen\` | manager-relaunch Claude max-turn relaunch path |
 | \`anatomy_park_empty_scope_skip\` | \`session\`, \`gate_payload.in_scope_paths\`, \`gate_payload.discovered_subsystems\` | pipeline-runner resolveAnatomySubsystems empty-scope skip |
 | \`szechuan_sauce_empty_scope_skip\` | \`session\`, \`gate_payload.in_scope_paths\` | pipeline-runner setupSzechuanSauce code-free-scope skip |
+| \`phase_cap_dropped_tickets\` | \`session\`, \`phase\`, \`gate_payload.dropped_ticket_ids\`, \`gate_payload.dropped_count\`, \`gate_payload.done_count\`, \`gate_payload.ticket_count\` | pipeline-runner capDroppedTicketsReported — pickle exhausted its iteration cap with tickets unbuilt (report + disposition, never a halt) |
 | \`resolver_indeterminate\` | \`session\`, \`gate_payload.wall_ms\`, \`gate_payload.budget_ms\`, \`gate_payload.phase\` | check-readiness runReadiness over-wall-budget resolver path (warn, non-blocking) |
 | \`readiness_false_positive_suppressed\` | \`session\`, \`gate_payload.suppressed_count\`, \`gate_payload.suppressed\` | check-readiness runReadiness — a prior blocking finding absent on re-run (observability, non-blocking) |
 

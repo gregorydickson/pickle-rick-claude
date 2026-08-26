@@ -3709,6 +3709,28 @@ function writeFinalPipelineActivity(
 const UNFINISHED_TICKETS_PRINT_CAP = 50;
 
 /**
+ * AC-V4 (dc205237): the named disposition recorded in `phaseDispositions` when the
+ * pickle phase exhausts its iteration cap with tickets still unbuilt. Mirrors the
+ * existing `done_over_red_worker_gate_tests:<ids>` shape — a name, a colon, the
+ * comma-joined ticket ids — so `pipeline-status.json` readers get one vocabulary.
+ */
+const CAP_DROPPED_DISPOSITION = 'tickets_dropped_at_cap';
+
+/**
+ * Append a disposition marker to `phaseDispositions[phase]`, preserving any marker a
+ * prior gate already recorded for the same phase. Two gates can legitimately fire on
+ * one phase (a degraded post-final verdict AND a cap-dropped ticket), and a bare
+ * assignment would silently drop whichever ran first — so the ONE append policy lives
+ * here rather than being restated at each call site. The overwrite sites elsewhere in
+ * this file are deliberate: they record a phase's single terminal reason, not an
+ * accumulating list.
+ */
+function appendPhaseDisposition(counters: PhaseCounters, phase: PhaseName, marker: string): void {
+  const prior = counters.phaseDispositions[phase];
+  counters.phaseDispositions[phase] = prior ? `${prior}; ${marker}` : marker;
+}
+
+/**
  * Report unfinished tickets when a phase exits with PhaseIncomplete (3).
  * Walks `<session>/<hash>/rick_ticket_<hash>.md`, prints non-Done entries
  * sorted by `order` ascending, capped at UNFINISHED_TICKETS_PRINT_CAP.
@@ -3908,6 +3930,70 @@ function pipelineBundleScan(runtime: PipelineRuntime): GraduationCounts | null {
 }
 
 /**
+ * AC-V4 (dc205237): the pickle phase can exit with tickets still unbuilt for many
+ * reasons, and until now every one of them was reported with the same word —
+ * "incomplete". A ticket DROPPED because the phase exhausted its iteration cap is a
+ * different measurement from a ticket pending for a milder reason, and a reader of a
+ * finished 4/4 pipeline could never tell the two apart. This names the first one.
+ *
+ * Returns TRUE when it took ownership of the report (caller then suppresses the
+ * generic line); FALSE means fall through to today's message unchanged.
+ *
+ * THIS IS A DISPOSITION PLUS A REPORT, NEVER A GATE. It records
+ * `phaseDispositions` (which reaches `pipeline-status.json` via the terminal write),
+ * logs a distinct line and emits one activity event carrying the dropped ticket ids.
+ * It stamps no `exit_reason`, adds no abort condition and cannot break the phase
+ * loop — the caller's `{ action: 'continue', phaseIncomplete: true }` is untouched.
+ *
+ * Observable: `state.exit_reason === 'iteration_cap_exhausted'`, the literal BOTH
+ * mux-runner cap exits write (per-ticket tier budget `mux-runner.ts:11228`, global
+ * `max_iterations` `:11236`), and the same literal `reportPhaseIncomplete` already
+ * trusts to make this same distinction — so this adds no second observable to keep
+ * in sync. Exit code 3 was rejected: it is the GENERIC `PhaseIncomplete` channel and
+ * `resolvePhaseIncompleteOutcome` diverts it before `finalizePhaseSuccess` ever
+ * reaches here, so it is not merely weaker but usually unavailable at this seam.
+ * Must run BEFORE `reportPhaseIncomplete`, which overwrites `exit_reason` with
+ * `pipeline_phase_incomplete`.
+ *
+ * Fails toward the generic message on every uncertainty (unreadable state, a
+ * different exit_reason, no resolvable ids). A false negative degrades to today's
+ * behaviour; it cannot raise a false alarm.
+ */
+function capDroppedTicketsReported(
+  runtime: PipelineRuntime,
+  rawPhase: PhaseName,
+  counters: PhaseCounters,
+  progress: ReturnType<typeof collectPicklePhaseProgress>,
+  log: (msg: string) => void,
+): boolean {
+  try {
+    if (sm.read(runtime.statePath).exit_reason !== 'iteration_cap_exhausted') return false;
+  } catch { return false; }
+  // Only pay the oracle/git cost of resolveUnfinishedTickets on the cap path.
+  const ids = resolveUnfinishedTickets(runtime, collectTickets(runtime.sessionDir))
+    .map(t => t.id)
+    .filter((id): id is string => Boolean(id));
+  if (ids.length === 0) return false;
+  appendPhaseDisposition(counters, rawPhase, `${CAP_DROPPED_DISPOSITION}:${ids.join(',')}`);
+  log(`Phase ${rawPhase} hit its iteration cap with ${ids.length}/${progress.ticketCount} ticket(s) never built (${progress.doneCount} Done) — dropped at cap: ${ids.join(', ')} — reporting phase incomplete, advancing`);
+  // `logActivity` is best-effort and never throws (see emitParkedTicketResidualEvents),
+  // so a redundant try/catch here would add a state without removing an ambiguity.
+  logActivity({
+    event: 'phase_cap_dropped_tickets',
+    source: 'pickle',
+    session: path.basename(runtime.sessionDir),
+    phase: rawPhase,
+    gate_payload: {
+      dropped_ticket_ids: ids,
+      dropped_count: ids.length,
+      done_count: progress.doneCount,
+      ticket_count: progress.ticketCount,
+    },
+  });
+  return true;
+}
+
+/**
  * B-GROUND2 WS1 (R-DPMC-2 fix): the ONE proportional graduation gate the
  * pickle phase-exit path delegates to. Collapses the three former guards
  * (`maybeStampPhaseNoProgress` 0-Done/0-commit, `maybeStampPhaseIncompleteTickets`
@@ -3940,6 +4026,7 @@ function maybeStampPhaseGraduation(
   runtime: PipelineRuntime,
   rawPhase: PhaseName,
   _exitCode: number,
+  counters: PhaseCounters,
   log: (msg: string) => void,
 ): PhaseIterationOutcome | null {
   if (rawPhase !== 'pickle') { return null; }
@@ -3963,7 +4050,10 @@ function maybeStampPhaseGraduation(
     emitParkedTicketResidualEvents(runtime, rawPhase, resolveUnfinishedTickets(runtime, collectTickets(runtime.sessionDir)));
     return { action: 'continue', phaseIncomplete: true };
   }
-  log(`Phase ${rawPhase} exited but ${progress.pendingCount}/${progress.ticketCount} tickets remain pending (${progress.doneCount} Done) — not all-tickets-terminal, reporting phase incomplete, advancing`);
+  // AC-V4: name the cap-drop distinctly; every milder cause keeps today's message.
+  if (!capDroppedTicketsReported(runtime, rawPhase, counters, progress, log)) {
+    log(`Phase ${rawPhase} exited but ${progress.pendingCount}/${progress.ticketCount} tickets remain pending (${progress.doneCount} Done) — not all-tickets-terminal, reporting phase incomplete, advancing`);
+  }
   reportPhaseIncomplete(runtime, rawPhase);
   return { action: 'continue', phaseIncomplete: true };
 }
@@ -4799,8 +4889,7 @@ function withholdForDegradedPostFinalVerdict(
   if (!verdict) return;
   counters.nonConvergent += 1;
   const marker = `${POST_FINAL_DEGRADED_MARKER}:${verdict.state}`;
-  const prior = counters.phaseDispositions[rawPhase];
-  counters.phaseDispositions[rawPhase] = prior ? `${prior}; ${marker}` : marker;
+  appendPhaseDisposition(counters, rawPhase, marker);
   const detail = verdict.dimensions.length > 0 ? ` — ${verdict.dimensions.join(', ')}` : '';
   log(`Phase ${rawPhase}: ${marker} — withholding success verdict${detail}`);
   try { writeRunningStatus(runtime, counters, null); } catch { /* non-blocking */ }
@@ -4828,7 +4917,7 @@ export function finalizePhaseSuccess(
   // B-GROUND2 WS1: the single proportional graduation gate (R-DPMC-2 fix). Runs
   // on ALL exit codes — the former three guards' `exitCode !== 0` early-return
   // let a breaker/error pickle exit silently graduate with pending tickets.
-  const graduationBreak = maybeStampPhaseGraduation(runtime, rawPhase, exitCode, log);
+  const graduationBreak = maybeStampPhaseGraduation(runtime, rawPhase, exitCode, counters, log);
   if (graduationBreak) { return graduationBreak; }
   // WS-B (f8559470): the pickle phase graduated, but ≥1 ticket flipped Done over a
   // red worker_gate_tests_verdict. The run STILL executes every remaining phase

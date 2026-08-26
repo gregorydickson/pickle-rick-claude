@@ -1346,6 +1346,27 @@
         }
       }
     },
+    "phase_cap_dropped_tickets": {
+      "type": "object",
+      "required": ["event", "ts", "session", "gate_payload"],
+      "properties": {
+        "event": { "type": "string", "const": "phase_cap_dropped_tickets" },
+        "ts": { "type": "string" },
+        "session": { "type": "string" },
+        "source": { "type": "string" },
+        "phase": { "type": "string" },
+        "gate_payload": {
+          "type": "object",
+          "required": ["dropped_ticket_ids"],
+          "properties": {
+            "dropped_ticket_ids": { "type": "array", "items": { "type": "string" } },
+            "dropped_count": { "type": "number" },
+            "done_count": { "type": "number" },
+            "ticket_count": { "type": "number" }
+          }
+        }
+      }
+    },
     "ticket_preskipped_already_terminal": {
       "type": "object",
       "required": ["event", "ts", "ticket_id", "gate_payload"],
@@ -1998,6 +2019,7 @@
     { "$ref": "#/definitions/install_sh_override_used" },
     { "$ref": "#/definitions/anatomy_park_empty_scope_skip" },
     { "$ref": "#/definitions/szechuan_sauce_empty_scope_skip" },
+    { "$ref": "#/definitions/phase_cap_dropped_tickets" },
     { "$ref": "#/definitions/monitor_respawn_session_dir_invalid" },
     { "$ref": "#/definitions/spawn_morty_invalid_ticket_path" },
     { "$ref": "#/definitions/ticket_preskipped_already_terminal" },

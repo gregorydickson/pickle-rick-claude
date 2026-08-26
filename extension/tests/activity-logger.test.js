@@ -210,6 +210,8 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'anatomy_park_non_convergent_halt',
         'anatomy_park_complexity_regression',
         'szechuan_sauce_empty_scope_skip',
+        // AC-V4 (dc205237): pickle exhausted its iteration cap with tickets unbuilt.
+        'phase_cap_dropped_tickets',
         'pipeline_all_backends_exhausted_recovery_attempted',
         'paused_session_orphan_precleaned',
         'spawn_morty_invalid_ticket_path',

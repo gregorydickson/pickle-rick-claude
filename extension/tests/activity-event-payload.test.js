@@ -1358,6 +1358,8 @@ test('activity-event-payload: schema defines all registered event type definitio
     'state_write_schema_version_violation',
     'anatomy_park_empty_scope_skip',
     'szechuan_sauce_empty_scope_skip',
+    // AC-V4 (dc205237): cap-dropped-ticket disposition event.
+    'phase_cap_dropped_tickets',
     'pipeline_all_backends_exhausted_recovery_attempted',
     'monitor_respawn_session_dir_invalid',
     'spawn_morty_invalid_ticket_path',

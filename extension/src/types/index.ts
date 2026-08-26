@@ -822,6 +822,11 @@ export const VALID_ACTIVITY_EVENTS = [
   'install_sh_override_used',
   'anatomy_park_empty_scope_skip',
   'szechuan_sauce_empty_scope_skip',
+  // AC-V4 (dc205237): the pickle phase exhausted its iteration cap with tickets
+  // still unbuilt. Distinct from the generic `pipeline_phase_incomplete` report —
+  // it NAMES the cap and carries the dropped ticket ids. A disposition + a report,
+  // never a gate: the phase still advances (`action: 'continue'`).
+  'phase_cap_dropped_tickets',
   // B-APNC WS-1: a subsystem ran N passes (default 8, env
   // PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN) without a single clean pass — the runner
   // halts-and-reports it as non-convergent instead of grinding to the iteration cap.
