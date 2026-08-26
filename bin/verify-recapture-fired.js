@@ -220,11 +220,17 @@ export function verifyRecaptureFired(sessionRoot) {
   const activityFiles = listActivityFiles(activityDir);
   const latestWindow = latestAnatomyWindow(state.history);
   const windows = latestWindow ? [latestWindow] : [];
-  const activity = activityFiles === null
+  // With no anatomy window the verdict is `phase-window-missing`, decided by state.history
+  // alone — no activity event can change it. Reading anyway passed NaN as the day bound, which
+  // DISABLES it (`Number.isFinite` above), so the failure path scanned every retained activity
+  // file: measured 7 files / 381,795 events / 1358MB heap / 3.4s on a six-day host, growing
+  // without bound. Skip the read; `activity_count: null` then reports honestly that nothing was
+  // measured, exactly as the activity-missing arm already does.
+  const activity = activityFiles === null || latestWindow === null
     ? null
-    : readActivityEventsSince(activityDir, activityFiles, latestWindow ? latestWindow.start : NaN);
+    : readActivityEventsSince(activityDir, activityFiles, latestWindow.start);
   const matchingEvent = activity ? findMatchingEvent(activity, windows, sessionName) : null;
-  const failureReason = activity === null
+  const failureReason = activityFiles === null
     ? 'activity-missing'
     : windows.length === 0
       ? 'phase-window-missing'

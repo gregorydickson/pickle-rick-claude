@@ -845,3 +845,77 @@ test('scope.json orphan tmp: an equal-mtime dead tmp is promoted over a readable
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// AP-BIN-ITER16-01. `phase-window-missing` is settled by state.history alone, but the verifier
+// used to scan the activity log first anyway — and it passed `NaN` as the day bound, which
+// DISABLES the bound, so the FAILURE path read every retained activity file on the host
+// (measured: 7 files / 381,795 events / 1358MB heap / 3.4s after six days). The A/B below is one
+// fixture with four events split across two days; only the anatomy-park marker changes.
+//   no window -> activity_count null   (nothing was read, and the artifact says so)
+//   window    -> activity_count 2      (read, and the pre-window DAY was bounded out of the scan)
+// Reverting the guard reddens the first half with `activity_count: 4` — the two pre-window-day
+// events reappear, which is the unbounded scan showing itself. The second half is what stops the
+// pin decaying into "the count is always null".
+const PRE_WINDOW_DAY_TS = '2026-04-29T12:00:00.000Z'; // ~47h before the window: earlier local day in every TZ
+test('verify-recapture.no anatomy window skips the activity scan instead of reading every retained day', () => {
+  const session = makeSession(baseState([
+    { step: 'pickle', timestamp: '2026-05-02T10:00:00.000Z' },
+    { step: 'szechuan-sauce', timestamp: '2026-05-02T12:00:00.000Z' },
+  ]));
+  const dataRoot = makeDataRoot();
+  const sessionName = path.basename(session);
+  try {
+    writeActivityEvents(dataRoot, [
+      recaptureEvent(sessionName, { ts: PRE_WINDOW_DAY_TS, iteration: 1 }),
+      { ts: PRE_WINDOW_DAY_TS, event: 'iteration_start', source: 'pickle', session: sessionName },
+      recaptureEvent(sessionName),
+      { ts: '2026-05-02T11:20:00.000Z', event: 'iteration_start', source: 'pickle', session: sessionName },
+    ]);
+
+    const noWindow = runVerifier(session, dataRoot);
+    assert.equal(noWindow.status, 1);
+    assert.equal(noWindow.runtimeArtifact.failure_reason, 'phase-window-missing');
+    assert.equal(
+      noWindow.runtimeArtifact.evidence.activity_count,
+      null,
+      'a verdict fixed by state.history must not scan the activity log at all',
+    );
+
+    // Same session, same four events — only the anatomy-park marker is restored.
+    writeFileSync(
+      path.join(session, 'state.json'),
+      `${JSON.stringify(baseState(HISTORY_WINDOW_HIT), null, 2)}\n`,
+    );
+    const withWindow = runVerifier(session, dataRoot);
+    assert.equal(withWindow.status, 0, withWindow.stderr);
+    assert.equal(withWindow.runtimeArtifact.pass, true);
+    assert.equal(
+      withWindow.runtimeArtifact.evidence.activity_count,
+      2,
+      'the windowed scan reads the window day only — the pre-window day stays bounded out',
+    );
+  } finally {
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+// The activity-missing arm outranks phase-window-missing, and the guard above rewrote the
+// predicate that decides that order (`activity === null` -> `activityFiles === null`). With both
+// inputs absent at once the old expression would now read `activity === null` as activity-missing
+// for a session whose real defect is the missing phase marker, so pin the cell directly.
+test('verify-recapture.absent activity dir still outranks a missing anatomy window', () => {
+  const session = makeSession(baseState([
+    { step: 'pickle', timestamp: '2026-05-02T10:00:00.000Z' },
+  ]));
+  const dataRoot = makeDataRoot();
+  try {
+    const result = runVerifier(session, dataRoot);
+    assert.equal(result.status, 1);
+    assert.equal(result.runtimeArtifact.failure_reason, 'activity-missing');
+    assert.deepEqual(result.runtimeArtifact.evidence.anatomy_windows, []);
+  } finally {
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
