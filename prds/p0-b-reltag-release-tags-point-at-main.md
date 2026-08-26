@@ -62,6 +62,43 @@ comparing spelling instead of commit identity (closed in beta.17), applied to th
 - **AC-R6 (report-only, non-gating)** No new halt path (PRIME DIRECTIVE). AC-R1 refuses a LOCAL
   action — this build — and does not add an abort condition to the pipeline runtime.
 
+
+## ✅ AC-R1's PREMISE VALIDATED ON A LIVE RUN — and the next layer is now MEASURED (2026-08-26)
+
+`v2.1.0-beta.18` was the first release tagged with an explicit `--target`, verified BY COMPARISON
+(expected `62e51b6b`, actual `62e51b6b`, match) rather than by existence. **CI built the right tree for
+the first time since April** — its log reads `pickle-rick-scripts@2.1.0-beta.18`, not the
+`2.0.0-beta.47` that every prior run reported. The wrong-tree cause is confirmed and closed by procedure.
+
+**The run still failed, and the reason is now KNOWN rather than unscopeable:**
+
+```
+# tests 662   # pass 652   # fail 0   # cancelled 7   # skipped 3
+##[error]Process completed with exit code 1
+```
+
+**`fail 0`. It fails on CANCELLATIONS.** The `#` summary prefix (not `ℹ`) confirms CI is on the **Node 22**
+line; the cancelled cases carry `failureType: 'cancelledByParent'` and cluster in the judge-spawn async
+paths (`async path: hang × 4 → SIGTERM → JudgeMeasurementTimeout`, `probe ok, measurement ENOENT →
+judge_cli_missing`, `primary timeout → fallback engaged`, `all 4 attempts fail after fallback`).
+
+**The same tier on Node 24 locally: `662 tests, pass 662, fail 0, cancelled 0`.** So this is the Node-22
+cancellation class again — the one `BUG-2026-08-21` chased and `beta.14` resolved by aligning DOWN to
+`22.x`, and which `beta.16` then fixed AT SOURCE for `monitor.ts` by keeping a watchdog timer ref'd.
+These seven are a DIFFERENT set, in the judge-spawn async paths.
+
+**This retires the PRD's own non-goal.** It said *"Fixing whatever CI failures remain once it builds the
+RIGHT tree ... cannot be scoped honestly before then."* They can now: **seven `cancelledByParent`
+cancellations in the judge-spawn async paths under Node 22.**
+
+- **AC-R7** The seven Node-22 cancellations are fixed AT SOURCE (the async lifecycle in the judge-spawn
+  paths), not by re-pinning around them. `beta.16` proved this is tractable: the `monitor.ts` case was a
+  real production wedge-escape defect, not a harness quirk, and the same question must be asked here —
+  does an unref'd/unawaited handle let the loop resolve out from under a pending promise?
+- **AC-R8** The release workflow reaches a GREEN verdict on a tag. Not "the tier is green locally" —
+  the workflow itself, on the tag, on CI's Node line. That is the only evidence that the four-month
+  outage is over.
+
 ## Non-goals
 
 - Merging `release/v2.1-beta` into `main`, or changing the branching model. That is a separate decision
