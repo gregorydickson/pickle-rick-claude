@@ -162,7 +162,7 @@ test('install-agent-overlay: with no sha256 tool, an unchanged legacy agent stil
   const { dir, scriptDir, homeDir, scriptPath } = makeFixture();
   try {
     const { legacyPath } = writeSourceAndLegacy(scriptDir, homeDir, 'morty-implementer.md', 'canonical body\n');
-    const result = spawnSync('bash', [withoutSha256(scriptPath)], { cwd: dir, env: { ...process.env, HOME: homeDir }, encoding: 'utf8' });
+    const result = spawnSync('bash', [withoutSha256(scriptPath)], { cwd: dir, env: { ...process.env, HOME: homeDir }, encoding: 'utf8', timeout: 30_000 });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(existsSync(legacyPath), false, 'size+mtime fallback must still migrate unchanged installer output');
     assert.equal(
@@ -181,7 +181,7 @@ test('install-agent-overlay: with no sha256 tool, a superseded version is preser
     // the manifest recognises it and migrates; without one there is nothing to consult, so
     // the documented failure direction is under-migrate -- preserve the user's file.
     const { legacyPath } = writeSourceAndLegacy(scriptDir, homeDir, 'morty-reviewer.md', 'new shipped body\n', 'older shipped body\n');
-    const result = spawnSync('bash', [withoutSha256(scriptPath)], { cwd: dir, env: { ...process.env, HOME: homeDir }, encoding: 'utf8' });
+    const result = spawnSync('bash', [withoutSha256(scriptPath)], { cwd: dir, env: { ...process.env, HOME: homeDir }, encoding: 'utf8', timeout: 30_000 });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(legacyPath, 'utf8'), 'older shipped body\n', 'fallback must under-migrate rather than delete');
     // NOTE: the fixture paraphrases the installer's messages ("legacy conflict" vs
