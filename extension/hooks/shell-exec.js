@@ -393,10 +393,12 @@ const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
  *
  * Finally, every command string bash will re-parse as CODE is itself expanded
  * into segments (`expandShellCommandStrings`): a `bash -c '<cmd>'` / `sh -lc
- * "<cmd>"` payload, and the arguments of the `eval` builtin (`eval "<cmd>"`).
+ * "<cmd>"` payload, the arguments of the `eval` builtin (`eval "<cmd>"`), and
+ * the operand of a here-string (`bash <<< '<cmd>'`, AP-EXT-ITER70-02).
  * The quote-preserving tokenizer keeps `<cmd>` as ONE token, so without the
  * unwrap the only executable a detector ever sees is the `-c` FLAG — or, for
- * `eval`, the builtin's own name (AP-EXT-ITER70-01).
+ * `eval`, the builtin's own name (AP-EXT-ITER70-01), or, for a here-string, the
+ * shell that will read it.
  *
  * ONE home for the split so the handlers cannot re-fork: config-protection and
  * tsc-gate each carried a private near-identical copy and DID drift —
@@ -544,11 +546,12 @@ function shellCommandStringPayload(segment) {
  * (shim-verified: the eval forms really exec git / tee).
  *
  * Bash's word-to-code constructs are a CLOSED set fixed by the language — the
- * `-c` operand of a shell and the arguments of `eval` — which is why declaring
- * them is a grammar declaration (the AP-EXT-ITER66-01 move) and NOT the
- * open-ended carrier catalog the module keeps refusing: `source`/`.` take a
- * FILE, and a shell reading code from a fd (`bash <<< '<cmd>'`, `… | sh`) takes
- * it as DATA on stdin, never as a word. That fd family is a DIFFERENT class and
+ * `-c` operand of a shell, the arguments of `eval`, and the operand of a
+ * here-string (`hereStringPayload`) — which is why declaring them is a grammar
+ * declaration (the AP-EXT-ITER66-01 move) and NOT the open-ended carrier catalog
+ * the module keeps refusing. `source`/`.` and `< file` take a FILE, and a
+ * pipeline's upstream hands the shell the OUTPUT of a program (`… | sh`), so
+ * neither leaves a word to unwrap; that fd-data family is a different class and
  * stays open — see the AP-EXT-ITER70-01 trap door's RESIDUAL.
  *
  * The anchor is the shared `execAnchorIndex`, so `eval` is located wherever it
@@ -570,11 +573,67 @@ function evalBuiltinPayload(segment) {
     return tokens.slice(anchor + 1).map((token) => token.value).join(' ');
 }
 /**
+ * A here-string redirection operator: `<<<`, optionally carrying the fd prefix
+ * bash allows on every redirect (`0<<<`). Matched against a token's folded
+ * VALUE, so the glued `<<<'<cmd>'` — one word to the tokenizer — is the same
+ * operator as the spaced form.
+ */
+const HERE_STRING_OPERATOR_RE = /^\d*<<</;
+/**
+ * The word a here-string hands to the command's standard input, or null when
+ * the segment carries no here-string.
+ *
+ * AP-EXT-ITER70-02. AP-EXT-ITER70-01 declared bash's word-to-code set as `-c`
+ * plus `eval` and filed the rest as a fd family whose code "arrives as DATA on
+ * stdin, never as a word". That boundary was drawn in the wrong place: a
+ * here-string's operand IS a word standing on the command line — bash merely
+ * spools it to fd 0 before the shell parses it — so it is recoverable by
+ * exactly the unwrap the other two constructs already get. Measured against the
+ * post-ITER70-01 shipped mirror: `bash <<< 'git reset --hard'`, its glued
+ * `bash <<<'…'` and fd-prefixed `bash 0<<<'…'` twins, `sh <<<`, `bash -s <<<`,
+ * `source /dev/stdin <<<` and `. /dev/stdin <<<` ALL APPROVED for a worker —
+ * git verbs, the `install.sh` ban and the R-WSRC-3 state-write gate alike —
+ * while every bare twin blocked (shim-verified: all six forms really exec git).
+ * A here-DOCUMENT was never in the family: its body is separated by newlines,
+ * which the segmenter already treats as a boundary, so it blocks today.
+ *
+ * The consumer is deliberately NOT tested. Asking "is the program reading this
+ * stdin a shell?" is the positional/naming question `execAnchorIndex` and
+ * `isShellWrapper` were each burned by — and here it needs a LIST, because
+ * `source`, `.` and `/dev/stdin` are not shell-interpreter names at all. Bash's
+ * ONE here-string operator is a closed grammar fact; the consumer set is not.
+ * Over-reach is fail-safe in the module's established direction: `cat <<< foo`
+ * yields one extra benign segment. Measured 2 new blocks over 6930 real worker
+ * commands from 12 prior sessions, both of them reviewer probe scripts whose
+ * TEXT contains `bash <<< 'git reset --hard'` — the same true-positive-in-prose
+ * cost heredoc bodies already pay, and 50x cheaper than the reject-every-quoted-
+ * word collapse ITER70-01 measured at +111.
+ *
+ * A quoted token can never be the operator: bash reads `"<<<x"` as data, the
+ * same asymmetry `foldShellWord` documents for `>`.
+ *
+ * Making `<<<` a SHELL_SEGMENT_SEPARATORS member instead was rejected: it would
+ * REPLACE the carrying segment's text rather than add to it, and every fix in
+ * this module rests on the unwrap being monotone — no command that blocked
+ * before can stop blocking now.
+ */
+function hereStringPayload(segment) {
+    const tokens = tokenizeShellTokens(segment);
+    for (let idx = 0; idx < tokens.length; idx++) {
+        const token = tokens[idx];
+        if (token.quoted || !HERE_STRING_OPERATOR_RE.test(token.value))
+            continue;
+        const glued = token.value.replace(HERE_STRING_OPERATOR_RE, '');
+        return glued.length > 0 ? glued : (tokens[idx + 1]?.value ?? null);
+    }
+    return null;
+}
+/**
  * Appends each command-string payload's own segments after the segment that
- * carries it — the `-c` operand of a shell wrapper, and the arguments of the
- * `eval` builtin. The carrying segment is KEPT (fail-safe: never removes a
- * segment a detector already saw), so `bash install.sh` — which carries
- * neither — is untouched.
+ * carries it — the `-c` operand of a shell wrapper, the arguments of the `eval`
+ * builtin, and the operand of a here-string. The carrying segment is KEPT
+ * (fail-safe: never removes a segment a detector already saw), so `bash
+ * install.sh` — which carries none of them — is untouched.
  */
 function expandShellCommandStrings(segments, depth) {
     if (depth >= MAX_SHELL_COMMAND_STRING_DEPTH)
@@ -582,7 +641,11 @@ function expandShellCommandStrings(segments, depth) {
     const expanded = [];
     for (const segment of segments) {
         expanded.push(segment);
-        for (const payload of [evalBuiltinPayload(segment), shellCommandStringPayload(segment)]) {
+        for (const payload of [
+            evalBuiltinPayload(segment),
+            shellCommandStringPayload(segment),
+            hereStringPayload(segment),
+        ]) {
             if (payload !== null)
                 expanded.push(...splitShellSegments(payload, depth + 1));
         }

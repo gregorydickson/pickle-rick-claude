@@ -3070,3 +3070,185 @@ test('AP-EXT-ITER70-01: evalBuiltinPayload anchors and joins, with no positional
   assert.match(body, /tokens\.slice\(anchor \+ 1\)[\s\S]*\.join\(' '\)/);
   assert.doesNotMatch(body, /execTokenIndex|skipEnvAssignments|\.quoted/);
 });
+
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER70-02 — a here-string's operand is a WORD, not fd data
+//
+// AP-EXT-ITER70-01 declared bash's word-to-code set as the `-c` operand plus
+// `eval`'s arguments, and filed everything else as a fd family whose code
+// "arrives as DATA on stdin, never as a word". The boundary was drawn in the
+// wrong place. A here-string's operand stands on the command line as an
+// ordinary word — bash only spools it to fd 0 before the shell parses it — so
+// it is recoverable by exactly the unwrap the other two constructs get.
+//
+// Measured against the post-ITER70-01 shipped mirror: every form below APPROVED
+// for a worker while its bare twin blocked, across all three gates (git verbs,
+// the install.sh ban, the R-WSRC-3 write gates). Shim-verified on this box: the
+// spaced, glued, fd-prefixed, `-s`, `source /dev/stdin` and `. /dev/stdin`
+// forms all really exec git.
+//
+// A here-DOCUMENT was never in this family — its body is newline-separated and
+// the segmenter already boundaries on newlines — which is why the heredoc
+// control below is a PRE-EXISTING pass, not a claim about this fix.
+//
+// The consumer is deliberately untested: `source`, `.` and `/dev/stdin` are not
+// shell-interpreter names, so asking "is the reader a shell?" needs a LIST.
+// Bash's one here-string operator is a closed grammar fact; the consumer set is
+// not.
+// ---------------------------------------------------------------------------
+
+const ITER70_02_HERESTRING_GIT = [
+  ['a spaced here-string', `bash <<< 'git reset --hard'`],
+  ['a glued here-string', `bash <<<'git reset --hard'`],
+  ['a double-quoted glued here-string', `bash <<<"git reset --hard"`],
+  ['an fd-prefixed here-string', `bash 0<<< 'git push origin main'`],
+  ['a non-bash shell', `zsh <<< 'git stash'`],
+  ['a stdin-reading -s shell', `bash -s <<< 'git rebase main'`],
+  ['the source builtin over /dev/stdin', `source /dev/stdin <<< 'git checkout main'`],
+  ['the dot builtin over /dev/stdin', `. /dev/stdin <<< 'git switch main'`],
+  ['a command prefix before the shell', `env bash <<< 'git commit --amend'`],
+  ['a here-string in a chained segment', `cd extension && bash <<< 'git pull'`],
+  ['a here-string in a grouped segment', `(bash <<< 'git fetch --prune')`],
+  ['a here-string inside a -c payload', `bash -c "bash <<< 'git reset --hard'"`],
+  ['a here-string inside eval', `eval "bash <<< 'git reset --hard'"`],
+  ['a chained payload whose verb is not the first word', `bash <<< 'cd sub && git reset --hard'`],
+];
+
+for (const [label, command] of ITER70_02_HERESTRING_GIT) {
+  test(`AP-EXT-ITER70-02: worker blocks a prohibited git verb behind ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-WSRC-GR/);
+  });
+}
+
+test('AP-EXT-ITER70-02: worker blocks the deploy script behind a here-string', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `bash <<< 'bash install.sh'` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC/);
+});
+
+// Both R-WSRC-3 write gates, through both write constructs the walker knows.
+for (const [label, build] of [
+  ['a tee destination', (dir) => `bash <<< 'tee ${path.join(dir, 'state.json')}'`],
+  ['a > redirect', (dir) => `bash <<< 'echo x > ${path.join(dir, 'state.json')}'`],
+]) {
+  test(`AP-EXT-ITER70-02: worker blocks a state-file write behind a here-string via ${label}`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: build(sessionDir) },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', build(sessionDir));
+    assert.match(result.reason, /state file protected/i);
+  });
+}
+
+test('AP-EXT-ITER70-02: worker blocks a settings write behind a here-string', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `bash <<< "tee ${path.join(tmpDir, 'pickle_settings.json')}"` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+});
+
+// Pre-existing control, NOT a claim about this fix: a here-DOCUMENT body is
+// newline-separated, so the segmenter surfaced it before this pass and must
+// keep doing so. If this ever reds, the newline boundary broke, not the
+// here-string unwrap.
+test('AP-EXT-ITER70-02: a here-document body still blocks (pre-existing, newline boundary)', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: "bash <<'XEOF'\ngit reset --hard\nXEOF" },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+});
+
+// Non-tautology twins. Without these the block cases above would pass under a
+// guard that blocks any command containing the three characters `<<<`.
+const ITER70_02_APPROVED = [
+  ['a non-gated verb behind a here-string', `bash <<< 'git status'`],
+  ['a read-only git log behind a here-string', `bash <<< 'git log --oneline'`],
+  ['a benign payload behind a here-string', `bash <<< 'echo hi'`],
+  ['a here-string into a non-shell reader', 'cat <<< hello'],
+  ['a here-string feeding grep a variable', 'grep -c foo <<< "$body"'],
+  // A quoted `<<<` is DATA, never the operator — the same asymmetry
+  // `foldShellWord` documents for a quoted `>`. These two are the cases that
+  // RED when the `token.quoted` test is dropped: the operator characters lead a
+  // FULLY quoted word, which bash prints and never spools to a fd.
+  ['a wholly quoted here-string operator', 'echo "<<<git reset --hard"'],
+  ['a wholly single-quoted here-string operator', "echo '<<<git reset --hard'"],
+  ['a quoted here-string operator inside a commit message', 'git commit -m "diff marker <<< here"'],
+  ['a bare here-string with no operand', 'bash <<<'],
+];
+
+for (const [label, command] of ITER70_02_APPROVED) {
+  test(`AP-EXT-ITER70-02: ${label} stays approved`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', JSON.stringify(command));
+  });
+}
+
+// The seam itself, so a detector-level regression cannot be mistaken for a
+// segmentation one. The glued and fd-prefixed forms are the two the tokenizer
+// folds into ONE word, which a `token.value === '<<<'` test would miss.
+test('AP-EXT-ITER70-02: splitShellSegments surfaces the here-string operand as its own segment', () => {
+  for (const command of [
+    `bash <<< 'git reset --hard'`,
+    `bash <<<'git reset --hard'`,
+    `bash <<<"git reset --hard"`,
+    `bash 0<<< 'git reset --hard'`,
+    `source /dev/stdin <<< 'git reset --hard'`,
+  ]) {
+    assert.ok(
+      splitShellSegments(command).includes('git reset --hard'),
+      `${command} -> ${JSON.stringify(splitShellSegments(command))}`,
+    );
+  }
+  // Monotone: the carrying segment is kept, never replaced.
+  assert.ok(splitShellSegments(`bash <<< 'git reset --hard'`).includes(`bash <<< 'git reset --hard'`));
+});
+
+// Shape pin (the catalog PATTERN_SHAPE): the operator is matched on the folded
+// token VALUE with an fd-prefix-tolerant regex and an unquoted test — never an
+// equality compare against the literal `<<<` (which loses the glued form) and
+// never a consumer/name test (which needs a list).
+test('AP-EXT-ITER70-02: hereStringPayload matches the operator by shape, not by equality', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
+    'utf-8',
+  );
+  const body = source.match(/function hereStringPayload\(segment: string\): string \| null \{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(body, 'hereStringPayload must remain a single named function');
+  assert.match(body, /HERE_STRING_OPERATOR_RE\.test\(token\.value\)/);
+  assert.match(body, /token\.quoted/);
+  assert.doesNotMatch(body, /isShellWrapper|execTokenIndex|=== '<<<'/);
+  assert.match(source, /const HERE_STRING_OPERATOR_RE = \/\^\\d\*<<</);
+});
