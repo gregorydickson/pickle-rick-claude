@@ -437,9 +437,9 @@ it('isGitCommitCommand detects commit behind leading env-var assignments', async
   // commit`, a real git idiom). Before the parity fix segmentIsGitCommit read the
   // assignment token as tokens[0], failed the `=== 'git'` check, classified the
   // segment non-commit, and SKIPPED the R-WACT tsc gate for a real broken-TS
-  // commit. config-protection.ts:findGitVerb/parseFirstShellWord already skip
-  // leading `NAME=value` tokens (it catches `GIT_DIR=x git reset`); this closes
-  // the one-sided sibling-parity gap.
+  // commit. config-protection.ts:findGitVerb already skips leading `NAME=value`
+  // tokens (it catches `GIT_DIR=x git reset`); this closes the one-sided
+  // sibling-parity gap.
   const positives = [
     'GIT_COMMITTER_DATE=2020-01-01T00:00:00 git commit -m "x"',
     'GIT_AUTHOR_DATE=2020-01-01 git commit -m "x"',

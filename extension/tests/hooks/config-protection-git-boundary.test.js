@@ -1099,9 +1099,10 @@ test('R-WSRC-GR quoted-verb chained: worker blocks `cd extension && git "reset" 
 });
 
 // The shell also strips quotes around the EXECUTABLE, so `"git" reset` runs as
-// `git reset`. parseFirstShellWord's bare split read the token `"git"`, so
+// `git reset`. The then-current gate's bare split read the token `"git"`, so
 // detectProhibitedGitVerb skipped the segment (`"git"` !== 'git') and the reset
 // slipped the guard — the quoted-executable twin of the quoted-verb bypass.
+// That gate is gone (AP-EXT-ITER63-02); the exec-anchor read carries the case.
 test('R-WSRC-GR quoted-exec: worker blocks `"git" reset --hard HEAD~1`', () => {
   const { tmpDir, stateFile } = bootstrapSession();
   const result = runHandler({
@@ -1848,3 +1849,166 @@ for (const command of [
     assert.equal(result.decision, 'approve');
   });
 }
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER63-02 — a POSIX command PREFIX hides the real exec
+//
+// The RESIDUAL AP-EXT-ITER63-01 left open, and the seventh instance of the
+// AP-EXT-ITER10-01/12-01/18-01/19-01/54-01/63-01 shape. `execTokenIndex` answers
+// "which token does the shell exec" POSITIONALLY, skipping env assignments and
+// one shell wrapper. But a POSIX command PREFIX is an ordinary program that
+// takes a command as its argument and execs it, so it stands in exec position
+// with the real executable behind it. `parseFirstShellWord` read `env`, the
+// `!== 'git'` gate skipped the segment, and `env git reset --hard` APPROVED for
+// a worker while its byte-identical bare twin blocked.
+//
+// Measured against the shipped export before the fix: 16 of 17 prefixed forms
+// bypassed. `env`, `command`, `nohup`, `nice`, `exec` and `time` were each
+// verified to really exec git on this box (each ran `git rev-parse` in a scratch
+// repo and printed the branch), so this was a live bypass of the R-WSRC-GR
+// data-loss guard, not a parsing curiosity.
+//
+// The fix needs NO prefix table — enumerating them is the incomplete-declaration
+// shape that has now failed six times here, one member from the next bypass.
+// `findGitVerb` scans for the `git` ANCHOR wherever it sits, exactly as it
+// already scans for the VERB wherever it sits (AP-EXT-ITER55-01) rather than
+// carrying a git-global-option table. `parseFirstShellWord` is DELETED: the
+// anchor read subsumes its gate.
+//
+// Each block case is paired with a benign twin below, so none of these can pass
+// by blanket-blocking any command that merely mentions a prefix or `git`.
+// ---------------------------------------------------------------------------
+
+for (const { label, command, expect: expected } of [
+  { label: 'env', command: 'env git reset --hard', expect: /reset/ },
+  { label: 'env with an assignment operand', command: 'env FOO=1 git reset --hard', expect: /reset/ },
+  { label: 'env -i', command: 'env -i git reset --hard', expect: /reset/ },
+  { label: 'command', command: 'command git push origin main', expect: /push/ },
+  { label: 'nohup', command: 'nohup git push origin main', expect: /push/ },
+  { label: 'nice', command: 'nice git stash', expect: /stash/ },
+  { label: 'nice with an operand', command: 'nice -n 10 git stash', expect: /stash/ },
+  { label: 'exec', command: 'exec git reset --hard', expect: /reset/ },
+  { label: 'time', command: 'time git push origin main', expect: /push/ },
+  { label: 'sudo', command: 'sudo git reset --hard', expect: /reset/ },
+  { label: 'timeout with an operand', command: 'timeout 5 git rebase main', expect: /rebase/ },
+  { label: 'setsid', command: 'setsid git pull', expect: /pull/ },
+  { label: 'an absolute-path prefix', command: '/usr/bin/env git reset --hard', expect: /reset/ },
+  { label: 'a prefix behind an env assignment', command: 'PICKLE_ROLE=x env git reset --hard', expect: /reset/ },
+  { label: 'a prefix behind a shell wrapper', command: 'bash -c "env git reset --hard"', expect: /reset/ },
+  { label: 'a prefix in a chained segment', command: 'cd extension && env git reset --hard', expect: /reset/ },
+  { label: 'a prefix in a grouped segment', command: '(nohup git reset --hard)', expect: /reset/ },
+  { label: 'a quoted prefix', command: '"env" git reset --hard', expect: /reset/ },
+  { label: 'two stacked prefixes', command: 'nohup nice git push origin main', expect: /push/ },
+]) {
+  test(`AP-EXT-ITER63-02: worker blocks a prohibited git verb behind ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+}
+
+// Non-tautology guards. The anchor read must not blanket-block: a prefixed
+// command that runs no gated verb, and an allowed git operation behind a
+// prefix, both still approve. Without these a `return block()` would pass the
+// block cases above.
+for (const { label, command } of [
+  { label: 'a prefixed benign git verb', command: 'env git status' },
+  { label: 'a prefixed benign build command', command: 'nohup npm run test:fast' },
+  { label: 'a prefixed plain commit', command: 'env git commit -m fix' },
+  { label: 'a prefixed path-mode checkout', command: 'nice git checkout -- src/foo.ts' },
+  { label: 'a prefixed plain fetch', command: 'command git fetch origin' },
+  { label: 'a prefix with no git at all', command: 'env FOO=1 npm ci' },
+  { label: 'a directory that merely starts with git', command: 'cd git-repo && npm test' },
+  { label: 'a bare cd into a dir named git', command: 'cd git' },
+  { label: 'a gated verb inside a quoted commit message', command: 'git commit -m "env git reset --hard is blocked"' },
+]) {
+  test(`AP-EXT-ITER63-02: worker still approves ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve');
+  });
+}
+
+test('AP-EXT-ITER63-02: manager context is unaffected by the anchor read', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'env git reset --hard' },
+    extraEnv: { PICKLE_ROLE: 'manager' },
+  });
+  assert.equal(result.decision, 'approve');
+});
+
+// The anchor is quoting-aware by the AP-EXT-ITER51-02 rule it SHARES with
+// findWriteTargetInScope's Pass 2, not a second copy of it: a quoted word in
+// ARGUMENT position is data and never anchors, but a quoted word AT the exec
+// index is an exec like any other. Pinned in both directions so a future
+// narrowing to "quoted never anchors" cannot re-open `'git' reset --hard`.
+test('AP-EXT-ITER63-02: a quoted git in EXEC position still anchors', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: "'git' reset --hard" },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC-GR/);
+});
+
+test('AP-EXT-ITER63-02: a quoted git in ARGUMENT position does not anchor', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: "echo 'git' reset" },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'approve');
+});
+
+// The prefix set is deliberately UNENUMERATED. This is the guard against a
+// future fix regressing to a table: an invented prefix that no table would ever
+// carry must block exactly like the real ones.
+test('AP-EXT-ITER63-02: an unenumerated prefix blocks too — no prefix table exists', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'zzz-unknown-prefix-9f2a git reset --hard' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC-GR/);
+});
+
+// Structural pin: the deleted gate must not come back. `parseFirstShellWord`
+// re-introduced anywhere in the hooks tree means the positional read is back in
+// the git chain and the whole prefix family re-opens.
+test('AP-EXT-ITER63-02: parseFirstShellWord stays deleted from the hooks tree', () => {
+  const hooksSrc = path.resolve(__dirname, '../../src/hooks');
+  const offenders = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (!entry.name.endsWith('.ts')) continue;
+      if (fs.readFileSync(full, 'utf8').includes('parseFirstShellWord')) offenders.push(full);
+    }
+  };
+  walk(hooksSrc);
+  assert.deepEqual(offenders, []);
+});

@@ -203,6 +203,46 @@ export function execTokenIndex(tokens) {
     return skipEnvAssignments(tokens, afterWrapper);
 }
 /**
+ * Index of the first token this segment may EXEC as `name`, or -1.
+ *
+ * The exec-token PRELUDE (`execTokenIndex`) answers "which token does the shell
+ * exec" positionally, and that question has no list-free answer: a POSIX command
+ * PREFIX is an ordinary program that takes a command as its argument and execs
+ * it, so `env` / `command` / `nohup` / `nice` / `exec` / `time` / `sudo` /
+ * `timeout` / `setsid` / `stdbuf` / `xargs` all stand in exec position while the
+ * real executable stands behind them. Teaching the prelude to skip them means
+ * enumerating them — the incomplete-declaration shape that has now failed six
+ * times in this module (AP-EXT-ITER10-01/12-01/18-01/19-01/54-01/63-01), one
+ * member from the next bypass.
+ *
+ * So this asks the ANSWERABLE question instead: does the segment contain a
+ * token the shell may exec as `name`, wherever it sits? That needs no prefix
+ * table, exactly as `findGitVerb` needs no git-global-option table since it
+ * stopped reading the verb POSITIONALLY (see `GATED_GIT_VERBS`).
+ *
+ * Quoting demotes an anchor by the AP-EXT-ITER51-02 rule, which this shares with
+ * `findWriteTargetInScope`'s Pass 2 rather than restating: a quoted word in
+ * ARGUMENT position is data (`echo 'git' reset` execs nothing), but a quoted
+ * word AT the exec index is an exec like any other (`'git' reset --hard` really
+ * does reset). Gating on quoting alone re-opened every write guard in
+ * config-protection once already.
+ *
+ * Over-reach is fail-safe in this module's established direction: a bare
+ * unquoted `git` argument to some other program (`echo git reset`) now anchors
+ * and may over-block, while every prefixed form under-blocked before. Over-block,
+ * never under-block.
+ */
+export function execAnchorIndex(tokens, name) {
+    const execIndex = execTokenIndex(tokens.map((token) => token.value));
+    for (let i = 0; i < tokens.length; i++) {
+        if (tokens[i].quoted && i !== execIndex)
+            continue;
+        if (execName(tokens[i].value) === name)
+            return i;
+    }
+    return -1;
+}
+/**
  * Every operator at which bash starts a new command.
  *
  * Beyond the control operators (`&&`, `||`, `|`, `&`, `;`, newline) this

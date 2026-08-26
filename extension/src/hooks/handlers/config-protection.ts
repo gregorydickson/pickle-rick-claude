@@ -7,6 +7,7 @@ import { getExtensionRoot, getDataRoot } from '../../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../../services/microverse-state.js';
 import { logActivity } from '../../services/activity-logger.js';
 import {
+  execAnchorIndex,
   execName,
   execTokenIndex,
   skipEnvAssignments,
@@ -640,26 +641,6 @@ function isBashInvokingInstallSh(command: string): boolean {
   return splitShellSegments(command).some(segmentInvokesInstallSh);
 }
 
-/**
- * Extracts the EXECUTABLE token from a shell command, handling common shell
- * prefixes: `bash`/`sh` wrappers, and KEY=value env-var assignments.
- * Returns the basename of the first actual executable, or null if empty.
- */
-function parseFirstShellWord(command: string): string | null {
-  if (!command) return null;
-  const trimmed = command.trim();
-  if (!trimmed) return null;
-  // Quote-aware: the shell strips quotes around the executable, so `"git" reset`
-  // runs as `git reset`. A bare split(/\s+/) read the token `"git"` (quotes
-  // attached), so `detectProhibitedGitVerb` skipped the segment (`"git"` !== 'git')
-  // and the destructive reset slipped the R-WSRC-GR guard. Same root cause and
-  // same fix as findGitVerb's quoted-verb gap.
-  const tokens = tokenizeShellCommand(trimmed);
-  const exec = tokens[execTokenIndex(tokens)];
-  if (!exec) return null;
-  return execName(exec);
-}
-
 const PROHIBITED_GIT_VERBS_SIMPLE = new Set(['reset', 'switch', 'stash', 'rebase', 'pull', 'push']);
 
 /**
@@ -713,10 +694,19 @@ function isCheckoutRefOperation(afterVerb: string[]): boolean {
  *   git fetch (without --prune)  (plain fetch is allowed)
  */
 function findGitVerb(command: string): { verb: string; afterVerb: string[] } | null {
-  const tokens = tokenizeShellCommand(command);
-  let idx = execTokenIndex(tokens);
-  idx++; // skip 'git' itself
-  const rest = tokens.slice(idx).filter(t => t.length > 0);
+  const tokens = tokenizeShellTokens(command);
+  // The git ANCHOR, not the exec-token prelude. A POSIX command PREFIX (`env`,
+  // `command`, `nohup`, `nice`, `exec`, `time`, `sudo`, …) stands in exec
+  // position and execs the real command behind it, so a positional read saw
+  // `env` and this whole chain skipped the segment — `env git reset --hard`
+  // APPROVED for a worker while its bare twin blocked (16 of 17 prefixed forms
+  // measured against the shipped export). Teaching the prelude those prefixes
+  // means enumerating them, the shape that has failed six times in this module;
+  // scanning for the anchor needs no table, exactly as the verb scan below
+  // needs no git-option table. See `execAnchorIndex`.
+  const anchor = execAnchorIndex(tokens, 'git');
+  if (anchor === -1) return null;
+  const rest = tokens.slice(anchor + 1).map(t => t.value).filter(t => t.length > 0);
   // ONE uniform read: the verb is the first bare word that IS a gated verb.
   // Deliberately no option table and no "stop at the first bare word" — both
   // made the verb position depend on knowing git's operand-taking options, and
@@ -744,7 +734,6 @@ export function detectProhibitedGitVerb(command: string): { verb: string } | nul
   // running `cd sub && git reset` or `git status && git push` must still be
   // caught (the leading token is `cd` / a benign git verb).
   for (const segment of splitShellSegments(command)) {
-    if (parseFirstShellWord(segment) !== 'git') continue;
     const parsed = findGitVerb(segment);
     if (!parsed) continue;
     const { verb, afterVerb } = parsed;
