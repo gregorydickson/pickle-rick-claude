@@ -1427,6 +1427,52 @@ test('activity-event-payload: schema defines all registered event type definitio
   );
 });
 
+// R-PDD-oneOf surface 1 vs surface 3, derived on BOTH sides. The set-equality
+// check above pins schema.definitions against a hand-maintained EVENT_NAMES
+// literal, so it cannot see an event that is defined AND asserted but never
+// registered in the runtime allowlist -- `ticket_audit_manual_edit` and
+// `bundle_2026_05_04_closer_done` sat in that blind spot from the day the
+// schema landed: log-activity.js rejected both with "Unknown event type" while
+// the schema and this suite constrained their payloads.
+// An event definition is recognised STRUCTURALLY (it pins `properties.event`
+// to a const/enum), never by subtracting a named list of non-event defs -- an
+// enumerated exception set is one member away from the next blind spot.
+const schemaEventNames = () => {
+  const names = new Set();
+  for (const def of Object.values(schema.definitions)) {
+    const spec = def && def.properties && def.properties.event;
+    if (!spec) continue;
+    if (typeof spec.const === 'string') names.add(spec.const);
+    if (Array.isArray(spec.enum)) for (const n of spec.enum) names.add(n);
+  }
+  return names;
+};
+
+test('activity-event-payload: every schema-defined event is registered in VALID_ACTIVITY_EVENTS', () => {
+  const registered = new Set(VALID_ACTIVITY_EVENTS);
+  const unregistered = [...schemaEventNames()].filter((n) => !registered.has(n));
+  assert.deepStrictEqual(
+    unregistered,
+    [],
+    'schema constrains events the runtime allowlist rejects: ' +
+      `${unregistered.join(', ')} -- log-activity.js and logActivity() will refuse them`,
+  );
+});
+
+test('activity-event-payload: every schema-defined event is reachable through the top-level oneOf', () => {
+  const refs = new Set(schema.oneOf.map((entry) => entry.$ref));
+  const inert = Object.entries(schema.definitions)
+    .filter(([, def]) => def && def.properties && def.properties.event)
+    .map(([name]) => name)
+    .filter((name) => !refs.has(`#/definitions/${name}`));
+  assert.deepStrictEqual(
+    inert,
+    [],
+    `definitions with no top-level oneOf $ref are inert: ${inert.join(', ')}`,
+  );
+});
+
+
 // AC-PIAP-A6-1: tier_phase_skipped accepts trivial tier + lifecycle phase IDs
 test('activity-event-payload: tier_phase_skipped accepts trivial tier with lifecycle phase IDs (AC-PIAP-A6-1)', () => {
   const result = validate({

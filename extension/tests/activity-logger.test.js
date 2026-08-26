@@ -299,6 +299,11 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'worker_spawn_lock_contended',
         // b6b7ddc5: reaper reports collected counts by match class, quiet on zero.
         'worker_orphan_reap_summary',
+        // p1-bug-fix-bundle-2026-05-04 AC-EVENT-PAYLOAD-01: both shipped a schema
+        // definition + oneOf $ref + a payload spec, but never reached this array,
+        // so the runtime refused the very names the schema constrained.
+        'ticket_audit_manual_edit',
+        'bundle_2026_05_04_closer_done',
     ];
     assert.equal(VALID_ACTIVITY_EVENTS.length, expected.length);
     for (const e of expected) {
