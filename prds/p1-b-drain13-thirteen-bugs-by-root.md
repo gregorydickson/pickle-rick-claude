@@ -34,8 +34,12 @@ node v24.19.0 | ref   -> promise settles, exit 0
 **This is not a Node-22 artifact.** In production a real `ChildProcess` handle incidentally holds the
 loop, so the timeout fires only via ref-counting the function neither controls nor documents.
 
-**Measured: 15 `.unref()` sites remain on the runner surface** — `mux-runner.ts` ×6, `spawn-morty.ts` ×5,
-`microverse-runner.ts` ×3, `convergence-gate.ts` ×1. Read in context, at least three are settle paths
+**Measured: 13 `.unref()` sites remain on the runner surface** — `mux-runner.ts` ×6, `spawn-morty.ts` ×3,
+`microverse-runner.ts` ×3, `convergence-gate.ts` ×1. (Re-measured at HEAD `782d3cfd`, 2026-08-26, as the
+mandatory pre-launch stale-premise check. The earlier figure of 15 / `spawn-morty.ts` ×5 was stale: that
+file carries 3 at HEAD **and** 3 in the deployed tree, so this is a real change, not a source-vs-deployed
+skew. Across all of `extension/src` the count is 23, not 13 — 13 is the four-file runner surface this root
+scopes to, and the two figures are not interchangeable.) Read in context, at least three are settle paths
 for a HANG:
 
 ```ts
@@ -51,7 +55,24 @@ exists to end a hung iteration never fires.
 `BUG-2026-08-16-tier-hangs-at-mux-runner-suite`, `BUG-2026-08-18-timeout-e2e-serial-tier-red`,
 `BUG-2026-08-12-fast-tier-marginal-spawn-timeouts`.
 
-**This is a LEAD, not a conclusion.** Two sites are proven; the other thirteen are *shape matches*.
+**PRE-LAUNCH CHECKS (2026-08-26, HEAD `782d3cfd`, both required by `prds/CLAUDE.md`):**
+(a) **Stale premise — MECHANISM HOLDS, COUNT CORRECTED.** All three named sole-settle-path timers are
+still present at HEAD *and* in the deployed tree: `hangGuard`, `outputStallGuard`, `timeoutResolveTimer`.
+The site count was stale and is corrected above.
+(b) **Green tree — MEASURED, not assumed.** The full release gate ran green on this tree at the
+v2.1.0-beta.19 ship one hour before launch, with **zero waived failures**: all 10 audits rc=0,
+`test:fast:budget` `failures=0 runs_completed=5 runs_requested=5`, integration parallel 662/662, serial
+625/625 (run as a separate invocation, because R-ISSC hides that half whenever the parallel half is
+non-zero), expensive rc=0 with the deploy-lifecycle soak genuinely running 1804s. HEAD has advanced only
+by a docs commit and the version bump since. **No inherited failures are recorded, because none stand** —
+beta.17 retired both. Any failure appearing during this bundle is therefore attributable to this bundle.
+
+**Scope overlap checked:** PR #4 (`fix/installer-agent-provenance`) also touches the installer but is NOT
+part of ROOT 2, which covers `BUG-2026-08-10-install-sh-destroys-its-own-source-tree` and the
+runner-authored-commit-attribution cluster. The agent-overlay/provenance surface appears nowhere in this
+PRD, so there is no duplicate work and no ownership question to resolve.
+
+**This is a LEAD, not a conclusion.** Two sites are proven; the other eleven are *shape matches*.
 Refinement must establish which are genuine sole-settle-paths and which are legitimately unref'd
 (a heartbeat or a kill-grace timer often SHOULD be unref'd — `measureMetricAttempt` unrefs only its
 kill-grace timer and that is correct). **Do not blanket-ref every timer.**
