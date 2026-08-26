@@ -28,6 +28,85 @@ completion/gate layer. Memory: [[feedback_reliability_first_stop_the_fix_treadmi
    a completion/disposition/quality-gate verdict and make it **continue-and-flag**. Reserve halting for the
    genuine crash floor only (`fatal`, `state_schema_version_ahead`, budget cap). See [[B-NOSTOP-GATES]] below.
 
+
+### ⛔ CORRECTION 2026-08-26 — the iteration cap never fired. Both sizing caps were founded on a mislabel.
+
+**Measured on the `B-CGSHIP` session state, not inferred from a log line:**
+
+| field | value |
+|---|---|
+| `max_iterations` | **500** |
+| `iteration` at stop | **6** |
+| `current_ticket_max_iterations` | **None** — no per-ticket budget was set |
+| mux-runner exit | **code 0** — a clean exit, not a cap exit |
+
+**Nothing capped anything.** The phase reported `hit iteration cap` because of one line
+(`bin/pipeline-runner.ts:3846`):
+
+```ts
+const cause = priorExitReason === null || priorExitReason === 'iteration_cap_exhausted'
+  ? 'hit iteration cap'
+  : `exited (exit_reason=<reason>)`;
+```
+
+**A `null` `priorExitReason` renders as `hit iteration cap`.** An ABSENT exit reason reported as a
+SPECIFIC cause — this codebase's dominant defect class, sitting in the line that misdirects whoever
+reads the log. Its own in-source comment already calls the older hardcoded form "historically
+misleading"; the `null` arm is the surviving half of that same bug.
+
+**What this invalidates.** The BUNDLE SIZING rule above was written on 2026-08-24 and amended on
+2026-08-25, both times attributing `B-CGSHIP`'s dropped ticket to the iteration cap. **That attribution
+came from the mislabel and was never checked against session state.** A ticket-count ceiling of 6–7 has
+NO measured basis. Large PRDs are not constrained by the cap.
+
+**What remains TRUE and is not retracted:**
+- The phase-duration economics (PICKLE ~22–25 min/ticket linear; ANATOMY-PARK + SZECHUAN a near-fixed
+  ~300-minute toll). Those were measured from `pipeline-runner.log` timestamps and stand.
+- Compose by SHARED FILE / SUBSYSTEM SURFACE, not by priority tier.
+- `B-CGSHIP` really did leave ticket `f2b3cf76` unbuilt with zero commits. That happened. **The cause
+  was misattributed, not the event.**
+
+**The real open defect, still unexplained:** mux-runner exited **code 0 while `f2b3cf76` was
+`In Progress`**, stranding it. That — not a cap — is what strands work in large bundles. Tracked as
+**AC-D2′** in [[B-DRAIN13]].
+
+**Method note, because this is the second time a label sent me at the wrong fix:** the log said
+"iteration cap", so two policy revisions went into this file about iteration caps. Neither author
+(both me) opened `state.json`. **Read the state, not the sentence about the state.**
+
+## 🧭 NEXT DISPATCH — [[B-DRAIN13]]: thirteen filed bugs, composed BY ROOT (2026-08-26)
+
+`prds/p1-b-drain13-thirteen-bugs-by-root.md` — operator-directed: *"if we have 13 bugs then we should do
+them in one bundle. ensure we are following the prime directive and pushing toward simplification."*
+
+**Thirteen PRDs are NOT thirteen tickets.** Composed by root they collapse to **seven tickets across
+four roots** — composing one-per-PRD would be the enumerated-set mistake the complexity clause names.
+
+**ROOT 1 — an unref'd timer that is the SOLE settle path. Covers 4 filed hang/timeout PRDs.**
+Proven twice at source already: `monitor.ts` `writeWithWatchdog` (beta.16 `3b2c0205`) and
+`microverse-runner.ts` `spawnWithClosedStdin` (`5cce7f5d`). The second settled it with a controlled
+experiment toggling ONLY the ref state against a handle-free child — **both Node lines fail identically**
+(`unref` → unsettled top-level await, exit 13; `ref` → settles, exit 0). It is a live production hang,
+not a Node-22 artifact; in production a real `ChildProcess` handle incidentally holds the loop.
+
+**Measured: 15 `.unref()` sites remain** — `mux-runner.ts` ×6, `spawn-morty.ts` ×5,
+`microverse-runner.ts` ×3, `convergence-gate.ts` ×1. Read in context, at least three are settle paths
+for a hang: `hangGuard` → `resolveTimeout('wall_clock')`, `outputStallGuard` →
+`resolveTimeout('output_stall')`, `timeoutResolveTimer` → `scheduleTimeoutResolutionFinish(true)`.
+**The whole-iteration wall-clock hang guard is unref'd.**
+
+**This is a LEAD, not a conclusion** — two sites proven, thirteen are shape matches. Refinement must
+separate genuine sole-settle-paths from timers that SHOULD be unref'd (`measureMetricAttempt` correctly
+unrefs only its kill-grace timer). **Do NOT blanket-ref every timer; a heartbeat holding the loop open
+forever is a NEW hang.**
+
+ROOT 2 installer (2 PRDs) · ROOT 3 verdict/accounting reads the wrong measurement (3) · ROOT 4 anchors
+by position not identity (2) · 2 singletons.
+
+**PRIME DIRECTIVE note:** ROOT 1 adds no halt — it makes existing halts WORK. Today a hung iteration can
+run forever *because its guard was unref'd*; fixing it lets the run terminate its own stuck work and
+continue.
+
 ## 🐝 AGENT SWARMS — the destination, and why it is SEQUENCED BEHIND simplification (operator-set 2026-08-25)
 
 **Operator direction: agent swarms eventually. Simplify and stabilize FIRST.** This records the concrete
@@ -110,8 +189,10 @@ iteration/budget caps. Watch `iteration`, not roster size.
 1. **Compose by SHARED FILE / SUBSYSTEM SURFACE, not by priority tier.** The review toll scales with
    subsystem count, so tickets touching the same files ride the same review for free. A bundle that
    sprawls across new subsystems pays more. Priority orders the queue; surface composes the bundle.
-2. **Cap at 6–7, OR raise the pickle iteration cap first. AMENDED 2026-08-25 — the original "cap at 8"
-   was WRONG and cost a ticket.** [[B-CGSHIP]] composed 8 tickets and pickle **hit its iteration cap with
+2. **RETRACTED 2026-08-26 — BOTH the original "cap at 8" AND the 2026-08-25 amendment rested on a
+   premise that was never verified. There is no known ticket-count ceiling.** See the correction block
+   immediately below this list. The 2026-08-25 text is preserved for the record:
+   ~~Cap at 6–7, OR raise the pickle iteration cap first.~~ [[B-CGSHIP]] composed 8 tickets and pickle **hit its iteration cap with
    1/8 still pending**: `Phase pickle exited but 1/8 tickets remain pending (7 Done) — not
    all-tickets-terminal, reporting phase incomplete, advancing`. Ticket `f2b3cf76` was **never built** —
    zero commits, no code. The runtime behaved correctly (reported incomplete, advanced, did not halt),
