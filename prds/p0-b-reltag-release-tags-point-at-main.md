@@ -91,6 +91,33 @@ These seven are a DIFFERENT set, in the judge-spawn async paths.
 RIGHT tree ... cannot be scoped honestly before then."* They can now: **seven `cancelledByParent`
 cancellations in the judge-spawn async paths under Node 22.**
 
+
+### 🔬 LOCAL REPRODUCTION — one suite, four seconds (measured 2026-08-26)
+
+CI's `cancelled 7` reproduces exactly on this host. No 20-minute round trip needed:
+
+```
+/opt/homebrew/opt/node@22/bin/node --test tests/integration/judge-measurement-async.test.js
+  v22.23.2 → # tests 8   # pass 1   # fail 0   # cancelled 7      (7 × cancelledByParent)
+/opt/homebrew/opt/node@24/bin/node --test tests/integration/judge-measurement-async.test.js
+  v24.19.0 → ℹ tests 8   ℹ pass 8   ℹ fail 0   ℹ cancelled 0
+```
+
+**Same count as CI (7), same suite, same failure type.** The error string is the decisive one:
+
+> `error: 'Promise resolution is still pending but the event loop has already resolved'`
+
+That is **byte-identical to the `monitor.ts` diagnosis** that `beta.16` fixed at source — where an
+unconditionally `.unref()`'d watchdog let the loop resolve out from under a still-pending write, and
+refinement reclassified it from a harness quirk to a **live production wedge-escape defect**. Ask the
+same question here before assuming a test-only cause: does an unref'd or unawaited handle in the
+judge-spawn async path let the loop resolve while a measurement promise is still pending? If so, the
+Node-22 cancellation is the SYMPTOM and the production defect is real on every Node line.
+
+**Cancelled cases anchor at `judge-measurement-async.test.js:136` and `:154`** (first two of seven).
+
+**This retires AC-R7's scoping risk.** The fix loop is a four-second command, not a CI push.
+
 - **AC-R7** The seven Node-22 cancellations are fixed AT SOURCE (the async lifecycle in the judge-spawn
   paths), not by re-pinning around them. `beta.16` proved this is tractable: the `monitor.ts` case was a
   real production wedge-escape defect, not a harness quirk, and the same question must be asked here —
