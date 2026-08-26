@@ -175,6 +175,14 @@ Tests: `extension/tests/*.test.js` via `node --test` (no `.test.ts`). Aux script
 
 Semver in `extension/package.json`: **Major** = breaking (state schema, CLI args, hook contracts) | **Minor** = features (commands, flags, prompts) | **Patch** = fixes/refactors. Bump → commit `chore: bump version to X.Y.Z` → `gh release create vX.Y.Z`.
 
+**⛔ TAG AT AN EXPLICIT COMMIT (operator-set 2026-08-26, after a 4-month wrong-tree outage).**
+`gh release create <tag>` with NO `--target` tags the repository's **DEFAULT BRANCH**. `main` is on the
+stale 2.0 line, so every release from 2026-04-22 onward tagged `main` and CI faithfully built a tree
+nobody shipped — `v2.1.0-beta.16` and `v2.1.0-beta.17` BOTH resolve to `e0c91e17` = `origin/main`.
+Always: `gh release create vX.Y.Z --target "$(git rev-parse HEAD)"`, then **compare** the pushed tag's
+sha to that value. `git ls-remote --tags origin <tag>` alone confirms EXISTENCE, not correctness — it
+printed the same wrong sha for two consecutive releases and neither was caught. See [[B-RELTAG]].
+
 **Before tagging**, the full release gate must be green from `extension/` (test failures block release, no exceptions) — this is the release-gate source of truth, mirrored by `.github/workflows/release.yml` (enforced by `release-gate-parity.test.js`):
 
 `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-un-terminalize-single-path.sh && bash scripts/audit-did-we-count.sh && npm run test:fast:budget && npm run test:integration && RUN_EXPENSIVE_TESTS=1 npm run test:expensive`
