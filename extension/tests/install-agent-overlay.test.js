@@ -1,7 +1,7 @@
 // @tier: fast
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -51,7 +51,7 @@ is_installer_output() {
   fi
   [ "$legacy_hash" = "$(file_sha256 "$2")" ] && return 0
   [ -f "$KNOWN_AGENT_HASHES" ] || return 1
-  grep -q "^$3 $legacy_hash\$" "$KNOWN_AGENT_HASHES"
+  grep -qFx -- "$3 $legacy_hash" "$KNOWN_AGENT_HASHES"
 }
 if [ -d "$SCRIPT_DIR/.claude/agents" ]; then
   mkdir -p "$AGENTS_DIR" "$MANAGED_AGENTS_DIR"
@@ -136,6 +136,58 @@ test('install-agent-overlay: modified legacy top-level agent is preserved as use
       readFileSync(path.join(homeDir, '.claude', 'agents', '.pickle-managed', 'morty-reviewer.md'), 'utf8'),
       'canonical\n',
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The no-sha256 fallback arm of is_installer_output. Hosts without sha256sum/shasum
+// revert to the size+mtime heuristic, which is the ONLY branch where the pre-provenance
+// semantics still apply -- so both of its outcomes are pinned here rather than left to
+// the claim in the commit message. `file_sha256` is stubbed to return empty (the exact
+// signal a missing hasher produces) instead of stripping PATH, which would also remove
+// the tools the migration block itself needs.
+function withoutSha256(scriptPath) {
+  const anchor = 'if [ -d "$SCRIPT_DIR/.claude/agents" ]; then';
+  const src = readFileSync(scriptPath, 'utf8');
+  assert.ok(src.includes(anchor), 'fixture script must contain the migration block anchor');
+  const stubbed = src.replace(anchor, `file_sha256() { :; }\n${anchor}`);
+  const stubbedPath = `${scriptPath}.nosha`;
+  writeFileSync(stubbedPath, stubbed);
+  chmodSync(stubbedPath, 0o755);
+  return stubbedPath;
+}
+
+test('install-agent-overlay: with no sha256 tool, an unchanged legacy agent still migrates', () => {
+  const { dir, scriptDir, homeDir, scriptPath } = makeFixture();
+  try {
+    const { legacyPath } = writeSourceAndLegacy(scriptDir, homeDir, 'morty-implementer.md', 'canonical body\n');
+    const result = spawnSync('bash', [withoutSha256(scriptPath)], { cwd: dir, env: { ...process.env, HOME: homeDir }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(legacyPath), false, 'size+mtime fallback must still migrate unchanged installer output');
+    assert.equal(
+      readFileSync(path.join(homeDir, '.claude', 'agents', '.pickle-managed', 'morty-implementer.md'), 'utf8'),
+      'canonical body\n',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('install-agent-overlay: with no sha256 tool, a superseded version is preserved, not migrated', () => {
+  const { dir, scriptDir, homeDir, scriptPath } = makeFixture();
+  try {
+    // A real older shipped version: differs from the bytes being installed. WITH a hasher
+    // the manifest recognises it and migrates; without one there is nothing to consult, so
+    // the documented failure direction is under-migrate -- preserve the user's file.
+    const { legacyPath } = writeSourceAndLegacy(scriptDir, homeDir, 'morty-reviewer.md', 'new shipped body\n', 'older shipped body\n');
+    const result = spawnSync('bash', [withoutSha256(scriptPath)], { cwd: dir, env: { ...process.env, HOME: homeDir }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(legacyPath, 'utf8'), 'older shipped body\n', 'fallback must under-migrate rather than delete');
+    // NOTE: the fixture paraphrases the installer's messages ("legacy conflict" vs
+    // "Legacy agent conflict preserved"), so this marker pins the FIXTURE, not shipped
+    // output. The real string is asserted against real install.sh in the integration tier.
+    assert.match(result.stdout, /legacy conflict /);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

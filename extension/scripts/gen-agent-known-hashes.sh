@@ -30,16 +30,20 @@ if ! command -v git >/dev/null 2>&1; then
   exit 1
 fi
 
-sha256_stdin() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | awk '{print $1}'
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 | awk '{print $1}'
-  else
-    echo "gen-agent-known-hashes: no sha256sum/shasum available" >&2
-    exit 1
-  fi
-}
+# Resolve the hasher ONCE, at top level, before any work. The previous form put the
+# `exit 1` inside the function, which was only ever called from `$( ... || true )` and
+# from an `echo` argument -- in both places the exit killed a subshell the caller then
+# discarded, so a host with no sha256 tool wrote an empty manifest and reported success.
+# Probing availability up front makes "cannot measure" a hard stop instead of a silent
+# zero, and collapses two per-call branches into one decision.
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_stdin() { sha256sum | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_stdin() { shasum -a 256 | awk '{print $1}'; }
+else
+  echo "gen-agent-known-hashes: no sha256sum/shasum available" >&2
+  exit 1
+fi
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
@@ -56,7 +60,7 @@ paths="$(
 for p in $paths; do
   agent_file="$(basename "$p")"
   # Every historical revision of this path, plus the working-tree copy.
-  for rev in $(git rev-list --all -- "$p" 2>/dev/null); do
+  for rev in $(git rev-list --all --full-history -- "$p" 2>/dev/null); do
     blob_hash="$(git cat-file blob "$rev:$p" 2>/dev/null | sha256_stdin || true)"
     [ -n "$blob_hash" ] && echo "$agent_file $blob_hash" >> "$tmp"
   done

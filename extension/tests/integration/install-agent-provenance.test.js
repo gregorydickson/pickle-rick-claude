@@ -52,7 +52,7 @@ function findSupersededShippedVersion() {
   for (const file of files) {
     const rel = `.claude/agents/${file}`;
     const current = fs.readFileSync(path.join(AGENTS_SRC, file));
-    const revs = execFileSync('git', ['rev-list', '--all', '--', rel], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000 })
+    const revs = execFileSync('git', ['rev-list', '--all', '--full-history', '--', rel], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000 })
       .split('\n')
       .filter(Boolean);
     for (const rev of revs) {

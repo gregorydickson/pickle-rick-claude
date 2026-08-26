@@ -671,7 +671,7 @@ is_installer_output() {
   [ "$legacy_hash" = "$(file_sha256 "$2")" ] && return 0
   # Byte-identical to a version we shipped previously.
   [ -f "$KNOWN_AGENT_HASHES" ] || return 1
-  grep -q "^$3 $legacy_hash\$" "$KNOWN_AGENT_HASHES"
+  grep -qFx -- "$3 $legacy_hash" "$KNOWN_AGENT_HASHES"
 }
 if [ -d "$SCRIPT_DIR/.claude/agents" ]; then
   mkdir -p "$AGENTS_DIR" "$MANAGED_AGENTS_DIR"
