@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { isShellWrapper } from '../../hooks/shell-exec.js';
+import { isShellWrapper, splitShellSegments } from '../../hooks/shell-exec.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HANDLER = path.resolve(__dirname, '../../hooks/handlers/config-protection.js');
@@ -2011,4 +2011,99 @@ test('AP-EXT-ITER63-02: parseFirstShellWord stays deleted from the hooks tree', 
   };
   walk(hooksSrc);
   assert.deepEqual(offenders, []);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER63-06 — a POSIX command prefix hid the whole -c payload
+//
+// `shellCommandStringPayload` gated the `-c` unwrap on a POSITIONAL read:
+// `isShellWrapper(tokens[skipEnvAssignments(tokens)])`. A command PREFIX (`env`,
+// `nohup`, `command`, `timeout`, …) is an ordinary program that stands in exec
+// position while the shell stands behind it, so the env prelude walked past
+// nothing and the wrapper test failed on the PREFIX. The payload is ONE quoted
+// token, so a failed test hid the ENTIRE command string from every detector at
+// once — this was the SHARED ROOT of the positional-exec-read family, re-opening
+// the git-verb, install.sh, expensive-test and R-WSRC-3 state-write guards in a
+// single stroke. Measured before the fix: `env bash -c "git reset --hard"`,
+// `nohup sh -c "git push origin main"` and `env bash -c "bash install.sh"` all
+// APPROVED for a worker while their byte-identical unprefixed twins blocked.
+//
+// The fix anchors the WRAPPER wherever it sits — the same move execAnchorIndex
+// made for the EXEC one level up — so no prefix table exists to fall behind.
+// Each case is paired with the unprefixed twin that already blocked, so none can
+// pass by blanket-blocking anything that merely mentions a shell.
+// ---------------------------------------------------------------------------
+
+for (const { label, command, expect: expected } of [
+  { label: 'env bash -c', command: 'env bash -c "git reset --hard"', expect: /reset/ },
+  { label: 'nohup sh -c', command: 'nohup sh -c "git push origin main"', expect: /push/ },
+  { label: 'command zsh -c', command: 'command zsh -c "git reset --hard"', expect: /reset/ },
+  { label: 'timeout with operand', command: 'timeout 5 bash -c "git rebase main"', expect: /rebase/ },
+  { label: 'prefixed absolute-path shell', command: 'env /bin/bash -lc "git stash"', expect: /stash/ },
+  { label: 'env assignment AND prefix', command: 'PICKLE_ROLE=x env bash -c "git pull"', expect: /pull/ },
+  { label: 'unenumerated prefix', command: 'zzz-unknown-prefix-9f2a bash -c "git reset --hard"', expect: /reset/ },
+]) {
+  test(`AP-EXT-ITER63-06: worker blocks prohibited git verb via ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block');
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+}
+
+// The unwrap is shared, so the install.sh detector inherits the fix through the
+// payload rather than through a second copy of it.
+test('AP-EXT-ITER63-06: worker blocks a prefixed shell wrapping bash install.sh', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'env bash -c "bash install.sh"' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC/);
+});
+
+// Benign twins: the widened anchor must not turn ordinary prefixed commands
+// into blocks. A fix that blanket-blocks every `env`/`nohup` line would satisfy
+// the cases above and break every worker.
+for (const { label, command } of [
+  { label: 'prefixed benign shell', command: 'env bash -c "npm test"' },
+  { label: 'prefixed read-only git', command: 'nohup bash -c "git status"' },
+  { label: 'prefixed echo', command: 'command echo hello' },
+  { label: 'bare benign shell', command: 'bash -c "ls -la"' },
+]) {
+  test(`AP-EXT-ITER63-06: worker still approves ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve');
+  });
+}
+
+// Structural pin, in the module's own terms: the unwrap must be a strict
+// SUPERSET of the old positional read. The post-env index is still scanned — it
+// is simply no longer the only one — so a future narrowing that reinstates a
+// positional gate is caught here rather than at the next bypass.
+test('AP-EXT-ITER63-06: the -c payload resolves at, before and after the post-env index', () => {
+  const at = splitShellSegments('bash -c "git reset --hard"');
+  const envPrelude = splitShellSegments('PICKLE_ROLE=x /bin/bash -lc "git reset --hard"');
+  const prefixed = splitShellSegments('env bash -c "git reset --hard"');
+  for (const [label, segments] of [['bare', at], ['env-assignment', envPrelude], ['prefixed', prefixed]]) {
+    assert.ok(
+      segments.includes('git reset --hard'),
+      `${label} form must expand its -c payload into its own segment, got ${JSON.stringify(segments)}`,
+    );
+  }
 });

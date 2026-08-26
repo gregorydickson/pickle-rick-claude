@@ -392,9 +392,28 @@ export function splitShellSegments(command, depth = 0) {
 }
 /**
  * Returns the command-string payload of a `bash -c '<cmd>'` segment, or null
- * when the segment is not a shell command-string invocation. Uses the same
- * env-assignment prelude and `isShellWrapper` fold as every other exec-token
- * read, so `PICKLE_ROLE=x /bin/bash -lc '<cmd>'` resolves like the rest.
+ * when the segment is not a shell command-string invocation.
+ *
+ * The WRAPPER is anchored wherever it sits, not read positionally. Gating on
+ * `isShellWrapper(tokens[skipEnvAssignments(tokens)])` asked the unanswerable
+ * positional question `execAnchorIndex` already retired one level up: a POSIX
+ * command PREFIX (`env`, `nohup`, `command`, `nice`, `timeout`, `sudo`, …) is an
+ * ordinary program standing in exec position while the shell stands behind it,
+ * so the env-assignment prelude walked past nothing and the wrapper test failed
+ * on the PREFIX. The payload is ONE quoted token, so a failed test hid the
+ * ENTIRE command string from every detector at once: `env bash -c "git reset
+ * --hard"`, `nohup sh -c "git push origin main"` and `env bash -c "bash
+ * install.sh"` all APPROVED for a worker while their unprefixed twins blocked
+ * (AP-EXT-ITER63-06). This is the shared root of the positional-exec-read family
+ * — it re-opened the git-verb, install.sh, expensive-test and R-WSRC-3
+ * state-write guards in a single stroke.
+ *
+ * Scanning for the wrapper strictly WIDENS what unwraps — the old post-env index
+ * is still scanned, it is simply no longer the only one — so no command that
+ * blocked before can stop blocking now. Env assignments need no separate skip:
+ * `KEY=value` cannot match the interpreter naming shape, so
+ * `PICKLE_ROLE=x /bin/bash -lc '<cmd>'` still resolves. That collapse is the
+ * point — two same-theme guards for one concern were the smell (Override 1.6).
  *
  * The payload is the word immediately AFTER the command-string flag, found
  * wherever that flag sits in the wrapper's option run — never "the first word
@@ -414,10 +433,10 @@ export function splitShellSegments(command, depth = 0) {
  */
 function shellCommandStringPayload(segment) {
     const tokens = tokenizeShellCommand(segment);
-    const start = skipEnvAssignments(tokens);
-    if (!isShellWrapper(tokens[start]))
+    const wrapper = tokens.findIndex((token) => isShellWrapper(token));
+    if (wrapper < 0)
         return null;
-    for (let idx = start + 1; idx < tokens.length; idx++) {
+    for (let idx = wrapper + 1; idx < tokens.length; idx++) {
         if (SHELL_COMMAND_STRING_FLAG_RE.test(tokens[idx]))
             return tokens[idx + 1] ?? null;
     }
