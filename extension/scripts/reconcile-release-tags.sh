@@ -44,7 +44,7 @@ remote="${1:-origin}"
 # a failure was indistinguishable from "tag absent", so ONE transient
 # network error silently dropped that tag's row and left the audit GREEN
 # with a MISPOINTED tag in the set. See extension/CLAUDE.md trap door
-# AP-EXT-ITER2-01.
+# AP-EXT-ITER65-01.
 listing="$(git ls-remote --tags "$remote" 'refs/tags/v*')"
 
 if [ -z "$listing" ]; then

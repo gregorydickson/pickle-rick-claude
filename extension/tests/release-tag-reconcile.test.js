@@ -191,7 +191,7 @@ test('bad invocation (too many args) prints usage and exits non-zero', () => {
     assert.match(result.stderr, /Usage:/);
 });
 
-// AP-EXT-ITER2-01 regression. The auditor used to derive tag NAMES from a
+// AP-EXT-ITER65-01 regression. The auditor used to derive tag NAMES from a
 // `git ls-remote` listing and then throw that listing's shas away, re-querying
 // `resolve_tag_sha` once per tag. Two consequences, both pinned below:
 //   1. N+1 network round-trips where the first listing already held every sha
@@ -234,7 +234,7 @@ function seedTwoTagRepo(dir) {
     git(['tag', 'v9.9.9'], dir);
 }
 
-test('AP-EXT-ITER2-01: the whole audit costs exactly ONE git ls-remote, whatever the tag count', () => {
+test('AP-EXT-ITER65-01: the whole audit costs exactly ONE git ls-remote, whatever the tag count', () => {
     const dir = makeFixtureRepo();
     try {
         seedTwoTagRepo(dir);
@@ -265,7 +265,7 @@ test('AP-EXT-ITER2-01: the whole audit costs exactly ONE git ls-remote, whatever
     }
 });
 
-test('AP-EXT-ITER2-01: a per-tag ls-remote blip can no longer hide a MISPOINTED tag behind a green exit', () => {
+test('AP-EXT-ITER65-01: a per-tag ls-remote blip can no longer hide a MISPOINTED tag behind a green exit', () => {
     const dir = makeFixtureRepo();
     try {
         seedTwoTagRepo(dir);
@@ -291,7 +291,7 @@ test('AP-EXT-ITER2-01: a per-tag ls-remote blip can no longer hide a MISPOINTED 
     }
 });
 
-test('AP-EXT-ITER2-01: list_tag_shas_from_listing is the ONE place the ^{} peel rule lives', () => {
+test('AP-EXT-ITER65-01: list_tag_shas_from_listing is the ONE place the ^{} peel rule lives', () => {
     // resolve_tag_sha must read its sha back through the shared parser rather
     // than re-deriving the peel, so the two scripts cannot drift apart.
     const shared = fs.readFileSync(path.join(EXTENSION_ROOT, 'scripts', 'resolve-tag-sha.sh'), 'utf8');
