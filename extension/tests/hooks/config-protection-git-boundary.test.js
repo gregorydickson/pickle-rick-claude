@@ -2234,3 +2234,165 @@ test('AP-EXT-ITER64-01: execAnchorIndex reads no positional exec index', () => {
       "redirect anchor. Pass 2's exec anchor must be quoting-blind.",
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER63-05 — a POSIX command PREFIX hid node from the expensive-test guard
+//
+// The third and last of the residuals AP-EXT-ITER63-02 left open, and the
+// eleventh instance of the AP-EXT-ITER10-01/12-01/18-01/19-01/54-01/63-01/63-02/
+// 63-06/64-01/64-02 shape. `extractNodeTestPathsFromSegment` read the executable
+// POSITIONALLY — `execName(tokens[skipEnvAssignments(tokens)]) !== 'node'` — and a
+// POSIX command prefix is an ordinary program that stands in exec position and
+// execs the real command behind it. It is not an env assignment, so the prelude
+// walked past nothing, the `!== 'node'` gate matched the PREFIX, the segment
+// yielded NO candidates, `isExpensiveTestFile` was never consulted, and the
+// R-CSIS-B1 soak guard APPROVED.
+//
+// Measured 2026-08-26 against the shipped hook: 12 of 12 prefixed forms APPROVED
+// while their byte-identical bare twins BLOCKED. That is a live bypass of the
+// guard that keeps a worker from starting a 30-minute soak inside its turn.
+//
+// The fix needs NO prefix table — that is the incomplete-declaration shape this
+// module has now been bitten by ten times. It scans for the `node` ANCHOR
+// wherever it sits (`execAnchorIndex`), exactly as `findGitVerb` does for `git`.
+// Every block case below is paired with a benign twin, so none can pass by
+// blanket-blocking any command that merely mentions a prefix or `node`.
+// ---------------------------------------------------------------------------
+
+const ITER63_05_PREFIXES = [
+  ['env', 'env node --test soak.test.js'],
+  ['env with an assignment operand', 'env FOO=1 node --test soak.test.js'],
+  ['command', 'command node --test soak.test.js'],
+  ['nohup', 'nohup node --test soak.test.js'],
+  ['nice', 'nice node --test soak.test.js'],
+  ['nice with an operand', 'nice -n 10 node --test soak.test.js'],
+  ['exec', 'exec node --test soak.test.js'],
+  ['time', 'time node --test soak.test.js'],
+  ['sudo', 'sudo node --test soak.test.js'],
+  ['timeout with an operand', 'timeout 600 node --test soak.test.js'],
+  ['setsid', 'setsid node --test soak.test.js'],
+  ['stdbuf with an operand', 'stdbuf -o0 node --test soak.test.js'],
+  ['npx', 'npx node --test soak.test.js'],
+  ['an absolute-path prefix', '/usr/bin/env node --test soak.test.js'],
+  ['a prefix behind an env assignment', 'PICKLE_ROLE=x env node --test soak.test.js'],
+  ['a prefix behind a shell wrapper', 'bash -c "env node --test soak.test.js"'],
+  ['a prefix in a chained segment', 'cd extension && env node --test soak.test.js'],
+  ['a prefix in a grouped segment', '(nohup node --test soak.test.js)'],
+  ['a quoted prefix', '"env" node --test soak.test.js'],
+  ['two stacked prefixes', 'nohup nice node --test soak.test.js'],
+  ['a prefix before an option operand', 'env node --test --test-reporter spec soak.test.js'],
+  // No table carries this one. An enumerated prefix set would approve it; an
+  // anchor read cannot tell it from `env`, which is the entire point.
+  ['an INVENTED prefix no table would carry', 'frobnicate node --test soak.test.js'],
+];
+
+for (const [label, command] of ITER63_05_PREFIXES) {
+  test(`AP-EXT-ITER63-05: worker blocks an expensive soak behind ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'soak.test.js'), '// @tier: expensive\n');
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-CSIS-B1/);
+  });
+}
+
+// Non-tautology twins: the SAME prefixes over a non-expensive file must still
+// approve. Without these, a blanket "block anything with a prefix" would pass
+// every case above.
+test('AP-EXT-ITER63-05: the same prefixes over a NON-expensive test stay approved', () => {
+  for (const [, command] of ITER63_05_PREFIXES) {
+    const benign = command.replace(/soak\.test\.js/g, 'benign.test.js');
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'benign.test.js'), '// @tier: fast\n');
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: benign },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', JSON.stringify(benign));
+  }
+});
+
+// Quoting invariance, in parity with AP-EXT-ITER64-01: the shell strips the
+// quotes before node runs, so a quoted exec behind a prefix is still an exec.
+test('AP-EXT-ITER63-05: a quoted node behind a prefix still anchors', () => {
+  for (const command of [
+    "env 'node' --test soak.test.js",
+    'nohup "node" --test soak.test.js',
+    "command 'node' --test 'soak.test.js'",
+    'PICKLE_ROLE=worker env "/usr/bin/node" --test "soak.test.js"',
+  ]) {
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'soak.test.js'), '// @tier: expensive\n');
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-CSIS-B1/);
+  }
+});
+
+// The anchor must not invent a block out of DATA. A quoted span that merely
+// contains the invocation is one token whose `execName` fold is not `node`, and
+// the recommended expensive-test entry point runs through npm, not node.
+test('AP-EXT-ITER63-05: node inside a quoted argument, and npm entry points, stay approved', () => {
+  for (const command of [
+    'env echo "node --test soak.test.js"',
+    "nohup git commit -m 'node --test soak.test.js'",
+    'env RUN_EXPENSIVE_TESTS=1 npm run test:expensive',
+    'env node --version',
+    'env node --test',
+  ]) {
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'soak.test.js'), '// @tier: expensive\n');
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', JSON.stringify(command));
+  }
+});
+
+// Structural pin: the positional read must not come back. The behavior cases
+// above pass on the day a re-typed positional variant is written and drift from
+// it afterwards; the ABSENCE of the prelude call from this body is the invariant.
+test('AP-EXT-ITER63-05: extractNodeTestPathsFromSegment reads no positional exec index', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'),
+    'utf8',
+  );
+  const body = source.slice(
+    source.indexOf('function extractNodeTestPathsFromSegment'),
+    source.indexOf('function extractNodeTestPaths('),
+  );
+  assert.ok(body.length > 0, 'extractNodeTestPathsFromSegment must exist');
+  assert.match(
+    body,
+    /execAnchorIndex\(tokens, 'node'\)/,
+    'the node exec must be located by anchor, not by position',
+  );
+  assert.equal(
+    /skipEnvAssignments|execTokenIndex|\.quoted/.test(body),
+    false,
+    `extractNodeTestPathsFromSegment must not gate on a positional exec index or ` +
+      `on quoting — a command prefix defeats both. Body was:\n${body}`,
+  );
+  // File-wide: an enumerated prefix table parked at module scope is the same
+  // incomplete-set shape, one indent out of the extractor.
+  assert.equal(
+    /'(env|nohup|nice|command|timeout|setsid|stdbuf|npx)'/.test(source),
+    false,
+    'config-protection.ts must not enumerate POSIX command prefixes',
+  );
+});

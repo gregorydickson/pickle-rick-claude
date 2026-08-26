@@ -10,7 +10,6 @@ import {
   execAnchorIndex,
   execName,
   execTokenIndex,
-  skipEnvAssignments,
   splitShellSegments,
   tokenizeShellCommand,
   tokenizeShellTokens,
@@ -780,7 +779,7 @@ export function detectProhibitedGitVerb(command: string): { verb: string } | nul
  * — an operand only reaches `block()` if it names a real file whose first line
  * is `// @tier: expensive`, and blocking that is the conservative call.
  *
- * Tokenizes quote-aware via `tokenizeShellCommand` for the same reason the git
+ * Tokenizes quote-aware via `tokenizeShellTokens` for the same reason the git
  * chain and `segmentInvokesInstallSh` do (the "quoted-token parity" trap door):
  * a bare `split(/\s+/)` reads `"node"`, `"--test"` and `"soak.test.js"` with the
  * quotes attached, so `node --test "<expensive>"` — which the shell runs as the
@@ -788,22 +787,42 @@ export function detectProhibitedGitVerb(command: string): { verb: string } | nul
  * `isExpensiveTestFile` failed its read, and the guard APPROVED the soak while
  * the unquoted form blocked (measured: 4 of 7 forms). This was the last detector
  * in the file still on the bare split, and the residual the AP-EXT-EXECFOLD trap
- * door left open.
+ * door left open. `tokenizeShellCommand` is that tokenizer's `.value`
+ * projection; this reads the tokens themselves so it can share `execAnchorIndex`.
+ *
+ * node is located by ANCHOR, not by position (AP-EXT-ITER63-05). The old read
+ * was `execName(tokens[skipEnvAssignments(tokens)])`, and a POSIX command PREFIX
+ * (`env`, `command`, `nohup`, `nice`, `timeout`, `sudo`, `setsid`, `stdbuf`,
+ * `time`, `exec`, `npx`, …) is an ordinary program that stands in exec position
+ * and execs the real command behind it — no env assignment, so the prelude
+ * walked past nothing and the `!== 'node'` test failed on the PREFIX. The
+ * segment yielded NO candidates, `isExpensiveTestFile` was never consulted, and
+ * the R-CSIS-B1 soak guard APPROVED: `env node --test <expensive>`,
+ * `nohup`/`nice`/`timeout 600`/`exec`/`sudo`/`setsid`/`stdbuf -o0`/`time` and
+ * `cd extension && env node --test <expensive>` — 12 of 12 measured against the
+ * shipped hook — while the byte-identical bare twin BLOCKED.
+ *
+ * Teaching the prelude those prefixes means enumerating them, the shape that has
+ * now failed ten times in this module; the anchor needs no table, exactly as
+ * `findGitVerb` needs none (AP-EXT-ITER63-02) and for the same reason. Scanning
+ * from the anchor is a strict SUPERSET of the post-env index the old code read —
+ * an env assignment can never fold to `node`, so the anchor lands on the same
+ * token whenever the old read fired, and nothing that blocked before can stop
+ * blocking now.
  */
 function extractNodeTestPathsFromSegment(segment: string): string[] {
   const trimmed = segment.trim();
   if (!trimmed) return [];
-  const tokens = tokenizeShellCommand(trimmed);
-  let idx = skipEnvAssignments(tokens);
-  // execName, not a raw compare: `NODE --test <expensive>` and
-  // `/usr/bin/node --test <expensive>` both really run node, and a raw
-  // `!== 'node'` let them slip the expensive-test guard. Same fold as every
-  // other exec-token compare in this file.
-  if (execName(tokens[idx]) !== 'node') return [];
+  const tokens = tokenizeShellTokens(trimmed);
+  // `execAnchorIndex` folds through `execName`, so `NODE --test <expensive>`,
+  // `/usr/bin/node --test <expensive>` and a quoted `'node'` all anchor — every
+  // one really runs node, and a raw `!== 'node'` let them slip this guard.
+  const anchor = execAnchorIndex(tokens, 'node');
+  if (anchor === -1) return [];
   const candidates: string[] = [];
   let foundTestFlag = false;
-  for (idx++; idx < tokens.length; idx++) {
-    const t = tokens[idx];
+  for (let idx = anchor + 1; idx < tokens.length; idx++) {
+    const t = tokens[idx].value;
     if (t === '--test') { foundTestFlag = true; continue; }
     if (foundTestFlag && !t.startsWith('-')) candidates.push(t);
   }
