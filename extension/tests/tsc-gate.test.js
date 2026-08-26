@@ -968,18 +968,31 @@ it('AP-EXT-ITER27-01 the exec-token prelude has ONE home (no private tsc-gate co
   // every behavior case above on the day it is written and drifts afterwards.
   assert.match(shellExec, /export function execTokenIndex\(/);
   assert.match(shellExec, /export function skipEnvAssignments\(/);
-  for (const [name, source] of [['tsc-gate.ts', tscGate], ['config-protection.ts', configProtection]]) {
-    assert.equal(
-      /function execTokenIndex\(/.test(source),
-      false,
-      `${name} must consume shell-exec.ts:execTokenIndex, not define its own`,
-    );
+  // The exec-LOCATING helper each handler consumes differs by design and must
+  // not be pinned to `execTokenIndex` by name: AP-EXT-ITER63-03 moved tsc-gate
+  // off the positional prelude onto the list-free `execAnchorIndex`, because a
+  // POSIX command prefix stands AT the prelude's index. What this test pins is
+  // the ONE-HOME rule — whichever helper a handler uses, it imports it from
+  // shell-exec.ts and defines no private copy.
+  const handlers = [
+    ['tsc-gate.ts', tscGate, 'execAnchorIndex'],
+    ['config-protection.ts', configProtection, 'execTokenIndex'],
+  ];
+  assert.match(shellExec, /export function execAnchorIndex\(/);
+  for (const [name, source, helper] of handlers) {
+    for (const shared of ['execTokenIndex', 'skipEnvAssignments', 'execAnchorIndex']) {
+      assert.equal(
+        new RegExp(`function ${shared}\\(`).test(source),
+        false,
+        `${name} must consume shell-exec.ts:${shared}, not define its own`,
+      );
+    }
     assert.equal(
       /\[A-Za-z_\]\[A-Za-z0-9_\]\*=/.test(source),
       false,
       `${name} must consume shell-exec.ts:ENV_ASSIGNMENT_RE, not re-type the literal`,
     );
-    assert.match(source, /execTokenIndex[\s\S]*from '\.\.\/shell-exec\.js'/);
+    assert.match(source, new RegExp(`${helper}[\\s\\S]*from '\\.\\./shell-exec\\.js'`));
   }
 });
 
@@ -1103,5 +1116,108 @@ it('AP-EXT-ITER55-01: isGitCommitCommand classifies commit without an operand-op
   ];
   for (const command of negatives) {
     assert.equal(isGitCommitCommand(command), false, command);
+  }
+});
+
+it('AP-EXT-ITER63-03 a POSIX command PREFIX cannot hide the commit from the R-WACT tsc gate', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  // A command prefix is an ordinary program that takes a command as its
+  // argument and execs it, so it stands in exec position with git behind it.
+  // `execTokenIndex` landed on the PREFIX, `execName` folded it to `env`, the
+  // segment classified NON-commit, and the gate was SKIPPED for a broken-TS
+  // commit — 11 of 11 forms measured 2026-08-26 against the shipped export
+  // while every bare twin gated. `env`/`command`/`nohup`/`nice`/`exec`/`time`
+  // were each shim-verified to really exec git on this box.
+  const prefixed = [
+    'env git commit -m "x"',
+    'command git commit -m "x"',
+    'nohup git commit -m "x"',
+    'nice git commit -m "x"',
+    'exec git commit -m "x"',
+    'time git commit -m "x"',
+    'sudo git commit -m "x"',
+    'timeout 600 git commit -m "x"',
+    'setsid git commit -m "x"',
+    'stdbuf -o0 git commit -m "x"',
+    'xargs git commit -m "x"',
+    // An INVENTED prefix no enumeration would ever carry: the anchor read is
+    // list-free, so a prefix nobody has heard of is no different from `env`.
+    'frobnicate git commit -m "x"',
+    // The prefix composes with every form the earlier fixes closed.
+    'env /usr/bin/git commit -m "x"',
+    'env GIT_COMMITTER_DATE=2020 git commit -m "x"',
+    'nohup git --no-pager commit -m "x"',
+    'env git --config-env core.bare=MYVAL commit -m "x"',
+    'cd extension && env git commit -m "x"',
+    '(env git commit -m "x")',
+    'env bash -c "git commit -m x"',
+    // Quoting the exec does not stop bash execing it (AP-EXT-ITER64-01).
+    "env 'git' commit -m \"x\"",
+    'nohup "git" commit -m "x"',
+  ];
+  for (const command of prefixed) {
+    assert.equal(isGitCommitCommand(command), true, command);
+  }
+
+  // Non-tautology twins: these must stay NON-commits, so the anchor did not
+  // simply start classifying everything as a commit.
+  const negatives = [
+    'env git status',
+    'nohup git log --oneline',
+    'command git diff HEAD',
+    'nice git rev-parse HEAD',
+    'env bash install.sh',
+    'env gh pr create --fill',
+    'nohup npm run build',
+    'env git --config-env core.bare=MYVAL log --oneline',
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, command);
+  }
+});
+
+it('AP-EXT-ITER63-03 segmentIsGitCommit reads NO positional exec index', async () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts'),
+    'utf8',
+  );
+  const body = source.slice(
+    source.indexOf('function segmentIsGitCommit'),
+    source.indexOf('export function isGitCommitCommand'),
+  );
+  assert.ok(body.length > 0, 'segmentIsGitCommit body not found');
+  // Strip comments BEFORE grepping. This entry's own rationale names
+  // `execTokenIndex` in prose to say why it is gone, and an un-stripped grep
+  // counts that mention as the violation — the exact self-counting
+  // falsification mode `extension/CLAUDE.md` catalogs (R-CNAR-2,
+  // AP-EXT-ITER10-01). A pin that reddens on its own explanation is a phantom.
+  const stripComments = (text) =>
+    text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+  const code = stripComments(body);
+  // The structural half of the fix: the bug re-enters through ANY positional
+  // read of the exec token, so pin their absence rather than only the behavior
+  // above. A quoting side-condition is the same bug wearing a different hat
+  // (AP-EXT-ITER64-01/64-02), so `.quoted` is barred here too.
+  assert.match(code, /execAnchorIndex\(tokens, 'git'\)/);
+  for (const forbidden of ['execTokenIndex', 'skipEnvAssignments', '.quoted']) {
+    assert.equal(
+      code.includes(forbidden),
+      false,
+      `segmentIsGitCommit must not read ${forbidden}`,
+    );
+  }
+  // And no command-prefix table may appear anywhere in the handler — the
+  // enumerated fix is the trap, not the bug.
+  const handlerCode = stripComments(source);
+  // `'timeout'` is deliberately NOT in this list, unlike the sibling pin in
+  // config-protection.ts: it is a legitimate `GateFailureKind` union member
+  // here (tsc-gate.ts:23), so barring the literal would be an anchor that is
+  // false at birth — the catalog-rot mode `extension/CLAUDE.md` warns about.
+  for (const prefix of ["'env'", "'nohup'", "'nice'", "'command'", "'setsid'", "'stdbuf'"]) {
+    assert.equal(
+      handlerCode.includes(prefix),
+      false,
+      `tsc-gate.ts must carry no command-prefix literal ${prefix}`,
+    );
   }
 });

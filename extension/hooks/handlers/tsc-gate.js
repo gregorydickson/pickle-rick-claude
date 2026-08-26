@@ -6,7 +6,7 @@ import { approve, loadActiveState, resolveStateFile } from '../resolve-state.js'
 import { logActivity } from '../../services/activity-logger.js';
 import { getDataRoot, safeErrorMessage } from '../../services/pickle-utils.js';
 import { StateManager } from '../../services/state-manager.js';
-import { execName, execTokenIndex, splitShellSegments, tokenizeShellCommand } from '../shell-exec.js';
+import { execAnchorIndex, splitShellSegments, tokenizeShellTokens } from '../shell-exec.js';
 const TSC_TRIGGER_RE = /\.(?:[cm]?ts|tsx)$/i;
 const TSC_CONFIG_RE = /^tsconfig(?:\..+)?\.json$/i;
 const PACKAGE_JSON_RE = /^package.*\.json$/i;
@@ -63,30 +63,30 @@ function stripCdPrefix(command) {
 }
 function segmentIsGitCommit(segment) {
     const stripped = stripCdPrefix(segment);
-    const tokens = tokenizeShellCommand(stripped);
-    if (tokens.length === 0)
-        return false;
-    // Locate the executable through the ONE shared prelude (env assignments →
-    // optional `bash`/`sh` wrapper → env assignments), the same helper
-    // config-protection's three detectors use. A private inline copy here — an
-    // `ENV_ASSIGNMENT_RE` literal re-typed under a comment claiming it was "the
-    // identical regex", and missing the wrapper arm entirely — is the third fork
-    // of the shell-token family that AP-EXT-EXECFOLD and AP-EXT-ITER12-01 each
-    // had to collapse after it drifted. Without the env skip, an env-prefixed
-    // commit reads `GIT_COMMITTER_DATE=…` as tokens[0], fails the `git` check, is
-    // classified non-commit, and SKIPS the R-WACT tsc gate for a broken-TS commit.
-    const gitIdx = execTokenIndex(tokens);
-    // execName (not a raw compare): folds case and takes the basename, so
-    // `GIT commit` and `/usr/bin/git commit` — which really do run git on a
-    // case-insensitive filesystem — still classify as commits. A raw
-    // `!== 'git'` here classified them non-commit and SKIPPED the R-WACT gate
-    // entirely, letting a worker land broken TypeScript. The sibling detector
-    // in config-protection.ts already folded through `execName`; this was the
-    // remaining half of that parity pair.
-    const execToken = execName(tokens[gitIdx]);
-    if (execToken === 'gh')
-        return false;
-    if (execToken !== 'git')
+    const tokens = tokenizeShellTokens(stripped);
+    // The git ANCHOR, not the exec-token prelude — the same collapse
+    // config-protection's `findGitVerb` (AP-EXT-ITER63-02) and
+    // `extractNodeTestPathsFromSegment` (AP-EXT-ITER63-05) already made. A POSIX
+    // command PREFIX (`env`, `command`, `nohup`, `nice`, `exec`, `time`, `sudo`,
+    // …) is an ordinary program that takes a command as its argument and execs
+    // it, so it stands in exec position with the real executable behind it:
+    // `execTokenIndex` landed on the PREFIX, `env git commit -m x` classified
+    // NON-commit, and the R-WACT tsc gate was SKIPPED for a broken-TS commit
+    // while the bare twin gated. Teaching the prelude those prefixes means
+    // enumerating them — the incomplete-declaration shape that has now failed
+    // eleven times in this module, one member from the next bypass. Asking
+    // instead "does this segment contain a token the shell may exec as git,
+    // wherever it sits" needs no table, exactly as the subcommand scan below
+    // needs no git-option table.
+    //
+    // `execAnchorIndex` folds through `execName`, so `GIT commit` and
+    // `/usr/bin/git commit` — which really do run git on a case-insensitive
+    // filesystem — still classify as commits, and it reads no `.quoted` flag, so
+    // `env 'git' commit` cannot hide behind quotes either (AP-EXT-ITER64-01).
+    // The `gh` arm the prelude needed is gone with it: `gh pr create` carries no
+    // `git` anchor, so it returns -1 rather than needing its own exclusion.
+    const gitIdx = execAnchorIndex(tokens, 'git');
+    if (gitIdx === -1)
         return false;
     // ONE uniform read, in parity with config-protection.ts:findGitVerb: skip every
     // `-`-prefixed token (boolean global option, `=`-glued arg-option) and classify
@@ -101,7 +101,7 @@ function segmentIsGitCommit(segment) {
     // on the subcommand word instead means an unrecognised global option is stepped
     // over, and an option OPERAND spelling `commit` at worst RUNS the gate — safe.
     for (let index = gitIdx + 1; index < tokens.length; index++) {
-        const token = tokens[index];
+        const token = tokens[index].value;
         if (token.startsWith('-'))
             continue;
         if (token === 'commit')
