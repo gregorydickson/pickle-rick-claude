@@ -1047,17 +1047,32 @@ function main() {
     }
     block(`Config file protected: ${targetedConfigFile}. Pass ${ALLOW_CONFIG_EDIT_FLAG} to override.`);
 }
-try {
-    main();
-}
-catch (err) {
+// CLI guard: only execute the hook entrypoint when invoked directly as a script.
+// This module EXPORTS `detectProhibitedGitVerb` and `PROTECTED_WRITE_GLOBS` for
+// downstream auditing tools, and without the guard an `import` of it runs the
+// whole hook — reading fd 0 and printing a decision into the importer's stdout.
+// The two sibling handlers already carry this guard (`tsc-gate.ts`, whose own
+// fix commit reads "add CLI guard so test imports do not block on stdin", and
+// `stop-hook.ts`).
+//
+// Basename compare, NEVER a realpath-exact one (AP-EXT-ITER4-01): `dispatch.ts`
+// builds argv[1] from an un-realpathed `EXTENSION_DIR`, so through a symlinked
+// install root a realpath-exact guard never fires, the hook emits nothing, and
+// dispatch's "no valid decision JSON" arm approves — a fail-open strictly worse
+// than the bug this guard closes.
+if (process.argv[1] && path.basename(process.argv[1]) === 'config-protection.js') {
     try {
-        const msg = err instanceof Error ? err.message : String(err);
-        const extensionDir = getExtensionRoot();
-        fs.appendFileSync(path.join(extensionDir, 'debug.log'), `[config-protection] FATAL: ${msg}\n`);
+        main();
     }
-    catch {
-        /* ignore */
+    catch (err) {
+        try {
+            const msg = err instanceof Error ? err.message : String(err);
+            const extensionDir = getExtensionRoot();
+            fs.appendFileSync(path.join(extensionDir, 'debug.log'), `[config-protection] FATAL: ${msg}\n`);
+        }
+        catch {
+            /* ignore */
+        }
+        approve();
     }
-    approve();
 }

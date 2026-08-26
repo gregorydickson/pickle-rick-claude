@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execAnchorIndex, isShellWrapper, splitShellSegments, tokenizeShellTokens } from '../../hooks/shell-exec.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2828,4 +2828,70 @@ test('AP-EXT-ITER66-02: an escape naming no character stands as written', () => 
   ]) {
     assert.equal(tokenizeShellTokens(form)[0].value, value, form);
   }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER69-01 — the module is IMPORTABLE, so it must not run on import.
+//
+// The handler exports `detectProhibitedGitVerb` and `PROTECTED_WRITE_GLOBS`
+// ("for downstream tools that import the handler for auditing"). Without a CLI
+// entry guard the top-level `main()` ran on every import: it read fd 0 and
+// printed a hook decision into the importer's stdout. Measured pre-fix — with
+// stdin ignored the import emitted `{"decision":"approve"}` ahead of the
+// importer's own output; with stdin an open, never-written pipe (the stdio
+// shape `node --test` and any spawn-based tool harness give a child) the
+// import NEVER RETURNED. Both sibling handlers already carry the guard; only
+// this one never had it.
+//
+// The pin is the emitted-decision half because it is decided by CONTENT, not
+// by elapsed time. The stdin block is the same one line and needs no second,
+// timing-shaped case.
+// ---------------------------------------------------------------------------
+
+function importHandlerInChild() {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-import-'));
+  try {
+    const probe = path.join(tmpDir, 'import-probe.mjs');
+    fs.writeFileSync(
+      probe,
+      `await import(${JSON.stringify(pathToFileURL(HANDLER).href)});\n`
+        + `process.stdout.write('IMPORTED');\n`,
+    );
+    // stdin is 'ignore', so a pre-fix handler still terminates and the failure
+    // surfaces as the decision it printed rather than as a hung test.
+    return execFileSync(process.execPath, [probe], {
+      encoding: 'utf-8',
+      timeout: 30000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER69-01: importing the handler emits no hook decision', () => {
+  const stdout = importHandlerInChild();
+  assert.equal(
+    stdout,
+    'IMPORTED',
+    'importing config-protection.js must not run main(); it wrote a hook decision into the importer stdout',
+  );
+  assert.doesNotMatch(stdout, /"decision"/);
+});
+
+// The anti-disarm control. A guard that does not fire for dispatch's own argv
+// shape is strictly worse than no guard: the hook emits nothing and dispatch's
+// "no valid decision JSON" arm approves every worker-forbidden op. dispatch.ts
+// spawns `node <handlers>/config-protection.js`, so argv[1]'s BASENAME is what
+// the guard may key on — never a realpath-exact form (AP-EXT-ITER4-01).
+test('AP-EXT-ITER69-01 control: the entry guard still fires for dispatch argv, so the block lands', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'git reset --hard HEAD~1' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC-GR/);
 });
