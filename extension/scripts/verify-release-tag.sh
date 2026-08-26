@@ -6,6 +6,10 @@
 # Read-only: never pushes, creates, or deletes tags.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=resolve-tag-sha.sh
+source "$SCRIPT_DIR/resolve-tag-sha.sh"
+
 usage() {
   echo "Usage: $(basename "$0") <tag> <expected-sha> [<remote>]" >&2
   echo "  Compares the commit sha a tag resolves to on <remote> (default: origin)" >&2
@@ -33,29 +37,8 @@ if [[ ! "$expected_sha" =~ ^[0-9a-fA-F]{4,40}$ ]]; then
   exit 1
 fi
 
-# Query both the bare ref and its `^{}` peel explicitly. Filtering ls-remote
-# by the bare tag name alone (`git ls-remote --tags "$remote" "$tag"`) matches
-# only refs/tags/<tag> and silently drops the ^{}-peeled line for annotated
-# tags -- reintroducing the "tag object sha mistaken for commit sha" bug this
-# script exists to prevent. Two explicit refspecs avoid that pitfall.
-ls_remote_output="$(git ls-remote "$remote" "refs/tags/$tag" "refs/tags/$tag^{}")"
-
-if [ -z "$ls_remote_output" ]; then
-  fail_absent
-fi
-
-# An annotated tag returns two lines: the tag object's own sha, and a second
-# line suffixed `^{}` that dereferences to the commit sha. A lightweight tag
-# returns only the single (already-commit) line. The tag object's own sha is
-# NOT the commit sha, so the `^{}` line must win when present.
-deref_line="$(printf '%s\n' "$ls_remote_output" | grep -F '^{}' || true)"
-if [ -n "$deref_line" ]; then
-  actual_sha="$(printf '%s\n' "$deref_line" | awk '{print $1}')"
-else
-  actual_sha="$(printf '%s\n' "$ls_remote_output" | head -n1 | awk '{print $1}')"
-fi
-
-if [ -z "$actual_sha" ]; then
+actual_sha=""
+if ! actual_sha="$(resolve_tag_sha "$tag" "$remote")"; then
   fail_absent
 fi
 
