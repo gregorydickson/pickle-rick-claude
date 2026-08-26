@@ -81,7 +81,10 @@ function readActivityEventsSince(activityDir, files, sinceMs) {
     try {
       content = fs.readFileSync(path.join(activityDir, file), 'utf8');
     } catch {
-      continue;
+      // An in-window day we cannot READ is the absence of evidence, not evidence of absence.
+      // Skipping it would let the scan finish and report `activity_count: 0` — an affirmative
+      // claim that a complete scan found nothing. Stop and report no-measurement instead.
+      return null;
     }
     for (const rawLine of content.split('\n')) {
       const line = rawLine.trim();
@@ -230,7 +233,13 @@ export function verifyRecaptureFired(sessionRoot) {
     ? null
     : readActivityEventsSince(activityDir, activityFiles, latestWindow.start);
   const matchingEvent = activity ? findMatchingEvent(activity, windows, sessionName) : null;
-  const failureReason = activityFiles === null
+  // ONE no-measurement state, two producers: an unlistable activity DIR, or an in-window DAY
+  // file that could not be read. Both mean "the activity log could not be read" and both take
+  // the SAME operator repair, so they collapse onto `activity-missing` rather than adding a
+  // sixth failure_reason. Reporting `recapture-event-missing` instead asserts a scan that
+  // never completed and sends the operator at the producer instead of at the permissions.
+  const activityUnreadable = activityFiles === null || (windows.length > 0 && activity === null);
+  const failureReason = activityUnreadable
     ? 'activity-missing'
     : windows.length === 0
       ? 'phase-window-missing'

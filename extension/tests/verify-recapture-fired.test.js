@@ -919,3 +919,80 @@ test('verify-recapture.absent activity dir still outranks a missing anatomy wind
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });
+
+// AP-BIN-ITER17-01. `readActivityEventsSince` swallowed a per-file read error with `catch
+// { continue; }`, so an in-window day the verifier could NOT read was scored as a day that
+// held no match: the artifact reported `recapture-event-missing` with `activity_count: 0` —
+// an affirmative claim that a complete scan found nothing — and pointed the operator at the
+// PRODUCER ("ensure anatomy-park logs baseline_recapture_attempted") when anatomy-park had
+// logged it and the real repair was the log's permissions. The same file already draws this
+// distinction twice (`failureReasonForStateReadError` for state.json, `activity-missing` for
+// an unlistable activity DIR); only the day-file read dropped it.
+//
+// A/B on ONE session, ONE event, ONE day file — only the file's MODE changes between halves.
+// The readable half proves the event is genuinely findable, so the unreadable half cannot
+// decay into "this fixture never had a match in the first place".
+test('verify-recapture.an unreadable in-window activity day reports no-measurement, not a missing recapture', () => {
+  const session = makeSession(baseState(HISTORY_WINDOW_HIT));
+  const dataRoot = makeDataRoot();
+  const sessionName = path.basename(session);
+  const activityDir = writeActivityEvents(dataRoot, [recaptureEvent(sessionName)]);
+  const windowDay = path.join(activityDir, `${formatLocalDateKey(new Date(RECAPTURE_TS))}.jsonl`);
+  try {
+    const readable = runVerifier(session, dataRoot);
+    assert.equal(readable.status, 0, readable.stderr);
+    assert.equal(readable.runtimeArtifact.pass, true);
+    assert.equal(
+      readable.runtimeArtifact.evidence.activity_count,
+      1,
+      'the readable half must actually find the event, or the unreadable half proves nothing',
+    );
+
+    chmodSync(windowDay, 0o000);
+    const unreadable = runVerifier(session, dataRoot);
+    assert.equal(unreadable.status, 1);
+    assert.equal(unreadable.runtimeArtifact.pass, false);
+    assert.notEqual(
+      unreadable.runtimeArtifact.failure_reason,
+      'recapture-event-missing',
+      'a day we could not read is the absence of evidence, not evidence of absence',
+    );
+    assert.equal(unreadable.runtimeArtifact.failure_reason, 'activity-missing');
+    assert.equal(
+      unreadable.runtimeArtifact.evidence.activity_count,
+      null,
+      'nothing was measured, and the artifact must say so instead of reporting a count of 0',
+    );
+    assert.match(unreadable.runtimeArtifact.remediation_hint, /activity log directory .* readable/);
+  } finally {
+    chmodSync(windowDay, 0o644);
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+// The bound still runs BEFORE the read, so an unreadable day the verdict does not need stays
+// irrelevant — AP-BIN-ITER16-01's day bound must not be turned into a no-measurement tripwire
+// by the guard above. Pre-window day unreadable + in-window day readable => the AC still passes.
+test('verify-recapture.an unreadable PRE-window day is bounded out and cannot force no-measurement', () => {
+  const session = makeSession(baseState(HISTORY_WINDOW_HIT));
+  const dataRoot = makeDataRoot();
+  const sessionName = path.basename(session);
+  const activityDir = writeActivityEvents(dataRoot, [
+    { ts: PRE_WINDOW_DAY_TS, event: 'iteration_start', source: 'pickle', session: sessionName },
+    recaptureEvent(sessionName),
+  ]);
+  const preWindowDay = path.join(activityDir, `${formatLocalDateKey(new Date(PRE_WINDOW_DAY_TS))}.jsonl`);
+  try {
+    chmodSync(preWindowDay, 0o000);
+    const result = runVerifier(session, dataRoot);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.runtimeArtifact.pass, true);
+    assert.equal(result.runtimeArtifact.failure_reason, null);
+    assert.equal(result.runtimeArtifact.evidence.activity_count, 1);
+  } finally {
+    chmodSync(preWindowDay, 0o644);
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
