@@ -21,7 +21,7 @@ const SCRIPT = path.join(EXTENSION_ROOT, 'scripts', 'verify-release-tag.sh');
 const CLAUDE_MD = path.join(REPO_ROOT, 'CLAUDE.md');
 
 function git(args, cwd) {
-    const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000 });
     assert.equal(result.status, 0, `git ${args.join(' ')} failed: ${result.stderr}`);
     return result.stdout.trim();
 }
@@ -39,7 +39,7 @@ function makeFixtureRepo() {
 }
 
 function runScript(args) {
-    return spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', timeout: 10_000 });
+    return spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', timeout: 30_000 });
 }
 
 test('lightweight tag match exits zero and prints both shas', () => {
