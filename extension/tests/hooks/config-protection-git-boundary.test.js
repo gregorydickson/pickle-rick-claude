@@ -2534,3 +2534,225 @@ test('AP-EXT-ITER63-04: segmentInvokesInstallSh anchors the wrapper, not a posit
     'config-protection.ts must not enumerate POSIX command prefixes',
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER66-01 — bash has FOUR word-quoting forms and the scanner declared TWO
+//
+// `WORD_PART_SOURCE` offered `'…'` and `"…"`. bash also takes the `$`-introduced
+// spans `$'…'` (ANSI-C) and `$"…"` (locale), and in BOTH the `$` is syntax that
+// bash discards — `$'git'` IS the word `git`. Undeclared, the `$` fell through to
+// the ordinary-character run and glued to the span, so the fold produced `$git`
+// and every `execName` compare missed.
+//
+// Measured against the shipped handler before the fix: 10 of 10 forms APPROVED
+// for a worker while their byte-identical bare twins blocked, across FOUR guard
+// families at once — R-WSRC-GR git verbs, the R-WSRC `install.sh` ban, and the
+// R-WSRC-3 state and settings write gates. A `git`/`tee` shim confirmed each one
+// really execs (quote removal happens in the shell, before argv exists).
+//
+// `$'…'` additionally processes backslash escapes, so stripping delimiters alone
+// is not enough to recover the word: bash runs `$'\x67it'` and `$'\147it'` as
+// `git` (shim-verified). The numeric escapes are decoded for that reason.
+//
+// Every case is PAIRED with the twin that already blocked, so none can pass by
+// blanket-blocking anything containing a `$`.
+// ---------------------------------------------------------------------------
+
+for (const { label, dollar, twin, guard, expected } of [
+  // R-WSRC-GR — the git verb chain
+  { label: "$'git' reset", dollar: "$'git' reset --hard HEAD~1", twin: 'git reset --hard HEAD~1', guard: /R-WSRC-GR/, expected: /reset/ },
+  { label: '$"git" reset', dollar: '$"git" reset --hard HEAD~1', twin: 'git reset --hard HEAD~1', guard: /R-WSRC-GR/, expected: /reset/ },
+  { label: "$'git' push", dollar: "$'git' push origin main", twin: 'git push origin main', guard: /R-WSRC-GR/, expected: /push/ },
+  { label: "$'git' stash", dollar: "$'git' stash", twin: 'git stash', guard: /R-WSRC-GR/, expected: /stash/ },
+  // The VERB, not just the exec — `git $'reset'` runs a reset too.
+  { label: "git $'reset'", dollar: "git $'reset' --hard HEAD~1", twin: 'git reset --hard HEAD~1', guard: /R-WSRC-GR/, expected: /reset/ },
+  // Inside a `-c` payload, where the whole command string is ONE token.
+  { label: "bash -c $'git reset'", dollar: "bash -c $'git reset --hard HEAD~1'", twin: "bash -c 'git reset --hard HEAD~1'", guard: /R-WSRC-GR/, expected: /reset/ },
+  // Mid-word after a path separator: bash builds `/usr/bin/git`.
+  { label: "/usr/bin/$'git'", dollar: "/usr/bin/$'git' reset --hard", twin: '/usr/bin/git reset --hard', guard: /R-WSRC-GR/, expected: /reset/ },
+  // Composed with the AP-EXT-ITER64-01 command-prefix family.
+  { label: "env $'git'", dollar: "env $'git' reset --hard", twin: 'env git reset --hard', guard: /R-WSRC-GR/, expected: /reset/ },
+  // ANSI-C escapes really do spell the name — delimiter stripping alone misses these.
+  { label: "$'\\x67it' (hex escape)", dollar: "$'\\x67it' reset --hard", twin: 'git reset --hard', guard: /R-WSRC-GR/, expected: /reset/ },
+  { label: "$'\\147it' (octal escape)", dollar: "$'\\147it' reset --hard", twin: 'git reset --hard', guard: /R-WSRC-GR/, expected: /reset/ },
+  // R-WSRC — the deploy-script ban, on both the wrapper and the script token
+  { label: "$'bash' install.sh", dollar: "$'bash' install.sh", twin: 'bash install.sh', guard: /R-WSRC/, expected: /install\.sh/ },
+  { label: "bash $'install.sh'", dollar: "bash $'install.sh'", twin: 'bash install.sh', guard: /R-WSRC/, expected: /install\.sh/ },
+]) {
+  test(`AP-EXT-ITER66-01: worker blocks ${label} ($-introduced quoting)`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: dollar },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', dollar);
+    assert.match(result.reason, guard);
+    assert.match(result.reason, expected);
+  });
+
+  test(`AP-EXT-ITER66-01: ${label} matches its bare twin (non-tautology)`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: twin },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', twin);
+    assert.match(result.reason, expected);
+  });
+}
+
+// R-WSRC-3 — the same one character re-opened the protected-write gates. These
+// take the session's REAL state.json path, so the block is the shipped guard
+// answering about a live runtime file, not a basename coincidence.
+for (const { label, build, twinBuild, expected } of [
+  {
+    label: "$'tee' <session>/state.json",
+    build: (sf) => `$'tee' ${sf}`,
+    twinBuild: (sf) => `tee ${sf}`,
+    expected: /state file protected/i,
+  },
+  {
+    label: "$'sed' -i <session>/state.json",
+    build: (sf) => `$'sed' -i '' s/a/b/ ${sf}`,
+    twinBuild: (sf) => `sed -i '' s/a/b/ ${sf}`,
+    expected: /state file protected/i,
+  },
+  {
+    label: "$'cp' over <session>/state.json",
+    build: (sf) => `$'cp' /tmp/x ${sf}`,
+    twinBuild: (sf) => `cp /tmp/x ${sf}`,
+    expected: /state file protected/i,
+  },
+  {
+    label: "$'sed' -i pickle_settings.json",
+    build: () => "$'sed' -i '' s/a/b/ pickle_settings.json",
+    twinBuild: () => "sed -i '' s/a/b/ pickle_settings.json",
+    expected: /settings file protected/i,
+  },
+]) {
+  test(`AP-EXT-ITER66-01: worker blocks ${label} ($-introduced quoting)`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const command = build(stateFile);
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, expected);
+  });
+
+  test(`AP-EXT-ITER66-01: ${label} matches its bare twin (non-tautology)`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const command = twinBuild(stateFile);
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, expected);
+  });
+}
+
+// The fix widens what the scanner UNQUOTES, which is exactly the direction that
+// can invent a false block. These pin that it did not: a `$` that introduces no
+// span stays an ordinary character, and a write command named inside a commit
+// MESSAGE is still data.
+for (const approved of [
+  'git status',
+  'echo $HOME',
+  'echo "cost is $5"',
+  "git commit -m $'first line\\nsecond line'",
+  'git commit -m "worker -> state.json write ordering"',
+  "sed -n '1,20p' pickle_settings.json",
+  'cat install.sh',
+  "echo 'a'$'b'",
+]) {
+  test(`AP-EXT-ITER66-01: worker still approves ${JSON.stringify(approved)}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: approved },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', `${approved} → ${result.reason ?? ''}`);
+  });
+}
+
+// The fold must agree with bash about the WORD, which is the property every
+// detector above rests on. Every quoting expectation below was confirmed against
+// a real bash (`printf '%s\n' <form>`) rather than derived from the
+// implementation. `$notaspan` is the ONE deliberate divergence and is listed to
+// bound the fix: bash expands it as a variable, the scanner performs no
+// expansion, and that pre-existing limit (recorded in the `WRITE_COMMANDS` is a
+// speed bump trap door) is unchanged here — the `$` must simply stay an ordinary
+// character when it introduces no span.
+test('AP-EXT-ITER66-01: the fold reproduces bash word-splitting for all four quoting forms', () => {
+  for (const [form, value] of [
+    ["$'git'", 'git'],
+    ['$"git"', 'git'],
+    ["'git'", 'git'],
+    ['"git"', 'git'],
+    ["$'\\x67it'", 'git'],
+    ["$'\\147it'", 'git'],
+    ["/usr/bin/$'git'", '/usr/bin/git'],
+    ["$'a\\'b'", "a'b"],
+    ["a$'b'c", 'abc'],
+    ['$notaspan', '$notaspan'],
+    ['$', '$'],
+  ]) {
+    const tokens = tokenizeShellTokens(form);
+    assert.equal(tokens.length, 1, `${JSON.stringify(form)} must fold to ONE word`);
+    assert.equal(tokens[0].value, value, JSON.stringify(form));
+  }
+});
+
+// A `$`-introduced span is QUOTED, so the character it carries is data. Without
+// this, `$'>'` would read as a redirect operator and the AP-EXT-ITER51-01
+// refused-commit class returns through the new forms.
+test('AP-EXT-ITER66-01: a $-introduced span is quoted, so its content is data', () => {
+  for (const form of ["$'>'", '$">"', "'>'", '">"']) {
+    assert.equal(tokenizeShellTokens(form)[0].quoted, true, form);
+  }
+  for (const form of ['>', "x$'>'"]) {
+    assert.equal(tokenizeShellTokens(form)[0].quoted, false, form);
+  }
+});
+
+// Structural pin: the grammar must DECLARE all four forms. Behavior alone would
+// be satisfied by a special case bolted onto one detector, which is the shape
+// this module has had to remove nine times.
+test('AP-EXT-ITER66-01: the word grammar declares all four bash quoting forms', () => {
+  const shellExec = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
+    'utf8',
+  );
+  const alternation = shellExec.match(/const WORD_PART_SOURCE =[\s\S]*?;\n/);
+  assert.ok(alternation, 'WORD_PART_SOURCE must remain a single declaration');
+  for (const span of [
+    'ANSI_C_QUOTED_SPAN',
+    'LOCALE_QUOTED_SPAN',
+    'DOUBLE_QUOTED_SPAN',
+    'SINGLE_QUOTED_SPAN',
+  ]) {
+    assert.ok(
+      alternation[0].includes(span),
+      `WORD_PART_SOURCE must offer ${span} — an undeclared quoting form is ` +
+        `scanned as ordinary characters and silently changes the folded word`,
+    );
+  }
+  // The ordinary-character run must yield the `$` back to the span it belongs
+  // to; a bare `[^\s'"]+` swallows it and re-opens the mid-word path case.
+  assert.ok(
+    /const UNQUOTED_RUN = '\(\?:\(\?!\\\\\$\[\\'"\]\)/.test(shellExec),
+    'UNQUOTED_RUN must stop before a $ that introduces a quoted span',
+  );
+});

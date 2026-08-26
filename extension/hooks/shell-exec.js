@@ -46,6 +46,31 @@ export const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const DOUBLE_QUOTED_SPAN = '"(?:\\\\.|[^"\\\\])*"';
 const SINGLE_QUOTED_SPAN = '\'[^\']*\'';
 /**
+ * AP-EXT-ITER66-01: bash has FOUR word-quoting forms, not two. Beyond `'…'` and
+ * `"…"` it takes the `$`-introduced spans `$'…'` (ANSI-C) and `$"…"` (locale),
+ * and in both the `$` is SYNTAX — bash discards it, so `$'git'` IS the word
+ * `git`. Declaring only the bare pair left the `$` to be scanned as an ordinary
+ * character GLUED to the span, so the fold produced `$git`: every `execName`
+ * compare missed, and `$'git' reset --hard`, `$'bash' install.sh`,
+ * `$'tee' <session>/state.json` and `$'sed' -i … pickle_settings.json` all
+ * APPROVED for a worker while their bare twins blocked (10/10 measured,
+ * shim-verified to really exec). A two-member declaration of a four-member
+ * grammar is the incomplete-declaration shape that has now failed eight times in
+ * this module — the fix declares the grammar, it does not add a case.
+ *
+ * `$'…'` honors backslash escapes (bash: `\'` is a literal quote inside it), so
+ * it needs the escape-aware span body; `$"…"` is `"…"` with the `$` dropped.
+ */
+const ANSI_C_QUOTED_SPAN = '\\$\'(?:\\\\.|[^\'\\\\])*\'';
+const LOCALE_QUOTED_SPAN = '\\$"(?:\\\\.|[^"\\\\])*"';
+/**
+ * A run of ordinary characters. It stops before a `$` that INTRODUCES a quoted
+ * span, because that `$` belongs to the span, not to the run — without the
+ * bound, `/usr/bin/$'git'` folds to `/usr/bin/$git` (basename `$git`) where bash
+ * runs `/usr/bin/git`.
+ */
+const UNQUOTED_RUN = '(?:(?!\\$[\'"])[^\\s\'"])+';
+/**
  * One PART of a bash word: a complete quoted span, a run of ordinary
  * characters, or a lone unmatched quote.
  *
@@ -54,7 +79,8 @@ const SINGLE_QUOTED_SPAN = '\'[^\']*\'';
  * characters rather than being skipped — the pre-adjacency scanner kept those
  * bytes via `\S+` and detectors compare against them.
  */
-const WORD_PART_SOURCE = `${DOUBLE_QUOTED_SPAN}|${SINGLE_QUOTED_SPAN}|[^\\s'"]+|['"]`;
+const WORD_PART_SOURCE = `${ANSI_C_QUOTED_SPAN}|${LOCALE_QUOTED_SPAN}|${DOUBLE_QUOTED_SPAN}|${SINGLE_QUOTED_SPAN}` +
+    `|${UNQUOTED_RUN}|['"$]`;
 /**
  * `String.match` with a `/g` regex resets `lastIndex`, so these are reusable.
  *
@@ -74,13 +100,46 @@ const SEGMENT_SCAN_RE = new RegExp(`\\n|(?:${WORD_PART_SOURCE})+`, 'g');
  * shell will run, so the recursive unwrap sees `git commit`, not `\"git`.
  */
 const DOUBLE_QUOTE_ESCAPE_RE = /\\(["\\$`])/g;
-/** True when the span is a complete `'…'` / `"…"` — both delimiters, not a lone quote. */
-function isQuotedSpan(span) {
-    if (span.length < 2)
-        return false;
-    const first = span[0];
-    const last = span[span.length - 1];
-    return (first === '"' && last === '"') || (first === '\'' && last === '\'');
+/**
+ * Inside `$'…'` a backslash escape may NAME a character numerically, so stripping
+ * the delimiters is not enough to recover the word: bash runs `$'\\x67it'` and
+ * `$'\\147it'` as `git` (shim-verified). Decoding the numeric forms is what makes
+ * the fold agree with the shell; every other `\\<char>` yields `<char>`, which needs
+ * no table of control letters and errs toward MATCHING a detector — this module's
+ * established over-block-never-under-block direction.
+ */
+const ANSI_C_ESCAPE_RE = /\\(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|([0-7]{1,3})|([\s\S]))/g;
+function decodeAnsiCEscapes(body) {
+    return body.replace(ANSI_C_ESCAPE_RE, (_match, hex, u, bigU, octal, literal) => {
+        const code = hex ?? u ?? bigU;
+        if (code !== undefined)
+            return String.fromCodePoint(Number.parseInt(code, 16));
+        if (octal !== undefined)
+            return String.fromCodePoint(Number.parseInt(octal, 8));
+        return literal;
+    });
+}
+/**
+ * The word a complete quoted span contributes, or null when the part is not one
+ * (an ordinary run, or a lone unmatched quote).
+ *
+ * ONE parser for all FOUR of bash's word-quoting forms, so the grammar
+ * (`WORD_PART_SOURCE`), the delimiter strip, and the per-form unescape cannot
+ * drift apart — three copies of "which forms exist" is how `$'…'`/`$"…"` came to
+ * be declared in none of them (AP-EXT-ITER66-01).
+ */
+function unquoteSpan(part) {
+    const dollar = part.startsWith('$') ? 1 : 0;
+    const open = part[dollar];
+    if (open !== '"' && open !== '\'')
+        return null;
+    if (part.length < dollar + 2 || part[part.length - 1] !== open)
+        return null;
+    const body = part.slice(dollar + 1, -1);
+    if (open === '"')
+        return body.replace(DOUBLE_QUOTE_ESCAPE_RE, '$1');
+    // `'…'` is bash's ONE literal form; its `$'…'` sibling processes escapes.
+    return dollar === 1 ? decodeAnsiCEscapes(body) : body;
 }
 /**
  * Tokenize a single (already-segmented) shell command, quote-aware: a quoted
@@ -130,13 +189,13 @@ function foldShellWord(word) {
     let value = '';
     let sawUnquoted = false;
     for (const part of parts) {
-        if (!isQuotedSpan(part)) {
+        const unquoted = unquoteSpan(part);
+        if (unquoted === null) {
             value += part;
             sawUnquoted = true;
             continue;
         }
-        const inner = part.slice(1, -1);
-        value += part[0] === '"' ? inner.replace(DOUBLE_QUOTE_ESCAPE_RE, '$1') : inner;
+        value += unquoted;
     }
     return { value, quoted: parts.length > 0 && !sawUnquoted };
 }
@@ -361,7 +420,7 @@ function pushWordBoundaryTokens(word, tokens) {
         buffer = '';
     };
     for (const part of word.match(WORD_PART_RE) ?? []) {
-        if (isQuotedSpan(part)) {
+        if (unquoteSpan(part) !== null) {
             buffer += part;
             continue;
         }
