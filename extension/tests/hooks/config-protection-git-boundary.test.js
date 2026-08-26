@@ -2396,3 +2396,141 @@ test('AP-EXT-ITER63-05: extractNodeTestPathsFromSegment reads no positional exec
     'config-protection.ts must not enumerate POSIX command prefixes',
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER63-04 — a POSIX command PREFIX hid the deploy script from R-WSRC
+//
+// The LAST detector in this module still reading the exec POSITIONALLY, and the
+// residual AP-EXT-ITER63-02/63-03/63-05/64-02 each left open by name.
+// `segmentInvokesInstallSh` read `tokens[execTokenIndex(tokens)]`; a POSIX
+// command prefix is an ordinary program that stands in exec position and execs
+// the real command behind it, so the read folded to the PREFIX and the
+// deploy-script test failed.
+//
+// Measured 2026-08-26 against the shipped compiled hook: 13 of 13 prefixed forms
+// APPROVED for a worker while both controls (bare and quoted) BLOCKED — a live
+// bypass of the R-PIPE-3 / R-WSRC hard-forbidden worker deploy op.
+//
+// The fix does NOT transfer verbatim from the four siblings, and the asymmetry
+// is the whole content of this entry. They anchor on an EXECUTABLE (`git`,
+// `node`) that no read-only command takes as an argument. This one anchors on a
+// SCRIPT that read-only commands routinely do, and `install.sh` as an argument is
+// pinned APPROVE four times over. So it anchors the WRAPPER instead — the same
+// list-free shape `shellCommandStringPayload` took in AP-EXT-ITER63-06 — and
+// keeps the old exec-token read as a first arm, which makes the guard a strict
+// SUPERSET of what blocked before.
+//
+// Every block case below is paired with a read-only twin behind the SAME prefix,
+// so none can pass by blanket-blocking any command that mentions the script.
+//
+// RESIDUAL OPEN, deliberately NOT pinned as a test: a prefixed DIRECT exec with
+// no wrapper (`env ./install.sh`, `nohup ./install.sh`) still APPROVES. There is no wrapper
+// to anchor on, and separating it from `cat ./install.sh` provably requires the prefix
+// enumeration this family exists to refuse. Asserting it `approve` here would
+// turn a known hole into a contract, so it is reported in the catalog instead.
+// ---------------------------------------------------------------------------
+
+const ITER63_04_PREFIXED = [
+  ['env', 'env bash install.sh'],
+  ['env with an assignment operand', 'env FOO=1 bash install.sh'],
+  ['command', 'command bash install.sh'],
+  ['nohup', 'nohup bash install.sh'],
+  ['nice', 'nice bash install.sh'],
+  ['nice with an operand', 'nice -n 10 bash install.sh'],
+  ['exec', 'exec bash install.sh'],
+  ['time', 'time bash install.sh'],
+  ['sudo', 'sudo bash install.sh'],
+  ['timeout with an operand', 'timeout 600 bash install.sh'],
+  ['setsid', 'setsid bash install.sh'],
+  ['stdbuf with an operand', 'stdbuf -o0 bash install.sh'],
+  ['an absolute-path prefix', '/usr/bin/env bash install.sh'],
+  ['an absolute-path wrapper behind a prefix', 'env /bin/bash install.sh'],
+  ['a prefix behind an env assignment', 'PICKLE_ROLE=x env bash install.sh'],
+  ['a prefix in a chained segment', 'cd extension && env bash ../install.sh'],
+  ['a prefix in a grouped segment', '(nohup bash install.sh)'],
+  ['a quoted prefix', '"env" bash install.sh'],
+  ['a quoted script behind a prefix', 'env bash "install.sh"'],
+  ['a case-variant script behind a prefix', 'env bash INSTALL.SH'],
+  ['a non-bash shell behind a prefix', 'env zsh install.sh'],
+  ['two stacked prefixes', 'nohup nice bash install.sh'],
+  ['a wrapper option before the script', 'env bash -x install.sh'],
+  ['a prefix inside a -c payload', 'bash -c "env bash install.sh"'],
+  // No table carries this one. An enumerated prefix set would approve it; the
+  // wrapper anchor cannot tell it from `env`, which is the entire point.
+  ['an INVENTED prefix no table would carry', 'frobnicate bash install.sh'],
+];
+
+for (const [label, command] of ITER63_04_PREFIXED) {
+  test(`AP-EXT-ITER63-04: worker blocks the deploy script behind ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-WSRC/);
+  });
+}
+
+// Non-tautology twins: the SAME prefixes over a read-only reference, and over a
+// differently-named script, must still approve. Without these the block cases
+// above would pass under a guard that blocks anything naming the script at all.
+const ITER63_04_APPROVED = [
+  ['a prefixed read-only cat', 'env cat install.sh'],
+  ['a prefixed read-only vim', 'nohup vim install.sh'],
+  ['a prefixed read-only git log', 'env git log install.sh'],
+  ['a prefixed read-only head', 'timeout 600 head -20 install.sh'],
+  ['a bare read-only cat', 'cat install.sh'],
+  ['a prefixed differently-named script', 'env bash pre-install.sh'],
+  ['a bare differently-named script', 'bash my-install.sh'],
+  ['a prefixed read-only reference in a chain', 'cd extension && env cat ../install.sh'],
+];
+
+for (const [label, command] of ITER63_04_APPROVED) {
+  test(`AP-EXT-ITER63-04: ${label} stays approved`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', JSON.stringify(command));
+  });
+}
+
+test('AP-EXT-ITER63-04: segmentInvokesInstallSh anchors the wrapper, not a position', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'),
+    'utf8',
+  );
+  const body = source.slice(
+    source.indexOf('function segmentInvokesInstallSh'),
+    source.indexOf('function isBashInvokingInstallSh'),
+  );
+  assert.ok(body.length > 0, 'segmentInvokesInstallSh must exist');
+  assert.match(
+    body,
+    /findIndex\(\(token\) => isShellWrapper\(token\)\)/,
+    'the shell wrapper must be located by anchor scan, not by position',
+  );
+  // The exec-token read is RETAINED here on purpose — it is the first arm that
+  // keeps `./<script>` (no wrapper at all) blocking, and it makes the guard a
+  // strict superset of its previous behavior. This asserts it is not the ONLY
+  // read, which is what the bypass depended on.
+  assert.equal(
+    /execTokenIndex/.test(body) && !/isShellWrapper/.test(body),
+    false,
+    `segmentInvokesInstallSh must not locate the exec by position ALONE — a ` +
+      `command prefix stands at that index. Body was:\n${body}`,
+  );
+  // File-wide: an enumerated prefix table parked at module scope is the same
+  // incomplete-set shape, one indent out of the detector.
+  assert.equal(
+    /'(env|nohup|nice|command|timeout|setsid|stdbuf|npx)'/.test(source),
+    false,
+    'config-protection.ts must not enumerate POSIX command prefixes',
+  );
+});

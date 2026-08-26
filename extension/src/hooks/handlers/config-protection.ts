@@ -10,6 +10,7 @@ import {
   execAnchorIndex,
   execName,
   execTokenIndex,
+  isShellWrapper,
   splitShellSegments,
   tokenizeShellCommand,
   tokenizeShellTokens,
@@ -615,24 +616,46 @@ function detectTargetedStateFile(input: PreToolUseInput): { matched: string; isS
 }
 
 /**
- * Returns true if a single (already-segmented) shell command invokes
- * `install.sh` as its executable token, skipping a leading `bash`/`sh` wrapper
- * and any `KEY=value` env prefixes. Does not match read-only references
- * (`cat install.sh`) or suffixed filenames (`pre-install.sh`).
+ * Returns true if a single (already-segmented) shell command EXECS the deploy
+ * script install.sh — whether it stands at the exec token or behind a shell wrapper.
  *
- * Tokenizes quote-aware via `tokenizeShellCommand` for the same reason the git
- * chain does (the "quoted-token parity" trap door): a bare `split(/\s+/)` read
- * `"install.sh"` with the quotes attached, so `bash "install.sh"` — which the
- * shell runs as `bash install.sh` — slipped the guard. This detector was the
- * last of the three leading-command detectors still on the bare split.
+ * The wrapper is anchored WHEREVER IT SITS (`isShellWrapper`), the shape
+ * `shellCommandStringPayload` already took one level down (AP-EXT-ITER63-06),
+ * because the positional read this replaces has no list-free form: a POSIX
+ * command PREFIX is an ordinary program that takes a command as its argument
+ * and execs it, so it stands at `execTokenIndex` with the wrapper behind it.
+ * The prelude folded to the PREFIX and the deploy-script test failed —
+ * `env bash install.sh` plus `command`, `nohup`, `nice`, `exec`, `time`, `sudo`,
+ * `timeout 600`, `setsid`, `stdbuf -o0` and chained forms: 13 of 13 APPROVED
+ * for a worker while both controls BLOCKED (measured 2026-08-26 against the
+ * shipped hook).
+ *
+ * A bare `execAnchorIndex(tokens, 'install.sh')` — the collapse the four sibling
+ * detectors took — is NOT available here, and the asymmetry is the point: those
+ * detectors anchor on an EXECUTABLE (`git`, `node`) that no read-only command
+ * takes as an argument, while this one anchors on a SCRIPT that read-only
+ * commands routinely do (`cat`, `vim`, `git log`, all pinned APPROVE). Nothing
+ * list-free separates `cat install.sh` from `env bash install.sh` by the script token
+ * alone. The WRAPPER is the discriminator that needs no table: a shell
+ * interpreter standing before the script means the script is being RUN.
+ *
+ * Strictly WIDENS what blocks — the old exec-token read is retained as the
+ * first arm — so no command that blocked before can stop blocking.
+ *
+ * RESIDUAL, reported rather than claimed closed: a prefixed DIRECT exec with no
+ * wrapper (`env ./install.sh`, `nohup ./install.sh`) still approves. It offers no wrapper
+ * to anchor on, and separating it from `cat ./install.sh` provably requires the
+ * prefix enumeration this whole family exists to refuse. The unprefixed
+ * `./install.sh` blocks via the exec-token arm.
  */
 function segmentInvokesInstallSh(segment: string): boolean {
   const trimmed = segment.trim();
   if (!trimmed) return false;
   const tokens = tokenizeShellCommand(trimmed);
-  const exec = tokens[execTokenIndex(tokens)];
-  if (!exec) return false;
-  return execName(exec) === 'install.sh';
+  const isDeployScript = (token: string | undefined): boolean => execName(token) === 'install.sh';
+  if (isDeployScript(tokens[execTokenIndex(tokens)])) return true;
+  const wrapper = tokens.findIndex((token) => isShellWrapper(token));
+  return wrapper >= 0 && tokens.slice(wrapper + 1).some(isDeployScript);
 }
 
 /**
@@ -640,12 +663,12 @@ function segmentInvokesInstallSh(segment: string): boolean {
  * from worker contexts. This is a hard forbidden (manager-only) per the
  * project CLAUDE.md worker rules. The hook must return "block" for workers.
  *
- * Only matches when `install.sh` is the EXECUTABLE token (basename of the
- * binary being invoked), not when it appears as an argument to a read-only
- * tool (`cat install.sh`, `vim install.sh`, `git log install.sh`) and not
- * when it is a suffix of a different filename (`pre-install.sh`,
- * `my-install.sh`). Every chained segment is checked so `cd x && bash
- * install.sh` is caught, not just a leading invocation.
+ * Matches when install.sh is the EXECUTABLE token OR stands behind a shell
+ * wrapper anywhere in the segment (see `segmentInvokesInstallSh`), not when
+ * it appears as an argument to a read-only tool (`cat install.sh`, `vim install.sh`,
+ * `git log install.sh`) and not when it is a suffix of a different filename
+ * (`pre-install.sh`, `my-install.sh`). Every chained segment is checked so
+ * `cd x && bash install.sh` is caught, not just a leading invocation.
  */
 function isBashInvokingInstallSh(command: string): boolean {
   if (!command) return false;
