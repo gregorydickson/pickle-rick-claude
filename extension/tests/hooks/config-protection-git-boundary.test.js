@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { execAnchorIndex, isShellWrapper, splitShellSegments, tokenizeShellTokens } from '../../hooks/shell-exec.js';
+import { execAnchorIndex, execName, isShellWrapper, splitShellSegments, tokenizeShellTokens } from '../../hooks/shell-exec.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HANDLER = path.resolve(__dirname, '../../hooks/handlers/config-protection.js');
@@ -3427,4 +3427,225 @@ test('AP-EXT-ITER71-01: the word-to-code builtins are one declared set, not two 
   for (const extractor of ['wordToCodeBuiltinPayload', 'shellCommandStringPayload', 'hereStringPayload']) {
     assert.ok(body.includes(`${extractor}(segment)`), `${extractor} must stay in the payload array`);
   }
+});
+
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER72-01 — a BACKSLASH is bash's cheapest quoting mechanism
+//
+// The grammar declared FOUR word-quoting forms after AP-EXT-ITER66-01 (`'…'`,
+// `"…"`, `$'…'`, `$"…"`) and missed the fifth, which needs no delimiter at all:
+// outside quotes, `\<char>` quotes exactly that character. For every character
+// that is NOT special that is a pure no-op on execution — it only suppresses
+// alias lookup — so `\git`, `g\it` and `gi\t` all really exec git.
+//
+// Measured against the shipped mirror before the fix: the backslash fell into
+// `UNQUOTED_RUN` as an ordinary character, so `execName` folded `\git` to
+// `\git`. Because `execName` is the hooks subsystem's single exec-token seam,
+// ONE backslash defeated every detector built on it at once — 5/5 gated verbs
+// that block bare APPROVED as `\git <verb>`, `isGitCommitCommand` missed
+// `\git commit` (skipping the R-WACT tsc gate), `execName('\tee')` missed every
+// `WRITE_COMMANDS` member (re-opening the R-WSRC-3 write gates), and
+// `isShellWrapper('\bash')` was false, so an escaped wrapper's `-c` payload was
+// never even unwrapped. Shim-verified on this box: `bash -c '\git reset --hard'`,
+// `bash -c 'g\it reset --hard'` and `bash -c 'gi\t push --force'` ALL really
+// exec git.
+//
+// The module already decoded the HARDER escape grammar correctly — `$'\x67it'`
+// blocked, because `decodeAnsiCEscapes` runs on ANSI-C spans — so this was an
+// inconsistency inside the module's own decoding, not an unknown.
+//
+// The fix declares the grammar (one `UNQUOTED_ESCAPE` word part), it does NOT
+// add a case: there is deliberately no table of escaped command names, because
+// quoting a non-special character is a no-op for EVERY character and an
+// enumerated list is the incomplete-set shape this module has paid for eleven
+// times.
+//
+// The escaped NEWLINE is the same bypass wearing a different escape: bash
+// splices a line continuation out, so `gi\<newline>t reset --hard` really runs
+// git. The fold must DELETE it, not treat it as an ordinary character.
+// ---------------------------------------------------------------------------
+
+const BS = String.fromCharCode(92);
+
+// Every one of the 9 GATED_GIT_VERBS in escaped form, plus the escape in each
+// of the three positions within the word, plus the escape landing on the VERB
+// instead of the executable, plus each construct the segmenter unwraps. The
+// per-position spread matters: a fix that special-cased a LEADING backslash
+// would pass the first row and fail the next two.
+const ITER72_01_ESCAPED_GIT = [
+  ['a leading backslash', BS + 'git reset --hard', 'reset'],
+  ['a mid-word backslash', 'g' + BS + 'it switch main', 'switch'],
+  ['a trailing backslash', 'gi' + BS + 't stash', 'stash'],
+  ['an escaped rebase', BS + 'git rebase -i', 'rebase'],
+  ['an escaped pull', BS + 'git pull', 'pull'],
+  ['an escaped push', BS + 'git push origin main', 'push'],
+  ['an escaped checkout-with-ref', BS + 'git checkout main', 'checkout'],
+  ['an escaped commit --amend', BS + 'git commit --amend', 'commit'],
+  ['an escaped fetch --prune', BS + 'git fetch --prune', 'fetch'],
+  ['an escape on the VERB, not the exec', 'git re' + BS + 'set --hard', 'reset'],
+  ['a LINE CONTINUATION inside the exec', 'gi' + BS + '\nt reset --hard', 'reset'],
+  ['an escaped exec in a chained segment', 'cd extension && ' + BS + 'git reset --hard', 'reset'],
+  ['an escaped exec in a grouped segment', '(' + BS + 'git reset --hard)', 'reset'],
+  ['an escaped exec inside a -c payload', `bash -c "${BS}${BS}git reset --hard"`, 'reset'],
+  ['an escaped WRAPPER whose payload must still unwrap', `${BS}bash -c "git reset --hard"`, 'reset'],
+  ['an escaped exec inside eval', `eval "${BS}${BS}git reset --hard"`, 'reset'],
+  ['an escaped exec behind a command prefix', 'env ' + BS + 'git push origin main', 'push'],
+];
+
+for (const [label, command, verb] of ITER72_01_ESCAPED_GIT) {
+  test(`AP-EXT-ITER72-01: worker blocks a prohibited git verb behind ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-WSRC-GR/);
+    // The block must name the verb the shell would really have run — a guard
+    // that blocked on the backslash alone would pass the line above.
+    assert.match(result.reason, new RegExp('`git ' + verb), JSON.stringify(command));
+  });
+}
+
+test('AP-EXT-ITER72-01: worker blocks the deploy script behind an escaped wrapper', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `${BS}bash install.sh` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC/);
+});
+
+// Both R-WSRC-3 write gates, through both write constructs the walker knows.
+// The escaped `tee` is the one that proves the fold reaches `WRITE_COMMANDS`;
+// the escaped `>` proves the redirect anchor is not demoted by the escape.
+for (const [label, build] of [
+  ['an escaped tee destination', (dir) => `${BS}tee ${path.join(dir, 'state.json')}`],
+  ['an escaped in-place editor', (dir) => `${BS}sed -i '' s/a/b/ ${path.join(dir, 'state.json')}`],
+  ['an escaped exec before a > redirect', (dir) => `${BS}echo x > ${path.join(dir, 'state.json')}`],
+]) {
+  test(`AP-EXT-ITER72-01: worker blocks a state-file write via ${label}`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: build(sessionDir) },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', build(sessionDir));
+    assert.match(result.reason, /state file protected/i);
+  });
+}
+
+test('AP-EXT-ITER72-01: worker blocks a settings write behind an escaped tee', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `${BS}tee ${path.join(tmpDir, 'pickle_settings.json')}` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+});
+
+// Non-tautology twins. Without these the block cases above would pass under a
+// guard that blocks any command containing a backslash — which would be a
+// catastrophic over-block, since `find -exec … \;` and escaped quotes in commit
+// prose are everyday worker commands. These are the READ-PATH approvals the
+// fix had to preserve: an escape must fold the word, never arm a detector that
+// the bare twin would not arm.
+const ITER72_01_APPROVED = [
+  ['an escaped non-gated verb', BS + 'git status'],
+  ['an escaped read-only git log', BS + 'git log --oneline'],
+  ['an escaped git checkout -- path', BS + 'git checkout -- src/foo.ts'],
+  ['an escaped plain commit (no --amend)', BS + 'git commit -m x'],
+  ['an escaped plain fetch (no --prune)', BS + 'git fetch'],
+  ['an escaped ordinary command', BS + 'ls -la'],
+  ['a find -exec terminator', `find . -name "*.ts" -exec grep -l x {} ${BS};`],
+  ['an escaped quote in commit prose', `git commit -m "a ${BS}${BS}" b"`],
+  ['a read-only sed on a protected path', `sed -n '1,20p' state.json`],
+];
+
+for (const [label, command] of ITER72_01_APPROVED) {
+  test(`AP-EXT-ITER72-01: ${label} stays approved`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', JSON.stringify(command));
+  });
+}
+
+// Quoting invariance: the escape must fold to EXACTLY what the bare and the
+// already-supported quoted forms fold to. A fix that produced a third answer
+// would satisfy the block cases while leaving the seam inconsistent.
+test('AP-EXT-ITER72-01: an escaped exec folds identically to its bare and quoted twins', () => {
+  for (const [escaped, bare] of [
+    [BS + 'git', 'git'],
+    ['g' + BS + 'it', 'git'],
+    ['gi' + BS + 't', 'git'],
+    [BS + 'bash', 'bash'],
+    [BS + 'tee', 'tee'],
+    ['/usr/bin/' + BS + 'git', 'git'],
+  ]) {
+    const [token] = tokenizeShellTokens(escaped);
+    assert.equal(execName(token.value), bare, escaped);
+    assert.equal(execName(tokenizeShellTokens(`'${bare}'`)[0].value), bare, bare);
+  }
+  // A line continuation is spliced OUT, not folded to a newline character.
+  assert.equal(execName(tokenizeShellTokens('gi' + BS + '\nt')[0].value), 'git');
+  // An escaped WRAPPER is still a wrapper, so its -c payload still unwraps.
+  assert.equal(isShellWrapper(tokenizeShellTokens(BS + 'bash')[0].value), true);
+});
+
+// An ESCAPED separator is data, exactly like a quoted one: bash runs
+// `echo A \; echo B` as ONE command printing `A ; echo B` (verified on this
+// box), so the segmenter must not break there.
+test('AP-EXT-ITER72-01: an escaped separator is data, not a segment boundary', () => {
+  assert.deepEqual(splitShellSegments(`echo A ${BS}; echo B`), [`echo A ${BS}; echo B`]);
+  // BOTH `&` must be escaped to stay one command: in `\&&` the second `&` is a
+  // real background operator, so bash runs `echo A '&'` then `echo B`
+  // (verified). Splitting there is CORRECT, and the case below pins that too.
+  assert.deepEqual(
+    splitShellSegments(`echo A ${BS}&${BS}& echo B`),
+    [`echo A ${BS}&${BS}& echo B`],
+  );
+  assert.equal(splitShellSegments(`echo A ${BS}&& echo B`).length, 2);
+  // The unescaped twins still split, so the rule above is not a blanket
+  // suppression of the separator set.
+  assert.equal(splitShellSegments('echo A ; echo B').length, 2);
+  assert.equal(splitShellSegments('echo A && echo B').length, 2);
+});
+
+// The grammar itself, so a detector-level regression cannot be mistaken for a
+// tokenizer one — and so the fix stays list-free.
+test('AP-EXT-ITER72-01: the escape is declared in the word grammar, with no command table', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
+    'utf-8',
+  );
+  // The escape is a first-class word part, tried BEFORE every quoted span so
+  // `\"` cannot be read as a span opener.
+  assert.match(source, /const UNQUOTED_ESCAPE = /);
+  assert.match(source, /const WORD_PART_SOURCE =\s*\n\s*`\$\{UNQUOTED_ESCAPE\}`/);
+  // The run must not be able to swallow a backslash, or the escape part never
+  // gets a turn. Asserted through the exported tokenizer rather than by pinning
+  // the literal's exact escaping: a source-text pin on a regex constant reddens
+  // on a reformat with no behavior change, which is a phantom violation.
+  assert.equal(tokenizeShellTokens('a' + BS + 'b')[0].value, 'ab');
+  // One decoder, shared by the fold and the boundary splitter.
+  const body = source.match(/function unquotedEscapeChar\(part: string\): string \| null \{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(body, 'unquotedEscapeChar must remain a single named function');
+  assert.match(body, /part\[1\] === '\\n' \? '' : part\[1\]/);
+  // List-free: no table of escaped command names anywhere in the module.
+  assert.doesNotMatch(source, /'\\\\(git|bash|sh|tee|cp|mv|sed|node)'/);
 });

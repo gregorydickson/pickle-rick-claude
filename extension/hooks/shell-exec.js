@@ -64,23 +64,51 @@ const SINGLE_QUOTED_SPAN = '\'[^\']*\'';
 const ANSI_C_QUOTED_SPAN = '\\$\'(?:\\\\.|[^\'\\\\])*\'';
 const LOCALE_QUOTED_SPAN = '\\$"(?:\\\\.|[^"\\\\])*"';
 /**
+ * AP-EXT-ITER72-01: a BACKSLASH is bash's fourth quoting mechanism, and the
+ * cheapest one. Outside quotes `\<char>` quotes exactly that character — for
+ * every character that is not special it is a pure NO-OP on execution (it only
+ * suppresses alias lookup), so `\git`, `g\it` and `gi\t` ALL really exec git
+ * (shim-verified). The grammar had no escape part, so the backslash fell into
+ * `UNQUOTED_RUN` as an ordinary character and `execName` folded `\git` to
+ * `\git` — matching no detector.
+ *
+ * This is the ONE part that must be tried FIRST: `\"` has to be consumed as an
+ * escaped literal quote before `DOUBLE_QUOTED_SPAN` can mistake that `"` for a
+ * span opener.
+ *
+ * `[\s\S]` rather than `.` so an escaped NEWLINE is a part too — bash's line
+ * continuation, which the fold must DELETE (see `unquotedEscapeChar`). Reading
+ * it as an ordinary character instead would leave `gi\<newline>t` unfolded,
+ * which is the same bypass wearing a different escape.
+ */
+const UNQUOTED_ESCAPE = '\\\\[\\s\\S]';
+/**
  * A run of ordinary characters. It stops before a `$` that INTRODUCES a quoted
  * span, because that `$` belongs to the span, not to the run — without the
  * bound, `/usr/bin/$'git'` folds to `/usr/bin/$git` (basename `$git`) where bash
  * runs `/usr/bin/git`.
+ *
+ * It also stops before a backslash, which `UNQUOTED_ESCAPE` owns: a run that
+ * could swallow the `\` would re-glue the escape to the word and undo the fold.
  */
-const UNQUOTED_RUN = '(?:(?!\\$[\'"])[^\\s\'"])+';
+const UNQUOTED_RUN = '(?:(?!\\$[\'"])[^\\s\'"\\\\])+';
 /**
- * One PART of a bash word: a complete quoted span, a run of ordinary
- * characters, or a lone unmatched quote.
+ * One PART of a bash word: an unquoted backslash escape, a complete quoted
+ * span, a run of ordinary characters, or a lone unmatched quote.
+ *
+ * The escape alternative is FIRST so `\"`/`\'`/`\$` are consumed as escaped
+ * literals before any span pattern can read their quote character as a
+ * delimiter — the same reason a complete span is tried before the lone quote.
  *
  * The lone-quote alternative is last so a complete span always wins, and it
  * exists so an unterminated quote (`git commit -m "oops`) still yields its
  * characters rather than being skipped — the pre-adjacency scanner kept those
- * bytes via `\S+` and detectors compare against them.
+ * bytes via `\S+` and detectors compare against them. A trailing lone backslash
+ * joins it for the same reason: no byte of a word may be silently dropped.
  */
-const WORD_PART_SOURCE = `${ANSI_C_QUOTED_SPAN}|${LOCALE_QUOTED_SPAN}|${DOUBLE_QUOTED_SPAN}|${SINGLE_QUOTED_SPAN}` +
-    `|${UNQUOTED_RUN}|['"$]`;
+const WORD_PART_SOURCE = `${UNQUOTED_ESCAPE}` +
+    `|${ANSI_C_QUOTED_SPAN}|${LOCALE_QUOTED_SPAN}|${DOUBLE_QUOTED_SPAN}|${SINGLE_QUOTED_SPAN}` +
+    `|${UNQUOTED_RUN}|['"$\\\\]`;
 /**
  * `String.match` with a `/g` regex resets `lastIndex`, so these are reusable.
  *
@@ -125,6 +153,26 @@ function decodeAnsiCEscapes(body) {
         // range is the guard; no per-escape table is involved.
         return code <= 0x10FFFF ? String.fromCodePoint(code) : match;
     });
+}
+/**
+ * The character an unquoted backslash escape contributes, or null when the part
+ * is not one.
+ *
+ * Two rules, both bash's, neither an enumeration: `\<newline>` is a line
+ * CONTINUATION and contributes NOTHING (bash splices the word back together, so
+ * `gi\<newline>t reset --hard` really runs git — shim-verified), and `\<char>`
+ * contributes that character. There is no table of "special" characters
+ * because bash needs none here: quoting a character that was not special is
+ * simply a no-op, which is precisely why `\git` executes.
+ *
+ * Shared by the fold and the boundary splitter so the two cannot disagree about
+ * which parts are escapes — the private-copy drift AP-EXT-ITER12-01 collapsed
+ * one level up, and AP-EXT-ITER66-01 collapsed again for the quoting forms.
+ */
+function unquotedEscapeChar(part) {
+    if (part.length !== 2 || part[0] !== '\\')
+        return null;
+    return part[1] === '\n' ? '' : part[1];
 }
 /**
  * The word a complete quoted span contributes, or null when the part is not one
@@ -196,6 +244,18 @@ function foldShellWord(word) {
     let value = '';
     let sawUnquoted = false;
     for (const part of parts) {
+        // An escaped character DOES quote in bash's sense (`\>` is literal), but it
+        // is counted UNQUOTED here on purpose: the redirect pass would then read
+        // `\>` as an operator and over-block a command bash would not redirect.
+        // That is this module's established direction — over-block, never
+        // under-block — and the opposite reading would demote a real operator the
+        // moment an attacker escaped it.
+        const escaped = unquotedEscapeChar(part);
+        if (escaped !== null) {
+            value += escaped;
+            sawUnquoted = true;
+            continue;
+        }
         const unquoted = unquoteSpan(part);
         if (unquoted === null) {
             value += part;
@@ -431,7 +491,11 @@ function pushWordBoundaryTokens(word, tokens) {
         buffer = '';
     };
     for (const part of word.match(WORD_PART_RE) ?? []) {
-        if (unquoteSpan(part) !== null) {
+        // An ESCAPED separator is data, exactly like a quoted one: bash runs
+        // `echo A \; echo B` as ONE command printing `A ; echo B` (verified). The
+        // part is appended verbatim — backslash included — because the segment is
+        // re-tokenized later, where the fold decodes it once.
+        if (unquoteSpan(part) !== null || unquotedEscapeChar(part) !== null) {
             buffer += part;
             continue;
         }
