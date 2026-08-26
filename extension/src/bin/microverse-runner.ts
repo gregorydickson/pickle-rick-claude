@@ -2569,6 +2569,17 @@ function spawnWithClosedStdin(
       });
     });
 
+    // Stays REF'D for the duration of the in-flight judge spawn. This timer is the
+    // SOLE settle path when the child hangs — it neither closes nor errors — so an
+    // `.unref()` here makes the timeout conditional on some UNRELATED handle happening
+    // to hold the loop open. When nothing else does, the loop resolves out from under a
+    // still-pending measurement promise and the await never returns. `settle()` above
+    // clears this timer on every settle path, so a healthy spawn releases the handle
+    // within microseconds of `'close'`/`'error'` and a ref'd timer costs nothing.
+    // Same ruling as `writeWithWatchdog` (bin/monitor.ts) and the sibling
+    // `measureMetricAttempt` below, whose primary `timeoutHandle` is likewise ref'd.
+    // The SIGKILL escalation below is a different case: it is best-effort cleanup with
+    // no promise awaiting it, so it is correctly unref'd.
     const timer = setTimeout(() => {
       settle(() => {
         killJudgeSubtree('SIGTERM');
@@ -2577,7 +2588,6 @@ function spawnWithClosedStdin(
         reject(new JudgeMeasurementTimeout(options.timeoutMessage, options.timeoutMs));
       });
     }, options.timeoutMs);
-    (timer as NodeJS.Timeout).unref();
   });
 }
 
