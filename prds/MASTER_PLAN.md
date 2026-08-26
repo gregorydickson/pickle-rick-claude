@@ -255,6 +255,71 @@ reports 22 and overcounts by 5.
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+> ### 🚢 2026-08-26 — v2.1.0-beta.19, [[B-RELTAG]]: the release tags pointed at `main` for four months
+>
+> **The bundle that made release provenance checkable.** `gh release create <tag>` with no `--target`
+> tags the repository's DEFAULT branch; `main` is on the stale 2.0 line, so every release from
+> 2026-04-22 onward tagged a tree nobody shipped — `v2.1.0-beta.16` and `v2.1.0-beta.17` BOTH resolve
+> to `e0c91e17` = `origin/main`. **`git ls-remote --tags` confirms EXISTENCE, not correctness**: it
+> printed the same wrong sha after two consecutive releases and neither was caught, because nobody
+> compared it to anything. Shipped `extension/scripts/verify-release-tag.sh` so the comparison is
+> mechanical, plus `reconcile-release-tags.sh` as a read-only auditor.
+>
+> **Session `2026-08-26-27e0ac68`, 21 commits, 520m20s, 3/4 phases.** Two degraded dispositions, both
+> handled per [[B-NOSTOP-GATES]] rather than by halting: anatomy-park closed `anatomy_non_convergent`
+> after 8 passes without a clean one and was explicitly **"reported non-convergent, not counted as
+> completed"**; szechuan's microverse hit `judge_timeout` after 4 attempts and the runner ran
+> finalize-gate **anyway** (R-PRJT-2), which passed. Ran-to-completion and reported-success stayed on
+> separate wires — the property this codebase most often gets wrong, working.
+>
+> **Gate GREEN, every tier read from a directly-captured exit code:** static + **all 10** audits rc=0 ·
+> `tsc` emit left the tree clean (committed JS matches source) · `test:fast:budget` **failures=0
+> budget=2 runs_completed=5 runs_requested=5** · `test:integration:parallel` **662/662** ·
+> `test:integration:serial` **625/625** · `test:expensive` rc=0 with the deploy-lifecycle soak
+> **genuinely running 1804s** (`✔`, not the `﹣` self-skip that passed for green three releases
+> running). **Zero waived failures** — beta.17 retired both inherited exemptions, so this gate had no
+> exemption to hide behind.
+>
+> **Parallel and serial run as SEPARATE invocations.** R-ISSC short-circuits the serial half whenever
+> the parallel half is non-zero, which is why CI has never once measured those 625 tests. Running them
+> apart converted 625 permanently-unmeasured tests into a measured green.
+>
+> **What the run's own review phases found — 5 CRITICAL + 2 HIGH, all one seam.** `eval`, `<<<` and
+> `trap` each hand bash a WORD it re-parses as CODE, and each was invisible to every worker-forbidden-op
+> detector: `eval "git reset --hard"`, `eval "bash install.sh"`, 8 `trap` forms, all **APPROVED** for a
+> worker while their byte-identical bare twins blocked (shim-verified to really exec). **The trajectory
+> is the finding**: the "closed set" of word-to-code carriers went 2 → 3 → 4 across three consecutive
+> iterations, each pass declaring closure and the next falsifying it — the enumerated-set liability of
+> the complexity clause, wearing the label "grammar declaration". The last pass at least GENERALISED
+> (`wordToCodeBuiltinPayload` over a declaration) instead of writing a fourth extractor.
+>
+> **Operator residual (unchanged, by design):** `v2.1.0-beta.16` and `v2.1.0-beta.17` still point at
+> `origin/main`. The worker declined to rewrite published history; the retag commands are recorded in
+> the ticket conformance artifact.
+
+> ### 🚢 2026-08-26 — v2.1.0-beta.18, [[B-VERDICT]]: the verdict machinery reported a different measurement than it made
+>
+> First **4/4 clean run** (zero degraded dispositions) and the first correctly-`--target`ed tag,
+> verified by **comparison** rather than by existence. Root cause was `compareMetricSetOps`
+> (`microverse-state.ts:147`) deciding improved/held/regressed from set cardinality while reporting a
+> verdict that implied per-finding identity; fixed with a discriminated union that names the deciding
+> basis. 19 commits.
+
+> ### 🚢 2026-08-26 — v2.1.0-beta.17, [[B-CGSHIP]]: codegraph to workers + BOTH inherited failures retired
+>
+> **The first zero-waiver gate.** `install-bun-probe` resolved bun via `command -v` instead of
+> substring-matching `PATH` (`c0c66a47`); the `extension-wiring` deploy smoke stopped asserting the path
+> the installer `rm -f`s. `test:fast:budget` went from `FAIL_BUDGET_EXCEEDED failures=3 runs_completed=3`
+> to `OK failures=0 runs_completed=5 runs_requested=5` — restoring a gate that had been **silently
+> disarmed**, not merely red. 32 commits.
+
+> ### 🚢 2026-08-25 — v2.1.0-beta.16, the release-workflow P1
+>
+> Made `.github/workflows/release.yml` guard tag-vs-package.json agreement (AC-R1, `b003c572`) after the
+> streak was re-measured as **147 failures over 4 months, not 13**. 26 commits. The workflow still fails
+> on a tag — see beta.19: it was tagging the wrong tree, and CI was faithfully building it.
+
+
 > ### 🚢 2026-08-25 — v2.1.0-beta.15, the did-we-count PREVENTION bundle + its own regression fix
 >
 > **Two sessions, one release.** Operator-directed ("we have to get quality up"): convert the
