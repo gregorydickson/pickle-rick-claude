@@ -101,8 +101,15 @@ export function verifyBundle(options = {}) {
 
   for (const acId of expectedIds) {
     const filePath = artifactPath(repoRoot, acId);
-    const recoveredArtifact = readRecoverableJsonObject(filePath);
-    if (!fs.existsSync(filePath) && !recoveredArtifact) {
+    // Recovery exists to stop an interrupted write from false-reporting an AC MISSING — that
+    // is its whole remit, so it may only run when the artifact IS missing. Applied to a
+    // present base, the generic promotion renameSyncs the orphan OVER a tracked, hand-authored
+    // receipt (and unlinks its rejects), destroying committed evidence and then reporting the
+    // untracked tmp's `pass` as the AC verdict — a false-green vector on the release gate.
+    // Same guard, same reason as the statePath promotion in verify-recapture-fired.js.
+    const artifactExists = fs.existsSync(filePath);
+    const recoveredArtifact = artifactExists ? null : readRecoverableJsonObject(filePath);
+    if (!artifactExists && !recoveredArtifact) {
       missing.push(`${acId}: missing ${path.relative(repoRoot, filePath)}`);
       continue;
     }

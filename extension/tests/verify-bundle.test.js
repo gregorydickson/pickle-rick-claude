@@ -343,6 +343,40 @@ test('verify-bundle.recovers newer orphan tmp bundle artifacts before reporting 
   }
 });
 
+// The recovery above is scoped to "before treating an artifact as MISSING" — that phrase is
+// the whole contract. Run it against a PRESENT artifact and the generic promotion renameSyncs
+// the orphan OVER the tracked receipt, so the verifier both destroys committed evidence and
+// reports the untracked tmp's `pass` as the AC verdict. A `pass:true` orphan is the same
+// mechanism pointed the other way: a permanent false-green on the release-evidence gate.
+// Mutation-verified: dropping the `artifactExists` guard makes this exit 1 with
+// `GARBAGE FROM ORPHAN TMP` and leaves the base file overwritten.
+test('verify-bundle.does not promote an orphan tmp over a present artifact', () => {
+  let before;
+  const fixture = makeFixture(({ bundleDir }) => {
+    const artifactPath = path.join(bundleDir, acFileName('AC-DR-01'));
+    before = readFileSync(artifactPath, 'utf8');
+    writeFileSync(
+      path.join(bundleDir, `${acFileName('AC-DR-01')}.tmp.999999`),
+      `${JSON.stringify(artifact('AC-DR-01', {
+        pass: false,
+        failure_reason: 'GARBAGE FROM ORPHAN TMP',
+      }), null, 2)}\n`,
+    );
+  });
+  try {
+    const result = runVerifier(fixture, ['--ac', 'AC-DR-01']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /bundle PASS/);
+    assert.equal(
+      readFileSync(path.join(fixture, 'bundle', acFileName('AC-DR-01')), 'utf8'),
+      before,
+      'the present artifact must survive the run byte-for-byte',
+    );
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test('verify-bundle.repo-ac-dr-04d stays verifier-clean as a tracked artifact', () => {
   const result = runVerifier(REPO_ROOT, ['--ac', 'AC-DR-04d']);
   assert.equal(result.status, 0, result.stderr);
