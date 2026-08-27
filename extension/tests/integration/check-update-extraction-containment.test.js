@@ -169,7 +169,7 @@ describe('check-update extraction containment', () => {
       process.env.TMPDIR = linkedTmp;
       result = extractAndInstall(tarball);
     } finally {
-      if (priorTmpdir === undefined) delete process.env.TMPDIR;
+      if (priorTmpdir === undefined) { delete process.env.TMPDIR; }
       else process.env.TMPDIR = priorTmpdir;
     }
 

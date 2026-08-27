@@ -125,8 +125,9 @@ export const REMEDIATION_PROMPT_MAX_BYTES = 96 * 1024;
 // the budget by alternating head and tail lines, so neither end is starved, and
 // cuts only on line boundaries so no UTF-8 codepoint is split.
 export function boundRemediationPrompt(brief, briefPath, maxBytes = REMEDIATION_PROMPT_MAX_BYTES) {
-    if (Buffer.byteLength(brief) <= maxBytes)
+    if (Buffer.byteLength(brief) <= maxBytes) {
         return brief;
+    }
     const noticeText = `\n\n[...brief truncated to fit the platform argument limit. `
         + `Full brief on disk: ${briefPath}. The omitted middle is the CLAUDE.md `
         + `trap-door reference; re-read it from the working directory if needed...]\n\n`;
@@ -145,11 +146,13 @@ export function boundRemediationPrompt(brief, briefPath, maxBytes = REMEDIATION_
     while (i <= j) {
         const line = takeHead ? lines[i] : lines[j];
         const cost = Buffer.byteLength(line) + 1;
-        if (cost > budget)
+        if (cost > budget) {
             break;
+        }
         budget -= cost;
-        if (takeHead)
+        if (takeHead) {
             head.push(lines[i++]);
+        }
         else
             tail.unshift(lines[j--]);
         takeHead = !takeHead;
@@ -209,8 +212,9 @@ function resolveRemediatorSpawnTarget(sessionDir, backend) {
 export async function runRemediatorForIteration(gateResult, sessionDir, workingDir, backend, remediatorTimeoutS, runtimeOverrides = {}) {
     const gateDir = path.join(sessionDir, 'gate');
     const brief = await prepareRemediationBrief(gateResult, sessionDir);
-    if (brief === null)
+    if (brief === null) {
         return { success: false };
+    }
     const startMs = Date.now();
     const { resolution: workerBackendResolution, remediatorState } = resolveRemediatorSpawnTarget(sessionDir, backend);
     const execBackend = workerBackendResolution.backend;

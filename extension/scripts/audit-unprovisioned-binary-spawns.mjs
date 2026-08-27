@@ -68,7 +68,7 @@ const MATCHERS = [
 
 function lineNumberAt(content, index) {
   let line = 1;
-  for (let i = 0; i < index; i++) if (content[i] === '\n') line++;
+  for (let i = 0; i < index; i++) if (content[i] === '\n') { line++; }
   return line;
 }
 
@@ -93,9 +93,9 @@ function scanFile(filePath, baseRoot) {
       const tool = m[2];
       const lineNo = lineNumberAt(content, m.index);
       const key = `${lineNo}\t${tool}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key)) { continue; }
       seen.add(key);
-      if (isAllowlisted(lines, lineNo)) continue;
+      if (isAllowlisted(lines, lineNo)) { continue; }
       findings.push({ rel, tool, lineNo });
     }
   }
@@ -120,7 +120,7 @@ function main(argv) {
 
   const findings = [];
   for (const file of files) {
-    if (!fs.existsSync(file)) continue;
+    if (!fs.existsSync(file)) { continue; }
     findings.push(...scanFile(file, baseRoot));
   }
 

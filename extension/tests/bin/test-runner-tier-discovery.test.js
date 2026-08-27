@@ -430,7 +430,7 @@ test('runner times out wedged child test process instead of hanging indefinitely
   } finally {
     try {
       const gc = existsSync(grandchildMarkerPath) ? Number(readFileSync(grandchildMarkerPath, 'utf8').trim()) : 0;
-      if (gc > 0 && isPidAlive(gc)) process.kill(gc, 'SIGKILL');
+      if (gc > 0 && isPidAlive(gc)) { process.kill(gc, 'SIGKILL'); }
     } catch {
       // Best-effort: nothing left to reap.
     }

@@ -58,7 +58,7 @@ function grepLines(root, relFiles, needle) {
   for (const rel of relFiles) {
     const lines = fs.readFileSync(path.join(root, rel), 'utf8').split('\n');
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i].includes(needle)) matches.push(`${rel}:${i + 1}:${lines[i]}`);
+      if (lines[i].includes(needle)) { matches.push(`${rel}:${i + 1}:${lines[i]}`); }
     }
   }
   return matches;

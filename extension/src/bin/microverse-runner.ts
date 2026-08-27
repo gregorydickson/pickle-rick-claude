@@ -324,7 +324,7 @@ export function boundRemediationPrompt(
   briefPath: string,
   maxBytes: number = REMEDIATION_PROMPT_MAX_BYTES,
 ): string {
-  if (Buffer.byteLength(brief) <= maxBytes) return brief;
+  if (Buffer.byteLength(brief) <= maxBytes) { return brief; }
 
   const noticeText = `\n\n[...brief truncated to fit the platform argument limit. `
     + `Full brief on disk: ${briefPath}. The omitted middle is the CLAUDE.md `
@@ -346,9 +346,9 @@ export function boundRemediationPrompt(
   while (i <= j) {
     const line = takeHead ? lines[i] : lines[j];
     const cost = Buffer.byteLength(line) + 1;
-    if (cost > budget) break;
+    if (cost > budget) { break; }
     budget -= cost;
-    if (takeHead) head.push(lines[i++]);
+    if (takeHead) { head.push(lines[i++]); }
     else tail.unshift(lines[j--]);
     takeHead = !takeHead;
   }
@@ -423,7 +423,7 @@ export async function runRemediatorForIteration(
 ): Promise<{ success: boolean }> {
   const gateDir = path.join(sessionDir, 'gate');
   const brief = await prepareRemediationBrief(gateResult, sessionDir);
-  if (brief === null) return { success: false };
+  if (brief === null) { return { success: false }; }
 
   const startMs = Date.now();
   const { resolution: workerBackendResolution, remediatorState } = resolveRemediatorSpawnTarget(sessionDir, backend);
