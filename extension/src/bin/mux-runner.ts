@@ -13,7 +13,7 @@ import { buildManagerInvocation, resolveBackend, resolveBackendFromStateFileWith
 import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
 import { readTicketWorkerGateTestsVerdict } from './setup.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
-import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
+import { emitOrphanReapSummary, reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
 import { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream, CODEX_DELIMITER_RE } from '../services/classifier-utils.js';
 import { emitCrossTicketRegressionLinearComment } from '../lib/linear-comment.js';
 import {
@@ -536,18 +536,7 @@ export function runPipelineOrphanWorkerReap(
   // Did it FIND anything? A genuinely empty census stays quiet.
   if (result.reaped <= 0) return;
   log(`orphan-worker reap: scanned=${result.scanned} reaped=${result.reaped} unverified=${result.unverified}`);
-  try {
-    writeActivityEntry(statePath, {
-      event: 'worker_orphan_reap_summary',
-      ts: new Date().toISOString(),
-      scanned: result.scanned,
-      reaped: result.reaped,
-      unverified: result.unverified,
-      session_owned: result.by_match_class.session_owned,
-      tmp_prefix_fixture: result.by_match_class.tmp_prefix_fixture,
-      repo_fixture_path: result.by_match_class.repo_fixture_path,
-    });
-  } catch { /* best-effort telemetry — never block the runner */ }
+  emitOrphanReapSummary(statePath, result);
 }
 
 // ---------------------------------------------------------------------------

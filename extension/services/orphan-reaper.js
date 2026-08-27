@@ -629,6 +629,35 @@ export function reapOrphanedWorkerProcs(opts) {
         return sweepNotRun('sweep_failed');
     }
 }
+/**
+ * AC5: record a non-zero sweep as an activity event so a run's reap is auditable after
+ * the fact; a zero-reap sweep stays quiet (no event). THE one emitter — `setup.ts`'s
+ * bootstrap sweep and `mux-runner.ts`'s per-iteration sweep both call it, having
+ * previously each carried a byte-identical copy of this payload.
+ *
+ * The breakdown is SPREAD, not enumerated. Naming `session_owned` /
+ * `tmp_prefix_fixture` / `repo_fixture_path` at a call site makes a fourth match class
+ * a two-site edit that fails silently at the site that forgets — a missing telemetry
+ * field is indistinguishable from a class that scored zero. `ReapMatchClassCounts` is
+ * already the list; there is no reason for a second copy of it to exist.
+ *
+ * Best-effort like its `emitReapedTelemetry` siblings: telemetry never blocks a caller.
+ */
+export function emitOrphanReapSummary(statePath, result) {
+    if (result.reaped <= 0)
+        return;
+    try {
+        writeActivityEntry(statePath, {
+            event: 'worker_orphan_reap_summary',
+            ts: new Date().toISOString(),
+            scanned: result.scanned,
+            reaped: result.reaped,
+            unverified: result.unverified,
+            ...result.by_match_class,
+        });
+    }
+    catch { /* best-effort telemetry — never block the caller */ }
+}
 // ============================================================================
 // Suite-level registry teardown: survives abnormal runner death
 // ============================================================================
