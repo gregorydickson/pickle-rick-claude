@@ -380,18 +380,23 @@ export function execTokenIndex(tokens: string[]): number {
  * over-blocks anyway (measured). It suppressed no false positive — it only
  * taught the bypass to add quotes.
  *
- * This is NOT the AP-EXT-ITER51-02 rule and never shared code with it. That rule
- * governs `findWriteTargetInScope`'s Pass 2 over `WRITE_COMMANDS`, still reads
- * `tokens[i].quoted && i !== execIndex` there, and is left untouched HERE only
- * because one fix ships per pass — NOT because it is safe. The replay measured
- * it defeated identically: `env 'tee' <session>/state.json`, `nohup 'cp' …`,
- * `command "mv" …` and `env 'sed' -i '' … ` all APPROVE for a worker while both
- * their bare and their merely-quoted twins block, re-opening every R-WSRC-3
- * protected-state-file write guard (shim-verified to really exec). Tracked as
- * AP-EXT-ITER64-02; the same collapse applies there, but Pass 2 must keep its
- * UNQUOTED test on the `>`/`>>` REDIRECT anchor, which quoting really does turn
- * back into data (AP-EXT-ITER51-01). The two anchors are asymmetric; only the
- * exec one is safe to make quoting-blind.
+ * `findWriteTargetInScope`'s Pass 2 over `WRITE_COMMANDS` had the identical
+ * exception and AP-EXT-ITER64-02 applied the identical collapse to it
+ * (2026-08-26): that pass, too, is now one uniform
+ * `WRITE_COMMANDS.has(execName(value))` over every token, reading no exec index
+ * and no quoting flag. Pass 1's `>`/`>>` REDIRECT anchor keeps its UNQUOTED test,
+ * because quoting really does turn a redirect operator back into data
+ * (AP-EXT-ITER51-01). The two anchors are asymmetric; only the EXEC one is safe
+ * to make quoting-blind, and collapsing both would re-open ITER51-01.
+ *
+ * Do not restate either collapse as still-pending here. This paragraph asserted
+ * the opposite — that Pass 2 still carried the quoting-plus-exec-index arm and
+ * was unsafe — for a full pass AFTER ITER64-02 landed, and a fixer acting on it
+ * re-adds the arm that mutation-tests at 19 RED (AP-EXT-ITER74-01). Nor may the
+ * deleted arm be QUOTED here to say it is gone: this module is graded by token
+ * greps, and a backticked corpse reads exactly like a live reference. A claim
+ * about a SIBLING module's state belongs in that module, beside the code that
+ * can falsify it.
  *
  * Over-reach is fail-safe in this module's established direction: a bare `git`
  * argument to some other program (`echo git reset`, quoted or not) anchors and

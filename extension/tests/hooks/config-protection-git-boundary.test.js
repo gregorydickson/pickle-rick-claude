@@ -2236,6 +2236,70 @@ test('AP-EXT-ITER64-01: execAnchorIndex reads no positional exec index', () => {
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER74-01 — the collapse landed; the SIBLING's prose said it had not
+//
+// ITER64-01 (shell-exec.ts) and ITER64-02 (config-protection.ts) shipped the same
+// collapse on 2026-08-26. ITER64-02 corrected CLAUDE.md and the comment on the pin
+// above, but MISSED the `execAnchorIndex` docblock in shell-exec.ts, which went on
+// asserting in the present tense that Pass 2 "still reads" the quoting-plus-exec-
+// index arm, that it was "left untouched ... NOT because it is safe", and that
+// `env 'tee' <session>/state.json` still APPROVES for a worker — re-opening "every
+// R-WSRC-3 protected-state-file write guard". All false the day it was written.
+//
+// The pin above grades the CODE and stayed green through all of it, because prose
+// in a sibling file is invisible to it. That asymmetry is the defect: a reviewer
+// opening `execAnchorIndex` — the canonical home of the quoting-blind exec-anchor
+// rule — was told by the same docblock that its sibling guard was bypassable, and
+// the text NAMED the deleted arm as current. Acting on it means re-adding an arm
+// that mutation-tests at 19 RED. CI catches the code change; nothing caught the
+// prose inviting it.
+//
+// So grade the prose with the same token test that grades the code, and grade it
+// in the file that made the claim. `execIndex` is config-protection's deleted
+// LOCAL — shell-exec.ts never had one and has no business naming it. Saying a
+// corpse is gone, in backticks, is indistinguishable from referencing a live
+// symbol under a grep-based grader (the same reason the trap-door catalogs forbid
+// naming removed symbols in prose), so the assertion is zero occurrences, not
+// zero live uses.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER74-01: shell-exec.ts names no exec-index arm, live or quoted', () => {
+  const shellExecSrc = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
+    'utf8',
+  );
+
+  assert.equal(
+    (shellExecSrc.match(/execIndex/g) || []).length,
+    0,
+    'shell-exec.ts must not contain `execIndex` anywhere — it is the deleted ' +
+      'local from findWriteTargetInScope Pass 2 (AP-EXT-ITER64-02). In code it ' +
+      'would re-admit the positional exec read; in prose it re-creates the ' +
+      'phantom this pin exists to keep dead.',
+  );
+  assert.equal(
+    (shellExecSrc.match(/tokens\[i\]\.quoted/g) || []).length,
+    0,
+    'shell-exec.ts must not contain `tokens[i].quoted` — the exact index form ' +
+      'of the arm ITER64-02 deleted. shell-exec.ts owns no token loop that ' +
+      'gates on quoting; `hereStringPayload` reads `token.quoted` on a single ' +
+      'token, which is a different and legitimate shape.',
+  );
+
+  // The load-bearing knowledge must SURVIVE the correction: the two anchors are
+  // asymmetric, and only the exec one is safe to make quoting-blind. A rewrite
+  // that deleted the false claim AND this rationale would invite the opposite
+  // error — collapsing Pass 1 too, which re-opens AP-EXT-ITER51-01.
+  const anchorDoc = shellExecSrc.match(
+    /\/\*\*(?:(?!\*\/)[\s\S])*?\*\/\s*export function execAnchorIndex/,
+  );
+  assert.ok(anchorDoc, 'execAnchorIndex must keep its docblock');
+  assert.match(anchorDoc[0], /AP-EXT-ITER64-02/);
+  assert.match(anchorDoc[0], /AP-EXT-ITER51-01/);
+  assert.match(anchorDoc[0], /asymmetric/);
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER63-05 — a POSIX command PREFIX hid node from the expensive-test guard
 //
 // The third and last of the residuals AP-EXT-ITER63-02 left open, and the
