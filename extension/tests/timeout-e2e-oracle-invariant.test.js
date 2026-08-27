@@ -15,37 +15,116 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as ts from 'typescript';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TIMEOUT_E2E_PATH = path.resolve(__dirname, 'integration/timeout-e2e.test.js');
 const SERIAL_MANIFEST_PATH = path.resolve(__dirname, 'integration/.serial-tests.json');
 const SERIAL_MANIFEST_ENTRY = 'tests/integration/timeout-e2e.test.js';
 
-/** Top-level `test(` declarations — anchored at line start so nested `.skip(`/`.todo(` calls on the same identifier never match. */
-function countTopLevelTestDeclarations(sourceText) {
-  const matches = sourceText.match(/^test\(/gm);
-  return matches ? matches.length : 0;
+/**
+ * Parse one JavaScript source text into a TypeScript SourceFile. Every check below resolves its
+ * subject from this tree rather than from the source's line/column layout, because a guard that
+ * locates a construct by WHERE IT SITS fabricates a violation the moment something else moves: a
+ * `test(` at column 0 inside a template literal is text, not a declaration, and it is not an AST
+ * node at all. `setParentNodes` (4th arg) is `true`, matching the sibling guard in
+ * tests/ac6-operator-surface-guard.test.js.
+ */
+function parseSource(sourceText) {
+  return ts.createSourceFile('timeout-e2e.test.js', sourceText, ts.ScriptTarget.Latest, true);
 }
 
-/** True if the source carries any skip/todo modifier, in either call form or options-object form. */
-function hasSkipOrTodoModifier(sourceText) {
-  return /test\.skip\(|test\.todo\(|\{\s*skip\s*:|\{\s*todo\s*:/.test(sourceText);
-}
-
-/** Body text of each top-level `test(...)` declaration, split at declaration boundaries. */
-function splitTestBodies(sourceText) {
-  const starts = [];
-  const re = /^test\(/gm;
-  let m;
-  while ((m = re.exec(sourceText))) {
-    starts.push(m.index);
+/**
+ * Split a call's callee into `{ root, modifier }`: `test(...)` gives `{ root: 'test', modifier: null }`,
+ * `test.skip(...)` gives `{ root: 'test', modifier: 'skip' }`, anything else gives `{ root: null }`.
+ * This is the single place "is this a `test` call, and is it modified" is decided, so no check below
+ * carries its own spelling of that question.
+ */
+function calleeRootName(expression) {
+  if (ts.isIdentifier(expression)) {
+    return { root: expression.text, modifier: null };
   }
-  return starts.map((start, i) => sourceText.slice(start, i + 1 < starts.length ? starts[i + 1] : sourceText.length));
+  if (ts.isPropertyAccessExpression(expression)
+      && ts.isIdentifier(expression.expression) && ts.isIdentifier(expression.name)) {
+    return { root: expression.expression.text, modifier: expression.name.text };
+  }
+  return { root: null, modifier: null };
+}
+
+/** Every `test`-rooted CallExpression anywhere in the tree, with its modifier (`skip`/`todo`/`null`). */
+function allTestCalls(sourceText) {
+  const calls = [];
+  function visit(node) {
+    if (ts.isCallExpression(node)) {
+      const { root, modifier } = calleeRootName(node.expression);
+      if (root === 'test') calls.push({ call: node, modifier });
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(parseSource(sourceText));
+  return calls;
+}
+
+/** The unmodified top-level `test(...)` declarations — statements of the file, not lines of it. */
+function topLevelTestDeclarations(sourceText) {
+  return parseSource(sourceText).statements
+    .filter(stmt => ts.isExpressionStatement(stmt) && ts.isCallExpression(stmt.expression))
+    .map(stmt => ({ call: stmt.expression, ...calleeRootName(stmt.expression.expression) }))
+    .filter(entry => entry.root === 'test' && entry.modifier === null);
+}
+
+function countTopLevelTestDeclarations(sourceText) {
+  return topLevelTestDeclarations(sourceText).length;
+}
+
+/**
+ * True if any `test` call carries a skip/todo modifier (`test.skip(...)`) or a skip/todo property in
+ * its options object (`test('x', { skip: true }, fn)`). Both are read off the call itself, so an
+ * unrelated `{ skip: false }` elsewhere in the file cannot fire it. No alternation of spellings is
+ * maintained here: the previous 4-pattern regex was an enumerated set, and an enumerated set is
+ * always one unlisted form away from the next silent bypass.
+ */
+function hasSkipOrTodoModifier(sourceText) {
+  return allTestCalls(sourceText).some(({ call, modifier }) => {
+    if (modifier === 'skip' || modifier === 'todo') return true;
+    return call.arguments.some(arg => ts.isObjectLiteralExpression(arg)
+      && arg.properties.some(prop => prop.name && ts.isIdentifier(prop.name)
+        && (prop.name.text === 'skip' || prop.name.text === 'todo')));
+  });
+}
+
+/**
+ * Body source of each top-level `test(...)`: the callback node's own text, never a slice running from
+ * one declaration's offset to the next (which swallowed anything sitting between them, and ran the
+ * last body to end-of-file).
+ */
+function splitTestBodies(sourceText) {
+  return topLevelTestDeclarations(sourceText).map(({ call }) => {
+    const callback = [...call.arguments].reverse()
+      .find(arg => ts.isArrowFunction(arg) || ts.isFunctionExpression(arg));
+    return callback ? callback.getText() : '';
+  });
+}
+
+/** True when the body text contains a real `assert.*(...)` call, resolved as a call rooted at the `assert` identifier. */
+function bodyHasAssertCall(bodyText) {
+  let found = false;
+  function visit(node) {
+    if (found) return;
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      let receiver = node.expression.expression;
+      while (ts.isPropertyAccessExpression(receiver)) receiver = receiver.expression;
+      if (ts.isIdentifier(receiver) && receiver.text === 'assert') found = true;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(parseSource(bodyText));
+  return found;
 }
 
 /** True when every one of the given test bodies contains at least one `assert.` call. */
 function everyBodyAsserts(bodies) {
-  return bodies.length > 0 && bodies.every((body) => /assert\./.test(body));
+  return bodies.length > 0 && bodies.every(bodyHasAssertCall);
 }
 
 function fileEntryListed(manifestText, entry) {
@@ -111,7 +190,8 @@ test('bb01af94 mutation check: a test.skip on one test trips invariant 1 or 2', 
   assert.equal(
     countTopLevelTestDeclarations(skipped),
     1,
-    'test.skip(...) no longer matches the ^test\\( anchor, so the mutated declaration count must drop below 2 — '
+    'test.skip(...) resolves to a modified callee, so it is not an unmodified declaration and the '
+    + 'mutated count must drop below 2 — '
     + 'proving invariant 1 also catches this mutation independently of invariant 2',
   );
 });
@@ -145,5 +225,91 @@ test('bb01af94 mutation check: removing the manifest entry trips invariant 4', (
     fileEntryListed(withoutEntry, SERIAL_MANIFEST_ENTRY),
     false,
     'removing the timeout-e2e entry from a copy of the manifest must trip the manifest-membership check',
+  );
+});
+
+// ROOT-4 discrimination pins. The helpers above previously read this file's subject POSITIONALLY —
+// `/^test\(/gm` (identity = column 0) and a 4-member skip/todo pattern alternation — and a positional
+// reader matches things that are not the construct it claims to match. Both directions are pinned in
+// one place so the fix cannot degrade into a blanket exclusion that blinds the oracle instead.
+
+test('ROOT-4 true negative: a line-initial test( inside a template literal is not a declaration', () => {
+  const source = [
+    "test('the only real declaration', () => { assert.ok(1); });",
+    'const fixtureScript = `',
+    "test('this is fixture TEXT written by a fake-claude script, not a declaration', () => {})",
+    '`;',
+  ].join('\n');
+
+  assert.equal(
+    countTopLevelTestDeclarations(source),
+    1,
+    'a `test(` at column 0 inside a template literal is string content, not an AST declaration — '
+    + 'counting it fabricates a violation exactly as the audit once reported RegExp.prototype.exec '
+    + 'as a child_process.exec',
+  );
+});
+
+test('ROOT-4 true negative: an unrelated { skip: ... } object is not a test modifier', () => {
+  const source = [
+    "test('a real, unskipped test', () => { assert.ok(1); });",
+    'const retryOptions = { skip: false, todo: false };',
+  ].join('\n');
+
+  assert.equal(
+    hasSkipOrTodoModifier(source),
+    false,
+    'skip/todo is read off the test call itself; an unrelated object literal that happens to carry '
+    + 'those keys must not read as a quarantined test',
+  );
+});
+
+test('ROOT-4 true positive: real declarations, modifiers, and the options form all still fire', () => {
+  assert.equal(
+    countTopLevelTestDeclarations(
+      "test('one', () => { assert.ok(1); });\ntest('two', () => { assert.ok(1); });",
+    ),
+    2,
+    'genuine top-level declarations must still be counted',
+  );
+
+  assert.equal(
+    hasSkipOrTodoModifier("test.skip('quarantined', () => {});"),
+    true,
+    'test.skip(...) must still be detected',
+  );
+  assert.equal(
+    hasSkipOrTodoModifier("test.todo('quarantined', () => {});"),
+    true,
+    'test.todo(...) must still be detected',
+  );
+  assert.equal(
+    hasSkipOrTodoModifier("test('quarantined', { skip: true }, () => {});"),
+    true,
+    'the options-object form must still be detected',
+  );
+
+  // Indentation is not identity either: a declaration nested in a describe() is still a modified
+  // test call the oracle can see, so quarantining it cannot hide behind a column offset.
+  assert.equal(
+    hasSkipOrTodoModifier("describe('grp', () => {\n  test.skip('nested', () => {});\n});"),
+    true,
+    'a nested test.skip must be detected — the previous `^`-anchored reading only saw column 0',
+  );
+});
+
+test('ROOT-4: a body is the callback node, not a slice running to the next declaration', () => {
+  const source = [
+    "test('first', () => { assert.ok(1); });",
+    'function helperBetweenTests() { return assert.ok; }',
+    "test('second', () => { assert.ok(2); });",
+  ].join('\n');
+
+  const bodies = splitTestBodies(source);
+
+  assert.equal(bodies.length, 2);
+  assert.ok(
+    !bodies[0].includes('helperBetweenTests'),
+    'the first body must not swallow the helper declared between the two tests — offset slicing did',
   );
 });
