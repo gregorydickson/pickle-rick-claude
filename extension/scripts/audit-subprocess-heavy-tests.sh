@@ -9,6 +9,7 @@ TEST_ROOT="$EXTENSION_ROOT/tests"
 SERIAL_MANIFEST_PATH="$EXTENSION_ROOT/tests/integration/.serial-tests.json"
 MISSING_TIMEOUT_SCANNER="$SCRIPT_DIR/audit-subprocess-heavy-tests-missing-timeout.mjs"
 MISSING_TIMEOUT_BASELINE="$SCRIPT_DIR/subprocess-heavy-missing-timeout-baseline.json"
+UNPROVISIONED_SCANNER="$SCRIPT_DIR/audit-unprovisioned-binary-spawns.mjs"
 
 # --scan-root <dir>: run against an alternate directory instead of the default
 # $EXTENSION_ROOT/tests (e.g. an fs.mkdtemp fixture dir in a test, kept OUT of
@@ -198,6 +199,27 @@ if [ "${#AUDITED_FILES[@]}" -gt 0 ] && command -v node >/dev/null 2>&1; then
       [ -z "$mt_file" ] && continue
       echo "$mt_file: new missing-timeout $mt_fn(...) callsite not in baseline ($mt_key)" >&2
     done <<< "$missing_timeout_out"
+    status=1
+  fi
+fi
+
+# Unprovisioned-binary predicate: a test must not spawn a binary the CI/release
+# workflows do not install (e.g. ripgrep). Such a call site is green on a dev box
+# that happens to have the tool and ENOENT in CI. The tool list is imported by the
+# scanner from services/verify-command-safety.js -- not re-enumerated here.
+#
+# NOTE: deliberately NOT gated on the SERIAL allowlist above. Serialization and
+# binary provisioning are orthogonal, and tests/integration/mega-bundle-e2e.test.js
+# -- the file whose ripgrep spawn motivated this predicate -- is in the serial
+# manifest, so sharing that allowlist would blind this check to the original bug.
+if [ "${#AUDITED_FILES[@]}" -gt 0 ] && [ -f "$UNPROVISIONED_SCANNER" ]; then
+  unprovisioned_out="$(node "$UNPROVISIONED_SCANNER" --base "$EXTENSION_ROOT" "${AUDITED_FILES[@]}" 2>/dev/null)"
+  unprovisioned_exit=$?
+  if [ "$unprovisioned_exit" -ne 0 ]; then
+    while IFS=$'\t' read -r up_file up_tool up_line; do
+      [ -z "$up_file" ] && continue
+      echo "$up_file:$up_line: spawns unprovisioned binary '$up_tool' (not installed by ci.yml/release.yml); remove the dependency or mark the guarded call site PROVISIONED-OK" >&2
+    done <<< "$unprovisioned_out"
     status=1
   fi
 fi

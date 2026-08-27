@@ -32,6 +32,38 @@ function writeExtensionSentinel(root) {
   fs.writeFileSync(path.join(root, 'extension/bin/log-watcher.js'), '');
 }
 
+// --- ripgrep-free source enumeration + scan -----------------------------------
+// These replace `rg --files <dir>` and `rg -n <needle> <files>`. ripgrep is NOT
+// provisioned by .github/workflows/{ci,release}.yml, so spawning it here was an
+// invisible-locally / fatal-in-CI dependency (ENOENT). `rg --files` additionally
+// honors .gitignore and skips hidden files; neither is load-bearing under `src`
+// (measured: rg --files and `find -type f` enumerate an identical 173-file set),
+// so a plain walk is equivalent on this input.
+
+// Every regular file under <root>/<relDir>, as root-relative POSIX paths, sorted.
+function listFilesUnder(root, relDir) {
+  const base = path.join(root, relDir);
+  return fs
+    .readdirSync(base, { recursive: true, withFileTypes: true })
+    .filter(entry => entry.isFile())
+    .map(entry => path.relative(root, path.join(entry.parentPath, entry.name)).split(path.sep).join('/'))
+    .sort();
+}
+
+// `rg -n <needle> <files...>` output composition: one `path:lineno:content` per
+// matching line, path exactly as passed in. The caller's filters match against
+// that whole composed string, so the composition is part of the contract.
+function grepLines(root, relFiles, needle) {
+  const matches = [];
+  for (const rel of relFiles) {
+    const lines = fs.readFileSync(path.join(root, rel), 'utf8').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes(needle)) matches.push(`${rel}:${i + 1}:${lines[i]}`);
+    }
+  }
+  return matches;
+}
+
 function makeReleaseTarball(root, version) {
   const contentRoot = path.join(root, `release-${version}`);
   const packageRoot = path.join(contentRoot, 'pickle-rick-claude');
@@ -342,18 +374,9 @@ test('mega bundle A-F smoke paths work together', () => {
     assert.equal(hermes.args[hermes.args.indexOf('--max-turns') + 1], '4');
     assert.deepEqual(backendEnvOverrides('hermes'), { PICKLE_BACKEND: 'hermes' });
 
-    const sourceFiles = execFileSync('rg', ['--files', 'src'], { cwd: EXTENSION_ROOT, encoding: 'utf8' })
-      .trim()
-      .split('\n')
-      .filter(Boolean);
-    const legacyCarveOuts = spawnSync(
-      'rg',
-      ['-n', 'eslint-disable-next-line', ...sourceFiles],
-      { cwd: EXTENSION_ROOT, encoding: 'utf8' },
-    );
-    const unreviewedCarveOuts = (legacyCarveOuts.stdout ?? '')
-      .split('\n')
-      .filter(Boolean)
+    const sourceFiles = listFilesUnder(EXTENSION_ROOT, 'src');
+    const legacyCarveOuts = grepLines(EXTENSION_ROOT, sourceFiles, 'eslint-disable-next-line');
+    const unreviewedCarveOuts = legacyCarveOuts
       .filter(line => {
         if (/eslint-disable-next-line\s*(--)?\s*$/.test(line)) return true;
         if (!/(outside T0|complexity|max-lines-per-function)/.test(line)) return false;
@@ -367,5 +390,76 @@ test('mega bundle A-F smoke paths work together', () => {
     if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
     else process.env.PICKLE_DATA_ROOT = previousDataRoot;
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Regression case for the unprovisioned-binary predicate added to
+// scripts/audit-subprocess-heavy-tests.sh. ripgrep is not installed by
+// .github/workflows/{ci,release}.yml, so a test that spawns it is green on a dev
+// box and `spawnSync rg ENOENT` in CI — the defect this file's own source above
+// used to carry.
+//
+// Fixture source is assembled from a split token (`CALL + '('`) rather than a
+// spawn-call-with-tool-argv0 substring, so THIS file — which the audit scans as
+// part of the real extension/tests corpus — never itself reads as a candidate to
+// the very audit it is testing. Same technique, same reason, as
+// tests/audit-subprocess-heavy-tests-missing-timeout.test.js.
+//
+// NOTE: the scanner matches raw file text and does NOT exclude comments, so prose
+// here must not spell out a spawn call whose first argument is an unprovisioned
+// tool — describe the shape instead of quoting it. Teaching the scanner to skip
+// comments was rejected: a comment-stripper that mis-parses a string or template
+// literal would hide a REAL call site, and a false green is worse than this
+// constraint on prose.
+const AUDIT_SCRIPT = path.join(EXTENSION_ROOT, 'scripts/audit-subprocess-heavy-tests.sh');
+
+function unprovisionedFixture(argv0, marker) {
+  const CALL = 'spawnSync';
+  return [
+    '// @tier: fast',
+    "import { spawnSync } from 'node:child_process';",
+    'export function run(cwd) {',
+    ...(marker ? [`  ${marker}`] : []),
+    `  return ${CALL}(${argv0}, { cwd, encoding: 'utf-8', timeout: 30000 });`,
+    '}',
+    '',
+  ].join('\n');
+}
+
+function runAuditOnScanRoot(scanRoot) {
+  // timeout exceeds SUBPROCESS_HEAVY_WARN_MS (15000) so this spawn is not itself
+  // a subprocess-heavy candidate of the audit it invokes.
+  return spawnSync('bash', [AUDIT_SCRIPT, '--scan-root', scanRoot], {
+    encoding: 'utf-8',
+    timeout: 30000,
+  });
+}
+
+test('mega bundle audit reds a test that spawns an unprovisioned binary', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'unprovisioned-scan-root-')));
+  try {
+    // 1. Spawning ripgrep fails the audit and names the tool.
+    const rgFixture = path.join(dir, 'spawns-rg.test.js');
+    fs.writeFileSync(rgFixture, unprovisionedFixture("'rg', ['--files', 'src']", ''));
+    const red = runAuditOnScanRoot(dir);
+    assert.notEqual(red.status, 0, `expected non-zero exit; stderr=${red.stderr}`);
+    assert.match(red.stderr, /spawns unprovisioned binary 'rg'/);
+
+    // 2. Removing the dependency turns the same scan root green — this is the
+    //    mutation half: the audit reacts to the spawn, not to the fixture's mere
+    //    existence.
+    fs.writeFileSync(rgFixture, unprovisionedFixture("'git', ['status']", ''));
+    const green = runAuditOnScanRoot(dir);
+    assert.equal(green.status, 0, `expected exit 0 after removing rg; stderr=${green.stderr}`);
+
+    // 3. A guarded call site opts out explicitly via the PROVISIONED-OK marker.
+    fs.writeFileSync(
+      rgFixture,
+      unprovisionedFixture("'rg', ['--files', 'src']", '// PROVISIONED-OK: guarded by a which() probe'),
+    );
+    const allowed = runAuditOnScanRoot(dir);
+    assert.equal(allowed.status, 0, `expected exit 0 for an allowlisted site; stderr=${allowed.stderr}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
