@@ -311,3 +311,34 @@ test('W5b: budget row retired and no gate_skipped events emitted for signature_c
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER81-01: pins the fact that makes check-readiness.ts's own guarded
+// `gitTrackedFiles` (UNBOUNDED_READ_MAX_BUFFER + `enumerationCompleted`) UNREACHABLE:
+// `createResolverCache` populates `trackedAllFiles` EAGERLY, so `resolvePathRef`'s
+// `cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot)` never takes the right arm.
+// The corrected docblock at that function asserts exactly this. If the eager
+// population ever goes lazy again the arm comes alive, the docblock's claim becomes
+// false, and this test is what says so.
+test('AP-EXT-ITER81-01: createResolverCache populates trackedAllFiles eagerly, so the check-readiness ls-files fallback stays unreachable', async () => {
+  const { createResolverCache } = await import('../services/signature-caller-gap.js');
+  const repoRoot = path.resolve(__dirname, '..', '..');
+
+  const cache = createResolverCache(repoRoot, 120_000);
+
+  assert.ok(
+    Array.isArray(cache.trackedAllFiles),
+    'trackedAllFiles must be an array on a freshly created cache — a lazy/undefined field '
+      + 'revives resolvePathRef\'s `?? gitTrackedFiles(repoRoot)` arm and falsifies the '
+      + 'AP-EXT-ITER81-01 docblock in src/bin/check-readiness.ts',
+  );
+  assert.ok(
+    cache.trackedAllFiles.length > 0,
+    'trackedAllFiles must be non-empty for this repo; an empty listing means the enumeration '
+      + 'itself failed, which is the AP-EXT-ITER81-01 exposure rather than this pin',
+  );
+  assert.ok(
+    cache.trackedSourceFiles.length > 0,
+    'trackedSourceFiles feeds resolveSymbolRef candidate selection and comes from the same '
+      + 'single enumeration',
+  );
+});

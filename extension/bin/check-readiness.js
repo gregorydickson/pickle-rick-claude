@@ -246,30 +246,60 @@ function resolvePathRef(ref, repoRoot, ticket, sessionDir, cache) {
     // R-RTRC-4: git ls-files suffix-match fallback. Equivalent to
     //   git ls-files | grep -E '/<ref>$|^<ref>$'
     // Catches deep repo paths whose containing dir none of the bases above resolve.
+    // The `??` arm is UNREACHABLE in this binary — see gitTrackedFiles below. It is kept
+    // only so a cache-less call is not a crash; the lazy-init write that used to sit here
+    // was dead for the same reason and was removed rather than left to read as live.
     const tracked = cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot);
-    if (cache && cache.trackedAllFiles === undefined)
-        cache.trackedAllFiles = tracked;
     const escaped = normalizedRef.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const suffixRe = new RegExp(`(?:^|/)${escaped}$`);
     return tracked.some((file) => suffixRe.test(file));
 }
+/**
+ * AP-EXT-ITER81-01: THIS FUNCTION HAS NO REACHABLE CALLER, AND THE CEILING BELOW
+ * THEREFORE PROTECTS NOTHING. Do not read it as the gate's enumeration guard.
+ *
+ * Its one callsite is the `??` arm in `resolvePathRef`, which fires only when
+ * `cache.trackedAllFiles` is undefined. `createResolverCache`
+ * (services/signature-caller-gap.ts) sets that field EAGERLY on every cache it
+ * returns, and both callers of `resolvePathRef` — `findPathFindings` (via
+ * `runReadiness`) and `countUnresolvedReferences` — always pass such a cache.
+ * Neither `resolvePathRef` nor `findPathFindings` is exported, so no test reaches
+ * the arm either. Measured: `createResolverCache(repoRoot, 120_000).trackedAllFiles`
+ * is a 2114-entry array on this repo. Pinned by
+ * `tests/readiness-signature-change-caller-gap.test.js` (`AP-EXT-ITER81-01`) so this
+ * claim reddens if the eager population ever goes lazy again.
+ *
+ * WHAT ACTUALLY FEEDS THE GATE, and the live exposure: `trackedAllFiles` (suffix
+ * resolution here) and `trackedSourceFiles` (candidate scan in `resolveSymbolRef`)
+ * both come from `signature-caller-gap.ts`'s OWN `gitTrackedFiles`, which guards on
+ * `result.status !== 0` alone and declares NO `maxBuffer` — Node's 1 MB default. Past
+ * 1 MB of `git ls-files` output that child is truncated with `status: 0` /
+ * `error.code === 'ENOBUFS'`, the status-only guard reads it as a COMPLETE listing,
+ * and the partial list makes real tracked files resolve as absent. Those become
+ * `file_path` / `contract` findings, which are BLOCKING (`blockingFindings`) — so the
+ * gate returns exit 2 on a verdict manufactured by buffer size. Repo-size dependent:
+ * this repo's listing is ~115 KB, a large monorepo clears 1 MB.
+ *
+ * FENCE: `services/signature-caller-gap.ts` and
+ * `tests/check-readiness-hang-guard.test.js` (which asserts this spawn's timeout by
+ * SOURCE TEXT, and so is green over this dead code) are both OUTSIDE the current
+ * scope.json, so neither the real fix nor the deletion of this copy is landable here.
+ * `src/bin/CLAUDE.md` already records signature-caller-gap.ts as an out-of-fence
+ * survivor of the AP-EXT-ITER55-01 maxBuffer family; the dead-guard half is the trap
+ * door in `src/services/CLAUDE.md`.
+ *
+ * The `enumerationCompleted` call below is retained (not the `[]` the predicate's own
+ * docblock forbids mapping an unmeasured read to, but the callers here cannot consume
+ * a `null`, and turning an unmeasurable read into a throw would add an abort condition
+ * the PRIME DIRECTIVE forbids). It is correct-but-inert, exactly like the ceiling.
+ */
 function gitTrackedFiles(repoRoot) {
     const result = spawnSync('git', ['ls-files'], {
         cwd: repoRoot,
         encoding: 'utf-8',
         timeout: GIT_LS_FILES_TIMEOUT_MS,
-        // AP-EXT-ITER8-01: a whole-repo `ls-files` is unbounded; a truncated list reads as
-        // "file not tracked" and manufactures false-positive contract/file_path findings.
         maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
-    // The ceiling above has TWO overflow shapes and a `status`-only test sees only one.
-    // The other — a child that EXITS before Node's kill lands, so `status: 0`,
-    // `signal: null`, `error.code === 'ENOBUFS'` and TRUNCATED stdout — is exactly the
-    // truncation the comment above says the ceiling exists to stop, and status-only it
-    // reads as a COMPLETE listing. Completion is decided by the family's ONE shared
-    // `enumerationCompleted` predicate (`types/index.ts`), called and not
-    // re-implemented; four members of this family each regressed to the status-only
-    // half while the copies were maintained separately.
     if (!enumerationCompleted(result))
         return [];
     return result.stdout.split('\n').filter(Boolean);
