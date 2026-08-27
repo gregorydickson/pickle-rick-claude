@@ -20,6 +20,7 @@ import {
     __resetGitLsFilesSuffixCacheForTests,
     countContentLines,
     findStaleAnchorWarnings,
+    evaluateAcShapeEnforcement,
 } from '../bin/spawn-refinement-team.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 
@@ -1071,4 +1072,132 @@ test('AP-EXT-ITER56-01: the suffix enumeration declares the ONE unbounded-read c
     } finally {
         __resetGitLsFilesSuffixCacheForTests();
     }
+});
+
+// ─── AC-shape gate: one entry per TICKET, not per ANALYST ────────────────────
+//
+// AP-EXT-ITER84-01. `collectAcShapeData` appends every analyst's emissions into
+// one flat `manifest.tickets`, so a ticket named by all three analysts lands
+// three times. `evaluateAcShapeEnforcement` branches on how many tickets an AC
+// was decomposed into, so counting raw entries read a 3-analyst CONSENSUS on one
+// ticket as a "multi-ticket decomposition" and skipped the single-collapse shape
+// check entirely. Measured on a real manifest
+// (sessions/2026-08-22-a1e33756, AC-1 -> ws-a-worker-foreground-directive):
+// shipped gate returned [] where one-entry-per-ticket returns a violation.
+//
+// Every pre-existing fixture in refinement-ac-shape-gate.test.js uses DISTINCT
+// ticket ids, which is exactly why the whole suite stayed green through it.
+// These cases drive the REAL path — analyst .md files through
+// buildRefinementManifest — not a hand-built tickets array.
+
+const AC_SHAPE_ANALYST_ROLES = ['requirements', 'codebase', 'risk-scope'];
+
+function writeAcShapeAnalystOutputs(refinementDir, perRoleTickets, smell) {
+    fs.mkdirSync(refinementDir, { recursive: true });
+    for (const role of AC_SHAPE_ANALYST_ROLES) {
+        const payload = { ac_shape_smells: [smell], tickets: perRoleTickets(role) };
+        fs.writeFileSync(
+            path.join(refinementDir, `analysis_${role}.md`),
+            `# ${role}\n\n## ac_shape_smells\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\`\n`,
+        );
+    }
+}
+
+function buildAcShapeManifest(dir, perRoleTickets, smell) {
+    const refinementDir = path.join(dir, 'refinement');
+    writeAcShapeAnalystOutputs(refinementDir, perRoleTickets, smell);
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, '---\ntitle: ac-shape probe\n---\n\n# Probe\n');
+    return buildRefinementManifest(
+        { prdPath, sessionDir: dir },
+        {
+            refinementDir,
+            cyclesRequested: 1,
+            maxTurns: 1,
+            allCycleResults: [[]],
+            finalResults: AC_SHAPE_ANALYST_ROLES.map((roleId) => ({
+                roleId,
+                success: true,
+                logPath: path.join(refinementDir, `${roleId}.log`),
+                cycle: 1,
+            })),
+            allSuccess: true,
+        },
+    );
+}
+
+test('AP-EXT-ITER84-01: a single collapsed ticket named by all three analysts is still judged as a single-ticket collapse', () => {
+    const dir = tmpDir('pickle-acshape-collapse-');
+    // ONE logical ticket, emitted once per analyst with the per-analyst wording
+    // drift that real manifests carry. Not parametrized: no universal quantifier
+    // AND no describe.each anywhere in its fields.
+    const manifest = buildAcShapeManifest(
+        dir,
+        (role) => [{
+            id: 'T-COLLAPSE',
+            title: 'Handler getA validates permissions',
+            source_ac_ids: ['AC-1'],
+            acceptance_test: `getA returns 200 (${role} wording)`,
+            justification: `covers the getA path (${role})`,
+        }],
+        { ac_id: 'AC-1', headline: 'enumerated AC collapsed to one ticket', ticket_ids: ['T-COLLAPSE'] },
+    );
+
+    assert.equal(manifest.tickets.length, 3, 'manifest keeps one entry per analyst — that is the input shape being defended against');
+    assert.equal(new Set(manifest.tickets.map((t) => t.id)).size, 1, 'all three entries are the SAME ticket');
+
+    const violations = evaluateAcShapeEnforcement(manifest);
+    const collapse = violations.find((v) => v.ac_id === 'AC-1');
+    assert.ok(collapse, 'a single-ticket collapse must produce a violation even when three analysts emitted it');
+    assert.match(collapse.reason, /single-ticket collapse/, 'must take the single-collapse branch, not the multi-ticket justification branch');
+    assert.deepEqual(collapse.ticket_ids, ['T-COLLAPSE'], 'the violation names the ticket once, not once per analyst');
+});
+
+test('AP-EXT-ITER84-01: a parametrized collapsed ticket still passes when only one analyst supplied the describe.each', () => {
+    const dir = tmpDir('pickle-acshape-param-');
+    const manifest = buildAcShapeManifest(
+        dir,
+        (role) => [{
+            id: 'T-PARAM',
+            title: 'All handlers validate permissions',
+            source_ac_ids: ['AC-1'],
+            acceptance_test: role === 'codebase'
+                ? 'describe.each([["getA"], ["getB"]]) covers every handler'
+                : 'handlers return 200',
+            justification: `covers both handlers (${role})`,
+        }],
+        { ac_id: 'AC-1', headline: 'enumerated AC collapsed to one parametrized ticket', ticket_ids: ['T-PARAM'] },
+    );
+
+    assert.deepEqual(evaluateAcShapeEnforcement(manifest), [], 'merging same-id copies keeps a shape ANY analyst rendered visible');
+});
+
+test('AP-EXT-ITER84-01: a genuine multi-ticket split is still judged on justifications, not analyst count', () => {
+    const dir = tmpDir('pickle-acshape-split-');
+    const manifest = buildAcShapeManifest(
+        dir,
+        (role) => [
+            {
+                id: 'T-SPLIT-A',
+                title: 'Handler getA validates permissions',
+                source_ac_ids: ['AC-2'],
+                acceptance_test: `getA returns 200 (${role})`,
+                justification: 'getA uses separate storage',
+            },
+            {
+                id: 'T-SPLIT-B',
+                title: 'Handler getB validates permissions',
+                source_ac_ids: ['AC-2'],
+                acceptance_test: `getB returns 200 (${role})`,
+                // no justification from any analyst — unjustified split
+            },
+        ],
+        { ac_id: 'AC-2', headline: 'enumerated AC split across two tickets', ticket_ids: ['T-SPLIT-A', 'T-SPLIT-B'] },
+    );
+
+    const violations = evaluateAcShapeEnforcement(manifest);
+    const split = violations.find((v) => v.ac_id === 'AC-2');
+    assert.ok(split, 'an unjustified multi-ticket split must still violate');
+    assert.match(split.reason, /multi-ticket decomposition/, 'two distinct ids stay on the multi-ticket branch');
+    assert.deepEqual(split.ticket_ids, ['T-SPLIT-B'], 'the unjustified ticket is named exactly once, not once per analyst');
 });

@@ -1245,13 +1245,44 @@ function collectAcShapeData(results) {
     }
     return { acShapeSmells, tickets };
 }
+/**
+ * Union the three shape-bearing fields of two analyst copies of the SAME ticket id.
+ * Merging, not first-wins: the copies genuinely differ (measured across the real
+ * manifest corpus — same id, different `acceptance_test`/`justification` in every
+ * duplicated group), so keeping whichever analyst happened to be first in
+ * `finalResults` silently discards what the other two said about the same ticket.
+ */
+function mergeAnalystTicketShape(first, next) {
+    const union = (a, b) => a && b && a !== b ? `${a}\n${b}` : a ?? b;
+    return {
+        ...first,
+        title: union(first.title, next.title) ?? first.title,
+        acceptance_test: union(first.acceptance_test, next.acceptance_test),
+        justification: union(first.justification, next.justification),
+    };
+}
+/**
+ * Matching tickets for a smell, collapsed to ONE entry per ticket id.
+ *
+ * `manifest.tickets` is the CONCATENATION of every analyst's emissions
+ * (`collectAcShapeData` appends per role), so one logical ticket appears once per
+ * analyst that named it. The enforcement branch below asks how many TICKETS an AC
+ * was decomposed into — not how many analysts wrote it down — so counting raw
+ * entries reads a 3-analyst consensus on ONE ticket as a "multi-ticket
+ * decomposition" and never runs the single-collapse shape check at all.
+ */
 function ticketsForSmell(smell, tickets) {
     const explicitIds = new Set((smell.ticket_ids ?? []).filter((id) => id.trim() !== ''));
-    return tickets.filter((ticket) => {
-        if (explicitIds.size > 0 && explicitIds.has(ticket.id))
-            return true;
-        return ticket.source_ac_ids.includes(smell.ac_id);
-    });
+    const byId = new Map();
+    for (const ticket of tickets) {
+        const matchesSmell = (explicitIds.size > 0 && explicitIds.has(ticket.id))
+            || ticket.source_ac_ids.includes(smell.ac_id);
+        if (!matchesSmell)
+            continue;
+        const prior = byId.get(ticket.id);
+        byId.set(ticket.id, prior === undefined ? ticket : mergeAnalystTicketShape(prior, ticket));
+    }
+    return [...byId.values()];
 }
 function parseFrontmatter(content) {
     const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
