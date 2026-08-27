@@ -11185,7 +11185,26 @@ async function runMuxRunnerMain() {
             // B-GROUND2 WS1: the EPIC-success finalize routes through the single
             // ground-truth authority — a residual pending ticket refuses the
             // `success` stamp and stamps the incomplete reason instead (fail-closed).
-            finalizeIfTrulyComplete(statePath, () => muxBundleScan(sessionDir, state.working_dir || ''), { step: 'completed', runnerIteration: iteration, exitReason: 'success' });
+            {
+                const finalizeResult = finalizeIfTrulyComplete(statePath, () => muxBundleScan(sessionDir, state.working_dir || ''), { step: 'completed', runnerIteration: iteration, exitReason: 'success' });
+                // AC-D2' part 2: a refused finalize means a residual ticket (e.g. still
+                // `In Progress`) survived the ground-truth re-scan even though the
+                // manager claimed completion. `finalizeIfTrulyComplete` already stamped
+                // the named disposition (`finalizeResult.reason`) to state.json and
+                // logged the refusal residual — exiting here anyway would strand that
+                // ticket behind a false `success` exit code that disagrees with the
+                // ground truth just written. Continue the SAME loop instead: the
+                // existing iteration-cap / stall / circuit-breaker guards still bound
+                // it, so this collapses the ambiguous "clean exit, pending ticket"
+                // case rather than adding a new guard to detect it downstream.
+                if (!finalizeResult.finalized) {
+                    log(`Task completed claim refused (${finalizeResult.reason}) — a ticket remains unfinished; continuing instead of exiting.`);
+                    lastStateIteration = -1;
+                    stallCount = 0;
+                    await sleep(1000);
+                    continue;
+                }
+            }
             exitReason = 'success';
             break;
         }
@@ -11215,7 +11234,18 @@ async function runMuxRunnerMain() {
             else {
                 log('Review clean. Exiting loop.');
                 // B-GROUND2 WS1: EPIC-success finalize through the single authority.
-                finalizeIfTrulyComplete(statePath, () => muxBundleScan(sessionDir, curState.working_dir || state.working_dir || ''), { step: 'completed', runnerIteration: iteration, exitReason: 'success' });
+                const finalizeResult = finalizeIfTrulyComplete(statePath, () => muxBundleScan(sessionDir, curState.working_dir || state.working_dir || ''), { step: 'completed', runnerIteration: iteration, exitReason: 'success' });
+                // AC-D2' part 2: same collapse as the task_completed branch above — a
+                // refused finalize means a residual ticket survived the re-scan;
+                // continue instead of exiting with a `success` code that disagrees
+                // with the named disposition just stamped to state.json.
+                if (!finalizeResult.finalized) {
+                    log(`Review clean claim refused (${finalizeResult.reason}) — a ticket remains unfinished; continuing instead of exiting.`);
+                    lastStateIteration = -1;
+                    stallCount = 0;
+                    await sleep(1000);
+                    continue;
+                }
                 exitReason = 'success';
                 break;
             }

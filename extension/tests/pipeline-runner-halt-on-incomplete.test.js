@@ -158,6 +158,12 @@ test('pipeline-runner.halt-on-incomplete-phase', async () => {
     const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.ok(log.includes('hit iteration cap'), 'log must contain the iteration-cap halt message');
     assert.ok(log.includes('Unfinished tickets:'), 'log must contain the unfinished-tickets header');
+    // AC-D2': the genuine iteration_cap_exhausted arm must still render the cap
+    // cause, never the "no recorded exit_reason" absence phrasing.
+    assert.ok(
+      !log.includes('exited with no recorded exit_reason'),
+      'a real iteration_cap_exhausted exit_reason must not render as an absence',
+    );
 
     // All 3 tickets must still be Todo (pipeline did not falsely complete them) —
     // anchored to the frontmatter field line, not a bare substring that would also
@@ -229,6 +235,19 @@ test('pipeline-runner.clean-exit0-with-pending-and-progress advances to citadel,
     assert.ok(
       /PHASE 2\/2: CITADEL/.test(runnerLog),
       'pickle must advance to citadel on partial-progress incomplete, not halt before it',
+    );
+
+    // AC-D2': this stub's clean exit 0 never stamped a mux-runner exit_reason
+    // (priorExitReason === null at reportPhaseIncomplete's read) — an ABSENT
+    // measurement must render as an absence, never as the specific
+    // "hit iteration cap" cause (this run never hit any cap).
+    assert.ok(
+      runnerLog.includes('exited with no recorded exit_reason'),
+      'an absent exit_reason must render as an absence, not a fabricated cap cause',
+    );
+    assert.ok(
+      !runnerLog.includes('hit iteration cap'),
+      'a clean exit-0 with no recorded exit_reason must not be misreported as hitting the iteration cap',
     );
 
     // The pending ticket stays Todo (pipeline did not falsely complete it) —

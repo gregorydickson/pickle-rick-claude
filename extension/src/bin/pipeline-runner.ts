@@ -3844,9 +3844,16 @@ function reportPhaseIncomplete(runtime: PipelineRuntime, phase: PhaseName): bool
   // The genuine iteration-cap-exhausted exit (mux-runner R-ICP-1, exit code 3) still reads
   // "hit iteration cap"; any other cause (e.g. the Layer-A suppressor relaunch class) carries
   // the real exit_reason instead of the historically misleading hardcoded string.
-  const cause = priorExitReason === null || priorExitReason === 'iteration_cap_exhausted'
+  // AC-D2': an ABSENT measurement (priorExitReason === null — nothing was ever
+  // stamped) is a DIFFERENT fact than the cap and must render as an absence, not
+  // as the specific cap cause. Conflating "we don't know why it exited" with "it
+  // hit the cap" is exactly the dominant defect class this codebase's CLAUDE.md
+  // names: an absent measurement reported as a specific cause.
+  const cause = priorExitReason === 'iteration_cap_exhausted'
     ? 'hit iteration cap'
-    : `exited (exit_reason=${priorExitReason})`;
+    : priorExitReason === null
+      ? 'exited with no recorded exit_reason'
+      : `exited (exit_reason=${priorExitReason})`;
   runtime.log(`Phase ${phase} ${cause}; ${unfinished.length}/${total} tickets remain unfinished.`);
   if (unfinished.length > 0) {
     logUnfinishedTickets(runtime, unfinished);
