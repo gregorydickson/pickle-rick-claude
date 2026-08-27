@@ -23,7 +23,7 @@
 // Every tarball here carries a VALID installable payload (`extension/package.json` +
 // `install.sh` sharing one root), so `resolveInstallablePayloadRoot` accepts it. That matters:
 // it proves these cases reach the extractor rather than dying at the payload-shape guard.
-import { test, describe, before, after, beforeEach } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -94,12 +94,6 @@ after(() => {
 });
 
 describe('check-update extraction containment', () => {
-  let victim;
-
-  beforeEach(() => {
-    victim = fs.mkdtempSync(path.join(root, 'victim-'));
-  });
-
   test('fails closed on a member whose path escapes via a dot segment', () => {
     const { tarball, outside } = stageDotSegmentTarball('ESCAPED_DOT.txt');
 
@@ -115,6 +109,7 @@ describe('check-update extraction containment', () => {
     // slash — so a name-only `-tzf` scan cannot see this. Only the link's TARGET escapes.
     // `tar -r` appends to an uncompressed archive, which is how the symlink member is
     // ordered BEFORE the member that writes through it (portable across GNU and BSD tar).
+    const victim = fs.mkdtempSync(path.join(root, 'victim-'));
     const stage = stagePayload();
     fs.symlinkSync(victim, path.join(stage, 'evil'));
 
