@@ -1262,27 +1262,28 @@ function mergeAnalystTicketShape(first, next) {
     };
 }
 /**
- * Matching tickets for a smell, collapsed to ONE entry per ticket id.
+ * Collapse the per-ANALYST concatenation into ONE entry per ticket id.
  *
  * `manifest.tickets` is the CONCATENATION of every analyst's emissions
  * (`collectAcShapeData` appends per role), so one logical ticket appears once per
- * analyst that named it. The enforcement branch below asks how many TICKETS an AC
- * was decomposed into — not how many analysts wrote it down — so counting raw
- * entries reads a 3-analyst consensus on ONE ticket as a "multi-ticket
- * decomposition" and never runs the single-collapse shape check at all.
+ * analyst that named it. EVERY per-TICKET cardinality question — how many tickets
+ * an AC was decomposed into, how many tickets a bundle collapsed to — must ask it
+ * of this collapsed view, never of the raw array: counting raw entries reads an
+ * N-analyst consensus on ONE ticket as an N-ticket decomposition, and at the
+ * shipped `WORKER_ROLES` count that silently disables the check.
  */
-function ticketsForSmell(smell, tickets) {
-    const explicitIds = new Set((smell.ticket_ids ?? []).filter((id) => id.trim() !== ''));
+function collapseAnalystTicketCopies(tickets) {
     const byId = new Map();
     for (const ticket of tickets) {
-        const matchesSmell = (explicitIds.size > 0 && explicitIds.has(ticket.id))
-            || ticket.source_ac_ids.includes(smell.ac_id);
-        if (!matchesSmell)
-            continue;
         const prior = byId.get(ticket.id);
         byId.set(ticket.id, prior === undefined ? ticket : mergeAnalystTicketShape(prior, ticket));
     }
     return [...byId.values()];
+}
+/** Matching tickets for a smell, collapsed to ONE entry per ticket id. */
+function ticketsForSmell(smell, tickets) {
+    const explicitIds = new Set((smell.ticket_ids ?? []).filter((id) => id.trim() !== ''));
+    return collapseAnalystTicketCopies(tickets.filter((ticket) => ((explicitIds.size > 0 && explicitIds.has(ticket.id)) || ticket.source_ac_ids.includes(smell.ac_id))));
 }
 function parseFrontmatter(content) {
     const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
@@ -2085,13 +2086,16 @@ export function detectBundleOfBundlesOverCollapse(prdPath, manifest) {
         }
         if (sourcesWithAtomicSection.length === 0)
             return { detected: false };
-        // (c) manifest collapsed to <= one ticket per composed source
-        if (manifest.tickets.length > composedPaths.length)
+        // (c) manifest collapsed to <= one ticket per composed source. Count DISTINCT
+        // tickets: `manifest.tickets` is the per-ANALYST concatenation, so raw entries
+        // overstate the decomposition by up to WORKER_ROLES.length and mask the collapse.
+        const distinctTickets = collapseAnalystTicketCopies(manifest.tickets);
+        if (distinctTickets.length > composedPaths.length)
             return { detected: false };
         return {
             detected: true,
             composedCount: composedPaths.length,
-            ticketCount: manifest.tickets.length,
+            ticketCount: distinctTickets.length,
             sourcesWithAtomicSection,
         };
     }

@@ -21,6 +21,7 @@ import {
     countContentLines,
     findStaleAnchorWarnings,
     evaluateAcShapeEnforcement,
+    detectBundleOfBundlesOverCollapse,
 } from '../bin/spawn-refinement-team.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 
@@ -1200,4 +1201,91 @@ test('AP-EXT-ITER84-01: a genuine multi-ticket split is still judged on justific
     assert.ok(split, 'an unjustified multi-ticket split must still violate');
     assert.match(split.reason, /multi-ticket decomposition/, 'two distinct ids stay on the multi-ticket branch');
     assert.deepEqual(split.ticket_ids, ['T-SPLIT-B'], 'the unjustified ticket is named exactly once, not once per analyst');
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER85-01 — detectBundleOfBundlesOverCollapse counted analyst emissions
+//
+// `manifest.tickets` is the CONCATENATION of every analyst's emissions, so
+// condition (c) (`tickets.length > composedPaths.length`) overstated the
+// decomposition by up to WORKER_ROLES.length. Probed on the shipped runtime: a
+// genuine single-umbrella collapse was detected at 1 and 2 analyst copies and NOT
+// at 3 — the shipped role count — so the guard was off in production.
+// ---------------------------------------------------------------------------
+
+const BOB_ROLES = ['requirements', 'codebase', 'risk-scope'];
+
+/** Parent PRD composing two sources that each carry an `## Atomic decomposition`. */
+function buildOverCollapseFixture(dir) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'source-a.md'), '# A\n\n## Atomic decomposition\n\n- R-A-1\n- R-A-2\n');
+    fs.writeFileSync(path.join(dir, 'source-b.md'), '# B\n\n## Atomic decomposition\n\n- R-B-1\n- R-B-2\n');
+    const parentPath = path.join(dir, 'parent.md');
+    fs.writeFileSync(parentPath, '---\ncomposes:\n  - source-a.md\n  - source-b.md\n---\n\n# Parent bundle\n');
+    return parentPath;
+}
+
+/** One manifest entry per (ticket id x analyst), mirroring collectAcShapeData's concatenation. */
+function manifestWithAnalystCopies(ticketIds, analystCount) {
+    const tickets = [];
+    for (const role of BOB_ROLES.slice(0, analystCount)) {
+        for (const id of ticketIds) {
+            tickets.push({
+                id,
+                title: `umbrella ${id}`,
+                source_ac_ids: [],
+                source_worker: role,
+                source_file: `analysis_${role}.md`,
+            });
+        }
+    }
+    return { tickets };
+}
+
+test('AP-EXT-ITER85-01: a single umbrella ticket is detected as over-collapse at every analyst count', () => {
+    const dir = tmpDir('pickle-bob-collapse-');
+    try {
+        const parentPath = buildOverCollapseFixture(dir);
+        for (const analystCount of [1, 2, 3]) {
+            const manifest = manifestWithAnalystCopies(['umbrella'], analystCount);
+            assert.equal(manifest.tickets.length, analystCount, 'fixture must carry one raw entry per analyst');
+            const result = detectBundleOfBundlesOverCollapse(parentPath, manifest);
+            assert.equal(
+                result.detected,
+                true,
+                `one distinct ticket vs 2 composed sources is over-collapse at ${analystCount} analyst copies`,
+            );
+            assert.equal(result.ticketCount, 1, 'ticketCount reports DISTINCT tickets, not analyst emissions');
+            assert.equal(result.composedCount, 2, 'composedCount is the composes: entry count');
+        }
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER85-01: two umbrella tickets across three analysts (6 raw entries) still detect over-collapse', () => {
+    const dir = tmpDir('pickle-bob-collapse-two-');
+    try {
+        const parentPath = buildOverCollapseFixture(dir);
+        const manifest = manifestWithAnalystCopies(['umbrella-a', 'umbrella-b'], 3);
+        assert.equal(manifest.tickets.length, 6, 'raw entries exceed the composed-source count');
+        const result = detectBundleOfBundlesOverCollapse(parentPath, manifest);
+        assert.equal(result.detected, true, '2 distinct tickets <= 2 composed sources is over-collapse');
+        assert.equal(result.ticketCount, 2, 'the 6 raw entries collapse to 2 distinct tickets');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER85-01: a genuine atomic decomposition is not flagged, however many analysts named it', () => {
+    const dir = tmpDir('pickle-bob-atomic-');
+    try {
+        const parentPath = buildOverCollapseFixture(dir);
+        const manifest = manifestWithAnalystCopies(['R-A-1', 'R-A-2', 'R-B-1'], 3);
+        assert.equal(manifest.tickets.length, 9, 'three analysts each name all three atomic tickets');
+        const result = detectBundleOfBundlesOverCollapse(parentPath, manifest);
+        assert.equal(result.detected, false, '3 distinct tickets > 2 composed sources is a real fan-out');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 });
