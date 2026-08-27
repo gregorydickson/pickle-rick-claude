@@ -4005,6 +4005,13 @@ async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, inde
     }, runtime);
     if (skipWarning) {
         counters.skipped++;
+        // AP-EXT-ITER83-01: this downgrade is a continue-past-nonzero like every other
+        // one in this loop, so it records the SAME evidence. Without it, the sole
+        // writer of `recoverable_phase_failure` is skipped, `buildCloserReleasePlan`
+        // reads no prior non-zero exit, and a run whose anatomy-park phase CRASHED
+        // returns `{release,install,tag}` with the refusal line never logged — the
+        // one signal an operator reads as "the closer refused the tag".
+        recordRecoverablePhaseFailure(runtime, rawPhase, exitCode, index, 'continue');
         writeRunningStatus(runtime, counters, null);
         log(`phase_skipped_with_warning ${JSON.stringify({
             phase: rawPhase,

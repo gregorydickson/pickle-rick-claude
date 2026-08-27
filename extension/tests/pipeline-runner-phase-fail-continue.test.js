@@ -452,3 +452,90 @@ test('closer log skip install message when prior phase non-zero recoverable fail
     /Closer: prior phase non-zero exit detected — skipping install and tag/,
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER83-01: the anatomy-park missing-key-metric downgrade is a
+// continue-past-nonzero like every other one in the phase loop, and must leave
+// the SAME evidence behind.
+//
+// Pre-fix, `shouldSkipAnatomyPhaseWithWarning`'s branch returned
+// `{action:'continue'}` before `recordRecoverablePhaseFailure` — the sole writer
+// of `recoverable_phase_failure`. `buildCloserReleasePlan` withholds install+tag
+// on exactly that event, so a CRASHED anatomy-park phase (exit 1,
+// exit_reason='fatal') produced `{release:true,install:true,tag:true}` and the
+// `Closer: prior phase non-zero exit detected` refusal line was never logged —
+// the one signal an operator reads as "the closer refused the tag"
+// (prds/MASTER_PLAN.md:2172 records that exact reading).
+//
+// Both cases drive the REAL loop through `main`, then read the resulting
+// state.json through the shipped `buildCloserReleasePlan` rather than a fixture.
+// ---------------------------------------------------------------------------
+
+function driveAnatomyMissingKeyMetricCrash() {
+  const { repo, sessionDir, statePath } = makePipelineSession({
+    createFollowupCommit: true,
+    pipelineOverrides: { phases: ['anatomy-park'] },
+  });
+  let callCount = 0;
+  __setSpawnRunnerForTests(async () => {
+    callCount++;
+    if (callCount === 1) {
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      state.exit_reason = 'fatal';
+      state.command_template = 'anatomy-park.md';
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+      return {
+        exitCode: 1,
+        stdout: '',
+        stderr: "TypeError: Cannot read properties of undefined (reading 'description')\n",
+      };
+    }
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
+  return { repo, sessionDir, statePath };
+}
+
+test('AP-EXT-ITER83-01: downgraded anatomy-park crash records recoverable_phase_failure and withholds closer release', async () => {
+  const { repo, sessionDir, statePath } = driveAnatomyMissingKeyMetricCrash();
+
+  await expectMainExit(sessionDir, 0);
+
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+  const events = (Array.isArray(state.activity) ? state.activity : [])
+    .filter((entry) => entry.event === 'recoverable_phase_failure');
+  assert.equal(events.length, 1, 'the downgraded crash must leave one recoverable_phase_failure');
+  assert.equal(events[0].phase, 'anatomy-park');
+  assert.equal(events[0].exit_code, 1);
+  assert.equal(events[0].fatal, false);
+  assert.equal(events[0].decision, 'continue');
+
+  // The consequence the event exists for, read through the shipped builder.
+  const plan = buildCloserReleasePlan(state);
+  assert.equal(plan.release, false, 'a crashed anatomy-park phase must not clear install+tag');
+  assert.equal(plan.install, false);
+  assert.equal(plan.tag, false);
+
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.match(
+    runnerLog,
+    /Closer: prior phase non-zero exit detected — skipping install and tag/,
+  );
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+// Control: the downgrade itself is unchanged — this fix moves the EVIDENCE wire,
+// never the disposition wire. Without this, widening the branch into a halt or a
+// nonConvergent bump would also satisfy the case above.
+test('AP-EXT-ITER83-01 control: the missing-key-metric downgrade still continues and exits 0', async () => {
+  const { repo, sessionDir } = driveAnatomyMissingKeyMetricCrash();
+
+  await expectMainExit(sessionDir, 0);
+
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.match(runnerLog, /phase_skipped_with_warning/);
+  assert.match(runnerLog, /anatomy_park_missing_key_metric/);
+  const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+  assert.equal(status.status, 'completed');
+  assert.equal(status.skipped_phases, 1);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
