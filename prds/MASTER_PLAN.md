@@ -74,7 +74,34 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🧭 NEXT DISPATCH — [[B-DRAIN13]]: thirteen filed bugs, composed BY ROOT (2026-08-26)
+## 🧭 NEXT DISPATCH — pending composition (repointed 2026-08-27)
+
+**[[B-DRAIN13]] ✅ SHIPPED as v2.1.0-beta.20.** See the SHIP STATE entry.
+
+**[[B-ONEABORT]] was checked as the next candidate and NOT launched — its premise is stale because the
+bundle is largely BUILT.** Pre-launch measurement at HEAD `58dbe500`: the PRD's load-bearing claim is
+that `grep -c microverse` on `nostop-gates-invariant.test.js` returns **0**; it returns **6**, and the
+file now carries `AC-OA-3a — ONE RULE, channel 2: no microverse exit_reason aborts`. Ten `AC-OA-*`
+criteria are present across the suite, two dedicated files exist
+(`oneabort-termination-invariant.test.js`, `oneabort-termination-matrix.test.js`), and 19 commits
+reference the work. **`MICROVERSE_FATAL_REASONS` is down from the PRD's 8 triggers to 3.**
+
+**RESIDUAL, and it is narrow: 3 → 1.** The PRD's target was *exactly one* abort condition — terminate
+only when state cannot be safely read or written. Current set is `session_state_corrupted` (the genuine
+floor), plus `judge_cli_missing` and `baseline_unmeasurable_unrecoverable`. The PRD already argued the
+first of those is not a floor — *"an inert review phase is not an unsafe run"* — and the second is a
+**measurement** verdict, which [[B-NOSTOP-GATES]] says must park and report, not halt. Too small to
+dispatch alone under the BUNDLE SIZING directive; compose it.
+
+**Composition candidate — everything still standing between here and a green CI on a tag (AC-R8).**
+The B-ONEABORT residual, plus the newly-measured [[B-CIINT]] serial-tier reds (see the B-CIINT UPDATE
+below — 7 fail / 7 cancelled on Linux, green on macOS/Node 24), plus the unattributed
+`test:fast:budget RUN 4` failure whose log never leaves the CI runner's `/tmp`. **Author this against
+the v2.1.0-beta.20 CI result rather than beta.19's** — `b554cc7b` (2026-08-24) provisioned
+`release.yml` like `ci.yml` to unblock Node-22 codegraph cancellations, so the beta.20 run is the first
+that measures the post-fix surface. Measure first, then author.
+
+### (superseded) NEXT DISPATCH — [[B-DRAIN13]] (2026-08-26)
 
 `prds/p1-b-drain13-thirteen-bugs-by-root.md` — operator-directed: *"if we have 13 bugs then we should do
 them in one bundle. ensure we are following the prime directive and pushing toward simplification."*
@@ -2640,6 +2667,14 @@ Workaround: the 2-line gate deletion is a trivial manual fix, tracked for hand-a
 pipeline's citadel/anatomy/szechuan phases complete.
 
 ## 🎯 TOP ITEM — [[B-ONEABORT]]: two termination channels, one subtraction (2026-08-06, P1)
+
+> **⚠ STATUS CORRECTED 2026-08-27 (pre-launch check at HEAD `58dbe500`): LARGELY BUILT, residual 3 → 1.**
+> The prose below is the 2026-08-06 authored diagnosis and several of its premises are now false. Ten
+> `AC-OA-*` criteria and two dedicated test files exist; `grep -c microverse` on the invariant test is
+> **6**, not 0; `MICROVERSE_FATAL_REASONS` is **3**, not 8. What remains is parking `judge_cli_missing`
+> and `baseline_unmeasurable_unrecoverable` so the set is the single genuine floor. Do NOT dispatch this
+> PRD as written — see NEXT DISPATCH at the top of this file.
+
 
 **`prds/p1-b-oneabort-one-termination-policy-across-both-channels.md`** — **operator directive
 2026-08-06:** *"our reliability goes to zero every time a pipeline stops… we really should have almost
