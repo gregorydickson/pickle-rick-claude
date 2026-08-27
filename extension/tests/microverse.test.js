@@ -205,6 +205,60 @@ test('per-iteration gate remediation recovers orphan tmp result before classifyi
     }
 });
 
+// Linux caps a SINGLE execve argument at MAX_ARG_STRLEN (32 * PAGE_SIZE); macOS has no
+// per-argument cap. The remediation brief is passed as one argv element, so an unbounded
+// brief raised E2BIG on Linux only. These assertions have teeth on BOTH platforms: they
+// check the byte bound directly rather than relying on the spawn failing.
+const LINUX_MAX_ARG_STRLEN = 32 * 4096;
+const overBudgetBriefLines = () => Array.from({ length: 20000 }, (_, i) => `filler line ${i}`);
+
+test('boundRemediationPrompt leaves an under-budget brief byte-identical', () => {
+    const brief = '# Gate Remediation Brief\nline A\nline B\n';
+    assert.equal(boundRemediationPrompt(brief, '/tmp/brief.md'), brief);
+});
+
+test('boundRemediationPrompt bounds an over-budget brief below the Linux per-arg limit', () => {
+    const brief = overBudgetBriefLines().join('\n');
+    assert.ok(
+        Buffer.byteLength(brief) > LINUX_MAX_ARG_STRLEN,
+        'fixture must exceed the Linux per-argument limit to be meaningful',
+    );
+
+    const bounded = boundRemediationPrompt(brief, '/tmp/brief.md');
+    assert.ok(
+        Buffer.byteLength(bounded) <= REMEDIATION_PROMPT_MAX_BYTES,
+        `bounded prompt ${Buffer.byteLength(bounded)} exceeded budget ${REMEDIATION_PROMPT_MAX_BYTES}`,
+    );
+    assert.ok(
+        Buffer.byteLength(bounded) < LINUX_MAX_ARG_STRLEN,
+        `bounded prompt ${Buffer.byteLength(bounded)} would raise E2BIG on Linux `
+        + `(MAX_ARG_STRLEN ${LINUX_MAX_ARG_STRLEN})`,
+    );
+});
+
+test('boundRemediationPrompt keeps both ends of the brief and names the brief path', () => {
+    const lines = overBudgetBriefLines();
+    lines[0] = '## Section 1: Gate Failures (verbatim)';
+    lines[lines.length - 1] = '## Section 5: Evidence & Reporting';
+    const bounded = boundRemediationPrompt(lines.join('\n'), '/tmp/session/gate/brief.md');
+
+    assert.match(bounded, /^## Section 1: Gate Failures \(verbatim\)/, 'head must survive');
+    assert.match(bounded, /## Section 5: Evidence & Reporting$/, 'tail must survive');
+    assert.match(bounded, /brief truncated to fit the platform argument limit/);
+    assert.ok(
+        bounded.includes('/tmp/session/gate/brief.md'),
+        'truncation notice must name the full brief on disk',
+    );
+});
+
+test('boundRemediationPrompt output survives a real execve argument', () => {
+    const brief = overBudgetBriefLines().join('\n');
+    const bounded = boundRemediationPrompt(brief, '/tmp/brief.md');
+    // The exact syscall shape that failed: one oversized argv element. Passing the
+    // unbounded brief here raises E2BIG on Linux; the bounded one must not.
+    execFileSync('/bin/echo', [bounded], { stdio: 'pipe', timeout: 30_000 });
+});
+
 test('per-iteration gate remediation logs worker_backend_resolved with backend-resolution source semantics', async () => {
     const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-session-'));
     const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-work-'));
@@ -531,7 +585,7 @@ test('runIteration is exported from mux-runner', () => {
 
 // --- microverse-runner tests ---
 
-import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, applyTestBackendOverrideFromEnv, AMNESIAC_TURN_THRESHOLD } from '../bin/microverse-runner.js';
+import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, boundRemediationPrompt, REMEDIATION_PROMPT_MAX_BYTES, applyTestBackendOverrideFromEnv, AMNESIAC_TURN_THRESHOLD } from '../bin/microverse-runner.js';
 import { resetToSha } from '../services/git-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { writeStateFile } from '../services/pickle-utils.js';

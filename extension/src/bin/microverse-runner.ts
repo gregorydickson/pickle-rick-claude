@@ -303,13 +303,67 @@ function resolveRemediatorCodexModel(
   }
 }
 
-// Write the gate result, drive spawn-gate-remediator to author a brief, and
-// return the brief's content. Null on any failure — the caller treats every
+// Linux caps a SINGLE execve argument at MAX_ARG_STRLEN (32 * PAGE_SIZE = 131072
+// bytes) independently of the much larger total ARG_MAX; macOS has NO per-argument
+// cap at all. The brief goes to the agent as one argv element (backend-spawn.ts
+// `args.push('-p', opts.prompt)`), and it embeds whole subsystem CLAUDE.md
+// trap-door catalogs — measured at 215300 bytes for a single-failure gate result.
+// So `claude -p <brief>` raised E2BIG on every Linux remediation while passing on
+// macOS, silently disabling per-iteration remediation on Linux. One unconditional
+// budget fixes both platforms; do not branch on process.platform.
+export const REMEDIATION_PROMPT_MAX_BYTES = 96 * 1024;
+
+// Fit the brief into REMEDIATION_PROMPT_MAX_BYTES while keeping BOTH ends. The
+// operative instructions (Hard Rule / Abort Grammar, Evidence & Reporting) live at
+// the brief's tail and the gate failures at its head; the bulk in between is the
+// CLAUDE.md trap-door dump, which the agent can re-read from the working dir. Fills
+// the budget by alternating head and tail lines, so neither end is starved, and
+// cuts only on line boundaries so no UTF-8 codepoint is split.
+export function boundRemediationPrompt(
+  brief: string,
+  briefPath: string,
+  maxBytes: number = REMEDIATION_PROMPT_MAX_BYTES,
+): string {
+  if (Buffer.byteLength(brief) <= maxBytes) return brief;
+
+  const noticeText = `\n\n[...brief truncated to fit the platform argument limit. `
+    + `Full brief on disk: ${briefPath}. The omitted middle is the CLAUDE.md `
+    + `trap-door reference; re-read it from the working directory if needed...]\n\n`;
+  // A notice that cannot fit the budget would break this function's one postcondition
+  // (result <= maxBytes), so it degrades to a bare separator instead. briefPath is a
+  // filesystem path (<= PATH_MAX) and the shipped budget is 96 KiB, so this cannot fire
+  // today; it keeps the bound unconditional if maxBytes is ever lowered. Assumes maxBytes >= 1.
+  const notice = Buffer.byteLength(noticeText) <= maxBytes ? noticeText : '\n';
+
+  const lines = brief.split('\n');
+  const head: string[] = [];
+  const tail: string[] = [];
+  let budget = maxBytes - Buffer.byteLength(notice);
+  let takeHead = true;
+  let i = 0;
+  let j = lines.length - 1;
+
+  while (i <= j) {
+    const line = takeHead ? lines[i] : lines[j];
+    const cost = Buffer.byteLength(line) + 1;
+    if (cost > budget) break;
+    budget -= cost;
+    if (takeHead) head.push(lines[i++]);
+    else tail.unshift(lines[j--]);
+    takeHead = !takeHead;
+  }
+
+  return head.join('\n') + notice + tail.join('\n');
+}
+
+// Write the gate result, drive spawn-gate-remediator to author a brief, and return
+// the brief's content together with the path it was read from (the truncation
+// notice names that path). Null on any failure — the caller treats every
 // brief-preparation failure as an unsuccessful remediation.
 async function prepareRemediationBrief(
   gateResult: GateResult,
   sessionDir: string,
-): Promise<string | null> {
+): Promise<{ content: string; briefPath: string } | null> {
   const gateDir = path.join(sessionDir, 'gate');
   // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
   fs.mkdirSync(gateDir, { recursive: true });
@@ -327,9 +381,10 @@ async function prepareRemediationBrief(
   const briefPathLine = briefLines.find(l => l.startsWith('BRIEF_PATH='));
   if (!briefPathLine) return null;
 
+  const briefPath = briefPathLine.slice('BRIEF_PATH='.length);
   try {
     // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-    return fs.readFileSync(briefPathLine.slice('BRIEF_PATH='.length), 'utf-8');
+    return { content: fs.readFileSync(briefPath, 'utf-8'), briefPath };
   } catch {
     return null;
   }
@@ -367,8 +422,8 @@ export async function runRemediatorForIteration(
   runtimeOverrides: RemediatorRuntimeOverrides = {},
 ): Promise<{ success: boolean }> {
   const gateDir = path.join(sessionDir, 'gate');
-  const briefContent = await prepareRemediationBrief(gateResult, sessionDir);
-  if (briefContent === null) return { success: false };
+  const brief = await prepareRemediationBrief(gateResult, sessionDir);
+  if (brief === null) return { success: false };
 
   const startMs = Date.now();
   const { resolution: workerBackendResolution, remediatorState } = resolveRemediatorSpawnTarget(sessionDir, backend);
@@ -379,7 +434,7 @@ export async function runRemediatorForIteration(
   // backends ignore the field. (Fallback logic in resolveRemediatorCodexModel.)
   const codexModel = resolveRemediatorCodexModel(execBackend, sessionDir, remediatorState);
   const invocation = buildWorkerInvocation(execBackend, {
-    prompt: briefContent,
+    prompt: boundRemediationPrompt(brief.content, brief.briefPath),
     addDirs: [workingDir],
     ...(codexModel ? { model: codexModel } : {}),
   });
