@@ -74,7 +74,37 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🧭 NEXT DISPATCH — pending composition (repointed 2026-08-27)
+## 🧭 NEXT DISPATCH — [[B-CIGREEN]]: the release workflow has never been green on a tag (2026-08-27)
+
+`prds/p1-b-cigreen-the-release-workflow-has-never-been-green.md` — **P1.** Fourteen consecutive release
+runs have failed, beta.7 through beta.20. Two blindfolds are now gone ([[B-RELTAG]] fixed the tags,
+and [[R-ISSC]] no longer short-circuits because the parallel half went `cancelled 0`), so the beta.20
+run `33060047943` is the **first honest measurement of the release surface**: fast budget
+`failures=0 runs_completed=5/5`, integration parallel `662 · fail 0 · cancelled 0`, integration serial
+`625 · fail 7 · cancelled 3`. That last line is all that stands between HEAD and AC-R8.
+
+**Two things measured, not assumed, that this bundle must not re-derive.** [[B-DRAIN13]] **worked**:
+diffing the beta.19 failing set against beta.20's gives **four fixed, zero new**, and all four are the
+`R-APMW-6` wall-clock-guard cases — ROOT 1's unref fix, verified on the platform where it mattered
+rather than the box that never reproduced it. And the beta.19 `RUN 4` fast-tier failure I filed as
+unattributed was a **flake**: beta.20 reads `failures=0`. Closed by measurement, no ticket.
+
+**Roots:** A — a test spawns `rg`, which this Mac has and neither workflow provisions (invisible
+locally, fatal in CI). B — six Linux-only subprocess-lifecycle failures (kill/timeout/orphan). C —
+per-iteration gate remediation pair. D — path-containment pair, security-relevant. E — three remaining
+`Promise resolution is still pending` cancellations, i.e. sole-settle-path timers B-DRAIN13 declined or
+did not cover. F — the [[B-ONEABORT]] residual, 3 abort conditions down to 1.
+
+**Hard constraint, stated in the PRD:** none of this reproduces here — the same serial tier is
+**625/625 green on macOS/Node 24** at both ship gates, and `docker` has no VM, so there is no local
+Linux repro. A ticket may not close on "passes locally"; it closes on a mechanically-checkable property
+or on a green CI run, and must say which.
+
+**Explicit non-goal: do NOT move CI off Node 22.** Node 24 hides the unsettled-promise class rather
+than fixing it — both lines fail identically with `unref`, by controlled experiment. Bumping would turn
+the workflow green while leaving live production hangs in place.
+
+### (superseded) pending-composition note (2026-08-27)
 
 **[[B-DRAIN13]] ✅ SHIPPED as v2.1.0-beta.20.** See the SHIP STATE entry.
 
