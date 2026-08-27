@@ -152,11 +152,30 @@ function readRecordedPids(pidDir) {
   }
 }
 
-/** Sleep that never holds the event loop open on its own. */
-function sleep(ms) {
+/**
+ * Sleep that HOLDS the event loop open for exactly as long as it is being awaited.
+ *
+ * The ref'd timer is load-bearing, not incidental. Both callers (`observeSiblingKillWindow`,
+ * `waitForPath`) are poll loops whose subject — a spawned child — routinely exits BEFORE the loop
+ * is done: `observeSiblingKillWindow` still owes a 1000 ms quiet window after the last worker dies,
+ * and the refinement team's whole crash-and-reap run measures 77 ms on Linux. While the child is
+ * alive its `ChildProcess` handle is the loop's only ref; the instant it exits, an unref'd poll
+ * timer leaves the process with nothing pending. The loop then never ticks again and `node:test`
+ * cancels the still-pending test — plus every later test in the file — with
+ * `cancelledByParent: Promise resolution is still pending but the event loop has already resolved`.
+ *
+ * That is not a platform effect. Measured for PC-4: cancelled on macOS/Node 22.23.2 AND
+ * Linux/Node 22.23.2, green only on Node 24, whose test runner keeps the loop alive independently.
+ * So this must not be re-expressed as a `process.platform` branch; the timer itself is the seam.
+ *
+ * Holding the loop costs nothing here: every caller passes 25 ms, so the longest this can delay
+ * an exit is a single tick. `onTimer` exposes the ref'd-ness so PC-6 can assert it directly —
+ * an end-to-end oracle would pass vacuously on Node 24 and stop testing anything.
+ */
+function sleep(ms, onTimer) {
   return new Promise(resolve => {
     const t = setTimeout(resolve, ms);
-    t.unref();
+    onTimer?.(t);
   });
 }
 
@@ -386,16 +405,19 @@ test('PC-3: dispatch EPIPE produces exactly one valid approve JSON on stdout', (
 // dead) and closes when no registered worker is alive and the registered set has stopped growing.
 // Excluded on the near side: node bootstrap, the ESM import graph of the refinement bin and its
 // service imports, arg and settings resolution, the stale-anchor git scan, the AC and symbol
-// machinery, and the staggered worker spawn cadence (measured ~10s between workers). Excluded on the far
-// side: manifest write, the readiness gate, and interpreter teardown. Only the SIGTERM fan-out and
-// the workers' deaths are charged.
+// machinery, and the worker spawn cadence. Excluded on the far side: manifest write, the readiness
+// gate, and interpreter teardown. Only the SIGTERM fan-out and the workers' deaths are charged.
 // ---------------------------------------------------------------------------
 
-// Budget UNCHANGED at 30s — narrowing the window widens nothing. Measured on this branch: the crash
-// lands at ~41.5s of process time and every sibling is dead 4ms later, so the intended kill path has
-// enormous headroom. The degenerate ladder inside this window is the 2000ms SIGTERM → SIGKILL
-// escalation. A regression where siblings are not killed leaves them hanging for their full 60s
-// budget, so it fails this assertion rather than passing silently.
+// Budget UNCHANGED at 30s — narrowing the window widens nothing. Re-measured 2026-08-27 against a
+// standalone harness driving this exact child invocation: the refinement bin brings all three
+// workers up, sees the crash, group-SIGTERMs both siblings and writes the manifest in 969ms total
+// on macOS/Node 22 and 77ms on Linux/Node 22 — so the intended kill path has enormous headroom.
+// (The prior note here claimed the crash lands at ~41.5s; that figure was stale by two orders of
+// magnitude and described a window this test never actually spends.) The degenerate ladder inside
+// this window is the 2000ms SIGTERM → SIGKILL escalation. A regression where siblings are not
+// killed leaves them hanging for their full 60s budget, so it fails this assertion rather than
+// passing silently.
 // The refinement team spawns one worker per role: requirements, codebase, risk-scope.
 const WORKER_COUNT = 3;
 
@@ -607,6 +629,35 @@ setTimeout(() => {}, 60_000);
 });
 
 // ---------------------------------------------------------------------------
+// PC-6: the poll primitive keeps the event loop alive while it is awaited
+//
+// Regression guard for the defect that took out PC-4, PC-5 and AP-EXT-ITER54-01 together on
+// Node 22 (`cancelled 3` in the beta.20 serial tier). `sleep()` unref'd its timer, so once the
+// child a poll loop was watching exited, nothing in the process was pending; the loop stopped
+// ticking and node:test cancelled the pending test plus every later test in this file.
+//
+// The oracle is the TIMER, deliberately, not an end-to-end poll loop. An end-to-end oracle is red
+// on Node 22 but vacuously GREEN on Node 24 — whose runner refs the loop for reasons unrelated to
+// this fix — so it would stop testing anything the moment CI moves off 22. `hasRef()` is the
+// property whose absence caused the cancellation, and it is false pre-fix / true post-fix on every
+// platform and Node version.
+// ---------------------------------------------------------------------------
+test('PC-6: sleep() timer stays ref\'d so poll loops outlive the child they watch', async () => {
+  let refdAtCreation = null;
+  // Sampled inside the callback: after the timer fires, hasRef() no longer reports the choice
+  // this test is pinning.
+  await sleep(10, t => { refdAtCreation = t.hasRef(); });
+
+  assert.equal(
+    refdAtCreation,
+    true,
+    'sleep() must NOT unref its timer — observeSiblingKillWindow and waitForPath poll on it after '
+    + 'their spawned child has exited, and an unref\'d timer lets the event loop drain mid-wait, '
+    + 'cancelling this test and every later test in the file',
+  );
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER54-01: a gate check is a subtree ROOT — its timeout reaps the GROUP
 // ---------------------------------------------------------------------------
 
@@ -677,10 +728,15 @@ test('AP-EXT-ITER54-01: a timed-out gate check leaves no orphaned subtree behind
     assert.equal(recorded.length, 1, `expected exactly one recorded grandchild, got ${recorded.length}`);
 
     // The group kill is asynchronous at the OS level; poll rather than sample once.
+    // Polls via the shared `sleep` — this loop used to inline its own `.unref?.()`'d timer, which
+    // is the same liveness defect PC-6 pins: with the survivor still alive and nothing else
+    // pending, the loop drained the event loop and node:test reported `cancelledByParent` INSTEAD
+    // of the orphan assertion below. The surviving-grandchild defect this test exists to catch was
+    // therefore unreportable — it looked like a harness cancellation, not a finding.
     const deadline = Date.now() + 5_000;
     let survivor = recorded[0];
     while (Date.now() < deadline && isPidAlive(survivor)) {
-      await new Promise((r) => { setTimeout(r, 100).unref?.(); });
+      await sleep(100);
     }
     assert.equal(
       isPidAlive(survivor),
