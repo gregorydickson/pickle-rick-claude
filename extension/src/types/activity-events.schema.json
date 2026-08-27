@@ -5,7 +5,7 @@
   "definitions": {
     "backendEnum": {
       "type": "string",
-      "enum": ["claude", "codex", "hermes"]
+      "enum": ["claude", "codex", "hermes", "deepseek", "grok", "kimi", "gemini"]
     },
     "backendResolutionSourceEnum": {
       "type": "string",

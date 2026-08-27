@@ -4,13 +4,17 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
+import { VALID_ACTIVITY_EVENTS, BACKENDS } from '../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.resolve(__dirname, '../src/types/activity-events.schema.json');
 const schema = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'));
 
-const BACKEND_ENUM = ['claude', 'codex', 'hermes'];
+// DERIVED, never a literal: `backendEnum` is a JSON mirror of the `BACKENDS` const in
+// src/types/index.ts, and a hand-maintained copy on BOTH sides means neither can see the
+// other drift. It did: BACKENDS grew to seven while the schema and this list stayed at the
+// original three, so four shipped backends emitted schema-invalid backend telemetry.
+const BACKEND_ENUM = [...BACKENDS];
 const BACKEND_RESOLUTION_SOURCE_ENUM = ['state', 'env', 'settings', 'default', 'refinement-lock', 'cli-flag-override'];
 const WORKER_BACKEND_RESOLUTION_SOURCE_ENUM = ['worker_backend', 'backend', 'env_lock'];
 
@@ -1153,7 +1157,22 @@ test('activity-event-payload: recoverable_phase_failure schema enforces contract
   assert.equal(bad.valid, false, 'invalid exit_code/fatal/downstream_phases_remaining/decision should fail');
 });
 
-// worker_spawn_backend_resolved specific: source enum-of-six and backend enum-of-three
+// The schema's shared `backendEnum` is the JSON mirror of `BACKENDS` (src/types/index.ts).
+// Set-equality against the DERIVED array, not a literal: the drift this catches shipped
+// precisely because the schema and this file both hardcoded the same stale three members,
+// so every emitter using one of the four newer backends (deepseek/grok/kimi/gemini) wrote
+// telemetry the canonical schema rejects while the suite stayed green.
+test('activity-event-payload: schema backendEnum equals the BACKENDS const it mirrors', () => {
+  const schemaBackends = schema.definitions.backendEnum?.enum;
+  assert.ok(Array.isArray(schemaBackends), 'schema must define definitions.backendEnum.enum');
+  assert.deepEqual(
+    [...schemaBackends].sort(),
+    [...BACKENDS].sort(),
+    `backendEnum must list every BACKENDS member; missing=[${BACKENDS.filter((b) => !schemaBackends.includes(b))}] extra=[${schemaBackends.filter((b) => !BACKENDS.includes(b))}]`,
+  );
+});
+
+// worker_spawn_backend_resolved specific: source enum-of-six and backend enum derived from BACKENDS
 test('activity-event-payload: worker_spawn_backend_resolved source must be one of six BackendResolutionSource values', () => {
   const base = { event: 'worker_spawn_backend_resolved', ts: TS, backend: 'claude', pid: 4567 };
   for (const src of BACKEND_RESOLUTION_SOURCE_ENUM) {
@@ -1164,7 +1183,7 @@ test('activity-event-payload: worker_spawn_backend_resolved source must be one o
   assert.equal(bad.valid, false, `source 'unknown-source' should be rejected`);
 });
 
-test('activity-event-payload: worker_spawn_backend_resolved backend must be one of three Backend values', () => {
+test('activity-event-payload: worker_spawn_backend_resolved backend accepts every BACKENDS member', () => {
   const base = { event: 'worker_spawn_backend_resolved', ts: TS, source: 'state', pid: 4567 };
   for (const be of BACKEND_ENUM) {
     const result = validate({ ...base, backend: be }, 'worker_spawn_backend_resolved');
