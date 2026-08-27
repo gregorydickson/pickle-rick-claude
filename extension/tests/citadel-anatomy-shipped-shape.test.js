@@ -31,6 +31,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
+import { renderMicroverseDashboard } from '../bin/monitor.js';
 
 const __dirname = import.meta.dirname;
 const FIXTURE_DIR = path.resolve(__dirname, 'fixtures/citadel-cross-phase-fixture');
@@ -204,5 +205,95 @@ describe('AP-EXT-ITER45-01: citadel anatomy cross-phase reader vs. the producer 
       crossPhase.findings.filter((f) => f.source === 'anatomy-park').map((f) => f.id),
       ['AP-SEV-03'],
     );
+  });
+});
+
+// AP-EXT-ITER11-01 ENFORCE — the SECOND reader of this same artifact, and the same defect
+// class: a consumer of `anatomy-park.json` assuming a shape the PRODUCER has never written.
+//
+// `monitor.ts:mvSubsystemLine` labelled each subsystem row with `String(entry)` over the last
+// `findings_history` entry. Every shipped entry is an OBJECT (127/127 live entries across 12/12
+// host artifacts, 0 strings), so the anatomy-park operator pane printed `[object Object]` in that
+// column on every real run, for every subsystem, since the pane shipped.
+//
+// It stayed green because the only case exercising the column — `tests/monitor.test.js` AC-5 —
+// feeds `findings_history: { name: ['a very very long last action description'] }`, an array of
+// STRINGS. That is the AP-EXT-ITER13-01 rule ("assert a VERBATIM SHIPPED entry, never a
+// hand-authored fixture") violated in the other direction: a hand-authored fixture pinning a
+// shape production does not emit. So these cases drive the SAME verbatim shipped fixture the
+// citadel cases above use.
+describe('AP-EXT-ITER11-01: the anatomy-park monitor pane vs. the producer shape', () => {
+  function renderPane(anatomyArtifact) {
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monitor-anatomy-shape-'));
+    try {
+      fs.writeFileSync(
+        path.join(sessionDir, 'anatomy-park.json'),
+        JSON.stringify(anatomyArtifact, null, 2),
+      );
+      const rendered = renderMicroverseDashboard({ session_dir: sessionDir }, null);
+      return rendered.replace(/\x1b\[[0-9;]*[mJH]/g, '');
+    } finally {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  }
+
+  // The load-bearing case: the VERBATIM shipped artifact, not a hand-authored one.
+  test('the shipped-shape ledger labels each row with its pass verdict, never [object Object]', () => {
+    const shipped = readShippedShape();
+    const plain = renderPane(shipped);
+
+    assert.equal(
+      plain.includes('[object Object]'),
+      false,
+      `pane coerced an object ledger entry into a label: ${JSON.stringify(plain)}`,
+    );
+    for (const subsystem of shipped.subsystems) {
+      const entries = shipped.findings_history[subsystem];
+      const last = entries[entries.length - 1];
+      const expected = last.verdict ?? last.result;
+      assert.equal(typeof expected, 'string', 'fixture guard: shipped entries carry a verdict');
+      const row = plain.split('\n').find((line) => line.trim().startsWith(subsystem));
+      assert.ok(row, `no pane row for subsystem ${subsystem}`);
+      assert.ok(
+        row.includes(expected),
+        `row for ${subsystem} should carry its verdict ${JSON.stringify(expected)}, got ${JSON.stringify(row)}`,
+      );
+    }
+  });
+
+  // Anti-vacuity control. Without this the case above is satisfiable by blanket-'--'ing the
+  // column, which would trade a wrong label for a dead one.
+  test('a string ledger entry is still its own label', () => {
+    const plain = renderPane({
+      subsystems: ['bin'],
+      consecutive_clean: { bin: 1 },
+      stall_limit: 3,
+      findings_history: { bin: ['handwritten-label'] },
+    });
+
+    assert.ok(
+      plain.includes('handwritten-label'),
+      `string entries must render verbatim, got ${JSON.stringify(plain)}`,
+    );
+  });
+
+  // The unlabelled arm: an entry whose spelling this pane does not know reads as UNKNOWN, using
+  // the token the pane already uses for a field it cannot read (`AC-7: missing fields render --`).
+  // A coerced label here is the defect; a wrong-but-confident label would be worse than both.
+  test('a ledger entry with no verdict spelling reads as the unknown token, not a coercion', () => {
+    const plain = renderPane({
+      subsystems: ['bin'],
+      consecutive_clean: { bin: 0 },
+      stall_limit: 3,
+      findings_history: { bin: [{ pass: 4, confident_findings: 2, note: 'no verdict key here' }] },
+    });
+
+    assert.equal(
+      plain.includes('[object Object]'),
+      false,
+      `unknown entry shape must not be coerced, got ${JSON.stringify(plain)}`,
+    );
+    const row = plain.split('\n').find((line) => line.trim().startsWith('bin'));
+    assert.ok(row.includes('--'), `expected the unknown token in ${JSON.stringify(row)}`);
   });
 });

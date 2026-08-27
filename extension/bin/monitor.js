@@ -339,9 +339,41 @@ function mvTruncate(s) {
 function truncate(s, limit, reserve = 1) {
     return s.length > limit ? s.slice(0, limit - reserve) + '…' : s;
 }
+/**
+ * Key spellings of a `findings_history` entry's pass verdict — the same table
+ * `microverse-runner.ts:isCleanPassEntry` reads as `CLEAN_PASS_VERDICT_KEYS`. Kept local per the
+ * Rule of Three (two readers is not yet an abstraction), but it must stay a SUPERSET-compatible
+ * copy: widening that table without widening this one only costs the pane a label, never a wrong
+ * one, because an unmatched entry falls to the pane's unknown token.
+ */
+const MV_PASS_VERDICT_KEYS = ['verdict', 'result'];
+/**
+ * AP-EXT-ITER11-01: the pane's label for ONE `findings_history` entry.
+ *
+ * The producer is the anatomy-park worker PROMPT (`anatomy-park.md` Override 5), which mandates
+ * only "append current findings summary" and fixes no entry schema. The pre-fix `String(entry)`
+ * therefore rendered `[object Object]` on 127/127 live entries across 12/12 host artifacts —
+ * every shipped entry is an OBJECT, while the only fixture exercising this column fed an array of
+ * STRINGS no producer has ever written, which is why the coercion shipped green.
+ *
+ * A string entry is its own label. An object entry is labelled by its pass verdict. Anything else
+ * reads '--', the token this pane already uses for a field it cannot read — never a coerced
+ * string, because a label the reader cannot act on is noise that looks like a value.
+ */
+function mvLastAction(entry) {
+    if (typeof entry === 'string')
+        return entry;
+    if (!entry || typeof entry !== 'object')
+        return '--';
+    const record = entry;
+    const verdict = MV_PASS_VERDICT_KEYS
+        .map((key) => record[key])
+        .find((value) => typeof value === 'string' && value.trim().length > 0);
+    return verdict?.trim() ?? '--';
+}
 function mvSubsystemLine(name, clean, target, findingsMap) {
     const findings = Array.isArray(findingsMap[name]) ? findingsMap[name] : [];
-    const rawLast = findings.length > 0 ? String(findings[findings.length - 1]) : '--';
+    const rawLast = findings.length > 0 ? mvLastAction(findings[findings.length - 1]) : '--';
     const lastAction = truncate(rawLast, 20);
     return mvTruncate(`  ${MX.GREEN}${name}${MX.R} ${MX.DIM}${clean}/${target}${MX.R} ${lastAction}`);
 }
