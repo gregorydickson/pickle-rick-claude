@@ -12835,29 +12835,27 @@ async function runMuxRunnerMain() {
       // B-GROUND2 WS1: the EPIC-success finalize routes through the single
       // ground-truth authority — a residual pending ticket refuses the
       // `success` stamp and stamps the incomplete reason instead (fail-closed).
-      {
-        const finalizeResult = finalizeIfTrulyComplete(
-          statePath,
-          () => muxBundleScan(sessionDir, state.working_dir || ''),
-          { step: 'completed', runnerIteration: iteration, exitReason: 'success' },
-        );
-        // AC-D2' part 2: a refused finalize means a residual ticket (e.g. still
-        // `In Progress`) survived the ground-truth re-scan even though the
-        // manager claimed completion. `finalizeIfTrulyComplete` already stamped
-        // the named disposition (`finalizeResult.reason`) to state.json and
-        // logged the refusal residual — exiting here anyway would strand that
-        // ticket behind a false `success` exit code that disagrees with the
-        // ground truth just written. Continue the SAME loop instead: the
-        // existing iteration-cap / stall / circuit-breaker guards still bound
-        // it, so this collapses the ambiguous "clean exit, pending ticket"
-        // case rather than adding a new guard to detect it downstream.
-        if (!finalizeResult.finalized) {
-          log(`Task completed claim refused (${finalizeResult.reason}) — a ticket remains unfinished; continuing instead of exiting.`);
-          lastStateIteration = -1;
-          stallCount = 0;
-          await sleep(1000);
-          continue;
-        }
+      const finalizeResult = finalizeIfTrulyComplete(
+        statePath,
+        () => muxBundleScan(sessionDir, state.working_dir || ''),
+        { step: 'completed', runnerIteration: iteration, exitReason: 'success' },
+      );
+      // AC-D2' part 2: a refused finalize means a residual ticket (e.g. still
+      // `In Progress`) survived the ground-truth re-scan even though the
+      // manager claimed completion. `finalizeIfTrulyComplete` already stamped
+      // the named disposition (`finalizeResult.reason`) to state.json and
+      // logged the refusal residual — exiting here anyway would strand that
+      // ticket behind a false `success` exit code that disagrees with the
+      // ground truth just written. Continue the SAME loop instead: the
+      // existing iteration-cap / stall / circuit-breaker guards still bound
+      // it, so this collapses the ambiguous "clean exit, pending ticket"
+      // case rather than adding a new guard to detect it downstream.
+      if (!finalizeResult.finalized) {
+        log(`Task completed claim refused (${finalizeResult.reason}) — a ticket remains unfinished; continuing instead of exiting.`);
+        lastStateIteration = -1;
+        stallCount = 0;
+        await sleep(1000);
+        continue;
       }
       exitReason = 'success';
       break;
