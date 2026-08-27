@@ -604,13 +604,25 @@ setTimeout(() => {}, 60_000);
     // while still detecting a regression where SIGTERM doesn't kill workers
     // (which would wait the full 60s hang budget).
     await new Promise((resolve, reject) => {
-      // Cleared on settle and unref'd: a bare timer here keeps the event loop alive for the full
-      // 15s after the child has already exited, holding the whole serial tier behind it.
+      // Stays REF'D: this is the SOLE settle path when the child is already dead by the time the
+      // listeners below are attached. `child` was spawned before the 500ms bootstrap wait above, and
+      // `'exit'` is emitted ONCE and asynchronously — so a child that dies inside that window (a
+      // startup crash against the fake PATH, say) has already emitted it, `once('exit')` never
+      // fires, and `kill('SIGTERM')` was a no-op returning false. Measured, not assumed.
+      //
+      // The previous note here justified `.unref()` by a harm that cannot occur: it claimed a bare
+      // timer "keeps the event loop alive for the full 15s after the child has already exited", but
+      // `settle` calls `clearTimeout(deadline)` on BOTH the exit and error paths, so a healthy run
+      // releases this handle the instant the child exits. What the unref bought instead was the
+      // `cancelled 3` drain documented at PC-6 below — with the child dead and its stdio at EOF,
+      // nothing was pending — in place of the reportable rejection this timer carries.
+      //
+      // Bounded and self-clearing, so it cannot hold the loop open indefinitely: 15s ceiling, and
+      // cleared on every settle path. Same ruling, for the same shape, as convergence-gate.ts:789.
       const deadline = setTimeout(
         () => reject(new Error('SIGTERM did not kill process within 15s')),
         15_000,
       );
-      deadline.unref();
       const settle = (fn) => (arg) => {
         clearTimeout(deadline);
         fn(arg);
