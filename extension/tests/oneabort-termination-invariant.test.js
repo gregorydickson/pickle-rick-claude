@@ -30,7 +30,7 @@ import {
   shouldHaltAfterPhase,
   main,
 } from '../bin/pipeline-runner.js';
-import { MICROVERSE_EXIT_REASONS } from '../types/index.js';
+import { MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS } from '../types/index.js';
 
 const TMP_DIRS = new Set();
 
@@ -200,6 +200,13 @@ describe('AC-OA-1a: no member of the exported exit-reason union resolves to abor
 });
 
 describe('AC-OA-1a: the crash floor still aborts', () => {
+  // Ticket 2ecd5464 (B-ONEABORT residual): the floor set itself is sharpened from 3 members to
+  // exactly 1 — `judge_cli_missing` and `baseline_unmeasurable_unrecoverable` are demoted to
+  // park-and-report (see the AC-2ecd5464 block below). Asserted directly, not just observed.
+  test('MICROVERSE_FATAL_REASONS has exactly one member: session_state_corrupted', () => {
+    assert.deepEqual([...MICROVERSE_FATAL_REASONS], ['session_state_corrupted']);
+  });
+
   test('session_state_corrupted is the named floor — it is NOT in the exit union', () => {
     assert.ok(
       !MICROVERSE_EXIT_REASONS.includes('session_state_corrupted'),
@@ -311,6 +318,55 @@ describe('AC-OA-4: the incumbent reasons keep their existing counter behaviour',
     assert.equal(counters.nonConvergent, 0);
     assert.deepEqual(counters.phaseDispositions, {});
   });
+});
+
+/**
+ * Ticket 2ecd5464 (B-ONEABORT residual): `judge_cli_missing` (a measurement-tooling absence) and
+ * `baseline_unmeasurable_unrecoverable` (a measurement verdict) are demoted out of
+ * `MICROVERSE_FATAL_REASONS` — B-NOSTOP-GATES requires both to park-and-report, never halt. This
+ * block names each reason explicitly and asserts all four park-and-report properties together:
+ * (1) not the crash floor, (2) the classifier parks rather than aborting, (3) the phase loop
+ * actually continues to the next phase with the reason recorded as a residual, and (4) success is
+ * withheld (the degraded verdict rides `nonConvergent`, never `completed` alone — AC-OA-4's
+ * pinned convention above).
+ */
+describe('AC-2ecd5464: judge_cli_missing / baseline_unmeasurable_unrecoverable park-and-report, not fatal', () => {
+  for (const reason of ['judge_cli_missing', 'baseline_unmeasurable_unrecoverable']) {
+    test(`${reason}: not the crash floor, classifier parks, phase continues, success withheld`, async () => {
+      // (1) not the crash floor — the only remaining fatal member is session_state_corrupted.
+      assert.ok(
+        !MICROVERSE_FATAL_REASONS.includes(reason),
+        `${reason} must not be in MICROVERSE_FATAL_REASONS post-demotion`,
+      );
+
+      // (2) the classifier parks (run-finalize-gate-incomplete), never the abort floor.
+      const decision = classifyMicroverseHaltDecision(reason);
+      assert.equal(decision.action, 'run-finalize-gate-incomplete');
+      assert.equal(decision.recognizedExitReason, reason);
+
+      // (3)+(4) the actual phase-loop recovery producer: pipeline continues, the reason is
+      // recorded as a residual (phaseDispositions), and success is withheld (nonConvergent).
+      const { repo, startCommit } = makeRepo();
+      const runtime = makeRuntime({ repo, startCommit, exitReason: reason });
+      const counters = freshCounters();
+      stubGateExit(0);
+
+      const outcome = await runAllBackendsExhaustedFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+
+      assert.equal(outcome.action, 'continue', `${reason} must let the pipeline continue to the next phase`);
+      assert.equal(
+        counters.phaseDispositions['anatomy-park'],
+        residualFor(reason),
+        `${reason} must be recorded as a residual for a human, not silently dropped`,
+      );
+      assert.equal(
+        counters.nonConvergent,
+        1,
+        `${reason} must withhold success via nonConvergent, never a bare completed-only verdict`,
+      );
+      assert.equal(outcome.phaseIncomplete, undefined);
+    });
+  }
 });
 
 /**

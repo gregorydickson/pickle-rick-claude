@@ -63,7 +63,12 @@ import {
   shouldHaltAfterPhase,
 } from '../bin/pipeline-runner.js';
 import { isFailureExit, isHaltExit, isIncompleteExit } from '../bin/mux-runner.js';
-import { CRASH_FLOOR_EXIT_REASONS, EXIT_REASONS, MICROVERSE_EXIT_REASONS } from '../types/index.js';
+import {
+  CRASH_FLOOR_EXIT_REASONS,
+  EXIT_REASONS,
+  MICROVERSE_EXIT_REASONS,
+  MICROVERSE_FATAL_REASONS,
+} from '../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE_RUNNER_SRC = path.resolve(__dirname, '../src/bin/pipeline-runner.ts');
@@ -419,6 +424,14 @@ describe('AC-OA-3a — ONE RULE, channel 2: no microverse exit_reason aborts', (
  * it is pinned by the two crash-floor tests above, not renegotiated here.
  */
 describe('AC-OA-3a — channel 2 crash floor (the invariant is bounded, not universal)', () => {
+  // Ticket 2ecd5464: sharpened from "session_state_corrupted is in there somewhere" (3 members)
+  // to "it is the ONLY member" — judge_cli_missing and baseline_unmeasurable_unrecoverable are
+  // demoted to park-and-report per B-NOSTOP-GATES (see oneabort-termination-invariant.test.js's
+  // AC-2ecd5464 block for the full four-property proof on the actual recovery path).
+  test('MICROVERSE_FATAL_REASONS has exactly one member: session_state_corrupted', () => {
+    assert.deepEqual([...MICROVERSE_FATAL_REASONS], ['session_state_corrupted']);
+  });
+
   test('session_state_corrupted is outside the exit union and still aborts', () => {
     assert.ok(
       !MICROVERSE_EXIT_REASONS.includes('session_state_corrupted'),

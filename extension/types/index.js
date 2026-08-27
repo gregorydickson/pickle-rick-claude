@@ -527,9 +527,7 @@ export const MICROVERSE_EXIT_REASONS = [
     'stalled_below_target', 'iteration_budget_exhausted', 'time_budget_exhausted',
 ];
 export const MICROVERSE_FATAL_REASONS = [
-    'judge_cli_missing',
     'session_state_corrupted',
-    'baseline_unmeasurable_unrecoverable',
 ];
 /**
  * Runtime-iterable membership list for the pickle-phase `ExitReason`, declared `as const` to mirror

@@ -1410,9 +1410,7 @@ export const MICROVERSE_EXIT_REASONS = [
 export type MicroverseExitReason = typeof MICROVERSE_EXIT_REASONS[number];
 
 export const MICROVERSE_FATAL_REASONS = [
-  'judge_cli_missing',
   'session_state_corrupted',
-  'baseline_unmeasurable_unrecoverable',
 ] as const;
 
 export type MicroverseFatalReason = typeof MICROVERSE_FATAL_REASONS[number];

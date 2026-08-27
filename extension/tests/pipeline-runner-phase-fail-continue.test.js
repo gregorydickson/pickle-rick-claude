@@ -220,12 +220,26 @@ describe('shouldHaltAfterPhase', () => {
     assert.equal(shouldHaltAfterPhase('pickle', 1, runtime), false);
   });
 
+  // Deliberate pin inversion (ticket 2ecd5464, B-ONEABORT residual): `judge_cli_missing` is a
+  // measurement-tooling absence, not a state-integrity floor — B-NOSTOP-GATES requires it to
+  // park-and-report, not halt. It is demoted out of MICROVERSE_FATAL_REASONS, whose only remaining
+  // member is `session_state_corrupted`. This is the intended outcome, not a weakened test: the
+  // membership assertion below now asserts ABSENCE where it used to assert presence.
+  //
+  // `isFatalPhaseFailure`/`shouldHaltAfterPhase` still return `true` here and that is UNCHANGED —
+  // arm 3 of `isFatalPhaseFailure`'s anatomy-park branch (`isMicroverseFailureExit`, backed by the
+  // separate `MICROVERSE_FAILURE_REASONS` set, which still lists `judge_cli_missing` per the
+  // out-of-scope R-MBLE-2 trap door) independently routes the halt-dispatch path. That path then
+  // consults `classifyMicroverseHaltDecision`, which — because `judge_cli_missing` is a
+  // `MICROVERSE_EXIT_REASONS` union member — resolves to `run-finalize-gate-incomplete`: the
+  // pipeline runs finalize-gate and, on pass, continues to the next phase with success withheld
+  // (see `oneabort-termination-invariant.test.js`'s `AC-2ecd5464` block for the four-property proof).
   test('shouldHaltAfterPhase anatomy fatal when exit_reason is judge_cli_missing', () => {
     const { runtime } = makeRuntime({
       stateOverrides: { exit_reason: 'judge_cli_missing' },
     });
 
-    assert.ok(MICROVERSE_FATAL_REASONS.includes('judge_cli_missing'));
+    assert.ok(!MICROVERSE_FATAL_REASONS.includes('judge_cli_missing'));
     assert.equal(isFatalPhaseFailure('anatomy-park', runtime), true);
     assert.equal(shouldHaltAfterPhase('anatomy-park', 1, runtime), true);
   });
