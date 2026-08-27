@@ -70,13 +70,13 @@ function scopedDirtyJsPaths() {
     );
     const paths = new Set();
     for (const line of result.stdout.split('\n')) {
-        if (!line.trim()) continue;
+        if (!line.trim()) { continue; }
         // porcelain v1 is `XY <path>`, or `XY <old> -> <new>` for a rename.
         const entry = line.slice(3);
         const rename = entry.indexOf(' -> ');
         const raw = rename === -1 ? entry : entry.slice(rename + 4);
         const clean = raw.trim().replace(/^"|"$/g, '');
-        if (clean.endsWith('.js')) paths.add(clean);
+        if (clean.endsWith('.js')) { paths.add(clean); }
     }
     return paths;
 }

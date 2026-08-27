@@ -57,7 +57,7 @@ function allTestCalls(sourceText) {
   function visit(node) {
     if (ts.isCallExpression(node)) {
       const { root, modifier } = calleeRootName(node.expression);
-      if (root === 'test') calls.push({ call: node, modifier });
+      if (root === 'test') { calls.push({ call: node, modifier }); }
     }
     ts.forEachChild(node, visit);
   }
@@ -86,7 +86,7 @@ function countTopLevelTestDeclarations(sourceText) {
  */
 function hasSkipOrTodoModifier(sourceText) {
   return allTestCalls(sourceText).some(({ call, modifier }) => {
-    if (modifier === 'skip' || modifier === 'todo') return true;
+    if (modifier === 'skip' || modifier === 'todo') { return true; }
     return call.arguments.some(arg => ts.isObjectLiteralExpression(arg)
       && arg.properties.some(prop => prop.name
         && (ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name))
@@ -111,11 +111,11 @@ function splitTestBodies(sourceText) {
 function bodyHasAssertCall(bodyText) {
   let found = false;
   function visit(node) {
-    if (found) return;
+    if (found) { return; }
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
       let receiver = node.expression.expression;
       while (ts.isPropertyAccessExpression(receiver)) receiver = receiver.expression;
-      if (ts.isIdentifier(receiver) && receiver.text === 'assert') found = true;
+      if (ts.isIdentifier(receiver) && receiver.text === 'assert') { found = true; }
     }
     ts.forEachChild(node, visit);
   }

@@ -11,7 +11,7 @@ const p = new Promise((resolve) => {
     settled = true;
     resolve();
   }, 50);
-  if (unref) timer.unref();
+  if (unref) { timer.unref(); }
 });
 await p;
 console.log(`SETTLED ${settled}`);
