@@ -88,7 +88,8 @@ function hasSkipOrTodoModifier(sourceText) {
   return allTestCalls(sourceText).some(({ call, modifier }) => {
     if (modifier === 'skip' || modifier === 'todo') return true;
     return call.arguments.some(arg => ts.isObjectLiteralExpression(arg)
-      && arg.properties.some(prop => prop.name && ts.isIdentifier(prop.name)
+      && arg.properties.some(prop => prop.name
+        && (ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name))
         && (prop.name.text === 'skip' || prop.name.text === 'todo')));
   });
 }
@@ -287,6 +288,12 @@ test('ROOT-4 true positive: real declarations, modifiers, and the options form a
     hasSkipOrTodoModifier("test('quarantined', { skip: true }, () => {});"),
     true,
     'the options-object form must still be detected',
+  );
+  assert.equal(
+    hasSkipOrTodoModifier("test('quarantined', { 'skip': true }, () => {});"),
+    true,
+    "a string-literal key ({ 'skip': true }) is the same construct and must be detected too — "
+    + 'the property NAME is resolved, not its spelling',
   );
 
   // Indentation is not identity either: a declaration nested in a describe() is still a modified
