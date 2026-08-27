@@ -70,6 +70,12 @@ function makeBundleRepo() {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pcomp-handsoff-')));
   git(['init', '-q', '-b', 'main'], repo);
   git(['config', 'commit.gpgsign', 'false'], repo);
+  // Repo-local identity: production code under test (commitGatePassingDeliverableOnExitPath's
+  // internal git commit) spawns git without GIT_AUTHOR_NAME/EMAIL env, so it relies on git
+  // config. A global ~/.gitconfig on a dev machine masks a missing identity; a fresh CI
+  // container has none, and `git commit` refuses with no user.name/user.email.
+  git(['config', 'user.name', 'e2e'], repo);
+  git(['config', 'user.email', 'e2e@test.invalid'], repo);
   fs.mkdirSync(path.join(repo, 'extension'), { recursive: true });
   fs.writeFileSync(path.join(repo, 'extension', 'README.md'), 'fixture\n');
   git(['add', '-A'], repo);

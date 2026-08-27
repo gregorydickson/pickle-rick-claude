@@ -152,6 +152,14 @@ test('pipeline state stays coherent across a three-iteration mux-runner fixture'
             env: {
                 ...process.env,
                 EXTENSION_DIR: extDir,
+                // Without these, resolveExtensionRoot's sentinel check (extension/bin/log-watcher.js
+                // under EXTENSION_DIR) fails and silently falls back to the canonical
+                // ~/.claude/pickle-rick root. A dev machine with a real prior install masks this;
+                // a fresh CI container has no canonical root and every downstream template/gate
+                // lookup fails. EXTENSION_DIR_TEST is the sanctioned test-only bypass (see
+                // resolveExtensionRoot / allowsMissingExtensionSentinelForTests in pickle-utils.ts).
+                NODE_ENV: 'test',
+                EXTENSION_DIR_TEST: '1',
                 PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin'}`,
                 PICKLE_BACKEND: 'claude',
                 PICKLE_DATA_ROOT: path.join(tmpRoot, 'pickle-data'),
