@@ -255,6 +255,61 @@ reports 22 and overcounts by 5.
 
 ## 📦 SHIP STATE (newest first — the release-ready + in-flight ledger)
 
+> ### 🚢 2026-08-27 — v2.1.0-beta.20, [[B-DRAIN13]]: thirteen filed bugs, composed BY ROOT
+>
+> **Operator-directed** ("if we have 13 bugs then we should do them in one bundle"). Thirteen PRDs
+> composed to **7 tickets across 4 roots** — unref'd sole-settle-path timers, the installer,
+> verdict/accounting reading the wrong measurement, and anchors identified by POSITION not IDENTITY.
+> Session `2026-08-26-3f84fa12`, **18 commits**.
+>
+> **Two of the thirteen were already fixed.** Both singletons closed `zero_diff_intent:
+> already-satisfied` — *declared in frontmatter up front*, not rationalised after an empty diff — each
+> with a full 8-phase lifecycle and 10–15 machine-checkable ACs carrying evidence (one ran the full fast
+> tier **env-scrubbed**, `PICKLE_TICKET_ID` + the `GIT_CONFIG_*` family unset, rather than a `--grep`
+> subset). **Composing one-ticket-per-PRD would have spent two worker lifecycles discovering nothing** —
+> the concrete argument for composing by root.
+>
+> **⚠ PROCESS ERROR WORTH KEEPING: `/pickle-tmux` runs the PICKLE PHASE ONLY.** The bundle was launched
+> via `setup.js --tmux` + `mux-runner.js`, which drives pickle and stops. All 7 tickets went Done, the
+> runner exited cleanly, and the bundle was one gate away from shipping **with no citadel, no
+> anatomy-park and no szechuan-sauce**. Relaunching `pipeline-runner.js` against the finished session
+> first hit `[FATAL] Cannot read pipeline.json` — correct behaviour, since that file is written by the
+> `/pickle-pipeline` path — and that failed launch **stamped `exit_reason: 'fatal'` onto a session that
+> had completed cleanly**. Fix: write `pipeline.json` (copied verbatim from the prior session, not
+> invented), clear the mislabel, relaunch. Pickle re-entered and closed in **8m6s** because the tickets
+> were already Done, so re-entry on a finished session is cheap. **Use `/pickle-pipeline` for bundles.**
+>
+> **What the review phases found — and would have shipped.** Anatomy-park: **1 CRITICAL + 6 HIGH**.
+> The CRITICAL (`3b1c25fd`) is an autonomy-killer: `executeConvergedPlanAdapter` commits each `## Phase N`
+> block, but `executeCleanTreeReExecution` runs ONE implement pass against the whole plan, so phases 2..N
+> have an empty index — `git commit` exits 1, `commitPhase` read that as a phase FAILURE, and the recovery
+> ladder escalated to terminal `recovery_exhausted` **over work that was fully committed, tree clean, every
+> verify green**. Not an edge case: **31 of 32** real plan artifacts carry 2+ Phase blocks. The six HIGHs
+> are one theme — *a dropped file is a diagnostic, never a silent zero* · *a pin's rot-guard must read the
+> emitted artifact, not the file text* · *the attribution fence is a commit date, not a mutable epoch* ·
+> *name the ONE success disposition, not the not-success set* · *one canonical spelling of a violation's
+> identity* · *a pane labels an unschema'd entry, never coerces it*.
+>
+> **Szechuan** drove violations **20 → 9** then held; all four of its commits SUBTRACT (YAGNI collapse of
+> an unreachable `null` verdict, DRY on the post-final measurement seam and the orphan-reap emitter,
+> the segmenter contract attached to `splitShellSegments`).
+>
+> **Both review phases ended on honest non-convergent verdicts** — `anatomy_non_convergent` after 3h08m
+> and `stalled_below_target` after 82m — each exit-1, each classified non-fatal, each explicitly
+> *"reported non-convergent, not counted as completed"*, pipeline **complete** rather than halted. That
+> is why the headline reads **2/4 phases, 282m3s**: the ledger being truthful, not the run being broken.
+>
+> **[[B-VERDICT]] validated in the field**, two bundles after shipping: the microverse logged
+> `Classification: improved (basis=ledger_count, violations=9, previous=20)` — the **named deciding basis**
+> beta.18 added, doing its job in a live log rather than in a ledger claim.
+>
+> **Gate GREEN, zero waived failures**, every tier from a directly-captured exit code: static + all 10
+> audits rc=0 · `tsc` emit left the tree clean · `test:fast:budget` **failures=0 runs_completed=5/5** ·
+> integration **parallel 662/662** · **serial 625/625** (separate invocation — R-ISSC hides that half from
+> CI) · expensive rc=0, soak **genuinely 1804s**. Counts are **identical to the beta.19 gate**: nothing
+> greened by shrinking.
+
+
 > ### 🚢 2026-08-26 — v2.1.0-beta.19, [[B-RELTAG]]: the release tags pointed at `main` for four months
 >
 > **The bundle that made release provenance checkable.** `gh release create <tag>` with no `--target`
@@ -2387,6 +2442,20 @@ completion-evidence PROVEN, LOA-1363 run 4) are preserved in
 |---|------|-----|-------|--------|
 | R-SJLAGMT | **R-SJLAGMT** — `extension/tests/sjlag-state-heartbeat.test.js:60` asserts `mtimeAfter >= mtimeBefore` on `fs.statSync(...).mtimeMs`, a **float** millisecond derived from the filesystem's nanosecond timestamp. When both stat calls land inside the same millisecond, the float conversion does not preserve ordering and a `>=` on non-decreasing wall-clock time can read as FALSE. Observed 2026-08-15: `state.json mtime must advance: before=1786814171970.9998 after=1786814171970.999` — same millisecond, "after" smaller by 0.0008 ms. Confirmed **flaky, not deterministic**: `fail 1` on one run, `fail 0` on a clean re-run of the same tree (`7647 tests, 504 suites, fail 0, cancelled 0, 835042 ms, EXIT=0`). Pre-existing — the test shipped with `24cb85d0` (R-SJLAG), NOT with any 2026-08-15 bundle, so it has been failing at a low rate since. Fix = compare `fs.statSync(path, {bigint: true}).mtimeNs` (BigInt, lossless) or assert with an explicit tolerance; do NOT relax the assertion to `>` or delete it — the heartbeat it guards is real. | P2 | 🆕 **FILED 2026-08-15, unbuilt.** Costs a full ~800 s tier re-run each time it fires, and it fires with `cancelled 0`, so it reads as a genuine red rather than an obvious flake. | tier logs at `a5edb12f` (fail 1) vs the clean re-run (fail 0) |
 | R-TIERWEDGE | **R-TIERWEDGE** — an operator-run `npm run test:fast` can **wedge at zero CPU** rather than fail or finish. Observed 2026-08-15 on `a5edb12f`: log frozen at 6138 lines for 8+ minutes, ~12 min elapsed against a ~730 s baseline, and the whole tree parked — runner `bin/test-runner.js` at `0:00.10` CPU unchanged across a 20 s sample, its child at `0:02.68` unchanged across 25 s, its grandchild at `0:00.47` over 10:47. No summary block is ever emitted, so a wedged run cannot produce a false green — but it also never returns, and `PICKLE_TEST_RUNNER_TIMEOUT_MS=7200000` means a naive waiter blocks for 2 h. Same 0-CPU shape as the post-completion gate wedge, but here under a PLAIN operator tier with no worker gate involved, which widens the class. Recovery: kill the tree by pid (`kill -9` leaf-up) and re-run — the re-run completed normally, so the wedge is intermittent. **Operational rule: any wait on a tier run needs a STALL detector (no log growth for N minutes), not a timeout.** | P2 | 🆕 **FILED 2026-08-15, unbuilt.** Recovery is mechanical and costs one full tier re-run. | tier run at `a5edb12f`, process census 2026-08-15 12:31-12:40 |
+> **B-CIINT UPDATE 2026-08-27 (measured on the `v2.1.0-beta.19` release run, `33020749185`).** CI got
+> further than it ever has: integration **parallel** came back `662 tests, pass 659, fail 0, cancelled 0`.
+> Because the parallel half finally exited zero, [[R-ISSC]] did not short-circuit and the **serial tier ran
+> in CI for the first time** — `625 tests, pass 611, fail 7, cancelled 7`. A whole tier invisible on every
+> prior release is now measured, and it is **red on Linux while green on macOS/Node 24** (625/625 locally at
+> both the beta.19 and beta.20 ships). The 15 failing names are overwhelmingly subprocess/timing: `PC-4`
+> and `PC-5` refinement-team kill paths, `mega bundle A-F`, `pipeline state stays coherent across a
+> three-iteration mux-runner fixture`, `runner times out wedged child test process instead of hanging
+> indefinitely`, and **four `R-APMW-6` cases** including *"output every 10s for 4h - wall-clock guard
+> fires"*. **Newly VISIBLE, not newly broken** — beta.19 touched none of it. This is the harm R-ISSC
+> causes, stated as a measurement. Also unattributed and worth a look: that run's `test:fast:budget`
+> reported `OK failures=1 budget=2 runs_completed=5`; within budget, but `RUN 4 FAILED: status=1` and its
+> log lives in the CI runner's `/tmp`, unsurfaced, so WHICH fast test failed is unknown.
+
 | R-GBANNER | **R-GBANNER** — the between-ticket / cross-ticket gate's failure parser reports an **npm lifecycle BANNER line as a failing test name**. Observed verbatim failure entry: `{ "name": "> pickle-rick-scripts@2.1.0-beta.9 pretest:fast", "file": "" }` — a `> pkg@ver script` echo line, with an EMPTY `file`, which is the tell. Seen in **two independent sessions**: `2026-08-14-0807d986` (as `cross_ticket_regression_detected`, attributed to `prior_ticket_id: 70a67ccb` — a ticket that had already shipped clean) and `2026-08-15-b88a6603` (as `last_between_ticket_gate.ok: false`, `timed_out: false`, 1 failure, for `d35f4c61`). So it is systematic, not a one-off. Two distinct harms: (1) the "failing test" name is unactionable, so a manager handed this list dispatches a worker at a phantom; (2) the cross-ticket variant **attributes it to the wrong ticket**, manufacturing a regression against work that is already green. Underlying red is real but transient — `pretest:fast` is `audit-test-tiers.sh && audit-test-isolation.sh`, which react to mid-flight worker files; both exited 0 on demand minutes later. Fix = when a parsed failure has an empty `file` AND the name matches the `^> \S+@\S+ \S+$` npm banner shape, attribute the failure to the SCRIPT (a pretest/audit failure) rather than emitting it as a test, and never let it seed a cross-ticket attribution. | P2 | 🆕 **FILED 2026-08-15, unbuilt.** Both sightings were non-fatal — the phantom-Done watcher kept the affected tickets on valid completion-commit evidence, so the gate parked rather than stopped. Harm is misdirection, not a wedge. | sessions `2026-08-14-0807d986` (`cross_ticket_regression_detected`) + `2026-08-15-b88a6603` (`last_between_ticket_gate`) |
 | R-NOPOSTTIER | **R-NOPOSTTIER** — **no phase measures the tier AFTER a bundle's final commit**, so a run can pass every per-ticket gate and hand back a red tree. Demonstrated end-to-end 2026-08-15: session `2026-08-15-b88a6603` reported **8/8 Done, `EPIC_COMPLETED/all-tickets-done`, `exit_reason: completed`**, and its LAST commit `1bead552` (the bundle's own cross-reference audit ticket) expanded the R-WTFT trap-door entry at `extension/CLAUDE.md:191` to 1831 chars against the 1500 cap at `extension/tests/trap-door-conformance.test.js:15`. Operator-run clean-env tier at that commit: **7647 tests, fail 3, cancelled 0, EXIT=1** — three failures, one root. Nothing in the run was positioned to see it: the between-ticket gate runs BETWEEN tickets (there is no ticket after the last one), and per-ticket conformance is scoped to that ticket's own diff. This is the standing lesson with a mechanism attached: *a per-ticket ALL_PASS verdict is not a tree verdict.* Note the aggravating shape — the reddening commit was a DOCS commit from an AUDIT ticket, the class least likely to be suspected. Fix candidates: run one tier measurement after the final ticket flips Done and BEFORE synthesizing `EPIC_COMPLETED`, recording the verdict in the completion promise (report-only — per the no-stop-gates rule it must NOT block the epic, only withhold the success verdict); or extend the existing closer to own it. | P1 | 🆕 **FILED 2026-08-15, unbuilt.** Recovered by launching a fix bundle (`eff4ccbd` PRD → `a5edb12f`, 1831 → 1448 chars, cap untouched); no hand-build. Until built, EVERY bundle's green needs an operator-run tier measurement to be believed. **▶ 2026-08-16, ticket `4a25e6ca`: the fix bundle's own tier is MEASURED GREEN at `c688f9ab` — 7707 tests, 507 suites, pass 7704, fail 0, cancelled 0, skipped 2, todo 1, 1442185 ms, `EXIT=0`**, clearing both the measured 5899 floor (`5dba30c5`) and the retracted 7647. The `BUG-2026-08-16-post-final-measurement-wedges-the-tier` nested-tier hypothesis is **FALSIFIED**: both seams (`extension/src/bin/mux-runner.ts:708`, `:941`) return early unless `<working_dir>/extension` exists and that guard predates the bundle, while every `mux-runner.test.js` working dir is a bare `mkdtempSync` — the nested tier could not have fired from that file. The `e57bac7a` wedge was real but belongs to `R-TIERWEDGE`, not to this seam; the run walked through the old 6126-line wedge point (`mux-runner: exits with code 1 and prints Usage when no args provided` passes at line 6132) to 14089 lines. | session `2026-08-15-b88a6603`; tier logs at `1bead552` (fail 3) and `a5edb12f` (fail 1, unrelated); `c688f9ab` tier log 2026-08-16 |
 | R-GENVL | **R-GENVL** — a gate run inherits the manager/worker process env, and `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` (exported by the mux manager, `1800000` in the observed session) is read by `resolveWorkerTestFastTimeoutMs` at TEST time, so the whole `worker_test_gate_timeout_ms` cluster asserts against the leaked value instead of the compiled default. Measured 2026-08-14 (session `2026-08-14-0807d986`, iteration 10): the same tree ran **EXIT=1 with 8 failures** with the variable present and **EXIT=1 with exactly 1 failure** after `env -u PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` — 7 of 8 failures were pure contamination (`settings-loader` ×2, `runWorkerGate`, `showStatus`, `mux-runner-between-ticket-gate` ×2, `install.sh MANAGED_KEYS force`/`AC-SSAT-4`). Same family as the deployed-trailer-hook contamination (`env -u PICKLE_TICKET_ID -u GIT_CONFIG_*`) — a manager that runs the tier on a worker's behalf reads a **false red** and then hands the worker a fabricated fix list. Fix candidates: scrub the pickle env in the gate spawn (reuse the existing trailer-env scrub seam), or make the resolver ignore the env under `NODE_TEST_CONTEXT`. | P2 | 🆕 **FILED 2026-08-14, unbuilt.** Measured on `release/v2.1-beta` @ `f0fb36cf`; no code written. Manager workaround in use: `env -u PICKLE_WORKER_TEST_FAST_TIMEOUT_MS -u PICKLE_TICKET_ID -u GIT_CONFIG_*` before any manager-run `npm run test:fast`. | session `2026-08-14-0807d986` iteration 10; `/tmp/gate-063b991c.log` (dirty, 8 fails) vs `/tmp/gate2-063b991c.log` (clean, 1 fail) |
