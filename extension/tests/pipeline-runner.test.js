@@ -37,7 +37,7 @@ import {
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
-import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS } from '../types/index.js';
+import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS, FAILURE_REASONS, NO_PROGRESS_FAILURE_REASONS } from '../types/index.js';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pipeline-'));
@@ -2996,6 +2996,73 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     assert.ok(
       BACKENDS.includes('claude') && BACKENDS.includes('codex') && BACKENDS.length >= 2,
       'sanity: BACKENDS must still hold the real backend members',
+    );
+  });
+
+  // AP-EXT-ITER77-01: the same const-list drift shape, one entry down the file.
+  // `NO_PROGRESS_FAILURE_REASONS` was a SECOND hand-maintained copy of every
+  // `FAILURE_REASONS` member, annotated `: readonly TicketFailureReason[]` — so a
+  // reason added to FAILURE_REASONS and forgotten here still typechecked (probed:
+  // a 4th member omitted from the old array compiled CLEAN). The sole consumer,
+  // `mux-runner.ts:isOversizedNoProgressFailed`, does
+  // `(NO_PROGRESS_FAILURE_REASONS as readonly string[]).includes(reason)`, so the
+  // forgotten reason silently loses its retry-exemption / selection semantics.
+  // The array is now DERIVED from a TOTAL `Record<TicketFailureReason, boolean>`,
+  // which makes the omission a tsc error (TS2741) instead of a silent false.
+  test('NO_PROGRESS_FAILURE_REASONS derives from a total FAILURE_REASONS classification', () => {
+    const typesSrc = fs.readFileSync(new URL('../src/types/index.ts', import.meta.url), 'utf-8');
+
+    // The trap door's own PATTERN_SHAPE, executable: no exported membership list in
+    // this file may be annotated AS its union. That annotation is the drift licence.
+    const annotatedLists = typesSrc
+      .split('\n')
+      .filter((line) => /^export const [A-Z_]+: readonly \w+\[\] =/.test(line));
+    assert.deepEqual(
+      annotatedLists,
+      [],
+      'no `export const X: readonly T[] = …` in types/index.ts — annotating a membership '
+        + 'list as its union lets a union member missing from the array typecheck',
+    );
+
+    // The classification map is the single source of truth and must be TOTAL over the
+    // union; the exported array is derived from it, never restated.
+    assert.match(
+      typesSrc,
+      /^const FAILURE_REASON_IS_NO_PROGRESS: Record<TicketFailureReason, boolean> = \{$/m,
+      'the no-progress classification must be a total Record keyed by TicketFailureReason',
+    );
+    assert.match(
+      typesSrc,
+      /^export const NO_PROGRESS_FAILURE_REASONS = FAILURE_REASONS\.filter\($/m,
+      'NO_PROGRESS_FAILURE_REASONS must be derived from FAILURE_REASONS, not restated',
+    );
+
+    // The drift oracle proper, independent of tsc: every FAILURE_REASONS member must
+    // appear as a key of the map literal. This stays RED even if someone re-widens
+    // the type annotation, which a source-shape assertion alone would not catch.
+    const mapBody = /^const FAILURE_REASON_IS_NO_PROGRESS: Record<TicketFailureReason, boolean> = \{\n([\s\S]*?)^\};$/m
+      .exec(typesSrc);
+    assert.ok(mapBody, 'the FAILURE_REASON_IS_NO_PROGRESS literal must be parseable');
+    const classified = new Set(
+      [...mapBody[1].matchAll(/^\s*([A-Za-z_][\w]*)\s*:/gm)].map((m) => m[1]),
+    );
+    assert.deepEqual(
+      [...FAILURE_REASONS].filter((reason) => !classified.has(reason)),
+      [],
+      'every FAILURE_REASONS member must be classified in FAILURE_REASON_IS_NO_PROGRESS',
+    );
+    assert.deepEqual(
+      [...classified].filter((key) => !FAILURE_REASONS.includes(key)),
+      [],
+      'FAILURE_REASON_IS_NO_PROGRESS must not classify a reason FAILURE_REASONS does not declare',
+    );
+
+    // No behavior regression: the three WS-2d reasons are still all treated as
+    // no-progress, which is what mux-runner's selection / retry exemption reads.
+    assert.deepEqual(
+      [...NO_PROGRESS_FAILURE_REASONS].sort(),
+      ['no_progress_timeout', 'oversized_no_progress', 'scope_unresolvable'],
+      'sanity: the derived array must still hold every WS-2d no-progress reason',
     );
   });
 

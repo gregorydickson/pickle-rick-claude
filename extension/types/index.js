@@ -457,16 +457,28 @@ export const FAILURE_REASONS = [
     'no_progress_timeout',
 ];
 /**
- * WS-2d (R-PFNT): the no-progress Failed reasons that share the legacy
- * `oversized_no_progress` selection / retry-exemption semantics. A reader that
- * treated only the old literal as a terminal no-progress flip MUST treat all three
- * equivalently so the split introduces no behavior regression.
+ * WS-2d (R-PFNT): which Failed reasons share the legacy `oversized_no_progress`
+ * selection / retry-exemption semantics. A reader that treated only the old literal
+ * as a terminal no-progress flip MUST treat all three equivalently so the split
+ * introduces no behavior regression.
+ *
+ * AP-EXT-ITER77-01: the classification is a TOTAL `Record<TicketFailureReason, …>`
+ * and `NO_PROGRESS_FAILURE_REASONS` is DERIVED from it — never a second
+ * hand-maintained array. The prior shape (`export const NO_PROGRESS_FAILURE_REASONS:
+ * readonly TicketFailureReason[] = [...]`) is what this file's own const-list trap
+ * door forbids: annotating a membership list AS its union lets a reason added to
+ * `FAILURE_REASONS` be omitted here and still typecheck, and
+ * `mux-runner.ts:isOversizedNoProgressFailed` then silently answers false for it —
+ * the ticket loses its retry-exemption / selection semantics with no compiler signal.
+ * Mutation-probed: a 4th `FAILURE_REASONS` member omitted from the old array compiled
+ * CLEAN; omitted from this map it is a tsc error, because the Record is total.
  */
-export const NO_PROGRESS_FAILURE_REASONS = [
-    'oversized_no_progress',
-    'scope_unresolvable',
-    'no_progress_timeout',
-];
+const FAILURE_REASON_IS_NO_PROGRESS = {
+    oversized_no_progress: true,
+    scope_unresolvable: true,
+    no_progress_timeout: true,
+};
+export const NO_PROGRESS_FAILURE_REASONS = FAILURE_REASONS.filter((reason) => FAILURE_REASON_IS_NO_PROGRESS[reason]);
 /**
  * B-CWGE WS-2 (R-CWGE): the ticket-frontmatter field into which spawn-morty's
  * worker gate persists its overall verdict — the combined eslint + tsc + test
