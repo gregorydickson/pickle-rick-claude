@@ -125,6 +125,28 @@ function computeWallClockMs(spawnMsList, terminalTimestamps) {
     }
     return owningSpawnMs === null ? null : terminalMs - owningSpawnMs;
 }
+/**
+ * The ticket's disposition, in precedence order. Every arm returns a literal, which is why
+ * `TicketGateCompletion['reason']` carries no `null`: a ticket reaches here only by having
+ * been spawned, so it always HAS a disposition. A nullable verdict on a gate-reporting type
+ * is a state no producer can emit and every reader must still carry — the report says
+ * "unexplained" where none exists.
+ *
+ * Guard clauses, not a nested ternary: the arms are a priority list, and a list reads as one.
+ * Adding an arm is a line here; under the ternary it was a re-nesting, and the previous shape
+ * had already drifted to two arms indented and two crammed onto one line.
+ */
+function gateReason(flags) {
+    if (flags.narrowTierVacuity)
+        return 'narrow_tier_shortcircuit';
+    if (flags.observedCompletion)
+        return 'observed';
+    if (flags.skipped)
+        return 'skipped';
+    if (flags.timedOut)
+        return 'timed_out';
+    return 'failed';
+}
 function classifyTicketGate(ticket, spawnMsList, activity, narrowTierVacuity) {
     const skipped = activity.some((e) => e.event === 'tier_phase_skipped' && getEventTicketId(e) === ticket
         && Array.isArray(e.skipped_phases) && e.skipped_phases.includes('test:fast'));
@@ -135,11 +157,7 @@ function classifyTicketGate(ticket, spawnMsList, activity, narrowTierVacuity) {
     const failedNonTimeout = gateFailedEvents.length > 0 && !timedOut;
     const wallClockMs = computeWallClockMs(spawnMsList, [timeoutEvent?.ts, gateFailedEvents[0]?.ts, completionEvent?.ts]);
     const observedCompletion = !narrowTierVacuity && !skipped && !timedOut && !failedNonTimeout;
-    const reason = narrowTierVacuity
-        ? 'narrow_tier_shortcircuit'
-        : observedCompletion
-            ? 'observed'
-            : skipped ? 'skipped' : (timedOut ? 'timed_out' : 'failed');
+    const reason = gateReason({ narrowTierVacuity, observedCompletion, skipped, timedOut });
     return { ticket, spawned: true, skipped, timedOut, failedNonTimeout, observedCompletion, wallClockMs, reason };
 }
 export function buildGateCompletionReport(activity, opts) {
