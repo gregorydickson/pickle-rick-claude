@@ -801,3 +801,118 @@ test('AP-EXT-ITER47-01: parseSelfPgidFromPs reads our pgid off the census row, n
   assert.equal(parseSelfPgidFromPs(psOutput, 999999), null, 'a census without our row yields no pgid');
   assert.equal(parseSelfPgidFromPs('', process.pid), null);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER75-01: the WS-1 class reaps an UNATTRIBUTABLE proc, and three
+// docs said that never happens.
+//
+// At `origin/main` the ownership reject in `isReapableOrphan` was
+// unconditional — `if (cand.owningSessionDir === null) return false;` — so
+// "an unattributable proc is NEVER killed" was TRUE, and the module docblock,
+// `src/services/CLAUDE.md` and `extension/CLAUDE.md` all said so in exactly
+// those words. This branch added the `tmp_fixture` class, which has no owning
+// session BY CONSTRUCTION, does not even require a worker-shaped command, and
+// reaches a group SIGTERM -> SIGKILL on AGE ALONE. The reject became
+// `cand.kind !== 'tmp_fixture' && owningSessionDir === null`; none of the
+// three prose sites moved, and the module docblock's paragraph was REWRITTEN
+// on this branch (for the unreadable-state.json rule) with the now-false
+// sentence carried through unchanged.
+//
+// `audit-trap-door-enforcement.sh` cannot see this: it proves INVARIANT
+// symbols and ENFORCE refs RESOLVE, never that a claim is still TRUE. All
+// three sites stayed green through the whole change.
+//
+// A false absolute on a SIGKILL primitive is not a cosmetic drift. It scopes
+// the next reader's guard: AP-EXT-ITER47-01 above exists precisely because
+// self-protection had to be widened once the age-only arm appeared, and its
+// own entry says so — "the WS-1 `tmp_fixture` class is gated by AGE ALONE".
+// The catalog contradicted itself, and the arm the blanket claim covers is
+// the one with no ownership check left in it.
+//
+// So grade the prose with a behavioral non-vacuity proof beside it: assert
+// that an unattributed candidate really IS reaped, then assert no site
+// restates the absolute and every site names the exception. Quoting the false
+// sentence back — even to disown it — re-creates the phantom under a
+// grep-based grader (the AP-EXT-ITER74-01 lesson: a backticked corpse reads
+// like a live reference), so the assertion is zero occurrences, not zero live
+// claims.
+// ---------------------------------------------------------------------------
+
+/**
+ * The exact sentence the branch falsified, in both hyphenations and either
+ * number. Case-insensitive: a lowercase restatement is the same false claim.
+ */
+const FALSIFIED_NEVER_KILLED = /un-?attributable\s+procs?\s+(?:is|are)\s+never\s+killed/i;
+
+const ORPHAN_REAPER_SRC = path.resolve(
+  path.dirname(new URL(import.meta.url).pathname),
+  '../src/services/orphan-reaper.ts',
+);
+
+test('AP-EXT-ITER75-01: an UNATTRIBUTABLE tmp_fixture over the age floor really is group-killed', () => {
+  const sessionsRoot = makeTmp();
+  const fixtureDir = path.join(os.tmpdir(), 'pickle-ap-ext-iter75-01');
+  // Not worker-shaped at all, and no --add-dir: nothing attributes this proc.
+  const psOutput = `7101 7101 1 20:00:00 node ${fixtureDir}/descendant.js`;
+
+  const parsed = parseWorkerProcsFromPs(psOutput, sessionsRoot);
+  assert.equal(parsed.length, 1, 'the row must be admitted as a candidate');
+  assert.equal(parsed[0].owningSessionDir, null, 'it is unattributable by construction');
+  assert.equal(parsed[0].kind, 'tmp_fixture');
+
+  const kills = [];
+  const result = reapOrphanedWorkerProcs({
+    sessionsRoot,
+    psOutput,
+    kill: (pgid, sig) => { kills.push([pgid, sig]); return true; },
+    isAlive: () => false,
+    sleep: () => {},
+  });
+
+  // This is the whole point: age alone carried an unattributed proc to a kill.
+  assert.deepEqual(kills, [[7101, 'SIGTERM']]);
+  assert.equal(result.reaped, 1, 'an unattributable proc IS reaped — the blanket claim is false');
+});
+
+test('AP-EXT-ITER75-01: no doc site restates the blanket never-killed absolute', () => {
+  const sites = [
+    ['src/services/orphan-reaper.ts', ORPHAN_REAPER_SRC],
+    ['src/services/CLAUDE.md', path.resolve(path.dirname(ORPHAN_REAPER_SRC), 'CLAUDE.md')],
+    ['extension/CLAUDE.md', path.resolve(path.dirname(ORPHAN_REAPER_SRC), '../../CLAUDE.md')],
+  ];
+
+  for (const [label, file] of sites) {
+    const text = fs.readFileSync(file, 'utf8');
+    assert.equal(
+      FALSIFIED_NEVER_KILLED.test(text),
+      false,
+      `${label} must not claim unattributable procs are never killed — the WS-1 ` +
+        'tmp_fixture class reaps them on age alone (proved by the case above). ' +
+        'State the two-class rule, and do not quote the false sentence back to ' +
+        'disown it: a grep-based grader cannot tell a corpse from a live claim.',
+    );
+    assert.match(
+      text,
+      /tmp_fixture/,
+      `${label} must NAME the class that makes the blanket claim false, or the ` +
+        'correction reads as a deletion and the next reader re-derives the wrong rule.',
+    );
+    assert.match(
+      text,
+      /AGE ALONE|age alone/,
+      `${label} must say what gates the tmp_fixture class instead of ownership.`,
+    );
+  }
+});
+
+test('AP-EXT-ITER75-01: the ownership reject is kind-conditional, matching the corrected prose', () => {
+  const src = fs.readFileSync(ORPHAN_REAPER_SRC, 'utf8');
+  assert.match(
+    src,
+    /cand\.kind !== 'tmp_fixture' && owningSessionDir === null/,
+    'isReapableOrphan\'s ownership reject must stay kind-conditional. An ' +
+      'unconditional `owningSessionDir === null` reject would strand the whole ' +
+      'fixture class; if it is ever restored, the prose corrected by this ' +
+      'ticket becomes false in the OTHER direction.',
+  );
+});

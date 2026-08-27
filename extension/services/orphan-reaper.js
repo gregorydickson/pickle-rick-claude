@@ -10,18 +10,39 @@
  * crashes, is SIGKILL'd, or is operator-frozen runs no teardown, so its group
  * re-parents to PID 1 and lingers (codex hangs on network I/O and never
  * self-exits — B-SIGFH soak: 8 orphans, 16h–2d old, starved run 1 dead).
- * `reapOrphanedWorkerProcs` runs once at setup-time bootstrap and collects
- * worker procs no live pickle session owns.
+ * `reapOrphanedWorkerProcs` collects procs no live pickle session owns. It has
+ * THREE consumers, and the cadence matters: `setup.ts:runSetupOrphanReap` and
+ * `bin/reap-orphans.ts` fire once, but `mux-runner.ts:runPipelineOrphanWorkerReap`
+ * fires EVERY iteration of a live pipeline — so a false reap here lands mid-run,
+ * not only before one starts.
  *
- * TRAP DOOR (positive ownership): a proc is reaped ONLY when it is positively
- * attributed to an owning session (argv `--add-dir <path>` under the sessions
- * root — present on BOTH claude and codex worker invocations) AND that session
- * is provably not live (state.json ABSENT, `active !== true`, or a finite pid
- * that is dead). A state.json that is present but UNREADABLE or unparseable is
- * NOT proof of death — it accounts for nothing, so the proc is spared. An
- * unattributable proc is NEVER killed; a live session's proc is NEVER killed
- * regardless of ppid. There is deliberately NO ppid==1-only reap branch —
- * false-reaping an active worker is worse than a leaked orphan.
+ * TRAP DOOR (positive attribution — TWO classes, one of which is NOT ownership):
+ * every reap needs a positive match, but the two classes do not match on the
+ * same thing, and a reader who takes the `worker` rule for the whole rule will
+ * mis-scope the next guard.
+ *
+ *  - `worker` (codex/claude): reaped ONLY under session OWNERSHIP — argv
+ *    `--add-dir <path>` resolves under the sessions root (present on BOTH
+ *    backends) AND that session is provably not live (state.json ABSENT,
+ *    `active !== true`, or a finite pid that is dead). A state.json that is
+ *    present but UNREADABLE or unparseable is NOT proof of death — it accounts
+ *    for nothing, so the proc is spared. An unattributable WORKER is never
+ *    killed: `isReapableOrphan`'s `owningSessionDir === null` reject covers
+ *    exactly this class.
+ *  - `tmp_fixture` (WS-1): has NO owning session by construction and is gated by
+ *    AGE ALONE. That reject is conditional (`kind !== 'tmp_fixture'`), so the
+ *    worker rule above does NOT generalise: flattened into one blanket
+ *    ownership-required-for-every-kill claim it is false of this class, which
+ *    does not even require a worker-shaped command. Its containment is instead the
+ *    positive PATH match (`matchTestOwnedFixture`: an ABSOLUTE argv token
+ *    resolving under `os.tmpdir()` in a `TEST_OWNED_TMP_PREFIXES` first segment,
+ *    or under this repo's fixtures dir), the min-age floor, and `resolveSelfIds`
+ *    — which is load-bearing ONLY because of this class (AP-EXT-ITER47-01).
+ *
+ * A command matching NEITHER class is censused, never killed; a live session's
+ * worker is NEVER killed regardless of ppid. There is deliberately NO
+ * ppid==1-only reap branch — false-reaping an active worker is worse than a
+ * leaked orphan.
  *
  * `killProcessGroup` is the SHARED negative-PID group-kill primitive
  * (AC-CXHANG-3): `bin/spawn-morty.ts:killProcessTree` and
@@ -455,9 +476,13 @@ function sleepSync(ms) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 /**
- * TRAP DOOR: positive ownership required before any kill. Skips self/parent
- * groups, unattributable procs (NEVER killed), under-age procs, and any proc
- * whose owning session is live. No ppid==1-only branch by design.
+ * TRAP DOOR: a positive match required before any kill — but which match depends
+ * on `cand.kind`, and the two are not interchangeable (see the module docblock).
+ * Skips self/parent GROUPS, under-age procs, an already-reaped group, any
+ * `worker` whose owning session is live, and any `worker` with no owning session
+ * at all. A `tmp_fixture` reaches the kill on AGE ALONE — the ownership reject
+ * below is conditional on `kind !== 'tmp_fixture'`, so `selfIds` is that class's
+ * only self-protection. No ppid==1-only branch by design.
  */
 function isReapableOrphan(cand, rt, reapedPgids) {
     // Never signal anything that would land on US — see `selfIds`. One membership
