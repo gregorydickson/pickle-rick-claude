@@ -212,7 +212,12 @@ fi
 # binary provisioning are orthogonal, and tests/integration/mega-bundle-e2e.test.js
 # -- the file whose ripgrep spawn motivated this predicate -- is in the serial
 # manifest, so sharing that allowlist would blind this check to the original bug.
-if [ "${#AUDITED_FILES[@]}" -gt 0 ] && [ -f "$UNPROVISIONED_SCANNER" ]; then
+if [ "${#AUDITED_FILES[@]}" -gt 0 ] && [ ! -f "$UNPROVISIONED_SCANNER" ]; then
+  # Absent scanner is an ERROR, never a skip: a silent skip would print
+  # "audit-subprocess-heavy-tests: OK" with this predicate disarmed.
+  echo "[error: $UNPROVISIONED_SCANNER not found — unprovisioned-binary predicate cannot run]" >&2
+  status=1
+elif [ "${#AUDITED_FILES[@]}" -gt 0 ]; then
   unprovisioned_out="$(node "$UNPROVISIONED_SCANNER" --base "$EXTENSION_ROOT" "${AUDITED_FILES[@]}" 2>/dev/null)"
   unprovisioned_exit=$?
   if [ "$unprovisioned_exit" -ne 0 ]; then

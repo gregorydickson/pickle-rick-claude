@@ -25,6 +25,12 @@
 //   1. argv0 form   : spawn|spawnSync|execFile|execFileSync|execFileAsync('<tool>', ...)
 //   2. shell-string : exec|execSync('<tool> ...')  — leading token of the command
 //
+// `exec` is deliberately NOT receiver-qualified. `RegExp.prototype.exec` shares the
+// name, so `someRegex.exec('rg')` is a possible false positive. Excluding `.exec(`
+// would fix that but would blind this audit to the legitimate namespace-import form
+// `cp.exec('rg ...')` — trading a LOUD false positive for a SILENT false negative.
+// A red gate gets fixed; a silent pass ships. The noisier choice is the right one.
+//
 // Allowlist: a `PROVISIONED-OK` marker on the matching line or the line before it
 // (for a call site that legitimately guards on the tool's presence). Deliberately
 // NOT the SERIAL allowlist used by the host audit — serialization and binary
@@ -47,19 +53,18 @@ const { NON_GUARANTEED_TOOLS } = await import(
 const ARGV0_FNS = 'spawnSync|spawn|execFileSync|execFileAsync|execFile';
 const SHELL_FNS = 'execSync|exec';
 
-function escapeForClass(tool) {
+function escapeForRegex(tool) {
   return tool.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function buildMatchers(tools) {
-  const alt = tools.map(escapeForClass).join('|');
-  return [
-    // spawnSync('rg', ...) / spawnSync(\n  'rg', ...)
-    new RegExp(String.raw`\b(?:${ARGV0_FNS})\s*\(\s*(['"\`])(${alt})\1`, 'g'),
-    // execSync('rg --files src') — tool is the leading token of the command string
-    new RegExp(String.raw`\b(?:${SHELL_FNS})\s*\(\s*(['"\`])(${alt})(?=[\s;|&>]|\1)`, 'g'),
-  ];
-}
+// Built once: the tool set is a compiled constant, so there is nothing per-file here.
+const TOOL_ALT = [...NON_GUARANTEED_TOOLS].map(escapeForRegex).join('|');
+const MATCHERS = [
+  // spawnSync('rg', ...) / spawnSync(\n  'rg', ...)
+  new RegExp(String.raw`\b(?:${ARGV0_FNS})\s*\(\s*(['"\`])(${TOOL_ALT})\1`, 'g'),
+  // execSync('rg --files src') — tool is the leading token of the command string
+  new RegExp(String.raw`\b(?:${SHELL_FNS})\s*\(\s*(['"\`])(${TOOL_ALT})(?=[\s;|&>]|\1)`, 'g'),
+];
 
 function lineNumberAt(content, index) {
   let line = 1;
@@ -81,7 +86,7 @@ function scanFile(filePath, baseRoot) {
   const findings = [];
   const seen = new Set();
 
-  for (const matcher of buildMatchers([...NON_GUARANTEED_TOOLS])) {
+  for (const matcher of MATCHERS) {
     matcher.lastIndex = 0;
     let m;
     while ((m = matcher.exec(content)) !== null) {
@@ -101,7 +106,15 @@ function main(argv) {
   let baseRoot = process.cwd();
   const files = [];
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--base') { baseRoot = argv[++i]; continue; }
+    if (argv[i] === '--base') {
+      const value = argv[++i];
+      if (value === undefined) {
+        process.stderr.write('usage: --base requires a directory argument\n');
+        return 2;
+      }
+      baseRoot = value;
+      continue;
+    }
     files.push(argv[i]);
   }
 
