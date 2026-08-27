@@ -4951,10 +4951,18 @@ export function finalizePhaseSuccess(
   // (the live fake-green: `approach_exhaustion` recorded as success, 2026-07-17-a1597bbe).
   // Citadel carries no microverse disposition and never enters this branch. Template-A
   // continue only (no halt/abort — that routing is T5's scope).
+  //
+  // AP-EXT-ITER5-01: the test is `!== 'success'`, NOT `=== 'non-convergent'`. `reportAs` has FOUR
+  // not-success values (`non-convergent`, `non-success`, `failure`, `non-fatal-halt`) and naming
+  // only one of them is the enumerated-set liability: `fatal`, `stalled`, `cancelled` and every
+  // unrecognized string classify `non-success`, so a CRASHED phase fell through to `completed++`
+  // and the run reported success. `converged` is the sole disposition whose own exitCode is 0, so
+  // "not success" and "did not exit clean" are the same set — one comparison against the single
+  // success value needs no list, and a future reason can only be caught by it, never missed.
   if (rawPhase === 'anatomy-park' || rawPhase === 'szechuan-sauce') {
     let exitReason: unknown = null;
     try { exitReason = sm.read(runtime.statePath).exit_reason; } catch { /* best-effort — unreadable state defers to the success path below */ }
-    if (typeof exitReason === 'string' && classifyMicroverseDisposition(exitReason).reportAs === 'non-convergent') {
+    if (typeof exitReason === 'string' && classifyMicroverseDisposition(exitReason).reportAs !== 'success') {
       counters.nonConvergent++;
       counters.phaseDispositions[rawPhase] = exitReason;
       // Errors are non-blocking: a failed status write still reports the phase and continues.

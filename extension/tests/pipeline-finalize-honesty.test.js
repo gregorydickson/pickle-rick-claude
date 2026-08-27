@@ -203,6 +203,69 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     fs.rmSync(dir, { recursive: true });
   });
 
+  /**
+   * AP-EXT-ITER5-01. The gate keyed on `reportAs === 'non-convergent'` — ONE of the four
+   * not-success dispositions. `classifyMicroverseDisposition` returns `non-success` for
+   * `fatal`/`stalled`/`cancelled` and for every unrecognized string, and `failure` for
+   * `error`/`judge_unreachable`/... — so a phase that CRASHED fell straight through to
+   * `counters.completed++` and the run reported success, the exact fake-green this gate's own
+   * comment says it exists to stop.
+   *
+   * Drive the REAL exported `finalizePhaseSuccess` per reason, and assert the three observables
+   * the verdict rides on together (`completed` stayed 0, `nonConvergent` rose, the disposition
+   * was named). Asserting `nonConvergent` alone would pass on a gate that ALSO counted the
+   * phase completed, which still yields `pipelineFailed === false`.
+   */
+  const NOT_SUCCESS_REASONS = [
+    ['fatal', 'non-success'],                 // the microverse crash disposition
+    ['stalled', 'non-success'],
+    ['cancelled', 'non-success'],
+    ['error', 'failure'],
+    ['judge_timeout', 'non-fatal-halt'],
+    ['some_reason_added_next_year', 'non-success'], // unrecognized → still not success
+  ];
+
+  for (const [reason, reportAs] of NOT_SUCCESS_REASONS) {
+    test(`AP-EXT-ITER5-01: exit_reason '${reason}' (reportAs=${reportAs}) is NOT counted completed`, () => {
+      const dir = tmpDir();
+      const { runtime, statePath, cancelMarker } = makeRuntime(dir);
+      writeState(statePath, reason);
+      const logs = [];
+      runtime.log = (m) => logs.push(m);
+      const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+
+      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 1, runtime.log);
+
+      assert.equal(outcome.action, 'continue', 'the phase loop still advances — this withholds a verdict, it does not halt');
+      assert.equal(counters.completed, 0, `a phase that exited '${reason}' must not be counted completed`);
+      assert.equal(counters.nonConvergent, 1, 'the withheld-success term must be raised');
+      assert.equal(counters.phaseDispositions['anatomy-park'], reason, 'the disposition names the reason');
+      assert.ok(!logs.some((l) => l.includes('completed successfully')), 'no false success log');
+      assert.equal(readStatus(dir).phase_dispositions['anatomy-park'], reason);
+      fs.rmSync(dir, { recursive: true });
+    });
+  }
+
+  test('AP-EXT-ITER5-01 control: converged is the ONE success disposition and still counts completed', () => {
+    // Guards the widening from over-triggering: `converged` is the only reportAs==='success'
+    // value and the only one whose own exitCode is 0, so a green phase must be untouched.
+    const dir = tmpDir();
+    const { runtime, statePath, cancelMarker } = makeRuntime(dir);
+    writeState(statePath, 'converged');
+    const logs = [];
+    runtime.log = (m) => logs.push(m);
+    const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0, runtime.log);
+
+    assert.equal(outcome.action, 'continue');
+    assert.equal(counters.completed, 1, 'a genuinely converged phase still counts completed');
+    assert.equal(counters.nonConvergent, 0, 'the widening must not fire on success');
+    assert.equal(counters.phaseDispositions['anatomy-park'], undefined);
+    assert.ok(logs.some((l) => l.includes('completed successfully')));
+    fs.rmSync(dir, { recursive: true });
+  });
+
   test('AC-NS-5 backward parse: a status file written without phase_dispositions parses cleanly', () => {
     const dir = tmpDir();
     // Simulate an older / all-converged run: no phase_dispositions supplied.
