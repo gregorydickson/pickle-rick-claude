@@ -454,46 +454,6 @@ const MAX_SHELL_COMMAND_STRING_DEPTH = 3;
 const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
 
 /**
- * THE shell segmenter for the hooks subsystem. Splits a command into segments
- * at every operator where bash starts a new command — the control operators
- * `&&`, `||`, `|`, `&`, `;`, an unquoted newline (a top-level command
- * terminator, semantically identical to `;`), and the grouping /
- * command-substitution delimiters `(`, `)`, `{`, `}`, and a backtick (see
- * `SHELL_SEGMENT_SEPARATORS`), so a command nested in a subshell, brace group,
- * or substitution is a segment of its own rather than part of its parent's.
- * Quote-aware: a separator inside single or double quotes (a commit message
- * `-m 'fix && reset bug'`, or a multi-line `-m "line1\nline2"`) is preserved and
- * never a split point. Whitespace around an operator is NOT required — bash
- * runs `git status&&git reset --hard` exactly as its spaced twin (shim-verified)
- * — so a glued operator is split back out via `GLUED_SEPARATOR_RE`.
- *
- * Every leading-command detector in the subsystem consumes it, because each one
- * inspects only the FIRST executable token of the string it receives. Without
- * segmentation, `cd sub && git reset --hard` and `git status\ngit reset --hard`
- * slip the worker-forbidden-op guards, and `git add -A && git commit` reads its
- * subcommand as `add` and skips the R-WACT tsc gate — yet the project CLAUDE.md
- * mandates the `cd <subdir> && git <verb>` pattern AND a worker naturally emits
- * sequential commands one per line, making both forms the common case.
- * Over-segmentation is fail-safe: detectors match only prohibited verbs /
- * `install.sh` / the `commit` subcommand, so benign chained commands still pass.
- *
- * Finally, every command string bash will re-parse as CODE is itself expanded
- * into segments (`expandShellCommandStrings`): a `bash -c '<cmd>'` / `sh -lc
- * "<cmd>"` payload, the arguments of the `eval` builtin (`eval "<cmd>"`), and
- * the operand of a here-string (`bash <<< '<cmd>'`, AP-EXT-ITER70-02).
- * The quote-preserving tokenizer keeps `<cmd>` as ONE token, so without the
- * unwrap the only executable a detector ever sees is the `-c` FLAG — or, for
- * `eval`, the builtin's own name (AP-EXT-ITER70-01), or, for a here-string, the
- * shell that will read it.
- *
- * ONE home for the split so the handlers cannot re-fork: config-protection and
- * tsc-gate each carried a private near-identical copy and DID drift —
- * config-protection gained the `-c` unwrap (AP-EXT-ITER10-01) while tsc-gate's
- * copy did not, so `bash -c "git commit -m x"` was classified non-commit and the
- * R-WACT tsc gate was skipped for it (AP-EXT-ITER12-01). Same failure shape, and
- * same fix, as the `execName` fold above.
- */
-/**
  * Split ONE bash word into boundary tokens, keeping its parts glued.
  *
  * A quoted part is appended verbatim (quotes included, for the tokenizer that
@@ -537,6 +497,46 @@ function pushWordBoundaryTokens(word: string, tokens: string[]): void {
   flush();
 }
 
+/**
+ * THE shell segmenter for the hooks subsystem. Splits a command into segments
+ * at every operator where bash starts a new command — the control operators
+ * `&&`, `||`, `|`, `&`, `;`, an unquoted newline (a top-level command
+ * terminator, semantically identical to `;`), and the grouping /
+ * command-substitution delimiters `(`, `)`, `{`, `}`, and a backtick (see
+ * `SHELL_SEGMENT_SEPARATORS`), so a command nested in a subshell, brace group,
+ * or substitution is a segment of its own rather than part of its parent's.
+ * Quote-aware: a separator inside single or double quotes (a commit message
+ * `-m 'fix && reset bug'`, or a multi-line `-m "line1\nline2"`) is preserved and
+ * never a split point. Whitespace around an operator is NOT required — bash
+ * runs `git status&&git reset --hard` exactly as its spaced twin (shim-verified)
+ * — so a glued operator is split back out via `GLUED_SEPARATOR_RE`.
+ *
+ * Every leading-command detector in the subsystem consumes it, because each one
+ * inspects only the FIRST executable token of the string it receives. Without
+ * segmentation, `cd sub && git reset --hard` and `git status\ngit reset --hard`
+ * slip the worker-forbidden-op guards, and `git add -A && git commit` reads its
+ * subcommand as `add` and skips the R-WACT tsc gate — yet the project CLAUDE.md
+ * mandates the `cd <subdir> && git <verb>` pattern AND a worker naturally emits
+ * sequential commands one per line, making both forms the common case.
+ * Over-segmentation is fail-safe: detectors match only prohibited verbs /
+ * `install.sh` / the `commit` subcommand, so benign chained commands still pass.
+ *
+ * Finally, every command string bash will re-parse as CODE is itself expanded
+ * into segments (`expandShellCommandStrings`): a `bash -c '<cmd>'` / `sh -lc
+ * "<cmd>"` payload, the arguments of the `eval` builtin (`eval "<cmd>"`), and
+ * the operand of a here-string (`bash <<< '<cmd>'`, AP-EXT-ITER70-02).
+ * The quote-preserving tokenizer keeps `<cmd>` as ONE token, so without the
+ * unwrap the only executable a detector ever sees is the `-c` FLAG — or, for
+ * `eval`, the builtin's own name (AP-EXT-ITER70-01), or, for a here-string, the
+ * shell that will read it.
+ *
+ * ONE home for the split so the handlers cannot re-fork: config-protection and
+ * tsc-gate each carried a private near-identical copy and DID drift —
+ * config-protection gained the `-c` unwrap (AP-EXT-ITER10-01) while tsc-gate's
+ * copy did not, so `bash -c "git commit -m x"` was classified non-commit and the
+ * R-WACT tsc gate was skipped for it (AP-EXT-ITER12-01). Same failure shape, and
+ * same fix, as the `execName` fold above.
+ */
 export function splitShellSegments(command: string, depth = 0): string[] {
   // `\n` is matched as its own alternative BEFORE the word pattern so an
   // unquoted newline becomes a boundary token; the quoted spans match newlines
