@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
 import path from 'node:path';
+import { killProcessGroup } from '../services/orphan-reaper.js';
 
 // Cap any requested --test-concurrency to the available cores. node:test does NOT
 // auto-cap an explicit --test-concurrency, so a hardcoded `=8` oversubscribes a
@@ -337,11 +338,54 @@ function main(): never {
 
   const nodeArgs = ['--test', ...clampTestConcurrency(runnerArgs), ...selectedFiles];
   const disposableTmpRoot = createDisposableTmpRoot();
-  const result = spawnSync(process.execPath, nodeArgs, {
+  // `--test` is a package-manager-shaped ROOT too: each selected file runs in its OWN
+  // per-file child process, and that per-file process can itself spawn further descendants
+  // (the exact `npm -> node --test` grandchild shape `services/convergence-gate.ts`'s
+  // `runCheckSubtree` already reaps). `spawnSync`'s own `timeout` option signals ONLY this
+  // direct child pid, not the group, so a wedged per-file process (or anything it spawned)
+  // survives as a PID-1 orphan the moment `--test`'s own signal handling fails to cascade.
+  // `detached` makes this child LEAD its own process group so there is a group to reap, and
+  // the post-timeout kill below reuses the SAME shared negative-PID primitive
+  // `runCheckSubtree` delegates to — one discipline, no platform branch beyond the win32
+  // check `detached` itself already requires.
+  // `SpawnSyncOptions` omits `detached` in @types/node (it is declared only on the async
+  // `SpawnOptions`), but spawnSync's underlying libuv spawn honors it identically — a detached
+  // sync child leads its own process group (verified: child pid === child pgid, distinct from
+  // this process's own pgid). The intersection type is a documentation of that runtime/type gap,
+  // not a workaround.
+  //
+  // ACCEPTED COST, verified not argued: `detached` also takes the child OUT of this process's
+  // OWN process group, so a signal delivered to THIS process's group (a terminal Ctrl-C, or any
+  // `kill -TERM -$pgid`) no longer reaches the child — pre-fix, sharing the group meant that
+  // signal killed both together. A `process.on('SIGTERM', ...)` handler cannot close this gap:
+  // this call is synchronous, so the handler cannot run — and would not even suppress the
+  // default terminate action usefully — until `spawnSync` itself returns (verified: with a
+  // handler registered, a SIGTERM to the parent's group left the parent blocked-and-alive,
+  // ignoring the interrupt, for the full duration until the child exited on its own — worse
+  // than today's clean immediate kill). Closing this gap for real needs the async-`spawn` +
+  // signal-forwarding shape `pipeline-runner.ts`/`jar-runner.ts` use, which is a larger
+  // architectural change than this fix's scope (ETIMEDOUT-only orphan reap, matching
+  // `runCheckSubtree`'s existing discipline). Net effect versus pre-fix: the (previously
+  // unhandled) ETIMEDOUT leak is closed unconditionally; a signal-based kill of this process
+  // (interactive Ctrl-C, external SIGTERM) now leaves the child group behind where it
+  // previously died with the parent — same trade root CLAUDE.md's AP-EXT-ITER54-01 entry
+  // already accepted for `runCheckSubtree`.
+  const spawnOpts: SpawnSyncOptions & { detached?: boolean } = {
     stdio: 'inherit',
     timeout: getRunnerTimeoutMs(),
+    detached: process.platform !== 'win32',
     env: disposableTmpRoot ? { ...process.env, TMPDIR: disposableTmpRoot } : process.env,
-  });
+  };
+  const result = spawnSync(process.execPath, nodeArgs, spawnOpts);
+
+  const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
+  if (timedOut && typeof result.pid === 'number' && !killProcessGroup(result.pid, 'SIGKILL')) {
+    try {
+      process.kill(result.pid, 'SIGKILL');
+    } catch {
+      // Best-effort: the child may have already exited.
+    }
+  }
 
   // Cleanup runs BEFORE process.exit(): a synchronous process.exit() does not run pending
   // `finally` blocks, so cleanup must happen on the normal control-flow path, not deferred to one.

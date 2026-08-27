@@ -59,6 +59,23 @@ function stdoutLines(result) {
   return result.stdout.trim().split(/\r?\n/).filter(Boolean);
 }
 
+/**
+ * Returns true if the given PID is alive (process exists in the OS).
+ * Uses process.kill(pid, 0) — throws ESRCH if the process is gone.
+ */
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false; // ESRCH = no such process
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
 test('discovery walks all tagged test tiers', () => {
   const root = makeFixtureRoot();
   try {
@@ -339,14 +356,29 @@ test('runner still removes the disposable TMPDIR root when the spawned child fai
   }
 });
 
-test('runner times out wedged child test process instead of hanging indefinitely', () => {
+test('runner times out wedged child test process instead of hanging indefinitely', async () => {
   const root = makeFixtureRoot();
+  const grandchildMarkerPath = path.join(root, 'grandchild.pid');
   try {
+    // AP-EXT-ITER54-01 (test-runner.ts sibling): `--test` isolates this file in its OWN
+    // per-file child process — one level below the harness `spawnSync`'s timeout directly
+    // signals — and that per-file process here spawns a FURTHER descendant of its own
+    // (deliberately NOT detached, so it shares the harness's process group). This models
+    // the general `npm -> node --test` grandchild shape: a wedged leaf whose parent's own
+    // signal handling cannot be trusted to cascade the kill down to it. If the runner's
+    // teardown only ever signals the direct child pid, this grandchild reparents to init
+    // and survives — proven locally by running this fixture against the pre-fix runner
+    // (recorded pid stays alive past the poll deadline below).
     writeFixtureTest(
       root,
       'tests/hangs.test.js',
       'fast',
       [
+        "import { spawn } from 'node:child_process';",
+        "import { writeFileSync } from 'node:fs';",
+        `const grandchild = spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 600000)'], { stdio: 'ignore' });`,
+        'grandchild.unref();',
+        `writeFileSync(${JSON.stringify(grandchildMarkerPath)}, String(grandchild.pid));`,
         "test('blocks event loop past timeout', () => {",
         '  const shared = new SharedArrayBuffer(4);',
         '  const view = new Int32Array(shared);',
@@ -379,7 +411,29 @@ test('runner times out wedged child test process instead of hanging indefinitely
     // Ceiling = RUNNER_TIMEOUT_MS + generous spawn/teardown slack, still far
     // below the 60s fixture sleep so a real indefinite hang is still caught.
     assert.ok(Date.now() - startedAt < RUNNER_TIMEOUT_MS + 25_000, 'timeout should fail fast');
+
+    assert.ok(existsSync(grandchildMarkerPath), 'wedged fixture never recorded its grandchild pid');
+    const grandchildPid = Number(readFileSync(grandchildMarkerPath, 'utf8').trim());
+    assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0, `invalid recorded pid: ${grandchildPid}`);
+
+    // The group kill (or the OS reclaiming the group) is asynchronous; poll rather than
+    // sample once.
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && isPidAlive(grandchildPid)) {
+      await sleep(100);
+    }
+    assert.equal(
+      isPidAlive(grandchildPid),
+      false,
+      `wedged fixture's grandchild ${grandchildPid} survived the runner timeout as an orphan`,
+    );
   } finally {
+    try {
+      const gc = existsSync(grandchildMarkerPath) ? Number(readFileSync(grandchildMarkerPath, 'utf8').trim()) : 0;
+      if (gc > 0 && isPidAlive(gc)) process.kill(gc, 'SIGKILL');
+    } catch {
+      // Best-effort: nothing left to reap.
+    }
     cleanupFixtureRoot(root);
   }
 });
