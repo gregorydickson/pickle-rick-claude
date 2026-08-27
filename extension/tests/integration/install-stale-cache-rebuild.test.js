@@ -48,6 +48,39 @@ const PARITY_FILES = [
     'bin/spawn-gate-remediator.js',
 ];
 
+// AC-B5 — the deploy script must introduce no NEW drift in tracked compiled JS.
+//
+// Scoped to `.js` under extension/ deliberately: install.sh:342 runs `npm install`, which can
+// legitimately rewrite tracked extension/package-lock.json. An unscoped check would go red for that
+// and invite the catalogued work-destroying `git restore` response the PRD warns about.
+//
+// The pathspec is the plain `extension` directory plus a `.js` filter applied here, NOT
+// `extension/**/*.js`: git pathspec `**` matching is fnmatch-dependent, and a pathspec that silently
+// matched nothing would make this assertion vacuously green — the fix-looks-applied-and-is-not mode.
+function scopedDirtyJsPaths() {
+    const result = spawnSync('git', ['-C', REPO_ROOT, 'status', '--porcelain', '--', 'extension'], {
+        encoding: 'utf8',
+        timeout: 30_000,
+    });
+    // Fail closed: a probe that did not run must never read as "clean".
+    assert.equal(
+        result.status,
+        0,
+        `git status probe failed (exit ${result.status}): ${result.stderr || result.error}`,
+    );
+    const paths = new Set();
+    for (const line of result.stdout.split('\n')) {
+        if (!line.trim()) continue;
+        // porcelain v1 is `XY <path>`, or `XY <old> -> <new>` for a rename.
+        const entry = line.slice(3);
+        const rename = entry.indexOf(' -> ');
+        const raw = rename === -1 ? entry : entry.slice(rename + 4);
+        const clean = raw.trim().replace(/^"|"$/g, '');
+        if (clean.endsWith('.js')) paths.add(clean);
+    }
+    return paths;
+}
+
 function plantStaleArtifacts() {
     const originalTypesIndex = fs.readFileSync(TYPES_INDEX_JS, 'utf8');
     const staleTypesIndex = originalTypesIndex.replace(
@@ -93,6 +126,9 @@ test('install-stale-cache-rebuild: stale .tsbuildinfo + stale compiled JS still 
     let tmpHome = '';
     try {
         tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-stale-cache-'));
+        // AC-B5 baseline, captured AFTER planting so the deliberate stale fixture is already in the
+        // set — the window then isolates the deploy script's own effect on tracked compiled JS.
+        const dirtyBefore = scopedDirtyJsPaths();
         const { result, prefix } = runInstall(INSTALL_SH, tmpHome);
 
         // Precondition: the active-session guard (install.sh:293-306) must not have refused. Its
@@ -104,6 +140,26 @@ test('install-stale-cache-rebuild: stale .tsbuildinfo + stale compiled JS still 
         );
         assert.equal(result.status, 0, `install.sh failed (exit ${result.status}):\n${result.stderr}`);
         assert.match(result.stderr, /Mode: git/, 'expected git-mode install (compile block only runs in git mode)');
+
+        // AC-B5: no tracked compiled .js may be dirtied that was not already dirty going in.
+        // Raw before/after equality is NOT the assertion — this test plants a stale types/index.js on
+        // purpose and the deploy script recompiles it back to HEAD, so the set legitimately SHRINKS.
+        // A subset check is the faithful reading and stays compatible with AC-B2.
+        //
+        // The pre-fix script fails this: its force-clean loop `rm -f`s every compiled .js with a .ts
+        // twin, and tsc then re-creates them at the default umask — dropping the tracked 755 bit on
+        // extension/bin/reap-orphans.js (the only tracked compiled .js that is BOTH mode-755 and has a
+        // .ts twin). A mode-only change is invisible to the byte-parity loop below, and reap-orphans.js
+        // is not in the 8-file _parity_files domain either, so this is the only assertion that sees it.
+        const dirtyAfter = scopedDirtyJsPaths();
+        const newlyDirty = [...dirtyAfter].filter((p) => !dirtyBefore.has(p)).sort();
+        assert.deepEqual(
+            newlyDirty,
+            [],
+            `AC-B5: install.sh introduced new drift in tracked extension/**/*.js: ${newlyDirty.join(', ')} `
+            + '(a mode-only change counts — the pre-fix force-clean loop drops the tracked 755 bit). '
+            + 'Do NOT `git restore` to clear this: repair the cause, or chmod the mode back.',
+        );
 
         const deployedExtensionRoot = path.join(prefix, 'extension');
 
