@@ -376,7 +376,7 @@ test('runner times out wedged child test process instead of hanging indefinitely
       [
         "import { spawn } from 'node:child_process';",
         "import { writeFileSync } from 'node:fs';",
-        `const grandchild = spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 600000)'], { stdio: 'ignore' });`,
+        `const grandchild = spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 600000)'], { stdio: 'ignore', timeout: 30_000 });`,
         'grandchild.unref();',
         `writeFileSync(${JSON.stringify(grandchildMarkerPath)}, String(grandchild.pid));`,
         "test('blocks event loop past timeout', () => {",
