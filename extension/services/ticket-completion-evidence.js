@@ -45,6 +45,16 @@ function resolveTicketPath(ctx) {
  * 3-way git cat-file probe (R-AFCC-DEEP-3C pattern).
  * Returns 'exists' (exit 0), 'not-exists' (exit 1), or 'git-could-not-run'
  * (exit 128, ENOENT, ETIMEDOUT, SIGTERM — git produced no definitive answer).
+ *
+ * AP-EXT-ITER76-02: for THIS call shape the 'not-exists' arm is unreachable, and
+ * the difference is load-bearing. `git cat-file -e <sha>` exits 1 on a missing
+ * object, but the `^{commit}` peel makes it a rev-parse failure — `fatal: Not a
+ * valid object name`, exit 128 (probed, git 2.39.5). So "this repo simply does
+ * not have that commit" reports 'git-could-not-run', which is what makes
+ * `probeExplicitSha`'s `fallbackDir` rung fire on the ORDINARY case rather than
+ * only on a broken checkout. Do not read the 3-state prose as evidence that the
+ * fallback rung is rare; any rule that must hold for an accept has to hold on
+ * the fallback dir too (see `gitDirLadder`).
  */
 function probeCatFile(workingDir, sha) {
     try {
@@ -127,6 +137,35 @@ function probeExplicitSha(sha, workingDir, fallbackDir) {
     if (probeCatFile(fallbackDir, sha) === 'exists')
         return { kind: 'committed', sha, usedFallback: true };
     return null;
+}
+/**
+ * AP-EXT-ITER76-01: THE dir ladder. `workingDir` first, then the R-CCR-1
+ * `fallbackDir` — ONE definition of "which repo answers for this sha", shared by
+ * the accept probe (`probeExplicitSha`) and the R-OMA rejection read
+ * (`isForeignAttributedExplicitSha`), so a dir that decides an accept is always a
+ * dir the rejection rules were asked in.
+ */
+function gitDirLadder(ctx) {
+    return ctx.fallbackDir && ctx.fallbackDir !== ctx.workingDir
+        ? [ctx.workingDir, ctx.fallbackDir]
+        : [ctx.workingDir];
+}
+/**
+ * Reads a commit's full message from the FIRST dir on the ladder that can resolve
+ * `sha`, lowercased. `''` when no dir on the ladder can answer — which the caller
+ * treats as accept, preserving R-RIC-EXPLICIT's "absence of a matching message is
+ * never grounds for rejection".
+ */
+function showCommitMessage(sha, dirs) {
+    for (const dir of dirs) {
+        try {
+            const message = execFileSync('git', ['-C', dir, 'show', '-s', '--format=%B', sha], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim().toLowerCase();
+            if (message)
+                return message;
+        }
+        catch { /* this dir cannot answer for the sha — try the next rung */ }
+    }
+    return '';
 }
 /**
  * WS-2 consumer: parses `git log --format=%H%n%ct%n%(trailers:key=Pickle-Ticket,valueonly)%n---pickle-trailer-boundary---`
@@ -261,13 +300,7 @@ function isForeignAttributedExplicitSha(sha, ctx, content) {
     const siblingIds = enumerateSiblingTicketIds(ctx.sessionDir, selfId);
     if (siblingIds.length === 0)
         return false;
-    let message;
-    try {
-        message = execFileSync('git', ['-C', ctx.workingDir, 'show', '-s', '--format=%B', sha], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim().toLowerCase();
-    }
-    catch {
-        message = '';
-    }
+    const message = showCommitMessage(sha, gitDirLadder(ctx));
     if (!message)
         return false;
     const wordBoundary = (token) => new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
@@ -295,6 +328,11 @@ function isForeignAttributedExplicitSha(sha, ctx, content) {
  * Reachability can substitute for neither rule: a baseline SHA is git-reachable
  * BY CONSTRUCTION, and a foreign-attributed SHA is a real commit — just someone
  * else's. Both owns their own operator warn, so no caller can drop it.
+ *
+ * AP-EXT-ITER76-01: the gate is uniform on the DIR axis too, not just the arm
+ * axis. `isForeignAttributedExplicitSha` reads the commit message over the same
+ * `gitDirLadder` the accept probe resolves on, so an accept decided by the
+ * R-CCR-1 `fallbackDir` cannot be one R-OMA was never asked about.
  *
  * Callers own only the `absentReason` their arm reports: the stamped-field arms
  * (explicit, inferred) surface the hard reason, while the scan arm downgrades to

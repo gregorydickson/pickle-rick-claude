@@ -936,3 +936,164 @@ test('AP-EXT-ITER5-01 control: a truncated/garbage baseline never becomes a pref
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER76-01 — the rejection gate is uniform on the DIR axis, not just
+// the arm axis.
+//
+// AP-EXT-ITER16-01/-02 unified `rejectsAccept` across readEvidence's three
+// ACCEPT ARMS. The same divergence survived one axis over: the explicit arm's
+// accept probe walks a TWO-dir ladder (`probeExplicitSha`: workingDir, then the
+// R-CCR-1 `fallbackDir`), while the R-OMA read asked ONE dir. The two conditions
+// are the same condition — `probeExplicitSha` consults `fallbackDir` only when
+// the primary probe returns 'git-could-not-run', and `git show` in that same dir
+// fails for the same reason — so `usedFallback: true` IMPLIED R-OMA never ran.
+// Reachable on the ordinary path, not just a broken checkout: `git cat-file -e
+// <sha>^{commit}` exits 128 (not 1) for an object the repo does not have, so a
+// per-ticket `working_dir` that simply lacks the stamped commit takes the
+// fallback rung. The fix collapses both readers onto one `gitDirLadder`.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER76-01: a foreign sha accepted via the R-CCR-1 fallbackDir is still rejected (non-repo workingDir)', () => {
+  const root = mkTmp('pickle-iter76-fallback-foreign-');
+  try {
+    initGitRepo(root);
+    const siblingSha = commitFile(root, 'sib.txt', 'feat(fgsib076): sibling ticket work');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'fgsib076', {});
+    writeTicket(sessionDir, 'fbdr0076', { completionCommit: siblingSha });
+
+    // The per-ticket working_dir is not a git repo at all: `git cat-file -e` and
+    // `git show` both exit 128 there, so the accept is decided entirely by
+    // fallbackDir. R-OMA must be asked in the dir that decided the accept.
+    // OUTSIDE `root`: a dir nested inside the fixture repo would resolve through
+    // the parent `.git` and never exercise the fallback rung at all.
+    const notRepo = mkTmp('pickle-iter76-notrepo-');
+
+    const ev = readEvidence({
+      sessionDir, ticketId: 'fbdr0076', workingDir: notRepo, fallbackDir: root,
+    });
+    assert.equal(ev.kind, 'absent', 'the fallback dir must not launder a foreign-attributed sha into an accept');
+    assert.equal(ev.absentReason, 'foreign_attribution', 'explicit is a STAMPED field — it reports the hard reason');
+    assert.equal(ev.sha, undefined);
+    fs.rmSync(notRepo, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER76-01: same rejection when workingDir is a VALID repo that lacks the sha', () => {
+  const root = mkTmp('pickle-iter76-fallback-otherrepo-');
+  try {
+    initGitRepo(root);
+    const siblingSha = commitFile(root, 'sib.txt', 'feat(fgsib077): sibling ticket work');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'fgsib077', {});
+    writeTicket(sessionDir, 'fbdr0077', { completionCommit: siblingSha });
+
+    // A real repo with unrelated history. `git cat-file -e <sha>^{commit}` exits
+    // 128 ("Not a valid object name") for an absent object, which probeCatFile
+    // reads as 'git-could-not-run' — so this ORDINARY case takes the fallback rung.
+    const otherRepo = mkTmp('pickle-iter76-otherrepo-');
+    initGitRepo(otherRepo);
+
+    const ev = readEvidence({
+      sessionDir, ticketId: 'fbdr0077', workingDir: otherRepo, fallbackDir: root,
+    });
+    assert.equal(ev.kind, 'absent', 'a per-ticket repo that lacks the sha must not disable R-OMA');
+    assert.equal(ev.absentReason, 'foreign_attribution');
+    fs.rmSync(otherRepo, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER76-01: the dir ladder yields ONE verdict — fallback accept agrees with the direct accept', () => {
+  const root = mkTmp('pickle-iter76-dir-agreement-');
+  try {
+    initGitRepo(root);
+    const siblingSha = commitFile(root, 'sib.txt', 'feat(fgsib078): sibling ticket work');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'fgsib078', {});
+    writeTicket(sessionDir, 'fbdr0078', { completionCommit: siblingSha });
+
+    // OUTSIDE `root`: a dir nested inside the fixture repo would resolve through
+    // the parent `.git` and never exercise the fallback rung at all.
+    const notRepo = mkTmp('pickle-iter76-notrepo-');
+
+    const direct = readEvidence({ sessionDir, ticketId: 'fbdr0078', workingDir: root });
+    const viaFallback = readEvidence({
+      sessionDir, ticketId: 'fbdr0078', workingDir: notRepo, fallbackDir: root,
+    });
+
+    // The arm-agreement assertion of AP-EXT-ITER16-02, restated on the dir axis:
+    // one sha, one verdict, whichever DIR resolved it.
+    assert.deepEqual(
+      { kind: viaFallback.kind, absentReason: viaFallback.absentReason },
+      { kind: direct.kind, absentReason: direct.absentReason },
+      'the fallback dir must reach the same verdict as the primary dir for the same sha',
+    );
+    fs.rmSync(notRepo, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER76-01 control: an OWN-attributed sha still accepts through the fallbackDir (usedFallback intact)', () => {
+  const root = mkTmp('pickle-iter76-ctl-own-');
+  try {
+    initGitRepo(root);
+    const ownSha = commitFile(root, 'own.txt', 'fix(ownt0076): the work this ticket actually did');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'fgsib079', {});
+    writeTicket(sessionDir, 'ownt0076', { completionCommit: ownSha });
+
+    // OUTSIDE `root`: a dir nested inside the fixture repo would resolve through
+    // the parent `.git` and never exercise the fallback rung at all.
+    const notRepo = mkTmp('pickle-iter76-notrepo-');
+
+    const ev = readEvidence({
+      sessionDir, ticketId: 'ownt0076', workingDir: notRepo, fallbackDir: root,
+    });
+    assert.equal(ev.kind, 'committed', 'R-CCR-1 fallback recovery must keep working for legitimate evidence');
+    assert.equal(ev.sha, ownSha);
+    assert.equal(ev.usedFallback, true);
+    assert.equal(ev.via, 'explicit');
+    fs.rmSync(notRepo, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER76-01 control: a GENERIC commit message still accepts through the fallbackDir', () => {
+  const root = mkTmp('pickle-iter76-ctl-generic-');
+  try {
+    initGitRepo(root);
+    const genericSha = commitFile(root, 'chore.txt', 'chore: bump deps');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'fgsib080', {});
+    writeTicket(sessionDir, 'genr0076', { completionCommit: genericSha });
+
+    // OUTSIDE `root`: a dir nested inside the fixture repo would resolve through
+    // the parent `.git` and never exercise the fallback rung at all.
+    const notRepo = mkTmp('pickle-iter76-notrepo-');
+
+    // R-RIC-EXPLICIT: absence of a matching message is NEVER grounds for
+    // rejection. Widening the dir ladder must not turn accept-by-default into
+    // reject-by-default.
+    const ev = readEvidence({
+      sessionDir, ticketId: 'genr0076', workingDir: notRepo, fallbackDir: root,
+    });
+    assert.equal(ev.kind, 'committed', 'a generic message is not a positive foreign attribution');
+    assert.equal(ev.sha, genericSha);
+    assert.equal(ev.usedFallback, true);
+    fs.rmSync(notRepo, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
