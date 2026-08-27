@@ -17,7 +17,7 @@ import { reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
 import { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream, CODEX_DELIMITER_RE } from '../services/classifier-utils.js';
 import { emitCrossTicketRegressionLinearComment } from '../lib/linear-comment.js';
 import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
-import { runGit, getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, CODEGRAPH_PATHSPEC_EXCLUDES } from '../services/git-utils.js';
+import { runGit, getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence } from '../services/ticket-completion-evidence.js';
@@ -2823,22 +2823,6 @@ export function createWastedIterEmitter(buildInput) {
         emitted = true;
         emitMuxWastedIter(buildInput());
     };
-}
-function gitCommitEpoch(workingDir, sha) {
-    if (!sha)
-        return null;
-    try {
-        const raw = execFileSync('git', ['-C', workingDir, 'show', '-s', '--format=%ct', sha], {
-            timeout: 5000,
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-        }).trim();
-        const parsed = Number(raw);
-        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-    }
-    catch {
-        return null;
-    }
 }
 export function validateAutoTicketCompletion(sessionDir, ticketId, workingDir, startCommit) {
     const filePath = ticketFilePath(sessionDir, ticketId);

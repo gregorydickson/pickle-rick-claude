@@ -22,7 +22,7 @@ import {
   type ManagerRelaunchExitKind,
   type ManagerRelaunchDecision,
 } from '../services/manager-relaunch.js';
-import { runGit, getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
+import { runGit, getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible, type PlanPhase, type RecoveryDeps, type RecoveryEvidence, type RecoveryOutcome, type ReExecutionSeam } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds, type ArtifactProgressSnapshot } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence, type EvidenceCtx, type RevertDecision, type CompletionDecisionCtx, type CompletionDecisionKind } from '../services/ticket-completion-evidence.js';
@@ -3320,21 +3320,6 @@ export function createWastedIterEmitter(buildInput: () => MuxWastedIterInput): (
     emitted = true;
     emitMuxWastedIter(buildInput());
   };
-}
-
-function gitCommitEpoch(workingDir: string, sha: string | null): number | null {
-  if (!sha) return null;
-  try {
-    const raw = execFileSync('git', ['-C', workingDir, 'show', '-s', '--format=%ct', sha], {
-      timeout: 5000,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 export function validateAutoTicketCompletion(

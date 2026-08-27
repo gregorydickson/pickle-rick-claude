@@ -101,6 +101,39 @@ function applyStatusAndUpdatedFields(content, ticketId, nextStatus, today) {
     }
     return { content: nextContent, statusReplaced };
 }
+/**
+ * AP-EXT-ITER6-01: the ONE construction of the completion-attribution window
+ * origin — a COMMIT's own date, which cannot move once written.
+ *
+ * The attribution question `scanGitLogByTrailer` answers is historical ("is this
+ * commit inside my session?"), so its lower fence must be a fact about history.
+ * `state.start_time_epoch` is NOT one: it is the wall-clock origin the budget
+ * consumers measure `now - startEpoch` against, and three producers deliberately
+ * advance it FORWARD mid-session — `mux-runner.ts` adds the parked wall of every
+ * rate-limit park, `setup.ts:applyResumeConfig` resets it to the resume time
+ * (AC-LPB-05), and `pipeline-runner.ts` resets it on reconstruction. Each of
+ * those is correct for a budget origin and wrong for a history fence: every
+ * commit the session already made falls behind the fence and stops being its own.
+ *
+ * Returns null for an absent/unresolvable sha — the caller's signal to scan with
+ * no epoch fence at all rather than to invent one.
+ */
+export function gitCommitEpoch(workingDir, sha) {
+    if (!sha)
+        return null;
+    try {
+        const raw = execFileSync('git', ['-C', workingDir, 'show', '-s', '--format=%ct', sha], {
+            timeout: 5000,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim();
+        const parsed = Number(raw);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    }
+    catch {
+        return null;
+    }
+}
 function applyCompletionCommitField(content, patch) {
     if (patch.completion_commit === undefined)
         return content;

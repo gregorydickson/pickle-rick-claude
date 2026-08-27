@@ -10,6 +10,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { readFrontmatterField, ticketFilePath, upsertFrontmatterField } from '../services/pickle-utils.js';
+import { gitCommitEpoch } from '../services/git-utils.js';
 import { evaluateCompletionEvidence } from '../services/ticket-completion-evidence.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { writeActivityEntry } from '../services/state-manager.js';
@@ -39,15 +40,38 @@ interface SessionBaseline {
 
 const EMPTY_BASELINE: SessionBaseline = { startTimeEpoch: null, startCommit: null, pinnedSha: null };
 
-function parseStartEpoch(statePath: string | null | undefined): SessionBaseline {
+/**
+ * AP-EXT-ITER6-01: the attribution window's lower fence is the START COMMIT's
+ * date, never `state.start_time_epoch`.
+ *
+ * Both answer "when did this session begin?", but only one of them is a fact
+ * about history. `start_time_epoch` is the wall-clock origin the budget
+ * consumers measure `now - startEpoch` against, and it is advanced FORWARD
+ * mid-session on purpose (rate-limit park, `--resume`, reconstruction reset).
+ * Feeding that into `scanGitLogByTrailer`'s `--since` / `e.epoch < startEpoch`
+ * fence retroactively pushes the session's OWN commits behind its own start:
+ * measured on the shipped runtime, one identical correctly-trailered commit
+ * reads `filled` at an honest epoch and `no_evidence` after a 6h park.
+ *
+ * `start_commit` is read here already (for R-CXOR-2 baseline rejection) and its
+ * commit date cannot move, so this needs no new state and no new field. It is
+ * also the SAME construction the sibling attribution site already uses
+ * (`validateAutoTicketCompletion`), which is what collapses two spellings of the
+ * window origin into one. Absent/unresolvable → null, i.e. no epoch fence, which
+ * is what the other seven predicate call sites already pass.
+ */
+function parseStartEpoch(
+  statePath: string | null | undefined,
+  workingDir: string,
+): SessionBaseline {
   if (!statePath) return EMPTY_BASELINE;
   try {
     const raw = readRecoverableJsonObject(statePath) as
-      { start_time_epoch?: unknown; start_commit?: unknown; pinned_sha?: unknown } | null;
-    const parsed = Number(raw?.start_time_epoch);
+      { start_commit?: unknown; pinned_sha?: unknown } | null;
+    const startCommit = typeof raw?.start_commit === 'string' && raw.start_commit ? raw.start_commit : null;
     return {
-      startTimeEpoch: Number.isFinite(parsed) && parsed > 0 ? parsed : null,
-      startCommit: typeof raw?.start_commit === 'string' && raw.start_commit ? raw.start_commit : null,
+      startTimeEpoch: gitCommitEpoch(workingDir, startCommit),
+      startCommit,
       pinnedSha: typeof raw?.pinned_sha === 'string' && raw.pinned_sha ? raw.pinned_sha : null,
     };
   } catch {
@@ -66,7 +90,7 @@ function targetIds(sessionDir: string, ticketId?: string | null): string[] {
 }
 
 export function autoFillCompletionCommit(input: AutoFillCompletionCommitInput): AutoFillCompletionCommitResult[] {
-  const { startTimeEpoch, startCommit, pinnedSha } = parseStartEpoch(input.statePath);
+  const { startTimeEpoch, startCommit, pinnedSha } = parseStartEpoch(input.statePath, input.workingDir);
   const results: AutoFillCompletionCommitResult[] = [];
 
   for (const id of targetIds(input.sessionDir, input.ticketId)) {

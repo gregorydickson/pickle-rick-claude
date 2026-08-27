@@ -373,3 +373,108 @@ test('AP-EXT-ITER4-02: importing the module does not fire the CLI entry', () => 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER6-01: the completion-attribution window is fenced by the START COMMIT's
+// date, never by `state.start_time_epoch`.
+//
+// Both answer "when did this session begin?", but `start_time_epoch` is the wall-clock
+// origin the budget consumers measure `now - startEpoch` against, and THREE producers
+// advance it FORWARD mid-session on purpose: `mux-runner.ts` adds the parked wall of a
+// rate-limit park, `setup.ts:applyResumeConfig` resets it to the resume time (AC-LPB-05),
+// and `pipeline-runner.ts` resets it on reconstruction. Fed into
+// `scanGitLogByTrailer`'s `--since` / `e.epoch < startEpoch` fence, each one retroactively
+// pushes the session's OWN commits behind its own start.
+//
+// Drive the REAL git repo and the REAL predicate, and assert the ON-DISK STAMP: the only
+// difference between the two cases below is a number in state.json, and the pre-fix code
+// answered `no_evidence` quietly.
+function commitAt({ cwd, epoch, message, ticketId }) {
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_DATE: `${epoch} +0000`,
+    GIT_COMMITTER_DATE: `${epoch} +0000`,
+  };
+  const args = ['commit', '-m', message, '--no-gpg-sign'];
+  if (ticketId) args.push('--trailer', `Pickle-Ticket: ${ticketId}`);
+  execFileSync('git', args, { cwd, stdio: 'ignore', env, timeout: 30_000 });
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8', timeout: 30_000 }).trim();
+}
+
+test('AP-EXT-ITER6-01: a rate-limit park moves start_time_epoch past the session\'s own commit — attribution still lands', () => {
+  const root = makeTmpRoot();
+  try {
+    initGitRepo(root);
+    const sessionDir = path.join(root, 'session');
+    const ticketId = 'a17c0de1';
+    const ticketPath = writeTicket(sessionDir, ticketId);
+    const statePath = path.join(sessionDir, 'state.json');
+
+    const baseEpoch = 1_700_000_000;
+    fs.writeFileSync(path.join(root, 'base.txt'), 'base\n');
+    execFileSync('git', ['add', 'base.txt'], { cwd: root, timeout: 30_000 });
+    const startCommit = commitAt({ cwd: root, epoch: baseEpoch, message: 'session base' });
+
+    // The worker's real, correctly-trailered delivery, made DURING the session.
+    fs.writeFileSync(path.join(root, 'worker.txt'), 'worker changes\n');
+    execFileSync('git', ['add', 'worker.txt'], { cwd: root, timeout: 30_000 });
+    const workerSha = commitAt({ cwd: root, epoch: baseEpoch + 600, message: 'deliver the ticket', ticketId });
+
+    // ...then a 6h rate-limit park advances start_time_epoch past that commit
+    // (`max_park_minutes` default 360). Measured live: real sessions carry gaps of
+    // up to 43,312s between a ticket's own completion commit and start_time_epoch.
+    fs.writeFileSync(statePath, JSON.stringify({
+      start_commit: startCommit,
+      start_time_epoch: baseEpoch + 600 + 21_600,
+      activity: [],
+    }, null, 2));
+
+    const result = autoFillCompletionCommit({ sessionDir, workingDir: root, ticketId, statePath });
+
+    assert.deepEqual(result, [{ ticketId, sha: workerSha, action: 'filled' }]);
+    assert.match(
+      fs.readFileSync(ticketPath, 'utf8'),
+      new RegExp(`completion_commit:\\s*"?${workerSha}"?`),
+      'the durable completion_commit stamp must land despite the advanced epoch',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER6-01: the fence still holds — a commit older than start_commit is not attributed', () => {
+  // The negative control. Widening the window origin from wall-clock-start to the start
+  // commit's date must not admit PRE-session work: without this, "fixed" and "fence
+  // removed" are indistinguishable.
+  const root = makeTmpRoot();
+  try {
+    initGitRepo(root);
+    const sessionDir = path.join(root, 'session');
+    const ticketId = 'b22e1d02';
+    const ticketPath = writeTicket(sessionDir, ticketId);
+    const statePath = path.join(sessionDir, 'state.json');
+
+    const baseEpoch = 1_700_000_000;
+
+    // A trailered commit that predates the session baseline.
+    fs.writeFileSync(path.join(root, 'earlier.txt'), 'earlier\n');
+    execFileSync('git', ['add', 'earlier.txt'], { cwd: root, timeout: 30_000 });
+    commitAt({ cwd: root, epoch: baseEpoch - 1_000, message: 'pre-session work', ticketId });
+
+    fs.writeFileSync(path.join(root, 'base.txt'), 'base\n');
+    execFileSync('git', ['add', 'base.txt'], { cwd: root, timeout: 30_000 });
+    const startCommit = commitAt({ cwd: root, epoch: baseEpoch, message: 'session base' });
+
+    fs.writeFileSync(statePath, JSON.stringify({
+      start_commit: startCommit,
+      start_time_epoch: baseEpoch,
+      activity: [],
+    }, null, 2));
+
+    const result = autoFillCompletionCommit({ sessionDir, workingDir: root, ticketId, statePath });
+
+    assert.deepEqual(result, [{ ticketId, sha: null, action: 'no_evidence' }]);
+    assert.doesNotMatch(fs.readFileSync(ticketPath, 'utf8'), /completion_commit:/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
