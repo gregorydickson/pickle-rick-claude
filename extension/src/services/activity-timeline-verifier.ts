@@ -83,7 +83,15 @@ export function findOverlapViolations(activity: ActivityEvent[]): OverlapViolati
 
   for (const spawn of spawns) {
     const ticket = getEventTicketId(spawn.e) as string;
-    if (lastTicket !== null && ticket !== lastTicket) {
+    if (lastTicket !== null) {
+      // EVERY consecutive spawn pair is checked, INCLUDING two spawns of the same ticket.
+      // Nothing about serialization turns on ticket identity: the spawn lock admits one
+      // worker per SESSION, not one per ticket, and a relaunch over a still-live
+      // predecessor races two workers inside one ticket directory — worse than the
+      // cross-ticket shape, not exempt from it. Measured over the 14 real sessions on the
+      // authoring box, gating this branch on a differing ticket id hid 40 spawn pairs whose
+      // window holds no terminal at all, and reported `OVERLAP: none` over every one.
+      //
       // The window is bounded at BOTH ends. A relaunched ticket spawns more than once, and
       // only a terminal at or after ITS LAST spawn proves THAT run exited — a terminal from
       // an earlier run of the same ticket would otherwise vouch for every later run forever.

@@ -336,3 +336,70 @@ test('AP-EXT-ITER4-01: a spawned ticket with unparseable spawn timestamps is sti
   assert.equal(t.spawned, true);
   assert.equal(t.wallClockMs, null);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER82-01: the overlap check was gated on `ticket !== lastTicket`, so a
+// ticket re-spawned over its own still-live predecessor was never examined at all —
+// not even against the AP-EXT-ITER39-01 window one line below it.
+//
+// Serialization does not turn on ticket identity: `acquireWorkerSpawnLock` admits one
+// worker per SESSION. A same-ticket relaunch over a live predecessor races two workers
+// inside ONE ticket directory, which is the worse shape, not the exempt one.
+//
+// Measured before the fix over the 14 real sessions on the authoring box: 40 consecutive
+// same-ticket spawn pairs held no terminal event in their window and every one reported
+// `OVERLAP: none`. Asserts the operator-visible CLI verdict, not just the array length —
+// the pre-fix predicate returned a well-formed empty array, so a shape oracle greens over
+// the entire defect.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER82-01: a ticket re-spawned with no terminal for its prior run is an overlap', () => {
+  const activity = [
+    spawnEvt('2026-08-22T10:00:00.000Z', 'aaaa1111'),
+    spawnEvt('2026-08-22T10:06:00.000Z', 'aaaa1111'),
+  ];
+
+  const violations = findOverlapViolations(activity);
+  assert.equal(violations.length, 1, 'run 1 of aaaa1111 had no terminal when run 2 spawned');
+  assert.equal(violations[0].priorTicket, 'aaaa1111');
+  assert.equal(violations[0].nextTicket, 'aaaa1111');
+  assert.equal(violations[0].priorSpawnTs, '2026-08-22T10:00:00.000Z');
+  assert.equal(violations[0].nextSpawnTs, '2026-08-22T10:06:00.000Z');
+
+  const { exitCode, output } = withSessionDir(activity, runVerifyActivityTimeline);
+  assert.equal(exitCode, 1, 'the CLI must not exit 0 over a same-ticket overlap');
+  assert.match(output, /OVERLAP: 1 violation/);
+  assert.doesNotMatch(output, /OVERLAP: none/);
+});
+
+test('AP-EXT-ITER82-01 control: a serialized relaunch of the same ticket is not an overlap', () => {
+  // Identical shape, but run 1 resolves its boundary before run 2 spawns. Dropping the
+  // ticket-identity precondition must not manufacture a violation over routine relaunch.
+  const activity = [
+    spawnEvt('2026-08-22T10:00:00.000Z', 'aaaa1111'),
+    boundaryEvt('2026-08-22T10:05:00.000Z', 'aaaa1111'),
+    spawnEvt('2026-08-22T10:06:00.000Z', 'aaaa1111'),
+    boundaryEvt('2026-08-22T10:09:00.000Z', 'aaaa1111'),
+  ];
+
+  assert.deepEqual(findOverlapViolations(activity), []);
+
+  const { exitCode, output } = withSessionDir(activity, runVerifyActivityTimeline);
+  assert.equal(exitCode, 0);
+  assert.match(output, /OVERLAP: none/);
+});
+
+test('AP-EXT-ITER82-01: a stale terminal cannot vouch across a same-ticket re-spawn', () => {
+  // run 1 terminates, run 2 does not, run 3 spawns. The window's lower bound must pin the
+  // check to run 2 — run 1's boundary is not allowed to vouch for it.
+  const activity = [
+    spawnEvt('2026-08-22T10:00:00.000Z', 'aaaa1111'),
+    boundaryEvt('2026-08-22T10:01:00.000Z', 'aaaa1111'),
+    spawnEvt('2026-08-22T10:02:00.000Z', 'aaaa1111'),
+    spawnEvt('2026-08-22T10:03:00.000Z', 'aaaa1111'),
+  ];
+
+  const violations = findOverlapViolations(activity);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].priorSpawnTs, '2026-08-22T10:02:00.000Z');
+});
