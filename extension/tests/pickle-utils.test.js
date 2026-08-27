@@ -30,6 +30,7 @@ import {
     restartDeadWatcherPanes,
     runCmd,
     latestIterationLog,
+    drainStreamJsonLines,
 } from '../services/pickle-utils.js';
 import { LockError } from '../types/index.js';
 
@@ -1878,6 +1879,82 @@ test('AP-EXT-ITER7-01: no logs and an unreadable dir both yield null', () => {
         fs.writeFileSync(path.join(dir, 'state.json'), '{}');
         assert.equal(latestIterationLog(dir), null);
         assert.equal(latestIterationLog(path.join(dir, 'does-not-exist')), null);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+// --- AP-EXT-ITER86-01: drainStreamJsonLines decodes on the STREAM, not per chunk ---
+//
+// The read loop is chunked on a BYTE axis (DRAIN_CHUNK = 64 KiB). A multi-byte
+// UTF-8 character whose bytes straddle a chunk boundary must survive the drain:
+// a per-chunk `.toString('utf-8')` renders each half as U+FFFD. Every prior
+// fixture for this function wrote < 64 KiB of ASCII, so no boundary was ever
+// crossed and the defect stayed green.
+
+const DRAIN_CHUNK_BYTES = 65536;
+
+function writeStraddlingLog(dir, name, char, bytesBeforeChar) {
+    const logPath = path.join(dir, name);
+    fs.writeFileSync(logPath, 'a'.repeat(bytesBeforeChar) + char + 'tail\n', 'utf-8');
+    return logPath;
+}
+
+test('AP-EXT-ITER86-01: a multi-byte char straddling a DRAIN_CHUNK boundary survives the drain', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-iter86-straddle-'));
+    try {
+        // '\u2705' is 3 UTF-8 bytes. Placing it at byte 65535 puts 1 byte in the
+        // first chunk and 2 in the second — the exact split the decoder must hold.
+        const logPath = writeStraddlingLog(dir, 'straddle.log', '\u2705', DRAIN_CHUNK_BYTES - 1);
+        const emitted = [];
+        const result = drainStreamJsonLines(logPath, 0, '', (line) => line, (t) => emitted.push(t));
+
+        assert.equal(emitted.length, 1);
+        assert.ok(!emitted[0].includes('\uFFFD'), 'no U+FFFD replacement char may appear');
+        assert.ok(emitted[0].includes('\u2705tail'), 'the straddling char and its successor survive intact');
+        assert.equal(result.offset, fs.statSync(logPath).size);
+        assert.equal(result.lineBuf, '');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER86-01: every straddle offset across one chunk boundary round-trips byte-exactly', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-iter86-offsets-'));
+    try {
+        // Walk the char across the boundary so a 2-, 3- and 4-byte sequence is
+        // split at every possible position, not just one lucky alignment.
+        for (const char of ['\u00e9', '\u2705', '\u{1f600}']) {
+            const width = Buffer.byteLength(char, 'utf-8');
+            for (let lead = 1; lead < width; lead++) {
+                const logPath = writeStraddlingLog(
+                    dir, `off_${width}_${lead}.log`, char, DRAIN_CHUNK_BYTES - lead,
+                );
+                const emitted = [];
+                drainStreamJsonLines(logPath, 0, '', (line) => line, (t) => emitted.push(t));
+                const expected = fs.readFileSync(logPath, 'utf-8').replace(/\n$/, '');
+                assert.equal(emitted[0], expected, `width=${width} lead=${lead}`);
+            }
+        }
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER86-01: ASCII-only multi-chunk logs are unchanged by the decoder', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-iter86-ascii-'));
+    try {
+        const logPath = path.join(dir, 'ascii.log');
+        const lines = [];
+        for (let i = 0; i < 4000; i++) lines.push(JSON.stringify({ n: i, pad: 'x'.repeat(40) }));
+        fs.writeFileSync(logPath, lines.join('\n') + '\n', 'utf-8');
+        assert.ok(fs.statSync(logPath).size > DRAIN_CHUNK_BYTES * 2, 'fixture must span >2 chunks');
+
+        const emitted = [];
+        const result = drainStreamJsonLines(logPath, 0, '', (line) => line, (t) => emitted.push(t));
+        assert.equal(emitted.length, lines.length);
+        assert.deepEqual(emitted, lines);
+        assert.equal(result.offset, fs.statSync(logPath).size);
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }

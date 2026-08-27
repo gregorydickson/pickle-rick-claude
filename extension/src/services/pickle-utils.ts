@@ -1843,6 +1843,12 @@ const DRAIN_CHUNK = 65536; // 64 KiB
  * Reads stream-json log from `offset`, processes complete lines via the
  * provided `processor`, and emits output. Returns new offset and partial
  * trailing line buffer.
+ *
+ * AP-EXT-ITER7-01 replay: the read is chunked on a BYTE axis, so decoding must
+ * run on the STREAM, never per chunk. A `StringDecoder` holds the incomplete
+ * multi-byte sequence that straddles a `DRAIN_CHUNK` boundary until the next
+ * chunk supplies its remaining bytes -- a per-chunk `.toString('utf-8')` renders
+ * each half as U+FFFD instead. `drainLog` below decodes the same way.
  */
 export function drainStreamJsonLines(
   logPath: string,
@@ -1856,6 +1862,7 @@ export function drainStreamJsonLines(
     const { size } = fs.statSync(logPath);
     if (size <= offset) return { offset, lineBuf };
     fd = fs.openSync(logPath, 'r');
+    const decoder = new StringDecoder('utf-8');
     let pos = offset;
     let buf = lineBuf;
     while (pos < size) {
@@ -1863,9 +1870,10 @@ export function drainStreamJsonLines(
       const raw = Buffer.allocUnsafe(toRead);
       const bytesRead = fs.readSync(fd, raw, 0, toRead, pos);
       if (bytesRead === 0) break;
-      buf += raw.subarray(0, bytesRead).toString('utf-8');
+      buf += decoder.write(raw.subarray(0, bytesRead));
       pos += bytesRead;
     }
+    buf += decoder.end();
     fs.closeSync(fd);
     fd = null;
     const lines = buf.split('\n');
