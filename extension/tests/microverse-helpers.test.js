@@ -8,12 +8,15 @@ import * as path from 'node:path';
 import {
   executeMainLoop,
   measureAndClassifyIteration,
+  parseLlmJudgeOutput,
   _deps,
 } from '../bin/microverse-runner.js';
 import {
   createMicroverseState,
   readMicroverseState,
   writeMicroverseState,
+  generateViolationId,
+  updateViolationLedger,
 } from '../services/microverse-state.js';
 
 function makeTempDir(prefix = 'pickle-mv-helper-') {
@@ -418,4 +421,93 @@ test('executeMainLoop replays convergence mutation fixture order', async () => {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER4-01 — the ±5 line-drift reuse lookup must fire on the shape the
+// judge actually produces. `buildJudgePrompt`'s output schema names no `rule`,
+// so `parseLlmJudgeOutput` leaves `Violation.rule` undefined on every real
+// violation. The pre-fix predicate stored that raw `undefined` and compared it
+// against a `?? ''`-defaulted current value, so `undefined === ''` was false and
+// the reuse branch could never run: measured 41/41 live ledger entries on this
+// box carried no `rule`, and 41/41 had first_seen_iter === last_seen_iter.
+//
+// Drive the REAL parser, not a hand-shaped fixture — the two pre-existing
+// fuzzy-match cases above both hand-write `rule: 'no-any'` / `'strict-null'`,
+// the one shape production never emits, which is why they stayed green.
+// ---------------------------------------------------------------------------
+
+/** A judge payload in exactly the shape `buildJudgePrompt` demands — note: no `rule` key. */
+const AP_ITER4_OPTS = {
+  prdPath: '/tmp/test.md',
+  metric: { description: 'coverage', validation: 'echo 80', type: 'command', timeout_seconds: 30, tolerance: 1 },
+  stallLimit: 3,
+};
+
+function judgeOutputAtLine(line, id) {
+  return JSON.stringify({
+    score: 1,
+    violations: [{ id, path: 'src/foo.ts', line, severity: 'high', description: 'function too long' }],
+    resolved: [], new: [id], remaining: [],
+  });
+}
+
+test('AP-EXT-ITER4-01: a real judge violation (no `rule` key) keeps its id across a ±5 line drift', () => {
+  const state = createMicroverseState(AP_ITER4_OPTS);
+  state.violation_ledger = [];
+
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLine(100, 'v1')), 1);
+  assert.equal(state.violation_ledger.length, 1);
+  const firstId = state.violation_ledger[0].id;
+  assert.equal(state.violation_ledger[0].first_seen_iter, 1);
+
+  // The worker edited above it; the same violation is now 3 lines down.
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLine(103, firstId)), 2);
+  assert.equal(state.violation_ledger.length, 1, 'the drifted violation must reuse, not duplicate');
+  assert.equal(state.violation_ledger[0].id, firstId, 'ID must survive the drift');
+  assert.equal(state.violation_ledger[0].first_seen_iter, 1, 'first_seen_iter must carry the age');
+  assert.equal(state.violation_ledger[0].last_seen_iter, 2);
+  assert.equal(state.violation_ledger[0].line, 103, 'the entry tracks the new location');
+});
+
+test('AP-EXT-ITER4-01: a judge violation with no `path` either still reuses its entry', () => {
+  const state = createMicroverseState(AP_ITER4_OPTS);
+  state.violation_ledger = [];
+  const raw = (line, id) => JSON.stringify({
+    score: 1,
+    violations: [{ id, line, severity: 'med', description: 'no location' }],
+    resolved: [], new: [id], remaining: [],
+  });
+
+  updateViolationLedger(state, parseLlmJudgeOutput(raw(40, 'v1')), 1);
+  const firstId = state.violation_ledger[0].id;
+  updateViolationLedger(state, parseLlmJudgeOutput(raw(42, firstId)), 2);
+  assert.equal(state.violation_ledger.length, 1);
+  assert.equal(state.violation_ledger[0].id, firstId);
+  assert.equal(state.violation_ledger[0].first_seen_iter, 1);
+});
+
+test('AP-EXT-ITER4-01 control: a drift BEYOND ±5 still takes a new id (the fix does not over-match)', () => {
+  const state = createMicroverseState(AP_ITER4_OPTS);
+  state.violation_ledger = [];
+
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLine(100, 'v1')), 1);
+  const firstId = state.violation_ledger[0].id;
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLine(120, 'v2')), 2);
+  assert.equal(state.violation_ledger.length, 1);
+  assert.notEqual(state.violation_ledger[0].id, firstId, 'beyond the window is a different violation');
+  assert.equal(state.violation_ledger[0].first_seen_iter, 2);
+});
+
+test('AP-EXT-ITER4-01 control: normalizing identity does not change any generated id', () => {
+  // The canonical form is exactly what generateViolationId already defaulted to,
+  // so a deployed ledger's ids stay stable across this fix — no churn on upgrade.
+  assert.equal(
+    generateViolationId({ id: 'v1', path: 'src/foo.ts', line: 42, severity: 'high', description: 'd' }),
+    generateViolationId({ id: 'v1', path: 'src/foo.ts', line: 42, rule: '', severity: 'high', description: 'd' }),
+  );
+  assert.equal(
+    generateViolationId({ id: 'v1', path: '<arch>', rule: 'arch:layering', severity: 'high', description: 'd' }),
+    'module:v1:rule:layering',
+  );
 });

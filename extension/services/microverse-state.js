@@ -442,12 +442,26 @@ export function readMicroverseState(sessionDir) {
         return null;
     }
 }
+/**
+ * AP-EXT-ITER4-01: the ONE canonical spelling of the three fields a violation's identity is
+ * derived from.
+ *
+ * `Violation.path`/`.line`/`.rule` are all optional, and `buildJudgePrompt`'s output schema asks
+ * for no `rule` at all — so `rule` is absent on every violation this system actually produces.
+ * Two spellings of "absent" (`undefined` on a stored ledger entry, `''` where the id is hashed)
+ * is the whole defect: a predicate reading one side raw and the other defaulted compares
+ * `undefined === ''` and silently never matches. Normalize once, here, and the hash, the stored
+ * record, and the reuse lookup all speak the same identity.
+ */
+function violationIdentity(v) {
+    return { path: v.path ?? '', line: v.line ?? 0, rule: v.rule ?? '' };
+}
 export function generateViolationId(violation) {
-    const { id, path: vPath = '', line = 0, rule = '' } = violation;
+    const { path: vPath, line, rule } = violationIdentity(violation);
     const isArch = vPath === '<arch>' || rule.startsWith('arch:');
     if (isArch) {
         const ruleId = rule.startsWith('arch:') ? rule.slice(5) : rule;
-        return `module:${id}:rule:${ruleId}`;
+        return `module:${violation.id}:rule:${ruleId}`;
     }
     return crypto.createHash('sha1').update(`${vPath}:${line}:${rule}`).digest('hex').slice(0, 8);
 }
@@ -458,16 +472,16 @@ export function updateViolationLedger(state, judgeResult, iter) {
     const priorLedger = state.violation_ledger ?? [];
     const nextLedger = [];
     for (const violation of judgeResult.violations) {
-        const generatedId = generateViolationId(violation);
-        const vLine = violation.line ?? 0;
-        const existing = priorLedger.find((e) => e.path === (violation.path ?? '') && e.rule === (violation.rule ?? '') &&
-            Math.abs((e.line ?? 0) - vLine) <= 5);
+        const identity = violationIdentity(violation);
+        const existing = priorLedger.find((e) => {
+            const prior = violationIdentity(e);
+            return prior.path === identity.path && prior.rule === identity.rule &&
+                Math.abs(prior.line - identity.line) <= 5;
+        });
         if (existing) {
             nextLedger.push({
                 ...existing,
-                path: violation.path,
-                line: violation.line,
-                rule: violation.rule,
+                ...identity,
                 severity: violation.severity,
                 description: violation.description,
                 last_seen_iter: iter,
@@ -475,10 +489,8 @@ export function updateViolationLedger(state, judgeResult, iter) {
         }
         else {
             nextLedger.push({
-                id: generatedId,
-                path: violation.path,
-                line: violation.line,
-                rule: violation.rule,
+                id: generateViolationId(violation),
+                ...identity,
                 first_seen_iter: iter,
                 last_seen_iter: iter,
                 severity: violation.severity,
