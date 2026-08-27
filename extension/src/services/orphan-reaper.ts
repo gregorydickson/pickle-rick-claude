@@ -39,7 +39,10 @@
  *    or under this repo's fixtures dir), the min-age floor, and `resolveSelfIds`
  *    — which is load-bearing ONLY because of this class (AP-EXT-ITER47-01).
  *
- * A command matching NEITHER class is censused, never killed; a live session's
+ * A command matching NEITHER class never becomes a candidate at all:
+ * `parseWorkerProcsFromPs` drops it on `classified === null`, so it is absent
+ * from `scanned` too — do not read the census as a count of everything `ps`
+ * returned (AP-EXT-ITER44-01 pins what `scanned` means). A live session's
  * worker is NEVER killed regardless of ppid. There is deliberately NO
  * ppid==1-only reap branch — false-reaping an active worker is worse than a
  * leaked orphan.
