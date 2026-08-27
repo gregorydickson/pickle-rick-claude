@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import {
+    buildRefinementManifest,
     checkAnalystOutputPaths,
     scanAnalystOutputsForUnverifiedPaths,
     resolveTrackedSuffixMatches,
@@ -631,15 +632,66 @@ test('AP-RMS-3: the sentinel itself satisfies the schema', () => {
 });
 
 // --- AP-RMS-6: RefinementManifest root keys vs refinement-manifest.schema.json
-// The schema sets additionalProperties:false at the manifest root, so any key
-// present on the TS interface but absent from schema.properties fails ajv over
-// the WHOLE manifest. Two keys already drifted (AP-RMS-1 discovery,
-// AP-RMS-7 replay); the schema fix is fenced out of the active scope, so they
-// are PINNED here. This assertion is an equality, not a subset check: a third
+// The schema sets additionalProperties:false at the manifest root, so an
+// undeclared key fails ajv over the WHOLE manifest — but ONLY if a manifest can
+// actually carry it. A key the interface merely DECLARES is not an ajv hazard:
+// no manifest ever holds it, so nothing can fail on it. AP-EXT-ITER8-01: the pin
+// conflated the two, and its own rot-guard could not tell them apart because its
+// oracle was a whole-FILE token grep — satisfied by the interface line alone. It
+// therefore passed while asserting that `prd_advisory_shape_concerns` is
+// "genuinely written by buildRefinementManifest", which has never been true (the
+// key has no write site; measured 0/10 live refinement_manifest.json).
+//
+// The oracle is now the REAL artifact: call buildRefinementManifest and read the
+// root keys off what it returns. One derived set replaces the text proxy, and the
+// pin narrows to the keys that are genuinely emitted AND undeclared. A key that
+// LATER starts being emitted enters the set automatically and reddens the pin, so
+// detection is unchanged in the direction that matters.
+// The schema fix stays fenced out of the active scope, so the real hazard is
+// still PINNED here as an equality, not a subset check: a second emitted-and-
 // undeclared key breaks the build instead of silently joining the backlog.
 
-/** Root keys the TS interface declares but the schema does not — known-open, fenced. */
-const KNOWN_UNDECLARED_MANIFEST_KEYS = ['decomposition_quality_flags', 'prd_advisory_shape_concerns'];
+/**
+ * Root keys the TS interface declares, the schema does not, AND
+ * buildRefinementManifest actually emits — known-open ajv hazards, fenced.
+ */
+const KNOWN_UNDECLARED_MANIFEST_KEYS = ['decomposition_quality_flags'];
+
+/**
+ * Root keys a real `buildRefinementManifest` return value carries, unioned over
+ * its two conditional branches (with and without ticketQualityWarnings). Reading
+ * the produced object is what makes "emitted" checkable at all — every text proxy
+ * for it is satisfied by a declaration, a comment, or a dead reader.
+ */
+function emittedManifestRootKeys() {
+    const dir = tmpDir('pickle-rms6-');
+    try {
+        const prdPath = path.join(dir, 'prd.md');
+        fs.writeFileSync(prdPath, '---\ntitle: AP-RMS-6 probe\n---\n\n# Probe\n');
+        const args = { prdPath, sessionDir: dir };
+        const results = {
+            refinementDir: path.join(dir, 'refinement'),
+            cyclesRequested: 1,
+            maxTurns: 1,
+            allCycleResults: [[]],
+            finalResults: [],
+            allSuccess: true,
+        };
+        const warning = {
+            ticket_id: UNATTRIBUTED_TICKET_ID,
+            defect_class: 'probe',
+            evidence: 'probe',
+            source: 'post-decomp',
+            file_line: null,
+        };
+        return new Set([
+            ...Object.keys(buildRefinementManifest(args, results)),
+            ...Object.keys(buildRefinementManifest(args, results, [warning])),
+        ]);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+}
 
 /**
  * Property names off a real interface in the TS source. ONE extractor for every
@@ -665,30 +717,55 @@ test('AP-RMS-6: the manifest root still forbids additional properties (guards th
     assert.equal(schema.additionalProperties, false, 'manifest root must keep additionalProperties: false');
 });
 
-test('AP-RMS-6: no NEW manifest root key drifts from the schema', () => {
+test('AP-RMS-6: no NEW emitted manifest root key drifts from the schema', () => {
     const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
-    const undeclared = undeclaredKeys('RefinementManifest', schema);
+    const emitted = emittedManifestRootKeys();
+    const hazards = undeclaredKeys('RefinementManifest', schema).filter((k) => emitted.has(k));
 
     assert.deepEqual(
-        undeclared.slice().sort(),
+        hazards.slice().sort(),
         KNOWN_UNDECLARED_MANIFEST_KEYS.slice().sort(),
-        'RefinementManifest gained or lost an undeclared root key. A NEW key must be added to ' +
-            'refinement-manifest.schema.json properties (additionalProperties:false fails the whole ' +
-            'manifest otherwise). A key that disappeared here was fixed — drop it from ' +
-            'KNOWN_UNDECLARED_MANIFEST_KEYS.'
+        'buildRefinementManifest gained or lost an EMITTED root key the schema does not declare. ' +
+            'A NEW key must be added to refinement-manifest.schema.json properties ' +
+            '(additionalProperties:false fails the whole manifest otherwise). A key that ' +
+            'disappeared here was fixed — drop it from KNOWN_UNDECLARED_MANIFEST_KEYS.'
     );
 });
 
-test('AP-RMS-6: every pinned key is genuinely written by buildRefinementManifest', () => {
-    // Guards the pin itself: if a key is stale (no longer emitted), the pin
-    // must shrink rather than mask a real schema gap forever.
-    const src = fs.readFileSync(REFINE_SRC_PATH, 'utf-8');
+test('AP-RMS-6: every pinned key is genuinely emitted by buildRefinementManifest', () => {
+    // Guards the pin itself: if a key is stale (no longer emitted), the pin must
+    // shrink rather than mask a real schema gap forever. The oracle is the object
+    // buildRefinementManifest returns, not the text of the file that defines it —
+    // AP-EXT-ITER8-01: a whole-file grep is satisfied by an interface line, so it
+    // certified a key with no write site as "genuinely written".
+    const emitted = emittedManifestRootKeys();
     for (const key of KNOWN_UNDECLARED_MANIFEST_KEYS) {
         assert.ok(
-            new RegExp(`\\b${key}\\b`).test(src),
-            `${key} is pinned as known-undeclared but no longer appears in spawn-refinement-team.ts`
+            emitted.has(key),
+            `${key} is pinned as an emitted undeclared root key but buildRefinementManifest no ` +
+                `longer emits it — shrink KNOWN_UNDECLARED_MANIFEST_KEYS instead of masking the gap`
         );
     }
+});
+
+test('AP-RMS-6: a declared-but-never-emitted interface key is not an ajv hazard', () => {
+    // The negative control that separates the two facts the old single pin fused.
+    // `prd_advisory_shape_concerns` sits on the interface and is read by
+    // evaluateAcShapeAdvisory, but nothing writes it, so no manifest can carry it
+    // and additionalProperties:false can never trip on it. It must therefore be
+    // absent from BOTH the emitted set and the hazard pin — while still being
+    // caught by undeclaredKeys, which is what proves the filter is doing the work.
+    const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
+    const undeclared = undeclaredKeys('RefinementManifest', schema);
+    const emitted = emittedManifestRootKeys();
+
+    assert.ok(
+        undeclared.includes('prd_advisory_shape_concerns'),
+        'fixture drifted: prd_advisory_shape_concerns must still be interface-declared and ' +
+            'schema-undeclared for this control to mean anything'
+    );
+    assert.equal(emitted.has('prd_advisory_shape_concerns'), false);
+    assert.equal(KNOWN_UNDECLARED_MANIFEST_KEYS.includes('prd_advisory_shape_concerns'), false);
 });
 
 // --- AP-RMS-8: warning-ITEM keys vs refinement-manifest.schema.json ----------
