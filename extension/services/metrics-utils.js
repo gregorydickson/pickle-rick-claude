@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawnSync } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 import { formatLocalDateKey, safeErrorMessage } from './pickle-utils.js';
 import { readRecoverableJsonObject } from './microverse-state.js';
 import { BACKENDS, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
@@ -522,7 +523,99 @@ export function buildReport(tokens, loc, since, until, grouping) {
 // ---------------------------------------------------------------------------
 // Skip-flag budget report builder
 // ---------------------------------------------------------------------------
-const MAX_ACTIVITY_FILE_BYTES = 10 * 1024 * 1024; // 10 MB guard (mirrors standup)
+/**
+ * Streaming window for the activity-dir scanners below. This is a READ CHUNK,
+ * never a file-size cap: `forEachJsonlLine` carries a partial trailing line
+ * across chunks, so a file of any size is scanned in full at bounded memory.
+ *
+ * AP-EXT-ITER10-01: the predecessor was a 10 MB file-size cap that skipped past
+ * any larger file WITHOUT a diagnostic. Measured on a live host, 6 of 8 activity
+ * files were over the cap (up to 207 MB), so the skip-flag dashboard tallied 486
+ * of 15,441 real uses (96.9% lost) and reported
+ * `over_budget: false` for two reasons that were 40x and 2.5x OVER budget. A
+ * dropped file must never be silent, and a big file must not be dropped at all.
+ */
+const ACTIVITY_READ_CHUNK_BYTES = 1024 * 1024;
+/**
+ * Read `filePath` as newline-delimited text, invoking `onLine` once per line.
+ *
+ * Synchronous by contract: every caller is a sync scanner on the `/pickle-metrics`
+ * path. Reads through a fixed `ACTIVITY_READ_CHUNK_BYTES` buffer and carries the
+ * unterminated tail forward, so peak memory is the chunk plus the longest single
+ * line (1.3 MB in the live corpus) rather than the whole file. `StringDecoder`
+ * holds back partial multi-byte sequences that straddle a chunk boundary.
+ */
+function forEachJsonlLine(filePath, onLine) {
+    const fd = fs.openSync(filePath, 'r');
+    const decoder = new StringDecoder('utf-8');
+    const buf = Buffer.allocUnsafe(ACTIVITY_READ_CHUNK_BYTES);
+    let carry = '';
+    try {
+        for (;;) {
+            const bytesRead = fs.readSync(fd, buf, 0, buf.length, null);
+            if (bytesRead === 0)
+                break;
+            const parts = (carry + decoder.write(buf.subarray(0, bytesRead))).split('\n');
+            carry = parts.pop() ?? '';
+            for (const part of parts)
+                onLine(part);
+        }
+        carry += decoder.end();
+        if (carry)
+            onLine(carry);
+    }
+    finally {
+        fs.closeSync(fd);
+    }
+}
+/**
+ * The ONE activity-dir walk shared by every scanner below: enumerate
+ * `<activityDir>/*.jsonl`, stream each file, parse each line, and hand
+ * `onEvent` every event whose local-date key falls inside `[since, until]`
+ * (inclusive, matching the metrics report range).
+ *
+ * `label` names the caller in the per-file stderr diagnostic. A file that
+ * cannot be read is reported, never silently skipped — an under-count that
+ * announces itself is a measurement; one that does not is a false verdict.
+ */
+function forEachActivityEventInWindow(activityDir, since, until, label, onEvent) {
+    let files;
+    try {
+        files = fs.readdirSync(activityDir).filter((f) => f.endsWith('.jsonl'));
+    }
+    catch {
+        return;
+    }
+    for (const file of files) {
+        try {
+            forEachJsonlLine(path.join(activityDir, file), (rawLine) => {
+                const line = rawLine.trim();
+                if (!line)
+                    return;
+                let parsed;
+                try {
+                    parsed = JSON.parse(line);
+                }
+                catch {
+                    return;
+                }
+                if (typeof parsed !== 'object' || parsed === null)
+                    return;
+                const obj = parsed;
+                if (typeof obj.ts !== 'string')
+                    return;
+                const dateKey = formatLocalDateKey(new Date(obj.ts));
+                if (dateKey < since || dateKey > until)
+                    return;
+                onEvent(obj);
+            });
+        }
+        catch (err) {
+            const msg = safeErrorMessage(err);
+            process.stderr.write(`[metrics] ${label} scan skipped ${file}: ${msg}\n`);
+        }
+    }
+}
 function budgetKey(source, reason) {
     return `${source}::${reason}`;
 }
@@ -552,49 +645,11 @@ export function extractSkipFlagUse(ev) {
  */
 export function scanSkipFlagEvents(activityDir, since, until) {
     const out = [];
-    let files;
-    try {
-        files = fs.readdirSync(activityDir).filter((f) => f.endsWith('.jsonl'));
-    }
-    catch {
-        return out;
-    }
-    for (const file of files) {
-        const filePath = path.join(activityDir, file);
-        let content;
-        try {
-            const stat = fs.statSync(filePath);
-            if (stat.size > MAX_ACTIVITY_FILE_BYTES)
-                continue;
-            content = fs.readFileSync(filePath, 'utf-8');
-        }
-        catch (err) {
-            const msg = safeErrorMessage(err);
-            process.stderr.write(`[metrics] skip-flag scan skipped ${file}: ${msg}\n`);
-            continue;
-        }
-        for (const rawLine of content.split('\n')) {
-            const line = rawLine.trim();
-            if (!line)
-                continue;
-            let parsed;
-            try {
-                parsed = JSON.parse(line);
-            }
-            catch {
-                continue;
-            }
-            const ts = parsed?.ts;
-            if (typeof ts !== 'string')
-                continue;
-            const dateKey = formatLocalDateKey(new Date(ts));
-            if (dateKey < since || dateKey > until)
-                continue;
-            const use = extractSkipFlagUse(parsed);
-            if (use)
-                out.push(use);
-        }
-    }
+    forEachActivityEventInWindow(activityDir, since, until, 'skip-flag', (ev) => {
+        const use = extractSkipFlagUse(ev);
+        if (use)
+            out.push(use);
+    });
     return out;
 }
 /**
@@ -646,49 +701,11 @@ export function extractReadinessFalsePositive(ev) {
  */
 export function scanReadinessFalsePositiveEvents(activityDir, since, until) {
     const out = [];
-    let files;
-    try {
-        files = fs.readdirSync(activityDir).filter((f) => f.endsWith('.jsonl'));
-    }
-    catch {
-        return out;
-    }
-    for (const file of files) {
-        const filePath = path.join(activityDir, file);
-        let content;
-        try {
-            const stat = fs.statSync(filePath);
-            if (stat.size > MAX_ACTIVITY_FILE_BYTES)
-                continue;
-            content = fs.readFileSync(filePath, 'utf-8');
-        }
-        catch (err) {
-            const msg = safeErrorMessage(err);
-            process.stderr.write(`[metrics] readiness-false-positive scan skipped ${file}: ${msg}\n`);
-            continue;
-        }
-        for (const rawLine of content.split('\n')) {
-            const line = rawLine.trim();
-            if (!line)
-                continue;
-            let parsed;
-            try {
-                parsed = JSON.parse(line);
-            }
-            catch {
-                continue;
-            }
-            const ts = parsed?.ts;
-            if (typeof ts !== 'string')
-                continue;
-            const dateKey = formatLocalDateKey(new Date(ts));
-            if (dateKey < since || dateKey > until)
-                continue;
-            const ev = extractReadinessFalsePositive(parsed);
-            if (ev)
-                out.push(ev);
-        }
-    }
+    forEachActivityEventInWindow(activityDir, since, until, 'readiness-false-positive', (raw) => {
+        const ev = extractReadinessFalsePositive(raw);
+        if (ev)
+            out.push(ev);
+    });
     return out;
 }
 /**
@@ -729,56 +746,12 @@ export function scanRefusedRecoveredCounts(activityDir, since, until) {
         gate_parity_divergence: 0,
     };
     const eventSet = new Set(REFUSED_RECOVERED_EVENT_NAMES);
-    let files;
-    try {
-        files = fs.readdirSync(activityDir).filter((f) => f.endsWith('.jsonl'));
-    }
-    catch {
-        return { since, until, ...counts, total: 0 };
-    }
-    for (const file of files) {
-        const filePath = path.join(activityDir, file);
-        let content;
-        try {
-            const stat = fs.statSync(filePath);
-            if (stat.size > MAX_ACTIVITY_FILE_BYTES) {
-                continue;
-            }
-            content = fs.readFileSync(filePath, 'utf-8');
-        }
-        catch (err) {
-            const msg = safeErrorMessage(err);
-            process.stderr.write(`[metrics] refused-recovered scan skipped ${file}: ${msg}\n`);
-            continue;
-        }
-        for (const rawLine of content.split('\n')) {
-            const line = rawLine.trim();
-            if (!line) {
-                continue;
-            }
-            let parsed;
-            try {
-                parsed = JSON.parse(line);
-            }
-            catch {
-                continue;
-            }
-            const obj = parsed;
-            const event = typeof obj.event === 'string' ? obj.event : '';
-            if (!eventSet.has(event)) {
-                continue;
-            }
-            const ts = obj.ts;
-            if (typeof ts !== 'string') {
-                continue;
-            }
-            const dateKey = formatLocalDateKey(new Date(ts));
-            if (dateKey < since || dateKey > until) {
-                continue;
-            }
-            counts[event] += 1;
-        }
-    }
+    forEachActivityEventInWindow(activityDir, since, until, 'refused-recovered', (ev) => {
+        const event = typeof ev.event === 'string' ? ev.event : '';
+        if (!eventSet.has(event))
+            return;
+        counts[event] += 1;
+    });
     const total = counts.completion_finalize_refused + counts.phase_graduation_refused + counts.gate_parity_divergence;
     return { since, until, ...counts, total };
 }
