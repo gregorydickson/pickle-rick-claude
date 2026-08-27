@@ -6841,6 +6841,13 @@ export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): {
   } catch { return { ok: false }; }
   if (phases.length === 0) return { ok: false };
 
+  // AP-EXT-ITER2-01: the rung's verdict is GROUND TRUTH — did a commit actually land —
+  // never the per-phase `commitPhase` tally. See the empty-staging branch below: once a
+  // no-op phase reads ok, `result.committed` counts phases ATTEMPTED, not commits made,
+  // so an all-no-op run (genuinely clean tree, nothing recovered) would read ok on a
+  // tally alone. HEAD moving cannot be faked by a no-op.
+  const headBefore = convergedPlanHeadSha(input.workingDir);
+
   const result = executePhaseLoop({
     phases,
     executePhase: (phase) => {
@@ -6873,6 +6880,21 @@ export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): {
       if (add.status !== 0) {
         return { ok: false };
       }
+      // AP-EXT-ITER2-01: an empty staging area is a NO-OP, not a failure. The clean-tree
+      // re-execution seam spawns ONE implement pass against the whole plan, so the entire
+      // diff lands in phase 1's commit and phases 2..N have nothing of their own left to
+      // stage. `git commit` exits 1 on an empty index, which read as a phase failure and
+      // stopped the loop — so a plan that fully succeeded reported `ok:false` and the
+      // ladder escalated to the terminal `recovery_exhausted` over committed, green work.
+      // Measured: 31 of the 32 real `plan_*.md` artifacts carrying `## Phase` blocks have
+      // 2+ phases, so this fired on essentially every multi-phase recovery.
+      // No `encoding`: `--quiet` emits nothing and only the exit status is read, so this is
+      // not a capture site and must not claim to be one.
+      if (spawnSync('git', ['diff', '--cached', '--quiet'], {
+        cwd: input.workingDir, timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
+      }).status === 0) {
+        return { ok: true };
+      }
       const title = phase.title ? ` — ${phase.title}` : '';
       const phaseMsg = stampPickleTicketTrailer(
         input.workingDir,
@@ -6887,8 +6909,21 @@ export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): {
   });
 
   const stoppedAt = result.failedIndex !== null ? ` (stopped at phase ${phases[result.failedIndex].index})` : '';
-  input.log(`recovery: execute-converged-plan ran ${result.committed}/${phases.length} phase(s) for ${input.ticketId}${stoppedAt}`);
-  return { ok: result.ok };
+  const headAfter = convergedPlanHeadSha(input.workingDir);
+  const landed = headAfter !== null && headAfter !== headBefore;
+  input.log(
+    `recovery: execute-converged-plan ran ${result.committed}/${phases.length} phase(s) for ${input.ticketId}${stoppedAt}` +
+    `${landed ? '' : ' — no commit landed'}`,
+  );
+  return { ok: result.ok && landed };
+}
+
+/** HEAD sha for the converged-plan rung's landed-commit check; null when unreadable. */
+function convergedPlanHeadSha(workingDir: string): string | null {
+  const r = spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd: workingDir, encoding: 'utf-8', timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
+  });
+  return r.status === 0 ? (r.stdout as string).trim() : null;
 }
 
 /**

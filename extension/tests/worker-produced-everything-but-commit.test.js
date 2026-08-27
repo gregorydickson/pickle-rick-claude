@@ -1261,3 +1261,93 @@ test('AP-EXT-ITER55-02 control: a verbose verify that genuinely FAILS is still n
   rmSync(repo, { recursive: true, force: true });
   rmSync(sessionDir, { recursive: true, force: true });
 });
+
+// --- AP-EXT-ITER2-01: a multi-phase converged plan is the DOMINANT shape ------------------
+//
+// `executeCleanTreeReExecution` spawns ONE implement pass against the WHOLE plan, so the
+// entire diff is already in the tree when the verify-and-commit loop starts. Phase 1's
+// `git add -A` therefore stages everything and phases 2..N have nothing of their own left.
+// `git commit` exits 1 on an empty index, which `commitPhase` read as a phase FAILURE:
+// `executePhaseLoop` stopped at phase 2, the adapter returned `ok:false`, and the ladder
+// escalated to the terminal `recovery_exhausted` — a FAILURE exit that stops auto-resume —
+// over work that was fully committed with a clean tree and every verify green.
+//
+// This is not an edge case: of the 32 real `plan_*.md` artifacts on the operator's box that
+// carry `## Phase` blocks, 31 have 2+ phases. Every existing case in this file uses a
+// SINGLE-phase plan, which is the one shape the defect cannot reach.
+//
+// Assert the RUNG'S DISPOSITION plus the landed commit, and pair it with an all-no-op
+// control so the empty-index tolerance can never turn "nothing was recovered" green.
+
+function writeMultiPhasePlan(ticketDir) {
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-08-26.md'),
+    '# plan\n\n## Phase 1 — first\n\n**Verify:** `true`\n\n## Phase 2 — second\n\n**Verify:** `true`\n',
+  );
+}
+
+test('AP-EXT-ITER2-01: a 2-phase plan whose work all lands in phase 1 is ok, not a failed rung', () => {
+  const { repo, baseSha } = makeRepo('ap-iter2-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter2-session-');
+  const ticketId = 'a1b2c3d4';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+  writeMultiPhasePlan(ticketDir);
+
+  // The implement pass already produced the whole plan's diff.
+  writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+  writeFileSync(path.join(repo, 'b.ts'), 'export const b = 2;\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  // Pre-fix this was `false`, and the ladder terminated the run `recovery_exhausted`.
+  assert.equal(out.ok, true, 'every phase verified green and the work landed — the rung succeeded');
+  assert.notEqual(git(repo, ['rev-parse', 'HEAD']), baseSha, 'the plan work must be committed');
+  assert.equal(git(repo, ['status', '--porcelain']), '', 'no plan work may be left uncommitted');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER2-01 control: an all-no-op run over a clean tree stays not-ok', () => {
+  const { repo, baseSha } = makeRepo('ap-iter2-noop-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter2-noop-session-');
+  const ticketId = 'a1b2c3d5';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+  writeMultiPhasePlan(ticketDir);
+
+  // No tree delta at all: both phases stage nothing. Tolerating an empty index must NOT
+  // turn "nothing was recovered" into a green rung — the verdict is a LANDED COMMIT.
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  assert.equal(out.ok, false, 'a rung that commits nothing has recovered nothing');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']), baseSha, 'HEAD must not move');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER2-01: a genuinely failing phase 2 still stops the loop and fails the rung', () => {
+  const { repo, baseSha } = makeRepo('ap-iter2-fail-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter2-fail-session-');
+  const ticketId = 'a1b2c3d6';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-08-26.md'),
+    '# plan\n\n## Phase 1 — first\n\n**Verify:** `true`\n\n## Phase 2 — second\n\n**Verify:** `false`\n',
+  );
+  writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  assert.equal(out.ok, false, 'a phase whose verify exits non-zero is still a real rung failure');
+  assert.notEqual(git(repo, ['rev-parse', 'HEAD']), baseSha, 'phase 1 stays committed (partial-failure contract)');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
