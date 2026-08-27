@@ -949,30 +949,34 @@ export function runPostFinalMeasurement(input) {
     return persistAndLogPostFinalVerdict(input, classifyPostFinalVerdict(probePostFinalMeasurement(input)), '');
 }
 /**
+ * R-NOPOSTTIER: the seam-level wrap shared by BOTH promise-synthesis paths
+ * (`runManagerTokenPostFinalMeasurement` and `applyAllTicketsDoneCompletion`).
+ * `runPostFinalMeasurement` is written as a total function; this wrap keeps that true at the SEAM
+ * even if a future edit inside it grows a throwing path. A measurement must never be able to break
+ * the completion synthesis, and both seams owe that guarantee identically — so it lives in one
+ * place. Belt-and-braces, not redundancy: the verdict is recorded by the measurement's own catch
+ * (see `post-final-measurement.test.js`), and this only covers a throw that escapes it entirely.
+ */
+function measurePostFinalTierAtSeam(input) {
+    try {
+        runPostFinalMeasurement(input);
+    }
+    catch (err) {
+        input.log(`post-final tier measurement failed at the completion seam (ignored): ${safeErrorMessage(err)}`);
+    }
+}
+/**
  * R-NOPOSTTIER (AC-13): the manager-token completion seam's call into `runPostFinalMeasurement`.
  * The model itself emitted EPIC_COMPLETED/TASK_COMPLETED and `evaluateEpicCompletion` verified it
  * genuine — a second promise-synthesis path distinct from the proactive all-tickets-done scan in
  * `applyAllTicketsDoneCompletion`, which owes the same verdict for the same reason. Extracted to
  * its own exported function (rather than left inline in `runMuxRunnerMain`) so a test can drive
  * this exact seam directly — the ticket 6f0e349f wiring-proof requirement — without needing to run
- * the whole manager loop. `runPostFinalMeasurement` is itself total (never throws); the wrap here
- * is belt-and-braces for the same reason `applyAllTicketsDoneCompletion` wraps its own call.
+ * the whole manager loop. The throw-safety it owes is the same one `applyAllTicketsDoneCompletion`
+ * owes, so both route through the shared `measurePostFinalTierAtSeam` wrap.
  */
 export function runManagerTokenPostFinalMeasurement(statePath, workingDir, completedTicketId, log, deps = {}) {
-    try {
-        runPostFinalMeasurement({
-            statePath,
-            workingDir,
-            completedTicketId,
-            log,
-            now: deps.now,
-            runTestFast: deps.runTestFast,
-            finalCommitTs: deps.finalCommitTs,
-        });
-    }
-    catch (err) {
-        log(`post-final tier measurement failed at the completion seam (ignored): ${safeErrorMessage(err)}`);
-    }
+    measurePostFinalTierAtSeam({ statePath, workingDir, completedTicketId, log, ...deps });
 }
 function formatWorkerGateFailureLine(failure) {
     const label = failure.file || failure.name || 'unknown';
@@ -2196,6 +2200,24 @@ function collectRickTicketPaths(sessionDir) {
     }
     return ticketPaths;
 }
+/**
+ * Reads every ticket's `(id, status)` pair, or `null` if ANY ticket is unparseable — the same
+ * null-bails shape `collectRickTicketPaths` uses. An unparseable ticket must not be silently
+ * treated as terminal: it is unknown, and unknown blocks the all-done synthesis.
+ */
+function collectTicketIdStatuses(ticketPaths, log) {
+    const idStatuses = [];
+    for (const ticketPath of ticketPaths) {
+        const parsed = parseTicketFrontmatter(ticketPath);
+        if (!parsed) {
+            log(`all-tickets-done-check: cannot parse ${path.basename(path.dirname(ticketPath))} — skipping completion synthesis`);
+            return null;
+        }
+        const id = parsed.id ?? path.basename(path.dirname(ticketPath));
+        idStatuses.push({ id, status: normalizeTicketStatus(parsed.status || '') });
+    }
+    return idStatuses;
+}
 export function applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, log, workingDir = '', deps = {}) {
     const ticketPaths = collectRickTicketPaths(sessionDir);
     if (ticketPaths === null)
@@ -2205,16 +2227,9 @@ export function applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, 
     // B-DURA T40: shared git context for the Failed-terminal conjunctive guard,
     // applied identically here (the `every` pre-check) and in the reconcile re-scan.
     const t40GitCtx = { sessionDir, workingDir, startCommit: resolveSessionBaselineShas(sessionDir).startCommit };
-    const idStatuses = [];
-    for (const ticketPath of ticketPaths) {
-        const parsed = parseTicketFrontmatter(ticketPath);
-        if (!parsed) {
-            log(`all-tickets-done-check: cannot parse ${path.basename(path.dirname(ticketPath))} — skipping completion synthesis`);
-            return false;
-        }
-        const id = parsed.id ?? path.basename(path.dirname(ticketPath));
-        idStatuses.push({ id, status: normalizeTicketStatus(parsed.status || '') });
-    }
+    const idStatuses = collectTicketIdStatuses(ticketPaths, log);
+    if (idStatuses === null)
+        return false;
     // A Failed ticket that satisfies the conjunctive guard is terminal-excludable
     // here too (it does not block the all-done synthesis); otherwise it blocks.
     if (idStatuses.some(({ id, status }) => isPendingForAdvance(status, id, t40GitCtx)))
@@ -2232,23 +2247,13 @@ export function applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, 
     // verdict. Deliberately placed after the guards above: their `return false` branches synthesize
     // no promise, so they owe no verdict and must not pay for a tier run. The measurement is total —
     // it cannot abort the run — and it does not change the disposition (see `fa3d0f5a`).
-    // The wrap is belt-and-braces, not redundancy: `runPostFinalMeasurement` is written as a total
-    // function, and this keeps that true at the SEAM even if a future edit inside it grows a throwing
-    // path. A measurement must never be able to break the completion synthesis.
-    try {
-        runPostFinalMeasurement({
-            statePath,
-            workingDir,
-            completedTicketId: idStatuses[idStatuses.length - 1]?.id ?? 'all-tickets-done',
-            log,
-            now: deps.now,
-            runTestFast: deps.runTestFast,
-            finalCommitTs: deps.finalCommitTs,
-        });
-    }
-    catch (err) {
-        log(`post-final tier measurement failed at the completion seam (ignored): ${safeErrorMessage(err)}`);
-    }
+    measurePostFinalTierAtSeam({
+        statePath,
+        workingDir,
+        completedTicketId: idStatuses[idStatuses.length - 1]?.id ?? 'all-tickets-done',
+        log,
+        ...deps,
+    });
     const ts = new Date().toISOString();
     sm.update(statePath, s => {
         s.completion_promise = JSON.stringify({ kind: PromiseTokens.EPIC_COMPLETED, reason: 'all-tickets-done', ts });
