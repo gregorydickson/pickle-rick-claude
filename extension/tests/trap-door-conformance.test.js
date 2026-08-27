@@ -537,3 +537,179 @@ describe('trap-door catalog anchor liveness (repo)', () => {
     );
   });
 });
+
+// --- AP-EXT-ITER78-01: catalog anchor SCOPE liveness ---
+//
+// The liveness sweep above proves an anchor's symbol exists SOMEWHERE IN THE TREE. It cannot see
+// the next failure mode: an anchor that scopes a call to a named function — ``\`X(\` in \`Y\``` — where
+// X is alive, Y is alive, and X is simply not in Y. Both halves resolve, so `findDeadAnchors` and
+// `audit-trap-door-enforcement.sh` both read green while the shape is a phantom: run it as the grep
+// it is written to be and it reports a violation over correct code, and — the reason this is not
+// cosmetic — it is INERT against the regression it names, because deleting the real call site leaves
+// its output unchanged.
+//
+// Measured twice in one pass: `extension/CLAUDE.md`'s R-CWGE shape demanded
+// `readWorkerGateVerdict(` in `guardCompletionCommitBeforeDone` (0 hits — the guard consults
+// `resolveWorkerGateVerdict`, so the anchor guarding Done-over-red could not detect its own
+// deletion), and `src/services/CLAUDE.md`'s R-SLLJ-8 shape demanded `compareMetricSetOps(` in
+// `compareMetric` after 3c7f7344 split the logic into `compareMetricWithBasis` and left
+// `compareMetric` an 11-line delegation. This is the AP-EXT-ITER74-02 class with a mechanical
+// grader: the PATTERN_SHAPE asserted as an executable check instead of reviewer-verified prose.
+const scopedAnchorPattern = /`([A-Za-z_][\w.]*\()`\s+in\s+`([A-Za-z_]\w*)`/g;
+
+/**
+ * Scope claims that are CORRECT as written and must NOT be "fixed". A catalog legitimately names a
+ * function-scoped anchor in order to DENY it — `src/hooks/CLAUDE.md` says an anchor demanding
+ * `tokenizeShellCommand(` in `findGitVerb` "is stale and matches nothing", which is a warning to
+ * future readers, not a claim. Keyed `<catalog>::<callee> in <fn>` so a denial in one catalog cannot
+ * blind the sweep to the same pair going stale in another.
+ */
+const scopedAnchorAllowlist = new Map([
+  [
+    'extension/src/hooks/CLAUDE.md::tokenizeShellCommand( in findGitVerb',
+    'negative: the entry states this anchor is stale and matches nothing',
+  ],
+]);
+
+/** Top-level `function`/`const` declaration bodies, keyed by name, across a TS source tree. */
+function collectFunctionBodies(files) {
+  const declPattern = /^(?:export\s+)?(?:async\s+)?function\s+(\w+)|^(?:export\s+)?const\s+(\w+)\s*[=:]/;
+  const bodies = new Map();
+  for (const [file, content] of files) {
+    const lines = content.split('\n');
+    const starts = [];
+    lines.forEach((line, index) => {
+      const match = line.match(declPattern);
+      if (match) starts.push({ name: match[1] ?? match[2], index });
+    });
+    starts.forEach(({ name, index }, position) => {
+      const end = position + 1 < starts.length ? starts[position + 1].index : lines.length;
+      const body = lines.slice(index, end).join('\n');
+      if (!bodies.has(name)) bodies.set(name, []);
+      bodies.get(name).push({ file, body });
+    });
+  }
+  return bodies;
+}
+
+/** Every ``\`X(\` in \`Y\``` claim on an INVARIANT:/PATTERN_SHAPE line, minus explicit denials. */
+function collectScopedAnchors(catalog, content) {
+  const found = [];
+  content.split('\n').forEach((line, index) => {
+    if (!/INVARIANT:|PATTERN_SHAPE/.test(line)) return;
+    for (const match of line.matchAll(scopedAnchorPattern)) {
+      // A clause that calls the anchor stale is denying it, not asserting it. Scope the
+      // disclaimer test to the sentence around the match, never the whole line — these lines
+      // carry many independent clauses and a file-wide `stale` would mute all of them.
+      const clause = line.slice(Math.max(0, match.index - 200), match.index + match[0].length + 200);
+      if (/\bstale\b/i.test(clause)) continue;
+      found.push({ catalog, line: index + 1, callee: match[1], fn: match[2] });
+    }
+  });
+  return found;
+}
+
+function findMisscopedAnchors(anchors, bodies) {
+  return anchors.flatMap((anchor) => {
+    if (scopedAnchorAllowlist.has(`${anchor.catalog}::${anchor.callee} in ${anchor.fn}`)) return [];
+    const declarations = bodies.get(anchor.fn);
+    // Y is not a top-level declaration in the source tree (a method, a shell function, a test
+    // helper). Out of this oracle's competence — the liveness sweep above still covers the token.
+    if (!declarations || declarations.length === 0) return [];
+    if (declarations.some(({ body }) => body.includes(anchor.callee))) return [];
+    return [anchor];
+  });
+}
+
+function readSourceFiles(cwd = repoRoot) {
+  let listing;
+  try {
+    listing = execFileSync('git', ['ls-files', '-z', '--', 'extension/src/*.ts', 'extension/src/**/*.ts'], {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      timeout: ANCHOR_GIT_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    return { ok: false, reason: `git ls-files failed: ${error?.message ?? error}` };
+  }
+  const files = new Map();
+  for (const file of listing.split('\0').filter(Boolean)) {
+    try {
+      files.set(file, fs.readFileSync(path.join(cwd, file), 'utf8'));
+    } catch {
+      // Tracked-but-unreadable is not a sweep failure; the count assertion below proves it ran.
+    }
+  }
+  return files.size === 0
+    ? { ok: false, reason: 'git ls-files matched zero TS sources — sweep would check nothing' }
+    : { ok: true, files };
+}
+
+describe('trap-door catalog anchor scope (fixture parser)', () => {
+  const bodies = collectFunctionBodies(new Map([
+    ['a.ts', 'export function outer(x) {\n  return helper(x);\n}\n\nfunction wrapper(x) {\n  return outer(x);\n}\n'],
+  ]));
+
+  test('an anchor scoping a call to a function that does not contain it is reported', () => {
+    const anchors = collectScopedAnchors('c.md', 'PATTERN_SHAPE: `helper(` in `wrapper`.');
+    assert.deepEqual(findMisscopedAnchors(anchors, bodies), [
+      { catalog: 'c.md', line: 1, callee: 'helper(', fn: 'wrapper' },
+    ]);
+  });
+
+  test('an anchor whose call really is in the named function passes', () => {
+    const anchors = collectScopedAnchors('c.md', 'PATTERN_SHAPE: `helper(` in `outer`.');
+    assert.deepEqual(findMisscopedAnchors(anchors, bodies), []);
+  });
+
+  test('a clause calling the anchor stale is a denial, not a claim', () => {
+    const anchors = collectScopedAnchors(
+      'c.md',
+      'PATTERN_SHAPE: an anchor demanding `helper(` in `wrapper` is stale and matches nothing.',
+    );
+    assert.deepEqual(anchors, []);
+  });
+
+  test('an unknown target function is skipped rather than failed', () => {
+    const anchors = collectScopedAnchors('c.md', 'PATTERN_SHAPE: `helper(` in `notInTree`.');
+    assert.equal(anchors.length, 1);
+    assert.deepEqual(findMisscopedAnchors(anchors, bodies), []);
+  });
+
+  test('lines without an anchor keyword are not scanned', () => {
+    assert.deepEqual(collectScopedAnchors('c.md', 'prose: `helper(` in `wrapper`.'), []);
+  });
+});
+
+describe('trap-door catalog anchor scope (repo)', () => {
+  const sources = readSourceFiles();
+  const anchors = anchorCatalogs.flatMap(catalog => {
+    const absolute = path.join(repoRoot, catalog);
+    if (!fs.existsSync(absolute)) return [];
+    return collectScopedAnchors(catalog, fs.readFileSync(absolute, 'utf8'));
+  });
+
+  test(`sources resolve and scoped anchors are found (${anchors.length} anchors)`, () => {
+    if (!sources.ok) assert.fail(sources.reason);
+    // An empty anchor list is the vacuous pass this whole section exists to prevent.
+    assert.ok(
+      anchors.length > 0,
+      `zero scoped anchors extracted across ${anchorCatalogs.length} catalogs — the extractor matched nothing, which reads clean for the wrong reason`,
+    );
+  });
+
+  test('no PATTERN_SHAPE scopes a call to a function that does not contain it', () => {
+    if (!sources.ok) assert.fail(sources.reason);
+
+    const violations = findMisscopedAnchors(anchors, collectFunctionBodies(sources.files))
+      .map(entry => `${entry.catalog}:${entry.line} \`${entry.callee}\` is not in \`${entry.fn}\``);
+
+    assert.deepEqual(
+      violations,
+      [],
+      'a PATTERN_SHAPE scopes a call to a function whose body does not contain it — the anchor reports a phantom violation on sight AND is inert against the regression it names. Re-scope it to the function that really makes the call, or add it to scopedAnchorAllowlist if the entry is denying the anchor rather than asserting it',
+    );
+  });
+});
