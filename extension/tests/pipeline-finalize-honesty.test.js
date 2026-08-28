@@ -835,3 +835,145 @@ describe('AP-EXT-ITER89-01: the fatal-exit status carries the crash attribution 
     fs.rmSync(dir, { recursive: true });
   });
 });
+
+// AP-EXT-ITER90-01: carrying the persisted record forward used to be a per-CALLSITE obligation,
+// and that made it an enumerated set. `writePipelineStatus` REPLACES pipeline-status.json
+// wholesale (fresh payload + renameSync), so two callsites re-read and rest-spread the record
+// (AP-EXT-ITER88-01 citadel, AP-EXT-ITER89-01 fatal) while four did not — and a dropped key is
+// indistinguishable from a key that never applied. Measured on the compiled mirror, the four
+// unguarded writes erased `citadel_advisory_findings` (writeRunningStatus) and
+// `phase_skips`/`phase_dispositions`/`citadel_advisory_findings` (the terminal finalize write,
+// the terminal `cancelled` signal write, and the SCOPE_EMPTY_POST_BUILD write). Corroborated
+// across 14 host sessions, 13 of which ran citadel: `citadel_advisory_findings` survives in 0.
+//
+// The rule now has ONE home — the writer. These tests pin both halves: an OMITTED key is
+// carried, and an EXPLICIT value always wins (including `null` and `{}`), so the collapse can
+// never degrade into carry-anything.
+describe('AP-EXT-ITER90-01: writePipelineStatus carries the record; callers name only what they set', () => {
+  // Every field a mid-run record holds, so an erasure of any one of them is visible.
+  function seedFullStatus(dir) {
+    writePipelineStatus(dir, 'running', {
+      current_phase: 'citadel',
+      completed_phases: 2,
+      skipped_phases: 1,
+      total_phases: 4,
+      phase_skips: { pickle: 'setup_error' },
+      phase_dispositions: { pickle: 'approach_exhaustion' },
+      citadel_advisory_findings: 7,
+    });
+  }
+
+  test('the real writeRunningStatus path keeps the advisory count at the next phase boundary', () => {
+    // The defect measured in production: surfaceCitadelAdvisory records the count, then the very
+    // next phase boundary erases it, so it NEVER reaches the terminal record an operator reads.
+    // Driven through finalizePhaseSuccess -> writeRunningStatus, not through the writer directly.
+    const dir = tmpDir();
+    const { runtime, statePath, cancelMarker } = makeRuntime(dir);
+    writeState(statePath, 'converged');
+    seedFullStatus(dir);
+
+    const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 0, runtime.log);
+    assert.equal(outcome.action, 'continue');
+
+    const status = readStatus(dir);
+    assert.equal(
+      status.citadel_advisory_findings,
+      7,
+      'B-CSOR T50 operator-awareness count must survive the phase boundary that follows citadel',
+    );
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test('the terminal cancelled write keeps skips, dispositions and the advisory count', () => {
+    // installShutdownHandlers' verbatim details literal: four keys onto a TERMINAL record.
+    const dir = tmpDir();
+    seedFullStatus(dir);
+
+    writePipelineStatus(dir, 'cancelled', {
+      current_phase: null,
+      completed_phases: 2,
+      skipped_phases: 1,
+      total_phases: 4,
+    });
+
+    const status = readStatus(dir);
+    assert.equal(status.status, 'cancelled', 'the signal handler still authors the disposition');
+    assert.equal(status.current_phase, null, 'an EXPLICIT null still wins over the carried phase');
+    assert.deepEqual(status.phase_skips, { pickle: 'setup_error' });
+    assert.deepEqual(status.phase_dispositions, { pickle: 'approach_exhaustion' });
+    assert.equal(status.citadel_advisory_findings, 7);
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test('the SCOPE_EMPTY_POST_BUILD write keeps the attribution it then throws past', () => {
+    // refreshPhaseScope writes `failed` and THROWS, so whatever it strips is what the fatal
+    // handler faithfully carries forward — the strip has to not happen in the first place.
+    const dir = tmpDir();
+    seedFullStatus(dir);
+
+    writePipelineStatus(dir, 'failed', {
+      current_phase: 'szechuan-sauce',
+      completed_phases: 2,
+      skipped_phases: 1,
+      total_phases: 4,
+    });
+
+    const status = readStatus(dir);
+    assert.equal(status.current_phase, 'szechuan-sauce');
+    assert.deepEqual(status.phase_skips, { pickle: 'setup_error' });
+    assert.deepEqual(status.phase_dispositions, { pickle: 'approach_exhaustion' });
+    assert.equal(status.citadel_advisory_findings, 7);
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test('an EXPLICIT empty map clears the key — carry-through is not carry-anything', () => {
+    // finalizePipeline names both maps from the live `counters`, which is their authority: an
+    // emptied map must clear, not resurrect. This is the control that keeps the collapse honest.
+    const dir = tmpDir();
+    seedFullStatus(dir);
+
+    writePipelineStatus(dir, 'completed', {
+      current_phase: null,
+      completed_phases: 4,
+      skipped_phases: 0,
+      total_phases: 4,
+      phase_skips: {},
+      phase_dispositions: {},
+    });
+
+    const status = readStatus(dir);
+    assert.equal(status.phase_skips, undefined, 'an explicit empty map clears the carried value');
+    assert.equal(status.phase_dispositions, undefined);
+    assert.equal(status.skipped_phases, 0, 'an explicit 0 is not treated as "omitted"');
+    assert.equal(status.citadel_advisory_findings, 7, 'an OMITTED key is still carried');
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test('status and updated_at are never carried, and a corrupt counter cannot propagate', () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'pipeline-status.json'), JSON.stringify({
+      status: 'running',
+      current_phase: 'pickle',
+      completed_phases: 'not-a-number',
+      total_phases: 4,
+      citadel_advisory_findings: 'not-a-number',
+      updated_at: '2020-01-01T00:00:00.000Z',
+    }, null, 2));
+
+    writePipelineStatus(dir, 'failed', {});
+
+    const status = readStatus(dir);
+    assert.equal(status.status, 'failed', 'carry-through must never resurrect the running status');
+    assert.notEqual(status.updated_at, '2020-01-01T00:00:00.000Z', 'updated_at is stamped fresh');
+    assert.equal(status.current_phase, 'pickle', 'WHICH phase was running is still carried');
+    assert.equal(status.total_phases, 4);
+    assert.equal(
+      status.completed_phases,
+      0,
+      'the per-field type filter a callsite rest-spread had to abandon is restored in the writer',
+    );
+    assert.equal(status.citadel_advisory_findings, undefined, 'a non-numeric advisory count is filtered, not propagated');
+    fs.rmSync(dir, { recursive: true });
+  });
+});

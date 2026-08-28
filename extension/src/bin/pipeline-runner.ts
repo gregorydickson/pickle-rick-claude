@@ -1372,35 +1372,82 @@ export function __setCloserReleaseActionsForTests(actions: CloserReleaseActions 
   _closerReleaseActionsForTests = actions;
 }
 
+/** The `PipelineStatus` fields a caller may supply; `status`/`updated_at` are always authored here. */
+type PipelineStatusDetails = Partial<Omit<PipelineStatus, 'status' | 'updated_at'>>;
+
+/**
+ * AP-EXT-ITER90-01: the persisted record MINUS the two fields the writer always re-authors.
+ * Reading is best-effort — an absent, unparseable or unreadable status yields an empty carry
+ * so a write never fails for want of a predecessor.
+ */
+function readPriorStatusDetails(statusPath: string): PipelineStatusDetails {
+  try {
+    const prior = readRecoverableJsonObject(statusPath) as Partial<PipelineStatus> | null;
+    if (!prior) return {};
+    const { status: _priorStatus, updated_at: _priorUpdatedAt, ...carried } = prior;
+    return carried;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * AP-EXT-ITER90-01: carry-forward is the WRITER's job, not each caller's.
+ *
+ * This function REPLACES pipeline-status.json wholesale (fresh payload + renameSync), so any
+ * key a caller omitted used to be erased. Making that a per-callsite obligation produced an
+ * enumerated set: two callsites re-read and rest-spread the record while four did not, and a
+ * dropped key is indistinguishable from a key that never applied. Measured on the compiled
+ * mirror, the four unguarded writes erased `citadel_advisory_findings` (writeRunningStatus),
+ * and `phase_skips`/`phase_dispositions`/`citadel_advisory_findings` (the terminal finalize
+ * write, the terminal `cancelled` signal write, and the SCOPE_EMPTY_POST_BUILD write).
+ *
+ * The rule is now uniform and has ONE home: an explicitly supplied value ALWAYS wins —
+ * including `null` (the terminal writes clear `current_phase`) and `{}` (an empty counter map
+ * clears the key) — and ONLY an omitted key falls through to the persisted record. `status`
+ * and `updated_at` are never carried; this write authors both. Unknown keys cannot leak: the
+ * payload is copied field by field, never spread, so the per-field type filtering that a
+ * callsite rest-spread had to abandon is restored here.
+ */
 export function writePipelineStatus(
   sessionDir: string,
   status: PipelineStatusKind,
-  details: Partial<Omit<PipelineStatus, 'status' | 'updated_at'>> = {},
+  details: PipelineStatusDetails = {},
 ): void {
+  const statusPath = path.join(sessionDir, 'pipeline-status.json');
+  const prior = readPriorStatusDetails(statusPath);
+  const carry = <K extends keyof PipelineStatusDetails>(key: K): PipelineStatusDetails[K] =>
+    details[key] !== undefined ? details[key] : prior[key];
+  const counter = (key: 'completed_phases' | 'skipped_phases' | 'total_phases'): number => {
+    const value = carry(key);
+    return typeof value === 'number' ? value : 0;
+  };
   const payload: PipelineStatus = {
     status,
-    current_phase: details.current_phase ?? null,
-    completed_phases: details.completed_phases ?? 0,
-    skipped_phases: details.skipped_phases ?? 0,
-    total_phases: details.total_phases ?? 0,
+    current_phase: carry('current_phase') ?? null,
+    completed_phases: counter('completed_phases'),
+    skipped_phases: counter('skipped_phases'),
+    total_phases: counter('total_phases'),
     updated_at: new Date().toISOString(),
   };
   // R-PSSS-3: carry per-phase skip dispositions only when non-empty so older
   // status consumers and clean runs see no spurious key.
-  if (details.phase_skips && Object.keys(details.phase_skips).length > 0) {
-    payload.phase_skips = details.phase_skips;
+  const phaseSkips = carry('phase_skips');
+  if (phaseSkips && Object.keys(phaseSkips).length > 0) {
+    payload.phase_skips = phaseSkips;
   }
   // B-NONSTOP WS-2 (AC-NS-6): carry per-phase non-convergent dispositions only when
   // non-empty so older status consumers and all-converged runs see no spurious key.
-  if (details.phase_dispositions && Object.keys(details.phase_dispositions).length > 0) {
-    payload.phase_dispositions = details.phase_dispositions;
+  const phaseDispositions = carry('phase_dispositions');
+  if (phaseDispositions && Object.keys(phaseDispositions).length > 0) {
+    payload.phase_dispositions = phaseDispositions;
   }
-  // B-CSOR T50: additive advisory count — assigned only when a numeric value is supplied
+  // B-CSOR T50: additive advisory count — assigned only when a numeric value is available
   // so clean runs and older consumers see no spurious key.
-  if (typeof details.citadel_advisory_findings === 'number') {
-    payload.citadel_advisory_findings = details.citadel_advisory_findings;
+  const advisoryFindings = carry('citadel_advisory_findings');
+  if (typeof advisoryFindings === 'number') {
+    payload.citadel_advisory_findings = advisoryFindings;
   }
-  const statusPath = path.join(sessionDir, 'pipeline-status.json');
   const tmpPath = `${statusPath}.tmp.${process.pid}`;
   fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2));
   fs.renameSync(tmpPath, statusPath);
@@ -2743,22 +2790,15 @@ function surfaceCitadelAdvisory(runtime: PipelineRuntime, advisory: CitadelFindi
       runtime.log(`citadel advisory activity write failed: ${safeErrorMessage(err)}`);
     }
   }
-  // Merge-write the advisory count into pipeline-status.json additively, preserving existing keys.
-  //
-  // AP-EXT-ITER88-01: `writePipelineStatus` builds a FRESH payload and DEFAULTS every field the
-  // caller omits (`current_phase ?? null`, `completed_phases ?? 0`, ...) — the same wholesale
-  // replacement the terminal write documents under AC-NS-1b(i). So a callsite that NAMES the keys
-  // it carries silently erases the rest: naming `status` + `phase_skips` here zeroed
-  // `current_phase`/`completed_phases`/`skipped_phases`/`total_phases` and dropped
-  // `phase_dispositions` on EVERY citadel exit, advisory or not. Carry the persisted record
-  // through WHOLE — one rest-spread, no key list — so the next `PipelineStatus` field added is
-  // not silently zeroed here for want of an edit.
+  // AP-EXT-ITER88-01: write the advisory count ADDITIVELY — every other field of the mid-run
+  // record must survive a citadel exit, advisory or not, because `readResumePhasePlan` gates
+  // crash-resume on `completed_phases > 0` PLUS a recognizable `current_phase`. Carrying is
+  // `writePipelineStatus`'s own contract (AP-EXT-ITER90-01), so this callsite names ONLY what it
+  // sets. `status` is the one field the writer never carries, so re-read it and keep it.
   try {
     const statusPath = path.join(runtime.sessionDir, 'pipeline-status.json');
     const existing = readRecoverableJsonObject(statusPath) as Partial<PipelineStatus> | null;
-    const { status = 'running', ...carried } = existing ?? {};
-    writePipelineStatus(runtime.sessionDir, status, {
-      ...carried,
+    writePipelineStatus(runtime.sessionDir, existing?.status ?? 'running', {
       citadel_advisory_findings: advisory.length,
     });
   } catch (err) {
@@ -4322,11 +4362,11 @@ function finalizePipeline(
 
   try { fs.unlinkSync(cancelMarker); } catch { /* may not exist */ }
 
-  // AC-NS-1b(i): the terminal write REPLACES pipeline-status.json wholesale
-  // (writePipelineStatus builds a fresh payload — it never merges), so any key the
-  // mid-run writeRunningStatus recorded is erased unless it is repeated here. The
-  // dispositions are the only attribution for a non-success exit, and they are read
-  // after the process is gone; dropping them leaves an operator a bare `failed`.
+  // AC-NS-1b(i): the dispositions are the only attribution for a non-success exit, and they
+  // are read after the process is gone; dropping them leaves an operator a bare `failed`.
+  // They are named here because THIS write is their authority — `counters` is the live record
+  // and an emptied map must clear the key. Omitted keys are carried by `writePipelineStatus`
+  // itself (AP-EXT-ITER90-01); repeating them here is no longer what keeps them alive.
   writePipelineStatus(runtime.sessionDir, effectiveFailed ? 'failed' : 'completed', {
     current_phase: null,
     completed_phases: counters.completed,
@@ -5136,24 +5176,13 @@ if (process.argv[1] && path.basename(process.argv[1]) === 'pipeline-runner.js') 
     argv.includes('--no-design-safe') ? false :
     undefined;
   main(sessionDir, { scopeFlag, scopeBase, strictPhases, designSafeFlag }).catch((err) => {
-    // AC-CWRR-5 / AP-EXT-ITER89-01: carry the persisted status record forward WHOLE.
-    // `writePipelineStatus` builds a FRESH payload and DEFAULTS every key the caller omits, so
-    // naming the three counters here silently erased the rest of the crash attribution:
-    // `current_phase` (WHICH phase was running when the crash hit) -> null, and `phase_skips` /
-    // `phase_dispositions` / `citadel_advisory_findings` dropped — the same wholesale replacement
-    // AC-NS-1b(i) documents at the terminal write, whose own comment says the dispositions are
-    // "the only attribution for a non-success exit ... dropping them leaves an operator a bare
-    // `failed`". One rest-spread, no key list, so the next `PipelineStatus` field survives a fatal
-    // exit without an edit here. Unknown keys cannot leak: `writePipelineStatus` never spreads
-    // `details` — it copies only the fields it names.
-    let carried: Partial<Omit<PipelineStatus, 'status' | 'updated_at'>> = {};
+    // AC-CWRR-5 / AP-EXT-ITER89-01: the crash attribution — `current_phase` (WHICH phase was
+    // running when the crash hit), `phase_skips`, `phase_dispositions`,
+    // `citadel_advisory_findings` — must survive a fatal exit, not just a clean finalize. Naming
+    // keys here is what erased it; carrying is now `writePipelineStatus`'s own contract
+    // (AP-EXT-ITER90-01), so this handler sets the terminal disposition and nothing else.
     try {
-      const prior = readRecoverableJsonObject(path.join(sessionDir, 'pipeline-status.json')) as Partial<PipelineStatus> | null;
-      const { status: _priorStatus, updated_at: _priorUpdatedAt, ...rest } = prior ?? {};
-      carried = rest;
-    } catch { /* best effort — fall back to an empty carry */ }
-    try {
-      writePipelineStatus(sessionDir, 'failed', carried);
+      writePipelineStatus(sessionDir, 'failed', {});
     } catch { /* best effort */ }
     const fatalStatePath = path.join(sessionDir, 'state.json');
     try {
