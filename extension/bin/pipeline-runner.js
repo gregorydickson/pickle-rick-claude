@@ -29,6 +29,10 @@ import { classifyMicroverseDisposition } from './microverse-runner.js';
 // flipped Done over a red worker_gate_tests_verdict, so the residual can raise
 // counters.nonConvergent (see collectDoneTicketsWithRedTestVerdict below).
 import { readTicketWorkerGateTestsVerdict } from './setup.js';
+// The per-ANALYST -> per-TICKET collapse has ONE home (spawn-refinement-team.ts). Every
+// cardinality question over `refinement_manifest.json:tickets` routes through it; see
+// `runBundlePreflight`.
+import { collapseAnalystTicketCopies } from './spawn-refinement-team.js';
 // Re-export the single cap literal so existing importers (tests, Module Export Catalog)
 // keep resolving it from pipeline-runner without a second definition.
 export { SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
@@ -847,7 +851,8 @@ function assertComposedPrdsHaveRCodes(composes, workingDir, sessionRoot) {
  * Preconditions (in order):
  *   1. composes_paths_resolve  — all 3 composes: paths resolve to readable files
  *   2. composed_prds_have_R_codes — each composed PRD declares at least one R-<KEY>-<N>
- *   3. manifest_R_code_count_ge_26 — refinement_manifest.json.tickets.length >= 26
+ *   3. manifest_R_code_count_ge_26 — refinement_manifest.json holds >= 26 DISTINCT
+ *      tickets (`collapseAnalystTicketCopies`, not the raw array length)
  */
 export function runBundlePreflight(sessionRoot) {
     const pipelinePath = path.join(sessionRoot, 'pipeline.json');
@@ -871,15 +876,23 @@ export function runBundlePreflight(sessionRoot) {
     catch { /* composes stays empty */ }
     assertComposesPathsResolve(composes, workingDir, sessionRoot);
     assertComposedPrdsHaveRCodes(composes, workingDir, sessionRoot);
+    // `refinement_manifest.json:tickets` is the per-ANALYST concatenation — one logical
+    // ticket appears once per analyst that named it. Measured over the 9 live manifests on
+    // the authoring box, 4 of the 7 non-empty ones carry duplicates, up to 2.00x (12 raw
+    // entries / 6 distinct ids). A raw `.length` therefore overstates the decomposition by
+    // up to `WORKER_ROLES.length`, and this threshold can only be WEAKENED by that: at 2.00x
+    // a 13-ticket refinement reads as 26 and clears a gate that wanted 26 distinct tickets.
+    // The count goes through the collapse's ONE home in `spawn-refinement-team.ts`.
     let ticketCount = 0;
     try {
         const manifest = readRecoverableJsonObject(manifestPath);
-        if (manifest && Array.isArray(manifest.tickets))
-            ticketCount = manifest.tickets.length;
+        if (manifest && Array.isArray(manifest.tickets)) {
+            ticketCount = collapseAnalystTicketCopies(manifest.tickets).length;
+        }
     }
     catch { /* ticketCount stays 0 */ }
     if (ticketCount < 26) {
-        const reason = `refinement manifest has ${ticketCount} tickets, expected >= 26`;
+        const reason = `refinement manifest has ${ticketCount} distinct tickets, expected >= 26`;
         emitPreflightFailed(sessionRoot, 'manifest_R_code_count_ge_26', reason);
         throw new BundlePreflightError('manifest_R_code_count_ge_26', reason);
     }

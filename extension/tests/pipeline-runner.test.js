@@ -2087,6 +2087,78 @@ describe('runBundlePreflight', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // `refinement_manifest.json:tickets` is the per-ANALYST concatenation, so one logical
+  // ticket appears once per analyst that named it. Every fixture above gives DISTINCT ids,
+  // which is why a raw `.length` read passed them all; 4 of the 7 non-empty live manifests
+  // on the authoring box carry duplicates, up to 2.00x. The overcount can only WEAKEN a
+  // `>= 26` floor, so the defect is a preflight that fails OPEN.
+  test('manifest_R_code_count_ge_26 counts DISTINCT tickets, not per-analyst copies', () => {
+    const dir = makeSession();
+    try {
+      const prds = ['prd-a.md', 'prd-b.md', 'prd-c.md'].map((name, i) => {
+        const p = path.join(dir, name);
+        fs.writeFileSync(p, `# PRD ${i}\nR-DIST-${i + 1}: requirement\n`);
+        return p;
+      });
+      fs.writeFileSync(
+        path.join(dir, 'pipeline.json'),
+        JSON.stringify({ phases: ['pickle'], target: dir, composes: prds }),
+      );
+
+      // 30 raw entries, 10 distinct ids — three analysts each naming the same 10 tickets.
+      const tickets = [];
+      for (const role of ['researcher', 'architect', 'skeptic']) {
+        for (let i = 0; i < 10; i += 1) {
+          tickets.push({ id: `ticket-${i}`, source_worker: role, title: `t${i} per ${role}` });
+        }
+      }
+      assert.equal(tickets.length, 30, 'fixture holds 30 raw entries');
+      assert.equal(new Set(tickets.map((t) => t.id)).size, 10, 'fixture holds 10 distinct ids');
+      fs.writeFileSync(path.join(dir, 'refinement_manifest.json'), JSON.stringify({ tickets }));
+
+      assert.throws(
+        () => runBundlePreflight(dir),
+        (err) => {
+          assert.ok(err instanceof BundlePreflightError, 'should be BundlePreflightError');
+          assert.equal(err.failedAssertion, 'manifest_R_code_count_ge_26');
+          assert.match(err.message, /10 distinct tickets/);
+          return true;
+        },
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Control: 26 genuinely distinct tickets still passes, so the collapse did not turn the
+  // floor into a refusal for every manifest.
+  test('manifest_R_code_count_ge_26 passes on 26 distinct tickets carrying analyst copies', () => {
+    const dir = makeSession();
+    try {
+      const prds = ['prd-a.md', 'prd-b.md', 'prd-c.md'].map((name, i) => {
+        const p = path.join(dir, name);
+        fs.writeFileSync(p, `# PRD ${i}\nR-CTRL-${i + 1}: requirement\n`);
+        return p;
+      });
+      fs.writeFileSync(
+        path.join(dir, 'pipeline.json'),
+        JSON.stringify({ phases: ['pickle'], target: dir, composes: prds }),
+      );
+
+      const tickets = [];
+      for (const role of ['researcher', 'architect']) {
+        for (let i = 0; i < 26; i += 1) {
+          tickets.push({ id: `ticket-${i}`, source_worker: role });
+        }
+      }
+      fs.writeFileSync(path.join(dir, 'refinement_manifest.json'), JSON.stringify({ tickets }));
+
+      assert.doesNotThrow(() => runBundlePreflight(dir));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

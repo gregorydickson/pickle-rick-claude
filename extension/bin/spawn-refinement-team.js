@@ -1271,8 +1271,15 @@ function mergeAnalystTicketShape(first, next) {
  * of this collapsed view, never of the raw array: counting raw entries reads an
  * N-analyst consensus on ONE ticket as an N-ticket decomposition, and at the
  * shipped `WORKER_ROLES` count that silently disables the check.
+ *
+ * EXPORTED because "every cardinality question" reaches past this file:
+ * `pipeline-runner.ts:runBundlePreflight` asks the same question of the same
+ * array. A second local `new Set(...ids)` there would be the copy that drifts —
+ * the shape this module's own catalog entry forbids — so the collapse has ONE
+ * home and consumers import it. An entry carrying no `id` is not a distinct
+ * identifiable ticket and collapses with its fellows by design.
  */
-function collapseAnalystTicketCopies(tickets) {
+export function collapseAnalystTicketCopies(tickets) {
     const byId = new Map();
     for (const ticket of tickets) {
         const prior = byId.get(ticket.id);
