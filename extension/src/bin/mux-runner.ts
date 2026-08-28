@@ -1006,6 +1006,46 @@ function persistAndLogPostFinalVerdict(
 }
 
 /**
+ * R-NOPOSTTIER: the applicable-case half of `probePostFinalMeasurement` — the three
+ * world-touching statements that only run once a tier is known to be owed.
+ *
+ * The clock is stamped ONCE and injected into the gate so `last_between_ticket_gate.ts` and the
+ * classifier's `verdictTs` are the same number — `post_final_verdict` carries no `ts` of its own,
+ * so the gate's stamp IS the verdict's timestamp.
+ *
+ * Partial — this MAY throw (the git probe, the gate spawn). Its sole caller runs it inside the ONE
+ * try that lands every throw on the classifier's `absent` arm, so do NOT add a local try here: a
+ * catch would return a half-filled record, which the classifier reads as a positive fact rather
+ * than the unknown it is.
+ */
+function measureApplicablePostFinalTier(input: RunPostFinalMeasurementInput): {
+  gate: BetweenTicketGateResult | null;
+  verdictTs: number;
+  finalCommitTs: number | null;
+} {
+  const ts = (input.now ?? Date.now)();
+  let finalCommitTs: number | null;
+  if (input.finalCommitTs !== undefined) {
+    finalCommitTs = input.finalCommitTs;
+  } else {
+    const epochSeconds = gitCommitEpoch(input.workingDir, readHeadCommit(input.workingDir));
+    finalCommitTs = epochSeconds === null ? null : epochSeconds * 1000;
+  }
+  const gate = runBetweenTicketFastGate({
+    statePath: input.statePath,
+    workingDir: input.workingDir,
+    completedTicketId: input.completedTicketId,
+    nextTicketId: null,
+    landedStatus: 'done',
+    log: input.log,
+    now: () => ts,
+    timeoutMs: POST_FINAL_FAST_GATE_TIMEOUT_MS,
+    runTestFast: input.runTestFast,
+  });
+  return { gate, verdictTs: ts, finalCommitTs };
+}
+
+/**
  * R-NOPOSTTIER: the MEASUREMENT half of `runPostFinalMeasurement` — every statement that touches
  * the world (the working-dir probe, the clock, the git probe, the tier spawn itself) reduced to
  * the classifier's own input record. Split out so its caller reads as the three-step sequence it
@@ -1044,28 +1084,10 @@ function probePostFinalMeasurement(
       && fs.existsSync(path.join(input.workingDir, 'extension'));
 
     if (applicable) {
-      // Stamped once and injected into the gate so `last_between_ticket_gate.ts` and the
-      // classifier's `verdictTs` are the same number — `post_final_verdict` carries no `ts` of its
-      // own, so the gate's stamp IS the verdict's timestamp.
-      const ts = (input.now ?? Date.now)();
-      verdictTs = ts;
-      if (input.finalCommitTs !== undefined) {
-        finalCommitTs = input.finalCommitTs;
-      } else {
-        const epochSeconds = gitCommitEpoch(input.workingDir, readHeadCommit(input.workingDir));
-        finalCommitTs = epochSeconds === null ? null : epochSeconds * 1000;
-      }
-      gate = runBetweenTicketFastGate({
-        statePath: input.statePath,
-        workingDir: input.workingDir,
-        completedTicketId: input.completedTicketId,
-        nextTicketId: null,
-        landedStatus: 'done',
-        log: input.log,
-        now: () => ts,
-        timeoutMs: POST_FINAL_FAST_GATE_TIMEOUT_MS,
-        runTestFast: input.runTestFast,
-      });
+      const measured = measureApplicablePostFinalTier(input);
+      gate = measured.gate;
+      verdictTs = measured.verdictTs;
+      finalCommitTs = measured.finalCommitTs;
     }
   } catch (err) {
     gate = null;
@@ -6897,6 +6919,91 @@ function executeCleanTreeReExecution(
   return 'fallthrough';
 }
 
+/**
+ * Reads the ticket dir's newest `plan_*.md` and parses its authored Phases. Returns null for
+ * EVERY no-plan-to-run case — unreadable dir, no `plan_*.md`, a parse throw, or zero Phases —
+ * so the caller carries one early-return arm instead of four.
+ */
+function readConvergedPlanPhases(ticketDir: string): PlanPhase[] | null {
+  let phases: PlanPhase[];
+  try {
+    const planFile = fs.readdirSync(ticketDir)
+      .filter(f => /^plan_.*\.md$/.test(f))
+      .sort()
+      .pop();
+    if (!planFile) return null;
+    phases = parsePlanPhases(fs.readFileSync(path.join(ticketDir, planFile), 'utf-8'));
+  } catch { return null; }
+  return phases.length === 0 ? null : phases;
+}
+
+/**
+ * AP-EXT-ITER2-01: the rung's verdict is GROUND TRUTH — did a commit actually land — never the
+ * per-phase `commitPhase` tally. Once a no-op phase reads ok (see the empty-staging branch in
+ * `commitConvergedPlanPhase`), `result.committed` counts phases ATTEMPTED, not commits made, so
+ * an all-no-op run (genuinely clean tree, nothing recovered) would read ok on a tally alone.
+ * HEAD moving cannot be faked by a no-op.
+ */
+function reportConvergedPlanOutcome(args: {
+  input: ExecuteConvergedPlanInput;
+  phases: PlanPhase[];
+  result: ReturnType<typeof executePhaseLoop>;
+  headBefore: string | null;
+}): { ok: boolean } {
+  const { input, phases, result, headBefore } = args;
+  const stoppedAt = result.failedIndex !== null ? ` (stopped at phase ${phases[result.failedIndex].index})` : '';
+  const headAfter = convergedPlanHeadSha(input.workingDir);
+  const landed = headAfter !== null && headAfter !== headBefore;
+  input.log(
+    `recovery: execute-converged-plan ran ${result.committed}/${phases.length} phase(s) for ${input.ticketId}${stoppedAt}` +
+    `${landed ? '' : ' — no commit landed'}`,
+  );
+  return { ok: result.ok && landed };
+}
+
+/**
+ * AP-EXT-ITER6-01 / AP-EXT-ITER2-01 / B-RATRAIL: the per-Phase committer
+ * `executeConvergedPlanAdapter` delegates its `commitPhase` adapter to. Stages the whole tree
+ * minus the runtime's own code index, treats an empty index as a no-op, and stamps the runner's
+ * `Pickle-Ticket` trailer on the phase commit.
+ */
+function commitConvergedPlanPhase(input: ExecuteConvergedPlanInput, phase: PlanPhase): { ok: boolean } {
+  // AP-EXT-ITER6-01 replay: the sibling whole-tree add. Same shared exclusion —
+  // a per-Phase recovery commit must not carry the runtime's own `.codegraph/`
+  // index into the target repo.
+  const add = spawnSync('git', ['add', '-A', ...CODEGRAPH_PATHSPEC_EXCLUDES], {
+    cwd: input.workingDir, encoding: 'utf-8', timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
+  });
+  if (add.status !== 0) {
+    return { ok: false };
+  }
+  // AP-EXT-ITER2-01: an empty staging area is a NO-OP, not a failure. The clean-tree
+  // re-execution seam spawns ONE implement pass against the whole plan, so the entire
+  // diff lands in phase 1's commit and phases 2..N have nothing of their own left to
+  // stage. `git commit` exits 1 on an empty index, which read as a phase failure and
+  // stopped the loop — so a plan that fully succeeded reported `ok:false` and the
+  // ladder escalated to the terminal `recovery_exhausted` over committed, green work.
+  // Measured: 31 of the 32 real `plan_*.md` artifacts carrying `## Phase` blocks have
+  // 2+ phases, so this fired on essentially every multi-phase recovery.
+  // No `encoding`: `--quiet` emits nothing and only the exit status is read, so this is
+  // not a capture site and must not claim to be one.
+  if (spawnSync('git', ['diff', '--cached', '--quiet'], {
+    cwd: input.workingDir, timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
+  }).status === 0) {
+    return { ok: true };
+  }
+  const title = phase.title ? ` — ${phase.title}` : '';
+  const phaseMsg = stampPickleTicketTrailer(
+    input.workingDir,
+    `fix(${input.ticketId}): execute-converged-plan phase ${phase.index}${title}`,
+    input.ticketId,
+  );
+  const commit = spawnSync('git', ['commit', '-m', phaseMsg], {
+    cwd: input.workingDir, encoding: 'utf-8', timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
+  });
+  return { ok: commit.status === 0 };
+}
+
 export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): { ok: boolean } {
   const ticketDir = path.join(input.sessionDir, input.ticketId);
 
@@ -6908,22 +7015,9 @@ export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): {
     if (reExec !== 'fallthrough') return reExec;
   }
 
-  let phases: PlanPhase[];
-  try {
-    const planFile = fs.readdirSync(ticketDir)
-      .filter(f => /^plan_.*\.md$/.test(f))
-      .sort()
-      .pop();
-    if (!planFile) return { ok: false };
-    phases = parsePlanPhases(fs.readFileSync(path.join(ticketDir, planFile), 'utf-8'));
-  } catch { return { ok: false }; }
-  if (phases.length === 0) return { ok: false };
+  const phases = readConvergedPlanPhases(ticketDir);
+  if (phases === null) return { ok: false };
 
-  // AP-EXT-ITER2-01: the rung's verdict is GROUND TRUTH — did a commit actually land —
-  // never the per-phase `commitPhase` tally. See the empty-staging branch below: once a
-  // no-op phase reads ok, `result.committed` counts phases ATTEMPTED, not commits made,
-  // so an all-no-op run (genuinely clean tree, nothing recovered) would read ok on a
-  // tally alone. HEAD moving cannot be faked by a no-op.
   const headBefore = convergedPlanHeadSha(input.workingDir);
 
   const result = executePhaseLoop({
@@ -6948,52 +7042,10 @@ export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): {
       });
       return { ok: r.status === 0 };
     },
-    commitPhase: (phase) => {
-      // AP-EXT-ITER6-01 replay: the sibling whole-tree add. Same shared exclusion —
-      // a per-Phase recovery commit must not carry the runtime's own `.codegraph/`
-      // index into the target repo.
-      const add = spawnSync('git', ['add', '-A', ...CODEGRAPH_PATHSPEC_EXCLUDES], {
-        cwd: input.workingDir, encoding: 'utf-8', timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
-      });
-      if (add.status !== 0) {
-        return { ok: false };
-      }
-      // AP-EXT-ITER2-01: an empty staging area is a NO-OP, not a failure. The clean-tree
-      // re-execution seam spawns ONE implement pass against the whole plan, so the entire
-      // diff lands in phase 1's commit and phases 2..N have nothing of their own left to
-      // stage. `git commit` exits 1 on an empty index, which read as a phase failure and
-      // stopped the loop — so a plan that fully succeeded reported `ok:false` and the
-      // ladder escalated to the terminal `recovery_exhausted` over committed, green work.
-      // Measured: 31 of the 32 real `plan_*.md` artifacts carrying `## Phase` blocks have
-      // 2+ phases, so this fired on essentially every multi-phase recovery.
-      // No `encoding`: `--quiet` emits nothing and only the exit status is read, so this is
-      // not a capture site and must not claim to be one.
-      if (spawnSync('git', ['diff', '--cached', '--quiet'], {
-        cwd: input.workingDir, timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
-      }).status === 0) {
-        return { ok: true };
-      }
-      const title = phase.title ? ` — ${phase.title}` : '';
-      const phaseMsg = stampPickleTicketTrailer(
-        input.workingDir,
-        `fix(${input.ticketId}): execute-converged-plan phase ${phase.index}${title}`,
-        input.ticketId,
-      );
-      const commit = spawnSync('git', ['commit', '-m', phaseMsg], {
-        cwd: input.workingDir, encoding: 'utf-8', timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
-      });
-      return { ok: commit.status === 0 };
-    },
+    commitPhase: (phase) => commitConvergedPlanPhase(input, phase),
   });
 
-  const stoppedAt = result.failedIndex !== null ? ` (stopped at phase ${phases[result.failedIndex].index})` : '';
-  const headAfter = convergedPlanHeadSha(input.workingDir);
-  const landed = headAfter !== null && headAfter !== headBefore;
-  input.log(
-    `recovery: execute-converged-plan ran ${result.committed}/${phases.length} phase(s) for ${input.ticketId}${stoppedAt}` +
-    `${landed ? '' : ' — no commit landed'}`,
-  );
-  return { ok: result.ok && landed };
+  return reportConvergedPlanOutcome({ input, phases, result, headBefore });
 }
 
 /** HEAD sha for the converged-plan rung's landed-commit check; null when unreadable. */

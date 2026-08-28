@@ -469,9 +469,17 @@ test('anchor: the two call sites are the ones the trap door names', () => {
     1,
     'call site 1 lives in commitAndContinueDoneFlip',
   );
+  // Call site 2 lives in the per-Phase committer `commitConvergedPlanPhase`, which
+  // `executeConvergedPlanAdapter` delegates its `commitPhase` adapter to. The routing is pinned
+  // in two halves so neither the stamp nor the delegation can be dropped alone.
   assert.equal(
-    occurrences(windowFrom('export function executeConvergedPlanAdapter('), 'stampPickleTicketTrailer('),
+    occurrences(windowFrom('function commitConvergedPlanPhase('), 'stampPickleTicketTrailer('),
     1,
-    "call site 2 lives in executeConvergedPlanAdapter's commitPhase",
+    'call site 2 lives in commitConvergedPlanPhase, the per-Phase committer',
+  );
+  assert.equal(
+    occurrences(windowFrom('export function executeConvergedPlanAdapter('), 'commitConvergedPlanPhase('),
+    1,
+    'executeConvergedPlanAdapter must route its commitPhase adapter through that committer',
   );
 });
