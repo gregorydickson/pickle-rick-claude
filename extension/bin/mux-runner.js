@@ -9458,6 +9458,149 @@ export function runTerminalReport(input) {
     displayMacNotification(notif.title, notif.body, notif.subtitle);
     return completionVerdict;
 }
+/**
+ * Startup validation — mux-runner only. microverse-runner owns its own sentinels
+ * (worker_timeout_seconds=0 disables per-iteration timeout there; max_iterations=0
+ * means unlimited iterations there). These rules must NOT be shared.
+ *
+ * R-WTZ: repairs a zeroed worker_timeout_seconds before validation so a poisoned
+ * sentinel value does not brick the phase with exit 2. Logged here for
+ * observability; validateStartupState performs the same (idempotent) repair
+ * silently as part of the single authoritative validation path.
+ */
+function validateRunnerStartupState(ownerState, statePath, log) {
+    const timeoutRepair = repairZeroWorkerTimeout(ownerState);
+    if (timeoutRepair.repaired) {
+        sm.update(statePath, s => { s.worker_timeout_seconds = timeoutRepair.value; });
+        log(`[mux-runner] R-WTZ: repaired worker_timeout_seconds 0 → ${timeoutRepair.value}s at load`);
+    }
+    // Single source of truth for startup-state validation — the same rules used
+    // by validateStartupState (covered by mux-runner-startup-validation.test.js).
+    // Convert its thrown Error into the runner's exit-2 contract.
+    try {
+        validateStartupState(ownerState, statePath);
+    }
+    catch (err) {
+        console.error(safeErrorMessage(err));
+        process.exit(2);
+    }
+}
+/**
+ * Startup orphan reapers. Both are best-effort: a reaper failure is logged and
+ * swallowed so it can never block the run from starting.
+ */
+function runStartupOrphanReapers(statePath, extensionRoot, log) {
+    try {
+        const extensionDir = path.join(extensionRoot, 'extension');
+        reapOrphanedFastTestRunnersOnStartup(statePath, extensionDir, log);
+    }
+    catch (err) {
+        log(`startup orphan fast-test reaper failed (ignored): ${safeErrorMessage(err)}`);
+    }
+    try {
+        runPipelineOrphanWorkerReap(statePath, path.join(getDataRoot(), 'sessions'), log);
+    }
+    catch (err) {
+        log(`startup orphan worker-proc reaper failed (ignored): ${safeErrorMessage(err)}`);
+    }
+}
+/**
+ * Session-scoped resource bootstrap: the 4-pane monitor window, the one-shot
+ * package.json drift probe, the phantom-Done watcher, the codegraph session, and
+ * the shutdown handlers that release the last two.
+ *
+ * The monitor window is owned here rather than by each pickle skill prompt
+ * (pickle-tmux, pickle-pipeline, pickle-refine-prd, …), which used to end with a
+ * manual `bash tmux-monitor.sh …` step the agent sometimes dropped silently.
+ * Owning it here makes it unskippable. No-op when not inside tmux.
+ */
+function bootstrapSessionResources(opts) {
+    const { sessionDir, statePath, extensionRoot, ownerState, log } = opts;
+    try {
+        const result = ensureMonitorWindow({ sessionDir, extensionRoot, log });
+        log(`ensureMonitorWindow: ${result.status}${result.reason ? ` (${result.reason})` : ''}`);
+    }
+    catch (err) {
+        log(`ensureMonitorWindow: threw (ignored): ${safeErrorMessage(err)}`);
+    }
+    // R-PJV-2: one-shot package.json version drift detector.
+    try {
+        const srcPkgPath = path.join(ownerState.working_dir ?? '', 'extension', 'package.json');
+        const depPkgPath = path.join(extensionRoot, 'extension', 'package.json');
+        detectPkgJsonVersionDrift(srcPkgPath, depPkgPath, statePath);
+    }
+    catch (err) {
+        log(`detectPkgJsonVersionDrift: threw (ignored): ${safeErrorMessage(err)}`);
+    }
+    // R-ICP-5: phantom-Done filesystem watcher (see startPhantomDoneWatchers).
+    // Closed on SIGTERM/SIGINT/SIGHUP/exit so we don't leak file descriptors.
+    const phantomDoneWatcher = startPhantomDoneWatchers({
+        sessionDir,
+        statePath,
+        defaultWorkingDir: ownerState.working_dir || process.cwd(),
+        log,
+    });
+    const closePhantomDoneWatchers = () => { phantomDoneWatcher.close(); };
+    process.on('exit', closePhantomDoneWatchers);
+    // Session-scoped codegraph (see createCodegraphSession). Built before signal handlers
+    // so those closures can reference it; `init()` runs in the caller, after registration.
+    const codegraph = createCodegraphSession({
+        statePath,
+        sessionDir,
+        workingDir: ownerState.working_dir || process.cwd(),
+        log,
+    });
+    // Graceful shutdown (see installShutdownSignalHandlers) — deactivates the
+    // session, stamps the B-RRH C2 sentinel, and closes the session-scoped handles
+    // built above.
+    installShutdownSignalHandlers({
+        statePath,
+        sessionDir,
+        log,
+        releaseSessionResources: () => {
+            closePhantomDoneWatchers();
+            codegraph.emitSummary();
+            codegraph.close();
+        },
+    });
+    return { codegraph, closePhantomDoneWatchers };
+}
+/**
+ * B4 (ticket e9bdac75): park survives --resume. If a persisted park-arm exists
+ * with a still-future reset_at, RE-ARM the park (re-write rate_limit_wait.json so
+ * the watchdogs see in_wait_state and no worker spawns) instead of clearing it.
+ * Otherwise clean up a stale rate_limit_wait.json from a previous crashed session.
+ */
+function restorePersistedRateLimitPark(opts) {
+    const { sessionDir, statePath, ownerState, log } = opts;
+    const persistedPark = ownerState.rate_limit_park ?? null;
+    const persistedReset = persistedPark?.reset_at_epoch_sec ?? null;
+    const parkArmStillFuture = typeof persistedReset === 'number' && persistedReset > 0
+        && persistedReset * 1000 > Date.now();
+    if (parkArmStillFuture && persistedPark) {
+        writeStateFile(path.join(sessionDir, 'rate_limit_wait.json'), {
+            waiting: true, reason: 'API rate limit (re-armed on resume)',
+            started_at: new Date().toISOString(),
+            wait_until: new Date(persistedReset * 1000).toISOString(),
+            consecutive_waits: persistedPark.consecutive_waits,
+            rate_limit_type: null,
+            resets_at_epoch: persistedReset,
+            wait_source: 'api',
+        });
+        log(`Re-armed rate-limit park from persisted state (reset_at ${new Date(persistedReset * 1000).toISOString()}) — not spawn-burning.`);
+        return;
+    }
+    try {
+        fs.unlinkSync(path.join(sessionDir, 'rate_limit_wait.json'));
+    }
+    catch { /* not present */ }
+    if (persistedPark) {
+        try {
+            sm.update(statePath, (s) => { s.rate_limit_park = null; });
+        }
+        catch { /* best-effort */ }
+    }
+}
 // eslint-disable-next-line -- legacy mux runner loop retained behavior-preserving for global bin acceptance
 async function runMuxRunnerMain() {
     const sessionDir = process.argv[2];
@@ -9488,43 +9631,8 @@ async function runMuxRunnerMain() {
         const msg = safeErrorMessage(err);
         throw new Error(`Cannot read initial state.json: ${msg}`);
     }
-    // Startup validation — mux-runner only. microverse-runner owns its own sentinels
-    // (worker_timeout_seconds=0 disables per-iteration timeout there; max_iterations=0
-    // means unlimited iterations there). These rules must NOT be shared.
-    {
-        // R-WTZ: repair a zeroed worker_timeout_seconds before validation so a
-        // poisoned sentinel value does not brick the phase with exit 2. Logged here
-        // for observability; validateStartupState performs the same (idempotent)
-        // repair silently as part of the single authoritative validation path.
-        const timeoutRepair = repairZeroWorkerTimeout(ownerState);
-        if (timeoutRepair.repaired) {
-            sm.update(statePath, s => { s.worker_timeout_seconds = timeoutRepair.value; });
-            log(`[mux-runner] R-WTZ: repaired worker_timeout_seconds 0 → ${timeoutRepair.value}s at load`);
-        }
-        // Single source of truth for startup-state validation — the same rules used
-        // by validateStartupState (covered by mux-runner-startup-validation.test.js).
-        // Convert its thrown Error into the runner's exit-2 contract.
-        try {
-            validateStartupState(ownerState, statePath);
-        }
-        catch (err) {
-            console.error(safeErrorMessage(err));
-            process.exit(2);
-        }
-    }
-    try {
-        const extensionDir = path.join(extensionRoot, 'extension');
-        reapOrphanedFastTestRunnersOnStartup(statePath, extensionDir, log);
-    }
-    catch (err) {
-        log(`startup orphan fast-test reaper failed (ignored): ${safeErrorMessage(err)}`);
-    }
-    try {
-        runPipelineOrphanWorkerReap(statePath, path.join(getDataRoot(), 'sessions'), log);
-    }
-    catch (err) {
-        log(`startup orphan worker-proc reaper failed (ignored): ${safeErrorMessage(err)}`);
-    }
+    validateRunnerStartupState(ownerState, statePath, log);
+    runStartupOrphanReapers(statePath, extensionRoot, log);
     if (ownerState.tmux_mode === true &&
         (ownerState.active !== true || ownerState.pid !== process.pid)) {
         sm.update(statePath, s => {
@@ -9536,90 +9644,14 @@ async function runMuxRunnerMain() {
             ? 'Session ownership refreshed (pid updated)'
             : 'Session ownership taken (active: false → true)');
     }
-    // Auto-spawn the 4-pane monitor window. Previously each pickle skill prompt
-    // (pickle-tmux, pickle-pipeline, pickle-refine-prd, …) ended with a manual
-    // `bash tmux-monitor.sh …` step that the agent sometimes dropped silently.
-    // Owning it here makes it unskippable. No-op when not inside tmux.
-    try {
-        const result = ensureMonitorWindow({ sessionDir, extensionRoot, log });
-        log(`ensureMonitorWindow: ${result.status}${result.reason ? ` (${result.reason})` : ''}`);
-    }
-    catch (err) {
-        log(`ensureMonitorWindow: threw (ignored): ${safeErrorMessage(err)}`);
-    }
-    // R-PJV-2: one-shot package.json version drift detector.
-    try {
-        const srcPkgPath = path.join(ownerState.working_dir ?? '', 'extension', 'package.json');
-        const depPkgPath = path.join(extensionRoot, 'extension', 'package.json');
-        detectPkgJsonVersionDrift(srcPkgPath, depPkgPath, statePath);
-    }
-    catch (err) {
-        log(`detectPkgJsonVersionDrift: threw (ignored): ${safeErrorMessage(err)}`);
-    }
-    // R-ICP-5: phantom-Done filesystem watcher (see startPhantomDoneWatchers).
-    // Closed on SIGTERM/SIGINT/SIGHUP/exit so we don't leak file descriptors.
-    const phantomDoneWatcher = startPhantomDoneWatchers({
+    const { codegraph, closePhantomDoneWatchers } = bootstrapSessionResources({
         sessionDir,
         statePath,
-        defaultWorkingDir: ownerState.working_dir || process.cwd(),
+        extensionRoot,
+        ownerState,
         log,
     });
-    const closePhantomDoneWatchers = () => { phantomDoneWatcher.close(); };
-    process.on('exit', closePhantomDoneWatchers);
-    // Session-scoped codegraph (see createCodegraphSession). Built before signal handlers
-    // so those closures can reference it; `init()` runs below, after registration.
-    const codegraph = createCodegraphSession({
-        statePath,
-        sessionDir,
-        workingDir: ownerState.working_dir || process.cwd(),
-        log,
-    });
-    // Graceful shutdown (see installShutdownSignalHandlers) — deactivates the
-    // session, stamps the B-RRH C2 sentinel, and closes the session-scoped handles
-    // built above.
-    installShutdownSignalHandlers({
-        statePath,
-        sessionDir,
-        log,
-        releaseSessionResources: () => {
-            closePhantomDoneWatchers();
-            codegraph.emitSummary();
-            codegraph.close();
-        },
-    });
-    // B4 (ticket e9bdac75): park survives --resume. If a persisted park-arm exists
-    // with a still-future reset_at, RE-ARM the park (re-write rate_limit_wait.json so
-    // the watchdogs see in_wait_state and no worker spawns) instead of clearing it.
-    // Otherwise clean up a stale rate_limit_wait.json from a previous crashed session.
-    const persistedPark = ownerState.rate_limit_park ?? null;
-    const persistedReset = persistedPark?.reset_at_epoch_sec ?? null;
-    const parkArmStillFuture = typeof persistedReset === 'number' && persistedReset > 0
-        && persistedReset * 1000 > Date.now();
-    if (parkArmStillFuture && persistedPark) {
-        writeStateFile(path.join(sessionDir, 'rate_limit_wait.json'), {
-            waiting: true, reason: 'API rate limit (re-armed on resume)',
-            started_at: new Date().toISOString(),
-            wait_until: new Date(persistedReset * 1000).toISOString(),
-            consecutive_waits: persistedPark.consecutive_waits,
-            rate_limit_type: null,
-            resets_at_epoch: persistedReset,
-            wait_source: 'api',
-        });
-        log(`Re-armed rate-limit park from persisted state (reset_at ${new Date(persistedReset * 1000).toISOString()}) — not spawn-burning.`);
-    }
-    else {
-        // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-        try {
-            fs.unlinkSync(path.join(sessionDir, 'rate_limit_wait.json'));
-        }
-        catch { /* not present */ }
-        if (persistedPark) {
-            try {
-                sm.update(statePath, (s) => { s.rate_limit_park = null; });
-            }
-            catch { /* best-effort */ }
-        }
-    }
+    restorePersistedRateLimitPark({ sessionDir, statePath, ownerState, log });
     const cbSettings = loadSettings(extensionRoot);
     const cbEnabled = cbSettings.enabled;
     let cbState = cbEnabled ? initCircuitBreaker(sessionDir, cbSettings) : null;
