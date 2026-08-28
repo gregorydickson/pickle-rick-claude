@@ -1032,9 +1032,44 @@ export function armChildMuxRunnerHeartbeat(opts, deps = {}) {
     const timer = setIntervalFn(tick, opts.heartbeatMs);
     return { stop };
 }
+/**
+ * One-shot teardown latch for a phase child. `exit` and `error` are both terminal and
+ * either can arrive first, so the returned settler lets the FIRST arrival own the
+ * teardown — stopping the heartbeat and clearing the active-child tracking that
+ * R-OMTD's group reap reads — and makes every later arrival a no-op. Hand-copying this
+ * into each handler is how the jar-runner's three settle copies drifted, one of them
+ * silently ceasing to clear its timers (root CLAUDE.md § Complexity rule 2).
+ */
+function makePhaseChildSettler(heartbeat) {
+    let settled = false;
+    return (finish) => {
+        if (settled)
+            return;
+        settled = true;
+        heartbeat?.stop();
+        activeChild = null;
+        activeChildLeadsGroup = false;
+        finish();
+    };
+}
+/**
+ * The mux-runner no-progress heartbeat for a phase child, or `null` when there is no
+ * progress signal to watch: a non-mux-runner child has no iteration log, and
+ * `phaseRunnerContext` is installed by `main` alone, so an out-of-phase spawn has
+ * nowhere to read the stall thresholds from.
+ */
+function armPhaseChildMuxRunnerHeartbeat(child, args) {
+    if (!phaseRunnerContext || !isMuxRunnerInvocation(args))
+        return null;
+    return armChildMuxRunnerHeartbeat({
+        child,
+        sessionDir: phaseRunnerContext.sessionDir,
+        heartbeatMs: phaseRunnerContext.childMuxRunnerHeartbeatMs,
+        stallSeconds: phaseRunnerContext.childMuxRunnerStallSeconds,
+    });
+}
 function spawnRunner(cmd, args, env) {
     return new Promise((resolve, reject) => {
-        let settled = false;
         let stdout = '';
         let stderr = '';
         // R-OMTD: spawn the mux-runner child in its OWN process group so a SIGTERM
@@ -1048,13 +1083,7 @@ function spawnRunner(cmd, args, env) {
         });
         activeChild = child;
         activeChildLeadsGroup = leadsGroup;
-        const heartbeat = (phaseRunnerContext &&
-            isMuxRunnerInvocation(args)) ? armChildMuxRunnerHeartbeat({
-            child,
-            sessionDir: phaseRunnerContext.sessionDir,
-            heartbeatMs: phaseRunnerContext.childMuxRunnerHeartbeatMs,
-            stallSeconds: phaseRunnerContext.childMuxRunnerStallSeconds,
-        }) : null;
+        const heartbeat = armPhaseChildMuxRunnerHeartbeat(child, args);
         // `setEncoding` before the first read, NOT a per-chunk `toString()`: an OS pipe boundary
         // is a BYTE offset, so a multi-byte UTF-8 character straddles it and each half decodes to
         // U+FFFD — mojibake in the echoed phase output AND in the accumulated stdout/stderr this
@@ -1073,24 +1102,9 @@ function spawnRunner(cmd, args, env) {
             stderr += text;
             process.stderr.write(text);
         });
-        child.on('exit', (code) => {
-            if (!settled) {
-                settled = true;
-                heartbeat?.stop();
-                activeChild = null;
-                activeChildLeadsGroup = false;
-                resolve({ exitCode: code ?? 1, stdout, stderr });
-            }
-        });
-        child.on('error', (err) => {
-            if (!settled) {
-                settled = true;
-                heartbeat?.stop();
-                activeChild = null;
-                activeChildLeadsGroup = false;
-                reject(err);
-            }
-        });
+        const settle = makePhaseChildSettler(heartbeat);
+        child.on('exit', (code) => settle(() => resolve({ exitCode: code ?? 1, stdout, stderr })));
+        child.on('error', (err) => settle(() => reject(err)));
     });
 }
 async function runSpawnRunner(cmd, args, env) {
@@ -2409,45 +2423,79 @@ function healPipelineRequiredFields(runtime) {
     }
     return { prdPath, startCommit };
 }
-export async function executeCitadelPhase(runtime) {
+/**
+ * The two `state.json` fields the citadel audit cannot run without, after
+ * `healPipelineRequiredFields` has had its chance to recover them. `null` means the phase
+ * fails; the caller must NOT fall back to the pre-heal snapshot (R-PSCG).
+ */
+function resolveCitadelPhaseInputs(runtime) {
     const { prdPath, startCommit } = healPipelineRequiredFields(runtime);
-    if (!prdPath || !startCommit) {
-        const missing = [
-            !prdPath ? 'state.prd_path' : null,
-            !startCommit ? 'state.start_commit' : null,
-        ].filter(Boolean).join(' and ');
-        runtime.log(`citadel: missing ${missing} — failing phase`);
-        return { exitCode: 1 };
+    if (prdPath && startCommit)
+        return { prdPath, startCommit };
+    const missing = [
+        !prdPath ? 'state.prd_path' : null,
+        !startCommit ? 'state.start_commit' : null,
+    ].filter(Boolean).join(' and ');
+    runtime.log(`citadel: missing ${missing} — failing phase`);
+    return null;
+}
+/**
+ * T40: whether the mechanical (deterministically-fixable, sub-threshold) floor is armed.
+ * The floor is additive over the severity threshold and otherwise unconditional — the ONLY
+ * way to collapse it to threshold-only behavior is the UNIFIED skip surface (no new
+ * per-gate flag, W5b). Emits the skip event ONCE per phase invocation, not per cycle.
+ */
+function resolveCitadelMechanicalFloorEnabled(runtime, state) {
+    const rawReason = state.flags?.skip_quality_gates_reason;
+    const skipReason = typeof rawReason === 'string' && rawReason.trim() ? rawReason.trim() : null;
+    if (!skipReason)
+        return true;
+    // MUST go to the activity-dir jsonl sink via logActivity, NOT state.json.activity:
+    // the W5c skip-flag budget scanner (scanSkipFlagEvents) reads only
+    // getDataRoot()/activity/<day>.jsonl, so a state.json.activity write would leave the
+    // purpose-built citadel-mechanical::skip_quality_gates budget stuck at 0 forever.
+    try {
+        logActivity({
+            event: 'gate_skipped',
+            source: 'citadel-mechanical',
+            ts: new Date().toISOString(),
+            gate_payload: { reason: 'skip_quality_gates', detail: skipReason },
+        });
     }
+    catch (err) {
+        runtime.log(`citadel: gate_skipped activity write failed: ${safeErrorMessage(err)}`);
+    }
+    return false;
+}
+/**
+ * Split one audit cycle's findings into the remediator's input set and the advisory
+ * remainder. `toRemediate` is the threshold set plus the mechanical floor (deduped by id);
+ * `advisory` is the disjoint remainder — sub-threshold AND non-mechanical
+ * (`orphan-` prefixes and nested-ternary) — computed via `isMechanicalCitadelFinding`
+ * directly so the
+ * advisory class stays stable regardless of whether the floor is armed.
+ */
+function partitionCitadelCycleFindings(findings, threshold, mechanicalFloorEnabled) {
+    const remediable = findings.filter(f => findingMeetsThreshold(f, threshold));
+    const mechanical = mechanicalFloorEnabled ? findings.filter(isMechanicalCitadelFinding) : [];
+    const seen = new Set(remediable.map(f => f.id));
+    return {
+        toRemediate: [...remediable, ...mechanical.filter(f => !seen.has(f.id))],
+        remediable,
+        mechanical,
+        advisory: findings.filter(f => !findingMeetsThreshold(f, threshold) && !isMechanicalCitadelFinding(f)),
+    };
+}
+export async function executeCitadelPhase(runtime) {
+    const inputs = resolveCitadelPhaseInputs(runtime);
+    if (!inputs)
+        return { exitCode: 1 };
+    const { prdPath, startCommit } = inputs;
     const state = sm.read(runtime.statePath);
     const reportPath = path.join(runtime.sessionDir, 'citadel_report.json');
     const { cap, remediatorTimeoutMs } = citadelRemediationDeps.loadSettings();
     const threshold = remediationSeverityThreshold(runtime.config.citadel_strict);
-    // T40 bypass: the mechanical floor is additive over the threshold set; the ONLY way to
-    // collapse it to the Critical-only/threshold-only behavior is the UNIFIED skip
-    // surface (no new per-gate flag — W5b). The floor is otherwise unconditional.
-    const skipReason = typeof state.flags?.skip_quality_gates_reason === 'string' && state.flags.skip_quality_gates_reason.trim()
-        ? state.flags.skip_quality_gates_reason.trim()
-        : null;
-    const mechanicalEnabled = !skipReason;
-    if (skipReason) {
-        // Emit ONCE per phase invocation (not per cycle).
-        // MUST go to the activity-dir jsonl sink via logActivity, NOT state.json.activity:
-        // the W5c skip-flag budget scanner (scanSkipFlagEvents) reads only
-        // getDataRoot()/activity/<day>.jsonl, so a state.json.activity write would leave the
-        // purpose-built citadel-mechanical::skip_quality_gates budget stuck at 0 forever.
-        try {
-            logActivity({
-                event: 'gate_skipped',
-                source: 'citadel-mechanical',
-                ts: new Date().toISOString(),
-                gate_payload: { reason: 'skip_quality_gates', detail: skipReason },
-            });
-        }
-        catch (err) {
-            runtime.log(`citadel: gate_skipped activity write failed: ${safeErrorMessage(err)}`);
-        }
-    }
+    const mechanicalEnabled = resolveCitadelMechanicalFloorEnabled(runtime, state);
     // Outer accumulator tracks what was actually ATTEMPTED (the union), so the cap-exhausted
     // log below reflects the full set fed to the remediator, not just the threshold subset.
     let toRemediate = [];
@@ -2467,17 +2515,10 @@ export async function executeCitadelPhase(runtime) {
             reportPath,
             strict: runtime.config.citadel_strict,
         });
-        const remediable = result.findings.filter(f => findingMeetsThreshold(f, threshold));
-        // ADDITIVE floor: mechanical (deterministically-fixable, sub-threshold) findings join the
-        // remediator set without weakening the Critical/High threshold filter above.
-        const mechanical = mechanicalEnabled ? result.findings.filter(isMechanicalCitadelFinding) : [];
-        const seen = new Set(remediable.map(f => f.id));
-        toRemediate = [...remediable, ...mechanical.filter(f => !seen.has(f.id))];
-        // ADVISORY subset: sub-threshold AND non-mechanical (orphan-*/nested-ternary). Computed from
-        // the SAME result, via isMechanicalCitadelFinding directly (independent of T40's enabled flag)
-        // because the advisory class is stable regardless of the skip surface.
-        lastAdvisory = result.findings.filter(f => !findingMeetsThreshold(f, threshold) && !isMechanicalCitadelFinding(f));
-        runtime.log(`citadel: cycle ${cycle + 1}/${cap} — wrote ${reportPath} with ${result.findings.length} finding(s), ${remediable.length} remediable (>= ${threshold}), ${mechanical.length} mechanical, ${toRemediate.length} total, ${lastAdvisory.length} advisory`);
+        const cyclePartition = partitionCitadelCycleFindings(result.findings, threshold, mechanicalEnabled);
+        toRemediate = cyclePartition.toRemediate;
+        lastAdvisory = cyclePartition.advisory;
+        runtime.log(`citadel: cycle ${cycle + 1}/${cap} — wrote ${reportPath} with ${result.findings.length} finding(s), ${cyclePartition.remediable.length} remediable (>= ${threshold}), ${cyclePartition.mechanical.length} mechanical, ${toRemediate.length} total, ${lastAdvisory.length} advisory`);
         if (toRemediate.length === 0) {
             runtime.log('citadel: no remediable findings — phase complete, continuing pipeline');
             surfaceCitadelAdvisory(runtime, lastAdvisory);
@@ -2916,31 +2957,31 @@ function setupRuntimeScope(sessionDir, workingDir, target, opts, pipelineRaw, lo
         return;
     setupScope({ sessionDir, workingDir, target, scopeFlag, scopeBase, log });
 }
-function loadPipelineRuntime(sessionDir, opts, log) {
-    const extensionRoot = getExtensionRoot();
-    const statePath = path.join(sessionDir, 'state.json');
-    const pipelinePath = path.join(sessionDir, 'pipeline.json');
-    ensurePipelineMonitor(sessionDir, extensionRoot, log);
-    const { config, raw: pipelineRaw } = readPipelineConfig(pipelinePath);
-    let state = readClaimedPipelineState(statePath);
-    const workingDir = state.working_dir || process.cwd();
+/**
+ * Re-reconcile the claimed state with the two launch-time overrides that can rewrite it:
+ * the reconstruction epoch reset and `--strict-phases`. Each rewrite lands on disk, so the
+ * caller needs the RE-READ state, never its pre-override snapshot.
+ */
+function applyPipelineStateOverrides(state, statePath, sessionDir, opts, log) {
     const reset = applyEpochResetOnReconstruction(state, statePath, sessionDir);
     if (reset) {
         log(`reconstruction detected (iteration=${state.iteration ?? 0}) — start_time_epoch reset ${reset.originalEpoch ?? '?'} → ${reset.newEpoch}`);
     }
-    state = reset ? sm.read(statePath) : state;
-    if (applyStrictPhasesOverride(statePath, opts.strictPhases === true, log)) {
-        state = sm.read(statePath);
-    }
-    const { backend, phaseEnv } = resolvePipelineBackend(statePath, state, config, sessionDir, log);
-    // W1d: the dirty-tree preflight evaluates dirtiness ONLY over `allowed_paths` (the run scope) when a
-    // persisted scope.json exists, so an out-of-scope autofix (lint --fix) cannot abort launch/relaunch.
+    const strictApplied = applyStrictPhasesOverride(statePath, opts.strictPhases === true, log);
+    return reset || strictApplied ? sm.read(statePath) : state;
+}
+/**
+ * Bring the working tree to the clean state the phase loop requires, or FATAL. Three
+ * self-heals run first, in order, because each can be the reason the tree is dirty:
+ * a manager-boundary relaunch's interrupted ticket, a cold crash mid-implement, and
+ * only then the assertion. Dirtiness is evaluated ONLY over `allowed_paths` when a
+ * persisted scope.json exists (W1d), so an out-of-scope autofix cannot abort relaunch.
+ */
+function preparePipelineWorkingTree(state, workingDir, sessionDir, statePath, config, log) {
     const dirtyScope = {
         exemptSegments: config.dirty_exempt_segments,
         allowedPaths: readPersistedAllowedPaths(sessionDir),
     };
-    // At manager-boundary relaunch, reset dirty files left by the interrupted
-    // in-flight ticket so the subsequent assertCleanWorkingTree does not throw.
     const relaunchCount = typeof state.manager_relaunch_count === 'number' ? state.manager_relaunch_count : 0;
     if (relaunchCount > 0) {
         resetInterruptedTicketWorkForRelaunch(workingDir, dirtyScope, log);
@@ -2960,17 +3001,38 @@ function loadPipelineRuntime(sessionDir, opts, log) {
         log,
     });
     assertCleanWorkingTree(workingDir, dirtyScope);
-    setupRuntimeScope(sessionDir, workingDir, config.target || workingDir, opts, pipelineRaw, log);
-    let repoRoot = workingDir;
+}
+/**
+ * The git toplevel for `workingDir`, which is what citadel's diff walker must key its
+ * repo-relative paths on (R-CWRR): in a monorepo the session's working dir is a package
+ * subdirectory, and using it as the repo root yields package-relative paths that match
+ * nothing. Falls back to `workingDir` itself when it is not a git checkout.
+ */
+function resolveGitRepoRoot(workingDir) {
     try {
         const out = execFileSync('git', ['-C', workingDir, 'rev-parse', '--show-toplevel'], {
             encoding: 'utf-8',
             timeout: GIT_REPO_ROOT_TIMEOUT_MS,
         }).trim();
         if (out)
-            repoRoot = out;
+            return out;
     }
     catch { /* non-git dir — fall back to workingDir */ }
+    return workingDir;
+}
+function loadPipelineRuntime(sessionDir, opts, log) {
+    const extensionRoot = getExtensionRoot();
+    const statePath = path.join(sessionDir, 'state.json');
+    const pipelinePath = path.join(sessionDir, 'pipeline.json');
+    ensurePipelineMonitor(sessionDir, extensionRoot, log);
+    const { config, raw: pipelineRaw } = readPipelineConfig(pipelinePath);
+    const claimed = readClaimedPipelineState(statePath);
+    const workingDir = claimed.working_dir || process.cwd();
+    const state = applyPipelineStateOverrides(claimed, statePath, sessionDir, opts, log);
+    const { backend, phaseEnv } = resolvePipelineBackend(statePath, state, config, sessionDir, log);
+    preparePipelineWorkingTree(state, workingDir, sessionDir, statePath, config, log);
+    setupRuntimeScope(sessionDir, workingDir, config.target || workingDir, opts, pipelineRaw, log);
+    const repoRoot = resolveGitRepoRoot(workingDir);
     const designSafe = resolveDesignSafe(state.start_commit, repoRoot, opts.designSafeFlag);
     log(`design_safe resolved: ${String(designSafe)}${opts.designSafeFlag !== undefined ? ' (CLI override)' : ' (auto-detected)'}`);
     return {
@@ -4362,6 +4424,55 @@ async function handlePhaseBoundaryRespawn(runtime, rawPhase, nextRawPhase) {
     // R-MDS-6: reset flag so replacement watcher shows normal no-data message
     setProducerDone(runtime, false);
 }
+/**
+ * R-CRSR (WS-3-FacetA): the phase index the loop resumes at, seeding `counters` from the
+ * same status file that chose it. AC-CWRR-6: skipping phases WITHOUT carrying their counts
+ * forward leaves `finalizePipeline`'s (completed + skipped) < phases.length permanently
+ * true, so a fully-successful resumed pipeline would finalize FAILED and skip the closer
+ * install/tag. Cold start resolves to 0 and seeds nothing.
+ */
+function seedResumePhaseCounters(runtime, counters, log) {
+    const resumePlan = readResumePhasePlan(runtime);
+    if (resumePlan.index <= 0)
+        return resumePlan.index;
+    counters.completed = resumePlan.completed;
+    counters.skipped = resumePlan.skipped;
+    log(`Crash-resume: starting phase loop at index ${resumePlan.index} (${runtime.config.phases[resumePlan.index]}) per prior pipeline-status.json; seeded counters completed=${counters.completed} skipped=${counters.skipped}`);
+    return resumePlan.index;
+}
+/**
+ * Run the configured phases in order from `startIndex`, accumulating the incompleteness
+ * verdict. B-NOSTOP-GATES WS-1: the session's exit code derives from WHETHER any phase
+ * reported incomplete, not from which arm ended the loop — honesty and halting are
+ * separate wires, so a `break` here is a disposition, not a verdict.
+ */
+async function runPipelinePhaseLoop(runtime, counters, cancelMarker, startIndex, log) {
+    const result = { phaseIncomplete: false, phaseIncompleteReason: null };
+    for (let i = startIndex; i < runtime.config.phases.length; i++) {
+        const rawPhase = runtime.config.phases[i];
+        if (!isPhaseName(rawPhase)) {
+            log(`Unknown phase: ${String(rawPhase)} — skipping`);
+            continue;
+        }
+        const outcome = await runPhaseIteration(runtime, counters, cancelMarker, rawPhase, i, log);
+        if (outcome.phaseIncomplete) {
+            result.phaseIncomplete = true;
+            // Capture the reason AT THE MOMENT it was stamped — a later phase's own
+            // clean finalize (e.g. anatomy-park's 'converged') can overwrite
+            // state.json.exit_reason before finalizePipeline runs, so the boolean
+            // alone is not enough to recover what auto-resume.sh needs to see.
+            const capturedReason = readExistingExitReason(runtime.statePath);
+            if (capturedReason)
+                result.phaseIncompleteReason = capturedReason;
+        }
+        if (outcome.action === 'break')
+            break;
+        // R-MDS-1: Rebind monitor dashboard pane at non-citadel phase boundaries.
+        const nextRawPhase = runtime.config.phases[i + 1];
+        await handlePhaseBoundaryRespawn(runtime, rawPhase, nextRawPhase);
+    }
+    return result;
+}
 export async function main(sessionDir, opts = {}) {
     const schemaDrift = schemaVersionDeployDriftMessage();
     if (schemaDrift !== null) {
@@ -4375,63 +4486,23 @@ export async function main(sessionDir, opts = {}) {
     const cancelMarker = path.join(sessionDir, 'pipeline-cancel');
     const cleanupShutdownHandlers = installShutdownHandlers(runtime, counters, cancelMarker);
     const startTime = Date.now();
-    let phaseIncomplete = false;
-    let phaseIncompleteReason = null;
     phaseRunnerContext = {
         sessionDir,
         extensionRoot: runtime.extensionRoot,
         childMuxRunnerHeartbeatMs: runtime.config.child_mux_runner_heartbeat_ms,
         childMuxRunnerStallSeconds: runtime.config.child_mux_runner_stall_seconds,
     };
-    // R-CRSR (WS-3-FacetA): seed the loop start from the prior recorded phase on
-    // crash-resume (skip already-completed phases); cold-start resolves to 0.
-    const resumePlan = readResumePhasePlan(runtime);
-    const resumeStartIndex = resumePlan.index;
-    if (resumeStartIndex > 0) {
-        // AC-CWRR-6: skipping phases WITHOUT carrying their counts forward leaves
-        // `finalizePipeline`'s (completed + skipped) < phases.length permanently
-        // true — a fully-successful resumed pipeline would finalize FAILED and
-        // skip the closer install/tag. Seed from the same status file that chose
-        // the index.
-        counters.completed = resumePlan.completed;
-        counters.skipped = resumePlan.skipped;
-        log(`Crash-resume: starting phase loop at index ${resumeStartIndex} (${runtime.config.phases[resumeStartIndex]}) per prior pipeline-status.json; seeded counters completed=${counters.completed} skipped=${counters.skipped}`);
-    }
+    const resumeStartIndex = seedResumePhaseCounters(runtime, counters, log);
     writeRunningStatus(runtime, counters, null);
+    let loop;
     try {
-        for (let i = resumeStartIndex; i < runtime.config.phases.length; i++) {
-            const rawPhase = runtime.config.phases[i];
-            if (!isPhaseName(rawPhase)) {
-                log(`Unknown phase: ${String(rawPhase)} — skipping`);
-                continue;
-            }
-            const outcome = await runPhaseIteration(runtime, counters, cancelMarker, rawPhase, i, log);
-            // B-NOSTOP-GATES WS-1: the session's exit code derives from WHETHER any phase
-            // reported incomplete, not from which arm ended the loop — honesty and halting
-            // are separate wires.
-            if (outcome.phaseIncomplete) {
-                phaseIncomplete = true;
-                // Capture the reason AT THE MOMENT it was stamped — a later phase's own
-                // clean finalize (e.g. anatomy-park's 'converged') can overwrite
-                // state.json.exit_reason before finalizePipeline runs, so the boolean
-                // alone is not enough to recover what auto-resume.sh needs to see.
-                const capturedReason = readExistingExitReason(runtime.statePath);
-                if (capturedReason)
-                    phaseIncompleteReason = capturedReason;
-            }
-            if (outcome.action === 'break') {
-                break;
-            }
-            // R-MDS-1: Rebind monitor dashboard pane at non-citadel phase boundaries.
-            const nextRawPhase = runtime.config.phases[i + 1];
-            await handlePhaseBoundaryRespawn(runtime, rawPhase, nextRawPhase);
-        }
+        loop = await runPipelinePhaseLoop(runtime, counters, cancelMarker, resumeStartIndex, log);
     }
     finally {
         phaseRunnerContext = null;
         cleanupShutdownHandlers();
     }
-    finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncomplete, phaseIncompleteReason);
+    finalizePipeline(runtime, counters, cancelMarker, startTime, loop.phaseIncomplete, loop.phaseIncompleteReason);
 }
 /** Extract the value following `flag` in argv, or `undefined` if absent. */
 function parseArgvFlag(argv, flag) {
