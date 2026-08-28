@@ -238,14 +238,6 @@ function printWithinBudgetReport(summary: RunSummary, stdout: (msg: string) => v
   }
 }
 
-function summarizeHarnessFailure(stdout: string, stderr: string): string {
-  const firstLine = `${stderr}\n${stdout}`
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.length > 0);
-  return firstLine ?? 'child test runner exited without test output';
-}
-
 function runIterations(
   parsed: ParsedArgs,
   opts: Required<Pick<CheckFlakeBudgetMainOpts, 'cwd' | 'env' | 'execPath' | 'spawnSyncFn'>>,
@@ -274,20 +266,26 @@ function runIterations(
     if ((result.status ?? 1) !== 0) {
       const stdout = result.stdout ?? '';
       const stderr = result.stderr ?? '';
-      if (!isBudgetableTestFailure(stdout, stderr)) {
-        throw new Error(`Flake-budget child failed before reporting test results: ${summarizeHarnessFailure(stdout, stderr)}`);
-      }
-      failures += 1;
       const runNumber = runIndex + 1;
       const status = result.status ?? null;
-      const failing = dedupeFailureDetails(extractFailingTestDetails(stdout, stderr));
-      // Retain only names+durations in memory across runs; the full stdout/stderr for a
-      // ~5000-test tier is written straight to disk and never held past this iteration.
+      const budgetable = isBudgetableTestFailure(stdout, stderr);
+      const failing = budgetable ? dedupeFailureDetails(extractFailingTestDetails(stdout, stderr)) : [];
+
+      // ONE reporting seam for both branches: every non-zero exit writes its full stdout/stderr
+      // to disk before classification, so a harness crash (no ✖/not-ok/ℹ-tests markers) leaves
+      // the same evidence trail as a budgetable test failure. Retain only names+durations in
+      // memory across runs; the full stdout/stderr for a ~5000-test tier lives on disk.
       if (!logDir) {
         logDir = mkdtempSync(path.join(os.tmpdir(), 'flake-budget-logs-'));
       }
       const logPath = path.join(logDir, `run-${runNumber}.log`);
       writeFileSync(logPath, formatRunLogContents(runNumber, status, failing, stdout, stderr), 'utf8');
+
+      if (!budgetable) {
+        throw new Error(`Flake-budget child failed before reporting test results: full output written to ${logPath}`);
+      }
+
+      failures += 1;
       runRecords.push({ runIndex: runNumber, status, failing, logPath });
       if (failures > parsed.failBudget) {
         return { failures, runsCompleted: runNumber, runRecords };

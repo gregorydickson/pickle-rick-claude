@@ -293,6 +293,73 @@ test('flake-budget attributes a within-budget failure on stdout without failing 
   assert.doesNotMatch(err.join('\n'), /FAIL_BUDGET_EXCEEDED/, 'within budget is not a failure');
 });
 
+// R-FBTN-2/AC-M3: a non-budgetable failure (a harness crash — no ✖/not-ok/ℹ-tests markers)
+// must still write the child's full stdout/stderr to a log path, and that path must be named
+// in the thrown error. Pre-fix this branch threw immediately with only a first-line guess and
+// wrote no log at all, discarding the only diagnostic evidence.
+test('flake-budget writes the full child output to a log path on a non-budgetable failure, and names it in the error', async () => {
+  const stdout = '▶ AC-6: Operator/terminal surface guard\nsome unrelated progress line\n';
+  const stderr = 'FATAL ERROR: JavaScript heap out of memory\n';
+
+  const err = [];
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=1', '--fail-budget=0', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...process.env, PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: () => {},
+    stderr: (msg) => err.push(msg),
+    spawnSyncFn: () => ({ status: 1, stdout, stderr, error: null }),
+  });
+
+  assert.equal(code, 1);
+  const message = err.join('\n');
+  assert.match(message, /Flake-budget child failed before reporting test results/);
+
+  const pathMatch = message.match(/written to (\S+)/);
+  assert.ok(pathMatch, `error message must name a log path, got: ${message}`);
+  const logPath = pathMatch[1];
+  assert.doesNotThrow(() => fs.statSync(logPath), `log path must exist on disk: ${logPath}`);
+
+  const logContents = fs.readFileSync(logPath, 'utf8');
+  assert.ok(logContents.includes(stdout.trim()), 'log must contain the full child stdout');
+  assert.ok(logContents.includes(stderr.trim()), 'log must contain the full child stderr');
+});
+
+// R-FBTN-2/AC-M3b (mutation-verify): the error message must never be able to name a PASSING
+// test as the cause. The old `summarizeHarnessFailure` heuristic reported "the first non-empty
+// line of stderr+stdout" as if it were a diagnosis — but the first-printed file can be one that
+// passes 16/16, while the real failure (e.g. an OOM) is elsewhere in the output. Construct that
+// exact shape and assert the message accuses nothing but the log path.
+test('flake-budget error message cannot name a passing test on a non-budgetable failure', async () => {
+  const passingSuiteHeader = '▶ AC-6: Operator/terminal surface guard';
+  const stdout = `${passingSuiteHeader}\n(this suite would pass 16/16 if the harness had not crashed first)\n`;
+  const stderr = 'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n';
+
+  const err = [];
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=1', '--fail-budget=0', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...process.env, PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: () => {},
+    stderr: (msg) => err.push(msg),
+    spawnSyncFn: () => ({ status: 1, stdout, stderr, error: null }),
+  });
+
+  assert.equal(code, 1);
+  const message = err.join('\n');
+  assert.doesNotMatch(
+    message,
+    /AC-6: Operator\/terminal surface guard/,
+    'the message must not accuse the passing suite whose header printed first',
+  );
+  assert.doesNotMatch(
+    message,
+    /heap limit|heap out of memory/,
+    'the message must not quote a raw diagnostic line as the accusation either — only the log path',
+  );
+  assert.match(message, /written to \S+/, 'the message must still point at the full-output log');
+});
+
 // Negative control: a report that printed unconditionally would pass the case above.
 test('flake-budget stays a one-liner when every run passes', async () => {
   const out = [];
