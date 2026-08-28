@@ -86,52 +86,68 @@ function registerTaskMeta(meta, metaPath, taskId) {
 function taskIdForMeta(meta) {
     return typeof meta.task_id === 'string' ? meta.task_id : metaTaskIds.get(meta) ?? null;
 }
-async function runTask(sessionDir, repoCwd, extensionRoot) {
-    const statePath = path.join(sessionDir, 'state.json');
-    let state;
+/**
+ * Claim the task: mark its session live and record it as the batch's active
+ * task so the shutdown handlers can deactivate it and reap its subtree.
+ */
+function activateJarTaskSession(sessionDir, statePath) {
+    // Read first, purely to attribute an unreadable state.json to THIS task's
+    // session dir — sm.update would throw the same failure without the name.
     try {
-        state = sm.read(statePath);
+        sm.read(statePath);
     }
     catch (err) {
         const msg = safeErrorMessage(err);
         throw new Error(`Failed to read state.json for ${path.basename(sessionDir)}: ${msg}`);
     }
-    state = sm.update(statePath, s => {
+    const state = sm.update(statePath, s => {
         s.active = true;
         s.pid = process.pid;
         s.completion_promise = null;
     });
     activeTaskSessionDir = sessionDir;
-    const taskTimeout = loadJarTaskTimeout(extensionRoot, state);
-    const templateName = resolveCommandTemplate(state.command_template);
+    return state;
+}
+/**
+ * Locate the manager prompt template, preferring the deployed extension's own
+ * copy over `~/.claude/commands`. Exits non-zero when neither carries it — a
+ * missing template means install.sh never ran, which no retry can fix.
+ */
+function resolveJarPromptPath(extensionRoot, templateName) {
     const templatesDir = path.join(extensionRoot, 'templates');
     const commandsDir = path.join(os.homedir(), '.claude/commands');
-    // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-    const picklePromptPath = fs.existsSync(path.join(templatesDir, templateName))
-        ? path.join(templatesDir, templateName)
-        : path.join(commandsDir, templateName);
-    // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-    if (!fs.existsSync(picklePromptPath)) {
+    const bundled = path.join(templatesDir, templateName);
+    const promptPath = fs.existsSync(bundled) ? bundled : path.join(commandsDir, templateName);
+    if (!fs.existsSync(promptPath)) {
         process.stderr.write(`jar-runner: ${templateName} not found in ${templatesDir} or ${commandsDir}. Run install.sh first.\n`);
         process.exit(1);
     }
-    const settingsPath = path.join(extensionRoot, 'pickle_settings.json');
-    let managerMaxTurns = Defaults.MANAGER_MAX_TURNS;
+    return promptPath;
+}
+function resolveJarManagerMaxTurns(extensionRoot) {
     try {
-        const settings = readRecoverableJsonObject(settingsPath);
-        const settingsMaxTurns = positiveIntegerOrNull(settings?.default_manager_max_turns);
-        if (settingsMaxTurns !== null)
-            managerMaxTurns = settingsMaxTurns;
+        const settings = readRecoverableJsonObject(path.join(extensionRoot, 'pickle_settings.json'));
+        return positiveIntegerOrNull(settings?.default_manager_max_turns) ?? Defaults.MANAGER_MAX_TURNS;
     }
-    catch { /* ignore */ }
-    // Resolve the backend from THIS task's session state — jar batches are
-    // heterogeneous: each task carries its own backend (claude or codex) stored
-    // at jar-time. Resolving from the already-parsed state object avoids a second
-    // disk read + JSON.parse of the same file (the separate read could race a
-    // concurrent rewrite and silently default to 'claude' on parse failure, even
-    // when the first parse above succeeded).
+    catch {
+        return Defaults.MANAGER_MAX_TURNS;
+    }
+}
+/**
+ * Resolve the launch plan for one jar task and announce it on the panel.
+ *
+ * The backend comes from THIS task's already-parsed state — jar batches are
+ * heterogeneous: each task carries its own backend (claude or codex) stored at
+ * jar-time. Reading it off the parsed object avoids a second disk read + parse
+ * of the same file, whose race against a concurrent rewrite would silently
+ * default to 'claude' even though the first parse succeeded.
+ */
+function buildJarManagerLaunch(sessionDir, repoCwd, extensionRoot, state) {
+    const taskTimeoutSeconds = loadJarTaskTimeout(extensionRoot, state);
+    const promptPath = resolveJarPromptPath(extensionRoot, resolveCommandTemplate(state.command_template));
+    const managerMaxTurns = resolveJarManagerMaxTurns(extensionRoot);
     const backend = resolveBackend(state);
-    const prompt = composeManagerPromptFromSkill(picklePromptPath, backend, {
+    const prompt = composeManagerPromptFromSkill(promptPath, backend, {
         argumentSubstitution: `--resume ${sessionDir}`,
     });
     printMinimalPanel(`Running Jarred Task`, {
@@ -139,7 +155,7 @@ async function runTask(sessionDir, repoCwd, extensionRoot) {
         Repo: repoCwd,
         Backend: backend,
         MaxTurns: managerMaxTurns,
-        Timeout: `${taskTimeout}s`,
+        Timeout: `${taskTimeoutSeconds}s`,
     }, 'MAGENTA', '🥒');
     const invocation = buildManagerInvocation(backend, {
         prompt,
@@ -151,13 +167,24 @@ async function runTask(sessionDir, repoCwd, extensionRoot) {
         ...process.env,
         ...backendEnvOverrides(backend),
         ...(invocation.env ?? {}),
-        PICKLE_STATE_FILE: statePath,
+        PICKLE_STATE_FILE: path.join(sessionDir, 'state.json'),
         PYTHONUNBUFFERED: '1',
     };
     delete env['CLAUDECODE'];
     delete env['PICKLE_ROLE'];
+    return { invocation, env, backend, taskTimeoutSeconds };
+}
+/**
+ * Spawn the task's manager and resolve once its fate is known: clean exit,
+ * per-task timeout, spawn error, or the hang guard.
+ *
+ * Every outcome shares one settle path (`settle`) — first caller wins, timers
+ * die, the batch-active handles clear. Three hand-copied cleanup blocks is how
+ * the fourth outcome leaks a timer.
+ */
+function awaitJarManagerExit(launch, repoCwd) {
+    const { invocation, env, backend, taskTimeoutSeconds } = launch;
     return new Promise((resolve) => {
-        let settled = false;
         // R-OMTD (jar arm): spawn the manager in its OWN process group so both the
         // per-task timeout and the shutdown handler can reap the whole subtree.
         const leadsGroup = process.platform !== 'win32';
@@ -168,25 +195,17 @@ async function runTask(sessionDir, repoCwd, extensionRoot) {
         // whole group, or the manager's workers survive the batch.
         let killEscalation = null;
         const timeoutHandle = setTimeout(() => {
-            console.error(`\n${Style.YELLOW}⚠️  Jar task timed out after ${taskTimeout}s — killing${Style.RESET}`);
+            console.error(`\n${Style.YELLOW}⚠️  Jar task timed out after ${taskTimeoutSeconds}s — killing${Style.RESET}`);
             reapTaskSubtree(proc, leadsGroup, 'SIGTERM');
             killEscalation = setTimeout(() => {
                 reapTaskSubtree(proc, leadsGroup, 'SIGKILL');
             }, 2000);
-        }, taskTimeout * 1000);
+        }, taskTimeoutSeconds * 1000);
         // Hang guard: force-resolve if process doesn't exit within timeout + 30s
-        const hangGuard = setTimeout(() => {
-            if (settled)
-                return;
-            settled = true;
-            activeTaskSessionDir = null;
-            activeTaskProc = null;
-            activeTaskLeadsGroup = false;
-            console.error(`${Style.RED}❌ Jar task hang detected — forcing failure${Style.RESET}`);
-            resolve({ ok: false, backend });
-        }, (taskTimeout + 30) * 1000);
+        const hangGuard = setTimeout(() => settle({ ok: false, backend }, `${Style.RED}❌ Jar task hang detected — forcing failure${Style.RESET}`), (taskTimeoutSeconds + 30) * 1000);
         hangGuard.unref();
-        proc.on('close', (code) => {
+        let settled = false;
+        function settle(result, message) {
             if (settled)
                 return;
             settled = true;
@@ -197,19 +216,12 @@ async function runTask(sessionDir, repoCwd, extensionRoot) {
             activeTaskSessionDir = null;
             activeTaskProc = null;
             activeTaskLeadsGroup = false;
-            resolve({ ok: code === 0, backend });
-        });
+            if (message)
+                console.error(message);
+            resolve(result);
+        }
+        proc.on('close', (code) => settle({ ok: code === 0, backend }));
         proc.on('error', (err) => {
-            if (settled)
-                return;
-            settled = true;
-            clearTimeout(timeoutHandle);
-            if (killEscalation)
-                clearTimeout(killEscalation);
-            clearTimeout(hangGuard);
-            activeTaskSessionDir = null;
-            activeTaskProc = null;
-            activeTaskLeadsGroup = false;
             const errCode = err?.code;
             if (errCode === 'ENOENT') {
                 // Infrastructure error — the backend CLI is not installed. Do NOT
@@ -219,14 +231,16 @@ async function runTask(sessionDir, repoCwd, extensionRoot) {
                 const hint = backend === 'codex'
                     ? `codex CLI not found on PATH — install codex and re-run /pickle-jar-open, or re-jar these tasks with --backend claude`
                     : `claude CLI not found on PATH — install claude and re-run /pickle-jar-open`;
-                console.error(`${Style.RED}${hint}${Style.RESET}`);
-                resolve({ ok: false, enoent: true, backend });
+                settle({ ok: false, enoent: true, backend }, `${Style.RED}${hint}${Style.RESET}`);
                 return;
             }
-            console.error(`${Style.RED}Failed to spawn '${invocation.cmd}' (backend=${backend}): ${safeErrorMessage(err)}${Style.RESET}`);
-            resolve({ ok: false, backend });
+            settle({ ok: false, backend }, `${Style.RED}Failed to spawn '${invocation.cmd}' (backend=${backend}): ${safeErrorMessage(err)}${Style.RESET}`);
         });
     });
+}
+async function runTask(sessionDir, repoCwd, extensionRoot) {
+    const state = activateJarTaskSession(sessionDir, path.join(sessionDir, 'state.json'));
+    return awaitJarManagerExit(buildJarManagerLaunch(sessionDir, repoCwd, extensionRoot, state), repoCwd);
 }
 export function discoverMarinatingTasks(jarRoot) {
     const tasks = [];
