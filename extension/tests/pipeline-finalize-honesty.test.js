@@ -23,6 +23,7 @@ import {
   readResumePhasePlan,
   writePipelineStatus,
 } from '../bin/pipeline-runner.js';
+import { CRASH_FLOOR_EXIT_REASONS, EXIT_REASONS } from '../types/index.js';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-finalize-honesty-'));
@@ -976,4 +977,87 @@ describe('AP-EXT-ITER90-01: writePipelineStatus carries the record; callers name
     assert.equal(status.citadel_advisory_findings, undefined, 'a non-numeric advisory count is filtered, not propagated');
     fs.rmSync(dir, { recursive: true });
   });
+});
+
+/**
+ * R-NOPOSTTIER (ticket 30ff832b) — the STRUCTURAL half of "report-only, never a halt".
+ *
+ * `POST_FINAL_DEGRADED_MARKER`'s doc comment (pipeline-runner.ts) claims the marker is "a
+ * DISPOSITION string, never an exit reason — EXIT_REASONS and CRASH_FLOOR_EXIT_REASONS gain no
+ * member and exit_reason stays completed". Every OTHER test of this marker asserts
+ * disposition-string shape or runtime behaviour; none asserted that structural claim, so it was
+ * guarded by a comment alone. A prose invariant with no oracle drifts green — which is the exact
+ * failure class this whole ticket is about, one level up.
+ *
+ * `CRASH_FLOOR_EXIT_REASONS` is the set that would convert this report-only verdict into a halt,
+ * and CLAUDE.md's crash floor is "cannot-physically-continue only". A measurement verdict is not
+ * a crash floor, so its marker must never appear there.
+ *
+ * The pin imports the LIVE arrays and the LIVE marker and hand-maintains no list of forbidden
+ * reasons, so it cannot rot as those arrays legitimately grow.
+ */
+describe('R-NOPOSTTIER: the degraded marker is a disposition, never a halt', () => {
+  test('the marker is absent from EXIT_REASONS and CRASH_FLOOR_EXIT_REASONS', () => {
+    assert.ok(
+      !EXIT_REASONS.includes(POST_FINAL_DEGRADED_MARKER),
+      'a withheld success verdict must never become an exit reason',
+    );
+    assert.ok(
+      !CRASH_FLOOR_EXIT_REASONS.includes(POST_FINAL_DEGRADED_MARKER),
+      'a measurement verdict is not a cannot-physically-continue crash floor',
+    );
+  });
+
+  // Derived, not a mirrored literal: catches the typo'd-addition variant of the same failure,
+  // where a new crash floor member is not even a real exit reason and so is unreachable.
+  test('CRASH_FLOOR_EXIT_REASONS is a subset of EXIT_REASONS', () => {
+    for (const reason of CRASH_FLOOR_EXIT_REASONS) {
+      assert.ok(EXIT_REASONS.includes(reason), `crash floor member ${reason} must be a real exit reason`);
+    }
+  });
+});
+
+/**
+ * R-NOPOSTTIER (ticket 30ff832b) — the BEHAVIOURAL half: the withholding seam stamps NO exit
+ * reason at all.
+ *
+ * Existing coverage seeds `exit_reason: 'completed'` and later observes `completed`. That cannot
+ * distinguish "the seam left it alone" from "the seam WROTE completed" — a seam that stamped the
+ * reason would pass every one of those tests while adding a genuine new write to the disposition
+ * wire. Seeding a NON-completed reason separates the two: if anything at this seam writes
+ * `exit_reason`, the 'stall' case fails immediately.
+ *
+ * Honesty is a REPORTING property and halting is a DISPOSITION; these rows are the proof that
+ * withholding travels the reporting wire only.
+ */
+describe('R-NOPOSTTIER: withholding never writes exit_reason', () => {
+  for (const seededReason of ['stall', 'completed']) {
+    test(`a red verdict withholds success but leaves exit_reason "${seededReason}" untouched`, () => {
+      const dir = tmpDir();
+      const { runtime, statePath, cancelMarker } = makeRuntime(dir);
+      writeState(statePath, seededReason, { state: 'red', degraded: true, dimensions: [] });
+      const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+
+      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, runtime.log);
+
+      // The reporting wire moved: success is withheld and the cause is named.
+      assert.equal(counters.nonConvergent, 1, 'the red verdict must withhold the success verdict');
+      assert.ok(
+        counters.phaseDispositions.pickle.startsWith(`${POST_FINAL_DEGRADED_MARKER}:`),
+        'the withholding must be attributed to the post-final tier',
+      );
+
+      // The disposition wire did NOT move: no reason stamped, normalised, or cleared.
+      assert.equal(
+        JSON.parse(fs.readFileSync(statePath, 'utf-8')).exit_reason,
+        seededReason,
+        'the withholding seam must not write exit_reason',
+      );
+
+      // And the loop still runs: withholding a verdict is not failing a phase.
+      assert.equal(outcome.action, 'continue', 'the phase loop must not break');
+      assert.equal(counters.completed, 1, 'the phase still executed to completion');
+      fs.rmSync(dir, { recursive: true });
+    });
+  }
 });
