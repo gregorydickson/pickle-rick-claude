@@ -1405,7 +1405,8 @@ function tryResumeOrphanReattach(
   }
 }
 
-function resumeSession(config: SetupArgs): SessionResult {
+/** Resolve the session directory a `--resume` names, dying when it is absent. */
+function resolveResumeSessionPath(config: SetupArgs): string {
   const fullSessionPath = config.resumePath
     ? resolvePath(config.resumePath)
     : findSessionPathForCwd(process.cwd());
@@ -1413,16 +1414,64 @@ function resumeSession(config: SetupArgs): SessionResult {
   if (!fullSessionPath || !fs.existsSync(fullSessionPath)) {
     die(`No active session found or path invalid: ${fullSessionPath}`);
   }
+  return fullSessionPath;
+}
 
-  const statePath = path.join(fullSessionPath, 'state.json');
-
-  // D3 (B-RRH AC-D3): on --resume the session dir is authoritative for the PRD —
-  // prd_refined.md preferred over prd.md. resolvePrdPath ran against process.cwd()
-  // at parse time, so config.prdPath may hold a cwd-relative bare `prd.md` false
-  // match; the session PRD must supersede it. Only when the session dir has no PRD
-  // do we keep whatever config.prdPath resolved to (e.g. an explicit CLI arg).
+/**
+ * D3 (B-RRH AC-D3): on --resume the session dir is authoritative for the PRD —
+ * prd_refined.md preferred over prd.md. resolvePrdPath ran against process.cwd()
+ * at parse time, so config.prdPath may hold a cwd-relative bare `prd.md` false
+ * match; the session PRD must supersede it. Only when the session dir has no PRD
+ * do we keep whatever config.prdPath resolved to (e.g. an explicit CLI arg).
+ */
+function adoptSessionPrdPath(config: SetupArgs, fullSessionPath: string): void {
   const sessionPrd = resolveSessionPrdPath(fullSessionPath);
   if (sessionPrd) config.prdPath = sessionPrd;
+}
+
+/**
+ * Claim the session map entry under the live setup PID BEFORE the locked
+ * sm.update read can re-trigger recovery. Otherwise a stale dead-mapped-pid
+ * from a previous launcher (e.g. the original setup that created this
+ * session) trips paused-orphan demotion inside `recoverStaleActiveFlag` and
+ * silently flips active=false back, defeating resume. The cross-repo
+ * validateResumeCompatibility must die FIRST, so callers claim the map only
+ * after that check passes. Best-effort; resume must still proceed on failure.
+ */
+function claimSessionMapForResume(fullSessionPath: string): void {
+  try {
+    const setupPaths = buildSetupPaths();
+    updateSessionMap(setupPaths.sessionsMap, process.cwd(), fullSessionPath);
+  } catch {
+    /* map update is best-effort; resume must still proceed */
+  }
+}
+
+/** Apply the resume config to state.json, reconciling desync; dies on corrupt state. */
+function applyResumeStateTransition(
+  config: SetupArgs,
+  fullSessionPath: string,
+  statePath: string,
+  codexVersionSeen: string | null,
+): State {
+  try {
+    let state = sm.update(statePath, s => {
+      applyResumeConfig(s, config, fullSessionPath, codexVersionSeen);
+    });
+    if (state.active === true) {
+      clearExitReason(statePath);
+      state = sm.read(statePath);
+    }
+    return reconcileTicketStateDesyncOnResume(fullSessionPath, statePath, state.current_ticket || null, config.forceTicketStatusSync);
+  } catch {
+    die(`state.json is missing or corrupt in ${fullSessionPath}`);
+  }
+}
+
+function resumeSession(config: SetupArgs): SessionResult {
+  const fullSessionPath = resolveResumeSessionPath(config);
+  const statePath = path.join(fullSessionPath, 'state.json');
+  adoptSessionPrdPath(config, fullSessionPath);
 
   let preState: State | null = null;
   try {
@@ -1431,39 +1480,14 @@ function resumeSession(config: SetupArgs): SessionResult {
     /* missing/corrupt — sm.update below will surface the right error */
   }
   if (preState) validateResumeCompatibility(preState, config, fullSessionPath);
+  claimSessionMapForResume(fullSessionPath);
 
-  // Claim the session map entry under the live setup PID BEFORE the locked
-  // sm.update read can re-trigger recovery. Otherwise a stale dead-mapped-pid
-  // from a previous launcher (e.g. the original setup that created this
-  // session) trips paused-orphan demotion inside `recoverStaleActiveFlag` and
-  // silently flips active=false back, defeating resume. The cross-repo
-  // validateResumeCompatibility above must die FIRST, so we claim the map
-  // only after that check passes.
-  try {
-    const setupPaths = buildSetupPaths();
-    updateSessionMap(setupPaths.sessionsMap, process.cwd(), fullSessionPath);
-  } catch {
-    /* map update is best-effort; resume must still proceed */
-  }
-
-  let state: State;
   const resumeBackend = config.explicitFlags.has('backend') ? config.backend : preState?.backend;
   const codexVersionSeen = resolveCodexVersionForSetup(resumeBackend);
   // AC-LPB-05: capture the pre-resume epoch so we can emit the
   // session_reconstructed_epoch_reset activity event with both timestamps.
   const originalEpoch = typeof preState?.start_time_epoch === 'number' ? preState.start_time_epoch : null;
-  try {
-    state = sm.update(statePath, s => {
-      applyResumeConfig(s, config, fullSessionPath, codexVersionSeen);
-    });
-    if (state.active === true) {
-      clearExitReason(statePath);
-      state = sm.read(statePath);
-    }
-    state = reconcileTicketStateDesyncOnResume(fullSessionPath, statePath, state.current_ticket || null, config.forceTicketStatusSync);
-  } catch {
-    die(`state.json is missing or corrupt in ${fullSessionPath}`);
-  }
+  const state = applyResumeStateTransition(config, fullSessionPath, statePath, codexVersionSeen);
 
   // C5 (B-RRH AC-C5): self-heal an orphaned ticket commit on resume.
   tryResumeOrphanReattach(fullSessionPath, statePath, state.current_ticket, state.working_dir);
@@ -1483,6 +1507,54 @@ function resolveTask(config: SetupArgs): string {
   if (!taskStr && !config.pausedMode) die('No task specified. Run /pickle --help for usage.');
   if (!taskStr) return 'PRD Interview (task to be determined via interview)';
   return taskStr;
+}
+
+/**
+ * Persist the budget fields the operator set EXPLICITLY. Both are opt-in: an
+ * absent --max-time leaves `max_time_minutes` off the state entirely (which is
+ * what `time_cap_disabled_default` reports), and the medium-tier worker-timeout
+ * override is only recorded when the operator actually asked for one.
+ */
+function applyExplicitBudgetOverrides(state: State, config: SetupArgs): void {
+  if (config.explicitFlags.has('max-time')) {
+    state.max_time_minutes = config.timeLimit;
+  }
+  if (hasExplicitWorkerTimeoutOverride(config)) {
+    persistMediumWorkerTimeoutOverride(state, config.workerTimeout);
+  }
+}
+
+/**
+ * Record where in git history this session starts: `start_commit`/`pinned_sha`
+ * and `pinned_branch`.
+ *
+ * R-PSCG AC-3: the LoanLight-normal `--paused`-in-repo-root case WARNs loudly
+ * instead of silently deferring — the --resume recompute in applyResumeConfig
+ * fills the field once cwd is a git worktree. AC-SCPIN-5: branch on the real
+ * cause — a non-repo cwd and a git repo with an unborn HEAD (no commits yet)
+ * are different incidents and each gets its own true message, not one message
+ * asserted for both.
+ */
+function applyGitProvenanceToState(state: State): void {
+  const startCommit = resolveStartCommit();
+  if (startCommit) {
+    state.start_commit = startCommit;
+  } else if (isInsideGitRepo(process.cwd())) {
+    process.stderr.write(
+      '[setup] WARNING: git repo has no commits yet — start_commit deferred; ' +
+      'a later --resume in a git worktree will recompute it.\n',
+    );
+  } else {
+    process.stderr.write(
+      '[setup] WARNING: cwd is not a git repository — start_commit deferred; ' +
+      'a later --resume in a git worktree will recompute it.\n',
+    );
+  }
+
+  // Key order matters: state.json's serialized shape is pinned by a conformance
+  // test, so pinned_branch is assigned before pinned_sha.
+  try { state.pinned_branch = getHeadBranch(process.cwd()); } catch { state.pinned_branch = null; }
+  if (startCommit) state.pinned_sha = startCommit;
 }
 
 /**
@@ -1539,60 +1611,25 @@ function createInitialState(config: SetupArgs, sessionPath: string, taskStr: str
   };
 
   if (state.active) state.pid = process.pid;
-
-  if (config.explicitFlags.has('max-time')) {
-    state.max_time_minutes = config.timeLimit;
-  }
-  if (hasExplicitWorkerTimeoutOverride(config)) {
-    persistMediumWorkerTimeoutOverride(state, config.workerTimeout);
-  }
-  const startCommit = resolveStartCommit();
+  applyExplicitBudgetOverrides(state, config);
   if (config.prdPath) state.prd_path = config.prdPath;
-  if (startCommit) {
-    state.start_commit = startCommit;
-  } else {
-    // R-PSCG AC-3: the LoanLight-normal `--paused`-in-repo-root case. WARN
-    // loudly instead of silently deferring — the --resume recompute in
-    // applyResumeConfig fills the field once cwd is a git worktree.
-    // AC-SCPIN-5: branch on the real cause — a non-repo cwd and a git repo
-    // with an unborn HEAD (no commits yet) are different incidents and each
-    // gets its own true message, not one message asserted for both.
-    if (isInsideGitRepo(process.cwd())) {
-      process.stderr.write(
-        '[setup] WARNING: git repo has no commits yet — start_commit deferred; ' +
-        'a later --resume in a git worktree will recompute it.\n',
-      );
-    } else {
-      process.stderr.write(
-        '[setup] WARNING: cwd is not a git repository — start_commit deferred; ' +
-        'a later --resume in a git worktree will recompute it.\n',
-      );
-    }
-  }
-
-  const pinnedBranch = (() => {
-    try { return getHeadBranch(process.cwd()); } catch { return null; }
-  })();
-  state.pinned_branch = pinnedBranch;
-  if (startCommit) state.pinned_sha = startCommit;
+  applyGitProvenanceToState(state);
 
   return state;
 }
 
-function createSession(config: SetupArgs, paths: SetupPaths, taskStr: string): SessionResult {
-  const today = formatLocalDateKey(new Date());
-  const hash = crypto.randomBytes(4).toString('hex');
-  const sessionId = `${today}-${hash}`;
-  const fullSessionPath = path.join(paths.sessionsRoot, sessionId);
-
-  if (!fs.existsSync(fullSessionPath)) fs.mkdirSync(fullSessionPath, { recursive: true });
-
+/**
+ * Create the in-repo `.pickle-rick/sessions/<id>/TASK_NOTES.md` scaffold that
+ * carries knowledge across iterations.
+ *
+ * Housekeeping and scaffold creation are INDEPENDENT best-efforts.
+ * `pruneOldSessions` opens with an unguarded `fs.readdirSync(sessionsRoot)`, so
+ * an EACCES/EMFILE there throws; sharing one try/catch let that throw skip the
+ * scaffold entirely and the worker's TASK_NOTES.md silently vanished.
+ */
+function scaffoldInTreeSessionNotes(sessionId: string): void {
   const inTreeSessionsRoot = path.join(process.cwd(), '.pickle-rick', 'sessions');
   const inTreeSessionDir = path.join(inTreeSessionsRoot, sessionId);
-  // Housekeeping and scaffold creation are INDEPENDENT best-efforts. `pruneOldSessions`
-  // opens with an unguarded `fs.readdirSync(sessionsRoot)`, so an EACCES/EMFILE there
-  // throws; sharing one try/catch let that throw skip the scaffold entirely and the
-  // worker's TASK_NOTES.md — the cross-iteration knowledge transfer — silently vanished.
   try {
     pruneOldSessions(inTreeSessionsRoot);
   } catch { /* housekeeping only: never blocks the scaffold below */ }
@@ -1606,11 +1643,14 @@ function createSession(config: SetupArgs, paths: SetupPaths, taskStr: string): S
       );
     }
   } catch { /* must not block session start */ }
+}
 
-  const state = createInitialState(config, fullSessionPath, taskStr);
-  // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing state to lock against
-  sm.forceWrite(path.join(fullSessionPath, 'state.json'), state);
-  try { pruneActivity(); } catch { /* must not block session start */ }
+/**
+ * Announce the new session on the activity log. `time_cap_disabled_default` is
+ * the companion event for the opt-in --max-time budget: its ABSENCE from state
+ * is what the event reports, so it is emitted here and nowhere else.
+ */
+function emitSessionStartActivity(sessionId: string, state: State, config: SetupArgs, taskStr: string): void {
   logActivity({
     event: 'session_start',
     source: 'pickle',
@@ -1627,7 +1667,26 @@ function createSession(config: SetupArgs, paths: SetupPaths, taskStr: string): S
       backend: state.backend || 'claude',
     });
   }
+}
 
+function createSession(config: SetupArgs, paths: SetupPaths, taskStr: string): SessionResult {
+  const today = formatLocalDateKey(new Date());
+  const hash = crypto.randomBytes(4).toString('hex');
+  const sessionId = `${today}-${hash}`;
+  const fullSessionPath = path.join(paths.sessionsRoot, sessionId);
+
+  if (!fs.existsSync(fullSessionPath)) fs.mkdirSync(fullSessionPath, { recursive: true });
+
+  scaffoldInTreeSessionNotes(sessionId);
+
+  const state = createInitialState(config, fullSessionPath, taskStr);
+  // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing state to lock against
+  sm.forceWrite(path.join(fullSessionPath, 'state.json'), state);
+  try { pruneActivity(); } catch { /* must not block session start */ }
+  emitSessionStartActivity(sessionId, state, config, taskStr);
+
+  // AC-PIWG-5.2: advisory only. tests/concurrent-git-access-probe-launch.test.js
+  // pins this guarded try/catch shape inline, so it does not move to a helper.
   if (!config.pausedMode) {
     try {
       const holder = probeConcurrentGitAccess(process.cwd());
@@ -1861,6 +1920,41 @@ export function runSetupOrphanReap(
   }
 }
 
+/**
+ * R-MFW-4 (Option D, FR-4): setup-time MCP snapshot. Best-effort; never blocks
+ * session launch. The production fetchFn is a no-op (returns null) — the
+ * injectable seam exists for integration tests and future live callers.
+ */
+async function runSetupMcpSnapshot(session: SessionResult, resumeMode: boolean): Promise<void> {
+  try {
+    const settingsBag = loadPickleSettingsBag();
+    const snapshotServers = Array.isArray(settingsBag?.worker_mcp_snapshot_servers)
+      ? (settingsBag.worker_mcp_snapshot_servers as string[])
+      : [];
+    await runMcpSnapshot(
+      session.sessionRoot,
+      snapshotServers,
+      resolveMcpConfigPath(settingsBag ?? undefined),
+      session.state.original_prompt || '',
+      async () => null,
+      resumeMode
+    );
+  } catch { /* snapshot is best-effort — never block launch */ }
+}
+
+/** Point the cwd→session map at this session. A contended lock warns; anything else throws. */
+function updateSessionMapTolerantOfLock(sessionsMap: string, sessionRoot: string): void {
+  try {
+    updateSessionMap(sessionsMap, process.cwd(), sessionRoot);
+  } catch (err) {
+    if (err instanceof LockError) {
+      console.error(`[pickle] WARNING: session map not updated — ${safeErrorMessage(err)}`);
+    } else {
+      throw err;
+    }
+  }
+}
+
 async function main() {
   const schemaDrift = schemaVersionDeployDriftMessage();
   if (schemaDrift !== null) { process.stderr.write(`${schemaDrift}\n`); process.exit(1); }
@@ -1886,38 +1980,14 @@ async function main() {
   // the actual session dir. Best-effort; never throws.
   try { evaluateLaunchSizing(session.sessionRoot, args); } catch { /* sizing is advisory */ }
 
-  // R-MFW-4 (Option D, FR-4): setup-time MCP snapshot. Best-effort; never
-  // blocks session launch. Production fetchFn is a no-op (returns null) — the
-  // injectable seam exists for integration tests and future live callers.
-  try {
-    const settingsBag = loadPickleSettingsBag();
-    const snapshotServers = Array.isArray(settingsBag?.worker_mcp_snapshot_servers)
-      ? (settingsBag.worker_mcp_snapshot_servers as string[])
-      : [];
-    await runMcpSnapshot(
-      session.sessionRoot,
-      snapshotServers,
-      resolveMcpConfigPath(settingsBag ?? undefined),
-      session.state.original_prompt || '',
-      async () => null,
-      args.resumeMode
-    );
-  } catch { /* snapshot is best-effort — never block launch */ }
+  await runSetupMcpSnapshot(session, args.resumeMode);
 
   // C7: materialize the session-merged worker MCP config ONCE at setup, after the
   // snapshot seam. Best-effort — never blocks launch. The materialized path is
   // consumed at worker-spawn time via opts.mcpConfig.
   materializeWorkerMcpConfig(session.sessionRoot);
 
-  try {
-    updateSessionMap(paths.sessionsMap, process.cwd(), session.sessionRoot);
-  } catch (err) {
-    if (err instanceof LockError) {
-      console.error(`[pickle] WARNING: session map not updated — ${safeErrorMessage(err)}`);
-    } else {
-      throw err;
-    }
-  }
+  updateSessionMapTolerantOfLock(paths.sessionsMap, session.sessionRoot);
 
   displaySetupSummary(session);
 
