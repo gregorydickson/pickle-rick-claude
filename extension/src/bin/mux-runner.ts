@@ -3128,25 +3128,101 @@ function attemptOrphanChainReattach(input: {
   return { recovered: true, candidateSha: tip };
 }
 
+/** The disposition `detectAndRecoverHeadRegression` reports for one regressed HEAD. */
+type HeadRegressionAction = 'ff_reattached' | 'marked_failed' | 'flip_suppressed' | 'suppression_cap_escalate' | 'none';
+
 /**
- * R-CXOR-1 / e56ed23f: detect and recover from a worker HEAD regression.
- *
- * A codex worker may commit real work then `git reset --hard` to the pre-ticket
- * baseline on gate failure, leaving the ticket frontmatter Done but HEAD frozen.
- * This function detects that case and resolves the orphan chain TIP via:
- *   1. Ticket frontmatter completion_commit (authoritative, not window-filtered)
- *   2. `git fsck --no-reflogs` discovery scoped to the iteration window + allowed_paths
- * Then `git merge --ff-only` reattaches HEAD to the chain tip. On divergence or
- * ambiguity it emits `orphan_commit_unreattachable` and routes through the
- * 7eb9fa20 hold path (operator-hold) — it NEVER rewrites history (no `git reset`,
- * no `--force`). The hold path SUPPRESSES the Failed flip whenever there is
- * salvage evidence (fresh artifacts or a ticket-scoped commit) → `flip_suppressed`
- * / `suppression_cap_escalate`; only an evidence-absent, undiscoverable orphan
- * falls through to `marked_failed` (a non-destructive frontmatter write).
- * Success → `orphan_commit_reattached` with chain_length.
- * Divergent/ambiguous/undiscovered → `orphan_commit_unreattachable`, then hold.
+ * Telemetry for a known-but-unusable orphan candidate: HEAD regressed, a candidate tip
+ * was resolved, and the ff-only reattach refused it as divergent or ambiguous. Emitted
+ * BEFORE the hold path routes the ticket so the operator sees the sha that was found.
  */
-export function detectAndRecoverHeadRegression(input: {
+function emitOrphanUnreattachable(statePath: string, ticketId: string, candidateSha: string, prevHead: string): void {
+  try {
+    writeActivityEntry(statePath, {
+      event: 'orphan_commit_unreattachable',
+      ts: new Date().toISOString(),
+      ticket: ticketId,
+      sha: candidateSha,
+      prev_head: prevHead,
+      reason: 'divergent_or_ambiguous',
+    });
+  } catch { /* best-effort telemetry */ }
+}
+
+/**
+ * 7eb9fa20: decide what happens to a ticket whose orphan chain could NOT be reattached.
+ * Evidence-backed flip-intents are suppressed (held) instead of flipped — an
+ * unreattachable-but-real orphan commit is salvageable work, not a failure. Evidence
+ * absent → archive a dirty tree, then flip Failed (a non-destructive frontmatter write).
+ */
+function resolveUnreattachedOrphanDisposition(input: {
+  sessionDir: string;
+  statePath: string;
+  ticketId: string;
+  workingDir: string;
+  iteration: number;
+  startCommit: string;
+  iterationStartMs: number | null;
+  log: (msg: string) => void;
+}): Exclude<HeadRegressionAction, 'ff_reattached' | 'none'> {
+  const { sessionDir, statePath, ticketId, workingDir, iteration, startCommit, log } = input;
+  const decision = evaluateFailedFlipSuppression({
+    sessionDir,
+    statePath,
+    ticketId,
+    workingDir,
+    iteration,
+    callsite: 'head_regression',
+    windowStartMs: input.iterationStartMs,
+    windowEndMs: Date.now(),
+    preSha: startCommit,
+    log,
+  });
+  if (decision.action === 'suppress') {
+    log(`[head-regression] ticket ${ticketId} Failed flip suppressed (${decision.evidence}) — status preserved, ticket held`);
+    return 'flip_suppressed';
+  }
+  if (decision.action === 'escalate') {
+    log(`[head-regression] ticket ${ticketId} suppression cap ${decision.cap} reached — escalating to no-progress halt (no flip)`);
+    return 'suppression_cap_escalate';
+  }
+  archiveDirtyTreeBeforeFlip({ workingDir, sessionDir, ticketId, log });
+  try {
+    updateTicketFrontmatter(ticketId, sessionDir, { status: 'Failed', completion_commit: null });
+    log(`[head-regression] ticket ${ticketId} marked Failed — HEAD at baseline, orphan unrecoverable`);
+  } catch (err) {
+    log(`[head-regression] ticket Failed flip error: ${safeErrorMessage(err)}`);
+  }
+  return 'marked_failed';
+}
+
+/** Terminal audit record for one detected HEAD regression and the action taken. */
+function emitHeadRegressionDetected(input: {
+  statePath: string;
+  ticketId: string;
+  sessionDir: string;
+  startCommit: string;
+  currentHead: string;
+  orphanTipSha: string | null;
+  action: HeadRegressionAction;
+}): void {
+  try {
+    writeActivityEntry(input.statePath, {
+      event: 'worker_head_regression_detected',
+      ts: new Date().toISOString(),
+      ticket: input.ticketId,
+      session: path.basename(input.sessionDir),
+      gate_payload: {
+        start_commit: input.startCommit,
+        current_head_sha: input.currentHead,
+        orphan_tip_sha: input.orphanTipSha,
+        action: input.action,
+      },
+    });
+  } catch { /* best-effort */ }
+}
+
+interface HeadRegressionInput {
   ticketId: string;
   workingDir: string;
   startCommit: string;
@@ -3157,7 +3233,23 @@ export function detectAndRecoverHeadRegression(input: {
   /** 7eb9fa20: epoch ms when the iteration began — opens the artifact-evidence window for flip suppression. */
   iterationStartMs?: number | null;
   log: (msg: string) => void;
-}): { detected: boolean; recovered: boolean; action: 'ff_reattached' | 'marked_failed' | 'flip_suppressed' | 'suppression_cap_escalate' | 'none' } {
+}
+
+/**
+ * R-CXOR-1 / e56ed23f: detect and recover from a worker HEAD regression.
+ *
+ * A codex worker may commit real work then `git reset --hard` to the pre-ticket
+ * baseline on gate failure, leaving the ticket frontmatter Done but HEAD frozen.
+ * This function detects that case and resolves the orphan chain TIP via
+ * `attemptOrphanChainReattach`, then `git merge --ff-only` reattaches HEAD to it.
+ * It NEVER rewrites history (no `git reset`, no `--force`): a divergent or ambiguous
+ * chain routes to `resolveUnreattachedOrphanDisposition`, which owns the 7eb9fa20
+ * hold-vs-flip decision and documents it.
+ * Success → `ff_reattached`. Otherwise → whatever the hold path decides.
+ */
+export function detectAndRecoverHeadRegression(
+  input: HeadRegressionInput,
+): { detected: boolean; recovered: boolean; action: 'ff_reattached' | 'marked_failed' | 'flip_suppressed' | 'suppression_cap_escalate' | 'none' } {
   const { ticketId, workingDir, startCommit, completionCommitSha, sessionDir, statePath, iteration, log } = input;
   const currentHead = readHeadCommit(workingDir);
   if (!currentHead) return { detected: false, recovered: false, action: 'none' };
@@ -3171,7 +3263,7 @@ export function detectAndRecoverHeadRegression(input: {
   // prev_head field of both orphan events.
   const prevHead = currentHead;
 
-  let action: 'ff_reattached' | 'marked_failed' | 'flip_suppressed' | 'suppression_cap_escalate' = 'marked_failed';
+  let action: Exclude<HeadRegressionAction, 'none'> = 'marked_failed';
 
   // --- e56ed23f: SHA precedence + chain-tip resolution + ff-only reattach ---
   const reattach = attemptOrphanChainReattach({ ticketId, workingDir, sessionDir, statePath, completionCommitSha, prevHead, iterationStartMs: input.iterationStartMs, log });
@@ -3180,68 +3272,25 @@ export function detectAndRecoverHeadRegression(input: {
   const candidateSha = reattach.candidateSha;
   if (recovered) action = 'ff_reattached';
 
-  // Divergent / ambiguous / undiscovered non-reattach with a known candidate →
-  // emit orphan_commit_unreattachable BEFORE routing to the hold path.
-  if (!recovered && candidateSha) {
-    try {
-      writeActivityEntry(statePath, {
-        event: 'orphan_commit_unreattachable',
-        ts: new Date().toISOString(),
-        ticket: ticketId,
-        sha: candidateSha,
-        prev_head: prevHead,
-        reason: 'divergent_or_ambiguous',
-      });
-    } catch { /* best-effort telemetry */ }
-  }
-
   if (!recovered) {
-    // 7eb9fa20: evidence-backed flip-intents are suppressed (held) instead of
-    // flipped — an unreattachable-but-real orphan commit is salvageable work,
-    // not a failure. Evidence absent → archive a dirty tree, then flip.
-    const decision = evaluateFailedFlipSuppression({
-      sessionDir,
-      statePath,
-      ticketId,
-      workingDir,
-      iteration,
-      callsite: 'head_regression',
-      windowStartMs: input.iterationStartMs ?? null,
-      windowEndMs: Date.now(),
-      preSha: startCommit,
-      log,
+    // Divergent / ambiguous / undiscovered non-reattach with a known candidate →
+    // emit orphan_commit_unreattachable BEFORE routing to the hold path.
+    if (candidateSha) emitOrphanUnreattachable(statePath, ticketId, candidateSha, prevHead);
+    action = resolveUnreattachedOrphanDisposition({
+      sessionDir, statePath, ticketId, workingDir, iteration, startCommit,
+      iterationStartMs: input.iterationStartMs ?? null, log,
     });
-    if (decision.action === 'suppress') {
-      action = 'flip_suppressed';
-      log(`[head-regression] ticket ${ticketId} Failed flip suppressed (${decision.evidence}) — status preserved, ticket held`);
-    } else if (decision.action === 'escalate') {
-      action = 'suppression_cap_escalate';
-      log(`[head-regression] ticket ${ticketId} suppression cap ${decision.cap} reached — escalating to no-progress halt (no flip)`);
-    } else {
-      archiveDirtyTreeBeforeFlip({ workingDir, sessionDir, ticketId, log });
-      try {
-        updateTicketFrontmatter(ticketId, sessionDir, { status: 'Failed', completion_commit: null });
-        log(`[head-regression] ticket ${ticketId} marked Failed — HEAD at baseline, orphan unrecoverable`);
-      } catch (err) {
-        log(`[head-regression] ticket Failed flip error: ${safeErrorMessage(err)}`);
-      }
-    }
   }
 
-  try {
-    writeActivityEntry(statePath, {
-      event: 'worker_head_regression_detected',
-      ts: new Date().toISOString(),
-      ticket: ticketId,
-      session: path.basename(sessionDir),
-      gate_payload: {
-        start_commit: startCommit,
-        current_head_sha: currentHead,
-        orphan_tip_sha: candidateSha ?? completionCommitSha,
-        action,
-      },
-    });
-  } catch { /* best-effort */ }
+  emitHeadRegressionDetected({
+    statePath,
+    ticketId,
+    sessionDir,
+    startCommit,
+    currentHead,
+    orphanTipSha: candidateSha ?? completionCommitSha,
+    action,
+  });
 
   return { detected: true, recovered, action };
 }
@@ -6956,6 +7005,92 @@ function convergedPlanHeadSha(workingDir: string): string | null {
 }
 
 /**
+ * AC-GA-REC-1 production re-execution seam. B-WSPU WS-1: all tiers spawn an implement
+ * pass synchronously via `buildManagerInvocation`, handing the worker the raw plan path
+ * as task context. Bounded to `CONVERGED_PLAN_VERIFY_TIMEOUT_MS` per subsystem
+ * invariant #3 (finite spawn timeout).
+ */
+function spawnConvergedPlanImplementPass(opts: {
+  planPath: string;
+  ticketId: string;
+  complexityTier: string;
+  sessionDir: string;
+  workingDir: string;
+  statePath: string;
+}): { ok: boolean; timedOut?: boolean } {
+  try {
+    const { backend } = resolveBackendFromStateFileWithSource(opts.statePath);
+    const invocation = buildManagerInvocation(backend, {
+      prompt: `Re-execute the approved plan to produce the missing edits. Read the raw plan at ${opts.planPath} and implement its steps for ticket ${opts.ticketId}.`,
+      addDirs: [opts.workingDir, opts.sessionDir],
+      noSessionPersistence: true,
+    });
+    const r = spawnSync(invocation.cmd, invocation.args, {
+      cwd: opts.workingDir,
+      env: { ...process.env, ...backendEnvOverrides(backend, { workingDir: opts.workingDir, ticketId: opts.ticketId, sessionDir: opts.sessionDir }), ...(invocation.env ?? {}), PICKLE_STATE_FILE: opts.statePath },
+      encoding: 'utf-8',
+      timeout: CONVERGED_PLAN_VERIFY_TIMEOUT_MS,
+    });
+    if (r.error && (r.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
+      return { ok: false, timedOut: true };
+    }
+    return { ok: r.status === 0 };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('ETIMEDOUT') || msg.includes('timed out')) {
+      return { ok: false, timedOut: true };
+    }
+    return { ok: false };
+  }
+}
+
+/**
+ * Rung 1's ARMED gate. B-OFFREPO (AC-OFFREPO-1) narrowed this to `ok:false` on a
+ * missing `extension/` so rung 1 could never mint a fabricated green worker-gate
+ * verdict for a target repo whose suite never ran. That fix over-reached: it also
+ * stopped rung 1 from even ATTEMPTING the commit-and-flip on a genuinely-dirty,
+ * genuinely-advancing tree, collapsing every off-repo recovery pass straight to the
+ * honest terminal `recovery_exhausted` — a Prime Directive halt on a ladder that made
+ * real progress (INV-CODEX-RECOVERY-ADVANCED, R-CHTS-CODEX). The fear behind B-OFFREPO
+ * was correct (never assert a gate ran when it didn't); the fix belongs at the VERDICT,
+ * not at whether the commit is attempted — exactly the split B-OFFREPO's own
+ * `guardCompletionCommitBeforeDone` change already applies one level up (`not_run`
+ * routes to the gate-exempt decision kind rather than fail-closed). So this reports
+ * `ok: true` (the ladder may proceed) while recording the same not-run residual for
+ * observability; the committer is the one that must not lie about a verdict it didn't
+ * earn. `failures: null` distinguishes "gate never ran" from "gate ran, found none".
+ */
+function runRecoveryArmedGate(
+  input: AttemptRecoveryBeforeTerminalInput,
+  extensionDir: string,
+): { ok: boolean; failures: BetweenTicketGateFailure[] | null } {
+  if (!fs.existsSync(extensionDir)) {
+    emitWorkerGateNotRunResidual(input.statePath, input.ticketId, {
+      computedVia: 'not_applicable',
+      site: 'attemptRecoveryBeforeTerminal.runArmedGate',
+    });
+    input.log(`recovery: armed gate not applicable for ${input.ticketId} (no extension/) — proceeding without a fabricated green verdict`);
+    return { ok: true, failures: null };
+  }
+  const r = runBetweenTicketFastTests(extensionDir, input.extensionRoot);
+  return { ok: r.ok, failures: r.failures };
+}
+
+/**
+ * W4a: annotate the ledger reason with the backend/mode discriminant so every recovery
+ * attempt is attributable to the seam authority that hit the choke point, without a
+ * state-schema change. Best-effort — a ledger append never fails the ladder.
+ */
+function appendRecoveryAttempt(statePath: string, attempt: RecoveryAttempt, discriminantTag: string): void {
+  try {
+    sm.update(statePath, s => {
+      if (!Array.isArray(s.recovery_attempts)) s.recovery_attempts = [];
+      s.recovery_attempts.push({ ...attempt, reason: `${attempt.reason} ${discriminantTag}` });
+    });
+  } catch { /* best-effort ledger append */ }
+}
+
+/**
  * Build the RecoveryDeps bound to the runtime and run the ladder. The ARMED gate is
  * `runBetweenTicketFastTests` — it runs the real whole-repo `test:fast` and ignores
  * `flags.skip_quality_gates_reason` by construction (never a skip-flagged green).
@@ -6974,32 +7109,11 @@ export function attemptRecoveryBeforeTerminal(input: AttemptRecoveryBeforeTermin
     ticketId: input.ticketId,
     assessEvidence: () => assessRecoveryEvidence(input.sessionDir, input.workingDir, input.ticketId),
     runArmedGate: () => {
-      // B-OFFREPO (AC-OFFREPO-1) narrowed this to `ok:false` on a missing
-      // `extension/` so rung 1 could never mint a fabricated green worker-gate
-      // verdict for a target repo whose suite never ran. That fix over-reached: it
-      // also stopped rung 1 from even ATTEMPTING the commit-and-flip on a
-      // genuinely-dirty, genuinely-advancing tree, collapsing every off-repo
-      // recovery pass straight to the honest terminal `recovery_exhausted` — a
-      // Prime Directive halt on a ladder that made real progress
-      // (INV-CODEX-RECOVERY-ADVANCED, R-CHTS-CODEX). The fear behind B-OFFREPO was
-      // correct (never assert a gate ran when it didn't); the fix belongs at the
-      // VERDICT, not at whether the commit is attempted — exactly the split
-      // B-OFFREPO's own `guardCompletionCommitBeforeDone` change already applies
-      // one level up (`not_run` routes to the gate-exempt decision kind rather than
-      // fail-closed). So this reports `ok: true` (the ladder may proceed) while
-      // recording the same not-run residual for observability; the committer below
-      // is the one that must not lie about a verdict it didn't earn.
-      if (!fs.existsSync(extensionDir)) {
-        emitWorkerGateNotRunResidual(input.statePath, input.ticketId, {
-          computedVia: 'not_applicable',
-          site: 'attemptRecoveryBeforeTerminal.runArmedGate',
-        });
-        input.log(`recovery: armed gate not applicable for ${input.ticketId} (no extension/) — proceeding without a fabricated green verdict`);
-        return { ok: true };
-      }
-      const r = runBetweenTicketFastTests(extensionDir, input.extensionRoot);
-      lastGateFailures = r.failures;
-      return { ok: r.ok };
+      const gate = runRecoveryArmedGate(input, extensionDir);
+      // `failures === null` means the gate never RAN (no `extension/`), so the
+      // previously recorded failures must survive untouched.
+      if (gate.failures !== null) lastGateFailures = gate.failures;
+      return { ok: gate.ok };
     },
     commitAndFlipDone: () => commitAndContinueDoneFlip({
       sessionDir: input.sessionDir,
@@ -7022,49 +7136,10 @@ export function attemptRecoveryBeforeTerminal(input: AttemptRecoveryBeforeTermin
       // AC-GA-REC-1 production re-execution seam (B-WSPU WS-1: all tiers spawn
       // an implement pass synchronously — no detached lifecycle).
       reExecutionSeam: {
-        spawnImplementPass: (opts) => {
-          // B-WSPU WS-1: all tiers spawn an implement pass synchronously via
-          // buildManagerInvocation, handing the worker the raw plan path as task
-          // context. Bounded to CONVERGED_PLAN_VERIFY_TIMEOUT_MS per subsystem
-          // invariant #3 (finite spawn timeout).
-          try {
-            const { backend } = resolveBackendFromStateFileWithSource(opts.statePath);
-            const invocation = buildManagerInvocation(backend, {
-              prompt: `Re-execute the approved plan to produce the missing edits. Read the raw plan at ${opts.planPath} and implement its steps for ticket ${opts.ticketId}.`,
-              addDirs: [opts.workingDir, opts.sessionDir],
-              noSessionPersistence: true,
-            });
-            const r = spawnSync(invocation.cmd, invocation.args, {
-              cwd: opts.workingDir,
-              env: { ...process.env, ...backendEnvOverrides(backend, { workingDir: opts.workingDir, ticketId: opts.ticketId, sessionDir: opts.sessionDir }), ...(invocation.env ?? {}), PICKLE_STATE_FILE: opts.statePath },
-              encoding: 'utf-8',
-              timeout: CONVERGED_PLAN_VERIFY_TIMEOUT_MS,
-            });
-            if (r.error && (r.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
-              return { ok: false, timedOut: true };
-            }
-            return { ok: r.status === 0 };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes('ETIMEDOUT') || msg.includes('timed out')) {
-              return { ok: false, timedOut: true };
-            }
-            return { ok: false };
-          }
-        },
+        spawnImplementPass: spawnConvergedPlanImplementPass,
       },
     }),
-    appendAttempt: (attempt: RecoveryAttempt) => {
-      try {
-        sm.update(input.statePath, s => {
-          if (!Array.isArray(s.recovery_attempts)) s.recovery_attempts = [];
-          // W4a: annotate the ledger reason with the backend/mode discriminant so
-          // every recovery attempt is attributable to the seam authority that hit
-          // the choke point, without a state-schema change.
-          s.recovery_attempts.push({ ...attempt, reason: `${attempt.reason} ${discriminantTag}` });
-        });
-      } catch { /* best-effort ledger append */ }
-    },
+    appendAttempt: (attempt: RecoveryAttempt) => appendRecoveryAttempt(input.statePath, attempt, discriminantTag),
     log: input.log,
   };
   return runRecoveryLadder(deps);
@@ -9275,6 +9350,149 @@ export function advanceOrExitOnLadderExhaustion(input: {
   return noRunnableTicketsRemain(sessionDir) ? 'exit' : 'advance';
 }
 
+interface RecordArtifactProgressOpts {
+  k?: number;
+  iteration?: number;
+  log?: (m: string) => void;
+  workingDir?: string;
+  sourceSignatureFn?: (workingDir: string) => string | null;
+  /**
+   * AC-A4 (B-RRH): credit research/plan artifacts as progress (early iters of a
+   * large-tier ticket). Threaded into countWorkerArtifacts for the AFTER snapshot; the
+   * charge site MUST pass the SAME flag into the BEFORE snapshot so the delta is
+   * consistent.
+   */
+  creditEarlyPhases?: boolean;
+  /**
+   * AC-A5 (B-RRH): rate-limited / within-breaker-recovery-grace spawn — the
+   * zero-progress counter is HELD (never incremented) so a 429 or breaker-recovery race
+   * does not poison the no-progress ladder.
+   */
+  suppressIncrement?: boolean;
+  /**
+   * AC-A1 (B-RRH): done-guard predicate — a Done ticket with predicate-accepted
+   * completion evidence is never charged. Defaults to the fail-open
+   * evaluateCompletionEvidence-backed read (B-1SEAM WS-1).
+   */
+  doneGuardFn?: (sessionDir: string, ticketId: string, workingDir?: string) => boolean;
+}
+
+/**
+ * AC-R-WMNP-1 (M2/M3): a non-null signature counts as forward progress when
+ * (a) no prior signature was ever captured (FIRST capture — spawn 1 that lands only
+ * source work must seed the baseline, not be scored zero-progress), or (b) a prior null
+ * sentinel recorded a git-unavailable spawn and this probe finally succeeded (gap
+ * recovery — the prior `undefined` guard hid this until spawn 3), or (c) the signature
+ * actually changed since the prior spawn.
+ */
+function isSourceSignatureProgress(sourceSignature: string | null, priorSignature: string | null | undefined): boolean {
+  return sourceSignature !== null
+    && (priorSignature === undefined
+      || priorSignature === null
+      || sourceSignature !== priorSignature);
+}
+
+/**
+ * Charge precedence for one spawn: A1 done-guard resets (ticket is fine) → any forward
+ * progress resets → A5 suppression HOLDS (no increment) → otherwise increment.
+ */
+function computeArtifactProgressCharge(
+  priorZero: number,
+  input: { doneGuard: boolean; progressed: boolean; suppressIncrement: boolean },
+): { nextZero: number; incremented: boolean } {
+  if (input.doneGuard || input.progressed) return { nextZero: 0, incremented: false };
+  if (input.suppressIncrement) return { nextZero: priorZero, incremented: false };
+  return { nextZero: priorZero + 1, incremented: true };
+}
+
+/**
+ * Carry the freshest signature forward. On a probe failure persist an explicit `null`
+ * sentinel (M3) — not the prior value, and not `undefined` — so a later successful probe
+ * is detected as gap-recovery progress rather than staying invisible behind a
+ * missing-baseline guard. Only preserve a prior COMPLETE (non-null) signature when there
+ * was no prior at all.
+ */
+function carryForwardSourceSignature(sourceSignature: string | null, priorSignature: string | null | undefined): string | null {
+  return sourceSignature !== null ? sourceSignature : (priorSignature ?? null);
+}
+
+/**
+ * AC-A1 (B-RRH): a Done ticket with completion evidence is fine — never charge it
+ * (B-LERD: run-exit on a Done ticket). Fail-open: any read error → not guarded.
+ */
+function resolveDoneGuard(
+  doneGuardFn: NonNullable<RecordArtifactProgressOpts['doneGuardFn']>,
+  sessionDir: string,
+  ticketId: string,
+  workingDir?: string,
+): boolean {
+  try { return doneGuardFn(sessionDir, ticketId, workingDir); } catch { return false; }
+}
+
+/** One ticket's persisted progress counters, as `state.worker_artifact_progress` holds them. */
+interface ArtifactProgressEntry {
+  spawn_count: number;
+  last_artifact_count: number;
+  zero_progress_count: number;
+}
+
+/**
+ * Fold this spawn's outcome into `state.worker_artifact_progress[ticketId]` inside ONE
+ * state transaction, and report whether the zero-progress counter was actually
+ * incremented (the caller's fire-once predicate reads that, not the stored count).
+ */
+function persistArtifactProgressEntry(
+  statePath: string,
+  ticketId: string,
+  spawn: { afterCount: number; delta: number; doneGuard: boolean; sourceSignature: string | null; suppressIncrement: boolean },
+): { entry: ArtifactProgressEntry; incremented: boolean } {
+  let incremented = false;
+  const updated = sm.update(statePath, s => {
+    const map = (s.worker_artifact_progress && typeof s.worker_artifact_progress === 'object')
+      ? s.worker_artifact_progress
+      : (s.worker_artifact_progress = {});
+    const prev = map[ticketId] ?? { spawn_count: 0, last_artifact_count: 0, zero_progress_count: 0 };
+    const sourceProgressed = isSourceSignatureProgress(spawn.sourceSignature, prev.last_source_signature);
+    const charge = computeArtifactProgressCharge(prev.zero_progress_count, {
+      doneGuard: spawn.doneGuard,
+      progressed: spawn.delta > 0 || sourceProgressed,
+      suppressIncrement: spawn.suppressIncrement,
+    });
+    incremented = charge.incremented;
+    map[ticketId] = {
+      spawn_count: prev.spawn_count + 1,
+      last_artifact_count: spawn.afterCount,
+      zero_progress_count: charge.nextZero,
+      last_source_signature: carryForwardSourceSignature(spawn.sourceSignature, prev.last_source_signature),
+    };
+  });
+  const entry = updated.worker_artifact_progress?.[ticketId]
+    ?? { spawn_count: 1, last_artifact_count: spawn.afterCount, zero_progress_count: 0 };
+  return { entry, incremented };
+}
+
+/** The observe-threshold breadcrumb: emitted once, on the spawn that reached K. */
+function emitArtifactProgressZero(
+  statePath: string,
+  ticketId: string,
+  entry: ArtifactProgressEntry,
+  k: number,
+  log?: (m: string) => void,
+): void {
+  writeActivityEntry(statePath, {
+    event: 'worker_artifact_progress_zero',
+    ts: new Date().toISOString(),
+    ticket: ticketId,
+    gate_payload: {
+      spawn_count: entry.spawn_count,
+      last_artifact_count: entry.last_artifact_count,
+      zero_progress_count: entry.zero_progress_count,
+      observe_k: k,
+    },
+  });
+  log?.(`[observe] worker_artifact_progress_zero: ticket ${ticketId} produced no new review/conformance artifacts for ${k} consecutive spawns`);
+}
+
 /**
  * Persist the post-spawn progress delta for one ticket and, on exactly the
  * K-th consecutive zero-PROGRESS spawn, emit `worker_artifact_progress_zero`.
@@ -9290,36 +9508,13 @@ export function recordWorkerArtifactProgress(
   sessionDir: string,
   ticketId: string,
   beforeCount: number,
-  opts: {
-    k?: number;
-    iteration?: number;
-    log?: (m: string) => void;
-    workingDir?: string;
-    sourceSignatureFn?: (workingDir: string) => string | null;
-    // AC-A4 (B-RRH): credit research/plan artifacts as progress (early iters of a
-    // large-tier ticket). Threaded into countWorkerArtifacts for the AFTER snapshot;
-    // the charge site MUST pass the SAME flag into the BEFORE snapshot so the delta
-    // is consistent.
-    creditEarlyPhases?: boolean;
-    // AC-A5 (B-RRH): rate-limited / within-breaker-recovery-grace spawn — the
-    // zero-progress counter is HELD (never incremented) so a 429 or breaker-recovery
-    // race does not poison the no-progress ladder.
-    suppressIncrement?: boolean;
-    // AC-A1 (B-RRH): done-guard predicate — a Done ticket with predicate-accepted
-    // completion evidence is never charged. Defaults to the fail-open
-    // evaluateCompletionEvidence-backed read (B-1SEAM WS-1).
-    doneGuardFn?: (sessionDir: string, ticketId: string, workingDir?: string) => boolean;
-  } = {},
+  opts: RecordArtifactProgressOpts = {},
 ): { spawnCount: number; lastArtifactCount: number; zeroProgressCount: number; fired: boolean; doneGuard: boolean; incrementSuppressed: boolean } {
   const k = opts.k ?? resolveWmwObserveK();
   const afterCount = countWorkerArtifacts(path.join(sessionDir, ticketId), { creditEarlyPhases: opts.creditEarlyPhases });
   const delta = afterCount - beforeCount;
 
-  // AC-A1 (B-RRH): a Done ticket with completion evidence is fine — never charge it
-  // (B-LERD: run-exit on a Done ticket). Fail-open: any read error → not guarded.
-  const doneGuardFn = opts.doneGuardFn ?? defaultDoneGuard;
-  let doneGuard = false;
-  try { doneGuard = doneGuardFn(sessionDir, ticketId, opts.workingDir); } catch { doneGuard = false; }
+  const doneGuard = resolveDoneGuard(opts.doneGuardFn ?? defaultDoneGuard, sessionDir, ticketId, opts.workingDir);
 
   // AC-R-WMNP-1: capture the current source-tree signature. A non-null signature
   // that differs from the prior spawn's stored signature counts as progress even
@@ -9327,69 +9522,17 @@ export function recordWorkerArtifactProgress(
   const sigFn = opts.sourceSignatureFn ?? computeSourceTreeSignature;
   const sourceSignature = opts.workingDir ? sigFn(opts.workingDir) : null;
 
-  let incremented = false;
-  const updated = sm.update(statePath, s => {
-    const map = (s.worker_artifact_progress && typeof s.worker_artifact_progress === 'object')
-      ? s.worker_artifact_progress
-      : (s.worker_artifact_progress = {});
-    const prev = map[ticketId] ?? { spawn_count: 0, last_artifact_count: 0, zero_progress_count: 0 };
-    const artifactProgressed = delta > 0;
-    // AC-R-WMNP-1 (M2/M3): a non-null signature counts as forward progress when
-    // (a) no prior signature was ever captured (FIRST capture — spawn 1 that lands
-    // only source work must seed the baseline, not be scored zero-progress), or
-    // (b) a prior null sentinel recorded a git-unavailable spawn and this probe
-    // finally succeeded (gap recovery — the prior `undefined` guard hid this until
-    // spawn 3), or (c) the signature actually changed since the prior spawn.
-    const sourceProgressed = sourceSignature !== null
-      && (prev.last_source_signature === undefined
-        || prev.last_source_signature === null
-        || sourceSignature !== prev.last_source_signature);
-    const progressed = artifactProgressed || sourceProgressed;
-    // Charge precedence: A1 done-guard resets (ticket is fine) → A any forward
-    // progress resets → A5 suppression HOLDS (no increment) → otherwise increment.
-    let nextZero: number;
-    if (doneGuard || progressed) {
-      nextZero = 0;
-    } else if (opts.suppressIncrement) {
-      nextZero = prev.zero_progress_count;
-    } else {
-      nextZero = prev.zero_progress_count + 1;
-      incremented = true;
-    }
-    map[ticketId] = {
-      spawn_count: prev.spawn_count + 1,
-      last_artifact_count: afterCount,
-      zero_progress_count: nextZero,
-      // Carry the freshest signature forward. On a probe failure persist an
-      // explicit `null` sentinel (M3) — not the prior value, and not `undefined` —
-      // so a later successful probe is detected as gap-recovery progress rather
-      // than staying invisible behind a missing-baseline guard. Only preserve a
-      // prior COMPLETE (non-null) signature when there was no prior at all.
-      last_source_signature: sourceSignature !== null
-        ? sourceSignature
-        : (prev.last_source_signature ?? null),
-    };
+  const { entry, incremented } = persistArtifactProgressEntry(statePath, ticketId, {
+    afterCount,
+    delta,
+    doneGuard,
+    sourceSignature,
+    suppressIncrement: !!opts.suppressIncrement,
   });
-
-  const entry = updated.worker_artifact_progress?.[ticketId]
-    ?? { spawn_count: 1, last_artifact_count: afterCount, zero_progress_count: 0 };
   // Fire only when THIS spawn incremented to the threshold — a held (suppressed)
   // or done-guarded spawn that merely sits at k must not re-fire.
   const fired = incremented && entry.zero_progress_count === k;
-  if (fired) {
-    writeActivityEntry(statePath, {
-      event: 'worker_artifact_progress_zero',
-      ts: new Date().toISOString(),
-      ticket: ticketId,
-      gate_payload: {
-        spawn_count: entry.spawn_count,
-        last_artifact_count: entry.last_artifact_count,
-        zero_progress_count: entry.zero_progress_count,
-        observe_k: k,
-      },
-    });
-    opts.log?.(`[observe] worker_artifact_progress_zero: ticket ${ticketId} produced no new review/conformance artifacts for ${k} consecutive spawns`);
-  }
+  if (fired) emitArtifactProgressZero(statePath, ticketId, entry, k, opts.log);
   return {
     spawnCount: entry.spawn_count,
     lastArtifactCount: entry.last_artifact_count,
