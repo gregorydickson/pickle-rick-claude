@@ -37,6 +37,12 @@ jobs:
         # gate's detectMissingTools(['pnpm']) does not short-circuit red on Linux CI.
         run: corepack enable
 
+      - name: Install ripgrep
+        # A3/B-CIGREEN ROOT A: audit-trap-door-enforcement.sh shells out to `rg`.
+        # ubuntu-latest does not ship it, so without this step the audit's
+        # isUnrunnableCheckResult fail-closed path (2bf16f30) trips on every run.
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Install and test
         # R-CIFB: point getExtensionRoot() at the checked-out repo (sentinel
         # extension/bin/log-watcher.js is committed) instead of the deployed

@@ -43,6 +43,12 @@ jobs:
         # (convergence-gate.ts:739) short-circuits red on Linux CI.
         run: corepack enable
 
+      - name: Install ripgrep
+        # A3/B-CIGREEN ROOT A: audit-trap-door-enforcement.sh shells out to `rg`.
+        # ubuntu-latest does not ship it, so without this step the audit's
+        # isUnrunnableCheckResult fail-closed path (2bf16f30) trips on every run.
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Install and compile
         # 139925d8: deliberate mirror of ci.yml — do not delete as redundant.
         # Points getExtensionRoot() (pickle-utils.ts:371) at the checked-out repo
