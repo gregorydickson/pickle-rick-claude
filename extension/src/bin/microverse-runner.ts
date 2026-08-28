@@ -1149,6 +1149,35 @@ export type InterfaceSweepSkipReason =
   | 'changed_files_unmeasurable'
   | 'typecheck_unmeasurable';
 
+/**
+ * The two git-side classifier axes, enumerated from the same instant behind ONE unmeasurable
+ * disposition. `null` from either enumeration is "git could not answer", NOT "nothing changed":
+ * an empty result on either axis is a POSITIVE finding that `isSelfIntroducedFailure`
+ * short-circuits on, so a fabricated empty set disarms that axis and the sweep still reports
+ * `ran: true` — a verdict the caller reads as INV-NO-SELF-DISOWN evidence. An empty FILE list is
+ * not even a coherent reading once a symbol changed: no exported declaration changes without its
+ * file changing. Enumerating before the gate also means an unmeasurable sweep costs no
+ * whole-repo tsc.
+ */
+function enumerateInterfaceSweepAxes(
+  workingDir: string,
+  startCommit: string,
+  getSymbols: typeof getChangedExportedSymbols,
+  getFiles: typeof getChangedFilesSince,
+): { skipped: InterfaceSweepSkipReason } | { changedExportedSymbols: Set<string>; changedFiles: Set<string> } {
+  const changedExportedSymbols = getSymbols(workingDir, startCommit);
+  const changedFilesList = getFiles(workingDir, startCommit);
+  if (changedExportedSymbols === null || changedFilesList === null) {
+    return {
+      skipped: changedExportedSymbols === null ? 'symbols_unmeasurable' : 'changed_files_unmeasurable',
+    };
+  }
+  return {
+    changedExportedSymbols,
+    changedFiles: new Set(changedFilesList.map((f) => f.replace(/\\/g, '/'))),
+  };
+}
+
 export async function runInterfaceChangeSweep(opts: {
   workingDir: string;
   sessionDir: string;
@@ -1158,26 +1187,57 @@ export async function runInterfaceChangeSweep(opts: {
   getChangedExportedSymbolsFn?: typeof getChangedExportedSymbols;
   getChangedFilesSinceFn?: typeof getChangedFilesSince;
 }): Promise<{ ran: boolean; skipped: InterfaceSweepSkipReason | null; selfIntroduced: GateFailure[] }> {
-  const getSymbols = opts.getChangedExportedSymbolsFn ?? getChangedExportedSymbols;
-  const getFiles = opts.getChangedFilesSinceFn ?? getChangedFilesSince;
-  // BOTH classifier axes are enumerated up front, from the same instant, behind ONE unmeasurable
-  // disposition. `null` is "git could not answer", NOT "nothing changed": an empty result on
-  // either axis is a POSITIVE finding that `isSelfIntroducedFailure` short-circuits on, so a
-  // fabricated empty set disarms that axis and the sweep still reports `ran: true` — a verdict
-  // the caller reads as INV-NO-SELF-DISOWN evidence. An empty FILE list is not even a coherent
-  // reading once a symbol changed: no exported declaration changes without its file changing.
-  // Enumerating before the gate also means an unmeasurable sweep costs no whole-repo tsc.
-  const changedExportedSymbols = getSymbols(opts.workingDir, opts.startCommit);
-  const changedFilesList = getFiles(opts.workingDir, opts.startCommit);
-  if (changedExportedSymbols === null || changedFilesList === null) {
-    const skipped: InterfaceSweepSkipReason = changedExportedSymbols === null
-      ? 'symbols_unmeasurable'
-      : 'changed_files_unmeasurable';
-    return { ran: false, skipped, selfIntroduced: [] };
-  }
-  if (changedExportedSymbols.size === 0) {
+  const axes = enumerateInterfaceSweepAxes(
+    opts.workingDir,
+    opts.startCommit,
+    opts.getChangedExportedSymbolsFn ?? getChangedExportedSymbols,
+    opts.getChangedFilesSinceFn ?? getChangedFilesSince,
+  );
+  if ('skipped' in axes) return { ran: false, skipped: axes.skipped, selfIntroduced: [] };
+  if (axes.changedExportedSymbols.size === 0) {
     return { ran: false, skipped: null, selfIntroduced: [] };
   }
+  const typecheck = await runInterfaceSweepTypecheck(opts);
+  if (typecheck === null) {
+    return { ran: false, skipped: 'typecheck_unmeasurable', selfIntroduced: [] };
+  }
+  const { selfIntroduced } = classifyNoDisown(typecheck, {
+    changedFiles: axes.changedFiles,
+    changedExportedSymbols: axes.changedExportedSymbols,
+    workingDir: opts.workingDir,
+  });
+  return { ran: true, skipped: null, selfIntroduced };
+}
+
+/**
+ * Run the whole-repo typecheck arm of the sweep. Returns the gate's failures, or `null` when the
+ * typecheck did not measure — the THIRD axis of the same one unmeasurable disposition.
+ *
+ * A check that timed out, or that the cumulative gate deadline cut off, yields a `<timeout>` /
+ * GATE_CHECK_TIMEOUT pseudo-failure whose file matches no changed file and whose message yields
+ * no identifier, so `classifyNoDisown` always lands it in `other` and the sweep would return
+ * `ran: true` with an EMPTY `selfIntroduced` over a typecheck that never once ran — the exact
+ * "absence of failures read as evidence" shape AP-EXT-ITER6-01 closed one layer down.
+ *
+ * AP-EXT-ITER7-02 closes the SKIP half of that hole. The question is asked with ONE predicate
+ * owned by `convergence-gate.ts` — never a second, locally-derived one, which is how
+ * AP-EXT-ITER6-01's three arms drifted apart — but it is `isCheckUnmeasured`, not
+ * `hasUnmeasuredCheck`. The two ask different questions about the same map and must stay
+ * distinct: the baseline reader asks "did a check FAIL to measure?" and excludes `'skipped'` on
+ * purpose (folding it in there would defer every iteration of any repo whose test script the
+ * gate declines), while the sweep needs POSITIVE evidence that the whole-repo typecheck ran at
+ * all. A gate that SKIPPED it — off-repo `earlyResult`, `no_project_type_detected`,
+ * `project_type_low_confidence`, `workerModeSkipResult` — returns green with zero failures, and
+ * reading that as a clean typecheck is the same fake-green one door over. Narrowing from "any
+ * check" to `'typecheck'` loses nothing: this call requests only that check, and `'failed'` is
+ * still not `'ran'`, so the AP-EXT-ITER7-01 timeout case stays covered.
+ */
+async function runInterfaceSweepTypecheck(opts: {
+  workingDir: string;
+  sessionDir: string;
+  runGateFn: typeof runGate;
+  logActivityFn: typeof logActivity;
+}): Promise<GateFailure[] | null> {
   const result = await opts.runGateFn({
     workingDir: opts.workingDir,
     mode: 'strict',
@@ -1190,35 +1250,8 @@ export async function runInterfaceChangeSweep(opts: {
       gate_payload: { ...data, interface_change_sweep: true },
     }),
   });
-  // THIRD axis of the same one unmeasurable disposition: the whole-repo tsc itself. A check that
-  // timed out, or that the cumulative gate deadline cut off, yields a `<timeout>` /
-  // GATE_CHECK_TIMEOUT pseudo-failure whose file matches no changed file and whose message yields
-  // no identifier, so `classifyNoDisown` always lands it in `other` and the sweep would return
-  // `ran: true` with an EMPTY `selfIntroduced` over a typecheck that never once ran — the exact
-  // "absence of failures read as evidence" shape AP-EXT-ITER6-01 closed one layer down.
-  //
-  // AP-EXT-ITER7-02 closes the SKIP half of that hole. The question is asked with ONE predicate
-  // owned by `convergence-gate.ts` — never a second, locally-derived one, which is how
-  // AP-EXT-ITER6-01's three arms drifted apart — but it is `isCheckUnmeasured`, not
-  // `hasUnmeasuredCheck`. The two ask different questions about the same map and must stay
-  // distinct: the baseline reader asks "did a check FAIL to measure?" and excludes `'skipped'` on
-  // purpose (folding it in there would defer every iteration of any repo whose test script the
-  // gate declines), while the sweep needs POSITIVE evidence that the whole-repo typecheck ran at
-  // all. A gate that SKIPPED it — off-repo `earlyResult`, `no_project_type_detected`,
-  // `project_type_low_confidence`, `workerModeSkipResult` — returns green with zero failures, and
-  // reading that as a clean typecheck is the same fake-green one door over. Narrowing from "any
-  // check" to `'typecheck'` loses nothing: this call requests only that check, and `'failed'` is
-  // still not `'ran'`, so the AP-EXT-ITER7-01 timeout case stays covered.
-  if (isCheckUnmeasured(result.check_status, 'typecheck')) {
-    return { ran: false, skipped: 'typecheck_unmeasurable', selfIntroduced: [] };
-  }
-  const changedFiles = new Set(changedFilesList.map((f) => f.replace(/\\/g, '/')));
-  const { selfIntroduced } = classifyNoDisown(result.failures, {
-    changedFiles,
-    changedExportedSymbols,
-    workingDir: opts.workingDir,
-  });
-  return { ran: true, skipped: null, selfIntroduced };
+  if (isCheckUnmeasured(result.check_status, 'typecheck')) return null;
+  return result.failures;
 }
 
 function recordInterfaceSweepRegression(opts: {
@@ -1283,36 +1316,66 @@ function readWorkerConvergenceSignal(
 // R-ORSR-6: at convergence-signal time, run the whole-repo interface-change sweep. A non-empty
 // self-introduced break records a regression and blocks convergence with `selfRedOpen: true`
 // (which arms the no-disown bound on the deferral force-exit). Returns null when nothing blocks.
+/**
+ * Normalize the sweep's base commit, which is also its ARMING predicate: the sweep diffs against
+ * `state.start_commit`, so a blank or absent value leaves it nothing to diff and `null` means
+ * unarmed. AP-EXT-ITER14-01 pins the wiring that supplies it at the one seam that crosses it.
+ */
+function sweepBaseCommit(startCommit: string | undefined): string | null {
+  if (typeof startCommit !== 'string') return null;
+  const trimmed = startCommit.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * RENDER the sweep's not-run case. It stays NON-fatal — an unmeasurable sweep is not a measured
+ * regression, and halting here would take reliability and quality to zero over an absent
+ * reading. But it must not be silent: convergence proceeds carrying no INV-NO-SELF-DISOWN
+ * evidence either way, and that is a materially different fact from "the sweep cleared it".
+ */
+function renderInterfaceSweepNotRun(
+  skipped: InterfaceSweepSkipReason,
+  iteration: number,
+  log: (msg: string) => void,
+): void {
+  log(
+    `Iteration ${iteration} — interface-change sweep NOT RUN (${skipped}): a measurement ` +
+    `the no-disown classifier needs did not complete, so this iteration carries no ` +
+    `INV-NO-SELF-DISOWN evidence in either direction — continuing (non-fatal)`,
+  );
+}
+
+/**
+ * R-ORSR-6 interface-change sweep: before trusting a convergence signal, run a whole-repo tsc
+ * when the phase's own diff changed an exported symbol. A self-introduced out-of-scope consumer
+ * break blocks convergence and arms the no-disown bound on the deferral force-exit.
+ *
+ * The guard owns its own ARMING predicate: a blank or absent `startCommit` leaves the sweep with
+ * no base to diff against, so it is unarmed and returns null. Callers pass the raw
+ * `state.start_commit` through — AP-EXT-ITER14-01 pins that wiring at the one seam that crosses it.
+ */
 async function applyInterfaceChangeSweepGuard(opts: {
   currentMv: MicroverseSessionState;
   workingDir: string;
   sessionDir: string;
-  startCommit: string;
+  startCommit?: string;
   iteration: number;
   log: (msg: string) => void;
   _deps?: PerIterationGateDeps;
 }): Promise<{ currentMv: MicroverseSessionState; converged: false; reason: string; selfRedOpen: true } | null> {
-  const { currentMv, workingDir, sessionDir, startCommit, iteration, log, _deps } = opts;
+  const { currentMv, workingDir, sessionDir, iteration, log, _deps } = opts;
+  const baseCommit = sweepBaseCommit(opts.startCommit);
+  if (baseCommit === null) return null;
   const sweep = await runInterfaceChangeSweep({
     workingDir,
     sessionDir,
-    startCommit,
+    startCommit: baseCommit,
     runGateFn: _deps?.runGateFn ?? runGate,
     logActivityFn: _deps?.logActivityFn ?? logActivity,
     getChangedExportedSymbolsFn: _deps?.getChangedExportedSymbolsFn,
     getChangedFilesSinceFn: _deps?.getChangedFilesSinceFn,
   });
-  // RENDER the not-run case. It stays NON-fatal — an unmeasurable sweep is not a measured
-  // regression, and halting here would take reliability and quality to zero over an absent
-  // reading. But it must not be silent: convergence proceeds carrying no INV-NO-SELF-DISOWN
-  // evidence either way, and that is a materially different fact from "the sweep cleared it".
-  if (sweep.skipped !== null) {
-    log(
-      `Iteration ${iteration} — interface-change sweep NOT RUN (${sweep.skipped}): a measurement ` +
-      `the no-disown classifier needs did not complete, so this iteration carries no ` +
-      `INV-NO-SELF-DISOWN evidence in either direction — continuing (non-fatal)`,
-    );
-  }
+  if (sweep.skipped !== null) renderInterfaceSweepNotRun(sweep.skipped, iteration, log);
   if (!(sweep.ran && sweep.selfIntroduced.length > 0)) return null;
   log(
     `Iteration ${iteration} — convergence blocked: interface-change sweep found ` +
@@ -1387,7 +1450,7 @@ function deferConvergenceOnGateRegression(opts: {
 export async function handleWorkerManagedIteration(
   opts: WorkerManagedIterationOpts,
 ): Promise<WorkerManagedIterationResult> {
-  const { sessionDir, log, iteration, startCommit, _deps } = opts;
+  const { sessionDir, log, iteration } = opts;
   let currentMv = opts.currentMv;
   const priorIterationRegressions = Number(currentMv.iteration_regressions ?? 0);
   const lintFailures: GateFailure[] = [];
@@ -1415,31 +1478,10 @@ export async function handleWorkerManagedIteration(
   });
   if (regressionBlock) return regressionBlock;
 
-  // R-ORSR-6 interface-change sweep: before trusting a convergence signal, run a whole-repo tsc
-  // when the phase's own diff changed an exported symbol. A self-introduced out-of-scope consumer
-  // break blocks convergence and arms the no-disown bound on the deferral force-exit.
-  if (typeof startCommit === 'string' && startCommit.trim().length > 0) {
-    const sweepBlock = await applyInterfaceChangeSweepGuard({
-      currentMv,
-      workingDir: opts.workingDir,
-      sessionDir,
-      startCommit: startCommit.trim(),
-      iteration,
-      log,
-      _deps,
-    });
-    if (sweepBlock) return sweepBlock;
-  }
+  const sweepBlock = await applyInterfaceChangeSweepGuard({ ...opts, currentMv });
+  if (sweepBlock) return sweepBlock;
 
-  return applyWorkerConvergenceGuard({
-    currentMv,
-    reason,
-    minIterations: opts.minIterations,
-    iteration,
-    sessionDir,
-    log,
-    _deps,
-  });
+  return applyWorkerConvergenceGuard({ ...opts, currentMv, reason });
 }
 
 // R-MACB (B-1SEAM WS-3): ONE excludes constant for BOTH auto-commit sites
@@ -2097,6 +2139,30 @@ export function emitJudgeLegacyShapeDiagnostic(
   });
 }
 
+/** Keep only the string members of a judge id-list field; a non-array reads as empty. */
+const judgeStringArray = (arr: unknown): string[] =>
+  Array.isArray(arr) ? arr.filter((s): s is string => typeof s === 'string') : [];
+
+/**
+ * Coerce the judge's `violations` array into typed `Violation[]`. Non-object entries are
+ * dropped; every field is defaulted rather than trusted, so a partially-shaped entry still
+ * yields a usable ledger row (`severity` falls back to `'low'`, ids/descriptions to '').
+ */
+function normalizeJudgeViolations(raw: unknown[]): Violation[] {
+  return raw
+    .filter((v): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v))
+    .map(v => ({
+      id: typeof v.id === 'string' ? v.id : '',
+      path: typeof v.path === 'string' ? v.path : undefined,
+      line: typeof v.line === 'number' && Number.isFinite(v.line) ? v.line : undefined,
+      rule: typeof v.rule === 'string' ? v.rule : undefined,
+      severity: (['high', 'med', 'low'] as const).includes(v.severity as 'high' | 'med' | 'low')
+        ? v.severity as Violation['severity']
+        : 'low',
+      description: typeof v.description === 'string' ? v.description : '',
+    }));
+}
+
 /**
  * Parse structured JSON from LLM judge output. Never throws.
  * Returns JudgeResult with shape discriminator: 'full' | 'legacy' | 'malformed' | 'partial'.
@@ -2130,28 +2196,12 @@ export function parseLlmJudgeOutput(rawOutput: string): JudgeResult {
     return { ...emptyJudgeResult('legacy', score), legacy_raw_keys: Object.keys(obj) };
   }
 
-  const toStringArray = (arr: unknown): string[] =>
-    Array.isArray(arr) ? arr.filter((s): s is string => typeof s === 'string') : [];
-
-  const violations: Violation[] = (obj.violations as unknown[])
-    .filter((v): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v))
-    .map(v => ({
-      id: typeof v.id === 'string' ? v.id : '',
-      path: typeof v.path === 'string' ? v.path : undefined,
-      line: typeof v.line === 'number' && Number.isFinite(v.line) ? v.line : undefined,
-      rule: typeof v.rule === 'string' ? v.rule : undefined,
-      severity: (['high', 'med', 'low'] as const).includes(v.severity as 'high' | 'med' | 'low')
-        ? v.severity as Violation['severity']
-        : 'low',
-      description: typeof v.description === 'string' ? v.description : '',
-    }));
-
   return {
     score,
-    violations,
-    resolved: toStringArray(obj.resolved),
-    new: toStringArray(obj.new),
-    remaining: toStringArray(obj.remaining),
+    violations: normalizeJudgeViolations(obj.violations as unknown[]),
+    resolved: judgeStringArray(obj.resolved),
+    new: judgeStringArray(obj.new),
+    remaining: judgeStringArray(obj.remaining),
     shape: 'full',
   };
 }
