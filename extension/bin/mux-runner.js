@@ -620,23 +620,22 @@ export function parseBetweenTicketFastGateFailures(output, workingDir) {
             message: buildScriptFailureMessage(lines),
         }];
 }
+/**
+ * The between-ticket #99 fast gate: ONE deterministic `run test:fast` pass.
+ *
+ * B-OFFREPO (AC-OFFREPO-2d): the package manager is resolved from the detected
+ * project type rather than hardcoded to `'npm'`, sharing spawn-morty's single
+ * resolver (which reads the same `gate-commands.json` map) instead of growing a
+ * second package-manager table here. It resolves to `npm` for this repo, so the
+ * gate keeps executing exactly what it executes today.
+ */
 export function runBetweenTicketFastTests(extensionDir, extensionRoot = getExtensionRoot(), timeoutOverrideMs) {
     const timeoutMs = timeoutOverrideMs ?? resolveWorkerTestGateTimeoutMs(extensionRoot);
-    // B-OFFREPO (AC-OFFREPO-2d): resolve the package manager from the detected
-    // project type rather than hardcoding `'npm'`. Shares spawn-morty's single
-    // resolver (which reads the same `gate-commands.json` map) instead of growing a
-    // second package-manager table here. Resolves to `npm` for this repo, so the
-    // between-ticket gate keeps executing exactly what it executes today.
     const packageManager = resolvePackageManagerBin(extensionDir, 'npm');
-    // AP-EXT-ITER55-01: the fast tier's TAP stream is MEASURED at 1,338,798 bytes on this repo,
-    // over `spawnSync`'s 1MB default `maxBuffer`. Past the cap Node SIGTERMs the child and
-    // reports `error.code === 'ENOBUFS'` with `status === null` — neither `ETIMEDOUT` (so the
-    // arm below misses it) nor `0` — so the gate returns `ok: false` on a fully GREEN tier,
-    // every run, and `parseBetweenTicketFastGateFailures` names a phantom script failure off
-    // the truncated buffer. The captured bytes are not a log here; they ARE the verdict.
-    // The sibling budget runner under `bin/` already had to take this same cap for the very
-    // same tier (CI run 27578083942); this is the second site that needed it. Use the SHARED
-    // `UNBOUNDED_READ_MAX_BUFFER` rather than forking a third private byte constant.
+    // AP-EXT-ITER55-01: this capture is the VERDICT, not a log — `ok` and the failure
+    // list are both read out of the buffer — so it takes the SHARED
+    // `UNBOUNDED_READ_MAX_BUFFER`. Measurements and the ENOBUFS failure mode are stated
+    // once, in the trap door (`src/bin/CLAUDE.md`).
     //
     // Do NOT name that sibling bin, nor the tier's parallelism flag, in this file:
     // `tests/per-ticket-gate-no-flake-budget.test.js` pins mux-runner.ts source text against
@@ -688,6 +687,46 @@ export function defaultRunBetweenTicketFastTestsAdapter(extensionDir, timeoutMs)
 export function resolvePostFinalRunTestFastAdapter(runTestFast) {
     return runTestFast ?? defaultRunBetweenTicketFastTestsAdapter;
 }
+/** A timed-out between-ticket gate measured nothing — say so on the timeline. */
+function recordBetweenTicketGateTimeout(input, result, ts) {
+    if (!result.timed_out)
+        return;
+    writeActivityEntry(input.statePath, {
+        event: 'between_ticket_gate_timeout',
+        ts: new Date(ts).toISOString(),
+        ticket_id: input.nextTicketId || input.completedTicketId,
+        prior_ticket_id: input.completedTicketId,
+        gate_payload: {
+            command: 'npm run test:fast',
+            timeout_ms: result.timeout_ms,
+        },
+    });
+}
+/**
+ * A gate that goes RED immediately after a ticket landed Done is a CROSS-ticket
+ * regression, not this ticket's own failure: record it against both ids and
+ * surface it on the prior ticket's Linear issue.
+ */
+function recordCrossTicketRegression(input, result, ts) {
+    if (result.ok || normalizedStatus(input.landedStatus) !== 'done')
+        return;
+    const regressedTicketId = input.nextTicketId || input.completedTicketId;
+    const failingTests = result.failures.map(failure => ({ name: failure.name, file: failure.file }));
+    writeActivityEntry(input.statePath, {
+        event: 'cross_ticket_regression_detected',
+        ts: new Date(ts).toISOString(),
+        ticket_id: regressedTicketId,
+        prior_ticket_id: input.completedTicketId,
+        failing_tests: failingTests,
+    });
+    emitCrossTicketRegressionLinearComment({
+        sessionDir: path.dirname(input.statePath),
+        priorTicketId: input.completedTicketId,
+        regressedTicketId,
+        failingTests,
+        log: input.log,
+    });
+}
 export function runBetweenTicketFastGate(input) {
     const extensionDir = path.join(input.workingDir, 'extension');
     if (!fs.existsSync(extensionDir))
@@ -709,40 +748,8 @@ export function runBetweenTicketFastGate(input) {
             timeout_ms: result.timeout_ms,
         };
     });
-    if (result.timed_out) {
-        writeActivityEntry(input.statePath, {
-            event: 'between_ticket_gate_timeout',
-            ts: new Date(ts).toISOString(),
-            ticket_id: input.nextTicketId || input.completedTicketId,
-            prior_ticket_id: input.completedTicketId,
-            gate_payload: {
-                command: 'npm run test:fast',
-                timeout_ms: result.timeout_ms,
-            },
-        });
-    }
-    if (!result.ok && normalizedStatus(input.landedStatus) === 'done') {
-        writeActivityEntry(input.statePath, {
-            event: 'cross_ticket_regression_detected',
-            ts: new Date(ts).toISOString(),
-            ticket_id: input.nextTicketId || input.completedTicketId,
-            prior_ticket_id: input.completedTicketId,
-            failing_tests: result.failures.map(failure => ({
-                name: failure.name,
-                file: failure.file,
-            })),
-        });
-        emitCrossTicketRegressionLinearComment({
-            sessionDir: path.dirname(input.statePath),
-            priorTicketId: input.completedTicketId,
-            regressedTicketId: input.nextTicketId || input.completedTicketId,
-            failingTests: result.failures.map(failure => ({
-                name: failure.name,
-                file: failure.file,
-            })),
-            log: input.log,
-        });
-    }
+    recordBetweenTicketGateTimeout(input, result, ts);
+    recordCrossTicketRegression(input, result, ts);
     input.log(`between-ticket fast gate for ${input.completedTicketId}: ${result.ok ? 'passed' : `failed (${result.failures.length} failure(s))`}`);
     return result;
 }
@@ -1577,14 +1584,6 @@ function findSplitTwins(originalTitle, allTickets, selfId) {
         return TWIN_SUFFIX_RE.test(suffix);
     });
 }
-/**
- * R-PDUP: collect Done-twin evidence records. Returns null if any twin is
- * not Done or lacks a usable delivery SHA (caller should hold the original).
- *
- * Uses readEvidence as the oracle (per R-RIC-EXPLICIT-4 contract) to classify
- * the twin's evidence kind. Accepts `committed` evidence (an attributable git
- * commit exists); only `absent` blocks the auto-close.
- */
 function collectTwinEvidence(input, ticketId, twins, fallbackWorkingDir) {
     const evidence = [];
     for (const twin of twins) {
@@ -1620,6 +1619,45 @@ function collectTwinEvidence(input, ticketId, twins, fallbackWorkingDir) {
         evidence.push({ twinId: twin.id, sha: twinDecision.sha });
     }
     return evidence;
+}
+/**
+ * B-1SEAM WS-1: flip the split original Done through the standard guard idiom
+ * rather than a bare `writeTicketStatus` — the 7th
+ * `guardCompletionCommitBeforeDone` + `clearStaleDoneWithoutCommitEvidence` pair
+ * (R-PEDC parity 6->7). The twins' evidence, not the original's own gate, proves
+ * greenness, so a runner-authored GREEN verdict is persisted first (the same idiom
+ * `commitAndContinueDoneFlip` uses) for the R-CWGE fail-closed check to honor.
+ */
+function flipSplitOriginalDoneOnTwinEvidence(input, ticketId, workingDir, twinEvidence, canonicalSha) {
+    persistRunnerAuthoredGreenVerdict(input.sessionDir, ticketId);
+    const guard = guardCompletionCommitBeforeDone({
+        sessionDir: input.sessionDir,
+        ticketId,
+        workingDir,
+        flags: input.flags ?? {},
+        // R-PDUP twin-borrow: the canonical sha's commit message names the TWIN
+        // (production convention `fix(<twinId>): ...`), a sibling dir of the
+        // original — without this sanction R-OMA reads it as foreign_attribution
+        // and the original stays Todo forever (phantom-rebuild class).
+        ownAttributionTokens: twinEvidence.map((e) => e.twinId),
+    });
+    if (!guard.ok) {
+        input.log?.(`R-PDUP: auto-close guard refused split original ${ticketId}: ${guard.reason}`);
+        return false;
+    }
+    clearStaleDoneWithoutCommitEvidence(path.join(input.sessionDir, 'state.json'));
+    if (!markTicketDone(input.sessionDir, ticketId))
+        return false;
+    input.log?.(`R-PDUP: auto-closed split original ${ticketId} — twins [${twinEvidence.map((e) => e.twinId).join(', ')}] Done, completion_commit=${canonicalSha}`);
+    logActivity({
+        event: 'ticket_phantom_done_corrected',
+        source: 'pickle',
+        session: path.basename(input.sessionDir),
+        ticket: ticketId,
+        iteration: input.iteration,
+        reason: 'split_original_auto_closed_by_twin_evidence',
+    });
+    return true;
 }
 /**
  * R-PDUP roster-scanner auto-close branch, called from correctPhantomDoneTickets.
@@ -1660,41 +1698,7 @@ function maybeAutoCloseSplitOriginal(input, ticket, allTickets) {
         input.log?.(`R-PDUP: could not write completion_commit for split original ${ticket.id} (persist failed: ${persisted.action})`);
         return false;
     }
-    // B-1SEAM WS-1: flip Done through the standard guard idiom instead of a bare
-    // writeTicketStatus — the 7th guardCompletionCommitBeforeDone +
-    // clearStaleDoneWithoutCommitEvidence pair (R-PEDC parity 6→7). The twins'
-    // evidence, not the original's own gate, proves greenness: persist a
-    // runner-authored GREEN verdict first (same idiom as commitAndContinueDoneFlip)
-    // so the R-CWGE fail-closed check honors it.
-    persistRunnerAuthoredGreenVerdict(input.sessionDir, ticket.id);
-    const guard = guardCompletionCommitBeforeDone({
-        sessionDir: input.sessionDir,
-        ticketId: ticket.id,
-        workingDir,
-        flags: input.flags ?? {},
-        // R-PDUP twin-borrow: the canonical sha's commit message names the TWIN
-        // (production convention `fix(<twinId>): ...`), a sibling dir of the
-        // original — without this sanction R-OMA reads it as foreign_attribution
-        // and the original stays Todo forever (phantom-rebuild class).
-        ownAttributionTokens: twinEvidence.map((e) => e.twinId),
-    });
-    if (!guard.ok) {
-        input.log?.(`R-PDUP: auto-close guard refused split original ${ticket.id}: ${guard.reason}`);
-        return false;
-    }
-    clearStaleDoneWithoutCommitEvidence(path.join(input.sessionDir, 'state.json'));
-    if (!markTicketDone(input.sessionDir, ticket.id))
-        return false;
-    input.log?.(`R-PDUP: auto-closed split original ${ticket.id} — twins [${twinEvidence.map((e) => e.twinId).join(', ')}] Done, completion_commit=${canonicalSha}`);
-    logActivity({
-        event: 'ticket_phantom_done_corrected',
-        source: 'pickle',
-        session: path.basename(input.sessionDir),
-        ticket: ticket.id,
-        iteration: input.iteration,
-        reason: 'split_original_auto_closed_by_twin_evidence',
-    });
-    return true;
+    return flipSplitOriginalDoneOnTwinEvidence(input, ticket.id, workingDir, twinEvidence, canonicalSha);
 }
 // eslint-disable-next-line -- R-PDUP adds the todo/failed auto-close branch; R-AFCC-DEEP-3B requires batchLoopPhantomDoneKind to stay in this function body (audit-phantom-done-call-sites.sh invariant)
 export function correctPhantomDoneTickets(input) {
@@ -5173,21 +5177,30 @@ function finalizeDoneFlipAfterCommit(input, guard) {
     catch { /* best-effort — guard already proved evidence */ }
     return { ok: true, sha: guard.sha ?? undefined };
 }
+/**
+ * M1: ownership-scoped staging when `stagePaths` is provided (exit-path commit);
+ * otherwise the whole-tree add (Done-flip path), which MUST spread the ONE shared
+ * `CODEGRAPH_PATHSPEC_EXCLUDES` rather than a hand-copied pathspec. The rationale
+ * and the pollution it prevents are stated once, in the AP-EXT-ITER6-01 trap door
+ * (`src/bin/CLAUDE.md`) — do not re-state them here.
+ *
+ * B-CWGE: runner-authored commit — when the caller's armed #99 gate actually ran
+ * (extension/ present under workingDir) it already proved GREEN, so record that
+ * verdict and let the guard honor it instead of re-running the full recompute
+ * (which over-reaches on a toolchain-less salvage tree). Genuine worker
+ * self-commits don't route here, so their fail-closed absent-verdict recompute
+ * stays intact. See CLAUDE.md R-CWGE trap door.
+ *
+ * B-OFFREPO (AC-OFFREPO-1): a recovery-ladder caller may reach this committer
+ * with the gate reported `not_run` (no extension/ — the target repo has no JS
+ * worker gate to run at all). Stamping green there would be exactly the
+ * fabricated-verdict bug B-OFFREPO fixed. `persistRunnerAuthoredGreenVerdict`
+ * itself skips the stamp in that case; `guardCompletionCommitBeforeDone` below
+ * already reads the absent verdict, resolves `not_run`, and honors it
+ * permissively via its own gate-exempt decision kind — no fabrication needed.
+ */
 export function commitAndContinueDoneFlip(input) {
     assertWorkingDirUnderTmpdirIfTestMode(input.workingDir);
-    // M1: ownership-scoped staging when stagePaths is provided (exit-path commit);
-    // otherwise the whole-tree add (Done-flip path).
-    //
-    // AP-EXT-ITER6-01: that whole-tree add MUST carry `CODEGRAPH_PATHSPEC_EXCLUDES`.
-    // `.codegraph/` is the runtime's OWN regenerable index, written into
-    // `<workingDir>/.codegraph/` and git-ignored only through the local, unversioned
-    // `.git/info/exclude` — plain untracked dirt in any freshly-cloned target repo.
-    // Every sibling staging path already excludes it (`archiveBeforeDestructive`,
-    // `collectDirtyInScopePaths`, the exit-path committer) via `isCodegraphArtifact`;
-    // this one did not, and the recovery-ladder rung-1 caller
-    // (`attemptRecoveryBeforeTerminal`) passes no `stagePaths`, so it committed the
-    // index into the target repo and stamped THAT commit as the ticket's
-    // `completion_commit` on the Done flip. One shared exclusion, not a second guard.
     const addArgs = input.stagePaths && input.stagePaths.length > 0
         ? ['-C', input.workingDir, 'add', '--', ...input.stagePaths]
         : ['-C', input.workingDir, 'add', '-A', ...CODEGRAPH_PATHSPEC_EXCLUDES];
@@ -5202,20 +5215,6 @@ export function commitAndContinueDoneFlip(input) {
         input.log(`commit-and-continue: git commit blocked/failed for ${input.ticketId} (status ${commit.status ?? 'null'})`);
         return { ok: false };
     }
-    // B-CWGE: runner-authored commit — when the caller's armed #99 gate actually ran
-    // (extension/ present under workingDir) it already proved GREEN, so record that
-    // verdict and let the guard honor it instead of re-running the full recompute
-    // (which over-reaches on a toolchain-less salvage tree). Genuine worker
-    // self-commits don't route here, so their fail-closed absent-verdict recompute
-    // stays intact. See CLAUDE.md R-CWGE trap door.
-    //
-    // B-OFFREPO (AC-OFFREPO-1): a recovery-ladder caller may reach this committer
-    // with the gate reported `not_run` (no extension/ — the target repo has no JS
-    // worker gate to run at all). Stamping green there would be exactly the
-    // fabricated-verdict bug B-OFFREPO fixed. `persistRunnerAuthoredGreenVerdict`
-    // itself skips the stamp in that case; `guardCompletionCommitBeforeDone` below
-    // already reads the absent verdict, resolves `not_run`, and honors it
-    // permissively via its own gate-exempt decision kind — no fabrication needed.
     persistRunnerAuthoredGreenVerdict(input.sessionDir, input.ticketId, input.workingDir);
     const guard = guardCompletionCommitBeforeDone({
         sessionDir: input.sessionDir,
@@ -5271,8 +5270,33 @@ export function partitionExitPathDirtyByOwnership(dirtyPaths, workingDir, sessio
 // Re-exported here to preserve the `../bin/mux-runner.js` import surface
 // (exit-path-bystander-stash.test.js + Module Export Catalog).
 export { stashUnattributableRemainder };
+/**
+ * The gate-then-commit tail of `commitGatePassingDeliverableOnExitPath`, reached
+ * once the ownership partition has proved this ticket owns the staged work. Both
+ * halves REUSE the existing #99 seams — the armed fast gate (so only gate-PASSING
+ * work is committed) and the shared committer (git add/commit + R-PEDC guard +
+ * Done flip) — rather than growing a second copy of either.
+ */
+function commitExitPathDeliverableIfGateGreen(input, ticketId, extensionDir, gate, stagePaths) {
+    const { sessionDir, statePath, workingDir, extensionRoot, flags, log } = input;
+    if (!gate(extensionDir, extensionRoot).ok) {
+        log(`[exit-commit] ticket ${ticketId}: gate not green — leaving uncommitted work for the failure/skip path`);
+        return { committed: false, reason: 'gate-failed' };
+    }
+    const r = commitAndContinueDoneFlip({ sessionDir, ticketId, workingDir, statePath, flags, log, stagePaths });
+    if (!r.ok)
+        return { committed: false, reason: 'commit-failed' };
+    log(`[exit-commit] ticket ${ticketId}: committed gate-passing deliverable (completion_commit: ${r.sha})`);
+    return { committed: true, reason: 'committed', sha: r.sha };
+}
+/**
+ * M1 ownership pre-check: the shared committer would stage the WHOLE dirty tree
+ * under `ticketId`, which on a shared working dir misattributes a lagging sibling
+ * ticket's work. Partition the dirty set first and refuse to commit when NOTHING
+ * is owned by this ticket; otherwise stage ONLY the owned paths.
+ */
 export function commitGatePassingDeliverableOnExitPath(input) {
-    const { sessionDir, statePath, workingDir, ticketId, extensionRoot, flags, log } = input;
+    const { sessionDir, workingDir, ticketId, log } = input;
     const gate = input.runGate ?? runBetweenTicketFastTests;
     try {
         if (!ticketId)
@@ -5287,10 +5311,6 @@ export function commitGatePassingDeliverableOnExitPath(input) {
         const extensionDir = path.join(workingDir, 'extension');
         if (!fs.existsSync(extensionDir))
             return { committed: false, reason: 'no-extension-dir' };
-        // M1: ownership pre-check. The shared committer would `git add -A` the whole
-        // dirty tree under `ticketId`; on a shared working dir that misattributes a
-        // lagging sibling ticket's work. Partition the dirty set and refuse to commit
-        // when NOTHING is owned by this ticket; otherwise stage ONLY owned paths.
         let stagePaths;
         try {
             const dirtyPaths = listWorkingTreeDirtyPaths(workingDir);
@@ -5300,12 +5320,8 @@ export function commitGatePassingDeliverableOnExitPath(input) {
                 log(`[exit-commit] ticket ${ticketId}: no ticket-owned dirty work (${foreign.length} foreign path(s)) — not committing under this ticket`);
                 return { committed: false, reason: 'clean-ticket-tree' };
             }
-            // B-PCOMP: when there is an un-attributable dirty remainder, NEVER fall back
-            // to the whole-tree add (that would commit a sibling ticket's work under this
-            // ticket's completion_commit — a false Done, worse than losing the work).
-            // The shared salvage seam (B-1SEAM WS-3) stashes the remainder to a
-            // self-describing git ref (recoverable, schema-neutral) and returns ONLY the
-            // positively-owned paths as stageable.
+            // B-PCOMP: an un-attributable remainder goes to the shared salvage seam, never
+            // to a whole-tree add (trap door B-PCOMP #b736337f, `src/bin/CLAUDE.md`).
             if (foreign.length > 0) {
                 const plan = salvageDirtyTree({ workingDir, sessionDir, owned, foreign, log });
                 stagePaths = plan.stagePaths;
@@ -5313,27 +5329,13 @@ export function commitGatePassingDeliverableOnExitPath(input) {
             }
         }
         catch (err) {
-            // B-PCOMP: the ownership probe failed, so we cannot positively attribute ANY
-            // dirty path to this ticket. Refuse the over-staging whole-tree fallback:
-            // stash the entire dirty remainder to the recoverable ref and do NOT commit
-            // it as this ticket's Done.
+            // B-PCOMP: probe failed => nothing is positively attributable, so stash the
+            // whole remainder and commit nothing (same trap door as the branch above).
             log(`[exit-commit] ownership probe failed for ${ticketId}: ${safeErrorMessage(err)}`);
             stashUnattributableRemainder(workingDir, sessionDir, log);
             return { committed: false, reason: 'clean-ticket-tree' };
         }
-        // REUSE the existing #99 armed gate — only commit gate-PASSING work.
-        const gateResult = gate(extensionDir, extensionRoot);
-        if (!gateResult.ok) {
-            log(`[exit-commit] ticket ${ticketId}: gate not green — leaving uncommitted work for the failure/skip path`);
-            return { committed: false, reason: 'gate-failed' };
-        }
-        // REUSE the existing #99 committer (git add/commit + R-PEDC guard + Done flip).
-        const r = commitAndContinueDoneFlip({ sessionDir, ticketId, workingDir, statePath, flags, log, stagePaths });
-        if (r.ok) {
-            log(`[exit-commit] ticket ${ticketId}: committed gate-passing deliverable (completion_commit: ${r.sha})`);
-            return { committed: true, reason: 'committed', sha: r.sha };
-        }
-        return { committed: false, reason: 'commit-failed' };
+        return commitExitPathDeliverableIfGateGreen(input, ticketId, extensionDir, gate, stagePaths);
     }
     catch (err) {
         log(`[exit-commit] threw (ignored): ${safeErrorMessage(err)}`);
@@ -5437,9 +5439,13 @@ function preStashOutOfAllowlistResidue(sessionDir, workingDir, ticketId, log) {
         log(`[boundary-commit] allowlist pre-stash failed (continuing): ${safeErrorMessage(err)}`);
     }
 }
-export function commitGatePassingDeliverableAtBoundary(input) {
-    const { sessionDir, statePath, workingDir, ticketId, preIterSha, log } = input;
-    const resolve = (outcome, postIterSha, rest) => {
+/**
+ * The single `boundary_commit_resolved` emit site shared by every exit of
+ * `commitGatePassingDeliverableAtBoundary`. Telemetry is best-effort by
+ * construction — an emit failure must never block the boundary.
+ */
+function makeBoundaryCommitResolver(statePath, ticketId, preIterSha) {
+    return (outcome, postIterSha, rest) => {
         if (ticketId) {
             try {
                 writeActivityEntry(statePath, {
@@ -5453,6 +5459,10 @@ export function commitGatePassingDeliverableAtBoundary(input) {
         }
         return { outcome, ...rest };
     };
+}
+export function commitGatePassingDeliverableAtBoundary(input) {
+    const { sessionDir, statePath, workingDir, ticketId, preIterSha, log } = input;
+    const resolve = makeBoundaryCommitResolver(statePath, ticketId, preIterSha);
     try {
         if (!ticketId)
             return { outcome: 'honest_failure', reason: 'no-ticket' };
