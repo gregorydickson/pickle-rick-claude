@@ -26,6 +26,7 @@ import {
     inferMonitorMode,
     monitorModesCompatible,
     restartDeadWatcherPanes,
+    watcherPaneCommands,
     _resetExtensionDirFallbackForTests,
 } from '../services/pickle-utils.js';
 
@@ -853,6 +854,88 @@ test('restartDeadWatcherPanes: missing pane recreates collapsed layout via split
     } finally {
         f.cleanup();
     }
+});
+
+// AP-EXT-ITER87-01. The health predicate used to be a hardcoded `'node'`
+// literal, decoupled from the command the respawn path actually launches. Two
+// healthy shapes reported something else and were flagged dead forever:
+//   - council's pane 2 runs `tail -F`, so it reports `tail`;
+//   - every wrapped respawn ran `bash -c 'CMD 2>>log'`, where bash FORKS and
+//     stays the pane's foreground process, so tmux reports `bash`.
+// Every pre-existing fixture in this file used `node` for healthy and a shell
+// name for dead, so neither shape was ever presented and the defect stayed
+// green for the function's whole life.
+test('restartDeadWatcherPanes: council pane 2 running tail -F is healthy, not dead', async () => {
+    const f = makeWatcherFakes({
+        sessionName: 'council-tail',
+        paneCommands: { 0: 'node', 1: 'node', 2: 'tail', 3: 'node' },
+    });
+    try {
+        await f.withPath(() => restartDeadWatcherPanes(f.sessionDir, f.extRoot, 'council', loadRobustSpawnSync));
+
+        const calls = f.readCalls();
+        assert.doesNotMatch(
+            calls,
+            /tmux send-keys -t council-tail:monitor\.2/,
+            'a live `tail -F` pane must not be respawned',
+        );
+        assert.doesNotMatch(f.readRunnerLog(), /pane 2 command 'tail' is not/);
+        // Negative control: the OTHER panes of the same window still expect
+        // `node`, so the fix is not "accept anything".
+        assert.doesNotMatch(calls, /tmux send-keys -t council-tail:monitor\.0/);
+        assert.doesNotMatch(calls, /tmux send-keys -t council-tail:monitor\.3/);
+    } finally {
+        f.cleanup();
+    }
+});
+
+test('restartDeadWatcherPanes: council pane 2 fallen back to a shell is still dead', async () => {
+    const f = makeWatcherFakes({
+        sessionName: 'council-dead',
+        paneCommands: { 0: 'node', 1: 'node', 2: 'zsh', 3: 'node' },
+    });
+    try {
+        await f.withPath(() => restartDeadWatcherPanes(f.sessionDir, f.extRoot, 'council', loadRobustSpawnSync));
+
+        assert.match(
+            f.readCalls(),
+            /tmux send-keys -t council-dead:monitor\.2 .+tail -F .+\/mux-runner\.log.* Enter/,
+        );
+        assert.match(f.readRunnerLog(), /pane 2 command 'zsh' is not tail/);
+    } finally {
+        f.cleanup();
+    }
+});
+
+describe.each([
+    ['pickle'],
+    ['council'],
+    ['refinement'],
+    ['szechuan-sauce'],
+    ['anatomy-park'],
+])('watcherPaneCommands pane-command/health-predicate contract: mode=%s', (mode) => {
+    test('every pane execs its program, and `process` is that program', () => {
+        const panes = watcherPaneCommands('/tmp/session-xyz', '/deploy/root', mode);
+        assert.equal(panes.length, 4);
+        for (const { pane, command, process: expectedProcess } of panes) {
+            // The wrapper MUST `exec`, or bash stays the foreground process and
+            // `#{pane_current_command}` reports `bash` for a healthy pane.
+            const execPrefix = `bash -c 'exec `;
+            assert.ok(command.startsWith(execPrefix), `pane ${pane} does not exec its program: ${command}`);
+            const launchedProgram = command.slice(execPrefix.length).split(' ')[0];
+            assert.equal(
+                path.basename(launchedProgram),
+                expectedProcess,
+                `pane ${pane}: launched program and health expectation disagree`,
+            );
+            assert.ok(expectedProcess && !expectedProcess.includes('/'), `pane ${pane}: process must be a bare program name`);
+        }
+    });
+
+    test('pane 2 health expectation tracks the mode-specific program', () => {
+        const paneTwo = watcherPaneCommands('/tmp/session-xyz', '/deploy/root', mode).find(c => c.pane === 2);
+        assert.equal(paneTwo.process, mode === 'council' ? 'tail' : 'node');
+    });
 });
 
 test('restartDeadWatcherPanes: trap-door entry documents T3 regressions and size cap', () => {

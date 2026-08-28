@@ -2074,6 +2074,12 @@ export interface WatcherPaneCommand {
   pane: MonitorPane;
   name: string;
   command: string;
+  /**
+   * The value `#{pane_current_command}` reports while this pane is healthy —
+   * DERIVED from `command`'s own program, never a separate literal. See
+   * `watcherPane`.
+   */
+  process: string;
 }
 
 interface MissingPaneSplitSpec {
@@ -2244,11 +2250,11 @@ function processWatcherPane(
   if (currentCommand === null) {
     return handleNullPaneCommand(sessionDir, extensionRoot, mode, sessionName, watcher, spawnSyncFn, logTag, ensureMonitorWindowFn) === 'return';
   }
-  if (currentCommand === 'node') return false;
+  if (currentCommand === watcher.process) return false;
 
   appendWatcherRestartLog(
     sessionDir,
-    `${logTag} WARN: pane ${watcher.pane} command '${currentCommand || '(empty)'}' is not node`,
+    `${logTag} WARN: pane ${watcher.pane} command '${currentCommand || '(empty)'}' is not ${watcher.process}`,
   );
   const result = spawnSyncFn('tmux', ['send-keys', '-t', target, watcher.command, 'Enter'], {
     encoding: 'utf-8',
@@ -2377,7 +2383,33 @@ function missingWatcherPaneSplitSpec(sessionName: string, pane: MonitorPane): Mi
 /** Wrap a pane command so its stderr is appended to the per-pane log file. */
 function wrapWithStderrRedirect(cmd: string, sessionDir: string, pane: MonitorPane): string {
   const logPath = path.join(sessionDir, `monitor-${pane}.log`);
-  return `bash -c '${cmd} 2>>"${logPath}"'`;
+  // `exec` is load-bearing, not style: without it bash FORKS the program and
+  // remains the pane's foreground process, so `#{pane_current_command}` reports
+  // `bash` for a perfectly healthy watcher. Measured on tmux 3.7c / bash 3.2:
+  // `bash -c 'node x 2>>log'` -> `bash`; `bash -c 'exec node x 2>>log'` -> `node`.
+  // The redirect survives the exec either way.
+  return `bash -c 'exec ${cmd} 2>>"${logPath}"'`;
+}
+
+/**
+ * Builds one pane entry from its raw (unwrapped) command. `command` and
+ * `process` are derived from the SAME string, so the launcher and the
+ * health predicate cannot drift apart — which is exactly what happened while
+ * the predicate was a hardcoded `'node'` literal and council's pane 2 ran
+ * `tail -F`.
+ */
+function watcherPane(
+  pane: MonitorPane,
+  name: string,
+  rawCommand: string,
+  sessionDir: string,
+): WatcherPaneCommand {
+  return {
+    pane,
+    name,
+    command: wrapWithStderrRedirect(rawCommand, sessionDir, pane),
+    process: path.basename(rawCommand.split(' ')[0]),
+  };
 }
 
 export function watcherPaneCommands(sessionDir: string, extensionRoot: string, mode: MonitorMode): WatcherPaneCommand[] {
@@ -2394,52 +2426,24 @@ export function watcherPaneCommands(sessionDir: string, extensionRoot: string, m
   }
 
   return [
-    {
-      pane: 0,
-      name: 'monitor.js',
-      command: wrapWithStderrRedirect(`node ${path.join(binRoot, 'monitor.js')} ${sessionDir}`, sessionDir, 0),
-    },
-    {
-      pane: 1,
-      name: 'log-watcher.js',
-      command: wrapWithStderrRedirect(`node ${path.join(binRoot, 'log-watcher.js')} ${sessionDir}`, sessionDir, 1),
-    },
+    watcherPane(0, 'monitor.js', `node ${path.join(binRoot, 'monitor.js')} ${sessionDir}`, sessionDir),
+    watcherPane(1, 'log-watcher.js', `node ${path.join(binRoot, 'log-watcher.js')} ${sessionDir}`, sessionDir),
     paneTwo,
-    {
-      pane: 3,
-      name: 'raw-morty.js',
-      command: wrapWithStderrRedirect(`node ${path.join(binRoot, 'raw-morty.js')} ${sessionDir}`, sessionDir, 3),
-    },
+    watcherPane(3, 'raw-morty.js', `node ${path.join(binRoot, 'raw-morty.js')} ${sessionDir}`, sessionDir),
   ];
 }
 
 function watcherPaneTwoCommand(sessionDir: string, binRoot: string, mode: MonitorMode): WatcherPaneCommand {
   switch (mode) {
     case 'refinement':
-      return {
-        pane: 2,
-        name: 'refinement-watcher.js',
-        command: wrapWithStderrRedirect(`node ${path.join(binRoot, 'refinement-watcher.js')} ${sessionDir}`, sessionDir, 2),
-      };
+      return watcherPane(2, 'refinement-watcher.js', `node ${path.join(binRoot, 'refinement-watcher.js')} ${sessionDir}`, sessionDir);
     case 'council':
-      return {
-        pane: 2,
-        name: 'mux-runner.log tail',
-        command: wrapWithStderrRedirect(`tail -F ${path.join(sessionDir, 'mux-runner.log')}`, sessionDir, 2),
-      };
+      return watcherPane(2, 'mux-runner.log tail', `tail -F ${path.join(sessionDir, 'mux-runner.log')}`, sessionDir);
     case 'pickle':
-      return {
-        pane: 2,
-        name: 'morty-watcher.js',
-        command: wrapWithStderrRedirect(`node ${path.join(binRoot, 'morty-watcher.js')} ${sessionDir}`, sessionDir, 2),
-      };
+      return watcherPane(2, 'morty-watcher.js', `node ${path.join(binRoot, 'morty-watcher.js')} ${sessionDir}`, sessionDir);
     case 'szechuan-sauce':
     case 'anatomy-park':
-      return {
-        pane: 2,
-        name: 'pane-1-2-pointer.js',
-        command: wrapWithStderrRedirect(`node ${path.join(binRoot, 'pane-1-2-pointer.js')} ${sessionDir}`, sessionDir, 2),
-      };
+      return watcherPane(2, 'pane-1-2-pointer.js', `node ${path.join(binRoot, 'pane-1-2-pointer.js')} ${sessionDir}`, sessionDir);
   }
 }
 
