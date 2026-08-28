@@ -7,7 +7,8 @@
 // phase_dispositions field that older status files (without it) still parse cleanly.
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -714,6 +715,122 @@ describe('AP-EXT-ITER88-01: the citadel advisory write carries pipeline-status t
     assert.equal(status.citadel_advisory_findings, 0);
     assert.equal(status.phase_skips, undefined, 'no spurious keys are invented');
     assert.equal(status.phase_dispositions, undefined);
+
+    fs.rmSync(dir, { recursive: true });
+  });
+});
+
+// AP-EXT-ITER89-01: the `main().catch` fatal handler (AC-CWRR-5) re-reads pipeline-status.json
+// and hands it back to `writePipelineStatus`, which builds a FRESH payload and DEFAULTS every
+// omitted field. Naming only the three phase counters therefore ERASED the rest of the crash
+// attribution on every fatal exit: `current_phase` (WHICH phase was running when the crash hit)
+// -> null, and `phase_skips` / `phase_dispositions` / `citadel_advisory_findings` dropped.
+// The terminal write six hundred lines above states the rule this handler broke (AC-NS-1b(i)):
+// the dispositions "are the only attribution for a non-success exit, and they are read after the
+// process is gone; dropping them leaves an operator a bare `failed`."
+//
+// The handler lives inside the CLI guard, so there is no in-process seam: these cases drive the
+// SHIPPED compiled entry point and assert the PERSISTED file. A missing pipeline.json makes
+// `loadPipelineRuntime` throw, which is the shortest deterministic route into `main().catch`.
+describe('AP-EXT-ITER89-01: the fatal-exit status carries the crash attribution through', () => {
+  const RUNNER = fileURLToPath(new URL('../bin/pipeline-runner.js', import.meta.url));
+
+  function runFatal(dir) {
+    const result = spawnSync(process.execPath, [RUNNER, dir], {
+      encoding: 'utf-8',
+      timeout: 60_000,
+      env: { ...process.env, PICKLE_DATA_ROOT: path.join(dir, 'data-root') },
+    });
+    // The route into the catch must be the fatal handler, not a usage exit.
+    assert.match(String(result.stdout) + String(result.stderr), /\[FATAL\]/);
+    return result;
+  }
+
+  function writeFatalState(dir) {
+    fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({
+      schema_version: 1,
+      active: true,
+      step: 'anatomy-park',
+      iteration: 1,
+      working_dir: dir,
+      activity: [],
+    }, null, 2));
+    // No pipeline.json — readPipelineConfig throws, so main() rejects.
+  }
+
+  test('a crash mid-anatomy-park keeps current_phase, skips, dispositions and the advisory count', () => {
+    const dir = tmpDir();
+    writeFatalState(dir);
+
+    // Exactly what writeRunningStatus persists at the top of the anatomy-park phase iteration of
+    // a 4-phase pipeline that already completed two phases and skipped one.
+    writePipelineStatus(dir, 'running', {
+      current_phase: 'anatomy-park',
+      completed_phases: 2,
+      skipped_phases: 1,
+      total_phases: 4,
+      phase_skips: { citadel: 'empty_scope' },
+      phase_dispositions: { 'anatomy-park': 'approach_exhaustion' },
+      citadel_advisory_findings: 7,
+    });
+
+    runFatal(dir);
+
+    const status = JSON.parse(fs.readFileSync(path.join(dir, 'pipeline-status.json'), 'utf-8'));
+    assert.equal(status.status, 'failed', 'the terminal disposition is still authored here');
+    assert.equal(status.current_phase, 'anatomy-park', 'WHICH phase crashed must survive');
+    assert.equal(status.completed_phases, 2);
+    assert.equal(status.skipped_phases, 1);
+    assert.equal(status.total_phases, 4);
+    assert.deepEqual(status.phase_skips, { citadel: 'empty_scope' });
+    assert.deepEqual(
+      status.phase_dispositions,
+      { 'anatomy-park': 'approach_exhaustion' },
+      'AC-NS-6 attribution must survive a fatal exit, not just a clean finalize',
+    );
+    assert.equal(status.citadel_advisory_findings, 7);
+
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test('the prior status and updated_at are NOT carried — the terminal write authors both', () => {
+    const dir = tmpDir();
+    writeFatalState(dir);
+
+    fs.writeFileSync(path.join(dir, 'pipeline-status.json'), JSON.stringify({
+      status: 'running',
+      current_phase: 'pickle',
+      completed_phases: 1,
+      skipped_phases: 0,
+      total_phases: 4,
+      updated_at: '2020-01-01T00:00:00.000Z',
+    }, null, 2));
+
+    runFatal(dir);
+
+    const status = JSON.parse(fs.readFileSync(path.join(dir, 'pipeline-status.json'), 'utf-8'));
+    assert.equal(status.status, 'failed', 'carry-through must never resurrect the running status');
+    assert.notEqual(status.updated_at, '2020-01-01T00:00:00.000Z', 'updated_at is stamped fresh');
+    assert.equal(status.current_phase, 'pickle');
+
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test('no prior status file still yields a well-formed failed status (carry-through is not carry-anything)', () => {
+    const dir = tmpDir();
+    writeFatalState(dir);
+
+    runFatal(dir);
+
+    const status = JSON.parse(fs.readFileSync(path.join(dir, 'pipeline-status.json'), 'utf-8'));
+    assert.equal(status.status, 'failed');
+    assert.equal(status.current_phase, null);
+    assert.equal(status.completed_phases, 0);
+    assert.equal(status.skipped_phases, 0);
+    assert.equal(status.total_phases, 0);
+    assert.equal(status.phase_skips, undefined, 'no spurious keys are invented');
+    assert.equal(status.phase_dispositions, undefined);
+    assert.equal(status.citadel_advisory_findings, undefined);
 
     fs.rmSync(dir, { recursive: true });
   });

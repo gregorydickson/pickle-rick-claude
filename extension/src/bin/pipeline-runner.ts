@@ -5136,25 +5136,24 @@ if (process.argv[1] && path.basename(process.argv[1]) === 'pipeline-runner.js') 
     argv.includes('--no-design-safe') ? false :
     undefined;
   main(sessionDir, { scopeFlag, scopeBase, strictPhases, designSafeFlag }).catch((err) => {
-    // AC-CWRR-5: carry forward completed/skipped/total from the last writeRunningStatus
-    // call so the fatal-exit status does not zero out phases that already completed.
-    let fatalCompletedPhases = 0;
-    let fatalSkippedPhases = 0;
-    let fatalTotalPhases = 0;
+    // AC-CWRR-5 / AP-EXT-ITER89-01: carry the persisted status record forward WHOLE.
+    // `writePipelineStatus` builds a FRESH payload and DEFAULTS every key the caller omits, so
+    // naming the three counters here silently erased the rest of the crash attribution:
+    // `current_phase` (WHICH phase was running when the crash hit) -> null, and `phase_skips` /
+    // `phase_dispositions` / `citadel_advisory_findings` dropped — the same wholesale replacement
+    // AC-NS-1b(i) documents at the terminal write, whose own comment says the dispositions are
+    // "the only attribution for a non-success exit ... dropping them leaves an operator a bare
+    // `failed`". One rest-spread, no key list, so the next `PipelineStatus` field survives a fatal
+    // exit without an edit here. Unknown keys cannot leak: `writePipelineStatus` never spreads
+    // `details` — it copies only the fields it names.
+    let carried: Partial<Omit<PipelineStatus, 'status' | 'updated_at'>> = {};
     try {
-      const prior = readRecoverableJsonObject(path.join(sessionDir, 'pipeline-status.json')) as Record<string, unknown> | null;
-      if (prior) {
-        if (typeof prior.completed_phases === 'number') fatalCompletedPhases = prior.completed_phases;
-        if (typeof prior.skipped_phases === 'number') fatalSkippedPhases = prior.skipped_phases;
-        if (typeof prior.total_phases === 'number') fatalTotalPhases = prior.total_phases;
-      }
-    } catch { /* best effort — fall back to zero counts */ }
+      const prior = readRecoverableJsonObject(path.join(sessionDir, 'pipeline-status.json')) as Partial<PipelineStatus> | null;
+      const { status: _priorStatus, updated_at: _priorUpdatedAt, ...rest } = prior ?? {};
+      carried = rest;
+    } catch { /* best effort — fall back to an empty carry */ }
     try {
-      writePipelineStatus(sessionDir, 'failed', {
-        completed_phases: fatalCompletedPhases,
-        skipped_phases: fatalSkippedPhases,
-        total_phases: fatalTotalPhases,
-      });
+      writePipelineStatus(sessionDir, 'failed', carried);
     } catch { /* best effort */ }
     const fatalStatePath = path.join(sessionDir, 'state.json');
     try {
