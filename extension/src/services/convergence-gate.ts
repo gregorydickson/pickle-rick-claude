@@ -1702,7 +1702,7 @@ function detectProjectTypeWithRootResolution(opts: RunGateOpts): { opts: RunGate
 
 /**
  * R-SZGB-D-A: logs the uncertifiable-baseline signal only in baseline mode, keeping this
- * conditional out of runGate's cyclomatic complexity count.
+ * conditional out of the measure-and-partition path's cyclomatic complexity count.
  */
 function logUnrunnableCheckIfBaseline(
   unrunnableCheck: UnrunnableCheck | null,
@@ -1712,6 +1712,34 @@ function logUnrunnableCheckIfBaseline(
   console.error(
     `gate: check '${unrunnableCheck.check}' could not run (${unrunnableCheck.reason}) — baseline uncertifiable, cannot certify`,
   );
+}
+
+interface MeasuredFailures {
+  allFailures: GateFailure[];
+  realFailures: GateFailure[];
+  flakeFailures: GateFailure[];
+  checkStatus: Partial<Record<GateCheck, GateCheckStatus>>;
+}
+
+/**
+ * Runs every requested check under the cumulative gate deadline, then partitions the raw
+ * failures into real vs known-flake. Owns the baseline-only uncertifiable log so the
+ * `unrunnableCheck` signal never has to surface in runGate, whose remaining job after this
+ * returns is only to decide which of the three result producers answers.
+ */
+async function measureAndPartitionFailures(
+  opts: RunGateOpts,
+  targetDirs: string[],
+  cmdMap: GateCommandMap,
+  projectType: ProjectType,
+  emit: GateEmit,
+): Promise<MeasuredFailures> {
+  const totalDeadline = Date.now() + (opts._timeouts?.total ?? GATE_TOTAL_TIMEOUT_MS);
+  const { failures: allFailures, unrunnableCheck, checkStatus } = await collectGateFailures(opts, targetDirs, cmdMap, projectType, totalDeadline, emit);
+  logUnrunnableCheckIfBaseline(unrunnableCheck, opts.mode);
+  const flakeGlobs = opts.settings?.convergence_gate?.known_flake_files ?? [];
+  const { real: realFailures, flake: flakeFailures } = applyFlakeFilter(allFailures, opts.workingDir, flakeGlobs);
+  return { allFailures, realFailures, flakeFailures, checkStatus };
 }
 
 export async function runGate(rawOpts: RunGateOpts): Promise<GateResult> {
@@ -1744,13 +1772,8 @@ export async function runGate(rawOpts: RunGateOpts): Promise<GateResult> {
   const drift = await gitDriftResult(opts, allowedPathsUsed, start, emit);
   if (drift) return finalizeGateResult(opts, emit, drift);
 
-  const totalDeadline = Date.now() + (opts._timeouts?.total ?? GATE_TOTAL_TIMEOUT_MS);
-  const { failures: allFailures, unrunnableCheck, checkStatus } = await collectGateFailures(opts, resolved.targetDirs, cmdMap, projectType, totalDeadline, emit);
-
-  logUnrunnableCheckIfBaseline(unrunnableCheck, opts.mode);
-
-  const flakeGlobs = opts.settings?.convergence_gate?.known_flake_files ?? [];
-  const { real: realFailures, flake: flakeFailures } = applyFlakeFilter(allFailures, opts.workingDir, flakeGlobs);
+  const { allFailures, realFailures, flakeFailures, checkStatus } =
+    await measureAndPartitionFailures(opts, resolved.targetDirs, cmdMap, projectType, emit);
 
   // AP-EXT-ITER7-01: `check_status` rides out on EVERY result produced after the checks were
   // attempted, so an in-memory consumer reads the same per-check measurement fact the baseline
