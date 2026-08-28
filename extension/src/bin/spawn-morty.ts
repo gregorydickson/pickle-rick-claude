@@ -1016,6 +1016,25 @@ async function collectCodegraphHits(
 }
 
 /**
+ * Best-effort activity sink for the codegraph context events, hoisted out of
+ * `buildCodegraphContextSection` so the branch ladder there reads as a ladder.
+ * `writeActivityEntry` does NOT auto-stamp `ts` (R-WSE-2), so every emit stamps it
+ * explicitly; the sink is guarded on a usable `sessionDir` so callers that omit it
+ * (e.g. unit tests) skip emission without throwing. Only the SINK moves — both event
+ * call sites stay in the producer, because
+ * `codegraph-context-events-schema-conformance.test.js` scopes each event name to that
+ * function's body (trap door b1089e97).
+ */
+function createCodegraphActivitySink(sessionDir: string | undefined): (entry: ActivityLogEntry) => void {
+  return (entry: ActivityLogEntry): void => {
+    if (typeof sessionDir !== 'string' || sessionDir.length === 0) return;
+    try {
+      writeActivityEntry(path.join(sessionDir, 'state.json'), entry);
+    } catch { /* telemetry best-effort */ }
+  };
+}
+
+/**
  * Build the `## Code Graph Context` section, or `''` when absent. Absent on:
  * disabled settings, null service, non-graph tier (trivial), no derived terms,
  * or zero search hits. The service itself returns null on kill-switch / degraded /
@@ -1026,20 +1045,28 @@ async function collectCodegraphHits(
  * `codegraph_context_injected` on success. The steady-state `disabled` branch is
  * SUPPRESSED (no emit) to avoid per-spawn flooding while the default is OFF.
  * Emission is best-effort: telemetry must never break the spawn.
+ *
+ * Branch precedence (top wins): disabled → no_service → non_graph_tier → no_terms →
+ * query_timeout → query_failed → zero_hits → stale_refs. query_timeout/query_failed come
+ * from the batched killable-subprocess boundary (AC-CGH-A1) and are checked BEFORE zero_hits
+ * — a wedged/failed query returns early, so zero_hits is only reachable after an `ok` batch.
+ * stale_refs comes from node-level fs verification dropping every located node.
+ *
+ * 2e632f9a: node-level staleness verification runs at the `buildCodegraphEntries` call,
+ * upstream of `nodeLocation` rendering and upstream of the frozen b1089e97 render-empty
+ * guard below it. `hits.ranked.length > 0` is already guaranteed by `collectCodegraphHits`
+ * — zero located nodes there is a productive `stale_refs` skip, never `zero_hits` (that
+ * reason stays reserved for genuinely empty `ranked`, checked earlier, and for the
+ * render-empty guard). Render-empty: nothing fit under `context_max_bytes`
+ * (`renderCodegraphSection` returns `''`) → no context reaches the prompt, so that is a
+ * productive skip too, not an injection. Without it the injected counter + event fire
+ * with `bytes:0`, inflating the codegraph efficacy metric the default-on decision
+ * depends on.
  */
 export async function buildCodegraphContextSection(opts: CodegraphContextOptions): Promise<string> {
   const { tier, title, ticketContent, service, settings, sessionDir, ticketId, workingDir } = opts;
   const start = Date.now();
-
-  // Best-effort telemetry sink. writeActivityEntry does NOT auto-stamp `ts`
-  // (R-WSE-2) — every emit stamps it explicitly. Guarded on a usable sessionDir
-  // so callers that omit it (e.g. unit tests) skip emission without throwing.
-  const emit = (entry: ActivityLogEntry): void => {
-    if (typeof sessionDir !== 'string' || sessionDir.length === 0) return;
-    try {
-      writeActivityEntry(path.join(sessionDir, 'state.json'), entry);
-    } catch { /* telemetry best-effort */ }
-  };
+  const emit = createCodegraphActivitySink(sessionDir);
   const emitSkipped = (reason: CodegraphContextSkipReason, droppedStale?: number): void => {
     try { service?.recordContextSkipped(); } catch { /* best-effort */ }
     emit({
@@ -1050,11 +1077,6 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
     });
   };
 
-  // Branch precedence (top wins): disabled → no_service → non_graph_tier → no_terms →
-  // query_timeout → query_failed → zero_hits → stale_refs. query_timeout/query_failed come
-  // from the batched killable-subprocess boundary (AC-CGH-A1) and are checked BEFORE zero_hits
-  // — a wedged/failed query returns early, so zero_hits is only reachable after an `ok` batch.
-  // stale_refs comes from node-level fs verification dropping every located node.
   if (!settings.enabled) return '';                                    // disabled — SUPPRESSED, no emit
   if (!service) { emitSkipped('no_service'); return ''; }
   if (!tierUsesGraphContext(tier)) { emitSkipped('non_graph_tier'); return ''; }
@@ -1066,22 +1088,11 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
   if (hits === null) return '';
 
   const summary = await service.buildContext({ title, description: ticketContent.slice(0, 500) });
-  // 2e632f9a: node-level staleness verification runs here, upstream of `nodeLocation`
-  // rendering and upstream of the frozen b1089e97 render-empty PATTERN_SHAPE below.
-  // `hits.ranked.length > 0` is already guaranteed by `collectCodegraphHits` — zero located
-  // nodes at this point is a productive `stale_refs` skip, never `zero_hits` (that
-  // reason stays reserved for genuinely empty `ranked`, checked above, and the
-  // render-empty PATTERN_SHAPE, unchanged below).
   const built = buildCodegraphEntries(hits.ranked, hits.callersMap, summary, workingDir);
   if (built.locatedSurvivors === 0) { emitSkipped('stale_refs', built.droppedStale); return ''; }
   const entries = built.entries;
 
   const section = renderCodegraphSection(entries, settings.context_max_bytes);
-  // Nothing fit under context_max_bytes (renderCodegraphSection returns '') → no
-  // context reaches the prompt, so this is a productive skip, not an injection
-  // (mirrors the post-hits `entries.length === 0` zero_hits branch above). Without
-  // this guard the injected counter + event fire with bytes:0, inflating the
-  // codegraph efficacy metric the default-on decision depends on.
   if (section.length === 0) { emitSkipped('zero_hits'); return ''; }
   try { service.recordContextInjected(); } catch { /* best-effort */ }
   emit({
@@ -1096,6 +1107,42 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
     dropped_stale: built.droppedStale,
   });
   return section;
+}
+
+/**
+ * Fill the tier-scoped lifecycle scaffolding an implementation (non-review) prompt carries:
+ * the resume table, the active-phase sections (plus any pre-rendered Code Graph Context),
+ * and the diff-envelope minimalism rule for tiers that declare one.
+ */
+function applyTierLifecycleTemplate(workerPrompt: string, opts: BuildWorkerPromptOptions): string {
+  const tier = opts.complexityTier ?? 'medium';
+  const activePhases = TIER_LIFECYCLE[tier];
+  let rendered = workerPrompt
+    .replace('{{TIER_RESUME_TABLE}}', buildTierResumeTable(activePhases))
+    .replace(
+      '{{TIER_LIFECYCLE_SECTIONS}}',
+      buildTierLifecycleSections(activePhases, tier) + (opts.codegraphSection ?? ''),
+    );
+  if (TIER_DIFF_ENVELOPE[tier] !== undefined) {
+    rendered += `\n\n**Minimalism:** This is a ${tier} ticket. Make the smallest correct change. Do not refactor adjacent code, do not add abstractions, do not rename or restructure beyond the ticket's explicit ask. If the fix is one line, it is one line.`;
+  }
+  return rendered;
+}
+
+/**
+ * Contract additions only a codex worker needs: it commits for itself, so the ticket-id
+ * scope, the `completion_commit` frontmatter pairing and the ACK line are all on it.
+ */
+function buildCodexContractAdditions(ticket: TicketSpec): string {
+  return `
+
+**Codex-specific contract additions:**
+- You MUST run \`git add <files>\` and \`git commit -m "<msg>"\` before emitting \`<promise>${PromiseTokens.WORKER_DONE}</promise>\`. The orchestrator does NOT commit for you.
+- Your commit message MUST embed this ticket id as a conventional-commit scope so the runtime can attribute the commit to the ticket. Use exactly this shape: \`git commit -m "fix(${ticket.ticketId}): <short subject>"\` (or \`feat(${ticket.ticketId}): …\`). A commit that omits \`${ticket.ticketId}\` is NOT attributable and will be treated as if no commit landed.
+- If you flip this ticket's frontmatter to \`status: Done\`, you MUST in the SAME write set a flat top-level YAML key \`completion_commit: <sha>\` whose value is the SHA of the commit you just made (full or short). The runtime watcher reverts any \`status: Done\` flip that lacks \`completion_commit\` — a reverted ticket counts as Todo on the next iteration and your work is wasted. NEVER flip \`status: Done\` before the commit exists.
+- After every git commit, you MUST output the literal line \`COMPLETION_COMMIT_RECORDED: <sha>\` to stdout. The runner watches for this token and will retry if it's missing.
+- If an acceptance criterion contradicts reality (e.g. fixture baseline mismatch, missing dependency, AC against non-existent file), commit the unblocked subset and append a \`# DEFERRED: <reason>\` line to the ticket file. **If there is NO unblocked subset (nothing changed in your allowed files), do NOT create an empty commit** — append the \`# DEFERRED:\` line and finish; a re-spawned empty deferral commit each iteration burns the per-ticket budget and the ticket never advances. DO NOT loop indefinitely trying to satisfy a contradicted AC. Do NOT flip \`status: Done\` for a deferred ticket.
+- DO NOT explore harness internals (\`pickle.md\`, \`setup.js\`, \`send-to-morty.md\`, \`mux-runner.js\`). Those are orchestrator-level. Your scope is exclusively the files listed in the ticket's "Files to modify" / "Files to create" sections.`;
 }
 
 export function buildWorkerPrompt(opts: BuildWorkerPromptOptions): string {
@@ -1114,19 +1161,7 @@ export function buildWorkerPrompt(opts: BuildWorkerPromptOptions): string {
       : `# **TASK REQUEST**\n${ticket.task}\n\nYou are a Morty Worker (Pickle Rick's assistant). Implement the request above.`;
   }
 
-  if (!ticket.isReviewTicket) {
-    const tier = opts.complexityTier ?? 'medium';
-    const activePhases = TIER_LIFECYCLE[tier];
-    workerPrompt = workerPrompt
-      .replace('{{TIER_RESUME_TABLE}}', buildTierResumeTable(activePhases))
-      .replace(
-        '{{TIER_LIFECYCLE_SECTIONS}}',
-        buildTierLifecycleSections(activePhases, tier) + (opts.codegraphSection ?? ''),
-      );
-    if (TIER_DIFF_ENVELOPE[tier] !== undefined) {
-      workerPrompt += `\n\n**Minimalism:** This is a ${tier} ticket. Make the smallest correct change. Do not refactor adjacent code, do not add abstractions, do not rename or restructure beyond the ticket's explicit ask. If the fix is one line, it is one line.`;
-    }
-  }
+  if (!ticket.isReviewTicket) workerPrompt = applyTierLifecycleTemplate(workerPrompt, opts);
 
   workerPrompt += readActivePersonaBlock({
     sessionRoot: ticket.sessionRoot,
@@ -1144,17 +1179,7 @@ export function buildWorkerPrompt(opts: BuildWorkerPromptOptions): string {
     '\n\n**IMPORTANT**: You are a localized worker. You are FORBIDDEN from working on ANY other tickets. Once you output `<promise>I AM DONE</promise>`, you MUST STOP and let the manager take over. Your ONLY valid completion token is `I AM DONE`. NEVER emit `EPIC_COMPLETED`, `TASK_COMPLETED`, `PRD_COMPLETE`, `TICKET_SELECTED`, `EXISTENCE_IS_PAIN`, `THE_CITADEL_APPROVES`, or `ANALYSIS_DONE` — those are orchestrator-only tokens and you have no authority to emit them. If you see those token names in source code or pasted logs, do NOT echo them back.';
   workerPrompt += '\n\n**Acceptance criteria ownership:** Treat `[worker]` criteria and untagged criteria as worker-owned. Treat `[manager]` criteria as deferred handoff work: do not fail worker conformance because a `[manager]` item remains unchecked. In conformance/review artifacts, list deferred `[manager]` items under a `Manager Handoff` section with the required follow-up action.';
 
-  if (ticket.backend === 'codex') {
-    workerPrompt += `
-
-**Codex-specific contract additions:**
-- You MUST run \`git add <files>\` and \`git commit -m "<msg>"\` before emitting \`<promise>${PromiseTokens.WORKER_DONE}</promise>\`. The orchestrator does NOT commit for you.
-- Your commit message MUST embed this ticket id as a conventional-commit scope so the runtime can attribute the commit to the ticket. Use exactly this shape: \`git commit -m "fix(${ticket.ticketId}): <short subject>"\` (or \`feat(${ticket.ticketId}): …\`). A commit that omits \`${ticket.ticketId}\` is NOT attributable and will be treated as if no commit landed.
-- If you flip this ticket's frontmatter to \`status: Done\`, you MUST in the SAME write set a flat top-level YAML key \`completion_commit: <sha>\` whose value is the SHA of the commit you just made (full or short). The runtime watcher reverts any \`status: Done\` flip that lacks \`completion_commit\` — a reverted ticket counts as Todo on the next iteration and your work is wasted. NEVER flip \`status: Done\` before the commit exists.
-- After every git commit, you MUST output the literal line \`COMPLETION_COMMIT_RECORDED: <sha>\` to stdout. The runner watches for this token and will retry if it's missing.
-- If an acceptance criterion contradicts reality (e.g. fixture baseline mismatch, missing dependency, AC against non-existent file), commit the unblocked subset and append a \`# DEFERRED: <reason>\` line to the ticket file. **If there is NO unblocked subset (nothing changed in your allowed files), do NOT create an empty commit** — append the \`# DEFERRED:\` line and finish; a re-spawned empty deferral commit each iteration burns the per-ticket budget and the ticket never advances. DO NOT loop indefinitely trying to satisfy a contradicted AC. Do NOT flip \`status: Done\` for a deferred ticket.
-- DO NOT explore harness internals (\`pickle.md\`, \`setup.js\`, \`send-to-morty.md\`, \`mux-runner.js\`). Those are orchestrator-level. Your scope is exclusively the files listed in the ticket's "Files to modify" / "Files to create" sections.`;
-  }
+  if (ticket.backend === 'codex') workerPrompt += buildCodexContractAdditions(ticket);
 
   return `${toolRetryGuidance}${handoffNotes}${workerPrompt}`;
 }
@@ -1645,6 +1670,36 @@ async function runWorkerGateCheckPhase(
   };
 }
 
+/** eslint + tsc, in that order: the two static phases every gate tier runs. */
+async function runWorkerGateStaticChecks(
+  lintTargets: string[],
+  extensionDir: string,
+): Promise<{ lint: WorkerGateCheckPhase; tsc: WorkerGateCheckPhase }> {
+  const lint = lintTargets.length > 0
+    ? await runWorkerGateCheckPhase(['eslint', ...lintTargets, '--max-warnings=-1'], extensionDir, countLintErrors, parseWorkerGateLintFailures)
+    : LINT_PHASE_NOT_RUN;
+  const tsc = await runWorkerGateCheckPhase(['tsc', '--noEmit'], extensionDir, countTscErrors, parseWorkerGateTscFailures);
+  return { lint, tsc };
+}
+
+/**
+ * Run the worker gate's check ladder: eslint, tsc, then — only on a clean static pass —
+ * the test tiers the gate/ticket tier calls for.
+ *
+ * Gate-phase attribution is lint-first: tsc is blamed only when lint was clean.
+ *
+ * Every exit reports the same shape via `settle`; only the test dimension varies.
+ * B-OFFREPO: each exit names its own disposition instead of borrowing `testsOk: true` to
+ * mean two different things. `testsOk` is DERIVED (`!== 'red'`) so the gate-failure
+ * predicate keeps its exact prior semantics — a not-run test phase still does not fail
+ * the gate — while the persisted verdict records the truth. `settle` reads the live
+ * gatePhase/gateFailures bindings, so each exit carries its own settled values.
+ *
+ * Three exits skip the test phases entirely, reaching `settle('not_run', [])` without
+ * ever executing them: lint/tsc already failed, the gate tier is narrow, or the ticket's
+ * tier deliberately skips tests. All three used to report `true`, which
+ * `persistWorkerGateVerdict` then wrote as `worker_gate_tests_verdict: 'green'`.
+ */
 async function runWorkerGateChecks(args: {
   lintTargets: string[];
   extensionDir: string;
@@ -1652,23 +1707,13 @@ async function runWorkerGateChecks(args: {
   workerGateTier: WorkerGateTier;
   ticketTier?: string;
 }): Promise<WorkerGateCheckResult> {
-  const lint = args.lintTargets.length > 0
-    ? await runWorkerGateCheckPhase(['eslint', ...args.lintTargets, '--max-warnings=-1'], args.extensionDir, countLintErrors, parseWorkerGateLintFailures)
-    : LINT_PHASE_NOT_RUN;
-  const tsc = await runWorkerGateCheckPhase(['tsc', '--noEmit'], args.extensionDir, countTscErrors, parseWorkerGateTscFailures);
+  const { lint, tsc } = await runWorkerGateStaticChecks(args.lintTargets, args.extensionDir);
 
-  // Gate-phase attribution is lint-first: tsc is blamed only when lint was clean.
   let gatePhase: WorkerGatePhase | null = null;
   let gateFailures: WorkerGateTestFailure[] = [];
   if (!lint.ok) { gatePhase = 'lint'; gateFailures = lint.failures; }
   else if (!tsc.ok) { gatePhase = 'tsc'; gateFailures = tsc.failures; }
 
-  // Every exit reports the same shape; only the test dimension varies. B-OFFREPO:
-  // each exit now names its own disposition instead of borrowing `testsOk: true` to
-  // mean two different things. `testsOk` is DERIVED (`!== 'red'`) so the gate-failure
-  // predicate keeps its exact prior semantics — a not-run test phase still does not
-  // fail the gate — while the persisted verdict records the truth. Reads the live
-  // gatePhase/gateFailures bindings, so each exit carries its own settled values.
   const settle = (testsVerdict: WorkerGateVerdict, testFailures: WorkerGateTestFailure[]): WorkerGateCheckResult => ({
     lintOk: lint.ok,
     tscOk: tsc.ok,
@@ -1684,10 +1729,6 @@ async function runWorkerGateChecks(args: {
     lintRan: lint.ran,
   });
 
-  // B-OFFREPO: the three skip exits. Each reaches this point with the test phases
-  // never executed — lint/tsc already failed, the gate tier is narrow, or the
-  // ticket's tier deliberately skips tests. All three used to report `true`, which
-  // `persistWorkerGateVerdict` then wrote as `worker_gate_tests_verdict: 'green'`.
   if (!lint.ok || !tsc.ok) return settle('not_run', []);
   if (args.workerGateTier === 'narrow') return settle('not_run', []);
   if (args.ticketTier === 'small') return settle('not_run', []);
@@ -3302,6 +3343,17 @@ function drainWorkerLogThenFinalize(params: {
   }
 }
 
+/**
+ * Spawn the worker backend and resolve once its turn is finalized.
+ *
+ * R-CSI / W2.R1: the child is detached so the worker subtree leads its own process
+ * group; killProcessTree's existing `process.kill(-pid, sig)` then reaps exactly this
+ * session's group and cannot reach a concurrent session's healthy workers.
+ *
+ * When spawn fails with ENOENT, node emits both 'error' and 'close'. The 'error'
+ * handler owns the exit semantics (e.g. 127 for hermes missing), so the 'close' flow
+ * short-circuits on `spawnErrorHandled` and cannot race ahead with `process.exit(1)`.
+ */
 export async function runWorkerProcess(ctx: WorkerProcessContext): Promise<{ exitCode: number; isSuccess: boolean }> {
   const { args, ticketPath, ticketId, sessionRoot, sessionLog, sessionWorkingDir } = ctx;
   const resolvedMcpConfig = resolveSessionWorkerMcpConfig(args, sessionRoot);
@@ -3317,9 +3369,6 @@ export async function runWorkerProcess(ctx: WorkerProcessContext): Promise<{ exi
   try { updateTicketStatus(ticketId, 'In Progress', sessionRoot); } catch { /* best-effort */ }
   sessionLog.on('error', err => console.error(`${Style.RED}❌ Log stream error: ${safeErrorMessage(err)}${Style.RESET}`));
   const env = buildWorkerSpawnEnv(ctx, invocation);
-  // R-CSI / W2.R1: detach so the worker subtree leads its own process group;
-  // killProcessTree's existing `process.kill(-pid, sig)` then reaps exactly this
-  // session's group and cannot reach a concurrent session's healthy workers.
   const detachWorker = shouldIsolateSessionGroup();
   const proc = spawn(invocation.cmd, invocation.args, { cwd: sessionWorkingDir, env, stdio: ['inherit', 'pipe', 'pipe'], detached: detachWorker });
   proc.stdout?.pipe(sessionLog, { end: false });
@@ -3348,9 +3397,6 @@ export async function runWorkerProcess(ctx: WorkerProcessContext): Promise<{ exi
     });
     proc.on('close', code => {
       crumb(`proc.close fired — code=${code} spawnErrorHandled=${spawnErrorHandled}`);
-      // When spawn fails with ENOENT, node emits both 'error' and 'close' events.
-      // The 'error' handler owns the exit semantics (e.g. 127 for hermes missing);
-      // skip the normal close flow so it cannot race ahead with `process.exit(1)`.
       if (spawnErrorHandled) return;
       clearLifecycleTimers();
       drainWorkerLogThenFinalize({ ctx, code, startTime, resolve });
