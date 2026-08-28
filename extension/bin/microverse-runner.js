@@ -39,31 +39,33 @@ async function pathExists(targetPath) {
         return false;
     }
 }
-export function loadConvergenceGateSettings(extRoot) {
-    const nonEmptyStringArrayOrDefault = (value, fallback) => {
-        if (!Array.isArray(value))
-            return fallback;
-        const normalized = value
-            .filter((entry) => typeof entry === 'string')
-            .map((entry) => entry.trim())
-            .filter((entry) => entry.length > 0);
-        return normalized.length > 0 ? normalized : fallback;
-    };
-    const positiveIntegerOrDefault = (value, fallback) => {
-        return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
-    };
-    const defaults = {
+/** Fresh defaults per call — callers own the object they get back. */
+function defaultConvergenceGateSettings() {
+    return {
         enabled_convergence_files: ['anatomy-park.json'],
         regression_warning_threshold: 5,
         remediator_timeout_s: 600,
         baseline_max_age_iterations: 30,
         baseline_max_age_seconds: 14_400,
     };
+}
+function nonEmptyStringArrayOrDefault(value, fallback) {
+    if (!Array.isArray(value))
+        return fallback;
+    const normalized = value
+        .filter((entry) => typeof entry === 'string')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+    return normalized.length > 0 ? normalized : fallback;
+}
+function positiveIntegerOrDefault(value, fallback) {
+    return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+export function loadConvergenceGateSettings(extRoot) {
+    const defaults = defaultConvergenceGateSettings();
     try {
         const raw = readRecoverableJsonObject(path.join(extRoot, 'pickle_settings.json'));
-        if (!raw)
-            return defaults;
-        const cg = raw.convergence_gate;
+        const cg = raw?.convergence_gate;
         if (!cg || typeof cg !== 'object')
             return defaults;
         const gateSettings = cg;
@@ -596,16 +598,39 @@ function classifyExistingBaseline(opts) {
         return 'stale';
     }
 }
+/**
+ * Stale-baseline refresh failure is recoverable: the post-commit gate in
+ * `runChangedPerIterationGate` will detect the missing baseline and recapture from the
+ * clean pre-iteration tree (its strict-mode fallback). Killing the run here strands a
+ * forward-progressing session at the iteration boundary even though the next gate could
+ * heal it — so record the degradation and continue.
+ */
+function deferStaleBaselineRefresh(opts) {
+    const message = safeErrorMessage(opts.err);
+    opts.log(`[anatomy-park] stale-baseline refresh failed (${message}) — ` +
+        `continuing; post-commit gate will recapture from the pre-iteration tree`);
+    opts.logActivityFn({
+        event: 'gate_baseline_init_failed',
+        source: 'pickle',
+        session: path.basename(opts.sessionDir),
+        gate_payload: {
+            path: opts.baselinePath,
+            recoverable: true,
+            reason: 'stale_refresh_deferred_to_post_commit_recapture',
+            message,
+        },
+    });
+}
 export async function ensurePerIterationGateBaseline(opts) {
-    const { currentMv, workingDir, sessionDir, enabledFiles, log, currentIteration, baselineMaxAgeIterations, baselineMaxAgeSeconds, _deps, } = opts;
-    if (!enabledFiles.includes(currentMv.convergence_file ?? ''))
+    const { currentMv, workingDir, sessionDir, log, currentIteration, _deps } = opts;
+    if (!opts.enabledFiles.includes(currentMv.convergence_file ?? ''))
         return;
     const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
     const baselineStatus = classifyExistingBaseline({
         baselinePath,
         currentIteration,
-        baselineMaxAgeIterations,
-        baselineMaxAgeSeconds,
+        baselineMaxAgeIterations: opts.baselineMaxAgeIterations,
+        baselineMaxAgeSeconds: opts.baselineMaxAgeSeconds,
         log,
     });
     if (baselineStatus === 'fresh')
@@ -630,34 +655,28 @@ export async function ensurePerIterationGateBaseline(opts) {
         });
     }
     catch (err) {
-        // Stale-baseline refresh failure is recoverable: the post-commit gate in
-        // runChangedPerIterationGate will detect the missing baseline and recapture
-        // from the clean pre-iteration tree (its strict-mode fallback). Killing
-        // the run here strands a forward-progressing session at the iteration
-        // boundary even though the next gate could heal it. Fresh-init failure
-        // (no baseline ever) still throws because there is no recovery path.
+        // Fresh-init failure (no baseline ever) still throws: there is no recovery path.
         if (!staleRefresh)
             throw err;
-        log(`[anatomy-park] stale-baseline refresh failed (${safeErrorMessage(err)}) — ` +
-            `continuing; post-commit gate will recapture from the pre-iteration tree`);
-        (_deps?.logActivityFn ?? logActivity)({
-            event: 'gate_baseline_init_failed',
-            source: 'pickle',
-            session: path.basename(sessionDir),
-            gate_payload: {
-                path: baselinePath,
-                recoverable: true,
-                reason: 'stale_refresh_deferred_to_post_commit_recapture',
-                message: safeErrorMessage(err),
-            },
+        deferStaleBaselineRefresh({
+            err,
+            baselinePath,
+            sessionDir,
+            log,
+            logActivityFn: _deps?.logActivityFn ?? logActivity,
         });
     }
 }
 export async function runPerIterationGateHook(opts) {
-    const { preIterSha, workingDir, sessionDir, enabledFiles, regressionWarningThreshold, backend, remediatorTimeoutS, log, _deps, } = opts;
+    const { preIterSha, workingDir, sessionDir, log } = opts;
     let currentMv = opts.currentMv;
-    const deps = resolvePerIterationGateDeps({ workingDir, backend, remediatorTimeoutS, _deps });
-    const isEnabled = enabledFiles.includes(currentMv.convergence_file ?? '');
+    const deps = resolvePerIterationGateDeps({
+        workingDir,
+        backend: opts.backend,
+        remediatorTimeoutS: opts.remediatorTimeoutS,
+        _deps: opts._deps,
+    });
+    const isEnabled = opts.enabledFiles.includes(currentMv.convergence_file ?? '');
     const headSha = deps.getHeadShaFn(workingDir);
     const commitsHappened = preIterSha !== headSha;
     const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
@@ -682,7 +701,7 @@ export async function runPerIterationGateHook(opts) {
     }
     return maybeEmitGateRegressionWarning({
         currentMv,
-        regressionWarningThreshold,
+        regressionWarningThreshold: opts.regressionWarningThreshold,
         sessionDir,
         log,
         deps,
@@ -892,8 +911,23 @@ function applyWorkerConvergenceGuard(opts) {
         return { currentMv, ...guardResult };
     return { currentMv, converged: true, reason };
 }
+/**
+ * A convergence signal is not trustworthy when the iteration's OWN per-iteration gate left
+ * new regressions behind. Returns the deferral verdict, or null when the gate came back clean.
+ */
+function deferConvergenceOnGateRegression(opts) {
+    if (Number(opts.currentMv.iteration_regressions ?? 0) <= opts.priorIterationRegressions)
+        return null;
+    opts.log(`Iteration ${opts.iteration} — convergence deferred: per-iteration gate left unresolved regressions`);
+    return {
+        currentMv: opts.currentMv,
+        converged: false,
+        reason: 'per-iteration gate left unresolved regressions',
+        ...(opts.uncertifiableBaselineDeferFired ? { selfRedOpen: true } : {}),
+    };
+}
 export async function handleWorkerManagedIteration(opts) {
-    const { preIterSha, workingDir, sessionDir, enabledFiles, regressionWarningThreshold, backend, remediatorTimeoutS, log, iteration, minIterations, startCommit, _deps, } = opts;
+    const { sessionDir, log, iteration, startCommit, _deps } = opts;
     let currentMv = opts.currentMv;
     const priorIterationRegressions = Number(currentMv.iteration_regressions ?? 0);
     const lintFailures = [];
@@ -901,40 +935,29 @@ export async function handleWorkerManagedIteration(opts) {
     const cfPath = path.join(sessionDir, currentMv.convergence_file);
     const { converged, reason } = readWorkerConvergenceSignal(cfPath, iteration, log);
     currentMv = await runPerIterationGateHook({
-        currentMv,
-        preIterSha,
-        workingDir,
-        sessionDir,
-        enabledFiles,
-        regressionWarningThreshold,
-        backend,
-        remediatorTimeoutS,
-        iteration,
-        log,
-        _deps,
+        ...opts,
         lintFailuresSink: lintFailures,
         uncertifiableBaselineDeferSink,
     });
     if (!converged) {
         return { currentMv, converged, reason, lintFailures };
     }
-    const iterationLeftRegression = Number(currentMv.iteration_regressions ?? 0) > priorIterationRegressions;
-    if (iterationLeftRegression) {
-        log(`Iteration ${iteration} — convergence deferred: per-iteration gate left unresolved regressions`);
-        return {
-            currentMv,
-            converged: false,
-            reason: 'per-iteration gate left unresolved regressions',
-            ...(uncertifiableBaselineDeferSink.fired ? { selfRedOpen: true } : {}),
-        };
-    }
+    const regressionBlock = deferConvergenceOnGateRegression({
+        currentMv,
+        priorIterationRegressions,
+        iteration,
+        log,
+        uncertifiableBaselineDeferFired: uncertifiableBaselineDeferSink.fired,
+    });
+    if (regressionBlock)
+        return regressionBlock;
     // R-ORSR-6 interface-change sweep: before trusting a convergence signal, run a whole-repo tsc
     // when the phase's own diff changed an exported symbol. A self-introduced out-of-scope consumer
     // break blocks convergence and arms the no-disown bound on the deferral force-exit.
     if (typeof startCommit === 'string' && startCommit.trim().length > 0) {
         const sweepBlock = await applyInterfaceChangeSweepGuard({
             currentMv,
-            workingDir,
+            workingDir: opts.workingDir,
             sessionDir,
             startCommit: startCommit.trim(),
             iteration,
@@ -947,7 +970,7 @@ export async function handleWorkerManagedIteration(opts) {
     return applyWorkerConvergenceGuard({
         currentMv,
         reason,
-        minIterations,
+        minIterations: opts.minIterations,
         iteration,
         sessionDir,
         log,

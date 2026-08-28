@@ -210,35 +210,43 @@ async function pathExists(targetPath: string): Promise<boolean> {
   }
 }
 
-export function loadConvergenceGateSettings(extRoot: string): {
+export interface ConvergenceGateSettings {
   enabled_convergence_files: string[];
   regression_warning_threshold: number;
   remediator_timeout_s: number;
   baseline_max_age_iterations: number;
   baseline_max_age_seconds: number;
-} {
-  const nonEmptyStringArrayOrDefault = (value: unknown, fallback: string[]): string[] => {
-    if (!Array.isArray(value)) return fallback;
-    const normalized = value
-      .filter((entry): entry is string => typeof entry === 'string')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0);
-    return normalized.length > 0 ? normalized : fallback;
-  };
-  const positiveIntegerOrDefault = (value: unknown, fallback: number): number => {
-    return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
-  };
-  const defaults = {
+}
+
+/** Fresh defaults per call — callers own the object they get back. */
+function defaultConvergenceGateSettings(): ConvergenceGateSettings {
+  return {
     enabled_convergence_files: ['anatomy-park.json'],
     regression_warning_threshold: 5,
     remediator_timeout_s: 600,
     baseline_max_age_iterations: 30,
     baseline_max_age_seconds: 14_400,
   };
+}
+
+function nonEmptyStringArrayOrDefault(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  const normalized = value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function positiveIntegerOrDefault(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+export function loadConvergenceGateSettings(extRoot: string): ConvergenceGateSettings {
+  const defaults = defaultConvergenceGateSettings();
   try {
     const raw = readRecoverableJsonObject(path.join(extRoot, 'pickle_settings.json')) as Record<string, unknown> | null;
-    if (!raw) return defaults;
-    const cg = raw.convergence_gate;
+    const cg = raw?.convergence_gate;
     if (!cg || typeof cg !== 'object') return defaults;
     const gateSettings = cg as Record<string, unknown>;
     return {
@@ -511,6 +519,50 @@ export interface PerIterationGateDeps {
   // R-ORSR-6 interface-change sweep deps (injectable for tests).
   getChangedExportedSymbolsFn?: typeof getChangedExportedSymbols;
   getChangedFilesSinceFn?: typeof getChangedFilesSince;
+}
+
+/**
+ * The option bundle the per-iteration gate path threads end to end:
+ * `handleWorkerManagedIteration` -> `runPerIterationGateHook`. Both used to spell
+ * this same 11-field shape as an inline type literal, and the handler destructured
+ * every field only to re-pack it verbatim for the hook. One named shape, one spread.
+ */
+export interface PerIterationGateContext {
+  currentMv: MicroverseSessionState;
+  preIterSha: string;
+  workingDir: string;
+  sessionDir: string;
+  enabledFiles: string[];
+  regressionWarningThreshold: number;
+  backend: Backend;
+  remediatorTimeoutS: number;
+  iteration?: number;
+  log: (msg: string) => void;
+  _deps?: PerIterationGateDeps;
+}
+
+export interface PerIterationGateHookOpts extends PerIterationGateContext {
+  // B-APNC WS-2: optional sink the gate fills with the lint failures it already ran.
+  lintFailuresSink?: GateFailure[];
+  // R-SZGB-C-A: optional sink the gate fills when the uncertifiable-baseline defer fires.
+  uncertifiableBaselineDeferSink?: { fired: boolean };
+}
+
+export interface WorkerManagedIterationOpts extends PerIterationGateContext {
+  iteration: number;
+  minIterations?: number;
+  // R-ORSR-6: the phase's cumulative base commit (state.start_commit). When present the
+  // interface-change sweep arms at convergence-signal time; absent -> sweep stays off.
+  startCommit?: string;
+}
+
+export interface WorkerManagedIterationResult {
+  currentMv: MicroverseSessionState;
+  converged: boolean;
+  reason: string;
+  exitReason?: ExitReason;
+  selfRedOpen?: boolean;
+  lintFailures?: GateFailure[];
 }
 
 const PER_ITERATION_GATE_CHECKS: Array<'typecheck' | 'lint' | 'tests'> = ['typecheck', 'lint', 'tests'];
@@ -895,7 +947,39 @@ function classifyExistingBaseline(opts: {
   }
 }
 
-export async function ensurePerIterationGateBaseline(opts: {
+/**
+ * Stale-baseline refresh failure is recoverable: the post-commit gate in
+ * `runChangedPerIterationGate` will detect the missing baseline and recapture from the
+ * clean pre-iteration tree (its strict-mode fallback). Killing the run here strands a
+ * forward-progressing session at the iteration boundary even though the next gate could
+ * heal it — so record the degradation and continue.
+ */
+function deferStaleBaselineRefresh(opts: {
+  err: unknown;
+  baselinePath: string;
+  sessionDir: string;
+  log: (msg: string) => void;
+  logActivityFn: typeof logActivity;
+}): void {
+  const message = safeErrorMessage(opts.err);
+  opts.log(
+    `[anatomy-park] stale-baseline refresh failed (${message}) — ` +
+    `continuing; post-commit gate will recapture from the pre-iteration tree`,
+  );
+  opts.logActivityFn({
+    event: 'gate_baseline_init_failed',
+    source: 'pickle',
+    session: path.basename(opts.sessionDir),
+    gate_payload: {
+      path: opts.baselinePath,
+      recoverable: true,
+      reason: 'stale_refresh_deferred_to_post_commit_recapture',
+      message,
+    },
+  });
+}
+
+export interface EnsurePerIterationGateBaselineOpts {
   currentMv: MicroverseSessionState;
   workingDir: string;
   sessionDir: string;
@@ -905,26 +989,20 @@ export async function ensurePerIterationGateBaseline(opts: {
   baselineMaxAgeIterations?: number;
   baselineMaxAgeSeconds?: number;
   _deps?: Pick<PerIterationGateDeps, 'runGateFn' | 'logActivityFn'>;
-}): Promise<void> {
-  const {
-    currentMv,
-    workingDir,
-    sessionDir,
-    enabledFiles,
-    log,
-    currentIteration,
-    baselineMaxAgeIterations,
-    baselineMaxAgeSeconds,
-    _deps,
-  } = opts;
-  if (!enabledFiles.includes(currentMv.convergence_file ?? '')) return;
+}
+
+export async function ensurePerIterationGateBaseline(
+  opts: EnsurePerIterationGateBaselineOpts,
+): Promise<void> {
+  const { currentMv, workingDir, sessionDir, log, currentIteration, _deps } = opts;
+  if (!opts.enabledFiles.includes(currentMv.convergence_file ?? '')) return;
 
   const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
   const baselineStatus = classifyExistingBaseline({
     baselinePath,
     currentIteration,
-    baselineMaxAgeIterations,
-    baselineMaxAgeSeconds,
+    baselineMaxAgeIterations: opts.baselineMaxAgeIterations,
+    baselineMaxAgeSeconds: opts.baselineMaxAgeSeconds,
     log,
   });
   if (baselineStatus === 'fresh') return;
@@ -949,56 +1027,31 @@ export async function ensurePerIterationGateBaseline(opts: {
         `(captured ${result.total_raw_failure_count} pre-existing failure(s))`,
     });
   } catch (err) {
-    // Stale-baseline refresh failure is recoverable: the post-commit gate in
-    // runChangedPerIterationGate will detect the missing baseline and recapture
-    // from the clean pre-iteration tree (its strict-mode fallback). Killing
-    // the run here strands a forward-progressing session at the iteration
-    // boundary even though the next gate could heal it. Fresh-init failure
-    // (no baseline ever) still throws because there is no recovery path.
+    // Fresh-init failure (no baseline ever) still throws: there is no recovery path.
     if (!staleRefresh) throw err;
-    log(
-      `[anatomy-park] stale-baseline refresh failed (${safeErrorMessage(err)}) — ` +
-      `continuing; post-commit gate will recapture from the pre-iteration tree`,
-    );
-    (_deps?.logActivityFn ?? logActivity)({
-      event: 'gate_baseline_init_failed',
-      source: 'pickle',
-      session: path.basename(sessionDir),
-      gate_payload: {
-        path: baselinePath,
-        recoverable: true,
-        reason: 'stale_refresh_deferred_to_post_commit_recapture',
-        message: safeErrorMessage(err),
-      },
+    deferStaleBaselineRefresh({
+      err,
+      baselinePath,
+      sessionDir,
+      log,
+      logActivityFn: _deps?.logActivityFn ?? logActivity,
     });
   }
 }
 
-export async function runPerIterationGateHook(opts: {
-  currentMv: MicroverseSessionState;
-  preIterSha: string;
-  workingDir: string;
-  sessionDir: string;
-  enabledFiles: string[];
-  regressionWarningThreshold: number;
-  backend: Backend;
-  remediatorTimeoutS: number;
-  iteration?: number;
-  log: (msg: string) => void;
-  _deps?: PerIterationGateDeps;
-  // B-APNC WS-2: optional sink the gate fills with the lint failures it already ran.
-  lintFailuresSink?: GateFailure[];
-  // R-SZGB-C-A: optional sink the gate fills when the uncertifiable-baseline defer fires.
-  uncertifiableBaselineDeferSink?: { fired: boolean };
-}): Promise<MicroverseSessionState> {
-  const {
-    preIterSha, workingDir, sessionDir, enabledFiles, regressionWarningThreshold,
-    backend, remediatorTimeoutS, log, _deps,
-  } = opts;
+export async function runPerIterationGateHook(
+  opts: PerIterationGateHookOpts,
+): Promise<MicroverseSessionState> {
+  const { preIterSha, workingDir, sessionDir, log } = opts;
   let currentMv = opts.currentMv;
-  const deps = resolvePerIterationGateDeps({ workingDir, backend, remediatorTimeoutS, _deps });
+  const deps = resolvePerIterationGateDeps({
+    workingDir,
+    backend: opts.backend,
+    remediatorTimeoutS: opts.remediatorTimeoutS,
+    _deps: opts._deps,
+  });
 
-  const isEnabled = enabledFiles.includes(currentMv.convergence_file ?? '');
+  const isEnabled = opts.enabledFiles.includes(currentMv.convergence_file ?? '');
   const headSha = deps.getHeadShaFn(workingDir);
   const commitsHappened = preIterSha !== headSha;
   const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
@@ -1024,7 +1077,7 @@ export async function runPerIterationGateHook(opts: {
 
   return maybeEmitGateRegressionWarning({
     currentMv,
-    regressionWarningThreshold,
+    regressionWarningThreshold: opts.regressionWarningThreshold,
     sessionDir,
     log,
     deps,
@@ -1308,37 +1361,33 @@ function applyWorkerConvergenceGuard(opts: {
   return { currentMv, converged: true, reason };
 }
 
-export async function handleWorkerManagedIteration(opts: {
+/**
+ * A convergence signal is not trustworthy when the iteration's OWN per-iteration gate left
+ * new regressions behind. Returns the deferral verdict, or null when the gate came back clean.
+ */
+function deferConvergenceOnGateRegression(opts: {
   currentMv: MicroverseSessionState;
-  preIterSha: string;
-  workingDir: string;
-  sessionDir: string;
-  enabledFiles: string[];
-  regressionWarningThreshold: number;
-  backend: Backend;
-  remediatorTimeoutS: number;
-  log: (msg: string) => void;
+  priorIterationRegressions: number;
   iteration: number;
-  minIterations?: number;
-  // R-ORSR-6: the phase's cumulative base commit (state.start_commit). When present the
-  // interface-change sweep arms at convergence-signal time; absent → sweep stays off.
-  startCommit?: string;
-  _deps?: PerIterationGateDeps;
-}): Promise<{ currentMv: MicroverseSessionState; converged: boolean; reason: string; exitReason?: ExitReason; selfRedOpen?: boolean; lintFailures?: GateFailure[] }> {
-  const {
-    preIterSha,
-    workingDir,
-    sessionDir,
-    enabledFiles,
-    regressionWarningThreshold,
-    backend,
-    remediatorTimeoutS,
-    log,
-    iteration,
-    minIterations,
-    startCommit,
-    _deps,
-  } = opts;
+  log: (msg: string) => void;
+  uncertifiableBaselineDeferFired: boolean;
+}): WorkerManagedIterationResult | null {
+  if (Number(opts.currentMv.iteration_regressions ?? 0) <= opts.priorIterationRegressions) return null;
+  opts.log(
+    `Iteration ${opts.iteration} — convergence deferred: per-iteration gate left unresolved regressions`,
+  );
+  return {
+    currentMv: opts.currentMv,
+    converged: false,
+    reason: 'per-iteration gate left unresolved regressions',
+    ...(opts.uncertifiableBaselineDeferFired ? { selfRedOpen: true as const } : {}),
+  };
+}
+
+export async function handleWorkerManagedIteration(
+  opts: WorkerManagedIterationOpts,
+): Promise<WorkerManagedIterationResult> {
+  const { sessionDir, log, iteration, startCommit, _deps } = opts;
   let currentMv = opts.currentMv;
   const priorIterationRegressions = Number(currentMv.iteration_regressions ?? 0);
   const lintFailures: GateFailure[] = [];
@@ -1348,17 +1397,7 @@ export async function handleWorkerManagedIteration(opts: {
   const { converged, reason } = readWorkerConvergenceSignal(cfPath, iteration, log);
 
   currentMv = await runPerIterationGateHook({
-    currentMv,
-    preIterSha,
-    workingDir,
-    sessionDir,
-    enabledFiles,
-    regressionWarningThreshold,
-    backend,
-    remediatorTimeoutS,
-    iteration,
-    log,
-    _deps,
+    ...opts,
     lintFailuresSink: lintFailures,
     uncertifiableBaselineDeferSink,
   });
@@ -1367,19 +1406,14 @@ export async function handleWorkerManagedIteration(opts: {
     return { currentMv, converged, reason, lintFailures };
   }
 
-  const iterationLeftRegression =
-    Number(currentMv.iteration_regressions ?? 0) > priorIterationRegressions;
-  if (iterationLeftRegression) {
-    log(
-      `Iteration ${iteration} — convergence deferred: per-iteration gate left unresolved regressions`,
-    );
-    return {
-      currentMv,
-      converged: false,
-      reason: 'per-iteration gate left unresolved regressions',
-      ...(uncertifiableBaselineDeferSink.fired ? { selfRedOpen: true as const } : {}),
-    };
-  }
+  const regressionBlock = deferConvergenceOnGateRegression({
+    currentMv,
+    priorIterationRegressions,
+    iteration,
+    log,
+    uncertifiableBaselineDeferFired: uncertifiableBaselineDeferSink.fired,
+  });
+  if (regressionBlock) return regressionBlock;
 
   // R-ORSR-6 interface-change sweep: before trusting a convergence signal, run a whole-repo tsc
   // when the phase's own diff changed an exported symbol. A self-introduced out-of-scope consumer
@@ -1387,7 +1421,7 @@ export async function handleWorkerManagedIteration(opts: {
   if (typeof startCommit === 'string' && startCommit.trim().length > 0) {
     const sweepBlock = await applyInterfaceChangeSweepGuard({
       currentMv,
-      workingDir,
+      workingDir: opts.workingDir,
       sessionDir,
       startCommit: startCommit.trim(),
       iteration,
@@ -1400,7 +1434,7 @@ export async function handleWorkerManagedIteration(opts: {
   return applyWorkerConvergenceGuard({
     currentMv,
     reason,
-    minIterations,
+    minIterations: opts.minIterations,
     iteration,
     sessionDir,
     log,
