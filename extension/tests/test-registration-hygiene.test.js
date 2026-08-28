@@ -91,13 +91,23 @@ test('package test scripts delegate to tier discovery', () => {
   assert.equal(pkg.scripts.test, 'npm run test:fast && npm run test:integration');
   assert.equal(pkg.scripts['pretest:fast'], 'bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh');
   assert.equal(pkg.scripts['test:fast'], 'node bin/test-runner.js --tier fast --test-concurrency=8');
-  assert.equal(pkg.scripts['test:integration'], 'npm run test:integration:parallel && npm run test:integration:serial');
+  // A8 (R-ISSC / R-APGG): a bare "&&" here would short-circuit the serial half whenever
+  // the parallel half fails, so it silently never gets measured. Both halves must run
+  // independently and both exit codes must be explicitly reported.
+  assert.equal(
+    pkg.scripts['test:integration'],
+    'npm run test:integration:parallel; p=$?; npm run test:integration:serial; s=$?; echo "test:integration halves measured: parallel_exit=$p serial_exit=$s"; if [ $p -ne 0 ] || [ $s -ne 0 ]; then echo "test:integration FAILED (parallel_exit=$p serial_exit=$s)" >&2; exit 1; fi',
+  );
   assert.equal(pkg.scripts['test:integration:parallel'], 'node bin/test-runner.js --tier integration --manifest tests/integration/.serial-tests.json --manifest-mode exclude');
   assert.equal(pkg.scripts['test:integration:serial'], 'node bin/test-runner.js --tier integration --manifest tests/integration/.serial-tests.json --manifest-mode include --test-concurrency=1');
   // B-V2RG: expensive tier serial-split (mirrors integration) so the real-handshake
   // soaks (codegraph C0, worker-mcp C7, release-gate-wiring full-gate, deploy soak)
   // run at --test-concurrency=1 instead of starving each other at full concurrency.
-  assert.equal(pkg.scripts['test:expensive'], 'npm run test:expensive:parallel && npm run test:expensive:serial');
+  // A8 (R-ISSC / R-APGG): same never-short-circuit contract as test:integration above.
+  assert.equal(
+    pkg.scripts['test:expensive'],
+    'npm run test:expensive:parallel; p=$?; npm run test:expensive:serial; s=$?; echo "test:expensive halves measured: parallel_exit=$p serial_exit=$s"; if [ $p -ne 0 ] || [ $s -ne 0 ]; then echo "test:expensive FAILED (parallel_exit=$p serial_exit=$s)" >&2; exit 1; fi',
+  );
   assert.equal(pkg.scripts['test:expensive:parallel'], 'node bin/test-runner.js --tier expensive --manifest tests/expensive/.serial-tests.json --manifest-mode exclude');
   assert.equal(pkg.scripts['test:expensive:serial'], 'node bin/test-runner.js --tier expensive --manifest tests/expensive/.serial-tests.json --manifest-mode include --test-concurrency=1');
 });
