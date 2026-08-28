@@ -319,6 +319,33 @@ export function assertCleanWorkingTree(workingDir, opts) {
         `If a moved branch or advanced HEAD left a stale pin, run \`setup --repin\` to re-pin from HEAD, or \`pickle-recover\` to salvage in-flight work.`);
 }
 /**
+ * Split `git status --porcelain -z` output into tracked (restorable via checkout) and untracked
+ * (removable) paths. NUL-delimited because a rename/copy entry (`R`/`C` in either status column)
+ * spends a SECOND record on its origin path, which must be consumed rather than treated as another
+ * dirty file.
+ */
+function splitPorcelainStatusPaths(stdout) {
+    const trackedPaths = [];
+    const untrackedPaths = [];
+    const tokens = stdout.split('\0').filter((t) => t.length > 0);
+    for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i];
+        if (token.length < 4)
+            continue;
+        const xy = token.slice(0, 2);
+        const filePath = token.slice(3);
+        if (xy[0] === 'R' || xy[0] === 'C' || xy[1] === 'R' || xy[1] === 'C')
+            i++;
+        if (xy === '??') {
+            untrackedPaths.push(filePath);
+        }
+        else {
+            trackedPaths.push(filePath);
+        }
+    }
+    return { trackedPaths, untrackedPaths };
+}
+/**
  * At a manager-boundary relaunch (state.manager_relaunch_count > 0), the
  * in-flight ticket's interrupted worker may have left uncommitted partial
  * changes. This resets ONLY the blocking dirty paths (those assertCleanWorkingTree
@@ -347,24 +374,7 @@ export function resetInterruptedTicketWorkForRelaunch(workingDir, scope, log) {
         timeout: 30_000,
         stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const trackedPaths = [];
-    const untrackedPaths = [];
-    const tokens = (statusResult.stdout || '').split('\0').filter((t) => t.length > 0);
-    for (let i = 0; i < tokens.length; i++) {
-        const token = tokens[i];
-        if (token.length < 4)
-            continue;
-        const xy = token.slice(0, 2);
-        const filePath = token.slice(3);
-        if (xy[0] === 'R' || xy[0] === 'C' || xy[1] === 'R' || xy[1] === 'C')
-            i++;
-        if (xy === '??') {
-            untrackedPaths.push(filePath);
-        }
-        else {
-            trackedPaths.push(filePath);
-        }
-    }
+    const { trackedPaths, untrackedPaths } = splitPorcelainStatusPaths(statusResult.stdout || '');
     if (trackedPaths.length > 0) {
         spawnSync('git', ['checkout', '--', ...trackedPaths], {
             cwd: workingDir,
@@ -2578,30 +2588,51 @@ function isMicroverseFatalReason(reason) {
 function isCrashFloorExitReason(reason) {
     return typeof reason === 'string' && CRASH_FLOOR_EXIT_REASON_SET.has(reason);
 }
+/**
+ * Halt-eligibility for an anatomy-park / szechuan-sauce phase, keyed on the microverse exit reason.
+ *
+ * judge_timeout / all_judge_backends_exhausted / baseline_unmeasurable_transient are intentionally
+ * NOT in MICROVERSE_FAILURE_REASONS so logPhaseHaltReason can route them through finalize-gate
+ * (R-PRJT-2 / R-S529). They are still halt-eligible here so the halt path runs instead of
+ * recordRecoverablePhaseFailure. The remaining microverse failure exits (judge_unreachable, error,
+ * rate_limit_exhausted, ...) halt the pipeline; R-SCJM-3 expects judge_unreachable to halt without
+ * finalize-gate.
+ */
+function isMicroverseArmFatal(reason) {
+    if (isMicroverseFatalReason(reason))
+        return true;
+    if (reason === 'judge_timeout' || reason === 'all_judge_backends_exhausted' || reason === 'baseline_unmeasurable_transient') {
+        return true;
+    }
+    return typeof reason === 'string' && isMicroverseFailureExit(reason);
+}
+/**
+ * Two demotions govern the pickle arm and neither is visible from the surviving lines, so they are
+ * recorded here rather than beside the code that no longer implements them:
+ *
+ * B-GTRUTH WS-A2: `done_without_commit_evidence` is no longer phase-fatal here. AC-MWMO-D2-8's
+ * concern (an all-terminal bundle whose LAST ticket has no commit must not fake-green) is preserved
+ * by a BETTER mechanism: mux-runner now exits code 3, so `runPhaseIteration` routes it to
+ * `reportPhaseIncomplete` BEFORE reaching this function, and that path consults the completion
+ * oracle instead of the session-wide commit count. Demoted in lockstep with `isHaltExit` and
+ * `FAILURE_EXIT_REASONS` (mux-runner.ts) so the three classifiers agree.
+ *
+ * B-NOSTOP-GATES WS-1: the former `countCommitsSince === 0` arm was a SECOND demotion. Zero commits
+ * since baseline is a QUALITY signal — reported via `maybeStampPhaseGraduation`'s
+ * `phase_no_progress` branch, which now advances instead of halting — not a crash-floor
+ * cannot-continue condition. Only the `!startCommit` arm remains fatal: a missing baseline means
+ * progress is literally unmeasurable, which no downstream honesty gate can report around.
+ */
 export function isFatalPhaseFailure(phase, runtime) {
     try {
         const runnerState = sm.read(runtime.statePath);
         if (phase === 'pickle') {
-            // B-GTRUTH WS-A2: `done_without_commit_evidence` is no longer phase-fatal here.
-            // AC-MWMO-D2-8's concern (an all-terminal bundle whose LAST ticket has no commit
-            // must not fake-green) is preserved by a BETTER mechanism: mux-runner now exits
-            // code 3, so `runPhaseIteration` routes it to `reportPhaseIncomplete` BEFORE
-            // reaching this function, and that path consults the completion oracle instead
-            // of the session-wide commit count. Demoted in lockstep with `isHaltExit` and
-            // `FAILURE_EXIT_REASONS` (mux-runner.ts) so the three classifiers agree.
-            //
-            // B-NOSTOP-GATES WS-1: the `countCommitsSince === 0` arm below is a SECOND
-            // demotion. Zero commits since baseline is a QUALITY signal — reported via
-            // `maybeStampPhaseGraduation`'s `phase_no_progress` branch, which now advances
-            // instead of halting — not a crash-floor cannot-continue condition. Only the
-            // `!startCommit` arm remains fatal: a missing baseline means progress is
-            // literally unmeasurable, which no downstream honesty gate can report around.
             const startCommit = runnerState.start_commit?.trim();
             if (!startCommit)
                 return true;
             // B-CRASHFLOOR: cannot-physically-continue reasons (toolchain_unavailable,
             // state_working_dir_missing, state_schema_version_ahead) halt the pickle phase, mirroring
-            // how the microverse arm below consults MICROVERSE_FATAL_REASONS. Deliberately NOT
+            // how the microverse arm consults MICROVERSE_FATAL_REASONS. Deliberately NOT
             // FAILURE_EXIT_REASONS (mux-runner.ts) — that set is quality/measurement verdicts CLAUDE.md
             // binds to park-and-flag, not the crash floor.
             if (isCrashFloorExitReason(runnerState.exit_reason))
@@ -2609,22 +2640,7 @@ export function isFatalPhaseFailure(phase, runtime) {
             return false;
         }
         if (phase === 'anatomy-park' || phase === 'szechuan-sauce') {
-            const reason = runnerState.exit_reason;
-            if (isMicroverseFatalReason(reason))
-                return true;
-            // judge_timeout / all_judge_backends_exhausted / baseline_unmeasurable_transient are intentionally
-            // NOT in MICROVERSE_FAILURE_REASONS so logPhaseHaltReason can route them through finalize-gate
-            // (R-PRJT-2 / R-S529). Still treat as halt-eligible so the halt path runs instead of
-            // recordRecoverablePhaseFailure.
-            if (reason === 'judge_timeout' || reason === 'all_judge_backends_exhausted' || reason === 'baseline_unmeasurable_transient') {
-                return true;
-            }
-            // Microverse failure exits (judge_unreachable, error, rate_limit_exhausted, ...) halt
-            // the pipeline. R-SCJM-3 expects judge_unreachable to halt without finalize-gate.
-            if (typeof reason === 'string' && isMicroverseFailureExit(reason)) {
-                return true;
-            }
-            return false;
+            return isMicroverseArmFatal(runnerState.exit_reason);
         }
         return true;
     }
@@ -3687,72 +3703,83 @@ function finalizeNonSuccessTerminal(statePath, phaseIncomplete, phaseIncompleteR
         ? { step: 'completed', exitReason: phaseIncompleteReason }
         : { step: 'completed' });
 }
-function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncomplete, phaseIncompleteReason) {
-    const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
+/**
+ * The three verdict terms every downstream reader shares, derived once.
+ *
+ * AC-OA-1c: ran-to-completion ≠ reported-success. `nonConvergent` is the term BOTH degradation
+ * paths raise, so a degraded phase withholds the success verdict just as a phase shortfall does.
+ * A handoff stop is a deliberate pause, not a failure — folded out of `effectiveFailed` once here
+ * rather than re-tested at each use.
+ */
+function computePipelineVerdict(runtime, counters) {
     const pipelineFailed = (counters.completed + counters.skipped) < runtime.config.phases.length;
-    // AC-OA-1c: ran-to-completion ≠ reported-success. `nonConvergent` is the term BOTH degradation
-    // paths raise, so a degraded phase withholds the success verdict just as a phase shortfall does.
-    // Named once so every downstream verdict reads the same term.
     const unsuccessful = pipelineFailed || counters.nonConvergent > 0;
     const handoffStop = !!readHandoffExitReason(runtime.statePath);
-    // A handoff stop is a deliberate pause, not a failure — fold it out once.
-    const effectiveFailed = unsuccessful && !handoffStop;
-    if (phaseIncomplete || handoffStop) {
+    return { pipelineFailed, unsuccessful, handoffStop, effectiveFailed: unsuccessful && !handoffStop };
+}
+/**
+ * Stamp the run's terminal `exit_reason`.
+ *
+ * R-NOPOSTTIER (AC-4/AC-5): the TERMINAL STAMP keys on `pipelineFailed`, not `unsuccessful`.
+ * A withheld verdict with every phase executed is not a phase shortfall: the run reached
+ * completion, so `exit_reason` stays `completed` and no member is added to `EXIT_REASONS`.
+ * Stamping the generic `failed` here would say the run did not finish, which is false, and
+ * would be the only place a degraded verdict masqueraded as a crash.
+ *
+ * The VERDICT still keys on `unsuccessful` — the banner, `pipeline-status.json`, the exit
+ * code, and the closer-release skip in the caller are all unchanged. Reaching completion and
+ * reporting success stay separate wires.
+ *
+ * Same precedent as `finalizeFailedPipeline`: a specific reason already stamped on this
+ * degraded phase (e.g. `all_judge_backends_exhausted`) is preserved rather than overwritten
+ * — 'completed' is stamped ONLY when no reason was recorded (e.g. the post-final-verdict
+ * path, whose degraded classification lives in `state.post_final_verdict`, not `exit_reason`).
+ *
+ * B-GROUND2 WS1: the success finalize is the one transition that asserts the ticket bundle is
+ * truly complete — route it through the single authority so a residual pending ticket refuses
+ * the `completed` stamp (fail-closed).
+ */
+function stampPipelineTerminalReason(runtime, verdict, phaseIncomplete, phaseIncompleteReason) {
+    if (phaseIncomplete || verdict.handoffStop) {
         finalizeNonSuccessTerminal(runtime.statePath, phaseIncomplete, phaseIncompleteReason);
+        return;
     }
-    else if (pipelineFailed) {
+    if (verdict.pipelineFailed) {
         finalizeFailedPipeline(runtime.statePath);
+        return;
     }
-    else {
-        // R-NOPOSTTIER (AC-4/AC-5): the TERMINAL STAMP keys on `pipelineFailed`, not `unsuccessful`.
-        // A withheld verdict with every phase executed is not a phase shortfall: the run reached
-        // completion, so `exit_reason` stays `completed` and no member is added to `EXIT_REASONS`.
-        // Stamping the generic `failed` here would say the run did not finish, which is false, and
-        // would be the only place a degraded verdict masqueraded as a crash.
-        //
-        // The VERDICT still keys on `unsuccessful` — the banner, `pipeline-status.json`, the exit
-        // code, and the closer-release skip below are all unchanged. Reaching completion and
-        // reporting success stay separate wires.
-        //
-        // Same precedent as `finalizeFailedPipeline`: a specific reason already stamped on this
-        // degraded phase (e.g. `all_judge_backends_exhausted`) is preserved rather than overwritten
-        // — 'completed' is stamped ONLY when no reason was recorded (e.g. the post-final-verdict
-        // path, whose degraded classification lives in `state.post_final_verdict`, not `exit_reason`).
-        //
-        // B-GROUND2 WS1: the success finalize is the one transition that asserts the
-        // ticket bundle is truly complete — route it through the single authority so
-        // a residual pending ticket refuses the `completed` stamp (fail-closed).
-        finalizeIfTrulyComplete(runtime.statePath, () => pipelineBundleScan(runtime), finalizeDegradedCompleteOpts(runtime.statePath, unsuccessful));
-    }
-    // R-PSSS-3: name each skip disposition (`anatomy-park: empty_scope`) so the
-    // final summary distinguishes an empty-scope skip from a setup error.
+    finalizeIfTrulyComplete(runtime.statePath, () => pipelineBundleScan(runtime), finalizeDegradedCompleteOpts(runtime.statePath, verdict.unsuccessful));
+}
+/**
+ * R-PSSS-3: name each skip disposition (`anatomy-park: empty_scope`) so the final summary
+ * distinguishes an empty-scope skip from a setup error.
+ */
+function formatPhasesSummary(counters, totalPhases) {
+    if (counters.skipped === 0)
+        return `${counters.completed}/${totalPhases}`;
     const skipDetail = Object.entries(counters.phaseSkips)
         .map(([phase, reason]) => `${phase}: ${reason}`)
         .join('; ');
-    const phasesSummary = counters.skipped > 0
-        ? `${counters.completed}/${runtime.config.phases.length} (${counters.skipped} skipped${skipDetail ? ` — ${skipDetail}` : ''})`
-        : `${counters.completed}/${runtime.config.phases.length}`;
-    const banner = buildPipelineTerminalBanner(effectiveFailed);
-    const parkedCount = resolveParkedTicketCount(runtime);
-    printMinimalPanel(banner.title, buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount), banner.color, '🧪');
-    writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, effectiveFailed);
-    // handoff stops skip closer-release; so does a degraded run (B-ONEABORT AC-OA-1c).
-    if (!unsuccessful && !handoffStop) {
-        const closerPlan = buildCloserReleasePlan(sm.read(runtime.statePath));
-        executeCloserReleasePlan(closerPlan, _closerReleaseActionsForTests ?? {
-            install: () => { },
-            tag: () => { },
-        }, runtime.log);
-    }
-    try {
-        fs.unlinkSync(cancelMarker);
-    }
-    catch { /* may not exist */ }
-    // AC-NS-1b(i): the dispositions are the only attribution for a non-success exit, and they
-    // are read after the process is gone; dropping them leaves an operator a bare `failed`.
-    // They are named here because THIS write is their authority — `counters` is the live record
-    // and an emptied map must clear the key. Omitted keys are carried by `writePipelineStatus`
-    // itself (AP-EXT-ITER90-01); repeating them here is no longer what keeps them alive.
+    return `${counters.completed}/${totalPhases} (${counters.skipped} skipped${skipDetail ? ` — ${skipDetail}` : ''})`;
+}
+// handoff stops skip closer-release; so does a degraded run (B-ONEABORT AC-OA-1c).
+function maybeRunCloserRelease(runtime, unsuccessful, handoffStop) {
+    if (unsuccessful || handoffStop)
+        return;
+    const closerPlan = buildCloserReleasePlan(sm.read(runtime.statePath));
+    executeCloserReleasePlan(closerPlan, _closerReleaseActionsForTests ?? {
+        install: () => { },
+        tag: () => { },
+    }, runtime.log);
+}
+/**
+ * AC-NS-1b(i): the dispositions are the only attribution for a non-success exit, and they
+ * are read after the process is gone; dropping them leaves an operator a bare `failed`.
+ * They are named here because THIS write is their authority — `counters` is the live record
+ * and an emptied map must clear the key. Omitted keys are carried by `writePipelineStatus`
+ * itself (AP-EXT-ITER90-01); repeating them here is no longer what keeps them alive.
+ */
+function writeTerminalPipelineStatus(runtime, counters, effectiveFailed) {
     writePipelineStatus(runtime.sessionDir, effectiveFailed ? 'failed' : 'completed', {
         current_phase: null,
         completed_phases: counters.completed,
@@ -3761,6 +3788,24 @@ function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncom
         phase_skips: counters.phaseSkips,
         phase_dispositions: counters.phaseDispositions,
     });
+}
+function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncomplete, phaseIncompleteReason) {
+    const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
+    const verdict = computePipelineVerdict(runtime, counters);
+    const { unsuccessful, handoffStop, effectiveFailed } = verdict;
+    stampPipelineTerminalReason(runtime, verdict, phaseIncomplete, phaseIncompleteReason);
+    const phasesSummary = formatPhasesSummary(counters, runtime.config.phases.length);
+    const banner = buildPipelineTerminalBanner(effectiveFailed);
+    const parkedCount = resolveParkedTicketCount(runtime);
+    printMinimalPanel(banner.title, buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount), banner.color, '🧪');
+    writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, effectiveFailed);
+    // handoff stops skip closer-release; so does a degraded run (B-ONEABORT AC-OA-1c).
+    maybeRunCloserRelease(runtime, unsuccessful, handoffStop);
+    try {
+        fs.unlinkSync(cancelMarker);
+    }
+    catch { /* may not exist */ }
+    writeTerminalPipelineStatus(runtime, counters, effectiveFailed);
     if (phaseIncomplete) {
         process.exit(PipelineRunnerExitCode.PhaseIncomplete);
     }
@@ -4317,6 +4362,54 @@ function withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log) {
  * Exported (B-NONSTOP WS-2) so the honesty gate can be exercised directly by
  * `tests/pipeline-finalize-honesty.test.js`.
  */
+/**
+ * WS-B (f8559470): the pickle phase graduated, but ≥1 ticket flipped Done over a red
+ * worker_gate_tests_verdict. The run STILL executes every remaining phase (AC-B2 — the caller's
+ * `completed++` is unaffected) and closer-release still needs the caller to see a name; raise the
+ * existing `nonConvergent` term so `finalizePipeline`'s
+ * `unsuccessful = pipelineFailed || counters.nonConvergent > 0` withholds the success verdict
+ * (AC-B1) and skips closer-release, without adding a new gate, field, or halt.
+ */
+function withholdForDoneOverRedTestVerdict(runtime, counters, rawPhase, log) {
+    const redOffenders = collectDoneTicketsWithRedTestVerdict(runtime);
+    if (redOffenders.length === 0)
+        return;
+    counters.nonConvergent += redOffenders.length;
+    const names = redOffenders.map((o) => `${o.id}${o.title ? ` (${o.title})` : ''}`).join(', ');
+    counters.phaseDispositions[rawPhase] = `done_over_red_worker_gate_tests:${redOffenders.map((o) => o.id).join(',')}`;
+    log(`Phase ${rawPhase}: ${redOffenders.length} ticket(s) flipped Done over a red worker_gate_tests_verdict — withholding success verdict: ${names}`);
+    try {
+        writeRunningStatus(runtime, counters, null);
+    }
+    catch { /* non-blocking */ }
+}
+/**
+ * Honor operator cancellation. Named once because BOTH of `finalizePhaseSuccess`'s terminal arms
+ * need it: the phase loop has no independent cancel check and relies on this exit.
+ */
+function cancelledOutcome(cancelMarker, log) {
+    if (!fs.existsSync(cancelMarker))
+        return null;
+    log('Pipeline cancelled (cancel marker found) — stopping');
+    return { action: 'break' };
+}
+/**
+ * B-NONSTOP WS-2 (AC-NS-6): the non-pickle honesty gate below. `maybeStampPhaseGraduation`
+ * is pickle-only (`:3592`), so a non-convergent anatomy-park / szechuan-sauce phase — which
+ * reaches here with exitCode 1 (R-PHC-6 continue-by-default) — would otherwise fall straight
+ * through to `counters.completed++` and be reported a clean success (the live fake-green:
+ * `approach_exhaustion` recorded as success, 2026-07-17-a1597bbe). Citadel carries no microverse
+ * disposition and never enters that branch. Template-A continue only (no halt/abort — that
+ * routing is T5's scope).
+ *
+ * AP-EXT-ITER5-01: the test is `!== 'success'`, NOT `=== 'non-convergent'`. `reportAs` has FOUR
+ * not-success values (`non-convergent`, `non-success`, `failure`, `non-fatal-halt`) and naming
+ * only one of them is the enumerated-set liability: `fatal`, `stalled`, `cancelled` and every
+ * unrecognized string classify `non-success`, so a CRASHED phase fell through to `completed++`
+ * and the run reported success. `converged` is the sole disposition whose own exitCode is 0, so
+ * "not success" and "did not exit clean" are the same set — one comparison against the single
+ * success value needs no list, and a future reason can only be caught by it, never missed.
+ */
 export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, exitCode, log) {
     // B-RRH C1: strict roster+sentinel gate runs FIRST — do not trust exit code 0.
     const robustBreak = maybeStampPickleIncompleteRobust(runtime, rawPhase, log);
@@ -4329,42 +4422,10 @@ export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, 
     if (graduationBreak) {
         return graduationBreak;
     }
-    // WS-B (f8559470): the pickle phase graduated, but ≥1 ticket flipped Done over a
-    // red worker_gate_tests_verdict. The run STILL executes every remaining phase
-    // (AC-B2 — completed++ below is unaffected) and closer-release still needs the
-    // caller to see a name; raise the existing `nonConvergent` term so
-    // `finalizePipeline`'s `unsuccessful = pipelineFailed || counters.nonConvergent > 0`
-    // withholds the success verdict (AC-B1) and skips closer-release, without adding a
-    // new gate, field, or halt.
     if (rawPhase === 'pickle') {
-        const redOffenders = collectDoneTicketsWithRedTestVerdict(runtime);
-        if (redOffenders.length > 0) {
-            counters.nonConvergent += redOffenders.length;
-            const names = redOffenders.map((o) => `${o.id}${o.title ? ` (${o.title})` : ''}`).join(', ');
-            counters.phaseDispositions[rawPhase] = `done_over_red_worker_gate_tests:${redOffenders.map((o) => o.id).join(',')}`;
-            log(`Phase ${rawPhase}: ${redOffenders.length} ticket(s) flipped Done over a red worker_gate_tests_verdict — withholding success verdict: ${names}`);
-            try {
-                writeRunningStatus(runtime, counters, null);
-            }
-            catch { /* non-blocking */ }
-        }
+        withholdForDoneOverRedTestVerdict(runtime, counters, rawPhase, log);
         withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log);
     }
-    // B-NONSTOP WS-2 (AC-NS-6): non-pickle honesty gate. `maybeStampPhaseGraduation`
-    // is pickle-only (`:3592`), so a non-convergent anatomy-park / szechuan-sauce phase
-    // — which reaches here with exitCode 1 (R-PHC-6 continue-by-default) — would otherwise
-    // fall straight through to `counters.completed++` and be reported a clean success
-    // (the live fake-green: `approach_exhaustion` recorded as success, 2026-07-17-a1597bbe).
-    // Citadel carries no microverse disposition and never enters this branch. Template-A
-    // continue only (no halt/abort — that routing is T5's scope).
-    //
-    // AP-EXT-ITER5-01: the test is `!== 'success'`, NOT `=== 'non-convergent'`. `reportAs` has FOUR
-    // not-success values (`non-convergent`, `non-success`, `failure`, `non-fatal-halt`) and naming
-    // only one of them is the enumerated-set liability: `fatal`, `stalled`, `cancelled` and every
-    // unrecognized string classify `non-success`, so a CRASHED phase fell through to `completed++`
-    // and the run reported success. `converged` is the sole disposition whose own exitCode is 0, so
-    // "not success" and "did not exit clean" are the same set — one comparison against the single
-    // success value needs no list, and a future reason can only be caught by it, never missed.
     if (rawPhase === 'anatomy-park' || rawPhase === 'szechuan-sauce') {
         let exitReason = null;
         try {
@@ -4380,21 +4441,14 @@ export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, 
             }
             catch { /* non-blocking */ }
             log(`Phase ${rawPhase} did NOT converge (${exitReason}) — reported non-convergent, not counted as completed`);
-            // Honor operator cancellation here too — the phase loop has no independent
-            // cancel check and relies on this exit (mirrors the success path below).
-            if (fs.existsSync(cancelMarker)) {
-                log('Pipeline cancelled (cancel marker found) — stopping');
-                return { action: 'break' };
-            }
-            return { action: 'continue' };
+            return cancelledOutcome(cancelMarker, log) ?? { action: 'continue' };
         }
     }
     counters.completed++;
     writeRunningStatus(runtime, counters, null);
-    if (fs.existsSync(cancelMarker)) {
-        log('Pipeline cancelled (cancel marker found) — stopping');
-        return { action: 'break' };
-    }
+    const cancelled = cancelledOutcome(cancelMarker, log);
+    if (cancelled)
+        return cancelled;
     log(`Phase ${rawPhase} completed successfully`);
     return { action: 'continue' };
 }
