@@ -2744,13 +2744,21 @@ function surfaceCitadelAdvisory(runtime: PipelineRuntime, advisory: CitadelFindi
     }
   }
   // Merge-write the advisory count into pipeline-status.json additively, preserving existing keys.
+  //
+  // AP-EXT-ITER88-01: `writePipelineStatus` builds a FRESH payload and DEFAULTS every field the
+  // caller omits (`current_phase ?? null`, `completed_phases ?? 0`, ...) — the same wholesale
+  // replacement the terminal write documents under AC-NS-1b(i). So a callsite that NAMES the keys
+  // it carries silently erases the rest: naming `status` + `phase_skips` here zeroed
+  // `current_phase`/`completed_phases`/`skipped_phases`/`total_phases` and dropped
+  // `phase_dispositions` on EVERY citadel exit, advisory or not. Carry the persisted record
+  // through WHOLE — one rest-spread, no key list — so the next `PipelineStatus` field added is
+  // not silently zeroed here for want of an edit.
   try {
     const statusPath = path.join(runtime.sessionDir, 'pipeline-status.json');
-    const existing = readRecoverableJsonObject(statusPath) as Record<string, unknown> | null;
-    const status = (existing?.status as PipelineStatusKind) ?? 'running';
-    const phaseSkips = existing?.phase_skips as Record<string, PhaseSkipReason> | undefined;
+    const existing = readRecoverableJsonObject(statusPath) as Partial<PipelineStatus> | null;
+    const { status = 'running', ...carried } = existing ?? {};
     writePipelineStatus(runtime.sessionDir, status, {
-      phase_skips: phaseSkips,
+      ...carried,
       citadel_advisory_findings: advisory.length,
     });
   } catch (err) {

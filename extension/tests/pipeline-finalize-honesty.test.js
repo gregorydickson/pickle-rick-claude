@@ -13,10 +13,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   POST_FINAL_DEGRADED_MARKER,
+  __setCitadelRemediationDepsForTests,
   __setSpawnRunnerForTests,
   buildPipelineCompletePanel,
+  executeCitadelPhase,
   finalizePhaseSuccess,
   main,
+  readResumePhasePlan,
   writePipelineStatus,
 } from '../bin/pipeline-runner.js';
 
@@ -587,5 +590,131 @@ describe('AC-12: the degraded marker reaches the operator-visible completion out
     const panel = buildPipelineCompletePanel(counters, '4/4', 90, 0);
     assert.equal(panel.Dispositions, undefined);
     assert.deepEqual(Object.keys(panel), ['Phases', 'Elapsed']);
+  });
+});
+
+// AP-EXT-ITER88-01: `surfaceCitadelAdvisory` re-reads pipeline-status.json and hands the result
+// back to `writePipelineStatus`, which builds a FRESH payload and DEFAULTS every omitted field.
+// Naming the carried keys (`status` + `phase_skips`) therefore ERASED the rest on every citadel
+// exit: `current_phase` -> null, the three phase counters -> 0, `phase_dispositions` -> dropped.
+// The counters are not decoration — `readResumePhasePlan` gates crash-resume on
+// `completed_phases > 0` AND a recognizable `current_phase`, so a zeroed status downgrades a
+// resumable run to a cold start that re-executes the whole pipeline from phases[0].
+describe('AP-EXT-ITER88-01: the citadel advisory write carries pipeline-status through whole', () => {
+  const CITADEL_PHASES = ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'];
+
+  function writeCitadelState(dir) {
+    fs.writeFileSync(path.join(dir, 'prd.md'), '# prd\n');
+    fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({
+      active: true,
+      working_dir: dir,
+      step: 'citadel',
+      iteration: 1,
+      max_iterations: 50,
+      max_time_minutes: 720,
+      worker_timeout_seconds: 1200,
+      start_time_epoch: 1000,
+      completion_promise: null,
+      original_prompt: 'citadel status carry-through',
+      current_ticket: null,
+      history: [],
+      started_at: new Date().toISOString(),
+      session_dir: dir,
+      schema_version: 3,
+      exit_reason: null,
+      prd_path: path.join(dir, 'prd.md'),
+      start_commit: 'abc1234',
+      backend: 'claude',
+      activity: [],
+    }, null, 2));
+  }
+
+  function citadelRuntime(dir) {
+    return {
+      sessionDir: dir,
+      statePath: path.join(dir, 'state.json'),
+      repoRoot: dir,
+      workingDir: dir,
+      extensionRoot: dir,
+      backend: 'claude',
+      phaseEnv: { ...process.env },
+      log: () => {},
+      config: { phases: CITADEL_PHASES, target: dir, citadel_strict: false, dirty_exempt_segments: [] },
+    };
+  }
+
+  // A clean audit: zero findings means zero advisory, which is exactly the path that must still
+  // rewrite the status file. The bug was NOT gated on having advisory findings.
+  function stubCleanAudit() {
+    __setCitadelRemediationDepsForTests({
+      loadSettings: () => ({ cap: 2, remediatorTimeoutMs: 1000 }),
+      runCitadelAudit: async () => ({ findings: [] }),
+      spawnGateRemediatorMain: async () => { throw new Error('remediator must not run on a clean audit'); },
+      spawnRemediator: () => { throw new Error('worker must not spawn on a clean audit'); },
+    });
+  }
+
+  afterEach(() => {
+    __setCitadelRemediationDepsForTests(null);
+  });
+
+  test('a mid-run status survives the citadel phase intact, so crash-resume still resumes', async () => {
+    const dir = tmpDir();
+    writeCitadelState(dir);
+    stubCleanAudit();
+
+    // Exactly what writeRunningStatus persists at the top of the citadel phase iteration of a
+    // 4-phase pipeline whose `pickle` phase already completed and left a disposition behind.
+    writePipelineStatus(dir, 'running', {
+      current_phase: 'citadel',
+      completed_phases: 1,
+      skipped_phases: 0,
+      total_phases: 4,
+      phase_skips: { pickle: 'setup_error' },
+      phase_dispositions: { pickle: 'approach_exhaustion' },
+    });
+
+    assert.deepEqual(await executeCitadelPhase(citadelRuntime(dir)), { exitCode: 0 });
+
+    const status = JSON.parse(fs.readFileSync(path.join(dir, 'pipeline-status.json'), 'utf-8'));
+    assert.equal(status.current_phase, 'citadel', 'current_phase must not be reset to null');
+    assert.equal(status.completed_phases, 1, 'completed_phases must not be reset to 0');
+    assert.equal(status.total_phases, 4, 'total_phases must not be reset to 0');
+    assert.deepEqual(status.phase_skips, { pickle: 'setup_error' });
+    assert.deepEqual(
+      status.phase_dispositions,
+      { pickle: 'approach_exhaustion' },
+      'AC-NS-6 attribution must survive a citadel exit',
+    );
+    // The advisory count is still written ADDITIVELY — carrying the record through is not a
+    // regression of what this callsite exists to do.
+    assert.equal(status.citadel_advisory_findings, 0);
+
+    // The consumer half: the surviving counters are what make this run resumable at all.
+    assert.deepEqual(
+      readResumePhasePlan({ sessionDir: dir, config: { phases: CITADEL_PHASES } }),
+      { index: 1, completed: 1, skipped: 0 },
+      'a zeroed status would cold-start the pipeline and re-run every earlier phase',
+    );
+
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  test('no prior status file still yields a well-formed status (carry-through is not carry-anything)', async () => {
+    const dir = tmpDir();
+    writeCitadelState(dir);
+    stubCleanAudit();
+
+    assert.deepEqual(await executeCitadelPhase(citadelRuntime(dir)), { exitCode: 0 });
+
+    const status = JSON.parse(fs.readFileSync(path.join(dir, 'pipeline-status.json'), 'utf-8'));
+    assert.equal(status.status, 'running', 'absent prior status defaults to running');
+    assert.equal(status.current_phase, null);
+    assert.equal(status.completed_phases, 0);
+    assert.equal(status.citadel_advisory_findings, 0);
+    assert.equal(status.phase_skips, undefined, 'no spurious keys are invented');
+    assert.equal(status.phase_dispositions, undefined);
+
+    fs.rmSync(dir, { recursive: true });
   });
 });
