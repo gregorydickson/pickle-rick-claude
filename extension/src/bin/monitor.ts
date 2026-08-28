@@ -1061,9 +1061,74 @@ function parseMonitorArgs(args: string[]): { sessionDir: string | undefined; mod
   return { sessionDir, mode };
 }
 
-async function main() {
-  const { sessionDir, mode: initialMode } = parseMonitorArgs(process.argv.slice(2));
+/**
+ * AC-SSV-07: never block on stdout in the signal handler. If the pane is wedged a
+ * synchronous write would prevent the exit. Try the detach banner asynchronously, but
+ * exit unconditionally either way so Ctrl-C always wins.
+ */
+function installMonitorSigintHandler(): void {
+  process.on('SIGINT', () => {
+    try {
+      process.stdout.write(`\x1b[2J\x1b[H${MX.DIM}Monitor detached.${MX.R}\n`, () => {
+        process.exit(0);
+      });
+    } catch { /* fall through */ }
+    setTimeout(() => process.exit(0), 50).unref();
+  });
+}
+
+/**
+ * AC-SSV-07: render() awaits writeWithWatchdog internally, so a wedged stdout surfaces
+ * here as a rejected promise rather than a blocked iteration. We exit with status 2 + a
+ * clear stderr message instead of joining the wedge — kill -9 should never be required.
+ */
+async function renderOrExit(sessionDir: string, mode: MonitorMode): Promise<boolean> {
+  try {
+    return await render(sessionDir, mode);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[monitor] ${msg}\n`);
+    process.exit(2);
+  }
+}
+
+/** The terminal banner runs under the same wedge discipline as `renderOrExit`. */
+async function announceSessionCompleteOrExit(): Promise<void> {
+  try {
+    await writeWithWatchdog(process.stdout, `\n${MX.BRIGHT}◤ SESSION COMPLETE ◢${MX.R}\n`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[monitor] ${msg}\n`);
+    process.exit(2);
+  }
+}
+
+/**
+ * One inactive render is not an exit: the session may be between iterations. Confirm with a
+ * second render 3s later and only then ask the session whether it is allowed to end.
+ */
+async function isSessionFinished(sessionDir: string, mode: MonitorMode): Promise<boolean> {
+  await sleep(3000);
+  const stillInactive = !(await renderOrExit(sessionDir, mode));
+  return stillInactive && shouldMonitorExit(sessionDir, false);
+}
+
+async function runMonitorLoop(sessionDir: string, initialMode: MonitorMode): Promise<void> {
   let mode: MonitorMode = initialMode;
+  while (true) {
+    const active = await renderOrExit(sessionDir, mode);
+    if (!active && await isSessionFinished(sessionDir, mode)) {
+      await announceSessionCompleteOrExit();
+      break;
+    }
+    // R-MDS-3: re-check state.step each tick and hot-swap mode if phase changed.
+    mode = checkAndSwapMode(sessionDir, mode);
+    await sleep(2000);
+  }
+}
+
+async function main() {
+  const { sessionDir, mode } = parseMonitorArgs(process.argv.slice(2));
   // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
   if (!sessionDir || !fs.existsSync(sessionDir)) {
     console.error('Usage: node monitor.js <session-dir> [--mode pickle|microverse|idle|council|refinement|szechuan-sauce|anatomy-park]');
@@ -1080,57 +1145,8 @@ async function main() {
   // waiting for the next mux-runner phase boundary.
   startRespawnWatchdog({ sessionDir });
 
-  process.on('SIGINT', () => {
-    // AC-SSV-07: never block on stdout in the signal handler. If the pane
-    // is wedged a synchronous write would prevent the exit. Try the
-    // detach banner asynchronously, but exit unconditionally either way
-    // so Ctrl-C always wins.
-    try {
-      process.stdout.write(`\x1b[2J\x1b[H${MX.DIM}Monitor detached.${MX.R}\n`, () => {
-        process.exit(0);
-      });
-    } catch { /* fall through */ }
-    setTimeout(() => process.exit(0), 50).unref();
-  });
-
-  // AC-SSV-07: render() awaits writeWithWatchdog internally, so a wedged
-  // stdout surfaces here as a rejected promise rather than a blocked
-  // iteration. We exit with status 2 + a clear stderr message instead of
-  // joining the wedge — kill -9 should never be required.
-  while (true) {
-    let active: boolean;
-    try {
-      active = await render(sessionDir, mode);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[monitor] ${msg}\n`);
-      process.exit(2);
-    }
-    if (!active) {
-      await sleep(3000);
-      let stillInactive: boolean;
-      try {
-        stillInactive = !(await render(sessionDir, mode));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[monitor] ${msg}\n`);
-        process.exit(2);
-      }
-      if (stillInactive && shouldMonitorExit(sessionDir, false)) {
-        try {
-          await writeWithWatchdog(process.stdout, `\n${MX.BRIGHT}◤ SESSION COMPLETE ◢${MX.R}\n`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          process.stderr.write(`[monitor] ${msg}\n`);
-          process.exit(2);
-        }
-        break;
-      }
-    }
-    // R-MDS-3: re-check state.step each tick and hot-swap mode if phase changed.
-    mode = checkAndSwapMode(sessionDir, mode);
-    await sleep(2000);
-  }
+  installMonitorSigintHandler();
+  await runMonitorLoop(sessionDir, mode);
 }
 
 if (process.argv[1] && path.basename(process.argv[1]) === 'monitor.js') {

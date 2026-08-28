@@ -245,29 +245,71 @@ function writeBriefFile(gateDir, iso, briefContent, writeFile) {
     writeFile(briefPath, briefContent, 'utf-8');
     return briefPath;
 }
+/**
+ * Flags, then gate result, then gate dir. Every failure in that chain has the same disposition —
+ * report the operator-facing message and exit 1 — so the three checks collapse into one Result the
+ * caller reports at a single site instead of three copies of the same two lines.
+ */
+function preflightRemediator(argv, deps) {
+    const parsedFlags = parseRemediatorFlags(argv);
+    if (!parsedFlags.ok)
+        return { ok: false, error: parsedFlags.error };
+    const { gateResultPath, sessionRoot, reason } = parsedFlags.flags;
+    const gateResultLoad = loadGateResult(gateResultPath, deps);
+    if (!gateResultLoad.ok)
+        return { ok: false, error: gateResultLoad.error };
+    const gateDir = path.join(sessionRoot, 'gate');
+    const gateDirError = ensureGateDir(gateDir, deps);
+    if (gateDirError)
+        return { ok: false, error: gateDirError };
+    return { ok: true, ctx: { gateResult: gateResultLoad.gateResult, sessionRoot, reason, gateDir } };
+}
+/**
+ * R-GRLS: `worker_spawn_backend_resolved.source` stays inside `BackendResolutionSource` semantics
+ * (`env` or `default` here). Telemetry only — a failed write never fails the remediation.
+ */
+function recordInheritedBackend(sessionRoot) {
+    const { backend, source } = resolveInheritedBackend();
+    try {
+        writeActivityEntry(path.join(sessionRoot, 'state.json'), {
+            event: 'worker_spawn_backend_resolved',
+            ts: new Date().toISOString(),
+            backend,
+            source,
+            pid: process.pid,
+            session: path.basename(sessionRoot),
+        });
+    }
+    catch {
+        /* best-effort telemetry */
+    }
+}
+/** Gather the brief's two file-backed inputs, render it, and land it in `gate/`. */
+function produceRemediationBrief(ctx, iso, extensionClaudeMdContent, deps) {
+    const failingFileContents = loadFailingFileContents(ctx.gateResult, deps.readFile);
+    const trapDoorSection = loadTrapDoorSection(extensionClaudeMdContent, deps.readFile);
+    const briefContent = buildBriefContent({
+        gateResult: ctx.gateResult,
+        sessionRoot: ctx.sessionRoot,
+        reason: ctx.reason,
+        iso,
+        failingFileContents,
+        trapDoorSection,
+    });
+    return writeBriefFile(ctx.gateDir, iso, briefContent, deps.writeFile);
+}
 export async function spawnGateRemediatorMain(opts) {
     const { argv, isoOverride, extensionClaudeMdContent, stdout = (msg) => process.stdout.write(msg + '\n'), stderr = (msg) => process.stderr.write(msg + '\n'), } = opts;
     const deps = resolveDeps(opts);
-    const parsedFlags = parseRemediatorFlags(argv);
-    if (!parsedFlags.ok) {
-        stderr(parsedFlags.error);
+    const preflight = preflightRemediator(argv, deps);
+    if (!preflight.ok) {
+        stderr(preflight.error);
         return 1;
     }
-    const { gateResultPath, sessionRoot, reason } = parsedFlags.flags;
-    const gateResultLoad = loadGateResult(gateResultPath, deps);
-    if (!gateResultLoad.ok) {
-        stderr(gateResultLoad.error);
-        return 1;
-    }
+    const ctx = preflight.ctx;
     const iso = isoOverride ?? isoCompactStamp();
-    const gateDir = path.join(sessionRoot, 'gate');
-    const gateDirError = ensureGateDir(gateDir, deps);
-    if (gateDirError) {
-        stderr(gateDirError);
-        return 1;
-    }
-    const lockfilePath = path.join(gateDir, LOCKFILE_NAME);
-    const lock = acquireLockfile(lockfilePath, { sessionRoot, reason }, iso, deps, stdout);
+    const lockfilePath = path.join(ctx.gateDir, LOCKFILE_NAME);
+    const lock = acquireLockfile(lockfilePath, ctx, iso, deps, stdout);
     if (!lock.ok) {
         if (lock.error)
             stderr(lock.error);
@@ -283,31 +325,8 @@ export async function spawnGateRemediatorMain(opts) {
     };
     process.on('exit', cleanup);
     try {
-        const { backend, source } = resolveInheritedBackend();
-        try {
-            writeActivityEntry(path.join(sessionRoot, 'state.json'), {
-                event: 'worker_spawn_backend_resolved',
-                ts: new Date().toISOString(),
-                backend,
-                source,
-                pid: process.pid,
-                session: path.basename(sessionRoot),
-            });
-        }
-        catch {
-            /* best-effort telemetry */
-        }
-        const failingFileContents = loadFailingFileContents(gateResultLoad.gateResult, deps.readFile);
-        const trapDoorSection = loadTrapDoorSection(extensionClaudeMdContent, deps.readFile);
-        const briefContent = buildBriefContent({
-            gateResult: gateResultLoad.gateResult,
-            sessionRoot,
-            reason,
-            iso,
-            failingFileContents,
-            trapDoorSection,
-        });
-        const briefPath = writeBriefFile(gateDir, iso, briefContent, deps.writeFile);
+        recordInheritedBackend(ctx.sessionRoot);
+        const briefPath = produceRemediationBrief(ctx, iso, extensionClaudeMdContent, deps);
         stdout(`BRIEF_PATH=${briefPath}`);
         return 0;
     }
