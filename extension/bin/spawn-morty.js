@@ -1826,176 +1826,171 @@ async function runOffRepoWorkerGate(fileList, args) {
         ok: true,
     };
 }
-// TODO(R-LINT): refactor — pre-existing 123 lines / complexity 16 introduced
-// 2026-05-11 (c5e7f92a7); extract per-phase helpers in a focused PR.
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: pre-existing length/complexity tracked by R-LINT; per-phase helper extraction deferred to a focused refactor PR.
-export async function runWorkerGate(changedFiles, args) {
-    const fileList = [...changedFiles];
-    // R-PIAP-A3: soft diff-envelope check — never hard-blocks, never reverts
-    if (args.preWorkerHead && args.ticketTier) {
-        const envelope = TIER_DIFF_ENVELOPE[args.ticketTier];
-        if (envelope !== undefined) {
-            try {
-                const changedLoc = computeChangedLoc(args.preWorkerHead, args.workingDir);
-                if (changedLoc > envelope) {
-                    writeActivityEntry(args.statePath, {
-                        event: 'tier_diff_envelope_exceeded',
-                        ts: new Date().toISOString(),
-                        ticket_id: args.ticketId,
-                        tier: args.ticketTier,
-                        changed_loc: changedLoc,
-                        envelope,
-                    });
-                    console.warn(`[spawn-morty] ⚠️  Diff envelope exceeded for ${args.ticketTier} ticket: ${changedLoc} LOC changed (envelope: ${envelope}). Soft signal — run continues.`);
-                }
-            }
-            catch { /* best-effort */ }
-        }
-    }
-    const extensionDir = path.join(args.workingDir, 'extension');
-    // eslint-disable-next-line pickle/no-sync-in-async
-    if (!fs.existsSync(extensionDir)) {
-        // B-OFFREPO (AC-OFFREPO-2): no `extension/` tree — this is a TARGET repo, which
-        // is every repo that is not pickle-rick. Ticket 10 stopped this exit from
-        // claiming a pass; this branch makes it actually RUN, against the target's own
-        // toolchain resolved via `detectProjectType` + the shared gate command map.
-        return await runOffRepoWorkerGate(fileList, args);
-    }
-    const lintTargets = toExtensionLintTargets(args.workingDir, fileList);
-    const reportedFileList = lintTargets.length > 0
-        ? lintTargets.map(target => `extension/${target}`)
-        : fileList;
-    let retryCount = 0;
-    let autofixApplied = false;
-    const workerGateTier = resolveWorkerGateTier(args.workingDir);
-    const workerTestGateTimeoutMs = resolveWorkerTestGateTimeoutMs(args.workingDir);
-    if (workerGateTier === 'narrow') {
-        console.warn('[spawn-morty] worker gate tier downgraded to "narrow"; skipping test:fast and test:integration');
-    }
-    const skippedPhases = args.ticketTier === 'small'
-        ? (workerGateTier === 'full' ? ['test:fast', 'test:integration'] : ['test:fast'])
-        : [];
-    if (skippedPhases.length > 0) {
+/** R-PIAP-A3: soft diff-envelope check — never hard-blocks, never reverts. */
+function warnIfTierDiffEnvelopeExceeded(args) {
+    if (!args.preWorkerHead || !args.ticketTier)
+        return;
+    const envelope = TIER_DIFF_ENVELOPE[args.ticketTier];
+    if (envelope === undefined)
+        return;
+    try {
+        const changedLoc = computeChangedLoc(args.preWorkerHead, args.workingDir);
+        if (changedLoc <= envelope)
+            return;
         writeActivityEntry(args.statePath, {
-            event: 'tier_phase_skipped',
-            ticket_id: args.ticketId,
-            tier: 'small',
-            skipped_phases: skippedPhases,
+            event: 'tier_diff_envelope_exceeded',
             ts: new Date().toISOString(),
+            ticket_id: args.ticketId,
+            tier: args.ticketTier,
+            changed_loc: changedLoc,
+            envelope,
         });
+        console.warn(`[spawn-morty] ⚠️  Diff envelope exceeded for ${args.ticketTier} ticket: ${changedLoc} LOC changed (envelope: ${envelope}). Soft signal — run continues.`);
     }
-    let gateResult = await runWorkerGateChecks({
-        lintTargets,
-        extensionDir,
-        workerTestGateTimeoutMs,
-        workerGateTier,
-        ticketTier: args.ticketTier,
+    catch { /* best-effort */ }
+}
+/**
+ * `small` tickets intentionally skip the test phases and MUST say so in telemetry
+ * (CLAUDE.md worker-lint-gate invariant). Every other tier skips nothing.
+ */
+function recordTierPhaseSkips(args, workerGateTier) {
+    if (args.ticketTier !== 'small')
+        return;
+    writeActivityEntry(args.statePath, {
+        event: 'tier_phase_skipped',
+        ticket_id: args.ticketId,
+        tier: 'small',
+        skipped_phases: workerGateTier === 'full' ? ['test:fast', 'test:integration'] : ['test:fast'],
+        ts: new Date().toISOString(),
     });
-    let { lintOk, tscOk, testsOk } = gateResult;
-    if (shouldRetryWorkerGate(lintOk, tscOk, lintTargets.length)) {
-        autofixApplied = true;
-        retryCount = 1;
-        await runCommand('npx', ['eslint', '--fix', ...lintTargets, '--max-warnings=-1'], extensionDir);
-        writeActivityEntry(args.statePath, {
-            event: 'worker_lint_autofix_applied',
-            ticket_id: args.ticketId,
-            file_list: reportedFileList,
-            ts: new Date().toISOString(),
-        });
-        gateResult = await runWorkerGateChecks({
-            lintTargets,
-            extensionDir,
-            workerTestGateTimeoutMs,
-            workerGateTier,
-            ticketTier: args.ticketTier,
-        });
-        ({ lintOk, tscOk, testsOk } = gateResult);
+}
+/**
+ * Run the gate checks, and on a lint/tsc red with lintable targets apply ONE
+ * `eslint --fix` retry before re-running them (CLAUDE.md: one auto-fix retry only).
+ */
+async function runGateChecksWithAutofixRetry(opts) {
+    const checkArgs = {
+        lintTargets: opts.lintTargets,
+        extensionDir: opts.extensionDir,
+        workerTestGateTimeoutMs: opts.workerTestGateTimeoutMs,
+        workerGateTier: opts.workerGateTier,
+        ticketTier: opts.args.ticketTier,
+    };
+    const firstPass = await runWorkerGateChecks(checkArgs);
+    if (!shouldRetryWorkerGate(firstPass.lintOk, firstPass.tscOk, opts.lintTargets.length)) {
+        return { gateResult: firstPass, retryCount: 0, autofixApplied: false };
     }
-    // B-CWGE WS-2 (R-CWGE): persist the worker-gate verdict (eslint+tsc only —
-    // R-WGFR drops test:fast) so the Done-flip guard can read it on EVERY path
-    // without re-running the gate. Written on BOTH the pass and fail paths below.
-    persistWorkerGateVerdict(args.statePath, args.ticketId, computeWorkerGateVerdict(gateResult), gateResult.testsVerdict);
-    if (didWorkerGateFail(lintOk, tscOk, testsOk)) {
-        writeActivityEntry(args.statePath, {
-            event: 'worker_gate_failed',
-            ticket_id: args.ticketId,
-            gate_phase: gateResult.gatePhase ?? (gateResult.lintErrors > 0 ? 'lint' : gateResult.tscErrors > 0 ? 'tsc' : 'test:fast'),
-            failures: gateResult.gateFailures,
-            retry_count: retryCount,
-            ts: new Date().toISOString(),
+    await runCommand('npx', ['eslint', '--fix', ...opts.lintTargets, '--max-warnings=-1'], opts.extensionDir);
+    writeActivityEntry(opts.args.statePath, {
+        event: 'worker_lint_autofix_applied',
+        ticket_id: opts.args.ticketId,
+        file_list: opts.reportedFileList,
+        ts: new Date().toISOString(),
+    });
+    return { gateResult: await runWorkerGateChecks(checkArgs), retryCount: 1, autofixApplied: true };
+}
+/**
+ * 7eb9fa20: before the gate-fail reset destroys the worker's tree, check for evidence
+ * of real work (fresh ticket artifacts OR a ticket-scoped commit). Evidence present →
+ * suppress BOTH the reset and the downstream Failed flip (the manager-side non-runnable
+ * hold parks the ticket). The worker cannot halt the manager loop, so a cap escalation
+ * here also just preserves the work — the cap_exhausted ledger entry and the
+ * manager-side callsites own the actual recovery_exhausted halt. Evidence-check errors
+ * fail open (existing reset + flip behavior).
+ */
+function isFailedFlipSuppressed(args) {
+    try {
+        const parentState = readRecoverableJsonObject(args.statePath);
+        const decision = evaluateFailedFlipSuppression({
+            sessionDir: path.dirname(args.statePath),
+            statePath: args.statePath,
+            ticketId: args.ticketId,
+            workingDir: args.workingDir,
+            iteration: typeof parentState?.iteration === 'number' ? parentState.iteration : 0,
+            callsite: 'worker_gate_fail',
+            windowStartMs: args.spawnTsMs ?? null,
+            windowEndMs: Date.now(),
+            preSha: args.preWorkerHead,
+            log: msg => console.error(`[spawn-morty] ${msg}`),
         });
-        // 7eb9fa20: before the gate-fail reset destroys the worker's tree, check
-        // for evidence of real work (fresh ticket artifacts OR a ticket-scoped
-        // commit). Evidence present → suppress BOTH the reset and the downstream
-        // Failed flip (the manager-side non-runnable hold parks the ticket). The
-        // worker cannot halt the manager loop, so a cap escalation here also just
-        // preserves the work — the cap_exhausted ledger entry and the manager-side
-        // callsites own the actual recovery_exhausted halt. Evidence-check errors
-        // fail open (existing reset + flip behavior).
-        let failedFlipSuppressed = false;
-        try {
-            const sessionDir = path.dirname(args.statePath);
-            const parentState = readRecoverableJsonObject(args.statePath);
-            const decision = evaluateFailedFlipSuppression({
-                sessionDir,
-                statePath: args.statePath,
-                ticketId: args.ticketId,
-                workingDir: args.workingDir,
-                iteration: typeof parentState?.iteration === 'number' ? parentState.iteration : 0,
-                callsite: 'worker_gate_fail',
-                windowStartMs: args.spawnTsMs ?? null,
-                windowEndMs: Date.now(),
-                preSha: args.preWorkerHead,
-                log: msg => console.error(`[spawn-morty] ${msg}`),
-            });
-            failedFlipSuppressed = decision.action === 'suppress' || decision.action === 'escalate';
-        }
-        catch (err) {
+        return decision.action === 'suppress' || decision.action === 'escalate';
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[spawn-morty] failed-flip suppression check errored (fail-open): ${msg}`);
+        return false;
+    }
+}
+/** Roll the worker tree back to `preWorkerHead`, keeping the ticket dir and operator-named paths. */
+function resetWorkerTreeAfterGateFailure(args) {
+    if (!args.preWorkerHead)
+        return;
+    try {
+        const preservePrefixes = (args.preservePaths ?? [])
+            .map(preservePath => toRepoRelativePath(args.workingDir, preservePath))
+            .filter((prefix) => prefix !== null);
+        const sessionDir = path.dirname(args.statePath);
+        const ticketDir = path.join(sessionDir, args.ticketId);
+        resetToSha(args.preWorkerHead, args.workingDir, preservePrefixes, {
+            cwd: args.workingDir,
+            sessionDir,
+            ticketDir: fs.existsSync(ticketDir) ? ticketDir : null,
+            reason: 'pre_reset',
+        });
+    }
+    catch (err) {
+        if (err instanceof ArchiveAbortError) {
+            // Fail-closed: archival failed, so resetToSha never ran the reset.
+            // Leave the dirty tree in place and surface the abort loudly.
             const msg = err instanceof Error ? err.message : String(err);
-            console.error(`[spawn-morty] failed-flip suppression check errored (fail-open): ${msg}`);
+            console.error(`[spawn-morty] gate-fail reset ABORTED (pre-reset archive failed): ${msg} — uncommitted work left in place`);
         }
-        if (failedFlipSuppressed) {
-            console.error(`[spawn-morty] gate-fail reset and Failed flip suppressed for ${args.ticketId} — work preserved for triage`);
-        }
-        else if (args.preWorkerHead) {
-            try {
-                const preservePrefixes = (args.preservePaths ?? [])
-                    .map(preservePath => toRepoRelativePath(args.workingDir, preservePath))
-                    .filter((prefix) => prefix !== null);
-                const sessionDir = path.dirname(args.statePath);
-                const ticketDir = path.join(sessionDir, args.ticketId);
-                resetToSha(args.preWorkerHead, args.workingDir, preservePrefixes, {
-                    cwd: args.workingDir,
-                    sessionDir,
-                    // eslint-disable-next-line pickle/no-sync-in-async
-                    ticketDir: fs.existsSync(ticketDir) ? ticketDir : null,
-                    reason: 'pre_reset',
-                });
-            }
-            catch (err) {
-                if (err instanceof ArchiveAbortError) {
-                    // Fail-closed: archival failed, so resetToSha never ran the reset.
-                    // Leave the dirty tree in place and surface the abort loudly.
-                    const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[spawn-morty] gate-fail reset ABORTED (pre-reset archive failed): ${msg} — uncommitted work left in place`);
-                }
-                /* reset is best-effort; gate result below still reports the failure */
-            }
-        }
-        return {
-            ok: false,
-            fileList,
-            lintErrors: gateResult.lintErrors,
-            tscErrors: gateResult.tscErrors,
-            testFailures: gateResult.testFailures,
-            gatePhase: gateResult.gatePhase,
-            retryCount,
-            autofixApplied,
-            completionCommitSha: null,
-            failedFlipSuppressed,
-        };
+        /* reset is best-effort; the gate result still reports the failure */
     }
-    const completionCommitSha = autofixApplied
+}
+/** The `worker_gate_failed` phase, inferred from error counts when the checks named none. */
+function resolveGateFailurePhase(gateResult) {
+    if (gateResult.gatePhase !== null)
+        return gateResult.gatePhase;
+    if (gateResult.lintErrors > 0)
+        return 'lint';
+    if (gateResult.tscErrors > 0)
+        return 'tsc';
+    return 'test:fast';
+}
+/** Record the red gate, then either preserve the tree for triage or reset it. */
+function finalizeFailedWorkerGate(fileList, args, gateResult, outcome) {
+    writeActivityEntry(args.statePath, {
+        event: 'worker_gate_failed',
+        ticket_id: args.ticketId,
+        gate_phase: resolveGateFailurePhase(gateResult),
+        failures: gateResult.gateFailures,
+        retry_count: outcome.retryCount,
+        ts: new Date().toISOString(),
+    });
+    const failedFlipSuppressed = isFailedFlipSuppressed(args);
+    if (failedFlipSuppressed) {
+        console.error(`[spawn-morty] gate-fail reset and Failed flip suppressed for ${args.ticketId} — work preserved for triage`);
+    }
+    else {
+        resetWorkerTreeAfterGateFailure(args);
+    }
+    return {
+        ok: false,
+        fileList,
+        lintErrors: gateResult.lintErrors,
+        tscErrors: gateResult.tscErrors,
+        testFailures: gateResult.testFailures,
+        gatePhase: gateResult.gatePhase,
+        retryCount: outcome.retryCount,
+        autofixApplied: outcome.autofixApplied,
+        completionCommitSha: null,
+        failedFlipSuppressed,
+    };
+}
+/** Commit any autofix the gate applied, then record the green gate. */
+function finalizePassingWorkerGate(fileList, args, gateResult, reportedFileList, outcome) {
+    const completionCommitSha = outcome.autofixApplied
         ? stageAndCommitLintAutofix(args.workingDir, args.ticketId, fileList)
         : null;
     writeActivityEntry(args.statePath, {
@@ -2011,11 +2006,45 @@ export async function runWorkerGate(changedFiles, args) {
         tscErrors: gateResult.tscErrors,
         testFailures: gateResult.testFailures,
         gatePhase: null,
-        retryCount,
-        autofixApplied,
+        retryCount: outcome.retryCount,
+        autofixApplied: outcome.autofixApplied,
         completionCommitSha,
         failedFlipSuppressed: false,
     };
+}
+export async function runWorkerGate(changedFiles, args) {
+    const fileList = [...changedFiles];
+    warnIfTierDiffEnvelopeExceeded(args);
+    const extensionDir = path.join(args.workingDir, 'extension');
+    // eslint-disable-next-line pickle/no-sync-in-async
+    if (!fs.existsSync(extensionDir)) {
+        // B-OFFREPO (AC-OFFREPO-2): no `extension/` tree — this is a TARGET repo, which
+        // is every repo that is not pickle-rick. Ticket 10 stopped this exit from
+        // claiming a pass; this branch makes it actually RUN, against the target's own
+        // toolchain resolved via `detectProjectType` + the shared gate command map.
+        return await runOffRepoWorkerGate(fileList, args);
+    }
+    const lintTargets = toExtensionLintTargets(args.workingDir, fileList);
+    const reportedFileList = lintTargets.length > 0
+        ? lintTargets.map(target => `extension/${target}`)
+        : fileList;
+    const workerGateTier = resolveWorkerGateTier(args.workingDir);
+    const workerTestGateTimeoutMs = resolveWorkerTestGateTimeoutMs(args.workingDir);
+    if (workerGateTier === 'narrow') {
+        console.warn('[spawn-morty] worker gate tier downgraded to "narrow"; skipping test:fast and test:integration');
+    }
+    recordTierPhaseSkips(args, workerGateTier);
+    const outcome = await runGateChecksWithAutofixRetry({
+        args, lintTargets, reportedFileList, extensionDir, workerGateTier, workerTestGateTimeoutMs,
+    });
+    const gateResult = outcome.gateResult;
+    // B-CWGE WS-2 (R-CWGE): persist the worker-gate verdict (eslint+tsc only —
+    // R-WGFR drops test:fast) so the Done-flip guard can read it on EVERY path
+    // without re-running the gate. Written on BOTH the pass and fail paths below.
+    persistWorkerGateVerdict(args.statePath, args.ticketId, computeWorkerGateVerdict(gateResult), gateResult.testsVerdict);
+    return didWorkerGateFail(gateResult.lintOk, gateResult.tscOk, gateResult.testsOk)
+        ? finalizeFailedWorkerGate(fileList, args, gateResult, outcome)
+        : finalizePassingWorkerGate(fileList, args, gateResult, reportedFileList, outcome);
 }
 const RECONCILE_GIT_TIMEOUT_MS = 5_000;
 const CLAIMED_SHA_RE = /^[0-9a-f]{7,40}$/i;
