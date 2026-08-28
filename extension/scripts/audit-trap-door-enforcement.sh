@@ -573,10 +573,51 @@ if ! bash "$SCRIPT_DIR/audit-phantom-done-call-sites.sh"; then
   audit_exit_code=1
 fi
 
-if rg -n -e "npm (ci|install)" \
-  "$EXTENSION_ROOT/src/bin/spawn-morty.ts" \
-  "$EXTENSION_ROOT/src/bin/mux-runner.ts" >/dev/null; then
-  fail 'worker boot paths must reuse extension/node_modules; found npm ci/install in spawn-morty.ts or mux-runner.ts'
+# B-CIGREEN ROOT A / AC-M4: `rg` is provisioned on this dev box but NOT installed by
+# ci.yml or release.yml, so a bare `if rg ...; then fail; fi` silently no-ops in CI
+# ("rg: command not found" on stderr, non-zero exit) and the audit reports OK having
+# measured nothing. Route the result through the SAME `isUnrunnableCheckResult`
+# fail-closed classifier (R-SZGB-D, convergence-gate.ts) every other unrunnable-check
+# call site uses, rather than inventing a second detector: a preflight
+# `detectMissingTools` miss produces the identical `tool not installed: <bin>` sentinel
+# `runCheckCommand` emits, so one classifier covers both "never spawned" and "spawned
+# and failed to run" without a bash-native reimplementation of that logic.
+if ! node - "$EXTENSION_ROOT" "$EXTENSION_ROOT/src/bin/spawn-morty.ts" "$EXTENSION_ROOT/src/bin/mux-runner.ts" <<'NODE'
+const path = require('path');
+const { spawnSync } = require('child_process');
+const { pathToFileURL } = require('url');
+
+const [, , extensionRoot, ...targets] = process.argv;
+
+(async () => {
+  const { detectMissingTools } = await import(pathToFileURL(path.join(extensionRoot, 'services', 'verify-command-safety.js')).href);
+  const { isUnrunnableCheckResult } = await import(pathToFileURL(path.join(extensionRoot, 'services', 'convergence-gate.js')).href);
+
+  const bin = 'rg';
+  let result;
+  if (detectMissingTools([bin]).length > 0) {
+    result = { stdout: '', stderr: `tool not installed: ${bin}`, exitCode: 1 };
+  } else {
+    const r = spawnSync(bin, ['-n', '-e', 'npm (ci|install)', ...targets], { encoding: 'utf8' });
+    const spawnErrorText = r.error ? `${r.error.message}\n` : '';
+    result = { stdout: r.stdout ?? '', stderr: `${r.stderr ?? ''}${spawnErrorText}`, exitCode: r.status ?? 1 };
+  }
+
+  if (isUnrunnableCheckResult(result)) {
+    process.stderr.write(`worker boot paths npm-install audit could not run (${result.stderr.trim() || 'unrunnable'}) — failing closed, not reporting OK\n`);
+    process.exit(1);
+  }
+
+  if (result.exitCode === 0) {
+    process.stderr.write('worker boot paths must reuse extension/node_modules; found npm ci/install in spawn-morty.ts or mux-runner.ts\n');
+    process.exit(1);
+  }
+
+  process.exit(0);
+})();
+NODE
+then
+  audit_exit_code=1
 fi
 
 # T-HARDEN-PROBE: verify --judge-probe requires PICKLE_JUDGE_PROBE_ALLOWED=1 guard
