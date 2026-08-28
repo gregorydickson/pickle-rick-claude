@@ -9,19 +9,12 @@
 // whole-tree — `commitMessage` is a name collision with unrelated locals in
 // microverse-runner.ts and bundle-finalize.ts.
 
-import { describe, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-describe.each ??= function each(rows) {
-  return function runEach(_title, suite) {
-    for (const row of rows) {
-      describe(row.symbol, () => suite(row));
-    }
-  };
-};
+import { describeEach } from './helpers/describe-each.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -57,7 +50,7 @@ function listTsFiles(dir) {
   return out;
 }
 
-describe.each(DELETED_SYMBOLS)('DELETED_SYMBOLS member is absent from its home file', ({ symbol, homeFile }) => {
+describeEach(DELETED_SYMBOLS)('DELETED_SYMBOLS member is absent from its home file', ({ symbol, homeFile }) => {
   test(`${symbol} has zero occurrences in ${homeFile}`, () => {
     const src = readRepoFile(homeFile);
     const count = src.split(symbol).length - 1;

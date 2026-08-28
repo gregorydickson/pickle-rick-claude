@@ -1,9 +1,10 @@
 // @tier: integration
-import { describe, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { describeEach } from '../helpers/describe-each.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_ROOT = path.resolve(__dirname, '../..');
@@ -27,14 +28,7 @@ function findSectionEntry(ledger, section, sourcePrd) {
   ));
 }
 
-describe.each = (rows) => (name, callback) => {
-  for (const row of rows) {
-    const title = name.replace(/%s/g, () => String(row[0]));
-    describe(title, () => callback(...row));
-  }
-};
-
-describe.each(SECTIONS)('Section %s source PRD ACs', (section, sourcePrd) => {
+describeEach(SECTIONS)('Section %s source PRD ACs', (section, sourcePrd) => {
   test('report all ACs green in the rollup ledger', () => {
     const ledger = readLedger();
     const entry = findSectionEntry(ledger, section, sourcePrd);

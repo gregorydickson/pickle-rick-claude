@@ -1,12 +1,12 @@
 // @tier: fast
-import { describe as nodeDescribe, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync as realSpawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { format } from 'node:util';
+import { describeEach } from './helpers/describe-each.js';
 
 // Load-robust spawnSync injection for the real-shim `ensureMonitorWindow` /
 // `restartDeadWatcherPanes` tests. The SUT passes hardcoded 5s/10s timeouts to
@@ -31,20 +31,6 @@ import {
 } from '../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const describe = Object.assign(
-    (name, fn) => nodeDescribe(name, fn),
-    {
-        each(cases) {
-            return (name, fn) => {
-                for (const row of cases) {
-                    const values = Array.isArray(row) ? row : [row];
-                    test(format(name, ...values), () => fn(...values));
-                }
-            };
-        },
-    },
-);
 
 let withPathQueue = Promise.resolve();
 
@@ -907,7 +893,7 @@ test('restartDeadWatcherPanes: council pane 2 fallen back to a shell is still de
     }
 });
 
-describe.each([
+describeEach([
     ['pickle'],
     ['council'],
     ['refinement'],
@@ -1109,7 +1095,7 @@ test('inferMonitorMode: defaults to pickle when state.json missing', () => {
     }
 });
 
-describe.each([
+describeEach([
     ['szechuan-sauce.md', 'szechuan-sauce'],
     ['anatomy-park.md', 'anatomy-park'],
     ['meeseeks.md', 'pickle'],
@@ -1118,14 +1104,16 @@ describe.each([
     [undefined, 'pickle'],
     ['unknown-template.md', 'pickle'],
 ])('inferMonitorMode template %s => %s', (template, expected) => {
-    const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mode-')));
-    try {
-        const state = template === undefined ? {} : { command_template: template };
-        fs.writeFileSync(path.join(tmpRoot, 'state.json'), JSON.stringify(state));
-        assert.equal(inferMonitorMode(tmpRoot), expected);
-    } finally {
-        fs.rmSync(tmpRoot, { recursive: true, force: true });
-    }
+    test(`resolves to ${expected}`, () => {
+        const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mode-')));
+        try {
+            const state = template === undefined ? {} : { command_template: template };
+            fs.writeFileSync(path.join(tmpRoot, 'state.json'), JSON.stringify(state));
+            assert.equal(inferMonitorMode(tmpRoot), expected);
+        } finally {
+            fs.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+    });
 });
 
 test('inferMonitorMode: recovers orphan tmp state before reading command_template', () => {

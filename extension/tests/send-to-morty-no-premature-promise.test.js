@@ -6,21 +6,14 @@
  * so the guard is now tier-parameterized.
  */
 
-import { describe, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-
-describe.each ??= function each(rows) {
-  return function runEach(_title, suite) {
-    for (const row of rows) {
-      describe(String(row), () => suite(row));
-    }
-  };
-};
+import { describeEach } from './helpers/describe-each.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -63,7 +56,7 @@ const FORM_ASSERTIONS = {
     /no trailing `&`/.test(content),
 };
 
-describe.each(BACKGROUNDING_FORMS)(
+describeEach(BACKGROUNDING_FORMS)(
   'R-MWBG: send-to-morty.md forbids backgrounding form %s for the worker\'s own long commands',
   (form) => {
     test(`names "${form}" as forbidden`, () => {

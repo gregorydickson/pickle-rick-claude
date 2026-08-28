@@ -1,9 +1,10 @@
 // @tier: integration
-import { describe, it } from 'node:test';
+import { it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { getTicketTierBudgetWithOverrides, TICKET_TIER_BUDGETS } from '../../services/pickle-utils.js';
 import { makeState } from './test-harness.js';
+import { describeEach } from '../helpers/describe-each.js';
 
 const TIER_ROWS = [
   ['trivial', 300],
@@ -67,19 +68,11 @@ const PRECEDENCE_ROWS = [
   },
 ];
 
-describe.each ??= function each(rows) {
-  return function runEach(_title, suite) {
-    for (const row of rows) {
-      describe(row.label, () => suite(row));
-    }
-  };
-};
-
 it("TICKET_TIER_BUDGETS.medium.worker_timeout_seconds is 3600 (R-WTB-A2)", () => {
   assert.equal(TICKET_TIER_BUDGETS.medium.worker_timeout_seconds, 3600);
 });
 
-describe.each(PRECEDENCE_ROWS)('worker timeout tier budget precedence', ({ label, buildCase }) => {
+describeEach(PRECEDENCE_ROWS)('worker timeout tier budget precedence', ({ label, buildCase }) => {
   it('builds fresh fixtures per suite row', () => {
     const left = buildCase('medium', 3600);
     const right = buildCase('medium', 3600);

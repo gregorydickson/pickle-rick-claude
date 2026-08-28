@@ -1,10 +1,9 @@
 // @tier: fast
-import { describe as nodeDescribe, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { format } from 'node:util';
 
 import { inferMonitorMode, restartDeadWatcherPanes } from '../services/pickle-utils.js';
 import {
@@ -13,20 +12,7 @@ import {
   inferModeFromStep,
   startRespawnWatchdog,
 } from '../bin/monitor.js';
-
-const describe = Object.assign(
-  (name, fn) => nodeDescribe(name, fn),
-  {
-    each(cases) {
-      return (name, fn) => {
-        for (const row of cases) {
-          const values = Array.isArray(row) ? row : [row];
-          test(format(name, ...values), () => fn(...values));
-        }
-      };
-    },
-  },
-);
+import { describeEach } from './helpers/describe-each.js';
 
 const MONITOR_MODE_CASES = [
   ['pickle', 'pickle.md', 'implement', 'pickle', /morty-watcher\.js/],
@@ -139,181 +125,193 @@ function paneTargetCalls(spawnCalls, pane) {
 
 // --- R-MWCL-1: mode inference ---
 
-describe.each(MONITOR_MODE_CASES)(
+describeEach(MONITOR_MODE_CASES)(
   'R-MWCL-1 %s: inferMonitorMode resolves concrete monitor mode',
   (mode, template) => {
-    const tmpRoot = makeSessionRoot('pickle-monitor-mode-');
-    try {
-      writeState(tmpRoot, { command_template: template });
-      assert.equal(inferMonitorMode(tmpRoot), mode);
-    } finally {
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
-    }
+    test('resolves concrete monitor mode', () => {
+      const tmpRoot = makeSessionRoot('pickle-monitor-mode-');
+      try {
+        writeState(tmpRoot, { command_template: template });
+        assert.equal(inferMonitorMode(tmpRoot), mode);
+      } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+      }
+    });
   },
 );
 
 // --- R-MWCL-2: extended step inference ---
 
-describe.each(MONITOR_MODE_CASES)(
+describeEach(MONITOR_MODE_CASES)(
   'R-MWCL-2 %s: inferModeFromStep preserves the current exported step bucket contract',
   (mode, _template, step, expectedStepMode) => {
-    assert.equal(
-      inferModeFromStep(step),
-      expectedStepMode,
-      `mode ${mode} should map step ${step} to ${expectedStepMode}`,
-    );
+    test('maps step to the expected mode bucket', () => {
+      assert.equal(
+        inferModeFromStep(step),
+        expectedStepMode,
+        `mode ${mode} should map step ${step} to ${expectedStepMode}`,
+      );
+    });
   },
 );
 
 // --- R-MWCL-3: split-window fallback ---
 
-describe.each(MONITOR_MODE_CASES)(
+describeEach(MONITOR_MODE_CASES)(
   'R-MWCL-3 %s: collapsed watcher layout recreates pane 2 and pane 3 with the mode-specific command',
   (mode, template, _step, _expectedStepMode, paneTwoPattern) => {
-    const fixture = makeMonitorFixture({ template, sessionName: `${mode}-collapsed` });
-    try {
-      const restart = makeRestartSpawn(fixture.sessionDir, `${mode}-collapsed`);
-      restartDeadWatcherPanes(fixture.sessionDir, fixture.extRoot, mode, restart.spawnSyncFn);
+    test('recreates pane 2 and pane 3 with the mode-specific command', () => {
+      const fixture = makeMonitorFixture({ template, sessionName: `${mode}-collapsed` });
+      try {
+        const restart = makeRestartSpawn(fixture.sessionDir, `${mode}-collapsed`);
+        restartDeadWatcherPanes(fixture.sessionDir, fixture.extRoot, mode, restart.spawnSyncFn);
 
-      const callsText = restart.spawnCalls
-        .map((call) => `${call.command} ${call.args.join(' ')}`)
-        .join('\n');
-      assert.match(callsText, new RegExp(`tmux split-window -v -l 40% -t ${escapeRegex(`${mode}-collapsed:monitor.0`)}`));
-      assert.match(callsText, new RegExp(`tmux split-window -h -t ${escapeRegex(`${mode}-collapsed:monitor.2`)}`));
+        const callsText = restart.spawnCalls
+          .map((call) => `${call.command} ${call.args.join(' ')}`)
+          .join('\n');
+        assert.match(callsText, new RegExp(`tmux split-window -v -l 40% -t ${escapeRegex(`${mode}-collapsed:monitor.0`)}`));
+        assert.match(callsText, new RegExp(`tmux split-window -h -t ${escapeRegex(`${mode}-collapsed:monitor.2`)}`));
 
-      const paneTwoCalls = paneTargetCalls(restart.spawnCalls, 2);
-      assert.equal(paneTwoCalls.length, 1, `expected one pane 2 send-keys for ${mode}`);
-      assert.match(paneTwoCalls[0].args[3], paneTwoPattern);
+        const paneTwoCalls = paneTargetCalls(restart.spawnCalls, 2);
+        assert.equal(paneTwoCalls.length, 1, `expected one pane 2 send-keys for ${mode}`);
+        assert.match(paneTwoCalls[0].args[3], paneTwoPattern);
 
-      const paneThreeCalls = paneTargetCalls(restart.spawnCalls, 3);
-      assert.equal(paneThreeCalls.length, 1, `expected one pane 3 send-keys for ${mode}`);
-      assert.match(paneThreeCalls[0].args[3], /raw-morty\.js/);
+        const paneThreeCalls = paneTargetCalls(restart.spawnCalls, 3);
+        assert.equal(paneThreeCalls.length, 1, `expected one pane 3 send-keys for ${mode}`);
+        assert.match(paneThreeCalls[0].args[3], /raw-morty\.js/);
 
-      const runnerLog = restart.readRunnerLog();
-      assert.match(runnerLog, /pane 2 missing; recreated via/);
-      assert.match(runnerLog, /pane 3 missing; recreated via/);
-    } finally {
-      fixture.cleanup();
-    }
+        const runnerLog = restart.readRunnerLog();
+        assert.match(runnerLog, /pane 2 missing; recreated via/);
+        assert.match(runnerLog, /pane 3 missing; recreated via/);
+      } finally {
+        fixture.cleanup();
+      }
+    });
   },
 );
 
 // --- R-MWCL-4: stderr capture ---
 
-describe.each(MONITOR_MODE_CASES)(
+describeEach(MONITOR_MODE_CASES)(
   'R-MWCL-4 %s: render failure is captured in monitor-stderr.log',
   (mode, template) => {
-    const fixture = makeMonitorFixture({ template });
-    try {
-      const errLine = `[monitor] render failure for mode=${mode}: synthetic boom\n`;
-      appendMonitorStderrLog({
-        sessionDir: fixture.sessionDir,
-        chunk: errLine,
-        firstWriteForProcess: true,
-      });
-      const log = readMonitorStderr(fixture.sessionDir);
-      assert.match(log, /^\[monitor-stderr\] session=/);
-      assert.match(log, new RegExp(escapeRegex(errLine)));
-    } finally {
-      fixture.cleanup();
-    }
+    test('captures render failure in monitor-stderr.log', () => {
+      const fixture = makeMonitorFixture({ template });
+      try {
+        const errLine = `[monitor] render failure for mode=${mode}: synthetic boom\n`;
+        appendMonitorStderrLog({
+          sessionDir: fixture.sessionDir,
+          chunk: errLine,
+          firstWriteForProcess: true,
+        });
+        const log = readMonitorStderr(fixture.sessionDir);
+        assert.match(log, /^\[monitor-stderr\] session=/);
+        assert.match(log, new RegExp(escapeRegex(errLine)));
+      } finally {
+        fixture.cleanup();
+      }
+    });
   },
 );
 
 // --- R-MWCL-5: first-tick watchdog ---
 
-describe.each(MONITOR_MODE_CASES)(
+describeEach(MONITOR_MODE_CASES)(
   'R-MWCL-5 %s: watchdog fires immediately and uses the mode-specific pane 2 command',
-  async (mode, template, _step, _expectedStepMode, paneTwoPattern) => {
-    const fixture = makeMonitorFixture({ template, sessionName: `${mode}-watchdog` });
-    try {
-      const sessionName = `${mode}-watchdog`;
-      const paneCommands = { 0: 'zsh', 1: 'bash', 2: 'fish', 3: 'sh' };
-      const spawnCalls = [];
-      const spawnSyncFn = (command, args = []) => {
-        spawnCalls.push({ command, args: [...args] });
-        if (command !== 'tmux') return { status: 0, stdout: '', stderr: '' };
-        if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '#S') {
-          return { status: 0, stdout: `${sessionName}\n`, stderr: '' };
-        }
-        if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '-t') {
-          const pane = Number((args[3] || '').split('.').at(-1));
-          return { status: 0, stdout: `${paneCommands[pane] || ''}\n`, stderr: '' };
-        }
-        return { status: 0, stdout: '', stderr: '' };
-      };
+  (mode, template, _step, _expectedStepMode, paneTwoPattern) => {
+    test('watchdog fires immediately and uses the mode-specific pane 2 command', async () => {
+      const fixture = makeMonitorFixture({ template, sessionName: `${mode}-watchdog` });
+      try {
+        const sessionName = `${mode}-watchdog`;
+        const paneCommands = { 0: 'zsh', 1: 'bash', 2: 'fish', 3: 'sh' };
+        const spawnCalls = [];
+        const spawnSyncFn = (command, args = []) => {
+          spawnCalls.push({ command, args: [...args] });
+          if (command !== 'tmux') return { status: 0, stdout: '', stderr: '' };
+          if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '#S') {
+            return { status: 0, stdout: `${sessionName}\n`, stderr: '' };
+          }
+          if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '-t') {
+            const pane = Number((args[3] || '').split('.').at(-1));
+            return { status: 0, stdout: `${paneCommands[pane] || ''}\n`, stderr: '' };
+          }
+          return { status: 0, stdout: '', stderr: '' };
+        };
 
-      const handle = startRespawnWatchdog({
-        sessionDir: fixture.sessionDir,
-        extensionRoot: fixture.extRoot,
-        intervalMs: 40,
-        spawnSyncFn,
-      });
-      assert.ok(handle, 'watchdog should return a timer handle');
+        const handle = startRespawnWatchdog({
+          sessionDir: fixture.sessionDir,
+          extensionRoot: fixture.extRoot,
+          intervalMs: 40,
+          spawnSyncFn,
+        });
+        assert.ok(handle, 'watchdog should return a timer handle');
 
-      const immediateSendKeys = sendKeysCalls(spawnCalls);
-      assert.equal(immediateSendKeys.length, 4, `expected one immediate sweep for ${mode}`);
-      const paneTwoCall = paneTargetCalls(spawnCalls, 2)[0];
-      assert.match(paneTwoCall.args[3], paneTwoPattern);
+        const immediateSendKeys = sendKeysCalls(spawnCalls);
+        assert.equal(immediateSendKeys.length, 4, `expected one immediate sweep for ${mode}`);
+        const paneTwoCall = paneTargetCalls(spawnCalls, 2)[0];
+        assert.match(paneTwoCall.args[3], paneTwoPattern);
 
-      await new Promise((resolve) => setTimeout(resolve, 70));
-      clearInterval(handle);
+        await new Promise((resolve) => setTimeout(resolve, 70));
+        clearInterval(handle);
 
-      assert.ok(sendKeysCalls(spawnCalls).length >= 8, `expected a later interval sweep for ${mode}`);
-    } finally {
-      fixture.cleanup();
-    }
+        assert.ok(sendKeysCalls(spawnCalls).length >= 8, `expected a later interval sweep for ${mode}`);
+      } finally {
+        fixture.cleanup();
+      }
+    });
   },
 );
 
-describe.each(MONITOR_MODE_CASES)(
+describeEach(MONITOR_MODE_CASES)(
   'R-MWCL-5 %s: first-tick failure still leaves the watchdog interval armed',
-  async (mode, template) => {
-    const fixture = makeMonitorFixture({ template, sessionName: `${mode}-watchdog-flaky` });
-    try {
-      const sessionName = `${mode}-watchdog-flaky`;
-      const basePaneCommands = { 0: 'zsh', 1: 'bash', 2: 'fish', 3: 'sh' };
-      const spawnCalls = [];
-      let shouldThrow = true;
-      const errors = [];
-      const baseSpawn = (command, args = []) => {
-        spawnCalls.push({ command, args: [...args] });
-        if (command !== 'tmux') return { status: 0, stdout: '', stderr: '' };
-        if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '#S') {
-          return { status: 0, stdout: `${sessionName}\n`, stderr: '' };
-        }
-        if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '-t') {
-          const pane = Number((args[3] || '').split('.').at(-1));
-          return { status: 0, stdout: `${basePaneCommands[pane] || ''}\n`, stderr: '' };
-        }
-        return { status: 0, stdout: '', stderr: '' };
-      };
-      const flakySpawn = (command, args = []) => {
-        if (shouldThrow) {
-          shouldThrow = false;
-          throw new Error(`synthetic first-tick failure for ${mode}`);
-        }
-        return baseSpawn(command, args);
-      };
+  (mode, template) => {
+    test('first-tick failure still leaves the watchdog interval armed', async () => {
+      const fixture = makeMonitorFixture({ template, sessionName: `${mode}-watchdog-flaky` });
+      try {
+        const sessionName = `${mode}-watchdog-flaky`;
+        const basePaneCommands = { 0: 'zsh', 1: 'bash', 2: 'fish', 3: 'sh' };
+        const spawnCalls = [];
+        let shouldThrow = true;
+        const errors = [];
+        const baseSpawn = (command, args = []) => {
+          spawnCalls.push({ command, args: [...args] });
+          if (command !== 'tmux') return { status: 0, stdout: '', stderr: '' };
+          if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '#S') {
+            return { status: 0, stdout: `${sessionName}\n`, stderr: '' };
+          }
+          if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '-t') {
+            const pane = Number((args[3] || '').split('.').at(-1));
+            return { status: 0, stdout: `${basePaneCommands[pane] || ''}\n`, stderr: '' };
+          }
+          return { status: 0, stdout: '', stderr: '' };
+        };
+        const flakySpawn = (command, args = []) => {
+          if (shouldThrow) {
+            shouldThrow = false;
+            throw new Error(`synthetic first-tick failure for ${mode}`);
+          }
+          return baseSpawn(command, args);
+        };
 
-      const handle = startRespawnWatchdog({
-        sessionDir: fixture.sessionDir,
-        extensionRoot: fixture.extRoot,
-        intervalMs: 40,
-        spawnSyncFn: flakySpawn,
-        logger: (msg) => errors.push(msg),
-      });
+        const handle = startRespawnWatchdog({
+          sessionDir: fixture.sessionDir,
+          extensionRoot: fixture.extRoot,
+          intervalMs: 40,
+          spawnSyncFn: flakySpawn,
+          logger: (msg) => errors.push(msg),
+        });
 
-      assert.equal(errors.length, 1, `expected immediate error log for ${mode}`);
-      assert.match(errors[0], new RegExp(`monitor-watchdog tick error: synthetic first-tick failure for ${escapeRegex(mode)}`));
-      assert.equal(sendKeysCalls(spawnCalls).length, 0);
+        assert.equal(errors.length, 1, `expected immediate error log for ${mode}`);
+        assert.match(errors[0], new RegExp(`monitor-watchdog tick error: synthetic first-tick failure for ${escapeRegex(mode)}`));
+        assert.equal(sendKeysCalls(spawnCalls).length, 0);
 
-      await new Promise((resolve) => setTimeout(resolve, 70));
-      clearInterval(handle);
+        await new Promise((resolve) => setTimeout(resolve, 70));
+        clearInterval(handle);
 
-      assert.ok(sendKeysCalls(spawnCalls).length >= 4, `expected later recovery tick for ${mode}`);
-    } finally {
-      fixture.cleanup();
-    }
+        assert.ok(sendKeysCalls(spawnCalls).length >= 4, `expected later recovery tick for ${mode}`);
+      } finally {
+        fixture.cleanup();
+      }
+    });
   },
 );
