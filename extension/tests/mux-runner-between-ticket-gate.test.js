@@ -146,6 +146,103 @@ test('mux-runner-between-ticket-gate: Done prior ticket emits cross_ticket_regre
   }
 });
 
+// R-GBANNER: a real TAP failure with an EMPTY file field (e.g. no `location:` line in the
+// TAP output) must still fire the cross-ticket attribution — the guard must key on the
+// explicit `script_failure` marker, never on `file === ''` alone.
+test('mux-runner-between-ticket-gate: Done prior ticket with a real failure and an empty file field still emits cross_ticket_regression_detected', () => {
+  const root = makeRoot('pickle-mux-between-emptyfile-');
+  try {
+    const { sessionDir, statePath } = makeSession(root);
+    makeTicket(sessionDir, 'aaaa1111', 'Done');
+    makeTicket(sessionDir, 'bbbb2222', 'Todo');
+
+    runBetweenTicketFastGate({
+      statePath,
+      workingDir: root,
+      completedTicketId: 'aaaa1111',
+      nextTicketId: 'bbbb2222',
+      landedStatus: 'Done',
+      log: () => {},
+      now: () => 4321,
+      runTestFast: () => ({
+        ok: false,
+        timed_out: false,
+        timeout_ms: 240000,
+        failures: [{
+          name: 'a real failing test with no location line',
+          file: '',
+        }],
+      }),
+    });
+
+    const state = readState(statePath);
+    const event = state.activity.find((entry) => entry.event === 'cross_ticket_regression_detected');
+    assert.deepEqual(event, {
+      event: 'cross_ticket_regression_detected',
+      ts: new Date(4321).toISOString(),
+      ticket_id: 'bbbb2222',
+      prior_ticket_id: 'aaaa1111',
+      failing_tests: [{
+        name: 'a real failing test with no location line',
+        file: '',
+      }],
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// R-GBANNER: a `script_failure` entry (npm lifecycle banner death, e.g. in `pretest:fast`) must
+// never seed a cross-ticket attribution — an already-Done ("green") ticket must not be accused
+// of a regression it did not cause. Fixture shape mirrors the real synthetic entry
+// `parseBetweenTicketFastGateFailures` produces (see the AC-1/AC-2/AC-3 test below).
+test('mux-runner-between-ticket-gate: a script_failure (npm lifecycle banner death) does not seed cross_ticket_regression_detected', () => {
+  const root = makeRoot('pickle-mux-between-scriptfail-');
+  try {
+    const { sessionDir, statePath } = makeSession(root);
+    makeTicket(sessionDir, 'aaaa1111', 'Done');
+    makeTicket(sessionDir, 'bbbb2222', 'Todo');
+
+    runBetweenTicketFastGate({
+      statePath,
+      workingDir: root,
+      completedTicketId: 'aaaa1111',
+      nextTicketId: 'bbbb2222',
+      landedStatus: 'Done',
+      log: () => {},
+      now: () => 9999,
+      runTestFast: () => ({
+        ok: false,
+        timed_out: false,
+        timeout_ms: 240000,
+        failures: [{
+          name: 'script failure: pretest:fast',
+          file: '',
+          script_failure: true,
+          message: 'audit-test-tiers.sh: FAIL — tests/foo.test.js missing @tier header',
+        }],
+      }),
+    });
+
+    const state = readState(statePath);
+    // The gate RESULT is still persisted verbatim — only the cross-ticket ATTRIBUTION is
+    // suppressed.
+    assert.deepEqual(state.last_between_ticket_gate.failures, [{
+      name: 'script failure: pretest:fast',
+      file: '',
+      script_failure: true,
+      message: 'audit-test-tiers.sh: FAIL — tests/foo.test.js missing @tier header',
+    }]);
+    assert.equal(
+      state.activity.some((entry) => entry.event === 'cross_ticket_regression_detected'),
+      false,
+      `unexpected cross_ticket_regression_detected in ${JSON.stringify(state.activity)}`,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('mux-runner-between-ticket-gate: Failed prior ticket does not emit cross_ticket_regression_detected', () => {
   const root = makeRoot('pickle-mux-between-failed-');
   try {

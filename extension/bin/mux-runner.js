@@ -710,8 +710,16 @@ function recordBetweenTicketGateTimeout(input, result, ts) {
 function recordCrossTicketRegression(input, result, ts) {
     if (result.ok || normalizedStatus(input.landedStatus) !== 'done')
         return;
+    // R-GBANNER: a `script_failure` entry (the gate died before any TAP output, e.g. in
+    // `pretest:fast`) is not evidence of a real regression — it carries no test name at all.
+    // Reuse the marker `parseBetweenTicketFastGateFailures` already computed rather than
+    // re-matching the banner shape here; a gate whose ONLY failures are script failures accuses
+    // no ticket.
+    const realFailures = result.failures.filter(failure => !failure.script_failure);
+    if (realFailures.length === 0)
+        return;
     const regressedTicketId = input.nextTicketId || input.completedTicketId;
-    const failingTests = result.failures.map(failure => ({ name: failure.name, file: failure.file }));
+    const failingTests = realFailures.map(failure => ({ name: failure.name, file: failure.file }));
     writeActivityEntry(input.statePath, {
         event: 'cross_ticket_regression_detected',
         ts: new Date(ts).toISOString(),
