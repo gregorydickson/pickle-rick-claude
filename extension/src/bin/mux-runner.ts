@@ -3471,6 +3471,42 @@ export interface ApplyAutoTicketCompletionInput {
   flags: Record<string, unknown> | null;
 }
 
+/**
+ * B-GTRUTH WS-A2 / ticket 96444430: `done_without_commit_evidence` is a
+ * per-ticket verdict, not a session halt — record the residual and return the
+ * fatal `leave` verdict so the single caller parks this ticket and continues
+ * the phase loop. Do NOT safeDeactivate here (see mux-runner.ts main loop).
+ */
+function reportDoneWithoutCommitEvidence(
+  input: ApplyAutoTicketCompletionInput,
+  guardReason: string,
+): AutoTicketCompletionValidation {
+  const msg = `[fatal] ${new Date().toISOString()} ${guardReason}`;
+  input.log?.(msg);
+  process.stderr.write(`${msg}\n`);
+  recordExitReason(input.statePath, 'done_without_commit_evidence');
+  return { action: 'leave', reason: 'guard_failed_no_commit_evidence' };
+}
+
+/**
+ * B-NOSTOP-GATES WS-3 (AC-NSG-11): an auto-skipped ticket is a parked residual,
+ * so the Skipped flip is paired with exactly one `ticket_auto_skip_no_evidence`
+ * activity event a human can audit later. No-ops when the status flip did not
+ * apply, so a re-entered ticket cannot emit a duplicate residual.
+ */
+function markTicketAutoSkipped(input: ApplyAutoTicketCompletionInput, reason: string): void {
+  if (!markTicketSkipped(input.sessionDir, input.ticketId)) return;
+  input.log?.(`Marked ticket ${input.ticketId} as Skipped (${reason})`);
+  logActivity({
+    event: 'ticket_auto_skip_no_evidence',
+    source: 'pickle',
+    session: path.basename(input.sessionDir),
+    ticket: input.ticketId,
+    iteration: input.iteration,
+    reason,
+  });
+}
+
 export function applyAutoTicketCompletionValidation(input: ApplyAutoTicketCompletionInput): AutoTicketCompletionValidation {
   const verdict = validateAutoTicketCompletion(input.sessionDir, input.ticketId, input.workingDir, input.startCommit);
   if (verdict.action === 'done') {
@@ -3487,15 +3523,7 @@ export function applyAutoTicketCompletionValidation(input: ApplyAutoTicketComple
       flags: input.flags ?? {},
     });
     if (!guard.ok) {
-      const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
-      input.log?.(msg);
-      process.stderr.write(`${msg}\n`);
-      // B-GTRUTH WS-A2 / ticket 96444430: done_without_commit_evidence is a
-      // per-ticket verdict, not a session halt — record the residual and let
-      // the caller park this ticket and continue the phase loop. Do NOT
-      // safeDeactivate here (single caller — see mux-runner.ts main loop).
-      recordExitReason(input.statePath, 'done_without_commit_evidence');
-      return { action: 'leave', reason: 'guard_failed_no_commit_evidence' };
+      return reportDoneWithoutCommitEvidence(input, guard.reason);
     }
     // R-PEDC: clear any stale done_without_commit_evidence before marking Done.
     clearStaleDoneWithoutCommitEvidence(input.statePath);
@@ -3518,17 +3546,7 @@ export function applyAutoTicketCompletionValidation(input: ApplyAutoTicketComple
     return verdict;
   }
   if (verdict.action === 'skip') {
-    if (markTicketSkipped(input.sessionDir, input.ticketId)) {
-      input.log?.(`Marked ticket ${input.ticketId} as Skipped (${verdict.reason})`);
-      logActivity({
-        event: 'ticket_auto_skip_no_evidence',
-        source: 'pickle',
-        session: path.basename(input.sessionDir),
-        ticket: input.ticketId,
-        iteration: input.iteration,
-        reason: verdict.reason,
-      });
-    }
+    markTicketAutoSkipped(input, verdict.reason);
     return verdict;
   }
   input.log?.(`Warning: leaving ticket ${input.ticketId} unchanged (${verdict.reason})`);
