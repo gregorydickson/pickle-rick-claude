@@ -1,8 +1,10 @@
 // @tier: fast
 // F5 / R-APV-1 / B-FOMC WS-4: spawn-refinement-team must wire
 // checkAnalystOutputPaths into manifest build so unverified backticked
-// citations surface as ticket_quality_warnings BEFORE the readiness gate
-// halts the pipeline. The checker is ADVISORY ONLY — it blocks nothing.
+// citations surface as ticket_quality_warnings alongside the readiness gate's
+// own verdict. The checker is ADVISORY ONLY — it blocks nothing, and since
+// AP-EXT-ITER91-01 neither does the readiness gate itself (see the advisory
+// disposition sweep at the bottom of this file).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -1285,6 +1287,139 @@ test('AP-EXT-ITER85-01: a genuine atomic decomposition is not flagged, however m
         assert.equal(manifest.tickets.length, 9, 'three analysts each name all three atomic tickets');
         const result = detectBundleOfBundlesOverCollapse(parentPath, manifest);
         assert.equal(result.detected, false, '3 distinct tickets > 2 composed sources is a real fan-out');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+// --- AP-EXT-ITER91-01: the readiness gate must be advisory at EVERY caller ----
+//
+// R-GATE-ADVISORY (`87d837f6`, 2026-06-30) demoted the readiness and
+// ticket-audit gates from blocking to advisory — but the commit touched
+// `mux-runner.ts` alone. `spawn-refinement-team.ts` shells the SAME
+// `extension/bin/check-readiness.js` from its own 2026-04-30 copy and kept that
+// copy on `process.exit`, so one gate shipped two dispositions for four months
+// and nothing went red: the demotion was applied to a hand-remembered caller,
+// not to a discovered set.
+//
+// So this sweep DISCOVERS the callers instead of naming them. Any file under
+// src/bin that binds a readiness verdict to a variable is swept, and the verdict
+// may not reach `process.exit`. A third caller added later is covered on the day
+// it is written — which is the property the original demotion lacked.
+//
+// Scope note: the AC-shape gate (`runAcShapeEnforcement`) is deliberately NOT in
+// this family and its `process.exit(2)` is CORRECT. It is not one of the gates
+// `87d837f6` demoted, and `.claude/commands/pickle-refine-prd.md` Step 5
+// documents the exit-2 contract to the operator ("stop and fix the PRD/ticket
+// shape before continuing"). The negative control at the bottom of this block
+// pins that contract so a future advisory sweep cannot quietly widen onto it.
+const READINESS_GATE_BINDING_RE = /\bconst\s+(\w+)\s*=\s*(run\w*ReadinessGate)\s*\(/g;
+
+function binDir() {
+    return path.resolve(__dirname, '..', 'src', 'bin');
+}
+
+function readinessGateBindings() {
+    const bindings = [];
+    for (const name of fs.readdirSync(binDir())) {
+        if (!name.endsWith('.ts')) continue;
+        const file = path.join(binDir(), name);
+        const source = fs.readFileSync(file, 'utf-8');
+        READINESS_GATE_BINDING_RE.lastIndex = 0;
+        let match;
+        while ((match = READINESS_GATE_BINDING_RE.exec(source)) !== null) {
+            bindings.push({ file: name, variable: match[1], gate: match[2], source });
+        }
+    }
+    return bindings;
+}
+
+test('AP-EXT-ITER91-01: the readiness-gate caller sweep finds every known caller', () => {
+    const bindings = readinessGateBindings();
+    // Floor, not an exact list: mux-runner and spawn-refinement-team both bind a
+    // readiness verdict. A new caller raises this count and is swept below.
+    assert.ok(bindings.length >= 2, `expected >=2 readiness-gate bindings, found ${bindings.length}`);
+    const files = new Set(bindings.map((b) => b.file));
+    assert.ok(files.has('mux-runner.ts'), 'mux-runner readiness caller must be discovered');
+    assert.ok(files.has('spawn-refinement-team.ts'), 'spawn-refinement-team readiness caller must be discovered');
+});
+
+test('AP-EXT-ITER91-01: no readiness verdict is routed to process.exit', () => {
+    const offenders = [];
+    for (const binding of readinessGateBindings()) {
+        const exitRe = new RegExp(`process\\.exit\\(\\s*${binding.variable}\\b`);
+        if (exitRe.test(binding.source)) {
+            offenders.push(`${binding.file}: process.exit(${binding.variable}) from ${binding.gate}`);
+        }
+    }
+    assert.deepEqual(
+        offenders,
+        [],
+        `the readiness gate is advisory by design and must log + proceed, never halt:\n${offenders.join('\n')}`
+    );
+});
+
+test('AP-EXT-ITER91-01: the refinement handoff is emitted after the readiness gate', () => {
+    const source = fs.readFileSync(path.join(binDir(), 'spawn-refinement-team.ts'), 'utf-8');
+    const handoffIndex = source.indexOf('REFINEMENT_DIR=${cycleResults.refinementDir}');
+    assert.ok(handoffIndex > 0, 'the REFINEMENT_DIR= handoff line must exist');
+    const gateIndex = source.indexOf('runReadinessGate(args.sessionDir');
+    assert.ok(gateIndex > 0, 'the readiness call site must exist');
+    assert.ok(
+        gateIndex < handoffIndex,
+        'the readiness gate runs before the handoff, so halting on it starves /pickle-refine-prd Step 4b'
+    );
+});
+
+test('AP-EXT-ITER91-01 (negative control): the AC-shape gate keeps its documented blocking contract', () => {
+    // Not a defect-asserting test: `.claude/commands/pickle-refine-prd.md` Step 5
+    // tells the operator that exit 2 means "stop and fix the PRD/ticket shape".
+    // If a later advisory sweep widens onto runAcShapeEnforcement, this reddens
+    // and forces the command doc to be updated in the same change.
+    const source = fs.readFileSync(path.join(binDir(), 'spawn-refinement-team.ts'), 'utf-8');
+    assert.match(
+        source,
+        /if \(acShapeStatus !== 0\) process\.exit\(acShapeStatus\);/,
+        'the AC-shape gate must still halt — its exit 2 is a documented operator contract'
+    );
+    const commandDoc = path.resolve(REPO_ROOT, '.claude', 'commands', 'pickle-refine-prd.md');
+    if (fs.existsSync(commandDoc)) {
+        assert.match(
+            fs.readFileSync(commandDoc, 'utf-8'),
+            /exits `2` with an AC-shape collapse-or-justify failure/,
+            'the exit-2 contract must stay documented in /pickle-refine-prd Step 5'
+        );
+    }
+});
+
+test('AP-EXT-ITER91-01: a non-zero readiness verdict is reported and does not exit', () => {
+    // Behavioural half: drive the real compiled runReadinessGate against a
+    // check-readiness that exits non-zero, and assert the caller survives the
+    // verdict while still surfacing it. Pre-fix main() exited with that status.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-adv-'));
+    try {
+        const extRoot = path.join(dir, 'ext');
+        fs.mkdirSync(path.join(extRoot, 'extension', 'bin'), { recursive: true });
+        // getExtensionRoot() honours EXTENSION_DIR only when the sentinel exists.
+        fs.writeFileSync(path.join(extRoot, 'extension', 'bin', 'log-watcher.js'), '');
+        fs.writeFileSync(
+            path.join(extRoot, 'extension', 'bin', 'check-readiness.js'),
+            "process.stderr.write('BLOCKING FINDING\\n'); process.exit(2);\n"
+        );
+        const binPath = path.resolve(__dirname, '..', 'bin', 'spawn-refinement-team.js');
+        const script =
+            `const { runReadinessGate } = require(${JSON.stringify(binPath)});\n` +
+            `const status = runReadinessGate(${JSON.stringify(dir)}, ${JSON.stringify(dir)}, ${JSON.stringify(path.join(dir, 'm.json'))});\n` +
+            `if (status === 0) { console.error('fixture did not block'); process.exit(9); }\n` +
+            `process.stdout.write('SURVIVED status=' + status + '\\n');\n`;
+        const result = spawnSync(process.execPath, ['-e', script], {
+            encoding: 'utf-8',
+            timeout: 20_000,
+            env: { ...process.env, EXTENSION_DIR: extRoot },
+        });
+        assert.equal(result.status, 0, `caller must survive the verdict; stderr:\n${result.stderr}`);
+        assert.match(result.stdout, /SURVIVED status=2/, 'the gate still REPORTS 2 — only the halt is gone');
+        assert.match(result.stderr, /BLOCKING FINDING/, 'the gate still forwards every finding');
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }

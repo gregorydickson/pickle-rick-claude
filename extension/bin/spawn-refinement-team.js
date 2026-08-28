@@ -1597,6 +1597,36 @@ export function runAcShapeEnforcement(manifest, opts) {
     }
     return 2;
 }
+/**
+ * Advisory disposition for the readiness gate.
+ *
+ * R-GATE-ADVISORY (`87d837f6`) demoted the readiness and ticket-audit gates from
+ * blocking to advisory because their heuristic pre-flight findings false-blocked
+ * legitimate bundles. That commit touched `mux-runner.ts` alone, so THIS file's
+ * own copy of the very same gate — `runReadinessGate` shells the identical
+ * `extension/bin/check-readiness.js` that `runMuxReadinessGate` does — kept its
+ * 2026-04-30 `process.exit`. One gate, two dispositions, for four months.
+ *
+ * PRIME DIRECTIVE: a gate MAY refuse a local action and stamp a reason; it may
+ * NEVER terminate the pipeline. Halting here was pure loss — `writeManifestAtomic`
+ * has already made the manifest durable, so the exit discarded only the
+ * `REFINEMENT_DIR=`/`MANIFEST=` handoff that `/pickle-refine-prd` (Step 4b) and
+ * `/portal-gun` block on, and handed the operator nothing in exchange.
+ *
+ * Honesty is a REPORTING property; halting is a DISPOSITION. The gate still runs,
+ * still returns its non-zero verdict, and still prints every finding — this cuts
+ * the halting wire only.
+ *
+ * Deliberately NOT applied to the AC-shape gate above: its exit 2 is a documented
+ * operator contract (`.claude/commands/pickle-refine-prd.md` Step 5 tells the
+ * operator to stop and reshape the PRD), it is not one of the gates
+ * `87d837f6` demoted, and `tests/spawn-refinement-team.test.js` pins it.
+ */
+function reportAdvisoryGateVerdict(gate, status) {
+    if (status === 0)
+        return;
+    process.stderr.write(`[pickle-rick] ${gate} advisory: exited ${status} — findings logged, NOT halting (advisory gate)\n`);
+}
 const QUOTED_SYMBOL_RE = /[`'"]([A-Za-z][A-Za-z0-9_.-]*)[`'"]/g;
 const ACTIVITY_EVENT_TRIGGER_RE = /\b(?:activity[-_\s]?events?|event_type|logActivity|VALID_ACTIVITY_EVENTS)\b/i;
 const ACTIVITY_EVENT_CLAIM_RE = /\b(?:activity[-_\s]?events?|activity_event|event_type)\s*[:=]|\blogged\s+as\b|\b(?:emit|emits|emitted)\b|\blogActivity\b|\bVALID_ACTIVITY_EVENTS\b/i;
@@ -2202,8 +2232,7 @@ async function main() {
     if (postRefinementGate.status !== 'pass')
         process.exit(2);
     const readinessStatus = runReadinessGate(args.sessionDir, runtime.workingDir, manifestPath);
-    if (readinessStatus !== 0)
-        process.exit(readinessStatus);
+    reportAdvisoryGateVerdict('readiness gate', readinessStatus);
     if (!cycleResults.allSuccess) {
         const failed = cycleResults.finalResults.filter((r) => !r.success).map((r) => r.roleId);
         console.log(`${Style.YELLOW}⚠️  Workers failed: ${failed.join(', ')}. Synthesis will proceed with available analyses.${Style.RESET}`);
