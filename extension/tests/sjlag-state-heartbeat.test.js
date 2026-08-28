@@ -26,7 +26,9 @@ test('maybeEmitManagerTurnProgress: mtime advances when artifact lands', () => {
     fs.writeFileSync(statePath, stateContent);
 
     // Capture baseline mtime + content
-    const mtimeBefore = fs.statSync(statePath).mtimeMs;
+    // bigint mtimeNs (integer nanoseconds) avoids float mtimeMs rounding that
+    // can make a same-millisecond "after" stat read SMALLER than "before".
+    const mtimeBefore = fs.statSync(statePath, { bigint: true }).mtimeNs;
     const contentBefore = fs.readFileSync(statePath);
 
     // Write an artifact so the heartbeat detects progress
@@ -56,7 +58,7 @@ test('maybeEmitManagerTurnProgress: mtime advances when artifact lands', () => {
       });
 
       // AC-BPBH-03: mtime MUST advance
-      const mtimeAfter = fs.statSync(statePath).mtimeMs;
+      const mtimeAfter = fs.statSync(statePath, { bigint: true }).mtimeNs;
       assert.ok(mtimeAfter >= mtimeBefore, `state.json mtime must advance: before=${mtimeBefore} after=${mtimeAfter}`);
 
       // R-WSRC: content MUST be byte-identical
@@ -91,7 +93,7 @@ test('maybeEmitManagerTurnProgress: returns same lastSeen when no new artifacts'
     const statePath = path.join(sessionDir, 'state.json');
     fs.writeFileSync(statePath, JSON.stringify({ active: true }));
 
-    const mtimeBefore = fs.statSync(statePath).mtimeMs;
+    const mtimeBefore = fs.statSync(statePath, { bigint: true }).mtimeNs;
     const contentBefore = fs.readFileSync(statePath);
 
     // Set lastSeenMtimeMs to a very large value so no artifact can exceed it
@@ -105,7 +107,7 @@ test('maybeEmitManagerTurnProgress: returns same lastSeen when no new artifacts'
 
     // No advance expected
     assert.strictEqual(newLastSeen, futureMs, 'lastSeenMtimeMs must be unchanged when no new artifacts');
-    const mtimeAfter = fs.statSync(statePath).mtimeMs;
+    const mtimeAfter = fs.statSync(statePath, { bigint: true }).mtimeNs;
     assert.strictEqual(mtimeAfter, mtimeBefore, 'state.json mtime must not change when no artifact is newer');
 
     // Content still identical
@@ -120,7 +122,7 @@ test('maybeEmitManagerTurnProgress: skips gracefully when ticketId is nullish', 
   try {
     const statePath = path.join(sessionDir, 'state.json');
     fs.writeFileSync(statePath, JSON.stringify({ active: true }));
-    const mtimeBefore = fs.statSync(statePath).mtimeMs;
+    const mtimeBefore = fs.statSync(statePath, { bigint: true }).mtimeNs;
 
     const newLastSeen = maybeEmitManagerTurnProgress({
       sessionDir,
@@ -130,7 +132,7 @@ test('maybeEmitManagerTurnProgress: skips gracefully when ticketId is nullish', 
     });
 
     assert.strictEqual(newLastSeen, 0, 'must return unchanged lastSeen for null ticketId');
-    const mtimeAfter = fs.statSync(statePath).mtimeMs;
+    const mtimeAfter = fs.statSync(statePath, { bigint: true }).mtimeNs;
     assert.strictEqual(mtimeAfter, mtimeBefore, 'mtime must not change for null ticketId');
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
