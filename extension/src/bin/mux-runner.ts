@@ -8704,6 +8704,93 @@ export async function processCompletionBranch(state: State, result: IterationOut
   return { kind: 'noop' };
 }
 
+/**
+ * Finalize the in-flight ticket before the EPIC may exit: gate the Done flip on durable
+ * commit evidence, then run the between-ticket fast gate over the landed work.
+ *
+ * Returns a `LoopAction` when the caller must stop and act on it: the guard refused the Done
+ * flip, so `done_without_commit_evidence` is recorded as a per-ticket residual and the ticket
+ * is PARKED (B-GTRUTH WS-A2 / ticket 96444430 — a per-ticket verdict is not a
+ * cannot-continue halt, so the phase loop continues rather than breaking). Returns `null`
+ * when there is no current ticket, or when the ticket flipped Done and the caller should
+ * proceed to the EPIC finalize check.
+ */
+function finalizeCurrentTicketBeforeEpicExit(
+  state: State,
+  ctx: LoopContext,
+  curState: State,
+): LoopAction | null {
+  if (!curState.current_ticket) return null;
+  const guard = guardCompletionCommitBeforeDone({
+    sessionDir: ctx.sessionDir,
+    ticketId: curState.current_ticket,
+    workingDir: curState.working_dir || state.working_dir || process.cwd(),
+    flags: (curState.flags as Record<string, unknown> | undefined) ?? null,
+  });
+  if (!guard.ok) {
+    const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
+    ctx.log(msg);
+    process.stderr.write(`${msg}\n`);
+    recordExitReason(ctx.statePath, 'done_without_commit_evidence');
+    return { kind: 'continue', resetStall: true };
+  }
+  // R-PEDC: guard recovered — clear any stale `done_without_commit_evidence`
+  // exit_reason stamped by a prior iteration so finalize doesn't mislabel a
+  // fully-shipped bundle as failed.
+  clearStaleDoneWithoutCommitEvidence(ctx.statePath);
+  markTicketDone(ctx.sessionDir, curState.current_ticket);
+  try {
+    runBetweenTicketFastGate({
+      statePath: ctx.statePath,
+      workingDir: curState.working_dir || state.working_dir || process.cwd(),
+      completedTicketId: curState.current_ticket,
+      nextTicketId: null,
+      landedStatus: 'done',
+      log: ctx.log,
+      now: ctx.now,
+    });
+  } catch (err) {
+    ctx.log(`between-ticket fast gate failed after final completion (ignored): ${safeErrorMessage(err)}`);
+  }
+  return null;
+}
+
+/**
+ * False-completion guard + B-DURA T50 no-premature-drain: re-scan ticket frontmatter via
+ * `reconcileTicketTruth` before finalizing the EPIC as completed.
+ *
+ * The pickle phase MUST NOT exit while any non-`Failed` ticket is Todo / In Progress (real
+ * unattempted work). Advance only when every ticket is TERMINAL (Done | Skipped | Failed). A
+ * `Failed` ticket is terminal-for-advance — it does NOT force a re-drain, that is T40's
+ * domain — while an UNATTEMPTED Todo / In Progress ticket keeps the phase draining rather
+ * than reporting a premature completion (R-CECX run-3 / LOA-1488: codex drained at iteration
+ * 49/500 with 4 Todo tickets).
+ *
+ * Returns a `continue` action when non-terminal work remains, or `null` when every ticket is
+ * terminal and the caller may finalize.
+ */
+function refuseEpicFinalizeWhileWorkPending(
+  state: State,
+  ctx: LoopContext,
+  curState: State,
+): LoopAction | null {
+  const workingDir4Guard = curState.working_dir || state.working_dir || '';
+  const guardTruth = reconcileTicketTruth({ sessionDir: ctx.sessionDir, workingDir: workingDir4Guard });
+  const nonFailedPending = Object.entries(guardTruth.ticketStatuses)
+    .filter(([, st]) => {
+      const n = normalizeTicketStatus(st);
+      // Terminal-for-advance: Done, Skipped, AND Failed. Only Todo / In Progress
+      // (genuine non-terminal, unattempted-or-in-flight) keeps the phase draining.
+      return n !== 'done' && n !== 'skipped' && n !== 'failed';
+    });
+  if (nonFailedPending.length === 0) return null;
+  ctx.log(`no-premature-drain: ${nonFailedPending.length} non-Failed Todo/In-Progress ticket(s) remain — refusing EPIC finalize, keep draining`);
+  const handoffSummary = buildIterationHandoffSummary(state, ctx.sessionDir, ctx.iteration + 1);
+  (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffSummary, process.pid, ctx.log);
+  return { kind: 'continue', resetStall: true };
+}
+
+
 // eslint-disable-next-line complexity -- HT-1 reviewed: F3 R-DWC completion_commit guard adds branches to an already-large completion handler; surrounding-flow refactor out of scope for the surgical sweep.
 function processTaskCompleted(state: State, ctx: LoopContext): LoopAction {
   let curState: State;
@@ -8743,67 +8830,10 @@ function processTaskCompleted(state: State, ctx: LoopContext): LoopAction {
     exitForCloserTerminalState(ctx.statePath, ctx.sessionDir, ctx.iteration, closerDecision, ctx.log);
     return { kind: 'break', reason: closerDecision.reason };
   }
-  if (curState.current_ticket) {
-    const guard = guardCompletionCommitBeforeDone({
-      sessionDir: ctx.sessionDir,
-      ticketId: curState.current_ticket,
-      workingDir: curState.working_dir || state.working_dir || process.cwd(),
-      flags: (curState.flags as Record<string, unknown> | undefined) ?? null,
-    });
-    if (!guard.ok) {
-      const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
-      ctx.log(msg);
-      process.stderr.write(`${msg}\n`);
-      // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict, not a
-      // cannot-continue halt — record the residual, park this ticket
-      // (leave it un-Done), and let the phase loop continue.
-      recordExitReason(ctx.statePath, 'done_without_commit_evidence');
-      return { kind: 'continue', resetStall: true };
-    }
-    // R-PEDC: guard recovered — clear any stale `done_without_commit_evidence`
-    // exit_reason stamped by a prior iteration so finalize doesn't mislabel a
-    // fully-shipped bundle as failed.
-    clearStaleDoneWithoutCommitEvidence(ctx.statePath);
-    markTicketDone(ctx.sessionDir, curState.current_ticket);
-    try {
-      runBetweenTicketFastGate({
-        statePath: ctx.statePath,
-        workingDir: curState.working_dir || state.working_dir || process.cwd(),
-        completedTicketId: curState.current_ticket,
-        nextTicketId: null,
-        landedStatus: 'done',
-        log: ctx.log,
-        now: ctx.now,
-      });
-    } catch (err) {
-      ctx.log(`between-ticket fast gate failed after final completion (ignored): ${safeErrorMessage(err)}`);
-    }
-  }
-  // False-completion guard + B-DURA T50 no-premature-drain: re-scan ticket
-  // frontmatter via reconcileTicketTruth before finalizing EPIC as completed.
-  // The pickle phase MUST NOT exit while any non-`Failed` ticket is Todo / In
-  // Progress (real unattempted work). Advance only when every ticket is TERMINAL
-  // (Done | Skipped | Failed). A `Failed` ticket is terminal-for-advance (it does
-  // NOT force a re-drain — that is T40's domain); an UNATTEMPTED Todo / In Progress
-  // ticket keeps the phase draining rather than reporting a premature completion
-  // (R-CECX run-3 / LOA-1488: codex drained at iter 49/500 with 4 Todo tickets).
-  {
-    const workingDir4Guard = curState.working_dir || state.working_dir || '';
-    const guardTruth = reconcileTicketTruth({ sessionDir: ctx.sessionDir, workingDir: workingDir4Guard });
-    const nonFailedPending = Object.entries(guardTruth.ticketStatuses)
-      .filter(([, st]) => {
-        const n = normalizeTicketStatus(st);
-        // Terminal-for-advance: Done, Skipped, AND Failed. Only Todo / In Progress
-        // (genuine non-terminal, unattempted-or-in-flight) keeps the phase draining.
-        return n !== 'done' && n !== 'skipped' && n !== 'failed';
-      });
-    if (nonFailedPending.length > 0) {
-      ctx.log(`no-premature-drain: ${nonFailedPending.length} non-Failed Todo/In-Progress ticket(s) remain — refusing EPIC finalize, keep draining`);
-      const handoffSummary = buildIterationHandoffSummary(state, ctx.sessionDir, ctx.iteration + 1);
-      (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffSummary, process.pid, ctx.log);
-      return { kind: 'continue', resetStall: true };
-    }
-  }
+  const ticketAction = finalizeCurrentTicketBeforeEpicExit(state, ctx, curState);
+  if (ticketAction) return ticketAction;
+  const drainAction = refuseEpicFinalizeWhileWorkPending(state, ctx, curState);
+  if (drainAction) return drainAction;
   ctx.log('Task completed. Exiting loop.');
   ctxFinalize(ctx, 'success');
   return { kind: 'break', reason: 'success' };
