@@ -76,46 +76,7 @@ function formatFailuresTable(failures: GateFailure[]): string {
   ].join('\n') + '\n';
 }
 
-function buildBriefContent(opts: {
-  gateResult: GateResult;
-  sessionRoot: string;
-  reason: string;
-  iso: string;
-  failingFileContents: Map<string, string>;
-  trapDoorSection: string;
-}): string {
-  const { gateResult, sessionRoot, reason, iso, failingFileContents, trapDoorSection } = opts;
-
-  const sections: string[] = [];
-
-  sections.push(`# Gate Remediation Brief`);
-  sections.push(`\n**Generated**: ${iso}  \n**Session root**: ${sessionRoot}  \n**Reason**: ${reason}  \n**Gate status**: ${gateResult.status}  \n**Failures**: ${gateResult.failures.length}\n`);
-
-  sections.push(`## Section 1: Gate Failures (verbatim)\n`);
-  sections.push(formatFailuresTable(gateResult.failures));
-
-  sections.push(`## Section 2: Failing File Contents\n`);
-  if (failingFileContents.size === 0) {
-    sections.push('_No failing files to display._\n');
-  } else {
-    for (const [filePath, content] of failingFileContents) {
-      sections.push(`### \`${filePath}\`\n`);
-      if (content === '__UNREADABLE__') {
-        sections.push(`_Could not read file (unreadable or not found). Read it fresh before editing._\n`);
-      } else if (content === '__OVERSIZED__') {
-        sections.push(`_File exceeds ${MAX_FILE_BYTES} bytes. Read path directly: \`${filePath}\`_\n`);
-      } else {
-        const ext = path.extname(filePath).slice(1) || 'text';
-        sections.push(`\`\`\`${ext}\n${content}\n\`\`\`\n`);
-      }
-    }
-  }
-
-  sections.push(`## Section 3: Relevant CLAUDE.md Trap Doors\n`);
-  sections.push(trapDoorSection + '\n');
-
-  sections.push(`## Section 4: Hard Rule and Abort Grammar\n`);
-  sections.push(`### Hard Rule
+const SECTION_4_HARD_RULE_AND_ABORT_GRAMMAR = `### Hard Rule
 
 **Fix ONLY the failures listed in Section 1. Do not edit any other lines. Do not change behavior.**
 
@@ -148,7 +109,51 @@ The abort file must contain: reason, affected file:line, what fix was requested,
 - Do not run \`pnpm install\`, \`npm install\`, or any package manager mutation.
 - Do not write to \`state.json\`, \`microverse.json\`, or any orchestrator-owned file.
 - Write your outcome to \`\${SESSION_ROOT}/gate/remediation_<iso>_result.json\` only.
-`);
+`;
+
+function renderFailingFileBody(filePath: string, content: string): string {
+  if (content === '__UNREADABLE__') return `_Could not read file (unreadable or not found). Read it fresh before editing._\n`;
+  if (content === '__OVERSIZED__') return `_File exceeds ${MAX_FILE_BYTES} bytes. Read path directly: \`${filePath}\`_\n`;
+  const ext = path.extname(filePath).slice(1) || 'text';
+  return `\`\`\`${ext}\n${content}\n\`\`\`\n`;
+}
+
+function renderFailingFileSections(failingFileContents: Map<string, string>): string[] {
+  if (failingFileContents.size === 0) return ['_No failing files to display._\n'];
+  const out: string[] = [];
+  for (const [filePath, content] of failingFileContents) {
+    out.push(`### \`${filePath}\`\n`);
+    out.push(renderFailingFileBody(filePath, content));
+  }
+  return out;
+}
+
+function buildBriefContent(opts: {
+  gateResult: GateResult;
+  sessionRoot: string;
+  reason: string;
+  iso: string;
+  failingFileContents: Map<string, string>;
+  trapDoorSection: string;
+}): string {
+  const { gateResult, sessionRoot, reason, iso, failingFileContents, trapDoorSection } = opts;
+
+  const sections: string[] = [];
+
+  sections.push(`# Gate Remediation Brief`);
+  sections.push(`\n**Generated**: ${iso}  \n**Session root**: ${sessionRoot}  \n**Reason**: ${reason}  \n**Gate status**: ${gateResult.status}  \n**Failures**: ${gateResult.failures.length}\n`);
+
+  sections.push(`## Section 1: Gate Failures (verbatim)\n`);
+  sections.push(formatFailuresTable(gateResult.failures));
+
+  sections.push(`## Section 2: Failing File Contents\n`);
+  sections.push(...renderFailingFileSections(failingFileContents));
+
+  sections.push(`## Section 3: Relevant CLAUDE.md Trap Doors\n`);
+  sections.push(trapDoorSection + '\n');
+
+  sections.push(`## Section 4: Hard Rule and Abort Grammar\n`);
+  sections.push(SECTION_4_HARD_RULE_AND_ABORT_GRAMMAR);
 
   sections.push(`## Section 5: Evidence & Reporting\n`);
   sections.push(FOM_EVIDENCE_RULES + '\n');
