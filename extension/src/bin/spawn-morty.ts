@@ -3604,36 +3604,36 @@ function makeCodegraphActivityEmitter(sessionRoot: string): (event: CodegraphEmi
   };
 }
 
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: R-SMTEST-1 (ticket 1b57ef57) diagnostic breadcrumb instrumentation env-gated by PICKLE_DEBUG_SPAWN_MORTY; R-SMTEST-2 (ticket 910ae36c) early-exit invariant guard appended.
-async function main() {
-  // R-SMTEST early-exit invariant — see ticket 1b57ef57
-  const _smDebug = process.env.PICKLE_DEBUG_SPAWN_MORTY === '1';
-  function _smCrumb(label: string): void { if (_smDebug) process.stderr.write(`[SMTEST-1:CRUMB] ${label}\n`); }
-  _smCrumb('main() entered');
-  const parsed = parseAndValidateArgs(process.argv.slice(2));
-  _smCrumb(`parseAndValidateArgs done — sessionRoot=${parsed.sessionRoot} ticketPath=${parsed.ticketPath}`);
-  // R-SMTEST early-exit invariant — see prds/p1-bug-fix-bundle-b-release-drift-2026-05-26.md
-  const _dataRoot = getDataRoot();
-  if (!path.resolve(parsed.ticketPath).startsWith(_dataRoot + path.sep)) {
-    process.stderr.write(JSON.stringify({
-      event: 'spawn_morty_invalid_ticket_path',
-      ts: new Date().toISOString(),
-      ticket_path: parsed.ticketPath,
-      data_root: _dataRoot,
-    }) + '\n');
-    console.error(`[spawn-morty] --ticket-path "${parsed.ticketPath}" is outside data root "${_dataRoot}". Aborting.`);
-    process.exit(1);
-  }
-  const runtime = readSessionRuntime(parsed);
-  _smCrumb(`readSessionRuntime done — state=${runtime.state ? 'loaded' : 'null'}`);
-  const ticketInfo = readTicketInfo(parsed.ticketFilePath);
-  _smCrumb('readTicketInfo done');
-  // R-PIAP-A5: classify if no explicit tier was set (never bare medium default)
+const SM_DEBUG = process.env.PICKLE_DEBUG_SPAWN_MORTY === '1';
+
+/** R-SMTEST-1 (ticket 1b57ef57) diagnostic breadcrumb — env-gated by PICKLE_DEBUG_SPAWN_MORTY. */
+function _smCrumb(label: string): void { if (SM_DEBUG) process.stderr.write(`[SMTEST-1:CRUMB] ${label}\n`); }
+
+type TicketInfo = ReturnType<typeof readTicketInfo>;
+
+type ResolvedTierBudget = {
+  effectiveTier: TicketComplexityTier;
+  requestedTimeout: number;
+  effectiveTimeout: number;
+};
+
+/**
+ * Resolve the ticket's effective complexity tier and the worker timeout that tier
+ * implies, reporting either clamp direction to the operator.
+ *
+ * R-PIAP-A5: classify when no explicit tier was set (never a bare medium default).
+ * R-PIAP-A2: the resolved tier also drives prompt injection and lifecycle-skip telemetry.
+ * Mutates `ticketInfo.complexity_tier` in place so downstream tier readers agree.
+ */
+function resolveTierAndTimeout(
+  parsed: ParsedArgs,
+  runtime: SessionRuntime,
+  ticketInfo: TicketInfo,
+): ResolvedTierBudget {
   if (ticketInfo) {
     const resolvedTier = resolveEffectiveTierForTicket(parsed.ticketFilePath);
     if (resolvedTier) ticketInfo.complexity_tier = resolvedTier;
   }
-  // R-PIAP-A2: resolve effective tier for prompt injection and lifecycle-skip telemetry
   const effectiveTier: TicketComplexityTier = (ticketInfo?.complexity_tier ?? 'medium') as TicketComplexityTier;
   const requestedTimeout = ticketInfo
     ? getTicketTierBudgetWithOverrides(runtime.state, ticketInfo.complexity_tier).worker_timeout_seconds
@@ -3644,23 +3644,42 @@ async function main() {
   } else if (effectiveTimeout < requestedTimeout) {
     console.log(`${Style.YELLOW}⚠️  Worker timeout clamped: ${effectiveTimeout}s${Style.RESET}`);
   }
+  return { effectiveTier, requestedTimeout, effectiveTimeout };
+}
 
-  const statePath = path.join(parsed.sessionRoot, 'state.json');
-  // R-PIAP-A2: emit tier_phase_skipped for lifecycle phases pruned by the tier
-  if (!parsed.isReviewTicket) {
-    const lifecycleSkipped = ALL_LIFECYCLE_PHASES.filter(p => !TIER_LIFECYCLE[effectiveTier].includes(p));
-    if (lifecycleSkipped.length > 0) {
-      try {
-        writeActivityEntry(statePath, {
-          event: 'tier_phase_skipped',
-          ticket_id: parsed.ticketId,
-          tier: effectiveTier,
-          skipped_phases: lifecycleSkipped,
-          ts: new Date().toISOString(),
-        });
-      } catch { /* best-effort */ }
-    }
-  }
+/** R-PIAP-A2: emit tier_phase_skipped for the lifecycle phases this tier prunes. */
+function emitTierPhaseSkipped(statePath: string, parsed: ParsedArgs, effectiveTier: TicketComplexityTier): void {
+  if (parsed.isReviewTicket) return;
+  const lifecycleSkipped = ALL_LIFECYCLE_PHASES.filter(p => !TIER_LIFECYCLE[effectiveTier].includes(p));
+  if (lifecycleSkipped.length === 0) return;
+  try {
+    writeActivityEntry(statePath, {
+      event: 'tier_phase_skipped',
+      ticket_id: parsed.ticketId,
+      tier: effectiveTier,
+      skipped_phases: lifecycleSkipped,
+      ts: new Date().toISOString(),
+    });
+  } catch { /* best-effort */ }
+}
+
+type ResolvedSpawnBackend = {
+  backend: Backend;
+  source: BackendResolutionSource;
+  workerBackendResolution: ReturnType<typeof resolveWorkerBackendFromState>;
+};
+
+/**
+ * Route the worker backend and refuse to spawn when the routed backend contradicts
+ * the session's own recorded backend. Aborts the process on mismatch — a worker
+ * launched under the wrong backend writes unattributable state.
+ */
+function resolveAndAssertSpawnBackend(
+  parsed: ParsedArgs,
+  runtime: SessionRuntime,
+  ticketInfo: TicketInfo,
+  statePath: string,
+): ResolvedSpawnBackend {
   // Reuse `runtime.state` (already loaded via `_sm.read()` in `readSessionRuntime`)
   // for downstream backend resolution. Each fresh `_sm.read()` re-runs
   // `recoverable-json` tmp recovery, which `readdirSync`'s the data root;
@@ -3678,7 +3697,7 @@ async function main() {
   _smCrumb(`assertBackendPreSpawn done — mode=${preSpawn.mode}`);
   if (preSpawn.mode === 'mismatch') {
     try {
-      writeActivityEntry(path.join(parsed.sessionRoot, 'state.json'), {
+      writeActivityEntry(statePath, {
         event: 'worker_spawn_backend_mismatch',
         ts: new Date().toISOString(),
         source,
@@ -3703,6 +3722,16 @@ async function main() {
     console.error(`[spawn-morty] backend mismatch: resolved=${preSpawn.resolvedBackend}, state=${preSpawn.stateBackend}; aborting worker spawn`);
     process.exit(1);
   }
+  return { backend, source, workerBackendResolution };
+}
+
+/** Record the resolved backend, its precedence source, and any explicit CLI override. */
+function emitBackendResolutionTelemetry(
+  statePath: string,
+  parsed: ParsedArgs,
+  resolution: ResolvedSpawnBackend,
+): void {
+  const { backend, source, workerBackendResolution } = resolution;
   _smCrumb(`entering writeActivityEntry block — statePath=${statePath}`);
   try {
     _smCrumb('before writeActivityEntry worker_backend_resolved');
@@ -3740,54 +3769,61 @@ async function main() {
     /* best-effort telemetry */
   }
   _smCrumb('writeActivityEntry block done');
-  const args = { ...parsed, backend };
-  const extensionRoot = getExtensionRoot();
-  _smCrumb(`getExtensionRoot done — extensionRoot=${extensionRoot}`);
-  const model = resolveWorkerModel(backend, extensionRoot, parsed.sessionRoot, ticketInfo, runtime.state);
-  _smCrumb(`resolveWorkerModel done — model=${model}`);
-  _smCrumb('before printMinimalPanel');
-  printMinimalPanel(
-    args.isReviewTicket ? 'Spawning Review Worker' : 'Spawning Morty Worker',
-    { Request: args.ticket, Ticket: args.ticketId, Type: args.isReviewTicket ? 'review' : 'implementation', Format: args.outputFormat, Backend: backend, Timeout: `${effectiveTimeout}s (Req: ${requestedTimeout}s)`, PID: process.pid },
-    args.isReviewTicket ? 'MAGENTA' : 'CYAN',
-    '🥒'
-  );
-  _smCrumb('after printMinimalPanel — before codegraph context');
-  // Fail-open: codegraph context is best-effort and must never block a worker spawn.
-  let codegraphSection = '';
-  if (!args.isReviewTicket) {
+}
+
+/**
+ * Build the codegraph prompt section for an implementation worker.
+ *
+ * Fail-open: codegraph context is best-effort and must never block a worker spawn,
+ * so every failure path returns the empty section rather than propagating.
+ */
+async function buildCodegraphSectionForSpawn(
+  args: ParsedArgs & { backend: Backend },
+  runtime: SessionRuntime,
+  effectiveTier: TicketComplexityTier,
+): Promise<string> {
+  if (args.isReviewTicket) return '';
+  try {
+    const cgSettings = resolveCodegraphSettings(loadPickleSettingsBag());
+    const cgEmit = makeCodegraphActivityEmitter(args.sessionRoot);
+    const cgService = CodegraphService.create(runtime.sessionWorkingDir, cgSettings, { emit: cgEmit });
     try {
-      const cgSettings = resolveCodegraphSettings(loadPickleSettingsBag());
-      const cgEmit = makeCodegraphActivityEmitter(args.sessionRoot);
-      const cgService = CodegraphService.create(runtime.sessionWorkingDir, cgSettings, { emit: cgEmit });
-      try {
-        codegraphSection = await buildCodegraphContextSection({
-          tier: effectiveTier,
-          title: args.ticket,
-          ticketContent: args.ticketContent,
-          service: cgService,
-          settings: cgSettings,
-          // Activity dir = the session root that holds state.json (the
-          // `path.dirname(statePath)` per the b1089e97 contract; in main() the
-          // state file lives at `<sessionRoot>/state.json`).
-          sessionDir: args.sessionRoot,
-          ticketId: args.ticketId,
-          workingDir: runtime.sessionWorkingDir,
-        });
-      } finally {
-        cgService.close();
-      }
-    } catch (err) {
-      _smCrumb(`codegraph context skipped (ignored): ${safeErrorMessage(err)}`);
-      codegraphSection = '';
+      return await buildCodegraphContextSection({
+        tier: effectiveTier,
+        title: args.ticket,
+        ticketContent: args.ticketContent,
+        service: cgService,
+        settings: cgSettings,
+        // Activity dir = the session root that holds state.json (the
+        // `path.dirname(statePath)` per the b1089e97 contract; in main() the
+        // state file lives at `<sessionRoot>/state.json`).
+        sessionDir: args.sessionRoot,
+        ticketId: args.ticketId,
+        workingDir: runtime.sessionWorkingDir,
+      });
+    } finally {
+      cgService.close();
     }
+  } catch (err) {
+    _smCrumb(`codegraph context skipped (ignored): ${safeErrorMessage(err)}`);
+    return '';
   }
-  _smCrumb('after codegraph context — before buildWorkerPrompt');
+}
+
+/** Compose the worker prompt and hand the spawn to the per-session spawn lock. */
+async function launchWorker(
+  args: ParsedArgs & { backend: Backend },
+  runtime: SessionRuntime,
+  statePath: string,
+  budget: ResolvedTierBudget,
+  model: ReturnType<typeof resolveWorkerModel>,
+  codegraphSection: string,
+): Promise<void> {
   const prompt = buildWorkerPrompt({
-    ticket: { task: args.ticket, ticketContent: args.ticketContent, ticketId: args.ticketId, ticketPath: args.ticketPath, sessionRoot: args.sessionRoot, backend, isReviewTicket: args.isReviewTicket },
+    ticket: { task: args.ticket, ticketContent: args.ticketContent, ticketId: args.ticketId, ticketPath: args.ticketPath, sessionRoot: args.sessionRoot, backend: args.backend, isReviewTicket: args.isReviewTicket },
     model: model ?? 'sonnet',
     repoRoot: runtime.sessionWorkingDir,
-    complexityTier: effectiveTier,
+    complexityTier: budget.effectiveTier,
     codegraphSection,
   });
   _smCrumb('buildWorkerPrompt done — before runWorkerProcess');
@@ -3796,12 +3832,58 @@ async function main() {
     args, prompt, ticketPath: args.ticketPath, ticketId: args.ticketId, sessionRoot: args.sessionRoot, sessionLog,
     sessionLogPath: args.sessionLogPath, sessionWorkingDir: runtime.sessionWorkingDir,
     timeoutStatePath: runtime.timeoutStatePath, workerStatePath: runtime.workerStatePath,
-    effectiveTimeoutMs: effectiveTimeout * 1000, mutableState: { finalized: false, timedOut: false },
+    effectiveTimeoutMs: budget.effectiveTimeout * 1000, mutableState: { finalized: false, timedOut: false },
     model, effort: runtime.sessionEffort, hermesOptions: readHermesWorkerOptions(runtime.state),
     preWorkerHead: (() => {
       try { return getHeadSha(runtime.sessionWorkingDir); } catch { return null; }
     })(),
   }, { sessionRoot: args.sessionRoot, statePath, ticketId: args.ticketId });
+}
+
+async function main() {
+  _smCrumb('main() entered');
+  const parsed = parseAndValidateArgs(process.argv.slice(2));
+  _smCrumb(`parseAndValidateArgs done — sessionRoot=${parsed.sessionRoot} ticketPath=${parsed.ticketPath}`);
+  // R-SMTEST early-exit invariant — see prds/p1-bug-fix-bundle-b-release-drift-2026-05-26.md
+  const _dataRoot = getDataRoot();
+  if (!path.resolve(parsed.ticketPath).startsWith(_dataRoot + path.sep)) {
+    process.stderr.write(JSON.stringify({
+      event: 'spawn_morty_invalid_ticket_path',
+      ts: new Date().toISOString(),
+      ticket_path: parsed.ticketPath,
+      data_root: _dataRoot,
+    }) + '\n');
+    console.error(`[spawn-morty] --ticket-path "${parsed.ticketPath}" is outside data root "${_dataRoot}". Aborting.`);
+    process.exit(1);
+  }
+  const runtime = readSessionRuntime(parsed);
+  _smCrumb(`readSessionRuntime done — state=${runtime.state ? 'loaded' : 'null'}`);
+  const ticketInfo = readTicketInfo(parsed.ticketFilePath);
+  _smCrumb('readTicketInfo done');
+
+  const budget = resolveTierAndTimeout(parsed, runtime, ticketInfo);
+  const statePath = path.join(parsed.sessionRoot, 'state.json');
+  emitTierPhaseSkipped(statePath, parsed, budget.effectiveTier);
+
+  const resolution = resolveAndAssertSpawnBackend(parsed, runtime, ticketInfo, statePath);
+  emitBackendResolutionTelemetry(statePath, parsed, resolution);
+
+  const args = { ...parsed, backend: resolution.backend };
+  const extensionRoot = getExtensionRoot();
+  _smCrumb(`getExtensionRoot done — extensionRoot=${extensionRoot}`);
+  const model = resolveWorkerModel(resolution.backend, extensionRoot, parsed.sessionRoot, ticketInfo, runtime.state);
+  _smCrumb(`resolveWorkerModel done — model=${model}`);
+  _smCrumb('before printMinimalPanel');
+  printMinimalPanel(
+    args.isReviewTicket ? 'Spawning Review Worker' : 'Spawning Morty Worker',
+    { Request: args.ticket, Ticket: args.ticketId, Type: args.isReviewTicket ? 'review' : 'implementation', Format: args.outputFormat, Backend: resolution.backend, Timeout: `${budget.effectiveTimeout}s (Req: ${budget.requestedTimeout}s)`, PID: process.pid },
+    args.isReviewTicket ? 'MAGENTA' : 'CYAN',
+    '🥒'
+  );
+  _smCrumb('after printMinimalPanel — before codegraph context');
+  const codegraphSection = await buildCodegraphSectionForSpawn(args, runtime, budget.effectiveTier);
+  _smCrumb('after codegraph context — before buildWorkerPrompt');
+  await launchWorker(args, runtime, statePath, budget, model, codegraphSection);
 }
 
 if (process.argv[1] && path.basename(process.argv[1]) === 'spawn-morty.js') {
