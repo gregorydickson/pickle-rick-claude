@@ -1361,6 +1361,51 @@ function killProcessTree(proc: ReturnType<typeof spawn>, signal: NodeJS.Signals)
   }
 }
 
+/** How far the SIGTERM -> SIGKILL ladder got for a child killed by `runCommand`'s timeout. */
+function describeKillEscalation(sigtermSent: boolean, sigkillSent: boolean): string {
+  if (sigkillSent) return 'sent SIGTERM to process tree and escalated to SIGKILL after 2000ms';
+  if (sigtermSent) return 'sent SIGTERM to process tree';
+  return 'failed to signal process tree';
+}
+
+/** `CommandResult.timeoutMessage`: null unless the command was killed by its own timeout. */
+function formatTimeoutMessage(
+  timedOut: boolean,
+  timeoutMs: number,
+  sigtermSent: boolean,
+  sigkillSent: boolean,
+): string | null {
+  if (!timedOut) return null;
+  return `timed out after ${timeoutMs}ms; ${describeKillEscalation(sigtermSent, sigkillSent)}`;
+}
+
+/**
+ * Buffers a child's stdout/stderr as utf8 strings. The returned arrays fill as the
+ * child runs; join them once the child has settled.
+ */
+function collectChildOutput(
+  child: ReturnType<typeof spawn>,
+): { stdoutChunks: string[]; stderrChunks: string[] } {
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', chunk => stdoutChunks.push(chunk));
+  child.stderr?.on('data', chunk => stderrChunks.push(chunk));
+  return { stdoutChunks, stderrChunks };
+}
+
+/**
+ * Runs `cmd` to completion under a timeout, killing the whole process group on expiry.
+ *
+ * Timer discipline, both halves load-bearing — do not "tidy" either (see
+ * `tests/unref-sole-settle-path.test.js`): `timeoutHandle` stays REF'D because it is the
+ * SOLE trigger of the settle chain for a hung child — it does not resolve directly
+ * (`child.on('close')` does), but if it never fires SIGTERM is never sent and a hung child
+ * never emits `'close'` either, so `.unref()` here would make settling conditional on some
+ * UNRELATED handle holding the loop open. `killEscalation` is correctly UNREF'D: nothing
+ * awaits it and `'close'` resolves regardless of whether SIGKILL was needed.
+ */
 async function runCommand(cmd: string, args: string[], cwd: string, opts: { timeoutMs?: number } = {}): Promise<CommandResult> {
   const timeoutMs = opts.timeoutMs ?? 120_000;
   return await new Promise<CommandResult>((resolve) => {
@@ -1370,70 +1415,39 @@ async function runCommand(cmd: string, args: string[], cwd: string, opts: { time
       stdio: ['ignore', 'pipe', 'pipe'],
       env: scrubGateEnv(),
     });
-    const stdoutChunks: string[] = [];
-    const stderrChunks: string[] = [];
+    const { stdoutChunks, stderrChunks } = collectChildOutput(child);
     let timedOut = false;
     let settled = false;
     let sigtermSent = false;
     let sigkillSent = false;
     let killEscalation: ReturnType<typeof setTimeout> | null = null;
-
     const finalize = (status: number | null, signal: NodeJS.Signals | null, extraStderr = '') => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutHandle);
       if (killEscalation) clearTimeout(killEscalation);
-      const stdout = stdoutChunks.join('');
-      const stderr = `${stderrChunks.join('')}${extraStderr}`;
-      const timeoutMessage = timedOut
-        ? [
-          `timed out after ${timeoutMs}ms`,
-          sigkillSent
-            ? 'sent SIGTERM to process tree and escalated to SIGKILL after 2000ms'
-            : sigtermSent
-              ? 'sent SIGTERM to process tree'
-              : 'failed to signal process tree',
-        ].join('; ')
-        : null;
       resolve({
         ok: status === 0 && !timedOut,
         status,
-        stdout,
-        stderr,
+        stdout: stdoutChunks.join(''),
+        stderr: `${stderrChunks.join('')}${extraStderr}`,
         signal,
         timedOut,
-        timeoutMessage,
+        timeoutMessage: formatTimeoutMessage(timedOut, timeoutMs, sigtermSent, sigkillSent),
       });
     };
-
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', chunk => stdoutChunks.push(chunk));
-    child.stderr?.on('data', chunk => stderrChunks.push(chunk));
-
-    // Stays REF'D: this is the SOLE trigger that makes the eventual settle possible for a
-    // hung child. It does not resolve directly — settlement happens via `child.on('close')`
-    // below — but if this never fires, SIGTERM is never sent, and a genuinely hung child
-    // never produces `'close'` either. An `.unref()` here would make the whole settle chain
-    // conditional on some UNRELATED handle happening to hold the loop open. Cleared
-    // unconditionally in `finalize` on every settle path.
     const timeoutHandle = setTimeout(() => {
       timedOut = true;
       sigtermSent = killProcessTree(child, 'SIGTERM');
-      // Kill-grace: SIGKILL follow-up after the SIGTERM grace. Nothing awaits it directly —
-      // the promise resolves via `child.on('close')` regardless of whether SIGKILL is needed
-      // or whether this timer fires — so it is correctly left unref'd.
       killEscalation = setTimeout(() => {
         sigkillSent = killProcessTree(child, 'SIGKILL');
       }, 2000);
       killEscalation.unref();
     }, timeoutMs);
-
     child.on('error', (error) => {
       const message = safeErrorMessage(error);
       finalize(null, null, message ? `${message}\n` : '');
     });
-
     child.on('close', (status, signal) => {
       finalize(status, signal);
     });
