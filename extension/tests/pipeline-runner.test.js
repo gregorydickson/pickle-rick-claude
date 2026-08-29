@@ -32,6 +32,7 @@ import {
   __setSpawnRunnerForTests,
   setupAnatomyPark,
   readPersistedAllowedPaths,
+  finalizePhaseSuccess,
   main,
 } from '../bin/pipeline-runner.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
@@ -1666,6 +1667,174 @@ describe('pipeline shutdown', () => {
       process.exit = oldExit;
       if (oldDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
       else process.env.PICKLE_DATA_ROOT = oldDataRoot;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B1 (ticket eab8541c): the `pipeline-cancel` marker is never cleared at
+// startup, so a fresh pipeline-runner inherits a PRIOR run's SIGTERM marker
+// and cancels itself. The marker is written on signal receipt and unlinked
+// only at finalizePipeline — a path a cancelled run never reaches, because
+// handleShutdown calls process.exit(1) directly. AC-M5: a fresh run started
+// with a stale marker present must run ALL phases. Mutation-verify BOTH
+// directions: a stale marker must not cancel, but a marker written DURING
+// the run by a real signal must still cancel it.
+// ---------------------------------------------------------------------------
+
+describe('B1: pipeline-cancel marker is cleared at startup', () => {
+  function git(args, cwd) {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 10_000 }).trim();
+  }
+
+  function initRepo(dir) {
+    git(['init', '-q', '-b', 'main'], dir);
+    git(['config', 'user.email', 'test@test.local'], dir);
+    git(['config', 'user.name', 'Test'], dir);
+    git(['config', 'commit.gpgsign', 'false'], dir);
+    fs.writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    git(['add', '.'], dir);
+    git(['commit', '-q', '-m', 'seed'], dir);
+    return git(['rev-parse', 'HEAD'], dir);
+  }
+
+  function writeMainState(sessionDir, repo, startCommit) {
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+      active: false,
+      working_dir: repo,
+      step: 'implement',
+      iteration: 0,
+      max_iterations: 100,
+      max_time_minutes: 720,
+      worker_timeout_seconds: 1200,
+      start_time_epoch: 1000,
+      completion_promise: null,
+      original_prompt: 'B1 stale cancel-marker test',
+      current_ticket: null,
+      history: [],
+      started_at: new Date().toISOString(),
+      session_dir: sessionDir,
+      schema_version: 3,
+      tmux_mode: false,
+      chain_meeseeks: false,
+      backend: 'claude',
+      start_commit: startCommit,
+      exit_reason: null,
+      activity: [],
+    }, null, 2));
+  }
+
+  function writeMainPipeline(sessionDir, repo, phases) {
+    fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+      phases,
+      target: repo,
+      anatomy_stall_limit: 3,
+      szechuan_stall_limit: 5,
+      anatomy_max_iterations: 100,
+      szechuan_max_iterations: 50,
+      dirty_exempt_segments: ['prds', 'docs'],
+    }, null, 2));
+  }
+
+  class ExitIntercept extends Error {
+    constructor(code) {
+      super(`process.exit(${code})`);
+      this.code = code;
+    }
+  }
+
+  async function runMainToExit(sessionDir) {
+    const originalExit = process.exit;
+    const originalTmux = process.env.TMUX;
+    delete process.env.TMUX;
+    process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
+    try {
+      await main(sessionDir);
+      return null;
+    } catch (err) {
+      if (err instanceof ExitIntercept) return err.code;
+      throw err;
+    } finally {
+      process.exit = originalExit;
+      if (originalTmux === undefined) delete process.env.TMUX;
+      else process.env.TMUX = originalTmux;
+    }
+  }
+
+  // AC-M5, direction (a): a stale marker left by a PRIOR run must not cancel
+  // a fresh run. Two 'pickle' phases with zero tickets each graduate
+  // trivially (graduationDecision: ticketCount <= 0 -> graduate), so BOTH
+  // phases running (not just the first, before the pre-fix break) is the
+  // only way this test passes.
+  test('a stale pipeline-cancel marker present at launch does not cancel the run — both phases run', async () => {
+    const repo = tmpDir();
+    const sessionDir = tmpDir();
+    const dataRoot = tmpDir();
+    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    let spawnRunnerCalls = 0;
+    try {
+      const startCommit = initRepo(repo);
+      writeMainState(sessionDir, repo, startCommit);
+      writeMainPipeline(sessionDir, repo, ['pickle', 'pickle']);
+
+      // Simulate a prior run that was SIGTERM-killed mid-pipeline: the
+      // marker was written by installShutdownHandlers and never cleared
+      // because handleShutdown exits before finalizePipeline can unlink it.
+      fs.writeFileSync(path.join(sessionDir, 'pipeline-cancel'), 'SIGTERM');
+
+      __setSpawnRunnerForTests(async () => {
+        spawnRunnerCalls += 1;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      });
+
+      const exitCode = await runMainToExit(sessionDir);
+      assert.equal(exitCode, 0, 'a fresh run with no real cancellation must exit clean');
+
+      assert.equal(spawnRunnerCalls, 2, 'AC-M5: a stale marker must not stop the run after the first phase — ALL phases must run');
+
+      const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+      assert.equal(status.status, 'completed');
+      assert.equal(status.completed_phases, 2, 'both configured phases must be recorded as completed, not broken after phase 1');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+      else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  // Direction (b): a marker written DURING the run by a genuine signal must
+  // still cancel it. This is finalizePhaseSuccess's existing, unchanged
+  // check — the B1 fix only clears the marker once, at main()'s startup,
+  // before any phase runs; it must not touch cancelledOutcome itself.
+  test('a marker written during the run (a real signal) still cancels — finalizePhaseSuccess unchanged', () => {
+    const dir = tmpDir();
+    try {
+      const statePath = path.join(dir, 'state.json');
+      writeBaseState(statePath, { working_dir: '/tmp', exit_reason: null });
+      const cancelMarker = path.join(dir, 'pipeline-cancel');
+      // Not present at the START of this phase iteration...
+      assert.ok(!fs.existsSync(cancelMarker));
+      // ...but written mid-phase, as installShutdownHandlers does on a real signal.
+      fs.writeFileSync(cancelMarker, 'SIGTERM');
+
+      const runtime = {
+        sessionDir: dir,
+        statePath,
+        workingDir: '/tmp',
+        config: { phases: [{}] },
+        log: () => {},
+      };
+      const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+
+      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, runtime.log);
+
+      assert.deepEqual(outcome, { action: 'break' }, 'a marker present when finalizePhaseSuccess runs must still break the loop');
+    } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

@@ -5322,6 +5322,12 @@ export async function main(sessionDir: string, opts: MainOpts = {}): Promise<voi
   const runtime = loadPipelineRuntime(sessionDir, opts, log);
   const counters: PhaseCounters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
   const cancelMarker = path.join(sessionDir, 'pipeline-cancel');
+  // B1: a fresh run must not inherit a PRIOR run's cancellation. The marker is
+  // written on signal receipt and unlinked only at finalizePipeline — which a
+  // cancelled run never reaches (handleShutdown calls process.exit directly) —
+  // so a killed prior run's marker survives on disk and cancelledOutcome would
+  // otherwise read it as this run's own cancellation on its very first phase.
+  try { fs.unlinkSync(cancelMarker); } catch { /* no stale marker to clear */ }
   const cleanupShutdownHandlers = installShutdownHandlers(runtime, counters, cancelMarker);
   const startTime = Date.now();
   phaseRunnerContext = {
