@@ -644,9 +644,19 @@ const SHELL_SEGMENT_SEPARATORS = new Set([
  * the two-character operator degrades into two adjacent one-character ones —
  * both already separators, so the boundary lands in the same place. `\n` is
  * excluded because `\S` cannot match one; the scanner matches it directly.
+ *
+ * `{` and `}` are excluded too, and for bash's own reason: they are reserved
+ * WORDS, not metacharacters. Bash recognizes them only when they stand as a
+ * whole word — `{git status;}` is a SYNTAX ERROR, not a group (verified), while
+ * `{ git status;}` runs, because the opener must be blank-delimited. Splitting
+ * them out of a glued word therefore models a construct bash does not have, and
+ * it DESTROYS the one bash does: a BRACE EXPANSION (`git {reset,--hard}`) is a
+ * single word until `expandBraceWord` expands it. A standalone `{`/`}` is still
+ * a boundary — it reaches the segment loop as its own token, which tests
+ * `SHELL_SEGMENT_SEPARATORS` directly — so `{ git reset --hard; }` is unchanged.
  */
 const GLUED_SEPARATOR_RE = new RegExp(`(${[...SHELL_SEGMENT_SEPARATORS]
-    .filter((op) => op !== '\n')
+    .filter((op) => op !== '\n' && op !== '{' && op !== '}')
     .map((op) => op.replace(/[|\\^$*+?.()[\]{}]/g, '\\$&'))
     .join('|')})`);
 /**
@@ -656,6 +666,143 @@ const GLUED_SEPARATOR_RE = new RegExp(`(${[...SHELL_SEGMENT_SEPARATORS]
 const MAX_SHELL_COMMAND_STRING_DEPTH = 3;
 /** `-c`, and the combined forms a login/exec shell takes (`-lc`, `-ec`, `-xc`). */
 const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
+/**
+ * Bash's brace SEQUENCE form: `{X..Y}` / `{X..Y..N}` over integers or single
+ * letters. It is the same grammar production as the comma list, not a second
+ * feature — and it is just as exploitable: `git {r..r}eset --hard` really
+ * hard-resets (shim-verified). Zero-padding (`{01..03}`, bash 4+) is
+ * deliberately not reproduced: a digit cannot spell a gated verb or flag, so
+ * the padding cannot change any detector's answer.
+ */
+const BRACE_SEQUENCE_RE = /^(?:(-?\d+)\.\.(-?\d+)|([A-Za-z])\.\.([A-Za-z]))(?:\.\.(-?\d+))?$/;
+/**
+ * Bounds the expansion so a pathological word cannot spin the hook. Counts
+ * RECURSION STEPS, not output words, so it bounds breadth AND depth with one
+ * number. On overflow the word is left UNEXPANDED — today's behavior, so an
+ * overflow can never lose a block that a non-expanding scanner already had.
+ */
+const BRACE_EXPANSION_STEP_CAP = 4096;
+/**
+ * Which positions of `word` are syntactically inert — inside a quoted span or
+ * behind a backslash. Bash does not expand braces there (`"{a,b}"` and
+ * `\{a,b\}` are literal, verified), so the brace scan must skip them, and it
+ * decides that with the SAME `unquoteSpan`/`unquotedEscapeChar` parsers the
+ * fold and the boundary splitter use — a second notion of "is this quoted"
+ * is the drift AP-EXT-ITER66-01 collapsed one level down.
+ */
+function braceInertMask(word) {
+    const inert = new Array(word.length).fill(false);
+    let at = 0;
+    for (const part of word.match(WORD_PART_RE) ?? []) {
+        if (unquoteSpan(part) !== null || unquotedEscapeChar(part) !== null) {
+            for (let k = 0; k < part.length; k++)
+                inert[at + k] = true;
+        }
+        at += part.length;
+    }
+    return inert;
+}
+/** The words `{X..Y}` produces, or null when the body is not a sequence. */
+function braceSequenceWords(body) {
+    const m = BRACE_SEQUENCE_RE.exec(body);
+    if (!m)
+        return null;
+    const [, loDigits, hiDigits, loChar, hiChar, rawStep] = m;
+    const numeric = loDigits !== undefined;
+    const lo = numeric ? Number(loDigits) : loChar.charCodeAt(0);
+    const hi = numeric ? Number(hiDigits) : hiChar.charCodeAt(0);
+    const magnitude = Math.abs(rawStep === undefined ? 1 : Number(rawStep)) || 1;
+    const step = lo <= hi ? magnitude : -magnitude;
+    const words = [];
+    for (let v = lo; step > 0 ? v <= hi : v >= hi; v += step) {
+        words.push(numeric ? String(v) : String.fromCharCode(v));
+        if (words.length > BRACE_EXPANSION_STEP_CAP)
+            return null;
+    }
+    return words;
+}
+/** The leftmost brace group that actually expands, with its alternatives. */
+function findBraceGroup(word) {
+    const inert = braceInertMask(word);
+    for (let open = 0; open < word.length; open++) {
+        if (word[open] !== '{' || inert[open])
+            continue;
+        let depth = 1;
+        const commas = [];
+        for (let i = open + 1; i < word.length && depth > 0; i++) {
+            if (inert[i])
+                continue;
+            const ch = word[i];
+            if (ch === '{')
+                depth++;
+            else if (ch === ',' && depth === 1)
+                commas.push(i);
+            else if (ch === '}' && --depth === 0) {
+                const alts = commas.length > 0
+                    ? sliceBraceAlternatives(word, open, i, commas)
+                    : braceSequenceWords(word.slice(open + 1, i));
+                // A group with no comma and no range (`{a}`, `{}`) is LITERAL to bash;
+                // keep scanning — a later `{` may still be a real expansion.
+                if (alts)
+                    return { open, close: i, alts };
+            }
+        }
+    }
+    return null;
+}
+/** Split a comma-list body at its top-level commas. */
+function sliceBraceAlternatives(word, open, close, commas) {
+    const alts = [];
+    let start = open + 1;
+    for (const comma of commas) {
+        alts.push(word.slice(start, comma));
+        start = comma + 1;
+    }
+    alts.push(word.slice(start, close));
+    return alts;
+}
+/** Depth-first expansion in bash's own order; false once the budget is spent. */
+function expandBraceInto(word, out, budget) {
+    if (--budget.left < 0)
+        return false;
+    const group = word.includes('{') ? findBraceGroup(word) : null;
+    if (!group) {
+        out.push(word);
+        return true;
+    }
+    const prefix = word.slice(0, group.open);
+    const suffix = word.slice(group.close + 1);
+    for (const alt of group.alts) {
+        if (!expandBraceInto(prefix + alt + suffix, out, budget))
+            return false;
+    }
+    return true;
+}
+/**
+ * The words bash's BRACE EXPANSION produces from one word — `git
+ * {reset,--hard}` really runs `git reset --hard` (shim-verified: staged work
+ * destroyed), and `git commit --{amend,amend}` really amends.
+ *
+ * This is word EXPANSION, not segmentation, and that distinction is the whole
+ * fix: `{` and `}` are bash RESERVED WORDS, recognized only when they stand as
+ * a whole word (`{git status;}` is a syntax error, `{ git status;}` runs), so
+ * splitting a glued brace out as a boundary modeled a construct bash does not
+ * have while destroying the one it does. The verb and every flag were shredded
+ * across segments before any detector ran.
+ *
+ * An unquoted EMPTY word is dropped, as bash drops it (`git {stash,}` passes
+ * git exactly one argument). Unlike every pathname-expansion sibling in this
+ * family, this needs NO crafted filename — bash expands braces
+ * unconditionally — so it is strictly the cheapest bypass of the group.
+ */
+function expandBraceWord(word) {
+    if (!word.includes('{'))
+        return [word];
+    const out = [];
+    if (!expandBraceInto(word, out, { left: BRACE_EXPANSION_STEP_CAP }))
+        return [word];
+    return out.filter((w) => w.length > 0);
+}
 /**
  * Split ONE bash word into boundary tokens, keeping its parts glued.
  *
@@ -675,8 +822,10 @@ const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
 function pushWordBoundaryTokens(word, tokens) {
     let buffer = '';
     const flush = () => {
+        // The buffer is one complete bash WORD — operators already ended it — which
+        // is exactly where bash applies brace expansion, so that is where it goes.
         if (buffer.length > 0)
-            tokens.push(buffer);
+            tokens.push(...expandBraceWord(buffer));
         buffer = '';
     };
     for (const part of word.match(WORD_PART_RE) ?? []) {

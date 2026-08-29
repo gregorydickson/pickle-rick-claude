@@ -4210,3 +4210,114 @@ test('AP-EXT-ITER93-05: gating flags read through execNameIs, the FALSE arm stay
   assert.match(checkout, /t === '--'/);
   assert.doesNotMatch(checkout, /execNameIs\(/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER93-06: a BRACE EXPANSION is a word, not a command group.
+//
+// `{` and `}` were declared segment separators for the brace GROUP form
+// (`{ git reset --hard; }`, AP-EXT-ITER19-01) and the glued split honored them
+// mid-word, so `git {reset,--hard}` was shredded into segments `git` and
+// `reset,--hard` — the verb and every flag destroyed before any detector ran.
+// Unlike every pathname-expansion sibling in this family this needs NO crafted
+// filename: bash expands braces unconditionally.
+// ---------------------------------------------------------------------------
+
+const ITER93_06_BRACE_BLOCKED = [
+  ['git {reset,--hard}', 'git reset --hard'],
+  ['git {reset,x} --hard', 'git reset --hard'],
+  ['git re{set,} --hard', 'git reset --hard'],
+  ['git {r..r}eset --hard', 'git reset --hard'],
+  ['git re{s..s}et --hard', 'git reset --hard'],
+  ['git commit --{amend,amend} -m x', 'git commit --amend -m x'],
+  ['git commit --amen{d,d} -m x', 'git commit --amend -m x'],
+  ['git {push,origin} main', 'git push origin main'],
+  ['git {stash,}', 'git stash'],
+  ['git {pull,}', 'git pull'],
+  ['git {rebase,-i} main', 'git rebase -i main'],
+  ['git {checkout,main}', 'git checkout main'],
+  ['git {fetch,--prune}', 'git fetch --prune'],
+  ['git {switch,main}', 'git switch main'],
+  ['cd extension && git {reset,--hard}', 'cd extension && git reset --hard'],
+  ['git status\ngit {reset,--hard}', 'git status\ngit reset --hard'],
+  ['(git {reset,--hard})', '(git reset --hard)'],
+  ["bash -c 'git {reset,--hard}'", "bash -c 'git reset --hard'"],
+  ["eval 'git {reset,--hard}'", "eval 'git reset --hard'"],
+  ['env git {reset,--hard}', 'env git reset --hard'],
+];
+test('AP-EXT-ITER93-06: a braced git verb is blocked, and its literal twin still is', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const [command, twin] of ITER93_06_BRACE_BLOCKED) {
+    for (const form of [command, twin]) {
+      const result = runHandler({
+        tmpDir, stateFile, toolName: 'Bash', toolInput: { command: form },
+        extraEnv: { PICKLE_ROLE: 'worker' },
+      });
+      assert.equal(result.decision, 'block', form);
+    }
+  }
+});
+
+// Non-tautology controls: the brace GROUP form (`{` as a whole word) must keep
+// segmenting exactly as AP-EXT-ITER19-01 left it, or this fix would have traded
+// one bypass for another.
+test('AP-EXT-ITER93-06: a brace GROUP is still a segment boundary', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    '{ git reset --hard; }',
+    '{ git reset --hard;}',
+    '{ cd extension; git push origin main; }',
+    '{\ngit stash\n}',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', `brace GROUP must still block: ${command}`);
+  }
+  // A glued `{` is NOT a group opener — bash rejects `{git status;}` as a
+  // syntax error — so the whole word stays one word.
+  assert.deepEqual(splitShellSegments('{ git status; }'), ['git status']);
+  assert.deepEqual(splitShellSegments('(git status)'), ['git status']);
+});
+
+// The expansion must not fire where bash does not expand: quoting and escaping
+// both make a brace literal, and a group with no comma and no range is literal.
+test('AP-EXT-ITER93-06: quoted, escaped and non-expanding braces are left alone', () => {
+  assert.deepEqual(splitShellSegments('git "{reset,--hard}"'), ['git "{reset,--hard}"']);
+  assert.deepEqual(splitShellSegments("git '{reset,--hard}'"), ["git '{reset,--hard}'"]);
+  assert.deepEqual(splitShellSegments('git \\{reset,--hard\\}'), ['git \\{reset,--hard\\}']);
+  // `{a}` and `{}` are literal to bash (`echo {a}` prints `{a}`), so a word
+  // carrying one must survive whole — `find . -exec rm {} \;` is the live shape.
+  assert.deepEqual(splitShellSegments('echo {a}'), ['echo {a}']);
+  assert.deepEqual(splitShellSegments('find . -name x -exec rm {} \\;'), ['find . -name x -exec rm {} \\;']);
+});
+
+// The expansion itself, measured against the words bash really produces
+// (shim-verified via a `git` argv shim on this box, 2026-08-29).
+test('AP-EXT-ITER93-06: expansion produces the words bash produces', () => {
+  assert.deepEqual(splitShellSegments('git {reset,--hard}'), ['git reset --hard']);
+  assert.deepEqual(splitShellSegments('git a{b,c}d'), ['git abd acd']);
+  assert.deepEqual(splitShellSegments('git {reset,{--hard,x}}'), ['git reset --hard x']);
+  assert.deepEqual(splitShellSegments('git {a..c}'), ['git a b c']);
+  assert.deepEqual(splitShellSegments('git {1..3}'), ['git 1 2 3']);
+  // An unquoted EMPTY word is dropped, exactly as bash drops it: `git {stash,}`
+  // passes git exactly one argument.
+  assert.deepEqual(splitShellSegments('git {stash,}'), ['git stash']);
+  // A pathological word cannot spin the hook, and overflow falls back to the
+  // pre-fix reading rather than to a lost block.
+  const huge = `git {${Array.from({ length: 40 }, (_, i) => `a${i}`).join(',')}}`.repeat(1);
+  assert.ok(splitShellSegments(huge).length >= 1);
+});
+
+// The seam: `{`/`}` stay DECLARED separators (a standalone one is still a
+// boundary) but are excluded from the GLUED split, because bash recognizes them
+// only as whole words. Pinning both halves keeps a future edit from collapsing
+// the distinction back.
+test('AP-EXT-ITER93-06: braces are declared separators but not GLUED ones', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'), 'utf-8',
+  );
+  assert.match(source, /op !== '\\n' && op !== '\{' && op !== '\}'/);
+  assert.match(source, /'\(', '\)', '\{', '\}', '`',/);
+  assert.match(source, /tokens\.push\(\.\.\.expandBraceWord\(buffer\)\)/);
+});
