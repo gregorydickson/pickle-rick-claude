@@ -12359,16 +12359,20 @@ async function runMuxRunnerMain() {
       }
     } catch { /* best-effort — never block iteration on exit-path commit */ }
 
-    // AC-A5 (B-RRH): a rate-limited spawn (rate_limit_wait.json present OR the
-    // iteration log shows a 429) OR a spawn within breaker-recovery grace must NOT
-    // increment the no-progress counter (B-RLAR-D2 429-spawn counter poisoning).
-    // Fail-open: any probe error → not suppressed.
+    // AC-A5 (B-RRH): a rate-limited spawn (this iteration's own log shows a 429)
+    // OR a spawn within breaker-recovery grace must NOT increment the no-progress
+    // counter (B-RLAR-D2 429-spawn counter poisoning). B3: rate_limit_wait.json
+    // PRESENCE is deliberately NOT consulted here — it is a status artifact that
+    // can outlive the iteration that wrote it (a --resume re-arm from a still-live
+    // park, or a crash before fold-on-wake), so its mere presence would misclassify
+    // an unrelated same-window spawn failure as rate-limited. This iteration's own
+    // log is the sole per-iteration signal, and it independently catches every
+    // genuine re-hit of a live limit (the resumed spawn's own API call fails with
+    // its own rate_limit_event). Fail-open: any probe error → not suppressed.
     let apSuppressIncrement = false;
     try {
       const apRateLimited =
-        // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking probe (mirrors the rate_limit_wait check above)
-        fs.existsSync(path.join(sessionDir, 'rate_limit_wait.json'))
-        || detectRateLimitInLog(path.join(sessionDir, `tmux_iteration_${iteration}.log`)).limited;
+        detectRateLimitInLog(path.join(sessionDir, `tmux_iteration_${iteration}.log`)).limited;
       const apBreakerGrace = isWithinBreakerRecoveryGrace(
         cbState,
         resolveHardeningSettings(loadPickleSettingsBag(extensionRoot)).breaker_recovery_grace_seconds,

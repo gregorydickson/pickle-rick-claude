@@ -33,9 +33,12 @@ import {
   drawParkResumeJitterMs,
   isParkExhausted,
   processRateLimitCycle,
+  detectRateLimitInLog,
   PARK_RESUME_JITTER_MIN_MS,
   PARK_RESUME_JITTER_MAX_MS,
 } from '../bin/mux-runner.js';
+import { writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -156,10 +159,13 @@ test('B1: park emits exactly ONE rate_limit_wait and writes the rate_limit_wait.
   assert.ok(h.getWritten()[waitPath], 'rate_limit_wait.json park flag was written');
   assert.equal(h.getWritten()[waitPath].wait_source, 'api');
   assert.equal(h.getWritten()[waitPath].resets_at_epoch, fiveHours);
-  // Source: no worker spawn happens inside the api_limit park block — it `continue`s
-  // before CB recording + result branching, and spawns are suppressed when the flag is present.
+  // Source: no worker spawn happens inside the api_limit park block — the loop
+  // `continue`s before CB recording + result branching entirely, so no new spawn
+  // decision is made this iteration. (Presence of rate_limit_wait.json plays no
+  // role in gating a spawn attempt — see the B3 AC-A5 block: it only ever feeds
+  // the two liveness watchdogs and, until this bundle's B3 fix, a no-progress
+  // counter suppression it should never have fed.)
   assert.match(src, /continue;\s*\/\/ Skip CB recording \+ result branching entirely/);
-  assert.match(src, /rate_limit_wait\.json'\)\)\s*\n/, 'spawn suppression checks rate_limit_wait.json presence');
 });
 
 // ---------------------------------------------------------------------------
@@ -357,4 +363,66 @@ test('B6: the persisted park-arm survives SIGTERM (handler does not clear state.
   const body = handler.slice(0, handler.indexOf('process.exit(0);'));
   assert.ok(!/rate_limit_park\s*=\s*null/.test(body),
     'SIGTERM handler must NOT clear the persisted park-arm — it must survive for --resume re-arm');
+});
+
+// ---------------------------------------------------------------------------
+// B3 — rate_limit_wait.json presence alone cannot classify a spawn failure as
+// rate-limited (AC-M6b); a stale/expired resets_at must not re-arm a park.
+// ---------------------------------------------------------------------------
+
+test('B3/AC-A5: the no-progress-counter suppression no longer reads rate_limit_wait.json presence', () => {
+  // Anchor on the AC-A5 comment text rather than a line number so this survives
+  // unrelated reformatting elsewhere in the file.
+  const acA5Idx = src.indexOf("AC-A5 (B-RRH): a rate-limited spawn");
+  assert.ok(acA5Idx > 0, 'AC-A5 no-progress-counter suppression block must exist');
+  const block = src.slice(acA5Idx, acA5Idx + 2000);
+  const apSuppressEnd = block.indexOf('apSuppressIncrement = apRateLimited || apBreakerGrace;');
+  assert.ok(apSuppressEnd > 0, 'apSuppressIncrement assignment must be present in the block window');
+  const decision = block.slice(0, apSuppressEnd);
+  // The CODE construct that read presence must be gone — a bare substring check
+  // on 'rate_limit_wait.json' would also match this file's own explanatory
+  // prose, so this asserts the removed CALL SHAPE specifically.
+  assert.ok(!/existsSync\([^)]*rate_limit_wait\.json/.test(decision),
+    'AC-A5 must not call fs.existsSync(...rate_limit_wait.json...) — presence alone must not classify a spawn failure');
+  // The per-iteration log detector remains the sole classifier for this disjunct.
+  assert.match(decision, /const apRateLimited =\s*detectRateLimitInLog\(/);
+});
+
+test('B3: a spawn failure with no rate-limit evidence in its OWN log is not classified as rate-limited', () => {
+  // Exercises the exact function AC-A5 now depends on exclusively. A stale
+  // rate_limit_wait.json elsewhere on disk plays no part in this call.
+  const dir = mkdtempSync(path.join(tmpdir(), 'pickle-b3-ratelimit-'));
+  const logFile = path.join(dir, 'tmux_iteration_1.log');
+  writeFileSync(logFile, JSON.stringify({ type: 'result', subtype: 'error', is_error: true }) + '\n');
+  assert.equal(detectRateLimitInLog(logFile).limited, false);
+});
+
+test('B3: a spawn failure WITH a structured rejected rate_limit_event in its own log is still classified as rate-limited', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pickle-b3-ratelimit-'));
+  const logFile = path.join(dir, 'tmux_iteration_1.log');
+  const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+  writeFileSync(logFile, JSON.stringify({
+    type: 'rate_limit_event',
+    rate_limit_info: { status: 'rejected', resetsAt, rateLimitType: 'usage' },
+  }) + '\n');
+  const info = detectRateLimitInLog(logFile);
+  assert.equal(info.limited, true);
+  assert.equal(info.resetsAt, resetsAt);
+});
+
+test('B3: restorePersistedRateLimitPark does not re-arm from a resets_at already in the past (already correct at HEAD, predates this bundle)', () => {
+  // Regression pin, not a new fix: `parkArmStillFuture` was introduced in the
+  // original e9bdac75 feature commit (git log -S confirms it predates B-MEGADRAIN)
+  // and already strictly requires the persisted reset_at to be in the FUTURE
+  // before re-arming — an expired/past resets_at falls through to the
+  // unlink-and-clear branch instead.
+  const fnIdx = src.indexOf('function restorePersistedRateLimitPark');
+  assert.ok(fnIdx > 0, 'restorePersistedRateLimitPark must exist');
+  const fnBody = src.slice(fnIdx, fnIdx + 1500);
+  assert.match(fnBody, /const parkArmStillFuture = typeof persistedReset === 'number' && persistedReset > 0\s*&&\s*persistedReset \* 1000 > Date\.now\(\);/);
+  assert.match(fnBody, /if \(parkArmStillFuture && persistedPark\) {/);
+  // The strict future-only guard, not `>=`, is what refuses a resets_at that is
+  // exactly now or in the past.
+  assert.ok(!/persistedReset \* 1000 >= Date\.now\(\)/.test(fnBody),
+    'the re-arm guard must be a strict future check, not >=');
 });
