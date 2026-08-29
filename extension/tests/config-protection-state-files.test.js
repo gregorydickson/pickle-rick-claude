@@ -1590,7 +1590,12 @@ test('AP-EXT-ITER73-04: both write-destination arms read through the shared read
     handler.indexOf('function expandLeadingHome'),
   );
   assert.ok(basenameFn.length > 0, 'matchProtectedStateBasename body must be locatable');
-  assert.match(basenameFn, /execNamesIn\(spelling, PROTECTED_STATE_BASENAMES\)/);
+  // AP-EXT-ITER96-01 moved this arm off `execNamesIn` — whose `*`-elision was
+  // bought for SHORT COMMAND WORDS and under-blocked four long dotted filenames —
+  // onto the coverage reader. Re-borrowing the command-word matcher here re-opens
+  // `> <session>/stat*.json`.
+  assert.match(basenameFn, /wordSpellsProtectedName\(spelling, name\)/);
+  assert.doesNotMatch(basenameFn, /execNamesIn\(/);
   // The bypass shape: comparing the destination word as a literal.
   assert.doesNotMatch(basenameFn, /=== candidate/);
 
@@ -1604,3 +1609,72 @@ test('AP-EXT-ITER73-04: both write-destination arms read through the shared read
   assert.doesNotMatch(rootFn, /resolved === runtimeRoot/);
   assert.doesNotMatch(rootFn, /\.startsWith\(runtimeRoot/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER96-01 — a `*`-bearing spelling of a protected state file
+//
+// `matchProtectedStateBasename` read its destination through `execNamesIn`,
+// which refuses ANY `*`-bearing word. That bound is correct where it was
+// measured — SHORT COMMAND WORDS, where `**No` names `nano` — but this domain
+// holds four long dotted filenames, so the borrowed bound approved every `*`
+// spelling of state.json while the `?` twin (AP-EXT-ITER93-03) and the config
+// sibling both blocked the same shape.
+//
+// Shim-verified at BOTH ends before the fix: the handler approved, and bash
+// really clobbers — `echo CLOBBERED > <dir>/stat*.json` overwrites state.json,
+// as do `state.js*n`, `circuit_break*r.json` and the `tee` form.
+// ---------------------------------------------------------------------------
+
+for (const [label, basename] of [
+  ['redirect, elided middle', 'stat*.json'],
+  ['redirect, elided in ext', 'state.js*n'],
+  ['redirect, elided vowel', 'sta*e.json'],
+  ['circuit breaker', 'circuit_break*r.json'],
+  ['pipeline status', 'pipeline-stat*.json'],
+  ['settings', 'pickle_setting*.json'],
+]) {
+  test(`AP-EXT-ITER96-01: blocks a \`*\` spelling of a protected state file — ${label}`, () => {
+    assert.equal(
+      runWorkerBashOnSessionFile(basename, (t) => `echo x > ${t}`).decision,
+      'block',
+      `${basename} expands onto a protected state file and must not approve`,
+    );
+  });
+}
+
+for (const [label, buildCommand] of [
+  ['append', (t) => `echo x >> ${t}`],
+  ['tee', (t) => `echo x | tee ${t}`],
+  ['cp', (t) => `cp /etc/hosts ${t}`],
+  ['sed -i', (t) => `sed -i '' 's/a/b/' ${t}`],
+]) {
+  test(`AP-EXT-ITER96-01: the \`*\` spelling blocks on every write seam — ${label}`, () => {
+    assert.equal(
+      runWorkerBashOnSessionFile('stat*.json', buildCommand).decision,
+      'block',
+      `${label} must read the destination as the word bash expands`,
+    );
+  });
+}
+
+// The RELIABILITY direction, and the reason the bound is COVERAGE rather than a
+// blanket `*` read. These exact spellings were measured in this repo's live
+// worker logs (120,737 tokens): bare `*` x501, `**` x41, `c*` x11, plus `s**`
+// and `pickle_*`. Reading `*` unconditionally would block all of them — a
+// blocked artifact write stalls a ticket, which is the cost `execNamesIn`'s
+// bound was bought to avoid. Coverage keeps every one of them approving.
+for (const [label, command] of [
+  ['bare * arg', 'grep -rn "*" src/ > /tmp/g.txt'],
+  ['markdown emphasis in a heredoc body', 'cat > /tmp/r.md <<\'E\'\n**Note**: see *state* handling\nE'],
+  ['short glob c*', 'echo x > /tmp/c*'],
+  ['short glob s**', 'echo x > /tmp/s**'],
+  ['prefix glob pickle_*', 'ls pickle_* > /tmp/l.txt'],
+]) {
+  test(`AP-EXT-ITER96-01: coverage keeps an accidental glob approving — ${label}`, () => {
+    assert.equal(
+      runWorkerBash(command).decision,
+      'approve',
+      `${label} spells too little of any protected name to be an obfuscated write`,
+    );
+  });
+}

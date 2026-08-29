@@ -116,21 +116,56 @@ function stripTmpSuffix(basename) {
  * built for, and the same question `isProtectedShellPattern` asks of the config
  * domain. Measured on the shipped handler pre-fix: 12 of 14 globbed write forms
  * APPROVED for a worker across redirect, `>>`, `>|`, tee/cp/mv and `sed -i`
- * while all three literal twins blocked. `execNamesIn` rather than a private
- * matcher so the state domain cannot re-fork from the write-command seam, and
- * its `*`-eliding bound is inherited deliberately (AP-EXT-ITER93-04) — the
- * measured cost of widening it is blocked worker artifact writes.
+ * while all three literal twins blocked.
+ *
+ * AP-EXT-ITER96-01: the bound is COVERAGE, not the command-word matcher's
+ * `*`-elision, because this domain's names are not command words. `execNamesIn`
+ * refuses to read ANY `*`-bearing spelling — a bound bought for SHORT command
+ * names (`**No` names `nano`), where it is correct — and the state domain
+ * borrowed it for four long dotted filenames it was never measured against, so
+ * `> <session>/stat*.json` APPROVED while its `?` twin blocked and the config
+ * sibling blocked the same shape (shim-verified both ends: the handler approves
+ * and bash really clobbers state.json through it).
+ *
+ * `wordSpellsProtectedName` asks the ONE answerable question instead — does the
+ * word LITERALLY spell at least half the name it expands to — which subsumes
+ * both of `execNamesIn`'s bounds without enumerating a spelling. Measured over
+ * 120,737 tokens of real worker Bash: the obfuscated spellings score 0.90–0.95
+ * and the accidental globs that bound exists to protect score 0.00–0.35 (`*`
+ * x501, `**` x41, `c*` x11, `s**`, `pickle_*`), so closing this costs ZERO
+ * worker artifact writes. Do NOT push this bound down into `execNamesIn`: at
+ * command-word length it would re-block `v*`/`*no`, the cost that bound bought.
  */
 function matchProtectedStateBasename(filePath) {
     if (!filePath)
         return null;
     const base = path.basename(filePath).toLowerCase();
     for (const spelling of [base, stripTmpSuffix(base)]) {
-        const named = execNamesIn(spelling, PROTECTED_STATE_BASENAMES);
-        if (named.length > 0)
-            return named[0];
+        const named = PROTECTED_STATE_BASENAMES.find((name) => wordSpellsProtectedName(spelling, name));
+        if (named)
+            return named;
     }
     return null;
+}
+/**
+ * True when the shell word `word` names `name` — literally, or as a pattern bash
+ * pathname-expands to it that SPELLS at least half of it.
+ *
+ * The coverage half is what separates an obfuscated spelling of a protected file
+ * from a short glob that reaches one by accident; a wildcard contributes no
+ * literal, and neither does a bracket or brace body (`shellPatternToRegex` emits
+ * a fixed class for those, so their contents are not read as characters here
+ * either — the AP-EXT-ITER5-01 convention).
+ */
+function wordSpellsProtectedName(word, name) {
+    if (word === name)
+        return true;
+    if (!SHELL_PATTERN_CHARS.test(word))
+        return false;
+    if (!shellPatternToRegex(word).test(name))
+        return false;
+    const literals = word.replace(/\[[^\]]*\]/g, '').replace(/\{[^}]*\}/g, '').replace(/[*?]/g, '').length;
+    return literals * 2 >= name.length;
 }
 /**
  * Expands a leading `~`, `~/`, `$HOME`, or `${HOME}` to the absolute home
