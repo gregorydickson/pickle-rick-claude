@@ -345,17 +345,25 @@ const SINGLE_POSITION_WILDCARD_RE = /^(?:\?|\[[^\]]*\]|\{[^}]*\})$/;
  * Quoting is not consulted, the same uniform reading `execNameIs` takes: bash
  * does not expand a quoted word, so `'ba?h'` is over-read as a wrapper here.
  * Over-reach is fail-safe in this predicate's direction — see below.
+ *
+ * `wantedAt` receives the position index and the position COUNT, and answers
+ * with the character the caller's shape wants there. Every shape that must be
+ * asked of a word bash will expand — the interpreter name below, `sed`'s
+ * in-place flag in `config-protection.ts` — asks it through this ONE function,
+ * so the reading of "which construct stands for one position, and may be
+ * filled" has a single definition and cannot fork per caller.
  */
-function shellShapeWitness(folded) {
+export function shellWordWitness(folded, wantedAt) {
     const positions = folded.match(SHELL_WORD_POSITION_RE) ?? [];
-    const head = positions.length - SHELL_INTERPRETER_NAME_TAIL.length;
     return positions
-        .map((position, idx) => {
-        if (!SINGLE_POSITION_WILDCARD_RE.test(position))
-            return position;
-        return idx < head ? SHELL_INTERPRETER_HEAD_FILL : SHELL_INTERPRETER_NAME_TAIL[idx - head];
-    })
+        .map((position, idx) => (SINGLE_POSITION_WILDCARD_RE.test(position) ? wantedAt(idx, positions.length) : position))
         .join('');
+}
+function shellShapeWitness(folded) {
+    return shellWordWitness(folded, (idx, positions) => {
+        const head = positions - SHELL_INTERPRETER_NAME_TAIL.length;
+        return idx < head ? SHELL_INTERPRETER_HEAD_FILL : SHELL_INTERPRETER_NAME_TAIL[idx - head];
+    });
 }
 /**
  * True when the token is a shell wrapper to be skipped before the real exec.

@@ -14,6 +14,7 @@ import {
   isShellWrapper,
   SHELL_PATTERN_CHARS,
   shellPatternToRegex,
+  shellWordWitness,
   splitShellSegments,
   tokenizeShellCommand,
   tokenizeShellTokens,
@@ -440,14 +441,38 @@ const WRITE_COMMANDS = [
  */
 const IN_PLACE_ONLY_WRITERS = new Set(['sed']);
 
+/** The long spelling of sed's in-place flag — ONE declaration, the regex is built from it. */
+const IN_PLACE_LONG_OPTION = '--in-place';
+const IN_PLACE_LONG_RE = new RegExp(`^${IN_PLACE_LONG_OPTION}(=|$)`);
+
+/** The character a single-dash option cluster must carry to be in-place mode. */
+const IN_PLACE_CLUSTER_CHAR = 'i';
+
 /**
  * True for `--in-place`, `--in-place=.bak`, and any single-dash cluster carrying
  * an `i` (`-i`, `-i.bak`, `-i''`, `-ni`). Long options other than `--in-place`
  * are excluded so a script passed as `--expression='s/a/i/'` is not read as one.
+ *
+ * Both arms are asked of a WITNESS (`shellWordWitness`), not of the raw word,
+ * because bash pathname-expands an option word like any other: with a file named
+ * `-i` in cwd, `sed -? '' s/a/b/ <state.json>` really rewrites the file
+ * (shim-verified 2026-08-29 on this box — the target's contents were replaced),
+ * while a literal `.includes('i')` saw `-?`, matched nothing, and APPROVED a
+ * worker write through both R-WSRC-3 write gates. Same expansion-is-not-quoting
+ * seam as `isShellWrapper` and `execNameIs`; this predicate is a SHAPE test, so
+ * only the shared witness could reach it.
+ *
+ * The two arms want different fills — the long arm the option's own character at
+ * that index, the cluster arm an `i` anywhere past the dash — so each supplies
+ * its own `wantedAt`. What must NOT fork is the reading of "which construct
+ * stands for one position", and that stays in `shellWordWitness`.
  */
 function isInPlaceFlag(arg: string): boolean {
-  if (arg.startsWith('--')) return /^--in-place(=|$)/.test(arg);
-  return arg.startsWith('-') && arg.slice(1).includes('i');
+  if (arg.startsWith('--')) {
+    return IN_PLACE_LONG_RE.test(shellWordWitness(arg, idx => IN_PLACE_LONG_OPTION[idx] ?? '='));
+  }
+  return arg.startsWith('-')
+    && shellWordWitness(arg, () => IN_PLACE_CLUSTER_CHAR).slice(1).includes(IN_PLACE_CLUSTER_CHAR);
 }
 
 /**

@@ -1302,3 +1302,146 @@ test('AP-EXT-ITER73-02: Pass 2 asks execNamesIn, never a literal set-membership 
   assert.doesNotMatch(body, /WRITE_COMMANDS\.has\(/);
   assert.doesNotMatch(handler, /const WRITE_COMMANDS = new Set\(/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER93-07: bash EXPANDS an option word, so a globbed in-place flag
+// really puts `sed` in in-place mode.
+//
+// AP-EXT-ITER73-01/93-02/93-05 taught every NAME compare in this subsystem to
+// read a pattern-bearing word as the pattern it is, and AP-EXT-ITER93-01 did the
+// same for the wrapper SHAPE by asking it of a WITNESS. `isInPlaceFlag` is the
+// remaining SHAPE test: a character-class read (`--in-place…`, or a single-dash
+// cluster carrying an `i`), so `execNameIs` could not reach it and the raw fold
+// matched nothing over a wildcard.
+//
+// Measured against the shipped handler before the fix, with a file named `-i`
+// in cwd: `sed -? '' s/a/b/ <session>/state.json` APPROVED for a worker past
+// BOTH R-WSRC-3 write gates while `sed -i` blocked — and it is not theoretical,
+// the shim run really replaced the target file's contents. `--in-plac?` and
+// `--in-plac[e]` measured the same. `-[i]` and `-{i,i}` blocked by accident
+// (a bracket body still contains the literal `i`; braces expand upstream via
+// AP-EXT-ITER93-06), which is exactly the kind of partial coverage that made the
+// hole hard to see.
+//
+// Cost measured over 10140 unique real worker Bash commands from 558 live
+// session logs: 12 word-level predicate flips across 481838 words, and ZERO of
+// them land in a segment naming `sed` — so zero real commands change verdict.
+// (The predicate is consulted only for `sed`; `anchorWritesPositionalArg`
+// early-returns for every other WRITE_COMMANDS member.)
+//
+// Both directions are pinned: widening the flag test must not turn a read into
+// a write.
+// ---------------------------------------------------------------------------
+
+for (const [label, build, literalTwin] of [
+  ['sed -? single-dash glob', (t) => `sed -? '' s/a/b/ ${t}`, (t) => `sed -i '' s/a/b/ ${t}`],
+  ['sed -n? glob in a cluster', (t) => `sed -n? '' s/a/b/ ${t}`, (t) => `sed -ni '' s/a/b/ ${t}`],
+  ['sed --in-plac? long-option glob', (t) => `sed --in-plac? s/a/b/ ${t}`, (t) => `sed --in-place s/a/b/ ${t}`],
+  ['sed --in-plac[e] long-option bracket', (t) => `sed --in-plac[e] s/a/b/ ${t}`, (t) => `sed --in-place s/a/b/ ${t}`],
+  ['sed --in-plac?=.bak glob before the value', (t) => `sed --in-plac?=.bak s/a/b/ ${t}`, (t) => `sed --in-place=.bak s/a/b/ ${t}`],
+  ['sed -[i] bracket cluster', (t) => `sed -[i] '' s/a/b/ ${t}`, (t) => `sed -i '' s/a/b/ ${t}`],
+]) {
+  test(`AP-EXT-ITER93-07: ${label} blocks the state write`, () => {
+    assert.equal(
+      runWorkerBashInSession(build).decision,
+      'block',
+      'bash expands an option word; the in-place SHAPE must be asked of a witness',
+    );
+  });
+
+  // Non-tautology control: the literal twin must ALSO block, so the globbed case
+  // is testing the expansion reading rather than an unrelated always-block path.
+  test(`AP-EXT-ITER93-07: literal twin of ${label} still blocks`, () => {
+    assert.equal(runWorkerBashInSession(literalTwin).decision, 'block');
+  });
+}
+
+test('AP-EXT-ITER93-07: the settings gate moves with the state gate', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const settings = path.join(tmpDir, 'pickle_settings.json');
+  fs.writeFileSync(settings, '{}');
+  const result = runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `sed -? '' s/a/b/ ${settings}` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+});
+
+// The widening must not turn a READ into a write — the AP-EXT-ITER47-01
+// over-block this predicate exists to prevent.
+for (const [label, build] of [
+  ['sed -n range', (t) => `sed -n '1,200p' ${t}`],
+  ['sed -e script to stdout', (t) => `sed -e 's/a/b/' ${t}`],
+  ['sed -f script file', (t) => `sed -f prog.sed ${t}`],
+  ['sed -E -n extended regex', (t) => `sed -E -n '/x/p' ${t}`],
+  ['sed --expression carrying an i in the script', (t) => `sed --expression='s/a/i/' ${t}`],
+]) {
+  test(`AP-EXT-ITER93-07: read-only ${label} still approves`, () => {
+    assert.equal(runWorkerBashInSession(build).decision, 'approve');
+  });
+}
+
+test('AP-EXT-ITER93-07: shellWordWitness fills only SINGLE-POSITION wildcards', async () => {
+  const { shellWordWitness } = await import(
+    pathToFileURL(path.resolve(__dirname, '../hooks/shell-exec.js')).href
+  );
+  // A word carrying no wildcard is its own witness — one uniform test, not a
+  // literal arm plus a pattern arm.
+  assert.equal(shellWordWitness('-i', () => 'i'), '-i');
+  assert.equal(shellWordWitness('--in-place', (idx) => '--in-place'[idx] ?? '='), '--in-place');
+
+  // `?`, a bracket expression and a brace alternation each stand for ONE
+  // position and are filled with what the caller's shape wants there.
+  assert.equal(shellWordWitness('-?', () => 'i'), '-i');
+  assert.equal(shellWordWitness('-[xyz]', () => 'i'), '-i');
+  assert.equal(shellWordWitness('-{a,b}', () => 'i'), '-i');
+  assert.equal(shellWordWitness('--in-plac?', (idx) => '--in-place='[idx] ?? '='), '--in-place');
+
+  // `*` absorbs an arbitrary RUN, so it is NOT filled — it survives into the
+  // witness and fails the shape. This is the AP-EXT-ITER93-01 measured bound;
+  // removing it turns markdown emphasis in a heredoc artifact body into a match.
+  assert.equal(shellWordWitness('-*', () => 'i'), '-*');
+  assert.equal(shellWordWitness('**PASS**', () => 'i'), '**PASS**');
+});
+
+test('AP-EXT-ITER93-07: isInPlaceFlag asks a witness, and the fill machinery has ONE home', () => {
+  const handler = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'),
+    'utf-8',
+  );
+  const body = handler.slice(
+    handler.indexOf('function isInPlaceFlag'),
+    handler.indexOf('function anchorWritesPositionalArg'),
+  );
+  assert.ok(body.length > 0, 'isInPlaceFlag body must be locatable');
+  assert.match(body, /shellWordWitness\(/);
+  // The bypass shape: reading the RAW argument. A `.slice(1).includes` or a
+  // regex `.test` on `arg` itself can never see an expansion.
+  assert.doesNotMatch(body, /arg\.slice\(1\)\.includes\(/);
+  assert.doesNotMatch(body, /IN_PLACE_LONG_RE\.test\(arg\)/);
+  // ONE declaration of the long option, so the regex and the fill cannot drift
+  // — the AP-EXT-ITER93-01 one-declaration rule.
+  assert.match(handler, /const IN_PLACE_LONG_RE = new RegExp\(`\^\$\{IN_PLACE_LONG_OPTION\}/);
+
+  // The position-splitting and fillability rule stays in shell-exec.ts: the
+  // interpreter shape reaches it through the same primitive, so a future caller
+  // cannot fork "which construct stands for one position".
+  const shellExec = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/shell-exec.ts'),
+    'utf-8',
+  );
+  assert.equal(
+    (shellExec.match(/SINGLE_POSITION_WILDCARD_RE\.test\(/g) ?? []).length,
+    1,
+    'exactly one fillability test, inside shellWordWitness',
+  );
+  const shapeWitness = shellExec.slice(
+    shellExec.indexOf('function shellShapeWitness'),
+    shellExec.indexOf('export function isShellWrapper'),
+  );
+  assert.match(shapeWitness, /return shellWordWitness\(folded, /);
+  assert.doesNotMatch(shapeWitness, /SHELL_WORD_POSITION_RE/);
+});

@@ -3974,13 +3974,27 @@ test('AP-EXT-ITER93-01: the shape has one declaration and the fill is bounded', 
   // The tail is the shape's one declaration — the regex is built from it and so
   // is the fill, so the two readings cannot drift.
   assert.match(source, /const SHELL_INTERPRETER_NAME_RE = new RegExp\(`\^\[a-z\]\*\$\{SHELL_INTERPRETER_NAME_TAIL\}\$`\)/);
-  // The bound lives in the fill, not in an arm of its own.
+  // The bound lives in the fill, not in an arm of its own. AP-EXT-ITER93-07
+  // extracted the fill machinery into the shared `shellWordWitness` so `sed`'s
+  // in-place SHAPE could ask the same question; the bound moved WITH it, so this
+  // pin follows the rule to its new home rather than scoping to the caller that
+  // used to inline it (a name-scoped anchor outliving its symbol is how this
+  // catalog ships green over a violated invariant).
   const witness = source.slice(
-    source.indexOf('function shellShapeWitness('),
+    source.indexOf('export function shellWordWitness('),
     source.indexOf('export function isShellWrapper('),
   );
   assert.match(witness, /SINGLE_POSITION_WILDCARD_RE\.test\(position\)/);
   assert.doesNotMatch(witness, /includes\('\*'\)/);
+  // `shellShapeWitness` supplies only the interpreter shape's per-position fill;
+  // it must not re-acquire a private positions walk, or the two witnesses can
+  // once again disagree about which construct stands for one position.
+  const shapeWitness = source.slice(
+    source.indexOf('function shellShapeWitness('),
+    source.indexOf('export function isShellWrapper('),
+  );
+  assert.match(shapeWitness, /return shellWordWitness\(folded, /);
+  assert.doesNotMatch(shapeWitness, /SHELL_WORD_POSITION_RE/);
   // List-free: no shell NAME literals anywhere in the wrapper seam.
   assert.doesNotMatch(body + witness, /'(bash|zsh|dash|ksh|csh|tcsh|fish)'/);
 });
