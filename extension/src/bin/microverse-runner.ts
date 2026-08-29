@@ -2884,26 +2884,9 @@ export async function probeJudgeBackendAvailability(backend: ProbeJudgeBackend, 
 }
 
 /**
- * B2 (AC-M6a): the rate-limit wait used to be a DURABLE CONCLUSION ABOUT THE WORLD THAT NOTHING
- * RE-CHECKED — `waitEnd = now + waitMs`, computed once from a `resets_at` hint, then slept out.
- * A `seven_day` limit clamps to `DEFAULT_MAX_PARK_MINUTES` (360), so a limit that actually cleared
- * in ~45 minutes still burned all six hours. `rate_limit_wait.json` cannot help: it is a STATUS
- * artifact nothing in the loop reads, so deleting it changes nothing.
- *
- * This asks the API again. Exit 0 means the API SERVED us, which is the entire cleared rule — no
- * text analysis is needed on the success path. Only the failure path is classified, and it is
- * classified by `classifyIterationExit`, the SAME oracle that produced the `api_limit` verdict that
- * started the wait. There is deliberately no second pattern list here; one more hand-maintained
- * catalog of rate-limit phrasings is one more member away from the next silent miss.
- *
- * Three verdicts, ONE control decision. Only `'cleared'` shortens the wait; `'limited'` and
- * `'unknown'` behave identically and differ only in what the operator is told. That split is a
- * REPORTING property: an operator whose `claude` binary is missing should be able to see that the
- * wait ran long because the probe was broken, not because the limit was real.
- *
- * Non-halting by construction: the body catches everything, so it has no channel to throw into the
- * wait loop, and it never assigns `ctx.rateLimitExitReason`. A probe that fails forever degrades to
- * exactly the pre-B2 behaviour — sleep the deadline out — and says so in the log.
+ * Three verdicts, ONE control decision: only `'cleared'` shortens a rate-limit wait. `'limited'`
+ * and `'unknown'` behave identically and differ only in what the operator is told — a REPORTING
+ * distinction, deliberately not a second control path.
  */
 type RateLimitProbeVerdict = 'cleared' | 'limited' | 'unknown';
 
@@ -2956,6 +2939,25 @@ async function rateLimitWaitClearedByProbe(ctx: RunContext): Promise<boolean> {
   return false;
 }
 
+/**
+ * B2 (AC-M6a): re-ask the API whether the rate limit still holds.
+ *
+ * The wait used to be a DURABLE CONCLUSION ABOUT THE WORLD THAT NOTHING RE-CHECKED —
+ * `waitEnd = now + waitMs`, computed once from a `resets_at` hint, then slept out. A `seven_day`
+ * limit clamps to `DEFAULT_MAX_PARK_MINUTES` (360), so a limit that actually cleared in ~45 minutes
+ * still burned all six hours. `rate_limit_wait.json` cannot help: it is a STATUS artifact nothing
+ * in the wait reads, so deleting it changes nothing.
+ *
+ * Exit 0 means the API SERVED us, which is the entire cleared rule — no text analysis is needed on
+ * the success path. Only the failure path is classified, and it is classified by
+ * `classifyIterationExit`, the SAME oracle that produced the `api_limit` verdict that started the
+ * wait. There is deliberately no second pattern list here; one more hand-maintained catalog of
+ * rate-limit phrasings is one more member away from the next silent miss.
+ *
+ * Never assigns `ctx.rateLimitExitReason`, so it cannot introduce a halt path. It also catches its
+ * own spawn failures — but callers must not rely on that alone; `rateLimitWaitClearedByProbe` owns
+ * the total guarantee, because the setup above the try block can still throw.
+ */
 async function probeRateLimitCleared(ctx: RunContext): Promise<RateLimitProbeVerdict> {
   const backend = resolveWorkerBackendFromState(ctx.currentRunnerState).backend;
   const cwd = ctx.workingDir;
@@ -3978,17 +3980,18 @@ export async function handleRateLimit(
     duration_min: waitMetadata.durationMin ?? Math.ceil(actualWaitMs / 60_000),
   });
   const waitStart = _deps.now();
+  const waitEnd = waitStart + actualWaitMs;
   writeStateFile(path.join(ctx.sessionDir, RATE_LIMIT_WAIT_FILENAME), {
     waiting: true, reason: 'API rate limit',
     started_at: new Date(waitStart).toISOString(),
-    wait_until: new Date(waitStart + actualWaitMs).toISOString(),
+    wait_until: new Date(waitEnd).toISOString(),
     consecutive_waits: ctx.consecutiveRateLimits,
     rate_limit_type: waitMetadata.rateLimitType ?? null,
     resets_at_epoch: waitMetadata.resetsAt ?? null,
     wait_source: waitMetadata.waitSource ?? null,
   });
 
-  await runRateLimitWaitLoop(ctx, signal, waitStart, waitStart + actualWaitMs);
+  await runRateLimitWaitLoop(ctx, signal, waitStart, waitEnd);
 
   if (!ctx.rateLimitExitReason) {
     clearRateLimitWaitFile(ctx.sessionDir);

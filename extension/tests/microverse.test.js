@@ -585,7 +585,7 @@ test('runIteration is exported from mux-runner', () => {
 
 // --- microverse-runner tests ---
 
-import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, boundRemediationPrompt, REMEDIATION_PROMPT_MAX_BYTES, applyTestBackendOverrideFromEnv, AMNESIAC_TURN_THRESHOLD } from '../bin/microverse-runner.js';
+import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, boundRemediationPrompt, REMEDIATION_PROMPT_MAX_BYTES, applyTestBackendOverrideFromEnv, AMNESIAC_TURN_THRESHOLD, resolveRateLimitProbeIntervalMs } from '../bin/microverse-runner.js';
 import { resetToSha } from '../services/git-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { writeStateFile } from '../services/pickle-utils.js';
@@ -3545,7 +3545,8 @@ test('AC-CF-07: the turn-count proxy survives for a DIRTY tree — amnesiac stay
 /** Rig a `handleRateLimit` wait on a fake clock. Returns the ctx plus the clock reader. */
 function createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs }) {
     const statePath = path.join(sessionDir, 'state.json');
-    let clock = 1_700_000_000_000;
+    const epoch = 1_700_000_000_000;
+    let clock = epoch;
     _deps.now = () => clock;
     _deps.sleep = async () => { clock += advancePerPollMs; };
     const logLines = [];
@@ -3558,7 +3559,7 @@ function createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs })
         consecutiveRateLimits: 1,
         log: (msg) => logLines.push(msg),
     };
-    return { ctx, logLines, startedAt: clock, elapsed: () => clock - 1_700_000_000_000 };
+    return { ctx, logLines, elapsed: () => clock - epoch };
 }
 
 test('B2/AC-M6a: a rate limit that clears early ends the wait early', async () => {
@@ -3713,4 +3714,31 @@ test('B2/AC-M6a: the real probe reads a live backend exit, not a persisted concl
         _deps.spawn = originalSpawn;
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
+});
+
+test('B2/AC-M6a: the probe interval resolver floors an override and falls back on garbage', () => {
+    // Governs how often a park spends a spawn, so each branch is pinned: a bad override must not
+    // silently become "probe constantly", and a valid one must actually be honoured.
+    const TEN_MINUTES = 10 * 60 * 1000;
+    assert.equal(resolveRateLimitProbeIntervalMs({}), TEN_MINUTES, 'absent → compiled default');
+    assert.equal(
+        resolveRateLimitProbeIntervalMs({ PICKLE_RATE_LIMIT_PROBE_INTERVAL_MS: 'soon' }),
+        TEN_MINUTES,
+        'garbage → compiled default, never 0 (which would probe on every poll)',
+    );
+    assert.equal(
+        resolveRateLimitProbeIntervalMs({ PICKLE_RATE_LIMIT_PROBE_INTERVAL_MS: '0' }),
+        TEN_MINUTES,
+        'zero → compiled default',
+    );
+    assert.equal(
+        resolveRateLimitProbeIntervalMs({ PICKLE_RATE_LIMIT_PROBE_INTERVAL_MS: '1000' }),
+        60_000,
+        'below the floor → clamped UP, so an override cannot turn a park into a spawn-burn',
+    );
+    assert.equal(
+        resolveRateLimitProbeIntervalMs({ PICKLE_RATE_LIMIT_PROBE_INTERVAL_MS: '1800000' }),
+        1_800_000,
+        'a valid override is honoured',
+    );
 });
