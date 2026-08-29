@@ -310,6 +310,171 @@ test('A3: scoped signature promotes a dead-owner scope.json.tmp so refreshed pat
   }
 });
 
+// -- AP-EXT-ITER98-02 -- the source-tree signature must see INSIDE an untracked dir --
+//
+// git's DEFAULT untracked mode collapses a WHOLLY-untracked directory into ONE `dir/`
+// record. `computeSourceTreeSignature` hashed a bare `--porcelain`, so a worker whose
+// only output was new files inside an already-untracked directory left the digest
+// BYTE-IDENTICAL, `isSourceSignatureProgress` read false over real work, and
+// `recordWorkerArtifactProgress` charged the producing spawn as zero-progress -- the
+// same charge that walks a ticket toward worker_artifact_progress_zero. `-uall` is the
+// AP-EXT-ITER98-01 subtraction applied to this probe pair: one output domain, not two.
+
+function initSignatureRepo(prefix) {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf-8', stdio: 'pipe', timeout: 10_000 });
+  git('init', '-q');
+  git('config', 'user.email', 't@t.t');
+  git('config', 'user.name', 't');
+  fs.writeFileSync(path.join(repo, 'seed.txt'), 'seed\n');
+  git('add', '-A');
+  git('commit', '-qm', 'seed', '--no-gpg-sign');
+  return repo;
+}
+
+test('AP-EXT-ITER98-02: whole-tree signature moves when a file lands INSIDE an already-untracked dir', async () => {
+  const { computeSourceTreeSignature } = await import('../bin/mux-runner.js');
+  const repo = initSignatureRepo('ap98-02-whole-');
+  try {
+    // The directory is ALREADY untracked at baseline -- the collapse case.
+    fs.mkdirSync(path.join(repo, 'newpkg', 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'newpkg', 'a.ts'), 'export const a = 1;\n');
+    const baseline = computeSourceTreeSignature(repo);
+    assert.ok(typeof baseline === 'string', 'baseline signature reads as a string');
+    assert.ok(
+      baseline.includes('newpkg/a.ts'),
+      'the probe enumerates FILES inside the untracked dir, not the collapsed `newpkg/` token',
+    );
+
+    // The worker's entire output: two more files inside that same untracked directory.
+    fs.writeFileSync(path.join(repo, 'newpkg', 'b.ts'), 'export const b = 2;\n');
+    fs.writeFileSync(path.join(repo, 'newpkg', 'sub', 'c.ts'), 'export const c = 3;\n');
+    const after = computeSourceTreeSignature(repo);
+    assert.notEqual(after, baseline, 'files added inside an already-untracked dir MOVE the signature');
+    assert.ok(after.includes('newpkg/sub/c.ts'), 'the nested file is enumerated at depth');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER98-02: scoped signature over a DIRECTORY pathspec also sees inside it', async () => {
+  const { computeScopedSourceTreeSignature } = await import('../bin/mux-runner.js');
+  const repo = initSignatureRepo('ap98-02-scoped-');
+  try {
+    // A directory-shaped allowed_paths entry (the shape the A3 tests above pin) over a
+    // WHOLLY-untracked directory: a directory pathspec does NOT defeat the collapse.
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+    const scopePath = path.join(repo, 'scope.json');
+    fs.writeFileSync(scopePath, JSON.stringify({ allowed_paths: ['src/'] }));
+
+    const baseline = computeScopedSourceTreeSignature(repo, scopePath);
+    assert.ok(baseline.includes('src/a.ts'), 'scoped probe enumerates files, not the `src/` token');
+
+    fs.writeFileSync(path.join(repo, 'src', 'b.ts'), 'export const b = 2;\n');
+    assert.notEqual(
+      computeScopedSourceTreeSignature(repo, scopePath),
+      baseline,
+      'an in-scope file added inside the untracked scope dir MOVES the scoped signature',
+    );
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER98-02: a source-only spawn inside an untracked dir is NOT charged zero-progress', async () => {
+  const { recordWorkerArtifactProgress, computeScopedSourceTreeSignature } = await import('../bin/mux-runner.js');
+  const { sessionDir, statePath } = setupSession('ap98-02-charge-');
+  const repo = initSignatureRepo('ap98-02-charge-work-');
+  const id = 'ap9802ch';
+  // No scope.json on this path -> the scoped entry point delegates to the whole-tree probe,
+  // which is the live shape for a session launched without --scope.
+  const sigFn = (wd) => computeScopedSourceTreeSignature(wd, path.join(sessionDir, 'scope.json'));
+  try {
+    fs.mkdirSync(path.join(repo, 'newpkg'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'newpkg', 'a.ts'), 'export const a = 1;\n');
+
+    // Spawn 1 seeds the baseline signature (M2: seeding is never a zero-progress charge).
+    let r = recordWorkerArtifactProgress(statePath, sessionDir, id, 0, {
+      k: 3, workingDir: repo, sourceSignatureFn: sigFn,
+    });
+    assert.equal(r.zeroProgressCount, 0, 'spawn-1 seeds the baseline');
+
+    // Spawn 2's ONLY output is source work inside the already-untracked directory --
+    // no new lifecycle artifact. This is real progress and must not be charged.
+    fs.writeFileSync(path.join(repo, 'newpkg', 'b.ts'), 'export const b = 2;\n');
+    r = recordWorkerArtifactProgress(statePath, sessionDir, id, 0, {
+      k: 3, workingDir: repo, sourceSignatureFn: sigFn,
+    });
+    assert.equal(
+      r.zeroProgressCount,
+      0,
+      'a spawn that only added files inside an untracked dir is NOT charged zero-progress',
+    );
+    assert.ok(
+      readProgress(statePath, id).last_source_signature.includes('newpkg/b.ts'),
+      'the persisted signature records the file the worker actually produced',
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER98-02: both signature entry points compose through ONE NUL-joined combiner', async () => {
+  const { computeSourceTreeSignature, computeScopedSourceTreeSignature } = await import('../bin/mux-runner.js');
+  const repo = initSignatureRepo('ap98-02-join-');
+  try {
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+    const scopePath = path.join(repo, 'scope.json');
+    fs.writeFileSync(scopePath, JSON.stringify({ allowed_paths: ['src/'] }));
+
+    // NUL is the one byte git emits in NEITHER probe's output, so the status half
+    // cannot blur into the numstat half. The scoped path previously joined on a
+    // SPACE, which `status --porcelain` emits in every record.
+    for (const [label, sig] of [
+      ['whole-tree', computeSourceTreeSignature(repo)],
+      ['scoped', computeScopedSourceTreeSignature(repo, scopePath)],
+    ]) {
+      assert.equal(typeof sig, 'string', `${label} signature reads`);
+      assert.equal(sig.split('\u0000').length, 2, `${label} signature has exactly ONE NUL joiner`);
+      assert.ok(sig.includes(' '), `${label} signature contains spaces, so a space joiner is ambiguous`);
+    }
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER98-02: the auto-handoff note lists the FILES a worker produced, not the dir token', async () => {
+  const { recordWorkerArtifactProgress } = await import('../bin/mux-runner.js');
+  const { sessionDir, statePath } = setupSession('ap98-02-handoff-');
+  const repo = initSignatureRepo('ap98-02-handoff-work-');
+  const id = 'ap9802hn';
+  const ticketDir = path.join(sessionDir, id);
+  fs.mkdirSync(ticketDir, { recursive: true });
+  // A FROZEN signature: this spawn is charged zero-progress, which is the exact
+  // spawn appendAutoHandoffFallback writes its continuity block on.
+  const sigFn = () => 'frozen-signature';
+  try {
+    fs.mkdirSync(path.join(repo, 'newpkg', 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'newpkg', 'a.ts'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(repo, 'newpkg', 'sub', 'b.ts'), 'export const b = 2;\n');
+
+    // Spawn 1 seeds; spawn 2 is charged (same signature, no artifacts) and writes the note.
+    recordWorkerArtifactProgress(statePath, sessionDir, id, 0, { k: 3, workingDir: repo, sourceSignatureFn: sigFn });
+    const r = recordWorkerArtifactProgress(statePath, sessionDir, id, 0, { k: 3, workingDir: repo, sourceSignatureFn: sigFn });
+    assert.equal(r.zeroProgressCount, 1, 'spawn-2 is charged zero-progress (the note-writing spawn)');
+
+    const notes = fs.readFileSync(path.join(ticketDir, 'handoff_notes.md'), 'utf-8');
+    assert.ok(notes.includes('newpkg/a.ts'), 'the note names the file, not the collapsed `newpkg/` token');
+    assert.ok(notes.includes('newpkg/sub/b.ts'), 'the note names the nested file at depth');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 // ───────────────────── A4 — early-phase credit bounded by N ─────────────────────
 
 test('A4: countWorkerArtifacts credits research/plan only under creditEarlyPhases', async () => {

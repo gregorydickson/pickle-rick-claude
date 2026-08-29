@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+import { PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
@@ -7875,29 +7875,22 @@ export function countWorkerArtifacts(ticketDir, opts = {}) {
 /**
  * AC-R-WMNP-1: digest of the working-tree source state so a worker that lands real
  * source work (new/grown files, changed diff) but writes no new lifecycle artifact
- * file still counts as progress. Combines `git status --porcelain` (covers untracked
- * + staged + unstaged path set) with `git diff --numstat` (covers per-file line
- * churn on tracked files) into one comparable string. Returns `null` when git is
- * unavailable or EITHER probe fails (L1) -- a half-signature from one successful
- * probe would silently drop the other probe's signal and could read as a spurious
- * change/no-change against a prior COMPLETE signature. The caller's `?? prev`
- * fallback then preserves the prior complete signature instead of corrupting it.
- * `spawnSync` reports a timeout as `status === null` plus `error.code === 'ETIMEDOUT'`
- * (no thrown error), so an OR-in on the ETIMEDOUT codes catches a timed-out probe.
+ * file still counts as progress. Combines `git status --porcelain -uall` (covers
+ * untracked + staged + unstaged path set) with `git diff --numstat` (covers per-file
+ * line churn on tracked files) into one comparable string, both built by the single
+ * `gitSignatureProbes` argv shape. Returns `null` when git is unavailable or EITHER
+ * probe fails to COMPLETE (L1) -- a half-signature from one successful probe would
+ * silently drop the other probe's signal and could read as a spurious change/no-change
+ * against a prior COMPLETE signature. The caller's `?? prev` fallback then preserves
+ * the prior complete signature instead of corrupting it. The completion test lives in
+ * `gitProbesToSignature` behind the shared `enumerationCompleted` predicate, which
+ * covers the ETIMEDOUT shape (`status === null` + `error.code`, no thrown error) and
+ * the ENOBUFS shape (`status: 0` + `error.code`) alike.
  */
 export function computeSourceTreeSignature(workingDir) {
     try {
-        const status = spawnSync('git', ['-C', workingDir, 'status', '--porcelain'], { encoding: 'utf-8', timeout: 10_000 });
-        const numstat = spawnSync('git', ['-C', workingDir, 'diff', '--numstat'], { encoding: 'utf-8', timeout: 10_000 });
-        const statusErr = status.error?.code;
-        const numstatErr = numstat.error?.code;
-        if (status.status !== 0
-            || numstat.status !== 0
-            || statusErr === 'ETIMEDOUT'
-            || numstatErr === 'ETIMEDOUT') {
-            return null;
-        }
-        return `${status.stdout ?? ''} ${numstat.stdout ?? ''}`;
+        const { status, numstat } = gitSignatureProbes(workingDir, []);
+        return gitProbesToSignature(status, numstat);
     }
     catch {
         return null;
@@ -7947,22 +7940,56 @@ function readScopeAllowedPathSpecsFromFile(scopeJsonPath) {
     catch { /* scope.json absent or malformed — fall through to unscoped */ }
     return pathSpecs;
 }
-/** Combine a status+numstat probe pair into a signature; null on non-zero/ETIMEDOUT either probe. */
+/**
+ * AP-EXT-ITER98-02: the ONE argv shape both source-tree signature probes use, so the
+ * untracked-mode flag lives at a single site instead of being re-spelled per caller.
+ *
+ * `-uall` is the same SUBTRACTION AP-EXT-ITER98-01 made in `services/git-utils.ts`:
+ * git's DEFAULT untracked mode collapses a WHOLLY-untracked directory into one `dir/`
+ * record, so files added INSIDE an already-untracked directory leave the digest
+ * BYTE-IDENTICAL and `isSourceSignatureProgress` charges a producing worker zero
+ * progress. `-uall` deletes the directory-vs-file case from the probe's output domain
+ * (one shape, not two). `--exclude-standard` still applies by default, so ignored
+ * trees stay invisible and the flag costs nothing -- git already recurses.
+ *
+ * `UNBOUNDED_READ_MAX_BUFFER` bounds the now-per-file enumeration; the overflow it
+ * admits is read by the shared completion predicate in `gitProbesToSignature`.
+ */
+function gitSignatureProbes(workingDir, pathSpecs) {
+    const spec = pathSpecs.length > 0 ? ['--', ...pathSpecs] : [];
+    const opts = { encoding: 'utf-8', timeout: 10_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER };
+    return {
+        status: spawnSync('git', ['-C', workingDir, 'status', '--porcelain', '-uall', ...spec], opts),
+        numstat: spawnSync('git', ['-C', workingDir, 'diff', '--numstat', ...spec], opts),
+    };
+}
+/**
+ * Combine a status+numstat probe pair into a signature; null unless BOTH probes
+ * COMPLETED. AP-EXT-ITER98-02 (Override 1.6): the four hand-written same-theme
+ * guards this replaced (`status !== 0` x2, `ETIMEDOUT` x2) collapse into the ONE
+ * shared `types/index.ts:enumerationCompleted` predicate the rest of this family
+ * already uses. That subsumes all four AND the ENOBUFS shape they were blind to --
+ * a child that EXITS before Node's kill returns reports `status: 0` with
+ * `error.code === 'ENOBUFS'`, so a TRUNCATED enumeration read as a COMPLETE
+ * signature. The caller's `?? prev` fallback then preserves the prior complete
+ * signature instead of comparing against a half-read one.
+ *
+ * The joiner is NUL, the one byte git can emit in NEITHER probe's output, so a
+ * status half ending in a path cannot blur into the numstat half. Both signature
+ * entry points now compose here: the scoped path previously joined on a SPACE,
+ * which `status --porcelain` emits in every record.
+ */
 function gitProbesToSignature(status, numstat) {
-    const statusErr = status.error?.code;
-    const numstatErr = numstat.error?.code;
-    if (status.status !== 0 || numstat.status !== 0 || statusErr === 'ETIMEDOUT' || numstatErr === 'ETIMEDOUT') {
+    if (!enumerationCompleted(status) || !enumerationCompleted(numstat))
         return null;
-    }
-    return `${String(status.stdout ?? '')} ${String(numstat.stdout ?? '')}`;
+    return `${String(status.stdout ?? '')} ${String(numstat.stdout ?? '')}`;
 }
 export function computeScopedSourceTreeSignature(workingDir, scopeJsonPath) {
     const pathSpecs = readScopeAllowedPathSpecsFromFile(scopeJsonPath);
     if (pathSpecs.length === 0)
         return computeSourceTreeSignature(workingDir);
     try {
-        const status = spawnSync('git', ['-C', workingDir, 'status', '--porcelain', '--', ...pathSpecs], { encoding: 'utf-8', timeout: 10_000 });
-        const numstat = spawnSync('git', ['-C', workingDir, 'diff', '--numstat', '--', ...pathSpecs], { encoding: 'utf-8', timeout: 10_000 });
+        const { status, numstat } = gitSignatureProbes(workingDir, pathSpecs);
         return gitProbesToSignature(status, numstat);
     }
     catch {
@@ -8213,11 +8240,19 @@ function readAutoHandoffLogTail(logPath, n = 20) {
         return [];
     }
 }
-/** R-HNCG: dirty paths, filtered to `scope.json:allowed_paths` when present. */
+/**
+ * R-HNCG: dirty paths, filtered to `scope.json:allowed_paths` when present.
+ *
+ * AP-EXT-ITER98-02: carries `-uall` for the same reason the signature probes and
+ * `services/git-utils.ts:statusArgs` do — this note is written on exactly the spawn
+ * charged as zero-progress, and the files the worker DID produce inside a new
+ * directory are the whole point of the continuity block. The default untracked mode
+ * would hand the next worker's prompt one `dir/` token instead of them.
+ */
 function readAutoHandoffDirtyPaths(workingDir, scopeJsonPath) {
     try {
         const pathSpecs = readScopeAllowedPathSpecsFromFile(scopeJsonPath);
-        const args = ['-C', workingDir, 'status', '--porcelain'];
+        const args = ['-C', workingDir, 'status', '--porcelain', '-uall'];
         if (pathSpecs.length > 0)
             args.push('--', ...pathSpecs);
         const result = spawnSync('git', args, { encoding: 'utf-8', timeout: 10_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
