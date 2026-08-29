@@ -5037,13 +5037,22 @@ function maybeStampPickleIncompleteRobust(
   log: (msg: string) => void,
 ): PhaseIterationOutcome | null {
   if (rawPhase !== 'pickle') return null;
+  const sentinelPath = path.join(runtime.sessionDir, PICKLE_INCOMPLETE_SENTINEL);
   let sentinelPresent = false;
   try {
-    sentinelPresent = fs.existsSync(path.join(runtime.sessionDir, PICKLE_INCOMPLETE_SENTINEL));
+    sentinelPresent = fs.existsSync(sentinelPath);
   } catch { /* best-effort — unreadable treated as absent; existing gates still apply */ }
   if (!sentinelPresent) return null;
   log(`Phase ${rawPhase} did NOT complete — advancing with phase reported incomplete (${PICKLE_INCOMPLETE_SENTINEL} sentinel present)`);
-  reportPhaseIncomplete(runtime, rawPhase);
+  const genuinelyIncomplete = reportPhaseIncomplete(runtime, rawPhase);
+  if (!genuinelyIncomplete) {
+    // B4: a LATER pickle phase run completed the remaining tickets — the
+    // condition this sentinel recorded no longer holds. Clear it so it
+    // cannot keep asserting a stale incompleteness on a future phase-boundary
+    // check (subtraction, not a second ledger — the sentinel stays a
+    // best-effort reporting signal, never authoritative).
+    try { fs.unlinkSync(sentinelPath); } catch { /* best-effort */ }
+  }
   return { action: 'continue', phaseIncomplete: true };
 }
 

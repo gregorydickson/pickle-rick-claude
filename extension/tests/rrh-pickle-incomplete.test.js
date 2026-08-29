@@ -238,6 +238,85 @@ test('pickle_incomplete.json sentinel forces exit 3 but an honestly all-Done ros
   }
 });
 
+// ── B4: a LATER pickle phase completing the remaining tickets clears the
+// stale sentinel instead of letting it keep asserting incompleteness forever.
+// The exit code (3) still stands for THIS run (see the test above — that
+// split is intentional), but the on-disk artifact itself must not survive
+// past the point where ground truth (`reportPhaseIncomplete`) confirms the
+// condition it recorded no longer holds.
+test('B4: an honestly all-Done roster clears the stale pickle_incomplete.json sentinel', async () => {
+  const repo = tmpDir('rrh-repo-');
+  const sessionDir = tmpDir('rrh-session-');
+  try {
+    const head = initRepo(repo);
+    writeState(sessionDir, repo, { start_commit: head });
+    writePipeline(sessionDir, repo, ['pickle', 'citadel']);
+    writePrd(sessionDir);
+
+    writeTicket(sessionDir, 'aaa11111', 1, 'Done');
+    writeTicket(sessionDir, 'bbb22222', 2, 'Done');
+    const sentinelPath = path.join(sessionDir, SENTINEL);
+    // mux dropped the sentinel during an earlier teardown; a later pickle
+    // phase run (this one) went on to finish every remaining ticket.
+    fs.writeFileSync(
+      sentinelPath,
+      JSON.stringify({ reason: 'signal_teardown', remaining_count: 1, total: 2, ts: new Date().toISOString() }),
+    );
+
+    __setSpawnRunnerForTests(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
+
+    assert.ok(
+      !fs.existsSync(sentinelPath),
+      'B4: the stale sentinel must be cleared once ground truth confirms the roster is all-Done',
+    );
+  } finally {
+    __setSpawnRunnerForTests(null);
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// ── B4 control: a GENUINELY incomplete roster must keep the sentinel — the
+// clear must not fire just because the sentinel is present.
+test('B4 control: a genuinely incomplete roster keeps the pickle_incomplete.json sentinel', async () => {
+  const repo = tmpDir('rrh-repo-');
+  const sessionDir = tmpDir('rrh-session-');
+  try {
+    const head = initRepo(repo);
+    writeState(sessionDir, repo, { start_commit: head });
+    writePipeline(sessionDir, repo, ['pickle']);
+
+    writeTicket(sessionDir, 'aaa11111', 1, 'Done');
+    writeTicket(sessionDir, 'bbb22222', 2, 'Todo');
+    const sentinelPath = path.join(sessionDir, SENTINEL);
+    fs.writeFileSync(
+      sentinelPath,
+      JSON.stringify({ reason: 'signal_teardown', remaining_count: 1, total: 2, ts: new Date().toISOString() }),
+    );
+
+    __setSpawnRunnerForTests(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
+
+    assert.ok(
+      fs.existsSync(sentinelPath),
+      'B4 control: a genuinely unfinished roster must not have its sentinel cleared',
+    );
+    const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+    assert.equal(
+      state.exit_reason,
+      'pipeline_phase_incomplete',
+      'B4 control: the genuine incompleteness must still be stamped',
+    );
+  } finally {
+    __setSpawnRunnerForTests(null);
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 // ── AC3: all Done + no sentinel → normal advance preserved ───────────────────
 test('all tickets Done + no sentinel advances normally (pickle phase completes)', async () => {
   const repo = tmpDir('rrh-repo-');
