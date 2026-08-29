@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, readdirSync, statSync, existsSync, chmodSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,6 +25,7 @@ import {
   countWorkerArtifacts,
   executeConvergedPlanAdapter,
   emitWorkerProductionBreadcrumb,
+  spawnConvergedPlanImplementPass,
 } from '../bin/mux-runner.js';
 import { requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
 import { resetToSha } from '../services/git-utils.js';
@@ -1260,6 +1261,108 @@ test('AP-EXT-ITER55-02 control: a verbose verify that genuinely FAILS is still n
 
   rmSync(repo, { recursive: true, force: true });
   rmSync(sessionDir, { recursive: true, force: true });
+});
+
+// --- AP-EXT-ITER95-01: the implement pass's capture buffer IS the verdict too --------------
+//
+// `spawnConvergedPlanImplementPass` is the AC-GA-REC-1 re-execution seam: it spawns an LLM
+// implement pass through `buildManagerInvocation` in CAPTURE mode (`encoding: 'utf-8'`) and
+// reads `ok` off `r.status === 0` and NOTHING else. That producer is a coding agent CLI —
+// `codex exec` streams its whole tool trace — so it is strictly less bounded than the
+// plan-phase verify ~25 lines above, which already carries the shared 64MB cap
+// (AP-EXT-ITER55-02). Past Node's 1MB DEFAULT the child is SIGTERMed and reported as
+// `status === null` / `ENOBUFS`: neither `0` nor the `ETIMEDOUT` the timeout arm catches, so
+// a worker that finished its edits reads not-ok AND dies mid-pass, `executeCleanTreeReExecution`
+// returns `{ok:false}` and the execute-converged-plan rung collapses to `recovery_exhausted`.
+//
+// Assert the SEAM'S DISPOSITION, never the captured text.
+
+/**
+ * A `claude` shim on PATH that streams `bytes` to stdout and exits with `exitCode`.
+ *
+ * `fs.writeSync(1, ...)` is BLOCKING and the process ends naturally: stdout is a pipe, so
+ * `process.stdout.write(big); process.exit(0)` delivers only 65536 bytes, never overflows the
+ * default cap, and the case would then pass AGAINST the defect (the same flush trap the
+ * AP-EXT-ITER55-01/02 fixtures document). Returns the dir to prepend to PATH.
+ */
+function writeBigManagerBackendShim(dir, bytes, exitCode) {
+  const binDir = path.join(dir, 'shimbin');
+  mkdirSync(binDir, { recursive: true });
+  const emitterPath = path.join(dir, 'emit-implement-output.mjs');
+  writeFileSync(emitterPath, [
+    "import fs from 'node:fs';",
+    "const chunk = 'implement: a realistically long tool-trace line from a coding agent\\n';",
+    "let out = '';",
+    `while (out.length < ${bytes}) out += chunk;`,
+    'fs.writeSync(1, out);',
+    `process.exitCode = ${exitCode};`,
+    '',
+  ].join('\n'));
+  const shimPath = path.join(binDir, 'claude');
+  writeFileSync(shimPath, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(emitterPath)}\n`);
+  chmodSync(shimPath, 0o755);
+  return binDir;
+}
+
+function withShimOnPath(binDir, fn) {
+  const prior = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${prior}`;
+  try {
+    return fn();
+  } finally {
+    process.env.PATH = prior;
+  }
+}
+
+function makeImplementPassFixture(prefix, bytes, exitCode) {
+  const { repo } = makeRepo(`${prefix}-repo-`);
+  const { sessionDir, statePath } = makeSession(`${prefix}-session-`);
+  writeFileSync(statePath, JSON.stringify({
+    active: true, schema_version: 5, session_dir: sessionDir, backend: 'claude', activity: [],
+  }));
+  const ticketId = 'd1e2f3a4';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+  const planPath = path.join(ticketDir, 'plan_2026-08-29.md');
+  writeFileSync(planPath, '# plan\n\n## Phase 1 — do the thing\n\n**Verify:** `true`\n');
+  const binDir = writeBigManagerBackendShim(sessionDir, bytes, exitCode);
+  return {
+    repo, sessionDir, statePath, binDir,
+    call: () => withShimOnPath(binDir, () => spawnConvergedPlanImplementPass({
+      planPath, ticketId, complexityTier: 'small', sessionDir, workingDir: repo, statePath,
+    })),
+    cleanup: () => {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true });
+    },
+  };
+}
+
+test('AP-EXT-ITER95-01: an implement pass streaming past the 1MB default is still ok, not timedOut', () => {
+  // 1.5MB — over Node's 1MB default, well under the shared 64MB UNBOUNDED_READ_MAX_BUFFER.
+  const fx = makeImplementPassFixture('ap-iter95-ok', 1_500_000, 0);
+
+  const out = fx.call();
+
+  // The whole defect in one assertion: a backend that EXITS 0 must not be read as a failed
+  // implement pass. Pre-fix the capture returned status=null/SIGTERM/ENOBUFS, so this was
+  // `{ok:false}` and the rung collapsed to recovery_exhausted over a completed pass.
+  assert.equal(out.ok, true, 'a backend that exits 0 must not be read as a failed implement pass');
+  // ENOBUFS is not a timeout, and must never be laundered into the timedOut arm either.
+  assert.notEqual(out.timedOut, true, 'a buffer overflow must never be reported as a timeout');
+
+  fx.cleanup();
+});
+
+test('AP-EXT-ITER95-01 control: a verbose implement pass that genuinely FAILS is still not-ok', () => {
+  // Same byte volume, non-zero exit. Without this control the cap could over-trigger — turn a
+  // real backend failure green — and nothing would notice.
+  const fx = makeImplementPassFixture('ap-iter95-fail', 1_500_000, 1);
+
+  const out = fx.call();
+
+  assert.equal(out.ok, false, 'a backend that exits non-zero is a real implement-pass failure');
+
+  fx.cleanup();
 });
 
 // --- AP-EXT-ITER9-02: a wrapped `**Verify:**` code span is ONE command, not two -----------

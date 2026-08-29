@@ -7171,8 +7171,13 @@ function convergedPlanHeadSha(workingDir: string): string | null {
  * pass synchronously via `buildManagerInvocation`, handing the worker the raw plan path
  * as task context. Bounded to `CONVERGED_PLAN_VERIFY_TIMEOUT_MS` per subsystem
  * invariant #3 (finite spawn timeout).
+ *
+ * Exported for the AP-EXT-ITER95-01 regression case: the production seam is wired at
+ * `attemptRecoveryBeforeTerminal`, so a test that reached it through
+ * `executeConvergedPlanAdapter`'s optional `reExecutionSeam` would only ever exercise its
+ * OWN fake. The buffer invariant below lives in this function, so the spec must call it.
  */
-function spawnConvergedPlanImplementPass(opts: {
+export function spawnConvergedPlanImplementPass(opts: {
   planPath: string;
   ticketId: string;
   complexityTier: string;
@@ -7192,6 +7197,18 @@ function spawnConvergedPlanImplementPass(opts: {
       env: { ...process.env, ...backendEnvOverrides(backend, { workingDir: opts.workingDir, ticketId: opts.ticketId, sessionDir: opts.sessionDir }), ...(invocation.env ?? {}), PICKLE_STATE_FILE: opts.statePath },
       encoding: 'utf-8',
       timeout: CONVERGED_PLAN_VERIFY_TIMEOUT_MS,
+      // AP-EXT-ITER95-01, replay of the AP-EXT-ITER55-02 sibling ~25 lines above: the
+      // producer here is an LLM implement pass (`codex exec` streams its whole tool
+      // trace), which is strictly less bounded than the plan-phase verify that already
+      // carries this cap. Captured with `encoding`, so `ok` is `r.status === 0` and
+      // nothing else. Past `spawnSync`'s 1MB DEFAULT Node SIGTERMs the child and reports
+      // `status === null` with `error.code === 'ENOBUFS'` — neither `0` nor the
+      // `ETIMEDOUT` the arm below catches — so a worker that completed its edits reads
+      // not-ok AND is killed mid-pass. `executeCleanTreeReExecution` then returns
+      // `{ok:false}` and the execute-converged-plan rung collapses to
+      // `recovery_exhausted`. Measured at this exact call shape: 1.5MB on stdout +
+      // `exit 0` returns status=null/SIGTERM/ENOBUFS uncapped, status=0 with the cap.
+      maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
     if (r.error && (r.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
       return { ok: false, timedOut: true };
