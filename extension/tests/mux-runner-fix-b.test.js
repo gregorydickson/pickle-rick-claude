@@ -214,6 +214,76 @@ test('L5: noRunnableTicketsRemain is false when there are NO tickets (avoid fals
   }
 });
 
+// ---------------------------------------------------------------------------
+// C5 (R-EROS) — an In-Progress ticket held by an active failed-flip
+// suppression is NOT a Failed ticket. A held ticket is excluded from
+// SELECTION (findNextPendingTicketId) so the manager does not re-engage
+// ambiguous evidence, but the suppression preserves status instead of
+// flipping Failed — the ticket is still genuinely unfinished. Prior to this
+// fix, noRunnableTicketsRemain conflated "not currently selectable" with
+// "roster is all-Failed / exhausted", so a held-but-In-Progress ticket
+// falsely reported the roster as exhausted and stamped recovery_exhausted.
+// ---------------------------------------------------------------------------
+
+/** Writes state.json with an active failed_flip_suppressed hold for ticketId. */
+function writeHeldState(sessionDir, ticketId) {
+  fs.writeFileSync(
+    path.join(sessionDir, 'state.json'),
+    JSON.stringify({
+      active: true, schema_version: 5, working_dir: sessionDir, step: 'implement',
+      iteration: 1, current_ticket: null, activity: [],
+      recovery_attempts: [
+        { strategy: 'failed_flip_suppressed', outcome: 'success', ticket: ticketId, iteration: 1, reason: 'held for test' },
+      ],
+    }),
+  );
+}
+
+test('L5 (C5/R-EROS): noRunnableTicketsRemain is false for a lone In-Progress ticket held by a suppressed Failed flip', () => {
+  const sessionDir = makeTmp('fixb-l5-held-inprogress-');
+  try {
+    writeTicket(sessionDir, 'aaaa1111', 'In Progress', 1);
+    writeHeldState(sessionDir, 'aaaa1111');
+    assert.equal(noRunnableTicketsRemain(sessionDir), false,
+      'a held-but-In-Progress ticket must not read as an all-Failed/exhausted roster');
+  } finally {
+    cleanup(sessionDir);
+  }
+});
+
+test('L5 (C5/R-EROS): a genuinely terminal-Failed roster still reports exhausted alongside an unrelated held In-Progress ticket', () => {
+  // Mutation-verify the OTHER direction: adding a held-but-unfinished ticket to
+  // the mix must never mask a genuine all-terminal-Failed roster for the rest.
+  // Here the held ticket itself is In Progress (unfinished) so the overall
+  // roster is correctly NOT exhausted — this pins that the fix does not
+  // over-trigger by treating ALL non-selectable rosters as non-exhausted.
+  const sessionDir = makeTmp('fixb-l5-held-mixed-');
+  try {
+    writeTicket(sessionDir, 'aaaa1111', 'Failed', 1); // terminal no-progress Failed
+    writeTicket(sessionDir, 'bbbb2222', 'In Progress', 2);
+    writeHeldState(sessionDir, 'bbbb2222');
+    assert.equal(noRunnableTicketsRemain(sessionDir), false,
+      'the still-unfinished held ticket keeps the roster from reading as exhausted');
+  } finally {
+    cleanup(sessionDir);
+  }
+});
+
+test('L5 (C5/R-EROS): a genuinely exhausted roster (all terminal-Failed, none held) still reports exhausted', () => {
+  // Positive control for the other mutation direction: with NO held ticket at
+  // all, an all-terminal-Failed roster must still classify as exhausted —
+  // the fix narrows the false-positive case without disabling the true one.
+  const sessionDir = makeTmp('fixb-l5-genuinely-exhausted-');
+  try {
+    writeTicket(sessionDir, 'aaaa1111', 'Failed', 1);
+    writeTicket(sessionDir, 'bbbb2222', 'Failed', 2);
+    assert.equal(noRunnableTicketsRemain(sessionDir), true,
+      'a genuinely all-terminal-Failed roster must still report exhausted');
+  } finally {
+    cleanup(sessionDir);
+  }
+});
+
 test('L5: wiring — null preTicket + no runnable tickets short-circuits BEFORE runIteration', () => {
   // The guard must sit after the all-Done check and gate on a null resolved ticket.
   // W4b: the empty roster (all-Failed, no runnable) resolves to the honest ladder

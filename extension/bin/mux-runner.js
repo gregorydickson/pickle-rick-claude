@@ -1459,21 +1459,46 @@ export function findFirstPendingTicket(sessionDir) {
     return null;
 }
 /**
- * L5: true when the session HAS tickets but NONE are SELECTABLE for work — i.e.
- * `findNextPendingTicketId` (the same selection predicate `resolvePreTicket` uses:
- * `isPendingMuxTicket && !isOversizedNoProgressFailed`) finds nothing. This is the
- * all-terminal case the model can reach when every pending ticket flipped
- * `oversized_no_progress` Failed. Distinct from `applyAllTicketsDoneCompletion`
- * (which fires only when ALL are Done): this catches the all-terminal-Failed case
- * where the loop would otherwise enter `runIteration` with a null ticket. Returns
- * false for an empty session (no tickets) so a not-yet-populated session is never
+ * L5: true when the session HAS tickets and EVERY one of them is genuinely
+ * terminal — Done/Skipped, or a terminal no-progress Failed flip
+ * (`isOversizedNoProgressFailed`). This is the all-terminal case the model can
+ * reach when every pending ticket flipped `oversized_no_progress` Failed.
+ * Distinct from `applyAllTicketsDoneCompletion` (which fires only when ALL are
+ * Done): this catches the all-terminal-Failed case where the loop would
+ * otherwise enter `runIteration` with a null ticket. Returns false for an
+ * empty session (no tickets) so a not-yet-populated session is never
  * misclassified as terminal.
+ *
+ * C5 (R-EROS): this is deliberately NOT `findNextPendingTicketId(...) === null`
+ * (not-currently-SELECTABLE). A ticket held by an active failed-flip
+ * suppression (`readActiveFailedFlipHolds`) is excluded from selection so the
+ * manager does not re-engage ambiguous evidence, but the suppression means the
+ * Failed flip was skipped and the ticket's status was PRESERVED — it is still
+ * In Progress, i.e. genuinely unfinished, not Failed. Collapsing "not
+ * selectable" into "no runnable tickets remain" made a held-but-In-Progress
+ * ticket read as an all-Failed roster and stamp the honest `recovery_exhausted`
+ * terminal over work that had not actually failed. This predicate answers "is
+ * every ticket terminal?" directly from each ticket's OWN status, independent
+ * of selection-layer holds. A ticket whose status cannot be read is
+ * conservatively treated as not-terminal (the roster is not declared exhausted
+ * on a read failure).
  */
 export function noRunnableTicketsRemain(sessionDir) {
     const tickets = collectTickets(sessionDir);
     if (tickets.length === 0)
         return false;
-    return findNextPendingTicketId(sessionDir) === null;
+    return tickets.every(ticket => {
+        if (!ticket.id)
+            return true;
+        let status;
+        try {
+            status = getTicketStatus(sessionDir, ticket.id);
+        }
+        catch {
+            return false;
+        }
+        return isTerminalTicketStatus(status) || isOversizedNoProgressFailed(sessionDir, ticket.id);
+    });
 }
 function withFreshTicketStatuses(sessionDir, tickets) {
     return tickets.map(ticket => {

@@ -267,12 +267,14 @@ describe('routeExitPathSalvage: shared dep-set release wiring (aafc633a)', () =>
     });
   });
 
-  it('AC-2: releasing the hold clears readActiveFailedFlipHolds and noRunnableTicketsRemain for the lone-ticket roster', () => {
+  it('AC-2: releasing the hold clears readActiveFailedFlipHolds; noRunnableTicketsRemain is false throughout (C5/R-EROS)', () => {
     withHeldTicketFixture('restw002', ({ sessionDir, route }) => {
-      // Before release: the hold is active and the lone-ticket roster is
-      // (incorrectly) unrunnable — this is the incident this ticket fixes.
+      // Before release: the hold is active, but the ticket's status is still
+      // "In Progress" (the suppression preserves status instead of flipping
+      // Failed) — genuinely unfinished, not Failed. C5 (R-EROS): the roster
+      // must NOT read as exhausted just because the ticket is unselectable.
       assert.ok(readActiveFailedFlipHolds(sessionDir).has('restw002'), 'hold is active before release');
-      assert.equal(noRunnableTicketsRemain(sessionDir), true, 'held ticket makes the lone roster look unrunnable');
+      assert.equal(noRunnableTicketsRemain(sessionDir), false, 'held-but-In-Progress ticket must not make the roster look exhausted');
 
       route(failingRunGate);
 
