@@ -12,7 +12,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runStandaloneOrphanReap } from '../bin/reap-orphans.js';
+import { runStandaloneOrphanReap, sweepStaleFixtureTmpDirs } from '../bin/reap-orphans.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -253,4 +253,88 @@ test('AP-EXT-ITER45-01: a real non-zero sweep still logs its counts and emits it
   assert.equal(activity.length, 1, 'a non-zero sweep must still emit worker_orphan_reap_summary');
   assert.equal(activity[0].event, 'worker_orphan_reap_summary');
   assert.equal(activity[0].reaped, 2);
+});
+
+// ---------------------------------------------------------------------------
+// D6 (63463c5e, R-ORCG): age-based TMPDIR backlog sweep for `pickle-*` fixture
+// directories left behind when a test's own cleanup never ran. Hermetic — every
+// case operates inside a private mkdtemp sandbox passed as `tmpDir`, never the
+// real os.tmpdir(), so this cannot disturb or be disturbed by real leaked state
+// on the host running the suite.
+// ---------------------------------------------------------------------------
+
+function withSandboxTmpDir(fn) {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-reap-orphans-sandbox-'));
+  try {
+    return fn(sandbox);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
+function makeAgedDir(sandbox, name, ageMs) {
+  const dirPath = path.join(sandbox, name);
+  fs.mkdirSync(dirPath);
+  const past = new Date(Date.now() - ageMs);
+  fs.utimesSync(dirPath, past, past);
+  return dirPath;
+}
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+test('sweepStaleFixtureTmpDirs removes a pickle-prefixed directory past the age ceiling', () => {
+  withSandboxTmpDir((sandbox) => {
+    const stale = makeAgedDir(sandbox, 'pickle-stale-fixture', ONE_DAY_MS + 1000);
+    const result = sweepStaleFixtureTmpDirs(sandbox, ONE_DAY_MS);
+    assert.equal(result.scanned, 1);
+    assert.equal(result.removed, 1);
+    assert.ok(!fs.existsSync(stale), 'a directory older than the ceiling must be removed');
+  });
+});
+
+test('sweepStaleFixtureTmpDirs spares a pickle-prefixed directory younger than the age ceiling', () => {
+  withSandboxTmpDir((sandbox) => {
+    const fresh = makeAgedDir(sandbox, 'pickle-fresh-fixture', 1000);
+    const result = sweepStaleFixtureTmpDirs(sandbox, ONE_DAY_MS);
+    assert.equal(result.scanned, 1);
+    assert.equal(result.removed, 0);
+    assert.ok(fs.existsSync(fresh), 'a directory younger than the ceiling must survive — it may still be in use');
+  });
+});
+
+test('sweepStaleFixtureTmpDirs ignores non-pickle-prefixed entries regardless of age', () => {
+  withSandboxTmpDir((sandbox) => {
+    const other = makeAgedDir(sandbox, 'unrelated-tool-cache', ONE_DAY_MS + 1000);
+    const result = sweepStaleFixtureTmpDirs(sandbox, ONE_DAY_MS);
+    assert.equal(result.scanned, 0, 'a non-pickle-prefixed entry must never be scanned');
+    assert.ok(fs.existsSync(other), 'a non-pickle-prefixed entry must never be touched');
+  });
+});
+
+test('sweepStaleFixtureTmpDirs ignores a stale pickle-prefixed FILE (not a directory)', () => {
+  withSandboxTmpDir((sandbox) => {
+    const filePath = path.join(sandbox, 'pickle-stale-file.txt');
+    fs.writeFileSync(filePath, 'not a fixture directory');
+    const past = new Date(Date.now() - ONE_DAY_MS - 1000);
+    fs.utimesSync(filePath, past, past);
+    const result = sweepStaleFixtureTmpDirs(sandbox, ONE_DAY_MS);
+    assert.equal(result.scanned, 0, 'a bare file must never be counted as a scanned directory');
+    assert.ok(fs.existsSync(filePath), 'a bare file must never be removed by the directory sweep');
+  });
+});
+
+test('sweepStaleFixtureTmpDirs is best-effort against an unreadable tmpDir', () => {
+  const result = sweepStaleFixtureTmpDirs('/nonexistent/pickle-does-not-exist', ONE_DAY_MS);
+  assert.deepEqual(result, { scanned: 0, removed: 0 });
+});
+
+test('sweepStaleFixtureTmpDirs defaults to a 24h ceiling and the real os.tmpdir()', () => {
+  // No args: proves the exported defaults are wired. This DOES sweep the real TMPDIR —
+  // which is the intended production behavior when reap-orphans.js runs standalone — so
+  // it may also clear real >24h-old pickle-* backlog on the host running this suite.
+  // Anything younger than 24h (every OTHER concurrently-running test's fixtures) is
+  // untouched by construction, so this cannot race a sibling test file.
+  const result = sweepStaleFixtureTmpDirs();
+  assert.equal(typeof result.scanned, 'number');
+  assert.equal(typeof result.removed, 'number');
 });

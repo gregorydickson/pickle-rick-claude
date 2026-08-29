@@ -12,10 +12,66 @@
  * always exits 0, so a reaper failure can never redden a green test run.
  */
 import * as path from 'node:path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import { getDataRoot } from '../services/pickle-utils.js';
 import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
 
 type ReapResult = ReapSweepResult;
+
+/** D6 (R-ORCG): fixture prefix + staleness window for the TMPDIR directory backlog sweep. */
+const FIXTURE_TMPDIR_PREFIX = 'pickle-';
+const FIXTURE_TMPDIR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+export interface FixtureTmpDirSweepResult {
+  scanned: number;
+  removed: number;
+}
+
+/**
+ * Age-based backlog sweep for `pickle-*` directories left in TMPDIR by test fixtures whose
+ * own cleanup (a per-test `finally`/`after()`) never ran — timeout, SIGKILL, OOM, or a
+ * suite that never adopted `tests/helpers/fixture-tmpdir.js`. Unlike a PID-owned process, a
+ * bare leftover directory has no liveness signal to probe, so staleness is decided by
+ * mtime: anything older than `maxAgeMs` (default 24h, matching the existing fixture-registry
+ * staleness convention) is stale by construction — no single-run test tier takes anywhere
+ * near that long. Best-effort: a read/stat/rm failure on one entry is swallowed and the
+ * sweep continues over the rest; it must never throw into the `posttest` hook it runs under.
+ */
+export function sweepStaleFixtureTmpDirs(
+  tmpDir: string = os.tmpdir(),
+  maxAgeMs: number = FIXTURE_TMPDIR_MAX_AGE_MS,
+): FixtureTmpDirSweepResult {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(tmpDir);
+  } catch {
+    return { scanned: 0, removed: 0 };
+  }
+  const now = Date.now();
+  let scanned = 0;
+  let removed = 0;
+  for (const name of entries) {
+    if (!name.startsWith(FIXTURE_TMPDIR_PREFIX)) continue;
+    const fullPath = path.join(tmpDir, name);
+    let stat;
+    try {
+      stat = fs.statSync(fullPath);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    scanned += 1;
+    if (now - stat.mtimeMs < maxAgeMs) continue;
+    try {
+      fs.rmSync(fullPath, { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      /* best-effort — a locked/in-use directory is left for the next sweep */
+    }
+  }
+  return { scanned, removed };
+}
 
 export function runStandaloneOrphanReap(
   sessionsRoot: string,
@@ -46,9 +102,21 @@ export function runStandaloneOrphanReap(
   }
 }
 
+function runStandaloneFixtureTmpDirSweep(): void {
+  try {
+    const result = sweepStaleFixtureTmpDirs();
+    if (result.removed > 0) {
+      console.log(`[reap-orphans] fixture-tmpdir sweep: scanned=${result.scanned} removed=${result.removed}`);
+    }
+  } catch {
+    // Best-effort session-GC — never block a test run.
+  }
+}
+
 function main(): void {
   const sessionsRoot = path.join(getDataRoot(), 'sessions');
   runStandaloneOrphanReap(sessionsRoot);
+  runStandaloneFixtureTmpDirSweep();
   process.exit(0);
 }
 
