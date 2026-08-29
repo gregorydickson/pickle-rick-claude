@@ -252,8 +252,20 @@ function normalizeExcludePrefixes(excludePrefixes?: string[]): string[] {
     .filter((prefix) => prefix.length > 0);
 }
 
+/**
+ * AP-EXT-ITER98-01: `-uall` is load-bearing, not cosmetic. Git's DEFAULT
+ * `--untracked-files=normal` collapses a WHOLLY-untracked directory into a single
+ * `dir/` record, so this reader — whose every consumer treats its output as FILE
+ * paths — emitted a path that names no file. The launch preflight's destructive
+ * self-heal then `fs.unlinkSync`'d a directory (EPERM, swallowed), `assertCleanWorkingTree`
+ * re-listed the same `dir/`, and the pipeline FATAL'd at a manager relaunch it exists to
+ * survive. Listing every untracked file removes the directory-vs-file case from this
+ * reader's output domain rather than teaching each consumer to expand it; git already
+ * recurses into untracked directories, so the scan cost is unchanged (measured: 5000
+ * untracked files, ~50ms either way).
+ */
 function statusArgs(excludePrefixes?: string[]): string[] {
-  const args = ['status', '--porcelain', '-z'];
+  const args = ['status', '--porcelain', '-z', '-uall'];
   const cleanedPrefixes = normalizeExcludePrefixes(excludePrefixes);
   if (cleanedPrefixes.length > 0) {
     args.push('--', '.');

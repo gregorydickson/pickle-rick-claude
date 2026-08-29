@@ -33,8 +33,10 @@ import {
   setupAnatomyPark,
   readPersistedAllowedPaths,
   finalizePhaseSuccess,
+  resetInterruptedTicketWorkForRelaunch,
   main,
 } from '../bin/pipeline-runner.js';
+import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
@@ -3788,6 +3790,81 @@ describe('AP-EXT-ITER6-02 persisted scope.json survives a crashed tmp-rename', (
       assert.deepEqual(readPersistedAllowedPaths(sessionDir), ['extension/src/bin/microverse-runner.ts']);
     } finally {
       fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER98-01: a wholly-untracked directory must reach every consumer as
+// FILES, never as one collapsed `dir/` record.
+//
+// Pre-fix `statusArgs` omitted `-uall`, so git's default untracked mode reported
+// `newdir/`. The relaunch self-heal then unlinked a DIRECTORY (EPERM, swallowed by
+// the best-effort catch), the tree stayed dirty, and `assertCleanWorkingTree` FATAL'd
+// the pipeline at the manager relaunch that self-heal exists to survive.
+// ---------------------------------------------------------------------------
+
+describe('AP-EXT-ITER98-01 untracked-directory collapse', () => {
+  test('listWorkingTreeDirtyPaths reports the files of a wholly-untracked directory, not the directory', () => {
+    const dir = tmpDir();
+    try {
+      initRepo(dir);
+      fs.mkdirSync(path.join(dir, 'newdir', 'sub'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'newdir', 'a.ts'), 'export const a = 1;\n');
+      fs.writeFileSync(path.join(dir, 'newdir', 'sub', 'b.ts'), 'export const b = 2;\n');
+
+      const dirty = listWorkingTreeDirtyPaths(dir);
+      assert.deepEqual(dirty, ['newdir/a.ts', 'newdir/sub/b.ts']);
+      assert.equal(
+        dirty.some((p) => p.endsWith('/')),
+        false,
+        'no entry may be a directory record — every consumer treats these as file paths',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the relaunch self-heal removes a crashed worker\'s new directory instead of FATALing the launch', () => {
+    const dir = tmpDir();
+    try {
+      initRepo(dir);
+      fs.mkdirSync(path.join(dir, 'newdir', 'sub'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'newdir', 'a.ts'), 'export const a = 1;\n');
+      fs.writeFileSync(path.join(dir, 'newdir', 'sub', 'b.ts'), 'export const b = 2;\n');
+
+      const logs = [];
+      resetInterruptedTicketWorkForRelaunch(dir, { exemptSegments: ['prds', 'docs'] }, (m) => logs.push(m));
+
+      assert.equal(fs.existsSync(path.join(dir, 'newdir', 'a.ts')), false, 'the untracked file must be removed');
+      assert.equal(fs.existsSync(path.join(dir, 'newdir', 'sub', 'b.ts')), false);
+      assert.doesNotThrow(
+        () => assertCleanWorkingTree(dir, { exemptSegments: ['prds', 'docs'] }),
+        'the self-heal must leave a tree the launch gate accepts',
+      );
+      assert.ok(
+        logs.some((m) => /2 untracked removed/.test(m)),
+        `the count must match what was actually unlinked; got: ${logs.join(' | ')}`,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a new untracked directory holding only exempt-segment content does not block the launch', () => {
+    const dir = tmpDir();
+    try {
+      initRepo(dir);
+      fs.mkdirSync(path.join(dir, 'work', 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'work', 'docs', 'notes.md'), 'wip\n');
+
+      assert.deepEqual(listWorkingTreeDirtyPaths(dir), ['work/docs/notes.md']);
+      assert.doesNotThrow(
+        () => assertCleanWorkingTree(dir, { exemptSegments: ['prds', 'docs'] }),
+        'the `docs` segment exemption applies at any depth and must survive the reader',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });
