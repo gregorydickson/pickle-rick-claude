@@ -4858,6 +4858,20 @@ function resolvePhaseIncompleteOutcome(
   // the disposition wire that halts the phase loop. Read BEFORE
   // `reportPhaseIncomplete` mutates/re-reads exit_reason.
   const priorExitReasonForIncomplete = readExistingExitReason(runtime.statePath);
+  // C3 (B-MEGADRAIN): exit code 3 is shared between the ordinary
+  // iteration-cap/done-without-commit-evidence incompleteness route AND
+  // mux-runner's `state_schema_version_ahead` bypass exit
+  // (`handleSchemaVersionAhead` calls `process.exit(3)` directly so
+  // auto-resume.sh's R-CNAR-4(c) stop condition can see the reason — see
+  // `mux-runner.ts`). `reportPhaseIncomplete` unconditionally overwrites
+  // `exit_reason` with `pipeline_phase_incomplete`, which is exactly the
+  // value R-CNAR-4(c) treats as safe to keep retrying — discarding the
+  // crash-floor verdict at this phase boundary would flip auto-resume from
+  // "stop" to "keep relaunching into the same fatal state". Defer to the
+  // existing `shouldHaltAfterPhase` -> `isFatalPhaseFailure` crash-floor
+  // check below, which reads the same still-unmutated field and halts
+  // without touching it.
+  if (isCrashFloorExitReason(priorExitReasonForIncomplete)) return null;
   // Branch A: `reportPhaseIncomplete` still found genuinely-unfinished,
   // non-oracle-excludable tickets (real Todo/In-Progress work the oracle cannot
   // vouch for). This IS the resumability contract this function's docstring

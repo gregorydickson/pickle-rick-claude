@@ -311,6 +311,68 @@ test('pipeline-runner.clean-exit0-all-terminal advances (no false halt)', async 
   }
 });
 
+// C3 (B-MEGADRAIN): mux-runner's `state_schema_version_ahead` crash-floor exit
+// bypasses the normal exit-code computation and calls `process.exit(3)` directly
+// (see mux-runner.ts:handleSchemaVersionAhead) — the SAME exit code
+// PipelineRunnerExitCode.PhaseIncomplete uses for ordinary cap-exhaustion. Before
+// the fix, resolvePhaseIncompleteOutcome treated every exit-code-3 phase as
+// "incomplete" and unconditionally overwrote state.exit_reason with
+// 'pipeline_phase_incomplete' — discarding the crash-floor verdict at the phase
+// boundary. That is exactly the exit_reason auto-resume.sh's R-CNAR-4(c) stop
+// condition treats as safe to keep retrying, so the amnesiac breaker re-entered
+// the same fatal (unrunnable) state on every relaunch. The fix defers to the
+// existing crash-floor halt path (isFatalPhaseFailure / isCrashFloorExitReason)
+// instead of letting the phase-incomplete route claim exit code 3 first.
+test('pipeline-runner.crash-floor exit_reason on exit code 3 survives the phase boundary', async () => {
+  const repo = tmpDir('pipeline-crashfloor-repo-');
+  const sessionDir = tmpDir('pipeline-crashfloor-session-');
+  try {
+    initRepo(repo);
+    const startCommit = git(['rev-parse', 'HEAD'], repo);
+    writeState(sessionDir, repo, { start_commit: startCommit });
+    writePipeline(sessionDir, repo, ['pickle']);
+
+    writeTicket(sessionDir, 'ccf00001', 1);
+
+    // Stub: simulate mux-runner's handleSchemaVersionAhead bypass — stamps the
+    // crash-floor reason then exits 3 (the SAME code PhaseIncomplete uses).
+    __setSpawnRunnerForTests(async () => {
+      const statePath = path.join(sessionDir, 'state.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      state.exit_reason = 'state_schema_version_ahead';
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+      return { exitCode: 3, stdout: '', stderr: '' };
+    });
+
+    // A crash-floor halt is a Failure, not a PhaseIncomplete resume signal.
+    await captureMainExit(sessionDir, 1);
+
+    const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+    assert.equal(
+      state.exit_reason,
+      'state_schema_version_ahead',
+      'the crash-floor exit_reason must survive the phase boundary, not be overwritten with pipeline_phase_incomplete',
+    );
+
+    // getFatalPickleHaltReason's "crash floor — <reason>" phrasing only renders
+    // when isFatalPhaseFailure's crash-floor branch fired — proving the halt
+    // routed through the existing crash-floor path, not the phase-incomplete one.
+    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.ok(
+      log.includes('crash floor — state_schema_version_ahead'),
+      'log must attribute the halt to the crash floor, not phase incompleteness',
+    );
+    assert.ok(
+      !log.includes('Unfinished tickets:'),
+      'a crash-floor halt must not be reported through the phase-incomplete ticket roster',
+    );
+  } finally {
+    __setSpawnRunnerForTests(null);
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 // B-PXBO WS-1 (R-DPGT): reportPhaseIncomplete must RE-RESOLVE each non-Done ticket
 // through the completion oracle. A ticket still 'Todo' in frontmatter but whose
 // completion landed as a real commit (oracle committed) is excluded from the
