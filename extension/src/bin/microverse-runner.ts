@@ -1569,6 +1569,12 @@ export const _deps = {
   resetToSha: resetToSha as typeof resetToSha,
   isWorkingTreeDirty: isWorkingTreeDirty as typeof isWorkingTreeDirty,
   sleep: sleep as typeof sleep,
+  // Injected alongside `sleep` so a wait loop is drivable on a fake clock. Without it the
+  // rate-limit wait can only be tested by actually burning the wall it is designed to bound.
+  now: (() => Date.now()) as () => number,
+  // B2 (AC-M6a): injected so both mutation directions of the rate-limit wait are testable —
+  // a limit that clears early, and one that genuinely persists — without a real API call.
+  probeRateLimitCleared: probeRateLimitCleared as typeof probeRateLimitCleared,
   collectTickets: collectTickets as typeof collectTickets,
   logActivity: logActivity as typeof logActivity,
   // B-NONSTOP WS-5: injected so the finalize-fallback disposition stamp is reachable by a
@@ -2877,6 +2883,115 @@ export async function probeJudgeBackendAvailability(backend: ProbeJudgeBackend, 
   }
 }
 
+/**
+ * B2 (AC-M6a): the rate-limit wait used to be a DURABLE CONCLUSION ABOUT THE WORLD THAT NOTHING
+ * RE-CHECKED — `waitEnd = now + waitMs`, computed once from a `resets_at` hint, then slept out.
+ * A `seven_day` limit clamps to `DEFAULT_MAX_PARK_MINUTES` (360), so a limit that actually cleared
+ * in ~45 minutes still burned all six hours. `rate_limit_wait.json` cannot help: it is a STATUS
+ * artifact nothing in the loop reads, so deleting it changes nothing.
+ *
+ * This asks the API again. Exit 0 means the API SERVED us, which is the entire cleared rule — no
+ * text analysis is needed on the success path. Only the failure path is classified, and it is
+ * classified by `classifyIterationExit`, the SAME oracle that produced the `api_limit` verdict that
+ * started the wait. There is deliberately no second pattern list here; one more hand-maintained
+ * catalog of rate-limit phrasings is one more member away from the next silent miss.
+ *
+ * Three verdicts, ONE control decision. Only `'cleared'` shortens the wait; `'limited'` and
+ * `'unknown'` behave identically and differ only in what the operator is told. That split is a
+ * REPORTING property: an operator whose `claude` binary is missing should be able to see that the
+ * wait ran long because the probe was broken, not because the limit was real.
+ *
+ * Non-halting by construction: the body catches everything, so it has no channel to throw into the
+ * wait loop, and it never assigns `ctx.rateLimitExitReason`. A probe that fails forever degrades to
+ * exactly the pre-B2 behaviour — sleep the deadline out — and says so in the log.
+ */
+type RateLimitProbeVerdict = 'cleared' | 'limited' | 'unknown';
+
+const RATE_LIMIT_PROBE_INTERVAL_ENV_VAR = 'PICKLE_RATE_LIMIT_PROBE_INTERVAL_MS';
+const DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS = 10 * 60 * 1000;
+const MIN_RATE_LIMIT_PROBE_INTERVAL_MS = 60_000;
+const RATE_LIMIT_PROBE_TIMEOUT_MS = 120_000;
+const RATE_LIMIT_PROBE_LOG_FILENAME = 'rate_limit_probe.log';
+/** Smallest prompt that still forces a real API round trip. */
+const RATE_LIMIT_PROBE_PROMPT = 'Reply with exactly: ok';
+
+/**
+ * How often the wait re-asks. Clamped UP to a 60s floor so an operator override cannot turn the
+ * park into a spawn-burn; absent/garbage falls back to the compiled default.
+ */
+export function resolveRateLimitProbeIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = parseInt(env[RATE_LIMIT_PROBE_INTERVAL_ENV_VAR] ?? '', 10);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS;
+  return Math.max(raw, MIN_RATE_LIMIT_PROBE_INTERVAL_MS);
+}
+
+/**
+ * One re-probe step of the rate-limit wait: ask again, tell the operator what came back, and
+ * answer the single question the loop actually has — may we stop waiting?
+ *
+ * Split out of `handleRateLimit` so the wait loop reads as its four exit conditions rather than
+ * as the probe's reporting cases, and so the loop stays under the complexity ceiling. The verdict
+ * is read through `_deps` so an injected probe still reaches this branch.
+ */
+async function rateLimitWaitClearedByProbe(ctx: RunContext): Promise<boolean> {
+  let verdict: RateLimitProbeVerdict;
+  try {
+    verdict = await _deps.probeRateLimitCleared(ctx);
+  } catch (err) {
+    // THE choke point for the non-halting guarantee. `probeRateLimitCleared` catches its own
+    // spawn failures, but its pre-spawn setup (backend resolution, invocation build, judge-env
+    // construction) sits outside that catch — and an injected probe can throw anything at all.
+    // Enforcing "a probe failure keeps waiting" HERE makes the property independent of how the
+    // probe fails, instead of resting on every future probe body remembering to be total.
+    ctx.log(`Rate-limit re-probe could not run (${safeErrorMessage(err)}) — continuing to wait`);
+    return false;
+  }
+  if (verdict === 'cleared') {
+    ctx.log('Rate-limit re-probe: API responded — limit cleared ahead of the projected reset, resuming early');
+    return true;
+  }
+  ctx.log(verdict === 'limited'
+    ? 'Rate-limit re-probe: still rejected — continuing to wait'
+    : 'Rate-limit re-probe: could not be measured (see rate_limit_probe.log) — continuing to wait');
+  return false;
+}
+
+async function probeRateLimitCleared(ctx: RunContext): Promise<RateLimitProbeVerdict> {
+  const backend = resolveWorkerBackendFromState(ctx.currentRunnerState).backend;
+  const cwd = ctx.workingDir;
+  const probeLogPath = path.join(ctx.sessionDir, RATE_LIMIT_PROBE_LOG_FILENAME);
+  const { cmd, args } = buildJudgeInvocation(backend, { prompt: RATE_LIMIT_PROBE_PROMPT, addDirs: [] });
+  // `getJudgeEnvForAttempt` accepts only the judge-backend narrowing; reuse the predicate that
+  // already exists for that rather than introducing a second one. Anything else maps to the same
+  // claude default the helper applies internally.
+  const envBackend = isFallbackEligibleBackend(backend) ? backend : 'auto';
+  const spawnEnv = { ...getJudgeEnvForAttempt(envBackend, cwd), ...backendEnvOverrides(backend) }; // R-SJET-3
+  let served = false;
+  let transcript: string;
+  try {
+    transcript = await spawnWithClosedStdin(cmd, args, {
+      cwd,
+      env: spawnEnv,
+      timeoutMs: RATE_LIMIT_PROBE_TIMEOUT_MS,
+      timeoutMessage: `rate-limit probe timed out after ${RATE_LIMIT_PROBE_TIMEOUT_MS}ms`,
+    });
+    served = true;
+  } catch (err) {
+    transcript = safeErrorMessage(err);
+  } finally {
+    cleanupJudgeRuntimeDir(spawnEnv);
+  }
+  // Forensics for the operator AND the input the file-based oracle reads. One write, two uses.
+  try {
+    await fs.promises.writeFile(probeLogPath, transcript);
+  } catch (err) {
+    ctx.log(`WARNING: Could not write ${RATE_LIMIT_PROBE_LOG_FILENAME}: ${safeErrorMessage(err)}`);
+    return served ? 'cleared' : 'unknown';
+  }
+  if (served) return 'cleared';
+  return classifyIterationExit('continue', probeLogPath).type === 'api_limit' ? 'limited' : 'unknown';
+}
+
 function emitMetricParkWait(
   attemptActivity: JudgeAttemptActivity | undefined,
   parkMs: number,
@@ -3802,6 +3917,47 @@ export async function executeGapAnalysis(
   return { baseline: baseline ?? { raw: '', score: state.baseline_score } };
 }
 
+/**
+ * The rate-limit wait itself: burn wall until `waitEnd`, but stop the moment any of the four
+ * conditions that make waiting pointless becomes true — operator cancel, session budget spent,
+ * abort signal, or (B2/AC-M6a) THE LIMIT HAVING ACTUALLY CLEARED.
+ *
+ * The last one is the point of this function existing. `waitEnd` is derived from a `resets_at`
+ * HINT, and before B2 that hint was the sole authority: the loop re-read `state.active` forever
+ * and never once re-asked the API, so a limit that lifted early still cost the full projected
+ * park. The hint still sets the CEILING; it no longer sets the duration.
+ *
+ * Sets `ctx.rateLimitExitReason` ONLY for the two dispositions that were already exit conditions.
+ * An early probe-driven exit deliberately leaves it unset, so the caller's clean-resume block
+ * treats it as the ordinary resume it is.
+ */
+async function runRateLimitWaitLoop(
+  ctx: RunContext,
+  signal: AbortSignal,
+  waitStart: number,
+  waitEnd: number,
+): Promise<void> {
+  const probeIntervalMs = resolveRateLimitProbeIntervalMs();
+  // First probe fires one full interval in: we were rejected a moment ago, so re-asking
+  // immediately would spend a spawn to learn what we already know.
+  let lastProbeMs = waitStart;
+  while (_deps.now() < waitEnd) {
+    signal.throwIfAborted();
+    await _deps.sleep(Defaults.RATE_LIMIT_POLL_MS);
+    try {
+      const waitState = readRunnerState(ctx.statePath);
+      if (waitState.active !== true) { ctx.rateLimitExitReason = 'stopped'; return; }
+    } catch (err) {
+      ctx.log(`WARNING: Could not read state.json during rate limit wait: ${safeErrorMessage(err)}`);
+    }
+    const remainingPoll = remainingSessionSeconds(ctx.currentRunnerState);
+    if (remainingPoll !== null && remainingPoll <= 0) { ctx.rateLimitExitReason = 'limit_reached'; return; }
+    if (_deps.now() - lastProbeMs < probeIntervalMs) continue;
+    lastProbeMs = _deps.now();
+    if (await rateLimitWaitClearedByProbe(ctx)) return;
+  }
+}
+
 export async function handleRateLimit(
   _state: MicroverseState,
   ctx: RunContext,
@@ -3821,29 +3977,18 @@ export async function handleRateLimit(
     session: path.basename(ctx.sessionDir),
     duration_min: waitMetadata.durationMin ?? Math.ceil(actualWaitMs / 60_000),
   });
+  const waitStart = _deps.now();
   writeStateFile(path.join(ctx.sessionDir, RATE_LIMIT_WAIT_FILENAME), {
     waiting: true, reason: 'API rate limit',
-    started_at: new Date().toISOString(),
-    wait_until: new Date(Date.now() + actualWaitMs).toISOString(),
+    started_at: new Date(waitStart).toISOString(),
+    wait_until: new Date(waitStart + actualWaitMs).toISOString(),
     consecutive_waits: ctx.consecutiveRateLimits,
     rate_limit_type: waitMetadata.rateLimitType ?? null,
     resets_at_epoch: waitMetadata.resetsAt ?? null,
     wait_source: waitMetadata.waitSource ?? null,
   });
 
-  const waitEnd = Date.now() + actualWaitMs;
-  while (Date.now() < waitEnd) {
-    signal.throwIfAborted();
-    await _deps.sleep(Defaults.RATE_LIMIT_POLL_MS);
-    try {
-      const waitState = readRunnerState(ctx.statePath);
-      if (waitState.active !== true) { ctx.rateLimitExitReason = 'stopped'; break; }
-    } catch (err) {
-      ctx.log(`WARNING: Could not read state.json during rate limit wait: ${safeErrorMessage(err)}`);
-    }
-    const remainingPoll = remainingSessionSeconds(ctx.currentRunnerState);
-    if (remainingPoll !== null && remainingPoll <= 0) { ctx.rateLimitExitReason = 'limit_reached'; break; }
-  }
+  await runRateLimitWaitLoop(ctx, signal, waitStart, waitStart + actualWaitMs);
 
   if (!ctx.rateLimitExitReason) {
     clearRateLimitWaitFile(ctx.sessionDir);

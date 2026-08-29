@@ -3527,3 +3527,190 @@ test('AC-CF-07: the turn-count proxy survives for a DIRTY tree — amnesiac stay
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
 });
+
+// ---------------------------------------------------------------------------
+// B2 (AC-M6a): the rate-limit wait RE-PROBES the API.
+//
+// Before B2 the wait was a durable conclusion about the world that nothing re-checked:
+// `waitEnd = now + waitMs`, derived from a `resets_at` HINT, then slept out. A `seven_day`
+// limit clamps to DEFAULT_MAX_PARK_MINUTES (360), so a limit that actually lifted in ~45
+// minutes still cost six hours. These four tests pin BOTH directions — early clear ends the
+// wait, a live limit does not — plus the non-halting property of a broken probe.
+//
+// All four drive a FAKE clock through `_deps.now`, so no wall is burned: `_deps.sleep`
+// advances the clock instead of sleeping. Without that seam the only way to test a wait
+// designed to bound six hours is to spend six hours.
+// ---------------------------------------------------------------------------
+
+/** Rig a `handleRateLimit` wait on a fake clock. Returns the ctx plus the clock reader. */
+function createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs }) {
+    const statePath = path.join(sessionDir, 'state.json');
+    let clock = 1_700_000_000_000;
+    _deps.now = () => clock;
+    _deps.sleep = async () => { clock += advancePerPollMs; };
+    const logLines = [];
+    const ctx = {
+        sessionDir,
+        statePath,
+        workingDir: sessionDir,
+        currentRunnerState: state,
+        rateLimitWaitMs: waitMs,
+        consecutiveRateLimits: 1,
+        log: (msg) => logLines.push(msg),
+    };
+    return { ctx, logLines, startedAt: clock, elapsed: () => clock - 1_700_000_000_000 };
+}
+
+test('B2/AC-M6a: a rate limit that clears early ends the wait early', async () => {
+    const workingDir = createTempGitRepo();
+    const originalSleep = _deps.sleep;
+    const originalNow = _deps.now;
+    const originalProbe = _deps.probeRateLimitCleared;
+    try {
+        const { dir: sessionDir, state } = createSessionDir(workingDir);
+        // The measured over-wait: a 6h park produced by clamping a long reset window.
+        const waitMs = 6 * 60 * 60 * 1000;
+        const rig = createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs: 11 * 60 * 1000 });
+
+        // The limit is real for the first four probes and gone by the fifth — the ticket's
+        // "cleared in about 45 minutes" against a 360-minute projection.
+        let probeCalls = 0;
+        _deps.probeRateLimitCleared = async () => {
+            probeCalls += 1;
+            return probeCalls >= 5 ? 'cleared' : 'limited';
+        };
+
+        await handleRateLimit({}, rig.ctx, new AbortController().signal);
+
+        assert.equal(probeCalls, 5, 'the wait must re-ask the API, not sleep out its deadline');
+        assert.ok(
+            rig.elapsed() < waitMs,
+            `a cleared limit must end the wait early (waited ${rig.elapsed()}ms of ${waitMs}ms)`,
+        );
+        assert.equal(rig.elapsed(), 55 * 60 * 1000, 'resumes on the poll whose probe came back cleared');
+        assert.equal(rig.ctx.rateLimitExitReason, undefined, 'an early clear is a resume, not an exit disposition');
+        assert.equal(
+            fs.existsSync(path.join(sessionDir, 'rate_limit_wait.json')), false,
+            'the clean-resume block still clears the status artifact',
+        );
+        assert.ok(
+            rig.logLines.some(l => /limit cleared ahead of the projected reset/.test(l)),
+            `the early resume must be reported to the operator; log was: ${rig.logLines.join(' | ')}`,
+        );
+    } finally {
+        _deps.sleep = originalSleep;
+        _deps.now = originalNow;
+        _deps.probeRateLimitCleared = originalProbe;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('B2/AC-M6a: a limit that genuinely persists still waits out the full deadline', async () => {
+    const workingDir = createTempGitRepo();
+    const originalSleep = _deps.sleep;
+    const originalNow = _deps.now;
+    const originalProbe = _deps.probeRateLimitCleared;
+    try {
+        const { dir: sessionDir, state } = createSessionDir(workingDir);
+        const waitMs = 6 * 60 * 60 * 1000;
+        const rig = createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs: 11 * 60 * 1000 });
+
+        let probeCalls = 0;
+        _deps.probeRateLimitCleared = async () => { probeCalls += 1; return 'limited'; };
+
+        await handleRateLimit({}, rig.ctx, new AbortController().signal);
+
+        // The other direction: re-probing must not become a way to leave early on a live limit.
+        assert.ok(
+            rig.elapsed() >= waitMs,
+            `a still-live limit must be waited out in full (waited ${rig.elapsed()}ms of ${waitMs}ms)`,
+        );
+        assert.ok(probeCalls > 20, `the wait re-asks repeatedly across a long park (probes: ${probeCalls})`);
+        assert.equal(rig.ctx.rateLimitExitReason, undefined);
+    } finally {
+        _deps.sleep = originalSleep;
+        _deps.now = originalNow;
+        _deps.probeRateLimitCleared = originalProbe;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('B2/AC-M6a: a probe that fails parks and continues — it never aborts the wait', async () => {
+    const workingDir = createTempGitRepo();
+    const originalSleep = _deps.sleep;
+    const originalNow = _deps.now;
+    const originalProbe = _deps.probeRateLimitCleared;
+    try {
+        const { dir: sessionDir, state } = createSessionDir(workingDir);
+        const waitMs = 2 * 60 * 60 * 1000;
+        const rig = createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs: 11 * 60 * 1000 });
+
+        // The harshest failure available: the probe itself throws. Nothing may escape into
+        // the wait loop, and an unmeasurable limit must never be read as a cleared one.
+        let probeCalls = 0;
+        _deps.probeRateLimitCleared = async () => {
+            probeCalls += 1;
+            throw new Error('probe exploded');
+        };
+
+        await assert.doesNotReject(
+            () => handleRateLimit({}, rig.ctx, new AbortController().signal),
+            'a probe failure must not propagate — park and continue, never halt',
+        );
+
+        assert.ok(probeCalls >= 1, 'the probe was actually attempted');
+        assert.ok(
+            rig.elapsed() >= waitMs,
+            `an unmeasurable limit degrades to the full projected wait, not an early exit (waited ${rig.elapsed()}ms)`,
+        );
+        assert.equal(rig.ctx.rateLimitExitReason, undefined, 'no new exit disposition is introduced');
+    } finally {
+        _deps.sleep = originalSleep;
+        _deps.now = originalNow;
+        _deps.probeRateLimitCleared = originalProbe;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('B2/AC-M6a: the real probe reads a live backend exit, not a persisted conclusion', async () => {
+    const workingDir = createTempGitRepo();
+    const originalSpawn = _deps.spawn;
+    try {
+        const { dir: sessionDir, state } = createSessionDir(workingDir);
+        const ctx = {
+            sessionDir,
+            statePath: path.join(sessionDir, 'state.json'),
+            workingDir,
+            currentRunnerState: state,
+            log: () => {},
+        };
+        const probeLog = path.join(sessionDir, 'rate_limit_probe.log');
+
+        // Stand in for the backend CLI. Only the executable is swapped: production still
+        // builds the invocation, owns the spawn options and classifies the result.
+        const script = path.join(workingDir, 'backend.sh');
+        const runAs = (body) => {
+            fs.writeFileSync(script, `#!/bin/sh\n${body}\n`);
+            // TEST hang-guard only (satisfies the R-TFP-C2 missing-timeout audit); each
+            // script below exits immediately, so it can never fire.
+            _deps.spawn = (_cmd, _args, opts) => spawn('/bin/sh', [script], { ...opts, timeout: 30_000 });
+        };
+
+        // Exit 0 — the API served us. That alone is the cleared rule; no text analysis.
+        runAs('echo ok');
+        assert.equal(await _deps.probeRateLimitCleared(ctx), 'cleared');
+        assert.equal(fs.readFileSync(probeLog, 'utf-8').trim(), 'ok', 'the probe leaves a forensic transcript');
+
+        // Exit non-zero with a rate-limit rejection — still limited, keep waiting.
+        runAs('echo "your Claude AI usage limit has been reached" >&2; exit 1');
+        assert.equal(await _deps.probeRateLimitCleared(ctx), 'limited');
+
+        // Exit non-zero for an unrelated reason — unmeasurable, keep waiting. Critically NOT
+        // 'cleared': a broken probe must never shorten a wait.
+        runAs('echo "could not resolve host" >&2; exit 1');
+        assert.equal(await _deps.probeRateLimitCleared(ctx), 'unknown');
+    } finally {
+        _deps.spawn = originalSpawn;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
