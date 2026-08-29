@@ -223,6 +223,56 @@ test('R-TCVC: one keyword-hit case per CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS entr
   }
 });
 
+test('AP-EXT-ITER2-01: expensive-verify keywords match as whole words, not substrings (real-corpus shapes)', () => {
+  // Every string below is verbatim-shaped from live rick_ticket_*.md artifacts
+  // under ~/.local/share/pickle-rick/sessions. Before the fix, substring
+  // containment bumped 10/109 real tickets a full tier on these alone.
+  const base = { fileCount: 3, acCount: 4, locEstimate: 100 };
+  const spurious = [
+    ['composes: front-matter names the PRD set', 'composes: front-matter must not hit `compose`'],
+    ['decomposed per prd_refined.md', '`decomposed` must not hit `compose`'],
+    ['bind ${extension_root} in the composed manager prompt', '`composed` must not hit `compose`'],
+    ['current measurement (at `1e2e14d8`, cwd=extension/)', 'a commit SHA must not hit `e2e`'],
+    ['npm run pretest:integration', '`pretest:integration` must not hit `test:integration`'],
+  ];
+  for (const [text, why] of spurious) {
+    assert.equal(
+      classifyTicketTier({ ...base, text }),
+      'medium',
+      `${why} — tier must stay at its dimension-derived value`,
+    );
+  }
+});
+
+test('AP-EXT-ITER2-01: genuine expensive-verify mentions still bump, including colon phrases', () => {
+  const base = { fileCount: 3, acCount: 4, locEstimate: 100 };
+  const genuine = [
+    'Verify: docker compose up && pnpm test:integration',
+    'Verify: pnpm run test:migration',
+    'Verify: run the e2e suite',
+    'Verify: RUN_EXPENSIVE_TESTS=1 npm run test:expensive',
+  ];
+  for (const text of genuine) {
+    assert.equal(
+      classifyTicketTier({ ...base, text }),
+      'large',
+      `genuine expensive-verify mention must still bump one tier: ${text}`,
+    );
+  }
+});
+
+test('AP-EXT-ITER2-01: a spurious hit cannot mask a legitimate down-tier', () => {
+  // Two real corpus tickets went -1 -> 0 purely on `compose`/`e2e`, losing
+  // their SMALLER-keyword down-tier.
+  const tier = classifyTicketTier({
+    fileCount: 3,
+    acCount: 4,
+    locEstimate: 100,
+    text: 'typo fix; composes: prds/bug-2026-08-26.md; measured at 1e2e14d8',
+  });
+  assert.equal(tier, 'small', 'the SMALLER-keyword -1 must survive; spurious hits must not cancel it');
+});
+
 test('R-TCVC: an expensive-verify keyword combined with a CLASSIFIER_LARGER_KEYWORDS hit still only bumps by 1', () => {
   const tier = classifyTicketTier({
     fileCount: 3,

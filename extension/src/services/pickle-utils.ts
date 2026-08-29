@@ -643,6 +643,10 @@ const CLASSIFIER_LARGER_KEYWORDS = ['integrate', 'migrate', 'schema', 'cross-cut
  * into the SAME ±1 keyword delta as CLASSIFIER_LARGER_KEYWORDS — one list, no
  * separate classifier — so a ticket whose AC names one of these bumps one tier,
  * capped at 'large' by the existing delta clamp.
+ *
+ * Matched by `countKeywordHits`, i.e. the SAME word-boundary rule as every other
+ * classifier list. A colon is interior to these literals, not at a boundary, so
+ * `\btest:migration\b` matches `pnpm run test:migration` exactly as intended.
  */
 export const CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS = [
   'test:migration',
@@ -653,6 +657,22 @@ export const CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS = [
   'run_expensive_tests',
   'test:integration',
 ] as const;
+
+/**
+ * AP-EXT-ITER2-01: the ONE keyword-matching rule for every classifier list.
+ * Word-boundary anchored so a keyword only counts as its own word — `compose`
+ * must not fire on `composes:`/`decomposed`, and `e2e` must not fire inside a
+ * commit SHA like `1e2e14d8`. Keywords are regex-escaped; a colon or hyphen is
+ * interior to the literal, so `\b` still anchors both ends correctly.
+ */
+function countKeywordHits(textLower: string, keywords: readonly string[]): number {
+  let hits = 0;
+  for (const kw of keywords) {
+    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`\\b${escaped}\\b`).test(textLower)) hits++;
+  }
+  return hits;
+}
 
 function classifyDimension(val: number, thresholds: readonly [number, number, number]): number {
   if (val < thresholds[0]) return 0; // trivial
@@ -685,19 +705,11 @@ export function classifyTicketTier(info: TicketClassifierInfo): TicketComplexity
 
   // Keyword adjustment — clamped to [-1, 1] so keywords can't overwhelm signals
   const textLower = info.text.toLowerCase();
-  let delta = 0;
-  for (const kw of CLASSIFIER_LARGER_KEYWORDS) {
-    if (new RegExp(`\\b${kw}\\b`).test(textLower)) delta++;
-  }
-  // Colon-containing phrases (e.g. 'test:migration') never satisfy a \b word
-  // boundary reliably, so this list is matched by plain substring containment.
-  for (const kw of CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS) {
-    if (textLower.includes(kw)) delta++;
-  }
-  for (const kw of CLASSIFIER_SMALLER_KEYWORDS) {
-    if (new RegExp(`\\b${kw}\\b`).test(textLower)) delta--;
-  }
-  delta = Math.max(-1, Math.min(1, delta));
+  const rawDelta =
+    countKeywordHits(textLower, CLASSIFIER_LARGER_KEYWORDS) +
+    countKeywordHits(textLower, CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS) -
+    countKeywordHits(textLower, CLASSIFIER_SMALLER_KEYWORDS);
+  const delta = Math.max(-1, Math.min(1, rawDelta));
   score = Math.max(0, Math.min(3, score + delta));
 
   return VALID_TICKET_COMPLEXITY_TIERS[score];
