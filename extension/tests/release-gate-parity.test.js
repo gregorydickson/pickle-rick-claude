@@ -56,6 +56,36 @@ function nodeVersions(workflowText) {
   return [...workflowText.matchAll(NODE_VERSION_RE)].map(match => match[1]);
 }
 
+// R-RNTA: line-based job-block split (no YAML parser is a devDependency here,
+// matching every other check in this file). Assumes top-level job names sit at
+// exactly 2-space indent directly under `jobs:`, which is how every workflow in
+// this repo is authored.
+function jobBlocks(workflowText) {
+  const lines = workflowText.split(/\r?\n/);
+  const jobsStart = lines.findIndex(line => /^jobs:\s*$/.test(line));
+  assert.notEqual(jobsStart, -1, 'workflow has no top-level jobs: key');
+
+  const blocks = {};
+  let currentName = null;
+  let currentLines = [];
+  for (let i = jobsStart + 1; i < lines.length; i++) {
+    const jobHeader = lines[i].match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+    if (jobHeader) {
+      if (currentName) blocks[currentName] = currentLines.join('\n');
+      currentName = jobHeader[1];
+      currentLines = [];
+    } else if (currentName) {
+      currentLines.push(lines[i]);
+    }
+  }
+  if (currentName) blocks[currentName] = currentLines.join('\n');
+  return blocks;
+}
+
+function jobNameContaining(blocks, needle) {
+  return Object.keys(blocks).find(name => blocks[name].includes(needle));
+}
+
 test('release workflow gate matches outer CLAUDE.md Versioning gate', () => {
   const workflow = readFileSync(RELEASE_WORKFLOW, 'utf8');
   const gate = proseGateCommand();
@@ -99,6 +129,33 @@ test('each gate-carrying workflow pins the release gate runtime', () => {
       );
     }
   }
+});
+
+// R-RNTA: the gate and the release artifact are two concerns with different
+// failure modes and must not share a job -- a gate outcome must never
+// determine whether the tarball is built/attached. Regression pin: mutation-
+// verified red if the gate and tarball steps are put back in one job, or if
+// the artifact job grows a `needs:` dependency on the gate job.
+test('release tarball build/attach is independent of the gate job', () => {
+  const workflow = readFileSync(RELEASE_WORKFLOW, 'utf8');
+  const gate = proseGateCommand();
+  const blocks = jobBlocks(workflow);
+
+  const gateJob = jobNameContaining(blocks, gate);
+  const tarballJob = jobNameContaining(blocks, 'Build tarball');
+
+  assert.ok(gateJob, 'no job in release.yml carries the release gate command');
+  assert.ok(tarballJob, 'no job in release.yml carries the Build tarball step');
+  assert.notEqual(
+    gateJob,
+    tarballJob,
+    'the release gate and the tarball build must live in different jobs, so a gate failure cannot skip the tarball',
+  );
+  assert.doesNotMatch(
+    blocks[tarballJob],
+    /^\s*needs:/m,
+    `the '${tarballJob}' job must not declare a 'needs:' dependency on the gate job`,
+  );
 });
 
 test('ci workflow runs full gate on push and PR to main', () => {

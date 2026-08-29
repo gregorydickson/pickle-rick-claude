@@ -9,26 +9,18 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  # R-RNTA: the gate and the release artifact are two concerns with different
+  # failure modes and must not share a job. This job owns ONLY "did it pass" --
+  # it decides whether the release is blessed. It has no `needs:` relationship
+  # to the `release` job and does not gate artifact creation; a gate failure
+  # still reds this job (and therefore the overall workflow run), but never
+  # skips the tarball build or the GitHub release below.
+  gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Verify tag matches package version
-        # Runs before setup-node: ubuntu-latest ships a system Node.js in the
-        # base image tooling, so `node -p` works here without waiting for
-        # setup-node, letting this guard fail BEFORE the ~20-minute
-        # install/compile step runs on a tree that is already provably wrong.
-        run: |
-          EXPECTED="${GITHUB_REF_NAME#v}"
-          ACTUAL="$(node -p "require('./extension/package.json').version")"
-          if [ "$EXPECTED" != "$ACTUAL" ]; then
-            echo "::error::Tag version '${EXPECTED}' does not match extension/package.json version '${ACTUAL}'" >&2
-            exit 1
-          fi
-          echo "Tag version '${EXPECTED}' matches extension/package.json version '${ACTUAL}'"
 
       - uses: actions/setup-node@v4
         with:
@@ -58,6 +50,30 @@ jobs:
         env:
           EXTENSION_DIR: ${{ github.workspace }}
         run: cd extension && npm ci && npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-un-terminalize-single-path.sh && bash scripts/audit-did-we-count.sh && npm run test:fast:budget && npm run test:integration && RUN_EXPENSIVE_TESTS=1 npm run test:expensive
+
+  # R-RNTA: owns ONLY "does the artifact exist". No `needs: [gate]` — the
+  # tarball is built purely from already-committed, already-compiled files
+  # (see root CLAUDE.md "Source of Truth"), so it runs independently of the
+  # gate job's outcome and cannot be starved by a gate failure.
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag matches package version
+        # Runs on ubuntu-latest's base-image system Node.js -- this job never
+        # installs a pinned Node toolchain, since building the tarball only
+        # tars already-committed files and needs no compile step.
+        run: |
+          EXPECTED="${GITHUB_REF_NAME#v}"
+          ACTUAL="$(node -p "require('./extension/package.json').version")"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::Tag version '${EXPECTED}' does not match extension/package.json version '${ACTUAL}'" >&2
+            exit 1
+          fi
+          echo "Tag version '${EXPECTED}' matches extension/package.json version '${ACTUAL}'"
 
       - name: Build tarball
         run: |
