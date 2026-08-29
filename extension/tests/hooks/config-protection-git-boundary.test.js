@@ -2966,7 +2966,7 @@ test('AP-EXT-ITER69-01 control: the entry guard still fires for dispatch argv, s
 // `expandShellCommandStrings` unwrapped exactly one thing: the `-c` operand of a
 // shell wrapper. `eval` is the shell's other way of turning a WORD back into
 // CODE, and it is a BUILTIN — no binary, no PATH entry — so `isShellWrapper`'s
-// naming shape can never reach it and `shellCommandStringPayload` returns null
+// naming shape can never reach it and `shellCommandStringPayloads` is empty
 // for every `eval` form. The payload is then ONE quoted token, which is the
 // AP-EXT-ITER63-06 failure mode exactly: a single missed unwrap hides the WHOLE
 // command from every detector at once.
@@ -3330,8 +3330,8 @@ test('AP-EXT-ITER70-02: hereStringPayload matches the operator by shape, not by 
 // AP-EXT-ITER70-01 named `eval` "the shell's other one" and stopped there. It is
 // not the only one: `trap '<cmd>' EXIT` hands bash a WORD that the shell
 // re-parses and runs when the signal fires, and a builtin has no binary to name,
-// so `isShellWrapper` cannot reach it and `shellCommandStringPayload` returns
-// null for every form. The payload stayed ONE opaque token — the AP-EXT-ITER63-06
+// so `isShellWrapper` cannot reach it and `shellCommandStringPayloads` is
+// empty for every form. The payload stayed ONE opaque token — the AP-EXT-ITER63-06
 // failure mode, where a single missed unwrap hides the whole command from every
 // detector at once.
 //
@@ -3488,7 +3488,7 @@ test('AP-EXT-ITER71-01: the word-to-code builtins are one declared set, not two 
   // expandShellCommandStrings declares exactly the three word-to-code CONSTRUCTS.
   const body = source.match(/function expandShellCommandStrings\([\s\S]*?\n\}/)?.[0];
   assert.ok(body, 'expandShellCommandStrings must remain a single named function');
-  for (const extractor of ['wordToCodeBuiltinPayload', 'shellCommandStringPayload', 'hereStringPayload']) {
+  for (const extractor of ['wordToCodeBuiltinPayload', 'shellCommandStringPayloads', 'hereStringPayload']) {
     assert.ok(body.includes(`${extractor}(segment)`), `${extractor} must stay in the payload array`);
   }
 });
@@ -4320,4 +4320,135 @@ test('AP-EXT-ITER93-06: braces are declared separators but not GLUED ones', () =
   assert.match(source, /op !== '\\n' && op !== '\{' && op !== '\}'/);
   assert.match(source, /'\(', '\)', '\{', '\}', '`',/);
   assert.match(source, /tokens\.push\(\.\.\.expandBraceWord\(buffer\)\)/);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER93-08 — bash does not stop parsing options at `-c`
+//
+// `shellCommandStringPayload` returned the token immediately AFTER the first
+// command-string flag. Bash sets a mode flag at `-c` and KEEPS parsing options,
+// then takes the first NON-OPTION argument as the command string — so the flag's
+// neighbour is the payload only when nothing follows the flag in the option run.
+// A repeated or trailing option walks the single-token read one word too early:
+// the hook saw `-c` / `-x` / `pipefail` and APPROVED while bash really ran the
+// payload (shim-verified on this box 2026-08-29; the `-x` trace printed
+// `+ git reset --hard` before executing it, and `bash -c -o pipefail "git stash"`
+// really stashed).
+//
+// The payload is ONE quoted token, so a missed read hides the WHOLE command
+// string from every detector at once — the AP-EXT-ITER63-06 blast radius,
+// re-opened for the git-verb, `install.sh`, expensive-test and R-WSRC-3 write
+// gates alike. Unlike the pathname-expansion siblings it needs NO crafted
+// filename.
+//
+// The fix takes every word after the flag as a candidate, each scanned as its
+// own segment. "Skip options, take the first non-option" is unwritable without
+// knowing which options consume an operand — the enumerated-declaration shape
+// this module refuses, and `bash -c -o pipefail "…"` proves any such list
+// incomplete.
+// ---------------------------------------------------------------------------
+
+for (const { label, command, expect: expected } of [
+  { label: 'repeated -c', command: 'bash -c -c "git reset --hard"', expect: /reset/ },
+  { label: 'three -c', command: 'bash -c -c -c "git push origin main"', expect: /push/ },
+  { label: 'trailing -x after -c', command: 'bash -c -x "git reset --hard"', expect: /reset/ },
+  { label: 'combined -lc then -c', command: 'bash -lc -c "git stash"', expect: /stash/ },
+  { label: 'operand-taking -o after -c', command: 'bash -c -o pipefail "git rebase main"', expect: /rebase/ },
+  { label: 'sh with repeated -c', command: 'sh -c -c "git checkout other-branch"', expect: /checkout/ },
+  { label: '-e after -c', command: 'bash -c -e "git commit --amend -m x"', expect: /amend/i },
+  { label: 'prefixed wrapper with trailing option', command: 'env bash -c -x "git reset --hard"', expect: /reset/ },
+  { label: 'absolute path wrapper', command: '/bin/bash -c -x "git push --force"', expect: /push/ },
+  { label: 'chained after a cd', command: 'cd extension && bash -c -x "git reset --hard"', expect: /reset/ },
+]) {
+  test(`AP-EXT-ITER93-08: worker blocks prohibited git verb via ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, expected);
+  });
+}
+
+// The unwrap is one shared seam, so every gate built on it inherits the widened
+// read — not just the git chain that surfaced the finding.
+test('AP-EXT-ITER93-08: worker blocks the deploy script behind a trailing option', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'bash -c -x "bash install.sh"' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-WSRC/);
+});
+
+test('AP-EXT-ITER93-08: worker blocks a state write behind a trailing option', () => {
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `bash -c -x "echo {} > ${path.join(sessionDir, 'state.json')}"` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /state file protected/i);
+});
+
+test('AP-EXT-ITER93-08: worker blocks an expensive-tier soak behind a trailing option', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const soak = path.join(tmpDir, 'soak.test.js');
+  fs.writeFileSync(soak, '// @tier: expensive\n');
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `bash -c -x "node --test ${soak}"` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /R-CSIS-B1/);
+});
+
+// Non-tautology guards: reading the whole tail must not turn every wrapper
+// carrying options into a block, and a wrapper with no command-string flag must
+// still gain no payload.
+for (const { label, command } of [
+  { label: 'a benign payload behind a trailing option', command: 'bash -c -x "npm run test:fast"' },
+  { label: 'a benign payload behind a repeated -c', command: 'bash -c -c "cd extension && npx tsc --noEmit"' },
+  { label: 'an allowed path-mode checkout behind -x', command: 'bash -c -x "git checkout -- src/foo.ts"' },
+  { label: 'a plain commit behind -x', command: 'bash -c -x "git commit -m fix"' },
+  { label: 'positional arguments after the payload', command: 'bash -c "echo $0" npm test' },
+  { label: 'a wrapper with options and no -c', command: 'bash -o pipefail -x scripts/run-tests.sh' },
+  { label: 'a bare -c with nothing after it', command: 'bash -c' },
+]) {
+  test(`AP-EXT-ITER93-08: worker still approves ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', command);
+  });
+}
+
+// The seam itself: every word after the flag becomes its own segment, and the
+// old single-token read is still a member — the widening is monotone, so no
+// command that unwrapped before can stop unwrapping now.
+test('AP-EXT-ITER93-08: the whole option-run tail is unwrapped, not just the flag neighbour', () => {
+  assert.ok(splitShellSegments('bash -c -x "git reset --hard"').includes('git reset --hard'));
+  assert.ok(splitShellSegments('bash -c -c "git reset --hard"').includes('git reset --hard'));
+  assert.ok(splitShellSegments('bash -c -o pipefail "git stash"').includes('git stash'));
+  // Monotone: the pre-fix reading is preserved, carrying segment included.
+  const plain = splitShellSegments('bash -c "git reset --hard"');
+  assert.ok(plain.includes('git reset --hard'));
+  assert.ok(plain.includes('bash -c "git reset --hard"'));
+  // A wrapper with no command-string flag still yields no payload.
+  assert.deepEqual(splitShellSegments('bash install.sh'), ['bash install.sh']);
 });

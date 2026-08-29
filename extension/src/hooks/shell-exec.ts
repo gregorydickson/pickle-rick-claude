@@ -293,7 +293,7 @@ function foldShellWord(word: string): ShellToken {
  * operand-taking bash options: a two-member set, one member away from a bypass.
  * It reached that bypass. Every non-bash shell on this box (`/bin/zsh`,
  * `/bin/dash`, `/bin/ksh` all present) hid its whole `-c` payload from every
- * detector, because `shellCommandStringPayload` returns null for a token this
+ * detector, because `shellCommandStringPayloads` is empty for a token this
  * predicate rejects and the payload is ONE quoted token — so
  * `zsh -c 'git reset --hard'` was APPROVED while its `bash`/`sh` twins blocked,
  * and `zsh install.sh` read its exec token as `zsh`. Collapsing to the shape
@@ -969,30 +969,50 @@ export function splitShellSegments(command: string, depth = 0): string[] {
  * `PICKLE_ROLE=x /bin/bash -lc '<cmd>'` still resolves. That collapse is the
  * point — two same-theme guards for one concern were the smell (Override 1.6).
  *
- * The payload is the word immediately AFTER the command-string flag, found
- * wherever that flag sits in the wrapper's option run — never "the first word
- * that does not start with `-`". Bash options take OPERANDS (`-o pipefail`,
- * `+o histexpand`, `-O extglob`, `--rcfile FILE`, `--init-file FILE`), and each
- * operand is a bare word standing before the `-c`. A scan that stopped at the
- * first bare word therefore quit at `pipefail` and never reached the flag, so
- * `bash -o pipefail -c "git reset --hard"` was never unwrapped and every
- * detector saw only the wrapper (AP-EXT-ITER54-01).
+ * The flag is found wherever it sits in the wrapper's option run — never "the
+ * first word that does not start with `-`". Bash options take OPERANDS (`-o
+ * pipefail`, `+o histexpand`, `-O extglob`, `--rcfile FILE`, `--init-file
+ * FILE`), and each operand is a bare word standing before the `-c`. A scan that
+ * stopped at the first bare word therefore quit at `pipefail` and never reached
+ * the flag, so `bash -o pipefail -c "git reset --hard"` was never unwrapped and
+ * every detector saw only the wrapper (AP-EXT-ITER54-01).
  *
- * Reading forward from the flag needs no operand table, which is the point: an
- * enumerated list of operand-taking options is the same incomplete-declaration
- * shape as AP-EXT-ITER18-01/ITER19-01, one more member away from a bypass.
- * Over-reach is fail-safe in the module's existing direction — an unusual
- * `bash script.sh -c arg` yields one extra segment to scan, and the wrapper
+ * EVERY word after the flag is a payload candidate, not just the next one.
+ * Bash does not stop parsing options at `-c`: it sets a mode flag and keeps
+ * going, then takes the first NON-OPTION argument as the command string. So the
+ * flag's neighbour is the payload only when nothing follows the flag in the
+ * option run, and a repeated or trailing option walks a single-token read one
+ * word too early — `bash -c -c "git reset --hard"`, `bash -c -x "…"`, `bash -lc
+ * -c "…"` and `bash -c -o pipefail "git stash"` all really run the payload
+ * (shim-verified; the `-x` trace printed `+ git reset --hard` before executing
+ * it) while the hook saw only `-c` / `-x` / `pipefail` and APPROVED. That hides
+ * the WHOLE command string from every detector at once — the AP-EXT-ITER63-06
+ * blast radius, re-opened for the git-verb, `install.sh`, expensive-test and
+ * R-WSRC-3 write gates alike (AP-EXT-ITER93-08).
+ *
+ * Taking the whole tail is what needs no table. "Skip options, take the first
+ * non-option" cannot be written without knowing which options consume an
+ * operand — the enumerated-declaration shape of AP-EXT-ITER18-01/ITER19-01,
+ * one member away from the next bypass, and the very list `bash -c -o pipefail`
+ * proves incomplete. Each candidate is scanned as its OWN segment rather than
+ * joined, because the payload is one bash word and joining would bury its verb
+ * behind a leading `-x` where no exec-position read can reach it.
+ *
+ * Over-reach is fail-safe in the module's existing direction and is a strict
+ * WIDENING of the old read — yesterday's single token is still a member — so no
+ * command that blocked before can stop blocking now. The extra candidates are
+ * the shell's own option words and the command string's positional arguments
+ * (`$0`, `$1`, …); each yields one more benign segment to scan, and the wrapper
  * segment is kept regardless.
  */
-function shellCommandStringPayload(segment: string): string | null {
+function shellCommandStringPayloads(segment: string): string[] {
   const tokens = tokenizeShellCommand(segment);
   const wrapper = tokens.findIndex((token) => isShellWrapper(token));
-  if (wrapper < 0) return null;
+  if (wrapper < 0) return [];
   for (let idx = wrapper + 1; idx < tokens.length; idx++) {
-    if (SHELL_COMMAND_STRING_FLAG_RE.test(tokens[idx])) return tokens[idx + 1] ?? null;
+    if (SHELL_COMMAND_STRING_FLAG_RE.test(tokens[idx])) return tokens.slice(idx + 1);
   }
-  return null;
+  return [];
 }
 
 /**
@@ -1021,7 +1041,7 @@ const WORD_TO_CODE_BUILTINS = ['eval', 'trap'] as const;
  * `-c` is not the only place a bash WORD becomes CODE. These builtins are the
  * shell's other one — no binary, no PATH lookup, nothing to install — so
  * `isShellWrapper`'s naming shape can never reach them and
- * `shellCommandStringPayload` returns null for every `eval` / `trap` form. The
+ * `shellCommandStringPayloads` is empty for every `eval` / `trap` form. The
  * payload is then ONE quoted token, which is exactly the AP-EXT-ITER63-06
  * failure mode: a single missed unwrap hides the WHOLE command from every
  * detector at once. Measured 2026-08-26 against the shipped mirror — the
@@ -1139,7 +1159,7 @@ function expandShellCommandStrings(segments: string[], depth: number): string[] 
     expanded.push(segment);
     for (const payload of [
       wordToCodeBuiltinPayload(segment),
-      shellCommandStringPayload(segment),
+      ...shellCommandStringPayloads(segment),
       hereStringPayload(segment),
     ]) {
       if (payload !== null) expanded.push(...splitShellSegments(payload, depth + 1));

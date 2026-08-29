@@ -1066,18 +1066,24 @@ it('AP-EXT-ITER54-01 the payload is read FORWARD from the flag, not from the fir
     path.resolve(__dirname, '../src/hooks/shell-exec.ts'), 'utf8',
   );
   const body = shellExec.match(
-    /function shellCommandStringPayload\(segment: string\): string \| null \{([\s\S]*?)\n\}/,
+    /function shellCommandStringPayloads\(segment: string\): string\[\] \{([\s\S]*?)\n\}/,
   );
-  assert.ok(body, 'shellCommandStringPayload must remain a single named function');
+  assert.ok(body, 'shellCommandStringPayloads must remain a single named function');
   // Pin the SHAPE, not just the behavior. Two regressions are one edit away and
   // both pass a behavior-only spec that lists today's option set: re-introducing
   // a "stop at the first non-`-` word" scan (the bug), or bolting on an
   // enumerated operand-taking-option table (the AP-EXT-ITER18-01/ITER19-01
   // incomplete-declaration shape, one option away from the next bypass).
+  //
+  // AP-EXT-ITER93-08 amended the read from `tokens[idx + 1]` to the whole tail:
+  // bash keeps parsing options past `-c` and takes the first NON-option word, so
+  // the flag's neighbour is the payload only when nothing follows it in the
+  // option run. Taking every following word is the formulation that needs no
+  // operand table.
   assert.match(
     body[1],
-    /if \(SHELL_COMMAND_STRING_FLAG_RE\.test\(tokens\[idx\]\)\) return tokens\[idx \+ 1\] \?\? null;/,
-    'the payload must be the word immediately after the command-string flag',
+    /if \(SHELL_COMMAND_STRING_FLAG_RE\.test\(tokens\[idx\]\)\) return tokens\.slice\(idx \+ 1\);/,
+    'every word after the command-string flag must be a payload candidate',
   );
   assert.ok(
     !/startsWith\('-'\)/.test(body[1]),
