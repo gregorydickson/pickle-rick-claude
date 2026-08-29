@@ -8129,7 +8129,7 @@ function readAutoHandoffDirtyPaths(workingDir, scopeJsonPath) {
         const args = ['-C', workingDir, 'status', '--porcelain'];
         if (pathSpecs.length > 0)
             args.push('--', ...pathSpecs);
-        const result = spawnSync('git', args, { encoding: 'utf-8', timeout: 10_000 });
+        const result = spawnSync('git', args, { encoding: 'utf-8', timeout: 10_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
         if (result.status !== 0 || result.error || !result.stdout)
             return [];
         return result.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
