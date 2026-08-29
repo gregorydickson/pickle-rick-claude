@@ -7448,17 +7448,31 @@ export interface RecoveryBudgetRefundResult {
 /**
  * R-REIN: refund the per-ticket recovery budget when an operator explicitly resets a
  * ticket's frontmatter `status` back to `Todo`. The documented recovery recipe ("set
- * status: Todo + relaunch") was INERT once a ticket had exhausted its bounded-escape
- * ladder: the spent `bounded_terminal_escape` attempts persisted in the ledger, so the
- * ticket was force-escaped again on its very first no-progress relaunch (re-exiting
- * `recovery_exhausted` in ~2s with no real re-attempt).
+ * status: Todo + relaunch") was INERT once a ticket had exhausted a recovery ladder:
+ * the spent attempts persisted in the ledger, so the ticket was force-escaped again on
+ * its very first relaunch (re-exiting `recovery_exhausted` in ~2s with no real re-attempt).
+ *
+ * The refund is keyed on TICKET IDENTITY ALONE — deliberately not on a strategy list.
+ * `recovery_attempts` carries three independent per-ticket budgets
+ * (`bounded_terminal_escape` counted by `countBoundedEscapeAttempts`; and
+ * `silent_death_respawn` + `failed_flip_suppressed` counted by `countLedgerSuccesses`),
+ * and they do not share a charge polarity — bounded-escape charges on `outcome: 'failed'`
+ * while the other two charge on `'success'`. A refund that enumerated strategies could
+ * only ever cover the ones its author had in front of them, which is exactly how the
+ * `failed_flip_suppressed` budget (the HOT one — every live ledger entry in the corpus)
+ * stayed un-refundable while its scheduling hold was released by the same Todo reset.
+ * Filtering on `a.ticket === ticketId` needs no list and covers every future budget.
+ * It provably cannot touch the recovery-ladder entries `convergedPlanIdempotentNoOp`
+ * latches on: `runRecoveryLadder` appends `{strategy, outcome, reason, iteration}` with
+ * NO `ticket` field (`RecoveryAttempt.ticket` is optional, "absent on pre-existing ladder
+ * entries"), so `undefined === ticketId` is never true.
  *
  * Conservative: refunds ONLY when frontmatter status reads `todo` AND the ledger holds
- * spent attempts for THIS ticket. A still-Failed/In-Progress ticket (no reset) keeps its
- * spent attempts and exhausts normally. Pre-reset entries are SUPERSEDED (removed) so the
- * subsequent `countBoundedEscapeAttempts` reads zero and the ladder starts fresh. Emits
- * the existing `operator_recovery_transition` activity event for the audit trail. Adds no
- * forbidden state field. Best-effort: any read/write failure is swallowed (no refund).
+ * entries for THIS ticket. A still-Failed/In-Progress ticket (no reset) keeps its spent
+ * attempts and exhausts normally. Sibling tickets are untouched. Emits the existing
+ * `operator_recovery_transition` activity event for the audit trail (the per-event
+ * activity log, not this ledger, is the durable audit record). Adds no forbidden state
+ * field. Best-effort: any read/write failure is swallowed (no refund).
  */
 export function refundRecoveryBudgetOnReset(
   statePath: string,
@@ -7474,17 +7488,18 @@ export function refundRecoveryBudgetOnReset(
   } catch { return { refunded: false, cleared: 0 }; }
   if (status !== 'todo') return { refunded: false, cleared: 0 };
 
+  // ONE predicate drives both the precondition and the filter, so they can never diverge.
+  const chargedToThisTicket = (a: RecoveryAttempt): boolean => a.ticket === ticketId;
+
   let cleared = 0;
   try {
     const probe = readRecoverableJsonObject(statePath) as State | null;
-    const priorCount = countBoundedEscapeAttempts(probe?.recovery_attempts, ticketId);
+    const priorCount = (probe?.recovery_attempts ?? []).filter(chargedToThisTicket).length;
     if (priorCount <= 0) return { refunded: false, cleared: 0 };
     sm.update(statePath, s => {
       if (!Array.isArray(s.recovery_attempts)) { s.recovery_attempts = []; return; }
       const before = s.recovery_attempts.length;
-      s.recovery_attempts = s.recovery_attempts.filter(
-        a => !(a.strategy === BOUNDED_ESCAPE_STRATEGY && a.ticket === ticketId && a.outcome === 'failed'),
-      );
+      s.recovery_attempts = s.recovery_attempts.filter(a => !chargedToThisTicket(a));
       cleared = before - s.recovery_attempts.length;
     });
   } catch (err) {
@@ -11873,10 +11888,11 @@ async function runMuxRunnerMain() {
       } catch { /* best-effort */ }
       // R-REIN: refund the per-ticket recovery budget when the operator has explicitly
       // reset this ticket's frontmatter status back to Todo. Without this, the spent
-      // `bounded_terminal_escape` ledger entries survive the reset and force the ticket
-      // terminal again on its first no-progress relaunch — re-exiting `recovery_exhausted`
-      // in ~2s and making the documented "reset to Todo + relaunch" recovery INERT. The
-      // helper is conservative (no-op unless frontmatter is Todo AND spent attempts exist).
+      // ledger entries survive the reset and force the ticket terminal again on its first
+      // relaunch — re-exiting `recovery_exhausted` in ~2s and making the documented
+      // "reset to Todo + relaunch" recovery INERT. Covers ALL three per-ticket budgets
+      // (ticket-identity keyed, no strategy list). The helper is conservative (no-op
+      // unless frontmatter is Todo AND this ticket has ledger entries).
       refundRecoveryBudgetOnReset(statePath, sessionDir, preTicket, iteration, log);
     }
     state = updateMuxLifecycleState(statePath, { iteration, currentTicket: preTicket, step: preStep });

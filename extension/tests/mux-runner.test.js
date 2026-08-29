@@ -4756,7 +4756,7 @@ test('R-WSRC-2: the only raw sm.read(statePath) in mux-runner.ts is inside readR
 // must not be published as a MEASURED clean tree.
 //
 // `listWorkingTreeDirtyPaths` THROWS on every git failure on purpose
-// (AP-EXT-ITER8-01). The assessor used to map that throw to `treeDirty = false`,
+// (AP-EXT-ITER8-03). The assessor used to map that throw to `treeDirty = false`,
 // which skipped the ladder's two salvage rungs entirely — the ticket's whole
 // uncommitted implementation was never offered to commit-and-continue — while
 // the ladder still reported the `no_work_produced` fall_through, its own
@@ -4877,4 +4877,152 @@ test('AP-EXT-ITER49-01: an unmeasurable tree with an APPROVED plan still reaches
     'rung 3 must stay reachable — widening what the ladder attempts must not remove a rung',
   );
   assert.equal(evidence.noWorkProduced, false);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER8-03: the R-REIN refund must cover EVERY per-ticket recovery budget,
+// not just `bounded_terminal_escape`.
+//
+// `recovery_attempts` carries three independent per-ticket budgets and they do not
+// share a charge polarity (bounded-escape charges on outcome:'failed'; silent-death
+// respawn and failed-flip suppression charge on 'success'). The refund used to
+// enumerate ONE of them, so the documented operator heal ("set status: Todo +
+// relaunch") released the failed-flip scheduling hold — readActiveFailedFlipHolds
+// drops a Todo ticket — while leaving the spent suppression budget in the ledger.
+// The ticket was re-scheduled and then escalated on its VERY FIRST flip intent
+// (evaluateFailedFlipSuppression -> {action:'escalate'}), which routes to
+// advanceOrExitOnLadderExhaustion -> Failed flip + `recovery_exhausted` when no
+// other runnable ticket remains. That is the exact inert-recipe defect R-REIN was
+// written to kill, reproduced in the sibling budget.
+//
+// `failed_flip_suppressed` is the HOT strategy: 35/35 recovery_attempts entries
+// across the 11 live session ledgers carry it; `bounded_terminal_escape` has zero.
+// ---------------------------------------------------------------------------
+
+function seedRefundFixture(entries, status) {
+    const root = makeTmpRoot();
+    const ticket = 'abc12345';
+    fs.mkdirSync(path.join(root, ticket), { recursive: true });
+    fs.writeFileSync(path.join(root, ticket, 'research_2026-08-29.md'), '# work\n');
+    fs.writeFileSync(
+        path.join(root, ticket, `rick_ticket_${ticket}.md`),
+        `---\nid: ${ticket}\nstatus: ${status}\ncomplexity_tier: small\n---\n\n# Ticket\n`,
+    );
+    const statePath = path.join(root, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({
+        schema_version: 5,
+        session_id: path.basename(root),
+        working_dir: root,
+        current_ticket: ticket,
+        iteration: 9,
+        recovery_attempts: entries(ticket),
+    }, null, 2));
+    return { root, ticket, statePath };
+}
+
+const suppressionEntry = (ticket, n) => ({
+    strategy: 'failed_flip_suppressed',
+    outcome: 'success',
+    reason: `worker_gate_fail flip suppressed ${n}/2 (both) for ${ticket}`,
+    iteration: n,
+    ticket,
+});
+
+const HARDENING_FOR_REFUND = {
+    silent_death_respawn_cap: 1,
+    failed_flip_suppression_cap: 2,
+    breaker_recovery_grace_seconds: 30,
+    bounded_terminal_escape_cap: 3,
+};
+
+function flipIntentAfterHeal(fixture) {
+    return import('../bin/mux-runner.js').then(({ evaluateFailedFlipSuppression }) =>
+        evaluateFailedFlipSuppression({
+            sessionDir: fixture.root,
+            statePath: fixture.statePath,
+            ticketId: fixture.ticket,
+            workingDir: fixture.root,
+            iteration: 10,
+            callsite: 'worker_gate_fail',
+            windowStartMs: Date.now() - 60_000,
+            windowEndMs: Date.now(),
+            preSha: null,
+            settings: HARDENING_FOR_REFUND,
+        }));
+}
+
+test('AP-EXT-ITER8-03: a Todo reset refunds the failed-flip suppression budget, so the first flip intent is not an escalate', async () => {
+    const { refundRecoveryBudgetOnReset, readActiveFailedFlipHolds } = await import('../bin/mux-runner.js');
+    const fixture = seedRefundFixture(t => [suppressionEntry(t, 1), suppressionEntry(t, 2)], 'Todo');
+
+    // Precondition: the Todo reset already releases the SCHEDULING hold, so the ticket
+    // is re-queued. That half worked; the budget half is what was missing.
+    assert.deepEqual(
+        [...readActiveFailedFlipHolds(fixture.root)], [],
+        'a Todo reset releases the failed-flip hold — the ticket is re-scheduled',
+    );
+
+    const result = refundRecoveryBudgetOnReset(fixture.statePath, fixture.root, fixture.ticket, 9, () => {});
+    assert.equal(result.refunded, true, 'a Todo reset with a spent failed-flip budget must refund');
+    assert.equal(result.cleared, 2, 'both spent suppression entries cleared');
+
+    const decision = await flipIntentAfterHeal(fixture);
+    assert.notEqual(
+        decision.action, 'escalate',
+        'the healed ticket must get a real re-attempt, not an immediate ladder escalation',
+    );
+    assert.equal(decision.action, 'suppress', 'evidence is present and the budget is fresh → suppress');
+    assert.equal(decision.suppressionCount, 1, 'the budget restarts at 1/2');
+});
+
+test('AP-EXT-ITER8-03: a Todo reset refunds the silent-death respawn budget too', async () => {
+    const { refundRecoveryBudgetOnReset } = await import('../bin/mux-runner.js');
+    const fixture = seedRefundFixture(t => [{
+        strategy: 'silent_death_respawn',
+        outcome: 'success',
+        reason: `log_empty respawn 1/1 for ${t}`,
+        iteration: 1,
+        ticket: t,
+    }], 'Todo');
+
+    const result = refundRecoveryBudgetOnReset(fixture.statePath, fixture.root, fixture.ticket, 9, () => {});
+    assert.equal(result.refunded, true, 'the third per-ticket budget must refund on the same heal');
+    assert.equal(result.cleared, 1);
+});
+
+test('AP-EXT-ITER8-03: NEGATIVE CONTROL — a ticket that was never reset keeps its spent budget and still escalates', async () => {
+    const { refundRecoveryBudgetOnReset } = await import('../bin/mux-runner.js');
+    const fixture = seedRefundFixture(t => [suppressionEntry(t, 1), suppressionEntry(t, 2)], 'In Progress');
+
+    const result = refundRecoveryBudgetOnReset(fixture.statePath, fixture.root, fixture.ticket, 9, () => {});
+    assert.equal(result.refunded, false, 'no operator reset → no refund; widening must not become a blanket clear');
+    assert.equal(result.cleared, 0);
+
+    const decision = await flipIntentAfterHeal(fixture);
+    assert.equal(decision.action, 'escalate', 'an un-reset exhausted ticket must still exhaust');
+});
+
+test('AP-EXT-ITER8-03: the refund is ticket-keyed and must not clear ticket-less recovery-ladder entries', async () => {
+    const { refundRecoveryBudgetOnReset } = await import('../bin/mux-runner.js');
+    // `runRecoveryLadder` appends {strategy, outcome, reason, iteration} with NO ticket
+    // field, and `convergedPlanIdempotentNoOp` latches on an `execute-converged-plan`
+    // success. Clearing that would re-run an already-successful converged-plan rung.
+    const fixture = seedRefundFixture(t => [
+        suppressionEntry(t, 1),
+        { strategy: 'execute-converged-plan', outcome: 'success', reason: 'ladder', iteration: 2 },
+        { strategy: 'failed_flip_suppressed', outcome: 'success', reason: 'sibling', iteration: 3, ticket: 'other999' },
+    ], 'Todo');
+
+    const result = refundRecoveryBudgetOnReset(fixture.statePath, fixture.root, fixture.ticket, 9, () => {});
+    assert.equal(result.cleared, 1, 'only THIS ticket’s entry is cleared');
+
+    const after = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8')).recovery_attempts;
+    assert.ok(
+        after.some(a => a.strategy === 'execute-converged-plan'),
+        'a ticket-less ladder entry survives — undefined never equals the ticket id',
+    );
+    assert.ok(
+        after.some(a => a.ticket === 'other999'),
+        'a sibling ticket’s budget survives',
+    );
 });
