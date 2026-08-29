@@ -4678,7 +4678,8 @@ After committing, emit \`<promise>${PromiseTokens.WORKER_DONE}</promise>\` as us
  * Triggers ONLY when ALL are true:
  *   - backend === 'codex' (claude lacks this failure mode per RCA)
  *   - iteration - lastProgressIteration >= threshold (default 2)
- *   - `git diff --stat` OR `git diff --stat --cached` is non-empty
+ *   - the working tree has at least one non-`.codegraph` dirty path (staged,
+ *     unstaged, OR untracked — see AP-EXT-ITER99-01 below)
  *
  * Idempotent: if handoff.txt already exists at probe time (e.g. user-written
  * or rate-limit handoff), the probe defers and skips. Never throws — best
@@ -4698,18 +4699,19 @@ export function commitPendingProbe(input: CommitPendingProbeInput): CommitPendin
     return 'skipped:existing-handoff';
   }
 
-  // Detect uncommitted edits using the same git-diff pattern as
-  // classifyTicketCompletion (lines ~381-384). Both unstaged and staged
-  // diffs count as "pending commit" — codex has been observed leaving
-  // either flavor.
-  let hasUncommitted = false;
+  // AP-EXT-ITER99-01: ONE dirty-tree read, not a pair of `git diff` reads. `git diff
+  // --stat` and `--stat --cached` together cover tracked modifications staged and
+  // unstaged — and NOTHING untracked. A worker whose entire output is NEW files reads
+  // as having nothing pending, so the rescue that exists to make it commit before the
+  // circuit breaker trips is precisely the rescue it can never get. `-uall` inside
+  // `listWorkingTreeDirtyPaths` (AP-EXT-ITER98-01) makes new files visible, and the
+  // union it returns is a SUPERSET of the two diffs it replaces — one read, one
+  // branch, one definition of "pending". `.codegraph/` is untracked dirt on a fresh
+  // clone (ignored only via the local, unversioned `.git/info/exclude`), so it is
+  // dropped through the same exported predicate `collectDirtyInScopePaths` uses.
+  let hasUncommitted: boolean;
   try {
-    const unstaged = runCmd(['git', 'diff', '--stat'], { cwd: workingDir, check: false });
-    if (unstaged.length > 0) hasUncommitted = true;
-    if (!hasUncommitted) {
-      const staged = runCmd(['git', 'diff', '--stat', '--cached'], { cwd: workingDir, check: false });
-      if (staged.length > 0) hasUncommitted = true;
-    }
+    hasUncommitted = listWorkingTreeDirtyPaths(workingDir).some((p) => !isCodegraphArtifact(p));
   } catch (err) {
     log(`commit-pending probe: git probe failed (${safeErrorMessage(err)}) — skipping`);
     return 'skipped:no-uncommitted';

@@ -5139,3 +5139,99 @@ test('AP-EXT-ITER50-01: findLiveCommandForPid returns the census command, or nul
     assert.equal(findLiveCommandForPidUnderTest(psOutput, 999), null, 'a pid absent from the census is dead');
     assert.equal(findLiveCommandForPidUnderTest('', 111), null, 'an empty census attributes nothing');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER99-01: the commit-pending rescue must see UNTRACKED work.
+//
+// `commitPendingProbe` is the rescue that nudges a stagnating codex worker to
+// commit BEFORE the no-progress circuit breaker trips. It used to read pending
+// work as `git diff --stat` OR `git diff --stat --cached` — a pair that covers
+// tracked modifications staged and unstaged, and nothing untracked. A worker
+// whose entire output is NEW files therefore read as "nothing pending", so the
+// run most in need of the rescue was the one run that could never receive it.
+//
+// Hosted here rather than in the natural sibling `iteration-outcome.test.js`
+// (which owns the probe's happy path) because that file is outside this run's
+// scope fence; `mux-runner.test.js` is the in-scope host for this module.
+//
+// Both directions are pinned: the untracked case must FIRE, and two clean-ish
+// cases must NOT — a collapse that simply carries everything would pass the
+// first assertion alone.
+// ---------------------------------------------------------------------------
+import { commitPendingProbe as commitPendingProbeUnderTest } from '../bin/mux-runner.js';
+
+function runCommitPendingProbe(sessionDir, workingDir) {
+    return commitPendingProbeUnderTest({
+        sessionDir,
+        workingDir,
+        backend: 'codex',
+        iteration: 5,
+        lastProgressIteration: 2, // stagnation = 3 >= threshold 2
+        threshold: 2,
+        pid: process.pid,
+        log: () => {},
+    });
+}
+
+function withProbeDirs(fn) {
+    const sessionDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-ap99-sess-')));
+    const workingDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-ap99-repo-')));
+    try {
+        initGitRepo(workingDir);
+        fn(sessionDir, workingDir);
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+}
+
+test('AP-EXT-ITER99-01: untracked-only worker output fires the commit-pending rescue', () => {
+    withProbeDirs((sessionDir, workingDir) => {
+        // The worker's entire output is NEW files it never staged — invisible to
+        // `git diff --stat` and to `git diff --stat --cached` alike.
+        fs.mkdirSync(path.join(workingDir, 'newmod'), { recursive: true });
+        fs.writeFileSync(path.join(workingDir, 'newmod', 'a.ts'), 'export const a = 1;\n');
+        fs.writeFileSync(path.join(workingDir, 'newmod', 'b.ts'), 'export const b = 2;\n');
+
+        // Sanity: this really is the blind spot — both replaced reads are empty.
+        assert.equal(
+            spawnSync('git', ['diff', '--stat'], { cwd: workingDir, encoding: 'utf-8', timeout: 30000 }).stdout.trim(),
+            '',
+            'sanity: unstaged diff is empty for untracked-only work',
+        );
+        assert.equal(
+            spawnSync('git', ['diff', '--stat', '--cached'], { cwd: workingDir, encoding: 'utf-8', timeout: 30000 }).stdout.trim(),
+            '',
+            'sanity: staged diff is empty for untracked-only work',
+        );
+
+        assert.equal(runCommitPendingProbe(sessionDir, workingDir), 'fired');
+        assert.ok(
+            fs.existsSync(path.join(sessionDir, 'handoff.txt')),
+            'the rescue handoff must be written so the worker commits before the breaker trips',
+        );
+    });
+});
+
+test('AP-EXT-ITER99-01: a genuinely clean tree still declines (no carry-anything)', () => {
+    withProbeDirs((sessionDir, workingDir) => {
+        assert.equal(runCommitPendingProbe(sessionDir, workingDir), 'skipped:no-uncommitted');
+        assert.ok(
+            !fs.existsSync(path.join(sessionDir, 'handoff.txt')),
+            'a clean tree must not produce a rescue handoff',
+        );
+    });
+});
+
+test('AP-EXT-ITER99-01: a .codegraph-only tree declines (regenerable index is not worker output)', () => {
+    withProbeDirs((sessionDir, workingDir) => {
+        // `.codegraph/` is plain untracked dirt on a fresh clone — it is ignored
+        // only through the local, unversioned `.git/info/exclude`. Widening the
+        // read to untracked files must not turn the runtime's own index into
+        // "pending worker work".
+        fs.mkdirSync(path.join(workingDir, '.codegraph'), { recursive: true });
+        fs.writeFileSync(path.join(workingDir, '.codegraph', 'index.bin'), 'x');
+
+        assert.equal(runCommitPendingProbe(sessionDir, workingDir), 'skipped:no-uncommitted');
+    });
+});
