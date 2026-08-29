@@ -90,6 +90,31 @@ function gateArgs({ root, ticketId, statePath }) {
 
 const ranProbe = (root, name) => fs.existsSync(path.join(root, `${name}.ran`));
 
+/**
+ * A monorepo target: `workingDir` itself has NO manifest, but exactly one depth-1
+ * child does. Exercises `resolveWorkerGateProject`'s second resolution branch
+ * (probe children when the root itself doesn't resolve) end-to-end through the
+ * real `runWorkerGate` entry point.
+ */
+function makeMonorepoNpmFixture(childNames = ['app']) {
+  const root = makeTmp();
+  const ticketId = 'eee55555';
+  for (const childName of childNames) {
+    const childDir = path.join(root, childName);
+    fs.mkdirSync(childDir, { recursive: true });
+    const probe = (name) =>
+      `node -e "require('fs').writeFileSync('${name}.ran','1');process.exit(0)"`;
+    fs.writeFileSync(path.join(childDir, 'package.json'), JSON.stringify({
+      name: `target-${childName}`,
+      version: '1.0.0',
+      scripts: { typecheck: probe('typecheck'), lint: probe('lint'), test: probe('test') },
+    }, null, 2));
+    fs.writeFileSync(path.join(childDir, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3 }));
+  }
+  writeTicket(root, ticketId);
+  return { root, ticketId, statePath: writeState(root), childDir: path.join(root, childNames[0]) };
+}
+
 // ---------------------------------------------------------------------------
 // AC-OFFREPO-2a — the gate EXECUTES the target's own toolchain.
 // ---------------------------------------------------------------------------
@@ -148,6 +173,43 @@ test('off-repo: a project type with no command-map entry (bun) is not_run, not g
   const result = await runWorkerGate([], gateArgs({ root, ticketId, statePath }));
 
   assert.equal(frontmatterField(root, ticketId, 'worker_gate_verdict'), 'not_run');
+  assert.equal(result.ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// G1 (e7501535) — the monorepo-child resolution branch of resolveWorkerGateProject,
+// driven end-to-end through the real runWorkerGate entry point. Every prior fixture
+// puts the manifest directly in `workingDir`; a real non-pickle-rick target is often
+// a monorepo whose manifest lives one directory down, and that branch had no
+// coverage proving the gate actually runs the CHILD's toolchain.
+// ---------------------------------------------------------------------------
+
+test('off-repo: a monorepo with ONE resolvable child package has the CHILD toolchain executed', async () => {
+  const fixture = makeMonorepoNpmFixture(['app']);
+  const result = await runWorkerGate([], gateArgs(fixture));
+
+  // The load-bearing assertion: the probe files land in the CHILD directory, proving
+  // the gate resolved and ran the child's own scripts — not a phantom root-level
+  // command and not a no-op that happens to report green.
+  assert.equal(fs.existsSync(path.join(fixture.childDir, 'typecheck.ran')), true);
+  assert.equal(fs.existsSync(path.join(fixture.childDir, 'lint.ran')), true);
+  assert.equal(fs.existsSync(path.join(fixture.childDir, 'test.ran')), true);
+  assert.equal(fs.existsSync(path.join(fixture.root, 'typecheck.ran')), false, 'no phantom root-level command');
+
+  assert.equal(frontmatterField(fixture.root, fixture.ticketId, 'worker_gate_verdict'), 'green');
+  assert.equal(result.ok, true);
+});
+
+test('off-repo: an AMBIGUOUS monorepo (two resolvable children) is not_run, never guessed', async () => {
+  const fixture = makeMonorepoNpmFixture(['app', 'api']);
+  const result = await runWorkerGate([], gateArgs(fixture));
+
+  // Neither child's scripts may have run — resolveWorkerGateProject refuses to guess
+  // when 2+ candidates resolve.
+  assert.equal(fs.existsSync(path.join(fixture.root, 'app', 'typecheck.ran')), false);
+  assert.equal(fs.existsSync(path.join(fixture.root, 'api', 'typecheck.ran')), false);
+
+  assert.equal(frontmatterField(fixture.root, fixture.ticketId, 'worker_gate_verdict'), 'not_run');
   assert.equal(result.ok, true);
 });
 
