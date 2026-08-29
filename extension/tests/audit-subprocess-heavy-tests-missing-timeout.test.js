@@ -227,3 +227,61 @@ test('AP-EXT-ITER42-01: the committed extension/tests corpus has zero un-baselin
   );
   assert.equal(run.stdout.trim(), '', `expected no findings, got:\n${run.stdout}`);
 });
+
+// AP-EXT-ITER92-01. The scanner reads RAW file text — it strips no comments — so a `//`
+// documentation line that spells a call shape is a candidate exactly like real code, and
+// (being un-baselined) it blanks the whole integration tier via `pretest:integration`.
+// This is not hypothetical: anatomy-park commit `aa0a8bc8` documented the plan-verify seam
+// by naming its consumer call in prose and blacked out the tier for a full iteration, the
+// second recurrence of the AP-EXT-ITER42-01 blackout with a different producer.
+//
+// Pinned in BOTH directions so the rule is "prose must not spell a call shape", not
+// "prose is ignored": the paren-bearing form must fail, the reworded form must pass.
+// Both fixtures are assembled from split tokens so THIS file never becomes a candidate.
+test('AP-EXT-ITER92-01: a child_process call shape in COMMENT PROSE is a candidate; rewording clears it', () => {
+  const dir = tmpScanRoot();
+  const scanner = path.resolve(__dirname, '../scripts/audit-subprocess-heavy-tests-missing-timeout.mjs');
+  const FN = 'spawnSync';
+  const scan = (file) =>
+    spawnSync(process.execPath, [scanner, '--base', dir, file], {
+      encoding: 'utf-8',
+      timeout: 30000,
+    });
+
+  try {
+    const fixturePath = path.join(dir, 'comment-prose.test.js');
+    const body = ['export function run() {', '  return 1;', '}', ''];
+
+    // Prose that spells the call shape, parenthesis and all.
+    fs.writeFileSync(
+      fixturePath,
+      ['// @tier: fast', `// the sole consumer is ${FN}` + '(phase.verify, { shell: true })', ...body].join('\n'),
+    );
+    const flagged = scan(fixturePath);
+    assert.equal(
+      flagged.status,
+      1,
+      `a call shape in comment prose must read as a candidate; stdout=${flagged.stdout}`,
+    );
+    assert.match(
+      flagged.stdout,
+      new RegExp(`\\t${FN}\\t`),
+      `the finding must name the function from the prose; got:\n${flagged.stdout}`,
+    );
+
+    // Same sentence, same meaning, no call shape — the documented remedy.
+    fs.writeFileSync(
+      fixturePath,
+      ['// @tier: fast', `// the sole consumer is the one \`shell: true\` ${FN} in \`src/\``, ...body].join('\n'),
+    );
+    const cleared = scan(fixturePath);
+    assert.equal(
+      cleared.status,
+      0,
+      `rewording away the parenthesis must clear the candidate; stdout=${cleared.stdout}`,
+    );
+    assert.equal(cleared.stdout.trim(), '', `expected no findings, got:\n${cleared.stdout}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

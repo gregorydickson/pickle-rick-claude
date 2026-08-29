@@ -1265,8 +1265,8 @@ test('AP-EXT-ITER55-02 control: a verbose verify that genuinely FAILS is still n
 // --- AP-EXT-ITER9-02: a wrapped `**Verify:**` code span is ONE command, not two -----------
 //
 // `PLAN_PHASE_VERIFY_RE` captures `([^`]+)`, which spans newlines, and the sole consumer is
-// `spawnSync(phase.verify, { shell: true })` — where a newline is a command SEPARATOR, not
-// whitespace. Authors routinely wrap a long test invocation inside one backtick span, and
+// the one `shell: true` spawnSync in `src/`, run over `phase.verify` — where a newline is a
+// command SEPARATOR, not whitespace. Authors wrap a long test invocation in one span, and
 // CommonMark reads that as a single command (code-span line endings become spaces). Left raw,
 // the shell instead ran `node --test` with NO file operand — which discovers and runs the whole
 // tree, then burns the full 600s verify budget to SIGTERM — followed by a bare `.test.js` path.

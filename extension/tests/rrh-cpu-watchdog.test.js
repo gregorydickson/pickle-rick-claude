@@ -240,7 +240,7 @@ test('R-DSPW: a REAL live child process is never classified dead by the producti
   const ticketDir = path.join(sessionDir, ticketId);
   mkdirSync(ticketDir, { recursive: true });
 
-  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)']);
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { timeout: 30000 });
   try {
     // resolveCurrentWorkerPid matches /^worker_session_(\d+)\.log$/ on the ticket dir.
     writeFileSync(path.join(ticketDir, `worker_session_${child.pid}.log`), 'live\n');
@@ -265,7 +265,7 @@ test('R-DSPW: a dead pid recorded in the worker_session log is classified dead, 
   const ticketDir = path.join(sessionDir, ticketId);
   mkdirSync(ticketDir, { recursive: true });
 
-  const child = spawn(process.execPath, ['-e', 'process.exit(0)']);
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { timeout: 30000 });
   const deadPid = await new Promise((resolve, reject) => {
     child.on('exit', () => resolve(child.pid));
     child.on('error', reject);
