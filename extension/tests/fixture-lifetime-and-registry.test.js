@@ -72,6 +72,11 @@ function isAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+/** Best-effort teardown: by this point the fixture has usually already self-exited. */
+function killQuietly(child) {
+  try { child.kill('SIGKILL'); } catch { /* already gone */ }
+}
+
 async function waitFor(predicate, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -86,7 +91,7 @@ test('fixture self-exits unaided once its env-set lifetime bound elapses', async
   try {
     await waitFor(() => !isAlive(child.pid), 5_000, 'fixture exited unaided past its 300ms bound');
   } finally {
-    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    killQuietly(child);
   }
 });
 
@@ -102,9 +107,7 @@ test('fixture falls back to the compiled default when the lifetime env is absent
       assert.ok(isAlive(child.pid), `pid=${child.pid} must still be alive under the default bound`);
     }
   } finally {
-    for (const child of children) {
-      try { child.kill('SIGKILL'); } catch { /* already gone */ }
-    }
+    children.forEach(killQuietly);
   }
 });
 
@@ -119,7 +122,7 @@ test('fixture appends its PID to the run-scoped registry when the env var is set
     const lines = fs.readFileSync(registryPath, 'utf-8').trim().split('\n');
     assert.ok(lines.includes(String(child.pid)), `registry must contain spawned pid=${child.pid}; got: ${lines}`);
   } finally {
-    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    killQuietly(child);
   }
 });
 
