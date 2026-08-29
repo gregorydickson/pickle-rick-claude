@@ -7,10 +7,10 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   isNestedTernary,
-  isBraceFreeIf,
   findBannedConstructs,
   auditBannedConstructs,
 } from '../../services/citadel/banned-constructs-audit.js';
+import * as bannedConstructsAudit from '../../services/citadel/banned-constructs-audit.js';
 import { buildCitadelAuditReport } from '../../services/citadel/audit-runner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,21 +30,24 @@ describe('banned-constructs: nested ternary detector', () => {
   });
 });
 
-describe('banned-constructs: brace-free if detector', () => {
-  test('fires on a same-line brace-free if', () => {
-    assert.ok(isBraceFreeIf('  if (x) return y;'));
-    assert.ok(isBraceFreeIf('  } else if (cond(a, b)) doThing();'));
+describe('banned-constructs: fabricated arms stay deleted (R-BCFR regression pin)', () => {
+  test('isBraceFreeIf is not exported — the fabricated brace-free-if rule was deleted, not reworked', () => {
+    assert.equal(bannedConstructsAudit.isBraceFreeIf, undefined);
   });
-  test('silent on braced if, brace-on-next-line, and strings', () => {
-    assert.ok(!isBraceFreeIf('  if (x) {'));
-    assert.ok(!isBraceFreeIf('  if (cond)'));
-    assert.ok(!isBraceFreeIf('  const s = "if (x) y";'));
-    assert.ok(!isBraceFreeIf('  if (x) // comment'));
+  test('isNever is not exported — this arm never existed in the shipped audit and must stay absent', () => {
+    assert.equal(bannedConstructsAudit.isNever, undefined);
+  });
+  test('the brace-free-if finding id is never emitted, even for the shape that used to trigger it', () => {
+    const findings = findBannedConstructs([{
+      file: 'src/x.ts',
+      lines: [{ no: 11, text: 'if (ready) launch();' }],
+    }]);
+    assert.deepEqual(findings, []);
   });
 });
 
 describe('banned-constructs: findBannedConstructs', () => {
-  test('flags both classes on a positive fixture and is silent on clean lines', () => {
+  test('flags the remaining nested-ternary arm on a positive fixture and is silent on clean lines', () => {
     const findings = findBannedConstructs([{
       file: 'src/x.ts',
       lines: [
@@ -54,9 +57,8 @@ describe('banned-constructs: findBannedConstructs', () => {
         { no: 13, text: '// if (x) return;  comment line is ignored' },
       ],
     }]);
-    assert.equal(findings.length, 2);
-    assert.ok(findings.some((f) => f.id.startsWith('banned-construct:nested-ternary:')));
-    assert.ok(findings.some((f) => f.id.startsWith('banned-construct:brace-free-if:')));
+    assert.equal(findings.length, 1);
+    assert.ok(findings.every((f) => f.id.startsWith('banned-construct:nested-ternary:')));
     for (const f of findings) assert.equal(f.severity, 'Medium');
   });
 
