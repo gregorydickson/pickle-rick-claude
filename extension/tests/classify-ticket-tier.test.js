@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { classifyTicketTier } from '../services/pickle-utils.js';
+import { classifyTicketTier, CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS } from '../services/pickle-utils.js';
 import { resolveEffectiveTierForTicket } from '../bin/spawn-morty.js';
 
 function withTempTicket(content, fn) {
@@ -193,4 +193,42 @@ test('AC-PIAP-A5-3: ticket with invalid complexity_tier falls back to classifier
 test('AC-PIAP-A5-3: null ticketFilePath returns null', () => {
   const tier = resolveEffectiveTierForTicket(null);
   assert.equal(tier, null, 'null path must return null');
+});
+
+// --- R-TCVC: tier classifier recognizes expensive verify-command shapes ---
+
+test('R-TCVC AC-TCHN-1B: expensive-verify twin bumps one tier above its keyword-less twin', () => {
+  const base = { fileCount: 3, acCount: 4, locEstimate: 100 };
+  const expensive = classifyTicketTier({ ...base, text: 'Verify: pnpm run test:migration' });
+  const plain = classifyTicketTier({ ...base, text: 'implement the feature' });
+  assert.equal(plain, 'medium', 'keyword-less twin stays at its dimension-derived tier');
+  assert.equal(expensive, 'large', 'expensive-verify twin bumps one tier above its twin');
+});
+
+test('R-TCVC AC-TCHN-1A: an already-large ticket stays large (delta cap respected)', () => {
+  const tier = classifyTicketTier({
+    fileCount: 6,
+    acCount: 8,
+    locEstimate: 300,
+    text: 'Verify: docker compose up && pnpm test:integration',
+  });
+  assert.equal(tier, 'large', 'large tier is the ceiling — an expensive-verify hit cannot push past it');
+});
+
+test('R-TCVC: one keyword-hit case per CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS entry, generated from the exported list', () => {
+  const base = { fileCount: 3, acCount: 4, locEstimate: 100 };
+  for (const kw of CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS) {
+    const tier = classifyTicketTier({ ...base, text: `Verify: run the ${kw} suite` });
+    assert.equal(tier, 'large', `keyword "${kw}" must bump a medium-dimension ticket to large`);
+  }
+});
+
+test('R-TCVC: an expensive-verify keyword combined with a CLASSIFIER_LARGER_KEYWORDS hit still only bumps by 1', () => {
+  const tier = classifyTicketTier({
+    fileCount: 3,
+    acCount: 4,
+    locEstimate: 100,
+    text: 'migrate the schema, then Verify: pnpm run test:migration',
+  });
+  assert.equal(tier, 'large', 'two larger-keyword hits clamp to the same +1 delta as one');
 });

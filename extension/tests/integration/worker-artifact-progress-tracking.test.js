@@ -158,3 +158,98 @@ test('R-WSWA-2: honors PICKLE_WMW_OBSERVE_K override via opts.k', async () => {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+// --- R-HNCG: mechanical handoff-notes fallback on a zero-artifact-progress spawn ---
+
+test('R-HNCG AC-TCHN-2A: a zero-progress spawn appends a machine-tagged continuity block', async () => {
+  const { recordWorkerArtifactProgress } = await import('../../bin/mux-runner.js');
+  const { sessionDir, statePath } = setupSession('hncg-append-');
+  const ticketId = 'aabb1122';
+  const ticketDir = path.join(sessionDir, ticketId);
+  const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hncg-wd-'));
+  fs.mkdirSync(ticketDir, { recursive: true });
+  const logLines = Array.from({ length: 30 }, (_, i) => `log line ${i}`);
+  fs.writeFileSync(path.join(ticketDir, 'worker_session_4242.log'), `${logLines.join('\n')}\n`);
+  fs.writeFileSync(path.join(ticketDir, 'plan_2026-08-29.md'), 'plan body');
+  try {
+    recordWorkerArtifactProgress(statePath, sessionDir, ticketId, 0, { workingDir });
+
+    const notesPath = path.join(ticketDir, 'handoff_notes.md');
+    assert.ok(fs.existsSync(notesPath), 'handoff_notes.md must be created');
+    const notes = fs.readFileSync(notesPath, 'utf-8');
+    assert.match(notes, /<!-- auto-handoff spawn 4242 -->/, 'marker names the spawn pid');
+    assert.match(notes, /Phase reached: plan/, 'phase derived from the newest lifecycle artifact prefix');
+    const tail = logLines.slice(-20);
+    for (const line of tail) assert.ok(notes.includes(line), `log tail must include "${line}"`);
+    assert.ok(!notes.includes(logLines[0]), 'only the LAST 20 lines are included, not the first');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('R-HNCG AC-TCHN-2B: the auto-handoff append is idempotent per spawn pid', async () => {
+  const { recordWorkerArtifactProgress } = await import('../../bin/mux-runner.js');
+  const { sessionDir, statePath } = setupSession('hncg-idempotent-');
+  const ticketId = 'ccdd3344';
+  const ticketDir = path.join(sessionDir, ticketId);
+  const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hncg-wd-'));
+  fs.mkdirSync(ticketDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketDir, 'worker_session_5555.log'), 'one line\n');
+  try {
+    // Two spawns charged against the SAME on-disk session log (same pid) — the
+    // marker must appear exactly once, never duplicated.
+    recordWorkerArtifactProgress(statePath, sessionDir, ticketId, 0, { workingDir });
+    recordWorkerArtifactProgress(statePath, sessionDir, ticketId, 0, { workingDir });
+
+    const notes = fs.readFileSync(path.join(ticketDir, 'handoff_notes.md'), 'utf-8');
+    const marker = '<!-- auto-handoff spawn 5555 -->';
+    assert.equal(notes.split(marker).length - 1, 1, 'marker appears exactly once despite two charging spawns');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('R-HNCG: the append is append-only — a worker-authored note is preserved verbatim', async () => {
+  const { recordWorkerArtifactProgress } = await import('../../bin/mux-runner.js');
+  const { sessionDir, statePath } = setupSession('hncg-append-only-');
+  const ticketId = 'eeff5566';
+  const ticketDir = path.join(sessionDir, ticketId);
+  const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hncg-wd-'));
+  fs.mkdirSync(ticketDir, { recursive: true });
+  const authored = '## 2026-08-29T00:00:00.000Z iteration handoff\nTried: X\nFailed: none\n';
+  fs.writeFileSync(path.join(ticketDir, 'handoff_notes.md'), authored);
+  fs.writeFileSync(path.join(ticketDir, 'worker_session_7777.log'), 'a log line\n');
+  try {
+    recordWorkerArtifactProgress(statePath, sessionDir, ticketId, 0, { workingDir });
+
+    const notes = fs.readFileSync(path.join(ticketDir, 'handoff_notes.md'), 'utf-8');
+    assert.ok(notes.startsWith(authored), 'worker-authored content survives verbatim at the head of the file');
+    assert.match(notes, /<!-- auto-handoff spawn 7777 -->/, 'auto block appended after the authored note');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('R-HNCG: a spawn that PROGRESSES does not append an auto-handoff block', async () => {
+  const { recordWorkerArtifactProgress } = await import('../../bin/mux-runner.js');
+  const { sessionDir, statePath } = setupSession('hncg-no-append-on-progress-');
+  const ticketId = '99887766';
+  const ticketDir = path.join(sessionDir, ticketId);
+  const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hncg-wd-'));
+  fs.mkdirSync(ticketDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketDir, 'worker_session_8888.log'), 'a log line\n');
+  try {
+    // before=0, after=1 (a code_review artifact exists) → delta>0 → progressed,
+    // never charged as zero-progress, so no fallback note is written.
+    fs.writeFileSync(path.join(ticketDir, 'code_review_2026-08-29.md'), 'x');
+    recordWorkerArtifactProgress(statePath, sessionDir, ticketId, 0, { workingDir });
+
+    assert.ok(!fs.existsSync(path.join(ticketDir, 'handoff_notes.md')), 'no fallback note on a progressing spawn');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});

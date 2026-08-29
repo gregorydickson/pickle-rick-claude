@@ -9593,6 +9593,94 @@ function emitArtifactProgressZero(
   log?.(`[observe] worker_artifact_progress_zero: ticket ${ticketId} produced no new review/conformance artifacts for ${k} consecutive spawns`);
 }
 
+/** R-HNCG: newest lifecycle artifact prefix present in a ticket dir, or null. */
+function detectAutoHandoffPhase(ticketDir: string): string | null {
+  let newest: { name: string; mtimeMs: number } | null = null;
+  try {
+    for (const e of fs.readdirSync(ticketDir)) {
+      if (!e.endsWith('.md') || !/^(research|plan|conformance|code_review)/.test(e)) continue;
+      const st = fs.statSync(path.join(ticketDir, e));
+      if (!newest || st.mtimeMs > newest.mtimeMs) newest = { name: e, mtimeMs: st.mtimeMs };
+    }
+  } catch { /* dir missing/unreadable — no phase evidence */ }
+  return newest ? (newest.name.match(/^(research|plan|conformance|code_review)/)?.[0] ?? null) : null;
+}
+
+/** R-HNCG: newest `worker_session_<pid>.log` in a ticket dir, by mtime. */
+function detectAutoHandoffSessionLog(ticketDir: string): { pid: number | null; logPath: string | null } {
+  let newest: { file: string; mtimeMs: number } | null = null;
+  try {
+    for (const e of fs.readdirSync(ticketDir)) {
+      if (!/^worker_session_\d+\.log$/.test(e)) continue;
+      const st = fs.statSync(path.join(ticketDir, e));
+      if (!newest || st.mtimeMs > newest.mtimeMs) newest = { file: e, mtimeMs: st.mtimeMs };
+    }
+  } catch { /* dir missing/unreadable — no log evidence */ }
+  if (!newest) return { pid: null, logPath: null };
+  const pidMatch = newest.file.match(/^worker_session_(\d+)\.log$/);
+  return { pid: pidMatch ? Number(pidMatch[1]) : null, logPath: path.join(ticketDir, newest.file) };
+}
+
+/** R-HNCG: last `n` lines of a worker session log, or `[]` if unreadable/absent. */
+function readAutoHandoffLogTail(logPath: string | null, n = 20): string[] {
+  if (!logPath) return [];
+  try {
+    let content = fs.readFileSync(logPath, 'utf-8');
+    if (content.endsWith('\n')) content = content.slice(0, -1);
+    if (content === '') return [];
+    return content.split('\n').slice(-n);
+  } catch { return []; }
+}
+
+/** R-HNCG: dirty paths, filtered to `scope.json:allowed_paths` when present. */
+function readAutoHandoffDirtyPaths(workingDir: string, scopeJsonPath: string): string[] {
+  try {
+    const pathSpecs = readScopeAllowedPathSpecsFromFile(scopeJsonPath);
+    const args = ['-C', workingDir, 'status', '--porcelain'];
+    if (pathSpecs.length > 0) args.push('--', ...pathSpecs);
+    const result = spawnSync('git', args, { encoding: 'utf-8', timeout: 10_000 });
+    if (result.status !== 0 || result.error || !result.stdout) return [];
+    return result.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch { return []; }
+}
+
+/**
+ * R-HNCG mechanical handoff fallback: on the exact spawn `recordWorkerArtifactProgress`
+ * charges as zero-progress, append a machine-tagged, idempotent continuity block to
+ * `<ticketDir>/handoff_notes.md`. Append-only (never truncates/overwrites a
+ * worker-authored note) and best-effort — a failure here must never fail the
+ * iteration that is charging the zero-progress spawn (AC-TCHN-2A).
+ */
+function appendAutoHandoffFallback(sessionDir: string, ticketDir: string, workingDir: string): void {
+  try {
+    const { pid, logPath } = detectAutoHandoffSessionLog(ticketDir);
+    const marker = `<!-- auto-handoff spawn ${pid ?? 'unknown'} -->`;
+    const notesPath = path.join(ticketDir, 'handoff_notes.md');
+    let existing = '';
+    try { existing = fs.readFileSync(notesPath, 'utf-8'); } catch { /* absent — first note */ }
+    if (existing.includes(marker)) return; // AC-TCHN-2B: idempotent per spawn
+
+    const phase = detectAutoHandoffPhase(ticketDir);
+    const dirtyPaths = readAutoHandoffDirtyPaths(workingDir, path.join(sessionDir, 'scope.json'));
+    const logTail = readAutoHandoffLogTail(logPath, 20);
+    const block = [
+      '',
+      marker,
+      `## Auto-handoff (zero-artifact-progress exit) — ${new Date().toISOString()}`,
+      `Spawn pid: ${pid ?? 'unknown'}`,
+      `Phase reached: ${phase ?? 'unknown'}`,
+      'Dirty in-scope paths:',
+      ...(dirtyPaths.length > 0 ? dirtyPaths.map((p) => `- ${p}`) : ['(none)']),
+      `Last ${logTail.length} lines of worker session log:`,
+      '```',
+      ...logTail,
+      '```',
+      '',
+    ].join('\n');
+    fs.appendFileSync(notesPath, block);
+  } catch { /* continuity aid — must never fail an iteration */ }
+}
+
 /**
  * Persist the post-spawn progress delta for one ticket and, on exactly the
  * K-th consecutive zero-PROGRESS spawn, emit `worker_artifact_progress_zero`.
@@ -9602,6 +9690,13 @@ function emitArtifactProgressZero(
  * NEITHER a new artifact NOR a source-tree change increments `zero_progress_count`;
  * any forward progress resets it to 0. Firing uses `=== k` so it emits once at the
  * threshold (not re-spamming at k+1) and re-arms after a reset.
+ *
+ * R-HNCG: `incremented` (from `persistArtifactProgressEntry`) is exactly "this
+ * spawn was charged as zero-progress: not done-guarded, not progressed, not
+ * suppressed" — the existing signal AC-TCHN-2A directs reuse of, with no new
+ * progress detector. On that signal, append the mechanical handoff-notes
+ * fallback (`appendAutoHandoffFallback`) so a spawn that dies mid-verification
+ * leaves a continuity note for the next spawn even when it wrote nothing itself.
  */
 export function recordWorkerArtifactProgress(
   statePath: string,
@@ -9629,6 +9724,11 @@ export function recordWorkerArtifactProgress(
     sourceSignature,
     suppressIncrement: !!opts.suppressIncrement,
   });
+  // R-HNCG: this spawn is charged as zero-progress — append the mechanical
+  // continuity note (best-effort; see appendAutoHandoffFallback).
+  if (incremented) {
+    appendAutoHandoffFallback(sessionDir, path.join(sessionDir, ticketId), opts.workingDir ?? process.cwd());
+  }
   // Fire only when THIS spawn incremented to the threshold — a held (suppressed)
   // or done-guarded spawn that merely sits at k must not re-fire.
   const fired = incremented && entry.zero_progress_count === k;

@@ -637,6 +637,22 @@ export interface TicketClassifierInfo {
 
 const CLASSIFIER_SMALLER_KEYWORDS = ['padding', 'typo', 'rename', 'delete', 'copy', 'label', 'color'] as const;
 const CLASSIFIER_LARGER_KEYWORDS = ['integrate', 'migrate', 'schema', 'cross-cutting', 'refactor'] as const;
+/**
+ * R-TCVC: verify-command shapes that signal an expensive acceptance-criteria
+ * verification cost (container/e2e suites, not a plain unit-test grep). Folded
+ * into the SAME ±1 keyword delta as CLASSIFIER_LARGER_KEYWORDS — one list, no
+ * separate classifier — so a ticket whose AC names one of these bumps one tier,
+ * capped at 'large' by the existing delta clamp.
+ */
+export const CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS = [
+  'test:migration',
+  'docker',
+  'compose',
+  'e2e',
+  'playwright',
+  'run_expensive_tests',
+  'test:integration',
+] as const;
 
 function classifyDimension(val: number, thresholds: readonly [number, number, number]): number {
   if (val < thresholds[0]) return 0; // trivial
@@ -672,6 +688,11 @@ export function classifyTicketTier(info: TicketClassifierInfo): TicketComplexity
   let delta = 0;
   for (const kw of CLASSIFIER_LARGER_KEYWORDS) {
     if (new RegExp(`\\b${kw}\\b`).test(textLower)) delta++;
+  }
+  // Colon-containing phrases (e.g. 'test:migration') never satisfy a \b word
+  // boundary reliably, so this list is matched by plain substring containment.
+  for (const kw of CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS) {
+    if (textLower.includes(kw)) delta++;
   }
   for (const kw of CLASSIFIER_SMALLER_KEYWORDS) {
     if (new RegExp(`\\b${kw}\\b`).test(textLower)) delta--;
