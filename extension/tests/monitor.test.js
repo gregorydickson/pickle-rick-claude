@@ -743,7 +743,7 @@ test('writeWithWatchdog: resolves quickly on a healthy sink', async () => {
     assert.ok(elapsed < 200, `healthy write should resolve fast, took ${elapsed}ms`);
 });
 
-test('writeWithWatchdog: rejects with backpressure error when sink never drains', async () => {
+test('writeWithWatchdog: rejects with backpressure error when sink never drains', async (t) => {
     // Wedged sink: write callback never fires, drain never emitted.
     // Mimics a tmux pane whose scrollback is frozen and whose pipe buffer
     // is full — the synchronous syscall would block forever.
@@ -761,29 +761,37 @@ test('writeWithWatchdog: rejects with backpressure error when sink never drains'
         },
     };
     const watchdogMs = 200;
-    const grace = 500;
-    const start = Date.now();
+
+    // Drive the mock clock rather than race a real wall-clock threshold: a prior version of this
+    // test raced Date.now() against a real setTimeout and its upper-bound assertion had to be
+    // deleted (98dfa740) because the event loop starves under the c=8 stability gate and the real
+    // timer fires late. writeWithWatchdog (monitor.ts) calls bare global setTimeout/clearTimeout,
+    // so mocking only 'setTimeout' here intercepts it transparently.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+
+    let settled = false;
     let err;
+    const promise = writeWithWatchdog(wedged, 'wedged\n', watchdogMs);
+    promise.then(
+        () => { settled = true; },
+        (e) => { settled = true; err = e; },
+    );
+
+    // One tick short of the threshold: the watchdog must not have fired yet.
+    t.mock.timers.tick(watchdogMs - 1);
+    await new Promise((resolve) => setImmediate(resolve)); // flush pending microtasks
+    assert.equal(settled, false, 'watchdog must not fire before watchdogMs elapses');
+
+    // Cross the threshold: the watchdog must fire now and reject.
+    t.mock.timers.tick(1);
     try {
-        await writeWithWatchdog(wedged, 'wedged\n', watchdogMs);
+        await promise;
     } catch (e) {
         err = e;
     }
-    const elapsed = Date.now() - start;
     assert.ok(err, 'writeWithWatchdog must reject when sink never drains');
     assert.ok(/watchdog/i.test(err.message), `expected watchdog error, got: ${err.message}`);
     assert.ok(/wedged|backpressure|drain/i.test(err.message), `expected pane wedge hint, got: ${err.message}`);
-    // Lower bound proves the watchdog did not fire prematurely. The upper bound
-    // was a load-fragile stopwatch: under the 10× c=8 stability-gate the event
-    // loop starves and the 200ms timer fires late (>700ms), a false failure that
-    // is NOT the test's contract — "doesn't hang forever" is already guaranteed by
-    // this async test completing within node:test's own timeout. (B-CITAIL
-    // follow-up; R-TSPF "deterministic barrier, not a stopwatch".) `grace` retained
-    // for the diagnostic message only.
-    assert.ok(
-        elapsed >= watchdogMs,
-        `watchdog must wait at least ${watchdogMs}ms before rejecting (grace=${grace}ms), took ${elapsed}ms`,
-    );
 });
 
 test('writeWithWatchdog: surfaces sink error', async () => {
