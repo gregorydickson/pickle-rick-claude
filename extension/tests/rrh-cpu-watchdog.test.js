@@ -19,11 +19,16 @@ import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import {
   evaluateCpuLivenessWatchdog,
   gradeConformanceComplete,
   parsePsCpuTimeToSeconds,
+  resolveCurrentWorkerPid,
 } from '../bin/mux-runner.js';
+// R-DSPW: imported from state-manager.js, never re-inlined — the same seam
+// mux-runner.ts itself imports through (see the R-CIFB-A trap door).
+import { isProcessAlive } from '../services/state-manager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MUX_SRC = path.resolve(__dirname, '../src/bin/mux-runner.ts');
@@ -214,4 +219,70 @@ test('wiring: the CPU-stall commit honors the AC-2 working_dir fail-safe (never 
       /state_working_dir_missing/.test(tripSlice),
     'a missing working_dir must halt the git-mutating commit, not fall back to process.cwd()',
   );
+});
+
+// --- D5 (R-DSPW): a live worker is never classified dead ---------------------------
+//
+// prds/BUG-REPORT-2026-07-26-gitattr-double-trailer-and-duplicate-worker-spawn.md
+// recorded two live `spawn-morty` processes racing one ticket because the manager
+// judged a still-running worker as needing "resume". The fix (e4df9cce, ticket
+// 70a67ccb) lives in spawn-morty.ts's worker-spawn lock — out of this ticket's scope
+// fence. What IS in-fence is mux-runner.ts's own worker-liveness signal for the C6
+// watchdog: `workerAlive: workerPid != null && isProcessAlive(workerPid)`, fed by
+// `resolveCurrentWorkerPid`. Neither had test coverage before this ticket. These two
+// tests drive that composition against REAL child processes (not a hand-set boolean)
+// to prove it is genuinely liveness-driven, not vacuously true or false.
+
+test('R-DSPW: a REAL live child process is never classified dead by the production worker-liveness composition', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'rrh-cpu-dspw-live-'));
+  const sessionDir = path.join(root, 'sessions', '2026-08-29-test');
+  const ticketId = 'dead1234';
+  const ticketDir = path.join(sessionDir, ticketId);
+  mkdirSync(ticketDir, { recursive: true });
+
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)']);
+  try {
+    // resolveCurrentWorkerPid matches /^worker_session_(\d+)\.log$/ on the ticket dir.
+    writeFileSync(path.join(ticketDir, `worker_session_${child.pid}.log`), 'live\n');
+
+    const resolvedPid = resolveCurrentWorkerPid(sessionDir, ticketId);
+    assert.equal(resolvedPid, child.pid, 'must resolve the pid recorded in the worker_session log');
+    assert.equal(isProcessAlive(resolvedPid), true, 'a real running child must probe alive');
+
+    // Exact production composition (mux-runner.ts:12250).
+    const workerAlive = resolvedPid != null && isProcessAlive(resolvedPid);
+    assert.equal(workerAlive, true, 'a live worker must never be classified dead');
+  } finally {
+    child.kill('SIGKILL');
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('R-DSPW: a dead pid recorded in the worker_session log is classified dead, not alive (negative control)', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'rrh-cpu-dspw-dead-'));
+  const sessionDir = path.join(root, 'sessions', '2026-08-29-test');
+  const ticketId = 'dead5678';
+  const ticketDir = path.join(sessionDir, ticketId);
+  mkdirSync(ticketDir, { recursive: true });
+
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)']);
+  const deadPid = await new Promise((resolve, reject) => {
+    child.on('exit', () => resolve(child.pid));
+    child.on('error', reject);
+  });
+
+  try {
+    writeFileSync(path.join(ticketDir, `worker_session_${deadPid}.log`), 'dead\n');
+
+    const resolvedPid = resolveCurrentWorkerPid(sessionDir, ticketId);
+    assert.equal(resolvedPid, deadPid, 'the file-scan is pid-agnostic — it resolves the pid regardless of liveness');
+    assert.equal(isProcessAlive(resolvedPid), false, 'an exited child must probe dead');
+
+    // Exact production composition (mux-runner.ts:12250) — proves the classification
+    // is genuinely liveness-driven, not a constant that would pass vacuously.
+    const workerAlive = resolvedPid != null && isProcessAlive(resolvedPid);
+    assert.equal(workerAlive, false, 'a dead worker must never be classified alive');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
