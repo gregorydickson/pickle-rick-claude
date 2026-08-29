@@ -771,8 +771,19 @@ export function detectProhibitedGitVerb(command: string): { verb: string } | nul
     const { verb, afterVerb } = parsed;
     if (PROHIBITED_GIT_VERBS_SIMPLE.has(verb)) return { verb };
     if (verb === 'checkout' && isCheckoutRefOperation(afterVerb)) return { verb: 'checkout' };
-    if (verb === 'commit' && afterVerb.some(t => t === '--amend')) return { verb: 'commit --amend' };
-    if (verb === 'fetch' && afterVerb.some(t => t === '--prune')) return { verb: 'fetch --prune' };
+    // The gating FLAG is read through the same `execNameIs` the verb and the
+    // exec word already read with (AP-EXT-ITER93-05): bash expands an option
+    // word like any other, so with a file named `--amend` in cwd
+    // `git commit --amen? -m x` really AMENDS (shim-verified 2026-08-29 in a
+    // scratch repo: one commit still, HEAD sha replaced, subject overwritten)
+    // while a `=== '--amend'` compare saw `--amen?`, matched nothing, and
+    // APPROVED a history rewrite for a worker. `--prun?`, `--amen[d]` and
+    // `--{amend,x}` measured the same. The `--` of `isCheckoutRefOperation`
+    // deliberately stays literal: that arm returns FALSE (path-mode is
+    // ALLOWED), so widening it is the under-block direction, the same reason
+    // `NEGATIVE_GIT_SUBCOMMANDS` stays literal.
+    if (verb === 'commit' && afterVerb.some(t => execNameIs(t, '--amend'))) return { verb: 'commit --amend' };
+    if (verb === 'fetch' && afterVerb.some(t => execNameIs(t, '--prune'))) return { verb: 'fetch --prune' };
   }
   return null;
 }
@@ -844,7 +855,13 @@ function extractNodeTestPathsFromSegment(segment: string): string[] {
   let foundTestFlag = false;
   for (let idx = anchor + 1; idx < tokens.length; idx++) {
     const t = tokens[idx].value;
-    if (t === '--test') { foundTestFlag = true; continue; }
+    // Same `execNameIs` read as the git gating flags (AP-EXT-ITER93-05): the
+    // anchor learned that bash expands the command word, but the FLAG one token
+    // right was still a literal compare, so `node --tes? <expensive>` (a file
+    // named `--test` in cwd) never set this and the R-CSIS-B1 soak guard
+    // APPROVED, while its literal twin blocked. Measured over 10135 real worker
+    // Bash commands: zero candidate lists change.
+    if (execNameIs(t, '--test')) { foundTestFlag = true; continue; }
     if (foundTestFlag && !t.startsWith('-')) candidates.push(t);
   }
   return candidates;

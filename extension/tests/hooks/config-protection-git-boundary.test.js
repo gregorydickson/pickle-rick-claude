@@ -4088,3 +4088,125 @@ test('AP-EXT-ITER93-02: the verb read is one pattern-aware set read, prohibited-
     /const GATED_GIT_VERBS = \[\s*\.\.\.PROHIBITED_GIT_VERBS_SIMPLE, 'checkout', 'commit', 'fetch',/,
   );
 });
+
+// AP-EXT-ITER93-05: the option VALUE is a word too, so it is a pattern too
+//
+// AP-EXT-ITER73-01/93-01/93-02 taught the command word, the wrapper word and the
+// git VERB to read a glob as the pattern it is. The GATING FLAG one token
+// further right stayed a literal `=== '--amend'` / `=== '--prune'` /
+// `=== '--test'` compare, and pathname expansion does not care which word it is:
+// with a file named `--amend` in cwd, `git commit --amen? -m x` really AMENDS
+// (shim-verified 2026-08-29 in a scratch repo: still ONE commit, HEAD sha
+// replaced, subject overwritten) while the shipped handler APPROVED the history
+// rewrite for a worker and its literal twin blocked. Measured pre-fix: 6 of 6
+// globbed git-flag forms and 3 of 3 globbed node-flag forms APPROVED.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER93-05: a globbed git gating FLAG blocks like its literal twin', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    'git commit --amen? -m x',
+    'git commit --amen[d] -m x',
+    'git commit -m x --amen?',
+    'git fetch --prun?',
+    'git fetch --prun[e]',
+    'git fetch origin --prun?',
+    // The globbed flag survives every carrier the module already unwraps.
+    'cd sub && git commit --amen? -m x',
+    'git status && git fetch --prun?',
+    'bash -c "git commit --amen? -m x"',
+    'env git commit --amen? -m x',
+    // Verb and flag globbed at once, the AP-EXT-ITER93-02 seam plus this one.
+    'git commi? --amen? -m x',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+  }
+});
+
+test('AP-EXT-ITER93-05: a globbed `node --test` flag blocks the expensive soak', () => {
+  for (const command of [
+    'node --tes? soak.test.js',
+    'node --tes[t] soak.test.js',
+    'cd extension && node --tes? soak.test.js',
+    'node --TES? soak.test.js',
+  ]) {
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'soak.test.js'), '// @tier: expensive\n');
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, /R-CSIS-B1/);
+  }
+});
+
+// Non-tautology controls, the two real `git commit` forms the live corpus
+// carries plus the plain-verb allowances this gate exists to preserve. Measured
+// on 10135 real worker Bash commands from 557 live session logs: the flag
+// pattern read moves ZERO of them, in either direction.
+test('AP-EXT-ITER93-05: the flag pattern read does not over-block real usage', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    'git commit -m "Complete ticket 3646c20a: Worker node_modules reuse validation"',
+    'git add session/3646c20a/rick_ticket_3646c20a.md && git commit -m "Mark ticket 3646c20a as Done with completion commit reference"',
+    'git commit -m "fix"',
+    'git commit -a -m "wip"',
+    'git fetch',
+    'git fetch origin',
+    // A pure-wildcard word names every flag equally well, so it names none.
+    'git commit -m x -- *',
+    'git commit ???????',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', command);
+  }
+});
+
+// A real `node --test` run of a fast-tier file must still approve: the widened
+// flag read must not turn every node invocation into a soak candidate.
+test('AP-EXT-ITER93-05: the node flag pattern read does not over-block a fast-tier run', () => {
+  for (const command of [
+    'node --test tests/trap-door-conformance.test.js 2>&1 | tail -40',
+    'cd extension && node --test tests/salvage-ticket-matrix.test.js 2>&1 | tail -20',
+    'node --test soak.test.js.bak',
+  ]) {
+    const { tmpDir, stateFile } = bootstrapSession();
+    fs.writeFileSync(path.join(tmpDir, 'soak.test.js'), '// @tier: expensive\n');
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', command);
+  }
+});
+
+// The seam itself. Both flag families read through the ONE shared `execNameIs`,
+// and the `--` of `isCheckoutRefOperation` deliberately does NOT: that arm
+// returns FALSE (path-mode is ALLOWED), so widening it is the under-block
+// direction — the same reason `NEGATIVE_GIT_SUBCOMMANDS` stays literal.
+test('AP-EXT-ITER93-05: gating flags read through execNameIs, the FALSE arm stays literal', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'), 'utf-8',
+  );
+  assert.match(source, /afterVerb\.some\(t => execNameIs\(t, '--amend'\)\)/);
+  assert.match(source, /afterVerb\.some\(t => execNameIs\(t, '--prune'\)\)/);
+  assert.match(source, /if \(execNameIs\(t, '--test'\)\) \{ foundTestFlag = true; continue; \}/);
+  assert.doesNotMatch(source, /t === '--amend'/);
+  assert.doesNotMatch(source, /t === '--prune'/);
+  assert.doesNotMatch(source, /t === '--test'/);
+  const checkout = source.slice(
+    source.indexOf('function isCheckoutRefOperation('),
+    source.indexOf('R-WSRC-GR: Detects prohibited git verbs'),
+  );
+  assert.ok(checkout.length > 0, 'isCheckoutRefOperation must remain a single named function');
+  assert.match(checkout, /t === '--'/);
+  assert.doesNotMatch(checkout, /execNameIs\(/);
+});
