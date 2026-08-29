@@ -3829,3 +3829,158 @@ test('AP-EXT-ITER73-01: one glob translator, and its bracket arm stays construct
   assert.doesNotThrow(() => execNameIs('[anatomy-park]git', 'git'));
   assert.doesNotThrow(() => execNameIs('gi[x-a]', 'git'));
 });
+
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER93-01: the WRAPPER is a shape, and bash expands the command word
+//
+// `isShellWrapper` tested `/^[a-z]*sh$/` over the raw `execName` fold, so a
+// globbed spelling of the interpreter matched nothing over letters:
+// `/bin/ba?h -c '<cmd>'` really execs bash (shim-verified on this box) while
+// the fold `ba?h` was rejected, `shellCommandStringPayload` returned null, and
+// the `-c` payload — ONE quoted token — stayed opaque to every detector at
+// once. That is the AP-EXT-ITER63-06 blast radius reached through the
+// AP-EXT-ITER73-01 seam: expansion is not quoting, so the fold cannot undo it
+// and the TEST has to. Measured against the shipped handler: the git chain,
+// the install.sh ban and both R-WSRC-3 write gates all APPROVED behind a
+// globbed wrapper while their literal twins blocked.
+//
+// The fix asks the shape of a WITNESS — each single-position wildcard filled
+// with the character the shape wants there — which is ONE uniform test rather
+// than a literal arm plus a pattern arm.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER93-01: a globbed shell wrapper still unwraps its -c payload', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    "/bin/ba?h -c 'git reset --hard'",
+    '/bin/ba?h -c "git push origin main"',
+    "/bin/b?sh -c 'git stash'",
+    "/bin/zs? -c 'git rebase main'",
+    "/bin/[b]ash -c 'git pull'",
+    "/bin/{b,z}ash -c 'git reset --hard'",
+    "/usr/bin/en? /bin/ba?h -c 'git reset --hard'",
+    "PICKLE_ROLE=x /bin/ba?h -lc 'git switch main'",
+    "cd sub && /bin/ba?h -c 'git reset --hard'",
+    "/bin/ba?h -o pipefail -c 'git reset --hard'",
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, /R-WSRC/);
+  }
+});
+
+// The wrapper seam is shared, so the other two guards it fronts inherit the fix.
+test('AP-EXT-ITER93-01: a globbed wrapper hides neither the deploy script nor a state write', () => {
+  const { tmpDir, stateFile, sessionDir } = bootstrapSession();
+  for (const command of [
+    '/bin/ba?h install.sh',
+    '/bin/zs? install.sh',
+    '/bin/ba?h -c "bash install.sh"',
+    `/bin/ba?h -c "echo x > ${sessionDir}/state.json"`,
+    `/bin/ba?h -c "tee ${sessionDir}/state.json"`,
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+  }
+});
+
+// Non-tautology controls. The first three are the shapes that DOMINATE the
+// live corpus (10126 unique worker Bash commands from the session logs): an
+// artifact write whose heredoc body carries markdown emphasis and names the
+// deploy script in prose. Reading `*` as a fillable position made `**` a
+// wrapper and flipped exactly these three from approve to BLOCK — a blocked
+// artifact write stalls a ticket, so the bound below is measured, not taste.
+test('AP-EXT-ITER93-01: an expanded-word wrapper read does not block worker artifact writes', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    "cat > /tmp/research.md <<'EOF'\n- **PASS** — install.sh is manager-only\nEOF",
+    "cat > /tmp/notes.md <<'EOF'\n**Necessary?** yes — see install.sh MANAGED_KEYS\nEOF",
+    "cat > /tmp/plan.md <<'EOF'\nnote ** install.sh stays manager-only **\nEOF",
+    "cat > /tmp/plan.md <<'EOF'\nsee release/** and install.sh\nEOF",
+    'grep -rn "install.sh" extension/**/*.ts',
+    'ls *.sh',
+    'rm -rf dist/*',
+    'git status',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', command);
+  }
+});
+
+// The predicate itself, so a detector-level regression cannot be mistaken for a
+// wrapper-level one — and so the single-position bound stays measurable.
+test('AP-EXT-ITER93-01: isShellWrapper reads an expanded command word, bounded to one position', () => {
+  // Literal identity is unchanged: a word with no wildcards is its own witness.
+  assert.equal(isShellWrapper('bash'), true);
+  assert.equal(isShellWrapper('/bin/ZSH'), true);
+  assert.equal(isShellWrapper('sh'), true);
+  assert.equal(isShellWrapper('git'), false);
+  assert.equal(isShellWrapper(undefined), false);
+  assert.equal(isShellWrapper(''), false);
+  // A dot or a hyphen is a literal no fill can move, which is what keeps a
+  // script from folding to a wrapper.
+  assert.equal(isShellWrapper('install.sh'), false);
+  assert.equal(isShellWrapper('pre-install.sh'), false);
+  assert.equal(isShellWrapper('instal?.sh'), false);
+  // A single-position wildcard stands for the character the shape wants there,
+  // wherever it sits in the word.
+  assert.equal(isShellWrapper('/bin/ba?h'), true);
+  assert.equal(isShellWrapper('zs?'), true);
+  assert.equal(isShellWrapper('?sh'), true);
+  assert.equal(isShellWrapper('[b]ash'), true);
+  assert.equal(isShellWrapper('{b,z}ash'), true);
+  // The bound: `*` absorbs a RUN, so it is left unfilled and fails the shape.
+  assert.equal(isShellWrapper('ba*'), false);
+  assert.equal(isShellWrapper('*sh'), false);
+  assert.equal(isShellWrapper('**'), false);
+  assert.equal(isShellWrapper('**pass**'), false);
+  // A word too short to carry the shape's tail names nothing.
+  assert.equal(isShellWrapper('?'), false);
+});
+
+// One word can now be BOTH readings, so the wrapper SKIP must not be able to
+// hide the script from the deploy-script arm.
+test('AP-EXT-ITER93-01: a word that is both wrapper-shaped and script-shaped still blocks', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of ['./install?sh', './*sh', '*sh', './ins?all.sh', './install.sh']) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+  }
+});
+
+test('AP-EXT-ITER93-01: the shape has one declaration and the fill is bounded', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../../src/hooks/shell-exec.ts'), 'utf-8');
+  // ONE uniform test: the predicate asks the shape of the witness, with no
+  // separate literal arm to drift from the pattern arm.
+  const body = source.slice(
+    source.indexOf('export function isShellWrapper('),
+    source.indexOf('export function skipEnvAssignments('),
+  );
+  assert.ok(body.length > 0, 'isShellWrapper must remain a single named export');
+  assert.match(body, /SHELL_INTERPRETER_NAME_RE\.test\(shellShapeWitness\(execName\(token\)\)\)/);
+  // The tail is the shape's one declaration — the regex is built from it and so
+  // is the fill, so the two readings cannot drift.
+  assert.match(source, /const SHELL_INTERPRETER_NAME_RE = new RegExp\(`\^\[a-z\]\*\$\{SHELL_INTERPRETER_NAME_TAIL\}\$`\)/);
+  // The bound lives in the fill, not in an arm of its own.
+  const witness = source.slice(
+    source.indexOf('function shellShapeWitness('),
+    source.indexOf('export function isShellWrapper('),
+  );
+  assert.match(witness, /SINGLE_POSITION_WILDCARD_RE\.test\(position\)/);
+  assert.doesNotMatch(witness, /includes\('\*'\)/);
+  // List-free: no shell NAME literals anywhere in the wrapper seam.
+  assert.doesNotMatch(body + witness, /'(bash|zsh|dash|ksh|csh|tcsh|fish)'/);
+});

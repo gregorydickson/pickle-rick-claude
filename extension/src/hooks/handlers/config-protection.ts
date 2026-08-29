@@ -612,6 +612,15 @@ function detectTargetedStateFile(input: PreToolUseInput): { matched: string; isS
  * Strictly WIDENS what blocks — the old exec-token read is retained as the
  * first arm — so no command that blocked before can stop blocking.
  *
+ * The wrapper arm takes the anchor token ITSELF, not just what follows it,
+ * because one word can be BOTH readings at once now that `isShellWrapper` reads
+ * an expanded command word (AP-EXT-ITER93-01): `./install?sh` and `./*sh` name
+ * the deploy script AND fill the interpreter shape, so the `execTokenIndex`
+ * SKIP in the first arm walks straight past the script and the second arm's
+ * `slice(wrapper + 1)` started one token too late. Both blocked before that
+ * predicate learned to expand, so including the anchor is what keeps this a
+ * widening rather than a trade.
+ *
  * RESIDUAL, reported rather than claimed closed: a prefixed DIRECT exec with no
  * wrapper (`env ./install.sh`, `nohup ./install.sh`) still approves. It offers no wrapper
  * to anchor on, and separating it from `cat ./install.sh` provably requires the
@@ -625,7 +634,7 @@ function segmentInvokesInstallSh(segment: string): boolean {
   const isDeployScript = (token: string | undefined): boolean => execNameIs(token, 'install.sh');
   if (isDeployScript(tokens[execTokenIndex(tokens)])) return true;
   const wrapper = tokens.findIndex((token) => isShellWrapper(token));
-  return wrapper >= 0 && tokens.slice(wrapper + 1).some(isDeployScript);
+  return wrapper >= 0 && tokens.slice(wrapper).some(isDeployScript);
 }
 
 /**

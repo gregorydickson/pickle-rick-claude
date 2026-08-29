@@ -308,12 +308,91 @@ function foldShellWord(word: string): ShellToken {
  * to the right (onto the host), which no detector fires on, and an `ssh -c
  * <cipher>` yields one extra benign segment to scan. Over-block, never
  * under-block.
+ *
+ * The tail is the shape's ONE declaration: the regex is built from it and so is
+ * the witness fill below, so the two readings of the shape cannot drift.
  */
-const SHELL_INTERPRETER_NAME_RE = /^[a-z]*sh$/;
+const SHELL_INTERPRETER_NAME_TAIL = 'sh';
 
-/** True when the token is a shell wrapper to be skipped before the real exec. */
+/** Any lowercase letter satisfies the shape's head, so one stands for all. */
+const SHELL_INTERPRETER_HEAD_FILL = 'a';
+
+const SHELL_INTERPRETER_NAME_RE = new RegExp(`^[a-z]*${SHELL_INTERPRETER_NAME_TAIL}$`);
+
+/**
+ * One POSITION of a shell word: a wildcard construct, or a single character.
+ *
+ * A bracket expression and a brace alternation each stand for ONE position, the
+ * same reading `shellPatternToRegex` emits for them (`[^/]`, one alternative).
+ */
+const SHELL_WORD_POSITION_RE = /\[[^\]]*\]|\{[^}]*\}|[\s\S]/g;
+
+/**
+ * The wildcards that stand for exactly ONE position, and so may be FILLED with
+ * the character the shape wants there. `*` is deliberately absent: it absorbs an
+ * arbitrary RUN, which names a short word by accident far more often than by
+ * intent, and a shell name is three characters at its shortest.
+ *
+ * That is the `execNamesIn` bound, re-measured for this predicate on 10126 real
+ * worker Bash commands: reading `*` as a fillable position turned markdown
+ * emphasis inside a `cat > file <<EOF` artifact body (`**`, `**PASS**`, `/**`)
+ * into a shell wrapper, and three worker artifact writes flipped from approve to
+ * BLOCK through the install.sh arm — prose naming the deploy script now stood
+ * "behind a wrapper". A blocked artifact write stalls a ticket, which is a
+ * reliability cost, not a safety margin. With the bound: zero of 10126 flip, and
+ * every measured `?` / bracket / brace bypass still blocks.
+ *
+ * A `*`-bearing word is left unfilled and simply fails the shape, so this needs
+ * no arm of its own.
+ */
+const SINGLE_POSITION_WILDCARD_RE = /^(?:\?|\[[^\]]*\]|\{[^}]*\})$/;
+
+/**
+ * The one expansion of a folded word that decides whether ANY expansion of it
+ * can name a shell: every pathname-expansion construct filled with the
+ * character the shape wants at that position, every other character left as
+ * bash reads it.
+ *
+ * One witness suffices because the shape constrains each position
+ * INDEPENDENTLY — an ordinary lowercase run, then the fixed tail — so if the
+ * best-case fill fails the shape, no expansion can pass it, and if it passes,
+ * that expansion is a shell name. Requiring a witness rather than accepting any
+ * wildcard is what keeps the literal characters load-bearing: `install.sh`
+ * carries a dot no fill can move, and `pre-install.sh` a hyphen.
+ *
+ * Only a SINGLE-POSITION wildcard is filled (`SINGLE_POSITION_WILDCARD_RE`), so
+ * a `*`-bearing word survives into the witness and fails the shape: `ba*` and
+ * `*sh` stay unread. See the RESIDUAL on this pass's trap door.
+ *
+ * Quoting is not consulted, the same uniform reading `execNameIs` takes: bash
+ * does not expand a quoted word, so `'ba?h'` is over-read as a wrapper here.
+ * Over-reach is fail-safe in this predicate's direction — see below.
+ */
+function shellShapeWitness(folded: string): string {
+  const positions = folded.match(SHELL_WORD_POSITION_RE) ?? [];
+  const head = positions.length - SHELL_INTERPRETER_NAME_TAIL.length;
+  return positions
+    .map((position, idx) => {
+      if (!SINGLE_POSITION_WILDCARD_RE.test(position)) return position;
+      return idx < head ? SHELL_INTERPRETER_HEAD_FILL : SHELL_INTERPRETER_NAME_TAIL[idx - head];
+    })
+    .join('');
+}
+
+/**
+ * True when the token is a shell wrapper to be skipped before the real exec.
+ *
+ * The shape is asked of the WITNESS, not of the raw fold, because bash EXPANDS
+ * the command word: `/bin/ba?h -c '<cmd>'` really execs bash (shim-verified)
+ * while the fold `ba?h` matches no regex over letters, so the payload stayed ONE
+ * opaque token and every detector saw only the wrapper — the AP-EXT-ITER63-06
+ * blast radius, reached through the AP-EXT-ITER73-01 seam (expansion is not
+ * quoting, so the fold cannot undo it and the TEST has to). ONE uniform test,
+ * not a literal arm plus a pattern arm: a word with no wildcards is its own
+ * witness.
+ */
 export function isShellWrapper(token: string | undefined): boolean {
-  return SHELL_INTERPRETER_NAME_RE.test(execName(token));
+  return SHELL_INTERPRETER_NAME_RE.test(shellShapeWitness(execName(token)));
 }
 
 /**
