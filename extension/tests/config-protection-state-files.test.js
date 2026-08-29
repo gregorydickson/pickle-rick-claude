@@ -214,6 +214,53 @@ test('R-WSRC-3: blocks Bash redirect to $HOME/.claude/pickle-rick/** runtime fil
   assert.equal(result.decision, 'block');
 });
 
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER5-01: `shellPatternToRegex` used to copy a bracket expression's body
+// into the emitted regex verbatim. Any DESCENDING range in that body made the
+// regex unconstructible; `new RegExp` threw `Range out of order`, the SyntaxError
+// unwound out of `main()` into the entrypoint catch, and that catch calls
+// `approve()` — the config gate failed OPEN over a command it never finished
+// inspecting. This repo's own log tags supply the descending ranges for free
+// (`[anatomy-park]` is `y-p`, `[mux-runner]` is `x-r`), and 6 of 8925 real worker
+// Bash commands in the live session logs tripped it.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER5-01: a descending-range bracket token cannot crash the guard into approving a protected config write', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: {
+      command:
+        'cp src/a.ts /tmp/a.bak && echo "[anatomy-park] backed up" && sed -i \'\' s/strict/loose/ tsconfig.json',
+    },
+  });
+  assert.equal(result.decision, 'block');
+});
+
+test('AP-EXT-ITER5-01: a descending-range bracket token alone still approves — no crash, no over-block', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'cp src/a.ts /tmp/a.bak && echo "[mux-runner] copied"' },
+  });
+  assert.equal(result.decision, 'approve');
+});
+
+test('AP-EXT-ITER5-01: a bracket glob still matches the protected basename it names', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'sed -i "s/strict/loose/" tsconfig.jso[n]' },
+  });
+  assert.equal(result.decision, 'block');
+});
+
 test('R-WSRC-3: blocks Write to pickle_settings.json', () => {
   const { tmpDir, stateFile } = bootstrapSession();
   const result = runHandler({

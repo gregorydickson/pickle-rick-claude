@@ -225,19 +225,26 @@ function shellPatternToRegex(pattern: string): RegExp {
         continue;
       }
     }
+    // A bracket expression matches EXACTLY ONE character, so a single-character
+    // wildcard answers the only question asked here ("could this glob name a
+    // protected config file?") without reproducing the class body at all.
+    // Reproducing it was the SOLE way this translator could emit an INVALID
+    // regex: every other arm escapes into provably-constructible output, but a
+    // copied class body carries whatever range the token happened to contain,
+    // and this repo's own log tags are full of descending ones — `[anatomy-park]`
+    // is `y-p`, `[mux-runner]` is `x-r`. `new RegExp` throws `Range out of
+    // order`, the SyntaxError unwinds out of `main()` into the entrypoint catch,
+    // and that catch calls `approve()` — the config gate fails OPEN over a
+    // command it never finished inspecting. Measured across 8925 real worker
+    // Bash commands from the live session logs, 6 (0.07%) crashed the shipped
+    // guard this way. The wildcard needs no escaping, is always constructible,
+    // and errs toward over-block — this module's established direction.
     if (char === '[') {
       const end = pattern.indexOf(']', i + 1);
-      if (end !== -1) {
-        const rawClass = pattern.slice(i + 1, end);
-        const isNegated = rawClass.startsWith('!') || rawClass.startsWith('^');
-        const classBody = (isNegated ? rawClass.slice(1) : rawClass)
-          .replace(/\\/g, '\\\\')
-          .replace(/\]/g, '\\]');
-        if (classBody.length > 0) {
-          regex += isNegated ? `[^${classBody}]` : `[${classBody}]`;
-          i = end;
-          continue;
-        }
+      if (end > i + 1) {
+        regex += '[^/]';
+        i = end;
+        continue;
       }
     }
     regex += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
