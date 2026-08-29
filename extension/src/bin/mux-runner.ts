@@ -6922,10 +6922,7 @@ function convergedPlanIdempotentNoOp(input: ExecuteConvergedPlanInput): { ok: bo
 function executeCleanTreeReExecution(
   input: ExecuteConvergedPlanInput & { seam: ReExecutionSeam; ticketDir: string },
 ): { ok: boolean } | 'fallthrough' {
-  let planFile: string | undefined;
-  try {
-    planFile = fs.readdirSync(input.ticketDir).filter(f => /^plan_.*\.md$/.test(f)).sort().pop();
-  } catch { return { ok: false }; }
+  const planFile = newestExecutablePlanFile(input.ticketDir);
   if (!planFile) return { ok: false };
 
   let complexityTier = 'medium';
@@ -6973,16 +6970,40 @@ function executeCleanTreeReExecution(
  * so the caller carries one early-return arm instead of four.
  */
 function readConvergedPlanPhases(ticketDir: string): PlanPhase[] | null {
+  const planFile = newestExecutablePlanFile(ticketDir);
+  if (!planFile) return null;
   let phases: PlanPhase[];
   try {
-    const planFile = fs.readdirSync(ticketDir)
-      .filter(f => /^plan_.*\.md$/.test(f))
-      .sort()
-      .pop();
-    if (!planFile) return null;
     phases = parsePlanPhases(fs.readFileSync(path.join(ticketDir, planFile), 'utf-8'));
   } catch { return null; }
   return phases.length === 0 ? null : phases;
+}
+
+/**
+ * AP-EXT-ITER7-01: the ticket dir's plan artifact, PREFERRING one that actually parses as a
+ * plan. Both converged-plan readers used a bare lexicographic `.sort().pop()` over
+ * `plan_*.md`, and `plan_review.md` is not an incidental sibling — the artifact contract
+ * REQUIRES it for the medium and large tiers (`requiredTierArtifactPrefixes`) — so `r` sorted
+ * after every `plan_<date>.md` and the plan REVIEW won, carrying zero `## Phase` blocks.
+ * Ranking on the property the consumers need needs no filename exclusion list. Lexicographic
+ * order stays the tie-break, so genuine multi-plan dirs still take the newest.
+ * Returns null when the dir is unreadable or holds no `plan_*.md` at all.
+ */
+function newestExecutablePlanFile(ticketDir: string): string | null {
+  let candidates: string[];
+  try {
+    candidates = fs.readdirSync(ticketDir).filter(f => /^plan_.*\.md$/.test(f));
+  } catch { return null; }
+  const ranked = candidates.map(file => {
+    let phaseCount = 0;
+    try {
+      phaseCount = parsePlanPhases(fs.readFileSync(path.join(ticketDir, file), 'utf-8')).length;
+    } catch { /* an unreadable candidate ranks as phase-less, never as the winner */ }
+    return { file, executable: phaseCount > 0 };
+  });
+  ranked.sort((a, b) =>
+    Number(a.executable) - Number(b.executable) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  return ranked.at(-1)?.file ?? null;
 }
 
 /**

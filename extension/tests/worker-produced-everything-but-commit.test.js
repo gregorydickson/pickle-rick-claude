@@ -1351,3 +1351,69 @@ test('AP-EXT-ITER2-01: a genuinely failing phase 2 still stops the loop and fail
   rmSync(repo, { recursive: true, force: true });
   rmSync(sessionDir, { recursive: true, force: true });
 });
+
+// AP-EXT-ITER7-01 — the converged-plan rung selected its plan with a bare lexicographic
+// `.sort().pop()` over `plan_*.md`. `plan_review.md` is not an incidental sibling: it is a
+// REQUIRED artifact for the medium and large tiers (`requiredTierArtifactPrefixes`), and `r`
+// sorts after every `plan_<date>.md`, so the selector returned the plan REVIEW — which carries
+// zero `## Phase` blocks — on every medium/large ticket. `readConvergedPlanPhases` then read
+// null and the rung returned `ok: false` over a perfectly good plan.
+//
+// Measured on the operator's box: of 86 real ticket dirs holding a `plan_*.md`, the shipped
+// selector yielded ZERO parsed phases in 84, and in 49 of those a sibling plan WITH phases was
+// sitting right there unread.
+//
+// Every pre-existing case in this file uses `tier: 'small'` — the one tier whose artifact
+// contract does NOT require `plan_review.md`, i.e. the one shape the defect cannot reach. So
+// build the fixture from the SHIPPED contract (`tier: 'medium'`) rather than by hand.
+test('AP-EXT-ITER7-01: a medium-tier ticket picks the real plan, not the required plan_review.md', () => {
+  const { repo, baseSha } = makeRepo('ap-iter7-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter7-session-');
+  const ticketId = 'b2c3d4e5';
+  // tier medium => makeTicket lays down `plan_review.md` because the artifact contract demands it.
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'medium', status: 'In Progress' });
+  assert.ok(
+    existsSync(path.join(ticketDir, 'plan_review.md')),
+    'precondition: the medium-tier artifact contract puts plan_review.md in the ticket dir',
+  );
+  writeMultiPhasePlan(ticketDir);
+
+  writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  // Pre-fix: `plan_review.md` won the sort, parsed to zero phases, and the rung reported
+  // `ok: false` — the ladder escalates a recoverable ticket to recovery_exhausted.
+  assert.equal(out.ok, true, 'the dated plan carries the phases and must be the one executed');
+  assert.notEqual(git(repo, ['rev-parse', 'HEAD']), baseSha, 'the plan work must be committed');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+// Negative control: when the ONLY `plan_*.md` present is phase-less, the rung must still be
+// not-ok. Preferring a parseable plan must not degrade into "invent a plan"; a dir with no
+// executable plan has nothing to recover.
+test('AP-EXT-ITER7-01 control: a ticket dir whose only plan has no phases stays not-ok', () => {
+  const { repo, baseSha } = makeRepo('ap-iter7-ctl-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter7-ctl-session-');
+  const ticketId = 'b2c3d4e6';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'medium', status: 'In Progress' });
+  // Overwrite the contract-supplied dated plan with a phase-less body; plan_review.md is
+  // likewise phase-less. No candidate parses.
+  writeFileSync(path.join(ticketDir, 'plan_2026-08-28.md'), '# plan\n\nprose only, no phases\n');
+
+  writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  assert.equal(out.ok, false, 'no parseable plan means nothing to execute');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']), baseSha, 'HEAD must not move');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
