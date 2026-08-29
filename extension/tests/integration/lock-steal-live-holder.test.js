@@ -30,7 +30,7 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { acquireLockFile, inspectLockFile, isDeadPidPayload, isProcessAlive, stealLockFile, withLock } from '../../services/state-manager.js';
 import { applyCourseCorrectionRestructure } from '../../services/transaction-ticket-ops.js';
@@ -505,6 +505,100 @@ test('spawn-gate-remediator: a remediator lock stranded by a dead holder is recl
     const briefs = fs.readdirSync(gateDir).filter(f => f.endsWith('_brief.md'));
     assert.equal(briefs.length, 1, 'exactly one remediation brief must exist on disk');
     assert.equal(fs.existsSync(lock), false, 'the reclaimed lock is released on the way out, not leaked');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** Like writeGateResult, but the failing file is a real, absolute path the caller controls. */
+function writeGateResultForFile(sessionDir, absFilePath) {
+  const gateDir = path.join(sessionDir, 'gate');
+  fs.mkdirSync(gateDir, { recursive: true });
+  const gateResultPath = path.join(gateDir, `gate_result_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
+  fs.writeFileSync(gateResultPath, JSON.stringify({
+    status: 'red',
+    elapsed_ms: 1234,
+    failures: [{
+      check: 'typecheck', file: absFilePath, line: 1, ruleOrCode: 'TS2345',
+      message: 'Argument of type string is not assignable to parameter of type number',
+      severity: 'error', occurrence_index: 0,
+    }],
+  }));
+  return { gateDir, gateResultPath };
+}
+
+test('spawn-gate-remediator: a lock ACTUALLY SIGKILLed mid-hold is reclaimed and leaves no lockfile behind', async () => {
+  const dir = tmpDir();
+  try {
+    const targetFile = path.join(dir, 'target.ts');
+    fs.writeFileSync(targetFile, 'export const x: number = 1;\n');
+    const { gateDir, gateResultPath } = writeGateResultForFile(dir, targetFile);
+    const lock = path.join(gateDir, 'remediator.lockfile');
+    const sentinelPath = path.join(dir, 'holding.sentinel');
+    const remediatorUrl = pathToFileURL(path.resolve(__dirname, '../../bin/spawn-gate-remediator.js')).href;
+
+    // A real child process: acquires the lock exactly like production, then — ONLY on the
+    // failing-file read (which happens strictly AFTER lock acquisition, never on the
+    // gate-result read) — blocks synchronously via Atomics.wait so the parent has a reliable
+    // window to observe the lock held live and then SIGKILL the holder mid-critical-section.
+    const src = `
+      import(${JSON.stringify(remediatorUrl)}).then(({ spawnGateRemediatorMain }) => {
+        const fs = require('node:fs');
+        const [gateResultPath, sessionRoot, sentinelPath] = process.argv.slice(1);
+        spawnGateRemediatorMain({
+          argv: ['--gate-result', gateResultPath, '--session-root', sessionRoot, '--reason', 'strict'],
+          readFileFn: (p, enc) => {
+            const data = fs.readFileSync(p, enc);
+            if (p !== gateResultPath) {
+              fs.writeFileSync(sentinelPath, 'holding');
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15000);
+            }
+            return data;
+          },
+          stdout: () => {},
+          stderr: () => {},
+        }).then((code) => process.exit(code));
+      });
+    `;
+    const child = spawn(process.execPath, ['-e', src, gateResultPath, dir, sentinelPath], {
+      stdio: 'ignore',
+      timeout: 30_000,
+    });
+
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!fs.existsSync(sentinelPath)) {
+        if (Date.now() > deadline) {
+          try { child.kill('SIGKILL'); } catch { /* already gone */ }
+          assert.fail('child never reached the blocking read while holding the lock');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      // The lock is genuinely held, live, by the child we are about to kill.
+      assert.ok(fs.existsSync(lock), 'the lock must be on disk while the child holds it');
+      assert.match(fs.readFileSync(lock, 'utf-8'), new RegExp(`(^|\\n)${child.pid}(\\n|$)`),
+        'the held lock must carry the live child’s own pid');
+
+      // The actual SIGKILL: any process.on('exit') the child registered NEVER runs.
+      process.kill(child.pid, 'SIGKILL');
+      await once(child, 'exit');
+
+      // This is the ticket's premise, true in isolation: SIGKILL strands the lockfile.
+      assert.ok(fs.existsSync(lock), 'SIGKILL must strand the lockfile — process.on(exit) cannot prevent this');
+
+      // A later remediator reclaims on proof of death and performs real work.
+      const { gateResultPath: gateResultPath2 } = writeGateResultForFile(dir, targetFile);
+      const { code, out } = await runRemediator(dir, gateResultPath2);
+
+      assert.equal(code, 0);
+      assert.ok(out.some((l) => l.startsWith('BRIEF_PATH=')),
+        'the SIGKILLed holder must be reclaimed and real remediation work performed');
+      assert.equal(fs.existsSync(lock), false,
+        'no leak: the lock left behind by the SIGKILLed process must be gone after reclaim');
+    } finally {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
