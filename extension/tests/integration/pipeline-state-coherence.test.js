@@ -183,7 +183,7 @@ test('pipeline state stays coherent across a three-iteration mux-runner fixture'
         // removing the bypass leaves all other assertions GREEN and trips only this one.
         assert.ok(
             !output.includes('EXTENSION_DIR fallback'),
-            'mux-runner fell back to the canonical extension root instead of the fixture\'s '
+            `mux-runner fell back to the canonical extension root instead of the fixture's `
             + `EXTENSION_DIR — the fixture is measuring the host install, not itself:\n${output}`,
         );
         // Per R-CNAR-1 part 2 cap split (extension/CLAUDE.md trap door): once the
