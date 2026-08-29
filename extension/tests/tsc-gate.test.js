@@ -1221,3 +1221,55 @@ it('AP-EXT-ITER63-03 segmentIsGitCommit reads NO positional exec index', async (
     );
   }
 });
+
+// AP-EXT-ITER93-02: bash expands EVERY word, so the SUBCOMMAND is a pattern too.
+// With a file named `commit` in cwd, `git commi? -m x` really commits, yet the
+// `=== 'commit'` compare classified it NON-commit and the R-WACT tsc gate was
+// SKIPPED for a broken-TypeScript commit while the literal twin gated.
+it('AP-EXT-ITER93-02 isGitCommitCommand reads a globbed commit subcommand', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+
+  for (const command of [
+    'git commi? -m "fix"',
+    'git com[m]it -m "fix"',
+    'git c?mmit --amend',
+    'cd extension && git commi? -m "fix"',
+    'git add -u && git commi? -m "fix"',
+    'env git commi? -m "fix"',
+  ]) {
+    assert.equal(isGitCommitCommand(command), true, command);
+  }
+
+  // The `*` bound is the reason this reads through `execNamesIn` rather than
+  // `execNameIs`: `c*` names `commit`, and running tsc over a `git add` would be
+  // a reliability cost with no safety return. Measured on 10129 real worker Bash
+  // commands: this change moves ZERO commit classifications, in either direction.
+  for (const command of [
+    'git add c*',
+    'git add *',
+    'git log commit',
+    'git diff --stat',
+    'git rev-parse HEAD',
+    'git status',
+  ]) {
+    assert.equal(isGitCommitCommand(command), false, command);
+  }
+});
+
+// The negative arm stays LITERAL on purpose: widening the read that returns
+// FALSE would let a globbed `lo?` declare the segment read-only and skip the
+// gate — the under-block direction. Only the arm whose over-reach merely RUNS
+// the gate is pattern-aware.
+it('AP-EXT-ITER93-02 only the gate-running arm reads patterns', async () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts'), 'utf-8',
+  );
+  const body = source.slice(
+    source.indexOf('function segmentIsGitCommit('),
+    source.indexOf('export function isGitCommitCommand('),
+  );
+  assert.ok(body.length > 0, 'segmentIsGitCommit must remain a single named function');
+  assert.match(body, /execNamesIn\(token, GIT_COMMIT_SUBCOMMAND\)\.length > 0/);
+  assert.doesNotMatch(body, /token === 'commit'/);
+  assert.match(body, /NEGATIVE_GIT_SUBCOMMANDS\.has\(token\)/);
+});

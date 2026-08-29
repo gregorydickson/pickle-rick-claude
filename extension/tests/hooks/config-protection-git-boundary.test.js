@@ -3984,3 +3984,107 @@ test('AP-EXT-ITER93-01: the shape has one declaration and the fill is bounded', 
   // List-free: no shell NAME literals anywhere in the wrapper seam.
   assert.doesNotMatch(body + witness, /'(bash|zsh|dash|ksh|csh|tcsh|fish)'/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER93-02: bash expands EVERY word, so the VERB is a pattern too
+//
+// AP-EXT-ITER73-01/93-01 taught the command word and the wrapper word to read a
+// glob as the pattern it is; the verb one word to the right stayed a literal
+// `.has()` read of the gated set. Pathname expansion does not care which word it
+// is: with a file named `reset` in cwd, `git rese? --hard` really hard-resets
+// (shim-verified 2026-08-29 in a scratch repo — staged work destroyed, `HEAD is
+// now at ...`), and the shipped handler APPROVED it for a worker while the
+// byte-equivalent literal twin blocked. Nine forms measured, one per gated verb.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER93-02: a globbed git VERB blocks like its literal twin', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    'git rese? --hard',
+    'git res[e]t --hard',
+    'git pus? origin main',
+    'git stas?',
+    'git rebas? -i HEAD~2',
+    'git pul?',
+    'git swit?h main',
+    'git checkou? main',
+    'git commi? --amend',
+    'git fetc? --prune',
+    // The globbed verb survives every carrier the module already unwraps.
+    'cd sub && git rese? --hard',
+    'git status && git rese? --hard',
+    'bash -c "git rese? --hard"',
+    'env git rese? --hard',
+    // Both words globbed at once.
+    '/usr/bin/gi? rese? --hard',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+  }
+});
+
+// The declaration ORDER of GATED_GIT_VERBS is load-bearing, not cosmetic:
+// `execNamesIn` filters in that order, so a word spelling several gated verbs at
+// once must yield the unconditionally prohibited one. `????h` names `stash` and
+// `fetch`; picking `fetch` (whose check needs `--prune`) would APPROVE.
+test('AP-EXT-ITER93-02: a word naming several gated verbs yields the prohibited one', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command: 'git ????h' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block', 'git ????h names stash before fetch');
+});
+
+// Non-tautology controls. Measured on 10129 real worker Bash commands from the
+// live session logs: this change moves ZERO of them, in either direction — the
+// git-verb verdict is identical for all 10129 before and after.
+test('AP-EXT-ITER93-02: the verb pattern read does not over-block real git usage', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    'git status',
+    'git add -u',
+    'git commit -m "fix"',
+    'git log --oneline -5',
+    'git diff HEAD~1 -- src/*.ts',
+    'git add src/*.ts',
+    'git checkout -- src/f.ts',
+    'git fetch',
+    'git show HEAD:extension/src/hooks/shell-exec.ts',
+    // An all-wildcard word names every verb equally well, so it names none.
+    'git ??????',
+    'git *',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', command);
+  }
+});
+
+// The seam itself, so a detector-level regression cannot be mistaken for a
+// compare-level one, and so the ordering invariant stays mechanically pinned.
+test('AP-EXT-ITER93-02: the verb read is one pattern-aware set read, prohibited-first', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'), 'utf-8',
+  );
+  const body = source.slice(
+    source.indexOf('function findGitVerb('),
+    source.indexOf('export function detectProhibitedGitVerb('),
+  );
+  assert.ok(body.length > 0, 'findGitVerb must remain a single named function');
+  // ONE uniform read, shared with the write-command seam — no literal `.has()`
+  // arm beside it, and no per-verb compare.
+  assert.match(body, /execNamesIn\(rest\[i\], GATED_GIT_VERBS\)/);
+  assert.doesNotMatch(body, /GATED_GIT_VERBS\.has\(/);
+  // The prohibited verbs are spread FIRST, which is what makes `named[0]` the
+  // safe reading of a multi-naming word.
+  assert.match(
+    source,
+    /const GATED_GIT_VERBS = \[\s*\.\.\.PROHIBITED_GIT_VERBS_SIMPLE, 'checkout', 'commit', 'fetch',/,
+  );
+});

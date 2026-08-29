@@ -629,10 +629,28 @@ const PROHIBITED_GIT_VERBS_SIMPLE = new Set(['reset', 'switch', 'stash', 'rebase
  * This set is closed by the Git Boundary Rules, not by git's option surface: it is
  * exactly the verbs the checks below can return non-null for. Adding a git global
  * option must never require touching it.
+ *
+ * It is read as PATTERNS, via the shared `execNamesIn` (AP-EXT-ITER93-02), because
+ * bash applies pathname expansion to EVERY word of a command, not only the command
+ * word: with a file named `reset` in cwd, `git rese? --hard` really hard-resets
+ * (shim-verified 2026-08-29 — staged work destroyed, `HEAD is now at ...`), yet a
+ * `.has()` read of the raw word saw `rese?`, matched no member, and APPROVED for a
+ * worker while its literal twin blocked. `git res[e]t`, `git {r,x}eset`, `git pus?`,
+ * `git stas?`, `git rebas?`, `git swit?h`, `git pul?` and `git checkou? <ref>` all
+ * measured APPROVE against the shipped handler. The exec-word seams learned this at
+ * AP-EXT-ITER73-01/93-01; the verb is the same question one word to the right, and
+ * asking it needs no table of expandable spellings.
+ *
+ * ORDER IS LOAD-BEARING: `execNamesIn` filters `names` in declaration order, so
+ * spreading `PROHIBITED_GIT_VERBS_SIMPLE` FIRST means a word that spells several
+ * gated verbs at once (`{stash,fetch}`, `????h`) yields the unconditionally
+ * prohibited one, whose check needs no argument — never the conditional
+ * `checkout`/`commit`/`fetch` reading that could approve. Re-sorting this list
+ * would silently pick the approving member; the ENFORCE test pins it.
  */
-const GATED_GIT_VERBS = new Set([
+const GATED_GIT_VERBS = [
     ...PROHIBITED_GIT_VERBS_SIMPLE, 'checkout', 'commit', 'fetch',
-]);
+];
 /**
  * Returns true when `git checkout <args>` is targeting a ref (blocked).
  * Allowed: `git checkout -- <path>`, `git checkout .`, `git checkout` with no positional.
@@ -674,7 +692,9 @@ function findGitVerb(command) {
     if (anchor === -1)
         return null;
     const rest = tokens.slice(anchor + 1).map(t => t.value).filter(t => t.length > 0);
-    // ONE uniform read: the verb is the first bare word that IS a gated verb.
+    // ONE uniform read: the verb is the first bare word the shell may expand to a
+    // gated verb (`execNamesIn`, the same predicate the write-command seam reads
+    // with, carrying the same measured `*` bound).
     // Deliberately no option table and no "stop at the first bare word" — both
     // made the verb position depend on knowing git's operand-taking options, and
     // a global option we had not enumerated silently shifted the read onto its
@@ -686,9 +706,9 @@ function findGitVerb(command) {
             continue;
         if (firstBare === -1)
             firstBare = i;
-        if (GATED_GIT_VERBS.has(rest[i].toLowerCase())) {
-            return { verb: rest[i].toLowerCase(), afterVerb: rest.slice(i + 1) };
-        }
+        const named = execNamesIn(rest[i], GATED_GIT_VERBS);
+        if (named.length > 0)
+            return { verb: named[0], afterVerb: rest.slice(i + 1) };
     }
     // No gated verb anywhere: fall back to the first bare word so the returned verb
     // still names the real subcommand for non-prohibited commands. Nothing in

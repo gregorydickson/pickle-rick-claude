@@ -6,11 +6,28 @@ import { approve, loadActiveState, resolveStateFile } from '../resolve-state.js'
 import { logActivity } from '../../services/activity-logger.js';
 import { getDataRoot, safeErrorMessage } from '../../services/pickle-utils.js';
 import { StateManager } from '../../services/state-manager.js';
-import { execAnchorIndex, splitShellSegments, tokenizeShellTokens } from '../shell-exec.js';
+import { execAnchorIndex, execNamesIn, splitShellSegments, tokenizeShellTokens } from '../shell-exec.js';
 const TSC_TRIGGER_RE = /\.(?:[cm]?ts|tsx)$/i;
 const TSC_CONFIG_RE = /^tsconfig(?:\..+)?\.json$/i;
 const PACKAGE_JSON_RE = /^package.*\.json$/i;
 const NEGATIVE_GIT_SUBCOMMANDS = new Set(['log', 'diff', 'show', 'rev-parse']);
+/**
+ * The subcommand that RUNS this gate, read as a PATTERN via the shared
+ * `execNamesIn` (AP-EXT-ITER93-02) — bash expands every word of a command, not
+ * only the command word, so with a file named `commit` in cwd `git commi? -m x`
+ * really commits while a `=== 'commit'` compare classified it NON-commit and the
+ * R-WACT tsc gate was SKIPPED for a broken-TS commit (`git com[m]it`,
+ * `git {commit,status}` measured the same). One name, still the SET read rather
+ * than `execNameIs`: `execNamesIn` carries the measured `*` bound, without which
+ * `git add c*` would name `commit` and run tsc over a command that commits
+ * nothing.
+ *
+ * `NEGATIVE_GIT_SUBCOMMANDS` deliberately stays a LITERAL read: widening the arm
+ * that returns FALSE would let a globbed `lo?` decide the segment is read-only
+ * and skip the gate — the under-block direction. Only the arm whose over-reach
+ * merely RUNS the gate is pattern-aware.
+ */
+const GIT_COMMIT_SUBCOMMAND = ['commit'];
 const CD_PREFIX_RE = /^cd\s+(?:"[^"]*"|'[^']*'|[^;&]+?)\s*(?:&&|;)\s*/;
 const COMMAND_TIMEOUT_MS = 5_000;
 const ALLOW_TSC_FAILED_REASON_FIELD = 'allow_tsc_failed_reason';
@@ -104,7 +121,7 @@ function segmentIsGitCommit(segment) {
         const token = tokens[index].value;
         if (token.startsWith('-'))
             continue;
-        if (token === 'commit')
+        if (execNamesIn(token, GIT_COMMIT_SUBCOMMAND).length > 0)
             return true;
         // A read-only subcommand decides the segment: without this, `git log <ref>`
         // would scan past `log` and could match a ref literally named `commit`.
