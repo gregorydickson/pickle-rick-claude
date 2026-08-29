@@ -995,8 +995,13 @@ export function splitShellSegments(command: string, depth = 0): string[] {
  * operand — the enumerated-declaration shape of AP-EXT-ITER18-01/ITER19-01,
  * one member away from the next bypass, and the very list `bash -c -o pipefail`
  * proves incomplete. Each candidate is scanned as its OWN segment rather than
- * joined, because the payload is one bash word and joining would bury its verb
- * behind a leading `-x` where no exec-position read can reach it.
+ * joined, because bash's `-c` does not concatenate its arguments the way `eval`
+ * does — `wordToCodeBuiltinPayload` joins for exactly that reason and this must
+ * not. The tokenizer has already established these word boundaries and stripped
+ * each word's quotes; re-joining them manufactures a word sequence bash never
+ * produced. (It would NOT hide the verb: `execAnchorIndex` reads no position, so
+ * a joined `-x git reset --hard` still anchors — measured. The reason is
+ * faithfulness to the grammar, not reach.)
  *
  * Over-reach is fail-safe in the module's existing direction and is a strict
  * WIDENING of the old read — yesterday's single token is still a member — so no
