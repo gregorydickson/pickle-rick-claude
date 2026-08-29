@@ -4466,3 +4466,125 @@ test('AP-EXT-ITER93-08: the whole option-run tail is unwrapped, not just the fla
   // A wrapper with no command-string flag still yields no payload.
   assert.deepEqual(splitShellSegments('bash install.sh'), ['bash install.sh']);
 });
+
+// AP-EXT-ITER93-03: an option FLAG is a SHAPE, and bash expands it too
+//
+// `SHELL_COMMAND_STRING_FLAG_RE` was tested against the RAW token, so a globbed
+// spelling of `-c` matched nothing over letters. With a file named `-c` in cwd,
+// `bash -? '<cmd>'` really runs the payload (shim-verified on this box:
+// `bash -?`, `bash -[c]` and `bash -l?` each printed the payload's output),
+// while `shellCommandStringPayloads` came back empty and the command string
+// stayed ONE opaque token — the AP-EXT-ITER63-06 blast radius, hiding the whole
+// payload from the git-verb chain, the install.sh ban and both R-WSRC-3 write
+// gates at once. Measured against the shipped handler before the fix: all three
+// forms APPROVED for a worker while their literal twins blocked.
+//
+// AP-EXT-ITER93-01 taught the WRAPPER to read an expanded word and
+// AP-EXT-ITER93-07 extracted the fill into `shellWordWitness`; this is the last
+// expansion-blind shape test on a shell word in the module, and it asks the
+// same one machine rather than growing a second reader.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER93-03: a globbed command-string flag still unwraps its payload', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    "bash -? 'git reset --hard'",
+    "bash -[c] 'git reset --hard'",
+    "bash -l? 'git push origin main'",
+    "/bin/bash -{c,c} 'git stash'",
+    "bash -o pipefail -? 'git rebase main'",
+    "/bin/ba?h -? 'git pull'",
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, /R-WSRC/);
+  }
+});
+
+// The flag seam is shared, so the other two guards behind it inherit the fix.
+test('AP-EXT-ITER93-03: a globbed flag hides neither the deploy script nor a state write', () => {
+  const { tmpDir, stateFile, sessionDir } = bootstrapSession();
+  for (const command of [
+    'bash -? "bash install.sh"',
+    'bash -[c] "bash install.sh"',
+    `bash -? "echo x > ${sessionDir}/state.json"`,
+    `bash -l? "tee ${sessionDir}/state.json"`,
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+  }
+});
+
+// Non-tautology controls. Reading a flag shape off a witness widens what counts
+// as a payload carrier, and the widening's whole cost must land on commands a
+// worker really runs. Measured across 9167 unique worker Bash commands from 163
+// live session logs: 35 word-level predicate flips over 330875 words, 4 commands
+// whose SEGMENT SET changed — every one of them a prior anatomy-park pass's own
+// measurement script — and ZERO handler decision flips in either direction.
+test('AP-EXT-ITER93-03: an expanded flag read does not block ordinary worker commands', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    // The corpus's real flipped words: an xargs replace-string, an awk field
+    // separator and a bracket-bearing option value are option SHAPES that fill
+    // to `-c`, and none of them stands behind a shell wrapper.
+    'find . -name "*.ts" | xargs -I{} echo {}',
+    'awk -F[ ,+] \'{print $1}\' notes.txt',
+    "cat > /tmp/research.md <<'EOF'\n- **PASS** — install.sh is manager-only\nEOF",
+    'grep -rn "install.sh" extension/**/*.ts',
+    'bash -c "npm test"',
+    'git status',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', command);
+  }
+});
+
+// The seam itself, so a detector-level regression cannot be mistaken for a
+// flag-level one — and so the single-position bound stays measurable here too.
+test('AP-EXT-ITER93-03: the command-string flag is read as a shape, bounded to one position', () => {
+  const PAYLOAD = 'git reset --hard';
+  // Literal identity is unchanged: a word with no wildcards is its own witness.
+  assert.ok(splitShellSegments(`bash -c '${PAYLOAD}'`).includes(PAYLOAD));
+  assert.ok(splitShellSegments(`bash -lc '${PAYLOAD}'`).includes(PAYLOAD));
+  // A single-position wildcard stands for the flag character wherever it sits.
+  assert.ok(splitShellSegments(`bash -? '${PAYLOAD}'`).includes(PAYLOAD));
+  assert.ok(splitShellSegments(`bash -[c] '${PAYLOAD}'`).includes(PAYLOAD));
+  assert.ok(splitShellSegments(`bash -l? '${PAYLOAD}'`).includes(PAYLOAD));
+  assert.ok(splitShellSegments(`bash -?c '${PAYLOAD}'`).includes(PAYLOAD));
+  // The bound: `*` absorbs a RUN, so it is left unfilled and fails the shape.
+  assert.deepEqual(splitShellSegments(`bash -* '${PAYLOAD}'`), [`bash -* '${PAYLOAD}'`]);
+  // The leading `-` is a literal no fill can move, which is what keeps a
+  // wildcard-bearing positional FILE argument from reading as the flag.
+  assert.deepEqual(splitShellSegments(`bash ?? '${PAYLOAD}'`), [`bash ?? '${PAYLOAD}'`]);
+  // A word that is not an option at all is still not the flag.
+  assert.deepEqual(splitShellSegments('bash script.sh'), ['bash script.sh']);
+});
+
+test('AP-EXT-ITER93-03: the flag shape has one declaration and asks the shared witness', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../../src/hooks/shell-exec.ts'), 'utf-8');
+  // ONE declaration: the regex is BUILT from the character the witness fills
+  // with, so the shape and the fill cannot drift into disagreeing.
+  assert.match(
+    source,
+    /const SHELL_COMMAND_STRING_FLAG_RE = new RegExp\(`\^-\[A-Za-z\]\*\$\{SHELL_COMMAND_STRING_FLAG_CHAR\}`\)/,
+  );
+  // The predicate asks the SHARED fill machine, not a private positions walk —
+  // two position-splitters could disagree about `*` and only one is measured.
+  const body = source.slice(
+    source.indexOf('function isShellCommandStringFlag('),
+    source.indexOf('\n}', source.indexOf('function isShellCommandStringFlag(')),
+  );
+  assert.ok(body.length > 0, 'isShellCommandStringFlag must remain a single named function');
+  assert.match(body, /shellWordWitness\(/);
+  assert.doesNotMatch(body, /SHELL_WORD_POSITION_RE/);
+  assert.doesNotMatch(body, /SINGLE_POSITION_WILDCARD_RE/);
+});

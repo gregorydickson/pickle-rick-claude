@@ -1080,9 +1080,17 @@ it('AP-EXT-ITER54-01 the payload is read FORWARD from the flag, not from the fir
   // the flag's neighbour is the payload only when nothing follows it in the
   // option run. Taking every following word is the formulation that needs no
   // operand table.
+  //
+  // AP-EXT-ITER93-03 moved the shape TEST behind `isShellCommandStringFlag` so
+  // it could be asked of a witness (bash expands an option word too). The
+  // invariant this pin protects is the forward scan and the whole-tail take, not
+  // the spelling of the predicate, so the anchor follows the rule to its new
+  // home — a name-scoped pin outliving its symbol is how this catalog ships
+  // green over a violated invariant. The predicate's own shape is pinned in
+  // tests/hooks/config-protection-git-boundary.test.js#AP-EXT-ITER93-03.
   assert.match(
     body[1],
-    /if \(SHELL_COMMAND_STRING_FLAG_RE\.test\(tokens\[idx\]\)\) return tokens\.slice\(idx \+ 1\);/,
+    /if \(isShellCommandStringFlag\(tokens\[idx\]\)\) return tokens\.slice\(idx \+ 1\);/,
     'every word after the command-string flag must be a payload candidate',
   );
   assert.ok(

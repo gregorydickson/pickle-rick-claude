@@ -709,8 +709,41 @@ const GLUED_SEPARATOR_RE = new RegExp(
  */
 const MAX_SHELL_COMMAND_STRING_DEPTH = 3;
 
-/** `-c`, and the combined forms a login/exec shell takes (`-lc`, `-ec`, `-xc`). */
-const SHELL_COMMAND_STRING_FLAG_RE = /^-[A-Za-z]*c/;
+/** The character a bash option cluster must carry to be the command-string flag. */
+const SHELL_COMMAND_STRING_FLAG_CHAR = 'c';
+
+/**
+ * `-c`, and the combined forms a login/exec shell takes (`-lc`, `-ec`, `-xc`).
+ * ONE declaration — the regex is BUILT from the character the witness fills
+ * with, so the two readings cannot drift.
+ */
+const SHELL_COMMAND_STRING_FLAG_RE = new RegExp(`^-[A-Za-z]*${SHELL_COMMAND_STRING_FLAG_CHAR}`);
+
+/**
+ * True when the token is the flag that turns the next words into a command
+ * STRING.
+ *
+ * Asked of a WITNESS (`shellWordWitness`), not of the raw token, because bash
+ * pathname-expands an option word like any other: with a file named `-c` in
+ * cwd, `bash -? '<cmd>'` really runs the payload (shim-verified 2026-08-29 on
+ * this box), while a literal shape test saw `-?`, matched nothing, and left the
+ * payload as ONE opaque token — the AP-EXT-ITER63-06 blast radius, hiding the
+ * whole command string from the git-verb chain, the `install.sh` ban and both
+ * R-WSRC-3 write gates at once. Same expansion-is-not-quoting seam
+ * `isShellWrapper` and `isInPlaceFlag` already pass through; this is the last
+ * expansion-blind SHAPE test on a shell word in this module.
+ *
+ * The fill is the flag's own character at EVERY position, the `isInPlaceFlag`
+ * cluster arm's shape: `-c` is a single-dash cluster, so the flag character may
+ * sit anywhere past the dash (`-lc`, `-xc`). The leading `-` is a literal no
+ * fill can move, which is what keeps a positional wildcard-bearing FILE
+ * argument from reading as a flag.
+ */
+function isShellCommandStringFlag(token: string | undefined): boolean {
+  return SHELL_COMMAND_STRING_FLAG_RE.test(
+    shellWordWitness(token ?? '', () => SHELL_COMMAND_STRING_FLAG_CHAR),
+  );
+}
 
 /**
  * Bash's brace SEQUENCE form: `{X..Y}` / `{X..Y..N}` over integers or single
@@ -1030,7 +1063,7 @@ function shellCommandStringPayloads(segment: string): string[] {
   const wrapper = tokens.findIndex((token) => isShellWrapper(token));
   if (wrapper < 0) return [];
   for (let idx = wrapper + 1; idx < tokens.length; idx++) {
-    if (SHELL_COMMAND_STRING_FLAG_RE.test(tokens[idx])) return tokens.slice(idx + 1);
+    if (isShellCommandStringFlag(tokens[idx])) return tokens.slice(idx + 1);
   }
   return [];
 }
