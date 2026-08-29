@@ -557,6 +557,22 @@ export function clearActivePidFile(sessionDir: string): void {
   }
 }
 
+/**
+ * AP-EXT-ITER50-01: the live `ps` census is the identity oracle for a pid read off
+ * disk. Returns the census command line for `pid`, or null when the census does not
+ * list it at all. Reads the census already fetched by the caller — no second spawn,
+ * no second timeout (the AP-EXT-ITER47-01 `parseSelfPgidFromPs` reasoning).
+ */
+export function findLiveCommandForPid(psOutput: string, pid: number): string | null {
+  for (const rawLine of psOutput.split(/\r?\n/)) {
+    const match = rawLine.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/);
+    if (!match) continue;
+    if (Number(match[1]) !== pid) continue;
+    return match[4].trim();
+  }
+  return null;
+}
+
 /** R-OMS-2: Parse orphaned claude manager processes from ps output. */
 export function parseOrphanedManagersFromPs(
   psOutput: string,
@@ -612,7 +628,22 @@ export function reapOrphanedManagersAtIterationStart(
     const raw = fs.readFileSync(pidfilePath, 'utf-8').trim();
     const pidFromFile = Number(raw);
     if (Number.isInteger(pidFromFile) && pidFromFile > 0 && !suspects.has(pidFromFile)) {
-      suspects.set(pidFromFile, 'from-pidfile');
+      // AP-EXT-ITER50-01: reaching here means the census did NOT attribute this pid to
+      // this session, so the pidfile is the only evidence for it. Ask the census that
+      // was already fetched. A pid it lists under a command with no reference to
+      // `sessionDir` is a STRANGER that inherited the slot after the manager died —
+      // `writeActivePidFile` is unlinked on the normal path only, so a SIGKILL/OOM/crash
+      // strands the file and the session dir survives `--resume`. A pid the census does
+      // not list is already dead and signalling it is a no-op, so the pidfile stays
+      // authoritative about ROLE: an orphaned non-`claude` (e.g. codex) manager is
+      // invisible to the census FILTERS above but still appears in the census itself.
+      const liveCommand = findLiveCommandForPid(psOutput, pidFromFile);
+      const isStranger = liveCommand !== null && !liveCommand.includes(sessionDir);
+      if (isStranger) {
+        log(`orphan manager pidfile pid=${pidFromFile} is not attributable to this session — refusing to signal it`);
+      } else {
+        suspects.set(pidFromFile, 'from-pidfile');
+      }
     }
   } catch {
     // ENOENT or unreadable — no pidfile, skip

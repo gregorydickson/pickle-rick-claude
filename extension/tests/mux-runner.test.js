@@ -5026,3 +5026,113 @@ test('AP-EXT-ITER8-03: the refund is ticket-keyed and must not clear ticket-less
         'a sibling ticket’s budget survives',
     );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER50-01: the orphan-manager pidfile arm must not signal a pid the
+// live `ps` census attributes to a stranger. `reapOrphanedManagersAtIterationStart`
+// reaches its pidfile arm only when the census did NOT recognise the pid as this
+// session's manager, so before this guard the arm's reachable effects were killing
+// a dead pid (a no-op) or killing whatever process inherited the recycled slot.
+// ---------------------------------------------------------------------------
+import {
+    reapOrphanedManagersAtIterationStart as reapManagersForPidfileOwnership,
+    findLiveCommandForPid as findLiveCommandForPidUnderTest,
+} from '../bin/mux-runner.js';
+import { LATEST_SCHEMA_VERSION as SCHEMA_VERSION_FOR_PIDFILE_OWNERSHIP } from '../types/index.js';
+
+function makePidfileOwnershipFixture() {
+    const dir = makeTmpRoot();
+    const statePath = path.join(dir, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({
+        active: true,
+        schema_version: SCHEMA_VERSION_FOR_PIDFILE_OWNERSHIP,
+        activity: [],
+    }));
+    return { sessionDir: dir, statePath };
+}
+
+function pidIsAlive(pid) {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+test('AP-EXT-ITER50-01: a real stranger process named by the pidfile survives the reap', async () => {
+    const { sessionDir, statePath } = makePidfileOwnershipFixture();
+    // A genuine unrelated process — its argv references nothing about this session,
+    // exactly like a pid the kernel recycled after the manager died.
+    const stranger = spawn('sleep', ['120'], { detached: true, stdio: 'ignore' });
+    stranger.unref();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const strangerPid = stranger.pid;
+
+    try {
+        assert.ok(pidIsAlive(strangerPid), 'precondition: the stranger is running');
+        fs.writeFileSync(path.join(sessionDir, '.active_manager.pid'), String(strangerPid));
+
+        // Real ps census and the real SIGTERM path — no injection, this is the
+        // production wire that was measured killing a `sleep 120`.
+        const reaped = reapManagersForPidfileOwnership(statePath, sessionDir, () => {});
+        await new Promise(resolve => setTimeout(resolve, 400));
+
+        assert.deepEqual(reaped, [], 'an unattributable pid is not reported as reaped');
+        assert.ok(pidIsAlive(strangerPid), 'the stranger process must still be alive');
+
+        const activity = JSON.parse(fs.readFileSync(statePath, 'utf8')).activity || [];
+        assert.ok(
+            !activity.some(e => e.event === 'orphan_manager_reaped' && e.pid === strangerPid),
+            'no orphan_manager_reaped event is recorded for a kill that never happened',
+        );
+    } finally {
+        try { process.kill(strangerPid, 'SIGKILL'); } catch { /* already gone */ }
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER50-01: the pidfile stays authoritative about ROLE — a census-visible non-claude manager naming this session is still reaped', () => {
+    const { sessionDir, statePath } = makePidfileOwnershipFixture();
+    const codexPid = 424242;
+    fs.writeFileSync(path.join(sessionDir, '.active_manager.pid'), String(codexPid));
+
+    const killed = [];
+    // `basename !== 'claude'`, so parseOrphanedManagersFromPs cannot see it — only
+    // the pidfile finds this one, and the census confirms it belongs to us.
+    const psOutput = `${codexPid} 1 10:00 /opt/codex/bin/codex exec --add-dir ${sessionDir} -- run\n`;
+    reapManagersForPidfileOwnership(statePath, sessionDir, () => {}, {
+        psOutput,
+        kill: pid => killed.push(pid),
+    });
+
+    assert.deepEqual(killed, [codexPid], 'a census line referencing this sessionDir is attributable');
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER50-01: a census-visible pid whose command never names this session is refused', () => {
+    const { sessionDir, statePath } = makePidfileOwnershipFixture();
+    const strangerPid = 515151;
+    fs.writeFileSync(path.join(sessionDir, '.active_manager.pid'), String(strangerPid));
+
+    const killed = [];
+    const logged = [];
+    const psOutput = `${strangerPid} 1 10:00 /usr/bin/sleep 120\n`;
+    reapManagersForPidfileOwnership(statePath, sessionDir, msg => logged.push(msg), {
+        psOutput,
+        kill: pid => killed.push(pid),
+    });
+
+    assert.deepEqual(killed, [], 'a stranger in the census is never signalled');
+    assert.ok(
+        logged.some(m => m.includes('not attributable to this session')),
+        'the refusal is logged rather than silent',
+    );
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER50-01: findLiveCommandForPid returns the census command, or null when absent', () => {
+    const psOutput = [
+        '111 1 10:00 /usr/bin/sleep 120',
+        '222 1 09:00 node /path/to/thing.js --flag',
+    ].join('\n');
+
+    assert.equal(findLiveCommandForPidUnderTest(psOutput, 222), 'node /path/to/thing.js --flag');
+    assert.equal(findLiveCommandForPidUnderTest(psOutput, 999), null, 'a pid absent from the census is dead');
+    assert.equal(findLiveCommandForPidUnderTest('', 111), null, 'an empty census attributes nothing');
+});
