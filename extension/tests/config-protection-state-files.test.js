@@ -1445,3 +1445,162 @@ test('AP-EXT-ITER93-07: isInPlaceFlag asks a witness, and the fill machinery has
   assert.match(shapeWitness, /return shellWordWitness\(folded, /);
   assert.doesNotMatch(shapeWitness, /SHELL_WORD_POSITION_RE/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER73-04: a write DESTINATION is a shell word, and bash EXPANDS it.
+//
+// Both arms of the state-write probe compared the destination as a LITERAL:
+// `matchProtectedStateBasename` with `===` against the protected basenames, and
+// `isInsideRuntimeRoot` with a string prefix compare against the runtime root.
+// Pathname expansion applies to a redirect destination and to a positional file
+// argument like any other word, so `echo x > <session>/stat?.json` really
+// clobbers state.json (shim-verified on this box, as do `stat[e].json` and
+// `circuit_break*r.json`), and `~/.claude/pickle-ric?/...` really writes the
+// deployed runtime tree. Measured against the shipped handler pre-fix: 12 of 14
+// globbed write forms APPROVED for a worker across `>`, `>>`, `>|`, tee, cp, mv
+// and `sed -i` while all three literal twins blocked, and 3 of 4 globbed
+// runtime-root forms APPROVED.
+//
+// The fix is a COLLAPSE, not a third guard: both arms now ask the ONE shared
+// reader (`execNamesIn` / `execNameIs`) that the write-command seam already
+// uses, so the state domain cannot re-fork from it. `isInsideRuntimeRoot`'s two
+// literal compares (`=== root`, `startsWith(root + sep)`) become one
+// component-wise read that subsumes both.
+//
+// Cost, measured not assumed: 9229 unique real worker Bash commands from 163
+// live session logs, 667070 words — ZERO decision flips in either direction on
+// every command capable of flipping, against a pre-fix compiled mirror proven
+// to approve the bypass and block the literal twin.
+// ---------------------------------------------------------------------------
+
+function runWorkerBashOnSessionFile(basename, buildCommand) {
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  return runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: buildCommand(path.join(sessionDir, basename)) },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+}
+
+const GLOBBED_STATE_WRITES = [
+  ['redirect, `?` in the stem', 'stat?.json', (t) => `echo x > ${t}`],
+  ['redirect, `?` in the extension', 'state.jso?', (t) => `echo x > ${t}`],
+  ['redirect, bracket expression', 'stat[e].json', (t) => `echo x > ${t}`],
+  ['append redirect', 'stat?.json', (t) => `echo x >> ${t}`],
+  ['noclobber-override redirect', 'stat?.json', (t) => `echo x >| ${t}`],
+  ['dup-or-write redirect', 'stat?.json', (t) => `echo x >& ${t}`],
+  ['tmp-suffixed snapshot', 'stat?.json.tmp.4141', (t) => `echo x > ${t}`],
+  ['tee destination', 'stat?.json', (t) => `tee ${t}`],
+  ['cp destination', 'stat?.json', (t) => `cp /etc/hosts ${t}`],
+  ['mv destination', 'stat?.json', (t) => `mv /tmp/x ${t}`],
+  ['sed in-place', 'stat?.json', (t) => `sed -i '' s/a/b/ ${t}`],
+  ['circuit breaker', 'circuit_break?r.json', (t) => `echo x > ${t}`],
+  ['pipeline status', 'pipeline-statu?.json', (t) => `echo x > ${t}`],
+  ['settings', 'pickle_setting?.json', (t) => `echo x > ${t}`],
+];
+
+for (const [label, basename, build] of GLOBBED_STATE_WRITES) {
+  test(`AP-EXT-ITER73-04: blocks globbed state write — ${label} (${basename})`, () => {
+    const result = runWorkerBashOnSessionFile(basename, build);
+    assert.equal(
+      result.decision,
+      'block',
+      `a destination bash expands to a protected state file must not approve: ${build(basename)}`,
+    );
+  });
+}
+
+for (const [label, basename, build] of GLOBBED_STATE_WRITES) {
+  test(`AP-EXT-ITER73-04: literal twin still blocks — ${label}`, () => {
+    const literal = basename
+      .replace('stat?.json', 'state.json')
+      .replace('state.jso?', 'state.json')
+      .replace('stat[e].json', 'state.json')
+      .replace('circuit_break?r.json', 'circuit_breaker.json')
+      .replace('pipeline-statu?.json', 'pipeline-status.json')
+      .replace('pickle_setting?.json', 'pickle_settings.json');
+    assert.equal(runWorkerBashOnSessionFile(literal, build).decision, 'block');
+  });
+}
+
+// The deployed runtime tree: a glob in a DIRECTORY component, which the prefix
+// compare could not see at all.
+for (const [label, target] of [
+  ['glob in the runtime-root leaf dir', '~/.claude/pickle-ric?/extension/bin/setup.js'],
+  ['star in the runtime-root leaf dir', '~/.claude/pickle-*/extension/bin/setup.js'],
+  ['glob in an ancestor dir', '~/.clau?e/pickle-rick/extension/bin/setup.js'],
+  ['glob dir via a positional writer', '~/.claude/pickle-ric?/x.json'],
+]) {
+  test(`AP-EXT-ITER73-04: blocks globbed runtime-root write — ${label}`, () => {
+    const cmd = target.endsWith('x.json') ? `tee ${target}` : `echo x > ${target}`;
+    assert.equal(runWorkerBash(cmd).decision, 'block', `${cmd} must not bypass the runtime-root gate`);
+  });
+}
+
+test('AP-EXT-ITER73-04: literal runtime-root write still blocks', () => {
+  assert.equal(
+    runWorkerBash('echo x > ~/.claude/pickle-rick/extension/bin/setup.js').decision,
+    'block',
+  );
+});
+
+// Over-block controls: reading a globbed protected path, and writing a globbed
+// path that is NOT protected, must both stay approved. A guard that blocks a
+// worker's own artifact write is a reliability cost, not a safety margin.
+for (const [label, cmd] of [
+  ['read a globbed state path', (t) => `cat ${t}`],
+  ['grep a globbed state path', (t) => `grep -l x ${t}`],
+  ['head a globbed state path', (t) => `head -5 ${t}`],
+]) {
+  test(`AP-EXT-ITER73-04: still approves read-only — ${label}`, () => {
+    assert.equal(runWorkerBashOnSessionFile('stat?.json', cmd).decision, 'approve');
+  });
+}
+
+for (const [label, basename] of [
+  ['globbed report filename', 'repor?.md'],
+  ['globbed notes filename', 'note*.md'],
+  ['globbed unrelated json', 'manifes?.json'],
+  ['a sibling that merely starts the same', 'state-notes.md'],
+]) {
+  test(`AP-EXT-ITER73-04: still approves unprotected globbed write — ${label}`, () => {
+    assert.equal(
+      runWorkerBashOnSessionFile(basename, (t) => `echo x > ${t}`).decision,
+      'approve',
+      `${basename} is not a protected state file and must not over-block`,
+    );
+  });
+}
+
+test('AP-EXT-ITER73-04: a near-miss runtime-root sibling still approves', () => {
+  assert.equal(runWorkerBash('echo x > ~/.claude/pickle-rickety/notes.md').decision, 'approve');
+});
+
+// Structural pin (PATTERN_SHAPE): both arms must read through the ONE shared
+// reader. A re-inlined literal compare is exactly how this bypass existed.
+test('AP-EXT-ITER73-04: both write-destination arms read through the shared reader', () => {
+  const handler = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'),
+    'utf-8',
+  );
+  const basenameFn = handler.slice(
+    handler.indexOf('function matchProtectedStateBasename'),
+    handler.indexOf('function expandLeadingHome'),
+  );
+  assert.ok(basenameFn.length > 0, 'matchProtectedStateBasename body must be locatable');
+  assert.match(basenameFn, /execNamesIn\(spelling, PROTECTED_STATE_BASENAMES\)/);
+  // The bypass shape: comparing the destination word as a literal.
+  assert.doesNotMatch(basenameFn, /=== candidate/);
+
+  const rootFn = handler.slice(
+    handler.indexOf('function isInsideRuntimeRoot'),
+    handler.indexOf('/** Tool-input file_path match'),
+  );
+  assert.ok(rootFn.length > 0, 'isInsideRuntimeRoot body must be locatable');
+  assert.match(rootFn, /rootParts\.every\(\(rootPart, i\) => execNameIs\(parts\[i\], rootPart\)\)/);
+  // The two literal compares this collapsed — neither may come back.
+  assert.doesNotMatch(rootFn, /resolved === runtimeRoot/);
+  assert.doesNotMatch(rootFn, /\.startsWith\(runtimeRoot/);
+});

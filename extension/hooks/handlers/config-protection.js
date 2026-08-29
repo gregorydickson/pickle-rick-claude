@@ -106,15 +106,29 @@ function stripTmpSuffix(basename) {
  * `State.json.TMP.<pid>`. On a case-SENSITIVE filesystem this over-matches a
  * genuinely distinct `STATE.JSON`; that direction is fail-closed and the
  * `allow_state_writes_reason` override remains the escape hatch.
+ *
+ * The two spellings are read through the ONE shared `execNamesIn`, not compared
+ * as literals, because a write DESTINATION is a shell word and bash pathname-
+ * expands it: `echo x > <session>/stat?.json` really clobbers state.json
+ * (shim-verified, as do `stat[e].json` and `circuit_break*r.json`). Case-folding
+ * answers "spelled differently"; it cannot answer "expands to it", so the
+ * COMPARISON has to — the same expansion-is-not-quoting seam `execNameIs` was
+ * built for, and the same question `isProtectedShellPattern` asks of the config
+ * domain. Measured on the shipped handler pre-fix: 12 of 14 globbed write forms
+ * APPROVED for a worker across redirect, `>>`, `>|`, tee/cp/mv and `sed -i`
+ * while all three literal twins blocked. `execNamesIn` rather than a private
+ * matcher so the state domain cannot re-fork from the write-command seam, and
+ * its `*`-eliding bound is inherited deliberately (AP-EXT-ITER93-04) — the
+ * measured cost of widening it is blocked worker artifact writes.
  */
 function matchProtectedStateBasename(filePath) {
     if (!filePath)
         return null;
     const base = path.basename(filePath).toLowerCase();
-    const stripped = stripTmpSuffix(base);
-    for (const candidate of PROTECTED_STATE_BASENAMES) {
-        if (base === candidate || stripped === candidate)
-            return candidate;
+    for (const spelling of [base, stripTmpSuffix(base)]) {
+        const named = execNamesIn(spelling, PROTECTED_STATE_BASENAMES);
+        if (named.length > 0)
+            return named[0];
     }
     return null;
 }
@@ -147,15 +161,27 @@ function expandLeadingHome(filePath) {
  * `~/.claude/Pickle-Rick/**` are the SAME directory on a case-insensitive
  * filesystem, so a case-sensitive prefix compare let a worker Edit the deployed
  * runtime tree.
+ *
+ * Read per COMPONENT through the shared `execNameIs`, which is ONE check where
+ * there were two: `resolved === root` and `resolved.startsWith(root + sep)` are
+ * the same question asked of a different suffix, and both asked it of a LITERAL.
+ * A path component is a shell word bash expands like any other, so
+ * `~/.claude/pickle-ric?/extension/bin/setup.js` and `~/.clau?e/...` really
+ * write the deployed runtime while the string compare saw an unequal prefix —
+ * measured on the shipped handler, both APPROVED for a worker while the literal
+ * twin blocked. Comparing components (not a regex over the whole path) keeps the
+ * `/` boundary that makes `.claudeX` a different directory, and inherits
+ * `execNameIs`'s all-wildcard bound, so a pure-wildcard component names nothing
+ * (AP-EXT-ITER93-04's residual family, not a new one).
  */
 function isInsideRuntimeRoot(filePath) {
     if (!filePath)
         return false;
-    const runtimeRoot = getProtectedRuntimeRoot().toLowerCase();
-    const resolved = path.resolve(expandLeadingHome(filePath)).toLowerCase();
-    if (resolved === runtimeRoot)
-        return true;
-    return resolved.startsWith(runtimeRoot + path.sep);
+    const rootParts = getProtectedRuntimeRoot().toLowerCase().split(path.sep);
+    const parts = path.resolve(expandLeadingHome(filePath)).toLowerCase().split(path.sep);
+    if (parts.length < rootParts.length)
+        return false;
+    return rootParts.every((rootPart, i) => execNameIs(parts[i], rootPart));
 }
 /** Tool-input file_path match → returns reason string or null. */
 function detectProtectedWriteTarget(filePath) {
