@@ -30,6 +30,7 @@ import {
   shouldHaltAfterPhase,
   main,
 } from '../bin/pipeline-runner.js';
+import { extractScore, mapBaselineMeasureExitReason } from '../bin/microverse-runner.js';
 import { MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS } from '../types/index.js';
 
 const TMP_DIRS = new Set();
@@ -367,6 +368,59 @@ describe('AC-2ecd5464: judge_cli_missing / baseline_unmeasurable_unrecoverable p
       assert.equal(outcome.phaseIncomplete, undefined);
     });
   }
+});
+
+/**
+ * C2 (R-JUNS) regression pin — B-ONEABORT ticket 2ecd5464 absorbed R-JUNS (see this PRD's frontmatter
+ * `supersedes_findings: [R-JUNS]`), but no single in-scope test previously composed the chain starting
+ * from the literal 2026-08-06 symptom (a prose-only judge answer with no parseable number) through to
+ * the final non-abort disposition — the AC-2ecd5464 block above starts mid-stream at the `exit_reason`
+ * string. This closes that gap: it drives `extractScore` on a realistic non-numeric judge answer,
+ * confirms it maps through `mapBaselineMeasureExitReason` to `baseline_unmeasurable_unrecoverable`
+ * (never the crash floor), and feeds that derived reason into the same classifier + phase-loop
+ * assertions as AC-2ecd5464, so the composition is genuine rather than a hand-typed restatement.
+ */
+describe('R-JUNS (C2): an unparseable judge answer never aborts the pipeline', () => {
+  test('extractScore(prose-only judge answer) is null — the literal 2026-08-06 symptom', () => {
+    assert.equal(
+      extractScore('The changes look solid overall, no violations to report.'),
+      null,
+      'a prose-only judge answer must not fabricate a numeric score',
+    );
+  });
+
+  test('the null score maps to baseline_unmeasurable_unrecoverable, never the crash floor', () => {
+    const derivedReason = mapBaselineMeasureExitReason('failed');
+    assert.equal(derivedReason, 'baseline_unmeasurable_unrecoverable');
+    assert.ok(
+      !MICROVERSE_FATAL_REASONS.includes(derivedReason),
+      'AC-M7: baseline_unmeasurable_unrecoverable must not re-enter MICROVERSE_FATAL_REASONS',
+    );
+    assert.deepEqual(
+      [...MICROVERSE_FATAL_REASONS],
+      ['session_state_corrupted'],
+      'AC-M7: MICROVERSE_FATAL_REASONS must stay exactly one member',
+    );
+  });
+
+  test('the derived reason parks the phase (finalize-gate-incomplete) and the pipeline continues', async () => {
+    const derivedReason = mapBaselineMeasureExitReason('failed');
+
+    const decision = classifyMicroverseHaltDecision(derivedReason);
+    assert.equal(decision.action, 'run-finalize-gate-incomplete', 'a parse failure must park, never abort');
+    assert.equal(decision.recognizedExitReason, derivedReason);
+
+    const { repo, startCommit } = makeRepo();
+    const runtime = makeRuntime({ repo, startCommit, exitReason: derivedReason });
+    const counters = freshCounters();
+    stubGateExit(0);
+
+    const outcome = await runAllBackendsExhaustedFinalizeGate(runtime, counters, 'szechuan-sauce', () => {});
+
+    assert.equal(outcome.action, 'continue', 'an unparseable judge answer must let the pipeline continue');
+    assert.equal(counters.phaseDispositions['szechuan-sauce'], derivedReason);
+    assert.equal(counters.nonConvergent, 1, 'success must be withheld, not silently claimed');
+  });
 });
 
 /**
