@@ -9593,32 +9593,31 @@ function emitArtifactProgressZero(
   log?.(`[observe] worker_artifact_progress_zero: ticket ${ticketId} produced no new review/conformance artifacts for ${k} consecutive spawns`);
 }
 
-/** R-HNCG: newest lifecycle artifact prefix present in a ticket dir, or null. */
-function detectAutoHandoffPhase(ticketDir: string): string | null {
+/** R-HNCG: newest dir entry matching `re` by mtime, or null (best-effort). */
+function findNewestMatchingFile(dir: string, re: RegExp): string | null {
   let newest: { name: string; mtimeMs: number } | null = null;
   try {
-    for (const e of fs.readdirSync(ticketDir)) {
-      if (!e.endsWith('.md') || !/^(research|plan|conformance|code_review)/.test(e)) continue;
-      const st = fs.statSync(path.join(ticketDir, e));
+    for (const e of fs.readdirSync(dir)) {
+      if (!re.test(e)) continue;
+      const st = fs.statSync(path.join(dir, e));
       if (!newest || st.mtimeMs > newest.mtimeMs) newest = { name: e, mtimeMs: st.mtimeMs };
     }
-  } catch { /* dir missing/unreadable — no phase evidence */ }
-  return newest ? (newest.name.match(/^(research|plan|conformance|code_review)/)?.[0] ?? null) : null;
+  } catch { /* dir missing/unreadable — no evidence */ }
+  return newest ? newest.name : null;
+}
+
+/** R-HNCG: newest lifecycle artifact prefix present in a ticket dir, or null. */
+function detectAutoHandoffPhase(ticketDir: string): string | null {
+  const name = findNewestMatchingFile(ticketDir, /^(research|plan|conformance|code_review).*\.md$/);
+  return name ? (name.match(/^(research|plan|conformance|code_review)/)?.[0] ?? null) : null;
 }
 
 /** R-HNCG: newest `worker_session_<pid>.log` in a ticket dir, by mtime. */
 function detectAutoHandoffSessionLog(ticketDir: string): { pid: number | null; logPath: string | null } {
-  let newest: { file: string; mtimeMs: number } | null = null;
-  try {
-    for (const e of fs.readdirSync(ticketDir)) {
-      if (!/^worker_session_\d+\.log$/.test(e)) continue;
-      const st = fs.statSync(path.join(ticketDir, e));
-      if (!newest || st.mtimeMs > newest.mtimeMs) newest = { file: e, mtimeMs: st.mtimeMs };
-    }
-  } catch { /* dir missing/unreadable — no log evidence */ }
-  if (!newest) return { pid: null, logPath: null };
-  const pidMatch = newest.file.match(/^worker_session_(\d+)\.log$/);
-  return { pid: pidMatch ? Number(pidMatch[1]) : null, logPath: path.join(ticketDir, newest.file) };
+  const name = findNewestMatchingFile(ticketDir, /^worker_session_\d+\.log$/);
+  if (!name) return { pid: null, logPath: null };
+  const pidMatch = name.match(/^worker_session_(\d+)\.log$/);
+  return { pid: pidMatch ? Number(pidMatch[1]) : null, logPath: path.join(ticketDir, name) };
 }
 
 /** R-HNCG: last `n` lines of a worker session log, or `[]` if unreadable/absent. */
