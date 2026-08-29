@@ -1262,6 +1262,120 @@ test('AP-EXT-ITER55-02 control: a verbose verify that genuinely FAILS is still n
   rmSync(sessionDir, { recursive: true, force: true });
 });
 
+// --- AP-EXT-ITER9-02: a wrapped `**Verify:**` code span is ONE command, not two -----------
+//
+// `PLAN_PHASE_VERIFY_RE` captures `([^`]+)`, which spans newlines, and the sole consumer is
+// `spawnSync(phase.verify, { shell: true })` — where a newline is a command SEPARATOR, not
+// whitespace. Authors routinely wrap a long test invocation inside one backtick span, and
+// CommonMark reads that as a single command (code-span line endings become spaces). Left raw,
+// the shell instead ran `node --test` with NO file operand — which discovers and runs the whole
+// tree, then burns the full 600s verify budget to SIGTERM — followed by a bare `.test.js` path.
+// The phase read not-ok over GREEN work and the ladder escalated toward `recovery_exhausted`.
+//
+// Measured on the 168 live `plan_*.md` artifacts on this box: 2 of the 57 phases carrying a
+// verify command wrap mid-span, and BOTH are correctly-authored commands that pass when joined.
+// Replayed at the shipped call shape, the raw form returns `status=null`/`SIGTERM` (timeout)
+// while the joined form exits 0 in 1.0s.
+
+/** A plan whose single phase's verify span wraps across source lines, as authors write it. */
+function writeWrappedVerifyPlan(ticketDir, firstLine, secondLine) {
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-08-23.md'),
+    `# plan\n\n## Phase 1 — wrapped verify\n\n**Verify:** \`${firstLine}\n${secondLine}\` → \`fail 0\`.\n`,
+  );
+}
+
+/** Exits 0 only when it actually RECEIVED `expectedArg` — i.e. only if the span was joined. */
+function writeOperandAssertingVerify(dir, expectedArg) {
+  const scriptPath = path.join(dir, 'assert-operand.mjs');
+  writeFileSync(
+    scriptPath,
+    `process.exit(process.argv[2] === ${JSON.stringify(expectedArg)} ? 0 : 3);\n`,
+  );
+  return scriptPath;
+}
+
+test('AP-EXT-ITER9-02: a verify span wrapped across lines runs as ONE command and the phase commits', () => {
+  const { repo, baseSha } = makeRepo('ap-iter9a-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter9a-session-');
+  const ticketId = 'c7d8e9fc';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+
+  // Mirrors the live shape exactly: interpreter + flags on line 1, the file operand on line 2.
+  // The operand is a plain (non-executable) file, so when the shell splits the span the second
+  // "command" also fails — the same double failure the real defect produced.
+  const operandPath = path.join(sessionDir, 'operand.txt');
+  writeFileSync(operandPath, 'not an executable\n');
+  const scriptPath = writeOperandAssertingVerify(sessionDir, operandPath);
+  writeWrappedVerifyPlan(ticketDir, `node ${JSON.stringify(scriptPath)}`, JSON.stringify(operandPath));
+  writeFileSync(path.join(repo, 'src.ts'), 'export const y = 4;\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  // The whole defect in one pair: the operand must reach the interpreter (exit 0), and the
+  // phase's work must land. Pre-fix the shell ran two commands, the last one exited 126, the
+  // loop stopped at phase 1, and this commit never happened.
+  assert.equal(out.ok, true, 'a wrapped verify span whose joined command exits 0 must not read as a failed phase');
+  assert.notEqual(git(repo, ['rev-parse', 'HEAD']), baseSha, 'the phase commit must have landed');
+  assert.match(git(repo, ['log', '-1', '--format=%s']), /execute-converged-plan phase 1/);
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER9-02 control: a wrapped verify whose joined command FAILS is still not-ok and commits nothing', () => {
+  const { repo, baseSha } = makeRepo('ap-iter9a-fail-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter9a-fail-session-');
+  const ticketId = 'c7d8e9fd';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+
+  // Same wrapped shape, but the operand is the WRONG one, so the joined command exits 3.
+  // Without this control the normalisation could turn a genuine phase failure green by
+  // joining a span into something that happens to succeed, and nothing would notice.
+  const operandPath = path.join(sessionDir, 'operand.txt');
+  writeFileSync(operandPath, 'not an executable\n');
+  const scriptPath = writeOperandAssertingVerify(sessionDir, operandPath);
+  writeWrappedVerifyPlan(ticketDir, `node ${JSON.stringify(scriptPath)}`, JSON.stringify(`${operandPath}.other`));
+  writeFileSync(path.join(repo, 'src.ts'), 'export const y = 5;\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  assert.equal(out.ok, false, 'a wrapped verify whose joined command exits non-zero is a real phase failure');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']), baseSha, 'a failed phase commits nothing');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER9-02: only LINE ENDINGS are normalised — a quoted argument keeps its spacing', () => {
+  const { repo, baseSha } = makeRepo('ap-iter9a-ws-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter9a-ws-session-');
+  const ticketId = 'c7d8e9fe';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+
+  // The fix is newline-only, NOT a whitespace squash: a `\s+`-collapse would rewrite the inside
+  // of a quoted argument and silently change what the operator asked to run. 55 of the 57 live
+  // verify captures are byte-identical across the fix; this pins that direction behaviourally —
+  // the script exits 0 only if the two-space argument arrived intact.
+  const scriptPath = writeOperandAssertingVerify(sessionDir, 'two  spaces');
+  writeWrappedVerifyPlan(ticketDir, `node ${JSON.stringify(scriptPath)}`, "'two  spaces'");
+  writeFileSync(path.join(repo, 'src.ts'), 'export const y = 6;\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  assert.equal(out.ok, true, 'a wrapped span must join on the newline WITHOUT collapsing intra-argument spacing');
+  assert.notEqual(git(repo, ['rev-parse', 'HEAD']), baseSha, 'the phase commit must have landed');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
 // --- AP-EXT-ITER2-01: a multi-phase converged plan is the DOMINANT shape ------------------
 //
 // `executeCleanTreeReExecution` spawns ONE implement pass against the WHOLE plan, so the

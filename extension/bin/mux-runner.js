@@ -5959,6 +5959,16 @@ export function executeConvergedPlanAdapter(input) {
         executePhase: (phase) => {
             if (!phase.verify)
                 return { ok: false };
+            // AP-EXT-ITER9-02: a markdown code span is ONE command, and `shell: true` reads a
+            // newline as a command SEPARATOR. `PLAN_PHASE_VERIFY_RE` captures `([^`]+)`, which
+            // spans newlines, and authors routinely wrap a long test invocation inside one
+            // backtick span — CommonMark reads that as a single command (code-span line endings
+            // become spaces). Left raw the shell ran `node --test` with NO file operand, which
+            // discovers the whole tree and burns the full verify budget to SIGTERM, then a bare
+            // `.test.js` path: a GREEN phase read not-ok and the rung escalated the ladder toward
+            // `recovery_exhausted`. Newline-only, never a `\s+` squash — that would rewrite the
+            // inside of a quoted argument and change what the operator asked to run.
+            const verifyCommand = phase.verify.replace(/\r?\n/g, ' ').trim();
             // AP-EXT-ITER55-02, replay of the sibling gate above: `phase.verify` is an ARBITRARY
             // operator-authored command (routinely a whole test suite), captured with `encoding`
             // so these bytes ARE the verdict — `ok` is `r.status === 0` and nothing else. Past
@@ -5968,7 +5978,7 @@ export function executeConvergedPlanAdapter(input) {
             // converged-plan recovery rung reports partial failure over green work.
             // Reproduced live at this exact call shape: 1.5MB on stdout + `exit 0` returns
             // status=null/SIGTERM/ENOBUFS uncapped, and status=0 with the cap.
-            const r = spawnSync(phase.verify, {
+            const r = spawnSync(verifyCommand, {
                 cwd: input.workingDir,
                 shell: true,
                 encoding: 'utf-8',
