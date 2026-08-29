@@ -9,8 +9,11 @@ import { logActivity } from '../../services/activity-logger.js';
 import {
   execAnchorIndex,
   execName,
+  execNameIs,
   execTokenIndex,
   isShellWrapper,
+  SHELL_PATTERN_CHARS,
+  shellPatternToRegex,
   splitShellSegments,
   tokenizeShellCommand,
   tokenizeShellTokens,
@@ -40,7 +43,6 @@ const PROTECTED_PATTERNS = [
   /^vitest\.config\./i,
 ];
 
-const SHELL_PATTERN_CHARS = /[*?[\]{}]/;
 const PROTECTED_BASH_CANDIDATES = [
   '.eslintrc',
   '.eslintrc.js',
@@ -198,62 +200,6 @@ function detectProtectedWriteTarget(filePath: string): { matched: string; isSett
 function isProtectedFile(filePath: string): boolean {
   const base = path.basename(filePath);
   return PROTECTED_PATTERNS.some(p => p.test(base));
-}
-
-function shellPatternToRegex(pattern: string): RegExp {
-  let regex = '^';
-  for (let i = 0; i < pattern.length; i++) {
-    const char = pattern[i];
-    if (char === '*') {
-      regex += '.*';
-      continue;
-    }
-    if (char === '?') {
-      regex += '.';
-      continue;
-    }
-    if (char === '{') {
-      const end = pattern.indexOf('}', i + 1);
-      if (end !== -1) {
-        const variants = pattern
-          .slice(i + 1, end)
-          .split(',')
-          .map((variant) => variant.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-          .join('|');
-        regex += `(?:${variants})`;
-        i = end;
-        continue;
-      }
-    }
-    // A bracket expression matches EXACTLY ONE character, so a single-character
-    // wildcard answers the only question asked here ("could this glob name a
-    // protected config file?") without reproducing the class body at all.
-    // Reproducing it was the SOLE way this translator could emit an INVALID
-    // regex: every other arm escapes into provably-constructible output, but a
-    // copied class body carries whatever range the token happened to contain,
-    // and this repo's own log tags are full of descending ones — `[anatomy-park]`
-    // is `y-p`, `[mux-runner]` is `x-r`. `new RegExp` throws `Range out of
-    // order`, the SyntaxError unwinds out of `main()` into the entrypoint catch,
-    // and that catch calls `approve()` — the config gate fails OPEN over a
-    // command it never finished inspecting. Measured across 8925 real worker
-    // Bash commands from the live session logs, 6 (0.07%) crashed the shipped
-    // guard this way. The wildcard needs no escaping, is always constructible,
-    // and errs toward over-block — this module's established direction.
-    if (char === '[') {
-      const end = pattern.indexOf(']', i + 1);
-      if (end > i + 1) {
-        regex += '[^/]';
-        i = end;
-        continue;
-      }
-    }
-    regex += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-  regex += '$';
-  // Case-insensitive so a glob written in another case (`TSCONFIG*.json`) still
-  // matches the lowercase PROTECTED_BASH_CANDIDATES on a case-insensitive
-  // filesystem, matching PROTECTED_PATTERNS above.
-  return new RegExp(regex, 'i');
 }
 
 function isProtectedShellPattern(token: string): boolean {
@@ -659,7 +605,7 @@ function segmentInvokesInstallSh(segment: string): boolean {
   const trimmed = segment.trim();
   if (!trimmed) return false;
   const tokens = tokenizeShellCommand(trimmed);
-  const isDeployScript = (token: string | undefined): boolean => execName(token) === 'install.sh';
+  const isDeployScript = (token: string | undefined): boolean => execNameIs(token, 'install.sh');
   if (isDeployScript(tokens[execTokenIndex(tokens)])) return true;
   const wrapper = tokens.findIndex((token) => isShellWrapper(token));
   return wrapper >= 0 && tokens.slice(wrapper + 1).some(isDeployScript);

@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { execAnchorIndex, execName, isShellWrapper, splitShellSegments, tokenizeShellTokens } from '../../hooks/shell-exec.js';
+import { execAnchorIndex, execName, execNameIs, isShellWrapper, splitShellSegments, tokenizeShellTokens } from '../../hooks/shell-exec.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HANDLER = path.resolve(__dirname, '../../hooks/handlers/config-protection.js');
@@ -3712,4 +3712,120 @@ test('AP-EXT-ITER72-01: the escape is declared in the word grammar, with no comm
   assert.match(body, /part\[1\] === '\\n' \? '' : part\[1\]/);
   // List-free: no table of escaped command names anywhere in the module.
   assert.doesNotMatch(source, /'\\\\(git|bash|sh|tee|cp|mv|sed|node)'/);
+});
+
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER73-01: bash EXPANDS the command word, so a glob names the command
+//
+// Pathname expansion applies to the command word like any other word, so
+// `/usr/bin/gi?` really execs git and `bash instal?.sh` really runs the deploy
+// script (shim-verified on this box: `/usr/bin/gi? --version` prints the git
+// version). `execName` folds those to `gi?` / `instal?.sh` — expansion is not
+// quoting, so the fold cannot undo it — and every `=== name` compare missed:
+// all nine gated verbs, both `bash -c` and bare, APPROVED for a worker while
+// their literal twins blocked (measured against the shipped handler).
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER73-01: a globbed git exec token blocks every gated verb', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    '/usr/bin/gi? reset --hard',
+    '/usr/bin/gi* reset --hard HEAD~1',
+    '/usr/bin/gi[t] reset --hard',
+    '/usr/bin/g?t push origin main',
+    '/usr/bin/gi? pull',
+    '/usr/bin/gi? stash',
+    '/usr/bin/gi? rebase -i HEAD~2',
+    '/usr/bin/gi? switch main',
+    '/usr/bin/gi? checkout main',
+    '/usr/bin/gi? commit --amend',
+    '/usr/bin/gi? fetch --prune',
+    // The glob survives every carrier the module already unwraps.
+    'cd sub && /usr/bin/gi? reset --hard',
+    'bash -c "/usr/bin/gi? reset --hard"',
+    '(/usr/bin/gi? reset --hard)',
+    'env /usr/bin/gi? reset --hard',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+  }
+});
+
+test('AP-EXT-ITER73-01: a globbed install.sh invocation is still the deploy script', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of ['bash instal?.sh', 'bash install.s?', 'sh instal*.sh']) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+  }
+});
+
+// Non-tautology controls: the pattern read must not turn every glob-bearing
+// command into a block. Measured on 8778 real worker Bash commands from the
+// live session logs, these are the shapes that dominate the corpus.
+test('AP-EXT-ITER73-01: ordinary argument globs still approve', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    'ls *.ts',
+    'rm -rf dist/*',
+    'grep -rn "reset" src/**/*.ts',
+    'git status',
+    'git log --oneline -5',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', command);
+  }
+});
+
+// The predicate itself, so a detector-level regression cannot be mistaken for a
+// compare-level one — and so the wildcard bound stays measurable.
+test('AP-EXT-ITER73-01: execNameIs reads a pattern, and an all-wildcard word names nothing', () => {
+  // Literal identity is unchanged.
+  assert.equal(execNameIs('git', 'git'), true);
+  assert.equal(execNameIs('/usr/bin/GIT;', 'git'), true);
+  assert.equal(execNameIs('node', 'git'), false);
+  assert.equal(execNameIs(undefined, 'git'), false);
+  // A pattern that CAN expand to the name counts as the name.
+  assert.equal(execNameIs('/usr/bin/gi?', 'git'), true);
+  assert.equal(execNameIs('gi*', 'git'), true);
+  assert.equal(execNameIs('gi[t]', 'git'), true);
+  assert.equal(execNameIs('instal?.sh', 'install.sh'), true);
+  // A pattern that cannot does not.
+  assert.equal(execNameIs('gi?', 'node'), false);
+  assert.equal(execNameIs('*.ts', 'git'), false);
+  // An all-wildcard word matches every name equally, so it names none. This is
+  // the bound that keeps the read from anchoring on the `*` inside a heredoc
+  // body: without it the config guard's block count over the 3815 glob-bearing
+  // live commands rose from 94 to 217, 519 of the anchors being a bare `*`.
+  for (const wildcard of ['*', '**', '/**', '?', '???', '[A-Za-z_$][w$]*', '[sS]*?']) {
+    for (const name of ['git', 'node', 'install.sh']) {
+      assert.equal(execNameIs(wildcard, name), false, `${wildcard} vs ${name}`);
+    }
+  }
+});
+
+// ONE translator for both readers. `isProtectedShellPattern` (config-protection)
+// and the exec seam ask the same question of a word — "could this glob name X?" —
+// and a private second copy is the drift shape this module has collapsed
+// repeatedly. The bracket arm's fixed `[^/]` is load-bearing: a copied class body
+// can throw `Range out of order`, and that SyntaxError reaches the entrypoint
+// catch, which approves (AP-EXT-ITER5-01).
+test('AP-EXT-ITER73-01: one glob translator, and its bracket arm stays constructible', () => {
+  const shellExec = fs.readFileSync(path.resolve(__dirname, '../../src/hooks/shell-exec.ts'), 'utf-8');
+  const handler = fs.readFileSync(path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'), 'utf-8');
+  assert.match(shellExec, /export function shellPatternToRegex\(/);
+  assert.doesNotMatch(handler, /function shellPatternToRegex\(/);
+  assert.match(handler, /shellPatternToRegex,/);
+  // A descending range inside a bracket expression must not reach `new RegExp`.
+  assert.doesNotThrow(() => execNameIs('[anatomy-park]git', 'git'));
+  assert.doesNotThrow(() => execNameIs('gi[x-a]', 'git'));
 });

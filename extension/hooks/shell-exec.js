@@ -329,6 +329,119 @@ export function execTokenIndex(tokens) {
     return skipEnvAssignments(tokens, afterWrapper);
 }
 /**
+ * The characters bash reads as PATHNAME-EXPANSION syntax in an unquoted word.
+ */
+export const SHELL_PATTERN_CHARS = /[*?[\]{}]/;
+export function shellPatternToRegex(pattern) {
+    let regex = '^';
+    for (let i = 0; i < pattern.length; i++) {
+        const char = pattern[i];
+        if (char === '*') {
+            regex += '.*';
+            continue;
+        }
+        if (char === '?') {
+            regex += '.';
+            continue;
+        }
+        if (char === '{') {
+            const end = pattern.indexOf('}', i + 1);
+            if (end !== -1) {
+                const variants = pattern
+                    .slice(i + 1, end)
+                    .split(',')
+                    .map((variant) => variant.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+                    .join('|');
+                regex += `(?:${variants})`;
+                i = end;
+                continue;
+            }
+        }
+        // A bracket expression matches EXACTLY ONE character, so a single-character
+        // wildcard answers the only question asked here ("could this glob name a
+        // protected config file?") without reproducing the class body at all.
+        // Reproducing it was the SOLE way this translator could emit an INVALID
+        // regex: every other arm escapes into provably-constructible output, but a
+        // copied class body carries whatever range the token happened to contain,
+        // and this repo's own log tags are full of descending ones — `[anatomy-park]`
+        // is `y-p`, `[mux-runner]` is `x-r`. `new RegExp` throws `Range out of
+        // order`, the SyntaxError unwinds out of `main()` into the entrypoint catch,
+        // and that catch calls `approve()` — the config gate fails OPEN over a
+        // command it never finished inspecting. Measured across 8925 real worker
+        // Bash commands from the live session logs, 6 (0.07%) crashed the shipped
+        // guard this way. The wildcard needs no escaping, is always constructible,
+        // and errs toward over-block — this module's established direction.
+        if (char === '[') {
+            const end = pattern.indexOf(']', i + 1);
+            if (end > i + 1) {
+                regex += '[^/]';
+                i = end;
+                continue;
+            }
+        }
+        regex += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    regex += '$';
+    // Case-insensitive so a glob written in another case (`TSCONFIG*.json`) still
+    // matches the lowercase PROTECTED_BASH_CANDIDATES on a case-insensitive
+    // filesystem, matching PROTECTED_PATTERNS above.
+    return new RegExp(regex, 'i');
+}
+/**
+ * A pattern that is nothing but wildcards names EVERY command equally well, so it
+ * names none: `*`, `**`, `???` and `[A-Za-z_$][w$]*` all match `git`, `node` and
+ * `install.sh` alike while saying nothing about which one the shell would exec.
+ * Requiring one character bash reads LITERALLY is what keeps the pattern read an
+ * identification rather than a wildcard that anchors on everything.
+ *
+ * Measured on 8778 real worker Bash commands from the live session logs: without
+ * this, the pattern read raised the config guard's block count on the
+ * glob-bearing 3815 from 94 to 217, and 519 of the anchoring tokens were the bare
+ * `*` inside a heredoc body. Over-block is this module's direction, but a guard
+ * that blocks a worker's `cat > file <<EOF` is a reliability cost paid in stalled
+ * runs, not a safety margin.
+ *
+ * A bracket expression contributes no literal: `shellPatternToRegex` emits the
+ * fixed `[^/]` for it (AP-EXT-ITER5-01 — a copied class body throws and the guard
+ * fails OPEN), so its body is not read as characters here either. RESIDUAL,
+ * recorded rather than claimed closed: an all-bracket spelling (`/usr/bin/[g][i][t]`)
+ * therefore reads as unnamed and approves.
+ */
+function patternNamesACommand(pattern) {
+    return /[^*?]/.test(pattern.replace(/\[[^\]]*\]/g, ''));
+}
+/**
+ * True when the shell word `token` names the command `name` — literally, or as a
+ * PATTERN bash expands to it.
+ *
+ * Expansion is not quoting, so the FOLD cannot answer this and the COMPARISON has
+ * to. Bash applies pathname expansion to the command word like any other word, so
+ * `/usr/bin/gi?` really execs git and `bash instal?.sh` really runs the deploy
+ * script (both shim-verified), while `execName` folds them to `gi?` / `instal?.sh`
+ * and every `=== name` compare missed. Reading the word as the pattern it IS needs
+ * no table of expandable spellings.
+ *
+ * ONE translator, not a private copy: `isProtectedShellPattern` already asks this
+ * exact question of a write DESTINATION ("could this glob name a protected
+ * file?"), which is why `shellPatternToRegex` moved here rather than being
+ * re-inlined beside the exec seam — the drift shape this module has collapsed
+ * repeatedly.
+ *
+ * Fail direction: a pattern that CAN expand to the name counts AS the name, so an
+ * argument glob that happens to match one over-blocks, never under-blocks — this
+ * module's established direction.
+ */
+export function execNameIs(token, name) {
+    const folded = execName(token);
+    if (folded === name)
+        return true;
+    if (!SHELL_PATTERN_CHARS.test(folded))
+        return false;
+    if (!patternNamesACommand(folded))
+        return false;
+    return shellPatternToRegex(folded).test(name);
+}
+/**
  * Index of the first token this segment may EXEC as `name`, or -1.
  *
  * The exec-token PRELUDE (`execTokenIndex`) answers "which token does the shell
@@ -385,7 +498,7 @@ export function execTokenIndex(tokens) {
  */
 export function execAnchorIndex(tokens, name) {
     for (let i = 0; i < tokens.length; i++) {
-        if (execName(tokens[i].value) === name)
+        if (execNameIs(tokens[i].value, name))
             return i;
     }
     return -1;
