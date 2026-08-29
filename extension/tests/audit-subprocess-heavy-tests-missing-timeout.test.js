@@ -285,3 +285,68 @@ test('AP-EXT-ITER92-01: a child_process call shape in COMMENT PROSE is a candida
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER21-01. The scanner is a TEXTUAL predicate: it accepts any argument list
+// containing `timeout:` and proves nothing about whether that option actually bounds the
+// child. The callsite this case was written for is `detached: true` + `.unref()` — the one
+// shape where the guard is plausibly inert, because the parent has deliberately stopped
+// letting the child hold the event loop open. If `timeout:` were decorative there, every
+// remediation the audit demands on a detached callsite would be a token that satisfies the
+// grep and leaks the process anyway, and the audit would be greening over its own premise.
+//
+// Pinned in BOTH directions against the real node runtime, so the property is "the option
+// bounds a detached unref'd child", not "the option is spelled": the guarded arm's child
+// must be dead once its parent returns, the unguarded control's child must survive it.
+// Both call shapes are assembled from split tokens and written to a tmp script, so THIS
+// file never itself reads as a candidate to the audit it is testing.
+test('AP-EXT-ITER21-01: `timeout:` really bounds a detached unref\'d child, it is not a token that only satisfies the grep', async () => {
+  const dir = tmpScanRoot();
+  const FN = 'spawn';
+  const pidIsAlive = (pid) => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+
+  // `opts` is the only difference between the two arms.
+  const scriptSource = (opts) => [
+    "import { " + FN + " } from 'node:child_process';",
+    'const child = ' + FN + "('sleep', ['30'], " + opts + ');',
+    'child.unref();',
+    'process.stdout.write(String(child.pid));',
+  ].join('\n');
+
+  const runArm = (opts) => {
+    const scriptPath = path.join(dir, `arm-${opts.includes('timeout') ? 'guarded' : 'control'}.mjs`);
+    fs.writeFileSync(scriptPath, scriptSource(opts));
+    // The guarded arm's own timer keeps its parent alive until the deadline fires, so
+    // spawnSync returning IS the "past the deadline" observation — no sleep needed here.
+    const run = spawnSync(process.execPath, [scriptPath], { encoding: 'utf-8', timeout: 30000 });
+    assert.equal(run.status, 0, `arm exited non-zero: ${run.stderr}`);
+    const pid = Number(run.stdout.trim());
+    assert.ok(Number.isInteger(pid) && pid > 0, `arm must report a real pid, got ${run.stdout}`);
+    return pid;
+  };
+
+  // Control FIRST: it establishes that `sleep 30` genuinely outlives an unref'd parent,
+  // so the guarded arm's dead child cannot be explained by the child dying on its own.
+  const controlPid = runArm("{ detached: true, stdio: 'ignore' }");
+  try {
+    assert.ok(
+      pidIsAlive(controlPid),
+      'without `timeout:` a detached unref\'d child survives its parent — if this fails the guarded assertion below proves nothing',
+    );
+  } finally {
+    try { process.kill(controlPid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+
+  const guardedPid = runArm("{ detached: true, stdio: 'ignore', timeout: 800 }");
+  try {
+    assert.equal(
+      pidIsAlive(guardedPid),
+      false,
+      '`timeout:` did NOT bound a detached unref\'d child — the audit\'s prescribed remediation is decorative on exactly the shape it was applied to',
+    );
+  } finally {
+    try { process.kill(guardedPid, 'SIGKILL'); } catch { /* already gone */ }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

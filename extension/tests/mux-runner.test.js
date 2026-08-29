@@ -5059,7 +5059,10 @@ test('AP-EXT-ITER50-01: a real stranger process named by the pidfile survives th
     const { sessionDir, statePath } = makePidfileOwnershipFixture();
     // A genuine unrelated process — its argv references nothing about this session,
     // exactly like a pid the kernel recycled after the manager died.
-    const stranger = spawn('sleep', ['120'], { detached: true, stdio: 'ignore' });
+    // `timeout:` is the CLAUDE.md:148 hang-guard, not decoration: the child is
+    // detached and unref'd, so if this test dies between here and the finally the
+    // orphan would otherwise outlive the run. Verified to bound a detached child.
+    const stranger = spawn('sleep', ['120'], { detached: true, stdio: 'ignore', timeout: 30000 });
     stranger.unref();
     await new Promise(resolve => setTimeout(resolve, 300));
     const strangerPid = stranger.pid;
