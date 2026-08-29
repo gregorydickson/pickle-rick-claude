@@ -5,7 +5,7 @@ import { resolveStateFile, loadActiveState, approve } from '../resolve-state.js'
 import { getExtensionRoot, getDataRoot } from '../../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../../services/microverse-state.js';
 import { logActivity } from '../../services/activity-logger.js';
-import { execAnchorIndex, execName, execNameIs, execTokenIndex, isShellWrapper, SHELL_PATTERN_CHARS, shellPatternToRegex, splitShellSegments, tokenizeShellCommand, tokenizeShellTokens, } from '../shell-exec.js';
+import { execAnchorIndex, execNameIs, execNamesIn, execTokenIndex, isShellWrapper, SHELL_PATTERN_CHARS, shellPatternToRegex, splitShellSegments, tokenizeShellCommand, tokenizeShellTokens, } from '../shell-exec.js';
 // `/i` on every pattern for the same case-insensitive-filesystem reason as
 // `matchProtectedStateBasename`, and for parity with the sibling config regexes
 // in `tsc-gate.ts`, which already carry `/i`.
@@ -241,8 +241,15 @@ function findBashWriteTarget(command, probe) {
  *   - a COMMAND is a WORD, and quoting a word changes NOTHING about execing it:
  *     `'tee' state.json` and `"sed" -i '' s/a/b/ state.json` run tee and sed
  *     (shim-verified). Pass 2 therefore has NO quoting arm at all: every token is
- *     tested with the one uniform `WRITE_COMMANDS.has(execName(value))`, wherever
- *     it sits and however it is quoted.
+ *     tested with the one uniform `execNamesIn` read over `WRITE_COMMANDS`,
+ *     wherever it sits and however it is quoted.
+ *
+ * Quoting is not the only thing bash does to a word, and the fold cannot answer
+ * for EXPANSION: `/usr/bin/t?e`, `/bin/c?` and `/usr/bin/s?d -i` really exec
+ * tee/cp/sed (shim-verified), so a compare that reads the fold as a literal name
+ * misses them. `execNamesIn` reads a pattern-bearing word as the pattern it is,
+ * through the ONE shared translator, under the tighter bound a TWELVE-member set
+ * read needs — see its docblock (AP-EXT-ITER73-01/-02).
  *
  * Pass 2 asks the ANSWERABLE question — does this scope contain a token the shell
  * may exec as a write command — exactly as `execAnchorIndex` does for `git`
@@ -282,13 +289,17 @@ function findWriteTargetInScope(command, probe) {
     // Pass 2: write/editor commands that mutate a positional FILE arg
     // (`tee`/`cp`/`mv`/`rsync` destinations, `sed -i FILE`, `vim FILE`, ...).
     for (let i = 0; i < tokens.length; i++) {
-        // execName (not path.basename): folds case and strips a trailing `;`, so
-        // `SED -i`, `/usr/bin/sed -i`, and `TEE` all match the lowercase set.
-        const name = execName(tokens[i].value);
-        if (!WRITE_COMMANDS.has(name))
+        // execNamesIn (not a `.has` read of the fold): it carries the whole
+        // `execName` normalization — case, a trailing `;`, an absolute path, a
+        // backslash escape — AND reads a pattern-bearing word as the PATTERN bash
+        // will expand (AP-EXT-ITER73-02). A word may name several members at once
+        // (`?e?` names both `tee` and `sed`), so the anchor writes when ANY member
+        // it names does; no arbitrary pick, and the ambiguity resolves fail-closed.
+        const names = execNamesIn(tokens[i].value, WRITE_COMMANDS);
+        if (names.length === 0)
             continue;
         const argsInScope = tokens.slice(i + 1).map((token) => token.value);
-        if (!anchorWritesPositionalArg(name, argsInScope))
+        if (!names.some((name) => anchorWritesPositionalArg(name, argsInScope)))
             continue;
         for (const arg of argsInScope) {
             if (arg.startsWith('-'))
@@ -362,14 +373,20 @@ function normalizeRedirectOperators(command) {
  * Read-only commands (`grep`/`ls`/`stat`/`cat`/`awk`) are deliberately absent, so
  * they fall through to approve.
  *
- * EVERY probe over EVERY protected domain walks this one set — a per-caller
+ * EVERY probe over EVERY protected domain walks this one class — a per-caller
  * command class is what let `sed -i state.json` through while `sed -i
  * tsconfig.json` blocked, i.e. the security gate ran narrower than the lint gate.
+ *
+ * A LIST, not a Set: the only question asked of it is "which members does this
+ * shell word NAME?", which `execNamesIn` answers because bash expands
+ * the command word. `.has` answered a different, weaker question — "is the fold
+ * spelled exactly like a member" — and a Set exists to make exactly that read
+ * fast, so keeping one would preserve the seam the bypass came through.
  */
-const WRITE_COMMANDS = new Set([
+const WRITE_COMMANDS = [
     'tee', 'cp', 'mv', 'rsync',
     'sed', 'perl', 'vim', 'vi', 'nano', 'emacs', 'ed', 'ex',
-]);
+];
 /**
  * `WRITE_COMMANDS` members whose FILE argument is a write target only in
  * in-place mode. Membership requires a TOTAL implication: "no in-place flag" =>

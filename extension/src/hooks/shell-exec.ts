@@ -463,6 +463,41 @@ export function execNameIs(token: string | undefined, name: string): boolean {
 }
 
 /**
+ * Every member of `names` the shell word `token` may exec as.
+ *
+ * A SET read, not a loop of `execNameIs` — because asking twelve short names at
+ * once is a different question from asking one, and it needs one bound more.
+ * `*` is the only construct that absorbs an arbitrary RUN of characters, so a
+ * word carrying one names a short member by accident far more often than by
+ * intent: measured over 10122 real worker Bash commands, `**No` / `*no` /
+ * `s**` / `v*` — markdown emphasis inside a `cat > file <<EOF` artifact body —
+ * name `nano`, `sed` and `vi`, and 21 worker artifact writes flipped from
+ * approve to BLOCK. A blocked artifact write stalls a ticket, which is the
+ * reliability cost `patternNamesACommand` already refuses to pay for the bare
+ * `*` inside a heredoc.
+ *
+ * So a pattern is read here only when every wildcard consumes exactly ONE
+ * position (`?`, a bracket expression, a brace alternation) — the word still
+ * SPELLS the member, obfuscated, which is what a bypass is, rather than merely
+ * matching it. That keeps all ten measured bypasses blocked (`/usr/bin/t?e`,
+ * `/bin/c?`, `/bin/m?`, `/usr/bin/s?d -i`, `te?`, `vi?`, `per?`, `rsyn?`,
+ * `{t,q}ee`, `[t]ee`) and costs zero of the 21.
+ *
+ * The bound is NOT pushed down into `execNameIs`: that reads ONE name, where a
+ * `*` is affordable and load-bearing (`gi*` really does exec git), and widening
+ * this rule to there would under-block the git seam to buy nothing.
+ *
+ * RESIDUAL, recorded rather than claimed closed: an eliding spelling of a write
+ * command (`t*e`, `s*d`, `c*`) reads as unnamed here and approves.
+ */
+export function execNamesIn(token: string | undefined, names: readonly string[]): string[] {
+  const folded = execName(token);
+  const literal = names.filter((name) => folded === name);
+  if (literal.length > 0 || folded.includes('*')) return literal;
+  return names.filter((name) => execNameIs(token, name));
+}
+
+/**
  * Index of the first token this segment may EXEC as `name`, or -1.
  *
  * The exec-token PRELUDE (`execTokenIndex`) answers "which token does the shell
@@ -480,7 +515,7 @@ export function execNameIs(token: string | undefined, name: string): boolean {
  * table, exactly as `findGitVerb` needs no git-global-option table since it
  * stopped reading the verb POSITIONALLY (see `GATED_GIT_VERBS`).
  *
- * ONE uniform test — `execName(value) === name` — and deliberately NO quoting
+ * ONE uniform test — `execNameIs(value, name)` — and deliberately NO quoting
  * exception (AP-EXT-ITER64-01). The exception this had said a quoted word only
  * anchors AT `execTokenIndex`, which re-admitted the positional read this
  * function exists to retire: a command prefix stands at that index, so the real
@@ -496,9 +531,10 @@ export function execNameIs(token: string | undefined, name: string): boolean {
  *
  * `findWriteTargetInScope`'s Pass 2 over `WRITE_COMMANDS` had the identical
  * exception and AP-EXT-ITER64-02 applied the identical collapse to it
- * (2026-08-26): that pass, too, is now one uniform
- * `WRITE_COMMANDS.has(execName(value))` over every token, reading no exec index
- * and no quoting flag. Pass 1's `>`/`>>` REDIRECT anchor keeps its UNQUOTED test,
+ * (2026-08-26): that pass, too, is now one uniform read over every token,
+ * reading no exec index and no quoting flag — and AP-EXT-ITER73-02 then routed
+ * it through this same `execNameIs`, so both anchors ask bash's question rather
+ * than a spelling's. Pass 1's `>`/`>>` REDIRECT anchor keeps its UNQUOTED test,
  * because quoting really does turn a redirect operator back into data
  * (AP-EXT-ITER51-01). The two anchors are asymmetric; only the EXEC one is safe
  * to make quoting-blind, and collapsing both would re-open ITER51-01.

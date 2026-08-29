@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HANDLER = path.resolve(__dirname, '../hooks/handlers/config-protection.js');
@@ -1165,4 +1165,140 @@ test('AP-EXT-ITER47-01: read-only sed on a config file approves', () => {
 
 test('AP-EXT-ITER47-01: in-place sed on a config file still blocks', () => {
   assert.equal(runWorkerBash("sed -i '' 's/a/b/' tsconfig.json").decision, 'block');
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER73-02: bash EXPANDS the command word, so a globbed WRITE command
+// really writes. AP-EXT-ITER73-01 closed this at the git/install.sh seam by
+// routing every name compare through `execNameIs`, and recorded as residual (a)
+// that `findWriteTargetInScope`'s Pass 2 still read the fold literally via a set
+// membership test. It did: measured against the shipped handler, 10 of 10
+// globbed spellings of a `WRITE_COMMANDS` member over a protected state path
+// APPROVED for a worker while every literal twin BLOCKED — re-opening both
+// R-WSRC-3 write gates to one `?`. Shim-verified on this box that bash really
+// execs them: `/usr/bin/t?e` wrote its file, `/bin/c?` and `/bin/m?` copied and
+// moved, `/usr/bin/s?d -i` edited in place, `{t,q}ee` ran tee.
+//
+// The set read carries ONE bound the single-name read does not (`execNamesIn`):
+// a `*` absorbs an arbitrary RUN, and asking twelve SHORT names at once makes
+// that hit by accident. Measured over 10122 real worker Bash commands, an
+// unbounded set read flipped 21 worker artifact writes from approve to BLOCK —
+// markdown emphasis (`**No`, `*no`, `s**`, `v*`) inside a `cat > file <<EOF`
+// body naming `nano`/`sed`/`vi`. A blocked artifact write stalls a ticket.
+// With the bound: 10/10 bypasses blocked, 0 of the 21 paid.
+// ---------------------------------------------------------------------------
+
+// Each entry is [label, globbed build, literal twin build]. The twin is what
+// makes the block case non-tautological: it proves the form is one the gate
+// already had to catch, not a shape the test invented.
+const AP_EXT_ITER73_02_GLOBBED_WRITES = [
+  ['tee via /usr/bin/t?e', (t) => `echo x | /usr/bin/t?e ${t}`, (t) => `echo x | tee ${t}`],
+  ['tee via te?', (t) => `echo x | te? ${t}`, (t) => `echo x | tee ${t}`],
+  ['tee via brace {t,q}ee', (t) => `echo x | {t,q}ee ${t}`, (t) => `echo x | tee ${t}`],
+  ['tee via bracket [t]ee', (t) => `echo x | [t]ee ${t}`, (t) => `echo x | tee ${t}`],
+  ['sed -i via /usr/bin/s?d', (t) => `/usr/bin/s?d -i '' s/a/b/ ${t}`, (t) => `sed -i '' s/a/b/ ${t}`],
+  ['cp via /bin/c?', (t) => `/bin/c? /tmp/x ${t}`, (t) => `cp /tmp/x ${t}`],
+  ['mv via /bin/m?', (t) => `/bin/m? /tmp/x ${t}`, (t) => `mv /tmp/x ${t}`],
+  ['rsync via rsyn?', (t) => `rsyn? /tmp/x ${t}`, (t) => `rsync /tmp/x ${t}`],
+  ['vim via vi?', (t) => `vi? ${t}`, (t) => `vim ${t}`],
+  ['perl -i via per?', (t) => `per? -i -pe s/a/b/ ${t}`, (t) => `perl -i -pe s/a/b/ ${t}`],
+];
+
+for (const [label, globbed, literal] of AP_EXT_ITER73_02_GLOBBED_WRITES) {
+  test(`AP-EXT-ITER73-02: globbed write blocks — ${label}`, () => {
+    assert.equal(
+      runWorkerBashInSession(globbed).decision,
+      'block',
+      'bash expands the command word, so the glob really execs the write command',
+    );
+  });
+
+  test(`AP-EXT-ITER73-02: literal twin also blocks — ${label}`, () => {
+    assert.equal(
+      runWorkerBashInSession(literal).decision,
+      'block',
+      'non-tautology control: the literal spelling was already gated',
+    );
+  });
+}
+
+// The `?`/bracket/brace read must not reach a heredoc BODY. These are verbatim
+// shapes from the live corpus: a worker writing its own lifecycle artifact whose
+// markdown prose carries `**No`/`**no**` AND mentions `state.json`. Under an
+// unbounded set read every one of these BLOCKED, stalling the artifact write.
+for (const [label, command] of [
+  [
+    'markdown emphasis naming nano ahead of a state.json mention',
+    "cat > /tmp/ap-conf.md <<'EOF'\n## Verdict\n\n**No** regression — the worker never writes state.json ownership\nEOF",
+  ],
+  [
+    'lowercase emphasis inside an analysis artifact',
+    "cat > /tmp/ap-analysis.md <<'EOF'\n- ownership: **no** change to state.json required\nEOF",
+  ],
+  [
+    'a bare eliding glob ahead of a protected basename',
+    "cat > /tmp/ap-note.md <<'EOF'\nv* and s** are prose here, as is state.json downstream\nEOF",
+  ],
+]) {
+  test(`AP-EXT-ITER73-02: eliding-wildcard prose does not anchor — ${label}`, () => {
+    assert.equal(
+      runWorkerBash(command).decision,
+      'approve',
+      'a `*` absorbs an arbitrary run, so it names a short member by accident',
+    );
+  });
+}
+
+test('AP-EXT-ITER73-02: execNamesIn reads fixed-width patterns and rejects eliding ones', async () => {
+  const { execNamesIn } = await import(
+    pathToFileURL(path.resolve(__dirname, '../hooks/shell-exec.js')).href
+  );
+  const WRITE = ['tee', 'cp', 'mv', 'rsync', 'sed', 'perl', 'vim', 'vi', 'nano', 'emacs', 'ed', 'ex'];
+
+  // Literal identity is unchanged — this is what `.has(execName(...))` did.
+  assert.deepEqual(execNamesIn('tee', WRITE), ['tee']);
+  assert.deepEqual(execNamesIn('/usr/bin/SED;', WRITE), ['sed']);
+  assert.deepEqual(execNamesIn('grep', WRITE), []);
+  assert.deepEqual(execNamesIn(undefined, WRITE), []);
+
+  // A fixed-width pattern SPELLS the member, so it names it.
+  assert.deepEqual(execNamesIn('/usr/bin/t?e', WRITE), ['tee']);
+  assert.deepEqual(execNamesIn('/bin/c?', WRITE), ['cp']);
+  assert.deepEqual(execNamesIn('[t]ee', WRITE), ['tee']);
+  assert.deepEqual(execNamesIn('{t,q}ee', WRITE), ['tee']);
+
+  // One word may name several members at once; the caller resolves fail-closed.
+  assert.deepEqual(execNamesIn('?e?', WRITE).sort(), ['sed', 'tee']);
+
+  // An ELIDING wildcard names nothing here — the heredoc-body bound.
+  for (const eliding of ['**No', '*no', '**no**', 's**', 'v*', '*', '**']) {
+    assert.deepEqual(execNamesIn(eliding, WRITE), [], `${eliding} must name nothing`);
+  }
+
+  // The bound is scoped to the SET read: `execNameIs` still honors `*` for a
+  // single name, which is what keeps `gi*` execing git at the R-WSRC-GR seam.
+  const { execNameIs } = await import(
+    pathToFileURL(path.resolve(__dirname, '../hooks/shell-exec.js')).href
+  );
+  assert.equal(execNameIs('gi*', 'git'), true);
+
+  // An all-wildcard word names nothing even when fixed-width.
+  assert.deepEqual(execNamesIn('??', WRITE), []);
+});
+
+test('AP-EXT-ITER73-02: Pass 2 asks execNamesIn, never a literal set-membership read', () => {
+  const handler = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'),
+    'utf-8',
+  );
+  const body = handler.slice(
+    handler.indexOf('function findWriteTargetInScope'),
+    handler.indexOf('Write-aware config gate'),
+  );
+  assert.ok(body.length > 0, 'findWriteTargetInScope body must be locatable');
+  assert.match(body, /execNamesIn\(tokens\[i\]\.value, WRITE_COMMANDS\)/);
+  // The bypass shape: a `.has` read answers "is the fold spelled exactly like a
+  // member", which no expansion can satisfy. Keeping a Set would preserve it.
+  assert.doesNotMatch(body, /WRITE_COMMANDS\.has\(/);
+  assert.doesNotMatch(handler, /const WRITE_COMMANDS = new Set\(/);
 });
