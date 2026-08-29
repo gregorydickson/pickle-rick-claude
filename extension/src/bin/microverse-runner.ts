@@ -5,7 +5,7 @@ import * as path from 'path';
 import { execFileSync, execFile, spawn, spawnSync, type ChildProcess } from 'child_process';
 import { pathToFileURL } from 'node:url';
 import { State, Defaults, MicroverseExitReason, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
-import type { ActivityEventType, Backend, IterationExitType, MicroverseSessionState, MicroverseHistoryEntry, ViolationLedger, FailureClass, GateResult, GateFailure, GateBaselineFile, StallClassification, StallRecoveryAction, JudgeResult, Violation, PickleSettings } from '../types/index.js';
+import type { ActivityEventType, Backend, IterationExitType, MicroverseSessionState, MicroverseHistoryEntry, ViolationLedger, FailureClass, GateResult, GateFailure, GateBaselineFile, StallClassification, StallRecoveryAction, JudgeResult, Violation, PickleSettings, RateLimitPark, RateLimitAction } from '../types/index.js';
 import type { ErrorRecord } from '../types/index.js';
 import {
   resolveBackend,
@@ -53,6 +53,9 @@ import {
   collectTickets,
   getMicroverseSettings,
   resolveJudgeBackend,
+  loadPickleSettingsBag,
+  resolveRateLimitSettings,
+  DEFAULT_MAX_PARK_MINUTES,
 } from '../services/pickle-utils.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 
@@ -66,6 +69,8 @@ import {
   wouldResetOrphanCommit,
   resolveApncMaxPassesWithoutClean,
   classifyMuxIteration,
+  isParkExhausted,
+  foldParkIntoEpisode,
 } from './mux-runner.js';
 import { resolveCodexModel } from './spawn-morty.js';
 import { checkScopeDiff, isUnevaluableScopeStatus } from './check-scope-diff.js';
@@ -152,6 +157,8 @@ export interface RunContext {
   cgSettings: ReturnType<typeof loadConvergenceGateSettings>;
   rateLimitWaitMinutes: number;
   maxRateLimitRetries: number;
+  /** Cumulative rate-limit park ceiling (minutes), resolved from `pickle_settings.json:rate_limit.max_park_minutes` (R-MVPARK). Optional so pre-existing test-fixture RunContext literals outside this ticket's scope fence stay valid; production always sets it via buildRunContext. */
+  maxParkMinutes?: number;
   log: (msg: string) => void;
   currentRunnerState: State;
   iteration: number;
@@ -5099,7 +5106,36 @@ async function prepareIteration(state: MicroverseState, ctx: RunContext): Promis
   sm.update(ctx.statePath, s => { s.iteration = ctx.iteration; });
 }
 
-async function handleRateLimitExit(
+/** R-MVPARK: resolve the operator-configured cumulative-park ceiling, falling back to the compiled default. */
+function resolveMaxParkMinutes(ctx: RunContext): number {
+  return ctx.maxParkMinutes ?? DEFAULT_MAX_PARK_MINUTES;
+}
+
+/** R-MVPARK: read the EXISTING `state.rate_limit_park` accumulator (ticket e9bdac75, B5) — no second ledger. */
+function readPriorRateLimitPark(statePath: string): RateLimitPark | null {
+  return readRunnerState(statePath).rate_limit_park ?? null;
+}
+
+function parkCumulativeMs(priorPark: RateLimitPark | null): number {
+  return priorPark?.cumulative_parked_ms ?? 0;
+}
+
+/** R-MVPARK: the park-entry arm, mirroring mux-runner.ts's module-private `armRateLimitPark`. */
+function buildRateLimitParkArm(
+  priorPark: RateLimitPark | null,
+  action: RateLimitAction,
+  consecutiveWaits: number,
+  nowMs: number,
+): RateLimitPark {
+  return {
+    reset_at_epoch_sec: action.resetAtEpochSec ?? null,
+    parked_started_epoch_ms: priorPark?.parked_started_epoch_ms ?? nowMs,
+    cumulative_parked_ms: parkCumulativeMs(priorPark),
+    consecutive_waits: consecutiveWaits,
+  };
+}
+
+export async function handleRateLimitExit(
   state: MicroverseState,
   ctx: RunContext,
   exitResult: ClassifiedIterationExit,
@@ -5107,9 +5143,20 @@ async function handleRateLimitExit(
   if (exitResult.type !== 'api_limit') return null;
   ctx.consecutiveRateLimits++;
   ctx.log(`API rate limit detected (consecutive: ${ctx.consecutiveRateLimits}/${ctx.maxRateLimitRetries})`);
-  const action = computeRateLimitAction(exitResult, ctx.consecutiveRateLimits, ctx.maxRateLimitRetries, ctx.rateLimitWaitMinutes);
+  const maxParkMinutes = resolveMaxParkMinutes(ctx);
+  const action = computeRateLimitAction(exitResult, ctx.consecutiveRateLimits, ctx.maxRateLimitRetries, ctx.rateLimitWaitMinutes, maxParkMinutes);
   if (action.action === 'bail') {
     logActivity({ event: 'rate_limit_exhausted', source: 'pickle', session: path.basename(ctx.sessionDir), error: `max retries exceeded` });
+    return 'rate_limit_exhausted';
+  }
+  // R-MVPARK: route the park through the EXISTING state.rate_limit_park cumulative
+  // accumulator (ticket e9bdac75, B5) — an episode with many consecutive resets_at-bearing
+  // waits must not park indefinitely. Mirrors mux-runner.ts's armRateLimitPark /
+  // foldRateLimitParkOnWake (module-private there); no second ledger is created.
+  const priorPark = readPriorRateLimitPark(ctx.statePath);
+  if (isParkExhausted(parkCumulativeMs(priorPark) + action.waitMs, maxParkMinutes)) {
+    logActivity({ event: 'rate_limit_park_exhausted', source: 'pickle', session: path.basename(ctx.sessionDir) });
+    ctx.log(`Cumulative rate-limit park exceeded ${maxParkMinutes}min ceiling — giving up cleanly for recovery.`);
     return 'rate_limit_exhausted';
   }
   const remainingWait = remainingSessionSeconds(ctx.currentRunnerState);
@@ -5118,11 +5165,19 @@ async function handleRateLimitExit(
   ctx.resetRateLimitCounter = action.resetCounter;
   ctx.rateLimitExitReason = undefined;
   ctx.log(`Rate limit wait: ${Math.ceil(ctx.rateLimitWaitMs / 60_000)}min (source: ${action.waitSource})`);
+  const consecutiveAtParkStart = ctx.consecutiveRateLimits;
+  sm.update(ctx.statePath, s => {
+    s.rate_limit_park = buildRateLimitParkArm(priorPark, action, consecutiveAtParkStart, _deps.now());
+  });
+  const parkStartMs = _deps.now();
   await handleRateLimit(state, ctx, new AbortController().signal, {
     durationMin: Math.ceil(action.waitMs / 60_000),
     rateLimitType: exitResult.rateLimitInfo?.rateLimitType ?? null,
     resetsAt: exitResult.rateLimitInfo?.resetsAt ?? null,
     waitSource: action.waitSource,
+  });
+  sm.update(ctx.statePath, s => {
+    s.rate_limit_park = foldParkIntoEpisode(priorPark, _deps.now() - parkStartMs, consecutiveAtParkStart, _deps.now());
   });
   return ctx.rateLimitExitReason ?? 'continue';
 }
@@ -5438,6 +5493,7 @@ function buildRunContext(opts: {
   cgSettings: ReturnType<typeof loadConvergenceGateSettings>;
   rateLimitWaitMinutes: number;
   maxRateLimitRetries: number;
+  maxParkMinutes: number;
   log: (msg: string) => void;
   state: State;
 }): RunContext {
@@ -5452,6 +5508,7 @@ function buildRunContext(opts: {
     cgSettings: opts.cgSettings,
     rateLimitWaitMinutes: opts.rateLimitWaitMinutes,
     maxRateLimitRetries: opts.maxRateLimitRetries,
+    maxParkMinutes: opts.maxParkMinutes,
     log: opts.log,
     currentRunnerState: opts.state,
     iteration: 0,
@@ -5481,6 +5538,7 @@ function initializeMicroverseRun(sessionDir: string): RunStartup {
   installShutdownHandlers(sessionDir, statePath, log);
 
   const { waitMinutes: rateLimitWaitMinutes, maxRetries: maxRateLimitRetries } = loadRateLimitSettings(extensionRoot);
+  const { max_park_minutes: maxParkMinutes } = resolveRateLimitSettings(loadPickleSettingsBag(extensionRoot));
   const startTime = Date.now();
   const currentMv = structuredClone(mvState);
   const ctx = buildRunContext({
@@ -5493,6 +5551,7 @@ function initializeMicroverseRun(sessionDir: string): RunStartup {
     cgSettings,
     rateLimitWaitMinutes,
     maxRateLimitRetries,
+    maxParkMinutes,
     log,
     state,
   });

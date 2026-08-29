@@ -585,7 +585,7 @@ test('runIteration is exported from mux-runner', () => {
 
 // --- microverse-runner tests ---
 
-import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, boundRemediationPrompt, REMEDIATION_PROMPT_MAX_BYTES, applyTestBackendOverrideFromEnv, AMNESIAC_TURN_THRESHOLD, resolveRateLimitProbeIntervalMs } from '../bin/microverse-runner.js';
+import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, handleRateLimitExit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, boundRemediationPrompt, REMEDIATION_PROMPT_MAX_BYTES, applyTestBackendOverrideFromEnv, AMNESIAC_TURN_THRESHOLD, resolveRateLimitProbeIntervalMs } from '../bin/microverse-runner.js';
 import { resetToSha } from '../services/git-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { writeStateFile } from '../services/pickle-utils.js';
@@ -3741,4 +3741,182 @@ test('B2/AC-M6a: the probe interval resolver floors an override and falls back o
         1_800_000,
         'a valid override is honoured',
     );
+});
+
+// ---------------------------------------------------------------------------
+// R-MVPARK: the microverse rate-limit park has a cumulative ceiling, folded
+// through the EXISTING `state.rate_limit_park` accumulator (ticket e9bdac75, B5)
+// — never a second ledger. `handleRateLimitExit` now (a) passes `ctx.maxParkMinutes`
+// into `computeRateLimitAction`, (b) sums the persisted `cumulative_parked_ms`
+// against the ceiling before parking, and (c) arms/folds `state.rate_limit_park`
+// exactly like mux-runner.ts's `armRateLimitPark`/`foldRateLimitParkOnWake`.
+// ---------------------------------------------------------------------------
+
+test('R-MVPARK: handleRateLimitExit sums cumulative_parked_ms across waits and exhausts the ceiling cleanly', async () => {
+    const workingDir = createTempGitRepo();
+    const originalSleep = _deps.sleep;
+    const originalNow = _deps.now;
+    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-dataroot-'));
+    try {
+        process.env.PICKLE_DATA_ROOT = dataRoot;
+        const { dir: sessionDir, state } = createSessionDir(workingDir);
+        const statePath = path.join(sessionDir, 'state.json');
+        const maxParkMinutes = 5;
+        const ceilingMs = maxParkMinutes * 60 * 1000;
+        // Already parked most of the ceiling this episode via prior waits.
+        state.rate_limit_park = {
+            reset_at_epoch_sec: null,
+            parked_started_epoch_ms: 1_700_000_000_000,
+            cumulative_parked_ms: Math.floor(ceilingMs * 0.9),
+            consecutive_waits: 2,
+        };
+        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+        let sleepCalls = 0;
+        _deps.sleep = async () => { sleepCalls += 1; };
+        _deps.now = () => 1_700_000_100_000;
+
+        const logLines = [];
+        const ctx = {
+            sessionDir,
+            statePath,
+            workingDir,
+            currentRunnerState: state,
+            consecutiveRateLimits: 1,
+            maxRateLimitRetries: 5,
+            rateLimitWaitMinutes: 15,
+            maxParkMinutes,
+            log: (msg) => logLines.push(msg),
+        };
+        // Far-future resetsAt clamps action.waitMs to the ceiling itself, so combined
+        // with the already-parked 90% this must exhaust regardless of exact clamping.
+        const exitResult = {
+            type: 'api_limit',
+            rateLimitInfo: { limited: true, resetsAt: Math.floor(Date.now() / 1000) + 100 * 60 * 60, rateLimitType: 'five_hour' },
+        };
+
+        const result = await handleRateLimitExit({}, ctx, exitResult);
+
+        assert.equal(result, 'rate_limit_exhausted', 'a cumulative park past the ceiling must exhaust cleanly');
+        assert.equal(sleepCalls, 0, 'an exhausted ceiling must never enter the wait loop');
+        const events = readActivityEvents(dataRoot, 'rate_limit_park_exhausted');
+        assert.equal(events.length, 1, 'exactly one rate_limit_park_exhausted event must be logged');
+        assert.ok(
+            logLines.some(l => /ceiling/.test(l)),
+            `the operator must be told the ceiling was hit; log was: ${logLines.join(' | ')}`,
+        );
+        // No second ledger: the accumulator on disk is untouched by the exhaustion path
+        // (it is read, never mutated, when giving up).
+        const recorded = readRunnerState(statePath).rate_limit_park;
+        assert.equal(recorded.cumulative_parked_ms, Math.floor(ceilingMs * 0.9), 'exhaustion must not mutate the existing accumulator');
+    } finally {
+        _deps.sleep = originalSleep;
+        _deps.now = originalNow;
+        if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = previousDataRoot;
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('R-MVPARK: handleRateLimitExit arms and folds state.rate_limit_park across a completed park — no second ledger', async () => {
+    const workingDir = createTempGitRepo();
+    const originalSleep = _deps.sleep;
+    const originalNow = _deps.now;
+    const originalProbe = _deps.probeRateLimitCleared;
+    try {
+        const { dir: sessionDir, state } = createSessionDir(workingDir);
+        const statePath = path.join(sessionDir, 'state.json');
+        assert.equal(readRunnerState(statePath).rate_limit_park, undefined, 'fresh session starts with no park arm');
+
+        const epoch = 1_700_000_000_000;
+        let clock = epoch;
+        _deps.now = () => clock;
+        const advancePerPollMs = 11 * 60 * 1000;
+        _deps.sleep = async () => { clock += advancePerPollMs; };
+        _deps.probeRateLimitCleared = async () => 'limited';
+
+        const ctx = {
+            sessionDir,
+            statePath,
+            workingDir,
+            currentRunnerState: state,
+            consecutiveRateLimits: 1,
+            maxRateLimitRetries: 5,
+            rateLimitWaitMinutes: 15,
+            maxParkMinutes: 60,
+            log: () => {},
+        };
+        // ~5.5min clamped wait — well under the 60min ceiling, so the park completes in full.
+        const exitResult = {
+            type: 'api_limit',
+            rateLimitInfo: { limited: true, resetsAt: Math.floor(Date.now() / 1000) + 5 * 60, rateLimitType: 'five_hour' },
+        };
+
+        const result = await handleRateLimitExit({}, ctx, exitResult);
+
+        assert.equal(result, 'continue', 'a completed park with no cutoff resumes iteration');
+        const recorded = readRunnerState(statePath).rate_limit_park;
+        assert.ok(recorded, 'state.rate_limit_park must be populated by the arm/fold — no second ledger');
+        assert.equal(recorded.reset_at_epoch_sec, null, 'the fold consumes reset_at_epoch_sec — the window was spent');
+        assert.ok(
+            recorded.cumulative_parked_ms >= ctx.rateLimitWaitMs,
+            `the folded wall (${recorded.cumulative_parked_ms}ms) must cover at least the clamped wait (${ctx.rateLimitWaitMs}ms)`,
+        );
+        assert.equal(recorded.consecutive_waits, 2, 'the fold preserves consecutive_waits captured at park-start (post-increment)');
+    } finally {
+        _deps.sleep = originalSleep;
+        _deps.now = originalNow;
+        _deps.probeRateLimitCleared = originalProbe;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('R-MVPARK: handleRateLimitExit passes ctx.maxParkMinutes into computeRateLimitAction, not just the compiled default', async () => {
+    const workingDir = createTempGitRepo();
+    const originalSleep = _deps.sleep;
+    const originalNow = _deps.now;
+    const originalProbe = _deps.probeRateLimitCleared;
+    try {
+        const { dir: sessionDir, state } = createSessionDir(workingDir);
+        const statePath = path.join(sessionDir, 'state.json');
+
+        const epoch = 1_700_000_000_000;
+        let clock = epoch;
+        _deps.now = () => clock;
+        const advancePerPollMs = 11 * 60 * 1000;
+        _deps.sleep = async () => { clock += advancePerPollMs; };
+        _deps.probeRateLimitCleared = async () => 'limited';
+
+        const maxParkMinutes = 2; // far below DEFAULT_MAX_PARK_MINUTES (360)
+        const ctx = {
+            sessionDir,
+            statePath,
+            workingDir,
+            currentRunnerState: state,
+            consecutiveRateLimits: 1,
+            maxRateLimitRetries: 5,
+            rateLimitWaitMinutes: 15,
+            maxParkMinutes,
+            log: () => {},
+        };
+        // resetsAt far in the future so the clamp — not the API hint — determines waitMs.
+        const exitResult = {
+            type: 'api_limit',
+            rateLimitInfo: { limited: true, resetsAt: Math.floor(Date.now() / 1000) + 100 * 60 * 60, rateLimitType: 'five_hour' },
+        };
+
+        await handleRateLimitExit({}, ctx, exitResult);
+
+        assert.equal(
+            ctx.rateLimitWaitMs, maxParkMinutes * 60 * 1000,
+            'the operator-configured ceiling, not the compiled default, must clamp the wait',
+        );
+    } finally {
+        _deps.sleep = originalSleep;
+        _deps.now = originalNow;
+        _deps.probeRateLimitCleared = originalProbe;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
 });
