@@ -171,6 +171,21 @@ test('pipeline state stays coherent across a three-iteration mux-runner fixture'
         });
 
         const output = `${result.stderr ?? ''}${result.stdout ?? ''}`;
+        // AC-M9 property pin (D2/abcd2712). The EXTENSION_DIR_TEST bypass set above is the ONLY
+        // thing keeping this fixture pointed at its own extDir; without it resolveExtensionRoot
+        // silently falls back to the canonical ~/.claude/pickle-rick root, which is populated on
+        // any box that has run install.sh and EMPTY on a fresh CI container. That is why this test
+        // was green on macOS and red on Linux CI.
+        //
+        // The fallback is announced on stderr by emitExtensionDirFallbackOnce on EVERY platform —
+        // only its consequence is platform-dependent. Asserting its absence therefore turns a
+        // Linux-only red into a red HERE: mutation-measured 2026-08-28 (macOS/Node 22.23.2),
+        // removing the bypass leaves all other assertions GREEN and trips only this one.
+        assert.ok(
+            !output.includes('EXTENSION_DIR fallback'),
+            'mux-runner fell back to the canonical extension root instead of the fixture\'s '
+            + `EXTENSION_DIR — the fixture is measuring the host install, not itself:\n${output}`,
+        );
         // Per R-CNAR-1 part 2 cap split (extension/CLAUDE.md trap door): once the
         // per-ticket budget (max_iterations=3) is consumed without an
         // EPIC_COMPLETED promise, mux-runner exits 3 with

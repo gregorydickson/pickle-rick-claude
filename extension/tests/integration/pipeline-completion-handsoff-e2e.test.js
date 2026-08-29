@@ -54,6 +54,29 @@ import { getTicketStatus, collectTickets } from '../../services/pickle-utils.js'
 // ticket dirs surface in the dirty set (matches the production exit-path layout).
 // ---------------------------------------------------------------------------
 
+// Adversarial fixture (AC-M9 property pin, D2/abcd2712).
+//
+// The production code under test — commitGatePassingDeliverableOnExitPath's internal git commit —
+// spawns git with NO GIT_AUTHOR_*/GIT_COMMITTER_* env, so its identity can come only from git
+// config. A dev machine's global ~/.gitconfig supplies one; a fresh CI container has none and
+// `git commit` refuses. That asymmetry is the whole reason this test was green on macOS and red
+// on Linux CI: deleting makeBundleRepo's repo-local user.name/user.email reproduces the CI red
+// while staying GREEN locally (mutation-measured, macOS/Node 22.23.2, 2026-08-28).
+//
+// Neutralising global+system config alone is NOT enough — git then GUESSES an identity from the
+// host (username@hostname) and commits anyway, which is exactly how the gap hid. `useConfigOnly`
+// disables that guess, so a configured identity is the only one that can satisfy a commit, on
+// every host. Injected via GIT_CONFIG_* env rather than a temp config file so the property leaves
+// no filesystem artifact to leak or clean up.
+//
+// Do NOT "simplify" this by giving the fixture's commits an identity via GIT_AUTHOR_*/env: that
+// supplies the very thing production does not supply, and re-masks the gap.
+process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+process.env.GIT_CONFIG_SYSTEM = '/dev/null';
+process.env.GIT_CONFIG_COUNT = '1';
+process.env.GIT_CONFIG_KEY_0 = 'user.useConfigOnly';
+process.env.GIT_CONFIG_VALUE_0 = 'true';
+
 function git(args, cwd) {
   return execFileSync('git', args, {
     cwd,
