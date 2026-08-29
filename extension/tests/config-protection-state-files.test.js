@@ -1797,3 +1797,122 @@ test('AP-EXT-ITER96-02: the expansion read is shared, and the path domain adds n
   assert.match(execNameIsFn, /patternNamesACommand\(folded\)/);
   assert.match(execNameIsFn, /wordExpandsTo\(folded, name\)/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER97-01 — a RUN of stars must compile to ONE `.*`
+//
+// `shellPatternToRegex` emitted one `.*` per `*`, so an adjacent run compiled to
+// `.*.*.*…`. On a FAILING match the engine tries every way to split the subject
+// across those runs, and the cost is combinatorial in the run length. Measured
+// end-to-end on the shipped handler, one Bash redirect destination: 8 stars
+// 70ms, 12 stars 11.9s, 14 stars 54.8s, 16 stars 424s in-process. The guard
+// never returns inside the hook timeout, so the R-WSRC state-write gate answers
+// nothing at all — AP-EXT-ITER5-01's fail-open through a slower door — and the
+// run stalls for the whole timeout either way.
+//
+// Bash has no globstar in pathname expansion, so `**foo` and `*foo` expand
+// identically, and `.*.*` is the same LANGUAGE as `.*`: the collapse is a pure
+// subtraction. A/B over 150,484 unique pattern-bearing tokens from 169 live
+// session logs x 27 target strings (4 protected basenames, 16 config
+// candidates, 7 runtime-root components) = 4,063,068 comparisons, ZERO verdict
+// flips; the only 12 tokens not compared are the >=8-star ones the pre-fix
+// translator cannot answer at all.
+// ---------------------------------------------------------------------------
+
+/** Handler run with a hard wall-clock ceiling — the point of these cases. */
+function runHandlerBounded({ tmpDir, stateFile, toolInput, timeoutMs = 15000 }) {
+  const input = JSON.stringify({ tool_name: 'Bash', tool_input: toolInput });
+  const stdout = execFileSync(process.execPath, [HANDLER], {
+    input,
+    encoding: 'utf-8',
+    timeout: timeoutMs,
+    env: {
+      ...process.env,
+      EXTENSION_DIR: tmpDir,
+      PICKLE_DATA_ROOT: tmpDir,
+      PICKLE_STATE_FILE: stateFile,
+      FORCE_COLOR: '0',
+    },
+  });
+  return JSON.parse(stdout.trim());
+}
+
+// `pickle_settings.json` is the LAST member of PROTECTED_STATE_BASENAMES, so the
+// three earlier names each fail first — the failing match is where the pre-fix
+// translator blows up. 16 stars measured at 424s before the collapse; the 15s
+// ceiling is ~150x the post-fix cost and far under the pre-fix cost, so it
+// separates the two without pinning a starvation-sensitive timing bound. Runs
+// SHORTER than 14 stars are deliberately absent: 12 stars costs 11.9s, which
+// fits inside the ceiling, so it would not red under mutation and would pin
+// nothing.
+for (const stars of [16, 30]) {
+  test(`AP-EXT-ITER97-01: a ${stars}-star run still decides, and still blocks`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const result = runHandlerBounded({
+      tmpDir,
+      stateFile,
+      toolInput: {
+        command: `echo CLOBBERED > ${sessionDir}/${'*'.repeat(stars)}pickle_settings.json`,
+      },
+    });
+    assert.equal(result.decision, 'block');
+  });
+}
+
+test('AP-EXT-ITER97-01: a star run that names NOTHING still decides (approve)', () => {
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  // No protected name ends in `x.json`, so all four comparisons FAIL — the
+  // worst case for the pre-fix translator, and the one a worker hits by writing
+  // an ordinary artifact whose name happens to carry a long star run.
+  const result = runHandlerBounded({
+    tmpDir,
+    stateFile,
+    toolInput: { command: `echo hi > ${sessionDir}/${'*'.repeat(16)}x.json` },
+  });
+  assert.equal(result.decision, 'approve');
+});
+
+test('AP-EXT-ITER97-01: a star run in a runtime-root component still decides', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandlerBounded({
+    tmpDir,
+    stateFile,
+    toolInput: {
+      command: `echo CLOBBERED > ~/.claude/${'*'.repeat(16)}pickle-rick/extension/bin/setup.js`,
+    },
+  });
+  assert.equal(result.decision, 'block');
+});
+
+test('AP-EXT-ITER97-01: the collapse is a pure subtraction — one `.*` per run', async () => {
+  const { shellPatternToRegex } = await import(
+    pathToFileURL(path.resolve(__dirname, '../hooks/shell-exec.js')).href
+  );
+  // `**` and `*` are the same pattern to bash, so they must emit the same regex.
+  assert.equal(shellPatternToRegex('**a').source, shellPatternToRegex('*a').source);
+  assert.equal(shellPatternToRegex('*'.repeat(20) + 'a').source, shellPatternToRegex('*a').source);
+  assert.equal((shellPatternToRegex('*'.repeat(20)).source.match(/\.\*/g) || []).length, 1);
+  // Separated stars are NOT a run and must each survive.
+  assert.equal((shellPatternToRegex('*a*b*').source.match(/\.\*/g) || []).length, 3);
+  // The language is unchanged in both directions.
+  assert.ok(shellPatternToRegex('**pickle_settings.json').test('pickle_settings.json'));
+  assert.ok(!shellPatternToRegex('**x.json').test('pickle_settings.json'));
+  assert.ok(shellPatternToRegex('sta**e.json').test('state.json'));
+  // A `*` inside a brace body is an escaped LITERAL, not a wildcard, so the
+  // collapse must not reach into one: the arms slice their body out first.
+  assert.match(shellPatternToRegex('{a**b,c}').source, /a\\\*\\\*b/);
+});
+
+test('AP-EXT-ITER97-01: the collapse lives in the `*` arm, not a whole-pattern pre-pass', () => {
+  const shellExec = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/shell-exec.ts'),
+    'utf-8',
+  );
+  const start = shellExec.indexOf('export function shellPatternToRegex');
+  const body = shellExec.slice(start, shellExec.indexOf('\n}\n', start));
+  assert.ok(body.length > 0, 'shellPatternToRegex body must be locatable');
+  assert.match(body, /while \(pattern\[i \+ 1\] === '\*'\) i\+\+;/);
+  // A pre-pass over the whole pattern would also collapse a `**` inside a brace
+  // or bracket BODY, where the star is a literal — that is the regression.
+  assert.doesNotMatch(body, /pattern\s*=\s*pattern\.replace/);
+});

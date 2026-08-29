@@ -420,6 +420,22 @@ export function shellPatternToRegex(pattern) {
     for (let i = 0; i < pattern.length; i++) {
         const char = pattern[i];
         if (char === '*') {
+            // A RUN of stars is ONE `*` to bash — pathname expansion has no globstar,
+            // so `**foo` and `*foo` expand identically — and `.*.*` is the same
+            // LANGUAGE as `.*`. Only the collapsed form is TRACTABLE: on a FAILING
+            // match the engine tries every way to split the subject across the runs,
+            // so cost is combinatorial in the run length. Measured on the shipped
+            // handler against the four protected basenames: 8 stars 70ms, 12 stars
+            // 11.9s, 14 stars 54.8s end-to-end, 16 stars 424s (AP-EXT-ITER97-01).
+            // AP-EXT-ITER5-01 closed the door where this translator emits an INVALID
+            // regex and the guard fails OPEN through the entrypoint catch; a regex
+            // that never RETURNS is the same fail-open by a slower door, and it also
+            // stalls the run for the whole hook timeout. Collapsing here rather than
+            // pre-passing the whole pattern keeps brace and bracket BODIES untouched:
+            // those arms slice their body out before it reaches this one, where a `*`
+            // is escaped as a literal character rather than read as a wildcard.
+            while (pattern[i + 1] === '*')
+                i++;
             regex += '.*';
             continue;
         }
