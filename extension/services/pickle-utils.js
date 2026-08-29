@@ -2609,6 +2609,7 @@ Your ONLY valid setup.js invocation is the one already completed to initialize t
 export function composeManagerPromptFromSkill(skillPath, backend, opts) {
     let content = fs.readFileSync(skillPath, 'utf-8');
     content = content.replace(/\$ARGUMENTS/g, opts.argumentSubstitution);
+    content = content.replace(/\$\{EXTENSION_ROOT\}/g, getExtensionRoot());
     content = stripSetupSection(content);
     content = stripStepOneBlock(content);
     if (opts.handoffText)

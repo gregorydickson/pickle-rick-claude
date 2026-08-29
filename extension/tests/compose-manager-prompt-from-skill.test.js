@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { composeManagerPromptFromSkill, stripStepOneBlock, MANAGER_ROLE_FRAMING_BLOCK } from '../services/pickle-utils.js';
+import { composeManagerPromptFromSkill, stripStepOneBlock, MANAGER_ROLE_FRAMING_BLOCK, getExtensionRoot } from '../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -45,6 +45,20 @@ test('composeManagerPromptFromSkill: substitutes $ARGUMENTS', () => {
     const result = composeManagerPromptFromSkill(skillPath, 'claude', { argumentSubstitution: '--resume /tmp/sess' });
     assert.ok(result.includes('--resume /tmp/sess'));
     assert.ok(!result.includes('$ARGUMENTS'));
+  } finally { cleanup(); }
+});
+
+// --- $EXTENSION_ROOT} binding (R-MPVU) ---
+test('composeManagerPromptFromSkill: binds ${EXTENSION_ROOT} to getExtensionRoot()', () => {
+  const { skillPath, cleanup } = makeTempSkill(
+    'Run `node ${EXTENSION_ROOT}/extension/bin/spawn-morty.js` then `node "${EXTENSION_ROOT}/extension/bin/update-state.js"`.'
+  );
+  try {
+    const result = composeManagerPromptFromSkill(skillPath, 'claude', { argumentSubstitution: 'x' });
+    const root = getExtensionRoot();
+    assert.ok(!result.includes('${EXTENSION_ROOT}'), 'no literal ${EXTENSION_ROOT} placeholder should survive composition');
+    assert.ok(result.includes(`node ${root}/extension/bin/spawn-morty.js`));
+    assert.ok(result.includes(`node "${root}/extension/bin/update-state.js"`));
   } finally { cleanup(); }
 });
 
@@ -251,4 +265,32 @@ test('AC-PNTR-01 / R-PNTR-TEMPLATE-PARITY: _pickle-manager-prompt.md exists and 
   assert.ok(fs.existsSync(PICKLE_TEMPLATE_PATH), '_pickle-manager-prompt.md must exist at extension/templates/');
   const content = fs.readFileSync(PICKLE_TEMPLATE_PATH, 'utf-8');
   assert.ok(content.length > 0, '_pickle-manager-prompt.md must be non-empty');
+});
+
+// --- R-MPVU: the composed manager prompt ships with no unbound ${EXTENSION_ROOT} ---
+// The real template also carries ${SESSION_ROOT}/${TICKET_ID} tokens the manager (an LLM)
+// resolves from the appended "=== PICKLE RICK LOOP CONTEXT ===" handoff block (Session:/Ticket:
+// lines) rather than literal substitution — that is by design, so this test asserts the general
+// "no unbound ${...}" property scoped to EXTENSION_ROOT specifically, which has no such fallback.
+test('R-MPVU: composed manager prompt (claude) has zero unbound ${EXTENSION_ROOT} placeholders', () => {
+  const result = composeManagerPromptFromSkill(PICKLE_TEMPLATE_PATH, 'claude', {
+    argumentSubstitution: '--resume /tmp/session',
+  });
+  const unbound = result.match(/\$\{EXTENSION_ROOT\}/g) ?? [];
+  assert.deepEqual(unbound, [], `expected zero unbound \${EXTENSION_ROOT} placeholders, found ${unbound.length}`);
+  assert.ok(result.includes(getExtensionRoot()), 'composed prompt should contain the resolved extension root path');
+});
+
+test('R-MPVU: composed manager prompt (codex) has zero unbound ${EXTENSION_ROOT} placeholders', () => {
+  const result = composeManagerPromptFromSkill(PICKLE_TEMPLATE_PATH, 'codex', {
+    argumentSubstitution: '--resume /tmp/session',
+  });
+  const unbound = result.match(/\$\{EXTENSION_ROOT\}/g) ?? [];
+  assert.deepEqual(unbound, [], `expected zero unbound \${EXTENSION_ROOT} placeholders, found ${unbound.length}`);
+});
+
+test('R-MPVU: source template carries ${EXTENSION_ROOT} occurrences (stale-premise guard)', () => {
+  const content = fs.readFileSync(PICKLE_TEMPLATE_PATH, 'utf-8');
+  const occurrences = content.match(/\$\{EXTENSION_ROOT\}/g) ?? [];
+  assert.ok(occurrences.length > 0, 'the raw template should still reference ${EXTENSION_ROOT} — if this fails, the placeholder was removed upstream and the binding fix may be dead code');
 });

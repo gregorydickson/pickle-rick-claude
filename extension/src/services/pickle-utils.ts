@@ -3047,6 +3047,7 @@ export function composeManagerPromptFromSkill(
 ): string {
   let content = fs.readFileSync(skillPath, 'utf-8');
   content = content.replace(/\$ARGUMENTS/g, opts.argumentSubstitution);
+  content = content.replace(/\$\{EXTENSION_ROOT\}/g, getExtensionRoot());
   content = stripSetupSection(content);
   content = stripStepOneBlock(content);
   if (opts.handoffText) content += '\n\n' + opts.handoffText;
