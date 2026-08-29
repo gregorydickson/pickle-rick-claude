@@ -42,6 +42,7 @@ import {
     classifyAnatomyNonConvergence,
     markMicroverseFatalError,
     auditPostIterationScope,
+    JUDGE_SYSTEM_PROMPT,
     _deps,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
@@ -580,6 +581,29 @@ test('AC-JPCM-1: buildJudgePrompt asks for the JSON object the parser accepts, n
     assert.ok(
         prompt.includes('score` MUST equal `violations.length'),
         'count-type metrics must pin score to the evidence array, not a free-floating integer',
+    );
+});
+
+test('AC-JPCM-11: the judge SYSTEM prompt and the user-turn buildJudgePrompt agree on one output contract', () => {
+    // buildJudgePrompt was fixed to demand the JSON object parseLlmJudgeOutput accepts,
+    // but the SEPARATE system prompt sent to the same judge invocation
+    // (buildJudgeAttemptInvocation's `systemPrompt: JUDGE_SYSTEM_PROMPT`) still told the
+    // model to output "a single line containing ONLY a number" — a live contradiction
+    // inside one judge turn that this pin closes by deriving both from one constant.
+    assert.ok(
+        !/ONLY a number/i.test(JUDGE_SYSTEM_PROMPT),
+        'the system prompt must not resurrect the bare-number contract the user prompt no longer asks for',
+    );
+
+    const prompt = buildJudgePrompt('Reduce violations', '/repo', [], '/repo/src');
+    // Both prompts must cite the identical JSON schema string — not merely "both mention
+    // JSON" — proving they derive from one shared source rather than two hand-authored
+    // descriptions that can drift apart again.
+    const schemaMatch = prompt.match(/\{"score":[^\n]*"remaining": \["<id>"\]\}/);
+    assert.ok(schemaMatch, 'buildJudgePrompt must contain the JSON schema line');
+    assert.ok(
+        JUDGE_SYSTEM_PROMPT.includes(schemaMatch[0]),
+        'the system prompt must embed the exact same JSON schema string as buildJudgePrompt',
     );
 });
 
