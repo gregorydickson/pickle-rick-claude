@@ -907,7 +907,7 @@ test('runWorkerGate: honors worker_test_gate_timeout_ms, reports timeout details
     });
     assert.match(
       result.testFailures[0]?.message ?? '',
-      /^timed out after 6000ms; sent SIGTERM to process tree(?: and escalated to SIGKILL after 2000ms)?$/,
+      /^stalled: no output growth for 6000ms; sent SIGTERM to process tree(?: and escalated to SIGKILL after 2000ms)?$/,
     );
     assert.equal(isPidAlive(childPid), false, `descendant pid ${childPid} should be dead after timeout cleanup`);
     const signals = fs.readFileSync(signalPath, 'utf8');

@@ -1142,11 +1142,19 @@ function describeKillEscalation(sigtermSent, sigkillSent) {
         return 'sent SIGTERM to process tree';
     return 'failed to signal process tree';
 }
-/** `CommandResult.timeoutMessage`: null unless the command was killed by its own timeout. */
+/** `CommandResult.timeoutMessage`: null unless the command was killed by its own timeout or stall detector. */
 function formatTimeoutMessage(timedOut, timeoutMs, sigtermSent, sigkillSent) {
     if (!timedOut)
         return null;
     return `timed out after ${timeoutMs}ms; ${describeKillEscalation(sigtermSent, sigkillSent)}`;
+}
+/**
+ * R-TIERWEDGE: honest report for a kill triggered by the STALL detector (absence of
+ * output growth), distinct from a flat wall-clock kill — a tier run that is merely
+ * slow-but-live never reaches this message because every chunk resets the clock.
+ */
+function formatStallMessage(stallThresholdMs, sigtermSent, sigkillSent) {
+    return `stalled: no output growth for ${stallThresholdMs}ms; ${describeKillEscalation(sigtermSent, sigkillSent)}`;
 }
 /**
  * Buffers a child's stdout/stderr as utf8 strings. The returned arrays fill as the
@@ -1162,18 +1170,34 @@ function collectChildOutput(child) {
     return { stdoutChunks, stderrChunks };
 }
 /**
- * Runs `cmd` to completion under a timeout, killing the whole process group on expiry.
+ * Runs `cmd` to completion, killing the whole process group on expiry.
+ *
+ * Two mutually-exclusive wait modes:
+ *
+ * - `opts.stallThresholdMs` set (R-TIERWEDGE): a STALL detector, for waits on a tier
+ *   run (`npm run test:fast` / `test:integration`) whose TAP output streams
+ *   continuously. The child is killed only once `stallThresholdMs` elapses with NO
+ *   stdout/stderr growth at all — every chunk resets the clock, so a run that is
+ *   merely slow-but-live (still producing output) is never killed no matter how long
+ *   the total wall-clock runs. A wall-clock-only timeout cannot tell "working slowly"
+ *   from "not working"; absence of log growth can.
+ * - `opts.stallThresholdMs` absent: the original flat wall-clock `opts.timeoutMs`
+ *   (default 120_000ms), unchanged, for short checks (tsc/eslint) that may
+ *   legitimately emit nothing at all until they finish.
  *
  * Timer discipline, both halves load-bearing — do not "tidy" either (see
- * `tests/unref-sole-settle-path.test.js`): `timeoutHandle` stays REF'D because it is the
- * SOLE trigger of the settle chain for a hung child — it does not resolve directly
- * (`child.on('close')` does), but if it never fires SIGTERM is never sent and a hung child
- * never emits `'close'` either, so `.unref()` here would make settling conditional on some
- * UNRELATED handle holding the loop open. `killEscalation` is correctly UNREF'D: nothing
- * awaits it and `'close'` resolves regardless of whether SIGKILL was needed.
+ * `tests/unref-sole-settle-path.test.js`): the sole active watchdog handle
+ * (`timeoutHandle` or `stallCheckHandle`) stays REF'D because it is the SOLE trigger
+ * of the settle chain for a hung child — it does not resolve directly
+ * (`child.on('close')` does), but if it never fires SIGTERM is never sent and a hung
+ * child never emits `'close'` either, so `.unref()` here would make settling
+ * conditional on some UNRELATED handle holding the loop open. `killEscalation` is
+ * correctly UNREF'D: nothing awaits it and `'close'` resolves regardless of whether
+ * SIGKILL was needed.
  */
 async function runCommand(cmd, args, cwd, opts = {}) {
     const timeoutMs = opts.timeoutMs ?? 120_000;
+    const stallThresholdMs = opts.stallThresholdMs;
     return await new Promise((resolve) => {
         const child = spawn(cmd, args, {
             cwd,
@@ -1183,35 +1207,64 @@ async function runCommand(cmd, args, cwd, opts = {}) {
         });
         const { stdoutChunks, stderrChunks } = collectChildOutput(child);
         let timedOut = false;
+        let stalled = false;
         let settled = false;
         let sigtermSent = false;
         let sigkillSent = false;
         let killEscalation = null;
-        const finalize = (status, signal, extraStderr = '') => {
-            if (settled)
-                return;
-            settled = true;
-            clearTimeout(timeoutHandle);
-            if (killEscalation)
-                clearTimeout(killEscalation);
-            resolve({
-                ok: status === 0 && !timedOut,
-                status,
-                stdout: stdoutChunks.join(''),
-                stderr: `${stderrChunks.join('')}${extraStderr}`,
-                signal,
-                timedOut,
-                timeoutMessage: formatTimeoutMessage(timedOut, timeoutMs, sigtermSent, sigkillSent),
-            });
-        };
-        const timeoutHandle = setTimeout(() => {
-            timedOut = true;
+        let lastActivityAt = Date.now();
+        if (stallThresholdMs !== undefined) {
+            child.stdout?.on('data', () => { lastActivityAt = Date.now(); });
+            child.stderr?.on('data', () => { lastActivityAt = Date.now(); });
+        }
+        const killChild = () => {
             sigtermSent = killProcessTree(child, 'SIGTERM');
             killEscalation = setTimeout(() => {
                 sigkillSent = killProcessTree(child, 'SIGKILL');
             }, 2000);
             killEscalation.unref();
-        }, timeoutMs);
+        };
+        const finalize = (status, signal, extraStderr = '') => {
+            if (settled)
+                return;
+            settled = true;
+            if (timeoutHandle)
+                clearTimeout(timeoutHandle);
+            if (stallCheckHandle)
+                clearInterval(stallCheckHandle);
+            if (killEscalation)
+                clearTimeout(killEscalation);
+            resolve({
+                ok: status === 0 && !timedOut && !stalled,
+                status,
+                stdout: stdoutChunks.join(''),
+                stderr: `${stderrChunks.join('')}${extraStderr}`,
+                signal,
+                timedOut: timedOut || stalled,
+                timeoutMessage: stalled
+                    ? formatStallMessage(stallThresholdMs, sigtermSent, sigkillSent)
+                    : formatTimeoutMessage(timedOut, timeoutMs, sigtermSent, sigkillSent),
+            });
+        };
+        let timeoutHandle = null;
+        let stallCheckHandle = null;
+        if (stallThresholdMs !== undefined) {
+            // Poll rather than a single deadline timer: the clock must be able to reset on
+            // every chunk, which a one-shot `setTimeout` armed at start cannot do.
+            const pollMs = Math.min(30_000, stallThresholdMs);
+            stallCheckHandle = setInterval(() => {
+                if (Date.now() - lastActivityAt < stallThresholdMs)
+                    return;
+                stalled = true;
+                killChild();
+            }, pollMs);
+        }
+        else {
+            timeoutHandle = setTimeout(() => {
+                timedOut = true;
+                killChild();
+            }, timeoutMs);
+        }
         child.on('error', (error) => {
             const message = safeErrorMessage(error);
             finalize(null, null, message ? `${message}\n` : '');
@@ -1330,7 +1383,11 @@ export async function runWorkerGateTestCommand(scriptName, extensionDir, workerT
     // `test:integration` script names stay: this path IS pickle-rick.
     const packageManager = resolvePackageManagerBin(extensionDir, 'npm');
     const commandName = `${packageManager} run ${scriptName}`;
-    const testResult = await runCommand(packageManager, ['run', scriptName], extensionDir, { timeoutMs: workerTestGateTimeoutMs });
+    // R-TIERWEDGE: a tier run streams TAP output continuously, so waiting on it uses the
+    // stall detector (no output growth for `workerTestGateTimeoutMs`), never a flat
+    // wall-clock timeout — a slow-but-live run must survive no matter how long the whole
+    // tier takes, as long as it keeps producing output.
+    const testResult = await runCommand(packageManager, ['run', scriptName], extensionDir, { stallThresholdMs: workerTestGateTimeoutMs });
     const failures = testResult.ok
         ? []
         : testResult.timedOut
