@@ -5,7 +5,7 @@ import { resolveStateFile, loadActiveState, approve } from '../resolve-state.js'
 import { getExtensionRoot, getDataRoot } from '../../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../../services/microverse-state.js';
 import { logActivity } from '../../services/activity-logger.js';
-import { execAnchorIndex, execNameIs, execNamesIn, execTokenIndex, isShellWrapper, SHELL_PATTERN_CHARS, shellPatternToRegex, shellWordWitness, splitShellSegments, tokenizeShellCommand, tokenizeShellTokens, } from '../shell-exec.js';
+import { execAnchorIndex, execNameIs, execNamesIn, wordExpandsTo, execTokenIndex, isShellWrapper, SHELL_PATTERN_CHARS, shellPatternToRegex, shellWordWitness, splitShellSegments, tokenizeShellCommand, tokenizeShellTokens, } from '../shell-exec.js';
 // `/i` on every pattern for the same case-insensitive-filesystem reason as
 // `matchProtectedStateBasename`, and for parity with the sibling config regexes
 // in `tsc-gate.ts`, which already carry `/i`.
@@ -160,9 +160,7 @@ function matchProtectedStateBasename(filePath) {
 function wordSpellsProtectedName(word, name) {
     if (word === name)
         return true;
-    if (!SHELL_PATTERN_CHARS.test(word))
-        return false;
-    if (!shellPatternToRegex(word).test(name))
+    if (!wordExpandsTo(word, name))
         return false;
     const literals = word.replace(/\[[^\]]*\]/g, '').replace(/\{[^}]*\}/g, '').replace(/[*?]/g, '').length;
     return literals * 2 >= name.length;
@@ -197,7 +195,7 @@ function expandLeadingHome(filePath) {
  * filesystem, so a case-sensitive prefix compare let a worker Edit the deployed
  * runtime tree.
  *
- * Read per COMPONENT through the shared `execNameIs`, which is ONE check where
+ * Read per COMPONENT through the shared expansion reader, which is ONE check where
  * there were two: `resolved === root` and `resolved.startsWith(root + sep)` are
  * the same question asked of a different suffix, and both asked it of a LITERAL.
  * A path component is a shell word bash expands like any other, so
@@ -205,9 +203,22 @@ function expandLeadingHome(filePath) {
  * write the deployed runtime while the string compare saw an unequal prefix —
  * measured on the shipped handler, both APPROVED for a worker while the literal
  * twin blocked. Comparing components (not a regex over the whole path) keeps the
- * `/` boundary that makes `.claudeX` a different directory, and inherits
- * `execNameIs`'s all-wildcard bound, so a pure-wildcard component names nothing
- * (AP-EXT-ITER93-04's residual family, not a new one).
+ * `/` boundary that makes `.claudeX` a different directory.
+ *
+ * AP-EXT-ITER96-02: read through `wordExpandsTo`, the expansion READ alone, and
+ * NOT through `execNameIs` — whose `patternNamesACommand` bound ("a word of pure
+ * wildcards names every command equally, so it names none") is true of a command
+ * word and FALSE of a path component. A component sits beside a real directory
+ * bash is about to list, so a bare star names `pickle-rick` exactly:
+ * shim-verified, a pure-wildcard component written in place of `pickle-rick`
+ * APPROVED on the shipped handler for a worker while the literal twin and the
+ * `pickle-ric?` twin both blocked, and bash really clobbered the deployed
+ * runtime file through it. This domain adds no bound
+ * at all — the conjunction over every root component IS the bound, and it costs
+ * zero: over 10154 real worker Bash commands (482091 words) the read flips one
+ * token, `~/.claude/**`, itself a hazard spelling, and no decision (a heredoc
+ * BODY is not a write destination, so the artifact writes carrying it approve
+ * either way).
  */
 function isInsideRuntimeRoot(filePath) {
     if (!filePath)
@@ -216,7 +227,7 @@ function isInsideRuntimeRoot(filePath) {
     const parts = path.resolve(expandLeadingHome(filePath)).toLowerCase().split(path.sep);
     if (parts.length < rootParts.length)
         return false;
-    return rootParts.every((rootPart, i) => execNameIs(parts[i], rootPart));
+    return rootParts.every((rootPart, i) => wordExpandsTo(parts[i], rootPart));
 }
 /** Tool-input file_path match → returns reason string or null. */
 function detectProtectedWriteTarget(filePath) {

@@ -551,9 +551,29 @@ function patternNamesACommand(pattern: string): boolean {
 export function execNameIs(token: string | undefined, name: string): boolean {
   const folded = execName(token);
   if (folded === name) return true;
-  if (!SHELL_PATTERN_CHARS.test(folded)) return false;
   if (!patternNamesACommand(folded)) return false;
-  return shellPatternToRegex(folded).test(name);
+  return wordExpandsTo(folded, name);
+}
+
+/**
+ * True when the shell word `word` may pathname-expand onto `name` — literally,
+ * or as a pattern bash expands to it. NO domain bound: this is the expansion
+ * READ alone.
+ *
+ * The one shared answer to "could bash turn this word into that name?", which
+ * three domains ask with three different measured bounds layered on top:
+ * `execNameIs` adds `patternNamesACommand` (a command word must spell one
+ * literal char, or `*` inside a heredoc names every command), the state-file arm
+ * adds literal COVERAGE (AP-EXT-ITER96-01), and the runtime-root path read adds
+ * NOTHING — a wildcard path component really does expand onto the directory it
+ * sits beside (AP-EXT-ITER96-02). Each bound was measured in ITS domain; the
+ * expansion read underneath them is the same question and lives here once, so a
+ * domain cannot re-fork the translator while borrowing another domain's bound.
+ */
+export function wordExpandsTo(word: string, name: string): boolean {
+  if (word === name) return true;
+  if (!SHELL_PATTERN_CHARS.test(word)) return false;
+  return shellPatternToRegex(word).test(name);
 }
 
 /**

@@ -1604,7 +1604,12 @@ test('AP-EXT-ITER73-04: both write-destination arms read through the shared read
     handler.indexOf('/** Tool-input file_path match'),
   );
   assert.ok(rootFn.length > 0, 'isInsideRuntimeRoot body must be locatable');
-  assert.match(rootFn, /rootParts\.every\(\(rootPart, i\) => execNameIs\(parts\[i\], rootPart\)\)/);
+  // AP-EXT-ITER96-02 moved this arm off `execNameIs` — whose `patternNamesACommand`
+  // bound is true of a COMMAND word and false of a PATH COMPONENT — onto the bare
+  // expansion read. Re-borrowing the command-word matcher here re-opens
+  // `> ~/.claude/<star>/extension/bin/setup.js`.
+  assert.match(rootFn, /rootParts\.every\(\(rootPart, i\) => wordExpandsTo\(parts\[i\], rootPart\)\)/);
+  assert.doesNotMatch(rootFn, /execNameIs\(/);
   // The two literal compares this collapsed — neither may come back.
   assert.doesNotMatch(rootFn, /resolved === runtimeRoot/);
   assert.doesNotMatch(rootFn, /\.startsWith\(runtimeRoot/);
@@ -1678,3 +1683,117 @@ for (const [label, command] of [
     );
   });
 }
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER96-02 — a pure-wildcard PATH COMPONENT names the directory it
+// sits beside, and the deployed runtime tree is what it names.
+//
+// `isInsideRuntimeRoot` read each path component through `execNameIs`, whose
+// `patternNamesACommand` bound refuses a word of pure wildcards ("`*` names
+// every command equally, so it names none"). That is true of a COMMAND word —
+// where `*` inside a heredoc body would otherwise name `nano` — and FALSE of a
+// path component, which sits beside a real directory bash is about to list. So
+// a bare star written where `pickle-rick` belongs named NOTHING and the write
+// APPROVED, while the literal twin and the `pickle-ric?` twin both blocked.
+//
+// Shim-verified at BOTH ends before the fix: 9 of 10 globbed runtime-root forms
+// APPROVED on the shipped handler across `>`, `>>`, tee and cp, and bash really
+// clobbers — `echo CLOBBERED > $HOME/.claude/*/extension/bin/setup.js` and the
+// `/*/*/.*/*/` spelling each overwrote the target file in a sandboxed HOME.
+// The payoff is a worker rewriting the runtime it is executing.
+//
+// The fix adds NO bound: the conjunction over every root component IS the bound.
+// Cost measured, not assumed — over 10154 unique real worker Bash commands
+// (482091 words) the component read flips exactly one token, `~/.claude/**`
+// (itself a hazard spelling), and ZERO decisions: a heredoc BODY is not a write
+// destination, so the three artifact writes carrying that token approve either
+// way.
+// ---------------------------------------------------------------------------
+
+const RUNTIME_GLOB_FORMS = [
+  ['bare star for the runtime dir', 'cat > ~/.claude/*/extension/bin/setup.js'],
+  ['bare star, hooks file', 'echo x > ~/.claude/*/extension/hooks/shell-exec.js'],
+  ['$HOME spelling', 'cat > $HOME/.claude/*/extension/bin/setup.js'],
+  ['append seam', 'echo x >> ~/.claude/*/persona.md'],
+  ['tee seam', 'tee ~/.claude/*/extension/bin/setup.js < /dev/null'],
+  ['cp seam', 'cp /dev/null ~/.claude/*/extension/bin/setup.js'],
+  ['double star', 'cat > ~/.claude/**/extension/bin/setup.js'],
+  ['wildcards above the root too', 'cat > /*/*/.claude/*/extension/bin/setup.js'],
+  ['dot-glob spelling of .claude', 'cat > /*/*/.*/*/extension/bin/setup.js'],
+];
+
+for (const [label, command] of RUNTIME_GLOB_FORMS) {
+  test(`AP-EXT-ITER96-02: blocks a wildcard runtime-root component — ${label}`, () => {
+    assert.equal(
+      runWorkerBash(command).decision,
+      'block',
+      `${command} pathname-expands onto the deployed runtime tree and must not approve`,
+    );
+  });
+}
+
+test('AP-EXT-ITER96-02: the literal twin still blocks', () => {
+  assert.equal(
+    runWorkerBash('cat > ~/.claude/pickle-rick/extension/bin/setup.js').decision,
+    'block',
+  );
+});
+
+test('AP-EXT-ITER96-02: a Write tool file_path with a wildcard component blocks', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  assert.equal(
+    runHandler({
+      tmpDir,
+      stateFile,
+      toolName: 'Write',
+      toolInput: { file_path: '~/.claude/*/extension/bin/setup.js', content: 'x' },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    }).decision,
+    'block',
+  );
+});
+
+// The RELIABILITY direction. Dropping the command-word bound may not start
+// blocking the ordinary globs a worker writes all day; these are the shapes the
+// corpus is full of (bare `*` x501, `**` x41) plus the near-miss siblings that
+// prove the `/` boundary and the root spelling still discriminate.
+for (const [label, command] of [
+  ['bare * arg', 'grep -rn "*" src/ > /tmp/g.txt'],
+  ['markdown emphasis in a heredoc body', 'cat > /tmp/r.md <<\'E\'\n**Note**: see *state* handling\nE'],
+  ['a heredoc body naming the runtime tree', 'cat > /tmp/plan.md <<\'E\'\nsee ~/.claude/**\nE'],
+  ['glob under a sibling of the runtime root', 'cat > ~/.claude/projects/*/memory/MEMORY.md'],
+  ['glob in the repo working tree', 'cat > extension/src/notes*.md'],
+  ['near-miss root sibling', 'echo x > ~/.claude/pickle-rickety/notes.md'],
+  ['unrelated absolute glob', 'echo x > /tmp/out*.txt'],
+]) {
+  test(`AP-EXT-ITER96-02: the component read keeps an ordinary glob approving — ${label}`, () => {
+    assert.equal(
+      runWorkerBash(command).decision,
+      'approve',
+      `${label} cannot expand into the deployed runtime tree and must not over-block`,
+    );
+  });
+}
+
+// Structural pin (PATTERN_SHAPE): the expansion READ lives in one place and the
+// path domain layers no bound on it. A private copy here is how the three
+// domains drifted apart in the first place.
+test('AP-EXT-ITER96-02: the expansion read is shared, and the path domain adds no bound', () => {
+  const shellExec = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/shell-exec.ts'),
+    'utf-8',
+  );
+  const readerStart = shellExec.indexOf('export function wordExpandsTo');
+  const reader = shellExec.slice(readerStart, shellExec.indexOf('\n}\n', readerStart));
+  assert.ok(reader.length > 0, 'wordExpandsTo body must be locatable');
+  assert.match(reader, /return shellPatternToRegex\(word\)\.test\(name\)/);
+  // The command-word bound must NOT sink into the shared reader: at command-word
+  // length it is what keeps `**No` from naming `nano`.
+  assert.doesNotMatch(reader, /patternNamesACommand/);
+
+  const execStart = shellExec.indexOf('export function execNameIs(');
+  const execNameIsFn = shellExec.slice(execStart, shellExec.indexOf('\n}\n', execStart));
+  assert.ok(execNameIsFn.length > 0, 'execNameIs body must be locatable');
+  assert.match(execNameIsFn, /patternNamesACommand\(folded\)/);
+  assert.match(execNameIsFn, /wordExpandsTo\(folded, name\)/);
+});
