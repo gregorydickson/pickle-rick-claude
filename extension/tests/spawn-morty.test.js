@@ -2212,3 +2212,113 @@ test('send-to-morty.md: the rule reaches the worker through the builder, never a
     assert.equal(md.includes('## ⚠️ Synchronous Gate Confirmation & Commit-First'), false,
         'the builder already emits the rule at Implement for EVERY tier; a static block here restates it a third time in one prompt and forks the wording into a second place to maintain');
 });
+
+// --- AP-EXT-ITER118-01: $ARGUMENTS substitution must not re-read the dollar grammar ---
+// buildWorkerPrompt splices the ticket task into ~/.claude/commands/send-to-morty.md.
+// A replacement STRING makes String.replace re-interpret $$ / $& / $` / $' inside the
+// task text, so a task carrying one of those two-byte sequences gets template fragments
+// spliced into it. Real corpus hit: this repo's own live session prompt contains `$``.
+// Hermetic HOME so the assertion is independent of what install.sh deployed.
+test('buildWorkerPrompt: a task carrying $-substitution sequences reaches the worker verbatim', async () => {
+    const { buildWorkerPrompt } = await import('../bin/spawn-morty.js');
+
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-args-home-'));
+    const tmpSession = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-args-sess-'));
+    const cmdDir = path.join(tmpHome, '.claude', 'commands');
+    fs.mkdirSync(cmdDir, { recursive: true });
+    // Distinctive prefix/suffix so an injected $` (prefix) or $' (suffix) is unmistakable.
+    const template = 'PREFIX_SENTINEL_HEAD\n# TASK: $ARGUMENTS\nMIDDLE_SENTINEL\nrun --args $ARGUMENTS\nSUFFIX_SENTINEL_TAIL\n';
+    fs.writeFileSync(path.join(cmdDir, 'send-to-morty.md'), template);
+
+    // All four sequences that String.replace treats as special with a zero-group pattern.
+    const task = "fix parser for `^> \\S+@\\S+ \\S+$` and $' and $& and $$ literals";
+    const ticket = {
+        task,
+        ticketContent: 'N/A',
+        ticketId: 'abcd1234',
+        ticketPath: path.join(tmpSession, 'abcd1234'),
+        sessionRoot: tmpSession,
+        backend: 'claude',
+        isReviewTicket: true, // review path skips the tier-lifecycle template rewrite
+    };
+
+    const originalHome = process.env.HOME;
+    let prompt;
+    try {
+        process.env.HOME = tmpHome;
+        // Review tickets read send-to-morty-review.md; plant the same body there.
+        fs.writeFileSync(path.join(cmdDir, 'send-to-morty-review.md'), template);
+        prompt = buildWorkerPrompt({ ticket, model: 'sonnet', repoRoot: tmpSession, extensionRoot: tmpSession });
+    } finally {
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
+        fs.rmSync(tmpHome, { recursive: true, force: true });
+        fs.rmSync(tmpSession, { recursive: true, force: true });
+    }
+
+    // Fixture-rot control: the assertion below is only meaningful while the task actually
+    // carries the sequences String.replace treats as special. If a future edit sands them
+    // off, fail here rather than passing vacuously.
+    for (const seq of ['$`', "$'", '$&', '$$']) {
+        assert.ok(task.includes(seq), `fixture lost the ${seq} sequence — the pin would be vacuous`);
+    }
+
+    // The literal splice is the oracle: every $ARGUMENTS becomes the task, byte for byte.
+    const expected = template.split('$ARGUMENTS').join(task);
+    assert.ok(prompt.includes(expected),
+        `task must be spliced verbatim; got rendered region:\n${prompt.slice(0, 600)}`);
+    // Negative controls: neither the prefix nor the suffix may be duplicated into the task.
+    assert.equal(prompt.split('PREFIX_SENTINEL_HEAD').length - 1, 1,
+        'a $` in the task duplicated the template prefix');
+    assert.equal(prompt.split('SUFFIX_SENTINEL_TAIL').length - 1, 1,
+        "a $' in the task duplicated the template suffix");
+    assert.equal(prompt.includes('$ARGUMENTS'), false, 'placeholder must be fully substituted');
+});
+
+// AP-EXT-ITER118-01 replay: the sibling splice in applyTierLifecycleTemplate. Its
+// {{TIER_LIFECYCLE_SECTIONS}} replacement carries opts.codegraphSection, which is built
+// from repo-derived symbol names and paths -- the same dollar-grammar exposure.
+test('buildWorkerPrompt: a codegraph section carrying $-substitution sequences is spliced verbatim', async () => {
+    const { buildWorkerPrompt } = await import('../bin/spawn-morty.js');
+
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-cgsec-home-'));
+    const tmpSession = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-cgsec-sess-'));
+    const cmdDir = path.join(tmpHome, '.claude', 'commands');
+    fs.mkdirSync(cmdDir, { recursive: true });
+    const template = 'CG_PREFIX_SENTINEL\n{{TIER_LIFECYCLE_SECTIONS}}\nCG_SUFFIX_SENTINEL\n';
+    fs.writeFileSync(path.join(cmdDir, 'send-to-morty.md'), template);
+
+    // A `$$`-named export and a dollar-quote are both legal in real source trees.
+    const codegraphSection = "## Code Graph Context\n- `$$` (src/a$'b.ts:1) calls `$&`\n";
+    const ticket = {
+        task: 'plain task',
+        ticketContent: 'N/A',
+        ticketId: 'abcd1234',
+        ticketPath: path.join(tmpSession, 'abcd1234'),
+        sessionRoot: tmpSession,
+        backend: 'claude',
+        isReviewTicket: false, // non-review path is the one that runs applyTierLifecycleTemplate
+    };
+
+    const originalHome = process.env.HOME;
+    let prompt;
+    try {
+        process.env.HOME = tmpHome;
+        prompt = buildWorkerPrompt({
+            ticket, model: 'sonnet', repoRoot: tmpSession, extensionRoot: tmpSession,
+            complexityTier: 'trivial', codegraphSection,
+        });
+    } finally {
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
+        fs.rmSync(tmpHome, { recursive: true, force: true });
+        fs.rmSync(tmpSession, { recursive: true, force: true });
+    }
+
+    assert.ok(prompt.includes(codegraphSection),
+        `codegraph section must be spliced verbatim; got:\n${prompt.slice(0, 600)}`);
+    assert.equal(prompt.split('CG_PREFIX_SENTINEL').length - 1, 1,
+        'a $-backtick in the codegraph section duplicated the template prefix');
+    assert.equal(prompt.split('CG_SUFFIX_SENTINEL').length - 1, 1,
+        'a $-quote in the codegraph section duplicated the template suffix');
+});

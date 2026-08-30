@@ -988,9 +988,12 @@ export async function buildCodegraphContextSection(opts) {
 function applyTierLifecycleTemplate(workerPrompt, opts) {
     const tier = opts.complexityTier ?? 'medium';
     const activePhases = TIER_LIFECYCLE[tier];
+    // Replacer functions, same reason as the $ARGUMENTS splice above: codegraphSection is
+    // built from repo-derived symbol names and paths, so a replacement string would let a
+    // `$$`/`$&`/dollar-quote symbol splice this template into itself.
     let rendered = workerPrompt
-        .replace('{{TIER_RESUME_TABLE}}', buildTierResumeTable(activePhases))
-        .replace('{{TIER_LIFECYCLE_SECTIONS}}', buildTierLifecycleSections(activePhases, tier) + (opts.codegraphSection ?? ''));
+        .replace('{{TIER_RESUME_TABLE}}', () => buildTierResumeTable(activePhases))
+        .replace('{{TIER_LIFECYCLE_SECTIONS}}', () => buildTierLifecycleSections(activePhases, tier) + (opts.codegraphSection ?? ''));
     if (TIER_DIFF_ENVELOPE[tier] !== undefined) {
         rendered += `\n\n**Minimalism:** This is a ${tier} ticket. Make the smallest correct change. Do not refactor adjacent code, do not add abstractions, do not rename or restructure beyond the ticket's explicit ask. If the fix is one line, it is one line.`;
     }
@@ -1020,7 +1023,11 @@ export function buildWorkerPrompt(opts) {
     const mortyPromptPath = path.join(os.homedir(), '.claude', 'commands', promptFilename);
     let workerPrompt;
     if (fs.existsSync(mortyPromptPath)) {
-        workerPrompt = fs.readFileSync(mortyPromptPath, 'utf-8').replace(/\$ARGUMENTS/g, ticket.task);
+        // Replacer FUNCTION, never a replacement STRING: a replacement string re-reads the
+        // dollar-substitution grammar ($$, $&, $-backtick, $-quote) out of the task text and
+        // splices template fragments into it. The function form needs no escape table --
+        // it disables that grammar outright rather than enumerating its members.
+        workerPrompt = fs.readFileSync(mortyPromptPath, 'utf-8').replace(/\$ARGUMENTS/g, () => ticket.task);
     }
     else {
         workerPrompt = ticket.isReviewTicket
