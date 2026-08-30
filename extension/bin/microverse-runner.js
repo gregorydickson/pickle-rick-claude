@@ -1698,8 +1698,18 @@ function isMissingCommandExit(code, stdout, stderr) {
         return false;
     return /not found/i.test(`${stderr}\n${stdout}`);
 }
-/** THE terminator for both signals: the group first, the bare child as the fallback. */
-function killMeasurement(child, signal) {
+/**
+ * THE terminator for every child this module spawns, on both signals: the process
+ * GROUP first, the bare child only as the fallback when the group signal fails.
+ *
+ * ONE home, deliberately. Both subtree roots here — the `/bin/sh -c` metric shell
+ * (AP-EXT-ITER42-01) and the `claude` judge transport (AP-EXT-ITER53-02) — spawn
+ * `detached` and need the identical negative-PID reap, and each fix originally grew
+ * its own private copy of this body. Two copies of a terminator is the private-copy
+ * drift the root CLAUDE.md names first: a fix landed in one reaps nothing in the
+ * other, and the leak it was meant to close stays open on the twin's path.
+ */
+function killSpawnedSubtree(child, signal) {
     const pid = child.pid;
     if (typeof pid === 'number' && _deps.killProcessGroup(pid, signal))
         return;
@@ -1764,11 +1774,11 @@ function armMeasurementTimeout(opts) {
     const { child, timeoutMs, captured, finish } = opts;
     let killTimer;
     const timeoutHandle = setTimeout(() => {
-        killMeasurement(child, 'SIGTERM');
+        killSpawnedSubtree(child, 'SIGTERM');
         // Kill-grace: SIGKILL follow-up after the SIGTERM grace. `finish()` below settles the
         // promise SYNCHRONOUSLY in this same callback, before this timer even fires, so nothing
         // awaits it — it is correctly left unref'd.
-        killTimer = setTimeout(() => { killMeasurement(child, 'SIGKILL'); }, COMMAND_METRIC_KILL_GRACE_MS);
+        killTimer = setTimeout(() => { killSpawnedSubtree(child, 'SIGKILL'); }, COMMAND_METRIC_KILL_GRACE_MS);
         if (typeof killTimer.unref === 'function')
             killTimer.unref();
         // Settle HERE, not from `'close'`. `'close'` waits for the process to exit AND for
@@ -1983,27 +1993,16 @@ function spawnWithClosedStdin(cmd, args, options) {
         // its own tool/MCP subprocesses), so it leads its OWN process group and the
         // timeout signals the GROUP. `detached` is the load-bearing half — without it
         // the child shares this runner's group and the negative-PID kill in
-        // `killJudgeSubtree` would take down the runner itself (the AP-EXT-ITER47-01
+        // `killSpawnedSubtree` would take down the runner itself (the AP-EXT-ITER47-01
         // self-group hazard). Skipped on win32, where `detached` means "new console"
-        // and `killProcessGroup` is a no-op anyway. Same shape as `measureMetricAttempt`.
+        // and `killProcessGroup` is a no-op anyway. Same shape as `measureMetricAttempt`,
+        // which reaps through that same one terminator.
         const child = _deps.spawn(cmd, args, {
             cwd: options.cwd,
             env: options.env,
             stdio: ['ignore', 'pipe', 'pipe'],
             detached: process.platform !== 'win32',
         });
-        /** THE terminator for both signals: the group first, the bare child as the fallback. */
-        const killJudgeSubtree = (signal) => {
-            const pid = child.pid;
-            if (typeof pid === 'number' && _deps.killProcessGroup(pid, signal))
-                return;
-            try {
-                child.kill(signal);
-            }
-            catch {
-                // Best-effort cleanup.
-            }
-        };
         const settle = (fn) => {
             if (settled)
                 return;
@@ -2045,8 +2044,8 @@ function spawnWithClosedStdin(cmd, args, options) {
         // no promise awaiting it, so it is correctly unref'd.
         const timer = setTimeout(() => {
             settle(() => {
-                killJudgeSubtree('SIGTERM');
-                const killTimer = setTimeout(() => { killJudgeSubtree('SIGKILL'); }, 2000);
+                killSpawnedSubtree(child, 'SIGTERM');
+                const killTimer = setTimeout(() => { killSpawnedSubtree(child, 'SIGKILL'); }, 2000);
                 if (typeof killTimer.unref === 'function')
                     killTimer.unref();
                 reject(new JudgeMeasurementTimeout(options.timeoutMessage, options.timeoutMs));
