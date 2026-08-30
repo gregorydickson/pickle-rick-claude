@@ -2291,7 +2291,7 @@ test('measureLlmMetric extracts score from markdown-formatted output', async () 
 });
 
 test('buildJudgePrompt includes goal, cwd, and scoring format instructions', () => {
-    const prompt = buildJudgePrompt('fix bugs', '/tmp');
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp' });
     assert.ok(prompt.includes('fix bugs'), 'should include goal');
     assert.ok(prompt.includes('/tmp'), 'should include cwd');
     assert.ok(prompt.includes('Output a SINGLE JSON object'), 'should include single-JSON-object instruction');
@@ -2307,7 +2307,7 @@ test('buildJudgePrompt includes goal, cwd, and scoring format instructions', () 
 // numeric-scoring constraint is now that `score` must equal `violations.length` for
 // count-type metrics.
 test('buildJudgePrompt instructs score must equal violations.length for count-type metrics', () => {
-    const prompt = buildJudgePrompt('fix bugs', '/tmp');
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp' });
     assert.ok(
         prompt.includes('score` MUST equal `violations.length`'),
         'should instruct score equals violations.length for count-type metrics'
@@ -2315,18 +2315,18 @@ test('buildJudgePrompt instructs score must equal violations.length for count-ty
 });
 
 test('buildJudgePrompt does not include codebase evaluation preamble', () => {
-    const prompt = buildJudgePrompt('fix bugs', '/tmp');
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp' });
     assert.ok(!prompt.includes('You are evaluating a codebase'), 'preamble moved to system prompt');
 });
 
 test('buildJudgePrompt includes prdPath when provided', () => {
-    const prompt = buildJudgePrompt('fix bugs', '/tmp', undefined, '/tmp/prds/my-prd.md');
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp', prdPath: '/tmp/prds/my-prd.md' });
     assert.ok(prompt.includes('/tmp/prds/my-prd.md'), 'should include prd path');
     assert.ok(prompt.includes('Examine the code at this path'), 'should instruct to examine the path');
 });
 
 test('buildJudgePrompt omits target file when prdPath not provided', () => {
-    const prompt = buildJudgePrompt('fix bugs', '/tmp');
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp' });
     assert.ok(!prompt.includes('Target path:'), 'should not include target path without prdPath');
 });
 
@@ -2350,27 +2350,27 @@ test('measureLlmMetric passes prdPath to buildJudgePrompt', async () => {
 });
 
 test('buildJudgePrompt includes judgeContextPath when provided', () => {
-    const prompt = buildJudgePrompt('fix bugs', '/tmp', undefined, '/tmp/target', '/tmp/principles.md');
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp', prdPath: '/tmp/target', judgeContextPath: '/tmp/principles.md' });
     assert.ok(prompt.includes('/tmp/principles.md'), 'should include judge context path');
     assert.ok(prompt.includes('Scoring reference:'), 'should label the context path');
     assert.ok(prompt.includes('Read this file FIRST'), 'should instruct judge to read it first');
 });
 
 test('buildJudgePrompt omits scoring reference when judgeContextPath not provided', () => {
-    const prompt = buildJudgePrompt('fix bugs', '/tmp', undefined, '/tmp/target');
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp', prdPath: '/tmp/target' });
     assert.ok(!prompt.includes('Scoring reference:'), 'should not include scoring reference without judgeContextPath');
 });
 
 test('buildJudgePrompt places scoring reference before target path', () => {
-    const prompt = buildJudgePrompt('fix bugs', '/tmp', undefined, '/tmp/target', '/tmp/principles.md');
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp', prdPath: '/tmp/target', judgeContextPath: '/tmp/principles.md' });
     const refIdx = prompt.indexOf('Scoring reference:');
     const targetIdx = prompt.indexOf('Target path:');
     assert.ok(refIdx < targetIdx, 'scoring reference should appear before target path');
 });
 
 test('buildJudgePrompt with empty priorViolations produces unchanged prompt (no-op)', () => {
-    const withEmpty = buildJudgePrompt('fix bugs', '/tmp', undefined, undefined, undefined, []);
-    const withOmitted = buildJudgePrompt('fix bugs', '/tmp');
+    const withEmpty = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp', priorViolations: [] });
+    const withOmitted = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp' });
     assert.strictEqual(withEmpty, withOmitted, 'empty priorViolations must not alter the prompt');
     assert.ok(!withEmpty.includes('Prior violations'), 'should not include violations section');
 });
@@ -2381,7 +2381,7 @@ test('buildJudgePrompt with 3-entry priorViolations appends section with 3 lines
         { id: 'src-bar:20:no-magic:ef56gh78', first_seen_iter: 2, last_seen_iter: 4, severity: 'med', description: 'magic number 42' },
         { id: 'src-baz:30:no-any:ij90kl12', first_seen_iter: 1, last_seen_iter: 2, severity: 'low', description: 'any type used' },
     ];
-    const prompt = buildJudgePrompt('fix bugs', '/tmp', undefined, undefined, undefined, violations);
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp', priorViolations: violations });
     assert.ok(prompt.includes('## Prior violations (DO NOT re-report unless still present)'), 'should include section header');
     assert.ok(prompt.includes('[src-foo:10:no-unused:ab12cd34] high unused variable x (last seen iter 3)'), 'should include first entry');
     assert.ok(prompt.includes('[src-bar:20:no-magic:ef56gh78] med magic number 42 (last seen iter 4)'), 'should include second entry');
@@ -2398,7 +2398,7 @@ test('buildJudgePrompt with 60-entry priorViolations caps to 50 sorted by last_s
         severity: 'low',
         description: `violation ${i}`,
     }));
-    const prompt = buildJudgePrompt('fix bugs', '/tmp', undefined, undefined, undefined, violations);
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp', priorViolations: violations });
     const entryLines = prompt.split('\n').filter(l => l.startsWith('- ['));
     assert.strictEqual(entryLines.length, 50, 'should cap at 50 entries');
     // first entry should be the one with highest last_seen_iter (iter 60)
@@ -2410,7 +2410,7 @@ test('buildJudgePrompt with 60-entry priorViolations caps to 50 sorted by last_s
 // R-SJWT-1: scoped judge prompt (allowed_paths)
 test('buildJudgePrompt with allowedPaths uses scoped instruction and omits whole-tree instruction', () => {
     const paths = ['extension/src/foo.ts', 'extension/src/bar.ts'];
-    const prompt = buildJudgePrompt('fix bugs', '/tmp', undefined, '/tmp/target', undefined, [], paths);
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp', prdPath: '/tmp/target', priorViolations: [], allowedPaths: paths });
     assert.ok(prompt.includes('extension/src/foo.ts'), 'should include first allowed path');
     assert.ok(prompt.includes('extension/src/bar.ts'), 'should include second allowed path');
     assert.ok(prompt.includes('Review ONLY these paths:'), 'should include scoped section header');
@@ -2419,7 +2419,7 @@ test('buildJudgePrompt with allowedPaths uses scoped instruction and omits whole
 });
 
 test('buildJudgePrompt with empty allowedPaths falls back to whole-tree Target path (unscoped)', () => {
-    const prompt = buildJudgePrompt('fix bugs', '/tmp', undefined, '/tmp/target', undefined, [], []);
+    const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp', prdPath: '/tmp/target', priorViolations: [], allowedPaths: [] });
     assert.ok(prompt.includes('Target path: /tmp/target'), 'should include Target path for unscoped run');
     assert.ok(prompt.includes('Examine the code at this path'), 'should include whole-tree examine instruction');
     assert.ok(!prompt.includes('Review ONLY'), 'must not include scoped instruction for unscoped run');

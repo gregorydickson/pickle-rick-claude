@@ -118,7 +118,7 @@ const FIRST_PASS_METRIC = {
 };
 
 test('AP-EXT-ITER22-01: the judge prompt still declares the no-prior-list contract this relies on', () => {
-    const prompt = buildJudgePrompt('Reduce violations', '/repo', [], '/repo/src', undefined, []);
+    const prompt = buildJudgePrompt({ goal: 'Reduce violations', cwd: '/repo', history: [], prdPath: '/repo/src', priorViolations: [] });
     assert.match(
         prompt,
         /when there is no such list, `resolved` and `remaining` are `\[\]` and every id goes in `new`/,
@@ -491,30 +491,14 @@ test('createMicroverseState with convergenceMode: metric sets convergence_mode t
 // ---------------------------------------------------------------------------
 
 test('R-SJWT-1: buildJudgePrompt with allowedPaths omits "Target path:" for scoped run', () => {
-    const prompt = buildJudgePrompt(
-        'Reduce code quality violations',
-        '/repo',
-        [],
-        '/repo/src',
-        undefined,
-        [],
-        ['src/foo.ts', 'src/bar.ts'],
-    );
+    const prompt = buildJudgePrompt({ goal: 'Reduce code quality violations', cwd: '/repo', history: [], prdPath: '/repo/src', priorViolations: [], allowedPaths: ['src/foo.ts', 'src/bar.ts'] });
     assert.ok(!prompt.includes('Target path:'), 'scoped prompt must not include "Target path:"');
     assert.ok(prompt.includes('Review ONLY these paths:'), 'scoped prompt must include "Review ONLY these paths:"');
 });
 
 test('R-SJWT-1: buildJudgePrompt with allowedPaths enumerates each allowed path', () => {
     const allowedPaths = ['src/foo.ts', 'src/bar.ts', 'src/baz.ts'];
-    const prompt = buildJudgePrompt(
-        'Reduce violations',
-        '/repo',
-        [],
-        '/repo/src',
-        undefined,
-        [],
-        allowedPaths,
-    );
+    const prompt = buildJudgePrompt({ goal: 'Reduce violations', cwd: '/repo', history: [], prdPath: '/repo/src', priorViolations: [], allowedPaths });
     for (const p of allowedPaths) {
         assert.ok(prompt.includes(`- ${p}`), `scoped prompt must enumerate allowed path: ${p}`);
     }
@@ -522,15 +506,7 @@ test('R-SJWT-1: buildJudgePrompt with allowedPaths enumerates each allowed path'
 
 test('R-SSOC L1: scoped judge prompt constrains SCORING to allowed_paths and keeps the R-SJWT-1 pins', () => {
     const allowedPaths = ['src/foo.ts', 'src/bar.ts'];
-    const prompt = buildJudgePrompt(
-        'Reduce violations',
-        '/repo',
-        [],
-        '/repo/src',
-        undefined,
-        [],
-        allowedPaths,
-    );
+    const prompt = buildJudgePrompt({ goal: 'Reduce violations', cwd: '/repo', history: [], prdPath: '/repo/src', priorViolations: [], allowedPaths });
     // R-SSOC: the judge must score ONLY in-scope violations (whole-tree scoring
     // steers the worker off-scope — baseline 24 on a clean 12-file scope).
     assert.ok(
@@ -568,7 +544,7 @@ test('R-SJWT-3: convergence-to-0 — scoped judge score of 0 classifies as impro
 // ---------------------------------------------------------------------------
 
 test('AC-JPCM-1: buildJudgePrompt asks for the JSON object the parser accepts, not a bare integer', () => {
-    const prompt = buildJudgePrompt('Reduce violations', '/repo', [], '/repo/src');
+    const prompt = buildJudgePrompt({ goal: 'Reduce violations', cwd: '/repo', history: [], prdPath: '/repo/src' });
     assert.ok(
         !prompt.includes('Output ONLY a single integer'),
         'the bare-integer contract is what starved the parser — it must be gone',
@@ -595,7 +571,7 @@ test('AC-JPCM-11: the judge SYSTEM prompt and the user-turn buildJudgePrompt agr
         'the system prompt must not resurrect the bare-number contract the user prompt no longer asks for',
     );
 
-    const prompt = buildJudgePrompt('Reduce violations', '/repo', [], '/repo/src');
+    const prompt = buildJudgePrompt({ goal: 'Reduce violations', cwd: '/repo', history: [], prdPath: '/repo/src' });
     // Both prompts must cite the identical JSON schema string — not merely "both mention
     // JSON" — proving they derive from one shared source rather than two hand-authored
     // descriptions that can drift apart again.

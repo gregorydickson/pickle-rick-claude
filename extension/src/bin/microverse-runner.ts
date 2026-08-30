@@ -1907,26 +1907,44 @@ export const JUDGE_SYSTEM_PROMPT = [
 ].join(' ') + '\n\n' + FOM_HONEST_REPORTING_RULES;
 
 /**
- * Build the LLM judge prompt.
+ * Inputs to {@link buildJudgePrompt}, passed as one object rather than positionally.
  *
- * @param priorViolations - Known violations from prior iterations. When non-empty, a
- *   "## Prior violations" section is appended so the judge does not re-report already-
- *   tracked issues. Capped at the {@link MAX_PRIOR_VIOLATIONS_IN_PROMPT} most-recent
- *   entries by `last_seen_iter` desc.
- *   Non-array values are treated as empty (defensive).
- * @param allowedPaths - When non-empty (scoped run), the judge is restricted to these
- *   paths and the whole-tree "Target path:" instruction is omitted. When empty/absent
- *   (unscoped run), existing whole-tree behavior is preserved.
+ * `prdPath` and `judgeContextPath` are adjacent, same-typed (`string | undefined`) and
+ * both optional, so a transposed positional argument type-checked cleanly and silently
+ * fed the judge the wrong file. Naming them at the call site removes that failure mode.
  */
-export function buildJudgePrompt(
-  goal: string,
-  cwd: string,
-  history?: MicroverseHistoryEntry[],
-  prdPath?: string,
-  judgeContextPath?: string,
-  priorViolations: ViolationLedger[] = [],
-  allowedPaths: string[] = [],
-): string {
+export interface JudgePromptInput {
+  goal: string;
+  cwd: string;
+  history?: MicroverseHistoryEntry[];
+  prdPath?: string;
+  judgeContextPath?: string;
+  /**
+   * Known violations from prior iterations. When non-empty, a "## Prior violations"
+   * section is appended so the judge does not re-report already-tracked issues. Capped
+   * at the {@link MAX_PRIOR_VIOLATIONS_IN_PROMPT} most-recent entries by `last_seen_iter`
+   * desc. Non-array values are treated as empty (defensive).
+   */
+  priorViolations?: ViolationLedger[];
+  /**
+   * When non-empty (scoped run), the judge is restricted to these paths and the
+   * whole-tree "Target path:" instruction is omitted. When empty/absent (unscoped run),
+   * existing whole-tree behavior is preserved.
+   */
+  allowedPaths?: string[];
+}
+
+/** Build the LLM judge prompt. */
+export function buildJudgePrompt(input: JudgePromptInput): string {
+  const {
+    goal,
+    cwd,
+    history,
+    prdPath,
+    judgeContextPath,
+    priorViolations = [],
+    allowedPaths = [],
+  } = input;
   const parts: string[] = [
     `Goal: ${goal}`,
     `Working directory: ${cwd}`,
@@ -2636,7 +2654,7 @@ function buildJudgeAttemptInvocation(
   allowedPaths: string[],
 ): { cmd: string; args: string[]; model: string } {
   const model = judgeModel || DEFAULT_JUDGE_MODEL;
-  const userPrompt = buildJudgePrompt(goal, cwd, history, prdPath, judgeContextPath, priorViolations, allowedPaths);
+  const userPrompt = buildJudgePrompt({ goal, cwd, history, prdPath, judgeContextPath, priorViolations, allowedPaths });
   const { cmd, args } = buildJudgeInvocation('claude', {
     prompt: userPrompt,
     addDirs: [cwd],

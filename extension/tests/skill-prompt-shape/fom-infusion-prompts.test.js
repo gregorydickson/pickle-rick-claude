@@ -364,7 +364,7 @@ test('fom-infusion sweep: a synthetic unclassified surface makes the sweep throw
 
 // The two builders whose assembled output is directly callable get real output assertions.
 test('fom-infusion output-splice: buildJudgePrompt output carries FOM_HONEST_REPORTING_RULES', () => {
-  const prompt = buildJudgePrompt('fix bugs', '/tmp');
+  const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp' });
   assert.ok(
     prompt.includes(FOM_HONEST_REPORTING_RULES),
     'buildJudgePrompt must splice FOM_HONEST_REPORTING_RULES into the returned judge prompt, not merely import it',

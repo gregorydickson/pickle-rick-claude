@@ -1348,19 +1348,9 @@ export const JUDGE_SYSTEM_PROMPT = [
     'Use Read, Glob, and Grep tools to examine files as needed.',
     `Your final output MUST be a single JSON object matching this schema, and NOTHING else: ${JUDGE_OUTPUT_JSON_SCHEMA}`,
 ].join(' ') + '\n\n' + FOM_HONEST_REPORTING_RULES;
-/**
- * Build the LLM judge prompt.
- *
- * @param priorViolations - Known violations from prior iterations. When non-empty, a
- *   "## Prior violations" section is appended so the judge does not re-report already-
- *   tracked issues. Capped at the {@link MAX_PRIOR_VIOLATIONS_IN_PROMPT} most-recent
- *   entries by `last_seen_iter` desc.
- *   Non-array values are treated as empty (defensive).
- * @param allowedPaths - When non-empty (scoped run), the judge is restricted to these
- *   paths and the whole-tree "Target path:" instruction is omitted. When empty/absent
- *   (unscoped run), existing whole-tree behavior is preserved.
- */
-export function buildJudgePrompt(goal, cwd, history, prdPath, judgeContextPath, priorViolations = [], allowedPaths = []) {
+/** Build the LLM judge prompt. */
+export function buildJudgePrompt(input) {
+    const { goal, cwd, history, prdPath, judgeContextPath, priorViolations = [], allowedPaths = [], } = input;
     const parts = [
         `Goal: ${goal}`,
         `Working directory: ${cwd}`,
@@ -1903,7 +1893,7 @@ async function measureMetricWithRetry(validation, timeoutSeconds, cwd) {
  */
 function buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, judgeContextPath, priorViolations, allowedPaths) {
     const model = judgeModel || DEFAULT_JUDGE_MODEL;
-    const userPrompt = buildJudgePrompt(goal, cwd, history, prdPath, judgeContextPath, priorViolations, allowedPaths);
+    const userPrompt = buildJudgePrompt({ goal, cwd, history, prdPath, judgeContextPath, priorViolations, allowedPaths });
     const { cmd, args } = buildJudgeInvocation('claude', {
         prompt: userPrompt,
         addDirs: [cwd],
