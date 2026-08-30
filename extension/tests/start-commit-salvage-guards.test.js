@@ -214,3 +214,157 @@ test('AC-SCPIN-4(b): T40 isFailedTicketTerminalExcludable — empty-window exclu
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER103-01 — the fsck-tip scope filter inside `detectAndRecoverHeadRegression`
+// decides whether a DANGLING commit is `git merge --ff-only`'d onto the branch. Its whole
+// claim is "touched paths ⊆ scope.json:allowed_paths", so it must enumerate those paths
+// through the same git contract the fence was built from. Both arms below are contract
+// arms, and each is pinned separately: dropping either flag from `listRangeTouchedPaths`
+// reddens exactly one of them.
+
+/** Commit `files` (path -> contents) on `repo` and return the resulting sha. */
+function commitFiles(repo, files, message) {
+  for (const [rel, contents] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
+    writeFileSync(path.join(repo, rel), contents);
+  }
+  git(['add', '-A'], repo);
+  git(['commit', '-q', '-m', message, '--no-gpg-sign'], repo);
+  return git(['rev-parse', 'HEAD'], repo);
+}
+
+/**
+ * Build a DANGLING descendant of HEAD by committing on a throwaway branch and deleting it.
+ * `git fsck --no-reflogs` — the discovery the runtime uses — then reports it as a dangling
+ * tip, and because it descends from HEAD the runtime's `merge --ff-only` can reach it.
+ */
+function makeDanglingTip(repo, mutate, message) {
+  const branch = git(['symbolic-ref', '--short', 'HEAD'], repo);
+  git(['checkout', '-q', '-b', 'ap103orphan'], repo);
+  mutate();
+  git(['add', '-A'], repo);
+  git(['commit', '-q', '-m', message, '--no-gpg-sign'], repo);
+  const tip = git(['rev-parse', 'HEAD'], repo);
+  git(['checkout', '-q', branch], repo);
+  git(['branch', '-qD', 'ap103orphan'], repo);
+  return tip;
+}
+
+function runHeadRegression(repo, startCommit, allowedPaths, ticketId) {
+  const sessionFix = makeSessionDir(repo);
+  const { sessionDir, statePath } = sessionFix;
+  writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({ allowed_paths: allowedPaths }));
+  mkdirSync(path.join(sessionDir, ticketId), { recursive: true });
+  writeFileSync(
+    path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`),
+    ['---', `id: ${ticketId}`, 'title: "ap103 fixture"', 'status: In Progress', '---'].join('\n'),
+  );
+  const result = detectAndRecoverHeadRegression({
+    ticketId, workingDir: repo, startCommit, completionCommitSha: null,
+    sessionDir, statePath, iteration: 1, log: () => {},
+  });
+  return { result, sessionTmp: sessionFix.tmp };
+}
+
+test('AP-EXT-ITER103-01(a): a rename-hidden out-of-scope deletion is not ff-reattached', () => {
+  const repo = initRepo();
+  let sessionTmp;
+  try {
+    // Eight similar lines so git's default -M50% rename detection fires on the move below.
+    const START = commitFiles(repo, {
+      'outofscope/legacy.ts': 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n',
+      'extension/src/keep.ts': 'keep\n',
+    }, 'base');
+
+    const tip = makeDanglingTip(
+      repo,
+      () => git(['mv', 'outofscope/legacy.ts', 'extension/src/moved.ts'], repo),
+      'worker: move legacy into src',
+    );
+
+    // Fixture precondition — without this the case pins nothing. Rename detection is ON by
+    // default, so the pre-fix reader sees ONLY the in-scope destination and is blind to the
+    // out-of-scope source the commit DELETES.
+    assert.equal(
+      git(['diff', '--name-only', `HEAD..${tip}`], repo),
+      'extension/src/moved.ts',
+      'fixture precondition: rename detection hides the out-of-scope source path',
+    );
+
+    const { result, sessionTmp: tmp } = runHeadRegression(repo, START, ['extension/src/'], 'ap103ren');
+    sessionTmp = tmp;
+
+    assert.equal(result.detected, true, 'the regressed HEAD is still detected');
+    assert.notEqual(
+      result.action, 'ff_reattached',
+      'a tip whose rename DELETES a path outside allowed_paths must not be grafted onto the branch',
+    );
+    assert.equal(result.recovered, false);
+    assert.equal(git(['rev-parse', 'HEAD'], repo), START, 'HEAD must not move');
+    assert.equal(
+      git(['cat-file', '-t', 'HEAD:outofscope/legacy.ts'], repo), 'blob',
+      'the out-of-scope file the tip deletes is still on the branch',
+    );
+  } finally {
+    if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER103-01(b): an in-scope-only tip is still ff-reattached (positive control)', () => {
+  const repo = initRepo();
+  let sessionTmp;
+  try {
+    const START = commitFiles(repo, { 'extension/src/keep.ts': 'keep\n' }, 'base');
+    const tip = makeDanglingTip(
+      repo,
+      () => writeFileSync(path.join(repo, 'extension', 'src', 'added.ts'), 'added\n'),
+      'worker: in-scope work',
+    );
+
+    const { result, sessionTmp: tmp } = runHeadRegression(repo, START, ['extension/src/'], 'ap103ctl');
+    sessionTmp = tmp;
+
+    assert.equal(result.action, 'ff_reattached', 'the fix must not disable reattach for a legitimately in-scope tip');
+    assert.equal(result.recovered, true);
+    assert.equal(git(['rev-parse', 'HEAD'], repo), tip);
+  } finally {
+    if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER103-01(c): a C-quoted in-scope path is still ff-reattached (the -z arm)', () => {
+  const repo = initRepo();
+  let sessionTmp;
+  try {
+    const START = commitFiles(repo, { 'extension/src/keep.ts': 'keep\n' }, 'base');
+    // A TAB, not a non-ASCII character: `core.quotePath` C-quotes both, but a tab-bearing
+    // name is byte-identical on every platform, while a `café.ts` fixture would be stored
+    // NFD on macOS and NFC on Linux and the assertion would drift with the filesystem.
+    const quoted = 'extension/src/tab\tname.ts';
+    const tip = makeDanglingTip(
+      repo,
+      () => writeFileSync(path.join(repo, quoted), 'quoted\n'),
+      'worker: in-scope path git C-quotes',
+    );
+
+    // Fixture precondition: the pre-fix reader really does see a quote-wrapped path, which
+    // matches nothing in allowed_paths and denies a legitimately in-scope recovery.
+    assert.equal(
+      git(['diff', '--name-only', `HEAD..${tip}`], repo),
+      '"extension/src/tab\\tname.ts"',
+      'fixture precondition: core.quotePath C-quotes the in-scope path without -z',
+    );
+
+    const { result, sessionTmp: tmp } = runHeadRegression(repo, START, ['extension/src/'], 'ap103qtd');
+    sessionTmp = tmp;
+
+    assert.equal(result.action, 'ff_reattached', 'a C-quotable in-scope path must not deny the reattach');
+    assert.equal(result.recovered, true);
+    assert.equal(git(['rev-parse', 'HEAD'], repo), tip);
+  } finally {
+    if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});

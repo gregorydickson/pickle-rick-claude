@@ -2212,10 +2212,10 @@ export function isFailedTicketTerminalExcludable(ctx, ticketId) {
         // the window is trivially empty.
         return head === ctx.startCommit;
     }
-    const diffOut = silentDeathGit(['diff', '--name-only', `${ctx.startCommit}..HEAD`], ctx.workingDir);
-    if (diffOut === null)
+    const touchedPaths = listRangeTouchedPaths(ctx.workingDir, `${ctx.startCommit}..HEAD`);
+    if (touchedPaths === null)
         return false; // git could not answer → conservative block
-    const touched = new Set(diffOut.split('\n').map((s) => s.trim()).filter(Boolean));
+    const touched = new Set(touchedPaths);
     // The window is "empty for this ticket" iff none of its declared files were touched.
     const norm = (p) => p.replace(/^\.\//, '');
     const touchedNorm = new Set([...touched].map(norm));
@@ -2644,10 +2644,9 @@ function resolveOrphanSha(input) {
         }
         // Scope filter: touched paths ⊆ allowed_paths (unscoped session → all pass).
         if (allowed && allowed.length > 0) {
-            const diff = silentDeathGit(['diff', '--name-only', `HEAD..${tip}`], workingDir);
-            if (diff === null)
+            const touched = listRangeTouchedPaths(workingDir, `HEAD..${tip}`);
+            if (touched === null)
                 return false;
-            const touched = diff.split('\n').map((s) => s.trim()).filter(Boolean);
             if (touched.some((f) => !isWithinAllowedPaths(f, allowed))) {
                 log(`[head-regression] fsck tip ${tip.slice(0, 8)} touches out-of-scope paths — skipping`);
                 return false;
@@ -8542,6 +8541,29 @@ function isWithinAllowedPaths(file, allowed) {
     });
 }
 /**
+ * AP-EXT-ITER103-01 — the ONE reader of "which paths did `<range>` touch" in this file.
+ * It crosses the SAME git contract as the fence's producer
+ * (`scope-resolver.ts:computeAllowedFromDiff` — `--name-status -M100 -z`) and as the
+ * pre-commit reader (`check-scope-diff.ts:getStagedPaths` — `--no-renames -z`):
+ *
+ * - `--no-renames`: rename detection is ON by default (`diff.renames`, git >= 2.9) and a
+ *   DETECTED rename prints ONLY the destination. Without it a commit that renames an
+ *   OUT-of-scope file to an in-scope path reads as touching nothing but the in-scope
+ *   destination, and the deletion outside the fence is invisible to every caller below.
+ * - `-z`: `core.quotePath` is ON by default, so without it a non-ASCII path arrives
+ *   C-quoted (`"caf\303\251.ts"`) and matches nothing in `allowed_paths`.
+ *
+ * Returns `null` when git could not answer — an unanswered enumeration is NOT an empty
+ * one, and every caller routes `null` to its conservative arm. No `.trim()` per token:
+ * `-z` makes the delimiter exact, and trimming would corrupt a path with a trailing space.
+ */
+function listRangeTouchedPaths(workingDir, range) {
+    const out = silentDeathGit(['diff', '--name-only', '--no-renames', '-z', range], workingDir);
+    if (out === null)
+        return null;
+    return out.split('\0').filter(Boolean);
+}
+/**
  * B-RASO — the ONE frontmatter-SHA-verifying helper for BOTH recovery detectors
  * (silent-death salvage + Failed-flip suppression). Resolves a ticket's
  * frontmatter completion sha, git-VERIFIED: iterates both fields with `continue`
@@ -8579,10 +8601,9 @@ function hasScopedIterationWindowCommit(input) {
     const head = silentDeathGit(['rev-parse', 'HEAD'], input.workingDir);
     if (!head || head === input.preIterSha)
         return false;
-    const diffOut = silentDeathGit(['diff', '--name-only', `${input.preIterSha}..HEAD`], input.workingDir);
-    if (diffOut === null)
+    const touched = listRangeTouchedPaths(input.workingDir, `${input.preIterSha}..HEAD`);
+    if (touched === null)
         return false;
-    const touched = diffOut.split('\n').map((s) => s.trim()).filter(Boolean);
     if (touched.length === 0)
         return false;
     const allowed = readScopeAllowedPaths(input.sessionDir);
@@ -8765,10 +8786,9 @@ function hasTicketScopedCommitEvidence(input) {
     const head = silentDeathGit(['rev-parse', 'HEAD'], input.workingDir);
     if (!head || head === input.preSha)
         return false;
-    const diffOut = silentDeathGit(['diff', '--name-only', `${input.preSha}..HEAD`], input.workingDir);
-    if (diffOut === null)
+    const touched = listRangeTouchedPaths(input.workingDir, `${input.preSha}..HEAD`);
+    if (touched === null)
         return false;
-    const touched = diffOut.split('\n').map((s) => s.trim()).filter(Boolean);
     if (touched.length === 0)
         return false;
     const allowed = readScopeAllowedPaths(input.sessionDir);
