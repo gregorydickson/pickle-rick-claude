@@ -138,3 +138,103 @@ test('maybeEmitManagerTurnProgress: skips gracefully when ticketId is nullish', 
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER108-01 regression: the heartbeat's artifact predicate must not be a
+// phase-prefix list. The original form enumerated ['research_', 'plan_',
+// 'conformance_'] and so went silent for the LAST phases of every ticket — 30/30
+// ticket dirs in the live 2026-08-28 session wrote a `code_review_*.md` that
+// produced no mtime bump and no `manager_turn_progress` event, which is precisely
+// the "state stale + no progress event" shape src/bin/CLAUDE.md documents as a
+// genuine wedge. Each phase artifact is asserted on its own tmp dir so a fix that
+// merely appends the next two prefixes still fails on `simplify_`/`handoff_notes`.
+for (const artifact of [
+  'code_review_2026-08-29.md',
+  'simplify_2026-08-29.md',
+  'handoff_notes.md',
+  'research_2026-08-29.md',
+  'plan_review.md',
+  'conformance_2026-08-29.md',
+]) {
+  test(`maybeEmitManagerTurnProgress: ${artifact} counts as manager-turn progress`, () => {
+    const sessionDir = mkTmp();
+    const origDataRoot = process.env.PICKLE_DATA_ROOT;
+    try {
+      const ticketId = 'test-ticket';
+      const ticketDir = path.join(sessionDir, ticketId);
+      fs.mkdirSync(ticketDir);
+
+      const statePath = path.join(sessionDir, 'state.json');
+      const stateContent = JSON.stringify({ active: true, current_ticket: ticketId });
+      fs.writeFileSync(statePath, stateContent);
+      const mtimeBefore = fs.statSync(statePath, { bigint: true }).mtimeNs;
+      const contentBefore = fs.readFileSync(statePath);
+
+      const artifactPath = path.join(ticketDir, artifact);
+      fs.writeFileSync(artifactPath, '# fixture');
+      const lastSeen = fs.statSync(artifactPath).mtimeMs - 1;
+
+      process.env.PICKLE_DATA_ROOT = sessionDir;
+      const newLastSeen = maybeEmitManagerTurnProgress({
+        sessionDir,
+        statePath,
+        ticketId,
+        lastSeenMtimeMs: lastSeen,
+      });
+
+      assert.ok(
+        newLastSeen > lastSeen,
+        `${artifact} must advance lastSeenMtimeMs — a phase whose artifact is invisible `
+          + 'to the heartbeat reads as a wedged turn',
+      );
+      assert.ok(
+        fs.statSync(statePath, { bigint: true }).mtimeNs > mtimeBefore,
+        `${artifact} must bump the state-file mtime`,
+      );
+      // R-WSRC: the heartbeat is an mtime bump only — it must never rewrite state.json.
+      assert.deepStrictEqual(
+        Buffer.from(fs.readFileSync(statePath)),
+        Buffer.from(contentBefore),
+        'heartbeat must not alter state.json content',
+      );
+    } finally {
+      if (origDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+      else process.env.PICKLE_DATA_ROOT = origDataRoot;
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+}
+
+// The predicate must stay a suffix test, not a members list: a non-markdown file
+// (the worker session log churns constantly) must NOT read as turn progress.
+test('maybeEmitManagerTurnProgress: non-markdown ticket files are not progress', () => {
+  const sessionDir = mkTmp();
+  try {
+    const ticketId = 'test-ticket';
+    const ticketDir = path.join(sessionDir, ticketId);
+    fs.mkdirSync(ticketDir);
+
+    const statePath = path.join(sessionDir, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({ active: true, current_ticket: ticketId }));
+    const mtimeBefore = fs.statSync(statePath, { bigint: true }).mtimeNs;
+
+    const logPath = path.join(ticketDir, 'worker_session_1234.log');
+    fs.writeFileSync(logPath, 'chatter');
+    const lastSeen = fs.statSync(logPath).mtimeMs - 1;
+
+    const newLastSeen = maybeEmitManagerTurnProgress({
+      sessionDir,
+      statePath,
+      ticketId,
+      lastSeenMtimeMs: lastSeen,
+    });
+
+    assert.strictEqual(newLastSeen, lastSeen, 'a .log write must not count as manager-turn progress');
+    assert.strictEqual(
+      fs.statSync(statePath, { bigint: true }).mtimeNs,
+      mtimeBefore,
+      'state.json mtime must not move for a non-markdown write',
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});

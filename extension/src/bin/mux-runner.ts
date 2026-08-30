@@ -226,7 +226,6 @@ const TASK_NOTE_TRUNC_MARKER = '[truncated]';
 const TASK_NOTES_MAX_CHARS = 2000;
 
 const MANAGER_TURN_HEARTBEAT_POLL_MS = 20_000;
-const HEARTBEAT_ARTIFACT_PREFIXES = ['research_', 'plan_', 'conformance_'] as const;
 
 // R-MWIS-1 / AC-R-WPEXA-9: bounded stdio-drain window after the child's 'exit'
 // event. Node's 'close' event (the PRIMARY completion signal) is gated on
@@ -280,6 +279,17 @@ export function resolveApncMaxPassesWithoutClean(env: NodeJS.ProcessEnv = proces
   return APNC_MAX_PASSES_WITHOUT_CLEAN;
 }
 
+/**
+ * R-SJLAG manager-turn freshness heartbeat: when any markdown artifact under the
+ * current ticket dir gains a newer mtime, bump the state file's mtime (no content
+ * write) and emit `manager_turn_progress`.
+ *
+ * The predicate is `.md`, deliberately NOT a prefix list. Every markdown file in a
+ * ticket dir is written by the worker or by the manager acting on that ticket, so
+ * "a .md changed" and "the turn is progressing" are the same fact — and a list of
+ * phase prefixes is one lifecycle phase away from going blind, which is exactly how
+ * the original three-prefix form missed `code_review_*` and `simplify_*`.
+ */
 export function maybeEmitManagerTurnProgress(opts: {
   sessionDir: string;
   statePath: string;
@@ -297,7 +307,7 @@ export function maybeEmitManagerTurnProgress(opts: {
   }
   let maxMtimeMs = lastSeenMtimeMs;
   for (const f of files) {
-    if (!HEARTBEAT_ARTIFACT_PREFIXES.some(p => f.startsWith(p)) || !f.endsWith('.md')) continue;
+    if (!f.endsWith('.md')) continue;
     try {
       const { mtimeMs } = fs.statSync(path.join(ticketDir, f));
       if (mtimeMs > maxMtimeMs) maxMtimeMs = mtimeMs;
