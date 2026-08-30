@@ -1,7 +1,7 @@
 // @tier: fast
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -26,7 +26,7 @@ const AUDIT_SCRIPTS = [
   'bash scripts/audit-un-terminalize-single-path.sh',
   'bash scripts/audit-did-we-count.sh',
 ].join(' && ');
-const RELEASE_GATE_COMMAND = `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && ${AUDIT_SCRIPTS} && npm run test:fast:budget && npm run test:integration && RUN_EXPENSIVE_TESTS=1 npm run test:expensive`;
+const RELEASE_GATE_COMMAND = `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && ${AUDIT_SCRIPTS} && npm run test:fast:budget && npm run test:integration && npm run test:contract && RUN_EXPENSIVE_TESTS=1 npm run test:expensive`;
 
 function versioningSection(markdown) {
   const lines = markdown.split(/\r?\n/);
@@ -168,4 +168,65 @@ test('ci workflow runs full gate on push and PR to main', () => {
     runCommands(workflow).some(command => command.includes(RELEASE_GATE_COMMAND)),
     'ci.yml must contain the full gate command including audit scripts and expensive tests',
   );
+});
+
+// A tier the runner ACCEPTS but no gate command INVOKES is a test suite that exists,
+// audits green and never executes. Measured at the time this pin was written: `contract`
+// was such a tier -- 4 files / 99 tests, accepted by test-runner's VALID_TIERS, blessed by
+// audit-test-tiers.sh and audit-trap-door-enforcement.sh, cited by three ENFORCE clauses in
+// src/lib/CLAUDE.md, and reachable from no npm script at all. The tier set is READ FROM THE
+// RUNNER rather than restated here, so adding a fifth tier without a consumer reds this pin
+// instead of silently repeating the defect.
+function reachedTiers(gateCommand, scripts, rootDir) {
+  const tiers = new Set();
+  const seenScripts = new Set();
+  const seenFiles = new Set();
+
+  const absorb = (text) => {
+    // Both spellings reach the runner: the shell form `--tier contract` and the argv form
+    // `'--tier', 'fast'` (bin/check-flake-budget.js). A pattern that reads only the shell form
+    // reports the fast tier as unreached.
+    for (const match of text.matchAll(/--tier['"]?[\s,]+['"]?([A-Za-z0-9_-]+)['"]?/g)) tiers.add(match[1]);
+
+    for (const match of text.matchAll(/npm run ([A-Za-z0-9:_-]+)/g)) {
+      const name = match[1];
+      if (seenScripts.has(name) || !(name in scripts)) continue;
+      seenScripts.add(name);
+      absorb(scripts[name]);
+    }
+    // `test:fast` is reached only THROUGH a script file (test:fast:budget shells out to
+    // bin/check-flake-budget.js, which spawns the runner itself), so a shell-text-only
+    // walk would report the fast tier as unreached.
+    for (const match of text.matchAll(/node (bin\/[A-Za-z0-9._-]+\.js)/g)) {
+      const rel = match[1];
+      if (seenFiles.has(rel)) continue;
+      seenFiles.add(rel);
+      const abs = path.join(rootDir, rel);
+      if (existsSync(abs)) absorb(readFileSync(abs, 'utf8'));
+    }
+  };
+
+  absorb(gateCommand);
+  return tiers;
+}
+
+test('every tier the test runner accepts is invoked by the release gate', () => {
+  const extensionRoot = path.resolve(__dirname, '..');
+  const runnerSource = readFileSync(path.join(extensionRoot, 'bin', 'test-runner.js'), 'utf8');
+
+  const tierSet = runnerSource.match(/VALID_TIERS\s*=\s*new Set\(\[([^\]]*)\]\)/);
+  assert.ok(tierSet, 'bin/test-runner.js must declare VALID_TIERS as a Set literal');
+  const validTiers = [...tierSet[1].matchAll(/['"]([A-Za-z0-9_-]+)['"]/g)].map(m => m[1]);
+  assert.ok(validTiers.length > 0, 'VALID_TIERS parsed to zero tiers — the literal shape drifted');
+
+  const { scripts } = JSON.parse(readFileSync(PACKAGE_JSON_PATH, 'utf8'));
+  const reached = reachedTiers(RELEASE_GATE_COMMAND, scripts, extensionRoot);
+
+  for (const tier of validTiers) {
+    assert.ok(
+      reached.has(tier),
+      `test-runner accepts --tier ${tier} but no command reachable from the release gate ever `
+      + `invokes it, so every '// @tier: ${tier}' file is audited green and never executed`,
+    );
+  }
 });

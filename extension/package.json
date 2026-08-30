@@ -30,6 +30,7 @@
     "posttest:integration": "node bin/reap-orphans.js || true",
     "test:integration:parallel": "node bin/test-runner.js --tier integration --manifest tests/integration/.serial-tests.json --manifest-mode exclude",
     "test:integration:serial": "node bin/test-runner.js --tier integration --manifest tests/integration/.serial-tests.json --manifest-mode include --test-concurrency=1",
+    "test:contract": "node bin/test-runner.js --tier contract",
     "test:expensive": "npm run test:expensive:parallel; p=$?; npm run test:expensive:serial; s=$?; echo \"test:expensive halves measured: parallel_exit=$p serial_exit=$s\"; if [ $p -ne 0 ] || [ $s -ne 0 ]; then echo \"test:expensive FAILED (parallel_exit=$p serial_exit=$s)\" >&2; exit 1; fi",
     "test:expensive:parallel": "node bin/test-runner.js --tier expensive --manifest tests/expensive/.serial-tests.json --manifest-mode exclude",
     "test:expensive:serial": "node bin/test-runner.js --tier expensive --manifest tests/expensive/.serial-tests.json --manifest-mode include --test-concurrency=1",

@@ -29,6 +29,7 @@ const GATE = [
   'bash scripts/audit-did-we-count.sh',
   'npm run test:fast:budget',
   'npm run test:integration',
+  'npm run test:contract',
   'RUN_EXPENSIVE_TESTS=1 npm run test:expensive',
 ].join(' && ');
 
