@@ -111,8 +111,10 @@ test('quarantine excludes fast and integration tier files', () => {
     writeFixtureTest(root, 'tests/integration/integration-quarantined.test.js', 'integration');
     writeQuarantine(root, [
       '# Quarantine',
-      '- tests/fast-quarantined.test.js',
-      '- `tests/integration/integration-quarantined.test.js`',
+      '## tests/fast-quarantined.test.js',
+      '- Mechanism: skipped via tier-discovery helper\'s exclude-list',
+      '## tests/integration/integration-quarantined.test.js',
+      '- Mechanism: skipped via tier-discovery helper\'s exclude-list',
       '',
     ].join('\n'));
 
@@ -201,11 +203,89 @@ test('missing manifest fails loudly', () => {
   }
 });
 
+// AP-EXT-ITER100-01: `readQuarantineSet` and `scripts/audit-quarantine.sh` must agree on
+// what a quarantine entry IS. The audit skips `<!-- -->` comments and opens an entry only on a
+// `## tests/<path>` heading; a free-text `.test.js` scan is a second, wider definition the audit
+// is structurally blind to, so a name it cannot see still deletes that file from the tier while
+// the audit exits 0. Measured on the shipped runner before the fix: a filename in QUARANTINE.md's
+// own schema comment dropped tests/metrics.test.js (63 tests) from the fast tier, green.
+test('a .test.js name inside an HTML comment does not quarantine it', () => {
+  const root = makeFixtureRoot();
+  try {
+    writeFixtureTest(root, 'tests/fast-keep.test.js', 'fast');
+    writeQuarantine(root, [
+      '# Quarantined Tests',
+      '',
+      '<!-- Each entry must follow this schema:',
+      '## tests/<path>',
+      '- Mechanism: skipped via tier-discovery helper\'s exclude-list',
+      'For example:',
+      '## tests/fast-keep.test.js',
+      '-->',
+      '',
+    ].join('\n'));
+
+    assert.deepEqual(
+      stdoutLines(runRunner(root, ['--tier', 'fast', '--dry-run'])),
+      ['tests/fast-keep.test.js'],
+    );
+  } finally {
+    cleanupFixtureRoot(root);
+  }
+});
+
+test('a .test.js name in an entry\'s prose does not quarantine it', () => {
+  const root = makeFixtureRoot();
+  try {
+    writeFixtureTest(root, 'tests/fast-keep.test.js', 'fast');
+    writeFixtureTest(root, 'tests/fast-quarantined.test.js', 'fast');
+    writeQuarantine(root, [
+      '# Quarantined Tests',
+      '',
+      '## tests/fast-quarantined.test.js',
+      '- First failure: 2026-08-29',
+      '- Mechanism: skipped via tier-discovery helper\'s exclude-list',
+      '- Note: coverage superseded by tests/fast-keep.test.js',
+      '',
+    ].join('\n'));
+
+    // Only the headed entry is quarantined; the prose mention is not an entry.
+    assert.deepEqual(
+      stdoutLines(runRunner(root, ['--tier', 'fast', '--dry-run'])),
+      ['tests/fast-keep.test.js'],
+    );
+  } finally {
+    cleanupFixtureRoot(root);
+  }
+});
+
+test('an unterminated HTML comment hides entries to end of file, as the audit does', () => {
+  const root = makeFixtureRoot();
+  try {
+    writeFixtureTest(root, 'tests/fast-keep.test.js', 'fast');
+    writeQuarantine(root, [
+      '# Quarantined Tests',
+      '',
+      '<!-- draft, never closed',
+      '## tests/fast-keep.test.js',
+      '- Mechanism: skipped via tier-discovery helper\'s exclude-list',
+      '',
+    ].join('\n'));
+
+    assert.deepEqual(
+      stdoutLines(runRunner(root, ['--tier', 'fast', '--dry-run'])),
+      ['tests/fast-keep.test.js'],
+    );
+  } finally {
+    cleanupFixtureRoot(root);
+  }
+});
+
 test('quarantine retains expensive tier files', () => {
   const root = makeFixtureRoot();
   try {
     writeFixtureTest(root, 'tests/expensive-quarantined.test.js', 'expensive');
-    writeQuarantine(root, '- tests/expensive-quarantined.test.js\n');
+    writeQuarantine(root, '## tests/expensive-quarantined.test.js\n');
 
     assert.deepEqual(stdoutLines(runRunner(root, ['--tier', 'expensive', '--dry-run'], {
       env: { RUN_EXPENSIVE_TESTS: '1' },

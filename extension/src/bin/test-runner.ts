@@ -209,19 +209,35 @@ function readManifestEntries(rootDir: string, manifestPath: string): Set<string>
   return normalized;
 }
 
+/**
+ * A quarantine entry is a `## tests/<path>` HEADING outside an HTML comment — the same
+ * thing `scripts/audit-quarantine.sh` opens an entry on, so exactly the set the audit
+ * validates is the set excluded here.
+ *
+ * A free-text `.test.js` scan is a SECOND, wider definition, and the audit is structurally
+ * blind to the difference: a filename inside the `<!-- -->` schema comment, or named in an
+ * entry's prose ("superseded by tests/foo.test.js"), opens no entry the audit can see, yet
+ * still deletes that file from the fast and integration tiers. Measured on the shipped
+ * runner: a name in the comment block dropped `tests/metrics.test.js` (63 tests) from the
+ * tier while `audit-quarantine.sh` exited 0. The audit's `initial_count + 5` ceiling counts
+ * headings, so the wider reading can also drop unboundedly many files under a satisfied cap.
+ *
+ * The unterminated-comment arm matches the audit's state machine, which leaves `in_comment`
+ * set to end-of-file when a `<!--` never closes.
+ */
+const HTML_COMMENT_PATTERN = /<!--[\s\S]*?(?:-->|$)/g;
+const QUARANTINE_HEADING_PATTERN = /^##\s+(tests\/[A-Za-z0-9._/@+-]+\.test\.js)\s*$/;
+
 function readQuarantineSet(rootDir: string): Set<string> {
   const manifestPath = path.join(rootDir, 'tests', 'QUARANTINE.md');
   if (!existsSync(manifestPath)) return new Set();
 
   const entries = new Set<string>();
-  const manifest = readFileSync(manifestPath, 'utf8');
-  const entryPattern = /((?:\.\/)?(?:tests\/)?[A-Za-z0-9._/@+-]+\.test\.js)/g;
+  const manifest = readFileSync(manifestPath, 'utf8').replace(HTML_COMMENT_PATTERN, '');
 
   for (const line of manifest.split(/\r?\n/)) {
-    let match: RegExpExecArray | null;
-    while ((match = entryPattern.exec(line)) !== null) {
-      entries.add(normalizeQuarantineEntry(match[1].trim()));
-    }
+    const match = QUARANTINE_HEADING_PATTERN.exec(line);
+    if (match) entries.add(match[1]);
   }
 
   return entries;
