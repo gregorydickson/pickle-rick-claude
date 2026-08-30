@@ -396,6 +396,20 @@ export function __resetGitLsFilesSuffixCacheForTests() {
 function matchesOnPathBoundary(trackedPath, token) {
     return trackedPath === token || trackedPath.endsWith(`/${token}`);
 }
+// AP-EXT-ITER104-02: the listing is NUL-delimited, and that is what makes the
+// boundary rule above decidable. Without `-z`, `core.quotePath` (git's DEFAULT)
+// renders any path with a non-ASCII, control or quote byte ANYWHERE in it as a
+// C-quoted spelling wrapped in double quotes — so the entry ends in `"`, the
+// `endsWith('/' + token)` test misses, and a citation of a REAL tracked file is
+// reported `path_not_found`. Both arms measured on the shipped compiled module:
+// a lone `s\u00e9rvices/state-manager.ts` made `state-manager.ts` a fabricated
+// `path_not_found`, and adding an ASCII `plain/state-manager.ts` twin made the
+// genuinely AMBIGUOUS citation resolve to exactly one match, so `AC-FOMC-8d`'s
+// ambiguity warning never fired and the `line_out_of_range` read below ran
+// against the wrong file. Split, never TRIMMED: `-z` emits git's raw bytes, so
+// trimming would corrupt a path git deliberately did not quote, such as one
+// ending in a space. Same contract as `../hooks/handlers/tsc-gate.ts`'s
+// `listCachedPaths` (AP-EXT-ITER104-01).
 // `spawnSyncFn`, never `spawn`: the `pickle/spawn-error-handler` rule keys on the
 // IDENTIFIER, so a parameter named `spawn` reads as the async API and demands an
 // `.on('error')` handler a synchronous call can never have. The seam exists because
@@ -409,7 +423,7 @@ export function resolveTrackedSuffixMatches(workingDir, token, spawnSyncFn = spa
         return cached;
     let matches = [];
     try {
-        const result = spawnSyncFn('git', ['ls-files', '--', `*${token}`], {
+        const result = spawnSyncFn('git', ['ls-files', '-z', '--', `*${token}`], {
             cwd: workingDir,
             encoding: 'utf-8',
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -431,9 +445,8 @@ export function resolveTrackedSuffixMatches(workingDir, token, spawnSyncFn = spa
         // verdict rather than a visible failure to reach one.
         if (enumerationCompleted(result) && typeof result.stdout === 'string') {
             matches = result.stdout
-                .split('\n')
-                .map((line) => line.trim())
-                .filter(Boolean)
+                .split('\0')
+                .filter((tracked) => tracked.length > 0)
                 .filter((tracked) => matchesOnPathBoundary(tracked, token));
         }
     }

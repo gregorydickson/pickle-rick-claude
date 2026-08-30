@@ -927,7 +927,10 @@ function writeBigListingGitShim(shimDir) {
     fs.writeFileSync(
         shim,
         '#!/bin/sh\n'
-        + "awk 'BEGIN{for(i=0;i<40000;i++) printf \"vendor/p%06d/xstate-manager.ts\\n\", i; print \"src/services/state-manager.ts\"}'\n"
+        // AP-EXT-ITER104-02: the reader is `-z` now, so the shim must speak the
+        // same wire format. `tr` re-delimits without changing the byte count, and
+        // is a blocking streaming writer for the same reason awk is.
+        + "awk 'BEGIN{for(i=0;i<40000;i++) printf \"vendor/p%06d/xstate-manager.ts\\n\", i; print \"src/services/state-manager.ts\"}' | tr '\\n' '\\0'\n"
     );
     fs.chmodSync(shim, 0o755);
     return shim;
@@ -991,7 +994,7 @@ test('AP-EXT-ITER56-01 (control): the cap does not suppress a genuinely unresolv
 // `UNBOUNDED_READ_MAX_BUFFER` (64 MB) of paths, and which of the two overflow
 // shapes Node lands on is a race.
 
-const ENOBUFS_LISTING = 'services/state-manager.ts\n';
+const ENOBUFS_LISTING = 'services/state-manager.ts\0';
 
 function enobufsResult(stdout) {
     return {
@@ -1045,7 +1048,7 @@ test('AP-EXT-ITER56-01: the ambiguity verdict is withheld over a truncated listi
     // `matches.length > 1` is a POSITIVE finding (ambiguous_citation) in exactly the
     // same way `length === 0` is: over a prefix of the repo, both are fabricated.
     __resetGitLsFilesSuffixCacheForTests();
-    const listing = 'a/dup.ts\nb/dup.ts\n';
+    const listing = 'a/dup.ts\0b/dup.ts\0';
     try {
         assert.deepEqual(
             resolveTrackedSuffixMatches('/tmp/does-not-need-to-exist', 'dup.ts', () => enobufsResult(listing)),
@@ -1423,4 +1426,107 @@ test('AP-EXT-ITER91-01: a non-zero readiness verdict is reported and does not ex
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }
+});
+
+
+// --- AP-EXT-ITER104-02: the suffix listing is NUL-delimited -------------------
+// `git ls-files` without `-z` renders any path holding a non-ASCII, control or
+// quote byte ANYWHERE in it as a C-quoted spelling wrapped in double quotes
+// (`core.quotePath`, git's DEFAULT). The entry then ends in `"`, so
+// `matchesOnPathBoundary`'s `endsWith('/' + token)` misses and an ASCII citation
+// of a REAL tracked file reads as absent. Both arms below were measured on the
+// shipped compiled module before the fix. REPLAY of AP-EXT-ITER104-01
+// (hooks/handlers/tsc-gate.ts:listCachedPaths), same git contract.
+
+const QUOTING_GIT_TIMEOUT_MS = 20_000;
+
+function quotingGit(dir, args, extra = {}) {
+    return spawnSync('git', args, { cwd: dir, timeout: QUOTING_GIT_TIMEOUT_MS, ...extra });
+}
+
+function initQuotingRepo(dir, relativePaths) {
+    quotingGit(dir, ['init', '-q']);
+    quotingGit(dir, ['config', 'user.email', 'test@example.com']);
+    quotingGit(dir, ['config', 'user.name', 'Test']);
+    // Pin the DEFAULT explicitly: an ambient `core.quotePath=false` would make
+    // every assertion below vacuously green against the exact defect they pin.
+    quotingGit(dir, ['config', 'core.quotePath', 'true']);
+    for (const relativePath of relativePaths) {
+        const absolute = path.join(dir, relativePath);
+        fs.mkdirSync(path.dirname(absolute), { recursive: true });
+        fs.writeFileSync(absolute, '// tracked\n');
+    }
+    quotingGit(dir, ['add', '.']);
+    quotingGit(dir, ['commit', '-q', '-m', 'init']);
+    // Precondition: git really does C-quote here. Without this the cases below
+    // could pass on a host where the defect is unreachable.
+    const listing = quotingGit(dir, ['ls-files'], { encoding: 'utf-8' }).stdout;
+    assert.match(listing, /"/, `fixture precondition: git must C-quote the non-ASCII path; got:\n${listing}`);
+}
+
+test('AP-EXT-ITER104-02: an ASCII citation under a C-quoted ancestor directory is NOT a fabricated path_not_found', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    const workingDir = tmpDir('pickle-apv-quote-');
+    try {
+        // The only tracked copy sits under a non-ASCII directory. The citation
+        // itself is pure ASCII — the analyst named a real file correctly.
+        const nonAsciiDir = 'sérvices';
+        initQuotingRepo(workingDir, [`${nonAsciiDir}/state-manager.ts`, 'readme.md']);
+
+        const matches = resolveTrackedSuffixMatches(workingDir, 'state-manager.ts');
+        assert.equal(matches.length, 1, 'the real tracked file must resolve');
+        assert.ok(
+            matches[0].endsWith('/state-manager.ts'),
+            `resolved path must be the raw (unquoted) spelling; got ${JSON.stringify(matches[0])}`
+        );
+        assert.ok(!matches[0].includes('"'), 'a C-quoted spelling must never reach the caller');
+
+        __resetGitLsFilesSuffixCacheForTests();
+        const warnings = checkAnalystOutputPaths('Cited: `state-manager.ts`.\n', workingDir);
+        assert.deepEqual(warnings, [], 'a correctly-cited real file must produce no warning');
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER104-02: a C-quoted twin still counts toward ambiguous_citation', () => {
+    __resetGitLsFilesSuffixCacheForTests();
+    const workingDir = tmpDir('pickle-apv-quote-');
+    try {
+        // Two REAL tracked copies, one of them under a non-ASCII directory.
+        // Pre-fix the quoted twin was invisible, so AC-FOMC-8d's ambiguity
+        // warning never fired and the line range-check below ran against
+        // whichever copy happened to survive the boundary filter.
+        initQuotingRepo(workingDir, ['sérvices/state-manager.ts', 'plain/state-manager.ts']);
+
+        const matches = resolveTrackedSuffixMatches(workingDir, 'state-manager.ts');
+        assert.equal(matches.length, 2, 'both real copies must be visible to the ambiguity check');
+
+        __resetGitLsFilesSuffixCacheForTests();
+        const warnings = checkAnalystOutputPaths('Cited: `state-manager.ts`.\n', workingDir);
+        assert.equal(warnings.length, 1);
+        assert.equal(warnings[0].defect_class, 'ambiguous_citation');
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER104-02: resolveTrackedSuffixMatches reads ONE NUL-delimited listing, split but never trimmed', () => {
+    const source = fs.readFileSync(
+        path.join(REPO_ROOT, 'extension', 'src', 'bin', 'spawn-refinement-team.ts'),
+        'utf-8'
+    );
+    // Strip comments first: this file's own prose spells the forbidden shapes.
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+    const lsFilesArgvs = code.match(/\[\s*'ls-files'[^\]]*\]/g) ?? [];
+    assert.equal(lsFilesArgvs.length, 1, 'exactly one git ls-files argv may live in this file');
+    assert.ok(lsFilesArgvs[0].includes("'-z'"), `the ls-files argv must carry -z; got ${lsFilesArgvs[0]}`);
+
+    const start = code.indexOf('export function resolveTrackedSuffixMatches(');
+    assert.ok(start > 0, 'resolveTrackedSuffixMatches must still be exported from this file');
+    const body = code.slice(start, code.indexOf('\nexport function checkAnalystOutputPaths(', start));
+    assert.ok(body.includes("split('\\0')"), 'the listing must be split on NUL');
+    assert.ok(!body.includes("split('\\n')"), 'splitting the listing on newline is the regression');
+    assert.ok(!body.includes('.trim()'), 'trimming corrupts a raw path git deliberately did not quote');
 });
