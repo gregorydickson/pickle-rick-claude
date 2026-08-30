@@ -220,11 +220,38 @@ test('init-microverse omits judge_context_path when --judge-context not provided
 // szechuan-sauce.md: workers must not call update-state.js (runner owns state)
 // ---------------------------------------------------------------------------
 
+// The needle this guard used to carry — the bare phrase `update-state.js iteration`
+// — never existed in the artifact. The block 4b7abab1 removed spelled it
+// `update-state.js" iteration` (a closing quote before the space), so reinstating
+// that block verbatim left the guard GREEN. A negative anchor is a claim about a
+// SPELLING; pin the shape instead. A doc INSTRUCTION to run something is written as
+// CODE (a fence or an inline span); prose that merely NAMES the script — this rule's
+// own prohibition — puts the bare name in a span with no argument after it. So the
+// invariant needs no vocabulary list: no code region in the worker section may spell
+// update-state.js with an argument.
+function codeRegions(markdown) {
+    const regions = [];
+    const fenced = /```[^\n]*\n([\s\S]*?)```/g;
+    let rest = '';
+    let last = 0;
+    for (let m = fenced.exec(markdown); m; m = fenced.exec(markdown)) {
+        regions.push(m[1]);
+        rest += markdown.slice(last, m.index);
+        last = m.index + m[0].length;
+    }
+    rest += markdown.slice(last);
+    for (const m of rest.matchAll(/`([^`\n]+)`/g)) regions.push(m[1]);
+    return regions;
+}
+
 test('szechuan-sauce.md Worker Mode does not instruct workers to call update-state.js', () => {
     const content = readCommand();
     const workerStart = content.indexOf('## WORKER MODE');
-    const workerSection = content.slice(workerStart);
-    assert.ok(!workerSection.includes('update-state.js iteration'),
+    assert.notEqual(workerStart, -1,
+        'the "## WORKER MODE" anchor moved — slice(-1) would reduce this guard to one character');
+    const regions = codeRegions(content.slice(workerStart));
+    const invocations = regions.filter((r) => /update-state\.js["'`]?\s+\S/.test(r));
+    assert.deepEqual(invocations, [],
         'Worker should not call update-state.js — runner manages state');
 });
 
