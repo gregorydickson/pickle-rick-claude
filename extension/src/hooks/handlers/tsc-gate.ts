@@ -201,25 +201,45 @@ function hasTimedOut(result: SpawnSyncReturns<string | Buffer>): boolean {
   return errno.code === 'ETIMEDOUT';
 }
 
-function parseLineList(output: string): string[] {
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-}
 
 function isCommandFailure(result: CommandFailureResult): boolean {
   return result.status !== 0 || result.timedOut || Boolean(result.error);
 }
 
-function listStagedPaths(repoRoot: string): TextCommandResult & { paths: string[] } {
-  const result = runTextCommand('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMR'], repoRoot, COMMAND_TIMEOUT_MS);
-  return { ...result, paths: parseLineList(result.stdout) };
-}
-
-function listAddedPaths(repoRoot: string): TextCommandResult & { paths: string[] } {
-  const result = runTextCommand('git', ['diff', '--cached', '--name-only', '--diff-filter=A'], repoRoot, COMMAND_TIMEOUT_MS);
-  return { ...result, paths: parseLineList(result.stdout) };
+/**
+ * The ONE reader of what this commit has STAGED, and the only place this file
+ * spells `git diff --cached --name-only`. It carries `-z` and splits on NUL —
+ * the same contract `scope-resolver.ts:computeAllowedFromDiff` builds the fence
+ * from and `mux-runner.ts:listRangeTouchedPaths` (AP-EXT-ITER103-01) already
+ * reads back.
+ *
+ * Without `-z`, `core.quotePath` C-quotes a non-ASCII or tab-bearing staged path
+ * to `"src/ba\td.ts"` and the gate breaks in BOTH directions, MEASURED on the
+ * shipped compiled hook with identical file CONTENT:
+ *   - fail OPEN: the quoted spelling ends in a double quote, so
+ *     `TSC_TRIGGER_RE`'s `$` anchor misses, `shouldRunTsc` is false and the
+ *     R-WACT gate never runs — an ASCII-named twin of the same broken file
+ *     returned `block`, the quoted one returned `approve`.
+ *   - fail CLOSED: `materializeStagedTree` hands the quoted spelling to
+ *     `git show :<path>`, which cannot resolve it, so a clean-compiling commit
+ *     was blocked `setup_error`.
+ *
+ * Two filters, ONE argv: a second hand-spelled `--name-only` here is how the
+ * two readers drifted apart in the first place. `--no-renames` is deliberately
+ * absent — `--diff-filter=ACMR` wants a rename's DESTINATION, which is the file
+ * to typecheck, and `--diff-filter=A` excludes renames outright.
+ *
+ * The output is NUL-delimited, so it is split but never trimmed: trimming would
+ * corrupt a path git deliberately did not quote, such as one ending in a space.
+ */
+function listCachedPaths(repoRoot: string, diffFilter: string): TextCommandResult & { paths: string[] } {
+  const result = runTextCommand(
+    'git',
+    ['diff', '--cached', '--name-only', '-z', `--diff-filter=${diffFilter}`],
+    repoRoot,
+    COMMAND_TIMEOUT_MS,
+  );
+  return { ...result, paths: result.stdout.split('\0').filter((entry) => entry.length > 0) };
 }
 
 function shouldRunTsc(paths: string[]): boolean {
@@ -295,7 +315,7 @@ function formatBlockReason(kind: GateFailureKind, details: string): string {
 function runTscGate(repoRoot: string, stagedPaths: string[]): GateDecision {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-rick-tsc-gate-'));
   try {
-    const added = listAddedPaths(repoRoot);
+    const added = listCachedPaths(repoRoot, 'A');
     if (isCommandFailure(added)) {
       return {
         decision: 'block',
@@ -414,7 +434,7 @@ function evaluateCommitCommand(command: string, state: State | null): GateDecisi
   }
   const repoRoot = repoRootResult.stdout.trim();
 
-  const staged = listStagedPaths(repoRoot);
+  const staged = listCachedPaths(repoRoot, 'ACMR');
   if (isCommandFailure(staged)) {
     const decision = {
       decision: 'block',

@@ -1287,3 +1287,88 @@ it('AP-EXT-ITER93-02 only the gate-running arm reads patterns', async () => {
   assert.doesNotMatch(body, /token === 'commit'/);
   assert.match(body, /NEGATIVE_GIT_SUBCOMMANDS\.has\(token\)/);
 });
+
+
+// AP-EXT-ITER104-01 — the staged-path reader is the gate's own trigger, and
+// without `-z` git C-quotes any non-ASCII or tab-bearing staged path. Measured
+// on the shipped compiled hook with IDENTICAL file content: an ASCII-named
+// broken `.ts` returned `block`, the same file under a tab-bearing name
+// returned `approve`. A TAB is deliberate over `café`: both are C-quoted, but a
+// tab-bearing name is byte-identical everywhere while a non-ASCII fixture is
+// stored NFD on macOS and NFC on Linux and the assertion drifts with the
+// filesystem.
+const QUOTED_TS_NAME = 'src/ba\td.ts';
+
+// Each arm asserts its own precondition first: without this, a fixture whose
+// name git declines to quote would pin nothing at all.
+function assertGitQuotesPath(repoRoot, relativePath) {
+  const raw = git(['diff', '--cached', '--name-only', '--diff-filter=ACMR'], repoRoot);
+  assert.ok(
+    raw.split('\n').includes(`"${relativePath.replace('\t', '\\t')}"`),
+    `precondition: git must C-quote ${JSON.stringify(relativePath)} without -z, got ${JSON.stringify(raw)}`,
+  );
+}
+
+it('AP-EXT-ITER104-01 gates a broken staged TypeScript file whose path git C-quotes', () => {
+  const harness = makeHarness();
+  const repoRoot = makeRepo();
+  try {
+    writeSession(harness, repoRoot);
+    writeFixture(repoRoot, 'staged-addition.ts', path.join(repoRoot, QUOTED_TS_NAME));
+    git(['add', '--', QUOTED_TS_NAME], repoRoot);
+    assertGitQuotesPath(repoRoot, QUOTED_TS_NAME);
+
+    const result = runHandler({ harness, repoRoot });
+
+    assert.equal(result.decision?.decision, 'block');
+    assert.match(result.decision.reason, /R-WACT/);
+    assertFailedEvent(latestEvent(result.events, 'tsc_gate_failed'), 'compile_error');
+  } finally {
+    harness.cleanup();
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+it('AP-EXT-ITER104-01 materializes a clean staged addition whose path git C-quotes', () => {
+  const harness = makeHarness();
+  const repoRoot = makeRepo();
+  try {
+    writeSession(harness, repoRoot);
+    // A second, ASCII-named `.ts` keeps `shouldRunTsc` true independently of the
+    // quoted path, so this arm reaches `materializeStagedTree` and pins the
+    // fail-CLOSED direction: `git show :"src/ba\td.ts"` cannot resolve the
+    // quoted spelling, and the pre-fix gate blocked this clean commit
+    // `setup_error`.
+    writeFixture(repoRoot, 'clean.ts', path.join(repoRoot, 'src', 'trigger.ts'));
+    writeFixture(repoRoot, 'clean.ts', path.join(repoRoot, QUOTED_TS_NAME));
+    git(['add', '--', 'src/trigger.ts', QUOTED_TS_NAME], repoRoot);
+    assertGitQuotesPath(repoRoot, QUOTED_TS_NAME);
+
+    const result = runHandler({ harness, repoRoot });
+
+    assert.deepStrictEqual(result.decision, { decision: 'approve' });
+    assert.equal(latestEvent(result.events, 'tsc_gate_failed'), null);
+  } finally {
+    harness.cleanup();
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// PATTERN_SHAPE guard: the regression is a SECOND hand-spelled `--name-only`
+// argv in this file, or a `split('\n')` over its output.
+it('AP-EXT-ITER104-01 tsc-gate.ts stages exactly one --name-only reader', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts'), 'utf-8',
+  );
+  const argvSpellings = source.match(/'--name-only'/g) ?? [];
+  assert.equal(argvSpellings.length, 1, 'exactly one --name-only argv, inside listCachedPaths');
+  const body = source.slice(
+    source.indexOf('function listCachedPaths('),
+    source.indexOf('function shouldRunTsc('),
+  );
+  assert.ok(body.length > 0, 'listCachedPaths must remain a single named function');
+  assert.match(body, /'-z'/);
+  assert.match(body, /split\('\\0'\)/);
+  assert.doesNotMatch(body, /split\('\\n'\)/);
+  assert.doesNotMatch(body, /\.trim\(\)/);
+});
