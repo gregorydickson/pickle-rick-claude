@@ -43,18 +43,32 @@ function resolveTicketPath(ctx) {
 }
 /**
  * 3-way git cat-file probe (R-AFCC-DEEP-3C pattern).
- * Returns 'exists' (exit 0), 'not-exists' (exit 1), or 'git-could-not-run'
- * (exit 128, ENOENT, ETIMEDOUT, SIGTERM — git produced no definitive answer).
+ * Returns 'exists' (exit 0), 'not-exists' (exit 1 — the ONE outcome that proves
+ * absence), or 'git-could-not-run' (every other outcome — git produced no
+ * definitive answer).
+ *
+ * AP-EXT-ITER111-01: the verdict is decided by testing FOR the one proof, never
+ * by enumerating the failures that do not prove it. The prior form listed four
+ * survivors (ETIMEDOUT / SIGTERM / exit 128 / ENOENT) and DEFAULTED to a definite
+ * 'not-exists', so any unaccountable failure — EACCES on the git binary, an
+ * EAGAIN/EMFILE fork failure under tier load, a future non-128 fatal — fabricated
+ * "this repo does not have that commit". That fabrication is not inert: it is the
+ * one verdict `probeExplicitSha` treats as final, so it also short-circuited the
+ * `fallbackDir` rung, and a ticket whose commit the fallback repo could name read
+ * as `absent`. Same doctrine as `isProcessAlive` (AP-EXT-ITER109-01): a survivor
+ * list is one errno from the next wrong verdict.
  *
  * AP-EXT-ITER76-02: for THIS call shape the 'not-exists' arm is unreachable, and
  * the difference is load-bearing. `git cat-file -e <sha>` exits 1 on a missing
  * object, but the `^{commit}` peel makes it a rev-parse failure — `fatal: Not a
- * valid object name`, exit 128 (probed, git 2.39.5). So "this repo simply does
- * not have that commit" reports 'git-could-not-run', which is what makes
- * `probeExplicitSha`'s `fallbackDir` rung fire on the ORDINARY case rather than
- * only on a broken checkout. Do not read the 3-state prose as evidence that the
- * fallback rung is rare; any rule that must hold for an accept has to hold on
- * the fallback dir too (see `gitDirLadder`).
+ * valid object name`, exit 128 (re-probed 2026-08-30, git 2.39.5). So "this repo
+ * simply does not have that commit" reports 'git-could-not-run', which is what
+ * makes `probeExplicitSha`'s `fallbackDir` rung fire on the ORDINARY case rather
+ * than only on a broken checkout. Do not read the 3-state prose as evidence that
+ * the fallback rung is rare; any rule that must hold for an accept has to hold on
+ * the fallback dir too (see `gitDirLadder`). Keep the `status === 1` arm anyway:
+ * it is what makes the verdict follow git's contract rather than this call site's
+ * current spelling of it.
  */
 function probeCatFile(workingDir, sha) {
     try {
@@ -65,11 +79,7 @@ function probeCatFile(workingDir, sha) {
         return 'exists';
     }
     catch (err) {
-        const e = err;
-        if (e.code === 'ETIMEDOUT' || e.signal === 'SIGTERM' || e.status === 128 || e.code === 'ENOENT') {
-            return 'git-could-not-run';
-        }
-        return 'not-exists';
+        return err.status === 1 ? 'not-exists' : 'git-could-not-run';
     }
 }
 /** Boolean commit-reachability check; false for both "not found" and "git error". */

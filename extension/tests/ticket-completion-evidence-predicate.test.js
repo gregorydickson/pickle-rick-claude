@@ -1069,6 +1069,125 @@ test('AP-EXT-ITER76-01 control: an OWN-attributed sha still accepts through the 
   }
 });
 
+// --- AP-EXT-ITER111-01: only exit 1 proves a commit is absent -------------------
+//
+// `probeCatFile` used to enumerate the failures that do NOT prove absence
+// (ETIMEDOUT / SIGTERM / exit 128 / ENOENT) and DEFAULT to a definite
+// 'not-exists'. Any unaccountable failure therefore fabricated "this repo does
+// not have that commit" — and because 'not-exists' is the one verdict
+// `probeExplicitSha` treats as final (`if (primary !== 'git-could-not-run')
+// return null`), the fabrication ALSO skipped the R-CCR-1 `fallbackDir` rung.
+// The commit was right there in the fallback repo and the ticket read `absent`.
+//
+// Oracle: a `git` shim on PATH that fails with exit 3 — a status that is neither
+// the exit-1 proof of absence nor any listed survivor — but ONLY for the primary
+// dir, delegating to the real git everywhere else. That is the shape of a
+// transient, dir-local inability to answer (EACCES/EAGAIN under load), and it is
+// exactly the case the old survivor list mapped to a definite verdict.
+// Assert the EVIDENCE, not the probe: pre-fix this returns `absent`.
+function withGitFailingForDir(primaryDir, fn) {
+  const realGit = execFileSync('which', ['git'], { encoding: 'utf8', timeout: 5000 }).trim();
+  const shimDir = mkTmp('pickle-iter111-shim-');
+  const shim = path.join(shimDir, 'git');
+  fs.writeFileSync(
+    shim,
+    ['#!/bin/sh',
+     'prev=""',
+     'for a in "$@"; do',
+     `  if [ "$prev" = "-C" ] && [ "$a" = ${JSON.stringify(primaryDir)} ]; then exit 3; fi`,
+     '  prev="$a"',
+     'done',
+     `exec ${JSON.stringify(realGit)} "$@"`,
+     ''].join('\n'),
+  );
+  fs.chmodSync(shim, 0o755);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${shimDir}${path.delimiter}${savedPath}`;
+  try {
+    return fn();
+  } finally {
+    process.env.PATH = savedPath;
+    fs.rmSync(shimDir, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER111-01: an unaccountable git failure is not proof the commit is absent (fallbackDir still consulted)', () => {
+  const root = mkTmp('pickle-iter111-');
+  try {
+    initGitRepo(root);
+    const ownSha = commitFile(root, 'own.txt', 'fix(unac1110): the work this ticket actually did');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'fgsib111', {});
+    writeTicket(sessionDir, 'unac1110', { completionCommit: ownSha });
+
+    // OUTSIDE `root` so the fallback rung is genuinely exercised.
+    const primary = mkTmp('pickle-iter111-primary-');
+
+    const ev = withGitFailingForDir(primary, () => readEvidence({
+      sessionDir, ticketId: 'unac1110', workingDir: primary, fallbackDir: root,
+    }));
+
+    assert.equal(
+      ev.kind, 'committed',
+      'an unaccountable git failure on the primary dir must not fabricate absence — the fallbackDir has the commit',
+    );
+    assert.equal(ev.sha, ownSha);
+    assert.equal(ev.usedFallback, true, 'the fallbackDir rung must still fire when the primary probe could not answer');
+    assert.equal(ev.via, 'explicit');
+    fs.rmSync(primary, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER111-01 negative control: exit 1 IS proof of absence and does not reach the fallbackDir', () => {
+  const root = mkTmp('pickle-iter111-neg-');
+  try {
+    initGitRepo(root);
+    const ownSha = commitFile(root, 'own.txt', 'fix(neg11101): real work');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'fgsib112', {});
+    writeTicket(sessionDir, 'neg11101', { completionCommit: ownSha });
+
+    const primary = mkTmp('pickle-iter111-neg-primary-');
+    // Same shim shape, but exit 1 — git's contractual "object is not here".
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8', timeout: 5000 }).trim();
+    const shimDir = mkTmp('pickle-iter111-neg-shim-');
+    const shim = path.join(shimDir, 'git');
+    fs.writeFileSync(
+      shim,
+      ['#!/bin/sh',
+       'prev=""',
+       'for a in "$@"; do',
+       `  if [ "$prev" = "-C" ] && [ "$a" = ${JSON.stringify(primary)} ]; then exit 1; fi`,
+       '  prev="$a"',
+       'done',
+       `exec ${JSON.stringify(realGit)} "$@"`,
+       ''].join('\n'),
+    );
+    fs.chmodSync(shim, 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${shimDir}${path.delimiter}${savedPath}`;
+    let ev;
+    try {
+      ev = readEvidence({ sessionDir, ticketId: 'neg11101', workingDir: primary, fallbackDir: root });
+    } finally {
+      process.env.PATH = savedPath;
+      fs.rmSync(shimDir, { recursive: true, force: true });
+    }
+
+    // Exit 1 is a definite answer, so the explicit rung does NOT borrow the
+    // fallback dir. This is the arm that keeps the fix from degrading into
+    // "always try the fallback", which would erase the 3-state distinction.
+    assert.notEqual(ev.usedFallback, true, 'exit 1 is a definite absence — the fallbackDir must not be consulted');
+    fs.rmSync(primary, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('AP-EXT-ITER76-01 control: a GENERIC commit message still accepts through the fallbackDir', () => {
   const root = mkTmp('pickle-iter76-ctl-generic-');
   try {
