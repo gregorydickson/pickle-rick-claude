@@ -685,7 +685,20 @@ function getChangedSince(workingDir: string, since: string): string[] | null {
   // (`--name-status -M100 -z`). Without it `core.quotePath` C-quotes non-ASCII
   // paths, `filterByScope` matches none of them, and the gate silently narrows
   // its own failure set — fail-OPEN over a real regression.
-  const result = spawnSync('git', ['diff', '--name-only', '-z', `${since}..HEAD`], {
+  //
+  // AP-EXT-ITER117-02: `--no-renames` crosses that SAME producer contract on the
+  // OTHER axis. `--name-status -M100 -z` emits BOTH paths of a rename; a DETECTED
+  // rename under `--name-only` emits ONLY the destination (`diff.renames` is on by
+  // default, git >= 2.9), so the two halves of one diff disagree about which files
+  // the phase touched. Measured: a cross-package `git mv` yields
+  // `['packages/dest/mod.js']` where the fence sees both — `selectWorkspaceTargetDirs`
+  // then finds no candidate under `packages/source`, runs ZERO checks over the package
+  // the file moved OUT of, and `finalizeGateResult` reports an executed
+  // `gate_run_complete` green with no `gate_skipped` to give it away (the
+  // AP-EXT-ITER34-01 thesis, reached through the rename contract). Byte-identical flag
+  // set and ORDER to `mux-runner.ts:listRangeTouchedPaths`, this reader's sibling
+  // across the same contract, so any future divergence is one grep away.
+  const result = spawnSync('git', ['diff', '--name-only', '--no-renames', '-z', `${since}..HEAD`], {
     cwd: workingDir,
     encoding: 'utf-8',
     timeout: 30_000,

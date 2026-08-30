@@ -1075,3 +1075,126 @@ test('AP-EXT-ITER7-02 fence control: a runGateFn stub carrying NO check_status i
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER117-02 — the REPLAY of AP-EXT-ITER117-01's rename contract onto the OTHER
+// enumeration in `convergence-gate.ts`. `getChangedSince` (the reader behind
+// `getChangedFilesSince`, `selectWorkspaceTargetDirs` and `buildNoDisownContext`) omitted
+// `--no-renames`, and a DETECTED rename under `--name-only` emits ONLY the destination.
+//
+// The fence's PRODUCER (`scope-resolver.ts:computeAllowedFromDiff` — `--name-status -M100 -z`)
+// emits BOTH paths of the same rename, so the two halves of one diff disagreed about which
+// files the phase touched — the AP-EXT-ITER24-01 / AP-EXT-ITER31-01 "one diff, two git
+// contracts" class, reached on the rename axis instead of the quoting axis.
+//
+// These cases cross the REAL producer against a REAL repo and assert the gate STATUS: an
+// injected `getChangedFilesSinceFn` cannot observe an argv, and the pre-fix defect was an
+// executed `gate_run_complete` GREEN with no `gate_skipped` to give it away.
+// ---------------------------------------------------------------------------
+
+/**
+ * A workspace whose second commit moves a file ACROSS package boundaries, byte for byte.
+ * The package the file moves OUT of is the one whose check FAILS, so a gate that never
+ * targets it can only report green.
+ */
+function makeCrossPackageMoveRepo(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  git(dir, ['init']);
+  git(dir, ['config', 'user.name', 'Test User']);
+  git(dir, ['config', 'user.email', 'test@example.com']);
+
+  const sourceDir = path.join(dir, 'packages', 'source');
+  const destDir = path.join(dir, 'packages', 'dest');
+  fs.mkdirSync(sourceDir, { recursive: true });
+  fs.mkdirSync(destDir, { recursive: true });
+
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'workspace-root', private: true, workspaces: ['packages/*'],
+  }, null, 2));
+  fs.writeFileSync(path.join(sourceDir, 'package.json'), JSON.stringify({
+    name: 'source', version: '1.0.0', scripts: { test: 'node -e "process.exit(1)"' },
+  }, null, 2));
+  fs.writeFileSync(path.join(destDir, 'package.json'), JSON.stringify({
+    name: 'dest', version: '1.0.0', scripts: { test: 'node -e "process.exit(0)"' },
+  }, null, 2));
+  fs.writeFileSync(path.join(sourceDir, 'mod.js'), 'module.exports = { a: 1, b: 2, c: 3, d: 4 };\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'base']);
+  const base = headSha(dir);
+
+  git(dir, ['mv', 'packages/source/mod.js', 'packages/dest/mod.js']);
+  git(dir, ['commit', '-m', 'move the module across packages, byte for byte']);
+  return { dir, base, sourceDir, destDir };
+}
+
+test('AP-EXT-ITER117-02: the changed-file enumeration reports BOTH sides of a rename', () => {
+  const { dir, base } = makeCrossPackageMoveRepo('cg-apiter117b-producer-');
+  try {
+    // PRECONDITION: git really did record this as a rename. Without it the case would pass
+    // on a delete+add repo, which was never the defect.
+    const detected = execFileSync('git', ['diff', '--name-status', '-M100', `${base}..HEAD`], {
+      cwd: dir, encoding: 'utf-8', timeout: 30_000,
+    });
+    assert.match(detected, /^R100\t/m, 'fixture precondition: git must detect the move as a rename');
+
+    const measured = getChangedFilesSince(dir, base);
+    assert.ok(Array.isArray(measured), 'a reachable base must yield a real list');
+    assert.deepEqual(
+      [...measured].sort(),
+      ['packages/dest/mod.js', 'packages/source/mod.js'],
+      'the fence PRODUCER (`--name-status -M100 -z`) emits both paths of a rename; a reader ' +
+      'that emits only the destination disagrees with it about the same diff',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER117-02: a cross-package move still runs the package the file moved OUT of', async () => {
+  const { dir, base } = makeCrossPackageMoveRepo('cg-apiter117b-consumer-');
+  const events = [];
+  try {
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'changed', since: base, checks: ['tests'],
+      onEvent: (e) => events.push(e.event),
+    });
+
+    assert.equal(
+      result.status, 'red',
+      'the source package still holds every importer of the moved module — a gate that never ' +
+      'targets it reports an executed green over code it did not inspect',
+    );
+    assert.deepEqual(
+      result.failures.map(f => path.relative(dir, f.file).replace(/\\/g, '/')),
+      ['packages/source'],
+    );
+    assert.ok(
+      !events.includes('gate_skipped'),
+      'the pre-fix green was SILENT — it ran zero checks over `packages/source` and still ' +
+      'emitted gate_run_complete, so a skip event was never the tell',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER117-02 control: narrowing still excludes a package nothing touched', async () => {
+  // `--no-renames` widens the DIFF, never the pathspec: an ordinary edit confined to one
+  // package must still leave the other package untargeted, or the fix has simply disabled
+  // the narrowing it was meant to correct.
+  const { dir, destDir } = makeCrossPackageMoveRepo('cg-apiter117b-control-');
+  try {
+    fs.writeFileSync(path.join(destDir, 'other.js'), 'module.exports = 1;\n');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-m', 'touch only the passing package']);
+
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'changed', since: 'HEAD~1', checks: ['tests'],
+    });
+
+    assert.equal(result.status, 'green', 'the failing package was untouched — it must stay out of scope');
+    assert.equal(result.total_raw_failure_count, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
