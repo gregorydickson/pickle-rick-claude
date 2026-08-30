@@ -7895,7 +7895,7 @@ export function applyTimeoutCounter(input: TimeoutCounterInput): TimeoutCounterS
  * WS-B1 ground-truth seams for the per-spawn sync decision. `workingDir` omitted means the
  * current HEAD cannot be resolved, so the sha comparison is unavailable and mtime decides alone.
  */
-export interface CodegraphShaFreshnessDeps {
+interface CodegraphShaFreshnessDeps {
   workingDir?: string;
   readIndexedSha?: (dbPath: string) => string | null;
   getCurrentSha?: (workingDir: string) => string | null;
