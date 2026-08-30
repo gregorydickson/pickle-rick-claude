@@ -992,30 +992,66 @@ function resolveGateTargetDirs(opts, workspacePackages, allowedPathsUsed, start,
     }
     return { targetDirs: [opts.workingDir] };
 }
+/**
+ * AP-EXT-ITER107-01: the ONE reader for every pre-measurement git probe in `runGate`,
+ * behind the same shared `enumerationCompleted` predicate the two enumeration readers
+ * above already use. Returns `null` — never `''` — when the probe DID NOT COMPLETE.
+ *
+ * Both pre-measurement dispositions used to read `.stdout` directly, and each fabricated a
+ * definite verdict out of a measurement that never ran, in OPPOSITE directions: an
+ * unreadable `git status` read as a CLEAN tree, so the worker-mode dirty-tree skip silently
+ * declined to fire and the gate measured the very tree it exists to decline; an unreadable
+ * `git rev-parse` read as HEAD `''`, which mismatches every expected value and fabricated a
+ * `GATE_WORKINGDIR_DRIFT` red reporting `got ""`. A measurement that did not run is not a
+ * measurement of zero — same doctrine as `getChangedSince`'s `null`.
+ */
+function readGitProbe(workingDir, args) {
+    const result = spawnSync('git', args, {
+        cwd: workingDir,
+        encoding: 'utf-8',
+        timeout: 10_000,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+    });
+    return enumerationCompleted(result) ? (result.stdout ?? '') : null;
+}
+/**
+ * The ONE disposition for "a pre-measurement git probe did not complete", shared by both
+ * producers so neither can drift its own answer. Skipping is the honest non-halting call:
+ * a worktree the gate cannot read is a worktree it cannot certify, and `emptyGateResult`
+ * stamps every check `skipped`, so this is provably not reported as an executed pass.
+ */
+function worktreeUnreadableSkip(opts, start, emit) {
+    emit('gate_skipped', { reason: 'worktree_unreadable' });
+    return { ...emptyGateResult(opts.checks), elapsed_ms: Date.now() - start };
+}
 function workerModeSkipResult(opts, start, emit) {
     if (!opts.workerMode)
         return null;
-    const porcelainR = spawnSync('git', ['status', '--porcelain'], {
-        cwd: opts.workingDir, encoding: 'utf-8', timeout: 10_000,
-        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
-    });
-    const dirtyLines = (porcelainR.stdout ?? '').split('\n').filter(Boolean);
+    const porcelain = readGitProbe(opts.workingDir, ['status', '--porcelain']);
+    if (porcelain === null)
+        return worktreeUnreadableSkip(opts, start, emit);
+    const dirtyLines = porcelain.split('\n').filter(Boolean);
     if (dirtyLines.length === 0)
         return null;
     emit('gate_skipped', { reason: 'dirty_worktree_no_rescue' });
     return { ...emptyGateResult(opts.checks), elapsed_ms: Date.now() - start };
 }
+/**
+ * Returns a FINALIZED result, so `runGate` has no kind-of-result decision left to make:
+ * the drift red is a verdict and rides out through `finalizeGateResult`, while the
+ * unreadable-probe skip must bypass it (a `gate_run_complete` would make the skip
+ * indistinguishable from an executed pass — AC-OFFREPO-1). The producer knows which one it
+ * built; the call site does not need to.
+ */
 async function gitDriftResult(opts, allowedPathsUsed, start, emit) {
     if (opts.expected_head === undefined && opts.expected_branch === undefined)
         return null;
-    const headR = spawnSync('git', ['rev-parse', 'HEAD'], {
-        cwd: opts.workingDir, encoding: 'utf-8', timeout: 10_000,
-    });
-    const branchR = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-        cwd: opts.workingDir, encoding: 'utf-8', timeout: 10_000,
-    });
-    const currentHead = (headR.stdout ?? '').trim();
-    const currentBranch = (branchR.stdout ?? '').trim();
+    const headOut = readGitProbe(opts.workingDir, ['rev-parse', 'HEAD']);
+    const branchOut = readGitProbe(opts.workingDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (headOut === null || branchOut === null)
+        return worktreeUnreadableSkip(opts, start, emit);
+    const currentHead = headOut.trim();
+    const currentBranch = branchOut.trim();
     const headMismatch = opts.expected_head !== undefined && currentHead !== opts.expected_head;
     const branchMismatch = opts.expected_branch !== undefined && currentBranch !== opts.expected_branch;
     if (!headMismatch && !branchMismatch)
@@ -1027,7 +1063,7 @@ async function gitDriftResult(opts, allowedPathsUsed, start, emit) {
         expected_branch: opts.expected_branch,
         current_branch: currentBranch,
     });
-    return buildWorkingDirDriftResult(opts, currentHead, currentBranch, allowedPathsUsed, start);
+    return finalizeGateResult(opts, emit, buildWorkingDirDriftResult(opts, currentHead, currentBranch, allowedPathsUsed, start));
 }
 async function writeWorkingDirDriftFile(opts, currentHead, currentBranch) {
     const now = new Date().toISOString();
@@ -1466,7 +1502,7 @@ export async function runGate(rawOpts) {
         return workerSkip;
     const drift = await gitDriftResult(opts, allowedPathsUsed, start, emit);
     if (drift)
-        return finalizeGateResult(opts, emit, drift);
+        return drift;
     const { allFailures, realFailures, flakeFailures, checkStatus } = await measureAndPartitionFailures(opts, resolved.targetDirs, cmdMap, projectType, emit);
     // AP-EXT-ITER7-01: `check_status` rides out on EVERY result produced after the checks were
     // attempted, so an in-memory consumer reads the same per-check measurement fact the baseline

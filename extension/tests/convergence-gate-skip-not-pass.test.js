@@ -411,3 +411,95 @@ test('AP-EXT-ITER38-02: nested workspace root — scope=full never consults the 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER107-01 — a pre-measurement git probe that DID NOT COMPLETE is not an
+// observation. Both producers used to read `.stdout` with no completion check and
+// fabricated opposite verdicts from the same unread probe: `workerModeSkipResult`
+// read an unreadable `git status` as a CLEAN tree (skip silently declined to fire),
+// and `gitDriftResult` read an unreadable `git rev-parse` as HEAD `''`, which
+// mismatches every expected value and produced a `GATE_WORKINGDIR_DRIFT` red
+// reporting `got ""`. Both now route through the shared `enumerationCompleted`
+// predicate and land on the one `worktree_unreadable` skip.
+//
+// `core.repositoryformatversion 99` is the fixture: git refuses EVERY command in the
+// repo (`fatal: Expected git repo version <= 1, found 99`) while the on-disk worktree
+// — including its dirtiness — is untouched, so "the probe failed" is isolated from
+// "the tree changed".
+// ---------------------------------------------------------------------------
+
+function breakGitRepoFormat(dir) {
+  execSync('git config core.repositoryformatversion 99', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+}
+
+test('AP-EXT-ITER107-01: unreadable `git status` is not a clean tree — worker mode skips as worktree_unreadable', async () => {
+  await withGitFixture(async dir => {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'root', version: '1.0.0', scripts: { test: 'node -e "process.exit(0)"' },
+    }, null, 2));
+    execSync('git add .', { cwd: dir, stdio: 'pipe' });
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' });
+    // The tree IS dirty; only the probe is taken away.
+    fs.writeFileSync(path.join(dir, 'dirty.txt'), 'uncommitted\n');
+    breakGitRepoFormat(dir);
+
+    const { events, onEvent } = captureEvents();
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'full', checks: ['tests'],
+      workerMode: true, onEvent,
+    });
+
+    const skipped = events.find(e => e.event === 'gate_skipped');
+    assert.ok(skipped, 'an unreadable worktree must skip, not read as clean and fall through to measurement');
+    assert.equal(skipped.data.reason, 'worktree_unreadable');
+    assert.equal(result.status, 'green');
+    assert.deepEqual(result.check_status, { tests: 'skipped' }, 'the skip must record that it measured nothing');
+    assert.equal(
+      events.find(e => e.event === 'gate_run_complete'),
+      undefined,
+      'gate_run_complete must NOT be emitted — this skip never executed any check',
+    );
+  });
+});
+
+test('AP-EXT-ITER107-01: unreadable `git rev-parse` is not HEAD "" — drift is not fabricated', async () => {
+  await withGitFixture(async dir => {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'root', version: '1.0.0', scripts: { test: 'node -e "process.exit(0)"' },
+    }, null, 2));
+    execSync('git add .', { cwd: dir, stdio: 'pipe' });
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' });
+    const realHead = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf-8', timeout: 30_000 }).trim();
+    breakGitRepoFormat(dir);
+
+    const { events, onEvent } = captureEvents();
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'full', checks: ['tests'],
+      expected_head: realHead, expected_branch: 'main', onEvent,
+    });
+
+    assert.ok(
+      !result.failures.some(f => f.ruleOrCode === 'GATE_WORKINGDIR_DRIFT'),
+      `an unread rev-parse must not fabricate drift; got ${JSON.stringify(result.failures)}`,
+    );
+    assert.equal(
+      events.find(e => e.event === 'gate_workingdir_drift_detected'),
+      undefined,
+      'no drift was observed, so no drift event may be emitted',
+    );
+    assert.equal(
+      fs.existsSync(path.join(dir, 'gate')),
+      false,
+      'no drift report file may be written for a comparison that never ran',
+    );
+
+    const skipped = events.find(e => e.event === 'gate_skipped');
+    assert.ok(skipped, 'the unreadable probe must land on the shared skip');
+    assert.equal(skipped.data.reason, 'worktree_unreadable');
+    assert.equal(
+      events.find(e => e.event === 'gate_run_complete'),
+      undefined,
+      'gate_run_complete must NOT be emitted — the drift skip never executed any check',
+    );
+  });
+});
