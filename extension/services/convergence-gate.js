@@ -202,14 +202,17 @@ async function inspectBaselinePath(baselinePath) {
         };
     }
 }
+/** The tokens `tsc` quotes in a message. ONE reader for both axes below: the identifier axis
+ * keeps the identifier-shaped ones, the file axis keeps the relative-specifier ones. */
+function quotedMessageTokens(message) {
+    return (message.match(/['"]([^'"]+)['"]/g) ?? []).map(q => q.slice(1, -1).trim());
+}
 /** Extract identifier-shaped tokens a `tsc` failure references: every quoted token in the
  * message (tsc quotes symbol/type names) plus the basename stem of the failing file. */
 export function extractTscFailureIdentifiers(failure) {
     const ids = new Set();
     const idShape = /^[A-Za-z_$][\w$]*$/;
-    const quoted = failure.message.match(/['"]([^'"]+)['"]/g) ?? [];
-    for (const q of quoted) {
-        const inner = q.slice(1, -1).trim();
+    for (const inner of quotedMessageTokens(failure.message)) {
         if (idShape.test(inner))
             ids.add(inner);
     }
@@ -218,23 +221,51 @@ export function extractTscFailureIdentifiers(failure) {
         ids.add(stem);
     return Array.from(ids);
 }
-/** The ONE key a failure is looked up by in `changedFiles`. `changedFiles` always holds
- * git's own repo-relative spelling, so an ABSOLUTE `failure.file` is relativized against
- * `ctx.workingDir` (which must therefore be the REPO ROOT, not a resolved package dir) and
- * an already-relative one is taken as-is. Two membership tests over two path spaces is the
- * bug, not the defence: one of them silently never matches. */
-function changedFileKey(failure, ctx) {
-    return ctx.workingDir && path.isAbsolute(failure.file)
+/** The ONE key space the file axis compares in: repo-relative, forward-slashed, extension
+ * stripped. Both sides go through it, so git's `src/mod.ts` and a NodeNext specifier's
+ * `./mod.js` land on the same key. Stripping widens the axis in one direction ONLY — a file-axis
+ * hit can only ever KEEP a failure (see the `subtractBaseline` contract), never disown one. */
+function fileAxisKey(value) {
+    const norm = normalizeScopePath(value);
+    const base = norm.slice(norm.lastIndexOf('/') + 1);
+    const dot = base.lastIndexOf('.');
+    return dot > 0 ? norm.slice(0, norm.length - (base.length - dot)) : norm;
+}
+/** Every key a failure implicates in `changedFiles`. `changedFiles` always holds git's own
+ * repo-relative spelling, so an ABSOLUTE `failure.file` is relativized against `ctx.workingDir`
+ * (which must therefore be the REPO ROOT, not a resolved package dir) and an already-relative
+ * one is taken as-is. Two membership tests over two path spaces is the bug, not the defence:
+ * one of them silently never matches.
+ *
+ * The failing file is not the only path a failure names. `TS2307` names the module it CANNOT
+ * find and never the file that moved, so a phase's own `git mv` breaks an out-of-fence importer
+ * with a message mentioning no changed file and no changed exported symbol — measured. Resolving
+ * each quoted RELATIVE specifier against the failing file's own directory puts that break back
+ * on the phase that caused it, in the same key space rather than a third membership test. Bare
+ * specifiers are deliberately not resolved: they are package requests and can never name a path
+ * in the phase's diff. */
+function changedFileKeys(failure, ctx) {
+    const rel = ctx.workingDir && path.isAbsolute(failure.file)
         ? normalizeScopePath(path.relative(ctx.workingDir, failure.file))
         : normalizeScopePath(failure.file);
+    const dir = path.posix.dirname(rel);
+    const keys = [fileAxisKey(rel)];
+    for (const spec of quotedMessageTokens(failure.message)) {
+        if (spec.startsWith('./') || spec.startsWith('../')) {
+            keys.push(fileAxisKey(path.posix.join(dir, spec)));
+        }
+    }
+    return keys;
 }
 /** True when a failure intersects the phase's own diff (by changed file OR changed exported
  * symbol). Returns false when no context is supplied (the no-guard default). */
 export function isSelfIntroducedFailure(failure, ctx) {
     if (!ctx)
         return false;
-    if (ctx.changedFiles.size > 0 && ctx.changedFiles.has(changedFileKey(failure, ctx))) {
-        return true;
+    if (ctx.changedFiles.size > 0) {
+        const changed = new Set(Array.from(ctx.changedFiles, fileAxisKey));
+        if (changedFileKeys(failure, ctx).some(k => changed.has(k)))
+            return true;
     }
     if (ctx.changedExportedSymbols.size > 0) {
         for (const id of extractTscFailureIdentifiers(failure)) {

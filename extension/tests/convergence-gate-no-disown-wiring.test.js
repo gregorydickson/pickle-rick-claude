@@ -1198,3 +1198,134 @@ test('AP-EXT-ITER117-02 control: narrowing still excludes a package nothing touc
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER117-03 — the arming from AP-EXT-ITER117-01/-02 reaches a classifier that
+// disowns the very break it was armed to catch.
+//
+// A phase that MOVES a module breaks its out-of-fence importers with `TS2307`. That message
+// names the module it CANNOT find (`'./moved-audit.js'`) and never the file that moved, and
+// the failing file is the importer — which the phase did not touch. So the file axis missed,
+// and the identifier axis dropped the specifier outright (`idShape` rejects `./moved-audit.js`).
+// MEASURED on the shipped compiled mirror against a real `git mv`: `selfIntroduced 0, other 1` —
+// `INV-NO-SELF-DISOWN` disowned a whole-repo break the phase itself caused, and the sweep
+// returned `ran: true` with nothing to report while the repo did not compile.
+//
+// These cases drive the REAL producers and the REAL sweep. A hand-built `NoDisownContext`
+// cannot observe the specifier-resolution seam the way the real rename enumeration does.
+// ---------------------------------------------------------------------------
+
+/**
+ * A repo whose second commit moves a module into a subdirectory, byte for byte, leaving an
+ * out-of-fence importer behind. The `typecheck` script emits the tsc lines measured from a
+ * real `tsc --noEmit` over exactly this shape, plus two failures that must NOT be owned.
+ */
+function makeMovedModuleRepo(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  git(dir, ['init']);
+  git(dir, ['config', 'user.name', 'Test User']);
+  git(dir, ['config', 'user.email', 'test@example.com']);
+
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'moved-module-fixture', private: true, scripts: { typecheck: 'node typecheck.cjs' },
+  }, null, 2));
+  fs.writeFileSync(path.join(dir, 'typecheck.cjs'), [
+    // 1. the phase's OWN break: an importer it never touched, naming the module it moved.
+    'console.log("src/importer.ts(1,23): error TS2307: Cannot find module \'./moved-audit.js\' or its corresponding type declarations.");',
+    // 2. a genuinely unrelated failure in a file nothing touched.
+    'console.log("src/legacy.ts(4,9): error TS2554: Expected 1 arguments, but got 2.");',
+    // 3. a relative specifier that resolves OUTSIDE the phase diff.
+    'console.log("src/legacy.ts(6,1): error TS2307: Cannot find module \'./absent-helper.js\' or its corresponding type declarations.");',
+    // 4. a BARE specifier whose stem collides with the moved module — must not be resolved.
+    'console.log("src/legacy.ts(8,1): error TS2307: Cannot find module \'moved-audit\' or its corresponding type declarations.");',
+    'process.exit(1);',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(
+    path.join(dir, 'src', 'moved-audit.ts'),
+    'export interface Payload { id: string }\nexport function build(p: Payload): string { return p.id; }\n',
+  );
+  fs.writeFileSync(
+    path.join(dir, 'src', 'importer.ts'),
+    "import { build } from './moved-audit.js';\nexport const out = build({ id: 'x' });\n",
+  );
+  fs.writeFileSync(path.join(dir, 'src', 'legacy.ts'), 'export const legacy = 1;\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'base']);
+  const base = headSha(dir);
+
+  fs.mkdirSync(path.join(dir, 'src', 'moved'), { recursive: true });
+  git(dir, ['mv', 'src/moved-audit.ts', 'src/moved/moved-audit.ts']);
+  git(dir, ['commit', '-m', 'move the module, byte for byte']);
+  return { dir, base };
+}
+
+test('AP-EXT-ITER117-03: a move\'s TS2307 break in an out-of-fence importer is OWNED, not disowned', async () => {
+  const { dir, base } = makeMovedModuleRepo('cg-apiter117c-own-');
+  try {
+    // PRECONDITIONS. Without these the case would pass for the wrong reason.
+    const detected = execFileSync('git', ['diff', '--name-status', '-M100', `${base}..HEAD`], {
+      cwd: dir, encoding: 'utf-8', timeout: 30_000,
+    });
+    assert.match(detected, /^R100\t/m, 'fixture precondition: git must record this as a rename');
+
+    const changedFiles = getChangedFilesSince(dir, base);
+    assert.ok(
+      !changedFiles.includes('src/importer.ts'),
+      'precondition: the importer is OUT of the phase diff — the file axis cannot own it',
+    );
+    assert.ok(
+      getChangedExportedSymbols(dir, base).size > 0,
+      'precondition: AP-EXT-ITER117-01 must still arm the sweep, or nothing runs at all',
+    );
+
+    const sweep = await runInterfaceChangeSweep({
+      workingDir: dir,
+      sessionDir: dir,
+      startCommit: base,
+      runGateFn: runGate,
+      logActivityFn: () => {},
+    });
+
+    assert.equal(sweep.ran, true, 'the sweep must actually run');
+    assert.deepEqual(
+      sweep.selfIntroduced.map(f => `${path.relative(dir, f.file).replace(/\\/g, '/')}:${f.line}`),
+      ['src/importer.ts:1'],
+      'the phase moved the module, so the importer break is the phase\'s own; pre-fix this ' +
+      'list was EMPTY and the sweep reported ran:true with nothing to escalate',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER117-03 control: unrelated failures and unresolvable specifiers stay disowned', async () => {
+  // Owning the specifier must not degrade into owning every TS2307. Three siblings in the
+  // same sweep must remain `other`: a plain unrelated error, a relative specifier resolving
+  // outside the diff, and a BARE specifier whose stem matches the moved module by name.
+  const { dir, base } = makeMovedModuleRepo('cg-apiter117c-control-');
+  try {
+    const sweep = await runInterfaceChangeSweep({
+      workingDir: dir,
+      sessionDir: dir,
+      startCommit: base,
+      runGateFn: runGate,
+      logActivityFn: () => {},
+    });
+
+    assert.equal(sweep.ran, true);
+    assert.deepEqual(
+      sweep.selfIntroduced.map(f => path.relative(dir, f.file).replace(/\\/g, '/')),
+      ['src/importer.ts'],
+      'only the importer names a module the phase actually moved',
+    );
+    assert.equal(
+      sweep.selfIntroduced.some(f => path.basename(f.file) === 'legacy.ts'), false,
+      'a bare `moved-audit` request is a package lookup, and `./absent-helper.js` resolves ' +
+      'nowhere in the diff — resolving specifiers must stay anchored, not become a stem match',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
