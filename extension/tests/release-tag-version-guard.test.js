@@ -69,23 +69,41 @@ test('guard step fails the job on mismatch and names both values in the error', 
   );
 });
 
-test('guard step runs before actions/setup-node@v4 and before the install/compile step', () => {
+// Step order is only defined WITHIN a job: GitHub Actions runs jobs without a
+// `needs:` edge in parallel on separate runners, so a whole-file index
+// comparison across two jobs measures authoring order, not execution order.
+// This assertion was born (b003c572) against a single-job release.yml, where
+// those were the same thing, and 37452f90 split the file into the independent
+// `gate` and `release` jobs that release-gate-parity.test.js now pins apart --
+// leaving the old cross-job form unsatisfiable while its sibling pin holds.
+//
+// The invariant that survives the split is co-location, not precedence against
+// the gate's toolchain: the guard must sit in the SAME job as the artifact it
+// guards, ahead of it. The `gate` job legitimately has no stake in the tag --
+// it measures the tree -- so the old "fail before provisioning the toolchain"
+// half is deliberately NOT re-expressed here; re-adding it would mean a second
+// copy of the guard in a job that does not publish anything.
+//
+// Same-job membership is proved by slicing between the two steps and requiring
+// no top-level job header in between, rather than by enumerating step names.
+const JOB_HEADER_RE = /^ {2}[A-Za-z0-9_-]+:\s*$/m;
+
+test('guard step precedes the artifact build inside the same job', () => {
   const workflow = readWorkflow();
 
   const guardIndex = workflow.indexOf('Verify tag matches package version');
-  const setupNodeIndex = workflow.indexOf('actions/setup-node@v4');
-  const installIndex = workflow.indexOf('Install and compile');
+  const buildIndex = workflow.indexOf('Build tarball');
 
   assert.notEqual(guardIndex, -1, 'guard step not found');
-  assert.notEqual(setupNodeIndex, -1, 'setup-node step not found');
-  assert.notEqual(installIndex, -1, 'install/compile step not found');
+  assert.notEqual(buildIndex, -1, 'Build tarball step not found');
 
   assert.ok(
-    guardIndex < setupNodeIndex,
-    'guard step must run before actions/setup-node@v4 so a mismatched tree fails before the toolchain is even provisioned',
+    guardIndex < buildIndex,
+    'guard step must run before the Build tarball step so a mismatched tag never produces a release artifact',
   );
-  assert.ok(
-    guardIndex < installIndex,
-    'guard step must run before the Install and compile step so a mismatched tree does not pay for the ~20-minute gate',
+  assert.doesNotMatch(
+    workflow.slice(guardIndex, buildIndex),
+    JOB_HEADER_RE,
+    'guard step and Build tarball must live in the SAME job -- across two jobs with no needs: edge they run in parallel, so the guard orders nothing',
   );
 });
