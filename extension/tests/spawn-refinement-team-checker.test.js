@@ -1209,6 +1209,101 @@ test('AP-EXT-ITER84-01: a genuine multi-ticket split is still judged on justific
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER114-01 — hasJustificationBlock read ONE field, not the joined text
+//
+// `4b1d9277` ("loosen AC-shape matcher", fixing the LOA-727 cross-field
+// false-fire) extracted `ticketShapeText` and wired it into `isParametrizedTicket`
+// while rewriting `hasJustificationBlock` in the SAME commit WITHOUT it — half the
+// pair. So a multi-ticket split whose `// JUSTIFICATION:` block sits in
+// `acceptance_test` (where a `//` comment naturally belongs) or in `title` was
+// reported unjustified and `runAcShapeEnforcement` returned 2 — a documented
+// operator halt — while the ticket carried the exact token the gate's own
+// remediation message demands. Measured on the shipped compiled module before the
+// fix: sigil-in-`acceptance_test` and sigil-in-`title` both violated.
+//
+// The dedicated-field prose arm is load-bearing and unchanged: across the 6 live
+// `refinement_manifest.json` files on this box, 15 of 32 tickets carry prose-only
+// justifications with no sigil, so tightening to sigil-only would false-reject
+// 47% of production. The fix WIDENS only.
+// ---------------------------------------------------------------------------
+
+/** A two-ticket split for `AC-J`, with the justification placed by the caller. */
+function buildJustificationSplitManifest(dir, place) {
+    return buildAcShapeManifest(
+        dir,
+        (role) => [
+            { id: 'T-J-A', source_ac_ids: ['AC-J'], ...place('A', role) },
+            { id: 'T-J-B', source_ac_ids: ['AC-J'], ...place('B', role) },
+        ],
+        { ac_id: 'AC-J', headline: 'enumerated AC split across two tickets', ticket_ids: ['T-J-A', 'T-J-B'] },
+    );
+}
+
+test('AP-EXT-ITER114-01: a // JUSTIFICATION: block in acceptance_test justifies a multi-ticket split', () => {
+    const dir = tmpDir('pickle-acshape-just-at-');
+    const manifest = buildJustificationSplitManifest(dir, (arm, role) => ({
+        title: `Handler get${arm} validates permissions`,
+        acceptance_test: `get${arm} returns 200 (${role}) // JUSTIFICATION: get${arm} uses separate storage`,
+        justification: '',
+    }));
+
+    // Precondition: the sigil really is absent from the field the pre-fix reader read.
+    for (const ticket of manifest.tickets) {
+        assert.equal(ticket.justification ?? '', '', 'the dedicated field must be empty or the case pins nothing');
+        assert.match(ticket.acceptance_test, /\/\/ JUSTIFICATION:/, 'the sigil must live in acceptance_test');
+    }
+    assert.deepEqual(
+        evaluateAcShapeEnforcement(manifest), [],
+        'the sigil in acceptance_test is the same cross-field contract isParametrizedTicket already honours',
+    );
+});
+
+test('AP-EXT-ITER114-01: a // JUSTIFICATION: block in title justifies a multi-ticket split', () => {
+    const dir = tmpDir('pickle-acshape-just-title-');
+    const manifest = buildJustificationSplitManifest(dir, (arm, role) => ({
+        title: `Handler get${arm} // JUSTIFICATION: get${arm} uses separate storage`,
+        acceptance_test: `get${arm} returns 200 (${role})`,
+    }));
+
+    for (const ticket of manifest.tickets) {
+        assert.equal(ticket.justification ?? '', '', 'the dedicated field must be absent or the case pins nothing');
+        assert.match(ticket.title, /\/\/ JUSTIFICATION:/, 'the sigil must live in title');
+    }
+    assert.deepEqual(evaluateAcShapeEnforcement(manifest), [], 'title is part of the joined shape text too');
+});
+
+test('AP-EXT-ITER114-01: a split with no justification in ANY field still violates', () => {
+    const dir = tmpDir('pickle-acshape-just-none-');
+    const manifest = buildJustificationSplitManifest(dir, (arm, role) => ({
+        title: `Handler get${arm} validates permissions`,
+        acceptance_test: `get${arm} returns 200 (${role})`,
+        justification: '   ',
+    }));
+
+    const violation = evaluateAcShapeEnforcement(manifest).find((v) => v.ac_id === 'AC-J');
+    assert.ok(violation, 'widening the reader must not disarm the gate');
+    assert.match(violation.reason, /multi-ticket decomposition/);
+    assert.deepEqual(
+        violation.ticket_ids, ['T-J-A', 'T-J-B'],
+        'whitespace-only justification with no sigil anywhere names both tickets',
+    );
+});
+
+test('AP-EXT-ITER114-01: a prose-only dedicated justification still passes (the shape 15 of 32 live tickets use)', () => {
+    const dir = tmpDir('pickle-acshape-just-prose-');
+    const manifest = buildJustificationSplitManifest(dir, (arm) => ({
+        title: `Handler get${arm} validates permissions`,
+        acceptance_test: `get${arm} returns 200`,
+        justification: `get${arm} uses separate storage`,
+    }));
+
+    for (const ticket of manifest.tickets) {
+        assert.doesNotMatch(ticket.justification, /\/\/ JUSTIFICATION:/, 'prose-only: no sigil anywhere');
+    }
+    assert.deepEqual(evaluateAcShapeEnforcement(manifest), [], 'the dedicated-field prose arm must survive the collapse');
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER85-01 — detectBundleOfBundlesOverCollapse counted analyst emissions
 //
 // `manifest.tickets` is the CONCATENATION of every analyst's emissions, so

@@ -1218,6 +1218,7 @@ function printCompletionPanel(finalResults, allSuccess) {
 const AC_SHAPE_SECTION_RE = /^##+\s+ac_shape_smells\s*$/im;
 const UNIVERSAL_QUANTIFIER_RE = /\b(?:all|every|for any|each)\b/i;
 const JUSTIFICATION_RE = /\/\/\s*JUSTIFICATION:/i;
+const NON_EMPTY_RE = /\S/;
 const DESCRIBE_EACH_RE = /describe\.each\s*\(\s*\[/s;
 // PICKLE_AC_GATE_DEBUG=1 enables per-matcher stderr tracing for smell→ticket evaluation
 function ticketShapeText(ticket) {
@@ -1575,18 +1576,29 @@ export function enrichManifestTicketsFromSourcePrds(prdPath, tickets) {
         };
     });
 }
+// R-ACSG-1 (`4b1d9277`) landed the cross-field joined-text read on
+// `isParametrizedTicket` and rewrote this sibling in the SAME commit without it —
+// half the pair. A ticket whose `// JUSTIFICATION:` block sits in
+// `acceptance_test` (where a `//` comment naturally belongs) or `title` was
+// rejected with exit 2 while carrying the exact token this gate's own remediation
+// message demands. Two arms, neither subsuming the other:
+//   - the dedicated field carrying any prose (load-bearing: 15 of 32 tickets
+//     across the 6 live refinement manifests are prose-only, no sigil), and
+//   - the sigil anywhere in the joined shape text.
+// The old sigil-on-`justification` test was dead — `j.trim() !== ''` already
+// implied the `\S` fallback that followed it, so the gate enforced non-emptiness
+// while tracing as if it enforced the sigil. Widening only: every ticket that
+// passed before still passes, so no new rejection can reach the exit-2 contract.
 function hasJustificationBlock(ticket) {
-    const j = ticket.justification;
-    if (j === undefined || j.trim() === '')
-        return false;
-    const sigilMatch = JUSTIFICATION_RE.test(j);
-    acDebugMatcher(JUSTIFICATION_RE, 'justification', j, sigilMatch);
-    if (sigilMatch)
+    const dedicated = ticket.justification;
+    if (dedicated !== undefined && NON_EMPTY_RE.test(dedicated)) {
+        acDebugMatcher(NON_EMPTY_RE, 'justification', dedicated, true);
         return true;
-    const NON_EMPTY_RE = /\S/;
-    const proseMatch = NON_EMPTY_RE.test(j);
-    acDebugMatcher(NON_EMPTY_RE, 'justification', j, proseMatch);
-    return proseMatch;
+    }
+    const text = ticketShapeText(ticket);
+    const sigilMatch = JUSTIFICATION_RE.test(text);
+    acDebugMatcher(JUSTIFICATION_RE, 'joined', text, sigilMatch);
+    return sigilMatch;
 }
 export function isParametrizedTicket(ticket) {
     const text = ticketShapeText(ticket);
