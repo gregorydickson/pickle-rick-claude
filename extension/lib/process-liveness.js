@@ -3,15 +3,20 @@
  * asks the same question through it: "can I PROVE this pid is gone?"
  *
  * `process.kill(pid, 0)` delivers no signal; it reports whether the pid is signalable.
- * It fails two ways, and they are not the same fact:
- *   - `ESRCH` — no such process. Positive proof of death.
- *   - `EPERM` — the process EXISTS, we may not signal it (different euid).
+ * Exactly ONE failure is proof of death, and the predicate names that one rather than
+ * enumerating the failures that are not:
+ *   - `ESRCH` — no such process. Positive proof of death; the only `false` this returns.
+ *   - everything else — unaccountable, and unaccountable defers to LIVE. `EPERM` (the
+ *     process EXISTS under another euid) is the familiar member, but it is not the only
+ *     one: Node rejects a pid above 2^31-1 with `ERR_INVALID_ARG_TYPE` before the syscall
+ *     runs, and a pid arrives here from on-disk artifacts (lock payloads, session-map
+ *     entries, `state.pid`) that bound it at "positive integer" and nothing tighter.
  *
- * Collapsing both into `false` reads a LIVE process as dead, which is a destroy licence
- * at every consumer: `isDeadPidPayload` evicts a live holder's lock and puts two writers
- * in the same critical section, `orphan-reaper` group-SIGKILLs a live sibling worker, and
- * `pickle-utils` demotes a live session out of the map. Only ESRCH-class failure proves
- * death; an unsignalable pid is unaccountable, and unaccountable defers to LIVE.
+ * Reading any of those as death is a destroy licence at every consumer: `isDeadPidPayload`
+ * evicts a live holder's lock and puts two writers in the same critical section,
+ * `orphan-reaper` group-SIGKILLs a live sibling worker, and `pickle-utils` demotes a live
+ * session out of the map. Testing FOR the one proof-of-death errno cannot acquire a next
+ * blind spot the way testing AGAINST a list of survivors did.
  *
  * Same invariant `orphan-reaper.ts` states for state reads (unreadable is not absent) and
  * `recoverable-json.ts` states for content reads (a throw proves nothing about the file).
@@ -31,6 +36,6 @@ export function isProcessAlive(pid, signal = defaultSignal) {
         return true;
     }
     catch (err) {
-        return err.code === 'EPERM';
+        return err.code !== 'ESRCH';
     }
 }

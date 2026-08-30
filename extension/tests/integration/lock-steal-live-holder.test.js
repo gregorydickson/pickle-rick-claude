@@ -797,3 +797,59 @@ test('pid 1 is alive: the real kernel answer, whichever way this test runs as', 
   assert.equal(isProcessAlive(0), true, 'pid 0 addresses our own process group — never proof of death');
   assert.equal(isProcessAlive(-1), true, 'a negative pid addresses a group — never proof of death');
 });
+
+/**
+ * AP-EXT-ITER109-01 — the probe names the ONE errno that proves death, not the ones that do not.
+ *
+ * AP-EXT-ITER33-01 fixed the EPERM collapse by enumerating the survivor (`code === 'EPERM'` reads
+ * alive, everything else reads dead). That is the incomplete-set shape, and the next member had
+ * already shipped: Node rejects a pid above 2^31-1 with `ERR_INVALID_ARG_TYPE` BEFORE the syscall
+ * runs, so a lock payload carrying one read as PROVABLY DEAD and the steal evicted a holder nobody
+ * had accounted for — the same two-writers catastrophe, through a different errno. Every reader on
+ * the path to the probe bounds a pid at "positive integer" and nothing tighter (`isDeadPidPayload`,
+ * `isStaleLockSnapshot`, `state.pid`), so the value reaches it straight off disk.
+ *
+ * Driven through the REAL `process.kill`, never an injected errno: an injected-errno oracle is
+ * precisely what the pre-fix predicate already satisfied.
+ */
+test('a lock payload whose pid is out of kill(2) range is never stolen — unaccountable is not dead', async () => {
+  const OUT_OF_RANGE_PID = 2_147_483_648; // 2^31 — one past the largest pid process.kill accepts
+
+  // Precondition: this pid really does fail outside the ESRCH/EPERM pair. Without proving that
+  // first, the case below pins nothing — it would pass over a probe that never saw a third class.
+  let thrownCode = null;
+  try { process.kill(OUT_OF_RANGE_PID, 0); } catch (err) { thrownCode = err.code; }
+  assert.ok(thrownCode && thrownCode !== 'ESRCH' && thrownCode !== 'EPERM',
+    `fixture: kill(${OUT_OF_RANGE_PID}, 0) must fail outside the ESRCH/EPERM pair, got ${thrownCode}`);
+
+  const dir = tmpDir();
+  const lp = path.join(dir, 'state.json.lock');
+  const deadLp = path.join(dir, 'dead-holder.lock');
+  try {
+    assert.ok(acquireLockFile(lp, String(OUT_OF_RANGE_PID)), 'fixture: the holder must publish its lock');
+
+    // Production shape at every steal site: judge the payload, then steal only on a dead verdict.
+    const snapshot = inspectLockFile(lp);
+    assert.equal(isDeadPidPayload(snapshot.payload), false,
+      'a pid kill(2) never even examined is not a pid we proved dead');
+    if (isDeadPidPayload(snapshot.payload)) stealLockFile(lp, snapshot);
+    assert.equal(fs.existsSync(lp), true, 'the unaccountable holder’s lock must survive the reclaim sweep');
+
+    // Not vacuous: the same call path still evicts a holder that is provably gone.
+    assert.ok(acquireLockFile(deadLp, String(await deadPid())), 'fixture: the dead holder must publish its lock');
+    const deadSnapshot = inspectLockFile(deadLp);
+    assert.equal(isDeadPidPayload(deadSnapshot.payload), true,
+      'ESRCH is still positive proof of death — the steal must fire on it');
+    assert.equal(stealLockFile(deadLp, deadSnapshot), true, 'a dead holder’s lock is reclaimable');
+    assert.equal(fs.existsSync(deadLp), false, 'the dead holder’s lock must be gone');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an out-of-range pid and a non-Error throw both defer to LIVE at the probe', () => {
+  assert.equal(isProcessAlive(2_147_483_648), true,
+    'kill(2) rejected the argument before it ran — that is no evidence about the process');
+  assert.equal(isProcessAlive(424242, () => { throw 'not an Error'; }), true,
+    'a throw carrying no errno at all is the least accountable answer there is');
+});
