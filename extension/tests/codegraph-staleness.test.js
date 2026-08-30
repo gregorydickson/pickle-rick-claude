@@ -3,9 +3,13 @@
 // AC-STALE: shouldSyncCodegraph — pure staleness-decision function exported from mux-runner.
 // Injectable now/statSync seams; no filesystem side-effects.
 //
-// AC-GTRUTH-B1: WS-B1 HEAD-sha ground truth for the SEPARATE setup.ts codegraph index-freshness
-// gate (`cgResolveIndexAction`, exercised via `runCodegraphIndexAtSetup`). Distinct mechanism from
-// `shouldSyncCodegraph` above (that one backs the WS-B2 phase-transition sync, out of scope here).
+// AC-GTRUTH-B1: WS-B1 HEAD-sha ground truth for the setup.ts codegraph index-freshness gate
+// (`cgResolveIndexAction`, exercised via `runCodegraphIndexAtSetup`). A distinct mechanism from
+// `shouldSyncCodegraph` above, which backs the WS-B2 per-spawn sync.
+//
+// AP-EXT-ITER116-01: the two are distinct MECHANISMS but answer ONE question — "does this db
+// describe the current tree?" — and now share the same ground truth. WS-B1 deferred
+// `shouldSyncCodegraph` ("out of scope here", as this header used to say); that deferral is closed.
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -262,5 +266,121 @@ test('AC-GTRUTH-B1-4: corruption-quarantine must not orphan the sha sidecar → 
     calls().indexAllCalled,
     true,
     'a rebuilt-empty index must resolve full; a surviving sidecar makes it noop over an EMPTY graph',
+  );
+});
+
+// --- AP-EXT-ITER116-01: WS-B1 ground truth reaches the PER-SPAWN sync too ----------------------
+//
+// WS-B1 (9c7f1f10) gated setup.ts's `cgResolveIndexAction` on HEAD-sha ground truth and left
+// `shouldSyncCodegraph` — the per-spawn sync decision — on the superseded mtime-only rule, an
+// explicit deferral recorded in this file's own header. A fresh mtime proves only that the db was
+// WRITTEN recently: every commit the pipeline lands invalidates the index without touching its
+// mtime, so a known-stale index read as fresh for the whole staleness window and every worker
+// spawned in it queried a graph describing an older tree.
+//
+// Fixture convention matches AC-GTRUTH-B1 above: real tmpdir, real db file, real sidecar via
+// `writeIndexedHeadSha` (so the default `readIndexedHeadSha` is genuinely exercised), with only
+// the git resolver injected to keep the tier subprocess-free.
+
+function makeSyncFixture(ageMinutes, indexedSha) {
+  const workDir = makeGtruthTmp();
+  const dbPath = createDb(workDir, ageMinutes);
+  if (indexedSha !== null) writeIndexedHeadSha(dbPath, indexedSha);
+  return { workDir, dbPath };
+}
+
+test('AP-EXT-ITER116-01: fresh mtime + HEAD moved → sync (mtime alone reported it fresh)', () => {
+  const { workDir, dbPath } = makeSyncFixture(0, 'indexed-at-sha');
+  assert.equal(
+    shouldSyncCodegraph(dbPath, 30, Date.now, fs.statSync, {
+      workingDir: workDir,
+      getCurrentSha: () => 'head-moved-sha',
+    }),
+    true,
+    'a db indexed at a different HEAD is stale no matter how recently it was written',
+  );
+});
+
+test('AP-EXT-ITER116-01: fresh mtime + sha match → no sync (fix must not sync every spawn)', () => {
+  const { workDir, dbPath } = makeSyncFixture(0, 'same-sha');
+  assert.equal(
+    shouldSyncCodegraph(dbPath, 30, Date.now, fs.statSync, {
+      workingDir: workDir,
+      getCurrentSha: () => 'same-sha',
+    }),
+    false,
+    'sha match + fresh mtime must still noop — sync() advances the sidecar, so the decision converges',
+  );
+});
+
+test('AP-EXT-ITER116-01: fresh mtime + no sidecar → no sync (unresolvable is not evidence)', () => {
+  const { workDir, dbPath } = makeSyncFixture(0, null); // no sidecar written
+  assert.equal(
+    shouldSyncCodegraph(dbPath, 30, Date.now, fs.statSync, {
+      workingDir: workDir,
+      getCurrentSha: () => 'head-sha',
+    }),
+    false,
+    'an absent indexed-sha cannot prove a mismatch; the mtime bound stands alone',
+  );
+});
+
+test('AP-EXT-ITER116-01: fresh mtime + mismatch but NO workingDir → no sync (legacy callers)', () => {
+  const { dbPath } = makeSyncFixture(0, 'indexed-at-sha');
+  assert.equal(
+    shouldSyncCodegraph(dbPath, 30, Date.now, fs.statSync, { getCurrentSha: () => 'head-moved-sha' }),
+    false,
+    'without a workingDir the current HEAD is unresolvable, so mtime decides alone',
+  );
+});
+
+test('AP-EXT-ITER116-01: stale mtime + sha match → sync (mtime bound survives the fix)', () => {
+  const { workDir, dbPath } = makeSyncFixture(60, 'same-sha'); // 60min vs 30min threshold
+  let shaProbed = false;
+  assert.equal(
+    shouldSyncCodegraph(dbPath, 30, Date.now, fs.statSync, {
+      workingDir: workDir,
+      getCurrentSha: () => { shaProbed = true; return 'same-sha'; },
+    }),
+    true,
+    'the age ceiling still forces a sync even when the index is at the current HEAD',
+  );
+  assert.equal(shaProbed, false, 'a stale mtime short-circuits before the git probe — no cost on the hot path');
+});
+
+test('AP-EXT-ITER116-01: db absent + sha mismatch → no sync (full index is setup\'s job)', () => {
+  const workDir = makeGtruthTmp();
+  const dbPath = path.join(workDir, '.codegraph', 'codegraph.db'); // never created
+  assert.equal(
+    shouldSyncCodegraph(dbPath, 30, Date.now, fs.statSync, {
+      workingDir: workDir,
+      getCurrentSha: () => 'head-moved-sha',
+    }),
+    false,
+    'the db-absent contract is unchanged: a missing db routes to setup, never to a per-spawn sync',
+  );
+});
+
+test('AP-EXT-ITER116-01: fresh mtime + unresolvable HEAD (non-repo) → no sync', () => {
+  const { workDir, dbPath } = makeSyncFixture(0, 'indexed-at-sha');
+  assert.equal(
+    shouldSyncCodegraph(dbPath, 30, Date.now, fs.statSync, {
+      workingDir: workDir,
+      getCurrentSha: () => null, // defaultGetHeadSha's documented non-repo / git-absent result
+    }),
+    false,
+    'a null current HEAD cannot prove a mismatch — the sha arm must not read "unresolvable" as "stale"',
+  );
+});
+
+test('AP-EXT-ITER116-01: fresh mtime + throwing sha resolver → no sync (hot path stays fail-open)', () => {
+  const { workDir, dbPath } = makeSyncFixture(0, 'indexed-at-sha');
+  assert.equal(
+    shouldSyncCodegraph(dbPath, 30, Date.now, fs.statSync, {
+      workingDir: workDir,
+      getCurrentSha: () => { throw new Error('git exploded'); },
+    }),
+    false,
+    'a throwing resolver must never escape into the per-spawn path',
   );
 });

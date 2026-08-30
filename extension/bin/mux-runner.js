@@ -22,7 +22,7 @@ import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEl
 import { detectArtifactProgress, resolveNoProgressWindowSeconds } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence } from '../services/ticket-completion-evidence.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
-import { CodegraphService } from '../services/codegraph-service.js';
+import { CodegraphService, readIndexedHeadSha, defaultGetHeadSha } from '../services/codegraph-service.js';
 import { salvageTicket } from '../lib/salvage-ticket.js';
 import { reconcileTicketTruth } from '../lib/reconcile-ticket-truth.js';
 import { salvageDirtyTree, stashUnattributableRemainder } from '../services/dirty-tree-salvage.js';
@@ -6650,18 +6650,42 @@ export function applyTimeoutCounter(input) {
     return { count: prev.count, ticket: prev.ticket, halt: false };
 }
 /**
- * Returns true when the codegraph db mtime is older than the staleness threshold.
- * Returns false when the db is absent — full index is setup's responsibility.
- * Injectable `now` and `statSync` seams enable fast-tier unit tests.
+ * WS-B1 ground truth applied to the per-spawn sync: a fresh mtime proves only that the db was
+ * WRITTEN recently, never that it describes the current tree. Every commit the pipeline lands
+ * invalidates the index while leaving its mtime untouched, so mtime alone reports a known-stale
+ * index as fresh for the whole staleness window. Unresolvable on either side is NOT evidence of
+ * staleness — the mtime bound then stands alone, and the catch keeps the hot spawn path fail-open.
  */
-export function shouldSyncCodegraph(dbPath, stalenessMaxAgeMinutes, now = Date.now, statSync = fs.statSync) {
+function isIndexedShaStale(dbPath, deps) {
+    const { workingDir } = deps;
+    if (!workingDir)
+        return false;
     try {
-        const ageMs = now() - statSync(dbPath).mtimeMs;
-        return ageMs >= stalenessMaxAgeMinutes * 60 * 1000;
+        const indexedSha = (deps.readIndexedSha ?? readIndexedHeadSha)(dbPath);
+        const currentSha = (deps.getCurrentSha ?? defaultGetHeadSha)(workingDir);
+        return Boolean(indexedSha && currentSha && indexedSha !== currentSha);
     }
     catch {
         return false;
     }
+}
+/**
+ * Returns true when the codegraph db is stale — either its mtime is older than the staleness
+ * threshold, or (WS-B1) the HEAD it was indexed at is no longer the current HEAD.
+ * Returns false when the db is absent — full index is setup's responsibility.
+ * Injectable `now`, `statSync` and sha seams enable fast-tier unit tests.
+ */
+export function shouldSyncCodegraph(dbPath, stalenessMaxAgeMinutes, now = Date.now, statSync = fs.statSync, shaDeps = {}) {
+    let ageMs;
+    try {
+        ageMs = now() - statSync(dbPath).mtimeMs;
+    }
+    catch {
+        return false;
+    }
+    if (ageMs >= stalenessMaxAgeMinutes * 60 * 1000)
+        return true;
+    return isIndexedShaStale(dbPath, shaDeps);
 }
 /**
  * Halt side-effects for FR-B12/B14: reset CB (prevent orphan streak),
@@ -9417,7 +9441,7 @@ export function createCodegraphSession(opts) {
         syncIfStale: async () => {
             if (service === null || settings === null)
                 return;
-            if (shouldSyncCodegraph(dbPath, settings.staleness_max_age_minutes)) {
+            if (shouldSyncCodegraph(dbPath, settings.staleness_max_age_minutes, Date.now, fs.statSync, { workingDir })) {
                 try {
                     await service.sync();
                 }
