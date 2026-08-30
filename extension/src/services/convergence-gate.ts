@@ -361,11 +361,21 @@ export function parseChangedExportedSymbolsFromDiff(diffText: string): Set<strin
  * shares; the former local `32 * 1024 * 1024` was half of it and exactly the per-file fork that
  * trap door forbids. This spawn is a whole-branch PATCH — strictly larger than the `--name-only`
  * list its `getChangedSince` sibling already declares the ceiling on.
+ *
+ * AP-EXT-ITER117-01: `--no-renames` for the same reason `mux-runner.ts:listRangeTouchedPaths`
+ * spells it — rename detection is ON by default (`diff.renames`, git >= 2.9). A pure content
+ * move emits ONLY a `similarity index 100%` header with no `+`/`-` lines, so this reader
+ * returned an EMPTY set for a diff that relocated every exported symbol in a module, and the
+ * sweep's `size === 0` arm read that as the positive verdict "this phase changed no exported
+ * symbol" — `ran: false`, `skipped: null`, nothing rendered, no whole-repo typecheck. The
+ * module's own premise is stated at `microverse-runner.ts:enumerateInterfaceSweepAxes` ("no
+ * exported declaration changes without its file changing"); rename detection falsifies its
+ * dual. Fix the CONTRACT — never re-expand a rename in JS.
  */
 export function getChangedExportedSymbols(workingDir: string, sinceCommit: string): Set<string> | null {
   const result = spawnSync(
     'git',
-    ['diff', `${sinceCommit}..HEAD`, '--', '*.ts', '*.tsx'],
+    ['diff', '--no-renames', `${sinceCommit}..HEAD`, '--', '*.ts', '*.tsx'],
     { cwd: workingDir, encoding: 'utf-8', timeout: 30_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER },
   );
   if (!enumerationCompleted(result)) return null;

@@ -311,6 +311,113 @@ test('AP-EXT-ITER47-01: getChangedExportedSymbols returns null (not an empty Set
   }
 });
 
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER117-01: a pure MOVE is an exported-symbol change.
+//
+// `diff.renames` is ON by default (git >= 2.9), so a 100%-similar move emits ONLY a
+// `similarity index 100%` header with no `+`/`-` lines. `getChangedExportedSymbols` parses
+// `+`/`-` lines, so it returned an EMPTY Set — and an empty Set is the POSITIVE verdict the
+// sweep's `size === 0` arm reads as "this phase changed no exported symbol": `ran: false`,
+// `skipped: null`, nothing rendered, no whole-repo typecheck. Same class as the unmeasurable
+// arm directly above, reached through the git CONTRACT instead of a git failure.
+//
+// These cases cross the REAL producer against a REAL repo — an injected
+// `getChangedExportedSymbolsFn` cannot observe an argv.
+// ---------------------------------------------------------------------------
+
+/** A repo whose second commit is a PURE content move — no edit, 100% similarity. */
+function makePureMoveRepo(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  git(dir, ['init']);
+  git(dir, ['config', 'user.name', 'Test User']);
+  git(dir, ['config', 'user.email', 'test@example.com']);
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'src', 'audit.ts'),
+    'export interface AuditResult { sum: number }\nexport function audit(): AuditResult { return { sum: 0 }; }\n',
+  );
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'base']);
+  const base = headSha(dir);
+
+  git(dir, ['mv', 'src/audit.ts', 'src/moved-audit.ts']);
+  git(dir, ['commit', '-m', 'move the module, byte for byte']);
+  return { dir, base };
+}
+
+test('AP-EXT-ITER117-01: a pure file move is seen as an exported-symbol change, not as zero', () => {
+  const { dir, base } = makePureMoveRepo('cg-apiter117-producer-');
+  try {
+    // PRECONDITION: git really did detect this as a rename, so the case pins the shape it
+    // claims to. Without this the test could pass on a repo where the move was recorded as
+    // delete+add, which was never the defect.
+    const detected = execFileSync('git', ['diff', `${base}..HEAD`], {
+      cwd: dir, encoding: 'utf-8', timeout: 30_000,
+    });
+    assert.match(detected, /similarity index 100%/, 'fixture precondition: git must detect the move as a rename');
+    assert.equal(/^[+-][^+-]/m.test(detected), false, 'fixture precondition: a detected pure rename carries no +/- content lines');
+
+    const measured = getChangedExportedSymbols(dir, base);
+    assert.ok(measured instanceof Set, 'a reachable base must yield a real Set');
+    assert.equal(
+      measured.has('AuditResult'), true,
+      'a move relocates every exported symbol in the module — the module specifier every importer ' +
+      'uses just changed, so an empty Set here is a false "no exported symbol changed" verdict',
+    );
+    assert.equal(measured.has('audit'), true, 'both exported declarations move, not just the first');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER117-01: the moved-module sweep RUNS the whole-repo typecheck instead of reporting a clean verdict', async () => {
+  const { dir, base } = makePureMoveRepo('cg-apiter117-chain-');
+  let gateCalls = 0;
+  try {
+    const sweep = await runInterfaceChangeSweep({
+      workingDir: dir,
+      sessionDir: dir,
+      startCommit: base,
+      runGateFn: async () => { gateCalls++; return { failures: [] }; },
+      logActivityFn: () => {},
+      getChangedFilesSinceFn: () => ['src/moved-audit.ts'],
+    });
+    assert.equal(gateCalls, 1, 'the sweep must actually measure — pre-fix it short-circuited with zero gate calls');
+    assert.equal(sweep.ran, true, 'a move must ARM the sweep');
+    assert.equal(
+      sweep.skipped, null,
+      'and it must not be tagged unmeasurable — this input measures fine, it was being MISREAD',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER117-01: an unrelated non-TS edit still measures zero (the fix does not arm on everything)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-apiter117-control-'));
+  try {
+    git(dir, ['init']);
+    git(dir, ['config', 'user.name', 'Test User']);
+    git(dir, ['config', 'user.email', 'test@example.com']);
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'audit.ts'), 'export interface AuditResult { sum: number }\n');
+    fs.writeFileSync(path.join(dir, 'README.md'), 'one\n');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-m', 'base']);
+    const base = headSha(dir);
+
+    fs.writeFileSync(path.join(dir, 'README.md'), 'two\n');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-m', 'docs only']);
+
+    const measured = getChangedExportedSymbols(dir, base);
+    assert.ok(measured instanceof Set, 'a reachable base must yield a real Set');
+    assert.equal(measured.size, 0, 'a genuine zero must stay zero — `--no-renames` widens the diff, never the pathspec');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('AP-EXT-ITER47-01: an unmeasurable symbol set reaches the sweep as skipped, not as a clean verdict', async () => {
   const { dir, base } = makeExportChangeRepo('cg-apiter47-chain-');
   let gateCalls = 0;
