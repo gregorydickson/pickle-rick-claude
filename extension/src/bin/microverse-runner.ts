@@ -1786,8 +1786,16 @@ export function classifyNoCommitExit(iterLogFile: string): NoCommitExitClassific
   }
 
   const result = firstJsonResultLine(content);
-  const output = String(result?.result ?? content).toLowerCase();
-  const turns = typeof result?.num_turns === 'number' ? result.num_turns : null;
+  // A log carrying NO verdict is not a clean verdict. The needle scan used to fall back to the
+  // WHOLE log (`result?.result ?? content`), and every clean-needle is an ordinary word that
+  // ordinary tool output contains — `consecutive_clean`, `working tree clean`, `cleanup`. Measured:
+  // all 60 iteration logs of session 2026-08-28-a97ed2e5 classify `clean_pass` under that fallback,
+  // so a worker killed before emitting its result line reported a clean pass, and
+  // `handleNoCommitStall` turned that into `converged`. Same disposition as the unreadable-log arm
+  // above: absent evidence is a stall, never a pass.
+  if (!result) return 'stall';
+  const output = String(result.result ?? '').toLowerCase();
+  const turns = typeof result.num_turns === 'number' ? result.num_turns : null;
   if (turns !== null && turns < AMNESIAC_TURN_THRESHOLD) return 'amnesiac';
   if (
     output.includes('clean') ||

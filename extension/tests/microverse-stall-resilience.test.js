@@ -132,6 +132,67 @@ test('classifyNoCommitExit returns stall for many turns without clean signal', (
   }
 });
 
+// AP-EXT-ITER52-01 regression: a log with NO parseable `type:"result"` line carries no verdict.
+// The needle scan used to fall back to the whole log, and every clean-needle is a word ordinary
+// tool output contains, so a worker killed before emitting its result line read as a clean pass.
+test('classifyNoCommitExit returns stall when the log carries no result line, however many clean-needles the body holds', () => {
+  const dir = tmpDir();
+  try {
+    const logPath = path.join(dir, 'killed.log');
+    // Verbatim shapes from a real iteration log: a state read, a git probe, a prompt echo.
+    fs.writeFileSync(logPath, [
+      JSON.stringify({ type: 'assistant', message: '"consecutive_clean": { "extension": 1 }' }),
+      JSON.stringify({ type: 'user', message: 'nothing to fix here; no violations remain' }),
+      'On branch release/v2.1-beta',
+      'nothing to commit, working tree clean',
+      'A clean pass is a valid, expected outcome — say "clean" or "no violations".',
+    ].join('\n'));
+    assert.equal(classifyNoCommitExit(logPath), 'stall');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Same defect at the seam that consumes the verdict. `autoRescueDirtyTree` returns without
+// committing when every dirty path is un-attributable, which leaves the tree DIRTY — so
+// `isProvablyNoOpIteration` cannot demote, and the classifier's verdict stands unmediated.
+// A `clean_pass` there returns `converged` and ends the run reporting success over an
+// iteration that built nothing.
+test('handleNoCommitStall does not converge on a dirty tree when the killed worker left no result line', async () => {
+  const { dir, baseline } = initRepo();
+  const sessionDir = tmpDir('pickle-mrs-session-');
+  const originalSleep = _deps.sleep;
+  _deps.sleep = async () => {};
+  try {
+    // Un-attributable dirt: autoRescueDirtyTree excludes prds/, so owned is empty and the
+    // tree stays dirty through the no-commit seam.
+    fs.mkdirSync(path.join(dir, 'prds'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'prds', 'stray.md'), 'un-attributable dirt\n');
+    assert.equal(_deps.isWorkingTreeDirty(dir), true, 'precondition: the demotion guard must not fire');
+
+    const logPath = path.join(sessionDir, 'tmux_iteration_7.log');
+    fs.writeFileSync(logPath, 'reading consecutive_clean from anatomy-park.json\nworking tree clean\n');
+
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+    state.status = 'iterating';
+
+    const result = await handleNoCommitStall(state, {
+      sessionDir,
+      workingDir: dir,
+      preIterSha: baseline,
+      postIterSha: baseline,
+      log: () => {},
+    }, logPath);
+
+    assert.notEqual(result, 'converged', 'a verdict-less killed worker must never report convergence');
+    assert.equal(state.convergence.stall_counter, 1, 'it is recorded as the stall it is');
+  } finally {
+    _deps.sleep = originalSleep;
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('appendGapAnalysisFixedBlock appends commit SHA, message, and files', () => {
   const { dir } = initRepo();
   const sessionDir = tmpDir('pickle-mrs-session-');
