@@ -531,3 +531,81 @@ test('flake-budget fails closed when the child test target is missing', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER53-01: `PICKLE_FLAKE_BUDGET_TEST_FILE` replaces the ENTIRE fast tier
+// with one file, and `npm run test:fast:budget` is the only fast-tier execution in
+// the release gate. Pre-fix the OK line was byte-identical either way, so an
+// exported shell variable turned the gate green over ~5000 tests that never ran and
+// left no trace saying so. The load-bearing assertion is that the two verdicts
+// DIFFER: asserting either line alone passes over a hardcoded label.
+function envWithoutFlakeBudgetOverride() {
+  const env = { ...process.env };
+  delete env.PICKLE_FLAKE_BUDGET_TEST_FILE;
+  return env;
+}
+
+async function captureOkVerdict(env) {
+  const lines = [];
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=1', '--fail-budget=0', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env,
+    stdout: (msg) => lines.push(msg),
+    stderr: () => {},
+    spawnSyncFn: () => ({ status: 0, stdout: 'ℹ tests 1\nok 1 - synthetic\n', stderr: '' }),
+  });
+  assert.equal(code, 0, `expected a clean run, stdout: ${lines.join('\n')}`);
+  return lines.join('\n');
+}
+
+test('flake-budget names the fast tier it measured in the OK verdict', async () => {
+  const verdict = await captureOkVerdict(envWithoutFlakeBudgetOverride());
+  assert.match(verdict, /^flake-budget OK /m);
+  assert.match(
+    verdict,
+    /target=bin\/test-runner\.js --tier fast --test-concurrency=8/,
+    `a default run must name the fast tier, got: ${verdict}`,
+  );
+});
+
+test('flake-budget OK verdict distinguishes a single-file run from the fast tier', async () => {
+  const tierVerdict = await captureOkVerdict(envWithoutFlakeBudgetOverride());
+  const overrideVerdict = await captureOkVerdict({
+    ...envWithoutFlakeBudgetOverride(),
+    PICKLE_FLAKE_BUDGET_TEST_FILE: BIN,
+  });
+
+  assert.ok(
+    overrideVerdict.includes(`target=--test --test-concurrency=8 ${BIN}`),
+    `an overridden run must name the single file it measured, got: ${overrideVerdict}`,
+  );
+  assert.notEqual(
+    overrideVerdict,
+    tierVerdict,
+    'a one-file run and a whole-tier run must not report identical verdicts',
+  );
+  assert.ok(
+    !overrideVerdict.includes('--tier fast'),
+    `an overridden run must not claim the fast tier, got: ${overrideVerdict}`,
+  );
+});
+
+test('flake-budget names the measured target in the FAIL_BUDGET_EXCEEDED header too', async () => {
+  const lines = [];
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=2', '--fail-budget=0', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...envWithoutFlakeBudgetOverride(), PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: () => {},
+    stderr: (msg) => lines.push(msg),
+    spawnSyncFn: () => ({ status: 1, stdout: '✖ test alpha (10ms)\n', stderr: '' }),
+  });
+
+  assert.equal(code, 1);
+  const header = lines.find((line) => line.startsWith('FAIL_BUDGET_EXCEEDED'));
+  assert.ok(header, `expected a FAIL_BUDGET_EXCEEDED header, got: ${lines.join('\n')}`);
+  assert.ok(
+    header.includes(`target=--test --test-concurrency=8 ${BIN}`),
+    `the over-budget header must name the measured target, got: ${header}`,
+  );
+});

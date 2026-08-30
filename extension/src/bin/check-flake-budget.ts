@@ -46,6 +46,8 @@ interface RunSummary {
   failures: number;
   runsCompleted: number;
   runRecords: RunRecord[];
+  /** The child argv actually measured, verbatim — see `describeMeasuredTarget` below. */
+  target: string;
 }
 
 interface RunInvocation {
@@ -96,6 +98,21 @@ function parseArgs(argv: string[]): ParsedArgs {
   }
 
   return parsed;
+}
+
+/**
+ * The scope this run actually measured, carried into BOTH verdict lines.
+ *
+ * `PICKLE_FLAKE_BUDGET_TEST_FILE` replaces the whole fast tier with ONE file, and it is read
+ * from the ambient environment — nothing scrubs it, and `npm run test:fast:budget` is the only
+ * fast-tier execution in the release gate (extension/CLAUDE.md, .github/workflows/release.yml).
+ * Without the target in the verdict, `flake-budget OK failures=0 budget=2 runs_completed=5
+ * runs_requested=5` is byte-identical whether ~5000 tests ran or one file did, so an exported
+ * shell variable turns the gate green over an unmeasured tier and leaves no trace saying so.
+ * `PICKLE_GATE_DISABLED` already announces its own effect on the verdict; this does too.
+ */
+function describeMeasuredTarget(invocation: RunInvocation): string {
+  return invocation.args.join(' ');
 }
 
 function buildRunInvocation(env: NodeJS.ProcessEnv): RunInvocation {
@@ -219,7 +236,7 @@ function formatRunAttributionLines(runRecords: RunRecord[]): string[] {
 
 function printExceededReport(summary: RunSummary, parsed: ParsedArgs, stderr: (msg: string) => void): void {
   stderr(
-    `FAIL_BUDGET_EXCEEDED failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs}`,
+    `FAIL_BUDGET_EXCEEDED failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs} target=${summary.target}`,
   );
   for (const line of formatRunAttributionLines(summary.runRecords)) {
     stderr(line);
@@ -247,6 +264,7 @@ function runIterations(
   let logDir: string | null = null;
   const childEnv = { ...opts.env };
   const invocation = buildRunInvocation(opts.env);
+  const target = describeMeasuredTarget(invocation);
   delete childEnv.NODE_TEST_CONTEXT;
   assertInvocationTargetExists(opts.cwd, invocation);
 
@@ -288,12 +306,12 @@ function runIterations(
       failures += 1;
       runRecords.push({ runIndex: runNumber, status, failing, logPath });
       if (failures > parsed.failBudget) {
-        return { failures, runsCompleted: runNumber, runRecords };
+        return { failures, runsCompleted: runNumber, runRecords, target };
       }
     }
   }
 
-  return { failures, runsCompleted: parsed.runs, runRecords };
+  return { failures, runsCompleted: parsed.runs, runRecords, target };
 }
 
 export async function checkFlakeBudgetMain(opts: CheckFlakeBudgetMainOpts): Promise<number> {
@@ -315,7 +333,7 @@ export async function checkFlakeBudgetMain(opts: CheckFlakeBudgetMainOpts): Prom
     }
 
     stdout(
-      `flake-budget OK failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs}`,
+      `flake-budget OK failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs} target=${summary.target}`,
     );
     // A fully clean run stays a one-liner; a run that failed within budget gets attribution.
     if (summary.runRecords.length > 0) {
