@@ -1670,8 +1670,22 @@ function notifyOperatorOnTerminalError(
   }
 }
 
+/**
+ * AP-EXT-ITER54-01: the resolved `PICKLE_TEST_BACKEND_PATH` module for this process, or `null`
+ * when the run's iterations were executed by the real `runIteration`. Read by `writeFinalReport`
+ * so the run's own verdict artifact NAMES its executor — a run driven by a stand-in must not read
+ * identically to a real one.
+ */
+let testBackendOverridePath: string | null = null;
+
+/** The final report's executor line: a positive claim in BOTH directions, never an absence. */
+function describeIterationExecutor(): string {
+  return testBackendOverridePath === null ? 'real' : `override:${testBackendOverridePath}`;
+}
+
 export async function applyTestBackendOverrideFromEnv(): Promise<boolean> {
   const overridePath = process.env.PICKLE_TEST_BACKEND_PATH?.trim();
+  testBackendOverridePath = null;
   if (!overridePath) return false;
 
   const resolvedPath = path.resolve(overridePath);
@@ -1689,6 +1703,10 @@ export async function applyTestBackendOverrideFromEnv(): Promise<boolean> {
   }
 
   _deps.runIteration = candidate as TestRunIterationOverride;
+  testBackendOverridePath = resolvedPath;
+  process.stderr.write(
+    `microverse-runner: iterations executed by PICKLE_TEST_BACKEND_PATH override: ${resolvedPath}\n`,
+  );
   return true;
 }
 
@@ -3557,6 +3575,7 @@ export function writeFinalReport(
     '',
     `- **Exit Reason**: ${exitReason}`,
     `- **Iterations**: ${iterations}`,
+    `- **Iteration Executor**: ${describeIterationExecutor()}`,
     `- **Elapsed**: ${formatTime(elapsedSeconds)}`,
     `- **Metric**: ${metricDescriptionForFinalReport(mvState)}`,
     `- **Baseline Score**: ${mvState.baseline_score}`,

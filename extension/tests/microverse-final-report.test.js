@@ -9,6 +9,8 @@ import {
   buildFailureDistribution,
   buildEfficiencySection,
   writeFinalReport,
+  applyTestBackendOverrideFromEnv,
+  _deps,
 } from '../bin/microverse-runner.js';
 import { replayCorpus } from '../bin/wasted-iter-replay.js';
 
@@ -300,5 +302,106 @@ test('writeFinalReport handles worker-managed state without key metric', () => {
     assert.ok(report.includes('- **Convergence Mode**: worker'));
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// ── AP-EXT-ITER54-01: the final report NAMES the executor that produced the iterations ──
+
+const WORKER_MODE_STATE = {
+  status: 'iterating',
+  prd_path: '/tmp/prd.md',
+  convergence_mode: 'worker',
+  convergence_file: 'worker-convergence.json',
+  convergence: { stall_limit: 3, stall_counter: 0, history: [] },
+  gap_analysis_path: '',
+  failed_approaches: [],
+  failure_history: [],
+  baseline_score: 0,
+};
+
+/** Drive the REAL data flow: env var -> applyTestBackendOverrideFromEnv -> writeFinalReport artifact. */
+async function reportAfterOverride(overridePath) {
+  const previousEnv = process.env.PICKLE_TEST_BACKEND_PATH;
+  const originalRunIteration = _deps.runIteration;
+  const previousStderrWrite = process.stderr.write;
+  const stderrChunks = [];
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-executor-'));
+  try {
+    if (overridePath === null) delete process.env.PICKLE_TEST_BACKEND_PATH;
+    else process.env.PICKLE_TEST_BACKEND_PATH = overridePath;
+    process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+    let applied;
+    try {
+      applied = await applyTestBackendOverrideFromEnv();
+    } finally {
+      process.stderr.write = previousStderrWrite;
+    }
+    writeFinalReport(sessionDir, WORKER_MODE_STATE, 'converged', 1, 5);
+    const memoryDir = path.join(sessionDir, 'memory');
+    const [reportName] = fs.readdirSync(memoryDir).filter((f) => f.startsWith('microverse_report_'));
+    return {
+      applied,
+      stderr: stderrChunks.join(''),
+      report: fs.readFileSync(path.join(memoryDir, reportName), 'utf8'),
+    };
+  } finally {
+    _deps.runIteration = originalRunIteration;
+    if (previousEnv === undefined) delete process.env.PICKLE_TEST_BACKEND_PATH;
+    else process.env.PICKLE_TEST_BACKEND_PATH = previousEnv;
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER54-01: a stand-in-executed run does not report identically to a real one', async () => {
+  const backendDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-backend-'));
+  const backendPath = path.join(backendDir, 'stand-in-backend.mjs');
+  fs.writeFileSync(backendPath, 'export async function runIteration() { return { exitCode: 0 }; }\n');
+  try {
+    const real = await reportAfterOverride(null);
+    const substituted = await reportAfterOverride(backendPath);
+
+    // The defect: the two reports were byte-identical apart from the timestamped filename.
+    assert.notEqual(
+      real.report,
+      substituted.report,
+      'a run executed by a stand-in must be distinguishable from a real run in its own final report',
+    );
+
+    // The real run makes a POSITIVE claim — absence of a line is not the signal.
+    assert.ok(real.report.includes('- **Iteration Executor**: real'), 'real run names its executor');
+    assert.equal(real.applied, false);
+    assert.equal(real.stderr, '', 'no override announced when the env var is unset');
+
+    // The substituted run names the module that actually ran the iterations.
+    assert.ok(
+      substituted.report.includes(`- **Iteration Executor**: override:${backendPath}`),
+      'substituted run names the override module in its final report',
+    );
+    assert.ok(!substituted.report.includes('- **Iteration Executor**: real'));
+    assert.equal(substituted.applied, true);
+    assert.ok(
+      substituted.stderr.includes(`PICKLE_TEST_BACKEND_PATH override: ${backendPath}`),
+      'the substitution is announced on stderr as it is applied',
+    );
+    assert.notEqual(_deps.runIteration, undefined);
+  } finally {
+    fs.rmSync(backendDir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER54-01: the executor claim does not stick across runs in one process', async () => {
+  const backendDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-backend-reset-'));
+  const backendPath = path.join(backendDir, 'stand-in-backend.mjs');
+  fs.writeFileSync(backendPath, 'export async function runIteration() { return { exitCode: 0 }; }\n');
+  try {
+    await reportAfterOverride(backendPath);
+    const afterwards = await reportAfterOverride(null);
+    assert.ok(
+      afterwards.report.includes('- **Iteration Executor**: real'),
+      'a later un-overridden run must not inherit the previous override claim',
+    );
+    assert.ok(!afterwards.report.includes('override:'));
+  } finally {
+    fs.rmSync(backendDir, { recursive: true, force: true });
   }
 });
