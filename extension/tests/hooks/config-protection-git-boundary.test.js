@@ -4588,3 +4588,82 @@ test('AP-EXT-ITER93-03: the flag shape has one declaration and asks the shared w
   assert.doesNotMatch(body, /SHELL_WORD_POSITION_RE/);
   assert.doesNotMatch(body, /SINGLE_POSITION_WILDCARD_RE/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER110-01 — the seam's audit events must be REGISTERED event names.
+//
+// Pre-fix the emitter built the name (`worker_git_${verb}_${suffix}`) and cast it
+// through `as unknown as ActivityEventType`, so all 18 names it can spell were
+// absent from VALID_ACTIVITY_EVENTS. Measured on the host ledger: 9 distinct
+// `worker_git_*_blocked` names live, ZERO registered — every registry consumer
+// therefore read a real event as a fabrication.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER110-01: the event a blocked git verb actually emits is in VALID_ACTIVITY_EVENTS', async () => {
+  const { VALID_ACTIVITY_EVENTS } = await import('../../types/index.js');
+  const { tmpDir, stateFile, dataRoot } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'git reset --hard HEAD~1' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+
+  const emitted = readActivityEvents(dataRoot).filter(e => String(e.event).startsWith('worker_git_'));
+  assert.equal(emitted.length, 1, 'the blocked verb must leave exactly one audit event');
+  assert.equal(emitted[0].event, 'worker_git_reset_blocked');
+  assert.ok(
+    VALID_ACTIVITY_EVENTS.includes(emitted[0].event),
+    `emitted event ${emitted[0].event} must be registered in VALID_ACTIVITY_EVENTS`,
+  );
+});
+
+test('AP-EXT-ITER110-01: the bypass arm emits a registered name too', async () => {
+  const { VALID_ACTIVITY_EVENTS } = await import('../../types/index.js');
+  const { tmpDir, stateFile, dataRoot } = bootstrapSession({
+    flags: { allow_git_commit_amend_reason: 'operator closer step' },
+  });
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'git commit --amend -m x' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'approve');
+
+  const emitted = readActivityEvents(dataRoot).filter(e => String(e.event).startsWith('worker_git_'));
+  assert.equal(emitted.length, 1);
+  assert.equal(emitted[0].event, 'worker_git_commit__amend_bypass');
+  assert.ok(VALID_ACTIVITY_EVENTS.includes(emitted[0].event));
+});
+
+test('AP-EXT-ITER110-01: EVERY name the gate can emit is registered (no per-verb list here)', async () => {
+  const { VALID_ACTIVITY_EVENTS } = await import('../../types/index.js');
+  const { gitVerbGateEventNames } = await import('../../hooks/handlers/config-protection.js');
+  const names = gitVerbGateEventNames();
+  // Derived from the gate itself, so a 10th verb is covered without touching this test.
+  assert.ok(names.length >= 18, `expected the 9 gated verbs x 2 suffixes, got ${names.length}`);
+  const unregistered = names.filter(n => !VALID_ACTIVITY_EVENTS.includes(n));
+  assert.deepEqual(unregistered, [], `unregistered gate events: ${unregistered.join(', ')}`);
+});
+
+test('AP-EXT-ITER110-01: a PRD citing a real gate event is no longer audited as a phantom', async () => {
+  const { gitVerbGateEventNames } = await import('../../hooks/handlers/config-protection.js');
+  const { evaluateSymbolAudit } = await import('../../bin/spawn-refinement-team.js');
+  const prd = [
+    '# PRD',
+    '',
+    '## Acceptance Criteria',
+    '',
+    ...gitVerbGateEventNames().map((n, i) => `- AC-${i}: the hook emits \`${n}\` as an activity event.`),
+    '',
+  ].join('\n');
+  const audit = evaluateSymbolAudit(prd, process.cwd(), { tickets: [] });
+  const phantoms = audit.activityEvents.filter(ref => ref.status === 'phantom');
+  assert.deepEqual(
+    phantoms.map(p => p.symbol),
+    [],
+    'the refinement symbol audit must not report a live gate event as a fabricated citation',
+  );
+});

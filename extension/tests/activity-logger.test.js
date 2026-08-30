@@ -304,6 +304,30 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         // so the runtime refused the very names the schema constrained.
         'ticket_audit_manual_edit',
         'bundle_2026_05_04_closer_done',
+        // AP-EXT-ITER110-01: the R-WSRC-GR git-boundary seam's per-verb audit trail.
+        // These were emitted LIVE (9 distinct `_blocked` names in the host activity
+        // ledger) while absent from this registry for the seam's whole lifetime — the
+        // emitter built the name and cast it past ActivityEventType. `GIT_VERB_GATE` in
+        // config-protection.ts now spells them as ActivityEventType-annotated literals,
+        // so this list and that one cannot drift without a tsc error.
+        'worker_git_reset_blocked',
+        'worker_git_reset_bypass',
+        'worker_git_switch_blocked',
+        'worker_git_switch_bypass',
+        'worker_git_stash_blocked',
+        'worker_git_stash_bypass',
+        'worker_git_rebase_blocked',
+        'worker_git_rebase_bypass',
+        'worker_git_pull_blocked',
+        'worker_git_pull_bypass',
+        'worker_git_push_blocked',
+        'worker_git_push_bypass',
+        'worker_git_checkout_blocked',
+        'worker_git_checkout_bypass',
+        'worker_git_commit__amend_blocked',
+        'worker_git_commit__amend_bypass',
+        'worker_git_fetch__prune_blocked',
+        'worker_git_fetch__prune_bypass',
     ];
     assert.equal(VALID_ACTIVITY_EVENTS.length, expected.length);
     for (const e of expected) {

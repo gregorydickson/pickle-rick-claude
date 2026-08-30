@@ -1046,22 +1046,58 @@ const ALLOW_STATE_WRITE_REASON_FIELD = 'allow_state_writes_reason';
 const ALLOW_SETTINGS_WRITE_REASON_FIELD = 'allow_settings_writes_reason';
 const ALLOW_INSTALL_SH_REASON_FIELD = 'allow_install_sh_reason'; // rare manager override only (R-WSRC)
 
-/** R-WSRC-GR: Per-verb operator override flags. Narrowly scoped — one flag per verb. */
-const ALLOW_GIT_VERB_REASON_FIELDS: Record<string, string> = {
-  'reset': 'allow_git_reset_reason',
-  'checkout': 'allow_git_checkout_reason',
-  'switch': 'allow_git_switch_reason',
-  'stash': 'allow_git_stash_reason',
-  'rebase': 'allow_git_rebase_reason',
-  'commit --amend': 'allow_git_commit_amend_reason',
-  'pull': 'allow_git_pull_reason',
-  'push': 'allow_git_push_reason',
-  'fetch --prune': 'allow_git_fetch_prune_reason',
+/**
+ * R-WSRC-GR: ONE record per gated verb — the operator override flag AND the two audit
+ * events the seam emits for it. Narrowly scoped: one entry per verb, no second table.
+ *
+ * AP-EXT-ITER110-01: the event names were previously BUILT from the verb and cast past
+ * the ActivityEventType union (the double-assertion form, spelled out in the trap door
+ * rather than here so a grep sweep does not match this prose), so none of the 18 was in
+ * `VALID_ACTIVITY_EVENTS` — measured live, 9 distinct `worker_git_*_blocked` names in
+ * `~/.local/share/pickle-rick/activity/*.jsonl` against a 219-member registry holding
+ * ZERO of them. The cast is what let the two drift: every registry consumer reads the
+ * names as fabrications (`bin/log-activity.ts` refuses to emit one; the refinement
+ * symbol audit marks a factually-correct citation `phantom`, "not present in
+ * VALID_ACTIVITY_EVENTS").
+ *
+ * Writing the names as LITERALS annotated `ActivityEventType` is what makes the
+ * correspondence machine-checked rather than hand-maintained: a 10th verb added here
+ * without registering its two names no longer compiles. Do NOT reintroduce a name
+ * BUILDER — a constructed name is unrepresentable in the literal union, so it can only
+ * come back through a cast, and a cast is exactly the divergence this closes.
+ */
+type GitVerbGateEntry = { flag: string; blocked: ActivityEventType; bypass: ActivityEventType };
+const GIT_VERB_GATE: Record<string, GitVerbGateEntry | undefined> = {
+  'reset': { flag: 'allow_git_reset_reason', blocked: 'worker_git_reset_blocked', bypass: 'worker_git_reset_bypass' },
+  'checkout': { flag: 'allow_git_checkout_reason', blocked: 'worker_git_checkout_blocked', bypass: 'worker_git_checkout_bypass' },
+  'switch': { flag: 'allow_git_switch_reason', blocked: 'worker_git_switch_blocked', bypass: 'worker_git_switch_bypass' },
+  'stash': { flag: 'allow_git_stash_reason', blocked: 'worker_git_stash_blocked', bypass: 'worker_git_stash_bypass' },
+  'rebase': { flag: 'allow_git_rebase_reason', blocked: 'worker_git_rebase_blocked', bypass: 'worker_git_rebase_bypass' },
+  'commit --amend': { flag: 'allow_git_commit_amend_reason', blocked: 'worker_git_commit__amend_blocked', bypass: 'worker_git_commit__amend_bypass' },
+  'pull': { flag: 'allow_git_pull_reason', blocked: 'worker_git_pull_blocked', bypass: 'worker_git_pull_bypass' },
+  'push': { flag: 'allow_git_push_reason', blocked: 'worker_git_push_blocked', bypass: 'worker_git_push_bypass' },
+  'fetch --prune': { flag: 'allow_git_fetch_prune_reason', blocked: 'worker_git_fetch__prune_blocked', bypass: 'worker_git_fetch__prune_bypass' },
 };
 
-function gitVerbEventName(verb: string, suffix: string): ActivityEventType {
-  const base = verb.replace(/\s/g, '_').replace(/-+/g, '_');
-  return `worker_git_${base}_${suffix}` as unknown as ActivityEventType;
+/**
+ * The R-WSRC-GR audit line, best-effort. Lives here rather than inline so the two arms of
+ * `isGitVerbBlockedByRWSRCGR` share ONE emitter and neither the try/catch nor the
+ * gate-present check is re-spelled per arm.
+ */
+function logGitVerbGateEvent(
+  gate: GitVerbGateEntry | undefined,
+  arm: 'blocked' | 'bypass',
+  gatePayload: Record<string, unknown>,
+): void {
+  if (!gate) return; // total over detectProhibitedGitVerb's returns; an unknown verb loses only its audit line
+  try {
+    logActivity({ event: gate[arm], source: 'hook', gate_payload: gatePayload });
+  } catch { /* activity logging is best-effort */ }
+}
+
+/** Exported for the ENFORCE test: every name this seam can emit, for a registry check. */
+export function gitVerbGateEventNames(): ActivityEventType[] {
+  return Object.values(GIT_VERB_GATE).flatMap((entry) => (entry ? [entry.blocked, entry.bypass] : []));
 }
 
 /**
@@ -1083,30 +1119,19 @@ function isGitVerbBlockedByRWSRCGR(input: PreToolUseInput, state: State): boolea
   if (!detected) return false;
 
   const { verb } = detected;
-  const flagField = ALLOW_GIT_VERB_REASON_FIELDS[verb];
+  const gate = GIT_VERB_GATE[verb];
+  const flagField = gate?.flag;
   const flags = (state.flags as Record<string, unknown> | undefined) || {};
   const override = flagField ? trimmedFlag(flags, flagField) : null;
   const ticketId = (state as unknown as Record<string, unknown>).current_ticket as string | null | undefined;
 
   if (override) {
-    try {
-      logActivity({
-        event: gitVerbEventName(verb, 'bypass'),
-        source: 'hook',
-        gate_payload: { command: input.tool_input.command, reason: override, ticket_id: ticketId ?? null },
-      });
-    } catch { /* activity logging is best-effort */ }
+    logGitVerbGateEvent(gate, 'bypass', { command: input.tool_input.command, reason: override, ticket_id: ticketId ?? null });
     approve();
     return true;
   }
 
-  try {
-    logActivity({
-      event: gitVerbEventName(verb, 'blocked'),
-      source: 'hook',
-      gate_payload: { command: input.tool_input.command, ticket_id: ticketId ?? null },
-    });
-  } catch { /* best-effort */ }
+  logGitVerbGateEvent(gate, 'blocked', { command: input.tool_input.command, ticket_id: ticketId ?? null });
 
   block(`R-WSRC-GR: \`git ${verb}\` is FORBIDDEN inside worker subprocesses. PRESERVE WORK first (R-WUWC): commit verified changes scoped, then \`git restore <named-files>\` — NEVER \`git restore .\` or a directory over uncommitted work (restore is not blocked and wipes it all). Operator override: set state.flags.${flagField ?? `allow_git_${verb.replace(/\s/g, '_')}_reason`}="<reason>" to bypass.`);
   return true;

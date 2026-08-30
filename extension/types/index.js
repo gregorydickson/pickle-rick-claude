@@ -436,6 +436,30 @@ export const VALID_ACTIVITY_EVENTS = [
     // shared signature-caller-gap detector named out-of-fence callers. Over-cap
     // (> SCOPE_AUTO_EXTEND_MAX) extends nothing (allowed_paths unchanged, cap_hit:true).
     'scope_auto_extended',
+    // R-WSRC-GR: the git-boundary seam's per-verb audit trail, emitted by
+    // `hooks/handlers/config-protection.ts` on every blocked prohibited git verb and on
+    // every operator-flag bypass of one. Listed here as literals so `ActivityEventType`
+    // stays the literal union; `GIT_VERB_GATE` in that file is annotated with
+    // `ActivityEventType`, so a verb added to the gate without its two names landing here
+    // is a COMPILE error, not a silently unregistered event (AP-EXT-ITER110-01).
+    'worker_git_reset_blocked',
+    'worker_git_reset_bypass',
+    'worker_git_switch_blocked',
+    'worker_git_switch_bypass',
+    'worker_git_stash_blocked',
+    'worker_git_stash_bypass',
+    'worker_git_rebase_blocked',
+    'worker_git_rebase_bypass',
+    'worker_git_pull_blocked',
+    'worker_git_pull_bypass',
+    'worker_git_push_blocked',
+    'worker_git_push_bypass',
+    'worker_git_checkout_blocked',
+    'worker_git_checkout_bypass',
+    'worker_git_commit__amend_blocked',
+    'worker_git_commit__amend_bypass',
+    'worker_git_fetch__prune_blocked',
+    'worker_git_fetch__prune_bypass',
 ];
 /**
  * Recoverable reasons a ticket can be flipped to Failed by the auto-skip guard (R-WSWA-3).
