@@ -1372,3 +1372,64 @@ it('AP-EXT-ITER104-01 tsc-gate.ts stages exactly one --name-only reader', () => 
   assert.doesNotMatch(body, /split\('\\n'\)/);
   assert.doesNotMatch(body, /\.trim\(\)/);
 });
+
+// AP-EXT-ITER105-01: `safeErrorMessage` is `String(err)`, so `String(undefined)`
+// is the truthy string "undefined" and it short-circuited every
+// `safeErrorMessage(result.error) || result.stderr || fallback` chain. spawnSync
+// sets `.error` only when the SPAWN fails, so on the common failure — a nonzero
+// git exit — the block reason read `setup_error: undefined` and git's stderr was
+// dropped. This exercises the real data flow: cwd outside any repository makes
+// `git rev-parse --show-toplevel` exit 128 with a diagnosis on stderr only.
+it('AP-EXT-ITER105-01 reports git stderr, not the string "undefined", when setup fails', () => {
+  const harness = makeHarness();
+  const outsideRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'tsc-gate-norepo-'));
+  try {
+    writeSession(harness, outsideRepo);
+
+    const result = runHandler({ harness, repoRoot: outsideRepo });
+
+    assert.equal(result.decision?.decision, 'block');
+    assert.match(result.decision.reason, /not a git repository/);
+    assert.doesNotMatch(result.decision.reason, /undefined/);
+    const failed = latestEvent(result.events, 'tsc_gate_failed');
+    assertFailedEvent(failed, 'setup_error');
+    assert.doesNotMatch(failed.reason, /undefined/);
+    assert.match(failed.reason, /not a git repository/);
+  } finally {
+    harness.cleanup();
+    fs.rmSync(outsideRepo, { recursive: true, force: true });
+  }
+});
+
+// PATTERN_SHAPE guard: the regression is a re-forked `|| stderr ||` chain, or
+// routing a possibly-undefined `.error` through the `String()`-backed
+// `safeErrorMessage` where a falsy detail is required.
+it('AP-EXT-ITER105-01 tsc-gate.ts keeps one describeCommandFailure reader', () => {
+  // Strip block comments first: this file's own trap-door prose spells the
+  // forbidden `|| result.stderr || fallback` chain verbatim, and a source pin
+  // that greps prose measures documentation, not code.
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts'), 'utf-8',
+  ).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  assert.equal(
+    (source.match(/function describeCommandFailure\(/g) ?? []).length,
+    1,
+    'exactly one describeCommandFailure definition',
+  );
+  assert.equal(
+    (source.match(/describeCommandFailure\(/g) ?? []).length,
+    5,
+    'one definition plus exactly four call sites',
+  );
+  assert.doesNotMatch(source, /safeErrorMessage\([A-Za-z_$][\w$]*\.error\)/);
+  const body = source.slice(
+    source.indexOf('function describeCommandFailure('),
+    source.indexOf('function isCommandFailure('),
+  );
+  assert.ok(body.length > 0, 'describeCommandFailure must remain a single named function');
+  // The collapse itself: a possibly-absent `.error` is read through optional
+  // chaining, which is falsy when absent, so the `|| stderr` arm can be reached.
+  assert.match(body, /result\.error\?\.message \|\| result\.stderr \|\| fallback/);
+  assert.doesNotMatch(body, /safeErrorMessage/);
+  assert.doesNotMatch(body, /String\(/);
+});

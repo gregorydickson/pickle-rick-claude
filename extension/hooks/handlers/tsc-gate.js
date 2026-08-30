@@ -154,6 +154,25 @@ function hasTimedOut(result) {
     const errno = result.error;
     return errno.code === 'ETIMEDOUT';
 }
+/**
+ * The ONE reader of a failed command's diagnosis, and the only place this file
+ * turns a `TextCommandResult` into `setup_error` prose.
+ *
+ * `safeErrorMessage` is deliberately NOT used here: it is `String(err)`, so
+ * `safeErrorMessage(undefined)` returns the truthy STRING `"undefined"` and
+ * short-circuits any `... || result.stderr || fallback` chain. `spawnSync` sets
+ * `.error` ONLY when the spawn itself fails, so on the COMMON failure — a
+ * nonzero git exit — all four call sites reported `setup_error: undefined` and
+ * dropped git's stderr. MEASURED on the shipped compiled hook: `git commit`
+ * from outside a repository blocked with `setup_error: undefined` instead of
+ * `fatal: not a git repository`.
+ *
+ * One helper, four call sites: a fifth hand-spelled `|| stderr ||` chain is how
+ * the diagnosis was lost in the first place.
+ */
+function describeCommandFailure(result, fallback) {
+    return result.error?.message || result.stderr || fallback;
+}
 function isCommandFailure(result) {
     return result.status !== 0 || result.timedOut || Boolean(result.error);
 }
@@ -251,7 +270,7 @@ function runTscGate(repoRoot, stagedPaths) {
         if (isCommandFailure(added)) {
             return {
                 decision: 'block',
-                reason: formatBlockReason('setup_error', safeErrorMessage(added.error) || added.stderr || 'failed to enumerate added staged files'),
+                reason: formatBlockReason('setup_error', describeCommandFailure(added, 'failed to enumerate added staged files')),
                 failureKind: 'setup_error',
             };
         }
@@ -259,7 +278,7 @@ function runTscGate(repoRoot, stagedPaths) {
         if (materializeResult) {
             return {
                 decision: 'block',
-                reason: formatBlockReason('setup_error', safeErrorMessage(materializeResult.error) || materializeResult.stderr || 'failed to materialize staged tree'),
+                reason: formatBlockReason('setup_error', describeCommandFailure(materializeResult, 'failed to materialize staged tree')),
                 failureKind: 'setup_error',
             };
         }
@@ -350,7 +369,7 @@ function evaluateCommitCommand(command, state) {
     if (isCommandFailure(repoRootResult)) {
         const decision = {
             decision: 'block',
-            reason: formatBlockReason('setup_error', safeErrorMessage(repoRootResult.error) || repoRootResult.stderr || 'failed to resolve repository root'),
+            reason: formatBlockReason('setup_error', describeCommandFailure(repoRootResult, 'failed to resolve repository root')),
             failureKind: 'setup_error',
         };
         if (allowReason) {
@@ -365,7 +384,7 @@ function evaluateCommitCommand(command, state) {
     if (isCommandFailure(staged)) {
         const decision = {
             decision: 'block',
-            reason: formatBlockReason('setup_error', safeErrorMessage(staged.error) || staged.stderr || 'failed to enumerate staged files'),
+            reason: formatBlockReason('setup_error', describeCommandFailure(staged, 'failed to enumerate staged files')),
             failureKind: 'setup_error',
         };
         if (allowReason) {
