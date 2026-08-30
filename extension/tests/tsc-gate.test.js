@@ -1433,3 +1433,83 @@ it('AP-EXT-ITER105-01 tsc-gate.ts keeps one describeCommandFailure reader', () =
   assert.doesNotMatch(body, /safeErrorMessage/);
   assert.doesNotMatch(body, /String\(/);
 });
+
+it('AP-EXT-ITER113-01 the AP-EXT-ITER14-01 span anchor is RUNNABLE, and the cd-prefix strip is gone', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  const hooksSrc = path.resolve(__dirname, '../src/hooks');
+
+  // 1. THE ANCHOR, executed rather than read. AP-EXT-ITER14-01 declared "zero
+  // `"[^"]*"` quoted-span literals anywhere in `extension/src/`" — a claim that
+  // was FALSE AT BIRTH (3 standing hits), so a genuine reintroduction of the
+  // escape-blind span was indistinguishable from the noise and the CRITICAL
+  // invariant had no discriminating guard. Re-scoped to CODE lines under
+  // src/hooks/ (shell-word parsing lives nowhere else) it is exactly zero, and
+  // this test is what keeps it that way.
+  const codeLinesWithNaiveSpan = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (!entry.name.endsWith('.ts')) continue;
+      fs.readFileSync(full, 'utf8').split('\n').forEach((line, index) => {
+        const trimmed = line.trim();
+        // Comment prose is excluded on purpose: shell-exec.ts's own doc comment
+        // NAMES the defective span in order to explain it. Including comments
+        // makes the anchor read RED forever, which is how the original spelling
+        // stopped discriminating.
+        if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) return;
+        if (line.includes('"[^"]*"')) codeLinesWithNaiveSpan.push(`${full}:${index + 1}`);
+      });
+    }
+  };
+  walk(hooksSrc);
+  assert.deepEqual(codeLinesWithNaiveSpan, [], 'escape-blind quoted-span literal on a code line under src/hooks/');
+
+  // 2. STRUCTURAL: the second, naive shell parser cannot come back. A prefix
+  // strip in front of a position-independent anchor scan can only ever REMOVE a
+  // `git` the scan would have found.
+  const handlerSrc = fs.readFileSync(path.join(hooksSrc, 'handlers/tsc-gate.ts'), 'utf8');
+  const codeOnly = handlerSrc
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim();
+      return !(t.startsWith('*') || t.startsWith('//') || t.startsWith('/*'));
+    })
+    .join('\n');
+  assert.doesNotMatch(codeOnly, /CD_PREFIX_RE/);
+  assert.doesNotMatch(codeOnly, /stripCdPrefix/);
+
+  // 3. BEHAVIOURAL EQUIVALENCE. Removing the strip flipped 0 verdicts across
+  // 10385 real worker commands; these pin the shapes that exercised it, so a
+  // future "optimisation" that reintroduces a prefix parser cannot silently
+  // suppress a commit classification.
+  const positives = [
+    'cd extension && git commit -m x',
+    'cd "extension" && git commit -m x',
+    "cd 'extension' && git commit -m x",
+    'cd "extension" ; git commit -m x',
+    'cd extension\ngit add -A\ngit commit -m x\n; ls',
+    // The cd TARGET spells a separator inside quotes — the case where the naive
+    // strip and the escape-aware splitter could disagree about what is quoted.
+    'cd "a&&b" && git commit -m x',
+    'cd "a;b" && git commit -m x',
+    'cd "d\\"ir" && git commit -m x',
+    'cd "d\\"ir" ; git commit -m x',
+  ];
+  for (const command of positives) {
+    assert.equal(isGitCommitCommand(command), true, JSON.stringify(command));
+  }
+
+  // Negative controls — dropping the strip must not widen what counts as a
+  // commit, or the gate starts blocking non-commits whenever tsc is red.
+  const negatives = [
+    'cd src && ls',
+    'cd extension && npm test',
+    'cd extension && git log',
+    'cd extension\nls\n; echo hi',
+    'cd "x && git commit -m y"',
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, JSON.stringify(command));
+  }
+});

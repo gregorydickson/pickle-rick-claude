@@ -28,7 +28,6 @@ const NEGATIVE_GIT_SUBCOMMANDS = new Set(['log', 'diff', 'show', 'rev-parse']);
  * merely RUNS the gate is pattern-aware.
  */
 const GIT_COMMIT_SUBCOMMAND = ['commit'];
-const CD_PREFIX_RE = /^cd\s+(?:"[^"]*"|'[^']*'|[^;&]+?)\s*(?:&&|;)\s*/;
 const COMMAND_TIMEOUT_MS = 5_000;
 const ALLOW_TSC_FAILED_REASON_FIELD = 'allow_tsc_failed_reason';
 const sm = new StateManager();
@@ -71,16 +70,28 @@ function trimmedFlag(flags, key) {
     const trimmed = raw.trim();
     return trimmed.length > 0 ? trimmed : null;
 }
-function stripCdPrefix(command) {
-    let stripped = command.trim();
-    while (CD_PREFIX_RE.test(stripped)) {
-        stripped = stripped.replace(CD_PREFIX_RE, '').trimStart();
-    }
-    return stripped;
-}
 function segmentIsGitCommit(segment) {
-    const stripped = stripCdPrefix(segment);
-    const tokens = tokenizeShellTokens(stripped);
+    // AP-EXT-ITER113-01: no `cd` PREFIX STRIP. The removed `stripCdPrefix` was a
+    // SECOND, naive shell parser sitting in front of the escape-aware one — its
+    // double-quoted alternative was escape-BLIND, the last live code match of the
+    // span shape AP-EXT-ITER14-01 forbids. (The literal is deliberately not repeated
+    // here: this module's own anchor greps for it.)
+    //
+    // It could never change a verdict, because the git ANCHOR below is POSITION-
+    // INDEPENDENT: `execAnchorIndex` scans every token of the segment, so a prefix
+    // strip can only ever REMOVE a `git` the scan would have found — never reveal
+    // one. And it cannot remove a REAL commit either: the strip terminates at the
+    // first `&&`/`;`, while `splitShellSegments` (escape-aware) has already cut the
+    // command at every UNQUOTED separator, so any separator still inside a segment is
+    // quoted and cannot begin a command. The two parsers could only ever DISAGREE
+    // about quoting, and disagreement in the surviving direction is over-block.
+    //
+    // Measured before removal, not inferred: 0 verdict flips across 10385 unique real
+    // worker Bash commands from 173 live session logs (2876 of them `cd`-prefixed, 199
+    // classified as commits), plus 22 adversarial probes shim-verified against what
+    // bash REALLY execs (escaped quotes, quoted `&&`/`;`, newline and tab separators)
+    // with zero under-blocks in either the pre- or post-removal body.
+    const tokens = tokenizeShellTokens(segment.trim());
     // The git ANCHOR, not the exec-token prelude — the same collapse
     // config-protection's `findGitVerb` (AP-EXT-ITER63-02) and
     // `extractNodeTestPathsFromSegment` (AP-EXT-ITER63-05) already made. A POSIX
