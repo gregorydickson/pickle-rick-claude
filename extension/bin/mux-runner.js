@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
-import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
+import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
 import { PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive } from '../services/state-manager.js';
@@ -3420,20 +3420,6 @@ function readIterationStateOrThrow(sessionDir, iterationNum) {
         throw new Error(`Failed to read state.json for iteration ${iterationNum}: ${msg}`);
     }
 }
-function resolveIterationPromptPath(extensionRoot, templateName) {
-    if (templateName.includes('/') || templateName.includes('\\') || templateName.includes('..')) {
-        throw new Error(`Invalid command_template in state.json: "${templateName}" — must be a plain filename`);
-    }
-    const templatesDir = path.join(extensionRoot, 'templates');
-    const commandsDir = path.join(os.homedir(), '.claude/commands');
-    const promptPath = fs.existsSync(path.join(templatesDir, templateName))
-        ? path.join(templatesDir, templateName)
-        : path.join(commandsDir, templateName);
-    if (!fs.existsSync(promptPath)) {
-        throw new Error(`${templateName} not found in ${templatesDir} or ${commandsDir}. Run install.sh first.`);
-    }
-    return promptPath;
-}
 function consumeIterationHandoff(state, sessionDir, iterationNum) {
     const handoffPath = path.join(sessionDir, 'handoff.txt');
     if (!fs.existsSync(handoffPath)) {
@@ -3470,7 +3456,7 @@ function readIterationTaskNotes(sessionDir, enabled) {
 }
 function buildIterationPromptContext(state, sessionDir, iterationNum, extensionRoot) {
     const templateName = resolveCommandTemplate(state.command_template);
-    const promptPath = resolveIterationPromptPath(extensionRoot, templateName);
+    const promptPath = resolveManagerPromptPath(extensionRoot, templateName);
     const settings = loadSettingsBag(extensionRoot, 'mux-runner:run-iteration:settings');
     return {
         promptContext: {

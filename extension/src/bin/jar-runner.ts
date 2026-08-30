@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import * as crypto from 'crypto';
 import { spawn } from 'child_process';
-import { printMinimalPanel, Style, getExtensionRoot, getDataRoot, writeStateFile, safeErrorMessage, composeManagerPromptFromSkill, resolveCommandTemplate } from '../services/pickle-utils.js';
+import { printMinimalPanel, Style, getExtensionRoot, getDataRoot, writeStateFile, safeErrorMessage, composeManagerPromptFromSkill, resolveCommandTemplate, resolveManagerPromptPath } from '../services/pickle-utils.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason } from '../services/state-manager.js';
 import { State, Defaults, type Backend } from '../types/index.js';
 import { logActivity } from '../services/activity-logger.js';
@@ -165,23 +164,6 @@ function activateJarTaskSession(sessionDir: string, statePath: string): State {
   return state;
 }
 
-/**
- * Locate the manager prompt template, preferring the deployed extension's own
- * copy over `~/.claude/commands`. Exits non-zero when neither carries it — a
- * missing template means install.sh never ran, which no retry can fix.
- */
-function resolveJarPromptPath(extensionRoot: string, templateName: string): string {
-  const templatesDir = path.join(extensionRoot, 'templates');
-  const commandsDir = path.join(os.homedir(), '.claude/commands');
-  const bundled = path.join(templatesDir, templateName);
-  const promptPath = fs.existsSync(bundled) ? bundled : path.join(commandsDir, templateName);
-  if (!fs.existsSync(promptPath)) {
-    process.stderr.write(`jar-runner: ${templateName} not found in ${templatesDir} or ${commandsDir}. Run install.sh first.\n`);
-    process.exit(1);
-  }
-  return promptPath;
-}
-
 function resolveJarManagerMaxTurns(extensionRoot: string): number {
   try {
     const settings = readRecoverableJsonObject(path.join(extensionRoot, 'pickle_settings.json')) as Record<string, unknown> | null;
@@ -202,7 +184,7 @@ function resolveJarManagerMaxTurns(extensionRoot: string): number {
  */
 function buildJarManagerLaunch(sessionDir: string, repoCwd: string, extensionRoot: string, state: State): JarManagerLaunch {
   const taskTimeoutSeconds = loadJarTaskTimeout(extensionRoot, state);
-  const promptPath = resolveJarPromptPath(extensionRoot, resolveCommandTemplate(state.command_template));
+  const promptPath = resolveManagerPromptPath(extensionRoot, resolveCommandTemplate(state.command_template));
   const managerMaxTurns = resolveJarManagerMaxTurns(extensionRoot);
   const backend = resolveBackend(state);
   const prompt = composeManagerPromptFromSkill(promptPath, backend, {

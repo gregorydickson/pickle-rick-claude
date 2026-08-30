@@ -3042,6 +3042,37 @@ export function resolveCommandTemplate(raw: string | undefined): string {
 }
 
 /**
+ * AP-EXT-ITER109-01: the ONE resolver for a `command_template` name -> manager
+ * prompt path. Every loop runner that launches a manager routes through it.
+ *
+ * It THROWS on both refusals — an unresolvable template is a per-LAUNCH fact, so
+ * the disposition belongs to the caller that knows what one launch is worth. The
+ * jar batch turns it into a failed task and runs the next one; mux-runner turns it
+ * into a failed iteration. `process.exit` here would decide that for both, and it
+ * decided wrong: it ended an unattended Night Shift after task 1 of N and left that
+ * task's `state.json` at `active: true` with no `exit_reason`, because exiting skips
+ * every deactivate path the runner has.
+ *
+ * The plain-filename refusal is not separable from the lookup. `path.join` resolves
+ * `..` before `existsSync` sees it, so a traversing spelling reads a file from
+ * neither search directory and hands it to the manager as its prompt.
+ */
+export function resolveManagerPromptPath(extensionRoot: string, templateName: string): string {
+  if (templateName.includes('/') || templateName.includes('\\') || templateName.includes('..')) {
+    throw new Error(`Invalid command_template in state.json: "${templateName}" — must be a plain filename`);
+  }
+  const templatesDir = path.join(extensionRoot, 'templates');
+  const commandsDir = path.join(os.homedir(), '.claude/commands');
+  const promptPath = fs.existsSync(path.join(templatesDir, templateName))
+    ? path.join(templatesDir, templateName)
+    : path.join(commandsDir, templateName);
+  if (!fs.existsSync(promptPath)) {
+    throw new Error(`${templateName} not found in ${templatesDir} or ${commandsDir}. Run install.sh first.`);
+  }
+  return promptPath;
+}
+
+/**
  * HTML-comment framing block injected at the top of codex manager prompts.
  * Mirrors the GIT_BOUNDARY_RULES pattern that codex demonstrably respects.
  */

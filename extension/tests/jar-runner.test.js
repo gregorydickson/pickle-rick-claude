@@ -693,6 +693,92 @@ test('jar-runner: corrupt session state.json does not abort remaining tasks', ()
     }
 });
 
+// AP-EXT-ITER109-01: an unresolvable command_template is a PER-TASK fact. The
+// pre-fix jar-runner `process.exit(1)`'d from inside runTask — after
+// activateJarTaskSession had already persisted `active: true` — so one bad task
+// ended the whole Night Shift and stranded that task's session as permanently
+// active with no exit_reason. Assert the BATCH and the on-disk state, never the
+// exit code: the pre-fix run exited non-zero AND left the strand, so an exit-code
+// oracle greens over half the defect.
+function seedJarTemplateTask(tmpRoot, taskId, commandTemplate) {
+    const taskDir = path.join(tmpRoot, 'jar', '2026-01-01', taskId);
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, 'meta.json'), JSON.stringify({
+        status: 'marinating',
+        repo_path: tmpRoot,
+    }, null, 2));
+
+    const sessionDir = path.join(tmpRoot, 'sessions', taskId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+        active: false,
+        step: 'prd',
+        iteration: 0,
+        max_iterations: 1,
+        worker_timeout_seconds: 5,
+        original_prompt: 'template resolution regression',
+        working_dir: tmpRoot,
+        command_template: commandTemplate,
+    }, null, 2));
+
+    return { taskDir, sessionDir };
+}
+
+function readJarJson(filePath) {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+}
+
+for (const [label, commandTemplate, expectedText] of [
+    ['unresolvable', 'definitely-nonexistent-template-xyz123abc.md', 'not found in'],
+    ['path-traversing', '../../../etc/hosts', 'Invalid command_template'],
+]) {
+    test(`jar-runner: AP-EXT-ITER109-01 a ${label} command_template fails ONE task, not the batch`, () => {
+        const tmpRoot = makeTmpRoot();
+        try {
+            // Task A sorts first and carries the bad template.
+            const taskIdA = 'task-a-bad-template';
+            const { sessionDir: sessionDirA, taskDir: taskDirA } =
+                seedJarTemplateTask(tmpRoot, taskIdA, commandTemplate);
+
+            // Task B proves the batch kept going. Its session dir is absent, so
+            // it resolves to a deterministic skip with no manager spawn.
+            const taskIdB = 'task-b-no-session';
+            const taskDirB = path.join(tmpRoot, 'jar', '2026-01-01', taskIdB);
+            fs.mkdirSync(taskDirB, { recursive: true });
+            fs.writeFileSync(path.join(taskDirB, 'meta.json'), JSON.stringify({
+                status: 'marinating',
+                repo_path: tmpRoot,
+            }, null, 2));
+
+            const result = run(tmpRoot);
+            const combined = result.stdout + result.stderr;
+
+            assert.ok(
+                combined.includes(expectedText),
+                `Expected "${expectedText}" attribution, got: ${combined.slice(0, 800)}`
+            );
+            assert.ok(
+                combined.includes(taskIdA) && combined.includes(taskIdB),
+                `Batch must reach BOTH tasks, got: ${combined.slice(0, 800)}`
+            );
+            assert.ok(
+                combined.includes('Jar complete'),
+                `Batch must finalize, got: ${combined.slice(0, 800)}`
+            );
+
+            // The claimed session must not be stranded active — process.exit()
+            // skips every deactivate path jar-runner has.
+            const stateA = readJarJson(path.join(sessionDirA, 'state.json'));
+            assert.equal(stateA.active, false, 'task A session left active after a failed launch');
+            assert.equal(stateA.exit_reason, 'task_failed');
+
+            assert.equal(readJarJson(path.join(taskDirA, 'meta.json')).status, 'failed');
+        } finally {
+            fs.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+    });
+}
+
 test('jar-runner: SIGTERM shutdown preserves a newer orphan tmp session payload', async () => {
     const tmpRoot = makeTmpRoot();
     try {
