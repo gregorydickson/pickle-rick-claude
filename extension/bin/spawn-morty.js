@@ -2117,17 +2117,33 @@ export async function runWorkerGate(changedFiles, args) {
 }
 const RECONCILE_GIT_TIMEOUT_MS = 5_000;
 const CLAIMED_SHA_RE = /^[0-9a-f]{7,40}$/i;
-function reconcileGit(workingDir, args) {
+function reconcileGitRaw(workingDir, args) {
     return execFileSync('git', args, {
         cwd: workingDir,
         encoding: 'utf8',
         timeout: RECONCILE_GIT_TIMEOUT_MS,
         stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    });
+}
+function reconcileGit(workingDir, args) {
+    return reconcileGitRaw(workingDir, args).trim();
 }
 function reconcileGitOrNull(workingDir, args) {
     try {
         return reconcileGit(workingDir, args);
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * UNTRIMMED sibling of {@link reconcileGitOrNull}, for `-z` readers only: a NUL
+ * listing is git's RAW bytes and a tracked path may legitimately begin or end
+ * with a space, which `.trim()` would eat off the first/last record.
+ */
+function reconcileGitRawOrNull(workingDir, args) {
+    try {
+        return reconcileGitRaw(workingDir, args);
     }
     catch {
         return null;
@@ -2164,13 +2180,24 @@ function readWorkerClaimedCompletionSha(ctx) {
     catch { /* best-effort */ }
     return null;
 }
-/** Newest in-window commit touching a declared file; falls back to the window tip. */
+/**
+ * Newest in-window commit touching a declared file; falls back to the window tip.
+ *
+ * AP-EXT-ITER115-01: the listing carries `-z` and is split on NUL because
+ * `declaredFiles` is produced by `collectChangedFilesForLintGate`, whose two
+ * enumerations (`git-utils.ts:getDiffFiles` `-M100 -z`, `listWorkingTreeDirtyPaths`
+ * `-z`) both hand back git's RAW path bytes. Without `-z` here, `core.quotePath`
+ * (git's DEFAULT) C-quotes any non-ASCII/control/quote/backslash path, so the
+ * producer's `café.ts` meets the consumer's `"caf\303\251.ts"` and the exact-set
+ * membership test can never match — the scan falls through to the window TIP and
+ * stamps `completion_commit` on a commit the ticket did not produce.
+ */
 function pickAttributionCommit(workingDir, windowShas, declaredFiles) {
     const declared = new Set((declaredFiles ?? []).filter((f) => typeof f === 'string' && f.length > 0));
     if (declared.size > 0) {
         for (const sha of windowShas) {
-            const files = reconcileGitOrNull(workingDir, ['diff-tree', '--no-commit-id', '--name-only', '-r', sha]);
-            if (files !== null && files.split('\n').some((f) => declared.has(f.trim())))
+            const files = reconcileGitRawOrNull(workingDir, ['diff-tree', '--no-commit-id', '--name-only', '-z', '-r', sha]);
+            if (files !== null && files.split('\0').some((f) => declared.has(f)))
                 return sha;
         }
     }

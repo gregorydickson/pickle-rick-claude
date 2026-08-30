@@ -277,3 +277,58 @@ test('no declared-file match falls back to the newest in-window commit', () => {
 
   assert.equal(result, c2);
 });
+
+/**
+ * AP-EXT-ITER115-01: the declared-file scan and the producer that fills
+ * `declaredFiles` must cross ONE git path contract. `collectChangedFilesForLintGate`
+ * feeds this seam from `-z` enumerations (RAW bytes); without `-z` on the scan's own
+ * `diff-tree`, `core.quotePath` C-quotes the same path and the exact-set membership
+ * test silently misses, falling through to the window TIP.
+ */
+test('AP-EXT-ITER115-01: a C-quotable declared path still picks its own commit, not the window tip', () => {
+  const { repoDir, baseSha } = initRepo();
+  const quotable = 'café.txt';
+  const c1 = commitFile(repoDir, quotable, 'a\n', 'work on the non-ASCII path');
+  const c2 = commitFile(repoDir, 'b.txt', 'b\n', 'unrelated follow-up');
+
+  // Precondition: git really does C-quote this path when -z is absent, so the
+  // pre-fix reader could not have matched it. Without this the case pins nothing.
+  const unquoted = git(repoDir, ['diff-tree', '--no-commit-id', '--name-only', '-r', c1]);
+  assert.notEqual(unquoted, quotable, 'precondition: the newline reader must not see the raw path');
+  assert.match(unquoted, /^"caf\\303\\251\.txt"$/, 'precondition: git C-quotes the non-ASCII path');
+
+  const result = reconcileWorkerCommitAttribution(repoDir, TICKET_ID, baseSha, HALLUCINATED_SHA, {
+    declaredFiles: [quotable],
+  });
+
+  assert.equal(result, c1, 'the NUL listing matches the producer spelling of the declared path');
+  assert.notEqual(result, c2, 'must not fall through to the window tip');
+});
+
+/**
+ * AP-EXT-ITER115-01 (b): the `-z` listing is git's RAW bytes, so the reader must not
+ * trim. Every record is NUL-TERMINATED, so a whole-output `.trim()` can never reach
+ * the tail — but it does reach the head, and a leading space is not something
+ * `core.quotePath` escapes, so it survives `-z` only to be eaten by the trim.
+ */
+test('AP-EXT-ITER115-01: a declared path with a leading space is not trimmed away', () => {
+  const { repoDir, baseSha } = initRepo();
+  const spaced = ' leading.txt';
+  const c1 = commitFile(repoDir, spaced, 'a\n', 'work on the space-prefixed path');
+  const c2 = commitFile(repoDir, 'zzz.txt', 'b\n', 'unrelated follow-up');
+
+  // Precondition: a leading space is NOT quoted by core.quotePath, so it reaches the
+  // reader as a raw byte at the HEAD of the listing — the one position a whole-output
+  // trim can destroy. (`git()` here trims too, hence the -z read is asserted by index.)
+  const raw = execFileSync('git', ['-C', repoDir, 'diff-tree', '--no-commit-id', '--name-only', '-z', '-r', c1], {
+    timeout: 8000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  assert.equal(raw, `${spaced}\0`, 'precondition: git emits the leading space raw under -z');
+
+  const result = reconcileWorkerCommitAttribution(repoDir, TICKET_ID, baseSha, HALLUCINATED_SHA, {
+    declaredFiles: [spaced],
+  });
+
+  assert.equal(result, c1, 'the untrimmed NUL listing preserves the leading space');
+  assert.notEqual(result, c2, 'must not fall through to the window tip');
+});
