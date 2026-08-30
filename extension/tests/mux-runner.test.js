@@ -1305,7 +1305,7 @@ test('mux-runner: creates mux-runner.log in session directory', () => {
 
 // --- Completion classification (classifyCompletion) ---
 
-import { buildTmuxNotification, classifyCompletion, classifyTicketCompletion, applyAutoTicketCompletionValidation, correctPhantomDoneTickets, extractAssistantContent, loadRateLimitSettings, classifyIterationExit, detectRateLimitInLog, detectRateLimitInText, stripSetupSection, detectMultiRepo, validateAutoTicketCompletion, writeHandoffAtomic, classifyGitProbeError, resolveQualityGateSkipReason } from '../bin/mux-runner.js';
+import { buildTmuxNotification, classifyCompletion, classifyTicketCompletion, applyAutoTicketCompletionValidation, correctPhantomDoneTickets, extractAssistantContent, loadRateLimitSettings, classifyIterationExit, detectRateLimitInLog, detectRateLimitInText, stripSetupSection, detectMultiRepo, validateAutoTicketCompletion, writeHandoffAtomic, resolveQualityGateSkipReason } from '../bin/mux-runner.js';
 import { readEvidence } from '../services/ticket-completion-evidence.js';
 
 test('classifyCompletion: TASK_COMPLETED returns continue (single ticket, loop continues)', () => {
@@ -3402,33 +3402,6 @@ test('R-CCR-1 genuine phantom: dir unusable AND SHA absent in fallback repo', ()
         fs.rmSync(staleDir, { recursive: true, force: true });
         fs.rmSync(dataRoot, { recursive: true, force: true });
     }
-});
-
-// --- 4aa8be51 audit F1: classifyGitProbeError — git timeout must route to fallback ---
-
-test('4aa8be51 classifyGitProbeError: ETIMEDOUT timeout is git-could-not-run (fallback fires)', () => {
-    // execFileSync timeout throws { status:null, code:'ETIMEDOUT', signal:'SIGTERM' }
-    // (verified empirically). A timeout means git produced no answer — it MUST
-    // classify as git-could-not-run so frontmatterCompletionCommitReachable
-    // advances to the R-CCR-1 fallbackDir probe instead of reverting a Done ticket.
-    assert.equal(
-        classifyGitProbeError({ status: null, code: 'ETIMEDOUT', signal: 'SIGTERM' }),
-        'git-could-not-run',
-    );
-});
-
-test('4aa8be51 classifyGitProbeError: SIGTERM-killed probe is git-could-not-run', () => {
-    assert.equal(classifyGitProbeError({ status: null, signal: 'SIGTERM' }), 'git-could-not-run');
-});
-
-test('4aa8be51 classifyGitProbeError: clean exit 1 is not-reachable (no fallback)', () => {
-    // A clean not-an-ancestor result — git ran fine, the SHA just is not reachable.
-    assert.equal(classifyGitProbeError({ status: 1 }), 'not-reachable');
-});
-
-test('4aa8be51 classifyGitProbeError: exit 128 and ENOENT are git-could-not-run', () => {
-    assert.equal(classifyGitProbeError({ status: 128 }), 'git-could-not-run');
-    assert.equal(classifyGitProbeError({ code: 'ENOENT' }), 'git-could-not-run');
 });
 
 // --- R-CCR-8: coverage backfill for completion_commit_inferred and non-reachable SHA ---

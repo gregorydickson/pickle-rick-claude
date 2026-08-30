@@ -1788,25 +1788,6 @@ export interface CorrectPhantomDoneTicketsInput {
 
 
 /**
- * R-CCR-1: probe whether `sha` is an ancestor of HEAD in `dir`. Distinguishes a
- * clean not-an-ancestor result (exit 1) from git being unable to run at all
- * (exit 128 / ENOENT) — only the latter justifies a fallback-dir retry.
- */
-/**
- * Classify a thrown `git merge-base --is-ancestor` error. A clean exit 1 is a
- * definitive "not an ancestor". Exit 128, ENOENT, and timeouts (the child was
- * SIGTERM-killed before it could answer) all mean git produced no answer —
- * return 'git-could-not-run' so the R-CCR-1 fallback-dir retry fires. A timeout
- * misclassified as 'not-reachable' dead-ends the fallback and reverts a
- * genuinely-Done ticket to Todo.
- */
-export function classifyGitProbeError(err: unknown): 'not-reachable' | 'git-could-not-run' {
-  const e = err as { status?: number | null; code?: string; signal?: string | null };
-  if (e.code === 'ETIMEDOUT' || e.signal === 'SIGTERM') return 'git-could-not-run';
-  return e.status === 128 || e.code === 'ENOENT' ? 'git-could-not-run' : 'not-reachable';
-}
-
-/**
  * R-CCR-1: emit the phantom-Done "kept" log lines, including the fallback-probe
  * note. Extracted from `correctPhantomDoneTickets` to keep that loop under the
  * eslint complexity ceiling.
