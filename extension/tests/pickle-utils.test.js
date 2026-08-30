@@ -31,8 +31,10 @@ import {
     runCmd,
     latestIterationLog,
     drainStreamJsonLines,
+    respawnMonitorWindowForMode,
 } from '../services/pickle-utils.js';
 import { LockError } from '../types/index.js';
+import { spawn } from 'node:child_process';
 
 // --- safeErrorMessage ---
 
@@ -1957,5 +1959,131 @@ test('AP-EXT-ITER86-01: ASCII-only multi-chunk logs are unchanged by the decoder
         assert.equal(result.offset, fs.statSync(logPath).size);
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+
+// --- AP-EXT-ITER112-01: the pid kill lives under the same ownership gate as respawn-pane -k ---
+//
+// `respawnMonitorWindowForMode` has exactly one destructive reach: it kills the old monitor
+// process (SIGTERM then SIGKILL) AND `respawn-pane -k`s the target pane. `state.monitor_pid`
+// is persisted across runs and a bare pid is a slot the kernel re-issues, so a signal sent by
+// a run that has NOT proven the tmux target is ours can land on a stranger. These cases pin
+// that every no-op above the ownership gate is total. The third case is the negative control:
+// the fix must not degrade into never reclaiming the old monitor.
+
+function makeMonitorGateSession(stateFields) {
+    const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ap-iter112-')));
+    const sessionDir = path.join(tmpRoot, stateFields.__dirName || 'session');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const state = { session_dir: sessionDir, schema_version: 3, active: true, ...stateFields };
+    delete state.__dirName;
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(state));
+    return {
+        sessionDir,
+        readState: () => JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf8')),
+        cleanup: () => fs.rmSync(tmpRoot, { recursive: true, force: true }),
+    };
+}
+
+function makeGateMockSpawnSync(sessionName, panePid = 4242) {
+    const calls = [];
+    const fn = (cmd, args = []) => {
+        calls.push({ cmd, args: [...args] });
+        if (cmd !== 'tmux') return { status: 0, stdout: '', stderr: '' };
+        if (args[0] === 'display-message') {
+            if (args.includes('#{pane_pid}')) return { status: 0, stdout: `${panePid}\n`, stderr: '' };
+            return { status: 0, stdout: `${sessionName}\n`, stderr: '' };
+        }
+        if (args[0] === 'respawn-pane') return { status: 0, stdout: '', stderr: '' };
+        return { status: 0, stdout: '', stderr: '' };
+    };
+    fn.calls = calls;
+    return fn;
+}
+
+function spawnLiveProbe() {
+    // `timeout` is a leak backstop, never the oracle: the probe outlives every assertion below
+    // and the `finally` blocks SIGKILL it, but an aborted run must not strand a busy-loop.
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+        detached: true,
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+    });
+    child.unref();
+    return child.pid;
+}
+
+function isAlive(pid) {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+// A SIGTERM to a plain node process lands immediately; `_killPidGracefully` then sleeps 1000ms
+// before escalating. Waiting past that whole ladder means "no signal was sent", not "not yet".
+async function settleSignal() {
+    await new Promise((resolve) => setTimeout(resolve, 1400));
+}
+
+test('AP-EXT-ITER112-01: not inside tmux — the run signals no pid at all', async () => {
+    const pid = spawnLiveProbe();
+    const env = makeMonitorGateSession({ monitor_mode: 'pickle', monitor_pid: pid });
+    try {
+        const result = await respawnMonitorWindowForMode(env.sessionDir, 'anatomy-park', {
+            spawnSyncFn: makeGateMockSpawnSync('test-session'),
+            inTmux: false,
+        });
+        assert.equal(result, 'no-op');
+        await settleSignal();
+        assert.equal(isAlive(pid), true, 'a run that touches no tmux pane must signal no pid');
+    } finally {
+        env.cleanup();
+        try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+});
+
+test('AP-EXT-ITER112-01: foreign tmux session — the run signals no pid at all', async () => {
+    const pid = spawnLiveProbe();
+    const env = makeMonitorGateSession({
+        __dirName: '2026-01-01-abcd1234',
+        monitor_mode: 'pickle',
+        monitor_pid: pid,
+    });
+    const spawnSyncFn = makeGateMockSpawnSync('anatomy-park-deadbeef');
+    try {
+        const result = await respawnMonitorWindowForMode(env.sessionDir, 'anatomy-park', {
+            spawnSyncFn,
+            inTmux: true,
+        });
+        assert.equal(result, 'no-op');
+        assert.ok(
+            !spawnSyncFn.calls.some((c) => c.args[0] === 'respawn-pane'),
+            'the foreign-session guard must refuse respawn-pane',
+        );
+        await settleSignal();
+        assert.equal(isAlive(pid), true, 'the foreign-session guard must also cover the pid signal');
+    } finally {
+        env.cleanup();
+        try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+});
+
+test('AP-EXT-ITER112-01 negative control: own tmux session still reclaims the old monitor pid', async () => {
+    const pid = spawnLiveProbe();
+    const env = makeMonitorGateSession({
+        __dirName: '2026-01-01-abcd1234',
+        monitor_mode: 'pickle',
+        monitor_pid: pid,
+    });
+    try {
+        const result = await respawnMonitorWindowForMode(env.sessionDir, 'anatomy-park', {
+            spawnSyncFn: makeGateMockSpawnSync('anatomy-park-abcd1234', 4242),
+            inTmux: true,
+        });
+        assert.equal(result, 'respawned');
+        assert.equal(isAlive(pid), false, 'the gated path must still reclaim the old monitor process');
+        assert.equal(env.readState().monitor_pid, 4242);
+    } finally {
+        env.cleanup();
+        try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
     }
 });

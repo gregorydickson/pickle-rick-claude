@@ -2855,6 +2855,8 @@ function _updateMonitorState(smLocal: StateManager, statePath: string, newPid: n
  *   - not inside tmux
  *   - the ambient tmux session is not ours (isForeignTmuxSession)
  *   - tmux respawn-pane fails
+ * Every no-op above the ownership gate is TOTAL: no pane is respawned and no pid is
+ * signalled. Only a run that has proven the tmux target is ours reclaims the old monitor.
  * Returns 'respawned' on success; updates state.monitor_pid and state.monitor_mode.
  * Logs `monitor: respawned for mode <mode>` via opts.log so the line appears in
  * pipeline-runner.log (AC-MDS-01).
@@ -2875,8 +2877,6 @@ export async function respawnMonitorWindowForMode(
     if (s.monitor_mode === mode) return 'no-op';
   } catch { /* tolerate read failure — proceed */ }
 
-  await _killOldMonitorPid(smLocal, statePath);
-
   const inTmux = opts?.inTmux !== undefined ? opts.inTmux : !!process.env.TMUX;
   if (!inTmux) { log(`monitor: tmux unavailable, skipping respawn for mode ${mode}`); return 'no-op'; }
 
@@ -2889,6 +2889,12 @@ export async function respawnMonitorWindowForMode(
     log(`monitor: tmux session '${sessionName}' does not host this session's monitor window — skipping respawn for mode ${mode}`);
     return 'no-op';
   }
+
+  // AP-EXT-ITER112-01: reclaiming the old monitor process is the OTHER half of the same
+  // destructive act as `respawn-pane -k`, so it lives under the same ownership gate. Above
+  // this line the function has decided nothing may be touched; a pid signalled there is
+  // signalled by a run that then declines to act.
+  await _killOldMonitorPid(smLocal, statePath);
 
   const extensionRoot = getExtensionRoot();
   const monitorBin = path.join(extensionRoot, 'extension', 'bin', 'monitor.js');
