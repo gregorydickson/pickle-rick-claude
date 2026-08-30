@@ -40,7 +40,7 @@ import { isGitIgnoredPath, listWorkingTreeDirtyPaths, getDiffFiles, archiveBefor
 import { logActivity } from '../services/activity-logger.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
-import { readRecoverableJsonObject } from '../services/microverse-state.js';
+import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
@@ -1941,8 +1941,6 @@ function resolveAnatomySubsystems(sessionDir, target, scope, log) {
     log(`anatomy-park: scope filtered ${discovered.length} → ${filtered.length} subsystems: ${filtered.map(s => s.name).join(', ')}`);
     return filtered;
 }
-// A subsystem converges at 2 consecutive clean passes (`.claude/commands/anatomy-park.md`).
-const ANATOMY_CONVERGED_CLEAN_PASSES = 2;
 /**
  * AP-EXT-ITER5-01: a crash-resume re-enters the phase it died in (`readResumePhasePlan`
  * returns `phases.indexOf(priorPhase)`), so phase setup runs a SECOND time over a session

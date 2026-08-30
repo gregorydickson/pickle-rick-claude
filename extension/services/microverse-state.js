@@ -7,6 +7,21 @@ import { readRecoverableJsonObject } from './recoverable-json.js';
 export { readRecoverableJsonObject } from './recoverable-json.js';
 const sm = new StateManager();
 const MICROVERSE_FILE = 'microverse.json';
+/**
+ * A subsystem converges at 2 consecutive clean anatomy-park passes
+ * (`.claude/commands/anatomy-park.md`, Override 1 step 3 and the Convergence
+ * Criteria section). ONE declaration, shared by every reader of
+ * `anatomy-park.json`'s `consecutive_clean` map: `pipeline-runner.ts` decides a
+ * resumable ledger has converged with it, and `monitor.ts` renders the pane's
+ * `clean/target` fraction against it. A second copy could drift, and the pane
+ * would then disagree with the runner about whether an organ is done — which is
+ * exactly the AP-EXT-ITER11-02 defect this constant's single home replaces.
+ *
+ * It deliberately does NOT live in `anatomy-park.json`: the file's `stall_limit`
+ * is the ceiling on consecutive FAILED fixes (`stall_counts`), a different
+ * counter with a different subject, and reading it as this target is the bug.
+ */
+export const ANATOMY_CONVERGED_CLEAN_PASSES = 2;
 const MICROVERSE_STATUSES = new Set(['gap_analysis', 'iterating', 'converged', 'stopped']);
 const METRIC_TYPES = new Set(['command', 'llm', 'none']);
 const METRIC_DIRECTIONS = new Set(['higher', 'lower']);

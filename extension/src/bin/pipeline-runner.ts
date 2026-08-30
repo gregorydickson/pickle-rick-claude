@@ -68,7 +68,7 @@ import {
 import { logActivity } from '../services/activity-logger.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
-import { readRecoverableJsonObject } from '../services/microverse-state.js';
+import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import {
   resolveScope,
@@ -2315,9 +2315,6 @@ function resolveAnatomySubsystems(
   log(`anatomy-park: scope filtered ${discovered.length} → ${filtered.length} subsystems: ${filtered.map(s => s.name).join(', ')}`);
   return filtered;
 }
-
-// A subsystem converges at 2 consecutive clean passes (`.claude/commands/anatomy-park.md`).
-const ANATOMY_CONVERGED_CLEAN_PASSES = 2;
 
 /**
  * AP-EXT-ITER5-01: a crash-resume re-enters the phase it died in (`readResumePhasePlan`

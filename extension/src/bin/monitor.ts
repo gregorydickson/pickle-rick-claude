@@ -5,7 +5,7 @@ import { spawnSync } from 'child_process';
 import { collectTickets, statusSymbol, formatTime, getWidth, getHeight, Style, sleep, MatrixStyle, matrixSeparator, latestIterationLog, safeErrorMessage, TicketInfo, restartDeadWatcherPanes, inferMonitorMode, getExtensionRoot, validateSessionDirOrSkip } from '../services/pickle-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
-import { readMicroverseState, readRecoverableJsonObject } from '../services/microverse-state.js';
+import { readMicroverseState, readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES } from '../services/microverse-state.js';
 import { readCircuitBreakerState } from '../services/circuit-breaker.js';
 import { State, MicroverseSessionState, ClassifiedFailure, MicroverseHistoryEntry } from '../types/index.js';
 
@@ -444,7 +444,11 @@ function mvSubsystems(sessionDir: string): string[] {
   const subs = Array.isArray(ap?.subsystems) ? ap!.subsystems as string[] : [];
   const cleanMap = (typeof ap?.consecutive_clean === 'object' && ap!.consecutive_clean != null)
     ? ap!.consecutive_clean as Record<string, number> : {};
-  const target = typeof ap?.stall_limit === 'number' ? String(ap!.stall_limit) : '--';
+  // AP-EXT-ITER11-02: the denominator belongs to the NUMERATOR's counter. The
+  // numerator is `consecutive_clean[sub]`, whose target is the 2-consecutive
+  // convergence criterion — NOT `anatomy-park.json`'s `stall_limit`, which bounds
+  // the unrelated `stall_counts` (consecutive FAILED fixes) this pane never shows.
+  const target = String(ANATOMY_CONVERGED_CLEAN_PASSES);
   const findingsMap = (typeof ap?.findings_history === 'object' && ap!.findings_history != null)
     ? ap!.findings_history as Record<string, unknown[]> : {};
   if (subs.length === 0) return [...out, `  ${MX.DIM}--${MX.R}\n`];

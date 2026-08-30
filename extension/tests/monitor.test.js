@@ -1050,12 +1050,20 @@ test('R-MDS-3 AC-4: checkAndSwapMode preserves mode when state is unreadable', (
 
 // --- R-MDS-4: renderMicroverseDashboard ---
 
-test('R-MDS-4 AC-1: subsystems render consecutive_clean/target per subsystem', () => {
+// AP-EXT-ITER11-02: the subsystem row's fraction is `consecutive_clean` over the
+// 2-consecutive-clean CONVERGENCE target, never over `stall_limit` (the ceiling on
+// the unrelated `stall_counts`). The fixture keeps `stall_limit: 5` precisely so the
+// two numbers cannot be confused: pre-fix this row rendered `2/5` and `1/5`, so a
+// CONVERGED subsystem read two passes short of done on the operator's only view of
+// anatomy-park progress. Driven through the real `renderMicroverseDashboard` over a
+// real `anatomy-park.json`, not a hand-stubbed row.
+test('R-MDS-4 AC-1 / AP-EXT-ITER11-02: subsystems render consecutive_clean over the clean-pass target, not stall_limit', () => {
     const dir = tmpDir();
     try {
         const apData = {
             subsystems: ['services', 'bin'],
-            consecutive_clean: { services: 3, bin: 1 },
+            // `services` has CONVERGED (2 consecutive clean passes); `bin` is one short.
+            consecutive_clean: { services: 2, bin: 1 },
             stall_limit: 5,
             findings_history: { services: [], bin: [] },
         };
@@ -1064,9 +1072,12 @@ test('R-MDS-4 AC-1: subsystems render consecutive_clean/target per subsystem', (
         const result = renderMicroverseDashboard(state, null);
         const clean = result.replace(/\x1b\[[0-9;]*[mJH]/g, '');
         assert.ok(clean.includes('services'), 'subsystem name "services" should appear');
-        assert.ok(clean.includes('3/5'), 'consecutive_clean=3 / stall_limit=5 should appear');
-        assert.ok(clean.includes('1/5'), 'consecutive_clean=1 / stall_limit=5 should appear');
         assert.ok(clean.includes('bin'), 'subsystem name "bin" should appear');
+        assert.ok(clean.includes('2/2'), 'a converged subsystem must render 2/2, not 2/stall_limit');
+        assert.ok(clean.includes('1/2'), 'consecutive_clean=1 must render against the clean-pass target');
+        // Anti-regression: the stall ceiling must not reappear as this row's denominator.
+        assert.ok(!clean.includes('2/5'), 'stall_limit must not be the denominator');
+        assert.ok(!clean.includes('1/5'), 'stall_limit must not be the denominator');
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }
