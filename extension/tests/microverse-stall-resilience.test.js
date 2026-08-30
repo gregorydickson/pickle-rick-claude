@@ -11,6 +11,7 @@ import {
   _deps,
   appendGapAnalysisFixedBlock,
   buildMicroverseHandoff,
+  autoRescueDirtyTree,
   classifyNoCommitExit,
   handleNoCommitStall,
 } from '../bin/microverse-runner.js';
@@ -420,6 +421,110 @@ test('handleNoCommitStall clean pass converges without clearing state object', a
     assert.equal(state.convergence.stall_counter, 0);
     assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, 'microverse.json'), 'utf-8')).prd_path, '/tmp/prd.md');
   } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// AP-EXT-ITER119-01: `converged` over a repo that built nothing, reached through BYSTANDER dirt.
+//
+// AC-CF-06 above proves the clean-tree case. This is the same invariant on the arm that leaked:
+// `isProvablyNoOpIteration` used to ask "is the tree dirty", but `autoRescueDirtyTree` has already
+// run by then and has already committed everything ATTRIBUTABLE. Dirt that survives it is dirt it
+// explicitly DISOWNED (excluded prefix / out of session scope) and anchored to a salvage ref while
+// logging `treating as stall` — and that same disowned dirt then proved the iteration was not a
+// no-op, so the prose classifier ran and `clean_pass` returned the literal 'converged'. One
+// untracked file under `docs/` was enough to defeat AC-CF-06 without changing a line of the repo.
+//
+// The cases run the REAL caller sequence (autoRescueDirtyTree then handleNoCommitStall) against a
+// real git repo, because the defect lives in the seam between those two functions, not inside
+// either one.
+const BYSTANDER_ONLY_DIRT = [
+  { label: 'docs/', file: path.join('docs', 'workplan.md') },
+  { label: 'prds/', file: path.join('prds', 'p1-feature.md') },
+];
+
+async function runNoCommitIteration(dir, sessionDir, resultText) {
+  const sha = git(dir, ['rev-parse', 'HEAD']);
+  const logPath = writeResultLog(sessionDir, 'tmux_iteration_1.log', {
+    subtype: 'success',
+    num_turns: 60,
+    result: resultText,
+  });
+  const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+  state.status = 'iterating';
+  const ctx = {
+    sessionDir, workingDir: dir, preIterSha: sha, postIterSha: sha, iteration: 1, log: () => {},
+  };
+  autoRescueDirtyTree(ctx);
+  const headMoved = git(dir, ['rev-parse', 'HEAD']) !== sha;
+  if (headMoved) return { headMoved, result: null, state };
+  ctx.postIterSha = sha;
+  return { headMoved, result: await handleNoCommitStall(state, ctx, logPath), state };
+}
+
+for (const { label, file } of BYSTANDER_ONLY_DIRT) {
+  test(`AP-EXT-ITER119-01: bystander-only dirt under ${label} cannot turn a zero-commit iteration into 'converged'`, async () => {
+    const { dir } = initRepo();
+    const sessionDir = tmpDir('pickle-mrs-session-');
+    const originalSleep = _deps.sleep;
+    _deps.sleep = async () => {};
+    try {
+      fs.mkdirSync(path.join(dir, path.dirname(file)), { recursive: true });
+      fs.writeFileSync(path.join(dir, file), 'bystander\n');
+
+      const { headMoved, result, state } = await runNoCommitIteration(
+        dir, sessionDir, 'Clean pass — no violations found. Nothing committed.',
+      );
+
+      assert.equal(headMoved, false, 'auto-rescue must disown this dirt, so HEAD stays put');
+      assert.notEqual(
+        result,
+        'converged',
+        `'converged' over a repo that built nothing is a fake-green — one untracked ${label} file must not buy the success verdict AC-CF-06 denies a clean tree`,
+      );
+      assert.equal(result, null, 'below stall_limit the loop keeps going — the gate parks, it does not halt');
+      assert.equal(state.convergence.stall_counter, 1, 'the stall arm ran: stall_counter advanced');
+      assert.equal(
+        git(dir, ['status', '--porcelain']).trim() !== '', true,
+        'the bystander dirt is still there — the verdict changed, the tree did not',
+      );
+    } finally {
+      _deps.sleep = originalSleep;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+}
+
+// ANTI-OVER-TRIGGER CONTROL. The fix narrows the tree question to ATTRIBUTABLE dirt; it must not
+// widen into "every no-commit iteration is a no-op", which would make the classifier dead code.
+// Ownable dirt is real worker output, so the iteration is NOT provably a no-op and the classifier's
+// verdict must still stand. Mutating the fix to `return true` unconditionally reds this case.
+test('AP-EXT-ITER119-01 control: ownable dirt leaves the classifier verdict standing', async () => {
+  const { dir } = initRepo();
+  const sessionDir = tmpDir('pickle-mrs-session-');
+  const originalSleep = _deps.sleep;
+  _deps.sleep = async () => {};
+  try {
+    fs.writeFileSync(path.join(dir, 'worker-output.txt'), 'real uncommitted work\n');
+    const sha = git(dir, ['rev-parse', 'HEAD']);
+    const logPath = writeResultLog(sessionDir, 'tmux_iteration_1.log', {
+      subtype: 'success', num_turns: 60, result: 'Clean pass — no violations found.',
+    });
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+    state.status = 'iterating';
+
+    // handleNoCommitStall called directly: auto-rescue would have committed this dirt, so this
+    // pins the predicate itself rather than the pair.
+    const result = await handleNoCommitStall(state, {
+      sessionDir, workingDir: dir, preIterSha: sha, postIterSha: sha, iteration: 1, log: () => {},
+    }, logPath);
+
+    assert.equal(result, 'converged', 'ownable dirt is worker output — the no-op proof must NOT fire');
+    assert.equal(state.convergence.stall_counter, 0, 'the stall arm must not have run');
+  } finally {
+    _deps.sleep = originalSleep;
+    fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });

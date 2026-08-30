@@ -3453,13 +3453,38 @@ function convergenceExitReason(branch) {
     return branch === 'target' ? 'converged' : 'stalled_below_target';
 }
 /**
- * "Provably no-op" is all three of: an unchanged HEAD, zero commits, and a clean working tree.
+ * The ONE enumeration of dirt ATTRIBUTABLE to this iteration: working-tree dirt minus the excluded
+ * prefixes, minus anything outside the session's scope. Read by `autoRescueDirtyTree` (what it may
+ * stage) and by `isProvablyNoOpIteration` (whether the iteration produced anything) so the two
+ * cannot answer the same question differently — see AP-EXT-ITER119-01. Throws through to the
+ * caller's catch; an unmeasurable tree is not an empty one.
+ */
+function listOwnedDirtyPaths(ctx) {
+    const owned = listWorkingTreeDirtyPaths(ctx.workingDir, AUTO_COMMIT_DIRT_EXCLUDES);
+    const allowedPaths = readSessionScopeAllowedPaths(ctx.sessionDir);
+    return allowedPaths && allowedPaths.length > 0
+        ? filterByScope(owned, { scope: 'full', allowedPaths })
+        : owned;
+}
+/**
+ * "Provably no-op" is all three of: an unchanged HEAD, zero commits, and no attributable dirt.
  * Zero commits follows from the SHA equality — `preIterSha..postIterSha` is empty by construction
  * — so no extra git spawn is needed to establish it.
  *
  * Unproven is NOT the same as false: callers that pass no `workingDir`/SHAs, and a probe that
  * throws, both return false so the classifier's verdict stands unchanged. Truth demotes the proxy
  * where truth is available; it never fails closed where it is not.
+ *
+ * AP-EXT-ITER119-01: the tree question is `listOwnedDirtyPaths`, NOT "is the tree dirty". Those are
+ * different questions and the gap between them was a fake-green. `autoRescueDirtyTree` runs first
+ * and commits everything ATTRIBUTABLE; reaching here still dirty means the remainder is dirt it
+ * explicitly disowned (excluded prefix or out of session scope) and anchored to a salvage ref while
+ * logging `treating as stall`. Reading raw dirtiness let that same disowned dirt prove the iteration
+ * was NOT a no-op, so the prose classifier ran and `clean_pass` returned the literal `'converged'`
+ * — one iteration logging `treating as stall` and `treating as convergence` back to back. Measured
+ * on the shipped compiled runner: a single untracked `docs/` (or `prds/`) file flips a zero-commit
+ * iteration from `stall` to `'converged'`, defeating AC-CF-06 without touching a line of the repo.
+ * Both callers now read the ONE ownership enumeration, so the disposition cannot fork again.
  */
 function isProvablyNoOpIteration(ctx) {
     const { preIterSha, postIterSha, workingDir } = ctx;
@@ -3468,7 +3493,7 @@ function isProvablyNoOpIteration(ctx) {
     if (!workingDir)
         return false;
     try {
-        return !_deps.isWorkingTreeDirty(workingDir);
+        return listOwnedDirtyPaths(ctx).length === 0;
     }
     catch {
         return false;
@@ -3541,11 +3566,7 @@ export function autoRescueDirtyTree(ctx) {
     let foreign;
     try {
         const allDirty = listWorkingTreeDirtyPaths(ctx.workingDir);
-        owned = listWorkingTreeDirtyPaths(ctx.workingDir, AUTO_COMMIT_DIRT_EXCLUDES);
-        const allowedPaths = readSessionScopeAllowedPaths(ctx.sessionDir);
-        if (allowedPaths && allowedPaths.length > 0) {
-            owned = filterByScope(owned, { scope: 'full', allowedPaths });
-        }
+        owned = listOwnedDirtyPaths(ctx);
         const ownedSet = new Set(owned);
         foreign = allDirty.filter((p) => !ownedSet.has(p));
     }
