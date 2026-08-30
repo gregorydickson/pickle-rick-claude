@@ -7,13 +7,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CORPUS, DETECTABLE_CEILING } from '../services/did-we-count-corpus.js';
 import {
   replayCorpus,
   buildAstCheckRegistry,
   extractEnclosingFunctionSnippet,
   ruleFiresOnSnippet,
+  resolveReplayRepoRoot,
 } from '../bin/did-we-count-replay.js';
 
 const VALID_BUCKETS = new Set(['detectable', 'semantic', 'out-of-reach']);
@@ -325,4 +326,54 @@ test('AP-EXT-ITER57-01: the empty-catalog (2c857117) arm still fires — the gua
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ===========================================================================
+// AP-EXT-ITER102-01 regression: `resolveReplayRepoRoot` must DECODE its own
+// module URL before handing it to git as a `cwd`.
+//
+// A `file://` URL is percent-encoded by specification, so the prior
+// `new URL(import.meta.url).pathname` spelling answered `.../my%20repo/...` for a
+// checkout under `.../my repo/...`. That directory does not exist, so
+// `execFileSync` threw ENOENT — the fast-tier replay oracle below
+// (`buildAstCheckRegistry()`, no argument) went red on a healthy repo, and the
+// CLI's `buildRegistryOrEmpty()` swallowed the throw and reported all 18 shas
+// `no-check-yet` having measured nothing.
+//
+// Exercises the real data flow, not the spelling: a REAL git repo under a REAL
+// spaced path, a REAL `file://` URL of a module inside it, and the REAL
+// `git rev-parse --show-toplevel` call. `pathToFileURL` produces exactly the
+// `import.meta.url` Node would hand this module from that checkout.
+// ===========================================================================
+test('AP-EXT-ITER102-01: resolveReplayRepoRoot decodes a percent-encoded module URL', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-dwc-space-'));
+  // The space is the whole point — it is what `.pathname` percent-encodes.
+  const repoRoot = path.join(parent, 'my repo');
+  try {
+    fs.mkdirSync(path.join(repoRoot, 'extension', 'bin'), { recursive: true });
+    const init = spawnSync('git', ['init', '-q', repoRoot], {
+      encoding: 'utf8',
+      timeout: DID_WE_COUNT_TIMEOUT_MS,
+    });
+    assert.equal(init.status, 0, `git init failed: ${init.stderr}`);
+
+    const moduleUrl = pathToFileURL(
+      path.join(repoRoot, 'extension', 'bin', 'did-we-count-replay.js'),
+    ).href;
+    assert.ok(moduleUrl.includes('%20'), 'fixture must actually produce a percent-encoded URL');
+
+    // git resolves symlinks (/var -> /private/var on macOS), so compare realpaths.
+    assert.equal(
+      resolveReplayRepoRoot(moduleUrl),
+      fs.realpathSync(repoRoot),
+      'a checkout under a path containing a space must resolve, not throw ENOENT',
+    );
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER102-01: resolveReplayRepoRoot resolves this repo from its own default URL', () => {
+  // The no-argument path the fast-tier oracle and the CLI both take.
+  assert.equal(resolveReplayRepoRoot(), fs.realpathSync(path.resolve(EXTENSION_ROOT, '..')));
 });

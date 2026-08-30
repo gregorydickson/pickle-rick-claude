@@ -13,6 +13,7 @@
  * shas are never given a check at all.
  */
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
@@ -65,9 +66,19 @@ export function formatReplayReport(results) {
 // information). "Fires" means the rule reported >=1 message on that isolated snippet.
 const REPLAY_GIT_MAX_BUFFER = 64 * 1024 * 1024;
 const REPLAY_GIT_TIMEOUT_MS = 10_000;
-function resolveReplayRepoRoot() {
+/**
+ * The repo root this module lives in, derived from its own location.
+ *
+ * `fileURLToPath`, never the `URL#pathname` accessor: a `file://` URL is
+ * percent-encoded by specification, so `pathname` hands back `my%20repo` for a
+ * checkout under `my repo` and every path-consuming caller gets a directory that
+ * does not exist (measured: `execFileSync` throws ENOENT). `import.meta.url` is
+ * injectable so the decoding can be exercised against a real spaced checkout
+ * without relocating this module.
+ */
+export function resolveReplayRepoRoot(moduleUrl = import.meta.url) {
     return execFileSync('git', ['rev-parse', '--show-toplevel'], {
-        cwd: path.dirname(new URL(import.meta.url).pathname),
+        cwd: path.dirname(fileURLToPath(moduleUrl)),
         encoding: 'utf-8',
         timeout: REPLAY_GIT_TIMEOUT_MS,
     }).trim();
