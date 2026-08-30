@@ -1175,14 +1175,32 @@ describe('install.sh Forward Fix F2: lock serialization', () => {
 
   test('install.sh has a --dry-run guard after the lock', () => {
     const src = readFileSync(INSTALL_SH, 'utf8');
-    const lockIdx = src.indexOf('LOCKFILE="$EXTENSION_ROOT/.install.lock"');
-    const dryRunIdx = src.indexOf('--dry-run');
+    // Anchor on code, never on prose (AP-EXT-ITER55-02): the pre-fix form read
+    // src.indexOf('--dry-run'), and install.sh spells the option arm
+    // `--dry-ru[n]`, so the only literal match in the whole file was the
+    // comment above the guard. Rewriting that comment alone reddened the pin
+    // while the arm and the guard were untouched and fully functional.
+    const code = src.replace(/^[ \t]*#.*$/gm, '');
+    const lockIdx = code.indexOf('LOCKFILE="$EXTENSION_ROOT/.install.lock"');
+    const guardIdx = code.indexOf('if [ "$DRY_RUN" -eq 1 ]');
     assert.ok(lockIdx !== -1, 'lock block missing');
-    assert.ok(dryRunIdx !== -1, 'install.sh must accept --dry-run');
+    assert.ok(guardIdx !== -1, 'install.sh must gate its early exit on $DRY_RUN');
     assert.ok(
-      dryRunIdx > lockIdx,
+      guardIdx > lockIdx,
       '--dry-run guard must follow lock acquisition so the dry-run path still exercises serialization',
     );
+
+    // Acceptance is proved by bash's own matcher rather than by the arm's
+    // spelling, so the pin holds for `--dry-ru[n]` and a plain `--dry-run`
+    // alike and still reds on a typo'd arm that accepts neither.
+    const arm = /^[ \t]*(\S+)\)[ \t]*DRY_RUN=1/m.exec(code);
+    assert.ok(arm, 'install.sh must set DRY_RUN=1 from a case arm');
+    const probe = spawnSync(
+      'bash',
+      ['-c', `case "--dry-run" in ${arm[1]}) echo MATCH ;; *) echo NOMATCH ;; esac`],
+      { encoding: 'utf8', timeout: 10000 },
+    );
+    assert.equal(probe.stdout.trim(), 'MATCH', 'install.sh must accept --dry-run');
   });
 
   test('two simultaneous invocations serialize on the lock', async () => {
