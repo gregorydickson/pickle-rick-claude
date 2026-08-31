@@ -945,6 +945,29 @@ const PLAIN_PATH_TOKEN_RE = /^[A-Za-z0-9._-]+$/;
 const MKDTEMP_SUFFIX_RE = /^[A-Za-z0-9]{6}$/;
 /** Length of the random suffix `fs.mkdtempSync` appends to its prefix. */
 const MKDTEMP_SUFFIX_LEN = 6;
+/**
+ * How long a TMPDIR fixture directory must sit untouched before ANY sweep in this repo may
+ * remove it — the single source of truth for that floor, imported by
+ * `bin/reap-orphans.ts:sweepStaleFixtureTmpDirs` (which previously kept its own copy) and
+ * applied by `sweepDerivedTmpDirFixtures`. One directory, matched by both sweeps under one
+ * prefix, must not be governed by two staleness policies: the looser one simply wins and
+ * removes what the stricter one spared. No single test tier runs anywhere near this long, so
+ * a directory untouched for a day belongs to no live run.
+ */
+export const FIXTURE_TMPDIR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/**
+ * True only when `dir`'s mtime is provably older than `maxAgeMs`. An unstattable entry is NOT
+ * proof of staleness and defers — same positive-proof discipline `isProcessAlive` applies to
+ * pids, for the same reason: the verdict licenses an irreversible recursive removal.
+ */
+function isStaleFixtureTmpDir(dir, now, maxAgeMs) {
+    try {
+        return now - fs.statSync(dir).mtimeMs >= maxAgeMs;
+    }
+    catch {
+        return false;
+    }
+}
 let derivedTestOwnedTmpPrefixCache = null;
 /** Recursively collects `.js` file paths under `dir`; best-effort, `[]` on any read failure. */
 function walkJsFiles(dir) {
@@ -1036,13 +1059,25 @@ export function deriveTestOwnedTmpPrefixes(testsDir = DEFAULT_TEST_SOURCE_DIR) {
  *  - CONFINED TO TMPDIR: only entries returned by `readdirSync(tmpDir)` are considered, and
  *    each candidate's resolved path is re-verified to fall strictly under the resolved
  *    `tmpDir` before removal — a path can never escape the root it was listed from.
- *  - NEVER AGE-GATED: unlike the sibling `pickle-*` backlog sweep in `bin/reap-orphans.ts`
- *    (whose age floor exists because long-lived pipeline sessions legitimately hold `pickle-`
- *    prefixed directories for hours), this sweep runs as a `posttest` hook immediately after
- *    the test process that owns these prefixes has already exited — so an attributed match is
- *    sufficient on its own, and gating on age besides would only let unattributed leaks
- *    accumulate under cover of "not old enough yet", which the CLAUDE.md enumerated-set
- *    guidance forbids as a distinct failure mode.
+ *  - STALE ONLY, ON THE ONE FLOOR THIS REPO ALREADY HAS: attribution answers "is this a
+ *    fixture of our shape", never "is anyone still using it", and a correct attribution is
+ *    exactly when removal is most destructive. The earlier rationale here — that the owning
+ *    test process has already exited by `posttest` time — holds only for a machine running
+ *    ONE test process. It does not: the worker gate runs `npm run test:fast` per ticket
+ *    (`spawn-morty.ts:runWorkerGateTestCommand`) and the worker-spawn lock is session-scoped
+ *    "so it never serializes two unrelated sessions sharing one repo checkout", so a sweep
+ *    fired by one run routinely overlaps another. `test-runner.ts:createDisposableTmpRoot`
+ *    then makes the collision total rather than incidental: it mkdtemps `pickle-` under
+ *    `os.tmpdir()` and hands it to the spawned child as `TMPDIR`, so a live run's ENTIRE
+ *    fixture tree hangs off one directory whose basename is `pickle-` + 6 alnum — the exact
+ *    shape attributed above, with `pickle-` derived from test source like any other prefix.
+ *    A bare directory has no liveness signal to probe, so staleness is decided by mtime, on
+ *    `FIXTURE_TMPDIR_MAX_AGE_MS` — the SAME floor `bin/reap-orphans.ts:sweepStaleFixtureTmpDirs`
+ *    already applies to `pickle-*` in this same `posttest` hook. Two sweeps over one directory
+ *    matching one prefix under two staleness policies is the divergence, not the coverage: the
+ *    unfloored one runs second and removes precisely what the floored one deliberately spared.
+ *    Deferring a leak by one floor costs a later sweep; taking it costs a live run its whole
+ *    TMPDIR and every gate reading that run a false red.
  *
  * Best-effort: a `readdirSync`/`rmSync` failure on one entry is swallowed and the sweep
  * continues — it must never throw into the `posttest` hook it runs under.
@@ -1050,6 +1085,7 @@ export function deriveTestOwnedTmpPrefixes(testsDir = DEFAULT_TEST_SOURCE_DIR) {
 export function sweepDerivedTmpDirFixtures(opts = {}) {
     const tmpDir = path.resolve(opts.tmpDir ?? os.tmpdir());
     const prefixes = opts.prefixes ?? deriveTestOwnedTmpPrefixes(opts.testsDir ?? DEFAULT_TEST_SOURCE_DIR);
+    const maxAgeMs = opts.maxAgeMs ?? FIXTURE_TMPDIR_MAX_AGE_MS;
     const prefixSet = new Set(prefixes);
     let entries;
     try {
@@ -1058,6 +1094,7 @@ export function sweepDerivedTmpDirFixtures(opts = {}) {
     catch {
         return { scanned: 0, removed: 0, prefixes_used: prefixes };
     }
+    const now = Date.now();
     let scanned = 0;
     let removed = 0;
     const tmpDirPrefix = tmpDir + path.sep;
@@ -1074,6 +1111,8 @@ export function sweepDerivedTmpDirFixtures(opts = {}) {
         if (!resolved.startsWith(tmpDirPrefix))
             continue;
         scanned += 1;
+        if (!isStaleFixtureTmpDir(resolved, now, maxAgeMs))
+            continue;
         try {
             fs.rmSync(resolved, { recursive: true, force: true });
             removed += 1;

@@ -15,13 +15,18 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { getDataRoot } from '../services/pickle-utils.js';
-import { reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
+import { reapOrphanedWorkerProcs, FIXTURE_TMPDIR_MAX_AGE_MS, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
 
 type ReapResult = ReapSweepResult;
 
-/** D6 (R-ORCG): fixture prefix + staleness window for the TMPDIR directory backlog sweep. */
+/**
+ * D6 (R-ORCG): fixture prefix for the TMPDIR directory backlog sweep. The staleness window is
+ * NOT redeclared here — it is `FIXTURE_TMPDIR_MAX_AGE_MS` from `services/orphan-reaper.ts`, the
+ * one floor shared with `sweepDerivedTmpDirFixtures`. Both sweeps run in the same `posttest`
+ * hook over the same `os.tmpdir()` and both attribute `pickle-`, so a second local copy of this
+ * number is a second policy, and the looser of two policies is the only one that has effect.
+ */
 const FIXTURE_TMPDIR_PREFIX = 'pickle-';
-const FIXTURE_TMPDIR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface FixtureTmpDirSweepResult {
   scanned: number;

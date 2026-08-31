@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { parseWorkerProcsFromPs, reapOrphanedWorkerProcs, deriveTestOwnedTmpPrefixes, sweepDerivedTmpDirFixtures } from '../services/orphan-reaper.js';
+import { parseWorkerProcsFromPs, reapOrphanedWorkerProcs, deriveTestOwnedTmpPrefixes, sweepDerivedTmpDirFixtures, FIXTURE_TMPDIR_MAX_AGE_MS } from '../services/orphan-reaper.js';
 import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 
 test('AC-4: the exact live argv shape (node <tmpdir>/pickle-*/bin/npm run test:fast) yields one tmp_fixture candidate', () => {
@@ -82,7 +82,6 @@ test('AC-5: an old candidate of the node/bin/npm family (age above minAgeSeconds
   assert.equal(result.reaped, 1, 'an old candidate reaches the same reap path as other tmp_fixture matches');
   assert.deepEqual(kills, [[9106, 'SIGTERM']]);
 });
-
 
 /**
  * AP-EXT-ITER2-01: the tmpdir matchers compared an argv path against
@@ -311,6 +310,9 @@ function writeSyntheticTestSource(testsDir, source) {
   fs.writeFileSync(path.join(testsDir, 'synthetic.test.js'), source);
 }
 
+/** Comfortably past `FIXTURE_TMPDIR_MAX_AGE_MS`, for cases whose subject is attribution, not age. */
+const STALE_ENOUGH_MS = 25 * 60 * 60 * 1000;
+
 /** A basename in the exact shape `fs.mkdtempSync` produces: prefix + 6 random `[A-Za-z0-9]`. */
 function mkdtempShapedName(prefix) {
   return `${prefix}Xk4mZq`;
@@ -361,6 +363,7 @@ test('C2 AC-C3: sweepDerivedTmpDirFixtures removes a directory attributed to a d
   const scannedRoot = mkFixtureTmpDir('c2-sweep-root-attr-');
   const attributed = path.join(scannedRoot, mkdtempShapedName('c2-attributed-'));
   fs.mkdirSync(attributed);
+  backdate(attributed, STALE_ENOUGH_MS); // past the AP-EXT-ITER120-01 floor, so attribution is what is under test
   const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['c2-attributed-'] });
   assert.equal(result.scanned, 1);
   assert.equal(result.removed, 1);
@@ -371,6 +374,7 @@ test('C2 AC-C3c: sweepDerivedTmpDirFixtures is a no-op against an unattributable
   const scannedRoot = mkFixtureTmpDir('c2-sweep-root-noattr-');
   const unattributed = path.join(scannedRoot, mkdtempShapedName('not-a-derived-prefix-'));
   fs.mkdirSync(unattributed);
+  backdate(unattributed, STALE_ENOUGH_MS); // age must not be the reason it survives
   const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['c2-attributed-'] });
   assert.equal(result.scanned, 0);
   assert.equal(result.removed, 0);
@@ -404,6 +408,10 @@ test('C2 AC-C3c (over-trigger control): a SHORT derived prefix never eats a fore
   fs.mkdirSync(foreignSixNonAlnum);
   fs.mkdirSync(ownFixture);
   fs.writeFileSync(path.join(foreign, 'someone-elses-data.json'), '{}');
+  // Age every one of them past the AP-EXT-ITER120-01 floor. Backdating only `ownFixture`
+  // would hand each foreign directory a SECOND reason to survive, and a control that
+  // survives the mutation it exists to catch is not a control.
+  for (const d of [foreign, foreignShaped, foreignSixNonAlnum, ownFixture]) backdate(d, STALE_ENOUGH_MS);
 
   const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['ai-'] });
 
@@ -422,17 +430,83 @@ test('C2 AC-C3c: sweepDerivedTmpDirFixtures never touches a path outside the sca
   // Fully attributable by name — only its location keeps it safe.
   const siblingOutside = path.join(outerRoot, mkdtempShapedName('c2-attributed-'));
   fs.mkdirSync(siblingOutside);
+  backdate(siblingOutside, STALE_ENOUGH_MS); // location must be the only thing keeping it
   const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['c2-attributed-'] });
   assert.equal(result.scanned, 0, 'a matching-name directory OUTSIDE tmpDir must never be scanned');
   assert.equal(fs.existsSync(siblingOutside), true, 'the sibling directory outside tmpDir must survive untouched');
 });
 
-test('C2: sweepDerivedTmpDirFixtures removes an attributed directory regardless of age — never age-gated', () => {
-  const scannedRoot = mkFixtureTmpDir('c2-sweep-fresh-');
-  const freshlyCreated = path.join(scannedRoot, mkdtempShapedName('c2-attributed-'));
-  fs.mkdirSync(freshlyCreated); // created moments ago — must still be removed
-  const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['c2-attributed-'] });
-  assert.equal(result.removed, 1, 'attribution alone is sufficient; age must never gate removal');
+// --- AP-EXT-ITER120-01: attribution says "ours", never "idle" -------------------------------
+//
+// The C2 sweep attributes a directory by `<derived prefix><6 alnum>` and removed it on that
+// alone, on the stated ground that "the test process that owns these prefixes has already
+// exited" by `posttest` time. That holds for one test process per machine, and this repo does
+// not run one: `spawn-morty.ts:runWorkerGateTestCommand` runs `npm run test:fast` per ticket
+// (firing `posttest:fast`), and the worker-spawn lock is session-scoped "so it never
+// serializes two unrelated sessions sharing one repo checkout".
+//
+// `test-runner.ts:createDisposableTmpRoot` makes the overlap total rather than incidental: it
+// mkdtemps `pickle-` under `os.tmpdir()` and hands the result to the spawned child as `TMPDIR`,
+// so a live run's ENTIRE fixture tree hangs off one directory whose basename is exactly
+// `pickle-` + 6 alnum. `pickle-` is derived from test source like any other literal, so the
+// sweep attributed it and recursively removed a live run's whole TMPDIR — every fixture repo
+// and state.json under it — leaving that run to fail en masse on ENOENT and report a false red.
+//
+// These cases drive the REAL producer (`mkdtempSync(join(tmpdir, 'pickle-'))`), not a
+// hand-written name, so a change to the disposable root's shape re-aims them automatically.
+function makeLiveDisposableRunRoot(scannedRoot) {
+  const runRoot = fs.mkdtempSync(path.join(scannedRoot, 'pickle-'));
+  const fixture = path.join(runRoot, 'cp-git-Xk4mZq');
+  fs.mkdirSync(fixture);
+  fs.writeFileSync(path.join(fixture, 'state.json'), '{}');
+  return runRoot;
+}
+
+/** Backdate `dir` past the staleness floor without waiting for it. */
+function backdate(dir, ms) {
+  const when = new Date(Date.now() - ms);
+  fs.utimesSync(dir, when, when);
+}
+
+test('AP-EXT-ITER120-01: a LIVE run\'s disposable TMPDIR root is attributed but spared', () => {
+  const scannedRoot = mkFixtureTmpDir('c2-sweep-live-root-');
+  const runRoot = makeLiveDisposableRunRoot(scannedRoot);
+  assert.match(path.basename(runRoot), /^pickle-[A-Za-z0-9]{6}$/, 'precondition: the real producer emits the attributed shape');
+  assert.ok(deriveTestOwnedTmpPrefixes().includes('pickle-'), 'precondition: `pickle-` is a DERIVED prefix, so attribution really does reach this root');
+
+  const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['pickle-'] });
+
+  assert.equal(result.scanned, 1, 'the root is still attributed — the fix is a staleness floor, not a narrowing of attribution');
+  assert.equal(result.removed, 0, 'a concurrently running test run must not lose its TMPDIR to another run\'s posttest sweep');
+  assert.equal(fs.existsSync(path.join(runRoot, 'cp-git-Xk4mZq', 'state.json')), true, 'the live run\'s fixtures under the root must survive intact');
+});
+
+test('AP-EXT-ITER120-01 control: the SAME root, aged past the floor, is still removed', () => {
+  const scannedRoot = mkFixtureTmpDir('c2-sweep-stale-root-');
+  const runRoot = makeLiveDisposableRunRoot(scannedRoot);
+  backdate(runRoot, 25 * 60 * 60 * 1000);
+
+  const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['pickle-'] });
+
+  assert.equal(result.removed, 1, 'the fix must not degrade the sweep into collecting nothing — a day-old leak is still swept');
+  assert.equal(fs.existsSync(runRoot), false);
+});
+
+test('AP-EXT-ITER120-01: the floor is the ONE `FIXTURE_TMPDIR_MAX_AGE_MS`, not a second local policy', () => {
+  const scannedRoot = mkFixtureTmpDir('c2-sweep-floor-');
+  const justUnder = makeLiveDisposableRunRoot(scannedRoot);
+  backdate(justUnder, FIXTURE_TMPDIR_MAX_AGE_MS - 60_000);
+  assert.equal(
+    sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['pickle-'] }).removed,
+    0,
+    'one minute under the shared floor must be spared — a looser second policy here silently overrides the floor bin/reap-orphans.ts applies to this same prefix in this same posttest hook',
+  );
+  backdate(justUnder, FIXTURE_TMPDIR_MAX_AGE_MS + 60_000);
+  assert.equal(
+    sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['pickle-'] }).removed,
+    1,
+    'one minute over it must be removed',
+  );
 });
 
 test('C2: sweepDerivedTmpDirFixtures wires its default prefix source through deriveTestOwnedTmpPrefixes end-to-end', () => {
@@ -441,6 +515,7 @@ test('C2: sweepDerivedTmpDirFixtures wires its default prefix source through der
   const scannedRoot = mkFixtureTmpDir('c2-integration-root-');
   const attributed = path.join(scannedRoot, mkdtempShapedName('c2-integration-attributed-'));
   fs.mkdirSync(attributed);
+  backdate(attributed, STALE_ENOUGH_MS);
   const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, testsDir: fixtureTestsDir });
   assert.ok(result.prefixes_used.includes('c2-integration-attributed-'), 'the sweep must consult deriveTestOwnedTmpPrefixes for its default prefix set');
   assert.equal(result.removed, 1);
