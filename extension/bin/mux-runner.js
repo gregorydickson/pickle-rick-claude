@@ -1836,7 +1836,7 @@ export function correctPhantomDoneTickets(input) {
  * completion predicate — resolvable → keep, scan-recoverable → backfill,
  * else revert. The pre-B-1SEAM bare field-presence keep is gone.
  */
-function applyInspectPhantomDoneDecision(content, filePath, sessionDir, ticketId, workingDir, priorStatus) {
+function applyInspectPhantomDoneDecision(content, filePath, sessionDir, ticketId, workingDir, priorStatus, fallbackDir) {
     // B-1SEAM WS-1: the bare field-presence keep is GONE — a stamped
     // completion_commit is now git-probed through the same predicate as every
     // other decision site (the hallucinated-sha stamp that caused the R-AICF
@@ -1845,7 +1845,11 @@ function applyInspectPhantomDoneDecision(content, filePath, sessionDir, ticketId
     const hadExplicit = !!readFrontmatterField(content, 'completion_commit');
     // R-AFCC-DEEP-4A: delegate to gateForPhantomDoneRevert (predicate-backed),
     // with session baseline SHAs wired via buildCompletionCtx (R-CXOR-2).
-    const ctx = buildCompletionCtx({ sessionDir, ticketId, ticketPath: filePath, workingDir }, 'phantom-watch');
+    // AP-EXT-ITER124-02: `fallbackDir` is the R-CCR-1 rung its batch-loop sibling
+    // `batchLoopPhantomDoneKind` has passed since 26abfd3a. This arm REVERTS Done to
+    // Todo on `absent`, so resolving over one dir DISCARDS shipped work whenever the
+    // per-ticket `working_dir` is a non-empty string git cannot use.
+    const ctx = buildCompletionCtx({ sessionDir, ticketId, ticketPath: filePath, workingDir, fallbackDir }, 'phantom-watch');
     let decision;
     try {
         decision = gateForPhantomDoneRevert(ctx);
@@ -1890,8 +1894,12 @@ function applyInspectPhantomDoneDecision(content, filePath, sessionDir, ticketId
  * `priorStatus` defaults to 'Todo' but the watcher caller passes the last
  * known good status. Pure side-effect on the ticket file plus a structured result
  * — caller owns activity-event + stderr log writes.
+ *
+ * `fallbackDir` is rung 1 of the R-CCR-1 dir ladder (AP-EXT-ITER124-02). It is
+ * optional and trails `priorStatus` so the existing positional callers are
+ * unchanged; the live watcher composes the pair through `completionDirLadder`.
  */
-export function inspectPhantomDoneTicketFile(filePath, sessionDir, workingDir, priorStatus = 'Todo') {
+export function inspectPhantomDoneTicketFile(filePath, sessionDir, workingDir, priorStatus = 'Todo', fallbackDir) {
     let content;
     try {
         content = fs.readFileSync(filePath, 'utf8');
@@ -1907,7 +1915,7 @@ export function inspectPhantomDoneTicketFile(filePath, sessionDir, workingDir, p
     if (!ticketId) {
         return { changed: false, reason: 'missing_id' };
     }
-    return applyInspectPhantomDoneDecision(content, filePath, sessionDir, ticketId, workingDir, priorStatus);
+    return applyInspectPhantomDoneDecision(content, filePath, sessionDir, ticketId, workingDir, priorStatus, fallbackDir);
 }
 function hasArtifact(files, prefix) {
     return files.some(file => file.startsWith(prefix) && file.endsWith('.md'));
@@ -4752,24 +4760,6 @@ function buildCompletionCtx(args, decision) {
         zeroDiffIntent: () => readDeclaredZeroDiffIntent(args.sessionDir, args.ticketId),
     };
 }
-/**
- * AP-EXT-ITER124-01: THE dir pair every Done-flip authority hands the completion
- * predicate — the mux-runner-side companion to `gitDirLadder`, which consumes it.
- *
- * Every call site used to spell the pair as `ticket.working_dir || sessionWorkingDir
- * || process.cwd()`. That chain SELECTS one dir where the ladder PROBES both: `||`
- * falls through only on a FALSY per-ticket dir, so a `working_dir` that is a
- * non-empty string pointing at a directory git cannot use (the whole R-CCR-1 case)
- * wins the selection and the session dir is never consulted. Five hand-written
- * chains meant five chances to spell the pair differently, and two siblings
- * reading the very same pair already had: one included `state.working_dir`, the
- * other omitted it.
- *
- * Rung 0 is the per-ticket dir when it is usable-as-a-value, else the session dir,
- * else cwd. Rung 1 is the session dir whenever it is present and distinct — the
- * `gitDirLadder` contract drops a duplicate rung itself, so a same-dir pair costs
- * nothing.
- */
 function completionDirLadder(perTicketDir, sessionWorkingDir) {
     const session = sessionWorkingDir || undefined;
     const workingDir = perTicketDir || session || process.cwd();
@@ -9598,12 +9588,12 @@ const installPhantomDoneTicketWatcher = (opts) => {
  * stops a revert→recheck→revert cycle from feeding itself; the budget in
  * `consumeRecheckBudget` is the second, independent bound.
  */
-const handlePhantomDoneTicketEvent = (ctx, ticketId, ticketFile, workingDir, isRecheck) => {
+const handlePhantomDoneTicketEvent = (ctx, ticketId, ticketFile, dirs, isRecheck) => {
     const { sessionDir, emitCtx, priorStatusMap, log } = ctx;
     const prior = priorStatusMap.get(ticketId) ?? 'Todo';
     let result;
     try {
-        result = inspectPhantomDoneTicketFile(ticketFile, sessionDir, workingDir, prior);
+        result = inspectPhantomDoneTicketFile(ticketFile, sessionDir, dirs.workingDir, prior, dirs.fallbackDir);
     }
     catch (err) {
         log(`phantom-Done watcher: inspect threw for ${ticketId} (ignored): ${safeErrorMessage(err)}`);
@@ -9621,7 +9611,7 @@ const handlePhantomDoneTicketEvent = (ctx, ticketId, ticketFile, workingDir, isR
         return;
     emitRevertEvent(emitCtx, ticketId, result, ts);
     if (!isRecheck)
-        ctx.scheduleRecheck(ticketId, ticketFile, workingDir);
+        ctx.scheduleRecheck(ticketId, ticketFile, dirs);
 };
 /**
  * Releases every handle the registry owns: the `fs.watch` descriptors and the pending
@@ -9674,14 +9664,17 @@ const installPhantomDoneWatchersForSession = (opts) => {
             skipped++;
             continue;
         }
-        const workingDir = ticket.working_dir || defaultWorkingDir;
+        // AP-EXT-ITER124-02: the (per-ticket, session) pair has ONE resolver. `||`
+        // SELECTS one dir; `completionDirLadder` composes both rungs so the phantom-Done
+        // revert arm can never discard shipped work over an unusable per-ticket dir.
+        const dirs = completionDirLadder(ticket.working_dir, defaultWorkingDir);
         seedPriorTicketStatus(eventCtx.priorStatusMap, ticketId, ticketFile);
         const watcher = installPhantomDoneTicketWatcher({
             ticketId,
             ticketFile,
             debounceTimers,
             isClosed,
-            onDebounced: () => handlePhantomDoneTicketEvent(eventCtx, ticketId, ticketFile, workingDir, false),
+            onDebounced: () => handlePhantomDoneTicketEvent(eventCtx, ticketId, ticketFile, dirs, false),
             log,
         });
         if (!watcher) {
@@ -9706,7 +9699,7 @@ function startPhantomDoneWatchers(opts) {
         closed = true;
         releasePhantomDoneHandles(watchers, debounceTimers);
     };
-    const scheduleRecheck = (ticketId, ticketFile, workingDir) => {
+    const scheduleRecheck = (ticketId, ticketFile, dirs) => {
         if (!consumeRecheckBudget(recheckTimestamps, ticketId, Date.now())) {
             log(`phantom-Done watcher: re-check cap reached for ${ticketId} — skipping further re-checks this minute`);
             return;
@@ -9714,7 +9707,7 @@ function startPhantomDoneWatchers(opts) {
         setTimeout(() => {
             if (closed)
                 return;
-            handlePhantomDoneTicketEvent(eventCtx, ticketId, ticketFile, workingDir, true);
+            handlePhantomDoneTicketEvent(eventCtx, ticketId, ticketFile, dirs, true);
         }, PHANTOM_DONE_RECHECK_MS);
     };
     const eventCtx = {

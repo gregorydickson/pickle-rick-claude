@@ -1988,6 +1988,103 @@ test('AP-EXT-ITER124-01: no guardCompletionCommitBeforeDone call site hand-write
       'guardCompletionCommitBeforeDone args must declare fallbackDir — without it no caller can supply rung 1');
 });
 
+/**
+ * AP-EXT-ITER124-02 — the R-CCR-1 dir ladder reaches the SINGLE-FILE phantom-Done
+ * watcher, not only its batch-loop sibling.
+ *
+ * `batchLoopPhantomDoneKind` has passed `fallbackDir: input.workingDir` since
+ * `26abfd3a`; `applyInspectPhantomDoneDecision` — the arm the fs.watch pipeline
+ * runs — built its `'phantom-watch'` ctx with no fallback at all, while its own
+ * caller already held the pair (`ticket.working_dir || defaultWorkingDir`). That
+ * arm REVERTS Done to Todo on `absent`, so resolving over one dir DISCARDS shipped
+ * work rather than merely parking the ticket — strictly worse than the flip-side
+ * defect AP-EXT-ITER124-01 closed one level up.
+ *
+ * ONE sha, ONE repo, ONE ticket; the rung is the only variable. The single-dir
+ * REVERT is asserted first as the fixture's own precondition, so the case cannot
+ * pass by the fixture silently becoming resolvable from rung 0.
+ */
+test('AP-EXT-ITER124-02: the phantom-Done watcher resolves a sha over the R-CCR-1 fallback dir instead of reverting Done', async () => {
+    const { inspectPhantomDoneTicketFile } = await import('../bin/mux-runner.js');
+    const tmpRoot = makeTmpRoot();
+    try {
+        const repo = path.join(tmpRoot, 'repo');           // session working_dir — the real repo
+        const perTicketDir = path.join(tmpRoot, 'gone');   // per-ticket working_dir — exists, not a repo
+        const sessionDir = path.join(tmpRoot, 'session');
+        fs.mkdirSync(repo, { recursive: true });
+        fs.mkdirSync(perTicketDir, { recursive: true });
+        const ticketId = 'ee66ff77';
+        fs.mkdirSync(path.join(sessionDir, ticketId), { recursive: true });
+
+        initGitRepo(repo);
+        const startCommit = gitHead(repo);
+        fs.writeFileSync(path.join(repo, 'work.txt'), 'work');
+        spawnSync('git', ['add', '.'], { cwd: repo, timeout: 30000 });
+        spawnSync('git', ['commit', '-m', `fix(${ticketId}): deliver the work`, '--no-gpg-sign'], { cwd: repo, timeout: 30000 });
+        const sha = gitHead(repo);
+        assert.notEqual(sha, startCommit, 'fixture precondition: the delivery commit is not the session baseline');
+
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+            session_id: 'ap12402', working_dir: repo, start_commit: startCommit, activity: [],
+        }));
+
+        const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
+        const doneTicket = `---\nid: ${ticketId}\ntitle: "ladder"\nstatus: Done\ncompletion_commit: ${sha}\nworking_dir: ${perTicketDir}\n---\n# T\n`;
+        const statusOf = (fp) => fs.readFileSync(fp, 'utf-8').match(/^status:.*$/m)[0];
+
+        withProductionGuard(() => {
+            // Rung 0 alone cannot resolve the sha — and this arm does not park the
+            // ticket, it REVERTS it. This is the pre-fix reading.
+            fs.writeFileSync(ticketPath, doneTicket);
+            const single = inspectPhantomDoneTicketFile(ticketPath, sessionDir, perTicketDir, 'Todo');
+            assert.equal(single.reason, 'reverted',
+              'fixture precondition: the per-ticket dir alone cannot resolve the sha, and the watcher reverts on absent');
+            assert.match(statusOf(ticketPath), /Todo/, 'fixture precondition: the revert reached the ticket file');
+
+            // Same facts, plus the rung the batch-loop sibling has always had.
+            fs.writeFileSync(ticketPath, doneTicket);
+            const laddered = inspectPhantomDoneTicketFile(ticketPath, sessionDir, perTicketDir, 'Todo', repo);
+            assert.equal(laddered.reason, 'has_completion_commit',
+              'the phantom-Done watcher must resolve the sha over the R-CCR-1 fallback dir, exactly as batchLoopPhantomDoneKind does');
+            assert.equal(laddered.changed, false, 'a resolved sha leaves the ticket untouched');
+            assert.match(statusOf(ticketPath), /Done/, 'shipped work must not be discarded over the dir axis alone');
+
+            // Teeth: the fallback rung widens a REFUSAL, it does not disable it.
+            // A Done ticket with NO evidence still reverts even with rung 1 supplied.
+            const noEvidenceId = 'aabb1122';
+            fs.mkdirSync(path.join(sessionDir, noEvidenceId), { recursive: true });
+            const noEvidencePath = path.join(sessionDir, noEvidenceId, `rick_ticket_${noEvidenceId}.md`);
+            fs.writeFileSync(noEvidencePath,
+              `---\nid: ${noEvidenceId}\ntitle: "none"\nstatus: Done\nworking_dir: ${perTicketDir}\n---\n# T\n`);
+            const noEvidence = inspectPhantomDoneTicketFile(noEvidencePath, sessionDir, perTicketDir, 'Todo', repo);
+            assert.equal(noEvidence.reason, 'reverted',
+              'the fallback rung must not turn the phantom-Done revert into a blanket keep');
+        });
+    } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+/**
+ * AP-EXT-ITER124-02 (collapse half) — the phantom-Done watcher installer composes
+ * the (per-ticket, session) pair through the ONE resolver, like every
+ * `guardCompletionCommitBeforeDone` call site already does. A `||` chain here
+ * SELECTS the per-ticket dir whenever it is a non-empty string, which is exactly
+ * the R-CCR-1 case, and the session dir is never consulted.
+ */
+test('AP-EXT-ITER124-02: the phantom-Done watcher installer composes its dir pair with completionDirLadder', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'bin', 'mux-runner.ts'), 'utf-8');
+    const installer = src.slice(src.indexOf('const installPhantomDoneWatchersForSession'));
+    const body = installer.slice(0, installer.indexOf('\n};'));
+    assert.ok(body.length > 0, 'installPhantomDoneWatchersForSession must be present');
+    assert.match(body, /completionDirLadder\(ticket\.working_dir, defaultWorkingDir\)/,
+      'the watcher installer must compose the dir pair through completionDirLadder');
+    assert.equal(/working_dir\s*\|\|/.test(body), false,
+      'the watcher installer still SELECTS its dir with an || chain instead of probing both rungs');
+    assert.match(src, /fallbackDir\?: string,\n\): PhantomDoneInspectResult/,
+      'inspectPhantomDoneTicketFile must declare fallbackDir — without it no caller can supply rung 1');
+});
+
 // --- R-CCR-9: guardRereadBackoffMs env handling ---
 
 test('guardRereadBackoffMs: R-CCR-9 PICKLE_GUARD_REREAD_BACKOFF_MS=0 honored — guard returns without sleeping', async () => {
