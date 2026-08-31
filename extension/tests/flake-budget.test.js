@@ -11,6 +11,9 @@ import { resolveSubprocessCap } from './__helpers__/subprocess-cap.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.resolve(__dirname, '../bin/check-flake-budget.js');
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const CI_WORKFLOW = path.join(REPO_ROOT, '.github', 'workflows', 'ci.yml');
+const RELEASE_WORKFLOW = path.join(REPO_ROOT, '.github', 'workflows', 'release.yml');
 
 /** The per-run budget every call site below passes to the subject as `--timeout=`. */
 const CHILD_RUN_TIMEOUT_SECONDS = 30;
@@ -759,4 +762,135 @@ test('PICKLE_FLAKE_BUDGET_TEST_FILE still collapses to a single invocation', asy
   assert.equal(code, 0);
   assert.equal(spawnSyncFn.calls.length, 1, 'the single-file override must not run a serial half');
   assert.deepEqual(spawnSyncFn.calls[0], ['--test', '--test-concurrency=8', BIN]);
+});
+
+// --- FR-A2: the CI/release workflows must upload the per-run logs this file writes ------
+//
+// No YAML-parsing library is a devDependency here (package.json is out of scope for this
+// ticket); these tests parse the workflow text the same line-based way
+// release-gate-parity.test.js and release-tag-version-guard.test.js already do.
+
+/** The literal prefix `runIterations` passes to `mkdtempSync`, read from the shipped runtime
+ * rather than duplicated here -- if the log-dir shape ever changes, this test changes with it
+ * instead of silently drifting from what the script actually creates. */
+function readFlakeBudgetLogDirPrefix() {
+  const source = fs.readFileSync(BIN, 'utf8');
+  const match = source.match(/mkdtempSync\(path\.join\(os\.tmpdir\(\),\s*['"]([^'"]+)['"]\)\)/);
+  assert.ok(match, 'could not find the mkdtempSync(os.tmpdir(), "<prefix>") shape in check-flake-budget.js');
+  return match[1];
+}
+
+const LOG_DIR_PREFIX = readFlakeBudgetLogDirPrefix();
+const LOG_DIR_GLOB_FRAGMENT = `${LOG_DIR_PREFIX}*`;
+
+function readWorkflowText(workflowPath) {
+  return fs.readFileSync(workflowPath, 'utf8');
+}
+
+// Step boundary convention copied from release-tag-version-guard.test.js's guardStepBlock:
+// steps are authored at 6-space indent in every workflow in this repo, so a step's block runs
+// from its own `- name:` header up to (but not including) the next `- name:`/`- uses:` line.
+function uploadArtifactStepBlock(workflowText) {
+  const usesIndex = workflowText.indexOf('uses: actions/upload-artifact@v4');
+  assert.notEqual(usesIndex, -1, 'workflow has no actions/upload-artifact@v4 step');
+
+  const nameStart = workflowText.lastIndexOf('\n      - name:', usesIndex);
+  assert.notEqual(nameStart, -1, 'could not find the step name header preceding the upload-artifact use');
+
+  const nextStep = workflowText.indexOf('\n      - name:', usesIndex);
+  const nextUse = workflowText.indexOf('\n      - uses:', usesIndex);
+  const candidates = [nextStep, nextUse].filter((index) => index !== -1);
+  const end = candidates.length > 0 ? Math.min(...candidates) : workflowText.length;
+
+  return workflowText.slice(nameStart, end);
+}
+
+function extractField(block, field) {
+  const match = block.match(new RegExp(`^\\s*${field}:\\s*(.+)\\s*$`, 'm'));
+  return match ? match[1].trim() : null;
+}
+
+const WORKFLOWS = [
+  ['ci.yml', CI_WORKFLOW],
+  ['release.yml', RELEASE_WORKFLOW],
+];
+
+for (const [label, workflowPath] of WORKFLOWS) {
+  test(`${label} declares a flake-budget upload-artifact step guarded by failure() with if-no-files-found: warn`, () => {
+    const block = uploadArtifactStepBlock(readWorkflowText(workflowPath));
+
+    const ifCondition = extractField(block, 'if');
+    assert.equal(ifCondition, 'failure()', `${label} upload step must be guarded by if: failure()`);
+
+    const pathValue = extractField(block, 'path');
+    assert.ok(pathValue, `${label} upload step must declare a path:`);
+    assert.ok(
+      pathValue.endsWith(LOG_DIR_GLOB_FRAGMENT),
+      `${label} upload path '${pathValue}' must end with the mktemp glob '${LOG_DIR_GLOB_FRAGMENT}' check-flake-budget.js actually creates`,
+    );
+
+    const ifNoFilesFound = extractField(block, 'if-no-files-found');
+    assert.equal(
+      ifNoFilesFound,
+      'warn',
+      `${label} upload step must use if-no-files-found: warn -- 'error' would add a new red path for gate failures that never reach test:fast:budget`,
+    );
+  });
+
+  test(`${label} places the flake-budget upload step after the gate run: step`, () => {
+    const workflow = readWorkflowText(workflowPath);
+    const uploadIndex = workflow.indexOf('uses: actions/upload-artifact@v4');
+    const gateIndex = workflow.indexOf('npm run test:fast:budget');
+
+    assert.notEqual(uploadIndex, -1, `${label} has no upload-artifact step`);
+    assert.notEqual(gateIndex, -1, `${label} has no npm run test:fast:budget invocation`);
+    assert.ok(
+      uploadIndex > gateIndex,
+      `${label} must declare the upload step AFTER the gate run: step, not before it`,
+    );
+  });
+
+  test(`${label} gate run: line is unchanged by the upload-step edit`, () => {
+    const workflow = readWorkflowText(workflowPath);
+    assert.ok(
+      workflow.includes(
+        'npm run test:fast:budget && npm run test:integration && npm run test:contract && RUN_EXPENSIVE_TESTS=1 npm run test:expensive',
+      ),
+      `${label} gate run: line must still end in the exact release-gate tail (unchanged by this ticket)`,
+    );
+  });
+}
+
+// The critical proof: the declared glob pattern must actually resolve against a directory
+// built the exact way check-flake-budget.js builds it -- a string that merely "looks like"
+// the right pattern is not evidence the upload step will find anything on a real runner.
+test('the declared flake-budget glob pattern matches a directory built the same way the script builds one', () => {
+  const block = uploadArtifactStepBlock(readWorkflowText(CI_WORKFLOW));
+  const pathValue = extractField(block, 'path');
+  const globFragment = pathValue.slice(pathValue.lastIndexOf('/') + 1);
+  assert.equal(
+    globFragment,
+    LOG_DIR_GLOB_FRAGMENT,
+    'the workflow path\'s final segment must be exactly the glob fragment check-flake-budget.js creates',
+  );
+
+  const escaped = globFragment.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  const globRegExp = new RegExp(`^${escaped.replace(/\*/g, '[^/]*')}$`);
+
+  const createdDir = fs.mkdtempSync(path.join(os.tmpdir(), LOG_DIR_PREFIX));
+  try {
+    assert.match(
+      path.basename(createdDir),
+      globRegExp,
+      `a real mkdtempSync('${LOG_DIR_PREFIX}') directory must match the declared workflow glob`,
+    );
+    // Negative control: an unrelated directory name must NOT match, so the pin has teeth.
+    assert.doesNotMatch(
+      'unrelated-tmp-dir-name',
+      globRegExp,
+      'the glob regex must not match an unrelated directory name',
+    );
+  } finally {
+    fs.rmSync(createdDir, { recursive: true, force: true });
+  }
 });

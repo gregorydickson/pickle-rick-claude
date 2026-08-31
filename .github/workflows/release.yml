@@ -41,6 +41,15 @@ jobs:
         # isUnrunnableCheckResult fail-closed path (2bf16f30) trips on every run.
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
+      - name: Resolve flake-budget log directory
+        # FR-A2: check-flake-budget.ts writes per-run failure logs to a mktemp-style
+        # dir under os.tmpdir() (extension/src/bin/check-flake-budget.ts:
+        # mkdtempSync(path.join(os.tmpdir(), 'flake-budget-logs-'))). The runner's
+        # TMPDIR may not be /tmp, so resolve it with the same Node that runs the gate
+        # and export it for the upload step below -- a hardcoded /tmp glob would
+        # silently upload nothing on a runner where it differs.
+        run: echo "FLAKE_BUDGET_TMPDIR=$(node -e 'console.log(require("os").tmpdir())')" >> "$GITHUB_ENV"
+
       - name: Install and compile
         # 139925d8: deliberate mirror of ci.yml — do not delete as redundant.
         # Points getExtensionRoot() (pickle-utils.ts:371) at the checked-out repo
@@ -50,6 +59,18 @@ jobs:
         env:
           EXTENSION_DIR: ${{ github.workspace }}
         run: cd extension && npm ci && npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-un-terminalize-single-path.sh && bash scripts/audit-did-we-count.sh && npm run test:fast:budget && npm run test:integration && npm run test:contract && RUN_EXPENSIVE_TESTS=1 npm run test:expensive
+
+      - name: Upload flake-budget logs
+        # FR-A2: the gate above is ONE `&&`-joined command, so most failures (tsc,
+        # eslint, an audit script) never reach `npm run test:fast:budget` and leave no
+        # log directory -- if-no-files-found: warn is deliberate, since `error` would
+        # add a brand-new red path for every unrelated gate failure.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-budget-logs
+          path: ${{ env.FLAKE_BUDGET_TMPDIR }}/flake-budget-logs-*
+          if-no-files-found: warn
 
   # R-RNTA: owns ONLY "does the artifact exist". No `needs: [gate]` — the
   # tarball is built purely from already-committed, already-compiled files
