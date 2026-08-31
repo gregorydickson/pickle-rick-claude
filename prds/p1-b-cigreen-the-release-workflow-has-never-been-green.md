@@ -42,14 +42,30 @@ closed by measurement. **Do not open a ticket for it.**
 
 ## The constraint that shapes every ticket
 
-**These failures do not reproduce on this host.** The same serial tier measures **625/625 green** on
-macOS / Node 24 — at both the beta.19 and beta.20 ship gates. `docker` is present as a CLI but has no
-running VM (`docker info` fails; no colima/podman/lima), so **there is no local Linux repro.**
+**These failures do not reproduce on macOS.** The same serial tier measures **625/625 green** on
+macOS / Node 24 — at both the beta.19 and beta.20 ship gates.
 
-A ticket therefore may NOT close on "passes locally". Acceptance is either (a) a mechanically-checkable
-property of the code or workflow that explains the CI observation, or (b) a green CI run on a pushed
-tag. **State which one you are claiming.** An "I couldn't reproduce it so it's probably fine" close is
-the fake-green this repo exists to prevent.
+**CORRECTED 2026-08-30 (ticket `c1d1eeb3`).** The clause that stood here — "`docker` is present as a
+CLI but has no running VM (`docker info` fails; no colima/podman/lima), so there is no local Linux
+repro" — is **false as stated**, and being false it was shaping how tickets closed. Docker runs on
+this host (server 29.0.1), and `extension/scripts/ci-repro.sh` is the local Linux repro. It derives
+CI's provisioning from `.github/workflows/ci.yml` rather than mirroring it, and runs the tier in a
+container as the same unprivileged uid CI uses, with no route to the model API. Measured at
+`fe7860bb`: the naive `docker run -v "$PWD":/repo:ro node:22 npm run test:fast` shape — the one that
+made "no repro" look true — reports **123 fail / 7 cancelled**, essentially all provisioning noise;
+the harness reports **1 / 3 / 2 fail across three runs, 0 cancelled**, of 8902 tests. Harness
+**provisioning noise measured 0** in every run — the count moves only because both survivors are
+genuine and probabilistic on Linux: a coarse-clock `mtimeMs` race (0/300 on macOS, ~35% on Linux)
+and one load-sensitive timing assertion. The baseline is deliberately reported as a range; a single
+number would imply a determinism the tier does not have.
+
+A ticket still may NOT close on "passes locally" — a macOS pass remains no evidence about Linux, and
+that is what this rule was always about. Acceptance is (a) a mechanically-checkable property of the
+code or workflow that explains the CI observation, (b) a green CI run on a pushed tag, or (c) a
+`ci-repro.sh` run naming the sha it tested — valid only while the harness's own noise baseline is 0,
+because a harness that carries noise cannot falsify anything. **State which one you are claiming.**
+An "I couldn't reproduce it so it's probably fine" close is the fake-green this repo exists to
+prevent.
 
 ## ROOT A — a test depends on a tool the runner does not have (1 ticket)
 

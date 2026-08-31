@@ -169,9 +169,13 @@ Escalate to SIGKILL and VERIFY by pid; a SIGTERM that returns success changes no
 
 **D2 — B-CIINT: the Linux-only serial-tier reds.** 7 fail / 3 cancelled on Linux, **633/633 green on
 macOS/Node 24** (re-measured this session). Six are subprocess-lifecycle (kill/timeout/orphan) and one
-is a path-containment pair. **Hard constraint from the B-CIGREEN PRD, carried forward: none of this
-reproduces here and `docker` has no VM, so there is no local Linux repro. A ticket may not close on
-"passes locally" — it closes on a mechanically-checkable property or a green CI run, and must say which.**
+is a path-containment pair. **CORRECTED 2026-08-30 (ticket `c1d1eeb3`): the constraint carried forward from
+the B-CIGREEN PRD — "`docker` has no VM, so there is no local Linux repro" — is false as stated.**
+Docker runs here (server 29.0.1) and `extension/scripts/ci-repro.sh` reproduces CI's Linux
+environment with a measured **provisioning-noise baseline of 0** at `fe7860bb` (1-3 genuine failures
+of 8902 tests across three runs, against 130 for the naive container shape). **What survives the correction is the rule, unchanged: a
+ticket may not close on "passes locally" — it closes on a mechanically-checkable property, a green CI
+run, or a `ci-repro.sh` run naming the sha it tested, and must say which.**
 
 **D3 — R-TIERWEDGE** — a plain `npm run test:fast` can wedge at ZERO CPU: log frozen 8+ min, runner and
 children with unchanged CPU time across samples, no summary emitted. Cannot fake a green (no summary) but

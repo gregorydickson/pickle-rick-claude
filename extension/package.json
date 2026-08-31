@@ -36,7 +36,8 @@
     "test:expensive:serial": "node bin/test-runner.js --tier expensive --manifest tests/expensive/.serial-tests.json --manifest-mode include --test-concurrency=1",
     "test:regression-3x": "bash scripts/regression-test-fast-integration-3x.sh",
     "test:behavioral": "node --test tests/feature-flag-baseline.test.js",
-    "wire-check": "bash scripts/check-wired.sh"
+    "wire-check": "bash scripts/check-wired.sh",
+    "ci-repro": "bash scripts/ci-repro.sh"
   },
   "_audit": {
     "flatted": "P3-hygiene: GHSA-25h7-pfq9-p65f HIGH (CVSS 7.5) DoS in parse(). Dev-only path: eslint->file-entry-cache->flat-cache->flatted. Not reachable in production. Track for eslint upgrade to resolve transitively.",
