@@ -5671,7 +5671,7 @@ function buildCompletionCtx<K extends CompletionDecisionKind>(
  * `gitDirLadder` contract drops a duplicate rung itself, so a same-dir pair costs
  * nothing.
  */
-export interface CompletionDirs {
+interface CompletionDirs {
   workingDir: string;
   fallbackDir?: string;
 }
