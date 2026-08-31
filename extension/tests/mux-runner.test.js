@@ -2085,6 +2085,195 @@ test('AP-EXT-ITER124-02: the phantom-Done watcher installer composes its dir pai
       'inspectPhantomDoneTicketFile must declare fallbackDir — without it no caller can supply rung 1');
 });
 
+/**
+ * AP-EXT-ITER125-01 — the R-CCR-1 dir ladder reaches the manager-DRIFT
+ * attribution predicate, the last member of the family and the only arm whose
+ * refusal is TERMINAL.
+ *
+ * `guardCompletionCommitBeforeDone` took the rung in AP-EXT-ITER124-01 and
+ * `inspectPhantomDoneTicketFile` in AP-EXT-ITER124-02, but
+ * `ApplyAutoTicketCompletionInput` still carried a single `workingDir`, so the
+ * pair its own call site already held (`prevTicketInfo?.working_dir ||
+ * state.working_dir || process.cwd()`) reached neither
+ * `validateAutoTicketCompletion`'s predicate nor the guard beneath it. A
+ * `no_commit_referencing_ticket_since_current_set` verdict here does not park
+ * the ticket — `markTicketAutoSkipped` flips it to **Skipped**, which
+ * `isTerminalTicketStatus` treats as terminal, so the ticket is never revisited
+ * and shipped work is abandoned outright.
+ *
+ * ONE sha, ONE repo, ONE ticket; the rung is the only variable. The single-dir
+ * auto-SKIP is asserted first as the fixture's own precondition, so the case
+ * cannot pass by the fixture silently becoming resolvable from rung 0.
+ */
+test('AP-EXT-ITER125-01: the manager-drift validation resolves a sha over the R-CCR-1 fallback dir instead of auto-Skipping', async () => {
+    const { applyAutoTicketCompletionValidation } = await import('../bin/mux-runner.js');
+    const tmpRoot = makeTmpRoot();
+    try {
+        const repo = path.join(tmpRoot, 'repo');           // session working_dir — the real repo
+        const perTicketDir = path.join(tmpRoot, 'gone');   // per-ticket working_dir — exists, not a repo
+        const sessionDir = path.join(tmpRoot, 'session');
+        fs.mkdirSync(repo, { recursive: true });
+        fs.mkdirSync(perTicketDir, { recursive: true });
+        const ticketId = 'bb99cc00';
+        fs.mkdirSync(path.join(sessionDir, ticketId), { recursive: true });
+
+        initGitRepo(repo);
+        const startCommit = gitHead(repo);
+        fs.writeFileSync(path.join(repo, 'work.txt'), 'work');
+        spawnSync('git', ['add', '.'], { cwd: repo, timeout: 30000 });
+        spawnSync('git', ['commit', '-m', `fix(${ticketId}): deliver the work\n\nPickle-Ticket: ${ticketId}`, '--no-gpg-sign'], { cwd: repo, timeout: 30000 });
+        const sha = gitHead(repo);
+        assert.notEqual(sha, startCommit, 'fixture precondition: the delivery commit is not the session baseline');
+
+        const statePath = path.join(sessionDir, 'state.json');
+        const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
+        // The drift shape: the model moved current_ticket on without flipping status.
+        const driftTicket = `---\nid: ${ticketId}\ntitle: "ladder"\nstatus: In Progress\nworking_dir: ${perTicketDir}\n---\n# T\n\n## Acceptance Criteria\n- [x] the work is delivered\n`;
+        const reset = () => {
+            fs.writeFileSync(ticketPath, driftTicket);
+            fs.writeFileSync(statePath, JSON.stringify({
+                session_id: 'ap125', working_dir: repo, start_commit: startCommit, activity: [],
+            }));
+        };
+        const statusOf = (fp) => fs.readFileSync(fp, 'utf-8').match(/^status:.*$/m)[0];
+        const applyWith = (dirs) => applyAutoTicketCompletionValidation({
+            sessionDir, ticketId, startCommit, iteration: 1, statePath, flags: {}, ...dirs,
+        });
+
+        withProductionGuard(() => {
+            // Rung 0 alone cannot resolve the sha — and this arm does not park the
+            // ticket, it SKIPS it, terminally. This is the pre-fix reading.
+            reset();
+            const single = applyWith({ workingDir: perTicketDir });
+            assert.equal(single.action, 'skip',
+              'fixture precondition: the per-ticket dir alone cannot resolve the sha');
+            assert.match(statusOf(ticketPath), /Skipped/,
+              'fixture precondition: the auto-skip reached the ticket file, terminally');
+
+            // Same facts, plus the rung the Done-flip guard and the phantom-Done
+            // watcher have both had since AP-EXT-ITER124-01/-02.
+            reset();
+            const laddered = applyWith({ workingDir: perTicketDir, fallbackDir: repo });
+            assert.equal(laddered.action, 'done',
+              'the drift validation must resolve the sha over the R-CCR-1 fallback dir, exactly as the Done-flip guard does');
+            assert.match(statusOf(ticketPath), /Done/,
+              'shipped work must not be abandoned over the dir axis alone');
+            assert.match(fs.readFileSync(ticketPath, 'utf-8'), new RegExp(`completion_commit: "?${sha}`),
+              'the accepted sha is the delivery commit, not a fabricated one');
+
+            // Teeth: the fallback rung widens a REFUSAL, it does not disable it.
+            // A drifted ticket with NO attributable commit still auto-skips with
+            // rung 1 supplied.
+            const noEvidenceId = 'ffee0099';
+            fs.mkdirSync(path.join(sessionDir, noEvidenceId), { recursive: true });
+            const noEvidencePath = path.join(sessionDir, noEvidenceId, `rick_ticket_${noEvidenceId}.md`);
+            fs.writeFileSync(noEvidencePath,
+              `---\nid: ${noEvidenceId}\ntitle: "none"\nstatus: In Progress\nworking_dir: ${perTicketDir}\n---\n# T\n\n## Acceptance Criteria\n- [x] nothing shipped\n`);
+            const noEvidence = applyAutoTicketCompletionValidation({
+                sessionDir, ticketId: noEvidenceId, workingDir: perTicketDir, fallbackDir: repo,
+                startCommit, iteration: 1, statePath, flags: {},
+            });
+            assert.equal(noEvidence.action, 'skip',
+              'the fallback rung must not turn the auto-skip into a blanket accept');
+        });
+    } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+/**
+ * AP-EXT-ITER125-01 (collapse half) — the drift call site composes the
+ * (per-ticket, session) pair through the ONE resolver, like every
+ * `guardCompletionCommitBeforeDone` call site and the phantom-Done watcher
+ * installer already do. An `||` chain SELECTS the per-ticket dir whenever it is a
+ * non-empty string — exactly the R-CCR-1 case — and the session dir is never
+ * consulted.
+ */
+test('AP-EXT-ITER125-01: the applyAutoTicketCompletionValidation call site composes its dir pair with completionDirLadder', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'bin', 'mux-runner.ts'), 'utf-8');
+    const callSiteBlocks = src.split('applyAutoTicketCompletionValidation({').slice(1);
+    assert.equal(callSiteBlocks.length, 1, `expected exactly 1 applyAutoTicketCompletionValidation call site, saw ${callSiteBlocks.length}`);
+    const args = callSiteBlocks[0].slice(0, callSiteBlocks[0].indexOf('});'));
+    assert.match(args, /\.\.\.completionDirLadder\(prevTicketInfo\?\.working_dir, state\.working_dir\)/,
+      'the drift call site must compose the dir pair through completionDirLadder');
+    assert.equal(/working_dir\s*\|\|/.test(args), false,
+      'the drift call site still SELECTS its dir with an || chain instead of probing both rungs');
+    const inputType = src.slice(src.indexOf('export interface ApplyAutoTicketCompletionInput'));
+    assert.match(inputType.slice(0, inputType.indexOf('\n}')), /fallbackDir\?: string;/,
+      'ApplyAutoTicketCompletionInput must declare fallbackDir — without it no caller can supply rung 1');
+});
+
+/**
+ * AP-EXT-ITER125-01 (epoch half) — the START-COMMIT epoch is the same dir question
+ * as the sha probe, so it walks the same rungs.
+ *
+ * `scanGitLogByTrailer` fences the attribution window with `--since @<epoch>` and
+ * drops any entry older than it; an unresolvable epoch means NO fence at all. So a
+ * laddered dir with a rung-0-only epoch resolves the sha over both dirs while
+ * fencing the window over neither — and a correctly-trailered commit authored
+ * BEFORE the session baseline is attributed to this ticket.
+ *
+ * Each arm gets its own ticket: the promote-once step stamps `completion_commit`
+ * into the frontmatter on an accept, and a later arm would then read that explicit
+ * stamp and never reach the trailer scan at all.
+ */
+test('AP-EXT-ITER125-01: the start-commit epoch resolves over the ladder, so a pre-baseline commit is not attributed', async () => {
+    const { validateAutoTicketCompletion } = await import('../bin/mux-runner.js');
+    const tmpRoot = makeTmpRoot();
+    try {
+        const repo = path.join(tmpRoot, 'repo');
+        const perTicketDir = path.join(tmpRoot, 'gone');
+        const sessionDir = path.join(tmpRoot, 'session');
+        fs.mkdirSync(repo, { recursive: true });
+        fs.mkdirSync(perTicketDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+        initGitRepo(repo);
+
+        const ticketId = 'cc00dd11';
+        // A correctly-trailered commit, authored two hours before the session baseline.
+        const stale = new Date(Date.now() - 7200_000).toISOString();
+        fs.writeFileSync(path.join(repo, 'old.txt'), 'old');
+        spawnSync('git', ['add', '.'], { cwd: repo, timeout: 30000 });
+        spawnSync('git', ['commit', '-m', `old work\n\nPickle-Ticket: ${ticketId}`, '--no-gpg-sign'], {
+            cwd: repo, timeout: 30000,
+            env: { ...process.env, GIT_AUTHOR_DATE: stale, GIT_COMMITTER_DATE: stale },
+        });
+        const staleSha = gitHead(repo);
+        // The session baseline lands after it.
+        fs.writeFileSync(path.join(repo, 'base.txt'), 'base');
+        spawnSync('git', ['add', '.'], { cwd: repo, timeout: 30000 });
+        spawnSync('git', ['commit', '-m', 'session baseline', '--no-gpg-sign'], { cwd: repo, timeout: 30000 });
+        const startCommit = gitHead(repo);
+        assert.notEqual(staleSha, startCommit, 'fixture precondition: the stale commit is not the baseline');
+
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+            session_id: 'ap125e', working_dir: repo, start_commit: startCommit, activity: [],
+        }));
+        const writeTicket = (id) => {
+            fs.mkdirSync(path.join(sessionDir, id), { recursive: true });
+            fs.writeFileSync(path.join(sessionDir, id, `rick_ticket_${id}.md`),
+              `---\nid: ${id}\ntitle: "epoch"\nstatus: In Progress\nworking_dir: ${perTicketDir}\n---\n# T\n\n## Acceptance Criteria\n- [x] the work is delivered\n`);
+        };
+
+        withProductionGuard(() => {
+            // Control: rung 0 IS the repo, so the epoch resolves and the fence holds.
+            writeTicket(ticketId);
+            assert.equal(validateAutoTicketCompletion(sessionDir, ticketId, repo, startCommit).action, 'skip',
+              'fixture precondition: with a resolvable epoch the pre-baseline commit is out of the window');
+
+            // The laddered case: rung 0 cannot answer either question, so BOTH must
+            // fall through to rung 1 — the sha probe and the epoch fence alike.
+            // Same ticket id (the trailer names it) and a freshly rewritten file, so
+            // no `completion_commit` from the control arm can short-circuit the scan.
+            writeTicket(ticketId);
+            assert.equal(validateAutoTicketCompletion(sessionDir, ticketId, perTicketDir, startCommit, repo).action, 'skip',
+              'a laddered dir with a rung-0-only epoch fences nothing and attributes a pre-baseline commit');
+        });
+    } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
 // --- R-CCR-9: guardRereadBackoffMs env handling ---
 
 test('guardRereadBackoffMs: R-CCR-9 PICKLE_GUARD_REREAD_BACKOFF_MS=0 honored — guard returns without sleeping', async () => {

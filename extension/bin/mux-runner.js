@@ -2927,7 +2927,26 @@ export function createWastedIterEmitter(buildInput) {
         emitMuxWastedIter(buildInput());
     };
 }
-export function validateAutoTicketCompletion(sessionDir, ticketId, workingDir, startCommit) {
+/**
+ * AP-EXT-ITER125-01: the START-COMMIT epoch is the SAME dir question the sha
+ * probe asks, so it walks the SAME rungs. Resolving it over rung 0 alone would
+ * hand the trailer scan `null` whenever the per-ticket dir is unusable, which
+ * silently swaps `--since @<epoch>` for the `-n TRAILER_SCAN_MAX_COMMITS` count
+ * cap — a 46-ticket bundle authors well past that cap, so an early ticket's
+ * correctly-trailered delivery drops out of the window and reads `absent`.
+ * A laddered dir with an unladdered epoch is half a fix.
+ */
+function commitEpochOverLadder(dirs, sha) {
+    return gitCommitEpoch(dirs.workingDir, sha)
+        ?? (dirs.fallbackDir ? gitCommitEpoch(dirs.fallbackDir, sha) : null);
+}
+export function validateAutoTicketCompletion(sessionDir, ticketId, workingDir, startCommit, 
+/**
+ * AP-EXT-ITER125-01 / R-CCR-1 rung 1: the session-level dir that answers for
+ * this ticket's sha when the per-ticket `working_dir` cannot. Trails the
+ * existing positionals so every pre-existing 4-argument caller is unchanged.
+ */
+fallbackDir) {
     const filePath = ticketFilePath(sessionDir, ticketId);
     try {
         if (isTerminalTicketStatus(getTicketStatus(sessionDir, ticketId)))
@@ -2951,11 +2970,17 @@ export function validateAutoTicketCompletion(sessionDir, ticketId, workingDir, s
     // unreachable-explicit scan fallback, and announcement recovery for free.
     // decision:'attribution' — the R-CWGE verdict stays with the guard at the
     // applyAutoTicketCompletionValidation callsite (unchanged double-check).
+    // AP-EXT-ITER125-01: the attribution predicate asks the SAME question as the
+    // Done-flip guard one level down and the phantom-Done watcher one level over,
+    // so it asks it of the SAME dirs. Omitting rung 1 here auto-SKIPS the ticket —
+    // a TERMINAL status, so shipped work is abandoned, not merely parked.
+    const dirs = { workingDir, fallbackDir };
     const decision = evaluateCompletionEvidence(buildCompletionCtx({
         sessionDir,
         ticketId,
         workingDir,
-        startTimeEpoch: gitCommitEpoch(workingDir, startCommit),
+        fallbackDir,
+        startTimeEpoch: commitEpochOverLadder(dirs, startCommit),
         rereadBackoffMs: 0,
     }, 'attribution'));
     if (!decision.ok) {
@@ -2996,7 +3021,7 @@ function markTicketAutoSkipped(input, reason) {
     });
 }
 export function applyAutoTicketCompletionValidation(input) {
-    const verdict = validateAutoTicketCompletion(input.sessionDir, input.ticketId, input.workingDir, input.startCommit);
+    const verdict = validateAutoTicketCompletion(input.sessionDir, input.ticketId, input.workingDir, input.startCommit, input.fallbackDir);
     if (verdict.action === 'done') {
         // R-CCRC-2: route Done-flip through guard so the R-WUWC SOFT-variant
         // auto-fill runs and completion_commit is persisted to the frontmatter.
@@ -3008,6 +3033,10 @@ export function applyAutoTicketCompletionValidation(input) {
             sessionDir: input.sessionDir,
             ticketId: input.ticketId,
             workingDir: input.workingDir,
+            // AP-EXT-ITER125-01: the predicate above and this guard are the two halves
+            // of ONE Done decision — they must read the same rungs or the pair splits
+            // into accept-here-refuse-there on the dir axis.
+            fallbackDir: input.fallbackDir,
             flags: input.flags ?? {},
         });
         if (!guard.ok) {
@@ -11259,11 +11288,13 @@ async function runMuxRunnerMain() {
                 }
                 else {
                     // Drift scenario: model changed current_ticket without following protocol
-                    const ticketWorkingDir = prevTicketInfo?.working_dir || state.working_dir || process.cwd();
                     const autoValidation = applyAutoTicketCompletionValidation({
                         sessionDir,
                         ticketId: previousTicket,
-                        workingDir: ticketWorkingDir,
+                        // AP-EXT-ITER125-01: this site already held the (per-ticket, session)
+                        // pair and spent it on an `||` SELECTION, so a non-empty-but-unusable
+                        // per-ticket `working_dir` won and the session dir was never consulted.
+                        ...completionDirLadder(prevTicketInfo?.working_dir, state.working_dir),
                         startCommit: previousTicketStartCommit,
                         iteration,
                         log,
