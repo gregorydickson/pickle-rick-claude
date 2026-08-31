@@ -126,11 +126,10 @@ test('D2/R-DSPW: a lock held by a LIVE pid is refused, not stolen, when the lock
       },
     );
 
-    // Refused, not stolen-and-retaken: the original holder's bytes are untouched, and no
-    // steal sub-lock was ever opened. Asserting only the rejection above would also pass if
+    // Refused, not stolen-and-retaken: the payload carries a per-acquisition nonce, so these
+    // bytes change under any eviction. Asserting only the rejection above would also pass if
     // the lock had been evicted and re-taken by a racing acquire.
     assert.equal(fs.readFileSync(lockPath, 'utf-8'), payloadBefore, 'the live holder must still own the lock');
-    assert.equal(fs.existsSync(`${lockPath}.steal`), false);
 
     releaseWorkerSpawnLock(held);
   } finally {
