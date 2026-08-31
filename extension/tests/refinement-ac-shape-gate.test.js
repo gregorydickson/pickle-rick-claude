@@ -437,3 +437,67 @@ test('AC-ACSG-3c: multi-ticket split with one empty justification produces >= 1 
   assert.ok(unjustifiedViolation, 'violation must reference AC-NEG-2');
   assert.ok(unjustifiedViolation.ticket_ids.includes('T-NEG-2B'), 'violation must identify the unjustified ticket T-NEG-2B');
 });
+
+// FR-C2: the refinement template must recommend describeEach([...]) (the repo's
+// real tests/helpers/describe-each.js idiom), never bare describe.each( — which
+// does not exist on node:test — as the spelling to WRITE.
+
+test('FR-C2: no non-comment line in the shipped module advises bare describe.each( as the spelling to write', () => {
+  const source = fs.readFileSync(BIN, 'utf-8');
+  const offendingLines = source
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .filter((line) => line.includes('describe.each('));
+  assert.deepEqual(
+    offendingLines,
+    [],
+    `every non-comment describe.each( occurrence must be gone — found: ${JSON.stringify(offendingLines)}`,
+  );
+});
+
+test('FR-C2: every advice string recommends describeEach([...]) with the real helper path', () => {
+  const source = fs.readFileSync(BIN, 'utf-8');
+  assert.match(
+    source,
+    /"acceptance_test":\s*"describeEach\(\[\.\.\.\]\).*tests\/helpers\/describe-each\.js/,
+    'the acceptance_test template example must recommend describeEach([...]) with the real helper path',
+  );
+  assert.match(
+    source,
+    /single-ticket collapse lacks a universal-quantifier title or describeEach\(\[\.\.\.\]\) acceptance test/,
+    'the single-ticket-collapse violation reason must recommend describeEach([...])',
+  );
+  assert.match(
+    source,
+    /Fix: rewrite ticket to use universal quantifier title AND describeEach\(\[/,
+    'the stderr Fix template must recommend describeEach([',
+  );
+});
+
+test('FR-C2: mutation-verify — the gate still fires on a genuinely bad ticket after the spelling edit', () => {
+  const violations = evaluateAcShapeEnforcement({
+    ac_shape_smells: [{ ac_id: 'AC-FRC2', ticket_ids: ['T-FRC2'] }],
+    tickets: [{
+      id: 'T-FRC2',
+      title: 'Handler validates permissions',
+      source_ac_ids: ['AC-FRC2'],
+      acceptance_test: 'getA returns 200',
+    }],
+  });
+  assert.strictEqual(violations.length, 1, 'a genuinely enumerated single ticket must still violate the gate');
+  assert.match(
+    violations[0].reason,
+    /describeEach\(\[\.\.\.\]\)/,
+    'the violation reason must cite the describeEach spelling, not describe.each',
+  );
+});
+
+test('FR-C2: the repo idiom (describeEach) still satisfies isParametrizedTicket', () => {
+  const ticket = {
+    id: 'T-FRC2-OK',
+    title: 'All handlers reject anonymous callers',
+    source_ac_ids: ['AC-FRC2-OK'],
+    acceptance_test: "describeEach([['getA'], ['getB']])('%s rejects anonymous', ...)",
+  };
+  assert.ok(isParametrizedTicket(ticket), 'describeEach([...]) over a table must still satisfy the parametrized-ticket predicate');
+});

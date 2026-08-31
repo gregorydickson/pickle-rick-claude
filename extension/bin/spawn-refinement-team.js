@@ -142,7 +142,7 @@ Emit a machine-readable section exactly named \`## ac_shape_smells\`. If no smel
       "id": "ticket-id",
       "title": "All handlers enforce the shared invariant",
       "source_ac_ids": ["AC-EXAMPLE-01"],
-      "acceptance_test": "describe.each([...]) covers every enumerated target",
+      "acceptance_test": "describeEach([...]) (tests/helpers/describe-each.js) covers every enumerated target",
       "justification": "// JUSTIFICATION: Required only when this smelly AC intentionally fans out into multiple tickets."
     }
   ]
@@ -1642,7 +1642,7 @@ export function evaluateAcShapeEnforcement(manifest) {
             if (!isParametrizedTicket(ticket)) {
                 violations.push({
                     ac_id: smell.ac_id,
-                    reason: 'single-ticket collapse lacks a universal-quantifier title or describe.each([...]) acceptance test',
+                    reason: 'single-ticket collapse lacks a universal-quantifier title or describeEach([...]) acceptance test',
                     ticket_ids: [ticket.id],
                 });
             }
@@ -1731,9 +1731,9 @@ export function runAcShapeEnforcement(manifest, opts) {
             process.stderr.write('[pickle-rick]   Fix: add // JUSTIFICATION: to each split ticket explaining the split rationale\n');
         }
         else {
-            process.stderr.write('[pickle-rick]   Fix: rewrite ticket to use universal quantifier title AND describe.each([\n');
+            process.stderr.write('[pickle-rick]   Fix: rewrite ticket to use universal quantifier title AND describeEach([\n');
             process.stderr.write('[pickle-rick]     title: "All <entities> <condition>"\n');
-            process.stderr.write("[pickle-rick]     acceptance_test: \"describe.each([['input1'], ['input2']])(...)\" — or the repo's own each-runner, e.g. \"describeEach([['input1'], ['input2']])(...)\"\n");
+            process.stderr.write("[pickle-rick]     acceptance_test: \"describeEach([['input1'], ['input2']])(...)\" (tests/helpers/describe-each.js)\n");
         }
         process.stderr.write(`[pickle-rick]   Override: --skip-ac-shape-gate "<reason>"\n`);
     }
