@@ -6,33 +6,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { simulateBinaryAbsent } from './helpers/simulate-binary-absent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
-
-// Resolves `bin` via `command -v` under the given PATH and removes exactly that
-// directory, looping to handle multiple resolvable installs. Deterministic
-// regardless of where the tool is installed (mirrors install-bun-probe.test.js's
-// simulateBunAbsent, generalized to an arbitrary binary name).
-function simulateBinaryAbsent(pathEnv, bin) {
-  let currentPath = pathEnv;
-  for (let i = 0; i < 10; i++) {
-    const which = spawnSync('bash', ['-c', `command -v ${bin}`], {
-      encoding: 'utf8',
-      env: { ...process.env, PATH: currentPath },
-      timeout: 30_000,
-    });
-    if (which.status !== 0 || !which.stdout.trim()) { break; }
-    const binDir = path.dirname(which.stdout.trim());
-    const next = currentPath
-      .split(path.delimiter)
-      .filter(p => p !== binDir)
-      .join(path.delimiter);
-    if (next === currentPath) { break; }
-    currentPath = next;
-  }
-  return currentPath;
-}
 
 test('audit-trap-door-enforcement exits 0 at HEAD', () => {
   const result = spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
@@ -80,6 +57,25 @@ test('audit-trap-door-enforcement fails when R-CNAR-7 PATTERN_SHAPE is blanked i
 // closed with an explicit unrunnable reason instead of silently no-oping.
 test('audit-trap-door-enforcement fails closed when rg is absent from PATH (never reports OK)', () => {
   const filteredPath = simulateBinaryAbsent(process.env.PATH || '', 'rg');
+
+  // Only `rg` may go missing. The predecessor simulation deleted the whole directory that resolved
+  // it, which on Linux is /usr/bin (with /bin symlinked to it) — so `bash` itself became
+  // unresolvable, the audit was never spawned, and every assertion below graded a failed spawn
+  // rather than the audit's verdict. Assert the survivors FIRST so that regression reports
+  // "bash no longer resolves" instead of passing the rg precondition for the wrong reason.
+  for (const bin of ['bash', 'env', 'git']) {
+    const probe = spawnSync('bash', ['-c', `command -v ${bin}`], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: filteredPath },
+      timeout: 30_000,
+    });
+    assert.equal(
+      probe.status,
+      0,
+      `${bin} must still resolve under the simulated-absent PATH (got exit ${probe.status}); ` +
+        'without it the audit never runs and this test measures nothing',
+    );
+  }
 
   const which = spawnSync('bash', ['-c', 'command -v rg'], {
     encoding: 'utf8',
