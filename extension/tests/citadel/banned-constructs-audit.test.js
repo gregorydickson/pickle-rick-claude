@@ -6,7 +6,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  isNestedTernary,
   findBannedConstructs,
   auditBannedConstructs,
 } from '../../services/citadel/banned-constructs-audit.js';
@@ -17,25 +16,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const PRDS_DIR = path.resolve(REPO_ROOT, 'prds');
 
-describe('banned-constructs: nested ternary detector', () => {
-  test('fires on nested and chained ternaries', () => {
-    assert.ok(isNestedTernary('const x = cond ? a ? b : c : d;'));
-    assert.ok(isNestedTernary('const x = a ? b : c ? d : e;'));
-  });
-  test('silent on a single ternary, optional props, and optional chaining', () => {
-    assert.ok(!isNestedTernary('const x = ok ? 1 : 2;'));
-    assert.ok(!isNestedTernary('type T = { a?: number; b?: number };'));
-    assert.ok(!isNestedTernary('const y = obj?.a ?? fallback;'));
-    assert.ok(!isNestedTernary('const s = "a ? b ? c : d : e";'));
-  });
-});
-
 describe('banned-constructs: fabricated arms stay deleted (R-BCFR regression pin)', () => {
   test('isBraceFreeIf is not exported — the fabricated brace-free-if rule was deleted, not reworked', () => {
     assert.equal(bannedConstructsAudit.isBraceFreeIf, undefined);
   });
   test('isNever is not exported — this arm never existed in the shipped audit and must stay absent', () => {
     assert.equal(bannedConstructsAudit.isNever, undefined);
+  });
+  test('isNestedTernary is not exported — the fabricated nested-ternary rule was deleted, its CLAUDE.md citation never existed', () => {
+    assert.equal(bannedConstructsAudit.isNestedTernary, undefined);
+  });
+  test('the module survives: banned-casts-audit.ts shared imports are still exported functions, distinguishing "arm deleted" from "module gutted"', () => {
+    assert.equal(typeof bannedConstructsAudit.collectChangedCodeLines, 'function');
+    assert.equal(typeof bannedConstructsAudit.isCommentLine, 'function');
+    assert.equal(typeof bannedConstructsAudit.stripStringLiterals, 'function');
   });
   test('the brace-free-if finding id is never emitted, even for the shape that used to trigger it', () => {
     const findings = findBannedConstructs([{
@@ -44,10 +38,17 @@ describe('banned-constructs: fabricated arms stay deleted (R-BCFR regression pin
     }]);
     assert.deepEqual(findings, []);
   });
+  test('the nested-ternary finding id is never emitted, even for the shape that used to trigger it', () => {
+    const findings = findBannedConstructs([{
+      file: 'src/x.ts',
+      lines: [{ no: 10, text: 'const z = a ? b ? c : d : e;' }],
+    }]);
+    assert.deepEqual(findings, []);
+  });
 });
 
 describe('banned-constructs: findBannedConstructs', () => {
-  test('flags the remaining nested-ternary arm on a positive fixture and is silent on clean lines', () => {
+  test('emits no findings for any input — no construct arm remains', () => {
     const findings = findBannedConstructs([{
       file: 'src/x.ts',
       lines: [
@@ -57,12 +58,10 @@ describe('banned-constructs: findBannedConstructs', () => {
         { no: 13, text: '// if (x) return;  comment line is ignored' },
       ],
     }]);
-    assert.equal(findings.length, 1);
-    assert.ok(findings.every((f) => f.id.startsWith('banned-construct:nested-ternary:')));
-    for (const f of findings) assert.equal(f.severity, 'Medium');
+    assert.deepEqual(findings, []);
   });
 
-  test('end-to-end wired read via auditBannedConstructs on a temp file', () => {
+  test('end-to-end wired read via auditBannedConstructs on a temp file emits no findings', () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-'));
     try {
       fs.mkdirSync(path.join(repoRoot, 'src'), { recursive: true });
@@ -72,7 +71,7 @@ describe('banned-constructs: findBannedConstructs', () => {
         changedFiles: [{ path: 'src/x.ts', status: 'M', kind: 'production', changedLines: [{ start: 1, end: 1 }], blame: [] }],
         claudeFiles: [],
       });
-      assert.ok(result.findings.some((f) => f.id.startsWith('banned-construct:nested-ternary:')));
+      assert.deepEqual(result.findings, []);
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
-import { CitadelFinding, slugify } from './reporter.js';
+import { CitadelFinding } from './reporter.js';
 import { DiffSummary } from './diff-walker.js';
 
 export interface BannedConstructsResult {
@@ -68,38 +68,13 @@ export function collectChangedCodeLines(diff: DiffSummary): ChangedSource[] {
 }
 
 /**
- * A nested/chained ternary: after removing optional-chaining (`?.`), nullish (`??`), and TS optional
- * markers (`?:`), the line still carries two or more ternary `?` and two or more `:`.
+ * No construct arm remains — the last one (isNestedTernary) carried a fabricated CLAUDE.md
+ * citation, same as the already-deleted isBraceFreeIf. This module stays wired to
+ * collectChangedCodeLines/isCommentLine/stripStringLiterals, which banned-casts-audit.ts
+ * imports, so a real construct rule can be added here without re-plumbing.
  */
-export function isNestedTernary(line: string): boolean {
-  const cleaned = stripStringLiterals(line)
-    .replace(/\?\./g, '')
-    .replace(/\?\?/g, '')
-    .replace(/\?:/g, ':');
-  const ternaryQ = (cleaned.match(/\?/g) ?? []).length;
-  const colons = (cleaned.match(/:/g) ?? []).length;
-  return ternaryQ >= 2 && colons >= 2;
-}
-
-export function findBannedConstructs(sources: ChangedSource[]): CitadelFinding[] {
-  const findings: CitadelFinding[] = [];
-  for (const source of sources) {
-    for (const { no, text } of source.lines) {
-      if (isCommentLine(text)) continue;
-      if (isNestedTernary(text)) {
-        findings.push({
-          id: `banned-construct:nested-ternary:${slugify(source.file)}:${no}`,
-          severity: 'Medium',
-          file: source.file,
-          line: no,
-          message:
-            `Nested/chained ternary at ${source.file}:${no} is banned by CLAUDE.md; `
-            + 'extract it into an if/else block or named intermediate variables.',
-        });
-      }
-    }
-  }
-  return findings;
+export function findBannedConstructs(_sources: ChangedSource[]): CitadelFinding[] {
+  return [];
 }
 
 export function auditBannedConstructs(diff: DiffSummary): BannedConstructsResult {
