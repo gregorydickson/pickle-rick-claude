@@ -374,3 +374,99 @@ test('_matchListCompleted: a maxBuffer overflow that still EXITS 0 or 1 is not a
     assert.equal(_matchListCompleted({ status: 0, error: enobufs }), false);
     assert.equal(_matchListCompleted({ status: 1, error: enobufs }), false);
 });
+
+// ---------------------------------------------------------------------------
+// A2 / e8e71b7a — the rg arm must compute the SAME importer set the other two
+// tiers compute.
+//
+// beta.22's CI failed `computeOneHop: basic one-hop` 3/3 while the same test
+// passed on macOS and in a `node:22` container. The variable was the ripgrep
+// VERSION, nothing in this repo: `ubuntu-latest` installs rg 14.1.0, whose
+// Unicode matcher returns ZERO matches for the alternation `findImporters`
+// builds even though each branch matches alone. rg 13.0.0 (Debian bookworm,
+// which `scripts/ci-repro.sh` provisions) and rg 15.2.0 (current homebrew) are
+// both outside that window, so every local environment was blind to it.
+//
+// Two pins, because either alone leaves a hole:
+//   A — the invocation carries `--no-unicode`. Holds on every host, including
+//       the ones where the engine defect is absent, and observes the argv the
+//       SUT actually passes rather than the text of the source.
+//   B — the host's real rg, driven through the SUT, still finds the importer.
+//       This is the pin that would have caught beta.22. It can only fire on an
+//       affected host; on rg 13/15 it passes before and after the fix, which is
+//       the honest reading — the engine defect genuinely is not there.
+// ---------------------------------------------------------------------------
+
+// Records argv rather than answering, so the assertion is about the invocation
+// the SUT makes. Exits 1 = "ran fine, zero matches", the authoritative-empty
+// code, so the SUT accepts the answer and does NOT degrade to git grep/grep —
+// that keeps this pin measuring the rg arm and nothing else.
+const RG_ARGV_RECORDING_SCRIPT = (argvPath) => `#!/bin/sh
+printf '%s\\n' "$@" > ${JSON.stringify(argvPath)}
+exit 1
+`;
+
+test('A2: the rg import walk passes --no-unicode (rg 14.x returns zero matches for the alternation without it)', () => {
+    const repo = makeRepo();
+    const shimDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'scope-rg-argv-')));
+    try {
+        const argvPath = path.join(shimDir, 'rg-argv.txt');
+        const rgShim = path.join(shimDir, 'rg');
+        fs.writeFileSync(rgShim, RG_ARGV_RECORDING_SCRIPT(argvPath));
+        fs.chmodSync(rgShim, 0o755);
+
+        // Prepend so `rg` resolves to the recorder while git/grep stay real.
+        const script = `
+import { computeOneHop } from './services/scope-resolver.js';
+computeOneHop(['a.ts'], ${JSON.stringify(repo)}, { findImportersTimeoutMs: ${HANG_TIMEOUT_MS} });
+`;
+        const out = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+            cwd: path.resolve(import.meta.dirname, '..'),
+            encoding: 'utf-8',
+            env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+            timeout: RUNNER_SPAWN_TIMEOUT_MS,
+        });
+        assert.equal(out.status, 0, out.stderr || out.stdout);
+
+        assert.ok(fs.existsSync(argvPath), 'rg shim was never invoked — the walk did not reach the rg arm');
+        const argv = fs.readFileSync(argvPath, 'utf-8').split('\n').filter((s) => s.length > 0);
+        assert.ok(
+            argv.includes('--no-unicode'),
+            `expected --no-unicode in the rg invocation, got ${JSON.stringify(argv)}`,
+        );
+    } finally {
+        fs.rmSync(shimDir, { recursive: true, force: true });
+        cleanup(repo);
+    }
+});
+
+test('A2: the host rg finds the importer — the union of the pattern branches is not empty', (t) => {
+    let realRg;
+    try {
+        realRg = resolveRealBinary('rg');
+    } catch {
+        // Named out loud rather than silently self-skipping: rg is a
+        // non-guaranteed tool, and a suite that quietly skips has verified
+        // nothing. CI installs ripgrep, so this does not skip there.
+        t.skip('ripgrep is not installed on this host — the rg arm cannot be exercised');
+        return;
+    }
+
+    const repo = makeRepo();
+    try {
+        // Exclusive PATH override: rg only. git and grep are ABSENT, so the
+        // degrade chain cannot answer for the rg arm and mask a wrong result.
+        const output = withRealBinariesOnPath(['rg'], (shimDir) =>
+            runComputeOneHopWithPathOverride(repo, shimDir));
+
+        assert.deepStrictEqual(
+            output.result,
+            ['a.ts', 'b.ts'],
+            `the rg arm dropped the importer (rg at ${realRg}). This is the beta.22 ` +
+            'CI failure: ripgrep 14.x returns zero matches for an alternation whose ' +
+            'branches each match. Expected --no-unicode to avoid it.',
+        );
+    } finally {
+        cleanup(repo);
+    }
+});

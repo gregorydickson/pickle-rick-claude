@@ -743,7 +743,22 @@ function _runRgImportWalk(pattern, root, timeoutMs) {
     // timeoutMs for that reason — a runner image missing rg (a runner-image
     // property, not a Node-version property; ripgrep is not guaranteed on
     // GitHub-hosted `ubuntu-latest`) must degrade, not hang or crash.
-    const rg = spawnSync('rg', ['-l', '--glob', '*.{ts,tsx,js,jsx,mjs,cjs}', '-e', pattern, '.'], {
+    // `--no-unicode` is CORRECTNESS, not a tuning knob. `pattern` is an alternation,
+    // and ripgrep 14.x's Unicode matcher returns ZERO matches for it even though each
+    // branch matches on its own (measured on rg 14.1.0, the version `ubuntu-latest`
+    // installs: `A|B` -> no matches, `A` -> a.ts, `B` -> b.ts). Restructuring the
+    // pattern does NOT avoid it — grouping, factoring the shared `import` prefix, and
+    // two separate `-e` flags were each measured and each still returns zero; only
+    // leaving the Unicode matcher does. rg 13.0.0 and 15.2.0 are unaffected, which is
+    // why this reproduced ONLY on CI (beta.22, `computeOneHop: basic one-hop`, 3/3).
+    //
+    // ASCII is also the semantics this walk WANTS, so this converges the degrade chain
+    // rather than adding a special case: `extractExportNames` captures `(\w+)` — ASCII
+    // by construction — and the `grep -E` last resort is already ASCII in the C locale.
+    // Before this flag, rg alone applied Unicode `\b`/`\s`/`\w`; now all three tiers
+    // agree. `-P` (PCRE2) also avoids the defect but is a build-time-optional backend
+    // that hard-errors where it is absent — on exactly the rg-thin hosts this chain serves.
+    const rg = spawnSync('rg', ['-l', '--no-unicode', '--glob', '*.{ts,tsx,js,jsx,mjs,cjs}', '-e', pattern, '.'], {
         cwd: root,
         encoding: 'utf-8',
         timeout: timeoutMs,
