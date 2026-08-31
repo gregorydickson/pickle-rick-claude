@@ -42,10 +42,49 @@
 # NON-ZERO naming the field and the file. It refuses to run rather than run something it
 # cannot describe.
 #
+# THE DISTRO IS PART OF THE ANSWER
+# --------------------------------
+# Package NAMES derive from the workflow; package VERSIONS are a property of the distro, and
+# for a while this harness got the second half wrong. It provisioned from `node:<major>` --
+# Debian bookworm -- and so installed ripgrep 13.0.0 where CI installs 14.1.0. A2 (e8e71b7a)
+# turned out to be a rg-14-only behaviour, so the harness was structurally incapable of
+# reproducing the failure it was pointed at, and returned a confident green. While that held,
+# a green here was not evidence about ANY version-sensitive tool.
+#
+# So the base is the runner's own release, with the derived node copied on top:
+#   FROM ubuntu:<release>                            <- what `runs-on` resolves to
+#   COPY --from=node:<major> /usr/local /usr/local   <- the derived node, unchanged
+# node:<major> ships the official nodejs.org build, which is the same artifact
+# `actions/setup-node` fetches, so node stays faithful while the userland becomes CI's.
+#
+# RESOLVING `ubuntu-latest` -- why this is NOT a string transform
+# ---------------------------------------------------------------
+# `ubuntu-latest` is a GitHub label; `ubuntu:latest` is a Docker Hub tag. They are two
+# vendors' opinions about the word "latest", and they DISAGREE today: Docker Hub is already
+# Ubuntu 26.04 (ripgrep 15.1.0) while GitHub is still on 24.04 (ripgrep 14.1.0). Rewriting
+# one into the other would swap a silent bookworm/rg-13 infidelity for a silent 26.04/rg-15
+# one -- and would be trusted MORE, because it looks derived. That was measured, not assumed.
+#
+# A version-pinned label (`ubuntu-24.04`) is therefore used as written, and `-latest` is
+# resolved from the only authority that knows what it currently means: the workflow's own
+# most recent run, which prints `Image: ubuntu-<release>` about itself. The resolution follows
+# GitHub's next migration with no edit here. If it cannot be read, this script exits 2 naming
+# the field and `--runner-release` rather than guessing.
+#
+# WHAT THE IMAGE ACTUALLY IS -- reported, not asserted
+# ----------------------------------------------------
+# Derivation states an intention; only the built image states a fact. So `--print-env` and the
+# run summary MEASURE the provisioned image -- /etc/os-release, node, and a `dpkg-query`
+# version for every derived package -- and an infidelity of this class becomes visible instead
+# of inferable. That report enumerates nothing: ripgrep's version appears because ci.yml
+# declares ripgrep, and a tool CI adds tomorrow appears with no edit here.
+#
 # RUNNER BASELINE — the one thing the workflow cannot tell us, and how it stays honest
 # -----------------------------------------------------------------------------------
 # `runs-on: ubuntu-latest` names an image that preinstalls tools the workflow never has to
-# mention. That set is not derivable from the YAML, so a seed list lives below — and a seed
+# mention -- and the bare `ubuntu:<release>` base has fewer of them than the old node base did,
+# so the seed is correspondingly larger. That set is not derivable from the YAML, so a seed
+# list lives below — and a seed
 # list is exactly the enumerated set this codebase keeps getting burned by, because a
 # missing member looks like a member that does not apply. So the incompleteness is made
 # LOUD instead of silent: after the run, `report_provisioning_gaps` reads the log for the
@@ -80,6 +119,8 @@
 #     --print-env        print the derived environment and exit without running anything
 #     --rebuild          re-provision even if a matching image exists
 #     --extra-packages "a b"  extra apt packages (see RUNNER BASELINE)
+#     --runner-release <ver>  ubuntu release to provision (e.g. 24.04); overrides the
+#                        resolution of `runs-on`, for use offline or without `gh`
 #     --log <path>       log file (default under $TMPDIR)
 #     -h, --help         this text
 #
@@ -100,11 +141,14 @@ die() { printf 'ci-repro: %s\n' "$*" >&2; exit 2; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 
-# Tools ubuntu-latest ships that node:* does not. Kept minimal and evidence-backed: each was
-# named by an actual `command not found` in a measured run, not guessed. See RUNNER BASELINE.
+# Tools the GitHub runner image ships that a bare `ubuntu:<release>` does not. Kept minimal
+# and evidence-backed: each was named by an actual `command not found` in a measured run, or
+# by provisioning failing without it — none is guessed. See RUNNER BASELINE.
 #   jq    — install.sh, release-gate.sh, coverage-delta.sh
 #   rsync — install.sh, install-agents.sh
-CI_RUNNER_BASELINE_PACKAGES="jq rsync"
+#   git   — this script's own checkout step; absent from ubuntu:24.04, which the previous
+#           node:<major> base had supplied implicitly as a buildpack-deps derivative.
+CI_RUNNER_BASELINE_PACKAGES="git jq rsync"
 
 WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
 REF="HEAD"
@@ -113,6 +157,7 @@ USE_FULL_GATE=0
 PRINT_ENV_ONLY=0
 REBUILD=0
 EXTRA_PACKAGES=""
+RUNNER_RELEASE_OVERRIDE=""
 LOG=""
 
 usage() { sed -n '/^# USAGE/,/^# Only committed/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
@@ -124,6 +169,7 @@ while [ $# -gt 0 ]; do
     --cmd)      CMD="$2"; shift 2 ;;
     --log)      LOG="$2"; shift 2 ;;
     --extra-packages) EXTRA_PACKAGES="$2"; shift 2 ;;
+    --runner-release) RUNNER_RELEASE_OVERRIDE="$2"; shift 2 ;;
     --full)     USE_FULL_GATE=1; shift ;;
     --print-env) PRINT_ENV_ONLY=1; shift ;;
     --rebuild)  REBUILD=1; shift ;;
@@ -136,6 +182,42 @@ done
 # Derivation. Each value names the workflow field it came from, so --print-env
 # is an auditable statement of what is being reproduced.
 # ---------------------------------------------------------------------------
+# Resolve the runner LABEL to a concrete ubuntu release. See "RESOLVING `ubuntu-latest`" above:
+# this deliberately is not `${CI_RUNS_ON#ubuntu-}`, because for `-latest` that produces a Docker
+# Hub tag whose meaning is set by a different vendor on a different schedule.
+resolve_runner_release() {
+  if [ -n "$RUNNER_RELEASE_OVERRIDE" ]; then
+    CI_RUNNER_RELEASE="$RUNNER_RELEASE_OVERRIDE"
+    CI_RUNNER_RELEASE_BASIS="--runner-release (operator override)"
+    return 0
+  fi
+
+  # A pinned label already names the release; nothing to resolve.
+  case "${CI_RUNS_ON%-arm}" in
+    ubuntu-[0-9]*.[0-9]*)
+      CI_RUNNER_RELEASE="${CI_RUNS_ON%-arm}"
+      CI_RUNNER_RELEASE="${CI_RUNNER_RELEASE#ubuntu-}"
+      CI_RUNNER_RELEASE_BASIS="pinned as '$CI_RUNS_ON' in $(basename "$WORKFLOW")"
+      return 0 ;;
+  esac
+
+  # `-latest`: ask the runs themselves. `grep -m1` closes the pipe, so gh stops early and this
+  # costs about a second rather than a full log download.
+  command -v gh >/dev/null 2>&1 || die "runs-on is '$CI_RUNS_ON', whose release only GitHub \
+defines, and 'gh' is not on PATH to ask. Re-run with --runner-release <ver> (e.g. 24.04)."
+  local wf run_id observed
+  wf="$(basename "$WORKFLOW")"
+  run_id="$(gh run list --workflow="$wf" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+  [ -n "$run_id" ] || die "no completed run of $wf found to resolve '$CI_RUNS_ON' against \
+(gh run list returned nothing). Re-run with --runner-release <ver>."
+  observed="$( { gh run view "$run_id" --log 2>/dev/null || true; } \
+    | grep -m1 -oE 'Image: ubuntu-[0-9]+\.[0-9]+' || true)"
+  [ -n "$observed" ] || die "run $run_id of $wf prints no 'Image: ubuntu-<release>' line to \
+resolve '$CI_RUNS_ON' from. Re-run with --runner-release <ver>."
+  CI_RUNNER_RELEASE="${observed#Image: ubuntu-}"
+  CI_RUNNER_RELEASE_BASIS="observed as '$observed' in run $run_id of $wf"
+}
+
 derive_ci_env() {
   [ -f "$WORKFLOW" ] || die "workflow file not found: $WORKFLOW"
 
@@ -146,6 +228,15 @@ derive_ci_env() {
   case "$CI_RUNS_ON" in
     ubuntu-*) ;;
     *) die "runs-on '$CI_RUNS_ON' in $WORKFLOW is not an ubuntu runner; this harness reproduces Linux only" ;;
+  esac
+
+  resolve_runner_release
+  # GitHub suffixes its arm runner labels with `-arm`; absence of the suffix means x64. Pinning
+  # this is not decoration: with no --platform the arch of a run is whatever variant happens to
+  # be in the local image cache, i.e. a property of pull history rather than of the workflow.
+  case "$CI_RUNS_ON" in
+    *-arm) CI_PLATFORM="linux/arm64" ;;
+    *)     CI_PLATFORM="linux/amd64" ;;
   esac
 
   CI_NODE_VERSION="$(sed -nE "s/^[[:space:]]*node-version:[[:space:]]*['\"]?([^'\"[:space:]]+)['\"]?.*/\1/p" "$WORKFLOW" | head -1)"
@@ -187,12 +278,30 @@ derive_ci_env() {
     | tr ' ' '\n' | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 }
 
+# What the built image IS, as opposed to what the derivation intended. Driven by $ALL_PACKAGES,
+# so it names no tool of its own: ripgrep appears here because ci.yml installs ripgrep.
+report_image_measurement() {
+  # -i is load-bearing: without it the container gets no stdin, `bash -s` reads nothing, and this
+  # function prints an empty block that reads exactly like "measured, all fine".
+  docker run --rm -i --platform "$CI_PLATFORM" -e PKGS="$ALL_PACKAGES" "$1" bash -s <<'MEASURE_IMG'
+. /etc/os-release
+printf '    distro           : %s (VERSION_ID=%s) on %s\n' "$PRETTY_NAME" "$VERSION_ID" "$(uname -m)"
+printf '    node / npm       : %s / %s\n' "$(node -v)" "$(npm -v)"
+for p in $PKGS; do
+  ver="$(dpkg-query -W -f='${Version}' "$p" 2>/dev/null || true)"
+  printf '    pkg %-12s : %s\n' "$p" "${ver:-NOT INSTALLED}"
+done
+MEASURE_IMG
+}
+
 print_env() {
   cat <<EOF
 ci-repro derived environment
   workflow            : $WORKFLOW
   runs-on             : $CI_RUNS_ON  (+ runner baseline packages)
-  node-version        : $CI_NODE_VERSION  -> image node:$CI_NODE_MAJOR
+  runner release      : ubuntu:$CI_RUNNER_RELEASE — $CI_RUNNER_RELEASE_BASIS
+  platform            : $CI_PLATFORM
+  node-version        : $CI_NODE_VERSION  -> node:$CI_NODE_MAJOR copied onto ubuntu:$CI_RUNNER_RELEASE
   apt packages        : ${CI_APT_PACKAGES:-(none declared)}
   runner baseline     : $CI_RUNNER_BASELINE_PACKAGES${EXTRA_PACKAGES:+ (+ extra: $EXTRA_PACKAGES)}
   job user            : $JOB_USER (uid $JOB_UID, HOME $JOB_HOME) — $CI_NONROOT_BASIS
@@ -200,7 +309,16 @@ ci-repro derived environment
   EXTENSION_DIR       : $([ "$CI_EXTENSION_DIR_IS_WORKSPACE" = 1 ] && echo 'workspace (checkout root)' || echo 'not set by workflow')
   fetch-depth         : $CI_FETCH_DEPTH $([ "$CI_FETCH_DEPTH" = 0 ] && echo '(full history)')
   gate command        : $CI_GATE_CMD
+  provisioned image   : $IMAGE
 EOF
+  # Measured, not derived — and deliberately optional, so --print-env keeps working with no
+  # docker daemon and before anything has been built.
+  if command -v docker >/dev/null 2>&1 && docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "  measured in image   :"
+    report_image_measurement "$IMAGE"
+  else
+    echo "  measured in image   : (not built yet — run without --print-env to provision $IMAGE)"
+  fi
 }
 
 # The GitHub runner's own identity: uid 1001 with a home two components deep. Both matter --
@@ -213,25 +331,30 @@ JOB_HOME="/home/runner"
 derive_ci_env
 [ "$USE_FULL_GATE" = 1 ] && CMD="$CI_GATE_CMD"
 
-if [ "$PRINT_ENV_ONLY" = 1 ]; then print_env; exit 0; fi
-
-command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
-docker version --format '{{.Server.Version}}' >/dev/null 2>&1 || die "docker daemon not reachable (docker version failed)"
-
 RESOLVED_SHA="$(git -C "$REPO_ROOT" rev-parse "$REF")" || die "cannot resolve ref: $REF"
 SHORT_SHA="${RESOLVED_SHA:0:12}"
-
-if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
-  printf 'ci-repro: NOTE working tree is dirty; only committed state at %s is tested.\n' "$SHORT_SHA" >&2
-fi
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -c1-12
   else shasum -a 256 | cut -c1-12; fi
 }
-ENV_HASH="$(printf '%s|%s|%s|%s|%s' "$CI_NODE_MAJOR" "$ALL_PACKAGES" "$CI_COREPACK" \
-  "$CI_EXTENSION_DIR_IS_WORKSPACE" "$JOB_UID" | sha256_of)"
+# The release and platform are part of the image's identity: without them a distro change
+# would silently reuse an image built for the previous one, and every number measured through
+# it would describe an environment that is no longer being claimed.
+ENV_HASH="$(printf '%s|%s|%s|%s|%s|%s|%s' "$CI_RUNNER_RELEASE" "$CI_PLATFORM" "$CI_NODE_MAJOR" \
+  "$ALL_PACKAGES" "$CI_COREPACK" "$CI_EXTENSION_DIR_IS_WORKSPACE" "$JOB_UID" | sha256_of)"
 IMAGE="pickle-ci-repro:${SHORT_SHA}-${ENV_HASH}"
+BASE_IMAGE="pickle-ci-repro-base:${CI_RUNNER_RELEASE}-node${CI_NODE_MAJOR}-${CI_PLATFORM##*/}"
+
+if [ "$PRINT_ENV_ONLY" = 1 ]; then print_env; exit 0; fi
+
+command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
+docker version --format '{{.Server.Version}}' >/dev/null 2>&1 || die "docker daemon not reachable (docker version failed)"
+
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
+  printf 'ci-repro: NOTE working tree is dirty; only committed state at %s is tested.\n' "$SHORT_SHA" >&2
+fi
+
 LOG="${LOG:-${TMPDIR:-/tmp}/pickle-ci-repro-${SHORT_SHA}-$(date -u +%Y%m%dT%H%M%SZ).log}"
 
 # ---------------------------------------------------------------------------
@@ -239,18 +362,43 @@ LOG="${LOG:-${TMPDIR:-/tmp}/pickle-ci-repro-${SHORT_SHA}-$(date -u +%Y%m%dT%H%M%
 # Split from measurement because `npm ci` needs the network and the measured run
 # must not have it.
 # ---------------------------------------------------------------------------
+# The runner's userland with the derived node laid on top. Two named images and an empty build
+# context — nothing is fetched by URL, so there is no tarball, arch token or checksum to keep
+# right, and node remains exactly the build actions/setup-node would have installed.
+build_base_image() {
+  local ctx
+  ctx="$(mktemp -d)"
+  printf 'ci-repro: building %s (ubuntu:%s + node:%s, %s)\n' \
+    "$BASE_IMAGE" "$CI_RUNNER_RELEASE" "$CI_NODE_MAJOR" "$CI_PLATFORM" >&2
+  if ! docker build --platform "$CI_PLATFORM" -t "$BASE_IMAGE" -f - "$ctx" <<DOCKERFILE
+FROM ubuntu:$CI_RUNNER_RELEASE
+COPY --from=node:$CI_NODE_MAJOR /usr/local /usr/local
+# /opt as well, and not optionally: the node image splits its runtime across both trees --
+# /usr/local/bin/yarn and yarnpkg are symlinks into /opt/yarn-v*. Copying only /usr/local
+# leaves them dangling, and `corepack enable` aborts on the realpath of yarnpkg rather than
+# on anything to do with pnpm. Named by a measured provisioning run, not predicted.
+COPY --from=node:$CI_NODE_MAJOR /opt /opt
+DOCKERFILE
+  then
+    rmdir "$ctx" 2>/dev/null || true
+    die "could not build base image $BASE_IMAGE (ubuntu:$CI_RUNNER_RELEASE + node:$CI_NODE_MAJOR)"
+  fi
+  rmdir "$ctx" 2>/dev/null || true
+}
+
 provision() {
   local container="pickle-ci-repro-provision-$$"
   docker rm -f "$container" >/dev/null 2>&1 || true
-  printf 'ci-repro: provisioning %s from node:%s (network ON)\n' "$IMAGE" "$CI_NODE_MAJOR" >&2
+  build_base_image
+  printf 'ci-repro: provisioning %s from %s (network ON)\n' "$IMAGE" "$BASE_IMAGE" >&2
 
-  if ! docker run --name "$container" -i \
+  if ! docker run --name "$container" -i --platform "$CI_PLATFORM" \
         -e CI_ALL_PACKAGES="$ALL_PACKAGES" \
         -e CI_COREPACK="$CI_COREPACK" \
         -e CI_TARGET_SHA="$RESOLVED_SHA" \
         -e JOB_USER="$JOB_USER" -e JOB_UID="$JOB_UID" -e JOB_HOME="$JOB_HOME" \
         -v "$REPO_ROOT":/src:ro \
-        "node:$CI_NODE_MAJOR" bash -s <<'PROVISION'
+        "$BASE_IMAGE" bash -s <<'PROVISION'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 if [ -n "${CI_ALL_PACKAGES:-}" ]; then
@@ -312,7 +460,7 @@ printf 'ci-repro: sha=%s image=%s\nci-repro: cmd=%s\nci-repro: log=%s\n' \
   "$RESOLVED_SHA" "$IMAGE" "$CMD" "$LOG" >&2
 
 set +e
-docker run --rm -i --network none \
+docker run --rm -i --network none --platform "$CI_PLATFORM" \
   --user "$JOB_UID:$JOB_UID" \
   -e HOME="$JOB_HOME" \
   "${RUN_ENV_ARGS[@]}" \
@@ -374,6 +522,13 @@ ci-repro summary
   container exit code : $EXIT_CODE
   log                 : $LOG
 EOF
+
+# Reporting what the image is must never change what the run REPORTS. Under `set -e` an
+# unreadable image (daemon stopped, image pruned mid-run) would abort here and return docker's
+# status instead of the command's — the same fake signal the `|| true` above exists to prevent.
+{ echo "  measured in image   :"
+  report_image_measurement "$IMAGE" || echo "    (image could not be measured; run result below is unaffected)"
+} >&2
 
 if [ -n "$MISSING_COMMANDS" ]; then
   cat >&2 <<EOF

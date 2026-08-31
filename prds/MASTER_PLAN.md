@@ -96,9 +96,28 @@ per-iteration gate remediation pair. D — path-containment pair, security-relev
 did not cover. F — the [[B-ONEABORT]] residual, 3 abort conditions down to 1.
 
 **Hard constraint, stated in the PRD:** none of this reproduces here — the same serial tier is
-**625/625 green on macOS/Node 24** at both ship gates, and `docker` has no VM, so there is no local
-Linux repro. A ticket may not close on "passes locally"; it closes on a mechanically-checkable property
-or on a green CI run, and must say which.
+**625/625 green on macOS/Node 24** at both ship gates.
+
+**CORRECTED 2026-08-31 (ticket `f561bc7d`, after `c1d1eeb3`).** The clause that stood here —
+"`docker` has no VM, so there is no local Linux repro" — is **false**, and it was hard-wrapped
+across a newline, which is why the single-line grep that swept the other PRDs missed it. Docker
+runs on this host (server 29.0.1) and `extension/scripts/ci-repro.sh` is the local Linux repro.
+
+**A ticket still may NOT close on "passes locally"** — a macOS pass is no evidence about Linux, and
+that is what this rule was always about. Acceptance is (a) a mechanically-checkable property of the
+code or workflow that explains the CI observation, (b) a green CI run on a pushed tag, or (c) a
+`ci-repro.sh` run naming the sha it tested — valid only while the harness's own provisioning-noise
+baseline is 0, because a harness that carries noise cannot falsify anything. **State which one you
+are claiming.**
+
+**And (c) carries a second condition, learned the expensive way.** Until `f561bc7d` the harness
+derived `runs-on: ubuntu-latest` and then provisioned `node:22` — Debian bookworm, ripgrep 13.0.0 —
+where CI runs Ubuntu 24.04 with ripgrep 14.1.0. Package *names* were derived; package *versions*
+were an accident of the base image. A2 turned out to be rg-14-only, so the harness was structurally
+incapable of reproducing the failure it was pointed at and returned a confident green, which
+`c1d1eeb3` recorded as an honest negative. **A green is only evidence about a version-sensitive
+tool if the harness provisions CI's distro** — check `--print-env`, which now reports the measured
+distro and a version for every derived package, rather than trusting that it does.
 
 **Explicit non-goal: do NOT move CI off Node 22.** Node 24 hides the unsettled-promise class rather
 than fixing it — both lines fail identically with `unref`, by controlled experiment. Bumping would turn
