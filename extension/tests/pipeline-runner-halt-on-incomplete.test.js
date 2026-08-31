@@ -16,6 +16,7 @@ import {
   __setSpawnRunnerForTests,
   main,
 } from '../bin/pipeline-runner.js';
+import { isTicketOracleCommitted } from '../bin/mux-runner.js';
 import { PipelineRunnerExitCode } from '../types/index.js';
 
 class ExitIntercept extends Error {
@@ -79,12 +80,15 @@ function writePipeline(sessionDir, repo, phases = ['pickle']) {
   }, null, 2));
 }
 
-function writeTicket(sessionDir, id, order, status = 'Todo') {
+function writeTicket(sessionDir, id, order, status = 'Todo', workingDir = null) {
   const ticketDir = path.join(sessionDir, id);
   fs.mkdirSync(ticketDir, { recursive: true });
+  // AP-EXT-ITER126-01: `working_dir` is the per-ticket rung — omitted by every
+  // pre-existing caller, so those fixtures are byte-identical to before.
+  const dirLine = workingDir ? `working_dir: ${workingDir}\n` : '';
   fs.writeFileSync(
     path.join(ticketDir, `rick_ticket_${id}.md`),
-    `---\nid: ${id}\ntitle: Halt test ticket ${id}\nstatus: ${status}\norder: ${order}\n---\n\n# Test\n`,
+    `---\nid: ${id}\ntitle: Halt test ticket ${id}\nstatus: ${status}\norder: ${order}\n${dirLine}---\n\n# Test\n`,
   );
 }
 
@@ -429,5 +433,191 @@ test('pipeline-runner.WS-1 oracle-committed non-Done ticket is excluded from unf
     else process.env.PICKLE_DATA_ROOT = prevDataRoot;
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// AP-EXT-ITER126-01 (R-CCR-1 dir ladder, 6th and final consumer): `resolveUnfinishedTickets`
+// re-resolves each status-unfinished ticket through the completion oracle, and it holds the
+// (per-ticket, session) PAIR in its own loop variable — `t.working_dir` is a field of the
+// roster row it is already iterating. It spent only the session dir, so a multi-repo epic
+// whose worker committed green in the TICKET's repo read as unfinished, `reportPhaseIncomplete`
+// stamped `pipeline_phase_incomplete`, and `resolvePhaseIncompleteOutcome` BROKE the phase loop
+// over shipped work — the false-stop class the no-stop-gates contract exists to remove.
+//
+// The dir is the only variable: the fixture asserts the session-dir refusal AND the ticket-dir
+// accept as its own precondition, so a fixture that stops reproducing the split fails loudly
+// rather than passing vacuously.
+test('pipeline-runner.AP-EXT-ITER126-01 a ticket committed in its OWN working_dir is oracle-excluded, not falsely incomplete', async () => {
+  const sessionRepo = tmpDir('pipeline-i126-session-repo-');
+  const ticketRepo = tmpDir('pipeline-i126-ticket-repo-');
+  const sessionDir = tmpDir('pipeline-i126-session-');
+  const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+  process.env.PICKLE_DATA_ROOT = tmpDir('pipeline-i126-dataroot-');
+  try {
+    initRepo(sessionRepo);
+    initRepo(ticketRepo);
+    writeState(sessionDir, sessionRepo);
+    writePipeline(sessionDir, sessionRepo, ['pickle']);
+
+    // The ticket's own repo is NOT the session repo — the shape `collectTickets` models
+    // and `renderStatus` warns about ("MULTI-REPO: Tickets span ...").
+    writeTicket(sessionDir, 'ccc30001', 1, 'Todo', ticketRepo);
+
+    __setSpawnRunnerForTests(async () => {
+      // Worker committed green IN THE TICKET'S REPO, carrying the ticket's trailer.
+      fs.writeFileSync(path.join(ticketRepo, 'ccc30001.ts'), 'export const a = 1;\n');
+      git(['add', '.'], ticketRepo);
+      git(['commit', '-q', '-m', 'durable green work', '--trailer', 'Pickle-Ticket: ccc30001'], ticketRepo);
+      const statePath = path.join(sessionDir, 'state.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      state.exit_reason = 'iteration_cap_exhausted';
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+      return { exitCode: 3, stdout: '', stderr: '' };
+    });
+
+    await captureMainExit(sessionDir, 3);
+
+    // Precondition: the split is real for THIS fixture — same sha, same ticket, dir the
+    // only variable. Asserted after the run so the commit exists.
+    assert.equal(
+      isTicketOracleCommitted({ sessionDir, ticketId: 'ccc30001', workingDir: sessionRepo }),
+      false,
+      'fixture precondition: the session repo alone must NOT be able to attribute the commit',
+    );
+    assert.equal(
+      isTicketOracleCommitted({ sessionDir, ticketId: 'ccc30001', workingDir: ticketRepo }),
+      true,
+      'fixture precondition: the ticket repo must attribute the commit',
+    );
+
+    const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+    assert.notEqual(
+      state.exit_reason,
+      'pipeline_phase_incomplete',
+      'a ticket committed in its own working_dir must NOT be stamped phase-incomplete',
+    );
+
+    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.ok(
+      !/^.*\bccc30001\b.*\[status: Todo\]/m.test(log),
+      'the oracle-excluded ticket must not be printed on the unfinished roster',
+    );
+    assert.ok(
+      /no phase-incomplete stamp|excluded from the unfinished set/.test(log),
+      'log must record the oracle re-resolution exclusion',
+    );
+  } finally {
+    __setSpawnRunnerForTests(null);
+    if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+    for (const d of [sessionRepo, ticketRepo, sessionDir]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
+// Teeth: the added rung must not degrade into a blanket accept. Same multi-repo shape,
+// but NOTHING is ever committed for the ticket in either repo — it must stay on the
+// unfinished roster and still reach the `pipeline_phase_incomplete` stamp.
+test('pipeline-runner.AP-EXT-ITER126-01 teeth — a per-ticket working_dir with no commit anywhere stays unfinished', async () => {
+  const sessionRepo = tmpDir('pipeline-i126t-session-repo-');
+  const ticketRepo = tmpDir('pipeline-i126t-ticket-repo-');
+  const sessionDir = tmpDir('pipeline-i126t-session-');
+  const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+  process.env.PICKLE_DATA_ROOT = tmpDir('pipeline-i126t-dataroot-');
+  try {
+    initRepo(sessionRepo);
+    initRepo(ticketRepo);
+    writeState(sessionDir, sessionRepo);
+    writePipeline(sessionDir, sessionRepo, ['pickle']);
+    writeTicket(sessionDir, 'ccc30002', 1, 'Todo', ticketRepo);
+
+    __setSpawnRunnerForTests(async () => {
+      const statePath = path.join(sessionDir, 'state.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      state.exit_reason = 'iteration_cap_exhausted';
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+      return { exitCode: 3, stdout: '', stderr: '' };
+    });
+
+    await captureMainExit(sessionDir, 3);
+
+    assert.equal(
+      isTicketOracleCommitted({ sessionDir, ticketId: 'ccc30002', workingDir: ticketRepo }),
+      false,
+      'teeth precondition: no commit exists for this ticket in its own repo either',
+    );
+
+    const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+    assert.equal(
+      state.exit_reason,
+      'pipeline_phase_incomplete',
+      'a genuinely-uncommitted ticket must still be counted unfinished',
+    );
+    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.ok(
+      /Unfinished tickets:/.test(log) && /ccc30002/.test(log),
+      'the uncommitted ticket must still be printed on the unfinished roster',
+    );
+  } finally {
+    __setSpawnRunnerForTests(null);
+    if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+    for (const d of [sessionRepo, ticketRepo, sessionDir]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
+// AP-EXT-ITER126-01 rung 1: the R-CCR-1 case the `fallbackDir` exists for. The ticket's
+// `working_dir` is a non-empty string git CANNOT use (a real directory, not a repo), and the
+// commit lives in the SESSION repo. Composing the pair moves rung 0 to the per-ticket dir, so
+// without rung 1 this configuration would newly read as unfinished — the fallback is what keeps
+// the change from trading one false stop for another. `probeCatFile` maps an unusable dir to
+// 'git-could-not-run', which descends; only a real 'not-exists' is final (AP-EXT-ITER111-01).
+test('pipeline-runner.AP-EXT-ITER126-01 rung 1 — an unusable per-ticket working_dir falls back to the session repo', async () => {
+  const sessionRepo = tmpDir('pipeline-i126f-session-repo-');
+  const notARepo = tmpDir('pipeline-i126f-not-a-repo-');
+  const sessionDir = tmpDir('pipeline-i126f-session-');
+  const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+  process.env.PICKLE_DATA_ROOT = tmpDir('pipeline-i126f-dataroot-');
+  try {
+    initRepo(sessionRepo);
+    writeState(sessionDir, sessionRepo);
+    writePipeline(sessionDir, sessionRepo, ['pickle']);
+    writeTicket(sessionDir, 'ccc30003', 1, 'Todo', notARepo);
+
+    __setSpawnRunnerForTests(async () => {
+      fs.writeFileSync(path.join(sessionRepo, 'ccc30003.ts'), 'export const a = 1;\n');
+      git(['add', '.'], sessionRepo);
+      git(['commit', '-q', '-m', 'durable green work', '--trailer', 'Pickle-Ticket: ccc30003'], sessionRepo);
+      const statePath = path.join(sessionDir, 'state.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      state.exit_reason = 'iteration_cap_exhausted';
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+      return { exitCode: 3, stdout: '', stderr: '' };
+    });
+
+    await captureMainExit(sessionDir, 3);
+
+    // Precondition: rung 0 alone cannot answer — the ticket dir is not a git repo.
+    assert.equal(
+      isTicketOracleCommitted({ sessionDir, ticketId: 'ccc30003', workingDir: notARepo }),
+      false,
+      'fixture precondition: the unusable per-ticket dir must not attribute the commit on its own',
+    );
+    assert.equal(
+      isTicketOracleCommitted({ sessionDir, ticketId: 'ccc30003', workingDir: notARepo, fallbackDir: sessionRepo }),
+      true,
+      'the fallback rung must attribute the commit the unusable per-ticket dir cannot see',
+    );
+
+    const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+    assert.notEqual(
+      state.exit_reason,
+      'pipeline_phase_incomplete',
+      'an unusable per-ticket working_dir must not manufacture a false phase-incomplete stamp',
+    );
+  } finally {
+    __setSpawnRunnerForTests(null);
+    if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+    for (const d of [sessionRepo, notARepo, sessionDir]) fs.rmSync(d, { recursive: true, force: true });
   }
 });

@@ -4601,6 +4601,9 @@ export function isTicketOracleCommitted(args) {
             sessionDir: args.sessionDir,
             ticketId: args.ticketId,
             workingDir: args.workingDir,
+            // AP-EXT-ITER126-01: this oracle asks the SAME question as the Done-flip
+            // and both phantom watchers, so it asks it of the SAME dirs.
+            fallbackDir: args.fallbackDir,
             rereadBackoffMs: 0,
         }, 'attribution'));
         return decision.ok;
@@ -4792,7 +4795,7 @@ function buildCompletionCtx(args, decision) {
         zeroDiffIntent: () => readDeclaredZeroDiffIntent(args.sessionDir, args.ticketId),
     };
 }
-function completionDirLadder(perTicketDir, sessionWorkingDir) {
+export function completionDirLadder(perTicketDir, sessionWorkingDir) {
     const session = sessionWorkingDir || undefined;
     const workingDir = perTicketDir || session || process.cwd();
     return session && session !== workingDir ? { workingDir, fallbackDir: session } : { workingDir };

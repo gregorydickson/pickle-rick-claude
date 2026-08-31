@@ -90,7 +90,7 @@ import { isProcessAlive } from '../lib/process-liveness.js';
 // (an already-permitted completion-evidence oracle caller). pipeline-runner MUST NOT
 // import the oracle module directly — that becomes a 3rd caller and fails
 // audit-trap-door-enforcement.sh R-AFCC-CALLER-ENUMERATION.
-import { isTicketOracleCommitted, isPerTicketVerdictReason } from './mux-runner.js';
+import { completionDirLadder, isTicketOracleCommitted, isPerTicketVerdictReason } from './mux-runner.js';
 import { loadFinalizeGateSettings, resolveFinalizeSettingsRoot } from './finalize-gate.js';
 import type { GateResult } from '../types/index.js';
 import { runGate } from '../services/convergence-gate.js';
@@ -3916,6 +3916,13 @@ function appendPhaseDisposition(counters: PhaseCounters, phase: PhaseName, marke
  * excluded from the unfinished set. The status filter alone (pure string compare)
  * misses this because the frontmatter flip to Done lands after the cap-check.
  *
+ * AP-EXT-ITER126-01: the oracle is asked over the ticket's OWN repo first, then the
+ * session repo (`completionDirLadder`) — the same rungs the Done-flip and both
+ * phantom watchers walk. A multi-repo epic (`collectTickets` models a per-ticket
+ * `working_dir`; `renderStatus` even warns `MULTI-REPO` when the rows span two)
+ * lands the worker's commit in the TICKET's repo, which a session-dir-only probe
+ * cannot see.
+ *
  * AC-DPGT-3: no new state field — reuses `readEvidence` (via the helper) + the
  * existing ticket roster. AC-DPGT-4 negative path: a genuinely-stuck ticket (no
  * commit) stays in the set and still reaches the `pipeline_phase_incomplete` stamp.
@@ -3926,7 +3933,12 @@ function resolveUnfinishedTickets(runtime: PipelineRuntime, tickets: ReturnType<
     .filter(t => !(t.id && isTicketOracleCommitted({
       sessionDir: runtime.sessionDir,
       ticketId: t.id,
-      workingDir: runtime.workingDir,
+      // AP-EXT-ITER126-01: the (per-ticket, session) PAIR this loop already holds —
+      // `t.working_dir` is the roster row's own field — composed through the ONE
+      // resolver every sibling consumer uses. Passing `runtime.workingDir` alone
+      // asked the oracle a narrower question here than the Done-flip and the
+      // phantom watchers ask, and this site's refusal BREAKS the phase loop.
+      ...completionDirLadder(t.working_dir, runtime.workingDir),
     })))
     .sort((a, b) => (a.order || 0) - (b.order || 0));
 }

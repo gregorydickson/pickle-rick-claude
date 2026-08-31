@@ -5427,6 +5427,12 @@ export function isTicketOracleCommitted(args: {
   sessionDir: string;
   ticketId: string;
   workingDir: string;
+  /**
+   * AP-EXT-ITER126-01: the R-CCR-1 rung 1. Supplied by any consumer holding a
+   * (per-ticket, session) PAIR — compose it with `completionDirLadder`, never a
+   * hand-written `||` chain. A consumer with one dir omits it and is unchanged.
+   */
+  fallbackDir?: string;
 }): boolean {
   if (!args.ticketId) return false;
   try {
@@ -5436,6 +5442,9 @@ export function isTicketOracleCommitted(args: {
       sessionDir: args.sessionDir,
       ticketId: args.ticketId,
       workingDir: args.workingDir,
+      // AP-EXT-ITER126-01: this oracle asks the SAME question as the Done-flip
+      // and both phantom watchers, so it asks it of the SAME dirs.
+      fallbackDir: args.fallbackDir,
       rereadBackoffMs: 0,
     }, 'attribution'));
     return decision.ok;
@@ -5662,12 +5671,12 @@ function buildCompletionCtx<K extends CompletionDecisionKind>(
  * `gitDirLadder` contract drops a duplicate rung itself, so a same-dir pair costs
  * nothing.
  */
-interface CompletionDirs {
+export interface CompletionDirs {
   workingDir: string;
   fallbackDir?: string;
 }
 
-function completionDirLadder(
+export function completionDirLadder(
   perTicketDir: string | null | undefined,
   sessionWorkingDir: string | null | undefined,
 ): CompletionDirs {
