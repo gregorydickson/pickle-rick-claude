@@ -403,3 +403,80 @@ test('AP-EXT-ITER82-01: a stale terminal cannot vouch across a same-ticket re-sp
   assert.equal(violations.length, 1);
   assert.equal(violations[0].priorSpawnTs, '2026-08-22T10:02:00.000Z');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER115-01 — the CLI must read the gate tier from the EXTENSION ROOT
+//
+// `resolveWorkerGateTier(root)` reads `<root>/pickle_settings.json`. The CLI used to
+// hand it `state.working_dir` — the TARGET repo — which carries that file only when the
+// target happens to BE the pickle-rick source tree. Everywhere else the read missed and
+// the resolver fell through to its `'fast'` default silently, pinning `narrowTierVacuity`
+// false. A narrow-tier run emits no per-ticket gate event at all, so every spawned ticket
+// then printed as an observed completion: a gate that never ran reported as a gate that
+// passed.
+//
+// The fixture is deliberately NOT "settings absent". A decoy `pickle_settings.json` sits
+// in the working dir declaring the OPPOSITE tier, so the assertion can only pass if the
+// reader actually switched roots — an oracle that merely observed the default would stay
+// green if the argument were changed to any other settings-less path.
+function withTierRoots(workingDirTier, extensionRootTier, activity, fn) {
+  const extRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-atv-extroot-'));
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-atv-sess-'));
+  const priorExtensionDir = process.env.EXTENSION_DIR;
+  try {
+    // INSTALL_ROOT_SENTINEL, so getExtensionRoot() honors EXTENSION_DIR without needing
+    // the NODE_ENV/EXTENSION_DIR_TEST escape hatch.
+    fs.writeFileSync(path.join(extRoot, '.pickle-install-root'), '');
+    fs.writeFileSync(
+      path.join(extRoot, 'pickle_settings.json'),
+      JSON.stringify({ worker_gate_tier: extensionRootTier }),
+    );
+    fs.writeFileSync(
+      path.join(sessionDir, 'pickle_settings.json'),
+      JSON.stringify({ worker_gate_tier: workingDirTier }),
+    );
+    fs.writeFileSync(
+      path.join(sessionDir, 'state.json'),
+      JSON.stringify({ session_dir: sessionDir, working_dir: sessionDir, activity }),
+    );
+    process.env.EXTENSION_DIR = extRoot;
+    return fn(sessionDir);
+  } finally {
+    if (priorExtensionDir === undefined) delete process.env.EXTENSION_DIR;
+    else process.env.EXTENSION_DIR = priorExtensionDir;
+    fs.rmSync(extRoot, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER115-01: a narrow tier at the extension root vacates the CLI verdict, even when the working dir says otherwise', () => {
+  // One spawn, zero negative signals — the shape that reads as an observed completion
+  // whenever the vacuity override fails to fire.
+  const activity = [spawnEvt('2026-08-30T10:00:00.000Z', 'eeee5555')];
+
+  const { exitCode, output } = withTierRoots('fast', 'narrow', activity, runVerifyActivityTimeline);
+
+  assert.match(
+    output,
+    /GATE VERDICT: 0 observed completions, 0 timeouts \(narrow-tier short-circuit/,
+    'a narrow tier emits no per-ticket gate event, so nothing may be counted as observed',
+  );
+  assert.match(output, /eeee5555 \| false \| n\/a \| false \| narrow_tier_shortcircuit/);
+  assert.doesNotMatch(output, /1 observed completions/);
+  // The overlap axis is independent of the tier and must be untouched by this fix.
+  assert.equal(exitCode, 0);
+  assert.match(output, /OVERLAP: none/);
+});
+
+test('AP-EXT-ITER115-01 control: a fast tier at the extension root still counts the completion', () => {
+  // The non-tautology twin. Same activity, same decoy — only the extension root's tier
+  // differs, so an assertion that simply always read "not observed" fails here.
+  const activity = [spawnEvt('2026-08-30T10:00:00.000Z', 'eeee5555')];
+
+  const { exitCode, output } = withTierRoots('narrow', 'fast', activity, runVerifyActivityTimeline);
+
+  assert.match(output, /GATE VERDICT: 1 observed completions, 0 timeouts/);
+  assert.doesNotMatch(output, /narrow-tier short-circuit/);
+  assert.match(output, /eeee5555 \| true \| n\/a \| false \| observed/);
+  assert.equal(exitCode, 0);
+});

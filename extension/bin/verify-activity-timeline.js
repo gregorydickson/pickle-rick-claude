@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { readRecoverableJsonObject } from '../services/recoverable-json.js';
+import { getExtensionRoot } from '../services/pickle-utils.js';
 import { resolveWorkerGateTier } from './spawn-morty.js';
 import { findOverlapViolations, buildGateCompletionReport, } from '../services/activity-timeline-verifier.js';
 const USAGE = 'Usage: verify-activity-timeline <session-dir>';
@@ -11,10 +12,18 @@ export function runVerifyActivityTimeline(sessionDir) {
         return { exitCode: 1, output: `verify-activity-timeline: unable to read state.json at ${statePath}` };
     }
     const activity = Array.isArray(state.activity) ? state.activity : [];
-    const workingDir = typeof state.working_dir === 'string' ? state.working_dir : sessionDir;
+    // AP-EXT-ITER115-01: `resolveWorkerGateTier`'s parameter is an EXTENSION ROOT — it reads
+    // `<root>/pickle_settings.json`. The session's `working_dir` is the TARGET repo, which carries
+    // that file only when the target IS the pickle-rick source tree; everywhere else the read misses
+    // and the resolver falls through to its `'fast'` default WITHOUT warning (the warn arm fires only
+    // for a present-but-invalid value). That pinned `narrowTierVacuity` false, so a narrow-tier run —
+    // which emits no per-ticket gate event at all — reported every spawned ticket as an observed
+    // completion. `spawn-morty.ts`'s sibling call may pass `args.workingDir` because it is reached
+    // only past an `fs.existsSync(extensionDir)` gate that proves the target is this repo; there is
+    // no such precondition here, so the argument that is correct there is wrong here.
     let workerGateTier;
     try {
-        workerGateTier = resolveWorkerGateTier(workingDir);
+        workerGateTier = resolveWorkerGateTier(getExtensionRoot());
     }
     catch {
         workerGateTier = undefined;
