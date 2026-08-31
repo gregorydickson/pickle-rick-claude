@@ -53,8 +53,8 @@ function resolveTicketPath(ctx) {
  * 'not-exists', so any unaccountable failure — EACCES on the git binary, an
  * EAGAIN/EMFILE fork failure under tier load, a future non-128 fatal — fabricated
  * "this repo does not have that commit". That fabrication is not inert: it is the
- * one verdict `probeExplicitSha` treats as final, so it also short-circuited the
- * `fallbackDir` rung, and a ticket whose commit the fallback repo could name read
+ * one verdict `probeShaOverLadder` treats as final, so it also short-circuited the
+ * remaining rungs, and a ticket whose commit the fallback repo could name read
  * as `absent`. Same doctrine as `isProcessAlive` (AP-EXT-ITER109-01): a survivor
  * list is one errno from the next wrong verdict.
  *
@@ -63,7 +63,7 @@ function resolveTicketPath(ctx) {
  * object, but the `^{commit}` peel makes it a rev-parse failure — `fatal: Not a
  * valid object name`, exit 128 (re-probed 2026-08-30, git 2.39.5). So "this repo
  * simply does not have that commit" reports 'git-could-not-run', which is what
- * makes `probeExplicitSha`'s `fallbackDir` rung fire on the ORDINARY case rather
+ * makes `probeShaOverLadder`'s `fallbackDir` rung fire on the ORDINARY case rather
  * than only on a broken checkout. Do not read the 3-state prose as evidence that
  * the fallback rung is rare; any rule that must hold for an accept has to hold on
  * the fallback dir too (see `gitDirLadder`). Keep the `status === 1` arm anyway:
@@ -81,10 +81,6 @@ function probeCatFile(workingDir, sha) {
     catch (err) {
         return err.status === 1 ? 'not-exists' : 'git-could-not-run';
     }
-}
-/** Boolean commit-reachability check; false for both "not found" and "git error". */
-function commitExists(workingDir, sha) {
-    return probeCatFile(workingDir, sha) === 'exists';
 }
 /** Shortest abbreviation `normalizeCompletionCommitField` accepts; also the floor here. */
 const MIN_ABBREV_SHA_LEN = 7;
@@ -132,26 +128,44 @@ function rejectsAsBaseline(sha, ctx) {
     return true;
 }
 /**
- * Probes whether an explicit SHA is git-reachable, falling back to fallbackDir on
- * 'git-could-not-run'. Returns the EvidenceResult on success, or null when the
- * SHA is not reachable (caller maps null → absent).
+ * AP-EXT-ITER123-01: THE accept probe — "can any repo on the ladder resolve this
+ * sha?". Every accept arm asks it, so no arm can be decided by a narrower set of
+ * dirs than its siblings.
+ *
+ * It walks `gitDirLadder` rather than carrying its own workingDir/fallbackDir
+ * pair, which is what made the divergence possible: this function used to be the
+ * ONLY ladder-walking accept path, so the inferred arm (a bare `commitExists` on
+ * `ctx.workingDir`) and the scan arm resolved over ONE dir while the explicit arm
+ * resolved over two. Same sha, same repo, same ticket — the explicit arm kept a
+ * Done ticket via the fallback rung and the other two reverted it to Todo.
+ *
+ * `'not-exists'` on a rung is FINAL (that rung positively proved absence);
+ * `'git-could-not-run'` descends to the next rung, which is the R-CCR-1 case the
+ * fallback exists for — an unusable per-ticket `working_dir` cannot answer for
+ * ANY arm's sha, not just the explicit one. Per AP-EXT-ITER76-02 the
+ * `'not-exists'` arm is unreachable for this call shape; it is kept so the
+ * verdict follows git's contract rather than the current spelling of it.
+ *
+ * Returns the EvidenceResult on success, or null when no rung can resolve the
+ * sha (caller maps null → absent).
  */
-function probeExplicitSha(sha, workingDir, fallbackDir) {
-    const primary = probeCatFile(workingDir, sha);
-    if (primary === 'exists')
-        return { kind: 'committed', sha };
-    if (primary !== 'git-could-not-run')
-        return null;
-    if (!fallbackDir || fallbackDir === workingDir)
-        return null;
-    if (probeCatFile(fallbackDir, sha) === 'exists')
-        return { kind: 'committed', sha, usedFallback: true };
+function probeShaOverLadder(sha, ctx) {
+    const dirs = gitDirLadder(ctx);
+    for (const [rung, dir] of dirs.entries()) {
+        const probe = probeCatFile(dir, sha);
+        if (probe === 'exists') {
+            return rung === 0 ? { kind: 'committed', sha } : { kind: 'committed', sha, usedFallback: true };
+        }
+        if (probe !== 'git-could-not-run')
+            return null;
+    }
     return null;
 }
 /**
  * AP-EXT-ITER76-01: THE dir ladder. `workingDir` first, then the R-CCR-1
  * `fallbackDir` — ONE definition of "which repo answers for this sha", shared by
- * the accept probe (`probeExplicitSha`) and the R-OMA rejection read
+ * the accept probe (`probeShaOverLadder`, shared by ALL THREE accept arms) and
+ * the R-OMA rejection read
  * (`isForeignAttributedExplicitSha`), so a dir that decides an accept is always a
  * dir the rejection rules were asked in.
  */
@@ -364,11 +378,20 @@ function rejectsAccept(sha, ctx, content) {
  * the `Pickle-Ticket` trailer produces and consumes attribution directly.
  */
 function scanGitLog(args) {
-    return scanGitLogByTrailer({
-        workingDir: args.workingDir,
-        ticketId: args.ticketId,
-        startTimeEpoch: args.startTimeEpoch,
-    });
+    // AP-EXT-ITER123-01: walks the same `gitDirLadder` as the stamped-field arms.
+    // `scanGitLogByTrailer` stays the single-dir primitive (mirroring
+    // `showCommitMessage`), so the ladder has exactly one definition and the
+    // execFileSync inventory is unchanged.
+    for (const dir of args.dirs) {
+        const hit = scanGitLogByTrailer({
+            workingDir: dir,
+            ticketId: args.ticketId,
+            startTimeEpoch: args.startTimeEpoch,
+        });
+        if (hit)
+            return hit;
+    }
+    return null;
 }
 // ---------------------------------------------------------------------------
 // Entry point 1: readEvidence
@@ -394,9 +417,12 @@ function readInferredArm(ctx, content, absent) {
     const rejection = rejectsAccept(inferredField, ctx, content);
     if (rejection)
         return { kind: 'absent', absentReason: rejection };
-    if (commitExists(ctx.workingDir, inferredField)) {
-        return { kind: 'committed', sha: inferredField, via: 'inferred' };
-    }
+    // AP-EXT-ITER123-01: the SAME ladder the explicit arm accepts over. A bare
+    // `commitExists(ctx.workingDir, …)` here made an unusable per-ticket
+    // working_dir revert a Done ticket whose sha the fallback repo could name.
+    const probed = probeShaOverLadder(inferredField, ctx);
+    if (probed)
+        return { ...probed, via: 'inferred' };
     // R-AFCC-STAGE: field present but git can't verify (non-repo workingDir or a
     // dropped commit). A stored-but-unverifiable SHA is not evidence the gate can
     // act on → absent.
@@ -431,7 +457,7 @@ export function readEvidence(ctx) {
         const rejection = rejectsAccept(explicit, ctx, content);
         if (rejection)
             return { kind: 'absent', absentReason: rejection };
-        const r = probeExplicitSha(explicit, ctx.workingDir, ctx.fallbackDir);
+        const r = probeShaOverLadder(explicit, ctx);
         if (r)
             return { ...r, via: 'explicit' };
         // R-AICF: explicit SHA present but UNREACHABLE (hallucinated/dropped stamp).
@@ -452,7 +478,7 @@ export function readEvidence(ctx) {
     // --- Git log scan (WS-2 Pickle-Ticket trailer) ---
     const selfId = readFrontmatterField(content, 'id') ?? ctx.ticketId ?? null;
     const scan = scanGitLog({
-        workingDir: ctx.workingDir,
+        dirs: gitDirLadder(ctx),
         ticketId: selfId,
         startTimeEpoch: ctx.startTimeEpoch,
     });

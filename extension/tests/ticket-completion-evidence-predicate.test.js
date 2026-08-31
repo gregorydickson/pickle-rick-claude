@@ -1216,3 +1216,143 @@ test('AP-EXT-ITER76-01 control: a GENERIC commit message still accepts through t
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER123-01 — the dir ladder governs EVERY accept arm, not just the
+// explicit one.
+//
+// AP-EXT-ITER76-01 collapsed the R-OMA *rejection* read onto `gitDirLadder` and
+// stated the doctrine outright: any rule that must hold for an accept has to
+// hold on the fallback dir too. It wired two of the four probe sites. The two
+// it left behind were ACCEPT arms: the inferred arm gated on a bare
+// `commitExists(ctx.workingDir, …)` and the scan arm passed `ctx.workingDir`
+// straight to the trailer scan, so both resolved over ONE dir while the explicit
+// arm resolved over two.
+//
+// Consequence, measured on the shipped module before the fix: for ONE sha in ONE
+// repo for ONE ticket, an unusable per-ticket `working_dir` made the explicit arm
+// keep the ticket Done via the fallback rung while the inferred and scan arms
+// reverted it to Todo (`correctPhantomDoneTickets` → `writeTicketStatus(…,'Todo')`).
+// That is shipped work discarded on the dir axis alone — the R-DSAN never-discard
+// failure the R-CCR-1 fallback was built to remove, still open on 2 of 3 arms.
+//
+// The fix is a COLLAPSE: `commitExists` and `probeExplicitSha`'s bespoke two-rung
+// logic are both deleted in favour of ONE `probeShaOverLadder` walking
+// `gitDirLadder`, so there is no per-arm dir policy left to diverge.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fixture for the ladder-parity cases: a real repo holding the delivering commit
+ * (the R-CCR-1 `fallbackDir`) plus a per-ticket `working_dir` that is not a repo
+ * at all. Created OUTSIDE the fixture repo — a dir nested inside it would resolve
+ * through the parent `.git` and never exercise the fallback rung.
+ */
+function mkLadderFixture(tag, ticketId) {
+  const root = mkTmp(`pickle-iter123-${tag}-`);
+  initGitRepo(root);
+  const sha = commitFileWithTrailer(root, `${tag}.txt`, `feat(${ticketId}): delivered work`, ticketId);
+  const sessionDir = path.join(root, 'session');
+  const notRepo = mkTmp(`pickle-iter123-${tag}-notrepo-`);
+  return {
+    root, sessionDir, notRepo, sha,
+    cleanup: () => {
+      fs.rmSync(notRepo, { recursive: true, force: true });
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test('AP-EXT-ITER123-01: the INFERRED arm accepts over the R-CCR-1 fallbackDir, like its explicit sibling', () => {
+  const f = mkLadderFixture('inferred', 'infl0123');
+  try {
+    writeTicket(f.sessionDir, 'infl0123', { completionCommitInferred: f.sha });
+
+    const ev = readEvidence({
+      sessionDir: f.sessionDir, ticketId: 'infl0123', workingDir: f.notRepo, fallbackDir: f.root,
+    });
+    assert.equal(ev.kind, 'committed', 'a stamped inferred sha the fallback repo can name is evidence');
+    assert.equal(ev.sha, f.sha);
+    assert.equal(ev.via, 'inferred', 'the arm identity survives the ladder collapse');
+    assert.equal(ev.usedFallback, true, 'the accept was decided by the fallback rung');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('AP-EXT-ITER123-01: the SCAN arm accepts over the R-CCR-1 fallbackDir, like its explicit sibling', () => {
+  const f = mkLadderFixture('scan', 'scan0123');
+  try {
+    // No stamped field at all — attribution rests entirely on the Pickle-Ticket
+    // trailer, which only the fallback repo can be asked about.
+    writeTicket(f.sessionDir, 'scan0123', {});
+
+    const ev = readEvidence({
+      sessionDir: f.sessionDir, ticketId: 'scan0123', workingDir: f.notRepo, fallbackDir: f.root,
+    });
+    assert.equal(ev.kind, 'committed', 'a trailer-attributed commit in the fallback repo is evidence');
+    assert.equal(ev.sha, f.sha);
+    assert.equal(ev.via, 'scan');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('AP-EXT-ITER123-01: the phantom-Done watcher KEEPS an inferred-stamped ticket whose working_dir is unusable', () => {
+  const f = mkLadderFixture('watcher', 'wtch0123');
+  try {
+    writeTicket(f.sessionDir, 'wtch0123', { completionCommitInferred: f.sha });
+
+    // The full data flow the defect reached through: gateForPhantomDoneRevert is
+    // what `correctPhantomDoneTickets` consults before flipping Done → Todo.
+    const decision = gateForPhantomDoneRevert({
+      sessionDir: f.sessionDir, ticketId: 'wtch0123', workingDir: f.notRepo, fallbackDir: f.root,
+    });
+    assert.equal(decision.action, 'keep', 'shipped work must not be reverted on the dir axis alone');
+    assert.equal(decision.sha, f.sha);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('AP-EXT-ITER123-01: widening the accept arms does NOT launder a foreign-attributed inferred sha', () => {
+  const root = mkTmp('pickle-iter123-foreign-');
+  const notRepo = mkTmp('pickle-iter123-foreign-notrepo-');
+  try {
+    initGitRepo(root);
+    const siblingSha = commitFile(root, 'sib.txt', 'feat(fgsib123): sibling ticket work');
+
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'fgsib123', {});
+    writeTicket(sessionDir, 'infr0123', { completionCommitInferred: siblingSha });
+
+    // Teeth control: the rejection gate runs BEFORE the ladder probe, and R-OMA
+    // reads the message over the same ladder — so reaching the fallback rung must
+    // not turn a sibling's commit into this ticket's evidence.
+    const ev = readEvidence({
+      sessionDir, ticketId: 'infr0123', workingDir: notRepo, fallbackDir: root,
+    });
+    assert.equal(ev.kind, 'absent', 'a foreign-attributed sha stays absent on every rung');
+    assert.equal(ev.absentReason, 'foreign_attribution', 'inferred is a STAMPED field — hard reason');
+    assert.equal(ev.sha, undefined);
+  } finally {
+    fs.rmSync(notRepo, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER123-01: a definite not-exists on the primary rung is still FINAL (no always-try-the-fallback degrade)', () => {
+  const f = mkLadderFixture('final', 'finl0123');
+  try {
+    writeTicket(f.sessionDir, 'finl0123', { completionCommitInferred: HALLUCINATED_SHA });
+
+    // The sha exists in NO repo on the ladder. Widening the arm must not invent
+    // evidence — absent is still the answer, and it is the stamped-field reason.
+    const ev = readEvidence({
+      sessionDir: f.sessionDir, ticketId: 'finl0123', workingDir: f.root, fallbackDir: f.root,
+    });
+    assert.equal(ev.kind, 'absent', 'an unresolvable sha is absent on every rung');
+    assert.equal(ev.sha, undefined);
+  } finally {
+    f.cleanup();
+  }
+});
