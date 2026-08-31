@@ -1702,15 +1702,16 @@ function collectTwinEvidence(input, ticketId, twins, fallbackWorkingDir) {
  * greenness, so a runner-authored GREEN verdict is persisted first (the same idiom
  * `commitAndContinueDoneFlip` uses) for the R-CWGE fail-closed check to honor.
  */
-function flipSplitOriginalDoneOnTwinEvidence(input, ticketId, workingDir, twinEvidence, canonicalSha) {
+function flipSplitOriginalDoneOnTwinEvidence(input, ticketId, dirs, twinEvidence, canonicalSha) {
     persistRunnerAuthoredGreenVerdict(input.sessionDir, ticketId);
     const guard = guardCompletionCommitBeforeDone({
         sessionDir: input.sessionDir,
         ticketId,
         // AP-EXT-ITER124-01: this guard was the ONE consumer of the pair inside this
-        // function that saw a single dir — `collectTwinEvidence` and `origCtx` both
-        // already pass `fallbackDir: input.workingDir`.
-        ...completionDirLadder(workingDir, input.workingDir),
+        // function that saw a single dir. It now spends the pair `maybeAutoCloseSplitOriginal`
+        // already resolved rather than re-laddering an already-collapsed rung 0 — one
+        // `completionDirLadder` call is the whole branch's single derivation of the pair.
+        ...dirs,
         flags: input.flags ?? {},
         // R-PDUP twin-borrow: the canonical sha's commit message names the TWIN
         // (production convention `fix(<twinId>): ...`), a sibling dir of the
@@ -1754,8 +1755,11 @@ function maybeAutoCloseSplitOriginal(input, ticket, allTickets) {
     const twins = findSplitTwins(ticket.title, allTickets, ticket.id);
     if (twins.length === 0)
         return false;
-    const { workingDir } = completionDirLadder(ticket.working_dir, input.workingDir);
-    const twinEvidence = collectTwinEvidence(input, ticket.id, twins, workingDir);
+    // R-CCR-1 / AP-EXT-ITER124-01: resolve the (per-ticket, session) pair ONCE and
+    // thread the value. Destructuring `fallbackDir` away here is what forced the two
+    // downstream rebuilds this branch used to carry.
+    const dirs = completionDirLadder(ticket.working_dir, input.workingDir);
+    const twinEvidence = collectTwinEvidence(input, ticket.id, twins, dirs.workingDir);
     if (!twinEvidence)
         return false; // hold: at least one twin not yet Done/provable
     // All twins Done with delivery SHAs — first twin's SHA is canonical.
@@ -1764,8 +1768,7 @@ function maybeAutoCloseSplitOriginal(input, ticket, allTickets) {
     const origCtx = {
         sessionDir: input.sessionDir,
         ticketId: ticket.id,
-        workingDir,
-        fallbackDir: input.workingDir,
+        ...dirs,
     };
     // Write EXPLICIT completion_commit — twin evidence is authoritative.
     // The original was superseded before doing its own work, so readEvidence on
@@ -1775,7 +1778,7 @@ function maybeAutoCloseSplitOriginal(input, ticket, allTickets) {
         input.log?.(`R-PDUP: could not write completion_commit for split original ${ticket.id} (persist failed: ${persisted.action})`);
         return false;
     }
-    return flipSplitOriginalDoneOnTwinEvidence(input, ticket.id, workingDir, twinEvidence, canonicalSha);
+    return flipSplitOriginalDoneOnTwinEvidence(input, ticket.id, dirs, twinEvidence, canonicalSha);
 }
 // eslint-disable-next-line -- R-PDUP adds the todo/failed auto-close branch; R-AFCC-DEEP-3B requires batchLoopPhantomDoneKind to stay in this function body (audit-phantom-done-call-sites.sh invariant)
 export function correctPhantomDoneTickets(input) {

@@ -1989,6 +1989,44 @@ test('AP-EXT-ITER124-01: no guardCompletionCommitBeforeDone call site hand-write
 });
 
 /**
+ * AP-EXT-ITER124-01 (single-derivation half) — the split-original auto-close
+ * branch resolves the (per-ticket, session) pair ONCE and threads the VALUE.
+ *
+ * It used to resolve the pair and immediately destructure `fallbackDir` away
+ * (`const { workingDir } = completionDirLadder(...)`), which forced two hand
+ * rebuilds downstream: `origCtx` respelled it as
+ * `{ workingDir, fallbackDir: input.workingDir }`, and the Done-flip re-laddered
+ * the already-collapsed rung 0. Three derivations of ONE fact inside one branch is
+ * the shape whose five recurrences produced this whole trap-door family — each
+ * spelling is another chance for two consumers of the same pair to diverge.
+ * Behaviour is unchanged: `gitDirLadder` drops a falsy AND a duplicate second rung,
+ * so the hand-built pair and the ladder's own output walk identical dirs.
+ */
+test('AP-EXT-ITER124-01: the split-original auto-close derives its dir pair exactly once', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'bin', 'mux-runner.ts'), 'utf-8');
+    const sliceFn = (name) => {
+        const start = src.indexOf(`function ${name}(`);
+        assert.ok(start > -1, `${name} must be present`);
+        const body = src.slice(start);
+        return body.slice(0, body.indexOf('\n}\n'));
+    };
+
+    const autoClose = sliceFn('maybeAutoCloseSplitOriginal');
+    assert.equal((autoClose.match(/completionDirLadder\(/g) || []).length, 1,
+      'maybeAutoCloseSplitOriginal must resolve the (per-ticket, session) pair exactly once');
+    assert.equal(/const \{\s*workingDir\s*\} = completionDirLadder\(/.test(autoClose), false,
+      'the resolved pair must be kept as a value, not destructured down to rung 0');
+    assert.match(autoClose, /ticketId: ticket\.id,\n\s*\.\.\.dirs,/,
+      'origCtx must spread the resolved pair instead of respelling it by hand');
+
+    const flip = sliceFn('flipSplitOriginalDoneOnTwinEvidence');
+    assert.match(flip, /dirs: CompletionDirs,/,
+      'the Done-flip must take the resolved pair, not a bare rung-0 dir');
+    assert.equal((flip.match(/completionDirLadder\(/g) || []).length, 0,
+      'the Done-flip must spend the pair its caller resolved, never re-ladder a collapsed rung 0');
+});
+
+/**
  * AP-EXT-ITER124-02 — the R-CCR-1 dir ladder reaches the SINGLE-FILE phantom-Done
  * watcher, not only its batch-loop sibling.
  *
