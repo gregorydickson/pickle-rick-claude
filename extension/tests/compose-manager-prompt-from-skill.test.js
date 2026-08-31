@@ -294,3 +294,45 @@ test('R-MPVU: source template carries ${EXTENSION_ROOT} occurrences (stale-premi
   const occurrences = content.match(/\$\{EXTENSION_ROOT\}/g) ?? [];
   assert.ok(occurrences.length > 0, 'the raw template should still reference ${EXTENSION_ROOT} — if this fails, the placeholder was removed upstream and the binding fix may be dead code');
 });
+
+// --- R-MPVU AC-3: the bound root is a REAL root, not just a substituted string ---
+// The zero-unbound assertions above are vacuous on their own: deleting every ${EXTENSION_ROOT}
+// occurrence from the template would also satisfy them. This pin closes that hole with two arms —
+// an EXISTENCE arm (the paths the manager is told to run are really there) and a VACUITY arm
+// (there are enough of them that an empty substitution cannot pass).
+//
+// Scoped to paths in `node <path>` position deliberately, and NOT to every path the prompt names.
+// The prompt also *reads* ${EXTENSION_ROOT}/extension/tests/behavioral/phase-personas/baseline.json,
+// which install.sh:382 (`--exclude='tests'`) never deploys — so that reference is unsatisfiable on a
+// real install. That is a pre-existing template defect, out of scope for this binding ticket; scoping
+// to executed paths keeps this pin measuring the binding instead of inheriting that defect. The
+// executed/read distinction is read off the prompt text, so no exclusion list needs maintaining.
+function executedExtensionPaths(prompt, root) {
+  const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`node\\s+"?(${escaped}/[A-Za-z0-9_./-]*)`, 'g');
+  return [...new Set([...prompt.matchAll(pattern)].map((m) => m[1]))];
+}
+
+for (const backend of ['claude', 'codex']) {
+  test(`AC-3 / R-MPVU: every executable path the composed manager prompt (${backend}) names under the bound extension root exists`, () => {
+    const root = getExtensionRoot();
+    const result = composeManagerPromptFromSkill(PICKLE_TEMPLATE_PATH, backend, {
+      argumentSubstitution: '--resume /tmp/session',
+    });
+    const named = executedExtensionPaths(result, root);
+
+    // VACUITY arm: an empty or misdirected substitution yields zero resolved paths and must not pass.
+    assert.ok(
+      named.length >= 5,
+      `expected >= 5 distinct executable paths under the bound extension root ${root}, found ${named.length}`,
+    );
+
+    // EXISTENCE arm: the bound root is sentinel-validated, so every path it roots must be real.
+    const missing = named.filter((p) => !fs.existsSync(p));
+    assert.deepEqual(
+      missing,
+      [],
+      `composed ${backend} manager prompt names a path that does not exist: ${missing.join(', ')}`,
+    );
+  });
+}
