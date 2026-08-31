@@ -1707,7 +1707,10 @@ function flipSplitOriginalDoneOnTwinEvidence(input, ticketId, workingDir, twinEv
     const guard = guardCompletionCommitBeforeDone({
         sessionDir: input.sessionDir,
         ticketId,
-        workingDir,
+        // AP-EXT-ITER124-01: this guard was the ONE consumer of the pair inside this
+        // function that saw a single dir — `collectTwinEvidence` and `origCtx` both
+        // already pass `fallbackDir: input.workingDir`.
+        ...completionDirLadder(workingDir, input.workingDir),
         flags: input.flags ?? {},
         // R-PDUP twin-borrow: the canonical sha's commit message names the TWIN
         // (production convention `fix(<twinId>): ...`), a sibling dir of the
@@ -1751,7 +1754,7 @@ function maybeAutoCloseSplitOriginal(input, ticket, allTickets) {
     const twins = findSplitTwins(ticket.title, allTickets, ticket.id);
     if (twins.length === 0)
         return false;
-    const workingDir = ticket.working_dir || input.workingDir || process.cwd();
+    const { workingDir } = completionDirLadder(ticket.working_dir, input.workingDir);
     const twinEvidence = collectTwinEvidence(input, ticket.id, twins, workingDir);
     if (!twinEvidence)
         return false; // hold: at least one twin not yet Done/provable
@@ -4750,6 +4753,29 @@ function buildCompletionCtx(args, decision) {
     };
 }
 /**
+ * AP-EXT-ITER124-01: THE dir pair every Done-flip authority hands the completion
+ * predicate — the mux-runner-side companion to `gitDirLadder`, which consumes it.
+ *
+ * Every call site used to spell the pair as `ticket.working_dir || sessionWorkingDir
+ * || process.cwd()`. That chain SELECTS one dir where the ladder PROBES both: `||`
+ * falls through only on a FALSY per-ticket dir, so a `working_dir` that is a
+ * non-empty string pointing at a directory git cannot use (the whole R-CCR-1 case)
+ * wins the selection and the session dir is never consulted. Five hand-written
+ * chains meant five chances to spell the pair differently, and two siblings
+ * reading the very same pair already had: one included `state.working_dir`, the
+ * other omitted it.
+ *
+ * Rung 0 is the per-ticket dir when it is usable-as-a-value, else the session dir,
+ * else cwd. Rung 1 is the session dir whenever it is present and distinct — the
+ * `gitDirLadder` contract drops a duplicate rung itself, so a same-dir pair costs
+ * nothing.
+ */
+function completionDirLadder(perTicketDir, sessionWorkingDir) {
+    const session = sessionWorkingDir || undefined;
+    const workingDir = perTicketDir || session || process.cwd();
+    return session && session !== workingDir ? { workingDir, fallbackDir: session } : { workingDir };
+}
+/**
  * B-GTRUTH WS-A1: render a guard's completion SHA for a log line. A declared
  * zero-diff accept legitimately has none, and this is the ONE place that absence is
  * spelled out — keeping the `??` out of the three call sites' cyclomatic budgets.
@@ -4919,6 +4945,12 @@ export function guardCompletionCommitBeforeDone(args) {
         sessionDir: args.sessionDir,
         ticketId: args.ticketId,
         workingDir: args.workingDir,
+        // AP-EXT-ITER124-01: the Done-FLIP asks the SAME question as the
+        // phantom-Done watcher, so it must ask it of the SAME dirs. Omitting this
+        // made `gitDirLadder` return one rung here and two at the watcher — one
+        // sha, one repo, one ticket, and the watcher kept Done while the flip
+        // parked it.
+        fallbackDir: args.fallbackDir,
         rereadBackoffMs: args.rereadBackoffMs,
         ownAttributionTokens: args.ownAttributionTokens,
     }, gateAdvisory ? 'phantom-watch' : 'done-flip'));
@@ -7597,7 +7629,9 @@ function finalizeCurrentTicketBeforeEpicExit(state, ctx, curState) {
     const guard = guardCompletionCommitBeforeDone({
         sessionDir: ctx.sessionDir,
         ticketId: curState.current_ticket,
-        workingDir: curState.working_dir || state.working_dir || process.cwd(),
+        // AP-EXT-ITER124-01: ladder, not `||` selection — an unusable per-ticket dir
+        // must fall through to the session dir, and a non-empty one never does.
+        ...completionDirLadder(curState.working_dir, state.working_dir),
         flags: curState.flags ?? null,
     });
     if (!guard.ok) {
@@ -11181,7 +11215,8 @@ async function runMuxRunnerMain() {
                     const guard = guardCompletionCommitBeforeDone({
                         sessionDir,
                         ticketId: prevTicketInfo.id,
-                        workingDir: prevTicketInfo.working_dir || state.working_dir || process.cwd(),
+                        // AP-EXT-ITER124-01: ladder, not `||` selection.
+                        ...completionDirLadder(prevTicketInfo.working_dir, state.working_dir),
                         flags: state.flags ?? null,
                     });
                     if (!guard.ok) {
@@ -11558,7 +11593,13 @@ async function runMuxRunnerMain() {
                     const guard = guardCompletionCommitBeforeDone({
                         sessionDir,
                         ticketId: curState.current_ticket,
-                        workingDir: curState.working_dir || process.cwd(),
+                        // AP-EXT-ITER124-01: ladder, not `||` selection. This site also
+                        // omitted `state.working_dir` from its chain entirely, unlike the
+                        // sibling at the genuine-epic-completion flip below, which reads the
+                        // very same pair. (Both dirs are session-level here, so the ladder
+                        // usually collapses to one rung — the defect is the divergence
+                        // between two siblings asking one question, not a lost rung.)
+                        ...completionDirLadder(curState.working_dir, state.working_dir),
                         flags: curState.flags ?? null,
                     });
                     if (!guard.ok) {
@@ -11636,7 +11677,8 @@ async function runMuxRunnerMain() {
                 const guard = guardCompletionCommitBeforeDone({
                     sessionDir,
                     ticketId: curState.current_ticket,
-                    workingDir: curState.working_dir || state.working_dir || process.cwd(),
+                    // AP-EXT-ITER124-01: ladder, not `||` selection.
+                    ...completionDirLadder(curState.working_dir, state.working_dir),
                     flags: curState.flags ?? null,
                 });
                 if (!guard.ok) {

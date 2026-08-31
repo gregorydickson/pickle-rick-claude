@@ -1906,6 +1906,88 @@ test('guardCompletionCommitBeforeDone: PICKLE_TEST_MODE=1 bypasses entire guard 
     }
 });
 
+/**
+ * AP-EXT-ITER124-01 — the R-CCR-1 dir ladder reaches the Done-FLIP authority,
+ * not only its phantom-watch sibling.
+ *
+ * ONE sha, ONE repo, ONE ticket, an unusable per-ticket `working_dir`. The
+ * phantom-Done watcher passes `fallbackDir: input.workingDir` and KEEPS the
+ * ticket Done; before this fix `guardCompletionCommitBeforeDone` had no
+ * `fallbackDir` in its args type at all, so the flip resolved over ONE dir,
+ * read `absent`, and parked the ticket. Accept-here-refuse-there on the dir
+ * axis alone (the R-AICF class B-1SEAM WS-1 exists to eliminate).
+ *
+ * Both arms below run under the SAME advisory worker-gate route (neither dir
+ * holds an `extension/`, so the verdict is `not_run`), which is what makes the
+ * dir the only variable.
+ */
+test('AP-EXT-ITER124-01: the Done-flip guard resolves a sha over the R-CCR-1 fallback dir, like its phantom-watch sibling', async () => {
+    const { guardCompletionCommitBeforeDone } = await import('../bin/mux-runner.js');
+    const tmpRoot = makeTmpRoot();
+    try {
+        const repo = path.join(tmpRoot, 'repo');           // session working_dir — the real repo
+        const perTicketDir = path.join(tmpRoot, 'gone');   // per-ticket working_dir — exists, not a repo
+        const sessionDir = path.join(tmpRoot, 'session');
+        fs.mkdirSync(repo, { recursive: true });
+        fs.mkdirSync(perTicketDir, { recursive: true });
+        const ticketId = 'dd44ee55';
+        fs.mkdirSync(path.join(sessionDir, ticketId), { recursive: true });
+
+        initGitRepo(repo);
+        const startCommit = gitHead(repo);
+        fs.writeFileSync(path.join(repo, 'work.txt'), 'work');
+        spawnSync('git', ['add', '.'], { cwd: repo, timeout: 30000 });
+        spawnSync('git', ['commit', '-m', `fix(${ticketId}): deliver the work`, '--no-gpg-sign'], { cwd: repo, timeout: 30000 });
+        const sha = gitHead(repo);
+        assert.notEqual(sha, startCommit, 'fixture precondition: the delivery commit is not the session baseline');
+
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+            session_id: 'ap124', working_dir: repo, start_commit: startCommit, activity: [],
+        }));
+        fs.writeFileSync(path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`),
+          `---\nid: ${ticketId}\ntitle: "ladder"\nstatus: Done\ncompletion_commit: ${sha}\nworking_dir: ${perTicketDir}\n---\n# T\n`);
+
+        withProductionGuard(() => {
+            // Rung 0 alone cannot resolve the sha — this is the pre-fix reading.
+            const single = guardCompletionCommitBeforeDone({
+                sessionDir, ticketId, workingDir: perTicketDir, flags: {}, rereadBackoffMs: 0,
+            });
+            assert.equal(single.ok, false, 'fixture precondition: the per-ticket dir alone cannot resolve the sha');
+
+            // Same facts, plus the rung the watcher has always had.
+            const laddered = guardCompletionCommitBeforeDone({
+                sessionDir, ticketId, workingDir: perTicketDir, fallbackDir: repo, flags: {}, rereadBackoffMs: 0,
+            });
+            assert.equal(laddered.ok, true,
+              'the Done-flip guard must resolve the sha over the R-CCR-1 fallback dir, exactly as the phantom-Done watcher does');
+            assert.equal(laddered.sha, sha, 'the accepted sha is the delivery commit, not a fabricated one');
+        });
+    } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+/**
+ * AP-EXT-ITER124-01 (collapse half) — the (per-ticket, session) dir pair has ONE
+ * resolver. Every `guardCompletionCommitBeforeDone` call site with a session-level
+ * rung available composes it through `completionDirLadder`; a hand-written
+ * `a.working_dir || b.working_dir || process.cwd()` chain SELECTS one dir where the
+ * ladder PROBES both — and two of the five chains, reading the very same pair,
+ * had already diverged on whether `state.working_dir` was in it at all.
+ */
+test('AP-EXT-ITER124-01: no guardCompletionCommitBeforeDone call site hand-writes the dir pair as an || chain', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'bin', 'mux-runner.ts'), 'utf-8');
+    const callSiteBlocks = src.split('guardCompletionCommitBeforeDone({').slice(1);
+    assert.ok(callSiteBlocks.length >= 7, `expected >= 7 guard call sites, saw ${callSiteBlocks.length}`);
+    for (const block of callSiteBlocks) {
+        const args = block.slice(0, block.indexOf('});'));
+        assert.equal(/working_dir\s*\|\|/.test(args), false,
+          `a guard call site still selects its dir with an || chain instead of completionDirLadder:\n${args}`);
+    }
+    assert.match(src, /fallbackDir\?: string;/,
+      'guardCompletionCommitBeforeDone args must declare fallbackDir — without it no caller can supply rung 1');
+});
+
 // --- R-CCR-9: guardRereadBackoffMs env handling ---
 
 test('guardRereadBackoffMs: R-CCR-9 PICKLE_GUARD_REREAD_BACKOFF_MS=0 honored — guard returns without sleeping', async () => {
