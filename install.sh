@@ -642,6 +642,37 @@ file_mtime() {
 same_size_and_mtime() {
   [ "$(file_size "$1")" = "$(file_size "$2")" ] && [ "$(file_mtime "$1")" = "$(file_mtime "$2")" ]
 }
+# Provenance manifest: every version of every agent this installer has ever shipped.
+# Regenerate with extension/scripts/gen-agent-known-hashes.sh.
+KNOWN_AGENT_HASHES="$SCRIPT_DIR/.claude/agents/.known-hashes"
+# `command -v` rather than run-and-fallback: the B-CITAIL stat bug above was caused by
+# a failing first probe emitting usable-looking stdout. Probing availability can't.
+file_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  fi
+}
+# Did the installer ever ship these bytes? Comparing against the CURRENT source alone
+# (the old same_size_and_mtime check) matched only when the agent had not changed since
+# the user's last install — i.e. only when there was nothing to migrate.
+# Args: $1 legacy file, $2 current source file, $3 agent filename.
+is_installer_output() {
+  local legacy_hash
+  legacy_hash="$(file_sha256 "$1")"
+  if [ -z "$legacy_hash" ]; then
+    # No sha256 tool: fall back to the legacy heuristic. It under-migrates rather than
+    # over-migrates, so the failure mode stays "preserve the user's file".
+    same_size_and_mtime "$1" "$2"
+    return $?
+  fi
+  # Byte-identical to what we are shipping right now.
+  [ "$legacy_hash" = "$(file_sha256 "$2")" ] && return 0
+  # Byte-identical to a version we shipped previously.
+  [ -f "$KNOWN_AGENT_HASHES" ] || return 1
+  grep -qFx -- "$3 $legacy_hash" "$KNOWN_AGENT_HASHES"
+}
 if [ -d "$SCRIPT_DIR/.claude/agents" ]; then
   mkdir -p "$AGENTS_DIR" "$MANAGED_AGENTS_DIR"
   for src_agent in "$SCRIPT_DIR"/.claude/agents/*.md; do
@@ -650,7 +681,7 @@ if [ -d "$SCRIPT_DIR/.claude/agents" ]; then
     legacy_agent="$AGENTS_DIR/$agent_file"
     managed_agent="$MANAGED_AGENTS_DIR/$agent_file"
     if [ -f "$legacy_agent" ]; then
-      if same_size_and_mtime "$legacy_agent" "$src_agent"; then
+      if is_installer_output "$legacy_agent" "$src_agent" "$agent_file"; then
         if [ -e "$managed_agent" ]; then
           rm -f "$legacy_agent"
           echo "ℹ️  Removed legacy duplicate agent $legacy_agent; managed copy already exists."
