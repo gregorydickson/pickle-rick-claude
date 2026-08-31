@@ -643,3 +643,96 @@ test('E1/AC-E1b control: a gate that RAN AND PASSED records every check as ran',
     );
   });
 });
+
+// AP-EXT-ITER121-01 — the fifth variant, and the one the AP-EXT-ITER34-01 cases above
+// could not reach: the narrowing is CORRECT and still empties the candidate set, because
+// the changed/allowed paths genuinely live under no workspace package. `e9636cf1` closed
+// this for a 7-member `WORKSPACE_ROOT_CONTROL_FILES` enumeration (`package.json` + six
+// lockfiles); every other root path — `tools/`, `scripts/`, `docs/`, `.github/` — still
+// fell through with `targetDirs: []`, ran zero checks, and reported an executed
+// `gate_run_complete` green. `hasUnmeasuredCheck` cannot catch it either: an all-`skipped`
+// check_status reads as measured by design. The disposition now hangs off the EMPTIED SET,
+// so no future root path can be the eighth omission.
+function writeRootOnlyFile(dir) {
+  const toolsDir = path.join(dir, 'app', 'tools');
+  fs.mkdirSync(toolsDir, { recursive: true });
+  fs.writeFileSync(path.join(toolsDir, 'build.js'), 'v1\n');
+  return 'app/tools/build.js';
+}
+
+test('AP-EXT-ITER121-01: allowedPaths under no workspace package is a declared skip, not an executed green', async () => {
+  const { dir } = buildNestedWorkspaceRepo();
+  try {
+    const rootOnly = writeRootOnlyFile(dir);
+    const { events, onEvent } = captureEvents();
+
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'full', checks: ['tests'],
+      allowedPaths: [rootOnly], onEvent,
+    });
+
+    assert.equal(result.status, 'green', 'nothing ran, so there is nothing to be red about');
+    assert.deepEqual(result.check_status, { tests: 'skipped' }, 'zero checks were attempted');
+    assert.ok(
+      events.some(e => e.event === 'gate_skipped' && e.data.reason === 'no_target_dir_in_scope'),
+      'a gate that ran zero checks must announce itself as a skip',
+    );
+    assert.ok(
+      !events.some(e => e.event === 'gate_run_complete'),
+      'pre-fix this reported an executed gate_run_complete pass over a gate that inspected nothing',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER121-01: a changed set under no workspace package takes the same declared skip', async () => {
+  const { dir } = buildNestedWorkspaceRepo();
+  try {
+    writeRootOnlyFile(dir);
+    execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+    execSync('git commit -m "root-only change"', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+    const { events, onEvent } = captureEvents();
+
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'changed', since: 'HEAD~1', checks: ['tests'], onEvent,
+    });
+
+    // The enumeration SUCCEEDED and is non-empty, so the AP-EXT-ITER38-02
+    // `no_changed_files` arm cannot cover this — both causes must meet at one skip.
+    assert.ok(
+      !events.some(e => e.event === 'gate_skipped' && e.data.reason === 'no_changed_files'),
+      'the changed set is non-empty; this is the narrowing arm, not the empty-enumeration arm',
+    );
+    assert.equal(result.status, 'green');
+    assert.deepEqual(result.check_status, { tests: 'skipped' });
+    assert.ok(
+      events.some(e => e.event === 'gate_skipped' && e.data.reason === 'no_target_dir_in_scope'),
+      'a non-empty changed set that resolves under no package still ran zero checks',
+    );
+    assert.ok(!events.some(e => e.event === 'gate_run_complete'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER121-01 control: a non-empty target set still runs and still reports an executed gate', async () => {
+  const { dir } = buildNestedWorkspaceRepo();
+  try {
+    writeRootOnlyFile(dir);
+    const { events, onEvent } = captureEvents();
+
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'full', checks: ['tests'],
+      allowedPaths: ['app/packages/failing/**'], onEvent,
+    });
+
+    assert.equal(result.status, 'red', 'the declared skip must not swallow a target set that resolves');
+    assert.equal(result.total_raw_failure_count, 1);
+    assert.deepEqual(result.check_status, { tests: 'ran' });
+    assert.ok(!events.some(e => e.event === 'gate_skipped'));
+    assert.ok(events.some(e => e.event === 'gate_run_complete'), 'an executed gate still reports as executed');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

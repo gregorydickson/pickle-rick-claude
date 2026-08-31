@@ -1180,6 +1180,21 @@ function resolveGateTargetDirs(
   // is false, so it filtered every package out and returned `[]` with no event,
   // and finalizeGateResult reported an executed `gate_run_complete` green over a
   // gate that ran zero checks.
+  // AP-EXT-ITER121-01: the ONE declared-skip producer for an empty target set, whatever
+  // emptied it. AC-OFFREPO-1: emit the canonical gate_skipped event (the same one the other
+  // emptyGateResult() producers use) so the skip participates in SKIP_FLAG_EVENT_NAMES
+  // governance, and return it directly rather than through finalizeGateResult, which would
+  // report the skip as an executed gate_run_complete pass.
+  // `allowedPathsUsed` rides out on the skip: an allowed-paths scope is one of the two things
+  // that can empty the target set, so reporting `false` here would hide the cause of the skip.
+  const declaredSkip = (reason: string): { targetDirs: string[]; earlyResult: GateResult } => {
+    emit('gate_skipped', { reason });
+    return {
+      targetDirs: [],
+      earlyResult: { ...emptyGateResult(opts.checks, allowedPathsUsed), elapsed_ms: Date.now() - start },
+    };
+  };
+
   // `?? []` keeps this site's disposition byte-identical: an enumeration that FAILED lands in
   // the same `length === 0` skip below that a genuinely empty diff does, which is exactly what
   // AP-EXT-ITER38-02 asked for here (declare the empty set, never narrow against it). `null` on
@@ -1189,18 +1204,21 @@ function resolveGateTargetDirs(
     : null;
   if (changedFiles && changedFiles.length === 0) {
     emit('gate_diff_scope_fallback', { since: opts.since, reason: 'no_changed_files' });
-    // AC-OFFREPO-1: also emit the canonical gate_skipped event (the same
-    // reason the other two emptyGateResult() producers use) so this skip
-    // participates in SKIP_FLAG_EVENT_NAMES governance and so runGate can
-    // return it directly without routing through finalizeGateResult, which
-    // would otherwise report the skip as an executed gate_run_complete pass.
-    emit('gate_skipped', { reason: 'no_changed_files' });
-    return { targetDirs: [], earlyResult: { ...emptyGateResult(opts.checks), elapsed_ms: Date.now() - start } };
+    return declaredSkip('no_changed_files');
   }
-  if (workspacePackages.length > 0) {
-    return { targetDirs: selectWorkspaceTargetDirs(opts, workspacePackages, allowedPathsUsed, changedFiles) };
-  }
-  return { targetDirs: [opts.workingDir] };
+  const targetDirs = workspacePackages.length > 0
+    ? selectWorkspaceTargetDirs(opts, workspacePackages, allowedPathsUsed, changedFiles)
+    : [opts.workingDir];
+  // AP-EXT-ITER121-01: the SECOND cause of an empty target set — a changed/allowed path set that
+  // resolves under no workspace package — used to fall through here with no event, and
+  // `collectGateFailures` then iterated nothing and marked every check `'skipped'`, which
+  // `hasUnmeasuredCheck` reads as measured. Gate the RESULT, not the inputs: `e9636cf1` gated the
+  // inputs with a 7-member `WORKSPACE_ROOT_CONTROL_FILES` enumeration, and every root path the
+  // set omits (`tools/`, `scripts/`, `docs/`, `.github/`) still reached a green
+  // `gate_run_complete` over zero checks. An enumeration cannot close this; one disposition on
+  // the emptied set can.
+  if (targetDirs.length === 0) return declaredSkip('no_target_dir_in_scope');
+  return { targetDirs };
 }
 
 /**
