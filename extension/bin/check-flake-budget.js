@@ -61,22 +61,39 @@ function parseArgs(argv) {
  * runs_requested=5` is byte-identical whether ~5000 tests ran or one file did, so an exported
  * shell variable turns the gate green over an unmeasured tier and leaves no trace saying so.
  * `PICKLE_GATE_DISABLED` already announces its own effect on the verdict; this does too.
+ *
+ * Now that a run is TWO child invocations, the verdict names both — a target line showing only
+ * the parallel half would hide a serial half that never ran, which is the same fake-green this
+ * field exists to prevent.
  */
-function describeMeasuredTarget(invocation) {
-    return invocation.args.join(' ');
+function describeMeasuredTarget(invocations) {
+    return invocations.map((invocation) => invocation.args.join(' ')).join(' + ');
 }
-function buildRunInvocation(env) {
+/** Kept in lockstep with the `--manifest` argument of `test:fast:parallel`/`test:fast:serial`. */
+const FAST_SERIAL_MANIFEST = 'tests/.serial-tests.json';
+/**
+ * The budget must measure what CI measures. `test:fast` is a parallel/serial split, so a budget
+ * run that executed the tier as one undifferentiated c=8 pool would be measuring a configuration
+ * nothing ships — and would keep reproducing the very contention the split removes.
+ */
+function buildRunInvocations(env) {
     const testFile = env.PICKLE_FLAKE_BUDGET_TEST_FILE?.trim();
     if (testFile) {
-        return {
-            args: ['--test', '--test-concurrency=8', testFile],
-            targetPath: testFile,
-        };
+        return [{
+                args: ['--test', '--test-concurrency=8', testFile],
+                targetPath: testFile,
+            }];
     }
-    return {
-        args: ['bin/test-runner.js', '--tier', 'fast', '--test-concurrency=8'],
-        targetPath: 'bin/test-runner.js',
-    };
+    return [
+        {
+            args: ['bin/test-runner.js', '--tier', 'fast', '--manifest', FAST_SERIAL_MANIFEST, '--manifest-mode', 'exclude', '--test-concurrency=8'],
+            targetPath: 'bin/test-runner.js',
+        },
+        {
+            args: ['bin/test-runner.js', '--tier', 'fast', '--manifest', FAST_SERIAL_MANIFEST, '--manifest-mode', 'include', '--test-concurrency=1'],
+            targetPath: 'bin/test-runner.js',
+        },
+    ];
 }
 function assertInvocationTargetExists(cwd, invocation) {
     const resolvedTarget = path.resolve(cwd, invocation.targetPath);
@@ -198,27 +215,49 @@ function runIterations(parsed, opts) {
     const runRecords = [];
     let logDir = null;
     const childEnv = { ...opts.env };
-    const invocation = buildRunInvocation(opts.env);
-    const target = describeMeasuredTarget(invocation);
+    const invocations = buildRunInvocations(opts.env);
+    const target = describeMeasuredTarget(invocations);
     delete childEnv.NODE_TEST_CONTEXT;
-    assertInvocationTargetExists(opts.cwd, invocation);
+    for (const invocation of invocations) {
+        assertInvocationTargetExists(opts.cwd, invocation);
+    }
     for (let runIndex = 0; runIndex < parsed.runs; runIndex += 1) {
-        const result = opts.spawnSyncFn(opts.execPath, invocation.args, {
-            cwd: opts.cwd,
-            env: childEnv,
-            encoding: 'utf8',
-            timeout: parsed.timeoutMs,
-            maxBuffer: SPAWN_MAX_BUFFER_BYTES,
-        });
-        if (result.error) {
-            throw result.error;
+        // Every half runs, every time — no early exit once one fails. This mirrors the
+        // `p=$?; ...; s=$?` shape of `test:fast` in package.json for the same reason: an `&&`-style
+        // short-circuit blanks the second half's result exactly when the first half's failure makes
+        // it most worth having. `halves` therefore always has one entry per invocation.
+        const halves = [];
+        for (const invocation of invocations) {
+            const result = opts.spawnSyncFn(opts.execPath, invocation.args, {
+                cwd: opts.cwd,
+                env: childEnv,
+                encoding: 'utf8',
+                timeout: parsed.timeoutMs,
+                maxBuffer: SPAWN_MAX_BUFFER_BYTES,
+            });
+            // A spawn-level error (ENOENT, ETIMEDOUT) is a harness fault, not a test result, and stays
+            // fatal exactly as before. It is deliberately NOT collected-and-continued: a half that hit
+            // the per-run timeout has already burned the budget, and running the other half would
+            // double an already-exhausted wall clock to learn nothing.
+            if (result.error) {
+                throw result.error;
+            }
+            halves.push({
+                status: result.status ?? null,
+                stdout: result.stdout ?? '',
+                stderr: result.stderr ?? '',
+            });
         }
-        if ((result.status ?? 1) !== 0) {
-            const stdout = result.stdout ?? '';
-            const stderr = result.stderr ?? '';
+        const failedHalves = halves.filter((half) => (half.status ?? 1) !== 0);
+        if (failedHalves.length > 0) {
+            const stdout = halves.map((half) => half.stdout).join('');
+            const stderr = halves.map((half) => half.stderr).join('');
             const runNumber = runIndex + 1;
-            const status = result.status ?? null;
-            const budgetable = isBudgetableTestFailure(stdout, stderr);
+            const status = failedHalves[0].status;
+            // Classify per FAILING half, never over the concatenation: a passing half always emits
+            // `ℹ tests N`, so a combined scan would read a crashed half as budgetable purely because
+            // its sibling reported results.
+            const budgetable = failedHalves.every((half) => isBudgetableTestFailure(half.stdout, half.stderr));
             const failing = budgetable ? dedupeFailureDetails(extractFailingTestDetails(stdout, stderr)) : [];
             // ONE reporting seam for both branches: every non-zero exit writes its full stdout/stderr
             // to disk before classification, so a harness crash (no ✖/not-ok/ℹ-tests markers) leaves

@@ -561,10 +561,18 @@ async function captureOkVerdict(env) {
 test('flake-budget names the fast tier it measured in the OK verdict', async () => {
   const verdict = await captureOkVerdict(envWithoutFlakeBudgetOverride());
   assert.match(verdict, /^flake-budget OK /m);
+  // FR-A1: the fast tier is a parallel/serial split, so the verdict names BOTH halves. A target
+  // naming only one half would be the same fake-green this field exists to prevent — it would
+  // read identically whether the serial half ran or was silently dropped.
   assert.match(
     verdict,
-    /target=bin\/test-runner\.js --tier fast --test-concurrency=8/,
-    `a default run must name the fast tier, got: ${verdict}`,
+    /target=bin\/test-runner\.js --tier fast --manifest tests\/\.serial-tests\.json --manifest-mode exclude --test-concurrency=8/,
+    `a default run must name the parallel half, got: ${verdict}`,
+  );
+  assert.match(
+    verdict,
+    /bin\/test-runner\.js --tier fast --manifest tests\/\.serial-tests\.json --manifest-mode include --test-concurrency=1/,
+    `a default run must name the serial half, got: ${verdict}`,
   );
 });
 
@@ -608,4 +616,147 @@ test('flake-budget names the measured target in the FAIL_BUDGET_EXCEEDED header 
     header.includes(`target=--test --test-concurrency=8 ${BIN}`),
     `the over-budget header must name the measured target, got: ${header}`,
   );
+});
+
+// --- FR-A1: the budget drives the same parallel/serial split CI runs ---------------------
+//
+// `npm run test:fast:budget` is the ONLY fast-tier execution in the release gate, so if it
+// measured the tier as one undifferentiated c=8 pool it would keep reproducing the very
+// contention the split exists to remove — and would certify a configuration nothing ships.
+
+/** Records every child argv the subject spawns, so a dropped half is visible as a missing call. */
+function recordingSpawnSyncFn(results) {
+  const calls = [];
+  let index = 0;
+  const fn = (_execPath, args) => {
+    calls.push(args);
+    const result = results[Math.min(index, results.length - 1)];
+    index += 1;
+    return result;
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+const PASSING_HALF = { status: 0, stdout: 'ℹ tests 1\nok 1 - synthetic\n', stderr: '' };
+
+test('flake-budget runs BOTH fast halves per run, parallel first then serial', async () => {
+  const spawnSyncFn = recordingSpawnSyncFn([PASSING_HALF]);
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=2', '--fail-budget=0', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: envWithoutFlakeBudgetOverride(),
+    stdout: () => {},
+    stderr: () => {},
+    spawnSyncFn,
+  });
+
+  assert.equal(code, 0);
+  assert.equal(
+    spawnSyncFn.calls.length,
+    4,
+    `2 runs x 2 halves must be 4 child spawns, got ${spawnSyncFn.calls.length}: ${JSON.stringify(spawnSyncFn.calls)}`,
+  );
+  for (let run = 0; run < 2; run += 1) {
+    const parallel = spawnSyncFn.calls[run * 2];
+    const serial = spawnSyncFn.calls[run * 2 + 1];
+    assert.deepEqual(
+      parallel,
+      ['bin/test-runner.js', '--tier', 'fast', '--manifest', 'tests/.serial-tests.json', '--manifest-mode', 'exclude', '--test-concurrency=8'],
+      `run ${run + 1} parallel half argv drifted`,
+    );
+    assert.deepEqual(
+      serial,
+      ['bin/test-runner.js', '--tier', 'fast', '--manifest', 'tests/.serial-tests.json', '--manifest-mode', 'include', '--test-concurrency=1'],
+      `run ${run + 1} serial half argv drifted`,
+    );
+  }
+});
+
+// The `&&` short-circuit defect this shape exists to prevent, asserted from the failing side:
+// the serial half must still be SPAWNED after the parallel half fails, and its failure must
+// still count. `test:integration` had exactly this bug once already.
+test('flake-budget measures the serial half even after the parallel half fails', async () => {
+  const failingParallel = { status: 1, stdout: 'ℹ tests 1\n✖ parallel-side failure (5ms)\n', stderr: '' };
+  const spawnSyncFn = recordingSpawnSyncFn([failingParallel, PASSING_HALF]);
+  const stdout = [];
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=1', '--fail-budget=1', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: envWithoutFlakeBudgetOverride(),
+    stdout: (msg) => stdout.push(msg),
+    stderr: () => {},
+    spawnSyncFn,
+  });
+
+  assert.equal(code, 0, 'one failure against a budget of 1 stays within budget');
+  assert.equal(
+    spawnSyncFn.calls.length,
+    2,
+    'the serial half must still run after the parallel half fails — no && short-circuit',
+  );
+  assert.deepEqual(spawnSyncFn.calls[1].slice(-3), ['--manifest-mode', 'include', '--test-concurrency=1']);
+  assert.ok(
+    stdout.join('\n').includes('parallel-side failure'),
+    `the failing half must be attributed, got: ${stdout.join('\n')}`,
+  );
+});
+
+test('flake-budget counts a serial-half-only failure against the budget', async () => {
+  const failingSerial = { status: 1, stdout: 'ℹ tests 1\n✖ serial-side failure (5ms)\n', stderr: '' };
+  const spawnSyncFn = recordingSpawnSyncFn([PASSING_HALF, failingSerial]);
+  const stderr = [];
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=1', '--fail-budget=0', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: envWithoutFlakeBudgetOverride(),
+    stdout: () => {},
+    stderr: (msg) => stderr.push(msg),
+    spawnSyncFn,
+  });
+
+  assert.equal(code, 1, 'a serial-half failure must red the gate exactly like a parallel-half one');
+  assert.ok(
+    stderr.some((line) => line.includes('serial-side failure')),
+    `the serial half's failure must be named, got: ${stderr.join('\n')}`,
+  );
+});
+
+// Classification is per FAILING half, never over the concatenation: a passing half always emits
+// `ℹ tests N`, so a combined scan would read a CRASHED half as a budgetable flake purely because
+// its sibling reported results — turning a harness crash into a tolerated flake.
+test('flake-budget still throws on a crashed half that a passing sibling would otherwise mask', async () => {
+  const crashedSerial = { status: 1, stdout: '', stderr: 'SyntaxError: Unexpected token\n' };
+  const spawnSyncFn = recordingSpawnSyncFn([PASSING_HALF, crashedSerial]);
+  const stderr = [];
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=1', '--fail-budget=2', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: envWithoutFlakeBudgetOverride(),
+    stdout: () => {},
+    stderr: (msg) => stderr.push(msg),
+    spawnSyncFn,
+  });
+
+  assert.equal(code, 1, 'a non-budgetable crash must fail even with budget remaining');
+  assert.ok(
+    stderr.some((line) => line.includes('failed before reporting test results')),
+    `a crashed half must report as non-budgetable, got: ${stderr.join('\n')}`,
+  );
+});
+
+test('PICKLE_FLAKE_BUDGET_TEST_FILE still collapses to a single invocation', async () => {
+  const spawnSyncFn = recordingSpawnSyncFn([PASSING_HALF]);
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=1', '--fail-budget=0', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...envWithoutFlakeBudgetOverride(), PICKLE_FLAKE_BUDGET_TEST_FILE: BIN },
+    stdout: () => {},
+    stderr: () => {},
+    spawnSyncFn,
+  });
+
+  assert.equal(code, 0);
+  assert.equal(spawnSyncFn.calls.length, 1, 'the single-file override must not run a serial half');
+  assert.deepEqual(spawnSyncFn.calls[0], ['--test', '--test-concurrency=8', BIN]);
 });

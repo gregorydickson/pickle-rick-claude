@@ -1,0 +1,41 @@
+{
+  "_comment": "Serial sub-tier for @tier: fast, consumed by npm run test:fast:serial / test:fast:parallel. The FLOOR of `entries` is DERIVED from scripts/audit-subprocess-heavy-tests.sh: regenerate with `bash scripts/audit-subprocess-heavy-tests.sh --emit-fast-manifest`, and that same audit FAILS (AC-A1a) if a file it calls load-sensitive is missing here. Do not hand-curate the derived floor.",
+  "_evidence": {
+    "tests/spawn-morty-worker-gate.test.js": "beta.23 CI RUN 4 (runWorkerGate: honors worker_test_gate_timeout_ms). NOT statically derivable: its spawn timeout is `CAP_WORKER_GATE`, an identifier imported from tests/__helpers__/subprocess-cap.js:213, so no numeric band can evaluate it. Measured 19.46s serial.",
+    "tests/beta6-ga-session-resume.test.js": "beta.23 CI RUN 1 (beta6-ga-session-resume). NOT statically derivable: spawnSync(process.execPath, [BIN], { timeout: 60000 }) is shape-identical to ~90 sibling fast tests (e.g. tests/check-readiness.test.js), and a predicate wide enough to name it costs +144% fast-tier wall clock (measured). Measured 0.44s serial; its setup.js spawns complete in ~106ms against the 60000ms budget, so it is not timeout-load-sensitive — see FR-A3 / ticket 11226cc4 for the disposition."
+  },
+  "entries": [
+    "tests/anatomy-park-scope.test.js",
+    "tests/audit-subprocess-heavy-tests-missing-timeout.test.js",
+    "tests/beta6-ga-session-resume.test.js",
+    "tests/census-worker-gate-red-tests.test.js",
+    "tests/check-readiness-forward-ref-fixture.test.js",
+    "tests/check-readiness-machinability.test.js",
+    "tests/check-readiness-manifest.test.js",
+    "tests/check-readiness-skip.test.js",
+    "tests/check-readiness-tilde-paths.test.js",
+    "tests/check-scope-diff-emits-event.test.js",
+    "tests/codex-git-boundary-parity.test.js",
+    "tests/dsan2-regression-corpus.test.js",
+    "tests/eslint-plugin-pickle.test.js",
+    "tests/gemini-backend.test.js",
+    "tests/grok-backend.test.js",
+    "tests/guarded-reset.test.js",
+    "tests/kimi-backend.test.js",
+    "tests/log-activity-schema-deploy-parity.test.js",
+    "tests/log-watcher.test.js",
+    "tests/monitor-mode-swap.test.js",
+    "tests/morty-watcher.test.js",
+    "tests/raw-morty.test.js",
+    "tests/readiness-signature-change-caller-gap.test.js",
+    "tests/refinement-ac-shape-gate.test.js",
+    "tests/refinement-source-prd-relative.test.js",
+    "tests/regression-test-fast-integration-3x.test.js",
+    "tests/runner-entry-recovery.test.js",
+    "tests/spawn-morty-worker-gate.test.js",
+    "tests/subsystem-watcher.test.js",
+    "tests/szechuan-scope.test.js",
+    "tests/ticket-completion-evidence-predicate.test.js",
+    "tests/unref-sole-settle-path.test.js"
+  ]
+}

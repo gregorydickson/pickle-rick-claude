@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTENSION_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_ROOT="$EXTENSION_ROOT/tests"
 SERIAL_MANIFEST_PATH="$EXTENSION_ROOT/tests/integration/.serial-tests.json"
+FAST_SERIAL_MANIFEST_PATH="$EXTENSION_ROOT/tests/.serial-tests.json"
 MISSING_TIMEOUT_SCANNER="$SCRIPT_DIR/audit-subprocess-heavy-tests-missing-timeout.mjs"
 MISSING_TIMEOUT_BASELINE="$SCRIPT_DIR/subprocess-heavy-missing-timeout-baseline.json"
 UNPROVISIONED_SCANNER="$SCRIPT_DIR/audit-unprovisioned-binary-spawns.mjs"
@@ -14,13 +15,24 @@ UNPROVISIONED_SCANNER="$SCRIPT_DIR/audit-unprovisioned-binary-spawns.mjs"
 # --scan-root <dir>: run against an alternate directory instead of the default
 # $EXTENSION_ROOT/tests (e.g. an fs.mkdtemp fixture dir in a test, kept OUT of
 # extension/tests so AC-4 stays satisfiable). Consumed before positional args.
+#
+# --emit-fast-manifest: regenerate tests/.serial-tests.json from this script's OWN
+# load-sensitive verdict, so the derived floor is never hand-transcribed. It writes the
+# UNION of the verdict and the existing entries — never a replacement — so regeneration
+# cannot silently drop an entry or fall below the floor the AC-A1a check enforces.
+# Explicit-flag only: the default run performs no write.
 SCAN_ROOT_OVERRIDE=""
+EMIT_FAST_MANIFEST=0
 ARGS=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --scan-root)
       SCAN_ROOT_OVERRIDE="$2"
       shift 2
+      ;;
+    --emit-fast-manifest)
+      EMIT_FAST_MANIFEST=1
+      shift
       ;;
     *)
       ARGS+=("$1")
@@ -34,12 +46,31 @@ if [ -n "$SCAN_ROOT_OVERRIDE" ]; then
 fi
 
 # SUBPROCESS_HEAVY_PATTERN (source of truth):
-#   spawnSync('bash'|'sh', [firstArg, ...], { ..., timeout: N, ... })
-#   where firstArg is NOT a '-' flag (i.e., it is a script path/variable)
-#   and N <= SUBPROCESS_HEAVY_TIMEOUT_MS (5000)
+#   <spawnFn>(<program>, [firstArg, ...], { ..., timeout: N, ... })
+#   where <spawnFn> is any child_process spawn entry point, <program> is any expression,
+#   and firstArg is NOT a '-' flag (i.e., it is a script path/variable).
+#
+# The program was formerly the two-member enumeration 'bash'|'sh'. That is the
+# incomplete-set shape CLAUDE.md names, and this repo had already MEASURED its cost:
+# tests/serial-tests-reasons-coverage.test.js:120-151 documents tsc-gate.test.js starving
+# the fast tier through `spawnSync(process.execPath, ...)` — invisible to the audit — and
+# holds it serial by hand because "serialization is therefore the ONLY guard on it".
+# Reading the program as an expression removes the distinction the hand-list compensated for.
+#
+# Two arms, one scan:
+#   program is bash/sh AND N <= SUBPROCESS_HEAVY_TIMEOUT_MS -> FAIL (hard, shipped scope)
+#   otherwise             N <= SUBPROCESS_HEAVY_WARN_MS      -> WARN (load-sensitive)
+# The FAIL arm keeps its narrow shipped scope deliberately. Widening it converts 12 existing
+# files into hard audit failures and reds the release gate — a new halt path, which the
+# PRIME DIRECTIVE forbids. A short timeout on a non-bash spawn degrades to "serialize this",
+# which is strictly the gentler disposition.
+#
+# A non-numeric timeout (`timeout: CAP_WORKER_GATE`, an imported constant) is NOT classified:
+# the audit cannot evaluate it statically, and guessing would be worse than the manifest entry
+# that records the measurement instead.
 #
 # Allowlist (silences a candidate):
-#   1. File path present in tests/integration/.serial-tests.json
+#   1. File path present in tests/.serial-tests.json or tests/integration/.serial-tests.json
 #   2. File contains the comment marker: // SERIAL: <reason>
 #
 # Excluded tiers:
@@ -63,20 +94,55 @@ fi
 
 status=0
 
-# is_in_manifest <rel_path>
-# Returns 0 (true) if the relative path is in the serial-tests manifest.
+# is_in_manifest <rel_path> [manifest_path...]
+# Returns 0 (true) if the relative path is in ANY of the given serial-tests manifests,
+# defaulting to every manifest this repo ships. Resolution is EXTENDED across the fast and
+# integration manifests rather than forked into a second predicate: membership in a serial
+# manifest is one fact, and asking it once keeps the allowlist a single concept.
 is_in_manifest() {
   local file_rel="$1"
-  if [ ! -f "$SERIAL_MANIFEST_PATH" ]; then
-    return 1
+  shift
+  local manifests=("$@")
+  if [ "${#manifests[@]}" -eq 0 ]; then
+    manifests=("$SERIAL_MANIFEST_PATH" "$FAST_SERIAL_MANIFEST_PATH")
   fi
-  node - "$SERIAL_MANIFEST_PATH" "$file_rel" <<'NODE'
+  local manifest
+  for manifest in "${manifests[@]}"; do
+    [ -f "$manifest" ] || continue
+    if node - "$manifest" "$file_rel" <<'NODE'
 const fs = require('fs');
 const [, , manifestPath, fileRel] = process.argv;
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 const normalized = fileRel.replace(/\\/g, '/');
 process.exit(manifest.entries.some((e) => e === normalized) ? 0 : 1);
 NODE
+    then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# declared_tier <file>
+# Prints the tier from a leading `// @tier: <name>` header, mirroring test-runner's own
+# `firstMeaningfulLine` semantics (shebang and blank lines skipped, then the FIRST line
+# decides). Matching that exactly matters: test-runner selects files by this header BEFORE
+# applying a manifest, so a file whose header it reads as null is never serialized however
+# it is listed.
+declared_tier() {
+  awk '
+    /^#!/ { next }
+    /^[ \t]*$/ { next }
+    {
+      if (match($0, /^[ \t]*\/\/[ \t]*@tier:[ \t]*[A-Za-z0-9_-]+[ \t]*$/)) {
+        line = $0
+        sub(/^[ \t]*\/\/[ \t]*@tier:[ \t]*/, "", line)
+        sub(/[ \t]*$/, "", line)
+        print line
+      }
+      exit
+    }
+  ' "$1"
 }
 
 # find_heavy_candidate <file> <fail_threshold_ms> <warn_threshold_ms>
@@ -101,26 +167,35 @@ const firstLine = content.split('\n')[0];
 if (firstLine.includes('@tier: expensive')) process.exit(1);
 
 // SUBPROCESS_HEAVY_PATTERN:
-//   spawnSync('bash'|'sh', [nonFlagFirstArg, ...]) with explicit timeout
+//   <spawnFn>(<program>, [nonFlagFirstArg, ...]) with explicit timeout
 //
 // The '-' exclusion prevents false positives on inline commands like:
 //   spawnSync('bash', ['-lc', 'command -v git'])
 //   spawnSync('bash', ['-c', 'echo test'])
-const bashSpawnRe = /\bspawnSync\s*\(\s*['"](?:bash|sh)['"]\s*,\s*\[(?!\s*['"][^'"]*-)/g;
+const SPAWN_FNS = 'spawnSync|execFileSync|execFile|spawn|fork';
+const spawnRe = new RegExp(
+  String.raw`\b(?:${SPAWN_FNS})\s*\(\s*([^,()]+?)\s*,\s*\[(?!\s*['"][^'"]*-)`,
+  'g',
+);
+const SHELL_PROGRAM_RE = /^['"](?:bash|sh)['"]$/;
 let warnReason = null; // first WARN-band candidate, used only if no FAIL found
 let m;
-while ((m = bashSpawnRe.exec(content)) !== null) {
+while ((m = spawnRe.exec(content)) !== null) {
+  const program = m[1].trim();
   const block = content.slice(m.index, m.index + 600);
   const timeoutMatch = block.match(/\btimeout\s*:\s*([0-9][0-9_]*)\b/);
-  if (!timeoutMatch) continue; // no explicit timeout: not flagged by this audit
+  if (!timeoutMatch) continue; // no explicit / no statically-readable timeout
   const t = parseInt(timeoutMatch[1].replace(/_/g, ''), 10);
-  const reason = `spawnSync(bash/sh, script, { timeout: ${t} })`;
-  if (t <= FAIL_THRESHOLD) {
-    process.stdout.write(`FAIL ${reason}\n`);
+  const isShell = SHELL_PROGRAM_RE.test(program);
+  // The FAIL reason keeps its shipped wording — tests/audit-subprocess-heavy-tests.test.js:26
+  // pins "subprocess-heavy candidate not serialized", and the FAIL band's scope is unchanged.
+  if (isShell && t <= FAIL_THRESHOLD) {
+    process.stdout.write(`FAIL spawnSync(bash/sh, script, { timeout: ${t} })\n`);
     process.exit(0);
   }
   if (t <= WARN_THRESHOLD && warnReason === null) {
-    warnReason = reason; // remember; keep scanning in case a FAIL-band spawn exists
+    // remember; keep scanning in case a FAIL-band spawn exists
+    warnReason = `spawn(${program}, script, { timeout: ${t} })`;
   }
 }
 
@@ -134,6 +209,9 @@ NODE
 }
 
 AUDITED_FILES=()
+# Every @tier: fast file this run classified load-sensitive — the DERIVED verdict, collected
+# whether or not it is already in the manifest, so --emit-fast-manifest writes the full floor.
+FAST_LOAD_SENSITIVE=()
 
 audit_file() {
   local file="$1"
@@ -157,6 +235,31 @@ audit_file() {
 
   local candidate_tag="${candidate_out%% *}"      # FAIL | WARN
   local candidate_reason="${candidate_out#* }"    # reason string
+
+  # AC-A1a — the fast tier's producer/consumer seam. For @tier: fast the WARN band stops being
+  # advice and becomes a gate: a load-sensitive file absent from tests/.serial-tests.json FAILS.
+  #
+  # Neither the integration manifest nor a `// SERIAL:` marker substitutes here, and that is the
+  # point rather than an oversight: only membership in the manifest `test:fast:serial` names
+  # actually moves a fast test out of the c=8 pool. Accepting either as a silencer would recreate
+  # exactly the defect this ticket closes — an annotation that reads as serialized while the test
+  # still runs at full concurrency.
+  #
+  # This is a LOCAL refusal: it sets `status`, which this script returns. It breaks no loop and
+  # terminates no pipeline (PRIME DIRECTIVE).
+  # `file_rel` is only a MANIFEST KEY when the prefix strip above actually fired — i.e. the file
+  # lives under $EXTENSION_ROOT. Under `--scan-root <tmpdir>` it stays absolute, and a file outside
+  # the repo can never be listed in a repo manifest, so AC-A1a must not demand it. Those files fall
+  # through to the advisory WARN, which is the honest verdict for a synthetic fixture.
+  if [ "$candidate_tag" = "WARN" ] && [ "$file_rel" != "$file" ] && [ "$(declared_tier "$file")" = "fast" ]; then
+    FAST_LOAD_SENSITIVE+=("$file_rel")
+    if is_in_manifest "$file_rel" "$FAST_SERIAL_MANIFEST_PATH"; then
+      return
+    fi
+    echo "$file_rel: load-sensitive subprocess spawn ($candidate_reason) missing from tests/.serial-tests.json — it would run in the --test-concurrency=8 pool; add it (bash scripts/audit-subprocess-heavy-tests.sh --emit-fast-manifest)" >&2
+    status=1
+    return
+  fi
 
   # Allowlist (silences BOTH bands): serial manifest
   if is_in_manifest "$file_rel"; then
@@ -227,6 +330,36 @@ elif [ "${#AUDITED_FILES[@]}" -gt 0 ]; then
     done <<< "$unprovisioned_out"
     status=1
   fi
+fi
+
+# --emit-fast-manifest: write the UNION of this run's derived verdict and the manifest's
+# existing entries. Union rather than replacement is what makes regeneration safe to run at
+# any time: it can raise the floor but never drop an entry that a measurement (rather than the
+# static verdict) put there. Runs only under the explicit flag, and clears the AC-A1a failures
+# it just resolved so emit-then-report is a single coherent verdict.
+if [ "$EMIT_FAST_MANIFEST" -eq 1 ]; then
+  node - "$FAST_SERIAL_MANIFEST_PATH" ${FAST_LOAD_SENSITIVE[@]+"${FAST_LOAD_SENSITIVE[@]}"} <<'NODE'
+const fs = require('fs');
+const [, , manifestPath, ...derived] = process.argv;
+let current = {};
+try {
+  current = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) ?? {};
+} catch {
+  current = {};
+}
+const entries = [...new Set([...(current.entries ?? []), ...derived])].sort();
+// Spread `current` first so sibling keys (the `_evidence` rationale for entries the static
+// verdict cannot derive) survive regeneration. Rewriting `{ entries }` alone would delete the
+// only record of WHY those entries exist, on a command whose whole purpose is to be safe to re-run.
+fs.writeFileSync(manifestPath, `${JSON.stringify({ ...current, entries }, null, 2)}\n`);
+process.stderr.write(`audit-subprocess-heavy-tests: wrote ${entries.length} entries to ${manifestPath}\n`);
+NODE
+  emit_exit=$?
+  if [ "$emit_exit" -ne 0 ]; then
+    echo "[error: --emit-fast-manifest failed to write $FAST_SERIAL_MANIFEST_PATH]" >&2
+    exit 1
+  fi
+  status=0
 fi
 
 if [ "$status" -eq 0 ]; then
