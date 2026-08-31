@@ -60,10 +60,13 @@ fi
 # Two arms, one scan:
 #   program is bash/sh AND N <= SUBPROCESS_HEAVY_TIMEOUT_MS -> FAIL (hard, shipped scope)
 #   otherwise             N <= SUBPROCESS_HEAVY_WARN_MS      -> WARN (load-sensitive)
-# The FAIL arm keeps its narrow shipped scope deliberately. Widening it converts 12 existing
-# files into hard audit failures and reds the release gate — a new halt path, which the
-# PRIME DIRECTIVE forbids. A short timeout on a non-bash spawn degrades to "serialize this",
-# which is strictly the gentler disposition.
+# The FAIL arm deliberately KEEPS the bash/sh program enumeration. That is the load-bearing
+# narrowing: dropping it there would convert 12 existing files into hard audit failures and red
+# the release gate — a new halt path, which the PRIME DIRECTIVE forbids. A short timeout on a
+# non-bash spawn instead degrades to "serialize this", which is strictly the gentler disposition.
+# (The FAIL arm's spawn-FUNCTION set does widen with the shared scan, so an
+# `execFileSync('bash', [script], { timeout: <=5000 })` now fails as `spawnSync` always did.
+# Measured: zero such call sites in the corpus today, so this widening reds nothing.)
 #
 # A non-numeric timeout (`timeout: CAP_WORKER_GATE`, an imported constant) is NOT classified:
 # the audit cannot evaluate it statically, and guessing would be worse than the manifest entry
@@ -93,6 +96,8 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 status=0
+# AC-A1a verdict, kept out of `status` so --emit-fast-manifest can clear THIS and only this.
+a1a_status=0
 
 # is_in_manifest <rel_path> [manifest_path...]
 # Returns 0 (true) if the relative path is in ANY of the given serial-tests manifests,
@@ -257,7 +262,11 @@ audit_file() {
       return
     fi
     echo "$file_rel: load-sensitive subprocess spawn ($candidate_reason) missing from tests/.serial-tests.json — it would run in the --test-concurrency=8 pool; add it (bash scripts/audit-subprocess-heavy-tests.sh --emit-fast-manifest)" >&2
-    status=1
+    # Recorded SEPARATELY from `status`, never folded into it here. --emit-fast-manifest resolves
+    # exactly this failure and must be able to clear it without also clearing an unrelated red
+    # (a missing-timeout callsite, an unprovisioned binary) — a blanket `status=0` after emit would
+    # turn the emit flag into a way to green the whole audit.
+    a1a_status=1
     return
   fi
 
@@ -359,7 +368,9 @@ NODE
     echo "[error: --emit-fast-manifest failed to write $FAST_SERIAL_MANIFEST_PATH]" >&2
     exit 1
   fi
-  status=0
+else
+  # Not emitting: the AC-A1a verdict is part of the audit's exit code.
+  [ "$a1a_status" -ne 0 ] && status=1
 fi
 
 if [ "$status" -eq 0 ]; then
