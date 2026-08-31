@@ -86,6 +86,58 @@ test('AC-2/AC-8: a lock held by a LIVE pid is never stolen; the happy path acqui
   }
 });
 
+// --- D2 (R-DSPW): a LIVE holder is never judged dead on the lock file's AGE ------
+//
+// The AC-2/AC-8 test above is headed "no age arm", but it drives a lock file created
+// milliseconds earlier — it would pass unchanged if an age-based steal arm were added with
+// any threshold above ~0ms, so that half of its header is prose, not a measurement. This is
+// the live-pid / stale-mtime disagreement case from
+// prds/BUG-REPORT-2026-07-26-gitattr-double-trailer-and-duplicate-worker-spawn.md (R-DSPW):
+// two live spawn-morty processes raced one ticket because something judged a live worker dead.
+// A stale file mtime is not evidence of death and a live pid is, so the two must never be
+// allowed to disagree in the file's favour. Load-bearing rather than theoretical: a large-tier
+// worker legitimately holds this lock for up to 4800s, so any future "stale lock" cleanup added
+// in good faith would evict a live worker and reproduce R-DSPW exactly.
+
+test('D2/R-DSPW: a lock held by a LIVE pid is refused, not stolen, when the lock file is hours stale', async () => {
+  const sessionRoot = mkSessionRoot();
+  try {
+    const held = await acquireWorkerSpawnLock(sessionRoot);
+    assert.equal(held.inert, false);
+
+    const lockPath = workerSpawnLockPath(sessionRoot);
+    const payloadBefore = fs.readFileSync(lockPath, 'utf-8');
+
+    // The disagreement: the holder is alive, the file looks abandoned.
+    const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+    fs.utimesSync(lockPath, sixHoursAgo, sixHoursAgo);
+    assert.ok(
+      Date.now() - fs.statSync(lockPath).mtimeMs > 5 * 60 * 60 * 1000,
+      'precondition: the lock file must actually read as hours old',
+    );
+
+    // Liveness decides, so the verdict is identical to the fresh-lock case.
+    await assert.rejects(
+      () => acquireWorkerSpawnLock(sessionRoot, 200),
+      (err) => {
+        assert.ok(err instanceof WorkerSpawnLockContendedError);
+        assert.equal(err.incumbentPid, String(process.pid));
+        return true;
+      },
+    );
+
+    // Refused, not stolen-and-retaken: the original holder's bytes are untouched, and no
+    // steal sub-lock was ever opened. Asserting only the rejection above would also pass if
+    // the lock had been evicted and re-taken by a racing acquire.
+    assert.equal(fs.readFileSync(lockPath, 'utf-8'), payloadBefore, 'the live holder must still own the lock');
+    assert.equal(fs.existsSync(`${lockPath}.steal`), false);
+
+    releaseWorkerSpawnLock(held);
+  } finally {
+    fs.rmSync(sessionRoot, { recursive: true, force: true });
+  }
+});
+
 // --- AC-4: a SIGKILLed holder is reclaimed, not stranded ------------------------
 
 test('AC-4: a lock held by a dead pid is reclaimed by the next acquire', async () => {
