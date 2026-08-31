@@ -503,3 +503,143 @@ test('AP-EXT-ITER107-01: unreadable `git rev-parse` is not HEAD "" — drift is 
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// E1 (B-OFFREPO) — the RECORD half of this file's thesis.
+//
+// Every case above proves a skip is distinguishable by its EVENTS
+// (`gate_skipped` fires, `gate_run_complete` does not). That oracle is blind to
+// the field an in-memory caller actually reads: `GateResult.check_status`. A
+// caller holding the returned object never saw the event stream, and the verdict
+// it does see was ALWAYS `green` with ZERO failures — so a status or
+// failure-count oracle greens over the whole defect. These cases assert the
+// MEASUREMENT RECORD instead.
+//
+// The two shapes are the ones a repo-agnostic gate actually meets, and they
+// deliberately collapse to ONE door (`no_project_type_detected`): an
+// unrecognised project type, and a package that EXISTS but sits one level too
+// deep for `resolveProjectRootOneLevelDown`'s depth-1 scan. Neither shape is
+// covered elsewhere — the sibling record assert in
+// `convergence-gate-no-disown-wiring.test.js` reaches this door only via a
+// two-child-marker root, and no fixture in this repo puts a package at depth 2.
+//
+// `status` stays `green` in all three, ON PURPOSE. A skip is a non-halting
+// disposition: every strict consumer keys on `status === 'red'`, so reddening a
+// skip would convert an honest "not measured" into a new halt path. Honesty is a
+// REPORTING property (`check_status`); halting is a DISPOSITION (`status`). The
+// third case is the other direction — without a gate that genuinely RAN, a fix
+// that stamps `skipped` on everything would pass the first two.
+// ---------------------------------------------------------------------------
+
+const ALL_CHECKS = ['typecheck', 'lint', 'tests'];
+
+// `async` + `await` are load-bearing: a non-async wrapper returning `fn(dir)` runs its
+// `finally` when the promise is CREATED, deleting the fixture before the gate ever reads it.
+// The skip cases would then still pass — an absent directory has no project type either — i.e.
+// pass for the wrong reason, which is the same fake-green this file exists to prevent.
+async function withTmpDir(prefix, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  try {
+    return await fn(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function runGateOnFixture(dir) {
+  const { events, onEvent } = captureEvents();
+  const result = await runGate({
+    workingDir: dir, mode: 'strict', scope: 'full', checks: ALL_CHECKS, onEvent,
+  });
+  return { result, events };
+}
+
+function assertEveryCheckRecorded(result, expected, why) {
+  for (const check of ALL_CHECKS) {
+    assert.equal(result.check_status?.[check], expected, `${check}: ${why}`);
+  }
+}
+
+test('E1/AC-E1b: an UNRECOGNISED project type records every check as skipped, not as a pass', async () => {
+  await withTmpDir('cg-e1-no-type-', async dir => {
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'main.rb'), "puts 'no marker the gate knows'\n");
+
+    const { result, events } = await runGateOnFixture(dir);
+
+    assert.equal(result.status, 'green', 'a skip is not a red — the disposition must stay non-halting');
+    assert.equal(result.failures.length, 0, 'nothing ran, so nothing failed');
+    assertEveryCheckRecorded(
+      result, 'skipped',
+      'the gate could not classify this project, so it attempted no check and must SAY so; ' +
+      'green with an absent or "ran" record is indistinguishable from a gate that measured everything',
+    );
+    assert.equal(
+      events.find(e => e.event === 'gate_run_complete'), undefined,
+      'gate_run_complete must NOT be emitted — this gate executed no check',
+    );
+  });
+});
+
+test('E1/AC-E1b: a monorepo package DEEPER THAN ONE LEVEL records every check as skipped', async () => {
+  await withTmpDir('cg-e1-depth2-', async dir => {
+    // `packages/app/` is the ordinary workspace layout, but `resolveProjectRootOneLevelDown`
+    // scans IMMEDIATE children only: `packages/` carries no marker, so the real package one
+    // level below it is never found and the gate takes the same no_project_type_detected exit.
+    const pkgDir = path.join(dir, 'packages', 'app');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({
+      name: 'app', version: '1.0.0', scripts: { test: 'node -e "process.exit(0)"' },
+    }, null, 2));
+
+    const { result, events } = await runGateOnFixture(dir);
+
+    assert.equal(result.status, 'green', 'an unreachable package is not a regression — do not halt on it');
+    assert.equal(result.failures.length, 0, 'nothing ran, so nothing failed');
+    assertEveryCheckRecorded(
+      result, 'skipped',
+      'the package sits below the depth-1 scan, so the gate ran nothing against it; reporting ' +
+      'this as measured would certify a monorepo the gate never entered',
+    );
+    assert.equal(
+      events.find(e => e.event === 'gate_run_complete'), undefined,
+      'gate_run_complete must NOT be emitted — the package was never reached',
+    );
+  });
+});
+
+test('E1/AC-E1b control: a gate that RAN AND PASSED records every check as ran', async () => {
+  // The other direction. The two cases above are satisfied by ANY implementation that
+  // stamps `skipped` unconditionally, which would be the same fake-green bug pointing the
+  // other way — a gate that ran and passed reported as unmeasured. This case is what makes
+  // the pair a DISCRIMINATION: same `status: 'green'`, opposite measurement record.
+  await withTmpDir('cg-e1-ran-', async dir => {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'ran-and-passed',
+      version: '1.0.0',
+      scripts: {
+        typecheck: 'node -e "process.exit(0)"',
+        lint: 'node -e "process.exit(0)"',
+        test: 'node -e "process.exit(0)"',
+      },
+    }, null, 2));
+
+    const { result, events } = await runGateOnFixture(dir);
+
+    assert.equal(result.status, 'green', 'every check passed');
+    assert.equal(result.failures.length, 0, 'a passing gate reports no failures');
+    assertEveryCheckRecorded(
+      result, 'ran',
+      'this gate genuinely executed the check — recording it as skipped would discard a real ' +
+      'measurement and is the same conflation in reverse',
+    );
+    assert.ok(
+      events.find(e => e.event === 'gate_run_complete'),
+      'a gate that executed its checks must report an executed run',
+    );
+    assert.equal(
+      events.find(e => e.event === 'gate_skipped'), undefined,
+      'nothing was skipped',
+    );
+  });
+});
