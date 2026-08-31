@@ -273,6 +273,51 @@ function printWithinBudgetReport(summary: RunSummary, stdout: (msg: string) => v
   }
 }
 
+interface RunHalf {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Executes every half of one run and returns one record per invocation.
+ *
+ * Every half runs, every time — no early exit once one fails. This mirrors the
+ * `p=$?; ...; s=$?` shape of `test:fast` in package.json for the same reason: an `&&`-style
+ * short-circuit blanks the second half's result exactly when the first half's failure makes it
+ * most worth having.
+ *
+ * A spawn-level error (ENOENT, ETIMEDOUT) is a harness fault, not a test result, and stays fatal
+ * exactly as before. It is deliberately NOT collected-and-continued: a half that hit the per-run
+ * timeout has already burned the budget, and running the other would double an already-exhausted
+ * wall clock to learn nothing.
+ */
+function runHalves(
+  invocations: RunInvocation[],
+  parsed: ParsedArgs,
+  opts: Required<Pick<CheckFlakeBudgetMainOpts, 'cwd' | 'env' | 'execPath' | 'spawnSyncFn'>>,
+): RunHalf[] {
+  return invocations.map((invocation) => {
+    const result = opts.spawnSyncFn(opts.execPath, invocation.args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      encoding: 'utf8',
+      timeout: parsed.timeoutMs,
+      maxBuffer: SPAWN_MAX_BUFFER_BYTES,
+    });
+
+    if (result.error) {
+      throw result.error;
+    }
+
+    return {
+      status: result.status ?? null,
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? '',
+    };
+  });
+}
+
 function runIterations(
   parsed: ParsedArgs,
   opts: Required<Pick<CheckFlakeBudgetMainOpts, 'cwd' | 'env' | 'execPath' | 'spawnSyncFn'>>,
@@ -289,34 +334,7 @@ function runIterations(
   }
 
   for (let runIndex = 0; runIndex < parsed.runs; runIndex += 1) {
-    // Every half runs, every time — no early exit once one fails. This mirrors the
-    // `p=$?; ...; s=$?` shape of `test:fast` in package.json for the same reason: an `&&`-style
-    // short-circuit blanks the second half's result exactly when the first half's failure makes
-    // it most worth having. `halves` therefore always has one entry per invocation.
-    const halves: { status: number | null; stdout: string; stderr: string }[] = [];
-    for (const invocation of invocations) {
-      const result = opts.spawnSyncFn(opts.execPath, invocation.args, {
-        cwd: opts.cwd,
-        env: childEnv,
-        encoding: 'utf8',
-        timeout: parsed.timeoutMs,
-        maxBuffer: SPAWN_MAX_BUFFER_BYTES,
-      });
-
-      // A spawn-level error (ENOENT, ETIMEDOUT) is a harness fault, not a test result, and stays
-      // fatal exactly as before. It is deliberately NOT collected-and-continued: a half that hit
-      // the per-run timeout has already burned the budget, and running the other half would
-      // double an already-exhausted wall clock to learn nothing.
-      if (result.error) {
-        throw result.error;
-      }
-
-      halves.push({
-        status: result.status ?? null,
-        stdout: result.stdout ?? '',
-        stderr: result.stderr ?? '',
-      });
-    }
+    const halves = runHalves(invocations, parsed, { ...opts, env: childEnv });
 
     const failedHalves = halves.filter((half) => (half.status ?? 1) !== 0);
     if (failedHalves.length > 0) {
