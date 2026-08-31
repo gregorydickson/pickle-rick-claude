@@ -35,6 +35,7 @@ const {
   evaluateFailedFlipSuppression,
   readActiveFailedFlipHolds,
   resolvePreTicket,
+  noRunnableTicketsRemain,
   detectAndRecoverHeadRegression,
 } = await import('../bin/mux-runner.js');
 
@@ -342,6 +343,59 @@ test('held ticket is excluded from the scheduling pass: runner selects past it',
     assert.equal(resolvePreTicket(fix.sessionDir, null), 'bbbb2222');
     // A held current_ticket is never re-engaged with stale evidence.
     assert.equal(resolvePreTicket(fix.sessionDir, TICKET), 'bbbb2222');
+  } finally { rmSync(fix.tmp, { recursive: true, force: true }); }
+});
+
+// R-EROS regression pin (ticket 38892302, FR-D2). Disposition: STALE — measured, not read.
+//
+// The filed defect: an In-Progress ticket held by a failed-flip suppression was COUNTED AS
+// FAILED, so the L5 gate at mux-runner.ts:12252 (`!preTicket && noRunnableTicketsRemain()`)
+// stamped the honest terminal `recovery_exhausted` over work that had not failed.
+//
+// The precondition still holds and is asserted here rather than assumed: the hold IS active
+// and `resolvePreTicket` DOES return null, i.e. the ticket is genuinely unselectable — the
+// exact condition the buggy predicate collapsed into "no runnable tickets remain". What
+// changed is that `noRunnableTicketsRemain` now answers from each ticket's OWN status, so it
+// returns false and the gate does not fire.
+//
+// The all-Failed positive control is in the SAME test on purpose: without it this pin would
+// also pass if `noRunnableTicketsRemain` were uniformly false (e.g. stubbed to `() => false`),
+// which would assert nothing.
+test('R-EROS: In-Progress ticket under an ACTIVE hold is not counted as Failed (no recovery_exhausted)', () => {
+  const fix = makeFixture({ recoveryAttempts: [suppressionEntry(1)] });
+  try {
+    // Precondition 1: the hold is real. Fixture ticket status is "In Progress".
+    assert.ok(readActiveFailedFlipHolds(fix.sessionDir).has(TICKET), 'hold must be active');
+
+    // Precondition 2: the held ticket is genuinely unselectable — preTicket resolves null.
+    // This is what the pre-fix code read as "the roster is all-Failed".
+    assert.equal(resolvePreTicket(fix.sessionDir, TICKET), null, 'held ticket is unselectable');
+
+    // The invariant: unselectable !== terminal. An In-Progress ticket is unfinished work.
+    // With preTicket null (above), this false is the whole reason the L5 gate
+    // `!preTicket && noRunnableTicketsRemain(...)` cannot fire and stamp recovery_exhausted.
+    assert.equal(
+      noRunnableTicketsRemain(fix.sessionDir),
+      false,
+      'In-Progress ticket must NOT read as a terminal roster',
+    );
+  } finally { rmSync(fix.tmp, { recursive: true, force: true }); }
+});
+
+test('R-EROS control: a genuinely all-Failed(no-progress) roster DOES read as terminal', () => {
+  // Positive control for the pin above — proves noRunnableTicketsRemain can return true,
+  // so the assertions there discriminate rather than riding on a uniformly-false predicate.
+  const fix = makeFixture({
+    ticketFrontmatter:
+      `---\nid: ${TICKET}\nstatus: "Failed"\norder: 1\nfailed_reason: oversized_no_progress\n---\n# T\n`,
+  });
+  try {
+    assert.equal(
+      noRunnableTicketsRemain(fix.sessionDir),
+      true,
+      'all-Failed(no-progress) roster is terminal',
+    );
+    assert.equal(resolvePreTicket(fix.sessionDir, TICKET), null, 'no ticket is selectable');
   } finally { rmSync(fix.tmp, { recursive: true, force: true }); }
 });
 
