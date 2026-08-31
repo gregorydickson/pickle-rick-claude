@@ -2,7 +2,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, runCmd, safeErrorMessage, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, resolveWorkerTestGateTimeoutMs, scrubGateEnv, classifyTicketTier, VALID_TICKET_COMPLEXITY_TIERS, extractFrontmatter, loadPickleSettingsBag, resolveCodegraphSettings, readFrontmatterField, upsertFrontmatterField, ticketFilePath, TIER_LIFECYCLE, TIER_DIFF_ENVELOPE, } from '../services/pickle-utils.js';
+import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, runCmd, safeErrorMessage, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, resolveWorkerTestGateTimeoutMs, resolveTierStallThresholdMs, scrubGateEnv, classifyTicketTier, VALID_TICKET_COMPLEXITY_TIERS, extractFrontmatter, loadPickleSettingsBag, resolveCodegraphSettings, readFrontmatterField, upsertFrontmatterField, ticketFilePath, TIER_LIFECYCLE, TIER_DIFF_ENVELOPE, } from '../services/pickle-utils.js';
 import { spawn, execFileSync } from 'child_process';
 import { PromiseTokens, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD } from '../types/index.js';
 import { CodegraphService } from '../services/codegraph-service.js';
@@ -1381,7 +1381,27 @@ function parseWorkerGateTscFailures(output, extensionDir) {
     const fallbackMessage = output.split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? 'tsc failed';
     return buildFallbackGateFailure('tsc', '', fallbackMessage);
 }
-export async function runWorkerGateTestCommand(scriptName, extensionDir, workerTestGateTimeoutMs) {
+/**
+ * Waits on ONE tier run through the stall detector.
+ *
+ * R-TIERWEDGE (FR-B1): the stall window N is the SMALLER of the configured gate budget and
+ * `resolveTierStallThresholdMs()`. The asymmetry is the whole point, and each direction
+ * answers a different failure:
+ *
+ * - A budget SHORTER than N still bounds the wait, so an operator (or a fixture) asking for a
+ *   tight gate gets one — `tests/spawn-morty-worker-gate.test.js:855` configures
+ *   `worker_test_gate_timeout_ms: 6000` and requires the report to name 6000 ms.
+ * - A budget LONGER than N cannot widen the wait. That is the defect: the budget is the
+ *   per-machine tune-back root CLAUDE.md's "Tune-Back CUJs" #1 tells operators to raise, and
+ *   `resolveWorkerTestGateTimeoutMs` applies no upper clamp, so sourcing N from it alone meant
+ *   `export PICKLE_WORKER_TEST_FAST_TIMEOUT_MS=10800000` silently pushed hang detection from
+ *   minutes out to three hours.
+ *
+ * Taking the minimum keeps both properties in one expression rather than a second branch, and
+ * neither direction can falsely flag a slow-but-live run: the detector fires only on the
+ * ABSENCE of output growth, never on elapsed wall-clock.
+ */
+export async function runWorkerGateTestCommand(scriptName, extensionDir, workerTestGateTimeoutMs, stallThresholdMs = Math.min(workerTestGateTimeoutMs, resolveTierStallThresholdMs())) {
     // B-OFFREPO (AC-OFFREPO-2d): the package manager is RESOLVED from the detected
     // project type instead of a hardcoded `'npm'`. `detectProjectType` returns `npm`
     // for this repo's `extension/` (it carries `package-lock.json`), so the resolved
@@ -1391,17 +1411,17 @@ export async function runWorkerGateTestCommand(scriptName, extensionDir, workerT
     const packageManager = resolvePackageManagerBin(extensionDir, 'npm');
     const commandName = `${packageManager} run ${scriptName}`;
     // R-TIERWEDGE: a tier run streams TAP output continuously, so waiting on it uses the
-    // stall detector (no output growth for `workerTestGateTimeoutMs`), never a flat
-    // wall-clock timeout — a slow-but-live run must survive no matter how long the whole
-    // tier takes, as long as it keeps producing output.
-    const testResult = await runCommand(packageManager, ['run', scriptName], extensionDir, { stallThresholdMs: workerTestGateTimeoutMs });
+    // stall detector (no output growth for `stallThresholdMs`), never a flat wall-clock
+    // timeout — a slow-but-live run must survive no matter how long the whole tier takes,
+    // as long as it keeps producing output.
+    const testResult = await runCommand(packageManager, ['run', scriptName], extensionDir, { stallThresholdMs });
     const failures = testResult.ok
         ? []
         : testResult.timedOut
             ? [{
                     name: '__timeout__',
                     file: commandName,
-                    message: testResult.timeoutMessage ?? `killed after ${workerTestGateTimeoutMs}ms`,
+                    message: testResult.timeoutMessage ?? `killed after ${stallThresholdMs}ms`,
                 }]
             : parseWorkerGateTestFailures(`${testResult.stdout}\n${testResult.stderr}`, extensionDir);
     return {

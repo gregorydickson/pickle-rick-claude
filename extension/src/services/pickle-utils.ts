@@ -166,6 +166,19 @@ export const DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS = 600_000;
 export const WORKER_TEST_GATE_TIMEOUT_FLOOR_MS = 60_000;
 export const WORKER_TEST_GATE_TIMEOUT_ENV_VAR = 'PICKLE_WORKER_TEST_FAST_TIMEOUT_MS';
 
+// R-TIERWEDGE: N for the tier-run STALL detector — the longest a tier run may produce NO
+// output at all before it is reported as stalled. A tier run streams TAP continuously, so
+// absence of growth is the observable the hang actually presents; CPU is not (a zero-CPU run
+// with a growing log is merely slow). Deliberately a SEPARATE number from
+// `DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS` above even though the two coincide today — that one is
+// a wall-clock budget operators are told to raise per-machine, and why raising it must not
+// widen this window is explained where the two meet (`spawn-morty.ts:runWorkerGateTestCommand`).
+// Floor for operator override: 60_000 ms (one minute of total silence is already abnormal for
+// a streaming tier run; below that, normal scheduling jitter would report false stalls).
+export const DEFAULT_TIER_STALL_THRESHOLD_MS = 600_000;
+export const TIER_STALL_THRESHOLD_FLOOR_MS = 60_000;
+export const TIER_STALL_THRESHOLD_ENV_VAR = 'PICKLE_TIER_STALL_THRESHOLD_MS';
+
 // The two scrubbed keys the trailer compose site (`backend-spawn.ts`) also WRITES.
 // Named here so that file can import the binding instead of restating the literal:
 // dropping either from the array below is then a compile error at the compose site,
@@ -1004,6 +1017,41 @@ export function resolveWorkerTestGateTimeoutMs(
     return timeoutMs;
   }
   return DEFAULT_WORKER_TEST_GATE_TIMEOUT_MS;
+}
+
+/**
+ * R-TIERWEDGE: resolve N for the tier-run stall detector (`spawn-morty.ts:runCommand`'s
+ * `stallThresholdMs` mode) — the longest a tier run may emit NOTHING before it is reported
+ * as stalled.
+ *
+ * Same shape as `resolveWorkerTestGateTimeoutMs` above: env override wins, parsed as a strict
+ * positive integer and clamped up to `TIER_STALL_THRESHOLD_FLOOR_MS`; every other input —
+ * absent, blank, non-numeric, zero, negative, or fractional — falls back to the compiled
+ * `DEFAULT_TIER_STALL_THRESHOLD_MS`. There is deliberately no `pickle_settings.json` arm:
+ * that file is a worker-forbidden write and `install.sh` MANAGED_KEYS strips such pins on
+ * every deploy (B-SSAT), so an env override is the sanctioned tune-back.
+ *
+ * `env` is an explicit parameter so callers — unit tests especially — can resolve against a
+ * literal object instead of ambient process state. That is what keeps this key OUT of
+ * `PICKLE_GATE_SCRUBBED_ENV_KEYS`: a test that never reads `process.env` cannot be
+ * contaminated by an operator's export, so the enumeration does not need to grow (root
+ * CLAUDE.md: prefer the formulation that needs no list).
+ *
+ * Reporting only — a resolved stall window never aborts anything. The detector that consumes
+ * it stamps `stalled: no output growth for <N>ms` and lets the caller's existing disposition
+ * run.
+ */
+export function resolveTierStallThresholdMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const rawEnv = env[TIER_STALL_THRESHOLD_ENV_VAR];
+  if (typeof rawEnv === 'string' && rawEnv.trim().length > 0) {
+    const parsed = Number(rawEnv);
+    if (Number.isFinite(parsed) && Number.isInteger(parsed) && parsed > 0) {
+      return Math.max(parsed, TIER_STALL_THRESHOLD_FLOOR_MS);
+    }
+  }
+  return DEFAULT_TIER_STALL_THRESHOLD_MS;
 }
 
 export function resolveJudgeBackend(
