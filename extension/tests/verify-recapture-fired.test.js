@@ -345,6 +345,56 @@ test('verify-recapture.stale-earlier-anatomy-window does not satisfy the latest 
   }
 });
 
+// AP-BIN-ITER18-01. `isInWindow` is a TWO-arm predicate — `ts >= start` AND `ts < end` — and
+// only the lower arm was fixtured. Both existing out-of-window cases (`wrong-phase`,
+// `stale-earlier-anatomy-window`) put the event BEFORE the window opens, so deleting `&& ts < end`
+// left the suite 92/92 GREEN while the latest anatomy window silently became half-open. The upper
+// arm is what stops a recapture emitted AFTER anatomy-park handed off — `latestAnatomyWindow`
+// closes on the next phase marker, and `enabled_convergence_files` is an operator list, so adding
+// a second phase's convergence file makes the very same producer emit into the very same
+// session-scoped sink past the window's end and false-green AC-DR-02.
+// A/B on ONE session and ONE activity day file — same session name, same event, only `ts` moves —
+// so the event is provably findable in both halves and the upper bound is the sole cause.
+test('verify-recapture.a recapture emitted AFTER the anatomy window closes does not satisfy the AC', () => {
+  const session = makeSession(baseState(HISTORY_WINDOW_HIT));
+  const dataRoot = makeDataRoot();
+  const sessionName = path.basename(session);
+  const windowEnd = Date.parse('2026-05-02T12:00:00.000Z');
+  // Same local day as RECAPTURE_TS, so the day bound cannot be what rejects it.
+  const afterWindowTs = '2026-05-02T12:30:00.000Z';
+  const dayFile = path.join(
+    dataRoot,
+    'activity',
+    `${formatLocalDateKey(new Date(afterWindowTs))}.jsonl`,
+  );
+  try {
+    writeActivityEvents(dataRoot, [recaptureEvent(sessionName, { ts: afterWindowTs })]);
+
+    const afterWindow = runVerifier(session, dataRoot);
+    assert.equal(afterWindow.status, 1);
+    assert.equal(afterWindow.runtimeArtifact.pass, false);
+    assert.equal(afterWindow.runtimeArtifact.failure_reason, 'recapture-event-missing');
+    assert.deepEqual(afterWindow.runtimeArtifact.evidence.anatomy_windows, [
+      { start: Date.parse('2026-05-02T11:00:00.000Z'), end: windowEnd },
+    ]);
+    // The scan DID read the day and see the event — it was rejected on membership, not skipped by
+    // the day bound or lost to a no-measurement arm. Without this the case could pass vacuously.
+    assert.equal(afterWindow.runtimeArtifact.evidence.activity_count, 1);
+    assert.ok(Date.parse(afterWindowTs) >= windowEnd, 'fixture must sit past the window end');
+
+    // Same session, same day file, same event — only `ts` moves back inside the window.
+    writeFileSync(dayFile, `${JSON.stringify(recaptureEvent(sessionName))}\n`);
+    const inWindow = runVerifier(session, dataRoot);
+    assert.equal(inWindow.status, 0, inWindow.stderr);
+    assert.equal(inWindow.runtimeArtifact.pass, true);
+    assert.equal(inWindow.runtimeArtifact.failure_reason, null);
+    assert.equal(inWindow.runtimeArtifact.evidence.activity_count, 1);
+  } finally {
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
 test('verify-recapture.ignores timestamp-only history entries when closing the anatomy window', () => {
   const session = makeSession(baseState([
     { step: 'pickle', timestamp: '2026-05-02T10:00:00.000Z' },
