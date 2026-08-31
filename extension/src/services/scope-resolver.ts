@@ -880,7 +880,10 @@ function _runRgImportWalk(pattern: string, root: string, timeoutMs: number): str
   // `--no-unicode` is CORRECTNESS, not a tuning knob. `pattern` is an alternation,
   // and ripgrep 14.x's Unicode matcher returns ZERO matches for it even though each
   // branch matches on its own (measured on rg 14.1.0, the version `ubuntu-latest`
-  // installs: `A|B` -> no matches, `A` -> a.ts, `B` -> b.ts). Restructuring the
+  // installs, over a fixture where only `d.ts` matches the default-import branch
+  // and only `b.ts` the named-import one: `A|B` -> NO matches, `A` -> d.ts,
+  // `B` -> b.ts — the union matching strictly less than either branch alone,
+  // which is the engine being wrong rather than the pattern). Restructuring the
   // pattern does NOT avoid it — grouping, factoring the shared `import` prefix, and
   // two separate `-e` flags were each measured and each still returns zero; only
   // leaving the Unicode matcher does. rg 13.0.0 and 15.2.0 are unaffected, which is

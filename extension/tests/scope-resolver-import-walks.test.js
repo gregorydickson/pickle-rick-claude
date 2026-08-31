@@ -185,7 +185,11 @@ function makeGitRepo() {
     return repo;
 }
 
-function runComputeOneHopWithPathOverride(repo, shimDir) {
+// `prepend: true` puts shimDir AHEAD of the real PATH, so shimmed tools win while
+// unshimmed ones still resolve to the host binary. The default is an EXCLUSIVE
+// override (shimDir alone), which is what guarantees ENOENT for anything absent
+// from shimDir regardless of what the host has installed.
+function runComputeOneHopWithPathOverride(repo, shimDir, { prepend = false } = {}) {
     const script = `
 import { computeOneHop } from './services/scope-resolver.js';
 const warnings = [];
@@ -196,7 +200,7 @@ process.stdout.write(JSON.stringify({ result, warnings }));
     const out = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
         cwd: path.resolve(import.meta.dirname, '..'),
         encoding: 'utf-8',
-        env: { ...process.env, PATH: shimDir },
+        env: { ...process.env, PATH: prepend ? `${shimDir}${path.delimiter}${process.env.PATH}` : shimDir },
         timeout: RUNNER_SPAWN_TIMEOUT_MS,
     });
     assert.equal(out.status, 0, out.stderr || out.stdout);
@@ -416,17 +420,7 @@ test('A2: the rg import walk passes --no-unicode (rg 14.x returns zero matches f
         fs.chmodSync(rgShim, 0o755);
 
         // Prepend so `rg` resolves to the recorder while git/grep stay real.
-        const script = `
-import { computeOneHop } from './services/scope-resolver.js';
-computeOneHop(['a.ts'], ${JSON.stringify(repo)}, { findImportersTimeoutMs: ${HANG_TIMEOUT_MS} });
-`;
-        const out = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
-            cwd: path.resolve(import.meta.dirname, '..'),
-            encoding: 'utf-8',
-            env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
-            timeout: RUNNER_SPAWN_TIMEOUT_MS,
-        });
-        assert.equal(out.status, 0, out.stderr || out.stdout);
+        runComputeOneHopWithPathOverride(repo, shimDir, { prepend: true });
 
         assert.ok(fs.existsSync(argvPath), 'rg shim was never invoked — the walk did not reach the rg arm');
         const argv = fs.readFileSync(argvPath, 'utf-8').split('\n').filter((s) => s.length > 0);
