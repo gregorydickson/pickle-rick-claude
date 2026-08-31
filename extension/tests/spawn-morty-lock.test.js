@@ -181,15 +181,6 @@ test('AC-4: a lock held by a dead pid is reclaimed by the next acquire', async (
 // residue a hard kill leaves behind is RECLAIMABLE by the next acquire, so it cannot harm a
 // subsequent run.
 
-function isAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function waitFor(predicate, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -225,8 +216,11 @@ test('AC-4 (real kill): a holder ACTUALLY SIGKILLed mid-hold strands a RECLAIMAB
     assert.equal(beforeKill?.payload, String(holderPid), 'precondition: a LIVE holder owns the lock');
 
     // The actual hard kill. No process.on('exit'), no SIGTERM handler, nothing in-process runs.
+    // Awaiting the child's own 'exit' beats polling `process.kill(pid, 0)`, which SUCCEEDS on a
+    // not-yet-reaped zombie and would read a dead holder as live.
+    const exited = new Promise((resolve) => child.once('exit', resolve));
     process.kill(holderPid, 'SIGKILL');
-    await waitFor(() => !isAlive(holderPid), 5000, 'the holder process is actually dead');
+    await exited;
 
     // The ticket's premise, pinned: an exit handler cannot prevent the strand. A test that did
     // not observe the lock surviving the kill would prove nothing about the reclaim below.
@@ -235,8 +229,8 @@ test('AC-4 (real kill): a holder ACTUALLY SIGKILLed mid-hold strands a RECLAIMAB
     // The PRODUCER assertion the synthetic-pid test cannot make: the strand carries the dead
     // holder's real pid, not the empty payload that would be unreclaimable by design.
     const stranded = inspectLockFile(lockPath);
+    // An empty payload here would be the R-GRLS strand shape: unreclaimable by design.
     assert.equal(stranded?.payload, String(holderPid), 'the stranded payload must name the dead holder');
-    assert.notEqual(stranded?.payload, '', 'an empty payload would be unreclaimable — the R-GRLS strand shape');
 
     // The property that matters: the next acquire reclaims it and proceeds.
     const reclaimed = await acquireWorkerSpawnLock(sessionRoot);
