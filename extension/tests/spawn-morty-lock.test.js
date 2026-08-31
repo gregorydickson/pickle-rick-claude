@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   acquireWorkerSpawnLock,
   releaseWorkerSpawnLock,
@@ -163,6 +163,92 @@ test('AC-4: a lock held by a dead pid is reclaimed by the next acquire', async (
 
     releaseWorkerSpawnLock(reclaimed);
   } finally {
+    fs.rmSync(sessionRoot, { recursive: true, force: true });
+  }
+});
+
+// The test above seeds a synthetic dead pid, so it exercises the reclaim DECODER only.
+// It cannot observe the PRODUCER: whether a real holder publishes a reclaimable bare-pid
+// payload *atomically*. That half is what actually failed in R-GRLS — the original lock was
+// created empty and written second, and a holder killed inside that window stranded a payload
+// `isDeadPidPayload` can never prove dead (see state-manager.ts `acquireLockFile`). So the two
+// tests are complementary: this one stays red if the published payload regresses, the synthetic
+// one stays green if it does.
+//
+// SCOPE OF THE CLAIM (read this before editing the title): nothing here "survives SIGKILL". The
+// kernel does not deliver SIGKILL to any handler, so no in-process cleanup runs — the assertions
+// below pin exactly that. What is demonstrated is narrower and is the property that matters: the
+// residue a hard kill leaves behind is RECLAIMABLE by the next acquire, so it cannot harm a
+// subsequent run.
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitFor(predicate, timeoutMs, label) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.fail(`timed out after ${timeoutMs}ms waiting for: ${label}`);
+}
+
+test('AC-4 (real kill): a holder ACTUALLY SIGKILLed mid-hold strands a RECLAIMABLE lock', async () => {
+  const sessionRoot = mkSessionRoot();
+  const scriptDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-worker-lock-child-')));
+  const scriptPath = path.join(scriptDir, 'holder.mjs');
+  fs.writeFileSync(scriptPath, `
+    import { acquireWorkerSpawnLock } from ${JSON.stringify(pathToFileURL(SPAWN_MORTY_BIN).href)};
+    await acquireWorkerSpawnLock(${JSON.stringify(sessionRoot)});
+    process.stdout.write('HELD\\n');
+    setInterval(() => {}, 1000);
+  `);
+
+  // `timeout` is a hard backstop only; the assertions below kill the child far sooner.
+  const child = spawn(process.execPath, [scriptPath], { stdio: ['ignore', 'pipe', 'inherit'], timeout: 30_000 });
+  const lockPath = workerSpawnLockPath(sessionRoot);
+
+  try {
+    let buf = '';
+    child.stdout.on('data', (chunk) => { buf += chunk.toString(); });
+    // Bounded: a child that fails to start must fail this test, never hang the tier.
+    await waitFor(() => buf.includes('HELD'), 5000, 'the child reported it holds the lock');
+
+    const holderPid = child.pid;
+    const beforeKill = inspectLockFile(lockPath);
+    assert.equal(beforeKill?.payload, String(holderPid), 'precondition: a LIVE holder owns the lock');
+
+    // The actual hard kill. No process.on('exit'), no SIGTERM handler, nothing in-process runs.
+    process.kill(holderPid, 'SIGKILL');
+    await waitFor(() => !isAlive(holderPid), 5000, 'the holder process is actually dead');
+
+    // The ticket's premise, pinned: an exit handler cannot prevent the strand. A test that did
+    // not observe the lock surviving the kill would prove nothing about the reclaim below.
+    assert.ok(fs.existsSync(lockPath), 'SIGKILL must strand the lock file — no handler can prevent this');
+
+    // The PRODUCER assertion the synthetic-pid test cannot make: the strand carries the dead
+    // holder's real pid, not the empty payload that would be unreclaimable by design.
+    const stranded = inspectLockFile(lockPath);
+    assert.equal(stranded?.payload, String(holderPid), 'the stranded payload must name the dead holder');
+    assert.notEqual(stranded?.payload, '', 'an empty payload would be unreclaimable — the R-GRLS strand shape');
+
+    // The property that matters: the next acquire reclaims it and proceeds.
+    const reclaimed = await acquireWorkerSpawnLock(sessionRoot);
+    assert.equal(reclaimed.inert, false);
+    assert.equal(inspectLockFile(lockPath)?.payload, String(process.pid), 'the lock must now name the live reclaimer');
+
+    // No leak into a subsequent run.
+    releaseWorkerSpawnLock(reclaimed);
+    assert.ok(!fs.existsSync(lockPath), 'the reclaimed lock must be gone after release');
+  } finally {
+    try { child.kill('SIGKILL'); } catch { /* already dead */ }
+    fs.rmSync(scriptDir, { recursive: true, force: true });
     fs.rmSync(sessionRoot, { recursive: true, force: true });
   }
 });

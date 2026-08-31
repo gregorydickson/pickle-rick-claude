@@ -853,7 +853,23 @@ function discardRegistry(registryPath) {
 }
 /**
  * Synchronously reap all fixtures recorded in the registry.
- * Called from process.on('exit') so it runs even on SIGKILL of the test runner.
+ *
+ * Registered by the suites that spawn fixtures via `process.on('exit')`
+ * (`tests/fixture-lifetime-and-registry.test.js`, `tests/integration/orphan-worker-reaper-*.js`).
+ *
+ * WHAT THAT COVERS: a normal exit, and an exit forced by an uncaught fatal — both of which run
+ * exit handlers.
+ *
+ * WHAT IT DOES NOT COVER, and cannot: **SIGKILL, `process.abort()`, and an OOM kill of the test
+ * runner.** The kernel does not deliver SIGKILL to a handler, so no in-process cleanup — this one
+ * or any other — runs on that path. An earlier version of this comment claimed the opposite
+ * ("so it runs even on SIGKILL"); it was false (R-GRLS / FR-B2).
+ *
+ * Unlike file descriptors, the fixtures leaked that way are child PROCESSES, so the kernel does
+ * not reclaim them when the runner dies. The recovery is out-of-process and deferred:
+ * `reapPreviousRunFixtures` sweeps the surviving registry at the NEXT run's startup. That is the
+ * only thing standing between an abruptly-killed runner and an orphaned fixture — so the residue
+ * is bounded and self-healing across runs, but it is NOT cleaned up at the moment of death.
  */
 export function reapFixturesSync(registryPath, platform = process.platform) {
     if (platform === 'win32')
