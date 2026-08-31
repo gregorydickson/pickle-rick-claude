@@ -145,6 +145,7 @@ function resume(sessionDir, dataRoot) {
 const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
 
 // AC-GA-EXIT-4 #3 (no throw / no migration error): a beta.6 fixture reads back clean.
+// FR-A3 disposition (ticket 11226cc4): LOAD-SENSITIVITY, not tight-timeout — this suite's setup.js spawns finish in ~106ms against a 60000ms budget (566x margin), and serialized it ran 1.0s x3 clean under 24 spinners, so the beta.23 RUN 1 failure was 8-way pool contention and no timeout here is tight.
 test('beta6-ga-session-resume: resumes clean — StateManager.read does not throw and preserves shape', () => {
     withSession(({ statePath }) => {
         const sm = new StateManager();

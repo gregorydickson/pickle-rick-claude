@@ -851,6 +851,7 @@ test.skip('runWorkerGate: skips test:fast when SKIP_WORKER_TEST_GATE=1 and logs 
   assert.match('SKIP_WORKER_TEST_GATE', /SKIP_WORKER_TEST_GATE/);
 });
 
+// FR-A3 disposition (ticket 11226cc4): LOAD-SENSITIVITY, not tight-timeout — raising was ALREADY tried and did not hold (worker_test_gate_timeout_ms 250ms -> 6000ms in 0e1ee7ab, 2026-05-20, months before the beta.23 RUN 4 failure); serialized this case ran 8512ms against its 60000ms budget (7.05x margin) under 24 spinners, so serialization is the remediation and no timeout is raised.
 test('runWorkerGate: honors worker_test_gate_timeout_ms, reports timeout details, and kills npm descendants', { timeout: 60_000 }, async () => {
   const root = makeTmpRoot();
   try {

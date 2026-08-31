@@ -299,6 +299,7 @@ test('AP-EXT-ITER92-01: a child_process call shape in COMMENT PROSE is a candida
 // must be dead once its parent returns, the unguarded control's child must survive it.
 // Both call shapes are assembled from split tokens and written to a tmp script, so THIS
 // file never itself reads as a candidate to the audit it is testing.
+// FR-A3 disposition (ticket 11226cc4): LOAD-SENSITIVITY, not tight-timeout — the audit derives this file from its own 15000ms-band spawn at :31, and the 800ms below is a deadline that must FIRE rather than a budget that must not be exceeded (a slower box only makes the child MORE certainly dead); serialized it ran 3.0s x3 clean under 24 spinners on 8 cores.
 test('AP-EXT-ITER21-01: `timeout:` really bounds a detached unref\'d child, it is not a token that only satisfies the grep', async () => {
   const dir = tmpScanRoot();
   const FN = 'spawn';
