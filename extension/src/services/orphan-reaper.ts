@@ -1006,3 +1006,199 @@ export function reapPreviousRunFixtures(registryDir: string, platform: NodeJS.Pl
   } catch { /* no previous registry or cleanup error */ }
   return reaped;
 }
+
+// ============================================================================
+// C2 — source-derived posttest TMPDIR sweep (long-tail mkdtempSync producers)
+// ============================================================================
+
+/**
+ * This module's own tests/ tree — present in the dev checkout (where `npm test` and this
+ * file's own unit tests run) and ABSENT from the deployed extension (`install.sh` rsyncs
+ * with `--exclude='tests'`). `deriveTestOwnedTmpPrefixes` degrades to `[]` when it is
+ * missing rather than throwing, so a caller resolving this default never needs to know
+ * which context it is running in.
+ */
+const DEFAULT_TEST_SOURCE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../tests');
+
+/**
+ * Captures every single- or double-quoted string literal that ends in a path-segment separator
+ * (`-`, `_`, `.`) — the universal shape of an `mkdtemp` prefix.
+ *
+ * Deliberately NOT anchored to the `mkdtempSync(path.join(os.tmpdir(), …` call site. The
+ * dominant producer in this suite passes its prefix through a one-hop local helper
+ * (`makeTmp('ratrail-session-')`, `mkTmpDir('judge-codex-')`, `mkFixtureTmpDir(prefix)`), so a
+ * call-site-anchored regex sees a variable, not a literal. Measured against the live TMPDIR, the
+ * call-site form attributed 15 of 4971 leaked directories where this harvest attributes 1839 —
+ * and keying on helper NAMES instead would just re-create the enumerated set (`makeTmp`,
+ * `makeTmpRoot`, `mkTmp`, `makeTempDir`, `makeSession`, `makeRepo`, `makeFixture`, …) that this
+ * ticket exists to remove.
+ *
+ * Harvesting this broadly is safe only because of the attribution rule in
+ * `sweepDerivedTmpDirFixtures`; the reasoning lives there, next to the `rmSync` it licenses.
+ */
+const SEPARATOR_TERMINATED_LITERAL_RE = /['"]([^'"\\\n]{1,120}[-_.])['"]/g;
+
+/**
+ * A derived prefix must be a plain filename-safe token. One positive rule, no blacklist: it
+ * rejects path separators (never part of a basename prefix), whitespace, and — the case this
+ * suite actually produces — template-interpolation source text such as `${prefix}` picked up
+ * from a test that writes generated code inside a backtick literal.
+ */
+const PLAIN_PATH_TOKEN_RE = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * The exact suffix `fs.mkdtempSync` appends: six characters drawn from `[A-Za-z0-9]`. Measured
+ * on this platform rather than assumed. Requiring it is what makes a broad literal harvest a
+ * SAFE attribution rule instead of a dangerous one.
+ */
+const MKDTEMP_SUFFIX_RE = /^[A-Za-z0-9]{6}$/;
+
+/** Length of the random suffix `fs.mkdtempSync` appends to its prefix. */
+const MKDTEMP_SUFFIX_LEN = 6;
+
+let derivedTestOwnedTmpPrefixCache: { key: string; prefixes: string[] } | null = null;
+
+/** Recursively collects `.js` file paths under `dir`; best-effort, `[]` on any read failure. */
+function walkJsFiles(dir: string): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...walkJsFiles(full));
+    } else if (entry.isFile() && entry.name.endsWith('.js')) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/**
+ * Derives the set of candidate test-owned TMPDIR fixture prefixes DIRECTLY from test source,
+ * by scanning every `.js` file under `testsDir` for separator-terminated string literals.
+ *
+ * This is the CLAUDE.md-mandated alternative to a hand-maintained prefix catalog: a prefix
+ * that exists in the tree is derived, one that does not is not, and the set updates itself
+ * the moment a test file changes — no list to edit, no 952nd-prefix silent miss. Crucially it
+ * needs no call-site analysis either, so a prefix reaches the set identically whether its test
+ * calls `mkdtempSync` directly, hands it to a one-hop local helper, or imports
+ * `mkFixtureTmpDir` from another file. There is nothing here to teach about a new indirection.
+ *
+ * The set is deliberately a SUPERSET of the real prefixes — it holds ordinary string literals
+ * that no producer ever passes to `mkdtemp` — which is what lets it stay list-free. Those
+ * extra members are inert under the attribution rule; see `sweepDerivedTmpDirFixtures`.
+ *
+ * Deliberate under-counts, stated rather than hidden: a producer whose prefix does not end in
+ * `-`/`_`/`.`, or that builds its root with `mkdirSync` rather than `mkdtempSync`, is not
+ * derived and its directories are left alone. Under-counting leaks a directory; over-counting
+ * deletes a stranger's data, and on macOS `os.tmpdir()` is a per-user directory shared with
+ * every other application. The asymmetry decides the direction.
+ *
+ * Memoized per `testsDir` value for the lifetime of the process (mirrors `tmpRootPrefixes`'s
+ * cache shape); a caller that needs a fresh read across a mutated tree passes a distinct
+ * `testsDir`.
+ *
+ * Returns `[]`, never throws, when `testsDir` is absent or unreadable — the deployed
+ * extension's compiled `services/` has no sibling `tests/` (`install.sh --exclude='tests'`),
+ * so this is the ordinary production answer, not an error condition.
+ */
+export function deriveTestOwnedTmpPrefixes(testsDir: string = DEFAULT_TEST_SOURCE_DIR): string[] {
+  if (derivedTestOwnedTmpPrefixCache?.key === testsDir) return derivedTestOwnedTmpPrefixCache.prefixes;
+  const prefixes = new Set<string>();
+  for (const filePath of walkJsFiles(testsDir)) {
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+    for (const match of content.matchAll(SEPARATOR_TERMINATED_LITERAL_RE)) {
+      const literal = match[1];
+      if (literal && PLAIN_PATH_TOKEN_RE.test(literal)) prefixes.add(literal);
+    }
+  }
+  const result = [...prefixes].sort();
+  derivedTestOwnedTmpPrefixCache = { key: testsDir, prefixes: result };
+  return result;
+}
+
+export type SweepDerivedTmpDirFixturesOpts = {
+  /** Root to scan for leaked fixture directories. Defaults to `os.tmpdir()`. */
+  tmpDir?: string;
+  /** Test source tree to derive prefixes from. Defaults to `DEFAULT_TEST_SOURCE_DIR`. */
+  testsDir?: string;
+  /** Injectable prefix list (tests) — wins over deriving from `testsDir`. */
+  prefixes?: string[];
+};
+
+export type SweepDerivedTmpDirFixturesResult = {
+  /** Entries under `tmpDir` matching a derived prefix. */
+  scanned: number;
+  /** Of `scanned`, how many were successfully removed. */
+  removed: number;
+  /** The prefix set the sweep matched against, for caller-side reporting. */
+  prefixes_used: string[];
+};
+
+/**
+ * Posttest TMPDIR sweep for the long tail of `mkdtempSync` producers that never adopted
+ * `tests/helpers/fixture-tmpdir.js`'s crash-surviving registry (ticket C2; the two dominant
+ * producers, `cp-git-`/`cp-state-`, were converted to that registry directly by ticket 40 and
+ * are out of this sweep's scope).
+ *
+ * Guard rails, all load-bearing:
+ *  - ATTRIBUTION ONLY, ON TWO INDEPENDENT AXES: an entry is removed only when its basename is
+ *    EXACTLY a derived prefix followed by the 6 random `[A-Za-z0-9]` characters that
+ *    `fs.mkdtempSync` itself appends. Both halves matter. Exact-match (never `startsWith`) is
+ *    what makes a short derived prefix safe: the suite really does produce `ai-`, `cp-`, `sm-`
+ *    and `rs-`, and under a `startsWith` rule any of those would attribute — and recursively
+ *    remove — a foreign `ai-cache` or `sm-notes` sitting in the same shared TMPDIR. Requiring
+ *    the `mkdtemp` shape is what makes a broad source-literal harvest safe, since an ordinary
+ *    string literal that names no fixture root matches nothing.
+ *  - CONFINED TO TMPDIR: only entries returned by `readdirSync(tmpDir)` are considered, and
+ *    each candidate's resolved path is re-verified to fall strictly under the resolved
+ *    `tmpDir` before removal — a path can never escape the root it was listed from.
+ *  - NEVER AGE-GATED: unlike the sibling `pickle-*` backlog sweep in `bin/reap-orphans.ts`
+ *    (whose age floor exists because long-lived pipeline sessions legitimately hold `pickle-`
+ *    prefixed directories for hours), this sweep runs as a `posttest` hook immediately after
+ *    the test process that owns these prefixes has already exited — so an attributed match is
+ *    sufficient on its own, and gating on age besides would only let unattributed leaks
+ *    accumulate under cover of "not old enough yet", which the CLAUDE.md enumerated-set
+ *    guidance forbids as a distinct failure mode.
+ *
+ * Best-effort: a `readdirSync`/`rmSync` failure on one entry is swallowed and the sweep
+ * continues — it must never throw into the `posttest` hook it runs under.
+ */
+export function sweepDerivedTmpDirFixtures(opts: SweepDerivedTmpDirFixturesOpts = {}): SweepDerivedTmpDirFixturesResult {
+  const tmpDir = path.resolve(opts.tmpDir ?? os.tmpdir());
+  const prefixes = opts.prefixes ?? deriveTestOwnedTmpPrefixes(opts.testsDir ?? DEFAULT_TEST_SOURCE_DIR);
+  const prefixSet = new Set(prefixes);
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(tmpDir, { withFileTypes: true });
+  } catch {
+    return { scanned: 0, removed: 0, prefixes_used: prefixes };
+  }
+  let scanned = 0;
+  let removed = 0;
+  const tmpDirPrefix = tmpDir + path.sep;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.length <= MKDTEMP_SUFFIX_LEN) continue;
+    if (!MKDTEMP_SUFFIX_RE.test(entry.name.slice(-MKDTEMP_SUFFIX_LEN))) continue;
+    if (!prefixSet.has(entry.name.slice(0, -MKDTEMP_SUFFIX_LEN))) continue;
+    const resolved = path.resolve(path.join(tmpDir, entry.name));
+    if (!resolved.startsWith(tmpDirPrefix)) continue;
+    scanned += 1;
+    try {
+      fs.rmSync(resolved, { recursive: true, force: true });
+      removed += 1;
+    } catch { /* best-effort — a lost removal is left for the next sweep */ }
+  }
+  return { scanned, removed, prefixes_used: prefixes };
+}

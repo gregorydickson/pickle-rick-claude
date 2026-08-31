@@ -12,7 +12,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { parseWorkerProcsFromPs, reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
+import { parseWorkerProcsFromPs, reapOrphanedWorkerProcs, deriveTestOwnedTmpPrefixes, sweepDerivedTmpDirFixtures } from '../services/orphan-reaper.js';
+import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 
 test('AC-4: the exact live argv shape (node <tmpdir>/pickle-*/bin/npm run test:fast) yields one tmp_fixture candidate', () => {
   const sessionsRoot = path.join(os.tmpdir(), 'd2368bde-sessions-root');
@@ -265,4 +266,183 @@ test('4329498d AC-6 (negative): the same nested fixture under a NON-test-owned r
     );
     assert.equal(result.length, 0, 'admission must key on the FIRST segment prefix, not on depth under tmpdir');
   });
+});
+/**
+ * Ticket b7b090fa (C2): source-derived posttest TMPDIR sweep for the long tail of
+ * `mkdtempSync` producers that never adopted `tests/helpers/fixture-tmpdir.js`'s registry.
+ *
+ * CORE CONSTRAINT: the prefix set is DERIVED from test source at run time — never a
+ * hand-maintained list. These cases prove the derivation reads the tree rather than returning
+ * a hardcoded superset (AC-C3b, mutation-verified in BOTH directions — an under-trigger
+ * mutation alone would be passed by a carry-anything implementation, so the negative control
+ * is the load-bearing half), and that the sweep only ever removes a directory it can attribute
+ * on BOTH axes and confine to TMPDIR (AC-C3c).
+ *
+ * The two axes are separable and each has its own over-trigger control below: exact-prefix
+ * match (not `startsWith`) is what keeps a real 3-character derived prefix like `ai-` from
+ * eating a foreign `ai-cache`, and the `mkdtemp` 6-character suffix shape is what makes a
+ * broad source-literal harvest safe.
+ */
+
+/** Source whose prefix reaches `mkdtempSync` directly at the call site. */
+function directMkdtempSource(prefix) {
+  return "import { mkdtempSync } from 'node:fs';\n"
+    + "import { tmpdir } from 'node:os';\n"
+    + "import { join } from 'node:path';\n"
+    + `mkdtempSync(join(tmpdir(), '${prefix}'));\n`;
+}
+
+/**
+ * Source whose prefix reaches `mkdtempSync` through a one-hop local helper. This is the
+ * DOMINANT shape in this suite (`makeTmp('ratrail-session-')`,
+ * `mkTmpDir('judge-codex-')`, `mkFixtureTmpDir(prefix)`), and a call-site-anchored derivation
+ * sees only a variable here — measured, that blind spot cost 15 attributed directories out of
+ * 4971 leaked ones.
+ */
+function helperIndirectionSource(prefix) {
+  return "import { mkdtempSync } from 'node:fs';\n"
+    + "import { tmpdir } from 'node:os';\n"
+    + "import { join } from 'node:path';\n"
+    + "function makeTmp(p) { return mkdtempSync(join(tmpdir(), p)); }\n"
+    + `makeTmp('${prefix}');\n`;
+}
+
+function writeSyntheticTestSource(testsDir, source) {
+  fs.writeFileSync(path.join(testsDir, 'synthetic.test.js'), source);
+}
+
+/** A basename in the exact shape `fs.mkdtempSync` produces: prefix + 6 random `[A-Za-z0-9]`. */
+function mkdtempShapedName(prefix) {
+  return `${prefix}Xk4mZq`;
+}
+
+test('C2 AC-C3b: deriveTestOwnedTmpPrefixes derives a NEWLY added prefix from source, with no list to edit', () => {
+  const fixtureTestsDir = mkFixtureTmpDir('c2-derive-fixture-src-present-');
+  writeSyntheticTestSource(fixtureTestsDir, directMkdtempSource('c2-zzz-new-prefix-'));
+  const prefixes = deriveTestOwnedTmpPrefixes(fixtureTestsDir);
+  assert.ok(prefixes.includes('c2-zzz-new-prefix-'), 'a prefix present in source must be derived without editing any list');
+});
+
+test('C2 AC-C3b (mutation control, negative direction): a prefix ABSENT from source is never derived', () => {
+  const fixtureTestsDir = mkFixtureTmpDir('c2-derive-fixture-src-absent-');
+  writeSyntheticTestSource(fixtureTestsDir, directMkdtempSource('c2-other-prefix-'));
+  const prefixes = deriveTestOwnedTmpPrefixes(fixtureTestsDir);
+  assert.equal(
+    prefixes.includes('c2-zzz-new-prefix-'),
+    false,
+    'a prefix that was never written to source must not appear — proves derivation reads the tree, not a hardcoded fallback',
+  );
+  assert.ok(prefixes.includes('c2-other-prefix-'), 'the prefix actually present must still be derived');
+});
+
+test('C2 AC-C3b: a prefix passed through a ONE-HOP helper is derived — the derivation needs no call-site analysis', () => {
+  const fixtureTestsDir = mkFixtureTmpDir('c2-derive-fixture-hop-');
+  writeSyntheticTestSource(fixtureTestsDir, helperIndirectionSource('c2-hop-prefix-'));
+  const prefixes = deriveTestOwnedTmpPrefixes(fixtureTestsDir);
+  assert.ok(
+    prefixes.includes('c2-hop-prefix-'),
+    'the dominant producer shape hands its prefix to a local helper; keying on the mkdtempSync call site (or on helper NAMES) rebuilds the enumerated set this ticket removes',
+  );
+});
+
+test('C2 AC-C3b: template-interpolation source text is never derived as a prefix', () => {
+  const fixtureTestsDir = mkFixtureTmpDir('c2-derive-fixture-tmpl-');
+  // The literal characters `${prefix}` — what a test that GENERATES source looks like on disk.
+  writeSyntheticTestSource(fixtureTestsDir, "mkdtempSync(join(tmpdir(), '${prefix}-'));\n");
+  const prefixes = deriveTestOwnedTmpPrefixes(fixtureTestsDir);
+  assert.deepEqual(
+    prefixes.filter(p => p.includes('$') || p.includes('{')),
+    [],
+    'a derived prefix must be a plain filename-safe token; generated-code text is not a real prefix',
+  );
+});
+
+test('C2 AC-C3: sweepDerivedTmpDirFixtures removes a directory attributed to a derived prefix', () => {
+  const scannedRoot = mkFixtureTmpDir('c2-sweep-root-attr-');
+  const attributed = path.join(scannedRoot, mkdtempShapedName('c2-attributed-'));
+  fs.mkdirSync(attributed);
+  const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['c2-attributed-'] });
+  assert.equal(result.scanned, 1);
+  assert.equal(result.removed, 1);
+  assert.equal(fs.existsSync(attributed), false, 'an attributed directory must be removed');
+});
+
+test('C2 AC-C3c: sweepDerivedTmpDirFixtures is a no-op against an unattributable directory', () => {
+  const scannedRoot = mkFixtureTmpDir('c2-sweep-root-noattr-');
+  const unattributed = path.join(scannedRoot, mkdtempShapedName('not-a-derived-prefix-'));
+  fs.mkdirSync(unattributed);
+  const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['c2-attributed-'] });
+  assert.equal(result.scanned, 0);
+  assert.equal(result.removed, 0);
+  assert.equal(fs.existsSync(unattributed), true, 'an entry matching no derived prefix must survive, however it is named');
+});
+
+test('C2 AC-C3c (over-trigger control): a SHORT derived prefix never eats a foreign directory that merely starts with it', () => {
+  // `ai-` is a real derived prefix (tests/activity-instrumentation.test.js), as are `cp-`,
+  // `sm-` and `rs-`. On macOS os.tmpdir() is a per-user directory shared with every other
+  // application, so a `startsWith` rule here would recursively remove a stranger's data.
+  //
+  // Attribution rests on TWO independent axes, and each foreign directory below isolates
+  // exactly ONE of them. That separation is not cosmetic: mutation-verifying this case found
+  // that a single foreign `ai-cache` is saved REDUNDANTLY — it fails the exact-match test and
+  // the mkdtemp-shape test — so with only that fixture present, deleting either axis on its
+  // own left this test green. A control that survives the mutation it exists to catch is not
+  // a control. Each directory here dies iff its own axis is removed.
+  const scannedRoot = mkFixtureTmpDir('c2-sweep-root-short-');
+  // Fails BOTH axes — the plain motivating case.
+  const foreign = path.join(scannedRoot, 'ai-cache');
+  // Pins the EXACT-match axis alone: mkdtemp-SHAPED (6 trailing alnum), but its stem is
+  // `ai-cache`, not `ai-`. Survives only because matching is exact; a `startsWith` rule eats it.
+  const foreignShaped = path.join(scannedRoot, 'ai-cacheXk4mZq');
+  // Pins the mkdtemp-SHAPE axis alone: its stem IS exactly the derived prefix `ai-`, but the
+  // 6 trailing characters are not `[A-Za-z0-9]`, so no `mkdtempSync` ever produced it.
+  // Survives only because the shape is required.
+  const foreignSixNonAlnum = path.join(scannedRoot, 'ai-my.log');
+  const ownFixture = path.join(scannedRoot, mkdtempShapedName('ai-'));
+  fs.mkdirSync(foreign);
+  fs.mkdirSync(foreignShaped);
+  fs.mkdirSync(foreignSixNonAlnum);
+  fs.mkdirSync(ownFixture);
+  fs.writeFileSync(path.join(foreign, 'someone-elses-data.json'), '{}');
+
+  const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['ai-'] });
+
+  assert.equal(fs.existsSync(foreign), true, 'attribution must be an EXACT prefix match plus the mkdtemp shape, never startsWith');
+  assert.equal(fs.existsSync(foreignShaped), true, 'a mkdtemp-shaped foreign directory whose stem is not EXACTLY the derived prefix must survive — this is the startsWith regression');
+  assert.equal(fs.existsSync(foreignSixNonAlnum), true, 'a directory whose stem is exactly the derived prefix but whose tail is not the mkdtemp shape must survive — nothing produced it');
+  assert.equal(fs.existsSync(ownFixture), false, 'the genuine mkdtemp-shaped fixture must still be removed — the guard must not degrade into sweeping nothing');
+  assert.equal(result.scanned, 1);
+  assert.equal(result.removed, 1);
+});
+
+test('C2 AC-C3c: sweepDerivedTmpDirFixtures never touches a path outside the scanned tmpDir', () => {
+  const outerRoot = mkFixtureTmpDir('c2-sweep-outer-');
+  const scannedRoot = path.join(outerRoot, 'scanned');
+  fs.mkdirSync(scannedRoot);
+  // Fully attributable by name — only its location keeps it safe.
+  const siblingOutside = path.join(outerRoot, mkdtempShapedName('c2-attributed-'));
+  fs.mkdirSync(siblingOutside);
+  const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['c2-attributed-'] });
+  assert.equal(result.scanned, 0, 'a matching-name directory OUTSIDE tmpDir must never be scanned');
+  assert.equal(fs.existsSync(siblingOutside), true, 'the sibling directory outside tmpDir must survive untouched');
+});
+
+test('C2: sweepDerivedTmpDirFixtures removes an attributed directory regardless of age — never age-gated', () => {
+  const scannedRoot = mkFixtureTmpDir('c2-sweep-fresh-');
+  const freshlyCreated = path.join(scannedRoot, mkdtempShapedName('c2-attributed-'));
+  fs.mkdirSync(freshlyCreated); // created moments ago — must still be removed
+  const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, prefixes: ['c2-attributed-'] });
+  assert.equal(result.removed, 1, 'attribution alone is sufficient; age must never gate removal');
+});
+
+test('C2: sweepDerivedTmpDirFixtures wires its default prefix source through deriveTestOwnedTmpPrefixes end-to-end', () => {
+  const fixtureTestsDir = mkFixtureTmpDir('c2-integration-src-');
+  writeSyntheticTestSource(fixtureTestsDir, directMkdtempSource('c2-integration-attributed-'));
+  const scannedRoot = mkFixtureTmpDir('c2-integration-root-');
+  const attributed = path.join(scannedRoot, mkdtempShapedName('c2-integration-attributed-'));
+  fs.mkdirSync(attributed);
+  const result = sweepDerivedTmpDirFixtures({ tmpDir: scannedRoot, testsDir: fixtureTestsDir });
+  assert.ok(result.prefixes_used.includes('c2-integration-attributed-'), 'the sweep must consult deriveTestOwnedTmpPrefixes for its default prefix set');
+  assert.equal(result.removed, 1);
+  assert.equal(fs.existsSync(attributed), false);
 });
