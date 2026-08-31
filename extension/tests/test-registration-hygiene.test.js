@@ -90,7 +90,15 @@ test('package test scripts delegate to tier discovery', () => {
 
   assert.equal(pkg.scripts.test, 'npm run test:fast && npm run test:integration');
   assert.equal(pkg.scripts['pretest:fast'], 'bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh');
-  assert.equal(pkg.scripts['test:fast'], 'node bin/test-runner.js --tier fast --test-concurrency=8');
+  // FR-A1: the fast tier gained the same parallel/serial split integration and expensive
+  // already had — it was the only tier running as one undifferentiated c=8 pool, which is the
+  // contention that reddened CI. Same never-short-circuit contract as the two below.
+  assert.equal(
+    pkg.scripts['test:fast'],
+    'npm run test:fast:parallel; p=$?; npm run test:fast:serial; s=$?; echo "test:fast halves measured: parallel_exit=$p serial_exit=$s"; if [ $p -ne 0 ] || [ $s -ne 0 ]; then echo "test:fast FAILED (parallel_exit=$p serial_exit=$s)" >&2; exit 1; fi',
+  );
+  assert.equal(pkg.scripts['test:fast:parallel'], 'node bin/test-runner.js --tier fast --manifest tests/.serial-tests.json --manifest-mode exclude --test-concurrency=8');
+  assert.equal(pkg.scripts['test:fast:serial'], 'node bin/test-runner.js --tier fast --manifest tests/.serial-tests.json --manifest-mode include --test-concurrency=1');
   // A8 (R-ISSC / R-APGG): a bare "&&" here would short-circuit the serial half whenever
   // the parallel half fails, so it silently never gets measured. Both halves must run
   // independently and both exit codes must be explicitly reported.
