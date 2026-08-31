@@ -1625,3 +1625,73 @@ test('AP-EXT-ITER104-02: resolveTrackedSuffixMatches reads ONE NUL-delimited lis
     assert.ok(!body.includes("split('\\n')"), 'splitting the listing on newline is the regression');
     assert.ok(!body.includes('.trim()'), 'trimming corrupts a raw path git deliberately did not quote');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER122-01 — the parametrized-shape predicate demanded ONE framework's
+// spelling, and this repo's framework cannot produce it
+//
+// `DESCRIBE_EACH_RE` matched the jest/vitest literal `describe.each([` only.
+// `node:test` has NO `describe.each` (measured: `typeof describe.each ===
+// 'undefined'`), so this repo — and every `node --test` repo the shared refinement
+// runtime refines — spells its table-driven runner `describeEach(`, via
+// `tests/helpers/describe-each.js`. An analyst writing the codebase's OWN correct
+// idiom failed `isParametrizedTicket`, `evaluateAcShapeEnforcement` reported a
+// single-ticket-collapse violation, and `runAcShapeEnforcement` returned 2 ->
+// `process.exit(2)` in `main()` AFTER `writeManifestAtomic`: the documented
+// operator halt, charged for producing the shape the gate asked for.
+//
+// The fix WIDENS to an `each`-suffixed runner applied to a table, so no framework
+// spelling list has to be maintained. Widening a REJECTION gate can only remove
+// halts, never add them — the negative control below pins that it still has teeth.
+// ---------------------------------------------------------------------------
+
+/** A single-ticket collapse of `AC-E`, with the acceptance test spelled by the caller. */
+function buildEachCollapseManifest(dir, acceptanceTest) {
+    return buildAcShapeManifest(
+        dir,
+        () => [{
+            id: 'T-E-1',
+            source_ac_ids: ['AC-E'],
+            title: 'All three handlers reject an anonymous caller',
+            acceptance_test: acceptanceTest,
+        }],
+        { ac_id: 'AC-E', headline: 'enumerated AC collapsed to one ticket', ticket_ids: ['T-E-1'] },
+    );
+}
+
+test('AP-EXT-ITER122-01: the repo\'s own describeEach idiom satisfies the single-ticket collapse rule', () => {
+    // Ground the fixture in the REAL helper, not an invented spelling: if the shim
+    // is ever renamed, this assert says so instead of the case quietly pinning air.
+    const shim = fs.readFileSync(path.join(__dirname, 'helpers', 'describe-each.js'), 'utf-8');
+    assert.match(shim, /export function describeEach\(/, 'the repo helper must still be spelled describeEach');
+
+    for (const [label, acceptanceTest] of [
+        ['array literal', 'describeEach([["getA"], ["getB"], ["getC"]])("%s rejects anonymous", ...)'],
+        ['named table', 'describeEach(HANDLERS)("%s rejects anonymous", ...)'],
+        ['test.each', 'test.each([["getA"], ["getB"]])("%s rejects anonymous")'],
+    ]) {
+        const manifest = buildEachCollapseManifest(tmpDir('pickle-acshape-each-'), acceptanceTest);
+        // Precondition: the jest/vitest literal really is absent, or the case pins nothing.
+        for (const ticket of manifest.tickets) {
+            assert.ok(!ticket.acceptance_test.includes('describe.each('), `${label}: the jest literal must be absent`);
+        }
+        assert.deepEqual(
+            evaluateAcShapeEnforcement(manifest), [],
+            `${label}: a parametrized acceptance test must not reach the exit-2 contract`,
+        );
+    }
+});
+
+test('AP-EXT-ITER122-01: a genuinely unparametrized single-ticket collapse still violates', () => {
+    // Negative control for the widening: no each-runner anywhere, so the gate must
+    // keep its teeth. Without this the fix above is indistinguishable from a no-op.
+    const manifest = buildEachCollapseManifest(tmpDir('pickle-acshape-noeach-'), 'getA returns 200; getB returns 200');
+    const violations = evaluateAcShapeEnforcement(manifest);
+    // `>= 1`, not `=== 1`: `ac_shape_smells` is the per-ANALYST concatenation and is
+    // NOT collapsed, so one AC filed by all three analysts is evaluated three times
+    // and reports three identical violations (AP-EXT-ITER122-02, open).
+    assert.ok(violations.length >= 1, 'an enumerated single ticket must still produce a violation');
+    for (const violation of violations) {
+        assert.match(violation.reason, /single-ticket collapse/, 'and it must be the single-collapse branch');
+    }
+});

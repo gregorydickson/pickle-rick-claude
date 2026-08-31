@@ -1619,7 +1619,24 @@ const AC_SHAPE_SECTION_RE = /^##+\s+ac_shape_smells\s*$/im;
 const UNIVERSAL_QUANTIFIER_RE = /\b(?:all|every|for any|each)\b/i;
 const JUSTIFICATION_RE = /\/\/\s*JUSTIFICATION:/i;
 const NON_EMPTY_RE = /\S/;
-const DESCRIBE_EACH_RE = /describe\.each\s*\(\s*\[/s;
+// AP-EXT-ITER122-01: match the PARAMETRIZED SHAPE, not one framework's spelling of
+// it. `describe.each(` is a jest/vitest literal and `node:test` has none (measured:
+// `typeof require('node:test').describe.each === 'undefined'`), so a `node --test`
+// repo — this one included — spells its table-driven runner `describeEach(`
+// (`tests/helpers/describe-each.js`; every one of its live consumers uses that
+// spelling, and `describe.each(` appears in `tests/` only inside this gate's own
+// fixtures). An analyst writing the codebase's OWN correct idiom failed the
+// predicate, and `evaluateAcShapeEnforcement`'s single-ticket-collapse branch turns
+// that into `runAcShapeEnforcement` -> 2 -> `process.exit(2)` in `main()` AFTER
+// `writeManifestAtomic` — the documented operator halt, charged for producing the
+// shape the gate asked for. An `each`-suffixed runner applied to a table (array
+// literal or named const) satisfies it, so no framework spelling list has to be
+// maintained: `describe.each([`, `test.each([`, `it.each([`, `describeEach([` and
+// `describeEach(ROWS)` all match. WIDENING ONLY — every ticket that passed before
+// still passes, so no NEW rejection can reach the exit-2 contract, and the residual
+// over-match (`items.forEach(fn)` in prose) fails safe: a missed advisory costs an
+// operator nothing, a false halt costs the run.
+const DESCRIBE_EACH_RE = /\b[A-Za-z_$][\w$]*(?:\.each|Each)\s*\(\s*[[A-Za-z_$]/s;
 // PICKLE_AC_GATE_DEBUG=1 enables per-matcher stderr tracing for smell→ticket evaluation
 
 function ticketShapeText(ticket: RefinementTicketManifestEntry): string {
@@ -2122,7 +2139,7 @@ export function runAcShapeEnforcement(
     } else {
       process.stderr.write('[pickle-rick]   Fix: rewrite ticket to use universal quantifier title AND describe.each([\n');
       process.stderr.write('[pickle-rick]     title: "All <entities> <condition>"\n');
-      process.stderr.write("[pickle-rick]     acceptance_test: \"describe.each([['input1'], ['input2']])(...)\"\n");
+      process.stderr.write("[pickle-rick]     acceptance_test: \"describe.each([['input1'], ['input2']])(...)\" — or the repo's own each-runner, e.g. \"describeEach([['input1'], ['input2']])(...)\"\n");
     }
     process.stderr.write(`[pickle-rick]   Override: --skip-ac-shape-gate "<reason>"\n`);
   }
