@@ -148,7 +148,13 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 #   rsync — install.sh, install-agents.sh
 #   git   — this script's own checkout step; absent from ubuntu:24.04, which the previous
 #           node:<major> base had supplied implicitly as a buildpack-deps derivative.
-CI_RUNNER_BASELINE_PACKAGES="git jq rsync"
+#   python3 — audit-subsystem-claude-md.sh:15. Named by the f561bc7d noise baseline, which
+#           reddened `audit-subsystem-claude-md` twice with `[error: python3 is required]`.
+#           Note this one was INVISIBLE to the MISSING_COMMANDS detector below: that detector
+#           reads `command not found` out of the log, and a script that probes for its own
+#           interpreter and prints a custom error never emits that string. A tool absence is
+#           only self-reporting when nothing catches it first.
+CI_RUNNER_BASELINE_PACKAGES="git jq python3 rsync"
 
 WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
 REF="HEAD"
