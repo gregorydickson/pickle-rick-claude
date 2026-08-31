@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HANDLER = path.resolve(__dirname, '../hooks/handlers/config-protection.js');
@@ -43,7 +44,7 @@ function baseState(overrides = {}) {
  * `flags` (optional) is merged into state.flags.
  */
 function bootstrapSession({ flags } = {}) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-state-'));
+  const tmpDir = mkFixtureTmpDir('cp-state-');
   writeExtensionSentinel(tmpDir);
   const sessionDir = path.join(tmpDir, 'sessions', 'session');
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -590,7 +591,7 @@ test('R-WSRC-3: hook approves Write to unrelated file even when active session',
 });
 
 test('R-WSRC-3: no active session approves protected state writes (fail-open)', () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-state-noactive-'));
+  const tmpDir = mkFixtureTmpDir('cp-state-noactive-');
   writeExtensionSentinel(tmpDir);
   const env = {
     ...process.env,
