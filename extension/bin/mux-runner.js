@@ -5924,19 +5924,32 @@ function readConvergedPlanPhases(ticketDir) {
     return phases.length === 0 ? null : phases;
 }
 /**
+ * AP-EXT-ITER58-01: the plan REVIEW is not a plan candidate. `plan_review` is a gated artifact
+ * prefix in its own right (`PHASE_ARTIFACT_PREFIX`), and the same `<prefix>.md` / `<prefix>_*`
+ * rule `findMissingPrefixes` matches it by ALSO makes it match `plan_*.md`, so it is excluded
+ * here by that contract prefix — one rule over the candidate SET, not a per-file list.
+ */
+function isPlanReviewArtifact(file) {
+    return file === 'plan_review.md' || file.startsWith('plan_review_');
+}
+/**
  * AP-EXT-ITER7-01: the ticket dir's plan artifact, PREFERRING one that actually parses as a
  * plan. Both converged-plan readers used a bare lexicographic `.sort().pop()` over
  * `plan_*.md`, and `plan_review.md` is not an incidental sibling — the artifact contract
  * REQUIRES it for the medium and large tiers (`requiredTierArtifactPrefixes`) — so `r` sorted
  * after every `plan_<date>.md` and the plan REVIEW won, carrying zero `## Phase` blocks.
- * Ranking on the property the consumers need needs no filename exclusion list. Lexicographic
- * order stays the tie-break, so genuine multi-plan dirs still take the newest.
- * Returns null when the dir is unreadable or holds no `plan_*.md` at all.
+ * Lexicographic order stays the tie-break, so genuine multi-plan dirs still take the newest.
+ * AP-EXT-ITER58-01: the executability rank alone was NOT enough to keep the review out — it is
+ * grammar-bound (`parsePlanPhases` accepts `## Phase N` with an em-dash/hyphen and nothing
+ * else), so on a plan whose phases are headed `### Phase N` or `## Phase N:` NO candidate ranks
+ * executable and the tie-break re-elects the review. The review is excluded from the candidate
+ * SET instead; the rank now only orders real plans.
+ * Returns null when the dir is unreadable or holds no plan artifact at all.
  */
 function newestExecutablePlanFile(ticketDir) {
     let candidates;
     try {
-        candidates = fs.readdirSync(ticketDir).filter(f => /^plan_.*\.md$/.test(f));
+        candidates = fs.readdirSync(ticketDir).filter(f => /^plan_.*\.md$/.test(f) && !isPlanReviewArtifact(f));
     }
     catch {
         return null;

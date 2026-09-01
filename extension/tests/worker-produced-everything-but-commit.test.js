@@ -1634,3 +1634,147 @@ test('AP-EXT-ITER7-01 control: a ticket dir whose only plan has no phases stays 
   rmSync(repo, { recursive: true, force: true });
   rmSync(sessionDir, { recursive: true, force: true });
 });
+
+// AP-EXT-ITER58-01 — AP-EXT-ITER7-01 kept `plan_review.md` from winning the converged-plan
+// selector by RANKING candidates on "parses as `## Phase N`". That property is grammar-bound:
+// `parsePlanPhases` accepts `## Phase N` with an em-dash/hyphen separator and nothing else, so
+// on a plan whose phases are headed `### Phase N` (or `## Phase N:`) NO candidate ranks
+// executable, the tie-break degenerates to the bare lexicographic sort ITER7-01 removed, and
+// `plan_review*` — which sorts after every `plan_<date>.md` — is elected again.
+//
+// Measured on the operator's box: 24 of the 75 live `plan_*.md` artifacts head their phases
+// `### Phase N` (23) or `## Phase N:` (1), and the shipped selector returned the REVIEW
+// artifact for 25 of 76 live ticket dirs. In production that winner is handed to
+// `spawnConvergedPlanImplementPass`, whose prompt is "Read the raw plan at <path> and implement
+// its steps" — the recovery worker re-implements the review VERDICT instead of the approved
+// plan, then the rung reports not-ok and the ladder escalates to `recovery_exhausted`.
+//
+// The parser grammar is the root cause and is fence-blocked (its compiled mirror
+// `extension/services/recovery-controller.js` is outside this branch's `scope.json`), so the
+// fix lands where the candidate SET is built: a review artifact is never a plan candidate.
+// These cases therefore assert WHICH ARTIFACT the implement pass receives — the observable the
+// defect actually moves — and never the rung's ok, which an H3-headed plan leaves not-ok either
+// way until the grammar gap is closed.
+
+/** A reExecutionSeam that records the plan basename it was handed and claims success. */
+function recordingReExecutionSeam(handed) {
+  return {
+    spawnImplementPass: (opts) => {
+      handed.push(path.basename(opts.planPath));
+      return { ok: true };
+    },
+  };
+}
+
+test('AP-EXT-ITER58-01: an unparseable-header plan still routes the implement pass to the plan, not the review', () => {
+  const { repo } = makeRepo('ap-iter58-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter58-session-');
+  const ticketId = 'c3d4e5f6';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'medium', status: 'In Progress' });
+  assert.ok(
+    existsSync(path.join(ticketDir, 'plan_review.md')),
+    'precondition: the medium-tier artifact contract puts plan_review.md in the ticket dir',
+  );
+  // The live `### Phase N` shape: real, authored phases that `parsePlanPhases` cannot see.
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-07-11.md'),
+    '# plan\n\n### Phase 1 — first\n\n**Verify:** `true`\n\n### Phase 2 — second\n\n**Verify:** `true`\n',
+  );
+  writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+
+  const handed = [];
+  executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+    reExecutionSeam: recordingReExecutionSeam(handed),
+  });
+
+  assert.deepEqual(
+    handed, ['plan_2026-07-11.md'],
+    'the implement pass must re-execute the approved plan, never the plan review verdict',
+  );
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER58-01: the dated plan_review_<date>.md variant is excluded by the same rule', () => {
+  const { repo } = makeRepo('ap-iter58-dated-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter58-dated-session-');
+  const ticketId = 'c3d4e5f7';
+  // `findMissingPrefixes` accepts `<prefix>_*` as well as `<prefix>.md`, so a review written as
+  // `plan_review_<date>.md` satisfies the same contract slot — and it is live on the operator's
+  // box. An exclusion keyed on the exact filename `plan_review.md` would elect it here.
+  const ticketDir = makeTicket(sessionDir, ticketId, {
+    tier: 'medium', status: 'In Progress',
+    extraFiles: { 'plan_review_2026-08-29.md': 'plan_review body\n' },
+  });
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-07-11.md'),
+    '# plan\n\n### Phase 1 — first\n\n**Verify:** `true`\n',
+  );
+  writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+
+  const handed = [];
+  executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+    reExecutionSeam: recordingReExecutionSeam(handed),
+  });
+
+  assert.deepEqual(
+    handed, ['plan_2026-07-11.md'],
+    'a `plan_review_<date>.md` sibling must be excluded by the contract prefix, not by one filename',
+  );
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER58-01 control: a dir whose only plan_*.md is the review spawns no implement pass', () => {
+  const { repo, baseSha } = makeRepo('ap-iter58-ctl-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter58-ctl-session-');
+  const ticketId = 'c3d4e5f8';
+  // Omitting the `plan` artifact leaves `plan_review.md` as the only `plan_*.md` in the dir.
+  // Excluding the review must yield "no plan to run", never a fabricated plan to re-execute.
+  makeTicket(sessionDir, ticketId, { tier: 'medium', status: 'In Progress', omitPrefix: 'plan' });
+
+  const handed = [];
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+    reExecutionSeam: recordingReExecutionSeam(handed),
+  });
+
+  assert.deepEqual(handed, [], 'no plan artifact means no implement pass — never re-execute the review');
+  assert.equal(out.ok, false, 'a dir with no plan has nothing to recover');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']), baseSha, 'HEAD must not move');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+// AP-EXT-ITER58-01 disjointness control: excluding the review from the candidate SET must not
+// retire AP-EXT-ITER7-01's rank — with the review gone, the rank is what still decides between
+// two REAL plans, and only a multi-plan dir separates it from the lexicographic tie-break.
+test('AP-EXT-ITER7-01/58-01: between two real plans the parsed-phase rank still beats filename order', () => {
+  const { repo } = makeRepo('ap-iter58-rank-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter58-rank-session-');
+  const ticketId = 'c3d4e5f9';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'medium', status: 'In Progress' });
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-07-11.md'),
+    '# plan\n\n## Phase 1 — first\n\n**Verify:** `true`\n',
+  );
+  // Lexicographically newer, but prose only — the rank must keep the parseable plan.
+  writeFileSync(path.join(ticketDir, 'plan_2026-08-30.md'), '# plan\n\nprose only, no phases\n');
+  writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+
+  const handed = [];
+  executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+    reExecutionSeam: recordingReExecutionSeam(handed),
+  });
+
+  assert.deepEqual(handed, ['plan_2026-07-11.md'], 'the plan that parses must win over the newer filename');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
