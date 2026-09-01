@@ -86,6 +86,51 @@ function jobNameContaining(blocks, needle) {
   return Object.keys(blocks).find(name => blocks[name].includes(needle));
 }
 
+const TARBALL_STEP = 'Build tarball';
+
+// R-RNTA: job-level keys sit at EXACTLY 4-space indent -- a direct child of the 2-space job
+// name. Step-level keys sit deeper (release.yml:68's `if: failure()` is at 8). Reading the
+// LEVEL is what separates "this whole job is skipped" from "this one step is skipped", and
+// only the former can starve the release asset.
+function jobLevelKeys(blockText) {
+  return new Set(
+    blockText
+      .split('\n')
+      .map(line => line.match(/^ {4}([A-Za-z0-9_-]+):/)?.[1])
+      .filter(Boolean),
+  );
+}
+
+// The oracle behind both the R-RNTA pin and its control arms. Returns one string per way the
+// tarball's EXISTENCE has been made contingent on the gate's VERDICT; [] means independent.
+// Shared on purpose: a control arm is only evidence if it exercises the same code as the pin.
+function tarballIndependenceViolations(workflowText, gateNeedle) {
+  const blocks = jobBlocks(workflowText);
+  const gateJob = jobNameContaining(blocks, gateNeedle);
+  const tarballJob = jobNameContaining(blocks, TARBALL_STEP);
+  const violations = [];
+
+  if (!gateJob) violations.push('no job carries the release gate command');
+  if (!tarballJob) violations.push(`no job carries the '${TARBALL_STEP}' step`);
+  if (gateJob && tarballJob && gateJob === tarballJob) {
+    violations.push(`the gate command and '${TARBALL_STEP}' share job '${gateJob}'`);
+  }
+
+  if (tarballJob) {
+    const keys = jobLevelKeys(blocks[tarballJob]);
+    // Fail-closed guard. If the job-level parse yields nothing recognisable then the
+    // indentation drifted, and every membership test below would report "absent" for the
+    // wrong reason -- i.e. this pin would go green by never looking at anything.
+    if (!keys.has('runs-on') || !keys.has('steps')) {
+      violations.push(`job '${tarballJob}' exposes no parseable job-level runs-on/steps`);
+    }
+    if (keys.has('needs')) violations.push(`job '${tarballJob}' declares a job-level needs:`);
+    if (keys.has('if')) violations.push(`job '${tarballJob}' declares a job-level if:`);
+  }
+
+  return violations;
+}
+
 test('release workflow gate matches outer CLAUDE.md Versioning gate', () => {
   const workflow = readFileSync(RELEASE_WORKFLOW, 'utf8');
   const gate = proseGateCommand();
@@ -131,30 +176,87 @@ test('each gate-carrying workflow pins the release gate runtime', () => {
   }
 });
 
-// R-RNTA: the gate and the release artifact are two concerns with different
-// failure modes and must not share a job -- a gate outcome must never
-// determine whether the tarball is built/attached. Regression pin: mutation-
-// verified red if the gate and tarball steps are put back in one job, or if
-// the artifact job grows a `needs:` dependency on the gate job.
+// R-RNTA: the gate and the release artifact are two concerns with different failure modes and
+// must not share a job -- a gate outcome must never determine whether the tarball is built and
+// attached. Measured 2026-09-01 (FR-C3): the decoupling itself shipped at 37452f90 (2026-08-29),
+// so this is a regression pin over an already-correct workflow, not a fix.
+//
+// Mutation-verified RED on each of: `needs: [gate]` added to the artifact job; a job-level `if:`
+// added to the artifact job; the two jobs merged back into one; the job-level indentation drifting
+// out of parse range. The `if:` arm is the one this pin used to MISS -- it checked only `needs:`,
+// so an `if:` that skips the artifact job on a tag push starved the release asset while this test
+// stayed green. The control arms below prove every one of those verdicts is reachable from the
+// same oracle, so this pin cannot pass by never firing.
 test('release tarball build/attach is independent of the gate job', () => {
   const workflow = readFileSync(RELEASE_WORKFLOW, 'utf8');
-  const gate = proseGateCommand();
-  const blocks = jobBlocks(workflow);
 
-  const gateJob = jobNameContaining(blocks, gate);
-  const tarballJob = jobNameContaining(blocks, 'Build tarball');
-
-  assert.ok(gateJob, 'no job in release.yml carries the release gate command');
-  assert.ok(tarballJob, 'no job in release.yml carries the Build tarball step');
-  assert.notEqual(
-    gateJob,
-    tarballJob,
-    'the release gate and the tarball build must live in different jobs, so a gate failure cannot skip the tarball',
+  assert.deepEqual(
+    tarballIndependenceViolations(workflow, proseGateCommand()),
+    [],
+    'a gate failure must not be able to skip the tarball build or the GitHub release',
   );
-  assert.doesNotMatch(
-    blocks[tarballJob],
-    /^\s*needs:/m,
-    `the '${tarballJob}' job must not declare a 'needs:' dependency on the gate job`,
+});
+
+// Control-arm fixtures: synthetic workflows carrying their own literal gate needle. Nothing here
+// is read back out of release.yml, so an arm's expected value cannot be derived from the very
+// thing the pin measures. Arm 0 establishes that this shape is clean, which is what licenses
+// arms 1-4 to attribute their single-element result to the ONE mutation each introduces.
+const CONTROL_GATE = 'run-the-control-gate';
+const CONTROL_GATE_STEP = `      - name: Gate\n        run: ${CONTROL_GATE}`;
+const CONTROL_TARBALL_STEP = `      - name: ${TARBALL_STEP}\n        run: tar -czf out.tgz .`;
+
+function controlWorkflow({ artifactJobKeys = '', merged = false, artifactIndent = 4 } = {}) {
+  if (merged) {
+    return `jobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n`
+      + `${CONTROL_GATE_STEP}\n${CONTROL_TARBALL_STEP}\n`;
+  }
+  const pad = ' '.repeat(artifactIndent);
+  return `jobs:\n  gate:\n    runs-on: ubuntu-latest\n    steps:\n${CONTROL_GATE_STEP}\n`
+    + `  release:\n${artifactJobKeys}${pad}runs-on: ubuntu-latest\n${pad}steps:\n`
+    + `${CONTROL_TARBALL_STEP}\n`;
+}
+
+test('R-RNTA control 0: a decoupled two-job workflow reports no violations', () => {
+  assert.deepEqual(
+    tarballIndependenceViolations(controlWorkflow(), CONTROL_GATE),
+    [],
+    'the control fixture itself must be clean, or arms 1-4 prove nothing',
+  );
+});
+
+test('R-RNTA control 1: a job-level needs: on the artifact job IS reported', () => {
+  assert.deepEqual(
+    tarballIndependenceViolations(
+      controlWorkflow({ artifactJobKeys: '    needs: [gate]\n' }),
+      CONTROL_GATE,
+    ),
+    ["job 'release' declares a job-level needs:"],
+  );
+});
+
+test('R-RNTA control 2: a job-level if: on the artifact job IS reported', () => {
+  assert.deepEqual(
+    tarballIndependenceViolations(
+      controlWorkflow({ artifactJobKeys: '    if: ${{ false }}\n' }),
+      CONTROL_GATE,
+    ),
+    ["job 'release' declares a job-level if:"],
+  );
+});
+
+test('R-RNTA control 3: the gate and the tarball sharing one job IS reported', () => {
+  assert.deepEqual(
+    tarballIndependenceViolations(controlWorkflow({ merged: true }), CONTROL_GATE),
+    [`the gate command and '${TARBALL_STEP}' share job 'release'`],
+  );
+});
+
+test('R-RNTA control 4: an artifact job whose job-level keys do not parse IS reported', () => {
+  // The fail-closed half. Without this the 4-space key read would go green on a reformat by
+  // finding no keys at all, which is exactly how a structural pin stops being able to fire.
+  assert.deepEqual(
+    tarballIndependenceViolations(controlWorkflow({ artifactIndent: 6 }), CONTROL_GATE),
+    ["job 'release' exposes no parseable job-level runs-on/steps"],
   );
 });
 
