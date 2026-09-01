@@ -247,7 +247,7 @@ test('R-RNTA control 2: a job-level if: on the artifact job IS reported', () => 
 test('R-RNTA control 3: the gate and the tarball sharing one job IS reported', () => {
   assert.deepEqual(
     tarballIndependenceViolations(controlWorkflow({ merged: true }), CONTROL_GATE),
-    [`the gate command and '${TARBALL_STEP}' share job 'release'`],
+    ["the gate command and 'Build tarball' share job 'release'"],
   );
 });
 
