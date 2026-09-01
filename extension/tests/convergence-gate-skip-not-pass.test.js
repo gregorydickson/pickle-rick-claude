@@ -18,6 +18,7 @@ import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import {
   assignOccurrenceIndices,
+  buildFailures,
   runGate,
   subtractBaseline,
 } from '../services/convergence-gate.js';
@@ -829,4 +830,212 @@ test('AP-EXT-ITER121-01 control: a non-empty target set still runs and still rep
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// R-FBTN — a red `tests` check must surface the failing TEST NAMES, not a bare status.
+//
+// Measured at the time this pin was written, over a REAL 5,663-byte `node --test` run with three
+// failures: `buildFailures(result, 'tests', dir)` returned ONE coarse failure whose `message` was
+// `output.slice(0, 500)` — the HEAD of the stream, which for any streaming reporter is the PASSING
+// tests. 0 of 3 names reached ANY of the three operator-visible render sites, and the single line
+// `check-gate` printed for a RED gate began with a green checkmark.
+//
+// Every pin below is paired with a CONTROL ARM that runs the SAME oracle over the pre-fix coarse
+// shape and asserts it FAILS to surface / FAILS to discriminate. Without the control arm a pin like
+// this passes forever by never firing: an oracle that is trivially true (a counter that always
+// returns "all surfaced") is green against the fix AND against the defect. The control arms fire on
+// their own — they assert a concrete non-zero fact about the old shape, not merely `!pinCondition`.
+// ---------------------------------------------------------------------------
+
+// `node --test`'s spec reporter, verbatim in shape: each failure is printed inline AND repeated in
+// a trailing summary block under a `✖ failing tests:` SECTION HEADER, and every name carries a
+// duration suffix. TAP is appended so the fixture pins BOTH reporter shapes rather than only the
+// one that happens to dominate this repo.
+const FBTN_SPEC_REPORTER_OUTPUT = [
+  '✔ backendEnvOverrides: worker invocation with a ticket injects core.hooksPath (27.727166ms)',
+  '✔ backendEnvOverrides: inherited GIT_CONFIG_COUNT=2 composes at index 2 (19.78825ms)',
+  '✔ backendEnvOverrides: never hardcodes GIT_CONFIG_KEY_0 (20.038583ms)',
+  '✖ backendEnvOverrides: materialization failure emits neither key and logs once (9.016ms)',
+  '✔ another passing case (1.5ms)',
+  '✖ AC-WDTFTO-1-1: timed-out worker WITH a window commit preserves the sha (226.686833ms)',
+  'ℹ tests 22',
+  'ℹ fail 2',
+  '',
+  '✖ failing tests:',
+  '',
+  'test at tests/services/backend-spawn-trailer-env.test.js:118:1',
+  '✖ backendEnvOverrides: materialization failure emits neither key and logs once (9.016ms)',
+  "  AssertionError [ERR_ASSERTION]: expected 'a' to equal 'b'",
+  '      at Test.run (node:internal/test_runner/test:1382:25)',
+  'test at tests/worker-timeout-preserves-commit.test.js:120:1',
+  '✖ AC-WDTFTO-1-1: timed-out worker WITH a window commit preserves the sha (226.686833ms)',
+].join('\n');
+
+const FBTN_TAP_REPORTER_OUTPUT = [
+  'TAP version 13',
+  '# Subtest: adds two numbers',
+  'ok 1 - adds two numbers',
+  '# Subtest: rejects a negative amount',
+  'not ok 2 - rejects a negative amount',
+  '  ---',
+  '  duration_ms: 1.2',
+  '  ...',
+  'not ok 3 - handles a unicode ✔ inside the name',
+  '1..3',
+  '# fail 2',
+].join('\n');
+
+const FBTN_SPEC_FAILING_NAMES = [
+  'backendEnvOverrides: materialization failure emits neither key and logs once',
+  'AC-WDTFTO-1-1: timed-out worker WITH a window commit preserves the sha',
+];
+const FBTN_TAP_FAILING_NAMES = [
+  'rejects a negative amount',
+  'handles a unicode ✔ inside the name',
+];
+
+// Reproduces `check-gate.ts:136` — the narrowest of the three operator-visible render sites, so a
+// name that survives this one survives `finalize-gate.ts:225` and `:337` too.
+function fbtnRenderCheckGateReport(failures) {
+  return failures
+    .map(f => `  [${f.check}] ${f.file}:${f.line} ${f.ruleOrCode} — ${f.message.slice(0, 120)}`)
+    .join('\n');
+}
+
+function fbtnNamesSurfaced(failures, names) {
+  const report = fbtnRenderCheckGateReport(failures);
+  return names.filter(name => report.includes(name)).length;
+}
+
+// The shape `buildFailures` produced for a red `tests` check before R-FBTN: the generic fallback,
+// keyed by exit code, carrying a 500-char HEAD slice of the output.
+function fbtnCoarsePreFixFailure(output, pkgDir, exitCode = 1) {
+  return {
+    check: 'tests',
+    file: pkgDir,
+    line: 0,
+    ruleOrCode: String(exitCode),
+    message: output.slice(0, 500),
+    severity: 'error',
+    occurrence_index: 0,
+  };
+}
+
+test('R-FBTN: a red tests check surfaces every failing test name in the operator report', () => {
+  const failures = buildFailures(
+    { stdout: FBTN_SPEC_REPORTER_OUTPUT, stderr: '', exitCode: 1 },
+    'tests',
+    '/repo/pkg',
+  );
+
+  assert.equal(
+    fbtnNamesSurfaced(failures, FBTN_SPEC_FAILING_NAMES),
+    FBTN_SPEC_FAILING_NAMES.length,
+    'every failing test name must appear in the rendered check-gate report',
+  );
+  // Not merely "the text is somewhere in there": the name must be the failure's IDENTITY, because
+  // `failureIdentityKey` is `check::file::ruleOrCode` and baseline subtraction matches on it.
+  assert.deepEqual(
+    failures.map(f => f.ruleOrCode),
+    FBTN_SPEC_FAILING_NAMES,
+    'the test name is the failure identity, in first-seen order',
+  );
+  // The reporter prints each failure twice; the summary repeat must not become a second failure.
+  assert.equal(failures.length, FBTN_SPEC_FAILING_NAMES.length, 'summary repeats are deduped');
+  // `✖ failing tests:` is a section header, not a test.
+  assert.ok(
+    !failures.some(f => f.ruleOrCode.endsWith(':')),
+    'a reporter section header must never be reported as a failing test',
+  );
+});
+
+test('R-FBTN control arm: the pre-fix coarse shape surfaces ZERO names through the same oracle', () => {
+  const coarse = [fbtnCoarsePreFixFailure(FBTN_SPEC_REPORTER_OUTPUT, '/repo/pkg')];
+
+  assert.equal(
+    fbtnNamesSurfaced(coarse, FBTN_SPEC_FAILING_NAMES),
+    0,
+    'the oracle must be able to SEE the defect — if this is non-zero the pin above proves nothing',
+  );
+  // The defect stated positively, so this arm asserts a fact of its own rather than the negation of
+  // the pin: what the operator actually read on a RED gate was a PASSING test.
+  const report = fbtnRenderCheckGateReport(coarse);
+  assert.ok(
+    report.includes('✔ backendEnvOverrides: worker invocation with a ticket injects core.hooksPath'),
+    'the pre-fix report led with a green checkmark on a red gate',
+  );
+});
+
+test('R-FBTN: TAP `not ok` lines surface too — the parser is not spec-reporter-only', () => {
+  const failures = buildFailures(
+    { stdout: FBTN_TAP_REPORTER_OUTPUT, stderr: '', exitCode: 1 },
+    'tests',
+    '/repo/pkg',
+  );
+
+  assert.deepEqual(failures.map(f => f.ruleOrCode), FBTN_TAP_FAILING_NAMES);
+  assert.equal(
+    fbtnNamesSurfaced(failures, FBTN_TAP_FAILING_NAMES),
+    FBTN_TAP_FAILING_NAMES.length,
+  );
+  assert.ok(
+    !failures.some(f => f.ruleOrCode.startsWith('adds two numbers')),
+    'a passing `ok` line must never be reported as a failure',
+  );
+});
+
+test('R-FBTN: per-test identities are distinct, so baseline subtraction can tell them apart', () => {
+  const failures = buildFailures(
+    { stdout: FBTN_SPEC_REPORTER_OUTPUT, stderr: '', exitCode: 1 },
+    'tests',
+    '/repo/pkg',
+  );
+
+  // `assignOccurrenceIndices` groups by `failureIdentityKey`. All-zero ordinals mean every failure
+  // occupies its OWN identity, which is exactly what the subtraction needs to distinguish a
+  // brand-new failing test from a baselined one.
+  //
+  // The expectation is a LITERAL derived from the fixture, never from `failures` itself: an oracle
+  // shaped `failures.map(() => 0)` is trivially true for any array of length <= 1, so it stayed
+  // GREEN against a parser that returned nothing and fell back to the single coarse failure. Pinning
+  // the cardinality here is what makes this arm fire on the defect it exists to catch.
+  assert.deepEqual(
+    assignOccurrenceIndices(failures).map(f => f.occurrence_index),
+    FBTN_SPEC_FAILING_NAMES.map(() => 0),
+    'each failing test must own a distinct failure identity, one per failing test',
+  );
+});
+
+test('R-FBTN control arm: the pre-fix coarse shape collapses every failing test into ONE identity', () => {
+  const coarse = FBTN_SPEC_FAILING_NAMES.map(
+    () => fbtnCoarsePreFixFailure(FBTN_SPEC_REPORTER_OUTPUT, '/repo/pkg'),
+  );
+
+  // 0,1,2 — one identity carrying three ordinals. This is the aliasing `failureIdentityKey`'s own
+  // comment describes, and it is why the granularity pin above is load-bearing rather than cosmetic.
+  assert.deepEqual(
+    assignOccurrenceIndices(coarse).map(f => f.occurrence_index),
+    FBTN_SPEC_FAILING_NAMES.map((_, i) => i),
+    'the oracle must be able to SEE the collapse — if these were all 0 the pin above proves nothing',
+  );
+});
+
+test('R-FBTN: an unrecognised reporter FAILS OPEN to the existing coarse fallback', () => {
+  const unknown = 'Tests: 3 failed, 10 passed\nSomething broke in a way no marker describes';
+  const failures = buildFailures({ stdout: unknown, stderr: '', exitCode: 2 }, 'tests', '/repo/pkg');
+
+  // Exactly today's behaviour — no new failure mode, no abort, no throw. A reporter the marker
+  // alphabet does not cover costs the CURRENT report and never less.
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].ruleOrCode, '2', 'the fallback still keys on the exit code');
+  assert.ok(failures[0].message.includes('Something broke'));
+});
+
+test('R-FBTN: a passing tests check is still green — granularity never invents a failure', () => {
+  assert.deepEqual(
+    buildFailures({ stdout: FBTN_SPEC_REPORTER_OUTPUT, stderr: '', exitCode: 0 }, 'tests', '/repo/pkg'),
+    [],
+    'exit 0 short-circuits before any parsing, however many ✖ glyphs the output contains',
+  );
 });

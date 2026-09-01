@@ -124,10 +124,15 @@ const ENV_WRAPPER_PREFIXES = ['cross-env-shell', 'cross-env', 'env'] as const;
  * unparsed fallback in `buildFailures` keys every check the same way — `file: pkgDir`,
  * `ruleOrCode: String(exitCode)`, `line: 0` — so a coarse `tests` failure and a coarse
  * `typecheck` failure in the same package are otherwise the SAME failure to both the
- * ordinal grouping and the baseline fingerprint. `tests` has no granular parser, so it
- * ALWAYS produces that coarse shape when red: a repo whose suite is red at baseline
- * would subtract a brand-new coarse typecheck/lint failure as if it were the baselined
- * test failure, and the gate would report green over it.
+ * ordinal grouping and the baseline fingerprint: a repo red at baseline would subtract a
+ * brand-new coarse failure as if it were the baselined one, and the gate would report
+ * green over it.
+ *
+ * R-FBTN narrowed WHEN that coarse shape appears. `tests` used to have no granular parser,
+ * so it produced it on EVERY red run; `parseTestOutput` now keys each failing test by its
+ * own name, so a red suite yields one distinct identity per test and the subtraction can
+ * tell a new failure from a baselined one. The `check` component is still load-bearing,
+ * because the fallback still fires for any reporter no parser recognises.
  *
  * The ordinal grouping and the fingerprint MUST derive from this one key: an occurrence
  * index is only meaningful within the identity space it is counted in, so a key here
@@ -958,6 +963,67 @@ function parseEslintOutput(output: string, pkgDir: string): GateFailure[] {
   return failures;
 }
 
+/**
+ * R-FBTN: which TESTS failed. `typecheck` and `lint` have had granular parsers since the
+ * beginning; `tests` did not, so every red suite fell through to the generic fallback whose
+ * `message` is the first 500 chars of the combined streams — i.e. the HEAD of the output, which
+ * for every streaming test reporter is the PASSING tests. Measured over a real 5.6KB `node --test`
+ * run with 3 failures: 0 of 3 names reached any of the three operator-visible render sites
+ * (`check-gate.ts:136`, `finalize-gate.ts:225`, `finalize-gate.ts:337`) — the operator saw a RED
+ * gate whose one reported "failure" was a green checkmark.
+ *
+ * Slicing the TAIL instead does not fix it and is measurably worse (0/3 vs the head's 1/3 at
+ * n=500): `node --test` ends in an assertion stack trace, not a summary. The names are STRUCTURED
+ * — on marked lines scattered through the stream — so no slice window of any size or end recovers
+ * them. They have to be selected.
+ *
+ * Keyed on a failure-marker ALPHABET rather than a per-tool catalog: `not ok` is the TAP standard,
+ * and the character class is a contiguous Unicode range over the failure-glyph block
+ * (\u00D7 x, \u2715 ✕, \u2716 ✖, \u2717 ✗, \u2718 ✘) that node --test / vitest / jest / mocha
+ * draw from. A range is orthography; a list of tools would be one release away from the next
+ * silent gap.
+ *
+ * FAILS OPEN by construction: no match anywhere returns `[]`, and `buildFailures` falls through to
+ * the same coarse fallback it produces today. An unrecognised reporter therefore costs exactly the
+ * CURRENT behaviour and never less — this adds no failure mode and no abort condition.
+ */
+const TEST_FAILURE_LINE_RE = /^(?:not ok(?:\s+\d+)?\s*(?:-\s*)?|[\u00D7\u2715-\u2718]\s+)(.+?)\s*$/;
+const TEST_DURATION_SUFFIX_RE = /\s*\([\d.]+m?s\)$/;
+
+function parseTestOutput(output: string, pkgDir: string): GateFailure[] {
+  const failures: GateFailure[] = [];
+  const seen = new Set<string>();
+  for (const rawLine of output.split('\n')) {
+    const line = rawLine.trim();
+    const m = line.match(TEST_FAILURE_LINE_RE);
+    if (!m) continue;
+    const name = (m[1] ?? '').replace(TEST_DURATION_SUFFIX_RE, '').trim();
+    // A trailing colon means a reporter SECTION HEADER, not a test — `node --test` prints
+    // `\u2716 failing tests:` above its summary block. One condition instead of a catalog of
+    // per-reporter headers; a real test name ending in ':' would be omitted from a list that
+    // today shows ZERO names, so the failure direction is toward the status quo, never below it.
+    if (!name || name.endsWith(':')) continue;
+    // Reporters print each failure twice (inline, then again in the summary). Dedupe on the name
+    // so the ordinal grouping in `assignOccurrenceIndices` is not fed phantom repeats.
+    if (seen.has(name)) continue;
+    seen.add(name);
+    failures.push({
+      check: 'tests',
+      file: pkgDir,
+      line: 0,
+      // The NAME is the identity, not just the blurb: `failureIdentityKey` is
+      // `check::file::ruleOrCode`, so putting it here is what lets baseline subtraction tell one
+      // failing test from another (see that function's comment). All three render sites print
+      // `ruleOrCode`, so this also surfaces the name with no render-site change.
+      ruleOrCode: name.slice(0, 500),
+      message: line.slice(0, 500),
+      severity: 'error',
+      occurrence_index: 0,
+    });
+  }
+  return failures;
+}
+
 // R-FGNC-1: pnpm prints `WARN  Issue while reading ".../.npmrc". Failed to
 // replace env in config: ${...TOKEN}` to stderr on every invocation when a
 // token env var referenced by an `.npmrc` is unset. It is benign config-read
@@ -974,7 +1040,22 @@ export function stripEnvNoise(output: string): string {
     .join('\n');
 }
 
-export function buildFailures(result: CheckResult, check: 'typecheck' | 'lint' | 'tests', pkgDir: string): GateFailure[] {
+type FailureParser = (output: string, pkgDir: string) => GateFailure[];
+
+/**
+ * The ONE dispatch from a check to its granular parser. Previously a hand-maintained
+ * `if (check === ...)` chain with a parser for two of the three checks and nothing for the third;
+ * a missing arm looked exactly like an arm that did not apply, which is how `tests` went granular-
+ * parserless in silence. As an exhaustive `Record<GateCheck, ...>` the set is closed by the TYPE:
+ * a future `GateCheck` member is a compile error, not another silent gap. Net 3 branches -> 1.
+ */
+const FAILURE_PARSERS: Record<GateCheck, FailureParser> = {
+  typecheck: parseTscOutput,
+  lint: parseEslintOutput,
+  tests: parseTestOutput,
+};
+
+export function buildFailures(result: CheckResult, check: GateCheck, pkgDir: string): GateFailure[] {
   // R-FGNC-2: the subprocess exit code is the source of truth for "did this
   // check fail" — stdout/stderr is scraped only to enumerate WHICH failures
   // exist. Exit 0 → no failures, regardless of stderr WARN content.
@@ -985,15 +1066,8 @@ export function buildFailures(result: CheckResult, check: 'typecheck' | 'lint' |
   // benign noise before the failure-line classifier runs.
   const output = stripEnvNoise(`${result.stdout}\n${result.stderr}`).trim();
 
-  if (check === 'typecheck') {
-    const parsed = parseTscOutput(output, pkgDir);
-    if (parsed.length > 0) return parsed;
-  }
-
-  if (check === 'lint') {
-    const parsed = parseEslintOutput(output, pkgDir);
-    if (parsed.length > 0) return parsed;
-  }
+  const parsed = FAILURE_PARSERS[check](output, pkgDir);
+  if (parsed.length > 0) return parsed;
 
   return [{
     check,
