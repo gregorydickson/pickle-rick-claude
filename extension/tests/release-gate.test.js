@@ -65,6 +65,25 @@ function makeTarball(version, archiveName = 'release.tar.gz') {
   return { dir, tarball };
 }
 
+// The shape `.github/workflows/release.yml` ACTUALLY builds: `tar -czf ... extension/package.json
+// install.sh ...` run from the repo root, with NO prefix directory, so production's payload root is
+// the EMPTY string. Every other fixture in this file wraps the payload in a `pickle-rick-claude/`
+// root that no release has ever emitted, which left the only path a real asset takes through this
+// gate unfixtured. Asserts the archive really carries TOP-LEVEL members, so a fixture that silently
+// regrows a prefix fails here instead of decaying into a duplicate of the prefixed happy path.
+function makeBarePayloadTarball(version, archiveName = 'pickle-release.tar.gz') {
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-bare-'));
+  const payload = path.join(dir, 'payload');
+  writePackage(payload, version);
+  writeFileSync(path.join(payload, 'install.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+  const tarball = path.join(dir, archiveName);
+  run('tar', ['-czf', tarball, '-C', payload, 'extension/package.json', 'install.sh']);
+  const listing = run('tar', ['-tzf', tarball]).stdout;
+  assert.match(listing, /^extension\/package\.json$/m, `fixture archive is not bare-rooted:\n${listing}`);
+  assert.match(listing, /^install\.sh$/m, `fixture archive is not bare-rooted:\n${listing}`);
+  return { dir, tarball };
+}
+
 function makeSidecarTarball(archiveName = 'sidecar.tar.gz', { includeInstallScript = false } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-sidecar-'));
   const root = path.join(dir, 'sidecar');
@@ -410,6 +429,42 @@ describe('release-gate.post-tag', () => {
       const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stdout, /ok/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  // AP-BIN-ITER19-02. `.github/workflows/release.yml` tars `extension/package.json` and `install.sh`
+  // as TOP-LEVEL members, so `list_installable_payload_roots` reaches the bare-root arms
+  // (`pkg[""] = 1` / `install[""] = 1`) and `post_tag` takes the `payload_root` EMPTY branch. All 24
+  // pre-existing post-tag fixtures used a `pickle-rick-claude/` prefix, so deleting either bare-root
+  // arm left the suite fully GREEN while every real release asset died 21 `missing install payload
+  // root`. The drift case below proves the version really comes from the bare member.
+  test('passes when the release asset carries a bare payload root, the shape release.yml builds', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeBarePayloadTarball('1.67.0');
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /ok: release .* tarball has extension\/package\.json version 1\.67\.0/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  test('exits 21 when a bare-payload-root release asset carries a drifted package version', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeBarePayloadTarball('1.64.0');
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21);
+      assert.match(result.stderr, /expected downloaded extension\/package\.json version 1\.67\.0 but found 1\.64\.0/);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
       rmSync(tarFixture.dir, { recursive: true, force: true });
