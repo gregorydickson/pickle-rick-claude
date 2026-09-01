@@ -124,11 +124,15 @@ test('runGate: no_project_type_detected skip emits gate_skipped, never gate_run_
 // AP-EXT-ITER20-01 — the sibling of "a skip is not a pass": a baseline SUBTRACTION that
 // cancels the wrong check is also a green that never happened. `buildFailures`' unparsed
 // fallback keys every check identically (`file: pkgDir`, `ruleOrCode: String(exitCode)`,
-// `line: 0`), and `tests` has no granular parser, so it ALWAYS takes that shape when red.
-// A repo whose suite is red at baseline capture therefore has a coarse `tests` entry
-// standing by to absorb the first coarse `typecheck`/`lint` failure the phase introduces.
-// Both the ordinal grouping and the fingerprint must key on `check` for that to be
-// impossible — hence the shared identity key.
+// `line: 0`), so a repo holding a coarse entry at baseline capture has one standing by to
+// absorb the first coarse failure the phase introduces. Both the ordinal grouping and the
+// fingerprint must key on `check` for that to be impossible — hence the shared identity key.
+//
+// R-FBTN narrowed WHEN that fallback is reached: `tests` used to have no granular parser, so
+// it took the coarse shape on EVERY red run, which made this collision the common case rather
+// than the edge one. `parseTestOutput` now gives each failing test its own identity, so the
+// fallback fires only for a reporter no marker matches. These cases drive the coarse shape
+// DIRECTLY (via `coarse()` below) and so still pin the fallback's identity behaviour exactly.
 function coarse(check, exitCode = '1', dir = '/repo') {
   return {
     check, file: dir, line: 0, ruleOrCode: exitCode,
@@ -915,12 +919,12 @@ function fbtnNamesSurfaced(failures, names) {
 
 // The shape `buildFailures` produced for a red `tests` check before R-FBTN: the generic fallback,
 // keyed by exit code, carrying a 500-char HEAD slice of the output.
-function fbtnCoarsePreFixFailure(output, pkgDir, exitCode = 1) {
+function fbtnCoarsePreFixFailure(output, pkgDir) {
   return {
     check: 'tests',
     file: pkgDir,
     line: 0,
-    ruleOrCode: String(exitCode),
+    ruleOrCode: '1',
     message: output.slice(0, 500),
     severity: 'error',
     occurrence_index: 0,
