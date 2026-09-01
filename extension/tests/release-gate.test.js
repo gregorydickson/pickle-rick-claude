@@ -314,6 +314,29 @@ describe('release-gate.pre-tag', () => {
     }
   });
 
+  // B-RELTAG: `gh release create <tag>` with no `--target` tags the DEFAULT branch, so a tag whose
+  // NAME is correct for HEAD can still point at a stale tree. Only the tagged-COMMIT arm sees that;
+  // the tag-name arm is satisfied. Every other pre-tag drift fixture lets the NAME drift too, so the
+  // name arm rejects first and this arm shipped unenforced — deleting it kept the suite 40/40 GREEN
+  // while this exact tag reported `ok:` and exited 0. The `doesNotMatch` on the name arm's own
+  // message is what keeps the pin from decaying back into a duplicate of the name-arm cases.
+  test('exits 10 when the tagged commit package version drifts from HEAD even though the tag name matches', () => {
+    const { dir: repoDir } = makeGitFixture({
+      headVersion: '2.1.0-beta.18',
+      tagVersion: '2.0.0',
+      tagName: 'v2.1.0-beta.18',
+    });
+    try {
+      const result = gate(['--pre-tag', 'v2.1.0-beta.18'], { cwd: repoDir });
+      assert.equal(result.status, 10, result.stdout || result.stderr);
+      assert.match(result.stderr, /but tag v2\.1\.0-beta\.18 has 2\.0\.0/);
+      assert.doesNotMatch(result.stderr, /to match extension\/package\.json version/);
+      assert.doesNotMatch(result.stdout, /^ok:/m);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   test('exits 11 when jq cannot parse package JSON', () => {
     const { dir: repoDir, tagName } = makeGitFixture();
     writeFileSync(path.join(repoDir, 'extension', 'package.json'), '{broken\n');
