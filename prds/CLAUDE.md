@@ -165,8 +165,8 @@ The green-tree check above runs `test:fast` on **your** box. That covers correct
 authoring OS and nothing else. Measured this bundle:
 `tests/bin/test-runner-tier-discovery.test.js` ran **16/16 green on macOS at both `6e75e131` and
 `f1eaa022`**, while that same file under Linux was **15/16 RED at the first** and 16/16 at the
-second. The Node 22 pin had covered the runtime axis the whole time; the OS
-axis was covered by nothing, so a launch commit could be — and was — Linux-red on green ground.
+second. The Node 22 pin had covered the runtime axis the whole time; the OS axis was covered by
+nothing, so a launch commit could be — and was — Linux-red on green ground.
 
 **Before launching a bundle whose ground you cannot otherwise vouch for, add the OS-axis leg:**
 
