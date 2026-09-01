@@ -657,8 +657,31 @@ function matchesAllowedPath(candidate: string, allowedPaths: readonly string[]):
   });
 }
 
-function affectsAllWorkspacePackages(repoRelativePaths: readonly string[]): boolean {
-  return repoRelativePaths.some((filePath) => WORKSPACE_ROOT_CONTROL_FILES.has(normalizeScopePath(filePath)));
+/**
+ * AP-EXT-ITER130-01: the membership test runs in the WORKSPACE root's path space, never the
+ * repo's. Every member of `WORKSPACE_ROOT_CONTROL_FILES` is spelled relative to the workspace
+ * root (`package.json`, `pnpm-lock.yaml`), while BOTH inputs this predicate reads —
+ * `getChangedSince`'s output and `opts.allowedPaths` — are REPO-ROOT-relative
+ * (AP-EXT-ITER34-01). With the workspace root below the git root, the R-SZGB-A shape
+ * `detectProjectTypeWithRootResolution` produces, the two spellings diverge (`app/package.json`
+ * vs `package.json`), every member missed, and the expansion `e9636cf1` added was INERT:
+ * a change set mixing the root manifest with one package's file narrowed to that package alone
+ * and `finalizeGateResult` reported an executed `gate_run_complete` green over every sibling
+ * package the manifest change affects, with no `gate_skipped` to give it away.
+ *
+ * Resolving into ONE path space is AP-EXT-ITER34-01's own doctrine applied to the narrowing
+ * input it did not reach; it is deliberately NOT an eighth enumeration member or a third
+ * `affectsAllWorkspacePackages` hatch, both of which `src/services/CLAUDE.md` forbids.
+ */
+function affectsAllWorkspacePackages(
+  repoRelativePaths: readonly string[],
+  repoRoot: string,
+  workspaceRoot: string,
+): boolean {
+  return repoRelativePaths.some((filePath) => {
+    const absolute = path.resolve(repoRoot, normalizeScopePath(filePath));
+    return WORKSPACE_ROOT_CONTROL_FILES.has(normalizeScopePath(path.relative(workspaceRoot, absolute)));
+  });
 }
 
 function applyFlakeFilter(
@@ -1155,7 +1178,7 @@ function selectWorkspaceTargetDirs(
 ): string[] {
   const repoRoot = resolveLexicalRepoRoot(opts.workingDir);
   let candidates = workspacePackages;
-  if (changedFiles && !affectsAllWorkspacePackages(changedFiles)) {
+  if (changedFiles && !affectsAllWorkspacePackages(changedFiles, repoRoot, opts.workingDir)) {
     candidates = workspacePackages.filter(pkgDir =>
       changedFiles.some(f => {
         const absFile = path.resolve(repoRoot, f);
@@ -1164,7 +1187,7 @@ function selectWorkspaceTargetDirs(
     );
   }
 
-  if (!allowedPathsUsed || affectsAllWorkspacePackages(opts.allowedPaths ?? [])) {
+  if (!allowedPathsUsed || affectsAllWorkspacePackages(opts.allowedPaths ?? [], repoRoot, opts.workingDir)) {
     return candidates;
   }
   const relCandidates = candidates.map(p => path.relative(repoRoot, p));

@@ -330,6 +330,100 @@ test('AP-EXT-ITER34-01: nested workspace root — changed-file narrowing compose
   }
 });
 
+// AP-EXT-ITER130-01 — the same false green as AP-EXT-ITER34-01, reached through the ONE
+// narrowing input that fix did not resolve. `e9636cf1` added the root-control-file expansion
+// (`WORKSPACE_ROOT_CONTROL_FILES`) so that a change to the workspace root manifest widens the
+// gate back to EVERY package, and pinned it with FLAT fixtures only — workspace root AT the git
+// root, where `package.json` is spelled the same in both path spaces. Both of the predicate's
+// inputs are REPO-ROOT-relative while every member of the set is WORKSPACE-ROOT-relative, so one
+// level down (`app/package.json`) the expansion was inert: a change set mixing the root manifest
+// with one package's file narrowed to that package alone and `gate_run_complete` reported green
+// over every sibling the manifest change affects. Measured before the fix on this exact fixture:
+// `status: green`, zero failures, no `gate_skipped`.
+function commitMixedRootAndPackage(dir, appDir, fileDir) {
+  const pkgPath = path.join(appDir, 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+  pkg.version = '2.0.0';
+  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+  fs.writeFileSync(path.join(fileDir, 'src.js'), 'v2\n');
+  execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+  execSync('git commit -m "bump root manifest and touch one package"', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+}
+
+test('AP-EXT-ITER130-01: nested workspace root — a changed root manifest expands scope to every workspace package', async () => {
+  const { dir, passingDir } = buildNestedWorkspaceRepo();
+  try {
+    // MIXED on purpose: the root manifest alone empties the candidate set and lands in the
+    // AP-EXT-ITER121-01 declared skip, which is honest. It is the mix that produces a green —
+    // one package survives the narrowing, so the gate runs, passes, and reports an executed pass.
+    commitMixedRootAndPackage(dir, path.join(dir, 'app'), passingDir);
+    const { events, onEvent } = captureEvents();
+
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'changed', since: 'HEAD~1', checks: ['tests'], onEvent,
+    });
+
+    assert.equal(result.status, 'red', 'a root manifest below the git root must still widen scope to every package');
+    assert.equal(result.total_raw_failure_count, 1);
+    assert.deepEqual(
+      result.failures.map(f => path.relative(dir, f.file).replace(/\\/g, '/')),
+      ['app/packages/failing'],
+      'the package the changed manifest never touched is the one that must still be measured',
+    );
+    assert.ok(
+      !events.some(e => e.event === 'gate_skipped'),
+      'the pre-fix green was silent — it ran one package of two and announced nothing',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER130-01: nested workspace root — a root manifest in allowedPaths expands scope to every workspace package', async () => {
+  const { dir } = buildNestedWorkspaceRepo();
+  try {
+    // The allowedPaths arm of the same predicate, spelled the way `scope.json:allowed_paths` is.
+    // Mixed for the same reason: `app/packages/passing/**` is what keeps a candidate alive, so a
+    // missed expansion is a green rather than the declared empty-target-set skip.
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'full', checks: ['tests'],
+      allowedPaths: ['app/package.json', 'app/packages/passing/**'],
+    });
+
+    assert.equal(result.status, 'red', 'a root manifest in allowedPaths must widen scope past the packages it names');
+    assert.equal(result.total_raw_failure_count, 1);
+    assert.deepEqual(
+      result.failures.map(f => path.relative(dir, f.file).replace(/\\/g, '/')),
+      ['app/packages/failing'],
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER130-01 control: a changed NON-control root file still narrows to the owning package', async () => {
+  const { dir, passingDir } = buildNestedWorkspaceRepo();
+  try {
+    // Over-rejection control. Same shape as the headline — a root-level file plus one package's
+    // file — but the root file is not a workspace control file, so the expansion must NOT fire
+    // and the failing package must stay out of scope. Resolving into the workspace path space
+    // must widen the SET's reach, never turn every repo-root path into a whole-workspace run.
+    fs.writeFileSync(path.join(dir, 'README.md'), 'v2\n');
+    fs.writeFileSync(path.join(passingDir, 'src.js'), 'v2\n');
+    execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+    execSync('git commit -m "touch a non-control root file and one package"', { cwd: dir, stdio: 'pipe', timeout: 30_000 });
+
+    const result = await runGate({
+      workingDir: dir, mode: 'strict', scope: 'changed', since: 'HEAD~1', checks: ['tests'],
+    });
+
+    assert.equal(result.status, 'green', 'narrowing must still narrow — only the 7 control files widen scope');
+    assert.equal(result.total_raw_failure_count, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // AP-EXT-ITER38-02 — the fifth variant of this file's thesis, reached by the
 // ENUMERATION-FAILURE axis rather than AP-EXT-ITER34-01's path-space axis.
 // `getChangedSince` maps ANY git failure (unreachable/rebased-away `since` SHA,
