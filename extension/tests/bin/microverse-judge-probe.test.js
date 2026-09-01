@@ -760,7 +760,8 @@ describe('R-JPCM judge output contract', () => {
     // The key list is DERIVED from the advertised schema, not hardcoded, so a contract that grows
     // a key is covered automatically rather than silently escaping a stale enumeration.
     const keys = topLevelKeys(advertisedSchema(JUDGE_SYSTEM_PROMPT));
-    const arrayKeys = keys.filter((k) => k !== 'score');
+    const full = responseForKeys(keys);
+    const arrayKeys = keys.filter((k) => Array.isArray(full[k]));
     assert.ok(arrayKeys.length > 0, 'no array keys derived — control arm would assert nothing');
 
     for (const omitted of arrayKeys) {
@@ -773,7 +774,7 @@ describe('R-JPCM judge output contract', () => {
     }
 
     // `score` degrades by value rather than by shape: it is read only when already a number.
-    const wrongType = { ...responseForKeys(keys), score: '3' };
+    const wrongType = { ...full, score: '3' };
     assert.equal(parseLlmJudgeOutput(JSON.stringify(wrongType)).score, null);
   });
 });
