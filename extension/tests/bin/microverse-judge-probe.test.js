@@ -538,22 +538,23 @@ describe('R-ORCG: judge XDG_RUNTIME_DIR cleanup', () => {
 
 const PARSE_FAILURE_LAST_ERROR = 'judge output did not contain a numeric score';
 
-/** Probe reply + four attempt replies, none containing a numeric score. */
-function makeUnparseableJudgeSteps() {
-  return [
-    { type: 'success', stdout: 'claude/2.1.0' },
-    { type: 'success', stdout: 'I cannot score this codebase.' },
-    { type: 'success', stdout: 'sorry, no rating available' },
-    { type: 'success', stdout: 'unable to comply' },
-    { type: 'success', stdout: 'no score' },
-  ];
-}
+/** Probe reply + four attempt replies (the backoff spends 1 + backoffsMs.length), none containing a
+ *  numeric score. makeSpawnMock's own default reply is also non-numeric, so an arity drift degrades
+ *  to "still a parse failure" rather than to a spurious pass. */
+const UNPARSEABLE_JUDGE_STEPS = [
+  { type: 'success', stdout: 'claude/2.1.0' },
+  { type: 'success', stdout: 'I cannot score this codebase.' },
+  { type: 'success', stdout: 'sorry, no rating available' },
+  { type: 'success', stdout: 'unable to comply' },
+  { type: 'success', stdout: 'no score' },
+];
 
-/** A real state.json so `isFatalPhaseFailure` answers through the shipped `sm.read` path.
+/** Every disposition observable any production consumer actually reads, for one exit reason.
+ *  Answers through a real state.json so `isFatalPhaseFailure` runs the shipped `sm.read` path.
  *  schema_version MUST be current: a stale value makes `sm.read` throw, and `isFatalPhaseFailure`
  *  fails OPEN to `false` (pipeline-runner.ts:3225-3230) — every assertion would then pass for the
  *  wrong reason. Hence LATEST_SCHEMA_VERSION rather than a literal. */
-function withStateFor(exitReason, fn) {
+function dispositionTuple(exitReason) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r-juns-'));
   try {
     const statePath = path.join(dir, 'state.json');
@@ -565,20 +566,16 @@ function withStateFor(exitReason, fn) {
       tickets: [],
       activity: [],
     }));
-    return fn({ statePath, sessionDir: dir, workingDir: dir });
+    const runtime = { statePath, sessionDir: dir, workingDir: dir };
+    return {
+      haltAction: classifyMicroverseHaltDecision(exitReason).action,
+      exitCode: classifyMicroverseDisposition(exitReason).exitCode,
+      fatalOnAnatomyPark: isFatalPhaseFailure('anatomy-park', runtime),
+      fatalOnSzechuanSauce: isFatalPhaseFailure('szechuan-sauce', runtime),
+    };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
-}
-
-/** Every disposition observable any production consumer actually reads, for one exit reason. */
-function dispositionTuple(exitReason) {
-  return withStateFor(exitReason, (runtime) => ({
-    haltAction: classifyMicroverseHaltDecision(exitReason).action,
-    exitCode: classifyMicroverseDisposition(exitReason).exitCode,
-    fatalOnAnatomyPark: isFatalPhaseFailure('anatomy-park', runtime),
-    fatalOnSzechuanSauce: isFatalPhaseFailure('szechuan-sauce', runtime),
-  }));
 }
 
 describe('R-JUNS: an unparseable judge answer never breaks the phase loop', () => {
@@ -586,7 +583,8 @@ describe('R-JUNS: an unparseable judge answer never breaks the phase loop', () =
     const previousLegacy = process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
     delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
     const orig = { spawn: _deps.spawn, sleep: _deps.sleep };
-    _deps.spawn = makeSpawnMock(makeUnparseableJudgeSteps());
+    // Copy: makeSpawnMock drains its steps with shift(), so the shared const must not be consumed.
+    _deps.spawn = makeSpawnMock([...UNPARSEABLE_JUDGE_STEPS]);
     _deps.sleep = async () => {};
     let result;
     try {
