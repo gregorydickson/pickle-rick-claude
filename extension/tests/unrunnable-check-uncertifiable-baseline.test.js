@@ -680,3 +680,148 @@ test('AP-EXT-ITER127-01 control: a workspace whose packages all run the check st
     rm(sessionDir);
   }
 });
+
+// ===========================================================================
+// AP-EXT-ITER128-01: an EXISTING per-iteration baseline that cannot be certified fresh is
+// REFRESHED, never fatal.
+//
+// `classifyExistingBaseline` used to enumerate the two recoverable error types
+// (`BaselineMissingError || BaselineStaleError`) and rethrow everything else, so a
+// `gate/baseline.json` that failed `validateBaselineStructure` raised `BASELINE_CORRUPT`
+// past `ensurePerIterationGateBaseline`'s try (which starts AFTER the classify call), out of
+// `prepareIteration`, and into `runMicroversePhases`, which stamps `exit_reason: 'error'` and
+// ends the loop — a halt over derived data whose MISSING and STALE siblings healed on the
+// same line. Every row below is an unusable on-disk baseline; all four must heal identically.
+//
+// The freshness triple MUST be passed: with any of `currentIteration` /
+// `baselineMaxAgeIterations` / `baselineMaxAgeSeconds` undefined, `classifyExistingBaseline`
+// short-circuits to 'fresh' and never calls `assertBaselineFresh` at all — the wire under
+// test would not be crossed. The stale row is the live proof that it is.
+// ===========================================================================
+
+const BASELINE_FRESHNESS_OPTS = {
+  currentIteration: 50,
+  baselineMaxAgeIterations: 30,
+  baselineMaxAgeSeconds: 14_400,
+};
+
+function writeRunnableFixtureRepo(dir) {
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({
+      name: 'apext128-gate-fixture',
+      private: true,
+      scripts: {
+        typecheck: 'node -e "process.exit(0)"',
+        lint: 'node -e "process.exit(0)"',
+        test: 'node -e "process.exit(0)"',
+      },
+    }, null, 2),
+  );
+}
+
+function validBaselineJson(workingDir, capturedIteration) {
+  return JSON.stringify({
+    schema_version: 1,
+    captured_at: new Date().toISOString(),
+    captured_iteration: capturedIteration,
+    working_dir: workingDir,
+    project_type: 'npm',
+    checks: ['typecheck', 'lint', 'tests'],
+    failures: [],
+    check_status: { typecheck: 'ran', lint: 'ran', tests: 'ran' },
+  }, null, 2);
+}
+
+const UNUSABLE_BASELINE_SHAPES = [
+  // The artifact a killed writer leaves behind — `readRecoverableJsonObject` returns null for
+  // it, so it reaches `validateBaselineStructure` as the corrupt case rather than the absent one.
+  { label: 'zero-byte torn write', body: () => '' },
+  { label: 'parses but is not a baseline', body: () => '{}' },
+  // Deploy drift: a newer runtime's baseline read by an older one.
+  {
+    label: 'future schema_version',
+    body: (workingDir) => JSON.stringify({ ...JSON.parse(validBaselineJson(workingDir, 50)), schema_version: 2 }),
+  },
+  // The sibling that ALWAYS healed — present so the row set proves one uniform disposition
+  // rather than three special cases bolted next to it.
+  { label: 'stale captured_iteration', body: (workingDir) => validBaselineJson(workingDir, 1) },
+];
+
+for (const shape of UNUSABLE_BASELINE_SHAPES) {
+  test(`AP-EXT-ITER128-01: an unusable per-iteration baseline (${shape.label}) is refreshed, not fatal`, async () => {
+    const workingDir = makeGitRepo('apext128-unusable-repo-');
+    const sessionDir = mkTmp('apext128-unusable-session-');
+
+    try {
+      writeRunnableFixtureRepo(workingDir);
+      commitAll(workingDir, 'initial clean state');
+
+      const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+      fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
+      fs.writeFileSync(baselinePath, shape.body(workingDir));
+
+      const logs = [];
+      await ensurePerIterationGateBaseline({
+        currentMv: makeMv({ key_metric: undefined }),
+        workingDir,
+        sessionDir,
+        enabledFiles: ['anatomy-park.json'],
+        log: (msg) => logs.push(msg),
+        ...BASELINE_FRESHNESS_OPTS,
+      });
+
+      const baseline = readBaseline(sessionDir);
+      assert.equal(baseline.schema_version, 1, 'the unusable baseline must be replaced by a real recapture');
+      assert.equal(
+        baseline.captured_iteration,
+        BASELINE_FRESHNESS_OPTS.currentIteration,
+        'the recapture must be stamped at the CURRENT iteration — a file left in place would keep its old stamp',
+      );
+      assert.ok(
+        logs.some((msg) => msg.includes('refreshing per-iteration gate baseline')),
+        `the refresh must be reported, got ${JSON.stringify(logs)}`,
+      );
+    } finally {
+      rm(workingDir);
+      rm(sessionDir);
+    }
+  });
+}
+
+// Over-rejection control: without it, "delete and recapture unconditionally" would satisfy
+// every row above while re-baselining a healthy session on every single iteration.
+test('AP-EXT-ITER128-01 control: a FRESH valid baseline is left exactly as it is', async () => {
+  const workingDir = makeGitRepo('apext128-fresh-repo-');
+  const sessionDir = mkTmp('apext128-fresh-session-');
+
+  try {
+    writeRunnableFixtureRepo(workingDir);
+    commitAll(workingDir, 'initial clean state');
+
+    const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+    fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
+    const written = validBaselineJson(workingDir, BASELINE_FRESHNESS_OPTS.currentIteration);
+    fs.writeFileSync(baselinePath, written);
+
+    const logs = [];
+    await ensurePerIterationGateBaseline({
+      currentMv: makeMv({ key_metric: undefined }),
+      workingDir,
+      sessionDir,
+      enabledFiles: ['anatomy-park.json'],
+      log: (msg) => logs.push(msg),
+      ...BASELINE_FRESHNESS_OPTS,
+    });
+
+    assert.equal(
+      fs.readFileSync(baselinePath, 'utf-8'),
+      written,
+      'a certifiably fresh baseline must not be deleted and recaptured',
+    );
+    assert.deepEqual(logs, [], `a fresh baseline must produce no refresh, got ${JSON.stringify(logs)}`);
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+});

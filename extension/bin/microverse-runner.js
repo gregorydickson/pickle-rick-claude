@@ -20,7 +20,7 @@ import { resolveCodexModel } from './spawn-morty.js';
 import { checkScopeDiff, isUnevaluableScopeStatus } from './check-scope-diff.js';
 import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
 import { logActivity } from '../services/activity-logger.js';
-import { assertBaselineFresh, BaselineMissingError, BaselineStaleError, runGate, filterByScope, classifyNoDisown, isCheckUnmeasured, getChangedExportedSymbols, getChangedFilesSince, } from '../services/convergence-gate.js';
+import { assertBaselineFresh, runGate, filterByScope, classifyNoDisown, isCheckUnmeasured, getChangedExportedSymbols, getChangedFilesSince, } from '../services/convergence-gate.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
 class MicroverseExitError extends Error {
     exitReason;
@@ -590,9 +590,14 @@ function classifyExistingBaseline(opts) {
         return 'fresh';
     }
     catch (err) {
-        if (!(err instanceof BaselineMissingError || err instanceof BaselineStaleError)) {
-            throw err;
-        }
+        // AP-EXT-ITER128-01: the file EXISTS (checked above) and could not be certified fresh.
+        // Every reason has the SAME disposition — drop the unusable baseline and recapture — so
+        // this catch does not enumerate which ones qualify. Naming two recoverable error types
+        // left `BASELINE_CORRUPT` (a zero-byte, torn, foreign, or future-`schema_version`
+        // `gate/baseline.json`) rethrowing past `ensurePerIterationGateBaseline`'s try, out of
+        // `prepareIteration` and into `runMicroversePhases`, ending the run at
+        // `exit_reason: 'error'` — a halt over derived data whose MISSING and STALE siblings
+        // heal on this very line.
         fs.rmSync(baselinePath, { force: true });
         log(`[anatomy-park] refreshing per-iteration gate baseline (${safeErrorMessage(err)})`);
         return 'stale';
