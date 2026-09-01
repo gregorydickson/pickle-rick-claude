@@ -884,6 +884,11 @@ const FBTN_TAP_REPORTER_OUTPUT = [
   'not ok 3 - handles a unicode ✔ inside the name',
   '1..3',
   '# fail 2',
+  // PROSE, not a marker. The failure alphabet must key on the TAP token `not ok` at a word
+  // BOUNDARY: without one, any line merely STARTING with those six characters is captured, and
+  // this line is reported as a failing test named `ay to leave the pool unattended`.
+  'note: not okay to leave the pool unattended',
+  'not okay to leave the pool unattended',
 ].join('\n');
 
 const FBTN_SPEC_FAILING_NAMES = [
@@ -982,6 +987,11 @@ test('R-FBTN: TAP `not ok` lines surface too — the parser is not spec-reporter
   assert.ok(
     !failures.some(f => f.ruleOrCode.startsWith('adds two numbers')),
     'a passing `ok` line must never be reported as a failure',
+  );
+  // The marker is a TOKEN, not a six-character prefix.
+  assert.ok(
+    !failures.some(f => f.ruleOrCode.includes('leave the pool unattended')),
+    'prose beginning `not ok...` must not be captured as a failing test',
   );
 });
 

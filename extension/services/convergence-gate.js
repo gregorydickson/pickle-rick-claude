@@ -863,11 +863,16 @@ function parseEslintOutput(output, pkgDir) {
  * draw from. A range is orthography; a list of tools would be one release away from the next
  * silent gap.
  *
+ * The `\b` after `not ok` is load-bearing, not decoration: without it the marker matches any prose
+ * line STARTING with those six characters, so `not okay to leave the pool unattended` is captured as
+ * a failing test named `ay to leave the pool unattended`. The boundary costs nothing on every real
+ * TAP spelling (`not ok 2 - name`, `not ok - name`, `not ok 3 name`) and removes that class.
+ *
  * FAILS OPEN by construction: no match anywhere returns `[]`, and `buildFailures` falls through to
  * the same coarse fallback it produces today. An unrecognised reporter therefore costs exactly the
  * CURRENT behaviour and never less — this adds no failure mode and no abort condition.
  */
-const TEST_FAILURE_LINE_RE = /^(?:not ok(?:\s+\d+)?\s*(?:-\s*)?|[\u00D7\u2715-\u2718]\s+)(.+?)\s*$/;
+const TEST_FAILURE_LINE_RE = /^(?:not ok\b\s*(?:\d+\s*)?(?:-\s*)?|[\u00D7\u2715-\u2718]\s+)(.+?)\s*$/;
 const TEST_DURATION_SUFFIX_RE = /\s*\([\d.]+m?s\)$/;
 function parseTestOutput(output, pkgDir) {
     const failures = [];
