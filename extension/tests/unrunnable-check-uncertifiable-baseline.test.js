@@ -16,6 +16,7 @@ const repoRoot = path.resolve(__dirname, '..', '..');
 
 const {
   ensurePerIterationGateBaseline,
+  runPerIterationGateHook,
   handleWorkerManagedIteration,
   handleIterationOutcome,
 } = await import(path.resolve(__dirname, '../bin/microverse-runner.js'));
@@ -820,6 +821,137 @@ test('AP-EXT-ITER128-01 control: a FRESH valid baseline is left exactly as it is
       'a certifiably fresh baseline must not be deleted and recaptured',
     );
     assert.deepEqual(logs, [], `a fresh baseline must produce no refresh, got ${JSON.stringify(logs)}`);
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+});
+
+// ===========================================================================
+// AP-EXT-ITER129-01 (the Phase 2.5 replay of AP-EXT-ITER128-01, one read site over).
+//
+// AP-EXT-ITER128-01 healed the FRESHNESS read (`classifyExistingBaseline`, which catches every
+// refusal and refreshes). The SUBTRACTION read had no such frame: `resolveBaselineResult`
+// raised `BASELINE_CORRUPT` past `handleBaselineMode`'s `LockError`-only catch, out of
+// `runGate`, out of `runChangedPerIterationGate` (which wraps `runGateFn` in no try), up to
+// `runMicroversePhases` — `exit_reason: 'error'`, loop over.
+//
+// The inversion these rows pin: the branch directly above CAPTURES when the baseline is
+// MISSING. An unusable baseline is strictly LESS information than a missing one, so it must
+// not take the harsher disposition. It now takes the no-baseline exit (`return null` ->
+// `runGate` falls through to `finalGateResult`).
+//
+// The direction matters as much as the survival: unsubtracted is fail-CLOSED. Each row proves
+// the SAME repo + SAME baseline path goes GREEN under a valid baseline and RED under a corrupt
+// one, so a "capture over the corrupt file" fix — which would return green and disown the
+// repo's real failures — cannot satisfy these rows.
+// ===========================================================================
+
+// A fixture whose `typecheck` script exits non-zero, so the gate has a real failure to either
+// subtract or report. Without a failure every row would be green either way and pass vacuously.
+function writeFailingTypecheckFixtureRepo(dir) {
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({
+      name: 'apext129-gate-fixture',
+      private: true,
+      scripts: {
+        typecheck: 'node -e "console.error(\'src/index.ts(1,7): error TS2322: nope\'); process.exit(1)"',
+      },
+    }, null, 2),
+  );
+}
+
+function runBaselineGate(workingDir, baselinePath) {
+  return runGate({ workingDir, mode: 'baseline', scope: 'full', checks: ['typecheck'], baselinePath });
+}
+
+for (const shape of UNUSABLE_BASELINE_SHAPES.filter((s) => s.label !== 'stale captured_iteration')) {
+  test(`AP-EXT-ITER129-01: an unusable baseline on the SUBTRACTION read reports unsubtracted, never throws (${shape.label})`, async () => {
+    const workingDir = makeGitRepo('apext129-subtract-repo-');
+    const sessionDir = mkTmp('apext129-subtract-session-');
+
+    try {
+      writeFailingTypecheckFixtureRepo(workingDir);
+      commitAll(workingDir, 'initial state with a failing typecheck');
+      const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+
+      // 1. capture, then 2. re-run: the SAME repo and SAME path go green once the real failure
+      //    is baselined. This is the in-row control — it is what makes step 3 a difference of
+      //    the baseline file's CONTENT and nothing else.
+      const captured = await runBaselineGate(workingDir, baselinePath);
+      assert.equal(captured.baseline_used, false, 'the first run captures rather than subtracts');
+      const subtracted = await runBaselineGate(workingDir, baselinePath);
+      assert.equal(subtracted.baseline_used, true, 'the second run must subtract against the captured baseline');
+      assert.equal(subtracted.status, 'green', 'a baselined pre-existing failure is not a new failure');
+
+      // 3. corrupt that very file and re-run. Pre-fix this THREW GateError out of runGate.
+      // `body()` stamps a fresh `captured_at`, so hold ONE rendering — comparing two calls
+      // would fail on the timestamp rather than on what the gate did.
+      const corruptBody = shape.body(workingDir);
+      fs.writeFileSync(baselinePath, corruptBody);
+      const unusable = await runBaselineGate(workingDir, baselinePath);
+
+      assert.equal(unusable.baseline_used, false, 'nothing may be subtracted against an unusable baseline');
+      assert.equal(
+        unusable.status,
+        'red',
+        'the disposition must be fail-CLOSED — a capture-over-the-corrupt-file fix would return green here',
+      );
+      assert.ok(
+        unusable.failures.length > 0,
+        `the repo's real failure must be reported, got ${JSON.stringify(unusable.failures)}`,
+      );
+      assert.equal(
+        fs.readFileSync(baselinePath, 'utf-8'),
+        corruptBody,
+        'the unusable file is left for classifyExistingBaseline to refresh — the gate must not overwrite it with a post-change capture',
+      );
+    } finally {
+      rm(workingDir);
+      rm(sessionDir);
+    }
+  });
+}
+
+// End-to-end pin on the halt itself: the throw's only unguarded consumer. Nothing between
+// `runChangedPerIterationGate` and `runMicroversePhases` holds a try, so a throw here IS
+// `exit_reason: 'error'`.
+test('AP-EXT-ITER129-01: the post-commit per-iteration gate survives an unusable baseline instead of ending the run', async () => {
+  const workingDir = makeGitRepo('apext129-hook-repo-');
+  const sessionDir = mkTmp('apext129-hook-session-');
+
+  try {
+    writeRunnableFixtureRepo(workingDir);
+    commitAll(workingDir, 'initial clean state');
+    const preIterSha = headSha(workingDir);
+    fs.writeFileSync(path.join(workingDir, 'worker-edit.txt'), 'the iteration committed something\n');
+    // `commitsHappened` (preIterSha !== HEAD) is what arms the gate at all — without this
+    // second commit the hook short-circuits to `gate_skipped` and the row passes vacuously.
+    commitAll(workingDir, 'worker commit');
+
+    const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+    fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
+    fs.writeFileSync(baselinePath, '');
+
+    const logs = [];
+    const mv = await runPerIterationGateHook({
+      ...BASE_OPTS,
+      currentMv: makeMv({ key_metric: undefined }),
+      preIterSha,
+      workingDir,
+      sessionDir,
+      enabledFiles: ['anatomy-park.json'],
+      iteration: 50,
+      log: (msg) => logs.push(msg),
+      _deps: {
+        logActivityFn: () => {},
+        writeMicroverseStateFn: () => {},
+        runRemediatorFn: async () => ({ success: false }),
+      },
+    });
+
+    assert.equal(mv.iteration_regressions, 0, 'a clean tree under an unusable baseline is not a regression');
   } finally {
     rm(workingDir);
     rm(sessionDir);

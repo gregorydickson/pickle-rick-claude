@@ -197,12 +197,16 @@ function validateBaselineStructure(data: unknown): data is GateBaselineFile {
   );
 }
 
-function loadBaselineFile(baselinePath: string): GateBaselineFile {
+/**
+ * AP-EXT-ITER129-01: the ONE answer to "can `runGate` subtract against the baseline at this
+ * path?" — absent, unparseable and off-schema all read as `null`, so no consumer has to
+ * enumerate corruption shapes. The THROW that used to be welded onto this read now lives with
+ * the one consumer that wants it (`assertBaselineFresh`, whose caller recovers by refreshing);
+ * the subtraction consumer takes the no-baseline exit instead, because it has no recovery frame.
+ */
+function readUsableBaseline(baselinePath: string): GateBaselineFile | null {
   const raw = readRecoverableJsonObject(baselinePath) as unknown;
-  if (!validateBaselineStructure(raw)) {
-    throw new GateError('BASELINE_CORRUPT', `Invalid baseline file at ${baselinePath}`);
-  }
-  return raw;
+  return validateBaselineStructure(raw) ? raw : null;
 }
 
 async function inspectBaselinePath(baselinePath: string): Promise<Record<string, unknown>> {
@@ -436,7 +440,10 @@ export function assertBaselineFresh(
       `Baseline at ${baselinePath} is ${Math.round(ageMs / 1000)}s old (max ${opts.max_age_seconds}s)`
     );
   }
-  const baseline = loadBaselineFile(baselinePath);
+  const baseline = readUsableBaseline(baselinePath);
+  if (!baseline) {
+    throw new GateError('BASELINE_CORRUPT', `Invalid baseline file at ${baselinePath}`);
+  }
   const capturedIteration = baseline.captured_iteration;
   const iterationAge = typeof capturedIteration === 'number'
     ? opts.current_iteration - capturedIteration
@@ -1664,7 +1671,7 @@ async function resolveBaselineResult(
   emit: GateEmit,
   uncertifiable: boolean,
   checkStatus: Partial<Record<GateCheck, GateCheckStatus>>,
-): Promise<GateResult> {
+): Promise<GateResult | null> {
   const preWriteStatus = await inspectBaselinePath(baselinePath);
   emit('gate_baseline_disk_check', { phase: 'pre_write', ...preWriteStatus });
   if (preWriteStatus.exists !== true) {
@@ -1684,7 +1691,25 @@ async function resolveBaselineResult(
       new_failures_vs_baseline: 0,
     };
   }
-  const newFailures = subtractBaseline(withIndices, loadBaselineFile(baselinePath), buildNoDisownContext(opts));
+  const existing = readUsableBaseline(baselinePath);
+  if (!existing) {
+    // AP-EXT-ITER129-01: a `gate/baseline.json` that exists but cannot be loaded used to raise
+    // `BASELINE_CORRUPT` from here — past `handleBaselineMode`'s `LockError`-only catch, out of
+    // `runGate`, out of `runChangedPerIterationGate` (which wraps `runGateFn` in no try), up to
+    // `runMicroversePhases`, which stamps `exit_reason: 'error'` and ends the loop. A halt over
+    // derived data, and an inversion: a MISSING baseline is recoverable (the branch above
+    // captures one) while an UNUSABLE one — strictly LESS information — killed the run.
+    //
+    // The owed disposition is the no-baseline one, and it already exists: returning `null` is
+    // how this function reports "not baseline mode", and `runGate` answers it by falling
+    // through to `finalGateResult` — every real failure reported, nothing subtracted. That is
+    // fail-CLOSED (over-strict, never fake-green: a garbage baseline is still never subtracted
+    // against) and it needs no new result shape, event, or recovery frame. The stale-baseline
+    // refresh in `microverse-runner.classifyExistingBaseline` replaces the file next iteration.
+    console.error(`gate: baseline at ${baselinePath} is unusable — reporting failures unsubtracted for this run`);
+    return null;
+  }
+  const newFailures = subtractBaseline(withIndices, existing, buildNoDisownContext(opts));
   return {
     status: newFailures.length === 0 ? 'green' : 'red',
     failures: newFailures,
