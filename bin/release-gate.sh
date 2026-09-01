@@ -131,6 +131,36 @@ find_installable_payload_root() {
   printf '%s\n' "${roots[0]}"
 }
 
+# `normalized()` above strips a leading `./` when DERIVING the payload root, but `tar -xOzf`
+# matches a member by the name as STORED: GNU tar cannot find `extension/package.json` in an
+# archive holding `./extension/package.json`, while bsdtar normalizes the request and does — so
+# rebuilding the member name from the stripped root false-REDs a valid release on Linux only, and
+# blames the tarball ("could not read") for the gate's own divergence. Read the stored name back
+# out of the same listing the root came from. `ENVIRON` rather than `-v` because `-v` applies
+# escape processing to the value. Drain to END — never a bare `exit` on first match — or pipefail
+# SIGPIPEs the still-writing producer on a >64KB listing (see release-gate.sh trap door).
+payload_pkg_member() {
+  local listing="$1"
+  local root="$2"
+  printf '%s\n' "$listing" | RELEASE_GATE_PAYLOAD_ROOT="$root" awk '
+    function normalized(entry) {
+      sub(/^\.\//, "", entry)
+      sub(/\/$/, "", entry)
+      return entry
+    }
+    BEGIN {
+      root = ENVIRON["RELEASE_GATE_PAYLOAD_ROOT"]
+      want = (root == "" ? "" : root "/") "extension/package.json"
+    }
+    {
+      if (!found && normalized($0) == want) {
+        print $0
+        found = 1
+      }
+    }
+  '
+}
+
 listing_has_unsafe_entries() {
   local listing="$1"
   printf '%s\n' "$listing" | awk '
@@ -251,11 +281,7 @@ post_tag() {
     [ "$status" -eq 1 ] || die 21 "downloaded tarball contains multiple install payload roots shared by $PKG_DISPLAY_PATH and install.sh"
     die 21 "downloaded tarball is missing install payload root shared by $PKG_DISPLAY_PATH and install.sh"
   }
-  if [ -n "$payload_root" ]; then
-    pkg_member="$payload_root/extension/package.json"
-  else
-    pkg_member="extension/package.json"
-  fi
+  pkg_member="$(payload_pkg_member "$name_listing" "$payload_root")"
   [ -n "$pkg_member" ] || die 21 "downloaded tarball is missing $PKG_DISPLAY_PATH"
   pkg="$(tar -xOzf "$tarball" "$pkg_member" 2>/dev/null)" || die 21 "could not read $PKG_DISPLAY_PATH from downloaded tarball"
   tagged="$(printf '%s\n' "$pkg" | jq -r '.version' 2>/dev/null)" || die 21 "could not parse $PKG_DISPLAY_PATH from downloaded tarball"

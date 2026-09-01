@@ -472,6 +472,122 @@ describe('release-gate.post-tag', () => {
     }
   });
 
+  // `normalized()` strips a leading `./` when DERIVING the payload root, but `post_tag` REBUILT the
+  // member name from that stripped root and handed it to `tar -xOzf`, which matches the name as
+  // STORED. GNU tar (Linux, CI) then reports "Not found in archive" and the gate dies 21
+  // `could not read`, blaming a valid asset; bsdtar (macOS) normalizes the request and matches, so
+  // the divergence is invisible on the only machine anyone develops on. Measured on GNU tar 1.34 vs
+  // bsdtar 3.5.3. `makeFakeTarFixture` extracts by EXACT member key, so it reproduces GNU tar's
+  // matching on both platforms and these cases fail identically everywhere under the old code.
+  test('reads the package member by its STORED name when the archive stores a ./ prefix', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const fakeTar = makeFakeTarFixture(
+      [
+        './extension/package.json',
+        './install.sh',
+      ],
+      {
+        './extension/package.json': JSON.stringify({ version: '1.67.0' }, null, 2),
+      },
+    );
+    const ghDir = makeGhFixture({ tarball: fakeTar.tarball });
+    writeFileSync(path.join(ghDir, 'tar'), readFileSync(fakeTar.tarPath, 'utf8'), { mode: 0o755 });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 0, result.stdout || result.stderr);
+      assert.match(result.stdout, /ok: release .* tarball has extension\/package\.json version 1\.67\.0/);
+      assert.doesNotMatch(result.stderr, /could not read/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(fakeTar.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  // DISJOINTNESS control for the ./-prefixed cases above. Every other post-tag fixture that
+  // reaches extraction goes through the REAL tar, and bsdtar normalizes `./` on the command line —
+  // so on macOS an implementation that prefixed `./` UNCONDITIONALLY kept the whole suite green
+  // while breaking every real (non-prefixed) release asset on GNU tar. Driving the bare production
+  // shape through the exact-match shim pins the other side of the wire on both platforms.
+  test('reads the package member by its STORED name when the archive stores no ./ prefix', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const fakeTar = makeFakeTarFixture(
+      [
+        'extension/package.json',
+        'install.sh',
+      ],
+      {
+        'extension/package.json': JSON.stringify({ version: '1.67.0' }, null, 2),
+      },
+    );
+    const ghDir = makeGhFixture({ tarball: fakeTar.tarball });
+    writeFileSync(path.join(ghDir, 'tar'), readFileSync(fakeTar.tarPath, 'utf8'), { mode: 0o755 });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 0, result.stdout || result.stderr);
+      assert.match(result.stdout, /ok: release .* tarball has extension\/package\.json version 1\.67\.0/);
+      assert.doesNotMatch(result.stderr, /could not read/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(fakeTar.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  // Non-vacuity control for the case above: the version must really be READ from the ./-prefixed
+  // member rather than falling back to the repo package.json or to a stale reconstruction.
+  test('exits 21 when a ./-prefixed release asset carries a drifted package version', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const fakeTar = makeFakeTarFixture(
+      [
+        './extension/package.json',
+        './install.sh',
+      ],
+      {
+        './extension/package.json': JSON.stringify({ version: '1.64.0' }, null, 2),
+      },
+    );
+    const ghDir = makeGhFixture({ tarball: fakeTar.tarball });
+    writeFileSync(path.join(ghDir, 'tar'), readFileSync(fakeTar.tarPath, 'utf8'), { mode: 0o755 });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stdout || result.stderr);
+      assert.match(result.stderr, /expected downloaded extension\/package\.json version 1\.67\.0 but found 1\.64\.0/);
+      assert.doesNotMatch(result.stderr, /could not read/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(fakeTar.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  // The non-empty-root arm of the same lookup: `want` is built from the root, so a ./-prefixed
+  // archive WITH a payload prefix pins the `root != ""` branch the two bare cases never reach.
+  test('reads the package member by its STORED name under a ./-prefixed payload root', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const fakeTar = makeFakeTarFixture(
+      [
+        './pickle-rick-claude/extension/package.json',
+        './pickle-rick-claude/install.sh',
+      ],
+      {
+        './pickle-rick-claude/extension/package.json': JSON.stringify({ version: '1.67.0' }, null, 2),
+      },
+    );
+    const ghDir = makeGhFixture({ tarball: fakeTar.tarball });
+    writeFileSync(path.join(ghDir, 'tar'), readFileSync(fakeTar.tarPath, 'utf8'), { mode: 0o755 });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 0, result.stdout || result.stderr);
+      assert.match(result.stdout, /ok: release .* tarball has extension\/package\.json version 1\.67\.0/);
+      assert.doesNotMatch(result.stderr, /could not read/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(fakeTar.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
   test('requests release tar.gz assets via glob pattern instead of the source archive flag', () => {
     const { dir: repoDir, tagName } = makeGitFixture();
     const tarFixture = makeTarball('1.67.0');
