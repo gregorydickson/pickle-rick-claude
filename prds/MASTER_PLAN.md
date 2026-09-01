@@ -2508,6 +2508,10 @@ a bundle.** Rows not re-measured: `R-TIERWEDGE`, `R-TCVC`, `R-HNCG`, `R-RWNF`, `
 `R-RNTA`, `R-FBTN`, the 3 id-less/`119` rows, and the `OPEN BUG` sections for `describe.each`,
 `--max-iterations 0`, `R-ORSR-2`, `R-EROS`, `B-OFFREPO`, `B-LOGEV`, `R-ACNP`.
 
+**Addendum 2026-09-01:** three further rows closed by B-CIGREEN3 measurement (`R-EROS`,
+`--max-iterations 0`, `R-TIERWEDGE`) and one NEW row filed from measurement ([[B-LINTGATE]], P2,
+operator-requested). Net open: **20**.
+
 **Method note:** the documented "~2-in-6 already fixed" rate is an UNDER-estimate. This sweep measured
 **10 of 30 (33%)** already fixed, and every one of the 11 items it actually checked resolved to a
 definite verdict — the cost of checking is low and the cost of not checking has killed a ticket in each
@@ -3021,6 +3025,71 @@ SUBTRACTIVE:** log-emptiness is a rendering artifact, not evidence; subordinate 
 to attributable-work, and fix the capture failure. ⛔ **Do NOT bound the respawns** — that caps the waste
 and leaves the misdiagnosis, and routing the class into `silent_death_respawn_cap` would wire the one
 signal that has never stopped a pipeline straight to the halt. Build **ATTENDED** (recovery path).
+
+## 🔺 OPEN BUG — [[B-LINTGATE]]: the lint gate reads strict, is configured unlimited, and ignores 16 fail-open defects it already found (2026-09-01, P2)
+
+*(measured 2026-09-01 at HEAD `f1eaa022`, operator-requested)*
+
+**The flag that looks strict is the flag that disables the check.** `--max-warnings=-1` is ESLint's
+**no limit** value, not a strict setting (strict is `0`). Measured: `./node_modules/.bin/eslint src/
+--max-warnings=-1` exits **0 with 16 warnings outstanding**. `eslint.config.js` states the design
+outright — four `pickle/*` rules were downgraded from `error` to `warn` with the comment *"real
+defects, but out of this ticket's file-scope allowlist to fix. 'error' here would break the
+`--max-warnings=-1` release gate on unrelated files this ticket cannot touch."* The downgrade was a
+scope workaround for one bundle; nothing ever turned it back up.
+
+**The 16 are not style noise — they are the fake-green class, in the orchestrators.** All 16 come
+from this repo's OWN custom rules, concentrated in `mux-runner.ts` (5), `pipeline-runner.ts` (3),
+`microverse-runner.ts` (3), `convergence-gate.ts` (1), plus `audit-ticket-bundle`, `standup`,
+`signature-caller-gap`:
+
+| Rule | Hits | Verbatim finding |
+|---|---|---|
+| `pickle/require-spawn-result-error-check` | **9** | *"tests `res.status` but never `res.error` — a spawnSync() child that exits before a maxBuffer-overflow SIGTERM lands returns `status:0` with `error.code:'ENOBUFS'`, which this check would read as success"* |
+| `pickle/require-max-buffer-on-capture` | **6** | *"captures potentially unbounded output but has no maxBuffer — Node's 1MB default silently truncates large output past the ceiling"* |
+| `pickle/no-sync-in-async` | 1 | blocking `fs.unlinkSync()` inside an async function |
+
+The first is **failure read as success at the syscall level** — the same family as this plan's own
+"distinguish failed from empty/not-found" rule. The second is the truncation class already recorded
+in the notes as a live defect shape.
+
+**`tests/` is not linted at all**, and it is the larger body of hand-written code:
+
+| tree | lines | files | linted |
+|---|---|---|---|
+| `src/` | 87,771 | 162 | yes |
+| `tests/` | **237,734** | **1,521** | **NO** (`ignores: ['bin/**','services/**','tests/**', …]`) |
+
+`bin/`/`services/` are compiled output and correctly ignored. `tests/` is 2.7x `src/` and carries
+much of this codebase's risk — beta.24's CI red (`ec691ef7`) was **in a test**.
+
+**Type-aware rules are paid for and unused.** `projectService: true` is set (the expensive part —
+full type information), but only `tseslint.configs.recommended` is enabled, never
+`recommendedTypeChecked`/`strictTypeChecked`. `no-floating-promises` alone is worth it here.
+
+### ⚠ Honest scope — this would NOT have caught the recent reds
+
+Checked against the actual failures rather than assumed: stricter lint would **not** have caught
+beta.24's enumerated-regex oracle, the GNU-tar-vs-bsdtar member name (shell, not JS), the
+missing-`lib/` deploy drift, the `||` in `isMicroverseArmFatal`, or the four CRITICAL halt-removals.
+Those are semantic/architectural and anatomy-park found them. **Do not sell this row as a fix for
+the CI-red class.** Its actual value is the 16 known fail-open defects the gate is configured to
+ignore, in the runners that orchestrate everything.
+
+### Workstreams — ORDER IS LOAD-BEARING
+
+1. **WS-1 — fix the 16, then flip those 4 rules to `error`.** Bounded, already diagnosed.
+2. **WS-2 — only then `--max-warnings=0`.** Tightening first REDS THE RELEASE GATE on the existing
+   16. This is a local gate refusal, not a pipeline abort — it must stay that way (no new abort
+   condition; PRIME DIRECTIVE).
+3. **WS-3 — lint `tests/`**, relaxed ruleset first. Largest coverage gap.
+4. **WS-4 — enable `recommendedTypeChecked`.** The type info is already being computed.
+
+⛔ Do NOT do WS-2 before WS-1. ⛔ Do NOT add a rule to silence a finding instead of fixing it — the
+downgrade-to-`warn` move above is exactly how this row was created.
+
+**Intended home:** `prds/b-drainall-open-bugs.md` as a 4th surface (same "verdict honesty" thesis as
+[[B-OFFREPO]]). WS-2/WS-3 change gate strictness, so they carry release consequences.
 
 ## OPEN BUG — R-ACNP acceptance-criteria checkbox gate is a consumer with no producer (2026-08-04, capture-only)
 
