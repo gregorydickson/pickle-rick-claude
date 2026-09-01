@@ -2552,7 +2552,7 @@ of the last three bundles.
 | # | Item | Pri | State | Source |
 |---|------|-----|-------|--------|
 | R-SJLAGMT | **R-SJLAGMT** — `extension/tests/sjlag-state-heartbeat.test.js:60` asserts `mtimeAfter >= mtimeBefore` on `fs.statSync(...).mtimeMs`, a **float** millisecond derived from the filesystem's nanosecond timestamp. When both stat calls land inside the same millisecond, the float conversion does not preserve ordering and a `>=` on non-decreasing wall-clock time can read as FALSE. Observed 2026-08-15: `state.json mtime must advance: before=1786814171970.9998 after=1786814171970.999` — same millisecond, "after" smaller by 0.0008 ms. Confirmed **flaky, not deterministic**: `fail 1` on one run, `fail 0` on a clean re-run of the same tree (`7647 tests, 504 suites, fail 0, cancelled 0, 835042 ms, EXIT=0`). Pre-existing — the test shipped with `24cb85d0` (R-SJLAG), NOT with any 2026-08-15 bundle, so it has been failing at a low rate since. Fix = compare `fs.statSync(path, {bigint: true}).mtimeNs` (BigInt, lossless) or assert with an explicit tolerance; do NOT relax the assertion to `>` or delete it — the heartbeat it guards is real. | P2 | ✅ **VERIFIED FIXED (2026-08-31 sweep)** — `tests/sjlag-state-heartbeat.test.js:61` now reads `fs.statSync(statePath,{bigint:true}).mtimeNs` (integer ns) with an in-file comment naming the float-`mtimeMs` rounding it avoids. Original state follows: 🆕 **FILED 2026-08-15, unbuilt.** Costs a full ~800 s tier re-run each time it fires, and it fires with `cancelled 0`, so it reads as a genuine red rather than an obvious flake. | tier logs at `a5edb12f` (fail 1) vs the clean re-run (fail 0) |
-| R-TIERWEDGE | **R-TIERWEDGE** — an operator-run `npm run test:fast` can **wedge at zero CPU** rather than fail or finish. Observed 2026-08-15 on `a5edb12f`: log frozen at 6138 lines for 8+ minutes, ~12 min elapsed against a ~730 s baseline, and the whole tree parked — runner `bin/test-runner.js` at `0:00.10` CPU unchanged across a 20 s sample, its child at `0:02.68` unchanged across 25 s, its grandchild at `0:00.47` over 10:47. No summary block is ever emitted, so a wedged run cannot produce a false green — but it also never returns, and `PICKLE_TEST_RUNNER_TIMEOUT_MS=7200000` means a naive waiter blocks for 2 h. Same 0-CPU shape as the post-completion gate wedge, but here under a PLAIN operator tier with no worker gate involved, which widens the class. Recovery: kill the tree by pid (`kill -9` leaf-up) and re-run — the re-run completed normally, so the wedge is intermittent. **Operational rule: any wait on a tier run needs a STALL detector (no log growth for N minutes), not a timeout.** | P2 | 🆕 **FILED 2026-08-15, unbuilt.** Recovery is mechanical and costs one full tier re-run. | tier run at `a5edb12f`, process census 2026-08-15 12:31-12:40 |
+| R-TIERWEDGE | **R-TIERWEDGE** — an operator-run `npm run test:fast` can **wedge at zero CPU** rather than fail or finish. Observed 2026-08-15 on `a5edb12f`: log frozen at 6138 lines for 8+ minutes, ~12 min elapsed against a ~730 s baseline, and the whole tree parked — runner `bin/test-runner.js` at `0:00.10` CPU unchanged across a 20 s sample, its child at `0:02.68` unchanged across 25 s, its grandchild at `0:00.47` over 10:47. No summary block is ever emitted, so a wedged run cannot produce a false green — but it also never returns, and `PICKLE_TEST_RUNNER_TIMEOUT_MS=7200000` means a naive waiter blocks for 2 h. Same 0-CPU shape as the post-completion gate wedge, but here under a PLAIN operator tier with no worker gate involved, which widens the class. Recovery: kill the tree by pid (`kill -9` leaf-up) and re-run — the re-run completed normally, so the wedge is intermittent. **Operational rule: any wait on a tier run needs a STALL detector (no log growth for N minutes), not a timeout.** | P2 | ✅ **VERIFIED FIXED (B-CIGREEN3 (shipped v2.1.0-beta.24, 2026-09-01))** — `TIER_STALL_THRESHOLD_ENV_VAR = 'PICKLE_TIER_STALL_THRESHOLD_MS'` (`src/services/pickle-utils.ts:180`); the tier stall window is now resolved SEPARATELY from the gate budget (commit `e0ce085c`, ticket `532cad9d`, FR-B1) with +107 lines in `worker-gate-test-command-timeout.test.js`. A stall detector, not a timeout. Original state follows: 🆕 **FILED 2026-08-15, unbuilt.** Recovery is mechanical and costs one full tier re-run. | tier run at `a5edb12f`, process census 2026-08-15 12:31-12:40 |
 > **B-CIINT UPDATE 2026-08-27 (measured on the `v2.1.0-beta.19` release run, `33020749185`).** CI got
 > further than it ever has: integration **parallel** came back `662 tests, pass 659, fail 0, cancelled 0`.
 > Because the parallel half finally exited zero, [[R-ISSC]] did not short-circuit and the **serial tier ran
@@ -2715,7 +2715,13 @@ to override the gate with a documented reason to proceed.
 
 ---
 
-## OPEN BUG — pipeline `--max-iterations 0` stops after ONE ticket + manager orphans its worker (2026-07-14, capture-only)
+## ✅ RESOLVED (was OPEN BUG) — pipeline `--max-iterations 0` stops after ONE ticket + manager orphans its worker (2026-07-14, capture-only)
+
+> **✅ CLOSED by measurement — B-CIGREEN3 (shipped v2.1.0-beta.24, 2026-09-01), ticket `38892302`, commit `1b635b4c` (FR-D3).** Disposition: STALE.
+> Pinned by `extension/tests/mux-runner-iteration-cap-exit.test.js`: `parseArguments(['--max-iterations','0'])`
+> yields `loopLimit === 0` (passed through as uncapped, not defaulted), with a `--max-iterations 5`
+> comparison arm. Asserted against source AND compiled so a stale mirror cannot hide a regression.
+
 
 **`prds/BUG-REPORT-2026-07-14-pipeline-max-iterations-zero-stops-after-one-plus-orphaned-worker.md`**
 
@@ -2912,7 +2918,14 @@ parallel-only figure). **Fix is SUBTRACTIVE:** run both halves unconditionally a
 already takes `--manifest-mode`/`--test-concurrency`, so one runner call owning both passes is the
 smaller change. Same family as the rest of 2026-08: **the instrument, not the thing measured.**
 
-## 🔺 OPEN BUG — R-EROS: an In-Progress ticket is reported "all-Failed" and stamped `recovery_exhausted` (2026-08-05, P1)
+## ✅ RESOLVED (was OPEN BUG) — R-EROS: an In-Progress ticket is reported "all-Failed" and stamped `recovery_exhausted` (2026-08-05, P1)
+
+> **✅ CLOSED by measurement — B-CIGREEN3 (shipped v2.1.0-beta.24, 2026-09-01), ticket `38892302`, commit `1b635b4c` (FR-D2).** Disposition
+> recorded in-test: *"R-EROS regression pin. Disposition: STALE — measured, not read."* Pinned by
+> `extension/tests/failed-flip-suppression.test.js` with BOTH arms: an In-Progress ticket under an
+> ACTIVE hold is not counted as Failed, AND a control proving a genuinely all-Failed roster still
+> reads terminal (so the pin cannot pass by never firing).
+
 
 **`prds/BUG-REPORT-2026-08-05-empty-roster-overstamps-recovery-exhausted-on-a-3of4-done-roster.md`** —
 found BY the [[B-OFFREPO]] build (session `2026-08-04-183319b4`). The pickle phase ended **3/4 Done**
