@@ -541,3 +541,142 @@ test('AP-EXT-ITER6-01: a SKIPPED check is not an unmeasured one — a refused te
     rm(sessionDir);
   }
 });
+
+// ===========================================================================
+// AP-EXT-ITER127-01: the same fact ACROSS TARGET DIRS.
+//
+// AP-EXT-ITER6-01 pinned the three EVENTS that mean "this check inspected nothing"
+// (unrunnable / per-check timeout / cumulative cutoff) in a single-dir project. What was
+// never fixtured is the COMPOSITION: `collectGateFailures` loops over `targetDirs` and
+// merges each dir's verdict for the SAME check through `escalateCheckStatus`, whose
+// escalate-only rank is the ONE thing stopping a sibling package's clean `'ran'` from
+// erasing a package whose check could not run at all.
+//
+// Measured on the shipped compiled module: with the merge reduced to `return next`, this
+// exact fixture persists `project_type: "npm"` and `check_status: {typecheck: "ran"}` —
+// a CERTIFIABLE baseline claiming a typecheck ran in a package that has no typecheck
+// script — while the operator-facing "baseline uncertifiable" line still prints, because
+// that log rides the separate `unrunnableCheck` field. The whole 160-case convergence-gate
+// suite stays green through it.
+//
+// The missing-script package sits in the MIDDLE of the workspace so the pin is order-
+// INDEPENDENT: under a last-write-wins merge the surviving status is a clean sibling's
+// `'ran'` whichever direction `targetDirs` is walked.
+// ===========================================================================
+
+const WORKSPACE_TYPECHECK_PACKAGES = ['a', 'b', 'c'];
+const WORKSPACE_MISSING_TYPECHECK_PACKAGE = 'b';
+
+// Each package's `typecheck` appends its own name to a marker file, so the test can prove
+// the sibling checks REALLY RAN. Without that proof the case could pass because the gate
+// never visited them — the merge would then never be exercised and the pin would cover
+// nothing.
+function writeWorkspaceTypecheckFixtureRepo(dir, markerPath, missingPackage) {
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({
+      name: 'apext127-workspace-root',
+      private: true,
+      workspaces: ['packages/*'],
+    }, null, 2),
+  );
+  fs.writeFileSync(markerPath, '');
+  for (const name of WORKSPACE_TYPECHECK_PACKAGES) {
+    const pkgDir = path.join(dir, 'packages', name);
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const scripts = {};
+    if (name !== missingPackage) {
+      scripts.typecheck = `node -e "require('fs').appendFileSync('${markerPath}', '${name}\\n')"`;
+    }
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name, scripts }, null, 2));
+  }
+}
+
+function readMarkedPackages(markerPath) {
+  return fs.readFileSync(markerPath, 'utf-8').split('\n').filter(Boolean).sort();
+}
+
+async function captureWorkspaceTypecheckBaseline(workingDir, sessionDir) {
+  return runGate({
+    workingDir,
+    mode: 'baseline',
+    scope: 'full',
+    checks: ['typecheck'],
+    baselinePath: path.join(sessionDir, 'gate', 'baseline.json'),
+    baselineIteration: 1,
+    _timeouts: { perCheck: { typecheck: 60_000 }, total: 120_000 },
+  });
+}
+
+test('AP-EXT-ITER127-01: a sibling package running the check clean must not erase a package whose check could not run', async () => {
+  const workingDir = makeGitRepo('apext127-workspace-repo-');
+  const sessionDir = mkTmp('apext127-workspace-session-');
+
+  try {
+    const markerPath = path.join(sessionDir, 'typecheck-marker.txt');
+    writeWorkspaceTypecheckFixtureRepo(workingDir, markerPath, WORKSPACE_MISSING_TYPECHECK_PACKAGE);
+    commitAll(workingDir, 'initial clean state');
+
+    await captureWorkspaceTypecheckBaseline(workingDir, sessionDir);
+
+    assert.deepEqual(
+      readMarkedPackages(markerPath),
+      WORKSPACE_TYPECHECK_PACKAGES.filter((n) => n !== WORKSPACE_MISSING_TYPECHECK_PACKAGE),
+      'fixture precondition: both sibling packages must really RUN their typecheck, so the ' +
+        'per-dir merge is exercised with a clean measurement on either side of the missing one',
+    );
+
+    const baseline = readBaseline(sessionDir);
+    assert.equal(
+      baseline.check_status.typecheck,
+      'failed',
+      'the merge across target dirs is escalate-only: a clean sibling package is not evidence ' +
+        'that the check ran in the package that has no such script',
+    );
+    assert.equal(
+      baseline.project_type,
+      null,
+      'a check that inspected NOTHING in one workspace package leaves the whole baseline ' +
+        'uncertifiable — otherwise every later iteration subtracts against a baseline that ' +
+        'claims a measurement it never made',
+    );
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+});
+
+// Over-rejection control: the SAME workspace with every package's typecheck present must stay
+// fully certifiable. Without this, a "fix" that uncertified every multi-package baseline would
+// satisfy the headline case above.
+test('AP-EXT-ITER127-01 control: a workspace whose packages all run the check stays CERTIFIABLE', async () => {
+  const workingDir = makeGitRepo('apext127-control-repo-');
+  const sessionDir = mkTmp('apext127-control-session-');
+
+  try {
+    const markerPath = path.join(sessionDir, 'typecheck-marker.txt');
+    writeWorkspaceTypecheckFixtureRepo(workingDir, markerPath, null);
+    commitAll(workingDir, 'initial clean state');
+
+    await captureWorkspaceTypecheckBaseline(workingDir, sessionDir);
+
+    assert.deepEqual(
+      readMarkedPackages(markerPath),
+      [...WORKSPACE_TYPECHECK_PACKAGES].sort(),
+      'control precondition: every package must run its typecheck',
+    );
+
+    const baseline = readBaseline(sessionDir);
+    assert.equal(baseline.check_status.typecheck, 'ran', 'every package measured, so the check RAN');
+    assert.equal(
+      baseline.project_type,
+      'npm',
+      'a workspace in which every package measured the check is an ordinary measured run — ' +
+        'the escalate-only merge must not deem it uncertifiable',
+    );
+    assert.deepEqual(baseline.failures, [], 'the control workspace is clean, so nothing may be baselined');
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+});
