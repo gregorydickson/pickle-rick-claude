@@ -544,6 +544,197 @@ test('AP-EXT-ITER6-01: a SKIPPED check is not an unmeasured one — a refused te
 });
 
 // ===========================================================================
+// AP-EXT-ITER127-02: the THIRD no-measurement arm — the CUMULATIVE gate deadline.
+//
+// AP-EXT-ITER6-01's own PATTERN_SHAPE names three arms that record "this check inspected
+// nothing" (unrunnable / per-check timeout / the cumulative `remaining <= 0` cutoff) and its
+// ENFORCE list covered only the first two. Measured on the shipped compiled module: EVERY
+// effect of the cutoff arm can be deleted — `if (false)`, the `timeoutFailure` push dropped,
+// the `checkStatus[check] = 'failed'` write dropped, `break outerLoop` weakened to `continue` —
+// and all 281 cases across the 34 test files that import convergence-gate.js stay GREEN.
+//
+// With the arm disabled, a capture whose budget was ALREADY exhausted persists
+// `{project_type: "npm", check_status: {tests: "skipped"}, failures: []}` — byte-identical to
+// the healthy control below, so a gate that measured NOTHING hands `isBaselineUncertifiable` a
+// fully CERTIFIABLE baseline and the iteration converges on it.
+//
+// Why no existing fixture sees this: `typecheck`/`lint` always carry a command from
+// data/gate-commands.json, so past the deadline they still SPAWN with
+// `Math.min(perCheckMs, remaining)` — negative, which fires the settle timer immediately — and
+// land on `'failed'` regardless. `tests` is the ONE check whose fall-through is `'skipped'`
+// (`canRunTestScript` refuses a package with no `test` script), which is why the cumulative-cap
+// case in convergence-gate-hang-guard.test.js — three slow scripts, all spawnable — cannot
+// distinguish the arm from its absence.
+// ===========================================================================
+
+// A real npm project with NO `test` script (so `canRunTestScript` refuses it) and a `lint` that
+// completes immediately — the control proves both facts, so `'skipped'`/`'ran'` in the headline
+// rows are the deadline's doing and not the fixture's.
+function writeNoTestScriptFixtureRepo(dir) {
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({
+      name: 'apext127-deadline-fixture',
+      private: true,
+      scripts: {
+        // `typecheck` completes immediately so the ONLY uncertifiable signal available to the
+        // headline row is the cutoff itself — a fixture with no typecheck script makes the
+        // per-iteration gate inside `handleWorkerManagedIteration` uncertifiable on its own and
+        // the convergence assertion would pass with the cutoff arm deleted.
+        typecheck: 'node -e "process.exit(0)"',
+        lint: 'node -e "process.exit(0)"',
+      },
+    }, null, 2),
+  );
+}
+
+// `total: 0` models a deadline already spent by earlier checks WITHOUT a sleep: `totalDeadline`
+// is stamped `Date.now() + 0` in measureAndPartitionFailures, so the very first
+// `remaining = totalDeadline - Date.now()` inside collectGateFailures is `<= 0` on any machine
+// (the clock is monotone non-decreasing across those two reads). Deterministic, and it spawns nothing.
+const DEADLINE_EXHAUSTED_TOTAL_MS = 0;
+
+async function captureBaselineWithTotalBudget(workingDir, sessionDir, totalMs, checks) {
+  return runGate({
+    workingDir,
+    mode: 'baseline',
+    scope: 'full',
+    checks,
+    baselinePath: path.join(sessionDir, 'gate', 'baseline.json'),
+    baselineIteration: 1,
+    _timeouts: { perCheck: { tests: 60_000, lint: 60_000 }, total: totalMs },
+  });
+}
+
+test('AP-EXT-ITER127-02: a check the CUMULATIVE gate deadline cut off marks the baseline uncertifiable and refuses to certify a clean iteration', async () => {
+  const workingDir = makeGitRepo('apext127-deadline-repo-');
+  const sessionDir = mkTmp('apext127-deadline-session-');
+
+  try {
+    writeNoTestScriptFixtureRepo(workingDir);
+    commitAll(workingDir, 'initial clean state');
+
+    await captureBaselineWithTotalBudget(workingDir, sessionDir, DEADLINE_EXHAUSTED_TOTAL_MS, ['tests']);
+
+    const baseline = readBaseline(sessionDir);
+    assert.equal(
+      baseline.check_status.tests,
+      'failed',
+      'the cumulative cutoff is a FAILED measurement, not a skip — without this arm the same ' +
+        'exhausted-budget capture records `skipped`, which hasUnmeasuredCheck reads as measured',
+    );
+    assert.ok(
+      baseline.failures.some((f) => f.check === 'tests' && f.ruleOrCode === 'GATE_CHECK_TIMEOUT' && f.file === '<timeout>'),
+      `the cutoff must be recorded as a failure, got ${JSON.stringify(baseline.failures)}`,
+    );
+    assert.equal(
+      baseline.project_type,
+      null,
+      'a check cut off by the cumulative deadline inspected NOTHING, so the baseline must carry ' +
+        'the uncertifiable signal — the same project_type: null the unrunnable and per-check-timeout arms set',
+    );
+
+    const preIterSha = headSha(workingDir);
+    fs.writeFileSync(
+      path.join(sessionDir, 'anatomy-park.json'),
+      JSON.stringify({ converged: true, reason: 'clean passes done' }),
+    );
+    fs.writeFileSync(path.join(workingDir, 'harmless.txt'), 'no regression here\n');
+    commitAll(workingDir, 'harmless clean commit under a deadline-cut check');
+
+    const result = await handleWorkerManagedIteration({
+      ...BASE_OPTS,
+      currentMv: makeMv({ key_metric: undefined }),
+      preIterSha,
+      workingDir,
+      sessionDir,
+      iteration: 1,
+      enabledFiles: ['anatomy-park.json'],
+      _deps: { writeMicroverseStateFn: () => {}, logActivityFn: () => {} },
+    });
+
+    assert.equal(
+      result.converged,
+      false,
+      'a baseline whose only check was cut off by the cumulative deadline must never certify convergence',
+    );
+    assert.equal(
+      result.selfRedOpen,
+      true,
+      'the uncertifiable-baseline defer must arm the existing R-ORSR-6 no-attrition latch (selfRedOpen)',
+    );
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+});
+
+// The arm's CONTROL FLOW, not just its verdict: `break outerLoop` means the FIRST check past the
+// deadline is the last one recorded. Weakened to `continue`, the sibling `lint` collects a second
+// phantom `<timeout>` failure and reads `'failed'` — a check the gate never even considered
+// running. The control below proves this same `lint` runs clean when there is budget for it.
+test('AP-EXT-ITER127-02: the cumulative cutoff stops the check loop — the untouched sibling is skipped, never a second phantom timeout', async () => {
+  const workingDir = makeGitRepo('apext127-deadline-break-repo-');
+  const sessionDir = mkTmp('apext127-deadline-break-session-');
+
+  try {
+    writeNoTestScriptFixtureRepo(workingDir);
+    commitAll(workingDir, 'initial clean state');
+
+    await captureBaselineWithTotalBudget(workingDir, sessionDir, DEADLINE_EXHAUSTED_TOTAL_MS, ['tests', 'lint']);
+
+    const baseline = readBaseline(sessionDir);
+    assert.equal(baseline.check_status.tests, 'failed', 'the first check past the deadline is the one cut off');
+    assert.equal(
+      baseline.check_status.lint,
+      'skipped',
+      'the loop must BREAK at the cutoff — a sibling the gate never considered must not be recorded as a failed measurement',
+    );
+    assert.deepEqual(
+      baseline.failures.map((f) => `${f.check}::${f.ruleOrCode}`),
+      ['tests::GATE_CHECK_TIMEOUT'],
+      `exactly ONE cutoff failure may be recorded, got ${JSON.stringify(baseline.failures)}`,
+    );
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+});
+
+// Over-rejection control: the SAME fixture and the SAME checks under a realistic total budget.
+// It is the non-vacuity proof for both rows above — `lint` really does run here (`'ran'`), and
+// `tests` really is refusable-not-failed (`'skipped'`), so neither row can pass because the
+// fixture is broken. A "fix" that recorded every check `'failed'` reds this.
+test('AP-EXT-ITER127-02 control: the same fixture under a realistic total budget stays CERTIFIABLE', async () => {
+  const workingDir = makeGitRepo('apext127-deadline-control-repo-');
+  const sessionDir = mkTmp('apext127-deadline-control-session-');
+
+  try {
+    writeNoTestScriptFixtureRepo(workingDir);
+    commitAll(workingDir, 'initial clean state');
+
+    await captureBaselineWithTotalBudget(workingDir, sessionDir, 120_000, ['tests', 'lint']);
+
+    const baseline = readBaseline(sessionDir);
+    assert.equal(baseline.check_status.lint, 'ran', 'control precondition: lint must complete under a realistic budget');
+    assert.equal(
+      baseline.check_status.tests,
+      'skipped',
+      'control precondition: an ABSENT test script is a refusal, not a cutoff — the two must stay distinguishable',
+    );
+    assert.equal(
+      baseline.project_type,
+      'npm',
+      'a run that had budget is a measurement — the cutoff arm must not deem an ordinary run uncertifiable',
+    );
+    assert.deepEqual(baseline.failures, [], 'the control fixture is clean, so no phantom timeout may be baselined');
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+});
+
+// ===========================================================================
 // AP-EXT-ITER127-01: the same fact ACROSS TARGET DIRS.
 //
 // AP-EXT-ITER6-01 pinned the three EVENTS that mean "this check inspected nothing"
