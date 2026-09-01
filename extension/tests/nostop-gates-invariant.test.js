@@ -613,6 +613,9 @@ describe('AC-NSG-5b — structural producer enumeration (widened reach)', () => 
  */
 describe('AC-OA-FRB1 — the microverse arm derives halt-eligibility, never restates it', () => {
   const MICROVERSE_PHASES = ['anatomy-park', 'szechuan-sauce'];
+  // The two `reportAs` values the arm treats as halt-eligible — named here so the correspondence
+  // with the production predicate is visible rather than an unexplained pair of strings.
+  const HALT_ELIGIBLE_DISPOSITIONS = ['failure', 'non-fatal-halt'];
   // Probed through the SHIPPED entry point (`isFatalPhaseFailure` → `sm.read`), never through the
   // predicate in isolation: `sm.read` normalises legacy reasons, so a pure-predicate probe reports
   // a membership the runtime can never actually observe.
@@ -627,7 +630,7 @@ describe('AC-OA-FRB1 — the microverse arm derives halt-eligibility, never rest
     // transcribed list would need editing for every new reason — the drift this AC exists to stop.
     const expected = [...MICROVERSE_EXIT_REASONS, ...MICROVERSE_FATAL_REASONS].filter((r) =>
       MICROVERSE_FATAL_REASONS.includes(r)
-      || ['failure', 'non-fatal-halt'].includes(classifyMicroverseDisposition(r).reportAs));
+      || HALT_ELIGIBLE_DISPOSITIONS.includes(classifyMicroverseDisposition(r).reportAs));
 
     for (const phase of MICROVERSE_PHASES) {
       assert.deepEqual(observedFatalReasons(phase, repo, startCommit), expected,
