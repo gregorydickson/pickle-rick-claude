@@ -14,6 +14,9 @@ import {
   classifyMicroverseDisposition,
   JudgeMeasurementTimeout,
   JudgeMeasurementSpawnFailed,
+  JUDGE_SYSTEM_PROMPT,
+  buildJudgePrompt,
+  parseLlmJudgeOutput,
 } from '../../bin/microverse-runner.js';
 import { classifyMicroverseHaltDecision, isFatalPhaseFailure } from '../../bin/pipeline-runner.js';
 import { LATEST_SCHEMA_VERSION } from '../../types/index.js';
@@ -655,5 +658,122 @@ describe('R-JUNS: an unparseable judge answer never breaks the phase loop', () =
       dispositionTuple('baseline_unmeasurable_unrecoverable'),
       'dispositionTuple must vary by reason, or AC-JUNS-2 compares two constants',
     );
+  });
+});
+
+// R-JPCM: the judge's system prompt, the judge's user prompt, and the parser that reads the
+// judge's reply are three surfaces that must describe ONE wire format. They drifted once already
+// (b88d16ce, 2026-08-29): `buildJudgePrompt` had been aligned with `parseLlmJudgeOutput` by an
+// earlier fix, but JUDGE_SYSTEM_PROMPT still demanded "a single line containing ONLY a number" —
+// a contradiction a model can satisfy while obeying neither. b88d16ce collapsed both prompts onto
+// one private JUDGE_OUTPUT_JSON_SCHEMA constant.
+//
+// That constant is NOT exported, so these pins deliberately do not reach for it. They read the
+// prompt VALUES the judge is actually sent and round-trip the shape those prompts advertise
+// through the real parser. That is the stronger instrument: it measures the contract as the judge
+// experiences it, and it stays valid if the constant is ever renamed or restructured.
+describe('R-JPCM judge output contract', () => {
+  const SCHEMA_MARKER = 'matching this schema, and NOTHING else: ';
+
+  /** Slice the advertised JSON schema object out of a prompt string. */
+  function advertisedSchema(text) {
+    const marked = text.indexOf(SCHEMA_MARKER);
+    const from = marked >= 0 ? marked + SCHEMA_MARKER.length : 0;
+    const line = text.slice(from).split('\n').find((l) => l.trim().startsWith('{"score"'));
+    return (line ?? '').trim();
+  }
+
+  // The advertised schema is a TEMPLATE (`<number>`, `"high"|"med"|"low"`), not valid JSON, so
+  // JSON.parse cannot be used. Scan for quoted keys at brace-depth 1 only.
+  function topLevelKeys(schema) {
+    const keys = [];
+    let depth = 0;
+    let inString = false;
+    let current = '';
+    for (let i = 0; i < schema.length; i++) {
+      const ch = schema[i];
+      if (inString) {
+        if (ch === '"') {
+          inString = false;
+          if (depth === 1 && /^\s*:/.test(schema.slice(i + 1))) keys.push(current);
+          current = '';
+        } else {
+          current += ch;
+        }
+        continue;
+      }
+      if (ch === '"') { inString = true; current = ''; continue; }
+      if (ch === '{' || ch === '[') depth++;
+      else if (ch === '}' || ch === ']') depth--;
+    }
+    return keys;
+  }
+
+  /** A judge reply built from exactly the keys the prompts advertise. */
+  function responseForKeys(keys) {
+    const byKey = {
+      score: 3,
+      violations: [{ id: 'v1', path: 'a.ts', line: 7, severity: 'high', description: 'd' }],
+      resolved: [],
+      new: ['v1'],
+      remaining: [],
+    };
+    return Object.fromEntries(keys.map((k) => [k, byKey[k]]));
+  }
+
+  test('AC-JPCM-1: the system prompt and the user prompt advertise the same output schema', () => {
+    const fromSystem = advertisedSchema(JUDGE_SYSTEM_PROMPT);
+    const fromUser = advertisedSchema(buildJudgePrompt({ goal: 'g', cwd: '/tmp' }));
+
+    // Anti-vacuity guard. Without it this test would pass if BOTH extractions returned '' — e.g.
+    // if the marker prose were reworded — comparing two empty strings and reporting agreement
+    // between two prompts it never actually read.
+    assert.ok(fromSystem.includes('"score"'), 'no schema extracted from JUDGE_SYSTEM_PROMPT');
+    assert.ok(fromUser.includes('"score"'), 'no schema extracted from buildJudgePrompt output');
+
+    assert.equal(
+      fromSystem,
+      fromUser,
+      'JUDGE_SYSTEM_PROMPT and buildJudgePrompt must advertise one wire format (R-JPCM)',
+    );
+  });
+
+  test('AC-JPCM-2: the advertised shape is exactly what parseLlmJudgeOutput accepts as full', () => {
+    const keys = topLevelKeys(advertisedSchema(JUDGE_SYSTEM_PROMPT));
+
+    // Pin the SET, not just its usability: a schema that silently loses a key would otherwise
+    // still round-trip, because the parser's own requirements would have shrunk with it.
+    assert.deepEqual(keys, ['score', 'violations', 'resolved', 'new', 'remaining']);
+
+    const parsed = parseLlmJudgeOutput(JSON.stringify(responseForKeys(keys)));
+    assert.equal(parsed.shape, 'full', 'a reply obeying the advertised schema must parse as full');
+    assert.equal(parsed.score, 3);
+    assert.equal(parsed.violations.length, 1);
+    assert.deepEqual(parsed.new, ['v1']);
+  });
+
+  test('AC-JPCM-2-control: every advertised key is load-bearing in the parser', () => {
+    // Control arm for AC-JPCM-2. Its green means nothing on its own: a parser that ignored its
+    // input entirely — or one that no longer required these keys — would also return 'full'. This
+    // arm proves the parser genuinely discriminates on each advertised key, so `full` is evidence.
+    //
+    // The key list is DERIVED from the advertised schema, not hardcoded, so a contract that grows
+    // a key is covered automatically rather than silently escaping a stale enumeration.
+    const keys = topLevelKeys(advertisedSchema(JUDGE_SYSTEM_PROMPT));
+    const arrayKeys = keys.filter((k) => k !== 'score');
+    assert.ok(arrayKeys.length > 0, 'no array keys derived — control arm would assert nothing');
+
+    for (const omitted of arrayKeys) {
+      const partial = responseForKeys(keys.filter((k) => k !== omitted));
+      assert.notEqual(
+        parseLlmJudgeOutput(JSON.stringify(partial)).shape,
+        'full',
+        `omitting "${omitted}" must not still parse as full, or the schema over-advertises`,
+      );
+    }
+
+    // `score` degrades by value rather than by shape: it is read only when already a number.
+    const wrongType = { ...responseForKeys(keys), score: '3' };
+    assert.equal(parseLlmJudgeOutput(JSON.stringify(wrongType)).score, null);
   });
 });
