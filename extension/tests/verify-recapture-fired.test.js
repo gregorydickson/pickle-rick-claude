@@ -1085,3 +1085,57 @@ test('verify-recapture.an unreadable PRE-window day is bounded out and cannot fo
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });
+
+// AP-BIN-ITER21-02. anatomyWindows' `if (start === null) return []` is the ONLY guard with a
+// fail-OPEN direction in this file, and it shipped unpinned: deleting it left the suite 53/53
+// GREEN. Without it an anatomy-park entry whose timestamp will not parse yields `start: null`,
+// and `ts >= null` coerces to `ts >= 0` — the window opens at the epoch. Any same-session
+// recapture from an EARLIER phase then satisfies AC-DR-02 for a phase that never recaptured,
+// and the null start also disables the day bound (`Number.isFinite`), restoring the unbounded
+// scan AP-BIN-ITER16-01 removed. A/B on ONE field — the anatomy-park entry's timestamp string —
+// over one session and one unchanged activity log, so the parse failure is provably the cause.
+const STALE_RECAPTURE_TS = '2026-05-02T10:30:00.000Z'; // before the anatomy marker, inside the epoch-0 window
+test('verify-recapture.an unparseable anatomy timestamp drops the window instead of opening it at the epoch', () => {
+  const session = makeSession(baseState([
+    { step: 'pickle', timestamp: '2026-05-02T10:00:00.000Z' },
+    { step: 'anatomy-park', timestamp: 'not-a-timestamp' },
+    { step: 'szechuan-sauce', timestamp: '2026-05-02T12:00:00.000Z' },
+  ]));
+  const dataRoot = makeDataRoot();
+  const sessionName = path.basename(session);
+  try {
+    // Attributed to THIS session and BEFORE the anatomy marker: findable only by an epoch-0 window.
+    writeActivityEvents(dataRoot, [recaptureEvent(sessionName, { ts: STALE_RECAPTURE_TS, iteration: 1 })]);
+
+    const unparseable = runVerifier(session, dataRoot);
+    assert.equal(unparseable.status, 1);
+    assert.equal(unparseable.runtimeArtifact.pass, false);
+    assert.equal(unparseable.runtimeArtifact.failure_reason, 'phase-window-missing');
+    assert.deepEqual(unparseable.runtimeArtifact.evidence.anatomy_windows, []);
+    assert.equal(unparseable.runtimeArtifact.evidence.matched_event, null);
+    assert.equal(
+      unparseable.runtimeArtifact.evidence.activity_count,
+      null,
+      'a dropped window must skip the scan — a null start would disable the day bound instead',
+    );
+
+    // Same session, same single event, same history SHAPE — only the anatomy-park entry's
+    // timestamp becomes parseable, and it opens a window that genuinely brackets the event.
+    writeFileSync(
+      path.join(session, 'state.json'),
+      `${JSON.stringify(baseState([
+        { step: 'pickle', timestamp: '2026-05-02T10:00:00.000Z' },
+        { step: 'anatomy-park', timestamp: '2026-05-02T10:15:00.000Z' },
+        { step: 'szechuan-sauce', timestamp: '2026-05-02T12:00:00.000Z' },
+      ]), null, 2)}\n`,
+    );
+    const parseable = runVerifier(session, dataRoot);
+    assert.equal(parseable.status, 0, parseable.stderr);
+    assert.equal(parseable.runtimeArtifact.pass, true);
+    assert.equal(parseable.runtimeArtifact.evidence.activity_count, 1);
+    assert.equal(parseable.runtimeArtifact.evidence.matched_event.ts, STALE_RECAPTURE_TS);
+  } finally {
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
