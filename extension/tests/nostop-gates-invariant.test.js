@@ -63,6 +63,8 @@ import {
   shouldHaltAfterPhase,
 } from '../bin/pipeline-runner.js';
 import { isFailureExit, isHaltExit, isIncompleteExit } from '../bin/mux-runner.js';
+import { classifyMicroverseDisposition } from '../bin/microverse-runner.js';
+import { StateManager } from '../services/state-manager.js';
 import {
   CRASH_FLOOR_EXIT_REASONS,
   EXIT_REASONS,
@@ -590,5 +592,101 @@ describe('AC-NSG-5b — structural producer enumeration (widened reach)', () => 
         `RULE) — found:\n${passingBranch}`,
       );
     }
+  });
+});
+
+/**
+ * B-ONEABORT FR-B1 — the microverse arm (`isMicroverseArmFatal`, consumed by
+ * `isFatalPhaseFailure`'s anatomy-park / szechuan-sauce branch).
+ *
+ * It used to be THREE arms: the crash floor, an inline `judge_timeout ||
+ * all_judge_backends_exhausted || baseline_unmeasurable_transient` literal triple, and
+ * `isMicroverseFailureExit`'s five-member set — eight hand-maintained literals across two lists,
+ * i.e. the enumerated-set shape root CLAUDE.md names as "a liability with a maintenance schedule".
+ * It is now ONE derived term: the crash floor, plus a `reportAs` read off `MICROVERSE_DISPOSITIONS`
+ * (an exhaustive `Record<MicroverseExitReason, …>`, so tsc forces an entry for every new reason and
+ * halt-eligibility follows by construction instead of by someone remembering a list).
+ *
+ * These pins protect the collapse in the three ways it can silently regress: by drifting in
+ * membership, by losing the set-equality the derivation rests on, and by losing the state-manager
+ * normalisation that makes the one disagreeing reason unreachable.
+ */
+describe('AC-OA-FRB1 — the microverse arm derives halt-eligibility, never restates it', () => {
+  const MICROVERSE_PHASES = ['anatomy-park', 'szechuan-sauce'];
+  // Probed through the SHIPPED entry point (`isFatalPhaseFailure` → `sm.read`), never through the
+  // predicate in isolation: `sm.read` normalises legacy reasons, so a pure-predicate probe reports
+  // a membership the runtime can never actually observe.
+  function observedFatalReasons(phase, repo, startCommit) {
+    return [...MICROVERSE_EXIT_REASONS, ...MICROVERSE_FATAL_REASONS].filter((exit_reason) =>
+      isFatalPhaseFailure(phase, makeRuntime({ repo, startCommit, stateOverrides: { exit_reason } })));
+  }
+
+  test('halt-eligibility is exactly the disposition-derived set — no literal list survives', () => {
+    const { repo, startCommit } = makeRepo();
+    // The expectation is DERIVED from the same property the arm reads, not transcribed. A
+    // transcribed list would need editing for every new reason — the drift this AC exists to stop.
+    const expected = [...MICROVERSE_EXIT_REASONS, ...MICROVERSE_FATAL_REASONS].filter((r) =>
+      MICROVERSE_FATAL_REASONS.includes(r)
+      || ['failure', 'non-fatal-halt'].includes(classifyMicroverseDisposition(r).reportAs));
+
+    for (const phase of MICROVERSE_PHASES) {
+      assert.deepEqual(observedFatalReasons(phase, repo, startCommit), expected,
+        `${phase}: the arm must agree with the disposition map it derives from`);
+    }
+  });
+
+  test('the effective set is 10 reasons — the count B-ONEABORT recorded as 6', () => {
+    const { repo, startCommit } = makeRepo();
+    // Guards the derivation in the direction the derived expectation above cannot: if BOTH the arm
+    // and MICROVERSE_DISPOSITIONS were widened together, the deepEqual would still pass. This
+    // number is the measurement MASTER_PLAN's B-ONEABORT section was corrected to.
+    for (const phase of MICROVERSE_PHASES) {
+      assert.equal(observedFatalReasons(phase, repo, startCommit).length, 10,
+        `${phase}: arm membership changed — re-measure before editing this number, and check no `
+        + 'reason gained a gate-fail break (PRIME DIRECTIVE: no new abort condition)');
+    }
+  });
+
+  test("the deleted inline triple is set-equal to the 'non-fatal-halt' disposition class", () => {
+    // The collapse is only behaviour-preserving because these coincide exactly. If a fourth reason
+    // becomes `non-fatal-halt`, or one of these three changes disposition, that is a deliberate
+    // decision that must be re-measured here rather than absorbed silently.
+    assert.deepEqual(
+      MICROVERSE_EXIT_REASONS
+        .filter((r) => classifyMicroverseDisposition(r).reportAs === 'non-fatal-halt').sort(),
+      ['all_judge_backends_exhausted', 'baseline_unmeasurable_transient', 'judge_timeout'],
+    );
+  });
+
+  test('sm.read normalises bare baseline_unmeasurable — the load-bearing invariant', () => {
+    // Bare `baseline_unmeasurable` is the ONE reason whose disposition ('failure') disagrees with
+    // the pre-collapse predicate, which excluded it. The collapse is safe only because
+    // `migrateLegacyBaselineExitReason` (state-manager.ts) rewrites it on EVERY read — including
+    // the already-current-schema branch — so the arm can never observe it. Delete that migration
+    // while microverse-runner still emits the bare reason and it gains a gate-fail break: a new
+    // abort condition. This pin fails first if that happens.
+    const sessionDir = tmpDir('frb1-legacy-baseline-');
+    const statePath = writeState(sessionDir, { exit_reason: 'baseline_unmeasurable' });
+    const observed = new StateManager().read(statePath).exit_reason;
+
+    assert.notEqual(observed, 'baseline_unmeasurable',
+      'bare baseline_unmeasurable must be normalised before any consumer sees it');
+    assert.equal(observed, 'baseline_unmeasurable_unrecoverable');
+  });
+
+  test('the arm body contains no exit-reason literal and no membership-set call', () => {
+    const body = extractFunctionBody(PIPELINE_RUNNER_SOURCE, 'isMicroverseArmFatal');
+    // Quoted literals in the body are compared against `reportAs`, a closed 5-value disposition
+    // union — never against an exit reason. Any exit-reason literal here is the enumerated-set
+    // shape growing back.
+    // `typeof x !== 'string'` operands are type tags, not reasons — stripped so the scan below
+    // reports only literals the arm actually compares a REASON against.
+    const scanned = body.replace(/typeof\s+\w+\s*[!=]==\s*'[a-z]+'/g, '');
+    const literals = [...scanned.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    const REPORT_AS_VALUES = ['success', 'non-convergent', 'non-fatal-halt', 'failure', 'non-success'];
+    assert.deepEqual(literals.filter((l) => !REPORT_AS_VALUES.includes(l)), [],
+      'the arm must read a property of the reason, not restate reasons');
+    assert.equal(body.includes('isMicroverseFailureExit'), false,
+      'MICROVERSE_FAILURE_REASONS is no longer consulted here — re-adding it re-splits the arm');
   });
 });

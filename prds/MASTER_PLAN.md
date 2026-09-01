@@ -2488,9 +2488,14 @@ crash-floor P2, `R-SJLAGMT`, `R-GBANNER`, `R-NOPOSTTIER`, `R-GENVL`, `R-WGTORPH`
 `R-BCFR`. (`R-WGFR` was already marked done; its row now carries the confirming evidence.)
 
 **Re-measured and STILL OPEN, with corrected detail:**
-- [[B-ONEABORT]] — 🔶 PARTIAL. `MICROVERSE_FATAL_REASONS` reached its one-member target, but
-  `isMicroverseArmFatal` ORs in the 5-member `MICROVERSE_FAILURE_REASONS`, so the arm has **6**
-  effective fatal reasons. The remaining subtraction is that `||`, not the list.
+- [[B-ONEABORT]] — ✔ SURFACE B CLOSED 2026-09-01 (FR-B1). The "**6** effective fatal reasons" count
+  recorded here was wrong twice over. It missed a THIRD arm — an inline
+  `judge_timeout || all_judge_backends_exhausted || baseline_unmeasurable_transient` literal triple
+  at `pipeline-runner.ts:3163` — giving 1 + 3 + 5 = **9**; and probing the shipped entry point
+  (`isFatalPhaseFailure` → `sm.read`) rather than the bare predicate gives **10**, because
+  `migrateLegacyBaselineExitReason` rewrites bare `baseline_unmeasurable` →
+  `baseline_unmeasurable_unrecoverable` on every read. The `||` is now collapsed to ONE derived
+  term: the crash floor plus a `reportAs` read off the exhaustive `MICROVERSE_DISPOSITIONS` map.
 - [[R-JUNS]] — ✔ RECONFIRMED OPEN. Traced live: `mapJudgeMeasurementFailure`'s `default:` arm still
   sends an unparseable answer to `baseline_unmeasurable_unrecoverable`, which is fatal. The
   non-fatal `baseline_unmeasurable_transient` reason already exists and only `rate_limited` reaches it.
@@ -2758,14 +2763,36 @@ pipeline's citadel/anatomy/szechuan phases complete.
 
 ## 🎯 TOP ITEM — [[B-ONEABORT]]: two termination channels, one subtraction (2026-08-06, P1) — 🔶 PARTIAL, remeasured 2026-08-31
 
-> **🔶 STILL OPEN, but the counts in this section are STALE — remeasured 2026-08-31.** Progress has landed:
-> `MICROVERSE_FATAL_REASONS` (`src/types/index.ts:1451`) is now **exactly ONE member** — `session_state_corrupted` —
-> which is this item's stated target, and `CRASH_FLOOR_EXIT_REASONS` is 3.
-> **But the target is NOT met.** `isMicroverseArmFatal` (`pipeline-runner.ts:3161-3165`) ORs the one-member fatal set
-> together with `isMicroverseFailureExit(reason)`, and `MICROVERSE_FAILURE_REASONS` (`types/index.ts:1492`) carries five
-> more — `error`, `rate_limit_exhausted`, `judge_unreachable`, `baseline_unmeasurable_unrecoverable`, `judge_cli_missing`.
-> So the microverse arm still has **6 effective fatal reasons, not 1**. The remaining subtraction is that `||` in
-> `isMicroverseArmFatal`, not the fatal-reason list it already collapsed.
+> **✔ SURFACE B CLOSED 2026-09-01 by FR-B1 — and the counts this section carried were WRONG. Re-measured, not re-read.**
+> `MICROVERSE_FATAL_REASONS` (`src/types/index.ts:1451`) is **exactly ONE member** (`session_state_corrupted`) and
+> `CRASH_FLOOR_EXIT_REASONS` is 3 — both already true before FR-B1.
+> **The "6 effective fatal reasons" claim was an undercount of a miscount.** `isMicroverseArmFatal` had THREE arms, not
+> two: the one-member crash floor, an **inline literal triple** (`judge_timeout`,
+> `all_judge_backends_exhausted`, `baseline_unmeasurable_transient`) that this section never recorded, and
+> `isMicroverseFailureExit`'s five (`error`, `rate_limit_exhausted`, `judge_unreachable`,
+> `baseline_unmeasurable_unrecoverable`, `judge_cli_missing`). 1 + 3 + 5 = **9** as a pure predicate — and **10** as the
+> runtime actually observes it, since `isFatalPhaseFailure` reads exit_reason through `sm.read`, whose
+> `migrateLegacyBaselineExitReason` (`state-manager.ts:761`, run on all three migrate branches including the
+> already-current-schema one) rewrites bare `baseline_unmeasurable` → `baseline_unmeasurable_unrecoverable`.
+>
+> **Two premises this section rested on were false at HEAD and are now deleted from the code:** the comment at
+> `:3151-3160` claimed the inline triple was held OUT of `MICROVERSE_FAILURE_REASONS` *"so logPhaseHaltReason can route
+> them through finalize-gate"*, and that *"R-SCJM-3 expects judge_unreachable to halt without finalize-gate"*.
+> `classifyMicroverseHaltDecision` consults neither set — it keys on the `judge_timeout` literal plus membership in
+> `MICROVERSE_EXIT_REASONS` — so **every** union member already routed to `run-finalize-gate-incomplete`, arms 2 and 3
+> alike. The split bought nothing.
+>
+> **FR-B1's subtraction:** 8 hand-maintained literals across 2 lists → ONE derived term (crash floor +
+> `reportAs ∈ {failure, non-fatal-halt}` read off `MICROVERSE_DISPOSITIONS`, an exhaustive
+> `Record<MicroverseExitReason, …>` that tsc forces complete). Behaviour is unchanged — verified identical over 46
+> probes — so **no abort condition was added**. Pinned by `AC-OA-FRB1` in `nostop-gates-invariant.test.js`, including
+> the state-manager normalisation the collapse depends on.
+>
+> **Residual (NOT closed):** `MICROVERSE_FAILURE_REASONS` (`types/index.ts:1492`) has lost its last production consumer
+> and is now test-only, held alive by a source-text set-equality pin in
+> `tests/microverse-exit-reason-allowlist.test.js:24`. Deleting it was out of FR-B1's scope fence.
+> Separately, [[R-JUNS]]'s "still aborts the phase" premise is stale by the same measurement —
+> `baseline_unmeasurable_unrecoverable` routes to `run-finalize-gate-incomplete`, not `abort`.
 
 
 > **⚠ STATUS CORRECTED 2026-08-27 (pre-launch check at HEAD `58dbe500`): LARGELY BUILT, residual 3 → 1.**
