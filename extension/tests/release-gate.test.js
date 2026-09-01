@@ -537,6 +537,34 @@ esac
     }
   });
 
+  // AP-BIN-ITER19-03. `select_installable_tarball` carries TWO count arms: `-gt 0` (nothing
+  // installable) and `-eq 1` (more than one installable). Only the first was fixtured — every
+  // sidecar fixture omitted `install.sh`, so it never became installable and `-ge 1` survived the
+  // suite. With the arm mutated, a release publishing two installable assets verifies
+  // `installable[0]` only and ships the other one unchecked. `includeInstallScript` was written for
+  // exactly this case and had no caller. `doesNotMatch` on the `-gt 0` arm's own message keeps this
+  // from decaying into a duplicate of the missing-payload case.
+  test('exits 21 when the release publishes two installable tar.gz assets', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeTarball('1.67.0', 'pickle-release.tar.gz');
+    const secondFixture = makeSidecarTarball('aaa-sidecar.tar.gz', { includeInstallScript: true });
+    const ghDir = makeGhFixture({
+      tarballs: [tarFixture.tarball, secondFixture.tarball],
+      fakeFindNames: ['aaa-sidecar.tar.gz', 'pickle-release.tar.gz'],
+    });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stderr);
+      assert.match(result.stderr, /downloaded multiple installable tar\.gz assets/);
+      assert.doesNotMatch(result.stderr, /missing install payload root/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(secondFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
   test('exits 21 when a downloaded tarball has extension/package.json but no install.sh payload', () => {
     const { dir: repoDir, tagName } = makeGitFixture();
     const sidecarFixture = makeSidecarTarball('pickle-release.tar.gz');
