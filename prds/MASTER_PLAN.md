@@ -2496,9 +2496,14 @@ crash-floor P2, `R-SJLAGMT`, `R-GBANNER`, `R-NOPOSTTIER`, `R-GENVL`, `R-WGTORPH`
   `migrateLegacyBaselineExitReason` rewrites bare `baseline_unmeasurable` →
   `baseline_unmeasurable_unrecoverable` on every read. The `||` is now collapsed to ONE derived
   term: the crash floor plus a `reportAs` read off the exhaustive `MICROVERSE_DISPOSITIONS` map.
-- [[R-JUNS]] — ✔ RECONFIRMED OPEN. Traced live: `mapJudgeMeasurementFailure`'s `default:` arm still
-  sends an unparseable answer to `baseline_unmeasurable_unrecoverable`, which is fatal. The
-  non-fatal `baseline_unmeasurable_transient` reason already exists and only `rate_limited` reaches it.
+- [[R-JUNS]] — ✅ **DISPOSED BY MEASUREMENT 2026-09-01 (FR-B2, ticket `57cd73e0`). The 2026-08-31
+  reconfirmation above was itself measured against a stale premise; superseded — see the corrected
+  R-JUNS section below.** Three findings, all probed against the compiled runtime rather than read:
+  the `default:` arm is **statically unreachable** (`JudgeFailureExitReason`, `microverse-runner.ts:99`,
+  has exactly the 3 members the switch cases); a parse failure reaches `case 'judge_timeout'` carrying
+  `exhaustedFailureKind: 'failed'`; and `baseline_unmeasurable_unrecoverable` does **not** abort — it
+  routes to `run-finalize-gate-incomplete` exactly as `_transient` does. Re-routing between the two is
+  a **behavioural no-op**. No code change; pinned instead.
 
 **⚠ NOT re-measured in this sweep — 18 items carry an UNVERIFIED premise.** Two of the ten confirmed
 fixes (`R-MPVU`, `R-BCFR`) were closed by the B-CIGREEN3 run that was still executing while this sweep
@@ -2843,15 +2848,51 @@ i.e. two policies collapsing into one. Net-negative LOC is pinned by AC-OA-1c.
 (mis-stamped roster reason), [[R-ISSC]] (gate hides half its surface — WS-4 must measure both
 integration sub-tiers separately).
 
-## 🚨 OPEN BUG — R-JUNS: an unparseable judge answer is "unrecoverable" and aborts the pipeline (2026-08-06, P1) — ✔ RECONFIRMED OPEN 2026-08-31
+## ✅ DISPOSED BY MEASUREMENT (was OPEN BUG) — R-JUNS: an unparseable judge answer is "unrecoverable" and aborts the pipeline (2026-08-06, P1) — ✅ CLOSED AS NO-OP 2026-09-01
 
-> **✔ RECONFIRMED OPEN — 2026-08-31 stale-premise sweep. The live path was traced end to end:**
-> `mapJudgeMeasurementFailure` (`microverse-runner.ts:3721`) falls through its `default:` arm to
-> `baseline_unmeasurable_unrecoverable` for any judge failure it does not recognise — an unparseable answer included.
-> That reason is a member of `MICROVERSE_FAILURE_REASONS`, which `isMicroverseArmFatal` treats as fatal, so the phase
-> still aborts. A `baseline_unmeasurable_transient` reason DOES now exist and is explicitly non-fatal, but only
-> `exhaustedFailureKind === 'rate_limited'` routes to it. **The fix is to route parse failures to the transient reason
-> that already exists — no new machinery.** Absorbed by [[B-ONEABORT]].
+> **✅ DISPOSED BY MEASUREMENT — 2026-09-01, FR-B2 (ticket `57cd73e0`). The proposed fix is a
+> behavioural NO-OP and cannot be implemented as written without a fail-open. No code changed.**
+> The 2026-08-31 "RECONFIRMED OPEN" block that stood here asserted three things; all three were
+> measured against the compiled runtime and all three are false at HEAD. Retained corrections:
+>
+> 1. **"falls through its `default:` arm" — FALSE. That arm is statically unreachable.**
+>    `measured.exitReason` is typed `JudgeFailureExitReason` (`microverse-runner.ts:99`) = exactly
+>    `{judge_timeout, judge_cli_missing, all_judge_backends_exhausted}`, and the switch cases all
+>    three. Driving a real parse failure through the shipped backoff loop yields
+>    `{exitReason:'judge_timeout', exhaustedFailureKind:'failed', lastError:'judge output did not
+>    contain a numeric score'}` — it reaches **`case 'judge_timeout'`** and takes the ternary's else
+>    branch. The routing complaint was real; the named mechanism was not.
+> 2. **"is a member of `MICROVERSE_FAILURE_REASONS`, which `isMicroverseArmFatal` treats as fatal,
+>    so the phase still aborts" — FALSE on both clauses.** Post-[[B-ONEABORT]] FR-B1 (`7ea249a8`),
+>    `isMicroverseArmFatal` does not consult that set at all (crash floor + a `reportAs` read), and
+>    `MICROVERSE_FAILURE_REASONS` now has **zero production call sites** — swept independently over
+>    `src/` and the compiled non-test tree; every caller is a test. More importantly the phase does
+>    **not** abort: `classifyMicroverseHaltDecision` returns `run-finalize-gate-incomplete` for
+>    `baseline_unmeasurable_unrecoverable`, identically to `_transient`. (The original bug report
+>    below also cites `∈ MICROVERSE_FATAL_REASONS` — that set is `['session_state_corrupted']` alone.)
+> 3. **"route parse failures to the transient reason that already exists" — a NO-OP, and unsafe as
+>    specified.** Across every observable a production consumer reads — halt action, exit code, and
+>    `isFatalPhaseFailure` on both microverse phases — `_transient` and `_unrecoverable` are
+>    identical. The one field that differs (`reportAs`: `non-fatal-halt` vs `failure`) is collapsed by
+>    all four of its consumers. **This is not something FR-B1 introduced:** a worktree at `1b635b4c`
+>    (pre-FR-B1) gives byte-identical dispositions, because the old `isMicroverseArmFatal` made
+>    `_transient` fatal via its literal triple (`:3163`) *and* `_unrecoverable` fatal via
+>    `isMicroverseFailureExit` (`:3164`) — both fatal, by two different arms. R-JUNS's proposed fix
+>    has never produced a different disposition at any point in this history.
+>
+> **Why it also cannot be implemented as written:** there is no parse-failure-specific signal at the
+> mapper. `exhaustedFailureKind: 'failed'` is produced identically by an unparseable answer, a spawn
+> `EACCES`, and an unknown error (measured: all three byte-identical on
+> `(exitReason, exhaustedFailureKind)`; only the free-form `lastError` string differs). Routing on it
+> would make a genuine spawn failure retryable — the fail-open the ticket text itself forbids — and
+> routing on a human-readable message string is the enumerated-set liability that fails green.
+>
+> **Pinned, not just closed.** `extension/tests/bin/microverse-judge-probe.test.js` carries
+> `AC-JUNS-1` (end-to-end: a parse failure's reason never aborts the phase, asserted for *both*
+> candidate reasons so it survives a future re-route) and `AC-JUNS-2` (the two reasons are
+> disposition-identical — a deliberate tripwire that goes RED if `_transient` is ever legitimately
+> demoted, meaning R-JUNS became live again), each with a positive control so neither can pass by
+> never firing. All three mutations verified RED-then-restore-GREEN. Absorbed by [[B-ONEABORT]].
 
 
 **`prds/BUG-REPORT-2026-08-06-judge-parse-failure-classified-unrecoverable-aborts-the-pipeline.md`** —
@@ -2872,6 +2913,18 @@ failure that killed the run. **Fix (subtractive, two halves):** route `'failed'`
 `baseline_unmeasurable_transient` via an explicit case; and drop
 `baseline_unmeasurable_unrecoverable` from the fatal set. ⛔ Do NOT add retry budget — the 4 attempts
 are not the problem, the classification of their outcome is.
+
+> **⚠ CORRECTION 2026-09-01 (FR-B2) — the "Fix (subtractive, two halves)" directly above is
+> superseded; do not implement it.** Half one (route `'failed'` to `_transient`) is a behavioural
+> no-op *and* a fail-open: `'failed'` does not mean "unparseable", it is shared verbatim by spawn
+> `EACCES` and unknown errors, so an explicit case on it makes genuine spawn failures retryable.
+> Half two (drop `_unrecoverable` from the fatal set) rests on a premise that no longer holds — the
+> reason does not abort the phase, and the sibling demotion of `_transient` was separately refuted by
+> FR-B1 as a *regression* (it would delete the R-S529 finalize-gate recovery) and is fence-blocked by
+> `tests/s529-classify-route.test.js:210,228`. The 2026-08-06 incident narrative above remains
+> accurate as **history** — a 590-minute run did die this way — but the abort it describes was
+> removed by [[B-CRASHFLOOR]] / [[B-ONEABORT]], not by reclassifying the parse failure. See the
+> disposition block at the head of this section for the measurements.
 
 ## ✅ RESOLVED (was OPEN BUG) — a deployed crash-floor halt verdict is discarded at the phase boundary; the amnesiac breaker zeroes its own bound, $13.21 burned (2026-08-07, P2)
 

@@ -5,14 +5,18 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import * as os from 'node:os';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   _deps,
   probeJudgeBackendAvailability,
   measureLlmMetricWithBackoff,
   classifyJudgeError,
+  classifyMicroverseDisposition,
   JudgeMeasurementTimeout,
   JudgeMeasurementSpawnFailed,
 } from '../../bin/microverse-runner.js';
+import { classifyMicroverseHaltDecision, isFatalPhaseFailure } from '../../bin/pipeline-runner.js';
+import { LATEST_SCHEMA_VERSION } from '../../types/index.js';
 import { buildJudgeEnv } from '../../services/judge-spawn-env.js';
 
 function makeEnoentError() {
@@ -505,5 +509,153 @@ describe('R-ORCG: judge XDG_RUNTIME_DIR cleanup', () => {
     }
     const after = listPickleJudgeTmpDirs();
     assert.deepEqual([...after].filter(d => !before.has(d)), [], 'the cli_missing short-circuit must not leak the probe env dir');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R-JUNS (FR-B2, ticket 57cd73e0) — VERIFY-FIRST disposal.
+//
+// The filed defect says `mapJudgeMeasurementFailure` sends an unparseable judge answer through its
+// `default:` arm to `baseline_unmeasurable_unrecoverable`, and asks for it to be routed to
+// `baseline_unmeasurable_transient` instead. Measurement refutes the premise three ways:
+//
+//   1. That `default:` arm is STATICALLY UNREACHABLE. `JudgeFailureExitReason`
+//      (microverse-runner.ts:99) has exactly three members and the switch cases all three. A parse
+//      failure arrives at `case 'judge_timeout'` carrying `exhaustedFailureKind: 'failed'` and takes
+//      the ternary's else branch. AC-JUNS-1 pins that arrival shape.
+//   2. There is NO parse-failure-specific signal to route on. `exhaustedFailureKind: 'failed'` is
+//      produced identically by an unparseable answer, a spawn EACCES and an unknown error, so
+//      routing on it would make a genuine spawn failure retryable — the fail-open the ticket itself
+//      forbids. (Documented, deliberately NOT pinned: the conflation is a residual, not a contract.)
+//   3. The re-route would change NOTHING observable. AC-JUNS-2 pins that.
+//
+// What these tests deliberately do NOT pin is the mapping itself — that a parse failure yields
+// `_unrecoverable` specifically. Freezing the disputed routing would block the very fix a future
+// ticket might legitimately make. Commit 1b635b4c declined to pin R-JUNS for exactly this reason
+// ("pinning a live defect would freeze the wrong contract"); these pins assert instead the
+// invariant that holds under EITHER routing.
+// ---------------------------------------------------------------------------
+
+const PARSE_FAILURE_LAST_ERROR = 'judge output did not contain a numeric score';
+
+/** Probe reply + four attempt replies, none containing a numeric score. */
+function makeUnparseableJudgeSteps() {
+  return [
+    { type: 'success', stdout: 'claude/2.1.0' },
+    { type: 'success', stdout: 'I cannot score this codebase.' },
+    { type: 'success', stdout: 'sorry, no rating available' },
+    { type: 'success', stdout: 'unable to comply' },
+    { type: 'success', stdout: 'no score' },
+  ];
+}
+
+/** A real state.json so `isFatalPhaseFailure` answers through the shipped `sm.read` path.
+ *  schema_version MUST be current: a stale value makes `sm.read` throw, and `isFatalPhaseFailure`
+ *  fails OPEN to `false` (pipeline-runner.ts:3225-3230) — every assertion would then pass for the
+ *  wrong reason. Hence LATEST_SCHEMA_VERSION rather than a literal. */
+function withStateFor(exitReason, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r-juns-'));
+  try {
+    const statePath = path.join(dir, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({
+      schema_version: LATEST_SCHEMA_VERSION,
+      exit_reason: exitReason,
+      start_commit: 'abc1234',
+      status: 'stopped',
+      tickets: [],
+      activity: [],
+    }));
+    return fn({ statePath, sessionDir: dir, workingDir: dir });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Every disposition observable any production consumer actually reads, for one exit reason. */
+function dispositionTuple(exitReason) {
+  return withStateFor(exitReason, (runtime) => ({
+    haltAction: classifyMicroverseHaltDecision(exitReason).action,
+    exitCode: classifyMicroverseDisposition(exitReason).exitCode,
+    fatalOnAnatomyPark: isFatalPhaseFailure('anatomy-park', runtime),
+    fatalOnSzechuanSauce: isFatalPhaseFailure('szechuan-sauce', runtime),
+  }));
+}
+
+describe('R-JUNS: an unparseable judge answer never breaks the phase loop', () => {
+  test('AC-JUNS-1: a parse failure exits as (judge_timeout, failed) and its reason does NOT abort — under either candidate routing', async () => {
+    const previousLegacy = process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    const orig = { spawn: _deps.spawn, sleep: _deps.sleep };
+    _deps.spawn = makeSpawnMock(makeUnparseableJudgeSteps());
+    _deps.sleep = async () => {};
+    let result;
+    try {
+      result = await measureLlmMetricWithBackoff('fix bugs', 30, '/tmp');
+    } finally {
+      _deps.spawn = orig.spawn;
+      _deps.sleep = orig.sleep;
+      if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+      else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
+    }
+
+    // Precondition: this really was a PARSE failure. Without the lastError assertion the test would
+    // pass just as well on a plain timeout, which lands in the same (exitReason, kind) shape — the
+    // message is the only thing that distinguishes them, which is finding (2) above in miniature.
+    assert.equal(result.metric, null);
+    assert.equal(result.lastError, PARSE_FAILURE_LAST_ERROR,
+      'the failure under test must be an unparseable answer, not a timeout wearing the same shape');
+    assert.equal(result.exitReason, 'judge_timeout',
+      'a parse failure reaches mapJudgeMeasurementFailure via case judge_timeout, NOT via default:');
+    assert.equal(result.exhaustedFailureKind, 'failed');
+
+    // The disposition half — this is the assertion the ticket asks for, made end-to-end on the
+    // reason rather than on the mapping function's return value. Both the reason a parse failure
+    // routes to today and the one FR-B2 proposes must leave the phase loop intact.
+    for (const reason of ['baseline_unmeasurable_unrecoverable', 'baseline_unmeasurable_transient']) {
+      const decision = classifyMicroverseHaltDecision(reason);
+      assert.notEqual(decision.action, 'abort',
+        `${reason} must never abort the phase (CLAUDE.md: a gate may never break the phase loop)`);
+      assert.equal(decision.action, 'run-finalize-gate-incomplete', `${reason} routes to the incomplete finalize gate`);
+    }
+  });
+
+  test('AC-JUNS-1-control: classifyMicroverseHaltDecision DOES return abort for a crash-floor input', () => {
+    // Positive control for the pin above. Without it, AC-JUNS-1's `notEqual(action,'abort')`
+    // would also pass if the function never returned 'abort' at all (e.g. stubbed to a constant),
+    // asserting nothing.
+    assert.equal(classifyMicroverseHaltDecision(undefined).action, 'abort',
+      'the crash floor must still abort — otherwise the pin above discriminates nothing');
+  });
+
+  test('AC-JUNS-2: _transient and _unrecoverable are disposition-identical, so re-routing between them is a no-op', () => {
+    const transient = dispositionTuple('baseline_unmeasurable_transient');
+    const unrecoverable = dispositionTuple('baseline_unmeasurable_unrecoverable');
+
+    // This is the measurement that disposes FR-B2: every observable a production consumer reads is
+    // the same for both reasons, so routing parse failures from one to the other changes nothing.
+    assert.deepEqual(transient, unrecoverable,
+      'FR-B2 proposes re-routing between these two reasons; that is only meaningful if they differ');
+
+    // The single field that DOES differ is the one no production consumer reads: all four
+    // `reportAs` consumers collapse 'failure' and 'non-fatal-halt' identically
+    // (pipeline-runner.ts:3186 and :5262, microverse-runner.ts:5776 and microverseExitCode).
+    assert.equal(classifyMicroverseDisposition('baseline_unmeasurable_transient').reportAs, 'non-fatal-halt');
+    assert.equal(classifyMicroverseDisposition('baseline_unmeasurable_unrecoverable').reportAs, 'failure');
+
+    // TRIPWIRE, deliberate: if a later ticket legitimately demotes `baseline_unmeasurable_transient`
+    // to arm-non-fatal (which needs tests/s529-classify-route.test.js:210,228 in its fence), this
+    // deepEqual goes RED. That is the intended signal, not a brittle assertion: it means R-JUNS has
+    // become live again and FR-B2 should be re-opened rather than left closed as a no-op.
+  });
+
+  test('AC-JUNS-2-control: the disposition tuple discriminates — converged differs from _unrecoverable', () => {
+    // Positive control for AC-JUNS-2. Without it, the deepEqual above would also pass if
+    // dispositionTuple returned a constant (e.g. every isFatalPhaseFailure call failing open to
+    // false under a bad fixture), which is precisely the silent all-clear this fixture guards.
+    assert.notDeepEqual(
+      dispositionTuple('converged'),
+      dispositionTuple('baseline_unmeasurable_unrecoverable'),
+      'dispositionTuple must vary by reason, or AC-JUNS-2 compares two constants',
+    );
   });
 });
