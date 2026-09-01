@@ -232,6 +232,45 @@ test('verify-recapture.foreign-session event does not satisfy this session AC', 
   }
 });
 
+// The SESSION arm above is pinned; its EVENT-NAME twin was not, and that is the arm carrying the
+// AC's whole meaning. One live session on this host logs 19 distinct event names and 300+ events,
+// so with the name predicate gone the FIRST same-session in-window event satisfies AC-DR-02 with
+// no recapture ever attempted. A/B on the `event` field alone; `activity_count: 1` on both halves
+// proves the rejection is the name predicate, not the day bound or a no-measurement arm.
+test('verify-recapture.a same-session in-window event of another name does not satisfy the AC', () => {
+  const session = makeSession(baseState());
+  const dataRoot = makeDataRoot();
+  try {
+    const sessionName = path.basename(session);
+    writeActivityEvents(dataRoot, [recaptureEvent(sessionName, { event: 'iteration_start' })]);
+    const impostor = runVerifier(session, dataRoot);
+    assert.equal(impostor.status, 1, impostor.stderr);
+    assert.equal(impostor.runtimeArtifact.pass, false);
+    assert.equal(impostor.runtimeArtifact.failure_reason, 'recapture-event-missing');
+    assert.equal(
+      impostor.runtimeArtifact.evidence.activity_count,
+      1,
+      'the impostor must be READ and rejected on its name, not bounded out of the scan',
+    );
+    assert.equal(impostor.runtimeArtifact.evidence.matched_event, null);
+
+    rmSync(path.join(dataRoot, 'activity'), { recursive: true, force: true });
+    writeActivityEvents(dataRoot, [recaptureEvent(sessionName)]);
+    const genuine = runVerifier(session, dataRoot);
+    assert.equal(genuine.status, 0, genuine.stderr);
+    assert.equal(genuine.runtimeArtifact.pass, true);
+    assert.equal(genuine.runtimeArtifact.failure_reason, null);
+    assert.equal(
+      genuine.runtimeArtifact.evidence.activity_count,
+      1,
+      'the A/B must differ in the event name alone',
+    );
+  } finally {
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
 // The PRODUCER half of that same join. `attemptStrictBaselineRecapture` is unexported, the two
 // integration tests that drive it assert only event/ordering, and every consumer fixture here
 // hand-stamps `session` — so deleting the producer's stamp left AC-DR-02 a permanent false-RED
