@@ -158,3 +158,31 @@ cd extension && npm run test:fast
 - This is a **doc-discipline precondition, not a new blocking gate** — do not build launch-blocking machinery
   to enforce it (that would false-block on a genuine flake, e.g. the `spawnSync ps ENOBUFS` case already
   living in the tier). Same posture as the Simplification Review: a rule authors follow, not a runtime lock.
+
+### OS axis — a green local tier is one OS's opinion (MANDATORY to consider, earned by FR-A1/FR-A3, 2026-09-01)
+
+The green-tree check above runs `test:fast` on **your** box. That covers correctness on the
+authoring OS and nothing else. Measured this bundle:
+`tests/bin/test-runner-tier-discovery.test.js` ran **16/16 green on macOS at both `6e75e131` and
+`f1eaa022`**, while that same file under Linux was **15/16 RED at the first** and 16/16 at the
+second. The Node 22 pin had covered the runtime axis the whole time; the OS
+axis was covered by nothing, so a launch commit could be — and was — Linux-red on green ground.
+
+**Before launching a bundle whose ground you cannot otherwise vouch for, add the OS-axis leg:**
+
+```
+bash extension/scripts/ci-repro.sh --ref "$(git rev-parse HEAD)" --cmd 'node bin/test-runner.js tests/<file>.test.js --test-concurrency=1'
+```
+
+- **Same posture as the rest of this section: a doc-discipline precondition, not a blocking
+  gate.** Do not wire it into the `&&` chain and do not build launch-blocking machinery for it —
+  docker is not guaranteed on every box, and an unrunnable check that fails closed reds the whole
+  chain. No docker (harness exits `2`) → record the OS axis UNRUN and inherit it from CI.
+- **Scope it to FILES, not tiers.** The harness forces `--platform linux/amd64`; on an
+  Apple-silicon host that container is emulated, so a whole tier will not finish in a normal
+  budget and **timing-sensitive reds under it are suspect**. Arch fidelity itself is exact — the
+  image measured Ubuntu 24.04.4 / x86_64 / node v22.23.2, CI's arch and node major.
+- Only **committed** state at `--ref` is measured; commit before you measure.
+- `0` pass · `1..` inner command · `2` refused · `3` UNTRUSTED (provisioning gap — completed, but
+  not evidence) · `90`/`91` preflight. **A green counts only while the measured noise baseline is
+  0**; re-measure it before treating the result as an inherited-vs-caused discriminator.

@@ -164,6 +164,8 @@ cd extension && npm ci && npx tsc --noEmit && npx eslint src/ --max-warnings=-1 
 ```
 Tests: `extension/tests/*.test.js` via `node --test` (no `.test.ts`). Aux scripts: `coverage` (c8 fast-tier baseline), `coverage:delta` (`scripts/coverage-delta.sh`), `wire-check` (gate parity, `scripts/check-wired.sh`).
 
+**This chain proves correctness on the OS you ran it on — nothing more.** It is one of three axes; the Node 22 leg covers the runtime axis and `extension/scripts/ci-repro.sh` covers the OS axis. A green here is NOT sufficient to tag — see **Versioning → Before tagging** below for the required manual OS-axis run and its limits.
+
 ## Required Patterns
 
 - CLI guard: `if (process.argv[1] && path.basename(process.argv[1]) === 'foo.js') { ... }`
@@ -191,6 +193,46 @@ or absence and prints both the expected and actual sha.
 `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-un-terminalize-single-path.sh && bash scripts/audit-did-we-count.sh && npm run test:fast:budget && npm run test:integration && npm run test:contract && RUN_EXPENSIVE_TESTS=1 npm run test:expensive`
 
 AND the tree must be clean (`git status` clean, compiled JS matches TS source). No dirty release.
+
+**⛔ THE GATE ABOVE COVERS ONE AXIS AND IS NOT SUFFICIENT ALONE (operator-set 2026-09-01, after a
+macOS-green gate hid a Linux-red tree).** Three axes, three legs — a green on one says nothing
+about the others:
+
+| Axis | Leg | What it covers |
+|---|---|---|
+| Correctness, **authoring OS** | the `&&` chain above | types, lint, audits, all tiers — on whatever OS you typed it on, and only that OS |
+| **Runtime** | `node-version: '22.x'` in `ci.yml`/`release.yml`, matching `engines.node` | the Node major CI runs |
+| **OS** | `extension/scripts/ci-repro.sh` — **REQUIRED MANUAL step, deliberately NOT an `&&` link** | Linux, which no other leg here reaches |
+
+Measured this bundle: `tests/bin/test-runner-tier-discovery.test.js` ran **16/16 green on macOS
+at BOTH** `6e75e131` and `f1eaa022`, while that same file under `ci-repro.sh` was **RED at the
+first (16 tests / 15 pass / 1 fail) and GREEN at the second**. The
+Node 22 leg had covered the runtime axis the whole time. A locally-green gate demonstrably
+cannot see a Linux-only red, so it is not on its own evidence that a tag is safe.
+
+Run it against the sha you are about to tag (from the repo root):
+
+```
+bash extension/scripts/ci-repro.sh --ref "$(git rev-parse HEAD)" --cmd 'node bin/test-runner.js tests/<file>.test.js --test-concurrency=1'
+```
+
+**Honest limits — an overstated green is worse than no run:**
+- **Not joined to the `&&` chain, on purpose.** Docker is not guaranteed on every box, and a
+  fail-closed leg without its provisioning half reds the whole chain. **Escape hatch:** no
+  docker (the harness exits `2`) → record the OS axis as UNRUN and let CI supply it. Never
+  report an unrun leg as green.
+- **Emulated on Apple silicon.** The harness forces `--platform linux/amd64`, and the image
+  measured Ubuntu 24.04.4 / x86_64 / node v22.23.2 — same arch AND node major as CI, so arch
+  fidelity is exact. Wall-clock is not: on an arm64 host that container is emulated, so
+  **timing-sensitive reds under it are suspect**, and a whole tier will not finish in a normal
+  budget. The practical use is driving **specific FILES** via `--cmd`, not tiers.
+- **Only COMMITTED state at `--ref` is measured** — a dirty tree is excluded, so commit first.
+- Exit codes: `0` pass · `1..` the inner command failed · `2` harness refused (underivable
+  field, missing docker) · `3` UNTRUSTED — the run completed but a provisioning gap makes the
+  number inadmissible · `90`/`91` preflight (credential present / model API reachable).
+- **Trust a green only while the measured noise baseline is 0** (FR-A1 measured 0 for the file
+  it drove). Re-measure that baseline before relying on a green; a harness that is mostly noise
+  falsifies nothing.
 
 ## Architecture
 
