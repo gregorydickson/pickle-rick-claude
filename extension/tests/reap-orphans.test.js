@@ -12,7 +12,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runStandaloneOrphanReap, sweepStaleFixtureTmpDirs } from '../bin/reap-orphans.js';
+import { runStandaloneOrphanReap, runStandaloneFixtureTmpDirSweep, sweepStaleFixtureTmpDirs } from '../bin/reap-orphans.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -288,6 +288,7 @@ test('sweepStaleFixtureTmpDirs removes a pickle-prefixed directory past the age 
     const result = sweepStaleFixtureTmpDirs(sandbox, ONE_DAY_MS);
     assert.equal(result.scanned, 1);
     assert.equal(result.removed, 1);
+    assert.equal(result.skipped, null, 'a sweep that read the directory produced a real census');
     assert.ok(!fs.existsSync(stale), 'a directory older than the ceiling must be removed');
   });
 });
@@ -325,7 +326,70 @@ test('sweepStaleFixtureTmpDirs ignores a stale pickle-prefixed FILE (not a direc
 
 test('sweepStaleFixtureTmpDirs is best-effort against an unreadable tmpDir', () => {
   const result = sweepStaleFixtureTmpDirs('/nonexistent/pickle-does-not-exist', ONE_DAY_MS);
-  assert.deepEqual(result, { scanned: 0, removed: 0 });
+  assert.deepEqual(result, { scanned: 0, removed: 0, skipped: 'sweep_failed' });
+});
+
+// AP-EXT-ITER149-02: the fixture-TMPDIR census and its operator line must distinguish
+// "we counted nothing" from "we never counted". Pre-fix, an unreadable TMPDIR and a
+// genuinely clean one returned BYTE-IDENTICAL `{scanned:0,removed:0}` records, and the
+// printer's `removed > 0` gate rendered a third state — scanned>0, nothing stale — as the
+// same silence. Byte-identical twin of AP-EXT-ITER149-01, fixed in the sibling first.
+test('AP-EXT-ITER149-02: an unreadable tmpDir is not byte-identical to a genuinely clean one', () => {
+  withSandboxTmpDir((sandbox) => {
+    const clean = sweepStaleFixtureTmpDirs(sandbox, ONE_DAY_MS);
+    const unreadable = sweepStaleFixtureTmpDirs('/nonexistent/pickle-does-not-exist', ONE_DAY_MS);
+    assert.equal(clean.scanned, 0);
+    assert.equal(unreadable.scanned, 0);
+    assert.notDeepEqual(
+      clean, unreadable,
+      'a failed sweep and an empty census must not collapse into one record',
+    );
+    assert.equal(clean.skipped, null, 'a readable empty TMPDIR IS a census');
+    assert.equal(unreadable.skipped, 'sweep_failed', 'an unreadable TMPDIR is NOT a census');
+  });
+});
+
+test('AP-EXT-ITER149-02: the printer reports every sweep, including a zero one', () => {
+  const lines = withCapturedStdout(() => {
+    runStandaloneFixtureTmpDirSweep({ sweep: () => ({ scanned: 0, removed: 0, skipped: null }) });
+  });
+  assert.equal(lines.length, 1, 'a zero census must still print exactly one line');
+  assert.match(lines[0], /scanned=0 removed=0/);
+  assert.doesNotMatch(lines[0], /did not run/, 'a real census must not claim it never ran');
+});
+
+test('AP-EXT-ITER149-02: the printer reports a scanned-but-nothing-stale sweep', () => {
+  const lines = withCapturedStdout(() => {
+    runStandaloneFixtureTmpDirSweep({ sweep: () => ({ scanned: 7, removed: 0, skipped: null }) });
+  });
+  assert.equal(lines.length, 1, 'scanned>0 removed=0 was the third state the removed>0 gate silenced');
+  assert.match(lines[0], /scanned=7 removed=0/);
+});
+
+test('AP-EXT-ITER149-02: the printer names a not-run sweep instead of borrowing the census line', () => {
+  const lines = withCapturedStdout(() => {
+    runStandaloneFixtureTmpDirSweep({ sweep: () => ({ scanned: 0, removed: 0, skipped: 'sweep_failed' }) });
+  });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /did not run \(sweep_failed\) — no census/);
+  assert.doesNotMatch(lines[0], /scanned=/, 'a sweep with no census must not render counts');
+});
+
+test('AP-EXT-ITER149-02: a throwing sweep is swallowed but still reported as no census', () => {
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => { errors.push(args.join(' ')); };
+  let lines;
+  try {
+    lines = withCapturedStdout(() => {
+      runStandaloneFixtureTmpDirSweep({ sweep: () => { throw new Error('readdir exploded'); } });
+    });
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(lines.length, 0, 'a throw must not print a census line');
+  assert.equal(errors.length, 1, 'a swallowed throw must not be silent');
+  assert.match(errors[0], /did not run \(sweep_failed\) — no census: readdir exploded/);
 });
 
 test('sweepStaleFixtureTmpDirs defaults to a 24h ceiling and the real os.tmpdir()', () => {
@@ -337,4 +401,6 @@ test('sweepStaleFixtureTmpDirs defaults to a 24h ceiling and the real os.tmpdir(
   const result = sweepStaleFixtureTmpDirs();
   assert.equal(typeof result.scanned, 'number');
   assert.equal(typeof result.removed, 'number');
+  assert.ok(result.skipped === null || result.skipped === 'sweep_failed',
+    'the default-args path carries the did-we-count axis like every other return');
 });

@@ -40,7 +40,7 @@ export function sweepStaleFixtureTmpDirs(tmpDir = os.tmpdir(), maxAgeMs = FIXTUR
         entries = fs.readdirSync(tmpDir);
     }
     catch {
-        return { scanned: 0, removed: 0 };
+        return { scanned: 0, removed: 0, skipped: 'sweep_failed' };
     }
     const now = Date.now();
     let scanned = 0;
@@ -69,7 +69,7 @@ export function sweepStaleFixtureTmpDirs(tmpDir = os.tmpdir(), maxAgeMs = FIXTUR
             /* best-effort — a locked/in-use directory is left for the next sweep */
         }
     }
-    return { scanned, removed };
+    return { scanned, removed, skipped: null };
 }
 export function runStandaloneOrphanReap(sessionsRoot, deps = {}) {
     try {
@@ -97,15 +97,32 @@ export function runStandaloneOrphanReap(sessionsRoot, deps = {}) {
         return null;
     }
 }
-function runStandaloneFixtureTmpDirSweep() {
+/**
+ * Operator line for the fixture-TMPDIR census. Exported and dep-injectable for the same
+ * reason `runStandaloneOrphanReap` above is: the two printers in this file answer the same
+ * did-we-count question and must be provable the same way. Keeping this one module-private
+ * is what let its `removed > 0` gate ship untested (AP-EXT-ITER149-02).
+ */
+export function runStandaloneFixtureTmpDirSweep(deps = {}) {
     try {
-        const result = sweepStaleFixtureTmpDirs();
-        if (result.removed > 0) {
+        const result = (deps.sweep ?? sweepStaleFixtureTmpDirs)();
+        // AC6, the same contract `runStandaloneOrphanReap` above already applies to the sibling
+        // census: branch on `skipped` BEFORE rendering counts, then report on EVERY sweep
+        // including a zero one. The `removed > 0` gate made one silence mean three things at
+        // once — the TMPDIR was clean, the TMPDIR held only fresh fixtures, and the sweep never
+        // ran — which is the reading that lets the leak this hook exists to bound grow unobserved.
+        if (result.skipped) {
+            console.log(`[reap-orphans] fixture-tmpdir sweep did not run (${result.skipped}) — no census`);
+        }
+        else {
             console.log(`[reap-orphans] fixture-tmpdir sweep: scanned=${result.scanned} removed=${result.removed}`);
         }
     }
-    catch {
-        // Best-effort session-GC — never block a test run.
+    catch (err) {
+        // Best-effort session-GC — never block a test run. But a swallowed throw is still a
+        // sweep with no census, so it SAYS so rather than borrowing the quiet-box line.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[reap-orphans] fixture-tmpdir sweep did not run (sweep_failed) — no census: ${msg}`);
     }
 }
 function main() {
