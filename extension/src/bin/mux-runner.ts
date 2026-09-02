@@ -7248,9 +7248,12 @@ function executeCleanTreeReExecution(
       return { ok: true };
     }
     // AC-GA-REC-4: zero diff (plan already fully realized) → reconcile to terminal,
-    // do NOT loop. The reconcile call routes the disposition through ground truth.
-    input.log(`recovery: execute-converged-plan zero-diff for ${input.ticketId} — reconciling to terminal via reconcileTicketTruth`);
-    reconcileTicketTruth({ sessionDir: input.sessionDir, workingDir: input.workingDir });
+    // do NOT loop. AP-EXT-ITER165-01: the disposition IS this `{ ok: false }` and
+    // nothing else. A `reconcileTicketTruth` call sat here claiming to route the
+    // disposition through ground truth; that function is a documented PURE READ, so
+    // its discarded `TicketTruth` routed nothing and only spent 3 git probes plus one
+    // `getTicketStatus` per session ticket, on the recovery ladder, for no verdict.
+    input.log(`recovery: execute-converged-plan zero-diff for ${input.ticketId} — reconciling to terminal`);
     return { ok: false };
   }
   // Diff present — fall through to the existing executePhaseLoop verify-and-commit path.

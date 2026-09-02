@@ -154,18 +154,63 @@ test('AC-DURA-8 attribute: worker committed untagged (HEAD moved, ticket-id in s
   }
 });
 
+/**
+ * Body of the first brace block opening at `opener`, matched by brace COUNTING so an
+ * assertion about a branch's own terminal cannot be satisfied by a statement outside it.
+ * Returns null when the opener is absent or the braces never balance.
+ */
+function braceBlockAfter(src, opener) {
+  const start = src.indexOf(opener);
+  if (start < 0) return null;
+  let depth = 0;
+  for (let i = start + opener.length - 1; i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(start + opener.length, i);
+    }
+  }
+  return null;
+}
+
 // --- Recovery zero-diff terminal (AC-GA-REC-4) must be UNCHANGED ---------------
 
-test('AC-GA-REC-4: the recovery execute-converged-plan zero-diff terminal is byte-unchanged (T20 governs the NORMAL boundary only)', () => {
-  // The recovery terminal: zero-diff → reconcileTicketTruth → return { ok: false }.
-  // T20 must NOT alter this path; assert the load-bearing shape is intact.
-  assert.ok(
-    /if \(!postDiff\) \{[\s\S]*?reconcileTicketTruth\(\{ sessionDir: input\.sessionDir, workingDir: input\.workingDir \}\);[\s\S]*?return \{ ok: false \};/.test(MUX_SRC),
-    'recovery zero-diff terminal (AC-GA-REC-4) must remain: !postDiff → reconcileTicketTruth → return { ok: false }',
+test('AC-GA-REC-4: the recovery execute-converged-plan zero-diff terminal stays terminal (T20 governs the NORMAL boundary only)', () => {
+  // The load-bearing shape is the DISPOSITION, not the statements before it:
+  // zero-diff → return { ok: false } (terminal, no loop). T20 must NOT alter it.
+  // Slice the `if (!postDiff)` block by brace-matching rather than spanning to the
+  // next `return { ok: false };` with a lazy `[\s\S]*?`: that form is satisfied by
+  // ANY later return in the file, so it stays green when the terminal itself flips
+  // (measured — it did not red when the branch was mutated to `{ ok: true }`).
+  const zeroDiffBlock = braceBlockAfter(MUX_SRC, 'if (!postDiff) {');
+  assert.ok(zeroDiffBlock, 'the recovery zero-diff branch `if (!postDiff) {` must exist');
+  assert.match(
+    zeroDiffBlock.trimEnd(),
+    /return \{ ok: false \};$/,
+    'recovery zero-diff terminal (AC-GA-REC-4) must remain: the !postDiff branch ENDS in return { ok: false }',
   );
   // It must be keyed on the working-tree-dirty probe, not on the boundary committer.
   assert.ok(
     MUX_SRC.includes('input._testHooks?.isPostImplementDirty'),
     'recovery terminal must stay keyed on isWorkingTreeDirty / isPostImplementDirty',
+  );
+});
+
+test('AP-EXT-ITER165-01: every reconcileTicketTruth call in mux-runner binds its result — a discarded pure read changes no disposition', () => {
+  // `reconcileTicketTruth` is a documented PURE READ (`lib/reconcile-ticket-truth.ts`
+  // header: "Pure read, best-effort"). Called as a bare expression statement its
+  // returned `TicketTruth` is discarded, so it routes NO disposition — it only spends
+  // 3 git probes plus one `getTicketStatus` per ticket in the session. Any comment or
+  // log line claiming such a call reconciles anything is false by construction.
+  // A comment/prose mention can never match: those lines start with `//` or `*`, and
+  // the only in-string mention is inside an `input.log(...)` call.
+  const discarded = MUX_SRC.split('\n')
+    .map((line, i) => ({ line: i + 1, text: line }))
+    .filter(({ text }) => /^\s*reconcileTicketTruth\s*\(/.test(text));
+  assert.deepEqual(
+    discarded,
+    [],
+    `reconcileTicketTruth must never be called for effect; bind and read the TicketTruth `
+    + `or drop the call. Discarded at: ${discarded.map((d) => d.line).join(', ')}`,
   );
 });
