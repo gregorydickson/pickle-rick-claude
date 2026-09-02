@@ -127,14 +127,68 @@ test('buildGateCompletionReport: __timeout__ failure marks timedOut, not observe
   assert.equal(report.summary.timeouts, 1);
 });
 
-test('buildGateCompletionReport: a spawned ticket with no negative signal is an observed completion', () => {
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER148-01: an "observed completion" must rest on a POSITIVE terminal.
+//
+// The predecessor derived it from absence alone (`!narrowTierVacuity && !skipped &&
+// !timedOut && !failedNonTimeout`), so a ticket that was spawned and never heard from
+// again — killed run, halt, still in flight — was indistinguishable from one that
+// finished. Measured over the 74 real spawned tickets in this box's 7 sessions: 59 read
+// `observed`, and 56 of those carried NO terminal event of any kind. The case this
+// replaces asserted exactly that behaviour, which is why the defect shipped green.
+//
+// The clean terminal is `boundary_commit_resolved` — the SAME vocabulary
+// `findOverlapViolations` was already hardened onto by AP-EXT-ITER6-01, which had
+// established that `worker_completion_commit_announced` is written from the LIVE
+// worker's stdout and is not terminal. `classifyTicketGate` read that non-terminal
+// event instead; no manager emits it (0 occurrences across those 7 sessions, against 10
+// for `boundary_commit_resolved`), so its clean arm never fired.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER148-01: a spawned ticket with NO terminal event is unresolved, not observed', () => {
   const activity = [spawnEvt('2026-08-14T00:00:00.000Z', 'cccc3333')];
   const report = buildGateCompletionReport(activity);
   const t = report.tickets.find((x) => x.ticket === 'cccc3333');
+  assert.equal(t.observedCompletion, false, 'absence of a negative signal is not evidence of completion');
+  assert.equal(t.reason, 'unresolved');
+  assert.equal(t.wallClockMs, null, 'nothing ended, so there is nothing to measure');
+  assert.equal(report.summary.observedCompletions, 0);
+  assert.equal(report.summary.unresolved, 1);
+  assert.equal(report.summary.verdict, '0 observed completions, 0 timeouts, 1 unresolved');
+});
+
+test('AP-EXT-ITER148-01 positive control: a clean boundary IS an observed completion, and is measured', () => {
+  // The negative case above is satisfiable by a predicate that never says "observed";
+  // this control fails such a collapse, and pins the wall clock the dead clean-terminal
+  // channel could never produce.
+  const activity = [
+    spawnEvt('2026-08-14T00:00:00.000Z', 'dddd4444'),
+    boundaryEvt('2026-08-14T00:12:00.000Z', 'dddd4444'),
+  ];
+  const report = buildGateCompletionReport(activity);
+  const t = report.tickets.find((x) => x.ticket === 'dddd4444');
   assert.equal(t.observedCompletion, true);
   assert.equal(t.reason, 'observed');
+  assert.equal(t.wallClockMs, 12 * 60 * 1000, 'the clean terminal must anchor a measurement');
   assert.equal(report.summary.observedCompletions, 1);
-  assert.equal(report.summary.verdict, '1 observed completions, 0 timeouts');
+  assert.equal(report.summary.unresolved, 0);
+});
+
+test('AP-EXT-ITER148-01: worker_completion_commit_announced does not make a ticket observed', () => {
+  // The exact event the predecessor read. It is written from the live worker's stdout,
+  // so it proves the worker was RUNNING — the same reason AP-EXT-ITER6-01 keeps it out
+  // of findOverlapViolations' terminal set. Both readers must agree on that.
+  const activity = [
+    spawnEvt('2026-08-14T00:00:00.000Z', 'eeee5555'),
+    {
+      event: 'worker_completion_commit_announced', ts: '2026-08-14T00:12:00.000Z',
+      ticket_id: 'eeee5555', source: 'pickle', sha: '0df05c84',
+    },
+  ];
+  const t = buildGateCompletionReport(activity).tickets.find((x) => x.ticket === 'eeee5555');
+  assert.equal(t.observedCompletion, false);
+  assert.equal(t.reason, 'unresolved');
+  assert.equal(t.wallClockMs, null, 'a live-worker event must not anchor a run duration');
 });
 
 test('buildGateCompletionReport: narrow tier forces every ticket to non-observed, even absent negative signal', () => {
@@ -151,7 +205,7 @@ test('buildGateCompletionReport: a zero-fast-tier-phase timeline reports zero ob
   const report = buildGateCompletionReport([]);
   assert.equal(report.tickets.length, 0);
   assert.equal(report.summary.observedCompletions, 0);
-  assert.equal(report.summary.verdict, '0 observed completions, 0 timeouts');
+  assert.equal(report.summary.verdict, '0 observed completions, 0 timeouts, 0 unresolved');
 });
 
 // ---------------------------------------------------------------------------
@@ -267,10 +321,15 @@ test('AP-EXT-ITER39-01 control: a terminal exactly AT the spawn instant still co
 // ---------------------------------------------------------------------------
 
 test('AP-EXT-ITER4-01: a relaunched ticket is measured from the spawn its terminal belongs to', () => {
-  // Run 1 resolves cleanly at +20m. Run 2 relaunches 2h after run 1 and times out 30m in.
+  // Run 1 never resolves — no terminal of any kind, which is WHY it was relaunched (the
+  // dominant real shape: 56 of the 74 spawned tickets on this box end with no terminal).
+  // Run 2 relaunches 2h after run 1 and times out 30m in. Run 1 deliberately carries no
+  // `boundaryEvt`: with the clean-terminal channel live (AP-EXT-ITER148-01) a run-1
+  // boundary would become the EARLIEST terminal, and measuring it from run 1's own spawn
+  // is a number an anchor-on-first-spawn bug also produces — the case would stop
+  // discriminating the very defect it exists for.
   const activity = [
     spawnEvt('2026-08-22T10:00:00.000Z', 'aaaa1111'),
-    boundaryEvt('2026-08-22T10:20:00.000Z', 'aaaa1111'),
     spawnEvt('2026-08-22T12:00:00.000Z', 'aaaa1111'),
     gateFailedEvt('2026-08-22T12:30:00.000Z', 'aaaa1111', 'test:fast', [{ name: '__timeout__', file: '', message: 'timed out' }]),
   ];
@@ -291,10 +350,11 @@ test('AP-EXT-ITER4-01: a relaunched ticket is measured from the spawn its termin
 
 test('AP-EXT-ITER4-01: three runs anchor on the third, not the first', () => {
   const activity = [
+    // Runs 1 and 2 leave no terminal; only run 3 resolves. Same reason as the case above:
+    // an earlier run's terminal is measurable from that run's OWN spawn, so it cannot
+    // discriminate anchor-on-first from anchor-on-owning-run.
     spawnEvt('2026-08-22T10:00:00.000Z', 'bbbb2222'),
-    boundaryEvt('2026-08-22T10:05:00.000Z', 'bbbb2222'),
     spawnEvt('2026-08-22T11:00:00.000Z', 'bbbb2222'),
-    boundaryEvt('2026-08-22T11:05:00.000Z', 'bbbb2222'),
     spawnEvt('2026-08-22T12:00:00.000Z', 'bbbb2222'),
     gateFailedEvt('2026-08-22T12:10:00.000Z', 'bbbb2222', 'test:fast', []),
   ];
@@ -450,18 +510,23 @@ function withTierRoots(workingDirTier, extensionRootTier, activity, fn) {
 }
 
 test('AP-EXT-ITER115-01: a narrow tier at the extension root vacates the CLI verdict, even when the working dir says otherwise', () => {
-  // One spawn, zero negative signals — the shape that reads as an observed completion
-  // whenever the vacuity override fails to fire.
-  const activity = [spawnEvt('2026-08-30T10:00:00.000Z', 'eeee5555')];
+  // A GENUINELY completed run — spawn plus its clean manager-side terminal — so the
+  // narrow-tier override is doing the vacating. Bare-spawn fixtures used to read as an
+  // observed completion on their own (AP-EXT-ITER148-01); against that predicate this
+  // case passed without the override ever having to fire.
+  const activity = [
+    spawnEvt('2026-08-30T10:00:00.000Z', 'eeee5555'),
+    boundaryEvt('2026-08-30T10:15:00.000Z', 'eeee5555'),
+  ];
 
   const { exitCode, output } = withTierRoots('fast', 'narrow', activity, runVerifyActivityTimeline);
 
   assert.match(
     output,
-    /GATE VERDICT: 0 observed completions, 0 timeouts \(narrow-tier short-circuit/,
+    /GATE VERDICT: 0 observed completions, 0 timeouts, 0 unresolved \(narrow-tier short-circuit/,
     'a narrow tier emits no per-ticket gate event, so nothing may be counted as observed',
   );
-  assert.match(output, /eeee5555 \| false \| n\/a \| false \| narrow_tier_shortcircuit/);
+  assert.match(output, /eeee5555 \| false \| 900000 \| false \| narrow_tier_shortcircuit/);
   assert.doesNotMatch(output, /1 observed completions/);
   // The overlap axis is independent of the tier and must be untouched by this fix.
   assert.equal(exitCode, 0);
@@ -471,12 +536,15 @@ test('AP-EXT-ITER115-01: a narrow tier at the extension root vacates the CLI ver
 test('AP-EXT-ITER115-01 control: a fast tier at the extension root still counts the completion', () => {
   // The non-tautology twin. Same activity, same decoy — only the extension root's tier
   // differs, so an assertion that simply always read "not observed" fails here.
-  const activity = [spawnEvt('2026-08-30T10:00:00.000Z', 'eeee5555')];
+  const activity = [
+    spawnEvt('2026-08-30T10:00:00.000Z', 'eeee5555'),
+    boundaryEvt('2026-08-30T10:15:00.000Z', 'eeee5555'),
+  ];
 
   const { exitCode, output } = withTierRoots('narrow', 'fast', activity, runVerifyActivityTimeline);
 
-  assert.match(output, /GATE VERDICT: 1 observed completions, 0 timeouts/);
+  assert.match(output, /GATE VERDICT: 1 observed completions, 0 timeouts, 0 unresolved/);
   assert.doesNotMatch(output, /narrow-tier short-circuit/);
-  assert.match(output, /eeee5555 \| true \| n\/a \| false \| observed/);
+  assert.match(output, /eeee5555 \| true \| 900000 \| false \| observed/);
   assert.equal(exitCode, 0);
 });
