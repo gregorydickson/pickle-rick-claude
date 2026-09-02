@@ -7210,6 +7210,7 @@ function executeCleanTreeReExecution(
     complexityTier = readFrontmatterField(ticketContent, 'complexity_tier') ?? 'medium';
   } catch { /* default to medium on read error */ }
 
+  const headBefore = convergedPlanHeadSha(input.workingDir);
   const spawnResult = input.seam.spawnImplementPass({
     planPath: path.join(input.ticketDir, planFile),
     ticketId: input.ticketId,
@@ -7233,6 +7234,19 @@ function executeCleanTreeReExecution(
     ? input._testHooks.isPostImplementDirty()
     : isWorkingTreeDirty(input.workingDir);
   if (!postDiff) {
+    // AP-EXT-ITER164-01: a clean tree is not the same fact as "nothing was produced".
+    // The implement pass may have COMMITTED what it produced — the producer side of
+    // this seam provisions exactly that (`backendEnvOverrides` materializes the trailer
+    // hooks and exports `PICKLE_TICKET_ID` into the child) — so ask this rung's OWN
+    // landed-commit authority, the same one its sibling verdict
+    // `reportConvergedPlanOutcome` already reads, before calling committed work
+    // zero-diff. Ground truth: HEAD moving cannot be faked by a no-op. Falling through
+    // cannot rescue this case — `executePhaseLoop` would re-measure HEAD from AFTER
+    // the commit, stage an empty index, and report that no commit landed.
+    if (convergedPlanCommitLanded(input.workingDir, headBefore)) {
+      input.log(`recovery: execute-converged-plan implement pass committed its work for ${input.ticketId} — advancing`);
+      return { ok: true };
+    }
     // AC-GA-REC-4: zero diff (plan already fully realized) → reconcile to terminal,
     // do NOT loop. The reconcile call routes the disposition through ground truth.
     input.log(`recovery: execute-converged-plan zero-diff for ${input.ticketId} — reconciling to terminal via reconcileTicketTruth`);
@@ -7314,8 +7328,7 @@ function reportConvergedPlanOutcome(args: {
 }): { ok: boolean } {
   const { input, phases, result, headBefore } = args;
   const stoppedAt = result.failedIndex !== null ? ` (stopped at phase ${phases[result.failedIndex].index})` : '';
-  const headAfter = convergedPlanHeadSha(input.workingDir);
-  const landed = headAfter !== null && headAfter !== headBefore;
+  const landed = convergedPlanCommitLanded(input.workingDir, headBefore);
   input.log(
     `recovery: execute-converged-plan ran ${result.committed}/${phases.length} phase(s) for ${input.ticketId}${stoppedAt}` +
     `${landed ? '' : ' — no commit landed'}`,
@@ -7418,6 +7431,18 @@ export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): {
   });
 
   return reportConvergedPlanOutcome({ input, phases, result, headBefore });
+}
+
+/**
+ * AP-EXT-ITER164-01: the converged-plan rung's ONE landed-commit authority, read by BOTH
+ * of its verdicts — the phase-loop outcome (`reportConvergedPlanOutcome`) and the
+ * clean-tree re-execution arm (`executeCleanTreeReExecution`). The rung's verdict is
+ * ground truth (AP-EXT-ITER2-01): HEAD moving cannot be faked by a no-op. An unreadable
+ * post sha reads as "nothing landed" — never claim a commit that cannot be measured.
+ */
+function convergedPlanCommitLanded(workingDir: string, headBefore: string | null): boolean {
+  const headAfter = convergedPlanHeadSha(workingDir);
+  return headAfter !== null && headAfter !== headBefore;
 }
 
 /** HEAD sha for the converged-plan rung's landed-commit check; null when unreadable. */

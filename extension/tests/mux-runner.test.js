@@ -5400,6 +5400,175 @@ test('AP-EXT-ITER163-01: a completion_commit equal to the session baseline is st
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER164-01 — the converged-plan rung had TWO verdicts of the same
+// question and only ONE of them could see a commit.
+//
+// `reportConvergedPlanOutcome` (the phase-loop verdict) already reads ground
+// truth — "did a commit actually land", HEAD before vs after, because a tally
+// can be faked by a no-op and HEAD moving cannot (AP-EXT-ITER2-01). The rung's
+// OTHER exit, `executeCleanTreeReExecution`, read its post-pass evidence as
+// `isWorkingTreeDirty` ALONE. So an implement pass that did the whole job and
+// COMMITTED it presents a clean tree, reads `zero-diff (plan already fully
+// realized)`, and the rung reports `{ok:false}` over a recovery that SUCCEEDED.
+//
+// The producer side of that same seam PROVISIONS the commit the consumer then
+// cannot see: `spawnConvergedPlanImplementPass` hands `backendEnvOverrides`
+// `{workingDir, ticketId, sessionDir}`, which materializes the trailer hooks and
+// exports `PICKLE_TICKET_ID` + `core.hooksPath` into the child.
+//
+// Measured on the compiled runtime before the fix: HEAD advanced by a real
+// `Pickle-Ticket`-trailered commit, working tree clean, and `runRecoveryLadder`
+// returned `{kind:'exhausted', reason:'ladder_exhausted'}` — `recovery_exhausted`,
+// a HALT, on the ladder that exists to prevent halts — while stamping two false
+// ledger rows (`execute-converged-plan/failed` + `escalate/failed`).
+//
+// The fix is subtraction: the landed-commit expression that lived inline in
+// `reportConvergedPlanOutcome` becomes ONE named authority
+// (`convergedPlanCommitLanded`) that BOTH verdicts of the rung read. Falling
+// through to `executePhaseLoop` cannot rescue this case — that path re-measures
+// HEAD from AFTER the commit, stages an empty index, and reports no commit landed.
+// ---------------------------------------------------------------------------
+
+/**
+ * A clean-tree converged-plan fixture: real git repo, an APPROVED plan the rung is
+ * eligible to re-execute, and the ticket In Progress with nothing committed yet.
+ */
+function seedConvergedPlanFixture(root) {
+  const f = seedAttributedCommitFixture(root);
+  const ticketId = 'tkt1';
+  f.writeTicket(ticketId);
+  fs.writeFileSync(
+    path.join(f.sessionDir, ticketId, `plan_${ticketId}.md`),
+    '# Plan\n\n## Phase 1 — Land the work\n\n**Verify:** `true`\n',
+  );
+  fs.writeFileSync(path.join(f.sessionDir, ticketId, 'plan_review.md'), 'Verdict: APPROVED\n');
+  return { ...f, ticketId, statePath: path.join(f.sessionDir, 'state.json') };
+}
+
+/**
+ * Drive the REAL ladder through the REAL adapter, with only the implement pass
+ * itself faked — that spawn is the one seam a test must not run for real.
+ */
+async function runConvergedPlanRung(f, spawnImplementPass) {
+  const { assessRecoveryEvidence, executeConvergedPlanAdapter } = await import('../bin/mux-runner.js');
+  const { runRecoveryLadder } = await import('../services/recovery-controller.js');
+  const logs = [];
+  const ledger = [];
+  let spawnCount = 0;
+  const outcome = runRecoveryLadder({
+    iteration: 1,
+    ticketId: f.ticketId,
+    assessEvidence: () => assessRecoveryEvidence(f.sessionDir, f.repoDir, f.ticketId),
+    runArmedGate: () => ({ ok: true }),
+    commitAndFlipDone: () => ({ ok: false }),
+    spawnRemediator: () => false,
+    appendAttempt: (a) => ledger.push(`${a.strategy}/${a.outcome}`),
+    log: (m) => logs.push(m),
+    executeConvergedPlan: () => executeConvergedPlanAdapter({
+      sessionDir: f.sessionDir,
+      ticketId: f.ticketId,
+      workingDir: f.repoDir,
+      statePath: f.statePath,
+      log: (m) => logs.push(m),
+      reExecutionSeam: {
+        spawnImplementPass: () => { spawnCount += 1; return spawnImplementPass(); },
+      },
+    }),
+  });
+  return { outcome, ledger, logs, spawnCount };
+}
+
+test('AP-EXT-ITER164-01: an implement pass that COMMITS its work advances the rung, never recovery_exhausted', async () => {
+  const root = makeTmpRoot();
+  const f = seedConvergedPlanFixture(root);
+  const headBefore = f.git(['rev-parse', 'HEAD']);
+
+  const r = await runConvergedPlanRung(f, () => {
+    // The worker re-executed the plan and committed it — exactly what the producer
+    // side of this seam provisions the trailer hooks and PICKLE_TICKET_ID for.
+    f.commitFor(f.ticketId, 'recovered.txt');
+    return { ok: true };
+  });
+
+  assert.equal(f.git(['status', '--porcelain']), '', 'precondition: the pass left a CLEAN tree');
+  assert.notEqual(f.git(['rev-parse', 'HEAD']), headBefore, 'precondition: the work is in git');
+  assert.equal(r.spawnCount, 1, 'implement pass ran exactly once — no loop');
+  assert.deepEqual(
+    r.outcome, { kind: 'advanced', strategy: 'execute-converged-plan' },
+    'a recovery whose work is COMMITTED must advance; reading the tree alone reported ' +
+    'zero-diff and collapsed the ladder to recovery_exhausted over work sitting in git',
+  );
+  assert.deepEqual(r.ledger, ['execute-converged-plan/success']);
+  assert.equal(
+    r.logs.some((m) => /zero-diff/.test(m)), false,
+    'committed work must not be logged as zero-diff',
+  );
+});
+
+test('AP-EXT-ITER164-01: a pass that produces NOTHING still reconciles to the zero-diff terminal (AC-GA-REC-4)', async () => {
+  const root = makeTmpRoot();
+  const f = seedConvergedPlanFixture(root);
+
+  const r = await runConvergedPlanRung(f, () => ({ ok: true }));
+
+  assert.equal(r.spawnCount, 1);
+  assert.equal(
+    r.outcome.kind, 'exhausted',
+    'the landed-commit arm must not over-trigger: a genuinely empty pass is still terminal',
+  );
+  assert.ok(r.logs.some((m) => /zero-diff/.test(m) && /reconcil/i.test(m)));
+  assert.deepEqual(r.ledger, ['execute-converged-plan/failed', 'escalate/failed']);
+});
+
+test('AP-EXT-ITER164-01: an UNCOMMITTED dirty tree still falls through to the phase loop', async () => {
+  const root = makeTmpRoot();
+  const f = seedConvergedPlanFixture(root);
+  const headBefore = f.git(['rev-parse', 'HEAD']);
+
+  const r = await runConvergedPlanRung(f, () => {
+    // Edits on the floor, no commit — the case the phase loop exists to commit.
+    fs.writeFileSync(path.join(f.repoDir, 'uncommitted.txt'), 'work\n');
+    return { ok: true };
+  });
+
+  assert.equal(r.spawnCount, 1);
+  assert.equal(
+    r.outcome.kind, 'advanced',
+    'the dirty-tree fallthrough is unchanged — the phase loop stages and commits it',
+  );
+  assert.notEqual(f.git(['rev-parse', 'HEAD']), headBefore, 'the phase loop landed the commit');
+  assert.ok(
+    r.logs.some((m) => /ran \d+\/\d+ phase/.test(m)),
+    'the phase-loop verdict is what reports this case, not the clean-tree arm',
+  );
+});
+
+test('AP-EXT-ITER164-01: a pass that commits AND leaves residue still falls through so the residue is committed', async () => {
+  const root = makeTmpRoot();
+  const f = seedConvergedPlanFixture(root);
+
+  const r = await runConvergedPlanRung(f, () => {
+    // Committed most of the work, left one file on the floor. The landed-commit arm
+    // must stay INSIDE the clean-tree branch: checking it first would return ok:true
+    // here and strand the residue, which the phase loop is the thing that commits.
+    f.commitFor(f.ticketId, 'recovered.txt');
+    fs.writeFileSync(path.join(f.repoDir, 'residue.txt'), 'left on the floor\n');
+    return { ok: true };
+  });
+
+  assert.equal(r.outcome.kind, 'advanced');
+  assert.equal(
+    f.git(['status', '--porcelain']), '',
+    'the residue must be committed by the phase-loop fallthrough, not stranded by an ' +
+    'early landed-commit return',
+  );
+  assert.ok(
+    r.logs.some((m) => /ran \d+\/\d+ phase/.test(m)),
+    'this case belongs to the phase-loop verdict, exactly as it did before the fix',
+  );
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER8-03: the R-REIN refund must cover EVERY per-ticket recovery budget,
 // not just `bounded_terminal_escape`.
 //
