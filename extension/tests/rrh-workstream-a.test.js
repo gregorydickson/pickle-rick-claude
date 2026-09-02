@@ -438,7 +438,8 @@ test('AP-EXT-ITER98-02: both signature entry points compose through ONE NUL-join
       ['scoped', computeScopedSourceTreeSignature(repo, scopePath)],
     ]) {
       assert.equal(typeof sig, 'string', `${label} signature reads`);
-      assert.equal(sig.split('\u0000').length, 2, `${label} signature has exactly ONE NUL joiner`);
+      // AP-EXT-ITER162-01: three probes (status, numstat, head) -> exactly TWO joiners.
+      assert.equal(sig.split('\u0000').length, 3, `${label} signature joins all THREE probes on NUL`);
       assert.ok(sig.includes(' '), `${label} signature contains spaces, so a space joiner is ambiguous`);
     }
   } finally {
@@ -603,4 +604,138 @@ test('A5: resolveHardeningSettings().breaker_recovery_grace_seconds + isWithinBr
     false,
     'unparseable last_change → fail-open false',
   );
+});
+
+// -- AP-EXT-ITER162-01 -- committing is progress, and the digest must see it --
+//
+// `git status --porcelain` and `git diff --numstat` are BOTH head-relative, so committing
+// is the one operation that moves work OUT of their output domain. A worker that lands
+// real source work and COMMITS it -- the disciplined one -- left the digest byte-identical
+// to the previous spawn's, `isSourceSignatureProgress` read false, and
+// `recordWorkerArtifactProgress` charged the producing spawn zero-progress. The Implement
+// phase writes NO `.md` (send-to-morty.md scopes the artifact set to
+// research/plan/conformance/code_review), so the artifact-delta arm cannot cover for it
+// either: at PICKLE_WMW_SKIP_K the R-WSWA-3 auto-skip flips a productive ticket terminal,
+// and the ladder it routes through first reads `probeTreeDirty` -- also clean -- so it
+// attempts ZERO rungs and returns `exhausted`. The `head` probe folds the committed half
+// of the source state into the SAME digest, under the SAME completion predicate.
+
+test('AP-EXT-ITER162-01: the signature MOVES across a commit that leaves the tree clean', async () => {
+  const { computeSourceTreeSignature } = await import('../bin/mux-runner.js');
+  const repo = initSignatureRepo('ap162-01-commit-');
+  // Isolation: sandbox PICKLE_DATA_ROOT so no imported helper can reach live orchestration state.
+  process.env.PICKLE_DATA_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'ap162-01-commit-dataroot-'));
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf-8', stdio: 'pipe', timeout: 10_000 });
+  try {
+    const before = computeSourceTreeSignature(repo);
+    fs.writeFileSync(path.join(repo, 'impl.ts'), 'export const impl = 1;\n');
+    git('add', '-A');
+    git('commit', '-qm', 'implement', '--no-gpg-sign');
+    const after = computeSourceTreeSignature(repo);
+
+    assert.equal(typeof before, 'string', 'baseline signature reads');
+    assert.equal(typeof after, 'string', 'post-commit signature reads');
+    assert.notEqual(after, before, 'a commit that leaves a CLEAN tree still moves the signature');
+    assert.ok(after.includes(git('rev-parse', 'HEAD').trim()), 'the committed tip is the term that carries it');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER162-01: a worker that commits every spawn is never charged toward the auto-skip', async () => {
+  const { recordWorkerArtifactProgress, computeScopedSourceTreeSignature, resolveWmwSkipK } =
+    await import('../bin/mux-runner.js');
+  const { sessionDir, statePath } = setupSession('ap162-01-charge-');
+  const repo = initSignatureRepo('ap162-01-charge-work-');
+  // Isolation: sandbox PICKLE_DATA_ROOT so no imported helper can reach live orchestration state.
+  process.env.PICKLE_DATA_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'ap162-01-charge-dataroot-'));
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf-8', stdio: 'pipe', timeout: 10_000 });
+  const id = 'ap16201c';
+  const sigFn = (wd) => computeScopedSourceTreeSignature(wd, path.join(sessionDir, 'scope.json'));
+  try {
+    // A ticket mid-lifecycle in Implement: research/plan already landed, and the phase
+    // writes no further markdown, so the artifact delta is 0 on every spawn below.
+    fs.mkdirSync(path.join(sessionDir, id), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, id, 'research_x.md'), '# r\n');
+    fs.writeFileSync(path.join(sessionDir, id, 'plan_x.md'), '# p\n');
+
+    const skipK = resolveWmwSkipK();
+    let r = null;
+    for (let i = 1; i <= skipK + 1; i++) {
+      fs.appendFileSync(path.join(repo, 'impl.ts'), 'export const v' + i + ' = ' + i + ';\n');
+      git('add', '-A');
+      git('commit', '-qm', 'implement ' + i, '--no-gpg-sign');
+      r = recordWorkerArtifactProgress(statePath, sessionDir, id, 0, {
+        k: 3, workingDir: repo, sourceSignatureFn: sigFn,
+      });
+      assert.equal(r.zeroProgressCount, 0, 'spawn ' + i + ' landed a real commit and must not be charged zero-progress');
+    }
+    assert.equal(r.fired, false, 'the observe breadcrumb never fires over a committing worker');
+    assert.ok(r.zeroProgressCount < skipK, 'a productive ticket never reaches the R-WSWA-3 auto-skip threshold');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER162-01 control: a worker that neither commits nor writes artifacts still reaches skip-K', async () => {
+  const { recordWorkerArtifactProgress, computeScopedSourceTreeSignature, resolveWmwSkipK } =
+    await import('../bin/mux-runner.js');
+  const { sessionDir, statePath } = setupSession('ap162-01-ctl-');
+  const repo = initSignatureRepo('ap162-01-ctl-work-');
+  // Isolation: sandbox PICKLE_DATA_ROOT so no imported helper can reach live orchestration state.
+  process.env.PICKLE_DATA_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'ap162-01-ctl-dataroot-'));
+  const id = 'ap16201x';
+  const sigFn = (wd) => computeScopedSourceTreeSignature(wd, path.join(sessionDir, 'scope.json'));
+  try {
+    fs.mkdirSync(path.join(sessionDir, id), { recursive: true });
+    const skipK = resolveWmwSkipK();
+    let r = null;
+    // Nothing changes between spawns: no commit, no artifact, static tree.
+    for (let i = 1; i <= skipK + 1; i++) {
+      r = recordWorkerArtifactProgress(statePath, sessionDir, id, 0, {
+        k: 3, workingDir: repo, sourceSignatureFn: sigFn,
+      });
+    }
+    assert.ok(
+      r.zeroProgressCount >= skipK,
+      'admitting the committed half must not disarm the auto-skip for a genuinely stuck worker',
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER162-01: an OUT-OF-SCOPE commit does not move the scoped signature', async () => {
+  const { computeScopedSourceTreeSignature } = await import('../bin/mux-runner.js');
+  const repo = initSignatureRepo('ap162-01-scope-');
+  // Isolation: sandbox PICKLE_DATA_ROOT so no imported helper can reach live orchestration state.
+  process.env.PICKLE_DATA_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'ap162-01-scope-dataroot-'));
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf-8', stdio: 'pipe', timeout: 10_000 });
+  const scopePath = path.join(repo, 'scope.json');
+  try {
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+    git('add', '-A');
+    git('commit', '-qm', 'seed src', '--no-gpg-sign');
+    fs.writeFileSync(scopePath, JSON.stringify({ allowed_paths: ['src/'] }));
+
+    const before = computeScopedSourceTreeSignature(repo, scopePath);
+    // A commit touching only paths OUTSIDE allowed_paths -- "HEAD moved" alone is never
+    // evidence, the same rule hasScopedIterationWindowCommit applies.
+    fs.mkdirSync(path.join(repo, 'prds'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'prds', 'peer.md'), '# peer\n');
+    git('add', '-A');
+    git('commit', '-qm', 'peer prd', '--no-gpg-sign');
+    assert.equal(computeScopedSourceTreeSignature(repo, scopePath), before, 'out-of-scope commit does NOT move it');
+
+    // ...and an IN-SCOPE commit does.
+    fs.appendFileSync(path.join(repo, 'src', 'a.ts'), 'export const b = 2;\n');
+    git('add', '-A');
+    git('commit', '-qm', 'in scope', '--no-gpg-sign');
+    assert.notEqual(computeScopedSourceTreeSignature(repo, scopePath), before, 'in-scope commit DOES move it');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
 });

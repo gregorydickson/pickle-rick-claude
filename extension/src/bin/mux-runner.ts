@@ -9719,13 +9719,19 @@ export function countWorkerArtifacts(
 }
 
 /**
- * AC-R-WMNP-1: digest of the working-tree source state so a worker that lands real
- * source work (new/grown files, changed diff) but writes no new lifecycle artifact
- * file still counts as progress. Combines `git status --porcelain -uall` (covers
- * untracked + staged + unstaged path set) with `git diff --numstat` (covers per-file
- * line churn on tracked files) into one comparable string, both built by the single
- * `gitSignatureProbes` argv shape. Returns `null` when git is unavailable or EITHER
- * probe fails to COMPLETE (L1) -- a half-signature from one successful probe would
+ * AC-R-WMNP-1: digest of the SOURCE STATE so a worker that lands real source work but
+ * writes no new lifecycle artifact file still counts as progress. Combines
+ * `git status --porcelain -uall` (untracked + staged + unstaged path set),
+ * `git diff --numstat` (per-file line churn on tracked files) and
+ * `git log -1 --format=%H` (the committed tip) into one comparable string, all three
+ * built by the single `gitSignatureProbes` argv shape.
+ *
+ * AP-EXT-ITER162-01: the third term is what makes this the SOURCE state rather than the
+ * WORKING-TREE state. The first two are HEAD-relative, so a worker that COMMITS its work
+ * -- the disciplined one -- leaves both empty and the digest byte-identical to the
+ * previous spawn's; committing was the one form of progress that read as no progress.
+ *
+ * Returns `null` when git is unavailable or ANY probe fails to COMPLETE (L1) -- a half-signature from one successful probe would
  * silently drop the other probe's signal and could read as a spurious change/no-change
  * against a prior COMPLETE signature. The caller's `?? prev` fallback then preserves
  * the prior complete signature instead of corrupting it. The completion test lives in
@@ -9735,15 +9741,14 @@ export function countWorkerArtifacts(
  */
 export function computeSourceTreeSignature(workingDir: string): string | null {
   try {
-    const { status, numstat } = gitSignatureProbes(workingDir, []);
-    return gitProbesToSignature(status, numstat);
+    return gitProbesToSignature(gitSignatureProbes(workingDir, []));
   } catch {
     return null;
   }
 }
 
 /**
- * AC-A3 (B-RRH): scoped working-tree signature. Identical contract to
+ * AC-A3 (B-RRH): scoped source-state signature. Identical contract to
  * `computeSourceTreeSignature` (null on git-unavailable / non-zero / ETIMEDOUT
  * EITHER probe, so the caller's `?? prev` preserves a prior COMPLETE signature)
  * but bounded to `scope.json:allowed_paths` (reusing the `getLatestCommitInScope`
@@ -9798,16 +9803,23 @@ function readScopeAllowedPathSpecsFromFile(scopeJsonPath?: string): string[] {
  *
  * `UNBOUNDED_READ_MAX_BUFFER` bounds the now-per-file enumeration; the overflow it
  * admits is read by the shared completion predicate in `gitProbesToSignature`.
+ *
+ * AP-EXT-ITER162-01: the `head` probe is the COMMITTED half of the same source state.
+ * `status` and `numstat` are both HEAD-RELATIVE, so committing is the one operation
+ * that moves work OUT of their output domain -- the pair reads a commit as the ERASURE
+ * of work rather than as work. It carries the SAME `spec`, so an out-of-scope commit
+ * does not move the signature, matching `hasScopedIterationWindowCommit`'s scoping rule.
  */
 function gitSignatureProbes(
   workingDir: string,
   pathSpecs: string[],
-): { status: ReturnType<typeof spawnSync>; numstat: ReturnType<typeof spawnSync> } {
+): { status: ReturnType<typeof spawnSync>; numstat: ReturnType<typeof spawnSync>; head: ReturnType<typeof spawnSync> } {
   const spec = pathSpecs.length > 0 ? ['--', ...pathSpecs] : [];
   const opts = { encoding: 'utf-8' as const, timeout: 10_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER };
   return {
     status: spawnSync('git', ['-C', workingDir, 'status', '--porcelain', '-uall', ...spec], opts),
     numstat: spawnSync('git', ['-C', workingDir, 'diff', '--numstat', ...spec], opts),
+    head: spawnSync('git', ['-C', workingDir, 'log', '-1', '--format=%H', ...spec], opts),
   };
 }
 
@@ -9822,17 +9834,29 @@ function gitSignatureProbes(
  * signature. The caller's `?? prev` fallback then preserves the prior complete
  * signature instead of comparing against a half-read one.
  *
- * The joiner is NUL, the one byte git can emit in NEITHER probe's output, so a
- * status half ending in a path cannot blur into the numstat half. Both signature
- * entry points now compose here: the scoped path previously joined on a SPACE,
- * which `status --porcelain` emits in every record.
+ * The joiner is NUL, the one byte git can emit in NO probe's output, so a status
+ * half ending in a path cannot blur into the numstat half. Both signature entry
+ * points now compose here: the scoped path previously joined on a SPACE, which
+ * `status --porcelain` emits in every record. It is spelled `'\u0000'` rather than
+ * as a raw byte: an invisible control character in source defeats grep, diff review
+ * and every heredoc-based edit tool that touches this line.
+ *
+ * AP-EXT-ITER162-01: the probes fold by ITERATING one list under the ONE completion
+ * predicate instead of naming each half in a widening boolean, so admitting the
+ * committed half adds neither a same-theme guard (Override 1.6) nor a branch.
+ * All-or-nothing is unchanged and now spans three probes -- a half-signature would
+ * silently drop a signal, and the caller's `?? prev` fallback preserves the prior
+ * COMPLETE signature rather than comparing against a partial one.
  */
 function gitProbesToSignature(
-  status: ReturnType<typeof spawnSync>,
-  numstat: ReturnType<typeof spawnSync>,
+  probes: ReturnType<typeof gitSignatureProbes>,
 ): string | null {
-  if (!enumerationCompleted(status) || !enumerationCompleted(numstat)) return null;
-  return `${String(status.stdout ?? '')} ${String(numstat.stdout ?? '')}`;
+  const parts: string[] = [];
+  for (const probe of [probes.status, probes.numstat, probes.head]) {
+    if (!enumerationCompleted(probe)) return null;
+    parts.push(String(probe.stdout ?? ''));
+  }
+  return parts.join('\u0000');
 }
 
 export function computeScopedSourceTreeSignature(
@@ -9842,8 +9866,7 @@ export function computeScopedSourceTreeSignature(
   const pathSpecs = readScopeAllowedPathSpecsFromFile(scopeJsonPath);
   if (pathSpecs.length === 0) return computeSourceTreeSignature(workingDir);
   try {
-    const { status, numstat } = gitSignatureProbes(workingDir, pathSpecs);
-    return gitProbesToSignature(status, numstat);
+    return gitProbesToSignature(gitSignatureProbes(workingDir, pathSpecs));
   } catch {
     return null;
   }
