@@ -1070,3 +1070,50 @@ describe('trap-door catalog anchor scope (repo)', () => {
     );
   });
 });
+
+/**
+ * AP-EXT-ITER154-01 — the shared 64 MB ceiling stays collapsed, pinned BY VALUE.
+ *
+ * `src/services/CLAUDE.md`'s AP-EXT-ITER8-01 entry says of `UNBOUNDED_READ_MAX_BUFFER`:
+ * "do NOT re-declare a local copy", and its PATTERN_SHAPE asserts the literal appears in
+ * `src/` only in `types/index.ts` plus one named holdout. Nothing executed that clause.
+ * The seven collapsed forks are pinned above ONLY as `scopedAnchorAllowlist` entries keyed
+ * on their old IDENTIFIERS, so a fork under a NEW name is invisible to every wire: the
+ * shell arm reads `INVARIANT:` spans, this file's sweep resolves identifiers, and
+ * `64 * 1024 * 1024` is neither. `REPLAY_GIT_MAX_BUFFER` re-forked the ceiling in
+ * `bin/did-we-count-replay.ts` on 2026-08-24, seventeen days after the collapse landed, and
+ * the catalog read green throughout.
+ *
+ * Keying on the VALUE is what needs no list of names. The assertion is an EXACT set, not a
+ * floor: it reddens when a new file forks the literal AND when a listed holdout is finally
+ * collapsed, so the entry cannot rot green in either direction.
+ */
+describe('AP-EXT-ITER154-01 shared 64 MB read ceiling (repo)', () => {
+  // `src/bin/audit-ticket-bundle.ts` is the one un-collapsed pre-existing holdout named by
+  // the catalog entry. It is NOT an escape hatch: collapsing it must red this test so the
+  // entry and this set are updated together.
+  const permitted = ['extension/src/types/index.ts', 'extension/src/bin/audit-ticket-bundle.ts'];
+  const literal = /64\s*\*\s*1024\s*\*\s*1024/;
+
+  test('the literal is declared only where the catalog says it is', () => {
+    const sources = readSourceFiles();
+    if (!sources.ok) assert.fail(sources.reason);
+
+    const forks = [...sources.files]
+      .filter(([, content]) => literal.test(content))
+      .map(([file]) => file)
+      .sort();
+
+    assert.deepEqual(
+      forks,
+      [...permitted].sort(),
+      'a `64 * 1024 * 1024` literal appears outside the files src/services/CLAUDE.md permits. Import UNBOUNDED_READ_MAX_BUFFER from types/index.js instead of re-declaring the ceiling; if a permitted holdout was collapsed, drop it from `permitted` and from the catalog entry in the same commit',
+    );
+  });
+
+  test('the sweep can see a re-declared ceiling (negative control)', () => {
+    const planted = new Map([['extension/src/bin/planted.ts', 'const X = 64 * 1024 * 1024;\n']]);
+    const forks = [...planted].filter(([, c]) => literal.test(c)).map(([f]) => f);
+    assert.deepEqual(forks, ['extension/src/bin/planted.ts']);
+  });
+});

@@ -19,6 +19,7 @@ import { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 import ts from 'typescript';
 import { CORPUS, DETECTABLE_CEILING, type CorpusBucket, type CorpusEntry } from '../services/did-we-count-corpus.js';
+import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 
 // `eslint-plugin-pickle/index.js` sits OUTSIDE this project's `rootDir: "src"` — a static
 // `import` pulls it into the tsc program and collides its emitted output with its own
@@ -79,7 +80,6 @@ export function formatReplayReport(results: ReplayEntryResult[]): string {
 // with the `typescript-eslint` parser (syntax-only — none of these four rules need type
 // information). "Fires" means the rule reported >=1 message on that isolated snippet.
 
-const REPLAY_GIT_MAX_BUFFER = 64 * 1024 * 1024;
 const REPLAY_GIT_TIMEOUT_MS = 10_000;
 
 /**
@@ -105,7 +105,7 @@ function readFileAtRef(repoRoot: string, ref: string, relPath: string): string {
     cwd: repoRoot,
     encoding: 'utf-8',
     timeout: REPLAY_GIT_TIMEOUT_MS,
-    maxBuffer: REPLAY_GIT_MAX_BUFFER,
+    maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
   });
 }
 

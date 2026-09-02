@@ -19,6 +19,7 @@ import { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 import ts from 'typescript';
 import { CORPUS, DETECTABLE_CEILING } from '../services/did-we-count-corpus.js';
+import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 // `eslint-plugin-pickle/index.js` sits OUTSIDE this project's `rootDir: "src"` — a static
 // `import` pulls it into the tsc program and collides its emitted output with its own
 // input (`TS5055`). Loading it via a non-literal `import()` specifier keeps it out of the
@@ -64,7 +65,6 @@ export function formatReplayReport(results) {
 // and runs ONLY the one rule that targets that defect class through `eslint`'s `Linter`
 // with the `typescript-eslint` parser (syntax-only — none of these four rules need type
 // information). "Fires" means the rule reported >=1 message on that isolated snippet.
-const REPLAY_GIT_MAX_BUFFER = 64 * 1024 * 1024;
 const REPLAY_GIT_TIMEOUT_MS = 10_000;
 /**
  * The repo root this module lives in, derived from its own location.
@@ -88,7 +88,7 @@ function readFileAtRef(repoRoot, ref, relPath) {
         cwd: repoRoot,
         encoding: 'utf-8',
         timeout: REPLAY_GIT_TIMEOUT_MS,
-        maxBuffer: REPLAY_GIT_MAX_BUFFER,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
 }
 /**
