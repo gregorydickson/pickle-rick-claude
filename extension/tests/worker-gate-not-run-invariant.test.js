@@ -90,13 +90,35 @@ function readTicketStatus(sessionDir, ticketId) {
   return match ? match[1] : null;
 }
 
-/** A shim that answers every `npx`/`npm` invocation with the given exit code, instantly. */
-function writeShim(binDir, name, exitCode = 0) {
+/**
+ * A shim that answers every `npx`/`npm` invocation with the given exit code, instantly.
+ *
+ * AP-EXT-ITER157-03: `stdout` is what a tier shim EMITS, and for the `npm` shim it is
+ * load-bearing rather than cosmetic — the gate's test dimension now reads a did-it-RUN
+ * proof out of the tier's own output, so a silent exit-0 shim stands for a tier that
+ * reached NOTHING, not for a tier that passed. Written with `write`+callback rather than
+ * a bare `write`+`exit`, whose output truncates at the pipe buffer.
+ */
+function writeShim(binDir, name, exitCode = 0, stdout = '') {
   fs.mkdirSync(binDir, { recursive: true });
   const shimPath = path.join(binDir, name);
-  fs.writeFileSync(shimPath, `#!/usr/bin/env node\nprocess.exit(${exitCode});\n`);
+  const body = stdout
+    ? `process.stdout.write(${JSON.stringify(stdout)}, () => process.exit(${exitCode}));\n`
+    : `process.exit(${exitCode});\n`;
+  fs.writeFileSync(shimPath, `#!/usr/bin/env node\n${body}`);
   fs.chmodSync(shimPath, 0o755);
 }
+
+/** What `npm run test:fast` prints when the tier genuinely ran and passed. */
+const TIER_RAN_STDOUT = '\u2139 tests 9099\n\u2139 pass 9099\n\u2139 fail 0\n';
+
+/**
+ * What `npm run test:fast` prints when the tier selected NOTHING. Measured on this tree:
+ * `bin/test-runner.js --tier fast --manifest <empty> --manifest-mode include` exits 0
+ * printing only `[no files for tier fast]`, and the composite `test:fast` script then
+ * reports both halves as `_exit=0` and exits 0 itself.
+ */
+const TIER_REACHED_NOTHING_STDOUT = 'test:fast halves measured: parallel_exit=0 serial_exit=0\n';
 
 async function withPathPrefix(prefix, fn) {
   const prev = process.env.PATH;
@@ -130,7 +152,7 @@ function initOnRepoFixture(root) {
  * Drive `runWorkerGate` over the on-repo fixture with eslint/tsc/test shims that all
  * pass, so the ONLY thing that varies between rows is whether the tier ran the tests.
  */
-async function runOnRepoGate(ticketTier) {
+async function runOnRepoGate(ticketTier, tierStdout = TIER_RAN_STDOUT) {
   const root = makeTmp();
   const ticketId = 'bbb22222';
   const preWorkerHead = initOnRepoFixture(root);
@@ -138,7 +160,7 @@ async function runOnRepoGate(ticketTier) {
   writeTicket(root, ticketId, { complexity_tier: ticketTier });
   const shimDir = path.join(root, 'shim');
   writeShim(shimDir, 'npx');
-  writeShim(shimDir, 'npm');
+  writeShim(shimDir, 'npm', 0, tierStdout);
   const result = await withPathPrefix(shimDir, () => runWorkerGate(['extension/src/demo/one.ts'], {
     workingDir: root,
     ticketId,
@@ -319,6 +341,43 @@ test('AC-1 comparator: a tier whose tests genuinely run reports green, not not_r
   const { result, testsVerdict } = await runOnRepoGate('medium');
   assert.equal(result.ok, true);
   assert.equal(testsVerdict, 'green', 'a test phase that ran and passed is still recorded green');
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER157-03 — an exit code is not a measurement.
+//
+// The comparator above is only a comparator because this case exists: it varies ONLY the
+// tier's output, holding the exit code at 0, and the two must not settle on the same
+// disposition. Pre-fix they did — `settle(result.ok ? 'green' : 'red')` read a tier that
+// selected no files as a verified pass and wrote `worker_gate_tests_verdict: green` into
+// the ticket, which `readTicketWorkerGateTestsVerdict` then trusts on every later
+// Done-flip path without re-running the gate.
+//
+// This drives the real seam end to end (runWorkerGate -> runWorkerGateChecks ->
+// persistWorkerGateVerdict -> ticket frontmatter) rather than the predicate in isolation,
+// because the defect was never in the scrape — it was in what the verdict was derived FROM.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER157-03: an exit-0 tier that ran NO tests is not_run, never green', async () => {
+  const { result, testsVerdict } = await runOnRepoGate('medium', TIER_REACHED_NOTHING_STDOUT);
+  assert.equal(
+    testsVerdict,
+    'not_run',
+    'a tier that exited 0 having executed nothing must not be recorded as a verified pass',
+  );
+  // No-stopping-gates: the unmeasured tier is recorded honestly and the local action is
+  // NOT blocked. `testsOk` stays `verdict !== 'red'`, so this must not fail the gate.
+  assert.equal(result.ok, true, 'an unmeasured tier must not fail the gate');
+});
+
+test('AP-EXT-ITER157-03: the two dispositions are distinguishable on output alone', async () => {
+  const ran = await runOnRepoGate('medium', TIER_RAN_STDOUT);
+  const reachedNothing = await runOnRepoGate('medium', TIER_REACHED_NOTHING_STDOUT);
+  assert.notEqual(
+    ran.testsVerdict,
+    reachedNothing.testsVerdict,
+    'same exit code, same fixture, different measurement — the verdicts must differ',
+  );
 });
 
 // ---------------------------------------------------------------------------

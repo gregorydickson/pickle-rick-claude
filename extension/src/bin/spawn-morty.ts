@@ -30,7 +30,7 @@ import {
   type TicketComplexityTier,
 } from '../services/pickle-utils.js';
 import { spawn, execFileSync } from 'child_process';
-import { PromiseTokens, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD, type ActivityLogEntry, type Backend, type BackendResolutionSource, type CodegraphContextSkipReason, type CodegraphSettings, type LastToolErrorState, type PickleSettings, type State } from '../types/index.js';
+import { PromiseTokens, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD, reportedTestResults, type ActivityLogEntry, type Backend, type BackendResolutionSource, type CodegraphContextSkipReason, type CodegraphSettings, type LastToolErrorState, type PickleSettings, type State } from '../types/index.js';
 import { CodegraphService, type CodegraphEmitEvent } from '../services/codegraph-service.js';
 import { isRecord } from '../lib/is-record.js';
 import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths, resetToSha, updateTicketFrontmatter, updateTicketStatus } from '../services/git-utils.js';
@@ -1651,6 +1651,14 @@ export async function runWorkerGateTestCommand(
   stallThresholdMs: number = Math.min(workerTestGateTimeoutMs, resolveTierStallThresholdMs()),
 ): Promise<{
   ok: boolean;
+  /**
+   * AP-EXT-ITER157-03: did this tier PROVE it executed at least one test? `ok` alone
+   * cannot carry it — the exact asymmetry the lint dimension already models with
+   * `WorkerGateCheckPhase.ran`. `bin/test-runner.js --tier <t>` exits 0 printing only
+   * `[no files for tier <t>]` on an empty selection, so a tier that reached nothing and a
+   * tier that ran clean are both `ok: true` here (measured against the compiled mirror).
+   */
+  measured: boolean;
   failures: WorkerGateTestFailure[];
   gatePhase: WorkerGatePhase;
 }> {
@@ -1678,9 +1686,30 @@ export async function runWorkerGateTestCommand(
       : parseWorkerGateTestFailures(`${testResult.stdout}\n${testResult.stderr}`, extensionDir);
   return {
     ok: testResult.ok,
+    measured: reportedTestResults(testResult.stdout, testResult.stderr),
     failures,
     gatePhase: scriptName,
   };
+}
+
+/**
+ * AP-EXT-ITER157-03: the ONE mapping from a settled tier run to the persisted
+ * three-valued `worker_gate_tests_verdict`, shared by both tier call sites below so the
+ * pair cannot drift. It replaces two copies of `result.ok ? 'green' : 'red'`, which read a
+ * tier that exited 0 having executed NOTHING as a verified green and wrote that claim into
+ * the ticket frontmatter, where `readTicketWorkerGateTestsVerdict` trusts it without
+ * re-running the gate.
+ *
+ * `not_run` is the state this repo already declared for exactly this fact (B-OFFREPO
+ * AC-OFFREPO-1b: "it previously wrote `green` for a legitimately-skipped phase, which is a
+ * claim of verification over a phase that never executed"), so nothing new is invented and
+ * no gate is made to stop: `testsOk` is `verdict !== 'red'`, so an unmeasured tier still
+ * does not fail the gate — `guardCompletionCommitBeforeDone` routes `not_run` down the
+ * gate-exempt path that records a residual instead of laundering a green.
+ */
+function tierRunVerdict(result: { ok: boolean; measured: boolean }): WorkerGateVerdict {
+  if (!result.ok) return 'red';
+  return result.measured ? 'green' : 'not_run';
 }
 
 function collectChangedFilesForLintGate(workingDir: string, preWorkerHead: string | null): string[] {
@@ -1845,7 +1874,7 @@ async function runWorkerGateChecks(args: {
     gateFailures = fastTierResult.failures;
   }
   if (!fastTierResult.ok || args.workerGateTier !== 'full') {
-    return settle(fastTierResult.ok ? 'green' : 'red', fastTierResult.failures);
+    return settle(tierRunVerdict(fastTierResult), fastTierResult.failures);
   }
 
   const integrationTierResult = await runWorkerGateTestCommand('test:integration', args.extensionDir, args.workerTestGateTimeoutMs);
@@ -1853,7 +1882,7 @@ async function runWorkerGateChecks(args: {
     gatePhase = integrationTierResult.gatePhase;
     gateFailures = integrationTierResult.failures;
   }
-  return settle(integrationTierResult.ok ? 'green' : 'red', integrationTierResult.failures);
+  return settle(tierRunVerdict(integrationTierResult), integrationTierResult.failures);
 }
 
 function shouldRetryWorkerGate(lintOk: boolean, tscOk: boolean, lintTargetCount: number): boolean {

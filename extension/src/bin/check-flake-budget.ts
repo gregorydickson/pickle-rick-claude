@@ -2,6 +2,9 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import path, { basename } from 'node:path';
+// AP-EXT-ITER157-01/-02/-03: the did-it-RUN proof for a tier spawn is ONE predicate shared
+// with the two per-ticket gates that spawn the same command, not a per-site scrape.
+import { measuredTestCount, reportedTestResults } from '../types/index.js';
 
 const DEFAULT_RUNS = 5;
 const DEFAULT_FAIL_BUDGET = 2;
@@ -160,32 +163,6 @@ function assertInvocationTargetExists(cwd: string, invocation: RunInvocation): v
   if (!existsSync(resolvedTarget)) {
     throw new Error(`Flake-budget target not found: ${invocation.targetPath}`);
   }
-}
-
-// Both built-in node:test reporters close a run with the same summary line and differ only in
-// the leading sigil — spec `ℹ tests 16`, TAP `# tests 16` (measured on node 22 and 24) — so the
-// pair is node's whole reporter set, not a list one member from the next hole.
-const TEST_SUMMARY_COUNT_RE = /^(?:ℹ|#)[ \t]+tests[ \t]+(\d+)[ \t]*$/m;
-const TEST_FAILURE_MARKER_RE = /(^✖\s)|(^not ok\s)/m;
-
-/** How many tests a half PROVED it ran; 0 when it emitted no node:test summary at all. */
-function measuredTestCount(stdout: string, stderr: string): number {
-  const match = TEST_SUMMARY_COUNT_RE.exec(`${stdout}\n${stderr}`);
-  return match ? Number.parseInt(match[1], 10) : 0;
-}
-
-/**
- * Did this half prove it ran tests? Either proof is accepted: a summary counting at least one
- * test, or a failure marker (a REPORTED failure is a test that ran, and a half can crash after
- * printing failures but before printing its summary).
- *
- * `tests 0` — and a half that printed no summary at all — is NOT proof. That is the
- * "reached nothing" case `scripts/audit-did-we-count.sh:requireCounted` already refuses by
- * name, and it is reachable here: `bin/test-runner.js --tier fast …` exits 0 on an empty
- * selection, printing only `[no files for tier fast]` (measured).
- */
-function reportedTestResults(stdout: string, stderr: string): boolean {
-  return measuredTestCount(stdout, stderr) > 0 || TEST_FAILURE_MARKER_RE.test(`${stdout}\n${stderr}`);
 }
 
 // R-FBTN/WS-D: node --test names each failure as `✖ <name> (…ms)` or TAP `not ok N - <name>`.

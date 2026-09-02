@@ -336,6 +336,42 @@ export function enumerationCompleted(result: { status: number | null; error?: Er
   return (result.status ?? 1) === 0 && !result.error;
 }
 
+// Both built-in node:test reporters close a run with the same summary line and differ only in
+// the leading sigil — spec `ℹ tests 16`, TAP `# tests 16` (measured on node 22 and 24) — so the
+// pair is node's whole reporter set, not a list one member from the next hole.
+const TEST_SUMMARY_COUNT_RE = /^(?:ℹ|#)[ \t]+tests[ \t]+(\d+)[ \t]*$/m;
+const TEST_FAILURE_MARKER_RE = /(^✖\s)|(^not ok\s)/m;
+
+/** How many tests a run PROVED it executed; 0 when it emitted no node:test summary at all. */
+export function measuredTestCount(stdout: string, stderr: string): number {
+  const match = TEST_SUMMARY_COUNT_RE.exec(`${stdout}\n${stderr}`);
+  return match ? Number.parseInt(match[1], 10) : 0;
+}
+
+/**
+ * Did this run prove it executed tests? The did-it-RUN axis for a test-tier spawn, and the
+ * sibling of `enumerationCompleted` above: that one reads a truncated enumeration, this one
+ * reads an EMPTY one. Either proof is accepted: a summary counting at least one test, or a
+ * failure marker (a REPORTED failure is a test that ran, and a run can crash after printing
+ * failures but before printing its summary).
+ *
+ * `tests 0` — and a run that printed no summary at all — is NOT proof. That is the
+ * "reached nothing" case `scripts/audit-did-we-count.sh:requireCounted` already refuses by
+ * name, and it is reachable from every tier spawn in this repo: `bin/test-runner.js --tier
+ * fast …` exits 0 on an empty selection, printing only `[no files for tier fast]` (measured),
+ * and `npm run test:fast` then reports `parallel_exit=0 serial_exit=0` and exits 0 too.
+ *
+ * Declared HERE rather than beside any one caller because the family has already regressed
+ * once per site: `bin/check-flake-budget.ts` closed the release gate's only fast-tier run
+ * (AP-EXT-ITER157-01) while the two per-ticket gates that spawn the SAME command
+ * (`spawn-morty.ts:runWorkerGateTestCommand`, `mux-runner.ts:runBetweenTicketFastTests`)
+ * stayed blind. A caller that hand-writes its own summary scrape instead of calling this is
+ * the regression.
+ */
+export function reportedTestResults(stdout: string, stderr: string): boolean {
+  return measuredTestCount(stdout, stderr) > 0 || TEST_FAILURE_MARKER_RE.test(`${stdout}\n${stderr}`);
+}
+
 /**
  * Runtime-iterable membership list for `Backend`, and the SINGLE source of truth for it:
  * `Backend` derives from this array (`typeof BACKENDS[number]`), mirroring the

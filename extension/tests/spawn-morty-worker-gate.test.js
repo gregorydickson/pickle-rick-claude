@@ -995,7 +995,11 @@ test('runWorkerGate: R-WGFR AC1b — a passing gate persists a green worker_gate
     const shimDir = path.join(root, 'bin');
     const logPath = path.join(root, 'gate-log.json');
     writeCommandShim(shimDir, 'npx', logPath);
-    writeCommandShim(shimDir, 'npm', logPath);
+    // AP-EXT-ITER157-03: the tier shim must EMIT a node:test summary. This case asserts a
+    // green tests verdict for a "genuinely clean gate (including tests)", and the gate now
+    // requires the tier to prove it executed something — a silent exit-0 shim stands for a
+    // tier that reached NOTHING, which is `not_run`, not `green`.
+    writeCommandShim(shimDir, 'npm', logPath, { stdout: '\u2139 tests 9099\n\u2139 pass 9099\n\u2139 fail 0\n' });
 
     const result = await withPathPrefix(shimDir, () => runWorkerGate([
       'extension/src/demo/one.ts',
