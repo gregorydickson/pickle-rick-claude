@@ -223,9 +223,57 @@ test('B2: resume re-spawns ≤1 worker for the SAME ticket/phase with iteration 
   assert.equal(result.consecutiveRateLimits, 0);
 });
 
+/**
+ * Every `logActivity(...)` object-literal argument in `src` that names `<eventName>`,
+ * brace-matched so each is read whole. Discovery is by BRACE MATCH, never by a
+ * `logActivity({ event: '<name>'` text needle: that needle is formatting-sensitive,
+ * so reflowing one emitter across lines silently drops it from coverage (measured).
+ * Scoping to the literal is the point: a span assertion joining the event name to a
+ * field name is satisfied by any later occurrence of that field anywhere in the file.
+ */
+function activityEmitterLiterals(eventName) {
+  const CALL = 'logActivity(';
+  const carriesEvent = new RegExp(`event:\\s*'${eventName}'`);
+  const literals = [];
+  for (let from = 0; ; ) {
+    const at = src.indexOf(CALL, from);
+    if (at === -1) break;
+    const open = at + CALL.length;
+    from = open;
+    if (src[open] !== '{') continue; // not an object-literal argument
+    let depth = 0;
+    let end = -1;
+    for (let i = open; i < src.length; i += 1) {
+      if (src[i] === '{') depth += 1;
+      else if (src[i] === '}' && (depth -= 1) === 0) { end = i; break; }
+    }
+    assert.notEqual(end, -1, `logActivity object literal at offset ${at} must be closed`);
+    const literal = src.slice(open, end + 1);
+    if (carriesEvent.test(literal)) literals.push(literal);
+    from = end;
+  }
+  assert.ok(literals.length > 0, `${eventName} must have at least one logActivity emitter`);
+  return literals;
+}
+
+/** ONE check applied to EVERY emitter of the event -- not one assert per emitter. */
+function assertEveryEmitterCarries(eventName, field) {
+  const literals = activityEmitterLiterals(eventName);
+  literals.forEach((literal, i) => {
+    assert.match(literal, new RegExp(`\\b${field}\\b`),
+      `${eventName} emitter ${i + 1}/${literals.length} must carry ${field}`);
+  });
+}
+
 test('B2: rate_limit_resume carries parked_minutes (source emitter check)', () => {
-  assert.match(src, /event: 'rate_limit_resume'[\s\S]*?parked_minutes/);
-  assert.match(src, /event: 'rate_limit_wait'[\s\S]*?reset_at/);
+  // Scoped to each emitter's own object literal, and applied to EVERY emitter of the
+  // event. The prior form `/event: 'rate_limit_wait'[\s\S]*?reset_at/` spanned the
+  // whole file: `reset_at` occurs 21 times in mux-runner.ts, so it stayed GREEN with
+  // the field stripped from BOTH emitters (measured). Its neighbour only looked sound
+  // because `parked_minutes` happens to occur nowhere else -- and even it saw only the
+  // FIRST of the two emitters (also measured).
+  assertEveryEmitterCarries('rate_limit_resume', 'parked_minutes');
+  assertEveryEmitterCarries('rate_limit_wait', 'reset_at');
 });
 
 // ---------------------------------------------------------------------------
