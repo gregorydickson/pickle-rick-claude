@@ -375,6 +375,14 @@ const anchorAbsenceAllowlist = new Map([
   ['extension/src/services/CLAUDE.md::GIT_LS_FILES_MAX_BUFFER', 'negative: former per-file fork, collapsed into UNBOUNDED_READ_MAX_BUFFER'],
   ['extension/src/services/CLAUDE.md::GIT_UNBOUNDED_MAX_BUFFER', 'negative: former per-file fork, collapsed into UNBOUNDED_READ_MAX_BUFFER'],
   ['extension/src/services/CLAUDE.md::ARCHIVE_GIT_MAX_BUFFER', 'negative: former per-file fork, collapsed into UNBOUNDED_READ_MAX_BUFFER'],
+  // Surfaced the moment the corpus stopped resolving a name off the text that denies it. Each is a
+  // token the extractor lifts out of a MULTI-token shape span, where the span as a whole is the
+  // claim and the fragment is not a symbol — the same class as `bexecFile` above.
+  ['extension/CLAUDE.md::measureLlm', 'artifact: alternation prefix inside a PATTERN_SHAPE regex, not a symbol'],
+  ['extension/CLAUDE.md::stolenIno', 'negative: fragment of the must-not-exist comparison the entry forbids'],
+  ['extension/CLAUDE.md::parseFirstShellWord', 'negative: entry asserts zero occurrences in src/hooks/'],
+  ['extension/src/hooks/CLAUDE.md::parseFirstShellWord', 'negative: entry says an anchor naming it is stale and matches nothing'],
+  ['extension/src/bin/CLAUDE.md::runIt', 'meta: illustrative snippet of an unparseable method shape, not a symbol'],
 ]);
 
 /**
@@ -386,12 +394,94 @@ const anchorAbsenceAllowlist = new Map([
  *    literal, so a corpus containing this file resolves all of them — and, worse, would resolve
  *    any dead symbol the moment someone allowlisted it, making the whole sweep vacuous.
  *
- * Trap 1 is excluded twice over — the corpus glob admits no markdown at all, and the basename
- * filter below is the backstop that keeps re-adding `'*.md'` from making the sweep vacuous rather
- * than merely wrong. Trap 2 is excluded by path here. Nothing else in the tree may enumerate
- * absent tokens.
+ * Trap 1 is excluded by kind: the corpus glob admits no markdown, and the basename filter is the
+ * backstop that keeps re-adding `'*.md'` from making the sweep vacuous rather than merely wrong.
+ *
+ * Trap 2 USED to be excluded by PATH, and a path list is the incomplete-set shape — it named this
+ * one file and was blind to every other file that spells a name in order to assert the name is
+ * GONE. Measured on this tree, three more such channels existed (a deletion-asserting hooks test,
+ * a did-we-count fixture, an integration test pinning a removed comparison), so the next member
+ * was already overdue. The rule that needs no list is not WHICH FILE answers but WHICH OCCURRENCE
+ * — see `buildAnchorCorpus`. That subsumes this exclusion exactly: the allowlist enumerates its
+ * tokens as string literals, so under the spell/use rule this file USES none of them and cannot
+ * resolve any of them, while it keeps resolving the symbols it genuinely declares. Allowlisting a
+ * name can therefore no longer be the act that blinds this sweep to it.
  */
-const anchorCorpusExclusions = new Set(['extension/tests/trap-door-conformance.test.js']);
+
+/** Whole-word tokenizer for the corpus index — the substring resolve is the bug it replaces. */
+const CORPUS_WORD_RE = /[A-Za-z_$][A-Za-z0-9_$]*/g;
+
+// The two SPELL media, stripped line-locally. Both are deliberately the same rule, and the same
+// names, as the strippers in `extension/scripts/audit-trap-door-enforcement.sh`: the two arms
+// cannot share a binding (one is a shell heredoc), so what they share is one rule stated
+// identically. A second, subtly-wider rule here is the divergence this fix exists to remove.
+//
+// Line-local on purpose: every decision comes from ONE line and discards nothing beyond it, so
+// neither a block-comment opener nor an unterminated quote can swallow the rest of the file.
+//
+// Residual, stated and measured: a symbol whose ONLY occurrence sits on a line beginning with one
+// of the three comment markers reads comment-only, and an odd quote can over-strip its own line.
+// The first moves a name into the ADVISORY tier, which never gates; on this tree the second set is
+// empty. Both residuals cost recall, never a false red.
+function nonCommentText(content) {
+  return content.split('\n').filter((line) => {
+    const t = line.trimStart();
+    return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+  }).join('\n');
+}
+
+// Deliberately NOT applied to JSON, where a quoted key IS the declaration: JSON has no unquoted
+// identifier space, so stripping literals there deletes the whole file and reports every
+// JSON-declared name as unused.
+function nonLiteralText(content) {
+  return content
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/'(?:\\.|[^'\\])*'/g, "''")
+        .replace(/"(?:\\.|[^"\\])*"/g, '""')
+        .replace(/`(?:\\.|[^`\\])*`/g, '``')
+    )
+    .join('\n');
+}
+
+/**
+ * ONE indexing routine, shared by the repo sweep and every fixture below, so a fixture can never
+ * assert a rule the repo sweep does not run.
+ *
+ * `words` is every name in any medium; `codeWords` drops comment text; `usedInFiles`/`spelledInFiles`
+ * carry the FILE cardinality the third tier's soundness clause needs.
+ */
+function buildSymbolIndex(sources) {
+  const words = new Set();
+  const codeWords = new Set();
+  const spelledInFiles = new Map();
+  const usedInFiles = new Map();
+
+  for (const { file, text } of sources) {
+    const commentFree = nonCommentText(text);
+    const useText = file.endsWith('.json') ? commentFree : nonLiteralText(commentFree);
+    const spelledHere = new Set();
+    const usedHere = new Set();
+
+    for (const word of text.matchAll(CORPUS_WORD_RE)) {
+      words.add(word[0]);
+      spelledHere.add(word[0]);
+    }
+    for (const word of commentFree.matchAll(CORPUS_WORD_RE)) codeWords.add(word[0]);
+    for (const word of useText.matchAll(CORPUS_WORD_RE)) usedHere.add(word[0]);
+
+    for (const word of spelledHere) spelledInFiles.set(word, (spelledInFiles.get(word) ?? 0) + 1);
+    for (const word of usedHere) usedInFiles.set(word, (usedInFiles.get(word) ?? 0) + 1);
+  }
+
+  return { words, codeWords, spelledInFiles, usedInFiles };
+}
+
+/** Fixture shorthand: index a single synthetic source file under the same rule as the repo sweep. */
+function indexSource(text, file = 'fixture.ts') {
+  return buildSymbolIndex([{ file, text }]);
+}
 
 /** Finite ceiling on every git spawn this sweep makes — an unbounded spawn can hang the tier. */
 const ANCHOR_GIT_TIMEOUT_MS = 30000;
@@ -408,6 +498,26 @@ const ANCHOR_GIT_TIMEOUT_MS = 30000;
  * `shouldExitMainLoop` resolved solely off `extension/REFACTOR_FEASIBILITY.md`, a pre-deletion
  * feasibility table, which silently exempted it from the allowlist and from the `no stale allowlist
  * entries` re-introduction alarm — while its named sibling in the same clause was covered by both.
+ *
+ * NEITHER IS A COMMENT NOR A STRING LITERAL. Markdown is only the wholesale case of one rule: a
+ * file answers "does this identifier still EXIST as code" with a name it USES, never with one it
+ * merely SPELLS. Comment text and string/regex literals spell; everything else uses. This is
+ * DELIBERATELY the same rule, and the same three tiers, as the INVARIANT-liveness arm of
+ * `extension/scripts/audit-trap-door-enforcement.sh`. The two wires read ONE contract off the same
+ * catalogs, and this one is the only reader of PATTERN_SHAPE clauses, so a second, subtly-weaker
+ * rule here is the divergence the root CLAUDE.md's subtract-before-add governance exists to
+ * prevent — it was measured as exactly that: 7 dead anchors read green here, none of them visible
+ * to the shell arm because none sits in an `INVARIANT:` span.
+ *
+ * The corpus is indexed by WHOLE WORD, never by substring. A raw `.includes(token)` resolved two
+ * dead anchors off longer live identifiers that merely CONTAIN them (a regex-fragment prefix in
+ * `extension/CLAUDE.md`, and a singular spelling of a plural helper in `src/services/CLAUDE.md`) —
+ * an anchor whose symbol is a prefix of a live one read live forever.
+ *
+ * THIS FILE IS IN THE CORPUS, so the two names are described here and never written: spelling a
+ * dead identifier as a bare token REVIVES it into the advisory tier and defuses the very anchor
+ * that names it. Measured while writing this fix — the first draft of this paragraph spelled both
+ * and dropped both from the gate.
  */
 function buildAnchorCorpus(cwd = repoRoot) {
   let listing;
@@ -430,23 +540,22 @@ function buildAnchorCorpus(cwd = repoRoot) {
   const files = listing
     .split('\0')
     .filter(Boolean)
-    .filter(file => path.basename(file) !== 'CLAUDE.md')
-    .filter(file => !anchorCorpusExclusions.has(file));
+    .filter(file => path.basename(file) !== 'CLAUDE.md');
   if (files.length === 0) {
     return { ok: false, reason: 'git ls-files returned zero files — corpus would match nothing' };
   }
 
-  const parts = [];
+  const sources = [];
   for (const file of files) {
     try {
-      parts.push(fs.readFileSync(path.join(cwd, file), 'utf8'));
+      sources.push({ file, text: fs.readFileSync(path.join(cwd, file), 'utf8') });
     } catch {
       // A tracked-but-unreadable path (submodule gitlink, deleted worktree entry) is not a
       // corpus failure; the file-count assertion below still proves the sweep ran.
     }
   }
 
-  return { ok: true, corpus: parts.join('\n'), fileCount: files.length };
+  return { ok: true, index: buildSymbolIndex(sources), fileCount: files.length };
 }
 
 /** Backticked identifiers on INVARIANT:/PATTERN_SHAPE lines — the anchors that make claims. */
@@ -469,8 +578,47 @@ function collectAnchorTokens(catalog, content) {
   return found;
 }
 
-function findDeadAnchors(tokens, corpus) {
-  return tokens.filter(entry => !corpus.includes(entry.token));
+/**
+ * The three tiers, in the shell arm's order and with its verdicts.
+ *
+ * `dead`     — the name occurs NOWHERE in the tree, in any medium. Gates.
+ * `proseOnly` — it occurs, but every occurrence is comment text: no code declares or uses it.
+ *              ADVISORY, never gating, and tested FIRST so a name can only reach the gate below
+ *              through real code. The comment strip is a line-local heuristic and reddening on a
+ *              heuristic is the thing to refuse (AP-EXT-ITER144-01).
+ * `spelledOnly` — it reaches real code, but every non-comment occurrence is inside a string or
+ *              regex literal AND exactly ONE file spells it. That file is the one asserting the
+ *              name is gone, and the anchor is resolving off it. Gates.
+ *
+ * The CARDINALITY clause is what makes the last tier sound rather than a lexing guess: a genuinely
+ * live string-valued name (an activity-event name, a reason code, a TS string-literal union member)
+ * is never spelled once — it has a producer and a consumer, and in this tree a src file plus its
+ * compiled mirror, so it lands in >= 2 files. Measured here: dropping the clause would red
+ * `SCOPE_EMPTY_DIFF`, `GATE_CHECK_TIMEOUT` and 30 other live reason codes.
+ */
+function classifyAnchors(tokens, index) {
+  const dead = [];
+  const proseOnly = [];
+  const spelledOnly = [];
+
+  for (const entry of tokens) {
+    const token = entry.token;
+    if (!index.words.has(token)) {
+      dead.push(entry);
+    } else if (!index.codeWords.has(token)) {
+      proseOnly.push(entry);
+    } else if ((index.usedInFiles.get(token) ?? 0) === 0 && index.spelledInFiles.get(token) === 1) {
+      spelledOnly.push(entry);
+    }
+  }
+
+  return { dead, proseOnly, spelledOnly };
+}
+
+/** The GATING half: absent from the tree, or spelled by exactly the one file denying it. */
+function findDeadAnchors(tokens, index) {
+  const { dead, spelledOnly } = classifyAnchors(tokens, index);
+  return [...dead, ...spelledOnly];
 }
 
 describe('trap-door catalog anchor liveness (fixture parser)', () => {
@@ -478,7 +626,7 @@ describe('trap-door catalog anchor liveness (fixture parser)', () => {
 
   test('a dead symbol on an INVARIANT line is reported', () => {
     const content = '- `src/a.ts` — INVARIANT: `liveHelper` delegates to `deletedHelper`. BREAKS: x. ENFORCE: y.';
-    const dead = findDeadAnchors(collectAnchorTokens(catalog, content), 'export function liveHelper() {}');
+    const dead = findDeadAnchors(collectAnchorTokens(catalog, content), indexSource('export function liveHelper() {}'));
 
     assert.deepEqual(dead.map(entry => entry.token), ['deletedHelper']);
   });
@@ -505,7 +653,7 @@ describe('trap-door catalog anchor liveness (fixture parser)', () => {
     const content = '- `src/a.ts` — INVARIANT: `ActivityEventType` replaced `ActivityEventName`.';
     const dead = findDeadAnchors(
       collectAnchorTokens(catalog, content),
-      'export type ActivityEventType = typeof VALID_ACTIVITY_EVENTS[number];',
+      indexSource('export type ActivityEventType = typeof VALID_ACTIVITY_EVENTS[number];'),
     );
 
     assert.deepEqual(dead.map(entry => entry.token), ['ActivityEventName']);
@@ -527,13 +675,13 @@ describe('trap-door catalog anchor liveness (fixture parser)', () => {
       'PATTERN_SHAPE: bareDeletedHelper mentioned outside backticks',
     ].join('\n');
 
-    assert.deepEqual(findDeadAnchors(collectAnchorTokens(catalog, content), ''), []);
+    assert.deepEqual(findDeadAnchors(collectAnchorTokens(catalog, content), indexSource('')), []);
   });
 
   test('a token repeated on one line is reported once', () => {
     const content = '- `src/a.ts` — PATTERN_SHAPE: `deletedHelper` then `deletedHelper` again.';
 
-    assert.equal(findDeadAnchors(collectAnchorTokens(catalog, content), '').length, 1);
+    assert.equal(findDeadAnchors(collectAnchorTokens(catalog, content), indexSource('')).length, 1);
   });
 
   test('the corpus builder rejects an empty listing rather than reporting a clean sweep', () => {
@@ -549,6 +697,78 @@ describe('trap-door catalog anchor liveness (fixture parser)', () => {
     }
   });
 
+  // --- AP-EXT-ITER153-02: the corpus answers with names a file USES, not names it SPELLS ---
+  //
+  // These five pin the rule that replaced `anchorCorpusExclusions`, a path list that named ONE
+  // spelling channel and was blind to the rest. Each fixture token is fictional, so none of them
+  // is an anchor anywhere and none can be revived by being written here.
+
+  test('AP-EXT-ITER153-02: a name only a deletion assertion SPELLS does not resolve as live code', () => {
+    const content = '- `src/a.ts` — PATTERN_SHAPE: no `evictedProbe` anywhere.';
+    // Exactly the shape that hid seven anchors: one file, asserting the name is gone, by quoting it.
+    const denier = "assert.ok(!body.includes('evictedProbe'), 'the helper must stay deleted');";
+    const dead = findDeadAnchors(collectAnchorTokens(catalog, content), indexSource(denier, 'denies.test.js'));
+
+    assert.deepEqual(
+      dead.map(entry => entry.token),
+      ['evictedProbe'],
+      'the anchor resolved off the assertion that denies it — the corpus is reading spellings again',
+    );
+  });
+
+  test('AP-EXT-ITER153-02: a name a file genuinely USES still resolves', () => {
+    const content = '- `src/a.ts` — PATTERN_SHAPE: `evictedProbe` guards the path.';
+    const user = "function evictedProbe() { return 1; }\nconst x = evictedProbe();";
+
+    assert.deepEqual(
+      findDeadAnchors(collectAnchorTokens(catalog, content), indexSource(user)),
+      [],
+      'the spell/use rule must not red a live symbol — that would make the sweep unusable',
+    );
+  });
+
+  test('AP-EXT-ITER153-02: an anchor is not resolved by a longer identifier that merely contains it', () => {
+    const content = '- `src/a.ts` — PATTERN_SHAPE: `evictedProbe` guards the path.';
+    const superstring = 'function evictedProbeHandle() { return evictedProbeHandle; }';
+    const dead = findDeadAnchors(collectAnchorTokens(catalog, content), indexSource(superstring));
+
+    assert.deepEqual(
+      dead.map(entry => entry.token),
+      ['evictedProbe'],
+      'a substring resolve is back — an anchor whose symbol is a prefix of a live one reads live forever',
+    );
+  });
+
+  test('AP-EXT-ITER153-02: a name only comment text carries is ADVISORY, never gated', () => {
+    const content = '- `src/a.ts` — PATTERN_SHAPE: `evictedProbe` guards the path.';
+    const commentOnly = '// evictedProbe used to guard the path here.\nconst other = 1;';
+    const tokens = collectAnchorTokens(catalog, content);
+    const index = indexSource(commentOnly);
+
+    assert.deepEqual(findDeadAnchors(tokens, index), [], 'the comment strip is a line-local heuristic; reddening on it is the thing to refuse');
+    assert.deepEqual(
+      classifyAnchors(tokens, index).proseOnly.map(entry => entry.token),
+      ['evictedProbe'],
+      'the advisory tier must still SEE it — dropping it silently is the failure the tier exists to prevent',
+    );
+  });
+
+  test('AP-EXT-ITER153-02: a literal-only name spelled by TWO files is a live reason code, not a dead anchor', () => {
+    const content = '- `src/a.ts` — PATTERN_SHAPE: `EVICTED_PROBE_REASON` is emitted once.';
+    // The cardinality clause. A live string-valued name has a producer and a consumer; a dead one
+    // has only the file denying it. Without this clause every reason code in the tree reds.
+    const index = buildSymbolIndex([
+      { file: 'producer.ts', text: "export const reason = 'EVICTED_PROBE_REASON';" },
+      { file: 'consumer.ts', text: "if (r === 'EVICTED_PROBE_REASON') { handle(); }" },
+    ]);
+
+    assert.deepEqual(
+      findDeadAnchors(collectAnchorTokens(catalog, content), index),
+      [],
+      'the cardinality clause is gone — a string-literal union member or activity-event name now reds',
+    );
+  });
+
   test('AP-EXT-ITER145-01: prose naming a deleted symbol does not resolve it as live code', () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'anchor-liveness-md-'));
     try {
@@ -562,7 +782,7 @@ describe('trap-door catalog anchor liveness (fixture parser)', () => {
       assert.equal(result.ok, true, result.ok ? '' : result.reason);
 
       const catalogContent = '- `live.ts` — INVARIANT: `livingHelper` replaced `buriedHelper`. BREAKS: x. ENFORCE: y.';
-      const dead = findDeadAnchors(collectAnchorTokens(catalog, catalogContent), result.corpus);
+      const dead = findDeadAnchors(collectAnchorTokens(catalog, catalogContent), result.index);
 
       assert.deepEqual(
         dead.map(entry => entry.token),
@@ -603,7 +823,7 @@ describe('trap-door catalog anchor liveness (repo)', () => {
       assert.fail(corpusResult.reason);
     }
 
-    const violations = findDeadAnchors(tokens, corpusResult.corpus)
+    const violations = findDeadAnchors(tokens, corpusResult.index)
       .filter(entry => !anchorAbsenceAllowlist.has(`${entry.catalog}::${entry.token}`))
       .map(entry => `${entry.catalog}:${entry.line} \`${entry.token}\``);
 
@@ -614,14 +834,57 @@ describe('trap-door catalog anchor liveness (repo)', () => {
     );
   });
 
+  // AP-EXT-ITER153-02: the corpus no longer excludes this file BY PATH, so the file that enumerates
+  // every legitimately-absent token now sits inside the corpus that judges them. That is safe for
+  // exactly one reason: the enumeration SPELLS its tokens and USES none of them. If the spell/use
+  // rule ever weakens back to raw text, allowlisting a name becomes the act that blinds this sweep
+  // to it — silently and permanently — so the property is pinned rather than trusted.
+  //
+  // What is pinned is this file's CONTRIBUTION, not the whole-corpus verdict. An entry does add one
+  // spelling of its own token, which can lift it past the third tier's cardinality clause; that is
+  // harmless because entry and perturbation move together (a token with an entry is filtered from
+  // the gate anyway, and deleting the entry deletes the spelling with it). What would NOT be
+  // harmless is this file contributing a USE, because a use is what the gate reads as liveness.
+  //
+  // Every token is DERIVED from the allowlist at run time. Writing one here as a literal would give
+  // it a second spelling file and defeat the pin asserting it stays absent.
+  test('AP-EXT-ITER153-02: the allowlist contributes spellings of its tokens, never a use', () => {
+    const tokens = [...anchorAbsenceAllowlist.keys()].map(key => key.slice(key.indexOf('::') + 2));
+    const selfIndex = buildSymbolIndex([
+      { file: 'trap-door-conformance.test.js', text: fs.readFileSync(fileURLToPath(import.meta.url), 'utf8') },
+    ]);
+
+    const spelledHere = tokens.filter(token => selfIndex.spelledInFiles.has(token));
+    assert.deepEqual(
+      [...new Set(spelledHere)].sort(),
+      [...new Set(tokens)].sort(),
+      'an allowlist key is not spelled by the file that declares it — the keys stopped being bare tokens, so this pin no longer measures the trap it guards',
+    );
+
+    const usedHere = tokens.filter(token => selfIndex.usedInFiles.has(token));
+    assert.deepEqual(
+      usedHere,
+      [],
+      'this file USES a token it allowlists as absent — the enumeration is now a liveness channel, so allowlisting a name is once again the act that blinds this sweep to it',
+    );
+  });
+
   test('no stale allowlist entries', () => {
     if (!corpusResult.ok) {
       assert.fail(corpusResult.reason);
     }
 
+    // "The symbol came back" means it came back AS CODE — `usedInFiles`, the same half of the
+    // spell/use rule the gate reads. Not the gate's full verdict, and deliberately so: every key
+    // below spells its own token as a string literal, so this file is itself one of the files that
+    // SPELL it. Reading anything spelling-sensitive here would make each entry perturb its own
+    // answer — an entry would lift its token out of the third tier's `spelledInFiles === 1`
+    // cardinality clause and then report itself stale. Reading uses only is immune to that, and it
+    // is the honest meaning of the alarm. The old substring form resolved a token off any longer
+    // identifier merely containing it.
     const stale = [...anchorAbsenceAllowlist.keys()].filter(key => {
       const token = key.slice(key.indexOf('::') + 2);
-      return corpusResult.corpus.includes(token);
+      return (corpusResult.index.usedInFiles.get(token) ?? 0) > 0;
     });
 
     assert.deepEqual(
