@@ -1587,3 +1587,154 @@ it('AP-EXT-ITER113-01 the AP-EXT-ITER14-01 span anchor is RUNNABLE, and the cd-p
     assert.equal(isGitCommitCommand(command), false, JSON.stringify(command));
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER159-01 — a diagnostic proves a compiler SPOKE, not that it measured
+// the staged code.
+//
+// These cases are driven by a REAL TypeScript compiler on purpose. `createNpxShim`
+// above stands in for `npx` with a script that greps for two hardcoded identifiers,
+// so it resolves where a real compiler cannot and can never emit a
+// module-resolution diagnostic — which is precisely why the defect below survived
+// 1500 lines of tests. See the trap door in `src/hooks/CLAUDE.md`.
+// ---------------------------------------------------------------------------
+
+const REAL_TSC = path.resolve(__dirname, '../node_modules/typescript/bin/tsc');
+const REAL_NODE_MODULES = path.resolve(__dirname, '../node_modules');
+
+/**
+ * An `npx` that resolves a real compiler by ABSOLUTE path — the measured
+ * production configuration (a globally installed `tsc`, or the project's own once
+ * `node_modules` is reachable). The materialized tree's cwd is a fresh tmpdir, so
+ * which compiler runs never depends on the tree under test.
+ */
+function createRealTscNpxShim(shimDir) {
+  const shimPath = path.join(shimDir, 'npx');
+  fs.writeFileSync(
+    shimPath,
+    `#!/bin/bash\nif [ "$1" = "tsc" ]; then shift; exec ${process.execPath} ${REAL_TSC} "$@"; fi\nexit 0\n`,
+  );
+  fs.chmodSync(shimPath, 0o755);
+}
+
+/**
+ * A project in the shape of essentially every Node/TS repository: a root
+ * tsconfig, a source file whose types come from `node_modules`, and
+ * `node_modules` gitignored.
+ */
+function makeTypedRepo(staged) {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tsc-gate-typed-'));
+  git(['init', '-q', '-b', 'main'], repoRoot);
+  git(['config', 'commit.gpgsign', 'false'], repoRoot);
+  fs.mkdirSync(path.join(repoRoot, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, '.gitignore'), 'node_modules/\n');
+  fs.writeFileSync(
+    path.join(repoRoot, 'tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: {
+        target: 'ESNext', module: 'NodeNext', moduleResolution: 'NodeNext',
+        strict: true, noEmit: true, skipLibCheck: true,
+      },
+      include: ['src/**/*.ts'],
+    }),
+  );
+  fs.writeFileSync(
+    path.join(repoRoot, 'src', 'entry.ts'),
+    'import * as fs from "fs";\nexport const p: string = fs.realpathSync(".");\n',
+  );
+  git(['add', '-A'], repoRoot);
+  git(['commit', '-qm', 'initial'], repoRoot);
+  fs.symlinkSync(REAL_NODE_MODULES, path.join(repoRoot, 'node_modules'), 'junction');
+  fs.writeFileSync(path.join(repoRoot, 'src', 'entry.ts'), staged);
+  git(['add', 'src/entry.ts'], repoRoot);
+  return repoRoot;
+}
+
+const CORRECT_STAGED = 'import * as fs from "fs";\nexport const p: string = fs.realpathSync("./x");\n';
+const TYPE_ERROR_STAGED = 'import * as fs from "fs";\nexport const p: number = fs.realpathSync("./x");\n';
+
+function runTypedCase(staged) {
+  assert.ok(fs.existsSync(REAL_TSC), 'the regression case needs the checked-out TypeScript compiler');
+  const harness = makeHarness();
+  createRealTscNpxShim(harness.shimDir);
+  const repoRoot = makeTypedRepo(staged);
+  try {
+    writeSession(harness, repoRoot);
+    return runHandler({ harness, repoRoot, timeout: 30_000 });
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    harness.cleanup();
+  }
+}
+
+it('AP-EXT-ITER159-01: correct staged code in an installed project is measured clean, not blocked by an absent dependency environment', () => {
+  const result = runTypedCase(CORRECT_STAGED);
+
+  // Pre-fix this blocked with `error TS2307: Cannot find module 'fs'` — a real
+  // diagnostic about the MISSING ENVIRONMENT, not about the staged edit. The
+  // materialized tree is `git checkout-index` output, so `node_modules` is absent
+  // by construction and every external type resolves to that same error.
+  assert.deepStrictEqual(result.decision, { decision: 'approve' });
+
+  // The approve must be a MEASUREMENT, not a skip: without this the case is
+  // satisfied by any change that merely stops the gate from running.
+  assert.equal(
+    latestEvent(result.events, 'gate_skipped'),
+    null,
+    'an installed project must reach a real verdict, not the not-measured channel',
+  );
+  assert.equal(latestEvent(result.events, 'tsc_gate_failed'), null);
+});
+
+it('AP-EXT-ITER159-01 control: a genuine type error in the same installed project still blocks, with its own diagnostic', () => {
+  const result = runTypedCase(TYPE_ERROR_STAGED);
+
+  assert.equal(result.decision.decision, 'block');
+  // Naming the diagnostic is what proves the verdict carries bits about the
+  // STAGED CODE. Pre-fix both this case and the one above blocked with the
+  // identical TS2307 at line 1, so the decision was independent of the content.
+  assert.match(result.decision.reason, /error TS2322/);
+  assert.doesNotMatch(result.decision.reason, /TS2307/);
+  assertFailedEvent(latestEvent(result.events, 'tsc_gate_failed'), 'compile_error');
+});
+
+it('AP-EXT-ITER159-01 control: a project with no node_modules is still measured, not skipped', () => {
+  // The link must be the WHOLE fix. An earlier draft ALSO declined to render a
+  // verdict when the environment could not be reproduced, which silently disabled
+  // the gate for every self-contained project. For a repo with no `node_modules`
+  // there is nothing to reproduce — the working tree resolves nothing external
+  // either, so the two environments already agree and the verdict is honest.
+  const harness = makeHarness();
+  createRealTscNpxShim(harness.shimDir);
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tsc-gate-bare-'));
+  try {
+    git(['init', '-q', '-b', 'main'], repoRoot);
+    git(['config', 'commit.gpgsign', 'false'], repoRoot);
+    fs.mkdirSync(path.join(repoRoot, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repoRoot, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: { target: 'ESNext', module: 'ESNext', strict: true, noEmit: true },
+        include: ['src/**/*.ts'],
+      }),
+    );
+    fs.writeFileSync(path.join(repoRoot, 'src', 'entry.ts'), 'export const a: number = 1;\n');
+    git(['add', '-A'], repoRoot);
+    git(['commit', '-qm', 'initial'], repoRoot);
+    fs.writeFileSync(path.join(repoRoot, 'src', 'entry.ts'), 'export const a: number = "two";\n');
+    git(['add', 'src/entry.ts'], repoRoot);
+    writeSession(harness, repoRoot);
+
+    const result = runHandler({ harness, repoRoot, timeout: 30_000 });
+    assert.equal(result.decision.decision, 'block');
+    assert.match(result.decision.reason, /error TS2322/);
+    assert.equal(
+      latestEvent(result.events, 'gate_skipped'),
+      null,
+      'a self-contained project is measurable without node_modules and must not be skipped',
+    );
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    harness.cleanup();
+  }
+});

@@ -379,6 +379,54 @@ function tscRenderedVerdict(result: TextCommandResult): boolean {
   return result.timedOut || TSC_DIAGNOSTIC_RE.test(result.stdout + result.stderr);
 }
 
+/**
+ * Reproduce, inside the materialized tree, the dependency environment the working
+ * tree resolves against — then say whether the tree can now answer for the staged
+ * code at all.
+ *
+ * `tscRenderedVerdict` asks whether a compiler SPOKE. That is not the same
+ * question as whether it measured the staged code, and the gap between them is
+ * this: `git checkout-index` writes TRACKED FILES ONLY, so `node_modules` — every
+ * `@types/*` package and every dependency's `.d.ts` — is absent from the tree by
+ * construction. A compiler that reaches it therefore emits diagnostics ABOUT THE
+ * MISSING ENVIRONMENT, and those carry an `error TS<code>` prefix like any other.
+ *
+ * MEASURED on the shipped compiled hook: a two-file project whose only import is
+ * `import * as fs from 'fs'`, with a trivially correct staged edit, blocked with
+ * `error TS2307: Cannot find module 'fs' or its corresponding type declarations`.
+ * Correct code, guaranteed block, in the shape of essentially every Node/TS
+ * project — the same 100%-of-commits halt path the no-compiler case was fixed for,
+ * reached through a compiler that IS resolvable (a global `tsc`, or the project's
+ * own once `node_modules` is linked). Linking removes the divergence rather than
+ * classifying the diagnostics it produces: a fix that sorted TS codes into
+ * environment-vs-code buckets would be the enumerated-set shape, one code away
+ * from the next fabricated block.
+ *
+ * The link is a symlink, never a copy: `fs.rmSync(recursive, force)` unlinks a
+ * symlink without following it (verified), so the temp-dir cleanup in
+ * `runTscGate`'s `finally` can never reach the real `node_modules`. Cost measured
+ * at 2099 ms for this repository's whole `extension` subtree and 657 ms for a
+ * 40-file project — both inside `getTscTimeoutMs()`'s 8 s ceiling.
+ *
+ * A repo with no `node_modules` is deliberately NOT skipped: the working tree
+ * resolves nothing external either, so the two environments already agree and the
+ * compiler's diagnostics are about the staged code exactly as they would be in the
+ * developer's own checkout. An earlier draft returned "not measured" there and
+ * silently disabled the gate for every self-contained project — the link is the
+ * whole fix, and nothing rides on its outcome.
+ */
+function linkDependencyEnvironment(repoRoot: string, destinationRoot: string): void {
+  const source = path.join(repoRoot, 'node_modules');
+  const destination = path.join(destinationRoot, 'node_modules');
+  if (fs.existsSync(destination) || !fs.existsSync(source)) return;
+  try {
+    fs.symlinkSync(source, destination, 'junction');
+  } catch {
+    // A tree that could not be linked is one the existing not-measured / verdict
+    // arms already answer for. Failing to link must never fail the commit.
+  }
+}
+
 function classifyTscFailure(result: TextCommandResult): GateFailureKind {
   if (result.timedOut) {
     return (result.stdout + result.stderr).trim().length === 0 ? 'cold_cache_timeout' : 'timeout';
@@ -411,6 +459,8 @@ function runTscGate(repoRoot: string, stagedPaths: string[]): GateDecision {
         failureKind: 'setup_error',
       };
     }
+
+    linkDependencyEnvironment(repoRoot, tempDir);
 
     const tscResult = runTextCommand('npx', ['tsc', '--noEmit'], tempDir, getTscTimeoutMs());
     if (tscResult.status === 0 && !tscResult.error) {
