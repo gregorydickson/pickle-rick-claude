@@ -26,6 +26,7 @@ import {
   executeConvergedPlanAdapter,
   emitWorkerProductionBreadcrumb,
   spawnConvergedPlanImplementPass,
+  spawnRecoveryRemediator,
 } from '../bin/mux-runner.js';
 import { requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
 import { resetToSha } from '../services/git-utils.js';
@@ -1777,4 +1778,130 @@ test('AP-EXT-ITER7-01/58-01: between two real plans the parsed-phase rank still 
 
   rmSync(repo, { recursive: true, force: true });
   rmSync(sessionDir, { recursive: true, force: true });
+});
+
+// --- AP-EXT-ITER146-01: the fix-forward rung must RUN the fixer, not just author its brief ---
+//
+// `spawnRecoveryRemediator` is the recovery ladder's rung-2 adapter. `spawn-gate-remediator.js`
+// only AUTHORS a brief and prints `BRIEF_PATH=`; the step that edits code is a fixer worker
+// driven over that brief — which is exactly what finalize-gate, pipeline-runner and
+// microverse-runner all do after reading `BRIEF_PATH=`. This adapter read only the exit code,
+// so the rung re-ran the ARMED whole-repo gate against a byte-identical tree and recorded
+// `remediator re-gate still red` for a remediation that never ran.
+//
+// Every ladder test scripts `RecoveryDeps.spawnRemediator` as a boolean fake, so the adapter
+// itself is unfixtured by construction — assert that a worker was actually INVOKED, and with
+// the brief's content, never the boolean alone.
+
+const REPO_ROOT = path.resolve(__dirname, '../..');
+
+/** A `claude` shim on PATH that records its argv to `markerPath` and exits `exitCode`. */
+function writeRecordingBackendShim(dir, markerPath, exitCode) {
+  const binDir = path.join(dir, 'recorderbin');
+  mkdirSync(binDir, { recursive: true });
+  const recorderPath = path.join(dir, 'record-invocation.mjs');
+  writeFileSync(recorderPath, [
+    "import fs from 'node:fs';",
+    `fs.writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify(process.argv.slice(2)));`,
+    `process.exitCode = ${exitCode};`,
+    '',
+  ].join('\n'));
+  const shimPath = path.join(binDir, 'claude');
+  writeFileSync(shimPath, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(recorderPath)} "$@"\n`);
+  chmodSync(shimPath, 0o755);
+  return binDir;
+}
+
+function makeRecoveryRemediatorFixture(prefix, { exitCode = 0, extensionRoot = REPO_ROOT } = {}) {
+  const { repo } = makeRepo(`${prefix}-repo-`);
+  const { sessionDir, statePath } = makeSession(`${prefix}-session-`);
+  writeFileSync(statePath, JSON.stringify({
+    active: true, schema_version: 5, session_dir: sessionDir, backend: 'claude', activity: [],
+  }));
+  // A real failing file so the brief's Section 2 carries content the worker can be shown.
+  const failingFile = path.join(repo, 'failing-spec.js');
+  writeFileSync(failingFile, "assert.equal(1, 2); // AP-EXT-ITER146-01 fixture\n");
+  const markerPath = path.join(sessionDir, 'worker-invocation.json');
+  const binDir = writeRecordingBackendShim(sessionDir, markerPath, exitCode);
+  const logs = [];
+  return {
+    repo, sessionDir, statePath, markerPath, failingFile, logs,
+    call: () => withShimOnPath(binDir, () => spawnRecoveryRemediator(
+      {
+        sessionDir, statePath, extensionRoot, workingDir: repo,
+        ticketId: 'ap146a01', iteration: 3, flags: null, log: (m) => logs.push(m),
+      },
+      [{ name: 'not ok 1 - AP-EXT-ITER146-01 fixture fails', file: failingFile }],
+    )),
+    cleanup: () => {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true });
+    },
+  };
+}
+
+test('AP-EXT-ITER146-01: the fix-forward rung drives a fixer worker over the authored brief', () => {
+  const fx = makeRecoveryRemediatorFixture('ap-iter146-ok', { exitCode: 0 });
+
+  const remediated = fx.call();
+
+  // The whole defect in one assertion: pre-fix NO worker was ever spawned, so the rung could
+  // never edit a single line — it only re-ran the armed gate on an unchanged tree.
+  assert.ok(existsSync(fx.markerPath), 'a fixer worker must actually be invoked, not just have its brief written');
+
+  // ...and it must be driven over the BRIEF, not an empty or synthetic prompt. Without this the
+  // marker could be satisfied by any spawn at all.
+  const argv = JSON.parse(readFileSync(fx.markerPath, 'utf8'));
+  const prompt = argv[argv.indexOf('-p') + 1];
+  assert.match(prompt, /# Gate Remediation Brief/, 'the worker must receive the authored brief as its prompt');
+  assert.ok(
+    prompt.includes(fx.failingFile),
+    'the brief handed to the worker must name the failing file from the armed gate',
+  );
+
+  assert.equal(remediated, true, 'a fixer worker that exits 0 is a completed remediation');
+
+  fx.cleanup();
+});
+
+test('AP-EXT-ITER146-01 control: a fixer worker that FAILS is not a completed remediation', () => {
+  // Without this control the fix could report every brief as remediated — the same false
+  // "remediated" the defect produced, just arrived at from the other side.
+  const fx = makeRecoveryRemediatorFixture('ap-iter146-fail', { exitCode: 1 });
+
+  const remediated = fx.call();
+
+  assert.ok(existsSync(fx.markerPath), 'the worker still runs; only its verdict differs');
+  assert.equal(remediated, false, 'a fixer worker that exits non-zero has not remediated anything');
+
+  fx.cleanup();
+});
+
+test('AP-EXT-ITER146-01 control: no brief means no worker and no claimed remediation', () => {
+  // Brief-prep exits 0 on a concurrent-remediator LOCKOUT too, printing `LOCKOUT_PATH=` and no
+  // brief. Hold the lockfile with a LIVE pid (this process) so the reclaim declines to steal it
+  // and the real bin takes that branch. The rung must spawn no worker on an empty prompt, and
+  // must not report a remediation it never attempted.
+  const fx = makeRecoveryRemediatorFixture('ap-iter146-nobrief', { exitCode: 0 });
+  const gateDir = path.join(fx.sessionDir, 'gate');
+  mkdirSync(gateDir, { recursive: true });
+  writeFileSync(path.join(gateDir, 'remediator.lockfile'), String(process.pid));
+
+  const remediated = fx.call();
+
+  // Precondition: brief-prep really did take the lockout branch rather than failing outright.
+  assert.ok(
+    readdirSync(gateDir).some((f) => f.startsWith('remediator_concurrent_lockout_')),
+    'fixture must reach the exit-0-without-BRIEF_PATH lockout branch',
+  );
+  assert.equal(existsSync(fx.markerPath), false, 'no brief must mean no fixer worker is spawned');
+  assert.equal(remediated, false, 'a rung that authored no brief has not remediated anything');
+  // ...and it must say WHY. A lockout is a distinct, honest outcome, not a crash — falling
+  // through to the generic catch would report a spawn failure that never happened.
+  assert.ok(
+    fx.logs.some((m) => m.includes('no BRIEF_PATH from brief-prep')),
+    'the lockout arm must report the missing brief, not a generic spawn failure',
+  );
+
+  fx.cleanup();
 });

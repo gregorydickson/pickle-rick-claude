@@ -5774,12 +5774,19 @@ export function assessRecoveryEvidence(sessionDir, workingDir, ticketId) {
     };
 }
 /**
- * fix-forward-trivial spawner: run the EXISTING gate remediator bin synchronously
- * (the same path finalize-gate uses), feeding it the armed gate's failures. Returns
- * true iff the remediator exited 0. Bounded to one invocation per ladder call by the
+ * fix-forward-trivial spawner: run the EXISTING gate remediator — the same TWO-step path
+ * finalize-gate uses — feeding it the armed gate's failures. Step 1 is
+ * `spawn-gate-remediator.js`, which only AUTHORS a brief and prints `BRIEF_PATH=`; step 2
+ * hands that brief to a fixer worker, which is the step that actually edits code. Returns
+ * true iff the fixer worker exited 0. Bounded to one invocation per ladder call by the
  * controller (INV-FIX-FORWARD-BOUND).
+ *
+ * Exported for the AP-EXT-ITER146-01 regression case: every ladder test scripts
+ * `RecoveryDeps.spawnRemediator` as a boolean fake, so a spec reaching this adapter through
+ * the controller would only ever exercise its OWN fake. The two-step invariant lives in this
+ * function, so the spec must call it.
  */
-function spawnRecoveryRemediator(input, gateFailures) {
+export function spawnRecoveryRemediator(input, gateFailures) {
     try {
         const gateDir = path.join(input.sessionDir, 'gate');
         fs.mkdirSync(gateDir, { recursive: true });
@@ -5809,12 +5816,57 @@ function spawnRecoveryRemediator(input, gateFailures) {
             '--session-root', input.sessionDir,
             '--reason', 'per-iteration',
         ], { cwd: input.workingDir, encoding: 'utf-8', timeout: resolveWorkerTestGateTimeoutMs(input.extensionRoot) });
-        return r.status === 0;
+        if (r.status !== 0)
+            return false;
+        // Brief-prep exits 0 for a CONCURRENT-LOCKOUT too, printing `LOCKOUT_PATH=` and no
+        // brief. No brief means no remediation was attempted — the same disposition
+        // finalize-gate's `no BRIEF_PATH` arm takes.
+        const briefPath = (r.stdout || '')
+            .split('\n')
+            .find(l => l.startsWith('BRIEF_PATH='))
+            ?.slice('BRIEF_PATH='.length)
+            .trim();
+        if (!briefPath) {
+            input.log(`fix-forward-trivial: no BRIEF_PATH from brief-prep for ${input.ticketId}`);
+            return false;
+        }
+        return spawnRecoveryRemediatorWorker(input, fs.readFileSync(briefPath, 'utf-8'));
     }
     catch (err) {
         input.log(`fix-forward-trivial: remediator spawn failed for ${input.ticketId}: ${safeErrorMessage(err)}`);
         return false;
     }
+}
+/**
+ * Step 2 of the fix-forward-trivial rung: drive the fixer worker over the authored brief.
+ * `spawn-gate-remediator.js` only WRITES the brief, so without this the rung re-ran the
+ * ARMED whole-repo gate against a byte-identical tree and recorded `remediator re-gate
+ * still red` for a remediation that never ran. Mirrors `spawnConvergedPlanImplementPass`'s
+ * spawn shape, including the AP-EXT-ITER95-01 buffer cap: the producer here is a coding-agent
+ * CLI streaming its whole tool trace, and past `spawnSync`'s 1MB DEFAULT Node SIGTERMs the
+ * child and reports `status === null`/`ENOBUFS`, which reads as a failed remediation over a
+ * worker that finished its edits.
+ */
+function spawnRecoveryRemediatorWorker(input, briefContent) {
+    const { backend } = resolveBackendFromStateFileWithSource(input.statePath);
+    const invocation = buildManagerInvocation(backend, {
+        prompt: briefContent,
+        addDirs: [input.workingDir, input.sessionDir],
+        noSessionPersistence: true,
+    });
+    const r = spawnSync(invocation.cmd, invocation.args, {
+        cwd: input.workingDir,
+        env: {
+            ...process.env,
+            ...backendEnvOverrides(backend, { workingDir: input.workingDir, ticketId: input.ticketId, sessionDir: input.sessionDir }),
+            ...(invocation.env ?? {}),
+            PICKLE_STATE_FILE: input.statePath,
+        },
+        encoding: 'utf-8',
+        timeout: CONVERGED_PLAN_VERIFY_TIMEOUT_MS,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+    });
+    return r.status === 0;
 }
 /** Resolve the W4a discriminant, defaulting backend from persisted state when absent. */
 function resolveRecoveryDiscriminant(input) {
