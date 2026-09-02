@@ -325,8 +325,26 @@ const anchorCatalogs = [
   'extension/src/types/CLAUDE.md',
 ];
 
-/** camelCase (>= 2 chars before the hump) or SCREAMING_SNAKE with >= 1 underscore. */
-const anchorTokenPattern = /\b([a-z][a-zA-Z0-9]{1,}[A-Z][a-zA-Z0-9]*|[A-Z][A-Z0-9]{2,}(?:_[A-Z0-9]+)+)\b/g;
+/**
+ * An identifier carrying an internal case hump (>= 2 chars before it), or SCREAMING_SNAKE with
+ * >= 1 underscore.
+ *
+ * AP-EXT-ITER151-01: the first arm keys on the HUMP, not on a casing convention. It used to be
+ * spelled `[a-z]...[A-Z]` — anchored on a LOWERCASE first character — which made the arm mean
+ * "camelCase" and left PascalCase matching neither alternative. Every TypeScript type, interface,
+ * class and enum name is PascalCase, so the whole type namespace was invisible to a sweep whose
+ * test asserts that no anchor "names a symbol absent from the tree": 104 PascalCase anchor tokens
+ * across the six catalogs were never checked, and `ActivityEventName` — named in BOTH the
+ * INVARIANT and the PATTERN_SHAPE of `src/bin/CLAUDE.md`'s AP-EXT-ITER148-02 entry while existing
+ * in ZERO files repo-wide — sat green.
+ *
+ * The fix COLLAPSES rather than appends (root CLAUDE.md: prefer the formulation that needs no
+ * list). A third `[A-Z][a-z]...` alternative would have been the next member of a casing
+ * enumeration, one convention away from the next blind spot; leading with `[A-Za-z]` and requiring
+ * a `[a-z][A-Z]` transition subsumes camelCase and PascalCase in ONE arm, so the alternation count
+ * stays at 2 and the convention distinction is removed instead of guarded.
+ */
+const anchorTokenPattern = /\b([A-Za-z][a-zA-Z0-9]*[a-z][A-Z][a-zA-Z0-9]*|[A-Z][A-Z0-9]{2,}(?:_[A-Z0-9]+)+)\b/g;
 
 /**
  * Absences that are CORRECT and must NOT be "fixed" — the trap inside this sweep. Only a
@@ -463,6 +481,44 @@ describe('trap-door catalog anchor liveness (fixture parser)', () => {
     const dead = findDeadAnchors(collectAnchorTokens(catalog, content), 'export function liveHelper() {}');
 
     assert.deepEqual(dead.map(entry => entry.token), ['deletedHelper']);
+  });
+
+  // AP-EXT-ITER151-01: PascalCase is the TypeScript type/interface/class/enum namespace. While the
+  // extractor's first arm was anchored on a lowercase first character it meant "camelCase", so a
+  // dead TYPE name was not merely unreported — it was never a token at all, and the repo sweep
+  // read green over `ActivityEventName`, which exists in zero files. The defect is invisible to a
+  // dead-vs-live assertion alone (an unextracted token has no verdict), so the extraction itself
+  // is pinned first.
+  test('AP-EXT-ITER151-01: a PascalCase type name on a PATTERN_SHAPE line is extracted as an anchor token', () => {
+    const content = '- `src/a.ts` — PATTERN_SHAPE: a name absent from the `ActivityEventName` union.';
+
+    assert.deepEqual(
+      collectAnchorTokens(catalog, content).map(entry => entry.token),
+      ['ActivityEventName'],
+      'the extractor dropped a PascalCase identifier — every TS type, interface and class name is '
+      + 'PascalCase, so anchoring the arm on a lowercase first character blinds the sweep to the '
+      + 'whole type namespace',
+    );
+  });
+
+  test('a dead PascalCase type name is reported, and a live one is not', () => {
+    const content = '- `src/a.ts` — INVARIANT: `ActivityEventType` replaced `ActivityEventName`.';
+    const dead = findDeadAnchors(
+      collectAnchorTokens(catalog, content),
+      'export type ActivityEventType = typeof VALID_ACTIVITY_EVENTS[number];',
+    );
+
+    assert.deepEqual(dead.map(entry => entry.token), ['ActivityEventName']);
+  });
+
+  test('the collapsed arm still reads camelCase and SCREAMING_SNAKE, and still rejects prose', () => {
+    const content = '- `src/a.ts` — PATTERN_SHAPE: `deletedHelper`, `DELETED_CONST`, `git`, `off`.';
+
+    assert.deepEqual(
+      collectAnchorTokens(catalog, content).map(entry => entry.token),
+      ['deletedHelper', 'DELETED_CONST'],
+      'widening to PascalCase must not cost either original arm, nor admit humpless prose words',
+    );
   });
 
   test('prose outside backticks and lines without an anchor keyword are not scanned', () => {
