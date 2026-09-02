@@ -5897,7 +5897,19 @@ function convergedPlanIdempotentNoOp(input) {
             ? input._testHooks.readStateForIdempotency()
             : readRecoverableJsonObject(input.statePath);
         const ledger = Array.isArray(s?.recovery_attempts) ? s.recovery_attempts : [];
-        const priorSuccess = ledger.some((a) => a.strategy === 'execute-converged-plan' && a.outcome === 'success');
+        // AP-EXT-ITER150-01: `recovery_attempts` is the SESSION ledger, shared by every
+        // ticket, and BOTH halves of this latch must read the same unit — the ticket. The
+        // second half already does (this ticket's own frontmatter `completion_commit`); the
+        // first half did not, so one sibling's genuine converged-plan success made the
+        // "prior success" half permanently true for every other ticket in the session, and
+        // the latch degenerated to "completion_commit is set". `attemptRecoveryBeforeTerminal`
+        // now stamps `ticket` on every attempt it appends, so the attribution is present.
+        // `?? input.ticketId` is the ONE place the legacy contract is spelled — an entry with
+        // no `ticket` ("absent on pre-existing ladder entries", `RecoveryAttempt.ticket`)
+        // is read as this ticket's, exactly as before the stamp existed.
+        const priorSuccess = ledger.some((a) => a.strategy === 'execute-converged-plan'
+            && a.outcome === 'success'
+            && (a.ticket ?? input.ticketId) === input.ticketId);
         if (!priorSuccess)
             return null;
         const ticketContent = fs.readFileSync(ticketFilePath(input.sessionDir, input.ticketId), 'utf-8');
@@ -6272,7 +6284,11 @@ export function attemptRecoveryBeforeTerminal(input) {
                 spawnImplementPass: spawnConvergedPlanImplementPass,
             },
         }),
-        appendAttempt: (attempt) => appendRecoveryAttempt(input.statePath, attempt, discriminantTag),
+        // AP-EXT-ITER150-01: stamp the ticket the attempt was made FOR. `recovery_attempts`
+        // is a per-ticket ledger that every other reader filters on `a.ticket === ticketId`;
+        // the ladder was the one writer that left its entries unattributed, so the
+        // execute-converged-plan idempotency latch could only read them session-globally.
+        appendAttempt: (attempt) => appendRecoveryAttempt(input.statePath, { ...attempt, ...(input.ticketId ? { ticket: input.ticketId } : {}) }, discriminantTag),
         log: input.log,
     };
     return runRecoveryLadder(deps);
@@ -6428,10 +6444,17 @@ export function recordBoundedEscapeAttempt(statePath, ticketId, iteration, log =
  * `failed_flip_suppressed` budget (the HOT one — every live ledger entry in the corpus)
  * stayed un-refundable while its scheduling hold was released by the same Todo reset.
  * Filtering on `a.ticket === ticketId` needs no list and covers every future budget.
- * It provably cannot touch the recovery-ladder entries `convergedPlanIdempotentNoOp`
- * latches on: `runRecoveryLadder` appends `{strategy, outcome, reason, iteration}` with
- * NO `ticket` field (`RecoveryAttempt.ticket` is optional, "absent on pre-existing ladder
- * entries"), so `undefined === ticketId` is never true.
+ * AP-EXT-ITER150-01 amended this paragraph, which used to record that the refund
+ * "provably cannot touch" the recovery-ladder entries `convergedPlanIdempotentNoOp`
+ * latches on, because `runRecoveryLadder` appended `{strategy, outcome, reason,
+ * iteration}` with NO `ticket` field. That un-attribution was the defect, not a
+ * feature: it also made the idempotency latch session-global. `attemptRecoveryBeforeTerminal`
+ * now stamps `ticket`, so ladder entries ARE refundable — which is the refund's own stated
+ * purpose ("the documented recovery recipe was INERT"), and removes the special case
+ * rather than guarding it. An operator `status: Todo` reset now clears this ticket's
+ * converged-plan latch too, so the relaunch genuinely re-attempts; AC-GA-REC-4 already
+ * makes a no-diff re-execution reconcile to terminal instead of looping. Only entries
+ * for THIS ticket clear — siblings are still untouched.
  *
  * Conservative: refunds ONLY when frontmatter status reads `todo` AND the ledger holds
  * entries for THIS ticket. A still-Failed/In-Progress ticket (no reset) keeps its spent

@@ -1264,6 +1264,93 @@ test('AP-EXT-ITER55-02 control: a verbose verify that genuinely FAILS is still n
   rmSync(sessionDir, { recursive: true, force: true });
 });
 
+// --- AP-EXT-ITER150-01: the converged-plan idempotency latch is PER-TICKET ------------------
+//
+// `convergedPlanIdempotentNoOp` no-ops the whole rung on two conditions: a prior successful
+// `execute-converged-plan` entry in `state.recovery_attempts`, AND this ticket's frontmatter
+// carrying a `completion_commit`. `recovery_attempts` is the SESSION ledger — every other
+// reader (`countLedgerSuccesses`, `countBoundedEscapeAttempts`, `refundRecoveryBudgetOnReset`)
+// filters it on `a.ticket === ticketId`; this one did not. So one sibling's genuine recovery
+// made the "prior success" half permanently true for every OTHER ticket, and the rung reported
+// `{ok:true}` — a `success` ledger entry and an `advanced` ladder verdict — for an approved
+// plan that was never executed.
+//
+// Drive the ADAPTER over a real ledger, and assert on whether the plan actually ran (HEAD
+// moved / a phase commit landed), never on the log text.
+
+test('AP-EXT-ITER150-01: a SIBLING ticket\'s execute-converged-plan success must not no-op this ticket', () => {
+  const { repo, baseSha } = makeRepo('ap-iter150-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter150-session-');
+  const ticketId = 'aa11bb22';
+  const ticketDir = makeTicket(sessionDir, ticketId, {
+    tier: 'small',
+    status: 'In Progress',
+    // The stranded shape: a completion_commit is already stamped while the ticket is
+    // still in recovery, so the latch's SECOND half is satisfied on its own.
+    frontmatter: { completion_commit: '"deadbee"' },
+  });
+  writeSinglePhasePlan(ticketDir, 'true');
+  writeFileSync(path.join(repo, 'src.ts'), 'export const y = 4;\n');
+
+  // The ledger holds a success for a DIFFERENT ticket, attributed as the runtime now does.
+  writeFileSync(statePath, JSON.stringify({
+    active: true, schema_version: 5, session_dir: sessionDir, activity: [],
+    recovery_attempts: [{
+      strategy: 'execute-converged-plan', outcome: 'success',
+      reason: 'executed converged plan for ff99ee88', iteration: 3, ticket: 'ff99ee88',
+    }],
+  }));
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  // Pre-fix this returned {ok:true} having executed NOTHING: the ladder then recorded
+  // `execute-converged-plan success` and returned `advanced` for a plan that never ran.
+  assert.equal(out.ok, true, 'the plan really executes (this is the recovered case)');
+  assert.notEqual(
+    git(repo, ['rev-parse', 'HEAD']), baseSha,
+    'the sibling\'s ledger entry must not suppress THIS ticket\'s phase execution',
+  );
+  assert.match(git(repo, ['log', '-1', '--format=%s']), /execute-converged-plan phase 1/);
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER150-01 control: THIS ticket\'s own prior success + completion_commit still no-ops', () => {
+  const { repo, baseSha } = makeRepo('ap-iter150c-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter150c-session-');
+  const ticketId = 'aa11bb33';
+  const ticketDir = makeTicket(sessionDir, ticketId, {
+    tier: 'small',
+    status: 'In Progress',
+    frontmatter: { completion_commit: '"deadbee"' },
+  });
+  writeSinglePhasePlan(ticketDir, 'true');
+  writeFileSync(path.join(repo, 'src.ts'), 'export const y = 5;\n');
+
+  // Without this control the fix could under-trigger — never latch at all — and the
+  // AC-GA-REC-3 contract would be silently deleted rather than corrected.
+  writeFileSync(statePath, JSON.stringify({
+    active: true, schema_version: 5, session_dir: sessionDir, activity: [],
+    recovery_attempts: [{
+      strategy: 'execute-converged-plan', outcome: 'success',
+      reason: `executed converged plan for ${ticketId}`, iteration: 3, ticket: ticketId,
+    }],
+  }));
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  assert.equal(out.ok, true, 'AC-GA-REC-3: a prior success on THIS ticket still no-ops');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']), baseSha, 'the no-op must execute nothing');
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
 // --- AP-EXT-ITER95-01: the implement pass's capture buffer IS the verdict too --------------
 //
 // `spawnConvergedPlanImplementPass` is the AC-GA-REC-1 re-execution seam: it spawns an LLM
