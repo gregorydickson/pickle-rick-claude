@@ -316,4 +316,79 @@ if (isMainThread) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // -------------------------------------------------------------------------
+  // AP-EXT-ITER142-01: promoting a dead writer's orphan tmp is a REPLACE.
+  //
+  // A writer killed between `writeStateFile`'s tmp write and its rename leaves a
+  // COMPLETE `.tmp.<pid>` snapshot. `read()` promotes it by renaming it over the base,
+  // so the file becomes exactly that snapshot — and the object `read()` returns must
+  // become exactly that snapshot too. Merging instead of replacing keeps every key the
+  // snapshot DELETED (a cleared `exit_reason`, the R-CNAR-8 `current_ticket_*` cache
+  // fields) alive in the returned object, and the next persist writes them back over
+  // the file just promoted: `read()` republishes a state no writer ever produced.
+  // -------------------------------------------------------------------------
+
+  test('AP-EXT-ITER142-01: promoted orphan-tmp snapshot REPLACES in-memory state; keys it deleted do not survive or get re-persisted', () => {
+    const dir = tmpDir();
+    try {
+      const statePath = path.join(dir, 'state.json');
+      const sm = new StateManager();
+
+      // Base: carries the per-ticket cache fields and a stale exit_reason.
+      writeStateFile(statePath, makeState({
+        iteration: 5,
+        current_ticket: 'OLD-1',
+        current_ticket_tier: 'heavy',
+        current_ticket_budget: 999,
+        current_ticket_max_iterations: 42,
+        current_ticket_worker_timeout_seconds: 7200,
+        current_ticket_budget_start_iteration: 3,
+        exit_reason: 'stalled_below_target',
+      }));
+
+      // Dead-writer orphan tmp: strictly NEWER, and it deleted every one of those keys
+      // (exactly what clearCurrentTicketCache / clearExitReason do before a write).
+      const promoted = makeState({ iteration: 6, current_ticket: 'NEW-2', step: 'implement' });
+      const tmpSibling = `${statePath}.tmp.99999999.${Date.now()}.1`;
+      fs.writeFileSync(tmpSibling, JSON.stringify(promoted, null, 2));
+      const future = Date.now() / 1000 + 5;
+      fs.utimesSync(tmpSibling, future, future);
+
+      const state = sm.read(statePath);
+
+      // Positive control: the promotion really happened and the snapshot's OWN values
+      // were adopted. Without this, "delete everything and assign nothing" also passes.
+      assert.equal(state.iteration, 6, 'promoted snapshot iteration must be adopted');
+      assert.equal(state.current_ticket, 'NEW-2', 'promoted snapshot current_ticket must be adopted');
+      assert.equal(state.step, 'implement', 'promoted snapshot step must be adopted');
+
+      // The defect: keys the promoted snapshot deleted must not survive the adoption.
+      for (const key of [
+        'current_ticket_tier',
+        'current_ticket_budget',
+        'current_ticket_max_iterations',
+        'current_ticket_worker_timeout_seconds',
+        'current_ticket_budget_start_iteration',
+        'exit_reason',
+      ]) {
+        assert.equal(state[key], undefined, `${key} must not survive promotion of a snapshot that deleted it`);
+      }
+
+      // And it must not be re-persisted over the file the rename just published.
+      const afterRead = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      assert.equal(afterRead.iteration, 6, 'on-disk state must be the promoted snapshot');
+      assert.equal(afterRead.current_ticket_tier, undefined, 'promotion must not re-persist a key the snapshot deleted');
+      assert.equal(afterRead.exit_reason, undefined, 'promotion must not re-persist a cleared exit_reason');
+
+      // The next ordinary write must not resurrect them either.
+      sm.update(statePath, (s) => { s.iteration = 7; });
+      const afterUpdate = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      assert.equal(afterUpdate.iteration, 7, 'ordinary update must land');
+      assert.equal(afterUpdate.current_ticket_tier, undefined, 'a later update must not resurrect the deleted cache field');
+      assert.equal(afterUpdate.exit_reason, undefined, 'a later update must not resurrect the cleared exit_reason');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 }

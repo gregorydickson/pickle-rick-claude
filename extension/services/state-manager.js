@@ -720,6 +720,23 @@ function isStateSnapshotNewer(currentState, currentMtimeMs, candidateState, cand
     // R-CIFB-B: both iterations absent → mtime tie-break, candidate (tmp) wins ties (`>=`).
     return candidateMtimeMs >= currentMtimeMs;
 }
+/**
+ * AP-EXT-ITER142-01: adopting a promoted snapshot is a REPLACE, never a merge.
+ *
+ * The rename has already made `promoted` the whole content of the state file, so the in-memory
+ * object must become that content and nothing else. `Object.assign` alone keeps every key the
+ * promoted snapshot DELETED — a cleared `exit_reason`, the R-CNAR-8 `current_ticket_*` cache
+ * fields — alive in the object `read()` returns, and the very next persist writes them back over
+ * the file we just promoted. The sibling promotion path (`recoverFromOrphanTmpWhenBaseCorrupt`)
+ * returns the snapshot itself and has always been a replace; this is the same act, so it gets the
+ * same semantics rather than a second set of them.
+ */
+function adoptPromotedSnapshot(target, promoted) {
+    const bag = target;
+    for (const key of Object.keys(bag))
+        delete bag[key];
+    Object.assign(target, promoted);
+}
 function unlinkQuietly(filePath) {
     try {
         fs.unlinkSync(filePath);
@@ -1170,7 +1187,7 @@ export class StateManager {
             catch {
                 continue;
             }
-            Object.assign(_state, candidate.state);
+            adoptPromotedSnapshot(_state, candidate.state);
             currentMtimeMs = readMtimeMs(statePath);
         }
     }
