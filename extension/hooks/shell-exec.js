@@ -877,6 +877,80 @@ function expandBraceWord(word) {
     return out.filter((w) => w.length > 0);
 }
 /**
+ * A character bash allows in a parameter NAME. Everything else inside a `${…}`
+ * body is expansion PUNCTUATION.
+ */
+const PARAMETER_NAME_CHAR_RE = /[A-Za-z0-9_]/;
+/**
+ * AP-EXT-ITER143-01: `${x:-git}` is not `$VAR` indirection — the word bash
+ * substitutes is WRITTEN IN THE COMMAND. Every one of bash's word-carrying
+ * parameter expansions (default, assign-default, alternate, error, prefix and
+ * suffix removal, replacement) places that word after a run of expansion
+ * punctuation, so the word is recovered by reading PAST punctuation and never
+ * by naming an operator — the enumerated-declaration shape this module has paid
+ * for fifteen times. Every body offset that begins a name run is therefore
+ * offered as a candidate word; the real one is always among them.
+ *
+ * The candidates are extra TOKENS, not a substitution into the word: every
+ * detector reads its anchor position-free (`execAnchorIndex`, `findGitVerb`,
+ * `findWriteTargetInScope` Pass 2), so a bare `git` in the segment answers the
+ * question `/usr/bin/${x:-git}` asks, and gluing (`${x:-git}reset`) can only
+ * over-block — this module's established direction.
+ *
+ * BOUNDED by the same budget brace expansion carries, and spent in CHARACTERS
+ * rather than candidates: a candidate is nearly as long as the body it comes
+ * from, so counting candidates alone is quadratic in the word — measured, a
+ * padded 20 KB body cost 3035 ms against the pre-fix 9 ms, and a 40 KB one
+ * drove `shellPatternToRegex` past the engine's regex-size limit, whose
+ * SyntaxError unwinds into `dispatch.ts`'s catch and APPROVES the whole command
+ * (the AP-EXT-ITER5-01 / ITER66-02 fail-open door). Charging each candidate its
+ * length keeps the emitted text linear in the budget. On overflow the surviving
+ * candidates stand; nothing is ever REMOVED, so an overflow cannot lose a block
+ * a non-expanding scanner had.
+ *
+ * RESIDUAL, recorded rather than claimed closed: a value-carrying `$NAME` /
+ * `${NAME}` (`G=git; $G reset --hard`) stays open. That word spells nothing —
+ * recovering it needs assignment tracking, not a grammar read — and it remains
+ * the accepted limit the `WRITE_COMMANDS is a speed bump` entry records.
+ */
+function parameterExpansionWords(word) {
+    const out = [];
+    let budget = BRACE_EXPANSION_STEP_CAP;
+    for (let i = 0; i + 1 < word.length; i++) {
+        if (word[i] !== '$' || word[i + 1] !== '{')
+            continue;
+        const close = word.indexOf('}', i + 2);
+        const body = word.slice(i + 2, close === -1 ? word.length : close);
+        for (let k = 0; k < body.length; k++) {
+            if (k > 0 && PARAMETER_NAME_CHAR_RE.test(body[k - 1]))
+                continue;
+            budget -= body.length - k;
+            if (budget < 0)
+                return out;
+            out.push(body.slice(k));
+        }
+        if (close !== -1)
+            i = close;
+    }
+    return out;
+}
+/**
+ * THE word-expansion seam: every word bash may produce from one word, in bash's
+ * own order — brace expansion first, then the literal words a parameter
+ * expansion may substitute into each result.
+ *
+ * ONE home, for the reason `execName` and `splitShellSegments` have one: a
+ * second expansion taught to half the module is the fork AP-EXT-ITER12-01 and
+ * AP-EXT-ITER66-01 each collapsed. The original word is always kept, so this is
+ * a strict WIDENING — no command that blocked before can stop blocking now.
+ */
+function expandWord(word) {
+    const braced = expandBraceWord(word);
+    if (!word.includes('${'))
+        return braced;
+    return braced.flatMap((w) => [w, ...parameterExpansionWords(w)]);
+}
+/**
  * Split ONE bash word into boundary tokens, keeping its parts glued.
  *
  * A quoted part is appended verbatim (quotes included, for the tokenizer that
@@ -896,9 +970,10 @@ function pushWordBoundaryTokens(word, tokens) {
     let buffer = '';
     const flush = () => {
         // The buffer is one complete bash WORD — operators already ended it — which
-        // is exactly where bash applies brace expansion, so that is where it goes.
+        // is exactly where bash applies its word expansions, so that is where they
+        // go (`expandWord`: brace expansion, then parameter expansion).
         if (buffer.length > 0)
-            tokens.push(...expandBraceWord(buffer));
+            tokens.push(...expandWord(buffer));
         buffer = '';
     };
     for (const part of word.match(WORD_PART_RE) ?? []) {

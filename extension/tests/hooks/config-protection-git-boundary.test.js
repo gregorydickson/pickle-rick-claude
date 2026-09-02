@@ -4334,7 +4334,12 @@ test('AP-EXT-ITER93-06: braces are declared separators but not GLUED ones', () =
   );
   assert.match(source, /op !== '\\n' && op !== '\{' && op !== '\}'/);
   assert.match(source, /'\(', '\)', '\{', '\}', '`',/);
-  assert.match(source, /tokens\.push\(\.\.\.expandBraceWord\(buffer\)\)/);
+  // AP-EXT-ITER143-01 renamed the flush seam to `expandWord` (brace expansion,
+  // then parameter expansion). Both halves are pinned, so the flush-time brace
+  // expansion cannot be dropped by editing either one alone.
+  assert.match(source, /tokens\.push\(\.\.\.expandWord\(buffer\)\)/);
+  assert.match(source, /return braced\.flatMap\(\(w\) => \[w, \.\.\.parameterExpansionWords\(w\)\]\);/);
+  assert.match(source, /const braced = expandBraceWord\(word\);/);
 });
 
 // ---------------------------------------------------------------------------
@@ -4667,4 +4672,106 @@ test('AP-EXT-ITER110-01: a PRD citing a real gate event is no longer audited as 
     [],
     'the refinement symbol audit must not report a live gate event as a fabricated citation',
   );
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER143-01 — a PARAMETER EXPANSION writes its word in plain sight
+//
+// `${x:-git}` is not `$VAR` indirection: bash substitutes a word that is
+// WRITTEN IN THE COMMAND, so it is recoverable by a grammar read exactly as a
+// brace expansion is (AP-EXT-ITER93-06), and it needs no assignment, no
+// environment and no crafted filename. The grammar declared no parameter part,
+// so the fold produced `${x:-git}` — matching no detector — and the bypass hit
+// every R-WSRC gate at once, the AP-EXT-ITER63-06 blast radius:
+//
+//   `${x:-git} reset --hard`        APPROVED (R-WSRC-GR)
+//   `${x:-git} push origin main`    APPROVED (R-WSRC-GR)
+//   `git ${x:-reset} --hard`        APPROVED (R-WSRC-GR, verb position)
+//   `${x:-bash} install.sh`         APPROVED (R-WSRC install.sh ban)
+//   `bash ${x:-install.sh}`         APPROVED (R-WSRC install.sh ban)
+//   `${x:-tee} <session>/state.json` APPROVED (R-WSRC-3 state write)
+//   `${x:-sed} -i "" s/a/b/ pickle_settings.json` APPROVED (R-WSRC-3 settings)
+//
+// All shim-verified on this box (2026-09-01) to really exec, and all measured
+// APPROVE against the shipped mirror before the fix while every literal twin
+// blocked. Cost measured over 10516 unique real worker Bash commands from 204
+// prior-session logs: ZERO verdict flips in either direction on the git-verb
+// gate, and ZERO across all four gates on the 486 commands whose segmentation
+// reshaped. 84.7 -> 85.7 microseconds per command.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER143-01: a parameter-expanded git verb is blocked, and its literal twin still is', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const run = (command) => runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  // The exec word, the verb word, and the flag word — all three positions.
+  for (const command of [
+    '${x:-git} reset --hard',
+    '${x-git} reset --hard',
+    '${x:=git} reset --hard',
+    '${x:+git} reset --hard',
+    'git ${x:-reset} --hard',
+    'git ${x:-push} origin main',
+    '${x:-git} stash',
+    '/usr/bin/${x:-git} rebase -i',
+    'git commit ${x:---amend} -m x',
+  ]) {
+    const result = run(command);
+    assert.equal(result.decision, 'block', `must block: ${command}`);
+    assert.match(result.reason, /R-WSRC-GR/);
+  }
+  // Non-tautology: the literal twins still block, and a benign parameter
+  // expansion still approves — the fix must not have made everything a block.
+  assert.equal(run('git reset --hard').decision, 'block');
+  assert.equal(run('git status --short').decision, 'approve');
+  assert.equal(run('echo "${HOME}/bin"').decision, 'approve');
+  assert.equal(run('cd ${DIR:-extension} && npm test').decision, 'approve');
+});
+
+test('AP-EXT-ITER143-01: the install.sh ban and both write gates see the substituted word', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const run = (command) => runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.match(run('${x:-bash} install.sh').reason ?? '', /R-WSRC/);
+  assert.equal(run('${x:-bash} install.sh').decision, 'block');
+  assert.equal(run('bash ${x:-install.sh}').decision, 'block');
+  assert.equal(run('${x:-tee} /tmp/pickle-test/state.json').decision, 'block');
+  assert.equal(run('${x:-sed} -i "" s/a/b/ pickle_settings.json').decision, 'block');
+});
+
+test('AP-EXT-ITER143-01: expansion offers the word bash substitutes, and keeps the original', () => {
+  // The candidates are extra TOKENS in the same segment — every detector reads
+  // its anchor position-free — and the ORIGINAL word is always kept, so the
+  // expansion is a strict widening and cannot lose a pre-fix block.
+  assert.deepEqual(splitShellSegments('${x:-git} reset'), ['${x:-git} x:-git -git git reset']);
+  // A body of pure name characters carries no substitutable word beyond itself.
+  assert.deepEqual(splitShellSegments('echo ${HOME}'), ['echo ${HOME} HOME']);
+  // No `${` at all: byte-identical to the pre-fix reading.
+  assert.deepEqual(splitShellSegments('git status && ls'), ['git status', 'ls']);
+  assert.deepEqual(splitShellSegments('git {reset,--hard}'), ['git reset --hard']);
+  // Nested and unterminated bodies still surface the literal word.
+  assert.ok(splitShellSegments('${a:-${b:-git}} reset')[0].split(' ').includes('git'));
+  assert.ok(splitShellSegments('${x:-git reset --hard')[0].split(' ').includes('git'));
+});
+
+test('AP-EXT-ITER143-01: the expansion budget is spent in CHARACTERS, so a padded word cannot spin the hook', () => {
+  // A candidate is nearly as long as the body it comes from, so a per-candidate
+  // cap is quadratic in the word: the character budget is what keeps the
+  // emitted text linear. Measured before the budget: a 20 KB punctuation body
+  // cost 3035 ms against the pre-fix 9 ms, and a 40 KB one drove
+  // `shellPatternToRegex` past the engine's regex-size limit, whose SyntaxError
+  // unwinds into dispatch's catch and APPROVES the whole command.
+  const padded = `\${${'x:'.repeat(10000)}}`;
+  const started = Date.now();
+  const segments = splitShellSegments(padded);
+  const elapsed = Date.now() - started;
+  assert.ok(segments.length >= 1);
+  assert.ok(elapsed < 1000, `padded parameter body must stay cheap, took ${elapsed}ms`);
+  // Overflow falls back to the surviving candidates; nothing is ever REMOVED,
+  // so an overflow cannot lose a block a non-expanding scanner already had.
+  assert.ok(segments[0].startsWith(padded));
 });
