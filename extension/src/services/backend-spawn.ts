@@ -1060,20 +1060,44 @@ export function backendEnvOverrides(backend: Backend, trailerOpts?: TrailerHooks
 // ---------------------------------------------------------------------------
 // R-CSI / W2.R1 — session-scoped process isolation (setpgid + stamp)
 //
-// Every subprocess pickle-rick spawns is stamped with the owning session id and
-// working_dir and (on POSIX) launched `detached` so it leads its OWN process
-// group. The single source of truth for both is here so every spawn site (the
-// worker spawn in spawn-morty.ts, the manager spawn in mux-runner.ts) stamps and
-// scopes identically — a kill that targets `process.kill(-pid, sig)` then reaps
-// exactly that session's subtree and CANNOT reach a concurrent session's (or an
-// out-of-repo pipeline's) healthy workers by a bare binary name.
+// TWO SEPARATE MECHANISMS live here, and only ONE of them is load-bearing.
+//
+// 1. `shouldIsolateSessionGroup()` — LOAD-BEARING. A spawn that passes it to
+//    `detached` makes its child LEAD a process group, which is what gives
+//    `process.kill(-pid, sig)` (services/orphan-reaper.ts `killProcessGroup`)
+//    a subtree to reap without naming a bare binary. Attribution of an ALREADY
+//    RUNNING proc back to its session is likewise NOT done from the stamp below:
+//    `orphan-reaper.ts resolveOwningSessionDir` scans argv for the first
+//    `--add-dir` under the sessions root.
+//
+// 2. `sessionStampEnv()` — DIAGNOSTIC ONLY. See its own docstring.
+//
+// NOT every spawn site does either. The stamp is applied at exactly two sites
+// (the worker spawn in spawn-morty.ts, the manager iteration spawn in
+// mux-runner.ts); `detached` is applied at the WORKER spawn and NOT at the
+// manager spawn, deliberately — a manager that led its own group would escape
+// `pipeline-runner.ts`'s `killProcessGroup(muxPid)` teardown, which reaps the
+// manager precisely BECAUSE it shares mux-runner's group. Do not "fix" that
+// asymmetry by detaching the manager, and do not group-kill a manager pid: with
+// no group of its own, `kill(-managerPid)` names mux-runner's OWN group — the
+// AP-EXT-ITER47-01 self-group hazard.
 // ---------------------------------------------------------------------------
 
 /**
- * Env stamp identifying the owning session for every spawned subprocess.
+ * Env stamp identifying the owning session for a spawned subprocess.
  * `sessionId` is the session directory basename (e.g. `2026-06-13-2bd4740a`);
- * `workingDir` is the session's canonical project directory. Both are read back
- * by kill/reaping paths to scope targets to this session only.
+ * `workingDir` is the session's canonical project directory.
+ *
+ * DIAGNOSTIC ONLY: nothing in this runtime READS either key — not the kill
+ * paths, not the reapers, not the hooks — and nothing ever has (measured over
+ * full history; the pair has been write-only since `45d9659d` introduced it).
+ * Its value is that `env | grep PICKLE_` inside a live subprocess names the
+ * owning session, which is how run evidence is captured
+ * (`docs/gitattr-live-run-evidence.md`). Treat a claim that some kill/reap path
+ * "scopes by the stamp" as false until a reader exists: the real scoping is
+ * `shouldIsolateSessionGroup()` + argv `--add-dir` attribution (see the section
+ * comment above). If you ever DO wire a reader, update this docstring in the
+ * same change — `backend-spawn-trailer-env.test.js` pins the two together.
  */
 export function sessionStampEnv(sessionId: string, workingDir: string): Record<string, string> {
   const env: Record<string, string> = {};

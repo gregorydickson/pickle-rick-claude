@@ -470,3 +470,96 @@ test('AP-EXT-ITER9-01: PICKLE_TEST_MODE unset is a production passthrough on the
     if (prev !== undefined) process.env.PICKLE_TEST_MODE = prev;
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER147-01 — the R-CSI session stamp is DIAGNOSTIC ONLY, and its own
+// prose has to say so.
+//
+// `sessionStampEnv` writes PICKLE_SESSION / PICKLE_WORKING_DIR at two spawn
+// sites; its docstring claimed both were "read back by kill/reaping paths to
+// scope targets to this session only". No such reader exists, and `git log -S`
+// finds none in the whole history — the claim was false at birth (`45d9659d`).
+// Real scoping is `shouldIsolateSessionGroup()` + `orphan-reaper.ts`'s argv
+// `--add-dir` attribution.
+//
+// Two-sided on purpose, so it can never become a brake on a real feature: while
+// the stamp has zero readers the prose MUST mark it diagnostic-only, and the
+// moment a reader lands the prose MUST stop saying that. Either way the code and
+// the sentence move together.
+// ---------------------------------------------------------------------------
+
+const STAMP_KEYS = ['PICKLE_SESSION', 'PICKLE_WORKING_DIR'];
+/** `PICKLE_SESSION` must not match `PICKLE_SESSION_ROOT` (a live, unrelated var). */
+const stampKeyRe = (key) => new RegExp(`${key}(?![A-Z0-9_])`);
+/**
+ * The two lines that WRITE the stamp — the producer, never a reader. Anchored on
+ * the assignment, not the surrounding `if`, so reformatting the guard does not
+ * red this file; a RENAME of either key still does.
+ */
+const STAMP_WRITE_RE = /\benv\.(PICKLE_SESSION|PICKLE_WORKING_DIR)(?![A-Z0-9_])\s*=[^=]/;
+
+function extensionRootDir() {
+  return path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
+}
+
+/** Tracked `.ts` under extension/src, the way git owns them. */
+function trackedSrcTsFiles() {
+  const extensionDir = extensionRootDir();
+  const out = execFileSync('git', ['ls-files', '--', 'src'], {
+    cwd: extensionDir,
+    encoding: 'utf-8',
+    timeout: GIT_TIMEOUT_MS,
+  });
+  return out.split('\n').filter(f => f.endsWith('.ts')).map(f => path.join(extensionDir, f));
+}
+
+/**
+ * Every non-comment line under extension/src that mentions a stamp key and is not
+ * the write itself. Comment stripping is line-shaped (`//`, `*`, `/*`), which is
+ * why the docstring above — which names both keys — does not count as a reader.
+ */
+function stampReaderLines() {
+  const hits = [];
+  for (const file of trackedSrcTsFiles()) {
+    const lines = fs.readFileSync(file, 'utf-8').split('\n');
+    lines.forEach((line, i) => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return;
+      if (!STAMP_KEYS.some(k => stampKeyRe(k).test(line))) return;
+      if (STAMP_WRITE_RE.test(line)) return;
+      hits.push(`${path.basename(file)}:${i + 1}: ${trimmed}`);
+    });
+  }
+  return hits;
+}
+
+test('AP-EXT-ITER147-01: the session stamp has no runtime reader, and its prose matches', () => {
+  const source = fs.readFileSync(
+    path.join(extensionRootDir(), 'src/services/backend-spawn.ts'),
+    'utf-8',
+  );
+
+  // Non-vacuity: a rename that moved the producer would make `readers` empty for
+  // the wrong reason, so prove the write site is still where we think it is.
+  const writeLines = source.split('\n').filter(l => STAMP_WRITE_RE.test(l));
+  assert.equal(writeLines.length, 2, 'both stamp writes must still be in backend-spawn.ts');
+  assert.ok(trackedSrcTsFiles().length > 50, 'src corpus must be non-empty');
+
+  const readers = stampReaderLines();
+  if (readers.length === 0) {
+    assert.ok(
+      /DIAGNOSTIC ONLY/.test(source),
+      'stamp has zero readers — sessionStampEnv must be documented DIAGNOSTIC ONLY',
+    );
+    assert.ok(
+      !/read back\s*\n?\s*\*?\s*by kill\/reaping paths/.test(source),
+      'stamp has zero readers — the docstring must not claim kill/reap paths read it',
+    );
+  } else {
+    assert.ok(
+      !/DIAGNOSTIC ONLY/.test(source),
+      `stamp now has ${readers.length} reader(s) — drop the DIAGNOSTIC ONLY wording and `
+        + `describe what reads it:\n${readers.join('\n')}`,
+    );
+  }
+});
