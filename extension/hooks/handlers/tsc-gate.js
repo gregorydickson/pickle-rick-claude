@@ -331,6 +331,11 @@ function tscRenderedVerdict(result) {
  * at 2099 ms for this repository's whole `extension` subtree and 657 ms for a
  * 40-file project — both inside `getTscTimeoutMs()`'s 8 s ceiling.
  *
+ * Both ends are the PROJECT directory (`resolveProjectPrefix`), never the git
+ * root: a link made beside the project rather than in it reproduces nothing, and
+ * that is measurably this repository's own case — its dependencies live in
+ * `extension/node_modules` while the git root holds none.
+ *
  * A repo with no `node_modules` is deliberately NOT skipped: the working tree
  * resolves nothing external either, so the two environments already agree and the
  * compiler's diagnostics are about the staged code exactly as they would be in the
@@ -338,9 +343,9 @@ function tscRenderedVerdict(result) {
  * silently disabled the gate for every self-contained project — the link is the
  * whole fix, and nothing rides on its outcome.
  */
-function linkDependencyEnvironment(repoRoot, destinationRoot) {
-    const source = path.join(repoRoot, 'node_modules');
-    const destination = path.join(destinationRoot, 'node_modules');
+function linkDependencyEnvironment(projectSource, projectDestination) {
+    const source = path.join(projectSource, 'node_modules');
+    const destination = path.join(projectDestination, 'node_modules');
     if (fs.existsSync(destination) || !fs.existsSync(source))
         return;
     try {
@@ -350,6 +355,61 @@ function linkDependencyEnvironment(repoRoot, destinationRoot) {
         // A tree that could not be linked is one the existing not-measured / verdict
         // arms already answer for. Failing to link must never fail the commit.
     }
+}
+/**
+ * The ONE anchor the gate measures from: the directory of the TypeScript project
+ * that owns the staged files, as a repo-relative prefix (`''` for a project at
+ * the repository root).
+ *
+ * `evaluateCommitCommand` resolves `repoRoot` with `git rev-parse
+ * --show-toplevel` — the GIT root, which is not the PROJECT root whenever the
+ * TypeScript project lives in a subdirectory. That is this repository's own shape
+ * (`extension/`) and the shape of every workspace/monorepo. The gate previously
+ * anchored BOTH the dependency link and the compiler's cwd at the git root, so on
+ * such a repo the compiler ran where no project config exists.
+ *
+ * MEASURED on this repository, replaying `runTscGate` step for step: 2129 files
+ * materialized, `node_modules` linked from the git root (empty — the real one is
+ * `extension/node_modules`), then `npx tsc --noEmit` at the tree root printed its
+ * HELP TEXT (`tsc: The TypeScript Compiler - Version 5.9.3 / COMMON COMMANDS`)
+ * and exited 1 with ZERO diagnostics. `tscRenderedVerdict` is false for that, so
+ * the gate approved as not-measured — for 100% of commits, having type-checked
+ * nothing. Re-anchored at `extension/` the same tree compiles in 1921 ms, exit 0,
+ * 0 diagnostics; with one injected `const x: number = "s"` it exits 2 with
+ * `TS2322`. Same tree, same compiler: the anchor was the whole difference.
+ *
+ * Discovery reproduces the compiler's OWN rule rather than inventing one — `tsc`
+ * with no `-p` walks up from its cwd to the nearest `tsconfig.json`, so this walks
+ * up from the staged file to the same thing. Deliberately not `TSC_CONFIG_RE`:
+ * that pattern admits `tsconfig.build.json`, which `tsc`'s search does not, and a
+ * discovery rule wider than the compiler's would anchor where the compiler will
+ * not look.
+ *
+ * The walk ends where `path.dirname` reaches a FIXED POINT, not at an enumerated
+ * set of root spellings. `'.'`, `''` and `path.sep` are three spellings of one
+ * idea, and a list of them is one spelling short of the next bug: on Windows
+ * `path.dirname('C:\\')` is `'C:\\'`, which is none of the three, so the loop
+ * would never terminate — a hang inside a PreToolUse hook, which is the halt path
+ * this codebase forbids outright. Asking whether the parent still MOVES needs no
+ * list and is identical on POSIX (verified against every case below).
+ *
+ * The prefix feeds the link source, the link destination AND the cwd, because a
+ * gate with three anchors that must agree is a gate that will drift apart again —
+ * this exact divergence is how the link came to be made in a directory the
+ * compiler never consulted. First staged path wins: staged files spanning two
+ * projects measure the first, which is strictly more than the zero measured
+ * before, and never blocks on the project it did not compile.
+ */
+function resolveProjectPrefix(treeRoot, stagedPaths) {
+    for (const relativePath of stagedPaths) {
+        let directory = path.dirname(relativePath);
+        for (let parent = path.dirname(directory); parent !== directory; parent = path.dirname(directory)) {
+            if (fs.existsSync(path.join(treeRoot, directory, 'tsconfig.json')))
+                return directory;
+            directory = parent;
+        }
+    }
+    return '';
 }
 function classifyTscFailure(result) {
     if (result.timedOut) {
@@ -380,8 +440,10 @@ function runTscGate(repoRoot, stagedPaths) {
                 failureKind: 'setup_error',
             };
         }
-        linkDependencyEnvironment(repoRoot, tempDir);
-        const tscResult = runTextCommand('npx', ['tsc', '--noEmit'], tempDir, getTscTimeoutMs());
+        const projectPrefix = resolveProjectPrefix(tempDir, stagedPaths);
+        const projectDir = path.join(tempDir, projectPrefix);
+        linkDependencyEnvironment(path.join(repoRoot, projectPrefix), projectDir);
+        const tscResult = runTextCommand('npx', ['tsc', '--noEmit'], projectDir, getTscTimeoutMs());
         if (tscResult.status === 0 && !tscResult.error) {
             return { decision: 'approve' };
         }

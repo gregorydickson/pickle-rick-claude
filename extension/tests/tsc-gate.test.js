@@ -1738,3 +1738,98 @@ it('AP-EXT-ITER159-01 control: a project with no node_modules is still measured,
     harness.cleanup();
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER160-01 — the gate compiled at the GIT root, and the project is not
+// always there.
+//
+// `evaluateCommitCommand` resolves `repoRoot` with `git rev-parse
+// --show-toplevel`. When the TypeScript project lives in a subdirectory — this
+// repository's own shape, and every workspace/monorepo — the compiler ran in a
+// directory with no project config, printed its help text, exited 1 with no
+// diagnostic, and the gate approved as not-measured for 100% of commits.
+//
+// Every case above puts its project config at the repository root, which is why
+// 1740 lines of tests could not see this. These two drive a real compiler at a
+// SUBDIRECTORY project.
+// ---------------------------------------------------------------------------
+
+/**
+ * A repository whose TypeScript project is a subdirectory: config, package
+ * manifest and `node_modules` all under `pkg/`, nothing at the git root but a
+ * `.gitignore`. Modelled directly on this repository's `extension/`.
+ */
+function makeSubdirectoryProjectRepo(staged) {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tsc-gate-subdir-'));
+  git(['init', '-q', '-b', 'main'], repoRoot);
+  git(['config', 'commit.gpgsign', 'false'], repoRoot);
+  fs.mkdirSync(path.join(repoRoot, 'pkg', 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, '.gitignore'), 'node_modules/\n');
+  fs.writeFileSync(
+    path.join(repoRoot, 'pkg', 'tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: {
+        target: 'ESNext', module: 'NodeNext', moduleResolution: 'NodeNext',
+        strict: true, noEmit: true, skipLibCheck: true,
+      },
+      include: ['src/**/*.ts'],
+    }),
+  );
+  fs.writeFileSync(
+    path.join(repoRoot, 'pkg', 'src', 'entry.ts'),
+    'import * as fs from "fs";\nexport const p: string = fs.realpathSync(".");\n',
+  );
+  git(['add', '-A'], repoRoot);
+  git(['commit', '-qm', 'initial'], repoRoot);
+  // Dependencies live BESIDE the project config, not at the git root — the whole
+  // point of the case. A link at the git root would reproduce nothing.
+  fs.symlinkSync(REAL_NODE_MODULES, path.join(repoRoot, 'pkg', 'node_modules'), 'junction');
+  fs.writeFileSync(path.join(repoRoot, 'pkg', 'src', 'entry.ts'), staged);
+  git(['add', 'pkg/src/entry.ts'], repoRoot);
+  return repoRoot;
+}
+
+function runSubdirectoryCase(staged) {
+  assert.ok(fs.existsSync(REAL_TSC), 'the regression case needs the checked-out TypeScript compiler');
+  const harness = makeHarness();
+  createRealTscNpxShim(harness.shimDir);
+  const repoRoot = makeSubdirectoryProjectRepo(staged);
+  try {
+    writeSession(harness, repoRoot);
+    return runHandler({ harness, repoRoot, timeout: 30_000 });
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    harness.cleanup();
+  }
+}
+
+it('AP-EXT-ITER160-01: a type error in a SUBDIRECTORY project is measured and blocks', () => {
+  const result = runSubdirectoryCase(TYPE_ERROR_STAGED);
+
+  // Pre-fix: cwd was the git-root mirror, where no project config exists, so tsc
+  // printed `COMMON COMMANDS` and exited 1 with no diagnostic — `tscRenderedVerdict`
+  // false, approve-as-not-measured. Broken TypeScript sailed through.
+  assert.equal(result.decision.decision, 'block');
+  // Naming the diagnostic is what proves a compiler read THIS staged file rather
+  // than merely running somewhere.
+  assert.match(result.decision.reason, /error TS2322/);
+  assertFailedEvent(latestEvent(result.events, 'tsc_gate_failed'), 'compile_error');
+});
+
+it('AP-EXT-ITER160-01 control: correct staged code in a SUBDIRECTORY project is measured clean, not skipped and not blocked', () => {
+  const result = runSubdirectoryCase(CORRECT_STAGED);
+
+  // The anti-vacuity half. Without it the case above is satisfied by anything
+  // that merely makes the gate stricter — including re-anchoring at a project
+  // whose dependency environment is missing, which blocks correct code with
+  // `TS2307 Cannot find module 'fs'`. Both halves together say the verdict tracks
+  // the staged content and nothing else.
+  assert.deepStrictEqual(result.decision, { decision: 'approve' });
+  assert.equal(
+    latestEvent(result.events, 'gate_skipped'),
+    null,
+    'a subdirectory project must reach a real verdict, not the not-measured channel',
+  );
+  assert.equal(latestEvent(result.events, 'tsc_gate_failed'), null);
+});
