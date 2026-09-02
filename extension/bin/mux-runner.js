@@ -5220,14 +5220,31 @@ function assertWorkingDirUnderTmpdirIfTestMode(workingDir) {
  * route judge the flip on real evidence). Omitting `gateWorkingDir` preserves
  * the unconditional stamp for callers that already gate on `extension/`
  * existing before ever reaching this committer (`commitGatePassingDeliverableOnExitPath`).
+ *
+ * AP-EXT-ITER157-04: `gateMeasured === false` records `not_run` INSTEAD of
+ * `green`. An `extension/` dir proves the gate was APPLICABLE, never that it
+ * measured anything — the armed gate reports `ok` off an exit code, and an empty
+ * tier selection exits 0 having run no test (the `measured` axis on
+ * `BetweenTicketGateResult`). Stamping green there is the durable half of that
+ * false green: the write lands BEFORE `shouldWithholdDoneFlipOnUnrunGate` reads
+ * the verdict back, so the rung-1 caller's declared `allowDoneWhenGateNotRun:
+ * false` resolves `green` and its withhold can never fire. Writing `not_run`
+ * hands that EXISTING path the honest disposition rather than adding a second
+ * refusal beside it. Do NOT "fix" this by skipping the stamp: an absent verdict
+ * routes `resolveWorkerGateVerdict` into `recomputeAbsentWorkerGateVerdict`
+ * (eslint + tsc only), re-minting a synthesised `green` for a ticket whose TEST
+ * dimension never ran — the trap `readWorkerGateVerdict`'s own comment names.
+ * `undefined` (not `false`) preserves the unconditional stamp for the caller
+ * whose greenness is earned from twin evidence rather than a gate
+ * (`flipSplitOriginalDoneOnTwinEvidence`).
  */
-function persistRunnerAuthoredGreenVerdict(sessionDir, ticketId, gateWorkingDir) {
+function persistRunnerAuthoredGreenVerdict(sessionDir, ticketId, gateWorkingDir, gateMeasured) {
     if (gateWorkingDir !== undefined && !fs.existsSync(path.join(gateWorkingDir, 'extension')))
         return;
     try {
         const fp = ticketFilePath(sessionDir, ticketId);
         const raw = fs.readFileSync(fp, 'utf8');
-        const upd = upsertFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD, 'green');
+        const upd = upsertFrontmatterField(raw, WORKER_GATE_VERDICT_FIELD, gateMeasured === false ? 'not_run' : 'green');
         if (upd)
             fs.writeFileSync(fp, upd);
     }
@@ -5403,7 +5420,7 @@ export function commitAndContinueDoneFlip(input) {
         input.log(`commit-and-continue: git commit blocked/failed for ${input.ticketId} (status ${commit.status ?? 'null'})`);
         return { ok: false };
     }
-    persistRunnerAuthoredGreenVerdict(input.sessionDir, input.ticketId, input.workingDir);
+    persistRunnerAuthoredGreenVerdict(input.sessionDir, input.ticketId, input.workingDir, input.gateMeasured);
     const guard = guardCompletionCommitBeforeDone({
         sessionDir: input.sessionDir,
         ticketId: input.ticketId,
@@ -5467,11 +5484,19 @@ export { stashUnattributableRemainder };
  */
 function commitExitPathDeliverableIfGateGreen(input, ticketId, extensionDir, gate, stagePaths) {
     const { sessionDir, statePath, workingDir, extensionRoot, flags, log } = input;
-    if (!gate(extensionDir, extensionRoot).ok) {
+    const gateResult = gate(extensionDir, extensionRoot);
+    if (!gateResult.ok) {
         log(`[exit-commit] ticket ${ticketId}: gate not green — leaving uncommitted work for the failure/skip path`);
         return { committed: false, reason: 'gate-failed' };
     }
-    const r = commitAndContinueDoneFlip({ sessionDir, ticketId, workingDir, statePath, flags, log, stagePaths });
+    // AP-EXT-ITER157-04: the gate's `ok` is an exit code; carry its `measured` axis
+    // through to the verdict stamp so an exit-0 tier that ran nothing records
+    // `not_run` rather than a durable, unearned `green`. `=== true` on purpose —
+    // an injected gate double that omits the field must read as UNMEASURED.
+    const r = commitAndContinueDoneFlip({
+        sessionDir, ticketId, workingDir, statePath, flags, log, stagePaths,
+        gateMeasured: gateResult.measured === true,
+    });
     if (!r.ok)
         return { committed: false, reason: 'commit-failed' };
     log(`[exit-commit] ticket ${ticketId}: committed gate-passing deliverable (completion_commit: ${r.sha})`);
@@ -6250,10 +6275,13 @@ function runRecoveryArmedGate(input, extensionDir) {
             site: 'attemptRecoveryBeforeTerminal.runArmedGate',
         });
         input.log(`recovery: armed gate not applicable for ${input.ticketId} (no extension/) — proceeding without a fabricated green verdict`);
-        return { ok: true, failures: null };
+        return { ok: true, failures: null, measured: false };
     }
     const r = runBetweenTicketFastTests(extensionDir, input.extensionRoot);
-    return { ok: r.ok, failures: r.failures };
+    // AP-EXT-ITER157-04: `measured` rides out alongside `failures` so the committer can
+    // tell "the tier passed" from "the tier reported nothing". Dropping it here is what
+    // let an exit-0 empty selection reach the stamp as a green.
+    return { ok: r.ok, failures: r.failures, measured: r.measured };
 }
 /**
  * W4a: annotate the ledger reason with the backend/mode discriminant so every recovery
@@ -6284,6 +6312,11 @@ export function attemptRecoveryBeforeTerminal(input) {
     const haltSite = typeof input.evidence?.halt_site === 'string' ? `;halt_site=${input.evidence.halt_site}` : '';
     const discriminantTag = `[backend=${discriminant.backend};mode=${discriminant.mode}${haltSite}]`;
     let lastGateFailures = [];
+    // AP-EXT-ITER157-04: same carry-out idiom as `lastGateFailures` — `RecoveryDeps.runArmedGate`
+    // returns only `{ok}`, so the measurement axis reaches `commitAndFlipDone` through the
+    // closure rather than through a widened service contract. `commitAndFlipDone` is only ever
+    // reached after `runArmedGate()`, so this is never read stale.
+    let lastGateMeasured = false;
     const deps = {
         iteration: input.iteration,
         ticketId: input.ticketId,
@@ -6294,6 +6327,7 @@ export function attemptRecoveryBeforeTerminal(input) {
             // previously recorded failures must survive untouched.
             if (gate.failures !== null)
                 lastGateFailures = gate.failures;
+            lastGateMeasured = gate.measured;
             return { ok: gate.ok };
         },
         commitAndFlipDone: () => commitAndContinueDoneFlip({
@@ -6306,6 +6340,10 @@ export function attemptRecoveryBeforeTerminal(input) {
             // AC-R2-3: rung 1 is a runner-driven recovery commit, not a worker's
             // declaration of completion. Never auto-flip Done over a gate that never ran.
             allowDoneWhenGateNotRun: false,
+            // AP-EXT-ITER157-04: and this is what makes the line above reachable. The stamp
+            // runs BEFORE the withhold reads the verdict, so without carrying the measurement
+            // the withhold always resolved `green` and could never fire.
+            gateMeasured: lastGateMeasured,
         }),
         spawnRemediator: () => spawnRecoveryRemediator(input, lastGateFailures),
         executeConvergedPlan: () => executeConvergedPlanAdapter({

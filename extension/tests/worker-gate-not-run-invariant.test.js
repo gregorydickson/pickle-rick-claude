@@ -381,6 +381,102 @@ test('AP-EXT-ITER157-03: the two dispositions are distinguishable on output alon
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER157-04 — the RUNNER-authored verdict stamp, and the withhold it disabled.
+//
+// SITE 4 above covers the OFF-repo arm: no `extension/`, so the stamp is skipped and
+// `allowDoneWhenGateNotRun: false` withholds the Done flip. The ON-repo arm was the hole.
+// `persistRunnerAuthoredGreenVerdict` took no verdict input at all — its only skip was a
+// missing `extension/` — so a tier that exited 0 having selected nothing wrote a DURABLE
+// `worker_gate_verdict: green` into ticket frontmatter. `readWorkerGateVerdict`
+// short-circuits on any non-absent value, so every later Done-flip path trusted it
+// without re-running a thing.
+//
+// The stamp also lands BEFORE `shouldWithholdDoneFlipOnUnrunGate` reads the verdict back,
+// so rung 1's declared `allowDoneWhenGateNotRun: false` resolved `green` and its withhold
+// could never fire. Fixing the stamp is what makes that existing path reachable — which
+// is why these cases assert the STATUS as well as the frontmatter: a verdict-only oracle
+// would green over the unearned Done flip.
+//
+// Driven through `attemptRecoveryBeforeTerminal` — the real ladder — rather than the
+// committer in isolation, because the defect was the measurement being DROPPED in transit
+// (`runRecoveryArmedGate` returned `{ok, failures}` and discarded `measured`), not the
+// stamp's own logic. Only an end-to-end drive can see a value lost between two functions.
+// ---------------------------------------------------------------------------
+
+/**
+ * Drive rung 1 of the recovery ladder over an ON-repo fixture (an `extension/` tree, so
+ * the gate is applicable and the stamp is NOT skipped) with a dirty tree so the rung is
+ * reachable. Only the tier's stdout varies between rows; the exit code is 0 throughout.
+ */
+async function runRecoveryLadderOnRepo(ticketId, tierStdout) {
+  const root = makeTmp();
+  const sessionDir = path.join(root, 'session');
+  initOnRepoFixture(root);
+  fs.writeFileSync(path.join(root, 'work.txt'), 'dirty tree — rung 1 is reachable');
+  const statePath = writeState(sessionDir, { working_dir: root });
+  writeTicket(sessionDir, ticketId);
+  const shimDir = path.join(root, 'shim');
+  writeShim(shimDir, 'npx');
+  writeShim(shimDir, 'npm', 0, tierStdout);
+  const outcome = await withPathPrefix(shimDir, () => withoutTestMode(() => attemptRecoveryBeforeTerminal({
+    sessionDir,
+    statePath,
+    extensionRoot: path.join(root, 'absent-extension-root'),
+    workingDir: root,
+    ticketId,
+    iteration: 1,
+    flags: null,
+    log: () => {},
+  })));
+  return {
+    outcome,
+    verdict: readFrontmatterField(sessionDir, ticketId, 'worker_gate_verdict'),
+    status: readTicketStatus(sessionDir, ticketId),
+  };
+}
+
+test('AP-EXT-ITER157-04: an exit-0 tier that ran NO tests stamps not_run, never a durable green', async () => {
+  const { outcome, verdict, status } = await runRecoveryLadderOnRepo('jjj10101', TIER_REACHED_NOTHING_STDOUT);
+  assert.equal(
+    verdict,
+    'not_run',
+    'a gate that measured nothing must not author a durable green worker_gate_verdict',
+  );
+  assert.equal(
+    status,
+    'In Progress',
+    'with the stamp honest, the rung-1 withhold (allowDoneWhenGateNotRun: false) finally fires',
+  );
+  // No-stopping-gates: the local Done flip is refused, the ladder is NOT. The commit is
+  // real and the run continues — a withheld flip is a parked item, not a halt.
+  assert.equal(
+    outcome.kind,
+    'advanced',
+    'an unmeasured gate must still let a genuinely-progressing ladder advance',
+  );
+});
+
+test('AP-EXT-ITER157-04 comparator: a tier that genuinely ran still stamps green and flips Done', async () => {
+  const { outcome, verdict, status } = await runRecoveryLadderOnRepo('kkk12121', TIER_RAN_STDOUT);
+  // The positive control. Without it this fix could pass by refusing everything —
+  // stamping `not_run` unconditionally would satisfy the case above and brick rung 1.
+  assert.equal(verdict, 'green', 'a tier that measured and passed is still recorded green');
+  assert.equal(status, 'Done', 'a measured green gate must still auto-flip the ticket Done');
+  assert.equal(outcome.kind, 'advanced');
+});
+
+test('AP-EXT-ITER157-04: same exit code, same fixture — the stamped verdicts must differ', async () => {
+  const ran = await runRecoveryLadderOnRepo('lll13131', TIER_RAN_STDOUT);
+  const reachedNothing = await runRecoveryLadderOnRepo('mmm14141', TIER_REACHED_NOTHING_STDOUT);
+  assert.notEqual(
+    ran.verdict,
+    reachedNothing.verdict,
+    'the runner-authored stamp must distinguish a measured pass from an unmeasured one',
+  );
+  assert.notEqual(ran.status, reachedNothing.status, 'and the Done flip must follow that distinction');
+});
+
+// ---------------------------------------------------------------------------
 // AC-2 — no authorship claim on a gate that did not execute.
 // ---------------------------------------------------------------------------
 
