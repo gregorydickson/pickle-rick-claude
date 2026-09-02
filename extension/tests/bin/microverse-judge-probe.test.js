@@ -649,14 +649,24 @@ describe('R-JUNS: an unparseable judge answer never breaks the phase loop', () =
     // become live again and FR-B2 should be re-opened rather than left closed as a no-op.
   });
 
-  test('AC-JUNS-2-control: the disposition tuple discriminates — converged differs from _unrecoverable', () => {
-    // Positive control for AC-JUNS-2. Without it, the deepEqual above would also pass if
-    // dispositionTuple returned a constant (e.g. every isFatalPhaseFailure call failing open to
-    // false under a bad fixture), which is precisely the silent all-clear this fixture guards.
-    assert.notDeepEqual(
-      dispositionTuple('converged'),
-      dispositionTuple('baseline_unmeasurable_unrecoverable'),
-      'dispositionTuple must vary by reason, or AC-JUNS-2 compares two constants',
+  test('AC-JUNS-2-control: the tuple discriminates on the HALT fields, not just the exit code', () => {
+    // Positive control for AC-JUNS-2, paired so that only the `isFatalPhaseFailure` half can
+    // decide it. `haltAction` and `exitCode` are computed from the reason alone and never read
+    // state.json, so a pair differing on either of them keeps this arm green while both halt
+    // fields are silently false — measured: with a fixture `sm.read` rejects, every
+    // `isFatalPhaseFailure` call fails OPEN to false (pipeline-runner.ts:3225-3230), AC-JUNS-2's
+    // deepEqual still passes, and a `converged` vs `_unrecoverable` control still passes too,
+    // on the exitCode 0-vs-1 difference alone. These two reasons agree on both cheap fields, so
+    // the collapse reddens this arm instead of hiding behind them.
+    const halting = dispositionTuple('baseline_unmeasurable_unrecoverable');
+    const nonHalting = dispositionTuple('stalled_below_target');
+
+    assert.equal(halting.haltAction, nonHalting.haltAction,
+      'the pair must agree on haltAction, or this arm can pass without reading state.json');
+    assert.equal(halting.exitCode, nonHalting.exitCode,
+      'the pair must agree on exitCode, or this arm can pass without reading state.json');
+    assert.notDeepEqual(halting, nonHalting,
+      'dispositionTuple must vary by reason on the halt fields, or AC-JUNS-2 compares two constants',
     );
   });
 });
