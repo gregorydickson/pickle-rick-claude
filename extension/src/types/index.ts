@@ -1101,6 +1101,14 @@ export interface ActivityEvent {
   wasted?: boolean;
   pre_iter_sha?: string | null;
   post_iter_sha?: string | null;
+  /**
+   * Ticket 7addedbf: the lifecycle-artifact delta `classifyMuxIteration` decided the
+   * `wasted_iter` verdict on. Recorded, not just consumed — a verdict published without
+   * the observable that produced it cannot be recounted, and the recount
+   * (`bin/wasted-iter-replay.ts`) is the only check that the claimed rate drop is real.
+   * Absent means the record predates this field, NOT `null`.
+   */
+  artifact_delta?: number | null;
   original_prompt?: string;
   model?: string;
   backend?: Backend;

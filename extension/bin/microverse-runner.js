@@ -3115,11 +3115,12 @@ function emitMicroverseWastedIter(ctx, action) {
     ctx.wastedIterEmittedForIteration = ctx.iteration;
     const preIterSha = ctx.preIterSha ?? null;
     const postIterSha = ctx.postIterSha ?? null;
+    const artifactDelta = action === 'worker' ? 1 : null;
     const { wasted, reason } = classifyMuxIteration({
         action,
         preIterSha,
         postIterSha,
-        artifactDelta: action === 'worker' ? 1 : null,
+        artifactDelta,
     });
     logActivity({
         event: 'wasted_iter',
@@ -3132,6 +3133,10 @@ function emitMicroverseWastedIter(ctx, action) {
         reason,
         pre_iter_sha: preIterSha,
         post_iter_sha: postIterSha,
+        // Recorded on BOTH emitters so absence means one thing — "this record predates the
+        // field" — rather than a per-runner rule a reader has to know. Here the value is
+        // redundant with `action`; on the mux path it is the only copy.
+        artifact_delta: artifactDelta,
     });
 }
 function adoptLateBaseline(state, baseline, metricResult, metricConv, ctx) {

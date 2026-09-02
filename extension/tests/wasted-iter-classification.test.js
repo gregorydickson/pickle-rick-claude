@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { StateManager } from '../services/state-manager.js';
 import { _deps, handleIterationOutcome } from '../bin/microverse-runner.js';
 import { classifyMuxIteration, createWastedIterEmitter, emitMuxWastedIter } from '../bin/mux-runner.js';
+import { classifyUnderNewPredicate } from '../bin/wasted-iter-replay.js';
 import { MUX_ITERATION_REASONS } from '../types/index.js';
 
 const stateManager = new StateManager();
@@ -446,6 +447,106 @@ test('AC-A1-mux: the handoff verdict survives the real emitter', async () => {
   assert.equal(events[0].runner, 'mux');
   assert.equal(events[0].wasted, false);
   assert.equal(events[0].reason, 'worker_handoff');
+});
+
+// --- AP-EXT-ITER156-01: a verdict must be RECOUNTABLE from its own record. ---
+//
+// `classifyMuxIteration` decides the mux verdict on `artifactDelta`, but the emitted record
+// used to carry only the CONCLUSION. `bin/wasted-iter-replay.ts` — the recount that is the
+// only check the claimed rate drop is real — has no `'worker'` action to project a delta
+// from on this path (`outcome.completion` is a five-member union that never includes it), so
+// it replayed every mux iteration past the `moved` arm as `artifactDelta: null` and read a
+// real handoff back as `no_progress`. Measured over the local activity corpus when this
+// landed: 36 of 75 real mux iterations were decided by an observable the record did not
+// carry, and 2 replayed to the opposite verdict from the one the runtime had written.
+//
+// These assert the ROUND TRIP through the shipped replay, not the presence of a field: a
+// test that only checked `artifact_delta !== undefined` would stay green if the replay
+// stopped reading it, and one that only checked the handoff arm would stay green if the
+// emitter hard-coded a positive delta.
+
+async function emitMuxAndReplay(artifactDelta) {
+  const events = await withSandbox(async ({ sessionDir, dataRoot }) => {
+    emitMuxWastedIter({
+      sessionDir,
+      iteration: 11,
+      action: 'continue',
+      preIterSha: SHA_A,
+      postIterSha: SHA_A,
+      artifactDelta,
+    });
+    return readWastedIterEvents(dataRoot);
+  });
+  assert.equal(events.length, 1);
+  return { recorded: events[0], replayed: classifyUnderNewPredicate(events[0]) };
+}
+
+for (const { delta, reason, wasted } of [
+  { delta: 3, reason: 'worker_handoff', wasted: false },
+  { delta: 0, reason: 'no_progress', wasted: true },
+  { delta: null, reason: 'no_progress', wasted: true },
+]) {
+  test(`AP-EXT-ITER156-01: a mux verdict decided on artifactDelta=${delta} replays to itself`, async () => {
+    const { recorded, replayed } = await emitMuxAndReplay(delta);
+    assert.equal(recorded.reason, reason, 'the runtime verdict moved — fixture no longer exercises this arm');
+    assert.equal(recorded.wasted, wasted);
+    assert.equal(
+      recorded.artifact_delta,
+      delta,
+      'the observable the verdict was decided on is missing from its own record',
+    );
+    assert.deepEqual(
+      replayed,
+      { wasted: recorded.wasted, reason: recorded.reason },
+      `the recount read back ${JSON.stringify(replayed)} for a record the runtime wrote as `
+      + `${JSON.stringify({ wasted: recorded.wasted, reason: recorded.reason })}`,
+    );
+  });
+}
+
+// The pre-fix record shape. Absence must keep meaning "unobserved" and stay on the
+// conservative side — the historical corpus is full of these and must not start throwing
+// or flipping to a handoff.
+test('AP-EXT-ITER156-01: a record written before the field existed still replays conservatively', async () => {
+  const { recorded } = await emitMuxAndReplay(3);
+  const legacy = { ...recorded };
+  delete legacy.artifact_delta;
+  assert.deepEqual(
+    classifyUnderNewPredicate(legacy),
+    { wasted: true, reason: 'no_progress' },
+  );
+});
+
+// Recorded on BOTH emitters, so a reader needs one rule ("absent = predates the field")
+// rather than a per-runner one. Here the value is redundant with `action`; on the mux path
+// above it is the only copy.
+//
+// BOTH arms of the microverse projection are pinned, and the second one is load-bearing:
+// the replay reads the recorded delta verbatim for any action other than `'worker'`, so a
+// projection that emitted a positive delta for `no_commit` would flip that iteration from
+// `no_progress` to `worker_handoff` — crediting a handoff that never happened. `strictEqual`
+// against `null` also pins PRESENCE, since a dropped field reads `undefined`.
+test('AP-EXT-ITER156-01: the microverse emitter records the delta on the handoff arm', async () => {
+  const events = await runWorkerModeHarness({ preSha: 'a'.repeat(40), postSha: 'a'.repeat(40) });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].action, 'worker');
+  assert.equal(events[0].artifact_delta, 1);
+  assert.deepEqual(
+    classifyUnderNewPredicate(events[0]),
+    { wasted: events[0].wasted, reason: events[0].reason },
+  );
+});
+
+test('AP-EXT-ITER156-01: the microverse emitter records null on the non-handoff arm', async () => {
+  const events = await runMetricModeHarness({ validation: 'echo 50', sameSha: true });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].action, 'no_commit', 'fixture no longer exercises a non-worker action');
+  assert.equal(events[0].artifact_delta, null);
+  assert.equal(events[0].reason, 'no_progress');
+  assert.deepEqual(
+    classifyUnderNewPredicate(events[0]),
+    { wasted: events[0].wasted, reason: events[0].reason },
+  );
 });
 
 test('AC-A1-mux: a handoff whose commit also landed reports the commit, not the handoff', () => {

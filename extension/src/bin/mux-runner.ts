@@ -3452,6 +3452,12 @@ export function emitMuxWastedIter(input: MuxWastedIterInput): void {
     reason,
     pre_iter_sha: input.preIterSha,
     post_iter_sha: input.postIterSha,
+    // The observable the verdict was decided on, recorded alongside it. Consuming a
+    // value to classify and then dropping it makes the classification unrecountable:
+    // `bin/wasted-iter-replay.ts` has no `'worker'` action to project from on this path,
+    // so every mux iteration past the `moved` arm was replayed as `artifactDelta: null`
+    // and a real handoff read back as `no_progress`.
+    artifact_delta: input.artifactDelta,
   });
 }
 

@@ -50,10 +50,12 @@ export interface CorpusEvent {
   pre_iter_sha?: string | null;
   post_iter_sha?: string | null;
   /**
-   * The worker's lifecycle-artifact delta. Not emitted by either runtime path today, so
-   * it is absent on every historical event; the fixture corpus carries it to exercise the
-   * mux handoff arm. Absent means "unobserved", which the classifier treats
-   * conservatively.
+   * The worker's lifecycle-artifact delta — the observable the runtime decided the
+   * verdict on. Both emitters record it now (`mux-runner.ts:emitMuxWastedIter`,
+   * `microverse-runner.ts:emitMicroverseWastedIter`); it is absent only on records
+   * written before that landed. Absent means "unobserved", which the classifier treats
+   * conservatively — on the mux path that silently downgraded a real handoff to
+   * `no_progress`, because this module has no `'worker'` action to project from there.
    */
   artifact_delta?: number | null;
 }
