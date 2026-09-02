@@ -5722,3 +5722,123 @@ test('AP-EXT-ITER41-02: an omitted iteration window is NOT progress — the lega
         'an unknown iteration window must fall back to the pre-existing charge, never to "progress"',
     );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER161-01: the bounded escape's progress oracle must read the whole
+// window-scoped half of silent-death attribution, not just its artifact arm.
+//
+// AP-EXT-ITER41-02 gave `recordBoundedEscapeAttempt` a progress reset, but wired it to
+// `ticketProducedFreshLifecycleArtifact` alone. The Implement phase writes NO `.md`
+// artifact (send-to-morty.md scopes the set to research_*/plan_*/conformance_*/
+// code_review_*; zero implement_* files exist across the live session corpus), so a
+// ticket committing real in-scope code on every relaunch produced no artifact, cleared
+// nothing, and was still forced terminal at the cap — the exact productive-ticket-to-
+// Skipped failure the reset exists to stop, surviving in the phase whose relaunches
+// actually exhaust `claude_max_turns`. Measured pre-fix on the compiled runtime: four
+// passes, HEAD moved in every window on an allowed_paths file, escape=true at
+// priorCount=3 on the 4th.
+//
+// Three arms: the commit must clear (the finding), a ticket producing NEITHER must
+// still escape (AC-A4 is not disabled), and an OUT-OF-SCOPE commit must not clear (the
+// fix reuses the SCOPED probe, so "HEAD moved" alone is not evidence of this ticket's
+// work).
+// ---------------------------------------------------------------------------
+
+function seedImplementPhaseEscapeFixture() {
+    const root = makeTmpRoot();
+    const sessionDir = path.join(root, 'session');
+    const repo = path.join(root, 'repo');
+    const ticket = 'be789abc';
+    fs.mkdirSync(path.join(sessionDir, ticket), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'extension', 'src'), { recursive: true });
+    fs.writeFileSync(
+        path.join(sessionDir, ticket, `rick_ticket_${ticket}.md`),
+        `---\nid: ${ticket}\nstatus: In Progress\ncomplexity_tier: complex\n---\n\n# Ticket\n`,
+    );
+    // The artifacts a prior phase already landed: present, but never freshly rewritten,
+    // so the artifact arm can only stay silent.
+    fs.writeFileSync(path.join(sessionDir, ticket, 'research_2026-09-01.md'), '# research\n');
+    fs.writeFileSync(path.join(sessionDir, ticket, 'plan_2026-09-01.md'), '# plan\n');
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+        allowed_paths: ['extension/src/in-scope.ts'],
+    }));
+    initGitRepo(repo);
+    const statePath = path.join(sessionDir, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({
+        schema_version: 5,
+        session_id: path.basename(root),
+        working_dir: repo,
+        current_ticket: ticket,
+        iteration: 1,
+        recovery_attempts: [],
+    }, null, 2));
+    return { sessionDir, repo, ticket, statePath };
+}
+
+// Drive `cap + 1` relaunch passes against a ticket whose only output is a commit at
+// `file` (null = a genuinely sterile ticket). Returns the pass index that escaped, or
+// null when the ticket survived every pass.
+async function driveImplementPhasePasses(fixture, file) {
+    const { evaluateBoundedEscape, recordBoundedEscapeAttempt } = await import('../bin/mux-runner.js');
+    for (let pass = 0; pass <= BOUNDED_ESCAPE_CAP_FOR_TEST; pass++) {
+        const preIterSha = gitHead(fixture.repo);
+        const iterationStartMs = Date.now();
+        if (file) {
+            const target = path.join(fixture.repo, file);
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.appendFileSync(target, `// implement pass ${pass}\n`);
+            assert.equal(spawnSync('git', ['add', '.'], { cwd: fixture.repo, timeout: 30000 }).status, 0);
+            assert.equal(spawnSync(
+                'git', ['commit', '-m', `implement pass ${pass}`, '--no-gpg-sign'],
+                { cwd: fixture.repo, timeout: 30000 },
+            ).status, 0);
+            assert.notEqual(gitHead(fixture.repo), preIterSha, 'fixture precondition: the pass committed');
+        }
+        const state = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8'));
+        if (evaluateBoundedEscape(state, fixture.sessionDir, BOUNDED_ESCAPE_CAP_FOR_TEST).escape) return pass;
+        recordBoundedEscapeAttempt(fixture.statePath, fixture.ticket, pass, () => {}, {
+            sessionDir: fixture.sessionDir,
+            iterationStartMs,
+            commitWindow: { workingDir: fixture.repo, preIterSha },
+        });
+    }
+    return null;
+}
+
+test('AP-EXT-ITER161-01: a ticket committing in-scope code every relaunch is never force-terminated', async () => {
+    const fixture = seedImplementPhaseEscapeFixture();
+    const escapedAt = await driveImplementPhasePasses(fixture, 'extension/src/in-scope.ts');
+
+    assert.equal(
+        escapedAt, null,
+        'the Implement phase writes no lifecycle artifact — its progress is the commit, so a ticket '
+        + 'that landed one in every iteration window made progress in every window',
+    );
+    const ledger = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8')).recovery_attempts;
+    assert.deepEqual(
+        ledger.filter(a => a.strategy === 'bounded_terminal_escape' && a.ticket === fixture.ticket), [],
+        'a scoped iteration-window commit must CLEAR this ticket\'s no-progress charges',
+    );
+});
+
+test('AP-EXT-ITER161-01 control: a ticket producing neither commit nor artifact still escapes at the cap', async () => {
+    const fixture = seedImplementPhaseEscapeFixture();
+    const escapedAt = await driveImplementPhasePasses(fixture, null);
+
+    assert.equal(
+        escapedAt, BOUNDED_ESCAPE_CAP_FOR_TEST,
+        'widening the progress oracle must not disarm AC-A4 — a ticket that produced nothing at all '
+        + 'is exactly what the bounded escape exists to force terminal',
+    );
+});
+
+test('AP-EXT-ITER161-01: an out-of-scope commit is not this ticket\'s progress', async () => {
+    const fixture = seedImplementPhaseEscapeFixture();
+    const escapedAt = await driveImplementPhasePasses(fixture, 'extension/src/out-of-scope.ts');
+
+    assert.equal(
+        escapedAt, BOUNDED_ESCAPE_CAP_FOR_TEST,
+        'the reset reuses the SCOPED commit probe, so a commit outside scope.json allowed_paths is '
+        + 'not evidence of this ticket\'s work — "HEAD moved" alone must never clear a charge',
+    );
+});

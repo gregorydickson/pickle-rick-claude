@@ -6507,17 +6507,37 @@ export function evaluateBoundedEscape(state, sessionDir, cap) {
  * appears (`pendingCount < baseline`). This is that reset, expressed per-ticket over the
  * ledger the escape already reads: progress CLEARS this ticket's charges rather than
  * adding a second counter beside them, so there is one number and it means what its name
- * says. Progress is `ticketProducedFreshLifecycleArtifact` — the same oracle silent-death
- * attribution uses, and the repository's own definition of a no-progress loop (iteration
- * advances, artifacts do not).
+ * says. Progress is `detectWindowScopedWork` — the whole window-scoped half of
+ * silent-death attribution, both arms.
+ *
+ * BOTH arms, because the artifact arm ALONE is blind to the phase that needs this most.
+ * The Implement phase writes no `.md` — its progress is commits — so with only
+ * `ticketProducedFreshLifecycleArtifact` a ticket committing real in-scope code on every
+ * relaunch charged every relaunch and was still forced terminal at the cap. MEASURED on
+ * the shipped compiled runtime before this fix: four passes, `HEAD` moved in every
+ * iteration window on an `allowed_paths` file, `escape=true` at `priorCount=3` on the
+ * 4th. That is the same productive-ticket-salvaged-to-`Skipped` failure the progress
+ * reset was added to stop, surviving in the phase where relaunches are most likely.
  *
  * `progress` is optional and an absent/unknown window is NOT progress, so a caller that
  * cannot supply an iteration window charges exactly as before — the fix can only ever
- * withdraw a charge that evidence contradicts, never invent one.
+ * withdraw a charge that evidence contradicts, never invent one. `commitWindow` carries
+ * `workingDir` and `preIterSha` TOGETHER so a caller cannot supply half a window; omit it
+ * and only the artifact arm runs, which is exactly what the LoopContext call site does
+ * (it has no pre-iteration sha to give).
  */
 export function recordBoundedEscapeAttempt(statePath, ticketId, iteration, log = () => { }, progress) {
-    const progressed = progress !== undefined
-        && ticketProducedFreshLifecycleArtifact(progress.sessionDir, ticketId, progress.iterationStartMs);
+    const evidence = progress === undefined ? null : detectWindowScopedWork({
+        sessionDir: progress.sessionDir,
+        statePath,
+        ticketId,
+        workingDir: progress.commitWindow?.workingDir ?? '',
+        iteration,
+        classification: null,
+        preIterSha: progress.commitWindow?.preIterSha ?? null,
+        iterationStartMs: progress.iterationStartMs,
+    });
+    const progressed = evidence !== null;
     let cleared = 0;
     try {
         sm.update(statePath, s => {
@@ -6543,7 +6563,7 @@ export function recordBoundedEscapeAttempt(statePath, ticketId, iteration, log =
         return;
     }
     if (progressed && cleared > 0) {
-        log(`bounded escape: ${ticketId} produced lifecycle artifacts this iteration — cleared ${cleared} no-progress charge(s).`);
+        log(`bounded escape: ${ticketId} produced work this iteration (${evidence}) — cleared ${cleared} no-progress charge(s).`);
     }
 }
 /**
@@ -8879,14 +8899,17 @@ function hasScopedIterationWindowCommit(input) {
         return true;
     return touched.every((f) => isWithinAllowedPaths(f, allowed));
 }
-/** Salvage probe 3: a lifecycle artifact was written inside the iteration window. */
 /**
- * The ONE definition of per-ticket progress in this file: did this ticket write a lifecycle
- * artifact at or after `sinceMs`? Both no-progress authorities read it — silent-death
- * attribution (`hasFreshLifecycleArtifacts`) and the bounded-escape charge
- * (`recordBoundedEscapeAttempt`) — so the two cannot drift into disagreeing about whether
- * the same iteration made progress. An unknown window (`undefined`) is NOT progress: both
- * callers must fall back to their pre-existing behaviour rather than inventing evidence.
+ * Salvage probe 3: did this ticket write a lifecycle artifact at or after `sinceMs`?
+ *
+ * This is ONE ARM of the window-scoped progress question, never the whole of it — read
+ * `detectWindowScopedWork`, which is what every no-progress authority consults. On its
+ * own this arm answers "did a `.md` land", and `LIFECYCLE_ARTIFACT_RE` names four
+ * prefixes, so a phase that ships code instead of documents (Implement) or writes an
+ * unlisted artifact (`simplify_*`) is invisible to it.
+ *
+ * An unknown window (`undefined`) is NOT progress: every caller must fall back to its
+ * pre-existing behaviour rather than inventing evidence.
  */
 function ticketProducedFreshLifecycleArtifact(sessionDir, ticketId, sinceMs) {
     if (typeof sinceMs !== 'number')
@@ -8920,15 +8943,32 @@ function appendRecoveryLedgerEntry(statePath, attempt) {
     }
     catch { /* best-effort ledger append — never block recovery */ }
 }
-function detectSilentDeathAttributableWork(input) {
-    if (resolveAttributableFrontmatterSha(input.sessionDir, input.ticketId, input.workingDir) !== null) {
-        return 'completion_commit';
-    }
+/**
+ * The ONE definition of "this ticket produced evidence of work DURING the iteration
+ * window" — both window-scoped probes and no third. The frontmatter-sha probe is
+ * deliberately NOT here: a `completion_commit` stamp is not window-scoped, so it stays
+ * true forever once written and can only answer "was there ever work", never "was there
+ * work this pass".
+ *
+ * Every per-iteration no-progress authority reads THIS, not one arm of it. The two arms
+ * are not interchangeable and neither is redundant: the Implement phase — the longest
+ * phase, and the one whose relaunches actually exhaust `claude_max_turns` — writes NO
+ * `.md` artifact at all (`send-to-morty.md` scopes the artifact set to
+ * `research_*`/`plan_*`/`conformance_*`/`code_review_*`; zero `implement_*` files exist
+ * across the live session corpus), so its ONLY progress signal is `scoped_commit`.
+ */
+function detectWindowScopedWork(input) {
     if (hasScopedIterationWindowCommit(input))
         return 'scoped_commit';
     if (hasFreshLifecycleArtifacts(input))
         return 'fresh_artifacts';
     return null;
+}
+function detectSilentDeathAttributableWork(input) {
+    if (resolveAttributableFrontmatterSha(input.sessionDir, input.ticketId, input.workingDir) !== null) {
+        return 'completion_commit';
+    }
+    return detectWindowScopedWork(input);
 }
 /**
  * 90574654 — ONE shared recovery policy for both silent-death sub-classes,
@@ -12131,7 +12171,8 @@ async function runMuxRunnerMain() {
                             continue;
                         }
                         if (esc.ticketId) {
-                            recordBoundedEscapeAttempt(statePath, esc.ticketId, iteration, log, { sessionDir, iterationStartMs: iterStartMs });
+                            recordBoundedEscapeAttempt(statePath, esc.ticketId, iteration, log, { sessionDir, iterationStartMs: iterStartMs,
+                                commitWindow: { workingDir: iterWorkingDir, preIterSha } });
                         }
                         const relaunchBackend = resolveBackendFromStateFileWithSource(statePath).backend;
                         log(`${relaunchBackend} manager exited via ${inactiveExitKind} with ${decision.pendingCount} pending — relaunching (count ${decision.nextRelaunchCount}/${decision.cap}).`);
