@@ -33,6 +33,15 @@ const FALSE_AT_BIRTH = 'zzInvariantLiveness' + 'NeverExistedFixture';
 
 const FIXTURE_NAMES = [RENAMED_AWAY, DELETED_BY_REFACTOR, FALSE_AT_BIRTH];
 
+// AP-EXT-ITER144-01 fixture: a name that is PRESENT in the tracked tree but only ever
+// as COMMENT TEXT. It is planted by the very next line -- a whole-line comment in this
+// tracked file -- so the fixture is hermetic: it depends on no other file's prose, and
+// the corpus and the strip read it from the same source of truth.
+// zzInvariantLivenessProseOnlyFixture <- the plant. Whole-line comment ON PURPOSE:
+// the gate corpus keeps comments and so resolves it; the advisory code corpus strips
+// this line and so does not. Do NOT move this token onto a code line or into a string.
+const PROSE_ONLY = 'zzInvariantLiveness' + 'ProseOnlyFixture';
+
 // Appends one catalog entry to a copy of the real extension/CLAUDE.md and runs the
 // audit against it. The copy keeps every sibling arm satisfied, so a non-zero status
 // is attributable to the appended entry alone. REPO_ROOT is derived from the script's
@@ -147,4 +156,90 @@ test('premise: fixture names resolve nowhere in the tree', () => {
         'or it enters the corpus and defuses its own test'
     );
   }
+});
+
+// AP-EXT-ITER144-01 -- the RETIRE-IN-PLACE shape. A symbol deleted by a commit that
+// deliberately leaves explanatory prose behind resolves against the gate corpus (which
+// keeps comments) and was counted inside `verified` with no signal whatsoever. Measured
+// at the time of the fix, three such anchors were live claims across the catalogs.
+// The arm's own header states the convention -- a backticked bare identifier in an
+// INVARIANT clause is a claim the symbol is LIVE -- and its CANDIDATE RULE note demands
+// that nothing be dropped silently.
+//
+// Asserted here as BEHAVIOUR of the shipped script, never as source text.
+test('AP-EXT-ITER144-01: a symbol present only in comment text is reported prose-only', () => {
+  const result = runAuditWithEntry(
+    '- `src/bin/setup.ts` (R-FIXTURE-PROSE-ONLY) - ' +
+      'INVARIANT: setup consults `' + PROSE_ONLY + '` before resolving catalogs. BREAKS: nothing.'
+  );
+
+  // Advisory, not a gate: the strip that finds it is a line-local heuristic, and the
+  // measured objection to comment-stripping is an objection to REDDENING on one.
+  assert.equal(result.status, 0, `prose-only must not fail the audit; stderr: ${result.stderr}`);
+
+  // Distinguishes prose-only from absent. Without this the test would still pass if the
+  // arm regressed into treating a comment-only name as missing from the tree entirely.
+  assert.doesNotMatch(
+    result.stderr,
+    new RegExp(`absent from the tree: ${PROSE_ONLY}$`, 'm'),
+    `the plant IS in the tree, so it must not be graded absent: ${result.stderr}`
+  );
+
+  assert.match(
+    result.stderr,
+    new RegExp(`^INVARIANT \\(prose-only\\): .*: ${PROSE_ONLY}: `, 'm'),
+    `stderr must name the prose-only anchor: ${result.stderr}`
+  );
+
+  assert.match(result.stdout, /resolved in comment text only/, result.stdout);
+});
+
+// Teeth on the COUNT, not only the message. A prose-only anchor must LEAVE `verified` --
+// otherwise the partition is cosmetic and the number still conflates the two
+// populations, which is the defect itself.
+test('AP-EXT-ITER144-01: a prose-only anchor is subtracted from the verified count', () => {
+  const liveEntry =
+    '- `src/bin/setup.ts` (R-FIXTURE-PROSE-COUNT-CONTROL) - ' +
+    'INVARIANT: setup resolves catalogs through `discoverCatalogs`. BREAKS: nothing.';
+  const proseEntry =
+    '- `src/bin/setup.ts` (R-FIXTURE-PROSE-COUNT) - ' +
+    'INVARIANT: setup consults `' + PROSE_ONLY + '` before resolving catalogs. BREAKS: nothing.';
+
+  const readCounts = (stdout) => {
+    const m = stdout.match(
+      /(\d+) INVARIANT symbol\(s\) verified[\s\S]*?(\d+) resolved in comment text only/
+    );
+    assert.ok(m, `success line must carry both counts: ${stdout}`);
+    return { verified: Number(m[1]), proseOnly: Number(m[2]) };
+  };
+
+  const live = readCounts(runAuditWithEntry(liveEntry).stdout);
+  const prose = readCounts(runAuditWithEntry(proseEntry).stdout);
+
+  assert.equal(
+    prose.verified,
+    live.verified - 1,
+    'a prose-only anchor must not be counted as verified'
+  );
+  assert.equal(
+    prose.proseOnly,
+    live.proseOnly + 1,
+    'a prose-only anchor must raise the prose-only count'
+  );
+});
+
+// Control: a symbol declared in real code must NOT be swept into the prose-only report.
+// Without this, a strip that ate every line would satisfy the tests above vacuously.
+test('AP-EXT-ITER144-01: a code-declared symbol is never reported prose-only', () => {
+  const result = runAuditWithEntry(
+    '- `src/bin/setup.ts` (R-FIXTURE-CODE-LIVE-CONTROL) - ' +
+      'INVARIANT: setup resolves catalogs through `discoverCatalogs`. BREAKS: nothing.'
+  );
+
+  assert.equal(result.status, 0, `live symbol should pass; stderr: ${result.stderr}`);
+  assert.doesNotMatch(
+    result.stderr,
+    /^INVARIANT \(prose-only\): .*: discoverCatalogs: /m,
+    `a code-declared symbol must not be reported prose-only: ${result.stderr}`
+  );
 });

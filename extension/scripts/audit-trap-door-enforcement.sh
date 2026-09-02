@@ -306,16 +306,33 @@ fi
 #     JSON keys, string-literal values, or node code inside shell heredocs
 #     (`discoverCatalogs` itself is declared in a heredoc in THIS file), which
 #     reports live symbols as dead.
-#   * Stripping comments first was rejected ON MEASUREMENT: it turns the live
-#     `referencedFiles` (services/citadel/trap-door-coverage-audit.js) into a
-#     failure, because that file has `/*` inside a REGEX LITERAL and a
-#     block-comment regex swallows live code from there on. Regex cannot lex, and a
-#     FALSE POSITIVE reddens a green release gate — strictly worse than a missed one.
-#   * FALSE-NEGATIVE COST, stated: a dead symbol still named in a COMMENT resolves
-#     as live (e.g. the retired `SCOPE_ARCHIVE_EXISTS`). This does not defeat the
-#     three motivating cases — for all three, the surviving comment mention was
+#   * Stripping comments first remains rejected AS THE GATE'S CORPUS, on
+#     measurement: it turns the live `referencedFiles` (services/citadel/
+#     trap-door-coverage-audit.js) into a failure, because that file has a
+#     block-comment opener inside a REGEX LITERAL and a block-comment regex
+#     swallows live code from there on. Regex cannot lex, and a FALSE POSITIVE
+#     reddens a green release gate — strictly worse than a missed one.
+#   * FALSE NEGATIVE, now MEASURED instead of merely stated: a dead symbol still
+#     named in a COMMENT resolves as live. The original argument for tolerating it
+#     was that for all three motivating cases the surviving comment mention was
 #     introduced by the FIX commit, so while each anchor was dead-but-uncorrected
-#     the name had zero non-.md hits and this arm would have caught it.
+#     the name had zero non-.md hits. That argument covers rename/refactor/
+#     false-at-birth. It does NOT cover RETIRE-IN-PLACE, where the commit that
+#     deletes a symbol leaves explanatory prose behind on purpose — and three such
+#     anchors were resolving as live inside `verified` with no signal at all
+#     (AP-EXT-ITER144-01).
+#   * SO: a SECOND word set, `codeWords`, is built in the same pass from a
+#     LINE-LOCAL comment strip — the SAME rule the B-1SEAM arm already uses, three
+#     whole-line markers and nothing else. Line-local by construction, so it can
+#     never swallow forward past its own line, which is the precise mechanism that
+#     made the block-comment regex inadmissible. It does NOT gate: an anchor absent
+#     from `codeWords` but present in `words` is reported as PROSE-ONLY and the
+#     exit code is unchanged. That
+#     asymmetry is the whole point — the measured objection above is an objection to
+#     REDDENING on a lexing heuristic, and a heuristic that only ever moves a
+#     reported number cannot redden anything. It buys back exactly the visibility
+#     the CANDIDATE RULE note demands: the unchecked population is a number that
+#     moves when the catalogs change.
 #
 # BREAKS: is OUT OF SCOPE by design — it describes historical breakage and
 # legitimately names dead symbols; sweeping it would red correct entries.
@@ -390,6 +407,34 @@ function collectInvariantClauses(claudePath) {
   return clauses;
 }
 
+// Line-local comment strip, feeding the ADVISORY `codeWords` set only — never the
+// gate. Every decision is made from ONE line and discards nothing beyond it, so the
+// forward-swallowing failure that made a block-comment regex inadmissible for the
+// gate's corpus cannot occur here. The three whole-line markers also cover the
+// block-comment interior (` * `) without ever matching an opener/closer across lines.
+//
+// This is DELIBERATELY the same rule, and the same name, as the B-1SEAM arm's
+// stripper further down this file. The two arms run as separate `node -` heredocs and
+// so cannot share a binding; what they CAN share is one rule, stated identically. A
+// second, subtly-wider rule is the divergence CLAUDE.md's subtract-before-add
+// governance exists to prevent.
+//
+// The wider rule was measured, not assumed. Adding a `#` whole-line marker and a
+// line-comment TAIL strip changes the prose-only set on this tree by ZERO entries
+// (4 either way, same three symbols). It bought no coverage and cost a divergence
+// plus fresh over-strip risk — a line-comment marker inside a string or a regex
+// literal would truncate live code — so it is not taken.
+//
+// Residual over-strip, stated: a symbol whose ONLY occurrence sits on a line that
+// begins with one of the three markers reads as prose-only. That moves a symbol INTO
+// an advisory report; it can never redden the gate.
+function nonCommentText(content) {
+  return content.split('\n').filter((line) => {
+    const t = line.trimStart();
+    return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+  }).join('\n');
+}
+
 // maxBuffer is mandatory, not decorative: the 1 MB default was breached at 96b08eba
 // and turned a sibling whole-repo enumeration into `spawnSync git ENOBUFS`
 // (the 64 MB ceiling is the named trap door in src/services/CLAUDE.md).
@@ -408,6 +453,7 @@ function buildSymbolCorpus() {
   }
 
   const words = new Set();
+  const codeWords = new Set();
   let fileCount = 0;
 
   for (const rel of tracked.split('\0')) {
@@ -420,16 +466,18 @@ function buildSymbolCorpus() {
     }
     fileCount++;
     for (const word of text.matchAll(WORD_RE)) words.add(word[0]);
+    for (const word of nonCommentText(text).matchAll(WORD_RE)) codeWords.add(word[0]);
   }
 
-  return { words, fileCount };
+  return { words, codeWords, fileCount };
 }
 
-const { words, fileCount } = buildSymbolCorpus();
+const { words, codeWords, fileCount } = buildSymbolCorpus();
 
 let failures = 0;
 let verified = 0;
 let nonIdentifierSpans = 0;
+const proseOnly = [];
 const perCatalog = [];
 
 for (const claudePath of discoverCatalogs()) {
@@ -456,6 +504,14 @@ for (const claudePath of discoverCatalogs()) {
         continue;
       }
 
+      // Present in the corpus, but every occurrence is comment text. The backticks
+      // claim the symbol is LIVE and no code declares or uses it. Reported, never
+      // gated -- see the corpus note above for why this side stays advisory.
+      if (!codeWords.has(candidate)) {
+        proseOnly.push(`${label}:${lineNum}: ${candidate}`);
+        continue;
+      }
+
       verified++;
     }
   }
@@ -473,11 +529,21 @@ if (failures > 0) {
   process.exit(1);
 }
 
+for (const entry of proseOnly) {
+  process.stderr.write(
+    `INVARIANT (prose-only): ${entry}: backticked as a live symbol, but every ` +
+      'occurrence in the tree is comment text -- no code declares or uses it. ' +
+      'Fix the NAME to the live symbol, or drop its backticks if the clause ' +
+      'deliberately names an ABSENT one. Advisory: does not fail this audit.\n'
+  );
+}
+
 console.log(
   `audit-trap-door-enforcement: ${verified} INVARIANT symbol(s) verified across ` +
     `${perCatalog.length} catalog(s) (${perCatalog.join(', ')}) ` +
     `against ${words.size} symbols in ${fileCount} tracked file(s); ` +
-    `${nonIdentifierSpans} non-identifier span(s) not checked`
+    `${nonIdentifierSpans} non-identifier span(s) not checked; ` +
+    `${proseOnly.length} resolved in comment text only`
 );
 NODE
 then
