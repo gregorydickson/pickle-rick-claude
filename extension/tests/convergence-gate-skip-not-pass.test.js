@@ -1035,6 +1035,123 @@ test('R-FBTN control arm: the pre-fix coarse shape collapses every failing test 
   );
 });
 
+// AP-EXT-ITER141-01 — a test NAME is not unique across files, so the repeat-suppressing dedupe
+// may not key on it.
+//
+// Both fixtures below are VERBATIM `node --test` spec-reporter output (node 24, stdout piped),
+// captured from two real runs of two real fixture files that deliberately share one test title.
+// This is not a hypothetical collision: this repo's own suite has 23 titles used in 2+ files, one
+// of them in 10 files that are ALL `@tier: fast` and therefore run in a single `node --test`
+// invocation.
+//
+// Measured against the name-keyed dedupe: the a+b run's THREE failing tests parse to TWO failures,
+// the survivor matches the baselined identity, `subtractBaseline` returns empty and the gate that
+// derives `status` from it reports GREEN over a brand-new failing test. The direction is what makes
+// this load-bearing — the erasure is fail-OPEN, which is the one direction the R-FBTN comment
+// promises the parser never takes.
+const FBTN_DUP_TITLE_BASELINE_OUTPUT = [
+  '✖ schema has a definition (0.721666ms)',
+  '✖ unique to a (0.154459ms)',
+  'ℹ tests 2',
+  'ℹ fail 2',
+  '',
+  '✖ failing tests:',
+  '',
+  'test at a.test.js:3:1',
+  '✖ schema has a definition (0.721666ms)',
+  '      at Test.run (node:internal/test_runner/test:1382:25)',
+  'test at a.test.js:4:1',
+  '✖ unique to a (0.154459ms)',
+].join('\n');
+
+// Same suite one commit later: `a.test.js`'s own `schema has a definition` still fails AND
+// `b.test.js` contributes a DIFFERENT test that happens to carry the same title.
+const FBTN_DUP_TITLE_CURRENT_OUTPUT = [
+  '✖ schema has a definition (0.705167ms)',
+  '✖ unique to a (0.150291ms)',
+  '✖ schema has a definition (0.673375ms)',
+  'ℹ tests 3',
+  'ℹ fail 3',
+  '',
+  '✖ failing tests:',
+  '',
+  'test at a.test.js:3:1',
+  '✖ schema has a definition (0.705167ms)',
+  '      at Test.run (node:internal/test_runner/test:1382:25)',
+  'test at a.test.js:4:1',
+  '✖ unique to a (0.150291ms)',
+  'test at b.test.js:3:1',
+  '✖ schema has a definition (0.673375ms)',
+].join('\n');
+
+function fbtnParse(output) {
+  return assignOccurrenceIndices(
+    buildFailures({ stdout: output, stderr: '', exitCode: 1 }, 'tests', '/repo/pkg'),
+  );
+}
+
+// The pre-fix shape, reproduced from the post-fix parse rather than restated: keying the
+// repeat-suppressing dedupe on the NAME keeps only the first failure carrying each title.
+function fbtnNameKeyedDedupe(failures) {
+  const seen = new Set();
+  return assignOccurrenceIndices(
+    failures.filter(f => {
+      if (seen.has(f.ruleOrCode)) return false;
+      seen.add(f.ruleOrCode);
+      return true;
+    }),
+  );
+}
+
+// `resolveBaselineResult` derives the gate verdict as `newFailures.length === 0 ? 'green' : 'red'`.
+function fbtnGateStatus(current, baseline) {
+  return subtractBaseline(current, { schema_version: 1, failures: baseline }).length === 0
+    ? 'green'
+    : 'red';
+}
+
+test('AP-EXT-ITER141-01: a second failing test sharing a baselined title still reddens the gate', () => {
+  const baseline = fbtnParse(FBTN_DUP_TITLE_BASELINE_OUTPUT);
+  const current = fbtnParse(FBTN_DUP_TITLE_CURRENT_OUTPUT);
+
+  // Three failing tests in the run, three failures parsed — the summary block's repeat of each is
+  // still suppressed (both fixtures print every failure twice), so this is not "dedupe removed".
+  assert.equal(current.length, 3, 'every failing test survives; only the reporter repeat is dropped');
+  assert.equal(baseline.length, 2);
+
+  // Two same-titled failures share `failureIdentityKey`, so the ordinal is what separates them.
+  assert.deepEqual(
+    current.filter(f => f.ruleOrCode === 'schema has a definition').map(f => f.occurrence_index),
+    [0, 1],
+    'the collision is carried by occurrence_index, which only exists if both survived the dedupe',
+  );
+
+  const newFailures = subtractBaseline(current, { schema_version: 1, failures: baseline });
+  assert.equal(newFailures.length, 1, 'the brand-new failing test must not be subtracted away');
+  assert.equal(newFailures[0].ruleOrCode, 'schema has a definition');
+  assert.equal(newFailures[0].occurrence_index, 1);
+  assert.equal(fbtnGateStatus(current, baseline), 'red');
+});
+
+test('AP-EXT-ITER141-01 control arm: keying the dedupe on the NAME reports GREEN over that failure', () => {
+  const baseline = fbtnNameKeyedDedupe(fbtnParse(FBTN_DUP_TITLE_BASELINE_OUTPUT));
+  const current = fbtnNameKeyedDedupe(fbtnParse(FBTN_DUP_TITLE_CURRENT_OUTPUT));
+
+  // Positive facts about the old shape, not the negation of the pin: a run with THREE failing tests
+  // reports two, and the one it drops is the only one that was not already in the baseline.
+  assert.equal(current.length, 2, 'the name-keyed dedupe erases the third failing test outright');
+  assert.deepEqual(
+    current.map(f => `${f.ruleOrCode}#${f.occurrence_index}`),
+    baseline.map(f => `${f.ruleOrCode}#${f.occurrence_index}`),
+    'what survives is byte-identical to the baseline, so nothing is left to report as new',
+  );
+  assert.equal(
+    fbtnGateStatus(current, baseline),
+    'green',
+    'the oracle must be able to SEE the fake-green — if this is red the pin above proves nothing',
+  );
+});
+
 test('R-FBTN: an unrecognised reporter FAILS OPEN to the existing coarse fallback', () => {
   const unknown = 'Tests: 3 failed, 10 passed\nSomething broke in a way no marker describes';
   const failures = buildFailures({ stdout: unknown, stderr: '', exitCode: 2 }, 'tests', '/repo/pkg');

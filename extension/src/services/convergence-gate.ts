@@ -129,10 +129,16 @@ const ENV_WRAPPER_PREFIXES = ['cross-env-shell', 'cross-env', 'env'] as const;
  * green over it.
  *
  * R-FBTN narrowed WHEN that coarse shape appears. `tests` used to have no granular parser,
- * so it produced it on EVERY red run; `parseTestOutput` now keys each failing test by its
- * own name, so a red suite yields one distinct identity per test and the subtraction can
- * tell a new failure from a baselined one. The `check` component is still load-bearing,
- * because the fallback still fires for any reporter no parser recognises.
+ * so it produced it on EVERY red run; `parseTestOutput` now keys each failing test by its own
+ * NAME, so the subtraction can tell one failing test from another. The narrowing is not total
+ * and the residue is named here rather than guarded: a test NAME is not unique across files
+ * (23 titles in this repo's own suite are used in 2+ files, one in 10), and the reporter lines
+ * the parser reads carry no file, so two same-titled failures share this key and are separated
+ * only by their `occurrence_index`. Recovering the file would mean scanning reporter-specific
+ * structure — the enumerated-set shape — so the multiplicity is what defends this axis, which
+ * is why `parseTestOutput` dedupes on the rendered LINE and never on the name. The `check`
+ * component is still load-bearing, because the fallback still fires for any reporter no parser
+ * recognises.
  *
  * The ordinal grouping and the fingerprint MUST derive from this one key: an occurrence
  * index is only meaningful within the identity space it is counted in, so a key here
@@ -1008,10 +1014,18 @@ function parseTestOutput(output: string, pkgDir: string): GateFailure[] {
     // per-reporter headers; a real test name ending in ':' would be omitted from a list that
     // today shows ZERO names, so the failure direction is toward the status quo, never below it.
     if (!name || name.endsWith(':')) continue;
-    // Reporters print each failure twice (inline, then again in the summary). Dedupe on the name
-    // so the ordinal grouping in `assignOccurrenceIndices` is not fed phantom repeats.
-    if (seen.has(name)) continue;
-    seen.add(name);
+    // Reporters print each failure twice (inline, then again in the summary), and both prints are
+    // the SAME rendered line once indentation is stripped — so the whole line is the repeat's
+    // identity and dedupe on it keeps `assignOccurrenceIndices` off phantom repeats. Deduping on
+    // the NAME instead would also erase two DIFFERENT tests that happen to share a title: this
+    // repo alone has 23 titles used in 2+ files (one in 10, all `@tier: fast`, so they run in one
+    // `node --test` invocation). That erasure is the fail-OPEN direction — the survivor matches a
+    // baselined identity and the vanished one is subtracted into a GREEN. The line carries what
+    // separates them (`not ok 2` vs `not ok 7`; distinct duration suffixes), so one key does both
+    // jobs and no second condition is needed. A reporter that renders its two prints differently
+    // double-counts instead, which is fail-CLOSED.
+    if (seen.has(line)) continue;
+    seen.add(line);
     failures.push({
       check: 'tests',
       file: pkgDir,
