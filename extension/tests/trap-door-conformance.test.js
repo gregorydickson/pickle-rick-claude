@@ -341,6 +341,7 @@ const anchorTokenPattern = /\b([a-z][a-zA-Z0-9]{1,}[A-Z][a-zA-Z0-9]*|[A-Z][A-Z0-
 const anchorAbsenceAllowlist = new Map([
   ['extension/CLAUDE.md::scriptArg', 'meta: placeholder inside a PATTERN_SHAPE description, not a symbol'],
   ['extension/CLAUDE.md::shouldExitForLimits', 'negative: DELETED — the entry says do not re-add'],
+  ['extension/CLAUDE.md::shouldExitMainLoop', 'negative: DELETED — the entry says do not re-add'],
   ['extension/src/bin/CLAUDE.md::readRegistryPids', 'historical: named as the pre-fix VIOLATING shape'],
   ['extension/src/hooks/CLAUDE.md::extraWriteCommands', 'negative: entry asserts zero occurrences'],
   ['extension/src/hooks/CLAUDE.md::CONFIG_INPLACE_WRITE_COMMANDS', 'negative: entry asserts zero occurrences'],
@@ -367,7 +368,10 @@ const anchorAbsenceAllowlist = new Map([
  *    literal, so a corpus containing this file resolves all of them — and, worse, would resolve
  *    any dead symbol the moment someone allowlisted it, making the whole sweep vacuous.
  *
- * Both are excluded by path. Nothing else in the tree may enumerate absent tokens.
+ * Trap 1 is excluded twice over — the corpus glob admits no markdown at all, and the basename
+ * filter below is the backstop that keeps re-adding `'*.md'` from making the sweep vacuous rather
+ * than merely wrong. Trap 2 is excluded by path here. Nothing else in the tree may enumerate
+ * absent tokens.
  */
 const anchorCorpusExclusions = new Set(['extension/tests/trap-door-conformance.test.js']);
 
@@ -377,13 +381,22 @@ const ANCHOR_GIT_TIMEOUT_MS = 30000;
 /**
  * Discriminated result for the same reason `runClaudeDiff` has one: a corpus that failed to
  * build is a sweep that did not run, and a not-run sweep must FAIL rather than report zero.
+ *
+ * MARKDOWN IS NOT A LIVENESS CHANNEL. The corpus answers one question — does this identifier still
+ * EXIST as code — so prose about a symbol must not answer it. Documentation outlives the code it
+ * describes by design (design notes, feasibility tables, migration write-ups all name symbols
+ * precisely because they were removed), so a corpus that reads .md resolves a deleted name off the
+ * very document that records its deletion and reports the anchor live. That is not hypothetical:
+ * `shouldExitMainLoop` resolved solely off `extension/REFACTOR_FEASIBILITY.md`, a pre-deletion
+ * feasibility table, which silently exempted it from the allowlist and from the `no stale allowlist
+ * entries` re-introduction alarm — while its named sibling in the same clause was covered by both.
  */
 function buildAnchorCorpus(cwd = repoRoot) {
   let listing;
   try {
     listing = execFileSync(
       'git',
-      ['ls-files', '-z', '--', '*.ts', '*.js', '*.sh', '*.json', '*.yml', '*.md'],
+      ['ls-files', '-z', '--', '*.ts', '*.js', '*.sh', '*.json', '*.yml'],
       {
         cwd,
         encoding: 'utf8',
@@ -477,6 +490,31 @@ describe('trap-door catalog anchor liveness (fixture parser)', () => {
       assert.match(result.reason, /zero files/);
     } finally {
       fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-EXT-ITER145-01: prose naming a deleted symbol does not resolve it as live code', () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'anchor-liveness-md-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: fixture, stdio: 'ignore', timeout: ANCHOR_GIT_TIMEOUT_MS });
+      fs.writeFileSync(path.join(fixture, 'live.ts'), 'export function livingHelper() {}\n');
+      // The shape that revived shouldExitMainLoop: a design doc naming the symbol it removed.
+      fs.writeFileSync(path.join(fixture, 'NOTES.md'), '| `buriedHelper` | deleted in the refactor |\n');
+      execFileSync('git', ['add', 'live.ts', 'NOTES.md'], { cwd: fixture, stdio: 'ignore', timeout: ANCHOR_GIT_TIMEOUT_MS });
+
+      const result = buildAnchorCorpus(fixture);
+      assert.equal(result.ok, true, result.ok ? '' : result.reason);
+
+      const catalogContent = '- `live.ts` — INVARIANT: `livingHelper` replaced `buriedHelper`. BREAKS: x. ENFORCE: y.';
+      const dead = findDeadAnchors(collectAnchorTokens(catalog, catalogContent), result.corpus);
+
+      assert.deepEqual(
+        dead.map(entry => entry.token),
+        ['buriedHelper'],
+        'markdown is in the corpus again — a deleted symbol resolves off the prose that records its deletion, so its anchor reads live and never reaches the allowlist',
+      );
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
     }
   });
 });
