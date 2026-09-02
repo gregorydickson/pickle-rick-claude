@@ -1058,6 +1058,20 @@ export function deriveTestOwnedTmpPrefixes(testsDir = DEFAULT_TEST_SOURCE_DIR) {
     return result;
 }
 /**
+ * The ONE not-run result for the derived sweep — the `sweepNotRun` of this record type,
+ * sharing its `ReapSweepSkipReason` vocabulary rather than opening a second one.
+ *
+ * AP-EXT-ITER44-01 removed this exact collapse from `reapOrphanedWorkerProcs` and stated the
+ * rule ("'we counted nothing' and 'we never counted' cannot collapse into the same zero
+ * tuple"); the derived sweep shipped in the same bundle without it. Measured against the
+ * shipped module: an unreadable `tmpDir` and a genuinely clean one returned byte-identical
+ * records, and the posttest printer was silent for both — so the one signal that the TMPDIR
+ * leak this sweep exists to bound is still being bounded read the same as no signal at all.
+ */
+function derivedSweepNotRun(reason, prefixes) {
+    return { scanned: 0, removed: 0, prefixes_used: prefixes, skipped: reason };
+}
+/**
  * Posttest TMPDIR sweep for the long tail of `mkdtempSync` producers that never adopted
  * `tests/helpers/fixture-tmpdir.js`'s crash-surviving registry (ticket C2; the two dominant
  * producers, `cp-git-`/`cp-state-`, were converted to that registry directly by ticket 40 and
@@ -1108,7 +1122,7 @@ export function sweepDerivedTmpDirFixtures(opts = {}) {
         entries = fs.readdirSync(tmpDir, { withFileTypes: true });
     }
     catch {
-        return { scanned: 0, removed: 0, prefixes_used: prefixes };
+        return derivedSweepNotRun('sweep_failed', prefixes);
     }
     const now = Date.now();
     let scanned = 0;
@@ -1135,5 +1149,5 @@ export function sweepDerivedTmpDirFixtures(opts = {}) {
         }
         catch { /* best-effort — a lost removal is left for the next sweep */ }
     }
-    return { scanned, removed, prefixes_used: prefixes };
+    return { scanned, removed, prefixes_used: prefixes, skipped: null };
 }

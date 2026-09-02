@@ -521,3 +521,29 @@ test('C2: sweepDerivedTmpDirFixtures wires its default prefix source through der
   assert.equal(result.removed, 1);
   assert.equal(fs.existsSync(attributed), false);
 });
+
+test('AP-EXT-ITER149-01: a sweep that never produced a census is distinguishable from a clean one', () => {
+  const cleanRoot = mkFixtureTmpDir('c2-census-clean-');
+  const unreadable = path.join(cleanRoot, 'never-created-' + Date.now());
+
+  const clean = sweepDerivedTmpDirFixtures({ tmpDir: cleanRoot, prefixes: ['c2-nomatch-'] });
+  const notRun = sweepDerivedTmpDirFixtures({ tmpDir: unreadable, prefixes: ['c2-nomatch-'] });
+
+  // Premise: both arms really are the zero-count case, so the discrimination below can only
+  // come from the did-we-actually-count axis and never from a difference in the counts.
+  assert.equal(clean.scanned, 0, 'premise: the clean arm must scan nothing');
+  assert.equal(clean.removed, 0, 'premise: the clean arm must remove nothing');
+  assert.deepEqual(
+    [notRun.scanned, notRun.removed],
+    [clean.scanned, clean.removed],
+    'premise: the two arms must agree on every count — otherwise this case could pass on a count difference',
+  );
+
+  assert.equal(clean.skipped, null, 'a sweep that ran to completion produced a census');
+  assert.equal(notRun.skipped, 'sweep_failed', 'an unreadable tmpDir produced NO census and must say so');
+  assert.notDeepEqual(
+    notRun,
+    clean,
+    'AP-EXT-ITER44-01 applied to the derived sweep: "we counted nothing" and "we never counted" must not collapse into the same zero tuple',
+  );
+});

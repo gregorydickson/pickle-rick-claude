@@ -16,7 +16,14 @@ import { sweepDerivedTmpDirFixtures } from '../services/orphan-reaper.js';
 
 try {
   const result = sweepDerivedTmpDirFixtures();
-  if (result.scanned > 0) {
+  // AP-EXT-ITER149-01: branch on `skipped` BEFORE rendering counts, and report on every
+  // sweep including a zero one — the same AC6 contract `bin/reap-orphans.ts` applies to the
+  // sibling census. Printing only when `scanned > 0` made silence mean two things at once:
+  // "the TMPDIR was clean" and "this sweep never produced a census", which is the one
+  // reading that lets the leak this hook exists to bound grow unobserved.
+  if (result.skipped) {
+    console.log(`sweep-derived-tmpdir-fixtures: sweep did not run (${result.skipped}) — no census`);
+  } else {
     console.log(`sweep-derived-tmpdir-fixtures: scanned=${result.scanned} removed=${result.removed} prefixes=${result.prefixes_used.length}`);
   }
 } catch (err) {
