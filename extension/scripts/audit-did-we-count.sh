@@ -76,11 +76,25 @@ try {
 let workflowsScanned = 0;
 let pinsCompared = 0;
 const NODE_VERSION_RE = /^\s*node-version:\s*['"]?([^'"\n]+?)['"]?\s*$/gm;
+// Every `actions/setup-node` step is a place CI picks a Node version, so it is
+// the unit check 1 must compare. `pinsCompared` is a SUM: a workflow
+// contributing zero pins is invisible behind its pinned siblings, which is
+// exactly the ff2846d1 "three workflows, only two caught" shape this check
+// exists to prevent. Assert per FILE, in the loop, before summing.
+const SETUP_NODE_RE = /uses:\s*actions\/setup-node/g;
 
 for (const wf of workflowFiles) {
   const text = fs.readFileSync(wf, 'utf8');
   const pins = [...text.matchAll(NODE_VERSION_RE)].map((m) => m[1]);
+  const setupNodeSteps = [...text.matchAll(SETUP_NODE_RE)].length;
   workflowsScanned++;
+  if (setupNodeSteps > pins.length) {
+    fail(
+      `${path.relative(repoRoot, wf)}: ${setupNodeSteps} actions/setup-node step(s) but ${pins.length} ` +
+        `node-version pin(s) — each setup-node step must pin node-version to engines.node ` +
+        `(a node-version-file key is not compared by this audit)`,
+    );
+  }
   if (engineNode) {
     for (const pin of pins) {
       pinsCompared++;

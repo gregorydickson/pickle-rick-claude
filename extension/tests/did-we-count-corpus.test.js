@@ -239,9 +239,12 @@ const UNPINNED_WORKFLOW =
 /**
  * Build a throwaway repo root and run the shipped script against it via
  * DID_WE_COUNT_REPO_ROOT_OVERRIDE. `workflow` null omits ci.yml entirely;
- * `catalog` false omits the CLAUDE.md that check 2 counts.
+ * `catalog` false omits the CLAUDE.md that check 2 counts. `extraWorkflows`
+ * (name -> content) adds SIBLING workflow files — the multi-file shape is the
+ * only one that can express AP-EXT-ITER79-TD1, where a healthy sibling's pins
+ * carry the aggregate over an uncounted workflow.
  */
-function runDidWeCount({ workflow, catalog = true }) {
+function runDidWeCount({ workflow, catalog = true, extraWorkflows = {} }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'did-we-count-'));
   try {
     fs.mkdirSync(path.join(root, 'extension'), { recursive: true });
@@ -252,6 +255,9 @@ function runDidWeCount({ workflow, catalog = true }) {
     );
     if (workflow !== null) {
       fs.writeFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), workflow);
+    }
+    for (const [name, content] of Object.entries(extraWorkflows)) {
+      fs.writeFileSync(path.join(root, '.github', 'workflows', name), content);
     }
     if (catalog) {
       fs.writeFileSync(path.join(root, 'CLAUDE.md'), '# fixture catalog\n');
@@ -294,6 +300,59 @@ test('AP-EXT-ITER57-01 arm B: a workflows dir with ZERO .yml files fails closed'
   const res = runDidWeCount({ workflow: null });
   assert.equal(res.status, 1, `check 1 reached no workflow file and must not report clean; stdout: ${res.stdout}`);
   assert.match(res.stderr, /check 1 \(workflow node-version parity\): zero comparisons made/);
+});
+
+// AP-EXT-ITER79-TD1: `pinsCompared` is accumulated across the workflow loop, so
+// arm A above only fires when EVERY workflow is unpinned. Measured on the
+// pre-fix script: two pinned workflows plus one setup-node step carrying no
+// `node-version:` exited 0 while the summary printed "2 pin(s) across 3 workflow
+// file(s)" — the ff2846d1 "three workflows, only two caught" shape, reported
+// clean. Check 1's unit is the setup-node STEP, asserted per file.
+
+const NODELESS_WORKFLOW = 'name: docs\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n';
+
+const TWO_STEP_ONE_PIN_WORKFLOW =
+  'name: ci\njobs:\n  a:\n    steps:\n' +
+  "      - uses: actions/setup-node@v4\n        with:\n          node-version: '22.x'\n" +
+  '      - uses: actions/setup-node@v4\n        with:\n          node-version-file: .nvmrc\n';
+
+test('AP-EXT-ITER79-TD1: an unpinned workflow beside pinned siblings fails closed and is NAMED', () => {
+  const res = runDidWeCount({
+    workflow: pinnedWorkflow(DID_WE_COUNT_ENGINE_NODE),
+    extraWorkflows: {
+      'release.yml': pinnedWorkflow(DID_WE_COUNT_ENGINE_NODE),
+      'stability-gate.yml': UNPINNED_WORKFLOW,
+    },
+  });
+  assert.equal(
+    res.status,
+    1,
+    `a setup-node step comparing zero pins must fail even when siblings are pinned; stdout: ${res.stdout}`,
+  );
+  assert.match(
+    res.stderr,
+    /stability-gate\.yml: 1 actions\/setup-node step\(s\) but 0 node-version pin\(s\)/,
+    'the failure must name the uncounted workflow — an aggregate count cannot',
+  );
+  // The aggregate arm cannot be what fired: the pinned siblings made comparisons.
+  assert.doesNotMatch(res.stderr, /check 1 \(workflow node-version parity\): zero comparisons made/);
+});
+
+test('AP-EXT-ITER79-TD1: the unit is the setup-node STEP, not the file', () => {
+  const res = runDidWeCount({ workflow: TWO_STEP_ONE_PIN_WORKFLOW });
+  assert.equal(res.status, 1, `a second unpinned setup-node step must fail; stdout: ${res.stdout}`);
+  assert.match(res.stderr, /ci\.yml: 2 actions\/setup-node step\(s\) but 1 node-version pin\(s\)/);
+});
+
+test('AP-EXT-ITER79-TD1 non-vacuity: a workflow that never selects Node is NOT required to pin', () => {
+  // Keyed on setup-node so the guard cannot degrade into "every .yml must pin",
+  // which would red a legitimate node-free workflow and make the audit a brake.
+  const res = runDidWeCount({
+    workflow: pinnedWorkflow(DID_WE_COUNT_ENGINE_NODE),
+    extraWorkflows: { 'docs.yml': NODELESS_WORKFLOW },
+  });
+  assert.equal(res.status, 0, `a workflow with no setup-node step must not fail; stderr: ${res.stderr}`);
+  assert.match(res.stdout, /1 node-version pin\(s\) across 2 workflow file\(s\)/);
 });
 
 test('AP-EXT-ITER57-01 arm C: check 2 fails closed on zero catalogs even when check 1 is healthy', () => {
