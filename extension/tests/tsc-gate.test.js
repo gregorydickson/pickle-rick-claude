@@ -74,6 +74,15 @@ if (mode === 'timeout-output') {
 } else if (mode === 'setup-error') {
   process.stderr.write('simulated npx setup error\\n');
   process.exit(1);
+} else if (mode === 'no-compiler') {
+  // The signature real npx produces when the project's TypeScript is not
+  // resolvable from cwd — MEASURED verbatim by running \`npx tsc --noEmit\` in a
+  // directory with no node_modules: it resolves the deprecated \`tsc\` npm stub,
+  // which prints this banner on STDOUT and exits 1 without a single diagnostic.
+  // That is every materialized staged tree, because checkout-index copies
+  // TRACKED FILES ONLY and node_modules is gitignored.
+  process.stdout.write('This is not the tsc command you are looking for\\n');
+  process.exit(1);
 } else {
   const files = walk(process.cwd()).filter((file) => /\\.(?:[cm]?ts|tsx)$/.test(file));
   const broken = files.some((file) => {
@@ -840,6 +849,60 @@ it('uses the override on failure and consumes it on the next clean gated commit'
   }
 });
 
+it('AP-EXT-ITER158-01 a tsc run that emitted no diagnostic is reported as unmeasured, never as compile_error', () => {
+  // The gate type-checks a `git checkout-index` materialization of the staged
+  // tree. That tree holds TRACKED FILES ONLY, so `node_modules` — and with it the
+  // project's compiler — is never in it, and `npx tsc` there resolves the
+  // deprecated `tsc` npm stub, exiting nonzero with no diagnostics. The old
+  // `classifyTscFailure` fall-through published that as `compile_error`.
+  //
+  // MEASURED on the compiled hook against four repositories laid out like this
+  // one (valid TS, broken TS, JS-only, self-contained root-config): all four
+  // returned the IDENTICAL `block ... compile_error: compile_error`. The verdict
+  // carried zero bits — no staged content could change it — and wiring the hook
+  // up would therefore have blocked 100% of TypeScript commits.
+  //
+  // The `no-compiler` shim reproduces that measured signature: nonzero exit, no
+  // `error TS<code>` anywhere. The twin direction (a shim that DOES emit
+  // `error TS2305` must still block) is pinned by the `blocks broken staged
+  // tracked TypeScript` cases above, which run the default `scan` mode.
+  const harness = makeHarness();
+  const repoRoot = makeRepo();
+  try {
+    const { stateFile } = writeSession(harness, repoRoot, {
+      flags: { allow_tsc_failed_reason: 'emergency revert' },
+    });
+    stageTrackedCleanFile(repoRoot);
+
+    const result = runHandler({
+      harness,
+      repoRoot,
+      command: 'git commit -m "no compiler in the materialized tree"',
+      extraEnv: { TSC_GATE_NPX_MODE: 'no-compiler' },
+    });
+
+    assert.equal(result.decision?.decision, 'approve', 'an unmeasured gate must not build a halt path');
+    assert.equal(
+      latestEvent(result.events, 'tsc_gate_failed'),
+      null,
+      'the gate must not report a compile verdict it never observed',
+    );
+
+    const skipped = latestEvent(result.events, 'gate_skipped');
+    assert.ok(skipped, 'an unmeasured approve must leave a breadcrumb, not pass silently');
+    assert.equal(skipped.gate_payload?.reason, 'tsc_not_measured');
+    assert.match(skipped.gate_payload?.detail ?? '', /^tsc emitted no diagnostics: /);
+
+    // An unmeasured approve is not a clean pass, so it must not spend the
+    // operator's escape hatch.
+    assert.equal(readState(stateFile).flags?.allow_tsc_failed_reason, 'emergency revert');
+    assert.equal(latestEvent(result.events, 'tsc_gate_override_consumed'), null);
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    harness.cleanup();
+  }
+});
+
 it('blocks deterministic timeout cases using a shimmed npx and the actual configured timeout env', () => {
   const harness = makeHarness();
   const repoRoot = makeRepo();
@@ -1416,10 +1479,21 @@ it('AP-EXT-ITER105-01 tsc-gate.ts keeps one describeCommandFailure reader', () =
     1,
     'exactly one describeCommandFailure definition',
   );
-  assert.equal(
-    (source.match(/describeCommandFailure\(/g) ?? []).length,
-    5,
-    'one definition plus exactly four call sites',
+  // Not a hand-kept CALL-SITE COUNT. The count read `=== 5` and reddened on
+  // AP-EXT-ITER158-01, whose fix ROUTED a fifth diagnosis through the helper —
+  // the exact behaviour this pin exists to encourage — while staying green for a
+  // re-forked chain that replaced a call site instead of adding one. The
+  // invariant is "every `|| stderr ||` diagnosis lives in the ONE helper", which
+  // needs no number: assert the chain shape occurs once, inside the helper body.
+  const callSites = (source.match(/describeCommandFailure\(/g) ?? []).length - 1;
+  assert.ok(callSites >= 4, `the collapse must keep its readers; got ${callSites}`);
+  const chainShape = /\|\|\s*[A-Za-z_$][\w$]*\.stderr\s*\|\|/g;
+  const chains = source.match(chainShape) ?? [];
+  assert.equal(chains.length, 1, `the '|| stderr ||' chain must not re-fork; got ${chains.length}`);
+  assert.ok(
+    source.search(chainShape) > source.indexOf('function describeCommandFailure(') &&
+      source.search(chainShape) < source.indexOf('function isCommandFailure('),
+    'the surviving chain must be the one inside describeCommandFailure',
   );
   assert.doesNotMatch(source, /safeErrorMessage\([A-Za-z_$][\w$]*\.error\)/);
   const body = source.slice(

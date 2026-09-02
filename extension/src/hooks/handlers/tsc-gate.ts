@@ -65,8 +65,15 @@ const COMMAND_TIMEOUT_MS = 5_000;
 const ALLOW_TSC_FAILED_REASON_FIELD = 'allow_tsc_failed_reason';
 const sm = new StateManager();
 
+/**
+ * `unmeasuredReason` rides on APPROVE rather than becoming a third decision
+ * value: the hook contract admits exactly `approve` and `block` (enforced by the
+ * `pickle/hook-decision-values` rule), and an approve that could not measure is
+ * still an approve. It carries the evidence that separates "the staged tree
+ * compiles" from "no compiler was reachable" — see `tscRenderedVerdict`.
+ */
 type GateDecision =
-  | { decision: 'approve' }
+  | { decision: 'approve'; unmeasuredReason?: string }
   | { decision: 'block'; reason: string; failureKind: GateFailureKind };
 
 function block(reason: string): void {
@@ -332,6 +339,46 @@ function getTscTimeoutMs(): number {
   return Math.min(8_000, Math.max(1_000, dispatchTimeout - 1_000));
 }
 
+/**
+ * The ONE test of whether tsc actually RENDERED a verdict, read off the only
+ * thing that proves it did: a TypeScript diagnostic. `tsc` prefixes every
+ * diagnostic it emits with `error TS<code>`, so its presence is the compiler
+ * speaking and its absence is the compiler never having spoken.
+ *
+ * Without this the gate reported an outcome it never observed. `runTscGate`
+ * type-checks a `git checkout-index` materialization of the staged tree, which
+ * by construction holds TRACKED FILES ONLY — `node_modules` is gitignored in
+ * every repository, so the project's compiler is NEVER present in that tree and
+ * `npx tsc` there resolves the deprecated `tsc` npm stub (or, uncached, an
+ * install that cannot run non-interactively). It exits nonzero having compiled
+ * nothing, and the old `return 'compile_error'` fall-through published that as a
+ * type error in the worker's code.
+ *
+ * MEASURED on the compiled hook against four repositories laid out like this one
+ * — valid TS, broken TS, JS-only, and a self-contained root-config project — all
+ * four returned the IDENTICAL `block ... compile_error: compile_error`. The
+ * verdict carried zero bits: no staged content could change it. The whole
+ * measurement path is invisible to `tests/tsc-gate.test.js` because that suite
+ * PATH-shims `npx` with a stand-in that greps for two hardcoded identifiers, so
+ * the shim always resolves where the real compiler cannot exist.
+ *
+ * A no-diagnostic exit is therefore NOT-MEASURED, and this codebase does not
+ * redden a not-run: a gate may refuse a local action but may never build a halt
+ * path, and blocking every commit is a halt path. The skip is logged, never
+ * silent — `gate_skipped` is the existing vocabulary for it (pipeline-runner,
+ * finalize-gate, microverse-runner, mux-runner all emit it), so this needs no
+ * new event name.
+ *
+ * Deliberately NOT applied to the timeout arms: `classifyTscFailure` already
+ * distinguishes a silent timeout (`cold_cache_timeout`) from a noisy one, and a
+ * timeout is a measurement that ran out of budget, not one that never began.
+ */
+const TSC_DIAGNOSTIC_RE = /\berror TS\d+/;
+
+function tscRenderedVerdict(result: TextCommandResult): boolean {
+  return result.timedOut || TSC_DIAGNOSTIC_RE.test(result.stdout + result.stderr);
+}
+
 function classifyTscFailure(result: TextCommandResult): GateFailureKind {
   if (result.timedOut) {
     return (result.stdout + result.stderr).trim().length === 0 ? 'cold_cache_timeout' : 'timeout';
@@ -370,6 +417,14 @@ function runTscGate(repoRoot: string, stagedPaths: string[]): GateDecision {
       return { decision: 'approve' };
     }
 
+    if (!tscRenderedVerdict(tscResult)) {
+      const detail = describeCommandFailure(tscResult, tscResult.stdout) || 'no tsc diagnostics';
+      return {
+        decision: 'approve',
+        unmeasuredReason: `tsc emitted no diagnostics: ${detail.split('\n')[0].trim()}`,
+      };
+    }
+
     const failureKind = classifyTscFailure(tscResult);
     const detailSource = tscResult.stderr || tscResult.stdout || `staged changes: ${stagedPaths.join(', ')}`;
     return {
@@ -390,6 +445,32 @@ function emitTscGateFailed(reason: string, failureKind: GateFailureKind, command
       reason,
       gate_payload: {
         failure_kind: failureKind,
+        command,
+      },
+    } as never);
+  } catch {
+    /* activity logging is best effort */
+  }
+}
+
+/**
+ * The not-measured breadcrumb. `gate_skipped` is the vocabulary four other
+ * producers already use for a gate that did not run, carried on the same
+ * `gate_payload.reason` + `detail` shape — a fifth `tsc_gate_*` event name would
+ * be an enumeration member bought for nothing.
+ *
+ * It is emitted on a decision that APPROVES, which is the point: the only thing
+ * distinguishing "the staged tree compiles" from "no compiler was reachable" is
+ * this line in the activity log.
+ */
+function emitTscGateSkipped(reason: string, command: string): void {
+  try {
+    logActivity({
+      event: 'gate_skipped',
+      source: 'hook',
+      gate_payload: {
+        reason: 'tsc_not_measured',
+        detail: reason,
         command,
       },
     } as never);
@@ -487,6 +568,13 @@ function evaluateCommitCommand(command: string, state: State | null): GateDecisi
 
   const gateDecision = runTscGate(repoRoot, staged.paths);
   if (gateDecision.decision === 'approve') {
+    // An unmeasured approve is NOT a clean pass, so `allowReason` is deliberately
+    // left in place: consuming the operator's escape hatch here would spend it on
+    // a commit the gate never type-checked.
+    if (gateDecision.unmeasuredReason) {
+      emitTscGateSkipped(gateDecision.unmeasuredReason, command);
+      return gateDecision;
+    }
     if (allowReason) consumeTscOverride(command);
     return gateDecision;
   }
