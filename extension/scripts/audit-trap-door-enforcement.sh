@@ -435,6 +435,33 @@ function nonCommentText(content) {
   }).join('\n');
 }
 
+// ONE predicate for "may this tracked file answer the question the corpus asks" —
+// does this identifier still EXIST as code. Both clauses exclude the same kind of
+// file: one that SPELLS names it does not USE.
+//
+//   * Markdown never answers it. Documentation outlives the code it describes by
+//     design, so prose resolves a deleted name off the very document recording its
+//     deletion.
+//   * Neither does the sibling wire's anchor-absence allowlist. That map exists to
+//     enumerate, as bare string literals, every anchor token that must NOT exist —
+//     so a corpus containing it resolves ALL of them, and would resolve any dead
+//     symbol the moment someone allowlisted it. Allowlisting a name in the sibling
+//     is then the very act that blinds THIS arm to it, permanently and silently.
+//
+// This is DELIBERATELY the same rule, and the same exclusion, as the sibling's
+// `anchorCorpusExclusions` — which documents the identical trap and calls closing it
+// load-bearing ("Nothing else in the tree may enumerate absent tokens"). The two arms
+// run in separate processes and cannot share a binding; what they CAN share is one
+// rule, stated identically. Measured on this tree: without the second clause 8 anchors
+// in src/services/CLAUDE.md resolved SOLELY off that allowlist and were counted as
+// verified, while the header's own warning above — write a dead identifier as a bare
+// literal in a tracked file and you revive it — had been true of that file all along.
+const ANCHOR_ABSENCE_ENUMERATOR = 'extension/tests/trap-door-conformance.test.js';
+
+function isLivenessChannel(rel) {
+  return !rel.endsWith('.md') && rel !== ANCHOR_ABSENCE_ENUMERATOR;
+}
+
 // maxBuffer is mandatory, not decorative: the 1 MB default was breached at 96b08eba
 // and turned a sibling whole-repo enumeration into `spawnSync git ENOBUFS`
 // (the 64 MB ceiling is the named trap door in src/services/CLAUDE.md).
@@ -457,7 +484,7 @@ function buildSymbolCorpus() {
   let fileCount = 0;
 
   for (const rel of tracked.split('\0')) {
-    if (!rel || rel.endsWith('.md')) continue;
+    if (!rel || !isLivenessChannel(rel)) continue;
     let text;
     try {
       text = fs.readFileSync(path.join(repoRoot, rel), 'utf8');
