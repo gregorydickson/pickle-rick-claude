@@ -184,6 +184,37 @@ function computeWallClockMs(spawnMsList: number[], terminalTimestamps: Array<str
 }
 
 /**
+ * The ticket's events from its CURRENT run: everything at or after its LATEST parseable spawn.
+ *
+ * The AP-EXT-ITER39-01 staleness rule — an event from one run must never be paired with another
+ * run of the same ticket — was stated twice in this file and applied to neither terminal READ:
+ * `findOverlapViolations` bounds its window inline, `computeWallClockMs` anchors on the owning
+ * spawn, and `classifyTicketGate` scanned the WHOLE activity array for a terminal naming the
+ * ticket. So run 1's terminal vouched for run N forever, exactly as the overlap comment warns.
+ * MEASURED over the 74 real spawned tickets in this box's 7 sessions: 5 of the 6 `observed`
+ * verdicts rest on a clean boundary that PRECEDES the ticket's last spawn, with no terminal at
+ * all after it, and 2 more read `failed` off a gate failure from an earlier run — 7 of 74
+ * dispositions describing a run that never reported. Ground truth is 1 observed, not 6.
+ *
+ * Returned as ONE slice rather than a third copy of the bound: every terminal arm below reads
+ * from it, so the ticket-identity conjunct and the run bound are each written once. A ticket
+ * whose spawns are all unparseable has no derivable current run, so nothing can prove its run
+ * ended — it keeps its row and reads `unresolved`, never a disposition borrowed from another run.
+ *
+ * `tier_phase_skipped` is deliberately NOT read through here: skip is a precondition on whether
+ * the gate RAN, not evidence that a run finished (the AP-EXT-ITER148-01 "NOT matches" note).
+ */
+function currentRunEvents(ticket: string, spawnMsList: number[], activity: ActivityEvent[]): ActivityEvent[] {
+  if (spawnMsList.length === 0) return [];
+  const latestSpawnMs = spawnMsList[spawnMsList.length - 1];
+  return activity.filter((e) => {
+    if (getEventTicketId(e) !== ticket) return false;
+    const ms = parseTs(e);
+    return !Number.isNaN(ms) && ms >= latestSpawnMs;
+  });
+}
+
+/**
  * The ticket's disposition, in precedence order. Every arm returns a literal, which is why
  * `TicketGateCompletion['reason']` carries no `null`: a ticket reaches here only by having
  * been spawned, so it always HAS a disposition. A nullable verdict on a gate-reporting type
@@ -219,8 +250,9 @@ function classifyTicketGate(
     (e) => e.event === 'tier_phase_skipped' && getEventTicketId(e) === ticket
       && Array.isArray(e.skipped_phases) && (e.skipped_phases as unknown[]).includes('test:fast'),
   );
-  const gateFailedEvents = activity.filter(
-    (e) => e.event === GATE_FAILED_EVENT && getEventTicketId(e) === ticket && e.gate_phase === 'test:fast',
+  const runEvents = currentRunEvents(ticket, spawnMsList, activity);
+  const gateFailedEvents = runEvents.filter(
+    (e) => e.event === GATE_FAILED_EVENT && e.gate_phase === 'test:fast',
   );
   const timeoutEvent = gateFailedEvents.find(
     (e) => Array.isArray(e.failures) && (e.failures as Array<{ name?: unknown }>).some((f) => f?.name === '__timeout__'),
@@ -231,9 +263,7 @@ function classifyTicketGate(
   // stdout) and which no manager emits at all: 0 occurrences across the 7 sessions on this
   // box, against 10 for `boundary_commit_resolved`. So the clean arm never fired and every
   // cleanly-completed ticket measured `wallClockMs: null`.
-  const cleanTerminalEvent = activity.find(
-    (e) => e.event === CLEAN_TERMINAL_EVENT && getEventTicketId(e) === ticket,
-  );
+  const cleanTerminalEvent = runEvents.find((e) => e.event === CLEAN_TERMINAL_EVENT);
 
   const timedOut = Boolean(timeoutEvent);
   const failedNonTimeout = gateFailedEvents.length > 0 && !timedOut;

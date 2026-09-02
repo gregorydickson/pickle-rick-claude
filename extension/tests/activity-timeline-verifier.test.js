@@ -548,3 +548,84 @@ test('AP-EXT-ITER115-01 control: a fast tier at the extension root still counts 
   assert.match(output, /eeee5555 \| true \| 900000 \| false \| observed/);
   assert.equal(exitCode, 0);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER155-01: a ticket's DISPOSITION must rest on a terminal from its CURRENT run.
+//
+// AP-EXT-ITER39-01 established the staleness rule and AP-EXT-ITER4-01 restated it for the
+// wall clock, but both PATTERN_SHAPEs name their own function, so neither could see that
+// `classifyTicketGate` scanned the WHOLE activity array for a terminal naming the ticket.
+// Run 1's boundary therefore vouched for run N forever — the precise failure the overlap
+// comment warns about, live in the sibling reader one function away.
+//
+// MEASURED over the 74 real spawned tickets in this box's 7 sessions: 5 of the 6 `observed`
+// verdicts rested on a clean boundary PRECEDING the ticket's last spawn with no terminal at
+// all after it (`5209a55d` in 2026-08-31-fa2fdee6 was its whole session's single "observed
+// completion", off three run-1..3 boundaries while run 4 vanished), and 2 more read `failed`
+// off a gate failure from an earlier run. AP-EXT-ITER148-01 corrected the headline from 59
+// to 6; ground truth is 1.
+//
+// Asserts the operator-visible CLI column as well as the pure report: the pre-fix code
+// returned a well-formed disposition, so a "is it a string" oracle greens over the defect.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER155-01: a clean boundary from an EARLIER run does not make the current run observed', () => {
+  const activity = [
+    spawnEvt('2026-08-31T19:48:33.000Z', '5209a55d'),
+    boundaryEvt('2026-08-31T20:04:30.000Z', '5209a55d'),
+    spawnEvt('2026-08-31T20:45:03.000Z', '5209a55d'),
+  ];
+  const report = buildGateCompletionReport(activity);
+  const t = report.tickets.find((x) => x.ticket === '5209a55d');
+  assert.equal(t.observedCompletion, false, "run 1's boundary cannot vouch for run 2");
+  assert.equal(t.reason, 'unresolved');
+  assert.equal(t.wallClockMs, null, 'the current run never ended, so there is nothing to measure');
+  assert.equal(report.summary.observedCompletions, 0);
+  assert.equal(report.summary.unresolved, 1);
+
+  const { output } = withSessionDir(activity, runVerifyActivityTimeline);
+  assert.match(output, /5209a55d \| false \| n\/a \| false \| unresolved/);
+});
+
+test('AP-EXT-ITER155-01: a gate failure from an EARLIER run does not make the current run failed', () => {
+  // The same defect on the negative channel: `e98d9866` (2026-08-26-27e0ac68) read `failed`
+  // off a run-1 gate red while its run-2 spawn produced no terminal at all.
+  const activity = [
+    spawnEvt('2026-08-26T13:07:00.000Z', 'e98d9866'),
+    gateFailedEvt('2026-08-26T13:16:56.000Z', 'e98d9866', 'test:fast', []),
+    spawnEvt('2026-08-26T13:21:36.000Z', 'e98d9866'),
+  ];
+  const t = buildGateCompletionReport(activity).tickets.find((x) => x.ticket === 'e98d9866');
+  assert.equal(t.failedNonTimeout, false, "run 1's gate red is not evidence that run 2 ended");
+  assert.equal(t.reason, 'unresolved');
+});
+
+test('AP-EXT-ITER155-01 control: a relaunched ticket whose LAST run terminates is still observed', () => {
+  // The two cases above are satisfiable by a bound that discards every terminal. This one
+  // is not: the run bound must admit the current run's own terminal, and measure from it.
+  const activity = [
+    spawnEvt('2026-08-31T19:48:33.000Z', 'aaaa1111'),
+    boundaryEvt('2026-08-31T20:04:30.000Z', 'aaaa1111'),
+    spawnEvt('2026-08-31T20:45:03.000Z', 'aaaa1111'),
+    boundaryEvt('2026-08-31T21:00:03.000Z', 'aaaa1111'),
+  ];
+  const report = buildGateCompletionReport(activity);
+  const t = report.tickets.find((x) => x.ticket === 'aaaa1111');
+  assert.equal(t.observedCompletion, true);
+  assert.equal(t.reason, 'observed');
+  assert.equal(t.wallClockMs, 15 * 60 * 1000, "measured from run 2's spawn, not run 1's");
+  assert.equal(report.summary.observedCompletions, 1);
+});
+
+test('AP-EXT-ITER155-01 control: a terminal exactly AT the last spawn instant still counts', () => {
+  // Mirrors the AP-EXT-ITER39-01 boundary-equality control: the bound is `>=`, so a
+  // same-instant terminal is inside the current run, not stale.
+  const activity = [
+    spawnEvt('2026-08-22T10:00:00.000Z', 'bbbb2222'),
+    spawnEvt('2026-08-22T11:00:00.000Z', 'bbbb2222'),
+    boundaryEvt('2026-08-22T11:00:00.000Z', 'bbbb2222'),
+  ];
+  const t = buildGateCompletionReport(activity).tickets.find((x) => x.ticket === 'bbbb2222');
+  assert.equal(t.observedCompletion, true);
+  assert.equal(t.wallClockMs, 0, 'a same-instant terminal measures zero, not null');
+});
