@@ -677,6 +677,61 @@ describe('AC-OA-FRB1 — the microverse arm derives halt-eligibility, never rest
     assert.equal(observed, 'baseline_unmeasurable_unrecoverable');
   });
 
+  // AP-EXT-ITER46-01. `isMicroverseArmFatal` carries TWO fail-open arms, and until this pin only
+  // one of them was enforced. The trailing `catch` is cataloged in `src/bin/CLAUDE.md` and pinned by
+  // AC-CF-04; the `typeof reason !== 'string'` guard — added by the FR-B1 collapse that introduced
+  // `classifyMicroverseDisposition` here — had neither. Measured before writing this test: flipping
+  // that guard to `return true` survived all 467 tests in every file referencing
+  // `isFatalPhaseFailure`/`shouldHaltAfterPhase`, while changing real behaviour on both microverse
+  // phases (absent/null/non-string exit_reason: continue -> HALT). The source-shape test below even
+  // STRIPS `typeof x !== 'string'` before scanning, so the guard was visible to the suite and
+  // asserted by nothing.
+  //
+  // Why it matters more than a coverage gap: a microverse phase that exits non-zero without
+  // stamping an exit_reason (killed runner, crash before `recordExitReason`, or a post-recovery
+  // `clearExitReason`) is exactly the silent-death case. Fail-closed there is a NEW abort
+  // condition on a run that could have continued — the root CLAUDE.md's PRIME DIRECTIVE, and the
+  // same fail-open reasoning AC-CF-04 already protects one arm with.
+  test('a microverse phase with no usable exit_reason continues — the second fail-open arm', () => {
+    const { repo, startCommit } = makeRepo();
+    // Every shape that reaches the guard: the key absent entirely, an explicit null, and a
+    // non-string value. `JSON.stringify` drops an `undefined` value, so the first case really does
+    // write a state file with no `exit_reason` key at all.
+    const UNUSABLE = [
+      ['absent', {}],
+      ['null', { exit_reason: null }],
+      ['non-string', { exit_reason: 0 }],
+    ];
+
+    for (const phase of MICROVERSE_PHASES) {
+      for (const [label, override] of UNUSABLE) {
+        const runtime = makeRuntime({
+          repo,
+          startCommit,
+          stateOverrides: { pipeline_continue_on_phase_fail: true, ...override },
+        });
+
+        assert.equal(isFatalPhaseFailure(phase, runtime), false,
+          `${phase}: exit_reason ${label} must not be halt-eligible — a phase that failed without `
+          + 'stamping a reason has not reported a crash-floor condition');
+        assert.equal(shouldHaltAfterPhase(phase, 1, runtime), false,
+          `${phase}: exit_reason ${label} must not halt the pipeline (PRIME DIRECTIVE: a halt on a `
+          + 'missing reason is a new abort condition)');
+      }
+
+      // Control, and the reason this pin cannot pass by the arm collapsing to a constant `false`:
+      // a genuinely halt-eligible STRING must still be halt-eligible on the same runtime shape.
+      // Without this, deleting the disposition read entirely would leave the block green.
+      const halting = makeRuntime({
+        repo,
+        startCommit,
+        stateOverrides: { pipeline_continue_on_phase_fail: true, exit_reason: 'judge_timeout' },
+      });
+      assert.equal(isFatalPhaseFailure(phase, halting), true,
+        `${phase}: the fail-open arm must not swallow a real halt-eligible reason`);
+    }
+  });
+
   test('the arm body contains no exit-reason literal and no membership-set call', () => {
     const body = extractFunctionBody(PIPELINE_RUNNER_SOURCE, 'isMicroverseArmFatal');
     // Quoted literals in the body are compared against `reportAs`, a closed 5-value disposition
