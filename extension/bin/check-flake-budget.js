@@ -101,9 +101,28 @@ function assertInvocationTargetExists(cwd, invocation) {
         throw new Error(`Flake-budget target not found: ${invocation.targetPath}`);
     }
 }
-function isBudgetableTestFailure(stdout, stderr) {
-    const combined = `${stdout}\n${stderr}`;
-    return /(^✖\s)|(^not ok\s)|(^ℹ tests\s+\d+)/m.test(combined);
+// Both built-in node:test reporters close a run with the same summary line and differ only in
+// the leading sigil — spec `ℹ tests 16`, TAP `# tests 16` (measured on node 22 and 24) — so the
+// pair is node's whole reporter set, not a list one member from the next hole.
+const TEST_SUMMARY_COUNT_RE = /^(?:ℹ|#)[ \t]+tests[ \t]+(\d+)[ \t]*$/m;
+const TEST_FAILURE_MARKER_RE = /(^✖\s)|(^not ok\s)/m;
+/** How many tests a half PROVED it ran; 0 when it emitted no node:test summary at all. */
+function measuredTestCount(stdout, stderr) {
+    const match = TEST_SUMMARY_COUNT_RE.exec(`${stdout}\n${stderr}`);
+    return match ? Number.parseInt(match[1], 10) : 0;
+}
+/**
+ * Did this half prove it ran tests? Either proof is accepted: a summary counting at least one
+ * test, or a failure marker (a REPORTED failure is a test that ran, and a half can crash after
+ * printing failures but before printing its summary).
+ *
+ * `tests 0` — and a half that printed no summary at all — is NOT proof. That is the
+ * "reached nothing" case `scripts/audit-did-we-count.sh:requireCounted` already refuses by
+ * name, and it is reachable here: `bin/test-runner.js --tier fast …` exits 0 on an empty
+ * selection, printing only `[no files for tier fast]` (measured).
+ */
+function reportedTestResults(stdout, stderr) {
+    return measuredTestCount(stdout, stderr) > 0 || TEST_FAILURE_MARKER_RE.test(`${stdout}\n${stderr}`);
 }
 // R-FBTN/WS-D: node --test names each failure as `✖ <name> (…ms)` or TAP `not ok N - <name>`.
 // Surface WHICH tests flaked and HOW LONG they took, not just how many — a bare count is
@@ -194,7 +213,7 @@ function formatRunAttributionLines(runRecords) {
     return lines;
 }
 function printExceededReport(summary, parsed, stderr) {
-    stderr(`FAIL_BUDGET_EXCEEDED failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs} target=${summary.target}`);
+    stderr(`FAIL_BUDGET_EXCEEDED failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs} tests=${summary.testsMeasured} target=${summary.target}`);
     for (const line of formatRunAttributionLines(summary.runRecords)) {
         stderr(line);
     }
@@ -245,6 +264,7 @@ function runHalves(invocations, parsed, opts) {
 function runIterations(parsed, opts) {
     let failures = 0;
     const runRecords = [];
+    const perRunMeasuredTests = [];
     let logDir = null;
     const childEnv = { ...opts.env };
     const invocations = buildRunInvocations(opts.env);
@@ -255,37 +275,41 @@ function runIterations(parsed, opts) {
     }
     for (let runIndex = 0; runIndex < parsed.runs; runIndex += 1) {
         const halves = runHalves(invocations, parsed, { ...opts, env: childEnv });
+        perRunMeasuredTests.push(halves.reduce((sum, half) => sum + measuredTestCount(half.stdout, half.stderr), 0));
+        // ONE question, asked of EVERY half: did it prove it ran tests? Asking it only of the
+        // FAILING halves is what let a half that exited 0 having run NOTHING pass as a clean run —
+        // and five such halves print the byte-identical `flake-budget OK … runs_completed=5` line.
+        // Per half, never over the concatenation: a reporting half would otherwise vouch for a
+        // silent sibling.
+        const unreported = halves.filter((half) => !reportedTestResults(half.stdout, half.stderr));
         const failedHalves = halves.filter((half) => (half.status ?? 1) !== 0);
-        if (failedHalves.length > 0) {
+        if (failedHalves.length > 0 || unreported.length > 0) {
             const stdout = halves.map((half) => half.stdout).join('');
             const stderr = halves.map((half) => half.stderr).join('');
             const runNumber = runIndex + 1;
-            const status = failedHalves[0].status;
-            // Classify per FAILING half, never over the concatenation: a passing half always emits
-            // `ℹ tests N`, so a combined scan would read a crashed half as budgetable purely because
-            // its sibling reported results.
-            const budgetable = failedHalves.every((half) => isBudgetableTestFailure(half.stdout, half.stderr));
-            const failing = budgetable ? dedupeFailureDetails(extractFailingTestDetails(stdout, stderr)) : [];
-            // ONE reporting seam for both branches: every non-zero exit writes its full stdout/stderr
-            // to disk before classification, so a harness crash (no ✖/not-ok/ℹ-tests markers) leaves
-            // the same evidence trail as a budgetable test failure. Retain only names+durations in
-            // memory across runs; the full stdout/stderr for a ~5000-test tier lives on disk.
+            const status = (failedHalves[0] ?? unreported[0]).status;
+            const failing = unreported.length > 0 ? [] : dedupeFailureDetails(extractFailingTestDetails(stdout, stderr));
+            // ONE reporting seam for both branches: every run that reaches here writes its full
+            // stdout/stderr to disk before classification, so a harness crash (no ✖/not-ok/ℹ-tests
+            // markers) leaves the same evidence trail as a budgetable test failure. Retain only
+            // names+durations in memory across runs; the full stdout/stderr for a ~5000-test tier
+            // lives on disk.
             if (!logDir) {
                 logDir = mkdtempSync(path.join(os.tmpdir(), 'flake-budget-logs-'));
             }
             const logPath = path.join(logDir, `run-${runNumber}.log`);
             writeFileSync(logPath, formatRunLogContents(runNumber, status, failing, stdout, stderr), 'utf8');
-            if (!budgetable) {
+            if (unreported.length > 0) {
                 throw new Error(`Flake-budget child failed before reporting test results: full output written to ${logPath}`);
             }
             failures += 1;
             runRecords.push({ runIndex: runNumber, status, failing, logPath });
             if (failures > parsed.failBudget) {
-                return { failures, runsCompleted: runNumber, runRecords, target };
+                return { failures, runsCompleted: runNumber, runRecords, target, testsMeasured: Math.min(...perRunMeasuredTests) };
             }
         }
     }
-    return { failures, runsCompleted: parsed.runs, runRecords, target };
+    return { failures, runsCompleted: parsed.runs, runRecords, target, testsMeasured: Math.min(...perRunMeasuredTests) };
 }
 export async function checkFlakeBudgetMain(opts) {
     const stdout = opts.stdout ?? ((msg) => process.stdout.write(`${msg}\n`));
@@ -302,7 +326,7 @@ export async function checkFlakeBudgetMain(opts) {
             printExceededReport(summary, parsed, stderr);
             return 1;
         }
-        stdout(`flake-budget OK failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs} target=${summary.target}`);
+        stdout(`flake-budget OK failures=${summary.failures} budget=${parsed.failBudget} runs_completed=${summary.runsCompleted} runs_requested=${parsed.runs} tests=${summary.testsMeasured} target=${summary.target}`);
         // A fully clean run stays a one-liner; a run that failed within budget gets attribution.
         if (summary.runRecords.length > 0) {
             printWithinBudgetReport(summary, stdout);

@@ -894,3 +894,131 @@ test('the declared flake-budget glob pattern matches a directory built the same 
     fs.rmSync(createdDir, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER157-01: `target=` names the argv the run REQUESTED; nothing named the size it
+// MEASURED. Two doors reach a green verdict over an unmeasured tier, and neither moves the argv:
+// `bin/test-runner.js --tier fast …` exits 0 printing only `[no files for tier fast]` when its
+// selection is empty (case A measures that), and an ambient env can narrow what the child
+// registers with the argv byte-identical (case D). Pre-fix `flake-budget OK failures=0
+// runs_completed=5 runs_requested=5 target=…` was byte-identical to a real green in both.
+// Assert the VERDICT and the measured count, never the exit code alone — the pre-fix run
+// returned 0 in every one of these shapes.
+
+const EMPTY_TIER_STDERR = '[no files for tier fast]\n';
+
+test('AP-EXT-ITER157-01(a): the real tier runner exits 0 with NO node:test summary on an empty selection', () => {
+  const dir = makeTmpDir();
+  try {
+    // An existing test file that is NOT in the fast tier: the include-filter yields zero files,
+    // which is the only way `readManifestEntries` (it rejects absent entries) lets a tier go empty.
+    const manifestPath = path.join(dir, 'manifest.json');
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({ entries: ['tests/integration/deploy-lifecycle-soak.test.js'] }),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.resolve(__dirname, '..', 'bin/test-runner.js'),
+        '--tier', 'fast',
+        '--manifest', manifestPath,
+        '--manifest-mode', 'include',
+        '--test-concurrency=1',
+      ],
+      { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', timeout: CAP_FLAKE_BUDGET_CHILD },
+    );
+
+    assert.equal(result.status, 0, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+    assert.match(result.stderr, /\[no files for tier fast\]/);
+    assert.ok(
+      !/^(?:ℹ|#)[ \t]+tests[ \t]+\d+/m.test(`${result.stdout}\n${result.stderr}`),
+      `an empty selection must emit no node:test summary, got: ${result.stdout}${result.stderr}`,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER157-01(b): a half that exits 0 having run nothing is refused, not reported OK', async () => {
+  const emptyHalf = { status: 0, stdout: '', stderr: EMPTY_TIER_STDERR };
+  // The fixture's own precondition: this shape is a SUCCESS exit, so the case cannot pass
+  // because of a non-zero status — case (a) measures that the real runner emits exactly it.
+  assert.equal(emptyHalf.status, 0);
+
+  const out = [];
+  const err = [];
+  const code = await checkFlakeBudgetMain({
+    argv: ['--runs=5', '--fail-budget=2', '--timeout=30000'],
+    cwd: path.resolve(__dirname, '..'),
+    env: envWithoutFlakeBudgetOverride(),
+    stdout: (msg) => out.push(msg),
+    stderr: (msg) => err.push(msg),
+    spawnSyncFn: () => ({ ...emptyHalf }),
+  });
+
+  assert.equal(code, 1, `stdout: ${out.join('\n')}`);
+  assert.deepEqual(
+    out.filter((l) => l.startsWith('flake-budget OK')), [],
+    `a tier that ran nothing must not print an OK verdict, got: ${out.join('\n')}`,
+  );
+  const message = err.join('\n');
+  assert.match(message, /failed before reporting test results/);
+  const pathMatch = message.match(/written to (\S+)/);
+  assert.ok(pathMatch, `the refusal must name a log path, got: ${message}`);
+  assert.ok(
+    fs.readFileSync(pathMatch[1], 'utf8').includes(EMPTY_TIER_STDERR.trim()),
+    'the log must carry the child output that could not be measured',
+  );
+});
+
+/** A real test file whose registered test COUNT is chosen by an ambient env var, not by argv. */
+function writeEnvSizedTest(dir) {
+  const testFile = path.join(dir, 'env-sized.test.js');
+  fs.writeFileSync(
+    testFile,
+    `import { test } from 'node:test';
+const n = Number.parseInt(process.env.AP24_TEST_COUNT ?? '1', 10);
+for (let i = 0; i < n; i += 1) test('env-sized case ' + i, () => {});
+`,
+  );
+  return testFile;
+}
+
+test('AP-EXT-ITER157-01(d): the OK verdict names the size measured, so an argv-blind narrowing is visible', async () => {
+  const dir = makeTmpDir();
+  try {
+    const testFile = writeEnvSizedTest(dir);
+    const runWith = async (count) => {
+      const out = [];
+      const code = await checkFlakeBudgetMain({
+        argv: ['--runs=1', '--fail-budget=0', '--timeout=60000'],
+        cwd: path.resolve(__dirname, '..'),
+        env: {
+          ...envWithoutFlakeBudgetOverride(),
+          PICKLE_FLAKE_BUDGET_TEST_FILE: testFile,
+          AP24_TEST_COUNT: String(count),
+        },
+        stdout: (msg) => out.push(msg),
+        stderr: () => {},
+        spawnSyncFn: undefined,
+      });
+      assert.equal(code, 0, `a real green run must stay green, got: ${out.join('\n')}`);
+      return out.join('\n');
+    };
+
+    const wide = await runWith(3);
+    const narrowed = await runWith(1);
+
+    // Precondition: the argv is byte-identical across the two runs, so `target=` cannot
+    // distinguish them — pre-fix the whole verdict line was identical too.
+    const targetOf = (verdict) => verdict.slice(verdict.indexOf('target='));
+    assert.equal(targetOf(wide), targetOf(narrowed), 'the two runs must share one target= argv');
+
+    assert.match(wide, /\btests=3\b/, `the wide run must name 3 measured tests, got: ${wide}`);
+    assert.match(narrowed, /\btests=1\b/, `the narrowed run must name 1 measured test, got: ${narrowed}`);
+    assert.notEqual(wide, narrowed, 'a narrowed run must not print a verdict identical to the wide one');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
