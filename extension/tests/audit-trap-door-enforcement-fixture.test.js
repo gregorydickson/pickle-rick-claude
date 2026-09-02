@@ -177,7 +177,7 @@ test('AP-EXT-ITER152-01 INVARIANT corpus does not resolve a token that only the 
 
   assert.match(
     result.stderr,
-    new RegExp('names a symbol absent from the tree: ' + token),
+    new RegExp('names a symbol nothing in the tree uses: ' + token),
     'a token spelled ONLY in the sibling allowlist must NOT resolve as live; the corpus is ' +
       `resolving it off that allowlist. stderr: ${result.stderr}`
   );
@@ -190,12 +190,12 @@ test('AP-EXT-ITER152-01 INVARIANT corpus still resolves a genuinely live symbol 
 
   assert.doesNotMatch(
     result.stderr,
-    new RegExp('names a symbol absent from the tree: ' + liveToken),
+    new RegExp('names a symbol (?:absent from the tree|nothing in the tree uses): ' + liveToken),
     `excluding the enumerator must not narrow the corpus for live symbols. stderr: ${result.stderr}`
   );
 });
 
-test('AP-EXT-ITER152-01 the anchor-absence enumerator is excluded from the INVARIANT corpus file count', () => {
+test('AP-EXT-ITER153-01 the INVARIANT corpus reads every tracked non-markdown file', () => {
   const withFix = spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
     cwd: EXTENSION_ROOT,
     encoding: 'utf8',
@@ -212,7 +212,96 @@ test('AP-EXT-ITER152-01 the anchor-absence enumerator is excluded from the INVAR
   assert.ok(reported, `success line must report the corpus file count; stdout: ${withFix.stdout}`);
   assert.equal(
     Number(reported[1]),
-    Number(trackedNonMarkdown.stdout.trim()) - 1,
-    'the corpus must be every tracked non-markdown file MINUS the anchor-absence enumerator'
+    Number(trackedNonMarkdown.stdout.trim()),
+    'the corpus is every tracked non-markdown file: AP-EXT-ITER153-01 replaced the ' +
+      'per-file exclusion with a per-OCCURRENCE rule, so the enumerator is READ again ' +
+      'while the names it only spells still resolve nothing (pin above)'
+  );
+});
+
+// AP-EXT-ITER153-01: the per-file exclusion was one hand-written path, and the tree held
+// more files that spell a name solely to assert it is GONE — including THIS AUDIT's own
+// `prunedExports` list, which resolved both of the pruned exports it names (each declared
+// MUST-NOT-EXIST by an extension/CLAUDE.md anchor) off the very arm asserting their
+// absence. Both wires were blind: the sibling sweep reads *.sh too. The fix stops naming
+// files and asks of each OCCURRENCE whether the file USES the name or only SPELLS it.
+//
+// Those two names are deliberately NOT written anywhere in this file, not even in this
+// comment: a comment is stripped from the USE half of the rule but still counts as a
+// SPELLING, so naming them here pushes their file cardinality to 2 and defuses the pin
+// below. Measured — the first draft of this comment did exactly that.
+//
+// Same derivation discipline as the pin above: the dead token is read out of the audit
+// script at run time. Writing it here as a literal would make THIS file a second speller,
+// push the cardinality to 2 and silently defuse the pin.
+
+/** A name the audit's own `prunedExports` list declares absent, spelled nowhere else. */
+function findTokenLiveOnlyInAuditScript() {
+  const repoRoot = path.resolve(EXTENSION_ROOT, '..');
+  const auditRel = 'extension/scripts/audit-trap-door-' + 'enforcement.sh';
+  const text = fs.readFileSync(path.join(repoRoot, auditRel), 'utf8');
+  const block = /const prunedExports = \[([\s\S]*?)\]/.exec(text);
+  if (!block) return null;
+  const tokens = [...block[1].matchAll(/'export function ([A-Za-z_$][A-Za-z0-9_$]*)'/g)].map((m) => m[1]);
+
+  for (const token of tokens) {
+    const hits = spawnSync('git', ['grep', '-l', '-w', '-F', '--', token], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    if (hits.status !== 0 && hits.status !== 1) continue;
+    const files = (hits.stdout || '').split('\n').filter(Boolean).filter((f) => !f.endsWith('.md'));
+    if (files.length === 1 && files[0] === auditRel) return token;
+  }
+  return null;
+}
+
+test('AP-EXT-ITER153-01 a name only the audit\'s own absence-assertion list spells does not resolve as live', () => {
+  const token = findTokenLiveOnlyInAuditScript();
+  assert.ok(
+    token,
+    'precondition: the audit\'s prunedExports must declare at least one name absent from ' +
+      'every other non-markdown tracked file, otherwise this test measures nothing'
+  );
+
+  const result = runAuditOverFixtureCatalog('- `x.ts` — INVARIANT: `' + token + '` is the anchor.');
+
+  assert.match(
+    result.stderr,
+    new RegExp('names a symbol nothing in the tree uses: ' + token),
+    'the arm is resolving the anchor off its OWN list of names that must not exist. ' +
+      `stderr: ${result.stderr}`
+  );
+});
+
+test('AP-EXT-ITER153-01 a symbol the audit script genuinely declares still resolves as live', () => {
+  // Declared, not merely spelled, inside the audit script — the file stays in the corpus
+  // and must keep answering for what it USES. This is the direction a blanket per-file
+  // exclusion would have broken: measured, `isLivenessChannel`, `codeWords` and
+  // `TEST_NAME_RE` are all anchored in extension/CLAUDE.md and resolve nowhere else.
+  const liveToken = 'isLivenessChannel';
+  const result = runAuditOverFixtureCatalog('- `x.ts` — INVARIANT: `' + liveToken + '` is the anchor.');
+
+  assert.doesNotMatch(
+    result.stderr,
+    new RegExp('names a symbol (?:absent from the tree|nothing in the tree uses): ' + liveToken),
+    `a symbol the corpus USES must stay verified. stderr: ${result.stderr}`
+  );
+});
+
+test('AP-EXT-ITER153-01 a live string-valued name spelled in several files still resolves as live', () => {
+  // The cardinality clause is what keeps the spell/use rule from reddening every
+  // activity-event name: those exist ONLY as string literals, so they are spelled and
+  // never "used" — but they are spelled by a producer, a consumer and a compiled mirror.
+  // Drop the `=== 1` and this anchor goes red, which is the mutation this pin catches.
+  const eventName = 'worker_gate_red';
+  const result = runAuditOverFixtureCatalog('- `x.ts` — INVARIANT: `' + eventName + '` is the anchor.');
+
+  assert.doesNotMatch(
+    result.stderr,
+    new RegExp('names a symbol (?:absent from the tree|nothing in the tree uses): ' + eventName),
+    'a literal-only name spelled by more than one file is live, not spelled-only. ' +
+      `stderr: ${result.stderr}`
   );
 });

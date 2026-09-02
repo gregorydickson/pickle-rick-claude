@@ -435,31 +435,57 @@ function nonCommentText(content) {
   }).join('\n');
 }
 
-// ONE predicate for "may this tracked file answer the question the corpus asks" —
-// does this identifier still EXIST as code. Both clauses exclude the same kind of
-// file: one that SPELLS names it does not USE.
+// ONE rule for "may this tracked file answer the question the corpus asks" — does
+// this identifier still EXIST as code. The predicate used to name FILES, and a file
+// list is the incomplete-set shape: it excluded markdown plus ONE hand-written path
+// (the sibling wire's anchor-absence allowlist) and was blind to every other file
+// that spells a name in order to assert the name is GONE. Measured on this tree, at
+// least three more such channels existed — THIS SCRIPT's own `prunedExports` list,
+// a deletion-asserting hooks test, and a citadel fixture — so the next member was
+// already overdue.
 //
-//   * Markdown never answers it. Documentation outlives the code it describes by
-//     design, so prose resolves a deleted name off the very document recording its
-//     deletion.
-//   * Neither does the sibling wire's anchor-absence allowlist. That map exists to
-//     enumerate, as bare string literals, every anchor token that must NOT exist —
-//     so a corpus containing it resolves ALL of them, and would resolve any dead
-//     symbol the moment someone allowlisted it. Allowlisting a name in the sibling
-//     is then the very act that blinds THIS arm to it, permanently and silently.
+// The rule that needs no list is not WHICH FILE answers, it is WHICH OCCURRENCE: a
+// file answers with a name it USES, never with one it merely SPELLS. Comment text
+// and string/regex literals SPELL; everything else USES. Markdown is still excluded
+// wholesale because markdown only ever spells — prose outlives the code it describes
+// by design, so it resolves a deleted name off the very document recording the
+// deletion.
 //
-// This is DELIBERATELY the same rule, and the same exclusion, as the sibling's
-// `anchorCorpusExclusions` — which documents the identical trap and calls closing it
-// load-bearing ("Nothing else in the tree may enumerate absent tokens"). The two arms
-// run in separate processes and cannot share a binding; what they CAN share is one
-// rule, stated identically. Measured on this tree: without the second clause 8 anchors
-// in src/services/CLAUDE.md resolved SOLELY off that allowlist and were counted as
-// verified, while the header's own warning above — write a dead identifier as a bare
-// literal in a tracked file and you revive it — had been true of that file all along.
-const ANCHOR_ABSENCE_ENUMERATOR = 'extension/tests/trap-door-conformance.test.js';
-
+// This subsumes the deleted path exclusion exactly: the allowlist enumerates its
+// tokens as string literals inside one file, so under this rule it USES none of them
+// and cannot resolve any of them — while the audit script and the conformance sweep
+// keep resolving the symbols they genuinely DECLARE (`isLivenessChannel`, `codeWords`
+// and `TEST_NAME_RE` are all anchored in extension/CLAUDE.md and all still verify).
+// Allowlisting a name can therefore no longer be the act that blinds this arm to it.
 function isLivenessChannel(rel) {
-  return !rel.endsWith('.md') && rel !== ANCHOR_ABSENCE_ENUMERATOR;
+  return !rel.endsWith('.md');
+}
+
+// The SPELL half of that rule. `nonCommentText` above removes one spelling medium;
+// this removes the other, and the two compose — a needle written into a deletion
+// assertion is a string either way. Line-local for the same reason its sibling is:
+// every decision comes from ONE line, so an unterminated quote cannot swallow the
+// rest of the file. Residual, stated: an odd quote (an apostrophe inside a comment
+// has already been removed, but one inside a nested string has not) can over-strip
+// its own line, which drops a USE and could red a live name spelled by only one
+// file. Measured on this tree that set is empty -- the gate is green at HEAD with
+// exactly the four intended anchors corrected and nothing else moved.
+//
+// Deliberately NOT applied to JSON, where a quoted key IS the declaration: JSON has
+// no unquoted identifier space at all, so stripping literals there deletes the whole
+// file and would report every JSON-declared name as unused. Measured: without this
+// exemption `prior_value` (a real `activity-events.schema.json` property) reads as
+// spelled-only.
+function nonLiteralText(content) {
+  return content
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/'(?:\\.|[^'\\])*'/g, "''")
+        .replace(/"(?:\\.|[^"\\])*"/g, '""')
+        .replace(/`(?:\\.|[^`\\])*`/g, '``')
+    )
+    .join('\n');
 }
 
 // maxBuffer is mandatory, not decorative: the 1 MB default was breached at 96b08eba
@@ -481,6 +507,10 @@ function buildSymbolCorpus() {
 
   const words = new Set();
   const codeWords = new Set();
+  // Per-token file cardinality for the two halves of the spell/use rule. A name a
+  // file merely SPELLS counts in `spelledInFiles` only; one it USES counts in both.
+  const spelledInFiles = new Map();
+  const usedInFiles = new Map();
   let fileCount = 0;
 
   for (const rel of tracked.split('\0')) {
@@ -492,19 +522,33 @@ function buildSymbolCorpus() {
       continue;
     }
     fileCount++;
-    for (const word of text.matchAll(WORD_RE)) words.add(word[0]);
-    for (const word of nonCommentText(text).matchAll(WORD_RE)) codeWords.add(word[0]);
+
+    const commentFree = nonCommentText(text);
+    const useText = rel.endsWith('.json') ? commentFree : nonLiteralText(commentFree);
+    const spelledHere = new Set();
+    const usedHere = new Set();
+
+    for (const word of text.matchAll(WORD_RE)) {
+      words.add(word[0]);
+      spelledHere.add(word[0]);
+    }
+    for (const word of commentFree.matchAll(WORD_RE)) codeWords.add(word[0]);
+    for (const word of useText.matchAll(WORD_RE)) usedHere.add(word[0]);
+
+    for (const word of spelledHere) spelledInFiles.set(word, (spelledInFiles.get(word) ?? 0) + 1);
+    for (const word of usedHere) usedInFiles.set(word, (usedInFiles.get(word) ?? 0) + 1);
   }
 
-  return { words, codeWords, fileCount };
+  return { words, codeWords, spelledInFiles, usedInFiles, fileCount };
 }
 
-const { words, codeWords, fileCount } = buildSymbolCorpus();
+const { words, codeWords, spelledInFiles, usedInFiles, fileCount } = buildSymbolCorpus();
 
 let failures = 0;
 let verified = 0;
 let nonIdentifierSpans = 0;
 const proseOnly = [];
+const spelledOnly = [];
 const perCatalog = [];
 
 for (const claudePath of discoverCatalogs()) {
@@ -533,9 +577,33 @@ for (const claudePath of discoverCatalogs()) {
 
       // Present in the corpus, but every occurrence is comment text. The backticks
       // claim the symbol is LIVE and no code declares or uses it. Reported, never
-      // gated -- see the corpus note above for why this side stays advisory.
+      // gated -- see the corpus note above for why this side stays advisory. This
+      // tier is tested FIRST, and deliberately: the comment strip is a line-local
+      // heuristic and AP-EXT-ITER144-01 measured that REDDENING on one is the thing
+      // to refuse, so the gate below may only judge a name that reaches real code.
       if (!codeWords.has(candidate)) {
         proseOnly.push(`${label}:${lineNum}: ${candidate}`);
+        continue;
+      }
+
+      // Reaches real code, but NOTHING in the tree uses it -- every non-comment
+      // occurrence is inside a string or regex literal -- and exactly ONE file
+      // spells it. That file is the one asserting the name is gone, and the anchor
+      // is resolving off it.
+      //
+      // The cardinality clause is what keeps this sound rather than a lexing guess.
+      // A genuinely live string-valued name (an activity-event name, a reason code,
+      // an enum member) is never spelled once: it has a producer and a consumer, and
+      // in this tree a src file and its compiled mirror, so it lands in >= 2 files.
+      // Measured on this tree: all 17 literal-only names with >= 2 files are live
+      // event names, and all 4 with exactly one file were deliberately-absent
+      // symbols left backticked against this arm's own convention.
+      if ((usedInFiles.get(candidate) ?? 0) === 0 && spelledInFiles.get(candidate) === 1) {
+        process.stderr.write(
+          `INVARIANT: ${label}:${lineNum}: names a symbol nothing in the tree uses: ${candidate}\n`
+        );
+        spelledOnly.push(`${label}:${lineNum}: ${candidate}`);
+        failures++;
         continue;
       }
 
@@ -548,7 +616,8 @@ for (const claudePath of discoverCatalogs()) {
 
 if (failures > 0) {
   process.stderr.write(
-    `\n${failures} INVARIANT symbol reference(s) name a symbol absent from the tree.\n` +
+    `\n${failures} INVARIANT symbol reference(s) name a symbol absent from the tree, ` +
+      `or one that nothing in the tree uses (${spelledOnly.length} of them).\n` +
       'Fix the NAME to the live symbol, or — if the clause deliberately names an ABSENT ' +
       'symbol — drop its backticks, which is what marks it as a liveness claim. ' +
       'Do not weaken this arm to accommodate a bad anchor.\n'
