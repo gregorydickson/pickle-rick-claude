@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
+import { PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
@@ -702,6 +702,7 @@ export function runBetweenTicketFastTests(extensionDir, extensionRoot = getExten
                 }],
             timed_out: true,
             timeout_ms: timeoutMs,
+            measured: false,
         };
     }
     const output = `${result.stdout || ''}\n${result.stderr || ''}`;
@@ -712,6 +713,14 @@ export function runBetweenTicketFastTests(extensionDir, extensionRoot = getExten
             : parseBetweenTicketFastGateFailures(output, path.dirname(extensionDir)),
         timed_out: false,
         timeout_ms: timeoutMs,
+        // AP-EXT-ITER157-02: `status === 0` alone is not a measurement. `bin/test-runner.js --tier
+        // fast` exits 0 printing only `[no files for tier fast]` on an empty selection, and
+        // `test:fast` then reports `parallel_exit=0 serial_exit=0` and exits 0 too — so the exit
+        // code above says PASS over a tier that executed nothing. The shared predicate is the whole
+        // point — a hand-written summary scrape here would be the third copy of a family that has
+        // already regressed once per site. (Naming the sibling bin is forbidden in this file; see
+        // the note on the spawn above.)
+        measured: reportedTestResults(result.stdout || '', result.stderr || ''),
     };
 }
 /**
@@ -807,7 +816,15 @@ export function runBetweenTicketFastGate(input) {
 function isMalformedGate(gate) {
     if (gate === null)
         return false;
-    return typeof gate !== 'object' || typeof gate.ok !== 'boolean' || !Array.isArray(gate.failures);
+    return typeof gate !== 'object'
+        || typeof gate.ok !== 'boolean'
+        || !Array.isArray(gate.failures)
+        // AP-EXT-ITER157-02: an object that does not DECLARE whether it measured anything is not a
+        // gate result. Checked here, in the one place that already refuses unrecognizable input, so
+        // the arm below reads a trusted boolean instead of coercing `undefined` — which would read
+        // as "unmeasured" for a well-formed old-shape object and as "measured" under a `=== false`
+        // test. Both silent; the honest answer to an unreadable shape is the existing `absent`.
+        || typeof gate.measured !== 'boolean';
 }
 function isStaleVerdict(input) {
     return (input.finalCommitTs !== null &&
@@ -848,8 +865,21 @@ export function classifyPostFinalVerdict(input) {
     // `git show` timeout, a non-repo working dir — so a `finalCommitTs === null` arm placed here
     // would classify a genuinely RED tier as 'green' whenever the probe failed. A red gate stays red
     // no matter how little we know about the commit it followed.
+    // AP-EXT-ITER157-02: the GREEN claim, and only it, requires a measurement. `gate.ok` is the
+    // tier's EXIT CODE — `bin/test-runner.js --tier fast` exits 0 printing only `[no files for
+    // tier fast]` on an empty selection, so `test:fast` reports `parallel_exit=0 serial_exit=0`
+    // and exits 0 having run nothing. Pre-fix that landed here and stamped
+    // `post_final_verdict: {state:'green', degraded:false}` — the BUNDLE's success verdict, the
+    // one field `pipeline-runner.ts:readDegradedPostFinalVerdict` reads to withhold success.
+    //
+    // Placed HERE and not above the failure handling on purpose: exactly ONE cell of the
+    // (ok x measured) matrix changes, (ok=T, measured=F). A `!measured` arm hoisted next to the
+    // timeout arm would also swallow the RED path — a pretest script failure exits non-zero
+    // printing no node:test summary, so it is `measured: false` too, and routing it to
+    // `inconclusive` would drop the failure names `parseBetweenTicketFastGateFailures` recovered.
+    // An unmeasured gate cannot prove a pass; it can still report a failure it observed.
     if (gate.ok)
-        return finalize('green', []);
+        return finalize(gate.measured ? 'green' : 'inconclusive', []);
     const failureNames = gate.failures.map(f => f.name);
     if (isBaselineOnlyFailureSet(failureNames, input.baselineFailures))
         return finalize('green', []);

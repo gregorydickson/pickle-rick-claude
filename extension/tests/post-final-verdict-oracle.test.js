@@ -112,7 +112,7 @@ test('b88a6603 shape: 8/8 Done, final commit reddens, run completes without repo
     const gateLogs = [];
     // Injected directly as a structured BetweenTicketGateResult — no npm output is ever
     // parsed, so R-GBANNER cannot affect this oracle either way.
-    const redRunner = () => ({ ok: false, failures: [], timed_out: false, timeout_ms: 1_800_000 });
+    const redRunner = () => ({ ok: false, failures: [], timed_out: false, timeout_ms: 1_800_000, measured: true });
 
     // Step 1: drive the REAL completion-synthesis seam (the fixture: all tickets Done + a
     // real reddening final commit + an injected red gate).
@@ -194,7 +194,7 @@ test('manager-token completion seam: runManagerTokenPostFinalMeasurement records
     makeTicket(sessionDir, ticketId);
 
     const gateLogs = [];
-    const redRunner = () => ({ ok: false, failures: [], timed_out: false, timeout_ms: 1_800_000 });
+    const redRunner = () => ({ ok: false, failures: [], timed_out: false, timeout_ms: 1_800_000, measured: true });
 
     runManagerTokenPostFinalMeasurement(statePath, repo, ticketId, (m) => gateLogs.push(m), { runTestFast: redRunner });
 

@@ -3,8 +3,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyPostFinalVerdict } from '../bin/mux-runner.js';
 
-function gate({ ok = true, failures = [], timed_out = false, timeout_ms = null } = {}) {
-  return { ok, failures, timed_out, timeout_ms };
+// AP-EXT-ITER157-02: `measured` DEFAULTS off `timed_out` rather than to a bare `true`, because
+// that is what the producer does — a timed-out gate measured nothing. Every pre-existing case
+// therefore keeps the disposition it was written for, and a case that wants the third state
+// (exit 0 over a tier that ran nothing) says `measured: false` out loud.
+function gate({ ok = true, failures = [], timed_out = false, timeout_ms = null, measured = !timed_out } = {}) {
+  return { ok, failures, timed_out, timeout_ms, measured };
 }
 
 test('not_applicable when the working dir has no extension/, and it is NOT degraded', () => {
@@ -210,4 +214,99 @@ test('a red gate with failures outside an empty baseline classifies red with dim
   assert.strictEqual(result.state, 'red');
   assert.strictEqual(result.degraded, true);
   assert.deepStrictEqual(result.dimensions, ['real_regression']);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER157-02 — a gate that EXITED 0 without executing a test is not green.
+//
+// `bin/test-runner.js --tier fast` exits 0 printing only `[no files for tier fast]` on an
+// empty selection, so `runBetweenTicketFastTests` returns `ok: true` for a tier that ran
+// nothing. Pre-fix this classifier's only no-measurement arm keyed on `timed_out`, so that
+// gate fell through to the `gate.ok` green and stamped `post_final_verdict:
+// {state:'green', degraded:false}` — the BUNDLE's success verdict, which
+// `pipeline-runner.ts:readDegradedPostFinalVerdict` keys on to decide whether to withhold it.
+//
+// These cases drive the classifier through its exported entry point, on the same
+// `{ok:true, failures:[], timed_out:false}` record the producer actually returns for an
+// empty tier — the discriminator is `measured` and nothing else.
+
+test('AP-EXT-ITER157-02: a gate that exited 0 without measuring a test is inconclusive, NOT green', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: true, measured: false }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'inconclusive');
+  assert.strictEqual(result.degraded, true, 'an unmeasured tier must withhold the success verdict');
+  assert.deepEqual(result.dimensions, []);
+});
+
+// The positive control that forbids passing by refusing everything: the SAME record with the
+// single `measured` bit flipped must still be green. Without this, `return finalize(
+// 'inconclusive')` at the top of the function passes the case above.
+test('AP-EXT-ITER157-02 comparator: the same exit-0 gate WITH a measurement stays green', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: true, measured: true }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'green');
+  assert.strictEqual(result.degraded, false);
+});
+
+// The blast-radius fence: `measured` gates the GREEN claim and NOTHING else. A gate that exited
+// NON-ZERO is unmeasured too whenever it died before emitting a summary — a pretest script
+// failure is exactly that shape — and it must still classify RED with its failure names intact.
+// Hoisting the measurement check up beside the timeout arm passes the two cases above and
+// silently swallows this one, which is why it is pinned separately.
+test('AP-EXT-ITER157-02: an unmeasured gate that exited NON-ZERO still classifies red, with dimensions', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({
+      ok: false,
+      timed_out: false,
+      measured: false,
+      failures: [{ name: 'npm run test:fast', file: '', script_failure: true }],
+    }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'red', 'an unmeasured gate can still REPORT a failure it observed');
+  assert.strictEqual(result.degraded, true);
+  assert.deepEqual(result.dimensions, ['npm run test:fast'], 'the attribution must not be dropped');
+});
+
+// The timeout arm is untouched by this fix and stays keyed on `timed_out` — pinned here with
+// `measured` left at its producer value so a future edit cannot quietly re-route it.
+test('AP-EXT-ITER157-02: the timeout arm still classifies inconclusive with an EMPTY dimension list', () => {
+  const timedOut = classifyPostFinalVerdict({
+    gate: gate({ ok: false, timed_out: true, failures: [{ name: '__timeout__', file: 'npm run test:fast' }] }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(timedOut.state, 'inconclusive');
+  assert.strictEqual(timedOut.degraded, true);
+  assert.deepEqual(timedOut.dimensions, []);
+});
+
+// A gate object that does not DECLARE the axis is not a gate result. It lands on the existing
+// `absent` arm (degraded) rather than being coerced silently in either direction — the same
+// refusal `{garbage: true}` already gets.
+test('AP-EXT-ITER157-02: an old-shape gate with no `measured` field classifies absent, never green', () => {
+  const result = classifyPostFinalVerdict({
+    gate: { ok: true, failures: [], timed_out: false, timeout_ms: null },
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'absent');
+  assert.strictEqual(result.degraded, true);
 });

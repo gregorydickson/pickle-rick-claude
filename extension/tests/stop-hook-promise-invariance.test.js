@@ -76,8 +76,11 @@ function makeTicket(sessionDir, id) {
   );
 }
 
-const GREEN_GATE = () => ({ ok: true, failures: [], timed_out: false, timeout_ms: 1_800_000 });
-const RED_GATE = () => ({ ok: false, failures: [], timed_out: false, timeout_ms: 1_800_000 });
+// AP-EXT-ITER157-02: both stubs declare `measured: true`. `ok` is only the tier's EXIT CODE;
+// a gate that omits the did-it-RUN axis is not a gate result and classifies `absent`, which
+// would make BOTH arms of this invariance pair degraded and hide the very difference it pins.
+const GREEN_GATE = () => ({ ok: true, failures: [], timed_out: false, timeout_ms: 1_800_000, measured: true });
+const RED_GATE = () => ({ ok: false, failures: [], timed_out: false, timeout_ms: 1_800_000, measured: true });
 
 /**
  * Drives the real all-tickets-done synthesis under an injected gate and returns the state it

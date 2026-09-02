@@ -112,7 +112,10 @@ function stubRunner(result) {
   return fn;
 }
 
-const GREEN = { ok: true, failures: [], timed_out: false, timeout_ms: POST_FINAL_FAST_GATE_TIMEOUT_MS };
+// AP-EXT-ITER157-02: `measured` is the did-it-RUN axis. A stub standing in for a GREEN tier must
+// declare it ran something — `ok: true` alone is the exit code, which a tier that selected no
+// files also returns.
+const GREEN = { ok: true, failures: [], timed_out: false, timeout_ms: POST_FINAL_FAST_GATE_TIMEOUT_MS, measured: true };
 
 /**
  * Two Done tickets + a real git working repo, driven straight through
@@ -238,6 +241,7 @@ test('AC-11: a bundle with no commit at all reports green, and a red tier still 
       failures: [{ name: 'real_regression', file: 'tests/x.test.js' }],
       timed_out: false,
       timeout_ms: POST_FINAL_FAST_GATE_TIMEOUT_MS,
+      measured: true,
     });
     const redVerdict = runPostFinalMeasurement({
       statePath: makeSession(redSession, repo),
@@ -273,11 +277,16 @@ test('AC-5: a script-only gate failure (no TAP output) names the script, never t
   assert.equal(parsedFailures.length, 1);
   assert.equal(parsedFailures[0].script_failure, true);
 
+  // AP-EXT-ITER157-02: `measured: false` is what PRODUCTION returns here — a pretest script
+  // failure exits non-zero having emitted no node:test summary and no `not ok` marker. Setting
+  // it true would model the fixture's convenience instead of the defect, and would hide the
+  // hazard this case exists to pin: an unmeasured gate must not lose its RED attribution.
   const gateResult = {
     ok: false,
     failures: parsedFailures,
     timed_out: false,
     timeout_ms: POST_FINAL_FAST_GATE_TIMEOUT_MS,
+    measured: false,
   };
   const runner = stubRunner(gateResult);
   const ctx = drive(runner);
@@ -364,6 +373,7 @@ test('a red tier is recorded as red with its failing dimensions, and the run sti
     failures: [{ name: 'widget explodes', file: 'tests/widget.test.js' }],
     timed_out: false,
     timeout_ms: POST_FINAL_FAST_GATE_TIMEOUT_MS,
+    measured: true,
   });
   const ctx = drive(runner);
   try {
@@ -386,6 +396,7 @@ test('a timed-out tier is classified inconclusive, not green', () => {
     failures: [{ name: '__timeout__', file: 'npm run test:fast' }],
     timed_out: true,
     timeout_ms: POST_FINAL_FAST_GATE_TIMEOUT_MS,
+    measured: false,
   });
   const ctx = drive(runner);
   try {
@@ -663,11 +674,16 @@ test('AC-3b: resolvePostFinalRunTestFastAdapter(undefined) is the exact producti
  * is wired to a REAL spawn (AC-3b) and that a production-shaped run records a real verdict, never
  * `absent` (AC-3c), without ever running the actual ~14-minute fast tier.
  */
-function withFastNpmShimAndNoTestMode(fn) {
+function withFastNpmShimAndNoTestMode(fn, opts = {}) {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'post-final-realdefault-'));
   const recorderFile = path.join(binDir, 'npm.calls');
   const npmShim = path.join(binDir, 'npm');
-  fs.writeFileSync(npmShim, `#!/bin/sh\necho "$@" >> "${recorderFile}"\nexit 0\n`);
+  // AP-EXT-ITER157-02: the shim must emit a node:test summary to stand in for a tier that RAN.
+  // Without it this fixture models the defect (exit 0, zero tests) while its assertion claims
+  // green — the third time in this repo that the pin protecting a claim was satisfied by a
+  // fixture that never exercised it. `emitSummary: false` is the deliberate empty-tier case.
+  const summary = opts.emitSummary === false ? '' : 'echo "ℹ tests 3"\necho "ℹ pass 3"\necho "ℹ fail 0"\n';
+  fs.writeFileSync(npmShim, `#!/bin/sh\necho "$@" >> "${recorderFile}"\n${summary}exit 0\n`);
   fs.chmodSync(npmShim, 0o755);
   const prevPath = process.env.PATH;
   const prevTestMode = process.env.PICKLE_TEST_MODE;
@@ -740,6 +756,57 @@ test('AC-3b/AC-3c: seam 2 (runManagerTokenPostFinalMeasurement) — production d
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER157-02 — the durable end of the false green.
+//
+// `runBetweenTicketFastTests` returned `ok: result.status === 0` with no term proving a test ran.
+// `bin/test-runner.js --tier fast` exits 0 printing only `[no files for tier fast]` on an empty
+// selection, so `npm run test:fast` reports `parallel_exit=0 serial_exit=0` and exits 0 too.
+// That exit code reached `classifyPostFinalVerdict`'s `gate.ok` arm and stamped
+// `post_final_verdict: {state:'green', degraded:false}` into state.json — the BUNDLE's success
+// verdict, which `pipeline-runner.ts:readDegradedPostFinalVerdict` reads to decide whether to
+// withhold success and skip closer-release.
+//
+// This drives the REAL production adapter (no injected `runTestFast`, PICKLE_TEST_MODE unset)
+// through a PATH-shimmed npm, so the producer, the classifier and the durable write are all in
+// the loop. Its comparator is the AC-3b/AC-3c seam-1 case above, which runs the same shim WITH a
+// node:test summary and must stay green — without that pair, `finalize('inconclusive')` at the
+// top of the classifier would satisfy this case by refusing everything.
+test('AP-EXT-ITER157-02: a real exit-0 tier that ran NO tests records inconclusive, not green', () => {
+  withFastNpmShimAndNoTestMode((recorderFile) => {
+    const sessionDir = makeTmp('post-final-nomeasure-');
+    const repo = makeWorkingRepo();
+    try {
+      const statePath = makeSession(sessionDir, repo);
+      makeTicket(sessionDir, 'aaa', 'Done');
+      makeTicket(sessionDir, 'bbb', 'Done');
+      const fired = applyAllTicketsDoneCompletion(statePath, sessionDir, 1, () => {}, repo);
+      assert.equal(fired, true, 'the bundle must still complete — this is a verdict, not a halt');
+      assert.match(
+        fs.readFileSync(recorderFile, 'utf8'),
+        /run test:fast/,
+        'the real adapter must have spawned the tier — otherwise this measures nothing',
+      );
+      const state = readState(statePath);
+      assert.equal(
+        state.post_final_verdict.state,
+        'inconclusive',
+        'exit 0 over zero tests is not a green tier',
+      );
+      assert.equal(
+        state.post_final_verdict.degraded,
+        true,
+        'the success verdict must be withheld — `degraded` is the only field the withholding wire reads',
+      );
+      // Ran to completion is not reported success: every phase still executes.
+      assert.equal(state.exit_reason, 'completed');
+    } finally {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  }, { emitSummary: false });
 });
 
 test('between-ticket callers still inherit the resolver default (no timeout argument)', () => {

@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
+import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
@@ -396,6 +396,14 @@ export type BetweenTicketGateResult = {
   failures: BetweenTicketGateFailure[];
   timed_out: boolean;
   timeout_ms: number | null;
+  /**
+   * AP-EXT-ITER157-02: the did-it-RUN axis, orthogonal to `ok`. `ok` reports the tier's EXIT
+   * CODE; this reports whether the tier proved it executed anything, via the shared
+   * `types/index.ts:reportedTestResults`. A timed-out gate and a gate whose selection was empty
+   * are the SAME claim — no measurement — so both land here as `false` rather than as two
+   * separate arms in every consumer.
+   */
+  measured: boolean;
 };
 
 export interface OrphanedFastTestRunner {
@@ -805,6 +813,7 @@ export function runBetweenTicketFastTests(
       }],
       timed_out: true,
       timeout_ms: timeoutMs,
+      measured: false,
     };
   }
   const output = `${result.stdout || ''}\n${result.stderr || ''}`;
@@ -815,6 +824,14 @@ export function runBetweenTicketFastTests(
       : parseBetweenTicketFastGateFailures(output, path.dirname(extensionDir)),
     timed_out: false,
     timeout_ms: timeoutMs,
+    // AP-EXT-ITER157-02: `status === 0` alone is not a measurement. `bin/test-runner.js --tier
+    // fast` exits 0 printing only `[no files for tier fast]` on an empty selection, and
+    // `test:fast` then reports `parallel_exit=0 serial_exit=0` and exits 0 too — so the exit
+    // code above says PASS over a tier that executed nothing. The shared predicate is the whole
+    // point — a hand-written summary scrape here would be the third copy of a family that has
+    // already regressed once per site. (Naming the sibling bin is forbidden in this file; see
+    // the note on the spawn above.)
+    measured: reportedTestResults(result.stdout || '', result.stderr || ''),
   };
 }
 
@@ -944,7 +961,15 @@ export type ClassifyPostFinalVerdictOutput = {
 
 function isMalformedGate(gate: BetweenTicketGateResult | null): boolean {
   if (gate === null) return false;
-  return typeof gate !== 'object' || typeof gate.ok !== 'boolean' || !Array.isArray(gate.failures);
+  return typeof gate !== 'object'
+    || typeof gate.ok !== 'boolean'
+    || !Array.isArray(gate.failures)
+    // AP-EXT-ITER157-02: an object that does not DECLARE whether it measured anything is not a
+    // gate result. Checked here, in the one place that already refuses unrecognizable input, so
+    // the arm below reads a trusted boolean instead of coercing `undefined` — which would read
+    // as "unmeasured" for a well-formed old-shape object and as "measured" under a `=== false`
+    // test. Both silent; the honest answer to an unreadable shape is the existing `absent`.
+    || typeof gate.measured !== 'boolean';
 }
 
 function isStaleVerdict(input: ClassifyPostFinalVerdictInput): boolean {
@@ -992,7 +1017,20 @@ export function classifyPostFinalVerdict(
   // `git show` timeout, a non-repo working dir — so a `finalCommitTs === null` arm placed here
   // would classify a genuinely RED tier as 'green' whenever the probe failed. A red gate stays red
   // no matter how little we know about the commit it followed.
-  if (gate.ok) return finalize('green', []);
+  // AP-EXT-ITER157-02: the GREEN claim, and only it, requires a measurement. `gate.ok` is the
+  // tier's EXIT CODE — `bin/test-runner.js --tier fast` exits 0 printing only `[no files for
+  // tier fast]` on an empty selection, so `test:fast` reports `parallel_exit=0 serial_exit=0`
+  // and exits 0 having run nothing. Pre-fix that landed here and stamped
+  // `post_final_verdict: {state:'green', degraded:false}` — the BUNDLE's success verdict, the
+  // one field `pipeline-runner.ts:readDegradedPostFinalVerdict` reads to withhold success.
+  //
+  // Placed HERE and not above the failure handling on purpose: exactly ONE cell of the
+  // (ok x measured) matrix changes, (ok=T, measured=F). A `!measured` arm hoisted next to the
+  // timeout arm would also swallow the RED path — a pretest script failure exits non-zero
+  // printing no node:test summary, so it is `measured: false` too, and routing it to
+  // `inconclusive` would drop the failure names `parseBetweenTicketFastGateFailures` recovered.
+  // An unmeasured gate cannot prove a pass; it can still report a failure it observed.
+  if (gate.ok) return finalize(gate.measured ? 'green' : 'inconclusive', []);
 
   const failureNames = gate.failures.map(f => f.name);
   if (isBaselineOnlyFailureSet(failureNames, input.baselineFailures)) return finalize('green', []);

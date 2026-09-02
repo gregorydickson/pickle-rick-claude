@@ -329,6 +329,8 @@ test('mux-runner-between-ticket-gate: timeout emits dedicated timeout event and 
       ok: false,
       timed_out: true,
       timeout_ms: 50,
+      // AP-EXT-ITER157-02: a gate killed at its deadline measured nothing.
+      measured: false,
       failures: [{
         name: '__timeout__',
         file: 'npm run test:fast',
@@ -394,6 +396,8 @@ test('mux-runner-between-ticket-gate: runBetweenTicketFastTests returns timeout 
       ok: false,
       timed_out: true,
       timeout_ms: 50,
+      // AP-EXT-ITER157-02: a gate killed at its deadline measured nothing.
+      measured: false,
       failures: [{
         name: '__timeout__',
         file: 'npm run test:fast',
@@ -477,7 +481,10 @@ test('mux-runner-between-ticket-gate: runBetweenTicketFastTests stays GREEN when
       "const line = 'ok %I% - a passing fast-tier case with a realistically long name\\n';",
       "let out = '';",
       "for (let i = 0; i < 20000; i++) out += line.replace('%I%', String(i + 1));",
-      "process.stdout.write('TAP version 13\\n1..20000\\n' + out + '# pass 20000\\n# fail 0\\n');",
+      // `# tests 20000` is what a real node:test TAP run closes with, and AP-EXT-ITER157-02
+      // makes it load-bearing: without it this "passing tier" fixture proves no test ran, and
+      // the case would assert green over the very shape that finding is about.
+      "process.stdout.write('TAP version 13\\n1..20000\\n' + out + '# tests 20000\\n# pass 20000\\n# fail 0\\n');",
       // NO `process.exit(0)` here. stdout is a PIPE, so writes are async and a bare
       // `write(...); process.exit(0)` truncates at the 64KB pipe buffer — the emitter would
       // deliver 65536 bytes, never overflow the cap, and this case would pass against the
@@ -502,6 +509,104 @@ test('mux-runner-between-ticket-gate: runBetweenTicketFastTests stays GREEN when
     assert.equal(result.ok, true, `gate must be green for a passing tier; got failures: ${JSON.stringify(result.failures)}`);
     assert.deepEqual(result.failures, []);
     assert.equal(result.timed_out, false);
+    assert.equal(result.measured, true, 'a tier that closed with a node:test summary PROVED it ran');
+  } finally {
+    if (originalExtensionDir === undefined) delete process.env.EXTENSION_DIR;
+    else process.env.EXTENSION_DIR = originalExtensionDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER157-02 — the producer half: `ok` is the tier's EXIT CODE, `measured` is whether it
+// ran anything, and the two are not the same fact.
+//
+// `bin/test-runner.js --tier fast` exits 0 printing only `[no files for tier fast]` on an empty
+// selection (measured), after which `test:fast` reports `parallel_exit=0 serial_exit=0` and exits
+// 0 too. These cases drive the real `runBetweenTicketFastTests` against npm shims reproducing
+// exactly that output, and its inverse.
+
+function withGateShim(shimBody, assertFn) {
+  const root = makeRoot('pickle-mux-between-measured-');
+  const originalExtensionDir = process.env.EXTENSION_DIR;
+  try {
+    const extensionDir = path.join(root, 'extension');
+    mkdirSync(path.join(extensionDir, 'bin'), { recursive: true });
+    writeFileSync(path.join(extensionDir, 'bin', 'log-watcher.js'), '');
+    writeFileSync(path.join(root, 'pickle_settings.json'), JSON.stringify({
+      worker_test_gate_timeout_ms: 120000,
+    }, null, 2));
+
+    const shimDir = path.join(root, 'bin');
+    mkdirSync(shimDir, { recursive: true });
+    const npmShim = path.join(shimDir, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+    writeFileSync(npmShim, shimBody);
+    chmodSync(npmShim, 0o755);
+
+    process.env.EXTENSION_DIR = root;
+    assertFn(withCleanGateTimeoutEnv(() => withPathPrefix(shimDir, () => runBetweenTicketFastTests(extensionDir))));
+  } finally {
+    if (originalExtensionDir === undefined) delete process.env.EXTENSION_DIR;
+    else process.env.EXTENSION_DIR = originalExtensionDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('mux-runner-between-ticket-gate: AP-EXT-ITER157-02 an exit-0 tier that selected no files is NOT measured', () => {
+  // Byte-for-byte the shape the real runner emits on an empty selection.
+  withGateShim(
+    '#!/bin/sh\necho "[no files for tier fast]"\necho "[no files for tier fast]"\necho "test:fast halves measured: parallel_exit=0 serial_exit=0"\nexit 0\n',
+    (result) => {
+      assert.equal(result.ok, true, 'the exit code really is 0 — that is the whole problem');
+      assert.equal(result.measured, false, 'no node:test summary and no failure marker: nothing ran');
+      assert.deepEqual(result.failures, []);
+      assert.equal(result.timed_out, false);
+    },
+  );
+});
+
+// The comparator. Without it, `measured: false` hardcoded at the producer passes the case above.
+test('mux-runner-between-ticket-gate: AP-EXT-ITER157-02 comparator — a tier that emitted a summary IS measured', () => {
+  withGateShim(
+    '#!/bin/sh\necho "ℹ tests 12"\necho "ℹ pass 12"\necho "ℹ fail 0"\nexit 0\n',
+    (result) => {
+      assert.equal(result.ok, true);
+      assert.equal(result.measured, true, 'a summary counting 12 tests is proof the tier ran');
+    },
+  );
+});
+
+// A REPORTED failure is also proof a test ran — a run can die after printing failures but before
+// printing its summary, and that is a red tier, not an unmeasured one.
+test('mux-runner-between-ticket-gate: AP-EXT-ITER157-02 a failing tier with no summary is still measured', () => {
+  withGateShim(
+    '#!/bin/sh\necho "TAP version 13"\necho "not ok 1 - widget explodes"\nexit 1\n',
+    (result) => {
+      assert.equal(result.ok, false);
+      assert.equal(result.measured, true, 'a reported failure is a test that ran');
+    },
+  );
+});
+
+// A timed-out gate measured nothing either — the producer sets the same bit, so consumers need
+// ONE no-measurement arm rather than one per cause.
+test('mux-runner-between-ticket-gate: AP-EXT-ITER157-02 a timed-out gate reports measured: false', () => {
+  const root = makeRoot('pickle-mux-between-measured-timeout-');
+  const originalExtensionDir = process.env.EXTENSION_DIR;
+  try {
+    const extensionDir = path.join(root, 'extension');
+    mkdirSync(path.join(extensionDir, 'bin'), { recursive: true });
+    writeFileSync(path.join(extensionDir, 'bin', 'log-watcher.js'), '');
+    const shimDir = path.join(root, 'bin');
+    mkdirSync(shimDir, { recursive: true });
+    const npmShim = path.join(shimDir, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+    writeFileSync(npmShim, '#!/bin/sh\nsleep 30\n');
+    chmodSync(npmShim, 0o755);
+    process.env.EXTENSION_DIR = root;
+    const result = withCleanGateTimeoutEnv(() =>
+      withPathPrefix(shimDir, () => runBetweenTicketFastTests(extensionDir, undefined, 1000)));
+    assert.equal(result.timed_out, true);
+    assert.equal(result.measured, false, 'a gate killed at its deadline proved nothing');
   } finally {
     if (originalExtensionDir === undefined) delete process.env.EXTENSION_DIR;
     else process.env.EXTENSION_DIR = originalExtensionDir;
