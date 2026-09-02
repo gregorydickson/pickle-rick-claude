@@ -291,6 +291,36 @@ test('AP-EXT-ITER65-01: a per-tag ls-remote blip can no longer hide a MISPOINTED
     }
 });
 
+/**
+ * Body of the top-level shell function `<name>() {`, ending at the first line that
+ * is a bare `}` in column 0. Scoping the region is the point: an assertion about one
+ * function's contents must not be satisfiable by text elsewhere in the file.
+ */
+function shellFunctionBody(src, name) {
+    const lines = src.split('\n');
+    const start = lines.findIndex((l) => l.startsWith(`${name}() {`));
+    assert.notEqual(start, -1, `shell function ${name}() must exist`);
+    const end = lines.findIndex((l, i) => i > start && l === '}');
+    assert.notEqual(end, -1, `shell function ${name}() must be closed by a bare }`);
+    return lines.slice(start + 1, end).join('\n');
+}
+
+/**
+ * The single logical statement assigning `<name>=` inside a shell body, with
+ * backslash continuations joined, so a multi-line command substitution is read whole.
+ */
+function shellAssignment(body, name) {
+    const lines = body.split('\n');
+    const start = lines.findIndex((l) => new RegExp(`^\\s*${name}=`).test(l));
+    assert.notEqual(start, -1, `${name} must be assigned`);
+    const statement = [];
+    for (let i = start; i < lines.length; i += 1) {
+        statement.push(lines[i]);
+        if (!lines[i].trimEnd().endsWith('\\')) break;
+    }
+    return statement.join('\n');
+}
+
 test('AP-EXT-ITER65-01: list_tag_shas_from_listing is the ONE place the ^{} peel rule lives', () => {
     // resolve_tag_sha must read its sha back through the shared parser rather
     // than re-deriving the peel, so the two scripts cannot drift apart.
@@ -298,7 +328,17 @@ test('AP-EXT-ITER65-01: list_tag_shas_from_listing is the ONE place the ^{} peel
     const reconcile = fs.readFileSync(SCRIPT, 'utf8');
 
     assert.match(shared, /list_tag_shas_from_listing\(\)/, 'shared parser must be defined');
-    assert.match(shared, /resolve_tag_sha[\s\S]*list_tag_shas_from_listing/, 'resolve_tag_sha must delegate to the shared parser');
+    // Assert the PRODUCER of resolve_tag_sha's sha, not the co-occurrence of two
+    // names anywhere in the file: `/resolve_tag_sha[\s\S]*list_tag_shas_from_listing/`
+    // is satisfied by the header comment on line 3 followed by the one on line 11,
+    // so it stayed green when the peel rule was re-derived inline inside
+    // resolve_tag_sha -- the exact drift this test names (measured, both with and
+    // without a behaviour change).
+    assert.match(
+        shellAssignment(shellFunctionBody(shared, 'resolve_tag_sha'), 'actual_sha'),
+        /list_tag_shas_from_listing/,
+        'resolve_tag_sha must assign actual_sha FROM the shared parser, not re-derive the peel',
+    );
     assert.match(reconcile, /list_tag_shas_from_listing "\$listing"/, 'the auditor must read shas from its own listing');
     assert.doesNotMatch(reconcile, /resolve_tag_sha /, 'the auditor must not re-query per tag');
 
