@@ -5614,3 +5614,111 @@ test('AP-EXT-ITER99-01: a .codegraph-only tree declines (regenerable index is no
         assert.equal(runCommitPendingProbe(sessionDir, workingDir), 'skipped:no-uncommitted');
     });
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER41-01: the bounded terminal escape must count CONSECUTIVE no-progress
+// relaunches, not cumulative ones.
+//
+// AC-A4 exists to kill a ticket the manager can never finish ("sterile" relaunches).
+// `recordBoundedEscapeAttempt` used to charge the ledger on EVERY relaunch of the
+// in-flight ticket with no progress test at all, so the count its four doc sites call
+// "consecutive no-progress" was really "cumulative". Measured on the compiled runtime
+// before the fix: a ticket that completed one lifecycle phase between every relaunch
+// was forced terminal on the 4th (escape=true at priorCount=3) with five artifacts on
+// disk — a productive ticket salvaged to Skipped after three relaunches, inside a
+// system whose CLAUDE_MANAGER_RELAUNCH_CAP budgets twenty of them, and on a charge that
+// fires for `claude_max_turns`, i.e. the manager exhausting its turn budget doing real
+// work. The sibling authority on this seam (checkAndUpdateCodexManagerNoProgress)
+// already zeroed its counter on progress; this is that reset, per-ticket.
+//
+// Both directions are asserted: progress must clear the run, and a genuinely sterile
+// ticket must still escape — a fix that only stopped charging would delete AC-A4.
+// ---------------------------------------------------------------------------
+
+function seedBoundedEscapeFixture() {
+    const root = makeTmpRoot();
+    const ticket = 'be123456';
+    fs.mkdirSync(path.join(root, ticket), { recursive: true });
+    fs.writeFileSync(
+        path.join(root, ticket, `rick_ticket_${ticket}.md`),
+        `---\nid: ${ticket}\nstatus: In Progress\ncomplexity_tier: complex\n---\n\n# Ticket\n`,
+    );
+    const statePath = path.join(root, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({
+        schema_version: 5,
+        session_id: path.basename(root),
+        working_dir: root,
+        current_ticket: ticket,
+        iteration: 1,
+        recovery_attempts: [],
+    }, null, 2));
+    return { root, ticket, statePath };
+}
+
+const BOUNDED_ESCAPE_CAP_FOR_TEST = 3;
+const LIFECYCLE_PHASES = ['research', 'plan', 'conformance', 'code_review'];
+
+// Drive `cap + 1` relaunch passes. `progressing` writes one real lifecycle artifact per
+// pass (the phase a working manager would have landed); returns the pass index that
+// escaped, or null when the ticket survived every pass.
+async function driveBoundedEscapePasses(fixture, progressing) {
+    const { evaluateBoundedEscape, recordBoundedEscapeAttempt } = await import('../bin/mux-runner.js');
+    for (let pass = 0; pass <= BOUNDED_ESCAPE_CAP_FOR_TEST; pass++) {
+        const iterationStartMs = Date.now();
+        if (progressing) {
+            fs.writeFileSync(
+                path.join(fixture.root, fixture.ticket, `${LIFECYCLE_PHASES[pass]}_${fixture.ticket}.md`),
+                `# phase ${LIFECYCLE_PHASES[pass]} landed on pass ${pass}\n`,
+            );
+        }
+        const state = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8'));
+        if (evaluateBoundedEscape(state, fixture.root, BOUNDED_ESCAPE_CAP_FOR_TEST).escape) return pass;
+        recordBoundedEscapeAttempt(fixture.statePath, fixture.ticket, pass, () => {}, {
+            sessionDir: fixture.root,
+            iterationStartMs,
+        });
+    }
+    return null;
+}
+
+test('AP-EXT-ITER41-01: a ticket landing a lifecycle phase every relaunch is never force-terminated', async () => {
+    const fixture = seedBoundedEscapeFixture();
+    const escapedAt = await driveBoundedEscapePasses(fixture, true);
+
+    assert.equal(
+        escapedAt, null,
+        'a ticket that produced a lifecycle artifact on every pass made progress on every pass — '
+        + 'the bounded escape must never force it terminal',
+    );
+    const ledger = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8')).recovery_attempts;
+    assert.deepEqual(
+        ledger.filter(a => a.strategy === 'bounded_terminal_escape' && a.ticket === fixture.ticket), [],
+        'progress must CLEAR the ticket\'s no-progress charges, so the count is consecutive by construction',
+    );
+});
+
+test('AP-EXT-ITER41-01 control: a sterile ticket still escapes at the cap (AC-A4 preserved)', async () => {
+    const fixture = seedBoundedEscapeFixture();
+    const escapedAt = await driveBoundedEscapePasses(fixture, false);
+
+    assert.equal(
+        escapedAt, BOUNDED_ESCAPE_CAP_FOR_TEST,
+        'a ticket that produced nothing across cap relaunches is exactly what AC-A4 forces terminal — '
+        + 'the progress reset must not disable the escape',
+    );
+});
+
+test('AP-EXT-ITER41-01: an omitted iteration window is NOT progress — the legacy call form still charges', async () => {
+    const { recordBoundedEscapeAttempt } = await import('../bin/mux-runner.js');
+    const fixture = seedBoundedEscapeFixture();
+    // A fresh artifact exists, but no window is supplied: the charge must still land,
+    // so a caller that cannot measure the window can never silently disarm the escape.
+    fs.writeFileSync(path.join(fixture.root, fixture.ticket, `research_${fixture.ticket}.md`), '# work\n');
+    recordBoundedEscapeAttempt(fixture.statePath, fixture.ticket, 1, () => {});
+
+    const ledger = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8')).recovery_attempts;
+    assert.equal(
+        ledger.filter(a => a.strategy === 'bounded_terminal_escape').length, 1,
+        'an unknown iteration window must fall back to the pre-existing charge, never to "progress"',
+    );
+});

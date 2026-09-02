@@ -7701,6 +7701,16 @@ export interface BoundedEscapeEvaluation {
   cap: number;
 }
 
+/**
+ * The ONE predicate for "this ledger entry is a bounded-escape charge against this ticket".
+ * `countBoundedEscapeAttempts` (which decides the escape) and the progress reset in
+ * `recordBoundedEscapeAttempt` (which un-decides it) both read it, so the count and the
+ * thing that clears the count can never come to disagree about what a charge is.
+ */
+function isBoundedEscapeCharge(a: RecoveryAttempt, ticketId: string): boolean {
+  return a.strategy === BOUNDED_ESCAPE_STRATEGY && a.ticket === ticketId && a.outcome === 'failed';
+}
+
 function countBoundedEscapeAttempts(
   ledger: readonly RecoveryAttempt[] | undefined,
   ticketId: string,
@@ -7708,7 +7718,7 @@ function countBoundedEscapeAttempts(
   if (!Array.isArray(ledger)) return 0;
   let n = 0;
   for (const a of ledger) {
-    if (a.strategy === BOUNDED_ESCAPE_STRATEGY && a.ticket === ticketId && a.outcome === 'failed') n++;
+    if (isBoundedEscapeCharge(a, ticketId)) n++;
   }
   return n;
 }
@@ -7741,16 +7751,49 @@ export function evaluateBoundedEscape(
  * Record one no-progress relaunch attempt for the in-flight ticket into the
  * persisted ledger. The Nth such entry is what makes `evaluateBoundedEscape`
  * fire on the next pass — the consecutive-no-progress count IS the ledger count.
+ *
+ * `progress` is what makes that sentence TRUE. Without it the ledger counts every
+ * relaunch of the ticket, progress or not, and "consecutive no-progress" degrades to
+ * "cumulative": MEASURED on the shipped compiled runtime, a ticket that completed one
+ * lifecycle phase between every relaunch — research, plan, implement, code_review, five
+ * artifacts on disk — was still forced terminal on the 4th (`escape=true` at
+ * `priorCount=3`). That is a productive ticket salvaged to `Skipped` after three
+ * relaunches inside a system whose own `CLAUDE_MANAGER_RELAUNCH_CAP` budgets twenty, and
+ * the charge fires on `claude_max_turns` — the manager exhausting its turn budget while
+ * doing real work, which is the ordinary shape of a complex ticket, not a sterile one.
+ *
+ * The sibling authority on this very seam already had the check: the codex path runs
+ * `checkAndUpdateCodexManagerNoProgress`, which zeroes its counter the moment progress
+ * appears (`pendingCount < baseline`). This is that reset, expressed per-ticket over the
+ * ledger the escape already reads: progress CLEARS this ticket's charges rather than
+ * adding a second counter beside them, so there is one number and it means what its name
+ * says. Progress is `ticketProducedFreshLifecycleArtifact` — the same oracle silent-death
+ * attribution uses, and the repository's own definition of a no-progress loop (iteration
+ * advances, artifacts do not).
+ *
+ * `progress` is optional and an absent/unknown window is NOT progress, so a caller that
+ * cannot supply an iteration window charges exactly as before — the fix can only ever
+ * withdraw a charge that evidence contradicts, never invent one.
  */
 export function recordBoundedEscapeAttempt(
   statePath: string,
   ticketId: string,
   iteration: number,
   log: (msg: string) => void = () => { /* silent */ },
+  progress?: { sessionDir: string; iterationStartMs?: number },
 ): void {
+  const progressed = progress !== undefined
+    && ticketProducedFreshLifecycleArtifact(progress.sessionDir, ticketId, progress.iterationStartMs);
+  let cleared = 0;
   try {
     sm.update(statePath, s => {
       if (!Array.isArray(s.recovery_attempts)) s.recovery_attempts = [];
+      if (progressed) {
+        const before = s.recovery_attempts.length;
+        s.recovery_attempts = s.recovery_attempts.filter(a => !isBoundedEscapeCharge(a, ticketId));
+        cleared = before - s.recovery_attempts.length;
+        return;
+      }
       s.recovery_attempts.push({
         strategy: BOUNDED_ESCAPE_STRATEGY,
         outcome: 'failed',
@@ -7761,6 +7804,10 @@ export function recordBoundedEscapeAttempt(
     });
   } catch (err) {
     log(`WARN: failed to record bounded-escape attempt: ${safeErrorMessage(err)}`);
+    return;
+  }
+  if (progressed && cleared > 0) {
+    log(`bounded escape: ${ticketId} produced lifecycle artifacts this iteration — cleared ${cleared} no-progress charge(s).`);
   }
 }
 
@@ -8282,6 +8329,13 @@ export interface LoopContext {
   exitResult?: IterationExitResult;
   outcome?: IterationOutcome;
   iterLogFile?: string;
+  /**
+   * Wall-clock start of THIS iteration. The bounded-escape charge needs it to ask whether
+   * the in-flight ticket produced anything during the pass it is about to be charged for.
+   * Optional: an absent window is not progress, so a caller that omits it charges exactly
+   * as it did before.
+   */
+  iterationStartMs?: number;
   consecutiveRateLimits?: number;
   maxRateLimitRetries?: number;
   rateLimitWaitMinutes?: number;
@@ -9262,7 +9316,10 @@ function handlePendingInactiveCompletion(
     executeBoundedEscape(ctx.statePath, ctx.sessionDir, postState.working_dir || state.working_dir || '', esc.ticketId, ctx.iteration, boundedEscapeCap, ctx.log);
     return { kind: 'relaunch', relaunchCount: decision.nextRelaunchCount, pendingTickets: Math.max(0, decision.pendingCount - 1), resetStall: true };
   }
-  if (esc.ticketId) recordBoundedEscapeAttempt(ctx.statePath, esc.ticketId, ctx.iteration, ctx.log);
+  if (esc.ticketId) {
+    recordBoundedEscapeAttempt(ctx.statePath, esc.ticketId, ctx.iteration, ctx.log,
+      { sessionDir: ctx.sessionDir, iterationStartMs: ctx.iterationStartMs });
+  }
   const backend = resolveBackendFromStateFileWithSource(ctx.statePath).backend;
   return recordAndReturnRelaunch(
     ctx,
@@ -10453,18 +10510,34 @@ function hasScopedIterationWindowCommit(input: SilentDeathRecoveryInput): boolea
 }
 
 /** Salvage probe 3: a lifecycle artifact was written inside the iteration window. */
-function hasFreshLifecycleArtifacts(input: SilentDeathRecoveryInput): boolean {
-  if (typeof input.iterationStartMs !== 'number') return false;
+/**
+ * The ONE definition of per-ticket progress in this file: did this ticket write a lifecycle
+ * artifact at or after `sinceMs`? Both no-progress authorities read it — silent-death
+ * attribution (`hasFreshLifecycleArtifacts`) and the bounded-escape charge
+ * (`recordBoundedEscapeAttempt`) — so the two cannot drift into disagreeing about whether
+ * the same iteration made progress. An unknown window (`undefined`) is NOT progress: both
+ * callers must fall back to their pre-existing behaviour rather than inventing evidence.
+ */
+function ticketProducedFreshLifecycleArtifact(
+  sessionDir: string,
+  ticketId: string,
+  sinceMs: number | undefined,
+): boolean {
+  if (typeof sinceMs !== 'number') return false;
   try {
-    const ticketDir = path.join(input.sessionDir, input.ticketId);
+    const ticketDir = path.join(sessionDir, ticketId);
     for (const file of fs.readdirSync(ticketDir)) {
       if (!LIFECYCLE_ARTIFACT_RE.test(file)) continue;
       try {
-        if (fs.statSync(path.join(ticketDir, file)).mtimeMs >= input.iterationStartMs) return true;
+        if (fs.statSync(path.join(ticketDir, file)).mtimeMs >= sinceMs) return true;
       } catch { /* ignore unstattable artifact */ }
     }
   } catch { /* ticket dir unreadable → no evidence */ }
   return false;
+}
+
+function hasFreshLifecycleArtifacts(input: SilentDeathRecoveryInput): boolean {
+  return ticketProducedFreshLifecycleArtifact(input.sessionDir, input.ticketId, input.iterationStartMs);
 }
 
 /** Append one entry to `state.recovery_attempts` (R-WMW-5 persistence pattern: state-backed, survives relaunch/--resume). */
@@ -13979,7 +14052,10 @@ async function runMuxRunnerMain() {
               await sleep(1000);
               continue;
             }
-            if (esc.ticketId) recordBoundedEscapeAttempt(statePath, esc.ticketId, iteration, log);
+            if (esc.ticketId) {
+              recordBoundedEscapeAttempt(statePath, esc.ticketId, iteration, log,
+                { sessionDir, iterationStartMs: iterStartMs });
+            }
             const relaunchBackend = resolveBackendFromStateFileWithSource(statePath).backend;
             log(`${relaunchBackend} manager exited via ${inactiveExitKind} with ${decision.pendingCount} pending — relaunching (count ${decision.nextRelaunchCount}/${decision.cap}).`);
             recordManagerRelaunch(statePath, sessionDir, decision, iteration, log);
