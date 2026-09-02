@@ -5259,6 +5259,147 @@ test('AP-EXT-ITER49-01: an unmeasurable tree with an APPROVED plan still reaches
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER163-01 — the recovery ladder's "was work produced?" evidence was the
+// ONE work-oracle in this file with no COMMIT arm.
+//
+// `noWorkProduced` was `dirty !== true && !planArtifactExists`: two tree-shaped
+// probes, both blind to commits. A trivial-tier ticket (no plan artifact) that did
+// its whole job and COMMITTED it therefore presents a clean tree and no plan, and
+// the ladder classified it `no_work_produced` — its own "genuinely zero output at
+// timeout" verdict — stamping `auto-split/failed` and falling through to the
+// `oversized_no_progress` Failed flip over work that is sitting in git.
+//
+// Two other authorities in this same file already answered the same question with
+// a commit arm (`detectFailedFlipEvidence`, `detectSilentDeathAttributableWork`),
+// so the fix is subtraction, not a third guard: every evidence source is iterated
+// under ONE predicate, and committed work is read through the file's own shared
+// attribution oracle (`isTicketOracleCommitted`) rather than re-derived.
+//
+// The oracle is what makes the negative controls hold: it is ticket-ATTRIBUTED
+// (a sibling ticket's commit is not this ticket's work), it rejects the session
+// baseline sha (R-CXOR-2), and it returns false on any error, so an unanswerable
+// probe leaves the pre-existing reading exactly where it was.
+// ---------------------------------------------------------------------------
+
+function seedAttributedCommitFixture(root) {
+  const repoDir = seedRecoveryEvidenceRepo(root);
+  const sessionDir = path.join(root, 'session');
+  const git = (args) => {
+    const r = spawnSync('git', args, { cwd: repoDir, encoding: 'utf-8', timeout: 30_000 });
+    assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`);
+    return (r.stdout || '').trim();
+  };
+  const startCommit = git(['rev-parse', 'HEAD']);
+  fs.mkdirSync(sessionDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(sessionDir, 'state.json'),
+    JSON.stringify({ start_commit: startCommit, working_dir: repoDir }, null, 2),
+  );
+  const writeTicket = (id, extraFrontmatter = '') => {
+    fs.mkdirSync(path.join(sessionDir, id), { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, id, `rick_ticket_${id}.md`),
+      `---\nid: ${id}\nstatus: In Progress\ncomplexity_tier: trivial\n${extraFrontmatter}---\n\n# Ticket\n`,
+    );
+  };
+  // The Pickle-Ticket trailer is the attribution the runtime's own
+  // prepare-commit-msg hook stamps, and the only git-log arm readEvidence scans.
+  const commitFor = (id, file) => {
+    fs.writeFileSync(path.join(repoDir, file), `${file}\n`);
+    git(['add', file]);
+    git(['commit', '-m', `feat: ${file}\n\nPickle-Ticket: ${id}`, '--no-gpg-sign']);
+    return git(['rev-parse', 'HEAD']);
+  };
+  return { repoDir, sessionDir, startCommit, writeTicket, commitFor, git };
+}
+
+/** Run the real ladder over real evidence, capturing the ledger it would write. */
+async function runLadderOverEvidence(sessionDir, repoDir, ticketId) {
+  const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
+  const { runRecoveryLadder, classifyRecoveryTaxonomy } = await import('../services/recovery-controller.js');
+  const evidence = assessRecoveryEvidence(sessionDir, repoDir, ticketId);
+  const ledger = [];
+  const outcome = runRecoveryLadder({
+    iteration: 1,
+    ticketId,
+    assessEvidence: () => evidence,
+    runArmedGate: () => ({ ok: true }),
+    commitAndFlipDone: () => ({ ok: false }),
+    spawnRemediator: () => false,
+    executeConvergedPlan: () => ({ ok: false }),
+    appendAttempt: (a) => ledger.push(`${a.strategy}/${a.outcome}`),
+    log: () => {},
+  });
+  return { evidence, outcome, ledger, taxonomy: classifyRecoveryTaxonomy(evidence) };
+}
+
+test('AP-EXT-ITER163-01: a ticket that COMMITTED its work is not classified no_work_produced', async () => {
+  const root = makeTmpRoot();
+  const f = seedAttributedCommitFixture(root);
+  f.writeTicket('tkt1');
+  // The worker did its whole job and committed it — a trivial-tier ticket, so
+  // there is no plan artifact, and committing left the tree clean.
+  for (const file of ['work1.txt', 'work2.txt', 'work3.txt']) f.commitFor('tkt1', file);
+  assert.equal(f.git(['status', '--porcelain']), '', 'fixture precondition: the tree is clean');
+  assert.equal(f.git(['rev-list', '--count', `${f.startCommit}..HEAD`]), '3', 'fixture precondition: 3 commits landed');
+
+  const { evidence, outcome, ledger, taxonomy } = await runLadderOverEvidence(f.sessionDir, f.repoDir, 'tkt1');
+
+  assert.equal(
+    evidence.noWorkProduced, false,
+    'committed work IS work — a tree-only oracle read the ticket\'s whole delivered ' +
+    'implementation as "genuinely zero output at timeout"',
+  );
+  assert.equal(taxonomy, null, 'no_work_produced is a false taxonomy for a ticket with committed work');
+  assert.notEqual(
+    outcome.reason, 'no_work_produced',
+    'the ladder must not fall through to the oversized_no_progress Failed flip over committed work',
+  );
+  assert.ok(
+    !ledger.includes('auto-split/failed'),
+    `the false zero-output ledger stamp must not be written; got ${JSON.stringify(ledger)}`,
+  );
+});
+
+test('AP-EXT-ITER163-01: a SIBLING ticket\'s commit is not this ticket\'s work (the probe is attributed)', async () => {
+  const root = makeTmpRoot();
+  const f = seedAttributedCommitFixture(root);
+  f.writeTicket('tkt1');
+  f.writeTicket('tkt2');
+  // tkt2 delivers; tkt1 produced nothing at all.
+  f.commitFor('tkt2', 'sibling.txt');
+
+  const { evidence, outcome, ledger, taxonomy } = await runLadderOverEvidence(f.sessionDir, f.repoDir, 'tkt1');
+
+  assert.equal(
+    evidence.noWorkProduced, true,
+    'a session-wide commit probe would delete the no_work_produced class outright — ' +
+    'the evidence must be attributed to THIS ticket',
+  );
+  assert.equal(taxonomy, 'no_work_produced');
+  assert.equal(outcome.kind, 'fall_through');
+  assert.equal(outcome.reason, 'no_work_produced');
+  assert.ok(ledger.includes('auto-split/failed'), 'the genuine zero-output disposition is preserved');
+});
+
+test('AP-EXT-ITER163-01: a completion_commit equal to the session baseline is still no work (R-CXOR-2)', async () => {
+  const root = makeTmpRoot();
+  const f = seedAttributedCommitFixture(root);
+  // The codex orphan-reset false-Done class: the ticket stamps the session
+  // baseline as its own completion. It did nothing beyond session start.
+  f.writeTicket('tkt1', `completion_commit: ${f.startCommit}\n`);
+
+  const { evidence, outcome } = await runLadderOverEvidence(f.sessionDir, f.repoDir, 'tkt1');
+
+  assert.equal(
+    evidence.noWorkProduced, true,
+    'the baseline sha is not evidence of work — the shared oracle\'s R-CXOR-2 ' +
+    'rejection must be wired, or a no-op ticket reads as delivered',
+  );
+  assert.equal(outcome.reason, 'no_work_produced');
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER8-03: the R-REIN refund must cover EVERY per-ticket recovery budget,
 // not just `bounded_terminal_escape`.
 //

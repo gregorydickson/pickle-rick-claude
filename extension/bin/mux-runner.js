@@ -5820,6 +5820,20 @@ export function assessRecoveryEvidence(sessionDir, workingDir, ticketId) {
         }
     }
     catch { /* ticket dir unreadable → no plan evidence */ }
+    // AP-EXT-ITER163-01: "did this ticket produce work?" is ONE question asked of every
+    // evidence source the runner holds — iterated under a single predicate, never a
+    // conjunction of tree-shaped guards. The uncommitted-vs-committed distinction is
+    // DELETED here rather than guarded with an N+1th arm: committed work is read by this
+    // file's own attribution oracle, the SAME authority the Failed-flip suppression
+    // (`detectFailedFlipEvidence`) and the silent-death salvage
+    // (`detectSilentDeathAttributableWork`) already consult. It rejects a baseline sha
+    // (R-CXOR-2) and a foreign attribution (R-OMA), and returns false on any error, so an
+    // unanswerable oracle leaves the pre-existing reading untouched.
+    const workEvidence = [
+        dirty === true,
+        planArtifactExists,
+        isTicketOracleCommitted({ sessionDir, ticketId, workingDir }),
+    ];
     return {
         // An ABSENT tree measurement must not SKIP the salvage rungs: `null` reads as
         // possibly-dirty so rungs 1–2 still ATTEMPT the commit-and-flip on a tree that may
@@ -5829,9 +5843,9 @@ export function assessRecoveryEvidence(sessionDir, workingDir, ticketId) {
         // The two DISPOSITION-bearing fields keep the exact readings the fabricated-clean
         // catch produced (`!treeDirty` was `dirty !== true` for every measurable case and
         // for the unmeasurable one). Honesty is a reporting property, halting is a
-        // disposition: this fix widens what the ladder ATTEMPTS, never where it lands.
+        // disposition: that fix widened what the ladder ATTEMPTS, never where it lands.
         planConvergedUncommitted: dirty !== true && isConvergedPlanEligible({ planArtifactExists, planReviewApproved: planApproved }),
-        noWorkProduced: dirty !== true && !planArtifactExists,
+        noWorkProduced: !workEvidence.some(Boolean),
     };
 }
 /**
