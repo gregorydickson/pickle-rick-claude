@@ -5616,7 +5616,7 @@ test('AP-EXT-ITER99-01: a .codegraph-only tree declines (regenerable index is no
 });
 
 // ---------------------------------------------------------------------------
-// AP-EXT-ITER41-01: the bounded terminal escape must count CONSECUTIVE no-progress
+// AP-EXT-ITER41-02: the bounded terminal escape must count CONSECUTIVE no-progress
 // relaunches, not cumulative ones.
 //
 // AC-A4 exists to kill a ticket the manager can never finish ("sterile" relaunches).
@@ -5681,7 +5681,7 @@ async function driveBoundedEscapePasses(fixture, progressing) {
     return null;
 }
 
-test('AP-EXT-ITER41-01: a ticket landing a lifecycle phase every relaunch is never force-terminated', async () => {
+test('AP-EXT-ITER41-02: a ticket landing a lifecycle phase every relaunch is never force-terminated', async () => {
     const fixture = seedBoundedEscapeFixture();
     const escapedAt = await driveBoundedEscapePasses(fixture, true);
 
@@ -5697,7 +5697,7 @@ test('AP-EXT-ITER41-01: a ticket landing a lifecycle phase every relaunch is nev
     );
 });
 
-test('AP-EXT-ITER41-01 control: a sterile ticket still escapes at the cap (AC-A4 preserved)', async () => {
+test('AP-EXT-ITER41-02 control: a sterile ticket still escapes at the cap (AC-A4 preserved)', async () => {
     const fixture = seedBoundedEscapeFixture();
     const escapedAt = await driveBoundedEscapePasses(fixture, false);
 
@@ -5708,7 +5708,7 @@ test('AP-EXT-ITER41-01 control: a sterile ticket still escapes at the cap (AC-A4
     );
 });
 
-test('AP-EXT-ITER41-01: an omitted iteration window is NOT progress — the legacy call form still charges', async () => {
+test('AP-EXT-ITER41-02: an omitted iteration window is NOT progress — the legacy call form still charges', async () => {
     const { recordBoundedEscapeAttempt } = await import('../bin/mux-runner.js');
     const fixture = seedBoundedEscapeFixture();
     // A fresh artifact exists, but no window is supplied: the charge must still land,
