@@ -9636,18 +9636,42 @@ async function main() {
     await runMuxRunnerMain();
 }
 /**
+ * The ONE predicate for "this status may be RESTORED to a ticket by a phantom-Done
+ * revert". Returns the normalized status, or `null` when it must never enter
+ * `priorStatusMap`. Both writers of that map route through it, so the map cannot be
+ * poisoned from one end while the other is hardened.
+ *
+ * `Done` is the value a revert exists to UNDO, never one to restore to: writing it
+ * back is a no-op rewrite, `updateTicketStatusInTransaction` rejects a no-op, and the
+ * caller reports the refused revert as `unparseable` — a phantom Done that survives
+ * while the log blames the ticket file.
+ */
+export const restorablePriorStatus = (raw) => {
+    const s = (raw ?? '').replace(/["']/g, '').trim();
+    return s.length > 0 && s.toLowerCase() !== 'done' ? s : null;
+};
+/**
  * Re-seeds the prior-status map after an inspect so a later revert restores the
  * value the ticket actually held (Todo vs. In Progress) instead of defaulting.
+ *
+ * The reason allow-list is a single member on purpose. `has_completion_commit` was
+ * the second, and it could only ever seed `Done` — `inspectPhantomDoneTicketFile`
+ * returns `not_done` for every status but Done, so that reason PROVES the live status
+ * is Done. Reading the file for it was a guaranteed poisoning, which
+ * `restorablePriorStatus` now also refuses; dropping the member removes the dead case
+ * (and its fs read) instead of guarding it.
  */
-const refreshPriorStatusAfterInspect = (priorStatusMap, ticketId, ticketFile, result) => {
-    if (result.reason === 'reverted' && result.priorStatus) {
-        priorStatusMap.set(ticketId, result.priorStatus);
+export const refreshPriorStatusAfterInspect = (priorStatusMap, ticketId, ticketFile, result) => {
+    if (result.reason === 'reverted') {
+        const reverted = restorablePriorStatus(result.priorStatus);
+        if (reverted)
+            priorStatusMap.set(ticketId, reverted);
         return;
     }
-    if (result.reason !== 'not_done' && result.reason !== 'has_completion_commit')
+    if (result.reason !== 'not_done')
         return;
     try {
-        const live = readFrontmatterField(fs.readFileSync(ticketFile, 'utf8'), 'status');
+        const live = restorablePriorStatus(readFrontmatterField(fs.readFileSync(ticketFile, 'utf8'), 'status'));
         if (live)
             priorStatusMap.set(ticketId, live);
     }
@@ -9877,7 +9901,10 @@ const consumeRecheckBudget = (recheckTimestamps, ticketId, nowMs) => {
  * Seeds the prior-status map from disk at install time so the FIRST revert restores
  * the value the ticket actually held (`In Progress`) rather than the `'Todo'` default
  * `handlePhantomDoneEvent` falls back to. A ticket already sitting at Done is not
- * seeded: Done is the value a revert exists to undo, never one to restore to.
+ * seeded: Done is the value a revert exists to undo, never one to restore to. That
+ * rule is `restorablePriorStatus`, shared with `refreshPriorStatusAfterInspect`
+ * rather than spelled inline here — this guard was correct while its twin had none,
+ * and one predicate is what keeps the pair from diverging again.
  *
  * The install-time twin of `refreshPriorStatusAfterInspect`, which re-seeds the same
  * map after each inspect. Best-effort by construction — an unreadable ticket file
@@ -9885,10 +9912,9 @@ const consumeRecheckBudget = (recheckTimestamps, ticketId, nowMs) => {
  */
 const seedPriorTicketStatus = (priorStatusMap, ticketId, ticketFile) => {
     try {
-        const seed = readFrontmatterField(fs.readFileSync(ticketFile, 'utf8'), 'status');
-        if (seed && seed.toLowerCase() !== 'done') {
+        const seed = restorablePriorStatus(readFrontmatterField(fs.readFileSync(ticketFile, 'utf8'), 'status'));
+        if (seed)
             priorStatusMap.set(ticketId, seed);
-        }
     }
     catch { /* best-effort */ }
 };
