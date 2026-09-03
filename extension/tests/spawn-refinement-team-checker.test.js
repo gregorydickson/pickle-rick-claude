@@ -1943,3 +1943,114 @@ test('AP-EXT-ITER122-01: a genuinely unparametrized single-ticket collapse still
         assert.match(violation.reason, /single-ticket collapse/, 'and it must be the single-collapse branch');
     }
 });
+
+// ─── decomposition_quality_flags: one flag per TICKET, not per ANALYST ───────
+//
+// AP-EXT-ITER189-01. Same shape as AP-EXT-ITER84-01 above, one field over:
+// `buildRefinementManifest` fed `detectDecompositionQualityFlags` the RAW
+// per-analyst concatenation. That detector emits at most one flag per INPUT
+// entry, so a ticket all three analysts named produced three identical flags and
+// the operator line `N ticket(s) flagged` counted analyst COPIES. Measured
+// through the shipped compiled module at the 3-role fan-out: 2 flags for 1
+// distinct ticket. Fixed by asking the collapsed view — the same rule
+// `detectBundleOfBundlesOverCollapse` follows and `collapseAnalystTicketCopies`
+// states in its own docblock.
+//
+// These cases drive the REAL path (analyst .md files through
+// buildRefinementManifest); a hand-built tickets array cannot see the defect,
+// which is why the dedicated detector suite stayed green through it.
+
+const OPEN_ENDED_ACCEPTANCE = 'review the whole reporter module for parity';
+
+test('AP-EXT-ITER189-01: a ticket every analyst names is flagged ONCE, not once per analyst', () => {
+    const manifest = buildAcShapeManifest(
+        tmpDir('pickle-decompflag-shared-'),
+        () => [{
+            id: 'T-SHARED',
+            title: 'Wire the reporter',
+            source_ac_ids: ['AC-1'],
+            acceptance_test: OPEN_ENDED_ACCEPTANCE,
+            justification: 'touches `src/a.ts`',
+        }],
+        { ac_id: 'AC-1', ticket_ids: ['T-SHARED'] },
+    );
+
+    // Precondition: the raw array really does carry one copy per analyst, or the
+    // case pins nothing.
+    assert.equal(
+        manifest.tickets.filter((t) => t.id === 'T-SHARED').length,
+        AC_SHAPE_ANALYST_ROLES.length,
+        'fixture precondition: every analyst must have named the same ticket id',
+    );
+
+    const flags = manifest.decomposition_quality_flags;
+    assert.equal(flags.length, 1, 'one distinct ticket must yield exactly one flag');
+    assert.equal(flags[0].ticket_id, 'T-SHARED');
+    assert.equal(flags[0].reason, 'open_ended_derivation');
+    assert.equal(
+        new Set(flags.map((f) => f.ticket_id)).size,
+        flags.length,
+        'the flag array length must equal the distinct flagged-ticket count it is reported as',
+    );
+});
+
+test('AP-EXT-ITER189-01: a large tier read by a NON-first analyst survives the collapse', () => {
+    // The collapse keeps `...first`, so without a tier union the pre_split flag
+    // would depend on which analyst happened to be first in finalResults.
+    // `classifyTicketTier` is not monotonic in the merged text (it reads the
+    // first-wins `acCount` and subtracts smaller-keyword hits), so re-classifying
+    // the merged entry is NOT a substitute for taking the max.
+    const manifest = buildAcShapeManifest(
+        tmpDir('pickle-decompflag-large-'),
+        (role) => [role === 'codebase'
+            ? {
+                id: 'T-BIG',
+                title: 'Tidy the emitter',
+                source_ac_ids: ['AC-1', 'AC-2', 'AC-3', 'AC-4', 'AC-5', 'AC-6', 'AC-7'],
+                acceptance_test: 'emitter tidied across `src/e.ts`, `src/f.ts`, `src/g.ts`, `src/h.ts`',
+                justification: 'also `src/i.ts`, `src/j.ts`, `src/k.ts`',
+            }
+            : {
+                id: 'T-BIG',
+                title: 'Tidy the emitter',
+                source_ac_ids: ['AC-1'],
+                acceptance_test: 'emitter tidied',
+                justification: 'one line in `src/e.ts`',
+            }],
+        { ac_id: 'AC-1', ticket_ids: ['T-BIG'] },
+    );
+
+    // Precondition: the first analyst must NOT be the one reading it large, or the
+    // case is satisfied by first-wins and pins nothing.
+    const perCopy = manifest.tickets.filter((t) => t.id === 'T-BIG');
+    assert.equal(perCopy[0].source_worker, 'requirements', 'fixture precondition: requirements is first');
+    assert.notEqual(perCopy[0].complexity_tier, 'large', 'fixture precondition: the first copy is not large');
+    assert.ok(
+        perCopy.some((t) => t.complexity_tier === 'large'),
+        'fixture precondition: some later copy must read the ticket large',
+    );
+
+    const flags = manifest.decomposition_quality_flags;
+    assert.equal(flags.length, 1, 'the large-tier ticket must be flagged exactly once');
+    assert.equal(flags[0].ticket_id, 'T-BIG');
+    assert.equal(flags[0].reason, 'large_tier', 'the large reading must survive the collapse');
+    assert.equal(flags[0].action, 'pre_split');
+});
+
+test('AP-EXT-ITER189-01: a bounded ticket no analyst flags stays unflagged', () => {
+    // Negative control for the collapse: without it the two cases above are
+    // indistinguishable from a detector that never fires.
+    const manifest = buildAcShapeManifest(
+        tmpDir('pickle-decompflag-clean-'),
+        () => [{
+            id: 'T-OK',
+            title: 'Rename the flag',
+            source_ac_ids: ['AC-1'],
+            acceptance_test: 'flag renamed',
+            justification: 'one line in `src/d.ts`',
+        }],
+        { ac_id: 'AC-1', ticket_ids: ['T-OK'] },
+    );
+
+    assert.deepEqual(manifest.decomposition_quality_flags, [], 'a bounded ticket must not be flagged');
+});

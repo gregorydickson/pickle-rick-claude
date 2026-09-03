@@ -1370,6 +1370,29 @@ function collectAcShapeData(results) {
     return { acShapeSmells, tickets };
 }
 /**
+ * The stronger of two analyst tier readings, by POSITION in the declared order.
+ *
+ * `VALID_TICKET_COMPLEXITY_TIERS` is ascending and `classifyTicketTier` returns
+ * `VALID_TICKET_COMPLEXITY_TIERS[score]`, so the index IS the rank — asking it
+ * needs no second ordering to keep in sync, and a fifth tier declared there is
+ * ranked here without an edit.
+ *
+ * MAX, not first-wins, for the reason the classifier itself gives ("Conservative:
+ * ties round UP"): `classifyTicketTier` is NOT monotonic in the merged text — it
+ * reads `acCount` (first-wins here) and subtracts `CLASSIFIER_SMALLER_KEYWORDS`
+ * hits — so re-classifying the merged entry can land BELOW a copy's own reading.
+ * Taking the max means the collapsed entry is never weaker than any analyst's,
+ * which is the only direction `detectDecompositionQualityFlags`' `large_tier` arm
+ * may move.
+ */
+function strongerTier(a, b) {
+    if (a === undefined)
+        return b;
+    if (b === undefined)
+        return a;
+    return VALID_TICKET_COMPLEXITY_TIERS.indexOf(b) > VALID_TICKET_COMPLEXITY_TIERS.indexOf(a) ? b : a;
+}
+/**
  * Union the three shape-bearing fields of two analyst copies of the SAME ticket id.
  * Merging, not first-wins: the copies genuinely differ (measured across the real
  * manifest corpus — same id, different `acceptance_test`/`justification` in every
@@ -1383,6 +1406,7 @@ function mergeAnalystTicketShape(first, next) {
         title: union(first.title, next.title) ?? first.title,
         acceptance_test: union(first.acceptance_test, next.acceptance_test),
         justification: union(first.justification, next.justification),
+        complexity_tier: strongerTier(first.complexity_tier, next.complexity_tier),
     };
 }
 /**
@@ -2100,7 +2124,15 @@ export function buildRefinementManifest(args, results, ticketQualityWarnings) {
         ...t,
         complexity_tier: classifyTicketTier(buildClassifierInfoForEntry(t)),
     }));
-    const decompQualityFlags = detectDecompositionQualityFlags(classifiedTickets);
+    // AP-EXT-ITER189-01: the flag set is a per-TICKET question, so it is asked of the
+    // COLLAPSED view. `classifiedTickets` is the per-ANALYST concatenation, and
+    // `detectDecompositionQualityFlags` emits at most one flag per INPUT entry — fed the
+    // raw array it emits one per analyst COPY, so `decomposition_quality_flags` carried
+    // duplicate ticket_ids and the `N ticket(s) flagged` line counted copies, not tickets
+    // (measured 2 flags / 1 distinct ticket at the shipped 3-role fan-out). Same rule
+    // `detectBundleOfBundlesOverCollapse` follows and `collapseAnalystTicketCopies`
+    // states: every per-ticket cardinality question asks the collapsed view.
+    const decompQualityFlags = detectDecompositionQualityFlags(collapseAnalystTicketCopies(classifiedTickets));
     const manifest = {
         prd_path: args.prdPath,
         refinement_dir: results.refinementDir,
