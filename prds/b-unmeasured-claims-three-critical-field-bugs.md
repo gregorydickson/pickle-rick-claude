@@ -101,6 +101,51 @@ history is interpretable.
 **Files (scope fence):** `extension/src/bin/microverse-runner.ts` + compiled, existing
 auto-commit tests, `prds/MASTER_PLAN.md`.
 
+## FR-5 (CRITICAL, #9) — `$1` inside emitted launch templates is rewritten at render time
+
+Five command files embed `SESSION_ROOT="$1"` inside a heredoc:
+`pickle-pipeline.md`, `anatomy-park.md`, `szechuan-sauce.md`, `pickle-microverse.md`, `plumbus.md`
+(**verified 2026-09-03: exactly those five at HEAD**). When the command is invoked WITH arguments,
+positional-argument substitution replaces `$1` **before the model sees the file**, so the template
+the operator is told to write resolves `SESSION_ROOT` to an invocation token — field-observed as
+`SESSION_ROOT="--dir"`, yielding `STATE_PATH="--dir/state.json"`.
+
+The single-quoted heredoc correctly suppresses *shell* expansion; the substitution happens earlier,
+in command rendering, so **quoting cannot defend against it**. The fix must therefore avoid emitting
+a bare `$1` in the template at all rather than trying to escape it.
+
+**⚠ Exposure note — the documented path is broken while the babysitter path is not.** This
+bundle's own launches invoke `setup.js --tmux --task`, write `pipeline.json`, and start
+`pipeline-runner.js` directly; **no `launch.sh` is produced** (verified absent in session
+`2026-09-01-6a67c80b`). So the operator-facing instructions are the broken surface, and the path
+actually exercised in-house is not — which is why this survived. Do not "verify" the fix by
+launching the way this repo launches.
+
+**Files (scope fence):** the five `.claude/commands/*.md` above, `README.md` if it documents the
+template, existing command-template tests.
+
+## FR-6 (CRITICAL, #10) — `refinement_manifest.tickets` is gated by AC-shape smell, undocumented
+
+`collectAcShapeData` (`spawn-refinement-team.ts:1758`) assembles `tickets` **exclusively** from each
+analyst's AC-shape section via `parseAcShapeSection` (`:1740`). A requirement whose AC family
+triggered no shape smell contributes **no ticket entry at all** — no warning, no disposition, no
+coverage assertion. Field-measured: **2 of 9 requirements silently dropped (22%)**, including a HIGH
+finding, with `all_success: true`, `cycles: 3/3`, exit `0`. The analysts did the work
+(`analysis_requirements_c3.md` mentions `AC-MEMO` 3×, `AC-CNT` 4×); manifest assembly discarded it.
+
+`ac_shape_smells` is the de-facto gate on ticket coverage and nothing in the field name, schema, or
+docs says so. A live consumer already reads it as the decomposition:
+`pipeline-runner.ts:runBundlePreflight` derives `ticketCount` from it.
+
+**Known adjacent defect — do not regress it while fixing this.** The same array is appended
+**per-analyst** (`:1822` documents it), so one logical ticket appears once per role and a raw
+`.length` read is a fail-open cardinality gate. FR-6 must fix *omission* without reintroducing or
+masking *duplication*; state both cardinalities in the test.
+
+**Files (scope fence):** `extension/src/bin/spawn-refinement-team.ts` + compiled
+`extension/bin/spawn-refinement-team.js`, `extension/src/bin/pipeline-runner.ts` +compiled (the
+`runBundlePreflight` consumer, only if research shows it must change), existing refinement tests.
+
 ---
 
 ## Bundle-wide rules
