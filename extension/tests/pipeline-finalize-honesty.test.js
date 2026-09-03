@@ -695,7 +695,19 @@ describe('AP-EXT-ITER88-01: the citadel advisory write carries pipeline-status t
     // The consumer half: the surviving counters are what make this run resumable at all.
     assert.deepEqual(
       readResumePhasePlan({ sessionDir: dir, config: { phases: CITADEL_PHASES } }),
-      { index: 1, completed: 1, skipped: 0 },
+      {
+        index: 1,
+        counters: {
+          completed: 1,
+          skipped: 0,
+          phaseSkips: { pickle: 'setup_error' },
+          // AP-EXT-ITER185-01: the carried dispositions are the resumed run's `nonConvergent`
+          // term — carrying the record through the citadel write is what keeps the withheld
+          // verdict alive across the crash boundary, not just the counts.
+          nonConvergent: 1,
+          phaseDispositions: { pickle: 'approach_exhaustion' },
+        },
+      },
       'a zeroed status would cold-start the pipeline and re-run every earlier phase',
     );
 

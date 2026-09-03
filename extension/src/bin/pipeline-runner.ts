@@ -2645,6 +2645,15 @@ interface PhaseCounters {
   phaseDispositions: Record<string, string>;
 }
 
+/**
+ * The zero ledger. Named once because BOTH `main()` and the crash-resume cold-start plan
+ * need it: a counter added to `PhaseCounters` must not be initialised in one and forgotten
+ * in the other.
+ */
+function emptyPhaseCounters(): PhaseCounters {
+  return { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+}
+
 export interface CloserReleasePlan {
   release: boolean;
   install: boolean;
@@ -3826,19 +3835,45 @@ function writeRunningStatus(runtime: PipelineRuntime, counters: PhaseCounters, c
 export interface ResumePhasePlan {
   /** Phase-loop start index; 0 on cold start. */
   index: number;
-  /** Phases the prior process completed, to seed `counters.completed`. */
-  completed: number;
-  /** Phases the prior process skipped, to seed `counters.skipped`. */
-  skipped: number;
+  /**
+   * The prior process's counters ledger, seeded WHOLESALE.
+   *
+   * AP-EXT-ITER185-01: this used to be a hand-mirrored `{ completed, skipped }` pair, and the
+   * mirror rotted the moment `PhaseCounters` grew past it — `nonConvergent` +
+   * `phaseDispositions` (22dcccd7, the same day AC-CWRR-6 landed) and two later withholding
+   * paths (5b43f4f1 Done-over-red, 4514ebb0 post-final degraded) were never added to it, so a
+   * crash-resume forgot every pre-crash withheld verdict. Typing this `PhaseCounters` instead
+   * of restating its members makes tsc demand every one at the construction site below: the
+   * type IS the list, so the next counter cannot be omitted by silence.
+   */
+  counters: PhaseCounters;
 }
-
-// Frozen: returned by reference from every cold-start path, so a caller that
-// mutated the plan would otherwise corrupt the shared constant.
-const COLD_START_PLAN: Readonly<ResumePhasePlan> = Object.freeze({ index: 0, completed: 0, skipped: 0 });
 
 /** Non-negative integer or 0 — a malformed count must never seed a counter. */
 function resumeCount(raw: unknown): number {
   return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : 0;
+}
+
+/**
+ * A persisted `phase_skips` / `phase_dispositions` map, filtered to its string values. Both
+ * keys are additive-optional, so an absent or malformed record seeds an EMPTY map — a read
+ * failure can never fabricate a disposition, mirroring `resumeCount`'s direction.
+ */
+function resumeStringRecord(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>)
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  );
+}
+
+/**
+ * Cold start: index 0 over a zero ledger. Built fresh per call rather than returned from a
+ * shared frozen constant — the plan now carries mutable maps, and one shared instance would
+ * hand every caller the same two objects.
+ */
+function coldStartPlan(): ResumePhasePlan {
+  return { index: 0, counters: emptyPhaseCounters() };
 }
 
 export function readResumePhasePlan(
@@ -3850,17 +3885,30 @@ export function readResumePhasePlan(
       path.join(runtime.sessionDir, 'pipeline-status.json'),
     ) as Record<string, unknown> | null;
   } catch { /* best-effort — unreadable status falls through to cold-start */ }
-  if (!prior) return COLD_START_PLAN;
-  if (prior.status !== 'running') return COLD_START_PLAN;
-  if (typeof prior.completed_phases !== 'number' || prior.completed_phases <= 0) return COLD_START_PLAN;
+  if (!prior) return coldStartPlan();
+  if (prior.status !== 'running') return coldStartPlan();
+  if (typeof prior.completed_phases !== 'number' || prior.completed_phases <= 0) return coldStartPlan();
   const priorPhase = prior.current_phase;
-  if (!isPhaseName(priorPhase)) return COLD_START_PLAN;
+  if (!isPhaseName(priorPhase)) return coldStartPlan();
   const idx = runtime.config.phases.indexOf(priorPhase);
-  if (idx < 0) return COLD_START_PLAN;
+  if (idx < 0) return coldStartPlan();
+  const phaseDispositions = resumeStringRecord(prior.phase_dispositions);
   return {
     index: idx,
-    completed: resumeCount(prior.completed_phases),
-    skipped: resumeCount(prior.skipped_phases),
+    counters: {
+      completed: resumeCount(prior.completed_phases),
+      skipped: resumeCount(prior.skipped_phases),
+      phaseSkips: resumeStringRecord(prior.phase_skips) as Record<string, PhaseSkipReason>,
+      // Every `nonConvergent` raise writes a `phaseDispositions[phase]` entry beside it — all
+      // four sites do (the microverse non-convergent branch, the judge-exhausted gate, the
+      // Done-over-red withholding, the post-final-degraded withholding) and nothing writes a
+      // disposition WITHOUT raising the count — so the persisted map is the faithful record of
+      // the term and needs no second persisted field. Only `> 0` is ever tested by the verdict;
+      // a phase that raised the count several times under one disposition key reads as one here
+      // rather than as zero, which is the half that matters.
+      nonConvergent: Object.keys(phaseDispositions).length,
+      phaseDispositions,
+    },
   };
 }
 
@@ -5317,17 +5365,27 @@ interface PipelinePhaseLoopResult {
  * forward leaves `finalizePipeline`'s (completed + skipped) < phases.length permanently
  * true, so a fully-successful resumed pipeline would finalize FAILED and skip the closer
  * install/tag. Cold start resolves to 0 and seeds nothing.
+ *
+ * AP-EXT-ITER185-01: the SAME fact governs the other direction. `nonConvergent` /
+ * `phaseDispositions` record a phase that ran but WITHHELD its success verdict, and dropping
+ * them on resume fails green: `unsuccessful = pipelineFailed || nonConvergent > 0` reads
+ * false, the run exits 0, `maybeRunCloserRelease` cuts install()+tag(), and the terminal
+ * `writeTerminalPipelineStatus` then writes the emptied maps over the persisted
+ * `phase_dispositions` — erasing the only surviving attribution. The plan carries the whole
+ * ledger for that reason; halting and reporting stay separate wires, and this is the
+ * reporting one.
  */
-function seedResumePhaseCounters(
-  runtime: PipelineRuntime,
+export function seedResumePhaseCounters(
+  runtime: Pick<PipelineRuntime, 'sessionDir' | 'config'>,
   counters: PhaseCounters,
   log: (msg: string) => void,
 ): number {
   const resumePlan = readResumePhasePlan(runtime);
   if (resumePlan.index <= 0) return resumePlan.index;
-  counters.completed = resumePlan.completed;
-  counters.skipped = resumePlan.skipped;
-  log(`Crash-resume: starting phase loop at index ${resumePlan.index} (${runtime.config.phases[resumePlan.index]}) per prior pipeline-status.json; seeded counters completed=${counters.completed} skipped=${counters.skipped}`);
+  // Wholesale, never field by field: the seed is total over `PhaseCounters` by construction,
+  // so a counter added later is carried without editing this line.
+  Object.assign(counters, resumePlan.counters);
+  log(`Crash-resume: starting phase loop at index ${resumePlan.index} (${runtime.config.phases[resumePlan.index]}) per prior pipeline-status.json; seeded counters completed=${counters.completed} skipped=${counters.skipped} nonConvergent=${counters.nonConvergent}`);
   return resumePlan.index;
 }
 
@@ -5375,7 +5433,7 @@ export async function main(sessionDir: string, opts: MainOpts = {}): Promise<voi
   const log = createPipelineLog(sessionDir);
   log('pipeline-runner started');
   const runtime = loadPipelineRuntime(sessionDir, opts, log);
-  const counters: PhaseCounters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+  const counters: PhaseCounters = emptyPhaseCounters();
   const cancelMarker = path.join(sessionDir, 'pipeline-cancel');
   // B1: a fresh run must not inherit a PRIOR run's cancellation. The marker is
   // written on signal receipt and unlinked only at finalizePipeline — which a

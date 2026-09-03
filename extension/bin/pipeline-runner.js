@@ -2164,6 +2164,14 @@ export function setupSzechuanSauce(sessionDir, target, stallLimit, extensionRoot
     log('Szechuan Sauce setup complete');
     return true;
 }
+/**
+ * The zero ledger. Named once because BOTH `main()` and the crash-resume cold-start plan
+ * need it: a counter added to `PhaseCounters` must not be initialised in one and forgotten
+ * in the other.
+ */
+function emptyPhaseCounters() {
+    return { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+}
 const PHASE_NAMES = ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'];
 function isPhaseName(phase) {
     return typeof phase === 'string' && PHASE_NAMES.includes(phase);
@@ -3172,12 +3180,28 @@ function writeRunningStatus(runtime, counters, currentPhase) {
         phase_dispositions: counters.phaseDispositions,
     });
 }
-// Frozen: returned by reference from every cold-start path, so a caller that
-// mutated the plan would otherwise corrupt the shared constant.
-const COLD_START_PLAN = Object.freeze({ index: 0, completed: 0, skipped: 0 });
 /** Non-negative integer or 0 — a malformed count must never seed a counter. */
 function resumeCount(raw) {
     return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : 0;
+}
+/**
+ * A persisted `phase_skips` / `phase_dispositions` map, filtered to its string values. Both
+ * keys are additive-optional, so an absent or malformed record seeds an EMPTY map — a read
+ * failure can never fabricate a disposition, mirroring `resumeCount`'s direction.
+ */
+function resumeStringRecord(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+        return {};
+    return Object.fromEntries(Object.entries(raw)
+        .filter((entry) => typeof entry[1] === 'string'));
+}
+/**
+ * Cold start: index 0 over a zero ledger. Built fresh per call rather than returned from a
+ * shared frozen constant — the plan now carries mutable maps, and one shared instance would
+ * hand every caller the same two objects.
+ */
+function coldStartPlan() {
+    return { index: 0, counters: emptyPhaseCounters() };
 }
 export function readResumePhasePlan(runtime) {
     let prior = null;
@@ -3186,21 +3210,34 @@ export function readResumePhasePlan(runtime) {
     }
     catch { /* best-effort — unreadable status falls through to cold-start */ }
     if (!prior)
-        return COLD_START_PLAN;
+        return coldStartPlan();
     if (prior.status !== 'running')
-        return COLD_START_PLAN;
+        return coldStartPlan();
     if (typeof prior.completed_phases !== 'number' || prior.completed_phases <= 0)
-        return COLD_START_PLAN;
+        return coldStartPlan();
     const priorPhase = prior.current_phase;
     if (!isPhaseName(priorPhase))
-        return COLD_START_PLAN;
+        return coldStartPlan();
     const idx = runtime.config.phases.indexOf(priorPhase);
     if (idx < 0)
-        return COLD_START_PLAN;
+        return coldStartPlan();
+    const phaseDispositions = resumeStringRecord(prior.phase_dispositions);
     return {
         index: idx,
-        completed: resumeCount(prior.completed_phases),
-        skipped: resumeCount(prior.skipped_phases),
+        counters: {
+            completed: resumeCount(prior.completed_phases),
+            skipped: resumeCount(prior.skipped_phases),
+            phaseSkips: resumeStringRecord(prior.phase_skips),
+            // Every `nonConvergent` raise writes a `phaseDispositions[phase]` entry beside it — all
+            // four sites do (the microverse non-convergent branch, the judge-exhausted gate, the
+            // Done-over-red withholding, the post-final-degraded withholding) and nothing writes a
+            // disposition WITHOUT raising the count — so the persisted map is the faithful record of
+            // the term and needs no second persisted field. Only `> 0` is ever tested by the verdict;
+            // a phase that raised the count several times under one disposition key reads as one here
+            // rather than as zero, which is the half that matters.
+            nonConvergent: Object.keys(phaseDispositions).length,
+            phaseDispositions,
+        },
     };
 }
 function logPhaseStart(runtime, phase, index) {
@@ -4543,14 +4580,24 @@ async function handlePhaseBoundaryRespawn(runtime, rawPhase, nextRawPhase) {
  * forward leaves `finalizePipeline`'s (completed + skipped) < phases.length permanently
  * true, so a fully-successful resumed pipeline would finalize FAILED and skip the closer
  * install/tag. Cold start resolves to 0 and seeds nothing.
+ *
+ * AP-EXT-ITER185-01: the SAME fact governs the other direction. `nonConvergent` /
+ * `phaseDispositions` record a phase that ran but WITHHELD its success verdict, and dropping
+ * them on resume fails green: `unsuccessful = pipelineFailed || nonConvergent > 0` reads
+ * false, the run exits 0, `maybeRunCloserRelease` cuts install()+tag(), and the terminal
+ * `writeTerminalPipelineStatus` then writes the emptied maps over the persisted
+ * `phase_dispositions` — erasing the only surviving attribution. The plan carries the whole
+ * ledger for that reason; halting and reporting stay separate wires, and this is the
+ * reporting one.
  */
-function seedResumePhaseCounters(runtime, counters, log) {
+export function seedResumePhaseCounters(runtime, counters, log) {
     const resumePlan = readResumePhasePlan(runtime);
     if (resumePlan.index <= 0)
         return resumePlan.index;
-    counters.completed = resumePlan.completed;
-    counters.skipped = resumePlan.skipped;
-    log(`Crash-resume: starting phase loop at index ${resumePlan.index} (${runtime.config.phases[resumePlan.index]}) per prior pipeline-status.json; seeded counters completed=${counters.completed} skipped=${counters.skipped}`);
+    // Wholesale, never field by field: the seed is total over `PhaseCounters` by construction,
+    // so a counter added later is carried without editing this line.
+    Object.assign(counters, resumePlan.counters);
+    log(`Crash-resume: starting phase loop at index ${resumePlan.index} (${runtime.config.phases[resumePlan.index]}) per prior pipeline-status.json; seeded counters completed=${counters.completed} skipped=${counters.skipped} nonConvergent=${counters.nonConvergent}`);
     return resumePlan.index;
 }
 /**
@@ -4595,7 +4642,7 @@ export async function main(sessionDir, opts = {}) {
     const log = createPipelineLog(sessionDir);
     log('pipeline-runner started');
     const runtime = loadPipelineRuntime(sessionDir, opts, log);
-    const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    const counters = emptyPhaseCounters();
     const cancelMarker = path.join(sessionDir, 'pipeline-cancel');
     // B1: a fresh run must not inherit a PRIOR run's cancellation. The marker is
     // written on signal receipt and unlinked only at finalizePipeline — which a
