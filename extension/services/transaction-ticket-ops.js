@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { StateManager, acquireLockFile, reclaimDeadLock, releaseLockFile, } from './state-manager.js';
+import { isRecord } from '../lib/is-record.js';
 function isWithinRoot(targetPath, rootPath) {
     const relative = path.relative(path.resolve(rootPath), path.resolve(targetPath));
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
@@ -120,19 +121,50 @@ export function materializeNewTicket(spec) {
         })),
     };
 }
+/**
+ * The wrapper fields `ReverseLedger` declares. `satisfies` makes the compiler the
+ * owner of this list: a field added to the interface without being added here is a
+ * type error, so it cannot silently become the one shape the parser fails to see.
+ */
+const REVERSE_LEDGER_WRAPPER_KEYS = ['entries', 'actions', 'steps'];
+/**
+ * AP-EXT-ITER197-01: `null` means "this text is NOT a ledger container", which is
+ * a different fact from "this container is empty". Returning `[]` for a
+ * non-container is what let a one-entry ledger resolve to zero entries.
+ */
 function resolveLedgerEntries(parsed) {
     if (Array.isArray(parsed))
         return parsed;
-    return parsed.entries ?? parsed.actions ?? parsed.steps ?? [];
+    if (!isRecord(parsed))
+        return null;
+    const key = REVERSE_LEDGER_WRAPPER_KEYS.find(candidate => Array.isArray(parsed[candidate]));
+    if (key !== undefined)
+        return parsed[key];
+    // Carries a wrapper field but no usable array: an EMPTY container, never a record.
+    return REVERSE_LEDGER_WRAPPER_KEYS.some(candidate => candidate in parsed) ? [] : null;
 }
+function parseJsonDocumentOrNull(trimmed) {
+    try {
+        return JSON.parse(trimmed);
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * AP-EXT-ITER197-01: the container-vs-JSONL decision reads the PARSED STRUCTURE,
+ * never the text's shape. The prior discriminator asked whether the trimmed text
+ * started with `{` and held no newline — a LINE COUNT, which a one-entry JSONL
+ * apply ledger satisfies exactly. It then resolved that lone entry as a wrapper,
+ * found no `entries`/`actions`/`steps` key, and returned `[]`, so the
+ * single-step crash window reversed NOTHING and reported success.
+ */
 function parseLedgerContent(raw) {
     const trimmed = raw.trim();
     if (trimmed.length === 0)
         return [];
-    if (trimmed.startsWith('[') || (trimmed.startsWith('{') && !trimmed.includes('\n'))) {
-        return resolveLedgerEntries(JSON.parse(trimmed));
-    }
-    return trimmed
+    const wrapped = resolveLedgerEntries(parseJsonDocumentOrNull(trimmed));
+    return wrapped ?? trimmed
         .split(/\r?\n/)
         .filter(line => line.trim().length > 0)
         .map(line => JSON.parse(line));

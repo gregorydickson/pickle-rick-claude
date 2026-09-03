@@ -748,3 +748,113 @@ test('AP-EXT-ITER8-02: applying over an unreadable existing file is refused, not
     );
   });
 });
+
+// AP-EXT-ITER197-01: `parseLedgerContent` chose the container-vs-JSONL branch on a
+// LINE COUNT (`startsWith('{') && !includes('\n')`). A one-entry apply ledger — the
+// step-1 crash window, `started` appended and the overwrite landed but the `applied`
+// append never did — satisfies that test exactly, so it was resolved as a
+// `ReverseLedger` wrapper, yielded no `entries`/`actions`/`steps`, and returned [].
+// `rollbackAndHaltApply`'s replay then reversed NOTHING and reported success, while
+// the entry's `beforeContent` was the only surviving copy of the file.
+//
+// The oracle is DIFFERENTIAL: the same entry, duplicated to make the ledger two
+// lines, reverses correctly today. Only the line count differs, so a fixture that
+// uses the two-line form cannot observe the defect at all.
+function crashWindowEntry(step, target) {
+  return JSON.stringify({
+    step,
+    action: 'write',
+    operation: 'kill_ticket',
+    ticket_id: path.basename(path.dirname(target)),
+    path: target,
+    status: 'started',
+    recovery_class: 'restore-previous-content',
+    beforeContent: 'BEFORE (the only copy)',
+    previousContent: 'BEFORE (the only copy)',
+    afterContent: 'AFTER (half-applied)',
+    content: 'AFTER (half-applied)',
+    createdAt: '2026-09-03T00:00:00.000Z',
+  });
+}
+
+test('AP-EXT-ITER197-01: a ONE-entry apply ledger reverses its crash-window step', () => {
+  withDir((dir) => {
+    const file = path.join(dir, 'ticket-a', 'rick_ticket_a.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'AFTER (half-applied)', 'utf-8');
+
+    const ledgerPath = path.join(dir, 'change_proposal_x_apply.log');
+    fs.writeFileSync(ledgerPath, crashWindowEntry(1, file) + '\n', 'utf-8');
+
+    const restored = replayReverseLedger(ledgerPath, dir);
+
+    assert.equal(
+      fs.readFileSync(file, 'utf-8'),
+      'BEFORE (the only copy)',
+      'the sole ledger entry was resolved as an empty wrapper and its step went unreversed',
+    );
+    assert.equal(restored.length, 1, 'a one-entry ledger must report the step it restored');
+  });
+});
+
+test('AP-EXT-ITER197-01: one-entry and two-entry ledgers of the SAME step agree', () => {
+  withDir((dir) => {
+    const outcomeFor = (lineCount) => {
+      const file = path.join(dir, `ticket-${lineCount}`, 'rick_ticket.md');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, 'AFTER (half-applied)', 'utf-8');
+      const ledgerPath = path.join(dir, `change_proposal_${lineCount}_apply.log`);
+      const line = crashWindowEntry(1, file);
+      fs.writeFileSync(ledgerPath, Array(lineCount).fill(line).join('\n') + '\n', 'utf-8');
+      const restored = replayReverseLedger(ledgerPath, dir);
+      return { content: fs.readFileSync(file, 'utf-8'), restoredAny: restored.length > 0 };
+    };
+
+    // Line count is an incidental property of the ledger, never a format signal.
+    assert.deepEqual(outcomeFor(1), outcomeFor(2));
+  });
+});
+
+test('AP-EXT-ITER197-01: a multi-line ReverseLedger wrapper is still read as a container', () => {
+  withDir((sessionDir) => {
+    const createdPath = path.join(sessionDir, 'created', 'file.md');
+    const updatedPath = path.join(sessionDir, 'updated.md');
+    fs.mkdirSync(path.dirname(createdPath), { recursive: true });
+    fs.writeFileSync(createdPath, 'created');
+    fs.writeFileSync(updatedPath, 'new');
+
+    const ledgerPath = path.join(sessionDir, 'ledger.json');
+    // Pretty-printed — multi-line, so the old line-count discriminator sent it to
+    // the JSONL branch and `JSON.parse('{')` threw instead of reversing anything.
+    fs.writeFileSync(ledgerPath, JSON.stringify({
+      entries: [
+        { action: 'create', path: path.relative(sessionDir, createdPath) },
+        { action: 'write', path: updatedPath, beforeContent: 'old' },
+      ],
+    }, null, 2));
+
+    const restored = replayReverseLedger(ledgerPath, sessionDir);
+
+    assert.equal(fs.existsSync(createdPath), false);
+    assert.equal(fs.readFileSync(updatedPath, 'utf-8'), 'old');
+    assert.deepEqual(restored, [{ path: updatedPath, content: 'old' }]);
+  });
+});
+
+test('AP-EXT-ITER197-01: a bare JSON-array ledger is read as a container', () => {
+  withDir((sessionDir) => {
+    const updatedPath = path.join(sessionDir, 'updated.md');
+    fs.writeFileSync(updatedPath, 'new');
+
+    const ledgerPath = path.join(sessionDir, 'ledger.json');
+    // The third container form: a top-level array, with no wrapper object around it.
+    fs.writeFileSync(ledgerPath, JSON.stringify([
+      { action: 'write', path: updatedPath, beforeContent: 'old' },
+    ]));
+
+    const restored = replayReverseLedger(ledgerPath, sessionDir);
+
+    assert.equal(fs.readFileSync(updatedPath, 'utf-8'), 'old');
+    assert.deepEqual(restored, [{ path: updatedPath, content: 'old' }]);
+  });
+});
