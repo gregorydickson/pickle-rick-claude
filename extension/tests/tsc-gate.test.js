@@ -13,6 +13,8 @@ const it = test;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HANDLER = path.resolve(__dirname, '../hooks/handlers/tsc-gate.js');
 const HANDLER_TS = path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts');
+const SHELL_EXEC_TS = path.resolve(__dirname, '../src/hooks/shell-exec.ts');
+const CONFIG_PROTECTION_TS = path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts');
 const FIXTURE_DIR = path.resolve(__dirname, 'fixtures/tsc-gate');
 const REPLAY_PATCH = path.resolve(__dirname, 'fixtures/tsc-gate-replay-7d44f22d.patch');
 
@@ -244,9 +246,9 @@ function stageTimeoutConfig(repoRoot) {
 // prefix replaced by a placeholder the caller substitutes. Reading the source
 // keeps the assertion pinned to the shipped command rather than to a copy of it.
 function readCheckoutIndexArgs() {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts'), 'utf8',
-  );
+  // Masked: the handler's own comment above this argv explains the ABSENT
+  // `--stage` flag, and the first bracketed literal wins.
+  const source = readCode(HANDLER_TS);
   const match = source.match(/\[('checkout-index'[^\]]*)\]/);
   assert.ok(match, 'tsc-gate.ts must build a checkout-index argv array');
   return match[1]
@@ -615,9 +617,7 @@ it('AP-EXT-ITER18-01 isGitCommitCommand sees a commit behind a GLUED operator', 
 });
 
 it('AP-EXT-ITER18-01 the glued-operator split is DERIVED from the separator set', async () => {
-  const shellExec = fs.readFileSync(
-    path.resolve(__dirname, '../src/hooks/shell-exec.ts'), 'utf8',
-  );
+  const shellExec = readCode(SHELL_EXEC_TS);
   // The bug was a hardcoded `/(;)/` sitting beside a six-member separator set:
   // declaring an operator a separator did not make the tokenizer yield it as a
   // boundary. Pin the derivation, not just the behavior — a second hardcoded
@@ -688,6 +688,114 @@ function codeMask(source, fileName) {
 
   return out.join('');
 }
+
+/**
+ * The ONE way a pin in this file reads a source file. Every question asked
+ * below is a question about CODE, so no pin gets to reach for the raw bytes:
+ * routing them all through here is what stops the next pin being born comment-
+ * blind, which is how AP-EXT-ITER178-01 was born while two masked pins already
+ * sat in the same file.
+ */
+function readCode(file) {
+  return codeMask(fs.readFileSync(file, 'utf8'), file);
+}
+
+/**
+ * The routing half of AP-EXT-ITER178-01, and the half a reader test cannot
+ * cover: `codeMask` was already correct and already in this file when the
+ * AP-EXT-ITER93-02 and AP-EXT-ITER104-01 pins were written against raw bytes
+ * beside it. A correct reader nobody is obliged to use guarantees nothing, so
+ * the invariant is that a source path can only be read HERE.
+ *
+ * Read as grammar, not as a grep: the offender is a `readFileSync` call whose
+ * path argument resolves a `.ts` file against this file's own location, and
+ * only its position relative to `readCode` decides. A fixture the test just
+ * wrote is read from a runtime-rooted path and is deliberately NOT covered —
+ * those assertions are about exact bytes, which masking would destroy.
+ *
+ * Honest limit: a read whose argument is a VARIABLE (the AP-EXT-ITER113-01
+ * directory walk holds one) is invisible here, because a name says nothing
+ * about what it holds. The second clause is what covers that direction — such a
+ * read can only route around `readCode` by forking a second masked reader, and
+ * there is exactly one place a `codeMask` call may live.
+ */
+it('AP-EXT-ITER178-01 no pin reads a source file outside the ONE masked reader', () => {
+  const selfPath = fileURLToPath(import.meta.url);
+  const self = parseHandler(fs.readFileSync(selfPath, 'utf8'), selfPath);
+  const spanOf = (name) => {
+    let span = null;
+    const find = (node) => {
+      if (ts.isFunctionDeclaration(node) && node.name?.text === name) {
+        span = { start: node.getStart(self), end: node.getEnd() };
+      }
+      ts.forEachChild(node, find);
+    };
+    find(self);
+    assert.ok(span, `${name} must remain a single named function`);
+    return span;
+  };
+  const readerSpan = spanOf('readCode');
+  const lineOf = (node) => self.getLineAndCharacterOfPosition(node.getStart(self)).line + 1;
+
+  const rawSourceReads = [];
+  const maskCallers = [];
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression.getText(self);
+      const inReader = node.getStart(self) >= readerSpan.start && node.getEnd() <= readerSpan.end;
+      if (callee.endsWith('readFileSync') && !inReader) {
+        const target = node.arguments[0]?.getText(self) ?? '';
+        // A path this file resolves against its OWN location is a repo file
+        // under review; a path rooted at a runtime variable is a fixture the
+        // test just wrote, whose exact bytes are the assertion and which must
+        // NOT be masked. `_TS` names the shared constants, all of which are
+        // `path.resolve(__dirname, …)`. The compiled mirror counts too: a pin
+        // over `hooks/**.js` reads the same code past the same comments.
+        const repoSource = /_TS\b/.test(target)
+          || (target.includes('__dirname') && /\.[cm]?[tj]s['"`]/.test(target));
+        if (repoSource) rawSourceReads.push(`${lineOf(node)}: readFileSync(${target})`);
+      }
+      if (callee === 'codeMask' && !inReader) maskCallers.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(self);
+
+  assert.deepEqual(
+    rawSourceReads, [],
+    'a source-text pin must read through readCode, not raw readFileSync bytes',
+  );
+  // Second clause, and the one that covers a read this cannot see: the only
+  // other place allowed to call `codeMask` is its own anchor test, which feeds
+  // it hand-built probe strings and never a file. Anything else is a SECOND
+  // masked path — the shape a variable-rooted read would have to take to route
+  // around `readCode` while still looking masked. Positional, not a count: a
+  // hand-kept caller count admits the N+1th caller by construction.
+  const anchorSpan = (() => {
+    let span = null;
+    self.forEachChild((node) => {
+      // The test's own TITLE, not its text: a node's text includes its
+      // comments, so matching the phrase anywhere would let a comment in some
+      // other test claim to be the anchor and empty this clause out.
+      if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return;
+      const [title] = node.expression.arguments;
+      if (!title || !ts.isStringLiteral(title)) return;
+      if (title.text.includes('codeMask blanks comments by grammar')) {
+        span = { start: node.getStart(self), end: node.getEnd() };
+      }
+    });
+    assert.ok(span, 'the codeMask anchor test must remain in this file');
+    return span;
+  })();
+  const strayMaskCallers = maskCallers
+    .filter((node) => node.getStart(self) < anchorSpan.start || node.getEnd() > anchorSpan.end)
+    .map((node) => `${lineOf(node)}: ${node.getText(self).split('\n')[0]}`);
+  assert.deepEqual(
+    strayMaskCallers, [],
+    'codeMask has exactly two callers: readCode, and the anchor test that proves it',
+  );
+  assert.ok(maskCallers.length > 0, 'the anchor test must still exercise codeMask');
+});
 
 it('AP-EXT-ITER177-01 codeMask blanks comments by grammar, and moves nothing', () => {
   // The mutation matrix that proved the fix. Regress codeMask in EITHER
@@ -833,10 +941,9 @@ it('AP-EXT-ITER173-01 the one-home readers are comment-blind and refactor-tolera
 });
 
 it('AP-EXT-ITER12-01 the hooks segmenter has ONE home (no private tsc-gate copy)', async () => {
-  const hooksDir = path.resolve(__dirname, '../src/hooks');
-  const shellExec = fs.readFileSync(path.join(hooksDir, 'shell-exec.ts'), 'utf8');
-  const tscGate = fs.readFileSync(path.join(hooksDir, 'handlers', 'tsc-gate.ts'), 'utf8');
-  const configProtection = fs.readFileSync(path.join(hooksDir, 'handlers', 'config-protection.ts'), 'utf8');
+  const shellExec = readCode(SHELL_EXEC_TS);
+  const tscGate = readCode(HANDLER_TS);
+  const configProtection = readCode(CONFIG_PROTECTION_TS);
   // The drift this closes was structural, not a missing branch: each handler
   // owned a private segmenter, so a fix landing in one silently skipped the
   // other. Pin the single definition rather than the behavior alone — behavior
@@ -1223,9 +1330,7 @@ it('AP-EXT-ITER19-01 isGitCommitCommand sees a commit inside a GROUPED command',
 });
 
 it('AP-EXT-ITER19-01 grouping delimiters are declared in the ONE separator set', async () => {
-  const shellExec = fs.readFileSync(
-    path.resolve(__dirname, '../src/hooks/shell-exec.ts'), 'utf8',
-  );
+  const shellExec = readCode(SHELL_EXEC_TS);
   // Pin the declaration, not just the behavior. ITER18 made the split derive
   // from SHELL_SEGMENT_SEPARATORS precisely so that declaring an operator is
   // what makes it a boundary — a fix that instead bolted a second hardcoded
@@ -1244,10 +1349,9 @@ it('AP-EXT-ITER19-01 grouping delimiters are declared in the ONE separator set',
 });
 
 it('AP-EXT-ITER27-01 the exec-token prelude has ONE home (no private tsc-gate copy)', async () => {
-  const hooksDir = path.resolve(__dirname, '../src/hooks');
-  const shellExec = fs.readFileSync(path.join(hooksDir, 'shell-exec.ts'), 'utf8');
-  const tscGate = fs.readFileSync(path.join(hooksDir, 'handlers', 'tsc-gate.ts'), 'utf8');
-  const configProtection = fs.readFileSync(path.join(hooksDir, 'handlers', 'config-protection.ts'), 'utf8');
+  const shellExec = readCode(SHELL_EXEC_TS);
+  const tscGate = readCode(HANDLER_TS);
+  const configProtection = readCode(CONFIG_PROTECTION_TS);
   // Third fork of the same family AP-EXT-EXECFOLD (execName) and
   // AP-EXT-ITER12-01 (splitShellSegments) each had to collapse: tsc-gate carried
   // its own `ENV_ASSIGNMENT_RE` LITERAL under a comment claiming it was "the
@@ -1370,9 +1474,7 @@ it('AP-EXT-ITER54-01 isGitCommitCommand sees a commit past an option OPERAND', a
 });
 
 it('AP-EXT-ITER54-01 the payload is read FORWARD from the flag, not from the first bare word', async () => {
-  const shellExec = fs.readFileSync(
-    path.resolve(__dirname, '../src/hooks/shell-exec.ts'), 'utf8',
-  );
+  const shellExec = readCode(SHELL_EXEC_TS);
   const body = shellExec.match(
     /function shellCommandStringPayloads\(segment: string\): string\[\] \{([\s\S]*?)\n\}/,
   );
@@ -1499,10 +1601,6 @@ it('AP-EXT-ITER63-03 a POSIX command PREFIX cannot hide the commit from the R-WA
 });
 
 it('AP-EXT-ITER63-03 segmentIsGitCommit reads NO positional exec index', async () => {
-  const source = fs.readFileSync(
-    HANDLER_TS,
-    'utf8',
-  );
   // Blank comments BEFORE grepping. This entry's own rationale names
   // `execTokenIndex` in prose to say why it is gone, and an un-stripped grep
   // counts that mention as the violation — the exact self-counting
@@ -1511,7 +1609,7 @@ it('AP-EXT-ITER63-03 segmentIsGitCommit reads NO positional exec index', async (
   // Mask the WHOLE file, then slice: codeMask preserves positions, so an index
   // taken here addresses the same byte, and the two delimiters below now fail
   // CLOSED — one that survives only in prose no longer finds its function.
-  const handlerCode = codeMask(source, HANDLER_TS);
+  const handlerCode = readCode(HANDLER_TS);
   const code = handlerCode.slice(
     handlerCode.indexOf('function segmentIsGitCommit'),
     handlerCode.indexOf('export function isGitCommitCommand'),
@@ -1583,9 +1681,7 @@ it('AP-EXT-ITER93-02 isGitCommitCommand reads a globbed commit subcommand', asyn
 // gate — the under-block direction. Only the arm whose over-reach merely RUNS
 // the gate is pattern-aware.
 it('AP-EXT-ITER93-02 only the gate-running arm reads patterns', async () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts'), 'utf-8',
-  );
+  const source = readCode(HANDLER_TS);
   const body = source.slice(
     source.indexOf('function segmentIsGitCommit('),
     source.indexOf('export function isGitCommitCommand('),
@@ -1665,9 +1761,7 @@ it('AP-EXT-ITER104-01 materializes a clean staged addition whose path git C-quot
 // PATTERN_SHAPE guard: the regression is a SECOND hand-spelled `--name-only`
 // argv in this file, or a `split('\n')` over its output.
 it('AP-EXT-ITER104-01 tsc-gate.ts stages exactly one --name-only reader', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts'), 'utf-8',
-  );
+  const source = readCode(HANDLER_TS);
   const argvSpellings = source.match(/'--name-only'/g) ?? [];
   assert.equal(argvSpellings.length, 1, 'exactly one --name-only argv, inside listCachedPaths');
   const body = source.slice(
@@ -1716,7 +1810,7 @@ it('AP-EXT-ITER105-01 tsc-gate.ts keeps one describeCommandFailure reader', () =
   // Strip block comments first: this file's own trap-door prose spells the
   // forbidden `|| result.stderr || fallback` chain verbatim, and a source pin
   // that greps prose measures documentation, not code.
-  const source = codeMask(fs.readFileSync(HANDLER_TS, 'utf-8'), HANDLER_TS);
+  const source = readCode(HANDLER_TS);
   assert.equal(
     (source.match(/function describeCommandFailure\(/g) ?? []).length,
     1,
@@ -1768,13 +1862,14 @@ it('AP-EXT-ITER113-01 the AP-EXT-ITER14-01 span anchor is RUNNABLE, and the cd-p
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) { walk(full); continue; }
       if (!entry.name.endsWith('.ts')) continue;
-      fs.readFileSync(full, 'utf8').split('\n').forEach((line, index) => {
-        const trimmed = line.trim();
-        // Comment prose is excluded on purpose: shell-exec.ts's own doc comment
-        // NAMES the defective span in order to explain it. Including comments
-        // makes the anchor read RED forever, which is how the original spelling
-        // stopped discriminating.
-        if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) return;
+      // Comment prose is excluded on purpose: shell-exec.ts's own doc comment
+      // NAMES the defective span in order to explain it. Including comments
+      // makes the anchor read RED forever, which is how the original spelling
+      // stopped discriminating. Excluded by GRAMMAR, not by a line prefix: a
+      // prefix test keeps a trailing comment and drops a code line that merely
+      // continues onto a `*`, and `codeMask` preserves newlines so the
+      // `file:line` this reports is still the file's own line number.
+      readCode(full).split('\n').forEach((line, index) => {
         if (line.includes('"[^"]*"')) codeLinesWithNaiveSpan.push(`${full}:${index + 1}`);
       });
     }
@@ -1785,14 +1880,7 @@ it('AP-EXT-ITER113-01 the AP-EXT-ITER14-01 span anchor is RUNNABLE, and the cd-p
   // 2. STRUCTURAL: the second, naive shell parser cannot come back. A prefix
   // strip in front of a position-independent anchor scan can only ever REMOVE a
   // `git` the scan would have found.
-  const handlerSrc = fs.readFileSync(path.join(hooksSrc, 'handlers/tsc-gate.ts'), 'utf8');
-  const codeOnly = handlerSrc
-    .split('\n')
-    .filter((line) => {
-      const t = line.trim();
-      return !(t.startsWith('*') || t.startsWith('//') || t.startsWith('/*'));
-    })
-    .join('\n');
+  const codeOnly = readCode(HANDLER_TS);
   assert.doesNotMatch(codeOnly, /CD_PREFIX_RE/);
   assert.doesNotMatch(codeOnly, /stripCdPrefix/);
 
