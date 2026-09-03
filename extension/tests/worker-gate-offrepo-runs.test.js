@@ -308,18 +308,36 @@ test('off-repo: an unsafe (smoke/e2e-class) target test script is NOT spawned �
 });
 
 test('off-repo: the spawn decision uses the convergence gate ONE classifier, not a second copy', () => {
-  const spawnMorty = fs.readFileSync(new URL('../src/bin/spawn-morty.ts', import.meta.url), 'utf8');
-
-  assert.match(
-    spawnMorty,
-    /classifyTestScriptSafety\(project\.projectType, project\.dir\)/,
-    'the off-repo test dimension must ask the shared classifier before spawning',
+  const spawnMorty = parseSource(
+    fs.readFileSync(new URL('../src/bin/spawn-morty.ts', import.meta.url), 'utf8'),
+    'spawn-morty.ts',
   );
+
+  // The classifier must be BOUND from the gate service AND CALLED. Do NOT grep
+  // the raw source for the call form: prose can answer that. MEASURED before
+  // this collapse — a privately named local classifier whose
+  // unsafe-leaf list had silently dropped the browser and chain runners, with a
+  // comment left naming the shared call form, was GREEN 13/13. That is a second
+  // copy that SPAWNS a leaf the convergence gate refuses.
+  const classifier = namedImportsOf(spawnMorty, '../services/convergence-gate.js')
+    .find((binding) => binding.imported === 'classifyTestScriptSafety');
+  assert.ok(
+    classifier,
+    'the off-repo test dimension must bind the shared safety classifier',
+  );
+  assert.ok(
+    callsIdentifier(spawnMorty, classifier.local),
+    'the off-repo test dimension must CALL the shared classifier, not just import it',
+  );
+
   // A local unsafe-pattern list here is the divergence this fix removes: the two
   // gates would then answer the same question about the same script differently.
+  // Comment-blindness is the parser's, not a regex's: the `^\s*//` stripper this
+  // replaces only removed WHOLE-LINE comments, so appending `// e.g. a
+  // playwright leaf` to the call — a comment, changing nothing the invariant
+  // asserts — measured 11 pass / 2 fail.
   assert.equal(
-    /playwright|cypress|hardhat/.test(spawnMorty.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')),
-    false,
+    /playwright|cypress|hardhat/.test(codeText(spawnMorty)), false,
     'no second unsafe-test-script pattern may be declared on the gate path',
   );
 });
@@ -329,16 +347,15 @@ test('off-repo: the spawn decision uses the convergence gate ONE classifier, not
 // outside convergence-gate.ts; spawn-morty's own JSDoc names them in prose, so a
 // bare grep counts ITSELF and reports a guard that is fully intact as deleted.
 test('AP-EXT-ITER15-01: the ONE-classifier anchor is comment-scoped, not self-matching', () => {
-  const spawnMorty = fs.readFileSync(new URL('../src/bin/spawn-morty.ts', import.meta.url), 'utf8');
-  const stripComments = (src) => src.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const raw = fs.readFileSync(new URL('../src/bin/spawn-morty.ts', import.meta.url), 'utf8');
 
   // The self-match is real — this is WHY the anchor must say "non-comment lines".
   assert.equal(
-    /playwright|cypress|hardhat/.test(spawnMorty), true,
+    /playwright|cypress|hardhat/.test(raw), true,
     'precondition: spawn-morty names the tokens in prose, so a bare grep self-matches',
   );
   assert.equal(
-    /playwright|cypress|hardhat/.test(stripComments(spawnMorty)), false,
+    /playwright|cypress|hardhat/.test(codeText(parseSource(raw, 'spawn-morty.ts'))), false,
     'the real invariant: no unsafe-runner pattern is DECLARED outside convergence-gate.ts',
   );
 
@@ -584,4 +601,52 @@ test('AP-EXT-ITER173-02 the gate-path source readers are comment-blind and refac
   for (const [label, body] of code) {
     assert.equal(spells(body), true, `a ${label} must read as a re-derivation`);
   }
+});
+
+test('AP-EXT-ITER174-02 the ONE-classifier pin reads a fork as uncalled and a comment as prose', () => {
+  // The two mutants this holds, both MEASURED against the pin as it stood.
+  //
+  // FALSE GREEN — a real second copy of the classifier, its unsafe-leaf list
+  // diverged (missing the browser and chain runners) so the gate would spawn a
+  // leaf the convergence gate refuses, with the shared call form left in a
+  // comment: 13 pass / 0 fail. The old positive half grepped
+  // `classifyTestScriptSafety(project.projectType, project.dir)` in the raw
+  // source, and prose answered it.
+  const forkedSource = [
+    "import { classifyTestScriptSafety } from '../services/convergence-gate.js';",
+    'const LOCAL_UNSAFE_LEAF_RE = /integration|e2e|golden|smoke|baseline/i;',
+    '// Was: await classifyTestScriptSafety(project.projectType, project.dir);',
+    'export const runnable = (script) => !LOCAL_UNSAFE_LEAF_RE.test(script);',
+  ].join('\n');
+  const forked = parseSource(forkedSource, 'spawn-morty.ts');
+  assert.deepEqual(
+    namedImportsOf(forked, '../services/convergence-gate.js').map((b) => b.imported),
+    ['classifyTestScriptSafety'],
+    'precondition: the fork keeps the shared import, so the binding half still passes',
+  );
+  assert.match(
+    forkedSource, /classifyTestScriptSafety\(project\.projectType, project\.dir\)/,
+    'precondition: the raw-source call-form grep the pin used is satisfied by the comment',
+  );
+  assert.equal(
+    callsIdentifier(forked, 'classifyTestScriptSafety'), false,
+    'a fork that only NAMES the call form in prose must read as uncalled',
+  );
+
+  // FALSE RED — a trailing comment naming a runner. The `^\s*//` stripper both
+  // halves shared removed only WHOLE-LINE comments, so this measured 11 pass /
+  // 2 fail: a comment reddened the invariant and the anchor test whose entire
+  // subject is that comments must not answer it.
+  const trailing = 'export const s = await classifyTestScriptSafety(t, d); // e.g. a playwright leaf';
+  assert.match(trailing, /playwright/, 'precondition: the token is present in the raw source');
+  assert.equal(
+    /playwright|cypress|hardhat/.test(codeText(parseSource(trailing, 'spawn-morty.ts'))), false,
+    'a TRAILING comment naming a runner is prose, not a declared pattern',
+  );
+  assert.equal(
+    /playwright|cypress|hardhat/.test(codeText(parseSource(
+      'const UNSAFE = /playwright|cypress/i;', 'spawn-morty.ts',
+    ))), true,
+    'a declared unsafe-runner pattern must still read as a second copy',
+  );
 });
