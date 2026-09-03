@@ -26,6 +26,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import ts from 'typescript';
+
 import {
   evaluateCompletionEvidence,
   gateForPhantomDoneRevert,
@@ -355,16 +357,67 @@ test("AC-GTRUTH-A1-3: no sentinel sha literal beyond the pre-existing test-mode 
   }
 });
 
+/**
+ * The file's code with every comment blanked out — by the LANGUAGE's parser, and
+ * without moving a single character. A comment's bytes become spaces (newlines
+ * kept), so an index taken from this text addresses the same byte in the file
+ * and a `file:line` report stays true.
+ *
+ * This replaces three hand-rolled `replace(...)` strippers that shared one
+ * regex pair and were blind in BOTH directions, each measured live against this
+ * file's own pins. A `//` inside a string erased the rest of that line: a
+ * planted `zero_diff_intent` producer behind `const u = 'https://example.com';`
+ * read 22/22 GREEN where the bare producer read 21/22 RED. A comment OPENER
+ * inside a string, template or regex literal opened a comment that ran to the
+ * next closer — 1,133 code lines across 23 `src/` files, 743 of them in
+ * services/dot-builder.ts, whose line 90 hid the same producer at 22/22 GREEN.
+ * Both holes also hid a git-subprocess call from the no-git-write pin below.
+ *
+ * A comment is trivia, so keeping exactly the token spans and blanking
+ * everything else needs no enumeration of the lexical contexts a comment marker
+ * can hide inside. JSDoc is the one comment the parser hands back as a node
+ * rather than as trivia, so it is skipped explicitly.
+ *
+ * NOTE: a fourth parser-based reader under tests/ (see
+ * tests/fixture-lifetime-and-registry.test.js, tests/tsc-gate.test.js,
+ * tests/worker-gate-offrepo-runs.test.js). Those return concatenated token text;
+ * this one must preserve positions, so it is not the same function. A shared
+ * test helper is still the right home — see AP-EXT-ITER174-01.
+ */
+function codeMask(source, fileName) {
+  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const isJsDoc = (node) => node.kind >= ts.SyntaxKind.FirstJSDocNode
+    && node.kind <= ts.SyntaxKind.LastJSDocNode;
+  // Indexed by UTF-16 code UNIT, which is what `getStart`/`getEnd` count. `Array.from`
+  // walks code POINTS, so one astral character (20 src files carry them) would shorten
+  // this array and silently shift every span after it.
+  const out = new Array(source.length);
+  for (let i = 0; i < source.length; i += 1) out[i] = source[i] === '\n' ? '\n' : ' ';
+
+  const keep = (node) => {
+    if (isJsDoc(node)) return;
+    const children = node.getChildren(sourceFile);
+    if (children.length === 0) {
+      for (let i = node.getStart(sourceFile); i < node.getEnd(); i += 1) out[i] = source[i];
+      return;
+    }
+    children.forEach(keep);
+  };
+  keep(sourceFile);
+
+  return out.join('');
+}
+
 test('AC-GTRUTH-A1-5: guardCompletionCommitBeforeDone stays policy-free (shape mapping only)', () => {
-  const mux = fs.readFileSync(MUX_TS, 'utf8');
-  const start = mux.indexOf('export function guardCompletionCommitBeforeDone(');
+  const code = codeMask(fs.readFileSync(MUX_TS, 'utf8'), MUX_TS);
+  const start = code.indexOf('export function guardCompletionCommitBeforeDone(');
   assert.ok(start > 0, 'guardCompletionCommitBeforeDone must be present');
-  const end = mux.indexOf('\nexport function hasSubstantiveManagerHandoff', start);
+  const end = code.indexOf('\nexport function hasSubstantiveManagerHandoff', start);
   assert.ok(end > start, 'could not delimit the guard body');
-  const body = mux.slice(start, end);
+  const body = code.slice(start, end);
 
   assert.ok(
-    !/zero[_-]?[Dd]iff/.test(body.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')),
+    !/zero[_-]?[Dd]iff/.test(body),
     'the guard must contain NO zero-diff decision logic (comments excluded) — the arm and all '
     + 'three of its conditions belong to evaluateCompletionEvidence. A branch here would re-split '
     + 'the single-seam policy the B-1SEAM trap door protects.',
@@ -389,18 +442,13 @@ function collectSourceTs(dir) {
   });
 }
 
-/** Comments legitimately discuss the field at length; only code can produce it. */
-function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-}
-
 test('F9: `zero_diff_intent` is READ-ONLY in production — a producer must bring an authorship constraint', () => {
   const SRC_ROOT = path.join(import.meta.dirname, '..', 'src');
   const sanctionedRead = /readFrontmatterField\([^,]+,\s*'zero_diff_intent'\)/;
 
   const unsanctioned = [];
   for (const file of collectSourceTs(SRC_ROOT)) {
-    const lines = stripComments(fs.readFileSync(file, 'utf8')).split('\n');
+    const lines = codeMask(fs.readFileSync(file, 'utf8'), file).split('\n');
     lines.forEach((line, i) => {
       if (!line.includes('zero_diff_intent')) return;
       if (sanctionedRead.test(line)) return;
@@ -436,16 +484,90 @@ test('F9: the sanctioned read is still present — this pin fails closed', () =>
   );
 });
 
+/**
+ * The reader itself, pinned. Every row below is one mutation measured by hand
+ * against the three pins above on the real tree; writing them down is what keeps
+ * the repair proved. Regress `codeMask` in either direction and this reds:
+ * under-blanking lets prose answer a pin, over-blanking hides code from it.
+ */
+test('AP-EXT-ITER176-01: codeMask blanks comments by grammar, and moves nothing', () => {
+  const CLOSER = `*${'/'}`;
+  const cases = [
+    {
+      name: 'a `//` inside a string opens no comment',
+      source: `const u = 'https://example.com'; const p = { zero_diff_intent: 'reused' };`,
+      visible: ['zero_diff_intent', 'https'],
+      blanked: [],
+    },
+    {
+      name: 'a comment OPENER inside a string opens no comment',
+      source: `const g = ':!dir/**';\nconst p = { zero_diff_intent: 'reused' };\nconst h = 'tail${CLOSER}';`,
+      visible: ['zero_diff_intent'],
+      blanked: [],
+    },
+    {
+      name: 'a comment OPENER inside a regex literal opens no comment',
+      source: `const re = /[\\w./*-]+/;\npersistEvidence(ctx);\nconst h = 'tail${CLOSER}';`,
+      visible: ['persistEvidence'],
+      blanked: [],
+    },
+    {
+      name: 'an astral character does not shift the spans after it',
+      source: `const e = '\u{1F952}'; // prose\nconst p = { zero_diff_intent: 'reused' };\n`,
+      visible: ['zero_diff_intent'],
+      blanked: ['prose'],
+    },
+    {
+      name: 'a trailing line comment is still blanked',
+      source: `const p = 1; // zero_diff_intent is only ever read\n`,
+      visible: ['const p = 1;'],
+      blanked: ['zero_diff_intent'],
+    },
+    {
+      name: 'a block comment is still blanked',
+      source: `/* zero_diff_intent ${CLOSER}\nconst p = 1;\n`,
+      visible: ['const p = 1;'],
+      blanked: ['zero_diff_intent'],
+    },
+    {
+      name: 'a JSDoc block is still blanked — the parser hands it back as a node',
+      source: `/** never persistEvidence( a commit into being ${CLOSER}\nexport function f() { return 1; }\n`,
+      visible: ['export function f()'],
+      blanked: ['persistEvidence'],
+    },
+  ];
+
+  for (const { name, source, visible, blanked } of cases) {
+    const masked = codeMask(source, 'probe.ts');
+
+    assert.equal(masked.length, source.length,
+      `${name}: codeMask must not move a character — every pin above takes an index from `
+      + 'this text and addresses the file with it');
+    assert.equal(masked.split('\n').length, source.split('\n').length,
+      `${name}: line count must survive, or the F9 pin reports the wrong file:line`);
+
+    for (const token of visible) {
+      assert.ok(masked.includes(token),
+        `${name}: \`${token}\` is CODE and must survive — blanking it makes every pin above `
+        + 'pass for the worst possible reason');
+    }
+    for (const token of blanked) {
+      assert.ok(!masked.includes(token),
+        `${name}: \`${token}\` is a COMMENT and must be blanked — prose must never answer a pin`);
+    }
+  }
+});
+
 test('AC-GTRUTH-A1-4: the zero-diff path performs no git write', () => {
-  const oracle = fs.readFileSync(ORACLE_TS, 'utf8');
-  const start = oracle.indexOf('function zeroDiffAccept(');
+  // Read the code, not the prose: the surrounding documentation legitimately discusses
+  // commits ("attributably committed", "no business carrying a stamp"), and matching that
+  // would make this assertion fire on documentation rather than on code.
+  const code = codeMask(fs.readFileSync(ORACLE_TS, 'utf8'), ORACLE_TS);
+  const start = code.indexOf('function zeroDiffAccept(');
   assert.ok(start > 0, 'zeroDiffAccept must be present');
-  const end = oracle.indexOf('\nexport function evaluateCompletionEvidence', start);
+  const end = code.indexOf('\nexport function evaluateCompletionEvidence', start);
   assert.ok(end > start, 'could not delimit zeroDiffAccept');
-  // Strip comments first: the prose legitimately discusses commits ("attributably
-  // committed", "no business carrying a stamp"), and matching that would make this
-  // assertion fire on documentation rather than on code.
-  const body = oracle.slice(start, end).replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '');
+  const body = code.slice(start, end);
 
   for (const forbidden of ['execFileSync(', 'spawnSync(', 'writeFileSync(', 'persistEvidence(']) {
     assert.ok(
