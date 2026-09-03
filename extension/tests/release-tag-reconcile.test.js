@@ -314,13 +314,16 @@ function shellFunctionBody(src, name) {
  * only the first is what AP-EXT-ITER167-02 measured -- a decorative assignment that
  * satisfies the pin followed by a real one that overwrites it stayed green. Reading only
  * the last is the same bet with the opposite index, and a branch defeats it just as
- * quietly. Discovery matches the assignment token after start-of-line, whitespace or `;`
- * so `local x=` / `export x=` are seen without enumerating the declaration keywords;
- * comment lines are dropped so prose naming the variable is not read as code.
+ * quietly. Discovery matches the assignment token wherever an identifier character does
+ * not precede it, so `local x=`, `export x=` and `(x=...)` are all seen without a list of
+ * declaration keywords or shell metacharacters to keep current -- a hand-picked class of
+ * separators missed the subshell form silently, which is this same defect one layer down.
+ * A mention inside a string reads as an assignment and fails loud; that is the safe
+ * direction. Comment lines are dropped so prose naming the variable is not read as code.
  */
 function shellAssignments(body, name) {
     const lines = body.split('\n').filter((l) => !/^\s*#/.test(l));
-    const assigns = new RegExp(`(^|[\\s;])${name}=`);
+    const assigns = new RegExp(`(^|[^A-Za-z0-9_])${name}=`);
     const statements = [];
     for (let i = 0; i < lines.length; i += 1) {
         if (!assigns.test(lines[i])) continue;
@@ -405,6 +408,16 @@ test('AP-EXT-ITER167-02: shellAssignments reads every assignment, not just the f
         shellAssignments('  local actual_sha="$(peel)"', 'actual_sha').length,
         1,
         'a `local x=` declaration is an assignment; discovery must not require the name in column 0',
+    );
+    assert.equal(
+        shellAssignments('  (actual_sha="$(peel)")', 'actual_sha').length,
+        1,
+        'a subshell opening immediately before the name is an assignment too; a hand-picked separator class missed exactly this',
+    );
+    assert.equal(
+        shellAssignments('  prefix_actual_sha="$(peel)"\n  actual_sha="$(peel)"', 'actual_sha').length,
+        1,
+        'a longer identifier merely ENDING in the name is not an assignment of it',
     );
     assert.throws(
         () => shellAssignments('  printf \'%s\' "$actual_sha"', 'actual_sha'),
