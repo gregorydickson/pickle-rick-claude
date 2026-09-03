@@ -95,9 +95,7 @@ function ctxFor(sessionDir, workingDir, decision, overrides = {}) {
     rereadBackoffMs: 0,
     workerGateVerdict: () => ({ verdict: 'green', computedVia: 'fixture' }),
     zeroDiffIntent: () => {
-      const raw = fs.readFileSync(
-        path.join(sessionDir, TICKET_ID, `rick_ticket_${TICKET_ID}.md`), 'utf8',
-      );
+      const raw = readTicketFrontmatter(sessionDir);
       const m = /^zero_diff_intent:\s*(.+)$/m.exec(raw);
       return m ? m[1].trim() : null;
     },
@@ -343,7 +341,10 @@ test("AC-GTRUTH-A1-3: no sentinel sha literal beyond the pre-existing test-mode 
 
     // Both quote styles: single is the house style, but the AC forbids the VALUE, not a
     // particular spelling of it, and a double-quoted sentinel is the same forgery.
-    const source = fs.readFileSync(absPath, 'utf8');
+    // Read through the mask like every other source pin here: a sentinel spelled in
+    // PROSE is not a sentinel the runtime can return, and a comment must never be
+    // able to red this either.
+    const source = readCode(absPath);
     const literals = [...source.matchAll(/sha:\s*(?:'([^']*)'|"([^"]*)")/g)]
       .map((m) => m[1] ?? m[2]);
 
@@ -408,8 +409,42 @@ function codeMask(source, fileName) {
   return out.join('');
 }
 
+/**
+ * The ONE masked reader. Every repo-source read in this file goes through it,
+ * so no pin can ask a question of raw bytes and get prose for an answer.
+ *
+ * `codeMask` was already correct and already in this file when the F9
+ * fail-closed pin below was written against raw bytes beside it — a correct
+ * reader nobody is OBLIGED to use guarantees nothing. That is why the pin at
+ * the bottom of this file is about ROUTING, not about the reader.
+ */
+function readCode(file) {
+  return codeMask(fs.readFileSync(file, 'utf8'), file);
+}
+
+/**
+ * The fixture ticket's raw frontmatter. Masking would be wrong here — the
+ * subject is markdown, not TypeScript — and it builds its own path from the
+ * session dir plus this file's fixed ticket id, so it cannot be pointed at a
+ * repo source. Admitting it is not admitting a general escape hatch.
+ */
+function readTicketFrontmatter(sessionDir) {
+  return fs.readFileSync(
+    path.join(sessionDir, TICKET_ID, `rick_ticket_${TICKET_ID}.md`), 'utf8',
+  );
+}
+
+/**
+ * This file's own bytes, for the routing pin that parses this file.
+ * Argument-less by construction, so it can never become a second reader
+ * of anything else.
+ */
+function readSelf() {
+  return fs.readFileSync(import.meta.filename, 'utf8');
+}
+
 test('AC-GTRUTH-A1-5: guardCompletionCommitBeforeDone stays policy-free (shape mapping only)', () => {
-  const code = codeMask(fs.readFileSync(MUX_TS, 'utf8'), MUX_TS);
+  const code = readCode(MUX_TS);
   const start = code.indexOf('export function guardCompletionCommitBeforeDone(');
   assert.ok(start > 0, 'guardCompletionCommitBeforeDone must be present');
   const end = code.indexOf('\nexport function hasSubstantiveManagerHandoff', start);
@@ -448,7 +483,7 @@ test('F9: `zero_diff_intent` is READ-ONLY in production — a producer must brin
 
   const unsanctioned = [];
   for (const file of collectSourceTs(SRC_ROOT)) {
-    const lines = codeMask(fs.readFileSync(file, 'utf8'), file).split('\n');
+    const lines = readCode(file).split('\n');
     lines.forEach((line, i) => {
       if (!line.includes('zero_diff_intent')) return;
       if (sanctionedRead.test(line)) return;
@@ -475,7 +510,13 @@ test('F9: `zero_diff_intent` is READ-ONLY in production — a producer must brin
 });
 
 test('F9: the sanctioned read is still present — this pin fails closed', () => {
-  const mux = fs.readFileSync(MUX_TS, 'utf8');
+  // Masked, and that is the whole point of the case. MEASURED (AP-EXT-ITER182-01):
+  // against raw bytes, deleting the real `return readFrontmatterField(raw,
+  // 'zero_diff_intent')` from mux-runner.ts and leaving only a comment naming it
+  // kept this case GREEN — so the fail-closed guarantee its own title claims was
+  // fake, and the producer-absence pin above would then have passed vacuously over
+  // a feature that no longer existed, which is exactly what F9 exists to prevent.
+  const mux = readCode(MUX_TS);
   assert.match(
     mux,
     /readFrontmatterField\([^,]+,\s*'zero_diff_intent'\)/,
@@ -562,7 +603,7 @@ test('AC-GTRUTH-A1-4: the zero-diff path performs no git write', () => {
   // Read the code, not the prose: the surrounding documentation legitimately discusses
   // commits ("attributably committed", "no business carrying a stamp"), and matching that
   // would make this assertion fire on documentation rather than on code.
-  const code = codeMask(fs.readFileSync(ORACLE_TS, 'utf8'), ORACLE_TS);
+  const code = readCode(ORACLE_TS);
   const start = code.indexOf('function zeroDiffAccept(');
   assert.ok(start > 0, 'zeroDiffAccept must be present');
   const end = code.indexOf('\nexport function evaluateCompletionEvidence', start);
@@ -577,4 +618,106 @@ test('AC-GTRUTH-A1-4: the zero-diff path performs no git write', () => {
       + 'arm exists to avoid (AC-GTRUTH-A1-4)',
     );
   }
+});
+
+/**
+ * The routing half, and the half a reader test cannot cover: `codeMask` was
+ * ALREADY correct and ALREADY in this file when the F9 fail-closed pin beside
+ * it was written against raw bytes. A correct reader nobody is obliged to use
+ * guarantees nothing, so the invariant is ROUTING — a file may only be read
+ * inside a DECLARED reader.
+ *
+ * Read as grammar, not as a grep. The offender is a `readFileSync` call sitting
+ * outside every declared reader; nothing here inspects the path ARGUMENT,
+ * because a path argument can be spelled around (measured next door,
+ * AP-EXT-ITER181-02: a bare `readFileSync(HANDLER_TS)` RED while the same read
+ * via a one-line `const p = HANDLER_TS` alias read GREEN). Membership of a
+ * named span cannot be aliased away.
+ *
+ * Every reader either takes no path at all or builds its own from a fixture
+ * root, so admitting one here is not admitting a general escape hatch.
+ */
+test('AP-EXT-ITER182-01: no pin reads a source file outside the declared readers', () => {
+  const self = ts.createSourceFile(
+    import.meta.filename, readSelf(), ts.ScriptTarget.Latest, true,
+  );
+  const spanOf = (name) => {
+    let span = null;
+    const find = (node) => {
+      if (ts.isFunctionDeclaration(node) && node.name?.text === name) {
+        span = { start: node.getStart(self), end: node.getEnd() };
+      }
+      ts.forEachChild(node, find);
+    };
+    find(self);
+    // Throws rather than quietly shrinking the checked set: deleting or renaming
+    // a reader must RED this, not silently narrow what it polices.
+    assert.ok(span, `${name} must remain a single named function`);
+    return span;
+  };
+
+  const readerSpans = ['readCode', 'readTicketFrontmatter', 'readSelf'].map(spanOf);
+  const [maskedReaderSpan] = readerSpans;
+  const lineOf = (node) => self.getLineAndCharacterOfPosition(node.getStart(self)).line + 1;
+
+  const strayReads = [];
+  const maskCallers = [];
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression.getText(self);
+      const inAReader = readerSpans.some(
+        (s) => node.getStart(self) >= s.start && node.getEnd() <= s.end,
+      );
+      if (callee.endsWith('readFileSync') && !inAReader) {
+        const target = node.arguments[0]?.getText(self) ?? '';
+        strayReads.push(`${lineOf(node)}: readFileSync(${target})`);
+      }
+      // Deliberately NOT `inAReader`: the clause below names exactly two
+      // permitted `codeMask` callers, so a fork hiding inside one of the OTHER
+      // readers must still surface here.
+      const inMaskedReader = node.getStart(self) >= maskedReaderSpan.start
+        && node.getEnd() <= maskedReaderSpan.end;
+      if (callee === 'codeMask' && !inMaskedReader) maskCallers.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(self);
+
+  assert.deepEqual(
+    strayReads, [],
+    'every readFileSync in this file must sit inside a declared reader '
+    + '(readCode, readTicketFrontmatter, readSelf). A pin that reads raw bytes can be '
+    + 'answered by a COMMENT: that is how the F9 fail-closed pin above came to be fake.',
+  );
+
+  // Second clause, covering a read the first cannot see: the only other place
+  // allowed to call `codeMask` is its own anchor test, which feeds it hand-built
+  // probe strings and never a file. Anything else is a SECOND masked path — the
+  // shape a variable-rooted read would take to route around `readCode` while
+  // still looking masked. Positional, not a count: a hand-kept caller count
+  // admits the N+1th caller by construction.
+  const anchorSpan = (() => {
+    let span = null;
+    self.forEachChild((node) => {
+      // The test's own TITLE, not its text: a node's text includes its comments,
+      // so matching the phrase anywhere would let a comment in some other test
+      // claim to be the anchor and empty this clause out.
+      if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return;
+      const [title] = node.expression.arguments;
+      if (!title || !ts.isStringLiteral(title)) return;
+      if (title.text.includes('codeMask blanks comments by grammar')) {
+        span = { start: node.getStart(self), end: node.getEnd() };
+      }
+    });
+    assert.ok(span, 'the codeMask anchor test must remain in this file');
+    return span;
+  })();
+  const strayMaskCallers = maskCallers
+    .filter((node) => node.getStart(self) < anchorSpan.start || node.getEnd() > anchorSpan.end)
+    .map((node) => `${lineOf(node)}: ${node.getText(self).split('\n')[0]}`);
+  assert.deepEqual(
+    strayMaskCallers, [],
+    'codeMask has exactly two callers: readCode, and the anchor test that proves it',
+  );
+  assert.ok(maskCallers.length > 0, 'the anchor test must still exercise codeMask');
 });
