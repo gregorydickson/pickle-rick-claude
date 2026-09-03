@@ -31,6 +31,52 @@ import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
+// --- Declared readers -------------------------------------------------------
+// AP-EXT-ITER183-01. Every `fs.readFileSync` in this file must sit inside one of
+// the functions below; the routing pin at the bottom enforces that by SPAN
+// membership and never inspects the path ARGUMENT, because a path can be spelled
+// around and a named span cannot. `codeMask` was already correct and already in
+// this file while exactly ONE read used it, which guarantees nothing: a correct
+// reader nobody is obliged to use is not a reader.
+const SCHEMA_PATH = path.resolve(__dirname, '../src/types/refinement-manifest.schema.json');
+const REFINE_SRC_PATH = path.resolve(__dirname, '../src/bin/spawn-refinement-team.ts');
+const SELF_PATH = fileURLToPath(import.meta.url);
+
+/** TypeScript source with comments blanked by grammar. The ONLY source reader. */
+function readCode(file) {
+    return codeMask(fs.readFileSync(file, 'utf-8'), file);
+}
+
+/** The REAL manifest schema. JSON carries no comments, so masking is meaningless. */
+function readSchema() {
+    return JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
+}
+
+/**
+ * The /pickle-refine-prd command doc, or null when absent. Markdown, and it
+ * builds its own fixed path, so admitting it is not a general escape hatch.
+ */
+function readCommandDoc() {
+    const file = path.resolve(REPO_ROOT, '.claude', 'commands', 'pickle-refine-prd.md');
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : null;
+}
+
+/** The repo's describeEach shim; path built here, so it cannot be aimed elsewhere. */
+function readDescribeEachShim() {
+    return fs.readFileSync(path.join(__dirname, 'helpers', 'describe-each.js'), 'utf-8');
+}
+
+/** Spawn count from a tmpdir git shim, rooted at the fixture dir it is handed. */
+function readShimSpawnCount(shimDir) {
+    const counterFile = path.join(shimDir, 'count.txt');
+    return fs.existsSync(counterFile) ? fs.readFileSync(counterFile, 'utf-8').length : 0;
+}
+
+/** This file's own bytes, for the routing pin that parses this file. */
+function readSelf() {
+    return fs.readFileSync(SELF_PATH, 'utf-8');
+}
+
 function tmpDir(prefix = 'pickle-apv-') {
     return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
@@ -173,7 +219,7 @@ test('AC-FOMC-8b: suffix resolution finds a bare basename or a partial relative 
 });
 
 test('AC-FOMC-8b (invariant guard): resolution logic carries no hardcoded extension/ or extension/src/ prefix', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'bin', 'spawn-refinement-team.ts'), 'utf-8');
+    const source = readCode(REFINE_SRC_PATH);
     assert.doesNotMatch(source, /ls-files.*'extension\/|'extension\/' \+/);
 });
 
@@ -376,7 +422,7 @@ test('AC-FOMC-14: repeating the same token spawns git ls-files exactly once', ()
             `checkAnalystOutputPaths(${JSON.stringify(content)}, ${JSON.stringify(workingDir)});\n`;
         const result = spawnSync(process.execPath, ['-e', script], { env, encoding: 'utf-8' });
         assert.equal(result.status, 0, result.stderr);
-        const spawnCount = fs.existsSync(counterFile) ? fs.readFileSync(counterFile, 'utf-8').length : 0;
+        const spawnCount = readShimSpawnCount(shimDir);
         assert.equal(spawnCount, 1);
     } finally {
         fs.rmSync(workingDir, { recursive: true, force: true });
@@ -412,7 +458,7 @@ test('AC-FOMC-14: repeating the same token spawns git ls-files exactly once', ()
 const SYNC_SPAWN_RE = /\b(execFileSync|execSync|spawnSyncFn|spawnSync)\s*\(/g;
 
 function readRefinementSource() {
-    return fs.readFileSync(path.resolve(__dirname, '..', 'src', 'bin', 'spawn-refinement-team.ts'), 'utf-8');
+    return readCode(REFINE_SRC_PATH);
 }
 
 // Slice from a call's opening paren to its balanced close, so the options
@@ -558,12 +604,10 @@ test('regression corpus: the preserved 44-warning baseline collapses well below 
 // ajv validates the manifest as ONE document, so a single '' entry fails the
 // whole manifest, not just the offending warning.
 
-const SCHEMA_PATH = path.resolve(__dirname, '../src/types/refinement-manifest.schema.json');
-const REFINE_SRC_PATH = path.resolve(__dirname, '../src/bin/spawn-refinement-team.ts');
 
 /** Item-level constraints read from the REAL schema, not a local restatement. */
 function warningItemSchema() {
-    const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
+    const schema = readSchema();
     return schema.properties.ticket_quality_warnings.items;
 }
 
@@ -620,7 +664,7 @@ test('AP-RMS-3: analyst-path warnings carry a schema-valid ticket_id', () => {
 });
 
 test('AP-RMS-3: no writer emits the empty-string ticket_id', () => {
-    const src = fs.readFileSync(REFINE_SRC_PATH, 'utf-8');
+    const src = readCode(REFINE_SRC_PATH);
     assert.ok(
         !/ticket_id:\s*''/.test(src),
         "ticket_id: '' is schema-invalid (minLength: 1) — use UNATTRIBUTED_TICKET_ID"
@@ -704,7 +748,7 @@ function emittedManifestRootKeys() {
  * (the AP-RMS-6 red-check caught a `[a-z_]+` blind to digits/camelCase).
  */
 function interfaceKeys(interfaceName) {
-    const src = fs.readFileSync(REFINE_SRC_PATH, 'utf-8');
+    const src = readCode(REFINE_SRC_PATH);
     const start = src.indexOf(`export interface ${interfaceName}`);
     assert.notEqual(start, -1, `${interfaceName} interface must exist in spawn-refinement-team.ts`);
     const body = src.slice(start, src.indexOf('\n}', start));
@@ -718,12 +762,12 @@ function undeclaredKeys(interfaceName, schemaObject) {
 }
 
 test('AP-RMS-6: the manifest root still forbids additional properties (guards the assertion below)', () => {
-    const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
+    const schema = readSchema();
     assert.equal(schema.additionalProperties, false, 'manifest root must keep additionalProperties: false');
 });
 
 test('AP-RMS-6: no NEW emitted manifest root key drifts from the schema', () => {
-    const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
+    const schema = readSchema();
     const emitted = emittedManifestRootKeys();
     const hazards = undeclaredKeys('RefinementManifest', schema).filter((k) => emitted.has(k));
 
@@ -760,7 +804,7 @@ test('AP-RMS-6: a declared-but-never-emitted interface key is not an ajv hazard'
     // and additionalProperties:false can never trip on it. It must therefore be
     // absent from BOTH the emitted set and the hazard pin — while still being
     // caught by undeclaredKeys, which is what proves the filter is doing the work.
-    const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
+    const schema = readSchema();
     const undeclared = undeclaredKeys('RefinementManifest', schema);
     const emitted = emittedManifestRootKeys();
 
@@ -901,10 +945,7 @@ test('AP-RMS-10: anchor path (findStaleAnchorWarnings) flags one-past-EOF and re
 });
 
 test('AP-RMS-10: neither staleness site hand-rolls its own line count', () => {
-    const src = fs.readFileSync(
-        path.join(REPO_ROOT, 'extension', 'src', 'bin', 'spawn-refinement-team.ts'),
-        'utf-8',
-    );
+    const src = readCode(REFINE_SRC_PATH);
     // the phantom-element expression must exist nowhere outside the one oracle
     const handRolled = src.match(/(?:headContent|fileContent|content)\s*===\s*''\s*\?\s*0\s*:[^\n]*split\(\/\\r\?\\n\/\)\.length/g) ?? [];
     assert.equal(handRolled.length, 0, `line-count logic re-forked: ${JSON.stringify(handRolled)}`);
@@ -1423,7 +1464,7 @@ function readinessGateBindings() {
     for (const name of fs.readdirSync(binDir())) {
         if (!name.endsWith('.ts')) continue;
         const file = path.join(binDir(), name);
-        const source = fs.readFileSync(file, 'utf-8');
+        const source = readCode(file);
         READINESS_GATE_BINDING_RE.lastIndex = 0;
         let match;
         while ((match = READINESS_GATE_BINDING_RE.exec(source)) !== null) {
@@ -1459,7 +1500,7 @@ test('AP-EXT-ITER91-01: no readiness verdict is routed to process.exit', () => {
 });
 
 test('AP-EXT-ITER91-01: the refinement handoff is emitted after the readiness gate', () => {
-    const source = fs.readFileSync(path.join(binDir(), 'spawn-refinement-team.ts'), 'utf-8');
+    const source = readCode(REFINE_SRC_PATH);
     const handoffIndex = source.indexOf('REFINEMENT_DIR=${cycleResults.refinementDir}');
     assert.ok(handoffIndex > 0, 'the REFINEMENT_DIR= handoff line must exist');
     const gateIndex = source.indexOf('runReadinessGate(args.sessionDir');
@@ -1475,16 +1516,16 @@ test('AP-EXT-ITER91-01 (negative control): the AC-shape gate keeps its documente
     // tells the operator that exit 2 means "stop and fix the PRD/ticket shape".
     // If a later advisory sweep widens onto runAcShapeEnforcement, this reddens
     // and forces the command doc to be updated in the same change.
-    const source = fs.readFileSync(path.join(binDir(), 'spawn-refinement-team.ts'), 'utf-8');
+    const source = readCode(REFINE_SRC_PATH);
     assert.match(
         source,
         /if \(acShapeStatus !== 0\) process\.exit\(acShapeStatus\);/,
         'the AC-shape gate must still halt — its exit 2 is a documented operator contract'
     );
-    const commandDoc = path.resolve(REPO_ROOT, '.claude', 'commands', 'pickle-refine-prd.md');
-    if (fs.existsSync(commandDoc)) {
+    const commandDoc = readCommandDoc();
+    if (commandDoc !== null) {
         assert.match(
-            fs.readFileSync(commandDoc, 'utf-8'),
+            commandDoc,
             /exits `2` with an AC-shape collapse-or-justify failure/,
             'the exit-2 contract must stay documented in /pickle-refine-prd Step 5'
         );
@@ -1657,10 +1698,8 @@ function codeMask(source, fileName) {
 }
 
 test('AP-EXT-ITER104-02: resolveTrackedSuffixMatches reads ONE NUL-delimited listing, split but never trimmed', () => {
-    const sourcePath = path.join(REPO_ROOT, 'extension', 'src', 'bin', 'spawn-refinement-team.ts');
-    const source = fs.readFileSync(sourcePath, 'utf-8');
     // Blank comments by grammar first: this file's own prose spells the forbidden shapes.
-    const code = codeMask(source, sourcePath);
+    const code = readCode(REFINE_SRC_PATH);
 
     const lsFilesArgvs = code.match(/\[\s*'ls-files'[^\]]*\]/g) ?? [];
     assert.equal(lsFilesArgvs.length, 1, 'exactly one git ls-files argv may live in this file');
@@ -1721,6 +1760,120 @@ test('AP-EXT-ITER177-01: codeMask blanks comments by grammar, and moves nothing'
     );
 });
 
+/**
+ * The routing half, and the half a reader test cannot cover: `codeMask` was
+ * ALREADY correct and ALREADY in this file while exactly ONE of fifteen reads
+ * used it. A correct reader nobody is obliged to use guarantees nothing, so the
+ * invariant is ROUTING — a file may only be read inside a DECLARED reader.
+ *
+ * MEASURED on the real source before the fix, both directions:
+ *  - fail-open: deleting `if (acShapeStatus !== 0) process.exit(acShapeStatus);`
+ *    and leaving a COMMENT naming it kept the case titled "(negative control)"
+ *    GREEN 61/61; moving `runReadinessGate` to AFTER the handoff — the exact
+ *    regression the ordering pin's own message describes — also stayed GREEN,
+ *    because a comment supplied the position `indexOf` reported.
+ *  - fail-closed: a pure comment with NO code change RED two must-be-absent pins.
+ *  - isolated: an identical hand-rolled line count RED without a comment and
+ *    GREEN with a one-line comment naming `countContentLines(`.
+ *
+ * Read as grammar, not as a grep. The offender is a `readFileSync` sitting
+ * outside every declared reader; nothing here inspects the path ARGUMENT,
+ * because a path argument can be spelled around (measured next door,
+ * AP-EXT-ITER181-02: a bare `readFileSync(HANDLER_TS)` RED while the same read
+ * via a one-line `const p = HANDLER_TS` alias read GREEN). Membership of a
+ * named span cannot be aliased away.
+ *
+ * Every reader other than `readCode` either takes no path at all or builds its
+ * own from a fixture root it is handed, so admitting one is not admitting a
+ * general escape hatch.
+ */
+test('AP-EXT-ITER183-01: no pin reads a source file outside the declared readers', () => {
+    const self = ts.createSourceFile(SELF_PATH, readSelf(), ts.ScriptTarget.Latest, true);
+    const spanOf = (name) => {
+        let span = null;
+        const find = (node) => {
+            if (ts.isFunctionDeclaration(node) && node.name?.text === name) {
+                span = { start: node.getStart(self), end: node.getEnd() };
+            }
+            ts.forEachChild(node, find);
+        };
+        find(self);
+        // Throws rather than quietly shrinking the checked set: deleting or renaming
+        // a reader must RED this, not silently narrow what it polices.
+        assert.ok(span, `${name} must remain a single named function`);
+        return span;
+    };
+
+    const readerSpans = [
+        'readCode', 'readSchema', 'readCommandDoc',
+        'readDescribeEachShim', 'readShimSpawnCount', 'readSelf',
+    ].map(spanOf);
+    const [maskedReaderSpan] = readerSpans;
+    const lineOf = (node) => self.getLineAndCharacterOfPosition(node.getStart(self)).line + 1;
+
+    const strayReads = [];
+    const maskCallers = [];
+    const visit = (node) => {
+        if (ts.isCallExpression(node)) {
+            const callee = node.expression.getText(self);
+            const inAReader = readerSpans.some(
+                (sp) => node.getStart(self) >= sp.start && node.getEnd() <= sp.end,
+            );
+            if (callee.endsWith('readFileSync') && !inAReader) {
+                const target = node.arguments[0]?.getText(self) ?? '';
+                strayReads.push(`${lineOf(node)}: readFileSync(${target})`);
+            }
+            // Deliberately NOT `inAReader`: the clause below names exactly two
+            // permitted `codeMask` callers, so a fork hiding inside one of the
+            // OTHER readers must still surface here.
+            const inMaskedReader = node.getStart(self) >= maskedReaderSpan.start
+                && node.getEnd() <= maskedReaderSpan.end;
+            if (callee === 'codeMask' && !inMaskedReader) maskCallers.push(node);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(self);
+
+    assert.deepEqual(
+        strayReads, [],
+        'every readFileSync in this file must sit inside a declared reader (readCode, '
+        + 'readSchema, readCommandDoc, readDescribeEachShim, readShimSpawnCount, readSelf). '
+        + 'A pin that reads raw bytes can be answered by a COMMENT: that is how the '
+        + 'AP-EXT-ITER91-01 negative control above came to be fake.'
+    );
+
+    // Second clause, covering a read the first cannot see: the only other place
+    // allowed to call `codeMask` is its own anchor test, which feeds it hand-built
+    // probe strings and never a file. Anything else is a SECOND masked path — the
+    // shape a variable-rooted read would take to route around `readCode` while
+    // still looking masked. Positional, not a count: a hand-kept caller count
+    // admits the N+1th caller by construction.
+    const anchorSpan = (() => {
+        let span = null;
+        self.forEachChild((node) => {
+            // The test's own TITLE, not its text: a node's text includes its comments,
+            // so matching the phrase anywhere would let a comment in some other test
+            // claim to be the anchor and empty this clause out.
+            if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return;
+            const [title] = node.expression.arguments;
+            if (!title || !ts.isStringLiteral(title)) return;
+            if (title.text.includes('codeMask blanks comments by grammar')) {
+                span = { start: node.getStart(self), end: node.getEnd() };
+            }
+        });
+        assert.ok(span, 'the codeMask anchor test must remain in this file');
+        return span;
+    })();
+    const strayMaskCallers = maskCallers
+        .filter((node) => node.getStart(self) < anchorSpan.start || node.getEnd() > anchorSpan.end)
+        .map((node) => `${lineOf(node)}: ${node.getText(self).split('\n')[0]}`);
+    assert.deepEqual(
+        strayMaskCallers, [],
+        'codeMask has exactly two callers: readCode, and the anchor test that proves it'
+    );
+    assert.ok(maskCallers.length > 0, 'the anchor test must still exercise codeMask');
+});
+
 // ---------------------------------------------------------------------------
 // AP-EXT-ITER122-01 — the parametrized-shape predicate demanded ONE framework's
 // spelling, and this repo's framework cannot produce it
@@ -1757,7 +1910,7 @@ function buildEachCollapseManifest(dir, acceptanceTest) {
 test('AP-EXT-ITER122-01: the repo\'s own describeEach idiom satisfies the single-ticket collapse rule', () => {
     // Ground the fixture in the REAL helper, not an invented spelling: if the shim
     // is ever renamed, this assert says so instead of the case quietly pinning air.
-    const shim = fs.readFileSync(path.join(__dirname, 'helpers', 'describe-each.js'), 'utf-8');
+    const shim = readDescribeEachShim();
     assert.match(shim, /export function describeEach\(/, 'the repo helper must still be spelled describeEach');
 
     for (const [label, acceptanceTest] of [
