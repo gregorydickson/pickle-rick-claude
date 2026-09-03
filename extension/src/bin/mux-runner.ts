@@ -3057,11 +3057,25 @@ function readHeadCommit(workingDir: string): string | null {
   }
 }
 
-/** Returns true when headSha is the same as refSha or is an ancestor of refSha (HEAD regressed). */
-function isHeadAtOrBelowCommit(headSha: string, refSha: string, workingDir: string): boolean {
+/**
+ * Tri-state ancestry probe: `true` when headSha is the same as refSha or is an
+ * ancestor of it (HEAD regressed), `false` when it provably is not, and `null`
+ * when the probe COULD NOT ANSWER.
+ *
+ * AP-EXT-ITER202-01: `git merge-base --is-ancestor` exits 0 for yes and 1 for no,
+ * but 128 for an unresolvable ref — and a spawn error or the 5s timeout leaves
+ * `status` null. Collapsing that whole error space into `false` reports "provably
+ * not an ancestor" on evidence that proves nothing, which is only safe for a
+ * caller whose false-branch is inert. `wouldResetOrphanCommit`'s false-branch
+ * runs `git reset --hard`, so it needs the third state to fail closed. Callers
+ * pick their own direction for `null`; nobody gets it silently.
+ */
+function isHeadAtOrBelowCommit(headSha: string, refSha: string, workingDir: string): boolean | null {
   if (headSha === refSha) return true;
   const r = spawnSync('git', ['-C', workingDir, 'merge-base', '--is-ancestor', headSha, refSha], { encoding: 'utf-8', timeout: 5000 });
-  return r.status === 0;
+  if (r.status === 0) return true;
+  if (r.status === 1) return false;
+  return null;
 }
 
 /**
@@ -3072,10 +3086,12 @@ function isHeadAtOrBelowCommit(headSha: string, refSha: string, workingDir: stri
  * (`isHeadAtOrBelowCommit`); does NOT duplicate the merge-base probe.
  *
  * `protectedSha` is the in-flight ticket commit (current HEAD); `target` is the
- * reset destination. Equal/empty SHAs or a non-ancestor target → false (the
- * reset orphans nothing, so it may proceed). Callers that get true MUST preserve
- * HEAD instead of rewinding (no reset path rewinds off a commit that ff-descends
- * from HEAD).
+ * reset destination. Equal/empty SHAs or a PROVABLY non-ancestor target → false
+ * (the reset orphans nothing, so it may proceed). An ancestry probe that cannot
+ * answer → true: this guard's false-branch destroys commits, so an unproven
+ * verdict preserves HEAD rather than acting on it. Callers that get true MUST
+ * preserve HEAD instead of rewinding (no reset path rewinds off a commit that
+ * ff-descends from HEAD).
  */
 export function wouldResetOrphanCommit(input: {
   workingDir: string;
@@ -3088,6 +3104,10 @@ export function wouldResetOrphanCommit(input: {
   // target is a strict ancestor of protectedSha ⇒ protectedSha ff-descends from
   // target ⇒ resetting HEAD back to target would strand the descendant work.
   const orphans = isHeadAtOrBelowCommit(target, protectedSha, workingDir);
+  if (orphans === null) {
+    log?.(`[reset-guard] ancestry probe for ${target}..${protectedSha} could not answer — preserving HEAD (fail-closed)`);
+    return true;
+  }
   if (orphans) {
     log?.(`[reset-guard] reset to ${target} would orphan ff-descendant ${protectedSha} — preserving HEAD`);
   }
@@ -3380,7 +3400,9 @@ export function detectAndRecoverHeadRegression(
   const { ticketId, workingDir, startCommit, completionCommitSha, sessionDir, statePath, iteration, log } = input;
   const currentHead = readHeadCommit(workingDir);
   if (!currentHead) return { detected: false, recovered: false, action: 'none' };
-  if (!isHeadAtOrBelowCommit(currentHead, startCommit, workingDir)) {
+  // Detection only (non-destructive): an unproven probe stays 'not detected',
+  // exactly as before the tri-state split — `!== true` just says so out loud.
+  if (isHeadAtOrBelowCommit(currentHead, startCommit, workingDir) !== true) {
     return { detected: false, recovered: false, action: 'none' };
   }
 

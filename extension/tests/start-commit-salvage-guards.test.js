@@ -39,7 +39,7 @@ const dataRoot = mkdtempSync(path.join(tmpdir(), 'pickle-scsg-dataroot-'));
 process.env.PICKLE_DATA_ROOT = dataRoot;
 after(() => rmSync(dataRoot, { recursive: true, force: true }));
 
-const { detectAndRecoverHeadRegression, isFailedTicketTerminalExcludable } =
+const { detectAndRecoverHeadRegression, isFailedTicketTerminalExcludable, wouldResetOrphanCommit } =
   await import('../bin/mux-runner.js');
 
 function makeSessionDir(workingDir) {
@@ -365,6 +365,109 @@ test('AP-EXT-ITER103-01(c): a C-quoted in-scope path is still ff-reattached (the
     assert.equal(git(['rev-parse', 'HEAD'], repo), tip);
   } finally {
     if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+
+// --- AP-EXT-ITER202-01 -------------------------------------------------------
+// `wouldResetOrphanCommit` is the LAST guard before `guardedMicroverseRollback`
+// runs `resetToSha` -> `git reset --hard`. Its ancestry probe is
+// `git merge-base --is-ancestor`, which exits 0 for yes, 1 for no and 128 for an
+// unresolvable ref, and leaves `status` null on a spawn error or on its own 5s
+// timeout. The pre-fix probe returned `r.status === 0`, mapping that entire
+// error space onto "provably NOT an ancestor" -> "the reset orphans nothing" ->
+// the destructive reset proceeds and destroys the commit the guard exists to
+// protect. The asymmetry that makes it reachable: the guard runs under a 5,000 ms
+// deadline while the `git reset --hard` it gates runs under runCmd's 30,000 ms
+// one, so any git slow enough to miss the guard's deadline is still fast enough
+// to complete the reset.
+//
+// These cases drive the probe's error space through a PATH shim rather than
+// asserting on source text, so they fail against the pre-fix runtime and cannot
+// be satisfied by a comment. The negative control is not optional: a guard that
+// answered `true` unconditionally would also pass the three fail-closed cases
+// while permanently disabling every legitimate rollback.
+
+/**
+ * A `git` on PATH that faithfully delegates, except `merge-base` exits `code`.
+ * Delegation restores the CALLER's PATH rather than resolving git's absolute
+ * path with a `which` subprocess — no extra spawn, and no self-recursion (the
+ * shim dir is not on the restored PATH).
+ */
+function makeGitShim(code) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pickle-scsg-gitshim-'));
+  const callerPath = process.env.PATH ?? '';
+  writeFileSync(
+    path.join(dir, 'git'),
+    `#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = "merge-base" ]; then\n    echo "fatal: simulated probe failure" >&2\n    exit ${code}\n  fi\ndone\nPATH='${callerPath}' exec git "$@"\n`,
+    { mode: 0o755 },
+  );
+  return dir;
+}
+
+function withPath(dir, fn) {
+  const saved = process.env.PATH;
+  process.env.PATH = dir;
+  try {
+    return fn();
+  } finally {
+    process.env.PATH = saved;
+  }
+}
+
+test('AP-EXT-ITER202-01: an ancestry probe that cannot answer preserves HEAD instead of reporting "no orphan"', () => {
+  const repo = initRepo();
+  const shim128 = makeGitShim(128);
+  const emptyPath = mkdtempSync(path.join(tmpdir(), 'pickle-scsg-nogit-'));
+  try {
+    const target = commit(repo, 'base.txt', 'base'); // preIterSha, the reset destination
+    const protectedSha = commit(repo, 'work.txt', 'gate-green ticket commit'); // postIterSha
+
+    // Fixture precondition: resetting to `target` genuinely WOULD orphan
+    // `protectedSha`, so the only correct verdict in every case below is `true`.
+    assert.equal(
+      execFileSync('git', ['merge-base', '--is-ancestor', target, protectedSha], {
+        cwd: repo, encoding: 'utf-8', timeout: 15000,
+      }) === '' ,
+      true,
+      'fixture precondition: target is a strict ancestor of protectedSha (reset would orphan)',
+    );
+
+    // Control: with a working probe the guard flags the orphan.
+    assert.equal(
+      wouldResetOrphanCommit({ workingDir: repo, target, protectedSha }),
+      true,
+      'control: a resolvable probe must flag the ff-descendant',
+    );
+
+    // (a) The probe errors (exit 128 — an unresolvable ref). Pre-fix: false.
+    assert.equal(
+      withPath(shim128, () => wouldResetOrphanCommit({ workingDir: repo, target, protectedSha })),
+      true,
+      'a probe exiting 128 proves nothing — it must not read as "no orphan"',
+    );
+
+    // (b) The probe cannot spawn at all (git absent -> status null, the same
+    //     shape the 5s timeout produces). Pre-fix: false.
+    assert.equal(
+      withPath(emptyPath, () => wouldResetOrphanCommit({ workingDir: repo, target, protectedSha })),
+      true,
+      'an unspawnable probe proves nothing — it must not read as "no orphan"',
+    );
+
+    // Negative control: a genuinely divergent target orphans nothing, and the
+    // guard must still say so. Without this, "return true always" passes above.
+    git(['checkout', '-q', '-b', 'divergent', target], repo);
+    const divergent = commit(repo, 'other.txt', 'divergent line');
+    assert.equal(
+      wouldResetOrphanCommit({ workingDir: repo, target: divergent, protectedSha }),
+      false,
+      'negative control: a provably non-ancestor target must still permit the reset',
+    );
+  } finally {
+    rmSync(shim128, { recursive: true, force: true });
+    rmSync(emptyPath, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
   }
 });

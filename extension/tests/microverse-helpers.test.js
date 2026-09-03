@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -116,16 +117,40 @@ test('measureAndClassifyIteration returns improved and records accepted history'
   }
 });
 
+// AP-EXT-ITER202-01: the rollback runs behind `wouldResetOrphanCommit`, whose
+// ancestry probe now reports "cannot answer" rather than "provably not an
+// ancestor". This fixture therefore supplies REAL, DIVERGENT commits in a real
+// repo — `postIterSha` does not ff-descend from `preIterSha`, so the reset
+// genuinely orphans nothing and the guard permits it on a verdict it can prove.
+// The placeholder SHAs this test used to pass (`'rollback-sha'`/`'post'` in a
+// non-git temp dir) made the probe exit 128, and the rollback it asserts was
+// reached only through the error-collapse the fix removes.
+function makeDivergentShas(workingDir) {
+  const g = (args) => execFileSync('git', args, { cwd: workingDir, encoding: 'utf-8', timeout: 15000 }).trim();
+  g(['init', '-q']);
+  g(['config', 'user.email', 'mvh@test.local']);
+  g(['config', 'user.name', 'mvh']);
+  g(['commit', '-q', '--allow-empty', '-m', 'base', '--no-gpg-sign']);
+  const base = g(['rev-parse', 'HEAD']);
+  g(['commit', '-q', '--allow-empty', '-m', 'pre-iteration line', '--no-gpg-sign']);
+  const preIterSha = g(['rev-parse', 'HEAD']);
+  g(['checkout', '-q', '-b', 'divergent', base]);
+  g(['commit', '-q', '--allow-empty', '-m', 'divergent line', '--no-gpg-sign']);
+  const postIterSha = g(['rev-parse', 'HEAD']);
+  return { preIterSha, postIterSha };
+}
+
 test('measureAndClassifyIteration returns regressed and rolls back', async () => {
   const { sessionDir, workingDir, runnerState, mv } = makeSession(40);
   const originalReset = _deps.resetToSha;
   let rolledBackTo = null;
   try {
+    const { preIterSha, postIterSha } = makeDivergentShas(workingDir);
     _deps.resetToSha = (sha) => { rolledBackTo = sha; };
-    const ctx = makeContext(sessionDir, workingDir, runnerState, { preIterSha: 'rollback-sha' });
+    const ctx = makeContext(sessionDir, workingDir, runnerState, { preIterSha, postIterSha });
     const result = await measureAndClassifyIteration(mv, { raw: '50', score: 50 }, ctx);
     assert.deepEqual(result, { kind: 'regressed', rollback: true });
-    assert.equal(rolledBackTo, 'rollback-sha');
+    assert.equal(rolledBackTo, preIterSha);
     assert.equal(mv.convergence.history[0].action, 'revert');
     assert.equal(mv.failed_approaches.length, 1);
   } finally {
