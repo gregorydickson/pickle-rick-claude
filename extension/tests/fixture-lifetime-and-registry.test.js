@@ -28,6 +28,7 @@
  * reaps while the orphans stayed alive.
  */
 import { test, after } from 'node:test';
+import * as ts from 'typescript';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -127,18 +128,118 @@ test('fixture appends its PID to the run-scoped registry when the env var is set
 });
 
 /**
- * Source with comments removed, so the pin below reads CODE and never prose. A
- * docblock naming `recordFixturePid` is not a call to it, and matching one would
- * let a file look wired while recording nothing — the exact fake-green the pin
- * exists to catch. Only block comments and comment-ONLY lines are stripped, so no
- * `//` inside a string literal can swallow a real call on the same line.
+ * Read the candidate test sources with the LANGUAGE's own parser. Every question
+ * the pin below asks — is this a call, where does this name come from, which
+ * module is this — is grammar, and every hand-rolled lexical answer to it
+ * measured wrong: a stripper that removes only block comments and comment-ONLY
+ * lines lets a TRAILING comment name a call, a needle keyed on an identifier's
+ * spelling reds a legal alias, and a selector keyed on the `node:` prefix drops
+ * a whole file out of the scan. `ts` draws all three lines by construction, so
+ * no enumeration of lexical contexts, name spellings or specifier forms is
+ * needed or wanted.
+ *
+ * NOTE: a third copy of these readers (see tests/tsc-gate.test.js and
+ * tests/worker-gate-offrepo-runs.test.js). A shared test helper is the right
+ * home; see AP-EXT-ITER174-01.
  */
-function stripComments(source) {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter(line => !/^\s*(\/\/|\*)/.test(line))
-    .join('\n');
+const parseSource = (source, fileName) =>
+  ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+
+/**
+ * The source with its comments removed — exactly, by the parser, rather than by
+ * a regex that approximates it. Every leaf token's text in source order, so a
+ * path spelled inside a string still reads as code and prose reads as nothing.
+ */
+function codeText(sourceFile) {
+  let out = '';
+  const visit = (node) => {
+    let leaf = true;
+    ts.forEachChild(node, (child) => { leaf = false; visit(child); });
+    if (leaf) out += node.getText(sourceFile);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return out;
+}
+
+/**
+ * Every module this file names, as an IDENTITY rather than a spelling: relative
+ * specifiers resolved against `fromDir`, bare ones stripped of any `node:`
+ * prefix. `import` and `require()` are both how JavaScript names a module, so
+ * both are walked — reading one of the two would be an enumeration missing a
+ * member. Each entry keeps its declaring statement so a caller can ask for the
+ * bindings of one particular module.
+ */
+function moduleRefs(sourceFile, fromDir) {
+  const refs = [];
+  const record = (specifier, statement) => {
+    const target = specifier.startsWith('.')
+      ? path.resolve(fromDir, specifier)
+      : specifier.replace(/^node:/, '');
+    refs.push({ target, statement });
+  };
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      record(node.moduleSpecifier.text, node);
+    } else if (ts.isCallExpression(node)
+        && ts.isIdentifier(node.expression)
+        && node.expression.text === 'require'
+        && node.arguments.length === 1
+        && ts.isStringLiteralLike(node.arguments[0])) {
+      record(node.arguments[0].text, node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return refs;
+}
+
+/**
+ * One `{ imported, local }` per named binding of the module resolving to
+ * `target`. Aliasing, quote style, how many directories up the specifier
+ * climbs, splitting one import into two and reflowing it are all legal
+ * refactors that must not red a pin about WHERE a name comes from.
+ */
+function namedImportsOfModule(sourceFile, fromDir, target) {
+  const bindings = [];
+  for (const { target: seen, statement } of moduleRefs(sourceFile, fromDir)) {
+    if (seen !== target || !ts.isImportDeclaration(statement)) continue;
+    const named = statement.importClause?.namedBindings;
+    if (!named || !ts.isNamedImports(named)) continue;
+    for (const element of named.elements) {
+      bindings.push({
+        imported: (element.propertyName ?? element.name).text,
+        local: element.name.text,
+      });
+    }
+  }
+  return bindings;
+}
+
+/**
+ * True only for a real call of `local` as an identifier callee. A mention of
+ * that name followed by a paren in a comment, string or template literal is not
+ * a call site.
+ *
+ * RESIDUE, stated rather than claimed away: a call reached through a namespace
+ * import (`reaper.recordFixturePid()`) has a property-access callee and reads
+ * false here. `namedImportsOfModule` above would not have bound the local
+ * either, so the pair fails CLOSED on that form — a false RED, never a false
+ * green.
+ */
+function callsIdentifier(sourceFile, local) {
+  let called = false;
+  const visit = (node) => {
+    if (called) return;
+    if (ts.isCallExpression(node)
+        && ts.isIdentifier(node.expression)
+        && node.expression.text === local) {
+      called = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return called;
 }
 
 /**
@@ -175,20 +276,84 @@ function collectTestFiles(dir) {
  * which is checked on every run rather than asserted once in a review artifact —
  * add a real spawn to one and this fails immediately.
  */
+/**
+ * The one home of the seam, as a resolved path so that a specifier's depth
+ * (`../` vs `../../`) is not part of the fact. If the module ever moves, every
+ * spawner reds on the import half below rather than quietly matching nothing.
+ */
+const SEAM_MODULE = path.resolve(__dirname, '../services/orphan-reaper.js');
+
 test('D1 (R-ORCG): every real spawner of the sleeper fixture releases it through the shared registry seam', () => {
   const spawners = collectTestFiles(__dirname)
-    .map(file => ({ file, code: stripComments(fs.readFileSync(file, 'utf-8')) }))
-    .filter(({ code }) => code.includes('sigterm-ignoring-sleeper') && code.includes('node:child_process'));
+    .map(file => ({ file, ast: parseSource(fs.readFileSync(file, 'utf-8'), file) }))
+    .map(({ file, ast }) => ({ file, ast, dir: path.dirname(file) }))
+    .filter(({ ast, dir }) => codeText(ast).includes('sigterm-ignoring-sleeper')
+      && moduleRefs(ast, dir).some(({ target }) => target === 'child_process'));
 
   // Non-vacuity: a selector that admits nothing passes trivially and pins nothing.
   assert.ok(spawners.length > 0, 'the selector must admit the real spawners, else this test proves nothing');
 
-  for (const { file, code } of spawners) {
+  for (const { file, ast, dir } of spawners) {
     const rel = path.relative(__dirname, file);
+    const bindings = namedImportsOfModule(ast, dir, SEAM_MODULE);
     for (const { name, consequence } of REQUIRED_SEAM_CALLS) {
-      // `${name}(` is composed, never written out: a literal `foo(` in this very
-      // assertion would be found by the scan and would make THIS file pass itself.
-      assert.ok(code.includes(`${name}(`), `${rel} spawns the sleeper fixture but never calls ${name} — ${consequence}`);
+      const bound = bindings.filter(binding => binding.imported === name);
+      assert.ok(
+        bound.length > 0,
+        `${rel} spawns the sleeper fixture but never imports ${name} from the shared seam — ${consequence}`,
+      );
+      assert.ok(
+        bound.some(binding => callsIdentifier(ast, binding.local)),
+        `${rel} spawns the sleeper fixture and imports ${name} but never calls it — ${consequence}`,
+      );
     }
   }
+});
+
+/**
+ * The readers above are the D1 pin's whole reason to be believed, and until this
+ * test they had none of their own — the catalog recorded that gap as VACUOUS.
+ * Each case is a spelling the pre-fix lexical scan measured WRONG in one
+ * direction or the other, asserted here against the readers directly so a future
+ * simplification back to a regex reds here first.
+ */
+test('AP-EXT-ITER175-01 the D1 seam pin reads calls from the grammar, not from the text', () => {
+  const at = (source) => parseSource(source, 'probe.js');
+  const dir = path.resolve('/repo/tests');
+  const seam = path.resolve('/repo/services/orphan-reaper.js');
+
+  // A mention is not a call, in either lexical context the old stripper left behind.
+  assert.equal(callsIdentifier(at('void 0; // recordFixturePid(a, b)'), 'recordFixturePid'), false);
+  assert.equal(callsIdentifier(at('const doc = "recordFixturePid(a, b)";'), 'recordFixturePid'), false);
+  assert.equal(callsIdentifier(at('const doc = `recordFixturePid(a, b)`;'), 'recordFixturePid'), false);
+  // ...and a real call still is one, however it is reflowed.
+  assert.equal(callsIdentifier(at('recordFixturePid(a, b);'), 'recordFixturePid'), true);
+  assert.equal(callsIdentifier(at('recordFixturePid(\n  a,\n  b,\n);'), 'recordFixturePid'), true);
+
+  // An alias is the same import; the local name is what gets called.
+  const aliased = at("import { recordFixturePid as note } from '../services/orphan-reaper.js';\nnote(a, b);");
+  assert.deepEqual(namedImportsOfModule(aliased, dir, seam), [{ imported: 'recordFixturePid', local: 'note' }]);
+  assert.equal(callsIdentifier(aliased, 'note'), true);
+
+  // Quote style and specifier depth are spellings, not facts.
+  const deep = at('import { recordFixturePid } from "../services/../services/orphan-reaper.js";');
+  assert.deepEqual(namedImportsOfModule(deep, dir, seam), [{ imported: 'recordFixturePid', local: 'recordFixturePid' }]);
+
+  // An import naming a DIFFERENT module never satisfies a seam question.
+  const elsewhere = at("import { recordFixturePid } from '../services/other.js';");
+  assert.deepEqual(namedImportsOfModule(elsewhere, dir, seam), []);
+
+  // The `node:` prefix is not part of a builtin's identity, and `require` names
+  // a module exactly as `import` does — the selector must see through both.
+  const targets = (source) => moduleRefs(at(source), dir).map(({ target }) => target);
+  assert.ok(targets("import { spawn } from 'node:child_process';").includes('child_process'));
+  assert.ok(targets("import { spawn } from 'child_process';").includes('child_process'));
+  assert.ok(targets("const { spawn } = require('node:child_process');").includes('child_process'));
+  // A quoted spawn line inside a generated worker script is text, not an import.
+  assert.deepEqual(targets('const worker = "const { spawn } = require(\'node:child_process\');";'), []);
+
+  // codeText keeps string contents — the fixture is named by a path literal —
+  // while dropping prose, so the selector cannot be answered by a docblock.
+  assert.ok(codeText(at("const f = 'fixtures/sigterm-ignoring-sleeper.js';")).includes('sigterm-ignoring-sleeper'));
+  assert.equal(codeText(at('// spawns fixtures/sigterm-ignoring-sleeper.js\nvoid 0;')).includes('sigterm-ignoring-sleeper'), false);
 });
