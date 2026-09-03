@@ -2649,24 +2649,43 @@ function resolveFsckDanglingTips(workingDir) {
  * Resolve the TIP of the orphaned chain that `candidate` belongs to:
  *   - candidate is its own tip when no fsck tip has it as an ancestor (single-commit orphan)
  *   - exactly one dangling tip with `candidate` as an ancestor → that tip
- *   - >1 such tips → 'ambiguous' (operator must resolve; runner holds)
+ *   - >1 such tips, or any tip whose ancestry could not be PROVEN either way →
+ *     a `hold` carrying the operator-facing reason (runner never guesses)
+ *
+ * AP-EXT-ITER202-02: this used to repeat `isHeadAtOrBelowCommit`'s merge-base
+ * probe inline and reduce it with `r.status === 0`, so an erroring (128) or
+ * unspawnable/timed-out probe silently DROPPED a tip from `matching` — and the
+ * size of `matching` is the whole answer. 1→0 returns the candidate, which is an
+ * INTERIOR commit of the chain, as its own tip: HEAD ff-only reattaches to it,
+ * the descendant work stays orphaned, and the run still reports `ff_reattached`.
+ * 2→0 collapses the multi-tip operator hold into a confident wrong tip.
+ *
+ * The result is a discriminated `{ tip } | { hold }` rather than the previous
+ * in-band `'ambiguous'` sentinel: a sentinel is assignable to `string`, so a
+ * caller that forgets an arm feeds the WORD to `git merge --ff-only` and stamps
+ * it into `orphan_commit_unreattachable` as the orphan's sha. Under this shape
+ * that mistake is a compile error, and the two hold causes collapse into one
+ * caller branch that reports which one it was.
  */
 function resolveChainTip(candidate, tips, workingDir) {
-    const matching = tips.filter((tip) => {
-        if (tip === candidate)
-            return true;
-        const r = spawnSync('git', ['-C', workingDir, 'merge-base', '--is-ancestor', candidate, tip], {
-            encoding: 'utf-8',
-            timeout: 5000,
-            stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        return r.status === 0;
-    });
+    const matching = [];
+    for (const tip of tips) {
+        if (tip === candidate) {
+            matching.push(tip);
+            continue;
+        }
+        const isAncestor = isHeadAtOrBelowCommit(candidate, tip, workingDir);
+        // One unanswered probe invalidates the COUNT, and the count is the answer.
+        if (isAncestor === null)
+            return { hold: `chain-tip ancestry probe could not answer for ${candidate.slice(0, 8)}` };
+        if (isAncestor)
+            matching.push(tip);
+    }
     if (matching.length === 0)
-        return candidate; // single-commit orphan: candidate IS the tip
+        return { tip: candidate }; // single-commit orphan: candidate IS the tip
     if (matching.length === 1)
-        return matching[0];
-    return 'ambiguous'; // >1 tips contain candidate as ancestor → operator territory
+        return { tip: matching[0] };
+    return { hold: `multiple dangling tips contain ${candidate.slice(0, 8)}` }; // operator territory
 }
 /**
  * SHA precedence for orphan tip resolution:
@@ -2743,11 +2762,12 @@ function attemptOrphanChainReattach(input) {
     }
     // The candidate may be an interior commit of a multi-commit orphan chain;
     // resolve the descendant-most tip so ff-only lands HEAD at the chain TIP.
-    const tip = resolveChainTip(resolved.sha, resolveFsckDanglingTips(workingDir), workingDir);
-    if (tip === 'ambiguous') {
-        log(`[head-regression] ambiguous orphan chain (multiple dangling tips contain ${resolved.sha.slice(0, 8)}) — holding for operator`);
+    const chain = resolveChainTip(resolved.sha, resolveFsckDanglingTips(workingDir), workingDir);
+    if (chain.hold !== undefined) {
+        log(`[head-regression] orphan chain unresolved (${chain.hold}) — holding for operator`);
         return { recovered: false, candidateSha: resolved.sha };
     }
+    const tip = chain.tip;
     // Archive a dirty tree BEFORE ff-only (self-no-ops on a clean tree). ff-only
     // refuses a dirty tree, so a still-dirty tree after archive falls to the hold.
     archiveDirtyTreeBeforeFlip({ workingDir, sessionDir, ticketId, log });

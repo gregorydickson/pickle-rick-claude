@@ -471,3 +471,146 @@ test('AP-EXT-ITER202-01: an ancestry probe that cannot answer preserves HEAD ins
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+
+// --- AP-EXT-ITER202-02 -------------------------------------------------------
+// The twin of AP-EXT-ITER202-01, found by its Phase 2.5 replay: `resolveChainTip`
+// repeated the same `git merge-base --is-ancestor` collapse INLINE (`r.status === 0`)
+// instead of reusing the tri-state probe. A tip whose probe cannot answer is
+// therefore dropped from `matching`, and dropping members silently changes the
+// answer in two directions:
+//
+//   1 -> 0  the real chain TIP disappears and the candidate (an INTERIOR commit
+//           of the chain) is returned as its own tip. HEAD ff-only reattaches to
+//           the interior commit, the descendant work stays orphaned, and the run
+//           still reports `ff_reattached` — a fake-green over lost commits.
+//   2 -> 0  the `ambiguous` operator hold, which exists precisely because the
+//           chain shape is unknowable, collapses into a confident wrong tip.
+//
+// Reached here through the exported `detectAndRecoverHeadRegression`, whose own
+// ancestry check takes `isHeadAtOrBelowCommit`'s equality branch (HEAD === the
+// pinned start_commit after the worker's reset) and so never spawns a probe of
+// its own — the shim below reaches ONLY the chain-tip probe.
+
+/** BASE -> START -> WORK1 -> WORK2, then a worker `reset --hard` back to START. */
+function makeOrphanChainRepo() {
+  const repo = initRepo();
+  commit(repo, 'base.txt', 'base');
+  const START = commit(repo, 'start.txt', 'start');
+  const WORK1 = commit(repo, 'work1.txt', 'work one'); // recorded completion commit (interior)
+  const WORK2 = commit(repo, 'work2.txt', 'work two'); // real chain TIP
+  git(['reset', '--hard', START], repo);
+  return { repo, START, WORK1, WORK2 };
+}
+
+test('AP-EXT-ITER202-02: a chain-tip probe that cannot answer holds instead of reattaching to the interior commit', () => {
+  const { repo, START, WORK1, WORK2 } = makeOrphanChainRepo();
+  const shim128 = makeGitShim(128);
+  let sessionTmp;
+  try {
+    const fix = makeSessionDir(repo);
+    sessionTmp = fix.tmp;
+
+    // Control: with a resolvable probe the chain tip is found and HEAD lands on
+    // WORK2, not on the recorded interior candidate WORK1. Without this case an
+    // implementation that returned "unprovable" unconditionally would pass the
+    // fail-closed assertions below while disabling every legitimate reattach.
+    const control = detectAndRecoverHeadRegression({
+      ticketId: 'ap20202a',
+      workingDir: repo,
+      startCommit: START,
+      completionCommitSha: WORK1,
+      sessionDir: fix.sessionDir,
+      statePath: fix.statePath,
+      iteration: 1,
+      log: () => {},
+    });
+    assert.equal(control.detected, true, 'control: the reset-to-start regression is detected');
+    assert.equal(control.recovered, true, 'control: a resolvable chain is reattachable');
+    assert.equal(control.action, 'ff_reattached');
+    assert.equal(git(['rev-parse', 'HEAD'], repo), WORK2, 'control: HEAD reattaches to the chain TIP');
+
+    // Now the same regression with the chain-tip probe unable to answer.
+    git(['reset', '--hard', START], repo);
+    assert.equal(git(['rev-parse', 'HEAD'], repo), START);
+
+    const blind = withPath(shim128, () => detectAndRecoverHeadRegression({
+      ticketId: 'ap20202b',
+      workingDir: repo,
+      startCommit: START,
+      completionCommitSha: WORK1,
+      sessionDir: fix.sessionDir,
+      statePath: fix.statePath,
+      iteration: 2,
+      log: () => {},
+    }));
+
+    // Pre-fix this asserted `true` / 'ff_reattached' with HEAD at WORK1: the tip
+    // was dropped, the interior commit was mistaken for the tip, and WORK2 was
+    // left on the floor under a success verdict.
+    assert.equal(blind.detected, true, 'detection is unaffected (equality branch, no probe)');
+    assert.equal(blind.recovered, false, 'an unprovable chain shape must not be reported recovered');
+    assert.notEqual(blind.action, 'ff_reattached');
+    assert.equal(
+      git(['rev-parse', 'HEAD'], repo),
+      START,
+      'HEAD must stay put — never ff to an interior commit on an unproven chain shape',
+    );
+  } finally {
+    rmSync(shim128, { recursive: true, force: true });
+    if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER202-02(b): an unanswerable probe does not collapse the >1-tip ambiguous hold into a confident tip', () => {
+  const repo = initRepo();
+  const shim128 = makeGitShim(128);
+  let sessionTmp;
+  try {
+    commit(repo, 'base.txt', 'base');
+    const START = commit(repo, 'start.txt', 'start');
+    const WORK1 = commit(repo, 'work1.txt', 'work one'); // interior, ancestor of BOTH tips
+    commit(repo, 'tip-a.txt', 'tip a');
+    git(['reset', '--hard', WORK1], repo);
+    commit(repo, 'tip-b.txt', 'tip b');
+    git(['reset', '--hard', START], repo);
+
+    const fix = makeSessionDir(repo);
+    sessionTmp = fix.tmp;
+
+    // Control: two dangling tips both descend from WORK1 -> ambiguous -> hold.
+    const control = detectAndRecoverHeadRegression({
+      ticketId: 'ap20202c',
+      workingDir: repo,
+      startCommit: START,
+      completionCommitSha: WORK1,
+      sessionDir: fix.sessionDir,
+      statePath: fix.statePath,
+      iteration: 1,
+      log: () => {},
+    });
+    assert.equal(control.recovered, false, 'control: an ambiguous chain holds for the operator');
+    assert.equal(git(['rev-parse', 'HEAD'], repo), START);
+
+    // Same fork, probe unable to answer. Pre-fix BOTH tips dropped out of
+    // `matching`, so the hold became a confident ff to the interior WORK1.
+    const blind = withPath(shim128, () => detectAndRecoverHeadRegression({
+      ticketId: 'ap20202d',
+      workingDir: repo,
+      startCommit: START,
+      completionCommitSha: WORK1,
+      sessionDir: fix.sessionDir,
+      statePath: fix.statePath,
+      iteration: 2,
+      log: () => {},
+    }));
+    assert.equal(blind.recovered, false, 'an unprovable fork must stay a hold, not become a tip');
+    assert.notEqual(blind.action, 'ff_reattached');
+    assert.equal(git(['rev-parse', 'HEAD'], repo), START, 'HEAD must stay put on an unprovable fork');
+  } finally {
+    rmSync(shim128, { recursive: true, force: true });
+    if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
