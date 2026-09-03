@@ -459,9 +459,19 @@ export function assertBaselineFresh(
   const iterationAge = typeof capturedIteration === 'number'
     ? opts.current_iteration - capturedIteration
     : opts.current_iteration;
-  if (iterationAge >= opts.max_age_iterations) {
+  // AP-EXT-ITER186-01: `captured_iteration` is a reading of `ctx.iteration` — a PER-PROCESS
+  // counter that `buildRunContext` rebuilds as 0 on every microverse-runner start — persisted
+  // into `gate/baseline.json`, which outlives that process. A baseline captured by an EARLIER
+  // runner therefore yields a NEGATIVE age, and refuting only the too-large half read that as
+  // the freshest possible baseline: measured on live sessions, -64/-55/-9 all certified fresh,
+  // so a phase re-entry reused a baseline measured against a tree dozens of commits old.
+  // Certify from POSITIVE evidence instead — the age must be one THIS process could have
+  // produced (>= 0) AND in window. Both refusals carry the one disposition the caller already
+  // applies to every refusal (`classifyExistingBaseline`: drop the file and recapture), so this
+  // is the same collapse one level down, not a second staleness rule.
+  if (!(iterationAge >= 0 && iterationAge < opts.max_age_iterations)) {
     throw new BaselineStaleError(
-      `baseline iteration age (${iterationAge}) >= max_age_iterations (${opts.max_age_iterations})`
+      `baseline iteration age (${iterationAge}) is outside [0, ${opts.max_age_iterations})`
     );
   }
 }

@@ -21,7 +21,7 @@ const {
   handleIterationOutcome,
 } = await import(path.resolve(__dirname, '../bin/microverse-runner.js'));
 
-const { runGate } = await import(path.resolve(__dirname, '../services/convergence-gate.js'));
+const { runGate, assertBaselineFresh, BaselineStaleError } = await import(path.resolve(__dirname, '../services/convergence-gate.js'));
 
 // ---------------------------------------------------------------------------
 // Env isolation: keep real activity-logger writes off the operator's data dir.
@@ -1017,6 +1017,112 @@ test('AP-EXT-ITER128-01 control: a FRESH valid baseline is left exactly as it is
     rm(sessionDir);
   }
 });
+
+// ===========================================================================
+// AP-EXT-ITER186-01: a baseline stamped by an EARLIER runner process is STALE, not fresh.
+//
+// `captured_iteration` is a reading of `ctx.iteration`, which `buildRunContext` rebuilds as 0
+// on every microverse-runner start, while `gate/baseline.json` lives in the SESSION dir and
+// outlives that process. So the two operands of the iteration axis are not on one clock: a
+// re-entered phase compares its own iteration 1 against a stamp of 65 and gets age -64.
+// Refuting only `>= max_age_iterations` read every negative age as the freshest possible
+// baseline — the axis could not fire at all after a restart. Measured on the shipped module
+// with the live stamps of three sessions (-64 / -55 / -9): all three certified FRESH.
+//
+// These rows pin the axis at BOTH ends, because a fix that merely inverted the comparison, or
+// that rejected everything, would satisfy one row and break the other.
+// ===========================================================================
+
+function writeBaselineStampedAt(baselinePath, workingDir, capturedIteration) {
+  fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
+  fs.writeFileSync(baselinePath, validBaselineJson(workingDir, capturedIteration));
+}
+
+test('AP-EXT-ITER186-01: assertBaselineFresh refuses a baseline stamped by an earlier runner process', () => {
+  const sessionDir = mkTmp('apext186-negative-age-');
+  try {
+    const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+    // The live stamp of session 2026-08-28-a97ed2e5 read by a restarted runner's iteration 1.
+    writeBaselineStampedAt(baselinePath, sessionDir, 65);
+
+    assert.throws(
+      () => assertBaselineFresh(baselinePath, {
+        max_age_iterations: 30,
+        max_age_seconds: 14_400,
+        current_iteration: 1,
+      }),
+      (err) => err instanceof BaselineStaleError && /-64/.test(err.message),
+      'an age this process could not have produced must take the recapture disposition, ' +
+        'not read as the freshest possible baseline',
+    );
+  } finally {
+    rm(sessionDir);
+  }
+});
+
+// Over-rejection controls at both boundaries of the accepted window. Without them, "throw
+// whenever captured_iteration is set" and "throw unless the age is strictly positive" both
+// satisfy the row above while re-baselining a healthy session on every iteration.
+for (const [capturedIteration, currentIteration, label] of [
+  [50, 50, 'age 0 — the baseline this very iteration just captured'],
+  [21, 50, 'age 29 — the last age inside the window'],
+]) {
+  test(`AP-EXT-ITER186-01 control: ${label} stays fresh`, () => {
+    const sessionDir = mkTmp('apext186-control-');
+    try {
+      const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+      writeBaselineStampedAt(baselinePath, sessionDir, capturedIteration);
+
+      assert.doesNotThrow(() => assertBaselineFresh(baselinePath, {
+        max_age_iterations: 30,
+        max_age_seconds: 14_400,
+        current_iteration: currentIteration,
+      }));
+    } finally {
+      rm(sessionDir);
+    }
+  });
+}
+
+// End-to-end: the refusal has to reach the RECAPTURE, or the axis is still dead in production.
+// `ensurePerIterationGateBaseline` is the only production caller's frame.
+test('AP-EXT-ITER186-01: a baseline from an earlier runner process is dropped and recaptured', async () => {
+  const workingDir = makeGitRepo('apext186-recapture-repo-');
+  const sessionDir = mkTmp('apext186-recapture-session-');
+
+  try {
+    writeRunnableFixtureRepo(workingDir);
+    commitAll(workingDir, 'initial clean state');
+
+    const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+    // Stamped ABOVE currentIteration (50) — a stamp only a prior process could have written.
+    writeBaselineStampedAt(baselinePath, workingDir, BASELINE_FRESHNESS_OPTS.currentIteration + 20);
+
+    const logs = [];
+    await ensurePerIterationGateBaseline({
+      currentMv: makeMv({ key_metric: undefined }),
+      workingDir,
+      sessionDir,
+      enabledFiles: ['anatomy-park.json'],
+      log: (msg) => logs.push(msg),
+      ...BASELINE_FRESHNESS_OPTS,
+    });
+
+    assert.equal(
+      readBaseline(sessionDir).captured_iteration,
+      BASELINE_FRESHNESS_OPTS.currentIteration,
+      'the recapture must re-stamp at the CURRENT iteration — a file left in place keeps the prior process stamp',
+    );
+    assert.ok(
+      logs.some((msg) => msg.includes('refreshing per-iteration gate baseline')),
+      `the refresh must be reported, got ${JSON.stringify(logs)}`,
+    );
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+});
+
 
 // ===========================================================================
 // AP-EXT-ITER129-01 (the Phase 2.5 replay of AP-EXT-ITER128-01, one read site over).
