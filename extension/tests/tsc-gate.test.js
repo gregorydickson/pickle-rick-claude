@@ -12,6 +12,7 @@ import * as ts from 'typescript';
 const it = test;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HANDLER = path.resolve(__dirname, '../hooks/handlers/tsc-gate.js');
+const HANDLER_TS = path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts');
 const FIXTURE_DIR = path.resolve(__dirname, 'fixtures/tsc-gate');
 const REPLAY_PATCH = path.resolve(__dirname, 'fixtures/tsc-gate-replay-7d44f22d.patch');
 
@@ -641,6 +642,84 @@ it('AP-EXT-ITER18-01 the glued-operator split is DERIVED from the separator set'
 function parseHandler(source, fileName) {
   return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
 }
+
+/**
+ * The file's code with every comment blanked out — by the parser, and without
+ * moving a character, so an index taken from this text addresses the same byte
+ * in the file and the position comparisons below stay true.
+ *
+ * Replaces the hand-rolled block-comment + line-comment regex pair used at both
+ * call sites. That pair reads a comment marker inside a string,
+ * template or regex literal as a real one: the `//` arm then erases the rest of
+ * the line and the block arm runs to the next closer, hiding whole spans from
+ * the forbidden-shape greps these pins are made of. tsc-gate.ts carries 0 such
+ * lines TODAY, so nothing is hidden right now — but both pins here were already
+ * ANSWERABLE, measured against the old reader: an `execTokenIndex` read inside
+ * `segmentIsGitCommit` and a forked `|| r.stderr ||` chain each went invisible
+ * behind one same-line `'https://x.dev'`, GREEN where the bare edit read RED.
+ * One string literal, not a future refactor, was the whole distance
+ * (AP-EXT-ITER177-01).
+ *
+ * Keeping exactly the leaf-token spans needs no enumeration of the lexical
+ * contexts a marker can hide inside. JSDoc is the one comment the parser returns
+ * as a node rather than as trivia, so it is skipped explicitly.
+ *
+ * DELIBERATE duplication: third copy, shared home fence-blocked, see
+ * AP-EXT-ITER174-01 and the twin docblock in the checker test.
+ */
+function codeMask(source, fileName) {
+  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const isJsDoc = (node) => node.kind >= ts.SyntaxKind.FirstJSDocNode
+    && node.kind <= ts.SyntaxKind.LastJSDocNode;
+  // Indexed by UTF-16 code UNIT, which is what `getStart`/`getEnd` count.
+  const out = new Array(source.length);
+  for (let i = 0; i < source.length; i += 1) out[i] = source[i] === '\n' ? '\n' : ' ';
+
+  const keep = (node) => {
+    if (isJsDoc(node)) return;
+    const children = node.getChildren(sourceFile);
+    if (children.length === 0) {
+      for (let i = node.getStart(sourceFile); i < node.getEnd(); i += 1) out[i] = source[i];
+      return;
+    }
+    children.forEach(keep);
+  };
+  keep(sourceFile);
+
+  return out.join('');
+}
+
+it('AP-EXT-ITER177-01 codeMask blanks comments by grammar, and moves nothing', () => {
+  // The mutation matrix that proved the fix. Regress codeMask in EITHER
+  // direction and this reds: under-blank hides a violation from the two pins
+  // below, over-blank lets this file's own trap-door prose answer them.
+  for (const [name, source, mustBeVisible] of [
+    ['line marker inside a string', "const u = 'https://x.dev'; const bad = r.stderr;", true],
+    ['block opener inside a string', "const u = '/* not a comment'; const bad = r.stderr;", true],
+    ['block opener inside a regex literal', 'const re = /[/*]/; const bad = r.stderr;', true],
+    ['marker inside a template', 'const t = `see // here`; const bad = r.stderr;', true],
+    ['a REAL line comment', '// never read r.stderr here', false],
+    ['a REAL block comment', '/* never read r.stderr here */', false],
+    ['a REAL JSDoc block', '/** never read r.stderr here */', false],
+  ]) {
+    const masked = codeMask(source, 'probe.ts');
+    assert.equal(
+      masked.includes('r.stderr'), mustBeVisible,
+      `${name}: expected ${mustBeVisible ? 'VISIBLE' : 'BLANKED'} in ${JSON.stringify(masked)}`,
+    );
+    assert.equal(masked.length, source.length, `${name}: codeMask must not move a character`);
+  }
+  // Position-preserving is load-bearing here: the AP-EXT-ITER105-01 pin below
+  // compares indexOf offsets to decide WHICH function holds the surviving chain.
+  // An astral character is two UTF-16 code units but one code point, so a
+  // code-POINT walk shifts the newline and every span after it.
+  const astral = "const e = '\u{1F600}'; // c\nconst bad = r.stderr;";
+  assert.equal(
+    codeMask(astral, 'probe.ts'),
+    "const e = '\u{1F600}';     \nconst bad = r.stderr;",
+    'must index by UTF-16 code unit',
+  );
+});
 
 // Returns one `{ imported, local }` per binding of `specifier`, across every
 // import statement naming it — splitting one import into two, reflowing it,
@@ -1421,22 +1500,23 @@ it('AP-EXT-ITER63-03 a POSIX command PREFIX cannot hide the commit from the R-WA
 
 it('AP-EXT-ITER63-03 segmentIsGitCommit reads NO positional exec index', async () => {
   const source = fs.readFileSync(
-    path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts'),
+    HANDLER_TS,
     'utf8',
   );
-  const body = source.slice(
-    source.indexOf('function segmentIsGitCommit'),
-    source.indexOf('export function isGitCommitCommand'),
-  );
-  assert.ok(body.length > 0, 'segmentIsGitCommit body not found');
-  // Strip comments BEFORE grepping. This entry's own rationale names
+  // Blank comments BEFORE grepping. This entry's own rationale names
   // `execTokenIndex` in prose to say why it is gone, and an un-stripped grep
   // counts that mention as the violation — the exact self-counting
   // falsification mode `extension/CLAUDE.md` catalogs (R-CNAR-2,
   // AP-EXT-ITER10-01). A pin that reddens on its own explanation is a phantom.
-  const stripComments = (text) =>
-    text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
-  const code = stripComments(body);
+  // Mask the WHOLE file, then slice: codeMask preserves positions, so an index
+  // taken here addresses the same byte, and the two delimiters below now fail
+  // CLOSED — one that survives only in prose no longer finds its function.
+  const handlerCode = codeMask(source, HANDLER_TS);
+  const code = handlerCode.slice(
+    handlerCode.indexOf('function segmentIsGitCommit'),
+    handlerCode.indexOf('export function isGitCommitCommand'),
+  );
+  assert.ok(code.length > 0, 'segmentIsGitCommit body not found');
   // The structural half of the fix: the bug re-enters through ANY positional
   // read of the exec token, so pin their absence rather than only the behavior
   // above. A quoting side-condition is the same bug wearing a different hat
@@ -1451,7 +1531,6 @@ it('AP-EXT-ITER63-03 segmentIsGitCommit reads NO positional exec index', async (
   }
   // And no command-prefix table may appear anywhere in the handler — the
   // enumerated fix is the trap, not the bug.
-  const handlerCode = stripComments(source);
   // `'timeout'` is deliberately NOT in this list, unlike the sibling pin in
   // config-protection.ts: it is a legitimate `GateFailureKind` union member
   // here (tsc-gate.ts:23), so barring the literal would be an anchor that is
@@ -1637,9 +1716,7 @@ it('AP-EXT-ITER105-01 tsc-gate.ts keeps one describeCommandFailure reader', () =
   // Strip block comments first: this file's own trap-door prose spells the
   // forbidden `|| result.stderr || fallback` chain verbatim, and a source pin
   // that greps prose measures documentation, not code.
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../src/hooks/handlers/tsc-gate.ts'), 'utf-8',
-  ).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const source = codeMask(fs.readFileSync(HANDLER_TS, 'utf-8'), HANDLER_TS);
   assert.equal(
     (source.match(/function describeCommandFailure\(/g) ?? []).length,
     1,

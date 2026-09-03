@@ -12,6 +12,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import * as ts from 'typescript';
 
 import {
     buildRefinementManifest,
@@ -1606,13 +1607,60 @@ test('AP-EXT-ITER104-02: a C-quoted twin still counts toward ambiguous_citation'
     }
 });
 
+/**
+ * The file's code with every comment blanked out — by the LANGUAGE's parser, and
+ * without moving a single character, so an index taken from this text addresses
+ * the same byte in the file.
+ *
+ * Replaces the hand-rolled block-comment + line-comment regex pair, which was
+ * blind in both directions and measured fake-GREEN for the pin below. A `//`
+ * inside a string erases the rest of that line: a second `ls-files` argv planted
+ * behind `const u = 'https://x.dev';` read 60/60 GREEN where the identical argv
+ * bare read RED, and a `.trim()` planted the same way read GREEN against a pin
+ * whose whole purpose is to bar it. A comment OPENER inside a string, template
+ * or regex literal opens a comment that runs to the next closer. 13 code lines
+ * of spawn-refinement-team.ts are already invisible to that pair today.
+ *
+ * A comment is trivia, so keeping exactly the leaf-token spans and blanking
+ * everything else needs no enumeration of the lexical contexts a comment marker
+ * can hide inside. JSDoc is the one comment the parser returns as a node rather
+ * than as trivia, so it is skipped explicitly.
+ *
+ * DELIBERATE duplication, not drift: this is a third copy (see
+ * tests/zero-diff-completion-arm.test.js, tests/tsc-gate.test.js). The shared
+ * home is a new module under tests/__helpers__/, and `allowed_paths` is a
+ * snapshot of EXISTING files, so that file cannot be created from here. Filed as
+ * AP-EXT-ITER174-01; a correct reader in three places beats a broken one.
+ */
+function codeMask(source, fileName) {
+    const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+    const isJsDoc = (node) => node.kind >= ts.SyntaxKind.FirstJSDocNode
+        && node.kind <= ts.SyntaxKind.LastJSDocNode;
+    // Indexed by UTF-16 code UNIT, which is what `getStart`/`getEnd` count. `Array.from`
+    // walks code POINTS, so one astral character would shorten this array and silently
+    // shift every span after it.
+    const out = new Array(source.length);
+    for (let i = 0; i < source.length; i += 1) out[i] = source[i] === '\n' ? '\n' : ' ';
+
+    const keep = (node) => {
+        if (isJsDoc(node)) return;
+        const children = node.getChildren(sourceFile);
+        if (children.length === 0) {
+            for (let i = node.getStart(sourceFile); i < node.getEnd(); i += 1) out[i] = source[i];
+            return;
+        }
+        children.forEach(keep);
+    };
+    keep(sourceFile);
+
+    return out.join('');
+}
+
 test('AP-EXT-ITER104-02: resolveTrackedSuffixMatches reads ONE NUL-delimited listing, split but never trimmed', () => {
-    const source = fs.readFileSync(
-        path.join(REPO_ROOT, 'extension', 'src', 'bin', 'spawn-refinement-team.ts'),
-        'utf-8'
-    );
-    // Strip comments first: this file's own prose spells the forbidden shapes.
-    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const sourcePath = path.join(REPO_ROOT, 'extension', 'src', 'bin', 'spawn-refinement-team.ts');
+    const source = fs.readFileSync(sourcePath, 'utf-8');
+    // Blank comments by grammar first: this file's own prose spells the forbidden shapes.
+    const code = codeMask(source, sourcePath);
 
     const lsFilesArgvs = code.match(/\[\s*'ls-files'[^\]]*\]/g) ?? [];
     assert.equal(lsFilesArgvs.length, 1, 'exactly one git ls-files argv may live in this file');
@@ -1624,6 +1672,53 @@ test('AP-EXT-ITER104-02: resolveTrackedSuffixMatches reads ONE NUL-delimited lis
     assert.ok(body.includes("split('\\0')"), 'the listing must be split on NUL');
     assert.ok(!body.includes("split('\\n')"), 'splitting the listing on newline is the regression');
     assert.ok(!body.includes('.trim()'), 'trimming corrupts a raw path git deliberately did not quote');
+});
+
+/**
+ * The mutation matrix that proved the fix, written down. Every row was first
+ * measured by hand against the pin above on the real source; regress `codeMask`
+ * in EITHER direction and this reds — under-blank (a marker inside a literal
+ * treated as a real comment) hides a violation, over-blank (real comment prose
+ * kept) lets documentation answer a source pin.
+ */
+test('AP-EXT-ITER177-01: codeMask blanks comments by grammar, and moves nothing', () => {
+    const cases = [
+        ['line marker inside a string', "const u = 'https://x.dev'; const bad = v.trim();", true],
+        ['block opener inside a string', "const u = '/* not a comment'; const bad = v.trim();", true],
+        ['block opener inside a regex literal', 'const r = /[/*]/; const bad = v.trim();', true],
+        ['marker inside a template', 'const t = `see // here`; const bad = v.trim();', true],
+        ['a REAL line comment', '// never call v.trim() here', false],
+        ['a REAL block comment', '/* never call v.trim() here */', false],
+        ['a REAL JSDoc block', '/** never call v.trim() here */', false],
+    ];
+    for (const [name, source, mustBeVisible] of cases) {
+        const masked = codeMask(source, 'probe.ts');
+        assert.equal(
+            masked.includes('v.trim()'), mustBeVisible,
+            `${name}: expected the call to be ${mustBeVisible ? 'VISIBLE' : 'BLANKED'} in ${JSON.stringify(masked)}`
+        );
+        // Position-preserving is what makes an index into this text address the
+        // same byte in the file, and what keeps the pin's two indexOf slices honest.
+        assert.equal(masked.length, source.length, `${name}: codeMask must not move a character`);
+    }
+
+    // Newlines survive, so a line number derived from this text is the file's own.
+    const multi = "const a = 1;\n/* two\n   lines */\nconst b = 2;\n";
+    const maskedMulti = codeMask(multi, 'probe.ts');
+    assert.equal(maskedMulti.split('\n').length, multi.split('\n').length, 'line count must be preserved');
+    assert.equal(maskedMulti.split('\n')[3], 'const b = 2;', 'code must stay on its original line');
+
+    // An astral character is TWO UTF-16 code units but ONE code point, so a
+    // code-POINT walk (`Array.from` over the string) shifts every span after it.
+    // Length alone does NOT pin this — the token writes restore it — so assert
+    // the exact bytes: under a code-point walk the newline lands one position
+    // early and `const bad` reports as line 1 instead of line 2.
+    const astral = "const e = '\u{1F600}'; // c\nconst bad = v.trim();";
+    assert.equal(
+        codeMask(astral, 'probe.ts'),
+        "const e = '\u{1F600}';     \nconst bad = v.trim();",
+        'must index by UTF-16 code unit, or every span after an astral character shifts'
+    );
 });
 
 // ---------------------------------------------------------------------------
