@@ -6936,16 +6936,30 @@ function probeTreeDirty(workingDir: string): boolean | null {
   catch { return null; }
 }
 
-/** Probe the recovery evidence the runner already holds: tree state, plan artifacts, output. */
+/**
+ * Probe the recovery evidence the runner already holds: tree state, plan artifacts, output.
+ *
+ * AP-EXT-ITER198-01: the ELIGIBILITY gate and the rung's own EXECUTOR must answer
+ * "which file is the plan, and which is its review" the same way. `newestExecutablePlanFile`
+ * settled that with `isPlanReviewArtifact` (AP-EXT-ITER58-01) — the `<prefix>.md` /
+ * `<prefix>_*` contract rule `findMissingPrefixes` uses — while this assessor kept the
+ * pre-fix shape: a bare `plan_*.md` scan that counts the REVIEW as a plan, and an exact
+ * `'plan_review.md'` name that cannot see the suffixed review the same contract permits.
+ * Both halves now go through that one predicate, so the gate cannot admit a ticket whose
+ * only "plan" is the review, nor withhold the rung from a review the executor would read.
+ */
 export function assessRecoveryEvidence(sessionDir: string, workingDir: string, ticketId: string): RecoveryEvidence {
   const dirty = probeTreeDirty(workingDir);
   let planArtifactExists = false;
   let planApproved = false;
   try {
     const entries = fs.readdirSync(path.join(sessionDir, ticketId));
-    planArtifactExists = entries.some(f => /^plan_.*\.md$/.test(f));
-    if (entries.includes('plan_review.md')) {
-      const review = fs.readFileSync(path.join(sessionDir, ticketId, 'plan_review.md'), 'utf-8');
+    planArtifactExists = entries.some(f => /^plan_.*\.md$/.test(f) && !isPlanReviewArtifact(f));
+    // Lexicographic last mirrors `newestExecutablePlanFile`'s tie-break, so a dated
+    // `plan_review_<date>.md` (which sorts after the bare `plan_review.md`) wins.
+    const reviewFile = entries.filter(f => isPlanReviewArtifact(f)).sort().at(-1);
+    if (reviewFile) {
+      const review = fs.readFileSync(path.join(sessionDir, ticketId, reviewFile), 'utf-8');
       planApproved = /\bAPPROVED\b/.test(review);
     }
   } catch { /* ticket dir unreadable → no plan evidence */ }

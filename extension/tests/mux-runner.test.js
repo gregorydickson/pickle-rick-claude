@@ -5259,6 +5259,95 @@ test('AP-EXT-ITER49-01: an unmeasurable tree with an APPROVED plan still reaches
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER198-01 — the converged-plan rung's ELIGIBILITY GATE and its EXECUTOR
+// disagreed about which file is the plan and which is the plan REVIEW.
+//
+// `newestExecutablePlanFile` — the reader the rung actually runs — excludes the
+// review from the plan candidates through `isPlanReviewArtifact`, the artifact
+// contract's `<prefix>.md` / `<prefix>_*` rule (AP-EXT-ITER58-01). The gate that
+// decides whether that reader is ever called kept the pre-fix shape: a bare
+// `plan_*.md` scan (which the review's own name satisfies) plus an exact
+// `'plan_review.md'` string the same contract does not require.
+//
+// Both halves fail, in opposite directions:
+//   - a review-only dir reads as "a plan exists", so `noWorkProduced` — the
+//     ladder's honest zero-output class — is suppressed and rung 3 is offered a
+//     plan its executor will refuse to find. Synthetic: 76/76 live ticket dirs
+//     hold a real plan (AP-EXT-ITER58-01), so this half is unfixtured by
+//     construction and this is the fixture that constructs it;
+//   - a dated review reads as "not approved", withholding the rung from a plan
+//     the executor would have run. ATTESTED: 1 of 54 live plan-review artifacts
+//     is named `plan_review_<date>.md`.
+//
+// The fix is subtraction: one predicate, `isPlanReviewArtifact`, decides both.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER198-01: a DATE-SUFFIXED plan review still reaches the converged-plan rung', async () => {
+  const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
+  const { classifyRecoveryTaxonomy } = await import('../services/recovery-controller.js');
+  const root = makeTmpRoot();
+  const repoDir = seedRecoveryEvidenceRepo(root);
+  const sessionDir = path.join(root, 'session');
+  const ticketDir = path.join(sessionDir, 'tkt1');
+  fs.mkdirSync(ticketDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketDir, 'plan_tkt1.md'), '## Phase 1 — do it\n');
+  // The shape the live corpus actually contains — `findMissingPrefixes` counts it
+  // as the plan_review artifact, so the worker that wrote it satisfied the contract.
+  fs.writeFileSync(path.join(ticketDir, 'plan_review_2026-08-29.md'), 'Verdict: APPROVED\n');
+
+  const evidence = assessRecoveryEvidence(sessionDir, repoDir, 'tkt1');
+
+  assert.equal(
+    evidence.planConvergedUncommitted, true,
+    'an APPROVED review the EXECUTOR would read must not be invisible to the gate that gates it',
+  );
+  assert.equal(classifyRecoveryTaxonomy(evidence), 'plan_converged_uncommitted');
+});
+
+test('AP-EXT-ITER198-01: the plan REVIEW alone is not plan evidence', async () => {
+  const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
+  const { classifyRecoveryTaxonomy } = await import('../services/recovery-controller.js');
+  const root = makeTmpRoot();
+  const repoDir = seedRecoveryEvidenceRepo(root);
+  const sessionDir = path.join(root, 'session');
+  const ticketDir = path.join(sessionDir, 'tkt1');
+  fs.mkdirSync(ticketDir, { recursive: true });
+  // No `plan_*.md` at all — only the review, whose own name matches `plan_*.md`.
+  fs.writeFileSync(path.join(ticketDir, 'plan_review.md'), 'Verdict: APPROVED\n');
+
+  const evidence = assessRecoveryEvidence(sessionDir, repoDir, 'tkt1');
+
+  assert.equal(
+    evidence.planConvergedUncommitted, false,
+    'rung 3 must not be offered a plan that `newestExecutablePlanFile` excludes from its own candidates',
+  );
+  assert.equal(
+    evidence.noWorkProduced, true,
+    'the review is not work — suppressing the honest zero-output class costs the ladder its only accurate verdict',
+  );
+  assert.equal(classifyRecoveryTaxonomy(evidence), 'no_work_produced');
+});
+
+test('AP-EXT-ITER198-01: with two reviews present the LEXICOGRAPHIC LAST wins, as in newestExecutablePlanFile', async () => {
+  const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  const repoDir = seedRecoveryEvidenceRepo(root);
+  const sessionDir = path.join(root, 'session');
+  const ticketDir = path.join(sessionDir, 'tkt1');
+  fs.mkdirSync(ticketDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketDir, 'plan_tkt1.md'), '## Phase 1 — do it\n');
+  // '.' (0x2e) sorts before '_' (0x5f), so the dated review is the last — and the
+  // superseding — one. Reading the stale bare review instead withholds the rung.
+  fs.writeFileSync(path.join(ticketDir, 'plan_review.md'), 'Verdict: REJECTED\n');
+  fs.writeFileSync(path.join(ticketDir, 'plan_review_2026-08-29.md'), 'Verdict: APPROVED\n');
+
+  assert.equal(
+    assessRecoveryEvidence(sessionDir, repoDir, 'tkt1').planConvergedUncommitted, true,
+    'the newest review is the verdict — a first-seen tie-break re-elects the superseded one',
+  );
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER163-01 — the recovery ladder's "was work produced?" evidence was the
 // ONE work-oracle in this file with no COMMIT arm.
 //
